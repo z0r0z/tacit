@@ -1,0 +1,2978 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>tacit</title>
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f4efe6;
+  --bg-alt: #ebe3d4;
+  --bg-warm: #fff8eb;
+  --ink: #0a0a0a;
+  --ink-mid: #555;
+  --ink-faint: #999;
+  --orange: #f7931a;
+  --green: #2e7d32;
+  --red: #c62828;
+  --purple: #6a1b9a;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--bg); color: var(--ink); }
+body {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 13px; line-height: 1.55; letter-spacing: -0.01em;
+  padding: 24px; max-width: 1100px; margin: 0 auto;
+  background-image: radial-gradient(rgba(0,0,0,0.025) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+header {
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 16px; margin-bottom: 32px;
+  display: grid; grid-template-columns: auto 1fr auto;
+  align-items: end; gap: 24px;
+}
+.logo {
+  font-family: 'Instrument Serif', serif;
+  font-size: 60px; font-style: italic;
+  line-height: 0.85; letter-spacing: -0.03em;
+}
+.logo .dot { color: var(--orange); }
+.tagline {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); border-left: 1px solid var(--ink); padding-left: 12px;
+}
+.tagline em { color: var(--orange); font-style: normal; }
+.net-badge {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em;
+  font-weight: 700; padding: 6px 12px;
+  border: 1px solid var(--ink); background: var(--ink); color: var(--bg);
+}
+
+.section {
+  border: 1px solid var(--ink);
+  margin-bottom: 24px; background: var(--bg);
+}
+.section-header {
+  border-bottom: 1px solid var(--ink); padding: 8px 16px;
+  background: var(--ink); color: var(--bg);
+  font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase;
+  display: flex; justify-content: space-between; align-items: center;
+  font-weight: 500;
+}
+.section-body { padding: 20px; }
+
+.kv { display: grid; grid-template-columns: 130px 1fr; gap: 10px 16px; }
+.kv dt {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); padding-top: 3px;
+}
+.kv dd { font-size: 12px; word-break: break-all; min-width: 0; }
+
+.mono-box {
+  background: var(--bg-alt); border: 1px dashed var(--ink);
+  padding: 8px 12px; font-size: 11px;
+  word-break: break-all; user-select: all; cursor: text;
+}
+.mono-box.inline { padding: 2px 6px; display: inline-block; font-size: 10px; }
+
+button, .btn {
+  font-family: inherit; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  padding: 8px 14px; border: 1px solid var(--ink);
+  background: var(--bg); cursor: pointer;
+  transition: all 0.08s; font-weight: 500;
+  text-decoration: none; color: var(--ink);
+  display: inline-block; white-space: nowrap;
+}
+button:hover, .btn:hover { background: var(--ink); color: var(--bg); }
+button:disabled { opacity: 0.35; cursor: not-allowed; }
+button:disabled:hover { background: var(--bg); color: var(--ink); }
+button.primary {
+  background: var(--orange); border-color: var(--orange);
+  color: var(--ink); font-weight: 600;
+}
+button.primary:hover {
+  background: var(--ink); color: var(--orange); border-color: var(--ink);
+}
+button.danger:hover { background: var(--red); color: #fff; border-color: var(--red); }
+
+input, textarea, select {
+  font-family: inherit; font-size: 12px; padding: 9px 10px;
+  border: 1px solid var(--ink); background: var(--bg);
+  color: var(--ink); width: 100%;
+}
+input:focus, textarea:focus { outline: 2px solid var(--orange); outline-offset: -1px; }
+
+label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); display: block;
+  margin-bottom: 5px; margin-top: 14px; font-weight: 500;
+}
+
+.form-row { display: grid; gap: 16px; }
+.form-row.two { grid-template-columns: 1fr 1fr; }
+.form-row.three { grid-template-columns: 1fr 1fr 1fr; }
+
+.tabs {
+  display: flex; border-bottom: 2px solid var(--ink);
+  margin-bottom: 24px; overflow-x: auto;
+}
+.tab {
+  padding: 12px 22px; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.15em;
+  cursor: pointer; border: none; background: transparent;
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+  color: var(--ink-mid); font-weight: 500; white-space: nowrap;
+  transition: background 0.08s, color 0.08s;
+}
+.tab.active { color: var(--ink); border-bottom-color: var(--orange); font-weight: 700; }
+.tab:hover:not(.active) { background: var(--ink); color: var(--bg); }
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; animation: fadein 0.2s; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+.script-decode {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) minmax(170px, auto) 1fr;
+  gap: 4px 18px; font-size: 11px;
+  background: var(--bg-warm);
+  padding: 14px; border: 1px dashed var(--ink);
+  overflow-x: auto;
+}
+.script-decode .hex { color: var(--ink-mid); font-weight: 300; white-space: nowrap; }
+.script-decode .op { color: var(--orange); font-weight: 700; white-space: nowrap; }
+.script-decode .desc { color: var(--ink-mid); font-style: italic; }
+
+.asset-card {
+  border: 1px solid var(--ink);
+  padding: 18px; margin-bottom: 14px;
+  background: var(--bg);
+}
+.asset-card .head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 16px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--ink); padding-bottom: 10px;
+}
+.asset-card .ticker {
+  font-family: 'Instrument Serif', serif;
+  font-size: 36px; font-style: italic; line-height: 1;
+  color: var(--ink);
+}
+.asset-card .ticker .id-tag {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px; font-style: normal;
+  color: var(--ink-mid); letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-left: 8px;
+}
+.asset-card .balance {
+  font-family: 'Instrument Serif', serif;
+  font-size: 32px; font-style: italic; line-height: 1;
+  text-align: right;
+}
+.asset-card .balance .unit {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--ink-mid); font-style: normal; display: block;
+}
+.asset-card .meta {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 6px 16px; font-size: 11px; color: var(--ink-mid);
+}
+.asset-card .meta .lbl {
+  text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 9px; display: inline-block; min-width: 60px; color: var(--ink-mid);
+}
+.asset-card .actions {
+  margin-top: 14px;
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
+
+.alloc-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px; align-items: end;
+  margin-bottom: 10px;
+  padding: 10px; border: 1px dashed var(--ink-mid);
+  background: var(--bg-warm);
+}
+.alloc-row label { margin-top: 0; }
+
+.batch-summary {
+  background: var(--bg-warm);
+  border: 1px solid var(--ink);
+  padding: 12px 14px;
+  margin: 14px 0;
+  font-size: 11px;
+}
+.batch-summary strong { color: var(--orange); }
+
+.tx-preview {
+  margin-top: 14px;
+  font-size: 11px;
+  background: var(--bg-warm);
+  border: 1px dashed var(--ink);
+  padding: 14px;
+}
+.tx-preview h4 {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
+  margin-bottom: 8px; color: var(--ink-mid);
+}
+.tx-preview .row {
+  font-family: monospace; font-size: 11px;
+  padding: 3px 0; border-bottom: 1px dotted var(--ink-faint);
+}
+.tx-preview .row:last-child { border-bottom: none; }
+.tx-preview .row .idx {
+  display: inline-block; min-width: 30px; color: var(--orange); font-weight: 600;
+}
+.tx-preview .row .label {
+  display: inline-block; min-width: 100px; color: var(--ink-mid);
+}
+
+.opreturn-decode {
+  background: var(--orange);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  padding: 10px 14px;
+  margin-top: 8px;
+  box-shadow: 3px 3px 0 var(--ink);
+  font-size: 11px;
+}
+.opreturn-decode .head {
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+  font-size: 10px; margin-bottom: 6px;
+}
+.opreturn-decode .data { font-family: monospace; font-size: 10px; word-break: break-all; }
+
+.status-pill {
+  display: inline-block; padding: 2px 8px;
+  font-size: 10px; letter-spacing: 0.1em;
+  text-transform: uppercase; border: 1px solid var(--ink);
+  font-weight: 600;
+}
+.status-pill.confirmed { background: var(--green); color: #fff; border-color: var(--green); }
+.status-pill.pending { background: var(--bg-warm); color: var(--ink); }
+.status-pill.etch { background: var(--purple); color: #fff; border-color: var(--purple); }
+
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  padding: 14px 22px; background: var(--ink); color: var(--bg);
+  font-size: 12px; border-left: 4px solid var(--orange);
+  max-width: 420px; z-index: 100;
+  animation: slidein 0.2s ease-out; word-break: break-word;
+  box-shadow: 4px 4px 0 var(--orange);
+}
+.toast.error { border-left-color: var(--red); box-shadow: 4px 4px 0 var(--red); }
+.toast.success { border-left-color: var(--green); box-shadow: 4px 4px 0 var(--green); }
+@keyframes slidein { from { transform: translateX(110%); } to { transform: translateX(0); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+.empty {
+  padding: 36px; text-align: center; color: var(--ink-mid);
+  font-style: italic; font-family: 'Instrument Serif', serif;
+  font-size: 18px; border: 1px dashed var(--ink);
+}
+
+.flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--ink-mid); font-size: 11px; }
+.warn {
+  background: var(--bg-warm); border-left: 4px solid var(--orange);
+  padding: 10px 14px; font-size: 11px; margin: 12px 0;
+}
+.error { color: var(--red); font-size: 11px; margin: 6px 0; }
+
+a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+a:hover { color: var(--orange); }
+
+.amount {
+  font-family: 'Instrument Serif', serif;
+  font-size: 36px; font-style: italic; line-height: 1;
+}
+.amount .unit {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--ink-mid); margin-left: 4px; font-style: normal;
+}
+
+.hero {
+  border: 1px solid var(--ink);
+  background: var(--bg);
+  padding: 18px 20px;
+  margin-bottom: 24px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 20px;
+  position: relative;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 32px;
+  left: 50px;
+  right: 50px;
+  border-top: 1px dashed var(--ink-mid);
+  z-index: 0;
+}
+.hero-step { position: relative; z-index: 1; }
+.hero-num {
+  background: var(--orange);
+  color: var(--ink);
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: 'Instrument Serif', serif;
+  font-style: italic; font-size: 18px; font-weight: 700;
+  margin-bottom: 10px;
+}
+.hero-title {
+  font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  margin-bottom: 4px;
+}
+.hero-text {
+  font-size: 11px; color: var(--ink-mid); line-height: 1.5;
+}
+
+footer {
+  margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--ink);
+  font-size: 10px; color: var(--ink-mid);
+  display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+
+@media (max-width: 700px) {
+  body { padding: 14px; }
+  header { grid-template-columns: 1fr; gap: 12px; }
+  .logo { font-size: 42px; }
+  .form-row.two, .form-row.three { grid-template-columns: 1fr; }
+  .kv { grid-template-columns: 1fr; gap: 4px 0; }
+  .kv dd { margin-bottom: 8px; }
+  .alloc-row { grid-template-columns: 1fr; }
+  .hero { grid-template-columns: 1fr; gap: 14px; }
+  .hero::before { display: none; }
+}
+</style>
+</head>
+<body>
+
+<div id="file-protocol-warning" style="display:none;background:#fee;border-bottom:2px solid var(--red);padding:10px 16px;font-size:12px;color:var(--red);text-align:center;">
+  <strong>⚠ Served from <code>file://</code></strong> — share-links generated here will contain a broken origin and won't open elsewhere.
+  Host the file on <code>localhost</code> or any static host (GitHub Pages, Cloudflare Pages, etc.) for a working demo.
+</div>
+
+<header>
+  <div class="logo">tacit</div>
+  <div class="tagline">
+    Confidential tokens<br>
+    indexer-validated on bitcoin<br>
+    <em>amounts hidden · supply checked from chain data</em>
+  </div>
+  <div class="net-badge">signet</div>
+</header>
+
+<div class="tabs">
+  <button class="tab active" data-tab="wallet">Wallet</button>
+  <button class="tab" data-tab="etch">Etch Asset</button>
+  <button class="tab" data-tab="transfer">Transfer</button>
+  <button class="tab" data-tab="holdings">Holdings</button>
+  <button class="tab" data-tab="about">Protocol</button>
+</div>
+
+<!-- WALLET TAB -->
+<div class="tab-panel active" id="tab-wallet">
+  <div class="hero">
+    <div class="hero-step">
+      <div class="hero-num">1</div>
+      <div class="hero-title">Get sats</div>
+      <div class="hero-text">You need a few thousand signet sats to pay for txs. Use the faucet button below.</div>
+    </div>
+    <div class="hero-step">
+      <div class="hero-num">2</div>
+      <div class="hero-title">Etch a confidential asset</div>
+      <div class="hero-text">Define ticker, supply, decimals. Supply is committed via Pedersen — only you know the amount. The chain sees a 33-byte commitment.</div>
+    </div>
+    <div class="hero-step">
+      <div class="hero-num">3</div>
+      <div class="hero-title">Transfer privately</div>
+      <div class="hero-text">Send to a recipient's pubkey. On-chain: only commitments. The recipient learns their amount via an ECDH-derived blinding embedded in a share-link.</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span>tacit.wallet</span>
+      <span id="wallet-status" class="muted">loading…</span>
+    </div>
+    <div class="section-body">
+      <dl class="kv">
+        <dt>Address</dt>
+        <dd>
+          <div class="mono-box" id="w-address">—</div>
+          <a class="muted" id="explorer-link" target="_blank" rel="noopener" style="font-size:10px;margin-top:4px;display:inline-block;">view on explorer ↗</a>
+        </dd>
+        <dt>Public key</dt>
+        <dd>
+          <div class="mono-box" id="w-pubkey">—</div>
+          <div class="muted" style="margin-top:4px;">share with senders so they can transfer assets to you</div>
+        </dd>
+        <dt>Balance</dt>
+        <dd><span class="amount" id="w-balance">—</span><span class="unit">sats</span></dd>
+        <dt>Block height</dt>
+        <dd id="w-height">—</dd>
+      </dl>
+      <div class="flex" style="margin-top:18px;">
+        <button id="btn-refresh">↻ Refresh</button>
+        <button id="btn-drip" class="primary">⚡ Demo drip</button>
+        <button id="btn-faucet">Manual faucet</button>
+        <button id="btn-export" class="danger">Export key</button>
+        <button id="btn-import">Import key</button>
+        <button id="btn-regen" class="danger">New wallet</button>
+      </div>
+      <div id="faucet-panel" style="display:none; margin-top:16px; border: 1px dashed var(--orange); background: var(--bg-warm); padding: 16px;">
+        <strong style="font-size:11px; text-transform:uppercase; letter-spacing:0.12em;">Faucet · address copied to clipboard</strong>
+        <div class="muted" style="font-size:11px; margin-top:6px;">Open a faucet, paste address, solve captcha:</div>
+        <div class="flex" style="margin-top:10px;">
+          <a class="btn" href="https://signetfaucet.com" target="_blank">signetfaucet.com</a>
+          <a class="btn" href="https://alt.signetfaucet.com" target="_blank">alt.signetfaucet.com</a>
+          <a class="btn" href="https://signet.bc-2.jp/" target="_blank">signet.bc-2.jp</a>
+        </div>
+      </div>
+      <div class="warn" style="margin-top:14px;">
+        <strong>Demo wallet</strong> — your private key lives in localStorage and never leaves the page.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ETCH TAB -->
+<div class="tab-panel" id="tab-etch">
+  <div class="section">
+    <div class="section-header"><span>tacit.etch · define a new asset</span></div>
+    <div class="section-body">
+      <div class="form-row two">
+        <div>
+          <label>Ticker (1–8 chars, A–Z 0–9)</label>
+          <input id="e-ticker" placeholder="USDC" maxlength="8" autocomplete="off">
+        </div>
+        <div>
+          <label>Decimals (0–8)</label>
+          <input id="e-decimals" type="number" value="0" min="0" max="8">
+        </div>
+      </div>
+      <label>Supply (display units; fractions OK, e.g. "1000.50" with decimals=2)</label>
+      <input id="e-supply" type="text" value="1000000" inputmode="decimal">
+      <label style="margin-top:14px;">Image URI (optional) — token logo / icon, or metadata JSON CID</label>
+      <input id="e-image" type="text" placeholder="ipfs://bafybeih... or https://..." spellcheck="false">
+      <div class="flex" style="margin-top:8px;gap:8px;align-items:center;">
+        <label for="e-image-file" class="btn" style="margin:0;cursor:pointer;">↑ Upload to IPFS</label>
+        <input id="e-image-file" type="file" accept="image/png,image/jpeg,image/webp" style="display:none;">
+        <span id="e-image-status" class="muted" style="font-size:11px;"></span>
+      </div>
+      <label style="margin-top:14px;">Description (optional, ≤500 chars) — bundled into a metadata JSON pinned to IPFS</label>
+      <textarea id="e-description" maxlength="500" rows="2" placeholder="What this token is for, who issued it, etc." style="font-family:inherit;font-size:12px;padding:9px 10px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);width:100%;resize:vertical;"></textarea>
+      <label style="margin-top:14px;">External URL (optional) — project website / docs</label>
+      <input id="e-external-url" type="text" placeholder="https://..." spellcheck="false">
+      <div class="muted">A Pedersen commitment <code>C = supply·H + r·G</code> plus a 32-bit rangeproof go on-chain inside a Taproot script-path envelope. Only you know <code>(supply, r)</code> — observers see only the 33-byte commitment and the proof that the base-unit supply is in <code>[0, 2³²)</code>. The supply blinding and an 8-byte encrypted-supply field are both self-derived from your wallet privkey + commit-input anchor, so a freshly-installed wallet with only your key can recover the etched supply from chain alone — no localStorage backup needed. Decimals are capped at 8 because the 32-bit rangeproof bounds the commitment value: with <code>d</code> decimals, max display supply per asset_id is roughly <code>4.29 × 10⁹ ÷ 10ᵈ</code>. To issue more of the same asset, etch additional asset_ids; or upgrade to wider rangeproofs (next protocol revision). Etch is a 2-tx flow (commit + reveal); broadcast takes a few seconds. Image URI (≤256 bytes) is stored alongside the supply commitment and propagates to recipients through the canonical CETCH ancestor — they don't trust the share-link sender for it.</div>
+
+      <div id="etch-preview" style="display:none;"></div>
+
+      <div class="flex" style="margin-top:18px;">
+        <button id="btn-etch-preview">Preview etch</button>
+        <button id="btn-etch-broadcast" class="primary" disabled>Etch &amp; broadcast</button>
+      </div>
+      <div id="etch-error" class="error"></div>
+    </div>
+  </div>
+</div>
+
+<!-- TRANSFER TAB -->
+<div class="tab-panel" id="tab-transfer">
+  <div class="section">
+    <div class="section-header"><span>tacit.transfer · confidential send</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Single-asset confidential transfer. Each transfer is a 2-tx flow: a commit tx creates a Taproot output committed to the envelope, then a reveal tx spends it via script-path, exposing the commitments + rangeproofs in the witness. Observers see commitments and proofs, never amounts. The recipient receives a <strong>share-link</strong> with the cleartext amount; their blinding factor is recomputable via ECDH.
+      </div>
+
+      <label>Asset</label>
+      <select id="x-asset"><option value="">— select —</option></select>
+
+      <label>Recipient public key (33-byte compressed hex, 02… or 03…)</label>
+      <input id="x-recipient-pub" placeholder="02… or 03… (66 hex chars)" autocomplete="off" spellcheck="false">
+      <div class="muted">Ask the recipient to share their pubkey from their Wallet tab. The address is derived from this pubkey.</div>
+
+      <label>Amount to send</label>
+      <input id="x-amount" type="text" placeholder="100" autocomplete="off">
+
+      <div id="transfer-preview" style="display:none;"></div>
+
+      <div class="flex" style="margin-top:18px;">
+        <button id="btn-transfer-preview">Preview transfer</button>
+        <button id="btn-transfer-broadcast" class="primary" disabled>Transfer &amp; broadcast</button>
+      </div>
+      <div id="transfer-error" class="error"></div>
+      <div id="transfer-share" style="display:none;margin-top:18px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- HOLDINGS TAB -->
+<div class="tab-panel" id="tab-holdings">
+  <div class="section">
+    <div class="section-header">
+      <span>tacit.holdings · confidential</span>
+      <span id="holdings-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="flex" style="margin-bottom:14px;">
+        <button id="btn-rescan">↻ Rescan UTXOs</button>
+        <button id="btn-import-share">＋ Import received share-link</button>
+        <button id="btn-discover">⌕ Discover assets</button>
+      </div>
+      <div id="holdings-list"></div>
+      <div id="discover-panel" style="display:none; margin-top:24px; border-top: 1px dashed var(--ink); padding-top:16px;">
+        <div style="font-size:10px; text-transform:uppercase; letter-spacing:0.12em; color:var(--ink-mid); margin-bottom:10px;">tacit.discover · all etched assets on signet</div>
+        <div id="discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;">click discover</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ABOUT TAB -->
+<div class="tab-panel" id="tab-about">
+  <div class="section">
+                <div class="section-header"><span>tacit.protocol</span></div>
+    <div class="section-body" style="line-height:1.75;">
+      <p>Confidential single-asset token meta-protocol on Bitcoin. Pedersen commitments hide amounts; rangeproofs and kernel signatures together enforce supply conservation without trusting any participant.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Validation model</h3>
+      <p style="margin-top:8px;">Like every Bitcoin token meta-protocol (Runes, BRC-20, Ordinals, Taproot Assets, RGB, Counterparty), tacit's token rules are <strong>not enforced by Bitcoin nodes</strong>. Bitcoin validates the underlying tx structure and Taproot signatures; an external indexer validates the token-level rules (commitments, rangeproofs, kernel signatures, asset_id consistency).</p>
+      <p>Architecturally tacit is an <strong>indexer-validated meta-protocol</strong> — same family as Runes, BRC-20, and Ordinals. All data needed to validate any UTXO lives on Bitcoin's chain. An indexer with chain-only access can recursively walk every UTXO back to its CETCH root and reach the same verdict as any other indexer running the same rules. No federation, no off-band proof exchange, no out-of-band coordination.</p>
+      <p>This is distinct from <strong>proof-distribution protocols</strong> (RGB, Taproot Assets) where the recipient must receive validity proofs out-of-band; an indexer with chain-only access cannot reconstruct token state. It's also distinct from <strong>fully-validated chains</strong> (Liquid, Mimblewimble) where consensus enforces the rules natively. Tacit's contribution is bringing CT-style amount-hiding into the indexer-validated meta-protocol family — the only thing that travels out-of-band is the recipient's own opening (cleartext amount + blinding) via share-link, which lets them <em>see</em> their balance but is not required for any indexer to <em>validate</em> the UTXO.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Cryptography</h3>
+      <p style="margin-top:8px;">Commitments: <code>C = a·H + r·G</code>, additively homomorphic. <code>H</code> is a NUMS generator (no known discrete log w.r.t. <code>G</code>) derived deterministically by hash-to-curve from the seed <code>"tacit-generator-H-v1"</code>. The protocol carries <code>C</code> on chain; <code>(a, r)</code> stay private.</p>
+      <p>Rangeproofs: each commitment is accompanied by a proof that <code>a ∈ [0, 2³²)</code>. Bit-decompose <code>a = Σ b_i·2^i</code>, commit each bit as <code>C_i = b_i·2^i·H + r_i·G</code> with <code>Σ C_i = C</code>, and prove via Schnorr OR-proof that each <code>C_i</code> opens to <code>0</code> or <code>2^i</code>. A single Fiat-Shamir transcript binds all 32 branches. 5152 bytes per output, ~250ms to prove, ~350ms to verify in-browser.</p>
+      <p>32-bit range bounds the value committed in any one Pedersen commitment to 4.29 × 10⁹ base units. Two practical implications worth distinguishing:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li><strong>Per-UTXO cap (works around naturally).</strong> A user holding more than 2³² base units of an asset just spreads across multiple UTXOs — same as Bitcoin itself. Wallets pick 1–8 inputs per CXFER, so transferring large amounts means picking enough UTXOs to cover the send. Splitting across multiple CXFERs is fine for amounts beyond what fits in 8 inputs. Not a capability limit, just a UTXO-management one.</li>
+        <li><strong>Per-asset supply cap (hard limit at etch).</strong> Total supply of any single asset_id is bounded by 2³² base units because that's the most a single CETCH commitment can hold. With <code>d</code> decimals, max display supply is <code>4.29 × 10⁹ ÷ 10ᵈ</code> per asset. Common settings: 0 decimals → 4.29B units (community/gaming tokens, fine); 2 decimals → 42.9M with cents (regional stablecoins, fine); 6 decimals → 4,294 units (USDC-style, too small for anything serious); 8 decimals → 42.9 units (BTC-style, only useful for rare/limited tokens). To issue more of "the same asset," etch a new asset_id — but that's a new asset from the protocol's perspective, not increased supply of the original.</li>
+      </ul>
+      <p style="margin-top:8px;">The real fix for high-decimal stablecoins is wider rangeproofs (64-bit gives 18.4 quintillion base units, enough for any practical issuance). With current bit-decomposition that doubles proof size to ~10KB per output. Bulletproofs at 64-bit would be ~750 bytes per output — a 7× compression that also reduces per-CXFER fees by roughly 5–10×. Bulletproofs is the next major protocol revision; not in this build.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Wire format (Taproot envelope)</h3>
+      <p style="margin-top:8px;">Rangeproofs don't fit in 80-byte OP_RETURN, so payload moves into a Taproot script-path leaf. Each operation is <strong>2 transactions</strong>: a <em>commit</em> tx that creates a P2TR output committed to the envelope's leaf hash (internal pubkey = BIP-341 NUMS, so script-path is the only spend), and a <em>reveal</em> tx that spends the P2TR via script-path, exposing the envelope script in the witness. Indexers scan <code>tx.vin[0].witness[1]</code> for envelopes.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">Envelope leaf script</h4>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">32B</span><span class="op">&lt;signing pubkey x-only&gt;</span><span class="desc">wallet pubkey allowed to sign reveal</span>
+        <span class="hex">ac</span><span class="op">OP_CHECKSIG</span><span class="desc">verifies witness signature</span>
+        <span class="hex">00 63</span><span class="op">OP_FALSE OP_IF</span><span class="desc">enter unreachable data block</span>
+        <span class="hex">05</span><span class="op">"TACIT"</span><span class="desc">protocol magic</span>
+        <span class="hex">01</span><span class="op">version</span><span class="desc">envelope version</span>
+        <span class="hex">..</span><span class="op">payload chunks (≤520B each)</span><span class="desc">opcode + body + rangeproof</span>
+        <span class="hex">68</span><span class="op">OP_ENDIF</span><span class="desc">end</span>
+      </div>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">CETCH payload (opcode 0x21)</h4>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">21</span><span class="op">T_CETCH</span><span class="desc">confidential etch</span>
+        <span class="hex">L</span><span class="op">ticker length</span><span class="desc">1 byte (1–16)</span>
+        <span class="hex">..</span><span class="op">ticker</span><span class="desc">UTF-8</span>
+        <span class="hex">d</span><span class="op">decimals</span><span class="desc">1 byte (0–8; protocol-capped)</span>
+        <span class="hex">33B</span><span class="op">commitment C</span><span class="desc">a·H + r·G</span>
+        <span class="hex">5152B</span><span class="op">rangeproof</span><span class="desc">32 × 161 bytes</span>
+        <span class="hex">8B</span><span class="op">amount_ct</span><span class="desc">u64 LE supply XOR keystream — etcher-only, recoverable from chain</span>
+        <span class="hex">2B</span><span class="op">image_len</span><span class="desc">u16 LE (0–256)</span>
+        <span class="hex">..</span><span class="op">image_uri</span><span class="desc">opaque UTF-8; image OR metadata-blob CID; renderers MUST validate scheme</span>
+      </div>
+      <p style="margin-top:8px;">The wire format treats <code>image_uri</code> as opaque UTF-8 bytes. The decoder accepts any valid UTF-8 ≤256 bytes — it does not enforce a URI scheme. This leaves room for future schemes (<code>ar://</code>, <code>ipns://</code>, etc.) without a wire-format change. <strong>Renderers MUST validate before display</strong>: tacit's UI accepts only <code>https://</code>, <code>ipfs://CID</code>, or bare CIDs (Qm…/bafy…), and rejects <code>http:</code>, <code>javascript:</code>, <code>data:</code>, and other potentially-unsafe schemes. The etch UI also rejects them at write time as a UX safeguard.</p>
+      <p>Asset_id = <code>sha256(reveal_txid_BE ‖ 0_LE)</code> (32 bytes). Supply commitment lives at vout 0 of the reveal tx.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">CXFER payload (opcode 0x23)</h4>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">23</span><span class="op">T_CXFER</span><span class="desc">confidential transfer</span>
+        <span class="hex">32B</span><span class="op">asset_id</span><span class="desc">single asset</span>
+        <span class="hex">64B</span><span class="op">kernel_sig</span><span class="desc">BIP-340 Schnorr; proves balance closes</span>
+        <span class="hex">N</span><span class="op">output count</span><span class="desc">1–8</span>
+        <span class="hex">33B</span><span class="op">C_i</span><span class="desc">commitment for vout i</span>
+        <span class="hex">2B</span><span class="op">rangeproof_len</span><span class="desc">u16 LE; reserved (currently fixed at 5152)</span>
+        <span class="hex">..</span><span class="op">rangeproof_i</span><span class="desc">5152 bytes for 32-bit range</span>
+        <span class="hex">8B</span><span class="op">amount_ct_i</span><span class="desc">u64 LE plaintext XOR keystream — recoverable from chain</span>
+      </div>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">How attacks are blocked</h3>
+      <p style="margin-top:8px;"><strong>Negative amounts (mod N).</strong> A "−1000" is just <code>N − 1000</code> as a scalar, but bit-decomposition cannot represent <code>N − k</code> in 32 bits. The rangeproof prover refuses any amount outside <code>[0, 2³²)</code>; verifiers reject.</p>
+      <p style="margin-top:8px;"><strong>Unbalanced amounts.</strong> Even with rangeproofs, a sender holding 100 USDV could try to construct outputs (30 to recipient, 200 to themselves) — both with valid rangeproofs — and mint 130 from nothing. Kernel signatures block this:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li>Sender computes <code>excess = Σr_out − Σr_in</code> and signs <code>kernel_msg</code> with priv = excess (BIP-340 Schnorr).</li>
+        <li>Verifier reconstructs <code>E' = ΣC_out − ΣC_in</code> from on-chain commitments. If amounts balance, <code>E' = excess·G</code> and the sig verifies under <code>E'.xonly()</code>.</li>
+        <li>If amounts don't balance, <code>E' = δ·H + excess·G</code> with <code>δ ≠ 0</code>. Producing a valid sig would require knowing the discrete log of <code>H</code> w.r.t. <code>G</code>, which is hard since <code>H</code> is NUMS.</li>
+        <li><code>kernel_msg</code> binds the sig to <code>(asset_id, input outpoints, output commitments)</code>, preventing replay across txs.</li>
+      </ul>
+      <p style="margin-top:8px;"><strong>Cross-asset confusion.</strong> A sender could declare a CXFER as USDV but spend GOLDC inputs. The indexer fetches each input's parent envelope, reads its declared asset_id, and rejects the CXFER if any input's asset_id differs from the current claim.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Blinding delivery + amount recovery</h3>
+      <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout_LE)</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The anchor's per-tx entropy prevents cross-tx commitment correlation: without it, two transfers between the same parties at the same vout would produce identical blindings, and an observer could compute <code>(C₁ − C₂) = (a₁ − a₂)·H</code> to learn the difference of amounts.</p>
+      <p>Sender's change blinding: <code>r_change = HMAC-SHA256(sender_priv, "tacit-change-v1" ‖ anchor ‖ 1_LE)</code>. Deterministic from the wallet privkey so it's recoverable from chain alone.</p>
+      <p>Etcher's supply blinding: <code>r_supply = HMAC-SHA256(etcher_priv, "tacit-etch-v1" ‖ etch_anchor)</code>, where <code>etch_anchor</code> = first input outpoint of the <em>commit</em> tx. The anchor predates the envelope (a pre-existing UTXO), breaking the cycle that would otherwise arise from anchoring on the reveal txid. Scanners read it via <code>reveal_tx.vin[0]</code> → fetch commit tx → <code>commit_tx.vin[0]</code>.</p>
+      <p>Each commitment also carries an <strong>encrypted amount</strong> (8 bytes, u64 LE XOR'd with an HMAC-keystream). For CXFER outputs, the keystream uses ECDH-derived keying for recipients (so recipient can decrypt with their priv + sender pub) and self-derived keying for change. For CETCH supply, the keystream is self-derived from <code>etcher_priv</code> + <code>etch_anchor</code> — only the etcher can decrypt; observers see opaque bytes. After decryption, the wallet verifies <code>C == amount·H + r·G</code>; tampering with the ciphertext makes verification fail.</p>
+      <p>This means <strong>share-links are optional notifications, not required for recovery</strong>. A freshly-installed wallet with only its privkey can auto-discover its full balance from chain alone — incoming CXFER transfers (via ECDH), its own CXFER change (via self-derived), and its own CETCH supply (via etch-anchor self-derived).</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Indexer rules (recursive validation)</h3>
+      <ol style="margin-left:20px;margin-top:8px;">
+        <li>For each wallet UTXO, fetch parent tx; read <code>vin[0].witness[1]</code>; decode as tacit envelope.</li>
+        <li>Recursively validate the outpoint: walk the ancestry back to its CETCH root, validating each step. Memoize results to keep cost O(N) over a chain of length N.</li>
+        <li>At each step verify all rangeproofs in the envelope (~350ms per output).</li>
+        <li>For CXFER nodes: every input outpoint must itself recursively validate; every input's declared <code>asset_id</code> must match this CXFER's; the kernel sig must verify under <code>(ΣC_out − ΣC_in).xonly()</code> over the kernel msg.</li>
+        <li>Any failure anywhere in the ancestry → the UTXO is flagged as inflation attempt and excluded from balance.</li>
+        <li>For CETCH leaves: only vout 0 is the supply commitment; no kernel (no input).</li>
+        <li>Resolve <code>(amount, blinding)</code> for the commitment: try local opening first, then trial-decrypt the on-chain <code>amount_ct</code> (ECDH against sender pubkey for incoming, self-derived for own change/etch). Verify <code>C == a·H + r·G</code>. If known or recovered → balance += a; if neither path works → "ghost".</li>
+      </ol>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Privacy scope</h3>
+      <p style="margin-top:8px;">Tacit hides <strong>amounts</strong>. It does NOT hide:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li><strong>Address graph.</strong> Sender and recipient Bitcoin addresses are visible on chain like any tx.</li>
+        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in the envelope).</li>
+        <li><strong>Sender pubkey.</strong> Visible in <code>tx.vin[1].witness[1]</code> (P2WPKH witness); recipient needs it for ECDH blinding recovery.</li>
+        <li><strong>Tx graph.</strong> Inputs and outputs are linkable like any UTXO chain.</li>
+      </ul>
+      <p style="margin-top:8px;">This is strictly weaker than Mimblewimble (which hides tx graph via cut-through) and weaker than Liquid CT with surjection proofs (which hides asset_id). It's the same scope as Liquid CT without surjection proofs: amount-hiding only.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Validation cost</h3>
+      <p style="margin-top:8px;">Recursive validation is <strong>O(chain depth)</strong> on a cold cache: a UTXO N hops downstream from its CETCH root requires N rangeproof verifications (~350ms each in-browser) plus N kernel-sig verifications. Memoization keeps subsequent scans O(new UTXOs) within the same session. For a fresh wallet on mobile, deep ancestries will be slow; production deployments would want a persistent validation cache (across sessions) or a shared indexer service. The "single-file dApp" claim holds for cryptographic correctness; the practical UX for deep chains needs server-side help.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Trust model</h3>
+      <p style="margin-top:8px;">Issuer chooses initial supply at etch (the supply commitment is hidden, so no kernel applies). Users decide whether to trust a given issuer's announced supply — same trust model as any centralized stablecoin. After issuance, no participant can inflate, burn, or substitute assets — the recursive client-side validation guarantees that.</p>
+
+      <p class="muted" style="margin-top:24px;font-size:11px;">
+        Pedersen commits via @noble/secp256k1 projective ops. NUMS H from deterministic hash-to-curve. BIP-340 Schnorr + BIP-341 Taproot inlined. Bit-decomposition rangeproofs + Mimblewimble kernel sigs in pure JS.
+      </p>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span>tacit</span>
+  <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank">CT (Maxwell)</a></span>
+</footer>
+
+<div id="toast-container"></div>
+
+<script type="module">
+import * as secp from 'https://esm.sh/@noble/secp256k1@2.1.0';
+import { sha256 } from 'https://esm.sh/@noble/hashes@1.4.0/sha256';
+import { ripemd160 } from 'https://esm.sh/@noble/hashes@1.4.0/ripemd160';
+import { hmac } from 'https://esm.sh/@noble/hashes@1.4.0/hmac';
+import { hexToBytes, bytesToHex, concatBytes } from 'https://esm.sh/@noble/hashes@1.4.0/utils';
+import { bech32 } from 'https://esm.sh/@scure/base@1.1.6';
+
+secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
+
+// ============== NETWORK (signet hardcoded) ==============
+const NET = {
+  name: 'signet', hrp: 'tb',
+  api: 'https://mempool.space/signet/api',
+  explorer: 'https://mempool.space/signet'
+};
+const DUST = 546; // P2WPKH dust limit, conservative
+
+// Convenience Worker (image upload, demo faucet, asset directory).
+// Trust-bearing logic stays in this file; the Worker is purely cache + UX.
+// Set BASE to '' to disable all Worker-backed features (upload + auto-faucet + discover).
+const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+const PIN_URL      = WORKER_BASE ? WORKER_BASE + '/pin'      : '';
+const PIN_JSON_URL = WORKER_BASE ? WORKER_BASE + '/pin-json' : '';
+const FAUCET_URL   = WORKER_BASE ? WORKER_BASE + '/drip'     : '';
+const REGISTRY_URL = WORKER_BASE ? WORKER_BASE + '/assets'   : '';
+const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
+
+// IPFS gateway used to render images and dereference metadata blobs. Trailing slash required.
+const IPFS_GATEWAY = 'https://content.wrappr.wtf/ipfs/';
+
+// ============== HASH HELPERS ==============
+const hash256 = b => sha256(sha256(b));
+const hash160 = b => ripemd160(sha256(b));
+const reverseBytes = b => { const r = new Uint8Array(b); r.reverse(); return r; };
+
+// ============== BYTE WRITER ==============
+class W {
+  constructor() { this.parts = []; }
+  push(b) { this.parts.push(b); return this; }
+  u8(n)   { this.parts.push(new Uint8Array([n & 0xff])); return this; }
+  u32(n)  { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return this.push(b); }
+  u64(n)  { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return this.push(b); }
+  varint(n) {
+    if (n < 0xfd)        return this.u8(n);
+    if (n < 0x10000)     { this.u8(0xfd); const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, n, true); return this.push(b); }
+    if (n < 0x100000000) { this.u8(0xfe); const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n, true); return this.push(b); }
+    this.u8(0xff); return this.u64(n);
+  }
+  out() { return concatBytes(...this.parts); }
+}
+
+// Variable-length integer (Bitcoin compact size)
+function readVarint(bytes, offset) {
+  const first = bytes[offset];
+  if (first < 0xfd) return [BigInt(first), offset + 1];
+  if (first === 0xfd) {
+    const v = bytes[offset+1] | (bytes[offset+2] << 8);
+    return [BigInt(v), offset + 3];
+  }
+  if (first === 0xfe) {
+    const v = bytes[offset+1] | (bytes[offset+2] << 8) | (bytes[offset+3] << 16) | (bytes[offset+4] << 24);
+    return [BigInt(v >>> 0), offset + 5];
+  }
+  // 0xff: 8-byte
+  let v = 0n;
+  for (let i = 0; i < 8; i++) v |= BigInt(bytes[offset+1+i]) << BigInt(i*8);
+  return [v, offset + 9];
+}
+
+function encodeVarintBytes(n) {
+  const w = new W();
+  if (typeof n === 'bigint') {
+    if (n < 0xfdn) w.u8(Number(n));
+    else if (n < 0x10000n) { w.u8(0xfd); const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, Number(n), true); w.push(b); }
+    else if (n < 0x100000000n) { w.u8(0xfe); const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, Number(n), true); w.push(b); }
+    else { w.u8(0xff); w.u64(n); }
+  } else {
+    w.varint(n);
+  }
+  return w.out();
+}
+
+// ============== SCRIPT ENCODING ==============
+function pushBytes(data) {
+  const len = data.length;
+  if (len === 0)  return new Uint8Array([0x00]);
+  if (len <= 75)  return concatBytes(new Uint8Array([len]), data);
+  if (len <= 255) return concatBytes(new Uint8Array([0x4c, len]), data);
+  if (len <= 65535) {
+    const head = new Uint8Array(3);
+    head[0] = 0x4d;
+    new DataView(head.buffer).setUint16(1, len, true);
+    return concatBytes(head, data);
+  }
+  throw new Error('push too large');
+}
+
+const p2wpkhScript = pubkey => concatBytes(new Uint8Array([0x00, 0x14]), hash160(pubkey));
+const p2wpkhAddress = pubkey => bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(pubkey))]);
+
+// Decode a bech32 segwit-v0 P2WPKH address to its scriptPubKey
+function addressToScript(addr) {
+  const decoded = bech32.decode(addr);
+  if (decoded.prefix !== NET.hrp) throw new Error(`address is for wrong network (got ${decoded.prefix}, expected ${NET.hrp})`);
+  const words = decoded.words;
+  if (words[0] !== 0) throw new Error('only segwit v0 supported');
+  const program = bech32.fromWords(words.slice(1));
+  if (program.length !== 20) throw new Error('only P2WPKH (20-byte programs) supported');
+  return concatBytes(new Uint8Array([0x00, 0x14]), new Uint8Array(program));
+}
+
+// ============== BIP143 SIGHASH ==============
+function sighashV0(tx, idx, scriptCode, value) {
+  const w = new W();
+  w.u32(tx.version);
+  const wp = new W();
+  for (const i of tx.inputs) { wp.push(reverseBytes(hexToBytes(i.txid))); wp.u32(i.vout); }
+  w.push(hash256(wp.out()));
+  const ws = new W();
+  for (const i of tx.inputs) ws.u32(i.sequence);
+  w.push(hash256(ws.out()));
+  const inp = tx.inputs[idx];
+  w.push(reverseBytes(hexToBytes(inp.txid)));
+  w.u32(inp.vout);
+  w.varint(scriptCode.length).push(scriptCode);
+  w.u64(value);
+  w.u32(inp.sequence);
+  const wo = new W();
+  for (const o of tx.outputs) { wo.u64(o.value); wo.varint(o.script.length).push(o.script); }
+  w.push(hash256(wo.out()));
+  w.u32(tx.locktime);
+  w.u32(0x01); // SIGHASH_ALL
+  return hash256(w.out());
+}
+
+function serializeTx(tx, withWitness = true) {
+  const hasWit = withWitness && tx.inputs.some(i => i.witness && i.witness.length);
+  const w = new W();
+  w.u32(tx.version);
+  if (hasWit) w.push(new Uint8Array([0x00, 0x01]));
+  w.varint(tx.inputs.length);
+  for (const i of tx.inputs) {
+    w.push(reverseBytes(hexToBytes(i.txid)));
+    w.u32(i.vout);
+    const ss = i.scriptSig || new Uint8Array(0);
+    w.varint(ss.length).push(ss);
+    w.u32(i.sequence);
+  }
+  w.varint(tx.outputs.length);
+  for (const o of tx.outputs) { w.u64(o.value); w.varint(o.script.length).push(o.script); }
+  if (hasWit) {
+    for (const i of tx.inputs) {
+      const wit = i.witness || [];
+      w.varint(wit.length);
+      for (const item of wit) w.varint(item.length).push(item);
+    }
+  }
+  w.u32(tx.locktime);
+  return w.out();
+}
+const txid = tx => bytesToHex(reverseBytes(hash256(serializeTx(tx, false))));
+
+function derEncodeFromCompact(rs) {
+  const trim = (x) => {
+    let i = 0;
+    while (i < x.length - 1 && x[i] === 0) i++;
+    let t = x.slice(i);
+    if (t[0] & 0x80) t = concatBytes(new Uint8Array([0]), t);
+    return t;
+  };
+  const r = trim(rs.slice(0, 32));
+  const s = trim(rs.slice(32, 64));
+  return concatBytes(
+    new Uint8Array([0x30, 4 + r.length + s.length]),
+    new Uint8Array([0x02, r.length]), r,
+    new Uint8Array([0x02, s.length]), s
+  );
+}
+function sign(hash, priv) {
+  const sig = secp.sign(hash, priv, { lowS: true });
+  return concatBytes(derEncodeFromCompact(sig.toCompactRawBytes()), new Uint8Array([0x01]));
+}
+
+// ============== WALLET ==============
+const WALLET_KEY = 'tacit-wallet-v1';
+const wallet = {
+  priv: null, pub: null,
+  load() {
+    const s = localStorage.getItem(WALLET_KEY);
+    if (s) { this.priv = hexToBytes(s); }
+    else { this.priv = secp.utils.randomPrivateKey(); localStorage.setItem(WALLET_KEY, bytesToHex(this.priv)); }
+    this.pub = secp.getPublicKey(this.priv, true);
+  },
+  setPriv(hex) {
+    const clean = hex.trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(clean)) throw new Error('private key must be 64 hex chars');
+    const b = hexToBytes(clean);
+    secp.getPublicKey(b, true);
+    this.priv = b;
+    this.pub = secp.getPublicKey(b, true);
+    localStorage.setItem(WALLET_KEY, clean);
+  },
+  regenerate() {
+    this.priv = secp.utils.randomPrivateKey();
+    this.pub = secp.getPublicKey(this.priv, true);
+    localStorage.setItem(WALLET_KEY, bytesToHex(this.priv));
+  },
+  address() { return p2wpkhAddress(this.pub); },
+  pubHex()  { return bytesToHex(this.pub); },
+  xonly()   { return this.pub.slice(1); }
+};
+
+// ============== mempool.space API ==============
+async function api(path, opts = {}) {
+  const r = await fetch(NET.api + path, opts);
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
+  }
+  return r;
+}
+const apiText = (p, o) => api(p, o).then(r => r.text());
+const apiJson = (p, o) => api(p, o).then(r => r.json());
+const getUtxos = a => apiJson(`/address/${a}/utxo`);
+const getTip = () => apiText('/blocks/tip/height').then(t => parseInt(t));
+const broadcast = hex => apiText('/tx', { method: 'POST', body: hex });
+// Retry broadcast a few times on transient errors. The most common failure
+// is broadcasting a child tx (reveal) before the parent (commit) has been
+// indexed by mempool.space — the API rejects with a "missing inputs" /
+// "txn-mempool-conflict" error, but the commit usually catches up in 1–3s.
+async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, baseDelayMs * i));
+    try { return await broadcast(hex); }
+    catch (e) {
+      lastErr = e;
+      const msg = (e && e.message) || '';
+      // Only retry on errors that suggest propagation/indexing delay.
+      if (!/missing inputs|mempool-conflict|already in block|already known|bad-txns-inputs-missingorspent|non-mandatory-script-verify-flag|too-long-mempool-chain/i.test(msg)) {
+        throw e;
+      }
+    }
+  }
+  throw lastErr || new Error('broadcast failed');
+}
+const getTx = id => apiJson(`/tx/${id}`).catch(() => null);
+
+let _cachedRate = null, _cachedRateAt = 0;
+async function getFeeRate() {
+  if (_cachedRate && Date.now() - _cachedRateAt < 60000) return _cachedRate;
+  try {
+    const r = await fetch(`${NET.api}/v1/fees/recommended`);
+    if (!r.ok) throw new Error();
+    const j = await r.json();
+    _cachedRate = Math.max(1, j.halfHourFee || j.hourFee || 2);
+  } catch { _cachedRate = 2; }
+  _cachedRateAt = Date.now();
+  return _cachedRate;
+}
+
+// ============== TACIT PROTOCOL ==============
+// Confidential single-asset token protocol on Bitcoin.
+// Pedersen commitments hide amounts; bit-decomposition rangeproofs prevent negative-amount inflation;
+// kernel signatures (Mimblewimble) prevent unbalanced-amount inflation;
+// asset_id consistency checks prevent cross-asset substitution.
+// Each operation = 2 txs (commit + reveal). Indexer scans witness data, not OP_RETURN.
+
+const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+const SECP_P = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
+const N_BITS = 32; // amount range: [0, 2^32)
+const BLIND_DOMAIN = new TextEncoder().encode('tacit-blind-v1');
+
+// ---- Asset ID: 32-byte sha256 derived from etch outpoint ----
+function assetIdFor(etchTxidHex, etchVout) {
+  const txidBE = reverseBytes(hexToBytes(etchTxidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, etchVout >>> 0, true);
+  return sha256(concatBytes(txidBE, voutLE)); // 32 bytes
+}
+
+// ---- NUMS generator H (try-and-increment) for Pedersen amount basis ----
+function deriveH() {
+  const seed = sha256(new TextEncoder().encode('tacit-generator-H-v1'));
+  for (let counter = 0; counter < 256; counter++) {
+    const x = sha256(concatBytes(seed, new Uint8Array([counter])));
+    const candidate = concatBytes(new Uint8Array([0x02]), x);
+    try {
+      const p = secp.ProjectivePoint.fromHex(bytesToHex(candidate));
+      if (!p.equals(secp.ProjectivePoint.ZERO)) return p;
+    } catch {}
+  }
+  throw new Error('failed to derive NUMS generator H');
+}
+const H = deriveH();
+const G = secp.ProjectivePoint.BASE;
+const ZERO = secp.ProjectivePoint.ZERO;
+
+// ---- Pedersen commitment ----
+const modN = x => ((x % SECP_N) + SECP_N) % SECP_N;
+function pedersenCommit(amount, blinding) {
+  const a = modN(BigInt(amount));
+  const r = modN(BigInt(blinding));
+  const aH = a === 0n ? ZERO : H.multiply(a);
+  const rG = r === 0n ? ZERO : G.multiply(r);
+  return aH.add(rG);
+}
+const pointToBytes = P => P.toRawBytes(true);
+const bytesToPoint = b => secp.ProjectivePoint.fromHex(bytesToHex(b));
+function bigintToBytes32(n) { const m = modN(n); return hexToBytes(m.toString(16).padStart(64, '0')); }
+const bytes32ToBigint = b => BigInt('0x' + bytesToHex(b));
+
+// ---- ECDH-derived blinding factor ----
+// Including anchorBytes prevents cross-tx commitment correlation: two transfers
+// from the same sender to the same recipient at the same vout would otherwise produce
+// identical blindings, allowing an observer to compute (C1 − C2) = (a1 − a2)·H and
+// learn the *difference* of the two amounts. With per-tx entropy, blindings are unlinkable.
+//
+// We use the first asset input's outpoint (txid_BE || vout_LE) as the anchor. Both
+// sender (from picked UTXOs) and recipient (from tx.vin[1] of the reveal tx) can
+// derive it identically.
+function deriveBlinding(myPriv, theirPubBytes, anchorBytes, voutIdx) {
+  const shared = secp.getSharedSecret(myPriv, theirPubBytes);
+  const sharedX = shared.slice(1);
+  const seed = sha256(sharedX);
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, voutIdx >>> 0, true);
+  const out = hmac(sha256, seed, concatBytes(BLIND_DOMAIN, anchorBytes, voutLE));
+  return bytes32ToBigint(out) % SECP_N;
+}
+
+// ---- Deterministic change blinding (recoverable from chain + wallet key) ----
+// Sender's change blinding for their own UTXO. Derived from sender's privkey, not from
+// ECDH (no peer to share with). Recoverable from chain alone given the wallet privkey:
+// the wallet can scan its own CXFER outputs and re-derive each change blinding.
+const CHANGE_DOMAIN = new TextEncoder().encode('tacit-change-v1');
+function deriveChangeBlinding(myPriv, anchorBytes, voutIdx) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, voutIdx >>> 0, true);
+  const out = hmac(sha256, myPriv, concatBytes(CHANGE_DOMAIN, anchorBytes, voutLE));
+  return bytes32ToBigint(out) % SECP_N;
+}
+
+// ---- Deterministic CETCH supply blinding + amount keystream ----
+// Etcher's supply blinding for their own CETCH UTXO. Anchored to the first input
+// outpoint of the *commit* tx (a pre-existing UTXO, so anchor is independent of the
+// envelope/commitment cycle). Both etcher (at build time) and a chain scanner
+// (via reveal_tx.vin[0] → commit_tx → commit_tx.vin[0]) can derive it identically.
+// Recoverable from chain + wallet privkey alone — no localStorage required.
+const ETCH_BLIND_DOMAIN = new TextEncoder().encode('tacit-etch-v1');
+const ETCH_AMOUNT_DOMAIN = new TextEncoder().encode('tacit-etch-amount-v1');
+function deriveEtchBlinding(myPriv, anchorBytes) {
+  const out = hmac(sha256, myPriv, concatBytes(ETCH_BLIND_DOMAIN, anchorBytes));
+  return bytes32ToBigint(out) % SECP_N;
+}
+function deriveEtchAmountKeystream(myPriv, anchorBytes) {
+  return hmac(sha256, myPriv, concatBytes(ETCH_AMOUNT_DOMAIN, anchorBytes)).slice(0, 8);
+}
+
+// ---- Amount encryption (one-time-pad over HMAC keystream) ----
+// Each commitment in a CXFER carries an 8-byte ciphertext of the amount, encrypted to
+// either the recipient (for output 0, ECDH-derived key) or the sender themselves (for
+// change outputs, privkey-derived key). This lets either party recover their amount
+// from chain alone — no share-link required for receivers, no localStorage required
+// for senders. Tampering fails the commitment-equals-amount·H+r·G verification.
+const AMOUNT_DOMAIN = new TextEncoder().encode('tacit-amount-v1');
+const AMOUNT_SELF_DOMAIN = new TextEncoder().encode('tacit-amount-self-v1');
+
+// Compute 8-byte keystream for output `voutIdx` using the same ECDH path as recipient blinding.
+function deriveAmountKeystreamECDH(myPriv, theirPubBytes, anchorBytes, voutIdx) {
+  const shared = secp.getSharedSecret(myPriv, theirPubBytes);
+  const seed = sha256(shared.slice(1));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, voutIdx >>> 0, true);
+  return hmac(sha256, seed, concatBytes(AMOUNT_DOMAIN, anchorBytes, voutLE)).slice(0, 8);
+}
+// Compute 8-byte keystream for self (change-output) using sender's own priv.
+function deriveAmountKeystreamSelf(myPriv, anchorBytes, voutIdx) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, voutIdx >>> 0, true);
+  return hmac(sha256, myPriv, concatBytes(AMOUNT_SELF_DOMAIN, anchorBytes, voutLE)).slice(0, 8);
+}
+
+// Encrypt a non-negative BigInt amount (must fit in u64) to 8-byte ciphertext.
+function encryptAmount(amountBigint, keystream8) {
+  const a = BigInt(amountBigint);
+  if (a < 0n || a >= (1n << 64n)) throw new Error('amount out of u64 range');
+  const ct = new Uint8Array(8);
+  let n = a;
+  for (let i = 0; i < 8; i++) {
+    ct[i] = (Number(n & 0xffn)) ^ keystream8[i];
+    n >>= 8n;
+  }
+  return ct;
+}
+// Decrypt: returns a BigInt amount; caller must verify against the commitment.
+function decryptAmount(ciphertext8, keystream8) {
+  let n = 0n;
+  for (let i = 7; i >= 0; i--) {
+    n = (n << 8n) | BigInt(ciphertext8[i] ^ keystream8[i]);
+  }
+  return n;
+}
+
+// ---- Random scalar (rejection sampling) ----
+function randomScalar() {
+  while (true) {
+    const x = bytes32ToBigint(crypto.getRandomValues(new Uint8Array(32)));
+    if (x !== 0n && x < SECP_N) return x;
+  }
+}
+
+// ============== RANGEPROOF (32-bit bit-decomposition Schnorr OR) ==============
+// Proves C = a·H + r·G commits to a in [0, 2^32).
+// Construction: per-bit commitment C_i = b_i*2^i*H + r_i*G with Σ C_i = C.
+// Each bit gets a Schnorr OR-proof that C_i opens to 0 or 2^i. Single Fiat-Shamir
+// transcript binds all branches across all bits.
+// Per-bit proof bytes: 33 (Ci) + 32*4 (e0,e1,s0,s1) = 161 bytes
+// Full proof: 32 * 161 = 5152 bytes per output.
+function proveRange(amount, blinding) {
+  const a = BigInt(amount);
+  if (a < 0n || a >= (1n << BigInt(N_BITS))) {
+    throw new Error(`amount ${a} out of range [0, 2^${N_BITS})`);
+  }
+  const r = modN(BigInt(blinding));
+  const C = pedersenCommit(a, r);
+  const bits = []; for (let i = 0; i < N_BITS; i++) bits.push(Number((a >> BigInt(i)) & 1n));
+  const rBits = []; let sum = 0n;
+  for (let i = 0; i < N_BITS - 1; i++) { const ri = randomScalar(); rBits.push(ri); sum = modN(sum + ri); }
+  rBits.push(modN(r - sum));
+  const Cbits = bits.map((b, i) => {
+    const v = b === 1 ? (1n << BigInt(i)) : 0n;
+    return pedersenCommit(v, rBits[i]);
+  });
+  const transcriptParts = [
+    new TextEncoder().encode('tacit-rangeproof-v1'),
+    pointToBytes(C),
+    new Uint8Array([N_BITS & 0xff]),
+  ];
+  const prover = [];
+  for (let i = 0; i < N_BITS; i++) {
+    const b = bits[i]; const Ci = Cbits[i];
+    const kReal = randomScalar();
+    const Rreal = G.multiply(kReal);
+    const eFake = randomScalar();
+    const sFake = randomScalar();
+    const twoiH = i === 0 ? H : H.multiply(1n << BigInt(i));
+    const Pfake = b === 0 ? Ci.add(twoiH.negate()) : Ci;
+    const Rfake = G.multiply(sFake).add(Pfake.multiply(eFake).negate());
+    const R0 = b === 0 ? Rreal : Rfake;
+    const R1 = b === 1 ? Rreal : Rfake;
+    transcriptParts.push(pointToBytes(Ci), pointToBytes(R0), pointToBytes(R1));
+    prover.push({ b, kReal, eFake, sFake, Ci });
+  }
+  const eAll = modN(bytes32ToBigint(sha256(concatBytes(...transcriptParts))));
+  const out = [];
+  for (let i = 0; i < N_BITS; i++) {
+    const p = prover[i];
+    const eReal = modN(eAll - p.eFake);
+    const sReal = modN(p.kReal + eReal * modN(rBits[i]));
+    let e0, e1, s0, s1;
+    if (p.b === 0) { e0 = eReal; e1 = p.eFake; s0 = sReal; s1 = p.sFake; }
+    else            { e0 = p.eFake; e1 = eReal; s0 = p.sFake; s1 = sReal; }
+    out.push({ e0, e1, s0, s1, Ci: p.Ci });
+  }
+  const buf = [];
+  for (const p of out) {
+    buf.push(pointToBytes(p.Ci));
+    buf.push(bigintToBytes32(p.e0));
+    buf.push(bigintToBytes32(p.e1));
+    buf.push(bigintToBytes32(p.s0));
+    buf.push(bigintToBytes32(p.s1));
+  }
+  return { proof: concatBytes(...buf), commitment: pointToBytes(C) };
+}
+
+function verifyRange(commitmentBytes, proof) {
+  let C; try { C = bytesToPoint(commitmentBytes); } catch { return false; }
+  const perBit = 33 + 32 * 4;
+  if (proof.length !== N_BITS * perBit) return false;
+  const bits = []; let off = 0;
+  for (let i = 0; i < N_BITS; i++) {
+    let Ci; try { Ci = bytesToPoint(proof.slice(off, off + 33)); } catch { return false; }
+    off += 33;
+    const e0 = bytes32ToBigint(proof.slice(off, off + 32)); off += 32;
+    const e1 = bytes32ToBigint(proof.slice(off, off + 32)); off += 32;
+    const s0 = bytes32ToBigint(proof.slice(off, off + 32)); off += 32;
+    const s1 = bytes32ToBigint(proof.slice(off, off + 32)); off += 32;
+    bits.push({ Ci, e0, e1, s0, s1 });
+  }
+  let sumP = ZERO; for (const b of bits) sumP = sumP.add(b.Ci);
+  if (!sumP.equals(C)) return false;
+  const transcriptParts = [
+    new TextEncoder().encode('tacit-rangeproof-v1'),
+    pointToBytes(C),
+    new Uint8Array([N_BITS & 0xff]),
+  ];
+  for (let i = 0; i < N_BITS; i++) {
+    const { Ci, e0, e1, s0, s1 } = bits[i];
+    const twoiH = i === 0 ? H : H.multiply(1n << BigInt(i));
+    const R0 = G.multiply(s0).add(Ci.multiply(e0).negate());
+    const R1 = G.multiply(s1).add(Ci.add(twoiH.negate()).multiply(e1).negate());
+    transcriptParts.push(pointToBytes(Ci), pointToBytes(R0), pointToBytes(R1));
+  }
+  const eAll = modN(bytes32ToBigint(sha256(concatBytes(...transcriptParts))));
+  for (const b of bits) if (modN(b.e0 + b.e1) !== eAll) return false;
+  return true;
+}
+
+// ============== BIP-340 SCHNORR ==============
+function _taggedHash(tag, ...msgs) {
+  const tagHash = sha256(new TextEncoder().encode(tag));
+  return sha256(concatBytes(tagHash, tagHash, ...msgs));
+}
+function _xor32(a, b) { const r = new Uint8Array(32); for (let i = 0; i < 32; i++) r[i] = a[i] ^ b[i]; return r; }
+function signSchnorr(msgHash, priv32) {
+  const dPrime = bytes32ToBigint(priv32);
+  if (dPrime <= 0n || dPrime >= SECP_N) throw new Error('schnorr: invalid private key');
+  const P = G.multiply(dPrime);
+  const Pbytes = P.toRawBytes(true);
+  const Px = Pbytes.slice(1);
+  const d = (Pbytes[0] === 0x02) ? dPrime : (SECP_N - dPrime);
+  const aux = crypto.getRandomValues(new Uint8Array(32));
+  const t = _xor32(bigintToBytes32(d), _taggedHash('BIP0340/aux', aux));
+  const rand = _taggedHash('BIP0340/nonce', t, Px, msgHash);
+  let kPrime = bytes32ToBigint(rand) % SECP_N;
+  if (kPrime === 0n) throw new Error('schnorr: nonce was zero');
+  const R = G.multiply(kPrime);
+  const Rbytes = R.toRawBytes(true);
+  const Rx = Rbytes.slice(1);
+  const k = (Rbytes[0] === 0x02) ? kPrime : (SECP_N - kPrime);
+  const e = bytes32ToBigint(_taggedHash('BIP0340/challenge', Rx, Px, msgHash)) % SECP_N;
+  const s = (k + e * d) % SECP_N;
+  return concatBytes(Rx, bigintToBytes32(s));
+}
+function verifySchnorr(sig64, msgHash, pubXonly32) {
+  if (sig64.length !== 64 || pubXonly32.length !== 32 || msgHash.length !== 32) return false;
+  const Rx = sig64.slice(0, 32);
+  const sBig = bytes32ToBigint(sig64.slice(32, 64));
+  if (sBig >= SECP_N) return false;
+  if (bytes32ToBigint(pubXonly32) >= SECP_P) return false;
+  let P; try { P = secp.ProjectivePoint.fromHex('02' + bytesToHex(pubXonly32)); } catch { return false; }
+  const e = bytes32ToBigint(_taggedHash('BIP0340/challenge', Rx, pubXonly32, msgHash)) % SECP_N;
+  const R = G.multiply(sBig).add(P.multiply(e).negate());
+  const Rb = R.toRawBytes(true);
+  if (Rb[0] !== 0x02) return false;
+  return bytesToHex(Rb.slice(1)) === bytesToHex(Rx);
+}
+
+// ============== TAPROOT (BIP-341) ==============
+const TAP_NUMS = hexToBytes('50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0');
+
+function _compactSize(n) {
+  if (n < 0xfd) return new Uint8Array([n]);
+  if (n <= 0xffff) {
+    const b = new Uint8Array(3); b[0] = 0xfd;
+    new DataView(b.buffer).setUint16(1, n, true); return b;
+  }
+  if (n <= 0xffffffff) {
+    const b = new Uint8Array(5); b[0] = 0xfe;
+    new DataView(b.buffer).setUint32(1, n, true); return b;
+  }
+  throw new Error('compactSize too big');
+}
+function tapLeafHash(script, leafVersion = 0xc0) {
+  return _taggedHash('TapLeaf', new Uint8Array([leafVersion]), _compactSize(script.length), script);
+}
+function tweakedOutputKey(internalXonly, merkleRoot) {
+  const P = secp.ProjectivePoint.fromHex('02' + bytesToHex(internalXonly));
+  const t = _taggedHash('TapTweak', internalXonly, merkleRoot);
+  const tBig = bytes32ToBigint(t);
+  if (tBig >= SECP_N) throw new Error('tap tweak ≥ N');
+  const Q = P.add(G.multiply(tBig));
+  const Qbytes = Q.toRawBytes(true);
+  return { Q_xonly: Qbytes.slice(1), parity: Qbytes[0] === 0x03 ? 1 : 0 };
+}
+function p2trScript(Q_xonly) {
+  return concatBytes(new Uint8Array([0x51, 0x20]), Q_xonly);
+}
+function controlBlock(internalXonly, parity, leafVersion = 0xc0) {
+  return concatBytes(new Uint8Array([leafVersion | (parity & 1)]), internalXonly);
+}
+function tapSighash(tx, inputIdx, prevouts, leafHash, hashType = 0x00) {
+  if (prevouts.length !== tx.inputs.length) throw new Error('prevouts length mismatch');
+  const u8 = v => new Uint8Array([v & 0xff]);
+  const u32 = v => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; };
+  const u64 = v => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(v), true); return b; };
+  const parts = [];
+  parts.push(u8(0x00)); // epoch
+  parts.push(u8(hashType));
+  parts.push(u32(tx.version));
+  parts.push(u32(tx.locktime));
+  if ((hashType & 0x80) !== 0x80) {
+    const buf = [];
+    for (const inp of tx.inputs) {
+      buf.push(reverseBytes(hexToBytes(inp.txid)));
+      buf.push(u32(inp.vout));
+    }
+    parts.push(sha256(concatBytes(...buf)));
+    const amts = []; for (const po of prevouts) amts.push(u64(po.value));
+    parts.push(sha256(concatBytes(...amts)));
+    const spks = [];
+    for (const po of prevouts) { spks.push(_compactSize(po.script.length)); spks.push(po.script); }
+    parts.push(sha256(concatBytes(...spks)));
+    const seqs = []; for (const inp of tx.inputs) seqs.push(u32(inp.sequence ?? 0xffffffff));
+    parts.push(sha256(concatBytes(...seqs)));
+  }
+  const baseHt = hashType & 0x03;
+  if (baseHt === 0x00 || baseHt === 0x01) {
+    const outs = [];
+    for (const out of tx.outputs) {
+      outs.push(u64(out.value));
+      outs.push(_compactSize(out.script.length));
+      outs.push(out.script);
+    }
+    parts.push(sha256(concatBytes(...outs)));
+  }
+  const ext_flag = 1; // tapscript path
+  parts.push(u8((ext_flag << 1) | 0));
+  if ((hashType & 0x80) === 0x80) {
+    const inp = tx.inputs[inputIdx]; const po = prevouts[inputIdx];
+    parts.push(reverseBytes(hexToBytes(inp.txid)));
+    parts.push(u32(inp.vout));
+    parts.push(u64(po.value));
+    parts.push(_compactSize(po.script.length));
+    parts.push(po.script);
+    parts.push(u32(inp.sequence ?? 0xffffffff));
+  } else {
+    parts.push(u32(inputIdx));
+  }
+  parts.push(leafHash);
+  parts.push(u8(0x00)); // key_version
+  parts.push(u32(0xffffffff)); // codesep_pos
+  return _taggedHash('TapSighash', concatBytes(...parts));
+}
+
+// ============== ENVELOPE ==============
+const ENVELOPE_MAGIC = new TextEncoder().encode('TACIT');
+const ENVELOPE_VERSION = 0x01;
+const T_CETCH = 0x21;
+const T_CXFER = 0x23;
+const MAX_SCRIPT_PUSH = 520;
+const OP_FALSE = 0x00, OP_PUSHDATA1 = 0x4c, OP_PUSHDATA2 = 0x4d;
+const OP_IF = 0x63, OP_ENDIF = 0x68, OP_CHECKSIG = 0xac;
+
+function _encodePush(data) {
+  if (data.length === 0) return new Uint8Array([OP_FALSE]);
+  if (data.length <= 75) return concatBytes(new Uint8Array([data.length]), data);
+  if (data.length <= 255) return concatBytes(new Uint8Array([OP_PUSHDATA1, data.length]), data);
+  if (data.length <= 65535) {
+    const lenLE = new Uint8Array(2); new DataView(lenLE.buffer).setUint16(0, data.length, true);
+    return concatBytes(new Uint8Array([OP_PUSHDATA2]), lenLE, data);
+  }
+  throw new Error('push data too large');
+}
+function encodeEnvelopeScript(signingPubXonly, payload) {
+  if (signingPubXonly.length !== 32) throw new Error('signing pubkey must be 32 bytes (x-only)');
+  const chunks = [ENVELOPE_MAGIC, new Uint8Array([ENVELOPE_VERSION])];
+  for (let i = 0; i < payload.length; i += MAX_SCRIPT_PUSH) {
+    chunks.push(payload.slice(i, Math.min(i + MAX_SCRIPT_PUSH, payload.length)));
+  }
+  const pieces = [
+    _encodePush(signingPubXonly),
+    new Uint8Array([OP_CHECKSIG]),
+    new Uint8Array([OP_FALSE, OP_IF]),
+  ];
+  for (const c of chunks) pieces.push(_encodePush(c));
+  pieces.push(new Uint8Array([OP_ENDIF]));
+  return concatBytes(...pieces);
+}
+function decodeEnvelopeScript(script) {
+  if (!script || script.length < 36) return null;
+  let p = 0;
+  if (script[p] !== 32) return null; p += 1;
+  if (p + 32 > script.length) return null;
+  const signingPubXonly = script.slice(p, p + 32); p += 32;
+  if (p + 1 > script.length || script[p] !== OP_CHECKSIG) return null; p += 1;
+  if (p + 2 > script.length || script[p] !== OP_FALSE || script[p + 1] !== OP_IF) return null; p += 2;
+  const pushes = [];
+  let sawEndif = false;
+  while (p < script.length) {
+    if (script[p] === OP_ENDIF) { p += 1; sawEndif = true; break; }
+    const op = script[p]; p += 1;
+    let data;
+    if (op >= 1 && op <= 75) {
+      if (p + op > script.length) return null;
+      data = script.slice(p, p + op); p += op;
+    }
+    else if (op === OP_PUSHDATA1) {
+      if (p + 1 > script.length) return null;
+      const ln = script[p]; p += 1;
+      if (p + ln > script.length) return null;
+      data = script.slice(p, p + ln); p += ln;
+    }
+    else if (op === OP_PUSHDATA2) {
+      if (p + 2 > script.length) return null;
+      const ln = script[p] | (script[p + 1] << 8); p += 2;
+      if (p + ln > script.length) return null;
+      data = script.slice(p, p + ln); p += ln;
+    }
+    else if (op === OP_FALSE) { data = new Uint8Array(0); }
+    else { return null; }
+    pushes.push(data);
+  }
+  if (!sawEndif) return null; // OP_ENDIF must be present
+  if (p !== script.length) return null; // canonical: no trailing bytes after OP_ENDIF
+  if (pushes.length < 3) return null;
+  if (pushes[0].length !== ENVELOPE_MAGIC.length) return null;
+  for (let i = 0; i < ENVELOPE_MAGIC.length; i++) if (pushes[0][i] !== ENVELOPE_MAGIC[i]) return null;
+  if (pushes[1].length !== 1 || pushes[1][0] !== ENVELOPE_VERSION) return null;
+  const payload = concatBytes(...pushes.slice(2));
+  if (payload.length < 1) return null;
+  return { signingPubXonly, opcode: payload[0], payload };
+}
+
+// ---- CETCH typed payload ----
+//   T_CETCH || ticker_len || ticker || decimals || commitment(33) || rangeproof(5152)
+//          || amount_ct(8) || image_len(2 LE) || image_uri(image_len)
+// amount_ct is u64 LE plaintext supply XOR'd with an HMAC keystream derived from
+// (etcher_priv, ETCH_AMOUNT_DOMAIN, commit_input_anchor). Self-encrypted — only the
+// etcher can decrypt; observers see opaque bytes. Tampering fails the commitment check.
+// image_len is 2-byte little-endian (0..256). image_uri is opaque UTF-8.
+// The protocol does NOT constrain the URI scheme — renderers MUST validate before display
+// (the dApp uses normalizeImageUri() for this; see also validateImageUriForEtch() at write time).
+function encodeCEtchPayload({ ticker, decimals, commitment, rangeproof, encryptedAmount, imageUri = null }) {
+  const tk = new TextEncoder().encode(ticker);
+  if (tk.length === 0 || tk.length > 16) throw new Error('ticker 1–16 bytes');
+  if (decimals < 0 || decimals > 8) throw new Error('decimals 0–8');
+  if (commitment.length !== 33) throw new Error('commitment 33 bytes');
+  if (!encryptedAmount || encryptedAmount.length !== 8) throw new Error('encrypted_amount must be 8 bytes');
+  const imgBytes = imageUri ? new TextEncoder().encode(imageUri) : new Uint8Array(0);
+  if (imgBytes.length > 256) throw new Error('image_uri must be ≤256 bytes');
+  const imgLen = new Uint8Array(2);
+  new DataView(imgLen.buffer).setUint16(0, imgBytes.length, true);
+  return concatBytes(
+    new Uint8Array([T_CETCH]), new Uint8Array([tk.length]), tk,
+    new Uint8Array([decimals]), commitment, rangeproof, encryptedAmount, imgLen, imgBytes
+  );
+}
+
+// Expected rangeproof length for 32-bit bit-decomposition: 32 × (33 + 4×32) = 5152 bytes.
+const EXPECTED_RANGEPROOF_LEN = N_BITS * (33 + 4 * 32);
+
+function decodeCEtchPayload(payload) {
+  if (!payload) return null;
+  // Minimum: opcode(1) + tlen(1) + ticker(≥1) + decimals(1) + commitment(33) + rangeproof(5152) + amount_ct(8) + img_len(2)
+  const minLen = 1 + 1 + 1 + 1 + 33 + EXPECTED_RANGEPROOF_LEN + 8 + 2;
+  if (payload.length < minLen) return null;
+  if (payload[0] !== T_CETCH) return null;
+  let p = 1;
+  const tlen = payload[p]; p += 1;
+  if (tlen < 1 || tlen > 16) return null;
+  if (p + tlen > payload.length) return null;
+  let ticker;
+  try { ticker = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + tlen)); } catch { return null; }
+  p += tlen;
+  const decimals = payload[p]; p += 1;
+  if (decimals > 8) return null;
+  // Fixed positions for commitment + rangeproof + amount_ct(8) + image_len(2) + image_uri(image_len)
+  if (p + 33 + EXPECTED_RANGEPROOF_LEN + 8 + 2 > payload.length) return null;
+  const commitment = payload.slice(p, p + 33); p += 33;
+  const rangeproof = payload.slice(p, p + EXPECTED_RANGEPROOF_LEN); p += EXPECTED_RANGEPROOF_LEN;
+  const encryptedAmount = payload.slice(p, p + 8); p += 8;
+  const imgLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (imgLen > 256) return null;
+  if (p + imgLen !== payload.length) return null; // canonical: no trailing bytes
+  let imageUri = null;
+  if (imgLen > 0) {
+    try { imageUri = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + imgLen)); } catch { return null; }
+  }
+  return { kind: 'cetch', ticker, decimals, commitment, rangeproof, encryptedAmount, imageUri };
+}
+
+// ---- CXFER typed payload (with kernel signature + per-output encrypted amount) ----
+//   T_CXFER || asset_id(32) || kernel_sig(64) || N (1B) || (commitment(33) || rl(2B LE) || rangeproof(rl) || amount_ct(8))*N
+// rl is currently fixed at EXPECTED_RANGEPROOF_LEN (5152) — the field is reserved for a future
+// rangeproof-format swap (e.g. bulletproofs). amount_ct is 8 bytes (u64 LE plaintext XOR keystream).
+function encodeCXferPayload({ assetId, kernelSig, outputs }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (!kernelSig || kernelSig.length !== 64) throw new Error('kernel_sig must be 64 bytes');
+  if (outputs.length < 1 || outputs.length > 8) throw new Error('outputs 1–8');
+  const parts = [new Uint8Array([T_CXFER]), assetId, kernelSig, new Uint8Array([outputs.length])];
+  for (const o of outputs) {
+    if (o.commitment.length !== 33) throw new Error('commitment 33 bytes');
+    if (!o.encryptedAmount || o.encryptedAmount.length !== 8) throw new Error('encrypted_amount must be 8 bytes');
+    parts.push(o.commitment);
+    const rl = new Uint8Array(2); new DataView(rl.buffer).setUint16(0, o.rangeproof.length, true);
+    parts.push(rl);
+    parts.push(o.rangeproof);
+    parts.push(o.encryptedAmount);
+  }
+  return concatBytes(...parts);
+}
+function decodeCXferPayload(payload) {
+  if (!payload) return null;
+  // Minimum: opcode(1) + asset_id(32) + kernel_sig(64) + N(1) + at least 1 output(33+2+5152+8)
+  const minOut = 33 + 2 + EXPECTED_RANGEPROOF_LEN + 8;
+  if (payload.length < 1 + 32 + 64 + 1 + minOut) return null;
+  if (payload[0] !== T_CXFER) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const n = payload[p]; p += 1;
+  if (n < 1 || n > 8) return null;
+  const outputs = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 + 2 > payload.length) return null;
+    const commitment = payload.slice(p, p + 33); p += 33;
+    const rl = payload[p] | (payload[p + 1] << 8); p += 2;
+    if (rl !== EXPECTED_RANGEPROOF_LEN) return null; // canonical: only currently-supported rangeproof length
+    if (p + rl + 8 > payload.length) return null;
+    const rangeproof = payload.slice(p, p + rl); p += rl;
+    const encryptedAmount = payload.slice(p, p + 8); p += 8;
+    outputs.push({ commitment, rangeproof, encryptedAmount });
+  }
+  if (p !== payload.length) return null; // canonical: no trailing bytes
+  return { kind: 'cxfer', assetId, kernelSig, outputs };
+}
+
+// ---- Kernel message: binds the sig to (asset_id, input outpoints, output commitments) ----
+// Anyone replaying this sig in a different tx (different inputs or outputs) gets a different msg
+// and cannot produce a valid kernel.
+function computeKernelMsg(assetId, inputOutpoints, outputCommitments) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  const parts = [new TextEncoder().encode('tacit-kernel-v1'), assetId, new Uint8Array([inputOutpoints.length & 0xff])];
+  for (const op of inputOutpoints) {
+    parts.push(reverseBytes(hexToBytes(op.txid)));
+    const voutLE = new Uint8Array(4);
+    new DataView(voutLE.buffer).setUint32(0, op.vout >>> 0, true);
+    parts.push(voutLE);
+  }
+  parts.push(new Uint8Array([outputCommitments.length & 0xff]));
+  for (const c of outputCommitments) parts.push(c);
+  return sha256(concatBytes(...parts));
+}
+
+// ============== STORAGE ==============
+const REG_KEY = 'tacit-registry-v1';
+const loadRegistry = () => JSON.parse(localStorage.getItem(REG_KEY) || '{}');
+const saveRegistry = r => localStorage.setItem(REG_KEY, JSON.stringify(r));
+function registerAsset(meta) {
+  const r = loadRegistry();
+  r[meta.assetIdHex] = { ...r[meta.assetIdHex], ...meta };
+  saveRegistry(r);
+}
+function getAssetMeta(assetIdHex) {
+  const r = loadRegistry();
+  return r[assetIdHex] || null;
+}
+// Per-UTXO openings: "txid:vout" -> { assetIdHex, amount: string, blinding: hex }
+const OPEN_KEY = 'tacit-openings-v1';
+const loadOpenings = () => JSON.parse(localStorage.getItem(OPEN_KEY) || '{}');
+const saveOpenings = o => localStorage.setItem(OPEN_KEY, JSON.stringify(o));
+function recordOpening(txidHex, vout, assetIdHex, amount, blinding) {
+  const o = loadOpenings();
+  o[`${txidHex}:${vout}`] = {
+    assetIdHex,
+    amount: amount.toString(),
+    blinding: bytesToHex(bigintToBytes32(blinding)),
+  };
+  saveOpenings(o);
+}
+function getOpening(txidHex, vout) {
+  const o = loadOpenings();
+  const e = o[`${txidHex}:${vout}`];
+  if (!e) return null;
+  return {
+    assetIdHex: e.assetIdHex,
+    amount: BigInt(e.amount),
+    blinding: BigInt('0x' + e.blinding),
+  };
+}
+
+// ============== INDEXER (witness-based) ==============
+// Verify a CXFER's kernel signature and asset_id consistency.
+// Recursively validate a tacit outpoint (txid, vout). Returns true iff:
+//   - the outpoint's parent tx has a valid tacit envelope at vin[0].witness[1]
+//   - all rangeproofs in that envelope verify
+//   - if it's a CXFER: all of ITS input outpoints recursively validate, and the asset_id
+//     matches across them, and the kernel sig verifies
+// Memoized via validatedSet to avoid O(N²) re-validation on long chains.
+// This is what makes tacit a soundly client-side-validated protocol: a malformed CXFER
+// anywhere in an UTXO's ancestry invalidates everything downstream of it.
+// At each CETCH leaf encountered during validation, record the canonical (ticker, decimals, etchTxid)
+// in the optional metadataOut map keyed by asset_id hex. This is how share-link import obtains
+// trustworthy metadata for unknown assets (don't trust the sender's link for ticker/decimals).
+async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0, metadataOut = null) {
+  const key = `${txidHex}:${vout}`;
+  if (validatedSet.has(key)) return validatedSet.get(key);
+  if (depth > 200) { validatedSet.set(key, false); return false; } // depth bound
+
+  const tx = await fetchTx(txidHex);
+  if (!tx || !tx.vin || !tx.vin[0]) { validatedSet.set(key, false); return false; }
+  const wit = tx.vin[0].witness;
+  if (!wit || wit.length < 3) { validatedSet.set(key, false); return false; }
+  let env;
+  try { env = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { env = null; }
+  if (!env) { validatedSet.set(key, false); return false; }
+
+  // Helper: mark all sibling outputs of this tx with a result
+  const markAll = (n, ok) => { for (let j = 0; j < n; j++) validatedSet.set(`${txidHex}:${j}`, ok); };
+
+  if (env.opcode === T_CETCH) {
+    if (vout !== 0) { validatedSet.set(key, false); return false; }
+    const dec = decodeCEtchPayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    const ok = verifyRange(dec.commitment, dec.rangeproof);
+    validatedSet.set(key, ok);
+    if (ok && metadataOut) {
+      const aidHex = bytesToHex(assetIdFor(txidHex, 0));
+      if (!metadataOut.has(aidHex)) {
+        metadataOut.set(aidHex, { ticker: dec.ticker, decimals: dec.decimals, etchTxid: txidHex, imageUri: dec.imageUri || null });
+      }
+    }
+    return ok;
+  }
+
+  if (env.opcode === T_CXFER) {
+    const dec = decodeCXferPayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    if (vout >= dec.outputs.length) { validatedSet.set(key, false); return false; }
+
+    // Step 1: every input outpoint must itself be valid (recursive client-side validation)
+    if (tx.vin.length < 2) { markAll(dec.outputs.length, false); return false; }
+    for (let i = 1; i < tx.vin.length; i++) {
+      const inp = tx.vin[i];
+      const parentValid = await validateOutpoint(inp.txid, inp.vout, validatedSet, fetchTx, depth + 1, metadataOut);
+      if (!parentValid) { markAll(dec.outputs.length, false); return false; }
+    }
+
+    // Step 2: every rangeproof on this envelope verifies
+    for (const o of dec.outputs) {
+      if (!verifyRange(o.commitment, o.rangeproof)) { markAll(dec.outputs.length, false); return false; }
+    }
+
+    // Step 3: asset_id consistency (every input came from the same asset)
+    // + kernel signature (Σ a_in = Σ a_out)
+    const ourAssetIdHex = bytesToHex(dec.assetId);
+    const inputCommitments = [];
+    for (let i = 1; i < tx.vin.length; i++) {
+      const inp = tx.vin[i];
+      const parent = await fetchTx(inp.txid);
+      const pwit = parent.vin[0].witness;
+      const parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1]));
+      let parentAssetIdHex, parentCommitment;
+      if (parentEnv.opcode === T_CETCH) {
+        const pdec = decodeCEtchPayload(parentEnv.payload);
+        parentAssetIdHex = bytesToHex(assetIdFor(inp.txid, 0));
+        parentCommitment = pdec.commitment;
+      } else {
+        const pdec = decodeCXferPayload(parentEnv.payload);
+        parentAssetIdHex = bytesToHex(pdec.assetId);
+        parentCommitment = pdec.outputs[inp.vout].commitment;
+      }
+      if (parentAssetIdHex !== ourAssetIdHex) { markAll(dec.outputs.length, false); return false; }
+      inputCommitments.push(parentCommitment);
+    }
+
+    let EPrime = secp.ProjectivePoint.ZERO;
+    try {
+      for (const o of dec.outputs) EPrime = EPrime.add(bytesToPoint(o.commitment));
+      for (const c of inputCommitments) EPrime = EPrime.add(bytesToPoint(c).negate());
+    } catch { markAll(dec.outputs.length, false); return false; }
+    if (EPrime.equals(secp.ProjectivePoint.ZERO)) { markAll(dec.outputs.length, false); return false; }
+
+    const ExBytes = EPrime.toRawBytes(true).slice(1);
+    const inputOutpoints = tx.vin.slice(1).map(v => ({ txid: v.txid, vout: v.vout }));
+    const outputCommitments = dec.outputs.map(o => o.commitment);
+    const msg = computeKernelMsg(dec.assetId, inputOutpoints, outputCommitments);
+    const kernelOk = verifySchnorr(dec.kernelSig, msg, ExBytes);
+
+    markAll(dec.outputs.length, kernelOk);
+    return kernelOk;
+  }
+
+  validatedSet.set(key, false);
+  return false;
+}
+
+// For each wallet UTXO, look at its parent tx's input[0].witness[1] for a tacit envelope.
+// Decode envelope, identify which envelope output corresponds to this UTXO,
+// match against local openings, verify rangeproofs.
+async function scanHoldings() {
+  const utxos = await getUtxos(wallet.address());
+  const holdings = new Map();
+  const txCache = new Map();
+  const validatedSet = new Map(); // memoization for recursive validation
+  // Canonical CETCH metadata discovered during recursive validation. Lets a fresh
+  // wallet learn ticker/decimals/imageUri for assets it's never seen before
+  // (e.g. an incoming CXFER for a token whose CETCH ancestor isn't in localStorage).
+  const metadataOut = new Map();
+  const fetchTx = async id => {
+    if (txCache.has(id)) return txCache.get(id);
+    const t = await getTx(id);
+    txCache.set(id, t);
+    return t;
+  };
+
+  for (const u of utxos) {
+    const tx = await fetchTx(u.txid);
+    if (!tx || !tx.vin || !tx.vin[0]) continue;
+    const witness = tx.vin[0].witness;
+    if (!witness || witness.length < 3) continue;
+    let envelopeBytes;
+    try { envelopeBytes = hexToBytes(witness[1]); } catch { continue; }
+    const env = decodeEnvelopeScript(envelopeBytes);
+    if (!env) continue;
+
+    let assetIdHex = null, ticker = '???', decimals = 0, onChainCommitment = null;
+
+    if (env.opcode === T_CETCH) {
+      const dec = decodeCEtchPayload(env.payload);
+      if (!dec) continue;
+      // Only vout 0 is the supply commitment
+      if (u.vout !== 0) continue;
+      const aid = assetIdFor(u.txid, 0);
+      assetIdHex = bytesToHex(aid);
+      ticker = dec.ticker; decimals = dec.decimals;
+      onChainCommitment = dec.commitment;
+      if (!getAssetMeta(assetIdHex)) {
+        registerAsset({ assetIdHex, ticker, decimals, etchTxid: u.txid, etchVout: 0, imageUri: dec.imageUri || null });
+      }
+    } else if (env.opcode === T_CXFER) {
+      const dec = decodeCXferPayload(env.payload);
+      if (!dec) continue;
+      assetIdHex = bytesToHex(dec.assetId);
+      const meta = getAssetMeta(assetIdHex);
+      if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
+      if (u.vout >= dec.outputs.length) continue;
+      onChainCommitment = dec.outputs[u.vout].commitment;
+    } else continue;
+
+    if (!holdings.has(assetIdHex)) {
+      holdings.set(assetIdHex, {
+        assetIdHex, ticker, decimals,
+        balance: 0n, utxos: [], ghosts: [], inflated: [],
+        unknownAsset: !getAssetMeta(assetIdHex),
+      });
+    }
+    const h = holdings.get(assetIdHex);
+
+    // Recursive validation: this UTXO and ALL its ancestors must be valid.
+    // A bad CXFER anywhere in the ancestry invalidates everything downstream.
+    // Pass metadataOut so the validator records canonical CETCH metadata for any
+    // ancestor it walks; we use that below to register tickers/decimals/imageUri
+    // for assets that aren't yet in our local registry.
+    const valid = await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut);
+
+    // Register any newly-discovered canonical metadata. Honors first-seen wins;
+    // the registry is keyed by asset_id which is itself derived from the CETCH
+    // reveal txid, so there's no risk of metadata mismatch.
+    for (const [aid, meta] of metadataOut.entries()) {
+      if (!getAssetMeta(aid)) {
+        registerAsset({
+          assetIdHex: aid,
+          ticker: meta.ticker,
+          decimals: meta.decimals,
+          etchTxid: meta.etchTxid,
+          etchVout: 0,
+          imageUri: meta.imageUri || null,
+        });
+      }
+    }
+    // If this holdings entry was created as 'unknown', re-resolve now that
+    // recursive validation may have populated the registry.
+    if (h.unknownAsset) {
+      const m = getAssetMeta(assetIdHex);
+      if (m) {
+        h.ticker = m.ticker;
+        h.decimals = m.decimals;
+        h.unknownAsset = false;
+      }
+    }
+
+    if (!valid) {
+      h.inflated.push({ utxo: u, commitment: onChainCommitment });
+      continue;
+    }
+
+    const opening = getOpening(u.txid, u.vout);
+    if (opening && opening.assetIdHex === assetIdHex) {
+      const verifyC = pedersenCommit(opening.amount, opening.blinding);
+      try {
+        const onChainPoint = bytesToPoint(onChainCommitment);
+        if (verifyC.equals(onChainPoint)) {
+          h.balance += opening.amount;
+          h.utxos.push({ utxo: u, amount: opening.amount, blinding: opening.blinding, commitment: onChainCommitment });
+          continue;
+        }
+      } catch {}
+    }
+
+    // Auto-discovery: try to recover (amount, blinding) from chain alone using the
+    // encrypted-amount field on the envelope. This is what makes share-link import
+    // optional and lets a freshly-installed wallet recover its full state from chain
+    // + privkey alone, with no localStorage dependency.
+    if (env.opcode === T_CETCH) {
+      const dec = decodeCEtchPayload(env.payload);
+      // Re-derive the etcher's anchor: first input outpoint of the commit tx
+      // (= reveal_tx.vin[0].txid → commit tx → commit_tx.vin[0]).
+      if (dec) {
+        const commitTxid = tx.vin[0].txid;
+        const commitTx = await fetchTx(commitTxid);
+        if (commitTx && commitTx.vin && commitTx.vin[0]) {
+          const ci = commitTx.vin[0];
+          const anchorBytes = concatBytes(
+            reverseBytes(hexToBytes(ci.txid)),
+            (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, ci.vout >>> 0, true); return b; })(),
+          );
+          const r = deriveEtchBlinding(wallet.priv, anchorBytes);
+          const ks = deriveEtchAmountKeystream(wallet.priv, anchorBytes);
+          const candidate = decryptAmount(dec.encryptedAmount, ks);
+          if (candidate >= 0n && candidate < (1n << BigInt(N_BITS))) {
+            try {
+              if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
+                recordOpening(u.txid, u.vout, assetIdHex, candidate, r);
+                h.balance += candidate;
+                h.utxos.push({ utxo: u, amount: candidate, blinding: r, commitment: onChainCommitment });
+                continue;
+              }
+            } catch {}
+          }
+        }
+      }
+    }
+
+    if (env.opcode === T_CXFER) {
+      const dec = decodeCXferPayload(env.payload); // already decoded above; re-decode for closure scope
+      if (dec && tx.vin.length >= 2) {
+        const firstIn = tx.vin[1];
+        const anchorBytes = concatBytes(
+          reverseBytes(hexToBytes(firstIn.txid)),
+          (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, firstIn.vout >>> 0, true); return b; })(),
+        );
+        // Try as recipient first: ECDH against sender's pub from vin[1].witness[1]
+        const senderPubHex = (firstIn.witness && firstIn.witness.length === 2 && firstIn.witness[1].length === 66)
+          ? firstIn.witness[1] : null;
+        const ct = dec.outputs[u.vout].encryptedAmount;
+        let recovered = null;
+        if (senderPubHex) {
+          const senderPub = hexToBytes(senderPubHex);
+          const ks = deriveAmountKeystreamECDH(wallet.priv, senderPub, anchorBytes, u.vout);
+          const candidate = decryptAmount(ct, ks);
+          if (candidate >= 0n && candidate < (1n << 64n)) {
+            const r = deriveBlinding(wallet.priv, senderPub, anchorBytes, u.vout);
+            try {
+              if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
+                recovered = { amount: candidate, blinding: r };
+              }
+            } catch {}
+          }
+        }
+        // Try as sender's own change: self-derived keystream + change blinding
+        if (!recovered) {
+          const ks = deriveAmountKeystreamSelf(wallet.priv, anchorBytes, u.vout);
+          const candidate = decryptAmount(ct, ks);
+          if (candidate >= 0n && candidate < (1n << 64n)) {
+            const r = deriveChangeBlinding(wallet.priv, anchorBytes, u.vout);
+            try {
+              if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
+                recovered = { amount: candidate, blinding: r };
+              }
+            } catch {}
+          }
+        }
+        if (recovered) {
+          // Persist for future scans (cheap)
+          recordOpening(u.txid, u.vout, assetIdHex, recovered.amount, recovered.blinding);
+          h.balance += recovered.amount;
+          h.utxos.push({ utxo: u, amount: recovered.amount, blinding: recovered.blinding, commitment: onChainCommitment });
+          continue;
+        }
+      }
+    }
+
+    h.ghosts.push({ utxo: u, commitment: onChainCommitment });
+  }
+  return holdings;
+}
+
+// ============== FEE EST ==============
+const inputVbytes = 68;
+const p2wpkhOutVbytes = 31;
+const p2trOutVbytes = 43;
+function estCommitVb(numInputs) { return 11 + numInputs * inputVbytes + p2trOutVbytes + p2wpkhOutVbytes; }
+const feeFor = (vb, rate) => Math.max(500, Math.ceil(vb * rate));
+
+// ============== TX SERIALIZATION HELPERS ==============
+// Build a tx that includes witnesses for ALL inputs (P2WPKH or P2TR script-path).
+// tx: { version, locktime, inputs:[{txid, vout, sequence, witness}], outputs:[{value, script}] }
+// serializeTx (defined above) handles witness arrays correctly.
+
+// Build a P2WPKH BIP-143 sighash and signed witness for input idx of tx
+function signP2wpkhInput(tx, idx, prevValue) {
+  const scriptCode = concatBytes(new Uint8Array([0x76, 0xa9, 0x14]), hash160(wallet.pub), new Uint8Array([0x88, 0xac]));
+  const sh = sighashV0(tx, idx, scriptCode, prevValue);
+  const sig = sign(sh, wallet.priv); // ECDSA DER + SIGHASH_ALL
+  return [sig, wallet.pub];
+}
+
+// Build a Taproot script-path BIP-341 sighash and signed witness for input 0 of tx
+function signTaprootScriptPathInput(tx, prevouts, envelopeScript, controlBlockBytes) {
+  const leaf = tapLeafHash(envelopeScript);
+  const sh = tapSighash(tx, 0, prevouts, leaf, 0x00);
+  const sig = signSchnorr(sh, wallet.priv);
+  return [sig, envelopeScript, controlBlockBytes];
+}
+
+// ============== CETCH (commit-reveal) ==============
+// Takes supplyBase (already in base units, already validated to be < 2^N_BITS).
+async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri = null }) {
+  const supplyBig = BigInt(supplyBase);
+  if (supplyBig <= 0n || supplyBig >= (1n << BigInt(N_BITS))) {
+    throw new Error(`supplyBase ${supplyBig} out of range [1, 2^${N_BITS})`);
+  }
+
+  // Estimate fees (independent of blinding) so we can pick commit inputs before
+  // deriving the supply blinding from the first input's outpoint.
+  const feeRate = await getFeeRate();
+  const revealVb = 1600; // pads for ≤256-byte image_uri (max envelope ~5538 bytes after amount_ct)
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = DUST + revealFee;
+
+  // Pick commit inputs first; their order determines the anchor.
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const picked = []; let total = 0;
+  let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) throw new Error(`insufficient sats (need ~${commitValue + commitFee}, have ${total}). Use the faucet.`);
+
+  // Anchor the supply blinding to the first commit input's outpoint. This breaks the
+  // envelope/commitment cycle (anchor predates the tx being built) and lets a chain-only
+  // scanner re-derive the same blinding via reveal_tx.vin[0] → commit_tx → commit_tx.vin[0].
+  const firstIn = picked[0];
+  const anchorBytes = concatBytes(
+    reverseBytes(hexToBytes(firstIn.txid)),
+    (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, firstIn.vout >>> 0, true); return b; })(),
+  );
+  const blinding = deriveEtchBlinding(wallet.priv, anchorBytes);
+  const amountKs = deriveEtchAmountKeystream(wallet.priv, anchorBytes);
+  const encryptedAmount = encryptAmount(supplyBig, amountKs);
+
+  // Prove rangeproof (this is the slow step, ~250ms)
+  const { proof, commitment } = proveRange(supplyBig, blinding);
+  const payload = encodeCEtchPayload({ ticker, decimals, commitment, rangeproof: proof, encryptedAmount, imageUri });
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: p2trSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid = txid(commitTx);
+
+  await broadcast(commitHex);
+
+  // Build reveal tx (spend the commit P2TR via script-path)
+  // input 0: commit tx output 0 (the P2TR)
+  // output 0: P2WPKH to etcher (DUST = supply commitment carrier)
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: DUST, script: p2wpkhScript(wallet.pub) }],
+  };
+  const prevouts = [{ value: commitValue, script: p2trSpk }];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid = txid(revealTx);
+
+  // Brief delay so the commit propagates into mempool.space's view before we
+  // broadcast the reveal that spends it. Without this, the reveal can be
+  // rejected with "missing inputs" because the API hasn't indexed the commit yet.
+  await broadcastWithRetry(revealHex);
+
+  // Save opening locally
+  const aid = assetIdFor(revealTxid, 0);
+  recordOpening(revealTxid, 0, bytesToHex(aid), supplyBig, blinding);
+  registerAsset({ assetIdHex: bytesToHex(aid), ticker, decimals, etchTxid: revealTxid, etchVout: 0, imageUri });
+
+  return {
+    commitTxid, revealTxid,
+    commitHex, revealHex,
+    assetIdHex: bytesToHex(aid),
+    commitVb: 11 + picked.length * inputVbytes + commitOutputs.length * p2wpkhOutVbytes,
+    revealVb,
+    commitFee, revealFee,
+  };
+}
+
+// ============== CXFER (commit-reveal) ==============
+async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount }) {
+  const amt = BigInt(amount);
+  if (amt < 0n || amt >= (1n << BigInt(N_BITS))) {
+    throw new Error(`amount must be 0..${(1n << BigInt(N_BITS)) - 1n} base units (32-bit range)`);
+  }
+  // Find wallet UTXOs for this asset with known openings
+  const holdings = await scanHoldings();
+  const h = holdings.get(assetIdHex);
+  if (!h) throw new Error(`no holdings for asset ${assetIdHex}`);
+  if (h.balance < amt) throw new Error(`insufficient balance: have ${h.balance}, need ${amt}`);
+
+  // Pick UTXOs greedily until covered
+  const sortedUtxos = [...h.utxos].sort((a, b) => Number(b.amount - a.amount));
+  const pickedAssetUtxos = []; let inAmt = 0n; let inBlindingSum = 0n;
+  for (const x of sortedUtxos) {
+    pickedAssetUtxos.push(x); inAmt += x.amount; inBlindingSum = modN(inBlindingSum + BigInt(x.blinding));
+    if (inAmt >= amt) break;
+  }
+  const changeAmt = inAmt - amt;
+  if (changeAmt < 0n) throw new Error('internal: change negative');
+
+  const recipientPub = hexToBytes(recipientPubHex);
+  if (recipientPub.length !== 33) throw new Error('recipient pubkey must be 33-byte compressed');
+
+  // Anchor for blinding derivation: first asset input's outpoint. Unique per CXFER
+  // because spent UTXOs are unique. Known to both sender (from picked UTXOs) and
+  // recipient (from tx.vin[1] of the reveal tx). Including this prevents cross-tx
+  // commitment correlation that would otherwise leak amount differences.
+  const firstAssetIn = pickedAssetUtxos[0].utxo;
+  const anchorBytes = concatBytes(
+    reverseBytes(hexToBytes(firstAssetIn.txid)),
+    (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, firstAssetIn.vout >>> 0, true); return b; })(),
+  );
+
+  // Recipient blinding via ECDH (vout 0 = recipient in reveal tx)
+  const recipBlinding = deriveBlinding(wallet.priv, recipientPub, anchorBytes, 0);
+  // Sender change blinding: deterministic from (sender_priv, anchor, vout). Recoverable
+  // from chain — wallet can scan its own CXFER outputs and re-derive openings even after
+  // localStorage is cleared.
+  const changeBlinding = deriveChangeBlinding(wallet.priv, anchorBytes, 1);
+
+  // Prove rangeproofs (~500ms for 2 outputs)
+  const r1 = proveRange(amt, recipBlinding);
+  const r2 = proveRange(changeAmt, changeBlinding);
+
+  // Compute kernel signature (proves Σ a_out = Σ a_in without revealing amounts).
+  //   excess = Σ r_out − Σ r_in   (a scalar; sender knows it)
+  //   E = excess·G                  (a point; equals ΣC_out − ΣC_in iff amounts balance)
+  //   sig = Schnorr-sign(kernel_msg, excess)
+  // Verifier reconstructs E' = ΣC_out − ΣC_in and verifies sig under E'.xonly().
+  // If amounts don't balance, E' has a nonzero H-component and no signer can produce a valid sig
+  // (would require knowing dlog of H w.r.t. G — H is NUMS).
+  const excess = modN(recipBlinding + changeBlinding - inBlindingSum);
+  const inputOutpoints = pickedAssetUtxos.map(x => ({ txid: x.utxo.txid, vout: x.utxo.vout }));
+  const outputCommitments = [r1.commitment, r2.commitment];
+  const assetIdBytes = hexToBytes(assetIdHex);
+  const kernelMsg = computeKernelMsg(assetIdBytes, inputOutpoints, outputCommitments);
+  const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(excess));
+
+  // Encrypt amounts so recipient and sender can recover from chain alone.
+  // Recipient (vout 0): ECDH-derived keystream. Sender's change (vout 1): self-derived keystream.
+  const recipKs = deriveAmountKeystreamECDH(wallet.priv, recipientPub, anchorBytes, 0);
+  const changeKs = deriveAmountKeystreamSelf(wallet.priv, anchorBytes, 1);
+  const recipCt = encryptAmount(amt, recipKs);
+  const changeCt = encryptAmount(changeAmt, changeKs);
+
+  const payload = encodeCXferPayload({
+    assetId: assetIdBytes,
+    kernelSig,
+    outputs: [
+      { commitment: r1.commitment, rangeproof: r1.proof, encryptedAmount: recipCt },
+      { commitment: r2.commitment, rangeproof: r2.proof, encryptedAmount: changeCt },
+    ],
+  });
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  // Reveal vbytes: base ~120 + witness/4 (~10500/4 = 2625) + extra inputs
+  const numAssetIn = pickedAssetUtxos.length;
+  const numExtraOuts = 2; // 2 commitment outputs (recipient + change)
+  // Reveal vbytes: base ~120 + witness/4 (envelope ~10500B + 8B amount_ct × N → +2 vbytes per output)
+  const revealVb = 120 + 2720 + numAssetIn * inputVbytes + numExtraOuts * p2wpkhOutVbytes + 31; // +sats change
+  const revealFee = feeFor(revealVb, feeRate);
+
+  // Reveal tx outputs:
+  //   output 0: recipient commitment (DUST P2WPKH)
+  //   output 1: sender change commitment (DUST P2WPKH)
+  //   output 2 (optional): sats change to sender
+  const recipientP2wpkh = concatBytes(new Uint8Array([0x00, 0x14]), hash160(recipientPub));
+  const senderP2wpkh = p2wpkhScript(wallet.pub);
+  const totalOutputDust = DUST * numExtraOuts;
+  const assetInputTotal = pickedAssetUtxos.reduce((s, u) => s + u.utxo.value, 0); // sat values
+
+  // We need: commitValue + assetInputTotal = totalOutputDust + satsChange + revealFee
+  // satsChange ≥ 0; commitValue must be at least enough for it to work
+  let satsChange = 0;
+  let commitValue = totalOutputDust + revealFee - assetInputTotal;
+  if (commitValue < DUST) {
+    // pad with extra sats inputs in commit
+    commitValue = DUST + revealFee;
+    satsChange = commitValue + assetInputTotal - totalOutputDust - revealFee;
+  }
+  if (satsChange < DUST) satsChange = 0;
+
+  // Build commit tx (pure sats spend → P2TR + change)
+  const allUtxos = await getUtxos(wallet.address());
+  // Exclude the asset UTXOs we're going to spend in the reveal
+  const assetUtxoKeys = new Set(pickedAssetUtxos.map(x => `${x.utxo.txid}:${x.utxo.vout}`));
+  const sats = allUtxos
+    .filter(u => !assetUtxoKeys.has(`${u.txid}:${u.vout}`))
+    .filter(u => u.value > DUST)
+    .sort((a, b) => b.value - a.value);
+  const pickedSats = []; let totalSats = 0; let commitFee = 500;
+  for (const u of sats) {
+    pickedSats.push(u); totalSats += u.value;
+    commitFee = feeFor(estCommitVb(pickedSats.length), feeRate);
+    if (totalSats >= commitValue + commitFee + DUST) break;
+  }
+  if (totalSats < commitValue + commitFee) {
+    throw new Error(`insufficient sats for commit (need ~${commitValue + commitFee}, have ${totalSats})`);
+  }
+  const commitChange = totalSats - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: p2trSpk }];
+  if (commitChange >= DUST) commitOutputs.push({ value: commitChange, script: p2wpkhScript(wallet.pub) });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: pickedSats.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, pickedSats[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid = txid(commitTx);
+
+  await broadcast(commitHex);
+
+  // Build reveal tx
+  const revealOutputs = [
+    { value: DUST, script: recipientP2wpkh },
+    { value: DUST, script: senderP2wpkh },
+  ];
+  if (satsChange >= DUST) revealOutputs.push({ value: satsChange, script: senderP2wpkh });
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
+      ...pickedAssetUtxos.map(x => ({ txid: x.utxo.txid, vout: x.utxo.vout, sequence: 0xfffffffd, witness: [] })),
+    ],
+    outputs: revealOutputs,
+  };
+  const prevouts = [
+    { value: commitValue, script: p2trSpk },
+    ...pickedAssetUtxos.map(x => ({ value: x.utxo.value, script: p2wpkhScript(wallet.pub) })),
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  for (let i = 1; i < revealTx.inputs.length; i++) {
+    revealTx.inputs[i].witness = signP2wpkhInput(revealTx, i, prevouts[i].value);
+  }
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid = txid(revealTx);
+
+  // Retry on "missing inputs" — the commit may not yet be indexed by mempool.space.
+  await broadcastWithRetry(revealHex);
+
+  // Save sender change opening locally (recipient gets theirs via share-link)
+  recordOpening(revealTxid, 1, assetIdHex, changeAmt, changeBlinding);
+
+  return {
+    commitTxid, revealTxid, assetIdHex,
+    sendAmount: amt, changeAmount: changeAmt,
+    recipBlinding, changeBlinding,
+    commitFee, revealFee,
+    revealCommitmentRecipient: r1.commitment,
+    revealCommitmentChange: r2.commitment,
+  };
+}
+
+// ============== SHARE-LINK ==============
+// The rangeproof and kernel sig are on-chain (in the envelope), so the share-link only needs
+// to identify the recipient's UTXO and provide the cleartext amount + asset.
+// (The blinding is recomputable by the recipient via ECDH from the sender's tx.)
+function encodeShareLink(d) {
+  const obj = {
+    tx: d.txid,           // reveal tx id
+    vo: d.vout,           // vout of recipient's commitment in reveal tx
+    a:  d.assetIdHex,
+    am: d.amount.toString(),
+    t:  d.ticker,
+    d:  d.decimals,
+  };
+  const json = JSON.stringify(obj);
+  const b64 = btoa(unescape(encodeURIComponent(json)));
+  return `${location.origin}${location.pathname}#recv=${b64}`;
+}
+function decodeShareLinkHash(hash) {
+  if (!hash || !hash.startsWith('#recv=')) return null;
+  try {
+    const b64 = hash.slice(6);
+    const json = decodeURIComponent(escape(atob(b64)));
+    const obj = JSON.parse(json);
+
+    // Strict validation. A malicious share-link could otherwise encode an amount
+    // that opens the same Pedersen commitment as a smaller value (because
+    // pedersenCommit reduces mod SECP_N), yielding an inflated displayed balance.
+    // We also reject malformed hex / out-of-range vouts.
+    const txid       = String(obj.tx || '').toLowerCase();
+    const assetIdHex = String(obj.a  || '').toLowerCase();
+    const vout       = Number(obj.vo);
+    let amount;
+    try { amount = BigInt(obj.am); } catch { return null; }
+    const ticker     = typeof obj.t === 'string' ? obj.t : null;
+    const decimals   = Number(obj.d);
+
+    if (!/^[0-9a-f]{64}$/.test(txid)) return null;
+    if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return null;
+    if (!Number.isInteger(vout) || vout < 0 || vout > 7) return null;
+    if (amount < 0n || amount >= (1n << BigInt(N_BITS))) return null;
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 8) return null;
+
+    return { txid, vout, assetIdHex, amount, ticker, decimals };
+  } catch { return null; }
+}
+async function importShareLink(linkOrHash) {
+  const hash = linkOrHash.includes('#recv=') ? linkOrHash.slice(linkOrHash.indexOf('#recv=')) : linkOrHash;
+  const d = decodeShareLinkHash(hash);
+  if (!d) throw new Error('invalid share-link');
+
+  // Set up a tx fetcher with cache so the validator and the local checks below share fetches
+  const txCache = new Map();
+  const fetchTx = async id => {
+    if (txCache.has(id)) return txCache.get(id);
+    const t = await getTx(id);
+    txCache.set(id, t);
+    return t;
+  };
+
+  // 1. Recursive client-side validation: walk back to CETCH and verify every step.
+  //    Refuse to record an opening for a UTXO that traces to bad ancestry —
+  //    otherwise scanHoldings will later silently reject it as "inflated", which is bad UX.
+  const validatedSet = new Map();
+  const metadataOut = new Map();
+  const valid = await validateOutpoint(d.txid, d.vout, validatedSet, fetchTx, 0, metadataOut);
+  if (!valid) throw new Error('share-link UTXO failed validation (bad ancestry, kernel sig, or rangeproof)');
+
+  // 2. Canonical metadata comes from the CETCH ancestor we just walked back to.
+  //    Don't trust ticker/decimals from the share-link itself.
+  const canonical = metadataOut.get(d.assetIdHex);
+  if (!canonical) throw new Error('could not locate CETCH ancestor for asset_id');
+  const ticker = canonical.ticker;
+  const decimals = canonical.decimals;
+
+  // 3. Now resolve the recipient's commitment + verify the share-link's claim opens it
+  const tx = await fetchTx(d.txid);
+  let senderPubHex = null;
+  for (let i = 1; i < tx.vin.length; i++) {
+    const w = tx.vin[i].witness;
+    if (w && w.length === 2 && w[1].length === 66) { senderPubHex = w[1]; break; }
+  }
+  if (!senderPubHex) throw new Error('cannot identify sender pubkey from tx witnesses');
+  const senderPub = hexToBytes(senderPubHex);
+
+  // Compute the same anchor the sender used: first asset input's outpoint.
+  // For CXFER reveal txs, vin[0] is the script-path P2TR (commit) and vin[1] is the
+  // first asset input. The sender derived blindings from vin[1]'s outpoint.
+  if (tx.vin.length < 2) throw new Error('reveal tx has no asset input');
+  const firstAssetIn = tx.vin[1];
+  const anchorBytes = concatBytes(
+    reverseBytes(hexToBytes(firstAssetIn.txid)),
+    (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, firstAssetIn.vout >>> 0, true); return b; })(),
+  );
+  const blinding = deriveBlinding(wallet.priv, senderPub, anchorBytes, d.vout);
+  const expectedC = pedersenCommit(d.amount, blinding);
+  const envBytes = hexToBytes(tx.vin[0].witness[1]);
+  const env = decodeEnvelopeScript(envBytes);
+  if (!env || env.opcode !== T_CXFER) throw new Error('parent tx is not a CXFER');
+  const dec = decodeCXferPayload(env.payload);
+  if (!dec || d.vout >= dec.outputs.length) throw new Error('vout outside envelope outputs');
+  // Asset_id from envelope must match the share-link's claim (already implied by metadata lookup but check explicitly)
+  if (bytesToHex(dec.assetId) !== d.assetIdHex) throw new Error('asset_id mismatch between envelope and share-link');
+  const onChainC = dec.outputs[d.vout].commitment;
+  if (bytesToHex(pointToBytes(expectedC)) !== bytesToHex(onChainC)) {
+    throw new Error('commitment mismatch — share-link does not open the on-chain commitment');
+  }
+  recordOpening(d.txid, d.vout, d.assetIdHex, d.amount, blinding);
+  // Register asset metadata under canonical (CETCH-sourced) values
+  if (!getAssetMeta(d.assetIdHex)) {
+    registerAsset({ assetIdHex: d.assetIdHex, ticker, decimals, etchTxid: canonical.etchTxid, etchVout: 0, imageUri: canonical.imageUri || null });
+  }
+  return { ticker, amount: d.amount, decimals, assetIdHex: d.assetIdHex };
+}
+
+// ============== UI HELPERS ==============
+const $ = sel => document.querySelector(sel);
+const $$ = sel => document.querySelectorAll(sel);
+const escapeHtml = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const shorten = (s, n = 10) => !s || s.length <= n*2 + 3 ? s : s.slice(0, n) + '…' + s.slice(-n);
+const fmtSats = n => Number(n).toLocaleString('en-US');
+function fmtAssetAmount(amt, decimals) {
+  const a = BigInt(amt);
+  if (decimals === 0) return a.toLocaleString('en-US');
+  const div = 10n ** BigInt(decimals);
+  const whole = a / div;
+  const frac = a % div;
+  const fracStr = frac.toString().padStart(decimals, '0').replace(/0+$/, '');
+  return whole.toLocaleString('en-US') + (fracStr ? '.' + fracStr : '');
+}
+
+// Normalize a user-provided asset image URI for safe rendering in <img>.
+// Returns an HTTP(S) URL or null if the input doesn't match an accepted form.
+// Accepted: https://..., ipfs://CID, or a bare CID (Qm... | bafy...).
+function normalizeImageUri(uri) {
+  if (!uri) return null;
+  const s = String(uri).trim();
+  if (!s) return null;
+  if (/^https:\/\//i.test(s)) return s;
+  // ipfs:// scheme
+  let cid = null;
+  const ipfsMatch = s.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
+  if (ipfsMatch) cid = ipfsMatch[1];
+  // bare CID v0 (Qm…) or v1 (bafy…)
+  else if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(s)) cid = s;
+  else if (/^baf[a-z0-9]{50,80}$/i.test(s)) cid = s;
+  // Project's own IPFS gateway. Lower latency + no shared rate-limit ceiling vs public
+  // gateways. Override IPFS_GATEWAY at the top of this script if you want to switch.
+  if (cid) return `${IPFS_GATEWAY}${cid}`;
+  return null;
+}
+// Validate a URI for storage in CETCH (UTF-8 bytes ≤ 256, must normalize successfully)
+function validateImageUriForEtch(uri) {
+  if (!uri) return null; // empty is fine — image is optional
+  const s = String(uri).trim();
+  if (!s) return null;
+  if (new TextEncoder().encode(s).length > 256) throw new Error('image URI too long (max 256 bytes)');
+  if (!normalizeImageUri(s)) throw new Error('image URI must be ipfs://CID, https://..., or a bare CID');
+  return s;
+}
+function toast(msg, kind = '', ms = 4000) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.textContent = msg;
+  $('#toast-container').appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+// ============== TABS ==============
+function setupTabs() {
+  $$('.tab').forEach(tab => {
+    tab.onclick = () => {
+      $$('.tab').forEach(t => t.classList.remove('active'));
+      $$('.tab-panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      $('#tab-' + tab.dataset.tab).classList.add('active');
+      if (tab.dataset.tab === 'wallet') refreshWallet();
+      if (tab.dataset.tab === 'holdings') renderHoldings();
+      if (tab.dataset.tab === 'transfer') refreshAssetSelect();
+    };
+  });
+}
+
+// ============== WALLET ==============
+// Threshold below which we surface the demo-drip / manual-faucet buttons.
+// One drip = 20K sats; an etch or transfer needs ~5–10K. Below 10K means
+// "running low" — hide the drip CTA above this so the buttons only appear
+// when actually useful.
+const FAUCET_VISIBLE_BELOW_SATS = 10000;
+// Demo drip is hidden if the faucet wallet itself can't fund a single drip
+// (avoids the "faucet has no UTXOs" dead-end click).
+const FAUCET_READY_MIN_SATS = 30000;
+async function checkFaucetReady() {
+  if (!WORKER_BASE) return false;
+  try {
+    const resp = await fetch(WORKER_BASE + '/balance');
+    if (!resp.ok) return false;
+    const j = await resp.json();
+    return (j.balance || 0) >= FAUCET_READY_MIN_SATS;
+  } catch { return false; }
+}
+async function refreshWallet() {
+  $('#w-address').textContent = wallet.address();
+  $('#w-pubkey').textContent = wallet.pubHex();
+  $('#explorer-link').href = `${NET.explorer}/address/${wallet.address()}`;
+  $('#wallet-status').textContent = 'syncing…';
+  try {
+    const [utxos, height, rate, faucetReady] = await Promise.all([
+      getUtxos(wallet.address()),
+      getTip(),
+      getFeeRate(),
+      checkFaucetReady(),
+    ]);
+    const balance = utxos.reduce((a, u) => a + u.value, 0);
+    $('#w-balance').textContent = fmtSats(balance);
+    $('#w-height').textContent = height;
+    $('#wallet-status').textContent = `synced · ${rate} sat/vB`;
+    const userLow = balance < FAUCET_VISIBLE_BELOW_SATS;
+    const dripBtn = $('#btn-drip');
+    const manualFaucetBtn = $('#btn-faucet');
+    // Demo drip: only when user wallet is low AND the demo-faucet wallet
+    // actually has enough sats to fund a drip. Avoids dead-end clicks.
+    if (dripBtn) dripBtn.style.display = (userLow && FAUCET_URL && faucetReady) ? '' : 'none';
+    // Manual faucet (third-party signet faucets): always available as a
+    // fallback when the user wallet is low, regardless of our demo wallet.
+    if (manualFaucetBtn) manualFaucetBtn.style.display = userLow ? '' : 'none';
+    if (!userLow) $('#faucet-panel').style.display = 'none';
+  } catch (e) {
+    $('#wallet-status').textContent = 'offline: ' + e.message;
+  }
+}
+function setupWalletButtons() {
+  $('#btn-refresh').onclick = refreshWallet;
+  $('#btn-export').onclick = () => prompt('Your private key (hex). Save somewhere safe:', bytesToHex(wallet.priv));
+  $('#btn-import').onclick = () => {
+    const v = prompt('Paste private key (hex, 64 chars):');
+    if (!v) return;
+    try { wallet.setPriv(v); toast('Wallet imported', 'success'); refreshWallet(); }
+    catch (e) { toast('Import failed: ' + e.message, 'error'); }
+  };
+  $('#btn-regen').onclick = () => {
+    if (!confirm('Generate a new wallet? Your old key will be replaced (export it first if you want to keep it).')) return;
+    wallet.regenerate(); toast('New wallet generated', 'success'); refreshWallet();
+  };
+  const dripBtn = $('#btn-drip');
+  if (!FAUCET_URL) { dripBtn.disabled = true; dripBtn.title = 'demo drip disabled (no Worker)'; }
+  dripBtn.onclick = async () => {
+    if (!FAUCET_URL) return;
+    dripBtn.disabled = true;
+    const orig = dripBtn.textContent;
+    dripBtn.textContent = 'Dripping…';
+    try {
+      const resp = await fetch(FAUCET_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ address: wallet.address() }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+      toast(`Drip sent: ${j.amount_sats} sats · tx ${j.txid.slice(0, 10)}…`, 'success');
+      // Wait long enough for mempool.space's address-UTXO index to pick up the new tx.
+      setTimeout(refreshWallet, 4000);
+    } catch (e) {
+      toast(`Drip failed: ${e.message}`, 'error');
+    } finally {
+      dripBtn.disabled = false;
+      dripBtn.textContent = orig;
+    }
+  };
+  $('#btn-faucet').onclick = async () => {
+    try { await navigator.clipboard.writeText(wallet.address()); } catch {}
+    $('#faucet-panel').style.display = 'block';
+    toast('Address copied to clipboard');
+  };
+}
+
+// ============== ETCH UI ==============
+let pendingCEtch = null;
+async function uploadImageToPinata(file) {
+  if (!PIN_URL) throw new Error('upload disabled — set PIN_URL after deploying the Worker');
+  if (file.size > MAX_UPLOAD_BYTES) throw new Error(`file too big (max ${MAX_UPLOAD_BYTES} bytes)`);
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    throw new Error(`unsupported type ${file.type} (png/jpeg/webp only)`);
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  const resp = await fetch(PIN_URL, { method: 'POST', body: fd });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `upload failed: HTTP ${resp.status}`);
+  if (!j.cid) throw new Error('worker returned no CID');
+  return j.cid;
+}
+
+// Pin a small ERC-721-style metadata JSON to IPFS via the Worker.
+// Returns the metadata CID, which the dApp stores in the CETCH envelope's image_uri.
+async function uploadMetadataToPinata(metadata) {
+  if (!PIN_JSON_URL) throw new Error('metadata pinning disabled — no Worker configured');
+  const resp = await fetch(PIN_JSON_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(metadata),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `metadata pin failed: HTTP ${resp.status}`);
+  if (!j.cid) throw new Error('worker returned no CID');
+  return j.cid;
+}
+
+// Resolve an envelope's image_uri to a renderable image URL.
+// If the URI dereferences to JSON metadata (with an `image` field), follow it.
+// If it dereferences to image bytes, use the URI directly. Cached per session.
+const _resolvedImageCache = new Map();
+const _metadataExtraCache = new Map(); // imageUri → { description, external_url }
+async function resolveImageUri(imageUri) {
+  if (!imageUri) return null;
+  if (_resolvedImageCache.has(imageUri)) return _resolvedImageCache.get(imageUri);
+  const url = normalizeImageUri(imageUri);
+  if (!url) { _resolvedImageCache.set(imageUri, null); return null; }
+  let resolved = url;
+  let extra = null;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 5000);
+  try {
+    const resp = await fetch(url, { signal: ac.signal });
+    if (resp.ok) {
+      const ct = (resp.headers.get('content-type') || '').toLowerCase();
+      if (ct.includes('json') || ct.includes('text/plain')) {
+        // Treating the URI as a metadata blob. Default to no image and only
+        // set one if the JSON has an actual image field — otherwise we'd
+        // point an <img src> at JSON bytes and fail silently.
+        resolved = null;
+        const text = await resp.text();
+        if (text.length < 8192) {
+          try {
+            const j = JSON.parse(text);
+            if (j && typeof j === 'object') {
+              if (typeof j.image === 'string') {
+                const inner = normalizeImageUri(j.image);
+                if (inner) resolved = inner;
+              }
+              // external_url must be plain https:// — escapeHtml prevents HTML
+              // injection but doesn't make `javascript:` / `data:` URLs safe to click.
+              const rawExternal = typeof j.external_url === 'string' ? j.external_url.trim() : '';
+              const safeExternal = /^https:\/\//i.test(rawExternal) ? rawExternal : null;
+              extra = {
+                description: typeof j.description === 'string' ? j.description : null,
+                external_url: safeExternal,
+              };
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {} finally { clearTimeout(timer); }
+  _resolvedImageCache.set(imageUri, resolved);
+  if (extra) _metadataExtraCache.set(imageUri, extra);
+  return resolved;
+}
+function getMetadataExtras(imageUri) {
+  return _metadataExtraCache.get(imageUri) || null;
+}
+function setupEtchForm() {
+  const fileInput = $('#e-image-file');
+  const fileLabel = document.querySelector('label[for="e-image-file"]');
+  const fileStatus = $('#e-image-status');
+  if (!PIN_URL) {
+    fileLabel.style.opacity = '0.4';
+    fileLabel.style.pointerEvents = 'none';
+    fileStatus.textContent = 'upload disabled — set PIN_URL in tacit.html';
+  }
+  fileInput.onchange = async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    fileStatus.textContent = `uploading ${file.name} (${(file.size/1024).toFixed(1)} KB)…`;
+    try {
+      const cid = await uploadImageToPinata(file);
+      $('#e-image').value = `ipfs://${cid}`;
+      fileStatus.textContent = `pinned: ${cid.slice(0, 12)}…`;
+      toast(`Uploaded to IPFS: ${cid.slice(0, 12)}…`, 'success');
+    } catch (e) {
+      fileStatus.textContent = '';
+      toast(`Upload failed: ${e.message}`, 'error');
+      console.error(e);
+    } finally {
+      fileInput.value = '';
+    }
+  };
+  $('#btn-etch-preview').onclick = async () => {
+    $('#etch-error').textContent = '';
+    try {
+      const ticker = $('#e-ticker').value.trim().toUpperCase();
+      if (!/^[A-Z0-9]{1,8}$/.test(ticker)) throw new Error('ticker must be 1–8 chars (A–Z, 0–9)');
+      const decimals = parseInt($('#e-decimals').value);
+      if (isNaN(decimals) || decimals < 0 || decimals > 8) {
+        throw new Error('decimals must be 0–8 (32-bit range caps higher decimals at trivial supplies)');
+      }
+      // Decimal-aware supply parsing — accepts fractional display amounts (e.g. "1000.50" with decimals=2)
+      const supplyStr = $('#e-supply').value.trim();
+      let supplyBase;
+      try { supplyBase = parseAssetAmount(supplyStr, decimals); }
+      catch (e) { throw new Error(`supply: ${e.message}`); }
+      if (supplyBase <= 0n) throw new Error('supply must be > 0');
+      if (supplyBase >= (1n << BigInt(N_BITS))) {
+        const maxBase = (1n << BigInt(N_BITS)) - 1n;
+        const div = 10n ** BigInt(decimals);
+        const maxDisp = maxBase / div;
+        const rem = (maxBase - maxDisp * div).toString().padStart(decimals, '0');
+        const maxStr = decimals > 0 ? `${maxDisp}.${rem}` : `${maxDisp}`;
+        throw new Error(`supply exceeds 2³² base units. Max with ${decimals} decimals: ${maxStr}`);
+      }
+
+      // Optional image URI
+      let imageUri = null;
+      try { imageUri = validateImageUriForEtch($('#e-image').value); }
+      catch (e) { throw new Error(`image: ${e.message}`); }
+
+      // Optional metadata-blob fields. If either is filled, the broadcast step
+      // builds a JSON metadata object and pins it; the metadata CID becomes the
+      // envelope's image_uri (replacing the raw image CID, which moves into
+      // metadata.image). Renderers dereference the metadata transparently.
+      const description = $('#e-description').value.trim();
+      const externalUrl = $('#e-external-url').value.trim();
+      if (externalUrl && !/^https:\/\//i.test(externalUrl)) {
+        throw new Error('external URL must start with https://');
+      }
+      if (description.length > 500) throw new Error('description max 500 chars');
+
+      pendingCEtch = { ticker, supplyBase, decimals, imageUri, description, externalUrl };
+      const rate = await getFeeRate();
+      const commitFeeEst = feeFor(estCommitVb(1), rate);
+      const revealFeeEst = feeFor(1600, rate); // pads for ≤256-byte image_uri
+      const totalFeeEst = commitFeeEst + revealFeeEst;
+
+      $('#etch-preview').style.display = 'block';
+      $('#etch-preview').innerHTML = `
+        <div class="tx-preview" style="margin-top:18px;">
+          <h4>Preview envelope</h4>
+          <div class="opreturn-decode">
+            <div class="head">CETCH · Taproot envelope</div>
+            <div class="data">ticker = "${escapeHtml(ticker)}" · decimals = ${decimals} · supply = ${escapeHtml(supplyStr)} (${supplyBase} base units)</div>
+            ${imageUri ? `<div class="data" style="display:flex;align-items:center;gap:10px;margin-top:6px;">image: <span style="font-family:var(--mono);font-size:11px;word-break:break-all;">${escapeHtml(imageUri)}</span><img src="${escapeHtml(normalizeImageUri(imageUri) || '')}" alt="" style="width:32px;height:32px;border:1px solid var(--ink);object-fit:cover;background:#fff;" onerror="this.style.display='none';"></div>` : ''}
+            ${description ? `<div class="data" style="margin-top:6px;">description: <span style="font-style:italic;">${escapeHtml(description)}</span></div>` : ''}
+            ${externalUrl ? `<div class="data" style="margin-top:4px;">link: <span style="font-family:var(--mono);font-size:11px;">${escapeHtml(externalUrl)}</span></div>` : ''}
+            ${(description || externalUrl) ? `<div class="data" style="margin-top:6px;color:var(--ink-mid);font-size:10px;">↑ a JSON metadata blob will be pinned and the envelope will store its CID (instead of the raw image CID)</div>` : ''}
+            <div class="data">commitment C = supply·H + r·G (33B, supply hidden) — bytes computed at broadcast from your wallet key + commit input</div>
+            <div class="data" style="margin-top:6px;color:var(--ink-mid);">+ 5152-byte rangeproof proving supply ∈ [0, 2³²) — generated at broadcast (~250ms)</div>
+          </div>
+          <h4 style="margin-top:14px;">2-tx commit-reveal flow</h4>
+          <div class="row"><span class="idx">[1]</span><span class="label">commit tx</span> creates P2TR output (envelope merkle-committed in tweak)</div>
+          <div class="row"><span class="idx">[2]</span><span class="label">reveal tx</span> spends P2TR via script-path, exposing envelope + rangeproof in witness</div>
+          <h4 style="margin-top:14px;">Reveal tx outputs</h4>
+          <div class="row"><span class="idx">[0]</span><span class="label">P2WPKH (you)</span> ${fmtSats(DUST)} sats · holds the supply commitment</div>
+          <h4 style="margin-top:14px;">Estimated fees</h4>
+          <div>commit ~${commitFeeEst} sats · reveal ~${revealFeeEst} sats · total ~${totalFeeEst} sats @ ${rate} sat/vB</div>
+        </div>`;
+      $('#btn-etch-broadcast').disabled = false;
+    } catch (e) {
+      $('#etch-error').textContent = e.message;
+      pendingCEtch = null;
+      $('#btn-etch-broadcast').disabled = true;
+      $('#etch-preview').style.display = 'none';
+    }
+  };
+  $('#btn-etch-broadcast').onclick = async () => {
+    if (!pendingCEtch) return;
+    $('#btn-etch-broadcast').disabled = true;
+    try {
+      // If the user added description / external URL, build a metadata JSON and pin it.
+      // The CETCH envelope then carries the metadata CID instead of the raw image CID;
+      // metadata.image points back to the original image. Wire-format unchanged.
+      let envelopeImageUri = pendingCEtch.imageUri;
+      if (PIN_JSON_URL && (pendingCEtch.description || pendingCEtch.externalUrl)) {
+        $('#btn-etch-broadcast').textContent = 'Pinning metadata…';
+        const md = { name: pendingCEtch.ticker, decimals: pendingCEtch.decimals };
+        if (pendingCEtch.imageUri) md.image = pendingCEtch.imageUri;
+        if (pendingCEtch.description) md.description = pendingCEtch.description;
+        if (pendingCEtch.externalUrl) md.external_url = pendingCEtch.externalUrl;
+        const metaCid = await uploadMetadataToPinata(md);
+        envelopeImageUri = `ipfs://${metaCid}`;
+      }
+
+      $('#btn-etch-broadcast').textContent = 'Proving rangeproof…';
+      // Yield to UI before the ~250ms prove
+      await new Promise(r => setTimeout(r, 50));
+      $('#btn-etch-broadcast').textContent = 'Broadcasting commit + reveal…';
+      const r = await buildAndBroadcastCEtch({
+        ticker: pendingCEtch.ticker,
+        supplyBase: pendingCEtch.supplyBase,
+        decimals: pendingCEtch.decimals,
+        imageUri: envelopeImageUri,
+      });
+      toast(`Etched ${pendingCEtch.ticker}: commit=${shorten(r.commitTxid, 6)} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
+      pendingCEtch = null;
+      $('#etch-preview').style.display = 'none';
+      $('#e-ticker').value = '';
+      refreshWallet();
+      $('.tab[data-tab="holdings"]').click();
+    } catch (e) {
+      $('#etch-error').textContent = e.message;
+      console.error(e);
+    } finally {
+      $('#btn-etch-broadcast').disabled = false;
+      $('#btn-etch-broadcast').textContent = 'Etch & broadcast';
+    }
+  };
+}
+
+// ============== TRANSFER UI ==============
+let pendingCXfer = null;
+
+async function refreshAssetSelect() {
+  const sel = $('#x-asset');
+  if (!sel) return;
+  const holdings = await scanHoldings().catch(() => new Map());
+  const knownNonZero = [...holdings.values()].filter(h => !h.unknownAsset && h.balance > 0n);
+  const current = sel.value;
+  sel.innerHTML = '<option value="">— select —</option>' + knownNonZero.map(h =>
+    `<option value="${h.assetIdHex}">${escapeHtml(h.ticker)} · balance: ${fmtAssetAmount(h.balance, h.decimals)}</option>`
+  ).join('');
+  if (current) sel.value = current;
+}
+
+function setupTransferForm() {
+  $('#btn-transfer-preview').onclick = async () => {
+    $('#transfer-error').textContent = '';
+    $('#transfer-share').style.display = 'none';
+    try {
+      const assetIdHex = $('#x-asset').value;
+      if (!assetIdHex) throw new Error('select an asset');
+      const recipientPubHex = $('#x-recipient-pub').value.trim().toLowerCase().replace(/\s/g, '');
+      if (!/^0[23][0-9a-f]{64}$/.test(recipientPubHex)) throw new Error('recipient pubkey must be 33-byte compressed hex');
+      try { secp.ProjectivePoint.fromHex(recipientPubHex); } catch { throw new Error('recipient pubkey is not a valid point'); }
+      const meta = getAssetMeta(assetIdHex);
+      if (!meta) throw new Error('unknown asset');
+      const amountStr = $('#x-amount').value.trim();
+      if (!amountStr) throw new Error('enter an amount');
+      const amount = parseAssetAmount(amountStr, meta.decimals);
+      if (amount <= 0n) throw new Error('amount must be > 0');
+      if (amount >= (1n << BigInt(N_BITS))) throw new Error(`amount must be < 2^${N_BITS} base units`);
+
+      const holdings = await scanHoldings();
+      const h = holdings.get(assetIdHex);
+      if (!h || h.balance < amount) throw new Error(`insufficient balance: have ${h ? fmtAssetAmount(h.balance, meta.decimals) : 0}, need ${fmtAssetAmount(amount, meta.decimals)}`);
+
+      pendingCXfer = { assetIdHex, recipientPubHex, amount, ticker: meta.ticker, decimals: meta.decimals };
+
+      const recipientPub = hexToBytes(recipientPubHex);
+      const recipientAddr = bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(recipientPub))]);
+      const rate = await getFeeRate();
+      const commitFeeEst = feeFor(estCommitVb(1), rate);
+      const revealFeeEst = feeFor(2900, rate); // padded for ~10KB witness + 1 P2WPKH input
+      const totalFeeEst = commitFeeEst + revealFeeEst;
+
+      $('#transfer-preview').style.display = 'block';
+      $('#transfer-preview').innerHTML = `
+        <div class="tx-preview" style="margin-top:14px;">
+          <h4>2-tx commit-reveal flow (Taproot envelope)</h4>
+          <div class="row"><span class="idx">[1]</span><span class="label">commit tx</span> creates P2TR output (envelope merkle-committed in tweak)</div>
+          <div class="row"><span class="idx">[2]</span><span class="label">reveal tx</span> spends P2TR via script-path + your asset UTXO; exposes envelope + 2 rangeproofs (~10KB witness)</div>
+          <h4 style="margin-top:14px;">Reveal tx outputs</h4>
+          <div class="row"><span class="idx">[0]</span><span class="label">P2WPKH</span> ${fmtSats(DUST)} sats → ${escapeHtml(shorten(recipientAddr, 14))} <span class="muted">(recipient's commitment)</span></div>
+          <div class="row"><span class="idx">[1]</span><span class="label">P2WPKH (you)</span> ${fmtSats(DUST)} sats <span class="muted">(your change commitment)</span></div>
+          <h4 style="margin-top:14px;">What stays private</h4>
+          <div class="row">recipient amount: ${fmtAssetAmount(amount, meta.decimals)} ${escapeHtml(meta.ticker)}</div>
+          <div class="row">your change: ${fmtAssetAmount(h.balance - amount, meta.decimals)} ${escapeHtml(meta.ticker)}</div>
+          <div class="row" style="color:var(--ink-mid);font-style:italic;">observers see only 33-byte commitments + 5KB rangeproofs — neither amount visible</div>
+          <h4 style="margin-top:14px;">After broadcast</h4>
+          <div class="row" style="color:var(--ink-mid);">a share-link will be generated — recipients can recover the amount from chain alone, but the link lets them import immediately without rescanning</div>
+          <h4 style="margin-top:14px;">Estimated fees</h4>
+          <div>commit ~${commitFeeEst} sats · reveal ~${revealFeeEst} sats · total ~${totalFeeEst} sats @ ${rate} sat/vB</div>
+        </div>`;
+      $('#btn-transfer-broadcast').disabled = false;
+    } catch (e) {
+      $('#transfer-error').textContent = e.message;
+      console.error(e);
+      pendingCXfer = null;
+      $('#btn-transfer-broadcast').disabled = true;
+      $('#transfer-preview').style.display = 'none';
+    }
+  };
+  $('#btn-transfer-broadcast').onclick = async () => {
+    if (!pendingCXfer) return;
+    $('#btn-transfer-broadcast').disabled = true;
+    $('#btn-transfer-broadcast').textContent = 'Proving rangeproofs…';
+    try {
+      await new Promise(r => setTimeout(r, 50));
+      $('#btn-transfer-broadcast').textContent = 'Broadcasting commit + reveal…';
+      const r = await buildAndBroadcastCXfer(pendingCXfer);
+      toast(`CXFER: commit=${shorten(r.commitTxid, 6)} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
+      const link = encodeShareLink({
+        txid: r.revealTxid, vout: 0, // recipient is at vout 0 in reveal tx
+        assetIdHex: r.assetIdHex,
+        amount: r.sendAmount,
+        ticker: pendingCXfer.ticker, decimals: pendingCXfer.decimals,
+      });
+      $('#transfer-share').style.display = 'block';
+      $('#transfer-share').innerHTML = `
+        <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+          <strong>↓ Send this share-link to the recipient (optional notification)</strong>
+          <div class="muted" style="font-size:11px;margin-top:4px;">A compatible wallet auto-recovers the amount from chain (the on-chain <code>amount_ct</code> is decryptable by the recipient via ECDH against your pubkey). The share-link just lets them import immediately and verify without waiting for a rescan.</div>
+          <div class="mono-box" style="margin-top:10px;font-size:10px;">${escapeHtml(link)}</div>
+          <div class="flex" style="margin-top:10px;">
+            <button id="btn-copy-share" class="primary">Copy share-link</button>
+            <a class="btn" href="${NET.explorer}/tx/${r.revealTxid}" target="_blank">View reveal tx ↗</a>
+            <a class="btn" href="${NET.explorer}/tx/${r.commitTxid}" target="_blank">View commit tx ↗</a>
+          </div>
+        </div>`;
+      $('#btn-copy-share').onclick = async () => {
+        try { await navigator.clipboard.writeText(link); toast('Share-link copied', 'success'); }
+        catch { prompt('Copy this share-link:', link); }
+      };
+      pendingCXfer = null;
+      $('#x-amount').value = '';
+      $('#x-recipient-pub').value = '';
+      $('#transfer-preview').style.display = 'none';
+      refreshWallet();
+    } catch (e) {
+      $('#transfer-error').textContent = e.message;
+      console.error(e);
+    } finally {
+      $('#btn-transfer-broadcast').disabled = false;
+      $('#btn-transfer-broadcast').textContent = 'Transfer & broadcast';
+    }
+  };
+}
+
+function parseAssetAmount(input, decimals) {
+  const s = input.trim();
+  if (!/^\d+(\.\d+)?$/.test(s)) throw new Error(`invalid amount: ${input}`);
+  const [whole, frac = ''] = s.split('.');
+  if (frac.length > decimals) throw new Error(`amount has too many decimals (max ${decimals})`);
+  const padded = (frac + '0'.repeat(decimals)).slice(0, decimals);
+  return BigInt(whole) * (10n ** BigInt(decimals)) + (padded ? BigInt(padded) : 0n);
+}
+
+// ============== HOLDINGS UI ==============
+async function renderHoldings() {
+  const list = $('#holdings-list');
+  $('#holdings-status').textContent = 'scanning…';
+  list.innerHTML = '<div class="muted" style="padding:20px;text-align:center;">Scanning UTXOs…</div>';
+  try {
+    const holdings = await scanHoldings();
+    const arr = [...holdings.values()].sort((a, b) => Number(b.balance - a.balance));
+    if (!arr.length) {
+      list.innerHTML = `<div class="empty">No assets yet. Hit the <strong>faucet</strong> for some signet sats, then go to <strong>Etch</strong> to mint your first token — or paste a share-link below if someone sent you one.</div>`;
+      $('#holdings-status').textContent = '';
+      return;
+    }
+    list.innerHTML = '';
+    // Resolve all metadata blobs in parallel — sequential awaits inside the loop
+    // turn N tokens into N back-to-back round-trips to IPFS.
+    const imgUrls = await Promise.all(arr.map(h => {
+      const m = getAssetMeta(h.assetIdHex);
+      return m?.imageUri ? resolveImageUri(m.imageUri) : Promise.resolve(null);
+    }));
+    for (let i = 0; i < arr.length; i++) {
+      const h = arr[i];
+      const card = document.createElement('div');
+      card.className = 'asset-card';
+      const meta = getAssetMeta(h.assetIdHex);
+      const etchLink = meta?.etchTxid ? `${NET.explorer}/tx/${meta.etchTxid}` : '#';
+      const imgUrl = imgUrls[i];
+      const extras = meta?.imageUri ? getMetadataExtras(meta.imageUri) : null;
+      const avatar = imgUrl
+        ? `<img src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;" onerror="this.style.display='none';">`
+        : '';
+      card.innerHTML = `
+        <div class="head" style="display:flex;align-items:center;gap:12px;">
+          ${avatar}
+          <div style="flex:1;min-width:0;">
+            <div class="ticker">${escapeHtml(h.ticker)}<span class="id-tag">${escapeHtml(shorten(h.assetIdHex, 4))}</span></div>
+            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span></div>
+          </div>
+        </div>
+        <div class="meta">
+          <div><span class="lbl">Asset ID</span> <span class="mono-box inline">${escapeHtml(h.assetIdHex)}</span></div>
+          <div><span class="lbl">Decimals</span> ${h.decimals}</div>
+          <div><span class="lbl">UTXOs</span> ${h.utxos.length} known${h.ghosts.length ? ` · <span style="color:var(--red);">${h.ghosts.length} ghost</span>` : ''}</div>
+          <div><span class="lbl">Etch tx</span> ${meta?.etchTxid ? `<a href="${escapeHtml(etchLink)}" target="_blank">${escapeHtml(shorten(meta.etchTxid, 8))} ↗</a>` : '—'}</div>
+        </div>
+        ${extras?.description ? `<div class="muted" style="margin-top:10px;font-size:11px;font-style:italic;">${escapeHtml(extras.description)}</div>` : ''}
+        ${extras?.external_url ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(extras.external_url)}" target="_blank" rel="noopener">${escapeHtml(extras.external_url)} ↗</a></div>` : ''}
+        ${h.ghosts.length ? `<div class="warn" style="margin-top:10px;font-size:11px;">⚠ ${h.ghosts.length} UTXO${h.ghosts.length>1?'s':''} hold commitments this wallet can't open. Try ↻ Rescan, or import a share-link for legacy/incompatible sends.</div>` : ''}
+        ${h.inflated && h.inflated.length ? `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee;border-left-color:var(--red);"><strong>⚠ Inflation attempt detected:</strong> ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} have invalid rangeproofs. These are not counted in your balance.</div>` : ''}
+        <div class="actions">
+          ${h.balance > 0n && !h.unknownAsset ? `<button data-act="send" data-aid="${h.assetIdHex}">Send privately</button>` : ''}
+        </div>
+      `;
+      list.appendChild(card);
+    }
+    list.querySelectorAll('button[data-act]').forEach(b => {
+      b.onclick = () => {
+        if (b.dataset.act === 'send') {
+          $('#x-asset').value = b.dataset.aid;
+          $('.tab[data-tab="transfer"]').click();
+          refreshAssetSelect().then(() => $('#x-asset').value = b.dataset.aid);
+        }
+      };
+    });
+    $('#holdings-status').textContent = `${arr.length} asset${arr.length > 1 ? 's' : ''}`;
+  } catch (e) {
+    list.innerHTML = `<div class="error">Scan failed: ${escapeHtml(e.message)}</div>`;
+    console.error(e);
+  }
+}
+
+async function renderDiscover() {
+  const panel = $('#discover-panel');
+  const list = $('#discover-list');
+  panel.style.display = 'block';
+  if (!REGISTRY_URL) {
+    list.innerHTML = `<div class="muted" style="padding:14px;">discovery disabled (no Worker)</div>`;
+    return;
+  }
+  list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;">loading…</div>`;
+  try {
+    const resp = await fetch(REGISTRY_URL);
+    const j = await resp.json();
+    const ls = j.meta?.last_scanned, tip = j.meta?.tip;
+    const freshness = (Number.isInteger(ls) && Number.isInteger(tip))
+      ? `<div class="muted" style="font-size:10px;text-align:right;margin-bottom:8px;">scanned through block ${ls}${tip > ls ? ` · ${tip - ls} block${tip - ls === 1 ? '' : 's'} behind tip` : ' · caught up'}</div>`
+      : '';
+    if (!j.assets || !j.assets.length) {
+      list.innerHTML = freshness + `<div class="empty">No assets etched on signet yet. Be the first.</div>`;
+      return;
+    }
+    list.innerHTML = freshness;
+    const dImgUrls = await Promise.all(j.assets.map(a =>
+      a.image_uri ? resolveImageUri(a.image_uri) : Promise.resolve(null)
+    ));
+    for (let di = 0; di < j.assets.length; di++) {
+      const a = j.assets[di];
+      const card = document.createElement('div');
+      card.className = 'asset-card';
+      const imgUrl = dImgUrls[di];
+      const extras = a.image_uri ? getMetadataExtras(a.image_uri) : null;
+      const avatar = imgUrl
+        ? `<img src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;" onerror="this.style.display='none';">`
+        : '';
+      const ageMin = Math.max(0, Math.floor((Date.now()/1000 - (a.etched_at || 0)) / 60));
+      const ageStr = ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.floor(ageMin/60)}h ago` : `${Math.floor(ageMin/1440)}d ago`;
+      // Defense-in-depth: don't trust the registry endpoint to return canonical hex.
+      // Validate before rendering into innerHTML; treat anything else as suspect.
+      const safeAssetId = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
+      const safeEtchTxid = /^[0-9a-f]{64}$/.test(a.etch_txid || '') ? a.etch_txid : '';
+      const safeDecimals = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+      const safeHeight = Number.isInteger(a.etched_at_height) ? a.etched_at_height : null;
+      card.innerHTML = `
+        <div class="head" style="display:flex;align-items:center;gap:12px;">
+          ${avatar}
+          <div style="flex:1;min-width:0;">
+            <div class="ticker" style="font-size:24px;">${escapeHtml(a.ticker)}<span class="id-tag">${escapeHtml(shorten(safeAssetId, 4))}</span></div>
+            <div class="muted" style="font-size:11px;">decimals ${safeDecimals} · etched ${ageStr} · block ${safeHeight ?? '—'}</div>
+          </div>
+        </div>
+        ${extras?.description ? `<div class="muted" style="margin-top:8px;font-size:11px;font-style:italic;">${escapeHtml(extras.description)}</div>` : ''}
+        ${extras?.external_url ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(extras.external_url)}" target="_blank" rel="noopener">${escapeHtml(extras.external_url)} ↗</a></div>` : ''}
+        <div class="meta">
+          <div><span class="lbl">Asset ID</span> <span class="mono-box inline">${escapeHtml(safeAssetId)}</span></div>
+          <div><span class="lbl">Etch tx</span> ${safeEtchTxid ? `<a href="${NET.explorer}/tx/${escapeHtml(safeEtchTxid)}" target="_blank">${escapeHtml(shorten(safeEtchTxid, 8))} ↗</a>` : '—'}</div>
+        </div>`;
+      list.appendChild(card);
+    }
+  } catch (e) {
+    list.innerHTML = `<div class="error">Discovery failed: ${escapeHtml(e.message)}</div>`;
+    console.error(e);
+  }
+}
+
+function setupHoldingsButtons() {
+  $('#btn-rescan').onclick = renderHoldings;
+  $('#btn-import-share').onclick = async () => {
+    const link = prompt('Paste a share-link (URL with #recv=…):');
+    if (!link) return;
+    try {
+      const data = await importShareLink(link);
+      toast(`Imported ${fmtAssetAmount(data.amount, data.decimals)} ${data.ticker}`, 'success');
+      renderHoldings();
+    } catch (e) {
+      toast('Import failed: ' + e.message, 'error');
+      console.error(e);
+    }
+  };
+  const discoverBtn = $('#btn-discover');
+  if (!REGISTRY_URL) { discoverBtn.disabled = true; discoverBtn.title = 'discovery disabled (no Worker)'; }
+  discoverBtn.onclick = renderDiscover;
+}
+
+async function autoImportShareLink() {
+  if (!location.hash.includes('recv=')) return;
+  try {
+    const data = await importShareLink(location.hash);
+    toast(`Imported ${fmtAssetAmount(data.amount, data.decimals)} ${data.ticker} from URL`, 'success');
+    history.replaceState(null, '', location.pathname + location.search);
+  } catch (e) {
+    toast('Auto-import failed: ' + e.message, 'error');
+    console.error('auto-import failed:', e);
+  }
+}
+
+// ============== INIT ==============
+async function init() {
+  if (location.protocol === 'file:') {
+    const w = document.getElementById('file-protocol-warning');
+    if (w) w.style.display = 'block';
+  }
+  wallet.load();
+  setupTabs();
+  setupWalletButtons();
+  setupEtchForm();
+  setupTransferForm();
+  setupHoldingsButtons();
+  await refreshWallet();
+  await autoImportShareLink();
+}
+init().catch(e => { toast('Init error: ' + e.message, 'error'); console.error(e); });
+
+</script>
+</body>
+</html>

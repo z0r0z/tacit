@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Node / Wrangler
+node_modules/
+.wrangler/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local env (secrets live in `wrangler secret`, never in repo)
+.env
+.env.local
+.dev.vars

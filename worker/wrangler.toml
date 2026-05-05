@@ -1,0 +1,38 @@
+name = "tacit-pin"
+main = "src/index.js"
+compatibility_date = "2024-12-01"
+
+# UPLOAD_KV — per-IP rate limits for /pin uploads
+[[kv_namespaces]]
+binding = "UPLOAD_KV"
+id = "03383c435594414f88b9799be252adf7"
+
+# REGISTRY_KV — asset directory entries + faucet rate-limit counters
+[[kv_namespaces]]
+binding = "REGISTRY_KV"
+id = "0079941fcc274de191d6b69a67f0ba72"
+
+# Cron: scan signet for new tacit etches every 5 minutes
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+# CORS allowlist (comma-separated). "*" allows any origin.
+# Add your dev origin(s) here. `null` covers file:// loads. localhost ports as needed.
+ALLOWED_ORIGINS = "https://tacit.wei.is,http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000,null"
+
+# Per-IP /pin uploads per UTC day
+DAILY_LIMIT = "20"
+
+# Per-file size cap for /pin (bytes)
+MAX_BYTES = "2097152"
+
+# Faucet drip amount (sats per request)
+DRIP_SATS = "20000"
+
+# Bitcoin signet API base URL
+SIGNET_API = "https://mempool.space/signet/api"
+
+# Faucet rate limits per UTC day
+FAUCET_IP_LIMIT = "1"
+FAUCET_ADDR_LIMIT = "1"
