@@ -12,7 +12,7 @@ id = "03383c435594414f88b9799be252adf7"
 binding = "REGISTRY_KV"
 id = "0079941fcc274de191d6b69a67f0ba72"
 
-# Cron: scan signet for new tacit etches every 5 minutes
+# Cron: scan signet AND mainnet for new tacit etches every 5 minutes
 [triggers]
 crons = ["*/5 * * * *"]
 
@@ -32,6 +32,17 @@ DRIP_SATS = "20000"
 
 # Bitcoin signet API base URL
 SIGNET_API = "https://mempool.space/signet/api"
+
+# Bitcoin mainnet API base URL (Discover indexer scans both networks)
+MAINNET_API = "https://mempool.space/api"
+
+# Cron blocks-per-tick. Signet blocks are near-empty so we can scan many per
+# tick; mainnet blocks have ~3000 txs each (paginated 25/page on mempool.space)
+# so a single block burns ~120 subrequests. Keep mainnet small to fit Worker
+# subrequest budgets; the /assets/hint endpoint covers user-broadcast etches
+# instantly regardless.
+SCAN_BLOCKS_SIGNET = "5"
+SCAN_BLOCKS_MAINNET = "1"
 
 # Faucet rate limits per UTC day
 FAUCET_IP_LIMIT = "1"

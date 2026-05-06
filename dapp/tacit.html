@@ -1,0 +1,1561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!--
+  Content-Security-Policy. The audit-load-bearing line is `script-src 'self'`
+  — no 'unsafe-inline', no third-party origins. Inline scripts and inline
+  event-handler attributes (onerror=, onclick=, …) are blocked, so the only
+  JS that can run in the same realm as the in-page tacit privkey is what's
+  served from this same origin (./tacit.js + ./vendor/tacit-deps.min.js).
+  An IPFS pin of the dapp/ directory ties those bytes to the CID.
+  connect-src lists the only network endpoints the dApp fetches at runtime
+  (mempool.space REST, the specific conveniences worker URL, the IPFS
+  gateway). img-src is tight: 'self' + the IPFS gateway only — no arbitrary
+  https, since direct https:// image URIs in CETCH envelopes would be
+  IP-correlation beacons for asset viewers (the renderer enforces this at
+  normalizeImageUri too). style-src/font-src cover Google Fonts;
+  object-src 'none' and base-uri 'self' are defense-in-depth.
+
+  `frame-ancestors` is intentionally absent here — browsers ignore that
+  directive when delivered via <meta>. It's set as an HTTP header by the
+  static host instead; see ./_headers for the Cloudflare Pages / Netlify
+  config that adds frame-ancestors 'self' (clickjacking defense).
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://mempool.space https://blockstream.info https://tacit-pin.rosscampbell9.workers.dev https://content.wrappr.wtf; img-src 'self' data: https://content.wrappr.wtf; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<title>tacit</title>
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #f4efe6;
+  --bg-alt: #ebe3d4;
+  --bg-warm: #fff8eb;
+  --ink: #0a0a0a;
+  --ink-mid: #555;
+  --ink-faint: #999;
+  --orange: #f7931a;
+  --green: #2e7d32;
+  --red: #c62828;
+  --purple: #6a1b9a;
+  --mono: 'IBM Plex Mono', ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--bg); color: var(--ink); }
+body {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 13px; line-height: 1.55; letter-spacing: -0.01em;
+  padding: 24px; max-width: 1100px; margin: 0 auto;
+  background-image: radial-gradient(rgba(0,0,0,0.025) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+header {
+  border-bottom: 2px solid var(--ink);
+  padding-bottom: 16px; margin-bottom: 32px;
+  display: grid; grid-template-columns: auto 1fr auto;
+  align-items: end; gap: 24px;
+}
+.logo {
+  font-family: 'Instrument Serif', serif;
+  font-size: 60px; font-style: italic;
+  line-height: 0.85; letter-spacing: -0.03em;
+}
+.logo .dot { color: var(--orange); }
+.tagline {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); border-left: 1px solid var(--ink); padding-left: 12px;
+}
+.tagline em { color: var(--orange); font-style: normal; }
+.net-badge {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em;
+  font-weight: 700; padding: 6px 12px;
+  border: 1px solid var(--ink); background: var(--ink); color: var(--bg);
+}
+.net-select {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em;
+  font-weight: 700; padding: 6px 28px 6px 12px;
+  border: 1px solid var(--ink); background: var(--ink); color: var(--bg);
+  appearance: none; cursor: pointer; width: auto;
+  background-image: linear-gradient(45deg, transparent 50%, var(--bg) 50%),
+                    linear-gradient(135deg, var(--bg) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.net-select:focus { outline: 2px solid var(--orange); outline-offset: 2px; }
+.net-select option { background: var(--ink); color: var(--bg); }
+.net-select:disabled { opacity: 0.65; cursor: not-allowed; }
+.net-control { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.net-lock-hint {
+  font-size: 9px; letter-spacing: 0.05em; text-transform: none;
+  color: var(--ink-mid); text-align: right;
+  max-width: 220px;
+}
+.net-lock-hint a { color: var(--ink); }
+.net-lock-hint a:hover { color: var(--orange); }
+
+.section {
+  border: 1px solid var(--ink);
+  margin-bottom: 24px; background: var(--bg);
+}
+.section-header {
+  border-bottom: 1px solid var(--ink); padding: 8px 16px;
+  background: var(--ink); color: var(--bg);
+  font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase;
+  display: flex; justify-content: space-between; align-items: center;
+  font-weight: 500;
+}
+.section-body { padding: 20px; }
+
+.kv { display: grid; grid-template-columns: 130px 1fr; gap: 10px 16px; }
+.kv dt {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); padding-top: 3px;
+}
+.kv dd { font-size: 12px; word-break: break-all; min-width: 0; }
+
+.mono-box {
+  background: var(--bg-alt); border: 1px dashed var(--ink);
+  padding: 8px 12px; font-size: 11px;
+  word-break: break-all; user-select: all; cursor: text;
+}
+.mono-box.inline { padding: 2px 6px; display: inline-block; font-size: 10px; }
+
+button, .btn {
+  font-family: inherit; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  padding: 8px 14px; border: 1px solid var(--ink);
+  background: var(--bg); cursor: pointer;
+  transition: all 0.08s; font-weight: 500;
+  text-decoration: none; color: var(--ink);
+  display: inline-block; white-space: nowrap;
+}
+button:hover, .btn:hover { background: var(--ink); color: var(--bg); }
+button:disabled { opacity: 0.35; cursor: not-allowed; }
+button:disabled:hover { background: var(--bg); color: var(--ink); }
+button.primary {
+  background: var(--orange); border-color: var(--orange);
+  color: var(--ink); font-weight: 600;
+}
+button.primary:hover {
+  background: var(--ink); color: var(--orange); border-color: var(--ink);
+}
+button.danger:hover { background: var(--red); color: #fff; border-color: var(--red); }
+
+/* Compact copy buttons next to mono-box address/pubkey rows. Visually
+   secondary to primary actions; click → navigator.clipboard + toast. */
+.btn-copy {
+  font-size: 9px; padding: 4px 8px; letter-spacing: 0.1em;
+  flex-shrink: 0; align-self: stretch;
+}
+
+input, textarea, select {
+  font-family: inherit; font-size: 12px; padding: 9px 10px;
+  border: 1px solid var(--ink); background: var(--bg);
+  color: var(--ink); width: 100%;
+}
+input:focus, textarea:focus { outline: 2px solid var(--orange); outline-offset: -1px; }
+
+label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); display: block;
+  margin-bottom: 5px; margin-top: 14px; font-weight: 500;
+}
+
+/* Checkbox row: a label that wraps an <input type="checkbox"> + descriptive
+   text. Resets the parent label's tracked-uppercase styling so the long
+   description reads as normal sentence-case prose. */
+.checkbox-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin-top: 12px; padding: 10px 12px;
+  background: var(--bg-alt);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-transform: none; letter-spacing: 0;
+  font-weight: normal; color: var(--ink);
+  transition: border-color 0.1s, background 0.1s;
+}
+.checkbox-row:hover { border-color: var(--ink-faint); }
+.checkbox-row:has(input:checked) {
+  background: var(--bg-warm);
+  border-color: var(--orange);
+}
+.checkbox-row input[type="checkbox"] {
+  flex-shrink: 0; margin-top: 2px;
+  width: 16px; height: 16px;
+  accent-color: var(--orange);
+  cursor: pointer;
+}
+.checkbox-row .cbx-body {
+  font-size: 12px; line-height: 1.5;
+  text-transform: none; letter-spacing: normal;
+}
+.checkbox-row .cbx-body strong { font-weight: 600; }
+.checkbox-row .cbx-body code {
+  font-size: 11px; padding: 1px 4px;
+  background: var(--bg); border: 1px solid var(--ink-faint);
+}
+
+/* Preset chips: small toggle group used for decimals presets on the etch
+   form. Each chip stacks the numeric value over a tiny hint label. */
+.preset-chips {
+  display: flex; gap: 4px; flex-wrap: wrap;
+}
+.preset-chip {
+  flex: 1; min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--ink); background: var(--bg);
+  font-family: inherit; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 1px; line-height: 1;
+  text-transform: none; letter-spacing: 0;
+  transition: background 0.08s, color 0.08s;
+}
+.preset-chip:hover { background: var(--ink); color: var(--bg); }
+.preset-chip.active {
+  background: var(--orange); color: var(--ink);
+  border-color: var(--orange); font-weight: 600;
+}
+.preset-chip .num {
+  font-family: 'Instrument Serif', serif;
+  font-size: 16px; font-style: italic;
+}
+.preset-chip .hint {
+  font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--ink-mid);
+}
+.preset-chip.active .hint { color: var(--ink); }
+.preset-chip:hover .hint { color: var(--bg); }
+.preset-chip.active:hover .hint { color: var(--ink); }
+
+/* Live "what you'll end up with" preview shown beneath the supply input.
+   Reads as a single-line summary of base units, smallest divisible unit,
+   and any cap warnings. */
+.live-preview {
+  margin-top: 6px; padding: 8px 10px;
+  background: var(--bg-warm);
+  border-left: 3px solid var(--orange);
+  font-size: 11px; line-height: 1.5;
+  color: var(--ink);
+  min-height: 28px;
+  display: none;
+}
+.live-preview.show { display: block; }
+.live-preview.error { border-left-color: var(--red); color: var(--red); }
+.live-preview .lbl {
+  font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.08em; color: var(--ink-mid);
+  margin-right: 4px;
+}
+.live-preview code {
+  font-family: var(--mono); font-size: 10px;
+}
+
+.form-row { display: grid; gap: 16px; }
+.form-row.two { grid-template-columns: 1fr 1fr; }
+.form-row.three { grid-template-columns: 1fr 1fr 1fr; }
+
+.tabs {
+  display: flex; border-bottom: 2px solid var(--ink);
+  margin-bottom: 24px; overflow-x: auto;
+}
+.tab {
+  padding: 12px 22px; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.15em;
+  cursor: pointer; border: none; background: transparent;
+  border-bottom: 2px solid transparent; margin-bottom: -2px;
+  color: var(--ink-mid); font-weight: 500; white-space: nowrap;
+  transition: background 0.08s, color 0.08s;
+}
+.tab.active { color: var(--ink); border-bottom-color: var(--orange); font-weight: 700; }
+.tab:hover:not(.active) { background: var(--ink); color: var(--bg); }
+
+.tab-panel { display: none; }
+.tab-panel.active { display: block; animation: fadein 0.2s; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+.script-decode {
+  display: grid;
+  grid-template-columns: minmax(110px, auto) minmax(170px, auto) 1fr;
+  gap: 4px 18px; font-size: 11px;
+  background: var(--bg-warm);
+  padding: 14px; border: 1px dashed var(--ink);
+  overflow-x: auto;
+}
+.script-decode .hex { color: var(--ink-mid); font-weight: 300; white-space: nowrap; }
+.script-decode .op { color: var(--orange); font-weight: 700; white-space: nowrap; }
+.script-decode .desc { color: var(--ink-mid); font-style: italic; }
+
+.asset-card {
+  border: 1px solid var(--ink);
+  padding: 18px; margin-bottom: 14px;
+  background: var(--bg);
+}
+.asset-card .head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  gap: 16px; margin-bottom: 12px;
+  border-bottom: 1px solid var(--ink); padding-bottom: 10px;
+}
+.asset-card .ticker {
+  font-family: 'Instrument Serif', serif;
+  font-size: 36px; font-style: italic; line-height: 1;
+  color: var(--ink);
+}
+.asset-card .ticker .id-tag {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px; font-style: normal;
+  color: var(--ink-mid); letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-left: 8px;
+}
+/* Secondary ticker tag — surfaces the on-chain identifier when the primary
+   "ticker" slot is being used for the human-readable Name. */
+.asset-card .ticker .ticker-sub {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px; font-style: normal; font-weight: 600;
+  color: var(--orange);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+.asset-card .balance {
+  font-family: 'Instrument Serif', serif;
+  font-size: 32px; font-style: italic; line-height: 1;
+  text-align: right;
+}
+.asset-card .balance .unit {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--ink-mid); font-style: normal; display: block;
+}
+.asset-card .meta {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 6px 16px; font-size: 11px; color: var(--ink-mid);
+}
+.asset-card .meta .lbl {
+  text-transform: uppercase; letter-spacing: 0.05em;
+  font-size: 9px; display: inline-block; min-width: 60px; color: var(--ink-mid);
+}
+.asset-card .actions {
+  margin-top: 14px;
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
+.asset-card .actions-group {
+  margin-top: 10px;
+  border-top: 1px dashed var(--ink-faint);
+  padding-top: 10px;
+}
+.asset-card .actions-group > summary {
+  cursor: pointer; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--ink-mid); padding: 4px 0;
+  list-style: none;
+}
+.asset-card .actions-group > summary::-webkit-details-marker { display: none; }
+.asset-card .actions-group[open] > summary { color: var(--ink); }
+.asset-card .actions-group > summary > .arrow {
+  display: inline-block; transition: transform 0.1s; margin-right: 4px;
+}
+.asset-card .actions-group[open] > summary > .arrow { transform: rotate(90deg); }
+.asset-card .actions-group > .group-body {
+  margin-top: 8px;
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.asset-card .actions-group .group-blurb {
+  font-size: 10px; color: var(--ink-mid);
+  margin-bottom: 6px; line-height: 1.5;
+  flex-basis: 100%;
+}
+.inline-form {
+  width: 100%; margin-top: 8px;
+  background: var(--bg-warm); border: 1px dashed var(--ink-faint);
+  padding: 12px;
+}
+.inline-form label { margin-top: 8px; }
+.inline-form label:first-child { margin-top: 0; }
+.inline-form .form-buttons {
+  margin-top: 12px; display: flex; gap: 6px; flex-wrap: wrap;
+}
+.inline-form-host {
+  /* Inserted as next-sibling of a trigger button. Take a full row so it
+     wraps cleanly inside a flex group-body and isn't squeezed beside the
+     remaining buttons. */
+  flex-basis: 100%; width: 100%; min-width: 0;
+}
+.asset-card .id-tag {
+  cursor: pointer;
+  border-bottom: 1px dotted var(--ink-faint);
+}
+.asset-card .id-tag:hover { color: var(--orange); }
+.short-id-row {
+  font-size: 11px; word-break: break-all;
+}
+.short-id-row .full {
+  display: none; user-select: all;
+}
+.short-id-row.expanded .short { display: none; }
+.short-id-row.expanded .full { display: inline; }
+.short-id-row .toggle {
+  font-size: 9px; color: var(--ink-mid);
+  text-transform: uppercase; letter-spacing: 0.1em;
+  cursor: pointer; margin-left: 6px;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.short-id-row .toggle:hover { color: var(--orange); }
+
+.alloc-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px; align-items: end;
+  margin-bottom: 10px;
+  padding: 10px; border: 1px dashed var(--ink-mid);
+  background: var(--bg-warm);
+}
+.alloc-row label { margin-top: 0; }
+
+.batch-summary {
+  background: var(--bg-warm);
+  border: 1px solid var(--ink);
+  padding: 12px 14px;
+  margin: 14px 0;
+  font-size: 11px;
+}
+.batch-summary strong { color: var(--orange); }
+
+.tx-preview {
+  margin-top: 14px;
+  font-size: 11px;
+  background: var(--bg-warm);
+  border: 1px dashed var(--ink);
+  padding: 14px;
+}
+.tx-preview h4 {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.12em;
+  margin-bottom: 8px; color: var(--ink-mid);
+}
+.tx-preview .row {
+  font-family: monospace; font-size: 11px;
+  padding: 3px 0; border-bottom: 1px dotted var(--ink-faint);
+}
+.tx-preview .row:last-child { border-bottom: none; }
+.tx-preview .row .idx {
+  display: inline-block; min-width: 30px; color: var(--orange); font-weight: 600;
+}
+.tx-preview .row .label {
+  display: inline-block; min-width: 100px; color: var(--ink-mid);
+}
+
+.opreturn-decode {
+  background: var(--orange);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  padding: 10px 14px;
+  margin-top: 8px;
+  box-shadow: 3px 3px 0 var(--ink);
+  font-size: 11px;
+}
+.opreturn-decode .head {
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em;
+  font-size: 10px; margin-bottom: 6px;
+}
+.opreturn-decode .data { font-family: monospace; font-size: 10px; word-break: break-all; }
+
+.status-pill {
+  display: inline-block; padding: 2px 8px;
+  font-size: 10px; letter-spacing: 0.1em;
+  text-transform: uppercase; border: 1px solid var(--ink);
+  font-weight: 600;
+}
+.status-pill.confirmed { background: var(--green); color: #fff; border-color: var(--green); }
+.status-pill.pending { background: var(--bg-warm); color: var(--ink); }
+.status-pill.etch { background: var(--purple); color: #fff; border-color: var(--purple); }
+
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  padding: 14px 22px; background: var(--ink); color: var(--bg);
+  font-size: 12px; border-left: 4px solid var(--orange);
+  max-width: 420px; z-index: 100;
+  animation: slidein 0.2s ease-out; word-break: break-word;
+  box-shadow: 4px 4px 0 var(--orange);
+}
+.toast.error { border-left-color: var(--red); box-shadow: 4px 4px 0 var(--red); }
+.toast.success { border-left-color: var(--green); box-shadow: 4px 4px 0 var(--green); }
+@keyframes slidein { from { transform: translateX(110%); } to { transform: translateX(0); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+/* Shared loading skeleton — used by Discover, Holdings, and the recently-etched
+   tile grid so all three render the same "ghost rows shimmering" placeholder
+   while data fetches. Each .skeleton element renders three faint stacked
+   bars; the shimmer is a moving gradient so the eye reads the page as
+   "loading" rather than "broken". */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+.skeleton {
+  border: 1px dashed var(--ink-faint);
+  background: var(--bg-alt);
+  padding: 16px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.skeleton-row {
+  height: 14px;
+  background: linear-gradient(90deg,
+    var(--bg-alt) 0%,
+    var(--bg) 40%,
+    var(--bg-alt) 80%);
+  background-size: 200px 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+.skeleton-row.short { width: 40%; }
+.skeleton-row.medium { width: 70%; }
+.skeleton.compact { padding: 10px; gap: 6px; }
+.skeleton.compact .skeleton-row { height: 10px; }
+
+/* Brief flash applied to a scrolled-into-view card when it's the deep-link
+   target of a Recent-etches tile click. ~1.8s of orange ring tells the user
+   "this is the asset you came for." */
+@keyframes highlight-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(247, 147, 26, 0.55); background: var(--bg-warm); }
+  60%  { box-shadow: 0 0 0 8px rgba(247, 147, 26, 0);    background: var(--bg-warm); }
+  100% { box-shadow: 0 0 0 0 rgba(247, 147, 26, 0);      background: var(--bg); }
+}
+.asset-card.highlight-pulse {
+  animation: highlight-pulse 1.8s ease-out;
+  border-color: var(--orange);
+}
+
+.empty {
+  padding: 36px; text-align: center; color: var(--ink-mid);
+  font-style: italic; font-family: 'Instrument Serif', serif;
+  font-size: 18px; border: 1px dashed var(--ink);
+}
+
+.recent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+.recent-tile {
+  border: 1px solid var(--ink);
+  background: var(--bg);
+  padding: 10px 12px;
+  display: flex; align-items: center; gap: 10px;
+  text-decoration: none; color: var(--ink);
+  transition: background 0.08s, color 0.08s;
+  min-width: 0;
+}
+.recent-tile:hover { background: var(--ink); color: var(--bg); }
+.recent-tile:hover .recent-tile-meta { color: var(--bg); }
+.recent-tile img {
+  width: 32px; height: 32px;
+  border: 1px solid currentColor;
+  object-fit: cover; background: #fff;
+  flex-shrink: 0;
+}
+.recent-tile-body { min-width: 0; flex: 1; }
+.recent-tile-ticker {
+  font-family: 'Instrument Serif', serif;
+  font-size: 18px; font-style: italic; line-height: 1.1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.recent-tile-meta {
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--ink-mid); margin-top: 2px;
+}
+
+.flex { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.muted { color: var(--ink-mid); font-size: 11px; }
+.warn {
+  background: var(--bg-warm); border-left: 4px solid var(--orange);
+  padding: 10px 14px; font-size: 11px; margin: 12px 0;
+}
+.error { color: var(--red); font-size: 11px; margin: 6px 0; }
+
+a { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
+a:hover { color: var(--orange); }
+
+.amount {
+  font-family: 'Instrument Serif', serif;
+  font-size: 36px; font-style: italic; line-height: 1;
+}
+.amount .unit {
+  font-family: 'IBM Plex Mono', monospace; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.12em;
+  color: var(--ink-mid); margin-left: 4px; font-style: normal;
+}
+
+.hero {
+  border: 1px solid var(--ink);
+  background: var(--bg);
+  padding: 18px 20px;
+  margin-bottom: 24px;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 20px;
+  position: relative;
+}
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 32px;
+  left: 50px;
+  right: 50px;
+  border-top: 1px dashed var(--ink-mid);
+  z-index: 0;
+}
+.hero-step { position: relative; z-index: 1; }
+.hero-close {
+  position: absolute; top: 6px; right: 6px;
+  width: 22px; height: 22px;
+  padding: 0; line-height: 1;
+  border: 1px solid transparent;
+  background: transparent;
+  font-family: inherit; font-size: 16px;
+  color: var(--ink-faint);
+  cursor: pointer;
+  text-transform: none; letter-spacing: 0;
+  transition: color 0.08s, border-color 0.08s, background 0.08s;
+  z-index: 2;
+}
+.hero-close:hover {
+  color: var(--ink); border-color: var(--ink);
+  background: var(--bg);
+}
+.hero-num {
+  background: var(--orange);
+  color: var(--ink);
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: 'Instrument Serif', serif;
+  font-style: italic; font-size: 18px; font-weight: 700;
+  margin-bottom: 10px;
+}
+.hero-title {
+  font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  margin-bottom: 4px;
+}
+.hero-text {
+  font-size: 11px; color: var(--ink-mid); line-height: 1.5;
+}
+
+footer {
+  margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--ink);
+  font-size: 10px; color: var(--ink-mid);
+  display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+
+@media (max-width: 700px) {
+  body { padding: 14px; font-size: 13px; }
+  /* Two-column header at tablet widths: logo on the left, network selector
+     on the right; tagline drops to a full-width row below. */
+  header { grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+  .logo { font-size: 42px; }
+  .tagline { grid-column: 1 / -1; border-left: none; padding-left: 0; padding-top: 6px; border-top: 1px dashed var(--ink-faint); }
+  .net-control { align-items: flex-end; }
+  .form-row.two, .form-row.three { grid-template-columns: 1fr; }
+  .kv { grid-template-columns: 1fr; gap: 4px 0; }
+  .kv dd { margin-bottom: 8px; }
+  .alloc-row { grid-template-columns: 1fr; }
+  .hero { grid-template-columns: 1fr; gap: 14px; padding: 14px 14px 18px; }
+  .hero::before { display: none; }
+  /* Compact tabs at narrow widths: shrink horizontal padding and tighten
+     letter-spacing so all 6 fit without horizontal scroll. The tab labels
+     stay short enough at this size to read cleanly. */
+  .tab { padding: 10px 10px; letter-spacing: 0.08em; font-size: 10px; }
+  /* Reclaim horizontal space inside cards/sections — desktop's 20-24px
+     gutters are wasteful on a 360-700px viewport. */
+  .section-body { padding: 14px; }
+  .asset-card { padding: 14px; }
+  .asset-card .head { gap: 10px; }
+  .asset-card .ticker { font-size: 28px; }
+  .asset-card .balance { font-size: 24px; }
+  .asset-card .meta { grid-template-columns: 1fr; gap: 6px 0; }
+  /* Toast: span most of the viewport instead of a tiny bottom-right pill,
+     so the user can read it without squinting at a phone corner. */
+  .toast { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+  /* Hero close: bigger hit area for thumbs while keeping the visual size. */
+  .hero-close { width: 36px; height: 36px; font-size: 20px; }
+  /* Etch preset chips: tighten the secondary "hint" line so 4 chips fit
+     comfortably on phones. */
+  .preset-chip .hint { font-size: 8px; }
+  /* Discover filter input: bump to 14px so iOS doesn't auto-zoom on focus. */
+  #discover-filter { font-size: 14px; }
+}
+@media (max-width: 480px) {
+  /* On phones, free up more space — drop letter-spacing entirely and pull
+     padding tight. Six tabs fit a 360px viewport at this density. */
+  .tab { padding: 10px 7px; letter-spacing: 0.04em; font-size: 10px; }
+  body { padding: 10px; }
+  .section-body { padding: 12px; }
+  .asset-card { padding: 12px; }
+  .asset-card .ticker { font-size: 24px; }
+  .asset-card .balance { font-size: 20px; }
+  /* Primary action rows on holdings cards become full-width buttons; phones
+     can't fit "Send privately + Receive + Mint more" on one line. */
+  .asset-card .actions { flex-direction: column; align-items: stretch; }
+  .asset-card .actions > button { width: 100%; }
+  .asset-card .actions-group .group-body > button { flex: 1 1 100%; }
+  /* Hero step text needs more breathing room on tiny widths. */
+  .hero-text { font-size: 12px; }
+  .hero-num { width: 32px; height: 32px; font-size: 20px; }
+  /* Header logo a bit smaller still. */
+  .logo { font-size: 36px; }
+  /* Footer text wraps cleaner with tighter spacing. */
+  footer { font-size: 9px; gap: 6px; }
+}
+
+/* Touch-device specific tweaks. Independent of viewport width because some
+   tablets are wide but touch-only. Two changes that genuinely matter:
+   1) iOS Safari auto-zooms inputs whose font-size < 16px on focus. Bumping
+      to 16px stops the jarring zoom-and-pan. Visual size stays tight via
+      padding, not font-size.
+   2) Buttons get a 40px minimum height so taps don't miss tiny targets
+      (Apple HIG recommends 44px; 40 keeps the editorial density). */
+@media (pointer: coarse) {
+  input, select, textarea { font-size: 16px; }
+  .inline-form input, .inline-form select, .inline-form textarea { font-size: 16px; }
+  button, .btn { min-height: 40px; }
+  /* Tabs are width-constrained, not height-constrained — keep them compact
+     so the row doesn't blow up vertically. */
+  .tabs .tab { min-height: 0; }
+  /* The tiny per-listing/per-row inline buttons (Cancel listing, Copy pubkey,
+     etc.) intentionally stay small — they're not primary CTAs. */
+  button[style*="padding:2px 8px"], button[style*="padding:2px"] { min-height: 0; }
+  /* Tab pane animation can feel laggy on slow phones; remove the fade. */
+  .tab-panel.active { animation: none; }
+}
+
+/* Hide the browser's default <details>/<summary> disclosure triangle so the
+   manual "▸" we render in the summary text doesn't double up. */
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline-block; }
+
+/* Discover filter pills. Single-selection toggle group sitting under the
+   text-search input — pill picks the predicate, search narrows by string,
+   and the two combine with AND. "All" exists so users can clear the predicate
+   without clicking the same pill twice. */
+.filter-pill {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  padding: 6px 12px;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  cursor: pointer;
+  text-transform: uppercase;
+}
+.filter-pill:hover { background: var(--bg-alt); }
+.filter-pill.active { background: var(--ink); color: var(--bg); }
+@media (max-width: 480px) {
+  .filter-pill { font-size: 9px; padding: 5px 10px; }
+}
+
+/* Outstanding atomic-offer rows in the Holdings tab. Three stacked lines:
+   status + asset + price · meta · actions. Status word is colored by state;
+   monospace amount; small action buttons. */
+.offer-row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--bg-alt);
+}
+.offer-row:last-child { border-bottom: 0; }
+.offer-line {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.offer-status {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  display: inline-block;
+  white-space: nowrap;
+}
+.offer-asset { font-family: var(--mono); font-size: 12px; }
+.offer-price { font-family: var(--mono); font-size: 11px; }
+.offer-line + .offer-line { margin-top: 4px; }
+
+/* Activity log rows in the Holdings tab. Plain table-ish layout, monospace
+   amounts, four columns: kind verb, amount + ticker, relative time, tx link.
+   Color-coded kind tags so etch / receive / mint stand out from send / burn. */
+.activity-row {
+  display: grid;
+  grid-template-columns: 90px 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--bg-alt);
+  font-size: 12px;
+}
+.activity-row:last-child { border-bottom: 0; }
+.activity-kind {
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 3px 7px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  display: inline-block;
+  text-align: center;
+  white-space: nowrap;
+}
+.activity-etch         { color: var(--orange); }
+.activity-mint         { color: var(--orange); }
+.activity-transfer-in  { color: var(--green); }
+.activity-transfer-out { color: var(--ink); }
+.activity-burn         { color: var(--red); }
+.activity-list-atomic  { color: var(--purple); }
+.activity-amount {
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.activity-time { font-size: 11px; }
+.activity-tx { font-size: 10px; }
+@media (max-width: 480px) {
+  .activity-row {
+    grid-template-columns: 70px 1fr;
+    grid-auto-rows: auto;
+    gap: 4px 10px;
+  }
+  .activity-time, .activity-tx { grid-column: 2; font-size: 10px; }
+}
+
+/* First-load welcome modal — shown only when this network has no burner key
+   AND no remembered ext-wallet mode. Forces a deliberate choice (connect
+   external vs. generate local) before init() falls into the passphrase prompt,
+   so users aren't ambushed by a password dialog with no context. */
+.welcome-modal {
+  position: fixed; inset: 0; z-index: 1000;
+  display: grid; place-items: center;
+  background: rgba(10, 10, 10, 0.55);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  padding: 24px;
+}
+.welcome-card {
+  width: 100%; max-width: 520px;
+  background: var(--bg); border: 1px solid var(--ink);
+  padding: 28px 28px 22px;
+}
+.welcome-title {
+  font-family: 'Instrument Serif', serif;
+  font-size: 40px; font-style: italic;
+  line-height: 0.9; letter-spacing: -0.02em;
+  margin-bottom: 14px;
+}
+.welcome-title .accent { color: var(--orange); }
+.welcome-lede {
+  font-size: 12px; line-height: 1.55;
+  color: var(--ink-mid); margin-bottom: 18px;
+}
+.welcome-lede strong { color: var(--ink); font-weight: 600; }
+.welcome-options { display: flex; flex-direction: column; gap: 8px; }
+.welcome-option {
+  display: flex; flex-direction: column; align-items: flex-start;
+  text-align: left; padding: 12px 14px;
+  border: 1px solid var(--ink); background: var(--bg);
+  cursor: pointer; gap: 4px;
+  font-family: inherit;
+  text-transform: none; letter-spacing: 0;
+  white-space: normal;
+  transition: background 0.08s, color 0.08s;
+}
+.welcome-option:hover:not(:disabled) {
+  background: var(--ink); color: var(--bg);
+}
+.welcome-option:hover:not(:disabled) .welcome-option-meta { color: var(--bg); }
+.welcome-option:disabled { opacity: 0.7; cursor: not-allowed; }
+.welcome-option:disabled .welcome-option-title::after {
+  content: ' · not installed';
+  color: var(--ink-faint); font-weight: 400; font-style: italic;
+}
+.welcome-option-title { font-size: 13px; font-weight: 500; }
+.welcome-option-meta {
+  font-size: 10px; color: var(--ink-mid);
+  text-transform: none; letter-spacing: 0;
+  line-height: 1.5;
+}
+.welcome-footer {
+  margin-top: 16px; padding-top: 14px;
+  border-top: 1px dashed var(--ink-faint);
+  font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); line-height: 1.55;
+}
+
+/* Passphrase modal — replaces native prompt() so Chrome's user-activation
+   heuristic can't silently suppress the dialog after a wallet-extension popup,
+   and so we can do inline char-count / match validation. Higher z-index than
+   the welcome modal because they can stack briefly during the new-wallet flow. */
+.pass-modal {
+  position: fixed; inset: 0; z-index: 1010;
+  display: grid; place-items: center;
+  background: rgba(10, 10, 10, 0.55);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  padding: 24px;
+}
+.pass-card {
+  width: 100%; max-width: 480px;
+  background: var(--bg); border: 1px solid var(--ink);
+  padding: 24px 24px 20px;
+}
+.pass-title {
+  font-family: 'Instrument Serif', serif;
+  font-size: 28px; font-style: italic;
+  line-height: 1; letter-spacing: -0.02em;
+  margin-bottom: 12px;
+}
+.pass-reason {
+  font-size: 11px; line-height: 1.55;
+  color: var(--ink-mid); margin-bottom: 16px;
+}
+.pass-field { margin-bottom: 12px; }
+.pass-field label {
+  display: block; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); margin-bottom: 4px;
+}
+.pass-field input {
+  width: 100%; font-family: var(--mono); font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--ink); background: var(--bg);
+  color: var(--ink);
+}
+.pass-field input:focus {
+  outline: 2px solid var(--orange); outline-offset: -1px;
+}
+.pass-hint {
+  font-size: 10px;
+  color: var(--ink-mid); margin-top: 4px; min-height: 14px;
+  letter-spacing: 0.02em;
+}
+.pass-hint.error { color: var(--red); }
+.pass-hint.ok { color: var(--green); }
+.pass-warn {
+  background: var(--bg-warm);
+  border-left: 4px solid var(--orange);
+  padding: 8px 12px; font-size: 10px;
+  margin: 14px 0 6px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+.pass-warn strong { font-weight: 600; }
+.pass-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+  margin-top: 14px;
+}
+</style>
+</head>
+<body>
+
+<div id="file-protocol-warning" style="display:none;background:#fee;border-bottom:2px solid var(--red);padding:10px 16px;font-size:12px;color:var(--red);text-align:center;">
+  <strong>⚠ Served from <code>file://</code></strong> — share-links generated here will contain a broken origin and won't open elsewhere.
+  Host the file on <code>localhost</code> or any static host (GitHub Pages, Cloudflare Pages, etc.) for a working demo.
+</div>
+
+<header>
+  <div class="logo">tacit</div>
+  <div class="tagline">
+    Confidential tokens<br>
+    indexer-validated on bitcoin<br>
+    <em>amounts hidden · downstream conservation checked · supply optionally attested</em>
+  </div>
+  <div class="net-control">
+    <select class="net-select" id="net-select" aria-label="Network">
+      <option value="mainnet">mainnet</option>
+      <option value="signet">signet</option>
+    </select>
+    <div id="net-lock-hint" class="net-lock-hint" style="display:none;">
+      Locked while wallet is connected · <a href="#" id="net-lock-disconnect">disconnect to switch</a>
+    </div>
+  </div>
+</header>
+
+<div id="mainnet-banner" style="display:none;position:relative;background:#fee;border:2px solid var(--red);padding:10px 36px 10px 16px;font-size:12px;color:var(--red);text-align:center;margin-bottom:16px;">
+  <button id="mainnet-banner-close" type="button" aria-label="Acknowledge and hide" title="Acknowledge and hide" style="position:absolute;top:6px;right:8px;background:transparent;border:1px solid transparent;color:var(--red);font-size:16px;line-height:1;width:22px;height:22px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
+  <strong>⚠ Mainnet — real BTC.</strong> Experimental software, no warranty. Do not put amounts at risk that you can't afford to lose.
+  <div id="mainnet-burner-backup-hint" style="margin-top:6px;font-size:11px;font-weight:normal;display:none;">
+    <strong>Your wallet key has not been backed up.</strong> Tacit will require an export-and-acknowledge step before your first asset operation.
+  </div>
+</div>
+
+<!--
+  Chain-divergence watchdog banner. Hidden by default; shown when the dApp
+  observes the primary and secondary Esplora endpoints disagreeing on tip
+  height by more than CHAIN_DIVERGE_TOLERANCE blocks. Read-only signal —
+  doesn't block transactions, since cryptographic checks already prevent
+  acceptance of fabricated data. Surfaces mempool.space outages, stale
+  tips, and infrastructure tampering at near-zero runtime cost.
+-->
+<div id="chain-divergence-banner" style="display:none;background:#fff8eb;border:2px solid #a04030;color:#a04030;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
+
+<div class="tabs">
+  <button class="tab active" data-tab="wallet">Wallet</button>
+  <button class="tab" data-tab="holdings">Holdings</button>
+  <button class="tab" data-tab="transfer">Send</button>
+  <button class="tab" data-tab="etch">Etch</button>
+  <button class="tab" data-tab="market">Market</button>
+  <button class="tab" data-tab="discover">Discover</button>
+  <button class="tab" data-tab="about">Protocol</button>
+</div>
+
+<!-- WALLET TAB -->
+<div class="tab-panel active" id="tab-wallet">
+  <div class="hero" id="hero-strip">
+    <button class="hero-close" id="hero-close" aria-label="Hide getting started" title="Hide getting started">×</button>
+    <div class="hero-step">
+      <div class="hero-num">1</div>
+      <div class="hero-title">Connect a wallet</div>
+      <div class="hero-text">Use your existing Xverse / UniSat / Leather (one click), import a privkey, or — on signet — let the dApp generate one and grab faucet sats.</div>
+    </div>
+    <div class="hero-step">
+      <div class="hero-num">2</div>
+      <div class="hero-title">Etch a confidential asset</div>
+      <div class="hero-text">Define ticker, supply, decimals. Supply is committed via Pedersen — only you know the amount. The chain sees a 33-byte commitment.</div>
+    </div>
+    <div class="hero-step">
+      <div class="hero-num">3</div>
+      <div class="hero-title">Transfer privately</div>
+      <div class="hero-text">Send to a recipient's pubkey. On-chain: only commitments. The recipient learns their amount via an ECDH-derived blinding embedded in a share-link.</div>
+    </div>
+  </div>
+  <div id="hero-show" style="display:none;text-align:right;margin-top:-16px;margin-bottom:16px;">
+    <a href="#" id="hero-show-link" class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;text-decoration:underline;text-underline-offset:2px;">↺ show getting started</a>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span>tacit.wallet</span>
+      <span style="display:flex;align-items:center;gap:10px;">
+        <span id="wallet-mode-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;"></span>
+        <span id="wallet-backup-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;"></span>
+        <span id="wallet-status" class="muted">loading…</span>
+      </span>
+    </div>
+    <div class="section-body">
+      <dl class="kv">
+        <dt>Address</dt>
+        <dd>
+          <div style="display:flex;align-items:flex-start;gap:6px;">
+            <div class="mono-box" id="w-address" style="flex:1;min-width:0;">—</div>
+            <button class="btn-copy" data-copy-target="w-address" title="Copy address" type="button">copy</button>
+          </div>
+          <a class="muted" id="explorer-link" target="_blank" rel="noopener noreferrer" style="font-size:10px;margin-top:4px;display:inline-block;">view on explorer ↗</a>
+        </dd>
+        <dt>Public key</dt>
+        <dd>
+          <div style="display:flex;align-items:flex-start;gap:6px;">
+            <div class="mono-box" id="w-pubkey" style="flex:1;min-width:0;">—</div>
+            <button class="btn-copy" data-copy-target="w-pubkey" title="Copy public key" type="button">copy</button>
+          </div>
+          <div class="muted" style="margin-top:4px;">share with senders so they can transfer assets to you</div>
+        </dd>
+        <dt>Balance</dt>
+        <dd><span class="amount" id="w-balance">—</span><span class="unit">sats</span></dd>
+        <dt>Block height</dt>
+        <dd id="w-height">—</dd>
+      </dl>
+
+      <!-- Primary actions row. Visibility is state-driven in renderWalletCard():
+           connect-buttons surface only when no ext wallet is bound; top-up shows
+           when an ext wallet is connected; faucet shows on signet only. -->
+      <div class="flex" style="margin-top:18px;gap:8px;flex-wrap:wrap;">
+        <button id="btn-refresh">↻ Refresh</button>
+        <button id="btn-drip" class="primary">⚡ Demo drip</button>
+        <button id="btn-ext-fund" class="primary" style="display:none;">Top up tacit</button>
+        <button id="btn-ext-connect-xverse" class="primary">Connect Xverse / Leather</button>
+        <button id="btn-ext-connect-unisat" class="primary">Connect UniSat</button>
+        <button id="btn-faucet">Manual faucet</button>
+      </div>
+
+      <!-- Collapsible wallet management. Default closed so the home view stays
+           focused on address + balance; connect/import/export live behind it. -->
+      <details style="margin-top:14px;">
+        <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Manage wallet</summary>
+        <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+
+          <div id="ext-wallet-connected-info" style="display:none;margin-bottom:14px;padding:10px 12px;background:var(--bg-alt);border:1px dashed var(--ink-faint);">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--ink-mid);margin-bottom:6px;">External wallet</div>
+            <dl class="kv" style="grid-template-columns:90px 1fr;">
+              <dt>Provider</dt><dd><span id="ext-wallet-provider" class="mono-box inline">—</span> · <span id="ext-wallet-network">—</span></dd>
+              <dt>Wallet addr</dt><dd><div class="mono-box" id="ext-wallet-address">—</div></dd>
+            </dl>
+            <button id="btn-ext-disconnect" style="margin-top:10px;">Disconnect</button>
+          </div>
+
+          <div class="flex" style="gap:8px;flex-wrap:wrap;">
+            <button id="btn-export" class="danger">Export key</button>
+            <button id="btn-import">Import key</button>
+            <button id="btn-regen" class="danger">New wallet</button>
+          </div>
+
+          <div class="muted" style="margin-top:10px;font-size:11px;line-height:1.6;">
+            Tacit needs an in-page privkey to do its confidential math (HMAC-derived blindings, kernel sigs, taproot script-path Schnorr) — primitives that external wallets don't expose. Whichever path placed the key here (auto, import, or locally bound to your Xverse / UniSat / Leather address), <strong>this is the key that controls your tacit assets</strong>. The external-wallet path stores a fresh tacit key locally per external address — clearing browser storage or switching devices loses it, so export and back it up before holding value.
+          </div>
+
+          <!-- Hidden status text retained for code-paths that update it; the badge
+               in the section header is the visible signal now. -->
+          <span id="ext-wallet-status" style="display:none;">not connected</span>
+          <!-- Legacy hooks: scripts may toggle these classes/IDs. Keep them
+               present so prior wiring continues to work without exceptions. -->
+          <span id="ext-wallet-disconnected" style="display:none;"></span>
+          <span id="ext-wallet-connected" style="display:none;"></span>
+          <span id="ext-tacit-address" style="display:none;"></span>
+        </div>
+      </details>
+
+      <div id="faucet-panel" style="display:none; margin-top:16px; border: 1px dashed var(--orange); background: var(--bg-warm); padding: 16px;">
+        <strong style="font-size:11px; text-transform:uppercase; letter-spacing:0.12em;">Faucet · address copied to clipboard</strong>
+        <div class="muted" style="font-size:11px; margin-top:6px;">Open a faucet, paste address, solve captcha:</div>
+        <div class="flex" style="margin-top:10px;">
+          <a class="btn" href="https://signetfaucet.com" target="_blank" rel="noopener noreferrer">signetfaucet.com</a>
+          <a class="btn" href="https://alt.signetfaucet.com" target="_blank" rel="noopener noreferrer">alt.signetfaucet.com</a>
+          <a class="btn" href="https://signet.bc-2.jp/" target="_blank" rel="noopener noreferrer">signet.bc-2.jp</a>
+        </div>
+      </div>
+
+      <div id="wallet-backup-warn" class="warn" style="margin-top:14px;display:none;">
+        <strong>⚠ Back up your key.</strong> Browser storage is the wallet — clearing it without a backup loses access to anything held under this address. Click <em>Manage wallet → Export key</em> above and save the hex somewhere safe.
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="recent-etches-section">
+    <div class="section-header">
+      <span>tacit.discover · recently etched</span>
+      <a href="#" id="recent-etches-all" class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--bg);">browse all ↗</a>
+    </div>
+    <div class="section-body">
+      <div id="recent-etches-list"><div class="skeleton compact"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row medium"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ETCH TAB -->
+<div class="tab-panel" id="tab-etch">
+  <div class="section">
+    <div class="section-header"><span>tacit.etch · define a new asset</span></div>
+    <div class="section-body">
+      <div class="form-row two">
+        <div>
+          <label>Ticker (1–8 chars, A–Z 0–9)</label>
+          <input id="e-ticker" placeholder="USDC" maxlength="8" autocomplete="off">
+        </div>
+        <div>
+          <label>Decimals</label>
+          <div class="preset-chips" id="e-decimals-presets">
+            <button type="button" class="preset-chip" data-decimals="0"><span class="num">0</span><span class="hint">whole</span></button>
+            <button type="button" class="preset-chip" data-decimals="2"><span class="num">2</span><span class="hint">cents</span></button>
+            <button type="button" class="preset-chip" data-decimals="6"><span class="num">6</span><span class="hint">USDC</span></button>
+            <button type="button" class="preset-chip" data-decimals="8"><span class="num">8</span><span class="hint">sats</span></button>
+          </div>
+          <input id="e-decimals" type="number" value="0" min="0" max="8" style="margin-top:6px;">
+        </div>
+      </div>
+      <label>Name (optional, ≤64 chars) — full human-readable name (e.g. "USD Coin")</label>
+      <input id="e-name" type="text" maxlength="64" placeholder='e.g. "USD Coin"' autocomplete="off">
+      <div class="muted" style="margin-top:4px;font-size:10px;">Off-chain in the metadata blob; ticker stays the on-chain identity. Renderers display "Name (TICKER)" when both are set.</div>
+      <label style="margin-top:14px;">Supply</label>
+      <input id="e-supply" type="text" value="1000000" inputmode="decimal" placeholder="e.g. 1000000 or 1000.50">
+      <div id="e-preview-line" class="live-preview"></div>
+      <label style="margin-top:14px;">Image URI (optional) — token logo / icon, or metadata JSON CID</label>
+      <input id="e-image" type="text" placeholder="ipfs://bafybeih... or https://..." spellcheck="false">
+      <div class="flex" style="margin-top:8px;gap:8px;align-items:center;">
+        <label for="e-image-file" class="btn" style="margin:0;cursor:pointer;">↑ Upload to IPFS</label>
+        <input id="e-image-file" type="file" accept="image/png,image/jpeg,image/webp" style="display:none;">
+        <span id="e-image-status" class="muted" style="font-size:11px;"></span>
+      </div>
+      <label style="margin-top:14px;">Description (optional, ≤500 chars) — bundled into a metadata JSON pinned to IPFS</label>
+      <textarea id="e-description" maxlength="500" rows="2" placeholder="What this token is for, who issued it, etc." style="font-family:inherit;font-size:12px;padding:9px 10px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);width:100%;resize:vertical;"></textarea>
+      <label style="margin-top:14px;">External URL (optional) — project website / docs</label>
+      <input id="e-external-url" type="text" placeholder="https://..." spellcheck="false">
+      <label class="checkbox-row">
+        <input id="e-attest-on-etch" type="checkbox" checked>
+        <span class="cbx-body"><strong>Publish supply opening</strong> <span style="color:#0a7d4e;">(recommended)</span> — anyone can cryptographically verify the announced supply against the on-chain commitment. The opening <code>(supply, blinding)</code> is bundled into the asset's metadata blob on IPFS (content-addressed, worker-independent) and also pinned to the discovery worker. <strong>Uncheck</strong> only if you have a specific reason to keep total supply confidential. Per-transfer amounts stay hidden either way — this checkbox only affects the announced total.</span>
+      </label>
+      <label class="checkbox-row">
+        <input id="e-mintable" type="checkbox">
+        <span class="cbx-body"><strong>Mintable</strong> — your wallet's pubkey becomes the <code>mint_authority</code> and can issue more supply later via signed <code>T_MINT</code> envelopes. Default off ⇒ supply is fixed at etch (BTC-style). <strong>Permanent:</strong> a fixed-supply asset can never be made mintable later.</span>
+      </label>
+      <div id="mintable-key-warning" style="display:none;margin-top:8px;padding:10px 12px;border:1px solid var(--red);background:#fff4f4;font-size:11px;color:var(--red);">
+        <strong>⚠ Back up your private key before etching.</strong> The mint authority is your wallet's local key. Clearing browser storage, losing the device, or switching browsers without exporting the key permanently freezes the supply — there is no recovery path. Click <strong>Export key</strong> on the Wallet tab and save the hex somewhere safe before you broadcast.
+      </div>
+      <details class="etch-why" style="margin-top:14px;">
+        <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
+          <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Why is the supply hidden? · what gets pinned
+        </summary>
+        <div class="muted" style="padding-top:8px;border-top:1px dashed var(--ink-faint);margin-top:4px;line-height:1.6;">
+          A Pedersen commitment <code>C = supply·H + r·G</code> plus a 64-bit aggregated bulletproof go on-chain inside a Taproot script-path envelope. Only you know <code>(supply, r)</code> — observers see only the 33-byte commitment and a ~700-byte proof that the base-unit supply is in <code>[0, 2⁶⁴)</code>. The supply blinding and an 8-byte encrypted-supply field are both self-derived from your wallet privkey + commit-input anchor, so a freshly-installed wallet with only your key can recover the etched supply from chain alone — no localStorage backup needed. With 64-bit range, max supply per asset_id is ~1.84 × 10¹⁹ base units, which covers any realistic decimals setting. Etch is a 2-tx flow (commit + reveal); broadcast takes a few seconds. Image URI (≤256 bytes) is stored alongside the supply commitment and propagates to recipients through the canonical CETCH ancestor — they don't trust the share-link sender for it.
+        </div>
+      </details>
+
+      <div id="etch-preview" style="display:none;"></div>
+
+      <div class="flex" style="margin-top:18px;">
+        <button id="btn-etch-preview">Preview etch</button>
+        <button id="btn-etch-broadcast" class="primary" disabled>Etch &amp; broadcast</button>
+      </div>
+      <div id="etch-error" class="error"></div>
+      <div id="etch-success" style="display:none;margin-top:18px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- TRANSFER TAB -->
+<div class="tab-panel" id="tab-transfer">
+  <div class="section">
+    <div class="section-header"><span>tacit.transfer · confidential send</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Single-asset confidential transfer. Each transfer is a 2-tx flow: a commit tx creates a Taproot output committed to the envelope, then a reveal tx spends it via script-path, exposing the commitments + rangeproofs in the witness. Observers see commitments and proofs, never amounts. The recipient receives a <strong>share-link</strong> with the cleartext amount; their blinding factor is recomputable via ECDH.
+      </div>
+
+      <label>Asset</label>
+      <select id="x-asset"><option value="">— select —</option></select>
+
+      <label>Recipient public key (33-byte compressed hex, 02… or 03…)</label>
+      <input id="x-recipient-pub" placeholder="02… or 03… (66 hex chars)" autocomplete="off" spellcheck="false" list="x-recipient-recents">
+      <datalist id="x-recipient-recents"></datalist>
+      <div class="muted">Ask the recipient to share their pubkey from their Wallet tab. The address is derived from this pubkey.</div>
+      <div id="x-recipient-derived" class="muted" style="margin-top:6px;font-size:11px;display:none;"></div>
+
+      <label>Amount to send</label>
+      <input id="x-amount" type="text" placeholder="100" autocomplete="off">
+
+      <div id="transfer-preview" style="display:none;"></div>
+
+      <div class="flex" style="margin-top:18px;">
+        <button id="btn-transfer-preview">Preview transfer</button>
+        <button id="btn-transfer-broadcast" class="primary" disabled>Transfer &amp; broadcast</button>
+      </div>
+      <div id="transfer-error" class="error"></div>
+      <div id="transfer-share" style="display:none;margin-top:18px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- HOLDINGS TAB -->
+<div class="tab-panel" id="tab-holdings">
+  <div class="section">
+    <div class="section-header">
+      <span>tacit.holdings · confidential</span>
+      <span id="holdings-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="flex" style="margin-bottom:14px;">
+        <button id="btn-rescan">↻ Rescan UTXOs</button>
+        <button id="btn-import-share">＋ Import received share-link</button>
+        <button id="btn-take-atomic">＋ Take atomic offer</button>
+      </div>
+      <div id="holdings-list"></div>
+    </div>
+  </div>
+  <div class="section" id="offers-section" style="margin-top:14px;display:none;">
+    <div class="section-header">
+      <span>tacit.offers · outstanding atomic</span>
+      <span class="muted" style="display:flex;gap:10px;align-items:center;">
+        <span id="offers-status"></span>
+      </span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;font-size:11px;">
+        Atomic offers you've created on this device. Status is recomputed from chain on each render. Cancel by spending the listed asset UTXO via a self-send CXFER (the original commit value is forfeit; the asset is preserved).
+      </div>
+      <div id="offers-list"></div>
+    </div>
+  </div>
+  <div class="section" id="activity-section" style="margin-top:14px;">
+    <div class="section-header">
+      <span>tacit.activity · local log</span>
+      <span class="muted" style="display:flex;gap:10px;align-items:center;">
+        <span id="activity-status"></span>
+        <button id="btn-activity-clear" type="button" style="font-size:9px;padding:3px 8px;letter-spacing:0.1em;display:none;">clear</button>
+      </span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;font-size:11px;">
+        Local-only history of broadcasts you've signed on this device (etch / transfer / mint / burn / received). Cleared if you wipe browser storage; the chain is the source of truth.
+      </div>
+      <div id="activity-list"></div>
+    </div>
+  </div>
+</div>
+
+<!-- MARKET TAB -->
+<div class="tab-panel" id="tab-market">
+  <div class="section">
+    <div class="section-header">
+      <span>tacit.market · open listings</span>
+      <span id="market-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;font-size:12px;">
+        Bilateral OTC offers across all assets. Settlement is off-chain in v1: pay the maker's address in sats, then the maker broadcasts a CXFER to your pubkey. Counterparty trust required (or use a 2-of-2 escrow).
+        <strong>Range-disclosed</strong> listings prove a lower bound on the maker's balance without publishing their full opening — useful for makers who want to keep their treasury confidential.
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
+        <input id="market-filter-asset" type="text" placeholder="ticker / asset_id prefix…" style="flex:1;min-width:140px;">
+        <select id="market-filter-kind" style="flex:0;">
+          <option value="all">all kinds</option>
+          <option value="opening">opening (exact)</option>
+          <option value="range">range (≥ X)</option>
+        </select>
+        <input id="market-filter-min-price" type="number" placeholder="min sats" style="width:90px;" min="0">
+        <input id="market-filter-max-price" type="number" placeholder="max sats" style="width:90px;" min="0">
+        <select id="market-sort" style="flex:0;">
+          <option value="recency">newest first</option>
+          <option value="price-asc">price ↑</option>
+          <option value="price-desc">price ↓</option>
+        </select>
+        <button id="btn-market-refresh">↻ Refresh</button>
+      </div>
+      <div id="market-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;">loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<!-- DISCOVER TAB -->
+<div class="tab-panel" id="tab-discover">
+  <div class="section">
+    <div class="section-header">
+      <span id="discover-header-title">tacit.discover · all etched assets</span>
+      <span id="discover-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;" id="discover-blurb">
+        Browse confidential tokens etched on Bitcoin — tickers public, supplies optionally proven, amounts always hidden. Tap any asset's ticker to copy its asset_id, or click the etch tx to verify on-chain.
+      </div>
+      <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;">
+        <input id="discover-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
+        <button id="btn-discover-refresh">↻ Refresh</button>
+      </div>
+      <div class="discover-pills" id="discover-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
+        <button class="filter-pill active" data-pill="all" type="button">All</button>
+        <button class="filter-pill" data-pill="mintable" type="button" title="Issuer can mint additional supply">Mintable</button>
+        <button class="filter-pill" data-pill="attested" type="button" title="Issuer published a verifiable supply attestation">Attested</button>
+        <button class="filter-pill" data-pill="recent" type="button" title="Etched in the last 24h">Recent</button>
+      </div>
+      <div id="discover-list"><div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- ABOUT TAB -->
+<div class="tab-panel" id="tab-about">
+  <div class="section">
+                <div class="section-header"><span>tacit.protocol</span></div>
+    <div class="section-body" style="line-height:1.75;">
+      <p>Confidential single-asset token meta-protocol on Bitcoin. Pedersen commitments hide amounts; rangeproofs and kernel signatures together enforce supply conservation without trusting any participant.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Validation model</h3>
+      <p style="margin-top:8px;">Like every Bitcoin token meta-protocol (Runes, BRC-20, Ordinals, Taproot Assets, RGB, Counterparty), tacit's token rules are <strong>not enforced by Bitcoin nodes</strong>. Bitcoin validates the underlying tx structure and Taproot signatures; an external indexer validates the token-level rules (commitments, rangeproofs, kernel signatures, asset_id consistency).</p>
+      <p>Architecturally tacit is an <strong>indexer-validated meta-protocol</strong> — same family as Runes, BRC-20, and Ordinals. All data needed to validate any UTXO lives on Bitcoin's chain. An indexer with chain-only access can recursively walk every UTXO back to its CETCH root and reach the same verdict as any other indexer running the same rules. No federation, no off-band proof exchange, no out-of-band coordination.</p>
+      <p>This is distinct from <strong>proof-distribution protocols</strong> (RGB, Taproot Assets) where the recipient must receive validity proofs out-of-band; an indexer with chain-only access cannot reconstruct token state. It's also distinct from <strong>fully-validated chains</strong> (Liquid, Mimblewimble) where consensus enforces the rules natively. Tacit's contribution is bringing CT-style amount-hiding into the indexer-validated meta-protocol family — the only thing that travels out-of-band is the recipient's own opening (cleartext amount + blinding) via share-link, which lets them <em>see</em> their balance but is not required for any indexer to <em>validate</em> the UTXO.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Cryptography</h3>
+      <p style="margin-top:8px;">Commitments: <code>C = a·H + r·G</code>, additively homomorphic. <code>H</code> is a NUMS generator (no known discrete log w.r.t. <code>G</code>) derived deterministically by hash-to-curve from the seed <code>"tacit-generator-H-v1"</code>. The protocol carries <code>C</code> on chain; <code>(a, r)</code> stay private.</p>
+      <p>Rangeproofs: <strong>aggregated Bulletproofs</strong> (Bünz et al. 2017) at n=64 bits, meaning each committed value is proven to lie in <code>[0, 2⁶⁴)</code>. A single proof can cover m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, with witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. ~250 ms to prove and ~150 ms to verify in-browser per proof; the indexer batches multiple proofs into a single multi-scalar multiplication for sub-linear amortized cost.</p>
+      <p>64-bit range bounds any single Pedersen commitment to 1.84 × 10¹⁹ base units. With 8 decimals that's 184 quintillion display units per UTXO — well past anything practical. Wallets still spread holdings across multiple UTXOs (1–8 per CXFER) for change tracking, but the per-UTXO cap is no longer a real constraint for any practical decimals/supply combination.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Wire format (Taproot envelope)</h3>
+      <p style="margin-top:8px;">Rangeproofs and aggregated payloads don't fit in 80-byte OP_RETURN, so payload moves into a Taproot script-path leaf. Each operation is <strong>2 transactions</strong>: a <em>commit</em> tx that creates a P2TR output committed to the envelope's leaf hash (internal pubkey = BIP-341 NUMS, so script-path is the only spend), and a <em>reveal</em> tx that spends the P2TR via script-path, exposing the envelope script in the witness. Indexers scan <code>tx.vin[0].witness[1]</code> for envelopes.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">Envelope leaf script</h4>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">32B</span><span class="op">&lt;signing pubkey x-only&gt;</span><span class="desc">wallet pubkey allowed to sign reveal</span>
+        <span class="hex">ac</span><span class="op">OP_CHECKSIG</span><span class="desc">verifies witness signature</span>
+        <span class="hex">00 63</span><span class="op">OP_FALSE OP_IF</span><span class="desc">enter unreachable data block</span>
+        <span class="hex">05</span><span class="op">"TACIT"</span><span class="desc">protocol magic</span>
+        <span class="hex">01</span><span class="op">version</span><span class="desc">envelope version (0x01)</span>
+        <span class="hex">..</span><span class="op">payload chunks (≤520B each)</span><span class="desc">opcode + body + rangeproof</span>
+        <span class="hex">68</span><span class="op">OP_ENDIF</span><span class="desc">end</span>
+      </div>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">CETCH payload (opcode 0x21) — initial issuance</h4>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">21</span><span class="op">T_CETCH</span><span class="desc">confidential etch</span>
+        <span class="hex">L</span><span class="op">ticker length</span><span class="desc">1 byte (1–16)</span>
+        <span class="hex">..</span><span class="op">ticker</span><span class="desc">UTF-8</span>
+        <span class="hex">d</span><span class="op">decimals</span><span class="desc">1 byte (0–8)</span>
+        <span class="hex">33B</span><span class="op">commitment C</span><span class="desc">a·H + r·G</span>
+        <span class="hex">8B</span><span class="op">amount_ct</span><span class="desc">u64 LE supply XOR keystream — etcher-only, recoverable from chain</span>
+        <span class="hex">2B</span><span class="op">rp_len</span><span class="desc">u16 LE; rangeproof byte count (688 for m=1)</span>
+        <span class="hex">..</span><span class="op">rangeproof</span><span class="desc">aggregated bulletproof, m=1, n=64</span>
+        <span class="hex">32B</span><span class="op">mint_authority</span><span class="desc">x-only pubkey or all-zero (non-mintable)</span>
+        <span class="hex">2B</span><span class="op">image_len</span><span class="desc">u16 LE (0–256)</span>
+        <span class="hex">..</span><span class="op">image_uri</span><span class="desc">opaque UTF-8; image OR metadata-blob CID; renderers MUST validate scheme</span>
+      </div>
+      <p style="margin-top:8px;">The wire format treats <code>image_uri</code> as opaque UTF-8 bytes. The decoder accepts any valid UTF-8 ≤256 bytes — it does not enforce a URI scheme. This leaves room for future schemes (<code>ar://</code>, <code>ipns://</code>, etc.) without a wire-format change. <strong>Renderers MUST validate before display</strong>: tacit's UI accepts only <code>ipfs://CID</code> and bare CIDs (Qm…/bafy…), and rejects <code>http:</code>, <code>https:</code>, <code>javascript:</code>, <code>data:</code>, and other schemes. Direct <code>https://</code> images are rejected on purpose — every wallet that views the asset would fetch from the issuer-controlled host, which is an IP-correlation beacon. Forcing IPFS routes traffic through the configured gateway, one fixed origin that the CSP locks down at <code>img-src</code>.</p>
+      <p>Asset_id = <code>sha256(reveal_txid_BE ‖ 0_LE)</code> (32 bytes). Supply commitment lives at vout 0 of the reveal tx. If <code>mint_authority</code> is all-zero, the asset is fixed-supply (BTC-style); otherwise the named pubkey can issue more via <code>T_MINT</code>.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">CXFER payload (opcode 0x23) — confidential transfer</h4>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">23</span><span class="op">T_CXFER</span><span class="desc">confidential transfer</span>
+        <span class="hex">32B</span><span class="op">asset_id</span><span class="desc">single asset</span>
+        <span class="hex">64B</span><span class="op">kernel_sig</span><span class="desc">BIP-340 Schnorr; proves balance closes</span>
+        <span class="hex">N</span><span class="op">output count</span><span class="desc">1, 2, 4, or 8 (must be a power of 2 for aggregation)</span>
+        <span class="hex">33B</span><span class="op">C_i</span><span class="desc">commitment for vout i</span>
+        <span class="hex">8B</span><span class="op">amount_ct_i</span><span class="desc">u64 LE plaintext XOR keystream — recoverable from chain</span>
+        <span class="hex">2B</span><span class="op">rp_len</span><span class="desc">u16 LE; aggregated rangeproof byte count</span>
+        <span class="hex">..</span><span class="op">rangeproof</span><span class="desc">single bulletproof covering all N commitments</span>
+      </div>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">MINT payload (opcode 0x24) — issue more supply (mintable assets only)</h4>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">24</span><span class="op">T_MINT</span><span class="desc">signed by mint_authority</span>
+        <span class="hex">32B</span><span class="op">asset_id</span><span class="desc">must equal sha256(etch_txid ‖ 0)</span>
+        <span class="hex">32B</span><span class="op">etch_txid</span><span class="desc">parent CETCH; validator confirms it's mintable</span>
+        <span class="hex">33B</span><span class="op">commitment</span><span class="desc">a·H + r·G for the new supply</span>
+        <span class="hex">8B</span><span class="op">amount_ct</span><span class="desc">issuer-self keystream; only the authority can decrypt</span>
+        <span class="hex">2B</span><span class="op">rp_len</span><span class="desc">u16 LE</span>
+        <span class="hex">..</span><span class="op">rangeproof</span><span class="desc">m=1 bulletproof on the new commitment</span>
+        <span class="hex">64B</span><span class="op">issuer_sig</span><span class="desc">BIP-340 over sha256("tacit-mint-v1" ‖ asset_id ‖ commit_anchor(36B) ‖ commitment ‖ amount_ct), under mint_authority</span>
+      </div>
+      <p style="margin-top:8px;font-size:12px;"><code>commit_anchor</code> = <code>commit_tx.vin[0].txid_BE ‖ commit_tx.vin[0].vout_LE</code> (the same anchor the issuer uses for the mint blinding/keystream). Binding it into <code>mint_msg</code> ties the issuer's signature to a specific commit/reveal pair so a witnessed mint envelope cannot be replayed into a different commit/reveal pair at an attacker's address.</p>
+      <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">BURN payload (opcode 0x25) — destroy supply, public amount</h4>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">25</span><span class="op">T_BURN</span><span class="desc">any holder; emits a public burned_amount</span>
+        <span class="hex">32B</span><span class="op">asset_id</span><span class="desc">single asset</span>
+        <span class="hex">8B</span><span class="op">burned_amount</span><span class="desc">u64 LE plaintext — public, auditable</span>
+        <span class="hex">64B</span><span class="op">kernel_sig</span><span class="desc">BIP-340; proves Σ C_in = burned·H + Σ C_out</span>
+        <span class="hex">N</span><span class="op">output count</span><span class="desc">0, 1, 2, 4, or 8 (N=0 = full burn, no change)</span>
+        <span class="hex">33B</span><span class="op">C_i</span><span class="desc">change commitment for vout i</span>
+        <span class="hex">8B</span><span class="op">amount_ct_i</span><span class="desc">self keystream for the burn-tx's change output</span>
+        <span class="hex">2B</span><span class="op">rp_len</span><span class="desc">u16 LE (0 if N=0)</span>
+        <span class="hex">..</span><span class="op">rangeproof</span><span class="desc">aggregated bulletproof on N change commitments</span>
+      </div>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">How attacks are blocked</h3>
+      <p style="margin-top:8px;"><strong>Negative amounts (mod N).</strong> A "−1000" is just <code>N − 1000</code> as a scalar; bulletproofs reject any value outside <code>[0, 2⁶⁴)</code>. The proof's inner-product argument cannot be satisfied for a value that doesn't fit in 64 bits, so the verifier rejects.</p>
+      <p style="margin-top:8px;"><strong>Unbalanced amounts (CXFER).</strong> Even with rangeproofs, a sender holding 100 USDV could try to construct outputs (30 to recipient, 200 to themselves) — both with valid rangeproofs — and mint 130 from nothing. Kernel signatures block this:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li>Sender computes <code>excess = Σr_out − Σr_in</code> and signs <code>kernel_msg</code> with priv = excess (BIP-340 Schnorr).</li>
+        <li>Verifier reconstructs <code>E' = ΣC_out − ΣC_in</code> from on-chain commitments. If amounts balance, <code>E' = excess·G</code> and the sig verifies under <code>E'.xonly()</code>.</li>
+        <li>If amounts don't balance, <code>E' = δ·H + excess·G</code> with <code>δ ≠ 0</code>. Producing a valid sig would require knowing the discrete log of <code>H</code> w.r.t. <code>G</code>, which is hard since <code>H</code> is NUMS.</li>
+        <li><code>kernel_msg = sha256("tacit-kernel-v1" ‖ asset_id ‖ N_in ‖ inputs ‖ N_out ‖ outputs ‖ burned_amount_LE)</code>, binding the sig to all relevant fields and preventing replay across txs.</li>
+      </ul>
+      <p style="margin-top:8px;"><strong>Unbalanced amounts (BURN).</strong> Same kernel construction with <code>burned_amount</code> made explicit: the verifier checks <code>E' = ΣC_out + burned·H − ΣC_in = excess·G</code>. The public <code>burned_amount</code> field is bound into <code>kernel_msg</code> so claiming a smaller burn than was actually destroyed shifts the message and breaks the sig.</p>
+      <p style="margin-top:8px;"><strong>Mint forgery.</strong> Only the holder of <code>mint_authority</code>'s private key can issue valid <code>T_MINT</code> envelopes for an asset. The validator fetches the parent CETCH, confirms the asset is mintable (mint_authority ≠ zero), and verifies the issuer Schnorr sig under that x-only key. The signed message binds the <code>commit_anchor</code> (commit-tx's first input outpoint) so an observer cannot rewrap the on-chain envelope payload into their own commit/reveal pair. The mint itself is rangeproof-bounded to <code>[0, 2⁶⁴)</code> per envelope; the authority can mint any number of times.</p>
+      <p style="margin-top:8px;"><strong>Cross-asset confusion.</strong> A sender could declare a CXFER as USDV but spend GOLDC inputs. The indexer fetches each input's parent envelope, reads its declared asset_id (across all four opcodes — CETCH, MINT, CXFER, BURN — via a unified parent-resolver), and rejects the CXFER if any input's asset_id differs from the current claim.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Blinding delivery + amount recovery</h3>
+      <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout_LE)</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The anchor's per-tx entropy prevents cross-tx commitment correlation: without it, two transfers between the same parties at the same vout would produce identical blindings, and an observer could compute <code>(C₁ − C₂) = (a₁ − a₂)·H</code> to learn the difference of amounts.</p>
+      <p>Sender's change blinding: <code>r_change = HMAC-SHA256(sender_priv, "tacit-change-v1" ‖ anchor ‖ 1_LE)</code>. Deterministic from the wallet privkey so it's recoverable from chain alone.</p>
+      <p>Etcher's supply blinding: <code>r_supply = HMAC-SHA256(etcher_priv, "tacit-etch-v1" ‖ etch_anchor)</code>, where <code>etch_anchor</code> = first input outpoint of the <em>commit</em> tx. The anchor predates the envelope (a pre-existing UTXO), breaking the cycle that would otherwise arise from anchoring on the reveal txid. Scanners read it via <code>reveal_tx.vin[0]</code> → fetch commit tx → <code>commit_tx.vin[0]</code>.</p>
+      <p>Each commitment also carries an <strong>encrypted amount</strong> (8 bytes, u64 LE XOR'd with an HMAC-keystream). For CXFER outputs, the keystream uses ECDH-derived keying for recipients (so recipient can decrypt with their priv + sender pub) and self-derived keying for change. For CETCH supply, the keystream is self-derived from <code>etcher_priv</code> + <code>etch_anchor</code> — only the etcher can decrypt; observers see opaque bytes. After decryption, the wallet verifies <code>C == amount·H + r·G</code>; tampering with the ciphertext makes verification fail.</p>
+      <p>This means <strong>share-links are optional notifications, not required for recovery</strong>. A freshly-installed wallet with only its privkey can auto-discover its full balance from chain alone — incoming CXFER transfers (via ECDH), its own CXFER change (via self-derived), and its own CETCH supply (via etch-anchor self-derived).</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Indexer rules (recursive validation)</h3>
+      <ol style="margin-left:20px;margin-top:8px;">
+        <li>For each wallet UTXO, fetch parent tx; read <code>vin[0].witness[1]</code>; decode as tacit envelope.</li>
+        <li>Recursively validate the outpoint: walk the ancestry back to its CETCH root, validating each step. Memoize results to keep cost O(N) over a chain of length N. Depth-bounded at 200 hops.</li>
+        <li><strong>Aggregated rangeproof verification.</strong> A single bulletproof per envelope covers all m commitments (m ∈ {1,2,4,8}). The walker can additionally <em>batch</em> proofs across the entire ancestry into one multi-scalar multiplication via <code>bpRangeAggBatchVerify</code>, with random per-proof scalars α<sub>i</sub>, β<sub>i</sub> ensuring soundness preservation.</li>
+        <li><strong>For CETCH leaves</strong> (T_CETCH): only vout 0 is the supply commitment; no kernel; the rangeproof bounds the initial supply.</li>
+        <li><strong>For MINT envelopes</strong> (T_MINT): vout 0 holds the new supply commitment. Validator confirms <code>asset_id = sha256(etch_txid ‖ 0)</code>, recursively validates the CETCH ancestor, requires <code>mint_authority ≠ 0</code>, and verifies the issuer's BIP-340 sig under the authority's x-only pubkey. <code>mint_msg</code> binds <code>commit_anchor</code> (the commit-tx's first input outpoint), preventing replay of the envelope into a different commit/reveal pair.</li>
+        <li><strong>For CXFER nodes</strong> (T_CXFER): every input outpoint must itself recursively validate; every input's parent (CETCH/MINT/CXFER/BURN) must declare the same <code>asset_id</code>; the aggregated rangeproof must verify; the kernel sig must verify under <code>(ΣC_out − ΣC_in).xonly()</code> over the kernel msg.</li>
+        <li><strong>For BURN nodes</strong> (T_BURN): same as CXFER but the verifier reconstructs <code>E' = ΣC_out + burned_amount·H − ΣC_in</code>. <code>N=0</code> is allowed (full burn, no change output, no rangeproof).</li>
+        <li>Any failure anywhere in the ancestry → the UTXO is flagged as inflation attempt and excluded from balance. <code>markAll</code> propagates the verdict to every sibling output of a failed envelope.</li>
+        <li>Resolve <code>(amount, blinding)</code> for the commitment: try local opening first, then trial-decrypt the on-chain <code>amount_ct</code> (ECDH against sender pubkey for incoming, self-derived for own change/etch/mint). Verify <code>C == a·H + r·G</code>. If known or recovered → balance += a; if neither path works → "ghost".</li>
+      </ol>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Privacy scope</h3>
+      <p style="margin-top:8px;">Tacit hides <strong>amounts</strong>. It does NOT hide:</p>
+      <ul style="margin-left:20px;margin-top:8px;">
+        <li><strong>Address graph.</strong> Sender and recipient Bitcoin addresses are visible on chain like any tx.</li>
+        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in the envelope).</li>
+        <li><strong>Sender pubkey.</strong> Visible in <code>tx.vin[1].witness[1]</code> (P2WPKH witness); recipient needs it for ECDH blinding recovery.</li>
+        <li><strong>Tx graph.</strong> Inputs and outputs are linkable like any UTXO chain.</li>
+      </ul>
+      <p style="margin-top:8px;">This is strictly weaker than Mimblewimble (which hides tx graph via cut-through) and weaker than Liquid CT with surjection proofs (which hides asset_id). It's the same scope as Liquid CT without surjection proofs: amount-hiding only.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Validation cost</h3>
+      <p style="margin-top:8px;">Recursive validation is <strong>O(chain depth)</strong> on a cold cache. With aggregated bulletproofs and batched verification, the practical cost is dominated by ECDSA/Schnorr verification across the ancestry, not rangeproofs (~150 ms verify per BP, batched into one multi-exp across the full walk). Memoization keeps subsequent scans O(new UTXOs) within the same session. For a fresh wallet on mobile, deep ancestries (≥50 hops) will still be slow; production deployments would want a persistent validation cache (across sessions) or a shared indexer service. The "single-file dApp" claim holds for cryptographic correctness; the practical UX for deep chains benefits from server-side help.</p>
+
+      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Trust model</h3>
+      <p style="margin-top:8px;"><strong>Issuer at etch.</strong> The initial supply commitment is hidden, so no kernel-sig constraint applies — the issuer chooses any value in <code>[0, 2⁶⁴)</code>. The dApp publishes the <code>(supply, blinding)</code> opening by default — embedded in the asset's IPFS metadata blob (content-addressed) and pinned to the discovery worker as a cache. Anyone verifies <code>C == supply·H + r·G</code> against the on-chain commitment, no issuer trust required. Issuers explicitly opt out of attestation only if they have a reason to keep the total confidential; the dApp surfaces that as a deliberate uncheck.</p>
+      <p style="margin-top:8px;"><strong>Mint authority for mintable assets.</strong> If <code>mint_authority ≠ 0</code> in the CETCH envelope, that x-only pubkey can issue additional supply via <code>T_MINT</code> envelopes — bounded only by 2⁶⁴ per envelope, unlimited in count. This is the standard signature-gated mint pattern: holders trust the mint-authority key not to be abused, and compromise of that private key means uncapped inflation. The dApp auto-attests every mint by default so the supply remains publicly auditable across mint events. Fixed-supply assets (<code>mint_authority</code> all-zero) cannot be expanded — for those, etch-time attestation gives you provably and permanently public supply.</p>
+      <p style="margin-top:8px;"><strong>After issuance.</strong> No participant can inflate (kernel sig blocks unbalanced CXFER), burn covertly (BURN's <code>burned_amount</code> is public and bound into the kernel msg), or substitute assets (asset_id consistency checked across every input's parent envelope). The recursive client-side validation guarantees this independent of any indexer's honesty.</p>
+
+      <p class="muted" style="margin-top:24px;font-size:11px;">
+        Pedersen commits via @noble/secp256k1 projective ops. NUMS H from deterministic hash-to-curve. BIP-340 Schnorr + BIP-341 Taproot inlined. Aggregated bulletproofs (Bünz et al. 2017) + Mimblewimble-style kernel sigs in pure JS, with Pippenger MSM for batched verification.
+      </p>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span>tacit</span>
+  <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank" rel="noopener noreferrer">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank" rel="noopener noreferrer">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank" rel="noopener noreferrer">CT (Maxwell)</a></span>
+</footer>
+
+<div id="toast-container"></div>
+
+<div id="welcome-modal" class="welcome-modal" role="dialog" aria-modal="true" aria-labelledby="welcome-title" style="display:none;">
+  <div class="welcome-card">
+    <div class="welcome-title" id="welcome-title">welcome to <span class="accent">tacit</span></div>
+    <div class="welcome-lede">
+      tacit signs every confidential envelope with an in-browser key. your existing bitcoin wallet (xverse / leather / unisat) <em>funds</em> that key but cannot replace it. <strong>pick how you want to start:</strong>
+    </div>
+    <div class="welcome-options">
+      <button id="welcome-xverse" class="welcome-option" type="button">
+        <span class="welcome-option-title">connect xverse / leather</span>
+        <span class="welcome-option-meta">bind tacit's signing key to your wallet's address — fund taps from xverse / leather</span>
+      </button>
+      <button id="welcome-unisat" class="welcome-option" type="button">
+        <span class="welcome-option-title">connect unisat</span>
+        <span class="welcome-option-meta">bind tacit's signing key to your unisat address — fund taps from unisat</span>
+      </button>
+      <button id="welcome-local" class="welcome-option" type="button">
+        <span class="welcome-option-title">generate a new local wallet</span>
+        <span class="welcome-option-meta">no extension required — fund via signet faucet, or import a privkey later</span>
+      </button>
+    </div>
+    <div class="welcome-footer">
+      next step → set a passphrase to encrypt the in-browser signing key at rest. you can connect or switch wallets at any time from the wallet tab.
+    </div>
+  </div>
+</div>
+
+<div id="pass-modal" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="pass-title" style="display:none;">
+  <div class="pass-card">
+    <div class="pass-title" id="pass-title"></div>
+    <div class="pass-reason" id="pass-reason"></div>
+    <form id="pass-form" autocomplete="off">
+      <div class="pass-field">
+        <label for="pass-input-1" id="pass-label-1">passphrase</label>
+        <input type="password" id="pass-input-1" autocomplete="new-password">
+        <div class="pass-hint" id="pass-hint-1"></div>
+      </div>
+      <div class="pass-field" id="pass-field-2">
+        <label for="pass-input-2">confirm passphrase</label>
+        <input type="password" id="pass-input-2" autocomplete="new-password">
+        <div class="pass-hint" id="pass-hint-2"></div>
+      </div>
+      <div class="pass-warn" id="pass-warn">
+        <strong>important:</strong> if you forget this passphrase AND don't have the raw privkey backed up, the wallet is unrecoverable. export the privkey separately via wallet → export key once setup completes.
+      </div>
+      <div class="pass-actions">
+        <button type="button" id="pass-cancel">cancel</button>
+        <button type="submit" id="pass-submit" class="primary" disabled>continue</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script type="module" src="./tacit.js"></script>
+</body>
+</html>

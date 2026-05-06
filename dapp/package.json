@@ -1,0 +1,7 @@
+{
+  "name": "tacit-dapp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "tacit dApp — confidential token meta-protocol on Bitcoin. Loaded in the browser via <script type=\"module\"> from tacit.html. The package.json + \"type\":\"module\" only matter for offline test harnesses (tests/dapp-parity.test.mjs) that import this file as ESM under Node."
+}

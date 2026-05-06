@@ -6,10 +6,11 @@
 
 Confidential token meta-protocol on Bitcoin. Amounts hidden, supply enforced from chain data, indexer-validated in the browser.
 
-> **Status:** signet demo. Single-file dApp + one
-> stateless Worker for image upload / faucet / asset registry.
+> **Status:** signet + mainnet. Sign in with an existing browser wallet (Xverse / UniSat / Leather), import a privkey, or — on signet — let the dApp generate one and grab faucet sats.
 >
 > **Live demo:** [tacit.wei.is](https://tacit.wei.is)
+>
+> **Protocol spec:** [SPEC.md](./SPEC.md) — wire format, security properties, threat model. Authoritative reference for indexer implementations and audit review.
 
 ---
 
@@ -18,67 +19,95 @@ Confidential token meta-protocol on Bitcoin. Amounts hidden, supply enforced fro
 Like Runes or BRC-20, tacit is a token meta-protocol on Bitcoin: token rules
 aren't enforced by Bitcoin nodes, they're enforced by an indexer that anyone
 can run and reach the same verdict. Unlike Runes/BRC-20, tacit hides the
-**amounts**: each on-chain commitment is a Pedersen point, accompanied by a
-rangeproof and (for transfers) a Mimblewimble-style kernel signature that
-together prove conservation of supply without revealing individual balances.
+**amounts**: each on-chain commitment is a Pedersen point, accompanied by
+an aggregated bulletproof rangeproof and (for transfers) a Mimblewimble-style
+kernel signature that together prove conservation of supply without revealing
+individual balances.
 
 The indexer in this repo runs **inside the dApp**, in your browser, against
-chain data fetched from `mempool.space`. There's no server-side authority,
-no federation, no off-band proof exchange. Two browsers running the same
-file against the same chain reach the same verdict.
+chain data fetched from `mempool.space` (with `blockstream.info` queried in
+parallel by a tip-divergence watchdog so a single Esplora-endpoint outage
+or tampering surfaces as an in-app banner). There's no server-side
+authority, no federation, no off-band proof exchange. Two browsers running
+the same file against the same chain reach the same verdict.
 
 What that buys you, concretely:
 
-- A user can **etch** a confidential asset with a hidden initial supply.
-- They can **transfer** privately — observers see commitments + rangeproofs
-  in the witness, never amounts.
+- A user can **etch** a confidential asset with a hidden initial supply, and
+  optionally make it **mintable** (the etcher's pubkey becomes the mint
+  authority and can issue more supply later via signed `T_MINT` envelopes).
+- They can **transfer** privately — observers see commitments + an aggregated
+  rangeproof in the witness, never amounts.
+- Any holder can **burn** part or all of their balance — the burned amount
+  is public so observers can audit supply reduction.
 - A recipient with only their privkey can **recover their balance from chain
   alone** — no share-link required (each commitment carries an ECDH-encrypted
   amount field that only the recipient and sender can decrypt).
 - Anyone can **validate** every UTXO's ancestry independently.
+- A holder can **publish a per-UTXO opening** to make a specific UTXO's
+  amount publicly verifiable (auditor flows, listing collateral) while their
+  other UTXOs stay confidential.
+- A holder can publish a **range disclosure** ("`balance ≥ K`") that reveals
+  only a lower bound — bulletproof on the homomorphic sum of their UTXOs
+  for an asset, no exact amount leaked.
+- A maker can list a UTXO on the **public marketplace** (OTC, opening-based
+  or range-disclosed) or as an **atomic intent** (browse-and-take) — both
+  surface on the Market tab. Settlement uses `T_AXFER` (SPEC §5.7) and is
+  **trustless single-Bitcoin-tx** for atomic flows: maker can't redirect the
+  buyer's payment, buyer can't get tokens without paying, all in one block.
 
 What it doesn't do:
 
 - Hide the address graph (sender/recipient bitcoin addresses are visible).
 - Hide the asset ID (which token is being moved is public).
-- Magically scale — each transfer carries ~10 KB of bit-decomposition
-  rangeproofs. Bulletproofs would shrink this 7×; that's the next major
-  protocol revision.
-- Protect issuer-claimed initial supply (the supply commitment is hidden, so
-  there's no way for a third party to verify the etcher's announced number;
-  same trust model as any centralized stablecoin).
+- *(For confidential-supply assets)* protect against issuers announcing a
+  fake supply at etch — the commitment hides the value, so there's nothing
+  to verify against unless the issuer publishes `(supply, blinding)`. **The
+  dApp publishes by default** (etch UI ships with attestation on, embedded
+  into IPFS metadata), so any asset etched through this client has provably
+  public supply unless the issuer explicitly opts into the centralized-
+  stablecoin trust model.
 
 ---
 
 ## User stories
 
-**Alice mints a token.** Alice opens `tacit.html`, gets a fresh wallet (one
-privkey, browser-only). She clicks the faucet for some signet sats, fills in
-ticker = `ALICE`, supply = 1000, decimals = 2, optionally uploads an image.
-She hits Etch. Two transactions go on chain (commit + reveal). On chain,
-anyone can see a new ALICE token exists and that its supply is some integer
-in `[0, 2³²)` — but only Alice knows the supply is 1000.
+**Alice mints a token.** Alice opens the dApp and signs in with Xverse —
+tacit derives a per-wallet identity in this browser and Alice clicks
+"fund tacit" to send a few thousand sats over from Xverse for tx fees.
+She fills in ticker = `ALICE`, supply = 1000, decimals = 2, optionally
+uploads an image or marks the asset Mintable, and clicks Etch. Two
+transactions go on chain (commit + reveal). On chain, anyone can see a
+new ALICE token exists and that its supply is some integer in `[0, 2⁶⁴)` —
+but only Alice knows the supply is 1000. (On signet, Alice can skip the
+wallet connect: the dApp generates a key and the faucet button funds it.)
 
 **Alice sends 50 ALICE to Bob.** Alice pastes Bob's pubkey (Bob copied it
 from his Wallet tab). The dApp builds a CXFER tx: input = Alice's supply
 UTXO (commits to 1000), outputs = recipient (commits to 50, blinded with an
 ECDH key only Alice and Bob can derive) + change (commits to 950, blinded
-with Alice's own key). A kernel signature proves inputs − outputs balance
+with Alice's own key). One aggregated bulletproof covers both output range
+proofs (~754 B total). A kernel signature proves inputs − outputs balance
 to zero. On chain: ALICE moved, neither amount visible.
 
 **Bob recovers on a fresh device.** Bob enters his privkey on a clean
-install. The dApp scans signet for outputs paying his pubkey, walks each one
-back through CXFER history to its CETCH ancestor, verifies every rangeproof
-and kernel sig locally (no trust in any server), derives the ECDH key with
-the sender, and decrypts the amount. **No share-link or sync server
+install. The dApp scans signet/mainnet for outputs paying his pubkey, walks
+each one back through CXFER history to its CETCH ancestor, verifies every
+rangeproof and kernel sig locally (no trust in any server), derives the ECDH
+key with the sender, and decrypts the amount. **No share-link or sync server
 required.** Privkey alone reconstructs the wallet.
 
 **Carol browses what tokens exist.** Carol clicks Discover. The dApp hits
-the Worker's `/assets` endpoint, which has been chain-scanning signet every
-5 minutes for CETCH envelopes. She sees the gallery (ticker, image, etch tx)
-and "scanned through block X · N blocks behind tip" so she knows how fresh
-the data is. She can't see anyone's balances or supplies — only that the
-token exists.
+the Worker's `/assets` endpoint, which has been chain-scanning every 5
+minutes for CETCH, T_MINT, and T_BURN envelopes. **Every Discover card is
+client-validated before render**: the dApp walks back to the on-chain
+CETCH envelope, verifies the rangeproof, decodes the canonical ticker /
+decimals / commitment, and checks attestation against the `tacit_attest`
+field in the IPFS metadata blob (no worker trust — content-addressed). If
+the worker tries to spoof a ticker, Carol sees a ⚠ MISMATCH badge. She
+can't see anyone's balances, but for any attested asset she sees the
+supply (✓ verified opening, IPFS) along with attested mint history and
+public burn totals.
 
 **Alice optionally pings Bob with a share-link.** After broadcasting, the
 dApp emits a URL ending in `#recv=…` containing the opening (amount +
@@ -86,34 +115,94 @@ blinding). Alice DMs it to Bob; clicking it imports the opening directly,
 skipping a chain scan. **This is purely UX — Bob's recovery story above
 works regardless.** Share-links notify, they don't authorize.
 
+**Bob lists 5,000 ALICE for sale on the public market.** From Holdings, Bob
+clicks "List a UTXO for sale" → 250,000 sats, 7-day expiry. The listing
+publishes the UTXO's `(amount, blinding)` opening + price + signed offer to
+the worker. Anyone can browse it on the Market tab and click Verify, which
+re-runs Pedersen + sig + liveness checks client-side. A taker pays Bob's
+address out-of-band and Bob delivers via CXFER — OTC, trust required.
+
+**Carol lists 1,000 ALICE with hidden total balance.** Carol holds a
+treasury of ALICE across many UTXOs and doesn't want to dox the total.
+"List (hidden balance)" → bulletproof showing `balance ≥ 1000` is published
+alongside the offer. The Market tab shows it with a green ≥ badge. Same
+OTC settlement, but Carol's exact balance stays confidential.
+
+**Dave atomically swaps 10,000 GOLDC for 500K sats with Erin.** They
+exchange pubkeys via Telegram. Dave clicks "Atomic (targeted)" on Holdings,
+generates a partial reveal targeted at Erin's pubkey, copies the JSON.
+Erin clicks "Take atomic offer," pastes the JSON, and the dApp appends her
+BTC funding signed `SIGHASH_ALL`. **One Bitcoin tx settles both sides.**
+Neither could grief the other — the maker's `SIGHASH_SINGLE_ACP` sigs bind
+the BTC payment, the taker's `SIGHASH_ALL` sig binds the whole tx.
+
+**Frank publishes an open atomic intent for anyone to claim.** "Atomic
+intent (open)" on Holdings → 100 USDA for 50K sats, 1-day expiry. The
+intent appears on the Market tab with a purple ⚡ badge. Helen clicks
+Claim, locks for 30 minutes. Frank sees the claim on the Market tab and
+clicks "Fulfil claim" — the dApp generates a partial reveal targeted at
+Helen's pubkey and posts it. Helen clicks Take, broadcasts. **Discoverable
++ trustless atomic OTC**, no out-of-band coordination.
+
 ---
 
 ## Repository layout
 
 ```
 tacit/
-├── tacit.html          # the dApp — single file, ~3000 lines, no build step
-├── tacit.svg           # logo
-├── worker/             # Cloudflare Worker: /pin /pin-json /drip /balance /assets
+├── dapp/                  # THE dApp — pin this directory to IPFS
+│   ├── tacit.html         # markup, CSP, and one external script tag
+│   ├── tacit.js           # all dApp code (Pedersen, bulletproofs, kernel sigs,
+│   │                      #  BIP-340/341, envelope encode/decode, recursive
+│   │                      #  validator, wallet, UI, marketplace flows).
+│   │                      #  Loaded as ESM module.
+│   ├── tacit.svg          # logo / favicon
+│   ├── _headers           # CF Pages / Netlify HTTP headers — frame-ancestors
+│   │                      #  'self' (clickjacking defense; CSP via <meta>
+│   │                      #  ignores frame-ancestors per spec) + XCTO + Referrer
+│   └── vendor/
+│       └── tacit-deps.min.js   # bundled @noble/secp256k1 + @noble/hashes
+│                                #  + @scure/base + sats-connect (~250 KB)
+├── build/                 # bundling tooling, dev-time only
+│   ├── package.json
+│   ├── entry.mjs          # bundle entry: re-exports the symbols tacit.js imports
+│   ├── build.mjs          # esbuild → dapp/vendor/tacit-deps.min.js + SRI hashes
+│   └── README.md
+├── worker/                # optional Cloudflare Worker (image pinning, faucet, asset registry)
 │   ├── src/index.js
 │   ├── wrangler.toml
 │   ├── package.json
-│   └── README.md       # Worker-specific deployment notes
-├── README.md           # you are here
-└── LICENSE
+│   └── README.md
+├── SPEC.md                # protocol specification
+├── README.md              # you are here
+├── LICENSE
+└── tests/                 # offline test harness (worker / bp-test parity)
 ```
 
-`tacit.html` is the entire client. It pulls `@noble/secp256k1`, `@noble/hashes`,
-and `@scure/base` from `esm.sh` at runtime; everything else (Pedersen
-commitments, bit-decomposition rangeproof, BIP-340 Schnorr, BIP-341 Taproot,
-envelope encode/decode, Mimblewimble kernel sig, ECDH-derived blindings,
-encrypted-amount keystreams, recursive validator, P2WPKH wallet) is inline.
+`dapp/` contains three loaded JS files: `tacit.js` (the app), `vendor/
+tacit-deps.min.js` (noble + scure + sats-connect, bundled), and the inline
+HTML. All three load same-origin only — a meta-CSP in `tacit.html` locks
+`script-src 'self'` (no `'unsafe-inline'`, no third-party origins), so
+nothing runs in the wallet's JS realm except code under the same IPFS CID.
+Pinning the `dapp/` directory yields one CID covering every byte of
+trust-bearing code. `connect-src` is locked down too: the only network
+endpoints reachable at runtime are `mempool.space` and `blockstream.info`
+(the second-Esplora divergence watchdog), the configured worker, and the
+IPFS gateway. `img-src` is `'self' data: https://content.wrappr.wtf` —
+direct `https://` images in CETCH envelopes are rejected on purpose, since
+they would be IP-correlation beacons for asset viewers.
+
+`build/` is dev-time only. Run `cd build && npm install && npm run build`
+when you bump deps or want fresh SRI hashes. Editing `dapp/tacit.html`
+or `dapp/tacit.js` directly does not require a build — both are served
+as-is, and the runtime KAT inside catches any drift between the bundle and
+what tacit expects.
 
 The `worker/` directory holds an optional Cloudflare Worker that provides
 demo conveniences (image pinning to IPFS, signet faucet drip, asset
 directory). **The Worker holds no trust-bearing logic.** Setting
-`WORKER_BASE = ''` at the top of `tacit.html` disables it entirely; the
-protocol still works.
+`WORKER_BASE = ''` at the top of `dapp/tacit.html` disables it entirely;
+the protocol still works.
 
 ---
 
@@ -125,8 +214,10 @@ ETCH (one-time, mints a new asset)
  commit-tx → P2TR output committed to envelope
  reveal-tx → spends P2TR via script-path, exposes envelope in witness:
 
-     CETCH || ticker || decimals || C(33B) || rangeproof(5152B)
-            || amount_ct(8B) || image_uri(≤256B)
+     CETCH || ticker || decimals || C(33B) || amount_ct(8B)
+            || rangeproof(~688B m=1 bulletproof, n=64)
+            || mint_authority(32B, all-zero = non-mintable)
+            || image_uri(≤256B)
 
    C = supply·H + r·G        (Pedersen commitment to supply)
    amount_ct = supply ⊕ HMAC(etcher_priv, "tacit-etch-amount-v1" ‖ anchor)
@@ -143,8 +234,11 @@ TRANSFER
  commit-tx → P2TR output committed to envelope
  reveal-tx → spends commit-tx + asset UTXO(s); envelope:
 
-     CXFER || asset_id || kernel_sig(64B) || N || (C_i, rangeproof_i, amount_ct_i)*N
+     CXFER || asset_id || kernel_sig(64B) || N
+           || (C_i, amount_ct_i)*N
+           || aggregated_rangeproof    (one bulletproof for all N outputs)
 
+   N ∈ {1, 2, 4, 8} (power of 2 for aggregation)
    r_recipient = HMAC(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout)
    r_change    = HMAC(sender_priv,                       "tacit-change-v1" ‖ anchor ‖ vout)
    amount_ct   = amount ⊕ keystream  (ECDH-derived for recipient, self-derived for change)
@@ -154,17 +248,46 @@ TRANSFER
    kernel_sig verifies under E'.xonly() — proves Σa_out = Σa_in without revealing amounts
 
 
+MINT (mintable assets only)
+───────────────────────────
+ Same commit-reveal pattern, envelope:
+
+     T_MINT || asset_id || etch_txid || C(33B) || amount_ct(8B)
+            || rangeproof(~688B) || issuer_sig(64B)
+
+   issuer_sig = BIP-340 over sha256("tacit-mint-v1" ‖ asset_id ‖ commit_anchor ‖ C ‖ amount_ct)
+                under mint_authority's privkey
+   (commit_anchor binding prevents envelope replay into a different commit/reveal pair)
+
+
+BURN
+────
+ Same commit-reveal pattern, envelope:
+
+     T_BURN || asset_id || burned_amount(8B, public) || kernel_sig(64B) || N
+           || (C_i, amount_ct_i)*N        # change outputs (N=0 = full burn)
+           || aggregated_rangeproof       # omitted if N=0
+
+   E' = ΣC_out + burned_amount·H − ΣC_in
+   kernel_sig verifies under E'.xonly()
+
+
 VALIDATION (recursive, browser-side)
 ────────────────────────────────────
  For each wallet UTXO:
    1. Decode envelope at parent_tx.vin[0].witness[1]
-   2. If CXFER, recursively validate every input outpoint
-   3. Verify all rangeproofs (~350ms each)
-   4. Verify asset_id consistency across inputs
-   5. Verify kernel_sig under (ΣC_out − ΣC_in).xonly()
-   6. Resolve own (amount, blinding) via local cache OR trial-decrypt amount_ct
+   2. If CETCH:    verify rangeproof; record metadata
+   3. If T_MINT:   recursively validate the CETCH ancestor;
+                   verify issuer_sig (with commit_anchor binding); verify rangeproof
+   4. If CXFER/BURN:
+       a. recursively validate every input outpoint
+       b. verify aggregated rangeproof for outputs (skip if BURN with N=0)
+       c. verify asset_id consistency across all input parents
+       d. verify kernel_sig under (ΣC_out + burned·H − ΣC_in).xonly()
+   5. Resolve own (amount, blinding) via local cache OR trial-decrypt amount_ct
 
- Memoized; O(N) over chain depth N.
+ Memoized; O(N) over chain depth N. Optimistically batches all rangeproofs
+ across the walk into a single multi-scalar multiplication.
 
 
 RECOVERY
@@ -174,23 +297,24 @@ RECOVERY
    - As recipient (ECDH against sender pubkey at vin[1].witness[1])
    - As own change      (self-derived keystream)
    - As own etched supply (self-derived from commit input outpoint anchor)
+   - As own minted supply (same anchor pattern, different domain string)
 ```
 
-For more detail, open the dApp and read the **Protocol** tab — the
-on-page docs spell out the wire format, attack vectors, blinding
-delivery, and trust model.
+For more detail, open the dApp and read the **Protocol** tab — the on-page
+docs spell out the wire format, attack vectors, blinding delivery, and
+trust model.
 
 ---
 
 ## Running the dApp
 
-The dApp is a single HTML file. There's no build step.
+The dApp is a single HTML file plus its vendored bundle.
 
 ### Locally (fastest path)
 
 ```sh
 # any static file server works
-cd tacit/
+cd tacit/dapp
 python3 -m http.server 8000
 # open http://localhost:8000/tacit.html
 ```
@@ -201,9 +325,9 @@ endpoints out of the box.
 
 ### Hosted
 
-Drop `tacit.html` on Cloudflare Pages, GitHub Pages, Vercel, or any
-static host. There are no env vars or build flags — the Worker URL and
-IPFS gateway are set at the top of the script:
+Pin the `dapp/` directory to IPFS, or drop it on Cloudflare Pages, GitHub
+Pages, Vercel, or any static host. There are no env vars or build flags —
+the Worker URL and IPFS gateway are set at the top of the script:
 
 ```js
 const WORKER_BASE  = 'https://tacit-pin.rosscampbell9.workers.dev';
@@ -213,47 +337,111 @@ const IPFS_GATEWAY = 'https://content.wrappr.wtf/ipfs/';
 Once you know your hosted origin, narrow `ALLOWED_ORIGINS` in
 `worker/wrangler.toml` to it, then `wrangler deploy`.
 
+### Refreshing the vendor bundle
+
+Run only when bumping crypto dep versions or wanting fresh SRI hashes.
+
+```sh
+cd tacit/build
+npm install
+npm run build
+# prints SHA-384 of dapp/vendor/tacit-deps.min.js and dapp/tacit.html
+```
+
+See `build/README.md` for details.
+
 ---
 
 ## Using the dApp
 
-1. **Wallet.** A signet privkey is auto-generated on first load and stored
-   in `localStorage`. Export/import via the buttons; new wallet wipes and
-   regenerates.
-2. **Get sats.** Click ⚡ Demo drip — single round trip, no captcha. (If the
-   faucet is empty, the Manual faucet button opens public signet faucets as
-   a fallback.)
+1. **Sign in / set up a wallet.** Three paths, pick whichever fits:
+   - **Connect an external wallet** (Xverse / UniSat / Leather) — tacit derives
+     a per-wallet identity stored in this browser and binds it to that wallet's
+     address. Reconnecting from this browser restores it.
+   - **Import a privkey** — paste the 64-hex from any source.
+   - **Auto-generated** — the dApp creates a key on first load (handy for
+     signet demos with the faucet).
+
+   Whichever path you pick, the in-page privkey is **encrypted at rest in
+   localStorage** — AES-GCM with a passphrase-derived key (PBKDF2-SHA256,
+   600k iterations per OWASP 2023). On every load the dApp prompts for the
+   passphrase to unlock. Forgetting the passphrase = losing the wallet, so
+   **export the privkey separately** via Wallet → Export key — that's the
+   real recovery path. Mainnet operations gate every value-creating action
+   behind a "have you exported the key?" acknowledgement.
+2. **Get sats.** On signet, click ⚡ Demo drip — single round trip, no
+   captcha. (If the faucet is empty, the Manual faucet button opens public
+   signet faucets.) On mainnet, click **Fund tacit** in the connect panel
+   for one-click funding from your external wallet, or send sats to the
+   tacit address shown on the Wallet tab from any Bitcoin wallet.
 3. **Etch.** Pick a ticker, supply, decimals (0–8). Optionally upload an
-   image and add description / external URL — the dApp pins a JSON metadata
-   blob to IPFS and stores its CID in the envelope. Click Preview, then
-   Etch & broadcast. Two transactions go out (commit + reveal); the second
-   confirms in ~10 minutes on signet.
+   image and add description / external URL — the dApp pins a JSON
+   metadata blob to IPFS and stores its CID in the envelope. Mark
+   **Mintable** if the etcher pubkey should be allowed to issue more supply
+   later (permanent decision; loss of the in-page privkey freezes supply
+   forever). Click Preview, then Etch & broadcast. Two transactions go out
+   (commit + reveal); the second confirms in ~10 minutes on signet.
 4. **Transfer.** Pick an asset, paste recipient's pubkey (they read it off
    their own Wallet tab), enter an amount. Click Preview, then Transfer &
    broadcast. The recipient auto-discovers the balance on next scan via
    the on-chain encrypted-amount field.
-5. **Holdings.** Lists your assets with images, descriptions, balances.
-   ↻ Rescan UTXOs forces re-validation. ⌕ Discover lists every asset
-   etched on signet (cached by the Worker's cron).
+5. **Mint.** Mintable asset only — issues additional supply, signed by the
+   mint_authority key (the etcher's in-page privkey). Re-uses the
+   commit-reveal flow.
+6. **Burn.** Any holder. Destroys part or all of their balance with a
+   public `burned_amount` so observers can audit supply reduction.
+7. **Holdings.** Lists your assets with images, descriptions, balances.
+   ↻ Rescan UTXOs forces re-validation. **Per-asset card actions** include:
+   - **Send privately / Burn / Mint more** (core CXFER / BURN / MINT flows).
+   - **Reveal supply / Reveal mints** — etcher / mint-authority publish their
+     openings to the worker so anyone in Discover sees ✓ verified supply.
+   - **Publish balance** — pin the per-UTXO `(amount, blinding)` openings to
+     the worker; signed by your wallet so a CXFER counterparty who learned
+     the opening can't dox you. Permanent — once on the worker, it's there.
+   - **Prove ≥ threshold** — generate a bulletproof showing balance ≥ X
+     without revealing the exact amount (range disclosure, SPEC §5.6).
+   - **List a UTXO for sale** — public OTC listing with the per-UTXO
+     opening + price + expiry + maker payment address.
+   - **List (hidden balance)** — same shape but the proof is "`balance ≥ K`"
+     instead of full opening; other UTXOs stay confidential.
+   - **Atomic (targeted)** — partial-reveal-as-JSON for a specific known
+     recipient pubkey. Settles atomically when the taker pastes + finalizes.
+   - **Atomic intent (open)** — publish a generic atomic offer on the
+     Market tab for any taker to claim and atomically settle.
+8. **Discover.** Lists every asset etched on the active network. Filter by
+   ticker / asset_id; pills for `mintable` / `attested` / `recent` narrow
+   the view. Each asset card surfaces verified supply, mint history, burn
+   totals, and (when available) circulating-supply math.
+9. **Market.** Aggregate marketplace across all assets. Three listing kinds:
+   - 🟢 **opening** — exact-amount listing (OTC settlement)
+   - 🟢 **≥ range** — range-disclosed listing (OTC settlement, exact balance hidden)
+   - 🟣 **⚡ atomic intent** — browse-and-take with single-Bitcoin-tx settlement
+   Filters: ticker / asset_id, kind, price min/max, sort by recency or
+   price. Take + Verify buttons run full client-side validation (sigs,
+   ownership, Pedersen for openings / bulletproof for ranges, UTXO
+   liveness) before any commitment. Atomic intent tiles surface the
+   relevant button based on your role: Claim if untaken, Fulfil if it's
+   yours and a claim is pending, Take when fulfilment is ready.
 
 ### Recovery sanity check
 
 Open the dApp in a fresh incognito window. Import your privkey via the
 Import key button. ↻ Rescan UTXOs. Your full balance — across received
-transfers, your own etches, and your change — should reappear from chain
-data alone.
+transfers, your own etches, your own mints, and your change — should
+reappear from chain data alone.
 
 ---
 
 ## Trust model
 
-| What you trust                    | For what                                             | Mitigation if compromised                                          |
-| --------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------ |
-| Bitcoin (signet)                  | Tx ordering, no double-spends, witness data integrity | None — it's the bottom layer                                       |
-| `mempool.space` API               | Returning real chain data                             | Swap for any other Bitcoin node API                                |
-| The `tacit.html` file you loaded  | Implementing the validation rules correctly          | Re-host, audit; pin by content hash                                |
-| The asset's etcher                | The supply they announced                             | Out of scope — same as any centralized stablecoin issuer            |
-| `@noble/secp256k1` from `esm.sh`  | Crypto code matching what was published              | Vendor it (replace `https://esm.sh/...` with a local copy)          |
+| What you trust                            | For what                                                                              | Mitigation if compromised                                                                  |
+| ----------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Bitcoin (signet / mainnet)                | Tx ordering, no double-spends, witness data integrity                                  | None — it's the bottom layer                                                              |
+| `mempool.space` API (primary) + `blockstream.info` (watchdog) | Returning real chain data                            | A 5-min divergence watchdog cross-checks tip heights between the two endpoints; ≥3-block disagreement surfaces a top-of-page banner so a single-endpoint outage or tampering is visible. Swap either for any Esplora-compatible API by editing `NETWORKS` in `dapp/tacit.js`. |
+| The `tacit.html` file you loaded          | Implementing the validation rules correctly                                            | Re-host, audit; pin by IPFS CID — the runtime KAT in `runStartupKAT()` is independent defense |
+| `dapp/vendor/tacit-deps.min.js` (vendored) | Crypto code matching what was published                                                | Bundle is pinned alongside `tacit.html` under one IPFS CID; rebuild and re-pin if upstream npm packages change |
+| The asset's etcher                        | *Confidential-supply assets only:* the supply they announced. *(Mintable assets:)* their use of the mint_authority key. | The dApp publishes `(supply, blinding)` to IPFS-embedded metadata by default; for attested assets supply is cryptographically verifiable from chain + IPFS alone. The "centralized-stablecoin" trust model only applies when the issuer explicitly opts out of attestation. Mintable assets retain mint-key trust regardless. |
+| The in-page tacit privkey                 | Signing every tacit op (P2WPKH spend, taproot script-path, kernel sig, mint authority) — whichever path put a key in the page (auto, imported, or locally bound to an external wallet address) | **AES-GCM encrypted at rest** with a passphrase-derived key (PBKDF2-SHA256, 600k iterations); unlocked per session. Defends against localStorage exfiltration (malicious extensions, stolen unlocked devices). Export the raw privkey separately via Wallet → Export key — that's the recovery path if the passphrase is lost. |
 
 The Worker is a **convenience cache**, not a trust target. Setting
 `WORKER_BASE = ''` disables it; the protocol still works (no auto-faucet,
@@ -267,37 +455,261 @@ validates and transfers correctly).
 Tacit hides **amounts**. It does not hide:
 
 - Address graph (sender/recipient bitcoin addresses are visible).
-- Asset ID (the 32-byte asset_id is in every CXFER envelope).
+- Asset ID (the 32-byte asset_id is in every CXFER / T_MINT / T_BURN envelope).
 - Sender pubkey (visible at `tx.vin[1].witness[1]` — the recipient needs it
   for ECDH blinding recovery).
 - Tx graph (inputs and outputs are linkable like any UTXO chain).
+- Burn amounts (T_BURN's `burned_amount` is public for auditability).
 
 This is strictly weaker than Mimblewimble (which hides the tx graph via
 cut-through) and weaker than Liquid CT with surjection proofs (which hides
-asset_id). It's the same scope as Liquid CT without surjection proofs.
+asset_id). It's the same scope as Liquid CT without surjection proofs:
+amount-hiding only.
 
 ---
 
 ## Known limitations / roadmap
 
-- **Range is 32-bit.** Supply per asset_id is capped at 4.29 × 10⁹ base
-  units. With 6 decimals (USDC-style) that's ~$4,294 max issuance. This is
-  a per-asset cap, not a per-UTXO cap — wallets split balances across UTXOs
-  the same way Bitcoin already does. The fix is bulletproofs at 64-bit
-  range, which is also a 7× witness compression.
-- **Bit-decomposition rangeproofs are 5,152 bytes per output.** A 2-output
-  CXFER witness is ~10 KB. At signet rates this is invisible; at mainnet
-  rates (≥10 sat/vB) this would be $5–25 per transfer until bulletproofs.
+- **Witness size.** ~10 KB per CXFER (m=2) at current bulletproof sizes. At
+  mainnet 10 sat/vB, ~$1–3 per transfer. Bulletproofs+ (~17% smaller) is a
+  v1.5 candidate.
 - **Recursive validation is O(chain depth) on cold cache.** Memoized within
   a session; mobile users on deep chains will struggle. A persistent
   validator cache would be a real production add — currently out of scope.
-- **localStorage is the wallet.** Demo-grade. Use a fresh signet key, never
-  reuse with mainnet funds.
-- **Issuer trusts.** The CETCH supply commitment is hidden, so there's no
-  cryptographic check on the etcher's announced supply. Downstream of etch,
-  no one can inflate, but the etcher could lie about how much they minted.
-- **Single-asset CXFER only.** No multi-asset transfers, no swaps in one
-  envelope.
+- **localStorage is the wallet.** Whichever path placed the privkey in the
+  page (auto, imported, or locally bound to an external wallet address),
+  `localStorage` is what persists it. Mainnet UX gates every value-creating
+  op behind an explicit key-export acknowledgement; hardware-wallet
+  integration for the protocol's signing paths (kernel sig, taproot
+  script-path, HMAC-blinding) is the proper long-term mitigation but not in
+  v1.
+- **Per-network wallet identities.** Signet and mainnet use independent
+  localStorage keys (`tacit-wallet-v1:signet`, `tacit-wallet-v1:mainnet`,
+  plus `:by:<extAddr>` variants when bound to a connected wallet). A
+  signet test compromise does NOT blast-radius into mainnet, but it also
+  means flipping networks shows a fresh empty wallet by default — the
+  dApp surfaces a one-time toast on the first cross-network flip
+  explaining this. Use `Import key` on the destination network to carry a
+  single identity across both.
+- **Lost mint key = permanent fixed supply.** No recovery mechanism for the
+  mint authority. Mintable etches force a key-export step before broadcast.
+- **Issuer trust** (*for confidential-supply assets only*). Pedersen hides
+  the supply, so unless the issuer publishes `(supply, blinding)` there's
+  nothing to verify the announcement against. The dApp ships with the
+  "Publish supply opening" checkbox on by default — the opening is embedded
+  into the asset's IPFS metadata blob (content-addressed, worker-
+  independent) and also POSTed to the worker's `/attest` cache for fast
+  Discover paint. Issuers who want the centralized-stablecoin trust model
+  uncheck the box explicitly. Mints are auto-attested by default too (per-
+  asset opt-out via `localStorage`). For attested non-mintable assets,
+  total supply is provably and permanently public.
+- **Single-asset transfers only.** No multi-asset CXFER (e.g.,
+  USDA ↔ GOLDC swap in one envelope). The wire format would need a new
+  opcode (e.g., `T_CXFER_MULTI`) with per-asset kernel sigs sharing one
+  aggregated bulletproof. v2 territory.
+- **Atomic settlement is whole-UTXO only.** Both atomic flows (`T_AXFER`
+  targeted offers and atomic intents) sell a complete UTXO; partial fills
+  require pre-splitting via Send Privately into a UTXO of the listed
+  amount, then listing the resulting UTXO. The constraint comes from the
+  `SIGHASH_SINGLE_ACP` discipline — see SPEC §5.7.3.
+- **Atomic intents need maker liveness.** The maker has to actively click
+  "Fulfil" within the 30-min claim window after a taker claims their
+  intent. If they're offline, the claim expires and the slot returns to
+  "open." Acceptable for OTC pace; a market-maker bot would need to keep
+  the dApp open or run a fulfilment automaton.
+- **Abandoned commits aren't auto-reclaimed.** If an atomic intent
+  expires unclaimed, the commit P2TR sits unspent on chain. The maker can
+  reclaim manually by spending it via the script-path with the envelope as
+  the leaf — the dApp doesn't yet expose a one-click button for this. Cost:
+  the commit tx fee (~$0.10–1 mainnet).
+
+---
+
+## Future directions
+
+Concepts the protocol enables but the v1 dApp doesn't build. Sketched here so the
+shape is on record.
+
+### Confidential wrapped BTC (`cBTC`)
+
+A tacit asset where 1 unit = 1 satoshi, transferable confidentially on
+Bitcoin. Same idea as wBTC on Ethereum, but with **per-transfer amounts
+hidden** — observers see "some amount of cBTC moved between two
+addresses" but never the value.
+
+Buildable today on existing primitives, no protocol changes:
+
+```
+mint  : user sends BTC → bridge address → bridge T_MINTs cBTC to user's tacit pubkey
+hold  : cBTC sits in user's wallet as a confidential UTXO
+xfer  : user sends cBTC to anyone via standard CXFER — amount hidden
+redeem: user CXFERs cBTC to bridge → bridge ECDH-decrypts the opening →
+        bridge sends N sats of real BTC back to a payout address
+```
+
+**Setup.** Etch `cBTC` mintable, decimals=8, mint_authority = bridge's pubkey.
+The bridge runs a deposit watcher (cron over a known Bitcoin address) and a
+redemption processor (scans incoming CXFERs to its tacit pubkey, decodes the
+opening via ECDH, sends BTC out).
+
+**Trust model.** Same as wBTC / USDC — the bridge is custodial. It can rug,
+pause, or mint without backing. The protocol guarantees only "no inflation
+downstream of `T_MINT`" — issuer honesty about the BTC reserves is
+out-of-band. The dApp's existing `(supply, blinding)` attestation flow makes
+proof-of-reserves trivial for the bridge: total cBTC minted is publicly
+attested; total BTC locked at the deposit address is publicly verifiable
+on-chain; the ratio should be ≤ 1.
+
+**What's better than wBTC.** Every wBTC transfer publishes its value on
+Ethereum/Solana. cBTC transfers publish only the asset_id and address graph
+— amounts stay confidential. For payroll, treasury moves, or
+privacy-conscious payments, this is a meaningful upgrade.
+
+**What atomic settlement adds.** Once cBTC exists in the network, holders
+can swap it for real BTC **trustlessly** via `T_AXFER` listings — no bridge
+involvement, no custodian for the trade itself. The bridge is only the
+edge: mint and redeem. Internal trading is trustless. Liquidity providers
+arbitrage the bridge spread on the open market.
+
+**MVP shape:** ~500 LOC of bridge code (deposit watcher + redemption
+processor + proof-of-reserves attestation cron) + a small client UI for
+deposit/redemption flows. Deploy alongside the existing tacit Worker;
+share the asset registry. Maybe a week of focused work.
+
+**What this can't be (yet).** Trustless wrapping — BTC locked in a script
+that releases only when a corresponding cBTC burn is observed by Bitcoin
+consensus — requires Bitcoin-layer primitives that don't exist in stable
+form: federated multisig (Liquid-style; still trust, just spread), a soft
+fork (OP_CAT/CTV covenants, BIP-300 drivechains), or BitVM-style ZK proofs
+in tapscript. None of these are tacit-protocol problems; tacit can host the
+asset, but the peg's trustlessness is upstream.
+
+### Receiver privacy via BIP-352 Silent Payments
+
+Hide the **address graph** — every payment to a recipient lands at a fresh
+one-time address, so an observer can't link "Alice's address has 17 USDA
+txs" because there's no recurring address to link. Composable with v1
+amount-only privacy; not a replacement for it.
+
+```
+recipient publishes: sp1<scan_xpub><spend_xpub>   (one static address)
+sender derives:      shared = ECDH(sender_priv, scan_pub)
+                     one_time_pub = spend_pub + tweak(shared)·G
+                     CXFER vout[0] → P2WPKH(hash160(one_time_pub))
+recipient scans:     for each Taproot output, derive expected one_time_pub
+                     from (scan_priv, sender_pub); match → it's mine
+```
+
+**Tacit composition is clean.** Tacit's existing recipient blinding is
+`HMAC(ECDH(sender_priv, recipient_pub).x, …)` — the BIP-352 derivation
+already produces the same shared secret as a side effect, so we'd thread
+it through both paths. No protocol change to CXFER, no envelope change,
+no kernel-sig change.
+
+**Forward-compat for existing tokens: full.** Tokens etched today live at
+standard P2WPKH addresses and stay valid forever. BIP-352 is a per-receive
+opt-in: a recipient publishes a `sp1...` address if they want stealth,
+their traditional pubkey continues to work for senders that don't support
+silent payments. Existing wallets keep their privkey — it becomes
+`spend_priv`; a sibling `scan_priv` derives via BIP-32 from the same
+seed.
+
+**Effort: ~4–6 weeks.** ~300 LOC of crypto (well-spec'd, reference impls
+exist), ~250 LOC of two-key wallet UX, ~50 LOC of tacit blinding
+composition. **The real cost is the scanner**: BIP-352 receivers need to
+check every Taproot output on chain for a tweak match. Light-client
+filters (BIP-158) narrow the candidate set; for serious adoption, an
+indexer service (or "view server" pattern using the scan key) is
+required. ~400 LOC of scanner integration on top.
+
+**Tradeoff vs v1 baseline.** Today: amounts hidden, address graph
+public. With BIP-352 layered on: amounts hidden + address graph
+unlinkable per-payment, at the cost of recovery time (scanner has to
+walk every recent Taproot output, not just `getUtxos(my_addr)`).
+Chain analysts lose the "Alice's address transacted 17 times in USDA"
+view.
+
+**Defer until.** BIP-352 wallet adoption hits critical mass — Cake,
+BlueWallet, Sparrow are shipping native support in early 2026; once
+5+ wallets ship and a public silent-payment indexer landscape stabilizes,
+integration shifts from "build from scratch" to "use existing
+infrastructure." Likely 6–12 months out.
+
+### Asset_id privacy via Asset Surjection Proofs (ASPs)
+
+Hide **which token** is moving. Currently every CXFER envelope publishes
+the `asset_id` cleartext; an observer who looks up the asset in Discover
+sees "this is a USDA transfer." ASPs replace the universal Pedersen value
+generator `H` with a per-asset blinded generator `H_a`, and add a
+ring-signature-style ZK proof that the output uses one of the input
+assets' generators — without revealing which.
+
+```
+v1 commitment:  C = a·H + r·G          (universal H, asset_id cleartext)
+v2 commitment:  C = a·H_a + r·G        (per-asset H_a derived from asset_id)
+v2 envelope:    surjection_proof(33B + ~1.5KB) — proves output asset ∈ input assets
+```
+
+This is the Liquid CT mechanism. `libsecp256k1-zkp` has the reference
+implementation we'd port, alongside whatever bulletproof migration we end
+up doing for the audit story.
+
+**Forward-compat for existing tokens: partial.**
+- ✓ **Spendability is forever.** v1 tokens continue to work via the
+  existing `CXFER` opcode against the universal `H`. The validator handles
+  both opcodes (`CXFER` for v1, `T_CXFER_PRIV` for v2) interchangeably as
+  ancestors of any future descendant.
+- ✗ **No automatic privacy upgrade.** v1 commitments use universal `H`;
+  the math doesn't bridge. To gain ASP privacy, holders go through a
+  burn-and-remint redemption — issuer of a mintable token offers a 1:1
+  v1→v2 exchange. Same pattern Liquid uses for asset migrations. Etch
+  mintable today if you want issuer-side optionality for a v2 redemption
+  flow later.
+
+**Effort: ~10–12 weeks engineering + audit.**
+
+| Component | LOC | Time |
+|---|---|---|
+| Per-asset H_a derivation | ~100 | 2 days |
+| Surjection prover + verifier (port from libsecp256k1-zkp) | ~700 | 3 weeks |
+| Wire format + new opcode `T_CXFER_PRIV` | ~200 | 1 week |
+| Validator + recovery + indexer changes | ~400 | 2 weeks |
+| Tests + adversarial cases | ~500 | 2 weeks |
+| Audit (new ZKP system) | — | 4–8 weeks parallel |
+
+**Tradeoff vs v1 baseline.**
+- **Privacy gain:** all transfers across all assets become
+  indistinguishable at the asset-type level. Stablecoin issuer can no
+  longer be pattern-matched ("USDV is moving 10× more than DAIA today");
+  treasury holdings of which asset stay private.
+- **Witness size grows ~1.5–2 KB** per CXFER → ~$2–4/tx mainnet, vs.
+  ~$1–3 today.
+- **Recovery is slower:** the recipient no longer reads `asset_id` from
+  the envelope cleartext; they trial-decrypt against asset_ids they know
+  about. Acceptable for wallets holding 1–10 assets, slower for "scan
+  every asset_id in the registry."
+- **Marketplace listings have to publish asset_id cleartext** — listings
+  inherently expose the asset (otherwise buyers can't filter). So ASPs
+  hide *transfers* in the wild; they don't hide *listings*.
+- **Audit cost roughly doubles.** A second ZKP system on top of
+  bulletproofs + kernel sigs is more code under audit; consider this
+  parallel to the bulletproof-correctness audit, not stacked.
+
+**Defer until.** A real issuer asks for asset_id privacy as a launch
+requirement (for a privacy-focused stablecoin, mining-pool payouts, or
+multi-asset market-maker desks who don't want flow-pattern leaks). Until
+then the privacy axis most issuers actually want — and that the dApp
+already provides — is amount privacy on transfer. The discovery channel
+for ASPs is "first issuer who explicitly asks"; until then, building it
+is speculative.
+
+**Etching today is safe regardless.** Use mintable etches (with multisig
+mint authority once we ship that UX, single-key today as a tradeoff) if
+you want to leave the door open to offer a v1→v2 redemption later. Fixed-
+supply etches stay v1 forever — that's fine; they keep amount privacy
+which is the v1 main feature, they just don't gain asset_id privacy
+later. For tokens treated as a public brand (most stablecoin / treasury
+cases), this is no loss.
 
 ---
 
@@ -306,20 +718,36 @@ asset_id). It's the same scope as Liquid CT without surjection proofs.
 The Worker holds three secrets — `PINATA_JWT`, `FAUCET_PRIV` (signet only),
 and the configured CORS allowlist. It exposes:
 
-| Endpoint        | Method | Purpose                                                           |
-| --------------- | ------ | ----------------------------------------------------------------- |
-| `/pin`          | POST   | Image upload to IPFS via Pinata                                    |
-| `/pin-json`     | POST   | Metadata-blob pin (used when etching with description / URL)        |
-| `/drip`         | POST   | Send 20K signet sats to `{address}` — 1/IP/day, 1/addr/day         |
-| `/balance`      | GET    | Faucet wallet's signet balance + funding address                  |
-| `/assets`       | GET    | List of all known etched assets (cron-populated)                   |
-| `/assets/:id`   | GET    | Single asset metadata                                              |
-| `/scan`         | POST   | Manual scan trigger (debug)                                        |
-| `/rescan`       | POST   | Rewind `meta:last_scanned` to a given height (debug, `?from=<h>`)   |
-| _scheduled_     |        | `*/5 * * * *` — scan recent signet blocks for new CETCH envelopes  |
+| Endpoint                          | Method | Purpose                                                            |
+| --------------------------------- | ------ | ------------------------------------------------------------------ |
+| `/pin`                            | POST   | Image upload to IPFS via Pinata                                    |
+| `/pin-json`                       | POST   | Metadata-blob pin (used when etching with description / URL)        |
+| `/drip`                           | POST   | Send 20K signet sats to `{address}` — 1/IP/day, 1/addr/day         |
+| `/balance`                        | GET    | Faucet wallet's signet balance + funding address                   |
+| `/assets`                         | GET    | List of all etched assets + per-asset mint history (cron-populated) |
+| `/assets/:id`                     | GET    | Single asset metadata + mint events + burn events                   |
+| `/assets/hint`                    | POST   | Targeted index of a fresh etch / mint / burn pre-confirmation       |
+| `/assets/:id/attest`              | POST   | Discovery cache for etch attestation. Worker re-verifies `C == supply·H + r·G` before storing. **Primary** distribution is the IPFS metadata blob at the envelope's `image_uri` — see SPEC §7.3; this endpoint is just a cache for fast Discover paint. |
+| `/assets/:id/mints/:txid/attest`  | POST   | Same shape, for T_MINT events. dApp auto-attests by default. |
+| `/assets/:id/openings`            | GET    | List per-UTXO `(amount, blinding)` openings holders have voluntarily published (cache-only, optional). |
+| `/utxos/:txid/:vout/opening`      | GET    | Single-UTXO opening lookup. |
+| `/assets/:id/disclosures`         | GET / POST | Range disclosures (`balance ≥ K` proofs) per SPEC §5.6. Worker verifies Schnorr sig + on-chain ownership before storing; consumers MUST re-verify the bulletproof client-side. |
+| `/assets/:id/listings`            | GET / POST | Per-UTXO marketplace listings (opening-based). Worker stores listing terms + opening proof; settlement is OTC. |
+| `/assets/:id/listings/:txid/:vout`             | DELETE | Maker cancels a listing (signed). |
+| `/assets/:id/listings/:txid/:vout/claim`       | POST   | Taker locks a listing for 30 min so two takers can't both pay. |
+| `/assets/:id/listings-range`      | GET / POST | Range-disclosed listings (`balance ≥ K`). Maker proves a lower bound on their balance without revealing the exact amount; other UTXOs stay confidential. OTC settlement, same as above. |
+| `/assets/:id/listings-range/:owner_pubkey`     | DELETE | Maker cancels (signed). |
+| `/assets/:id/listings-range/:owner_pubkey/claim` | POST   | Taker locks (30 min). |
+| `/assets/:id/atomic-intents`      | GET / POST | Atomic intents — trustless single-Bitcoin-tx settlement (SPEC §5.7.6). Maker pre-broadcasts a commit tx + posts intent metadata + cleartext recipient blinding. Browse-and-take. |
+| `/assets/:id/atomic-intents/:intent_id`        | DELETE | Maker cancels (signed). |
+| `/assets/:id/atomic-intents/:intent_id/claim`  | POST   | Taker locks for 30 min (signed). |
+| `/assets/:id/atomic-intents/:intent_id/fulfilment` | GET / POST | Maker uploads a partial reveal targeted at the claimant's pubkey (signed). Taker fetches and broadcasts atomically. |
+| `/scan`                           | POST   | Manual scan trigger (debug)                                        |
+| `/rescan`                         | POST   | Rewind `meta:last_scanned` to a given height (debug, `?from=<h>`)   |
+| _scheduled_                       |        | `*/5 * * * *` — scan recent signet AND mainnet blocks for CETCH, T_MINT, and T_BURN envelopes |
 
 Setup steps live in `worker/README.md`. Deploy your own (and update
-`WORKER_BASE` in `tacit.html`) if you want isolated keys / quota.
+`WORKER_BASE` in `dapp/tacit.html`) if you want isolated keys / quota.
 
 ---
 
@@ -327,8 +755,8 @@ Setup steps live in `worker/README.md`. Deploy your own (and update
 
 - Pedersen commitments + Mimblewimble kernel sigs — Maxwell, Poelstra,
   Jedusor.
-- Bit-decomposition rangeproof with Borromean ring sig — Maxwell &
-  Poelstra, "Confidential Transactions" (2015).
+- Aggregated Bulletproofs — Bünz, Bootle, Boneh, Poelstra, Wuille, Maxwell
+  (2017).
 - BIP-340 Schnorr / BIP-341 Taproot — Wuille, Nick, Towns.
 - The "indexer-validated meta-protocol" framing comes from Runes / Ordinals;
   tacit is a CT-flavored cousin in the same family.

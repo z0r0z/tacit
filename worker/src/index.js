@@ -1,13 +1,60 @@
 // tacit-pin Worker
+//
+// All network-scoped endpoints accept ?network=signet|mainnet. The query
+// default is signet so older clients calling /assets without the query
+// keep working unchanged; the current dapp explicitly sends ?network=mainnet.
+// KV keys are namespaced per network: signet keeps its legacy unprefixed form
+// (asset:<aid>), mainnet uses asset:mainnet:<aid>.
+//
 // Endpoints:
 //   POST /pin               — upload an image; returns { cid, size }
-//   GET  /balance           — faucet wallet balance + address
-//   POST /drip { address }  — send DRIP_SATS to a signet address
-//   GET  /assets            — list all known tacit-etched assets on signet
+//   GET  /balance           — faucet wallet balance + address (signet only)
+//   POST /drip { address }  — send DRIP_SATS to a signet address (signet only)
+//   GET  /assets            — list etched assets on the requested network
+//                              optional ?limit=N (default unbounded, max 1000)
+//                              optional ?mints=0 to skip per-asset mint history
 //   GET  /assets/:asset_id  — single asset's metadata
-//   POST /scan              — manually trigger a registry scan (debug)
-//   POST /rescan?from=<h>   — rewind meta:last_scanned so next tick re-scans from height <h> (debug)
-// Scheduled (cron */5 * * * *): scan recent signet blocks for new CETCH envelopes.
+//   POST /assets/hint       — { reveal_txid, reveal_vout? } targeted index of a
+//                              fresh etch/mint so it appears immediately without
+//                              waiting on the cron tick. Works pre-confirmation.
+//   POST /assets/:asset_id/attest — etcher publishes (supply, blinding) opening; worker verifies
+//                                   C == supply·H + r·G against the on-chain commitment.
+//   POST /assets/:asset_id/mints/:mint_txid/attest — issuer publishes (mint_amount, mint_blinding)
+//                                   for a specific T_MINT event. Same semantics as etch attest.
+//   POST /utxos/:txid/:vout/opening — UTXO holder publishes (amount, blinding) opening for any
+//                                   tacit UTXO they own. Worker verifies Pedersen + ownership
+//                                   (P2WPKH hash160 match) + BIP-340 sig from owner_pubkey over
+//                                   sha256("tacit-opening-v1" || asset_id || txid_BE || vout_LE
+//                                   || amount_LE || blinding || owner_pubkey).
+//   GET  /utxos/:txid/:vout/opening — fetch a single published opening.
+//   GET  /assets/:asset_id/openings — list all published openings for an asset (marketplace-friendly).
+//   POST /assets/:asset_id/disclosures — holder publishes a "balance ≥ threshold" range disclosure
+//                                   for one or more UTXOs they own. Worker verifies ownership +
+//                                   sig but NOT the bulletproof itself; consumers verify client-side.
+//   GET  /assets/:asset_id/disclosures — list all published range disclosures for an asset.
+//   POST /assets/:asset_id/listings — atomic create-listing-with-opening: opening fields plus
+//                                   {price_sats, maker_address, expiry, listing_sig}. Worker
+//                                   verifies opening, listing sig, and address coherence.
+//   GET  /assets/:asset_id/listings — list active listings (with expired flag).
+//   DELETE /assets/:asset_id/listings/:txid/:vout — explicit cancel; requires cancel_sig from
+//                                   owner_pubkey. (Implicit cancellation: spend the UTXO.)
+//   POST /assets/:asset_id/listings/:txid/:vout/claim — taker reserves a listing for 30 min
+//                                   to prevent multi-taker race in OTC settlement. Atomic
+//                                   claim-or-409. Body: {taker_pubkey, sig over canonical msg}.
+//   POST /assets/:asset_id/listings-range — range-disclosed listing: maker proves balance ≥ K
+//                                   without revealing per-UTXO openings. Body combines
+//                                   disclosure (utxos, threshold, rangeproof, disclosure_sig)
+//                                   with listing terms (price_sats, maker_address, expiry,
+//                                   listing_sig). One per (asset, owner_pubkey).
+//   GET  /assets/:asset_id/listings-range — list active range-listings.
+//   DELETE /assets/:asset_id/listings-range/:owner_pubkey — explicit cancel by maker.
+//   POST /assets/:asset_id/listings-range/:maker_pubkey/claim — taker reservation, 30 min TTL.
+// Debug endpoints (gated on DEBUG_TOKEN env secret; default-deny 404 if unset):
+//   POST /scan              — manually trigger a registry scan for the requested network.
+//   POST /rescan?from=<h>   — rewind meta:last_scanned so next tick re-scans from height <h>.
+// Scheduled (cron */5 * * * *): scans signet AND mainnet for CETCH, T_MINT, and T_BURN envelopes.
+// Mainnet runs at a smaller blocks-per-tick budget because mainnet blocks
+// (~3000 txs each) burn far more subrequests than near-empty signet blocks.
 //
 // Secrets (set via `wrangler secret put`):
 //   PINATA_JWT     — Pinata API JWT for image uploads
@@ -21,7 +68,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import { ripemd160 } from '@noble/hashes/ripemd160';
 import { hmac } from '@noble/hashes/hmac';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
-import { bech32 } from '@scure/base';
+import { bech32, bech32m } from '@scure/base';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -29,12 +76,59 @@ secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m
 const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const PNG_MAGIC  = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 const JPEG_MAGIC = [0xff, 0xd8, 0xff];
-const SIGNET_HRP = 'tb';
+// Address human-readable-parts per network. P2WPKH on signet/testnet shares
+// 'tb'; mainnet is 'bc'. The faucet (signet-only) reads .signet directly;
+// the listings module reads HRP_BY_NETWORK[network].
+const HRP_BY_NETWORK = { signet: 'tb', mainnet: 'bc' };
 const DUST = 546;
 const ENVELOPE_MAGIC = new TextEncoder().encode('TACIT');
-const T_CETCH = 0x21;
-const N_BITS = 32;
-const EXPECTED_RANGEPROOF_LEN = N_BITS * (33 + 4 * 32); // 5152
+const T_CETCH    = 0x21;
+const T_CXFER    = 0x23;
+const T_MINT     = 0x24;
+const T_BURN     = 0x25;
+const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
+const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
+const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+
+// ============== PEDERSEN (must match dApp's deriveH / pedersenCommit) ==============
+function deriveH() {
+  const seed = sha256(new TextEncoder().encode('tacit-generator-H-v1'));
+  for (let counter = 0; counter < 256; counter++) {
+    const x = sha256(concatBytes(seed, new Uint8Array([counter])));
+    const candidate = concatBytes(new Uint8Array([0x02]), x);
+    try {
+      const p = secp.ProjectivePoint.fromHex(bytesToHex(candidate));
+      if (!p.equals(secp.ProjectivePoint.ZERO)) return p;
+    } catch {}
+  }
+  throw new Error('failed to derive NUMS generator H');
+}
+const PEDERSEN_H = deriveH();
+const PEDERSEN_G = secp.ProjectivePoint.BASE;
+const PEDERSEN_ZERO = secp.ProjectivePoint.ZERO;
+const modN = x => ((x % SECP_N) + SECP_N) % SECP_N;
+function pedersenCommit(amount, blinding) {
+  const a = modN(BigInt(amount));
+  const r = modN(BigInt(blinding));
+  const aH = a === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(a);
+  const rG = r === 0n ? PEDERSEN_ZERO : PEDERSEN_G.multiply(r);
+  return aH.add(rG);
+}
+
+// Strict 33-byte compressed-point parser: pins the length and prefix before
+// handing the hex to noble. Mirrors the dApp's bytesToPoint guard so a future
+// noble update can't accidentally accept x-only or uncompressed forms — both
+// would silently change the meaning of envelope payloads here.
+function compressedPointFromHex(input) {
+  const hex = typeof input === 'string'
+    ? input.toLowerCase()
+    : bytesToHex(input);
+  if (hex.length !== 66) throw new Error('point must be 33 bytes (66 hex chars)');
+  if (hex[0] !== '0' || (hex[1] !== '2' && hex[1] !== '3')) {
+    throw new Error('point prefix must be 02/03 (compressed)');
+  }
+  return secp.ProjectivePoint.fromHex(hex);
+}
 
 // ============== UTIL ==============
 const hash160 = b => ripemd160(sha256(b));
@@ -58,15 +152,119 @@ function jsonResponse(obj, status, headers) {
   });
 }
 
+// Bearer-token gate for the debug endpoints (/scan, /rescan). Either of those
+// can burn substantial mempool.space subrequest budget — /rescan?from=0 in
+// particular triggers a scan from genesis on the next cron tick. Default-deny:
+// if DEBUG_TOKEN isn't configured the endpoints return 404 (so an attacker
+// probing the surface can't tell they exist) rather than 401.
+function checkDebugAuth(req, env) {
+  const token = env.DEBUG_TOKEN;
+  if (!token || typeof token !== 'string' || token.length < 16) return false;
+  const auth = req.headers.get('Authorization') || '';
+  const m = auth.match(/^Bearer (.+)$/);
+  if (!m) return false;
+  // Constant-time string compare to avoid timing leaks on the secret.
+  const a = m[1], b = token;
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 // ============== mempool.space CLIENT ==============
-async function apiText(env, path, opts = {}) {
-  const r = await fetch(`${env.SIGNET_API}${path}`, opts);
-  if (!r.ok) throw new Error(`signet ${r.status}: ${(await r.text()).slice(0, 200)}`);
+// Network plumbing. The worker scans both signet and mainnet; KV keys are
+// namespaced per network. Signet keys keep their legacy unprefixed form
+// (asset:<aid>) for backward compat; mainnet uses asset:mainnet:<aid>.
+const NETWORKS = ['signet', 'mainnet'];
+function networkApi(env, network) {
+  if (network === 'mainnet') return env.MAINNET_API || 'https://mempool.space/api';
+  return env.SIGNET_API || 'https://mempool.space/signet/api';
+}
+function parseNetwork(value) {
+  const v = String(value || '').toLowerCase();
+  return v === 'mainnet' ? 'mainnet' : 'signet';
+}
+function assetKey(network, aid)        { return network === 'signet' ? `asset:${aid}` : `asset:${network}:${aid}`; }
+function mintKeyFor(network, aid, txid)   { return network === 'signet' ? `mint:${aid}:${txid}` : `mint:${network}:${aid}:${txid}`; }
+function burnKeyFor(network, aid, txid)   { return network === 'signet' ? `burn:${aid}:${txid}` : `burn:${network}:${aid}:${txid}`; }
+function assetPrefix(network)          { return network === 'signet' ? 'asset:' : `asset:${network}:`; }
+function mintPrefix(network, aid)      { return network === 'signet' ? `mint:${aid}:` : `mint:${network}:${aid}:`; }
+function burnPrefix(network, aid)      { return network === 'signet' ? `burn:${aid}:` : `burn:${network}:${aid}:`; }
+function attestKey(network, aid)       { return network === 'signet' ? `attest:${aid}` : `attest:${network}:${aid}`; }
+function attestMintKey(network, aid, txid) {
+  return network === 'signet' ? `attest:mint:${aid}:${txid}` : `attest:${network}:mint:${aid}:${txid}`;
+}
+function openingKey(network, aid, txid, vout) {
+  return network === 'signet'
+    ? `opening:${aid}:${txid}:${vout}`
+    : `opening:${network}:${aid}:${txid}:${vout}`;
+}
+function openingPrefix(network, aid) {
+  return network === 'signet' ? `opening:${aid}:` : `opening:${network}:${aid}:`;
+}
+function disclosureKey(network, aid, ownerPubHex, thresholdHex) {
+  // One disclosure per (asset, owner_pubkey, threshold) — re-publishing
+  // overwrites and refreshes the timestamp / UTXO set / proof.
+  const tag = `${ownerPubHex}:${thresholdHex}`;
+  return network === 'signet'
+    ? `disclosure:${aid}:${tag}`
+    : `disclosure:${network}:${aid}:${tag}`;
+}
+function disclosurePrefix(network, aid) {
+  return network === 'signet' ? `disclosure:${aid}:` : `disclosure:${network}:${aid}:`;
+}
+function listingKey(network, aid, txid, vout) {
+  return network === 'signet'
+    ? `listing:${aid}:${txid}:${vout}`
+    : `listing:${network}:${aid}:${txid}:${vout}`;
+}
+function listingPrefix(network, aid) {
+  return network === 'signet' ? `listing:${aid}:` : `listing:${network}:${aid}:`;
+}
+// Range-disclosed listings: one per (maker, asset). Different KV namespace
+// from per-UTXO listings so GET prefix-lists don't collide.
+function rangeListingKey(network, aid, ownerPubHex) {
+  return network === 'signet'
+    ? `listing-range:${aid}:${ownerPubHex}`
+    : `listing-range:${network}:${aid}:${ownerPubHex}`;
+}
+function rangeListingPrefix(network, aid) {
+  return network === 'signet' ? `listing-range:${aid}:` : `listing-range:${network}:${aid}:`;
+}
+// Atomic intents — browse-and-take T_AXFER marketplace. Three records per
+// intent: the intent itself, the current taker claim, the maker's fulfilment
+// (partial reveal targeted at the claimant). intent_id is a 16-hex-char
+// sha256-prefix of (commit_txid || maker_pubkey).
+function atomicIntentKey(network, aid, intentIdHex) {
+  return network === 'signet'
+    ? `axintent:${aid}:${intentIdHex}`
+    : `axintent:${network}:${aid}:${intentIdHex}`;
+}
+function atomicIntentPrefix(network, aid) {
+  return network === 'signet' ? `axintent:${aid}:` : `axintent:${network}:${aid}:`;
+}
+function atomicClaimKey(network, aid, intentIdHex) {
+  return network === 'signet'
+    ? `axclaim:${aid}:${intentIdHex}`
+    : `axclaim:${network}:${aid}:${intentIdHex}`;
+}
+function atomicFulfilmentKey(network, aid, intentIdHex) {
+  return network === 'signet'
+    ? `axfulfil:${aid}:${intentIdHex}`
+    : `axfulfil:${network}:${aid}:${intentIdHex}`;
+}
+function lastScannedKey(network)       { return network === 'signet' ? 'meta:last_scanned' : `meta:last_scanned:${network}`; }
+
+async function apiText(env, path, opts = {}, network = 'signet') {
+  const base = networkApi(env, network);
+  const r = await fetch(`${base}${path}`, opts);
+  if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.text();
 }
-async function apiJson(env, path, opts = {}) {
-  const r = await fetch(`${env.SIGNET_API}${path}`, opts);
-  if (!r.ok) throw new Error(`signet ${r.status}: ${(await r.text()).slice(0, 200)}`);
+async function apiJson(env, path, opts = {}, network = 'signet') {
+  const base = networkApi(env, network);
+  const r = await fetch(`${base}${path}`, opts);
+  if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
 }
 
@@ -164,9 +362,28 @@ async function handlePinJson(req, env, cors) {
     return jsonResponse({ error: 'expected JSON object' }, 400, cors);
   }
   // Whitelist allowed fields; ignore everything else to keep blobs predictable.
-  const allowed = ['name', 'description', 'image', 'external_url', 'decimals'];
+  // tacit_attest is a structured object the dapp embeds when an etcher opts
+  // into "Publish supply opening" — verifiers later read it from the IPFS
+  // blob and recompute Pedersen against the on-chain commitment. Without
+  // this, the IPFS-embedded attestation path silently degrades to the
+  // worker /attest cache (still cryptographically verified, but no longer
+  // content-addressed).
+  const allowed = ['name', 'description', 'image', 'external_url', 'decimals', 'tacit_attest'];
   const clean = {};
   for (const k of allowed) if (body[k] !== undefined) clean[k] = body[k];
+  // Bound-check tacit_attest's shape so we don't pin garbage. The dapp's
+  // verifier already re-checks Pedersen, but rejecting malformed shapes
+  // here keeps the blob compact and the schema honest.
+  if (clean.tacit_attest !== undefined) {
+    const a = clean.tacit_attest;
+    const ok = a && typeof a === 'object' && !Array.isArray(a)
+      && typeof a.supply === 'string' && /^\d+$/.test(a.supply)
+      && typeof a.blinding === 'string' && /^[0-9a-f]{64}$/.test(a.blinding)
+      && typeof a.commitment === 'string' && /^[0-9a-f]{66}$/.test(a.commitment);
+    if (!ok) return jsonResponse({ error: 'tacit_attest malformed' }, 400, cors);
+    // Drop any extra fields the caller tacked on.
+    clean.tacit_attest = { supply: a.supply, blinding: a.blinding, commitment: a.commitment };
+  }
   const json = JSON.stringify(clean);
   if (json.length > 4096) {
     return jsonResponse({ error: 'metadata exceeds 4 KB' }, 413, cors);
@@ -297,7 +514,7 @@ function faucetKeys(env) {
   if (!/^[0-9a-f]{64}$/.test(cleaned)) throw new Error('FAUCET_PRIV must be 64 hex chars');
   const priv = hexToBytes(cleaned);
   const pub = secp.getPublicKey(priv, true);
-  const address = p2wpkhAddress(pub, SIGNET_HRP);
+  const address = p2wpkhAddress(pub, HRP_BY_NETWORK.signet);
   return { priv, pub, address };
 }
 
@@ -319,7 +536,7 @@ async function handleDrip(req, env, cors) {
   if (!recipient) return jsonResponse({ error: 'missing "address"' }, 400, cors);
 
   let recipientScript;
-  try { recipientScript = addressToScript(recipient, SIGNET_HRP); }
+  try { recipientScript = addressToScript(recipient, HRP_BY_NETWORK.signet); }
   catch (e) { return jsonResponse({ error: `invalid address: ${e.message}` }, 400, cors); }
 
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
@@ -432,10 +649,14 @@ function decodeEnvelopeScript(script) {
   return { opcode: payload[0], payload };
 }
 
+// Worker only does length-validation; rangeproof verification stays client-side.
+// CETCH wire format:
+//   T_CETCH(1) || tlen(1) || ticker(tlen) || decimals(1) ||
+//   commitment(33) || amount_ct(8) || rp_len(2 LE) || rangeproof(rp_len) ||
+//   mint_authority(32) || img_len(2 LE) || image_uri(img_len)
 function decodeCEtchPayload(payload) {
   if (!payload) return null;
-  const minLen = 1 + 1 + 1 + 1 + 33 + EXPECTED_RANGEPROOF_LEN + 8 + 2;
-  if (payload.length < minLen) return null;
+  if (payload.length < 1 + 1 + 1 + 1 + 33 + 8 + 2 + 32 + 2) return null;
   if (payload[0] !== T_CETCH) return null;
   let p = 1;
   const tlen = payload[p]; p += 1;
@@ -446,10 +667,13 @@ function decodeCEtchPayload(payload) {
   p += tlen;
   const decimals = payload[p]; p += 1;
   if (decimals > 8) return null;
-  if (p + 33 + EXPECTED_RANGEPROOF_LEN + 8 + 2 > payload.length) return null;
+  if (p + 33 + 8 + 2 > payload.length) return null;
   const commitment = payload.slice(p, p + 33); p += 33;
-  p += EXPECTED_RANGEPROOF_LEN; // skip rangeproof
   p += 8;                        // skip amount_ct
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen + 32 + 2 > payload.length) return null;
+  p += rpLen;                    // skip rangeproof
+  const mintAuthority = payload.slice(p, p + 32); p += 32;
   const imgLen = payload[p] | (payload[p + 1] << 8); p += 2;
   if (imgLen > 256) return null;
   if (p + imgLen !== payload.length) return null;
@@ -457,7 +681,12 @@ function decodeCEtchPayload(payload) {
   if (imgLen > 0) {
     try { imageUri = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + imgLen)); } catch { return null; }
   }
-  return { ticker, decimals, commitment: bytesToHex(commitment), imageUri };
+  let mintable = false;
+  for (let i = 0; i < 32; i++) if (mintAuthority[i] !== 0) { mintable = true; break; }
+  return {
+    ticker, decimals, commitment: bytesToHex(commitment), imageUri,
+    mintable, mint_authority: bytesToHex(mintAuthority),
+  };
 }
 function assetIdFor(etchTxidHex, etchVout) {
   const txidBE = reverseBytes(hexToBytes(etchTxidHex));
@@ -466,81 +695,1763 @@ function assetIdFor(etchTxidHex, etchVout) {
   return bytesToHex(sha256(concatBytes(txidBE, voutLE)));
 }
 
-async function handleAssetsList(env, cors) {
-  // Cap at 1000 entries; pagination is a future concern.
-  const list = await env.REGISTRY_KV.list({ prefix: 'asset:', limit: 1000 });
-  const assets = [];
+// T_MINT structural decoder (length checks only; signature + range proof verify
+// is the dApp's job).
+function decodeCMintPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 32 + 33 + 8 + 2 + 64) return null;
+  if (payload[0] !== T_MINT) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const etchTxid = payload.slice(p, p + 32); p += 32;
+  const commitment = payload.slice(p, p + 33); p += 33;
+  p += 8; // amount_ct
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen + 64 > payload.length) return null;
+  p += rpLen;
+  p += 64; // issuer_sig
+  if (p !== payload.length) return null;
+  return {
+    asset_id: bytesToHex(assetId),
+    etch_txid: bytesToHex(etchTxid),
+    commitment: bytesToHex(commitment),
+  };
+}
+
+// T_CXFER structural decoder. Returns asset_id + per-output commitments. Used
+// by the per-UTXO opening endpoint to resolve a CXFER output's commitment by
+// vout. Kernel sig + range proof stay client-side.
+function decodeCXferPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 64 + 1) return null;
+  if (payload[0] !== T_CXFER) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  p += 64; // kernel_sig
+  const N = payload[p]; p += 1;
+  if (![1, 2, 4, 8].includes(N)) return null;
+  if (p + N * (33 + 8) + 2 > payload.length) return null;
+  const outputs = [];
+  for (let i = 0; i < N; i++) {
+    const commitment = payload.slice(p, p + 33); p += 33;
+    p += 8; // amount_ct
+    outputs.push({ commitment: bytesToHex(commitment) });
+  }
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  return { asset_id: bytesToHex(assetId), outputs };
+}
+
+// T_AXFER structural decoder. Same shape as CXFER plus an asset_input_count
+// byte after asset_id (SPEC §5.7). The kernel sig and rangeproof verify
+// client-side; the worker only needs the per-vout commitments to power
+// commitmentForUtxo() lookups.
+function decodeAxferPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 1 + 64 + 1) return null;
+  if (payload[0] !== T_AXFER) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount < 1) return null;
+  p += 64; // kernel_sig
+  const N = payload[p]; p += 1;
+  if (![1, 2, 4, 8].includes(N)) return null;
+  if (p + N * (33 + 8) + 2 > payload.length) return null;
+  const outputs = [];
+  for (let i = 0; i < N; i++) {
+    const commitment = payload.slice(p, p + 33); p += 33;
+    p += 8; // amount_ct
+    outputs.push({ commitment: bytesToHex(commitment) });
+  }
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  return { asset_id: bytesToHex(assetId), asset_input_count: assetInputCount, outputs };
+}
+
+// T_BURN structural decoder. Burns are simpler than mints because the burned
+// amount is public — no Pedersen indirection. We only extract asset_id and
+// burned_amount. The kernel sig + remaining outputs are validated client-side.
+function decodeCBurnPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 8 + 64 + 1) return null;
+  if (payload[0] !== T_BURN) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const burnedLE = payload.slice(p, p + 8); p += 8;
+  const view = new DataView(burnedLE.buffer, burnedLE.byteOffset, 8);
+  const burnedAmount = (BigInt(view.getUint32(4, true)) << 32n) | BigInt(view.getUint32(0, true));
+  if (burnedAmount < 0n || burnedAmount >= (1n << BigInt(N_BITS))) return null;
+  p += 64; // kernel_sig
+  const n = payload[p]; p += 1;
+  if (![0, 1, 2, 4, 8].includes(n)) return null;
+  const outputs = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 + 8 > payload.length) return null;
+    const commitment = payload.slice(p, p + 33); p += 33;
+    p += 8; // amount_ct
+    outputs.push({ commitment: bytesToHex(commitment) });
+  }
+  // Match the dApp's strict bounds: BURN with N>0 carries an aggregated rp;
+  // N=0 carries nothing trailing. Anything else is malformed.
+  if (n > 0) {
+    if (p + 2 > payload.length) return null;
+    const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+    if (p + rpLen !== payload.length) return null;
+  } else if (p !== payload.length) {
+    return null;
+  }
+  return {
+    asset_id: bytesToHex(assetId),
+    burned_amount: burnedAmount.toString(),
+    outputs,
+  };
+}
+
+async function loadBurnsForAsset(env, network, assetIdHex) {
+  // Burns are public: no attestation logic, just sum the cleartext amounts.
+  const list = await env.REGISTRY_KV.list({ prefix: burnPrefix(network, assetIdHex), limit: 1000 });
+  const burns = [];
   for (const k of list.keys) {
     const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (v) assets.push(v);
+    if (v) burns.push(v);
+  }
+  burns.sort((a, b) => (a.burned_at || 0) - (b.burned_at || 0));
+  return burns;
+}
+
+async function loadMintsForAsset(env, network, assetIdHex) {
+  // Returns sorted list of mint events for one asset_id, attested where
+  // available. Cap at 1000 mints/asset (way beyond any practical use).
+  const list = await env.REGISTRY_KV.list({ prefix: mintPrefix(network, assetIdHex), limit: 1000 });
+  const mints = [];
+  for (const k of list.keys) {
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (!v) continue;
+    const att = await env.REGISTRY_KV.get(attestMintKey(network, assetIdHex, v.mint_txid), 'json');
+    if (att) v.attestation = att;
+    mints.push(v);
+  }
+  mints.sort((a, b) => (a.minted_at || 0) - (b.minted_at || 0));
+  return mints;
+}
+
+async function handleAssetsList(env, network, cors, opts = {}) {
+  const limit = Number.isInteger(opts.limit) && opts.limit > 0 ? Math.min(opts.limit, 1000) : null;
+  const includeMints = opts.includeMints !== false;
+  // Signet's legacy unprefixed `asset:*` would also catch `asset:mainnet:*`
+  // entries; filter those out when listing signet so the namespaces don't bleed.
+  const prefix = assetPrefix(network);
+  const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
+  const assets = [];
+  for (const k of list.keys) {
+    if (network === 'signet' && k.name.startsWith('asset:mainnet:')) continue;
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (!v) continue;
+    assets.push(v);
   }
   assets.sort((a, b) => (b.etched_at || 0) - (a.etched_at || 0));
-  // Surface scan freshness so the dApp can show "scanned up to block X" and
-  // explain the gap to a just-broadcast etch that hasn't been indexed yet.
-  const lastScanned = parseInt((await env.REGISTRY_KV.get('meta:last_scanned')) || '0', 10);
+  const trimmed = limit ? assets.slice(0, limit) : assets;
+  for (const v of trimmed) {
+    const att = await env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json');
+    if (att) v.attestation = att;
+    if (includeMints) v.mints = await loadMintsForAsset(env, network, v.asset_id);
+    v.burns = await loadBurnsForAsset(env, network, v.asset_id);
+    // Lightweight counts so Discover can show "N openings · M disclosures"
+    // without doing per-asset round-trips client-side. KV list is paginated;
+    // 1000 cap is way beyond any realistic per-asset count for v1.
+    const op = await env.REGISTRY_KV.list({ prefix: openingPrefix(network, v.asset_id), limit: 1000 });
+    v.opening_count = op.keys.length;
+    const dc = await env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, v.asset_id), limit: 1000 });
+    v.disclosure_count = dc.keys.length;
+    const ls = await env.REGISTRY_KV.list({ prefix: listingPrefix(network, v.asset_id), limit: 1000 });
+    v.listing_count = ls.keys.length;
+    const lr = await env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, v.asset_id), limit: 1000 });
+    v.range_listing_count = lr.keys.length;
+    const ai = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, v.asset_id), limit: 1000 });
+    v.atomic_intent_count = ai.keys.length;
+  }
+  const lastScanned = parseInt((await env.REGISTRY_KV.get(lastScannedKey(network))) || '0', 10);
   let tip = null;
-  try { tip = parseInt((await apiText(env, '/blocks/tip/height')).trim(), 10); } catch {}
+  let tipUnavailable = false;
+  try {
+    const raw = (await apiText(env, '/blocks/tip/height', {}, network)).trim();
+    const parsed = parseInt(raw, 10);
+    if (Number.isInteger(parsed) && parsed >= 0) tip = parsed;
+    else tipUnavailable = true;
+  } catch { tipUnavailable = true; }
   return jsonResponse({
+    network,
     count: assets.length,
-    assets,
-    meta: { last_scanned: lastScanned, tip },
+    assets: trimmed,
+    // tip_unavailable=true lets the dapp distinguish "caught up" (tip ===
+    // last_scanned) from "we couldn't reach mempool.space" (tip null).
+    // Without this flag the freshness label silently lied as "caught up".
+    meta: { last_scanned: lastScanned, tip, tip_unavailable: tipUnavailable },
   }, 200, cors);
 }
-async function handleAssetGet(assetIdHex, env, cors) {
-  const v = await env.REGISTRY_KV.get(`asset:${assetIdHex}`, 'json');
+
+async function commitmentFromRevealTx(env, revealTxid, vout, network) {
+  // Fallback path for attestations submitted before the cron has indexed the asset.
+  // Fetch the reveal tx from mempool.space, decode the CETCH envelope at vin[0].witness[1],
+  // and return its commitment so we can validate the opening before the cron catches up.
+  const tx = await apiJson(env, `/tx/${revealTxid}`, {}, network);
+  if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) {
+    throw new Error('reveal tx has no Taproot script-path witness');
+  }
+  const envBytes = hexToBytes(tx.vin[0].witness[1]);
+  const decoded = decodeEnvelopeScript(envBytes);
+  if (!decoded || decoded.opcode !== T_CETCH) throw new Error('not a CETCH envelope');
+  const ce = decodeCEtchPayload(decoded.payload);
+  if (!ce) throw new Error('invalid CETCH payload');
+  const aidHex = assetIdFor(revealTxid, vout >>> 0);
+  return { commitment: ce.commitment, asset: { ticker: ce.ticker, decimals: ce.decimals, image_uri: ce.imageUri }, aidHex };
+}
+
+async function handleAttest(assetIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) {
+    return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  }
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const supplyStr = String(body.supply ?? '');
+  const blindingHex = String(body.blinding ?? '').toLowerCase();
+  if (!/^\d+$/.test(supplyStr)) return jsonResponse({ error: 'supply must be a base-10 integer string' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(blindingHex)) return jsonResponse({ error: 'blinding must be 64-hex-char (32 bytes)' }, 400, cors);
+  let supply;
+  try { supply = BigInt(supplyStr); } catch { return jsonResponse({ error: 'unparseable supply' }, 400, cors); }
+  if (supply < 0n || supply >= (1n << BigInt(N_BITS))) {
+    return jsonResponse({ error: `supply must be in [0, 2^${N_BITS})` }, 400, cors);
+  }
+  const blinding = BigInt('0x' + blindingHex);
+
+  let commitmentHex = null;
+  const indexed = await env.REGISTRY_KV.get(assetKey(network, assetIdHex), 'json');
+  if (indexed?.commitment) {
+    commitmentHex = indexed.commitment;
+  } else {
+    const revealTxid = String(body.reveal_txid ?? body.etch_tx ?? '').toLowerCase();
+    const revealVout = Number.isInteger(body.reveal_vout) ? body.reveal_vout : 0;
+    if (!/^[0-9a-f]{64}$/.test(revealTxid)) {
+      return jsonResponse({
+        error: 'asset not yet indexed; pass reveal_txid (and optional reveal_vout) so worker can fetch from chain',
+      }, 404, cors);
+    }
+    try {
+      const r = await commitmentFromRevealTx(env, revealTxid, revealVout, network);
+      if (r.aidHex !== assetIdHex) {
+        return jsonResponse({ error: `reveal_txid + vout do not derive to ${assetIdHex}` }, 400, cors);
+      }
+      commitmentHex = r.commitment;
+    } catch (e) {
+      return jsonResponse({ error: 'failed to resolve reveal tx: ' + e.message }, 400, cors);
+    }
+  }
+
+  let claimed, onchain;
+  try {
+    claimed = pedersenCommit(supply, blinding);
+    onchain = compressedPointFromHex(commitmentHex);
+  } catch (e) {
+    return jsonResponse({ error: 'commitment math failed: ' + e.message }, 400, cors);
+  }
+  if (!claimed.equals(onchain)) {
+    return jsonResponse({ error: 'opening does not match on-chain commitment' }, 400, cors);
+  }
+  const attestation = {
+    supply: supplyStr,
+    blinding: blindingHex,
+    attested_at: Math.floor(Date.now() / 1000),
+  };
+  await env.REGISTRY_KV.put(attestKey(network, assetIdHex), JSON.stringify(attestation));
+  return jsonResponse({ ok: true, attestation }, 200, cors);
+}
+
+// Targeted-scan endpoint. The cron polls in 5-min ticks, so a freshly broadcast
+// etch can take ~5–15 min to surface in /assets. The dApp calls this right after
+// broadcast with the reveal txid; the worker fetches the tx directly from
+// mempool.space (which serves unconfirmed txs too), validates the TACIT envelope,
+// and writes the registry entry immediately. The cron later overwrites with
+// confirmed metadata once the tx lands in a block.
+async function handleAssetHint(req, env, network, cors) {
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+  const txidHex = String(body.reveal_txid ?? body.txid ?? '').toLowerCase();
+  const vout = Number.isInteger(body.reveal_vout) ? body.reveal_vout : 0;
+  if (!/^[0-9a-f]{64}$/.test(txidHex)) {
+    return jsonResponse({ error: 'reveal_txid must be 64 hex chars' }, 400, cors);
+  }
+  if (vout < 0 || vout > 0xffff) {
+    return jsonResponse({ error: 'reveal_vout out of range' }, 400, cors);
+  }
+
+  // Light per-IP daily cap. Hints only echo data already on chain (or in
+  // mempool), so abuse is bounded — but we still don't want unbounded work.
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const kvKey = `hint:${day}:${ip}`;
+  const limit = parseInt(env.HINT_LIMIT || '200', 10);
+  const prior = parseInt((await env.REGISTRY_KV.get(kvKey)) || '0', 10);
+  if (prior >= limit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
+
+  let tx;
+  try { tx = await apiJson(env, `/tx/${txidHex}`, {}, network); }
+  catch (e) { return jsonResponse({ error: `tx not found on ${network}: ${e.message}` }, 404, cors); }
+  if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) {
+    return jsonResponse({ error: 'tx has no taproot script-path witness' }, 400, cors);
+  }
+
+  let envBytes;
+  try { envBytes = hexToBytes(tx.vin[0].witness[1]); }
+  catch { return jsonResponse({ error: 'invalid witness hex' }, 400, cors); }
+  const decoded = decodeEnvelopeScript(envBytes);
+  if (!decoded) return jsonResponse({ error: 'not a tacit envelope' }, 400, cors);
+
+  const confirmed = !!tx.status?.confirmed;
+  const blockHeight = Number.isInteger(tx.status?.block_height) ? tx.status.block_height : null;
+  const blockTime = Number.isInteger(tx.status?.block_time) ? tx.status.block_time : null;
+
+  if (decoded.opcode === T_CETCH) {
+    const ce = decodeCEtchPayload(decoded.payload);
+    if (!ce) return jsonResponse({ error: 'invalid CETCH payload' }, 400, cors);
+    const aid = assetIdFor(txidHex, vout >>> 0);
+    const existing = await env.REGISTRY_KV.get(assetKey(network, aid), 'json');
+    if (existing && Number.isInteger(existing.etched_at_height)) {
+      await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+      return jsonResponse({ ok: true, asset: existing, source: 'registry', network }, 200, cors);
+    }
+    const meta = {
+      asset_id: aid,
+      ticker: ce.ticker,
+      decimals: ce.decimals,
+      commitment: ce.commitment,
+      image_uri: ce.imageUri,
+      etch_txid: txidHex,
+      etch_vout: vout,
+      etched_at_height: blockHeight,
+      etched_at: blockTime || Math.floor(Date.now() / 1000),
+      mintable: ce.mintable,
+      mint_authority: ce.mint_authority,
+      pending: confirmed ? undefined : true,
+      network,
+    };
+    await env.REGISTRY_KV.put(assetKey(network, aid), JSON.stringify(meta));
+    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    return jsonResponse({ ok: true, asset: meta, source: 'hint', network }, 200, cors);
+  }
+
+  if (decoded.opcode === T_MINT) {
+    const cm = decodeCMintPayload(decoded.payload);
+    if (!cm) return jsonResponse({ error: 'invalid mint payload' }, 400, cors);
+    const mk = mintKeyFor(network, cm.asset_id, txidHex);
+    const existing = await env.REGISTRY_KV.get(mk, 'json');
+    if (existing && Number.isInteger(existing.minted_at_height)) {
+      await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+      return jsonResponse({ ok: true, mint: existing, source: 'registry', network }, 200, cors);
+    }
+    const mintMeta = {
+      asset_id: cm.asset_id,
+      etch_txid: cm.etch_txid,
+      mint_txid: txidHex,
+      mint_vout: vout,
+      commitment: cm.commitment,
+      minted_at_height: blockHeight,
+      minted_at: blockTime || Math.floor(Date.now() / 1000),
+      pending: confirmed ? undefined : true,
+      network,
+    };
+    await env.REGISTRY_KV.put(mk, JSON.stringify(mintMeta));
+    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    return jsonResponse({ ok: true, mint: mintMeta, source: 'hint', network }, 200, cors);
+  }
+
+  return jsonResponse({ error: 'unsupported envelope opcode' }, 400, cors);
+}
+
+async function handleAssetGet(assetIdHex, env, network, cors) {
+  const v = await env.REGISTRY_KV.get(assetKey(network, assetIdHex), 'json');
   if (!v) return jsonResponse({ error: 'unknown asset_id' }, 404, cors);
+  const att = await env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json');
+  if (att) v.attestation = att;
+  v.mints = await loadMintsForAsset(env, network, assetIdHex);
+  v.burns = await loadBurnsForAsset(env, network, assetIdHex);
+  const op = await env.REGISTRY_KV.list({ prefix: openingPrefix(network, assetIdHex), limit: 1000 });
+  v.opening_count = op.keys.length;
+  const dc = await env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, assetIdHex), limit: 1000 });
+  v.disclosure_count = dc.keys.length;
+  const ls = await env.REGISTRY_KV.list({ prefix: listingPrefix(network, assetIdHex), limit: 1000 });
+  v.listing_count = ls.keys.length;
+  const lr = await env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, assetIdHex), limit: 1000 });
+  v.range_listing_count = lr.keys.length;
+  const ai = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
+  v.atomic_intent_count = ai.keys.length;
   return jsonResponse(v, 200, cors);
 }
 
-// ============== Cron: scan signet for new CETCH envelopes ==============
-async function fetchBlockTxs(env, blockHash) {
+// Per-mint attestation. Takes the issuer's (mint_amount, mint_blinding) opening
+// and verifies it against the mint's on-chain commitment (either from the KV
+// registry or, if not yet indexed, fetched from the reveal tx directly).
+async function handleMintAttest(assetIdHex, mintTxidHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex))     return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(mintTxidHex))    return jsonResponse({ error: 'invalid mint_txid' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const supplyStr = String(body.supply ?? body.amount ?? '');
+  const blindingHex = String(body.blinding ?? '').toLowerCase();
+  if (!/^\d+$/.test(supplyStr))             return jsonResponse({ error: 'supply must be a base-10 integer string' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(blindingHex))  return jsonResponse({ error: 'blinding must be 64-hex-char (32 bytes)' }, 400, cors);
+  let supply;
+  try { supply = BigInt(supplyStr); } catch { return jsonResponse({ error: 'unparseable supply' }, 400, cors); }
+  if (supply < 0n || supply >= (1n << BigInt(N_BITS))) {
+    return jsonResponse({ error: `supply must be in [0, 2^${N_BITS})` }, 400, cors);
+  }
+  const blinding = BigInt('0x' + blindingHex);
+
+  // Resolve commitment from registry, falling back to fetching the mint's
+  // reveal tx envelope directly so attestations work pre-index.
+  let commitmentHex = null;
+  const indexed = await env.REGISTRY_KV.get(mintKeyFor(network, assetIdHex, mintTxidHex), 'json');
+  if (indexed?.commitment) {
+    commitmentHex = indexed.commitment;
+  } else {
+    try {
+      const tx = await apiJson(env, `/tx/${mintTxidHex}`, {}, network);
+      if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) {
+        return jsonResponse({ error: 'mint tx has no taproot script-path witness' }, 400, cors);
+      }
+      const decoded = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1]));
+      if (!decoded || decoded.opcode !== T_MINT) {
+        return jsonResponse({ error: 'tx is not a T_MINT envelope' }, 400, cors);
+      }
+      const cm = decodeCMintPayload(decoded.payload);
+      if (!cm || cm.asset_id !== assetIdHex) {
+        return jsonResponse({ error: 'mint envelope does not match asset_id' }, 400, cors);
+      }
+      commitmentHex = cm.commitment;
+    } catch (e) {
+      return jsonResponse({ error: 'failed to resolve mint tx: ' + e.message }, 400, cors);
+    }
+  }
+
+  let claimed, onchain;
+  try {
+    claimed = pedersenCommit(supply, blinding);
+    onchain = compressedPointFromHex(commitmentHex);
+  } catch (e) {
+    return jsonResponse({ error: 'commitment math failed: ' + e.message }, 400, cors);
+  }
+  if (!claimed.equals(onchain)) {
+    return jsonResponse({ error: 'opening does not match on-chain mint commitment' }, 400, cors);
+  }
+
+  const attestation = {
+    supply: supplyStr,
+    blinding: blindingHex,
+    attested_at: Math.floor(Date.now() / 1000),
+  };
+  await env.REGISTRY_KV.put(attestMintKey(network, assetIdHex, mintTxidHex), JSON.stringify(attestation));
+  return jsonResponse({ ok: true, attestation }, 200, cors);
+}
+
+// ============== Per-UTXO opening (publish) ==============
+// Marketplaces / explorers can fetch (amount, blinding) openings for any UTXO
+// the holder has chosen to publish. Pedersen binding alone makes the opening
+// unforgeable, but we also require a BIP-340 Schnorr sig from the UTXO's owner
+// pubkey so a counterparty who happens to know an opening cannot dox the holder
+// by publishing on their behalf.
+
+const SECP_P = 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2fn;
+const bytes32ToBigint = b => BigInt('0x' + bytesToHex(b));
+function _taggedHash(tag, ...msgs) {
+  const tagHash = sha256(new TextEncoder().encode(tag));
+  return sha256(concatBytes(tagHash, tagHash, ...msgs));
+}
+// Direct port of the dApp's verifySchnorr (BIP-340). Avoids relying on noble's
+// schnorr API surface across versions.
+function verifySchnorr(sig64, msgHash, pubXonly32) {
+  if (sig64.length !== 64 || pubXonly32.length !== 32 || msgHash.length !== 32) return false;
+  const Rx = sig64.slice(0, 32);
+  const sBig = bytes32ToBigint(sig64.slice(32, 64));
+  if (sBig >= SECP_N) return false;
+  if (bytes32ToBigint(pubXonly32) >= SECP_P) return false;
+  let P;
+  try { P = secp.ProjectivePoint.fromHex('02' + bytesToHex(pubXonly32)); } catch { return false; }
+  const e = bytes32ToBigint(_taggedHash('BIP0340/challenge', Rx, pubXonly32, msgHash)) % SECP_N;
+  const R = secp.ProjectivePoint.BASE.multiply(sBig).add(P.multiply(e).negate());
+  // BIP-340 mandates rejecting infinite R. noble encodes the identity as
+  // 02 || 00…00; without an explicit guard, a sig with Rx = 32 zero bytes
+  // would verify against the identity point.
+  if (R.equals(secp.ProjectivePoint.ZERO)) return false;
+  const Rb = R.toRawBytes(true);
+  if (Rb[0] !== 0x02) return false;
+  return bytesToHex(Rb.slice(1)) === bytesToHex(Rx);
+}
+
+// Resolve the on-chain commitment + declared asset_id for an arbitrary tacit
+// UTXO by walking its parent tx's envelope. Mirrors the dApp's
+// getParentEnvelopeData but lives server-side so the worker can validate
+// openings without trusting the submitter.
+async function commitmentForUtxo(env, txidHex, vout, network) {
+  const tx = await apiJson(env, `/tx/${txidHex}`, {}, network);
+  if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) {
+    throw new Error('parent tx has no taproot script-path witness');
+  }
+  const decoded = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1]));
+  if (!decoded) throw new Error('parent tx is not a tacit envelope');
+  if (decoded.opcode === T_CETCH) {
+    if (vout !== 0) throw new Error('CETCH supply lives at vout 0 only');
+    const ce = decodeCEtchPayload(decoded.payload);
+    if (!ce) throw new Error('invalid CETCH payload');
+    return { commitment: ce.commitment, asset_id: assetIdFor(txidHex, 0) };
+  }
+  if (decoded.opcode === T_MINT) {
+    if (vout !== 0) throw new Error('T_MINT supply lives at vout 0 only');
+    const cm = decodeCMintPayload(decoded.payload);
+    if (!cm) throw new Error('invalid T_MINT payload');
+    return { commitment: cm.commitment, asset_id: cm.asset_id };
+  }
+  if (decoded.opcode === T_CXFER) {
+    const cx = decodeCXferPayload(decoded.payload);
+    if (!cx) throw new Error('invalid CXFER payload');
+    if (vout >= cx.outputs.length) throw new Error(`CXFER vout ${vout} out of range`);
+    return { commitment: cx.outputs[vout].commitment, asset_id: cx.asset_id };
+  }
+  if (decoded.opcode === T_AXFER) {
+    const cx = decodeAxferPayload(decoded.payload);
+    if (!cx) throw new Error('invalid T_AXFER payload');
+    if (vout >= cx.outputs.length) throw new Error(`T_AXFER vout ${vout} out of range`);
+    return { commitment: cx.outputs[vout].commitment, asset_id: cx.asset_id };
+  }
+  if (decoded.opcode === T_BURN) {
+    const cb = decodeCBurnPayload(decoded.payload);
+    if (!cb) throw new Error('invalid T_BURN payload');
+    if (vout >= cb.outputs.length) throw new Error(`T_BURN vout ${vout} out of range`);
+    return { commitment: cb.outputs[vout].commitment, asset_id: cb.asset_id };
+  }
+  throw new Error('unsupported envelope opcode');
+}
+
+// Canonical message the holder signs over to authorize publication. Must match
+// the dApp's signOpening helper byte-for-byte.
+function openingMsg(assetIdHex, txidHex, vout, amount, blindingHex, ownerPubHex) {
+  const txidBE = reverseBytes(hexToBytes(txidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, vout >>> 0, true);
+  const amountLE = new Uint8Array(8);
+  const view = new DataView(amountLE.buffer);
+  const a = BigInt(amount);
+  view.setBigUint64(0, a, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-opening-v1'),
+    hexToBytes(assetIdHex),
+    txidBE,
+    voutLE,
+    amountLE,
+    hexToBytes(blindingHex),
+    hexToBytes(ownerPubHex),
+  ));
+}
+
+async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
+  const vout = parseInt(voutStr, 10);
+  if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) {
+    return jsonResponse({ error: 'invalid vout' }, 400, cors);
+  }
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  const amountStr = String(body.amount ?? '');
+  const blindingHex = String(body.blinding ?? '').toLowerCase();
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const sigHex = String(body.sig ?? '').toLowerCase();
+  if (!/^\d+$/.test(amountStr))            return jsonResponse({ error: 'amount must be base-10 integer string' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(blindingHex)) return jsonResponse({ error: 'blinding must be 64 hex chars' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed hex (02/03 prefix)' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex))     return jsonResponse({ error: 'sig must be 128 hex chars (64-byte BIP-340)' }, 400, cors);
+
+  let amount;
+  try { amount = BigInt(amountStr); } catch { return jsonResponse({ error: 'unparseable amount' }, 400, cors); }
+  if (amount < 0n || amount >= (1n << BigInt(N_BITS))) {
+    return jsonResponse({ error: `amount must be in [0, 2^${N_BITS})` }, 400, cors);
+  }
+  const blinding = BigInt('0x' + blindingHex);
+
+  // Resolve the on-chain commitment + the parent envelope's declared asset_id.
+  let resolved;
+  try { resolved = await commitmentForUtxo(env, txidHex, vout, network); }
+  catch (e) { return jsonResponse({ error: 'commitment lookup failed: ' + e.message }, 400, cors); }
+  const assetIdHex = resolved.asset_id;
+
+  // Pedersen binding: opening must commit to on-chain C.
+  let claimed, onchain;
+  try {
+    claimed = pedersenCommit(amount, blinding);
+    onchain = compressedPointFromHex(resolved.commitment);
+  } catch (e) {
+    return jsonResponse({ error: 'commitment math failed: ' + e.message }, 400, cors);
+  }
+  if (!claimed.equals(onchain)) {
+    return jsonResponse({ error: 'opening does not match on-chain commitment' }, 400, cors);
+  }
+
+  // Ownership: hash160(owner_pubkey) must match the P2WPKH script-pubkey hash
+  // at the UTXO's vout. Anyone publishing on the holder's behalf would have to
+  // forge a Schnorr sig under their pubkey or grind a hash collision.
+  const tx = await apiJson(env, `/tx/${txidHex}`, {}, network);
+  const out = tx?.vout?.[vout];
+  if (!out?.scriptpubkey) return jsonResponse({ error: 'vout has no scriptpubkey' }, 400, cors);
+  const spk = hexToBytes(out.scriptpubkey);
+  if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+    return jsonResponse({ error: 'vout is not P2WPKH (tacit outputs are P2WPKH)' }, 400, cors);
+  }
+  const expectHash = bytesToHex(spk.slice(2, 22));
+  const gotHash = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  if (expectHash !== gotHash) {
+    return jsonResponse({ error: 'owner_pubkey does not control this UTXO' }, 403, cors);
+  }
+
+  // Authorization: BIP-340 sig under x-only(owner_pubkey) over the canonical msg.
+  const msg = openingMsg(assetIdHex, txidHex, vout, amountStr, blindingHex, ownerPubHex);
+  const xonly = hexToBytes(ownerPubHex).slice(1);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, xonly)) {
+    return jsonResponse({ error: 'invalid owner signature' }, 403, cors);
+  }
+
+  const opening = {
+    asset_id: assetIdHex,
+    txid: txidHex,
+    vout,
+    amount: amountStr,
+    blinding: blindingHex,
+    owner_pubkey: ownerPubHex,
+    sig: sigHex,
+    attested_at: Math.floor(Date.now() / 1000),
+    network,
+  };
+  await env.REGISTRY_KV.put(openingKey(network, assetIdHex, txidHex, vout), JSON.stringify(opening));
+  return jsonResponse({ ok: true, opening }, 200, cors);
+}
+
+async function handleUtxoOpeningGet(txidHex, voutStr, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
+  const vout = parseInt(voutStr, 10);
+  if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) {
+    return jsonResponse({ error: 'invalid vout' }, 400, cors);
+  }
+  // The opening key is namespaced by asset_id, but callers don't necessarily
+  // know the asset_id up front. Resolve it from chain so a single fetch by
+  // (txid, vout) works.
+  let assetIdHex;
+  try { assetIdHex = (await commitmentForUtxo(env, txidHex, vout, network)).asset_id; }
+  catch (e) { return jsonResponse({ error: 'commitment lookup failed: ' + e.message }, 404, cors); }
+  const v = await env.REGISTRY_KV.get(openingKey(network, assetIdHex, txidHex, vout), 'json');
+  if (!v) return jsonResponse({ error: 'no opening published for this UTXO' }, 404, cors);
+  return jsonResponse(v, 200, cors);
+}
+
+async function handleAssetOpenings(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const list = await env.REGISTRY_KV.list({ prefix: openingPrefix(network, assetIdHex), limit: 1000 });
+  const openings = [];
+  for (const k of list.keys) {
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (v) openings.push(v);
+  }
+  openings.sort((a, b) => (b.attested_at || 0) - (a.attested_at || 0));
+  return jsonResponse({ asset_id: assetIdHex, count: openings.length, openings }, 200, cors);
+}
+
+// ============== Range disclosure ("balance >= K" without revealing balance) ==============
+// A holder publishes a bulletproof showing that the homomorphic sum of their
+// owned UTXOs for an asset is at least `threshold` base units, without revealing
+// the exact total. The worker stores the proof + provenance; clients verify the
+// bulletproof at consume time. Off-chain by design (no new opcode needed).
+//
+// Soundness sketch:
+//   C_sum = Σ C_i = a_sum·H + r_sum·G  (homomorphic over the listed UTXOs)
+//   Prover commits to v = a_sum − K with the same blinding r_sum:
+//     C' = C_sum − K·H = v·H + r_sum·G
+//   Bulletproof on C' bounds v ∈ [0, 2⁶⁴), so a_sum ≥ K (in the integers, since
+//   each UTXO's on-chain rangeproof already pins a_i < 2⁶⁴ and the prover knows
+//   the unique opening of C_sum by Pedersen binding).
+
+// Bulletproof byte sizes for m ∈ {1, 2, 4, 8} at n=64. Disclosures aggregate
+// to a single virtual commitment (m=1) so the proof is exactly 688 bytes; we
+// allow a small slack in case future versions add an aggregated form.
+const BP_LEN_MIN = 688; // m=1, n=64 bulletproof byte size
+const BP_LEN_MAX = 900;
+
+function disclosureMsg(assetIdHex, utxos, thresholdBig, rangeproofHex, ownerPubHex) {
+  const N = utxos.length;
+  if (N > 0xffff) throw new Error('too many utxos');
+  const refsBytes = new Uint8Array(N * (32 + 4));
+  for (let i = 0; i < N; i++) {
+    refsBytes.set(reverseBytes(hexToBytes(utxos[i].txid)), i * 36);
+    new DataView(refsBytes.buffer, refsBytes.byteOffset + i * 36 + 32, 4)
+      .setUint32(0, utxos[i].vout >>> 0, true);
+  }
+  const nLE = new Uint8Array(2);
+  new DataView(nLE.buffer).setUint16(0, N, true);
+  const thresholdLE = new Uint8Array(8);
+  new DataView(thresholdLE.buffer).setBigUint64(0, BigInt(thresholdBig), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-disclosure-v1'),
+    hexToBytes(assetIdHex),
+    nLE,
+    refsBytes,
+    thresholdLE,
+    hexToBytes(rangeproofHex),
+    hexToBytes(ownerPubHex),
+  ));
+}
+
+async function handleDisclosurePost(assetIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  const thresholdStr = String(body.threshold ?? '');
+  const rangeproofHex = String(body.rangeproof ?? '').toLowerCase();
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const sigHex = String(body.sig ?? '').toLowerCase();
+  const utxosRaw = Array.isArray(body.utxos) ? body.utxos : null;
+  if (!/^\d+$/.test(thresholdStr))                return jsonResponse({ error: 'threshold must be base-10 integer string' }, 400, cors);
+  if (!/^[0-9a-f]+$/.test(rangeproofHex))         return jsonResponse({ error: 'rangeproof must be hex' }, 400, cors);
+  if (rangeproofHex.length / 2 < BP_LEN_MIN || rangeproofHex.length / 2 > BP_LEN_MAX) {
+    return jsonResponse({ error: `rangeproof length out of range (${BP_LEN_MIN}–${BP_LEN_MAX} bytes)` }, 400, cors);
+  }
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex))   return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex))            return jsonResponse({ error: 'sig must be 128 hex chars (64-byte BIP-340)' }, 400, cors);
+  if (!utxosRaw || !utxosRaw.length || utxosRaw.length > 64) {
+    return jsonResponse({ error: 'utxos must be a non-empty array (max 64 entries)' }, 400, cors);
+  }
+  const utxos = [];
+  for (const u of utxosRaw) {
+    const txid = String(u?.txid ?? '').toLowerCase();
+    const vout = u?.vout;
+    if (!/^[0-9a-f]{64}$/.test(txid))                       return jsonResponse({ error: 'utxo.txid must be 64 hex chars' }, 400, cors);
+    if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) return jsonResponse({ error: 'utxo.vout must be integer 0..65535' }, 400, cors);
+    utxos.push({ txid, vout });
+  }
+
+  let threshold;
+  try { threshold = BigInt(thresholdStr); } catch { return jsonResponse({ error: 'unparseable threshold' }, 400, cors); }
+  if (threshold <= 0n || threshold >= (1n << BigInt(N_BITS))) {
+    return jsonResponse({ error: `threshold must be in (0, 2^${N_BITS})` }, 400, cors);
+  }
+
+  // Validate ownership + asset_id consistency for every referenced UTXO.
+  const ownerHash160 = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  for (const u of utxos) {
+    let resolved;
+    try { resolved = await commitmentForUtxo(env, u.txid, u.vout, network); }
+    catch (e) { return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: ${e.message}` }, 400, cors); }
+    if (resolved.asset_id !== assetIdHex) {
+      return jsonResponse({ error: `utxo ${u.txid}:${u.vout} is for a different asset` }, 400, cors);
+    }
+    const tx = await apiJson(env, `/tx/${u.txid}`, {}, network);
+    const out = tx?.vout?.[u.vout];
+    if (!out?.scriptpubkey) return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: vout missing scriptpubkey` }, 400, cors);
+    const spk = hexToBytes(out.scriptpubkey);
+    if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+      return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: not P2WPKH` }, 400, cors);
+    }
+    if (bytesToHex(spk.slice(2, 22)) !== ownerHash160) {
+      return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: owner_pubkey does not control this UTXO` }, 403, cors);
+    }
+  }
+
+  // Authorization sig over canonical msg.
+  let msg;
+  try { msg = disclosureMsg(assetIdHex, utxos, threshold, rangeproofHex, ownerPubHex); }
+  catch (e) { return jsonResponse({ error: 'msg construction failed: ' + e.message }, 400, cors); }
+  const xonly = hexToBytes(ownerPubHex).slice(1);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, xonly)) {
+    return jsonResponse({ error: 'invalid owner signature' }, 403, cors);
+  }
+
+  // We deliberately do NOT verify the bulletproof here — it's ~600 LOC of
+  // verifier code we don't want to run in a Worker on every submission.
+  // Consumers (marketplaces, gating UIs) re-verify client-side using the
+  // dApp's bpRangeAggVerify. The worker is a pin/index, not a trust root.
+  const thresholdHex = threshold.toString(16);
+  const disclosure = {
+    asset_id: assetIdHex,
+    utxos,
+    threshold: thresholdStr,
+    rangeproof: rangeproofHex,
+    owner_pubkey: ownerPubHex,
+    sig: sigHex,
+    attested_at: Math.floor(Date.now() / 1000),
+    network,
+  };
+  await env.REGISTRY_KV.put(disclosureKey(network, assetIdHex, ownerPubHex, thresholdHex), JSON.stringify(disclosure));
+  return jsonResponse({ ok: true, disclosure }, 200, cors);
+}
+
+async function handleDisclosureList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const list = await env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, assetIdHex), limit: 1000 });
+  const disclosures = [];
+  for (const k of list.keys) {
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (v) disclosures.push(v);
+  }
+  disclosures.sort((a, b) => (b.attested_at || 0) - (a.attested_at || 0));
+  return jsonResponse({ asset_id: assetIdHex, count: disclosures.length, disclosures }, 200, cors);
+}
+
+// ============== Listings (orderbook layer) ==============
+// A listing is a signed offer to sell a specific tacit UTXO for a fixed BTC
+// payment. Settlement is OFF-CHAIN (OTC two-tx) in v1: taker pays maker via a
+// regular Bitcoin tx, then maker broadcasts a CXFER to the taker. Atomic
+// single-tx settlement requires the v1.5 validator relaxation (allow non-tacit
+// aux inputs). The listing primitive is the same either way.
+//
+// Storage is one listing per UTXO. Re-publishing overwrites. Cancellation is
+// either explicit (DELETE with cancel_sig) or implicit (UTXO gets spent — the
+// listing becomes unsettleable; clients should check liveness before taking).
+
+// Strict bech32 / bech32m decoding. P2WPKH uses bech32, P2TR uses bech32m;
+// accept either so cold-storage P2TR addresses work as maker_address. Bech32
+// requires uniform case (all-lower or all-upper); reject mixed.
+function decodeBitcoinAddress(addr) {
+  if (typeof addr !== 'string' || addr.length < 8 || addr.length > 90) return null;
+  const lower = addr.toLowerCase();
+  if (addr !== lower && addr !== addr.toUpperCase()) return null;
+  for (const codec of [bech32, bech32m]) {
+    try {
+      const d = codec.decode(lower);
+      return { hrp: d.prefix };
+    } catch {}
+  }
+  return null;
+}
+const ADDR_MAX_LEN = 90;
+const PRICE_MIN = 546;   // dust
+const EXPIRY_MAX_DAYS = 365;
+
+function listingMsg(assetIdHex, txidHex, vout, priceSats, expiry, makerAddress, openingSigHex) {
+  const txidBE = reverseBytes(hexToBytes(txidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, vout >>> 0, true);
+  const priceLE = new Uint8Array(8);
+  new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const expiryLE = new Uint8Array(8);
+  new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  const addrBytes = new TextEncoder().encode(makerAddress);
+  const addrLen = new Uint8Array(2);
+  new DataView(addrLen.buffer).setUint16(0, addrBytes.length, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-listing-v1'),
+    hexToBytes(assetIdHex),
+    txidBE,
+    voutLE,
+    priceLE,
+    expiryLE,
+    addrLen,
+    addrBytes,
+    hexToBytes(openingSigHex),
+  ));
+}
+
+function cancelMsg(assetIdHex, txidHex, vout) {
+  const txidBE = reverseBytes(hexToBytes(txidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, vout >>> 0, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-listing-cancel-v1'),
+    hexToBytes(assetIdHex),
+    txidBE,
+    voutLE,
+  ));
+}
+
+async function handleListingPost(assetIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  const txidHex = String(body.txid ?? '').toLowerCase();
+  const vout = body.vout;
+  const amountStr = String(body.amount ?? '');
+  const blindingHex = String(body.blinding ?? '').toLowerCase();
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const openingSigHex = String(body.opening_sig ?? '').toLowerCase();
+  const priceSatsRaw = body.price_sats;
+  const expiryRaw = body.expiry;
+  const makerAddress = String(body.maker_address ?? '');
+  const listingSigHex = String(body.listing_sig ?? '').toLowerCase();
+
+  if (!/^[0-9a-f]{64}$/.test(txidHex))                return jsonResponse({ error: 'invalid txid' }, 400, cors);
+  if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) return jsonResponse({ error: 'invalid vout' }, 400, cors);
+  if (!/^\d+$/.test(amountStr))                       return jsonResponse({ error: 'amount must be base-10 integer string' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(blindingHex))            return jsonResponse({ error: 'blinding must be 64 hex chars' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex))       return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(openingSigHex))         return jsonResponse({ error: 'opening_sig must be 128 hex chars' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(listingSigHex))         return jsonResponse({ error: 'listing_sig must be 128 hex chars' }, 400, cors);
+  if (!Number.isInteger(priceSatsRaw) || priceSatsRaw < PRICE_MIN || priceSatsRaw > Number.MAX_SAFE_INTEGER) {
+    return jsonResponse({ error: `price_sats must be integer >= ${PRICE_MIN}` }, 400, cors);
+  }
+  if (!Number.isInteger(expiryRaw))                   return jsonResponse({ error: 'expiry must be integer unix-seconds' }, 400, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if (expiryRaw <= now)                               return jsonResponse({ error: 'expiry must be in the future' }, 400, cors);
+  if (expiryRaw > now + EXPIRY_MAX_DAYS * 86400)      return jsonResponse({ error: `expiry must be within ${EXPIRY_MAX_DAYS} days` }, 400, cors);
+  if (!makerAddress || makerAddress.length > ADDR_MAX_LEN) {
+    return jsonResponse({ error: `maker_address required, ≤ ${ADDR_MAX_LEN} chars` }, 400, cors);
+  }
+  const decoded = decodeBitcoinAddress(makerAddress);
+  if (!decoded) {
+    return jsonResponse({ error: 'maker_address is not a valid bech32/bech32m address' }, 400, cors);
+  }
+  const expectedHrp = HRP_BY_NETWORK[network];
+  if (decoded.hrp !== expectedHrp) {
+    return jsonResponse({ error: `maker_address must use ${expectedHrp}… HRP for ${network}` }, 400, cors);
+  }
+
+  let amount;
+  try { amount = BigInt(amountStr); } catch { return jsonResponse({ error: 'unparseable amount' }, 400, cors); }
+  if (amount < 0n || amount >= (1n << BigInt(N_BITS))) {
+    return jsonResponse({ error: `amount must be in [0, 2^${N_BITS})` }, 400, cors);
+  }
+
+  // Resolve commitment + asset_id from chain. Same path as handleUtxoOpeningPost.
+  let resolved;
+  try { resolved = await commitmentForUtxo(env, txidHex, vout, network); }
+  catch (e) { return jsonResponse({ error: 'commitment lookup failed: ' + e.message }, 400, cors); }
+  if (resolved.asset_id !== assetIdHex) {
+    return jsonResponse({ error: 'utxo asset_id mismatch' }, 400, cors);
+  }
+
+  // Pedersen binding: opening must commit to on-chain C.
+  let claimed, onchain;
+  try {
+    claimed = pedersenCommit(amount, BigInt('0x' + blindingHex));
+    onchain = compressedPointFromHex(resolved.commitment);
+  } catch (e) {
+    return jsonResponse({ error: 'commitment math failed: ' + e.message }, 400, cors);
+  }
+  if (!claimed.equals(onchain)) {
+    return jsonResponse({ error: 'opening does not match on-chain commitment' }, 400, cors);
+  }
+
+  // Ownership: hash160(owner_pubkey) matches vout's P2WPKH script hash.
+  const tx = await apiJson(env, `/tx/${txidHex}`, {}, network);
+  const out = tx?.vout?.[vout];
+  if (!out?.scriptpubkey) return jsonResponse({ error: 'vout has no scriptpubkey' }, 400, cors);
+  const spk = hexToBytes(out.scriptpubkey);
+  if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+    return jsonResponse({ error: 'vout is not P2WPKH' }, 400, cors);
+  }
+  if (bytesToHex(spk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(ownerPubHex)))) {
+    return jsonResponse({ error: 'owner_pubkey does not control this UTXO' }, 403, cors);
+  }
+
+  // Both sigs verify under x-only(owner_pubkey).
+  const xonly = hexToBytes(ownerPubHex).slice(1);
+  const oMsg = openingMsg(assetIdHex, txidHex, vout, amountStr, blindingHex, ownerPubHex);
+  if (!verifySchnorr(hexToBytes(openingSigHex), oMsg, xonly)) {
+    return jsonResponse({ error: 'invalid opening signature' }, 403, cors);
+  }
+  const lMsg = listingMsg(assetIdHex, txidHex, vout, priceSatsRaw, expiryRaw, makerAddress, openingSigHex);
+  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
+    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
+  }
+
+  // Store opening (idempotent — overwrites with same content) + listing.
+  const opening = {
+    asset_id: assetIdHex,
+    txid: txidHex, vout,
+    amount: amountStr,
+    blinding: blindingHex,
+    owner_pubkey: ownerPubHex,
+    sig: openingSigHex,
+    attested_at: now,
+    network,
+  };
+  await env.REGISTRY_KV.put(openingKey(network, assetIdHex, txidHex, vout), JSON.stringify(opening));
+
+  const listing = {
+    asset_id: assetIdHex,
+    txid: txidHex, vout,
+    amount: amountStr,
+    price_sats: priceSatsRaw,
+    maker_address: makerAddress,
+    expiry: expiryRaw,
+    owner_pubkey: ownerPubHex,
+    listing_sig: listingSigHex,
+    listed_at: now,
+    network,
+  };
+  await env.REGISTRY_KV.put(listingKey(network, assetIdHex, txidHex, vout), JSON.stringify(listing));
+  return jsonResponse({ ok: true, listing }, 200, cors);
+}
+
+async function handleListingList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const list = await env.REGISTRY_KV.list({ prefix: listingPrefix(network, assetIdHex), limit: 1000 });
+  const now = Math.floor(Date.now() / 1000);
+  const listings = [];
+  for (const k of list.keys) {
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (!v) continue;
+    v.expired = (v.expiry || 0) <= now;
+    // Drop stale claims at read time so clients don't see them as active.
+    // The KV record itself is left alone; the next claim POST will overwrite.
+    if (v.claim && v.claim.expires_at <= now) v.claim = null;
+    listings.push(v);
+  }
+  listings.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
+  return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
+}
+
+// Claim lock prevents the multi-taker race in OTC settlement: two takers each
+// paying the maker for the same listing. The maker can only deliver once.
+// This is a soft, time-bounded reservation — no on-chain commitment, just a
+// coordination signal. Default TTL 30 min: long enough for a Bitcoin
+// confirmation, short enough that abandoned claims clear quickly.
+const CLAIM_TTL_SECONDS = 30 * 60;
+// Atomic-intent fulfilment TTL. After 24h the maker can re-fulfil for a new
+// claimant — this protects the maker from a taker who claims, gets a signed
+// partial reveal, and then ghosts. The taker's BTC payment is still locked
+// behind their own SIGHASH_ALL signature so this doesn't risk anyone's funds;
+// it just frees the marketplace slot.
+const FULFILMENT_TTL_SECONDS = 24 * 3600;
+
+function claimMsg(assetIdHex, txidHex, vout, takerPubHex) {
+  const txidBE = reverseBytes(hexToBytes(txidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, vout >>> 0, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-listing-claim-v1'),
+    hexToBytes(assetIdHex),
+    txidBE,
+    voutLE,
+    hexToBytes(takerPubHex),
+  ));
+}
+
+async function handleListingClaim(assetIdHex, txidHex, voutStr, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(txidHex))    return jsonResponse({ error: 'invalid txid' }, 400, cors);
+  const vout = parseInt(voutStr, 10);
+  if (!Number.isInteger(vout) || vout < 0) return jsonResponse({ error: 'invalid vout' }, 400, cors);
+
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const takerPubHex = String(body.taker_pubkey ?? '').toLowerCase();
+  const sigHex = String(body.sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(takerPubHex)) return jsonResponse({ error: 'taker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex))          return jsonResponse({ error: 'sig must be 128 hex chars' }, 400, cors);
+
+  const msg = claimMsg(assetIdHex, txidHex, vout, takerPubHex);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(takerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid taker signature' }, 403, cors);
+  }
+
+  const key = listingKey(network, assetIdHex, txidHex, vout);
+  const stored = await env.REGISTRY_KV.get(key, 'json');
+  if (!stored)                 return jsonResponse({ error: 'no such listing' }, 404, cors);
+  if (stored.expiry <= Math.floor(Date.now() / 1000)) {
+    return jsonResponse({ error: 'listing expired' }, 410, cors);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  // Reject if an unexpired claim exists for a different taker. Same taker can
+  // refresh their own claim (idempotent re-claim).
+  if (stored.claim && stored.claim.expires_at > now && stored.claim.taker_pubkey !== takerPubHex) {
+    return jsonResponse({
+      error: 'listing already claimed',
+      claim: { expires_at: stored.claim.expires_at },
+    }, 409, cors);
+  }
+  stored.claim = {
+    taker_pubkey: takerPubHex,
+    claimed_at: now,
+    expires_at: now + CLAIM_TTL_SECONDS,
+  };
+  await env.REGISTRY_KV.put(key, JSON.stringify(stored));
+  return jsonResponse({ ok: true, listing: stored }, 200, cors);
+}
+
+async function handleListingDelete(assetIdHex, txidHex, voutStr, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(txidHex))    return jsonResponse({ error: 'invalid txid' }, 400, cors);
+  const vout = parseInt(voutStr, 10);
+  if (!Number.isInteger(vout) || vout < 0) return jsonResponse({ error: 'invalid vout' }, 400, cors);
+
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const cancelSigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(cancelSigHex))    return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+
+  const stored = await env.REGISTRY_KV.get(listingKey(network, assetIdHex, txidHex, vout), 'json');
+  if (!stored) return jsonResponse({ error: 'no listing found' }, 404, cors);
+  if (stored.owner_pubkey !== ownerPubHex) {
+    return jsonResponse({ error: 'owner_pubkey does not match listing' }, 403, cors);
+  }
+  const msg = cancelMsg(assetIdHex, txidHex, vout);
+  if (!verifySchnorr(hexToBytes(cancelSigHex), msg, hexToBytes(ownerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(listingKey(network, assetIdHex, txidHex, vout));
+  return jsonResponse({ ok: true }, 200, cors);
+}
+
+// ============== Range-disclosed listings ==============
+// Same offer semantics as per-UTXO listings, but the maker discloses only a
+// LOWER BOUND on their balance (via the disclosure rangeproof) instead of
+// publishing each UTXO's opening. Other UTXOs of theirs stay confidential.
+//
+// Wire format combines a disclosure (utxos, threshold, rangeproof,
+// disclosure_sig) with the listing terms (price_sats, maker_address, expiry,
+// listing_sig). Worker validates BOTH: ownership of every referenced UTXO,
+// matching asset_id, disclosure sig, listing sig, network-coherent address.
+// Bulletproof itself is not verified server-side (clients re-verify), same
+// policy as the standalone disclosure endpoint.
+//
+// Storage: one range-listing per (asset_id, owner_pubkey). Re-publish to
+// update price / available / proof; old entry overwritten.
+
+function rangeListingMsg(assetIdHex, threshold, priceSats, expiry, makerAddress, disclosureSigHex) {
+  const priceLE = new Uint8Array(8);
+  new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const expiryLE = new Uint8Array(8);
+  new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  const thresholdLE = new Uint8Array(8);
+  new DataView(thresholdLE.buffer).setBigUint64(0, BigInt(threshold), true);
+  const addrBytes = new TextEncoder().encode(makerAddress);
+  const addrLen = new Uint8Array(2);
+  new DataView(addrLen.buffer).setUint16(0, addrBytes.length, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-listing-range-v1'),
+    hexToBytes(assetIdHex),
+    thresholdLE,
+    priceLE,
+    expiryLE,
+    addrLen,
+    addrBytes,
+    hexToBytes(disclosureSigHex),
+  ));
+}
+
+function rangeListingCancelMsg(assetIdHex, ownerPubHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-listing-range-cancel-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(ownerPubHex),
+  ));
+}
+
+function rangeListingClaimMsg(assetIdHex, makerPubHex, takerPubHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-listing-range-claim-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(makerPubHex),
+    hexToBytes(takerPubHex),
+  ));
+}
+
+async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  // ---- Disclosure fields (ownership + balance lower-bound proof) ----
+  const utxosRaw = Array.isArray(body.utxos) ? body.utxos : null;
+  const thresholdStr = String(body.threshold ?? '');
+  const rangeproofHex = String(body.rangeproof ?? '').toLowerCase();
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  const disclosureSigHex = String(body.disclosure_sig ?? '').toLowerCase();
+  // ---- Listing terms ----
+  const priceSatsRaw = body.price_sats;
+  const expiryRaw = body.expiry;
+  const makerAddress = String(body.maker_address ?? '');
+  const listingSigHex = String(body.listing_sig ?? '').toLowerCase();
+
+  // Same shape checks as handleDisclosurePost + handleListingPost.
+  if (!utxosRaw || !utxosRaw.length || utxosRaw.length > 64) return jsonResponse({ error: 'utxos must be a non-empty array (max 64)' }, 400, cors);
+  if (!/^\d+$/.test(thresholdStr))                     return jsonResponse({ error: 'threshold must be base-10 integer string' }, 400, cors);
+  if (!/^[0-9a-f]+$/.test(rangeproofHex) || rangeproofHex.length / 2 < BP_LEN_MIN || rangeproofHex.length / 2 > BP_LEN_MAX)
+    return jsonResponse({ error: `rangeproof length out of range (${BP_LEN_MIN}–${BP_LEN_MAX} bytes)` }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex))        return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(disclosureSigHex))       return jsonResponse({ error: 'disclosure_sig must be 128 hex chars' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(listingSigHex))          return jsonResponse({ error: 'listing_sig must be 128 hex chars' }, 400, cors);
+  if (!Number.isInteger(priceSatsRaw) || priceSatsRaw < PRICE_MIN || priceSatsRaw > Number.MAX_SAFE_INTEGER)
+    return jsonResponse({ error: `price_sats must be integer >= ${PRICE_MIN}` }, 400, cors);
+  if (!Number.isInteger(expiryRaw))                    return jsonResponse({ error: 'expiry must be integer unix-seconds' }, 400, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if (expiryRaw <= now)                                return jsonResponse({ error: 'expiry must be in the future' }, 400, cors);
+  if (expiryRaw > now + EXPIRY_MAX_DAYS * 86400)       return jsonResponse({ error: `expiry must be within ${EXPIRY_MAX_DAYS} days` }, 400, cors);
+
+  if (!makerAddress || makerAddress.length > ADDR_MAX_LEN) return jsonResponse({ error: `maker_address required, ≤ ${ADDR_MAX_LEN} chars` }, 400, cors);
+  const decoded = decodeBitcoinAddress(makerAddress);
+  if (!decoded)  return jsonResponse({ error: 'maker_address is not a valid bech32/bech32m address' }, 400, cors);
+  if (decoded.hrp !== HRP_BY_NETWORK[network]) return jsonResponse({ error: `maker_address must use ${HRP_BY_NETWORK[network]}… HRP for ${network}` }, 400, cors);
+
+  let threshold;
+  try { threshold = BigInt(thresholdStr); } catch { return jsonResponse({ error: 'unparseable threshold' }, 400, cors); }
+  if (threshold <= 0n || threshold >= (1n << BigInt(N_BITS))) {
+    return jsonResponse({ error: `threshold must be in (0, 2^${N_BITS})` }, 400, cors);
+  }
+
+  const utxos = [];
+  for (const u of utxosRaw) {
+    const txid = String(u?.txid ?? '').toLowerCase();
+    const vout = u?.vout;
+    if (!/^[0-9a-f]{64}$/.test(txid))                       return jsonResponse({ error: 'utxo.txid must be 64 hex chars' }, 400, cors);
+    if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) return jsonResponse({ error: 'utxo.vout must be integer 0..65535' }, 400, cors);
+    utxos.push({ txid, vout });
+  }
+
+  // Validate ownership + asset_id consistency for every referenced UTXO.
+  const ownerHash160Hex = bytesToHex(hash160(hexToBytes(ownerPubHex)));
+  for (const u of utxos) {
+    let resolved;
+    try { resolved = await commitmentForUtxo(env, u.txid, u.vout, network); }
+    catch (e) { return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: ${e.message}` }, 400, cors); }
+    if (resolved.asset_id !== assetIdHex) {
+      return jsonResponse({ error: `utxo ${u.txid}:${u.vout} is for a different asset` }, 400, cors);
+    }
+    const tx = await apiJson(env, `/tx/${u.txid}`, {}, network);
+    const out = tx?.vout?.[u.vout];
+    if (!out?.scriptpubkey) return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: vout missing scriptpubkey` }, 400, cors);
+    const spk = hexToBytes(out.scriptpubkey);
+    if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+      return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: not P2WPKH` }, 400, cors);
+    }
+    if (bytesToHex(spk.slice(2, 22)) !== ownerHash160Hex) {
+      return jsonResponse({ error: `utxo ${u.txid}:${u.vout}: owner_pubkey does not control this UTXO` }, 403, cors);
+    }
+  }
+
+  // Disclosure sig over the canonical disclosure msg.
+  const xonly = hexToBytes(ownerPubHex).slice(1);
+  const dMsg = disclosureMsg(assetIdHex, utxos, threshold, rangeproofHex, ownerPubHex);
+  if (!verifySchnorr(hexToBytes(disclosureSigHex), dMsg, xonly)) {
+    return jsonResponse({ error: 'invalid disclosure signature' }, 403, cors);
+  }
+  // Listing sig over the canonical range-listing msg (binds disclosure_sig +
+  // price + expiry + maker_address + threshold).
+  const lMsg = rangeListingMsg(assetIdHex, threshold, priceSatsRaw, expiryRaw, makerAddress, disclosureSigHex);
+  if (!verifySchnorr(hexToBytes(listingSigHex), lMsg, xonly)) {
+    return jsonResponse({ error: 'invalid listing signature' }, 403, cors);
+  }
+
+  const listing = {
+    kind: 'range',
+    asset_id: assetIdHex,
+    utxos,
+    threshold: thresholdStr,
+    available_amount: thresholdStr, // alias for clients
+    rangeproof: rangeproofHex,
+    owner_pubkey: ownerPubHex,
+    disclosure_sig: disclosureSigHex,
+    price_sats: priceSatsRaw,
+    maker_address: makerAddress,
+    expiry: expiryRaw,
+    listing_sig: listingSigHex,
+    listed_at: now,
+    network,
+  };
+  await env.REGISTRY_KV.put(rangeListingKey(network, assetIdHex, ownerPubHex), JSON.stringify(listing));
+  return jsonResponse({ ok: true, listing }, 200, cors);
+}
+
+async function handleRangeListingList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const list = await env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, assetIdHex), limit: 1000 });
+  const now = Math.floor(Date.now() / 1000);
+  const listings = [];
+  for (const k of list.keys) {
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (!v) continue;
+    v.expired = (v.expiry || 0) <= now;
+    if (v.claim && v.claim.expires_at <= now) v.claim = null;
+    listings.push(v);
+  }
+  listings.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
+  return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
+}
+
+async function handleRangeListingDelete(assetIdHex, ownerPubHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex))             return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex.toLowerCase()))
+    return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed hex' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const cancelSigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(cancelSigHex))          return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+
+  const stored = await env.REGISTRY_KV.get(rangeListingKey(network, assetIdHex, ownerPubHex.toLowerCase()), 'json');
+  if (!stored)                  return jsonResponse({ error: 'no listing found' }, 404, cors);
+  const msg = rangeListingCancelMsg(assetIdHex, ownerPubHex.toLowerCase());
+  if (!verifySchnorr(hexToBytes(cancelSigHex), msg, hexToBytes(ownerPubHex.toLowerCase()).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(rangeListingKey(network, assetIdHex, ownerPubHex.toLowerCase()));
+  return jsonResponse({ ok: true }, 200, cors);
+}
+
+async function handleRangeListingClaim(assetIdHex, makerPubHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex))             return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(makerPubHex.toLowerCase()))
+    return jsonResponse({ error: 'maker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const takerPubHex = String(body.taker_pubkey ?? '').toLowerCase();
+  const sigHex = String(body.sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(takerPubHex))       return jsonResponse({ error: 'taker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex))                return jsonResponse({ error: 'sig must be 128 hex chars' }, 400, cors);
+
+  const msg = rangeListingClaimMsg(assetIdHex, makerPubHex.toLowerCase(), takerPubHex);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(takerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid taker signature' }, 403, cors);
+  }
+  const key = rangeListingKey(network, assetIdHex, makerPubHex.toLowerCase());
+  const stored = await env.REGISTRY_KV.get(key, 'json');
+  if (!stored)                 return jsonResponse({ error: 'no such listing' }, 404, cors);
+  if (stored.expiry <= Math.floor(Date.now() / 1000)) {
+    return jsonResponse({ error: 'listing expired' }, 410, cors);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (stored.claim && stored.claim.expires_at > now && stored.claim.taker_pubkey !== takerPubHex) {
+    return jsonResponse({
+      error: 'listing already claimed',
+      claim: { expires_at: stored.claim.expires_at },
+    }, 409, cors);
+  }
+  stored.claim = {
+    taker_pubkey: takerPubHex,
+    claimed_at: now,
+    expires_at: now + CLAIM_TTL_SECONDS,
+  };
+  await env.REGISTRY_KV.put(key, JSON.stringify(stored));
+  return jsonResponse({ ok: true, listing: stored }, 200, cors);
+}
+
+// ============== Atomic intents (T_AXFER browse-and-take marketplace) ==============
+// Three-step trustless settlement that's also discoverable:
+//   1. Maker publishes a generic intent (asset UTXO + commit tx + terms,
+//      no recipient yet).
+//   2. Taker browses and claims with their pubkey. Worker locks for 30 min.
+//   3. Maker observes the claim, generates a partial reveal targeted at
+//      the claimant's pubkey, uploads as a fulfilment.
+//   4. Taker fetches the fulfilment, finalizes (appends BTC funding,
+//      signs SIGHASH_ALL), broadcasts. One Bitcoin tx, atomic settlement,
+//      no counterparty trust.
+
+function atomicIntentMsg(assetIdHex, intentIdHex, makerPubHex, amountStr, priceSats, expiry, commitTxidHex, assetUtxoTxidHex, assetUtxoVout) {
+  const priceLE = new Uint8Array(8);
+  new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const expiryLE = new Uint8Array(8);
+  new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  const amountLE = new Uint8Array(8);
+  new DataView(amountLE.buffer).setBigUint64(0, BigInt(amountStr), true);
+  const utxoVoutLE = new Uint8Array(4);
+  new DataView(utxoVoutLE.buffer).setUint32(0, assetUtxoVout >>> 0, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    hexToBytes(makerPubHex),
+    amountLE,
+    priceLE,
+    expiryLE,
+    reverseBytes(hexToBytes(commitTxidHex)),
+    reverseBytes(hexToBytes(assetUtxoTxidHex)),
+    utxoVoutLE,
+  ));
+}
+
+function atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-claim-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    hexToBytes(takerPubHex),
+  ));
+}
+
+function atomicIntentFulfilmentMsg(assetIdHex, intentIdHex, takerPubHex, partialRevealJson) {
+  const phash = sha256(new TextEncoder().encode(partialRevealJson));
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-fulfilment-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    hexToBytes(takerPubHex),
+    phash,
+  ));
+}
+
+function atomicIntentCancelMsg(assetIdHex, intentIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-cancel-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+  ));
+}
+
+async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  const intentIdHex = String(body.intent_id ?? '').toLowerCase();
+  const makerPubHex = String(body.maker_pubkey ?? '').toLowerCase();
+  const makerAddress = String(body.maker_address ?? '');
+  const amountStr = String(body.amount ?? '');
+  const priceSatsRaw = body.price_sats;
+  const expiryRaw = body.expiry;
+  const commitTxidHex = String(body.commit_txid ?? '').toLowerCase();
+  const commitValueRaw = body.commit_value;
+  const p2trSpkHex = String(body.p2tr_spk_hex ?? '').toLowerCase();
+  const assetUtxoTxid = String(body.asset_utxo?.txid ?? '').toLowerCase();
+  const assetUtxoVout = body.asset_utxo?.vout;
+  const assetUtxoValue = body.asset_utxo?.value;
+  const ticker = String(body.ticker ?? '');
+  const decimals = body.decimals;
+  const sigHex = String(body.intent_sig ?? '').toLowerCase();
+  // Envelope script + control block are required so the maker can rebuild
+  // the script-path witness at fulfilment time. Stored opaquely (the worker
+  // doesn't decode them — Bitcoin will when the eventual reveal broadcasts).
+  // Generous upper bounds: an aggregated bulletproof at m=1 is ~688 bytes;
+  // padded-PUSHDATA framing + payload header runs the envelope to ~830
+  // bytes. 4096 hex chars (2048 bytes) is well above that and well below
+  // anything that would bloat KV.
+  const envelopeScriptHex = String(body.envelope_script_hex ?? '').toLowerCase();
+  const controlBlockHex = String(body.control_block_hex ?? '').toLowerCase();
+
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex))             return jsonResponse({ error: 'intent_id must be 32 hex chars (16 bytes)' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(makerPubHex))        return jsonResponse({ error: 'maker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^\d+$/.test(amountStr))                        return jsonResponse({ error: 'amount must be base-10 integer string' }, 400, cors);
+  if (!Number.isInteger(priceSatsRaw) || priceSatsRaw < PRICE_MIN) return jsonResponse({ error: `price_sats must be integer ≥ ${PRICE_MIN}` }, 400, cors);
+  if (!Number.isInteger(expiryRaw))                    return jsonResponse({ error: 'expiry must be integer unix-seconds' }, 400, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if (expiryRaw <= now)                                return jsonResponse({ error: 'expiry must be in the future' }, 400, cors);
+  if (expiryRaw > now + EXPIRY_MAX_DAYS * 86400)       return jsonResponse({ error: `expiry must be within ${EXPIRY_MAX_DAYS} days` }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(commitTxidHex))           return jsonResponse({ error: 'invalid commit_txid' }, 400, cors);
+  if (!Number.isInteger(commitValueRaw) || commitValueRaw < DUST) return jsonResponse({ error: 'invalid commit_value' }, 400, cors);
+  if (!/^0020[0-9a-f]{64}$/.test(p2trSpkHex))          return jsonResponse({ error: 'p2tr_spk_hex must be 34 bytes (00 20 + 32-byte tweaked key)' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(assetUtxoTxid))           return jsonResponse({ error: 'asset_utxo.txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(assetUtxoVout) || assetUtxoVout < 0) return jsonResponse({ error: 'asset_utxo.vout must be non-negative integer' }, 400, cors);
+  if (!Number.isInteger(assetUtxoValue) || assetUtxoValue < DUST) return jsonResponse({ error: 'asset_utxo.value invalid' }, 400, cors);
+  if (!makerAddress || makerAddress.length > ADDR_MAX_LEN) return jsonResponse({ error: `maker_address required, ≤ ${ADDR_MAX_LEN} chars` }, 400, cors);
+  const decoded = decodeBitcoinAddress(makerAddress);
+  if (!decoded || decoded.hrp !== HRP_BY_NETWORK[network]) {
+    return jsonResponse({ error: `maker_address must be a ${HRP_BY_NETWORK[network]}… bech32 address` }, 400, cors);
+  }
+  if (!/^[0-9a-f]{128}$/.test(sigHex))                 return jsonResponse({ error: 'intent_sig must be 128 hex chars' }, 400, cors);
+  if (!/^[0-9a-f]+$/.test(envelopeScriptHex) || envelopeScriptHex.length > 4096 || envelopeScriptHex.length < 80) {
+    return jsonResponse({ error: 'envelope_script_hex required (40–2048 byte hex string)' }, 400, cors);
+  }
+  if (!/^[0-9a-f]{66}$/.test(controlBlockHex)) {
+    return jsonResponse({ error: 'control_block_hex must be 33-byte hex (parity_byte + 32-byte internal key)' }, 400, cors);
+  }
+  // Verify intent_id derives from (commit_txid || maker_pubkey).
+  const expectedIntentId = bytesToHex(sha256(concatBytes(
+    reverseBytes(hexToBytes(commitTxidHex)),
+    hexToBytes(makerPubHex),
+  ))).slice(0, 32);
+  if (intentIdHex !== expectedIntentId) {
+    return jsonResponse({ error: 'intent_id does not derive from sha256(commit_txid || maker_pubkey).slice(0, 16)' }, 400, cors);
+  }
+
+  // Verify the maker controls the asset UTXO (P2WPKH(hash160(maker_pubkey))).
+  let assetTx;
+  try { assetTx = await apiJson(env, `/tx/${assetUtxoTxid}`, {}, network); }
+  catch (e) { return jsonResponse({ error: 'asset_utxo tx not found: ' + e.message }, 400, cors); }
+  const out = assetTx?.vout?.[assetUtxoVout];
+  if (!out?.scriptpubkey) return jsonResponse({ error: 'asset_utxo missing scriptpubkey' }, 400, cors);
+  const spk = hexToBytes(out.scriptpubkey);
+  if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) return jsonResponse({ error: 'asset_utxo not P2WPKH' }, 400, cors);
+  if (bytesToHex(spk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(makerPubHex)))) {
+    return jsonResponse({ error: 'maker_pubkey does not control the asset UTXO' }, 403, cors);
+  }
+  // Verify the asset UTXO's parent envelope declares the same asset_id.
+  let resolved;
+  try { resolved = await commitmentForUtxo(env, assetUtxoTxid, assetUtxoVout, network); }
+  catch (e) { return jsonResponse({ error: 'commitment lookup failed: ' + e.message }, 400, cors); }
+  if (resolved.asset_id !== assetIdHex) {
+    return jsonResponse({ error: 'asset_utxo is for a different asset' }, 400, cors);
+  }
+  // Verify the intent_sig.
+  const msg = atomicIntentMsg(assetIdHex, intentIdHex, makerPubHex, amountStr, priceSatsRaw, expiryRaw, commitTxidHex, assetUtxoTxid, assetUtxoVout);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(makerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid intent signature' }, 403, cors);
+  }
+
+  // Structural binding of the envelope script. The worker can't bind the
+  // (amount, blinding) opening since it never sees `r`, but it can confirm
+  // the envelope is the right shape for an atomic-intent settlement: T_AXFER
+  // opcode, single asset input, single tacit output, asset_id matches the
+  // intent. Without this, a maker could publish an envelope that's a CXFER
+  // or a different asset and have it accepted; the eventual reveal would
+  // fail to relay, but a claimant would have already wasted a 30-min lock.
+  let env_decoded;
+  try { env_decoded = decodeEnvelopeScript(hexToBytes(envelopeScriptHex)); }
+  catch (e) { return jsonResponse({ error: 'envelope_script_hex decode threw: ' + e.message }, 400, cors); }
+  if (!env_decoded) return jsonResponse({ error: 'envelope_script_hex is structurally invalid' }, 400, cors);
+  if (env_decoded.opcode !== T_AXFER) return jsonResponse({ error: `envelope opcode 0x${env_decoded.opcode.toString(16)} != T_AXFER (0x26)` }, 400, cors);
+  const ax = decodeAxferPayload(env_decoded.payload);
+  if (!ax) return jsonResponse({ error: 'T_AXFER payload decode failed' }, 400, cors);
+  if (ax.assetInputCount !== 1) return jsonResponse({ error: `assetInputCount must be 1 for atomic intent (got ${ax.assetInputCount})` }, 400, cors);
+  if (ax.outputs.length !== 1) return jsonResponse({ error: `expected exactly 1 tacit output (got ${ax.outputs.length})` }, 400, cors);
+  if (bytesToHex(ax.assetId) !== assetIdHex) {
+    return jsonResponse({ error: 'envelope.asset_id does not match URL asset_id' }, 400, cors);
+  }
+
+  // Bind the published p2tr_spk to the actual on-chain commit_txid:0. Without
+  // this, a maker could point at any commit; the take would only fail at
+  // Bitcoin relay time. We fetch the commit tx and compare scripts byte-wise.
+  let commitTx;
+  try { commitTx = await apiJson(env, `/tx/${commitTxidHex}`, {}, network); }
+  catch (e) { return jsonResponse({ error: 'commit_txid not found on chain: ' + e.message }, 400, cors); }
+  const commitVout0 = commitTx?.vout?.[0];
+  if (!commitVout0?.scriptpubkey) return jsonResponse({ error: 'commit tx vout[0] missing scriptpubkey' }, 400, cors);
+  if (commitVout0.scriptpubkey.toLowerCase() !== p2trSpkHex) {
+    return jsonResponse({ error: 'commit_txid vout[0] scriptpubkey does not match p2tr_spk_hex' }, 400, cors);
+  }
+  if (commitVout0.value !== commitValueRaw) {
+    return jsonResponse({ error: `commit_value mismatch (declared ${commitValueRaw}, on-chain ${commitVout0.value})` }, 400, cors);
+  }
+
+  const intent = {
+    asset_id: assetIdHex,
+    intent_id: intentIdHex,
+    maker_pubkey: makerPubHex,
+    maker_address: makerAddress,
+    amount: amountStr,
+    price_sats: priceSatsRaw,
+    expiry: expiryRaw,
+    commit_txid: commitTxidHex,
+    commit_value: commitValueRaw,
+    p2tr_spk_hex: p2trSpkHex,
+    asset_utxo: { txid: assetUtxoTxid, vout: assetUtxoVout, value: assetUtxoValue },
+    ticker: ticker || '',
+    decimals: Number.isInteger(decimals) ? decimals : 0,
+    envelope_script_hex: envelopeScriptHex,
+    control_block_hex: controlBlockHex,
+    intent_sig: sigHex,
+    created_at: now,
+    network,
+  };
+  await env.REGISTRY_KV.put(atomicIntentKey(network, assetIdHex, intentIdHex), JSON.stringify(intent));
+  return jsonResponse({ ok: true, intent }, 200, cors);
+}
+
+async function handleAtomicIntentList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const list = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
+  const now = Math.floor(Date.now() / 1000);
+  const intents = [];
+  for (const k of list.keys) {
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (!v) continue;
+    v.expired = (v.expiry || 0) <= now;
+    // Hydrate claim + fulfilment status so the maker can see who's bidding
+    // and the taker can see if their fulfilment is ready. Stale fulfilments
+    // (older than FULFILMENT_TTL_SECONDS without a broadcast) are dropped so
+    // the maker can re-fulfil for a new claimant.
+    const claim = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, v.intent_id), 'json');
+    if (claim && claim.expires_at > now) v.claim = claim;
+    const fulfil = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, v.intent_id), 'json');
+    if (fulfil) {
+      const fulfilledAt = Number(fulfil.fulfilled_at) || 0;
+      if (fulfilledAt && (now - fulfilledAt) > FULFILMENT_TTL_SECONDS) {
+        // GC: lazy cleanup on read. Fire-and-forget, no await — we don't need
+        // the delete to land before responding, and deferring keeps the read
+        // path cheap.
+        env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, v.intent_id)).catch(() => {});
+      } else {
+        v.fulfilment_pending = true; // don't include the partial reveal here; it's a separate fetch
+        v.fulfilled_at = fulfilledAt;
+      }
+    }
+    intents.push(v);
+  }
+  intents.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents }, 200, cors);
+}
+
+async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const cancelSigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(cancelSigHex)) return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+  const stored = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
+  if (!stored) return jsonResponse({ error: 'no intent found' }, 404, cors);
+  const msg = atomicIntentCancelMsg(assetIdHex, intentIdHex);
+  if (!verifySchnorr(hexToBytes(cancelSigHex), msg, hexToBytes(stored.maker_pubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(atomicIntentKey(network, assetIdHex, intentIdHex));
+  await env.REGISTRY_KV.delete(atomicClaimKey(network, assetIdHex, intentIdHex));
+  await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, intentIdHex));
+  return jsonResponse({ ok: true }, 200, cors);
+}
+
+async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const takerPubHex = String(body.taker_pubkey ?? '').toLowerCase();
+  const sigHex = String(body.sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(takerPubHex)) return jsonResponse({ error: 'taker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex))          return jsonResponse({ error: 'sig must be 128 hex chars' }, 400, cors);
+
+  const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
+  if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if ((intent.expiry || 0) <= now) return jsonResponse({ error: 'intent expired' }, 410, cors);
+
+  // Reject if there's an unexpired claim by a different taker.
+  const existing = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
+  if (existing && existing.expires_at > now && existing.taker_pubkey !== takerPubHex) {
+    return jsonResponse({
+      error: 'intent already claimed',
+      claim: { expires_at: existing.expires_at },
+    }, 409, cors);
+  }
+  const msg = atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(takerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid taker signature' }, 403, cors);
+  }
+  const claim = {
+    intent_id: intentIdHex,
+    taker_pubkey: takerPubHex,
+    sig: sigHex,
+    claimed_at: now,
+    expires_at: now + CLAIM_TTL_SECONDS,
+  };
+  await env.REGISTRY_KV.put(atomicClaimKey(network, assetIdHex, intentIdHex), JSON.stringify(claim));
+  return jsonResponse({ ok: true, claim, intent }, 200, cors);
+}
+
+async function handleAtomicIntentFulfil(assetIdHex, intentIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const takerPubHex = String(body.taker_pubkey ?? '').toLowerCase();
+  const partialReveal = body.partial_reveal;
+  const sigHex = String(body.fulfilment_sig ?? '').toLowerCase();
+  // 32-byte ECDH-encrypted recipient blinding `r XOR keystream(maker.priv,
+  // taker.pub, intent_id, asset_id)`. Worker stores it opaquely; only the
+  // claimant can decrypt with their priv. Refuse fulfilments without it —
+  // older clients that omit this field would ship blinding cleartext via
+  // the obsolete intent.recipient_blinding path, leaking amounts to anyone
+  // watching the marketplace.
+  const encRecipBlindingHex = String(body.enc_recipient_blinding ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(takerPubHex)) return jsonResponse({ error: 'taker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (typeof partialReveal !== 'object' || partialReveal === null) return jsonResponse({ error: 'partial_reveal must be a JSON object' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return jsonResponse({ error: 'fulfilment_sig must be 128 hex chars' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(encRecipBlindingHex)) return jsonResponse({ error: 'enc_recipient_blinding must be 64 hex chars (32-byte ciphertext)' }, 400, cors);
+
+  const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
+  if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
+  const claim = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
+  const now = Math.floor(Date.now() / 1000);
+  if (!claim || claim.expires_at <= now) return jsonResponse({ error: 'no active claim' }, 404, cors);
+  if (claim.taker_pubkey !== takerPubHex) return jsonResponse({ error: 'taker_pubkey does not match claim' }, 403, cors);
+
+  // Verify the maker (== owner of intent) signed the fulfilment.
+  const partialRevealJson = JSON.stringify(partialReveal);
+  const msg = atomicIntentFulfilmentMsg(assetIdHex, intentIdHex, takerPubHex, partialRevealJson);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(intent.maker_pubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid fulfilment signature (must be signed by the intent maker)' }, 403, cors);
+  }
+  const fulfilment = {
+    intent_id: intentIdHex,
+    taker_pubkey: takerPubHex,
+    partial_reveal: partialReveal,
+    fulfilment_sig: sigHex,
+    enc_recipient_blinding: encRecipBlindingHex,
+    fulfilled_at: now,
+  };
+  await env.REGISTRY_KV.put(atomicFulfilmentKey(network, assetIdHex, intentIdHex), JSON.stringify(fulfilment));
+  return jsonResponse({ ok: true, fulfilment }, 200, cors);
+}
+
+async function handleAtomicIntentFulfilGet(assetIdHex, intentIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+  const fulfilment = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, intentIdHex), 'json');
+  if (!fulfilment) return jsonResponse({ error: 'fulfilment not yet posted' }, 404, cors);
+  const now = Math.floor(Date.now() / 1000);
+  const fulfilledAt = Number(fulfilment.fulfilled_at) || 0;
+  if (fulfilledAt && (now - fulfilledAt) > FULFILMENT_TTL_SECONDS) {
+    // Stale: GC lazily and treat as "not yet posted" so the maker can re-fulfil.
+    env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, intentIdHex)).catch(() => {});
+    return jsonResponse({ error: 'fulfilment expired (stale beyond TTL); maker should re-fulfil for an active claim' }, 410, cors);
+  }
+  const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
+  return jsonResponse({ ok: true, fulfilment, intent }, 200, cors);
+}
+
+// ============== Cron: scan signet + mainnet for new CETCH envelopes ==============
+async function fetchBlockTxs(env, blockHash, network) {
   const all = [];
   let startIdx = 0;
   while (true) {
     let txs;
-    try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`); }
+    try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, {}, network); }
     catch { break; }
     if (!Array.isArray(txs) || txs.length === 0) break;
     all.push(...txs);
     if (txs.length < 25) break;
     startIdx += 25;
-    if (all.length >= 1000) break; // safety
+    // Mainnet blocks can be 3000+ txs (120+ pages); cap at 5000 to bound work
+    // per cron tick. The hint endpoint catches anything missed by truncation.
+    if (all.length >= 5000) break;
   }
   return all;
 }
 
-async function rewindLastScanned(env, from) {
+async function rewindLastScanned(env, from, network) {
   if (!Number.isInteger(from) || from < 0) throw new Error('from must be a non-negative integer');
-  const tip = parseInt((await apiText(env, '/blocks/tip/height')).trim(), 10);
+  const tip = parseInt((await apiText(env, '/blocks/tip/height', {}, network)).trim(), 10);
   if (from > tip) throw new Error(`from (${from}) is ahead of tip (${tip})`);
-  const prior = parseInt((await env.REGISTRY_KV.get('meta:last_scanned')) || '0', 10);
-  // Set last_scanned to from-1 so next scan tick begins exactly at `from`.
-  // Special-case from=0: clear the key so the first-run backfill branch fires again.
-  if (from === 0) await env.REGISTRY_KV.delete('meta:last_scanned');
-  else await env.REGISTRY_KV.put('meta:last_scanned', String(from - 1));
-  return { rewound_to: from, prior_last_scanned: prior, tip };
+  const key = lastScannedKey(network);
+  const prior = parseInt((await env.REGISTRY_KV.get(key)) || '0', 10);
+  if (from === 0) await env.REGISTRY_KV.delete(key);
+  else await env.REGISTRY_KV.put(key, String(from - 1));
+  return { rewound_to: from, prior_last_scanned: prior, tip, network };
 }
 
-async function scanForEtches(env) {
-  const lastScanned = parseInt((await env.REGISTRY_KV.get('meta:last_scanned')) || '0', 10);
-  const tip = parseInt((await apiText(env, '/blocks/tip/height')).trim(), 10);
-  // First run: backfill ~2 weeks of signet history (2016 blocks @ 10-min target).
-  // At 5 blocks/tick × 5-min cron, catch-up takes ~34h. Subsequent runs: continue from last+1.
-  const startHeight = lastScanned > 0 ? lastScanned + 1 : Math.max(0, tip - 2016);
-  // Cap blocks per run to stay within Worker subrequest limits.
-  const endHeight = Math.min(tip, startHeight + 5);
-  if (startHeight > tip) return { up_to_date: true, tip };
+async function scanForEtches(env, network) {
+  // Distinguish "never scanned" (key absent) from "scanned through 0" (value
+  // '0'). Without this distinction, `/rescan?from=1` writes '0' into the key
+  // and the next tick mistakes that for "never scanned" and triggers backfill.
+  const raw = await env.REGISTRY_KV.get(lastScannedKey(network));
+  const lastScanned = raw === null ? -1 : parseInt(raw, 10);
+  const tip = parseInt((await apiText(env, '/blocks/tip/height', {}, network)).trim(), 10);
+  // Per-network blocks-per-tick budget (signet is sparse, mainnet is dense).
+  const blocksPerTick = network === 'mainnet'
+    ? parseInt(env.SCAN_BLOCKS_MAINNET || '1', 10)
+    : parseInt(env.SCAN_BLOCKS_SIGNET || '5', 10);
+  // Backfill window: signet has near-empty blocks so we backfill 2 weeks (2016
+  // blocks); mainnet would be prohibitive at 3000 txs/block, so we start from
+  // tip and only catch new etches going forward. Hint endpoint covers anything
+  // historical the dApp owner cares about.
+  const backfillBlocks = network === 'mainnet' ? 0 : 2016;
+  const startHeight = lastScanned >= 0 ? lastScanned + 1 : Math.max(0, tip - backfillBlocks);
+  const endHeight = Math.min(tip, startHeight + blocksPerTick);
+  if (startHeight > tip) return { up_to_date: true, tip, network };
 
   let scanned = 0, found = 0;
-  // Track the highest CONTIGUOUSLY-completed height. Stop on any failure so we
-  // re-try the failed block on the next cron tick instead of permanently skipping it.
-  let lastContiguous = lastScanned;
+  let lastContiguous = lastScanned >= 0 ? lastScanned : 0;
   for (let h = startHeight; h <= endHeight; h++) {
     let blockHash;
-    try { blockHash = (await apiText(env, `/block-height/${h}`)).trim(); }
-    catch { break; } // stop here; next run retries from lastContiguous + 1
+    try { blockHash = (await apiText(env, `/block-height/${h}`, {}, network)).trim(); }
+    catch { break; }
     let txs;
-    try { txs = await fetchBlockTxs(env, blockHash); }
+    try { txs = await fetchBlockTxs(env, blockHash, network); }
     catch { break; }
     for (const tx of txs) {
       scanned++;
@@ -548,28 +2459,71 @@ async function scanForEtches(env) {
       let envBytes;
       try { envBytes = hexToBytes(tx.vin[0].witness[1]); } catch { continue; }
       const decoded = decodeEnvelopeScript(envBytes);
-      if (!decoded || decoded.opcode !== T_CETCH) continue;
-      const ce = decodeCEtchPayload(decoded.payload);
-      if (!ce) continue;
-      const aid = assetIdFor(tx.txid, 0);
-      const meta = {
-        asset_id: aid,
-        ticker: ce.ticker,
-        decimals: ce.decimals,
-        commitment: ce.commitment,
-        image_uri: ce.imageUri,
-        etch_txid: tx.txid,
-        etch_vout: 0,
-        etched_at_height: h,
-        etched_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
-      };
-      await env.REGISTRY_KV.put(`asset:${aid}`, JSON.stringify(meta));
-      found++;
+      if (!decoded) continue;
+      if (decoded.opcode === T_CETCH) {
+        const ce = decodeCEtchPayload(decoded.payload);
+        if (!ce) continue;
+        const aid = assetIdFor(tx.txid, 0);
+        const meta = {
+          asset_id: aid,
+          ticker: ce.ticker,
+          decimals: ce.decimals,
+          commitment: ce.commitment,
+          image_uri: ce.imageUri,
+          etch_txid: tx.txid,
+          etch_vout: 0,
+          etched_at_height: h,
+          etched_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          mintable: ce.mintable,
+          mint_authority: ce.mint_authority,
+          network,
+        };
+        await env.REGISTRY_KV.put(assetKey(network, aid), JSON.stringify(meta));
+        found++;
+      } else if (decoded.opcode === T_MINT) {
+        const cm = decodeCMintPayload(decoded.payload);
+        if (!cm) continue;
+        const mintMeta = {
+          asset_id: cm.asset_id,
+          etch_txid: cm.etch_txid,
+          mint_txid: tx.txid,
+          mint_vout: 0,
+          commitment: cm.commitment,
+          minted_at_height: h,
+          minted_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          network,
+        };
+        await env.REGISTRY_KV.put(mintKeyFor(network, cm.asset_id, tx.txid), JSON.stringify(mintMeta));
+        found++;
+      } else if (decoded.opcode === T_BURN) {
+        const cb = decodeCBurnPayload(decoded.payload);
+        if (!cb) continue;
+        const burnMeta = {
+          asset_id: cb.asset_id,
+          burn_txid: tx.txid,
+          burned_amount: cb.burned_amount,
+          burned_at_height: h,
+          burned_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          network,
+        };
+        await env.REGISTRY_KV.put(burnKeyFor(network, cb.asset_id, tx.txid), JSON.stringify(burnMeta));
+        found++;
+      }
     }
+    lastContiguous = h;
   }
-  await env.REGISTRY_KV.put('meta:last_scanned', String(endHeight));
-  return { scanned_txs: scanned, found_etches: found, from: startHeight, to: endHeight, tip };
+  await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
+  return { scanned_txs: scanned, found_etches: found, from: startHeight, to: lastContiguous, tip, network };
 }
+
+// Named exports for cross-impl parity tests in the test harness. Cloudflare
+// Workers ignores extra named exports — only the default object's fetch /
+// scheduled handlers are invoked at runtime — so this has no production effect.
+export {
+  openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
+  atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
+  verifySchnorr, compressedPointFromHex,
+};
 
 // ============== ROUTER ==============
 export default {
@@ -582,21 +2536,87 @@ export default {
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);
     if (url.pathname === '/balance' && req.method === 'GET')   return handleBalance(env, cors);
     if (url.pathname === '/drip' && req.method === 'POST')     return handleDrip(req, env, cors);
-    if (url.pathname === '/assets' && req.method === 'GET')    return handleAssetsList(env, cors);
-    const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
-    if (m && req.method === 'GET')                             return handleAssetGet(m[1], env, cors);
+    // Network is selected via ?network=signet|mainnet. Default is signet so a
+    // no-network call (legacy clients) doesn't accidentally hit mainnet KV.
+    // The current dapp explicitly passes ?network=mainnet for mainnet ops.
+    const network = parseNetwork(url.searchParams.get('network'));
 
+    if (url.pathname === '/assets' && req.method === 'GET') {
+      const limitStr = url.searchParams.get('limit');
+      let limit = null;
+      if (limitStr !== null) {
+        // Reject non-numeric limits explicitly rather than silently
+        // coercing to no-limit. handleAssetsList caps at 1000 anyway,
+        // but garbage input should 400 so callers fix their query.
+        if (!/^\d+$/.test(limitStr)) {
+          return jsonResponse({ error: 'limit must be a non-negative integer' }, 400, cors);
+        }
+        limit = parseInt(limitStr, 10);
+        if (limit < 1 || limit > 1000) {
+          return jsonResponse({ error: 'limit must be between 1 and 1000' }, 400, cors);
+        }
+      }
+      const mintsParam = url.searchParams.get('mints');
+      const includeMints = mintsParam !== '0' && mintsParam !== 'false';
+      return handleAssetsList(env, network, cors, { limit, includeMints });
+    }
+    if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors);
+    const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
+    if (m && req.method === 'GET')                             return handleAssetGet(m[1], env, network, cors);
+    const ma = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/attest$/);
+    if (ma && req.method === 'POST')                           return handleAttest(ma[1], req, env, network, cors);
+    const mm = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/mints\/([0-9a-f]{64})\/attest$/);
+    if (mm && req.method === 'POST')                           return handleMintAttest(mm[1], mm[2], req, env, network, cors);
+    const mo = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/openings$/);
+    if (mo && req.method === 'GET')                            return handleAssetOpenings(mo[1], env, network, cors);
+    const mu = url.pathname.match(/^\/utxos\/([0-9a-f]{64})\/(\d+)\/opening$/);
+    if (mu && req.method === 'POST')                           return handleUtxoOpeningPost(mu[1], mu[2], req, env, network, cors);
+    if (mu && req.method === 'GET')                            return handleUtxoOpeningGet(mu[1], mu[2], env, network, cors);
+    const md = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/disclosures$/);
+    if (md && req.method === 'POST')                           return handleDisclosurePost(md[1], req, env, network, cors);
+    if (md && req.method === 'GET')                            return handleDisclosureList(md[1], env, network, cors);
+    const ml = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings$/);
+    if (ml && req.method === 'POST')                           return handleListingPost(ml[1], req, env, network, cors);
+    if (ml && req.method === 'GET')                            return handleListingList(ml[1], env, network, cors);
+    const ml2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings\/([0-9a-f]{64})\/(\d+)$/);
+    if (ml2 && req.method === 'DELETE')                        return handleListingDelete(ml2[1], ml2[2], ml2[3], req, env, network, cors);
+    const ml3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings\/([0-9a-f]{64})\/(\d+)\/claim$/);
+    if (ml3 && req.method === 'POST')                          return handleListingClaim(ml3[1], ml3[2], ml3[3], req, env, network, cors);
+    const mlr = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range$/);
+    if (mlr && req.method === 'POST')                          return handleRangeListingPost(mlr[1], req, env, network, cors);
+    if (mlr && req.method === 'GET')                           return handleRangeListingList(mlr[1], env, network, cors);
+    const mlr2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range\/(0[23][0-9a-f]{64})$/);
+    if (mlr2 && req.method === 'DELETE')                       return handleRangeListingDelete(mlr2[1], mlr2[2], req, env, network, cors);
+    const mlr3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range\/(0[23][0-9a-f]{64})\/claim$/);
+    if (mlr3 && req.method === 'POST')                         return handleRangeListingClaim(mlr3[1], mlr3[2], req, env, network, cors);
+    // Atomic intents (browse-and-take T_AXFER marketplace).
+    const mai = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents$/);
+    if (mai && req.method === 'POST')                          return handleAtomicIntentPost(mai[1], req, env, network, cors);
+    if (mai && req.method === 'GET')                           return handleAtomicIntentList(mai[1], env, network, cors);
+    const mai2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})$/);
+    if (mai2 && req.method === 'DELETE')                       return handleAtomicIntentDelete(mai2[1], mai2[2], req, env, network, cors);
+    const mai3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim$/);
+    if (mai3 && req.method === 'POST')                         return handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors);
+    const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
+    if (mai4 && req.method === 'POST')                         return handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors);
+    if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
+
+    // Debug endpoints: gated on DEBUG_TOKEN. Without the secret, attackers
+    // can rescan-from-genesis and exhaust the worker's daily subrequest
+    // budget. We return 404 (not 401) on missing/wrong auth so the surface
+    // looks like it doesn't exist.
     if (url.pathname === '/scan' && req.method === 'POST') {
-      try { return jsonResponse(await scanForEtches(env), 200, cors); }
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try { return jsonResponse(await scanForEtches(env, network), 200, cors); }
       catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
-
     if (url.pathname === '/rescan' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
       try {
         const fromStr = url.searchParams.get('from');
         if (fromStr === null) return jsonResponse({ error: 'missing ?from=<height>' }, 400, cors);
         const from = parseInt(fromStr, 10);
-        return jsonResponse(await rewindLastScanned(env, from), 200, cors);
+        return jsonResponse(await rewindLastScanned(env, from, network), 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 400, cors); }
     }
 
@@ -604,6 +2624,9 @@ export default {
   },
 
   async scheduled(_event, env, ctx) {
-    ctx.waitUntil(scanForEtches(env).catch(() => {}));
+    // Scan both networks each cron tick. Failures in one don't affect the other.
+    ctx.waitUntil(Promise.allSettled(
+      NETWORKS.map(net => scanForEtches(env, net).catch(() => {}))
+    ));
   },
 };

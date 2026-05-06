@@ -1,0 +1,20 @@
+{
+  "name": "tacit-build",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Build tooling for tacit.html — bundles noble + scure into a single self-contained JS file and produces dapp/ ready to pin to IPFS.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "verify": "node build.mjs --verify-only"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.4.0",
+    "@noble/secp256k1": "2.1.0",
+    "@scure/base": "1.1.6",
+    "sats-connect": "^3.6.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}
