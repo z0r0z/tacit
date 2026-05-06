@@ -19,7 +19,7 @@ const ROOT       = resolve(HERE, '..');                     // /Users/z/tacit
 const DAPP_DIR   = join(ROOT, 'dapp');                      // production output (pin this)
 const VENDOR_DIR = join(DAPP_DIR, 'vendor');
 const BUNDLE_OUT = join(VENDOR_DIR, 'tacit-deps.min.js');
-const HTML       = join(DAPP_DIR, 'tacit.html');
+const HTML       = join(DAPP_DIR, 'index.html');
 const APP_JS     = join(DAPP_DIR, 'tacit.js');               // app code (extracted from inline)
 
 const verifyOnly = process.argv.includes('--verify-only');

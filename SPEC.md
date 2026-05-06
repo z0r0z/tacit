@@ -123,7 +123,7 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags:
 | `tacit-mint-amount-v1` | Issuer's mint keystream (8B) | T_MINT `amount_ct` |
 
 Anchor construction:
-- **CXFER / BURN**: `anchor = first_asset_input_txid_BE || first_asset_input_vout_LE`. Per-tx entropy prevents cross-tx correlation (`(C₁ − C₂) = (a₁ − a₂) · H` leak).
+- **CXFER / T_AXFER / BURN**: `anchor = first_asset_input_txid_BE || first_asset_input_vout_LE`. The first asset input is `tx.vin[1]` in all three opcodes (asset inputs come immediately after the envelope-bearing `vin[0]`; T_AXFER's aux BTC inputs are appended at the tail). Per-tx entropy prevents cross-tx correlation (`(C₁ − C₂) = (a₁ − a₂) · H` leak).
 - **CETCH / T_MINT**: `anchor = first_commit_input_txid_BE || first_commit_input_vout_LE`. Anchor predates the envelope (a pre-existing UTXO), breaking the envelope/commitment cycle. Scanners read it via `reveal_tx.vin[0]` → fetch commit tx → `commit_tx.vin[0]`.
 
 **Uniqueness invariant.** Bitcoin consensus prevents any outpoint from being spent twice, so each anchor is unique across all valid txs that reference it as a first input. Combined with the per-output `vout_LE` suffix in every keystream/blinding domain, no two outputs across all valid envelopes can ever reuse the same `(domain, anchor, vout)` triple under a given keystream. This is what makes the deterministic recovery of openings from chain + privkey alone safe.
@@ -516,11 +516,11 @@ The off-chain marketplace stores three records per intent:
 
 ```
 intent {
-  intent_id            16 hex chars (sha256(commit_txid_BE || maker_pubkey)[:16])
+  intent_id            16 bytes / 32 hex chars (sha256(commit_txid_BE || maker_pubkey)[:16])
   asset_id, maker_pubkey (33B compressed), maker_address (bech32),
   amount               u64 base units (cleartext — the listed amount)
   price_sats           u64
-  expiry               unix-seconds (≤ 7 days from publish)
+  expiry               unix-seconds (≤ 365 days from publish)
   commit_txid          the maker's already-broadcast commit tx
   commit_value         u64 sats locked in the commit P2TR
   p2tr_spk_hex         34-byte segwit script (00 20 || tweaked-key)
@@ -706,6 +706,7 @@ Worker endpoints:
 | `POST /assets/:asset_id/disclosures` | Holder publishes a `balance ≥ K` range disclosure (§5.6); worker verifies the Schnorr sig + on-chain ownership + asset-id consistency before storing. The bulletproof itself is **not** verified by the worker (~600 LOC of verifier code per submission); consumers MUST re-verify it client-side per §5.6, requirement (4). |
 | `GET /assets/:asset_id/disclosures` | List published range disclosures for an asset; consumers MUST re-verify (chain ownership and unspent-ness can change after publication). |
 | `GET /assets/:asset_id/openings` | List per-UTXO `(amount, blinding)` openings the issuer/holder has voluntarily published for an asset (cache-only, optional). |
+| `POST /utxos/:txid/:vout/opening` | Holder publishes a per-UTXO `(amount, blinding)` opening. Worker re-verifies the BIP-340 sig under `owner_pubkey` and `pedersenCommit(amount, blinding) == on_chain_commitment` before storing. |
 | `GET /utxos/:txid/:vout/opening` | Single-UTXO opening lookup (cache-only). |
 | `GET /assets/:asset_id/listings`, `POST /assets/:asset_id/listings/:txid/:vout/claim`, `DELETE /assets/:asset_id/listings/:txid/:vout` | OTC marketplace endpoints. **Settlement is OTC, not protocol-enforced** — the worker stores listing intent + an opening proof; actual delivery is bilateral. The marketplace surface lives entirely outside the on-chain protocol; an indexer that only cares about token validity can ignore it. |
 | `GET /assets/:asset_id/listings-range`, `DELETE /assets/:asset_id/listings-range/:ownerPubkey` | Range-disclosure variant of the above (lists backed by a `balance ≥ K` proof rather than a single UTXO opening). Same OTC caveat applies. |

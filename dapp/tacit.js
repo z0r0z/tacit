@@ -8524,7 +8524,7 @@ function setupHoldingsButtons() {
       submitLabel: 'Import',
       content: `
         <label>Share-link URL</label>
-        <textarea data-field="link" rows="2" style="font-family:var(--mono);font-size:11px;padding:8px;border:1px solid var(--ink);background:var(--bg);width:100%;resize:vertical;" placeholder="https://…/tacit.html#recv=…"></textarea>
+        <textarea data-field="link" rows="2" style="font-family:var(--mono);font-size:11px;padding:8px;border:1px solid var(--ink);background:var(--bg);width:100%;resize:vertical;" placeholder="https://…/#recv=…"></textarea>
         <div class="muted" style="margin-top:6px;font-size:11px;">
           Paste a share-link sent to you. The dapp validates the claim against on-chain data before recording an opening.
         </div>`,
