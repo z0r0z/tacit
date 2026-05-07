@@ -2527,7 +2527,7 @@ export {
 
 // ============== ROUTER ==============
 export default {
-  async fetch(req, env) {
+  async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const cors = corsHeaders(env, req.headers.get('Origin') || '');
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
@@ -2558,7 +2558,40 @@ export default {
       }
       const mintsParam = url.searchParams.get('mints');
       const includeMints = mintsParam !== '0' && mintsParam !== 'false';
-      return handleAssetsList(env, network, cors, { limit, includeMints });
+      // Cloudflare Cache API layer in front of the registry list. Each /assets
+      // call would otherwise issue 1 + 5×N KV list operations (asset prefix +
+      // openings/disclosures/listings/range-listings/atomic-intents per asset),
+      // which on the free tier (1000 list ops/day) burns the quota in tens of
+      // page loads. The Cache API has no quota and is per-colo, so a 30s TTL
+      // collapses bursts of dapp polls into a single backend hit.
+      const cache = caches.default;
+      const cacheKey = new Request(url.toString(), { method: 'GET' });
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        // CORS headers must match the *current* request's origin, not the
+        // cached one (otherwise origin A's response leaks to origin B's CORS
+        // check). Rebuild the response with this request's CORS.
+        const body = await cached.text();
+        const headers = new Headers(cached.headers);
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', 'HIT');
+        return new Response(body, { status: cached.status, headers });
+      }
+      const fresh = await handleAssetsList(env, network, cors, { limit, includeMints });
+      // Only cache successful responses; errors should retry.
+      if (fresh.status === 200) {
+        const body = await fresh.text();
+        const cacheHeaders = new Headers(fresh.headers);
+        cacheHeaders.set('Cache-Control', 'public, max-age=30');
+        const toCache = new Response(body, { status: 200, headers: cacheHeaders });
+        if (ctx && typeof ctx.waitUntil === 'function') {
+          ctx.waitUntil(cache.put(cacheKey, toCache.clone()));
+        }
+        const respHeaders = new Headers(cacheHeaders);
+        respHeaders.set('X-Cache', 'MISS');
+        return new Response(body, { status: 200, headers: respHeaders });
+      }
+      return fresh;
     }
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors);
     const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
