@@ -5,8 +5,8 @@
   "type": "module",
   "description": "Offline test + benchmark harness for tacit's crypto (bulletproofs + composition).",
   "scripts": {
-    "test": "node bulletproofs.test.mjs && node composition.test.mjs && node vectors.test.mjs && node msm.test.mjs && node bip340.test.mjs && node adversarial.test.mjs && node envelope.test.mjs && node disclosure.test.mjs && node storage.test.mjs && node worker-parity.test.mjs && node dapp-parity.test.mjs && node indexer.test.mjs",
-    "test:fast": "node bulletproofs.test.mjs && node composition.test.mjs && node vectors.test.mjs && node msm.test.mjs && node bip340.test.mjs && node adversarial.test.mjs && node envelope.test.mjs && node disclosure.test.mjs && node storage.test.mjs && node worker-parity.test.mjs && node dapp-parity.test.mjs",
+    "test": "node bulletproofs.test.mjs && node composition.test.mjs && node vectors.test.mjs && node msm.test.mjs && node bip340.test.mjs && node adversarial.test.mjs && node envelope.test.mjs && node disclosure.test.mjs && node storage.test.mjs && node worker-parity.test.mjs && node worker-contract.test.mjs && node dapp-parity.test.mjs && node indexer.test.mjs",
+    "test:fast": "node bulletproofs.test.mjs && node composition.test.mjs && node vectors.test.mjs && node msm.test.mjs && node bip340.test.mjs && node adversarial.test.mjs && node envelope.test.mjs && node disclosure.test.mjs && node storage.test.mjs && node worker-parity.test.mjs && node worker-contract.test.mjs && node dapp-parity.test.mjs",
     "test:bp": "node bulletproofs.test.mjs",
     "test:composition": "node composition.test.mjs",
     "test:vectors": "node vectors.test.mjs",
@@ -18,6 +18,7 @@
     "test:disclosure": "node disclosure.test.mjs",
     "test:storage": "node storage.test.mjs",
     "test:worker-parity": "node worker-parity.test.mjs",
+    "test:worker-contract": "node worker-contract.test.mjs",
     "test:dapp-parity": "node dapp-parity.test.mjs",
     "bench": "node bulletproofs.bench.mjs"
   },

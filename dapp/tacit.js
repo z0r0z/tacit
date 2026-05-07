@@ -9436,6 +9436,11 @@ export {
   deriveMintBlinding, deriveMintAmountKeystream,
   deriveAmountKeystreamECDH, deriveAmountKeystreamSelf,
   encryptAmount, decryptAmount,
+  // Bitcoin script builders (exported for dapp↔worker contract tests so the
+  // exact bytes the dapp publishes can be validated against the worker's
+  // regex/length checks — drift here would silently break feature endpoints
+  // (the 5120 vs 0020 P2TR atomic-intent regression is the canonical example).
+  p2trScript, controlBlock,
   // Wire format encoders / decoders
   encodeEnvelopeScript, decodeEnvelopeScript,
   encodeCEtchPayload, decodeCEtchPayload,
