@@ -2588,11 +2588,25 @@ const REG_KEY_BASE  = 'tacit-registry-v1';
 const OPEN_KEY_BASE = 'tacit-openings-v1';
 function regKey()  { return `${REG_KEY_BASE}:${NET.name}`; }
 function openKey() { return `${OPEN_KEY_BASE}:${NET.name}`; }
+// In-memory write-through caches for the registry (asset_id → meta) and the
+// openings (txid:vout → { amount, blinding, assetIdHex }). Without these,
+// every getAssetMeta / getOpening call did a JSON.parse over localStorage;
+// scanHoldings hits getAssetMeta ~7×/UTXO + getOpening once, so a 100-UTXO
+// scan was paying ~700 redundant parses. The caches live on the JS module;
+// a network flip (which changes the storage key) does location.reload() so
+// stale state from one network can never be read against another's key.
+let _registryCache = null;
+let _openingsCache = null;
 const loadRegistry = () => {
-  try { return JSON.parse(localStorage.getItem(regKey()) || '{}') || {}; }
-  catch (e) { console.warn('registry parse failed; resetting to empty', e); return {}; }
+  if (_registryCache) return _registryCache;
+  try { _registryCache = JSON.parse(localStorage.getItem(regKey()) || '{}') || {}; }
+  catch (e) { console.warn('registry parse failed; resetting to empty', e); _registryCache = {}; }
+  return _registryCache;
 };
-const saveRegistry = r => localStorage.setItem(regKey(), JSON.stringify(r));
+const saveRegistry = r => {
+  _registryCache = r;
+  try { localStorage.setItem(regKey(), JSON.stringify(r)); } catch {}
+};
 function registerAsset(meta) {
   const r = loadRegistry();
   r[meta.assetIdHex] = { ...r[meta.assetIdHex], ...meta };
@@ -2604,10 +2618,15 @@ function getAssetMeta(assetIdHex) {
 }
 // Per-UTXO openings: "txid:vout" -> { assetIdHex, amount: string, blinding: hex }
 const loadOpenings = () => {
-  try { return JSON.parse(localStorage.getItem(openKey()) || '{}') || {}; }
-  catch (e) { console.warn('openings parse failed; resetting to empty', e); return {}; }
+  if (_openingsCache) return _openingsCache;
+  try { _openingsCache = JSON.parse(localStorage.getItem(openKey()) || '{}') || {}; }
+  catch (e) { console.warn('openings parse failed; resetting to empty', e); _openingsCache = {}; }
+  return _openingsCache;
 };
-const saveOpenings = o => localStorage.setItem(openKey(), JSON.stringify(o));
+const saveOpenings = o => {
+  _openingsCache = o;
+  try { localStorage.setItem(openKey(), JSON.stringify(o)); } catch {}
+};
 function recordOpening(txidHex, vout, assetIdHex, amount, blinding) {
   const o = loadOpenings();
   o[`${txidHex}:${vout}`] = {
@@ -2664,6 +2683,64 @@ function recordActivity(entry) {
   });
   if (arr.length > ACTIVITY_MAX) arr.length = ACTIVITY_MAX;
   try { localStorage.setItem(activityKey(), JSON.stringify(arr)); } catch {}
+  _invalidateLocalActivityCaches();  // any pill might be affected by a new entry
+}
+
+// Cached per-pill Sets of asset_ids the user has locally interacted with.
+// Invalidated by recordActivity (for activity-derived pills) and by
+// recordOpenOffer / forgetOpenOffer (for the offers pill). Hot-path for
+// renderDiscoverCard, which runs once per asset on every Discover refresh —
+// without the cache, each card would re-load and re-parse localStorage for
+// each of the four pills. Lazy-built on first read so we don't pay the
+// parse cost during init().
+let _localXferIdsCache = null;
+let _localMintIdsCache = null;
+let _localBurnIdsCache = null;
+let _localOfferIdsCache = null;
+function _invalidateLocalActivityCaches() {
+  _localXferIdsCache = null;
+  _localMintIdsCache = null;
+  _localBurnIdsCache = null;
+  _localOfferIdsCache = null;
+}
+function _buildLocalActivitySet(kindFilter) {
+  try {
+    return new Set(
+      loadActivity()
+        .filter(kindFilter)
+        .map(e => e.assetId)
+        .filter(id => /^[0-9a-f]{64}$/.test(id || ''))
+    );
+  } catch { return new Set(); }
+}
+function _localTransferAssetIds() {
+  if (!_localXferIdsCache) _localXferIdsCache = _buildLocalActivitySet(e => e.kind === 'transfer-out' || e.kind === 'transfer-in');
+  return _localXferIdsCache;
+}
+function _localMintAssetIds() {
+  if (!_localMintIdsCache) _localMintIdsCache = _buildLocalActivitySet(e => e.kind === 'mint' || e.kind === 'etch');
+  return _localMintIdsCache;
+}
+function _localBurnAssetIds() {
+  if (!_localBurnIdsCache) _localBurnIdsCache = _buildLocalActivitySet(e => e.kind === 'burn');
+  return _localBurnIdsCache;
+}
+function _localOfferAssetIds() {
+  if (_localOfferIdsCache) return _localOfferIdsCache;
+  try {
+    // 'list-atomic' kinds in the activity log + any persisted open offer for
+    // this network. The latter catches offers a user published in a prior
+    // session whose activity entry has aged out of the 200-entry log.
+    const ids = new Set();
+    for (const e of loadActivity()) {
+      if (e.kind === 'list-atomic' && /^[0-9a-f]{64}$/.test(e.assetId || '')) ids.add(e.assetId);
+    }
+    for (const o of loadOpenOffers()) {
+      if (/^[0-9a-f]{64}$/.test(o.asset_id || '')) ids.add(o.asset_id);
+    }
+    _localOfferIdsCache = ids;
+  } catch { _localOfferIdsCache = new Set(); }
+  return _localOfferIdsCache;
 }
 
 // ============== OPEN ATOMIC OFFERS ==============
@@ -2688,6 +2765,9 @@ function loadOpenOffers() {
 }
 function saveOpenOffers(arr) {
   try { localStorage.setItem(offersKey(), JSON.stringify(arr)); } catch {}
+  // The Has-offers pill on Discover reads from this list; invalidate so
+  // the next render reflects the updated set without re-parsing per card.
+  _localOfferIdsCache = null;
 }
 function recordOpenOffer(offer) {
   if (!offer || !/^[0-9a-f]{64}$/.test(String(offer.commit_txid || ''))) return;
@@ -5863,6 +5943,8 @@ function parseAirdropCSV(csvText, opts = {}) {
   const rows = [];
   let assignedIndex = 0;
   let headerSeen = false;
+  let droppedDust = 0;     // rows that truncated to 0 (sub-target-precision)
+  let droppedBlacklist = 0;
   for (let lineNo = 0; lineNo < lines.length; lineNo++) {
     const raw = lines[lineNo].trim();
     if (!raw) continue;
@@ -5893,7 +5975,7 @@ function parseAirdropCSV(csvText, opts = {}) {
     catch (e) { throw new Error(`csv line ${lineNo + 1}: ${e.message}`); }
     const ethAddrHex = bytesToHex(ethAddrBytes);
 
-    if (blacklist && blacklist.has(ethAddrHex)) continue;
+    if (blacklist && blacklist.has(ethAddrHex)) { droppedBlacklist++; continue; }
 
     let amount;
     try { amount = _parseAmountCell(amtCell, sourceDecimals); }
@@ -5904,11 +5986,15 @@ function parseAirdropCSV(csvText, opts = {}) {
     }
     if (amount < 0n) throw new Error(`csv line ${lineNo + 1}: negative amount`);
     if (amount >= (1n << 64n)) throw new Error(`csv line ${lineNo + 1}: amount overflows u64 after conversion to ${targetDecimals} decimals`);
-    if (amount === 0n) continue;  // post-truncation dust holder; skip silently
+    if (amount === 0n) { droppedDust++; continue; }  // post-truncation dust holder
 
     rows.push({ ethAddrHex, ethAddrBytes, amount, index: assignedIndex });
     assignedIndex++;
   }
+  // Stash drop counts as array properties so the build-preview UI can surface
+  // them. Tests that read `rows.length` / iterate `rows` are unaffected.
+  rows.droppedDust = droppedDust;
+  rows.droppedBlacklist = droppedBlacklist;
   return rows;
 }
 
@@ -6045,7 +6131,7 @@ function buildAirdropClaimMsg({ rootHex, network, assetIdHex, ethAddrHex, leafIn
   const amt = BigInt(amount);
   if (amt < 0n || amt >= (1n << 64n)) throw new Error('amount out of u64');
   if (typeof ticker !== 'string') throw new Error('ticker required');
-  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) throw new Error('decimals 0..18');
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 8) throw new Error('decimals 0..8 (CETCH max)');
   const cleanPub = String(tacitPubHex).toLowerCase().replace(/\s/g, '');
   if (!/^0[23][0-9a-f]{64}$/.test(cleanPub)) throw new Error('tacitPubHex must be 33-byte compressed');
   const display = fmtAssetAmountPlain(amt, decimals);
@@ -8129,6 +8215,8 @@ function _buildDropSnapshot() {
       ticker: src.ticker || `Source ${i}`,
       sourceDecimals: src.sourceDecimals,
       rowCount: rows.length,
+      droppedDust: rows.droppedDust || 0,
+      droppedBlacklist: rows.droppedBlacklist || 0,
       total: rows.reduce((s, r) => s + r.amount, 0n),
     });
   }
@@ -8162,9 +8250,13 @@ function _renderBuildPreview() {
   const sample = rows.slice(0, 5).map(r =>
     `<div class="row" style="font-family:var(--mono);font-size:11px;"><span class="idx">[${r.index}]</span> 0x${r.ethAddrHex} → ${fmtAssetAmountPlain(r.amount, targetDecimals)} ${escapeHtml(targetTicker)}</div>`,
   ).join('');
-  const sourceLines = sourceStats.map((s, i) =>
-    `<div class="row" style="font-size:11px;"><span class="idx">[${i + 1}]</span> ${escapeHtml(s.ticker)} · src decimals ${s.sourceDecimals} · ${s.rowCount} rows post-truncation · ${fmtAssetAmountPlain(s.total, targetDecimals)} ${escapeHtml(targetTicker)}</div>`,
-  ).join('');
+  const sourceLines = sourceStats.map((s, i) => {
+    const dropNotes = [];
+    if (s.droppedDust > 0) dropNotes.push(`${s.droppedDust} sub-precision`);
+    if (s.droppedBlacklist > 0) dropNotes.push(`${s.droppedBlacklist} blacklisted`);
+    const dropTail = dropNotes.length ? ` · <span class="muted">excluded: ${dropNotes.join(', ')}</span>` : '';
+    return `<div class="row" style="font-size:11px;"><span class="idx">[${i + 1}]</span> ${escapeHtml(s.ticker)} · src decimals ${s.sourceDecimals} · ${s.rowCount} rows post-truncation · ${fmtAssetAmountPlain(s.total, targetDecimals)} ${escapeHtml(targetTicker)}${dropTail}</div>`;
+  }).join('');
   out.style.display = 'block';
   out.innerHTML = `
     <div class="tx-preview">
@@ -8467,11 +8559,15 @@ function _parseClaimTuples(text) {
   return out;
 }
 
-function _verifyDropFulfilBatch() {
+async function _verifyDropFulfilBatch() {
   const drop = _dropFulfilCurrent;
   if (!drop) throw new Error('no drop selected');
   const claims = _parseClaimTuples($('#drop-fulfil-claims').value);
   const requireSigs = !!$('#drop-fulfil-require-sig')?.checked;
+  // Smart-wallet (ERC-1271) fallback for sigs that don't ECDSA-recover. Only
+  // available if an Ethereum provider is connected on this dapp instance — no
+  // provider means EOA-only verification, surfaced in the error message below.
+  const ethProvider = (typeof _ethProvider === 'function') ? _ethProvider() : null;
 
   // Reject claims for already-fulfilled leaves (defense against double-pay).
   const fulfilledSet = new Set((drop.fulfilled || []).map(f => f.leaf_index));
@@ -8515,9 +8611,19 @@ function _verifyDropFulfilBatch() {
         decimals: drop.asset_decimals,
         tacitPubHex: c.tacitPubHex,
       });
+      // ECDSA recovery first (covers EOA wallets — MetaMask, Rainbow, Rabby,
+      // Coinbase, Trust). Falls back to ERC-1271 eth_call for smart-contract
+      // wallets (Safe, Argent, Ambire) when an Ethereum provider is reachable.
       sigVerified = verifyAirdropClaimSig(claimMsg, c.ethSigHex, row.ethAddrHex);
+      if (!sigVerified && ethProvider) {
+        try { sigVerified = await verifyEthSigViaErc1271(claimMsg, c.ethSigHex, row.ethAddrHex, ethProvider); }
+        catch { sigVerified = false; }
+      }
       if (!sigVerified) {
-        throw new Error(`leaf ${c.leafIndex}: eth signature does NOT recover to row's eth_address (0x${row.ethAddrHex}). Reject — claim may be forged or the canonical message differs (check ticker/decimals/network).`);
+        const tail = ethProvider
+          ? ' Tried ERC-1271 eth_call too; both failed.'
+          : ' If this claimant uses a smart-contract wallet (Safe / Argent / Ambire), connect an Ethereum wallet on the Claim tab so the dapp can run an ERC-1271 eth_call, then re-verify.';
+        throw new Error(`leaf ${c.leafIndex}: eth signature does NOT recover to row's eth_address (0x${row.ethAddrHex}). Reject — claim may be forged or the canonical message differs (check ticker/decimals/network).${tail}`);
       }
     } else if (requireSigs) {
       throw new Error(`leaf ${c.leafIndex}: missing eth signature (strict mode). Either ask the claimant to re-submit via the Claim portal, or uncheck "Require eth signatures" to fulfil unverified.`);
@@ -8815,14 +8921,14 @@ function setupDropsForm() {
   });
 
   // Fulfil verify
-  $('#btn-drop-fulfil-verify')?.addEventListener('click', () => {
+  $('#btn-drop-fulfil-verify')?.addEventListener('click', async () => {
     const errEl = $('#drop-fulfil-err');
     errEl.textContent = '';
     $('#drop-fulfil-preview').style.display = 'none';
     $('#btn-drop-fulfil-broadcast').disabled = true;
     _dropFulfilStaged = null;
     try {
-      const items = _verifyDropFulfilBatch();
+      const items = await _verifyDropFulfilBatch();
       const drop = _dropFulfilCurrent;
       const decimals = drop.asset_decimals;
       const ticker = drop.asset_ticker;
@@ -9198,8 +9304,8 @@ function _claimValidateSnapshot(rootHexInput, blob) {
   if (blob.asset_id != null && !/^[0-9a-f]{64}$/.test(String(blob.asset_id).toLowerCase())) {
     throw new Error('snapshot asset_id must be 64-char hex');
   }
-  if (blob.asset_decimals != null && (!Number.isInteger(blob.asset_decimals) || blob.asset_decimals < 0 || blob.asset_decimals > 18)) {
-    throw new Error('snapshot asset_decimals must be integer 0..18');
+  if (blob.asset_decimals != null && (!Number.isInteger(blob.asset_decimals) || blob.asset_decimals < 0 || blob.asset_decimals > 8)) {
+    throw new Error('snapshot asset_decimals must be integer 0..8 (CETCH max)');
   }
   if (blob.asset_ticker != null) {
     if (typeof blob.asset_ticker !== 'string' || blob.asset_ticker.length === 0 || blob.asset_ticker.length > 16) {
@@ -11194,6 +11300,7 @@ function renderActivity() {
     clearBtn.onclick = () => {
       if (!confirm(`Clear ${entries.length} local activity ${entries.length === 1 ? 'entry' : 'entries'} for ${NET.name}?`)) return;
       try { localStorage.removeItem(activityKey()); } catch {}
+      _invalidateLocalActivityCaches();  // all four pills depend on activity
       renderActivity();
     };
   }
@@ -11395,7 +11502,7 @@ async function renderRecentEtches() {
       tile.innerHTML = `
         ${imgUrls[i] ? `<img src="${escapeHtml(imgUrls[i])}" alt="">` : ''}
         <div class="recent-tile-body">
-          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;" title="another asset etched this ticker first — verify the asset_id">DUP</span>' : ''}</div>
+          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
           <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}${dupMark}</div>
         </div>`;
       grid.appendChild(tile);
@@ -11636,7 +11743,29 @@ function _setDiscoverVerifyStats(patch) {
   el.textContent = `${parts.join(' · ')} of ${total} asset${total === 1 ? '' : 's'}`;
 }
 
+// Cards entering the viewport are pushed into a pending list and flushed
+// 100ms later as a batch. The 100ms window is enough for the
+// IntersectionObserver to fire for every card visible on initial paint,
+// which lets us batch-verify their rangeproofs together via
+// bpRangeAggBatchVerify (sub-linear in proof count — same trick
+// scanHoldings already uses for wallet UTXO ancestry). Single-card flushes
+// (a lone card scrolled into view later) skip batching since the overhead
+// isn't worth it for one proof.
+const DISCOVER_BATCH_DEBOUNCE_MS = 100;
 let _discoverVerifyObserver = null;
+let _discoverPendingItems = [];
+let _discoverPendingTimer = null;
+function _flushDiscoverPendingBatch() {
+  const items = _discoverPendingItems;
+  _discoverPendingItems = [];
+  _discoverPendingTimer = null;
+  if (items.length === 0) return;
+  if (items.length === 1) {
+    _processDiscoverCardVerify(items[0].card, items[0].asset);
+  } else {
+    _processBatchedDiscoverCardVerify(items);
+  }
+}
 function _ensureDiscoverVerifyObserver() {
   if (_discoverVerifyObserver) return _discoverVerifyObserver;
   if (typeof IntersectionObserver === 'undefined') {
@@ -11652,13 +11781,19 @@ function _ensureDiscoverVerifyObserver() {
     return _discoverVerifyObserver;
   }
   _discoverVerifyObserver = new IntersectionObserver((entries) => {
+    let added = false;
     for (const e of entries) {
       if (!e.isIntersecting) continue;
       const card = e.target;
       _discoverVerifyObserver.unobserve(card);
       if (card.dataset.verifyState === 'pending' && card._discoverAsset) {
-        _processDiscoverCardVerify(card, card._discoverAsset);
+        _discoverPendingItems.push({ card, asset: card._discoverAsset });
+        added = true;
       }
+    }
+    if (added) {
+      if (_discoverPendingTimer) clearTimeout(_discoverPendingTimer);
+      _discoverPendingTimer = setTimeout(_flushDiscoverPendingBatch, DISCOVER_BATCH_DEBOUNCE_MS);
     }
   }, { rootMargin: '300px 0px' }); // pre-warm the next ~screen of scroll-down cards
   return _discoverVerifyObserver;
@@ -11719,6 +11854,128 @@ async function _processDiscoverCardVerify(card, a) {
   }
 }
 
+// Batched stage-1 verify across multiple cards entering view together. The
+// chain walk runs per-asset (each has its own ancestry) but rangeproofs from
+// every walk are pushed to a shared rpBatch and verified in one
+// bpRangeAggBatchVerify call — same trick scanHoldings already uses for
+// wallet UTXO ancestry. Sub-linear cost in number of proofs, so 12 cards
+// verify in roughly the same wall-clock as 1 card. If the batch fails (an
+// attacker-tampered chain in the visible set), we fall back to strict
+// per-card verification so we can mark exactly which cards failed.
+async function _processBatchedDiscoverCardVerify(items) {
+  if (items.length === 0) return;
+  if (items.length === 1) return _processDiscoverCardVerify(items[0].card, items[0].asset);
+  // Mark cards as verifying upfront. Cards already in a terminal state are
+  // dropped from the batch (a re-observe after verify is a no-op anyway).
+  const live = [];
+  for (const it of items) {
+    if (it.card.dataset.verifyState === 'pending') {
+      it.card.dataset.verifyState = 'verifying';
+      live.push(it);
+    }
+  }
+  if (live.length === 0) return;
+  if (live.length === 1) return _processDiscoverCardVerify(live[0].card, live[0].asset);
+  await _discoverVerifyAcquire();
+  try {
+    const rpBatch = [];
+    const cacheHits = new Set();
+    const canonicals = await Promise.all(live.map(async ({ asset }) => {
+      const cached = getCachedDiscoverEtch(asset.asset_id, asset.etch_txid);
+      if (cached) {
+        cacheHits.add(asset.asset_id);
+        return {
+          ok: true, ticker: cached.ticker, decimals: cached.decimals,
+          commitment: cached.commitment, imageUri: cached.imageUri,
+          mintable: !!cached.mintable, mintAuthorityHex: cached.mintAuthorityHex,
+          etcherXonly: cached.etcherXonly || null,
+        };
+      }
+      try { return await _verifyDiscoverEtchOnlyBatched(asset, rpBatch); }
+      catch (e) { return { ok: false, error: (e && e.message) || String(e) }; }
+    }));
+    let batchOk = rpBatch.length === 0;
+    if (rpBatch.length > 0) {
+      try { batchOk = bpRangeAggBatchVerify(rpBatch); } catch { batchOk = false; }
+    }
+    if (!batchOk) {
+      // Fall back to strict per-card verify — the batch can't tell us which
+      // entry's rangeproof failed without re-walking individually. Adversarial
+      // chains are rare so this fallback is the cheap path on average.
+      for (let i = 0; i < live.length; i++) {
+        if (cacheHits.has(live[i].asset.asset_id)) continue;
+        if (!canonicals[i].ok) continue;
+        try { canonicals[i] = await _verifyDiscoverEtchOnly(live[i].asset); }
+        catch (e) { canonicals[i] = { ok: false, error: (e && e.message) || String(e) }; }
+      }
+    }
+    await Promise.all(live.map(async ({ card, asset }, i) => {
+      const canonical = canonicals[i];
+      if (canonical.ok && !cacheHits.has(asset.asset_id)) {
+        setCachedDiscoverEtch(asset.asset_id, {
+          etch_txid: asset.etch_txid,
+          ok: true,
+          ticker: canonical.ticker, decimals: canonical.decimals,
+          commitment: canonical.commitment, imageUri: canonical.imageUri,
+          mintable: canonical.mintable, mintAuthorityHex: canonical.mintAuthorityHex,
+          etcherXonly: canonical.etcherXonly || null,
+        });
+      }
+      const verify = canonical.ok
+        ? {
+            ok: true,
+            ticker: canonical.ticker, decimals: canonical.decimals,
+            commitment: canonical.commitment, imageUri: canonical.imageUri,
+            mintable: canonical.mintable, mintAuthorityHex: canonical.mintAuthorityHex,
+            etcherXonly: canonical.etcherXonly || null,
+            ipfsAttest: null, verifiedMints: {}, verifiedBurns: {}, mismatches: [],
+          }
+        : { ok: false, error: canonical.error || 'unknown', mismatches: [], verifiedMints: {}, verifiedBurns: {}, ipfsAttest: null };
+      if (verify.ok) {
+        const m = [];
+        if (typeof asset.ticker === 'string' && asset.ticker !== verify.ticker) m.push(`ticker (worker=${asset.ticker} vs chain=${verify.ticker})`);
+        if (Number.isFinite(asset.decimals) && asset.decimals !== verify.decimals) m.push(`decimals (${asset.decimals} vs ${verify.decimals})`);
+        if (typeof asset.commitment === 'string' && asset.commitment.toLowerCase() !== verify.commitment) m.push('commitment');
+        if ((asset.image_uri || null) !== (verify.imageUri || null)) m.push('image_uri');
+        verify.mismatches = m;
+      }
+      _discoverVerifyCache.set(asset.asset_id, verify);
+      verify._assetId = asset.asset_id;
+      const effectiveImageUri = verify.ok ? verify.imageUri : asset.image_uri;
+      const imgUrl = effectiveImageUri ? await resolveImageUri(effectiveImageUri).catch(() => null) : null;
+      const extras = effectiveImageUri ? getMetadataExtras(effectiveImageUri) : null;
+      card.dataset.verifyState = verify.ok ? 'verified' : 'failed';
+      renderDiscoverCard(card, asset, verify, imgUrl, extras);
+      applyDiscoverFilter();
+      if (verify.ok) {
+        _setDiscoverVerifyStats({
+          verified: _discoverVerifyStats.verified + (cacheHits.has(asset.asset_id) ? 0 : 1),
+          cached:   _discoverVerifyStats.cached   + (cacheHits.has(asset.asset_id) ? 1 : 0),
+          pending:  Math.max(0, _discoverVerifyStats.pending - 1),
+        });
+      } else {
+        _setDiscoverVerifyStats({
+          failed:  _discoverVerifyStats.failed + 1,
+          pending: Math.max(0, _discoverVerifyStats.pending - 1),
+        });
+      }
+      if (verify.ok) {
+        enrichDiscoverAttestation(verify)
+          .then(() => { renderDiscoverCard(card, asset, verify, imgUrl, extras); applyDiscoverFilter(); })
+          .catch(() => {});
+        enrichDiscoverMints(asset, verify)
+          .then(() => { verify._mintsEnriched = true; renderDiscoverCard(card, asset, verify, imgUrl, extras); })
+          .catch(() => { verify._mintsEnriched = true; renderDiscoverCard(card, asset, verify, imgUrl, extras); });
+        enrichDiscoverBurns(asset, verify)
+          .then(() => { verify._burnsEnriched = true; renderDiscoverCard(card, asset, verify, imgUrl, extras); })
+          .catch(() => { verify._burnsEnriched = true; renderDiscoverCard(card, asset, verify, imgUrl, extras); });
+      }
+    }));
+  } finally {
+    _discoverVerifyRelease();
+  }
+}
+
 // Stage 1 — etch validation. No IPFS, no mint/burn walks. Returns the
 // canonical envelope fields. Persistent cache hit → no chain fetch at all.
 async function verifyDiscoverAsset(a) {
@@ -11739,6 +11996,7 @@ async function verifyDiscoverAsset(a) {
       imageUri:         cached.imageUri,
       mintable:         !!cached.mintable,
       mintAuthorityHex: cached.mintAuthorityHex,
+      etcherXonly:      cached.etcherXonly || null,
     };
   } else {
     canonical = await _verifyDiscoverEtchOnly(a)
@@ -11753,6 +12011,7 @@ async function verifyDiscoverAsset(a) {
         imageUri:         canonical.imageUri,
         mintable:         canonical.mintable,
         mintAuthorityHex: canonical.mintAuthorityHex,
+        etcherXonly:      canonical.etcherXonly,
       });
     }
   }
@@ -11776,6 +12035,36 @@ async function verifyDiscoverAsset(a) {
   }
   _discoverVerifyCache.set(aid, canonical);
   return canonical;
+}
+
+// Variant of _verifyDiscoverEtchOnly that defers rangeproof verification to a
+// shared rpBatch (caller runs bpRangeAggBatchVerify across many cards). All
+// non-rangeproof checks (envelope decode, asset_id consistency, kernel sig)
+// still run eagerly so non-rangeproof anomalies fail fast.
+async function _verifyDiscoverEtchOnlyBatched(a, rpBatch) {
+  if (!/^[0-9a-f]{64}$/.test(a.etch_txid || '')) return { ok: false, error: 'bad etch_txid' };
+  if (!/^[0-9a-f]{64}$/.test(a.asset_id || ''))  return { ok: false, error: 'bad asset_id' };
+  const aidComputed = bytesToHex(assetIdFor(a.etch_txid, 0));
+  if (aidComputed !== a.asset_id) return { ok: false, error: 'asset_id ≠ sha256(etch_txid_BE‖0_LE)' };
+  const validatedSet = new Map();
+  const valid = await validateOutpoint(a.etch_txid, 0, validatedSet, _sharedFetchTx, 0, null, rpBatch);
+  if (!valid) return { ok: false, error: 'on-chain CETCH failed validation (non-rangeproof)' };
+  const etchTx = await _sharedFetchTx(a.etch_txid);
+  let env;
+  try { env = decodeEnvelopeScript(hexToBytes(etchTx.vin[0].witness[1])); } catch { return { ok: false, error: 'envelope decode failed' }; }
+  if (!env || env.opcode !== T_CETCH) return { ok: false, error: 'parent is not CETCH' };
+  const dec = decodeCEtchPayload(env.payload);
+  if (!dec) return { ok: false, error: 'CETCH payload decode failed' };
+  return {
+    ok: true,
+    ticker:           dec.ticker,
+    decimals:         dec.decimals,
+    commitment:       bytesToHex(dec.commitment),
+    imageUri:         dec.imageUri,
+    mintable:         dec.mintable,
+    mintAuthorityHex: bytesToHex(dec.mintAuthority),
+    etcherXonly:      bytesToHex(env.signingPubXonly),
+  };
 }
 
 async function _verifyDiscoverEtchOnly(a) {
@@ -11804,6 +12093,11 @@ async function _verifyDiscoverEtchOnly(a) {
     imageUri:         dec.imageUri,
     mintable:         dec.mintable,
     mintAuthorityHex: bytesToHex(dec.mintAuthority),
+    // Etcher's signing pubkey from the envelope leaf script (BIP-340 x-only).
+    // Stable identity per etcher across all their etches; surfaced on Discover
+    // cards so users can group assets by creator. Canonical bech32 derives
+    // from hash160(0x02 || xonly) — BIP-340 keys are even-Y by convention.
+    etcherXonly:      bytesToHex(env.signingPubXonly),
   };
 }
 
@@ -12009,7 +12303,19 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   const displayName = (_discoverExtras?.name && _discoverExtras.name.trim()) ? _discoverExtras.name : ticker;
   // Filter key: lowercase concatenation of name + ticker + asset_id, used by
   // the Discover search input to substring-match against card content.
-  card.dataset.filterKey = `${displayName} ${ticker} ${safeAssetId}`.toLowerCase();
+  // Etcher identity: BIP-340 x-only signing pubkey from the CETCH envelope
+  // leaf script. Renders as a bech32 derived from hash160(0x02 || xonly) —
+  // BIP-340 keys are even-Y by convention, so 02-prefix gives the canonical
+  // compressed form. Stable per etcher across all their etches; ends up in
+  // filterKey so substring search by issuer bech32 narrows the registry to
+  // one creator's assets.
+  const etcherXonly = (verified && /^[0-9a-f]{64}$/.test(verify.etcherXonly || '')) ? verify.etcherXonly : null;
+  let etcherAddr = null;
+  if (etcherXonly) {
+    try { etcherAddr = p2wpkhAddress(concatBytes(new Uint8Array([0x02]), hexToBytes(etcherXonly))); } catch { /* defensive */ }
+  }
+  if (etcherAddr) card.dataset.etcher = etcherAddr;
+  card.dataset.filterKey = `${displayName} ${ticker} ${safeAssetId} ${etcherAddr || ''}`.toLowerCase();
   // Filter-pill attributes. Mintable comes from the canonical envelope so a
   // worker can't lie about it. Attested = the IPFS metadata blob carries a
   // tacit_attest that we've cryptographically verified opens the on-chain
@@ -12025,10 +12331,17 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   const _offerCount = Number(a.listing_count || 0)
                     + Number(a.range_listing_count || 0)
                     + Number(a.atomic_intent_count || 0);
-  card.dataset.hasOffers = _offerCount > 0 ? '1' : '0';
-  card.dataset.hasMints = (Array.isArray(a.mints) && a.mints.length > 0) ? '1' : '0';
-  card.dataset.hasBurns = (Array.isArray(a.burns) && a.burns.length > 0) ? '1' : '0';
-  card.dataset.hasTransfers = (Number(a.transfer_count || 0) > 0) ? '1' : '0';
+  // Pill predicates: the worker's counts only reflect what its cron has
+  // indexed since it started running (mainnet starts at tip with no
+  // backfill, signet backfills 2 weeks). Augment each pill with the user's
+  // own local activity / offer log so a user who just sent / minted / burned
+  // / listed sees the pill match immediately, even if the cron hasn't caught
+  // up. Each Set is cached at module scope and invalidated by
+  // recordActivity / saveOpenOffers, so per-card lookup is O(1).
+  card.dataset.hasOffers = (_offerCount > 0 || _localOfferAssetIds().has(a.asset_id)) ? '1' : '0';
+  card.dataset.hasMints = ((Array.isArray(a.mints) && a.mints.length > 0) || _localMintAssetIds().has(a.asset_id)) ? '1' : '0';
+  card.dataset.hasBurns = ((Array.isArray(a.burns) && a.burns.length > 0) || _localBurnAssetIds().has(a.asset_id)) ? '1' : '0';
+  card.dataset.hasTransfers = (Number(a.transfer_count || 0) > 0 || _localTransferAssetIds().has(a.asset_id)) ? '1' : '0';
   // Numeric counts on the dataset so the discover-sort comparator can rank
   // cards without re-reading the worker payload. transferCount comes from
   // the cron-maintained counter; offerCount aggregates the three orderbook
@@ -12057,11 +12370,11 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   if (pending) {
     verifyBadge = `<span style="font-size:10px;background:#fff8eb;color:var(--ink-mid);padding:2px 6px;border:1px solid var(--ink-faint);text-transform:uppercase;letter-spacing:0.1em;">⏳ verifying…</span>`;
   } else if (!verified) {
-    verifyBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;">✗ unverifiable · ${escapeHtml(verify.error || 'unknown')}</span>`;
+    verifyBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;" title="The on-chain CETCH envelope failed local verification — the rangeproof, kernel sig, or envelope decode rejected. Treat this asset as unsafe until the dApp can re-validate from chain.">✗ unverifiable · ${escapeHtml(verify.error || 'unknown')}</span>`;
   } else if (verify.mismatches && verify.mismatches.length) {
-    verifyBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;" title="${escapeHtml(verify.mismatches.join('; '))}">⚠ worker mismatch</span>`;
+    verifyBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;" title="Worker's metadata disagrees with the on-chain CETCH envelope. The dApp shows on-chain values (those are authoritative). Mismatches: ${escapeHtml(verify.mismatches.join('; '))}">⚠ worker mismatch</span>`;
   } else {
-    verifyBadge = `<span style="font-size:10px;background:#eaf6ee;color:#0a7d4e;padding:2px 6px;border:1px solid #0a7d4e;text-transform:uppercase;letter-spacing:0.1em;">✓ chain-verified</span>`;
+    verifyBadge = `<span style="font-size:10px;background:#eaf6ee;color:#0a7d4e;padding:2px 6px;border:1px solid #0a7d4e;text-transform:uppercase;letter-spacing:0.1em;" title="Rangeproof and CETCH envelope decoded + verified locally from chain bytes; worker's metadata matches the on-chain values. The asset's existence is cryptographically established, not just worker-claimed.">✓ chain-verified</span>`;
   }
 
   // Resolve etch supply attestation. Prefer the IPFS-embedded opening (which
@@ -12099,7 +12412,9 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       }
     }
     if (etchSupply !== null) {
-      const tag = attestSource === 'ipfs' ? '✓ verified opening (IPFS)' : '✓ verified opening (worker cache)';
+      const tag = attestSource === 'ipfs'
+        ? '<span title="(supply, blinding) opening fetched from IPFS and verified to open the on-chain commitment. Content-addressed — anyone can re-verify from chain + IPFS alone, no worker trust required.">✓ verified opening (IPFS)</span>'
+        : '<span title="(supply, blinding) opening fetched from the worker\'s cache and verified to open the on-chain commitment. IPFS is the primary attestation channel; this is a fast discovery cache. Same crypto either way.">✓ verified opening (worker cache)</span>';
       supplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Etch supply: ${escapeHtml(fmtAssetAmount(etchSupply, decimals))}</strong> · ${tag}</div>`;
     }
   }
@@ -12192,7 +12507,9 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       // Collapsed: rewrite supplyBadge from "Etch supply: X · ✓ verified
       // opening" to "Supply: X · ✓ verified · fixed (no mints, no burns)".
       // Skip the totalSupplyBadge to avoid duplicating the same number.
-      const tag = attestSource === 'ipfs' ? '✓ verified opening (IPFS)' : '✓ verified opening (worker cache)';
+      const tag = attestSource === 'ipfs'
+        ? '<span title="(supply, blinding) opening fetched from IPFS and verified to open the on-chain commitment. Content-addressed — anyone can re-verify from chain + IPFS alone, no worker trust required.">✓ verified opening (IPFS)</span>'
+        : '<span title="(supply, blinding) opening fetched from the worker\'s cache and verified to open the on-chain commitment. IPFS is the primary attestation channel; this is a fast discovery cache. Same crypto either way.">✓ verified opening (worker cache)</span>';
       supplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Supply: ${escapeHtml(fmtAssetAmount(etchSupply, decimals))}</strong> · ${tag} · fixed (no mints, no burns)</div>`;
     } else {
       totalSupplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Circulating: ${escapeHtml(fmtAssetAmount(circulating, decimals))}</strong> · issued ${escapeHtml(fmtAssetAmount(totalIssued, decimals))}${burnedSum > 0n ? ` − burned ${escapeHtml(fmtAssetAmount(burnedSum, decimals))}` : ''}</div>`;
@@ -12210,10 +12527,10 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   // get a stronger duplicate badge nudging users to read the asset_id.
   let collisionBadge = '', collisionDetail = '';
   if (a._tickerCollision === 'duplicate') {
-    collisionBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;" title="another asset etched this ticker first — verify the asset_id below before trusting">⚠ duplicate ticker</span>`;
+    collisionBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before sending or buying.">⚠ duplicate ticker</span>`;
     collisionDetail = `<div style="margin-top:6px;font-size:11px;color:var(--red);">⚠ This ticker is shared with ≥ 1 earlier-etched asset. <strong>Tickers are not unique on tacit</strong> — the asset_id below is the canonical reference. Confirm with the issuer before trading.</div>`;
   } else if (a._tickerCollision === 'original') {
-    collisionBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;" title="other assets share this ticker; this one was etched first">shared ticker · earliest</span>`;
+    collisionBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">shared ticker · earliest</span>`;
   }
 
   card.innerHTML = `
@@ -12272,6 +12589,7 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     <div class="meta">
       <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(safeAssetId)}</div>
       <div><span class="lbl">Etch tx</span> ${safeEtchTxid ? `<a href="${NET.explorer}/tx/${escapeHtml(safeEtchTxid)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(safeEtchTxid, 8))} ↗</a>` : '—'}</div>
+      <div><span class="lbl">Etcher</span> ${etcherAddr ? `<a href="#" data-act="filter-etcher" data-etcher="${escapeHtml(etcherAddr)}" title="Click to filter Discover by this etcher's assets">${escapeHtml(shorten(etcherAddr, 10))}</a>` : '—'}</div>
     </div>`;
   // Wire the asset_id short/full toggle for this card.
   wireAssetIdToggles(card);
@@ -12281,6 +12599,24 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       ev.preventDefault();
       pendingMarketFilter = el.dataset.aid || '';
       $('.tab[data-tab="market"]').click();
+    };
+  });
+  // Wire the etcher row → fill the Discover search input with the etcher
+  // bech32. Substring match against filterKey (which we appended the etcher
+  // address to above) narrows the registry to that creator's assets only.
+  card.querySelectorAll('[data-act="filter-etcher"]').forEach(el => {
+    el.onclick = (ev) => {
+      ev.preventDefault();
+      const input = $('#discover-filter');
+      if (!input) return;
+      input.value = el.dataset.etcher || '';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      // Scroll the list back to the top so the newly-narrowed results are
+      // immediately visible. The input keeps focus for easy deletion if the
+      // user wants to clear the filter.
+      const list = $('#discover-list');
+      if (list) list.scrollTop = 0;
+      input.focus();
     };
   });
 }
@@ -12376,9 +12712,25 @@ function applyMarketFilters() {
   if (filterKind !== 'all') rows = rows.filter(l => l.kind === filterKind);
   if (Number.isInteger(minPrice)) rows = rows.filter(l => Number(l.price_sats || 0) >= minPrice);
   if (Number.isInteger(maxPrice)) rows = rows.filter(l => Number(l.price_sats || 0) <= maxPrice);
-  if (sort === 'price-asc')       rows.sort((a, b) => Number(a.price_sats || 0) - Number(b.price_sats || 0));
-  else if (sort === 'price-desc') rows.sort((a, b) => Number(b.price_sats || 0) - Number(a.price_sats || 0));
-  else                             rows.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
+  // Sort priority: trustless atomic intents always surface above
+  // trust-required listings (within each price/recency tier). The user can
+  // still see opening/range offers, but the recommended path is on top.
+  // For price sorts, atomic ↔ non-atomic at the same price stay grouped:
+  // atomics first, then opening/range tied by price.
+  const atomicScore = l => l.kind === 'intent' ? 0 : 1;
+  if (sort === 'price-asc') {
+    rows.sort((a, b) =>
+      atomicScore(a) - atomicScore(b)
+      || Number(a.price_sats || 0) - Number(b.price_sats || 0));
+  } else if (sort === 'price-desc') {
+    rows.sort((a, b) =>
+      atomicScore(a) - atomicScore(b)
+      || Number(b.price_sats || 0) - Number(a.price_sats || 0));
+  } else {
+    rows.sort((a, b) =>
+      atomicScore(a) - atomicScore(b)
+      || (b.listed_at || 0) - (a.listed_at || 0));
+  }
   if (status) status.textContent = `${rows.length} live · ${_marketCache.listings.length} total`;
   if (!rows.length) {
     list.innerHTML = '<div class="empty">No listings match.</div>';
@@ -12396,7 +12748,7 @@ function applyMarketFilters() {
     const tile = document.createElement('div');
     tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);';
     const kindBadge =
-        l.kind === 'range'  ? `<span style="display:inline-block;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;">≥</span>`
+        l.kind === 'range'  ? `<span style="display:inline-block;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="Range-disclosed listing — maker proved their balance ≥ the listed amount via a bulletproof, without revealing the exact balance.">≥</span>`
       : l.kind === 'intent' ? `<span style="display:inline-block;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="atomic — settles in one Bitcoin tx, no counterparty trust">⚡</span>`
       : '';
     // Action buttons depend on listing kind + my role on this intent.
@@ -12434,9 +12786,9 @@ function applyMarketFilters() {
     // later etches under the same ticker get a stronger `duplicate` badge to
     // push the taker to read the asset_id rather than trust the string.
     const collisionTileBadge = a._tickerCollision === 'duplicate'
-      ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="another asset etched this ticker first — verify the asset_id below before trading">⚠ DUP</span>`
+      ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before buying.">⚠ DUP</span>`
       : a._tickerCollision === 'original'
-        ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="other assets share this ticker; this one was etched first">earliest</span>`
+        ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">earliest</span>`
         : '';
     tile.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
@@ -13856,7 +14208,18 @@ function applyHeroVisibility() {
 function setupHero() {
   applyHeroVisibility();
   const closeBtn = document.getElementById('hero-close');
-  if (closeBtn) closeBtn.onclick = () => { markOnboarded(); };
+  if (closeBtn) closeBtn.onclick = () => {
+    // Set the flag idempotently AND force-hide. Don't go through
+    // markOnboarded() because it early-returns when already onboarded —
+    // which broke the close button after the user revealed the hero via
+    // "↺ show getting started" (that reveal preserves the flag, so a
+    // subsequent × click would otherwise be a no-op).
+    if (!isOnboarded()) localStorage.setItem(ONBOARDED_KEY, '1');
+    const strip = document.getElementById('hero-strip');
+    const showBar = document.getElementById('hero-show');
+    if (strip) strip.style.display = 'none';
+    if (showBar) showBar.style.display = '';
+  };
   const showLink = document.getElementById('hero-show-link');
   if (showLink) showLink.onclick = (e) => {
     e.preventDefault();

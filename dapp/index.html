@@ -1651,15 +1651,20 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;font-size:12px;">
-        Bilateral OTC offers across all assets. Settlement is off-chain in v1: pay the maker's address in sats, then the maker broadcasts a CXFER to your pubkey. Counterparty trust required (or use a 2-of-2 escrow).
-        <strong>Range-disclosed</strong> listings prove a lower bound on the maker's balance without publishing their full opening — useful for makers who want to keep their treasury confidential.
+        Bilateral OTC offers across all assets. Three settlement modes:
+        <ul style="margin:6px 0 6px 18px;padding:0;">
+          <li><strong>⚡ Atomic intent (recommended)</strong> — single Bitcoin tx settles both sides; the maker's CXFER and the taker's BTC payment go in or fail together. <strong>No counterparty trust.</strong> Click <em>Claim</em> on a ⚡ tile to lock the offer for 5 min while the maker generates a partial reveal targeted at your pubkey, then <em>Take</em> to broadcast.</li>
+          <li><strong>Opening</strong> — maker publishes the full Pedersen opening of one UTXO. Settlement is off-chain: pay the maker's address in sats, then the maker broadcasts a CXFER to your pubkey. <strong>Counterparty trust required</strong> (the maker can take your sats and not deliver). Use atomic intents instead unless the maker explicitly insists on this path.</li>
+          <li><strong>Range</strong> — maker proves a lower bound on their balance without revealing the full opening. Same off-chain settlement and trust assumptions as opening listings; suited to makers who want to keep their treasury confidential.</li>
+        </ul>
       </div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
         <input id="market-filter-asset" type="text" placeholder="ticker / asset_id prefix…" style="flex:1;min-width:140px;">
         <select id="market-filter-kind" style="flex:0;">
           <option value="all">all kinds</option>
-          <option value="opening">opening (exact)</option>
-          <option value="range">range (≥ X)</option>
+          <option value="intent">⚡ atomic (trustless)</option>
+          <option value="opening">opening (exact, trust)</option>
+          <option value="range">range (≥ X, trust)</option>
         </select>
         <input id="market-filter-min-price" type="number" placeholder="min sats" style="width:90px;" min="0">
         <input id="market-filter-max-price" type="number" placeholder="max sats" style="width:90px;" min="0">
@@ -1707,7 +1712,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button class="filter-pill" data-pill="offers" type="button" title="Has at least one active marketplace offer">Has offers</button>
         <button class="filter-pill" data-pill="minted" type="button" title="Has at least one chain-verified mint event">Has mints</button>
         <button class="filter-pill" data-pill="burned" type="button" title="Has at least one chain-verified burn event">Has burns</button>
-        <button class="filter-pill" data-pill="moved" type="button" title="Has at least one indexed CXFER/AXFER transfer">Has transfers</button>
+        <button class="filter-pill" data-pill="moved" type="button" title="Has at least one CXFER/AXFER transfer the worker has indexed, OR one you've broadcast/imported locally. The worker's mainnet cron starts from tip and doesn't backfill historical transfers, so historical sends may not match unless your local activity log still has the entry.">Has transfers</button>
       </div>
       <div id="discover-verify-stats" class="muted" style="font-size:11px;margin-bottom:10px;display:none;" title="Each asset card validates the on-chain CETCH envelope locally before its ✓ badge appears. Cards out of view defer their walk until you scroll them into view to save CPU + battery."></div>
       <div id="discover-list"><div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div></div>
@@ -1921,14 +1926,25 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <button id="faq-close" class="faq-close" type="button" aria-label="Close">✕</button>
     </div>
     <div class="faq-body">
-      <div class="faq-q">Why not just use Runes / Liquid / RGB?</div>
+      <div class="faq-q">What is tacit?</div>
       <div class="faq-a">
-        Each pays a price tacit declines. Runes and BRC-20 publish amounts in cleartext. Liquid hides amounts <em>and</em> asset IDs but runs on a federated sidechain (~15 KYC'd functionaries — not Bitcoin proper, not trustless). RGB hides amounts via off-chain proofs the recipient must receive from the sender out-of-band; lose the proof, lose the asset. Tacit hides amounts on Bitcoin proper <em>and</em> recovers from privkey + chain alone — that intersection is the niche.
+        Confidential token creation, sends, mints, and burns on Bitcoin. Supply can be public or hidden at issuance — your choice. No federation, no off-chain proofs, no third-party trust; your privkey plus the chain are enough to use it and to recover your full balance years later.
       </div>
 
-      <div class="faq-q">Will my tacit holdings show up in UniSat / Xverse / Leather?</div>
+      <div class="faq-q">Why not just use Runes / Liquid / RGB?</div>
       <div class="faq-a">
-        No. Those wallets don't run a tacit indexer; they'll see your tacit UTXOs as small BTC dust. Balances surface only here, or in any third-party tacit indexer. Connecting an external wallet is <em>just for funding</em> — your tacit privkey is separate, encrypted in this browser.
+        Runes and BRC-20 publish amounts in cleartext — anyone with a block explorer sees your balance. Liquid hides them but runs on a federated sidechain with ~15 KYC'd functionaries; that's not really Bitcoin. RGB hides them on Bitcoin proper, but the recipient has to receive a proof chain from the sender off-chain — lose the proof, lose the asset. Tacit hides amounts on Bitcoin and you recover from privkey + chain alone, the way Bitcoin itself works.
+      </div>
+
+      <div class="faq-q">How do I see my tacit balances?</div>
+      <div class="faq-a">
+        Right here in the dApp, or in any third-party tacit indexer. Tacit envelopes ride in Bitcoin Taproot witnesses; the dApp decodes them client-side, walks ancestry to each CETCH / MINT, and decrypts amounts via ECDH — all from chain data alone, no server in the trust path. External wallets like Xverse / UniSat / Leather connect for <em>funding</em> the tacit wallet from your existing BTC; the tacit privkey stays in this browser, encrypted and separate from your external wallet's seed.
+      </div>
+
+      <div class="faq-q">Am I locked into your platform?</div>
+      <div class="faq-a">
+        No. The protocol spec is open (MIT); any indexer reaches the same verdict from chain alone, and the dApp itself can be pinned to IPFS by anyone. Asset metadata pins to IPFS by content hash — the CID on-chain references the content itself, not anyone's server, so any IPFS gateway works. Both <code>WORKER_BASE</code> and <code>IPFS_GATEWAY</code> are configurable constants in <code>tacit.js</code>; setting the worker URL to <code>''</code> disables it entirely and the protocol keeps working.
+        Ordinals takes the opposite tradeoff: content lives directly on-chain (no off-chain piece, but heavy and pricey per-inscription). Runes carries no image or metadata convention at all — wallets usually fetch "what does this rune look like" from a centralized marketplace API.
       </div>
 
       <div class="faq-q">Can I recover from just my privkey?</div>

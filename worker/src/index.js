@@ -978,6 +978,24 @@ async function handleAssetsList(env, network, cors, opts = {}) {
   const prefix = assetPrefix(network);
   const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
   const wanted = list.keys.filter(k => !(network === 'signet' && k.name.startsWith('asset:mainnet:')));
+  // Kick off the side-fetches (last_scanned and chain tip-height) in parallel
+  // with the asset hydration. Both are independent of the asset list and used
+  // only for the freshness banner; running them sequentially after hydration
+  // adds ~150-300ms to the MISS path for no value. The mempool.space upstream
+  // can be slow / occasionally 522 — catch failures so a flaky upstream
+  // doesn't fail the whole /assets response.
+  const lastScannedP = env.REGISTRY_KV.get(lastScannedKey(network));
+  // Cap the chain tip fetch at 2.5s. mempool.space occasionally hangs
+  // (we've observed >60s latency for /blocks/tip/height under stress),
+  // and the tip is only used for the freshness banner — losing it just
+  // shows "tip unavailable" instead of "X blocks behind". Without this
+  // timeout a slow upstream blocks the entire /assets response, since
+  // the second Promise.all below awaits this promise regardless of
+  // how the per-asset hydrate completes.
+  const tipP = Promise.race([
+    apiText(env, '/blocks/tip/height', {}, network).then(s => s.trim()),
+    new Promise(resolve => setTimeout(() => resolve(null), 2500)),
+  ]).catch(() => null);
   const fetched = await Promise.all(
     wanted.map(k => env.REGISTRY_KV.get(k.name, 'json')),
   );
@@ -988,15 +1006,15 @@ async function handleAssetsList(env, network, cors, opts = {}) {
   // without doing per-asset round-trips client-side. KV list is paginated;
   // 1000 cap is way beyond any realistic per-asset count for v1.
   await Promise.all(trimmed.map(v => hydrateAssetSummary(env, network, v, includeMints)));
-  const lastScanned = parseInt((await env.REGISTRY_KV.get(lastScannedKey(network))) || '0', 10);
+  const [lastScannedRaw, tipRaw] = await Promise.all([lastScannedP, tipP]);
+  const lastScanned = parseInt(lastScannedRaw || '0', 10);
   let tip = null;
-  let tipUnavailable = false;
-  try {
-    const raw = (await apiText(env, '/blocks/tip/height', {}, network)).trim();
-    const parsed = parseInt(raw, 10);
+  let tipUnavailable = tipRaw === null;
+  if (!tipUnavailable) {
+    const parsed = parseInt(tipRaw, 10);
     if (Number.isInteger(parsed) && parsed >= 0) tip = parsed;
     else tipUnavailable = true;
-  } catch { tipUnavailable = true; }
+  }
   return jsonResponse({
     network,
     count: assets.length,
@@ -1006,6 +1024,49 @@ async function handleAssetsList(env, network, cors, opts = {}) {
     // Without this flag the freshness label silently lied as "caught up".
     meta: { last_scanned: lastScanned, tip, tip_unavailable: tipUnavailable },
   }, 200, cors);
+}
+
+// ============== /assets edge cache (SWR + cron pre-warm) ==============
+// FRESH: how long a cached response counts as "current".
+// STALE: how long past FRESH we still serve cached + refresh async.
+// Beyond STALE the cache is treated as missing and we recompute synchronously.
+// Tuned around the cron's 5-min tick: fresh data only changes that often,
+// so a 5-min serve-stale window doesn't lose meaningful accuracy.
+const ASSETS_CACHE_FRESH_MS = 60 * 1000;
+const ASSETS_CACHE_STALE_MS = 5 * 60 * 1000;
+
+// Build a normalized cache key for /assets responses. Both the live route
+// handler and the cron pre-warm hit the same key, so cron writes are visible
+// to subsequent user requests within the same colo. The synthetic origin
+// prevents the worker's deployed hostname from leaking into the key (which
+// would make staging/preview deploys see different cache entries from prod).
+function assetsCacheKey(network, limit, includeMints) {
+  const params = new URLSearchParams();
+  params.set('network', network);
+  if (Number.isInteger(limit) && limit > 0) params.set('limit', String(limit));
+  if (!includeMints) params.set('mints', '0');
+  return new Request(`https://_assets-cache_/assets?${params.toString()}`, { method: 'GET' });
+}
+
+// Compute /assets and write it into the edge cache. Used by both the live
+// route handler (synchronous MISS path + ctx.waitUntil background refresh
+// during STALE) and the cron pre-warm (so the next user lands on a HIT
+// instead of paying the MISS cost themselves).
+async function assetsComputeAndCache(env, network, opts) {
+  // Empty cors here — caller wraps with the request's cors at response time.
+  const fresh = await handleAssetsList(env, network, {}, opts);
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(ASSETS_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(
+      assetsCacheKey(network, opts.limit, opts.includeMints),
+      new Response(body, { status: 200, headers: ch }),
+    );
+  }
+  return { body, status: fresh.status };
 }
 
 async function commitmentFromRevealTx(env, revealTxid, vout, network) {
@@ -2613,25 +2674,32 @@ const AIRDROP_LEAF_INDEX_MAX = 0xffffffff;
 const AIRDROP_LIST_PAGE = 1000;     // KV's max per call
 const AIRDROP_LIST_HARD_CAP = 10000; // total per response; bound size + cost
 
-// Per-IP daily rate limit for airdrop-claim POST and DELETE. Without this an
+// Layered daily rate limit for airdrop-claim POST and DELETE. Without this an
 // attacker could fill KV with junk submissions for any root, or wipe a
-// recipient's submission before the issuer pulls. The cap is generous so a
-// legitimate recipient who needs to re-sign isn't blocked.
-async function _airdropRateLimit(req, env) {
+// recipient's submission before the issuer pulls. The IP cap is generous so a
+// legitimate recipient who needs to re-sign isn't blocked; the per-pubkey cap
+// (POST-only — DELETE has no signed pubkey) forces a determined attacker to
+// rotate keys as well as IPs, mirroring the layered defense on /drops.
+async function _airdropRateLimit(req, env, tacitPubHex) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
-  const kvKey = `airdrop-rl:${day}:${ip}`;
-  const limit = safeInt(env.AIRDROP_DAILY_LIMIT, 200, { min: 1 });
-  const prior = safeInt(await env.REGISTRY_KV.get(kvKey), 0, { min: 0 });
-  if (prior >= limit) return { ok: false, limit };
-  await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+  const ipKey = `airdrop-rl:ip:${day}:${ip}`;
+  const ipLimit = safeInt(env.AIRDROP_DAILY_LIMIT, 200, { min: 1 });
+  const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
+  if (ipPrior >= ipLimit) return { ok: false, reason: `IP daily limit (${ipLimit}/day)` };
+  if (tacitPubHex) {
+    const pkKey = `airdrop-rl:pk:${day}:${tacitPubHex}`;
+    const pkLimit = safeInt(env.AIRDROP_DAILY_LIMIT_PUBKEY, 50, { min: 1 });
+    const pkPrior = safeInt(await env.REGISTRY_KV.get(pkKey), 0, { min: 0 });
+    if (pkPrior >= pkLimit) return { ok: false, reason: `pubkey daily limit (${pkLimit}/day)` };
+    await env.REGISTRY_KV.put(pkKey, String(pkPrior + 1), { expirationTtl: 90000 });
+  }
+  await env.REGISTRY_KV.put(ipKey, String(ipPrior + 1), { expirationTtl: 90000 });
   return { ok: true };
 }
 
 async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
-  const rl = await _airdropRateLimit(req, env);
-  if (!rl.ok) return jsonResponse({ error: `airdrop daily limit reached (${rl.limit}/day)` }, 429, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
 
@@ -2640,6 +2708,8 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
   let ethSigHex = String(body.eth_sig ?? '').toLowerCase();
   if (ethSigHex.startsWith('0x')) ethSigHex = ethSigHex.slice(2);
 
+  // Format-validate before charging the rate limit so malformed bodies don't
+  // burn slots that legitimate retries might need.
   if (!Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex > AIRDROP_LEAF_INDEX_MAX) {
     return jsonResponse({ error: `leaf_index must be integer in [0, ${AIRDROP_LEAF_INDEX_MAX}]` }, 400, cors);
   }
@@ -2649,6 +2719,9 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
   if (!/^[0-9a-f]{130}$/.test(ethSigHex)) {
     return jsonResponse({ error: 'eth_sig must be 65 bytes (130 hex chars)' }, 400, cors);
   }
+
+  const rl = await _airdropRateLimit(req, env, tacitPubHex);
+  if (!rl.ok) return jsonResponse({ error: `airdrop limit reached: ${rl.reason}` }, 429, cors);
 
   const record = {
     root: rootHex,
@@ -2716,8 +2789,8 @@ async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network
   // a malicious deleter to AIRDROP_DAILY_LIMIT entries per day per IP, which
   // combined with claimants storing their submission locally and the issuer
   // re-pulling on each fulfilment session makes mass-wipe impractical.
-  const rl = await _airdropRateLimit(req, env);
-  if (!rl.ok) return jsonResponse({ error: `airdrop daily limit reached (${rl.limit}/day)` }, 429, cors);
+  const rl = await _airdropRateLimit(req, env, null);   // null pubkey → IP-only
+  if (!rl.ok) return jsonResponse({ error: `airdrop limit reached: ${rl.reason}` }, 429, cors);
   const leafIndex = safeInt(leafIndexStr, -1, { min: 0, max: AIRDROP_LEAF_INDEX_MAX });
   if (leafIndex < 0) {
     return jsonResponse({ error: 'invalid leaf_index' }, 400, cors);
@@ -3106,40 +3179,51 @@ export default {
       }
       const mintsParam = url.searchParams.get('mints');
       const includeMints = mintsParam !== '0' && mintsParam !== 'false';
-      // Cloudflare Cache API layer in front of the registry list. Each /assets
-      // call would otherwise issue 1 + 5×N KV list operations (asset prefix +
-      // openings/disclosures/listings/range-listings/atomic-intents per asset),
-      // which on the free tier (1000 list ops/day) burns the quota in tens of
-      // page loads. The Cache API has no quota and is per-colo, so a 30s TTL
-      // collapses bursts of dapp polls into a single backend hit.
+      // Cloudflare Cache API layer in front of the registry list, with
+      // stale-while-revalidate semantics. Without SWR the first request after
+      // a TTL window pays the full MISS cost (~2-3s on cold mainnet — KV
+      // fan-out + mempool.space tip-height upstream). With SWR, anyone past
+      // the fresh window but within the stale window gets the cached body
+      // instantly while the worker refreshes in the background; only requests
+      // arriving after a long quiet period (>STALE_MS) ever pay MISS again.
+      //
+      // FRESH: how long a cached response counts as "current".
+      // STALE: how long past FRESH we still serve cached + refresh async.
+      // Beyond STALE the cache is treated as missing and we recompute synchronously.
+      // Tuned around the cron's 5-min tick: fresh data only changes that often,
+      // so a 5-min serve-stale window doesn't lose much accuracy.
       const cache = caches.default;
-      const cacheKey = new Request(url.toString(), { method: 'GET' });
+      const cacheKey = assetsCacheKey(network, limit, includeMints);
+      const _withCors = (body, status, kind) => {
+        const headers = new Headers();
+        headers.set('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', kind);
+        return new Response(body, { status, headers });
+      };
+      const _computeAndCache = () => assetsComputeAndCache(env, network, { limit, includeMints });
       const cached = await cache.match(cacheKey);
       if (cached) {
-        // CORS headers must match the *current* request's origin, not the
-        // cached one (otherwise origin A's response leaks to origin B's CORS
-        // check). Rebuild the response with this request's CORS.
-        const body = await cached.text();
-        const headers = new Headers(cached.headers);
-        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
-        headers.set('X-Cache', 'HIT');
-        return new Response(body, { status: cached.status, headers });
-      }
-      const fresh = await handleAssetsList(env, network, cors, { limit, includeMints });
-      // Only cache successful responses; errors should retry.
-      if (fresh.status === 200) {
-        const body = await fresh.text();
-        const cacheHeaders = new Headers(fresh.headers);
-        cacheHeaders.set('Cache-Control', 'public, max-age=30');
-        const toCache = new Response(body, { status: 200, headers: cacheHeaders });
-        if (ctx && typeof ctx.waitUntil === 'function') {
-          ctx.waitUntil(cache.put(cacheKey, toCache.clone()));
+        const cachedAtStr = cached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < ASSETS_CACHE_FRESH_MS) {
+          return _withCors(await cached.text(), cached.status, 'HIT');
         }
-        const respHeaders = new Headers(cacheHeaders);
-        respHeaders.set('X-Cache', 'MISS');
-        return new Response(body, { status: 200, headers: respHeaders });
+        if (ageMs < ASSETS_CACHE_STALE_MS) {
+          // Stale-while-revalidate: serve immediately, refresh async. The
+          // background refresh swallows errors so a transient failure doesn't
+          // poison the next read; the next read then sees the same stale
+          // body again and re-tries the refresh, eventually catching up.
+          if (ctx && typeof ctx.waitUntil === 'function') {
+            ctx.waitUntil(_computeAndCache().catch(() => null));
+          }
+          return _withCors(await cached.text(), cached.status, 'STALE');
+        }
+        // Older than STALE: fall through to synchronous recomputation below.
       }
-      return fresh;
+      // MISS path. Compute synchronously and cache before responding.
+      const result = await _computeAndCache();
+      return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors);
     const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
@@ -3238,8 +3322,20 @@ export default {
 
   async scheduled(_event, env, ctx) {
     // Scan both networks each cron tick. Failures in one don't affect the other.
-    ctx.waitUntil(Promise.allSettled(
-      NETWORKS.map(net => scanForEtches(env, net).catch(() => {}))
-    ));
+    ctx.waitUntil((async () => {
+      await Promise.allSettled(
+        NETWORKS.map(net => scanForEtches(env, net).catch(() => {})),
+      );
+      // After the scan updates KV, pre-warm the /assets edge cache for both
+      // networks. Without this, the first user to hit /assets after a quiet
+      // period pays the full MISS cost (~2-3s on cold mainnet). With the
+      // pre-warm, the SWR layer always has a fresh-or-stale entry to serve
+      // instantly. We pre-warm the default (no-limit, mints=true) shape since
+      // that's what Discover/Market/lander all hit; specialized callers with
+      // ?limit= or ?mints=0 still pay one MISS but they're rare paths.
+      await Promise.allSettled(
+        NETWORKS.map(net => assetsComputeAndCache(env, net, { limit: null, includeMints: true }).catch(() => {})),
+      );
+    })());
   },
 };

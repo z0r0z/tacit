@@ -123,24 +123,33 @@ Where tacit isn't the right choice:
 
 ## FAQ
 
-**Why tacit and not Runes / Liquid / RGB?** Each pays a price tacit
-declines to pay. Runes / BRC-20 publish amounts in cleartext (no privacy).
-Liquid hides amounts and asset IDs but runs on a federated sidechain
-(~15 KYC'd functionaries — not Bitcoin proper, not trustless). RGB and
-Taproot Assets keep the substrate clean but move validation off-chain;
-the recipient must receive a proof chain from the sender out-of-band, and
-losing it loses the asset. Tacit hides amounts on Bitcoin proper *and*
-recovers from privkey + chain alone — that intersection is the niche.
-See "How tacit compares" above for the full breakdown.
+**What is tacit?** Confidential token creation and transfers on Bitcoin —
+no federation, no off-chain proofs, no third-party trust. Issue a token
+with public or hidden initial supply (your choice — the dApp publishes
+the supply opening to IPFS by default, opt out if you want a centralized-
+stablecoin-style trust model), send privately, optionally make it mintable,
+burn part or all of your balance, or settle OTC swaps atomically in a
+single Bitcoin tx. Your privkey plus the Bitcoin chain are enough to use
+it and to recover your full balance years later.
 
-**Will my tacit holdings show up in UniSat / Xverse / Leather?** No.
-Those wallets don't run a tacit indexer. They'll see your tacit UTXOs as
-small BTC dust (the few hundred sats parked at each holding output).
-Balances surface only in a tacit indexer — the reference dApp, or any
-third-party implementation of [SPEC.md](./SPEC.md). The "Connect UniSat"
-flow in the dApp is *just for funding* — the tacit privkey is separate
-and stays in-page; UniSat never holds it, signs with it, or sees the
-balances it controls.
+**Why tacit and not Runes / Liquid / RGB?** Runes and BRC-20 publish
+amounts in cleartext — anyone with a block explorer sees your balance.
+Liquid CT hides them but runs on a federated sidechain with ~15 KYC'd
+functionaries; that's not Bitcoin and it's not trustless. RGB and Taproot
+Assets keep the substrate clean but push validation off-chain — the
+recipient has to receive and store a proof chain from the sender, and
+losing it loses the asset. Tacit hides amounts on Bitcoin proper and
+recovers from privkey + chain alone, the way Bitcoin itself works. See
+"How tacit compares" above for the longer breakdown.
+
+**How do I see my tacit balances?** In the dApp here, or in any
+third-party tacit indexer that implements [SPEC.md](./SPEC.md). Tacit
+envelopes ride in Bitcoin Taproot witnesses; the dApp decodes them
+client-side, walks ancestry to each CETCH/MINT, and decrypts amounts via
+ECDH — all from chain data alone, no server in the trust path. External
+wallets like Xverse / UniSat / Leather connect for *funding* the tacit
+wallet from your existing BTC; the tacit privkey itself stays in this
+browser, encrypted and separate from your external wallet's seed.
 
 **Is amount privacy actually enough?** For most fungible-token use cases
 (treasury operations, confidential payments, OTC settlement, payroll) —
@@ -150,6 +159,26 @@ scope every Bitcoin-substrate protocol gives you. BIP-352 Silent Payments
 (receiver privacy) and Asset Surjection Proofs (asset-id privacy) are on
 the roadmap and compatible with tacit's wallet model — see "Future
 directions" below.
+
+**Am I locked into your platform?** No. The protocol spec is open (MIT,
+[SPEC.md](./SPEC.md) is authoritative); any indexer in any language
+reaches the same verdict from chain alone — re-implement it, audit it,
+pin a copy of the dApp by IPFS CID. Asset metadata (images, descriptions,
+supply openings) is pinned to IPFS by content hash, so the on-chain
+reference is to the content (CID), not to anyone's server: anyone can
+re-pin to a different IPFS service, any IPFS gateway can resolve. Both
+`WORKER_BASE` and `IPFS_GATEWAY` are top-of-file constants in
+`dapp/tacit.js`; setting `WORKER_BASE = ''` disables every worker
+endpoint and the protocol still works for transfers, validation, and
+recovery.
+
+Ordinals takes the opposite tradeoff — content lives directly on-chain
+in Taproot witnesses, no off-chain dependency at all but each inscription
+carries the full file as Bitcoin fees (impractical beyond small images).
+Runes encodes token state in OP_RETURN runestones but carries no image /
+metadata convention in the protocol, so wallets and explorers usually
+fetch "what does this rune look like" from a marketplace's centralized
+API.
 
 **Can I recover my balance from just my privkey?** Yes, for every
 on-chain envelope. The dApp scans chain data, walks ancestry back to
