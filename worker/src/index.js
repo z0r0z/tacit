@@ -79,6 +79,16 @@ const JPEG_MAGIC = [0xff, 0xd8, 0xff];
 // Address human-readable-parts per network. P2WPKH on signet/testnet shares
 // 'tb'; mainnet is 'bc'. The faucet (signet-only) reads .signet directly;
 // the listings module reads HRP_BY_NETWORK[network].
+// Robust env-var int parsing. `parseInt('', 10)` and `parseInt('foo', 10)`
+// both return NaN, and `prior >= NaN` is false — silently disabling every
+// limit check that uses one. Use `safeInt` everywhere to coerce malformed
+// values back to the intended default.
+function safeInt(value, fallback, { min = -Infinity, max = Infinity } = {}) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return fallback;
+  if (n < min || n > max) return fallback;
+  return n;
+}
 const HRP_BY_NETWORK = { signet: 'tb', mainnet: 'bc' };
 const DUST = 546;
 const ENVELOPE_MAGIC = new TextEncoder().encode('TACIT');
@@ -104,6 +114,15 @@ function deriveH() {
   throw new Error('failed to derive NUMS generator H');
 }
 const PEDERSEN_H = deriveH();
+// SPEC §3.1 cross-implementation KAT: a typo in the seed string ("tacit-
+// generator-H-v1") silently produces a different curve point and rejects
+// every proof from the canonical implementation. Pin the published vector at
+// module load so a regression fails fast (per-isolate cold-start cost only).
+{
+  const expected = '02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56';
+  const actual = bytesToHex(PEDERSEN_H.toRawBytes(true));
+  if (actual !== expected) throw new Error(`worker NUMS H mismatch: ${actual} != ${expected}`);
+}
 const PEDERSEN_G = secp.ProjectivePoint.BASE;
 const PEDERSEN_ZERO = secp.ProjectivePoint.ZERO;
 const modN = x => ((x % SECP_N) + SECP_N) % SECP_N;
@@ -331,8 +350,8 @@ async function handlePin(req, env, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const kvKey = `pin:${day}:${ip}`;
-  const dailyLimit = parseInt(env.DAILY_LIMIT || '20', 10);
-  const prior = parseInt((await env.UPLOAD_KV.get(kvKey)) || '0', 10);
+  const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
+  const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
   if (prior >= dailyLimit) {
     return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
   }
@@ -344,7 +363,7 @@ async function handlePin(req, env, cors) {
   if (!(file instanceof File)) {
     return jsonResponse({ error: 'missing form field "file"' }, 400, cors);
   }
-  const maxBytes = parseInt(env.MAX_BYTES || String(2 * 1024 * 1024), 10);
+  const maxBytes = safeInt(env.MAX_BYTES, 2 * 1024 * 1024, { min: 1 });
   if (file.size > maxBytes) {
     return jsonResponse({ error: `file exceeds ${maxBytes} bytes` }, 413, cors);
   }
@@ -370,8 +389,12 @@ async function handlePin(req, env, cors) {
     });
   } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
   if (!pinResp.ok) {
-    const text = (await pinResp.text()).slice(0, 240);
-    return jsonResponse({ error: `pinata ${pinResp.status}: ${text}` }, 502, cors);
+    // Don't echo Pinata's response body to the client — some upstreams include
+    // request-context (auth headers, internal IDs) in error bodies, and the
+    // bearer JWT is long enough to fit in 240 chars. Log server-side; return
+    // only the status code to the caller.
+    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
+    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
   }
   const j = await pinResp.json();
   if (!j.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
@@ -390,8 +413,8 @@ async function handlePinJson(req, env, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const kvKey = `pin:${day}:${ip}`;
-  const dailyLimit = parseInt(env.DAILY_LIMIT || '20', 10);
-  const prior = parseInt((await env.UPLOAD_KV.get(kvKey)) || '0', 10);
+  const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
+  const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
   if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
 
   let body;
@@ -440,8 +463,9 @@ async function handlePinJson(req, env, cors) {
     });
   } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
   if (!pinResp.ok) {
-    const text = (await pinResp.text()).slice(0, 240);
-    return jsonResponse({ error: `pinata ${pinResp.status}: ${text}` }, 502, cors);
+    // See note in handlePin — never echo Pinata's body to the client.
+    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
+    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
   }
   const j = await pinResp.json();
   if (!j.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
@@ -581,23 +605,40 @@ async function handleDrip(req, env, cors) {
   const day = new Date().toISOString().slice(0, 10);
   const ipKey = `drip:ip:${day}:${ip}`;
   const addrKey = `drip:addr:${day}:${recipient}`;
-  const ipLimit = parseInt(env.FAUCET_IP_LIMIT || '1', 10);
-  const addrLimit = parseInt(env.FAUCET_ADDR_LIMIT || '1', 10);
-  const ipPrior = parseInt((await env.REGISTRY_KV.get(ipKey)) || '0', 10);
-  const addrPrior = parseInt((await env.REGISTRY_KV.get(addrKey)) || '0', 10);
+  const ipLimit = safeInt(env.FAUCET_IP_LIMIT, 1, { min: 0 });
+  const addrLimit = safeInt(env.FAUCET_ADDR_LIMIT, 1, { min: 0 });
+  const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
+  const addrPrior = safeInt(await env.REGISTRY_KV.get(addrKey), 0, { min: 0 });
   if (ipPrior >= ipLimit)   return jsonResponse({ error: `IP daily limit reached (${ipLimit}/day)` }, 429, cors);
   if (addrPrior >= addrLimit) return jsonResponse({ error: `address daily limit reached (${addrLimit}/day)` }, 429, cors);
 
+  // Pre-increment the per-IP / per-address counters BEFORE the slow broadcast.
+  // KV has no CAS, so two requests racing within the broadcast window would
+  // both see prior=0 and both broadcast — draining the faucet at twice the
+  // intended rate. Pre-incrementing closes the window from "broadcast time"
+  // (~hundreds of ms) to "two KV reads + writes" (~tens of ms). Best-effort
+  // rollback on broadcast failure so a transient mempool.space error doesn't
+  // permanently consume the user's daily quota.
+  await env.REGISTRY_KV.put(ipKey, String(ipPrior + 1), { expirationTtl: 90000 });
+  await env.REGISTRY_KV.put(addrKey, String(addrPrior + 1), { expirationTtl: 90000 });
+  const rollbackCounters = async () => {
+    try { await env.REGISTRY_KV.put(ipKey, String(ipPrior), { expirationTtl: 90000 }); } catch {}
+    try { await env.REGISTRY_KV.put(addrKey, String(addrPrior), { expirationTtl: 90000 }); } catch {}
+  };
+
   let f;
   try { f = faucetKeys(env); }
-  catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+  catch (e) { await rollbackCounters(); return jsonResponse({ error: e.message }, 500, cors); }
 
   let utxos;
   try { utxos = await apiJson(env, `/address/${f.address}/utxo`); }
-  catch (e) { return jsonResponse({ error: e.message }, 502, cors); }
-  if (!utxos.length) return jsonResponse({ error: 'faucet has no UTXOs — send signet sats to ' + f.address }, 503, cors);
+  catch (e) { await rollbackCounters(); return jsonResponse({ error: e.message }, 502, cors); }
+  if (!utxos.length) {
+    await rollbackCounters();
+    return jsonResponse({ error: 'faucet has no UTXOs — send signet sats to ' + f.address }, 503, cors);
+  }
 
-  const dripSats = parseInt(env.DRIP_SATS || '20000', 10);
+  const dripSats = safeInt(env.DRIP_SATS, 20000, { min: DUST });
   const feeRate = 2; // signet, conservative
   const sorted = [...utxos].sort((a, b) => b.value - a.value);
   const picked = []; let total = 0;
@@ -610,6 +651,7 @@ async function handleDrip(req, env, cors) {
     if (total >= dripSats + estFee + DUST) break;
   }
   if (total < dripSats + estFee) {
+    await rollbackCounters();
     return jsonResponse({ error: `faucet underfunded: ${total} sats, need ${dripSats + estFee}` }, 503, cors);
   }
   const change = total - dripSats - estFee;
@@ -631,10 +673,11 @@ async function handleDrip(req, env, cors) {
 
   let broadcastTxid;
   try { broadcastTxid = (await apiText(env, '/tx', { method: 'POST', body: hex })).trim(); }
-  catch (e) { return jsonResponse({ error: `broadcast failed: ${e.message}` }, 502, cors); }
-
-  await env.REGISTRY_KV.put(ipKey, String(ipPrior + 1), { expirationTtl: 90000 });
-  await env.REGISTRY_KV.put(addrKey, String(addrPrior + 1), { expirationTtl: 90000 });
+  catch (e) {
+    await rollbackCounters();
+    return jsonResponse({ error: `broadcast failed: ${e.message}` }, 502, cors);
+  }
+  // Counters were pre-incremented above; broadcast succeeded, leave them in place.
 
   return jsonResponse({
     txid: broadcastTxid,
@@ -1036,8 +1079,8 @@ async function handleAssetHint(req, env, network, cors) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const kvKey = `hint:${day}:${ip}`;
-  const limit = parseInt(env.HINT_LIMIT || '200', 10);
-  const prior = parseInt((await env.REGISTRY_KV.get(kvKey)) || '0', 10);
+  const limit = safeInt(env.HINT_LIMIT, 200, { min: 0 });
+  const prior = safeInt(await env.REGISTRY_KV.get(kvKey), 0, { min: 0 });
   if (prior >= limit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
 
   let tx;
@@ -1560,10 +1603,25 @@ function decodeBitcoinAddress(addr) {
   if (typeof addr !== 'string' || addr.length < 8 || addr.length > 90) return null;
   const lower = addr.toLowerCase();
   if (addr !== lower && addr !== addr.toUpperCase()) return null;
-  for (const codec of [bech32, bech32m]) {
+  // Validate the address is actually spendable: witness version must be 0 or
+  // 1, and the (codec, version, program length) tuple must be one of the
+  // BIP-141 / BIP-350 canonical combinations. Without these checks a maker
+  // could publish a listing whose `maker_address` decodes but is unspendable
+  // (e.g. v17 with 2-byte program), causing takers to burn fees crafting an
+  // unrelayable tx.
+  const codecs = [{ codec: bech32, version: 0 }, { codec: bech32m, version: 1 }];
+  for (const { codec, version } of codecs) {
     try {
       const d = codec.decode(lower);
-      return { hrp: d.prefix };
+      if (!d.words || d.words.length === 0) continue;
+      const ver = d.words[0];
+      if (ver !== version) continue;
+      let program;
+      try { program = codec.fromWords(d.words.slice(1)); } catch { continue; }
+      // v0: P2WPKH (20 bytes) or P2WSH (32 bytes). v1: P2TR (32 bytes).
+      if (version === 0 && program.length !== 20 && program.length !== 32) continue;
+      if (version === 1 && program.length !== 32) continue;
+      return { hrp: d.prefix, version, programLength: program.length };
     } catch {}
   }
   return null;
@@ -2210,8 +2268,12 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
 
   // Verify the maker controls the asset UTXO (P2WPKH(hash160(maker_pubkey))).
   let assetTx;
-  try { assetTx = await apiJson(env, `/tx/${assetUtxoTxid}`, {}, network); }
-  catch (e) { return jsonResponse({ error: 'asset_utxo tx not found: ' + e.message }, 400, cors); }
+  // Same indexer-race rationale as the commit_txid + taker_utxo paths: the
+  // maker may have just received this asset via a private send seconds
+  // before publishing an intent, in which case mempool.space's /tx index
+  // hasn't caught up. Retry on 404 absorbs ~7s of propagation lag.
+  try { assetTx = await fetchFreshTxJson(env, assetUtxoTxid, network); }
+  catch (e) { return jsonResponse({ error: 'asset_utxo tx not found after retries: ' + e.message }, 400, cors); }
   const out = assetTx?.vout?.[assetUtxoVout];
   if (!out?.scriptpubkey) return jsonResponse({ error: 'asset_utxo missing scriptpubkey' }, 400, cors);
   const spk = hexToBytes(out.scriptpubkey);
@@ -2298,33 +2360,40 @@ async function handleAtomicIntentList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   const list = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
   const now = Math.floor(Date.now() / 1000);
-  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
-  const intents = fetched.filter(v => v);
-  // Hydrate claim + fulfilment status so the maker can see who's bidding
-  // and the taker can see if their fulfilment is ready. Stale fulfilments
-  // (older than FULFILMENT_TTL_SECONDS without a broadcast) are dropped so
-  // the maker can re-fulfil for a new claimant.
-  const claimsAndFulfils = await Promise.all(intents.map(v => Promise.all([
-    env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, v.intent_id), 'json'),
-    env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, v.intent_id), 'json'),
-  ])));
-  for (let i = 0; i < intents.length; i++) {
-    const v = intents[i];
-    const [claim, fulfil] = claimsAndFulfils[i];
+  // intent_id is the last `:`-separated segment of the KV key (see
+  // atomicIntentKey). Parsing it from the key lets us issue intent + claim
+  // + fulfilment fetches in one fan-out instead of two phases — saves one
+  // round-trip's latency on the hot Market path.
+  const triples = await Promise.all(list.keys.map(async k => {
+    const intentIdHex = k.name.slice(k.name.lastIndexOf(':') + 1);
+    if (!/^[0-9a-f]{32}$/.test(intentIdHex)) return null;
+    const [intent, claim, fulfil] = await Promise.all([
+      env.REGISTRY_KV.get(k.name, 'json'),
+      env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json'),
+      env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, intentIdHex), 'json'),
+    ]);
+    if (!intent) return null;
+    return { intent, claim, fulfil, intentIdHex };
+  }));
+  const intents = [];
+  for (const t of triples) {
+    if (!t) continue;
+    const v = t.intent;
     v.expired = (v.expiry || 0) <= now;
-    if (claim && claim.expires_at > now) v.claim = claim;
-    if (fulfil) {
-      const fulfilledAt = Number(fulfil.fulfilled_at) || 0;
+    if (t.claim && t.claim.expires_at > now) v.claim = t.claim;
+    if (t.fulfil) {
+      const fulfilledAt = Number(t.fulfil.fulfilled_at) || 0;
       if (fulfilledAt && (now - fulfilledAt) > FULFILMENT_TTL_SECONDS) {
         // GC: lazy cleanup on read. Fire-and-forget, no await — we don't need
         // the delete to land before responding, and deferring keeps the read
         // path cheap.
-        env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, v.intent_id)).catch(() => {});
+        env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, t.intentIdHex)).catch(() => {});
       } else {
         v.fulfilment_pending = true; // don't include the partial reveal here; it's a separate fetch
         v.fulfilled_at = fulfilledAt;
       }
     }
+    intents.push(v);
   }
   intents.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents }, 200, cors);
@@ -2387,8 +2456,14 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
   // the UTXO — taker may spend it before fulfilment, that's their risk —
   // but at claim time they had to actually have the funds.
   let takerTx;
-  try { takerTx = await apiJson(env, `/tx/${takerUtxoTxid}`, {}, network); }
-  catch (e) { return jsonResponse({ error: 'taker_utxo tx not found: ' + e.message }, 400, cors); }
+  // Use fetchFreshTxJson rather than apiJson: takers often top up their sat
+  // balance from a faucet or external send specifically to claim a hot
+  // intent, so the taker_utxo can be very recently confirmed and hit the
+  // mempool.space indexer-lag race we fixed for commit_txid (see
+  // handleAtomicIntentPost). Retrying on 404 absorbs ~7s of propagation
+  // lag instead of failing the claim and forcing the user to wait + retry.
+  try { takerTx = await fetchFreshTxJson(env, takerUtxoTxid, network); }
+  catch (e) { return jsonResponse({ error: 'taker_utxo tx not found after retries: ' + e.message }, 400, cors); }
   const takerOut = takerTx?.vout?.[takerUtxoVout];
   if (!takerOut?.scriptpubkey) return jsonResponse({ error: 'taker_utxo missing scriptpubkey' }, 400, cors);
   const spk = hexToBytes(takerOut.scriptpubkey);
@@ -2416,7 +2491,14 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
     claimed_at: now,
     expires_at: now + CLAIM_TTL_SECONDS,
   };
-  await env.REGISTRY_KV.put(atomicClaimKey(network, assetIdHex, intentIdHex), JSON.stringify(claim));
+  // Auto-expire the claim record at the TTL deadline so KV doesn't accumulate
+  // dead reservations. A small buffer (60s) absorbs clock skew between CF
+  // edges and ensures readers within the TTL window always see the claim.
+  await env.REGISTRY_KV.put(
+    atomicClaimKey(network, assetIdHex, intentIdHex),
+    JSON.stringify(claim),
+    { expirationTtl: CLAIM_TTL_SECONDS + 60 },
+  );
   return jsonResponse({ ok: true, claim, intent }, 200, cors);
 }
 
@@ -2503,8 +2585,25 @@ const AIRDROP_LEAF_INDEX_MAX = 0xffffffff;
 const AIRDROP_LIST_PAGE = 1000;     // KV's max per call
 const AIRDROP_LIST_HARD_CAP = 10000; // total per response; bound size + cost
 
+// Per-IP daily rate limit for airdrop-claim POST and DELETE. Without this an
+// attacker could fill KV with junk submissions for any root, or wipe a
+// recipient's submission before the issuer pulls. The cap is generous so a
+// legitimate recipient who needs to re-sign isn't blocked.
+async function _airdropRateLimit(req, env) {
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const kvKey = `airdrop-rl:${day}:${ip}`;
+  const limit = safeInt(env.AIRDROP_DAILY_LIMIT, 200, { min: 1 });
+  const prior = safeInt(await env.REGISTRY_KV.get(kvKey), 0, { min: 0 });
+  if (prior >= limit) return { ok: false, limit };
+  await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+  return { ok: true };
+}
+
 async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
+  const rl = await _airdropRateLimit(req, env);
+  if (!rl.ok) return jsonResponse({ error: `airdrop daily limit reached (${rl.limit}/day)` }, 429, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
 
@@ -2568,10 +2667,19 @@ async function handleAirdropClaimList(rootHex, env, network, cors, opts = {}) {
   return jsonResponse({ root: rootHex, network, count: claims.length, claims, truncated, next_cursor: nextCursor }, 200, cors);
 }
 
-async function handleAirdropClaimDelete(rootHex, leafIndexStr, env, network, cors) {
+async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
-  const leafIndex = parseInt(leafIndexStr, 10);
-  if (!Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex > AIRDROP_LEAF_INDEX_MAX) {
+  // Same per-IP cap as POST. The endpoint is intentionally unauthenticated —
+  // the issuer's dapp calls DELETE after pulling each leaf for fulfilment, and
+  // doesn't have the claimant's private key to sign with. Adding sig auth
+  // would break the existing flow; the rate limit bounds the blast radius of
+  // a malicious deleter to AIRDROP_DAILY_LIMIT entries per day per IP, which
+  // combined with claimants storing their submission locally and the issuer
+  // re-pulling on each fulfilment session makes mass-wipe impractical.
+  const rl = await _airdropRateLimit(req, env);
+  if (!rl.ok) return jsonResponse({ error: `airdrop daily limit reached (${rl.limit}/day)` }, 429, cors);
+  const leafIndex = safeInt(leafIndexStr, -1, { min: 0, max: AIRDROP_LEAF_INDEX_MAX });
+  if (leafIndex < 0) {
     return jsonResponse({ error: 'invalid leaf_index' }, 400, cors);
   }
   await env.REGISTRY_KV.delete(airdropClaimKey(network, rootHex, leafIndex));
@@ -2617,8 +2725,8 @@ async function scanForEtches(env, network) {
   const tip = parseInt((await apiText(env, '/blocks/tip/height', {}, network)).trim(), 10);
   // Per-network blocks-per-tick budget (signet is sparse, mainnet is dense).
   const blocksPerTick = network === 'mainnet'
-    ? parseInt(env.SCAN_BLOCKS_MAINNET || '1', 10)
-    : parseInt(env.SCAN_BLOCKS_SIGNET || '5', 10);
+    ? safeInt(env.SCAN_BLOCKS_MAINNET, 1, { min: 1, max: 100 })
+    : safeInt(env.SCAN_BLOCKS_SIGNET, 5, { min: 1, max: 100 });
   // Backfill window: signet has near-empty blocks so we backfill 2 weeks (2016
   // blocks); mainnet would be prohibitive at 3000 txs/block, so we start from
   // tip and only catch new etches going forward. Hint endpoint covers anything
@@ -2629,7 +2737,11 @@ async function scanForEtches(env, network) {
   if (startHeight > tip) return { up_to_date: true, tip, network };
 
   let scanned = 0, found = 0;
-  let lastContiguous = lastScanned >= 0 ? lastScanned : 0;
+  // Seed at `startHeight - 1` so a transient API failure on the very first
+  // block of a never-scanned network doesn't write `0` to KV and abandon the
+  // entire backfill window. We only update `lastContiguous` after a block's
+  // tx list completes, so the seed value is what gets persisted on early-exit.
+  let lastContiguous = startHeight - 1;
   for (let h = startHeight; h <= endHeight; h++) {
     let blockHash;
     try { blockHash = (await apiText(env, `/block-height/${h}`, {}, network)).trim(); }
@@ -2847,7 +2959,7 @@ export default {
       return handleAirdropClaimList(mac[1], env, network, cors, opts);
     }
     const mac2 = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims\/(\d+)$/);
-    if (mac2 && req.method === 'DELETE')                       return handleAirdropClaimDelete(mac2[1], mac2[2], env, network, cors);
+    if (mac2 && req.method === 'DELETE')                       return handleAirdropClaimDelete(mac2[1], mac2[2], req, env, network, cors);
 
     // Debug endpoints: gated on DEBUG_TOKEN. Without the secret, attackers
     // can rescan-from-genesis and exhaust the worker's daily subrequest

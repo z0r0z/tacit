@@ -7511,6 +7511,126 @@ function _dropIdFor(rootHex, assetIdHex) {
   return bytesToHex(sha256(concatBytes(hexToBytes(rootHex), hexToBytes(assetIdHex)))).slice(0, 32);
 }
 
+// ============== DROP FULFILMENT LEASE LOCK ==============
+// Prevents concurrent fulfilment broadcasts of the same drop from two browser
+// tabs (or concurrent calls in any other scenario where state changes overlap).
+// localStorage is shared across tabs but has no native CAS; the pending-entry
+// in-flight lock alone has a TOCTOU window at phase-1 write where two tabs
+// could each race to add the same leaves before either sees the other's write.
+//
+// The lease layer here serializes the entire broadcast handler against
+// concurrent broadcasts of the SAME drop_id. Different drops can fulfil in
+// parallel safely (no shared state).
+//
+// Mechanism:
+//   - Each tab gets a random tab_id stored in sessionStorage (per-tab, not shared).
+//   - Lease in localStorage at `tacit-drop-lease-v1:<network>:<drop_id>` records
+//     `{ tab_id, acquired_at, expires_at }` with TTL ≥ a typical broadcast latency.
+//   - Acquire reads existing lease; rejects if a different tab_id holds an
+//     unexpired lease; otherwise writes its own and re-reads to verify it won
+//     the (very narrow) write race.
+//   - Release writes only if we still hold the lease.
+//   - Stale leases (e.g. tab crashed mid-broadcast) auto-expire; another tab
+//     can take over after TTL.
+const DROP_LEASE_TTL_MS = 10 * 60 * 1000;  // 10 min — generous for slow mempool
+
+function _ensureTabId() {
+  try {
+    let id = sessionStorage.getItem('tacit-tab-id-v1');
+    if (!id) {
+      id = bytesToHex(crypto.getRandomValues(new Uint8Array(8)));
+      sessionStorage.setItem('tacit-tab-id-v1', id);
+    }
+    return id;
+  } catch {
+    // If sessionStorage is unavailable (very locked-down browsers), fall back
+    // to a per-page-load random ID. Lock will still work within a single
+    // broadcast call but won't survive page reloads — better than nothing.
+    return bytesToHex(crypto.getRandomValues(new Uint8Array(8)));
+  }
+}
+
+function _dropLeaseKey(dropId) {
+  return `tacit-drop-lease-v1:${NET.name}:${dropId}`;
+}
+
+// Acquire the lease for `dropId`. Returns:
+//   { ok: true,  tabId, expiresAt } on success
+//   { ok: false, ownedBy, expiresAt } on conflict (another tab holds it)
+function acquireDropLease(dropId, ttlMs = DROP_LEASE_TTL_MS) {
+  const tabId = _ensureTabId();
+  const key = _dropLeaseKey(dropId);
+  const now = Date.now();
+
+  // Check existing lease
+  const existingRaw = localStorage.getItem(key);
+  if (existingRaw) {
+    try {
+      const existing = JSON.parse(existingRaw);
+      if (existing && typeof existing === 'object'
+          && typeof existing.tab_id === 'string'
+          && Number.isInteger(existing.expires_at)
+          && existing.tab_id !== tabId
+          && existing.expires_at > now) {
+        return { ok: false, ownedBy: existing.tab_id, expiresAt: existing.expires_at };
+      }
+    } catch { /* malformed lease, treat as absent */ }
+  }
+
+  // Write our lease
+  const lease = { tab_id: tabId, acquired_at: now, expires_at: now + ttlMs, drop_id: dropId };
+  localStorage.setItem(key, JSON.stringify(lease));
+
+  // Re-read and verify we won the race (narrows TOCTOU window from the time
+  // between read and write to the time between write and re-read; effectively
+  // microseconds, so the practical race window is closed for human-clicked
+  // events).
+  const verifyRaw = localStorage.getItem(key);
+  if (verifyRaw) {
+    try {
+      const verify = JSON.parse(verifyRaw);
+      if (verify && verify.tab_id === tabId) {
+        return { ok: true, tabId, expiresAt: lease.expires_at };
+      }
+      return { ok: false, ownedBy: verify?.tab_id || 'unknown', expiresAt: verify?.expires_at || 0 };
+    } catch {
+      return { ok: false, ownedBy: 'unknown', expiresAt: 0 };
+    }
+  }
+  return { ok: false, ownedBy: 'unknown', expiresAt: 0 };
+}
+
+// Release the lease IF we still own it. No-op if someone else holds it now
+// (don't release another tab's lease — they may be mid-broadcast).
+function releaseDropLease(dropId) {
+  const tabId = _ensureTabId();
+  const key = _dropLeaseKey(dropId);
+  try {
+    const existingRaw = localStorage.getItem(key);
+    if (!existingRaw) return;
+    const existing = JSON.parse(existingRaw);
+    if (existing && existing.tab_id === tabId) {
+      localStorage.removeItem(key);
+    }
+  } catch { /* best-effort */ }
+}
+
+// Refresh the lease's expiry IF we still own it. Useful for very long
+// broadcasts that exceed the original TTL.
+function refreshDropLease(dropId, ttlMs = DROP_LEASE_TTL_MS) {
+  const tabId = _ensureTabId();
+  const key = _dropLeaseKey(dropId);
+  try {
+    const existingRaw = localStorage.getItem(key);
+    if (!existingRaw) return false;
+    const existing = JSON.parse(existingRaw);
+    if (!existing || existing.tab_id !== tabId) return false;
+    existing.expires_at = Date.now() + ttlMs;
+    localStorage.setItem(key, JSON.stringify(existing));
+    return true;
+  } catch { return false; }
+}
+
 function refreshDropsTab() {
   // Re-render across tab entry. Sources and built snapshot persist within a
   // session (user might tab away mid-edit and come back).
@@ -8260,12 +8380,40 @@ function _importDropJSON(text) {
 
   // Fulfilled list: validate each entry shape but don't trust against chain
   // here (Cross-check is the separate validation pass).
+  //
+  // Two valid shapes:
+  //   confirmed: { leaf_index, tacit_pubkey, txid: 64-hex string, ... }
+  //   pending:   { leaf_index, tacit_pubkey, txid: null, pending: true, ... }
+  //
+  // Pending entries MUST survive a round-trip through export→import, otherwise
+  // a backup taken between phase-1 and phase-2 of a fulfilment broadcast would
+  // lose the in-flight lock and re-open the double-pay window. Preserve the
+  // pending sentinels and their error annotations explicitly.
   const fulfilled = Array.isArray(obj.fulfilled) ? obj.fulfilled.filter(f => {
     if (!f || !Number.isInteger(f.leaf_index)) return false;
     if (f.leaf_index < 0 || f.leaf_index >= count) return false;
     if (typeof f.tacit_pubkey !== 'string' || !/^0[23][0-9a-f]{64}$/.test(f.tacit_pubkey)) return false;
-    if (typeof f.txid !== 'string' || !/^[0-9a-f]{64}$/.test(f.txid)) return false;
-    return true;
+    const isConfirmed = typeof f.txid === 'string' && /^[0-9a-f]{64}$/.test(f.txid);
+    const isPending = (f.txid === null || f.txid === undefined) && f.pending === true;
+    return isConfirmed || isPending;
+  }).map(f => {
+    // Preserve all fields the writer side cares about. Strip unknown ones to
+    // bound malicious-payload bloat but keep pending sentinel + error.
+    const out = {
+      leaf_index: f.leaf_index,
+      tacit_pubkey: f.tacit_pubkey,
+      eth_address: typeof f.eth_address === 'string' ? f.eth_address : '',
+      amount: String(f.amount ?? '0'),
+      txid: typeof f.txid === 'string' ? f.txid : null,
+      fulfilled_at: Number.isInteger(f.fulfilled_at) ? f.fulfilled_at : null,
+      sig_verified: !!f.sig_verified,
+    };
+    if (f.pending === true) {
+      out.pending = true;
+      if (typeof f.pending_error === 'string') out.pending_error = f.pending_error.slice(0, 200);
+      if (Number.isInteger(f.pending_error_at)) out.pending_error_at = f.pending_error_at;
+    }
+    return out;
   }) : [];
 
   const drops = loadSavedDrops();
@@ -8493,6 +8641,22 @@ function setupDropsForm() {
     btn.disabled = true; btn.textContent = 'building proof + broadcasting…';
     $('#drop-fulfil-err').textContent = '';
 
+    // Multi-tab lease lock. Acquire BEFORE phase-1 write to prevent two
+    // tabs from racing past the loadSavedDrops/saveDrops sequence with
+    // overlapping leaf sets. Released in the finally block regardless of
+    // outcome. Stale leases (e.g. tab crashed) auto-expire after TTL so
+    // another tab can take over.
+    const lease = acquireDropLease(drop.drop_id);
+    if (!lease.ok) {
+      const remainSec = Math.max(0, Math.ceil((lease.expiresAt - Date.now()) / 1000));
+      $('#drop-fulfil-err').innerHTML =
+        `<strong>Another browser tab is fulfilling this drop right now.</strong> ` +
+        `Wait ~${remainSec}s for the lease to expire (or close that tab) and try again. ` +
+        `If you're sure no other tab is active and the lease is stale, wait the full ${Math.ceil(remainSec / 60)} minutes for auto-expiry.`;
+      btn.disabled = false; btn.textContent = 'Broadcast batch CXFER';
+      return;
+    }
+
     // Two-phase persistence (closes HIGH #1 — state-loss double-pay window).
     // Phase 1: write the fulfilment entries with `pending: true` BEFORE
     // broadcast. Phase 2: after broadcast confirms, flip pending→false and
@@ -8625,6 +8789,10 @@ function setupDropsForm() {
         `If no matching CXFER exists, manually delete the pending entries before retrying.`;
       console.error(e);
     } finally {
+      // Release the multi-tab lease unconditionally on broadcast finish
+      // (success OR failure). Pending entries persist independently — the
+      // lease is just the in-flight serializer for the broadcast handler.
+      releaseDropLease(drop.drop_id);
       btn.disabled = false; btn.textContent = 'Broadcast batch CXFER';
     }
   });
@@ -8659,14 +8827,39 @@ function setupDropsForm() {
     }
     btn.disabled = true; const orig = btn.textContent; btn.textContent = 'pulling…';
     try {
-      const url = `${WORKER_BASE}/airdrops/${drop.merkle_root_hex}/claims?network=${encodeURIComponent(drop.network || NET.name)}`;
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`worker returned ${resp.status}`);
-      const j = await resp.json();
+      // Walk the worker's paginated queue (added in MED#9 fix). Stop early
+      // once we have enough unfulfilled claims to fill a 7-recipient batch,
+      // since paging beyond that point is wasted bandwidth.
+      const baseUrl = `${WORKER_BASE}/airdrops/${drop.merkle_root_hex}/claims?network=${encodeURIComponent(drop.network || NET.name)}`;
       const fulfilledSet = new Set((drop.fulfilled || []).map(f => f.leaf_index));
-      const pending = (j.claims || []).filter(c => !fulfilledSet.has(c.leaf_index));
+      const allClaims = [];
+      let nextCursor = null;
+      let totalSeen = 0;
+      let truncatedAtWorker = false;
+      let pageGuard = 0;
+      const PAGE_GUARD_CAP = 16;  // 16 pages × ≤1000 = 16K claims max per pull
+      do {
+        const url = nextCursor ? `${baseUrl}&cursor=${encodeURIComponent(nextCursor)}` : baseUrl;
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`worker returned ${resp.status}`);
+        const j = await resp.json();
+        for (const c of (j.claims || [])) allClaims.push(c);
+        totalSeen += (j.count || 0);
+        nextCursor = j.next_cursor || null;
+        truncatedAtWorker = !!j.truncated;
+        // Stop early once we've collected enough unfulfilled claims for a batch.
+        const unfulfilledSoFar = allClaims.filter(c => !fulfilledSet.has(c.leaf_index)).length;
+        if (unfulfilledSoFar >= 7) break;
+        pageGuard++;
+        if (pageGuard > PAGE_GUARD_CAP) break;
+      } while (nextCursor);
+
+      const pending = allClaims.filter(c => !fulfilledSet.has(c.leaf_index));
       if (pending.length === 0) {
-        if (status) status.innerHTML = `<span class="muted">No pending claims in queue (${j.count || 0} total · ${fulfilledSet.size} already fulfilled locally).</span>`;
+        const truncNote = truncatedAtWorker || nextCursor
+          ? ' (worker reports more pages available; click Pull again after broadcasting these)'
+          : '';
+        if (status) status.innerHTML = `<span class="muted">No new claims in queue (${totalSeen} seen · ${fulfilledSet.size} already fulfilled locally${truncNote}).</span>`;
         return;
       }
       // Cap at 7 (the per-batch limit). Surplus claims stay in the queue for
@@ -8675,8 +8868,9 @@ function setupDropsForm() {
       const lines = take.map(c => `${c.leaf_index},${c.tacit_pubkey},${c.eth_sig}`);
       $('#drop-fulfil-claims').value = lines.join('\n');
       if (status) {
-        const more = pending.length > take.length ? ` · ${pending.length - take.length} more pending after this batch` : '';
-        status.innerHTML = `<span style="color:var(--green);">Pulled ${take.length} claim${take.length === 1 ? '' : 's'} from queue${more}. Click Verify next.</span>`;
+        const localExtra = pending.length > take.length ? ` · ${pending.length - take.length} more in this fetch` : '';
+        const remoteExtra = (nextCursor || truncatedAtWorker) ? ` · more queued upstream` : '';
+        status.innerHTML = `<span style="color:var(--green);">Pulled ${take.length} claim${take.length === 1 ? '' : 's'} from queue${localExtra}${remoteExtra}. Click Verify next.</span>`;
       }
       toast(`Pulled ${take.length} queued claim${take.length === 1 ? '' : 's'}`, 'success');
     } catch (e) {
@@ -9744,15 +9938,18 @@ async function renderHoldings() {
             formHost.innerHTML = '';
             return;
           }
-          // Each listing is per-UTXO. Default to selling the largest UTXO; let
-          // the user pick another one via the dropdown.
-          const sortedUtxos = [...target.utxos].sort((a, b) => Number(b.amount - a.amount));
+          // Each listing is per-UTXO. Sort smallest-first so the default
+          // matches the most-common case "test the market with a small
+          // portion" — the prior largest-first default was misread as the
+          // dapp auto-picking, leaving sellers thinking they couldn't pick
+          // a smaller UTXO themselves. The dropdown still shows everything.
+          const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
           const utxoOpts = sortedUtxos.map((u, idx) => `
             <option value="${idx}">${escapeHtml(fmtAssetAmount(u.amount, target.decimals))} ${escapeHtml(target.ticker)} · UTXO ${escapeHtml(shorten(u.utxo.txid, 8))}:${u.utxo.vout}</option>
           `).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>UTXO to sell</label>
+              <label>Pick UTXO to sell ▾ (smallest first; whole UTXO is sold)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
@@ -9937,13 +10134,17 @@ async function renderHoldings() {
             formHost.innerHTML = '';
             return;
           }
-          const sortedUtxos = [...target.utxos].sort((a, b) => Number(b.amount - a.amount));
+          // Sort smallest-first so the default matches the most-common case
+          // "send a small portion atomically to a specific recipient". The
+          // dropdown still shows every UTXO; users wanting to send a larger
+          // one scroll down or pre-split via Send Privately.
+          const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
           const utxoOpts = sortedUtxos.map((u, idx) => `
             <option value="${idx}">${escapeHtml(fmtAssetAmount(u.amount, target.decimals))} ${escapeHtml(target.ticker)} · UTXO ${escapeHtml(shorten(u.utxo.txid, 8))}:${u.utxo.vout}</option>
           `).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>UTXO to sell (entire UTXO; v1 atomic doesn't support partial fills — split via Send Privately first if needed)</label>
+              <label>Pick UTXO to sell ▾ (smallest first; entire UTXO is sold — split via Send Privately first if you want a different size)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <label style="margin-top:8px;">Recipient public key (33-byte compressed hex, 02… or 03…)</label>
               <input type="text" data-field="recipient" placeholder="02… or 03…" autocomplete="off" spellcheck="false">
@@ -10055,13 +10256,17 @@ async function renderHoldings() {
             formHost.innerHTML = '';
             return;
           }
-          const sortedUtxos = [...target.utxos].sort((a, b) => Number(b.amount - a.amount));
+          // Sort smallest-first so the default matches the common "test the
+          // market with a small portion" case. Every UTXO appears in the
+          // dropdown; users wanting to list a larger one scroll, or split
+          // bigger UTXOs via Send Privately first.
+          const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
           const utxoOpts = sortedUtxos.map((u, idx) => `
             <option value="${idx}">${escapeHtml(fmtAssetAmount(u.amount, target.decimals))} ${escapeHtml(target.ticker)} · UTXO ${escapeHtml(shorten(u.utxo.txid, 8))}:${u.utxo.vout}</option>
           `).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>UTXO to publish (whole UTXO; v1 atomic doesn't support partial fills)</label>
+              <label>Pick UTXO to sell ▾ (smallest first; whole UTXO is sold atomically — v1 doesn't support partial fills)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
@@ -10353,9 +10558,26 @@ async function renderRecentEtches() {
   const list = $('#recent-etches-list');
   if (!REGISTRY_URL) { section.style.display = 'none'; return; }
   try {
-    const resp = await fetch(withNet(REGISTRY_URL, 'limit=6&mints=0'));
-    const j = await resp.json();
-    const assets = (j.assets || []).slice(0, 6);
+    // Reuse loadDiscoverRegistry's 60s cache rather than a separate
+    // limit=6 fetch. Two reasons:
+    //   1. We need the full list to compute ticker-collision precedence
+    //      correctly — if we only see 6 of N assets, a duplicate-ticker
+    //      asset that shows up here without its earlier-etched sibling
+    //      would be marked `original` instead of `duplicate`, defeating
+    //      the spoof warning.
+    //   2. The cache is shared with the Discover tab, so a user who hits
+    //      Discover first pays zero extra; a wallet-first user warms it
+    //      for Discover.
+    // Worker is parallelized so the full hydration stays fast (~150ms
+    // for 30 assets); if N grows past a few hundred we'd want a worker-
+    // side `summary=0` flag that skips count/burns hydration.
+    const j = await loadDiscoverRegistry();
+    const allAssets = j.assets || [];
+    // Mark ticker collisions over the FULL list (first-etched wins) before
+    // we trim to 6, so a duplicate that happens to be in the recent slice
+    // gets correctly flagged against its earlier-etched sibling that isn't.
+    markTickerCollisions(allAssets);
+    const assets = allAssets.slice(0, 6);
     if (!assets.length) {
       list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;">No assets etched on ${escapeHtml(NET.name)} yet — be the first.</div>`;
       return;
@@ -10395,11 +10617,15 @@ async function renderRecentEtches() {
         ? (v.mismatches && v.mismatches.length ? ' · ⚠' : ' · ✓')
         : ' · ✗';
       const pending = a.pending ? ' · pending' : '';
+      // Ticker-collision marker. Computed across the FULL asset list above
+      // (not just these 6) so a `duplicate` flag here is meaningful even
+      // when the earlier-etched sibling isn't in the recent slice.
+      const dupMark = a._tickerCollision === 'duplicate' ? ' · ⚠ DUP' : '';
       const tile = document.createElement('a');
       tile.className = 'recent-tile';
       tile.href = '#';
       tile.title = v.ok
-        ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}`
+        ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
         : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`;
       tile.onclick = (e) => {
         e.preventDefault();
@@ -10409,8 +10635,8 @@ async function renderRecentEtches() {
       tile.innerHTML = `
         ${imgUrls[i] ? `<img src="${escapeHtml(imgUrls[i])}" alt="">` : ''}
         <div class="recent-tile-body">
-          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}</div>
-          <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}</div>
+          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;" title="another asset etched this ticker first — verify the asset_id">DUP</span>' : ''}</div>
+          <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}${dupMark}</div>
         </div>`;
       grid.appendChild(tile);
     }
