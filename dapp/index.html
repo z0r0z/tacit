@@ -1043,7 +1043,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
   <div class="section">
     <div class="section-header">
-      <span>tacit.wallet</span>
+      <span>wallet</span>
       <span style="display:flex;align-items:center;gap:10px;">
         <span id="wallet-mode-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;"></span>
         <span id="wallet-backup-badge" class="muted" style="font-size:10px;letter-spacing:0.1em;text-transform:uppercase;"></span>
@@ -1079,6 +1079,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            when an ext wallet is connected; faucet shows on signet only. -->
       <div class="flex" style="margin-top:18px;gap:8px;flex-wrap:wrap;">
         <button id="btn-refresh">↻ Refresh</button>
+        <button id="btn-lock" title="Lock the in-browser tacit signing key. You'll be prompted for the passphrase on the next action.">🔒 Lock</button>
         <button id="btn-drip" class="primary">⚡ Demo drip</button>
         <button id="btn-ext-fund" class="primary" style="display:none;">Top up tacit</button>
         <button id="btn-ext-connect-xverse" class="primary">Connect Xverse / Leather</button>
@@ -1140,7 +1141,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
   <div class="section" id="recent-etches-section">
     <div class="section-header">
-      <span>tacit.discover · recently etched</span>
+      <span>discover · recently etched</span>
       <a href="#" id="recent-etches-all" class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--bg);">browse all ↗</a>
     </div>
     <div class="section-body">
@@ -1152,7 +1153,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <!-- ETCH TAB -->
 <div class="tab-panel" id="tab-etch">
   <div class="section">
-    <div class="section-header"><span>tacit.etch · define a new asset</span></div>
+    <div class="section-header"><span>etch · define a new asset</span></div>
     <div class="section-body">
       <div class="form-row two">
         <div>
@@ -1222,7 +1223,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <!-- TRANSFER TAB -->
 <div class="tab-panel" id="tab-transfer">
   <div class="section">
-    <div class="section-header"><span>tacit.transfer · confidential send</span></div>
+    <div class="section-header"><span>transfer · confidential send</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
         Single-asset confidential transfer. Each transfer is a 2-tx flow: a commit tx creates a Taproot output committed to the envelope, then a reveal tx spends it via script-path, exposing the commitments + rangeproofs in the witness. Observers see commitments and proofs, never amounts. The recipient receives a <strong>share-link</strong> with the cleartext amount; their blinding factor is recomputable via ECDH.
@@ -1256,7 +1257,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div class="tab-panel" id="tab-holdings">
   <div class="section">
     <div class="section-header">
-      <span>tacit.holdings · confidential</span>
+      <span>holdings · confidential</span>
       <span id="holdings-status" class="muted"></span>
     </div>
     <div class="section-body">
@@ -1303,7 +1304,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div class="tab-panel" id="tab-market">
   <div class="section">
     <div class="section-header">
-      <span>tacit.market · open listings</span>
+      <span>market · open listings</span>
       <span id="market-status" class="muted"></span>
     </div>
     <div class="section-body">
@@ -1336,7 +1337,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div class="tab-panel" id="tab-discover">
   <div class="section">
     <div class="section-header">
-      <span id="discover-header-title">tacit.discover · all etched assets</span>
+      <span id="discover-header-title">discover · all etched assets</span>
       <span id="discover-status" class="muted"></span>
     </div>
     <div class="section-body">

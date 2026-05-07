@@ -515,6 +515,45 @@ function _passphraseModal({ mode, title, reason, errorHint }) {
   });
 }
 
+// Tab-session privkey cache. After a successful unlock, decrypt the privkey
+// once and stash the bytes in sessionStorage so refreshes within the same tab
+// don't re-prompt. sessionStorage is per-tab and cleared on tab close, so the
+// at-rest encryption (localStorage AES-GCM blob) remains the boundary against
+// device theft / cross-tab access. The unlocked key was already in JS memory
+// for the duration of the session, so this doesn't expand the XSS surface.
+const SESSION_PRIV_BASE = 'tacit-session-priv-v1';
+function sessionPrivKey(boundExtAddr = null) {
+  return boundExtAddr
+    ? `${SESSION_PRIV_BASE}:${NET.name}:by:${boundExtAddr.toLowerCase()}`
+    : `${SESSION_PRIV_BASE}:${NET.name}`;
+}
+function _cacheSessionPriv(privBytes, boundExtAddr) {
+  try { sessionStorage.setItem(sessionPrivKey(boundExtAddr), bytesToHex(privBytes)); }
+  catch { /* sessionStorage may be unavailable in restricted contexts */ }
+}
+function _readSessionPriv(boundExtAddr) {
+  try {
+    const hex = sessionStorage.getItem(sessionPrivKey(boundExtAddr));
+    if (!hex || !/^[0-9a-f]{64}$/.test(hex)) return null;
+    const b = hexToBytes(hex);
+    secp.getPublicKey(b, true);
+    return b;
+  } catch {
+    try { sessionStorage.removeItem(sessionPrivKey(boundExtAddr)); } catch {}
+    return null;
+  }
+}
+function clearAllSessionPriv() {
+  try {
+    const toRemove = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const k = sessionStorage.key(i);
+      if (k && k.startsWith(SESSION_PRIV_BASE)) toRemove.push(k);
+    }
+    toRemove.forEach(k => sessionStorage.removeItem(k));
+  } catch {}
+}
+
 async function _promptNewPassphrase(reason) {
   return _passphraseModal({ mode: 'new', title: 'set passphrase', reason });
 }
@@ -543,6 +582,18 @@ const wallet = {
     const key = walletStorageKey(boundExtAddr);
     const raw = localStorage.getItem(key);
     const shape = _storageShape(raw);
+    // Tab-session fast path: if this tab already unlocked the same wallet,
+    // skip the passphrase prompt on refresh. Only meaningful when the on-disk
+    // blob is encrypted — empty/plaintext shapes need to run their setup or
+    // migration paths regardless.
+    if (shape === 'encrypted') {
+      const cached = _readSessionPriv(boundExtAddr);
+      if (cached) {
+        this.priv = cached;
+        this.pub = secp.getPublicKey(this.priv, true);
+        return;
+      }
+    }
     if (shape === 'empty') {
       // Reason copy varies with binding: when the burner is being created
       // alongside an external-wallet connect, name the relationship explicitly
@@ -589,6 +640,7 @@ const wallet = {
       throw new Error(`unknown wallet storage format at ${key}`);
     }
     this.pub = secp.getPublicKey(this.priv, true);
+    _cacheSessionPriv(this.priv, boundExtAddr);
   },
 
   async setPriv(hex, boundExtAddr = null) {
@@ -601,6 +653,7 @@ const wallet = {
     this.pub = secp.getPublicKey(b, true);
     const key = walletStorageKey(boundExtAddr);
     localStorage.setItem(key, await encryptPrivkey(b, passphrase));
+    _cacheSessionPriv(b, boundExtAddr);
   },
 
   async regenerate(boundExtAddr = null) {
@@ -609,6 +662,7 @@ const wallet = {
     this.pub = secp.getPublicKey(this.priv, true);
     const key = walletStorageKey(boundExtAddr);
     localStorage.setItem(key, await encryptPrivkey(this.priv, passphrase));
+    _cacheSessionPriv(this.priv, boundExtAddr);
   },
   address() { return p2wpkhAddress(this.pub); },
   pubHex()  { return bytesToHex(this.pub); },
@@ -5582,6 +5636,15 @@ async function refreshWallet() {
 }
 function setupWalletButtons() {
   $('#btn-refresh').onclick = refreshWallet;
+  // Lock: drop the tab-session privkey cache and reload. The encrypted blob in
+  // localStorage is untouched, so the next page load will prompt for the
+  // passphrase as it did pre-cache. Clears all bound/unbound entries so a user
+  // who has cycled through ext-wallet bindings re-locks every cached identity.
+  const lockBtn = $('#btn-lock');
+  if (lockBtn) lockBtn.onclick = () => {
+    clearAllSessionPriv();
+    location.reload();
+  };
   // Generic copy-to-clipboard handler for any element marked with
   // `data-copy-target="<element-id>"`. Reads .textContent of the target
   // (so users always copy what they see, not a stale state), invokes
@@ -8151,7 +8214,7 @@ async function renderDiscover() {
         section.style.marginTop = '24px';
         section.innerHTML = `
           <div class="section-header">
-            <span>tacit.market · open listings</span>
+            <span>market · open listings</span>
             <span class="muted">${flat.length} live</span>
           </div>
           <div class="section-body">
@@ -8746,7 +8809,7 @@ function setupNetworkSelect() {
   if (!sel) return;
   sel.value = NET.name;
   const dh = $('#discover-header-title');
-  if (dh) dh.textContent = `tacit.discover · all etched assets on ${NET.name}`;
+  if (dh) dh.textContent = `discover · all etched assets on ${NET.name}`;
   // Mainnet banner: real BTC at stake, but show only until the user has
   // acknowledged ("× Acknowledge and hide" button). Once dismissed,
   // MAINNET_OK_KEY persists the ack and the banner stays hidden for that
