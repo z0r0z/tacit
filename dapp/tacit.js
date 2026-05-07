@@ -80,11 +80,6 @@ let NET = NETWORKS[currentNetworkName()];
 const DUST = 546; // P2WPKH dust limit, conservative
 
 // ============== MAINNET BETA GUARDRAILS ==============
-// Per-etch supply cap on mainnet (display units). Bounds the worst-case loss
-// from a future-discovered protocol bug while real-user volume is still small.
-// Lift in 30/60/90 days as uptime data accumulates. Doesn't apply to signet
-// (fake sats, no value at risk).
-const MAINNET_BETA_SUPPLY_CAP = 1_000_000n;
 // Mintable etches: allowed on mainnet from day one. Single-key mint authority
 // is the local burner key — compromise of the burner = uncapped inflation, so
 // the existing `mintable-key-warning` UI surfaces the export-the-key gate
@@ -5914,22 +5909,6 @@ function setupEtchForm() {
         const maxStr = decimals > 0 ? `${maxDisp}.${rem}` : `${maxDisp}`;
         throw new Error(`supply exceeds 2⁶⁴ base units. Max with ${decimals} decimals: ${maxStr}`);
       }
-      // Mainnet-beta supply cap. The cap is in display units, so we compare
-      // (supplyBase / 10^decimals) against MAINNET_BETA_SUPPLY_CAP. Bounds the
-      // worst-case loss from a future-discovered protocol bug while real-user
-      // volume is still small.
-      if (NET.name === 'mainnet') {
-        const div = 10n ** BigInt(decimals);
-        const displaySupply = supplyBase / div;
-        if (displaySupply > MAINNET_BETA_SUPPLY_CAP) {
-          throw new Error(
-            `mainnet beta cap: max ${MAINNET_BETA_SUPPLY_CAP.toLocaleString()} display units per etch. ` +
-            `You requested ${displaySupply.toLocaleString()}. ` +
-            `Cap will be raised after the audit-clear milestone.`,
-          );
-        }
-      }
-
       // Optional image URI
       let imageUri = null;
       try { imageUri = validateImageUriForEtch($('#e-image').value); }
