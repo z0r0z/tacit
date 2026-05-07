@@ -2134,7 +2134,7 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   if (expiryRaw > now + EXPIRY_MAX_DAYS * 86400)       return jsonResponse({ error: `expiry must be within ${EXPIRY_MAX_DAYS} days` }, 400, cors);
   if (!/^[0-9a-f]{64}$/.test(commitTxidHex))           return jsonResponse({ error: 'invalid commit_txid' }, 400, cors);
   if (!Number.isInteger(commitValueRaw) || commitValueRaw < DUST) return jsonResponse({ error: 'invalid commit_value' }, 400, cors);
-  if (!/^0020[0-9a-f]{64}$/.test(p2trSpkHex))          return jsonResponse({ error: 'p2tr_spk_hex must be 34 bytes (00 20 + 32-byte tweaked key)' }, 400, cors);
+  if (!/^5120[0-9a-f]{64}$/.test(p2trSpkHex))          return jsonResponse({ error: 'p2tr_spk_hex must be a P2TR scriptPubKey: 34 bytes (51 20 + 32-byte tweaked output key)' }, 400, cors);
   if (!/^[0-9a-f]{64}$/.test(assetUtxoTxid))           return jsonResponse({ error: 'asset_utxo.txid must be 64 hex chars' }, 400, cors);
   if (!Number.isInteger(assetUtxoVout) || assetUtxoVout < 0) return jsonResponse({ error: 'asset_utxo.vout must be non-negative integer' }, 400, cors);
   if (!Number.isInteger(assetUtxoValue) || assetUtxoValue < DUST) return jsonResponse({ error: 'asset_utxo.value invalid' }, 400, cors);
