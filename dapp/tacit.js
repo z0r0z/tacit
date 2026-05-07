@@ -7259,15 +7259,30 @@ function renderActivity() {
 
 // Fire-and-forget targeted-scan hint. After a successful etch/mint broadcast,
 // poke the worker with the reveal txid so the registry indexes it immediately
-// instead of waiting on the 5-min cron tick. Errors are swallowed; the cron is
-// the source of truth — this is purely a UX fast-path.
+// instead of waiting on the 5-min cron tick. Retries on 404 because mempool.space
+// often lags a few seconds behind broadcast — without retry, the hint fails
+// silently and the etch only appears in Discover after the next cron scan
+// (potentially many minutes on mainnet, where SCAN_BLOCKS_MAINNET=1). The cron
+// is still the source of truth; this is purely a UX fast-path.
 function postHint(revealTxid, revealVout = 0) {
   if (!HINT_URL || !revealTxid) return;
-  fetch(withNet(HINT_URL), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reveal_txid: revealTxid, reveal_vout: revealVout }),
-  }).catch(() => {});
+  const delays = [0, 3000, 8000, 20000, 60000]; // ~90s total before giving up
+  (async () => {
+    for (const d of delays) {
+      if (d > 0) await new Promise(r => setTimeout(r, d));
+      try {
+        const resp = await fetch(withNet(HINT_URL), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reveal_txid: revealTxid, reveal_vout: revealVout }),
+        });
+        // 2xx → indexed, done. 404 → tx not yet on mempool, retry. Other 4xx/5xx
+        // (rate-limit, malformed, worker error) → don't retry, cron will catch it.
+        if (resp.ok) return;
+        if (resp.status !== 404) return;
+      } catch { /* network blip — let the next delay retry */ }
+    }
+  })();
 }
 
 async function renderRecentEtches() {
