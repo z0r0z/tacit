@@ -337,10 +337,10 @@ disclosure_msg = SHA256(
 )
 ```
 
-Disclosure record (POST body):
+Disclosure record (stored shape; `asset_id` is taken from the URL path on POST and echoed in `GET` responses, the other fields are the POST body):
 ```
 {
-  asset_id:     hex(32),
+  asset_id:     hex(32),          # from URL path /assets/:asset_id/disclosures
   utxos:        [{txid, vout}, …],
   threshold:    decimal string, 0 < K < 2⁶⁴,
   rangeproof:   hex,
@@ -348,6 +348,8 @@ Disclosure record (POST body):
   sig:          hex(64)           # BIP-340 Schnorr over disclosure_msg, x-only key from owner_pubkey
 }
 ```
+
+The reference worker enforces `1 ≤ utxos.length ≤ 64` on POST. The wire format above (the canonical reference for interop) only requires `0 < N_LE < 2¹⁶`; deployments may pick a different cap.
 
 Verifier requirements:
 1. `0 < K < 2⁶⁴`.

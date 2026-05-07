@@ -19,7 +19,7 @@ crons = ["*/5 * * * *"]
 [vars]
 # CORS allowlist (comma-separated). "*" allows any origin.
 # Add your dev origin(s) here. `null` covers file:// loads. localhost ports as needed.
-ALLOWED_ORIGINS = "https://tacit.wei.is,http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000,null"
+ALLOWED_ORIGINS = "https://tacit.finance,https://www.tacit.finance,https://tacit-ioq0.onrender.com,https://tacit.wei.is,http://localhost:8000,http://localhost:3000,http://127.0.0.1:8000,null"
 
 # Per-IP /pin uploads per UTC day
 DAILY_LIMIT = "20"
