@@ -122,6 +122,8 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags:
 | `tacit-etch-amount-v1` | Etcher's supply keystream (8B) | CETCH `amount_ct` |
 | `tacit-mint-amount-v1` | Issuer's mint keystream (8B) | T_MINT `amount_ct` |
 
+**Endianness convention.** Throughout this spec, `txid_BE` denotes the txid in the byte order that `SHA256(serialized_tx)` natively produces — the same bytes a Bitcoin transaction puts on the wire when it references a previous output. This is the **reverse** of the displayed/RPC hex form (e.g. `getrawtransaction` output, block-explorer URLs). In wider Bitcoin documentation this on-wire order is often called "internal" or "LE"; tacit's `_BE` label is not standard but is fixed by the test vectors in §3.1 (and `tests/vectors.test.mjs`). Implementers should treat any `_BE` field as `reverseBytes(hexToBytes(displayed_txid))`. `_LE` on integer fields (e.g. `vout_LE`, `amount_LE`) means standard little-endian integer encoding.
+
 Anchor construction:
 - **CXFER / T_AXFER / BURN**: `anchor = first_asset_input_txid_BE || first_asset_input_vout_LE`. The first asset input is `tx.vin[1]` in all three opcodes (asset inputs come immediately after the envelope-bearing `vin[0]`; T_AXFER's aux BTC inputs are appended at the tail). Per-tx entropy prevents cross-tx correlation (`(C₁ − C₂) = (a₁ − a₂) · H` leak).
 - **CETCH / T_MINT**: `anchor = first_commit_input_txid_BE || first_commit_input_vout_LE`. Anchor predates the envelope (a pre-existing UTXO), breaking the envelope/commitment cycle. Scanners read it via `reveal_tx.vin[0]` → fetch commit tx → `commit_tx.vin[0]`.
