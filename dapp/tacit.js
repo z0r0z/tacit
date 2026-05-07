@@ -347,6 +347,35 @@ function walletStorageKey(boundExtAddr = null) {
     : `${WALLET_KEY_BASE}:${NET.name}`;
 }
 const EXT_MODE_KEY = 'tacit-ext-mode-v1';   // 'sats-connect' | 'unisat' | null
+// Tab-session ext-wallet state cache. The `{provider, address, pubkey, network}`
+// blob is non-secret (all addresses/pubkeys go on chain), so caching it in
+// sessionStorage lets refresh skip the wallet's getAccounts/requestAccounts
+// round-trip — which on some wallets surfaces a "reconnect?" popup even when
+// the origin is already authorized. Cleared on disconnect; tab-scoped so a new
+// tab still gets the official authorization flow.
+const EXT_STATE_KEY = 'tacit-ext-state-v1';
+function _cacheExtState(state) {
+  try {
+    if (state && state.provider && state.address) {
+      sessionStorage.setItem(EXT_STATE_KEY, JSON.stringify(state));
+    }
+  } catch { /* sessionStorage may be unavailable */ }
+}
+function _readCachedExtState() {
+  try {
+    const raw = sessionStorage.getItem(EXT_STATE_KEY);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== 'object' || !j.provider || !j.address) return null;
+    return j;
+  } catch {
+    try { sessionStorage.removeItem(EXT_STATE_KEY); } catch {}
+    return null;
+  }
+}
+function _clearCachedExtState() {
+  try { sessionStorage.removeItem(EXT_STATE_KEY); } catch {}
+}
 
 // ============== ENCRYPTED-AT-REST PRIVKEY ==============
 // AES-GCM ciphertext of the privkey, key derived via PBKDF2-SHA256 at OWASP
@@ -894,6 +923,7 @@ const extWallet = {
       network,
     };
     localStorage.setItem(EXT_MODE_KEY, 'sats-connect');
+    _cacheExtState(this.state);
     return this.state;
   },
 
@@ -905,13 +935,21 @@ const extWallet = {
     const network = await window.unisat.getNetwork();
     this.state = { provider: 'unisat', address: accounts[0], pubkey, network };
     localStorage.setItem(EXT_MODE_KEY, 'unisat');
+    _cacheExtState(this.state);
     return this.state;
   },
 
-  // Silent reconnect on page reload. Some wallets allow re-querying without a
-  // fresh user prompt. We never prompt during silent reconnect — if it fails,
-  // fall back to burner mode and let the user click Connect explicitly.
+  // Silent reconnect on page reload. Tab-session cache is checked first so a
+  // refresh skips the wallet API call (and any "reconnect?" popup it may
+  // surface) entirely. On a fresh tab the cache is empty and we fall through
+  // to the wallet-side reconnect path; that may still prompt depending on the
+  // wallet's authorization model, but a successful call repopulates the cache.
   async tryRestore() {
+    const cached = _readCachedExtState();
+    if (cached) {
+      this.state = cached;
+      return cached;
+    }
     const mode = localStorage.getItem(EXT_MODE_KEY);
     if (!mode) return null;
     try {
@@ -924,6 +962,7 @@ const extWallet = {
   disconnect() {
     this.state = null;
     localStorage.removeItem(EXT_MODE_KEY);
+    _clearCachedExtState();
   },
 
   // Trigger the wallet's send-sats UI (one popup, user approves, returns txid).
@@ -8581,6 +8620,7 @@ function setupUnisatEvents() {
   window.unisat.on('networkChanged', (network) => {
     if (!extWallet.state || extWallet.state.provider !== 'unisat') return;
     extWallet.state = { ...extWallet.state, network };
+    _cacheExtState(extWallet.state);
     // reconcile handles its own disconnect/reload/toast paths.
     reconcileWalletNetwork(extWallet.state);
   });
