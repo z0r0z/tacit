@@ -1080,7 +1080,36 @@ async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
   }
   throw lastErr || new Error('broadcast failed');
 }
-const getTx = id => apiJson(`/tx/${id}`).catch(() => null);
+// Persistent per-txid cache for `getTx`. Confirmed Bitcoin txs are immutable
+// (a sufficiently-buried block header can't change without breaking PoW), so a
+// hit is permanently valid — every refresh, tab switch, and subsequent
+// scanHoldings call now skips the round-trip to mempool.space for any ancestor
+// it has seen before. First scan still pays the network cost; subsequent scans
+// are dominated by local crypto only (rangeproof batch verify is sub-linear).
+//
+// Cache scope: per-network, per-txid (so signet and mainnet don't pollute each
+// other). Mempool txs are intentionally NOT cached — they can RBF or drop out,
+// so we always re-fetch them. Quota-exceeded errors on setItem are swallowed:
+// the scan still works, just falls back to per-tx network fetches.
+const TX_CACHE_PREFIX = 'tacit-tx-v1';
+function _txCacheKey(id) { return `${TX_CACHE_PREFIX}:${NET.name}:${id}`; }
+const getTx = async (rawId) => {
+  if (typeof rawId !== 'string') return null;
+  const id = rawId.toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(id)) return null;
+  try {
+    const cached = localStorage.getItem(_txCacheKey(id));
+    if (cached) return JSON.parse(cached);
+  } catch { /* corrupted entry — fall through to network and overwrite */ }
+  let tx = null;
+  try { tx = await apiJson(`/tx/${id}`); } catch { return null; }
+  if (!tx) return null;
+  if (tx.status && tx.status.confirmed === true) {
+    try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); }
+    catch { /* quota exceeded → silently skip; cache is best-effort */ }
+  }
+  return tx;
+};
 
 let _cachedRate = null, _cachedRateAt = 0;
 async function getFeeRate() {
@@ -6391,6 +6420,33 @@ function refreshRecipientRecents() {
 // Live preview of the bech32 address as the user types/pastes a recipient
 // pubkey. Validates compressed-hex format + curve point; surfaces the derived
 // address (or a parse error) so they can confirm before previewing the tx.
+// Classify common non-pubkey inputs the user might paste by mistake (Bitcoin
+// address, Ethereum address, xpub, Nostr key, raw 32-byte hex). Returns a
+// targeted hint string or null if no specific pattern matched. Lets the live
+// recipient-input hint say "looks like a Bitcoin address" instead of "X/66
+// chars" when the user pasted bc1q… by mistake.
+function classifyRecipientMisinput(raw) {
+  if (/^(bc1|tb1)[02-9ac-hj-np-z]{6,}$/.test(raw)) {
+    return 'looks like a Bitcoin address — tacit needs the recipient\'s pubkey (66 hex chars, 02… or 03…), not their address. They can copy it from their Wallet tab.';
+  }
+  if (/^0x[0-9a-f]{40}$/.test(raw)) {
+    return 'looks like an Ethereum address — tacit needs a Bitcoin secp256k1 compressed pubkey (66 hex chars starting with 02 or 03).';
+  }
+  if (/^(xpub|ypub|zpub|tpub|upub|vpub)/.test(raw)) {
+    return 'looks like an extended public key — paste a single compressed pubkey (66 hex chars), not the xpub.';
+  }
+  if (/^npub1/.test(raw)) {
+    return 'looks like a Nostr pubkey — tacit needs a Bitcoin secp256k1 compressed pubkey (66 hex chars starting with 02 or 03).';
+  }
+  if (/^[13][1-9a-km-z]{25,34}$/.test(raw)) {
+    return 'looks like a legacy Bitcoin address — tacit needs the recipient\'s pubkey (66 hex chars, 02… or 03…), not their address.';
+  }
+  if (/^[0-9a-f]{64}$/.test(raw)) {
+    return '64 hex chars — that\'s a 32-byte value (privkey or x-only pubkey). tacit needs a 33-byte compressed pubkey: prefix 02 or 03 + 64 hex chars (66 total).';
+  }
+  return null;
+}
+
 function updateDerivedAddressHint() {
   const inputEl = $('#x-recipient-pub');
   const hintEl = $('#x-recipient-derived');
@@ -6398,9 +6454,10 @@ function updateDerivedAddressHint() {
   const raw = inputEl.value.trim().toLowerCase().replace(/\s/g, '');
   if (!raw) { hintEl.style.display = 'none'; hintEl.textContent = ''; return; }
   if (!/^0[23][0-9a-f]{64}$/.test(raw)) {
+    const targeted = classifyRecipientMisinput(raw);
     hintEl.style.display = '';
-    hintEl.style.color = 'var(--ink-mid)';
-    hintEl.textContent = `${raw.length}/66 chars · expecting compressed pubkey starting with 02 or 03`;
+    hintEl.style.color = targeted ? 'var(--red)' : 'var(--ink-mid)';
+    hintEl.textContent = targeted || `${raw.length}/66 chars · expecting compressed pubkey starting with 02 or 03`;
     return;
   }
   try { secp.ProjectivePoint.fromHex(raw); }
@@ -6422,9 +6479,26 @@ function updateDerivedAddressHint() {
 
 function setupTransferForm() {
   refreshRecipientRecents();
+  // Invalidate a previously-rendered Preview whenever the form changes. Without
+  // this, a user could Preview {asset A, amount X, recipient R}, then change
+  // any field without re-previewing, then click Broadcast — and we'd send the
+  // stale {A, X, R} job while the form visibly showed something else. Real
+  // correctness risk for a local-wallet confirmation flow. Forces re-Preview
+  // after any edit.
+  const invalidatePreview = () => {
+    pendingCXfer = null;
+    const broadcastBtn = $('#btn-transfer-broadcast');
+    if (broadcastBtn) broadcastBtn.disabled = true;
+    const preview = $('#transfer-preview');
+    if (preview) preview.style.display = 'none';
+    // Don't clear #transfer-error — surfaces stay visible until user retries.
+  };
   const recipientInput = $('#x-recipient-pub');
   if (recipientInput) {
-    recipientInput.addEventListener('input', updateDerivedAddressHint);
+    recipientInput.addEventListener('input', () => {
+      updateDerivedAddressHint();
+      invalidatePreview();
+    });
     // Re-evaluate on tab activation in case of network switches.
     updateDerivedAddressHint();
   }
@@ -6435,6 +6509,7 @@ function setupTransferForm() {
     // ERC-20 amount, then picked an 8-decimal asset. Without this, the trim
     // wouldn't fire until the next keystroke.
     applyAmountTruncation();
+    invalidatePreview();
   });
   const maxBtn = $('#btn-x-max');
   if (maxBtn) maxBtn.onclick = () => {
@@ -6445,9 +6520,15 @@ function setupTransferForm() {
     // Max-fill never produces a trim, but clear any prior warn so the field
     // looks clean.
     const warn = $('#x-amount-warn'); if (warn) { warn.textContent = ''; warn.style.display = 'none'; }
+    // Treat Max-fill as a value change for invalidation purposes — programmatic
+    // .value = doesn't dispatch 'input', so do it explicitly.
+    invalidatePreview();
   };
   const amountInput = $('#x-amount');
-  if (amountInput) amountInput.addEventListener('input', applyAmountTruncation);
+  if (amountInput) amountInput.addEventListener('input', () => {
+    applyAmountTruncation();
+    invalidatePreview();
+  });
   updateTransferAmountHint();
   $('#btn-transfer-preview').onclick = async () => {
     const btn = $('#btn-transfer-preview');
@@ -6581,7 +6662,7 @@ function setupTransferForm() {
       console.error(e);
     } finally {
       $('#btn-transfer-broadcast').disabled = false;
-      $('#btn-transfer-broadcast').textContent = 'Transfer & broadcast';
+      $('#btn-transfer-broadcast').textContent = '2. Confirm & send';
     }
   };
 }
