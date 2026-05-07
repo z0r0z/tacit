@@ -6257,16 +6257,107 @@ function setupEtchForm() {
 // ============== TRANSFER UI ==============
 let pendingCXfer = null;
 
+// Snapshot of the most recent transfer-tab holdings scan, keyed by assetId.
+// Lets the amount hint and Max button render synchronously on every #x-asset
+// change without re-scanning chain on each keystroke.
+const _transferHoldings = new Map();
+
 async function refreshAssetSelect() {
   const sel = $('#x-asset');
   if (!sel) return;
   const holdings = await scanHoldings().catch(() => new Map());
   const knownNonZero = [...holdings.values()].filter(h => !h.unknownAsset && h.balance > 0n);
+  _transferHoldings.clear();
+  for (const h of knownNonZero) _transferHoldings.set(h.assetIdHex, h);
   const current = sel.value;
   sel.innerHTML = '<option value="">— select —</option>' + knownNonZero.map(h =>
     `<option value="${h.assetIdHex}">${escapeHtml(h.ticker)} · balance: ${fmtAssetAmount(h.balance, h.decimals)}</option>`
   ).join('');
   if (current) sel.value = current;
+  updateTransferAmountHint();
+}
+
+// Render the decimals/balance hint next to the Amount label and toggle the
+// Max button's enabled state. Called on asset-select change and after each
+// holdings refresh. Tolerates missing meta (asset selected but not yet in the
+// snapshot) by clearing the hint rather than throwing.
+function updateTransferAmountHint() {
+  const hint = $('#x-amount-hint');
+  const maxBtn = $('#btn-x-max');
+  const sel = $('#x-asset');
+  if (!hint || !maxBtn || !sel) return;
+  const aid = sel.value;
+  const h = aid ? _transferHoldings.get(aid) : null;
+  if (!h) {
+    hint.textContent = '';
+    maxBtn.disabled = true;
+    return;
+  }
+  const decUnit = h.decimals === 1 ? 'decimal' : 'decimals';
+  hint.textContent = `· ${h.decimals} ${decUnit} · balance ${fmtAssetAmount(h.balance, h.decimals)} ${h.ticker}`;
+  maxBtn.disabled = h.balance <= 0n;
+}
+
+// Render an asset amount in display units WITHOUT thousands separators, so the
+// result round-trips through parseAssetAmount without modification. Used by the
+// Max button — fmtAssetAmount's localized form ("21,000,000") would otherwise
+// fail input validation.
+function fmtAssetAmountPlain(amt, decimals) {
+  const a = BigInt(amt);
+  if (decimals === 0) return a.toString();
+  const div = 10n ** BigInt(decimals);
+  const whole = (a / div).toString();
+  const frac = (a % div).toString().padStart(decimals, '0').replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : whole;
+}
+
+// Live-truncate the Send-tab amount input against the selected asset's decimals.
+// Wired to the input's `input` event and re-fired on asset-change. No-op when
+// no asset is selected (we don't know the target decimals yet) or the value
+// already fits. Reuses the visible #x-amount-warn to surface what got dropped.
+function applyAmountTruncation() {
+  const inp = $('#x-amount');
+  const warn = $('#x-amount-warn');
+  if (!inp || !warn) return;
+  const aid = $('#x-asset').value;
+  const h = aid ? _transferHoldings.get(aid) : null;
+  if (!h) {
+    warn.textContent = '';
+    warn.style.display = 'none';
+    return;
+  }
+  const { trimmed, dropped } = truncateAmountToDecimals(inp.value, h.decimals);
+  if (trimmed === null) {
+    warn.textContent = '';
+    warn.style.display = 'none';
+    return;
+  }
+  inp.value = trimmed;
+  warn.textContent = `Trimmed to ${h.decimals} decimals · dropped 0.${'0'.repeat(h.decimals)}${dropped}`;
+  warn.style.display = '';
+}
+
+// Cross-decimal paste support: an ERC-20 user pasting "596.45782132688733573"
+// into an 8-decimal asset would otherwise hit "too many decimals" at preview
+// time. Truncates extra fractional digits (round-down — never spend more than
+// typed) and reports what was dropped so the UI can surface the trim
+// transparently. Returns { trimmed, dropped } with both as plain strings or
+// null when no truncation was needed. The input is left otherwise untouched
+// (commas/whitespace are normalised by parseAssetAmount, not here).
+function truncateAmountToDecimals(input, decimals) {
+  const s = String(input || '');
+  const dot = s.indexOf('.');
+  if (dot < 0) return { trimmed: null, dropped: null };
+  const frac = s.slice(dot + 1);
+  // Only digits in the fractional part — ignore stray characters; parseAssetAmount
+  // will produce a clearer error than we could synthesize here.
+  if (!/^\d*$/.test(frac)) return { trimmed: null, dropped: null };
+  if (frac.length <= decimals) return { trimmed: null, dropped: null };
+  const keep = frac.slice(0, decimals);
+  const drop = frac.slice(decimals);
+  // For a 0-decimal asset, drop the dot entirely so "5.99" → "5".
+  const trimmed = decimals === 0 ? s.slice(0, dot) : `${s.slice(0, dot)}.${keep}`;
+  return { trimmed, dropped: drop };
 }
 
 // Last 5 successfully-sent recipients, surfaced as a datalist on the Send tab
@@ -6337,6 +6428,27 @@ function setupTransferForm() {
     // Re-evaluate on tab activation in case of network switches.
     updateDerivedAddressHint();
   }
+  const assetSel = $('#x-asset');
+  if (assetSel) assetSel.addEventListener('change', () => {
+    updateTransferAmountHint();
+    // Re-truncate any value already in the input — e.g. user pasted 18-decimal
+    // ERC-20 amount, then picked an 8-decimal asset. Without this, the trim
+    // wouldn't fire until the next keystroke.
+    applyAmountTruncation();
+  });
+  const maxBtn = $('#btn-x-max');
+  if (maxBtn) maxBtn.onclick = () => {
+    const aid = $('#x-asset').value;
+    const h = aid ? _transferHoldings.get(aid) : null;
+    if (!h || h.balance <= 0n) return;
+    $('#x-amount').value = fmtAssetAmountPlain(h.balance, h.decimals);
+    // Max-fill never produces a trim, but clear any prior warn so the field
+    // looks clean.
+    const warn = $('#x-amount-warn'); if (warn) { warn.textContent = ''; warn.style.display = 'none'; }
+  };
+  const amountInput = $('#x-amount');
+  if (amountInput) amountInput.addEventListener('input', applyAmountTruncation);
+  updateTransferAmountHint();
   $('#btn-transfer-preview').onclick = async () => {
     const btn = $('#btn-transfer-preview');
     const origLabel = btn.textContent;
@@ -6453,8 +6565,17 @@ function setupTransferForm() {
         $('#x-amount').value = '';
         $('#x-recipient-pub').value = '';
         $('#transfer-preview').style.display = 'none';
+        // Clear any leftover decimal-truncation warn from the cleared amount.
+        const warn = $('#x-amount-warn'); if (warn) { warn.textContent = ''; warn.style.display = 'none'; }
       }
       refreshWallet();
+      // Re-scan asset balances so the dropdown, the inline hint, and the Max
+      // button reflect the post-transfer state. The new change UTXO may take a
+      // few seconds to index on mempool.space; users who hit "send another"
+      // before that lands will see the prior balance briefly. Acceptable —
+      // refreshWallet() is the same story for sats. The user can also hit the
+      // wallet card's ↻ Refresh.
+      refreshAssetSelect();
     } catch (e) {
       $('#transfer-error').textContent = e.message;
       console.error(e);
@@ -6466,7 +6587,9 @@ function setupTransferForm() {
 }
 
 function parseAssetAmount(input, decimals) {
-  const s = input.trim();
+  // Strip thousands separators and whitespace so a user pasting a localized
+  // balance ("21,000,000.5") parses the same as a raw value ("21000000.5").
+  const s = input.trim().replace(/[\s,]/g, '');
   if (!/^\d+(\.\d+)?$/.test(s)) throw new Error(`invalid amount: ${input}`);
   const [whole, frac = ''] = s.split('.');
   if (frac.length > decimals) throw new Error(`amount has too many decimals (max ${decimals})`);

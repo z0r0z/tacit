@@ -1238,8 +1238,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="muted">Ask the recipient to share their pubkey from their Wallet tab. The address is derived from this pubkey.</div>
       <div id="x-recipient-derived" class="muted" style="margin-top:6px;font-size:11px;display:none;"></div>
 
-      <label>Amount to send</label>
-      <input id="x-amount" type="text" placeholder="100" autocomplete="off">
+      <label>Amount to send <span id="x-amount-hint" class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:11px;"></span></label>
+      <div class="flex" style="gap:6px;align-items:stretch;">
+        <input id="x-amount" type="text" placeholder="100" autocomplete="off" style="flex:1;min-width:0;">
+        <button id="btn-x-max" type="button" title="Fill in the full balance for the selected asset" disabled>Max</button>
+      </div>
+      <div id="x-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
 
       <div id="transfer-preview" style="display:none;"></div>
 
