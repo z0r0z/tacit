@@ -1012,6 +1012,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab" data-tab="holdings">Holdings</button>
   <button class="tab" data-tab="transfer">Send</button>
   <button class="tab" data-tab="etch">Etch</button>
+  <button class="tab" data-tab="drops">Drops</button>
+  <button class="tab" data-tab="claim">Claim</button>
   <button class="tab" data-tab="market">Market</button>
   <button class="tab" data-tab="discover">Discover</button>
   <button class="tab" data-tab="about">Protocol</button>
@@ -1254,6 +1256,147 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="muted" style="margin-top:6px;font-size:11px;">Review your transfer details below before broadcasting — once sent, it can't be undone.</div>
       <div id="transfer-error" class="error"></div>
       <div id="transfer-share" style="display:none;margin-top:18px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- DROPS TAB -->
+<div class="tab-panel" id="tab-drops">
+  <div class="section">
+    <div class="section-header"><span>drops · airdrop tooling</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Issuer-side tooling for batched 1:N CXFER airdrops. Upload a snapshot CSV (<code>eth_address,amount</code> in target base units), preview the merkle commitment, pin the snapshot to IPFS, and fulfil claims in batches of up to 7 recipients per CXFER. The merkle root is the public commitment a claim portal verifies against.
+      </div>
+
+      <div class="warn" style="margin-bottom:14px;">
+        <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by your <em>active wallet</em>. To bound blast radius, generate a fresh treasury identity below, fund it from your main wallet via Send, then use Wallet → Import key in a separate browser profile to switch to the treasury before fulfilling.
+      </div>
+
+      <h3 style="margin-top:18px;">1 · Treasury (optional)</h3>
+      <div class="muted" style="font-size:12px;margin-bottom:8px;">Generate a fresh tacit identity dedicated to this drop. The privkey is shown <strong>once</strong>; copy it now and store it somewhere safe.</div>
+      <div class="flex" style="gap:6px;">
+        <button id="btn-drop-gen-treasury" type="button">Generate treasury key</button>
+      </div>
+      <div id="drop-treasury-out" style="display:none;margin-top:10px;"></div>
+
+      <h3 style="margin-top:18px;">2 · Target asset</h3>
+      <label>Airdrop asset</label>
+      <select id="drop-asset"><option value="">— select —</option></select>
+      <div class="muted" style="font-size:11px;margin-top:4px;">The tacit asset to airdrop. Each source CSV's amounts are floor-truncated to this asset's decimals before merging.</div>
+      <div id="drop-asset-meta" class="muted" style="font-size:11px;margin-top:4px;"></div>
+
+      <h3 style="margin-top:18px;">3 · Source CSVs</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:10px;">
+        Add one or more snapshot CSVs. Each may have its own source decimals (typical ERC-20 is 18, USDC/USDT are 6). Same-address balances across sources are summed; the sum is then floor-truncated to the target asset's decimals. Etherscan token-holder exports work as-is (<code>"HolderAddress","Balance",…</code>).
+      </div>
+      <div id="drop-sources"></div>
+      <div class="flex" style="gap:6px;margin-top:8px;">
+        <button id="btn-drop-add-source" type="button">+ Add source</button>
+        <button id="btn-drop-clear-sources" type="button" title="Remove all loaded sources">Clear all</button>
+      </div>
+
+      <h3 style="margin-top:18px;">4 · Blacklist (optional)</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Addresses listed here are excluded even if present in any source CSV. One per line, with or without 0x prefix. Comments (<code>#</code>, <code>//</code>) ignored.</div>
+      <textarea id="drop-blacklist" rows="3" style="font-family:var(--mono);font-size:11px;" placeholder="# exclude these addresses&#10;0x1111111111111111111111111111111111111111&#10;0x2222222222222222222222222222222222222222"></textarea>
+
+      <h3 style="margin-top:18px;">5 · Build snapshot</h3>
+      <div class="flex" style="gap:6px;">
+        <button id="btn-drop-build" type="button" class="primary">Build merged snapshot</button>
+      </div>
+      <div id="drop-build-err" class="error" style="margin-top:8px;"></div>
+      <div id="drop-build-preview" style="display:none;margin-top:14px;"></div>
+
+      <h3 style="margin-top:18px;">6 · Publish</h3>
+      <div class="flex" style="gap:6px;">
+        <button id="btn-drop-pin-snapshot" type="button" disabled title="Build a snapshot first">Pin snapshot to IPFS</button>
+        <button id="btn-drop-save" type="button" class="primary" disabled title="Build a snapshot first">Save drop record</button>
+      </div>
+      <div id="drop-save-out" class="muted" style="font-size:11px;margin-top:8px;"></div>
+
+      <h3 style="margin-top:18px;">7 · Saved drops</h3>
+      <div id="drop-list"><div class="empty" style="font-size:12px;">No drops saved yet.</div></div>
+    </div>
+  </div>
+
+  <div class="section" id="drop-fulfil-section" style="display:none;">
+    <div class="section-header"><span>fulfil claims · batched CXFER</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Paste claim tuples (one per line). Format: <code>leaf_index,tacit_pubkey_hex,eth_signature_hex</code> (the third column is what the recipient produces in the Claim tab). The dapp looks up <code>(eth_address, amount)</code> from the saved drop, verifies the merkle inclusion, recovers the eth address from the signature, and stages a batch CXFER. Claims are batched in groups of up to 7 per CXFER.
+      </div>
+      <label>Active drop</label>
+      <div id="drop-fulfil-meta" class="mono-box" style="font-size:11px;"></div>
+
+      <label style="margin-top:14px;">Claim tuples (one per line: <code>leaf_index,tacit_pubkey_hex,eth_sig_hex</code>)</label>
+      <textarea id="drop-fulfil-claims" rows="6" style="font-family:var(--mono);font-size:11px;" placeholder="0,0298a8…,0xabc123…&#10;7,03b1f0…,0xdef456…"></textarea>
+
+      <label style="margin-top:8px;display:flex;align-items:center;gap:6px;font-weight:normal;">
+        <input id="drop-fulfil-require-sig" type="checkbox" checked>
+        <span>Require eth signatures (strict — refuses tuples without a signature)</span>
+      </label>
+      <div class="muted" style="font-size:11px;margin-top:4px;">Uncheck only if you're fulfilling a hand-curated batch you trust without claimant proof. With the box checked, every tuple must include a signature that recovers to the row's eth_address.</div>
+
+      <div class="flex" style="margin-top:14px;gap:6px;">
+        <button id="btn-drop-fulfil-verify" type="button">Verify batch</button>
+        <button id="btn-drop-fulfil-broadcast" type="button" class="primary" disabled title="Verify first">Broadcast batch CXFER</button>
+        <button id="btn-drop-fulfil-cancel" type="button">Close</button>
+      </div>
+      <div id="drop-fulfil-err" class="error" style="margin-top:8px;"></div>
+      <div id="drop-fulfil-preview" style="display:none;margin-top:14px;"></div>
+      <div id="drop-fulfil-result" style="display:none;margin-top:14px;"></div>
+    </div>
+  </div>
+</div>
+
+<!-- CLAIM TAB -->
+<div class="tab-panel" id="tab-claim">
+  <div class="section">
+    <div class="section-header"><span>claim · airdrop recipient</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Recipient-side flow for an airdrop drop you're eligible for. Provide the drop's <strong>merkle root</strong> and <strong>IPFS snapshot CID</strong> (from the issuer); connect MetaMask to prove you control the listed ETH address; sign a canonical claim binding your tacit pubkey; send the resulting tuple to the issuer.
+      </div>
+
+      <h3>1 · Drop reference</h3>
+      <label>Merkle root</label>
+      <input id="claim-root" type="text" autocomplete="off" spellcheck="false" placeholder="64-char hex" style="font-family:var(--mono);font-size:12px;">
+      <label style="margin-top:10px;">Snapshot IPFS CID (or full <code>ipfs://</code> URI)</label>
+      <input id="claim-cid" type="text" autocomplete="off" spellcheck="false" placeholder="Qm… or bafy…" style="font-family:var(--mono);font-size:12px;">
+      <div class="flex" style="margin-top:8px;gap:6px;">
+        <button id="btn-claim-load" type="button">Load snapshot</button>
+        <button id="btn-claim-clear" type="button">Clear</button>
+      </div>
+      <div id="claim-load-err" class="error" style="margin-top:8px;"></div>
+      <div id="claim-load-out" style="display:none;margin-top:14px;"></div>
+
+      <h3 style="margin-top:18px;">2 · Connect Ethereum wallet</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Connecting MetaMask (or any EIP-1193 provider). The connection is purely for signing — no transaction is broadcast on Ethereum, no gas is spent. The current MetaMask network doesn't matter; the signed claim binds to the drop's tacit network ("signet" or "mainnet"), not to chainId.</div>
+      <div class="flex" style="gap:6px;align-items:center;">
+        <button id="btn-claim-connect-mm" type="button">Connect MetaMask</button>
+        <span id="claim-mm-status" class="muted" style="font-size:11px;"></span>
+      </div>
+      <div id="claim-eligibility" style="display:none;margin-top:14px;"></div>
+
+      <h3 style="margin-top:18px;">3 · Receiving tacit identity</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">The airdrop will be sent to your <strong>active dapp tacit pubkey</strong>. To use a different tacit identity, switch via <em>Wallet → Import key</em> (or <em>Regenerate</em>) before signing the claim.</div>
+      <div id="claim-tacit-id" class="mono-box" style="font-size:11px;"></div>
+      <div class="warn" style="margin-top:10px;font-size:11px;">
+        <strong>⚠ Back up your tacit privkey before signing.</strong> The privkey controlling this pubkey lives only in this browser's localStorage. If you clear it before the issuer fulfills, the airdrop is unrecoverable. Use <em>Wallet → Export key</em> now if you haven't already.
+      </div>
+
+      <h3 style="margin-top:18px;">4 · Sign claim</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">MetaMask will display the full canonical claim message. Read every field before clicking Sign in MetaMask.</div>
+      <details style="margin:8px 0;"><summary class="muted" style="cursor:pointer;font-size:11px;">Preview the message that will be signed</summary>
+        <pre id="claim-msg-preview" style="margin-top:6px;font-size:11px;background:var(--bg-warm);padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;"></pre>
+      </details>
+      <div class="flex" style="gap:6px;">
+        <button id="btn-claim-sign" type="button" class="primary" disabled title="Connect MetaMask + load eligible drop first">Sign with MetaMask</button>
+      </div>
+      <div id="claim-sign-err" class="error" style="margin-top:8px;"></div>
+
+      <h3 style="margin-top:18px;">5 · Send to issuer</h3>
+      <div id="claim-result" style="display:none;"></div>
     </div>
   </div>
 </div>

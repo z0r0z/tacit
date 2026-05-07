@@ -432,6 +432,223 @@ test('m=8 proof size matches formula (33·4 + 32·3 + log2(512)·33·2 + 32·2)'
   return proof.length === 886;
 });
 
+// ----------- Multi-recipient CXFER (airdrop batching) ------------
+// Mirrors dapp/tacit.js buildAndBroadcastCXferMulti. The dapp builder is
+// async + does network I/O, so we re-derive the same crypto here in a pure
+// function to pin the on-chain shape it produces and to prove that every
+// recipient (and the sender) can independently recover their amount from
+// chain bytes via the §3.5 derivations.
+console.log('\nMulti-recipient CXFER (airdrop):');
+
+function buildMultiCXfer({ K, inAmt, recipientAmounts, senderPriv, recipientPubs }) {
+  // m = smallest power of 2 in {2,4,8} fitting K recipients + 1 change output.
+  const totalOuts = K + 1;
+  const m = totalOuts <= 2 ? 2 : totalOuts <= 4 ? 4 : 8;
+  const totalSendAmt = recipientAmounts.reduce((s, a) => s + a, 0n);
+  const changeAmt = inAmt - totalSendAmt;
+
+  // Single asset input commitment (sender's UTXO).
+  const inBlinding = randomScalar();
+  const inputCommit = pedersenCommit(inAmt, inBlinding);
+
+  // Anchor for derivations: a fake first-input outpoint.
+  const anchorOutpoint = fakeOutpoint();
+  const anchor = anchorOf(anchorOutpoint);
+
+  // Per-output amount/blinding/keystream tables.
+  const amounts = [];
+  const blindings = [];
+  const keystreams = [];
+  for (let i = 0; i < K; i++) {
+    amounts.push(recipientAmounts[i]);
+    blindings.push(deriveBlinding(senderPriv, recipientPubs[i], anchor, i));
+    keystreams.push(deriveAmountKeystreamECDH(senderPriv, recipientPubs[i], anchor, i));
+  }
+  // change at vout K
+  amounts.push(changeAmt);
+  blindings.push(deriveChangeBlinding(senderPriv, anchor, K));
+  keystreams.push(deriveAmountKeystreamSelf(senderPriv, anchor, K));
+  // padding at vouts K+1..m-1 (amount = 0)
+  for (let v = K + 1; v < m; v++) {
+    amounts.push(0n);
+    blindings.push(deriveChangeBlinding(senderPriv, anchor, v));
+    keystreams.push(deriveAmountKeystreamSelf(senderPriv, anchor, v));
+  }
+
+  const { proof: aggProof, commitments } = bpRangeAggProve(amounts, blindings);
+  const commitmentBytesList = commitments.map(pointToBytes);
+
+  // Kernel sig
+  const blindingSum = blindings.reduce((s, b) => modN(s + b), 0n);
+  const excess = modN(blindingSum - inBlinding);
+  const assetId = sha256(new TextEncoder().encode('AIRDROP_ASSET'));
+  const inputOutpoints = [anchorOutpoint];
+  const kernelMsg = computeKernelMsg(assetId, inputOutpoints, commitmentBytesList);
+  const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(excess));
+
+  // Encrypt each amount under its keystream
+  const cts = amounts.map((a, i) => encryptAmount(a, keystreams[i]));
+
+  // Encode the wire-format payload
+  const payload = encodeCXferPayload({
+    assetId,
+    kernelSig,
+    outputs: amounts.map((_, i) => ({
+      commitment: commitmentBytesList[i],
+      encryptedAmount: cts[i],
+    })),
+    rangeproof: aggProof,
+  });
+
+  return {
+    m, payload, kernelMsg, kernelSig,
+    assetId, inputCommit, inBlinding, inputOutpoints,
+    commitments, commitmentBytesList,
+    amounts, blindings, keystreams, cts,
+    aggProof,
+  };
+}
+
+test('multi-recipient: m=2 single recipient (current default)', () => {
+  const sender = newWallet();
+  const recipPub = newWallet().pub;
+  const t = buildMultiCXfer({
+    K: 1, inAmt: 1000n,
+    recipientAmounts: [400n],
+    senderPriv: sender.priv, recipientPubs: [recipPub],
+  });
+  if (t.m !== 2) return false;
+  if (!bpRangeAggVerify(t.commitments, t.aggProof)) return false;
+  return verifyKernel({
+    inputCommits: [t.inputCommit], outCommits: t.commitments,
+    inputOutpoints: t.inputOutpoints, outputCommitments: t.commitmentBytesList,
+    assetId: t.assetId, sig: t.kernelSig,
+  });
+});
+
+test('multi-recipient: m=4 with K=3 recipients (zero padding)', () => {
+  const sender = newWallet();
+  const recips = [newWallet(), newWallet(), newWallet()];
+  const t = buildMultiCXfer({
+    K: 3, inAmt: 10000n,
+    recipientAmounts: [100n, 200n, 300n],
+    senderPriv: sender.priv, recipientPubs: recips.map(r => r.pub),
+  });
+  if (t.m !== 4) return false;
+  if (!bpRangeAggVerify(t.commitments, t.aggProof)) return false;
+  return verifyKernel({
+    inputCommits: [t.inputCommit], outCommits: t.commitments,
+    inputOutpoints: t.inputOutpoints, outputCommitments: t.commitmentBytesList,
+    assetId: t.assetId, sig: t.kernelSig,
+  });
+});
+
+test('multi-recipient: m=8 with K=7 recipients (max airdrop batch)', () => {
+  const sender = newWallet();
+  const recips = Array.from({ length: 7 }, () => newWallet());
+  const amts = [100n, 200n, 300n, 400n, 500n, 600n, 700n]; // sum = 2800
+  const t = buildMultiCXfer({
+    K: 7, inAmt: 5000n,
+    recipientAmounts: amts,
+    senderPriv: sender.priv, recipientPubs: recips.map(r => r.pub),
+  });
+  if (t.m !== 8) return false;
+  if (t.aggProof.length !== 886) return false; // m=8 BP size
+  if (!bpRangeAggVerify(t.commitments, t.aggProof)) return false;
+  return verifyKernel({
+    inputCommits: [t.inputCommit], outCommits: t.commitments,
+    inputOutpoints: t.inputOutpoints, outputCommitments: t.commitmentBytesList,
+    assetId: t.assetId, sig: t.kernelSig,
+  });
+});
+
+test('multi-recipient: each recipient recovers ONLY their own amount via ECDH', () => {
+  // The whole point of an airdrop CXFER: recipient i opens vout i, but vouts
+  // belonging to other recipients must NOT decrypt under their privkey. This
+  // is the ECDH per-recipient unlinkability property.
+  const sender = newWallet();
+  const recips = [newWallet(), newWallet(), newWallet()];
+  const amts = [111n, 222n, 333n];
+  const t = buildMultiCXfer({
+    K: 3, inAmt: 10000n,
+    recipientAmounts: amts,
+    senderPriv: sender.priv, recipientPubs: recips.map(r => r.pub),
+  });
+
+  for (let i = 0; i < 3; i++) {
+    const myAnchor = anchorOf(t.inputOutpoints[0]);
+    // Recipient re-derives blinding/keystream against sender's pub at vout i.
+    const myKs = deriveAmountKeystreamECDH(recips[i].priv, sender.pub, myAnchor, i);
+    const myBlinding = deriveBlinding(recips[i].priv, sender.pub, myAnchor, i);
+    const candidate = decryptAmount(t.cts[i], myKs);
+    if (candidate !== amts[i]) return false;
+    // Pedersen recheck: this is what makes amount_ct authenticated.
+    if (!pedersenCommit(candidate, myBlinding).equals(t.commitments[i])) return false;
+
+    // Negative path: recipient i tries to open someone else's vout (j ≠ i).
+    // The ECDH derivation against (recipient_i, sender) at vout j produces a
+    // different keystream; the candidate plaintext won't match the on-chain
+    // commitment under recipient_i's blinding.
+    for (let j = 0; j < 3; j++) {
+      if (j === i) continue;
+      const wrongKs = deriveAmountKeystreamECDH(recips[i].priv, sender.pub, myAnchor, j);
+      const wrongBlind = deriveBlinding(recips[i].priv, sender.pub, myAnchor, j);
+      const wrongCandidate = decryptAmount(t.cts[j], wrongKs);
+      if (pedersenCommit(wrongCandidate, wrongBlind).equals(t.commitments[j])) {
+        return false; // would mean cross-recipient leak
+      }
+    }
+  }
+  return true;
+});
+
+test('multi-recipient: sender recovers change + padding from chain bytes', () => {
+  // After the CXFER is broadcast, the sender's localStorage is wiped; they
+  // must re-derive openings for vouts K..m-1 from the wallet privkey + anchor
+  // alone. Padding outputs (amount = 0) must round-trip too.
+  const sender = newWallet();
+  const recips = [newWallet(), newWallet()];
+  const amts = [123n, 456n];
+  const t = buildMultiCXfer({
+    K: 2, inAmt: 1000n,
+    recipientAmounts: amts,
+    senderPriv: sender.priv, recipientPubs: recips.map(r => r.pub),
+  });
+  if (t.m !== 4) return false; // K=2 → m=4 with 1 padding
+
+  const myAnchor = anchorOf(t.inputOutpoints[0]);
+  for (let v = 2; v < 4; v++) {
+    const ks = deriveAmountKeystreamSelf(sender.priv, myAnchor, v);
+    const r = deriveChangeBlinding(sender.priv, myAnchor, v);
+    const candidate = decryptAmount(t.cts[v], ks);
+    const expected = v === 2 ? (1000n - 123n - 456n) : 0n;
+    if (candidate !== expected) return false;
+    if (!pedersenCommit(candidate, r).equals(t.commitments[v])) return false;
+  }
+  return true;
+});
+
+test('multi-recipient: padding outputs have zero H-component (balance preserved)', () => {
+  // Check the kernel-sig invariant: padding contributes 0·H, so even though
+  // outputs include 0-amount slots, Σ_out·H == Σ_in·H is preserved.
+  const sender = newWallet();
+  const recips = [newWallet(), newWallet()];
+  const t = buildMultiCXfer({
+    K: 2, inAmt: 700n,
+    recipientAmounts: [200n, 100n],
+    senderPriv: sender.priv, recipientPubs: recips.map(r => r.pub),
+  });
+  // E' = ΣC_out − ΣC_in. If amounts balance, E' = excess·G.
+  let EPrime = ZERO;
+  for (const C of t.commitments) EPrime = EPrime.add(C);
+  EPrime = EPrime.add(t.inputCommit.negate());
+  // Should equal excess·G
+  const blindingSum = t.blindings.reduce((s, b) => modN(s + b), 0n);
+  const excess = modN(blindingSum - t.inBlinding);
+  const expected = secp.ProjectivePoint.BASE.multiply(excess);
+  return EPrime.equals(expected);
+});
+
 // ----------- Wire format ------------
 console.log('\nWire format (CETCH / CXFER):');
 function makeRandomCommitment() { return pointToBytes(pedersenCommit(0n, randomScalar())); }

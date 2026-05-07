@@ -8,6 +8,7 @@
 export * as secp from '@noble/secp256k1';
 export { sha256 } from '@noble/hashes/sha256';
 export { ripemd160 } from '@noble/hashes/ripemd160';
+export { keccak_256 } from '@noble/hashes/sha3';
 export { hmac } from '@noble/hashes/hmac';
 export { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 export { bech32 } from '@scure/base';

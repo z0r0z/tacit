@@ -684,7 +684,7 @@ function decodeCEtchPayload(payload) {
   let mintable = false;
   for (let i = 0; i < 32; i++) if (mintAuthority[i] !== 0) { mintable = true; break; }
   return {
-    ticker, decimals, commitment: bytesToHex(commitment), imageUri,
+    ticker, decimals, commitment: bytesToHex(commitment), image_uri: imageUri,
     mintable, mint_authority: bytesToHex(mintAuthority),
   };
 }
@@ -905,7 +905,7 @@ async function commitmentFromRevealTx(env, revealTxid, vout, network) {
   const ce = decodeCEtchPayload(decoded.payload);
   if (!ce) throw new Error('invalid CETCH payload');
   const aidHex = assetIdFor(revealTxid, vout >>> 0);
-  return { commitment: ce.commitment, asset: { ticker: ce.ticker, decimals: ce.decimals, image_uri: ce.imageUri }, aidHex };
+  return { commitment: ce.commitment, asset: { ticker: ce.ticker, decimals: ce.decimals, image_uri: ce.image_uri }, aidHex };
 }
 
 async function handleAttest(assetIdHex, req, env, network, cors) {
@@ -1025,7 +1025,7 @@ async function handleAssetHint(req, env, network, cors) {
       ticker: ce.ticker,
       decimals: ce.decimals,
       commitment: ce.commitment,
-      image_uri: ce.imageUri,
+      image_uri: ce.image_uri,
       etch_txid: txidHex,
       etch_vout: vout,
       etched_at_height: blockHeight,
@@ -2197,9 +2197,9 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   if (env_decoded.opcode !== T_AXFER) return jsonResponse({ error: `envelope opcode 0x${env_decoded.opcode.toString(16)} != T_AXFER (0x26)` }, 400, cors);
   const ax = decodeAxferPayload(env_decoded.payload);
   if (!ax) return jsonResponse({ error: 'T_AXFER payload decode failed' }, 400, cors);
-  if (ax.assetInputCount !== 1) return jsonResponse({ error: `assetInputCount must be 1 for atomic intent (got ${ax.assetInputCount})` }, 400, cors);
+  if (ax.asset_input_count !== 1) return jsonResponse({ error: `asset_input_count must be 1 for atomic intent (got ${ax.asset_input_count})` }, 400, cors);
   if (ax.outputs.length !== 1) return jsonResponse({ error: `expected exactly 1 tacit output (got ${ax.outputs.length})` }, 400, cors);
-  if (bytesToHex(ax.assetId) !== assetIdHex) {
+  if (ax.asset_id !== assetIdHex) {
     return jsonResponse({ error: 'envelope.asset_id does not match URL asset_id' }, 400, cors);
   }
 
@@ -2469,7 +2469,7 @@ async function scanForEtches(env, network) {
           ticker: ce.ticker,
           decimals: ce.decimals,
           commitment: ce.commitment,
-          image_uri: ce.imageUri,
+          image_uri: ce.image_uri,
           etch_txid: tx.txid,
           etch_vout: 0,
           etched_at_height: h,
@@ -2523,6 +2523,14 @@ export {
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
   verifySchnorr, compressedPointFromHex,
+  // Wire-format decoders + opcode constants exported so tests/worker-decoder
+  // can pin down the exact return shape. The atomic-intent regression where
+  // a handler read `ax.assetInputCount` (camelCase) against a snake_case
+  // `asset_input_count` was silent in JS — this surface lets a test fail loudly
+  // if any decoder's return-shape contract drifts.
+  decodeEnvelopeScript,
+  decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeAxferPayload, decodeCBurnPayload,
+  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER,
 };
 
 // ============== ROUTER ==============

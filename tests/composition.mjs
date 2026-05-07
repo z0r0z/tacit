@@ -507,6 +507,364 @@ function decodeCXferPayload(payload) {
   return { kind: 'cxfer', assetId, kernelSig, outputs, rangeproof };
 }
 
+// ============== AIRDROP / SNAPSHOT HELPERS ==============
+// Mirror of dapp/tacit.js (search "AIRDROP_LEAF_TAG"). Keep in sync — if the
+// merkle scheme or domain tags change, both must update.
+const AIRDROP_LEAF_TAG = 'tacit-airdrop-leaf-v1';
+const AIRDROP_NODE_TAG = 'tacit-airdrop-node-v1';
+
+function _parseEthAddress(s) {
+  if (typeof s !== 'string') throw new Error('eth_address must be a string');
+  let a = s.trim();
+  if (a.startsWith('0x') || a.startsWith('0X')) a = a.slice(2);
+  if (!/^[0-9a-fA-F]{40}$/.test(a)) throw new Error(`invalid eth_address: ${s}`);
+  return hexToBytes(a.toLowerCase());
+}
+
+function airdropLeafHash(ethAddrBytes, amountBig, indexU32) {
+  if (!(ethAddrBytes instanceof Uint8Array) || ethAddrBytes.length !== 20) {
+    throw new Error('eth_address must be 20 bytes');
+  }
+  const amt = BigInt(amountBig);
+  if (amt < 0n || amt >= (1n << 64n)) throw new Error('amount out of u64 range');
+  const idx = Number(indexU32);
+  if (!Number.isInteger(idx) || idx < 0 || idx > 0xffffffff) throw new Error('index out of u32 range');
+  const amtLE = new Uint8Array(8);
+  new DataView(amtLE.buffer).setBigUint64(0, amt, true);
+  const idxLE = new Uint8Array(4);
+  new DataView(idxLE.buffer).setUint32(0, idx, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode(AIRDROP_LEAF_TAG),
+    ethAddrBytes, amtLE, idxLE,
+  ));
+}
+
+function _airdropNodeHash(a, b) {
+  let cmp = 0;
+  for (let i = 0; i < 32; i++) {
+    if (a[i] !== b[i]) { cmp = a[i] < b[i] ? -1 : 1; break; }
+  }
+  const [lo, hi] = cmp <= 0 ? [a, b] : [b, a];
+  return sha256(concatBytes(
+    new TextEncoder().encode(AIRDROP_NODE_TAG),
+    lo, hi,
+  ));
+}
+
+function buildAirdropMerkle(leaves) {
+  if (!Array.isArray(leaves) || leaves.length === 0) throw new Error('leaves must be a non-empty array');
+  for (const l of leaves) {
+    if (!(l instanceof Uint8Array) || l.length !== 32) throw new Error('leaves must be 32-byte arrays');
+  }
+  if (leaves.length === 1) return { root: leaves[0], layers: [leaves.slice()] };
+  const layers = [leaves.slice()];
+  while (layers[layers.length - 1].length > 1) {
+    const prev = layers[layers.length - 1];
+    const next = [];
+    for (let i = 0; i < prev.length; i += 2) {
+      if (i + 1 < prev.length) next.push(_airdropNodeHash(prev[i], prev[i + 1]));
+      else next.push(prev[i]);
+    }
+    layers.push(next);
+  }
+  return { root: layers[layers.length - 1][0], layers };
+}
+
+function airdropMerkleProof(layers, leafIndex) {
+  if (!Array.isArray(layers) || layers.length === 0) throw new Error('empty layers');
+  if (leafIndex < 0 || leafIndex >= layers[0].length) throw new Error('leafIndex out of range');
+  const proof = [];
+  let idx = leafIndex;
+  for (let h = 0; h < layers.length - 1; h++) {
+    const layer = layers[h];
+    const sibIdx = idx ^ 1;
+    if (sibIdx < layer.length) proof.push(layer[sibIdx]);
+    idx = idx >> 1;
+  }
+  return proof;
+}
+
+function verifyAirdropMerkleProof(leaf, proof, root) {
+  if (!(leaf instanceof Uint8Array) || leaf.length !== 32) return false;
+  if (!(root instanceof Uint8Array) || root.length !== 32) return false;
+  let h = leaf;
+  for (const s of proof) {
+    if (!(s instanceof Uint8Array) || s.length !== 32) return false;
+    h = _airdropNodeHash(h, s);
+  }
+  return h.length === 32 && h.every((b, i) => b === root[i]);
+}
+
+function _splitCSVLine(line) {
+  const cells = [];
+  let i = 0;
+  const n = line.length;
+  while (i < n) {
+    let cell = '';
+    if (line[i] === '"') {
+      i++;
+      while (i < n) {
+        if (line[i] === '"') {
+          if (line[i + 1] === '"') { cell += '"'; i += 2; }
+          else { i++; break; }
+        } else { cell += line[i]; i++; }
+      }
+      while (i < n && line[i] !== ',' && line[i] !== '\t') i++;
+      if (i < n && (line[i] === ',' || line[i] === '\t')) i++;
+    } else if (line[i] === ',' || line[i] === '\t') {
+      i++;
+    } else {
+      while (i < n && line[i] !== ',' && line[i] !== '\t') { cell += line[i]; i++; }
+      if (i < n && (line[i] === ',' || line[i] === '\t')) i++;
+    }
+    cells.push(cell.trim());
+  }
+  return cells;
+}
+
+function _parseAmountCell(s, decimals) {
+  let clean = String(s).trim();
+  if (clean.startsWith('"') && clean.endsWith('"')) clean = clean.slice(1, -1);
+  clean = clean.replace(/[,\s_]/g, '');
+  if (!clean) throw new Error('empty amount');
+  if (decimals === 0) {
+    if (!/^[0-9]+$/.test(clean)) {
+      throw new Error(`amount must be a non-negative integer (saw "${s}"); set sourceDecimals to allow decimal display`);
+    }
+    return BigInt(clean);
+  }
+  const m = /^([0-9]+)(?:\.([0-9]+))?$/.exec(clean);
+  if (!m) throw new Error(`invalid decimal amount: "${s}"`);
+  const intPart = m[1];
+  const fracPart = (m[2] || '').slice(0, decimals);
+  const fracPadded = fracPart + '0'.repeat(decimals - fracPart.length);
+  return BigInt(intPart) * (10n ** BigInt(decimals)) + BigInt(fracPadded);
+}
+
+function truncateAmountDecimals(amount, sourceDecimals, dstDecimals) {
+  if (sourceDecimals === dstDecimals) return amount;
+  if (sourceDecimals > dstDecimals) return amount / (10n ** BigInt(sourceDecimals - dstDecimals));
+  return amount * (10n ** BigInt(dstDecimals - sourceDecimals));
+}
+
+function parseAirdropCSV(csvText, opts = {}) {
+  if (typeof csvText !== 'string') throw new Error('csv must be a string');
+  const sourceDecimals = Number.isInteger(opts.sourceDecimals) ? opts.sourceDecimals : 0;
+  const targetDecimals = Number.isInteger(opts.targetDecimals) ? opts.targetDecimals : sourceDecimals;
+  if (sourceDecimals < 0 || sourceDecimals > 36) throw new Error('sourceDecimals must be 0..36');
+  if (targetDecimals < 0 || targetDecimals > 36) throw new Error('targetDecimals must be 0..36');
+  const blacklist = opts.blacklist instanceof Set ? opts.blacklist : null;
+  const addressColumn = Number.isInteger(opts.addressColumn) ? opts.addressColumn : 0;
+  const amountColumn = Number.isInteger(opts.amountColumn) ? opts.amountColumn : 1;
+
+  const lines = csvText.split(/\r?\n/);
+  const rows = [];
+  let assignedIndex = 0;
+  let headerSeen = false;
+  for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+    const raw = lines[lineNo].trim();
+    if (!raw) continue;
+    if (raw.startsWith('#') || raw.startsWith('//')) continue;
+
+    const cells = _splitCSVLine(raw);
+    if (cells.length <= Math.max(addressColumn, amountColumn)) {
+      throw new Error(`csv line ${lineNo + 1}: expected ≥${Math.max(addressColumn, amountColumn) + 1} columns`);
+    }
+    const addrCell = cells[addressColumn];
+    const amtCell = cells[amountColumn];
+
+    if (!headerSeen && !/^0[xX]/.test(addrCell)) {
+      headerSeen = true; continue;
+    }
+    headerSeen = true;
+
+    let ethAddrBytes;
+    try { ethAddrBytes = _parseEthAddress(addrCell); }
+    catch (e) { throw new Error(`csv line ${lineNo + 1}: ${e.message}`); }
+    const ethAddrHex = bytesToHex(ethAddrBytes);
+
+    if (blacklist && blacklist.has(ethAddrHex)) continue;
+
+    let amount;
+    try { amount = _parseAmountCell(amtCell, sourceDecimals); }
+    catch (e) { throw new Error(`csv line ${lineNo + 1}: ${e.message}`); }
+    if (sourceDecimals !== targetDecimals) {
+      amount = truncateAmountDecimals(amount, sourceDecimals, targetDecimals);
+    }
+    if (amount < 0n) throw new Error(`csv line ${lineNo + 1}: negative amount`);
+    if (amount >= (1n << 64n)) throw new Error(`csv line ${lineNo + 1}: amount overflows u64 after conversion to ${targetDecimals} decimals`);
+    if (amount === 0n) continue;
+
+    rows.push({ ethAddrHex, ethAddrBytes, amount, index: assignedIndex });
+    assignedIndex++;
+  }
+  return rows;
+}
+
+function mergeAirdropRows(rowSets) {
+  if (!Array.isArray(rowSets)) throw new Error('rowSets must be an array');
+  const byAddr = new Map();
+  for (const rs of rowSets) {
+    if (!Array.isArray(rs)) continue;
+    for (const r of rs) {
+      const key = r.ethAddrHex;
+      const existing = byAddr.get(key);
+      if (existing) existing.amount += r.amount;
+      else byAddr.set(key, { ethAddrBytes: r.ethAddrBytes, amount: r.amount });
+    }
+  }
+  for (const v of byAddr.values()) {
+    if (v.amount >= (1n << 64n)) throw new Error('merged amount overflows u64');
+  }
+  const sorted = [...byAddr.entries()]
+    .filter(([, v]) => v.amount > 0n)
+    .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  return sorted.map(([ethAddrHex, v], i) => ({
+    ethAddrHex, ethAddrBytes: v.ethAddrBytes, amount: v.amount, index: i,
+  }));
+}
+
+function parseBlacklist(text) {
+  if (!text) return new Set();
+  if (typeof text !== 'string') throw new Error('blacklist must be a string');
+  const out = new Set();
+  const lines = text.split(/\r?\n/);
+  for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+    const raw = lines[lineNo].trim();
+    if (!raw) continue;
+    if (raw.startsWith('#') || raw.startsWith('//')) continue;
+    const first = (_splitCSVLine(raw)[0] || '').trim();
+    if (!first) continue;
+    let hex = first.toLowerCase();
+    if (hex.startsWith('0x')) hex = hex.slice(2);
+    if (!/^[0-9a-f]{40}$/.test(hex)) {
+      throw new Error(`blacklist line ${lineNo + 1}: invalid address "${first}"`);
+    }
+    out.add(hex);
+  }
+  return out;
+}
+
+function computeAirdropCommitment(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error('rows must be non-empty');
+  const seen = new Map();
+  const duplicates = [];
+  for (const r of rows) {
+    if (seen.has(r.ethAddrHex)) duplicates.push({ addr: r.ethAddrHex, indexes: [seen.get(r.ethAddrHex), r.index] });
+    else seen.set(r.ethAddrHex, r.index);
+  }
+  const leaves = rows.map(r => airdropLeafHash(r.ethAddrBytes, r.amount, r.index));
+  const { root, layers } = buildAirdropMerkle(leaves);
+  const total = rows.reduce((s, r) => s + r.amount, 0n);
+  return {
+    rows: rows.map((r, i) => ({ ...r, leaf: leaves[i] })),
+    root, layers, total, count: rows.length, duplicates,
+  };
+}
+
+// ---- Airdrop claim message + EIP-191 + ECDSA recover (mirror of dapp) ----
+async function _loadKeccak() {
+  const m = await import('@noble/hashes/sha3');
+  return m.keccak_256;
+}
+let _keccak256 = null;  // populated at module-eval time below
+{
+  // top-level await isn't available in cjs/esm config here, but @noble's sha3
+  // has a sync export. Import it directly.
+  const m = await import('@noble/hashes/sha3');
+  _keccak256 = m.keccak_256;
+}
+
+// Display a u64 amount with up to `decimals` fractional digits, no trailing
+// zeros, no thousands separator. Mirrors fmtAssetAmountPlain in the dapp.
+function _fmtAssetAmountPlain(amount, decimals) {
+  if (decimals === 0) return amount.toString();
+  const scale = 10n ** BigInt(decimals);
+  const intPart = amount / scale;
+  const fracPart = amount % scale;
+  if (fracPart === 0n) return intPart.toString();
+  let frac = fracPart.toString().padStart(decimals, '0');
+  frac = frac.replace(/0+$/, '');
+  return `${intPart.toString()}.${frac}`;
+}
+
+function buildAirdropClaimMsg({ rootHex, network, ethAddrHex, leafIndex, amount, ticker, decimals, tacitPubHex }) {
+  if (!/^[0-9a-f]{64}$/.test(String(rootHex || '').toLowerCase())) throw new Error('rootHex must be 64-hex');
+  if (typeof network !== 'string' || !network) throw new Error('network required');
+  const cleanAddr = String(ethAddrHex).toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]{40}$/.test(cleanAddr)) throw new Error('ethAddrHex must be 40-hex');
+  if (!Number.isInteger(leafIndex) || leafIndex < 0) throw new Error('leafIndex required');
+  const amt = BigInt(amount);
+  if (amt < 0n || amt >= (1n << 64n)) throw new Error('amount out of u64');
+  if (typeof ticker !== 'string') throw new Error('ticker required');
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) throw new Error('decimals 0..18');
+  const cleanPub = String(tacitPubHex).toLowerCase().replace(/\s/g, '');
+  if (!/^0[23][0-9a-f]{64}$/.test(cleanPub)) throw new Error('tacitPubHex must be 33-byte compressed');
+  const display = _fmtAssetAmountPlain(amt, decimals);
+  const cleanRoot = String(rootHex).toLowerCase();
+  return [
+    'tacit airdrop claim v1',
+    '',
+    `Drop:    ${cleanRoot}`,
+    `Network: ${network}`,
+    `Address: 0x${cleanAddr}`,
+    `Leaf:    ${leafIndex}`,
+    `Amount:  ${display} ${ticker} (${amt.toString()})`,
+    `Tacit:   ${cleanPub}`,
+    '',
+    `By signing, you authorize the airdrop issuer to send the above amount of ${ticker} to the tacit pubkey listed.`,
+  ].join('\n');
+}
+
+function eip191Hash(msg) {
+  const msgBytes = new TextEncoder().encode(msg);
+  const prefix = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
+  return _keccak256(concatBytes(prefix, msgBytes));
+}
+
+function recoverEthAddrFromSig(msg, sigHex) {
+  const clean = String(sigHex).toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]{130}$/.test(clean)) throw new Error('eth signature must be 65 bytes (130 hex)');
+  const r = clean.slice(0, 64);
+  const s = clean.slice(64, 128);
+  const vByte = parseInt(clean.slice(128, 130), 16);
+  let recovery;
+  if (vByte === 27 || vByte === 28) recovery = vByte - 27;
+  else if (vByte === 0 || vByte === 1) recovery = vByte;
+  else throw new Error(`unsupported recovery v: ${vByte}`);
+  const sig = secp.Signature.fromCompact(r + s).addRecoveryBit(recovery);
+  const msgHash = eip191Hash(msg);
+  const pub = sig.recoverPublicKey(msgHash);
+  const pubBytes = pub.toRawBytes(false);
+  if (pubBytes.length !== 65 || pubBytes[0] !== 0x04) throw new Error('recovered pubkey malformed');
+  const xy = pubBytes.slice(1);
+  return bytesToHex(_keccak256(xy).slice(12));
+}
+
+function verifyAirdropClaimSig(msg, sigHex, expectedEthAddrHex) {
+  try {
+    const recovered = recoverEthAddrFromSig(msg, sigHex);
+    const expected = String(expectedEthAddrHex).toLowerCase().replace(/^0x/, '');
+    return recovered === expected;
+  } catch { return false; }
+}
+
+// Helper for tests: sign an EIP-191 message with a known privkey.
+// Mirrors what MetaMask does on the recipient side.
+function _signEip191WithPriv(msg, privBytes) {
+  const msgHash = eip191Hash(msg);
+  const sig = secp.sign(msgHash, privBytes);  // returns RecoveredSignature in noble v2
+  // sig.recovery is 0|1; serialise as r||s||v with v ∈ {27, 28}
+  const compact = sig.toCompactHex();  // 64+64 hex
+  const v = (sig.recovery + 27).toString(16).padStart(2, '0');
+  return '0x' + compact + v;
+}
+
+function _ethAddrFromPriv(privBytes) {
+  const pub = secp.getPublicKey(privBytes, false);  // 65B uncompressed (0x04||X||Y)
+  return bytesToHex(_keccak256(pub.slice(1)).slice(12));
+}
+
 export {
   N_BITS, T_CETCH, T_CXFER, T_MINT, T_BURN,
   reverseBytes, assetIdFor,
@@ -522,4 +880,12 @@ export {
   encodeCXferPayload, decodeCXferPayload,
   encodeCMintPayload, decodeCMintPayload,
   encodeCBurnPayload, decodeCBurnPayload,
+  // Airdrop / snapshot helpers (mirror of dapp/tacit.js, see § AIRDROP)
+  AIRDROP_LEAF_TAG, AIRDROP_NODE_TAG,
+  airdropLeafHash, buildAirdropMerkle, airdropMerkleProof, verifyAirdropMerkleProof,
+  parseAirdropCSV, computeAirdropCommitment,
+  truncateAmountDecimals, mergeAirdropRows, parseBlacklist,
+  // Airdrop claim message + EIP-191 + ECDSA recover
+  buildAirdropClaimMsg, eip191Hash, recoverEthAddrFromSig, verifyAirdropClaimSig,
+  _signEip191WithPriv, _ethAddrFromPriv,
 };
