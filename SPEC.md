@@ -740,7 +740,7 @@ Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, a
 
 ## 10. Open issues / known limitations
 
-- **Witness size.** ~10 KB per CXFER (m=2) at current bulletproof sizes. At mainnet 10 sat/vB, ~$1–3 per transfer.
+- **Witness size.** ~10 KB witness per CXFER (m=2) at current bulletproof sizes — about 2,500–3,000 vBytes after the SegWit discount. At 10 sat/vB on mainnet, ~25–30k sats per transfer.
 - **First-load scan time.** Cold scanHoldings on a wallet with deep ancestry takes seconds (mitigated by batched verification).
 - **Lost mint key = permanent fixed supply.** No recovery mechanism. The dApp gates mintable etches behind an explicit key-export step before broadcast.
 - **Local storage is the wallet.** Whichever path placed a privkey in the page (auto-generated, imported, or locally bound to an external wallet address), `localStorage` is what persists it. Mainnet UX gates every value-creating op behind a "have you exported the key?" acknowledgement (per §2). Hardware-wallet signing for the protocol's signing paths is the proper long-term mitigation but not in v1.

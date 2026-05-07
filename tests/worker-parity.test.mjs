@@ -110,6 +110,33 @@ await test('atomicIntentFulfilmentMsg', () => {
   );
 });
 
+// Drop-announcement message hashes — pinned-vector regression sentinels.
+// composition.mjs doesn't (yet) mirror these helpers, so we pin the worker's
+// expected output for a known fixture; any drift in the field layout, domain
+// tag, network byte, or endianness fails this test loudly. The dApp's
+// `dropAnnounceMsgBytes` is byte-equal by construction (mirrored), and the
+// dapp-parity suite covers their cross-realm equality once added there.
+await test('dropAnnounceMsg signet vector', () => eq(
+  worker.dropAnnounceMsg('signet', 'a'.repeat(64), 'b'.repeat(64), 'bafybeihtest', 1700000000, 'Q1 2026 community drop'),
+  hexToBytes('cc0bcd08c5de66019892b7bec59f5b40955dd72ddf30b03e063e3e5de1ab2ae4'),
+));
+await test('dropAnnounceMsg mainnet vector (different network → different hash)', () => eq(
+  worker.dropAnnounceMsg('mainnet', 'a'.repeat(64), 'b'.repeat(64), 'bafybeihtest', 1700000000, 'Q1 2026 community drop'),
+  hexToBytes('3e7b2fe9cf3da00654f880ed7d7edecdaedf8446980a99d15074206e6c4d5685'),
+));
+await test('dropAnnounceMsg empty-note vector', () => eq(
+  worker.dropAnnounceMsg('signet', 'a'.repeat(64), 'b'.repeat(64), 'bafybeihtest', 1700000000, ''),
+  hexToBytes('12b6a6972bc2a55d40c110c61ad8dca9bc4286c77af97175fa9f0a91846a079f'),
+));
+await test('dropAnnounceCancelMsg signet vector', () => eq(
+  worker.dropAnnounceCancelMsg('signet', 'b'.repeat(64), '02' + '11'.repeat(32)),
+  hexToBytes('a4998333b6e8337c5a20d7e5c10a61c5fd2e0b0e34bf5c3e6ea589e7f4f5ebe9'),
+));
+await test('dropAnnounceCancelMsg mainnet vector', () => eq(
+  worker.dropAnnounceCancelMsg('mainnet', 'b'.repeat(64), '02' + '11'.repeat(32)),
+  hexToBytes('dd187a0472371b993ec3459e0b10d283e9957c310c29ba7fe7d915b5589da4a5'),
+));
+
 await test('atomicIntentCancelMsg', () => eq(
   worker.atomicIntentCancelMsg(ASSET_ID_HEX, INTENT_ID_HEX),
   composition.axintentCancelMsg(ASSET_ID_BYTES, INTENT_ID_BYTES),

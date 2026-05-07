@@ -269,6 +269,18 @@ function rangeListingPrefix(network, aid) {
 // intent: the intent itself, the current taker claim, the maker's fulfilment
 // (partial reveal targeted at the claimant). intent_id is a 16-hex-char
 // sha256-prefix of (commit_txid || maker_pubkey).
+// Drop-announcement KV layout. One record per (network, root) — re-announcing
+// the same root overwrites (latest wins). Key includes the network byte for
+// the same reason every other key does: a single colo cache holds both
+// networks' data and prefix scans must not bleed.
+function dropAnnounceKey(network, rootHex) {
+  return network === 'signet'
+    ? `drop-announce:${rootHex}`
+    : `drop-announce:${network}:${rootHex}`;
+}
+function dropAnnouncePrefix(network) {
+  return network === 'signet' ? 'drop-announce:' : `drop-announce:${network}:`;
+}
 function atomicIntentKey(network, aid, intentIdHex) {
   return network === 'signet'
     ? `axintent:${aid}:${intentIdHex}`
@@ -288,6 +300,18 @@ function atomicFulfilmentKey(network, aid, intentIdHex) {
     : `axfulfil:${network}:${aid}:${intentIdHex}`;
 }
 function lastScannedKey(network)       { return network === 'signet' ? 'meta:last_scanned' : `meta:last_scanned:${network}`; }
+// Per-asset CXFER+AXFER transfer counter. Exposed on /assets as
+// `transfer_count` so the Discover/Market UI can surface "popularity"
+// signals (movement is a coarse "is anyone using this?" indicator —
+// not legitimacy proof, since self-spam is cheap, but absence of any
+// transfers is still a meaningful negative signal). Counter-only design
+// (no per-tx records) keeps the read path at one KV.get per asset, well
+// inside the Worker subrequest budget. Cron does read-modify-write each
+// time it sees a confidential transfer envelope. Re-scan double-counts
+// at most a handful of CXFERs in the rare crash-mid-block case.
+function transferCountKey(network, aid) {
+  return network === 'signet' ? `xfercnt:${aid}` : `xfercnt:${network}:${aid}`;
+}
 
 async function apiText(env, path, opts = {}, network = 'signet') {
   const base = networkApi(env, network);
@@ -922,7 +946,7 @@ async function loadMintsForAsset(env, network, assetIdHex) {
 // latency on networks with many assets. Now everything fan-outs in one
 // Promise.all per asset.
 async function hydrateAssetSummary(env, network, v, includeMints) {
-  const [att, mints, burns, op, dc, ls, lr, ai] = await Promise.all([
+  const [att, mints, burns, op, dc, ls, lr, ai, xfer] = await Promise.all([
     env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
     includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
     loadBurnsForAsset(env, network, v.asset_id),
@@ -931,6 +955,9 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
     env.REGISTRY_KV.list({ prefix: listingPrefix(network, v.asset_id), limit: 1000 }),
     env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, v.asset_id), limit: 1000 }),
     env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, v.asset_id), limit: 1000 }),
+    // Single KV.get of the cron-maintained transfer counter — folded into
+    // the existing parallel fan-out so it adds zero round-trip latency.
+    env.REGISTRY_KV.get(transferCountKey(network, v.asset_id)),
   ]);
   if (att) v.attestation = att;
   if (includeMints) v.mints = mints;
@@ -940,6 +967,7 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   v.listing_count = ls.keys.length;
   v.range_listing_count = lr.keys.length;
   v.atomic_intent_count = ai.keys.length;
+  v.transfer_count = parseInt(xfer || '0', 10) || 0;
 }
 
 async function handleAssetsList(env, network, cors, opts = {}) {
@@ -2636,34 +2664,46 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
 
 async function handleAirdropClaimList(rootHex, env, network, cors, opts = {}) {
   if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
-  const startCursor = opts.cursor || undefined;
+  const requestedLimit = Number.isInteger(opts.limit) ? Math.min(opts.limit, AIRDROP_LIST_HARD_CAP) : AIRDROP_LIST_HARD_CAP;
+
+  // Synthetic cursor: "after:<leaf_index>". The previous design tried to
+  // reuse KV's native cursor here, which broke when ?limit truncated mid-
+  // KV-page (KV gives no cursor when list_complete=true, but we DO have
+  // unreturned entries within that page). The synthetic form is always
+  // resumable: caller passes back the same string, worker filters keys
+  // whose leaf_index suffix is ≤ the cursor's value.
+  let afterLeaf = -1;
+  if (typeof opts.cursor === 'string' && opts.cursor.startsWith('after:')) {
+    const n = parseInt(opts.cursor.slice('after:'.length), 10);
+    if (Number.isInteger(n) && n >= 0) afterLeaf = n;
+  }
+
   const claims = [];
-  let cursor = startCursor;
   let truncated = false;
   let nextCursor = null;
-  // Page through KV list until exhausted, hard cap reached, or caller hit
-  // their own page limit (?limit=N up to AIRDROP_LIST_HARD_CAP). Closes
-  // MED#9 — drops with > AIRDROP_LIST_PAGE recipients used to silently drop
-  // claims past the first page.
-  const requestedLimit = Number.isInteger(opts.limit) ? Math.min(opts.limit, AIRDROP_LIST_HARD_CAP) : AIRDROP_LIST_HARD_CAP;
-  while (claims.length < requestedLimit) {
+  let kvCursor = undefined;
+  outer: while (claims.length < requestedLimit) {
     const listOpts = { prefix: airdropClaimPrefix(network, rootHex), limit: AIRDROP_LIST_PAGE };
-    if (cursor) listOpts.cursor = cursor;
+    if (kvCursor) listOpts.cursor = kvCursor;
     const list = await env.REGISTRY_KV.list(listOpts);
     for (const k of list.keys) {
+      // Decode leaf_index from the padded suffix on the key name.
+      const lastSegment = k.name.split(':').pop();
+      const leafIdx = parseInt(lastSegment, 10);
+      if (!Number.isInteger(leafIdx)) continue;            // malformed key; skip
+      if (leafIdx <= afterLeaf) continue;                  // already returned in a prior page
       if (claims.length >= requestedLimit) {
         truncated = true;
-        nextCursor = list.cursor || cursor || null;
-        break;
+        nextCursor = `after:${claims[claims.length - 1].leaf_index}`;
+        break outer;
       }
       const v = await env.REGISTRY_KV.get(k.name, 'json');
       if (v) claims.push(v);
     }
-    if (truncated) break;
-    if (list.list_complete || !list.cursor) { nextCursor = null; break; }
-    cursor = list.cursor;
+    if (list.list_complete) break;
+    if (!list.cursor) break;
+    kvCursor = list.cursor;
   }
-  // KV list is already lex-sorted; padded leaf_index keys yield numeric order.
   return jsonResponse({ root: rootHex, network, count: claims.length, claims, truncated, next_cursor: nextCursor }, 200, cors);
 }
 
@@ -2683,6 +2723,189 @@ async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network
     return jsonResponse({ error: 'invalid leaf_index' }, 400, cors);
   }
   await env.REGISTRY_KV.delete(airdropClaimKey(network, rootHex, leafIndex));
+  return jsonResponse({ ok: true }, 200, cors);
+}
+
+// ============== AIRDROP ANNOUNCEMENTS (discovery layer) ==============
+// Recipients shouldn't have to copy/paste a merkle root + IPFS CID from a
+// Discord message. Issuers post a signed announcement here; the dapp's Claim
+// tab fetches the list, fans out to fetch each snapshot, and surfaces only
+// the drops a connected MetaMask address is in. Spam is bounded by an IP
+// daily cap plus a per-pubkey daily cap.
+//
+// Trust model: anyone holding a tacit privkey can announce. The worker is
+// not the gatekeeper — it just verifies the BIP-340 sig over the canonical
+// message and re-broadcasts. The dapp computes "matches_etcher" provenance
+// by comparing announcement.issuer_pubkey against the asset's CETCH signing
+// pubkey on the client; self-announced drops surface with a warning badge,
+// not hidden, so users decide.
+//
+// Re-announcing the same (network, root) overwrites — convenient for typos
+// or a renewed expiry; the issuer can also DELETE to retract.
+const DROP_NOTE_MAX_LEN = 200;
+const DROP_EXPIRES_MAX_SECONDS = 365 * 24 * 3600; // refuse expiries > 1y from now (KV residency)
+
+function _networkByte(network) { return network === 'mainnet' ? 1 : 0; }
+
+// Canonical signing message — must match dApp's `dropAnnounceMsgBytes`.
+function dropAnnounceMsg(network, assetIdHex, rootHex, cidString, expiresAt, noteString) {
+  const cidBytes = new TextEncoder().encode(cidString);
+  const noteBytes = new TextEncoder().encode(noteString);
+  const cidLen = new Uint8Array(2); new DataView(cidLen.buffer).setUint16(0, cidBytes.length, true);
+  const expiresLE = new Uint8Array(8); new DataView(expiresLE.buffer).setBigUint64(0, BigInt(expiresAt), true);
+  const noteLen = new Uint8Array(2); new DataView(noteLen.buffer).setUint16(0, noteBytes.length, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-drop-announce-v1'),
+    new Uint8Array([_networkByte(network)]),
+    hexToBytes(assetIdHex),
+    hexToBytes(rootHex),
+    cidLen, cidBytes,
+    expiresLE,
+    noteLen, noteBytes,
+  ));
+}
+function dropAnnounceCancelMsg(network, rootHex, issuerPubHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-drop-announce-cancel-v1'),
+    new Uint8Array([_networkByte(network)]),
+    hexToBytes(rootHex),
+    hexToBytes(issuerPubHex),
+  ));
+}
+
+// Layered rate-limit: per-IP and per-issuer. The per-IP cap is the same TTL
+// pattern as /pin and /drip; the per-pubkey cap forces a determined attacker
+// to acquire fresh keys, which costs them nothing but bounds the fan-out
+// from a single rotated IP-per-key. Either limit triggers 429.
+async function _dropAnnounceRateLimit(req, env, issuerPubHex) {
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const ipKey = `drop-announce-rl:ip:${day}:${ip}`;
+  const pkKey = `drop-announce-rl:pk:${day}:${issuerPubHex}`;
+  const ipLimit = safeInt(env.DROPS_DAILY_LIMIT_IP, 50, { min: 1 });
+  const pkLimit = safeInt(env.DROPS_DAILY_LIMIT_PUBKEY, 10, { min: 1 });
+  const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
+  const pkPrior = safeInt(await env.REGISTRY_KV.get(pkKey), 0, { min: 0 });
+  if (ipPrior >= ipLimit) return { ok: false, reason: `IP daily limit (${ipLimit}/day)` };
+  if (pkPrior >= pkLimit) return { ok: false, reason: `pubkey daily limit (${pkLimit}/day)` };
+  await env.REGISTRY_KV.put(ipKey, String(ipPrior + 1), { expirationTtl: 90000 });
+  await env.REGISTRY_KV.put(pkKey, String(pkPrior + 1), { expirationTtl: 90000 });
+  return { ok: true };
+}
+
+async function handleDropAnnouncePost(req, env, network, cors) {
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const assetIdHex = String(body.asset_id ?? '').toLowerCase();
+  const rootHex = String(body.merkle_root ?? '').toLowerCase().replace(/^0x/, '');
+  const cid = String(body.ipfs_cid ?? '').trim();
+  const issuerPubHex = String(body.issuer_pubkey ?? '').toLowerCase();
+  const expiresAt = body.expires_at;
+  const note = String(body.note ?? '');
+  const sigHex = String(body.announce_sig ?? '').toLowerCase();
+
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle_root' }, 400, cors);
+  // Match dApp's `_claimNormaliseCid` regex — same shape Pinata returns.
+  if (!/^(Qm[1-9A-HJ-NP-Za-km-z]{44,}|baf[a-z0-9]{50,})$/.test(cid)) {
+    return jsonResponse({ error: 'invalid ipfs_cid' }, 400, cors);
+  }
+  if (!/^0[23][0-9a-f]{64}$/.test(issuerPubHex)) {
+    return jsonResponse({ error: 'issuer_pubkey must be 33-byte compressed hex (starts 02 or 03)' }, 400, cors);
+  }
+  if (!Number.isInteger(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000)) {
+    return jsonResponse({ error: 'expires_at must be a future unix timestamp' }, 400, cors);
+  }
+  if (expiresAt > Math.floor(Date.now() / 1000) + DROP_EXPIRES_MAX_SECONDS) {
+    return jsonResponse({ error: `expires_at must be within ${DROP_EXPIRES_MAX_SECONDS / 86400} days` }, 400, cors);
+  }
+  if (note.length > DROP_NOTE_MAX_LEN) {
+    return jsonResponse({ error: `note must be ≤ ${DROP_NOTE_MAX_LEN} chars` }, 400, cors);
+  }
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return jsonResponse({ error: 'announce_sig must be 128 hex chars' }, 400, cors);
+
+  // BIP-340 verifies under x-only, but the announcement carries the full
+  // 33-byte compressed pubkey so the dapp can render it without an extra
+  // round-trip. Verify against the x-coord (slice off the parity byte).
+  const issuerXOnly = hexToBytes(issuerPubHex).slice(1);
+  const msg = dropAnnounceMsg(network, assetIdHex, rootHex, cid, expiresAt, note);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, issuerXOnly)) {
+    return jsonResponse({ error: 'invalid announce_sig (must be BIP-340 under issuer_pubkey)' }, 403, cors);
+  }
+
+  const rl = await _dropAnnounceRateLimit(req, env, issuerPubHex);
+  if (!rl.ok) return jsonResponse({ error: `drop announce limit reached: ${rl.reason}` }, 429, cors);
+
+  const record = {
+    schema: 'tacit-drop-v1',
+    network,
+    asset_id: assetIdHex,
+    merkle_root: rootHex,
+    ipfs_cid: cid,
+    issuer_pubkey: issuerPubHex,
+    expires_at: expiresAt,
+    note,
+    announce_sig: sigHex,
+    announced_at: Math.floor(Date.now() / 1000),
+  };
+  await env.REGISTRY_KV.put(dropAnnounceKey(network, rootHex), JSON.stringify(record));
+  return jsonResponse({ ok: true, drop: record }, 200, cors);
+}
+
+async function handleDropAnnounceList(env, network, cors) {
+  const list = await env.REGISTRY_KV.list({ prefix: dropAnnouncePrefix(network), limit: 1000 });
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const now = Math.floor(Date.now() / 1000);
+  const drops = [];
+  for (const v of fetched) {
+    if (!v) continue;
+    if (v.expires_at && v.expires_at <= now) {
+      // Lazy GC: fire-and-forget delete on read. Cheaper than a sweeper cron.
+      env.REGISTRY_KV.delete(dropAnnounceKey(network, v.merkle_root)).catch(() => {});
+      continue;
+    }
+    drops.push(v);
+  }
+  // Newest first so freshly announced drops surface immediately.
+  drops.sort((a, b) => (b.announced_at || 0) - (a.announced_at || 0));
+  return jsonResponse({ network, count: drops.length, drops }, 200, cors);
+}
+
+async function handleDropAnnounceGet(rootHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
+  const v = await env.REGISTRY_KV.get(dropAnnounceKey(network, rootHex), 'json');
+  if (!v) return jsonResponse({ error: 'no such drop' }, 404, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if (v.expires_at && v.expires_at <= now) {
+    env.REGISTRY_KV.delete(dropAnnounceKey(network, rootHex)).catch(() => {});
+    return jsonResponse({ error: 'drop expired' }, 410, cors);
+  }
+  return jsonResponse({ drop: v }, 200, cors);
+}
+
+async function handleDropAnnounceDelete(rootHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const issuerPubHex = String(body.issuer_pubkey ?? '').toLowerCase();
+  const sigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(issuerPubHex)) return jsonResponse({ error: 'issuer_pubkey required' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+
+  const stored = await env.REGISTRY_KV.get(dropAnnounceKey(network, rootHex), 'json');
+  if (!stored) return jsonResponse({ error: 'no such drop' }, 404, cors);
+  // Sig must be under the SAME pubkey that announced it. Otherwise an
+  // attacker who learned the rootHex could publish their own announcement
+  // first and then DELETE the legitimate one.
+  if (stored.issuer_pubkey !== issuerPubHex) {
+    return jsonResponse({ error: 'cancel must be signed by the original announcer' }, 403, cors);
+  }
+  const issuerXOnly = hexToBytes(issuerPubHex).slice(1);
+  const msg = dropAnnounceCancelMsg(network, rootHex, issuerPubHex);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, issuerXOnly)) {
+    return jsonResponse({ error: 'invalid cancel_sig' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(dropAnnounceKey(network, rootHex));
   return jsonResponse({ ok: true }, 200, cors);
 }
 
@@ -2804,6 +3027,26 @@ async function scanForEtches(env, network) {
         };
         await env.REGISTRY_KV.put(burnKeyFor(network, cb.asset_id, tx.txid), JSON.stringify(burnMeta));
         found++;
+      } else if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER) {
+        // Confidential transfer (T_CXFER) or atomic-OTC settlement reveal
+        // (T_AXFER). Both move asset value between holders; we bump a single
+        // per-asset counter so /assets can surface a "movement" stat without
+        // paying the cost of a full per-tx index. Counter design: read +
+        // increment + put. Idempotency is approximate — the cron's normal
+        // path advances `lastContiguous` only after the whole block scans,
+        // so a mid-block crash can re-scan a block on the next tick and
+        // double-count its transfers. The drift is bounded (≤ one block of
+        // CXFERs) and acceptable for a coarse popularity signal.
+        const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload : decodeCXferPayload;
+        const dx = decoder(decoded.payload);
+        if (!dx) continue;
+        const cntKey = transferCountKey(network, dx.asset_id);
+        const cur = parseInt((await env.REGISTRY_KV.get(cntKey)) || '0', 10);
+        await env.REGISTRY_KV.put(cntKey, String(cur + 1));
+        // Don't increment `found` — that counter is for new etches/mints/
+        // burns specifically (used in the cron's status return). Transfers
+        // happen on every active asset; counting them as "found" would be
+        // misleading.
       }
     }
     lastContiguous = h;
@@ -2818,6 +3061,7 @@ async function scanForEtches(env, network) {
 export {
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
+  dropAnnounceMsg, dropAnnounceCancelMsg,
   verifySchnorr, compressedPointFromHex,
   // Wire-format decoders + opcode constants exported so tests/worker-decoder
   // can pin down the exact return shape. The atomic-intent regression where
@@ -2960,6 +3204,15 @@ export default {
     }
     const mac2 = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims\/(\d+)$/);
     if (mac2 && req.method === 'DELETE')                       return handleAirdropClaimDelete(mac2[1], mac2[2], req, env, network, cors);
+
+    // Drop announcements (discovery layer for airdrops).
+    if (url.pathname === '/drops') {
+      if (req.method === 'POST') return handleDropAnnouncePost(req, env, network, cors);
+      if (req.method === 'GET')  return handleDropAnnounceList(env, network, cors);
+    }
+    const mda = url.pathname.match(/^\/drops\/([0-9a-f]{64})$/);
+    if (mda && req.method === 'GET')                           return handleDropAnnounceGet(mda[1], env, network, cors);
+    if (mda && req.method === 'DELETE')                         return handleDropAnnounceDelete(mda[1], req, env, network, cors);
 
     // Debug endpoints: gated on DEBUG_TOKEN. Without the secret, attackers
     // can rescan-from-genesis and exhaust the worker's daily subrequest

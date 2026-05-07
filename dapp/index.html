@@ -51,7 +51,16 @@ body {
   padding: 24px; max-width: 1100px; margin: 0 auto;
   background-image: radial-gradient(rgba(0,0,0,0.025) 1px, transparent 1px);
   background-size: 24px 24px;
+  /* Prevent horizontal page overflow on narrow viewports. Without this,
+     long uppercase labels with letter-spacing (tagline, button rows) can
+     push the document scrollWidth past viewport width, causing children
+     and fixed-positioned overlays to render at the wider scrollWidth. */
+  overflow-x: hidden;
 }
+/* Allow grid/flex children with long content (tagline, header columns) to
+   shrink below their min-content width and let text wrap on word boundaries
+   instead of forcing horizontal overflow on narrow viewports. */
+.tagline, header > * { min-width: 0; }
 
 header {
   border-bottom: 2px solid var(--ink);
@@ -395,7 +404,13 @@ label {
 }
 .asset-card .id-tag:hover { color: var(--orange); }
 .short-id-row {
-  font-size: 11px; word-break: break-all;
+  font-size: 11px;
+  /* No `word-break: break-all` here — it would chop the "expand"/"collapse"
+     toggle character-by-character on narrow gallery cards (the `c` ends up
+     stranded on its own line). The long-hex break is scoped to `.full`. */
+}
+.short-id-row .short, .short-id-row .full {
+  word-break: break-all;
 }
 .short-id-row .full {
   display: none; user-select: all;
@@ -407,6 +422,7 @@ label {
   text-transform: uppercase; letter-spacing: 0.1em;
   cursor: pointer; margin-left: 6px;
   text-decoration: underline; text-underline-offset: 2px;
+  white-space: nowrap;
 }
 .short-id-row .toggle:hover { color: var(--orange); }
 
@@ -654,6 +670,10 @@ footer {
   display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
   text-transform: uppercase; letter-spacing: 0.1em;
 }
+/* Allow footer flex items to shrink below their min-content width so the
+   text inside each span wraps naturally on narrow viewports instead of
+   forcing horizontal overflow. */
+footer > span { min-width: 0; }
 
 @media (max-width: 700px) {
   body { padding: 14px; font-size: 13px; }
@@ -962,6 +982,109 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   display: flex; gap: 8px; justify-content: flex-end;
   margin-top: 14px;
 }
+
+/* Header help button — opens the FAQ modal. Sits next to the network
+   selector via .net-row inside .net-control; subtle white-on-black
+   to read as reference, not workflow. */
+.net-row { display: flex; gap: 6px; align-items: stretch; }
+.btn-help {
+  width: 28px; height: 28px;
+  padding: 0; border: 1px solid var(--ink); background: var(--bg);
+  color: var(--ink); cursor: pointer;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 13px; font-weight: 700;
+  letter-spacing: 0; text-transform: none;
+  line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.08s, color 0.08s;
+}
+.btn-help:hover { background: var(--ink); color: var(--bg); }
+.btn-help:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+
+/* FAQ modal — same backdrop pattern as welcome/pass modals, with a
+   scrollable Q&A body. Higher z-index so it sits above the welcome
+   modal in the rare case both are open. */
+.faq-modal {
+  position: fixed; inset: 0; z-index: 1020;
+  display: grid; place-items: center;
+  background: rgba(10, 10, 10, 0.55);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  padding: 24px;
+}
+.faq-card {
+  width: 100%; max-width: 640px;
+  max-height: calc(100vh - 80px);
+  display: flex; flex-direction: column;
+  background: var(--bg); border: 1px solid var(--ink);
+}
+.faq-head {
+  padding: 18px 24px 14px;
+  border-bottom: 1px solid var(--ink-faint);
+  display: flex; justify-content: space-between; align-items: baseline;
+  flex-shrink: 0;
+}
+.faq-title {
+  font-family: 'Instrument Serif', serif;
+  font-size: 32px; font-style: italic;
+  line-height: 1; letter-spacing: -0.02em;
+}
+.faq-title .accent { color: var(--orange); }
+.faq-close {
+  width: 28px; height: 28px;
+  padding: 0; border: 1px solid var(--ink); background: var(--bg);
+  color: var(--ink); cursor: pointer;
+  font-size: 14px; line-height: 1;
+  letter-spacing: 0; text-transform: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.faq-close:hover { background: var(--ink); color: var(--bg); }
+.faq-body {
+  padding: 18px 24px 22px; overflow-y: auto;
+}
+.faq-q {
+  font-size: 13px; font-weight: 600;
+  margin: 18px 0 5px; color: var(--ink);
+  line-height: 1.45;
+}
+.faq-q:first-child { margin-top: 0; }
+.faq-a {
+  font-size: 12px; line-height: 1.6;
+  color: var(--ink-mid);
+}
+.faq-a code {
+  font-size: 11px; padding: 1px 4px;
+  background: var(--bg-alt); border: 1px solid var(--ink-faint);
+  word-break: break-all;
+}
+.faq-a em { font-style: italic; color: var(--ink); }
+.faq-foot {
+  padding: 12px 24px 16px;
+  border-top: 1px dashed var(--ink-faint);
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid); line-height: 1.55;
+  flex-shrink: 0;
+}
+.faq-foot a { color: var(--ink); }
+.faq-foot a:hover { color: var(--orange); }
+
+/* Mobile tuning for the FAQ modal + help button. Bumps the "?" target
+   closer to the 44px touch-target floor without overpowering the header,
+   reduces backdrop padding so the card gets more horizontal breathing
+   room on narrow viewports, and tightens internal padding to match. */
+@media (max-width: 700px) {
+  .btn-help { width: 36px; height: 36px; font-size: 15px; }
+  .faq-modal { padding: 10px; }
+  .faq-card { max-height: calc(100vh - 30px); }
+  .faq-head { padding: 14px 16px 10px; }
+  .faq-title { font-size: 26px; }
+  .faq-close { width: 32px; height: 32px; font-size: 15px; }
+  .faq-body { padding: 14px 16px 18px; }
+  .faq-q { font-size: 13px; margin: 16px 0 4px; }
+  .faq-a { font-size: 12px; }
+  .faq-foot { padding: 10px 16px 12px; line-height: 1.6; }
+}
 </style>
 </head>
 <body>
@@ -979,10 +1102,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <em>amounts hidden · downstream conservation checked · supply optionally attested</em>
   </div>
   <div class="net-control">
-    <select class="net-select" id="net-select" aria-label="Network">
-      <option value="mainnet">mainnet</option>
-      <option value="signet">signet</option>
-    </select>
+    <div class="net-row">
+      <button id="btn-faq" class="btn-help" type="button" aria-label="Help / FAQ" title="Frequently asked questions">?</button>
+      <select class="net-select" id="net-select" aria-label="Network">
+        <option value="mainnet">mainnet</option>
+        <option value="signet">signet</option>
+      </select>
+    </div>
     <div id="net-lock-hint" class="net-lock-hint" style="display:none;">
       Locked while wallet is connected · <a href="#" id="net-lock-disconnect">disconnect to switch</a>
     </div>
@@ -1150,6 +1276,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <a href="#" id="recent-etches-all" class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--bg);">browse all ↗</a>
     </div>
     <div class="section-body">
+      <div id="recent-etches-stats" style="margin-bottom:10px;font-size:11px;display:none;"></div>
+      <div id="recent-etches-toggle" style="margin-bottom:10px;display:none;gap:6px;">
+        <button class="filter-pill active" data-lander-sort="recent" type="button" title="Newest 6 etches on this network">Recent</button>
+        <button class="filter-pill" data-lander-sort="active" type="button" title="6 assets with the most cumulative activity (transfers + offers + mints + burns) — biased toward older assets, not a real-time trending signal">Most active</button>
+      </div>
       <div id="recent-etches-list"><div class="skeleton compact"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row medium"></div></div></div>
     </div>
   </div>
@@ -1392,34 +1523,51 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>claim · airdrop recipient</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Recipient-side flow for an airdrop drop you're eligible for. Provide the drop's <strong>merkle root</strong> and <strong>IPFS snapshot CID</strong> (from the issuer); connect MetaMask to prove you control the listed ETH address; sign a canonical claim binding your tacit pubkey; send the resulting tuple to the issuer.
+        Recipient-side flow for an airdrop drop you're eligible for. Connect any Ethereum wallet (EOA or smart-contract) to discover drops your address is in; or paste a merkle root + IPFS CID below if you received a private link. Either way you sign a canonical claim binding your tacit pubkey, then send the resulting tuple to the issuer.
       </div>
 
-      <h3>1 · Drop reference</h3>
-      <label>Merkle root</label>
-      <input id="claim-root" type="text" autocomplete="off" spellcheck="false" placeholder="64-char hex" style="font-family:var(--mono);font-size:12px;">
-      <label style="margin-top:10px;">Snapshot IPFS CID (or full <code>ipfs://</code> URI)</label>
-      <input id="claim-cid" type="text" autocomplete="off" spellcheck="false" placeholder="Qm… or bafy…" style="font-family:var(--mono);font-size:12px;">
-      <div class="flex" style="margin-top:8px;gap:6px;">
-        <button id="btn-claim-load" type="button">Load snapshot</button>
-        <button id="btn-claim-clear" type="button">Clear</button>
+      <h3>1 · Discover available drops</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">
+        Active issuer-published drops on <span id="claim-discover-network">…</span>. Connect an Ethereum wallet to filter to drops your address is eligible for.
       </div>
-      <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">…or paste / upload the snapshot JSON directly (fallback if IPFS gateways are unreachable)</summary>
-        <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any blob whose rows don't match the root above.</div>
-        <input id="claim-json-file" type="file" accept=".json,application/json" style="display:none;">
-        <div class="flex" style="gap:6px;margin-top:6px;">
-          <button id="btn-claim-json-upload" type="button">Upload JSON file</button>
-          <button id="btn-claim-json-load" type="button">Load pasted JSON</button>
+      <div class="flex" style="gap:6px;align-items:center;margin-bottom:8px;">
+        <button id="btn-claim-discover-refresh" type="button">↻ Refresh</button>
+        <span id="claim-discover-status" class="muted" style="font-size:11px;"></span>
+      </div>
+      <div id="claim-discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no drops loaded yet · click Refresh</div></div>
+
+      <details id="claim-manual-entry" style="margin-top:18px;">
+        <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
+          <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Have a merkle root + CID? Manual entry
+        </summary>
+        <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+          <label>Merkle root</label>
+          <input id="claim-root" type="text" autocomplete="off" spellcheck="false" placeholder="64-char hex" style="font-family:var(--mono);font-size:12px;">
+          <label style="margin-top:10px;">Snapshot IPFS CID (or full <code>ipfs://</code> URI)</label>
+          <input id="claim-cid" type="text" autocomplete="off" spellcheck="false" placeholder="Qm… or bafy…" style="font-family:var(--mono);font-size:12px;">
+          <div class="flex" style="margin-top:8px;gap:6px;">
+            <button id="btn-claim-load" type="button">Load snapshot</button>
+            <button id="btn-claim-clear" type="button">Clear</button>
+          </div>
+          <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">…or paste / upload the snapshot JSON directly (fallback if IPFS gateways are unreachable)</summary>
+            <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any blob whose rows don't match the root above.</div>
+            <input id="claim-json-file" type="file" accept=".json,application/json" style="display:none;">
+            <div class="flex" style="gap:6px;margin-top:6px;">
+              <button id="btn-claim-json-upload" type="button">Upload JSON file</button>
+              <button id="btn-claim-json-load" type="button">Load pasted JSON</button>
+            </div>
+            <textarea id="claim-json-text" rows="6" style="margin-top:6px;font-family:var(--mono);font-size:11px;" placeholder='{"schema":"tacit-airdrop-v1","merkle_root":"…","rows":[…]}'></textarea>
+          </details>
+          <div id="claim-load-err" class="error" style="margin-top:8px;"></div>
+          <div id="claim-load-out" style="display:none;margin-top:14px;"></div>
         </div>
-        <textarea id="claim-json-text" rows="6" style="margin-top:6px;font-family:var(--mono);font-size:11px;" placeholder='{"schema":"tacit-airdrop-v1","merkle_root":"…","rows":[…]}'></textarea>
       </details>
-      <div id="claim-load-err" class="error" style="margin-top:8px;"></div>
-      <div id="claim-load-out" style="display:none;margin-top:14px;"></div>
 
       <h3 style="margin-top:18px;">2 · Connect Ethereum wallet</h3>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">Connecting MetaMask (or any EIP-1193 provider). The connection is purely for signing — no transaction is broadcast on Ethereum, no gas is spent. The current MetaMask network doesn't matter; the signed claim binds to the drop's tacit network ("signet" or "mainnet"), not to chainId.</div>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Connecting also auto-filters the discovery list above to drops eligible for your address.</div>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Works with any EIP-1193 wallet (MetaMask, Rainbow, Rabby, Coinbase Wallet, Trust, Frame). Smart-contract wallets (Ambire, Safe, Argent) are also supported via ERC-1271 fallback. If multiple wallets are installed, you'll be prompted to pick one (EIP-6963). The connection is purely for signing — no Ethereum tx is broadcast, no gas is spent. For EOAs the wallet's network doesn't matter; the signed claim binds to the drop's tacit network. Smart wallets verify against the chain the wallet is currently on, so set that to the chain holding the smart-wallet contract.</div>
       <div class="flex" style="gap:6px;align-items:center;">
-        <button id="btn-claim-connect-mm" type="button">Connect MetaMask</button>
+        <button id="btn-claim-connect-mm" type="button">Connect Ethereum wallet</button>
         <span id="claim-mm-status" class="muted" style="font-size:11px;"></span>
       </div>
       <div id="claim-eligibility" style="display:none;margin-top:14px;"></div>
@@ -1432,12 +1580,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
 
       <h3 style="margin-top:18px;">4 · Sign claim</h3>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">MetaMask will display the full canonical claim message. Read every field before clicking Sign in MetaMask.</div>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Your wallet will display the full canonical claim message. Read every field before signing.</div>
       <details style="margin:8px 0;"><summary class="muted" style="cursor:pointer;font-size:11px;">Preview the message that will be signed</summary>
         <pre id="claim-msg-preview" style="margin-top:6px;font-size:11px;background:var(--bg-warm);padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;"></pre>
       </details>
       <div class="flex" style="gap:6px;">
-        <button id="btn-claim-sign" type="button" class="primary" disabled title="Connect MetaMask + load eligible drop first">Sign with MetaMask</button>
+        <button id="btn-claim-sign" type="button" class="primary" disabled title="Connect a wallet + load an eligible drop first">Sign with wallet</button>
       </div>
       <div id="claim-sign-err" class="error" style="margin-top:8px;"></div>
 
@@ -1540,6 +1688,15 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
       <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;">
         <input id="discover-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
+        <select id="discover-sort" title="Sort assets" style="font-size:12px;">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="ticker-asc">Ticker A→Z</option>
+          <option value="ticker-desc">Ticker Z→A</option>
+          <option value="transfers-desc">Most transferred</option>
+          <option value="offers-desc">Most offers</option>
+          <option value="active-desc">Most active</option>
+        </select>
         <button id="btn-discover-refresh">↻ Refresh</button>
       </div>
       <div class="discover-pills" id="discover-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
@@ -1547,7 +1704,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button class="filter-pill" data-pill="mintable" type="button" title="Issuer can mint additional supply">Mintable</button>
         <button class="filter-pill" data-pill="attested" type="button" title="Issuer published a verifiable supply attestation">Attested</button>
         <button class="filter-pill" data-pill="recent" type="button" title="Etched in the last 24h">Recent</button>
+        <button class="filter-pill" data-pill="offers" type="button" title="Has at least one active marketplace offer">Has offers</button>
+        <button class="filter-pill" data-pill="minted" type="button" title="Has at least one chain-verified mint event">Has mints</button>
+        <button class="filter-pill" data-pill="burned" type="button" title="Has at least one chain-verified burn event">Has burns</button>
+        <button class="filter-pill" data-pill="moved" type="button" title="Has at least one indexed CXFER/AXFER transfer">Has transfers</button>
       </div>
+      <div id="discover-verify-stats" class="muted" style="font-size:11px;margin-bottom:10px;display:none;" title="Each asset card validates the on-chain CETCH envelope locally before its ✓ badge appears. Cards out of view defer their walk until you scroll them into view to save CPU + battery."></div>
       <div id="discover-list"><div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div></div>
     </div>
   </div>
@@ -1694,7 +1856,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 </div>
 
 <footer>
-  <span>tacit</span>
+  <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · zero protocol fees</span>
   <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank" rel="noopener noreferrer">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank" rel="noopener noreferrer">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank" rel="noopener noreferrer">CT (Maxwell)</a></span>
 </footer>
 
@@ -1749,6 +1911,59 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button type="submit" id="pass-submit" class="primary" disabled>continue</button>
       </div>
     </form>
+  </div>
+</div>
+
+<div id="faq-modal" class="faq-modal" role="dialog" aria-modal="true" aria-labelledby="faq-title" style="display:none;">
+  <div class="faq-card">
+    <div class="faq-head">
+      <div class="faq-title" id="faq-title">faq · the <span class="accent">short version</span></div>
+      <button id="faq-close" class="faq-close" type="button" aria-label="Close">✕</button>
+    </div>
+    <div class="faq-body">
+      <div class="faq-q">Why not just use Runes / Liquid / RGB?</div>
+      <div class="faq-a">
+        Each pays a price tacit declines. Runes and BRC-20 publish amounts in cleartext. Liquid hides amounts <em>and</em> asset IDs but runs on a federated sidechain (~15 KYC'd functionaries — not Bitcoin proper, not trustless). RGB hides amounts via off-chain proofs the recipient must receive from the sender out-of-band; lose the proof, lose the asset. Tacit hides amounts on Bitcoin proper <em>and</em> recovers from privkey + chain alone — that intersection is the niche.
+      </div>
+
+      <div class="faq-q">Will my tacit holdings show up in UniSat / Xverse / Leather?</div>
+      <div class="faq-a">
+        No. Those wallets don't run a tacit indexer; they'll see your tacit UTXOs as small BTC dust. Balances surface only here, or in any third-party tacit indexer. Connecting an external wallet is <em>just for funding</em> — your tacit privkey is separate, encrypted in this browser.
+      </div>
+
+      <div class="faq-q">Can I recover from just my privkey?</div>
+      <div class="faq-a">
+        Yes — for every on-chain envelope. The dApp scans chain data, walks ancestry back to each CETCH / MINT, and decrypts amounts via ECDH. No share-link, no sync server, no counterparty cooperation; privkey + chain alone reconstruct the wallet, even years later on a fresh device. (Atomic intents — the OTC marketplace coordination layer — have their own recovery flow documented in SPEC §5.7.6.)
+      </div>
+
+      <div class="faq-q">Is amount privacy actually enough?</div>
+      <div class="faq-a">
+        For most fungible-token use cases — yes. Tacit hides what's load-bearing: how much is moving. Address-graph and asset-id privacy live at the Bitcoin-substrate layer — same scope every Bitcoin-substrate protocol gives you. BIP-352 Silent Payments and Asset Surjection Proofs are on the roadmap, compatible with tacit's wallet model.
+      </div>
+
+      <div class="faq-q">How do I trust the announced supply when amounts are hidden?</div>
+      <div class="faq-a">
+        The dApp publishes supply attestation by default. At etch time the <code>(supply, blinding)</code> opening is pinned to IPFS as part of the asset's metadata; anyone fetches the blob and verifies <code>pedersenCommit(supply, blinding) == on-chain commitment</code> from chain alone — no worker trust, no issuer trust beyond the one-time honest publish. Issuers can opt out for a centralized-stablecoin-style "trust me" model. Discover surfaces a ✓ verified badge for attested assets.
+      </div>
+
+      <div class="faq-q">What's the cost per transfer?</div>
+      <div class="faq-a">
+        ~10 KB witness per CXFER (m=2 aggregation), about 2,500–3,000 vBytes after the SegWit discount. At 10 sat/vB on mainnet that's ~25–30k sats per transfer; at low-fee periods correspondingly less. Roughly 10× the size of a Runes runestone — Runes publishes amounts in cleartext, tacit hides them via Pedersen commitments + bulletproofs. That's where the size goes.
+      </div>
+
+      <div class="faq-q">Is the worker trust-bearing? What if I don't trust it?</div>
+      <div class="faq-a">
+        It isn't. The worker is a convenience cache (asset directory, image pinning, OTC marketplace, airdrop queue) — it cannot make an invalid envelope appear valid, because every consumer re-verifies rangeproofs, kernel sigs, mint sigs, and Pedersen openings client-side. You can run your own in ~5 minutes on a free Cloudflare account, or set <code>WORKER_BASE = ''</code> in <code>dapp/tacit.js</code> to disable it entirely.
+      </div>
+
+      <div class="faq-q">License / source?</div>
+      <div class="faq-a">
+        MIT. The repo is the canonical source. The protocol spec is the authoritative reference; any indexer in any language reaches the same verdict from chain alone.
+      </div>
+    </div>
+    <div class="faq-foot">
+      Deeper read: <a href="https://github.com/z0r0z/tacit/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a> · <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">SPEC.md</a> · open the Protocol tab for the on-page primer.
+    </div>
   </div>
 </div>
 

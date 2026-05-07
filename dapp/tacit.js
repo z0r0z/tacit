@@ -115,6 +115,8 @@ const ATOMIC_INTENTS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/
 const ATOMIC_INTENT_DELETE_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}` : '';
 const ATOMIC_INTENT_CLAIM_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/claim` : '';
 const ATOMIC_INTENT_FULFILMENT_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/fulfilment` : '';
+const DROPS_URL = WORKER_BASE ? WORKER_BASE + '/drops' : '';
+const DROP_URL  = (rootHex) => WORKER_BASE ? `${WORKER_BASE}/drops/${rootHex}` : '';
 // Append the active network as a query param. The worker's registry endpoints
 // are network-scoped. The dapp defaults to mainnet; users opt into signet
 // via the network selector.
@@ -3725,7 +3727,7 @@ async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri =
 // Padding is needed because the aggregated bulletproof requires m to be a power
 // of 2. Padding outputs are indistinguishable from change to outsiders; the
 // wallet auto-recovers them as 0-amount UTXOs (DUST sats are returned).
-async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null }) {
+async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false }) {
   if (!Array.isArray(recipients) || recipients.length === 0) {
     throw new Error('recipients must be a non-empty array');
   }
@@ -3744,11 +3746,14 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   const totalSendAmt = parsed.reduce((s, r) => s + r.amount, 0n);
   if (totalSendAmt <= 0n) throw new Error('total recipient amount must be > 0');
 
-  // Two outputs to the same pubkey at distinct vouts is fine cryptographically
-  // (per-vout keystream suffix disambiguates) but is almost always an issuer
-  // mistake — most snapshot UIs key on (eth_address → tacit_pubkey), so two
-  // outputs to the same tacit_pubkey would surprise the recipient.
-  {
+  // Two outputs to the same pubkey at distinct vouts is cryptographically
+  // fine (per-vout keystream suffix disambiguates), but in the manual-send
+  // UI it's almost always a typo — most snapshot UIs key on (eth_address →
+  // tacit_pubkey), so two outputs to the same tacit_pubkey would surprise
+  // the recipient. The airdrop-fulfilment path overrides this with
+  // `allowDuplicateRecipients: true` because two distinct ETH addresses
+  // can legitimately consolidate to the same tacit wallet.
+  if (!allowDuplicateRecipients) {
     const seen = new Set();
     for (const r of parsed) {
       if (seen.has(r.pubHex)) throw new Error(`duplicate recipient pubkey ${r.pubHex.slice(0, 10)}…`);
@@ -5870,9 +5875,16 @@ function parseAirdropCSV(csvText, opts = {}) {
     const addrCell = cells[addressColumn];
     const amtCell = cells[amountColumn];
 
-    if (!headerSeen && !/^0[xX]/.test(addrCell)) {
-      headerSeen = true;
-      continue;
+    // Header detection: skip the first non-comment line if it doesn't look
+    // like an address. A 40-hex value with or without a `0x` prefix is data,
+    // not header — without this, a header-less CSV whose first row is
+    // `aaaa…(40 hex),100` was silently dropping the first holder.
+    if (!headerSeen) {
+      const stripped = String(addrCell).trim().replace(/^0[xX]/, '');
+      if (!/^[0-9a-fA-F]{40}$/.test(stripped)) {
+        headerSeen = true;
+        continue;
+      }
     }
     headerSeen = true;
 
@@ -6084,6 +6096,44 @@ function recoverEthAddrFromSig(msg, sigHex) {
   if (pubBytes.length !== 65 || pubBytes[0] !== 0x04) throw new Error('recovered pubkey malformed');
   const xy = pubBytes.slice(1);                   // 64B (X || Y)
   return bytesToHex(keccak_256(xy).slice(12));    // 20B address (lowercase hex)
+}
+
+// Canonical signing message for the discovery announcement of a drop. Must
+// match worker's `dropAnnounceMsg` byte-for-byte (worker-parity covers it).
+// network_byte: 0 = signet, 1 = mainnet (kept stable so future networks slot
+// in without breaking sigs over signet/mainnet announcements).
+function _dropNetworkByte(network) { return network === 'mainnet' ? 1 : 0; }
+function dropAnnounceMsgBytes(network, assetIdHex, rootHex, cidString, expiresAt, noteString) {
+  // Defensive validation so bad inputs throw a clear error rather than
+  // failing later inside hexToBytes / DataView with a cryptic "Invalid
+  // hex" message that's hard to trace back to a missing field.
+  if (network !== 'signet' && network !== 'mainnet') throw new Error(`dropAnnounceMsgBytes: invalid network "${network}"`);
+  if (!/^[0-9a-f]{64}$/i.test(String(assetIdHex || ''))) throw new Error('dropAnnounceMsgBytes: asset_id must be 64-char hex');
+  if (!/^[0-9a-f]{64}$/i.test(String(rootHex || ''))) throw new Error('dropAnnounceMsgBytes: merkle_root must be 64-char hex');
+  if (typeof cidString !== 'string' || cidString.length === 0) throw new Error('dropAnnounceMsgBytes: cid required');
+  if (!Number.isInteger(expiresAt) || expiresAt <= 0) throw new Error('dropAnnounceMsgBytes: expires_at must be a positive integer unix timestamp');
+  const cidBytes = new TextEncoder().encode(cidString);
+  const noteBytes = new TextEncoder().encode(noteString || '');
+  const cidLen = new Uint8Array(2); new DataView(cidLen.buffer).setUint16(0, cidBytes.length, true);
+  const expiresLE = new Uint8Array(8); new DataView(expiresLE.buffer).setBigUint64(0, BigInt(expiresAt), true);
+  const noteLen = new Uint8Array(2); new DataView(noteLen.buffer).setUint16(0, noteBytes.length, true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-drop-announce-v1'),
+    new Uint8Array([_dropNetworkByte(network)]),
+    hexToBytes(assetIdHex.toLowerCase()),
+    hexToBytes(rootHex.toLowerCase()),
+    cidLen, cidBytes,
+    expiresLE,
+    noteLen, noteBytes,
+  ));
+}
+function dropAnnounceCancelMsgBytes(network, rootHex, issuerPubHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-drop-announce-cancel-v1'),
+    new Uint8Array([_dropNetworkByte(network)]),
+    hexToBytes(rootHex),
+    hexToBytes(issuerPubHex),
+  ));
 }
 
 // One-shot verify. True iff the sig recovers to expectedEthAddrHex.
@@ -6360,6 +6410,22 @@ function toast(msg, kind = '', ms = 4000) {
 // by renderDiscover after the tab's cards are mounted. Cleared on first use
 // so a stale value can't re-fire a scroll on the next renderDiscover() call.
 let pendingDiscoverFocus = null;
+
+// Cross-tab deep-link target for Market — set when a Discover card's "view
+// offers" badge is clicked. Consumed by renderMarket / applyMarketFilters
+// after the Market tab mounts: the asset_id is dropped into the search box
+// to filter the listings down to one asset. Cleared after first consumption.
+let pendingMarketFilter = null;
+
+// Lander recent-etches sort. 'recent' = worker order (newest first);
+// 'active' = composite cumulative activity (transfers + offers + mints +
+// burns). Persisted in localStorage so a user who picks "active" doesn't
+// have to re-pick every reload. Read at module load to seed the initial
+// renderRecentEtches.
+let _landerSort = (() => {
+  try { return localStorage.getItem('tacit-lander-sort-v1') === 'active' ? 'active' : 'recent'; }
+  catch { return 'recent'; }
+})();
 
 // ============== TABS ==============
 function setupTabs() {
@@ -7679,11 +7745,24 @@ function renderSavedDropsList() {
     const cidLine = d.snapshot_cid
       ? `<a href="https://gateway.pinata.cloud/ipfs/${escapeHtml(d.snapshot_cid.replace(/^ipfs:\/\//, ''))}" target="_blank" rel="noopener">${escapeHtml(shorten(d.snapshot_cid, 12))}</a>`
       : `<span class="muted">unpinned</span>`;
+    // Publish-state badge: a drop is "discoverable" once it has been
+    // announced via the worker. Recipients without the (root, cid) pair can
+    // then find it by connecting MetaMask.
+    const announced = d.announced_at && (!d.announced_expires_at || d.announced_expires_at > Math.floor(Date.now() / 1000));
+    const announceBadge = announced
+      ? `<span class="status-pill confirmed" style="font-size:9px;">discoverable</span>`
+      : `<span class="status-pill pending" style="font-size:9px;">private</span>`;
+    const publishLabel = announced ? 'Update announcement' : 'Publish to discovery';
+    const canPublish = !!d.snapshot_cid;  // need a pinned snapshot first
+    const publishTitle = canPublish
+      ? 'Sign + post a discovery announcement so recipients can find this drop in their Claim tab'
+      : 'Pin the snapshot to IPFS first';
     return `
       <div class="card" style="margin-bottom:8px;">
         <div class="flex" style="justify-content:space-between;align-items:flex-start;">
           <div>
             <strong>${escapeHtml(d.asset_ticker || '???')}</strong>
+            ${announceBadge}
             <span class="muted" style="font-size:11px;"> · root <code>${escapeHtml(shorten(d.merkle_root_hex, 10))}</code></span>
           </div>
           <div class="muted" style="font-size:11px;">${relTime(d.created_at)}</div>
@@ -7696,6 +7775,8 @@ function renderSavedDropsList() {
         </div>
         <div class="flex" style="gap:6px;margin-top:8px;">
           <button data-act="drop-fulfil" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Fulfil claims</button>
+          <button data-act="drop-publish" data-drop-id="${escapeHtml(d.drop_id)}" type="button" ${canPublish ? '' : 'disabled'} title="${escapeHtml(publishTitle)}">${escapeHtml(publishLabel)}</button>
+          ${announced ? `<button data-act="drop-unpublish" data-drop-id="${escapeHtml(d.drop_id)}" type="button" title="Sign a cancel and remove the announcement from discovery">Unpublish</button>` : ''}
           <button data-act="drop-crosscheck" data-drop-id="${escapeHtml(d.drop_id)}" type="button" title="Verify each fulfilled[] entry against on-chain state">Cross-check</button>
           <button data-act="drop-export" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Export JSON</button>
           <button data-act="drop-copy-root" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Copy root</button>
@@ -7737,6 +7818,147 @@ function _handleDropRowAction(act, dropId) {
     if (_dropFulfilCurrent && _dropFulfilCurrent.drop_id === dropId) _closeDropFulfil();
     if (_dropCrossCheckCurrent && _dropCrossCheckCurrent.drop_id === dropId) _closeDropCrossCheck();
     toast('Drop record deleted', 'success');
+  } else if (act === 'drop-publish') {
+    _publishDropAnnouncement(d);
+  } else if (act === 'drop-unpublish') {
+    _unpublishDropAnnouncement(d);
+  }
+}
+
+// Publishes a signed announcement to the worker's /drops endpoint so that
+// recipients in the Claim tab can discover the drop without manually pasting
+// (root, cid). The announcement is BIP-340-signed by the active wallet's
+// tacit pubkey; the worker re-verifies before storing. Re-publishing the
+// same root overwrites — useful for renewing the expiry or fixing a typo'd
+// note. Idempotent: the worker key is `(network, root)`.
+const _DROP_DEFAULT_TTL_DAYS = 90;
+async function _publishDropAnnouncement(d) {
+  if (!WORKER_BASE) { toast('Worker not configured', 'error'); return; }
+  if (!d.snapshot_cid) { toast('Pin the snapshot to IPFS first', 'error'); return; }
+  // Default TTL of 90 days from now; user can override with a freeform prompt.
+  // The worker rejects expiries > 1 year so we don't need to clamp here.
+  const ttlInput = prompt(
+    `Publish "${d.asset_ticker}" drop to discovery?\n\n` +
+    `Recipients connecting MetaMask in the Claim tab will see this drop and any amount they're entitled to.\n\n` +
+    `Days until announcement expires (1–365):`,
+    String(_DROP_DEFAULT_TTL_DAYS),
+  );
+  if (ttlInput === null) return;
+  const ttlDays = parseInt(ttlInput, 10);
+  if (!Number.isInteger(ttlDays) || ttlDays < 1 || ttlDays > 365) {
+    toast('TTL must be 1–365 days', 'error');
+    return;
+  }
+  const note = prompt('Optional note (≤200 chars). Surfaces alongside the drop in recipients\' Claim tab:', d.announced_note || '') ?? '';
+  if (note.length > 200) { toast('note must be ≤200 chars', 'error'); return; }
+
+  const expiresAt = Math.floor(Date.now() / 1000) + ttlDays * 86400;
+  const cid = String(d.snapshot_cid).replace(/^ipfs:\/\//, '');
+  const network = d.network || NET.name;
+  // Saved drops use `asset_id_hex` (the local-record field name, distinct
+  // from the worker registry's `asset_id` shape). Older drop records in
+  // localStorage may still carry `asset_id`, so accept either; surface a
+  // clear error if neither is present.
+  const assetIdHex = d.asset_id_hex || d.asset_id;
+  if (!/^[0-9a-f]{64}$/i.test(String(assetIdHex || ''))) {
+    toast('drop record missing asset_id (corrupt local record)', 'error');
+    return;
+  }
+  const issuerPub = wallet.pub;            // 33-byte compressed
+  const issuerXOnly = issuerPub.slice(1);  // x-only for Schnorr
+
+  let sigHex;
+  try {
+    const msg = dropAnnounceMsgBytes(network, assetIdHex, d.merkle_root_hex, cid, expiresAt, note);
+    sigHex = bytesToHex(signSchnorr(msg, wallet.priv));
+    // Belt-and-suspenders: verify locally before posting so we never ship a
+    // sig the worker would reject — saves a round-trip and surfaces the
+    // failure with a concrete cause if our local signing is broken.
+    if (!verifySchnorr(hexToBytes(sigHex), msg, issuerXOnly)) {
+      throw new Error('local Schnorr verify failed (bug?)');
+    }
+  } catch (e) {
+    toast('sign failed: ' + e.message, 'error');
+    return;
+  }
+
+  const body = {
+    asset_id: assetIdHex,
+    merkle_root: d.merkle_root_hex,
+    ipfs_cid: cid,
+    issuer_pubkey: bytesToHex(issuerPub),
+    expires_at: expiresAt,
+    note,
+    announce_sig: sigHex,
+  };
+  try {
+    const resp = await fetch(withNet(DROPS_URL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const j = await resp.json().catch(() => ({}));
+      throw new Error(j.error || `worker ${resp.status}`);
+    }
+    // Persist announcement state on the local drop record so
+    // renderSavedDropsList can reflect "discoverable" vs "private" without
+    // round-tripping the worker.
+    const drops = loadSavedDrops();
+    const i = drops.findIndex(x => x.drop_id === d.drop_id);
+    if (i >= 0) {
+      drops[i].announced_at = Math.floor(Date.now() / 1000);
+      drops[i].announced_expires_at = expiresAt;
+      drops[i].announced_note = note;
+      saveDrops(drops);
+    }
+    renderSavedDropsList();
+    toast(`Drop published · expires in ${ttlDays}d`, 'success');
+  } catch (e) {
+    toast('publish failed: ' + e.message, 'error');
+  }
+}
+
+async function _unpublishDropAnnouncement(d) {
+  if (!WORKER_BASE) { toast('Worker not configured', 'error'); return; }
+  if (!confirm(`Remove "${d.asset_ticker}" from discovery?\n\nRecipients who already saved the (root, CID) can still claim manually. This only hides the announcement from the Claim tab's eligible-drops list.`)) return;
+  const issuerPub = wallet.pub;
+  const issuerXOnly = issuerPub.slice(1);
+  const network = d.network || NET.name;
+  let sigHex;
+  try {
+    const msg = dropAnnounceCancelMsgBytes(network, d.merkle_root_hex, bytesToHex(issuerPub));
+    sigHex = bytesToHex(signSchnorr(msg, wallet.priv));
+    if (!verifySchnorr(hexToBytes(sigHex), msg, issuerXOnly)) throw new Error('local Schnorr verify failed');
+  } catch (e) {
+    toast('sign failed: ' + e.message, 'error');
+    return;
+  }
+  try {
+    const resp = await fetch(withNet(DROP_URL(d.merkle_root_hex)), {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        issuer_pubkey: bytesToHex(issuerPub),
+        cancel_sig: sigHex,
+      }),
+    });
+    if (!resp.ok && resp.status !== 404) {
+      const j = await resp.json().catch(() => ({}));
+      throw new Error(j.error || `worker ${resp.status}`);
+    }
+    const drops = loadSavedDrops();
+    const i = drops.findIndex(x => x.drop_id === d.drop_id);
+    if (i >= 0) {
+      delete drops[i].announced_at;
+      delete drops[i].announced_expires_at;
+      delete drops[i].announced_note;
+      saveDrops(drops);
+    }
+    renderSavedDropsList();
+    toast('Drop unpublished', 'success');
+  } catch (e) {
+    toast('unpublish failed: ' + e.message, 'error');
   }
 }
 
@@ -8231,11 +8453,12 @@ function _parseClaimTuples(text) {
   }
   if (!out.length) throw new Error('no claim tuples parsed');
   if (out.length > 7) throw new Error(`max 7 claims per batch (got ${out.length}). Submit additional batches separately.`);
-  const seenPub = new Set();
-  for (const c of out) {
-    if (seenPub.has(c.tacitPubHex)) throw new Error(`duplicate tacit_pubkey in batch: ${shorten(c.tacitPubHex, 10)}`);
-    seenPub.add(c.tacitPubHex);
-  }
+  // Only reject duplicate leaf_index — that's the actual double-pay defense
+  // (the same leaf can't be claimed twice in one batch). Duplicate recipient
+  // tacit_pubkey is LEGITIMATE: a user with two eligible ETH addresses can
+  // consolidate both leaves to one tacit wallet, with distinct ETH sigs per
+  // leaf. The CXFER blinding derivation uses vout index, so two outputs to
+  // the same recipient pubkey produce different commitments and don't clash.
   const seenIdx = new Set();
   for (const c of out) {
     if (seenIdx.has(c.leafIndex)) throw new Error(`duplicate leaf_index in batch: ${c.leafIndex}`);
@@ -8696,9 +8919,15 @@ function setupDropsForm() {
 
     try {
       const recipients = items.map(x => ({ pubHex: x.tacitPubHex, amount: x.amount }));
+      // Airdrop batches can legitimately have multiple leaves consolidating
+      // to the same recipient pubkey (a user with two eligible ETH
+      // addresses claiming both to one tacit wallet). The cross-tx
+      // duplicate-recipient guard in buildAndBroadcastCXferMulti is meant
+      // for the typo-prevention case in the Send tab, not here.
       const result = await buildAndBroadcastCXferMulti({
         assetIdHex: drop.asset_id_hex,
         recipients,
+        allowDuplicateRecipients: true,
       });
       // Phase 2: flip pending → fulfilled with the confirmed txid. Reload
       // fresh because cross-check or other tabs may have touched the record.
@@ -8972,8 +9201,21 @@ function _claimValidateSnapshot(rootHexInput, blob) {
   if (blob.asset_decimals != null && (!Number.isInteger(blob.asset_decimals) || blob.asset_decimals < 0 || blob.asset_decimals > 18)) {
     throw new Error('snapshot asset_decimals must be integer 0..18');
   }
-  if (blob.asset_ticker != null && (typeof blob.asset_ticker !== 'string' || blob.asset_ticker.length === 0 || blob.asset_ticker.length > 16)) {
-    throw new Error('snapshot asset_ticker must be a string of length 1..16');
+  if (blob.asset_ticker != null) {
+    if (typeof blob.asset_ticker !== 'string' || blob.asset_ticker.length === 0 || blob.asset_ticker.length > 16) {
+      throw new Error('snapshot asset_ticker must be a string of length 1..16');
+    }
+    // Reject control characters and bidi marks. The ticker is interpolated
+    // verbatim into the EIP-191 message MetaMask shows when signing; a
+    // newline or right-to-left override could visually rearrange the
+    // displayed message even though the bytes signed are unambiguous.
+    // Range covers C0 controls, DEL, and the LRE/RLE/PDF/LRO/RLO/LRI/RLI/FSI/PDI bidi codepoints.
+    for (let i = 0; i < blob.asset_ticker.length; i++) {
+      const cp = blob.asset_ticker.codePointAt(i);
+      if (cp < 0x20 || cp === 0x7f || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069)) {
+        throw new Error('snapshot asset_ticker contains control or bidi characters');
+      }
+    }
   }
   if (blob.total_amount != null) {
     if (typeof blob.total_amount !== 'string' || !/^[0-9]+$/.test(blob.total_amount)) {
@@ -9006,6 +9248,29 @@ function _claimValidateSnapshot(rootHexInput, blob) {
   for (let i = 0; i < reconstructedRows.length; i++) {
     if (reconstructedRows[i].index !== i) {
       throw new Error(`snapshot indexes are not contiguous 0..N-1 (saw index ${reconstructedRows[i].index} at slot ${i})`);
+    }
+  }
+  // Reject duplicate ETH addresses. The issuer-side builder dedupes by
+  // summing duplicates, but a hand-rolled snapshot might pass the root
+  // recompute with two leaves for the same address. Eligibility uses
+  // `.find()`, so the recipient would only see the first leaf and the
+  // second silently strands. Fail loudly at load time.
+  const _seenAddrs = new Set();
+  for (const r of reconstructedRows) {
+    if (_seenAddrs.has(r.ethAddrHex)) {
+      throw new Error(`snapshot contains duplicate eth_address: 0x${r.ethAddrHex} (each address must appear at most once)`);
+    }
+    _seenAddrs.add(r.ethAddrHex);
+  }
+  // If the snapshot advertises `total_amount`, it must equal the sum of
+  // row amounts. Mismatch wouldn't break crypto (the root recompute below
+  // catches tampered rows), but it would mislead the displayed payout
+  // figure on the discover/claim UI.
+  if (blob.total_amount != null) {
+    const declared = BigInt(blob.total_amount);
+    const summed = reconstructedRows.reduce((s, r) => s + r.amount, 0n);
+    if (declared !== summed) {
+      throw new Error(`snapshot total_amount (${declared}) does not equal sum of rows (${summed})`);
     }
   }
   const leaves = reconstructedRows.map(r => airdropLeafHash(r.ethAddrBytes, r.amount, r.index));
@@ -9062,17 +9327,166 @@ function _renderClaimSnapshotInfo() {
   `;
 }
 
+// ============== EIP-6963 multi-provider discovery ==============
+// Pre-EIP-6963 dApps used `window.ethereum` directly, which silently picked
+// "whichever wallet loaded last" when more than one was injected (MetaMask +
+// Rabby + Coinbase Wallet, common combo). EIP-6963 fixes this: each wallet
+// dispatches an `eip6963:announceProvider` event with its own EIP-1193
+// provider object; the dApp listens, collects them, and presents a chooser
+// when more than one is available.
+//
+// Compat: every wallet that supports EIP-6963 also keeps injecting
+// `window.ethereum`, so the fallback path still works for older wallets that
+// don't announce. We dispatch `eip6963:requestProvider` to nudge providers
+// that load after our listener is wired.
+const _ethProviders = [];                   // [{ info: {uuid, name, icon, rdns}, provider }]
+let _ethSelectedProvider = null;            // selected provider; null = use window.ethereum
+function _ethAnnounceProvider(detail) {
+  if (!detail || !detail.info || !detail.provider) return;
+  if (_ethProviders.find(p => p.info.uuid === detail.info.uuid)) return;
+  _ethProviders.push(detail);
+}
+window.addEventListener('eip6963:announceProvider', e => _ethAnnounceProvider(e.detail));
+// Fire once at module load so wallets announced before our listener wired up
+// re-announce. Wallets that load after this still announce themselves on
+// load and our persistent listener catches those.
+try { window.dispatchEvent(new Event('eip6963:requestProvider')); } catch {}
+function _ethProvider() {
+  return _ethSelectedProvider || window.ethereum || null;
+}
+function _ethProviderLabel() {
+  if (_ethSelectedProvider) {
+    const announced = _ethProviders.find(p => p.provider === _ethSelectedProvider);
+    if (announced?.info?.name) return announced.info.name;
+  }
+  return 'Ethereum wallet';
+}
+
+// Strip control + bidi characters from a wallet-supplied display string. A
+// malicious or misconfigured wallet that announces itself with a name like
+// "Trust‮kellaW" could visually invert text in the chooser; strip those
+// codepoints. Same defense as the snapshot ticker validator.
+function _sanitizeWalletDisplayString(s) {
+  if (typeof s !== 'string') return '';
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const cp = s.codePointAt(i);
+    if (cp < 0x20 || cp === 0x7f || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069)) continue;
+    out += s[i];
+  }
+  return out.slice(0, 80);  // cap length so a long name can't blow out the layout
+}
+
+// Modal chooser — shown when ≥2 EIP-6963 providers are detected and none has
+// been selected yet. Resolves with the chosen provider, or null on cancel.
+function _showEthProviderChooser() {
+  return new Promise(resolve => {
+    const modal = document.createElement('div');
+    modal.className = 'welcome-modal';
+    modal.style.zIndex = '1020';
+    // Idempotent removal: button onclick + cancel both can fire (rapid
+    // clicks, ESC handler, etc). Without this guard, the second remove
+    // throws "Node was not found" because the modal is no longer a child.
+    const closeOnce = () => {
+      if (modal.parentNode === document.body) document.body.removeChild(modal);
+    };
+    const card = document.createElement('div');
+    card.className = 'welcome-card';
+    card.innerHTML = `
+      <div class="welcome-title">choose <span class="accent">wallet</span></div>
+      <div class="welcome-lede">Multiple Ethereum wallets are installed in this browser. Pick the one holding the address you want to claim with.</div>
+      <div class="welcome-options" id="eth-chooser-options"></div>
+      <div class="welcome-footer" style="display:flex;justify-content:flex-end;">
+        <button id="eth-chooser-cancel" type="button" style="font-size:11px;">Cancel</button>
+      </div>
+    `;
+    modal.appendChild(card);
+    document.body.appendChild(modal);
+    const opts = card.querySelector('#eth-chooser-options');
+    for (const p of _ethProviders) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'welcome-option';
+      const safeName = _sanitizeWalletDisplayString(p.info.name) || 'unknown wallet';
+      const safeRdns = _sanitizeWalletDisplayString(p.info.rdns);
+      const iconHtml = (p.info.icon && /^data:image\//.test(p.info.icon))
+        ? `<img src="${escapeHtml(p.info.icon)}" alt="" style="width:20px;height:20px;vertical-align:middle;margin-right:8px;">`
+        : '';
+      btn.innerHTML = `
+        <span class="welcome-option-title">${iconHtml}${escapeHtml(safeName)}</span>
+        <span class="welcome-option-meta">${escapeHtml(safeRdns)}</span>
+      `;
+      btn.onclick = () => { closeOnce(); resolve(p.provider); };
+      opts.appendChild(btn);
+    }
+    card.querySelector('#eth-chooser-cancel').onclick = () => {
+      closeOnce();
+      resolve(null);
+    };
+    // ESC key dismisses. Bound on the modal itself to avoid leaking the
+    // listener once the modal closes — closeOnce removes the element so
+    // subsequent ESC presses no-op.
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        document.removeEventListener('keydown', onKey);
+        closeOnce();
+        resolve(null);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+  });
+}
+
+// Connect to an Ethereum wallet. If multiple are announced via EIP-6963, the
+// user picks one; otherwise we use the only announced provider, or fall back
+// to `window.ethereum` for legacy injection.
 async function _claimConnectMetaMask() {
-  const eth = window.ethereum;
-  if (!eth) throw new Error('no Ethereum provider detected — install MetaMask or another EIP-1193 wallet');
-  // request_accounts may surface duplicate accounts if multiple wallets have
-  // injected; we just take the first returned account.
-  const accounts = await eth.request({ method: 'eth_requestAccounts' });
-  if (!Array.isArray(accounts) || !accounts.length) throw new Error('no accounts returned by Ethereum provider');
+  // Re-dispatch the EIP-6963 nudge each connect — wallets that loaded
+  // milliseconds after our module-load dispatch will still be in
+  // _ethProviders thanks to the persistent listener, but a wallet that
+  // ignores its own announce-on-load contract only re-announces on this
+  // request. Idempotent (existing entries dedupe by uuid).
+  try { window.dispatchEvent(new Event('eip6963:requestProvider')); } catch {}
+
+  let provider = _ethSelectedProvider;
+  if (!provider) {
+    if (_ethProviders.length >= 2) {
+      provider = await _showEthProviderChooser();
+      if (!provider) throw new Error('no wallet selected');
+      _ethSelectedProvider = provider;
+    } else if (_ethProviders.length === 1) {
+      provider = _ethProviders[0].provider;
+      _ethSelectedProvider = provider;
+    } else {
+      provider = window.ethereum;
+    }
+  }
+  if (!provider || typeof provider.request !== 'function') {
+    throw new Error('no Ethereum wallet detected — install one (MetaMask, Rainbow, Rabby, Coinbase Wallet, …) or unlock an existing one');
+  }
+  const accounts = await provider.request({ method: 'eth_requestAccounts' });
+  if (!Array.isArray(accounts) || !accounts.length) throw new Error('no accounts returned by Ethereum wallet');
   const addr = String(accounts[0]).toLowerCase().replace(/^0x/, '');
-  if (!/^[0-9a-f]{40}$/.test(addr)) throw new Error(`Ethereum provider returned malformed address: ${accounts[0]}`);
+  if (!/^[0-9a-f]{40}$/.test(addr)) throw new Error(`wallet returned malformed address: ${accounts[0]}`);
   _claimEthAddr = addr;
   _claimSigned = null;
+  // Re-bind the accountsChanged listener to the selected provider — the
+  // window-level listener wired in setupClaimTab covered window.ethereum, but
+  // a chosen EIP-6963 provider may be a different object. Idempotent (the
+  // wallet's own dedupe means re-binding is safe).
+  if (provider.on && !provider._tacitAccountsBound) {
+    provider._tacitAccountsBound = true;
+    provider.on('accountsChanged', accounts => {
+      _claimEthAddr = (Array.isArray(accounts) && accounts.length)
+        ? String(accounts[0]).toLowerCase().replace(/^0x/, '')
+        : null;
+      _claimSigned = null;
+      _renderClaimEligibility();
+      _renderClaimMsgPreview();
+      _renderClaimResult();
+      _renderClaimDiscoverList();
+    });
+  }
   return addr;
 }
 
@@ -9108,7 +9522,19 @@ function _renderClaimEligibility() {
       </div>`;
     return;
   }
+  // Network-mismatch banner — the readiness check already disables the
+  // sign button, but the user needs a concrete reason: tacit wallets are
+  // network-scoped, so signing a mainnet drop while on signet binds the
+  // claim to a key that doesn't exist on mainnet. Block prominently.
+  const networkMismatch = _claimSnapshot.network !== NET.name;
+  const networkBanner = networkMismatch
+    ? `<div class="warn" style="border-left-color:var(--red);background:#fee;">
+         <strong>⚠ Network mismatch.</strong> This drop is for <strong>${escapeHtml(_claimSnapshot.network)}</strong>, but tacit is currently on <strong>${escapeHtml(NET.name)}</strong>.<br>
+         Switch tacit to ${escapeHtml(_claimSnapshot.network)} (top-right network selector) before signing — otherwise the issuer fulfils on ${escapeHtml(_claimSnapshot.network)} to a pubkey that only exists on your ${escapeHtml(NET.name)} wallet.
+       </div>`
+    : '';
   out.innerHTML = `
+    ${networkBanner}
     <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
       <strong>✓ Eligible</strong> · leaf #${row.index}
       <div style="margin-top:4px;">amount: <strong>${fmtAssetAmountPlain(row.amount, decimals)} ${escapeHtml(ticker)}</strong> (${row.amount.toString()} base units)</div>
@@ -9134,10 +9560,16 @@ function _renderClaimTacitId() {
 function _refreshClaimSignAvailability() {
   const btn = $('#btn-claim-sign');
   if (!btn) return;
-  const ready = !!(_claimSnapshot && _claimEthAddr && _claimEligibleRow && wallet.pub);
+  // Network-match guard: signing a mainnet drop while the dApp is on signet
+  // (or vice versa) binds the claim to the wallet that exists on the OTHER
+  // network than the one the issuer fulfils on — funds appear "lost." Hard
+  // refuse unless `_claimSnapshot.network === NET.name`.
+  const networkMatches = !_claimSnapshot || _claimSnapshot.network === NET.name;
+  const ready = !!(_claimSnapshot && _claimEthAddr && _claimEligibleRow && wallet.pub && networkMatches);
   btn.disabled = !ready;
   if (!ready) btn.title = !_claimSnapshot ? 'Load a snapshot first'
-    : !_claimEthAddr ? 'Connect MetaMask first'
+    : !networkMatches ? `Drop is for ${_claimSnapshot.network}; switch tacit network before signing`
+    : !_claimEthAddr ? 'Connect Ethereum wallet first'
     : !_claimEligibleRow ? 'This address is not in the snapshot'
     : !wallet.pub ? 'No active tacit wallet (open Wallet tab to set up)'
     : '';
@@ -9148,7 +9580,7 @@ function _renderClaimMsgPreview() {
   const out = $('#claim-msg-preview');
   if (!out) return;
   if (!_claimSnapshot || !_claimEthAddr || !_claimEligibleRow || !wallet.pub) {
-    out.textContent = '(connect MetaMask + load snapshot to preview)';
+    out.textContent = '(connect Ethereum wallet + load snapshot to preview)';
     return;
   }
   try {
@@ -9173,6 +9605,12 @@ async function _claimSign() {
   if (!_claimSnapshot || !_claimEthAddr || !_claimEligibleRow || !wallet.pub) {
     throw new Error('not ready to sign');
   }
+  // Defense-in-depth network match: the readiness guard already disables the
+  // button, but a programmatic call (or a stale-state click) could otherwise
+  // sign for the wrong tacit identity. Hard-refuse here too.
+  if (_claimSnapshot.network !== NET.name) {
+    throw new Error(`This drop is for ${_claimSnapshot.network}. Switch tacit to ${_claimSnapshot.network} (top-right network selector) before signing — otherwise the issuer fulfils on ${_claimSnapshot.network} to your ${NET.name} wallet's pubkey, which doesn't exist on ${_claimSnapshot.network}.`);
+  }
   const tacitPubHex = bytesToHex(wallet.pub);
   const msg = buildAirdropClaimMsg({
     rootHex: _claimSnapshot.merkle_root,
@@ -9185,21 +9623,81 @@ async function _claimSign() {
     decimals: Number.isInteger(_claimSnapshot.asset_decimals) ? _claimSnapshot.asset_decimals : 0,
     tacitPubHex,
   });
-  const eth = window.ethereum;
-  if (!eth) throw new Error('Ethereum provider unavailable');
-  // personal_sign with msg as 0x-hex (some providers prefer hex; MetaMask accepts both)
+  const eth = _ethProvider();
+  if (!eth) throw new Error('Ethereum wallet unavailable — connect first');
+  // personal_sign with msg as 0x-hex (most providers prefer hex; some EOA
+  // wallets accept either form, smart-wallet bridges only accept hex).
   const msgHex = '0x' + bytesToHex(new TextEncoder().encode(msg));
   const sig = await eth.request({
     method: 'personal_sign',
     params: [msgHex, '0x' + _claimEthAddr],
   });
-  if (typeof sig !== 'string' || !sig.startsWith('0x')) throw new Error('Ethereum provider returned invalid signature');
-  // Self-verify: recover the address from the sig and confirm match.
-  if (!verifyAirdropClaimSig(msg, sig, _claimEthAddr)) {
-    throw new Error('signature self-verify failed — wallet returned a malformed signature');
+  if (typeof sig !== 'string' || !sig.startsWith('0x')) throw new Error('Ethereum wallet returned invalid signature');
+  // Self-verify: try ECDSA recovery first (EOA wallets — MetaMask, Rainbow,
+  // Coinbase Wallet, Rabby, Trust). On mismatch, fall back to ERC-1271 via
+  // the wallet's own RPC (smart-wallet support — Ambire, Safe, Argent).
+  // Either path passing means the wallet has cryptographically authorized
+  // this message under the connected address.
+  let verified = false;
+  try { verified = verifyAirdropClaimSig(msg, sig, _claimEthAddr); } catch {}
+  if (!verified) {
+    try { verified = await verifyEthSigViaErc1271(msg, sig, _claimEthAddr, eth); }
+    catch (e) { console.warn('ERC-1271 fallback failed:', e); }
+  }
+  if (!verified) {
+    throw new Error('signature self-verify failed — wallet returned a malformed signature, or the connected address is a smart wallet on a chain whose ERC-1271 contract this wallet can\'t resolve');
   }
   _claimSigned = { msg, sigHex: sig.toLowerCase(), tacitPubHex };
   return _claimSigned;
+}
+
+// ============== ERC-1271 fallback (smart-contract wallets) ==============
+// Smart-wallet wallets (Ambire, Safe, Argent) sign with contract logic, not a
+// secp256k1 private key, so secp256k1 ecrecover doesn't return their address.
+// EIP-1271 defines `isValidSignature(bytes32 hash, bytes sig) → bytes4` which
+// the contract resolves on-chain; magic value 0x1626ba7e means valid.
+//
+// We piggy-back on the wallet's own EIP-1193 transport for the eth_call so we
+// don't need a separate Ethereum RPC endpoint (and don't need to widen the
+// CSP). The connected provider is whatever chain the wallet is on; if the
+// snapshot is for a different chain than the wallet's current network, the
+// eth_call would target the wrong contract address and (almost certainly)
+// return empty bytes, causing this verifier to return false. That's the
+// correct behavior — the user needs to switch chains in their wallet.
+const ERC1271_MAGIC = '0x1626ba7e';
+async function verifyEthSigViaErc1271(msg, sigHex, expectedEthAddrHex, provider) {
+  if (!provider || typeof provider.request !== 'function') return false;
+  const cleanAddr = String(expectedEthAddrHex).toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]{40}$/.test(cleanAddr)) return false;
+  const cleanSig = String(sigHex).toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]+$/.test(cleanSig) || cleanSig.length % 2) return false;
+  const hash = eip191Hash(msg);   // bytes32 — same hash MetaMask shows in personal_sign UX
+  // ABI-encode (bytes32 hash, bytes sig):
+  //   selector(4) || hash(32) || offset(32 = 0x40) || length(32) || sig_data || zero-pad
+  const sigBytes = cleanSig.length / 2;
+  const padBytes = (32 - (sigBytes % 32)) % 32;
+  const calldata = '0x' +
+    ERC1271_MAGIC.slice(2) +
+    bytesToHex(hash) +
+    '0000000000000000000000000000000000000000000000000000000000000040' +
+    sigBytes.toString(16).padStart(64, '0') +
+    cleanSig +
+    '00'.repeat(padBytes);
+  let result;
+  try {
+    result = await provider.request({
+      method: 'eth_call',
+      params: [{ to: '0x' + cleanAddr, data: calldata }, 'latest'],
+    });
+  } catch {
+    // eth_call failed — could be that the address is an EOA (no contract code)
+    // or the chain rejected it. Either way, ERC-1271 doesn't apply.
+    return false;
+  }
+  // Result is right-padded to 32 bytes. We just check the magic-value prefix
+  // — anything else (including empty, all-zeros, or a different bytes4) means
+  // the contract did not validate the signature.
+  return typeof result === 'string' && result.toLowerCase().startsWith(ERC1271_MAGIC);
 }
 
 function _renderClaimResult() {
@@ -9272,8 +9770,12 @@ function _renderClaimResult() {
 // Called on Claim tab activation so a returning visitor's connection state
 // is restored without a click.
 async function _claimAutoConnect() {
-  const eth = window.ethereum;
-  if (!eth || !eth.request) return;
+  // Try the previously-selected EIP-6963 provider first (so a returning user
+  // who picked Rabby last session reconnects to Rabby, not whatever happens
+  // to be at window.ethereum now). Falls back to window.ethereum when no
+  // EIP-6963 selection has been made yet.
+  const eth = _ethProvider();
+  if (!eth || typeof eth.request !== 'function') return;
   try {
     const accounts = await eth.request({ method: 'eth_accounts' });
     if (Array.isArray(accounts) && accounts.length > 0) {
@@ -9323,9 +9825,182 @@ function _consumeClaimUrlHash() {
   }
 }
 
+// ============== Discovery list (recipient side) ==============
+// Holds the latest /drops fetch + per-drop snapshot fetch results, keyed by
+// merkle_root. Populated by `_claimRefreshDiscover`; consumed by
+// `_renderClaimDiscoverList` which re-renders on every state change (MetaMask
+// connect/disconnect, snapshot fetch completion, snapshot fetch failure).
+let _claimDiscoverDrops = [];
+const _claimDiscoverSnapshots = new Map(); // root -> { rows, error?, fetching? }
+
+async function _claimRefreshDiscover() {
+  const list = $('#claim-discover-list');
+  const status = $('#claim-discover-status');
+  const netLabel = $('#claim-discover-network');
+  if (netLabel) netLabel.textContent = NET.name;
+  if (!WORKER_BASE) {
+    if (list) list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">Worker not configured · use manual entry below</div>`;
+    return;
+  }
+  if (status) status.textContent = 'loading…';
+  try {
+    const resp = await fetch(withNet(DROPS_URL));
+    if (!resp.ok) throw new Error(`worker ${resp.status}`);
+    const j = await resp.json();
+    _claimDiscoverDrops = Array.isArray(j.drops) ? j.drops : [];
+    if (status) status.textContent = `${_claimDiscoverDrops.length} active`;
+  } catch (e) {
+    if (status) status.textContent = `error: ${e.message}`;
+    _claimDiscoverDrops = [];
+  }
+  // Kick off snapshot fetches in parallel — each completion re-renders so
+  // eligibility flips into place as it arrives. Snapshots are cached per
+  // root, so a refresh doesn't re-fetch already-resolved CIDs.
+  for (const d of _claimDiscoverDrops) {
+    if (!_claimDiscoverSnapshots.has(d.merkle_root)) {
+      _claimDiscoverSnapshots.set(d.merkle_root, { fetching: true });
+      _claimFetchSnapshot(d.ipfs_cid)
+        .then(blob => {
+          // The full root-recompute happens on the manual-load path the user
+          // triggers via "Claim →"; the lighter-weight check here just
+          // ensures the blob's declared root matches the announcement, so
+          // we never display rows that disagree with what we'd verify later.
+          if (String(blob.merkle_root || '').toLowerCase() !== d.merkle_root) {
+            throw new Error('snapshot root does not match announcement');
+          }
+          const rows = _claimReconstructDiscoveredRows(blob);
+          _claimDiscoverSnapshots.set(d.merkle_root, { rows });
+          _renderClaimDiscoverList();
+        })
+        .catch(e => {
+          _claimDiscoverSnapshots.set(d.merkle_root, { error: e.message });
+          _renderClaimDiscoverList();
+        });
+    }
+  }
+  _renderClaimDiscoverList();
+}
+
+function _claimReconstructDiscoveredRows(blob) {
+  if (!blob || !Array.isArray(blob.rows)) throw new Error('snapshot has no rows[]');
+  return blob.rows.map((r, i) => {
+    const ethAddrHex = String(r.eth_address || r.eth_addr || '').toLowerCase().replace(/^0x/, '');
+    if (!/^[0-9a-f]{40}$/.test(ethAddrHex)) throw new Error(`row ${i} has invalid eth_address`);
+    let amount;
+    try { amount = BigInt(r.amount); } catch { throw new Error(`row ${i} has invalid amount`); }
+    const index = Number.isInteger(r.index) ? r.index : i;
+    return { ethAddrHex, amount, index };
+  });
+}
+
+// Provenance heuristic: 'matches_etcher' | 'self_announced' | 'unknown'.
+// Conservative — for non-mintable assets we don't have the etcher's
+// signing-pubkey cached locally, so the badge falls back to 'unknown' rather
+// than misleading the user with a false-positive green flag.
+function _claimProvenance(d, meta) {
+  if (!d || !d.issuer_pubkey || !meta) return 'unknown';
+  const issuerXOnly = String(d.issuer_pubkey).slice(2).toLowerCase();
+  if (meta.mintAuthorityHex && /^[0-9a-f]{64}$/.test(meta.mintAuthorityHex)) {
+    return meta.mintAuthorityHex.toLowerCase() === issuerXOnly ? 'matches_etcher' : 'self_announced';
+  }
+  return 'unknown';
+}
+
+function _renderClaimDiscoverList() {
+  const list = $('#claim-discover-list');
+  if (!list) return;
+  if (!_claimDiscoverDrops.length) {
+    list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">No drops announced on ${escapeHtml(NET.name)} yet · use manual entry below if you have a private (root, CID)</div>`;
+    return;
+  }
+  // Sort: eligible first, then announced_at desc.
+  const rendered = _claimDiscoverDrops.map(d => {
+    const snap = _claimDiscoverSnapshots.get(d.merkle_root);
+    let eligibleRow = null;
+    let snapshotState = 'fetching';
+    if (snap?.error) snapshotState = 'error';
+    else if (snap?.rows) {
+      snapshotState = 'loaded';
+      if (_claimEthAddr) eligibleRow = snap.rows.find(r => r.ethAddrHex === _claimEthAddr) || null;
+    }
+    return { d, snap, eligibleRow, snapshotState };
+  });
+  rendered.sort((a, b) => {
+    const aE = a.eligibleRow ? 1 : 0, bE = b.eligibleRow ? 1 : 0;
+    if (aE !== bE) return bE - aE;
+    return (b.d.announced_at || 0) - (a.d.announced_at || 0);
+  });
+
+  list.innerHTML = rendered.map(({ d, snap, eligibleRow, snapshotState }) => {
+    const meta = getAssetMeta(d.asset_id);
+    const ticker = meta?.ticker || '?';
+    const decimals = Number.isInteger(meta?.decimals) ? meta.decimals : 0;
+    const expIso = new Date((d.expires_at || 0) * 1000).toISOString().slice(0, 10);
+    const issuerShort = shorten(d.issuer_pubkey || '', 10);
+    const provenance = _claimProvenance(d, meta);
+    const provBadge = provenance === 'matches_etcher'
+      ? `<span class="status-pill confirmed" style="font-size:9px;">issued by etcher</span>`
+      : provenance === 'self_announced'
+        ? `<span class="status-pill" style="background:var(--bg-warm);color:var(--orange);border-color:var(--orange);font-size:9px;">⚠ self-announced</span>`
+        : `<span class="status-pill pending" style="font-size:9px;">unverified provenance</span>`;
+    let amountLine = '';
+    let actionLine = '';
+    if (snapshotState === 'fetching') {
+      amountLine = `<div class="muted" style="font-size:11px;">checking eligibility…</div>`;
+      actionLine = `<button disabled style="font-size:11px;">…</button>`;
+    } else if (snapshotState === 'error') {
+      amountLine = `<div class="error" style="font-size:11px;">snapshot fetch failed: ${escapeHtml(snap.error)}</div>`;
+      actionLine = `<button disabled style="font-size:11px;">unavailable</button>`;
+    } else if (!_claimEthAddr) {
+      amountLine = `<div class="muted" style="font-size:11px;">${snap.rows.length} recipients · connect Ethereum wallet to check eligibility</div>`;
+      actionLine = `<button disabled style="font-size:11px;">connect wallet</button>`;
+    } else if (!eligibleRow) {
+      amountLine = `<div class="muted" style="font-size:11px;">not eligible (your address not in this drop)</div>`;
+      actionLine = `<button disabled style="font-size:11px;">not eligible</button>`;
+    } else {
+      amountLine = `<div style="font-size:13px;color:var(--green);"><strong>✓ ${escapeHtml(fmtAssetAmountPlain(eligibleRow.amount, decimals))} ${escapeHtml(ticker)}</strong> <span class="muted">· leaf #${eligibleRow.index}</span></div>`;
+      actionLine = `<button data-act="claim-discover-pick" data-root="${escapeHtml(d.merkle_root)}" data-cid="${escapeHtml(d.ipfs_cid)}" class="primary" style="font-size:11px;">Claim →</button>`;
+    }
+    const noteLine = d.note
+      ? `<div class="muted" style="font-size:11px;margin-top:4px;font-style:italic;">"${escapeHtml(d.note)}"</div>`
+      : '';
+    const selfAnnouncedHint = (provenance === 'self_announced')
+      ? `<div class="muted" style="font-size:10px;margin-top:4px;">announcer ${escapeHtml(issuerShort)} is not the asset's etcher — verify the drop is legit before claiming</div>`
+      : '';
+    return `
+      <div class="card" style="margin-bottom:8px;padding:12px;border:1px solid var(--ink);background:var(--bg);">
+        <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+          <div style="min-width:0;flex:1;">
+            <strong>${escapeHtml(ticker)}</strong>
+            ${provBadge}
+            <span class="muted" style="font-size:11px;"> · root <code>${escapeHtml(shorten(d.merkle_root, 10))}</code> · expires ${expIso}</span>
+          </div>
+          <div>${actionLine}</div>
+        </div>
+        <div style="margin-top:6px;">${amountLine}</div>
+        ${noteLine}
+        ${selfAnnouncedHint}
+      </div>
+    `;
+  }).join('');
+
+  list.querySelectorAll('button[data-act="claim-discover-pick"]').forEach(btn => {
+    btn.onclick = () => {
+      const rEl = $('#claim-root');
+      const cEl = $('#claim-cid');
+      if (rEl) rEl.value = btn.dataset.root;
+      if (cEl) cEl.value = btn.dataset.cid;
+      const m = $('#claim-manual-entry');
+      if (m) m.open = true;
+      $('#btn-claim-load')?.click();
+    };
+  });
+}
+
 function refreshClaimTab() {
   _renderClaimTacitId();
   _renderClaimSnapshotInfo();
+  _claimRefreshDiscover();
   // Silent MetaMask reconnect: if the user previously authorized this origin,
   // their connected address is restored without a prompt. Followed by a render
   // pass so the eligibility section reflects the recovered state.
@@ -9333,6 +10008,8 @@ function refreshClaimTab() {
     _renderClaimEligibility();
     _renderClaimMsgPreview();
     _refreshClaimSignAvailability();
+    // Re-render the discover list so eligibility flags pick up the recovered ETH address.
+    _renderClaimDiscoverList();
   });
   _renderClaimEligibility();
   _renderClaimMsgPreview();
@@ -9423,12 +10100,21 @@ function setupClaimTab() {
       _renderClaimEligibility();
       _renderClaimMsgPreview();
       _refreshClaimSignAvailability();
+      // Re-render the discovery list so eligibility flags fill in for any
+      // already-fetched snapshots without a network round-trip.
+      _renderClaimDiscoverList();
     } catch (e) {
-      toast('MetaMask connect failed: ' + e.message, 'error');
+      toast('Ethereum wallet connect failed: ' + e.message, 'error');
       console.error(e);
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
+  });
+
+  $('#btn-claim-discover-refresh')?.addEventListener('click', () => {
+    // Force re-fetch by clearing the per-root snapshot cache.
+    _claimDiscoverSnapshots.clear();
+    _claimRefreshDiscover();
   });
 
   $('#btn-claim-sign')?.addEventListener('click', async () => {
@@ -9448,9 +10134,12 @@ function setupClaimTab() {
     }
   });
 
-  // Listen for MetaMask account changes — invalidate eligibility + signed
-  // claim if the user switches addresses while the tab is open.
-  if (window.ethereum?.on) {
+  // Legacy fallback listener on window.ethereum for wallets that don't
+  // announce via EIP-6963. The post-EIP-6963 path re-binds an equivalent
+  // listener on the selected provider inside `_claimConnectMetaMask`, guarded
+  // by `_tacitAccountsBound` so we don't double-fire.
+  if (window.ethereum?.on && !window.ethereum._tacitAccountsBound) {
+    window.ethereum._tacitAccountsBound = true;
     window.ethereum.on('accountsChanged', accounts => {
       if (Array.isArray(accounts) && accounts.length > 0) {
         _claimEthAddr = String(accounts[0]).toLowerCase().replace(/^0x/, '');
@@ -9461,6 +10150,7 @@ function setupClaimTab() {
       _renderClaimEligibility();
       _renderClaimMsgPreview();
       _renderClaimResult();
+      _renderClaimDiscoverList();
     });
   }
 }
@@ -10577,7 +11267,77 @@ async function renderRecentEtches() {
     // we trim to 6, so a duplicate that happens to be in the recent slice
     // gets correctly flagged against its earlier-etched sibling that isn't.
     markTickerCollisions(allAssets);
-    const assets = allAssets.slice(0, 6);
+    // Network stats from the same data we already loaded — assets etched
+    // and total live offers (sum of the three KV count fields). Stale
+    // entries the worker hasn't GC'd yet inflate "live offers" slightly;
+    // clicking through to Market shows the post-filter count so this stat
+    // is a coarse hook into the marketplace, not a precise live number.
+    const statsEl = $('#recent-etches-stats');
+    if (statsEl) {
+      const totalAssets = allAssets.length;
+      const totalOffers = allAssets.reduce((s, a) =>
+        s + Number(a.listing_count || 0)
+          + Number(a.range_listing_count || 0)
+          + Number(a.atomic_intent_count || 0), 0);
+      const totalMintable = allAssets.filter(a => a.mintable).length;
+      const offersLink = totalOffers > 0
+        ? `<a href="#" id="recent-etches-offers-link" style="color:var(--bg);text-decoration:underline;">${totalOffers} live offer${totalOffers === 1 ? '' : 's'}</a>`
+        : `<span class="muted">0 live offers</span>`;
+      statsEl.style.display = 'flex';
+      statsEl.style.gap = '14px';
+      statsEl.style.flexWrap = 'wrap';
+      statsEl.innerHTML =
+        `<span><strong>${totalAssets}</strong> asset${totalAssets === 1 ? '' : 's'} etched</span>` +
+        ` · <span>${offersLink}</span>` +
+        ` · <span class="muted">${totalMintable} mintable</span>` +
+        ` · <span class="muted">${escapeHtml(NET.name)}</span>`;
+      const off = $('#recent-etches-offers-link');
+      if (off) off.onclick = (ev) => { ev.preventDefault(); $('.tab[data-tab="market"]').click(); };
+    }
+    // Lander sort toggle: "recent" (default, worker order) vs "active"
+    // (cumulative activity — transfers + offers + mints + burns). Persisted
+    // in localStorage so a user who prefers "active" doesn't have to re-pick
+    // every reload. Honest UI label: "Most active", not "Trending" — without
+    // timestamps on the per-tx transfer index, we can only sort cumulative.
+    const toggleEl = $('#recent-etches-toggle');
+    if (toggleEl) {
+      // Show the toggle only when there are assets to sort. Explicitly hide
+      // on empty networks so a user switching from a populated network to
+      // an empty one doesn't see a stranded toggle row above the empty
+      // state hint.
+      if (allAssets.length > 0) {
+        toggleEl.style.display = 'flex';
+        toggleEl.querySelectorAll('[data-lander-sort]').forEach(b => {
+          b.classList.toggle('active', b.dataset.landerSort === _landerSort);
+          b.onclick = () => {
+            if (b.dataset.landerSort === _landerSort) return;
+            _landerSort = b.dataset.landerSort;
+            try { localStorage.setItem('tacit-lander-sort-v1', _landerSort); } catch {}
+            renderRecentEtches();
+          };
+        });
+      } else {
+        toggleEl.style.display = 'none';
+      }
+    }
+    let sorted = allAssets;
+    if (_landerSort === 'active') {
+      sorted = [...allAssets].sort((x, y) => {
+        const xa = (Number(x.transfer_count || 0))
+                 + (Number(x.listing_count || 0)) + (Number(x.range_listing_count || 0)) + (Number(x.atomic_intent_count || 0))
+                 + (Array.isArray(x.mints) ? x.mints.length : 0)
+                 + (Array.isArray(x.burns) ? x.burns.length : 0);
+        const ya = (Number(y.transfer_count || 0))
+                 + (Number(y.listing_count || 0)) + (Number(y.range_listing_count || 0)) + (Number(y.atomic_intent_count || 0))
+                 + (Array.isArray(y.mints) ? y.mints.length : 0)
+                 + (Array.isArray(y.burns) ? y.burns.length : 0);
+        if (ya !== xa) return ya - xa;
+        // Tiebreaker: newer first so two zero-activity assets surface in
+        // recency order, matching the "recent" view's instinct.
+        return (Number(y.etched_at) || 0) - (Number(x.etched_at) || 0);
+      });
+    }
+    const assets = sorted.slice(0, 6);
     if (!assets.length) {
       list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;">No assets etched on ${escapeHtml(NET.name)} yet — be the first.</div>`;
       return;
@@ -10828,6 +11588,135 @@ function _sharedFetchTx(id) {
   p.catch(() => { if (_discoverFetchCache.get(id) === p) _discoverFetchCache.delete(id); });
   _discoverFetchCache.set(id, p);
   return p;
+}
+
+// ============== DISCOVER VERIFY: VIEWPORT-DRIVEN POOL ==============
+// Pre-fix Discover walked every asset's chain on tab open, even ones the
+// user never scrolled to. With many assets that wastes ~50–200ms of CPU
+// each (rangeproof verification dominates). The replacement: each card
+// registers an IntersectionObserver; only when it scrolls into view do
+// we kick off its chain walk. Cache hits skip this gating because they
+// cost essentially nothing and shouldn't delay the ✓ badge.
+//
+// Concurrency is capped via a single semaphore so the UI thread doesn't
+// stall when many cards become visible simultaneously (e.g., on a fast
+// scroll). Stats counters tick as work progresses; the stats line
+// collapses once all cards are accounted for.
+const DISCOVER_VERIFY_POOL_SIZE = 5;
+let _discoverVerifySemaphoreN = DISCOVER_VERIFY_POOL_SIZE;
+const _discoverVerifySemaphoreQ = [];
+function _discoverVerifyAcquire() {
+  if (_discoverVerifySemaphoreN > 0) { _discoverVerifySemaphoreN--; return Promise.resolve(); }
+  return new Promise(resolve => _discoverVerifySemaphoreQ.push(resolve));
+}
+function _discoverVerifyRelease() {
+  if (_discoverVerifySemaphoreQ.length) { _discoverVerifySemaphoreQ.shift()(); }
+  else _discoverVerifySemaphoreN++;
+}
+
+let _discoverVerifyStats = { total: 0, verified: 0, failed: 0, cached: 0, pending: 0 };
+function _setDiscoverVerifyStats(patch) {
+  Object.assign(_discoverVerifyStats, patch);
+  const el = $('#discover-verify-stats');
+  if (!el) return;
+  const { total, verified, failed, cached, pending } = _discoverVerifyStats;
+  if (total === 0) { el.style.display = 'none'; return; }
+  const done = verified + failed + cached;
+  if (pending <= 0 && done >= total) {
+    // All cards accounted for — collapse the indicator. Cached + verified
+    // collapse into one count since both are equally "trusted by chain".
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  const parts = [];
+  if (verified + cached > 0) parts.push(`${verified + cached} verified`);
+  if (pending > 0)           parts.push(`${pending} pending`);
+  if (failed > 0)            parts.push(`${failed} unverifiable`);
+  el.textContent = `${parts.join(' · ')} of ${total} asset${total === 1 ? '' : 's'}`;
+}
+
+let _discoverVerifyObserver = null;
+function _ensureDiscoverVerifyObserver() {
+  if (_discoverVerifyObserver) return _discoverVerifyObserver;
+  if (typeof IntersectionObserver === 'undefined') {
+    // Fallback for browsers/environments without IntersectionObserver:
+    // process every observed card immediately. Loses the CPU win but
+    // preserves correctness; the legacy pool model is no worse than this.
+    _discoverVerifyObserver = {
+      observe(card) {
+        if (card._discoverAsset) _processDiscoverCardVerify(card, card._discoverAsset);
+      },
+      unobserve() {},
+    };
+    return _discoverVerifyObserver;
+  }
+  _discoverVerifyObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const card = e.target;
+      _discoverVerifyObserver.unobserve(card);
+      if (card.dataset.verifyState === 'pending' && card._discoverAsset) {
+        _processDiscoverCardVerify(card, card._discoverAsset);
+      }
+    }
+  }, { rootMargin: '300px 0px' }); // pre-warm the next ~screen of scroll-down cards
+  return _discoverVerifyObserver;
+}
+
+// Run the full stage-1 verify path for a single card: chain walk, image
+// resolution, primary render, then fan out background enrichment for
+// attestation/mints/burns. Mirrors the body of the legacy POOL=5 loop
+// but is per-card and gated by the semaphore + viewport observer above.
+async function _processDiscoverCardVerify(card, a) {
+  if (!card || !a) return;
+  if (card.dataset.verifyState === 'verified' || card.dataset.verifyState === 'failed') return;
+  card.dataset.verifyState = 'verifying';
+  await _discoverVerifyAcquire();
+  try {
+    const cacheHit = !!getCachedDiscoverEtch(a.asset_id, a.etch_txid);
+    const verify = await verifyDiscoverAsset(a)
+      .catch(e => ({ ok: false, error: (e && e.message) || String(e),
+                     mismatches: [], verifiedMints: {}, verifiedBurns: {}, ipfsAttest: null }));
+    verify._assetId = a.asset_id;
+    const effectiveImageUri = verify.ok ? verify.imageUri : a.image_uri;
+    const imgUrl = effectiveImageUri ? await resolveImageUri(effectiveImageUri).catch(() => null) : null;
+    const extras = effectiveImageUri ? getMetadataExtras(effectiveImageUri) : null;
+    card.dataset.verifyState = verify.ok ? 'verified' : 'failed';
+    renderDiscoverCard(card, a, verify, imgUrl, extras);
+    applyDiscoverFilter();
+    // Stats: cache hits and chain walks both move "pending" → "ok or fail",
+    // but cached count is reported separately so the user can see how much
+    // of the load was free.
+    if (verify.ok) {
+      _setDiscoverVerifyStats({
+        verified: _discoverVerifyStats.verified + (cacheHit ? 0 : 1),
+        cached:   _discoverVerifyStats.cached   + (cacheHit ? 1 : 0),
+        pending:  Math.max(0, _discoverVerifyStats.pending - 1),
+      });
+    } else {
+      _setDiscoverVerifyStats({
+        failed:  _discoverVerifyStats.failed + 1,
+        pending: Math.max(0, _discoverVerifyStats.pending - 1),
+      });
+    }
+    // Stages 2-4 stay the same: per-asset background enrichment for IPFS
+    // metadata, on-chain mints, on-chain burns. None awaited — each
+    // updates the card itself when complete.
+    if (verify.ok) {
+      enrichDiscoverAttestation(verify)
+        .then(() => { renderDiscoverCard(card, a, verify, imgUrl, extras); applyDiscoverFilter(); })
+        .catch(() => {});
+      enrichDiscoverMints(a, verify)
+        .then(() => { verify._mintsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); })
+        .catch(() => { verify._mintsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); });
+      enrichDiscoverBurns(a, verify)
+        .then(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); })
+        .catch(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); });
+    }
+  } finally {
+    _discoverVerifyRelease();
+  }
 }
 
 // Stage 1 — etch validation. No IPFS, no mint/burn walks. Returns the
@@ -11128,6 +12017,31 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   card.dataset.mintable = (verified && verify.mintable) ? '1' : '0';
   card.dataset.attested = (verified && verify.ipfsAttest) ? '1' : '0';
   card.dataset.etchedAt = String(Number.isFinite(a.etched_at) ? a.etched_at : 0);
+  // Pill + sort signals from worker-supplied counts. Coarse — these are raw
+  // KV counts that may include not-yet-GC'd or unverified entries — but for
+  // a "show me assets with any market activity" filter that's the right
+  // granularity. The Market tab itself filters expired entries at render time.
+  card.dataset.ticker = String(ticker || '').toLowerCase();
+  const _offerCount = Number(a.listing_count || 0)
+                    + Number(a.range_listing_count || 0)
+                    + Number(a.atomic_intent_count || 0);
+  card.dataset.hasOffers = _offerCount > 0 ? '1' : '0';
+  card.dataset.hasMints = (Array.isArray(a.mints) && a.mints.length > 0) ? '1' : '0';
+  card.dataset.hasBurns = (Array.isArray(a.burns) && a.burns.length > 0) ? '1' : '0';
+  card.dataset.hasTransfers = (Number(a.transfer_count || 0) > 0) ? '1' : '0';
+  // Numeric counts on the dataset so the discover-sort comparator can rank
+  // cards without re-reading the worker payload. transferCount comes from
+  // the cron-maintained counter; offerCount aggregates the three orderbook
+  // count fields. activityCount is the composite used by "Most active":
+  // transfer count + offer count + mint count + burn count, equally
+  // weighted. Coarse but cheap; a more nuanced score could weight by
+  // recency (we'd need timestamped events) or by attestation status.
+  const _xferCount = Number(a.transfer_count || 0);
+  const _mintListCount = Array.isArray(a.mints) ? a.mints.length : 0;
+  const _burnListCount = Array.isArray(a.burns) ? a.burns.length : 0;
+  card.dataset.transferCount = String(_xferCount);
+  card.dataset.offerCount = String(_offerCount);
+  card.dataset.activityCount = String(_xferCount + _offerCount + _mintListCount + _burnListCount);
   const decimals = verified ? verify.decimals
                   : (Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0);
   const safeHeight = Number.isInteger(a.etched_at_height) ? a.etched_at_height : null;
@@ -11264,6 +12178,9 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   // Requires (a) chain-verified etch with attested supply, (b) every claimed
   // mint chain-verified AND attested, (c) zero phantom mints, (d) mints AND
   // burns enrichment complete (otherwise the math is incomplete).
+  // When etch === circulating (no mints, no burns), we collapse the two
+  // green lines into a single "Supply" line — the math is trivially the
+  // same as the etch supply, so showing it twice is redundant noise.
   let totalSupplyBadge = '';
   if (verified && verify._mintsEnriched && verify._burnsEnriched
       && mintAllAttested && etchSupply !== null
@@ -11271,7 +12188,15 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       && mintAttestedCount === chainMintCount) {
     const totalIssued = etchSupply + mintAttestedSum;
     const circulating = totalIssued - burnedSum;
-    totalSupplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Circulating: ${escapeHtml(fmtAssetAmount(circulating, decimals))}</strong> · issued ${escapeHtml(fmtAssetAmount(totalIssued, decimals))}${burnedSum > 0n ? ` − burned ${escapeHtml(fmtAssetAmount(burnedSum, decimals))}` : ''}</div>`;
+    if (chainMintCount === 0 && chainBurnCount === 0) {
+      // Collapsed: rewrite supplyBadge from "Etch supply: X · ✓ verified
+      // opening" to "Supply: X · ✓ verified · fixed (no mints, no burns)".
+      // Skip the totalSupplyBadge to avoid duplicating the same number.
+      const tag = attestSource === 'ipfs' ? '✓ verified opening (IPFS)' : '✓ verified opening (worker cache)';
+      supplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Supply: ${escapeHtml(fmtAssetAmount(etchSupply, decimals))}</strong> · ${tag} · fixed (no mints, no burns)</div>`;
+    } else {
+      totalSupplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Circulating: ${escapeHtml(fmtAssetAmount(circulating, decimals))}</strong> · issued ${escapeHtml(fmtAssetAmount(totalIssued, decimals))}${burnedSum > 0n ? ` − burned ${escapeHtml(fmtAssetAmount(burnedSum, decimals))}` : ''}</div>`;
+    }
   }
 
   // Mismatch detail — only when verified=true and at least one field differs.
@@ -11309,6 +12234,36 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     ${mintBadge}
     ${burnBadge}
     ${totalSupplyBadge}
+    ${(() => {
+      // Live-market badge — flag and link to offers when this asset has any
+      // active listings (per-UTXO, range, or atomic intent). Counts here are
+      // raw KV counts (may include expired entries the worker is GC'ing
+      // lazily); the click destination is the Market tab which filters those
+      // out at render time, so the deep-link stays correct even when a count
+      // is slightly stale.
+      const offerCount = Number(a.listing_count || 0)
+                       + Number(a.range_listing_count || 0)
+                       + Number(a.atomic_intent_count || 0);
+      if (offerCount <= 0) return '';
+      const breakdown = [];
+      if (Number(a.listing_count || 0) > 0)         breakdown.push(`${a.listing_count} listing${a.listing_count === 1 ? '' : 's'}`);
+      if (Number(a.range_listing_count || 0) > 0)   breakdown.push(`${a.range_listing_count} range`);
+      if (Number(a.atomic_intent_count || 0) > 0)   breakdown.push(`${a.atomic_intent_count} atomic`);
+      return `<div style="margin-top:6px;font-size:11px;">
+        <a href="#" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="display:inline-block;padding:3px 8px;background:#0a8f43;color:#fff;text-decoration:none;border:1px solid #0a8f43;font-weight:bold;letter-spacing:0.05em;">▸ ${offerCount} live offer${offerCount === 1 ? '' : 's'} on Market</a>
+        <span class="muted" style="margin-left:8px;">${escapeHtml(breakdown.join(' · '))}</span>
+      </div>`;
+    })()}
+    ${(() => {
+      // Transfer-count signal — coarse "is anyone moving this?" indicator,
+      // not a legitimacy proof (self-spam is cheap). Cron-maintained counter;
+      // absence of any transfers is meaningful, presence is movement only.
+      // Rendered only when > 0 so static drops/airdrops that never moved
+      // don't get a misleading "0 transfers" line.
+      const xferCount = Number(a.transfer_count || 0);
+      if (xferCount <= 0) return '';
+      return `<div class="muted" style="margin-top:6px;font-size:11px;">🔄 ${xferCount} indexed transfer${xferCount === 1 ? '' : 's'} <span title="counted from CXFER + AXFER envelopes seen by this worker since it began scanning — coarse popularity signal, not a legitimacy proof">(CXFER + AXFER)</span></div>`;
+    })()}
     ${extras?.description ? `<div class="muted" style="margin-top:8px;font-size:11px;font-style:italic;">${escapeHtml(extras.description)}</div>` : ''}
     ${(() => {
       const safe = safeExternalUrl(extras?.external_url);
@@ -11320,6 +12275,14 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     </div>`;
   // Wire the asset_id short/full toggle for this card.
   wireAssetIdToggles(card);
+  // Wire the "view offers" badge → Market tab with this asset_id pre-filtered.
+  card.querySelectorAll('[data-act="discover-view-offers"]').forEach(el => {
+    el.onclick = (ev) => {
+      ev.preventDefault();
+      pendingMarketFilter = el.dataset.aid || '';
+      $('.tab[data-tab="market"]').click();
+    };
+  });
 }
 
 // ============== MARKET TAB ==============
@@ -11372,6 +12335,15 @@ async function renderMarket() {
     list.innerHTML = '<div class="muted" style="padding:14px;">marketplace disabled (no Worker)</div>';
     if (status) status.textContent = '';
     return;
+  }
+  // Cross-tab deep-link: a Discover card's "view offers" badge sets
+  // pendingMarketFilter to an asset_id. Drop it into the search box before
+  // the first applyMarketFilters so the user lands directly on a filtered
+  // view rather than seeing the full list flash and then narrow.
+  if (pendingMarketFilter) {
+    const inputEl = $('#market-filter-asset');
+    if (inputEl) inputEl.value = pendingMarketFilter;
+    pendingMarketFilter = null;
   }
   try {
     _marketCache = await fetchMarketData();
@@ -11851,61 +12823,37 @@ async function renderDiscover(force = false) {
           .catch(() => { /* image resolution is best-effort */ });
       }
     }
-    // STAGE 1: ETCH VERIFY POOL. Limited concurrency for mempool.space rate.
-    // For each card, we (a) get the etch verify (cache hit → free; cache miss →
-    // chain walk + range proof), (b) re-render the card with canonical fields
-    // and a ✓ badge, (c) kick off attestation + mints + burns enrichment in
-    // the BACKGROUND so the next card's etch verify starts immediately.
-    const queue = j.assets.slice();
-    const POOL = 5;
-    await Promise.all(Array.from({ length: POOL }, async () => {
-      while (queue.length) {
-        const a = queue.shift();
-        if (!a) continue;
-        const card = cards.get(a.asset_id);
-        if (!card) continue;
-        const verify = await verifyDiscoverAsset(a)
-          .catch(e => ({ ok: false, error: (e && e.message) || String(e),
-                         mismatches: [], verifiedMints: {}, verifiedBurns: {}, ipfsAttest: null }));
-        verify._assetId = a.asset_id;
-        // Resolve canonical image AFTER verification so the avatar reflects
-        // the on-chain envelope's image_uri, not whatever the worker advertised.
-        const effectiveImageUri = verify.ok ? verify.imageUri : a.image_uri;
-        const imgUrl = effectiveImageUri ? await resolveImageUri(effectiveImageUri).catch(() => null) : null;
-        const extras = effectiveImageUri ? getMetadataExtras(effectiveImageUri) : null;
-        card.dataset.verifyState = verify.ok ? 'verified' : 'failed';
-        renderDiscoverCard(card, a, verify, imgUrl, extras);
-        // Re-apply filter so a card whose pill predicate fails (e.g. not
-        // mintable while the Mintable pill is active) hides immediately
-        // rather than flashing in then disappearing on the final pass.
-        applyDiscoverFilter();
-        // STAGES 2-4: BACKGROUND ENRICHMENT. Each promise updates the card on
-        // completion. We don't await any of them — the queue moves on to the
-        // next asset's etch verify so the user sees ✓ badges streaming in
-        // instead of waiting for IPFS / mint walks across all assets first.
-        if (verify.ok) {
-          // Stage 2: IPFS attestation. Worst-case 5s timeout per asset (the
-          // slow path we used to block on); now off the critical path entirely.
-          enrichDiscoverAttestation(verify)
-            .then(() => {
-              renderDiscoverCard(card, a, verify, imgUrl, extras);
-              // 'attested' pill predicate may now match — re-apply filter.
-              applyDiscoverFilter();
-            })
-            .catch(() => { /* enrichment is best-effort, never blocks UI */ });
-          // Stages 3-4: per-mint and per-burn validation. Each enrichment
-          // sets verify._{mints,burns}Enriched on completion (or failure)
-          // so renderDiscoverCard knows when to flip from "validating…" to
-          // the full chain-verified breakdown.
-          enrichDiscoverMints(a, verify)
-            .then(() => { verify._mintsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); })
-            .catch(() => { verify._mintsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); });
-          enrichDiscoverBurns(a, verify)
-            .then(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); })
-            .catch(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); });
-        }
+    // STAGE 1: LAZY VIEWPORT-DRIVEN ETCH VERIFY. Pre-fix the verify pool
+    // walked through every asset on load, even ones the user never scrolled
+    // to — pure CPU/battery waste at scale. Now: each card's chain walk is
+    // gated on IntersectionObserver. Cache hits process eagerly (free) so
+    // the user gets immediate ✓ badges on already-verified assets; cold
+    // chain walks defer until the card is in viewport (with a 300px margin
+    // so a fast scroller pre-warms the next page's worth of cards).
+    //
+    // Concurrency is enforced via a single semaphore shared by all cards,
+    // so the UI thread isn't saturated when many cards become visible at
+    // once. Stats counters tick as work completes; an empty pending queue
+    // collapses the stats display.
+    _setDiscoverVerifyStats({ total: j.assets.length, verified: 0, failed: 0, cached: 0, pending: j.assets.length });
+    const observer = _ensureDiscoverVerifyObserver();
+    for (const a of j.assets) {
+      const card = cards.get(a.asset_id);
+      if (!card) continue;
+      card._discoverAsset = a;
+      // Cache-hit fast path: process immediately. The verify cost is
+      // negligible (localStorage decode + small crypto check) so deferring
+      // would only delay the ✓ badge for no CPU savings.
+      if (getCachedDiscoverEtch(a.asset_id, a.etch_txid)) {
+        _processDiscoverCardVerify(card, a);
+      } else {
+        // Cold path: defer until the card scrolls into view.
+        observer.observe(card);
       }
-    }));
+    }
+    // The verify work is no longer awaited here — it streams in via the
+    // observer and the cache-hit fast path. The listings panel below runs
+    // independently. Stats stop ticking once every card is processed.
     // (asset_id short/full toggles are wired per-card inside renderDiscoverCard.)
     // Open listings panel: fetch listings for every asset that reports
     // listing_count > 0, flatten into a single grid, sorted by recency.
@@ -12091,8 +13039,9 @@ async function renderDiscover(force = false) {
     if (statusEl) statusEl.textContent = 'error';
     console.error(e);
   }
-  // Re-apply the Discover filter (if any) after a refresh so the user's
-  // current query stays active across re-renders.
+  // Re-apply the Discover filter + sort (if any) after a refresh so the
+  // user's current query and ordering stay active across re-renders.
+  applyDiscoverSort();
   applyDiscoverFilter();
   // Deep-link consumer: if a Wallet-tab tile click set a target, find the
   // corresponding card and scroll into view with a brief highlight pulse.
@@ -12372,10 +13321,11 @@ function setupHoldingsButtons() {
 }
 
 // Active pill predicate — combined with the text-search query in
-// applyDiscoverFilter. 'all' = no predicate; mintable/attested/recent each
-// add one. Held in module scope so a re-render (which rebuilds cards) keeps
-// the user's selection.
+// applyDiscoverFilter. 'all' = no predicate; mintable/attested/recent/
+// offers/minted/burned each add one. Held in module scope so a re-render
+// (which rebuilds cards) keeps the user's selection.
 let _discoverPill = 'all';
+let _discoverSort = 'newest';
 function _matchesPill(card) {
   switch (_discoverPill) {
     case 'mintable': return card.dataset.mintable === '1';
@@ -12385,8 +13335,50 @@ function _matchesPill(card) {
       if (!t) return false;
       return t * 1000 >= Date.now() - 24 * 3600 * 1000;
     }
+    case 'offers':   return card.dataset.hasOffers === '1';
+    case 'minted':   return card.dataset.hasMints === '1';
+    case 'burned':   return card.dataset.hasBurns === '1';
+    case 'moved':    return card.dataset.hasTransfers === '1';
     default: return true;
   }
+}
+
+// Re-order the rendered cards in-place by detaching and re-appending in
+// the requested sort. Worker returns assets in newest-first order so
+// 'newest' is the on-load default and is essentially a no-op when the
+// sort hasn't been touched. Other sorts read off card.dataset; cards are
+// already mounted so this is purely a DOM shuffle, no network fetch.
+function applyDiscoverSort() {
+  const list = $('#discover-list');
+  if (!list) return;
+  const cards = Array.from(list.querySelectorAll('.asset-card[data-aid]'));
+  if (cards.length < 2) return;
+  // Activity sorts use cumulative counters (transfer/offer/composite). They
+  // bias toward older assets with more time on chain — this is "most active
+  // overall" not "trending in the last 24h". Real time-windowed trending
+  // would need timestamped per-tx records; the current counter-only design
+  // can't compute a velocity. The labels in the dropdown say "Most …",
+  // never "Trending", to keep that distinction honest.
+  // Tiebreaker: when two cards have the same count (e.g., both 0), fall
+  // back to recency so newer assets surface above identical-but-older ones.
+  const tieByRecency = (a, b) => (Number(b.dataset.etchedAt) || 0) - (Number(a.dataset.etchedAt) || 0);
+  const numDesc = (key) => (a, b) => {
+    const d = (Number(b.dataset[key]) || 0) - (Number(a.dataset[key]) || 0);
+    return d !== 0 ? d : tieByRecency(a, b);
+  };
+  cards.sort((a, b) => {
+    switch (_discoverSort) {
+      case 'oldest':         return (Number(a.dataset.etchedAt) || 0) - (Number(b.dataset.etchedAt) || 0);
+      case 'ticker-asc':     return (a.dataset.ticker || '').localeCompare(b.dataset.ticker || '');
+      case 'ticker-desc':    return (b.dataset.ticker || '').localeCompare(a.dataset.ticker || '');
+      case 'transfers-desc': return numDesc('transferCount')(a, b);
+      case 'offers-desc':    return numDesc('offerCount')(a, b);
+      case 'active-desc':    return numDesc('activityCount')(a, b);
+      case 'newest':
+      default:               return tieByRecency(a, b);
+    }
+  });
+  for (const c of cards) list.appendChild(c);
 }
 // Apply the Discover filter (search input + active pill) to the currently
 // rendered cards. Substring-matches against card.dataset.filterKey for the
@@ -12454,6 +13446,14 @@ function setupDiscoverButtons() {
         b.classList.toggle('active', b.dataset.pill === _discoverPill);
       });
       applyDiscoverFilter();
+    });
+  }
+  // Sort dropdown — re-orders the already-mounted cards in place, no fetch.
+  const sortSel = $('#discover-sort');
+  if (sortSel) {
+    sortSel.addEventListener('change', () => {
+      _discoverSort = sortSel.value || 'newest';
+      applyDiscoverSort();
     });
   }
 }
@@ -12648,6 +13648,24 @@ function _hasAnyExistingWallet() {
   return false;
 }
 
+// FAQ modal: opened by the "?" button in the header. Static reference content
+// (questions hard-coded in index.html); this just wires up open/close. Closes
+// on the ✕ button, on backdrop click outside the card, and on Escape.
+function setupFaqModal() {
+  const btn = document.getElementById('btn-faq');
+  const modal = document.getElementById('faq-modal');
+  const closeBtn = document.getElementById('faq-close');
+  if (!btn || !modal || !closeBtn) return;
+  const open = () => { modal.style.display = 'grid'; closeBtn.focus(); };
+  const close = () => { modal.style.display = 'none'; };
+  btn.addEventListener('click', open);
+  closeBtn.addEventListener('click', close);
+  modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modal.style.display !== 'none') close();
+  });
+}
+
 // Welcome modal: shown on genuine first load to give the user a real choice
 // between connecting an existing bitcoin wallet (ext) and generating a fresh
 // local burner. Resolves to 'ext-xverse' | 'ext-unisat' | 'local'. Caller
@@ -12756,6 +13774,7 @@ async function init() {
   }
   setupNetworkSelect();
   setupTabs();
+  setupFaqModal();
   setupWalletButtons();
   setupExtWalletButtons();
   setupUnisatEvents();
@@ -12945,6 +13964,8 @@ export {
   _axintentFulfilMsg as axintentFulfilmentMsg,
   _axintentCancelMsg as axintentCancelMsg,
   deriveAxintentBlindingKeystream, xor32,
+  // Drop-announcement signing messages — exported so tests can verify cross-impl parity with the worker.
+  dropAnnounceMsgBytes, dropAnnounceCancelMsgBytes,
   // Encrypted-at-rest privkey storage
   encryptPrivkey, decryptPrivkey,
 };

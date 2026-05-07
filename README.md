@@ -121,6 +121,80 @@ Where tacit isn't the right choice:
 
 ---
 
+## FAQ
+
+**Why tacit and not Runes / Liquid / RGB?** Each pays a price tacit
+declines to pay. Runes / BRC-20 publish amounts in cleartext (no privacy).
+Liquid hides amounts and asset IDs but runs on a federated sidechain
+(~15 KYC'd functionaries — not Bitcoin proper, not trustless). RGB and
+Taproot Assets keep the substrate clean but move validation off-chain;
+the recipient must receive a proof chain from the sender out-of-band, and
+losing it loses the asset. Tacit hides amounts on Bitcoin proper *and*
+recovers from privkey + chain alone — that intersection is the niche.
+See "How tacit compares" above for the full breakdown.
+
+**Will my tacit holdings show up in UniSat / Xverse / Leather?** No.
+Those wallets don't run a tacit indexer. They'll see your tacit UTXOs as
+small BTC dust (the few hundred sats parked at each holding output).
+Balances surface only in a tacit indexer — the reference dApp, or any
+third-party implementation of [SPEC.md](./SPEC.md). The "Connect UniSat"
+flow in the dApp is *just for funding* — the tacit privkey is separate
+and stays in-page; UniSat never holds it, signs with it, or sees the
+balances it controls.
+
+**Is amount privacy actually enough?** For most fungible-token use cases
+(treasury operations, confidential payments, OTC settlement, payroll) —
+yes. Tacit hides what's load-bearing: how much is moving. Address-graph
+and asset-id privacy live at the Bitcoin-substrate layer — the same
+scope every Bitcoin-substrate protocol gives you. BIP-352 Silent Payments
+(receiver privacy) and Asset Surjection Proofs (asset-id privacy) are on
+the roadmap and compatible with tacit's wallet model — see "Future
+directions" below.
+
+**Can I recover my balance from just my privkey?** Yes, for every
+on-chain envelope. The dApp scans chain data, walks ancestry back to
+each CETCH/MINT, decrypts amounts via ECDH, and reconstructs the wallet —
+no share-link or sync server required. The one exception is atomic-intent
+recipient UTXOs (SPEC §5.7.6 — listed with a uniform-random blinding so
+browse-and-take can publish a cleartext amount without leaking via
+baby-step-giant-step), which fall back to local cache or the worker's
+24-hour fulfilment record.
+
+**How do I trust the announced supply when amounts are hidden?** The
+dApp ships supply attestation **on by default**. At etch time it pins
+the `(supply, blinding)` opening into IPFS as part of the asset
+metadata; anyone fetches the blob and verifies
+`pedersenCommit(supply, blinding) == on-chain commitment` from chain
+alone — no worker trust, no issuer trust beyond the one-time honest
+publish. Issuers who want a centralized-stablecoin-style "trust me about
+the supply" model can opt out explicitly. SPEC §7.3 spells out the
+attestation flow; for non-mintable assets attested at etch, supply is
+provably and permanently public.
+
+**What's the cost per transfer?** ~10 KB witness per CXFER (m=2
+aggregation), about 2,500–3,000 vBytes after the SegWit discount. At
+10 sat/vB on mainnet that's ~25–30k sats per transfer; at low-fee
+periods correspondingly less. Roughly 10× the size of a Runes'
+OP_RETURN runestone — Runes publishes amounts in cleartext, tacit hides
+them via Pedersen commitments + bulletproofs. That's where the size goes.
+
+**Is the indexer trust-bearing? What if I don't trust the worker?**
+The dApp's *indexer code* is the trust target — re-host it, pin it by
+IPFS CID; two browsers running the same code reach the same verdict from
+chain alone. The worker is a convenience cache, not part of the
+trust-bearing protocol: it cannot make an invalid envelope appear valid
+(clients re-verify rangeproofs, kernel sigs, mint sigs, and Pedersen
+openings client-side). You can run your own in ~5 minutes on a free
+Cloudflare account, or set `WORKER_BASE = ''` in `dapp/tacit.js` to
+disable it entirely. SPEC §8 covers this.
+
+**Is the code open?** Yes — MIT licensed, this repo is the canonical
+source. The protocol spec ([SPEC.md](./SPEC.md)) is the authoritative
+reference for indexer implementations; a re-implementation in any
+language reaches the same verdict from chain alone.
+
+---
+
 ## User stories
 
 **Alice mints a token.** Alice opens the dApp and signs in with Xverse —
@@ -563,9 +637,10 @@ amount-hiding only.
 
 ## Known limitations / roadmap
 
-- **Witness size.** ~10 KB per CXFER (m=2) at current bulletproof sizes. At
-  mainnet 10 sat/vB, ~$1–3 per transfer. Bulletproofs+ (~17% smaller) is a
-  v1.5 candidate.
+- **Witness size.** ~10 KB per CXFER (m=2) at current bulletproof sizes —
+  about 2,500–3,000 vBytes after the SegWit discount, ~25–30k sats per
+  transfer at 10 sat/vB on mainnet. Bulletproofs+ (~17% smaller) is a v1.5
+  candidate.
 - **Recursive validation is O(chain depth) on cold cache.** Memoized within
   a session; mobile users on deep chains will struggle. A persistent
   validator cache would be a real production add — currently out of scope.
@@ -775,8 +850,8 @@ up doing for the audit story.
   indistinguishable at the asset-type level. Stablecoin issuer can no
   longer be pattern-matched ("USDV is moving 10× more than DAIA today");
   treasury holdings of which asset stay private.
-- **Witness size grows ~1.5–2 KB** per CXFER → ~$2–4/tx mainnet, vs.
-  ~$1–3 today.
+- **Witness size grows ~1.5–2 KB** per CXFER → ~30–35k sats/tx at 10 sat/vB
+  on mainnet, vs. ~25–30k sats today.
 - **Recovery is slower:** the recipient no longer reads `asset_id` from
   the envelope cleartext; they trial-decrypt against asset_ids they know
   about. Acceptable for wallets holding 1–10 assets, slower for "scan

@@ -198,6 +198,68 @@ await test('airdrop claim POST body shape: { leaf_index, tacit_pubkey, eth_sig }
       && WORKER.airdropEthSigHex.test(dappBody.eth_sig.replace(/^0x/, ''));
 });
 
+console.log('\nDapp ↔ worker drop-announcement contract:');
+
+await test('drop announce POST body shape matches worker handler', () => {
+  // Pin the keys the dapp's `_publishDropAnnouncement` sends. Drift on either
+  // side silently breaks discovery — recipients see no eligible drops, issuers
+  // think publish succeeded. This test catches the rename class of bug.
+  const dappBody = {
+    asset_id: 'f'.repeat(64),
+    merkle_root: 'a'.repeat(64),
+    ipfs_cid: 'bafybeih' + 'a'.repeat(50),
+    issuer_pubkey: '02' + 'b'.repeat(64),
+    expires_at: Math.floor(Date.now() / 1000) + 7 * 86400,
+    note: 'Q1 2026 drop',
+    announce_sig: 'c'.repeat(128),
+  };
+  const required = ['asset_id', 'merkle_root', 'ipfs_cid', 'issuer_pubkey', 'expires_at', 'note', 'announce_sig'];
+  const got = Object.keys(dappBody);
+  return required.every(k => got.includes(k))
+      && WORKER.airdropMerkleRootHex.test(dappBody.merkle_root)
+      && WORKER.compressedPubHex.test(dappBody.issuer_pubkey)
+      && WORKER.schnorrSigHex.test(dappBody.announce_sig)
+      && Number.isInteger(dappBody.expires_at)
+      && dappBody.note.length <= 200;
+});
+
+await test('drop cancel DELETE body shape matches worker handler', () => {
+  const dappBody = {
+    issuer_pubkey: '02' + 'b'.repeat(64),
+    cancel_sig: 'c'.repeat(128),
+  };
+  const required = ['issuer_pubkey', 'cancel_sig'];
+  const got = Object.keys(dappBody);
+  return required.every(k => got.includes(k))
+      && WORKER.compressedPubHex.test(dappBody.issuer_pubkey)
+      && WORKER.schnorrSigHex.test(dappBody.cancel_sig);
+});
+
+await test('dropAnnounceMsgBytes (dapp) matches dropAnnounceMsg (worker) for fixture', async () => {
+  // Cross-realm parity check: the dapp computes the signing message via
+  // `dropAnnounceMsgBytes`; the worker re-computes via `dropAnnounceMsg`.
+  // Drift in field order, endianness, length-prefix width, or domain tag
+  // would silently make every announcement fail with "invalid announce_sig".
+  const worker = await import('../worker/src/index.js');
+  const aid = 'a'.repeat(64);
+  const root = 'b'.repeat(64);
+  const cid = 'bafybeihtest';
+  const exp = 1700000000;
+  const note = 'Q1 2026 community drop';
+  const dappOut = bytesToHex(dapp.dropAnnounceMsgBytes('signet', aid, root, cid, exp, note));
+  const wkrOut = bytesToHex(worker.dropAnnounceMsg('signet', aid, root, cid, exp, note));
+  return dappOut === wkrOut;
+});
+
+await test('dropAnnounceCancelMsgBytes (dapp) matches dropAnnounceCancelMsg (worker)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const root = 'b'.repeat(64);
+  const pub = '02' + '11'.repeat(32);
+  const dappOut = bytesToHex(dapp.dropAnnounceCancelMsgBytes('signet', root, pub));
+  const wkrOut = bytesToHex(worker.dropAnnounceCancelMsg('signet', root, pub));
+  return dappOut === wkrOut;
+});
+
 // ============================================================================
 // Summary
 // ============================================================================
