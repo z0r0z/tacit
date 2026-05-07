@@ -992,6 +992,9 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div id="mainnet-banner" style="display:none;position:relative;background:#fee;border:2px solid var(--red);padding:10px 36px 10px 16px;font-size:12px;color:var(--red);text-align:center;margin-bottom:16px;">
   <button id="mainnet-banner-close" type="button" aria-label="Acknowledge and hide" title="Acknowledge and hide" style="position:absolute;top:6px;right:8px;background:transparent;border:1px solid transparent;color:var(--red);font-size:16px;line-height:1;width:22px;height:22px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
   <strong>⚠ Mainnet — real BTC.</strong> Experimental software, no warranty. Do not put amounts at risk that you can't afford to lose.
+  <div id="mainnet-extwallet-hint" style="margin-top:6px;font-size:11px;font-weight:normal;display:none;">
+    <strong>No external wallet connected.</strong> Tacit is currently using an in-browser burner key. For meaningful balances on mainnet, connect Xverse / Leather / UniSat from the Wallet tab so the BTC funding side lives in a hardware-backed wallet.
+  </div>
   <div id="mainnet-burner-backup-hint" style="margin-top:6px;font-size:11px;font-weight:normal;display:none;">
     <strong>Your wallet key has not been backed up.</strong> Tacit will require an export-and-acknowledge step before your first asset operation.
   </div>
@@ -1273,6 +1276,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by your <em>active wallet</em>. To bound blast radius, generate a fresh treasury identity below, fund it from your main wallet via Send, then use Wallet → Import key in a separate browser profile to switch to the treasury before fulfilling.
       </div>
 
+      <details style="margin-bottom:14px;"><summary class="muted" style="cursor:pointer;font-size:11px;">Trust model: where the worker fits, and how to self-host</summary>
+        <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
+          The shared worker is a convenience layer with no trust authority over your drop. Snapshots live on IPFS (content-addressed, verifiable from chain + CID alone). Drop records are local to your browser (back them up via Export JSON; restore via Import). The worker's claim queue is dumb storage — it can withhold tuples but cannot forge them, and recipients can always hand-deliver tuples instead of submitting through the queue. Setting <code>WORKER_BASE = ''</code> disables it; the dApp falls back to manual flows. To run your own worker for a campaign, see <code>worker/README.md</code> (deploys to a free Cloudflare Workers account in ~5 minutes).
+        </div>
+      </details>
+
       <h3 style="margin-top:18px;">1 · Treasury (optional)</h3>
       <div class="muted" style="font-size:12px;margin-bottom:8px;">Generate a fresh tacit identity dedicated to this drop. The privkey is shown <strong>once</strong>; copy it now and store it somewhere safe.</div>
       <div class="flex" style="gap:6px;">
@@ -1315,7 +1324,31 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div id="drop-save-out" class="muted" style="font-size:11px;margin-top:8px;"></div>
 
       <h3 style="margin-top:18px;">7 · Saved drops</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:8px;">
+        Drop records (including the local <code>fulfilled[]</code> ledger) live in this browser's localStorage. Use <strong>Export JSON</strong> on each row to back up; clearing browser data without a backup means losing the "this leaf was paid" record (the chain is unaffected — fulfilled CXFERs stay valid). To restore from a backup, use Import below.
+      </div>
+      <div class="flex" style="gap:6px;margin-bottom:10px;">
+        <input id="drop-import-file" type="file" accept=".json,application/json" style="display:none;">
+        <button id="btn-drop-import" type="button" title="Restore a saved drop from a previously-exported JSON file">↑ Import drop JSON</button>
+        <span id="drop-import-status" class="muted" style="font-size:11px;align-self:center;"></span>
+      </div>
       <div id="drop-list"><div class="empty" style="font-size:12px;">No drops saved yet.</div></div>
+    </div>
+  </div>
+
+  <div class="section" id="drop-crosscheck-section" style="display:none;">
+    <div class="section-header"><span>cross-check vs chain</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Walks each entry in this drop's local <code>fulfilled[]</code> and verifies it against on-chain state. Catches: corrupted local records, fulfilled leaves where the broadcast didn't actually confirm, and mismatches where a tx exists but doesn't pay the expected tacit pubkey. Does NOT reconstruct missing entries — for that, restore from a backup JSON via Import.
+      </div>
+      <div id="drop-crosscheck-meta" class="mono-box" style="font-size:11px;"></div>
+      <div class="flex" style="gap:6px;margin-top:14px;">
+        <button id="btn-drop-crosscheck-run" type="button" class="primary">Run cross-check</button>
+        <button id="btn-drop-crosscheck-cancel" type="button">Close</button>
+      </div>
+      <div id="drop-crosscheck-progress" class="muted" style="font-size:11px;margin-top:8px;"></div>
+      <div id="drop-crosscheck-results" style="margin-top:14px;"></div>
     </div>
   </div>
 
@@ -1328,8 +1361,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <label>Active drop</label>
       <div id="drop-fulfil-meta" class="mono-box" style="font-size:11px;"></div>
 
-      <label style="margin-top:14px;">Claim tuples (one per line: <code>leaf_index,tacit_pubkey_hex,eth_sig_hex</code>)</label>
+      <div class="flex" style="gap:6px;align-items:center;margin-top:14px;">
+        <label style="margin:0;flex:1;">Claim tuples (one per line: <code>leaf_index,tacit_pubkey_hex,eth_sig_hex</code>)</label>
+        <button id="btn-drop-fulfil-pull" type="button" title="Pull queued claims from the worker for this drop and fill the textarea">↓ Pull queued</button>
+      </div>
       <textarea id="drop-fulfil-claims" rows="6" style="font-family:var(--mono);font-size:11px;" placeholder="0,0298a8…,0xabc123…&#10;7,03b1f0…,0xdef456…"></textarea>
+      <div id="drop-fulfil-pull-status" class="muted" style="font-size:11px;margin-top:4px;"></div>
 
       <label style="margin-top:8px;display:flex;align-items:center;gap:6px;font-weight:normal;">
         <input id="drop-fulfil-require-sig" type="checkbox" checked>
@@ -1367,6 +1404,15 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-claim-load" type="button">Load snapshot</button>
         <button id="btn-claim-clear" type="button">Clear</button>
       </div>
+      <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">…or paste / upload the snapshot JSON directly (fallback if IPFS gateways are unreachable)</summary>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any blob whose rows don't match the root above.</div>
+        <input id="claim-json-file" type="file" accept=".json,application/json" style="display:none;">
+        <div class="flex" style="gap:6px;margin-top:6px;">
+          <button id="btn-claim-json-upload" type="button">Upload JSON file</button>
+          <button id="btn-claim-json-load" type="button">Load pasted JSON</button>
+        </div>
+        <textarea id="claim-json-text" rows="6" style="margin-top:6px;font-family:var(--mono);font-size:11px;" placeholder='{"schema":"tacit-airdrop-v1","merkle_root":"…","rows":[…]}'></textarea>
+      </details>
       <div id="claim-load-err" class="error" style="margin-top:8px;"></div>
       <div id="claim-load-out" style="display:none;margin-top:14px;"></div>
 

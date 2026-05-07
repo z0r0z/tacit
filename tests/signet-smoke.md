@@ -169,7 +169,90 @@ For the asset etched in Step 2 (still mintable, balance > 0):
    browser → 200 OK + claim record.
 5. POST a second claim from a *third* taker pubkey → 409 with `claim` info.
 
-## Step 10 — Mempool.space API contract sanity
+## Step 10 — Atomic intent (open) round-trip
+
+The atomic-intent open path was 100% broken in production for an unknown
+stretch because `handleAtomicIntentPost` read `ax.assetInputCount` (camelCase)
+against a `decodeAxferPayload` returning `asset_input_count` (snake_case) — JS
+silently returned `undefined` and the worker rejected every valid maker post
+with `"assetInputCount must be 1 ... (got undefined)"`. Offline tests never
+exercised the handler end-to-end, only the message-byte parity. Hit the live
+flow on every release until we have a fixture-driven worker integration test.
+
+**Setup.** You need two browser profiles: maker (with a SMOKE balance from
+Step 4) and taker (with ≥ 60k signet sats and an empty atomic-intents tab).
+
+1. **Maker — open the intent.**
+   1. Holdings → choose a SMOKE UTXO → "Sell atomically (open intent)".
+   2. Set amount = 100, price = 30000 sats, expiry = +1 day.
+   3. dApp constructs:
+      - A commit tx funding a P2TR (script-path) output that holds the taker's
+        eventual sat payment.
+      - An unsigned AXFER reveal: 1 asset input (the chosen UTXO), 1 tacit
+        output (taker's commitment).
+   4. Approve the commit broadcast. Note the `intent_id` the dApp surfaces.
+   5. **Expected on worker** (Network tab):
+      - `POST /assets/:asset_id/atomic-intents?network=signet` → 200.
+      - Response body's `intent.asset_input_count` is omitted (the worker
+        stores the AXFER opaquely), but `intent.envelope_script_hex` is the
+        full AXFER script. Decode `payload[33]` (the byte after asset_id) — it
+        must be `0x01`.
+   6. **Regression sentinel:** if the response is `400 {"error":
+      "asset_input_count must be 1 for atomic intent (got undefined)"}`,
+      the field-name fix has been reverted. Stop the release.
+   7. **Expected on-chain:** commit tx confirms; reveal is NOT broadcast yet.
+2. **Taker — discover + claim.**
+   1. Discover tab → atomic intents list shows the intent with maker's price
+      + expiry + ticker.
+   2. Click "Reserve". The dApp pre-flights a confirmed P2WPKH sat UTXO of
+      value ≥ `price_sats` from the wallet, signs the v2 claim message
+      (`'tacit-axintent-claim-v2'` || asset_id || intent_id || taker_pub ||
+      taker_utxo_txid_BE || taker_utxo_vout_LE), and POSTs
+      `/atomic-intents/:intent_id/claim` with `taker_utxo`. → 200 with 5 min TTL.
+   3. **Regression sentinels:**
+      - If the wallet has *no* single confirmed UTXO ≥ price, the dApp must
+        refuse client-side with a clear "consolidate or fund first" message,
+        not POST and let the worker reject.
+      - If a malicious client POSTs without `taker_utxo`, worker → 400.
+      - If `taker_utxo.value < intent.price_sats`, worker → 400 with the
+        exact value mismatch.
+      - If `taker_utxo` is not P2WPKH(hash160(taker_pubkey)), worker → 403.
+   4. **Expected:** a second taker (different pubkey) tries to claim → 409
+      with `claim.expires_at`.
+3. **Maker — fulfil.**
+   1. Maker's intents tab now shows "Reserved by `02…`". Click "Fulfil".
+   2. dApp computes the partial reveal: rangeproof + ECDH-encrypted blinding
+      for taker (XOR keystream of `r` against
+      `tacit-axintent-blinding-v1` derivation).
+   3. POST `/atomic-intents/:intent_id/fulfil` → 200.
+   4. **Verify** `enc_recipient_blinding` is exactly 64 hex chars. The dApp
+      must NOT send a cleartext `recipient_blinding` field — older clients did
+      and leaked the amount; the worker now rejects those, but check the
+      Network tab to confirm the dApp isn't regressing.
+4. **Taker — take + broadcast.**
+   1. Taker's intents → "Take". dApp fetches
+      `/atomic-intents/:intent_id/fulfil`, decrypts blinding under taker's
+      privkey + maker's pubkey ECDH.
+   2. dApp completes the AXFER reveal: signs the sat-payment input under
+      taker's key, attaches the maker-supplied script-path witness for the
+      asset input. Broadcasts.
+   3. **Expected on-chain:**
+      - Reveal tx has 2 inputs (commit P2TR + taker sat input), 2 outputs
+        (taker's tacit commitment + maker's sat payment).
+      - Reveal envelope opcode = `0x26` (T_AXFER).
+      - Envelope payload byte after asset_id (the `asset_input_count` byte) = `0x01`.
+      - `kernel_sig` verifies; aggregated bulletproof at end (~688 bytes for m=1).
+   4. **Maker side:** sat balance increases by 30000 (minus fees) after
+      confirmation.
+   5. **Taker side:** Holdings shows SMOKE = 100, recoverable from chain alone.
+5. **Cancel path (separate intent).**
+   1. Maker opens a second intent with no taker activity.
+   2. Click "Cancel" → DELETE `/atomic-intents/:intent_id` with `cancel_sig`.
+   3. **Expected:** worker → 200, intent disappears from Discover. The commit
+      P2TR's sat output remains spendable by the maker via the cancellation
+      path of the script-path tree.
+
+## Step 11 — Mempool.space API contract sanity
 
 1. In DevTools, watch the Network panel during a normal scan.
 2. Confirm the dApp hits these endpoints:
@@ -198,5 +281,6 @@ When any step fails:
 - **Hardware wallet signing** — out of scope per SPEC §10 (v1.x+ feature).
 - **Multi-recipient CXFER (m=4, m=8)** — validator accepts these, the dApp
   builder doesn't currently emit them. When that ships, add a step here.
-- **Listing OTC settlement** — the buyer-pays-then-maker-cxfers handshake is
-  off-chain coordination; v1 has no atomic settlement. v1.5 work.
+- **Range-listing settlement path** — the listing flow at Step 9 stops at
+  publish + claim; the buyer-pays-then-maker-cxfers handshake is off-chain
+  coordination. For the atomic-settlement variant see Step 10.

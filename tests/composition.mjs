@@ -119,10 +119,14 @@ function axintentMsg(assetIdBytes, intentIdBytes, makerPubBytes, amount, priceSa
     reverseBytes(hexToBytes(assetUtxoTxidHex)), utxoVoutLE,
   ));
 }
-function axintentClaimMsg(assetIdBytes, intentIdBytes, takerPubBytes) {
+function axintentClaimMsg(assetIdBytes, intentIdBytes, takerPubBytes, takerUtxoTxidHex, takerUtxoVout) {
+  const txidBE = reverseBytes(hexToBytes(takerUtxoTxidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, takerUtxoVout >>> 0, true);
   return sha256(concatBytes(
-    new TextEncoder().encode('tacit-axintent-claim-v1'),
+    new TextEncoder().encode('tacit-axintent-claim-v2'),
     assetIdBytes, intentIdBytes, takerPubBytes,
+    txidBE, voutLE,
   ));
 }
 function axintentFulfilmentMsg(assetIdBytes, intentIdBytes, takerPubBytes, partialJson) {
@@ -788,9 +792,10 @@ function _fmtAssetAmountPlain(amount, decimals) {
   return `${intPart.toString()}.${frac}`;
 }
 
-function buildAirdropClaimMsg({ rootHex, network, ethAddrHex, leafIndex, amount, ticker, decimals, tacitPubHex }) {
+function buildAirdropClaimMsg({ rootHex, network, assetIdHex, ethAddrHex, leafIndex, amount, ticker, decimals, tacitPubHex }) {
   if (!/^[0-9a-f]{64}$/.test(String(rootHex || '').toLowerCase())) throw new Error('rootHex must be 64-hex');
   if (typeof network !== 'string' || !network) throw new Error('network required');
+  if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || '').toLowerCase())) throw new Error('assetIdHex must be 64-hex');
   const cleanAddr = String(ethAddrHex).toLowerCase().replace(/^0x/, '');
   if (!/^[0-9a-f]{40}$/.test(cleanAddr)) throw new Error('ethAddrHex must be 40-hex');
   if (!Number.isInteger(leafIndex) || leafIndex < 0) throw new Error('leafIndex required');
@@ -802,11 +807,13 @@ function buildAirdropClaimMsg({ rootHex, network, ethAddrHex, leafIndex, amount,
   if (!/^0[23][0-9a-f]{64}$/.test(cleanPub)) throw new Error('tacitPubHex must be 33-byte compressed');
   const display = _fmtAssetAmountPlain(amt, decimals);
   const cleanRoot = String(rootHex).toLowerCase();
+  const cleanAsset = String(assetIdHex).toLowerCase();
   return [
     'tacit airdrop claim v1',
     '',
     `Drop:    ${cleanRoot}`,
     `Network: ${network}`,
+    `Asset:   ${cleanAsset}`,
     `Address: 0x${cleanAddr}`,
     `Leaf:    ${leafIndex}`,
     `Amount:  ${display} ${ticker} (${amt.toString()})`,

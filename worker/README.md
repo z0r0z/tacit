@@ -51,3 +51,62 @@ curl -X POST http://localhost:8787/pin \
   -F file=@/path/to/icon.png
 # Expect: { "cid": "bafy...", "size": NNN }
 ```
+
+## Trust model: the worker is a convenience, not a trust dependency
+
+Every endpoint this worker exposes is either:
+- a **dumb cache** in front of public chain data (`/assets`, `/openings`,
+  `/disclosures`, `/listings`), or
+- a **dumb pass-through** to a third party (`/pin`, `/pin-json` → Pinata), or
+- a **dumb message bus** (`/airdrops/:root/claims` — recipients submit
+  signed tuples, issuers pull them in batches).
+
+A faulty or hostile worker can withhold data or accept gibberish, but it
+cannot forge cryptographic state: every consumer (the dApp, the issuer's
+Drops tab, the Claim tab) re-verifies signatures, range proofs, and merkle
+inclusion against the chain before trusting any worker output.
+
+Setting `WORKER_BASE = ''` in the dApp disables every worker call and the
+protocol still functions — fulfilment becomes manual (paste tuples instead
+of pull, manual IPFS pinning, etc).
+
+## Running your own private worker for an airdrop campaign
+
+If you don't trust a third-party operator (or just want to control your own
+infrastructure for a campaign), the whole thing is ~3000 lines and deploys
+to your own Cloudflare account in minutes:
+
+1. Fork or clone this repo's `worker/` directory.
+2. Run the One-time setup above against your own Cloudflare account.
+3. (Optional) Lock CORS to your dApp's origin via `ALLOWED_ORIGINS` in
+   `wrangler.toml` so only your dApp can write to the queue.
+4. In the dApp source (or a hosted fork), set `WORKER_BASE` to your worker's
+   URL.
+5. Recipients clicking your airdrop's claim link load your dApp build,
+   which talks only to your worker. The worker URL is visible in the
+   browser's network tab; recipients can audit which infrastructure their
+   claim passes through.
+
+You can also point a single dApp build at multiple workers (e.g., one per
+campaign) by deploying separate dApp instances with different `WORKER_BASE`
+values. The protocol layer is unchanged.
+
+## Airdrop claim queue endpoints
+
+Added in the airdrop tooling iteration. Pure dropbox — no signature
+verification on the worker side.
+
+```
+POST   /airdrops/:root/claims?network=signet|mainnet
+       body: { leaf_index: int, tacit_pubkey: 33-byte hex, eth_sig: 65-byte hex }
+       Re-submission for the same (root, leaf_index) overwrites.
+
+GET    /airdrops/:root/claims?network=signet|mainnet
+       returns: { root, network, count, claims: [...] }
+       (issuer pulls; sorted by leaf_index ascending)
+
+DELETE /airdrops/:root/claims/:leaf_index?network=signet|mainnet
+       (issuer fires after a successful broadcast to clean the queue)
+```
+
+KV layout: `airdrop:claim:[<network>:]<root>:<padded_leaf_index>`.

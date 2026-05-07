@@ -2,7 +2,7 @@
 #
 # CSP frame-ancestors is the one directive browsers IGNORE when delivered via
 # <meta> tag — it must come from an HTTP header. The dapp's <meta http-equiv>
-# CSP at the top of tacit.html covers everything else; this file adds the
+# CSP at the top of index.html covers everything else; this file adds the
 # clickjacking defense that meta can't do.
 #
 # 'self' (not 'none') so a hosted production deployment can still iframe its

@@ -1,9 +1,9 @@
 // Build script: refreshes ../dapp/vendor/tacit-deps.min.js from npm-installed
 // noble + scure + sats-connect packages and prints SHA-384 hashes for the
-// bundle, tacit.html, and tacit.js. Run when bundled deps change; otherwise
+// bundle, index.html, and tacit.js. Run when bundled deps change; otherwise
 // the dApp is served as-is from ../dapp/.
 //
-// The dApp source is split: ../dapp/tacit.html (markup + meta-CSP) loads
+// The dApp source is split: ../dapp/index.html (markup + meta-CSP) loads
 // ../dapp/tacit.js (the application module), which imports from
 // ./vendor/tacit-deps.min.js. Editing either source file directly does not
 // require a build — only the vendor bundle is generated.
@@ -66,7 +66,7 @@ async function main() {
   console.log('\nIntegrity hashes (publish in release notes):');
   console.log(`  vendor/tacit-deps.min.js  ${sha384b64(bundle)}`);
   console.log(`  tacit.js                  ${sha384b64(appJs)}`);
-  console.log(`  tacit.html                ${sha384b64(html)}`);
+  console.log(`  index.html                ${sha384b64(html)}`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

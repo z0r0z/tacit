@@ -38,7 +38,7 @@
 //   GET  /assets/:asset_id/listings — list active listings (with expired flag).
 //   DELETE /assets/:asset_id/listings/:txid/:vout — explicit cancel; requires cancel_sig from
 //                                   owner_pubkey. (Implicit cancellation: spend the UTXO.)
-//   POST /assets/:asset_id/listings/:txid/:vout/claim — taker reserves a listing for 30 min
+//   POST /assets/:asset_id/listings/:txid/:vout/claim — taker reserves a listing for 5 min
 //                                   to prevent multi-taker race in OTC settlement. Atomic
 //                                   claim-or-409. Body: {taker_pubkey, sig over canonical msg}.
 //   POST /assets/:asset_id/listings-range — range-disclosed listing: maker proves balance ≥ K
@@ -48,7 +48,7 @@
 //                                   listing_sig). One per (asset, owner_pubkey).
 //   GET  /assets/:asset_id/listings-range — list active range-listings.
 //   DELETE /assets/:asset_id/listings-range/:owner_pubkey — explicit cancel by maker.
-//   POST /assets/:asset_id/listings-range/:maker_pubkey/claim — taker reservation, 30 min TTL.
+//   POST /assets/:asset_id/listings-range/:maker_pubkey/claim — taker reservation, 5 min TTL.
 // Debug endpoints (gated on DEBUG_TOKEN env secret; default-deny 404 if unset):
 //   POST /scan              — manually trigger a registry scan for the requested network.
 //   POST /rescan?from=<h>   — rewind meta:last_scanned so next tick re-scans from height <h>.
@@ -221,6 +221,21 @@ function listingKey(network, aid, txid, vout) {
 function listingPrefix(network, aid) {
   return network === 'signet' ? `listing:${aid}:` : `listing:${network}:${aid}:`;
 }
+// Airdrop claim queue: recipients submit signed claim tuples here, issuers
+// pull them in batches. Worker is dumb storage — no signature or merkle
+// validation (the issuer's dapp re-verifies before broadcast). Per-leaf KV
+// keys, zero-padded so KV.list returns claims in numeric leaf-index order.
+function airdropClaimKey(network, rootHex, leafIndex) {
+  const idxPad = String(leafIndex).padStart(10, '0');
+  return network === 'signet'
+    ? `airdrop:claim:${rootHex}:${idxPad}`
+    : `airdrop:claim:${network}:${rootHex}:${idxPad}`;
+}
+function airdropClaimPrefix(network, rootHex) {
+  return network === 'signet'
+    ? `airdrop:claim:${rootHex}:`
+    : `airdrop:claim:${network}:${rootHex}:`;
+}
 // Range-disclosed listings: one per (maker, asset). Different KV namespace
 // from per-UTXO listings so GET prefix-lists don't collide.
 function rangeListingKey(network, aid, ownerPubHex) {
@@ -266,6 +281,29 @@ async function apiJson(env, path, opts = {}, network = 'signet') {
   const r = await fetch(`${base}${path}`, opts);
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
+}
+
+// Race between dApp broadcasting and mempool.space's /tx/{txid} index seeing
+// the tx (typically 1–10s lag for fresh broadcasts). The atomic-intent post
+// is the canonical case: dApp broadcasts the commit, then immediately POSTs
+// the intent; without retry the worker fail-closes on a tx that's perfectly
+// fine. Retries on 404 only — other 4xx/5xx aren't an indexer race and fail
+// fast. Backoff schedule is ~7s total wall clock (well under the Worker's
+// 30s soft cap). Confirmed broadcasts of older txs (asset UTXO, parent
+// envelopes) don't need this and keep using apiJson directly.
+async function fetchFreshTxJson(env, txid, network, maxAttempts = 4) {
+  const base = networkApi(env, network);
+  let lastErr;
+  for (let i = 0; i < maxAttempts; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 1000 * (1 << (i - 1))));
+    const r = await fetch(`${base}/tx/${txid}`);
+    if (r.ok) return r.json();
+    if (r.status !== 404) {
+      throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    }
+    lastErr = new Error(`${network} 404: tx not yet indexed`);
+  }
+  throw lastErr;
 }
 
 // ============== /pin ==============
@@ -811,11 +849,10 @@ function decodeCBurnPayload(payload) {
 async function loadBurnsForAsset(env, network, assetIdHex) {
   // Burns are public: no attestation logic, just sum the cleartext amounts.
   const list = await env.REGISTRY_KV.list({ prefix: burnPrefix(network, assetIdHex), limit: 1000 });
-  const burns = [];
-  for (const k of list.keys) {
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (v) burns.push(v);
-  }
+  const fetched = await Promise.all(
+    list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')),
+  );
+  const burns = fetched.filter(v => v);
   burns.sort((a, b) => (a.burned_at || 0) - (b.burned_at || 0));
   return burns;
 }
@@ -824,16 +861,42 @@ async function loadMintsForAsset(env, network, assetIdHex) {
   // Returns sorted list of mint events for one asset_id, attested where
   // available. Cap at 1000 mints/asset (way beyond any practical use).
   const list = await env.REGISTRY_KV.list({ prefix: mintPrefix(network, assetIdHex), limit: 1000 });
-  const mints = [];
-  for (const k of list.keys) {
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (!v) continue;
-    const att = await env.REGISTRY_KV.get(attestMintKey(network, assetIdHex, v.mint_txid), 'json');
-    if (att) v.attestation = att;
-    mints.push(v);
-  }
-  mints.sort((a, b) => (a.minted_at || 0) - (b.minted_at || 0));
-  return mints;
+  const events = (await Promise.all(
+    list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')),
+  )).filter(v => v);
+  // Hydrate attestations in parallel rather than serially per-mint.
+  const attestations = await Promise.all(
+    events.map(v => env.REGISTRY_KV.get(attestMintKey(network, assetIdHex, v.mint_txid), 'json')),
+  );
+  for (let i = 0; i < events.length; i++) if (attestations[i]) events[i].attestation = attestations[i];
+  events.sort((a, b) => (a.minted_at || 0) - (b.minted_at || 0));
+  return events;
+}
+
+// Per-asset hydration for the Discover/Market list. Pre-parallelisation this
+// ran 8+ KV operations sequentially per asset (attestation, mints loop, burns
+// loop, plus 5 separate KV.list calls for counts) which dominated /assets
+// latency on networks with many assets. Now everything fan-outs in one
+// Promise.all per asset.
+async function hydrateAssetSummary(env, network, v, includeMints) {
+  const [att, mints, burns, op, dc, ls, lr, ai] = await Promise.all([
+    env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
+    includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
+    loadBurnsForAsset(env, network, v.asset_id),
+    env.REGISTRY_KV.list({ prefix: openingPrefix(network, v.asset_id), limit: 1000 }),
+    env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, v.asset_id), limit: 1000 }),
+    env.REGISTRY_KV.list({ prefix: listingPrefix(network, v.asset_id), limit: 1000 }),
+    env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, v.asset_id), limit: 1000 }),
+    env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, v.asset_id), limit: 1000 }),
+  ]);
+  if (att) v.attestation = att;
+  if (includeMints) v.mints = mints;
+  v.burns = burns;
+  v.opening_count = op.keys.length;
+  v.disclosure_count = dc.keys.length;
+  v.listing_count = ls.keys.length;
+  v.range_listing_count = lr.keys.length;
+  v.atomic_intent_count = ai.keys.length;
 }
 
 async function handleAssetsList(env, network, cors, opts = {}) {
@@ -843,34 +906,17 @@ async function handleAssetsList(env, network, cors, opts = {}) {
   // entries; filter those out when listing signet so the namespaces don't bleed.
   const prefix = assetPrefix(network);
   const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
-  const assets = [];
-  for (const k of list.keys) {
-    if (network === 'signet' && k.name.startsWith('asset:mainnet:')) continue;
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (!v) continue;
-    assets.push(v);
-  }
+  const wanted = list.keys.filter(k => !(network === 'signet' && k.name.startsWith('asset:mainnet:')));
+  const fetched = await Promise.all(
+    wanted.map(k => env.REGISTRY_KV.get(k.name, 'json')),
+  );
+  const assets = fetched.filter(v => v);
   assets.sort((a, b) => (b.etched_at || 0) - (a.etched_at || 0));
   const trimmed = limit ? assets.slice(0, limit) : assets;
-  for (const v of trimmed) {
-    const att = await env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json');
-    if (att) v.attestation = att;
-    if (includeMints) v.mints = await loadMintsForAsset(env, network, v.asset_id);
-    v.burns = await loadBurnsForAsset(env, network, v.asset_id);
-    // Lightweight counts so Discover can show "N openings · M disclosures"
-    // without doing per-asset round-trips client-side. KV list is paginated;
-    // 1000 cap is way beyond any realistic per-asset count for v1.
-    const op = await env.REGISTRY_KV.list({ prefix: openingPrefix(network, v.asset_id), limit: 1000 });
-    v.opening_count = op.keys.length;
-    const dc = await env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, v.asset_id), limit: 1000 });
-    v.disclosure_count = dc.keys.length;
-    const ls = await env.REGISTRY_KV.list({ prefix: listingPrefix(network, v.asset_id), limit: 1000 });
-    v.listing_count = ls.keys.length;
-    const lr = await env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, v.asset_id), limit: 1000 });
-    v.range_listing_count = lr.keys.length;
-    const ai = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, v.asset_id), limit: 1000 });
-    v.atomic_intent_count = ai.keys.length;
-  }
+  // Lightweight counts so Discover can show "N openings · M disclosures"
+  // without doing per-asset round-trips client-side. KV list is paginated;
+  // 1000 cap is way beyond any realistic per-asset count for v1.
+  await Promise.all(trimmed.map(v => hydrateAssetSummary(env, network, v, includeMints)));
   const lastScanned = parseInt((await env.REGISTRY_KV.get(lastScannedKey(network))) || '0', 10);
   let tip = null;
   let tipUnavailable = false;
@@ -1353,11 +1399,8 @@ async function handleUtxoOpeningGet(txidHex, voutStr, env, network, cors) {
 async function handleAssetOpenings(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   const list = await env.REGISTRY_KV.list({ prefix: openingPrefix(network, assetIdHex), limit: 1000 });
-  const openings = [];
-  for (const k of list.keys) {
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (v) openings.push(v);
-  }
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const openings = fetched.filter(v => v);
   openings.sort((a, b) => (b.attested_at || 0) - (a.attested_at || 0));
   return jsonResponse({ asset_id: assetIdHex, count: openings.length, openings }, 200, cors);
 }
@@ -1493,11 +1536,8 @@ async function handleDisclosurePost(assetIdHex, req, env, network, cors) {
 async function handleDisclosureList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   const list = await env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, assetIdHex), limit: 1000 });
-  const disclosures = [];
-  for (const k of list.keys) {
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (v) disclosures.push(v);
-  }
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const disclosures = fetched.filter(v => v);
   disclosures.sort((a, b) => (b.attested_at || 0) - (a.attested_at || 0));
   return jsonResponse({ asset_id: assetIdHex, count: disclosures.length, disclosures }, 200, cors);
 }
@@ -1692,15 +1732,13 @@ async function handleListingList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   const list = await env.REGISTRY_KV.list({ prefix: listingPrefix(network, assetIdHex), limit: 1000 });
   const now = Math.floor(Date.now() / 1000);
-  const listings = [];
-  for (const k of list.keys) {
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (!v) continue;
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const listings = fetched.filter(v => v);
+  for (const v of listings) {
     v.expired = (v.expiry || 0) <= now;
     // Drop stale claims at read time so clients don't see them as active.
     // The KV record itself is left alone; the next claim POST will overwrite.
     if (v.claim && v.claim.expires_at <= now) v.claim = null;
-    listings.push(v);
   }
   listings.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
   return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
@@ -1709,9 +1747,12 @@ async function handleListingList(assetIdHex, env, network, cors) {
 // Claim lock prevents the multi-taker race in OTC settlement: two takers each
 // paying the maker for the same listing. The maker can only deliver once.
 // This is a soft, time-bounded reservation — no on-chain commitment, just a
-// coordination signal. Default TTL 30 min: long enough for a Bitcoin
-// confirmation, short enough that abandoned claims clear quickly.
-const CLAIM_TTL_SECONDS = 30 * 60;
+// coordination signal. 5 min is enough for a maker to fulfil + taker to
+// broadcast in one sitting; longer TTLs let trolls free-claim and lock up
+// active intents (claims today require only a Schnorr sig, no funds proof).
+// A real fix is requiring the taker to commit to a sat UTXO ≥ price_sats;
+// until that lands, this short TTL caps the grief radius.
+const CLAIM_TTL_SECONDS = 5 * 60;
 // Atomic-intent fulfilment TTL. After 24h the maker can re-fulfil for a new
 // claimant — this protects the maker from a taker who claims, gets a signed
 // partial reveal, and then ghosts. The taker's BTC payment is still locked
@@ -1964,13 +2005,11 @@ async function handleRangeListingList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   const list = await env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, assetIdHex), limit: 1000 });
   const now = Math.floor(Date.now() / 1000);
-  const listings = [];
-  for (const k of list.keys) {
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (!v) continue;
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const listings = fetched.filter(v => v);
+  for (const v of listings) {
     v.expired = (v.expiry || 0) <= now;
     if (v.claim && v.claim.expires_at <= now) v.claim = null;
-    listings.push(v);
   }
   listings.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
   return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
@@ -2036,7 +2075,7 @@ async function handleRangeListingClaim(assetIdHex, makerPubHex, req, env, networ
 // Three-step trustless settlement that's also discoverable:
 //   1. Maker publishes a generic intent (asset UTXO + commit tx + terms,
 //      no recipient yet).
-//   2. Taker browses and claims with their pubkey. Worker locks for 30 min.
+//   2. Taker browses and claims with their pubkey. Worker locks for 5 min.
 //   3. Maker observes the claim, generates a partial reveal targeted at
 //      the claimant's pubkey, uploads as a fulfilment.
 //   4. Taker fetches the fulfilment, finalizes (appends BTC funding,
@@ -2066,12 +2105,22 @@ function atomicIntentMsg(assetIdHex, intentIdHex, makerPubHex, amountStr, priceS
   ));
 }
 
-function atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex) {
+// Bumped to v2: message now binds the taker's committed sat UTXO. Without
+// the binding, a third party could replay a captured v1 sig pointing the
+// claim at a different UTXO. Worker enforces value >= price_sats on this
+// UTXO at claim time so a sig over (asset, intent, pub, utxo) attests to
+// "this pubkey controlled funds ≥ price_sats sitting at this outpoint".
+function atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex, takerUtxoTxidHex, takerUtxoVout) {
+  const txidBE = reverseBytes(hexToBytes(takerUtxoTxidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, takerUtxoVout >>> 0, true);
   return sha256(concatBytes(
-    new TextEncoder().encode('tacit-axintent-claim-v1'),
+    new TextEncoder().encode('tacit-axintent-claim-v2'),
     hexToBytes(assetIdHex),
     hexToBytes(intentIdHex),
     hexToBytes(takerPubHex),
+    txidBE,
+    voutLE,
   ));
 }
 
@@ -2189,7 +2238,7 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   // opcode, single asset input, single tacit output, asset_id matches the
   // intent. Without this, a maker could publish an envelope that's a CXFER
   // or a different asset and have it accepted; the eventual reveal would
-  // fail to relay, but a claimant would have already wasted a 30-min lock.
+  // fail to relay, but a claimant would have already wasted a 5-min lock.
   let env_decoded;
   try { env_decoded = decodeEnvelopeScript(hexToBytes(envelopeScriptHex)); }
   catch (e) { return jsonResponse({ error: 'envelope_script_hex decode threw: ' + e.message }, 400, cors); }
@@ -2206,9 +2255,12 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   // Bind the published p2tr_spk to the actual on-chain commit_txid:0. Without
   // this, a maker could point at any commit; the take would only fail at
   // Bitcoin relay time. We fetch the commit tx and compare scripts byte-wise.
+  // Use fetchFreshTxJson so a propagation race between the dApp's broadcast
+  // and the mempool.space index doesn't fail-close a perfectly valid post
+  // (the worker would otherwise return 400 for a 1–10s indexer lag).
   let commitTx;
-  try { commitTx = await apiJson(env, `/tx/${commitTxidHex}`, {}, network); }
-  catch (e) { return jsonResponse({ error: 'commit_txid not found on chain: ' + e.message }, 400, cors); }
+  try { commitTx = await fetchFreshTxJson(env, commitTxidHex, network); }
+  catch (e) { return jsonResponse({ error: 'commit_txid not found on chain after retries: ' + e.message }, 400, cors); }
   const commitVout0 = commitTx?.vout?.[0];
   if (!commitVout0?.scriptpubkey) return jsonResponse({ error: 'commit tx vout[0] missing scriptpubkey' }, 400, cors);
   if (commitVout0.scriptpubkey.toLowerCase() !== p2trSpkHex) {
@@ -2246,18 +2298,21 @@ async function handleAtomicIntentList(assetIdHex, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   const list = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
   const now = Math.floor(Date.now() / 1000);
-  const intents = [];
-  for (const k of list.keys) {
-    const v = await env.REGISTRY_KV.get(k.name, 'json');
-    if (!v) continue;
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const intents = fetched.filter(v => v);
+  // Hydrate claim + fulfilment status so the maker can see who's bidding
+  // and the taker can see if their fulfilment is ready. Stale fulfilments
+  // (older than FULFILMENT_TTL_SECONDS without a broadcast) are dropped so
+  // the maker can re-fulfil for a new claimant.
+  const claimsAndFulfils = await Promise.all(intents.map(v => Promise.all([
+    env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, v.intent_id), 'json'),
+    env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, v.intent_id), 'json'),
+  ])));
+  for (let i = 0; i < intents.length; i++) {
+    const v = intents[i];
+    const [claim, fulfil] = claimsAndFulfils[i];
     v.expired = (v.expiry || 0) <= now;
-    // Hydrate claim + fulfilment status so the maker can see who's bidding
-    // and the taker can see if their fulfilment is ready. Stale fulfilments
-    // (older than FULFILMENT_TTL_SECONDS without a broadcast) are dropped so
-    // the maker can re-fulfil for a new claimant.
-    const claim = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, v.intent_id), 'json');
     if (claim && claim.expires_at > now) v.claim = claim;
-    const fulfil = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, v.intent_id), 'json');
     if (fulfil) {
       const fulfilledAt = Number(fulfil.fulfilled_at) || 0;
       if (fulfilledAt && (now - fulfilledAt) > FULFILMENT_TTL_SECONDS) {
@@ -2270,7 +2325,6 @@ async function handleAtomicIntentList(assetIdHex, env, network, cors) {
         v.fulfilled_at = fulfilledAt;
       }
     }
-    intents.push(v);
   }
   intents.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents }, 200, cors);
@@ -2302,8 +2356,17 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
   const takerPubHex = String(body.taker_pubkey ?? '').toLowerCase();
   const sigHex = String(body.sig ?? '').toLowerCase();
+  // v2 claims commit to a sat UTXO ≥ price_sats so the worker can attest
+  // proof-of-funds at claim time. Without this any pubkey could free-claim
+  // and lock an intent for the full CLAIM_TTL window.
+  const takerUtxoTxid = String(body.taker_utxo?.txid ?? '').toLowerCase();
+  const takerUtxoVout = body.taker_utxo?.vout;
   if (!/^0[23][0-9a-f]{64}$/.test(takerPubHex)) return jsonResponse({ error: 'taker_pubkey must be 33-byte compressed hex' }, 400, cors);
   if (!/^[0-9a-f]{128}$/.test(sigHex))          return jsonResponse({ error: 'sig must be 128 hex chars' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(takerUtxoTxid))    return jsonResponse({ error: 'taker_utxo.txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(takerUtxoVout) || takerUtxoVout < 0 || takerUtxoVout > 0xffff) {
+    return jsonResponse({ error: 'taker_utxo.vout must be non-negative integer' }, 400, cors);
+  }
 
   const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
   if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
@@ -2318,13 +2381,37 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
       claim: { expires_at: existing.expires_at },
     }, 409, cors);
   }
-  const msg = atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex);
+  // Verify the committed UTXO: exists on chain, P2WPKH-controlled by the
+  // claimant, and value ≥ intent.price_sats. Same defensive pattern as
+  // handleAtomicIntentPost uses for the maker's asset_utxo. We do not lock
+  // the UTXO — taker may spend it before fulfilment, that's their risk —
+  // but at claim time they had to actually have the funds.
+  let takerTx;
+  try { takerTx = await apiJson(env, `/tx/${takerUtxoTxid}`, {}, network); }
+  catch (e) { return jsonResponse({ error: 'taker_utxo tx not found: ' + e.message }, 400, cors); }
+  const takerOut = takerTx?.vout?.[takerUtxoVout];
+  if (!takerOut?.scriptpubkey) return jsonResponse({ error: 'taker_utxo missing scriptpubkey' }, 400, cors);
+  const spk = hexToBytes(takerOut.scriptpubkey);
+  if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+    return jsonResponse({ error: 'taker_utxo not P2WPKH' }, 400, cors);
+  }
+  if (bytesToHex(spk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(takerPubHex)))) {
+    return jsonResponse({ error: 'taker_pubkey does not control taker_utxo' }, 403, cors);
+  }
+  const priceSats = Number(intent.price_sats);
+  const utxoValue = Number(takerOut.value);
+  if (!Number.isInteger(utxoValue) || utxoValue < priceSats) {
+    return jsonResponse({ error: `taker_utxo value (${utxoValue}) is below price_sats (${priceSats})` }, 400, cors);
+  }
+
+  const msg = atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex, takerUtxoTxid, takerUtxoVout);
   if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(takerPubHex).slice(1))) {
     return jsonResponse({ error: 'invalid taker signature' }, 403, cors);
   }
   const claim = {
     intent_id: intentIdHex,
     taker_pubkey: takerPubHex,
+    taker_utxo: { txid: takerUtxoTxid, vout: takerUtxoVout, value: utxoValue },
     sig: sigHex,
     claimed_at: now,
     expires_at: now + CLAIM_TTL_SECONDS,
@@ -2392,6 +2479,103 @@ async function handleAtomicIntentFulfilGet(assetIdHex, intentIdHex, env, network
   }
   const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
   return jsonResponse({ ok: true, fulfilment, intent }, 200, cors);
+}
+
+// ============== AIRDROP CLAIM QUEUE ==============
+// Recipients submit signed claim tuples here; issuers pull them in batches.
+// The worker performs format validation only — it doesn't have the snapshot
+// rows, so it can't (and doesn't try to) verify the merkle proof or the eth
+// signature. The issuer's dapp re-verifies before broadcast. Worker is dumb
+// dropbox; the canonical truth is on-chain after fulfilment.
+//
+// KV layout:
+//   airdrop:claim:<root>:<padded_leaf_index>             (signet, legacy unprefixed)
+//   airdrop:claim:<network>:<root>:<padded_leaf_index>   (other networks)
+// One record per leaf_index per drop. Re-submission overwrites (latest wins),
+// so a recipient who switches tacit identities can re-sign without manual
+// cleanup.
+//
+// Format limits:
+//   - leaf_index: 0 ≤ idx < 2^32 (4_294_967_296). Bounds the KV key space.
+//   - tacit_pubkey: 33-byte compressed (66 hex chars, 02/03 prefix).
+//   - eth_sig:     65 bytes (130 hex chars, 0x prefix optional).
+const AIRDROP_LEAF_INDEX_MAX = 0xffffffff;
+const AIRDROP_LIST_PAGE = 1000;     // KV's max per call
+const AIRDROP_LIST_HARD_CAP = 10000; // total per response; bound size + cost
+
+async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  const leafIndex = body.leaf_index;
+  const tacitPubHex = String(body.tacit_pubkey ?? '').toLowerCase();
+  let ethSigHex = String(body.eth_sig ?? '').toLowerCase();
+  if (ethSigHex.startsWith('0x')) ethSigHex = ethSigHex.slice(2);
+
+  if (!Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex > AIRDROP_LEAF_INDEX_MAX) {
+    return jsonResponse({ error: `leaf_index must be integer in [0, ${AIRDROP_LEAF_INDEX_MAX}]` }, 400, cors);
+  }
+  if (!/^0[23][0-9a-f]{64}$/.test(tacitPubHex)) {
+    return jsonResponse({ error: 'tacit_pubkey must be 33-byte compressed hex (starts 02 or 03)' }, 400, cors);
+  }
+  if (!/^[0-9a-f]{130}$/.test(ethSigHex)) {
+    return jsonResponse({ error: 'eth_sig must be 65 bytes (130 hex chars)' }, 400, cors);
+  }
+
+  const record = {
+    root: rootHex,
+    network,
+    leaf_index: leafIndex,
+    tacit_pubkey: tacitPubHex,
+    eth_sig: '0x' + ethSigHex,
+    submitted_at: Math.floor(Date.now() / 1000),
+  };
+  await env.REGISTRY_KV.put(airdropClaimKey(network, rootHex, leafIndex), JSON.stringify(record));
+  return jsonResponse({ ok: true, claim: record }, 200, cors);
+}
+
+async function handleAirdropClaimList(rootHex, env, network, cors, opts = {}) {
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
+  const startCursor = opts.cursor || undefined;
+  const claims = [];
+  let cursor = startCursor;
+  let truncated = false;
+  let nextCursor = null;
+  // Page through KV list until exhausted, hard cap reached, or caller hit
+  // their own page limit (?limit=N up to AIRDROP_LIST_HARD_CAP). Closes
+  // MED#9 — drops with > AIRDROP_LIST_PAGE recipients used to silently drop
+  // claims past the first page.
+  const requestedLimit = Number.isInteger(opts.limit) ? Math.min(opts.limit, AIRDROP_LIST_HARD_CAP) : AIRDROP_LIST_HARD_CAP;
+  while (claims.length < requestedLimit) {
+    const listOpts = { prefix: airdropClaimPrefix(network, rootHex), limit: AIRDROP_LIST_PAGE };
+    if (cursor) listOpts.cursor = cursor;
+    const list = await env.REGISTRY_KV.list(listOpts);
+    for (const k of list.keys) {
+      if (claims.length >= requestedLimit) {
+        truncated = true;
+        nextCursor = list.cursor || cursor || null;
+        break;
+      }
+      const v = await env.REGISTRY_KV.get(k.name, 'json');
+      if (v) claims.push(v);
+    }
+    if (truncated) break;
+    if (list.list_complete || !list.cursor) { nextCursor = null; break; }
+    cursor = list.cursor;
+  }
+  // KV list is already lex-sorted; padded leaf_index keys yield numeric order.
+  return jsonResponse({ root: rootHex, network, count: claims.length, claims, truncated, next_cursor: nextCursor }, 200, cors);
+}
+
+async function handleAirdropClaimDelete(rootHex, leafIndexStr, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
+  const leafIndex = parseInt(leafIndexStr, 10);
+  if (!Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex > AIRDROP_LEAF_INDEX_MAX) {
+    return jsonResponse({ error: 'invalid leaf_index' }, 400, cors);
+  }
+  await env.REGISTRY_KV.delete(airdropClaimKey(network, rootHex, leafIndex));
+  return jsonResponse({ ok: true }, 200, cors);
 }
 
 // ============== Cron: scan signet + mainnet for new CETCH envelopes ==============
@@ -2641,6 +2825,29 @@ export default {
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
     if (mai4 && req.method === 'POST')                         return handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors);
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
+
+    // Airdrop claim queue.
+    const mac = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims$/);
+    if (mac && req.method === 'POST')                          return handleAirdropClaimPost(mac[1], req, env, network, cors);
+    if (mac && req.method === 'GET') {
+      const cursorRaw = url.searchParams.get('cursor');
+      const limitRaw = url.searchParams.get('limit');
+      const opts = {};
+      if (cursorRaw) opts.cursor = cursorRaw;
+      if (limitRaw !== null) {
+        if (!/^\d+$/.test(limitRaw)) {
+          return jsonResponse({ error: 'limit must be a non-negative integer' }, 400, cors);
+        }
+        const lim = parseInt(limitRaw, 10);
+        if (lim < 1 || lim > 10000) {
+          return jsonResponse({ error: 'limit must be between 1 and 10000' }, 400, cors);
+        }
+        opts.limit = lim;
+      }
+      return handleAirdropClaimList(mac[1], env, network, cors, opts);
+    }
+    const mac2 = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims\/(\d+)$/);
+    if (mac2 && req.method === 'DELETE')                       return handleAirdropClaimDelete(mac2[1], mac2[2], env, network, cors);
 
     // Debug endpoints: gated on DEBUG_TOKEN. Without the secret, attackers
     // can rescan-from-genesis and exhaust the worker's daily subrequest

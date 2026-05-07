@@ -97,9 +97,9 @@ await test('atomicIntentMsg', () => eq(
   composition.axintentMsg(ASSET_ID_BYTES, INTENT_ID_BYTES, OWNER_PUB_BYTES, AMOUNT, PRICE_SATS, EXPIRY, COMMIT_TXID_HEX, ASSET_UTXO_TXID_HEX, ASSET_UTXO_VOUT),
 ));
 
-await test('atomicIntentClaimMsg', () => eq(
-  worker.atomicIntentClaimMsg(ASSET_ID_HEX, INTENT_ID_HEX, OWNER_PUB_HEX),
-  composition.axintentClaimMsg(ASSET_ID_BYTES, INTENT_ID_BYTES, OWNER_PUB_BYTES),
+await test('atomicIntentClaimMsg (v2: binds taker_utxo)', () => eq(
+  worker.atomicIntentClaimMsg(ASSET_ID_HEX, INTENT_ID_HEX, OWNER_PUB_HEX, TXID_HEX, VOUT),
+  composition.axintentClaimMsg(ASSET_ID_BYTES, INTENT_ID_BYTES, OWNER_PUB_BYTES, TXID_HEX, VOUT),
 ));
 
 await test('atomicIntentFulfilmentMsg', () => {

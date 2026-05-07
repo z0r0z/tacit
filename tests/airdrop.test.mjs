@@ -463,14 +463,18 @@ test('blacklist: applied across merge — even with multiple sources', () => {
 console.log('\nClaim message format:');
 
 const FIXED_ROOT = 'a'.repeat(64);
+const FIXED_ASSET = 'f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b';
 const FIXED_TACIT = '02' + 'b'.repeat(64);
 
-test('buildAirdropClaimMsg: pinned canonical format', () => {
-  // If this test ever fails, ANY previously-collected user signatures stop
-  // verifying. Treat it as a wire-format change requiring a deliberate v2.
+test('buildAirdropClaimMsg: pinned canonical format (with Asset binding)', () => {
+  // Pre-deployment: format is still v1; we updated v1 in place to include the
+  // Asset: line (closes MED#4 — same root + same recipient list across drops
+  // could otherwise share signatures). If this test ever fails AFTER mainnet
+  // deploy, treat it as a wire-format break requiring a deliberate v2.
   const msg = buildAirdropClaimMsg({
     rootHex: FIXED_ROOT,
     network: 'mainnet',
+    assetIdHex: FIXED_ASSET,
     ethAddrHex: '0xabcdef0123456789abcdef0123456789abcdef01',
     leafIndex: 7,
     amount: 123456789n,        // 1.23456789 in 8 decimals
@@ -483,6 +487,7 @@ test('buildAirdropClaimMsg: pinned canonical format', () => {
     '',
     `Drop:    ${FIXED_ROOT}`,
     'Network: mainnet',
+    `Asset:   ${FIXED_ASSET}`,
     'Address: 0xabcdef0123456789abcdef0123456789abcdef01',
     'Leaf:    7',
     'Amount:  1.23456789 TAC (123456789)',
@@ -493,10 +498,50 @@ test('buildAirdropClaimMsg: pinned canonical format', () => {
   return msg === expected;
 });
 
-test('buildAirdropClaimMsg: rejects malformed eth address', () => {
+test('buildAirdropClaimMsg: rejects missing assetIdHex (closes MED#4)', () => {
   try {
     buildAirdropClaimMsg({
       rootHex: FIXED_ROOT, network: 'mainnet',
+      // assetIdHex omitted
+      ethAddrHex: '0x' + '1'.repeat(40), leafIndex: 0, amount: 1n,
+      ticker: 'TAC', decimals: 8, tacitPubHex: FIXED_TACIT,
+    });
+    return false;
+  } catch { return true; }
+});
+
+test('buildAirdropClaimMsg: rejects malformed assetIdHex', () => {
+  try {
+    buildAirdropClaimMsg({
+      rootHex: FIXED_ROOT, network: 'mainnet',
+      assetIdHex: 'not-hex',
+      ethAddrHex: '0x' + '1'.repeat(40), leafIndex: 0, amount: 1n,
+      ticker: 'TAC', decimals: 8, tacitPubHex: FIXED_TACIT,
+    });
+    return false;
+  } catch { return true; }
+});
+
+test('buildAirdropClaimMsg: same merkle root + different asset_id produces different msg', () => {
+  // The whole point of Asset: binding — a signature for asset A must NOT
+  // verify against the same canonical msg shape claiming asset B.
+  const msg1 = buildAirdropClaimMsg({
+    rootHex: FIXED_ROOT, network: 'mainnet', assetIdHex: '00'.repeat(32),
+    ethAddrHex: '0x' + '1'.repeat(40), leafIndex: 0, amount: 1n,
+    ticker: 'T', decimals: 0, tacitPubHex: FIXED_TACIT,
+  });
+  const msg2 = buildAirdropClaimMsg({
+    rootHex: FIXED_ROOT, network: 'mainnet', assetIdHex: '11'.repeat(32),
+    ethAddrHex: '0x' + '1'.repeat(40), leafIndex: 0, amount: 1n,
+    ticker: 'T', decimals: 0, tacitPubHex: FIXED_TACIT,
+  });
+  return msg1 !== msg2;
+});
+
+test('buildAirdropClaimMsg: rejects malformed eth address', () => {
+  try {
+    buildAirdropClaimMsg({
+      rootHex: FIXED_ROOT, network: 'mainnet', assetIdHex: FIXED_ASSET,
       ethAddrHex: '0xZZZZ', leafIndex: 0, amount: 1n,
       ticker: 'TAC', decimals: 8, tacitPubHex: FIXED_TACIT,
     });
@@ -507,7 +552,7 @@ test('buildAirdropClaimMsg: rejects malformed eth address', () => {
 test('buildAirdropClaimMsg: rejects malformed tacit pubkey', () => {
   try {
     buildAirdropClaimMsg({
-      rootHex: FIXED_ROOT, network: 'mainnet',
+      rootHex: FIXED_ROOT, network: 'mainnet', assetIdHex: FIXED_ASSET,
       ethAddrHex: '0x' + '1'.repeat(40), leafIndex: 0, amount: 1n,
       ticker: 'TAC', decimals: 8, tacitPubHex: '04' + 'b'.repeat(64),  // uncompressed prefix → invalid
     });
@@ -517,7 +562,7 @@ test('buildAirdropClaimMsg: rejects malformed tacit pubkey', () => {
 
 test('buildAirdropClaimMsg: address is lowercased', () => {
   const msg = buildAirdropClaimMsg({
-    rootHex: FIXED_ROOT, network: 'signet',
+    rootHex: FIXED_ROOT, network: 'signet', assetIdHex: FIXED_ASSET,
     ethAddrHex: '0xABCDEF0123456789ABCDEF0123456789ABCDEF01',
     leafIndex: 0, amount: 100n, ticker: 'TST', decimals: 0,
     tacitPubHex: FIXED_TACIT,
@@ -646,6 +691,7 @@ test('end-to-end claim: portal builds msg, signs; issuer verifies', () => {
   const msg = buildAirdropClaimMsg({
     rootHex: bytesToHex(commit.root),
     network: 'mainnet',
+    assetIdHex: FIXED_ASSET,
     ethAddrHex: claimantAddr,
     leafIndex: myRow.index,
     amount: myRow.amount,
@@ -658,6 +704,7 @@ test('end-to-end claim: portal builds msg, signs; issuer verifies', () => {
   const reconstructed = buildAirdropClaimMsg({
     rootHex: bytesToHex(commit.root),
     network: 'mainnet',
+    assetIdHex: FIXED_ASSET,
     ethAddrHex: claimantAddr,
     leafIndex: myRow.index,
     amount: myRow.amount,
@@ -682,13 +729,13 @@ test('claim sig binds to tacit pubkey: cannot redirect to a different tacit iden
   const tacitA = '02' + 'a'.repeat(64);
   const tacitB = '03' + 'b'.repeat(64);
   const msgA = buildAirdropClaimMsg({
-    rootHex: FIXED_ROOT, network: 'mainnet', ethAddrHex: addr,
+    rootHex: FIXED_ROOT, network: 'mainnet', assetIdHex: FIXED_ASSET, ethAddrHex: addr,
     leafIndex: 0, amount: 1000n, ticker: 'T', decimals: 0, tacitPubHex: tacitA,
   });
   const sigA = _signEip191WithPriv(msgA, priv);
   // Attacker swaps tacitA → tacitB in the message they relay.
   const msgB = buildAirdropClaimMsg({
-    rootHex: FIXED_ROOT, network: 'mainnet', ethAddrHex: addr,
+    rootHex: FIXED_ROOT, network: 'mainnet', assetIdHex: FIXED_ASSET, ethAddrHex: addr,
     leafIndex: 0, amount: 1000n, ticker: 'T', decimals: 0, tacitPubHex: tacitB,
   });
   // sigA must not verify against msgB.

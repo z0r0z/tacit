@@ -183,9 +183,9 @@ await test('axintentMsg', () => eqBytes(
   dapp.axintentMsg(ASSET_ID, INTENT_ID, PK_A, 1234n, 50000, 1700000000, COMMIT_TXID, ASSET_UTXO_TXID, ASSET_UTXO_VOUT),
   comp.axintentMsg(ASSET_ID, INTENT_ID, PK_A, 1234n, 50000, 1700000000, COMMIT_TXID, ASSET_UTXO_TXID, ASSET_UTXO_VOUT),
 ));
-await test('axintentClaimMsg', () => eqBytes(
-  dapp.axintentClaimMsg(ASSET_ID, INTENT_ID, PK_B),
-  comp.axintentClaimMsg(ASSET_ID, INTENT_ID, PK_B),
+await test('axintentClaimMsg (v2: binds taker_utxo)', () => eqBytes(
+  dapp.axintentClaimMsg(ASSET_ID, INTENT_ID, PK_B, ASSET_UTXO_TXID, ASSET_UTXO_VOUT),
+  comp.axintentClaimMsg(ASSET_ID, INTENT_ID, PK_B, ASSET_UTXO_TXID, ASSET_UTXO_VOUT),
 ));
 await test('axintentFulfilmentMsg', () => {
   const partialJson = '{"version":2,"locktime":0,"inputs":[],"outputs":[]}';

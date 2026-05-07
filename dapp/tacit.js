@@ -37,13 +37,13 @@ document.addEventListener('error', e => {
 // mainnet — flipping `NET` re-renders all addresses without touching the key.
 //
 // CSP COUPLING: every host below must also appear in the `connect-src`
-// allow-list of the meta-CSP in tacit.html. The strict policy
+// allow-list of the meta-CSP in index.html. The strict policy
 // (`script-src 'self'`, no wildcards) means changing a host here without
 // updating the CSP causes the browser to silently drop fetches with a
 // console warning — the dApp will look broken in subtle ways (loading
 // spinner forever on the wallet/discover tabs). Same coupling applies to
 // `WORKER_BASE`, `IPFS_GATEWAY`, and the `<link href="https://fonts...">`
-// tags in tacit.html.
+// tags in index.html.
 // `api`  is the primary Esplora endpoint for chain reads.
 // `api2` is an OPTIONAL secondary used by the chain-divergence watchdog —
 //        every ~5 min the dApp fetches /blocks/tip/height from both and shows
@@ -415,7 +415,13 @@ async function decryptPrivkey(blobJson, passphrase) {
   try { blob = JSON.parse(blobJson); } catch { throw new Error('storage blob is malformed JSON'); }
   if (blob.v !== STORAGE_FORMAT_VERSION) throw new Error(`unsupported wallet format v${blob.v}`);
   if (blob.kdf !== 'pbkdf2') throw new Error(`unsupported kdf: ${blob.kdf}`);
-  const iter = Number.isInteger(blob.iter) && blob.iter >= 100000 ? blob.iter : PBKDF2_ITER;
+  // Cap PBKDF2 iterations at 5M so a tampered blob (malicious extension, XSS)
+  // can't DoS the unlock thread by setting iter to billions. Floor at 100k for
+  // back-compat with older blobs.
+  const PBKDF2_ITER_MAX = 5_000_000;
+  const iter = Number.isInteger(blob.iter) && blob.iter >= 100000
+    ? Math.min(blob.iter, PBKDF2_ITER_MAX)
+    : PBKDF2_ITER;
   const salt = hexToBytes(blob.salt);
   const iv   = hexToBytes(blob.iv);
   const ct   = hexToBytes(blob.ct);
@@ -1069,12 +1075,16 @@ async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
     catch (e) {
       lastErr = e;
       const msg = (e && e.message) || '';
+      // `already known` / `already in block` mean the broadcast already
+      // succeeded (mempool / mined). Treat as success — retrying just re-fails
+      // the same way and surfaces a fake error to a user whose tx is fine.
+      if (/already in block|already known/i.test(msg)) return null;
       // Only retry on errors that suggest propagation/indexing delay. Notably we
       // do NOT retry on `non-mandatory-script-verify-flag` (the tx is invalid
       // under mainnet policy — retry just hides the real bug) or
       // `bad-txns-inputs-missingorspent` (already covered by `missing inputs`
       // and otherwise indicates a permanent double-spend, not a race).
-      if (!/missing inputs|mempool-conflict|already in block|already known|too-long-mempool-chain/i.test(msg)) {
+      if (!/missing inputs|mempool-conflict|too-long-mempool-chain/i.test(msg)) {
         throw e;
       }
     }
@@ -1093,7 +1103,41 @@ async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
 // so we always re-fetch them. Quota-exceeded errors on setItem are swallowed:
 // the scan still works, just falls back to per-tx network fetches.
 const TX_CACHE_PREFIX = 'tacit-tx-v1';
+const TX_CACHE_INDEX_PREFIX = 'tacit-tx-v1-idx';
+const TX_CACHE_MAX = 2000;          // hard cap on confirmed tx entries per network
+const TX_CACHE_EVICT_BATCH = 200;   // drop this many oldest entries when cap is hit
 function _txCacheKey(id) { return `${TX_CACHE_PREFIX}:${NET.name}:${id}`; }
+function _txCacheIdxKey() { return `${TX_CACHE_INDEX_PREFIX}:${NET.name}`; }
+// Read the FIFO index of cached txids for the current network. Returns []
+// on parse errors so a corrupt index doesn't brick gets/sets.
+function _loadTxCacheIndex() {
+  try {
+    const raw = localStorage.getItem(_txCacheIdxKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+// Append to the index; evict oldest entries (and their cached txs) when the
+// cap is exceeded. Best-effort: any localStorage failure is swallowed because
+// the cache is purely an optimisation.
+function _appendTxCacheIndex(id) {
+  try {
+    let idx = _loadTxCacheIndex();
+    // Skip duplicates so a re-fetched tx doesn't push the index past its cap
+    // without an actual new entry.
+    if (idx.includes(id)) return;
+    idx.push(id);
+    if (idx.length > TX_CACHE_MAX) {
+      const dropCount = Math.min(idx.length - TX_CACHE_MAX + TX_CACHE_EVICT_BATCH, idx.length);
+      const drop = idx.splice(0, dropCount);
+      for (const oldId of drop) {
+        try { localStorage.removeItem(_txCacheKey(oldId)); } catch {}
+      }
+    }
+    localStorage.setItem(_txCacheIdxKey(), JSON.stringify(idx));
+  } catch {}
+}
 const getTx = async (rawId) => {
   if (typeof rawId !== 'string') return null;
   const id = rawId.toLowerCase();
@@ -1106,28 +1150,51 @@ const getTx = async (rawId) => {
   try { tx = await apiJson(`/tx/${id}`); } catch { return null; }
   if (!tx) return null;
   if (tx.status && tx.status.confirmed === true) {
-    try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); }
+    try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); _appendTxCacheIndex(id); }
     catch { /* quota exceeded → silently skip; cache is best-effort */ }
   }
   return tx;
 };
 
-let _cachedRate = null, _cachedRateAt = 0;
+// Per-network fee-rate cache. Today the only path that mutates `NET` is
+// `setupNetworkSelect → location.reload()`, so a single global would be safe;
+// keying by network is defense-in-depth against future code paths that flip
+// NET in-place.
+const _cachedRate = new Map();   // net.name → sat/vB
+const _cachedRateAt = new Map(); // net.name → ts
 async function getFeeRate() {
-  if (_cachedRate && Date.now() - _cachedRateAt < 60000) return _cachedRate;
-  let base = 2;
+  const net = NET.name;
+  if (_cachedRate.has(net) && Date.now() - (_cachedRateAt.get(net) || 0) < 60000) return _cachedRate.get(net);
+  let apiOk = false;
+  // Fallback floors when the fee API is unreachable: signet has no fee market,
+  // so a low rate is fine. Mainnet must NOT silently fall back to 2-3 sat/vB —
+  // any intra-day fee spike would leave the broadcast below min-relay and the
+  // commit/reveal pair stuck. 15 sat/vB clears typical mainnet floors with
+  // headroom; if the user is in a real fee crunch they should retry once the
+  // API is reachable.
+  let base = net === 'mainnet' ? 15 : 2;
   try {
     const r = await fetch(`${NET.api}/v1/fees/recommended`);
     if (!r.ok) throw new Error();
     const j = await r.json();
-    base = Math.max(1, j.halfHourFee || j.hourFee || 2);
-  } catch {}
+    base = Math.max(1, j.halfHourFee || j.hourFee || base);
+    apiOk = true;
+  } catch {
+    if (net === 'mainnet') {
+      // Surface the fact that we're on a fallback rate so the user understands
+      // why their tx might be slower than current mempool conditions.
+      try { toast(`Fee API unreachable — using fallback rate ${base} sat/vB on mainnet`, ''); } catch {}
+    }
+  }
   // 10% safety margin on mainnet so a small intra-block fee spike between the
   // cache write and the broadcast doesn't push the tx below the min-relay
   // threshold and stall it. Signet has no fee market, so no margin needed.
-  _cachedRate = NET.name === 'mainnet' ? Math.ceil(base * 1.1) : base;
-  _cachedRateAt = Date.now();
-  return _cachedRate;
+  const rate = net === 'mainnet' ? Math.ceil(base * 1.1) : base;
+  _cachedRate.set(net, rate);
+  // Shorter TTL on the fallback rate so a recovered API drives a fresh quote
+  // without waiting the full minute.
+  _cachedRateAt.set(net, apiOk ? Date.now() : Date.now() - 50_000);
+  return rate;
 }
 
 // ============== TACIT PROTOCOL ==============
@@ -1975,6 +2042,23 @@ function runStartupKAT() {
   if (!_C1.add(_C2).equals(pedersenCommit(10n, 16n))) {
     throw new Error('KAT failed: pedersen homomorphism broken');
   }
+  // Cross-implementation generator vectors (SPEC.md §3.1). A typo in any of
+  // the bp domain seeds (`tacit-bp-G-v1`, `tacit-bp-H-v1`, `tacit-bp-Q-v1`)
+  // or in the NUMS-H seed (`tacit-generator-H-v1`) silently shifts every
+  // generator and produces proofs that no other implementation verifies.
+  // Pedersen-homomorphism KAT above doesn't catch this because the seeds
+  // are consistent with themselves; only the published reference vectors do.
+  _kat_assertEq(H.toRawBytes(true), '02bd7bf40fb5db2f7e0a1e8660ca13df55bb0d9f904e36e6297361f00376865e56', 'NUMS H');
+  const { Gvec: _Gvec_kat, Hvec: _Hvec_kat, Q: _Q_kat } = _bpGens();
+  _kat_assertEq(_Q_kat.toRawBytes(true),       '0279b66e857697b21949facaa998d6c31e4636f81f442c63f84bea33e83baafda4', 'BP Q');
+  _kat_assertEq(_Gvec_kat[0].toRawBytes(true), '025cfa02a4913b0b122c4f275ae566e6ba52627d80036e25a43a3fd5d2062f28d4', 'BP G_vec[0]');
+  _kat_assertEq(_Gvec_kat[1].toRawBytes(true), '027608f5161dd88146ab22635ad357622a7e3fd9a293efd6fc21d18b50efab7c4e', 'BP G_vec[1]');
+  _kat_assertEq(_Gvec_kat[2].toRawBytes(true), '022f8c08dda9ade0264065a6770b219a5ee82c872f627d4503c4c3292472f1fb23', 'BP G_vec[2]');
+  _kat_assertEq(_Gvec_kat[3].toRawBytes(true), '02add28339b32e0e27075cb6cdee409acf07860ba5bf7cdca07cabf50947ed5a55', 'BP G_vec[3]');
+  _kat_assertEq(_Hvec_kat[0].toRawBytes(true), '02b78ed462f5c137b05d1e99daeb2619eb890ec4781acf098018628ca0ec0d20e2', 'BP H_vec[0]');
+  _kat_assertEq(_Hvec_kat[1].toRawBytes(true), '02ac4ee8f1ded833bf18be0815b9602b4fe0d586ade57923b35ef22e3e7c1e6ce2', 'BP H_vec[1]');
+  _kat_assertEq(_Hvec_kat[2].toRawBytes(true), '02795d359afdced0c4c7735bf61f24cdab214d43301f5210eefd46b96657a708a8', 'BP H_vec[2]');
+  _kat_assertEq(_Hvec_kat[3].toRawBytes(true), '02b65a170dfd727dd403cda635ddd2419882da910f6f79e10b24c4e5f3d171c76c', 'BP H_vec[3]');
 }
 
 // ============== TAPROOT (BIP-341) ==============
@@ -2182,7 +2266,7 @@ const _isZeroAuth = b => { for (let i = 0; i < 32; i++) if (b[i] !== 0) return f
 function encodeCEtchPayload({ ticker, decimals, commitment, rangeproof, encryptedAmount, mintAuthority = null, imageUri = null }) {
   const tk = new TextEncoder().encode(ticker);
   if (tk.length === 0 || tk.length > 16) throw new Error('ticker 1–16 bytes');
-  if (decimals < 0 || decimals > 8) throw new Error('decimals 0–8');
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 8) throw new Error('decimals must be an integer 0–8');
   if (commitment.length !== 33) throw new Error('commitment 33 bytes');
   if (!encryptedAmount || encryptedAmount.length !== 8) throw new Error('encrypted_amount must be 8 bytes');
   if (rangeproof.length > 0xffff) throw new Error('rangeproof too large');
@@ -2436,6 +2520,7 @@ function encodeCBurnPayload({ assetId, burnedAmount, kernelSig, outputs, rangepr
   if (!kernelSig || kernelSig.length !== 64) throw new Error('kernel_sig must be 64 bytes');
   if (![0, 1, 2, 4, 8].includes(outputs.length)) throw new Error('outputs.length must be in {0,1,2,4,8}');
   if (outputs.length > 0 && rangeproof.length > 0xffff) throw new Error('rangeproof too large');
+  if (outputs.length === 0 && rangeproof && rangeproof.length > 0) throw new Error('rangeproof must be empty when outputs.length === 0');
   const burnLE = new Uint8Array(8);
   {
     const view = new DataView(burnLE.buffer);
@@ -2665,6 +2750,87 @@ function forgetAxintentSecret(intentIdHex) {
   }
 }
 
+// ============== ATOMIC-INTENT PENDING POSTS ==============
+// Per-intent body captured AFTER the commit tx has successfully broadcast
+// but BEFORE the POST to the worker has succeeded. Without local
+// persistence, a worker failure (indexer race, transient outage, anything)
+// AFTER the maker has paid Bitcoin fees on the commit tx leaves the user
+// with a confirmed on-chain commit but no marketplace listing. Saving the
+// body lets us retry the POST verbatim — no second commit, no extra fees,
+// same intent_id (which derives from commit_txid + maker_pub so it's stable).
+// The body carries intent_sig already; combined with `r` from
+// axintent-secrets, a captured pending entry is everything needed to
+// publish. Cleared on successful POST or explicit user discard.
+//
+// Storage: tacit-axintent-pending-v1:<network> → { [intent_id]: { asset_id, body, savedAt } }
+const AXINTENT_PENDING_KEY_BASE = 'tacit-axintent-pending-v1';
+function axintentPendingKey() { return `${AXINTENT_PENDING_KEY_BASE}:${NET.name}`; }
+function loadAxintentPendings() {
+  try {
+    const raw = localStorage.getItem(axintentPendingKey());
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : {};
+  } catch { return {}; }
+}
+function recordAxintentPending(intentIdHex, assetIdHex, body) {
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex || '')) return;
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex || '')) return;
+  if (!body || typeof body !== 'object') return;
+  const obj = loadAxintentPendings();
+  obj[intentIdHex] = { asset_id: assetIdHex, body, savedAt: Math.floor(Date.now() / 1000) };
+  try { localStorage.setItem(axintentPendingKey(), JSON.stringify(obj)); } catch {}
+}
+function loadAxintentPending(intentIdHex) {
+  return loadAxintentPendings()[intentIdHex] || null;
+}
+function forgetAxintentPending(intentIdHex) {
+  const obj = loadAxintentPendings();
+  if (intentIdHex in obj) {
+    delete obj[intentIdHex];
+    try { localStorage.setItem(axintentPendingKey(), JSON.stringify(obj)); } catch {}
+  }
+}
+function listAxintentPendings() {
+  const obj = loadAxintentPendings();
+  return Object.entries(obj).map(([intentIdHex, v]) => ({ intentIdHex, ...v }));
+}
+
+// Wait for the chain API to see a freshly-broadcast tx. The worker has its
+// own 7s retry backstop in fetchFreshTxJson, but doing the wait here lets
+// us (a) give the user explicit progress feedback, (b) wait longer than
+// the worker's window before declaring "post failed", and (c) ensure the
+// POST never reaches the worker when the chain API is going to 404 — which
+// would burn worker subrequests + hold a long-lived connection unnecessarily.
+async function waitForTxVisible(commitTxidHex, { maxMs = 60000, initialMs = 1500, onProgress = null } = {}) {
+  let delay = initialMs;
+  const deadline = Date.now() + maxMs;
+  let attempts = 0;
+  while (true) {
+    attempts++;
+    if (onProgress) try { onProgress(attempts); } catch {}
+    try {
+      const r = await fetch(`${NET.api}/tx/${commitTxidHex}`);
+      if (r.ok) return await r.json();
+      if (r.status !== 404) {
+        const t = await r.text().catch(() => '');
+        throw new Error(`tx visibility check failed: ${r.status} ${t.slice(0, 80)}`);
+      }
+    } catch (e) {
+      if (Date.now() > deadline) throw e;
+      // transient network / DNS / fetch failure — fall through to backoff
+    }
+    if (Date.now() + delay > deadline) {
+      throw new Error(
+        `commit tx ${commitTxidHex.slice(0, 8)}… not visible to ${NET.name} chain API after ${Math.round(maxMs/1000)}s. ` +
+        `The Bitcoin tx may still be propagating; the marketplace listing is saved locally and will retry on next page load.`
+      );
+    }
+    await new Promise(r => setTimeout(r, delay));
+    delay = Math.min(delay * 2, 8000);
+  }
+}
+
 // ============== INDEXER (witness-based) ==============
 // Verify a CXFER's kernel signature and asset_id consistency.
 // Recursively validate a tacit outpoint (txid, vout). Returns true iff:
@@ -2793,9 +2959,10 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     const dec = isBurn ? decodeCBurnPayload(env.payload) : decodeCXferPayload(env.payload);
     if (!dec) { validatedSet.set(key, false); return false; }
     const N = dec.outputs.length;
-    // BURN may have N=0 (burn everything to nothing). CXFER requires vout < N.
-    if (!isBurn && vout >= N) { validatedSet.set(key, false); return false; }
-    if (isBurn && N > 0 && vout >= N) { validatedSet.set(key, false); return false; }
+    // CXFER requires vout < N. BURN may have N=0 (full burn, no change) — in
+    // which case the tx has no tacit asset outputs at all, so any vout (incl. 0)
+    // must be rejected. `vout >= N` covers both cases including N=0.
+    if (vout >= N) { validatedSet.set(key, false); return false; }
 
     // Step 1: every input outpoint must itself be valid (recursive client-side validation)
     if (tx.vin.length < 2) { markAll(Math.max(N, 1), false); return false; }
@@ -2997,9 +3164,13 @@ async function scanHoldings() {
   if (rpBatch.length > 0 && !bpRangeAggBatchVerify(rpBatch)) {
     // Strict re-validation: at least one rangeproof is bad. Clear the optimistic
     // cache so the main loop below re-walks each UTXO in single-proof mode and
-    // records ghost/inflated state precisely.
+    // records ghost/inflated state precisely. Also clear `metadataOut` — entries
+    // recorded during the optimistic walk may have come from envelopes whose
+    // rangeproofs would have failed individually, so re-derive from the strict
+    // walk to avoid attacker-chosen ticker/imageUri leaking into the registry.
     validatedSet = new Map();
     rpBatch = null;
+    metadataOut.clear();
   }
 
   for (const u of utxos) {
@@ -4322,10 +4493,18 @@ function _axintentMsg(assetIdBytes, intentIdBytes, makerPubBytes, amount, priceS
     reverseBytes(hexToBytes(assetUtxoTxidHex)), utxoVoutLE,
   ));
 }
-function _axintentClaimMsg(assetIdBytes, intentIdBytes, takerPubBytes) {
+// v2: claim message binds a taker-controlled sat UTXO ≥ price_sats. Worker
+// re-verifies the binding so any captured v1 sig can't be replayed against
+// a different UTXO, and so a free-claim DoS (was possible in v1) can no
+// longer lock intents without proof of funds.
+function _axintentClaimMsg(assetIdBytes, intentIdBytes, takerPubBytes, takerUtxoTxidHex, takerUtxoVout) {
+  const txidBE = reverseBytes(hexToBytes(takerUtxoTxidHex));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, takerUtxoVout >>> 0, true);
   return sha256(concatBytes(
-    new TextEncoder().encode('tacit-axintent-claim-v1'),
+    new TextEncoder().encode('tacit-axintent-claim-v2'),
     assetIdBytes, intentIdBytes, takerPubBytes,
+    txidBE, voutLE,
   ));
 }
 function _axintentFulfilMsg(assetIdBytes, intentIdBytes, takerPubBytes, partialJson) {
@@ -4440,19 +4619,25 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry }) {
     control_block_hex: bytesToHex(cb),
     intent_sig: bytesToHex(intentSig),
   };
-  const resp = await fetch(withNet(ATOMIC_INTENTS_URL(assetIdHex)), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const j = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
-
-  // Persist `r` locally so we can encrypt it to the claimant at fulfilment.
-  // Without this, a page reload would lose the secret and the trade can't
-  // complete (we wouldn't be able to communicate the amount→commitment
-  // opening that the taker needs to spend).
+  // Persist BOTH the body and the recipient blinding `r` locally before
+  // touching the worker. The commit tx is already on-chain (broadcast above),
+  // so any subsequent failure in waitForTxVisible / POST must be recoverable
+  // without re-broadcasting and re-paying fees. With these two persisted
+  // records, the dapp can resume the publish on next page load using the
+  // identical body — intent_id derives from commit_txid + maker_pub so it's
+  // stable, and the intent_sig is already baked in.
+  recordAxintentPending(intentIdHex, assetIdHex, body);
   recordAxintentSecret(intentIdHex, bytesToHex(bigintToBytes32(recipBlinding)));
+  // Block the POST until the chain API has indexed the commit tx. This is
+  // the primary defense against the propagation race; the worker also
+  // retries on its side as a 7s backstop. By the time we POST, mempool.space
+  // has acknowledged seeing the commit, so the worker's chain check
+  // succeeds on its first attempt.
+  await waitForTxVisible(commitTxidHex);
+  await postAxferIntentBody(assetIdHex, body);
+  // POST succeeded — discard the pending record so we don't try to re-post
+  // on next load. The secret + activity are kept (intent is now live).
+  forgetAxintentPending(intentIdHex);
   recordActivity({
     kind: 'list-atomic',
     ticker: target.ticker || '',
@@ -4464,14 +4649,87 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry }) {
   return { intent_id: intentIdHex, asset_id: assetIdHex };
 }
 
-async function claimAxferIntent({ assetIdHex, intentIdHex }) {
+// Verbatim re-POST of a captured intent body. Used both by the happy-path
+// publishAxferIntent flow and by the post-load resumption logic for
+// pending entries (commit tx broadcast OK but worker POST never landed).
+async function postAxferIntentBody(assetIdHex, body) {
   if (!WORKER_BASE) throw new Error('worker disabled');
-  const cMsg = _axintentClaimMsg(hexToBytes(assetIdHex), hexToBytes(intentIdHex), wallet.pub);
+  const resp = await fetch(withNet(ATOMIC_INTENTS_URL(assetIdHex)), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+  return j;
+}
+
+// Best-effort recovery for pending intents whose POST never succeeded. Runs
+// on dapp init: for each saved pending entry on this network, wait for the
+// commit tx to be visible (the user could be reloading hours later, so the
+// chain has had plenty of time) then re-POST. Successful entries clear; the
+// rest stay in localStorage for a future retry. Failures here are logged
+// but don't block init — the user can manually retry from a UI affordance.
+async function resumePendingAxintents() {
+  if (!WORKER_BASE) return;
+  const pendings = listAxintentPendings();
+  if (!pendings.length) return;
+  for (const p of pendings) {
+    if (!p.body || !p.asset_id) { forgetAxintentPending(p.intentIdHex); continue; }
+    // Skip entries whose intent has already expired — re-posting would just
+    // 400 with "expiry must be in the future" anyway.
+    const now = Math.floor(Date.now() / 1000);
+    if (Number.isInteger(p.body.expiry) && p.body.expiry <= now) {
+      forgetAxintentPending(p.intentIdHex);
+      continue;
+    }
+    try {
+      await waitForTxVisible(p.body.commit_txid, { maxMs: 30000 });
+      await postAxferIntentBody(p.asset_id, p.body);
+      forgetAxintentPending(p.intentIdHex);
+      console.info(`[axintent] resumed pending intent ${p.intentIdHex.slice(0, 8)}…`);
+    } catch (e) {
+      console.warn(`[axintent] could not resume ${p.intentIdHex.slice(0, 8)}…:`, e.message || e);
+      // Leave the pending entry in place; user-visible retry surface (see
+      // below) lets them try again manually after diagnosing.
+    }
+  }
+}
+
+async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!Number.isInteger(priceSats) || priceSats < 1) {
+    throw new Error('price_sats must be a positive integer to reserve');
+  }
+  // Pre-flight: pick a single P2WPKH sat UTXO of value ≥ price_sats. Worker
+  // re-verifies on-chain so trolls can't free-claim and lock intents — and
+  // surfacing the requirement client-side gives the user a clear error
+  // instead of a worker rejection ("not enough sats in a single UTXO").
+  let utxos;
+  try { utxos = await getUtxos(wallet.address()); }
+  catch (e) { throw new Error('could not load wallet UTXOs: ' + (e.message || e)); }
+  const candidate = (utxos || []).filter(u => u.status?.confirmed !== false)
+    .sort((a, b) => Number(a.value) - Number(b.value)) // smallest UTXO that fits, leave bigger ones for later
+    .find(u => Number(u.value) >= priceSats);
+  if (!candidate) {
+    const total = (utxos || []).reduce((s, u) => s + Number(u.value || 0), 0);
+    throw new Error(
+      `no single confirmed UTXO at this address has ≥ ${priceSats} sats ` +
+      `(total balance: ${total}). To reserve, consolidate into one UTXO or send sats to ${wallet.address()}.`
+    );
+  }
+  const utxoTxid = String(candidate.txid).toLowerCase();
+  const utxoVout = Number(candidate.vout) >>> 0;
+  const cMsg = _axintentClaimMsg(hexToBytes(assetIdHex), hexToBytes(intentIdHex), wallet.pub, utxoTxid, utxoVout);
   const sig = signSchnorr(cMsg, wallet.priv);
   const resp = await fetch(withNet(ATOMIC_INTENT_CLAIM_URL(assetIdHex, intentIdHex)), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ taker_pubkey: bytesToHex(wallet.pub), sig: bytesToHex(sig) }),
+    body: JSON.stringify({
+      taker_pubkey: bytesToHex(wallet.pub),
+      taker_utxo: { txid: utxoTxid, vout: utxoVout },
+      sig: bytesToHex(sig),
+    }),
   });
   const j = await resp.json().catch(() => ({}));
   if (resp.status === 409) {
@@ -5207,7 +5465,7 @@ async function cancelListing({ assetIdHex, txidHex, vout }) {
   return j;
 }
 
-// Soft claim lock — taker reserves a listing for 30 min so two takers don't
+// Soft claim lock — taker reserves a listing for 5 min so two takers don't
 // pay the maker for the same UTXO. Idempotent re-claim by same taker_pubkey.
 function claimMsgBytes(assetIdBytes, txidHex, vout, takerPubBytes) {
   const txidBE = reverseBytes(hexToBytes(txidHex));
@@ -5752,6 +6010,7 @@ function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, dec
 //
 //   Drop:    <merkle_root_hex>
 //   Network: <network>
+//   Asset:   <asset_id_hex>
 //   Address: 0x<eth_addr_hex>
 //   Leaf:    <leaf_index>
 //   Amount:  <amount_display> <ticker> (<base_units_decimal>)
@@ -5759,9 +6018,15 @@ function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, dec
 //
 //   By signing, you authorize the airdrop issuer to send the above amount
 //   of <ticker> to the tacit pubkey listed.
-function buildAirdropClaimMsg({ rootHex, network, ethAddrHex, leafIndex, amount, ticker, decimals, tacitPubHex }) {
+//
+// `Asset:` binding closes MED#4 (same merkle root + same recipient list could
+// theoretically cover different assets without this binding). Format remains
+// v1 since no in-flight signatures exist on mainnet — first signed claim
+// will use the format below.
+function buildAirdropClaimMsg({ rootHex, network, assetIdHex, ethAddrHex, leafIndex, amount, ticker, decimals, tacitPubHex }) {
   if (!/^[0-9a-f]{64}$/.test(String(rootHex || '').toLowerCase())) throw new Error('rootHex must be 64-hex');
   if (typeof network !== 'string' || !network) throw new Error('network required');
+  if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || '').toLowerCase())) throw new Error('assetIdHex must be 64-hex');
   const cleanAddr = String(ethAddrHex).toLowerCase().replace(/^0x/, '');
   if (!/^[0-9a-f]{40}$/.test(cleanAddr)) throw new Error('ethAddrHex must be 40-hex');
   if (!Number.isInteger(leafIndex) || leafIndex < 0) throw new Error('leafIndex required');
@@ -5773,11 +6038,13 @@ function buildAirdropClaimMsg({ rootHex, network, ethAddrHex, leafIndex, amount,
   if (!/^0[23][0-9a-f]{64}$/.test(cleanPub)) throw new Error('tacitPubHex must be 33-byte compressed');
   const display = fmtAssetAmountPlain(amt, decimals);
   const cleanRoot = String(rootHex).toLowerCase();
+  const cleanAsset = String(assetIdHex).toLowerCase();
   return [
     'tacit airdrop claim v1',
     '',
     `Drop:    ${cleanRoot}`,
     `Network: ${network}`,
+    `Asset:   ${cleanAsset}`,
     `Address: 0x${cleanAddr}`,
     `Leaf:    ${leafIndex}`,
     `Amount:  ${display} ${ticker} (${amt.toString()})`,
@@ -5951,6 +6218,53 @@ const $ = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 const escapeHtml = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const shorten = (s, n = 10) => !s || s.length <= n*2 + 3 ? s : s.slice(0, n) + '…' + s.slice(-n);
+
+// Mark assets whose ticker is shared by ≥ 2 active assets in the supplied
+// list. Tickers in tacit are free-form CETCH bytes; nothing prevents an
+// etcher from cloning a popular asset's ticker string to phish takers. The
+// on-chain identifier (asset_id = sha256(etch_txid_BE || vout_LE)) is the
+// only canonical reference; in addition we surface "first-etched wins" by
+// marking the chronologically-earliest asset for that ticker as `original`
+// and every later collision as `duplicate`. Pure on-chain-derived signal:
+// the timestamp comes from the etch tx's block_time, so the verdict is the
+// same for every observer no matter which worker they query. No centralized
+// allowlist or "verified by" blessing — just objective facts.
+//
+// Mutates each asset with `_tickerCollision`:
+//   `false`      — ticker is unique in the supplied list
+//   `'original'` — multiple assets share this ticker; this one etched first
+//   `'duplicate'`— multiple assets share this ticker; this one is later
+function markTickerCollisions(assets) {
+  if (!Array.isArray(assets)) return;
+  // Group by normalized ticker.
+  const groups = new Map();
+  for (const a of assets) {
+    const t = (a?.ticker || '').trim().toLowerCase();
+    if (!t) { a._tickerCollision = false; continue; }
+    if (!groups.has(t)) groups.set(t, []);
+    groups.get(t).push(a);
+  }
+  for (const [, group] of groups) {
+    if (group.length < 2) {
+      group[0]._tickerCollision = false;
+      continue;
+    }
+    // First-etched wins. Order primarily by etched_at_height (block height
+    // is the chain's canonical ordering); fall back to etched_at unix time
+    // when height is missing (pending entries pre-confirmation), then to
+    // asset_id lex for fully-deterministic tie-breaking.
+    group.sort((x, y) => {
+      const xh = Number.isInteger(x.etched_at_height) ? x.etched_at_height : Infinity;
+      const yh = Number.isInteger(y.etched_at_height) ? y.etched_at_height : Infinity;
+      if (xh !== yh) return xh - yh;
+      const xt = Number(x.etched_at) || 0, yt = Number(y.etched_at) || 0;
+      if (xt !== yt) return xt - yt;
+      return String(x.asset_id || '').localeCompare(String(y.asset_id || ''));
+    });
+    group[0]._tickerCollision = 'original';
+    for (let i = 1; i < group.length; i++) group[i]._tickerCollision = 'duplicate';
+  }
+}
 // Asset-metadata `external_url` fields are issuer-controlled. Even with HTML
 // attribute escaping, an `href="javascript:…"` (or `data:`, `vbscript:`, etc.)
 // would execute the moment a user clicks. Restrict to https:// — anything
@@ -6377,7 +6691,7 @@ function setupEtchForm() {
   if (!PIN_URL) {
     fileLabel.style.opacity = '0.4';
     fileLabel.style.pointerEvents = 'none';
-    fileStatus.textContent = 'upload disabled — set PIN_URL in tacit.html';
+    fileStatus.textContent = 'upload disabled — set PIN_URL in tacit.js';
   }
   // Show the key-custody warning whenever Mintable is checked. The mint
   // authority IS the local burner key; users must export-and-back-up before
@@ -7182,6 +7496,7 @@ let _dropBuilt = null;          // { commit, sourceStats, blacklistSize, totalRo
 let _dropPinnedCid = null;      // 'ipfs://...' once pinned
 let _dropFulfilCurrent = null;  // active drop being fulfilled
 let _dropFulfilStaged = null;   // verified batch: { drop, items: [{leafIndex, tacitPubHex, ethAddrHex, amount}] }
+let _dropCrossCheckCurrent = null;  // active drop being cross-checked
 
 function _dropsStorageKey() { return `tacit-drops-v1:${NET.name}`; }
 function loadSavedDrops() {
@@ -7261,6 +7576,7 @@ function renderSavedDropsList() {
         </div>
         <div class="flex" style="gap:6px;margin-top:8px;">
           <button data-act="drop-fulfil" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Fulfil claims</button>
+          <button data-act="drop-crosscheck" data-drop-id="${escapeHtml(d.drop_id)}" type="button" title="Verify each fulfilled[] entry against on-chain state">Cross-check</button>
           <button data-act="drop-export" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Export JSON</button>
           <button data-act="drop-copy-root" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Copy root</button>
           <button data-act="drop-delete" data-drop-id="${escapeHtml(d.drop_id)}" type="button" title="Delete this drop record (does NOT undo any fulfilled CXFERs)">Delete</button>
@@ -7291,12 +7607,15 @@ function _handleDropRowAction(act, dropId) {
     navigator.clipboard?.writeText(d.merkle_root_hex)
       .then(() => toast('Merkle root copied', 'success'))
       .catch(() => prompt('Copy merkle root:', d.merkle_root_hex));
+  } else if (act === 'drop-crosscheck') {
+    _openDropCrossCheck(d);
   } else if (act === 'drop-delete') {
     if (!confirm(`Delete drop record for ${d.asset_ticker} (root ${shorten(d.merkle_root_hex, 8)})?\n\nThis only removes the local record. It does NOT undo any CXFERs already fulfilled. The remaining treasury balance is unaffected.`)) return;
     const filtered = drops.filter(x => x.drop_id !== dropId);
     saveDrops(filtered);
     renderSavedDropsList();
     if (_dropFulfilCurrent && _dropFulfilCurrent.drop_id === dropId) _closeDropFulfil();
+    if (_dropCrossCheckCurrent && _dropCrossCheckCurrent.drop_id === dropId) _closeDropCrossCheck();
     toast('Drop record deleted', 'success');
   }
 }
@@ -7622,6 +7941,151 @@ function _closeDropFulfil() {
   if (sec) sec.style.display = 'none';
 }
 
+// ---- Cross-check: verify each fulfilled[] entry against on-chain state ----
+// For each entry, fetch the txid; confirm the parent envelope is a CXFER (or
+// T_AXFER) of the same asset_id; confirm an output's P2WPKH script pays
+// hash160(tacit_pubkey). Tx-not-found, wrong opcode, asset mismatch, or
+// missing recipient output are all flagged. Cannot reconstruct missing
+// entries — for that, restore from a backup JSON.
+async function _crossCheckOneEntry(drop, entry) {
+  // Pending entries (broadcast in flight or crashed mid-broadcast) have no
+  // txid yet. Surface as a distinct status so the user knows local state is
+  // inconsistent and needs manual reconciliation. Closes HIGH#1's diagnostic
+  // gap.
+  if (entry.pending === true || entry.txid == null) {
+    const errSuffix = entry.pending_error ? ` (broadcast error: "${String(entry.pending_error).slice(0, 120)}")` : '';
+    return { ok: false, pending: true, reason: `broadcast crashed or did not complete; no on-chain txid recorded${errSuffix}. Check mempool.space for any matching CXFER from your wallet, then either update the entry with the txid or manually delete it from the drop record before retrying.` };
+  }
+  if (!/^[0-9a-f]{64}$/.test(entry.txid)) return { ok: false, reason: 'malformed txid in local record' };
+  let tx;
+  try { tx = await getTx(entry.txid); }
+  catch (e) { return { ok: false, reason: `tx not found on chain (${e.message?.slice(0, 80) || 'fetch failed'})` }; }
+  if (!tx || !Array.isArray(tx.vin) || !tx.vin[0]?.witness) {
+    return { ok: false, reason: 'tx has no envelope-bearing input' };
+  }
+  const wit = tx.vin[0].witness;
+  if (!Array.isArray(wit) || wit.length < 2) return { ok: false, reason: 'vin[0] witness too short' };
+  let env;
+  try { env = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { env = null; }
+  if (!env) return { ok: false, reason: 'envelope decode failed' };
+  let dec, label;
+  if (env.opcode === T_CXFER)      { dec = decodeCXferPayload(env.payload); label = 'CXFER'; }
+  else if (env.opcode === T_AXFER) { dec = decodeAxferPayload(env.payload); label = 'T_AXFER'; }
+  else return { ok: false, reason: `parent envelope is opcode 0x${env.opcode.toString(16)}, not CXFER or T_AXFER` };
+  if (!dec) return { ok: false, reason: `${label} payload decode failed` };
+  if (bytesToHex(dec.assetId) !== drop.asset_id_hex) {
+    return { ok: false, reason: `${label} asset_id ${shorten(bytesToHex(dec.assetId), 8)} ≠ drop's ${shorten(drop.asset_id_hex, 8)}` };
+  }
+  // Find an output whose P2WPKH pays hash160(tacit_pubkey).
+  const expectedHash160 = bytesToHex(hash160(hexToBytes(entry.tacit_pubkey)));
+  let foundVout = -1;
+  for (let i = 0; i < (tx.vout?.length || 0); i++) {
+    const out = tx.vout[i];
+    if (!out?.scriptpubkey) continue;
+    const spk = hexToBytes(out.scriptpubkey);
+    if (spk.length === 22 && spk[0] === 0x00 && spk[1] === 0x14 && bytesToHex(spk.slice(2, 22)) === expectedHash160) {
+      foundVout = i;
+      break;
+    }
+  }
+  if (foundVout < 0) return { ok: false, reason: `tx has no output paying hash160(tacit_pubkey ${shorten(entry.tacit_pubkey, 8)})` };
+
+  // Commitment-equality check (closes MED#7). Re-derive the recipient's
+  // blinding via ECDH (we're the sender — deterministic from anchor + recipient
+  // pubkey), commit to the local-record amount, compare against the on-chain
+  // commitment at the matched vout. Catches hand-edited amount fields.
+  if (foundVout >= dec.outputs.length) {
+    return { ok: false, reason: `output ${foundVout} is outside the envelope's tacit-output range (${dec.outputs.length})` };
+  }
+  try {
+    const firstAssetIn = tx.vin[1];
+    if (firstAssetIn?.txid != null && Number.isInteger(firstAssetIn.vout)) {
+      const anchorBytes = concatBytes(
+        reverseBytes(hexToBytes(firstAssetIn.txid)),
+        (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, firstAssetIn.vout >>> 0, true); return b; })(),
+      );
+      const blinding = deriveBlinding(wallet.priv, hexToBytes(entry.tacit_pubkey), anchorBytes, foundVout);
+      const expectedCommit = pedersenCommit(BigInt(entry.amount), blinding);
+      const onChainCommit = bytesToPoint(dec.outputs[foundVout].commitment);
+      if (!expectedCommit.equals(onChainCommit)) {
+        return { ok: false, reason: `commitment at vout ${foundVout} does not open to recorded amount ${entry.amount} — record may be hand-edited or the wrong vout was matched` };
+      }
+    }
+  } catch (e) {
+    return { ok: false, reason: `commitment check error: ${e.message}` };
+  }
+
+  return { ok: true, label, foundVout };
+}
+
+function _openDropCrossCheck(drop) {
+  _dropCrossCheckCurrent = drop;
+  const sec = $('#drop-crosscheck-section');
+  if (sec) sec.style.display = '';
+  const meta = $('#drop-crosscheck-meta');
+  if (meta) {
+    meta.innerHTML = `
+      <div><span class="label">drop</span> <strong>${escapeHtml(drop.asset_ticker)}</strong> · root <code style="font-size:11px;">${escapeHtml(shorten(drop.merkle_root_hex, 12))}</code></div>
+      <div><span class="label">fulfilled</span> ${(drop.fulfilled || []).length} / ${drop.count}</div>
+      <div class="muted" style="font-size:11px;margin-top:4px;">Click "Run cross-check" to walk each fulfilled entry against chain. Each entry takes one tx-fetch round-trip; large drops may take a moment.</div>
+    `;
+  }
+  $('#drop-crosscheck-progress').textContent = '';
+  $('#drop-crosscheck-results').innerHTML = '';
+  sec?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function _closeDropCrossCheck() {
+  _dropCrossCheckCurrent = null;
+  const sec = $('#drop-crosscheck-section');
+  if (sec) sec.style.display = 'none';
+}
+
+async function _runDropCrossCheck() {
+  const drop = _dropCrossCheckCurrent;
+  if (!drop) return;
+  const fulfilled = drop.fulfilled || [];
+  const progress = $('#drop-crosscheck-progress');
+  const out = $('#drop-crosscheck-results');
+  out.innerHTML = '';
+  if (fulfilled.length === 0) {
+    out.innerHTML = `<div class="muted">No fulfilled[] entries to check.</div>`;
+    return;
+  }
+  if (progress) progress.textContent = `Checking ${fulfilled.length} entries…`;
+  const results = [];
+  for (let i = 0; i < fulfilled.length; i++) {
+    const entry = fulfilled[i];
+    if (progress) progress.textContent = `Checking ${i + 1} / ${fulfilled.length}…`;
+    const r = await _crossCheckOneEntry(drop, entry);
+    results.push({ entry, ...r });
+  }
+  if (progress) progress.textContent = '';
+  const okCount = results.filter(r => r.ok).length;
+  const pendingCount = results.filter(r => r.pending).length;
+  const failCount = results.length - okCount - pendingCount;
+  const summary = (failCount === 0 && pendingCount === 0)
+    ? `<div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);"><strong>✓ All ${okCount} fulfilled entries match chain</strong></div>`
+    : pendingCount > 0
+      ? `<div class="warn" style="border-left-color:var(--orange);"><strong>${okCount} ✓ &nbsp; ${pendingCount} ⏳ pending &nbsp; ${failCount} ✗</strong> · ${pendingCount} entr${pendingCount === 1 ? 'y' : 'ies'} have no on-chain txid (broadcast may have crashed); ${failCount} mismatch${failCount === 1 ? '' : 'es'}.</div>`
+      : `<div class="warn"><strong>${okCount} ✓ &nbsp; ${failCount} ✗</strong> · ${failCount} entr${failCount === 1 ? 'y' : 'ies'} failed cross-check (details below)</div>`;
+  const rows = results.map(r => {
+    const e = r.entry;
+    const status = r.ok
+      ? `<span style="color:var(--green);">✓ ${escapeHtml(r.label)}</span>`
+      : r.pending
+        ? `<span style="color:var(--orange);">⏳ ${escapeHtml(r.reason)}</span>`
+        : `<span style="color:var(--red);">✗ ${escapeHtml(r.reason)}</span>`;
+    return `
+      <div class="row" style="font-family:var(--mono);font-size:11px;border-top:1px solid var(--border);padding-top:6px;margin-top:6px;">
+        <span class="idx">[leaf ${e.leaf_index}]</span> ${escapeHtml(e.eth_address || '?')} → ${escapeHtml(shorten(e.tacit_pubkey || '?', 10))}
+        <div style="margin-top:2px;">${status} · txid <code>${escapeHtml(shorten(e.txid || '?', 10))}</code></div>
+      </div>
+    `;
+  }).join('');
+  out.innerHTML = summary + rows;
+}
+
 function _parseClaimTuples(text) {
   // One tuple per line. Two formats accepted:
   //   leaf_index,tacit_pubkey_hex                              (unsigned — issuer trusts the source)
@@ -7700,6 +8164,7 @@ function _verifyDropFulfilBatch() {
       const claimMsg = buildAirdropClaimMsg({
         rootHex: drop.merkle_root_hex,
         network: drop.network || NET.name,
+        assetIdHex: drop.asset_id_hex,
         ethAddrHex: row.ethAddrHex,
         leafIndex: row.index,
         amount: row.amount,
@@ -7725,6 +8190,137 @@ function _verifyDropFulfilBatch() {
   return items;
 }
 
+// Validate + restore a previously-exported drop record. Returns the merged
+// record on success; throws on schema or value errors. Existing drops with
+// the same drop_id are merged: locally-fulfilled entries are union'd with
+// the imported ones (deduped by leaf_index, keeping the imported entry as
+// authoritative if both have the same leaf).
+function _importDropJSON(text) {
+  let obj;
+  try { obj = JSON.parse(text); } catch (e) { throw new Error('not valid JSON: ' + e.message); }
+  if (!obj || typeof obj !== 'object') throw new Error('JSON root must be an object');
+
+  const dropId = String(obj.drop_id || '');
+  if (!/^[0-9a-f]{32}$/.test(dropId)) throw new Error('drop_id must be 32-char hex');
+  const network = String(obj.network || '');
+  if (network !== 'signet' && network !== 'mainnet') throw new Error('network must be "signet" or "mainnet"');
+  if (network !== NET.name) {
+    throw new Error(`drop is for "${network}" but you're on "${NET.name}". Switch networks (top-right) and re-import.`);
+  }
+  const assetIdHex = String(obj.asset_id_hex || '');
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) throw new Error('asset_id_hex must be 64-char hex');
+  const rootHex = String(obj.merkle_root_hex || '');
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) throw new Error('merkle_root_hex must be 64-char hex');
+  const count = Number(obj.count);
+  if (!Number.isInteger(count) || count < 1) throw new Error('count must be a positive integer');
+  if (!Array.isArray(obj.rows) || obj.rows.length !== count) throw new Error(`rows.length (${obj.rows?.length}) must equal count (${count})`);
+
+  // drop_id must equal _dropIdFor(rootHex, assetIdHex). An attacker-edited
+  // JSON could otherwise reuse a legitimate drop_id with mismatched root/asset
+  // to overwrite the local record (closes MED#8).
+  const expectedDropId = _dropIdFor(rootHex, assetIdHex);
+  if (dropId !== expectedDropId) {
+    throw new Error(`drop_id ${shorten(dropId, 8)} does not match expected ${shorten(expectedDropId, 8)} for (root, asset_id) — record is hand-edited or mislabeled`);
+  }
+
+  // Cross-check ticker/decimals against on-chain CETCH metadata when the dapp
+  // has scanned the asset (also closes MED#8). Mismatch breaks future
+  // canonical-msg reconstruction during fulfilment, so reject loudly. If we
+  // haven't scanned the asset yet, we soft-pass — first fulfilment attempt
+  // will surface any mismatch via sig-verify failures.
+  const onChainMeta = getAssetMeta(assetIdHex);
+  if (onChainMeta) {
+    const importTicker = String(obj.asset_ticker || '');
+    const importDecimals = obj.asset_decimals;
+    if (importTicker && importTicker !== onChainMeta.ticker) {
+      throw new Error(`asset_ticker "${importTicker}" ≠ on-chain ticker "${onChainMeta.ticker}" for asset_id ${shorten(assetIdHex, 8)}`);
+    }
+    if (Number.isInteger(importDecimals) && importDecimals !== onChainMeta.decimals) {
+      throw new Error(`asset_decimals ${importDecimals} ≠ on-chain decimals ${onChainMeta.decimals} for asset_id ${shorten(assetIdHex, 8)}`);
+    }
+  }
+
+  // Recompute the merkle root from rows; refuse to import a record whose
+  // declared root doesn't match the rows it claims to be from. Prevents an
+  // attacker who edits an exported JSON to insert their own address from
+  // succeeding.
+  const reconstructedRows = obj.rows.map((r, i) => {
+    const cleanAddr = String(r.eth_address || '').toLowerCase().replace(/^0x/, '');
+    if (!/^[0-9a-f]{40}$/.test(cleanAddr)) throw new Error(`rows[${i}].eth_address malformed`);
+    const amount = BigInt(r.amount);
+    if (amount < 0n || amount >= (1n << 64n)) throw new Error(`rows[${i}].amount out of u64`);
+    if (!Number.isInteger(r.index) || r.index !== i) throw new Error(`rows[${i}].index must be ${i}`);
+    return { ethAddrHex: cleanAddr, ethAddrBytes: hexToBytes(cleanAddr), amount, index: i };
+  });
+  const leaves = reconstructedRows.map(r => airdropLeafHash(r.ethAddrBytes, r.amount, r.index));
+  const { root } = buildAirdropMerkle(leaves);
+  if (bytesToHex(root) !== rootHex) {
+    throw new Error('rows do not hash to declared merkle_root_hex — record is tampered or corrupt');
+  }
+
+  // Fulfilled list: validate each entry shape but don't trust against chain
+  // here (Cross-check is the separate validation pass).
+  const fulfilled = Array.isArray(obj.fulfilled) ? obj.fulfilled.filter(f => {
+    if (!f || !Number.isInteger(f.leaf_index)) return false;
+    if (f.leaf_index < 0 || f.leaf_index >= count) return false;
+    if (typeof f.tacit_pubkey !== 'string' || !/^0[23][0-9a-f]{64}$/.test(f.tacit_pubkey)) return false;
+    if (typeof f.txid !== 'string' || !/^[0-9a-f]{64}$/.test(f.txid)) return false;
+    return true;
+  }) : [];
+
+  const drops = loadSavedDrops();
+  const existingIdx = drops.findIndex(d => d.drop_id === dropId);
+  // If a record exists locally, union its fulfilled[] with the imported one.
+  // Imported entry takes precedence if both list the same leaf_index.
+  let mergedFulfilled = fulfilled;
+  if (existingIdx >= 0) {
+    const localFulfilled = drops[existingIdx].fulfilled || [];
+    const importedLeaves = new Set(fulfilled.map(f => f.leaf_index));
+    mergedFulfilled = [
+      ...fulfilled,
+      ...localFulfilled.filter(f => !importedLeaves.has(f.leaf_index)),
+    ];
+  }
+
+  const record = {
+    drop_id: dropId,
+    network,
+    asset_id_hex: assetIdHex,
+    asset_ticker: String(obj.asset_ticker || '?'),
+    asset_decimals: Number.isInteger(obj.asset_decimals) ? obj.asset_decimals : 0,
+    merkle_root_hex: rootHex,
+    total_amount: String(obj.total_amount || '0'),
+    count,
+    snapshot_cid: obj.snapshot_cid || null,
+    snapshot_pinned_at: obj.snapshot_pinned_at || null,
+    rows: obj.rows.map(r => ({
+      index: r.index, eth_address: r.eth_address, amount: String(r.amount),
+    })),
+    sources: Array.isArray(obj.sources) ? obj.sources : [],
+    blacklist_size: Number.isInteger(obj.blacklist_size) ? obj.blacklist_size : 0,
+    fulfilled: mergedFulfilled,
+    created_at: Number.isInteger(obj.created_at) ? obj.created_at : Math.floor(Date.now() / 1000),
+  };
+
+  if (existingIdx >= 0) drops[existingIdx] = record;
+  else drops.push(record);
+  saveDrops(drops);
+  return { record, isNew: existingIdx < 0, mergedFulfilledCount: mergedFulfilled.length };
+}
+
+// Trigger a download of the current drop record as JSON. Convenience for
+// post-broadcast backup nudge so the issuer always has a fresh local copy.
+function _downloadDropBackup(drop) {
+  const blob = new Blob([JSON.stringify(drop, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date(drop.fulfilled?.[drop.fulfilled.length - 1]?.fulfilled_at * 1000 || Date.now()).toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `drop-${shorten(drop.merkle_root_hex, 8)}-${stamp}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function setupDropsForm() {
   // Source list management
   $('#btn-drop-add-source')?.addEventListener('click', () => _addDropSource());
@@ -7734,6 +8330,29 @@ function setupDropsForm() {
     _dropSources.clear();
     _invalidateBuilt();
     _renderDropSources();
+  });
+
+  // Import drop record (restore from a previously-exported JSON)
+  $('#btn-drop-import')?.addEventListener('click', () => $('#drop-import-file').click());
+  $('#drop-import-file')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const status = $('#drop-import-status');
+    if (status) status.textContent = '';
+    try {
+      const text = await file.text();
+      const { record, isNew, mergedFulfilledCount } = _importDropJSON(text);
+      renderSavedDropsList();
+      const verb = isNew ? 'imported' : 'merged';
+      if (status) status.innerHTML = `<span style="color:var(--green);">✓ ${verb} ${escapeHtml(record.asset_ticker)} drop · ${record.count} leaves · ${mergedFulfilledCount} fulfilled</span>`;
+      toast(`Drop ${verb} · root ${shorten(record.merkle_root_hex, 10)}`, 'success');
+    } catch (err) {
+      if (status) status.innerHTML = `<span style="color:var(--red);">✗ ${escapeHtml(err.message)}</span>`;
+      console.error(err);
+    } finally {
+      // Reset so the same file can be re-selected later.
+      e.target.value = '';
+    }
   });
 
   // Asset selector — re-render meta + invalidate build
@@ -7873,29 +8492,62 @@ function setupDropsForm() {
 
     btn.disabled = true; btn.textContent = 'building proof + broadcasting…';
     $('#drop-fulfil-err').textContent = '';
+
+    // Two-phase persistence (closes HIGH #1 — state-loss double-pay window).
+    // Phase 1: write the fulfilment entries with `pending: true` BEFORE
+    // broadcast. Phase 2: after broadcast confirms, flip pending→false and
+    // attach the real txid. If the broadcast fails, remove the pending
+    // entries we just added. If the dapp crashes between broadcast and
+    // post-flip, the entries remain pending with txid=null; Cross-check
+    // surfaces them so the user can reconcile manually.
+    //
+    // The pending entries also act as an in-flight lock: a subsequent Verify
+    // for the same leaves sees them in fulfilledSet and refuses to re-stage.
+    const itemLeaves = new Set(items.map(it => it.leafIndex));
+    const phaseOneNow = Math.floor(Date.now() / 1000);
+    {
+      const drops = loadSavedDrops();
+      const idx = drops.findIndex(d => d.drop_id === drop.drop_id);
+      if (idx < 0) {
+        $('#drop-fulfil-err').textContent = 'Drop record vanished — refusing to broadcast against a record that no longer exists locally.';
+        btn.disabled = false; btn.textContent = 'Broadcast batch CXFER';
+        return;
+      }
+      drops[idx].fulfilled = drops[idx].fulfilled || [];
+      for (const it of items) {
+        drops[idx].fulfilled.push({
+          leaf_index: it.leafIndex,
+          tacit_pubkey: it.tacitPubHex,
+          eth_address: '0x' + it.ethAddrHex,
+          amount: it.amount.toString(),
+          txid: null,                   // unknown until broadcast returns
+          fulfilled_at: phaseOneNow,
+          sig_verified: !!it.sigVerified,
+          pending: true,
+        });
+      }
+      saveDrops(drops);
+      _dropFulfilCurrent = drops[idx];
+    }
+
     try {
       const recipients = items.map(x => ({ pubHex: x.tacitPubHex, amount: x.amount }));
       const result = await buildAndBroadcastCXferMulti({
         assetIdHex: drop.asset_id_hex,
         recipients,
       });
-      // Persist fulfilment to the drop record (load fresh — the record may have
-      // been touched between open and broadcast).
+      // Phase 2: flip pending → fulfilled with the confirmed txid. Reload
+      // fresh because cross-check or other tabs may have touched the record.
       const drops = loadSavedDrops();
       const idx = drops.findIndex(d => d.drop_id === drop.drop_id);
       if (idx >= 0) {
         const now = Math.floor(Date.now() / 1000);
-        drops[idx].fulfilled = drops[idx].fulfilled || [];
-        for (const it of items) {
-          drops[idx].fulfilled.push({
-            leaf_index: it.leafIndex,
-            tacit_pubkey: it.tacitPubHex,
-            eth_address: '0x' + it.ethAddrHex,
-            amount: it.amount.toString(),
-            txid: result.revealTxid,
-            fulfilled_at: now,
-            sig_verified: !!it.sigVerified,
-          });
+        for (const f of (drops[idx].fulfilled || [])) {
+          if (f.pending === true && f.txid == null && itemLeaves.has(f.leaf_index)) {
+            f.txid = result.revealTxid;
+            f.fulfilled_at = now;
+            delete f.pending;
+          }
         }
         saveDrops(drops);
         _dropFulfilCurrent = drops[idx];
@@ -7906,22 +8558,134 @@ function setupDropsForm() {
           <strong>✓ Batch broadcast</strong>
           <div style="margin-top:4px;font-size:11px;">commit <code>${escapeHtml(shorten(result.commitTxid, 10))}</code> · reveal <code>${escapeHtml(shorten(result.revealTxid, 10))}</code></div>
           <div class="muted" style="font-size:11px;margin-top:4px;">${items.length} leaves marked fulfilled in the local drop record. Recipients' wallets auto-recover their amounts via ECDH on next scan.</div>
+          <div class="flex" style="gap:6px;margin-top:8px;">
+            <button id="btn-drop-fulfil-backup" type="button" title="Save the updated drop record (with this batch's fulfilment entries) so you can restore on localStorage loss">↓ Download backup JSON</button>
+          </div>
+          <div class="muted" style="font-size:10px;margin-top:4px;">Saving is recommended after every batch — clearing browser data without a backup loses the local fulfilled-leaf ledger (chain unaffected).</div>
         </div>
       `;
+      // Wire backup button to the post-merge drop record (loaded fresh inside
+      // the closure so it includes the entries we just appended).
+      const dropForBackup = drops[idx];
+      $('#btn-drop-fulfil-backup').onclick = () => _downloadDropBackup(dropForBackup);
       $('#drop-fulfil-claims').value = '';
       $('#drop-fulfil-preview').style.display = 'none';
       _dropFulfilStaged = null;
+      // Best-effort: remove the just-fulfilled claims from the worker queue so
+      // the next "Pull queued" doesn't redeliver them. Failures here are
+      // logged-and-swallowed — the local drop record is the source of truth
+      // for double-pay prevention regardless of queue state.
+      if (WORKER_BASE) {
+        for (const it of items) {
+          fetch(`${WORKER_BASE}/airdrops/${drop.merkle_root_hex}/claims/${it.leafIndex}?network=${encodeURIComponent(drop.network || NET.name)}`, { method: 'DELETE' })
+            .catch(e => console.warn('queue delete failed for leaf', it.leafIndex, e));
+        }
+      }
       _openDropFulfil(_dropFulfilCurrent);  // re-render meta with updated fulfilled count
       renderSavedDropsList();
       toast(`Batch fulfilled · ${items.length} leaves`, 'success');
     } catch (e) {
-      $('#drop-fulfil-err').textContent = 'Broadcast failed: ' + e.message;
+      // Broadcast errored. Per the safety review, we DON'T roll back pending
+      // entries automatically — the error could have come from anywhere in
+      // the pipeline (commit broadcast, reveal broadcast, recordOpening,
+      // recordActivity), and we cannot reliably distinguish "broadcast did
+      // not happen" from "broadcast happened but post-step threw" inside the
+      // catch. Auto-rollback in the latter case would unblock a retry that
+      // double-pays. Conservative choice: leave entries marked `pending` and
+      // tag the error so Cross-check / human review can reconcile.
+      //
+      // The downside: the user can't immediately retry the same leaves; they
+      // must first run Cross-check, see whether the on-chain CXFER exists,
+      // then either (a) keep the entries and update them with the txid, or
+      // (b) manually delete the pending entries and retry.
+      try {
+        const dropsAfter = loadSavedDrops();
+        const idxAfter = dropsAfter.findIndex(d => d.drop_id === drop.drop_id);
+        if (idxAfter >= 0) {
+          let touched = false;
+          for (const f of (dropsAfter[idxAfter].fulfilled || [])) {
+            if (f && f.pending === true && f.txid == null && itemLeaves.has(f.leaf_index)) {
+              f.pending_error = String(e.message || e).slice(0, 200);
+              f.pending_error_at = Math.floor(Date.now() / 1000);
+              touched = true;
+            }
+          }
+          if (touched) {
+            saveDrops(dropsAfter);
+            _dropFulfilCurrent = dropsAfter[idxAfter];
+          }
+        }
+      } catch (annotateErr) {
+        console.warn('pending entries annotation failed:', annotateErr);
+      }
+      $('#drop-fulfil-err').innerHTML =
+        `Broadcast errored: ${escapeHtml(e.message)}. ` +
+        `<strong>Pending entries are kept</strong> in the local record (NOT rolled back) to prevent accidental double-pay if the broadcast actually succeeded mid-error. ` +
+        `Run Cross-check on this drop: if the on-chain CXFER appears, update the pending entries with the txid manually. ` +
+        `If no matching CXFER exists, manually delete the pending entries before retrying.`;
       console.error(e);
     } finally {
       btn.disabled = false; btn.textContent = 'Broadcast batch CXFER';
     }
   });
   $('#btn-drop-fulfil-cancel')?.addEventListener('click', _closeDropFulfil);
+
+  // Cross-check buttons.
+  $('#btn-drop-crosscheck-run')?.addEventListener('click', async () => {
+    const btn = $('#btn-drop-crosscheck-run');
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'running…';
+    try { await _runDropCrossCheck(); }
+    catch (e) {
+      $('#drop-crosscheck-results').innerHTML = `<div class="warn"><strong>Cross-check failed:</strong> ${escapeHtml(e.message)}</div>`;
+      console.error(e);
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+    }
+  });
+  $('#btn-drop-crosscheck-cancel')?.addEventListener('click', _closeDropCrossCheck);
+
+  // Pull queued claims from the worker. De-dups against the drop's already-
+  // fulfilled set so the textarea only contains genuinely-pending claims.
+  // Append rather than replace if the textarea already has content.
+  $('#btn-drop-fulfil-pull')?.addEventListener('click', async () => {
+    const drop = _dropFulfilCurrent;
+    if (!drop) return;
+    const status = $('#drop-fulfil-pull-status');
+    const btn = $('#btn-drop-fulfil-pull');
+    if (status) status.textContent = '';
+    if (!WORKER_BASE) {
+      if (status) status.innerHTML = `<span style="color:var(--orange);">Worker disabled — paste claims manually.</span>`;
+      return;
+    }
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'pulling…';
+    try {
+      const url = `${WORKER_BASE}/airdrops/${drop.merkle_root_hex}/claims?network=${encodeURIComponent(drop.network || NET.name)}`;
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`worker returned ${resp.status}`);
+      const j = await resp.json();
+      const fulfilledSet = new Set((drop.fulfilled || []).map(f => f.leaf_index));
+      const pending = (j.claims || []).filter(c => !fulfilledSet.has(c.leaf_index));
+      if (pending.length === 0) {
+        if (status) status.innerHTML = `<span class="muted">No pending claims in queue (${j.count || 0} total · ${fulfilledSet.size} already fulfilled locally).</span>`;
+        return;
+      }
+      // Cap at 7 (the per-batch limit). Surplus claims stay in the queue for
+      // the next pull — the issuer broadcasts in waves of 7.
+      const take = pending.slice(0, 7);
+      const lines = take.map(c => `${c.leaf_index},${c.tacit_pubkey},${c.eth_sig}`);
+      $('#drop-fulfil-claims').value = lines.join('\n');
+      if (status) {
+        const more = pending.length > take.length ? ` · ${pending.length - take.length} more pending after this batch` : '';
+        status.innerHTML = `<span style="color:var(--green);">Pulled ${take.length} claim${take.length === 1 ? '' : 's'} from queue${more}. Click Verify next.</span>`;
+      }
+      toast(`Pulled ${take.length} queued claim${take.length === 1 ? '' : 's'}`, 'success');
+    } catch (e) {
+      if (status) status.innerHTML = `<span style="color:var(--red);">Pull failed: ${escapeHtml(e.message)}</span>`;
+      console.error(e);
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+    }
+  });
 }
 
 // ============== CLAIM (recipient airdrop tab) ==============
@@ -7949,42 +8713,101 @@ function _claimNormaliseCid(input) {
   return s;
 }
 
+// Hard caps to bound a hostile/malfunctioning gateway: 10s per attempt and
+// a 50 MB ceiling on the response body. A snapshot for a million-recipient
+// drop is well under 200 MB of raw JSON; in practice they are KB to a few MB.
+const _CLAIM_SNAPSHOT_TIMEOUT_MS = 10_000;
+const _CLAIM_SNAPSHOT_MAX_BYTES = 50 * 1024 * 1024;
+
 async function _claimFetchSnapshot(cid) {
   const errors = [];
   for (const gw of IPFS_GATEWAYS) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), _CLAIM_SNAPSHOT_TIMEOUT_MS);
     try {
-      const resp = await fetch(gw + cid, { cache: 'no-store' });
+      const resp = await fetch(gw + cid, { cache: 'no-store', signal: ctl.signal });
       if (!resp.ok) { errors.push(`${gw}: ${resp.status}`); continue; }
-      const j = await resp.json();
-      return j;
-    } catch (e) { errors.push(`${gw}: ${e.message}`); }
+      // Reject up-front if the gateway advertised an oversized body. Some
+      // gateways omit content-length, in which case we still cap by reading
+      // the body manually below.
+      const advertised = Number(resp.headers.get('content-length') || 0);
+      if (advertised > _CLAIM_SNAPSHOT_MAX_BYTES) {
+        errors.push(`${gw}: response too large (${advertised} > ${_CLAIM_SNAPSHOT_MAX_BYTES})`);
+        continue;
+      }
+      const text = await resp.text();
+      if (text.length > _CLAIM_SNAPSHOT_MAX_BYTES) {
+        errors.push(`${gw}: response too large (${text.length} > ${_CLAIM_SNAPSHOT_MAX_BYTES})`);
+        continue;
+      }
+      return JSON.parse(text);
+    } catch (e) {
+      errors.push(`${gw}: ${e.name === 'AbortError' ? 'timed out' : e.message}`);
+    } finally { clearTimeout(timer); }
   }
   throw new Error(`all gateways failed: ${errors.join(' | ')}`);
 }
 
-async function _claimLoadSnapshot(rootHexInput, cidInput) {
+// Validate a parsed snapshot blob against a claimed merkle root. Refuses any
+// inconsistency (wrong schema, wrong root, malformed rows, indexes not
+// contiguous, root doesn't match recomputed). Sets the active claim state on
+// success. Used by both IPFS-fetch and raw-paste paths.
+function _claimValidateSnapshot(rootHexInput, blob) {
   const rootHex = String(rootHexInput || '').toLowerCase().replace(/^0x/, '').trim();
   if (!/^[0-9a-f]{64}$/.test(rootHex)) throw new Error('merkle root must be 64-hex');
-  const cid = _claimNormaliseCid(cidInput);
-  const blob = await _claimFetchSnapshot(cid);
   if (!blob || blob.schema !== 'tacit-airdrop-v1') throw new Error('snapshot not in tacit-airdrop-v1 schema');
   if (String(blob.merkle_root || '').toLowerCase() !== rootHex) {
-    throw new Error(`snapshot root ${shorten(blob.merkle_root || '?', 8)} ≠ expected ${shorten(rootHex, 8)} — wrong CID for this drop`);
+    throw new Error(`snapshot root ${shorten(blob.merkle_root || '?', 8)} ≠ expected ${shorten(rootHex, 8)} — wrong source for this drop`);
   }
   if (!Array.isArray(blob.rows) || blob.rows.length === 0) throw new Error('snapshot has no rows');
-  // Verify the root by recomputing locally — protects against a malicious
-  // gateway / pinner that returns a tampered blob.
-  const reconstructedRows = blob.rows.map(r => {
+
+  // Strict-validate every metadata field interpolated into UI templates so a
+  // hostile gateway can't smuggle HTML through e.g. leaf_count or asset_id.
+  // Closes MED#6.
+  if (blob.leaf_count != null) {
+    if (!Number.isInteger(blob.leaf_count) || blob.leaf_count !== blob.rows.length) {
+      throw new Error(`snapshot leaf_count (${typeof blob.leaf_count === 'string' ? blob.leaf_count.slice(0, 32) : blob.leaf_count}) ≠ rows.length (${blob.rows.length})`);
+    }
+  }
+  if (blob.network != null && blob.network !== 'signet' && blob.network !== 'mainnet') {
+    throw new Error(`snapshot network must be "signet" or "mainnet"`);
+  }
+  if (blob.asset_id != null && !/^[0-9a-f]{64}$/.test(String(blob.asset_id).toLowerCase())) {
+    throw new Error('snapshot asset_id must be 64-char hex');
+  }
+  if (blob.asset_decimals != null && (!Number.isInteger(blob.asset_decimals) || blob.asset_decimals < 0 || blob.asset_decimals > 18)) {
+    throw new Error('snapshot asset_decimals must be integer 0..18');
+  }
+  if (blob.asset_ticker != null && (typeof blob.asset_ticker !== 'string' || blob.asset_ticker.length === 0 || blob.asset_ticker.length > 16)) {
+    throw new Error('snapshot asset_ticker must be a string of length 1..16');
+  }
+  if (blob.total_amount != null) {
+    if (typeof blob.total_amount !== 'string' || !/^[0-9]+$/.test(blob.total_amount)) {
+      throw new Error('snapshot total_amount must be a base-10 integer string');
+    }
+    try { const _t = BigInt(blob.total_amount); if (_t < 0n) throw new Error('negative'); }
+    catch { throw new Error('snapshot total_amount unparseable as BigInt'); }
+  }
+
+  const reconstructedRows = blob.rows.map((r, i) => {
+    if (!r || typeof r !== 'object') throw new Error(`row ${i} not an object`);
     const cleanAddr = String(r.eth_address || '').toLowerCase().replace(/^0x/, '');
-    if (!/^[0-9a-f]{40}$/.test(cleanAddr)) throw new Error(`malformed eth_address at index ${r.index}`);
+    if (!/^[0-9a-f]{40}$/.test(cleanAddr)) throw new Error(`malformed eth_address at row ${i}`);
+    if (!Number.isInteger(r.index) || r.index < 0) throw new Error(`row ${i} has non-integer index`);
+    if (typeof r.amount !== 'string' && typeof r.amount !== 'number' && typeof r.amount !== 'bigint') {
+      throw new Error(`row ${i} amount must be a string, number, or bigint`);
+    }
+    let amount;
+    try { amount = BigInt(r.amount); }
+    catch { throw new Error(`row ${i} amount unparseable: ${String(r.amount).slice(0, 32)}`); }
+    if (amount < 0n || amount >= (1n << 64n)) throw new Error(`row ${i} amount out of u64 range`);
     return {
       ethAddrHex: cleanAddr,
       ethAddrBytes: hexToBytes(cleanAddr),
-      amount: BigInt(r.amount),
+      amount,
       index: r.index,
     };
   });
-  // Index ordering: sort by index ascending; reject if not 0..N-1.
   reconstructedRows.sort((a, b) => a.index - b.index);
   for (let i = 0; i < reconstructedRows.length; i++) {
     if (reconstructedRows[i].index !== i) {
@@ -7994,13 +8817,31 @@ async function _claimLoadSnapshot(rootHexInput, cidInput) {
   const leaves = reconstructedRows.map(r => airdropLeafHash(r.ethAddrBytes, r.amount, r.index));
   const { root } = buildAirdropMerkle(leaves);
   if (bytesToHex(root) !== rootHex) {
-    throw new Error('snapshot rows do NOT hash to claimed root — blob is tampered or corrupt');
+    throw new Error('snapshot rows do NOT hash to claimed root — source is tampered or corrupt');
   }
-  blob._reconstructedRows = reconstructedRows;  // cache for eligibility lookup
+  blob._reconstructedRows = reconstructedRows;
   _claimSnapshot = blob;
   _claimEligibleRow = null;
   _claimSigned = null;
   return blob;
+}
+
+// Fetch via IPFS gateway list, then validate.
+async function _claimLoadSnapshot(rootHexInput, cidInput) {
+  const rootHex = String(rootHexInput || '').toLowerCase().replace(/^0x/, '').trim();
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) throw new Error('merkle root must be 64-hex');
+  const cid = _claimNormaliseCid(cidInput);
+  const blob = await _claimFetchSnapshot(cid);
+  return _claimValidateSnapshot(rootHex, blob);
+}
+
+// Parse a pasted JSON blob, then validate. Path of last resort when all IPFS
+// gateways fail (corporate proxy, censorship, etc) or for offline review.
+function _claimLoadSnapshotFromJSON(rootHexInput, jsonText) {
+  let blob;
+  try { blob = JSON.parse(jsonText); }
+  catch (e) { throw new Error('not valid JSON: ' + e.message); }
+  return _claimValidateSnapshot(rootHexInput, blob);
 }
 
 function _renderClaimSnapshotInfo() {
@@ -8120,6 +8961,7 @@ function _renderClaimMsgPreview() {
     const msg = buildAirdropClaimMsg({
       rootHex: _claimSnapshot.merkle_root,
       network: _claimSnapshot.network,
+      assetIdHex: _claimSnapshot.asset_id,
       ethAddrHex: _claimEthAddr,
       leafIndex: _claimEligibleRow.index,
       amount: _claimEligibleRow.amount,
@@ -8141,6 +8983,7 @@ async function _claimSign() {
   const msg = buildAirdropClaimMsg({
     rootHex: _claimSnapshot.merkle_root,
     network: _claimSnapshot.network,
+    assetIdHex: _claimSnapshot.asset_id,
     ethAddrHex: _claimEthAddr,
     leafIndex: _claimEligibleRow.index,
     amount: _claimEligibleRow.amount,
@@ -8171,16 +9014,21 @@ function _renderClaimResult() {
   if (!_claimSigned || !_claimEligibleRow) { out.style.display = 'none'; out.innerHTML = ''; return; }
   const tuple = `${_claimEligibleRow.index},${_claimSigned.tacitPubHex},${_claimSigned.sigHex}`;
   const ticker = _claimSnapshot.asset_ticker || '?';
+  const submitBlurb = WORKER_BASE
+    ? `Submit to the issuer's queue with one click, OR copy the line below and send through whatever channel the issuer specified. Submission to the queue is dumb storage — the issuer's dapp re-verifies before broadcasting.`
+    : `Worker is disabled in this dapp build, so manual hand-off is the only option. Copy the line below and send through whatever channel the issuer specified.`;
   out.style.display = 'block';
   out.innerHTML = `
     <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
       <strong>✓ Signed</strong>
-      <div class="muted" style="font-size:11px;margin-top:4px;">Send the line below to the airdrop issuer (e.g. via the channel they specified). They paste it into their Drops tab to fulfil your claim. The dapp does NOT post anywhere — submission is fully manual.</div>
+      <div class="muted" style="font-size:11px;margin-top:4px;">${submitBlurb}</div>
       <textarea id="claim-tuple-out" rows="4" readonly style="margin-top:8px;font-family:var(--mono);font-size:11px;">${escapeHtml(tuple)}</textarea>
-      <div class="flex" style="gap:6px;margin-top:8px;">
+      <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
+        ${WORKER_BASE ? `<button id="btn-claim-submit" type="button" class="primary">Submit to issuer queue</button>` : ''}
         <button id="btn-claim-copy" type="button">Copy claim line</button>
         <button id="btn-claim-copy-msg" type="button" title="The full canonical message you signed">Copy signed message</button>
       </div>
+      <div id="claim-submit-status" style="margin-top:8px;font-size:11px;"></div>
       <div class="muted" style="font-size:11px;margin-top:8px;">Once the issuer fulfils, your tacit wallet auto-recovers ${escapeHtml(ticker)} from chain on next scan. No further action needed on your end.</div>
     </div>
   `;
@@ -8194,6 +9042,51 @@ function _renderClaimResult() {
       .then(() => toast('Signed message copied', 'success'))
       .catch(() => prompt('Copy signed message:', _claimSigned.msg));
   };
+  const submitBtn = $('#btn-claim-submit');
+  if (submitBtn) {
+    submitBtn.onclick = async () => {
+      const status = $('#claim-submit-status');
+      submitBtn.disabled = true; const orig = submitBtn.textContent; submitBtn.textContent = 'submitting…';
+      if (status) status.textContent = '';
+      try {
+        const url = `${WORKER_BASE}/airdrops/${_claimSnapshot.merkle_root}/claims?network=${encodeURIComponent(_claimSnapshot.network)}`;
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            leaf_index: _claimEligibleRow.index,
+            tacit_pubkey: _claimSigned.tacitPubHex,
+            eth_sig: _claimSigned.sigHex,
+          }),
+        });
+        if (!resp.ok) throw new Error(`worker returned ${resp.status}: ${(await resp.text().catch(() => '')).slice(0, 200)}`);
+        const j = await resp.json();
+        if (status) status.innerHTML = `<span style="color:var(--green);">✓ Submitted to issuer queue at ${new Date((j.claim?.submitted_at || Math.floor(Date.now() / 1000)) * 1000).toLocaleString()}</span>`;
+        toast('Claim submitted to issuer queue', 'success');
+      } catch (e) {
+        if (status) status.innerHTML = `<span style="color:var(--red);">✗ Submit failed: ${escapeHtml(e.message)} — fall back to copy + manual hand-off.</span>`;
+      } finally {
+        submitBtn.disabled = false; submitBtn.textContent = orig;
+      }
+    };
+  }
+}
+
+// Silently probe MetaMask for already-authorized accounts. Unlike
+// eth_requestAccounts (which prompts on every fresh connect), eth_accounts
+// returns whatever the page already has permission for, with no popup.
+// Called on Claim tab activation so a returning visitor's connection state
+// is restored without a click.
+async function _claimAutoConnect() {
+  const eth = window.ethereum;
+  if (!eth || !eth.request) return;
+  try {
+    const accounts = await eth.request({ method: 'eth_accounts' });
+    if (Array.isArray(accounts) && accounts.length > 0) {
+      const addr = String(accounts[0]).toLowerCase().replace(/^0x/, '');
+      if (/^[0-9a-f]{40}$/.test(addr)) _claimEthAddr = addr;
+    }
+  } catch { /* user not connected; nothing to restore */ }
 }
 
 function _consumeClaimUrlHash() {
@@ -8204,8 +9097,18 @@ function _consumeClaimUrlHash() {
   const h = location.hash || '';
   if (!h.startsWith('#claim=')) return;
   const params = new URLSearchParams(h.slice(1));
-  const root = params.get('claim');
-  const cid = params.get('cid');
+  const rawRoot = params.get('claim');
+  const rawCid = params.get('cid');
+  // Validate both fields *before* writing them into inputs and triggering
+  // auto-load. A crafted hash can't otherwise produce script execution (CSP
+  // blocks inline JS and we use `.value=` not `innerHTML`), but stuffing
+  // arbitrary strings into the inputs and auto-clicking Load could route a
+  // claimant's request to an attacker-supplied CID.
+  const root = (rawRoot && /^[0-9a-f]{64}$/i.test(rawRoot.replace(/^0x/, ''))) ? rawRoot.replace(/^0x/, '').toLowerCase() : null;
+  let cid = null;
+  if (rawCid) {
+    try { cid = _claimNormaliseCid(rawCid); } catch { cid = null; }
+  }
   if (root) {
     const rEl = $('#claim-root');
     if (rEl) rEl.value = root;
@@ -8214,10 +9117,13 @@ function _consumeClaimUrlHash() {
     const cEl = $('#claim-cid');
     if (cEl) cEl.value = cid;
   }
+  // Clear the hash from the address bar once consumed so a refresh doesn't
+  // re-trigger auto-load and the URL doesn't propagate the snapshot fingerprint.
+  try { history.replaceState(null, '', location.pathname + location.search); } catch {}
   // Switch to the Claim tab automatically.
   const claimTabBtn = $('.tab[data-tab="claim"]');
   if (claimTabBtn) claimTabBtn.click();
-  // Auto-load if both fields present.
+  // Auto-load only if both fields parsed cleanly.
   if (root && cid) {
     setTimeout(() => $('#btn-claim-load')?.click(), 50);
   }
@@ -8226,6 +9132,14 @@ function _consumeClaimUrlHash() {
 function refreshClaimTab() {
   _renderClaimTacitId();
   _renderClaimSnapshotInfo();
+  // Silent MetaMask reconnect: if the user previously authorized this origin,
+  // their connected address is restored without a prompt. Followed by a render
+  // pass so the eligibility section reflects the recovered state.
+  _claimAutoConnect().then(() => {
+    _renderClaimEligibility();
+    _renderClaimMsgPreview();
+    _refreshClaimSignAvailability();
+  });
   _renderClaimEligibility();
   _renderClaimMsgPreview();
   _renderClaimResult();
@@ -8261,8 +9175,50 @@ function setupClaimTab() {
     _claimSnapshot = null; _claimEligibleRow = null; _claimSigned = null;
     $('#claim-root').value = '';
     $('#claim-cid').value = '';
+    const t = $('#claim-json-text'); if (t) t.value = '';
     $('#claim-load-err').textContent = '';
     refreshClaimTab();
+  });
+
+  // Raw-snapshot paste / upload fallback. Reuses the same root-recompute
+  // validation as the IPFS path so a malicious paste can't substitute rows.
+  const _loadClaimJSON = (text) => {
+    const errEl = $('#claim-load-err');
+    if (errEl) errEl.textContent = '';
+    try {
+      const root = $('#claim-root').value;
+      _claimLoadSnapshotFromJSON(root, text);
+      _renderClaimSnapshotInfo();
+      _renderClaimEligibility();
+      _renderClaimMsgPreview();
+      _refreshClaimSignAvailability();
+      toast(`Snapshot loaded · ${_claimSnapshot.leaf_count || _claimSnapshot.rows.length} recipients`, 'success');
+    } catch (e) {
+      if (errEl) errEl.textContent = e.message;
+      _claimSnapshot = null;
+      _renderClaimSnapshotInfo();
+      _renderClaimEligibility();
+      _refreshClaimSignAvailability();
+    }
+  };
+  $('#btn-claim-json-load')?.addEventListener('click', () => {
+    const text = $('#claim-json-text')?.value || '';
+    if (!text.trim()) { $('#claim-load-err').textContent = 'paste snapshot JSON first'; return; }
+    _loadClaimJSON(text);
+  });
+  $('#btn-claim-json-upload')?.addEventListener('click', () => $('#claim-json-file').click());
+  $('#claim-json-file')?.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const t = $('#claim-json-text'); if (t) t.value = text;
+      _loadClaimJSON(text);
+    } catch (err) {
+      $('#claim-load-err').textContent = 'file read failed: ' + err.message;
+    } finally {
+      e.target.value = '';
+    }
   });
 
   $('#btn-claim-connect-mm')?.addEventListener('click', async () => {
@@ -9118,7 +10074,7 @@ async function renderHoldings() {
                 </div>
               </div>
               <div class="muted" style="margin-top:10px;font-size:11px;line-height:1.5;">
-                Anyone can claim. Each claim has 30 min to be fulfilled by you.<br>
+                Anyone can claim. Each claim has 5 min to be fulfilled by you.<br>
                 ⚠ Fulfilment is device-local — the recipient blinding scalar is held in this browser. Publishing here means fulfilment must also happen here.<br>
                 ⚠ If you fulfil a claim and need to cancel, you must self-spend the asset UTXO (commit + reveal fees) — worker cancel alone does NOT stop the taker.
               </div>
@@ -9429,7 +10385,11 @@ async function renderRecentEtches() {
       // Display canonical ticker if verified; fall back to worker string only
       // when on-chain validation couldn't run (the ✗ badge signals it).
       const ticker = v.ok ? v.ticker : (typeof a.ticker === 'string' ? a.ticker : '?');
-      const _recentExtras = a.image_uri ? getMetadataExtras(a.image_uri) : null;
+      // Read metadata-blob extras (name/description) from the *canonical*
+      // image_uri when on-chain verification ran — the worker can otherwise
+      // present a different image_uri whose blob spoofs name/description.
+      const _recentImg = v.ok ? v.imageUri : a.image_uri;
+      const _recentExtras = _recentImg ? getMetadataExtras(_recentImg) : null;
       const displayName = (_recentExtras?.name && _recentExtras.name.trim()) ? _recentExtras.name : ticker;
       const verifyMark = v.ok
         ? (v.mismatches && v.mismatches.length ? ' · ⚠' : ' · ✓')
@@ -9926,7 +10886,11 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   const ticker = verified ? verify.ticker : (typeof a.ticker === 'string' ? a.ticker : '?');
   // Discover-side display name — read off the metadata blob (cached by
   // resolveImageUri); falls back to the ticker so older assets render unchanged.
-  const _discoverExtras = a.image_uri ? getMetadataExtras(a.image_uri) : null;
+  // Source the URI from the on-chain verify when it succeeded, so a worker that
+  // serves a different image_uri (whose IPFS blob spoofs name/description)
+  // can't influence the displayed name once the chain has confirmed the asset.
+  const _discoverImg = (verified && verify.imageUri) ? verify.imageUri : a.image_uri;
+  const _discoverExtras = _discoverImg ? getMetadataExtras(_discoverImg) : null;
   const displayName = (_discoverExtras?.name && _discoverExtras.name.trim()) ? _discoverExtras.name : ticker;
   // Filter key: lowercase concatenation of name + ticker + asset_id, used by
   // the Discover search input to substring-match against card content.
@@ -10089,6 +11053,18 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     ? `<div style="margin-top:6px;font-size:11px;color:#a04030;">⚠ Worker disagreed with on-chain envelope on: ${escapeHtml(verify.mismatches.join(', '))}. Showing on-chain values.</div>`
     : '';
 
+  // Ticker-collision warning. Tickers are free-form CETCH bytes so multiple
+  // assets can share one — the asset_id is the only canonical reference.
+  // First-etched is shown as `original`; later etches with the same ticker
+  // get a stronger duplicate badge nudging users to read the asset_id.
+  let collisionBadge = '', collisionDetail = '';
+  if (a._tickerCollision === 'duplicate') {
+    collisionBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;" title="another asset etched this ticker first — verify the asset_id below before trusting">⚠ duplicate ticker</span>`;
+    collisionDetail = `<div style="margin-top:6px;font-size:11px;color:var(--red);">⚠ This ticker is shared with ≥ 1 earlier-etched asset. <strong>Tickers are not unique on tacit</strong> — the asset_id below is the canonical reference. Confirm with the issuer before trading.</div>`;
+  } else if (a._tickerCollision === 'original') {
+    collisionBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;" title="other assets share this ticker; this one was etched first">shared ticker · earliest</span>`;
+  }
+
   card.innerHTML = `
     <div class="head" style="display:flex;align-items:center;gap:12px;">
       ${avatar}
@@ -10097,9 +11073,11 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
         <div class="muted" style="font-size:11px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <span>decimals ${decimals} · etched ${ageStr} · block ${safeHeight ?? '—'}</span>
           ${verifyBadge}
+          ${collisionBadge}
         </div>
       </div>
     </div>
+    ${collisionDetail}
     ${mismatchDetail}
     ${supplyBadge}
     ${mintBadge}
@@ -10130,6 +11108,10 @@ async function fetchMarketData() {
   const r = await fetch(withNet(REGISTRY_URL, 'mints=0'));
   const j = await r.json();
   const assets = j.assets || [];
+  // Mark ticker-collision precedence over the FULL asset set (not just the
+  // ones with active listings) — otherwise an attacker could side-step the
+  // warning by listing a duplicate-ticker asset before the original lists.
+  markTickerCollisions(assets);
   const haveAny = assets.filter(a =>
     Number(a.listing_count || 0) > 0
     || Number(a.range_listing_count || 0) > 0
@@ -10194,10 +11176,10 @@ function applyMarketFilters() {
     });
   }
   if (filterKind !== 'all') rows = rows.filter(l => l.kind === filterKind);
-  if (Number.isInteger(minPrice)) rows = rows.filter(l => (l.price_sats | 0) >= minPrice);
-  if (Number.isInteger(maxPrice)) rows = rows.filter(l => (l.price_sats | 0) <= maxPrice);
-  if (sort === 'price-asc')       rows.sort((a, b) => (a.price_sats | 0) - (b.price_sats | 0));
-  else if (sort === 'price-desc') rows.sort((a, b) => (b.price_sats | 0) - (a.price_sats | 0));
+  if (Number.isInteger(minPrice)) rows = rows.filter(l => Number(l.price_sats || 0) >= minPrice);
+  if (Number.isInteger(maxPrice)) rows = rows.filter(l => Number(l.price_sats || 0) <= maxPrice);
+  if (sort === 'price-asc')       rows.sort((a, b) => Number(a.price_sats || 0) - Number(b.price_sats || 0));
+  else if (sort === 'price-desc') rows.sort((a, b) => Number(b.price_sats || 0) - Number(a.price_sats || 0));
   else                             rows.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
   if (status) status.textContent = `${rows.length} live · ${_marketCache.listings.length} total`;
   if (!rows.length) {
@@ -10244,20 +11226,30 @@ function applyMarketFilters() {
       } else if (claim) {
         actions = `<button disabled style="flex:1;font-size:11px;">claimed by ${escapeHtml(shorten(claim.taker_pubkey, 6))}</button>`;
       } else {
-        actions = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" data-price="${l.price_sats | 0}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" style="flex:1;font-size:11px;">Claim</button>`;
+        actions = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" style="flex:1;font-size:11px;">Claim</button>`;
       }
     } else {
-      actions = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${l.price_sats | 0}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" style="flex:1;font-size:11px;">Take</button>` +
+      actions = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${Number(l.price_sats || 0)}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" style="flex:1;font-size:11px;">Take</button>` +
                 `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" style="font-size:11px;">Verify</button>`;
     }
+    // Ticker-collision warning. First-etched is shown as `original` (soft);
+    // later etches under the same ticker get a stronger `duplicate` badge to
+    // push the taker to read the asset_id rather than trust the string.
+    const collisionTileBadge = a._tickerCollision === 'duplicate'
+      ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="another asset etched this ticker first — verify the asset_id below before trading">⚠ DUP</span>`
+      : a._tickerCollision === 'original'
+        ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="other assets share this ticker; this one was etched first">earliest</span>`
+        : '';
     tile.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
-        <div><strong>${escapeHtml(a.ticker || '?')}</strong>${kindBadge} <span class="muted" style="font-size:10px;">${escapeHtml(shorten(safeAid, 4))}</span></div>
+        <div><strong>${escapeHtml(a.ticker || '?')}</strong>${kindBadge}${collisionTileBadge}</div>
         <div style="font-size:11px;" class="muted">expires ${expIso}</div>
       </div>
+      <div style="margin-top:2px;font-size:10px;font-family:var(--mono);color:var(--ink-mid);" title="${escapeHtml(safeAid)}">id ${escapeHtml(shorten(safeAid, 8))}</div>
       <div style="margin-top:6px;font-size:18px;">${l.kind === 'range' ? '≥ ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
-      <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${(l.price_sats | 0).toLocaleString()} sats</strong></div>
+      <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${Number(l.price_sats || 0).toLocaleString()} sats</strong></div>
       <div style="margin-top:8px;font-size:10px;" class="muted">maker: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || '', 6))}</span></div>
+      ${a._tickerCollision === 'duplicate' ? `<div style="margin-top:6px;font-size:10px;color:var(--red);">⚠ ticker shared with an earlier asset — verify asset_id before trading</div>` : ''}
       <div style="margin-top:10px;display:flex;gap:6px;">${actions}</div>`;
     grid.appendChild(tile);
   }
@@ -10295,11 +11287,11 @@ async function marketClaimIntentHandler(btn) {
     `Claim atomic intent?\n\n` +
     `Buying:  ${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
     `Price:   ${price.toLocaleString()} sats\n\n` +
-    `On confirm: locks the intent for 30 min so no one else can claim it. The maker then has 30 min to generate a partial reveal targeted at your pubkey. Once they fulfil, you click Take to finalize and broadcast — atomic, single Bitcoin tx, no trust.`,
+    `On confirm: you'll commit one of your own confirmed sat UTXOs (≥ price) as proof of funds, and the intent locks for 5 min so no one else can claim it. The maker then generates a partial reveal targeted at your pubkey. Once they fulfil, you click Take to finalize and broadcast — atomic, single Bitcoin tx, no trust.`,
   )) return;
   btn.disabled = true; btn.textContent = 'claiming…';
   try {
-    await claimAxferIntent({ assetIdHex: aid, intentIdHex: iid });
+    await claimAxferIntent({ assetIdHex: aid, intentIdHex: iid, priceSats: price });
     toast('Claim placed ✓ — wait for the maker to fulfil (refresh Market tab)', 'success', 6000);
     setTimeout(() => renderMarket(), 1000);
   } catch (e) {
@@ -10478,9 +11470,9 @@ async function marketTakeHandler(btn) {
     `STEPS:\n` +
     `1) Pay ${price.toLocaleString()} sats to:\n   ${addr}\n` +
     `2) Send your tacit pubkey to the maker (will be copied to clipboard):\n   ${myPub}\n` +
-    `3) Maker broadcasts a CXFER of ${ticker} to your pubkey within 30 min.\n` +
+    `3) Maker broadcasts a CXFER of ${ticker} to your pubkey within 5 min.\n` +
     `4) The new UTXO appears in Holdings (auto-discovered via ECDH).\n\n` +
-    `On confirm: the listing is reserved for you for 30 min. Settlement is OTC — counterparty trust still required.`;
+    `On confirm: the listing is reserved for you for 5 min. Settlement is OTC — counterparty trust still required.`;
   if (!confirm(msg)) { btn.disabled = false; btn.textContent = 'Take'; return; }
   btn.textContent = 'reserving…';
   try {
@@ -10497,7 +11489,7 @@ async function marketTakeHandler(btn) {
     return;
   }
   navigator.clipboard?.writeText(myPub).catch(() => {});
-  toast('Reserved 30 min · pubkey copied · pay the maker, then send pubkey to them', 'success', 8000);
+  toast('Reserved 5 min · pubkey copied · pay the maker, then send pubkey to them', 'success', 8000);
   btn.textContent = '✓ reserved';
 }
 
@@ -10595,6 +11587,9 @@ async function renderDiscover(force = false) {
       list.innerHTML = freshness + `<div class="empty">No assets etched on ${NET.name} yet. Be the first.</div>`;
       return;
     }
+    // Stamp ticker-collision precedence (first-etched wins) so each card
+    // can show the right warning. Pure on-chain-derived; no centralized list.
+    markTickerCollisions(j.assets);
     list.innerHTML = freshness;
     // EAGER RENDER. Each card mounts immediately with worker-supplied strings
     // (ticker, decimals, image, asset_id) under a "verifying…" badge — the
@@ -10814,7 +11809,7 @@ async function renderDiscover(force = false) {
               btn.disabled = false; btn.textContent = 'Take';
               return;
             }
-            // Confirm BEFORE claiming. If the user cancels, no 30-min stale
+            // Confirm BEFORE claiming. If the user cancels, no 5-min stale
             // claim is left behind blocking other takers. Two takers racing
             // past the dialog is exactly the case the claim mechanism is
             // designed to resolve: one wins, one sees a clear "already
@@ -10826,9 +11821,9 @@ async function renderDiscover(force = false) {
               `STEPS:\n` +
               `1) Pay ${price.toLocaleString()} sats to:\n   ${addr}\n` +
               `2) Send your tacit pubkey to the maker (will be copied to clipboard):\n   ${myPub}\n` +
-              `3) Maker broadcasts a CXFER of ${ticker} to your pubkey within 30 min.\n` +
+              `3) Maker broadcasts a CXFER of ${ticker} to your pubkey within 5 min.\n` +
               `4) The new UTXO appears in Holdings (auto-discovered via ECDH).\n\n` +
-              `On confirm: the listing is reserved for you for 30 min so no one else can pay the maker for the same UTXO. ` +
+              `On confirm: the listing is reserved for you for 5 min so no one else can pay the maker for the same UTXO. ` +
               `Settlement is OTC — counterparty trust still required.`;
             if (!confirm(msg)) {
               btn.disabled = false; btn.textContent = 'Take';
@@ -10843,7 +11838,7 @@ async function renderDiscover(force = false) {
               return;
             }
             navigator.clipboard?.writeText(myPub).catch(() => {});
-            toast('Reserved 30 min · pubkey copied · pay the maker, then send pubkey to them', 'success', 8000);
+            toast('Reserved 5 min · pubkey copied · pay the maker, then send pubkey to them', 'success', 8000);
             btn.textContent = '✓ reserved';
           };
         });
@@ -11559,6 +12554,23 @@ async function init() {
   consumePendingNetFlipToast();
   await autoImportShareLink();
   _consumeClaimUrlHash();
+  // Best-effort recovery: if a previous publishAxferIntent call broadcast a
+  // commit tx but the worker POST never landed (indexer race, network blip,
+  // worker outage), the body was persisted to localStorage. Re-POST it now
+  // that the chain has had time to index. Errors are non-fatal — they leave
+  // the entry in localStorage for a future retry. Fired-and-forgotten so a
+  // slow chain API doesn't block the rest of init.
+  resumePendingAxintents().then(() => {
+    const remaining = listAxintentPendings();
+    if (remaining.length) {
+      toast(
+        `${remaining.length} atomic intent${remaining.length === 1 ? '' : 's'} couldn't be published yet ` +
+        `(commit tx broadcast, marketplace POST pending). The dapp will retry automatically on reload — ` +
+        `your Bitcoin fees are not lost.`,
+        '', 12000,
+      );
+    }
+  }).catch(e => console.warn('[axintent] resume failed:', e));
 }
 // Gate the auto-init for offline test harnesses. Setting __TACIT_NO_INIT__ on
 // globalThis BEFORE importing this module (e.g. from a Node parity test) skips
@@ -11667,7 +12679,7 @@ function openInlineForm(triggerBtn, { content, submitLabel = 'Confirm', submitCl
   return { host, errEl, close };
 }
 
-// Named exports: tacit.html loads this file via <script type="module"> with
+// Named exports: index.html loads this file via <script type="module"> with
 // no importer, so these are inert in production. Their sole purpose is to let
 // tests/dapp-parity.test.mjs import the canonical dApp implementations and
 // diff them against the test-side mirrors in tests/composition.mjs — catches

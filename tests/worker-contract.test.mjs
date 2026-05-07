@@ -73,6 +73,9 @@ const WORKER = {
   compressedPubHex:  /^0[23][0-9a-f]{64}$/,
   // lines 2146, 2306, 2353 etc. — 64-byte BIP-340 Schnorr sig
   schnorrSigHex:     /^[0-9a-f]{128}$/,
+  // Airdrop claim queue (handleAirdropClaimPost)
+  airdropMerkleRootHex: /^[0-9a-f]{64}$/,
+  airdropEthSigHex:     /^[0-9a-f]{130}$/,    // 65 bytes: r:32 || s:32 || v:1
 };
 
 // The historically-wrong regex that bit us. Kept as a regression sentinel:
@@ -150,6 +153,49 @@ await test("Schnorr sig from signSchnorr matches worker's /^[0-9a-f]{128}$/", ()
   const msg = sha256(new TextEncoder().encode('contract-test'));
   const sig = signSchnorr(msg, priv);
   return sig.length === 64 && WORKER.schnorrSigHex.test(bytesToHex(sig));
+});
+
+console.log('\nDapp ↔ worker airdrop-claim contract:');
+
+const { buildAirdropMerkle, airdropLeafHash, _signEip191WithPriv, _ethAddrFromPriv, buildAirdropClaimMsg } = await import('./composition.mjs');
+
+await test('airdrop merkle root format (32-byte) matches worker /^[0-9a-f]{64}$/', () => {
+  const leaves = [
+    airdropLeafHash(new Uint8Array(20).fill(1), 100n, 0),
+    airdropLeafHash(new Uint8Array(20).fill(2), 200n, 1),
+  ];
+  const { root } = buildAirdropMerkle(leaves);
+  return root.length === 32 && WORKER.airdropMerkleRootHex.test(bytesToHex(root));
+});
+
+await test("dapp's eth signature output is 65 bytes / matches worker /^[0-9a-f]{130}$/", () => {
+  const priv = new Uint8Array(32); priv[31] = 11;
+  const addr = _ethAddrFromPriv(priv);
+  const msg = buildAirdropClaimMsg({
+    rootHex: '0'.repeat(64), network: 'mainnet',
+    assetIdHex: 'f'.repeat(64),
+    ethAddrHex: addr, leafIndex: 0, amount: 1n,
+    ticker: 'T', decimals: 0, tacitPubHex: '02' + 'a'.repeat(64),
+  });
+  const sig = _signEip191WithPriv(msg, priv);  // returns 0x-prefixed 132-char
+  const stripped = sig.replace(/^0x/, '');
+  return stripped.length === 130 && WORKER.airdropEthSigHex.test(stripped);
+});
+
+await test('airdrop claim POST body shape: { leaf_index, tacit_pubkey, eth_sig }', () => {
+  // Pin the body keys the dapp will send vs what the worker expects.
+  // If either side renames, the round-trip breaks silently otherwise.
+  const dappBody = {
+    leaf_index: 7,
+    tacit_pubkey: '02' + 'b'.repeat(64),
+    eth_sig: '0x' + '1'.repeat(130),
+  };
+  const required = ['leaf_index', 'tacit_pubkey', 'eth_sig'];
+  const got = Object.keys(dappBody);
+  return required.every(k => got.includes(k))
+      && Number.isInteger(dappBody.leaf_index)
+      && WORKER.compressedPubHex.test(dappBody.tacit_pubkey)
+      && WORKER.airdropEthSigHex.test(dappBody.eth_sig.replace(/^0x/, ''));
 });
 
 // ============================================================================

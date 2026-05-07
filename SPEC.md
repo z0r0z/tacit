@@ -26,7 +26,7 @@ Operations:
 |---|---|
 | **Bitcoin (host chain)** — tx ordering, witness integrity, no double-spends | None: this is the substrate |
 | **Indexer code** (the dApp HTML or a re-implementation) — correct enforcement of the rules in this spec | Re-host, audit, pin by content hash. Two browsers running the same code reach the same verdict |
-| **`@noble/secp256k1` and `@noble/hashes`** — crypto primitives | Vendored under `dapp/vendor/tacit-deps.min.js` and pinned by IPFS CID alongside `dapp/tacit.html`. Build pipeline at `build/`; runtime KAT in `runStartupKAT()` is independent defense |
+| **`@noble/secp256k1` and `@noble/hashes`** — crypto primitives | Vendored under `dapp/vendor/tacit-deps.min.js` and pinned by IPFS CID alongside `dapp/index.html` + `dapp/tacit.js`. Build pipeline at `build/`; runtime KAT in `runStartupKAT()` is independent defense |
 | **In-page tacit privkey** (localStorage) — signs every tacit op (P2WPKH spend, taproot script-path, kernel sig, mint authority) and is the HMAC key for blinding/keystream derivations | This is the wallet for tacit assets. It can be (a) auto-generated on first load, (b) imported from a privkey hex the user holds, or (c) **locally bound** to an external wallet's address when the user connects Xverse/UniSat/Leather. All three paths store the privkey under a `localStorage` key namespaced by **network** (`tacit-wallet-v1:signet` vs `tacit-wallet-v1:mainnet`) and, in case (c), additionally by the external wallet's address (`tacit-wallet-v1:<network>:by:<extAddr>`); reconnecting the same external wallet on the same network *in the same browser profile* re-binds to the same tacit identity. **Note:** the locally-bound case is local binding, not cryptographic derivation from the external wallet's seed — clearing localStorage or switching browsers/devices will yield a different tacit identity even if the external wallet is the same. In all three cases this in-page key is what controls asset UTXOs and must be exported and backed up. Mainnet UX gates every value-creating op behind an export-and-acknowledge step. Hardware-wallet signing for the protocol's signing paths (kernel sig, taproot script-path, HMAC-blinding) is a future enhancement — current external-wallet support does not expose those primitives. |
 | **The asset's etcher (issuer)** — *the announced initial supply is what they say it is* | Out of scope cryptographically at the protocol layer (Pedersen hides the supply, so no third party can verify the announcement without the issuer's opening). Resolved at the client layer by publishing the `(supply, blinding)` opening — §7.3 spells out the IPFS-primary, worker-cached attestation flow that the reference dApp ships on by default. The protocol guarantees no inflation *downstream of etch* either way. |
 | **The asset's mint authority** (mintable assets only) — *minting decisions* | Holder of the `mint_authority` private key from the CETCH envelope |
@@ -109,7 +109,7 @@ All deterministic blindings + amount-encryption keystreams are HMAC-SHA256 keyed
 - `wallet_priv` (self-derivations), or
 - `SHA256(ECDH(my_priv, their_pub).x)` (peer-derivations).
 
-Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags:
+Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags **for on-chain blinding/keystream derivations** (the set this section governs):
 
 | Tag | Purpose | Where used |
 |---|---|---|
@@ -121,6 +121,8 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags:
 | `tacit-amount-self-v1` | Self-derived amount keystream (8B) | CXFER + BURN change `amount_ct` |
 | `tacit-etch-amount-v1` | Etcher's supply keystream (8B) | CETCH `amount_ct` |
 | `tacit-mint-amount-v1` | Issuer's mint keystream (8B) | T_MINT `amount_ct` |
+
+Other domain-separated v1 tags appear where they're used and are not part of this table: BIP-340 Schnorr signature-message tags (`tacit-kernel-v1` §5.2, `tacit-mint-v1` §5.3, `tacit-disclosure-v1` §5.6, `tacit-axintent-{v1,claim-v1,fulfilment-v1,cancel-v1}` §5.7.6); a related HMAC keystream `tacit-axintent-blinding-v1` (§5.7.6); generator derivations `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1); the bulletproof Fiat-Shamir transcript domain `tacit-bp-v1` (§3.3); and off-chain coordination tags (`tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1}`) defined by their worker endpoints in §8 — these last live entirely outside the on-chain protocol.
 
 **Endianness convention.** Throughout this spec, `txid_BE` denotes the txid in the byte order that `SHA256(serialized_tx)` natively produces — the same bytes a Bitcoin transaction puts on the wire when it references a previous output. This is the **reverse** of the displayed/RPC hex form (e.g. `getrawtransaction` output, block-explorer URLs). In wider Bitcoin documentation this on-wire order is often called "internal" or "LE"; tacit's `_BE` label is not standard but is fixed by the test vectors in §3.1 (and `tests/vectors.test.mjs`). Implementers should treat any `_BE` field as `reverseBytes(hexToBytes(displayed_txid))`. `_LE` on integer fields (e.g. `vout_LE`, `amount_LE`) means standard little-endian integer encoding.
 
@@ -476,7 +478,7 @@ PSBT (BIP-174) supports proprietary key types under the `0xfc` keytype prefix wi
 |---|---|---|---|
 | `0x00` | (empty) | envelope script bytes (the leaf script of `vin[0]`) | input map at `vin[0]` |
 | `0x01` | (empty) | control block bytes (the script-path control block of `vin[0]`) | input map at `vin[0]` |
-| `0x02` | (empty) | u32 LE: `asset_input_count` | global map |
+| `0x02` | (empty) | u8: `asset_input_count` (matches the on-chain field width in §5.7) | global map |
 | `0x03` | u8: input index (0..N-1) | `(commitment(33) || amount_ct(8) || blinding_hint(33))` for the recipient — the blinding hint is the sender's compressed pubkey, which the recipient combines with their own privkey via ECDH per §3.5 to recover the blinding | global map |
 
 The `blinding_hint` lets the taker pre-verify their tacit-output commitment without a separate share-link. Other tacit outputs (change to maker, recipient outputs to other parties) are not annotated; the taker has no need to open them and the maker recovers their own change via §6.
@@ -540,7 +542,7 @@ intent {
   // taker receives it encrypted at fulfilment time.
 
 claim {
-  intent_id, taker_pubkey (33B), sig, claimed_at, expires_at  // 30-min TTL
+  intent_id, taker_pubkey (33B), sig, claimed_at, expires_at  // 5-min TTL
 }
 
 fulfilment {
@@ -578,7 +580,7 @@ cancel_msg    = SHA256("tacit-axintent-cancel-v1"    || asset_id || intent_id)
 ```
 [publish]   maker:   build & broadcast commit tx + post intent → intent stored
 [browse]    anyone:  GET /atomic-intents → discover open intents
-[claim]     taker:   POST /:intent_id/claim with taker_pubkey → 30-min lock
+[claim]     taker:   POST /:intent_id/claim with taker_pubkey → 5-min lock
 [fulfil]    maker:   POST /:intent_id/fulfilment with partial reveal targeted at claimant
 [take]      taker:   GET fulfilment, append BTC funding signed SIGHASH_ALL, broadcast
 [settled]   anyone:  the on-chain T_AXFER is indistinguishable from a §5.7.3 settlement
@@ -597,7 +599,7 @@ The atomic intent flow inherits §5.7.2 soundness from `T_AXFER` itself, plus th
 What atomic intents *don't* protect against:
 
 - **Maker double-spend race.** Between fulfilment-posting and taker-broadcast, the maker could in principle race-spend the asset UTXO in another tx. Same race as ordinals atomic listings. Mitigation is operational: the taker broadcasts immediately on receiving fulfilment (the dApp's "Take" button does this).
-- **Maker liveness.** Fulfilment requires the maker to be online during the 30-min claim window. If they're offline, the claim expires and a fresh claim from anyone can replace it.
+- **Maker liveness.** Fulfilment requires the maker to be online during the 5-min claim window. If they're offline, the claim expires and a fresh claim from anyone can replace it.
 - **Abandoned commits.** If no one claims the intent before its expiry, the commit P2TR sits unspent on chain. The maker can reclaim by spending it via the script-path with the envelope as the leaf — the reclaim is exactly a take-by-self with the maker as both maker and taker.
 
 ##### Privacy of the listed amount
@@ -609,6 +611,8 @@ Atomic intents publish the listed UTXO's amount in cleartext — the taker needs
 Because `r` is random rather than ECDH-derived, an atomic-intent recipient UTXO is **not recoverable from chain + privkey alone** in the sense of §6 paths 2–5. The taker's wallet records the opening locally on take (path 1), so recovery works from local cache as long as the wallet hasn't been wiped. If the wallet is wiped, the taker can re-fetch the encrypted fulfilment from the worker and decrypt — provided it's still within the worker's 24-hour fulfilment TTL. Beyond the TTL, the UTXO becomes a "ghost" entry: the BTC sats are spendable by privkey, but the asset amount is unrecoverable without the maker re-providing the encrypted blinding off-band.
 
 This is the only recovery-model exception in tacit and is unique to the atomic-intent coordination layer; targeted §5.7.3 settlements use ECDH-derived blindings and recover normally via §6 path 2.
+
+**Maker-side recovery.** A maker who reimports their privkey on a fresh device after losing local state recovers the listed asset UTXO via §6 paths normally — its `r` was set at the asset's originating CXFER / CETCH / T_AXFER, not at intent-publish time, so it is unaffected by the loss of the per-intent random `r`. The unspent commit P2TR's BTC sats are reclaimable via script-path spend using the privkey plus the leaf-script and control-block bytes the worker holds in the intent record (or any cached copy of the intent payload). What is irretrievably lost is the per-intent random `r` itself: any in-flight claim becomes un-fulfillable, the claim lock expires, and the maker must publish a fresh intent with a new `r` to relist. No asset value is destroyed — only the listing.
 
 ##### Worker endpoints (reference)
 
@@ -646,8 +650,9 @@ If none of the paths produce a valid `(amount, blinding)` opening, the UTXO is r
 ### 7.1 Privacy
 
 - **Amount confidentiality** of every commitment. Perfect Pedersen hiding + bulletproof zero-knowledge. Observers see range bounds and structure but not the value.
-- **Keystream uniqueness across transactions** (NOT forward secrecy): the keystream that XOR-encrypts each `amount_ct` is bound to a per-tx anchor (`vin[0]` outpoint) and per-output `vout` index. The same (sender, recipient, amount) tuple produces a different ciphertext every transaction because the anchor is unique. This prevents the OTP key-reuse attack (where two ciphertexts under the same keystream leak their XOR difference) but does **not** provide forward secrecy in the cryptographic sense — the keystream derives from `HMAC(SHA256(ECDH(maker_priv, taker_pub)), …)` (or `HMAC(wallet_priv, …)` for self-derived amounts), all of which are static long-term keys. **If either party's tacit privkey is compromised, every past `amount_ct` for transactions involving that key becomes decryptable from chain alone.** Real forward secrecy would require ephemeral key exchange per transaction, which the in-page key-custody model (a single static privkey reused for every op) does not support. Hiding therefore relies on long-term key secrecy plus Pedersen's perfect-hiding property at the commitment layer (the commitment itself reveals nothing without `r`, regardless of whether `amount_ct` is decrypted).
-- **No off-chain metadata leak on the send path.** A vanilla CXFER (and a targeted §5.7.3 T_AXFER) produces a Bitcoin tx broadcast and nothing else — no worker call, no IPFS pin, no third-party service is contacted as part of the transfer. Setting `WORKER_BASE = ''` in `tacit.html` disables every off-chain endpoint and the protocol still works for transfers, validation, and recovery (§8). Discovery and marketplace features (etch/mint attestation caches, per-UTXO openings, range disclosures, OTC listings, atomic intents) are explicit user-initiated publishes; an observer of the worker sees nothing about a send unless the user separately opted to publish for that asset.
+- **Pedersen perfect-hiding is the load-bearing privacy primitive; the keystream is a recovery channel, not a privacy mechanism.** The on-chain Pedersen commitment `C = a·H + r·G` reveals nothing about `a` to any observer who lacks `r`, regardless of whether `amount_ct` is also published. Even total exposure of every wallet's keystream-derivation key — or stripping `amount_ct` from the wire entirely — would not break amount confidentiality at the commitment layer; it would only force recipients to learn `a` out-of-band (sender→recipient share-link, etc.) rather than reconstruct it from chain. `amount_ct` exists so the recipient (and only the recipient) can decode `a` from chain alone, fulfilling §6's privkey-only recovery property.
+- **Keystream uniqueness across transactions** (NOT forward secrecy): the keystream that XOR-encrypts each `amount_ct` is bound to a per-tx anchor (`vin[0]` outpoint) and per-output `vout` index. The same (sender, recipient, amount) tuple produces a different ciphertext every transaction because the anchor is unique. This prevents the OTP key-reuse attack (where two ciphertexts under the same keystream leak their XOR difference) but does **not** provide forward secrecy in the cryptographic sense — the keystream derives from `HMAC(SHA256(ECDH(maker_priv, taker_pub)), …)` (or `HMAC(wallet_priv, …)` for self-derived amounts), all of which are static long-term keys. **If either party's tacit privkey is compromised, every past `amount_ct` for transactions involving that key becomes decryptable from chain alone.** Real forward secrecy would require ephemeral key exchange per transaction, which the in-page key-custody model (a single static privkey reused for every op) does not support. The fall-back to Pedersen perfect-hiding (above) is what keeps amount confidentiality intact even under that compromise: a privkey leak makes amounts recoverable to the holder of the leaked key, not to anyone else.
+- **No off-chain metadata leak on the send path.** A vanilla CXFER (and a targeted §5.7.3 T_AXFER) produces a Bitcoin tx broadcast and nothing else — no worker call, no IPFS pin, no third-party service is contacted as part of the transfer. Setting `WORKER_BASE = ''` in `dapp/tacit.js` disables every off-chain endpoint and the protocol still works for transfers, validation, and recovery (§8). Discovery and marketplace features (etch/mint attestation caches, per-UTXO openings, range disclosures, OTC listings, atomic intents) are explicit user-initiated publishes; an observer of the worker sees nothing about a send unless the user separately opted to publish for that asset.
 
 What is **not** hidden:
 - **Address graph.** Bitcoin-level addresses are visible.
@@ -693,7 +698,7 @@ For mintable assets, additional trust is on the mint_authority key not being abu
 
 ## 8. Worker (off-chain conveniences)
 
-The worker (`worker/src/index.js`) is **not part of the trust-bearing protocol**. Setting `WORKER_BASE = ''` in `tacit.html` disables it entirely; the protocol still works for full validation and transfers.
+The worker (`worker/src/index.js`) is **not part of the trust-bearing protocol**. Setting `WORKER_BASE = ''` in `dapp/tacit.js` disables it entirely; the protocol still works for full validation and transfers.
 
 Worker endpoints:
 
@@ -714,7 +719,8 @@ Worker endpoints:
 | `POST /utxos/:txid/:vout/opening` | Holder publishes a per-UTXO `(amount, blinding)` opening. Worker re-verifies the BIP-340 sig under `owner_pubkey` and `pedersenCommit(amount, blinding) == on_chain_commitment` before storing. |
 | `GET /utxos/:txid/:vout/opening` | Single-UTXO opening lookup (cache-only). |
 | `GET /assets/:asset_id/listings`, `POST /assets/:asset_id/listings/:txid/:vout/claim`, `DELETE /assets/:asset_id/listings/:txid/:vout` | OTC marketplace endpoints. **Settlement is OTC, not protocol-enforced** — the worker stores listing intent + an opening proof; actual delivery is bilateral. The marketplace surface lives entirely outside the on-chain protocol; an indexer that only cares about token validity can ignore it. |
-| `GET /assets/:asset_id/listings-range`, `DELETE /assets/:asset_id/listings-range/:ownerPubkey` | Range-disclosure variant of the above (lists backed by a `balance ≥ K` proof rather than a single UTXO opening). Same OTC caveat applies. |
+| `POST /assets/:asset_id/listings-range`, `GET /assets/:asset_id/listings-range`, `POST /assets/:asset_id/listings-range/:owner_pubkey/claim`, `DELETE /assets/:asset_id/listings-range/:owner_pubkey` | Range-disclosure variant of the above (lists backed by a `balance ≥ K` proof rather than a single UTXO opening). `POST /…/claim` is a 5-minute taker reservation, symmetric to the per-UTXO `listings/:txid/:vout/claim` row. Same OTC caveat applies. |
+| `POST /airdrops/:root/claims`, `GET /airdrops/:root/claims`, `DELETE /airdrops/:root/claims/:leaf_index` | Airdrop claim dropbox keyed by the issuer's merkle root. Recipients submit `(leaf_index, tacit_pubkey, eth_sig)` tuples; issuers pull batches and re-verify the merkle proof + ETH sig client-side against the off-chain snapshot before broadcasting CXFERs. Worker validates format only — it has no snapshot to check against. Lives entirely outside the on-chain protocol; canonical truth is the resulting CXFER set. |
 | `POST /assets/hint` | `{ reveal_txid, reveal_vout? }` — targeted index of a freshly broadcast etch / mint / burn so it appears in `/assets` immediately without waiting for the next 5-min cron tick. Works pre-confirmation. |
 | `POST /scan` | Manual cron trigger (debug) |
 | `POST /rescan?from=<height>` | Rewind `meta:last_scanned` (debug) |

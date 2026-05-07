@@ -70,11 +70,62 @@ What it doesn't do:
 
 ---
 
+## How tacit compares
+
+Bitcoin's token-protocol space sorts along three axes: **where validity is
+enforced**, **whether amounts are exposed**, and **what's required to
+recover a balance**. Tacit sits at the intersection "Bitcoin-substrate,
+indexer-validated" + "amounts hidden" + "privkey-only recovery" — no
+other protocol hits all three.
+
+| | Substrate | Validity | Amounts | Privkey-only recovery | Federation |
+|---|---|---|---|---|---|
+| Ordinals / BRC-20 | Bitcoin | Indexer | Public | Yes | None |
+| Runes | Bitcoin | Indexer | Public | Yes | None |
+| RGB | Bitcoin (anchor) | Off-chain client-side proofs | Hidden | **No** — needs proof chain from sender | None |
+| Taproot Assets | Bitcoin (anchor) | Off-chain client-side proofs | Partial | **No** | None |
+| Liquid CT | **Federated sidechain** | Sidechain consensus | Hidden | Yes (on Liquid) | **15-of-N** |
+| **tacit** | **Bitcoin** | **Indexer** | **Hidden** | **Yes** | **None** |
+
+What tacit does that nothing else does in one package:
+
+- **Confidential fungibles on Bitcoin proper.** Liquid CT uses the same
+  Pedersen + Bulletproof primitives but lives on a federated sidechain —
+  moving value in or out costs a peg. Tacit is just Bitcoin: every CXFER
+  is a Bitcoin tx, every UTXO is a Bitcoin UTXO, no bridge.
+- **No off-chain proof exchange.** RGB and Taproot Assets buy privacy by
+  moving validity off-chain — the recipient must receive a proof chain
+  from the sender, and losing it loses the balance. Tacit keeps everything
+  on-chain. The trade is larger witnesses (~10 KB per CXFER), but a wallet
+  recovers full balance from privkey + chain alone, even years later, with
+  no surviving relationship to the sender.
+- **Hidden amounts that aren't a federation away.** Same crypto as Liquid,
+  no federation. Same privacy as RGB, no proof distribution. Same
+  indexer-validated simplicity as Runes, with hidden amounts.
+- **OTC settlement in one Bitcoin tx (`T_AXFER`).** A confidential token
+  transfer and the BTC payment that pays for it close in the same tx,
+  atomically. Ordinals atomic listings are the closest precedent, but
+  they're public-amount; tacit gets the same atomicity over hidden balances.
+
+Where tacit isn't the right choice:
+
+- **NFTs / inscriptions.** Ordinals is purpose-built for this; tacit isn't.
+- **Lightning-native assets.** Taproot Assets is built into the LN stack;
+  tacit is on-chain only in v1.
+- **Highest-frequency, lowest-cost fungible transfers.** Runes wins on raw
+  cost (~hundreds of bytes vs. tacit's ~10 KB witness).
+- **Asset-graph privacy.** `asset_id` is visible in CXFER / MINT / BURN
+  payloads. Liquid hides this with surjection proofs; tacit v1 doesn't.
+- **Address-graph privacy.** Same as every Bitcoin-substrate protocol. No
+  CoinJoin or shielded pool.
+
+---
+
 ## User stories
 
 **Alice mints a token.** Alice opens the dApp and signs in with Xverse —
 tacit derives a per-wallet identity in this browser and Alice clicks
-"fund tacit" to send a few thousand sats over from Xverse for tx fees.
+"Top up tacit" to send a few thousand sats over from Xverse for tx fees.
 She fills in ticker = `ALICE`, supply = 1000, decimals = 2, optionally
 uploads an image or marks the asset Mintable, and clicks Etch. Two
 transactions go on chain (commit + reveal). On chain, anyone can see a
@@ -139,10 +190,28 @@ the BTC payment, the taker's `SIGHASH_ALL` sig binds the whole tx.
 **Frank publishes an open atomic intent for anyone to claim.** "Atomic
 intent (open)" on Holdings → 100 USDA for 50K sats, 1-day expiry. The
 intent appears on the Market tab with a purple ⚡ badge. Helen clicks
-Claim, locks for 30 minutes. Frank sees the claim on the Market tab and
+Claim, locks for 5 minutes. Frank sees the claim on the Market tab and
 clicks "Fulfil claim" — the dApp generates a partial reveal targeted at
 Helen's pubkey and posts it. Helen clicks Take, broadcasts. **Discoverable
 + trustless atomic OTC**, no out-of-band coordination.
+
+**Greta airdrops 50,000 GRETA to ETH holders of an old token.** Greta has
+an Etherscan CSV (320 addresses + balances). On the Drops tab she selects
+GRETA, uploads the CSV (optional blacklist), clicks Build merged snapshot
+— the dApp normalizes amounts, sorts by address, and computes the merkle
+root. She pins the snapshot JSON to IPFS and shares the `(merkle_root, CID)`
+pair via her usual channels. As claims arrive in the worker queue, she
+pulls them in batches and the dApp broadcasts batched CXFERs (up to 7
+confidential recipients per tx, all signed in one go from her treasury key).
+
+**Ivy claims her share.** Ivy opens the Claim tab, pastes the merkle root
++ IPFS CID, clicks Load snapshot. The dApp fetches the JSON, recomputes
+the merkle root locally, and shows Ivy her row. She connects MetaMask and
+signs a canonical claim binding her tacit pubkey to the drop (off-chain
+signature — no Eth tx, no gas). The resulting `(leaf_index, tacit_pubkey,
+eth_sig)` tuple goes to the worker queue (or directly to Greta). When
+Greta fulfils, the confidential GRETA UTXO appears in Ivy's Holdings via
+the same ECDH recovery path as any other CXFER.
 
 ---
 
@@ -151,7 +220,7 @@ Helen's pubkey and posts it. Helen clicks Take, broadcasts. **Discoverable
 ```
 tacit/
 ├── dapp/                  # THE dApp — pin this directory to IPFS
-│   ├── tacit.html         # markup, CSP, and one external script tag
+│   ├── index.html         # markup, meta-CSP, script tags (vendor bundle + tacit.js)
 │   ├── tacit.js           # all dApp code (Pedersen, bulletproofs, kernel sigs,
 │   │                      #  BIP-340/341, envelope encode/decode, recursive
 │   │                      #  validator, wallet, UI, marketplace flows).
@@ -179,11 +248,13 @@ tacit/
 └── tests/                 # offline test harness (worker / bp-test parity)
 ```
 
-`dapp/` contains three loaded JS files: `tacit.js` (the app), `vendor/
-tacit-deps.min.js` (noble + scure + sats-connect, bundled), and the inline
-HTML. All three load same-origin only — a meta-CSP in `tacit.html` locks
-`script-src 'self'` (no `'unsafe-inline'`, no third-party origins), so
-nothing runs in the wallet's JS realm except code under the same IPFS CID.
+`dapp/` loads three same-origin files: `index.html` (markup + meta-CSP), `tacit.js`
+(the app, loaded as an ESM module by the one `<script>` tag in `index.html`),
+and `vendor/tacit-deps.min.js` (noble + scure + sats-connect, bundled —
+imported from inside `tacit.js`, not loaded by a separate `<script>` tag).
+The meta-CSP in `index.html` locks `script-src 'self'` (no `'unsafe-inline'`,
+no third-party origins), so nothing runs in the wallet's JS realm except code
+under the same IPFS CID.
 Pinning the `dapp/` directory yields one CID covering every byte of
 trust-bearing code. `connect-src` is locked down too: the only network
 endpoints reachable at runtime are `mempool.space` and `blockstream.info`
@@ -193,7 +264,7 @@ direct `https://` images in CETCH envelopes are rejected on purpose, since
 they would be IP-correlation beacons for asset viewers.
 
 `build/` is dev-time only. Run `cd build && npm install && npm run build`
-when you bump deps or want fresh SRI hashes. Editing `dapp/tacit.html`
+when you bump deps or want fresh SRI hashes. Editing `dapp/index.html`
 or `dapp/tacit.js` directly does not require a build — both are served
 as-is, and the runtime KAT inside catches any drift between the bundle and
 what tacit expects.
@@ -201,7 +272,7 @@ what tacit expects.
 The `worker/` directory holds an optional Cloudflare Worker that provides
 demo conveniences (image pinning to IPFS, signet faucet drip, asset
 directory). **The Worker holds no trust-bearing logic.** Setting
-`WORKER_BASE = ''` at the top of `dapp/tacit.html` disables it entirely;
+`WORKER_BASE = ''` at the top of `dapp/tacit.js` disables it entirely;
 the protocol still works.
 
 ---
@@ -316,7 +387,7 @@ The dApp is a single HTML file plus its vendored bundle.
 # any static file server works
 cd tacit/dapp
 python3 -m http.server 8000
-# open http://localhost:8000/tacit.html
+# open http://localhost:8000/  (serves dapp/index.html)
 ```
 
 CORS is allowlisted for `http://localhost:8000`, `:3000`, `:127.0.0.1:8000`,
@@ -345,7 +416,7 @@ Run only when bumping crypto dep versions or wanting fresh SRI hashes.
 cd tacit/build
 npm install
 npm run build
-# prints SHA-384 of dapp/vendor/tacit-deps.min.js and dapp/tacit.html
+# prints SHA-384 of dapp/vendor/tacit-deps.min.js, dapp/tacit.js, and dapp/index.html
 ```
 
 See `build/README.md` for details.
@@ -371,7 +442,7 @@ See `build/README.md` for details.
    behind a "have you exported the key?" acknowledgement.
 2. **Get sats.** On signet, click ⚡ Demo drip — single round trip, no
    captcha. (If the faucet is empty, the Manual faucet button opens public
-   signet faucets.) On mainnet, click **Fund tacit** in the connect panel
+   signet faucets.) On mainnet, click **Top up tacit** in the connect panel
    for one-click funding from your external wallet, or send sats to the
    tacit address shown on the Wallet tab from any Bitcoin wallet.
 3. **Etch.** Pick a ticker, supply, decimals (0–8). Optionally upload an
@@ -422,6 +493,28 @@ See `build/README.md` for details.
    liveness) before any commitment. Atomic intent tiles surface the
    relevant button based on your role: Claim if untaken, Fulfil if it's
    yours and a claim is pending, Take when fulfilment is ready.
+10. **Drops** *(issuer side)*. Batched 1:N confidential CXFER airdrops.
+    Upload one or more snapshot CSVs (`eth_address,amount` — Etherscan
+    holder exports work as-is), optionally blacklist addresses, Build
+    merged snapshot to compute the merkle commitment, Pin to IPFS, Save
+    the drop record. Then publish `(merkle_root, IPFS CID)` to recipients
+    however you like (Twitter, Discord, blog). As claims arrive in the
+    worker queue, Pull queued → Verify batch → Broadcast: up to 7
+    recipients per CXFER, each verified for merkle inclusion + ETH-sig
+    recovery to the listed address before broadcast. Drop records
+    (including the local fulfilled-leaves ledger) live in localStorage;
+    use Export JSON to back up. A Cross-check vs chain button walks the
+    local ledger and verifies each fulfilled leaf actually confirmed
+    on-chain.
+11. **Claim** *(recipient side)*. Paste the drop's merkle root + IPFS CID
+    (from the issuer) → Load snapshot. The dApp fetches the JSON, refuses
+    any blob whose rows don't match the root, and shows your row. Connect
+    MetaMask (or any EIP-1193 provider) — the connection is purely for
+    signing a canonical claim message; no Eth tx, no gas, the current
+    chain doesn't matter. The signed tuple `(leaf_index, tacit_pubkey,
+    eth_sig)` goes to the worker queue or straight to the issuer. When
+    they fulfil, the confidential UTXO lands in your Holdings via the
+    standard ECDH recovery path.
 
 ### Recovery sanity check
 
@@ -438,8 +531,8 @@ reappear from chain data alone.
 | ----------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | Bitcoin (signet / mainnet)                | Tx ordering, no double-spends, witness data integrity                                  | None — it's the bottom layer                                                              |
 | `mempool.space` API (primary) + `blockstream.info` (watchdog) | Returning real chain data                            | A 5-min divergence watchdog cross-checks tip heights between the two endpoints; ≥3-block disagreement surfaces a top-of-page banner so a single-endpoint outage or tampering is visible. Swap either for any Esplora-compatible API by editing `NETWORKS` in `dapp/tacit.js`. |
-| The `tacit.html` file you loaded          | Implementing the validation rules correctly                                            | Re-host, audit; pin by IPFS CID — the runtime KAT in `runStartupKAT()` is independent defense |
-| `dapp/vendor/tacit-deps.min.js` (vendored) | Crypto code matching what was published                                                | Bundle is pinned alongside `tacit.html` under one IPFS CID; rebuild and re-pin if upstream npm packages change |
+| The dApp source (`dapp/index.html` + `dapp/tacit.js`) you loaded | Implementing the validation rules correctly                                            | Re-host, audit; pin by IPFS CID — the runtime KAT in `runStartupKAT()` is independent defense |
+| `dapp/vendor/tacit-deps.min.js` (vendored) | Crypto code matching what was published                                                | Bundle is pinned alongside `dapp/index.html` and `dapp/tacit.js` under one IPFS CID; rebuild and re-pin if upstream npm packages change |
 | The asset's etcher                        | *Confidential-supply assets only:* the supply they announced. *(Mintable assets:)* their use of the mint_authority key. | The dApp publishes `(supply, blinding)` to IPFS-embedded metadata by default; for attested assets supply is cryptographically verifiable from chain + IPFS alone. The "centralized-stablecoin" trust model only applies when the issuer explicitly opts out of attestation. Mintable assets retain mint-key trust regardless. |
 | The in-page tacit privkey                 | Signing every tacit op (P2WPKH spend, taproot script-path, kernel sig, mint authority) — whichever path put a key in the page (auto, imported, or locally bound to an external wallet address) | **AES-GCM encrypted at rest** with a passphrase-derived key (PBKDF2-SHA256, 600k iterations); unlocked per session. Defends against localStorage exfiltration (malicious extensions, stolen unlocked devices). Export the raw privkey separately via Wallet → Export key — that's the recovery path if the passphrase is lost. |
 
@@ -513,7 +606,7 @@ amount-hiding only.
   amount, then listing the resulting UTXO. The constraint comes from the
   `SIGHASH_SINGLE_ACP` discipline — see SPEC §5.7.3.
 - **Atomic intents need maker liveness.** The maker has to actively click
-  "Fulfil" within the 30-min claim window after a taker claims their
+  "Fulfil" within the 5-min claim window after a taker claims their
   intent. If they're offline, the claim expires and the slot returns to
   "open." Acceptable for OTC pace; a market-maker bot would need to keep
   the dApp open or run a fulfilment automaton.
@@ -734,20 +827,22 @@ and the configured CORS allowlist. It exposes:
 | `/assets/:id/disclosures`         | GET / POST | Range disclosures (`balance ≥ K` proofs) per SPEC §5.6. Worker verifies Schnorr sig + on-chain ownership before storing; consumers MUST re-verify the bulletproof client-side. |
 | `/assets/:id/listings`            | GET / POST | Per-UTXO marketplace listings (opening-based). Worker stores listing terms + opening proof; settlement is OTC. |
 | `/assets/:id/listings/:txid/:vout`             | DELETE | Maker cancels a listing (signed). |
-| `/assets/:id/listings/:txid/:vout/claim`       | POST   | Taker locks a listing for 30 min so two takers can't both pay. |
+| `/assets/:id/listings/:txid/:vout/claim`       | POST   | Taker locks a listing for 5 min so two takers can't both pay. |
 | `/assets/:id/listings-range`      | GET / POST | Range-disclosed listings (`balance ≥ K`). Maker proves a lower bound on their balance without revealing the exact amount; other UTXOs stay confidential. OTC settlement, same as above. |
 | `/assets/:id/listings-range/:owner_pubkey`     | DELETE | Maker cancels (signed). |
-| `/assets/:id/listings-range/:owner_pubkey/claim` | POST   | Taker locks (30 min). |
+| `/assets/:id/listings-range/:owner_pubkey/claim` | POST   | Taker locks (5 min). |
 | `/assets/:id/atomic-intents`      | GET / POST | Atomic intents — trustless single-Bitcoin-tx settlement (SPEC §5.7.6). Maker pre-broadcasts a commit tx + posts intent metadata + cleartext recipient blinding. Browse-and-take. |
 | `/assets/:id/atomic-intents/:intent_id`        | DELETE | Maker cancels (signed). |
-| `/assets/:id/atomic-intents/:intent_id/claim`  | POST   | Taker locks for 30 min (signed). |
+| `/assets/:id/atomic-intents/:intent_id/claim`  | POST   | Taker locks for 5 min (signed). |
 | `/assets/:id/atomic-intents/:intent_id/fulfilment` | GET / POST | Maker uploads a partial reveal targeted at the claimant's pubkey (signed). Taker fetches and broadcasts atomically. |
+| `/airdrops/:root/claims`          | GET / POST | Airdrop claim queue keyed by merkle root. Recipients POST `(leaf_index, tacit_pubkey, eth_sig)` tuples; issuers GET to pull batches and broadcast fulfilment CXFERs. Worker validates format only — it has no snapshot to verify against. Lives entirely outside the on-chain protocol; canonical truth is the resulting CXFER set. |
+| `/airdrops/:root/claims/:leaf_index` | DELETE | Removes a queued claim. Unauthenticated by design (the queue is convenience, not authority — re-submission is also unauth, "latest wins"). |
 | `/scan`                           | POST   | Manual scan trigger (debug)                                        |
 | `/rescan`                         | POST   | Rewind `meta:last_scanned` to a given height (debug, `?from=<h>`)   |
 | _scheduled_                       |        | `*/5 * * * *` — scan recent signet AND mainnet blocks for CETCH, T_MINT, and T_BURN envelopes |
 
 Setup steps live in `worker/README.md`. Deploy your own (and update
-`WORKER_BASE` in `dapp/tacit.html`) if you want isolated keys / quota.
+`WORKER_BASE` in `dapp/tacit.js`) if you want isolated keys / quota.
 
 ---
 
