@@ -5886,6 +5886,10 @@ function setupEtchForm() {
     }
   };
   $('#btn-etch-preview').onclick = async () => {
+    const btn = $('#btn-etch-preview');
+    const origLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'previewing…';
     $('#etch-error').textContent = '';
     $('#etch-success').style.display = 'none';
     try {
@@ -5983,6 +5987,9 @@ function setupEtchForm() {
       pendingCEtch = null;
       $('#btn-etch-broadcast').disabled = true;
       $('#etch-preview').style.display = 'none';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origLabel;
     }
   };
   $('#btn-etch-broadcast').onclick = async () => {
@@ -6084,8 +6091,8 @@ function setupEtchForm() {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                supply: opening.amount,
-                blinding: opening.blinding,
+                supply: opening.amount.toString(),
+                blinding: bytesToHex(bigintToBytes32(opening.blinding)),
                 reveal_txid: r.revealTxid,
                 reveal_vout: 0,
               }),
@@ -6229,6 +6236,10 @@ function setupTransferForm() {
     updateDerivedAddressHint();
   }
   $('#btn-transfer-preview').onclick = async () => {
+    const btn = $('#btn-transfer-preview');
+    const origLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'previewing…';
     $('#transfer-error').textContent = '';
     $('#transfer-share').style.display = 'none';
     try {
@@ -6286,6 +6297,9 @@ function setupTransferForm() {
       pendingCXfer = null;
       $('#btn-transfer-broadcast').disabled = true;
       $('#transfer-preview').style.display = 'none';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = origLabel;
     }
   };
   $('#btn-transfer-broadcast').onclick = async () => {
