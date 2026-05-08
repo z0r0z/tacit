@@ -715,21 +715,15 @@ function ensureBurnerBackedUp(opLabel) {
 }
 
 // ============== PASSKEY / PRF ==============
-// Separate storage key so passkey blob never overwrites password wallet blob.
-function prfWalletStorageKey() {
-  return `tacit-wallet-v1:${NET.name}:passkey`;
-}
-
-// Adapter that bridges PRF key derivation into the sign-identical-to-password
-// wallet model. PRF output → random session password → PBKDF2+AES-GCM blob
-// → wallet.priv via normal decrypt. Effect: every signing path sees a normal
-// wallet.priv, same as passphrase mode. No special-case code in any signer.
+// Bridges WebAuthn PRF key derivation into the existing wallet object: the
+// PRF output becomes wallet.priv directly so every signing path (ECDSA,
+// Schnorr, blinding derivation) is identical to passphrase mode. No
+// localStorage blob — the passkey itself is the persistent backing store.
 const prfWallet = {
-  state: null, // { label, credentialId, pubkey, address }
+  state: null, // { label, credentialId, pubkey }
 
   available() { return isPasskeyAvailable(); },
 
-  // Register a new passkey, derive key, create encrypted session blob.
   async register(label) {
     const { credentialId, priv, pub, pubHex } = await prfRegister(label);
     return this._setupSession({ credentialId, priv, pub, pubHex, label });
@@ -747,43 +741,69 @@ const prfWallet = {
     return this._setupSession({ ...result, label });
   },
 
-  // Core: wrap PRF-derived key in random-session-password encrypted blob,
-  // then load into wallet.priv via the standard PBKDF2+AES-GCM decrypt path.
+  // Hand the PRF-derived priv directly to wallet.priv. The previous
+  // implementation wrote the priv into a localStorage blob keyed by a
+  // throw-away random "session password" and immediately re-decrypted it —
+  // the password was never persisted, so the blob was unreadable next
+  // session and contributed nothing but a stale entry under WALLET_KEY_BASE.
+  // Skipping the round-trip eliminates that orphan and the failure modes it
+  // created (e.g. a later password-mode unlock seeing the blob via
+  // _hasAnyExistingWallet and prompting for an unguessable passphrase).
   async _setupSession({ credentialId, priv, pub, pubHex, label }) {
-    const sessionPass = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
-    const key = prfWalletStorageKey();
-    localStorage.setItem(key, await encryptPrivkey(priv, sessionPass));
-    const raw = localStorage.getItem(key);
-    wallet.priv = await decryptPrivkey(raw, sessionPass);
+    wallet.priv = new Uint8Array(priv); // copy: caller zeroes `priv` below
     wallet.pub = pub;
     wallet.mode = 'passkey';
-    const address = p2wpkhAddress(pub);
     const map = loadPrfMap();
-    const entryLabel = label || `passkey-${address.slice(2, 6)}`;
-    map[entryLabel] = { credentialId, pubkey: pubHex, address };
+    const entryLabel = label || `passkey-${pubHex.slice(0, 6)}`;
+    // Don't store address — same passkey produces the same priv on every
+    // network, but the bech32 address is HRP-dependent. Storing a frozen
+    // address means renderPasskeyPanel would show a stale tb1…/bc1… prefix
+    // after a network switch. Compute at render time from `pubkey`.
+    const prev = map[entryLabel] || {};
+    map[entryLabel] = {
+      credentialId,
+      pubkey: pubHex,
+      createdAt: prev.createdAt || Date.now(),
+      lastUsed: Date.now(),
+    };
     savePrfMap(map);
-    this.state = { label: entryLabel, credentialId, pubkey: pubHex, address };
-    priv.fill(0); // zero PRF output — key lives in wallet.priv (encrypted at rest)
+    this.state = { label: entryLabel, credentialId, pubkey: pubHex };
+    priv.fill(0);
+    setActiveWalletMode('passkey');
     return this.state;
   },
 
-  // Lock: clear wallet state, delete session blob. PRF map (credentials)
-  // persists so next reload auto-logs in via tryRestore.
+  // Lock: clear in-memory wallet state. The PRF map persists so next reload
+  // auto-logs in via tryRestore — the passkey itself is the source of truth.
   lock() {
     this.state = null;
     wallet.mode = null;
     wallet.pub = null;
     wallet.priv = null;
-    localStorage.removeItem(prfWalletStorageKey());
   },
 
-  // Restore first saved credential from PRF map for auto-login on reload.
   tryRestore() {
     const result = prfTryRestore();
     if (result) this.state = result;
     return result;
   },
 };
+
+// Tracks which wallet path was last used so init() can prefer it on reload
+// instead of always running the passkey path first. Without this, a user
+// with both an external wallet AND a passkey gets a passkey OS prompt every
+// reload, and the only way back to ext-wallet flow is to cancel — which
+// previously also wiped their passkey map.
+const ACTIVE_MODE_KEY = 'tacit-active-mode-v1';
+function getActiveWalletMode() {
+  const v = localStorage.getItem(ACTIVE_MODE_KEY);
+  return v === 'passkey' || v === 'ext' || v === 'local' ? v : null;
+}
+function setActiveWalletMode(mode) {
+  if (mode === 'passkey' || mode === 'ext' || mode === 'local') {
+    localStorage.setItem(ACTIVE_MODE_KEY, mode);
+  }
+}
 
 // Render saved passkey list in Manage Wallet drawer. Each entry is a clickable
 // row that re-authenticates with that specific credential. Active entry
@@ -807,7 +827,14 @@ function renderPasskeyPanel() {
     span.textContent = lbl;
     const meta = document.createElement('span');
     meta.style.cssText = 'color:var(--ink-mid);font-size:10px;text-transform:none;letter-spacing:0;';
-    meta.textContent = `${e.address ? e.address.slice(0,10)+'...' : '-'}${active ? ' ✓' : ''}`;
+    // Compute address at render time so the bech32 HRP matches the active
+    // network (same passkey → same priv on signet/mainnet, different addr).
+    let addrPreview = '-';
+    if (e.pubkey) {
+      try { addrPreview = p2wpkhAddress(hexToBytes(e.pubkey)).slice(0, 10) + '...'; }
+      catch { addrPreview = '-'; }
+    }
+    meta.textContent = `${addrPreview}${active ? ' ✓' : ''}`;
     row.append(span, meta);
     row.onclick = async () => {
       if (active) return;
@@ -825,6 +852,11 @@ function renderPasskeyPanel() {
 // Register/login modal: label input + Register/Login/Cancel buttons.
 // Register creates a new passkey credential; Login authenticates with
 // existing one (targets saved credential when label matches the PRF map).
+//
+// Single `inflight` guard so a slow Register can't have its in-flight
+// navigator.credentials.create() raced by a Login click — most authenticators
+// reject the parallel call but the modal would be left in a half-disabled
+// state.
 async function _showPasskeyModal() {
   const modal = document.getElementById('passkey-modal');
   const registerBtn = document.getElementById('passkey-register');
@@ -832,31 +864,38 @@ async function _showPasskeyModal() {
   const cancelBtn = document.getElementById('passkey-cancel');
   const labelInput = document.getElementById('passkey-label-input');
   if (!modal || !registerBtn || !loginBtn || !cancelBtn || !labelInput) return;
+  let inflight = false;
+  const setInflight = (v) => {
+    inflight = v;
+    registerBtn.disabled = v;
+    loginBtn.disabled = v;
+  };
   const close = () => {
     registerBtn.onclick = loginBtn.onclick = cancelBtn.onclick = null;
+    setInflight(false);
     modal.style.display = 'none';
   };
   const label = () => { const v = labelInput.value.trim(); return v || null; };
   return new Promise((resolve) => {
-    cancelBtn.onclick = () => { close(); resolve(false); };
+    cancelBtn.onclick = () => { if (inflight) return; close(); resolve(false); };
     registerBtn.onclick = async () => {
-      registerBtn.disabled = true;
+      if (inflight) return;
+      if (!label()) { toast('Label is required.', 'error'); return; }
+      setInflight(true);
       try {
-        if (!label()) { toast('Label is required.', 'error'); registerBtn.disabled = false; return; }
         await prfWallet.register(label());
-        wallet.mode = 'passkey';
         close();
         resolve(true);
-      } catch (e) { toast('Passkey: ' + e.message, 'error'); registerBtn.disabled = false; }
+      } catch (e) { toast('Passkey: ' + e.message, 'error'); setInflight(false); }
     };
     loginBtn.onclick = async () => {
-      loginBtn.disabled = true;
+      if (inflight) return;
+      setInflight(true);
       try {
         await prfWallet.login({ label: label() });
-        wallet.mode = 'passkey';
         close();
         resolve(true);
-      } catch (e) { toast('Passkey: ' + e.message, 'error'); loginBtn.disabled = false; }
+      } catch (e) { toast('Passkey: ' + e.message, 'error'); setInflight(false); }
     };
     modal.style.display = 'grid';
     labelInput.focus();
@@ -16173,10 +16212,14 @@ async function _runFirstLoadChoice() {
         wallet.ext = st;
         if (verdict === 'unsupported') await wallet.load();
         else                           await wallet.load(st.address);
+        setActiveWalletMode('ext');
       } else if (choice === 'passkey') {
         if (!await _showPasskeyModal()) throw new Error('cancelled');
+        // _showPasskeyModal → prfWallet.register/login already called
+        // setActiveWalletMode('passkey') via _setupSession.
       } else {
         await wallet.load();
+        setActiveWalletMode('local');
       }
       return;
     } catch (e) {
@@ -16214,19 +16257,29 @@ async function init() {
     const w = document.getElementById('file-protocol-warning');
     if (w) w.style.display = 'block';
   }
+  // Restore order is preference-driven: ACTIVE_MODE_KEY records what the user
+  // last successfully unlocked, so reloads don't surface a passkey OS prompt
+  // for users whose primary wallet is an extension (and vice versa). On a
+  // cancelled passkey prompt we DON'T wipe the PRF map — WebAuthn returns the
+  // same NotAllowedError for "user cancelled" and "credential missing", and
+  // cancels are far more common than genuinely stale credentials. The user
+  // can clear stale entries from the Manage Wallet drawer if needed.
+  const activeMode = getActiveWalletMode();
   const restoredPasskey = prfWallet.tryRestore();
-  if (restoredPasskey) {
-    wallet.mode = 'passkey';
+  let bootstrapped = false;
+  if (restoredPasskey && activeMode !== 'ext' && activeMode !== 'local') {
     try {
       await prfWallet.login({ label: restoredPasskey.label });
+      bootstrapped = true;
     } catch (e) {
       prfWallet.lock();
-      clearPrfMap();
-      console.warn('passkey auto-login failed, cleared stale credential:', e.message);
+      console.warn('passkey auto-login failed:', e.message);
+      // Stay on this path only if the user explicitly chose passkey last
+      // time; otherwise fall through to the other restore paths so a single
+      // cancelled prompt doesn't strand the user.
     }
   }
-  if (!restoredPasskey || wallet.mode !== 'passkey') {
-    localStorage.removeItem(prfWalletStorageKey());
+  if (!bootstrapped) {
     const restored = await extWallet.tryRestore().catch(() => null);
     if (restored) {
       wallet.ext = restored;
@@ -16234,8 +16287,10 @@ async function init() {
       if (verdict === 'reload') return;
       if (verdict === 'unsupported') await wallet.load();
       else                           await wallet.load(restored.address);
+      setActiveWalletMode('ext');
     } else if (_hasAnyExistingWallet()) {
       await wallet.load();
+      setActiveWalletMode('local');
     } else {
       if (await _runFirstLoadChoice() === 'reload') return;
     }
