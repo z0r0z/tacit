@@ -252,7 +252,60 @@ Step 4) and taker (with ≥ 60k signet sats and an empty atomic-intents tab).
       P2TR's sat output remains spendable by the maker via the cancellation
       path of the script-path tree.
 
-## Step 11 — Mempool.space API contract sanity
+## Step 11 — Public mint deploy (T_PETCH, SPEC §5.8)
+
+1. Etch tab → scroll past the standard CETCH form to the "etch · public mint
+   (fair launch)" panel.
+2. Fill: ticker `FAIR`, decimals `0`, cap `1000`, per-mint `100`. Live hint
+   should read "10 mints will reach the cap (1000 FAIR total at 100 per mint)".
+3. Try cap `1000`, per-mint `333` — hint should turn red ("not evenly
+   divisible"). Restore valid values.
+4. Click "Deploy public-mint asset". Approve JIT funding if prompted.
+5. **Expected on-chain:**
+   - Two txs: commit (P2WPKH → P2TR + change) and reveal (P2TR script-path
+     → P2WPKH dust at vout 0).
+   - Reveal tx vin[0].witness[1] decodes via the worker decoder
+     (`decodeCPetchPayload`) to ticker=`FAIR`, decimals=0, cap_amount=1000,
+     mint_limit=100, mint_start_height=0, mint_end_height=0.
+   - **Vout 0 is regular Bitcoin change**, not a tacit UTXO. Holdings tab
+     shows no FAIR balance for the deployer.
+6. Wait for the worker cron (≤5 min) to index. Reload Discover → the
+   "fair launch · public-mint assets" section should list the new asset
+   with `0 / 1000 FAIR` minted, `10 mints remaining`, progress bar empty,
+   and the Mint button enabled.
+
+## Step 12 — Public mint claim (T_PMINT, SPEC §5.9)
+
+1. From the Discover petch tile, click "Mint 100 FAIR". Confirm dialog,
+   approve burner-backup gate, JIT funding.
+2. **Expected on-chain:**
+   - Two txs: commit + reveal.
+   - Reveal vin[0].witness[1] decodes via `decodeCPmintPayload` to a 138-byte
+     payload with the correct asset_id, etch_txid (matches Step 11's reveal
+     txid), commitment (33 B), amount=`100`, blinding (32 B, non-zero).
+   - Reveal vout[0] is a P2WPKH dust output to your wallet.
+3. Holdings tab: the new FAIR UTXO should appear as **inflated** (validator
+   refuses to credit until the worker reports cap-credit at depth ≥ 3).
+   Activity log shows a `pmint` entry.
+4. Wait for ≥ 3 confirmations. Trigger worker re-scan (refresh Discover or
+   manually `POST /scan`). Reload Holdings:
+   - The UTXO promotes from inflated to a real holding with balance `100 FAIR`.
+   - The Discover petch tile now shows `100 / 1000 FAIR` minted, `9 mints
+     remaining`, progress bar at 10%.
+
+## Step 13 — Public mint cap-overflow
+
+1. Repeat Step 12 a few times (or have a second wallet mint until cap fills).
+   Use signet's fast block production to reach the cap quickly.
+2. **Expected:** the Mint button on the Discover petch tile changes to
+   "Mint · cap reached" and is disabled once cumulative_minted == cap_amount.
+3. If you broadcast a T_PMINT after the cap fills (e.g., via direct
+   `buildAndBroadcastPmint` call in DevTools), the worker indexes the event
+   but `loadCanonicalPmints` assigns `status: 'cap_overflow'` to it. The dapp
+   shows that UTXO as inflated permanently — its on-chain commitment exists
+   but never validates as ancestry.
+
+## Step 14 — Mempool.space API contract sanity (renumbered from 11)
 
 1. In DevTools, watch the Network panel during a normal scan.
 2. Confirm the dApp hits these endpoints:

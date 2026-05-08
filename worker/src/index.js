@@ -97,6 +97,8 @@ const T_CXFER    = 0x23;
 const T_MINT     = 0x24;
 const T_BURN     = 0x25;
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
+const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
+const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -209,6 +211,24 @@ function burnKeyFor(network, aid, txid)   { return network === 'signet' ? `burn:
 function assetPrefix(network)          { return network === 'signet' ? 'asset:' : `asset:${network}:`; }
 function mintPrefix(network, aid)      { return network === 'signet' ? `mint:${aid}:` : `mint:${network}:${aid}:`; }
 function burnPrefix(network, aid)      { return network === 'signet' ? `burn:${aid}:` : `burn:${network}:${aid}:`; }
+// T_PETCH (deployment) and T_PMINT (mint event) namespaces. Kept distinct
+// from `asset:*` so /assets and /petch-assets stay cleanly separable. Pmint
+// keys embed zero-padded (height, tx_index) in the key so KV.list returns
+// canonical chain order — SPEC §5.9 *Cap-overflow ordering* mandates
+// (height, tx_index) as the canonical sort, not (height, txid). The audit
+// caught my v1 mistake of using txid as the tiebreaker (lex order ≠
+// position-in-block); fix #2 plumbs the cron's loop index through and
+// pads it to 6 digits (1M txs/block headroom). Without this, two
+// same-block T_PMINTs picking the last cap slot pick the wrong winner
+// vs SPEC.
+function petchKey(network, aid)        { return network === 'signet' ? `petch:${aid}` : `petch:${network}:${aid}`; }
+function petchPrefix(network)          { return network === 'signet' ? 'petch:' : `petch:${network}:`; }
+function pmintKeyFor(network, aid, height, txIndex, txid) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  return network === 'signet' ? `pmint:${aid}:${h}:${idx}:${txid}` : `pmint:${network}:${aid}:${h}:${idx}:${txid}`;
+}
+function pmintPrefix(network, aid)     { return network === 'signet' ? `pmint:${aid}:` : `pmint:${network}:${aid}:`; }
 function attestKey(network, aid)       { return network === 'signet' ? `attest:${aid}` : `attest:${network}:${aid}`; }
 function attestMintKey(network, aid, txid) {
   return network === 'signet' ? `attest:mint:${aid}:${txid}` : `attest:${network}:mint:${aid}:${txid}`;
@@ -902,6 +922,98 @@ function decodeAxferPayload(payload) {
   return { asset_id: bytesToHex(assetId), asset_input_count: assetInputCount, outputs };
 }
 
+// T_PETCH structural decoder (SPEC §5.8). Permissionless-mint deployment
+// record. No commitment, no rangeproof, no signature — anyone may broadcast.
+// Wire: opcode(1) || tlen(1) || ticker(tlen) || decimals(1) || cap(8 LE) ||
+//   limit(8 LE) || start_h(4 LE) || end_h(4 LE) || img_len(2 LE) || img_uri(img_len)
+function decodeCPetchPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 1 + 1 + 1 + 8 + 8 + 4 + 4 + 2) return null;
+  if (payload[0] !== T_PETCH) return null;
+  let p = 1;
+  const tlen = payload[p]; p += 1;
+  if (tlen < 1 || tlen > 16) return null;
+  if (p + tlen > payload.length) return null;
+  let ticker;
+  try { ticker = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + tlen)); } catch { return null; }
+  p += tlen;
+  const decimals = payload[p]; p += 1;
+  if (decimals > 8) return null;
+  if (p + 8 + 8 + 4 + 4 + 2 > payload.length) return null;
+  const capLE = payload.slice(p, p + 8); p += 8;
+  const limitLE = payload.slice(p, p + 8); p += 8;
+  const capView = new DataView(capLE.buffer, capLE.byteOffset, 8);
+  const cap_amount = (BigInt(capView.getUint32(4, true)) << 32n) | BigInt(capView.getUint32(0, true));
+  const limitView = new DataView(limitLE.buffer, limitLE.byteOffset, 8);
+  const mint_limit = (BigInt(limitView.getUint32(4, true)) << 32n) | BigInt(limitView.getUint32(0, true));
+  // Envelope-level invariants per SPEC §5.8: cap > 0, limit > 0, cap evenly
+  // divisible by limit. The height-window invariants (mint_start_height ≥
+  // etch_height + 1) require knowing etch_height and are enforced by the
+  // indexer, not the decoder.
+  if (cap_amount <= 0n) return null;
+  if (mint_limit <= 0n) return null;
+  if (mint_limit > cap_amount) return null;
+  if (cap_amount % mint_limit !== 0n) return null;
+  const startView = new DataView(payload.buffer, payload.byteOffset + p, 4);
+  const mint_start_height = startView.getUint32(0, true); p += 4;
+  const endView = new DataView(payload.buffer, payload.byteOffset + p, 4);
+  const mint_end_height = endView.getUint32(0, true); p += 4;
+  // 0 sentinels mean "next block after etch confirms" / "no end". A non-zero
+  // end height MUST exceed the effective start; bare-decoder can only check
+  // the relation when both are non-zero (otherwise the effective_start
+  // depends on etch_height which the decoder doesn't see).
+  if (mint_start_height !== 0 && mint_end_height !== 0 && mint_end_height <= mint_start_height) return null;
+  const imgLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (imgLen > 256) return null;
+  if (p + imgLen !== payload.length) return null;
+  let imageUri = null;
+  if (imgLen > 0) {
+    try { imageUri = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + imgLen)); } catch { return null; }
+  }
+  return {
+    ticker, decimals,
+    cap_amount: cap_amount.toString(),
+    mint_limit: mint_limit.toString(),
+    mint_start_height, mint_end_height,
+    image_uri: imageUri,
+  };
+}
+
+// T_PMINT structural decoder (SPEC §5.9). Permissionless mint event. No
+// signature; (amount, blinding) are public, so the validator (and any
+// observer) can recompute the commitment from the envelope alone. Cap +
+// height-window enforcement is the indexer's job.
+// Wire: opcode(1) || asset_id(32) || etch_txid(32) || commitment(33) ||
+//   amount(8 LE) || blinding(32)
+function decodeCPmintPayload(payload) {
+  if (!payload) return null;
+  if (payload.length !== 1 + 32 + 32 + 33 + 8 + 32) return null;
+  if (payload[0] !== T_PMINT) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const etchTxid = payload.slice(p, p + 32); p += 32;
+  const commitment = payload.slice(p, p + 33); p += 33;
+  const amountLE = payload.slice(p, p + 8); p += 8;
+  const amountView = new DataView(amountLE.buffer, amountLE.byteOffset, 8);
+  const amount = (BigInt(amountView.getUint32(4, true)) << 32n) | BigInt(amountView.getUint32(0, true));
+  if (amount <= 0n || amount >= (1n << BigInt(N_BITS))) return null;
+  const blinding = payload.slice(p, p + 32); p += 32;
+  // 0 < blinding scalar — full curve_order check belongs in the validator
+  // (BigInt comparison against secp256k1 order constant). The decoder rejects
+  // an all-zero blinding which would yield an unblinded commitment.
+  let blindingNonZero = false;
+  for (let i = 0; i < 32; i++) if (blinding[i] !== 0) { blindingNonZero = true; break; }
+  if (!blindingNonZero) return null;
+  if (p !== payload.length) return null;
+  return {
+    asset_id: bytesToHex(assetId),
+    etch_txid: bytesToHex(etchTxid),
+    commitment: bytesToHex(commitment),
+    amount: amount.toString(),
+    blinding: bytesToHex(blinding),
+  };
+}
+
 // T_BURN structural decoder. Burns are simpler than mints because the burned
 // amount is public — no Pedersen indirection. We only extract asset_id and
 // burned_amount. The kernel sig + remaining outputs are validated client-side.
@@ -1165,6 +1277,33 @@ async function handleMarket(env, network, cors) {
   }, 200, cors);
 }
 
+// ============== /petch-assets edge cache (SWR + cron pre-warm) ==============
+// Mirrors the /assets and /market patterns. /petch-assets is even costlier per
+// MISS than /assets (every petch asset triggers its own loadCanonicalPmints
+// fan-out for cap-progress hydration), so SWR + pre-warm matter more here.
+const PETCH_ASSETS_CACHE_FRESH_MS = 60 * 1000;
+const PETCH_ASSETS_CACHE_STALE_MS = 5 * 60 * 1000;
+function petchAssetsCacheKey(network) {
+  const params = new URLSearchParams();
+  params.set('network', network);
+  return new Request(`https://_petch-assets-cache_/petch-assets?${params.toString()}`, { method: 'GET' });
+}
+async function petchAssetsComputeAndCache(env, network) {
+  const fresh = await handlePetchAssetsList(env, network, {});
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(PETCH_ASSETS_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(
+      petchAssetsCacheKey(network),
+      new Response(body, { status: 200, headers: ch }),
+    );
+  }
+  return { body, status: fresh.status };
+}
+
 async function marketComputeAndCache(env, network) {
   const fresh = await handleMarket(env, network, {});
   const body = await fresh.text();
@@ -1179,6 +1318,65 @@ async function marketComputeAndCache(env, network) {
     );
   }
   return { body, status: fresh.status };
+}
+
+// ============== /holdings aggregate (per-user join) ==============
+// Collapses the Holdings tab's per-asset 3-way fan-out (openings + listings
+// + range listings) into one round-trip. Server-side filters listings to
+// the requesting wallet's pubkey so the wire payload is much smaller than
+// the per-asset endpoints would have been (which return all listings
+// regardless of owner). Range listings use a direct .get() since their
+// KV key already includes owner_pubkey — no list scan for that arm.
+//
+// Per-user → not edge-cacheable; the dapp's 30s _holdingsCache absorbs
+// tab-switches. Cap on asset_ids prevents abuse.
+async function handleHoldings(req, env, network, cors) {
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const ownerPubHex = String(body.owner_pubkey ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(ownerPubHex)) {
+    return jsonResponse({ error: 'owner_pubkey must be 33-byte compressed hex' }, 400, cors);
+  }
+  const aids = Array.isArray(body.asset_ids) ? body.asset_ids : [];
+  if (aids.length === 0) {
+    return jsonResponse({ openings: {}, listings: {}, range_listings: {} }, 200, cors);
+  }
+  if (aids.length > 200) {
+    return jsonResponse({ error: 'asset_ids capped at 200' }, 400, cors);
+  }
+  for (const aid of aids) {
+    if (typeof aid !== 'string' || !/^[0-9a-f]{64}$/.test(aid)) {
+      return jsonResponse({ error: 'asset_ids must be 64-hex strings' }, 400, cors);
+    }
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const results = await Promise.all(aids.map(async aid => {
+    const [openings, allListings, rangeListing] = await Promise.all([
+      loadOpeningsForAsset(env, network, aid).catch(() => []),
+      loadListingsForAsset(env, network, aid).catch(() => []),
+      env.REGISTRY_KV.get(rangeListingKey(network, aid, ownerPubHex), 'json').catch(() => null),
+    ]);
+    // Server-side filter listings to this owner so the response carries
+    // only what the holdings card actually renders.
+    const myListings = allListings.filter(l => l.owner_pubkey === ownerPubHex);
+    const myRange = rangeListing ? [rangeListing] : [];
+    // Mirror loadRangeListingsForAsset's expired/claim normalisation for
+    // the single-key direct .get() path.
+    for (const v of myRange) {
+      v.expired = (v.expiry || 0) <= now;
+      if (v.claim && v.claim.expires_at <= now) v.claim = null;
+    }
+    return { aid, openings, listings: myListings, rangeListings: myRange };
+  }));
+  const openings = {};
+  const listings = {};
+  const rangeListings = {};
+  for (const r of results) {
+    openings[r.aid] = r.openings;
+    listings[r.aid] = r.listings;
+    rangeListings[r.aid] = r.rangeListings;
+  }
+  return jsonResponse({ openings, listings, range_listings: rangeListings }, 200, cors);
 }
 
 async function commitmentFromRevealTx(env, revealTxid, vout, network) {
@@ -1451,6 +1649,168 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   return jsonResponse(v, 200, cors);
 }
 
+// SPEC §5.9 confirmation depth for cap correctness — see also §10. Tip-state
+// T_PMINTs surface as 'pending' until they cross this depth; only credited
+// mints count toward `cumulative_minted` and the cap.
+const PMINT_CONFIRMATION_DEPTH = 3;
+
+// Cap-bookkeeping helpers. `loadCanonicalPmints` returns mints in lexically-
+// sorted KV order, which equals canonical (height, txid) order because the
+// key embeds zero-padded height. Each entry is annotated with `depth`,
+// `status`, and a credit decision derived from `cap_amount` and `mint_limit`.
+//
+// We deliberately do NOT maintain a live `pmint_count` counter in KV. The
+// cron writes raw events; this read-side computation is the single source of
+// truth for cap correctness, which makes reorg handling trivial — we never
+// have to "undo" a stale counter, only re-list.
+async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmountStr, mintLimitStr) {
+  const capAmount = capAmountStr != null ? BigInt(capAmountStr) : null;
+  const mintLimit = mintLimitStr != null ? BigInt(mintLimitStr) : null;
+  // v1 limitation (SPEC §10): single-page list, capped at 1000 events. An
+  // asset that accrues > 1000 confirmed T_PMINTs would silently under-count
+  // cumulative_minted here. Practical implication for v1: a fair-launch
+  // sized for ≤ 1000 mints (e.g. cap=1000 with limit=1, or cap=21M with
+  // limit=21k) is fine; larger schedules need pagination via list_complete
+  // + cursor before relying on the published cap progress.
+  const list = await env.REGISTRY_KV.list({ prefix: pmintPrefix(network, assetIdHex), limit: 1000 });
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const events = fetched.filter(v => v);
+  // KV.list returns keys in lex order; the embedded zero-padded
+  // (height, tx_index, txid) makes that lex order equal to canonical
+  // chain order — SPEC §5.9 *Cap-overflow ordering*.
+  let creditedCount = 0n;
+  let creditedAmount = 0n;
+  const annotated = events.map(e => {
+    const h = Number(e.minted_at_height) || 0;
+    const depth = Number.isInteger(tipHeight) ? Math.max(0, tipHeight - h) : null;
+    let status;
+    let credited = false;
+    if (depth == null) {
+      status = 'unknown_depth';   // tip unavailable — surface to UI but don't credit
+    } else if (depth < PMINT_CONFIRMATION_DEPTH) {
+      status = 'pending';
+    } else if (capAmount != null && mintLimit != null) {
+      const wouldBe = creditedAmount + mintLimit;
+      if (wouldBe > capAmount) {
+        status = 'cap_overflow';
+      } else {
+        status = 'credited';
+        credited = true;
+        creditedCount += 1n;
+        creditedAmount = wouldBe;
+      }
+    } else {
+      status = 'credited';   // missing cap metadata; can't enforce, default to credit
+      credited = true;
+      creditedCount += 1n;
+      if (mintLimit != null) creditedAmount += mintLimit;
+    }
+    return { ...e, depth, status, credited };
+  });
+  return {
+    events: annotated,
+    credited_count: creditedCount.toString(),
+    cumulative_minted: creditedAmount.toString(),
+  };
+}
+
+// GET /petch-assets — registry of T_PETCH-rooted assets. Same envelope shape
+// as /assets plus per-asset cap progress (cumulative_minted / cap_amount /
+// remaining) computed at read time. Kept distinct from /assets so a Discover
+// UI can present each issuance model in its own pane without the other
+// polluting; consumers wanting a unified list union both endpoints.
+async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) {
+  const list = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit });
+  const tipP = Promise.race([
+    apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
+    new Promise(resolve => setTimeout(() => resolve(null), 2500)),
+  ]).catch(() => null);
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const assets = fetched.filter(v => v);
+  assets.sort((a, b) => (b.etched_at || 0) - (a.etched_at || 0));
+  const tipHeight = await tipP;
+  // Hydrate cap progress per asset. KV.list cap of 1000 is well beyond what a
+  // single asset can have for v1; if an asset ever exceeds it we'll need
+  // pagination here, but that's outside scope for the first cut.
+  await Promise.all(assets.map(async a => {
+    const r = await loadCanonicalPmints(env, network, a.asset_id, tipHeight, a.cap_amount, a.mint_limit);
+    a.cumulative_minted = r.cumulative_minted;
+    a.credited_pmint_count = parseInt(r.credited_count, 10) || 0;
+    a.pmint_count = r.events.length;
+    a.pending_pmint_count = r.events.filter(e => e.status === 'pending').length;
+    if (a.cap_amount && a.mint_limit) {
+      const remaining = BigInt(a.cap_amount) - BigInt(a.cumulative_minted);
+      a.mints_remaining = String(remaining < 0n ? 0n : remaining / BigInt(a.mint_limit));
+    }
+  }));
+  return jsonResponse({
+    count: assets.length,
+    network,
+    meta: {
+      tip: Number.isInteger(tipHeight) ? tipHeight : null,
+      tip_unavailable: !Number.isInteger(tipHeight),
+      confirmation_depth: PMINT_CONFIRMATION_DEPTH,
+    },
+    assets,
+  }, 200, cors);
+}
+
+// GET /assets/:asset_id/pmints — canonically-ordered T_PMINT history for one
+// asset, annotated with `depth` and `status` (pending | credited | cap_overflow
+// | unknown_depth) so wallets can grey out non-credited UTXOs and surface
+// reorg-revoked entries explicitly.
+async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const petch = await env.REGISTRY_KV.get(petchKey(network, assetIdHex), 'json');
+  if (!petch) return jsonResponse({ error: 'unknown petch asset_id' }, 404, cors);
+  const tip = await Promise.race([
+    apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
+    new Promise(resolve => setTimeout(() => resolve(null), 2500)),
+  ]).catch(() => null);
+  const r = await loadCanonicalPmints(env, network, assetIdHex, tip, petch.cap_amount, petch.mint_limit);
+  // Slim payload for the dapp's validateOutpoint hot path: the only fact it
+  // needs is the set of credited mint txids. Per-event annotation (commitment,
+  // attested_amount, depth, status, …) bloats the response by ~200-500 bytes
+  // per pmint, which adds up on a popular fair launch with thousands of mints.
+  if (opts.creditedOnly) {
+    const credited_txids = [];
+    const cap_overflow_txids = [];
+    for (const e of r.events) {
+      if (!/^[0-9a-f]{64}$/.test(String(e.mint_txid || ''))) continue;
+      if (e.status === 'credited') credited_txids.push(e.mint_txid);
+      else if (e.status === 'cap_overflow') cap_overflow_txids.push(e.mint_txid);
+    }
+    // cap_overflow is published alongside credited so the dapp can distinguish
+    // "pending — will eventually credit" from "permanently rejected — paid
+    // fees for nothing." Without the overflow list, the wallet would have to
+    // either fall back to the full /pmints endpoint or treat overflow as
+    // pending indefinitely (audit fix #1 partial).
+    return jsonResponse({
+      asset_id: assetIdHex,
+      network,
+      credited_txids,
+      cap_overflow_txids,
+      confirmation_depth: PMINT_CONFIRMATION_DEPTH,
+      tip: Number.isInteger(tip) ? tip : null,
+      tip_unavailable: !Number.isInteger(tip),
+    }, 200, cors);
+  }
+  return jsonResponse({
+    asset_id: assetIdHex,
+    network,
+    cap_amount: petch.cap_amount,
+    mint_limit: petch.mint_limit,
+    cumulative_minted: r.cumulative_minted,
+    credited_count: parseInt(r.credited_count, 10) || 0,
+    pending_count: r.events.filter(e => e.status === 'pending').length,
+    cap_overflow_count: r.events.filter(e => e.status === 'cap_overflow').length,
+    confirmation_depth: PMINT_CONFIRMATION_DEPTH,
+    tip: Number.isInteger(tip) ? tip : null,
+    tip_unavailable: !Number.isInteger(tip),
+    pmints: r.events,
+  }, 200, cors);
+}
+
 // Per-mint attestation. Takes the issuer's (mint_amount, mint_blinding) opening
 // and verifies it against the mint's on-chain commitment (either from the KV
 // registry or, if not yet indexed, fetched from the reveal tx directly).
@@ -1713,12 +2073,17 @@ async function handleUtxoOpeningGet(txidHex, voutStr, env, network, cors) {
   return jsonResponse(v, 200, cors);
 }
 
-async function handleAssetOpenings(assetIdHex, env, network, cors) {
-  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+async function loadOpeningsForAsset(env, network, assetIdHex) {
   const list = await env.REGISTRY_KV.list({ prefix: openingPrefix(network, assetIdHex), limit: 1000 });
   const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
   const openings = fetched.filter(v => v);
   openings.sort((a, b) => (b.attested_at || 0) - (a.attested_at || 0));
+  return openings;
+}
+
+async function handleAssetOpenings(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const openings = await loadOpeningsForAsset(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: openings.length, openings }, 200, cors);
 }
 
@@ -3507,7 +3872,13 @@ async function scanForEtches(env, network) {
     let txs;
     try { txs = await fetchBlockTxs(env, blockHash, network); }
     catch { break; }
+    // Track tx_index alongside the iteration so T_PMINT KV keys can record
+    // the canonical block position (audit fix #2 + SPEC §5.9 ordering).
+    // mempool.space's /block/<hash>/txs endpoint returns txs in block order,
+    // so the array index IS the canonical tx_index.
+    let txIndex = -1;
     for (const tx of txs) {
+      txIndex++;
       scanned++;
       if (!tx.vin || !tx.vin[0] || !tx.vin[0].witness || tx.vin[0].witness.length < 3) continue;
       let envBytes;
@@ -3577,6 +3948,116 @@ async function scanForEtches(env, network) {
         // burns specifically (used in the cron's status return). Transfers
         // happen on every active asset; counting them as "found" would be
         // misleading.
+      } else if (decoded.opcode === T_PETCH) {
+        // Permissionless-mint deployment record (SPEC §5.8). T_PETCH never
+        // produces a tacit UTXO — its only role is to register the issuance
+        // schedule. Stored under a distinct `petch:*` namespace so /assets
+        // (which lists CETCH-rooted assets) and /petch-assets (which lists
+        // these) can be filtered cleanly without one polluting the other.
+        const cp = decodeCPetchPayload(decoded.payload);
+        if (!cp) continue;
+        // SPEC §5.8: if mint_start_height ≠ 0, it MUST be ≥ etch_height + 1.
+        // The decoder defers this (it doesn't see etch_height); enforce here
+        // so a deployer can't set mint_start_height = etch_height to bypass
+        // the §5.9 step-4 same-block defense and premine into their own
+        // T_PETCH. Non-conforming T_PETCHes are dropped entirely.
+        if (cp.mint_start_height !== 0 && cp.mint_start_height < h + 1) continue;
+        const aid = assetIdFor(tx.txid, 0);
+        const meta = {
+          asset_id: aid,
+          ticker: cp.ticker,
+          decimals: cp.decimals,
+          cap_amount: cp.cap_amount,
+          mint_limit: cp.mint_limit,
+          mint_start_height: cp.mint_start_height,
+          mint_end_height: cp.mint_end_height,
+          image_uri: cp.image_uri,
+          etch_txid: tx.txid,
+          etch_vout: 0,
+          etched_at_height: h,
+          etched_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          kind: 'petch',
+          network,
+        };
+        await env.REGISTRY_KV.put(petchKey(network, aid), JSON.stringify(meta));
+        found++;
+      } else if (decoded.opcode === T_PMINT) {
+        // Permissionless mint event (SPEC §5.9). Cron-side validation block
+        // (audit fix #3 + #4): structurally-valid envelopes pass the decoder
+        // length/opcode checks but the cron must additionally enforce:
+        //
+        //   §5.9 step 1: asset_id == sha256(etch_txid_BE || 0_LE). Without
+        //     this an attacker can broadcast a T_PMINT claiming a victim's
+        //     real asset_id with a forged etch_txid; the cron would write
+        //     under the victim's pmint:* namespace, poisoning the cap
+        //     counter on /petch-assets and (eventually) disabling the Mint
+        //     button across all wallets. Each grief envelope costs full
+        //     Bitcoin fees but the asymmetry is one bad mint affects every
+        //     viewer's UI.
+        //   §5.9 step 2: parent envelope at etch_txid is T_PETCH (not
+        //     CETCH or anything else). Cross-mode references would index a
+        //     T_PMINT against an asset that has no cap_amount/mint_limit
+        //     metadata — read-side cap arithmetic divides by zero and the
+        //     dapp's UI shows wrong state.
+        //   §5.9 step 3: amount == petch.mint_limit. T_PMINT is the
+        //     non-substitutable per-mint tranche; an envelope with a
+        //     different amount is malformed and shouldn't credit.
+        //   §5.9 step 4: confirmed_height in [effective_start,
+        //     effective_end]. This is the structural defense of the
+        //     "zero deployer allocation" property — without it, a deployer
+        //     who broadcasts T_PETCH and T_PMINT in the same block would
+        //     have the cap counter credit their same-block premine even
+        //     though dapp wallets correctly reject it.
+        //
+        // The dapp's validateOutpoint catches all four client-side, so
+        // wallets never credit the bad UTXOs as holdings. But /petch-assets
+        // is what every Discover view + every Mint button reads, and that's
+        // the surface this validation block protects.
+        const cm = decodeCPmintPayload(decoded.payload);
+        if (!cm) continue;
+        // §5.9 step 1: asset_id derivation.
+        const expectedAid = assetIdFor(cm.etch_txid, 0);
+        if (expectedAid !== cm.asset_id) continue;
+        // §5.9 step 2: parent must be T_PETCH. Lookup by the DERIVED asset_id
+        // rather than the (potentially forged) cm.asset_id so a payload that
+        // somehow slipped past step 1 still resolves to the right namespace.
+        const petch = await env.REGISTRY_KV.get(petchKey(network, expectedAid), 'json');
+        if (!petch) continue;   // T_PETCH not yet indexed — re-scan picks it up
+        // §5.9 step 3: amount equals mint_limit (BigInt compare; both are
+        // base-10 strings in the metadata + decoder).
+        try {
+          if (BigInt(cm.amount) !== BigInt(petch.mint_limit)) continue;
+        } catch { continue; }
+        // §5.9 step 4: height window. effective_start = mint_start_height ||
+        // (etch_height + 1); effective_end = mint_end_height || ∞. Any mint
+        // outside that window is permanently invalid and must not be counted.
+        const startH = Number(petch.mint_start_height) || 0;
+        const endH   = Number(petch.mint_end_height)   || 0;
+        const etchedAt = Number(petch.etched_at_height) || 0;
+        const effectiveStart = startH !== 0 ? startH : etchedAt + 1;
+        if (h < effectiveStart) continue;
+        if (endH !== 0 && h > endH) continue;
+        const mintMeta = {
+          asset_id: expectedAid,   // canonical derived id, not the claimed one
+          etch_txid: cm.etch_txid,
+          mint_txid: tx.txid,
+          mint_vout: 0,
+          commitment: cm.commitment,
+          amount: cm.amount,
+          blinding: cm.blinding,
+          minted_at_height: h,
+          minted_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          kind: 'pmint',
+          network,
+        };
+        // Write under (height, tx_index, txid) — see pmintKeyFor for why
+        // tx_index is required by SPEC §5.9 ordering. The txid suffix is
+        // a tiebreaker only used when an ill-formed indexer passes
+        // duplicate (height, tx_index); under canonical chain order it
+        // never differs.
+        mintMeta.tx_index = txIndex;
+        await env.REGISTRY_KV.put(pmintKeyFor(network, expectedAid, h, txIndex, tx.txid), JSON.stringify(mintMeta));
+        found++;
       }
     }
     lastContiguous = h;
@@ -3601,7 +4082,13 @@ export {
   // if any decoder's return-shape contract drifts.
   decodeEnvelopeScript,
   decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeAxferPayload, decodeCBurnPayload,
-  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER,
+  decodeCPetchPayload, decodeCPmintPayload,
+  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT,
+  // SPEC §5.9 cap-credit policy + the function that applies it. Exported so
+  // the petch-pmint test can simulate full canonical-order scenarios
+  // (depth-gated crediting, cap-overflow rejection, reorg-revoke) against
+  // an in-memory KV stub without spinning up Cloudflare's runtime.
+  PMINT_CONFIRMATION_DEPTH, loadCanonicalPmints,
 };
 
 // ============== ROUTER ==============
@@ -3714,7 +4201,67 @@ export default {
       const result = await marketComputeAndCache(env, network);
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
+    if (url.pathname === '/holdings' && req.method === 'POST') return handleHoldings(req, env, network, cors);
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors);
+    // Permissionless-mint registry (T_PETCH-rooted). Kept separate from
+    // /assets so consumers can filter cleanly without one mode polluting the
+    // other; clients wanting "every asset" union /assets and /petch-assets.
+    if (url.pathname === '/petch-assets' && req.method === 'GET') {
+      // Same SWR pattern as /assets and /market: HIT inside FRESH window,
+      // STALE-serve + background refresh between FRESH and STALE, MISS path
+      // recomputes synchronously. Cron pre-warm makes user requests almost
+      // always land on a HIT — important here since each MISS fans out to
+      // loadCanonicalPmints per asset, which is the costliest /petch-assets
+      // payload on the system.
+      const cache = caches.default;
+      const cacheKey = petchAssetsCacheKey(network);
+      const _withCors = (body, status, kind) => {
+        const headers = new Headers();
+        headers.set('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', kind);
+        return new Response(body, { status, headers });
+      };
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        const cachedAtStr = cached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < PETCH_ASSETS_CACHE_FRESH_MS) {
+          return _withCors(await cached.text(), cached.status, 'HIT');
+        }
+        if (ageMs < PETCH_ASSETS_CACHE_STALE_MS) {
+          if (ctx && typeof ctx.waitUntil === 'function') {
+            ctx.waitUntil(petchAssetsComputeAndCache(env, network).catch(() => null));
+          }
+          return _withCors(await cached.text(), cached.status, 'STALE');
+        }
+      }
+      const result = await petchAssetsComputeAndCache(env, network);
+      return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
+    }
+    const mpa = url.pathname.match(/^\/petch-assets\/([0-9a-f]{64})$/);
+    if (mpa && req.method === 'GET') {
+      const v = await env.REGISTRY_KV.get(petchKey(network, mpa[1]), 'json');
+      if (!v) return jsonResponse({ error: 'unknown petch asset_id' }, 404, cors);
+      const tip = await Promise.race([
+        apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
+        new Promise(resolve => setTimeout(() => resolve(null), 2500)),
+      ]).catch(() => null);
+      const r = await loadCanonicalPmints(env, network, mpa[1], tip, v.cap_amount, v.mint_limit);
+      v.cumulative_minted = r.cumulative_minted;
+      v.credited_pmint_count = parseInt(r.credited_count, 10) || 0;
+      v.pmint_count = r.events.length;
+      if (v.cap_amount && v.mint_limit) {
+        const remaining = BigInt(v.cap_amount) - BigInt(v.cumulative_minted);
+        v.mints_remaining = String(remaining < 0n ? 0n : remaining / BigInt(v.mint_limit));
+      }
+      return jsonResponse(v, 200, cors);
+    }
+    const mpm = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/pmints$/);
+    if (mpm && req.method === 'GET') {
+      const creditedOnly = url.searchParams.get('credited') === '1';
+      return handlePmintList(mpm[1], env, network, cors, { creditedOnly });
+    }
     const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
     if (m && req.method === 'GET')                             return handleAssetGet(m[1], env, network, cors);
     const ma = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/attest$/);
@@ -3843,6 +4390,13 @@ export default {
       // without ever waiting on a synchronous KV fan-out.
       await Promise.allSettled(
         NETWORKS.map(net => marketComputeAndCache(env, net).catch(() => {})),
+      );
+      // Pre-warm /petch-assets. Each MISS fans out to loadCanonicalPmints
+      // per asset (the costliest /petch-assets payload on the system), so
+      // keeping cache fresh keeps Discover's public-mint section snappy
+      // even after long quiet periods.
+      await Promise.allSettled(
+        NETWORKS.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
       );
     })());
   },

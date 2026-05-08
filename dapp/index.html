@@ -309,6 +309,37 @@ label {
 .tab.active { color: var(--ink); border-bottom-color: var(--orange); font-weight: 700; }
 .tab:hover:not(.active) { background: var(--ink); color: var(--bg); }
 
+/* Numeric badge appended to a tab when JS sets `data-count="N"` (Holdings,
+   Market, Drops). Filled orange chip on inactive tabs; flips to ink on the
+   active tab so it doesn't compete with the orange underline. Hidden when
+   count is 0 / missing so empty tabs stay clean. */
+.tab[data-count]::after {
+  content: attr(data-count);
+  display: inline-block;
+  margin-left: 6px;
+  min-width: 16px; padding: 0 5px;
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 14px;
+  background: var(--orange); color: var(--ink);
+  border: 1px solid var(--ink);
+  vertical-align: 1px;
+}
+.tab[data-count="0"]::after, .tab:not([data-count])::after { content: none; }
+.tab.active[data-count]::after { background: var(--ink); color: var(--orange); border-color: var(--ink); }
+.tab:hover:not(.active)[data-count]::after { background: var(--bg); color: var(--ink); }
+/* On phones the tab row is overflow-x scrollable but every extra pixel
+   pushes content offscreen. Trim the badge: smaller font, narrower padding,
+   tighter left-margin. Still legible at 8px since the contents are 1-3
+   digits or "999+". */
+@media (max-width: 480px) {
+  .tab[data-count]::after {
+    margin-left: 4px;
+    min-width: 13px; padding: 0 3px;
+    font-size: 8px; line-height: 12px;
+  }
+}
+
 .tab-panel { display: none; }
 .tab-panel.active { display: block; animation: fadein 0.2s; }
 @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
@@ -329,6 +360,17 @@ label {
   border: 1px solid var(--ink);
   padding: 18px; margin-bottom: 14px;
   background: var(--bg);
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+/* Subtle physicality on hover — picks up the same offset-ink shadow that
+   `.opreturn-decode` already uses, so it reads as "of a piece" with the
+   existing visual language. Skip on touch devices (no real hover) and when
+   the highlight-pulse is mid-flight (it owns box-shadow during its run). */
+@media (hover: hover) {
+  .asset-card:hover:not(.highlight-pulse) {
+    transform: translateY(-1px);
+    box-shadow: 3px 3px 0 var(--ink);
+  }
 }
 .asset-card .head {
   display: flex; justify-content: space-between; align-items: baseline;
@@ -559,6 +601,157 @@ label {
 .skeleton-row.medium { width: 70%; }
 .skeleton.compact { padding: 10px; gap: 6px; }
 .skeleton.compact .skeleton-row { height: 10px; }
+
+/* Stagger-fade applied to data-row children of the major list containers
+   when they paint. Total runtime is bounded (~250ms for ≤8 rows; any extra
+   rows beyond the 8th land at the same delay so the cascade has a clean
+   trailing edge instead of dragging out on long lists). Subtle on purpose —
+   3px translate + opacity, no scale or rotation, since Tacit's editorial
+   style would push back against anything snappier. Animations re-run on
+   each full re-render of a list (which is rare and short), so the user
+   gets a "data just landed" beat without it feeling like a screensaver.
+   Honors prefers-reduced-motion. */
+@keyframes row-fade-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+#holdings-list > .asset-card,
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card,
+#recent-etches-list .recent-tile,
+#offers-list .offer-row,
+#market-list > div:not(.empty):not(.error):not(.muted),
+#claim-discover-list > div:not(.empty):not(.error):not(.muted),
+#activity-list .activity-row {
+  animation: row-fade-in 0.18s ease-out backwards;
+}
+#holdings-list > .asset-card:nth-child(1),
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card:nth-child(1),
+#recent-etches-list .recent-tile:nth-child(1),
+#offers-list .offer-row:nth-child(1),
+#activity-list .activity-row:nth-child(1) { animation-delay: 0ms; }
+#holdings-list > .asset-card:nth-child(2),
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card:nth-child(2),
+#recent-etches-list .recent-tile:nth-child(2),
+#offers-list .offer-row:nth-child(2),
+#activity-list .activity-row:nth-child(2) { animation-delay: 25ms; }
+#holdings-list > .asset-card:nth-child(3),
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card:nth-child(3),
+#recent-etches-list .recent-tile:nth-child(3),
+#offers-list .offer-row:nth-child(3),
+#activity-list .activity-row:nth-child(3) { animation-delay: 50ms; }
+#holdings-list > .asset-card:nth-child(4),
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card:nth-child(4),
+#recent-etches-list .recent-tile:nth-child(4),
+#offers-list .offer-row:nth-child(4),
+#activity-list .activity-row:nth-child(4) { animation-delay: 75ms; }
+#holdings-list > .asset-card:nth-child(5),
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card:nth-child(5),
+#recent-etches-list .recent-tile:nth-child(5),
+#offers-list .offer-row:nth-child(5),
+#activity-list .activity-row:nth-child(5) { animation-delay: 100ms; }
+#holdings-list > .asset-card:nth-child(6),
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card:nth-child(6),
+#recent-etches-list .recent-tile:nth-child(6),
+#offers-list .offer-row:nth-child(6),
+#activity-list .activity-row:nth-child(6) { animation-delay: 120ms; }
+#holdings-list > .asset-card:nth-child(7),
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card:nth-child(7),
+#recent-etches-list .recent-tile:nth-child(7),
+#offers-list .offer-row:nth-child(7),
+#activity-list .activity-row:nth-child(7) { animation-delay: 140ms; }
+#holdings-list > .asset-card:nth-child(n+8),
+#discover-list > .asset-card,
+#petch-discover-list > .asset-card:nth-child(n+8),
+#recent-etches-list .recent-tile:nth-child(n+8),
+#offers-list .offer-row:nth-child(n+8),
+#activity-list .activity-row:nth-child(n+8) { animation-delay: 160ms; }
+@media (prefers-reduced-motion: reduce) {
+  #holdings-list > .asset-card,
+  #discover-list > .asset-card,
+#petch-discover-list > .asset-card,
+  #recent-etches-list .recent-tile,
+  #offers-list .offer-row,
+#market-list > div:not(.empty):not(.error):not(.muted),
+#claim-discover-list > div:not(.empty):not(.error):not(.muted),
+  #activity-list .activity-row {
+    animation: none;
+  }
+}
+
+/* Optimistic-debit pill rendered on a Holdings asset card right after a
+   broadcast resolves, before the next chain rescan reconciles. Trails the
+   balance amount on desktop. On phones the balance is already 20-24px
+   serif italic and the card is narrow — let the pill drop to its own line
+   below the number rather than competing for horizontal space. */
+.pending-pill {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 7px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: var(--orange);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  font-weight: 600;
+  vertical-align: 2px;
+  white-space: nowrap;
+}
+@media (max-width: 480px) {
+  .pending-pill {
+    display: block;
+    margin-left: 0;
+    margin-top: 4px;
+    width: fit-content;
+    vertical-align: baseline;
+  }
+}
+
+/* Brief flash applied to a numeric value the instant it changes between
+   renders (wallet balance, tip-height, etc). The orange background fades
+   out over ~700ms so the eye reads "this number just changed" without
+   demanding attention. Class is added by setIfChanged() and removed on
+   animationend so the next change can re-trigger. */
+@keyframes value-flash {
+  0%   { background: rgba(247, 147, 26, 0.55); color: var(--ink); }
+  100% { background: transparent; color: inherit; }
+}
+.value-flash {
+  animation: value-flash 0.7s ease-out;
+  border-radius: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .value-flash { animation: none; }
+}
+
+/* Animated trailing dots for any "loading…" / "scanning…" / "indexing…"
+   status text. Reads as "still alive" instead of frozen. Apply by adding
+   the .live-dots class to a span/div whose textContent is the prefix word
+   (no trailing ellipsis — the pseudo-element draws three pulsing dots).
+   Pure CSS, no JS, no layout thrash. Respects prefers-reduced-motion. */
+@keyframes live-dots-pulse {
+  0%, 20%   { opacity: 0.15; }
+  50%       { opacity: 1; }
+  80%, 100% { opacity: 0.15; }
+}
+.live-dots::after {
+  content: '\2026';            /* … as a single glyph; we color the dots via opacity */
+  display: inline-block;
+  margin-left: 1px;
+  letter-spacing: 0.15em;
+  animation: live-dots-pulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dots::after { animation: none; opacity: 0.55; }
+}
 
 /* Brief flash applied to a scrolled-into-view card when it's the deep-link
    target of a Recent-etches tile click. ~1.8s of orange ring tells the user
@@ -1059,6 +1252,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 }
 .btn-help:hover { background: var(--ink); color: var(--bg); }
 .btn-help:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+/* The ⌘K opener is two glyphs wide instead of one, so it needs a little
+   more horizontal room than the single-char .btn-help. Same height. */
+.btn-cmd { width: auto; min-width: 38px; padding: 0 6px; font-size: 11px; }
+@media (max-width: 700px) {
+  .btn-cmd { min-width: 46px; font-size: 12px; }
+}
 
 /* FAQ modal — same backdrop pattern as welcome/pass modals, with a
    scrollable Q&A body. Higher z-index so it sits above the welcome
@@ -1127,6 +1326,162 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 .faq-foot a { color: var(--ink); }
 .faq-foot a:hover { color: var(--orange); }
 
+/* Inline progress strip (etch broadcast, future: transfer). 4-step
+   horizontal timeline; each step shows a numbered chip + label, joined by
+   thin lines that fill orange as the flow progresses. The active step's
+   chip pulses; done steps are filled-orange-on-ink; pending are
+   ink-on-bg. Errors flip the active chip to red and stop the pulse. */
+.progress-strip {
+  margin-top: 14px;
+  display: flex; align-items: center;
+  gap: 0; padding: 12px;
+  background: var(--bg-warm);
+  border: 1px dashed var(--ink);
+}
+.progress-step {
+  display: flex; align-items: center;
+  gap: 6px; flex: 1; min-width: 0;
+  position: relative;
+}
+.progress-step + .progress-step::before {
+  content: ''; flex: 0 0 14px; height: 1px;
+  background: var(--ink-faint);
+  margin: 0 4px;
+  align-self: center;
+}
+.progress-step.done + .progress-step::before,
+.progress-step.active + .progress-step::before { background: var(--orange); }
+.progress-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  font-family: 'Instrument Serif', serif;
+  font-size: 14px; font-style: italic; font-weight: 700;
+  background: var(--bg); color: var(--ink);
+  border: 1px solid var(--ink);
+  flex-shrink: 0;
+}
+.progress-step.done .progress-num {
+  background: var(--orange); color: var(--ink);
+  border-color: var(--orange);
+}
+.progress-step.active .progress-num {
+  background: var(--ink); color: var(--orange);
+  border-color: var(--ink);
+  animation: progress-pulse 1.2s ease-in-out infinite;
+}
+.progress-step.error .progress-num {
+  background: var(--red); color: #fff; border-color: var(--red);
+  animation: none;
+}
+@keyframes progress-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(247, 147, 26, 0.55); }
+  50%      { box-shadow: 0 0 0 5px rgba(247, 147, 26, 0); }
+}
+.progress-label {
+  font-size: 11px; letter-spacing: 0.04em;
+  text-transform: uppercase; font-weight: 500;
+  color: var(--ink-mid);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.progress-step.done .progress-label,
+.progress-step.active .progress-label { color: var(--ink); }
+.progress-step.error .progress-label { color: var(--red); }
+@media (prefers-reduced-motion: reduce) {
+  .progress-step.active .progress-num { animation: none; }
+}
+@media (max-width: 480px) {
+  .progress-strip { gap: 0; padding: 10px 8px; }
+  .progress-num { width: 20px; height: 20px; font-size: 12px; }
+  .progress-label { font-size: 10px; }
+  .progress-step + .progress-step::before { flex-basis: 8px; margin: 0 2px; }
+}
+
+/* Command palette — same backdrop pattern as welcome/pass/faq, but with
+   a tighter card and a list of selectable items. Only opens on keyboard
+   trigger (⌘K / Ctrl+K / "/"), so there's no on-page button — it's an
+   undiscoverable power-user surface, the help text in #cmd-foot is the
+   only first-time hint. */
+.cmd-palette {
+  position: fixed; inset: 0; z-index: 1030;
+  display: grid; place-items: start center;
+  background: rgba(10, 10, 10, 0.55);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  padding: 80px 24px 24px;
+  animation: fadein 0.12s ease-out;
+}
+.cmd-card {
+  width: 100%; max-width: 560px;
+  background: var(--bg); border: 1px solid var(--ink);
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 120px);
+  box-shadow: 6px 6px 0 var(--ink);
+}
+#cmd-input {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 14px; padding: 14px 16px;
+  border: 0; border-bottom: 1px solid var(--ink);
+  background: var(--bg); color: var(--ink);
+  width: 100%; outline: none;
+}
+#cmd-input::placeholder {
+  color: var(--ink-faint); font-style: italic;
+  letter-spacing: 0;
+}
+.cmd-list {
+  list-style: none; padding: 6px 0; margin: 0;
+  overflow-y: auto; flex: 1;
+}
+.cmd-item {
+  display: flex; align-items: center;
+  gap: 12px; padding: 9px 16px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.cmd-item:hover, .cmd-item.active {
+  background: var(--bg-warm);
+  border-left-color: var(--orange);
+}
+.cmd-item-title { font-size: 13px; flex: 1; min-width: 0; }
+.cmd-item-title strong { font-weight: 600; }
+.cmd-item-hint {
+  font-size: 10px; color: var(--ink-mid);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.cmd-item-kbd {
+  font-size: 9px; color: var(--ink-mid);
+  border: 1px solid var(--ink-faint);
+  padding: 1px 5px; min-width: 18px;
+  text-align: center; letter-spacing: 0;
+  text-transform: none;
+  font-family: 'IBM Plex Mono', monospace;
+}
+.cmd-empty {
+  padding: 20px; text-align: center;
+  color: var(--ink-mid); font-style: italic;
+  font-family: 'Instrument Serif', serif;
+  font-size: 16px;
+}
+.cmd-foot {
+  border-top: 1px dashed var(--ink-faint);
+  padding: 8px 16px;
+  font-size: 9px; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink-mid);
+}
+.cmd-foot-key {
+  border: 1px solid var(--ink-faint);
+  padding: 0 4px; margin: 0 1px;
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: 0; text-transform: none;
+  color: var(--ink);
+}
+@media (max-width: 700px) {
+  .cmd-palette { padding: 40px 12px 12px; }
+  .cmd-card { box-shadow: 3px 3px 0 var(--ink); }
+  #cmd-input { font-size: 16px; padding: 12px 14px; }
+  .cmd-item { padding: 10px 14px; }
+}
+
 /* Mobile tuning for the FAQ modal + help button. Bumps the "?" target
    closer to the 44px touch-target floor without overpowering the header,
    reduces backdrop padding so the card gets more horizontal breathing
@@ -1161,6 +1516,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
   <div class="net-control">
     <div class="net-row">
+      <!-- Command-palette opener. Same shape as the FAQ button so the pair
+           reads as a coherent header utility row. Desktop users know the
+           keyboard shortcut (⌘K / Ctrl+K / `/`); the button is the only
+           reachable entry on mobile, where there's no keyboard for those.
+           setupCommandPalette() wires the click. -->
+      <button id="btn-cmd" class="btn-help btn-cmd" type="button" aria-label="Open command palette" title="Open command palette (⌘K)">⌘K</button>
       <button id="btn-faq" class="btn-help" type="button" aria-label="Help / FAQ" title="Frequently asked questions">?</button>
       <select class="net-select" id="net-select" aria-label="Network">
         <option value="mainnet">mainnet</option>
@@ -1414,8 +1775,77 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-etch-preview">Preview etch</button>
         <button id="btn-etch-broadcast" class="primary" disabled>Etch &amp; broadcast</button>
       </div>
+      <!-- Inline progress strip — hidden until broadcast starts. JS toggles
+           per-step .done / .active classes via setProgressStrip() so the
+           user sees a 4-stage timeline instead of a single disabled button.
+           Steps map to: pin metadata (skipped if none), prove rangeproof,
+           broadcast commit, broadcast reveal, index locally. -->
+      <div id="etch-progress" class="progress-strip" style="display:none;" aria-live="polite">
+        <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Index</span></div>
+      </div>
       <div id="etch-error" class="error"></div>
       <div id="etch-success" style="display:none;margin-top:18px;"></div>
+    </div>
+  </div>
+
+  <!-- T_PETCH (permissionless fair-launch mint) — kept as a separate panel
+       below the CETCH form so the trust models don't bleed into one another:
+       CETCH commits a hidden supply at etch with optional mint authority;
+       T_PETCH deploys a public-mint schedule and the deployer receives zero
+       tokens. Different commitment story → different form. -->
+  <div class="section">
+    <div class="section-header"><span>etch · public mint (fair launch)</span></div>
+    <div class="section-body">
+      <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:14px;">
+        Deploy a token with a fixed lifetime cap and a fixed per-mint amount.
+        <strong>You receive zero tokens at deploy</strong> — to hold any, broadcast a mint like everyone else.
+        Anyone can mint until the cap fills. Mints publicly reveal <code>(amount, blinding)</code> so the cap is auditable from chain alone — supply is fully observable for these assets (different from confidential CETCH supply). SPEC §5.8 / §5.9.
+      </div>
+      <div class="form-row two">
+        <div>
+          <label>Ticker (1–8 chars, A–Z 0–9)</label>
+          <input id="p-ticker" placeholder="FAIR" maxlength="8" autocomplete="off">
+        </div>
+        <div>
+          <label>Decimals</label>
+          <input id="p-decimals" type="number" value="0" min="0" max="8">
+        </div>
+      </div>
+      <div class="form-row two" style="margin-top:8px;">
+        <div>
+          <label>Cap amount (lifetime total, display units)</label>
+          <input id="p-cap" type="text" inputmode="decimal" placeholder="e.g. 21000000">
+        </div>
+        <div>
+          <label>Per-mint amount (display units)</label>
+          <input id="p-limit" type="text" inputmode="decimal" placeholder="e.g. 1000">
+        </div>
+      </div>
+      <div id="p-divisibility-hint" class="muted" style="margin-top:6px;font-size:11px;"></div>
+      <label style="margin-top:14px;">Image URI (optional)</label>
+      <input id="p-image" type="text" placeholder="ipfs://bafybeih... or bare CID" spellcheck="false">
+      <div class="muted" style="margin-top:8px;font-size:11px;line-height:1.6;">
+        ⚠ <strong>Cap is permanent.</strong> Once the cap is reached, no more T_PMINTs are accepted.<br>
+        ⚠ <strong>Per-mint amount is permanent</strong> and must divide the cap evenly (no remainder).<br>
+        Minting opens at the next confirmed block after this T_PETCH lands; deployer same-block mints are rejected at validation.
+      </div>
+      <div class="flex" style="margin-top:18px;">
+        <button id="btn-petch-broadcast" class="primary">Deploy public-mint asset</button>
+      </div>
+      <!-- Same 4-step strip as #etch-progress, scoped to the public-mint
+           deploy flow. Steps map to: build (TLB encode + optional pin),
+           commit broadcast, reveal broadcast, post-broadcast register. -->
+      <div id="petch-progress" class="progress-strip" style="display:none;" aria-live="polite">
+        <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Register</span></div>
+      </div>
+      <div id="petch-error" class="error"></div>
+      <div id="petch-success" style="display:none;margin-top:18px;"></div>
     </div>
   </div>
 </div>
@@ -1472,6 +1902,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <button id="btn-transfer-broadcast" class="primary" disabled title="Click 'Review transfer' first to see what you're about to send.">2. Confirm &amp; send</button>
         </div>
         <div class="muted" style="margin-top:6px;font-size:11px;">Review your transfer details below before broadcasting — once sent, it can't be undone.</div>
+        <!-- Same 4-step strip as #etch-progress, scoped to the transfer flow.
+             Build → Commit → Reveal → Sent. -->
+        <div id="transfer-progress" class="progress-strip" style="display:none;" aria-live="polite">
+          <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+          <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+          <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+          <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Sent</span></div>
+        </div>
         <div id="transfer-error" class="error"></div>
         <div id="transfer-share" style="display:none;margin-top:18px;"></div>
       </div>
@@ -1623,6 +2061,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-drop-fulfil-verify" type="button">Verify batch</button>
         <button id="btn-drop-fulfil-broadcast" type="button" class="primary" disabled title="Verify first">Broadcast batch CXFER</button>
         <button id="btn-drop-fulfil-cancel" type="button">Close</button>
+      </div>
+      <!-- Same 4-step strip; the airdrop fulfilment uses buildAndBroadcastCXferMulti
+           internally so the same Build → Commit → Reveal → Sent labels apply. -->
+      <div id="drop-fulfil-progress" class="progress-strip" style="display:none;" aria-live="polite">
+        <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Sent</span></div>
       </div>
       <div id="drop-fulfil-err" class="error" style="margin-top:8px;"></div>
       <div id="drop-fulfil-preview" style="display:none;margin-top:14px;"></div>
@@ -1805,7 +2251,18 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         </select>
         <button id="btn-market-refresh">↻ Refresh</button>
       </div>
-      <div id="market-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;">loading…</div></div>
+      <!-- Shared 3-step strip for take/settle on whichever market tile's
+           Take button is in flight. Take is single-broadcast (not commit +
+           reveal), so the labels are: Verify → Sign → Settle. Hidden until
+           a take is in progress; the click handler shows it and writes the
+           in-flight intent_id into data-intent for resilience against a
+           parallel render replacing the tile mid-flight. -->
+      <div id="market-take-progress" class="progress-strip" style="display:none;" aria-live="polite">
+        <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Verify</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Sign</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Settle</span></div>
+      </div>
+      <div id="market-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;"><span class="live-dots">loading</span></div></div>
     </div>
   </div>
 </div>
@@ -1850,6 +2307,34 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
       <div id="discover-verify-stats" class="muted" style="font-size:11px;margin-bottom:10px;display:none;" title="Each asset card validates the on-chain CETCH envelope locally before its ✓ badge appears. Cards out of view defer their walk until you scroll them into view to save CPU + battery."></div>
       <div id="discover-list"><div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div></div>
+    </div>
+  </div>
+
+  <!-- Permissionless-mint registry (T_PETCH-rooted). Lives in its own
+       section to keep CETCH (confidential supply) and T_PETCH (public
+       fair-launch) trust models visually distinct — same envelope-version
+       binary on chain, different issuance semantics that users should not
+       confuse at a glance. Cap-progress + Mint button render here. -->
+  <div class="section" id="petch-discover-section">
+    <div class="section-header">
+      <span>fair launch · public-mint assets</span>
+      <span id="petch-discover-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:14px;">
+        Permissionless-mint deployments — anyone can mint a fixed tranche until the cap fills. Supply is publicly auditable from chain alone (different from CETCH). SPEC §5.8 / §5.9.
+      </div>
+      <!-- Shared progress strip for whichever tile's Mint button is in
+           flight. Hidden until a mint click; the click handler also stamps
+           the in-flight ticker into the strip's data-ticker attr so a
+           parallel render doesn't blow it away. -->
+      <div id="pmint-progress" class="progress-strip" style="display:none;" aria-live="polite">
+        <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Pending</span></div>
+      </div>
+      <div id="petch-discover-list"><div class="muted" style="padding:14px;font-size:12px;"><span class="live-dots">loading</span></div></div>
     </div>
   </div>
 </div>
@@ -2137,6 +2622,25 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button type="button" id="passkey-login" style="flex:1;font-size:10px;padding:4px 8px;">Login</button>
         <button type="button" id="passkey-cancel" style="flex:1;font-size:10px;padding:4px 8px;">Cancel</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!--
+  Command palette. Opens on ⌘K / Ctrl+K (or "/" outside an input). Filters
+  the available actions by typed substring; ↑↓ moves selection, Enter runs,
+  Esc closes. Items are wired in tacit.js → buildCommandPaletteItems(),
+  which delegates each action back to the existing button click handlers
+  (btn-refresh, btn-rescan, etc.) so the palette never duplicates business
+  logic — it's just a fast keyboard surface over the same actions you'd
+  reach by clicking around.
+-->
+<div id="cmd-palette" class="cmd-palette" role="dialog" aria-modal="true" aria-labelledby="cmd-input" style="display:none;">
+  <div class="cmd-card">
+    <input id="cmd-input" type="text" autocomplete="off" spellcheck="false" placeholder="type to search · ↑↓ navigate · ↵ run · esc close">
+    <ul id="cmd-list" class="cmd-list" role="listbox"></ul>
+    <div class="cmd-foot">
+      <span class="cmd-foot-key">⌘K</span> open · <span class="cmd-foot-key">/</span> focus search · <span class="cmd-foot-key">esc</span> close
     </div>
   </div>
 </div>

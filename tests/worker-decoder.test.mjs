@@ -17,7 +17,8 @@
 import {
   decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload,
   decodeAxferPayload, decodeCBurnPayload,
-  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER,
+  decodeCPetchPayload, decodeCPmintPayload,
+  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT,
 } from '../worker/src/index.js';
 
 let pass = 0, fail = 0;
@@ -141,6 +142,151 @@ test('decodeCEtchPayload uses snake_case image_uri (regression sentinel for mixe
   // would silently get undefined. Pin the snake_case shape down.
   const d = decodeCEtchPayload(minCetch());
   return d.imageUri === undefined && (d.image_uri === null || typeof d.image_uri === 'string');
+});
+
+// ---------------------------------------------------------------------------
+// T_PETCH (SPEC §5.8) — opcode(1) || tlen(1) || ticker(tlen) || decimals(1) ||
+//   cap(8 LE) || limit(8 LE) || start_h(4 LE) || end_h(4 LE) ||
+//   img_len(2 LE) || image_uri(img_len)
+// ---------------------------------------------------------------------------
+const u64le = (n) => {
+  const b = new Uint8Array(8);
+  const v = new DataView(b.buffer);
+  v.setUint32(0, Number(BigInt(n) & 0xffffffffn), true);
+  v.setUint32(4, Number((BigInt(n) >> 32n) & 0xffffffffn), true);
+  return b;
+};
+const u32le = (n) => {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, n >>> 0, true);
+  return b;
+};
+const minPetch = ({ cap = 1000n, limit = 100n, start = 0, end = 0, ticker = 'A', decimals = 0, img = '' } = {}) => {
+  const t = new TextEncoder().encode(ticker);
+  const i = new TextEncoder().encode(img);
+  return concat(
+    u8(T_PETCH), u8(t.length), t, u8(decimals),
+    u64le(cap), u64le(limit),
+    u32le(start), u32le(end),
+    u8(i.length & 0xff, (i.length >> 8) & 0xff), i,
+  );
+};
+
+test('decodeCPetchPayload returns expected snake_case shape', () => {
+  const d = decodeCPetchPayload(minPetch());
+  if (!d) return false;
+  const expected = keysSorted({
+    ticker: 0, decimals: 0, cap_amount: 0, mint_limit: 0,
+    mint_start_height: 0, mint_end_height: 0, image_uri: 0,
+  });
+  if (keysSorted(d) !== expected) return false;
+  if (typeof d.cap_amount !== 'string' || typeof d.mint_limit !== 'string') return false;
+  if (d.cap_amount !== '1000' || d.mint_limit !== '100') return false;
+  return true;
+});
+
+test('decodeCPetchPayload no camelCase keys (regression sentinel)', () => {
+  const d = decodeCPetchPayload(minPetch());
+  return d.capAmount === undefined && d.mintLimit === undefined
+    && d.mintStartHeight === undefined && d.mintEndHeight === undefined
+    && d.imageUri === undefined;
+});
+
+test('decodeCPetchPayload rejects cap not divisible by limit', () => {
+  return decodeCPetchPayload(minPetch({ cap: 1000n, limit: 333n })) === null;
+});
+
+test('decodeCPetchPayload rejects mint_limit > cap_amount', () => {
+  return decodeCPetchPayload(minPetch({ cap: 100n, limit: 1000n })) === null;
+});
+
+test('decodeCPetchPayload rejects cap_amount == 0', () => {
+  return decodeCPetchPayload(minPetch({ cap: 0n, limit: 100n })) === null;
+});
+
+test('decodeCPetchPayload rejects mint_limit == 0', () => {
+  return decodeCPetchPayload(minPetch({ cap: 1000n, limit: 0n })) === null;
+});
+
+test('decodeCPetchPayload rejects decimals > 8', () => {
+  return decodeCPetchPayload(minPetch({ decimals: 9 })) === null;
+});
+
+test('decodeCPetchPayload rejects ticker_len == 0', () => {
+  // Construct manually since minPetch encodes a 1-char default
+  const payload = concat(
+    u8(T_PETCH), u8(0),
+    u8(0), u64le(1000n), u64le(100n), u32le(0), u32le(0), u8(0, 0),
+  );
+  return decodeCPetchPayload(payload) === null;
+});
+
+test('decodeCPetchPayload rejects ticker_len > 16', () => {
+  return decodeCPetchPayload(minPetch({ ticker: 'A'.repeat(17) })) === null;
+});
+
+test('decodeCPetchPayload rejects mint_end_height <= mint_start_height when both nonzero', () => {
+  return decodeCPetchPayload(minPetch({ start: 100, end: 100 })) === null
+    && decodeCPetchPayload(minPetch({ start: 100, end: 50 })) === null;
+});
+
+test('decodeCPetchPayload accepts mint_end_height == 0 (no end)', () => {
+  return decodeCPetchPayload(minPetch({ start: 100, end: 0 })) !== null;
+});
+
+test('decodeCPetchPayload rejects opcode != T_PETCH', () => {
+  const p = minPetch();
+  p[0] = T_CETCH;   // wrong opcode
+  return decodeCPetchPayload(p) === null;
+});
+
+// ---------------------------------------------------------------------------
+// T_PMINT (SPEC §5.9) — opcode(1) || asset_id(32) || etch_txid(32) ||
+//   commitment(33) || amount(8 LE) || blinding(32). Total 138 bytes exactly.
+// ---------------------------------------------------------------------------
+const minPmint = ({ amount = 100n, blinding = null, commitment = null } = {}) => {
+  const blind = blinding || (() => { const b = new Uint8Array(32); b[31] = 1; return b; })();
+  const comm = commitment || (() => { const c = new Uint8Array(33); c[0] = 0x02; c[32] = 1; return c; })();
+  return concat(
+    u8(T_PMINT), zeroes(32), zeroes(32), comm, u64le(amount), blind,
+  );
+};
+
+test('decodeCPmintPayload returns expected snake_case shape', () => {
+  const d = decodeCPmintPayload(minPmint());
+  if (!d) return false;
+  const expected = keysSorted({
+    asset_id: 0, etch_txid: 0, commitment: 0, amount: 0, blinding: 0,
+  });
+  if (keysSorted(d) !== expected) return false;
+  if (typeof d.amount !== 'string') return false;
+  if (d.amount !== '100') return false;
+  return true;
+});
+
+test('decodeCPmintPayload no camelCase keys (regression sentinel)', () => {
+  const d = decodeCPmintPayload(minPmint());
+  return d.assetId === undefined && d.etchTxid === undefined;
+});
+
+test('decodeCPmintPayload rejects all-zero blinding', () => {
+  return decodeCPmintPayload(minPmint({ blinding: zeroes(32) })) === null;
+});
+
+test('decodeCPmintPayload rejects amount == 0', () => {
+  return decodeCPmintPayload(minPmint({ amount: 0n })) === null;
+});
+
+test('decodeCPmintPayload rejects wrong total length', () => {
+  const p = minPmint();
+  // Trim one byte
+  return decodeCPmintPayload(p.slice(0, p.length - 1)) === null;
+});
+
+test('decodeCPmintPayload rejects opcode != T_PMINT', () => {
+  const p = minPmint();
+  p[0] = T_MINT;
+  return decodeCPmintPayload(p) === null;
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);
