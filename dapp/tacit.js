@@ -12555,15 +12555,22 @@ function _parseTabHash() {
 function _consumeTabUrlHash() {
   const parsed = _parseTabHash();
   if (!parsed) return;
-  // Stash asset focus before the tab switch so renderDiscover /
-  // renderPetchDiscover see it on first paint. Currently only Discover
-  // honors aid focus; on other tabs it's a harmless dangling pointer that
-  // a later switch to Discover will pick up.
-  if (parsed.aid) pendingDiscoverFocus = parsed.aid;
+  // Stash the asset focus into the right state slot for the target tab.
+  // Discover uses pendingDiscoverFocus → scroll/highlight on render.
+  // Market uses pendingMarketFilter → drops straight into asset-detail
+  // view on render. Other tabs ignore aid (harmless).
+  if (parsed.aid) {
+    if (parsed.tab === 'discover') pendingDiscoverFocus = parsed.aid;
+    else if (parsed.tab === 'market') pendingMarketFilter = parsed.aid;
+  }
   const btn = document.querySelector(`.tab[data-tab="${parsed.tab}"]`);
   if (!btn) return;
   if (!btn.classList.contains('active')) {
     btn.click();
+  } else if (parsed.aid && parsed.tab === 'market') {
+    // Already on Market — drive the asset-detail view directly so a
+    // hash-only change re-routes without requiring a tab re-click.
+    if (typeof goToMarketAsset === 'function') goToMarketAsset(parsed.aid);
   } else if (parsed.aid && parsed.tab === 'discover') {
     // Already on Discover but aid changed — re-resolve focus against the
     // already-mounted lists so a hash-only change scrolls/highlights too.
@@ -16023,6 +16030,54 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     ${burnBadge}
     ${totalSupplyBadge}
     ${(() => {
+      // Single-line price teaser. Surface floor unit price + live offer
+      // count so users browsing Discover see "what does this trade for?"
+      // without leaving the directory. Click → Market filtered to this
+      // asset (the per-asset Market view is the real orderbook surface).
+      // We deliberately do NOT show market-cap, last-traded, atomic-only
+      // splits, or floor breakdown here — that was the bloat the prior
+      // declutter cleaned out. One number, one click-through.
+      //
+      // Sources, in priority:
+      //   (a) verify._priceFloorPpu — populated by enrichDiscoverPriceFloor,
+      //       which fetches /listings + /atomic-intents per asset (only for
+      //       assets the worker reports a non-zero offer count). This is
+      //       the freshest answer when verify has finished enrichment.
+      //   (b) _marketFloorByAsset() cache — filled when the user has
+      //       visited the Market tab this session; accounts for liveness-
+      //       pruned UTXOs (no spent listings inflating the floor).
+      // If neither exists yet (no offers, or enrichment hasn't run), we
+      // fall back to a "Trade →" link without a price so the click path
+      // still works.
+      //
+      // Confidentiality caveat: the floor we show is an UPPER bound on
+      // what's actually available. Confidential holders not actively
+      // listing are invisible to the indexer. We don't try to fake this
+      // away — clicking through to Market shows the precise mix.
+      const offerCount = Number(a.listing_count || 0)
+                       + Number(a.range_listing_count || 0)
+                       + Number(a.atomic_intent_count || 0);
+      if (offerCount <= 0) return '';
+      let unit = null;
+      let unitTicker = ticker;
+      const liveFloor = _marketFloorByAsset()?.get(a.asset_id);
+      if (liveFloor) { unit = liveFloor.unit; unitTicker = liveFloor.ticker || ticker; }
+      else if (verify._priceFloorPpu && verify._priceFloorPpu > 0) {
+        // _priceFloorPpu is sats per smallest unit; convert to per display unit.
+        unit = verify._priceFloorPpu * Math.pow(10, decimals);
+      }
+      const priceStr = (unit != null && Number.isFinite(unit) && unit > 0)
+        ? (unit >= 1 ? unit.toFixed(unit >= 100 ? 0 : 2) : unit.toFixed(6).replace(/0+$/, '').replace(/\.$/, ''))
+        : null;
+      const priceFragment = priceStr
+        ? `<strong>${escapeHtml(priceStr)} sats/${escapeHtml(unitTicker)}</strong> floor · `
+        : '';
+      return `<div style="margin-top:8px;font-size:11px;">
+        💱 ${priceFragment}<a href="#tab=market&aid=${escapeHtml(safeAssetId)}" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="color:#0a7d4e;font-weight:bold;">${offerCount} live offer${offerCount === 1 ? '' : 's'} →</a>
+        <span class="muted" style="margin-left:6px;font-size:10px;" title="Floor reflects only listings the indexer can see; confidential holders not actively listing are invisible by design.">indexer view</span>
+      </div>`;
+    })()}
+    ${(() => {
       // Transfer-count signal — coarse "is anyone moving this?" indicator,
       // not a legitimacy proof (self-spam is cheap). Cron-maintained counter;
       // absence of any transfers is meaningful, presence is movement only.
@@ -16074,12 +16129,19 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     </div>`;
   // Wire the asset_id short/full toggle for this card.
   wireAssetIdToggles(card);
-  // Wire the "view offers" badge → Market tab with this asset_id pre-filtered.
+  // Wire the "view offers" link → Market tab pre-filtered to this asset.
+  // The anchor's href is already a deeplink hash (#tab=market&aid=...), but
+  // we override onclick to drive the navigation through location.hash
+  // explicitly so it works identically whether the user clicks normally or
+  // middle-clicks (browser handles middle-click via the href). Using
+  // location.hash also reflects the navigation in the URL bar so the user
+  // can copy/share the link to a specific asset's orderbook.
   card.querySelectorAll('[data-act="discover-view-offers"]').forEach(el => {
     el.onclick = (ev) => {
+      const aid = el.dataset.aid || '';
+      if (!/^[0-9a-f]{64}$/.test(aid)) return;
       ev.preventDefault();
-      pendingMarketFilter = el.dataset.aid || '';
-      $('.tab[data-tab="market"]').click();
+      location.hash = `#tab=market&aid=${aid}`;
     };
   });
   // Wire the etcher row → fill the Discover search input with the etcher
