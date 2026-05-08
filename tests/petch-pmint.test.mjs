@@ -98,10 +98,11 @@ await test(`PMINT_CONFIRMATION_DEPTH is the SPEC §5.9 default (3)`, () => {
 
 await test('mints at depth < 3 surface as "pending"', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
-  // Tip at 100; mints at heights 98, 99, 100 → depths 2, 1, 0 → all pending.
+  // Tip at 100; mints at heights 99, 100, 100 → depths 2, 1, 1 → all pending.
+  // Bitcoin convention: a tx in block N has 1 confirmation when tip==N.
   env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
-  env.REGISTRY_KV.set(pmintKey(ASSET, 99,  0, 'b'.repeat(64)), mintEvent(99,  0, 'b'.repeat(64)));
-  env.REGISTRY_KV.set(pmintKey(ASSET, 98,  0, 'c'.repeat(64)), mintEvent(98,  0, 'c'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 1, 'b'.repeat(64)), mintEvent(100, 1, 'b'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 99,  0, 'c'.repeat(64)), mintEvent(99,  0, 'c'.repeat(64)));
   const r = await loadCanonicalPmints(env, 'signet', ASSET, 100, '1000', '100');
   return r.events.length === 3
     && r.events.every(e => e.status === 'pending')
@@ -110,7 +111,7 @@ await test('mints at depth < 3 surface as "pending"', async () => {
 
 await test('mints at depth ≥ 3 are credited up to cap', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
-  // Tip at 200; mints at 100..104 (depths 100..96 — all ≥ 3). Cap = 1000,
+  // Tip at 200; mints at 100..104 (depths 101..97 — all ≥ 3). Cap = 1000,
   // limit = 100 → 10 mints fit. Five mints all credit.
   for (let i = 0; i < 5; i++) {
     env.REGISTRY_KV.set(pmintKey(ASSET, 100 + i, 0, String.fromCharCode(97 + i).repeat(64)), mintEvent(100 + i, 0, String.fromCharCode(97 + i).repeat(64)));
@@ -123,12 +124,12 @@ await test('mints at depth ≥ 3 are credited up to cap', async () => {
 
 await test('mixed pending + credited produces correct cumulative', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
-  // Tip at 105. Mints at 100, 101, 102, 103, 104 → depths 5, 4, 3, 2, 1.
+  // Tip at 104. Mints at 100, 101, 102, 103, 104 → depths 5, 4, 3, 2, 1.
   // First three credit (depth ≥ 3), last two pending.
   for (let i = 0; i < 5; i++) {
     env.REGISTRY_KV.set(pmintKey(ASSET, 100 + i, 0, String.fromCharCode(97 + i).repeat(64)), mintEvent(100 + i, 0, String.fromCharCode(97 + i).repeat(64)));
   }
-  const r = await loadCanonicalPmints(env, 'signet', ASSET, 105, '1000', '100');
+  const r = await loadCanonicalPmints(env, 'signet', ASSET, 104, '1000', '100');
   const credited = r.events.filter(e => e.status === 'credited').length;
   const pending = r.events.filter(e => e.status === 'pending').length;
   return credited === 3 && pending === 2 && r.cumulative_minted === '300';

@@ -1564,6 +1564,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab" data-tab="etch">Etch</button>
   <button class="tab" data-tab="drops">Drops</button>
   <button class="tab" data-tab="claim">Claim</button>
+  <button class="tab" data-tab="mixer">Mixer</button>
   <button class="tab" data-tab="about">Protocol</button>
 </div>
 
@@ -2335,6 +2336,89 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 </div>
 
 <!-- ABOUT TAB -->
+<div class="tab-panel" id="tab-mixer">
+  <div class="section">
+    <div class="section-header">
+      <span>mixer · shielded pools (T_DEPOSIT / T_WITHDRAW)</span>
+      <span id="mixer-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Tornado-style anonymity pool over any tacit asset. Deposit a fixed-denomination UTXO, wait, withdraw to a fresh pubkey — the on-chain edge between deposit and withdraw is broken by a Groth16 proof of unspent leaf membership in the pool merkle tree. SPEC §5.10 / §5.11.
+      </div>
+      <div id="mixer-stub-banner" style="border:1px solid #b58900;background:#fdf6e3;color:#657b83;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13px;">
+        <strong>v1 dev preview.</strong> The Groth16 verifier is stubbed — withdrawn UTXOs are not yet trusted by the validator. Circuit work, trusted-setup ceremony, and snarkjs vendor bundling are tracked separately. <em>Do not use on mainnet.</em>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>pools</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">Initialized pools are listed below. Each row shows total deposits, total withdrawals, current anonymity-set size, and the verifying-key CID. Empty list = no pools have been initialized on this network yet.</div>
+      <div id="mixer-pool-list"><div class="muted" style="font-size:12px;">No pools indexed yet.</div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>deposit</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">Spend a UTXO of a pool's exact denomination into the pool. The dApp generates a (secret, nullifier_preimage) pair — back up the resulting record before broadcasting; without it, the deposit cannot be withdrawn.</div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:1;min-width:200px;">Pool
+          <select id="mixer-deposit-pool"><option value="">— pick a pool —</option></select>
+        </label>
+        <button id="btn-mixer-deposit-preview" disabled>Preview</button>
+        <button id="btn-mixer-deposit-broadcast" disabled>Deposit &amp; broadcast</button>
+      </div>
+      <pre id="mixer-deposit-preview-out" class="muted" style="margin-top:10px;display:none;"></pre>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>withdraw</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">Withdraw an unspent leaf to a fresh pubkey. Paste a deposit record (the JSON the deposit flow gave you) or import via share-link. Anonymity-set size is shown beneath each pool.</div>
+      <textarea id="mixer-withdraw-record" rows="4" placeholder="paste deposit record JSON, or import share-link below" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+      <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
+        <input id="mixer-withdraw-sharelink" type="text" placeholder="#mix=…" style="flex:1;font-family:monospace;font-size:12px;">
+        <button id="btn-mixer-import-sharelink">Import</button>
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
+        <button id="btn-mixer-withdraw-preview" disabled>Preview</button>
+        <button id="btn-mixer-withdraw-broadcast" disabled>Withdraw &amp; broadcast</button>
+      </div>
+      <pre id="mixer-withdraw-preview-out" class="muted" style="margin-top:10px;display:none;"></pre>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>initialize a new pool</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">Pool initialization is permissionless — anyone can declare a pool for any asset at any denomination. The first canonically-confirmed POOL_INIT for a given (asset_id, denomination) wins. You'll need a Groth16 verifying-key CID and an MPC-ceremony-transcript CID, both pinned to IPFS. SPEC §5.10.1.</div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:1;min-width:240px;">Asset
+          <select id="mixer-init-asset"><option value="">— pick an asset —</option></select>
+        </label>
+        <label style="flex:0 0 140px;">Denomination
+          <input id="mixer-init-denom" type="text" placeholder="e.g. 100000000" inputmode="decimal">
+        </label>
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
+        <label style="flex:1;min-width:240px;">vk CID
+          <input id="mixer-init-vk-cid" type="text" placeholder="bafk…" autocomplete="off" spellcheck="false">
+        </label>
+        <label style="flex:1;min-width:240px;">Ceremony CID
+          <input id="mixer-init-ceremony-cid" type="text" placeholder="bafk…" autocomplete="off" spellcheck="false">
+        </label>
+      </div>
+      <div class="flex" style="gap:8px;align-items:flex-end;margin-top:10px;">
+        <button id="btn-mixer-init-broadcast" disabled>Initialize pool &amp; broadcast</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="tab-panel" id="tab-about">
   <div class="section">
                 <div class="section-header"><span>tacit.protocol</span></div>

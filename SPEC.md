@@ -123,8 +123,10 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags **f
 | `tacit-amount-self-v1` | Self-derived amount keystream (8B) | CXFER + BURN change `amount_ct` |
 | `tacit-etch-amount-v1` | Etcher's supply keystream (8B) | CETCH `amount_ct` |
 | `tacit-mint-amount-v1` | Issuer's mint keystream (8B) | T_MINT `amount_ct` |
+| `tacit-withdraw-blind-v1` | Self-derived withdrawal blinding scalar | T_WITHDRAW recipient output |
+| `tacit-withdraw-amount-v1` | Self-derived withdrawal amount keystream (8B) | T_WITHDRAW recipient `amount_ct` |
 
-Other domain-separated v1 tags appear where they're used and are not part of this table: BIP-340 Schnorr signature-message tags (`tacit-kernel-v1` §5.2, `tacit-mint-v1` §5.3, `tacit-disclosure-v1` §5.6, `tacit-axintent-{v1,claim-v1,fulfilment-v1,cancel-v1}` §5.7.6); a related HMAC keystream `tacit-axintent-blinding-v1` (§5.7.6); generator derivations `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1); the bulletproof Fiat-Shamir transcript domain `tacit-bp-v1` (§3.3); and off-chain coordination tags (`tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1}`) defined by their worker endpoints in §8 — these last live entirely outside the on-chain protocol.
+Other domain-separated v1 tags appear where they're used and are not part of this table: BIP-340 Schnorr signature-message tags (`tacit-kernel-v1` §5.2, `tacit-mint-v1` §5.3, `tacit-disclosure-v1` §5.6, `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` §5.7.6, `tacit-pool-init-v1` §5.10.1, `tacit-deposit-v1` §5.10, `tacit-withdraw-bind-v1` §5.11); a related HMAC keystream `tacit-axintent-blinding-v1` (§5.7.6); generator derivations `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1); the bulletproof Fiat-Shamir transcript domain `tacit-bp-v1` (§3.3); the pool empty-leaf constant `tacit-pool-empty-v1` (§3.6); and off-chain coordination tags (`tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1}`) defined by their worker endpoints in §8 — these last live entirely outside the on-chain protocol.
 
 **Endianness convention.** Throughout this spec, `txid_BE` denotes the txid in the byte order that `SHA256(serialized_tx)` natively produces — the same bytes a Bitcoin transaction puts on the wire when it references a previous output. This is the **reverse** of the displayed/RPC hex form (e.g. `getrawtransaction` output, block-explorer URLs). In wider Bitcoin documentation this on-wire order is often called "internal" or "LE"; tacit's `_BE` label is not standard but is fixed by the test vectors in §3.1 (and `tests/vectors.test.mjs`). Implementers should treat any `_BE` field as `reverseBytes(hexToBytes(displayed_txid))`. `_LE` on integer fields (e.g. `vout_LE`, `amount_LE`) means standard little-endian integer encoding.
 
@@ -133,6 +135,46 @@ Anchor construction:
 - **CETCH / T_MINT**: `anchor = first_commit_input_txid_BE || first_commit_input_vout_LE`. Anchor predates the envelope (a pre-existing UTXO), breaking the envelope/commitment cycle. Scanners read it via `reveal_tx.vin[0]` → fetch commit tx → `commit_tx.vin[0]`.
 
 **Uniqueness invariant.** Bitcoin consensus prevents any outpoint from being spent twice, so each anchor is unique across all valid txs that reference it as a first input. Combined with the per-output `vout_LE` suffix in every keystream/blinding domain, no two outputs across all valid envelopes can ever reuse the same `(domain, anchor, vout)` triple under a given keystream. This is what makes the deterministic recovery of openings from chain + privkey alone safe.
+
+### 3.6 Poseidon hash + per-pool Merkle tree
+
+Mixer-pool envelopes (§5.10, §5.11) require a SNARK-friendly hash and a tree-membership proof. The reference choice is **Poseidon** over BN254 with rate=2, capacity=1, and the parameters of Grassi et al. 2020 (8 full + 57 partial rounds, MDS matrix as published, S-box `x⁵`).
+
+For each `(asset_id, denomination)` pool that has been initialized (§5.10.1), indexers maintain a deterministic **append-only Merkle tree** of fixed depth `L = 20` (≈ 1.05M leaves). Empty leaves are the constant `EMPTY_LEAF = poseidon("tacit-pool-empty-v1")`. Deposit leaves are appended in canonical chain order: by confirmed block height, then by `(tx_index, vin[1].outpoint)` within a block. Indexers MUST cache the last 32 historical roots per pool; withdrawals (§5.11) may reference any one of them, providing a liveness window for in-flight proofs against recently-grown trees.
+
+Two indexers running over the same chain history reach byte-identical merkle roots and nullifier sets — pool state is a deterministic function of confirmed envelopes.
+
+### 3.7 Groth16 zk-SNARK (per-pool)
+
+The withdrawal envelope (§5.11) carries a Groth16 proof over **BN254 (alt_bn128)** under a per-pool verifying key (`vk`). The `vk` is fixed at pool creation time (§5.10.1), pinned to IPFS by content hash, and embedded in indexer registries.
+
+Trusted setup: Powers-of-Tau followed by a per-circuit Groth16 ceremony (Phase 2). The ceremony is **per pool** — no protocol-wide ceremony exists. Soundness assumes ≥ 1 honest contributor across the ceremony's participants for that specific pool. Privacy (the witness hides) does *not* depend on the ceremony — Groth16 has perfect zero-knowledge unconditionally.
+
+Pool initializers (§5.10.1) bear the responsibility of running an MPC ceremony with credible contributor diversity before broadcasting the `POOL_INIT` envelope. The ceremony transcripts are pinned to IPFS and committed to in the on-chain envelope; anyone can verify the contributor count and re-run Beacon-pinning offline.
+
+### 3.8 Withdrawal circuit (canonical reference)
+
+Public inputs (in BN254 scalar field `Fr`):
+- `merkle_root`
+- `nullifier_hash`
+- `denomination`
+- `recipient_commit_x`, `recipient_commit_y` — secp256k1 commitment coordinates, mapped into `Fr` via the canonical 4-limb non-native encoding (two limbs each)
+- `bind_hash`
+
+Private inputs (witness):
+- `secret`, `nullifier_preimage` ∈ `Fr`
+- `path_elements[L]`, `path_indices[L]`
+- `r_new` — secp256k1 scalar in 4-limb encoding
+
+Constraints:
+
+1. `leaf = poseidon(secret, nullifier_preimage, denomination)`.
+2. Walking `path_elements`/`path_indices` from `leaf` reproduces `merkle_root`.
+3. `nullifier_hash == poseidon(nullifier_preimage)`.
+4. `(recipient_commit_x, recipient_commit_y) == denomination · H + r_new · G` on secp256k1, computed in-circuit via non-native field arithmetic. `H` is the tacit Pedersen value generator (§3.1); `G` is secp256k1's standard generator.
+5. `bind_squared == bind_hash * bind_hash`. This is a no-op arithmetic constraint whose only purpose is to bind `bind_hash` into the proof's polynomial system — without it, a third party intercepting an unconfirmed broadcast could replay the proof bytes against substituted public inputs (Tornado Cash's `recipientSquare` trick).
+
+The dominant cost is constraint (4) — ≈30k of the ≈50k total — because it's a non-native secp256k1 multiplication. v1 ships with this cost; v1.5 may swap in an in-circuit Pedersen on bn254's native curve, with a separate out-of-circuit DLEQ between bn254-Pedersen and secp256k1-Pedersen, saving ~20k constraints at the cost of one extra protocol step.
 
 ## 4. Asset identity
 
@@ -344,6 +386,27 @@ validateOutpoint(txid, vout):
                 asset_id at depth ≥ 3) * mint_limit + amount <= cap_amount
         verify 0 < blinding < curve_order
         verify pedersenCommit(amount, blinding) == commitment
+        vout must == 0
+        return true
+    if envelope.opcode == T_DEPOSIT:
+        # See §5.10. Consumes the asset input and appends a leaf to the per-
+        # pool merkle tree; produces no tacit UTXO. POOL_INIT (denomination
+        # sentinel = 0) is a metadata event handled by the same scan path.
+        return false
+    if envelope.opcode == T_WITHDRAW:
+        # See §5.11. Produces a fresh tacit UTXO at vout[0] gated on a Groth16
+        # proof of unspent leaf membership in the pool. Recursive validation
+        # of any UTXO produced by T_WITHDRAW does NOT recurse through pool
+        # ancestry — the proof + nullifier check is the protocol-level
+        # validity. Pool-level state (tree, nullifiers, registered vk) is
+        # maintained by the cron-mode scan path described in §3.6 and §5.10.
+        require pool registered for (asset_id, denomination)
+        require merkle_root in last 32 canonical roots of this pool
+        require nullifier_hash NOT in this pool's spent-nullifier set
+        verify Groth16 proof under pool.vk over public inputs
+            [merkle_root, nullifier_hash, denomination,
+             recipient_commitment.x, recipient_commitment.y, bind_hash]
+        record nullifier_hash as spent
         vout must == 0
         return true
     return false
@@ -571,7 +634,13 @@ intent {
   // taker receives it encrypted at fulfilment time.
 
 claim {
-  intent_id, taker_pubkey (33B), sig, claimed_at, expires_at  // 5-min TTL
+  intent_id, taker_pubkey (33B),
+  taker_utxo { txid, vout, value }   // P2WPKH-controlled by taker_pubkey,
+                                     // value ≥ intent.price_sats. Worker
+                                     // verifies on-chain at claim time as a
+                                     // proof-of-funds gate; not locked, just
+                                     // attested.
+  sig, claimed_at, expires_at        // 5-min TTL
 }
 
 fulfilment {
@@ -596,7 +665,12 @@ intent_msg = SHA256(
     || commit_txid_BE(32) || asset_utxo_txid_BE(32) || asset_utxo_vout_LE(4)
 )
 
-claim_msg     = SHA256("tacit-axintent-claim-v1"     || asset_id || intent_id || taker_pubkey)
+claim_msg     = SHA256("tacit-axintent-claim-v2"     || asset_id || intent_id || taker_pubkey
+                       || taker_utxo_txid_BE(32) || taker_utxo_vout_LE(4))
+// v2 binds the taker's funding UTXO so a captured sig cannot be replayed
+// against a different outpoint. The worker re-checks that the bound UTXO
+// is P2WPKH-controlled by taker_pubkey and value ≥ intent.price_sats
+// before accepting the claim.
 fulfilment_msg = SHA256("tacit-axintent-fulfilment-v1" || asset_id || intent_id || taker_pubkey
                        || SHA256(partial_reveal_json))
 cancel_msg    = SHA256("tacit-axintent-cancel-v1"    || asset_id || intent_id)
@@ -609,7 +683,8 @@ cancel_msg    = SHA256("tacit-axintent-cancel-v1"    || asset_id || intent_id)
 ```
 [publish]   maker:   build & broadcast commit tx + post intent → intent stored
 [browse]    anyone:  GET /atomic-intents → discover open intents
-[claim]     taker:   POST /:intent_id/claim with taker_pubkey → 5-min lock
+[claim]     taker:   POST /:intent_id/claim with taker_pubkey + a committed
+                     funding UTXO (P2WPKH, value ≥ price_sats) → 5-min lock
 [fulfil]    maker:   POST /:intent_id/fulfilment with partial reveal targeted at claimant
 [take]      taker:   GET fulfilment, append BTC funding signed SIGHASH_ALL, broadcast
 [settled]   anyone:  the on-chain T_AXFER is indistinguishable from a §5.7.3 settlement
@@ -847,10 +922,166 @@ Cross-network replay is prevented by Bitcoin's network-level tx isolation: signe
 
 **Privacy disclosure.** Because every T_PMINT publishes `(amount, blinding)` in cleartext and `amount == mint_limit` is public, **cumulative supply is fully observable** for `T_PETCH`-rooted assets (`cumulative_minted = (count of valid T_PMINTs) × mint_limit`). This is a deliberate departure from CETCH's hidden-supply property — the asset class trades supply-side confidentiality for permissionless issuance and on-chain auditable cap enforcement. Per-holder balances remain confidential after the first CXFER (§3.5 re-blinds outputs). Wallets SHOULD surface this distinction at etch time so deployers and minters understand the trade-off.
 
-**Confirmation depth for cap correctness.** Step 5's `prior_count` is order-sensitive on canonical chain history. Two T_PMINTs that each look valid against the chain at depth-0 may collectively violate the cap when canonically ordered. Indexers MUST therefore compute `prior_count` only over T_PMINTs at confirmation depth ≥ 3 (the same depth Bitcoin reorg risk crosses below ~1% under reasonable hashrate assumptions). Tip-state T_PMINTs surface as "pending" to UI layers; they are not credited to wallets nor counted toward the cap until the depth threshold is crossed. On a reorg, indexers MUST re-run step 5 over the new canonical chain — a previously-credited T_PMINT may become invalid (cap-overflow under new ordering) and its UTXO MUST be revoked from holdings. This is a stronger reorg sensitivity than CETCH+T_MINT, where credit depends only on the issuer's signature, not on aggregate chain state.
+**Confirmation depth for cap correctness.** Step 5's `prior_count` is order-sensitive on canonical chain history. Two T_PMINTs that each look valid against the chain near tip may collectively violate the cap when canonically ordered. Indexers MUST therefore compute `prior_count` only over T_PMINTs at confirmation depth ≥ 3 (the standard Bitcoin 3-confirmation rule, where a tx in block N has 1 confirmation when tip == N — the same depth Bitcoin reorg risk crosses below ~1% under reasonable hashrate assumptions). Tip-state T_PMINTs surface as "pending" to UI layers; they are not credited to wallets nor counted toward the cap until the depth threshold is crossed. On a reorg, indexers MUST re-run step 5 over the new canonical chain — a previously-credited T_PMINT may become invalid (cap-overflow under new ordering) and its UTXO MUST be revoked from holdings. This is a stronger reorg sensitivity than CETCH+T_MINT, where credit depends only on the issuer's signature, not on aggregate chain state.
 
 Recovery semantics. T_PMINT-produced UTXOs are publicly opened — `(amount, blinding)` are in chain data — so any wallet with the privkey for the `vout[0]` output script can recover the UTXO from chain alone, with no derivation required. The first CXFER from such a UTXO produces fresh blindings (§3.5) and restores forward confidentiality for that holder. Wallets MAY surface a one-time hint encouraging a self-CXFER after mint, but the protocol does not require it and the UTXO is fully spendable in its open state.
 
+
+### 5.10 T_DEPOSIT (`0x29`) — anonymize a UTXO into a pool
+
+Spends one tacit UTXO of `asset_id` whose committed amount equals `denomination`. The input commitment is consumed (no tacit-side output produced); a leaf is appended to the pool's Merkle tree (§3.6) for `(asset_id, denomination)`.
+
+```
+T_DEPOSIT(1)
+|| asset_id(32)
+|| denomination(8)              u64 LE — public, the pool's fixed amount
+|| leaf_commitment(32)          poseidon(secret, nullifier_preimage, denomination)
+|| kernel_sig(64)               Schnorr sig over kernel_msg (below)
+```
+
+Constraints enforced at decode:
+- `denomination > 0` (the `denomination = 0` payload shape is the `POOL_INIT` variant; see §5.10.1).
+- A canonical pool for `(asset_id, denomination)` must already be initialized. Deposits to uninitialized pools are silently ignored by the indexer (return `false`).
+- `vin.length ≥ 2`; `vin[1]` is the asset input being deposited.
+
+Kernel message:
+```
+kernel_msg = SHA256(
+    "tacit-deposit-v1"
+    || asset_id(32)
+    || denomination_LE(8)
+    || input_txid_BE(32) || input_vout_LE(4)
+    || leaf_commitment(32)
+)
+```
+
+The kernel sig verifies under `(C_in − denomination · H).x_only()` where `C_in` is the input commitment fetched from `vin[1]`'s parent envelope. Sign with `excess = r_in` (the input's blinding). If the input's committed amount equals `denomination`, the H component vanishes and `(C_in − denomination·H) = r_in·G`; if it doesn't, the residual H component makes producing a valid x-only signature equivalent to breaking DLP for `H` w.r.t. `G` — same Mimblewimble argument as §5.2.
+
+This kernel proves *exactly `denomination` of `asset_id` was consumed into the pool*, without revealing the input's blinding. The leaf is Poseidon-bound to a `(secret, nullifier_preimage)` pair only the depositor knows.
+
+Validator algorithm extension:
+```
+if envelope.opcode == T_DEPOSIT:
+    if denomination == 0:
+        # POOL_INIT path — see §5.10.1
+        decode pool_denom, vk_cid, ceremony_cid, init_sig
+        if no canonical pool exists for (asset_id, pool_denom) at this height:
+            register {vk_cid, ceremony_cid, init_height: this_block} as canonical
+        return false
+    require pool registered for (asset_id, denomination)
+    require vin.length >= 2 and vin[1] is a tacit UTXO of asset_id
+    recursively validateOutpoint(vin[1])
+    let C_in = parent envelope commitment for vin[1]
+    let E' = C_in - denomination·H
+    verify kernel_sig under E'.x_only() over kernel_msg
+    append leaf_commitment to pool's merkle tree at canonical position
+    return false   # T_DEPOSIT produces no tacit UTXO
+```
+
+`vout[0]` of the reveal tx is BTC change, not a tacit UTXO. Recovery walks (§6) do not recurse through T_DEPOSIT envelopes.
+
+#### 5.10.1 POOL_INIT (variant of T_DEPOSIT, `denomination = 0` sentinel)
+
+Pool creation reuses opcode `0x29` with a `denomination = 0` sentinel. The remainder of the payload differs:
+
+```
+T_DEPOSIT (POOL_INIT shape)
+|| asset_id(32)
+|| denomination(8) = 0
+|| pool_denom(8)              u64 LE — the actual pool denomination, > 0
+|| vk_cid_len(1)              u8, 1..64
+|| vk_cid(vk_cid_len)         IPFS CID of the Groth16 verifying key (UTF-8)
+|| ceremony_cid_len(1)        u8, 1..64
+|| ceremony_cid(...)          IPFS CID of MPC ceremony transcripts (UTF-8)
+|| init_sig(64)               BIP-340 sig over init_msg by initializer pubkey at vin[1].witness[1]
+```
+
+Init message:
+```
+init_msg = SHA256(
+    "tacit-pool-init-v1"
+    || asset_id(32)
+    || pool_denom_LE(8)
+    || vk_cid(vk_cid_len)
+    || ceremony_cid(ceremony_cid_len)
+)
+```
+
+Once a pool is initialized, its `vk_cid` is fixed forever — content-addressed, no rotation, no soft-fork mechanism to migrate. Multiple `POOL_INIT` envelopes for the same `(asset_id, pool_denom)` are tolerated; the indexer treats only the *first canonically-ordered confirmed* one as canonical and ignores the rest. **No special privilege governs pool initialization** — the same first-mover dynamic as ticker disambiguation in CETCH (§4) applies.
+
+Pool initialization is a metadata event only — no tacit UTXO is produced and the validator returns `false` for any vout against a POOL_INIT envelope.
+
+### 5.11 T_WITHDRAW (`0x2A`) — anonymous mint from a pool
+
+Produces one fresh tacit UTXO of `asset_id` at `vout[0]`, contingent on a Groth16 proof of unspent leaf membership in the pool tree. Consumes no tacit input — the asset value comes from the pool's accumulated deposits.
+
+```
+T_WITHDRAW(1)
+|| asset_id(32)
+|| denomination(8)              u64 LE — the pool
+|| merkle_root(32)              claimed pool root (must match a recent canonical root)
+|| nullifier_hash(32)           public; must be unique within the pool
+|| recipient_commitment(33)     compressed Pedersen point: denomination·H + r_new·G
+|| amount_ct(8)                 u64 LE — denomination XOR HMAC keystream
+|| bind_hash(32)                see below
+|| proof_len(2)                 u16 LE
+|| proof(proof_len)             Groth16 proof bytes
+```
+
+`bind_hash` is computed as:
+```
+bind_hash = SHA256(
+    "tacit-withdraw-bind-v1"
+    || asset_id(32)
+    || denomination_LE(8)
+    || nullifier_hash(32)
+    || recipient_commitment(33)
+)
+```
+
+Public inputs to the Groth16 verifier (in BN254 scalar field, see §3.8):
+`[merkle_root, nullifier_hash, denomination, recipient_commitment.x, recipient_commitment.y, bind_hash]`.
+
+Validator algorithm extension:
+```
+if envelope.opcode == T_WITHDRAW:
+    require pool registered for (asset_id, denomination)
+    require merkle_root in last 32 canonical roots of this pool
+    require nullifier_hash NOT in this pool's spent-nullifier set
+    verify Groth16 proof under pool.vk over the public inputs above
+    record nullifier_hash as spent
+    vout must == 0
+    return true
+```
+
+Recipient blinding & amount recovery:
+```
+r_new       = HMAC(recipient_priv, "tacit-withdraw-blind-v1" || nullifier_hash)
+keystream   = HMAC(recipient_priv, "tacit-withdraw-amount-v1" || nullifier_hash)
+amount_ct   = denomination XOR keystream
+```
+
+The recipient is the wallet whose pubkey controls `vout[0]`'s P2WPKH; that wallet recovers `(amount, blinding)` from privkey + chain alone via the same self-derivation pattern as CXFER change (§3.5). For tornado-flow-to-self (the canonical privacy hop — withdrawer === recipient), this works without any out-of-band data.
+
+**For tornado-flow-to-other (withdrawer ≠ recipient):** the recipient's blinding cannot be self-derived from chain alone, because the `(secret, nullifier_preimage)` pair lives in the withdrawer's wallet, not the recipient's. The withdrawer MUST share `(secret, nullifier_preimage)` plus the recipient's spend privkey context out-of-band — a share-link in the same shape as CXFER's `#recv=…` (§5.7.6's "Recovery model exception" applies). For tornado-flow-to-self, no share-link is needed.
+
+#### 5.11.1 Soundness
+
+- **No pool inflation.** Each T_DEPOSIT consumes exactly `denomination` of asset value (kernel sig under `C_in − denom·H`); each T_WITHDRAW produces exactly `denomination` of asset value and consumes one previously-unseen nullifier. The indexer's nullifier set + leaf count maintain the invariant `(# leaves − # nullifiers) ≥ 0` as a per-pool reserve obligation.
+- **No double-withdraw.** Nullifiers are committed in plaintext as a public input to the proof. The indexer maintains a `(asset_id, denomination) → set<nullifier_hash>` and rejects any T_WITHDRAW whose nullifier is already present.
+- **No proof replay across recipients.** `bind_hash` is squared inside the circuit, binding the proof's polynomial system to the specific `(asset_id, denomination, nullifier_hash, recipient_commitment)` tuple. A relayer or mempool observer cannot reuse a proof with a substituted recipient; the verifier rejects.
+- **No proof replay across pools.** `asset_id` and `denomination` are committed in `bind_hash`; cross-pool replay fails the `bind_hash` check.
+- **No proof replay across roots.** `merkle_root` is a public input to the Groth16 statement; replaying a proof against a different root would require the prover to have generated a leaf-membership proof against that other root, which is not the case for a copied proof.
+
+#### 5.11.2 Anonymity set
+
+The withdrawer's anonymity set within a pool is **all leaves with currently-unspent nullifiers at the moment the proof is broadcast**, restricted to leaves whose owners have not otherwise leaked their `(secret, nullifier_preimage)` tuple to outside parties. With Groth16 zero-knowledge and Poseidon collision-resistance, a chain analyst observing the on-chain T_WITHDRAW envelope learns no information about which leaf was spent beyond the count of currently-unspent leaves.
+
+Practical anonymity scales with **pool depth** (number of unspent leaves) and **temporal mixing** (time elapsed between deposit and withdraw, during which other deposits and withdraws have occurred). A withdrawer who deposits and then immediately withdraws when their leaf is the only unspent one in the pool gets ≤ 1 anonymity. The dApp surfaces an "anonymity set size" reading on the withdraw screen so users can wait for adequate set size before withdrawing.
+
+#### 5.11.3 Trusted setup
+
+Soundness rests on the Groth16 ceremony for the per-pool `vk` having ≥ 1 honest contributor. Privacy does *not* — Groth16 has perfect zero-knowledge unconditionally. The ceremony is per-pool and per-circuit; pools serving popular `(asset_id, denomination)` pairs SHOULD run a publicly-coordinated ceremony with high contributor diversity (Tornado Cash's reference model: ≥ 1100 contributors over a public window). Smaller pools may run smaller ceremonies, with the understanding that soundness rests on whatever contributor set they assembled. Ceremony transcripts are pinned to IPFS at pool init and committed to in the `POOL_INIT` envelope; any third party can verify contributor count and re-run Beacon-pinning offline before depositing.
 
 ## 6. Recovery semantics
 
@@ -864,6 +1095,7 @@ For each UTXO the wallet owns:
 4. **As own etched supply (CETCH)**: Try `tacit-etch-v1` + `tacit-etch-amount-v1` against the etcher's commit-input anchor.
 5. **As own minted supply (T_MINT)**: Try `tacit-mint-blind-v1` + `tacit-mint-amount-v1` against the mint commit-input anchor.
 6. **As T_PMINT-minted supply (own or other)**: Read `(amount, blinding)` directly from the T_PMINT envelope. No derivation required — both fields are public. The wallet recognizes ownership by matching its pubkey's HASH160 against `vout[0].scriptpubkey`. Confirm `pedersenCommit(amount, blinding) == commitment` to reject tampered envelopes (the same authenticity check as paths 2–5).
+7. **As self-withdrawn from a mixer pool (T_WITHDRAW where recipient === withdrawer)**: Derive `r_new = HMAC(wallet_priv, "tacit-withdraw-blind-v1" || nullifier_hash)` and `keystream = HMAC(wallet_priv, "tacit-withdraw-amount-v1" || nullifier_hash)`. Decode `denomination` directly from the envelope (it's public). Verify `pedersenCommit(denomination, r_new) == on_chain_commitment`. Tornado-flow-to-other recipient UTXOs (§5.11) cannot be recovered from chain + privkey alone and fall back to a share-link delivering `(secret, nullifier_preimage)` from the withdrawer.
 
 If none of the paths produce a valid `(amount, blinding)` opening, the UTXO is recorded as a **"ghost"** — the wallet sees that it owns the BTC sat output but cannot decrypt the asset amount. This indicates either a legacy/incompatible sender, a misuse, or an atomic-intent recipient whose local cache and remote encrypted fulfilment are both unavailable; it does not represent loss of value (the BTC sats are still spendable by the wallet privkey).
 
@@ -921,6 +1153,19 @@ For non-mintable assets attested at etch, the result is **provably and permanent
 
 For mintable assets, additional trust is on the mint_authority key not being abused (the holder can mint arbitrary amounts at any time). Auto-attestation of every mint event by default closes the "K mints, N unattested" supply-bound gap; with all mints attested, total supply at any moment = etch + Σ attested mints − Σ on-chain burns.
 
+### 7.4 Mixer pool (§5.10–5.11)
+
+**Privacy.** The withdrawer's anonymity set within a pool is the count of currently-unspent leaves at the moment the proof is broadcast. Groth16 zero-knowledge ensures a chain analyst learns no information beyond pool size from a withdrawal. **Anonymity does not require trusted setup** — Groth16 zero-knowledge is unconditional. Trusted setup is only load-bearing for *soundness* (no false withdrawals).
+
+**Soundness.** Per §5.11.1: no pool inflation (kernel sig + denomination check on deposits), no double-withdraw (nullifier set), no recipient substitution (`bind_hash` squaring), no cross-pool/cross-root replay (`asset_id` + `denomination` + `merkle_root` committed in proof public inputs).
+
+**Trusted-setup posture.** Each pool runs its own per-circuit Groth16 MPC ceremony at init time. Soundness rests on ≥ 1 honest contributor *for that specific pool*; pools with weaker ceremony don't undermine other pools. Pool initialization is permissionless (§5.10.1) — anyone can run a ceremony and post `POOL_INIT`. Pool consumers should verify ceremony contributor diversity before depositing; the IPFS-pinned ceremony transcripts in the on-chain envelope make this directly auditable.
+
+**What's not hidden.**
+- **Pool participation.** T_DEPOSIT and T_WITHDRAW envelopes are public — observers see *that* a particular address deposited or withdrew, just not which deposit corresponds to which withdrawal.
+- **Pool size and denomination.** Public on chain; the same fact that grants anonymity sets is visible to observers.
+- **Address-graph privacy.** Same as the rest of tacit (§7.1): Bitcoin sender/recipient addresses are visible. Mixer pools break the *amount-to-address-to-amount* link inside a pool but not the input or output address itself.
+
 ## 8. Worker (off-chain conveniences)
 
 The worker (`worker/src/index.js`) is **not part of the trust-bearing protocol**. Setting `WORKER_BASE = ''` in `dapp/tacit.js` disables it entirely; the protocol still works for full validation and transfers.
@@ -972,7 +1217,7 @@ Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, T
 - **Lost mint key = permanent fixed supply.** No recovery mechanism. The dApp gates mintable etches behind an explicit key-export step before broadcast.
 - **Local storage is the wallet.** Whichever path placed a privkey in the page (auto-generated, imported, or locally bound to an external wallet address), `localStorage` is what persists it. Mainnet UX gates every value-creating op behind a "have you exported the key?" acknowledgement (per §2). Hardware-wallet signing for the protocol's signing paths is the proper long-term mitigation but not in v1.
 - **Network-scoped wallet keys.** v1 stores signet and mainnet identities under separate `localStorage` keys (`tacit-wallet-v1:signet`, `tacit-wallet-v1:mainnet`, plus `…:by:<extAddr>` variants when locally bound to an external wallet). Compromise of a signet/test key does NOT compromise mainnet — they're independent secrets generated on first use of each network. The trade-off is that switching from signet to mainnet (or vice versa) presents a fresh empty wallet by default; users who want to carry an identity across networks can manually `Import key` on the destination network. Older builds used a single un-namespaced `tacit-wallet-v1`; the dApp does not auto-migrate, so existing data under that key remains accessible only via manual import.
-- **T_PMINT reorg sensitivity.** Cap correctness for T_PETCH-rooted assets requires complete, canonically-ordered T_PMINT history. Two T_PMINTs near tip can each look valid at depth 0 yet collectively violate the cap when canonically ordered. v1 mitigates by requiring confirmation depth ≥ 3 for cap-credit (§5.9 *Confirmation depth*); the deeper the threshold, the smaller the reorg-revocation surface but the slower mint UX. Wallets MUST surface "pending" T_PMINT UTXOs as non-spendable until the depth threshold crosses, and MUST handle revocation events when an indexer reverts a previously-credited T_PMINT under new canonical ordering. CETCH+T_MINT assets are unaffected — credit there depends only on the issuer's signature, not on aggregate chain state.
+- **T_PMINT reorg sensitivity.** Cap correctness for T_PETCH-rooted assets requires complete, canonically-ordered T_PMINT history. Two T_PMINTs near tip can each look valid in isolation yet collectively violate the cap when canonically ordered. v1 mitigates by requiring confirmation depth ≥ 3 for cap-credit (§5.9 *Confirmation depth*); the deeper the threshold, the smaller the reorg-revocation surface but the slower mint UX. Wallets MUST surface "pending" T_PMINT UTXOs as non-spendable until the depth threshold crosses, and MUST handle revocation events when an indexer reverts a previously-credited T_PMINT under new canonical ordering. CETCH+T_MINT assets are unaffected — credit there depends only on the issuer's signature, not on aggregate chain state.
 - **Reference-indexer KV.list cap.** The reference worker's `loadCanonicalPmints` currently fetches T_PMINT events via a single `KV.list({ limit: 1000 })` call per asset. An asset that accrues more than 1000 confirmed T_PMINTs across its lifetime will under-count `cumulative_minted` until the indexer is paginated. v1 ships with this cap; deployments expecting > 1000 mints on a single asset should patch `loadCanonicalPmints` to follow the `list_complete` cursor before relying on the published cap progress for buy/sell decisions.
 
 ## 11. Acknowledgements
