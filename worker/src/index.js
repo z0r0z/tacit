@@ -1619,6 +1619,144 @@ async function handleAssetHint(req, env, network, cors) {
     return jsonResponse({ ok: true, burn: burnMeta, source: 'hint', network }, 200, cors);
   }
 
+  // T_PETCH hint — register a permissionless-mint deployment record so
+  // /petch-assets surfaces it immediately rather than waiting for the cron to
+  // re-scan its block. Mirrors the cron's per-petch put in scanForEtches; same
+  // §5.8 mint_start_height invariant enforced here so a deployer can't bypass
+  // §5.9 step-4 by hinting a malformed petch the cron would have dropped.
+  // Mainnet's scanner is forward-only (backfillBlocks=0); without this branch a
+  // T_PETCH whose reveal confirmed before the petch-aware code went live can
+  // never be indexed at all.
+  if (decoded.opcode === T_PETCH) {
+    const cp = decodeCPetchPayload(decoded.payload);
+    if (!cp) return jsonResponse({ error: 'invalid T_PETCH payload' }, 400, cors);
+    if (cp.mint_start_height !== 0 && Number.isInteger(blockHeight) && cp.mint_start_height < blockHeight + 1) {
+      return jsonResponse({ error: 'mint_start_height < etch_height + 1' }, 400, cors);
+    }
+    const aid = assetIdFor(txidHex, vout >>> 0);
+    const existing = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
+    if (existing && Number.isInteger(existing.etched_at_height)) {
+      await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+      return jsonResponse({ ok: true, asset: existing, source: 'registry', network }, 200, cors);
+    }
+    const meta = {
+      asset_id: aid,
+      ticker: cp.ticker,
+      decimals: cp.decimals,
+      cap_amount: cp.cap_amount,
+      mint_limit: cp.mint_limit,
+      mint_start_height: cp.mint_start_height,
+      mint_end_height: cp.mint_end_height,
+      image_uri: cp.image_uri,
+      etch_txid: txidHex,
+      etch_vout: vout,
+      etched_at_height: blockHeight,
+      etched_at: blockTime || Math.floor(Date.now() / 1000),
+      kind: 'petch',
+      pending: confirmed ? undefined : true,
+      network,
+    };
+    await env.REGISTRY_KV.put(petchKey(network, aid), JSON.stringify(meta));
+    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    // Refresh the /petch-assets edge cache so the next discover render sees
+    // the newly-hinted asset without waiting for the FRESH/STALE TTL to lapse.
+    // Fire-and-forget; the response goes out regardless.
+    // Delete the cached /petch-assets response and recompute. `caches.default`
+    // is per-POP, so a single delete only invalidates this POP — but the
+    // recompute writes a fresh entry that other POPs will pick up on their
+    // next miss / FRESH-window expiry. Without the delete, this POP keeps
+    // serving the pre-hint FRESH entry for up to PETCH_ASSETS_CACHE_FRESH_MS
+    // even though we just wrote new state.
+    await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+    petchAssetsComputeAndCache(env, network).catch(() => {});
+    return jsonResponse({ ok: true, asset: meta, source: 'hint', network }, 200, cors);
+  }
+
+  // T_PMINT hint — register a permissionless mint event under the canonical
+  // (height, tx_index, txid) key so /assets/<aid>/pmints and the cap counter
+  // reflect it without waiting for the cron. Enforces SPEC §5.9 steps 1–4
+  // exactly like the cron does (asset_id derivation, parent T_PETCH presence,
+  // amount==mint_limit, height-window). tx_index requires fetching the block's
+  // ordered txid list once — costlier than other hints but bounded by per-IP
+  // daily cap and cached by Cloudflare for repeat hints in the same block.
+  if (decoded.opcode === T_PMINT) {
+    const cm = decodeCPmintPayload(decoded.payload);
+    if (!cm) return jsonResponse({ error: 'invalid T_PMINT payload' }, 400, cors);
+    // §5.9 step 1: asset_id derivation must match.
+    const expectedAid = assetIdFor(cm.etch_txid, 0);
+    if (expectedAid !== cm.asset_id) return jsonResponse({ error: 'asset_id != sha256(etch_txid_BE || 0_LE)' }, 400, cors);
+    // §5.9 step 2: parent envelope must be T_PETCH (looked up by derived aid
+    // so a forged cm.asset_id can't aim at a real CETCH namespace).
+    const petch = await env.REGISTRY_KV.get(petchKey(network, expectedAid), 'json');
+    if (!petch) return jsonResponse({ error: 'parent T_PETCH not indexed yet — hint the etch first' }, 400, cors);
+    // §5.9 step 3: amount must equal mint_limit.
+    try {
+      if (BigInt(cm.amount) !== BigInt(petch.mint_limit)) {
+        return jsonResponse({ error: 'amount != petch.mint_limit' }, 400, cors);
+      }
+    } catch {
+      return jsonResponse({ error: 'unparseable amount' }, 400, cors);
+    }
+    // §5.9 step 4: confirmed_height in [effective_start, effective_end]. Skip
+    // when not yet confirmed — the cron will pick the pmint up on confirmation
+    // and re-validate. Out-of-window broadcasts get rejected so the cap counter
+    // never sees them.
+    if (confirmed && Number.isInteger(blockHeight)) {
+      const etchH = Number.isInteger(petch.etched_at_height) ? petch.etched_at_height : null;
+      if (etchH != null) {
+        const effStart = petch.mint_start_height !== 0 ? petch.mint_start_height : etchH + 1;
+        if (blockHeight < effStart) return jsonResponse({ error: 'mint before window opens' }, 400, cors);
+        if (petch.mint_end_height !== 0 && blockHeight > petch.mint_end_height) {
+          return jsonResponse({ error: 'mint after window closes' }, 400, cors);
+        }
+      }
+    }
+    // Need the block's ordered txid list to find the canonical tx_index. Use
+    // /block/<hash>/txids which returns the entire ordered list in one shot
+    // (vs the paginated /block/<hash>/txs that scanForEtches walks).
+    let txIndex = 0;
+    if (confirmed && tx.status?.block_hash) {
+      try {
+        const txids = await apiJson(env, `/block/${tx.status.block_hash}/txids`, {}, network);
+        if (Array.isArray(txids)) {
+          const i = txids.indexOf(txidHex);
+          if (i >= 0) txIndex = i;
+        }
+      } catch { /* fall through with txIndex=0; cron will rewrite the canonical key */ }
+    }
+    const mintMeta = {
+      asset_id: cm.asset_id,
+      etch_txid: cm.etch_txid,
+      mint_txid: txidHex,
+      mint_vout: 0,
+      commitment: cm.commitment,
+      amount: cm.amount,
+      blinding: cm.blinding,
+      minted_at_height: blockHeight,
+      minted_at: blockTime || Math.floor(Date.now() / 1000),
+      tx_index: txIndex,
+      pending: confirmed ? undefined : true,
+      network,
+    };
+    const pmk = pmintKeyFor(network, cm.asset_id, blockHeight || 0, txIndex, txidHex);
+    const existing = await env.REGISTRY_KV.get(pmk, 'json');
+    if (existing && Number.isInteger(existing.minted_at_height)) {
+      await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+      return jsonResponse({ ok: true, mint: existing, source: 'registry', network }, 200, cors);
+    }
+    await env.REGISTRY_KV.put(pmk, JSON.stringify(mintMeta));
+    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    // Delete the cached /petch-assets response and recompute. `caches.default`
+    // is per-POP, so a single delete only invalidates this POP — but the
+    // recompute writes a fresh entry that other POPs will pick up on their
+    // next miss / FRESH-window expiry. Without the delete, this POP keeps
+    // serving the pre-hint FRESH entry for up to PETCH_ASSETS_CACHE_FRESH_MS
+    // even though we just wrote new state.
+    await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+    petchAssetsComputeAndCache(env, network).catch(() => {});
+    return jsonResponse({ ok: true, mint: mintMeta, source: 'hint', network }, 200, cors);
+  }
+
   return jsonResponse({ error: 'unsupported envelope opcode' }, 400, cors);
 }
 

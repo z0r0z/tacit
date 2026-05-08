@@ -3974,6 +3974,14 @@ async function _scanHoldingsImpl() {
   //      ones are ghosts/inflated. Slow path, but only hit for actual problems.
   let validatedSet = new Map();
   let rpBatch = [];
+  // Scan-scoped T_PMINT failure-mode map. Lives across the optimistic and
+  // strict walks below so a pmint that gets tagged 'pending' in the first
+  // walk (which records validatedSet[key]=false but, until this hoist, used
+  // a per-call pmintStatusOut that was discarded) doesn't get re-classified
+  // as 'invalid' by the second walk falling through validatedSet's cached
+  // false without seeing the tag. Without this, a freshly-broadcast pmint
+  // sits as h.inflated with the misleading "invalid rangeproofs" warning.
+  const pmintStatusOut = new Map();
   // Chunked-parallel ancestor walk. Sequential here serialised N independent
   // /tx fetches on cold-cache scans (the slowest path). Concurrency=8 fans
   // network out without bursting hard against mempool.space rate limits.
@@ -3985,7 +3993,7 @@ async function _scanHoldingsImpl() {
   for (let i = 0; i < utxos.length; i += SCAN_CONCURRENCY) {
     const chunk = utxos.slice(i, i + SCAN_CONCURRENCY);
     await Promise.all(chunk.map(u =>
-      validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, rpBatch)
+      validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, rpBatch, pmintStatusOut)
         .catch(e => { console.warn('validateOutpoint threw for', u.txid + ':' + u.vout, e); return false; })
     ));
   }
@@ -3996,9 +4004,12 @@ async function _scanHoldingsImpl() {
     // recorded during the optimistic walk may have come from envelopes whose
     // rangeproofs would have failed individually, so re-derive from the strict
     // walk to avoid attacker-chosen ticker/imageUri leaking into the registry.
+    // pmintStatusOut also clears: a strict re-walk re-classifies T_PMINT failures
+    // from scratch.
     validatedSet = new Map();
     rpBatch = null;
     metadataOut.clear();
+    pmintStatusOut.clear();
   }
 
   for (const u of utxos) {
@@ -4075,12 +4086,12 @@ async function _scanHoldingsImpl() {
     // A bad CXFER anywhere in the ancestry invalidates everything downstream.
     // Pass metadataOut so the validator records canonical CETCH metadata for any
     // ancestor it walks; we use that below to register tickers/decimals/imageUri
-    // for assets that aren't yet in our local registry. The fresh
-    // pmintStatusOut Map captures whether T_PMINT failures are pending
-    // (transient) or invalid (permanent) so we route the UTXO to the right
-    // h.* bucket below — audit fix #1, see the T_PMINT branch in
-    // validateOutpoint for the classification rules.
-    const pmintStatusOut = new Map();
+    // for assets that aren't yet in our local registry. The scan-scoped
+    // pmintStatusOut Map (declared above) captures whether T_PMINT failures
+    // are pending (transient) or invalid (permanent) so we route the UTXO
+    // to the right h.* bucket below. It MUST be the same Map the optimistic
+    // walk used — see audit fix #1, plus the comment at its declaration for
+    // why a per-UTXO Map here mis-classified pending pmints as inflated.
     const valid = await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, null, pmintStatusOut);
 
     // Register any newly-discovered canonical metadata. Honors first-seen wins;
@@ -4736,6 +4747,11 @@ async function buildAndBroadcastPetch({ ticker, decimals, capAmount, mintLimit, 
     kind: 'petch', ticker, amount: cap, decimals,
     assetId: bytesToHex(aid), txid: revealTxid,
   });
+  // Mainnet's worker scanner is forward-only (backfillBlocks=0); without a
+  // hint, a T_PETCH can be silently skipped if its block was scanned before
+  // the petch-aware code went live. The hint endpoint's T_PETCH branch writes
+  // the registry entry directly, so /petch-assets surfaces it within seconds.
+  postHint(revealTxid, 0);
 
   return {
     commitTxid, revealTxid, commitHex, revealHex,
@@ -4879,6 +4895,12 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
   // Bust the petch list cache too so the next renderPetchDiscover sees the
   // new pending mint (cap progress + remaining-mints + pending counter move).
   invalidatePetchCache();
+  // Hint the worker so /petch-assets's pending_pmint_count reflects this
+  // mint immediately rather than waiting for the 5-min cron tick. The hint
+  // endpoint validates §5.9 steps 1–4 the same way the cron does and writes
+  // under the canonical (height, tx_index, txid) key — idempotent against
+  // the cron's later scan.
+  postHint(revealTxid, 0);
 
   return {
     commitTxid, revealTxid, commitHex, revealHex,
@@ -12970,7 +12992,18 @@ async function renderHoldings() {
           else detail = `${unconfirmed} unconfirmed · ${confirmed} awaiting ≥3 confs (SPEC §5.9)`;
           return `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed #7d4ff7;background:#f5f1ff;color:#5a36c4;"><strong>⏳ ${n} mint${plural} pending cap-credit:</strong> ${totalStr} — ${detail}. Spendable once credited; ↻ Rescan in a few minutes.</div>`;
         })() : ''}
-        ${h.inflated && h.inflated.length ? `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee;border-left-color:var(--red);"><strong>⚠ Inflation attempt detected:</strong> ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} have invalid rangeproofs. These are not counted in your balance.</div>` : ''}
+        ${h.inflated && h.inflated.length ? (() => {
+          // Distinguish T_PMINT failures (no rangeproof — failure is cap
+          // overflow, asset_id forgery, or wrong amount) from CETCH/CXFER
+          // rangeproof failures so the warning copy matches the actual issue.
+          // Generic "invalid rangeproofs" was technically incorrect for petch-
+          // rooted UTXOs, which carry public (amount, blinding) and never have
+          // a rangeproof to fail.
+          const reason = isPetchRooted
+            ? 'failed cap-credit or §5.9 validation (envelope decoded but not creditable — e.g. cap-overflow or wrong amount)'
+            : 'have invalid rangeproofs';
+          return `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee;border-left-color:var(--red);"><strong>⚠ Inflation attempt detected:</strong> ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} ${reason}. These are not counted in your balance.</div>`;
+        })() : ''}
         <div data-region="my-listings"></div>
         ${primaryButtons ? `<div class="actions">${primaryButtons}</div>` : ''}
         <div data-receive-panel="${h.assetIdHex}" style="display:none;margin-top:10px;padding:10px 12px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;">
@@ -14276,6 +14309,12 @@ const ACTIVITY_VERBS = {
   'transfer-out': 'Sent',
   'transfer-in':  'Received',
   'list-atomic':  'Listed',
+  // Public-mint (T_PETCH-rooted) flow — distinct from CETCH 'etch'/'mint' so
+  // the activity log preserves the trust-model distinction (zero deployer
+  // allocation; cap-credit at depth ≥ 3) instead of collapsing both into
+  // generic verbs that hide the difference.
+  'petch':        'Deployed',
+  'pmint':        'Minted',
 };
 function relTime(ts) {
   const d = Math.max(0, Date.now() - Number(ts));
@@ -14383,53 +14422,46 @@ async function renderRecentEtches() {
     // Worker is parallelized so the full hydration stays fast (~150ms
     // for 30 assets); if N grows past a few hundred we'd want a worker-
     // side `summary=0` flag that skips count/burns hydration.
-    const j = await loadDiscoverRegistry();
-    const allAssets = j.assets || [];
+    // Pull /assets (CETCH-rooted) and /petch-assets (T_PETCH-rooted public
+    // mints) in parallel and merge by etched_at so the lander shows both
+    // issuance models together. Petch entries stamp `kind:'petch'` (set by
+    // the worker) which the tile renderer reads to add the ⚡ public mint
+    // pill. Without this merge, fair launches would never appear here even
+    // though Discover surfaces them in a dedicated section.
+    const [j, petchJ] = await Promise.all([
+      loadDiscoverRegistry(),
+      PETCH_REGISTRY_URL
+        ? fetch(withNet(PETCH_REGISTRY_URL))
+            .then(r => r.ok ? r.json() : { assets: [] })
+            .catch(() => ({ assets: [] }))
+        : Promise.resolve({ assets: [] }),
+    ]);
+    const cetchAssets = j.assets || [];
+    const petchAssets = (petchJ.assets || []).map(p => ({ ...p, kind: 'petch' }));
+    const allAssets = [...cetchAssets, ...petchAssets];
     // Mark ticker collisions over the FULL list (first-etched wins) before
     // we trim to 6, so a duplicate that happens to be in the recent slice
     // gets correctly flagged against its earlier-etched sibling that isn't.
     markTickerCollisions(allAssets);
-    // Network stats from the same data we already loaded — assets etched
-    // and total live offers (sum of the three KV count fields). Stale
-    // entries the worker hasn't GC'd yet inflate "live offers" slightly;
-    // clicking through to Market shows the post-filter count so this stat
-    // is a coarse hook into the marketplace, not a precise live number.
+    // Network stats — directory-level signals only (assets etched, mintable
+    // count, public-mint count). Marketplace state (live offers, floor) lives
+    // on the Market tab to keep the lander uncluttered.
     const statsEl = $('#recent-etches-stats');
     if (statsEl) {
       const totalAssets = allAssets.length;
-      const totalOffers = allAssets.reduce((s, a) =>
-        s + Number(a.listing_count || 0)
-          + Number(a.range_listing_count || 0)
-          + Number(a.atomic_intent_count || 0), 0);
-      // Disclosed UTXOs: holders who voluntarily published (amount, blinding)
-      // openings (often as part of a marketplace listing, sometimes standalone
-      // for transparency). Range disclosures: zero-knowledge proofs of
-      // "balance ≥ K". Both surfaced here as network-health signals — neither
-      // is required by the protocol; they're opt-in transparency.
-      const totalOpenings = allAssets.reduce((s, a) => s + Number(a.opening_count || 0), 0);
-      const totalRangeDisclosures = allAssets.reduce((s, a) => s + Number(a.disclosure_count || 0), 0);
-      const totalMintable = allAssets.filter(a => a.mintable).length;
-      const offersLink = totalOffers > 0
-        ? `<a href="#" id="recent-etches-offers-link">${totalOffers} live offer${totalOffers === 1 ? '' : 's'}</a>`
-        : `<span class="muted">0 live offers</span>`;
+      const totalMintable = cetchAssets.filter(a => a.mintable).length;
+      const totalPetch = petchAssets.length;
       statsEl.style.display = 'flex';
       statsEl.style.gap = '14px';
       statsEl.style.flexWrap = 'wrap';
-      const openingsLine = totalOpenings > 0
-        ? ` · <span class="muted" title="UTXOs whose holders have published an (amount, blinding) opening to the worker — opt-in transparency, often via a marketplace listing.">${totalOpenings} disclosed UTXO${totalOpenings === 1 ? '' : 's'}</span>`
-        : '';
-      const rangeLine = totalRangeDisclosures > 0
-        ? ` · <span class="muted" title="Holders who have published a zero-knowledge proof that their balance of an asset is at least K, without revealing the exact amount.">${totalRangeDisclosures} range disclosure${totalRangeDisclosures === 1 ? '' : 's'}</span>`
+      const petchLine = totalPetch > 0
+        ? ` · <span class="muted">${totalPetch} public-mint</span>`
         : '';
       statsEl.innerHTML =
         `<span><strong>${totalAssets}</strong> asset${totalAssets === 1 ? '' : 's'} etched</span>` +
-        ` · <span>${offersLink}</span>` +
-        openingsLine +
-        rangeLine +
         ` · <span class="muted">${totalMintable} mintable</span>` +
+        petchLine +
         ` · <span class="muted">${escapeHtml(NET.name)}</span>`;
-      const off = $('#recent-etches-offers-link');
-      if (off) off.onclick = (ev) => { ev.preventDefault(); $('.tab[data-tab="market"]').click(); };
     }
     // Lander sort toggle: "recent" (default, worker order) vs "active"
     // (cumulative activity — transfers + offers + mints + burns). Persisted
@@ -14457,17 +14489,27 @@ async function renderRecentEtches() {
         toggleEl.style.display = 'none';
       }
     }
-    let sorted = allAssets;
+    // Default "recent" sort merges both registries by etched_at desc — without
+    // the explicit sort, the array order ([...cetch, ...petch]) would push all
+    // petches behind all CETCHes regardless of when they were actually deployed.
+    let sorted = [...allAssets].sort((x, y) =>
+      (Number(y.etched_at) || 0) - (Number(x.etched_at) || 0));
     if (_landerSort === 'active') {
+      // Composite "activity" signal — for CETCH: transfers + offers + mints +
+      // burns. For petch: transfers + pmint_count (every public mint counts as
+      // one activity event). Without the petch branch, fair launches would
+      // always sort to zero and disappear from the active view.
+      const score = (a) => {
+        if (a.kind === 'petch') {
+          return (Number(a.transfer_count || 0)) + (Number(a.pmint_count || 0));
+        }
+        return (Number(a.transfer_count || 0))
+             + (Number(a.listing_count || 0)) + (Number(a.range_listing_count || 0)) + (Number(a.atomic_intent_count || 0))
+             + (Array.isArray(a.mints) ? a.mints.length : 0)
+             + (Array.isArray(a.burns) ? a.burns.length : 0);
+      };
       sorted = [...allAssets].sort((x, y) => {
-        const xa = (Number(x.transfer_count || 0))
-                 + (Number(x.listing_count || 0)) + (Number(x.range_listing_count || 0)) + (Number(x.atomic_intent_count || 0))
-                 + (Array.isArray(x.mints) ? x.mints.length : 0)
-                 + (Array.isArray(x.burns) ? x.burns.length : 0);
-        const ya = (Number(y.transfer_count || 0))
-                 + (Number(y.listing_count || 0)) + (Number(y.range_listing_count || 0)) + (Number(y.atomic_intent_count || 0))
-                 + (Array.isArray(y.mints) ? y.mints.length : 0)
-                 + (Array.isArray(y.burns) ? y.burns.length : 0);
+        const ya = score(y), xa = score(x);
         if (ya !== xa) return ya - xa;
         // Tiebreaker: newer first so two zero-activity assets surface in
         // recency order, matching the "recent" view's instinct.
@@ -14498,36 +14540,54 @@ async function renderRecentEtches() {
       const safeAssetId = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
       const ageMin = Math.max(0, Math.floor((Date.now()/1000 - (a.etched_at || 0)) / 60));
       const ageStr = ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.floor(ageMin/60)}h ago` : `${Math.floor(ageMin/1440)}d ago`;
+      // Petch (T_PETCH-rooted public-mint deployments) skip CETCH-style
+      // verify — there's no Pedersen commitment to open and the worker's
+      // stored fields are all publicly auditable from chain. We render the
+      // worker's ticker directly with a ⚡ pill instead of the CETCH ✓/✗
+      // chain-verify mark.
+      const isPetch = a.kind === 'petch';
       // Pre-verify (v=null): show worker ticker on a "verifying…" placeholder
       // so the tile isn't blank. After verify lands we swap in canonical text.
-      const ticker = v && v.ok ? v.ticker : (typeof a.ticker === 'string' ? a.ticker : '?');
+      const ticker = isPetch
+        ? (typeof a.ticker === 'string' ? a.ticker : '?')
+        : (v && v.ok ? v.ticker : (typeof a.ticker === 'string' ? a.ticker : '?'));
       // Read metadata-blob extras (name/description) from the *canonical*
       // image_uri when on-chain verification ran — the worker can otherwise
       // present a different image_uri whose blob spoofs name/description.
       // Pre-verify we leave displayName === ticker (no extras lookup).
-      const _recentImg = v && v.ok ? v.imageUri : (v ? a.image_uri : null);
+      const _recentImg = isPetch
+        ? a.image_uri
+        : (v && v.ok ? v.imageUri : (v ? a.image_uri : null));
       const _recentExtras = _recentImg ? getMetadataExtras(_recentImg) : null;
       const displayName = (_recentExtras?.name && _recentExtras.name.trim()) ? _recentExtras.name : ticker;
-      const verifyMark = !v
-        ? ' · verifying…'
-        : v.ok
-          ? (v.mismatches && v.mismatches.length ? ' · ⚠' : ' · ✓')
-          : ' · ✗';
+      const verifyMark = isPetch
+        ? ''
+        : (!v
+            ? ' · verifying…'
+            : v.ok
+              ? (v.mismatches && v.mismatches.length ? ' · ⚠' : ' · ✓')
+              : ' · ✗');
       const pending = a.pending ? ' · pending' : '';
       // Ticker-collision marker. Computed across the FULL asset list above
       // (not just these 6) so a `duplicate` flag here is meaningful even
       // when the earlier-etched sibling isn't in the recent slice.
       const dupMark = a._tickerCollision === 'duplicate' ? ' · ⚠ DUP' : '';
-      tile.title = !v
-        ? `${safeAssetId} · verifying…`
-        : v.ok
-          ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
-          : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`;
+      const petchMark = isPetch ? ' · ⚡ public mint' : '';
+      tile.title = isPetch
+        ? `${safeAssetId} · public-mint (T_PETCH) — anyone can mint up to the cap${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
+        : (!v
+            ? `${safeAssetId} · verifying…`
+            : v.ok
+              ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
+              : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`);
+      const petchPill = isPetch
+        ? ' <span style="display:inline-block;padding:0 4px;background:#7d4ff7;color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;" title="Permissionless fair-launch (T_PETCH). Anyone can mint until cap fills.">⚡</span>'
+        : '';
       tile.innerHTML = `
         ${imgUrl ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="">` : ''}
         <div class="recent-tile-body">
-          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
-          <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}${dupMark}</div>
+          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${petchPill}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
+          <div class="recent-tile-meta">${ageStr}${verifyMark}${petchMark}${pending}${dupMark}</div>
         </div>`;
     };
     // Build placeholder tiles synchronously and attach to the DOM in a single
@@ -14559,6 +14619,19 @@ async function renderRecentEtches() {
     for (let i = 0; i < assets.length; i++) {
       const a = assets[i];
       const tile = tileNodes[i];
+      // Petches (T_PETCH-rooted) have no Pedersen commitment to verify and
+      // no CETCH envelope — skip verify, paint directly with worker fields,
+      // and resolve the image asynchronously. Same render shape, just no
+      // ✓/✗ chain-verify mark.
+      if (a.kind === 'petch') {
+        paintTile(tile, a, null, null);
+        if (a.image_uri) {
+          resolveImageUri(a.image_uri)
+            .then(url => { if (url) paintTile(tile, a, null, url); })
+            .catch(() => {});
+        }
+        continue;
+      }
       verifyDiscoverAsset(a)
         .catch(e => ({ ok: false, error: (e && e.message) || String(e) }))
         .then(v => {
@@ -14913,12 +14986,9 @@ async function _processDiscoverCardVerify(card, a) {
       enrichDiscoverBurns(a, verify)
         .then(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); })
         .catch(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); });
-      enrichDiscoverPriceFloor(a, verify)
-        .then(() => renderDiscoverCard(card, a, verify, imgUrl, extras))
-        .catch(() => {});
-      enrichDiscoverBidCount(a, verify)
-        .then(() => renderDiscoverCard(card, a, verify, imgUrl, extras))
-        .catch(() => {});
+      // Marketplace enrichments (price floor, open bids) are no longer
+      // rendered on Discover cards — those surfaces moved to the Market tab.
+      // Skipping the calls saves a worker round-trip per card on every load.
     }
   } finally {
     _discoverVerifyRelease();
@@ -15693,54 +15763,12 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     }
   }
 
-  // Market-cap estimate. Two ingredients:
-  //   1. A circulating-supply number — prefer fully-attested circulating
-  //      (etch + Σ attested mints − Σ burns) when available; fall back to
-  //      the etch supply alone for fixed-supply assets that haven't yet
-  //      finished mints/burns enrichment.
-  //   2. A floor price per smallest-unit — lowest active ask across the
-  //      asset's per-UTXO listings + atomic intents (range-listings excluded
-  //      because their amount is a lower bound, not a deliverable).
-  // Both must be present for a number to render. The market cap is honestly
-  // labeled as a coarse "floor × supply" estimate — replaceable with mid-
-  // market once bid-side intents (§5.7.7) ship and produce both sides.
-  let marketCapBadge = '';
-  if (etchSupply !== null && verify._priceFloorPpu && verify._priceFloorPpu > 0) {
-    // Choose supply for the cap. Prefer circulating when both enrichments
-    // landed; fall back to etch supply otherwise (matches what users see
-    // for fixed-supply assets in supplyBadge).
-    let supplyForCap;
-    if (verify.ok && verify._mintsEnriched && verify._burnsEnriched && mintAllAttested
-        && chainMintCount === claimedMints.length && mintAttestedCount === chainMintCount) {
-      supplyForCap = etchSupply + mintAttestedSum - burnedSum;
-    } else {
-      supplyForCap = etchSupply;
-    }
-    if (supplyForCap > 0n) {
-      const capSatsApprox = Number(supplyForCap) * verify._priceFloorPpu;
-      const capDisplay = (() => {
-        if (!Number.isFinite(capSatsApprox)) return null;
-        if (capSatsApprox >= 100_000_000) {
-          // ≥ 1 BTC — show as BTC with 4 decimals max
-          const btc = capSatsApprox / 100_000_000;
-          return `${btc >= 100 ? btc.toFixed(0) : btc.toFixed(2)} BTC`;
-        }
-        if (capSatsApprox >= 1_000_000) return `${(capSatsApprox / 1_000_000).toFixed(2)}M sats`;
-        if (capSatsApprox >= 1_000) return `${(capSatsApprox / 1_000).toFixed(1)}K sats`;
-        return `${Math.round(capSatsApprox)} sats`;
-      })();
-      // Per-display-unit price (sats per token in display units, not per
-      // smallest unit). Multiply by 10^decimals to invert the smallest-unit
-      // scaling, matching how users actually quote prices.
-      const ppuDisplay = verify._priceFloorPpu * Math.pow(10, decimals);
-      const ppuStr = ppuDisplay >= 1
-        ? `${ppuDisplay.toFixed(ppuDisplay >= 100 ? 0 : 2)} sats/${escapeHtml(ticker)}`
-        : `${ppuDisplay.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')} sats/${escapeHtml(ticker)}`;
-      if (capDisplay) {
-        marketCapBadge = `<div class="muted" style="margin-top:6px;font-size:11px;" title="Market-cap estimate = circulating supply × lowest active ask. Floor-derived; replace with mid-market once bid-side intents land.">📊 Mcap ~${capDisplay} · floor ${ppuStr}</div>`;
-      }
-    }
-  }
+  // Market-cap, floor-price, and live-offer surfaces moved off Discover —
+  // the Market tab consolidates them. Discover's job is "what tokens exist";
+  // Market's job is "what's for sale + at what price". Keeping them split
+  // means Discover stays scannable on small screens (no per-card market
+  // chrome to scroll past) and the Market tab is the single source of truth
+  // for orderbook state.
 
   // Mismatch detail — only when verified=true and at least one field differs.
   const mismatchDetail = (verified && verify.mismatches && verify.mismatches.length)
@@ -15751,15 +15779,13 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   // assets can share one — the asset_id is the only canonical reference.
   // First-etched is shown as `original`; later etches with the same ticker
   // get a stronger duplicate badge nudging users to read the asset_id.
-  // Atomic-intents pill — surface trustless-OTC availability at the browse
-  // level so a buyer can prefer assets with atomic settlement over those
-  // with only opening/range listings (which require counterparty trust).
-  // The Market tile already uses the ⚡ accent for atomic intents; mirror
-  // that color here in a Discover-card-friendly style.
-  const atomicBadge = (Number(a.atomic_intent_count || 0) > 0 || _localAtomicAssetIds().has(a.asset_id))
-    ? `<span style="font-size:10px;background:#f5f0ff;color:#7d4ff7;padding:2px 6px;border:1px solid #7d4ff7;text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="Atomic-intent OTC settlement is active for this asset. The confidential transfer + BTC payment close in one Bitcoin tx — no counterparty trust required.">⚡ atomic</span>`
-    : '';
-  card.dataset.hasAtomic = atomicBadge ? '1' : '0';
+  // Atomic-OTC availability is dataset-only on Discover — the Market tab
+  // owns the orderbook UI (open offers, floor, last-traded, atomic ⚡), so
+  // Discover stays a clean directory of "what tokens exist" rather than
+  // mixing in marketplace chrome. The dataset attr remains because the
+  // ⚡ Atomic filter pill (when present) reads it; if you want to also drop
+  // the pill, see index.html's #discover-pills.
+  card.dataset.hasAtomic = (Number(a.atomic_intent_count || 0) > 0 || _localAtomicAssetIds().has(a.asset_id)) ? '1' : '0';
 
   // Network chip. Sourced from the asset record (worker stamps every entry
   // with `network`); falls back to the dapp's current NET.name when absent
@@ -15788,7 +15814,6 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
           ${networkBadge}
           ${verifyBadge}
           ${collisionBadge}
-          ${atomicBadge}
         </div>
       </div>
     </div>
@@ -15798,71 +15823,6 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     ${mintBadge}
     ${burnBadge}
     ${totalSupplyBadge}
-    ${marketCapBadge}
-    ${(() => {
-      // Live-market badge — flag and link to offers when this asset has any
-      // active listings. Two count sources, in priority order:
-      //   1) `_marketCache.listings` (post-liveness-prune): if the user has
-      //      visited Market this session, we have authoritative live counts
-      //      that exclude listings whose UTXO has been spent on chain.
-      //   2) Worker raw `*_count` fields: includes UTXOs that may already
-      //      be spent (worker doesn't track spentness). Stale-prone but
-      //      always available.
-      // We label the source so a user seeing 0 here can tell whether it's
-      // genuinely empty or just unverified-yet-by-us.
-      const liveMap = _marketLiveCountsByAsset();
-      const haveLiveCounts = liveMap !== null;
-      // When Market has been loaded this session, an asset missing from the
-      // live map genuinely has zero live offers (its raw count is all spent).
-      // Treat missing as { all zero } so the stale-1-offer case collapses.
-      const liveCounts = haveLiveCounts
-        ? (liveMap.get(a.asset_id) || { listings: 0, ranges: 0, intents: 0, total: 0 })
-        : null;
-      const rawTotal = Number(a.listing_count || 0)
-                     + Number(a.range_listing_count || 0)
-                     + Number(a.atomic_intent_count || 0);
-      const offerCount = liveCounts ? liveCounts.total : rawTotal;
-      if (offerCount <= 0) return '';
-      const breakdown = [];
-      const lc = liveCounts || {
-        listings: Number(a.listing_count || 0),
-        ranges:   Number(a.range_listing_count || 0),
-        intents:  Number(a.atomic_intent_count || 0),
-      };
-      if (lc.listings > 0) breakdown.push(`${lc.listings} listing${lc.listings === 1 ? '' : 's'}`);
-      if (lc.ranges > 0)   breakdown.push(`${lc.ranges} range`);
-      if (lc.intents > 0)  breakdown.push(`${lc.intents} atomic`);
-      // Floor-price hint, only when the user has loaded Market once this
-      // session (the cache fills there). Conservative — range listings
-      // contribute their per-threshold price as the unit, which is an upper
-      // bound; the click-through to Market shows the precise mix.
-      const floor = _marketFloorByAsset()?.get(a.asset_id);
-      const floorTail = floor
-        ? ` · <span style="cursor:help;" title="Lowest unit price across active offers. Range listings contribute price ÷ threshold, which is an upper bound — the maker may deliver more for the same total, so an actual fill from a range entry can be cheaper than this number.">floor ${escapeHtml(fmtUnitPriceSats(floor.unit))} sats/${escapeHtml(floor.ticker)}</span>`
-        : '';
-      const liveTail = haveLiveCounts ? '' : ` · <span title="Counts come from worker registry — they may include listings whose UTXO is already spent on chain. Open Market to liveness-check and dedupe.">unverified</span>`;
-      return `<div style="margin-top:6px;font-size:11px;">
-        <a href="#" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="display:inline-block;padding:3px 8px;background:#0a8f43;color:#fff;text-decoration:none;border:1px solid #0a8f43;font-weight:bold;letter-spacing:0.05em;">▸ ${offerCount} live offer${offerCount === 1 ? '' : 's'} on Market</a>
-        <span class="muted" style="margin-left:8px;">${escapeHtml(breakdown.join(' · '))}${floorTail}${liveTail}</span>
-      </div>`;
-    })()}
-    ${(() => {
-      // Last-traded price — recorded by the worker when an atomic-intent
-      // settlement broadcasts (only AXFER fills carry a verifiable price at
-      // settlement time; opening/range fulfilments settle off-chain so the
-      // dapp can't observe them). Decorative signal, not a binding quote;
-      // a malicious caller could mis-stamp the worker once per asset, which
-      // is why the tooltip flags it as best-effort.
-      const lt = a.last_trade;
-      if (!lt || !Number.isInteger(lt.price_sats) || lt.price_sats <= 0) return '';
-      const ltAmt = (() => { try { return BigInt(lt.amount); } catch { return 0n; } })();
-      if (ltAmt <= 0n) return '';
-      const ltUnit = unitPriceSats(lt.price_sats, ltAmt, decimals);
-      const ltAge = relativeAge(Number(lt.ts) || 0);
-      const unitTail = ltUnit != null ? ` · ${escapeHtml(fmtUnitPriceSats(ltUnit))} sats/${escapeHtml(ticker)}` : '';
-      const ageTail = ltAge ? ` · ${escapeHtml(ltAge)} ago` : '';
-      return `<div class="muted" style="margin-top:6px;font-size:11px;" title="Most recent atomic-intent settlement (T_AXFER) reported to the worker. Best-effort — the worker can't independently re-verify the price, only that the tx is an AXFER for this asset. Last-write-wins; bounded damage from a bad report.">💱 last sold ${Number(lt.price_sats).toLocaleString()} sats${unitTail}${ageTail}</div>`;
-    })()}
     ${(() => {
       // Transfer-count signal — coarse "is anyone moving this?" indicator,
       // not a legitimacy proof (self-spam is cheap). Cron-maintained counter;
@@ -15906,11 +15866,8 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       const safe = safeExternalUrl(extras?.external_url);
       return safe ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safe)} ↗</a></div>` : '';
     })()}
-    ${verified ? `<div class="flex" style="gap:10px;margin-top:8px;flex-wrap:wrap;align-items:center;font-size:11px;">
-      <button data-act="discover-place-bid" data-aid="${escapeHtml(safeAssetId)}" data-ticker="${escapeHtml(ticker)}" data-decimals="${decimals}" type="button" title="Post a buy-side bid for this asset (off-chain bid book — SPEC §5.7.7)" style="font-size:11px;padding:3px 8px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);letter-spacing:0;">Place bid</button>
-      <a href="#" data-act="discover-view-bids" data-aid="${escapeHtml(safeAssetId)}" data-ticker="${escapeHtml(ticker)}" data-decimals="${decimals}" style="font-size:11px;" title="View open bids on this asset"><span data-bid-count-for="${escapeHtml(safeAssetId)}">${verify._bidCount != null ? verify._bidCount : '…'}</span> open bid${verify._bidCount === 1 ? '' : 's'} ↗</a>
-    </div>
-    <div data-bid-host="${escapeHtml(safeAssetId)}" style="display:none;margin-top:10px;"></div>` : ''}
+    ${/* Place-bid / open-bids row moved to the Market tab so Discover cards
+        stay a clean directory view. */ ''}
     <div class="meta">
       <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(safeAssetId)}</div>
       <div><span class="lbl">Etch tx</span> ${safeEtchTxid ? `<a href="${NET.explorer}/tx/${escapeHtml(safeEtchTxid)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(safeEtchTxid, 8))} ↗</a>` : '—'}</div>
@@ -17127,7 +17084,7 @@ async function renderPetchDiscover() {
       else if (!myWalletReady) { mintDisabled = true; mintReason = 'wallet not ready'; }
       const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
       return `
-        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);margin-bottom:10px;">
+        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);margin-bottom:10px;">
           <div style="display:flex;align-items:center;gap:12px;">
             ${imgUrl
               ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
@@ -17153,6 +17110,7 @@ async function renderPetchDiscover() {
           <div style="margin-top:8px;height:6px;border:1px solid var(--ink);background:var(--bg);overflow:hidden;">
             <div style="height:100%;background:${capFull ? '#a04030' : '#7d4ff7'};width:${pct}%;transition:width 0.2s;"></div>
           </div>
+          <div data-petch-optimistic data-optimistic-minted="0" style="display:none;margin-top:6px;font-size:10px;color:#5a36c4;font-style:italic;"></div>
           ${a.pending_pmint_count > 0
             ? `<div class="muted" style="margin-top:6px;font-size:10px;">${a.pending_pmint_count} mint${a.pending_pmint_count === 1 ? '' : 's'} pending (≥3 confs to credit)</div>`
             : ''}
@@ -17201,9 +17159,41 @@ async function renderPetchDiscover() {
             setProgressStrip('pmint-progress', -1);
           }, 1200);
           toast(`Minted ${limitDisp} ${ticker} — pending until ≥3 confs`, 'success', 8000);
+          // Optimistic UI update: bump cap-progress + remaining-mints + pending
+          // counter on this tile right away so the user sees their action
+          // reflected without waiting for the next /petch-assets fetch (worker
+          // takes ~5 min to re-index, plus the 30s edge cache). The next render
+          // overwrites with authoritative numbers from chain — until then this
+          // is the accurate "what just happened" view.
+          try {
+            const card = btn.closest('[data-petch-aid]');
+            if (card) {
+              const minted = BigInt(limitStr || '0');
+              const optimisticEl = card.querySelector('[data-petch-optimistic]');
+              if (optimisticEl) {
+                const prior = BigInt(optimisticEl.dataset.optimisticMinted || '0');
+                optimisticEl.dataset.optimisticMinted = String(prior + minted);
+                optimisticEl.textContent = `+${fmtAssetAmount(prior + minted, dec)} ${ticker} pending — refresh in ~5 min for chain-confirmed counters`;
+                optimisticEl.style.display = '';
+              }
+              // Re-disable the button as a soft-cooldown so a frustrated double-
+              // click doesn't fan out N parallel commit+reveal pairs (each
+              // burns sats). Re-enable after 6s — long enough for the user to
+              // see the "minted" toast, short enough to allow another mint
+              // since cap-fill needs many minters anyway. Anyone (incl. this
+              // user) can mint again until cap, so we don't permanently lock.
+              btn.disabled = true;
+              btn.textContent = `Minted · cooldown 6s`;
+              setTimeout(() => {
+                btn.disabled = false;
+                btn.textContent = origLabel;
+              }, 6000);
+            }
+          } catch (e) { console.warn('optimistic petch update failed', e); }
           // Bust holdings cache so the new pending UTXO surfaces immediately.
           if (typeof invalidateHoldingsCache === 'function') invalidateHoldingsCache();
           // Refresh the petch list so the cap progress + pending counter update.
+          // (The optimistic block above already covers the in-flight wait.)
           renderPetchDiscover();
         } catch (e) {
           if (pmintStrip && pmintStrip.style.display !== 'none') {
@@ -17861,7 +17851,10 @@ function setupHoldingsButtons() {
 // offers/minted/burned each add one. Held in module scope so a re-render
 // (which rebuilds cards) keeps the user's selection.
 let _discoverPill = 'all';
-let _discoverSort = 'newest';
+// Default to oldest-first so long-established assets surface ahead of fresh
+// etches (which can be junk during high-traffic windows). The dropdown still
+// exposes Newest first; persisted prefs override this default per-network.
+let _discoverSort = 'oldest';
 // Etcher → Set<asset_id> for the current Discover load. Populated lazily
 // from cached etch verifications at load time, then incrementally as fresh
 // verifies complete. Read by renderDiscoverCard to surface "etcher has K
@@ -17915,29 +17908,19 @@ function applyDiscoverSort() {
     return d !== 0 ? d : tieByRecency(a, b);
   };
   // Floor-asc reads from the Market cache (populated once the user has
-  // visited Market this session). Resolve the map once per sort pass; cards
-  // without a derivable floor sink under cards with one, then tie-break by
-  // recency so newer no-floor assets surface above older no-floor assets.
-  const floorMap = _discoverSort === 'floor-asc' ? _marketFloorByAsset() : null;
+  // Market-related sorts (offers / atomic / floor) live on the Market tab,
+  // not Discover — keeps the directory of "what tokens exist" cleanly split
+  // from orderbook state. Stale persisted prefs targeting a removed sort
+  // fall through to the default below.
   cards.sort((a, b) => {
     switch (_discoverSort) {
-      case 'oldest':         return (Number(a.dataset.etchedAt) || 0) - (Number(b.dataset.etchedAt) || 0);
+      case 'newest':         return tieByRecency(a, b);
       case 'ticker-asc':     return (a.dataset.ticker || '').localeCompare(b.dataset.ticker || '');
       case 'ticker-desc':    return (b.dataset.ticker || '').localeCompare(a.dataset.ticker || '');
       case 'transfers-desc': return numDesc('transferCount')(a, b);
-      case 'offers-desc':    return numDesc('offerCount')(a, b);
-      case 'atomic-desc':    return numDesc('atomicCount')(a, b);
       case 'active-desc':    return numDesc('activityCount')(a, b);
-      case 'floor-asc': {
-        const fa = floorMap?.get(a.dataset.aid)?.unit;
-        const fb = floorMap?.get(b.dataset.aid)?.unit;
-        if (fa == null && fb == null) return tieByRecency(a, b);
-        if (fa == null) return 1;
-        if (fb == null) return -1;
-        return fa !== fb ? fa - fb : tieByRecency(a, b);
-      }
-      case 'newest':
-      default:               return tieByRecency(a, b);
+      case 'oldest':
+      default:               return (Number(a.dataset.etchedAt) || 0) - (Number(b.dataset.etchedAt) || 0);
     }
   });
   for (const c of cards) list.appendChild(c);
@@ -18054,19 +18037,12 @@ function setupDiscoverButtons() {
     });
   }
   // Sort dropdown — re-orders the already-mounted cards in place, no fetch.
-  // Floor-asc reads from the Market cache; nudge the user the first time they
-  // pick it without that cache loaded so the sort doesn't silently degrade
-  // to recency. One-shot per session — the flag flips after the first nudge.
-  let _floorHintShown = false;
+  // Market-related sorts (offers / atomic / floor) live on Market; Discover
+  // keeps directory-style sorts (recency, ticker, transfers, activity).
   const sortSel = $('#discover-sort');
   if (sortSel) {
     sortSel.addEventListener('change', () => {
-      _discoverSort = sortSel.value || 'newest';
-      if (_discoverSort === 'floor-asc' && !_floorHintShown
-          && (!_marketCache?.listings || !_marketFloorByAsset()?.size)) {
-        toast('Open the Market tab once to populate floor prices, then re-sort.', 'info', 5000);
-        _floorHintShown = true;
-      }
+      _discoverSort = sortSel.value || 'oldest';
       _saveDiscoverPrefs();
       applyDiscoverSort();
     });
