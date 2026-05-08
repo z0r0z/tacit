@@ -100,11 +100,19 @@ const PIN_URL      = WORKER_BASE ? WORKER_BASE + '/pin'      : '';
 const PIN_JSON_URL = WORKER_BASE ? WORKER_BASE + '/pin-json' : '';
 const FAUCET_URL   = WORKER_BASE ? WORKER_BASE + '/drip'     : '';
 const REGISTRY_URL = WORKER_BASE ? WORKER_BASE + '/assets'   : '';
+// Worker-aggregated marketplace endpoint. Returns { assets, listings: [...] }
+// pre-joined with kind + _asset reference, so the Market tab pays one
+// round-trip instead of N×3 per-asset fetches.
+const MARKET_URL   = WORKER_BASE ? WORKER_BASE + '/market'    : '';
+// Worker-aggregated per-user holdings endpoint. POST { owner_pubkey,
+// asset_ids } → { openings, listings, range_listings } keyed by asset_id.
+// Listings are server-filtered to owner_pubkey so the Holdings tab pays
+// one round-trip + a small payload instead of N×3 per-asset fetches.
+const HOLDINGS_URL = WORKER_BASE ? WORKER_BASE + '/holdings'  : '';
 const HINT_URL     = WORKER_BASE ? WORKER_BASE + '/assets/hint' : '';
 const ATTEST_URL   = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/attest` : '';
 const MINT_ATTEST_URL = (assetIdHex, mintTxidHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/mints/${mintTxidHex}/attest` : '';
 const UTXO_OPENING_URL = (txidHex, vout) => WORKER_BASE ? `${WORKER_BASE}/utxos/${txidHex}/${vout}/opening` : '';
-const ASSET_OPENINGS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/openings` : '';
 const DISCLOSURES_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/disclosures` : '';
 const LISTINGS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/listings` : '';
 const LISTING_DELETE_URL = (assetIdHex, txidHex, vout) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/listings/${txidHex}/${vout}` : '';
@@ -116,6 +124,9 @@ const ATOMIC_INTENTS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/
 const ATOMIC_INTENT_DELETE_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}` : '';
 const ATOMIC_INTENT_CLAIM_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/claim` : '';
 const ATOMIC_INTENT_FULFILMENT_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/fulfilment` : '';
+const PETCH_REGISTRY_URL = WORKER_BASE ? WORKER_BASE + '/petch-assets' : '';
+const PETCH_ASSET_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/petch-assets/${assetIdHex}` : '';
+const PMINTS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/pmints` : '';
 const DROPS_URL = WORKER_BASE ? WORKER_BASE + '/drops' : '';
 const DROP_URL  = (rootHex) => WORKER_BASE ? `${WORKER_BASE}/drops/${rootHex}` : '';
 // Append the active network as a query param. The worker's registry endpoints
@@ -2410,6 +2421,8 @@ const T_CXFER    = 0x23;
 const T_MINT     = 0x24; // issue more supply on a mintable asset (signed by mint_authority)
 const T_BURN     = 0x25; // destroy supply (any holder; emits a public burned_amount)
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
+const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
+const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
 const MAX_SCRIPT_PUSH = 520;
 const OP_FALSE = 0x00, OP_PUSHDATA1 = 0x4c, OP_PUSHDATA2 = 0x4d;
 const OP_IF = 0x63, OP_ENDIF = 0x68, OP_CHECKSIG = 0xac;
@@ -2813,6 +2826,142 @@ function decodeCBurnPayload(payload) {
   return { kind: 'cburn', assetId, burnedAmount, kernelSig, outputs, rangeproof };
 }
 
+// ============== PERMISSIONLESS MINT (T_PETCH / T_PMINT) ==============
+// SPEC §5.8 / §5.9. Permissionless fair-launch issuance:
+//   - T_PETCH (0x27): deployment record. Declares ticker, decimals, lifetime
+//     cap, fixed per-mint amount, and a height window. NO supply UTXO is
+//     produced — the deployer receives zero tokens; to hold any, they (or
+//     anyone else) must broadcast T_PMINT.
+//   - T_PMINT (0x28): permissionless mint event. Anyone may broadcast.
+//     Reveals (amount, blinding) so any chain reader can audit the cap; cap
+//     is enforced by indexers summing canonically-ordered T_PMINTs at
+//     confirmation depth ≥ 3 (SPEC §5.9 *Confirmation depth*).
+//
+// Wire format kept verbatim parity with worker/src/index.js's
+// decodeCPetchPayload / decodeCPmintPayload — any drift here breaks
+// indexer interop. The worker-decoder.test.mjs / dapp-parity.test.mjs
+// pair pins this contract on every push.
+
+// T_PETCH(1) || tlen(1) || ticker(tlen) || decimals(1) ||
+//   cap_amount(8 LE) || mint_limit(8 LE) || mint_start_height(4 LE) ||
+//   mint_end_height(4 LE) || img_len(2 LE) || image_uri(img_len)
+function encodeCPetchPayload({ ticker, decimals, capAmount, mintLimit, mintStartHeight = 0, mintEndHeight = 0, imageUri = null }) {
+  const tk = new TextEncoder().encode(ticker);
+  if (tk.length < 1 || tk.length > 16) throw new Error('ticker length must be 1..16');
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 8) throw new Error('decimals must be 0..8');
+  const cap = BigInt(capAmount);
+  const lim = BigInt(mintLimit);
+  if (cap <= 0n || cap >= (1n << BigInt(N_BITS))) throw new Error('cap_amount out of range');
+  if (lim <= 0n || lim > cap) throw new Error('mint_limit out of range');
+  if (cap % lim !== 0n) throw new Error('cap_amount must be evenly divisible by mint_limit');
+  if (!Number.isInteger(mintStartHeight) || mintStartHeight < 0 || mintStartHeight > 0xffffffff) throw new Error('mint_start_height out of range');
+  if (!Number.isInteger(mintEndHeight) || mintEndHeight < 0 || mintEndHeight > 0xffffffff) throw new Error('mint_end_height out of range');
+  if (mintStartHeight !== 0 && mintEndHeight !== 0 && mintEndHeight <= mintStartHeight) {
+    throw new Error('mint_end_height must exceed mint_start_height when both nonzero');
+  }
+  const img = imageUri ? new TextEncoder().encode(imageUri) : new Uint8Array(0);
+  if (img.length > 256) throw new Error('image_uri too long');
+  const capLE = new Uint8Array(8);
+  const limLE = new Uint8Array(8);
+  {
+    const cv = new DataView(capLE.buffer);
+    cv.setUint32(0, Number(cap & 0xffffffffn), true);
+    cv.setUint32(4, Number((cap >> 32n) & 0xffffffffn), true);
+    const lv = new DataView(limLE.buffer);
+    lv.setUint32(0, Number(lim & 0xffffffffn), true);
+    lv.setUint32(4, Number((lim >> 32n) & 0xffffffffn), true);
+  }
+  const startLE = new Uint8Array(4); new DataView(startLE.buffer).setUint32(0, mintStartHeight >>> 0, true);
+  const endLE = new Uint8Array(4); new DataView(endLE.buffer).setUint32(0, mintEndHeight >>> 0, true);
+  const imgLen = new Uint8Array(2); new DataView(imgLen.buffer).setUint16(0, img.length, true);
+  return concatBytes(
+    new Uint8Array([T_PETCH]), new Uint8Array([tk.length]), tk,
+    new Uint8Array([decimals]), capLE, limLE, startLE, endLE, imgLen, img,
+  );
+}
+
+function decodeCPetchPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 1 + 1 + 1 + 8 + 8 + 4 + 4 + 2) return null;
+  if (payload[0] !== T_PETCH) return null;
+  let p = 1;
+  const tlen = payload[p]; p += 1;
+  if (tlen < 1 || tlen > 16) return null;
+  if (p + tlen > payload.length) return null;
+  let ticker;
+  try { ticker = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + tlen)); } catch { return null; }
+  p += tlen;
+  const decimals = payload[p]; p += 1;
+  if (decimals > 8) return null;
+  if (p + 8 + 8 + 4 + 4 + 2 > payload.length) return null;
+  const capView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const capAmount = (BigInt(capView.getUint32(4, true)) << 32n) | BigInt(capView.getUint32(0, true));
+  p += 8;
+  const limView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const mintLimit = (BigInt(limView.getUint32(4, true)) << 32n) | BigInt(limView.getUint32(0, true));
+  p += 8;
+  if (capAmount <= 0n) return null;
+  if (mintLimit <= 0n) return null;
+  if (mintLimit > capAmount) return null;
+  if (capAmount % mintLimit !== 0n) return null;
+  const startView = new DataView(payload.buffer, payload.byteOffset + p, 4);
+  const mintStartHeight = startView.getUint32(0, true); p += 4;
+  const endView = new DataView(payload.buffer, payload.byteOffset + p, 4);
+  const mintEndHeight = endView.getUint32(0, true); p += 4;
+  if (mintStartHeight !== 0 && mintEndHeight !== 0 && mintEndHeight <= mintStartHeight) return null;
+  const imgLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (imgLen > 256) return null;
+  if (p + imgLen !== payload.length) return null;
+  let imageUri = null;
+  if (imgLen > 0) {
+    try { imageUri = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + imgLen)); } catch { return null; }
+  }
+  return { kind: 'cpetch', ticker, decimals, capAmount, mintLimit, mintStartHeight, mintEndHeight, imageUri };
+}
+
+// T_PMINT(1) || asset_id(32) || etch_txid(32) || commitment(33) ||
+//   amount(8 LE) || blinding(32). Total: 138 bytes exactly.
+function encodeCPmintPayload({ assetId, etchTxid, commitment, amount, blinding }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (etchTxid.length !== 32) throw new Error('etch_txid 32 bytes');
+  if (commitment.length !== 33) throw new Error('commitment 33 bytes');
+  const amt = BigInt(amount);
+  if (amt <= 0n || amt >= (1n << BigInt(N_BITS))) throw new Error('amount out of range');
+  if (!blinding || blinding.length !== 32) throw new Error('blinding must be 32 bytes');
+  let blindingNonZero = false;
+  for (let i = 0; i < 32; i++) if (blinding[i] !== 0) { blindingNonZero = true; break; }
+  if (!blindingNonZero) throw new Error('blinding must be non-zero');
+  const amtLE = new Uint8Array(8);
+  {
+    const v = new DataView(amtLE.buffer);
+    v.setUint32(0, Number(amt & 0xffffffffn), true);
+    v.setUint32(4, Number((amt >> 32n) & 0xffffffffn), true);
+  }
+  return concatBytes(
+    new Uint8Array([T_PMINT]), assetId, etchTxid, commitment, amtLE, blinding,
+  );
+}
+
+function decodeCPmintPayload(payload) {
+  if (!payload) return null;
+  if (payload.length !== 1 + 32 + 32 + 33 + 8 + 32) return null;
+  if (payload[0] !== T_PMINT) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const etchTxid = payload.slice(p, p + 32); p += 32;
+  const commitment = payload.slice(p, p + 33); p += 33;
+  const amtView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const amount = (BigInt(amtView.getUint32(4, true)) << 32n) | BigInt(amtView.getUint32(0, true));
+  p += 8;
+  if (amount <= 0n || amount >= (1n << BigInt(N_BITS))) return null;
+  const blinding = payload.slice(p, p + 32); p += 32;
+  let blindingNonZero = false;
+  for (let i = 0; i < 32; i++) if (blinding[i] !== 0) { blindingNonZero = true; break; }
+  if (!blindingNonZero) return null;
+  if (p !== payload.length) return null;
+  return { kind: 'cpmint', assetId, etchTxid, commitment, amount, blinding };
+}
+
 // ============== STORAGE ==============
 // Both the asset-metadata registry and the per-UTXO opening cache are
 // network-namespaced. asset_ids and txids can't collide cross-network
@@ -2837,6 +2986,17 @@ function openKey() { return `${OPEN_KEY_BASE}:${NET.name}`; }
 // stale state from one network can never be read against another's key.
 let _registryCache = null;
 let _openingsCache = null;
+
+// Discover tab badge inputs. Both lists render in parallel (CETCH +
+// public-mint), each one calling _bumpDiscoverBadge() once it knows its own
+// count. The badge shows the sum. Tracked separately so a slow load on one
+// side doesn't reset the other side's already-shown contribution.
+let _lastDiscoverCetchCount = 0;
+let _lastDiscoverPetchCount = 0;
+function _bumpDiscoverBadge() {
+  if (typeof setTabBadge !== 'function') return;
+  setTabBadge('discover', _lastDiscoverCetchCount + _lastDiscoverPetchCount);
+}
 const loadRegistry = () => {
   if (_registryCache) return _registryCache;
   try { _registryCache = JSON.parse(localStorage.getItem(regKey()) || '{}') || {}; }
@@ -3274,7 +3434,68 @@ async function waitForTxVisible(commitTxidHex, { maxMs = 60000, initialMs = 1500
 // At each CETCH leaf encountered during validation, record the canonical (ticker, decimals, etchTxid)
 // in the optional metadataOut map keyed by asset_id hex. This is how share-link import obtains
 // trustworthy metadata for unknown assets (don't trust the sender's link for ticker/decimals).
-async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0, metadataOut = null, rpBatch = null) {
+// Per-asset cache of credited T_PMINT txids, populated on first encounter
+// during a scan and reused for subsequent ancestry walks within the same
+// scan session. SPEC §5.9 *Confirmation depth* requires the indexer to
+// canonical-order T_PMINT events at depth ≥ 3 before crediting them
+// against the cap; the dapp delegates that ordering to the worker for v1
+// and just checks set membership here. If the worker is unreachable we
+// degrade to optimistic acceptance (structural invariants only) — this
+// matches the spec's posture that the worker is operational, not trust-
+// bearing for non-cap-bound envelopes, while flagging a v1 limitation:
+// without the worker the dapp cannot enforce cap-overflow rejection on
+// T_PMINT inputs to ancestry walks. SPEC §10 documents this.
+const _pmintCreditedCache = new Map();
+const PMINT_CREDITED_TTL_MS = 30 * 1000;
+function invalidatePmintCreditedCache() { _pmintCreditedCache.clear(); }
+async function _fetchPmintCredited(assetIdHex) {
+  const c = _pmintCreditedCache.get(assetIdHex);
+  if (c && (Date.now() - c.fetchedAt) < PMINT_CREDITED_TTL_MS) return c;
+  if (!WORKER_BASE) {
+    const fallback = { credited: null, capOverflow: null, workerAvailable: false, fetchedAt: Date.now() };
+    _pmintCreditedCache.set(assetIdHex, fallback);
+    return fallback;
+  }
+  try {
+    // ?credited=1 short-circuit: worker returns just credited_txids, skipping
+    // the per-event annotation that bloats the response by ~200-500 bytes per
+    // pmint. Every cold scanHoldings walk hits one of these per unique petch
+    // asset in the wallet, so wire-payload weight matters here.
+    const r = await fetch(withNet(PMINTS_URL(assetIdHex), 'credited=1'));
+    if (!r.ok) {
+      const fallback = { credited: null, capOverflow: null, workerAvailable: false, fetchedAt: Date.now() };
+      _pmintCreditedCache.set(assetIdHex, fallback);
+      return fallback;
+    }
+    const j = await r.json();
+    const credited = new Set();
+    for (const t of (j.credited_txids || [])) {
+      if (/^[0-9a-f]{64}$/.test(String(t))) credited.add(t);
+    }
+    const capOverflow = new Set();
+    for (const t of (j.cap_overflow_txids || [])) {
+      if (/^[0-9a-f]{64}$/.test(String(t))) capOverflow.add(t);
+    }
+    const entry = { credited, capOverflow, workerAvailable: true, fetchedAt: Date.now() };
+    _pmintCreditedCache.set(assetIdHex, entry);
+    return entry;
+  } catch {
+    const fallback = { credited: null, capOverflow: null, workerAvailable: false, fetchedAt: Date.now() };
+    _pmintCreditedCache.set(assetIdHex, fallback);
+    return fallback;
+  }
+}
+
+// pmintStatusOut (optional, last positional) is a Map<"txid:vout", 'pending' | 'invalid'>
+// scanHoldings populates so it can distinguish T_PMINT failures that may
+// promote later (mempool, depth < 3, worker says not credited yet) from
+// permanently-invalid ones (forged commitment, asset_id mismatch, height
+// window violation, cap_overflow, parent not T_PETCH). Without this, every
+// T_PMINT failure mode rendered as "Inflation attempt detected" in the
+// holdings UI — a user who just successfully clicked Mint saw a scary
+// warning on their own legitimate mint until cron + 3 confs caught up.
+// Audit fix #1: pending mints render as a separate, accurate UI tier.
+async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0, metadataOut = null, rpBatch = null, pmintStatusOut = null) {
   const key = `${txidHex}:${vout}`;
   if (validatedSet.has(key)) return validatedSet.get(key);
   if (depth > 200) { validatedSet.set(key, false); return false; } // depth bound
@@ -3515,6 +3736,137 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     return kernelOkV2;
   }
 
+  if (env.opcode === T_PETCH) {
+    // SPEC §5.8: T_PETCH is a deployment record only. It produces NO tacit
+    // UTXO at any vout — the reveal tx's outputs are regular Bitcoin outputs
+    // (typically change). Reject any ancestry walk that lands on this
+    // envelope. Metadata is registered out-of-band by the cron / Discover
+    // path, not through this validator.
+    validatedSet.set(key, false);
+    return false;
+  }
+
+  if (env.opcode === T_PMINT) {
+    // SPEC §5.9: permissionless mint event. Validation is a fixed checklist —
+    //   1. asset_id matches sha256(etch_txid_BE || 0_LE)
+    //   2. parent envelope at etch_txid is T_PETCH (NOT CETCH — modes are
+    //      non-substitutable; the cross-mode reference rejection here is what
+    //      keeps T_PMINT from claiming a CETCH ancestor)
+    //   3. amount equals petch.mint_limit
+    //   4. confirmed_height is in [effective_start, effective_end]
+    //   5. pedersenCommit(amount, blinding) == declared commitment
+    //   6. cap-credit: this T_PMINT must appear in the worker's credited set
+    //      at depth ≥ 3 (degraded to optimistic if worker unavailable —
+    //      v1 limitation, see _fetchPmintCredited)
+    //   7. vout must be 0
+    //
+    // Failure-mode classification (audit fix #1): every false-return tags
+    // pmintStatusOut with either 'pending' (transient — may promote on
+    // re-scan) or 'invalid' (permanent — forged or out-of-window). Callers
+    // (scanHoldings) use this tag to render pending mints distinct from
+    // genuine inflation attempts.
+    const tagInvalid = () => { if (pmintStatusOut) pmintStatusOut.set(key, 'invalid'); };
+    const tagPending = () => { if (pmintStatusOut) pmintStatusOut.set(key, 'pending'); };
+    if (vout !== 0) { tagInvalid(); validatedSet.set(key, false); return false; }
+    const dec = decodeCPmintPayload(env.payload);
+    if (!dec) { tagInvalid(); validatedSet.set(key, false); return false; }
+    const aidFromEtch = assetIdFor(bytesToHex(dec.etchTxid), 0);
+    for (let i = 0; i < 32; i++) if (aidFromEtch[i] !== dec.assetId[i]) { tagInvalid(); validatedSet.set(key, false); return false; }
+    // Parent must be a T_PETCH envelope. Look up + decode without recursing
+    // through validateOutpoint (T_PETCH always returns false in the recursive
+    // path since no UTXO is produced). The lookup IS the recursion endpoint.
+    const etchTxidHex = bytesToHex(dec.etchTxid);
+    const etchTx = await fetchTx(etchTxidHex);
+    if (!etchTx?.vin?.[0]?.witness || etchTx.vin[0].witness.length < 3) { tagInvalid(); validatedSet.set(key, false); return false; }
+    let petchEnv;
+    try { petchEnv = decodeEnvelopeScript(hexToBytes(etchTx.vin[0].witness[1])); } catch { petchEnv = null; }
+    if (!petchEnv || petchEnv.opcode !== T_PETCH) { tagInvalid(); validatedSet.set(key, false); return false; }
+    const petchDec = decodeCPetchPayload(petchEnv.payload);
+    if (!petchDec) { tagInvalid(); validatedSet.set(key, false); return false; }
+    if (dec.amount !== petchDec.mintLimit) { tagInvalid(); validatedSet.set(key, false); return false; }
+    // Height window. effective_start = mint_start_height || (etch_height + 1).
+    // Fetch petch's confirmed height from the etch tx. effective_end = ∞ when 0.
+    const etchHeight = etchTx.status?.confirmed ? Number(etchTx.status.block_height) : null;
+    const pmintHeight = tx.status?.confirmed ? Number(tx.status.block_height) : null;
+    if (!Number.isFinite(etchHeight) || !Number.isFinite(pmintHeight)) {
+      // One or both sides unconfirmed — heights are unknown, but the mint
+      // may yet confirm validly. Pending, not invalid. The mempool case
+      // (just-broadcast T_PMINT seen by getUtxos before status.confirmed
+      // flips true) lands here, and the scanHoldings recovery path picks
+      // it up so the user sees their fresh mint immediately.
+      tagPending(); validatedSet.set(key, false); return false;
+    }
+    // SPEC §5.8: a non-zero mint_start_height MUST be ≥ etch_height + 1.
+    // The decoder defers this (it doesn't see etch_height); enforce here so
+    // a malformed T_PETCH whose deployer set mint_start_height = etch_height
+    // (to bypass the same-block premine defense) doesn't admit a credit.
+    // Permanent — the petch envelope can never produce a valid mint.
+    if (petchDec.mintStartHeight !== 0 && petchDec.mintStartHeight < etchHeight + 1) {
+      tagInvalid(); validatedSet.set(key, false); return false;
+    }
+    const effectiveStart = petchDec.mintStartHeight !== 0 ? petchDec.mintStartHeight : etchHeight + 1;
+    // Window violations are permanent: the mint confirmed at a height that
+    // can never satisfy the petch's declared window. Tagging invalid stops
+    // the recovery path from showing it as pending forever.
+    if (pmintHeight < effectiveStart) { tagInvalid(); validatedSet.set(key, false); return false; }
+    if (petchDec.mintEndHeight !== 0 && pmintHeight > petchDec.mintEndHeight) { tagInvalid(); validatedSet.set(key, false); return false; }
+    // Pedersen open: amount/blinding must reproduce the declared commitment.
+    let claimed, onchain;
+    try {
+      claimed = pedersenCommit(dec.amount, BigInt('0x' + bytesToHex(dec.blinding)));
+      onchain = bytesToPoint(dec.commitment);
+    } catch { tagInvalid(); validatedSet.set(key, false); return false; }
+    if (!claimed.equals(onchain)) { tagInvalid(); validatedSet.set(key, false); return false; }
+    // Cap-credit check (worker-aided; degrades to optimistic when worker is
+    // unreachable). This is the v1 trade documented in SPEC §10 for T_PMINT
+    // reorg sensitivity — the worker provides canonically-ordered credit at
+    // depth ≥ 3; trustless local cap computation is a v2 enhancement.
+    //
+    // The worker's slim creditedOnly response now ships BOTH credited_txids
+    // AND cap_overflow_txids. Membership in the latter is permanent (the
+    // mint confirmed but the cap was already full at its canonical position
+    // — the minter forfeits their fees). Membership in neither is pending
+    // (depth < 3 OR worker hasn't indexed this mint yet OR tip lookup
+    // failed). Distinguishing these is the difference between "your mint
+    // is on its way, refresh in a few minutes" and "your mint failed,
+    // these tokens never existed."
+    const credit = await _fetchPmintCredited(bytesToHex(dec.assetId));
+    if (credit.workerAvailable) {
+      if (credit.capOverflow && credit.capOverflow.has(txidHex)) {
+        tagInvalid(); validatedSet.set(key, false); return false;
+      }
+      if (credit.credited && !credit.credited.has(txidHex)) {
+        tagPending(); validatedSet.set(key, false); return false;
+      }
+    }
+    // Worker unavailable: degrade optimistically. We can't enforce cap
+    // correctness without canonical chain ordering, so accept the mint on
+    // structural invariants alone. SPEC §10 documents this as a v1
+    // limitation: a deployment running without the worker has weaker cap-
+    // overflow guarantees than one with it.
+    if (metadataOut) {
+      const aidHex = bytesToHex(dec.assetId);
+      if (!metadataOut.has(aidHex)) {
+        metadataOut.set(aidHex, {
+          ticker: petchDec.ticker, decimals: petchDec.decimals, etchTxid: etchTxidHex,
+          imageUri: petchDec.imageUri || null,
+          // T_PETCH-rooted assets are never `mintable` in the CETCH+T_MINT
+          // sense — there is no mint_authority. Setting these to false/null
+          // ensures the etch-mode check downstream (renderHoldings, etc.)
+          // doesn't surface a "mint more" issuer button on these.
+          mintable: false, mintAuthorityHex: null,
+          // Carry the kind so consumers can render T_PETCH-rooted assets
+          // with their own UI variant (cap progress, mint button, etc.).
+          kind: 'petch',
+          capAmount: petchDec.capAmount.toString(),
+          mintLimit: petchDec.mintLimit.toString(),
+        });
+      }
+    }
+    validatedSet.set(key, true);
+    return true;
+  }
+
   validatedSet.set(key, false);
   return false;
 }
@@ -3552,6 +3904,18 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     if (!d || vout >= d.outputs.length) return null;
     return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
   }
+  if (parentEnv.opcode === T_PMINT) {
+    // SPEC §5.9: T_PMINT produces exactly one tacit UTXO at vout 0, holding
+    // the publicly-revealed (amount, blinding) commitment. Treated as a v1
+    // valid ancestor for downstream CXFER/BURN consumers.
+    if (vout !== 0) return null;
+    const d = decodeCPmintPayload(parentEnv.payload);
+    if (!d) return null;
+    return { assetIdHex: bytesToHex(d.assetId), commitment: d.commitment };
+  }
+  // T_PETCH (0x27) intentionally falls through to null — it never produces a
+  // tacit UTXO at any vout (SPEC §5.8). A wallet treating its reveal-tx
+  // vout 0 as a tacit balance is a programming error; explicit reject here.
   return null;
 }
 
@@ -3673,6 +4037,19 @@ async function _scanHoldingsImpl() {
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       onChainCommitment = dec.commitment;
+    } else if (env.opcode === T_PMINT) {
+      // SPEC §5.9: T_PMINT-rooted UTXOs sit at vout 0. Like T_MINT, the
+      // commitment lives in the envelope and the asset is identified by
+      // dec.assetId. Unlike T_MINT, (amount, blinding) are public — the
+      // recovery path below reads them directly from the envelope without
+      // any HMAC/keystream/ECDH derivation.
+      const dec = decodeCPmintPayload(env.payload);
+      if (!dec) continue;
+      if (u.vout !== 0) continue;
+      assetIdHex = bytesToHex(dec.assetId);
+      const meta = getAssetMeta(assetIdHex);
+      if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
+      onChainCommitment = dec.commitment;
     } else if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN) {
       const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
                 : env.opcode === T_AXFER    ? decodeAxferPayload(env.payload)
@@ -3688,7 +4065,7 @@ async function _scanHoldingsImpl() {
     if (!holdings.has(assetIdHex)) {
       holdings.set(assetIdHex, {
         assetIdHex, ticker, decimals,
-        balance: 0n, utxos: [], ghosts: [], inflated: [],
+        balance: 0n, utxos: [], ghosts: [], inflated: [], pending: [],
         unknownAsset: !getAssetMeta(assetIdHex),
       });
     }
@@ -3698,8 +4075,13 @@ async function _scanHoldingsImpl() {
     // A bad CXFER anywhere in the ancestry invalidates everything downstream.
     // Pass metadataOut so the validator records canonical CETCH metadata for any
     // ancestor it walks; we use that below to register tickers/decimals/imageUri
-    // for assets that aren't yet in our local registry.
-    const valid = await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut);
+    // for assets that aren't yet in our local registry. The fresh
+    // pmintStatusOut Map captures whether T_PMINT failures are pending
+    // (transient) or invalid (permanent) so we route the UTXO to the right
+    // h.* bucket below — audit fix #1, see the T_PMINT branch in
+    // validateOutpoint for the classification rules.
+    const pmintStatusOut = new Map();
+    const valid = await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, null, pmintStatusOut);
 
     // Register any newly-discovered canonical metadata. Honors first-seen wins;
     // the registry is keyed by asset_id which is itself derived from the CETCH
@@ -3730,6 +4112,28 @@ async function _scanHoldingsImpl() {
     }
 
     if (!valid) {
+      // Pending T_PMINT branch (audit fix #1): if the failure was a transient
+      // condition (mempool / depth < 3 / worker hasn't credited yet),
+      // recover the opening directly from the envelope's public (amount,
+      // blinding) and surface it as h.pending — distinct from h.inflated,
+      // which is reserved for genuinely-broken UTXOs. The "Inflation
+      // attempt detected" copy in the holdings card only fires for
+      // h.inflated; pending mints get their own informative label.
+      const pmintKey = `${u.txid}:${u.vout}`;
+      if (env.opcode === T_PMINT && pmintStatusOut.get(pmintKey) === 'pending') {
+        const dec = decodeCPmintPayload(env.payload);
+        if (dec) {
+          const candidate = dec.amount;
+          const r = BigInt('0x' + bytesToHex(dec.blinding));
+          try {
+            if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
+              recordOpening(u.txid, u.vout, assetIdHex, candidate, r);
+              h.pending.push({ utxo: u, amount: candidate, blinding: r, commitment: onChainCommitment });
+              continue;
+            }
+          } catch {}
+        }
+      }
       h.inflated.push({ utxo: u, commitment: onChainCommitment });
       continue;
     }
@@ -3818,6 +4222,31 @@ async function _scanHoldingsImpl() {
             } catch {}
           }
         }
+      }
+    }
+
+    if (env.opcode === T_PMINT) {
+      // SPEC §5.9 *Recovery semantics*: T_PMINT envelopes carry (amount,
+      // blinding) in cleartext, so recovery is a direct read — no HMAC/ECDH
+      // derivation, no keystream decrypt. Authenticity falls out of the
+      // pedersenCommit equality check below (the envelope's commitment field
+      // and the on-chain commitment we already extracted are the same field).
+      const dec = decodeCPmintPayload(env.payload);
+      if (dec) {
+        const candidate = dec.amount;
+        const r = BigInt('0x' + bytesToHex(dec.blinding));
+        try {
+          if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, candidate, r);
+            h.balance += candidate;
+            h.utxos.push({ utxo: u, amount: candidate, blinding: r, commitment: onChainCommitment });
+            // Track our own pmints so the UI can surface "you minted X tokens
+            // of FAIR" history without re-fetching from the worker.
+            h.myPmints = h.myPmints || [];
+            h.myPmints.push({ mintTxid: u.txid, amount: candidate });
+            continue;
+          }
+        } catch {}
       }
     }
 
@@ -4032,7 +4461,14 @@ function signTaprootScriptPathInputWithSighash(tx, prevouts, envelopeScript, con
 // IPFS metadata) but BEFORE the envelope is built (so the metadata CID can be
 // the envelope's image_uri). Return value: the final image_uri to embed in
 // the on-chain envelope, or null/undefined to keep `imageUri` unchanged.
-async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri = null, mintable = false, metadataBuilder = null }) {
+async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri = null, mintable = false, metadataBuilder = null, onProgress = null }) {
+  // onProgress(stage) is invoked at the major checkpoints inside this
+  // function so the caller can drive a UI strip without re-implementing
+  // the orchestration. Stages: 'commit-broadcast', 'reveal-broadcast'.
+  // metadataBuilder fires its own pin-time UI; rangeproof prove and the
+  // post-broadcast index step are owned by the caller's bookends. Errors
+  // thrown anywhere here propagate normally — caller updates the strip.
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   const supplyBig = BigInt(supplyBase);
   if (supplyBig <= 0n || supplyBig >= (1n << BigInt(N_BITS))) {
     throw new Error(`supplyBase ${supplyBig} out of range [1, 2^${N_BITS})`);
@@ -4127,6 +4563,7 @@ async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri =
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxid = txid(commitTx);
 
+  _progress('commit-start');
   await broadcast(commitHex);
 
   // Build reveal tx (spend the commit P2TR via script-path)
@@ -4145,6 +4582,7 @@ async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri =
   // Brief delay so the commit propagates into mempool.space's view before we
   // broadcast the reveal that spends it. Without this, the reveal can be
   // rejected with "missing inputs" because the API hasn't indexed the commit yet.
+  _progress('reveal-start');
   await broadcastWithRetry(revealHex);
 
   // Save opening locally
@@ -4176,6 +4614,282 @@ async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri =
   };
 }
 
+// ============== T_PETCH (commit-reveal) ==============
+// SPEC §5.8 — permissionless-mint deployment record. Wire layout:
+//   T_PETCH(1) + tlen(1) + ticker(L) + decimals(1) + cap_amount(8) +
+//   mint_limit(8) + mint_start_height(4) + mint_end_height(4) + img_len(2) +
+//   image_uri(I) = 29 + L + I bytes.
+// No commitment, no rangeproof, no signature. The reveal tx's vout 0 is
+// regular Bitcoin change (P2WPKH back to deployer); T_PETCH never produces
+// a tacit UTXO. asset_id derives from reveal_txid same as CETCH so all
+// downstream tooling identifies the asset identically.
+function estPetchRevealVb({ tickerLen = 8, imageUriLen = 0 } = {}) {
+  const payloadLen = 29 + tickerLen + imageUriLen;
+  const numChunks = Math.max(1, Math.ceil(payloadLen / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + payloadLen + numChunks * 3;
+  const witnessLen = 1 + 65 + 3 + envelopeLen + 34;
+  const baseLen = 82;
+  return Math.ceil((baseLen * 4 + 2 + witnessLen) / 4) + 5;
+}
+
+async function buildAndBroadcastPetch({ ticker, decimals, capAmount, mintLimit, mintStartHeight = 0, mintEndHeight = 0, imageUri = null, metadataBuilder = null, onProgress = null }) {
+  // onProgress(stage) parity with buildAndBroadcastCEtch: 'commit-start'
+  // and 'reveal-start' fire right before each broadcast so the caller's
+  // progress strip's active step matches what's in flight.
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+  const cap = BigInt(capAmount);
+  const lim = BigInt(mintLimit);
+  if (cap <= 0n || cap >= (1n << BigInt(N_BITS))) throw new Error(`cap_amount out of range`);
+  if (lim <= 0n || lim > cap) throw new Error(`mint_limit out of range`);
+  if (cap % lim !== 0n) throw new Error('cap_amount must be evenly divisible by mint_limit');
+
+  const feeRate = await getFeeRate();
+  const tkLen = new TextEncoder().encode(ticker).length;
+  const rawImgLen = imageUri ? new TextEncoder().encode(imageUri).length : 0;
+  const expectedImgLen = metadataBuilder ? Math.max(rawImgLen, 70) : rawImgLen;
+  const revealVb = estPetchRevealVb({ tickerLen: tkLen, imageUriLen: expectedImgLen });
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = DUST + revealFee;
+
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const picked = []; let total = 0;
+  let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) throw new Error(`insufficient sats (need ~${commitValue + commitFee}, have ${total}). Use the faucet.`);
+
+  // Optional metadata builder — same hook shape as CEtch so the dapp can pin
+  // a richer JSON blob to IPFS and replace the on-chain image_uri with the
+  // resulting CID. T_PETCH metadata typically carries name/description/icon
+  // (no tacit_attest, since there's no supply opening to attest at deploy).
+  let finalImageUri = imageUri;
+  let metadataPinned = null;
+  if (typeof metadataBuilder === 'function') {
+    metadataPinned = false;
+    try {
+      const built = await metadataBuilder({});
+      if (typeof built === 'string' && built.length > 0) {
+        finalImageUri = built;
+        metadataPinned = true;
+      }
+    } catch (e) {
+      console.warn('metadataBuilder failed; etching with original imageUri', e);
+    }
+  }
+
+  const payload = encodeCPetchPayload({
+    ticker, decimals, capAmount: cap, mintLimit: lim,
+    mintStartHeight, mintEndHeight, imageUri: finalImageUri,
+  });
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: p2trSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  // Reveal tx: vout 0 is regular sat change (DUST P2WPKH to deployer). It is
+  // NOT a tacit UTXO — T_PETCH creates none. The deployer eats the DUST as
+  // recoverable sats and otherwise gets nothing for free.
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: DUST, script: p2wpkhScript(wallet.pub) }],
+  };
+  const prevouts = [{ value: commitValue, script: p2trSpk }];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid = txid(revealTx);
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  const aid = assetIdFor(revealTxid, 0);
+  registerAsset({
+    assetIdHex: bytesToHex(aid), ticker, decimals,
+    etchTxid: revealTxid, etchVout: 0, imageUri: finalImageUri,
+    mintable: false, mintAuthorityHex: null,
+    kind: 'petch',
+    capAmount: cap.toString(), mintLimit: lim.toString(),
+    mintStartHeight, mintEndHeight,
+  });
+  recordActivity({
+    kind: 'petch', ticker, amount: cap, decimals,
+    assetId: bytesToHex(aid), txid: revealTxid,
+  });
+
+  return {
+    commitTxid, revealTxid, commitHex, revealHex,
+    assetIdHex: bytesToHex(aid),
+    imageUri: finalImageUri,
+    metadataPinned,
+    commitVb: 11 + picked.length * inputVbytes + commitOutputs.length * p2wpkhOutVbytes,
+    revealVb,
+    commitFee, revealFee,
+  };
+}
+
+// ============== T_PMINT (commit-reveal) ==============
+// SPEC §5.9 — permissionless mint event. Wire payload is fixed at 138 bytes
+// (asset_id + etch_txid + commitment + amount + blinding). No signature; no
+// rangeproof; (amount, blinding) are public so any chain reader can audit
+// the commitment. Reveal tx vout 0 holds the new supply UTXO at DUST sats.
+function estPmintRevealVb() {
+  const payloadLen = 138;
+  const numChunks = Math.max(1, Math.ceil(payloadLen / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + payloadLen + numChunks * 3;
+  const witnessLen = 1 + 65 + 3 + envelopeLen + 34;
+  const baseLen = 82;
+  return Math.ceil((baseLen * 4 + 2 + witnessLen) / 4) + 5;
+}
+
+async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
+  // onProgress(stage) parity with buildAndBroadcastCEtch: 'commit-start'
+  // and 'reveal-start' fire right before each broadcast.
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+  if (!/^[0-9a-f]{64}$/.test(etchTxidHex)) throw new Error('invalid etch_txid');
+  const etchTx = await getTx(etchTxidHex);
+  if (!etchTx?.vin?.[0]?.witness || etchTx.vin[0].witness.length < 3) throw new Error('etch tx has no envelope');
+  let petchEnv;
+  try { petchEnv = decodeEnvelopeScript(hexToBytes(etchTx.vin[0].witness[1])); } catch { petchEnv = null; }
+  if (!petchEnv || petchEnv.opcode !== T_PETCH) throw new Error('etch_txid is not a T_PETCH envelope');
+  const petchDec = decodeCPetchPayload(petchEnv.payload);
+  if (!petchDec) throw new Error('T_PETCH payload failed to decode');
+  const aid = assetIdFor(etchTxidHex, 0);
+  const aidHex = bytesToHex(aid);
+
+  const blindingBig = randomScalar();
+  const blinding = bigintToBytes32(blindingBig);
+  const amount = petchDec.mintLimit;
+  const commitmentPt = pedersenCommit(amount, blindingBig);
+  const commitment = pointToBytes(commitmentPt);
+
+  const feeRate = await getFeeRate();
+  const revealVb = estPmintRevealVb();
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = DUST + revealFee;
+
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const picked = []; let total = 0;
+  let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) throw new Error(`insufficient sats (need ~${commitValue + commitFee}, have ${total}). Use the faucet.`);
+
+  const payload = encodeCPmintPayload({
+    assetId: aid, etchTxid: hexToBytes(etchTxidHex), commitment, amount, blinding,
+  });
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: p2trSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxid, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: DUST, script: p2wpkhScript(wallet.pub) }],
+  };
+  const prevouts = [{ value: commitValue, script: p2trSpk }];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid = txid(revealTx);
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  // Register asset metadata locally so the freshly-minted UTXO renders with
+  // the correct ticker/decimals on the holdings card immediately, instead of
+  // showing as `???` until validateOutpoint succeeds (which won't until the
+  // worker credits the mint at depth ≥ 3 — see audit fix #5). For a minter
+  // who's also the deployer, registerAsset was already called by
+  // buildAndBroadcastPetch; for a minter of someone else's T_PETCH this is
+  // the only path that lands the parent's metadata in the local registry.
+  if (!getAssetMeta(aidHex)) {
+    registerAsset({
+      assetIdHex: aidHex,
+      ticker: petchDec.ticker,
+      decimals: petchDec.decimals,
+      etchTxid: etchTxidHex,
+      etchVout: 0,
+      imageUri: petchDec.imageUri || null,
+      mintable: false,
+      mintAuthorityHex: null,
+      kind: 'petch',
+      capAmount: petchDec.capAmount.toString(),
+      mintLimit: petchDec.mintLimit.toString(),
+      mintStartHeight: petchDec.mintStartHeight,
+      mintEndHeight: petchDec.mintEndHeight,
+    });
+  }
+  // Persist the opening locally. validateOutpoint refuses to credit the UTXO
+  // as ancestry until the worker confirms cap-credit at depth ≥ 3, but
+  // scanHoldings's pending-tier path (audit fix #1) recovers the opening
+  // from the on-chain envelope and surfaces this UTXO under h.pending so
+  // the user sees their fresh mint accounted for — distinct from h.utxos
+  // (spendable) and h.inflated (genuinely-broken). Audit fix E: previous
+  // comment incorrectly claimed the recovery path runs unconditionally;
+  // the truth is that h.pending only catches T_PMINT failures whose
+  // pmintStatusOut tag is 'pending', not 'invalid'.
+  recordOpening(revealTxid, 0, aidHex, amount, blindingBig);
+  recordActivity({
+    kind: 'pmint', ticker: petchDec.ticker, amount, decimals: petchDec.decimals,
+    assetId: aidHex, txid: revealTxid,
+  });
+  invalidatePmintCreditedCache();
+  // Bust the petch list cache too so the next renderPetchDiscover sees the
+  // new pending mint (cap progress + remaining-mints + pending counter move).
+  invalidatePetchCache();
+
+  return {
+    commitTxid, revealTxid, commitHex, revealHex,
+    assetIdHex: aidHex,
+    amount, blinding: blindingBig,
+    commitVb: 11 + picked.length * inputVbytes + commitOutputs.length * p2wpkhOutVbytes,
+    revealVb,
+    commitFee, revealFee,
+  };
+}
+
 // ============== CXFER (commit-reveal) ==============
 // forceUtxos (optional) lets callers pre-select the exact asset UTXO(s) to
 // consume — used by the cancel-atomic-offer flow, which must spend the
@@ -4189,7 +4903,10 @@ async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri =
 // Padding is needed because the aggregated bulletproof requires m to be a power
 // of 2. Padding outputs are indistinguishable from change to outsiders; the
 // wallet auto-recovers them as 0-amount UTXOs (DUST sats are returned).
-async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false }) {
+async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null }) {
+  // onProgress(stage) parity with buildAndBroadcastCEtch — fires
+  // 'commit-start' / 'reveal-start' right before each broadcast.
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   if (!Array.isArray(recipients) || recipients.length === 0) {
     throw new Error('recipients must be a non-empty array');
   }
@@ -4360,6 +5077,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxid = txid(commitTx);
 
+  _progress('commit-start');
   await broadcast(commitHex);
 
   const revealOutputs = revealPkScripts.map(script => ({ value: DUST, script }));
@@ -4383,6 +5101,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxid = txid(revealTx);
 
+  _progress('reveal-start');
   await broadcastWithRetry(revealHex);
   // Bump the worker's per-asset transfer_count immediately. Without this the
   // counter only ticks on the next cron block-scan (5+ min on mainnet) and
@@ -4423,11 +5142,12 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
 // Backwards-compatible single-recipient wrapper. The send-form UI handler and
 // other internal flows (cancel-axfer-offer, cancel-fulfilled-intent) call this
 // with the legacy { assetIdHex, recipientPubHex, amount, forceUtxos } shape.
-async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount, forceUtxos = null }) {
+async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount, forceUtxos = null, onProgress = null }) {
   const r = await buildAndBroadcastCXferMulti({
     assetIdHex,
     recipients: [{ pubHex: recipientPubHex, amount }],
     forceUtxos,
+    onProgress,
   });
   return {
     commitTxid: r.commitTxid,
@@ -4784,7 +5504,13 @@ function verifyAxferOffer(offer) {
 // (signed SIGHASH_ALL — commits the whole tx, locking the maker's
 // payment-to-maker output at vout[1]) plus an optional taker BTC change output.
 // Broadcasts the result. Returns the broadcast txid.
-async function takeAxferOffer(offer) {
+async function takeAxferOffer(offer, { onProgress = null } = {}) {
+  // onProgress(stage). Single-broadcast settlement (no commit/reveal pair),
+  // so stages map to: 'verify-start' (cryptographic + on-chain verification
+  // before touching funds) → 'sign-start' (assembling + signing the
+  // settlement tx) → 'broadcast-start' (about to send the final tx).
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+  _progress('verify-start');
   // Cryptographic verification of the offer must happen BEFORE we touch funds.
   // verifyAxferOffer covers structure, output binding, envelope decode, and
   // the critical Pedersen binding that ties offer.amount to the on-chain
@@ -4847,6 +5573,7 @@ async function takeAxferOffer(offer) {
   const fundingGap = knownOutValue + fee - knownInValue;
   if (fundingGap < 0) throw new Error('partial tx is over-funded; refusing to take');
 
+  _progress('sign-start');
   const allUtxos = await getUtxos(wallet.address());
   const usable = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
   const picked = []; let total = 0;
@@ -4881,6 +5608,7 @@ async function takeAxferOffer(offer) {
 
   const txHex = bytesToHex(serializeTx(tx));
   const finalTxid = txid(tx);
+  _progress('broadcast-start');
   await broadcastWithRetry(txHex);
   // Bump the worker's per-asset transfer_count immediately for this T_AXFER
   // settlement; otherwise atomic-OTC fills don't surface in Discover until
@@ -5003,7 +5731,14 @@ function _axintentCancelMsg(assetIdBytes, intentIdBytes) {
   ));
 }
 
-async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry }) {
+async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onProgress = null }) {
+  // onProgress(stage). Stages, in order:
+  //   'commit-start'  — about to broadcast the commit tx
+  //   'wait-visible'  — commit broadcast resolved; waiting for chain API to index
+  //   'publish-start' — about to POST the signed intent body to the worker
+  // Different from the CETCH/CXFER shape: there's only one chain broadcast
+  // (the commit) — the reveal happens later when a taker takes the intent.
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!Number.isInteger(priceSats) || priceSats < DUST) throw new Error(`price_sats must be ≥ ${DUST}`);
   if (!Number.isInteger(expiry) || expiry <= Math.floor(Date.now() / 1000)) throw new Error('expiry must be future unix-seconds');
@@ -5072,6 +5807,7 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry }) {
   }
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxidHex = txid(commitTx);
+  _progress('commit-start');
   await broadcast(commitHex);
 
   const intentIdBytes = sha256(concatBytes(reverseBytes(hexToBytes(commitTxidHex)), wallet.pub)).slice(0, 16);
@@ -5115,7 +5851,9 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry }) {
   // retries on its side as a 7s backstop. By the time we POST, mempool.space
   // has acknowledged seeing the commit, so the worker's chain check
   // succeeds on its first attempt.
+  _progress('wait-visible');
   await waitForTxVisible(commitTxidHex);
+  _progress('publish-start');
   await postAxferIntentBody(assetIdHex, body);
   // POST succeeded — discard the pending record so we don't try to re-post
   // on next load. The secret + activity are kept (intent is now live).
@@ -5307,7 +6045,7 @@ async function fetchAxferFulfilment({ assetIdHex, intentIdHex }) {
   return j;
 }
 
-async function takeAxferIntent({ intent, fulfilment }) {
+async function takeAxferIntent({ intent, fulfilment, onProgress = null }) {
   if (!intent || !fulfilment) throw new Error('intent + fulfilment required');
   // Decrypt the recipient blinding the maker shipped at fulfilment. The
   // ciphertext is symmetric ECDH between (maker, taker), so deriving the
@@ -5348,7 +6086,7 @@ async function takeAxferIntent({ intent, fulfilment }) {
     partial_reveal: fulfilment.partial_reveal,
     recipient_blinding: rHexClear,
   };
-  const result = await takeAxferOffer(offer);
+  const result = await takeAxferOffer(offer, { onProgress });
   // takeAxferOffer already recordOpening'd with the verified blinding; the
   // intent path uses the same scalar so no overwrite needed here.
   return result;
@@ -5570,7 +6308,8 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
 // Structure mirrors CETCH (commit + reveal Taproot script-path), but the envelope
 // is T_MINT and the new UTXO at reveal vout=0 is the issuer's. mint_authority
 // must be the wallet's xonly pubkey (so we can sign).
-async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount }) {
+async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount, onProgress = null }) {
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   const amt = BigInt(amount);
   if (amt <= 0n || amt >= (1n << BigInt(N_BITS))) {
     throw new Error(`mint amount must be 1..${(1n << BigInt(N_BITS)) - 1n} base units`);
@@ -5649,6 +6388,7 @@ async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount }) {
   }
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxid = txid(commitTx);
+  _progress('commit-start');
   await broadcast(commitHex);
 
   const revealTx = {
@@ -5660,6 +6400,7 @@ async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount }) {
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxid = txid(revealTx);
+  _progress('reveal-start');
   await broadcastWithRetry(revealHex);
 
   // Record the issuer's opening so the new minted UTXO is spendable later.
@@ -5686,7 +6427,8 @@ async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount }) {
 //   - (optional) 1 change commitment for the burner (vout=0) — created if change > 0
 // Burned amount is public in the envelope. Kernel sig binds (asset_id, inputs,
 // outputs, burned_amount) and verifies under E' = Σ C_out + burned·H − Σ C_in.
-async function buildAndBroadcastCBurn({ assetIdHex, amount }) {
+async function buildAndBroadcastCBurn({ assetIdHex, amount, onProgress = null }) {
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   const burnAmt = BigInt(amount);
   if (burnAmt <= 0n || burnAmt >= (1n << BigInt(N_BITS))) {
     throw new Error(`burn amount must be 1..${(1n << BigInt(N_BITS)) - 1n} base units`);
@@ -5791,6 +6533,7 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount }) {
   }
   const commitHex = bytesToHex(serializeTx(commitTx));
   const commitTxid = txid(commitTx);
+  _progress('commit-start');
   await broadcast(commitHex);
 
   const revealOutputs = outputs.length > 0
@@ -5820,6 +6563,7 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount }) {
   }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxid = txid(revealTx);
+  _progress('reveal-start');
   await broadcastWithRetry(revealHex);
   // Hint the worker so the burn record (and a counter bump for the change
   // CXFER, if any) lands without waiting on the cron tick.
@@ -5906,11 +6650,15 @@ function selectSatsUtxosSafe(allUtxos, holdings) {
   // Build the canonical "do not spend as sats" set from holdings. Both validated
   // asset utxos and ghost utxos (validation incomplete but parent might be tacit)
   // are excluded. Better to refuse a legitimate sats UTXO than spend a tacit one.
+  // Pending T_PMINT UTXOs (audit fix #1) are also excluded — same DUST output
+  // shape as a credited mint, so a sats-send would silently destroy the
+  // commitment and the user's eventual cap-credit.
   const exclude = new Set();
   for (const h of holdings.values()) {
-    for (const u of (h.utxos || []))    exclude.add(`${u.txid}:${u.vout}`);
-    for (const g of (h.ghosts || []))   exclude.add(`${g.txid}:${g.vout}`);
-    for (const i of (h.inflated || [])) exclude.add(`${i.txid}:${i.vout}`);
+    for (const u of (h.utxos || []))    exclude.add(`${u.utxo?.txid || u.txid}:${u.utxo?.vout ?? u.vout}`);
+    for (const g of (h.ghosts || []))   exclude.add(`${g.utxo?.txid || g.txid}:${g.utxo?.vout ?? g.vout}`);
+    for (const i of (h.inflated || [])) exclude.add(`${i.utxo?.txid || i.txid}:${i.utxo?.vout ?? i.vout}`);
+    for (const p of (h.pending || []))  exclude.add(`${p.utxo?.txid || p.txid}:${p.utxo?.vout ?? p.vout}`);
   }
   return (allUtxos || []).filter(u => {
     const key = `${u.txid}:${u.vout}`;
@@ -6007,9 +6755,10 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   if (recheck && recheck instanceof Map) {
     const reExclude = new Set();
     for (const h of recheck.values()) {
-      for (const u of (h.utxos || []))    reExclude.add(`${u.txid}:${u.vout}`);
-      for (const g of (h.ghosts || []))   reExclude.add(`${g.txid}:${g.vout}`);
-      for (const i of (h.inflated || [])) reExclude.add(`${i.txid}:${i.vout}`);
+      for (const u of (h.utxos || []))    reExclude.add(`${u.utxo?.txid || u.txid}:${u.utxo?.vout ?? u.vout}`);
+      for (const g of (h.ghosts || []))   reExclude.add(`${g.utxo?.txid || g.txid}:${g.utxo?.vout ?? g.vout}`);
+      for (const i of (h.inflated || [])) reExclude.add(`${i.utxo?.txid || i.txid}:${i.utxo?.vout ?? i.vout}`);
+      for (const p of (h.pending || []))  reExclude.add(`${p.utxo?.txid || p.txid}:${p.utxo?.vout ?? p.vout}`);
     }
     for (const u of picked) {
       if (reExclude.has(`${u.txid}:${u.vout}`)) {
@@ -7149,6 +7898,202 @@ const $$ = sel => document.querySelectorAll(sel);
 const escapeHtml = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const shorten = (s, n = 10) => !s || s.length <= n*2 + 3 ? s : s.slice(0, n) + '…' + s.slice(-n);
 
+// Set transient status text on a small label element ("syncing", "scanning",
+// "loading", etc.). Pass `pending: true` to toggle the .live-dots CSS class
+// that pulses three trailing dots — strip your own ellipsis from the message
+// since the pseudo-element draws them. Pass `pending: false` (default) for
+// terminal text like "synced · 5 sat/vB" or "" to clear.
+function setStatus(elOrSel, text, pending = false) {
+  const el = typeof elOrSel === 'string' ? document.querySelector(elOrSel) : elOrSel;
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('live-dots', !!pending && !!text);
+}
+
+// Reusable progress-strip markup for embedding in inline forms (mint /
+// burn) where there isn't a fixed DOM slot in index.html. Same 4 steps
+// (Build → Commit → Reveal → Pending) — the form's onSubmit drives the
+// strip via setProgressStrip(host.querySelector('.progress-strip'), …).
+// Hidden by default; shown when broadcast starts.
+const PROGRESS_STRIP_HTML = `
+  <div class="progress-strip" style="display:none;margin-top:10px;" aria-live="polite">
+    <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+    <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+    <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+    <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Pending</span></div>
+  </div>
+`;
+
+// Optimistic balance debit applied to a Holdings asset card immediately
+// after a successful CXFER broadcast — bridges the 1-2s gap between
+// "broadcast resolved" and "next chain scan completes". Replaces the
+// rendered .balance text with `prev - delta` and overlays a small "pending
+// -X" pill on the card. The next renderHoldings() naturally rebuilds the
+// card from the chain-truth balance, replacing both. Pure cosmetic — no
+// state is mutated; the card is keyed on data-asset-card-aid (a class +
+// data attribute we add to the asset-card root in renderHoldings so this
+// helper can find the right card).
+function applyOptimisticDebit(assetIdHex, delta) {
+  // Find the holdings asset card. We can't use `data-aid` alone because
+  // many child buttons share that attribute — find the card root.
+  const cards = document.querySelectorAll('#holdings-list > .asset-card');
+  let card = null;
+  for (const c of cards) {
+    if (c.dataset.aid === assetIdHex) { card = c; break; }
+  }
+  if (!card) return;
+  const balanceEl = card.querySelector('.balance');
+  if (!balanceEl) return;
+  // Parse the current balance text (a fmtAssetAmount-formatted string).
+  // We avoid round-tripping through display units by reading a stored
+  // `data-base-amount` attr that renderHoldings stamps. Skip if absent —
+  // the optimistic update is a nicety, not a correctness path.
+  const baseAttr = card.dataset.baseAmount;
+  const decAttr = card.dataset.decimals;
+  if (!baseAttr || decAttr === undefined) return;
+  let prev;
+  try { prev = BigInt(baseAttr); }
+  catch { return; }
+  const dec = parseInt(decAttr, 10);
+  if (!Number.isInteger(dec)) return;
+  const next = prev > delta ? prev - delta : 0n;
+  card.dataset.baseAmount = next.toString();
+  // Update the visible balance number (preserve the unit + verified-tag spans).
+  const firstTextNode = balanceEl.firstChild;
+  if (firstTextNode && firstTextNode.nodeType === Node.TEXT_NODE) {
+    firstTextNode.textContent = fmtAssetAmount(next, dec);
+  }
+  // Overlay a pending pill so the user sees the action took effect — and
+  // also that the chain hasn't confirmed yet. Removed by the next full
+  // re-render of the card. Idempotent: if a previous debit already left a
+  // pill, update its text instead of stacking.
+  let pill = card.querySelector('[data-optimistic-pending]');
+  const fmtDelta = fmtAssetAmount(delta, dec);
+  if (!pill) {
+    pill = document.createElement('span');
+    pill.setAttribute('data-optimistic-pending', '1');
+    pill.className = 'pending-pill';
+    balanceEl.appendChild(pill);
+  }
+  pill.textContent = `pending −${fmtDelta}`;
+}
+
+// Drive a progress strip's per-step state. `stripIdOrEl` is the strip
+// element (or its id); `activeIdx` is the 0-based index of the in-flight
+// step. All steps with index < activeIdx are marked done; the active step
+// pulses; later steps stay pending. Pass `activeIdx === -1` to reset all
+// steps to pending (used to hide / clean up between flows). Pass
+// `errorAt` to mark a step as failed (red dot + label, no pulse).
+//
+// The strip itself is shown/hidden by the caller — this helper only
+// updates classes so the same strip can be reused across flows.
+function setProgressStrip(stripIdOrEl, activeIdx, opts = {}) {
+  const strip = typeof stripIdOrEl === 'string' ? document.getElementById(stripIdOrEl) : stripIdOrEl;
+  if (!strip) return;
+  const steps = strip.querySelectorAll('.progress-step');
+  const errorAt = Number.isInteger(opts.errorAt) ? opts.errorAt : -1;
+  steps.forEach((step, i) => {
+    step.classList.remove('done', 'active', 'error');
+    if (errorAt === i) step.classList.add('error');
+    else if (activeIdx === -1) { /* all pending */ }
+    else if (i < activeIdx) step.classList.add('done');
+    else if (i === activeIdx) step.classList.add('active');
+  });
+}
+
+// Numeric badge on a tab — `name` is the tab's data-tab value
+// (holdings / market / drops / discover / etc.). Pass 0/null/undefined to
+// clear. CSS at .tab[data-count]::after renders the chip when count > 0.
+function setTabBadge(name, count) {
+  const tab = document.querySelector(`.tab[data-tab="${name}"]`);
+  if (!tab) return;
+  if (count == null || count === 0 || Number.isNaN(count)) tab.removeAttribute('data-count');
+  else tab.setAttribute('data-count', String(count > 999 ? '999+' : count));
+}
+
+// Set element textContent and briefly flash an orange background if the
+// value actually changed (suppresses the flash on first paint and on
+// no-op refreshes). The .value-flash class self-clears on animationend
+// so the next change can re-trigger. Pass `force: true` for the rare case
+// you want to flash without a value change (e.g. confirmed tx receipt).
+// Set element text to a numeric value, optionally tweening from the prior
+// value over `ms` so the eye reads "this number changed" instead of just
+// snapping. fmt() is called per-RAF-frame to render the in-flight number;
+// the final value is set verbatim on completion to avoid floating-point
+// drift in the displayed string. Stores the canonical numeric value on
+// el.dataset.numericValue so successive calls can tween from the actual
+// prior numeric, not from a re-parsed comma-formatted string.
+//
+// Triggers .value-flash on change (same as setIfChanged) so users get both
+// signals: orange highlight + count-up. First paint and no-op refreshes
+// skip animation. prefers-reduced-motion → snap, no tween.
+function setNumberAnimated(elOrSel, value, fmt, ms = 500) {
+  const el = typeof elOrSel === 'string' ? document.querySelector(elOrSel) : elOrSel;
+  if (!el) return;
+  const next = Number(value);
+  if (!Number.isFinite(next)) { el.textContent = String(value); return; }
+  const prevStr = el.dataset.numericValue;
+  const prev = prevStr === undefined ? null : Number(prevStr);
+  el.dataset.numericValue = String(next);
+  // Cancel any in-flight tween on this element so a fast double-update
+  // doesn't render two overlapping animations on the same node.
+  if (el._tweenRAF) { cancelAnimationFrame(el._tweenRAF); el._tweenRAF = 0; }
+  // First paint, no prior, or no real change: snap and bail.
+  if (prev === null || !Number.isFinite(prev) || prev === next) {
+    el.textContent = fmt(next);
+    return;
+  }
+  // Honor reduced-motion: snap + flash, no tween.
+  const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) {
+    el.textContent = fmt(next);
+  } else {
+    const start = performance.now();
+    const tick = (now) => {
+      const t = Math.min(1, (now - start) / ms);
+      // ease-out cubic — fast at first, settles into the final value.
+      const eased = 1 - Math.pow(1 - t, 3);
+      const v = prev + (next - prev) * eased;
+      el.textContent = fmt(t < 1 ? v : next);
+      if (t < 1) el._tweenRAF = requestAnimationFrame(tick);
+      else el._tweenRAF = 0;
+    };
+    el._tweenRAF = requestAnimationFrame(tick);
+  }
+  // Replay-trick (same as setIfChanged) so back-to-back changes both flash.
+  el.classList.remove('value-flash');
+  void el.offsetWidth;
+  el.classList.add('value-flash');
+  if (!el._valueFlashWired) {
+    el._valueFlashWired = true;
+    el.addEventListener('animationend', e => {
+      if (e.animationName === 'value-flash') el.classList.remove('value-flash');
+    });
+  }
+}
+
+function setIfChanged(elOrSel, text, force = false) {
+  const el = typeof elOrSel === 'string' ? document.querySelector(elOrSel) : elOrSel;
+  if (!el) return;
+  const next = String(text == null ? '' : text);
+  const prev = el.textContent;
+  el.textContent = next;
+  if (!force && (prev === '' || prev === '—' || prev === next)) return;
+  // Replay-trick: remove the class, force a reflow, re-add. Without the
+  // reflow, removing-and-immediately-adding the class is collapsed by the
+  // browser into a no-op and the animation never restarts on the second
+  // change in a row.
+  el.classList.remove('value-flash');
+  void el.offsetWidth;
+  el.classList.add('value-flash');
+  if (!el._valueFlashWired) {
+    el._valueFlashWired = true;
+    el.addEventListener('animationend', e => {
+      if (e.animationName === 'value-flash') el.classList.remove('value-flash');
+    });
+  }
+}
+
 // Mark assets whose ticker is shared by ≥ 2 active assets in the supplied
 // list. Tickers in tacit are free-form CETCH bytes; nothing prevents an
 // etcher from cloning a popular asset's ticker string to phish takers. The
@@ -7459,7 +8404,7 @@ async function refreshWallet() {
   $('#w-address').textContent = wallet.address();
   $('#w-pubkey').textContent = wallet.pubHex();
   $('#explorer-link').href = `${NET.explorer}/address/${wallet.address()}`;
-  $('#wallet-status').textContent = 'syncing…';
+  setStatus('#wallet-status', 'syncing', true);
   // Render with conservative defaults immediately so badges and connect/faucet
   // visibility update the instant a refresh starts; the network result below
   // re-renders with the actual balance.
@@ -7472,12 +8417,12 @@ async function refreshWallet() {
       checkFaucetReady(),
     ]);
     const balance = utxos.reduce((a, u) => a + u.value, 0);
-    $('#w-balance').textContent = fmtSats(balance);
-    $('#w-height').textContent = height;
-    $('#wallet-status').textContent = `synced · ${rate} sat/vB`;
+    setNumberAnimated('#w-balance', balance, fmtSats, 600);
+    setIfChanged('#w-height', height);
+    setStatus('#wallet-status', `synced · ${rate} sat/vB`);
     renderWalletCard({ balance, faucetReady });
   } catch (e) {
-    $('#wallet-status').textContent = 'offline: ' + e.message;
+    setStatus('#wallet-status', 'offline: ' + e.message);
   }
 }
 function setupWalletButtons() {
@@ -7760,6 +8705,10 @@ async function resolveImageUri(imageUri) {
   return p;
 }
 function getMetadataExtras(imageUri) {
+  // Hydrate the persistent cache before the synchronous read so callers that
+  // run before any resolveImageUri (e.g. holdings card skeletons) still hit
+  // warm-cache values from localStorage instead of falling back to ticker.
+  _ensureImgCacheHydrated();
   return _metadataExtraCache.get(imageUri) || null;
 }
 function setupEtchForm() {
@@ -8063,7 +9012,6 @@ function setupEtchForm() {
       // showing just the ticker.
       const wantMetadata = (job.name || job.description || job.externalUrl || attestRequested) && PIN_JSON_URL;
       const metadataBuilder = !wantMetadata ? null : async ({ supply, blinding, commitment }) => {
-        $('#btn-etch-broadcast').textContent = 'Pinning metadata…';
         // Use the user-supplied name when present; fall back to the ticker so
         // ERC-721-style consumers always see a name field.
         const md = { name: job.name || job.ticker, decimals: job.decimals };
@@ -8081,10 +9029,17 @@ function setupEtchForm() {
         return `ipfs://${metaCid}`;
       };
 
-      $('#btn-etch-broadcast').textContent = 'Proving rangeproof…';
+      // Reveal the inline progress strip and start at step 0 (Build:
+      // rangeproof prove + optional metadata pin). The strip persists the
+      // user's mental model across the ~3-5s the broadcast normally takes,
+      // so they see commit → reveal → index landing in sequence instead of
+      // staring at a generic "Broadcasting…" button.
+      const progressEl = $('#etch-progress');
+      if (progressEl) progressEl.style.display = 'flex';
+      setProgressStrip('etch-progress', 0);
+      $('#btn-etch-broadcast').textContent = 'Etching…';
       // Yield to UI before the ~250ms prove
       await new Promise(r => setTimeout(r, 50));
-      $('#btn-etch-broadcast').textContent = 'Broadcasting commit + reveal…';
       const r = await buildAndBroadcastCEtch({
         ticker: job.ticker,
         supplyBase: job.supplyBase,
@@ -8092,7 +9047,16 @@ function setupEtchForm() {
         imageUri: job.imageUri,
         mintable: job.mintable,
         metadataBuilder,
+        onProgress: (stage) => {
+          // Each event fires when the named broadcast is about to go out,
+          // so the active step matches what's in flight.
+          if (stage === 'commit-start') setProgressStrip('etch-progress', 1);
+          else if (stage === 'reveal-start') setProgressStrip('etch-progress', 2);
+        },
       });
+      // All four stages done — flash the last one as complete then hide.
+      setProgressStrip('etch-progress', 4);
+      setTimeout(() => { if (progressEl) progressEl.style.display = 'none'; setProgressStrip('etch-progress', -1); }, 1200);
       toast(`Etched ${job.ticker}: commit=${shorten(r.commitTxid, 6)} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
       markOnboarded();
       postHint(r.revealTxid, 0);
@@ -8180,10 +9144,139 @@ function setupEtchForm() {
       refreshWallet();
     } catch (e) {
       $('#etch-error').textContent = e.message;
+      // Mark the in-flight step as errored. The strip stays visible — it
+      // shows the user exactly which stage failed (build / commit / reveal)
+      // so the error message has context. Hidden again on the next attempt
+      // or when the user navigates away.
+      const stripEl = $('#etch-progress');
+      if (stripEl && stripEl.style.display !== 'none') {
+        const activeStep = stripEl.querySelector('.progress-step.active');
+        const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
+        if (errIdx >= 0) setProgressStrip('etch-progress', -1, { errorAt: errIdx });
+      }
       console.error(e);
     } finally {
       $('#btn-etch-broadcast').disabled = false;
       $('#btn-etch-broadcast').textContent = 'Etch & broadcast';
+    }
+  };
+}
+
+// ============== T_PETCH FORM (permissionless fair-launch deploy) ==============
+// Mirrors setupEtchForm's commit-reveal flow but on a much simpler envelope:
+// no supply commitment, no rangeproof, no metadata-attest path. The deploy
+// step is a one-shot button (no preview) since there's no supply to surprise
+// the user with — every parameter is in the form and visible up front.
+function setupPetchForm() {
+  const tickerInput = $('#p-ticker');
+  const decimalsInput = $('#p-decimals');
+  const capInput = $('#p-cap');
+  const limitInput = $('#p-limit');
+  const imageInput = $('#p-image');
+  const hint = $('#p-divisibility-hint');
+  const broadcastBtn = $('#btn-petch-broadcast');
+  const errEl = $('#petch-error');
+  const successEl = $('#petch-success');
+  if (!broadcastBtn) return;
+
+  const updateHint = () => {
+    if (!hint) return;
+    const decimals = parseInt(decimalsInput.value, 10);
+    const capStr = capInput.value.trim();
+    const limStr = limitInput.value.trim();
+    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 8) { hint.textContent = ''; return; }
+    if (!capStr || !limStr) { hint.textContent = ''; return; }
+    let cap, lim;
+    try { cap = parseAssetAmount(capStr, decimals); lim = parseAssetAmount(limStr, decimals); }
+    catch { hint.textContent = ''; return; }
+    if (cap <= 0n || lim <= 0n) { hint.textContent = ''; return; }
+    if (lim > cap) { hint.style.color = 'var(--red)'; hint.textContent = `mint_limit (${limStr}) exceeds cap (${capStr}) — invalid`; return; }
+    if (cap % lim !== 0n) {
+      hint.style.color = 'var(--red)';
+      hint.textContent = `cap not evenly divisible by per-mint amount — leaves a residual that can never be minted; pick values where cap / per-mint is a whole integer`;
+      return;
+    }
+    const mintCount = cap / lim;
+    hint.style.color = '';
+    hint.textContent = `${mintCount.toString()} mints will reach the cap (${capStr} ${tickerInput.value || 'token'} total at ${limStr} per mint)`;
+  };
+  capInput?.addEventListener('input', updateHint);
+  limitInput?.addEventListener('input', updateHint);
+  decimalsInput?.addEventListener('input', updateHint);
+  tickerInput?.addEventListener('input', updateHint);
+
+  broadcastBtn.onclick = async () => {
+    errEl.textContent = '';
+    successEl.style.display = 'none';
+    let ticker, decimals, cap, lim, imageUri;
+    try {
+      ticker = tickerInput.value.trim().toUpperCase();
+      if (!/^[A-Z0-9]{1,8}$/.test(ticker)) throw new Error('ticker must be 1–8 chars (A–Z, 0–9)');
+      decimals = parseInt(decimalsInput.value, 10);
+      if (!Number.isInteger(decimals) || decimals < 0 || decimals > 8) throw new Error('decimals must be 0–8');
+      const capStr = capInput.value.trim();
+      const limStr = limitInput.value.trim();
+      if (!capStr || !limStr) throw new Error('cap_amount and per-mint amount required');
+      try { cap = parseAssetAmount(capStr, decimals); }
+      catch (e) { throw new Error(`cap_amount: ${e.message}`); }
+      try { lim = parseAssetAmount(limStr, decimals); }
+      catch (e) { throw new Error(`per-mint amount: ${e.message}`); }
+      if (cap <= 0n || lim <= 0n) throw new Error('amounts must be > 0');
+      if (lim > cap) throw new Error('per-mint amount exceeds cap');
+      if (cap % lim !== 0n) throw new Error('cap is not evenly divisible by per-mint amount');
+      try { imageUri = validateImageUriForEtch(imageInput.value); }
+      catch (e) { throw new Error(`image: ${e.message}`); }
+    } catch (e) {
+      errEl.textContent = e.message;
+      return;
+    }
+    if (!ensureBurnerBackedUp('Deploy a public-mint asset (T_PETCH; deployer receives no tokens)')) {
+      errEl.textContent = 'Deploy cancelled. Back up the in-page privkey first, then retry.';
+      return;
+    }
+    const need = await estimateSatsForOp('etch');
+    if (!(await ensureSatsFunded(need, 'Deploying T_PETCH'))) return;
+    broadcastBtn.disabled = true;
+    broadcastBtn.textContent = 'deploying…';
+    const stripEl = $('#petch-progress');
+    if (stripEl) stripEl.style.display = 'flex';
+    setProgressStrip('petch-progress', 0);
+    try {
+      const r = await buildAndBroadcastPetch({
+        ticker, decimals, capAmount: cap, mintLimit: lim, imageUri,
+        onProgress: (stage) => {
+          if (stage === 'commit-start') setProgressStrip('petch-progress', 1);
+          else if (stage === 'reveal-start') setProgressStrip('petch-progress', 2);
+        },
+      });
+      setProgressStrip('petch-progress', 4);
+      setTimeout(() => { if (stripEl) stripEl.style.display = 'none'; setProgressStrip('petch-progress', -1); }, 1200);
+      successEl.style.display = 'block';
+      successEl.innerHTML = `
+        <div style="padding:12px;border:1px solid var(--ink);border-left:4px solid #0a8f43;background:var(--bg-warm);">
+          <strong>✓ Public-mint asset deployed</strong>
+          <div class="muted" style="margin-top:6px;font-size:11px;line-height:1.6;">
+            asset_id: <span class="mono-box inline" style="font-size:10px;">${escapeHtml(r.assetIdHex)}</span><br>
+            commit: <a href="${NET.explorer}/tx/${r.commitTxid}" target="_blank" rel="noopener noreferrer" class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(r.commitTxid, 10))}</a><br>
+            reveal: <a href="${NET.explorer}/tx/${r.revealTxid}" target="_blank" rel="noopener noreferrer" class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(r.revealTxid, 10))}</a><br>
+            Anyone (including you) can mint <strong>${escapeHtml(limitInput.value)} ${escapeHtml(ticker)}</strong> per mint until the cap of <strong>${escapeHtml(capInput.value)}</strong> is reached. Minting opens after the next block confirms.
+          </div>
+        </div>`;
+      if (typeof invalidateDiscoverRegistryCache === 'function') invalidateDiscoverRegistryCache();
+      toast(`Deployed ${ticker} ✓`, 'success', 8000);
+    } catch (e) {
+      errEl.textContent = `Deploy failed: ${e.message}`;
+      // Mark in-flight step as errored; strip stays visible so the error
+      // line has visual context (which stage failed).
+      if (stripEl && stripEl.style.display !== 'none') {
+        const activeStep = stripEl.querySelector('.progress-step.active');
+        const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
+        if (errIdx >= 0) setProgressStrip('petch-progress', -1, { errorAt: errIdx });
+      }
+      console.error(e);
+    } finally {
+      broadcastBtn.disabled = false;
+      broadcastBtn.textContent = 'Deploy public-mint asset';
     }
   };
 }
@@ -8686,11 +9779,28 @@ function setupTransferForm() {
     const need = await estimateSatsForOp('cxfer');
     if (!(await ensureSatsFunded(need, 'Transferring'))) return;
     $('#btn-transfer-broadcast').disabled = true;
-    $('#btn-transfer-broadcast').textContent = 'Proving rangeproofs…';
+    $('#btn-transfer-broadcast').textContent = 'Sending…';
+    const xferStrip = $('#transfer-progress');
+    if (xferStrip) xferStrip.style.display = 'flex';
+    setProgressStrip('transfer-progress', 0);
     try {
       await new Promise(r => setTimeout(r, 50));
-      $('#btn-transfer-broadcast').textContent = 'Broadcasting commit + reveal…';
-      const r = await buildAndBroadcastCXfer(job);
+      const r = await buildAndBroadcastCXfer({
+        ...job,
+        onProgress: (stage) => {
+          if (stage === 'commit-start') setProgressStrip('transfer-progress', 1);
+          else if (stage === 'reveal-start') setProgressStrip('transfer-progress', 2);
+        },
+      });
+      setProgressStrip('transfer-progress', 4);
+      setTimeout(() => { if (xferStrip) xferStrip.style.display = 'none'; setProgressStrip('transfer-progress', -1); }, 1200);
+      // Optimistic balance debit: scanHoldings is invalidated and the next
+      // render will reconcile from chain in 1-2s, but during that window the
+      // Holdings card on the previous tab still shows the pre-send number.
+      // Annotate the affected card with a pending overlay so the user sees
+      // their action take effect immediately. The overlay is purely visual;
+      // the actual balance source of truth is still the chain scan.
+      applyOptimisticDebit(job.assetIdHex, BigInt(r.sendAmount));
       saveRecentRecipient(job.recipientPubHex);
       toast(`CXFER: commit=${shorten(r.commitTxid, 6)} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
       markOnboarded();
@@ -8735,6 +9845,11 @@ function setupTransferForm() {
       refreshAssetSelect();
     } catch (e) {
       $('#transfer-error').textContent = e.message;
+      if (xferStrip && xferStrip.style.display !== 'none') {
+        const activeStep = xferStrip.querySelector('.progress-step.active');
+        const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
+        if (errIdx >= 0) setProgressStrip('transfer-progress', -1, { errorAt: errIdx });
+      }
       console.error(e);
     } finally {
       $('#btn-transfer-broadcast').disabled = false;
@@ -9171,6 +10286,7 @@ function renderSavedDropsList() {
   const list = $('#drop-list');
   if (!list) return;
   const drops = loadSavedDrops();
+  setTabBadge('drops', drops.length);
   if (!drops.length) {
     list.innerHTML = `<div class="empty" style="font-size:12px;">No drops saved yet.</div>`;
     return;
@@ -10319,8 +11435,11 @@ function setupDropsForm() {
     const need = await estimateSatsForOp('cxfer');
     if (!(await ensureSatsFunded(need, 'Fulfilling airdrop batch'))) return;
 
-    btn.disabled = true; btn.textContent = 'building proof + broadcasting…';
+    btn.disabled = true; btn.textContent = 'broadcasting…';
     $('#drop-fulfil-err').textContent = '';
+    const dropStrip = $('#drop-fulfil-progress');
+    if (dropStrip) dropStrip.style.display = 'flex';
+    setProgressStrip('drop-fulfil-progress', 0);
 
     // Multi-tab lease lock. Acquire BEFORE phase-1 write to prevent two
     // tabs from racing past the loadSavedDrops/saveDrops sequence with
@@ -10386,7 +11505,13 @@ function setupDropsForm() {
         assetIdHex: drop.asset_id_hex,
         recipients,
         allowDuplicateRecipients: true,
+        onProgress: (stage) => {
+          if (stage === 'commit-start') setProgressStrip('drop-fulfil-progress', 1);
+          else if (stage === 'reveal-start') setProgressStrip('drop-fulfil-progress', 2);
+        },
       });
+      setProgressStrip('drop-fulfil-progress', 4);
+      setTimeout(() => { if (dropStrip) dropStrip.style.display = 'none'; setProgressStrip('drop-fulfil-progress', -1); }, 1200);
       // Phase 2: flip pending → fulfilled with the confirmed txid. Reload
       // fresh because cross-check or other tabs may have touched the record.
       const drops = loadSavedDrops();
@@ -10474,6 +11599,11 @@ function setupDropsForm() {
         `<strong>Pending entries are kept</strong> in the local record (NOT rolled back) to prevent accidental double-pay if the broadcast actually succeeded mid-error. ` +
         `Run Cross-check on this drop: if the on-chain CXFER appears, update the pending entries with the txid manually. ` +
         `If no matching CXFER exists, manually delete the pending entries before retrying.`;
+      if (dropStrip && dropStrip.style.display !== 'none') {
+        const a = dropStrip.querySelector('.progress-step.active');
+        const errIdx = a ? Number(a.dataset.step) : -1;
+        if (errIdx >= 0) setProgressStrip('drop-fulfil-progress', -1, { errorAt: errIdx });
+      }
       console.error(e);
     } finally {
       // Release the multi-tab lease unconditionally on broadcast finish
@@ -11659,7 +12789,7 @@ function parseAssetAmount(input, decimals) {
 // ============== HOLDINGS UI ==============
 async function renderHoldings() {
   const list = $('#holdings-list');
-  $('#holdings-status').textContent = 'scanning…';
+  setStatus('#holdings-status', 'scanning', true);
   list.innerHTML = '<div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>';
   try {
     const holdings = await scanHoldings();
@@ -11672,80 +12802,47 @@ async function renderHoldings() {
         ? `Hit the <strong>faucet</strong> for some signet sats, then go to <strong>Etch</strong> to mint your first token`
         : `Fund your wallet (connect Xverse / UniSat / Leather, or send sats to your address from any Bitcoin wallet) and head to <strong>Etch</strong> to mint your first token`;
       list.innerHTML = `<div class="empty">No tacit assets on ${escapeHtml(NET.name)} yet. ${fundingHint} — or paste a share-link below if someone sent you one.</div>`;
-      $('#holdings-status').textContent = '';
+      setStatus('#holdings-status', '');
+      setTabBadge('holdings', 0);
       return;
     }
     list.innerHTML = '';
-    // Resolve all metadata blobs + per-asset published openings in parallel —
-    // sequential awaits inside the loop turn N tokens into N back-to-back
-    // round-trips to IPFS / worker. Best-effort: errors leave the badge off,
-    // they don't break the render.
-    const [imgUrls, openingsByAsset, listingsByAsset, rangeListingsByAsset] = await Promise.all([
-      Promise.all(arr.map(h => {
-        const m = getAssetMeta(h.assetIdHex);
-        return m?.imageUri ? resolveImageUri(m.imageUri) : Promise.resolve(null);
-      })),
-      Promise.all(arr.map(h => {
-        if (!WORKER_BASE) return Promise.resolve([]);
-        return fetch(withNet(ASSET_OPENINGS_URL(h.assetIdHex)))
-          .then(r => r.ok ? r.json() : { openings: [] })
-          .then(j => Array.isArray(j.openings) ? j.openings : [])
-          .catch(() => []);
-      })),
-      Promise.all(arr.map(h => {
-        if (!WORKER_BASE) return Promise.resolve([]);
-        return fetch(withNet(LISTINGS_URL(h.assetIdHex)))
-          .then(r => r.ok ? r.json() : { listings: [] })
-          .then(j => Array.isArray(j.listings) ? j.listings : [])
-          .catch(() => []);
-      })),
-      Promise.all(arr.map(h => {
-        if (!WORKER_BASE) return Promise.resolve([]);
-        return fetch(withNet(RANGE_LISTINGS_URL(h.assetIdHex)))
-          .then(r => r.ok ? r.json() : { listings: [] })
-          .then(j => Array.isArray(j.listings) ? j.listings : [])
-          .catch(() => []);
-      })),
-    ]);
-    // DocumentFragment: build all cards then attach in one reflow rather
-    // than one reflow per card. Bigger win on wallets with many assets.
-    const frag = document.createDocumentFragment();
-    for (let i = 0; i < arr.length; i++) {
-      const h = arr[i];
-      const card = document.createElement('div');
-      card.className = 'asset-card';
-      const meta = getAssetMeta(h.assetIdHex);
-      const etchLink = meta?.etchTxid ? `${NET.explorer}/tx/${meta.etchTxid}` : '#';
-      const imgUrl = imgUrls[i];
-      const extras = meta?.imageUri ? getMetadataExtras(meta.imageUri) : null;
-      // Display name from metadata blob; falls back to ticker for assets that
-      // never set a name (older blobs, or etches without metadata at all).
-      const displayName = (extras?.name && extras.name.trim()) ? extras.name : h.ticker;
-      const avatar = imgUrl
-        ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+    const ownerPubHex = bytesToHex(wallet.pub);
+    // Render helpers — used by the initial skeleton AND by the per-asset
+    // enrichment that updates [data-region] markers in place once each card's
+    // 4 fetches resolve. Pure functions of arguments so call-sites stay
+    // declarative and the same HTML is produced however we get the data.
+    const avatarHTML = (url) => url
+      ? `<img loading="lazy" decoding="async" src="${escapeHtml(url)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+      : '';
+    const tickerSubHTML = (displayName, ticker) => displayName !== ticker
+      ? `<span class="ticker-sub">${escapeHtml(ticker)}</span>`
+      : '';
+    const descriptionHTML = (extras) => extras?.description
+      ? `<div class="muted" style="margin-top:10px;font-size:11px;font-style:italic;">${escapeHtml(extras.description)}</div>`
+      : '';
+    const externalUrlHTML = (extras) => {
+      const safe = safeExternalUrl(extras?.external_url);
+      return safe ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safe)} ↗</a></div>` : '';
+    };
+    const verifiedTagHTML = (myPublishedCount, totalUtxos) => myPublishedCount > 0
+      ? `<span class="unit" style="color:#0a8f43;">✓ ${myPublishedCount === totalUtxos ? 'verified' : `${myPublishedCount}/${totalUtxos} verified`}</span>`
+      : '';
+    const metaPublishedHTML = (myPublishedCount) => myPublishedCount > 0
+      ? ` · <span style="color:#0a8f43;">${myPublishedCount} published</span>`
+      : '';
+    const metaAssetWidePublishedHTML = (totalPublishedCount, myPublishedCount) =>
+      totalPublishedCount > myPublishedCount
+        ? ` · <span class="muted">${totalPublishedCount} openings published asset-wide</span>`
         : '';
-      // Cross-reference the published-openings list against the user's own UTXOs.
-      // "myPublishedCount" tells the user which of their balance is already public;
-      // "totalPublishedCount" is the asset-wide count for marketplace context.
-      const myUtxoKeys = new Set(h.utxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
-      const allOpenings = openingsByAsset[i] || [];
-      const myPublishedCount = allOpenings.filter(o => myUtxoKeys.has(`${o.txid}:${o.vout}`)).length;
-      const totalPublishedCount = allOpenings.length;
-      const balanceVerifiedTag = myPublishedCount > 0
-        ? `<span class="unit" style="color:#0a8f43;">✓ ${myPublishedCount === h.utxos.length ? 'verified' : `${myPublishedCount}/${h.utxos.length} verified`}</span>`
-        : '';
-      // Listings authored by this wallet, surfaced on the holdings card so the
-      // maker can see their active offers + cancel them. Both opening-based
-      // and range-disclosed variants render here.
-      const allListings = listingsByAsset[i] || [];
-      const allRangeListings = rangeListingsByAsset[i] || [];
-      const ownerPubHex = bytesToHex(wallet.pub);
+    const renderClaim = (claim) => claim
+      ? `<div style="margin-top:2px;color:#a04030;font-size:10px;">⏱ reserved by taker ${escapeHtml(shorten(claim.taker_pubkey, 6))} until ${new Date(claim.expires_at * 1000).toLocaleTimeString()} — they intend to pay; deliver via Send Privately when payment arrives</div>`
+      : '';
+    const myListingsHTML = (h, allListings, allRangeListings) => {
       const myListings = allListings.filter(l => l.owner_pubkey === ownerPubHex && !l.expired);
       const myRangeListings = allRangeListings.filter(l => l.owner_pubkey === ownerPubHex && !l.expired);
-      const renderClaim = (claim) => claim
-        ? `<div style="margin-top:2px;color:#a04030;font-size:10px;">⏱ reserved by taker ${escapeHtml(shorten(claim.taker_pubkey, 6))} until ${new Date(claim.expires_at * 1000).toLocaleTimeString()} — they intend to pay; deliver via Send Privately when payment arrives</div>`
-        : '';
-      const myListingsBlock = (myListings.length || myRangeListings.length) ? `
+      if (!myListings.length && !myRangeListings.length) return '';
+      return `
         <div style="margin-top:10px;padding:8px 10px;border:1px solid var(--ink);background:#f6f1e7;font-size:11px;">
           <strong>Your active listing${(myListings.length + myRangeListings.length)>1?'s':''}:</strong>
           ${myListings.map(l => `
@@ -11765,12 +12862,52 @@ async function renderHoldings() {
               ${renderClaim(l.claim)}
             </div>`).join('')}
         </div>
-      ` : '';
+      `;
+    };
+    // Skeleton render: paint cards immediately with everything derivable from
+    // scanHoldings + sync caches (getAssetMeta, getMetadataExtras). The four
+    // fetch-dependent regions (avatar, balance verified tag, meta published
+    // counts, my-listings block) start empty and are filled by per-asset
+    // enrichment below — no all-or-nothing wait for the slowest of 4N fetches.
+    // DocumentFragment: build all cards then attach in one reflow rather
+    // than one reflow per card. Bigger win on wallets with many assets.
+    const frag = document.createDocumentFragment();
+    const cardNodes = [];
+    for (const h of arr) {
+      const card = document.createElement('div');
+      card.className = 'asset-card';
+      // Stamp identity + numeric balance on the card root so
+      // applyOptimisticDebit() can locate this card and update its display
+      // immediately after a successful broadcast (bridges the 1-2s gap
+      // before the next chain rescan reconciles).
+      card.dataset.aid = h.assetIdHex;
+      card.dataset.baseAmount = h.balance.toString();
+      card.dataset.decimals = String(h.decimals);
+      const meta = getAssetMeta(h.assetIdHex);
+      const etchLink = meta?.etchTxid ? `${NET.explorer}/tx/${meta.etchTxid}` : '#';
+      // getMetadataExtras hydrates the persistent _metadataExtraCache on first
+      // call, so warm-cache loads paint with the canonical name immediately.
+      // Cold-cache: extras=null → falls back to ticker, then enrichment swaps
+      // in the canonical name/description once resolveImageUri completes.
+      const extras = meta?.imageUri ? getMetadataExtras(meta.imageUri) : null;
+      const displayName = (extras?.name && extras.name.trim()) ? extras.name : h.ticker;
+      // Audit fix A: surface T_PETCH-rooted assets distinctly in the
+      // Holdings card. Different trust model from CETCH (cumulative supply
+      // is publicly observable, no mint authority, anyone can mint) — SPEC
+      // §5.8 says wallets SHOULD surface this distinction. The badge mirrors
+      // the one on the Discover petch tile so users see the same visual
+      // identity end-to-end. meta.kind is set by registerAsset in
+      // buildAndBroadcastPetch / buildAndBroadcastPmint (and by the
+      // metadataOut path in validateOutpoint's T_PMINT branch).
+      const isPetchRooted = meta?.kind === 'petch';
+      const petchBadgeHTML = isPetchRooted
+        ? `<span style="display:inline-block;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Permissionless fair-launch (SPEC §5.8 / §5.9). Cumulative supply is publicly observable; per-mint amount is fixed at deploy. No mint authority — anyone can mint until the cap fills.">⚡ public mint</span>`
+        : '';
       // Per-asset action grouping. Primary actions (Send / Receive) sit on top
       // for the everyday holder. Disclosure (reveal supply / mints, publish
       // balance, prove ≥ X) and Marketplace (List for sale) live behind their
-      // own collapsible sections so the card stays scannable. Burn — irreversible
-      // — gets its own Danger zone.
+      // own collapsible sections so the card stays scannable. Burn —
+      // irreversible — gets its own Danger zone.
       const isMintAuthority = meta?.mintable && meta?.mintAuthorityHex === bytesToHex(wallet.xonly());
       const canMarket = WORKER_BASE && h.utxos.length && !h.unknownAsset;
       const primaryButtons = [
@@ -11792,28 +12929,49 @@ async function renderHoldings() {
         : '';
       const dangerButtons = h.balance > 0n && !h.unknownAsset ? `<button class="danger" data-act="burn" data-aid="${h.assetIdHex}">Burn</button>` : '';
 
+      // [data-region] markers wrap the data-fetch-dependent regions so the
+      // enrichment phase can update them in place without re-rendering the
+      // whole card (which would lose any open inline-form / receive panel).
+      // The avatar wrapper uses display:contents so an empty span doesn't
+      // contribute a flex item / gap before the image lands.
       card.innerHTML = `
         <div class="head" style="display:flex;align-items:center;gap:12px;">
-          ${avatar}
+          <span data-region="avatar" style="display:contents;">${avatarHTML(null)}</span>
           <div style="flex:1;min-width:0;">
-            <div class="ticker">${escapeHtml(displayName)}${displayName !== h.ticker ? `<span class="ticker-sub">${escapeHtml(h.ticker)}</span>` : ''}<span class="id-tag" data-act="copy-aid" data-aid="${h.assetIdHex}" title="Copy asset ID">${escapeHtml(shorten(h.assetIdHex, 4))}</span></div>
-            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span>${balanceVerifiedTag}</div>
+            <div class="ticker"><span data-region="display-name">${escapeHtml(displayName)}</span>${petchBadgeHTML}<span data-region="ticker-sub">${tickerSubHTML(displayName, h.ticker)}</span><span class="id-tag" data-act="copy-aid" data-aid="${h.assetIdHex}" title="Copy asset ID">${escapeHtml(shorten(h.assetIdHex, 4))}</span></div>
+            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span><span data-region="verified-tag"></span></div>
           </div>
         </div>
         <div class="meta">
           <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(h.assetIdHex)}</div>
           <div><span class="lbl">Decimals</span> ${h.decimals}</div>
-          <div><span class="lbl">UTXOs</span> ${h.utxos.length} known${h.ghosts.length ? ` · <span style="color:var(--red);">${h.ghosts.length} ghost</span>` : ''}${myPublishedCount > 0 ? ` · <span style="color:#0a8f43;">${myPublishedCount} published</span>` : ''}</div>
-          <div><span class="lbl">Etch tx</span> ${meta?.etchTxid ? `<a href="${escapeHtml(etchLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(meta.etchTxid, 8))} ↗</a>` : '—'}${totalPublishedCount > myPublishedCount ? ` · <span class="muted">${totalPublishedCount} openings published asset-wide</span>` : ''}</div>
+          <div><span class="lbl">UTXOs</span> ${h.utxos.length} known${h.ghosts.length ? ` · <span style="color:var(--red);">${h.ghosts.length} ghost</span>` : ''}<span data-region="meta-published"></span></div>
+          <div><span class="lbl">Etch tx</span> ${meta?.etchTxid ? `<a href="${escapeHtml(etchLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(meta.etchTxid, 8))} ↗</a>` : '—'}<span data-region="meta-asset-wide-published"></span></div>
+          ${isPetchRooted && meta?.capAmount && meta?.mintLimit ? `<div><span class="lbl">Cap</span> ${escapeHtml(fmtAssetAmount(BigInt(meta.capAmount), h.decimals))} ${escapeHtml(h.ticker)} · per mint ${escapeHtml(fmtAssetAmount(BigInt(meta.mintLimit), h.decimals))}</div>` : ''}
         </div>
-        ${extras?.description ? `<div class="muted" style="margin-top:10px;font-size:11px;font-style:italic;">${escapeHtml(extras.description)}</div>` : ''}
-        ${(() => {
-          const safe = safeExternalUrl(extras?.external_url);
-          return safe ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safe)} ↗</a></div>` : '';
-        })()}
+        ${isPetchRooted ? `<div class="muted" style="margin-top:6px;font-size:10px;line-height:1.5;">Permissionless fair-launch — cumulative supply is publicly observable from chain alone. <strong>This is a deliberate trade-off vs. confidential CETCH supply.</strong> Per-holder balances stay confidential after the first transfer.</div>` : ''}
+        <div data-region="description">${descriptionHTML(extras)}</div>
+        <div data-region="external-url">${externalUrlHTML(extras)}</div>
         ${h.ghosts.length ? `<div class="warn" style="margin-top:10px;font-size:11px;">⚠ ${h.ghosts.length} UTXO${h.ghosts.length>1?'s':''} hold commitments this wallet can't open. Try ↻ Rescan, or import a share-link for legacy/incompatible sends.</div>` : ''}
+        ${h.pending && h.pending.length ? (() => {
+          // Pending T_PMINT mints split into two sub-states with different
+          // user-facing copy: (a) unconfirmed — still in mempool, no block
+          // height; (b) confirmed at depth < 3 (or worker hasn't yet credited
+          // it). Same h.pending bucket but the wait-for is different, so the
+          // banner reads accurately for each. SPEC §5.9 *Confirmation depth*.
+          const total = h.pending.reduce((s, p) => s + p.amount, 0n);
+          const unconfirmed = h.pending.filter(p => !p.utxo?.status?.confirmed).length;
+          const confirmed = h.pending.length - unconfirmed;
+          const totalStr = `${escapeHtml(fmtAssetAmount(total, h.decimals))} ${escapeHtml(h.ticker)}`;
+          const n = h.pending.length, plural = n > 1 ? 's' : '';
+          let detail;
+          if (unconfirmed === n) detail = 'broadcast · awaiting block confirmation';
+          else if (confirmed === n) detail = 'confirmed · awaiting ≥3 confs for cap credit (SPEC §5.9)';
+          else detail = `${unconfirmed} unconfirmed · ${confirmed} awaiting ≥3 confs (SPEC §5.9)`;
+          return `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed #7d4ff7;background:#f5f1ff;color:#5a36c4;"><strong>⏳ ${n} mint${plural} pending cap-credit:</strong> ${totalStr} — ${detail}. Spendable once credited; ↻ Rescan in a few minutes.</div>`;
+        })() : ''}
         ${h.inflated && h.inflated.length ? `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee;border-left-color:var(--red);"><strong>⚠ Inflation attempt detected:</strong> ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} have invalid rangeproofs. These are not counted in your balance.</div>` : ''}
-        ${myListingsBlock}
+        <div data-region="my-listings"></div>
         ${primaryButtons ? `<div class="actions">${primaryButtons}</div>` : ''}
         <div data-receive-panel="${h.assetIdHex}" style="display:none;margin-top:10px;padding:10px 12px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;">
           <strong>Your tacit pubkey</strong>
@@ -11851,6 +13009,7 @@ async function renderHoldings() {
           </details>` : ''}
       `;
       frag.appendChild(card);
+      cardNodes.push(card);
     }
     list.appendChild(frag);
     // Asset-id short / full toggle.
@@ -11862,7 +13021,11 @@ async function renderHoldings() {
         catch { /* clipboard blocked; let the user expand and select instead */ }
       };
     });
-    list.querySelectorAll('button[data-act]').forEach(b => {
+    // Per-button handler factory. Extracted from the previous inline forEach
+    // so the per-asset enrichment can re-run it on cancel-* buttons that the
+    // my-listings region adds after its data fetch resolves. Idempotent —
+    // overwrites onclick on already-wired buttons.
+    const wireBtn = (b) => {
       b.onclick = async () => {
         if (b.dataset.act === 'send') {
           $('#x-asset').value = b.dataset.aid;
@@ -11896,7 +13059,8 @@ async function renderHoldings() {
               </div>
               <div class="muted" style="margin-top:8px;font-size:11px;color:var(--red);">
                 ⚠ Irreversible. The burned amount is public on chain.
-              </div>`,
+              </div>
+              ${PROGRESS_STRIP_HTML}`,
             onSubmit: async ({ host, errEl }) => {
               const raw = host.querySelector('[data-field="amount"]').value.trim();
               if (!raw) { errEl.textContent = 'enter an amount'; return false; }
@@ -11909,9 +13073,32 @@ async function renderHoldings() {
               }
               const need = await estimateSatsForOp('burn');
               if (!(await ensureSatsFunded(need, 'Burning'))) { errEl.textContent = 'Funding cancelled.'; return false; }
-              const r = await buildAndBroadcastCBurn({ assetIdHex: aid, amount: burnBase });
-              toast(`Burned ${fmtAssetAmount(burnBase, target.decimals)} ${target.ticker} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
-              renderHoldings(); renderActivity();
+              const strip = host.querySelector('.progress-strip');
+              if (strip) strip.style.display = 'flex';
+              setProgressStrip(strip, 0);
+              try {
+                const r = await buildAndBroadcastCBurn({
+                  assetIdHex: aid, amount: burnBase,
+                  onProgress: (stage) => {
+                    if (stage === 'commit-start') setProgressStrip(strip, 1);
+                    else if (stage === 'reveal-start') setProgressStrip(strip, 2);
+                  },
+                });
+                setProgressStrip(strip, 4);
+                // Burn reduces balance just like send — apply the same
+                // optimistic debit so the holdings card reflects it before
+                // renderHoldings() reconciles from chain.
+                applyOptimisticDebit(aid, burnBase);
+                toast(`Burned ${fmtAssetAmount(burnBase, target.decimals)} ${target.ticker} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
+                renderHoldings(); renderActivity();
+              } catch (e) {
+                if (strip) {
+                  const a = strip.querySelector('.progress-step.active');
+                  const idx = a ? Number(a.dataset.step) : -1;
+                  if (idx >= 0) setProgressStrip(strip, -1, { errorAt: idx });
+                }
+                throw e;
+              }
             },
           });
           // Wire "use max" link in the just-mounted form
@@ -11949,7 +13136,8 @@ async function renderHoldings() {
 
               <div class="muted" style="margin-top:6px;font-size:10px;">
                 You hold the mint authority for <strong>${tickerSafe}</strong>. Each mint emits a new T_MINT envelope; per-mint amount is bounded to 2⁶⁴ base units by the rangeproof.
-              </div>`,
+              </div>
+              ${PROGRESS_STRIP_HTML}`,
             onSubmit: async ({ host, errEl }) => {
               const raw = host.querySelector('[data-field="amount"]').value.trim();
               const confirmed = host.querySelector('[data-field="confirm"]').checked;
@@ -11964,7 +13152,27 @@ async function renderHoldings() {
               }
               const need = await estimateSatsForOp('mint');
               if (!(await ensureSatsFunded(need, 'Minting'))) { errEl.textContent = 'Funding cancelled.'; return false; }
-              const r = await buildAndBroadcastCMint({ assetIdHex: aid, etchTxidHex: meta.etchTxid, amount: mintBase });
+              const strip = host.querySelector('.progress-strip');
+              if (strip) strip.style.display = 'flex';
+              setProgressStrip(strip, 0);
+              let r;
+              try {
+                r = await buildAndBroadcastCMint({
+                  assetIdHex: aid, etchTxidHex: meta.etchTxid, amount: mintBase,
+                  onProgress: (stage) => {
+                    if (stage === 'commit-start') setProgressStrip(strip, 1);
+                    else if (stage === 'reveal-start') setProgressStrip(strip, 2);
+                  },
+                });
+                setProgressStrip(strip, 4);
+              } catch (e) {
+                if (strip) {
+                  const a = strip.querySelector('.progress-step.active');
+                  const idx = a ? Number(a.dataset.step) : -1;
+                  if (idx >= 0) setProgressStrip(strip, -1, { errorAt: idx });
+                }
+                throw e;
+              }
               toast(`Minted ${fmtAssetAmount(mintBase, target.decimals)} ${target.ticker} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
               postHint(r.revealTxid, 0);
               // Auto-attest the mint by default. A mintable asset whose etch
@@ -12760,6 +13968,15 @@ async function renderHoldings() {
                 <button data-form-act="cancel">Close</button>
               </div>
               <div class="error" data-form-error></div>
+              <!-- Custom 4-step strip for atomic-intent publish: there's
+                   only one chain broadcast (commit) — the labels reflect
+                   the actual stages: Build → Commit → Confirm → Publish. -->
+              <div class="progress-strip" data-publish-progress style="display:none;margin-top:10px;" aria-live="polite">
+                <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+                <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+                <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Confirm</span></div>
+                <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Publish</span></div>
+              </div>
             </div>`;
           formHost.style.display = 'block';
           const errEl = formHost.querySelector('[data-form-error]');
@@ -12815,7 +14032,10 @@ async function renderHoldings() {
             const need = await estimateSatsForOp('cxfer');
             if (!(await ensureSatsFunded(need, 'Publishing intent'))) { errEl.textContent = 'Funding cancelled.'; return; }
             const submitBtn = ev.target;
-            submitBtn.disabled = true; submitBtn.textContent = 'committing…';
+            submitBtn.disabled = true; submitBtn.textContent = 'publishing…';
+            const pubStrip = formHost.querySelector('[data-publish-progress]');
+            if (pubStrip) pubStrip.style.display = 'flex';
+            setProgressStrip(pubStrip, 0);
             await new Promise(r => setTimeout(r, 50));
             try {
               const r = await publishAxferIntent({
@@ -12823,7 +14043,13 @@ async function renderHoldings() {
                 utxoVout: u.utxo.vout,
                 priceSats,
                 expiry,
+                onProgress: (stage) => {
+                  if (stage === 'commit-start') setProgressStrip(pubStrip, 1);
+                  else if (stage === 'wait-visible') setProgressStrip(pubStrip, 2);
+                  else if (stage === 'publish-start') setProgressStrip(pubStrip, 3);
+                },
               });
+              setProgressStrip(pubStrip, 4);
               toast(`Intent ${shorten(r.intent_id, 6)} published ✓ — visible on the Market tab`, 'success', 8000);
               formHost.innerHTML = `
                 <div style="padding:10px 12px;border:1px solid var(--ink);border-left:4px solid #0a8f43;background:var(--bg-warm);font-size:11px;">
@@ -12843,16 +14069,92 @@ async function renderHoldings() {
               };
             } catch (e) {
               errEl.textContent = 'Intent failed: ' + e.message;
+              if (pubStrip) {
+                const a = pubStrip.querySelector('.progress-step.active');
+                const idx = a ? Number(a.dataset.step) : -1;
+                if (idx >= 0) setProgressStrip(pubStrip, -1, { errorAt: idx });
+              }
               submitBtn.disabled = false; submitBtn.textContent = 'Publish intent';
             }
           };
         }
       };
-    });
-    $('#holdings-status').textContent = `${arr.length} asset${arr.length > 1 ? 's' : ''}`;
+    };
+    list.querySelectorAll('button[data-act]').forEach(wireBtn);
+    // Per-asset enrichment splits into two independent pipelines:
+    //   • image (per-asset, IPFS) — refreshes the avatar + extras-dependent
+    //     regions (display-name, ticker-sub, description, external-url) once
+    //     resolveImageUri lands. Warm cache via persistent _metadataExtraCache
+    //     already populated those during skeleton render; this updates them
+    //     when a previously-unseen asset's blob arrives.
+    //   • holdings aggregate (one worker round-trip) — POST asset_ids +
+    //     owner_pubkey, get back per-asset openings + my listings + my range
+    //     listings server-pre-filtered. Replaces N×3 per-asset fetches with
+    //     a single request.
+    // Errors are swallowed: missing region content stays on skeleton's
+    // placeholder so a flaky worker / IPFS gateway doesn't blank cards.
+    for (let i = 0; i < arr.length; i++) {
+      const h = arr[i];
+      const card = cardNodes[i];
+      const meta = getAssetMeta(h.assetIdHex);
+      if (meta?.imageUri) {
+        resolveImageUri(meta.imageUri).then(imgUrl => {
+          card.querySelector('[data-region="avatar"]').innerHTML = avatarHTML(imgUrl);
+          // Re-read extras: resolveImageUri populates _metadataExtraCache as
+          // a side effect, so any blob with name/description/external_url is
+          // now visible to the synchronous getMetadataExtras call.
+          const extras2 = getMetadataExtras(meta.imageUri);
+          const displayName2 = (extras2?.name && extras2.name.trim()) ? extras2.name : h.ticker;
+          card.querySelector('[data-region="display-name"]').textContent = displayName2;
+          card.querySelector('[data-region="ticker-sub"]').innerHTML = tickerSubHTML(displayName2, h.ticker);
+          card.querySelector('[data-region="description"]').innerHTML = descriptionHTML(extras2);
+          card.querySelector('[data-region="external-url"]').innerHTML = externalUrlHTML(extras2);
+        }).catch(() => {});
+      }
+    }
+    if (HOLDINGS_URL && arr.length) {
+      fetch(withNet(HOLDINGS_URL), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          owner_pubkey: ownerPubHex,
+          asset_ids: arr.map(h => h.assetIdHex),
+        }),
+      })
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+          if (!j) return;
+          const openingsByAid = j.openings || {};
+          const listingsByAid = j.listings || {};
+          const rangeListingsByAid = j.range_listings || {};
+          for (let i = 0; i < arr.length; i++) {
+            const h = arr[i];
+            const card = cardNodes[i];
+            const aidOpenings = Array.isArray(openingsByAid[h.assetIdHex]) ? openingsByAid[h.assetIdHex] : [];
+            const aidListings = Array.isArray(listingsByAid[h.assetIdHex]) ? listingsByAid[h.assetIdHex] : [];
+            const aidRangeListings = Array.isArray(rangeListingsByAid[h.assetIdHex]) ? rangeListingsByAid[h.assetIdHex] : [];
+            const myUtxoKeys = new Set(h.utxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
+            const myPublishedCount = aidOpenings.filter(o => myUtxoKeys.has(`${o.txid}:${o.vout}`)).length;
+            const totalPublishedCount = aidOpenings.length;
+            card.querySelector('[data-region="verified-tag"]').innerHTML = verifiedTagHTML(myPublishedCount, h.utxos.length);
+            card.querySelector('[data-region="meta-published"]').innerHTML = metaPublishedHTML(myPublishedCount);
+            card.querySelector('[data-region="meta-asset-wide-published"]').innerHTML = metaAssetWidePublishedHTML(totalPublishedCount, myPublishedCount);
+            const region = card.querySelector('[data-region="my-listings"]');
+            // myListingsHTML re-applies the owner_pubkey + !expired filter; the
+            // worker already pre-filtered to owner so it's a no-op pass, but
+            // running it preserves the helper's contract (no special-cased
+            // server-trust path).
+            region.innerHTML = myListingsHTML(h, aidListings, aidRangeListings);
+            region.querySelectorAll('button[data-act]').forEach(wireBtn);
+          }
+        })
+        .catch(() => {});
+    }
+    setStatus('#holdings-status', `${arr.length} asset${arr.length > 1 ? 's' : ''}`);
+    setTabBadge('holdings', arr.length);
   } catch (e) {
     list.innerHTML = `<div class="error">Scan failed: ${escapeHtml(e.message)}</div>`;
-    $('#holdings-status').textContent = '';
+    setStatus('#holdings-status', '');
     console.error(e);
   }
 }
@@ -13182,61 +14484,93 @@ async function renderRecentEtches() {
     // worker could spoof "USDT" thumbnails on the wallet tab. Reuses the
     // verifyDiscoverAsset cache so users pay the verification cost once
     // across the wallet teaser and the Discover tab.
-    const verifications = await Promise.all(assets.map(a =>
-      verifyDiscoverAsset(a).catch(e => ({ ok: false, error: (e && e.message) || String(e) }))
-    ));
-    // Image fetches use the canonical image_uri from the verified envelope so
-    // a bad worker can't redirect tile thumbnails through a tracking IPFS CID.
-    const imgUrls = await Promise.all(assets.map((a, i) => {
-      const uri = verifications[i].ok ? verifications[i].imageUri : a.image_uri;
-      return uri ? resolveImageUri(uri) : Promise.resolve(null);
-    }));
-    const grid = document.createElement('div');
-    grid.className = 'recent-grid';
-    for (let i = 0; i < assets.length; i++) {
-      const a = assets[i];
-      const v = verifications[i];
+    //
+    // Progressive paint: tiles render immediately with worker-supplied text
+    // and a "verifying…" badge, then update in-place as each verify + image
+    // resolves. Avoids the all-or-nothing wait where the slowest of 6 ancestry
+    // walks (cold-cache CETCH validation) gates the entire grid. Same security
+    // model as Discover: worker strings are visibly marked unverified until
+    // chain-verify swaps in canonical values.
+    //
+    // Re-paints reuse the same `<a class="recent-tile">` node, so the click
+    // handler bound at construction time stays attached across updates.
+    const paintTile = (tile, a, v, imgUrl) => {
       const safeAssetId = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
       const ageMin = Math.max(0, Math.floor((Date.now()/1000 - (a.etched_at || 0)) / 60));
       const ageStr = ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.floor(ageMin/60)}h ago` : `${Math.floor(ageMin/1440)}d ago`;
-      // Display canonical ticker if verified; fall back to worker string only
-      // when on-chain validation couldn't run (the ✗ badge signals it).
-      const ticker = v.ok ? v.ticker : (typeof a.ticker === 'string' ? a.ticker : '?');
+      // Pre-verify (v=null): show worker ticker on a "verifying…" placeholder
+      // so the tile isn't blank. After verify lands we swap in canonical text.
+      const ticker = v && v.ok ? v.ticker : (typeof a.ticker === 'string' ? a.ticker : '?');
       // Read metadata-blob extras (name/description) from the *canonical*
       // image_uri when on-chain verification ran — the worker can otherwise
       // present a different image_uri whose blob spoofs name/description.
-      const _recentImg = v.ok ? v.imageUri : a.image_uri;
+      // Pre-verify we leave displayName === ticker (no extras lookup).
+      const _recentImg = v && v.ok ? v.imageUri : (v ? a.image_uri : null);
       const _recentExtras = _recentImg ? getMetadataExtras(_recentImg) : null;
       const displayName = (_recentExtras?.name && _recentExtras.name.trim()) ? _recentExtras.name : ticker;
-      const verifyMark = v.ok
-        ? (v.mismatches && v.mismatches.length ? ' · ⚠' : ' · ✓')
-        : ' · ✗';
+      const verifyMark = !v
+        ? ' · verifying…'
+        : v.ok
+          ? (v.mismatches && v.mismatches.length ? ' · ⚠' : ' · ✓')
+          : ' · ✗';
       const pending = a.pending ? ' · pending' : '';
       // Ticker-collision marker. Computed across the FULL asset list above
       // (not just these 6) so a `duplicate` flag here is meaningful even
       // when the earlier-etched sibling isn't in the recent slice.
       const dupMark = a._tickerCollision === 'duplicate' ? ' · ⚠ DUP' : '';
+      tile.title = !v
+        ? `${safeAssetId} · verifying…`
+        : v.ok
+          ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
+          : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`;
+      tile.innerHTML = `
+        ${imgUrl ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="">` : ''}
+        <div class="recent-tile-body">
+          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
+          <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}${dupMark}</div>
+        </div>`;
+    };
+    // Build placeholder tiles synchronously and attach to the DOM in a single
+    // reflow before kicking off any verify/image work.
+    const grid = document.createElement('div');
+    grid.className = 'recent-grid';
+    const tileNodes = assets.map(a => {
+      const safeAssetId = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
       const tile = document.createElement('a');
       tile.className = 'recent-tile';
       tile.href = '#';
-      tile.title = v.ok
-        ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
-        : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`;
       tile.onclick = (e) => {
         e.preventDefault();
         pendingDiscoverFocus = safeAssetId;
         $('.tab[data-tab="discover"]').click();
       };
-      tile.innerHTML = `
-        ${imgUrls[i] ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrls[i])}" alt="">` : ''}
-        <div class="recent-tile-body">
-          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
-          <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}${dupMark}</div>
-        </div>`;
+      paintTile(tile, a, null, null);
       grid.appendChild(tile);
-    }
+      return tile;
+    });
     list.innerHTML = '';
     list.appendChild(grid);
+    // Image fetches use the canonical image_uri from the verified envelope so
+    // a bad worker can't redirect tile thumbnails through a tracking IPFS CID.
+    // Per-tile pipeline: verify → repaint with badge → resolve image → repaint
+    // with thumbnail. Independent across tiles; one slow ancestry walk doesn't
+    // delay the others. Errors swallowed to keep one tile's failure from
+    // breaking the grid (placeholder remains visible).
+    for (let i = 0; i < assets.length; i++) {
+      const a = assets[i];
+      const tile = tileNodes[i];
+      verifyDiscoverAsset(a)
+        .catch(e => ({ ok: false, error: (e && e.message) || String(e) }))
+        .then(v => {
+          paintTile(tile, a, v, null);
+          const uri = v.ok ? v.imageUri : a.image_uri;
+          if (!uri) return;
+          return resolveImageUri(uri)
+            .then(url => { if (url) paintTile(tile, a, v, url); })
+            .catch(() => {});
+        })
+        .catch(() => {});
+    }
   } catch (e) {
     list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;">discovery unavailable</div>`;
     console.error(e);
@@ -14876,37 +16210,21 @@ function goToMarketBrowse() { _marketView = 'browse'; renderMarket(); }
 function goToMarketAsset(assetIdHex) { _marketView = { mode: 'asset', assetId: assetIdHex }; renderMarket(); }
 
 async function fetchMarketData() {
-  if (!REGISTRY_URL) return { assets: [], listings: [] };
-  const r = await fetch(withNet(REGISTRY_URL, 'mints=0'));
+  if (!MARKET_URL) return { assets: [], listings: [] };
+  // Worker-aggregated marketplace endpoint: one round-trip, server pre-joined
+  // with kind + _asset reference per listing. Replaces the previous N×3
+  // per-asset fan-out — the slowest of N×3 round-trips no longer gates
+  // first paint of the Market tab.
+  const r = await fetch(withNet(MARKET_URL));
+  if (!r.ok) throw new Error(`market HTTP ${r.status}`);
   const j = await r.json();
-  const assets = j.assets || [];
+  const assets = Array.isArray(j.assets) ? j.assets : [];
   // Mark ticker-collision precedence over the FULL asset set (not just the
-  // ones with active listings) — otherwise an attacker could side-step the
-  // warning by listing a duplicate-ticker asset before the original lists.
+  // ones with listings). Without this an attacker could side-step the
+  // duplicate-ticker warning by listing a copycat asset before the original.
   markTickerCollisions(assets);
-  const haveAny = assets.filter(a =>
-    Number(a.listing_count || 0) > 0
-    || Number(a.range_listing_count || 0) > 0
-    || Number(a.atomic_intent_count || 0) > 0,
-  );
-  const all = await Promise.all(haveAny.map(async a => {
-    const [openings, ranges, intents] = await Promise.all([
-      Number(a.listing_count || 0) > 0
-        ? fetch(withNet(LISTINGS_URL(a.asset_id))).then(r => r.ok ? r.json() : { listings: [] }).catch(() => ({ listings: [] }))
-        : Promise.resolve({ listings: [] }),
-      Number(a.range_listing_count || 0) > 0
-        ? fetch(withNet(RANGE_LISTINGS_URL(a.asset_id))).then(r => r.ok ? r.json() : { listings: [] }).catch(() => ({ listings: [] }))
-        : Promise.resolve({ listings: [] }),
-      Number(a.atomic_intent_count || 0) > 0
-        ? fetch(withNet(ATOMIC_INTENTS_URL(a.asset_id))).then(r => r.ok ? r.json() : { intents: [] }).catch(() => ({ intents: [] }))
-        : Promise.resolve({ intents: [] }),
-    ]);
-    const opens = (openings.listings || []).filter(l => !l.expired).map(l => ({ ...l, kind: 'opening', _asset: a }));
-    const ranges_ = (ranges.listings || []).filter(l => !l.expired).map(l => ({ ...l, kind: 'range', _asset: a }));
-    const intents_ = (intents.intents || []).filter(i => !i.expired).map(i => ({ ...i, kind: 'intent', _asset: a }));
-    return [...opens, ...ranges_, ...intents_];
-  }));
-  return { assets, listings: all.flat() };
+  const listings = Array.isArray(j.listings) ? j.listings : [];
+  return { assets, listings };
 }
 
 // Background liveness prune: dispatched right after applyMarketFilters
@@ -14984,18 +16302,19 @@ async function renderMarket() {
     applyMarketFilters();
     return;
   }
-  list.innerHTML = '<div class="muted" style="padding:14px;text-align:center;font-style:italic;">loading…</div>';
-  if (status) status.textContent = 'loading…';
+  list.innerHTML = '<div class="muted" style="padding:14px;text-align:center;font-style:italic;"><span class="live-dots">loading</span></div>';
+  setStatus(status, 'loading', true);
   try {
     _marketCache = await fetchMarketData();
     _marketFetchedAt = Date.now();
     applyMarketFilters();
+    setTabBadge('market', _marketCache?.listings?.length || 0);
     // Fire-and-forget: chain-check each listing's UTXO in parallel and
     // remove stale tiles as results come in. Doesn't block initial paint.
     startMarketLivenessPrune();
   } catch (e) {
     list.innerHTML = `<div class="error">Market load failed: ${escapeHtml(e.message)}</div>`;
-    if (status) status.textContent = 'error';
+    setStatus(status, 'error');
     console.error(e);
   }
 }
@@ -15503,12 +16822,30 @@ async function marketTakeIntentHandler(btn) {
       `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts. Atomic, single Bitcoin tx, no trust.`,
     )) { btn.disabled = false; btn.textContent = 'Take'; return; }
     btn.textContent = 'broadcasting…';
-    const r = await takeAxferIntent({ intent, fulfilment: fres.fulfilment });
+    const takeStrip = $('#market-take-progress');
+    if (takeStrip) takeStrip.style.display = 'flex';
+    setProgressStrip('market-take-progress', 0);
+    const r = await takeAxferIntent({
+      intent, fulfilment: fres.fulfilment,
+      onProgress: (stage) => {
+        if (stage === 'verify-start') setProgressStrip('market-take-progress', 0);
+        else if (stage === 'sign-start') setProgressStrip('market-take-progress', 1);
+        else if (stage === 'broadcast-start') setProgressStrip('market-take-progress', 2);
+      },
+    });
+    setProgressStrip('market-take-progress', 3);
+    setTimeout(() => { if (takeStrip) takeStrip.style.display = 'none'; setProgressStrip('market-take-progress', -1); }, 1200);
     toast(`Atomic take broadcast ✓ tx=${shorten(r.txid, 8)}`, 'success', 8000);
     btn.textContent = '✓ broadcast';
     setTimeout(() => renderMarket(), 2000);
     renderHoldings();
   } catch (e) {
+    const takeStrip = $('#market-take-progress');
+    if (takeStrip && takeStrip.style.display !== 'none') {
+      const a = takeStrip.querySelector('.progress-step.active');
+      const idx = a ? Number(a.dataset.step) : -1;
+      if (idx >= 0) setProgressStrip('market-take-progress', -1, { errorAt: idx });
+    }
     toast('Take failed: ' + e.message, 'error');
     btn.disabled = false; btn.textContent = 'Take';
   }
@@ -15716,16 +17053,191 @@ async function marketValidate(kind, aid, btn) {
   }
 }
 
+// SPEC §5.8 / §5.9 fair-launch (T_PETCH-rooted) registry. Rendered as a
+// dedicated Discover section so users can tell CETCH (confidential supply)
+// and T_PETCH (public fair-launch) apart at a glance — same envelope-version
+// 0x01 binary on chain, but different trust models that should not share
+// visual real estate. Fires alongside renderDiscover; failures here don't
+// block the CETCH list from rendering.
+//
+// Client-side TTL cache mirrors _marketCache. Worker SWR + cron pre-warm
+// already make first-fetch fast; this 30s in-memory cache means tab-switches
+// and back-to-back renders skip the fetch entirely. Bust on T_PMINT broadcast
+// (see buildAndBroadcastPmint) so cap progress + remaining-mints update
+// immediately on the next render.
+const PETCH_FETCH_TTL_MS = 30 * 1000;
+let _petchCache = null;
+let _petchFetchedAt = 0;
+function invalidatePetchCache() { _petchFetchedAt = 0; }
+
+async function renderPetchDiscover() {
+  const list = $('#petch-discover-list');
+  const statusEl = $('#petch-discover-status');
+  if (!list) return;
+  if (!PETCH_REGISTRY_URL) {
+    list.innerHTML = `<div class="muted" style="padding:14px;font-size:12px;">discovery disabled (no Worker)</div>`;
+    if (statusEl) setStatus(statusEl, '');
+    return;
+  }
+  list.innerHTML = `<div class="muted" style="padding:14px;font-size:12px;"><span class="live-dots">loading</span></div>`;
+  if (statusEl) setStatus(statusEl, 'loading', true);
+  try {
+    let j;
+    if (_petchCache && (Date.now() - _petchFetchedAt) < PETCH_FETCH_TTL_MS) {
+      j = _petchCache;
+    } else {
+      const r = await fetch(withNet(PETCH_REGISTRY_URL));
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      j = await r.json();
+      _petchCache = j;
+      _petchFetchedAt = Date.now();
+    }
+    const assets = Array.isArray(j.assets) ? j.assets : [];
+    if (!assets.length) {
+      list.innerHTML = `<div class="empty">No public-mint assets deployed on ${escapeHtml(NET.name)} yet. Deploy one from the Etch tab.</div>`;
+      if (statusEl) setStatus(statusEl, '');
+      _lastDiscoverPetchCount = 0; _bumpDiscoverBadge();
+      return;
+    }
+    const myWalletReady = wallet && wallet.address && typeof wallet.address === 'function';
+    const tiles = assets.map(a => {
+      const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
+      const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+      const cap = a.cap_amount ? BigInt(a.cap_amount) : 0n;
+      const mintedNow = a.cumulative_minted ? BigInt(a.cumulative_minted) : 0n;
+      const limit = a.mint_limit ? BigInt(a.mint_limit) : 0n;
+      const remaining = cap - mintedNow;
+      const remMints = limit > 0n ? remaining / limit : 0n;
+      const pct = cap > 0n ? Number(mintedNow * 10000n / cap) / 100 : 0;
+      const capFull = remaining <= 0n;
+      // Height-window check is best-effort here: tip + start_height come from
+      // the worker's response. If we can't determine, leave the button enabled
+      // and let buildAndBroadcastPmint fail loudly downstream rather than
+      // pre-judging in the UI. The cap-full check is unambiguous.
+      const tip = Number.isInteger(j?.meta?.tip) ? j.meta.tip : null;
+      const startH = Number(a.mint_start_height) || 0;
+      const endH = Number(a.mint_end_height) || 0;
+      const beforeWindow = tip != null && startH > 0 && tip < startH;
+      const afterWindow = tip != null && endH > 0 && tip > endH;
+      let mintReason = '';
+      let mintDisabled = false;
+      if (capFull) { mintDisabled = true; mintReason = 'cap reached'; }
+      else if (beforeWindow) { mintDisabled = true; mintReason = `opens at block ${startH}`; }
+      else if (afterWindow) { mintDisabled = true; mintReason = 'mint window closed'; }
+      else if (!myWalletReady) { mintDisabled = true; mintReason = 'wallet not ready'; }
+      const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
+      return `
+        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);margin-bottom:10px;">
+          <div style="display:flex;align-items:center;gap:12px;">
+            ${imgUrl
+              ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+              : `<div style="width:40px;height:40px;border:1px solid var(--ink-mid);background:var(--bg);flex-shrink:0;"></div>`}
+            <div style="min-width:0;flex:1;">
+              <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+                <strong style="font-size:16px;">${escapeHtml(a.ticker || '?')}</strong>
+                <span style="display:inline-block;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;border-radius:2px;" title="Permissionless fair-launch (SPEC §5.8 / §5.9)">⚡ public mint</span>
+              </div>
+              <div style="font-size:10px;color:var(--ink-mid);font-family:var(--mono);margin-top:2px;">${escapeHtml(shorten(safeAid, 12))}</div>
+            </div>
+            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${mintDisabled ? '' : 'background:#7d4ff7;color:#fff;border-color:#5a36c4;'}">
+              ${mintDisabled ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${escapeHtml(fmtAssetAmount(limit, dec))}`}
+            </button>
+          </div>
+          <div style="margin-top:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;color:var(--ink-mid);">
+            <span><strong style="color:var(--ink);">${escapeHtml(fmtAssetAmount(mintedNow, dec))}</strong> / ${escapeHtml(fmtAssetAmount(cap, dec))} ${escapeHtml(a.ticker || '')}</span>
+            <span>·</span>
+            <span>${escapeHtml(remMints.toString())} mints remaining</span>
+            <span>·</span>
+            <span>${escapeHtml(fmtAssetAmount(limit, dec))} per mint</span>
+          </div>
+          <div style="margin-top:8px;height:6px;border:1px solid var(--ink);background:var(--bg);overflow:hidden;">
+            <div style="height:100%;background:${capFull ? '#a04030' : '#7d4ff7'};width:${pct}%;transition:width 0.2s;"></div>
+          </div>
+          ${a.pending_pmint_count > 0
+            ? `<div class="muted" style="margin-top:6px;font-size:10px;">${a.pending_pmint_count} mint${a.pending_pmint_count === 1 ? '' : 's'} pending (≥3 confs to credit)</div>`
+            : ''}
+        </div>`;
+    }).join('');
+    list.innerHTML = tiles;
+    if (statusEl) setStatus(statusEl, `${assets.length} asset${assets.length === 1 ? '' : 's'}`);
+    _lastDiscoverPetchCount = assets.length; _bumpDiscoverBadge();
+    list.querySelectorAll('button[data-act="petch-mint"]').forEach(btn => {
+      btn.onclick = async () => {
+        const etchTxid = btn.dataset.etchTxid;
+        const ticker = btn.dataset.ticker;
+        const limitStr = btn.dataset.limit;
+        const dec = parseInt(btn.dataset.decimals, 10) || 0;
+        const limitDisp = fmtAssetAmount(BigInt(limitStr || '0'), dec);
+        if (!confirm(`Mint ${limitDisp} ${ticker}?\n\nThis broadcasts a T_PMINT (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees. The minted UTXO appears in your Holdings; cap-credit lands after 3 confirmations.`)) return;
+        if (!ensureBurnerBackedUp('Mint a public-mint asset (T_PMINT; broadcasts a commit+reveal pair)')) return;
+        const need = await estimateSatsForOp('etch');
+        if (!(await ensureSatsFunded(need, 'Minting'))) return;
+        const origLabel = btn.textContent;
+        btn.disabled = true; btn.textContent = 'minting…';
+        // Shared #pmint-progress strip lives just above the registry list.
+        // Mark it with the in-flight ticker so a parallel render — which
+        // would otherwise blow it away by re-rendering the list — can leave
+        // it alone if the mint is still going.
+        const pmintStrip = $('#pmint-progress');
+        if (pmintStrip) {
+          pmintStrip.style.display = 'flex';
+          pmintStrip.dataset.ticker = ticker;
+        }
+        setProgressStrip('pmint-progress', 0);
+        try {
+          const r = await buildAndBroadcastPmint({
+            etchTxidHex: etchTxid,
+            onProgress: (stage) => {
+              if (stage === 'commit-start') setProgressStrip('pmint-progress', 1);
+              else if (stage === 'reveal-start') setProgressStrip('pmint-progress', 2);
+            },
+          });
+          setProgressStrip('pmint-progress', 4);
+          setTimeout(() => {
+            if (pmintStrip) {
+              pmintStrip.style.display = 'none';
+              delete pmintStrip.dataset.ticker;
+            }
+            setProgressStrip('pmint-progress', -1);
+          }, 1200);
+          toast(`Minted ${limitDisp} ${ticker} — pending until ≥3 confs`, 'success', 8000);
+          // Bust holdings cache so the new pending UTXO surfaces immediately.
+          if (typeof invalidateHoldingsCache === 'function') invalidateHoldingsCache();
+          // Refresh the petch list so the cap progress + pending counter update.
+          renderPetchDiscover();
+        } catch (e) {
+          if (pmintStrip && pmintStrip.style.display !== 'none') {
+            const activeStep = pmintStrip.querySelector('.progress-step.active');
+            const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
+            if (errIdx >= 0) setProgressStrip('pmint-progress', -1, { errorAt: errIdx });
+          }
+          toast(`Mint failed: ${e.message}`, 'error');
+          console.error(e);
+          btn.disabled = false; btn.textContent = origLabel;
+        }
+      };
+    });
+  } catch (e) {
+    list.innerHTML = `<div class="error">Public-mint registry load failed: ${escapeHtml(e.message)}</div>`;
+    if (statusEl) setStatus(statusEl, 'error');
+    console.error(e);
+  }
+}
+
 async function renderDiscover(force = false) {
+  // Kick off the petch-discover render in parallel — it has its own DOM
+  // section + status indicator, so failure here doesn't block the CETCH
+  // list and vice versa.
+  renderPetchDiscover().catch(e => console.warn('renderPetchDiscover failed', e));
   const list = $('#discover-list');
   const statusEl = $('#discover-status');
   if (!REGISTRY_URL) {
     list.innerHTML = `<div class="muted" style="padding:14px;">discovery disabled (no Worker)</div>`;
-    if (statusEl) statusEl.textContent = '';
+    setStatus(statusEl, '');
     return;
   }
   list.innerHTML = `<div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>`;
-  if (statusEl) statusEl.textContent = 'loading…';
+  setStatus(statusEl, 'loading', true);
   try {
     // Registry response is cached for ~60s by default; the Refresh button
     // passes force=true to bypass and re-fetch. Tab-switches reuse the cache.
@@ -15742,7 +17254,8 @@ async function renderDiscover(force = false) {
           : ''
         }</div>`
       : '';
-    if (statusEl) statusEl.textContent = j.assets?.length ? `${j.assets.length} asset${j.assets.length === 1 ? '' : 's'}` : '';
+    setStatus(statusEl, j.assets?.length ? `${j.assets.length} asset${j.assets.length === 1 ? '' : 's'}` : '');
+    _lastDiscoverCetchCount = j.assets?.length || 0; _bumpDiscoverBadge();
     if (!j.assets || !j.assets.length) {
       list.innerHTML = freshness + `<div class="empty">No assets etched on ${NET.name} yet. Be the first.</div>`;
       return;
@@ -15827,19 +17340,24 @@ async function renderDiscover(force = false) {
     // observer and the cache-hit fast path. The listings panel below runs
     // independently. Stats stop ticking once every card is processed.
     // (asset_id short/full toggles are wired per-card inside renderDiscoverCard.)
-    // Open listings panel: fetch listings for every asset that reports
-    // listing_count > 0, flatten into a single grid, sorted by recency.
-    const assetsWithListings = j.assets.filter(a => Number(a.listing_count || 0) > 0);
-    if (assetsWithListings.length > 0) {
-      const allLists = await Promise.all(assetsWithListings.map(a =>
-        fetch(withNet(LISTINGS_URL(a.asset_id)))
-          .then(r => r.ok ? r.json() : { listings: [] })
-          .then(j2 => Array.isArray(j2.listings) ? j2.listings.map(l => ({ ...l, _asset: a })) : [])
-          .catch(() => [])
-      ));
-      const flat = allLists.flat().filter(l => !l.expired);
-      flat.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
-      if (flat.length > 0) {
+    // Open listings panel — shares the Market tab's /market aggregate so
+    // Discover doesn't pay its own N×listings fan-out. /market already
+    // returns kind-tagged, _asset-joined, server-filtered (non-expired)
+    // listings, so we just filter to `kind === 'opening'` here. Reuses
+    // _marketCache when fresh; populates it otherwise so a subsequent
+    // Market tab open lands on a cache hit too.
+    let _marketData;
+    if (_marketCache && (Date.now() - _marketFetchedAt) < MARKET_FETCH_TTL_MS) {
+      _marketData = _marketCache;
+    } else {
+      _marketData = await fetchMarketData().catch(() => ({ assets: [], listings: [] }));
+      _marketCache = _marketData;
+      _marketFetchedAt = Date.now();
+    }
+    const flat = (_marketData.listings || [])
+      .filter(l => l.kind === 'opening' && !l.expired)
+      .sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
+    if (flat.length > 0) {
         const section = document.createElement('div');
         section.className = 'section';
         section.style.marginTop = '24px';
@@ -16014,10 +17532,9 @@ async function renderDiscover(force = false) {
           };
         });
       }
-    }
   } catch (e) {
     list.innerHTML = `<div class="error">Discovery failed: ${escapeHtml(e.message)}</div>`;
-    if (statusEl) statusEl.textContent = 'error';
+    setStatus(statusEl, 'error');
     console.error(e);
   }
   // Re-apply the Discover filter + sort (if any) after a refresh so the
@@ -16802,6 +18319,222 @@ function setupFaqModal() {
   });
 }
 
+// ============== COMMAND PALETTE ==============
+// ⌘K / Ctrl+K (or `/` outside an input) opens a keyboard-first action
+// surface. Items are built dynamically per-open so visibility reflects
+// current state — "Disconnect external wallet" only appears when one is
+// connected, "Manual faucet" only on signet, etc. Each command's run()
+// delegates to the same handler the on-screen button would invoke (a
+// programmatic .click() in most cases) so the palette never duplicates
+// business logic. Pure additive — closing the palette restores focus to
+// whatever was focused before; tabbing inside the palette stays inside.
+function buildCommandPaletteItems() {
+  const items = [];
+  const tabs = [
+    { id: 'wallet', title: 'Wallet', hint: 'address · balance · backup' },
+    { id: 'holdings', title: 'Holdings', hint: 'your confidential assets' },
+    { id: 'transfer', title: 'Send', hint: 'token or plain bitcoin' },
+    { id: 'discover', title: 'Discover', hint: 'browse all etched assets' },
+    { id: 'market', title: 'Market', hint: 'open listings' },
+    { id: 'etch', title: 'Etch', hint: 'mint a new asset' },
+    { id: 'drops', title: 'Drops', hint: 'airdrop tooling' },
+    { id: 'claim', title: 'Claim', hint: 'redeem an airdrop' },
+    { id: 'about', title: 'Protocol', hint: 'spec primer' },
+  ];
+  for (const t of tabs) {
+    items.push({
+      title: `Go to <strong>${t.title}</strong>`,
+      hint: t.hint,
+      run: () => document.querySelector(`.tab[data-tab="${t.id}"]`)?.click(),
+    });
+  }
+  // Wallet actions — call .click() on the existing buttons so handler logic
+  // stays single-sourced. Skip when the button is missing or hidden so the
+  // palette doesn't surface unreachable actions.
+  const clickable = (id) => {
+    const el = document.getElementById(id);
+    if (!el) return null;
+    if (el.disabled) return null;
+    if (el.offsetParent === null) return null; // hidden
+    return el;
+  };
+  const cmd = (id, title, hint) => {
+    const el = clickable(id);
+    if (!el) return;
+    items.push({ title, hint, run: () => el.click() });
+  };
+  cmd('btn-refresh', 'Refresh <strong>wallet</strong>', 'pull balance + tip + fee');
+  cmd('btn-rescan', 'Rescan <strong>holdings</strong>', 'walk UTXOs again');
+  cmd('btn-lock', 'Lock', 'forget privkey from memory');
+  cmd('btn-faucet', 'Manual <strong>faucet</strong>', 'open signet faucet');
+  cmd('btn-drip', 'Demo <strong>drip</strong>', 'one-tap signet sats');
+  cmd('btn-export', 'Export <strong>key</strong>', 'back up the privkey');
+  cmd('btn-import', 'Import <strong>key</strong>', 'restore from backup');
+  cmd('btn-regen', 'New <strong>wallet</strong>', 'wipe and regenerate');
+  cmd('btn-import-share', 'Import <strong>share-link</strong>', 'received from a sender');
+  cmd('btn-petch-broadcast', 'Deploy <strong>public-mint asset</strong>', 'fair launch · T_PETCH');
+  cmd('btn-take-atomic', 'Take <strong>atomic offer</strong>', 'paste an offer link');
+  cmd('btn-faq', 'Open <strong>FAQ</strong>', 'short help');
+  // Copy address + pubkey directly — small but heavily-used.
+  const addrText = (document.getElementById('w-address')?.textContent || '').trim();
+  const pubText = (document.getElementById('w-pubkey')?.textContent || '').trim();
+  if (addrText && addrText !== '—') {
+    items.push({
+      title: `Copy <strong>address</strong>`,
+      hint: shorten(addrText, 6),
+      run: () => navigator.clipboard?.writeText(addrText).then(() => toast('Address copied', 'success', 1500)),
+    });
+  }
+  if (pubText && pubText !== '—') {
+    items.push({
+      title: `Copy <strong>public key</strong>`,
+      hint: shorten(pubText, 6),
+      run: () => navigator.clipboard?.writeText(pubText).then(() => toast('Pubkey copied', 'success', 1500)),
+    });
+  }
+  // Network switch — only the option you're not currently on. The select's
+  // change handler runs through the same checks as user interaction.
+  const netSel = document.getElementById('net-select');
+  if (netSel && !netSel.disabled) {
+    const cur = netSel.value;
+    for (const n of ['mainnet', 'signet']) {
+      if (n === cur) continue;
+      items.push({
+        title: `Switch to <strong>${n}</strong>`,
+        hint: 'reload required',
+        run: () => { netSel.value = n; netSel.dispatchEvent(new Event('change', { bubbles: true })); },
+      });
+    }
+  }
+  // Discover-tab focus shortcut — handy when the palette opens via "/".
+  const discoverTab = document.querySelector('.tab[data-tab="discover"]');
+  if (discoverTab) {
+    items.push({
+      title: 'Focus <strong>discover filter</strong>',
+      hint: 'jump to search',
+      run: () => {
+        discoverTab.click();
+        setTimeout(() => document.getElementById('discover-filter')?.focus(), 80);
+      },
+    });
+  }
+  return items;
+}
+
+function setupCommandPalette() {
+  const palette = document.getElementById('cmd-palette');
+  const input = document.getElementById('cmd-input');
+  const list = document.getElementById('cmd-list');
+  if (!palette || !input || !list) return;
+  let items = [];
+  let filtered = [];
+  let activeIdx = 0;
+  let restoreFocusTo = null;
+
+  const renderList = () => {
+    if (!filtered.length) {
+      list.innerHTML = `<li class="cmd-empty">no commands match</li>`;
+      return;
+    }
+    activeIdx = Math.max(0, Math.min(activeIdx, filtered.length - 1));
+    list.innerHTML = filtered.map((c, i) => `
+      <li class="cmd-item${i === activeIdx ? ' active' : ''}" data-i="${i}" role="option" aria-selected="${i === activeIdx}">
+        <span class="cmd-item-title">${c.title}</span>
+        ${c.hint ? `<span class="cmd-item-hint">${escapeHtml(c.hint)}</span>` : ''}
+      </li>
+    `).join('');
+  };
+
+  const filter = (q) => {
+    const ql = q.trim().toLowerCase();
+    if (!ql) { filtered = items.slice(); return; }
+    // Match on stripped title (drop <strong> tags) + hint. Cheap substring;
+    // command sets are tiny so fuzzy ranking doesn't pay off here.
+    filtered = items.filter(c => {
+      const plain = (c.title + ' ' + (c.hint || '')).replace(/<[^>]+>/g, '').toLowerCase();
+      return plain.includes(ql);
+    });
+  };
+
+  const open = () => {
+    if (palette.style.display !== 'none') return;
+    restoreFocusTo = document.activeElement;
+    items = buildCommandPaletteItems();
+    filtered = items.slice();
+    activeIdx = 0;
+    input.value = '';
+    palette.style.display = 'grid';
+    renderList();
+    requestAnimationFrame(() => input.focus());
+  };
+
+  const close = () => {
+    if (palette.style.display === 'none') return;
+    palette.style.display = 'none';
+    if (restoreFocusTo && typeof restoreFocusTo.focus === 'function') {
+      restoreFocusTo.focus();
+    }
+    restoreFocusTo = null;
+  };
+
+  const exec = (i) => {
+    if (!filtered[i]) return;
+    const fn = filtered[i].run;
+    close();
+    // Defer so the palette's hide doesn't fight the action's own focus
+    // moves (e.g. opening another modal). One frame is plenty.
+    requestAnimationFrame(() => { try { fn(); } catch (e) { console.error('cmd-palette:', e); } });
+  };
+
+  input.addEventListener('input', () => { filter(input.value); activeIdx = 0; renderList(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx++; renderList(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx--; renderList(); }
+    else if (e.key === 'Enter') { e.preventDefault(); exec(activeIdx); }
+    else if (e.key === 'Escape') { e.preventDefault(); close(); }
+  });
+  list.addEventListener('mousemove', (e) => {
+    const li = e.target.closest('.cmd-item');
+    if (!li) return;
+    const i = Number(li.dataset.i);
+    if (i !== activeIdx) { activeIdx = i; renderList(); }
+  });
+  list.addEventListener('click', (e) => {
+    const li = e.target.closest('.cmd-item');
+    if (!li) return;
+    exec(Number(li.dataset.i));
+  });
+  palette.addEventListener('click', (e) => { if (e.target === palette) close(); });
+
+  // Header opener button — the only entry point on touch devices where the
+  // keyboard shortcut isn't reachable. Toggles like the keyboard does.
+  const headerBtn = document.getElementById('btn-cmd');
+  if (headerBtn) {
+    headerBtn.addEventListener('click', () => {
+      palette.style.display === 'none' ? open() : close();
+    });
+  }
+
+  // Global shortcut — listen on document with capture so an editable
+  // textarea doesn't swallow ⌘K. `/` only triggers when the active element
+  // isn't text-entering, so it doesn't fight typing. The palette can also
+  // be invoked while another modal is open (welcome / pass / faq); they
+  // stack via z-index and Esc closes the topmost.
+  document.addEventListener('keydown', (e) => {
+    const isInput = e.target instanceof HTMLElement
+      && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable);
+    if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      palette.style.display === 'none' ? open() : close();
+      return;
+    }
+    if (e.key === '/' && !isInput && palette.style.display === 'none') {
+      e.preventDefault();
+      open();
+    }
+  }, true);
+}
+
 // Welcome modal: shown on genuine first load to give the user a real choice
 // between connecting an existing bitcoin wallet (ext) and generating a fresh
 // local burner. Resolves to 'ext-xverse' | 'ext-unisat' | 'local'. Caller
@@ -16963,11 +18696,13 @@ async function init() {
   setupNetworkSelect();
   setupTabs();
   setupFaqModal();
+  setupCommandPalette();
   setupWalletButtons();
   setupExtWalletButtons();
   setupPasskeyButtons();
   setupUnisatEvents();
   setupEtchForm();
+  setupPetchForm();
   setupTransferForm();
   setupSatsSendForm();
   setupDropsForm();
@@ -16980,9 +18715,16 @@ async function init() {
   // immediately + every CHAIN_DIVERGE_INTERVAL_MS thereafter. Surfaces a
   // banner if the primary and secondary endpoints disagree on tip height.
   startChainDivergenceWatchdog();
+  // Lander grid (recent etches) is independent of wallet keys — kick it off
+  // BEFORE awaiting refreshWallet so the registry + per-asset verify fetches
+  // run concurrently with the wallet's mempool round-trips instead of strictly
+  // after them. On cold caches this is the difference between the lander
+  // appearing in step with the wallet card vs. several seconds later.
+  // Fire-and-forget: renderRecentEtches has its own try/catch and writes to a
+  // disjoint DOM region, so no rejection bubbles into init.
+  renderRecentEtches();
   await refreshWallet();
   renderExtWalletPanel();
-  renderRecentEtches();
   // Surface any one-time net-flip explainer queued by the network selector.
   // Runs after refreshWallet so the toast text references the current
   // network's address that's already visible in the wallet card.
@@ -17160,6 +18902,8 @@ export {
   encodeCXferPayload, decodeCXferPayload,
   encodeCMintPayload, decodeCMintPayload,
   encodeCBurnPayload, decodeCBurnPayload,
+  encodeCPetchPayload, decodeCPetchPayload,
+  encodeCPmintPayload, decodeCPmintPayload,
   // Protocol message hashes
   computeKernelMsg, computeMintMsg,
   openingMsg, disclosureMsg,

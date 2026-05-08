@@ -351,5 +351,120 @@ await test('dapp.encryptPrivkey blob decrypts via tests/storage.mjs decryptPrivk
   return bytesToHex(recovered) === bytesToHex(PRIV);
 });
 
+// SPEC §5.8 / §5.9 — permissionless mint (T_PETCH / T_PMINT). Pin the dapp
+// encoder against the worker decoder so wire-format drift between the two
+// halves shows up as a test failure rather than as a silently-rejected
+// envelope at indexing time. Same purpose as the existing CETCH/MINT/BURN
+// parity rows above.
+console.log('\nT_PETCH / T_PMINT cross-impl:');
+
+const worker = await import('../worker/src/index.js');
+
+await test('dapp.encodeCPetchPayload bytes decode via worker.decodeCPetchPayload', () => {
+  const bytes = dapp.encodeCPetchPayload({
+    ticker: 'FAIR',
+    decimals: 2,
+    capAmount: 21_000_000_00n,
+    mintLimit: 1000_00n,
+    mintStartHeight: 0,
+    mintEndHeight: 0,
+    imageUri: 'ipfs://bafkreitestcid',
+  });
+  const dec = worker.decodeCPetchPayload(bytes);
+  if (!dec) return false;
+  return dec.ticker === 'FAIR'
+      && dec.decimals === 2
+      && dec.cap_amount === '2100000000'
+      && dec.mint_limit === '100000'
+      && dec.mint_start_height === 0
+      && dec.mint_end_height === 0
+      && dec.image_uri === 'ipfs://bafkreitestcid';
+});
+
+await test('dapp.encodeCPetchPayload with height window decodes correctly', () => {
+  const bytes = dapp.encodeCPetchPayload({
+    ticker: 'TIMED',
+    decimals: 0,
+    capAmount: 1000n,
+    mintLimit: 10n,
+    mintStartHeight: 100_000,
+    mintEndHeight: 200_000,
+  });
+  const dec = worker.decodeCPetchPayload(bytes);
+  return dec?.mint_start_height === 100_000 && dec?.mint_end_height === 200_000;
+});
+
+await test('dapp.encodeCPetchPayload throws on cap not divisible by limit', () => {
+  try {
+    dapp.encodeCPetchPayload({ ticker: 'X', decimals: 0, capAmount: 1000n, mintLimit: 333n });
+    return false;
+  } catch (e) {
+    return /divisible/.test(e.message);
+  }
+});
+
+await test('dapp.encodeCPetchPayload throws on mint_limit > cap_amount', () => {
+  try {
+    dapp.encodeCPetchPayload({ ticker: 'X', decimals: 0, capAmount: 100n, mintLimit: 1000n });
+    return false;
+  } catch (e) {
+    return /out of range/.test(e.message);
+  }
+});
+
+await test('dapp.encodeCPmintPayload bytes decode via worker.decodeCPmintPayload', () => {
+  const assetId = new Uint8Array(32); assetId[0] = 1;
+  const etchTxid = new Uint8Array(32); etchTxid[31] = 0xff;
+  const commitment = new Uint8Array(33); commitment[0] = 0x02; commitment[32] = 1;
+  const blinding = new Uint8Array(32); blinding[31] = 7;
+  const bytes = dapp.encodeCPmintPayload({
+    assetId, etchTxid, commitment, amount: 1000_00n, blinding,
+  });
+  // SPEC §5.9: total length must be exactly 138 bytes
+  if (bytes.length !== 138) return false;
+  const dec = worker.decodeCPmintPayload(bytes);
+  if (!dec) return false;
+  return dec.amount === '100000'
+      && dec.asset_id === bytesToHex(assetId)
+      && dec.etch_txid === bytesToHex(etchTxid)
+      && dec.commitment === bytesToHex(commitment)
+      && dec.blinding === bytesToHex(blinding);
+});
+
+await test('dapp.encodeCPmintPayload throws on all-zero blinding', () => {
+  try {
+    dapp.encodeCPmintPayload({
+      assetId: new Uint8Array(32),
+      etchTxid: new Uint8Array(32),
+      commitment: (() => { const c = new Uint8Array(33); c[0] = 2; return c; })(),
+      amount: 100n,
+      blinding: new Uint8Array(32),
+    });
+    return false;
+  } catch (e) {
+    return /non-zero/.test(e.message);
+  }
+});
+
+await test('dapp.decodeCPetchPayload accepts dapp-encoded bytes (round-trip)', () => {
+  const bytes = dapp.encodeCPetchPayload({
+    ticker: 'AB', decimals: 0, capAmount: 100n, mintLimit: 10n,
+  });
+  const dec = dapp.decodeCPetchPayload(bytes);
+  return dec?.kind === 'cpetch' && dec.ticker === 'AB' && dec.capAmount === 100n;
+});
+
+await test('dapp.decodeCPmintPayload accepts dapp-encoded bytes (round-trip)', () => {
+  const blinding = new Uint8Array(32); blinding[0] = 1;
+  const commitment = new Uint8Array(33); commitment[0] = 2;
+  const bytes = dapp.encodeCPmintPayload({
+    assetId: new Uint8Array(32),
+    etchTxid: new Uint8Array(32),
+    commitment, amount: 50n, blinding,
+  });
+  const dec = dapp.decodeCPmintPayload(bytes);
+  return dec?.kind === 'cpmint' && dec.amount === 50n;
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail === 0 ? 0 : 1);

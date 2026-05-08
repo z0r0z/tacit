@@ -1,6 +1,6 @@
 # tacit protocol specification
 
-> **Status:** v1. Wire format is envelope version `0x01`, opcodes 0x21–0x26 (0x26 = `T_AXFER`, atomic OTC settlement; §5.7). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2). This spec is the authoritative reference for indexer implementations and audit review.
+> **Status:** v1. Wire format is envelope version `0x01`, opcodes 0x21–0x28 (0x26 = `T_AXFER`, atomic OTC settlement; §5.7. 0x27 / 0x28 = `T_PETCH` / `T_PMINT`, permissionless public-mint mode; §5.8–§5.9). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2). This spec is the authoritative reference for indexer implementations and audit review.
 
 ## 1. Overview
 
@@ -19,6 +19,8 @@ Operations:
 | `0x24` | `T_MINT` | Issuer issues additional supply on a mintable asset. |
 | `0x25` | `T_BURN` | Any holder destroys part or all of their balance. Burn amount is public. |
 | `0x26` | `T_AXFER` | CXFER variant that allows non-tacit auxiliary inputs (e.g., a buyer's BTC payment) in the same Bitcoin tx, enabling atomic single-tx OTC settlement. §5.7. |
+| `0x27` | `T_PETCH` | Permissionless-mint deployment record. Declares ticker, decimals, lifetime cap, fixed per-mint amount, and a height window. Creates **no** supply UTXO; deployer receives zero tokens. §5.8. |
+| `0x28` | `T_PMINT` | Permissionless mint event against a `T_PETCH` ancestor. Anyone may broadcast. Mints exactly `mint_limit` tokens; reveals `(amount, blinding)` so any chain reader can audit cumulative supply against the cap. §5.9. |
 
 ## 2. Trust model
 
@@ -134,11 +136,11 @@ Anchor construction:
 
 ## 4. Asset identity
 
-`asset_id = SHA256(reveal_txid_BE || reveal_vout_LE)` where `reveal_vout = 0` for CETCH (always vout 0).
+`asset_id = SHA256(reveal_txid_BE || reveal_vout_LE)` where `reveal_vout = 0` for CETCH and T_PETCH (the etch envelope is always at the start of the reveal tx and asset_id keys off the canonical first-output position regardless of whether that vout actually carries a tacit UTXO).
 
-This deterministically derives a 32-byte asset_id from the etch reveal transaction. T_MINT envelopes reference the same `asset_id` and include `etch_txid` so the validator can resolve the originating CETCH envelope.
+This deterministically derives a 32-byte asset_id from the etch reveal transaction. T_MINT and T_PMINT envelopes reference the same `asset_id` and include `etch_txid` so the validator can resolve the originating etch envelope (CETCH for T_MINT, T_PETCH for T_PMINT — the validator rejects any cross-mode reference).
 
-The `ticker` field is **not** unique. Multiple etches with `ticker = "USDC"` are valid; they will have distinct `asset_id` values. Wallets must display `asset_id` alongside ticker for disambiguation (same as ERC-20 contract addresses).
+The `ticker` field is **not** unique. Multiple etches with `ticker = "USDC"` are valid; they will have distinct `asset_id` values. Wallets must display `asset_id` alongside ticker for disambiguation (same as ERC-20 contract addresses). Ticker collisions span CETCH and T_PETCH alike — the etch mode is part of an asset's identity but not part of its display name, so a CETCH `"USDC"` and a T_PETCH `"USDC"` collide on display the same way two CETCH `"USDC"` etches would.
 
 ## 5. Envelope wire format
 
@@ -280,6 +282,8 @@ The validator inspects bytes at `tx.vin[0].witness[1]` and tries to decode them 
 - **CXFER, T_AXFER, T_BURN.** A malformed or non-script-path input cannot satisfy the kernel sig + aggregated range proof: the kernel binds asset_id, every asset input outpoint, every output commitment, and the public burned amount, and the range proof bounds outputs. Tampering with any of that breaks one or both checks. `T_AXFER` (§5.7) additionally allows non-tacit aux inputs at `vin[1+asset_input_count..]`; those don't enter the kernel msg, so they can't affect the asset-side balance equation.
 - **T_MINT.** The issuer's BIP-340 sig under `mint_authority` (resolved from the parent CETCH) is bound to the `commit_anchor` (commit_tx.vin[0].outpoint), so an attacker rewrapping the on-chain mint payload into their own commit/reveal pair would need a fresh issuer sig over the new anchor.
 - **CETCH.** No kernel sig and no anchor sig — anyone can broadcast a CETCH-shaped envelope. This is intentional: there is no "the asset" to forge, because `asset_id = SHA256(reveal_txid_BE || 0_LE)` makes every well-formed CETCH a *new* asset whose identity is bound to the tx that carried it. Soundness for CETCH is just that its supply commitment carries a valid range proof; a forger has nothing to gain by re-using bytes from another etch since they would only be re-etching it under a fresh `asset_id`.
+- **T_PETCH.** Same posture as CETCH — no sig, no anchor. Forging gives a fresh `asset_id` under the forger's reveal-tx, not control of an existing one. Soundness here additionally requires `cap_amount % mint_limit == 0` and the height-window invariants (§5.8) so the mint state machine is well-defined.
+- **T_PMINT.** No signature. Soundness rests on three indexer-enforced invariants, all derivable from confirmed chain state: (1) `amount == petch.mint_limit`, (2) the T_PMINT's confirmed block height lies within the height window declared by the parent T_PETCH, and (3) the cumulative count of canonically-earlier valid T_PMINTs against the same `asset_id`, multiplied by `mint_limit`, is strictly less than `cap_amount`. Replay of a published T_PMINT envelope into a fresh commit/reveal pair is allowed but cost-symmetric with honest minting (§5.9 *Replay analysis*) — it consumes a cap slot at full Bitcoin-fee cost and produces a UTXO at the rewrapper's output script with the same opening; it does not steal the original miner's UTXO.
 
 The Taproot script-path framing in §5 (`OP_FALSE OP_IF` envelope, NUMS internal key) describes the canonical encoding — what writers SHOULD produce — and is what makes the witness slot cheap and inert under Bitcoin consensus. Validators do not enforce it. A future revision that requires Taproot validation would not change protocol soundness; it would only narrow what a writer is allowed to produce.
 
@@ -316,6 +320,31 @@ validateOutpoint(txid, vout):
         verify aggregated range proof for outputs[0..N]
         verify asset_id consistency across asset_inputs only
         compute E' from asset_inputs + outputs (no burn term) and verify kernel_sig under E'.x_only()
+        return true
+    if envelope.opcode == T_PETCH:
+        # See §5.8. Deployment record only — no UTXO produced at any vout.
+        # T_PETCH is reached during ancestry walks only when a wallet
+        # accidentally treats the reveal tx's vout 0 as a tacit UTXO; the
+        # correct answer is "not a tacit UTXO". Indexer cron records T_PETCH
+        # metadata via a separate non-recursive scan path.
+        return false
+    if envelope.opcode == T_PMINT:
+        verify asset_id == SHA256(etch_txid_BE || 0_LE)
+        # Parent lookup is a metadata read, not an ancestry recursion: T_PETCH
+        # has no spendable parent UTXO to validate. The validator looks up
+        # T_PETCH metadata by etch_txid (cached during cron scan, or fetched
+        # ad-hoc by decoding the reveal tx at etch_txid).
+        petch = lookupPetchMetadata(etch_txid)
+        require petch != null and petch.opcode == T_PETCH
+        verify amount == petch.mint_limit
+        let effective_start = petch.mint_start_height ≠ 0 ? petch.mint_start_height : (petch.etch_height + 1)
+        let effective_end   = petch.mint_end_height   ≠ 0 ? petch.mint_end_height   : ∞
+        verify confirmed_height ∈ [effective_start, effective_end]
+        verify (count of canonically-earlier confirmed T_PMINTs against this
+                asset_id at depth ≥ 3) * mint_limit + amount <= cap_amount
+        verify 0 < blinding < curve_order
+        verify pedersenCommit(amount, blinding) == commitment
+        vout must == 0
         return true
     return false
 ```
@@ -752,9 +781,80 @@ Both flows can coexist on the same asset: a buyer can post a bid at the same tim
 This primitive is implementation-defined in v1: the wire format above is the canonical reference for any implementation that wants to interoperate with the reference dApp's marketplace. Indexer-level validity is unaffected — bid intents live entirely outside the on-chain protocol; all settlement is normal `T_AXFER` via §5.7.6.
 
 
+### 5.8 T_PETCH (`0x27`) — permissionless-mint deployment record
+
+`T_PETCH` declares an asset whose supply is issued by **anyone**, in fixed tranches of `mint_limit`, until a lifetime cap is reached. The deploying tx receives **zero tokens**: a `T_PETCH` envelope creates no tacit UTXO. To hold tokens, the deployer (or anyone else) must broadcast `T_PMINT` like any other participant.
+
+This is a complement to CETCH's mint-authority model, not a replacement. CETCH+T_MINT covers issuer-controlled distribution with hidden supply changes; drops/claims (§8 marketplace layer) cover snapshot-based whitelist distribution; `T_PETCH`+`T_PMINT` covers open-participation fair-launch issuance with publicly auditable supply.
+
+```
+T_PETCH(1)
+|| ticker_len(1)         u8, 1..16
+|| ticker(ticker_len)    UTF-8
+|| decimals(1)           u8, 0..8
+|| cap_amount(8)         u64 LE base units, > 0 — lifetime mint cap
+|| mint_limit(8)         u64 LE base units, > 0 — exact per-T_PMINT amount
+|| mint_start_height(4)  u32 LE — 0 ⇒ "etch_height + 1" (next confirmed block)
+|| mint_end_height(4)    u32 LE — 0 ⇒ no end height (open until cap)
+|| img_len(2)            u16 LE, 0..256
+|| image_uri(img_len)    UTF-8 (typically "ipfs://bafk…")
+```
+
+Constraints (envelope-level; rejected as malformed if violated):
+- `ticker_len ∈ [1, 16]`, `decimals ∈ [0, 8]` — same as CETCH.
+- `cap_amount > 0`, `mint_limit > 0`.
+- `cap_amount % mint_limit == 0`. The cap MUST be reachable — a non-divisible cap leaves a residual that can never be minted, which produces user confusion and gameable end-of-mint races. Validators reject any T_PETCH with a non-zero remainder.
+- If `mint_start_height ≠ 0`, then `mint_start_height ≥ etch_height + 1`. A `T_PETCH` cannot open minting in its own block — this is the structural defense of the "zero deployer allocation" property. `mint_start_height = 0` is the canonical "next block after etch confirms" sentinel, not "active immediately".
+- If `mint_end_height ≠ 0`, then `mint_end_height > mint_start_height_effective` where `mint_start_height_effective = mint_start_height ≠ 0 ? mint_start_height : etch_height + 1`.
+
+Properties:
+- **No supply UTXO is created.** Vout 0 of the `T_PETCH` reveal tx is treated as regular Bitcoin output by tacit; it carries no asset balance. `validateOutpoint(T_PETCH_reveal_txid, 0)` returns `false`. The deployer typically uses vout 0 for change.
+- **No commitment, no rangeproof.** There is no hidden supply at deploy time, so neither primitive is needed.
+- **Anyone may broadcast a T_PETCH** for any ticker — same posture as CETCH (§5.5). Ticker collisions across CETCH and T_PETCH are resolved at the wallet/UI layer (display) not the protocol layer (asset_id is canonical).
+- `asset_id = SHA256(reveal_txid_BE || 0_LE)` — the same derivation as CETCH (§4), so all downstream tooling resolves T_PETCH-rooted assets identically.
+
+Soundness for T_PETCH. Like CETCH, T_PETCH has no kernel sig and no anchor sig — anyone can broadcast a T_PETCH-shaped envelope. There is no "the asset" to forge because every well-formed T_PETCH defines a *new* `asset_id`. A forger has nothing to gain by re-using bytes since they would only be re-deploying under a fresh identity.
+
+### 5.9 T_PMINT (`0x28`) — permissionless mint event
+
+```
+T_PMINT(1)
+|| asset_id(32)              must equal SHA256(etch_txid_BE || 0_LE)
+|| etch_txid(32)             reference to the originating T_PETCH reveal tx
+|| commitment(33)            Pedersen C = amount·H + blinding·G (compressed)
+|| amount(8)                 u64 LE — public; MUST equal petch.mint_limit
+|| blinding(32)              public scalar — 0 < blinding < curve_order
+```
+
+Validator checks:
+1. `asset_id == SHA256(etch_txid_BE || 0_LE)`.
+2. Fetch the etch ancestor at `etch_txid`. The parent envelope MUST be `T_PETCH` (opcode `0x27`). A T_PMINT that names a `CETCH` (opcode `0x21`) parent — or any other opcode — is rejected. T_MINT and T_PMINT are intentionally non-substitutable: the issuance trust models differ, and the asset's mode is part of its on-chain identity even though both etch opcodes derive `asset_id` the same way.
+3. `amount == petch.mint_limit`.
+4. Compute `effective_start = petch.mint_start_height ≠ 0 ? petch.mint_start_height : (petch.etch_height + 1)`. Compute `effective_end = petch.mint_end_height ≠ 0 ? petch.mint_end_height : ∞`. Reject if the T_PMINT's confirmed block height is `< effective_start` or `> effective_end`.
+5. Let `prior_count` be the count of T_PMINTs against this `asset_id` confirmed at canonically-earlier `(height, tx_index)` positions. Reject if `(prior_count + 1) × petch.mint_limit > petch.cap_amount`.
+6. Verify `blinding ∈ (0, curve_order)` and `pedersenCommit(amount, blinding) == commitment`. The commitment field is what subsequent CXFER / BURN walks consume as an input commitment for kernel-sig verification (§5.2 / §5.4).
+7. `vout = 0` of the reveal tx holds the new supply UTXO. Spendability of the on-chain output script follows Bitcoin rules, exactly as in T_MINT (§5.3 step 4).
+
+The new supply UTXO can subsequently be CXFER'd, T_AXFER'd, or BURN'd like any other holding.
+
+**Cap-overflow ordering.** When two T_PMINTs are mined in the same block and the cap can fit one but not both, canonical ordering is by `tx_index` within the block: lower `tx_index` wins. The losing T_PMINT is decoded but rejected at step 5. Its commit/reveal pair stays on chain; it produces no spendable tacit UTXO, and the rejected miner forfeits their Bitcoin tx fees. This is the same outcome as any other invalid envelope.
+
+**Why no signature.** T_PMINT carries no Schnorr signature. Anyone may produce the bytes; the blinding is public; the recipient is implicit (whoever controls the reveal tx's `vout[0]` output script). This is intentional — there is no "the minter" to authenticate. The validity gate is the cap counter plus the height window, both enforced from indexer state, not from cryptographic authentication.
+
+Replay analysis. An attacker who copies a published T_PMINT envelope and rewraps its bytes into their own commit/reveal pair must pay full Bitcoin tx fees. Their reveal-tx `vout[0]` commits to the *same* `(amount, blinding)` opening, so the resulting UTXO sits at *their* output script with the *same* opening as the original. This is not a theft of the original miner's UTXO (which lives at the original reveal tx's `vout[0]` permanently), but it does consume one cap slot. Since reproducing a T_PMINT costs the same as honest minting, there is no asymmetric grief vector — the rewrap path *is* the honest path under a different label. The cap eventually fills; that is the design.
+
+Cross-network replay is prevented by Bitcoin's network-level tx isolation: signet and mainnet asset_ids derive from different reveal txids, so byte-identical envelope bytes broadcast on both networks produce different `asset_id`s and never collide.
+
+**Privacy disclosure.** Because every T_PMINT publishes `(amount, blinding)` in cleartext and `amount == mint_limit` is public, **cumulative supply is fully observable** for `T_PETCH`-rooted assets (`cumulative_minted = (count of valid T_PMINTs) × mint_limit`). This is a deliberate departure from CETCH's hidden-supply property — the asset class trades supply-side confidentiality for permissionless issuance and on-chain auditable cap enforcement. Per-holder balances remain confidential after the first CXFER (§3.5 re-blinds outputs). Wallets SHOULD surface this distinction at etch time so deployers and minters understand the trade-off.
+
+**Confirmation depth for cap correctness.** Step 5's `prior_count` is order-sensitive on canonical chain history. Two T_PMINTs that each look valid against the chain at depth-0 may collectively violate the cap when canonically ordered. Indexers MUST therefore compute `prior_count` only over T_PMINTs at confirmation depth ≥ 3 (the same depth Bitcoin reorg risk crosses below ~1% under reasonable hashrate assumptions). Tip-state T_PMINTs surface as "pending" to UI layers; they are not credited to wallets nor counted toward the cap until the depth threshold is crossed. On a reorg, indexers MUST re-run step 5 over the new canonical chain — a previously-credited T_PMINT may become invalid (cap-overflow under new ordering) and its UTXO MUST be revoked from holdings. This is a stronger reorg sensitivity than CETCH+T_MINT, where credit depends only on the issuer's signature, not on aggregate chain state.
+
+Recovery semantics. T_PMINT-produced UTXOs are publicly opened — `(amount, blinding)` are in chain data — so any wallet with the privkey for the `vout[0]` output script can recover the UTXO from chain alone, with no derivation required. The first CXFER from such a UTXO produces fresh blindings (§3.5) and restores forward confidentiality for that holder. Wallets MAY surface a one-time hint encouraging a self-CXFER after mint, but the protocol does not require it and the UTXO is fully spendable in its open state.
+
+
 ## 6. Recovery semantics
 
-A wallet with only its **private key** can recover its full balance from chain data alone for every UTXO produced by the **on-chain protocol layer** (CETCH / CXFER / T_MINT / T_BURN, including targeted §5.7.3 T_AXFER settlements). Atomic-intent recipient UTXOs are the one exception — see §5.7.6 "Recovery model exception" — because their recipient blinding is a uniform-random scalar fixed at intent-publish time rather than ECDH-derived; recovery from chain + privkey alone is impossible by design, and recovery falls back to local opening cache or re-fetching the encrypted fulfilment from the worker.
+A wallet with only its **private key** can recover its full balance from chain data alone for every UTXO produced by the **on-chain protocol layer** (CETCH / CXFER / T_MINT / T_BURN / T_PMINT, including targeted §5.7.3 T_AXFER settlements). Atomic-intent recipient UTXOs are the one exception — see §5.7.6 "Recovery model exception" — because their recipient blinding is a uniform-random scalar fixed at intent-publish time rather than ECDH-derived; recovery from chain + privkey alone is impossible by design, and recovery falls back to local opening cache or re-fetching the encrypted fulfilment from the worker. T_PMINT recovery is the *easiest* of all paths because `(amount, blinding)` are published in the envelope rather than derived — no HMAC keystream, no ECDH (§5.9 *Recovery semantics*).
 
 For each UTXO the wallet owns:
 
@@ -763,6 +863,7 @@ For each UTXO the wallet owns:
 3. **As own change (CXFER / BURN)**: Try `tacit-change-v1` blinding + `tacit-amount-self-v1` keystream against the change vout.
 4. **As own etched supply (CETCH)**: Try `tacit-etch-v1` + `tacit-etch-amount-v1` against the etcher's commit-input anchor.
 5. **As own minted supply (T_MINT)**: Try `tacit-mint-blind-v1` + `tacit-mint-amount-v1` against the mint commit-input anchor.
+6. **As T_PMINT-minted supply (own or other)**: Read `(amount, blinding)` directly from the T_PMINT envelope. No derivation required — both fields are public. The wallet recognizes ownership by matching its pubkey's HASH160 against `vout[0].scriptpubkey`. Confirm `pedersenCommit(amount, blinding) == commitment` to reject tampered envelopes (the same authenticity check as paths 2–5).
 
 If none of the paths produce a valid `(amount, blinding)` opening, the UTXO is recorded as a **"ghost"** — the wallet sees that it owns the BTC sat output but cannot decrypt the asset amount. This indicates either a legacy/incompatible sender, a misuse, or an atomic-intent recipient whose local cache and remote encrypted fulfilment are both unavailable; it does not represent loss of value (the BTC sats are still spendable by the wallet privkey).
 
@@ -788,8 +889,9 @@ What is **not** hidden:
 
 - **No inflation downstream of etch.** Kernel sig + range proof ensure `Σ_out ≤ Σ_in + burnt − burnt = Σ_in` (or `Σ_in − burned` for BURN).
 - **No negative-amount smuggling.** Range proof bounds every amount to `[0, 2⁶⁴)`, including change. A "negative" amount would be `N − k` modulo the scalar field; this is *not* in the 64-bit range and the proof rejects.
-- **Mint authorization.** T_MINT requires Schnorr sig under `mint_authority` from the CETCH ancestor. Non-mintable assets (`mint_authority = 0`) reject all T_MINT envelopes.
-- **Replay protection.** Kernel msg binds (asset_id, input outpoints, output commitments, burned_amount). Mint msg binds (asset_id, commit_anchor, commitment, amount_ct) — the anchor prevents envelope re-wrap into a different commit/reveal pair (§5.3). No cross-tx or cross-asset replay.
+- **Mint authorization (CETCH+T_MINT).** T_MINT requires Schnorr sig under `mint_authority` from the CETCH ancestor. Non-mintable assets (`mint_authority = 0`) reject all T_MINT envelopes.
+- **Permissionless mint cap (T_PETCH+T_PMINT).** T_PMINT carries no signature; the cap is enforced by the indexer summing canonically-ordered T_PMINT events at confirmation depth ≥ 3 (§5.9). Cumulative supply is publicly observable for these assets — the trade is supply-side confidentiality for permissionless issuance with on-chain auditable cap. Reorgs at depth < 3 may revoke a previously-credited T_PMINT under new canonical ordering; indexers MUST re-run the cap check on reorg and surface revocations to wallets. T_PMINT envelope replay is allowed but cost-symmetric with honest minting (the rewrapper pays full Bitcoin fees and consumes one cap slot for an extra UTXO at their own output script — no theft from the original miner).
+- **Replay protection.** Kernel msg binds (asset_id, input outpoints, output commitments, burned_amount). Mint msg binds (asset_id, commit_anchor, commitment, amount_ct) — the anchor prevents envelope re-wrap into a different commit/reveal pair (§5.3). T_PMINT has no signature and no anchor: rewrap is allowed, and the cost-symmetric replay analysis above is what makes it harmless. No cross-tx or cross-asset replay across any opcode.
 - **Batch range-proof soundness.** The 2⁻²⁵⁵ bound on batch-verify failure assumes the batching scalars α and β are independent uniform samples drawn *after* the prover commits to the proof. Both conditions hold: each call to `randomScalar()` reads `crypto.getRandomValues`, and the draws happen inside the verify loop (post proof-fixing), so a malicious prover cannot have engineered Eq1 = −Eq2 in advance.
 
 #### Implementation hygiene
@@ -845,10 +947,12 @@ Worker endpoints:
 | `POST /assets/:asset_id/listings-range`, `GET /assets/:asset_id/listings-range`, `POST /assets/:asset_id/listings-range/:owner_pubkey/claim`, `DELETE /assets/:asset_id/listings-range/:owner_pubkey` | Range-disclosure variant of the above (lists backed by a `balance ≥ K` proof rather than a single UTXO opening). `POST /…/claim` is a 5-minute taker reservation, symmetric to the per-UTXO `listings/:txid/:vout/claim` row. Same OTC caveat applies. |
 | `POST /airdrops/:root/claims`, `GET /airdrops/:root/claims`, `DELETE /airdrops/:root/claims/:leaf_index` | Airdrop claim dropbox keyed by the issuer's merkle root. Recipients submit `(leaf_index, tacit_pubkey, eth_sig)` tuples; issuers pull batches and re-verify the merkle proof + ETH sig client-side against the off-chain snapshot before broadcasting CXFERs. Worker validates format only — it has no snapshot to check against. Lives entirely outside the on-chain protocol; canonical truth is the resulting CXFER set. |
 | `POST /assets/hint` | `{ reveal_txid, reveal_vout? }` — targeted index of a freshly broadcast etch / mint / burn so it appears in `/assets` immediately without waiting for the next 5-min cron tick. Works pre-confirmation. |
+| `GET /petch-assets` | Permissionless-mint asset registry (T_PETCH-rooted). Same envelope/payload shape as `/assets` plus per-asset `cap_amount`, `mint_limit`, `mint_start_height`, `mint_end_height`, `cumulative_minted` (depth ≥ 3), and a `mints_remaining` convenience field. T_PETCH-rooted assets are excluded from `/assets` so the two registries can be filtered cleanly in UI; consumers wanting "every asset" union both. |
+| `GET /assets/:asset_id/pmints` | Confirmed T_PMINT events for a T_PETCH-rooted asset, in canonical (height, tx_index) order. Each entry: `{ txid, height, tx_index, recipient_script, depth, status: 'credited' \| 'pending' \| 'revoked' }`. Status is recomputed every cron tick against current depth and reorg state. Wallets MUST treat `pending` as non-spendable. |
 | `POST /scan` | Manual cron trigger (debug) |
 | `POST /rescan?from=<height>` | Rewind `meta:last_scanned` (debug) |
 
-Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, and T_BURN envelopes and indexes them. Worker decodes envelopes only structurally — the rangeproof and signature verification stay client-side. The `/assets/hint` endpoint exists so a freshly broadcast envelope appears in the registry without waiting for the next cron tick.
+Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, T_BURN, T_PETCH, and T_PMINT envelopes and indexes them. Worker decodes envelopes only structurally — the rangeproof and signature verification stay client-side. The cap counter for T_PETCH-rooted assets is maintained per-asset and re-derived from canonical chain order on every reorg-affected block. The `/assets/hint` endpoint exists so a freshly broadcast envelope appears in the registry without waiting for the next cron tick.
 
 **Protocol validity vs. operational dependency.** "Not part of the trust-bearing protocol" means the worker cannot make an invalid envelope appear valid: every consumer is expected to re-verify rangeproofs, kernel sigs, mint sigs, and Pedersen openings client-side. It does **not** mean a malicious or faulty worker is harmless to user experience: such a worker could omit assets from `/assets`, return stale `last_scanned` heights, withhold or mis-serve `/openings` data needed for cold recovery, fail to index a freshly hinted reveal, lie about burn history, or refuse `/disclosures`. None of that produces unsound balances, but it can degrade discovery, slow recovery, and cause UI to lag chain reality. Any deployment that wants to harden against this should run its own indexer (the cron in `worker/src/index.js` is a few hundred lines and pluggable behind any mempool.space-compatible REST endpoint), or run client-side validation eagerly enough that worker output is treated as a hint rather than as canonical metadata. Likewise, the dApp's reliance on `mempool.space` REST APIs for raw-tx fetching is a UX dependency, not a trust dependency: a Bitcoin Core or Electrum backend would serve identically once the JSON shape is matched.
 
@@ -868,6 +972,8 @@ Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, a
 - **Lost mint key = permanent fixed supply.** No recovery mechanism. The dApp gates mintable etches behind an explicit key-export step before broadcast.
 - **Local storage is the wallet.** Whichever path placed a privkey in the page (auto-generated, imported, or locally bound to an external wallet address), `localStorage` is what persists it. Mainnet UX gates every value-creating op behind a "have you exported the key?" acknowledgement (per §2). Hardware-wallet signing for the protocol's signing paths is the proper long-term mitigation but not in v1.
 - **Network-scoped wallet keys.** v1 stores signet and mainnet identities under separate `localStorage` keys (`tacit-wallet-v1:signet`, `tacit-wallet-v1:mainnet`, plus `…:by:<extAddr>` variants when locally bound to an external wallet). Compromise of a signet/test key does NOT compromise mainnet — they're independent secrets generated on first use of each network. The trade-off is that switching from signet to mainnet (or vice versa) presents a fresh empty wallet by default; users who want to carry an identity across networks can manually `Import key` on the destination network. Older builds used a single un-namespaced `tacit-wallet-v1`; the dApp does not auto-migrate, so existing data under that key remains accessible only via manual import.
+- **T_PMINT reorg sensitivity.** Cap correctness for T_PETCH-rooted assets requires complete, canonically-ordered T_PMINT history. Two T_PMINTs near tip can each look valid at depth 0 yet collectively violate the cap when canonically ordered. v1 mitigates by requiring confirmation depth ≥ 3 for cap-credit (§5.9 *Confirmation depth*); the deeper the threshold, the smaller the reorg-revocation surface but the slower mint UX. Wallets MUST surface "pending" T_PMINT UTXOs as non-spendable until the depth threshold crosses, and MUST handle revocation events when an indexer reverts a previously-credited T_PMINT under new canonical ordering. CETCH+T_MINT assets are unaffected — credit there depends only on the issuer's signature, not on aggregate chain state.
+- **Reference-indexer KV.list cap.** The reference worker's `loadCanonicalPmints` currently fetches T_PMINT events via a single `KV.list({ limit: 1000 })` call per asset. An asset that accrues more than 1000 confirmed T_PMINTs across its lifetime will under-count `cumulative_minted` until the indexer is paginated. v1 ships with this cap; deployments expecting > 1000 mints on a single asset should patch `loadCanonicalPmints` to follow the `list_complete` cursor before relying on the published cap progress for buy/sell decisions.
 
 ## 11. Acknowledgements
 
