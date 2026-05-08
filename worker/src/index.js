@@ -52,7 +52,7 @@
 // Debug endpoints (gated on DEBUG_TOKEN env secret; default-deny 404 if unset):
 //   POST /scan              — manually trigger a registry scan for the requested network.
 //   POST /rescan?from=<h>   — rewind meta:last_scanned so next tick re-scans from height <h>.
-// Scheduled (cron */5 * * * *): scans signet AND mainnet for CETCH, T_MINT, and T_BURN envelopes.
+// Scheduled (cron */5 * * * *): scans signet AND mainnet for CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, and T_PMINT envelopes.
 // Mainnet runs at a smaller blocks-per-tick budget because mainnet blocks
 // (~3000 txs each) burn far more subrequests than near-empty signet blocks.
 //
@@ -99,6 +99,8 @@ const T_BURN     = 0x25;
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
 const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
 const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
+const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
+const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -229,6 +231,40 @@ function pmintKeyFor(network, aid, height, txIndex, txid) {
   return network === 'signet' ? `pmint:${aid}:${h}:${idx}:${txid}` : `pmint:${network}:${aid}:${h}:${idx}:${txid}`;
 }
 function pmintPrefix(network, aid)     { return network === 'signet' ? `pmint:${aid}:` : `pmint:${network}:${aid}:`; }
+
+// Mixer-pool KV layout (SPEC §5.10 / §5.11). Three namespaces:
+//   pool:<aid>:<denom>                 — POOL_INIT record (vk_cid, ceremony_cid, init_height, init_txid).
+//                                        First-confirmed-wins per SPEC §5.10.1.
+//   poolleaf:<aid>:<denom>:<h>:<idx>:<txid>
+//                                      — single deposit leaf, keyed by canonical position so
+//                                        list-order reproduces the merkle tree layout.
+//   poolnull:<aid>:<denom>:<nullifier_hex>
+//                                      — single withdraw nullifier; existence == spent.
+// Network-prefix follows the pmint convention (signet legacy, mainnet prefixed).
+function poolInitKey(network, aid, denom) {
+  return network === 'signet' ? `pool:${aid}:${denom}` : `pool:${network}:${aid}:${denom}`;
+}
+function poolPrefix(network) {
+  return network === 'signet' ? 'pool:' : `pool:${network}:`;
+}
+function poolLeafKeyFor(network, aid, denom, height, txIndex, txid) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  return network === 'signet'
+    ? `poolleaf:${aid}:${denom}:${h}:${idx}:${txid}`
+    : `poolleaf:${network}:${aid}:${denom}:${h}:${idx}:${txid}`;
+}
+function poolLeafPrefix(network, aid, denom) {
+  return network === 'signet' ? `poolleaf:${aid}:${denom}:` : `poolleaf:${network}:${aid}:${denom}:`;
+}
+function poolNullifierKey(network, aid, denom, nullifierHex) {
+  return network === 'signet'
+    ? `poolnull:${aid}:${denom}:${nullifierHex}`
+    : `poolnull:${network}:${aid}:${denom}:${nullifierHex}`;
+}
+function poolNullifierPrefix(network, aid, denom) {
+  return network === 'signet' ? `poolnull:${aid}:${denom}:` : `poolnull:${network}:${aid}:${denom}:`;
+}
 function attestKey(network, aid)       { return network === 'signet' ? `attest:${aid}` : `attest:${network}:${aid}`; }
 function attestMintKey(network, aid, txid) {
   return network === 'signet' ? `attest:mint:${aid}:${txid}` : `attest:${network}:mint:${aid}:${txid}`;
@@ -1017,6 +1053,94 @@ function decodeCPmintPayload(payload) {
 // T_BURN structural decoder. Burns are simpler than mints because the burned
 // amount is public — no Pedersen indirection. We only extract asset_id and
 // burned_amount. The kernel sig + remaining outputs are validated client-side.
+// SPEC §5.10. Two payload shapes: POOL_INIT (denomination = 0 sentinel) and
+// standard deposit. Returned shape's `kind` discriminates.
+function decodeTDepositPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_DEPOSIT) return null;
+  if (payload.length < 1 + 32 + 8) return null;
+  let p = 1;
+  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  const asset_id = bytesToHex(assetIdBytes);
+  if (denomination === 0n) {
+    if (payload.length < p + 8 + 1) return null;
+    const pdView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+    const poolDenom = (BigInt(pdView.getUint32(4, true)) << 32n) | BigInt(pdView.getUint32(0, true));
+    p += 8;
+    if (poolDenom <= 0n || poolDenom >= (1n << BigInt(N_BITS))) return null;
+    if (p + 1 > payload.length) return null;
+    const vkLen = payload[p]; p += 1;
+    if (vkLen < 1 || vkLen > 64) return null;
+    if (p + vkLen > payload.length) return null;
+    const vkCid = new TextDecoder().decode(payload.slice(p, p + vkLen)); p += vkLen;
+    if (p + 1 > payload.length) return null;
+    const ceLen = payload[p]; p += 1;
+    if (ceLen < 1 || ceLen > 64) return null;
+    if (p + ceLen > payload.length) return null;
+    const ceremonyCid = new TextDecoder().decode(payload.slice(p, p + ceLen)); p += ceLen;
+    if (p + 64 !== payload.length) return null;
+    const initSig = bytesToHex(payload.slice(p, p + 64)); p += 64;
+    return {
+      kind: 'pool_init',
+      asset_id,
+      pool_denom: poolDenom.toString(),
+      vk_cid: vkCid,
+      ceremony_cid: ceremonyCid,
+      init_sig: initSig,
+    };
+  }
+  if (payload.length !== 1 + 32 + 8 + 32 + 64) return null;
+  if (denomination >= (1n << BigInt(N_BITS))) return null;
+  const leaf = bytesToHex(payload.slice(p, p + 32)); p += 32;
+  const kernelSig = bytesToHex(payload.slice(p, p + 64)); p += 64;
+  return {
+    kind: 'deposit',
+    asset_id,
+    denomination: denomination.toString(),
+    leaf_commitment: leaf,
+    kernel_sig: kernelSig,
+  };
+}
+
+// SPEC §5.11. Worker decodes structurally only — proof verification + bind_hash
+// re-derivation happen client-side (the dApp pulls the worker's pool snapshot
+// and re-validates).
+function decodeTWithdrawPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_WITHDRAW) return null;
+  const HEADER = 1 + 32 + 8 + 32 + 32 + 33 + 8 + 32 + 2;
+  if (payload.length < HEADER) return null;
+  let p = 1;
+  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const merkleRoot = bytesToHex(payload.slice(p, p + 32)); p += 32;
+  const nullifierHash = bytesToHex(payload.slice(p, p + 32)); p += 32;
+  const recipientCommitment = bytesToHex(payload.slice(p, p + 33)); p += 33;
+  const amountCt = bytesToHex(payload.slice(p, p + 8)); p += 8;
+  const bindHash = bytesToHex(payload.slice(p, p + 32)); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (p + proofLen !== payload.length) return null;
+  const proof = bytesToHex(payload.slice(p, p + proofLen));
+  return {
+    kind: 'withdraw',
+    asset_id: bytesToHex(assetIdBytes),
+    denomination: denomination.toString(),
+    merkle_root: merkleRoot,
+    nullifier_hash: nullifierHash,
+    recipient_commitment: recipientCommitment,
+    amount_ct: amountCt,
+    bind_hash: bindHash,
+    proof,
+  };
+}
+
 function decodeCBurnPayload(payload) {
   if (!payload) return null;
   if (payload.length < 1 + 32 + 8 + 64 + 1) return null;
@@ -1820,7 +1944,11 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   let creditedAmount = 0n;
   const annotated = events.map(e => {
     const h = Number(e.minted_at_height) || 0;
-    const depth = Number.isInteger(tipHeight) ? Math.max(0, tipHeight - h) : null;
+    // Bitcoin convention: a tx in block N has 1 confirmation when tip == N
+    // (the tx's own block counts). SPEC §5.9 cites the standard "~1% reorg
+    // risk at depth 3" threshold, which is 3 confirmations. So depth here =
+    // confirmations = (tipHeight - h) + 1.
+    const depth = Number.isInteger(tipHeight) ? Math.max(0, tipHeight - h + 1) : null;
     let status;
     let credited = false;
     if (depth == null) {
@@ -4196,6 +4324,88 @@ async function scanForEtches(env, network) {
         mintMeta.tx_index = txIndex;
         await env.REGISTRY_KV.put(pmintKeyFor(network, expectedAid, h, txIndex, tx.txid), JSON.stringify(mintMeta));
         found++;
+      } else if (decoded.opcode === T_DEPOSIT) {
+        // SPEC §5.10. Two payload shapes share opcode 0x29:
+        //   - POOL_INIT (denomination = 0 sentinel): registers a new pool.
+        //     First-confirmed-wins per §5.10.1; subsequent inits for the
+        //     same (asset_id, pool_denom) are ignored.
+        //   - Standard deposit: appends a leaf to the pool's merkle tree at
+        //     a canonical position derived from (height, tx_index, txid).
+        //
+        // The cron does NOT verify the kernel sig (would require fetching
+        // the input UTXO's parent envelope to recover C_in — heavy). The
+        // dApp re-validates client-side per SPEC §5.10's validator rules.
+        const td = decodeTDepositPayload(decoded.payload);
+        if (!td) continue;
+        if (td.kind === 'pool_init') {
+          const k = poolInitKey(network, td.asset_id, td.pool_denom);
+          const existing = await env.REGISTRY_KV.get(k);
+          if (!existing) {
+            const meta = {
+              asset_id: td.asset_id,
+              pool_denom: td.pool_denom,
+              vk_cid: td.vk_cid,
+              ceremony_cid: td.ceremony_cid,
+              init_height: h,
+              init_txid: tx.txid,
+              init_sig: td.init_sig,
+              network,
+            };
+            await env.REGISTRY_KV.put(k, JSON.stringify(meta));
+            found++;
+          }
+          // else first-confirmed-wins: silently ignore re-inits.
+        } else if (td.kind === 'deposit') {
+          // Skip leaf-write if the pool isn't initialized yet — same
+          // "metadata not yet indexed" tolerance as T_PMINT's petch lookup.
+          // A re-scan will pick up these deposits once their POOL_INIT is
+          // canonicalized. NOTE: re-scans only happen via /rescan; in normal
+          // forward-only operation a deposit before its POOL_INIT in the
+          // same scan window is silently dropped.
+          const initRec = await env.REGISTRY_KV.get(poolInitKey(network, td.asset_id, td.denomination), 'json');
+          if (!initRec) continue;
+          const leafKey = poolLeafKeyFor(network, td.asset_id, td.denomination, h, txIndex, tx.txid);
+          const leafMeta = {
+            asset_id: td.asset_id,
+            denomination: td.denomination,
+            leaf_commitment: td.leaf_commitment,
+            deposit_txid: tx.txid,
+            tx_index: txIndex,
+            deposited_at_height: h,
+            deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            network,
+          };
+          await env.REGISTRY_KV.put(leafKey, JSON.stringify(leafMeta));
+          found++;
+        }
+      } else if (decoded.opcode === T_WITHDRAW) {
+        // SPEC §5.11. Worker records the nullifier as spent — the dApp
+        // verifies the Groth16 proof + recent-root check at consume time.
+        // Indexing without verification is safe: a structurally-decoded
+        // withdraw whose proof fails on the client will be rejected by the
+        // dApp's validator regardless of whether the nullifier was indexed.
+        // Conversely, indexing an unverified withdraw can't enable double-
+        // spend because the dApp re-checks both nullifier-set membership
+        // AND proof validity.
+        const tw = decodeTWithdrawPayload(decoded.payload);
+        if (!tw) continue;
+        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, tw.asset_id, tw.denomination), 'json');
+        if (!initRec) continue;
+        const nKey = poolNullifierKey(network, tw.asset_id, tw.denomination, tw.nullifier_hash);
+        const existing = await env.REGISTRY_KV.get(nKey);
+        if (!existing) {
+          const meta = {
+            asset_id: tw.asset_id,
+            denomination: tw.denomination,
+            nullifier_hash: tw.nullifier_hash,
+            withdraw_txid: tx.txid,
+            withdrawn_at_height: h,
+            withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            network,
+          };
+          await env.REGISTRY_KV.put(nKey, JSON.stringify(meta));
+          found++;
+        }
       }
     }
     lastContiguous = h;
@@ -4221,7 +4431,8 @@ export {
   decodeEnvelopeScript,
   decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeAxferPayload, decodeCBurnPayload,
   decodeCPetchPayload, decodeCPmintPayload,
-  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT,
+  decodeTDepositPayload, decodeTWithdrawPayload,
+  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW,
   // SPEC §5.9 cap-credit policy + the function that applies it. Exported so
   // the petch-pmint test can simulate full canonical-order scenarios
   // (depth-gated crediting, cap-overflow rejection, reorg-revoke) against
@@ -4245,6 +4456,62 @@ export default {
     // The current dapp explicitly passes ?network=mainnet for mainnet ops.
     const network = parseNetwork(url.searchParams.get('network'));
 
+    // /pools — list initialized mixer pools (SPEC §5.10.1). Returns each
+    // pool's POOL_INIT record + leaf/nullifier counts. The dApp consumes
+    // this on Mixer-tab open; per-pool detail (full leaf list + nullifier
+    // set) lives at /pools/:asset_id/:denom.
+    if (url.pathname === '/pools' && req.method === 'GET') {
+      const pools = [];
+      const list = await env.REGISTRY_KV.list({ prefix: poolPrefix(network), limit: 1000 });
+      for (const k of list.keys) {
+        const rec = await env.REGISTRY_KV.get(k.name, 'json');
+        if (!rec) continue;
+        // Lightweight stats: counts only, not full lists (the detail
+        // endpoint is for that).
+        const leafCount = (await env.REGISTRY_KV.list({
+          prefix: poolLeafPrefix(network, rec.asset_id, rec.pool_denom),
+          limit: 1000,
+        })).keys.length;
+        const nullifierCount = (await env.REGISTRY_KV.list({
+          prefix: poolNullifierPrefix(network, rec.asset_id, rec.pool_denom),
+          limit: 1000,
+        })).keys.length;
+        pools.push({ ...rec, leaf_count: leafCount, nullifier_count: nullifierCount });
+      }
+      return jsonResponse({ pools, network }, 200, cors);
+    }
+    // /pools/:asset_id/:denom — full per-pool state. Leaves are returned
+    // in canonical KV-key order (height-padded + tx_index-padded), which
+    // is the order the dApp must apply them in to reproduce the canonical
+    // merkle tree.
+    {
+      const m = url.pathname.match(/^\/pools\/([0-9a-f]{64})\/(\d+)$/i);
+      if (m && req.method === 'GET') {
+        const aid = m[1].toLowerCase();
+        const denom = m[2];
+        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denom), 'json');
+        if (!initRec) return jsonResponse({ error: 'pool not found' }, 404, cors);
+        const leafList = await env.REGISTRY_KV.list({
+          prefix: poolLeafPrefix(network, aid, denom),
+          limit: 1000,
+        });
+        const leaves = [];
+        for (const k of leafList.keys) {
+          const rec = await env.REGISTRY_KV.get(k.name, 'json');
+          if (rec) leaves.push(rec);
+        }
+        const nullifierList = await env.REGISTRY_KV.list({
+          prefix: poolNullifierPrefix(network, aid, denom),
+          limit: 1000,
+        });
+        const nullifiers = [];
+        for (const k of nullifierList.keys) {
+          const rec = await env.REGISTRY_KV.get(k.name, 'json');
+          if (rec) nullifiers.push(rec);
+        }
+        return jsonResponse({ pool: initRec, leaves, nullifiers, network }, 200, cors);
+      }
+    }
     if (url.pathname === '/assets' && req.method === 'GET') {
       const limitStr = url.searchParams.get('limit');
       let limit = null;

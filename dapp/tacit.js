@@ -1614,6 +1614,151 @@ function deriveAxintentBlindingKeystream(myPriv, theirPubBytes, intentIdBytes, a
   const seed = sha256(shared.slice(1));
   return hmac(sha256, seed, concatBytes(AXINTENT_BLINDING_DOMAIN, intentIdBytes, assetIdBytes));
 }
+
+// ============================================================================
+// MIXER POOL DERIVATIONS (SPEC §3.5, §3.6, §5.10, §5.11)
+// ============================================================================
+//
+// Mixer-pool envelopes (T_DEPOSIT / T_WITHDRAW) introduce three new derivations
+// keyed by the wallet privkey, plus a per-pool merkle hash and a nullifier hash.
+//
+// Self-derived withdrawal blinding + amount keystream live here alongside the
+// other tacit-prefixed HMAC paths so a wallet's recovery scan finds them via
+// the same code path as CXFER change recovery.
+//
+// Poseidon hash (used for leaf commitment + nullifier hash) is STUBBED in v1
+// because its circuit-side use requires a circom toolchain we don't yet
+// vendor. Production deployments must swap in circomlibjs's poseidon over
+// BN254. The stub uses domain-separated SHA256 truncated to ~254 bits so wire
+// formats and recovery-scan logic work end-to-end during dev/testing; circuit
+// correctness depends on the production swap.
+const POOL_INIT_DOMAIN       = new TextEncoder().encode('tacit-pool-init-v1');
+const DEPOSIT_DOMAIN         = new TextEncoder().encode('tacit-deposit-v1');
+const WITHDRAW_BIND_DOMAIN   = new TextEncoder().encode('tacit-withdraw-bind-v1');
+const WITHDRAW_BLIND_DOMAIN  = new TextEncoder().encode('tacit-withdraw-blind-v1');
+const WITHDRAW_AMOUNT_DOMAIN = new TextEncoder().encode('tacit-withdraw-amount-v1');
+const POOL_EMPTY_DOMAIN      = new TextEncoder().encode('tacit-pool-empty-v1');
+const POSEIDON_STUB_DOMAIN   = new TextEncoder().encode('tacit-poseidon-stub-v1');
+
+// Self-derived withdrawal blinding scalar — recipient (== withdrawer for
+// flow-to-self) derives this from their own privkey + the public nullifier
+// hash. The pair (denomination, blinding) opens the recipient_commitment.
+function deriveWithdrawBlinding(myPriv, nullifierHash) {
+  const out = hmac(sha256, myPriv, concatBytes(WITHDRAW_BLIND_DOMAIN, nullifierHash));
+  return bytes32ToBigint(out) % SECP_N;
+}
+
+// Self-derived withdrawal amount keystream (8 bytes). XOR'd against
+// `denomination` to produce the on-chain `amount_ct`. Recovery is symmetric.
+function deriveWithdrawAmountKeystream(myPriv, nullifierHash) {
+  return hmac(sha256, myPriv, concatBytes(WITHDRAW_AMOUNT_DOMAIN, nullifierHash)).slice(0, 8);
+}
+
+// Bind hash — committed-to as a public input to the Groth16 proof so a
+// relayer or mempool observer can't replay a copied proof against a
+// substituted recipient_commitment. SPEC §5.11.
+function computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
+  if (recipientCommitment.length !== 33) throw new Error('recipient_commitment 33 bytes');
+  const denomLE = new Uint8Array(8);
+  {
+    const d = BigInt(denomination);
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  return sha256(concatBytes(WITHDRAW_BIND_DOMAIN, assetId, denomLE, nullifierHash, recipientCommitment));
+}
+
+// SPEC §3.6 — Poseidon hash STUB. Production must swap in circomlibjs's
+// `poseidon` over BN254. Until then, domain-separated SHA256 truncated to fit
+// BN254's scalar field provides a hash function with the same byte-shape
+// (32-byte output, treated as Fr) so wire encoding, recovery scan, leaf
+// computation, and nullifier hashing all work in dev. Circuit-side correctness
+// (the actual proof verifying) requires the real Poseidon — see SPEC §3.6 and
+// §3.8 for the canonical parameters (rate=2, capacity=1, Grassi 2020 round
+// counts). Calls accept Uint8Array | bigint | number; bigints/numbers are
+// serialized as 32-byte big-endian for hashing.
+function poseidonStub(...inputs) {
+  const parts = [POSEIDON_STUB_DOMAIN];
+  for (const inp of inputs) {
+    if (inp instanceof Uint8Array) {
+      parts.push(inp);
+    } else if (typeof inp === 'bigint' || typeof inp === 'number') {
+      const v = BigInt(inp);
+      const buf = new Uint8Array(32);
+      for (let i = 31; i >= 0; i--) {
+        buf[i] = Number((v >> BigInt((31 - i) * 8)) & 0xffn);
+      }
+      parts.push(buf);
+    } else {
+      throw new Error('poseidonStub: unsupported input type');
+    }
+  }
+  const h = new Uint8Array(sha256(concatBytes(...parts)));
+  // Mask top 2 bits so the output fits in BN254's scalar field
+  // (the field prime is ~254 bits). Real Poseidon outputs always fit.
+  h[0] &= 0x3f;
+  return h;
+}
+
+// Leaf commitment for a pool deposit: H(secret, nullifier_preimage, denomination).
+// Both `secret` and `nullifier_preimage` are 32-byte values from the
+// depositor's CSPRNG; `denomination` is u64.
+function computePoolLeafCommitment(secret, nullifierPreimage, denomination) {
+  if (secret.length !== 32) throw new Error('secret 32 bytes');
+  if (nullifierPreimage.length !== 32) throw new Error('nullifier_preimage 32 bytes');
+  return poseidonStub(secret, nullifierPreimage, BigInt(denomination));
+}
+
+// Nullifier hash — published in plaintext at withdraw time. Indexer rejects
+// duplicates per SPEC §5.11.1.
+function computeNullifierHash(nullifierPreimage) {
+  if (nullifierPreimage.length !== 32) throw new Error('nullifier_preimage 32 bytes');
+  return poseidonStub(nullifierPreimage);
+}
+
+// Empty leaf constant for the per-pool merkle tree.
+function poolEmptyLeaf() {
+  // Cached on first call.
+  if (!poolEmptyLeaf._cached) {
+    poolEmptyLeaf._cached = poseidonStub(POOL_EMPTY_DOMAIN);
+  }
+  return poolEmptyLeaf._cached;
+}
+
+// Compute a pool merkle root from a left-to-right list of leaves, padding
+// with the empty-leaf constant up to depth L=20. Hash function is the same
+// poseidonStub (production: real Poseidon). For each layer, hash pairs
+// left-then-right.
+const POOL_TREE_DEPTH = 20;
+function computePoolRoot(leaves) {
+  const empty = poolEmptyLeaf();
+  // Precompute the "all-empty subtree root" at each depth so we don't pad
+  // exhaustively. depth 0 = empty, depth k = poseidon(zeros[k-1], zeros[k-1]).
+  if (!computePoolRoot._zeros) {
+    const zeros = [empty];
+    for (let i = 1; i <= POOL_TREE_DEPTH; i++) {
+      zeros.push(poseidonStub(zeros[i - 1], zeros[i - 1]));
+    }
+    computePoolRoot._zeros = zeros;
+  }
+  const zeros = computePoolRoot._zeros;
+  let layer = leaves.slice();
+  for (let depth = 0; depth < POOL_TREE_DEPTH; depth++) {
+    const next = [];
+    for (let i = 0; i < layer.length; i += 2) {
+      const left = layer[i];
+      const right = (i + 1 < layer.length) ? layer[i + 1] : zeros[depth];
+      next.push(poseidonStub(left, right));
+    }
+    if (next.length === 0) next.push(zeros[depth + 1]);
+    layer = next;
+  }
+  return layer[0];
+}
+
 function xor32(a, b) {
   if (a.length !== 32 || b.length !== 32) throw new Error('xor32 requires 32-byte inputs');
   const out = new Uint8Array(32);
@@ -2423,6 +2568,8 @@ const T_BURN     = 0x25; // destroy supply (any holder; emits a public burned_am
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
 const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
 const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
+const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
+const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const MAX_SCRIPT_PUSH = 520;
 const OP_FALSE = 0x00, OP_PUSHDATA1 = 0x4c, OP_PUSHDATA2 = 0x4d;
 const OP_IF = 0x63, OP_ENDIF = 0x68, OP_CHECKSIG = 0xac;
@@ -2960,6 +3107,484 @@ function decodeCPmintPayload(payload) {
   if (!blindingNonZero) return null;
   if (p !== payload.length) return null;
   return { kind: 'cpmint', assetId, etchTxid, commitment, amount, blinding };
+}
+
+// ============== MIXER POOL (T_DEPOSIT / T_WITHDRAW) ==============
+// SPEC §5.10 / §5.11. Two new opcodes implement a Tornado-Cash-style
+// shielded pool over any tacit asset:
+//
+//   T_DEPOSIT  — consume a UTXO of denomination `D` into pool `(asset_id, D)`.
+//                The depositor's leaf is poseidon(secret, nullifier_preimage, D).
+//                Two payload shapes share opcode 0x29: a `denomination = 0`
+//                sentinel marks a POOL_INIT (declares a pool's vk + ceremony
+//                CIDs); any `denomination > 0` is a standard deposit.
+//
+//   T_WITHDRAW — anonymously mint a fresh UTXO of denomination `D` to a
+//                recipient pubkey, gated on a Groth16 proof against the pool
+//                merkle tree. Public inputs: merkle_root, nullifier_hash,
+//                denomination, recipient_commitment.x|y, bind_hash.
+//
+// Pool state (registry, merkle trees, nullifier sets) is maintained by a
+// chain-scan path keyed off canonical chain order — NOT by validateOutpoint,
+// which can be called in arbitrary orders during ancestry walks.
+
+// Encode a standard deposit (denomination > 0) payload.
+//   T_DEPOSIT(1) || asset_id(32) || denomination(8 LE)
+//                || leaf_commitment(32) || kernel_sig(64). Total: 137 bytes.
+function encodeTDepositPayload({ assetId, denomination, leafCommitment, kernelSig }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (leafCommitment.length !== 32) throw new Error('leaf_commitment 32 bytes');
+  if (kernelSig.length !== 64) throw new Error('kernel_sig 64 bytes');
+  const d = BigInt(denomination);
+  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  return concatBytes(new Uint8Array([T_DEPOSIT]), assetId, denomLE, leafCommitment, kernelSig);
+}
+
+// Encode a POOL_INIT (denomination = 0 sentinel) payload.
+//   T_DEPOSIT(1) || asset_id(32) || denomination(8 = 0)
+//                || pool_denom(8 LE) || vk_cid_len(1) || vk_cid
+//                || ceremony_cid_len(1) || ceremony_cid || init_sig(64)
+function encodeTPoolInitPayload({ assetId, poolDenom, vkCid, ceremonyCid, initSig }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (initSig.length !== 64) throw new Error('init_sig 64 bytes');
+  const d = BigInt(poolDenom);
+  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('pool_denom out of range');
+  const vkBytes = (typeof vkCid === 'string') ? new TextEncoder().encode(vkCid) : vkCid;
+  const ceBytes = (typeof ceremonyCid === 'string') ? new TextEncoder().encode(ceremonyCid) : ceremonyCid;
+  if (vkBytes.length < 1 || vkBytes.length > 64) throw new Error('vk_cid len 1..64');
+  if (ceBytes.length < 1 || ceBytes.length > 64) throw new Error('ceremony_cid len 1..64');
+  const denomZero = new Uint8Array(8);
+  const poolDenomLE = new Uint8Array(8);
+  {
+    const v = new DataView(poolDenomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  return concatBytes(
+    new Uint8Array([T_DEPOSIT]),
+    assetId, denomZero,
+    poolDenomLE,
+    new Uint8Array([vkBytes.length]), vkBytes,
+    new Uint8Array([ceBytes.length]), ceBytes,
+    initSig,
+  );
+}
+
+// Decode either a standard deposit or a POOL_INIT envelope. Returned shape's
+// `kind` is 'deposit' or 'pool_init'.
+function decodeTDepositPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_DEPOSIT) return null;
+  if (payload.length < 1 + 32 + 8) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination === 0n) {
+    // POOL_INIT sentinel
+    if (payload.length < p + 8 + 1) return null;
+    const pdView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+    const poolDenom = (BigInt(pdView.getUint32(4, true)) << 32n) | BigInt(pdView.getUint32(0, true));
+    p += 8;
+    if (poolDenom <= 0n || poolDenom >= (1n << BigInt(N_BITS))) return null;
+    if (p + 1 > payload.length) return null;
+    const vkLen = payload[p]; p += 1;
+    if (vkLen < 1 || vkLen > 64) return null;
+    if (p + vkLen > payload.length) return null;
+    const vkCid = payload.slice(p, p + vkLen); p += vkLen;
+    if (p + 1 > payload.length) return null;
+    const ceLen = payload[p]; p += 1;
+    if (ceLen < 1 || ceLen > 64) return null;
+    if (p + ceLen > payload.length) return null;
+    const ceremonyCid = payload.slice(p, p + ceLen); p += ceLen;
+    if (p + 64 !== payload.length) return null;
+    const initSig = payload.slice(p, p + 64); p += 64;
+    return { kind: 'pool_init', assetId, poolDenom, vkCid, ceremonyCid, initSig };
+  }
+  // Standard deposit
+  if (payload.length !== 1 + 32 + 8 + 32 + 64) return null;
+  if (denomination >= (1n << BigInt(N_BITS))) return null;
+  const leafCommitment = payload.slice(p, p + 32); p += 32;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  return { kind: 'deposit', assetId, denomination, leafCommitment, kernelSig };
+}
+
+// Encode a withdraw envelope.
+//   T_WITHDRAW(1) || asset_id(32) || denomination(8) || merkle_root(32)
+//                 || nullifier_hash(32) || recipient_commitment(33)
+//                 || amount_ct(8) || bind_hash(32)
+//                 || proof_len(2 LE) || proof(proof_len)
+function encodeTWithdrawPayload({ assetId, denomination, merkleRoot, nullifierHash, recipientCommitment, amountCt, bindHash, proof }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (merkleRoot.length !== 32) throw new Error('merkle_root 32 bytes');
+  if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
+  if (recipientCommitment.length !== 33) throw new Error('recipient_commitment 33 bytes');
+  if (amountCt.length !== 8) throw new Error('amount_ct 8 bytes');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  if (proof.length === 0 || proof.length > 0xffff) throw new Error('proof len 1..65535');
+  const d = BigInt(denomination);
+  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const proofLen = new Uint8Array(2);
+  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
+  return concatBytes(
+    new Uint8Array([T_WITHDRAW]),
+    assetId, denomLE, merkleRoot, nullifierHash, recipientCommitment,
+    amountCt, bindHash, proofLen, proof,
+  );
+}
+
+function decodeTWithdrawPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_WITHDRAW) return null;
+  const HEADER = 1 + 32 + 8 + 32 + 32 + 33 + 8 + 32 + 2;
+  if (payload.length < HEADER) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const merkleRoot = payload.slice(p, p + 32); p += 32;
+  const nullifierHash = payload.slice(p, p + 32); p += 32;
+  const recipientCommitment = payload.slice(p, p + 33); p += 33;
+  const amountCt = payload.slice(p, p + 8); p += 8;
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  // Re-derive bind_hash and check consistency. SPEC §5.11: bind_hash MUST
+  // equal SHA256(WITHDRAW_BIND_DOMAIN || asset_id || denom_LE || nullifier_hash || recipient_commitment).
+  const expected = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment);
+  for (let i = 0; i < 32; i++) if (expected[i] !== bindHash[i]) return null;
+  return {
+    kind: 'withdraw',
+    assetId, denomination, merkleRoot, nullifierHash,
+    recipientCommitment, amountCt, bindHash, proof,
+  };
+}
+
+// Kernel message for T_DEPOSIT (SPEC §5.10). Domain-separated by 'tacit-deposit-v1'
+// to make cross-opcode replay against, say, a CXFER kernel sig structurally
+// impossible.
+function computeDepositKernelMsg(assetId, denomination, inputTxidBE, inputVout, leafCommitment) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (inputTxidBE.length !== 32) throw new Error('input_txid_BE 32 bytes');
+  if (leafCommitment.length !== 32) throw new Error('leaf_commitment 32 bytes');
+  const d = BigInt(denomination);
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, inputVout >>> 0, true);
+  return sha256(concatBytes(DEPOSIT_DOMAIN, assetId, denomLE, inputTxidBE, voutLE, leafCommitment));
+}
+
+// Init message for POOL_INIT (SPEC §5.10.1).
+function computePoolInitMsg(assetId, poolDenom, vkCid, ceremonyCid) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  const d = BigInt(poolDenom);
+  const poolDenomLE = new Uint8Array(8);
+  {
+    const v = new DataView(poolDenomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const vkBytes = (typeof vkCid === 'string') ? new TextEncoder().encode(vkCid) : vkCid;
+  const ceBytes = (typeof ceremonyCid === 'string') ? new TextEncoder().encode(ceremonyCid) : ceremonyCid;
+  return sha256(concatBytes(POOL_INIT_DOMAIN, assetId, poolDenomLE, vkBytes, ceBytes));
+}
+
+// ============== POOL STATE (in-memory, network-scoped) ==============
+// Pool state is maintained by a canonical-order chain scan (`scanPools`)
+// keyed off the active network. Three Maps:
+//
+//   poolRegistry:    poolKey -> { vkCid, ceremonyCid, initHeight, initTxid }
+//   poolMerkleTrees: poolKey -> { leaves: [...32-byte leaves...],
+//                                 roots:  [...last 32 roots...] }
+//   poolNullifiers:  poolKey -> Set<nullifier_hash_hex>
+//
+// poolKey is `${assetIdHex}:${denominationDecString}` so cross-asset and
+// cross-denomination pools stay isolated.
+const poolRegistry    = new Map();
+const poolMerkleTrees = new Map();
+const poolNullifiers  = new Map();
+
+function poolKey(assetIdHex, denomination) {
+  return `${assetIdHex}:${BigInt(denomination).toString()}`;
+}
+
+function mixerRegisterPool(assetIdHex, poolDenom, vkCid, ceremonyCid, initHeight, initTxid) {
+  const k = poolKey(assetIdHex, poolDenom);
+  // First-confirmed-wins (SPEC §5.10.1). Subsequent POOL_INITs for the same
+  // (asset_id, denomination) are silently ignored.
+  if (poolRegistry.has(k)) return false;
+  poolRegistry.set(k, { vkCid, ceremonyCid, initHeight, initTxid });
+  poolMerkleTrees.set(k, { leaves: [], roots: [] });
+  poolNullifiers.set(k, new Set());
+  return true;
+}
+
+function mixerIsPoolRegistered(assetIdHex, denomination) {
+  return poolRegistry.has(poolKey(assetIdHex, denomination));
+}
+
+// Append a leaf to the per-pool tree and roll the recent-roots cache.
+// Caller MUST invoke this in canonical chain order (block height, then
+// (tx_index, vin[1].outpoint) within block).
+function mixerAppendLeaf(assetIdHex, denomination, leafCommitment) {
+  const k = poolKey(assetIdHex, denomination);
+  const tree = poolMerkleTrees.get(k);
+  if (!tree) return false;
+  if (tree.leaves.length >= (1 << POOL_TREE_DEPTH)) return false; // pool full
+  tree.leaves.push(leafCommitment);
+  const newRoot = computePoolRoot(tree.leaves);
+  tree.roots.push(newRoot);
+  if (tree.roots.length > 32) tree.roots.shift();
+  return true;
+}
+
+function mixerHasRecentRoot(assetIdHex, denomination, root) {
+  const k = poolKey(assetIdHex, denomination);
+  const tree = poolMerkleTrees.get(k);
+  if (!tree) return false;
+  for (const r of tree.roots) {
+    if (r.length !== root.length) continue;
+    let eq = true;
+    for (let i = 0; i < r.length; i++) if (r[i] !== root[i]) { eq = false; break; }
+    if (eq) return true;
+  }
+  return false;
+}
+
+function mixerIsNullifierSpent(assetIdHex, denomination, nullifierHash) {
+  const k = poolKey(assetIdHex, denomination);
+  const set = poolNullifiers.get(k);
+  if (!set) return false;
+  return set.has(bytesToHex(nullifierHash));
+}
+
+function mixerMarkNullifierSpent(assetIdHex, denomination, nullifierHash) {
+  const k = poolKey(assetIdHex, denomination);
+  let set = poolNullifiers.get(k);
+  if (!set) { set = new Set(); poolNullifiers.set(k, set); }
+  set.add(bytesToHex(nullifierHash));
+}
+
+function mixerGetPoolStats(assetIdHex, denomination) {
+  const k = poolKey(assetIdHex, denomination);
+  const tree = poolMerkleTrees.get(k);
+  const set = poolNullifiers.get(k);
+  if (!tree) return null;
+  const totalLeaves = tree.leaves.length;
+  const spentNullifiers = set ? set.size : 0;
+  // Anonymity-set proxy: total deposits minus total withdrawals so far.
+  // Real anonymity set is "leaves whose nullifiers haven't been published",
+  // which is the same number absent operator-side leakage of (s, ν) pairs.
+  const anonymitySet = totalLeaves - spentNullifiers;
+  const latestRoot = tree.roots.length ? tree.roots[tree.roots.length - 1] : poolEmptyLeaf();
+  return { totalLeaves, spentNullifiers, anonymitySet, latestRoot };
+}
+
+// ============== GROTH16 VERIFY (STUB v1) ==============
+// SPEC §5.11. Real verification requires:
+//   1. The pool's verifying key (vk) — stored at IPFS CID `vkCid` from the
+//      POOL_INIT envelope. Worker can pin/serve.
+//   2. A Groth16 verifier over BN254 — via snarkjs's `groth16.verify` or a
+//      hand-rolled pairing-check. snarkjs is ~200 KB and requires bundling
+//      into vendor/tacit-deps.min.js (build/ rebuild step).
+//   3. The 6 public inputs canonicalized into BN254's scalar field per §3.8.
+//
+// v1 STUB: until snarkjs is vendored, structural checks only — proof length
+// in [100, 65535], no nonzero bytes are zero, etc. THIS DOES NOT PROVE
+// SOUNDNESS. Production deployments MUST swap in a real verifier before
+// enabling withdrawals on mainnet. The dApp surfaces this as a banner on
+// the Mixer tab (see UI scaffolding) so users don't trust withdrawn funds
+// pre-swap.
+//
+// Returning `false` from the stub keeps T_WITHDRAW UTXOs untrusted by the
+// validator. A deployment intent on dev-testing the rest of the pipeline
+// can flip MIXER_ALLOW_STUB_VERIFY to true; doing so on mainnet without a
+// real verifier is a footgun and the dApp UI gates it.
+const MIXER_ALLOW_STUB_VERIFY = false;
+
+async function verifyMixerProof({ vkCid, publicInputs, proof }) {
+  // STUB: structural sanity only.
+  if (!proof || proof.length < 100 || proof.length > 65535) return false;
+  if (!Array.isArray(publicInputs) || publicInputs.length !== 6) return false;
+  // Nonzero-proof sanity: at least one byte must be nonzero (rejects all-zero
+  // padding masquerading as a proof).
+  let anyNonzero = false;
+  for (let i = 0; i < proof.length; i++) if (proof[i] !== 0) { anyNonzero = true; break; }
+  if (!anyNonzero) return false;
+  // TODO: replace with real Groth16 verify against pool.vk. Until then,
+  // accept-or-reject is gated behind MIXER_ALLOW_STUB_VERIFY for safety.
+  return MIXER_ALLOW_STUB_VERIFY;
+}
+
+// ============== WALLET FLOWS ==============
+// Higher-level helpers a caller uses to generate the wire-level envelopes
+// for the three mixer operations. Callers handle the actual Bitcoin tx
+// construction (commit/reveal pattern) elsewhere — these just produce the
+// envelope payload bytes, kernel sigs, and helper output for share-link UX.
+
+// Generate a fresh (secret, nullifier_preimage) pair from CSPRNG. Both are
+// 32-byte values the depositor stores until withdraw time. These are the
+// only secrets the depositor must back up; losing them means losing the
+// deposit (no chain-side recovery possible — it's a zk system).
+function mixerGenerateDepositSecrets() {
+  const secret = new Uint8Array(32);
+  const nullifierPreimage = new Uint8Array(32);
+  crypto.getRandomValues(secret);
+  crypto.getRandomValues(nullifierPreimage);
+  return { secret, nullifierPreimage };
+}
+
+// Build the deposit envelope payload + kernel sig, given a chosen UTXO and
+// a fresh (secret, nullifier_preimage) pair.
+//
+// Inputs:
+//   - assetId        Uint8Array(32)
+//   - denomination   bigint | number | string (must equal input UTXO's amount)
+//   - inputTxidBE    Uint8Array(32)
+//   - inputVout      number
+//   - inputBlinding  bigint  (the holder's r_in for that UTXO)
+//   - holderPriv     Uint8Array(32)  (signs the kernel sig)
+//   - secret, nullifierPreimage  Uint8Array(32) each
+//
+// Returns:
+//   { payload, leafCommitment, nullifierHash, depositRecord }
+// where depositRecord is the JSON the depositor must back up to be able to
+// withdraw later (without it, the deposit is lost).
+async function buildMixerDepositEnvelope({
+  assetId, denomination, inputTxidBE, inputVout,
+  inputBlinding, holderPriv, secret, nullifierPreimage,
+}) {
+  const leafCommitment = computePoolLeafCommitment(secret, nullifierPreimage, denomination);
+  const nullifierHash = computeNullifierHash(nullifierPreimage);
+  const kernelMsg = computeDepositKernelMsg(assetId, denomination, inputTxidBE, inputVout, leafCommitment);
+  // Sign under the input's blinding scalar (equivalent excess for a single-input
+  // single-output zero-net kernel: excess = 0 - (-r_in) = r_in). The verifier
+  // checks the sig under (C_in - denom·H).x_only(), which equals r_in·G if
+  // amounts balance. SPEC §5.10.
+  const excessHex = inputBlinding.toString(16).padStart(64, '0');
+  const excessBytes = hexToBytes(excessHex);
+  const kernelSig = signSchnorr(kernelMsg, excessBytes);
+  const payload = encodeTDepositPayload({ assetId, denomination, leafCommitment, kernelSig });
+  return {
+    payload,
+    leafCommitment,
+    nullifierHash,
+    depositRecord: {
+      assetIdHex: bytesToHex(assetId),
+      denomination: BigInt(denomination).toString(),
+      secretHex: bytesToHex(secret),
+      nullifierPreimageHex: bytesToHex(nullifierPreimage),
+      leafCommitmentHex: bytesToHex(leafCommitment),
+      nullifierHashHex: bytesToHex(nullifierHash),
+      depositedAt: Date.now(),
+    },
+  };
+}
+
+// Build the withdraw envelope payload, given the depositor's saved record
+// + a Groth16 proof (generated externally — proof generation requires the
+// circom witness, snarkjs prover, etc., which are out-of-scope for v1 dApp).
+//
+// Inputs:
+//   - depositRecord  the JSON object returned by buildMixerDepositEnvelope
+//   - merkleRoot     Uint8Array(32) — must match a recent canonical root
+//   - recipientPriv  Uint8Array(32) — the recipient's private key (for
+//                    self-derived blinding/keystream; for tornado-flow-to-
+//                    other this is the recipient's key, delivered out-of-band)
+//   - proof          Uint8Array — Groth16 proof from the prover
+//
+// Returns:
+//   { payload, recipientCommitment, amountCt }
+async function buildMixerWithdrawEnvelope({
+  depositRecord, merkleRoot, recipientPriv, proof,
+}) {
+  const assetId = hexToBytes(depositRecord.assetIdHex);
+  const denomination = BigInt(depositRecord.denomination);
+  const nullifierHash = hexToBytes(depositRecord.nullifierHashHex);
+  // Self-derived recipient blinding + amount keystream (SPEC §5.11).
+  const rNew = deriveWithdrawBlinding(recipientPriv, nullifierHash);
+  const recipientCommitment = pedersenCommit(denomination, rNew).toRawBytes(true);
+  const keystream = deriveWithdrawAmountKeystream(recipientPriv, nullifierHash);
+  // amount_ct = denomination_LE XOR keystream
+  const denomLE = new Uint8Array(8);
+  {
+    const d = BigInt(denomination);
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const amountCt = new Uint8Array(8);
+  for (let i = 0; i < 8; i++) amountCt[i] = denomLE[i] ^ keystream[i];
+  const bindHash = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment);
+  const payload = encodeTWithdrawPayload({
+    assetId, denomination, merkleRoot, nullifierHash,
+    recipientCommitment, amountCt, bindHash, proof,
+  });
+  return { payload, recipientCommitment, amountCt, rNew };
+}
+
+// Build a POOL_INIT envelope payload + signature.
+// Pool initialization is permissionless — any pubkey can sign. The signing
+// key becomes the on-chain attribution for the init event but has no special
+// privilege thereafter; pool consumers verify the IPFS-pinned vk + ceremony
+// transcripts directly.
+async function buildMixerPoolInitEnvelope({
+  assetId, poolDenom, vkCid, ceremonyCid, initSignerPriv,
+}) {
+  const initMsg = computePoolInitMsg(assetId, poolDenom, vkCid, ceremonyCid);
+  const initSig = signSchnorr(initMsg, initSignerPriv);
+  const payload = encodeTPoolInitPayload({ assetId, poolDenom, vkCid, ceremonyCid, initSig });
+  return { payload, initSig };
+}
+
+// Build a "share-link" string for tornado-flow-to-other: the withdrawer
+// can't compute the recipient's blinding (recipient's privkey isn't in the
+// withdrawer's wallet), so they hand the recipient (secret, nullifier_preimage)
+// + denomination + asset_id, and the recipient self-derives blinding/keystream
+// after the withdraw confirms. SPEC §5.11. Mirror of the CXFER #recv= pattern.
+function buildMixerShareLink(depositRecord) {
+  const params = new URLSearchParams({
+    a: depositRecord.assetIdHex,
+    d: depositRecord.denomination,
+    s: depositRecord.secretHex,
+    n: depositRecord.nullifierPreimageHex,
+  });
+  return `#mix=${params.toString()}`;
+}
+
+function parseMixerShareLink(hashFragment) {
+  if (!hashFragment) return null;
+  const m = hashFragment.match(/#mix=(.+)$/);
+  if (!m) return null;
+  const params = new URLSearchParams(m[1]);
+  return {
+    assetIdHex: params.get('a'),
+    denomination: params.get('d'),
+    secretHex: params.get('s'),
+    nullifierPreimageHex: params.get('n'),
+  };
 }
 
 // ============== STORAGE ==============
@@ -3867,6 +4492,74 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     return true;
   }
 
+  if (env.opcode === T_DEPOSIT) {
+    // SPEC §5.10. Two payload shapes: POOL_INIT (denomination = 0) and a
+    // standard deposit. Neither produces a tacit UTXO, so we always return
+    // false from the recursive validator regardless of structural validity —
+    // the validator's role here is purely a discriminator that prevents an
+    // ancestry walk from treating a T_DEPOSIT-bearing reveal-tx output as a
+    // tacit balance. Pool state (registry, leaves, nullifiers) is maintained
+    // by scanPools (canonical-order pass), NOT here.
+    validatedSet.set(key, false);
+    return false;
+  }
+
+  if (env.opcode === T_WITHDRAW) {
+    // SPEC §5.11. Produces a fresh tacit UTXO at vout 0 gated on:
+    //   1. pool registered for (asset_id, denomination)
+    //   2. merkle_root in last 32 canonical roots of the pool
+    //   3. nullifier_hash NOT in pool's spent-nullifier set
+    //   4. Groth16 proof verifies under pool.vk
+    //   5. bind_hash matches the canonical re-derivation
+    //
+    // (5) is enforced by decodeTWithdrawPayload (any mismatch returns null).
+    // (4) is currently a STUB (see verifyMixerProof) — until snarkjs is
+    // vendored into the dApp, withdrawn UTXOs are NOT trusted by the
+    // validator and this branch returns false on stub. A deployment that
+    // sets MIXER_ALLOW_STUB_VERIFY = true accepts withdrawals without proof
+    // verification (dev-only). Production must replace the stub before
+    // setting that flag.
+    if (vout !== 0) { validatedSet.set(key, false); return false; }
+    const dec = decodeTWithdrawPayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    const aidHex = bytesToHex(dec.assetId);
+    if (!mixerIsPoolRegistered(aidHex, dec.denomination)) {
+      validatedSet.set(key, false); return false;
+    }
+    if (!mixerHasRecentRoot(aidHex, dec.denomination, dec.merkleRoot)) {
+      validatedSet.set(key, false); return false;
+    }
+    if (mixerIsNullifierSpent(aidHex, dec.denomination, dec.nullifierHash)) {
+      validatedSet.set(key, false); return false;
+    }
+    const pool = poolRegistry.get(poolKey(aidHex, dec.denomination));
+    const publicInputs = [
+      bytesToHex(dec.merkleRoot),
+      bytesToHex(dec.nullifierHash),
+      BigInt(dec.denomination).toString(),
+      // recipient_commitment.x|y — for the stub, we just pass the compressed
+      // bytes; real verifier expands to 4-limb non-native encoding.
+      bytesToHex(dec.recipientCommitment),
+      bytesToHex(dec.recipientCommitment), // placeholder for x|y split
+      bytesToHex(dec.bindHash),
+    ];
+    const proofOk = await verifyMixerProof({
+      vkCid: pool ? pool.vkCid : null,
+      publicInputs,
+      proof: dec.proof,
+    });
+    if (!proofOk) { validatedSet.set(key, false); return false; }
+    // Mark nullifier spent on first successful validation. NOTE: this
+    // mutates global pool state inside the recursive validator, which is
+    // safe ONLY because nullifier-marking is idempotent (Set.add) and
+    // canonical chain order has already been established by the caller's
+    // scanPools pass. A re-validation pass against the same (txid, vout)
+    // is hit by the validatedSet memo cache before reaching this point.
+    mixerMarkNullifierSpent(aidHex, dec.denomination, dec.nullifierHash);
+    validatedSet.set(key, true);
+    return true;
+  }
+
   validatedSet.set(key, false);
   return false;
 }
@@ -3912,6 +4605,15 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     const d = decodeCPmintPayload(parentEnv.payload);
     if (!d) return null;
     return { assetIdHex: bytesToHex(d.assetId), commitment: d.commitment };
+  }
+  if (parentEnv.opcode === T_WITHDRAW) {
+    // SPEC §5.11: T_WITHDRAW produces exactly one tacit UTXO at vout 0
+    // holding the recipient_commitment. Downstream CXFER/BURN consumers
+    // treat it identically to a CETCH/MINT/CXFER output.
+    if (vout !== 0) return null;
+    const d = decodeTWithdrawPayload(parentEnv.payload);
+    if (!d) return null;
+    return { assetIdHex: bytesToHex(d.assetId), commitment: d.recipientCommitment };
   }
   // T_PETCH (0x27) intentionally falls through to null — it never produces a
   // tacit UTXO at any vout (SPEC §5.8). A wallet treating its reveal-tx
@@ -4071,6 +4773,17 @@ async function _scanHoldingsImpl() {
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       if (u.vout >= dec.outputs.length) continue;
       onChainCommitment = dec.outputs[u.vout].commitment;
+    } else if (env.opcode === T_WITHDRAW) {
+      // SPEC §5.11: T_WITHDRAW outputs sit at vout 0. The asset is identified
+      // by dec.assetId; the on-chain commitment is dec.recipientCommitment.
+      // Recovery path below trial-derives r_new + keystream from wallet priv.
+      const dec = decodeTWithdrawPayload(env.payload);
+      if (!dec) continue;
+      if (u.vout !== 0) continue;
+      assetIdHex = bytesToHex(dec.assetId);
+      const meta = getAssetMeta(assetIdHex);
+      if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
+      onChainCommitment = dec.recipientCommitment;
     } else continue;
 
     if (!holdings.has(assetIdHex)) {
@@ -4258,6 +4971,31 @@ async function _scanHoldingsImpl() {
             continue;
           }
         } catch {}
+      }
+    }
+
+    if (env.opcode === T_WITHDRAW) {
+      // SPEC §6 path 7 — self-withdrawn from a mixer pool. Self-derive r_new
+      // from wallet.priv + the public nullifier_hash; the denomination is
+      // public in the envelope. Verify the commitment opens to (denomination,
+      // r_new) and record the opening. This recovers tornado-flow-to-self
+      // withdrawals from chain + privkey alone.
+      const dec = decodeTWithdrawPayload(env.payload);
+      if (dec) {
+        const r = deriveWithdrawBlinding(wallet.priv, dec.nullifierHash);
+        try {
+          if (pedersenCommit(dec.denomination, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, dec.denomination, r);
+            h.balance += dec.denomination;
+            h.utxos.push({ utxo: u, amount: dec.denomination, blinding: r, commitment: onChainCommitment });
+            continue;
+          }
+        } catch {}
+        // Tornado-flow-to-other: recipient cannot derive r_new from chain
+        // alone (it's bound to a fresh CSPRNG scalar in v1.5+, or the
+        // withdrawer's pre-share). The opening MUST come from the share-link
+        // import path (parseMixerShareLink), populated into the local
+        // openings cache before this scan runs.
       }
     }
 
@@ -8345,6 +9083,239 @@ function stopHoldingsAutoRefresh() {
   if (_holdingsPollTimer) { clearInterval(_holdingsPollTimer); _holdingsPollTimer = null; }
 }
 
+// ============== MIXER UI (v1 dev preview) ==============
+// Light scaffolding for the Mixer tab. Pool list reads from in-memory
+// poolRegistry / poolMerkleTrees / poolNullifiers, populated by the cron-mode
+// scan path (TODO: wire scanPools into the chain-divergence watchdog cron).
+// Deposit/withdraw broadcast is gated behind the Groth16 verifier swap; until
+// then, the Preview buttons format the wire payload but Broadcast is a no-op.
+let _mixerWithdrawRecord = null;
+
+// Fetch pool state from the worker's /pools + /pools/:asset_id/:denom
+// endpoints and apply it to the in-memory state Maps in canonical order.
+// Idempotent: re-applying the same chain state is a no-op (registry uses
+// first-confirmed-wins; mixerAppendLeaf gates on tree.leaves.length; the
+// nullifier Set dedupes).
+//
+// SPEC §5.10/§5.11: pool state is a deterministic function of confirmed
+// envelopes, so two indexers walking the same blocks reach byte-identical
+// roots. The worker's KV layout returns leaves in canonical-position order
+// (height-padded:tx_index-padded), so plain iteration reproduces the tree.
+async function scanPools() {
+  if (!WORKER_BASE) return { skipped: 'worker disabled' };
+  let listResp;
+  try {
+    listResp = await fetch(`${WORKER_BASE}/pools?network=${NET.name}`, { cache: 'no-store' });
+  } catch (e) { return { error: 'fetch failed' }; }
+  if (!listResp.ok) return { error: `HTTP ${listResp.status}` };
+  let listJson;
+  try { listJson = await listResp.json(); } catch { return { error: 'bad JSON' }; }
+  const pools = Array.isArray(listJson.pools) ? listJson.pools : [];
+  let registered = 0, leavesApplied = 0, nullifiersApplied = 0;
+  for (const p of pools) {
+    const aidHex = p.asset_id;
+    const denom = BigInt(p.pool_denom);
+    if (!mixerIsPoolRegistered(aidHex, denom)) {
+      mixerRegisterPool(
+        aidHex, denom,
+        new TextEncoder().encode(p.vk_cid),
+        new TextEncoder().encode(p.ceremony_cid),
+        Number(p.init_height) || 0,
+        p.init_txid,
+      );
+      registered++;
+    }
+    // Fetch full state and apply (idempotent).
+    let detailResp;
+    try {
+      detailResp = await fetch(
+        `${WORKER_BASE}/pools/${aidHex}/${p.pool_denom}?network=${NET.name}`,
+        { cache: 'no-store' },
+      );
+    } catch { continue; }
+    if (!detailResp.ok) continue;
+    let detail;
+    try { detail = await detailResp.json(); } catch { continue; }
+    // Re-apply leaves only if the local tree is smaller than the worker's
+    // count — avoids re-hashing the merkle path on every refresh.
+    const stats = mixerGetPoolStats(aidHex, denom);
+    const localLeafCount = stats ? stats.totalLeaves : 0;
+    const remoteLeaves = Array.isArray(detail.leaves) ? detail.leaves : [];
+    if (remoteLeaves.length > localLeafCount) {
+      // Worker sorts by canonical KV-key order; we apply leaves we don't
+      // yet have. Order is critical — append-only tree state is sensitive.
+      for (let i = localLeafCount; i < remoteLeaves.length; i++) {
+        const lc = remoteLeaves[i].leaf_commitment;
+        if (!lc) continue;
+        if (mixerAppendLeaf(aidHex, denom, hexToBytes(lc))) leavesApplied++;
+      }
+    }
+    const remoteNullifiers = Array.isArray(detail.nullifiers) ? detail.nullifiers : [];
+    for (const n of remoteNullifiers) {
+      if (!n.nullifier_hash) continue;
+      if (!mixerIsNullifierSpent(aidHex, denom, hexToBytes(n.nullifier_hash))) {
+        mixerMarkNullifierSpent(aidHex, denom, hexToBytes(n.nullifier_hash));
+        nullifiersApplied++;
+      }
+    }
+  }
+  return { pools: pools.length, registered, leavesApplied, nullifiersApplied };
+}
+
+// Time-budgeted refresher for the Mixer tab. Pool data only changes on the
+// worker's 5-min cron, so a 60s cache is more than enough.
+const MIXER_POOL_CACHE_TTL_MS = 60 * 1000;
+let _mixerPoolCacheUntil = 0;
+async function refreshPoolsIfStale() {
+  const now = Date.now();
+  if (now < _mixerPoolCacheUntil) return null;
+  _mixerPoolCacheUntil = now + MIXER_POOL_CACHE_TTL_MS;
+  return scanPools();
+}
+
+async function renderMixer() {
+  // Refresh pool state from worker before rendering. Errors here are non-
+  // fatal — we still render whatever in-memory state we have.
+  try { await refreshPoolsIfStale(); } catch {}
+
+  // Pool list
+  const list = document.getElementById('mixer-pool-list');
+  if (list) {
+    if (poolRegistry.size === 0) {
+      list.innerHTML = '<div class="muted" style="font-size:12px;">No pools indexed yet. Initialize one below or wait for chain scan.</div>';
+    } else {
+      const rows = [];
+      for (const [k, info] of poolRegistry.entries()) {
+        const [aidHex, denomStr] = k.split(':');
+        const denom = BigInt(denomStr);
+        const stats = mixerGetPoolStats(aidHex, denom);
+        const meta = getAssetMeta(aidHex);
+        const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
+        const decs = meta ? meta.decimals : 0;
+        const denomDisp = (Number(denom) / Math.pow(10, decs)).toString();
+        rows.push(`<div class="row" style="border:1px solid var(--border, #ddd);padding:10px;border-radius:6px;margin-bottom:8px;">
+          <div><strong>${ticker}</strong> · denom ${denomDisp} · anonymity-set <strong>${stats ? stats.anonymitySet : 0}</strong> (${stats ? stats.totalLeaves : 0} deposits − ${stats ? stats.spentNullifiers : 0} withdraws)</div>
+          <div class="muted" style="font-size:11px;margin-top:4px;">vk CID: ${new TextDecoder().decode(info.vkCid)} · init height ${info.initHeight}</div>
+        </div>`);
+      }
+      list.innerHTML = rows.join('');
+    }
+  }
+
+  // Populate deposit pool select
+  const sel = document.getElementById('mixer-deposit-pool');
+  if (sel) {
+    const opts = ['<option value="">— pick a pool —</option>'];
+    for (const k of poolRegistry.keys()) {
+      const [aidHex, denomStr] = k.split(':');
+      const meta = getAssetMeta(aidHex);
+      const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
+      opts.push(`<option value="${k}">${ticker} · ${denomStr}</option>`);
+    }
+    sel.innerHTML = opts.join('');
+  }
+
+  // Populate init-asset select with known assets
+  const initAsset = document.getElementById('mixer-init-asset');
+  if (initAsset) {
+    const opts = ['<option value="">— pick an asset —</option>'];
+    try {
+      const reg = JSON.parse(localStorage.getItem(regKey()) || '{}');
+      for (const aidHex of Object.keys(reg)) {
+        const m = reg[aidHex];
+        opts.push(`<option value="${aidHex}">${m.ticker || aidHex.slice(0, 8)} · ${aidHex.slice(0, 12)}…</option>`);
+      }
+    } catch {}
+    initAsset.innerHTML = opts.join('');
+  }
+}
+
+function _mixerStubAlert() {
+  alert('Mixer broadcasts are gated behind the Groth16 verifier vendor-bundling step. Build the snarkjs-groth16 wasm into vendor/tacit-deps.min.js and flip MIXER_ALLOW_STUB_VERIFY (or replace the stub) before enabling broadcast. SPEC §3.7 / §5.11.3.');
+}
+
+function setupMixerHandlers() {
+  const importBtn = document.getElementById('btn-mixer-import-sharelink');
+  if (importBtn) {
+    importBtn.onclick = () => {
+      const link = (document.getElementById('mixer-withdraw-sharelink') || {}).value || '';
+      const parsed = parseMixerShareLink(link.startsWith('#') ? link : '#' + link);
+      if (!parsed) { alert('Could not parse share-link. Expected format: #mix=a=…&d=…&s=…&n=…'); return; }
+      // Reconstruct a deposit record shape so the standard withdraw flow works.
+      const secret = hexToBytes(parsed.secretHex);
+      const nullifierPreimage = hexToBytes(parsed.nullifierPreimageHex);
+      const denom = BigInt(parsed.denomination);
+      const leaf = computePoolLeafCommitment(secret, nullifierPreimage, denom);
+      const nh = computeNullifierHash(nullifierPreimage);
+      const rec = {
+        assetIdHex: parsed.assetIdHex,
+        denomination: parsed.denomination,
+        secretHex: parsed.secretHex,
+        nullifierPreimageHex: parsed.nullifierPreimageHex,
+        leafCommitmentHex: bytesToHex(leaf),
+        nullifierHashHex: bytesToHex(nh),
+        importedAt: Date.now(),
+      };
+      _mixerWithdrawRecord = rec;
+      const ta = document.getElementById('mixer-withdraw-record');
+      if (ta) ta.value = JSON.stringify(rec, null, 2);
+    };
+  }
+
+  const previewWBtn = document.getElementById('btn-mixer-withdraw-preview');
+  if (previewWBtn) {
+    previewWBtn.onclick = () => {
+      const ta = document.getElementById('mixer-withdraw-record');
+      let rec = _mixerWithdrawRecord;
+      if (!rec && ta && ta.value.trim()) {
+        try { rec = JSON.parse(ta.value); } catch {}
+      }
+      const out = document.getElementById('mixer-withdraw-preview-out');
+      if (!rec) { if (out) { out.style.display = 'block'; out.textContent = 'No deposit record loaded.'; } return; }
+      if (out) {
+        out.style.display = 'block';
+        out.textContent = `Withdraw preview\n----------------\n` +
+          `asset_id     ${rec.assetIdHex}\n` +
+          `denomination ${rec.denomination}\n` +
+          `nullifier    ${rec.nullifierHashHex}\n` +
+          `leaf         ${rec.leafCommitmentHex}\n\n` +
+          `Stub mode: structural payload would be ${1 + 32 + 8 + 32 + 32 + 33 + 8 + 32 + 2}-byte header + Groth16 proof bytes (~256 B Groth16 / ~1 KB Halo2). Broadcast disabled until verifier vendor-bundle ships.`;
+      }
+    };
+  }
+
+  // Broadcast buttons: stub. Production wires these into the existing
+  // commit/reveal tx-builder once snarkjs is vendored.
+  const broadcastIds = [
+    'btn-mixer-deposit-broadcast',
+    'btn-mixer-withdraw-broadcast',
+    'btn-mixer-init-broadcast',
+  ];
+  for (const id of broadcastIds) {
+    const b = document.getElementById(id);
+    if (b) b.onclick = _mixerStubAlert;
+  }
+
+  const previewDBtn = document.getElementById('btn-mixer-deposit-preview');
+  if (previewDBtn) {
+    previewDBtn.onclick = () => {
+      const sel = document.getElementById('mixer-deposit-pool');
+      const out = document.getElementById('mixer-deposit-preview-out');
+      if (!sel || !sel.value) { if (out) { out.style.display = 'block'; out.textContent = 'Pick a pool first.'; } return; }
+      const [aidHex, denomStr] = sel.value.split(':');
+      const meta = getAssetMeta(aidHex);
+      const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
+      if (out) {
+        out.style.display = 'block';
+        out.textContent = `Deposit preview\n----------------\n` +
+          `asset:        ${ticker}  (${aidHex})\n` +
+          `denomination: ${denomStr}\n\n` +
+          `On broadcast: dApp would (1) generate (secret, nullifier_preimage) via CSPRNG, (2) compute leaf = poseidon(secret, ν, denom), (3) sign kernel under (C_in − denom·H).x_only(), (4) build commit/reveal txs. Wire-encoded payload size: 137 bytes. Broadcast disabled until verifier vendor-bundle ships.`;
+      }
+    };
+  }
+}
+
 function setupTabs() {
   $$('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -8365,11 +9336,39 @@ function setupTabs() {
       if (tab.dataset.tab === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
       else stopPetchAutoRefresh();
       if (tab.dataset.tab === 'market') renderMarket();
+      if (tab.dataset.tab === 'mixer') { renderMixer(); startMixerAutoRefresh(); }
+      else stopMixerAutoRefresh();
     };
   });
   // If discover is already the active tab on load (deep-link or restored
   // session), kick the polling on without waiting for a tab click.
   if (document.querySelector('.tab.active[data-tab="discover"]')) startPetchAutoRefresh();
+  // Kick a background pool scan if the Mixer tab is active on load.
+  if (document.querySelector('.tab.active[data-tab="mixer"]')) {
+    startMixerAutoRefresh();
+  }
+}
+
+// Background pool refresh while the Mixer tab is open. Same pattern as
+// startPetchAutoRefresh: 30s tick, stops when the tab loses focus. Pool
+// state on the worker only changes every 5 min (cron interval), so this
+// is comfortably under the worker's update cadence.
+let _mixerPollTimer = null;
+const MIXER_POLL_INTERVAL_MS = 30 * 1000;
+function startMixerAutoRefresh() {
+  if (_mixerPollTimer) return;
+  _mixerPollTimer = setInterval(async () => {
+    if (!document.querySelector('.tab.active[data-tab="mixer"]')) {
+      stopMixerAutoRefresh();
+      return;
+    }
+    // Force a fresh scan past the cache.
+    _mixerPoolCacheUntil = 0;
+    try { await renderMixer(); } catch {}
+  }, MIXER_POLL_INTERVAL_MS);
+}
+function stopMixerAutoRefresh() {
+  if (_mixerPollTimer) { clearInterval(_mixerPollTimer); _mixerPollTimer = null; }
 }
 
 // ============== WALLET ==============
@@ -12539,7 +13538,7 @@ function _consumeClaimUrlHash() {
 // clicks update the hash via replaceState — current state is shareable
 // via URL but back/forward isn't polluted with every casual tab click.
 const _DEEPLINK_TABS = new Set([
-  'wallet', 'holdings', 'transfer', 'discover', 'market', 'etch', 'drops', 'claim', 'about',
+  'wallet', 'holdings', 'transfer', 'discover', 'market', 'etch', 'drops', 'claim', 'about', 'mixer',
 ]);
 function _parseTabHash() {
   const h = location.hash || '';
@@ -16545,7 +17544,17 @@ function applyMarketFilters() {
   const filterKind = $('#market-filter-kind')?.value || 'all';
   const minPrice = parseInt($('#market-filter-min-price')?.value || '', 10);
   const maxPrice = parseInt($('#market-filter-max-price')?.value || '', 10);
-  const sort = $('#market-sort')?.value || 'recency';
+  // In asset-detail mode, nudge the sort dropdown from its default 'recency'
+  // to 'unit-asc' so asks read as a price ladder (cheapest-first) — the
+  // conventional orderbook layout. If the user has explicitly picked a
+  // different sort it stays. Mutating the dropdown value (rather than
+  // overriding at read-time only) means the user sees the active sort
+  // reflected in the UI and can switch back to recency manually.
+  const _sortSel = $('#market-sort');
+  if (_marketView !== 'browse' && _sortSel && _sortSel.value === 'recency') {
+    _sortSel.value = 'unit-asc';
+  }
+  const sort = _sortSel?.value || (_marketView !== 'browse' ? 'unit-asc' : 'recency');
   let rows = _marketCache.listings.slice();
   if (filterText) {
     rows = rows.filter(l => {
@@ -16621,9 +17630,20 @@ function applyMarketFilters() {
   // of whether listings remain (so the back affordance stays reachable even
   // on an empty result).
   const assetHeaderHtml = renderMarketAssetHeader(_marketView.assetId, rows);
+  // Resolve the asset record once for the bids ladder (and a fallback when
+  // there are no listings — we still render the bids panel + place-bid CTA).
+  const _assetForBids = (rows.find(l => l._asset?.asset_id === _marketView.assetId)?._asset)
+                     || (_marketCache?.listings.find(l => l._asset?.asset_id === _marketView.assetId)?._asset)
+                     || (_marketCache?.assets?.find(x => x.asset_id === _marketView.assetId))
+                     || { asset_id: _marketView.assetId, ticker: '?', decimals: 0 };
+  const bidsLadderHtml = renderMarketBidsLadderHTML(_assetForBids);
   if (!rows.length) {
-    list.innerHTML = assetHeaderHtml + '<div class="empty">No listings match.</div>';
+    // No asks but bids might still exist — render the ladder + place-bid CTA
+    // so makers without active listings can still see / capture buy-side
+    // demand. Empty asks copy clarifies the ask side specifically.
+    list.innerHTML = assetHeaderHtml + bidsLadderHtml + '<div class="empty">No active asks. Bids above; post one if you want to buy.</div>';
     bindMarketAssetHeader(list);
+    populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
     return;
   }
   // Asset-detail header above already shows the per-kind breakdown
@@ -16635,11 +17655,16 @@ function applyMarketFilters() {
   const noAtomicHint = atomicCount === 0 && trustCount > 0
     ? `<div style="margin-bottom:10px;font-size:11px;font-style:italic;" class="muted">no atomic offers under current filters — try kind=⚡ atomic</div>`
     : '';
+  // Asks-section header so the orderbook reads bids-on-top / asks-below.
+  const asksHeaderHtml = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;"><strong>Asks · ${rows.length}</strong> <span class="muted" style="font-size:10px;">${$('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first'} (change in sort dropdown)</span></div>`;
   list.innerHTML =
     assetHeaderHtml +
+    bidsLadderHtml +
+    asksHeaderHtml +
     noAtomicHint +
     `<div id="market-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;"></div>`;
   bindMarketAssetHeader(list);
+  populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
   const grid = $('#market-grid');
   const myPubHex = bytesToHex(wallet.pub);
   // Build all tiles into a DocumentFragment first; one reflow at the end
@@ -16932,9 +17957,208 @@ function renderMarketAssetHeader(assetId, rows) {
         <div style="font-size:14px;"><strong>${total}</strong> <span class="muted" style="font-size:11px;">offer${total === 1 ? '' : 's'}</span></div>
         ${kindBits.length ? `<div style="font-size:11px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:2px;">${kindBits.join('<span class="muted">·</span>')}</div>` : ''}
         <div style="font-size:12px;margin-top:4px;">${floorLine}</div>
+        ${(() => {
+          // Last-traded line. Only AXFER (atomic-intent settlement) carries
+          // a verifiable price at broadcast time — opening / range fills
+          // settle off-chain so we can't observe their prices. Decorative
+          // signal, tooltip explains the partiality.
+          const lt = a.last_trade;
+          if (!lt || !Number.isInteger(lt.price_sats) || lt.price_sats <= 0) return '';
+          const ltAmt = (() => { try { return BigInt(lt.amount); } catch { return 0n; } })();
+          if (ltAmt <= 0n) return '';
+          const ltUnit = unitPriceSats(lt.price_sats, ltAmt, dec);
+          const ltAge = relativeAge(Number(lt.ts) || 0);
+          const unitTail = ltUnit != null ? ` · ${escapeHtml(fmtUnitPriceSats(ltUnit))} sats/${escapeHtml(a.ticker || 'token')}` : '';
+          const ageTail = ltAge ? ` · ${escapeHtml(ltAge)} ago` : '';
+          return `<div class="muted" style="font-size:11px;margin-top:2px;" title="Most recent atomic-intent settlement (T_AXFER) reported to the worker. Best-effort: opening / range fills settle off-chain and don't carry an observable price.">💱 last ${Number(lt.price_sats).toLocaleString()} sats${unitTail}${ageTail}</div>`;
+        })()}
       </div>
       <button data-act="market-back-browse" title="Back to the asset index" style="font-size:11px;padding:6px 10px;flex-shrink:0;">← All assets</button>
     </div>`;
+}
+
+// Render a Bids ladder for the asset-detail Market view. Returns the
+// container HTML; populateMarketBidsLadder fills it asynchronously with
+// a /bid-intents fetch + place-bid form. Bids are SPEC §5.7.7 buy-side
+// intents (signed price + amount + expiry posted to the worker); a
+// holder fulfils one by issuing a partial AXFER reveal targeted at the
+// bidder, which closes via the standard atomic-intent take flow. Showing
+// bids next to asks gives a confidential analog of an orderbook.
+function renderMarketBidsLadderHTML(asset) {
+  const aid = /^[0-9a-f]{64}$/.test(asset.asset_id || '') ? asset.asset_id : '';
+  const ticker = escapeHtml(asset.ticker || '?');
+  return `
+    <div data-market-bids-section data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">
+        <strong>Bids · <span data-market-bids-count>—</span></strong>
+        <button data-act="market-bid-place" data-aid="${aid}" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">+ Place a bid on ${ticker}</button>
+      </div>
+      <div data-market-bid-form style="display:none;margin-top:10px;"></div>
+      <div data-market-bids-list style="margin-top:10px;font-size:11px;">
+        <div class="muted" style="font-size:11px;"><span class="live-dots">loading bids</span></div>
+      </div>
+    </div>`;
+}
+
+async function populateMarketBidsLadder(scope, asset) {
+  const section = scope.querySelector('[data-market-bids-section]');
+  if (!section) return;
+  const aid = section.dataset.aid;
+  const ticker = asset.ticker || '?';
+  const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  const list = section.querySelector('[data-market-bids-list]');
+  const countEl = section.querySelector('[data-market-bids-count]');
+  let raw;
+  try { raw = await browseBidIntents(aid); }
+  catch (e) {
+    list.innerHTML = `<div class="muted" style="font-size:10px;">load failed: ${escapeHtml(e?.message || String(e))}</div>`;
+    if (countEl) countEl.textContent = '?';
+    _wireMarketBidPlace(section, asset);
+    return;
+  }
+  const intents = Array.isArray(raw?.intents) ? raw.intents : [];
+  if (countEl) countEl.textContent = String(intents.length);
+  if (!intents.length) {
+    list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} — be the first to post one.</div>`;
+    _wireMarketBidPlace(section, asset);
+    return;
+  }
+  // Best bid (highest unit price) at the top of the ladder. Mirror of the
+  // asks ladder which surfaces cheapest-first; together they read like a
+  // standard orderbook.
+  const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : null;
+  const ladder = intents.map(b => {
+    const amt = BigInt(b.amount || 0);
+    const sats = Number(b.price_sats || 0);
+    const unit = unitPriceSats(sats, amt, decimals);
+    const expiresIn = Math.max(0, Number(b.expiry || 0) - Math.floor(Date.now() / 1000));
+    return { ...b, _unit: unit, _expiresIn: expiresIn, _isMine: myPub && b.buyer_pubkey === myPub };
+  });
+  ladder.sort((a, b) => {
+    const ua = a._unit, ub = b._unit;
+    if (ua == null && ub == null) return 0;
+    if (ua == null) return 1;
+    if (ub == null) return -1;
+    return ub - ua;
+  });
+  const rowsHtml = ladder.map(b => {
+    const amtStr = fmtAssetAmount(BigInt(b.amount || 0), decimals);
+    const sats = Number(b.price_sats || 0);
+    const unitStr = b._unit != null ? `${fmtUnitPriceSats(b._unit)} sats/${escapeHtml(ticker)}` : '— sats/—';
+    const expiry = b._expiresIn > 0
+      ? `${Math.floor(b._expiresIn / 3600)}h${Math.floor((b._expiresIn % 3600) / 60)}m`
+      : '<span style="color:var(--red);">expired</span>';
+    const claimed = !!b.axintent_id;
+    let action;
+    if (claimed) action = `<span class="muted" style="font-size:10px;">claimed · awaiting fulfil</span>`;
+    else if (b._isMine) action = `<button data-bid-action="cancel-mkt" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;padding:3px 8px;">Cancel</button>`;
+    else if (b._expiresIn <= 0) action = `<span class="muted" style="font-size:10px;">expired</span>`;
+    else action = `<button data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;padding:3px 8px;background:#0a8f43;color:#fff;border-color:#0a7d3a;">Fulfil</button>`;
+    return `
+      <div data-bid-row data-bid-id="${escapeHtml(b.bid_id)}" style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid var(--ink-faint);">
+        <div style="flex:0 0 auto;font-family:var(--mono);"><strong>${escapeHtml(unitStr)}</strong></div>
+        <div style="flex:1;font-size:11px;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${sats.toLocaleString()} sats · ${expiry}${b._isMine ? ' · <strong>you</strong>' : ''}</div>
+        <div style="flex:0 0 auto;">${action}</div>
+      </div>`;
+  }).join('');
+  list.innerHTML = rowsHtml;
+  list.querySelectorAll('[data-bid-action="fulfil-mkt"]').forEach(btn => {
+    btn.onclick = async () => {
+      const bid = ladder.find(x => x.bid_id === btn.dataset.bidId);
+      if (!bid) return;
+      btn.disabled = true; btn.textContent = 'fulfilling…';
+      try {
+        await fulfilBidIntent({ bid });
+        toast('Bid fulfilled — atomic intent published, awaiting bidder Take', 'success');
+        populateMarketBidsLadder(scope, asset);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = 'Fulfil';
+        toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
+      }
+    };
+  });
+  list.querySelectorAll('[data-bid-action="cancel-mkt"]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Cancel this bid?')) return;
+      btn.disabled = true; btn.textContent = 'cancelling…';
+      try {
+        await cancelBidIntent({ assetIdHex: aid, bidIdHex: btn.dataset.bidId });
+        toast('Bid cancelled', 'success');
+        populateMarketBidsLadder(scope, asset);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = 'Cancel';
+        toast('Cancel failed: ' + (e?.message || String(e)), 'error');
+      }
+    };
+  });
+  _wireMarketBidPlace(section, asset);
+}
+
+function _wireMarketBidPlace(section, asset) {
+  const aid = section.dataset.aid;
+  const ticker = asset.ticker || '?';
+  const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  const placeBtn = section.querySelector('[data-act="market-bid-place"]');
+  const formHost = section.querySelector('[data-market-bid-form]');
+  if (!placeBtn || !formHost) return;
+  placeBtn.onclick = () => {
+    if (formHost.style.display !== 'none' && formHost.dataset.open === '1') {
+      formHost.style.display = 'none'; formHost.dataset.open = ''; formHost.innerHTML = '';
+      return;
+    }
+    formHost.style.display = '';
+    formHost.dataset.open = '1';
+    formHost.innerHTML = `
+      <div style="border:1px dashed var(--ink-faint);padding:10px;background:var(--bg-warm);">
+        <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">Bid on ${escapeHtml(ticker)}</div>
+        <div class="flex" style="gap:6px;flex-wrap:wrap;">
+          <label style="font-size:10px;flex:1;min-width:120px;">Amount (${escapeHtml(ticker)})
+            <input data-bid-field="amount" type="text" inputmode="decimal" placeholder="100" style="width:100%;font-family:var(--mono);">
+          </label>
+          <label style="font-size:10px;flex:1;min-width:120px;">Total price (sats)
+            <input data-bid-field="price" type="number" min="1" step="1" placeholder="50000" style="width:100%;font-family:var(--mono);">
+          </label>
+          <label style="font-size:10px;flex:1;min-width:120px;">Expires (hours)
+            <input data-bid-field="expiry-hours" type="number" min="1" max="720" step="1" value="24" style="width:100%;font-family:var(--mono);">
+          </label>
+        </div>
+        <div class="flex" style="gap:6px;margin-top:8px;">
+          <button data-bid-action="submit" class="primary" type="button" style="font-size:11px;">Sign &amp; post bid</button>
+          <button data-bid-action="close" type="button" style="font-size:11px;">Close</button>
+        </div>
+        <div data-bid-status class="muted" style="font-size:10px;margin-top:6px;"></div>
+      </div>`;
+    const status = formHost.querySelector('[data-bid-status]');
+    formHost.querySelector('[data-bid-action="close"]').onclick = () => {
+      formHost.style.display = 'none'; formHost.dataset.open = ''; formHost.innerHTML = '';
+    };
+    const submitBtn = formHost.querySelector('[data-bid-action="submit"]');
+    submitBtn.onclick = async () => {
+      if (submitBtn.disabled) return;
+      try {
+        const amountStr = formHost.querySelector('[data-bid-field="amount"]').value.trim();
+        const priceSatsRaw = formHost.querySelector('[data-bid-field="price"]').value.trim();
+        const hoursRaw = formHost.querySelector('[data-bid-field="expiry-hours"]').value.trim();
+        if (!amountStr || !priceSatsRaw || !hoursRaw) throw new Error('all fields required');
+        const amount = parseAssetAmount(amountStr, decimals);
+        if (amount <= 0n) throw new Error('amount must be positive');
+        const priceSatsInt = parseInt(priceSatsRaw, 10);
+        if (!Number.isInteger(priceSatsInt) || priceSatsInt <= 0) throw new Error('price must be a positive integer');
+        const hours = Math.max(1, Math.min(720, parseInt(hoursRaw, 10) || 24));
+        const expiry = Math.floor(Date.now() / 1000) + hours * 3600;
+        submitBtn.disabled = true;
+        status.textContent = 'signing & posting…';
+        await publishBidIntent({ assetIdHex: aid, amount, priceSats: priceSatsInt, expiry });
+        status.textContent = 'bid posted ✓';
+        toast(`Bid posted on ${ticker}`, 'success');
+        formHost.style.display = 'none'; formHost.dataset.open = ''; formHost.innerHTML = '';
+        populateMarketBidsLadder(section.parentElement, asset);
+      } catch (e) {
+        submitBtn.disabled = false;
+        status.textContent = 'failed: ' + (e?.message || String(e));
+      }
+    };
+  };
 }
 
 // Wires the back-button + asset_id copy chip on a freshly rendered asset
@@ -19015,6 +20239,7 @@ async function init() {
   }
   setupNetworkSelect();
   setupTabs();
+  setupMixerHandlers();
   setupFaqModal();
   setupCommandPalette();
   setupWalletButtons();

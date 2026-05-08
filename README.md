@@ -36,6 +36,12 @@ What that buys you, concretely:
 - A user can **etch** a confidential asset with a hidden initial supply, and
   optionally make it **mintable** (the etcher's pubkey becomes the mint
   authority and can issue more supply later via signed `T_MINT` envelopes).
+- Or **deploy a fair-launch asset** (`T_PETCH`) — declares ticker + lifetime
+  cap + per-mint amount + height window; produces no supply at deploy time.
+  Anyone (including the deployer) can then broadcast `T_PMINT` to mint a
+  fixed tranche, with cumulative supply publicly auditable against the cap
+  via canonically-ordered chain history. The trade vs. CETCH is supply-side
+  confidentiality for permissionless issuance and on-chain auditable cap.
 - They can **transfer** privately — observers see commitments + an aggregated
   rangeproof in the witness, never amounts.
 - Any holder can **burn** part or all of their balance — the burned amount
@@ -127,10 +133,12 @@ Where tacit isn't the right choice:
 no federation, no off-chain proofs, no third-party trust. Issue a token
 with public or hidden initial supply (your choice — the dApp publishes
 the supply opening to IPFS by default, opt out if you want a centralized-
-stablecoin-style trust model), send privately, optionally make it mintable,
-burn part or all of your balance, or settle OTC swaps atomically in a
-single Bitcoin tx. Your privkey plus the Bitcoin chain are enough to use
-it and to recover your full balance years later.
+stablecoin-style trust model), or deploy a fair-launch asset (`T_PETCH`)
+where supply is minted permissionlessly against a publicly auditable cap.
+Send privately, optionally make it mintable, burn part or all of your
+balance, or settle OTC swaps atomically in a single Bitcoin tx. Your
+privkey plus the Bitcoin chain are enough to use it and to recover your
+full balance years later.
 
 **Why tacit and not Runes / Liquid / RGB?** Runes and BRC-20 publish
 amounts in cleartext — anyone with a block explorer sees your balance.
@@ -253,8 +261,9 @@ key with the sender, and decrypts the amount. **No share-link or sync server
 required.** Privkey alone reconstructs the wallet.
 
 **Carol browses what tokens exist.** Carol clicks Discover. The dApp hits
-the Worker's `/assets` endpoint, which has been chain-scanning every 5
-minutes for CETCH, T_MINT, and T_BURN envelopes. **Every Discover card is
+the Worker's `/assets` and `/petch-assets` endpoints, which have been
+chain-scanning every 5 minutes for CETCH, T_CXFER, T_MINT, T_BURN,
+T_AXFER, T_PETCH, and T_PMINT envelopes. **Every Discover card is
 client-validated before render**: the dApp walks back to the on-chain
 CETCH envelope, verifies the rangeproof, decodes the canonical ticker /
 decimals / commitment, and checks attestation against the `tacit_attest`
@@ -447,6 +456,57 @@ BURN
    kernel_sig verifies under E'.xonly()
 
 
+T_AXFER (atomic OTC settlement — CXFER variant for marketplace use)
+───────────────────────────────────────────────────────────────────
+ Same shape as CXFER except the maker explicitly declares how many of
+ vin[1..] are tacit asset inputs; the rest are aux BTC inputs the taker
+ funds in the same Bitcoin tx:
+
+     T_AXFER || asset_id || asset_input_count(1B) || kernel_sig(64B) || N
+            || (C_i, amount_ct_i)*N
+            || aggregated_rangeproof
+
+   maker signs vin[0] (envelope) + vin[1..1+asset_input_count] with
+   SIGHASH_SINGLE | ANYONECANPAY → taker can append BTC inputs/outputs
+   without invalidating maker's sigs.
+   taker's BTC funding inputs are SIGHASH_ALL → pin the whole tx.
+   Both sides settle in one Bitcoin tx; neither can grief the other.
+
+
+T_PETCH (permissionless-mint deployment record — fair-launch issuance)
+──────────────────────────────────────────────────────────────────────
+ Same commit-reveal pattern. Produces NO supply UTXO — deployer gets zero
+ tokens; the only way to hold supply is to broadcast T_PMINT later.
+
+     T_PETCH || ticker || decimals
+             || cap_amount(8B) || mint_limit(8B)
+             || mint_start_height(4B) || mint_end_height(4B)
+             || image_uri(≤256B)
+
+   asset_id = sha256(reveal_txid ‖ vout=0)            (same as CETCH)
+   cap_amount % mint_limit == 0  (cap reachable; rejected if not)
+   mint_start_height ≥ etch_height + 1  (deployer can't mint in own block)
+
+
+T_PMINT (permissionless mint event — anyone may broadcast)
+──────────────────────────────────────────────────────────
+ Mints exactly mint_limit tokens against a T_PETCH ancestor.
+
+     T_PMINT || asset_id || etch_txid
+             || C(33B) || amount(8B, public) || blinding(32B, public)
+
+   amount == petch.mint_limit       (validator rejects otherwise)
+   confirmed_height ∈ [start, end]  (height-window check)
+   credited only at depth ≥ 3       (Bitcoin reorg safety; SPEC §5.9)
+   cap enforced from canonically-ordered chain history:
+     prior_count × mint_limit + amount ≤ cap_amount
+
+   No signature. (amount, blinding) are public — any wallet with the
+   privkey for vout[0]'s output script recovers the UTXO from chain
+   alone, no derivation needed. The first CXFER from such a UTXO
+   re-blinds it back into confidential transfer mode.
+
+
 VALIDATION (recursive, browser-side)
 ────────────────────────────────────
  For each wallet UTXO:
@@ -454,12 +514,18 @@ VALIDATION (recursive, browser-side)
    2. If CETCH:    verify rangeproof; record metadata
    3. If T_MINT:   recursively validate the CETCH ancestor;
                    verify issuer_sig (with commit_anchor binding); verify rangeproof
-   4. If CXFER/BURN:
-       a. recursively validate every input outpoint
+   4. If CXFER/T_AXFER/BURN:
+       a. recursively validate every asset input outpoint
+          (T_AXFER: only vin[1..1+asset_input_count]; aux BTC inputs are skipped)
        b. verify aggregated rangeproof for outputs (skip if BURN with N=0)
-       c. verify asset_id consistency across all input parents
+       c. verify asset_id consistency across all asset-input parents
        d. verify kernel_sig under (ΣC_out + burned·H − ΣC_in).xonly()
-   5. Resolve own (amount, blinding) via local cache OR trial-decrypt amount_ct
+   5. If T_PETCH:  not a UTXO — return false. Metadata recorded by indexer.
+   6. If T_PMINT:  resolve T_PETCH parent metadata; verify amount == mint_limit,
+                   confirmed_height ∈ window, depth ≥ 3, cap not exceeded,
+                   pedersenCommit(amount, blinding) == commitment
+   7. Resolve own (amount, blinding) via local cache OR trial-decrypt amount_ct
+      (T_PMINT: amount + blinding are in the envelope cleartext — no decrypt)
 
  Memoized; O(N) over chain depth N. Optimistically batches all rangeproofs
  across the walk into a single multi-scalar multiplication.
@@ -473,6 +539,15 @@ RECOVERY
    - As own change      (self-derived keystream)
    - As own etched supply (self-derived from commit input outpoint anchor)
    - As own minted supply (same anchor pattern, different domain string)
+   - As T_PMINT-minted supply (own or other) — (amount, blinding) are in the
+     envelope cleartext; no derivation. Match P2WPKH(hash160(my_pub)) to
+     vout[0] to claim ownership; verify pedersenCommit(amount, blinding) ==
+     commitment to reject tampered envelopes.
+
+ (One exception: atomic-intent recipient UTXOs use a uniform-random blinding
+  delivered ECDH-encrypted to the claimant at fulfilment time — recovery
+  falls back to local cache or re-fetching the encrypted fulfilment from
+  the worker within its 24h TTL. SPEC §5.7.6.)
 ```
 
 For more detail, open the dApp and read the **Protocol** tab — the on-page
@@ -563,9 +638,18 @@ See `build/README.md` for details.
 5. **Mint.** Mintable asset only — issues additional supply, signed by the
    mint_authority key (the etcher's in-page privkey). Re-uses the
    commit-reveal flow.
-6. **Burn.** Any holder. Destroys part or all of their balance with a
+6. **Fair-launch (T_PETCH / T_PMINT).** Deploy an asset whose supply is
+   issued permissionlessly in fixed tranches, with a publicly auditable cap.
+   On the **Etch · public mint** panel, set ticker, decimals, `cap_amount`,
+   `mint_limit` (`mint_limit` must divide `cap_amount` so the cap is reachable), and an optional
+   height window. Click Deploy public-mint asset — the deploy tx creates
+   **zero tokens**; you (or anyone) mint a tranche later by clicking **Mint**
+   on the asset's card in **Discover → Fair launch**. Cumulative supply,
+   mints remaining, and per-mint status (pending / credited / revoked) are
+   visible to everyone. Mints credit at Bitcoin confirmation depth ≥ 3.
+7. **Burn.** Any holder. Destroys part or all of their balance with a
    public `burned_amount` so observers can audit supply reduction.
-7. **Holdings.** Lists your assets with images, descriptions, balances.
+8. **Holdings.** Lists your assets with images, descriptions, balances.
    ↻ Rescan UTXOs forces re-validation. **Per-asset card actions** include:
    - **Send privately / Burn / Mint more** (core CXFER / BURN / MINT flows).
    - **Reveal supply / Reveal mints** — etcher / mint-authority publish their
@@ -583,11 +667,16 @@ See `build/README.md` for details.
      recipient pubkey. Settles atomically when the taker pastes + finalizes.
    - **Atomic intent (open)** — publish a generic atomic offer on the
      Market tab for any taker to claim and atomically settle.
-8. **Discover.** Lists every asset etched on the active network. Filter by
-   ticker / asset_id; pills for `mintable` / `attested` / `recent` narrow
-   the view. Each asset card surfaces verified supply, mint history, burn
-   totals, and (when available) circulating-supply math.
-9. **Market.** Aggregate marketplace across all assets. Three listing kinds:
+9. **Discover.** Lists every asset on the active network in two sections:
+   the main confidential-supply list (CETCH-rooted, supply hidden behind a
+   Pedersen commitment plus issuer attestation), and a separate **fair
+   launch · public-mint assets** panel (T_PETCH-rooted, permissionless-mint
+   with public cumulative supply and per-mint status). Filter by ticker /
+   asset_id; pills (`mintable` / `attested` / `recent` / `has mints` /
+   `has burns` / `has transfers`) narrow the main list. Each card surfaces
+   verified supply, mint history, burn totals, and — for fair-launch
+   assets — cap progress and a Mint button.
+10. **Market.** Aggregate marketplace across all assets. Three listing kinds:
    - 🟢 **opening** — exact-amount listing (OTC settlement)
    - 🟢 **≥ range** — range-disclosed listing (OTC settlement, exact balance hidden)
    - 🟣 **⚡ atomic intent** — browse-and-take with single-Bitcoin-tx settlement
@@ -597,7 +686,7 @@ See `build/README.md` for details.
    liveness) before any commitment. Atomic intent tiles surface the
    relevant button based on your role: Claim if untaken, Fulfil if it's
    yours and a claim is pending, Take when fulfilment is ready.
-10. **Drops** *(issuer side)*. Batched 1:N confidential CXFER airdrops.
+11. **Drops** *(issuer side)*. Batched 1:N confidential CXFER airdrops.
     Upload one or more snapshot CSVs (`eth_address,amount` — Etherscan
     holder exports work as-is), optionally blacklist addresses, Build
     merged snapshot to compute the merkle commitment, Pin to IPFS, Save
@@ -610,7 +699,7 @@ See `build/README.md` for details.
     use Export JSON to back up. A Cross-check vs chain button walks the
     local ledger and verifies each fulfilled leaf actually confirmed
     on-chain.
-11. **Claim** *(recipient side)*. Paste the drop's merkle root + IPFS CID
+12. **Claim** *(recipient side)*. Paste the drop's merkle root + IPFS CID
     (from the issuer) → Load snapshot. The dApp fetches the JSON, refuses
     any blob whose rows don't match the root, and shows your row. Connect
     MetaMask (or any EIP-1193 provider) — the connection is purely for
@@ -652,7 +741,7 @@ validates and transfers correctly).
 Tacit hides **amounts**. It does not hide:
 
 - Address graph (sender/recipient bitcoin addresses are visible).
-- Asset ID (the 32-byte asset_id is in every CXFER / T_MINT / T_BURN envelope).
+- Asset ID (the 32-byte asset_id is in every CXFER / T_AXFER / T_MINT / T_BURN / T_PMINT envelope).
 - Sender pubkey (visible at `tx.vin[1].witness[1]` — the recipient needs it
   for ECDH blinding recovery).
 - Tx graph (inputs and outputs are linkable like any UTXO chain).
@@ -720,6 +809,22 @@ amount-hiding only.
   reclaim manually by spending it via the script-path with the envelope as
   the leaf — the dApp doesn't yet expose a one-click button for this. Cost:
   the commit tx fee (~$0.10–1 mainnet).
+- **T_PMINT reorg sensitivity.** Cap correctness for fair-launch
+  (T_PETCH-rooted) assets requires complete, canonically-ordered T_PMINT
+  history, so v1 only credits a mint at confirmation depth ≥ 3. Wallets
+  surface "pending" T_PMINT UTXOs as non-spendable until the depth
+  threshold crosses. A reorg below depth 3 may revoke a previously-
+  credited T_PMINT under new canonical ordering — indexers re-run the
+  cap check on reorg. CETCH+T_MINT assets are unaffected (credit there
+  depends only on the issuer's signature, not aggregate chain state).
+  SPEC §5.9 + §10.
+- **Reference-indexer KV.list cap.** The reference worker's
+  `loadCanonicalPmints` fetches via a single `KV.list({ limit: 1000 })`
+  per asset. Assets accruing more than 1000 confirmed T_PMINTs will
+  under-count `cumulative_minted` until the indexer paginates. Practical
+  for v1 (e.g. cap=1000 at limit=1, or cap=21M at limit=21k); larger
+  schedules need pagination patches before relying on published cap
+  progress for buy/sell decisions.
 
 ---
 
@@ -924,11 +1029,14 @@ and the configured CORS allowlist. It exposes:
 | `/balance`                        | GET    | Faucet wallet's signet balance + funding address                   |
 | `/assets`                         | GET    | List of all etched assets + per-asset mint history (cron-populated) |
 | `/assets/:id`                     | GET    | Single asset metadata + mint events + burn events                   |
-| `/assets/hint`                    | POST   | Targeted index of a fresh etch / mint / burn pre-confirmation       |
+| `/assets/hint`                    | POST   | Targeted index of a freshly broadcast envelope (CETCH, T_MINT, T_BURN, T_PETCH, T_PMINT) so it surfaces in `/assets` or `/petch-assets` immediately, pre-confirmation |
 | `/assets/:id/attest`              | POST   | Discovery cache for etch attestation. Worker re-verifies `C == supply·H + r·G` before storing. **Primary** distribution is the IPFS metadata blob at the envelope's `image_uri` — see SPEC §7.3; this endpoint is just a cache for fast Discover paint. |
 | `/assets/:id/mints/:txid/attest`  | POST   | Same shape, for T_MINT events. dApp auto-attests by default. |
 | `/assets/:id/openings`            | GET    | List per-UTXO `(amount, blinding)` openings holders have voluntarily published (cache-only, optional). |
-| `/utxos/:txid/:vout/opening`      | GET    | Single-UTXO opening lookup. |
+| `/utxos/:txid/:vout/opening`      | GET / POST | Single-UTXO opening: GET fetches; POST publishes (worker re-verifies BIP-340 sig + `pedersenCommit(amount, blinding) == on-chain commitment` before storing). |
+| `/petch-assets`                   | GET    | T_PETCH-rooted asset registry — same envelope shape as `/assets` plus per-asset `cap_amount`, `mint_limit`, `mint_start_height`, `mint_end_height`, `cumulative_minted` (depth ≥ 3), and `mints_remaining`. SPEC §5.8. |
+| `/petch-assets/:id`               | GET    | Single T_PETCH asset metadata + cap progress. |
+| `/assets/:id/pmints`              | GET    | Confirmed T_PMINT events for a T_PETCH-rooted asset, in canonical (height, tx_index) order. Each entry carries `depth` and `status: 'credited' \| 'pending' \| 'revoked'`. SPEC §5.9. |
 | `/assets/:id/disclosures`         | GET / POST | Range disclosures (`balance ≥ K` proofs) per SPEC §5.6. Worker verifies Schnorr sig + on-chain ownership before storing; consumers MUST re-verify the bulletproof client-side. |
 | `/assets/:id/listings`            | GET / POST | Per-UTXO marketplace listings (opening-based). Worker stores listing terms + opening proof; settlement is OTC. |
 | `/assets/:id/listings/:txid/:vout`             | DELETE | Maker cancels a listing (signed). |
@@ -936,15 +1044,20 @@ and the configured CORS allowlist. It exposes:
 | `/assets/:id/listings-range`      | GET / POST | Range-disclosed listings (`balance ≥ K`). Maker proves a lower bound on their balance without revealing the exact amount; other UTXOs stay confidential. OTC settlement, same as above. |
 | `/assets/:id/listings-range/:owner_pubkey`     | DELETE | Maker cancels (signed). |
 | `/assets/:id/listings-range/:owner_pubkey/claim` | POST   | Taker locks (5 min). |
-| `/assets/:id/atomic-intents`      | GET / POST | Atomic intents — trustless single-Bitcoin-tx settlement (SPEC §5.7.6). Maker pre-broadcasts a commit tx + posts intent metadata + cleartext recipient blinding. Browse-and-take. |
+| `/assets/:id/atomic-intents`      | GET / POST | Atomic intents — trustless single-Bitcoin-tx settlement (SPEC §5.7.6). Maker pre-broadcasts a commit tx + posts intent metadata; the recipient blinding stays on the maker's device. Browse-and-take. |
 | `/assets/:id/atomic-intents/:intent_id`        | DELETE | Maker cancels (signed). |
-| `/assets/:id/atomic-intents/:intent_id/claim`  | POST   | Taker locks for 5 min (signed). |
-| `/assets/:id/atomic-intents/:intent_id/fulfilment` | GET / POST | Maker uploads a partial reveal targeted at the claimant's pubkey (signed). Taker fetches and broadcasts atomically. |
+| `/assets/:id/atomic-intents/:intent_id/claim`  | POST   | Taker locks for 5 min (signed; binds a specific funding UTXO ≥ price_sats — proof-of-funds gate). |
+| `/assets/:id/atomic-intents/:intent_id/fulfilment` | GET / POST | Maker uploads a partial reveal targeted at the claimant's pubkey (signed) **plus the recipient blinding ECDH-encrypted to the claimant**. Taker fetches, decrypts, and broadcasts atomically. |
+| `/assets/:id/bid-intents`         | GET / POST | Bid intents (buyer-initiated mirror of atomic intents — SPEC §5.7.7). Buyer publishes "I'd buy N units at P" off-chain; sellers spin up an atomic intent targeted at the bidder when they decide to accept. No on-chain lock at bid time. |
+| `/assets/:id/bid-intents/:bid_id` | GET / DELETE | Fetch a single bid (with claim if any) / bidder cancels (signed). |
+| `/assets/:id/bid-intents/:bid_id/claim` | POST | Seller locks a bid for 30 min, attaches the `axintent_id` of the freshly-published seller intent. |
+| `/drops`                          | GET / POST | Drop announcements — discovery layer for airdrops. Issuer publishes `(merkle_root, IPFS CID, asset_id, ticker)` so claimants can find live drops. Lives entirely outside the on-chain protocol. |
+| `/drops/:root`                    | GET / DELETE | Single drop announcement / issuer cancels (signed). |
 | `/airdrops/:root/claims`          | GET / POST | Airdrop claim queue keyed by merkle root. Recipients POST `(leaf_index, tacit_pubkey, eth_sig)` tuples; issuers GET to pull batches and broadcast fulfilment CXFERs. Worker validates format only — it has no snapshot to verify against. Lives entirely outside the on-chain protocol; canonical truth is the resulting CXFER set. |
 | `/airdrops/:root/claims/:leaf_index` | DELETE | Removes a queued claim. Unauthenticated by design (the queue is convenience, not authority — re-submission is also unauth, "latest wins"). |
 | `/scan`                           | POST   | Manual scan trigger (debug)                                        |
 | `/rescan`                         | POST   | Rewind `meta:last_scanned` to a given height (debug, `?from=<h>`)   |
-| _scheduled_                       |        | `*/5 * * * *` — scan recent signet AND mainnet blocks for CETCH, T_MINT, and T_BURN envelopes |
+| _scheduled_                       |        | `*/5 * * * *` — scan recent signet AND mainnet blocks for CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, and T_PMINT envelopes |
 
 Setup steps live in `worker/README.md`. Deploy your own (and update
 `WORKER_BASE` in `dapp/tacit.js`) if you want isolated keys / quota.
