@@ -20,6 +20,7 @@ import { hmac } from './vendor/tacit-deps.min.js';
 import { hexToBytes, bytesToHex, concatBytes } from './vendor/tacit-deps.min.js';
 import { bech32 } from './vendor/tacit-deps.min.js';
 import { satsConnect as SatsConnect } from './vendor/tacit-deps.min.js';
+import { prfRegister, prfLogin, loadPrfMap, savePrfMap, clearPrfMap, isPasskeyAvailable, prfTryRestore } from './prf-wallet.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
 
@@ -656,6 +657,7 @@ const wallet = {
   pubHex()  { return bytesToHex(this.pub); },
   xonly()   { return this.pub.slice(1); }
 };
+wallet.mode = null; // null = password/burner · 'passkey' = passkey PRF
 
 // ============== BURNER BACKUP GATE ==============
 // The local "burner" privkey is the trust root for every tacit asset the user
@@ -689,6 +691,8 @@ function markBurnerBackedUp() {
 // the user acknowledges, false if they cancel. Caller should refuse the
 // pending op on `false`.
 function ensureBurnerBackedUp(opLabel) {
+  // Passkey credential is the backup — skip export/ack gate.
+  if (wallet.mode === 'passkey') return true;
   if (isBurnerBackedUp()) return true;
   const onMainnet = NET.name === 'mainnet';
   const tier = onMainnet ? '⚠ MAINNET' : 'signet';
@@ -708,6 +712,155 @@ function ensureBurnerBackedUp(opLabel) {
   if (!confirm('Did you save the private key somewhere you can recover it from?\n\nOK = yes, save the acknowledgement and proceed. Cancel = stop.')) return false;
   markBurnerBackedUp();
   return true;
+}
+
+// ============== PASSKEY / PRF ==============
+// Separate storage key so passkey blob never overwrites password wallet blob.
+function prfWalletStorageKey() {
+  return `tacit-wallet-v1:${NET.name}:passkey`;
+}
+
+// Adapter that bridges PRF key derivation into the sign-identical-to-password
+// wallet model. PRF output → random session password → PBKDF2+AES-GCM blob
+// → wallet.priv via normal decrypt. Effect: every signing path sees a normal
+// wallet.priv, same as passphrase mode. No special-case code in any signer.
+const prfWallet = {
+  state: null, // { label, credentialId, pubkey, address }
+
+  available() { return isPasskeyAvailable(); },
+
+  // Register a new passkey, derive key, create encrypted session blob.
+  async register(label) {
+    const { credentialId, priv, pub, pubHex } = await prfRegister(label);
+    return this._setupSession({ credentialId, priv, pub, pubHex, label });
+  },
+
+  // Authenticate with saved passkey. Resolves label → credentialId from
+  // the PRF map so reload auto-login targets the specific credential.
+  async login(opts = {}) {
+    let { credentialId, label } = opts;
+    if (!credentialId && label) {
+      const map = loadPrfMap();
+      credentialId = map[label]?.credentialId;
+    }
+    const result = await prfLogin({ credentialId });
+    return this._setupSession({ ...result, label });
+  },
+
+  // Core: wrap PRF-derived key in random-session-password encrypted blob,
+  // then load into wallet.priv via the standard PBKDF2+AES-GCM decrypt path.
+  async _setupSession({ credentialId, priv, pub, pubHex, label }) {
+    const sessionPass = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+    const key = prfWalletStorageKey();
+    localStorage.setItem(key, await encryptPrivkey(priv, sessionPass));
+    const raw = localStorage.getItem(key);
+    wallet.priv = await decryptPrivkey(raw, sessionPass);
+    wallet.pub = pub;
+    wallet.mode = 'passkey';
+    const address = p2wpkhAddress(pub);
+    const map = loadPrfMap();
+    const entryLabel = label || `passkey-${address.slice(2, 6)}`;
+    map[entryLabel] = { credentialId, pubkey: pubHex, address };
+    savePrfMap(map);
+    this.state = { label: entryLabel, credentialId, pubkey: pubHex, address };
+    priv.fill(0); // zero PRF output — key lives in wallet.priv (encrypted at rest)
+    return this.state;
+  },
+
+  // Lock: clear wallet state, delete session blob. PRF map (credentials)
+  // persists so next reload auto-logs in via tryRestore.
+  lock() {
+    this.state = null;
+    wallet.mode = null;
+    wallet.pub = null;
+    wallet.priv = null;
+    localStorage.removeItem(prfWalletStorageKey());
+  },
+
+  // Restore first saved credential from PRF map for auto-login on reload.
+  tryRestore() {
+    const result = prfTryRestore();
+    if (result) this.state = result;
+    return result;
+  },
+};
+
+// Render saved passkey list in Manage Wallet drawer. Each entry is a clickable
+// row that re-authenticates with that specific credential. Active entry
+// highlighted in orange. Hidden when no passkeys are saved.
+function renderPasskeyPanel() {
+  const info = document.getElementById('passkey-wallet-info');
+  const list = document.getElementById('passkey-wallet-list');
+  if (!info || !list) return;
+  const map = loadPrfMap();
+  const labels = Object.keys(map);
+  if (!labels.length) { info.style.display = 'none'; return; }
+  info.style.display = '';
+  list.innerHTML = '';
+  for (const lbl of labels) {
+    const e = map[lbl];
+    const active = prfWallet.state && prfWallet.state.label === lbl;
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.style.cssText = `text-align:left;padding:6px 10px;border:1px solid ${active ? 'var(--orange)' : 'var(--ink-faint)'};background:${active ? 'var(--bg-warm)' : 'var(--bg)'};cursor:pointer;font-size:11px;font-family:inherit;display:flex;justify-content:space-between;width:100%;`;
+    const span = document.createElement('span');
+    span.textContent = lbl;
+    const meta = document.createElement('span');
+    meta.style.cssText = 'color:var(--ink-mid);font-size:10px;text-transform:none;letter-spacing:0;';
+    meta.textContent = `${e.address ? e.address.slice(0,10)+'...' : '-'}${active ? ' ✓' : ''}`;
+    row.append(span, meta);
+    row.onclick = async () => {
+      if (active) return;
+      try {
+        await prfWallet.login({ label: lbl });
+        wallet.mode = 'passkey';
+        renderPasskeyPanel();
+        refreshWallet();
+      } catch (e) { toast('Passkey: ' + e.message, 'error'); }
+    };
+    list.appendChild(row);
+  }
+}
+
+// Register/login modal: label input + Register/Login/Cancel buttons.
+// Register creates a new passkey credential; Login authenticates with
+// existing one (targets saved credential when label matches the PRF map).
+async function _showPasskeyModal() {
+  const modal = document.getElementById('passkey-modal');
+  const registerBtn = document.getElementById('passkey-register');
+  const loginBtn = document.getElementById('passkey-login');
+  const cancelBtn = document.getElementById('passkey-cancel');
+  const labelInput = document.getElementById('passkey-label-input');
+  if (!modal || !registerBtn || !loginBtn || !cancelBtn || !labelInput) return;
+  const close = () => {
+    registerBtn.onclick = loginBtn.onclick = cancelBtn.onclick = null;
+    modal.style.display = 'none';
+  };
+  const label = () => { const v = labelInput.value.trim(); return v || null; };
+  return new Promise((resolve) => {
+    cancelBtn.onclick = () => { close(); resolve(false); };
+    registerBtn.onclick = async () => {
+      registerBtn.disabled = true;
+      try {
+        if (!label()) { toast('Label is required.', 'error'); registerBtn.disabled = false; return; }
+        await prfWallet.register(label());
+        wallet.mode = 'passkey';
+        close();
+        resolve(true);
+      } catch (e) { toast('Passkey: ' + e.message, 'error'); registerBtn.disabled = false; }
+    };
+    loginBtn.onclick = async () => {
+      loginBtn.disabled = true;
+      try {
+        await prfWallet.login({ label: label() });
+        wallet.mode = 'passkey';
+        close();
+        resolve(true);
+      } catch (e) { toast('Passkey: ' + e.message, 'error'); loginBtn.disabled = false; }
+    };
+    modal.style.display = 'grid';
+    labelInput.focus();
+  });
 }
 
 // ============== JUST-IN-TIME FUNDING ==============
@@ -7109,12 +7262,17 @@ function renderWalletCard(patch = {}) {
   // Backup badge + warn box.
   const backupEl = $('#wallet-backup-badge');
   const warnEl = $('#wallet-backup-warn');
-  const backedUp = isBurnerBackedUp();
-  if (backupEl) {
-    backupEl.textContent = backedUp ? '· ✓ backed up' : '· ⚠ not backed up';
-    backupEl.style.color = backedUp ? 'var(--green)' : 'var(--red)';
+  if (wallet.mode === 'passkey') {
+    if (backupEl) { backupEl.textContent = '· passkey'; backupEl.style.color = 'var(--orange)'; }
+    if (warnEl) warnEl.style.display = 'none';
+  } else {
+    const backedUp = isBurnerBackedUp();
+    if (backupEl) {
+      backupEl.textContent = backedUp ? '· ✓ backed up' : '· ⚠ not backed up';
+      backupEl.style.color = backedUp ? 'var(--green)' : 'var(--red)';
+    }
+    if (warnEl) warnEl.style.display = backedUp ? 'none' : '';
   }
-  if (warnEl) warnEl.style.display = backedUp ? 'none' : '';
 
   // External-wallet info card inside the Manage Wallet drawer. The dl/dt/dd
   // grid was authored statically, but the values come from renderExtWalletPanel
@@ -7174,15 +7332,20 @@ function setupWalletButtons() {
       }
     };
   });
-  $('#btn-export').onclick = () => {
+  $('#btn-export').onclick = async () => {
+    if (wallet.mode === 'passkey') {
+      try {
+        const { priv } = await prfLogin({ credentialId: prfWallet.state?.credentialId });
+        prompt('Your private key (hex). Save somewhere safe — there is no recovery:', bytesToHex(priv));
+        priv.fill(0);
+      } catch (e) { toast('Export cancelled: ' + e.message, 'error'); }
+      return;
+    }
     prompt('Your private key (hex). Save somewhere safe — there is no recovery:', bytesToHex(wallet.priv));
-    // After a manual export, ask once whether the user wants to clear the
-    // forced-backup gate. We don't auto-set it: the user might have hit the
-    // button by accident and not actually copied the value.
     if (!isBurnerBackedUp() && confirm('Mark this burner key as backed up?\n\nClick OK only if you copied the hex above to a safe location. This skips the export prompt before future tacit operations.')) {
       markBurnerBackedUp();
       toast('Burner key marked as backed up.', 'success');
-      setupNetworkSelect(); // refresh banner hints
+      setupNetworkSelect();
     }
   };
   $('#btn-import').onclick = async () => {
@@ -15834,8 +15997,8 @@ function setupNetworkSelect() {
   const extHint = $('#mainnet-extwallet-hint');
   const backHint = $('#mainnet-burner-backup-hint');
   if (NET.name === 'mainnet' && !mainnetAcked) {
-    if (extHint) extHint.style.display = wallet.ext ? 'none' : 'block';
-    if (backHint) backHint.style.display = isBurnerBackedUp() ? 'none' : 'block';
+    if (extHint) extHint.style.display = wallet.ext || wallet.mode === 'passkey' ? 'none' : 'block';
+    if (backHint) backHint.style.display = wallet.mode === 'passkey' || isBurnerBackedUp() ? 'none' : 'block';
   }
   // Wire the close button. Sets the ack flag and hides immediately. Idempotent —
   // setupNetworkSelect runs on every state change, so re-binding is fine.
@@ -15970,20 +16133,24 @@ function _showWelcomeModal() {
     const modal = document.getElementById('welcome-modal');
     const xBtn = document.getElementById('welcome-xverse');
     const uBtn = document.getElementById('welcome-unisat');
+    const pBtn = document.getElementById('welcome-passkey');
     const lBtn = document.getElementById('welcome-local');
-    if (!modal || !xBtn || !uBtn || !lBtn) { resolve('local'); return; }
+    if (!modal || !xBtn || !uBtn || !pBtn || !lBtn) { resolve('local'); return; }
     const av = extWallet.available();
     xBtn.disabled = !av.satsConnect;
     xBtn.title = av.satsConnect ? '' : 'Xverse / Leather extension not detected';
     uBtn.disabled = !av.unisat;
     uBtn.title = av.unisat ? '' : 'UniSat extension not detected';
+    pBtn.disabled = !prfWallet.available();
+    pBtn.title = prfWallet.available() ? '' : 'Passkey requires HTTPS (or localhost)';
     const close = (choice) => {
-      xBtn.onclick = uBtn.onclick = lBtn.onclick = null;
+      xBtn.onclick = uBtn.onclick = pBtn.onclick = lBtn.onclick = null;
       modal.style.display = 'none';
       resolve(choice);
     };
     xBtn.onclick = () => close('ext-xverse');
     uBtn.onclick = () => close('ext-unisat');
+    pBtn.onclick = () => close('passkey');
     lBtn.onclick = () => close('local');
     modal.style.display = 'grid';
   });
@@ -16006,6 +16173,8 @@ async function _runFirstLoadChoice() {
         wallet.ext = st;
         if (verdict === 'unsupported') await wallet.load();
         else                           await wallet.load(st.address);
+      } else if (choice === 'passkey') {
+        if (!await _showPasskeyModal()) throw new Error('cancelled');
       } else {
         await wallet.load();
       }
@@ -16045,27 +16214,31 @@ async function init() {
     const w = document.getElementById('file-protocol-warning');
     if (w) w.style.display = 'block';
   }
-  // Try silent reconnect of the previous external wallet first. If it succeeds,
-  // load the tacit identity bound to that wallet's address; otherwise fall
-  // through to the network-scoped local wallet (tacit-wallet-v1:<network>).
-  const restored = await extWallet.tryRestore().catch(() => null);
-  if (restored) {
-    wallet.ext = restored;
-    // 'reload' = a reload is queued, bail; 'unsupported' = reconcile already
-    // disconnected the wallet, fall through to burner mode.
-    const verdict = reconcileWalletNetwork(restored);
-    if (verdict === 'reload') return;
-    if (verdict === 'unsupported') await wallet.load();
-    else                           await wallet.load(restored.address);
-  } else if (_hasAnyExistingWallet()) {
-    // Returning user — encrypted blob exists somewhere under tacit-wallet-v1:*
-    // so go straight to the unlock prompt rather than the welcome modal.
-    await wallet.load();
-  } else {
-    // Genuine first load on this device. Surface the welcome modal so the user
-    // explicitly picks between connecting an existing wallet and generating a
-    // fresh local burner before any passphrase prompt fires.
-    if (await _runFirstLoadChoice() === 'reload') return;
+  const restoredPasskey = prfWallet.tryRestore();
+  if (restoredPasskey) {
+    wallet.mode = 'passkey';
+    try {
+      await prfWallet.login({ label: restoredPasskey.label });
+    } catch (e) {
+      prfWallet.lock();
+      clearPrfMap();
+      console.warn('passkey auto-login failed, cleared stale credential:', e.message);
+    }
+  }
+  if (!restoredPasskey || wallet.mode !== 'passkey') {
+    localStorage.removeItem(prfWalletStorageKey());
+    const restored = await extWallet.tryRestore().catch(() => null);
+    if (restored) {
+      wallet.ext = restored;
+      const verdict = reconcileWalletNetwork(restored);
+      if (verdict === 'reload') return;
+      if (verdict === 'unsupported') await wallet.load();
+      else                           await wallet.load(restored.address);
+    } else if (_hasAnyExistingWallet()) {
+      await wallet.load();
+    } else {
+      if (await _runFirstLoadChoice() === 'reload') return;
+    }
   }
   setupNetworkSelect();
   setupTabs();

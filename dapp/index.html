@@ -1284,6 +1284,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
             <button id="btn-ext-disconnect" style="margin-top:10px;">Disconnect</button>
           </div>
 
+          <div id="passkey-wallet-info" style="display:none;margin-bottom:14px;padding:10px 12px;background:var(--bg-alt);border:1px dashed var(--orange);">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.1em;color:var(--orange);margin-bottom:6px;">Passkey wallet</div>
+            <div id="passkey-wallet-list" style="margin-top:8px;"></div>
+          </div>
+
           <div class="flex" style="gap:8px;flex-wrap:wrap;">
             <button id="btn-export" class="danger">Export key</button>
             <button id="btn-import">Import key</button>
@@ -1992,6 +1997,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <span class="welcome-option-title">generate a new local wallet<span class="welcome-option-rec">(recommended)</span></span>
         <span class="welcome-option-meta">no extension required. tacit creates a signing key in this browser, locked behind a passphrase you set next. you can export it any time. fund via the signet faucet, or send sats from any wallet.</span>
       </button>
+      <div class="welcome-divider" style="margin-top:14px;">or use a passkey</div>
+      <button id="welcome-passkey" class="welcome-option" type="button">
+        <span class="welcome-option-title">use a passkey</span>
+        <span class="welcome-option-meta">WebAuthn PRF maps your biometric to a deterministic private key — same passkey, same key, every time. Wrapped in PBKDF2+AES-GCM so every signing path is identical to password wallets.</span>
+      </button>
       <div class="welcome-divider">already have a bitcoin wallet?</div>
       <button id="welcome-xverse" class="welcome-option" type="button">
         <span class="welcome-option-title">connect xverse / leather</span>
@@ -2095,6 +2105,24 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="faq-foot">
       Deeper read: <a href="https://github.com/z0r0z/tacit/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a> · <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">SPEC.md</a> · open the Protocol tab for the on-page primer.
     </div>
+  </div>
+</div>
+
+<div id="passkey-modal" class="pass-modal" role="dialog" aria-modal="true" style="display:none;">
+  <div class="pass-card">
+    <div class="pass-title">passkey wallet</div>
+    <div class="pass-reason" id="passkey-modal-reason">WebAuthn PRF derives a deterministic 32-byte private key from your biometric — same passkey, same key, every session. The key is wrapped in an ephemeral PBKDF2+AES-GCM blob for full compatibility with every signing path. Your passkey <strong>is</strong> the backup.</div>
+    <form id="passkey-form" autocomplete="off">
+      <div class="pass-field">
+        <label for="passkey-label-input">label</label>
+        <input type="text" id="passkey-label-input" placeholder="e.g. my-tacit-key" autocomplete="off">
+      </div>
+      <div class="pass-actions" style="gap:6px;">
+        <button type="button" id="passkey-register" class="primary" style="flex:1;font-size:10px;padding:4px 8px;">Register</button>
+        <button type="button" id="passkey-login" style="flex:1;font-size:10px;padding:4px 8px;">Login</button>
+        <button type="button" id="passkey-cancel" style="flex:1;font-size:10px;padding:4px 8px;">Cancel</button>
+      </div>
+    </form>
   </div>
 </div>
 
