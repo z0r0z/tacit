@@ -2281,16 +2281,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;">
         <input id="discover-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
         <label for="discover-sort" class="muted" style="align-self:center;font-size:11px;white-space:nowrap;">sort</label>
-        <select id="discover-sort" title="Sort assets — pick Oldest first to surface long-established etches">
-          <option value="newest">Newest first</option>
+        <select id="discover-sort" title="Sort assets — Oldest first surfaces long-established etches; market-related sorts (offers / floor / last-traded) live on the Market tab.">
           <option value="oldest">Oldest first</option>
+          <option value="newest">Newest first</option>
           <option value="ticker-asc">Ticker A→Z</option>
           <option value="ticker-desc">Ticker Z→A</option>
           <option value="transfers-desc">Most transferred</option>
-          <option value="offers-desc">Most offers</option>
-          <option value="atomic-desc" title="Most active atomic-intent OTC offers — trustless settlement available">Most atomic</option>
           <option value="active-desc">Most active</option>
-          <option value="floor-asc" title="Cheapest floor unit price first; populated once Market has been loaded this session">Cheapest floor</option>
         </select>
         <button id="btn-discover-refresh">↻ Refresh</button>
       </div>
@@ -2299,8 +2296,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button class="filter-pill" data-pill="mintable" type="button" title="Issuer can mint additional supply">Mintable</button>
         <button class="filter-pill" data-pill="attested" type="button" title="Issuer published a verifiable supply attestation">Attested</button>
         <button class="filter-pill" data-pill="recent" type="button" title="Etched in the last 24h">Recent</button>
-        <button class="filter-pill" data-pill="offers" type="button" title="Has at least one active marketplace offer">Has offers</button>
-        <button class="filter-pill" data-pill="atomic" type="button" title="Has at least one atomic-intent OTC offer — confidential transfer + BTC payment close in one Bitcoin tx, no counterparty trust required">⚡ Atomic</button>
         <button class="filter-pill" data-pill="minted" type="button" title="Has at least one chain-verified mint event">Has mints</button>
         <button class="filter-pill" data-pill="burned" type="button" title="Has at least one chain-verified burn event">Has burns</button>
         <button class="filter-pill" data-pill="moved" type="button" title="Has at least one CXFER/AXFER transfer the worker has indexed, OR one you've broadcast/imported locally. The worker's mainnet cron starts from tip and doesn't backfill historical transfers, so historical sends may not match unless your local activity log still has the entry.">Has transfers</button>
