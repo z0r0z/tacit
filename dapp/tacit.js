@@ -8294,6 +8294,30 @@ let _landerSort = (() => {
 })();
 
 // ============== TABS ==============
+// Live-poll the petch registry while the Discover tab is open so users see
+// the cap progress fill in near-real-time as other people mint — matches
+// Unisat-style "watch the bar" UX. Worker edge-caches /petch-assets at 30s
+// FRESH so polling at this rate mostly hits cache (cheap), and 30s is
+// frequent enough that hot launches feel live.
+const PETCH_POLL_INTERVAL_MS = 30 * 1000;
+let _petchPollTimer = null;
+function startPetchAutoRefresh() {
+  if (_petchPollTimer) return;
+  _petchPollTimer = setInterval(() => {
+    if (document.hidden) return;                              // tab backgrounded
+    if (!document.querySelector('.tab.active[data-tab="discover"]')) return;
+    // Skip if a mint is in flight on this device — its optimistic UI
+    // mutations would otherwise get blown away mid-broadcast.
+    const strip = document.getElementById('pmint-progress');
+    if (strip && strip.style.display !== 'none') return;
+    invalidatePetchCache();
+    renderPetchDiscover().catch(() => {});
+  }, PETCH_POLL_INTERVAL_MS);
+}
+function stopPetchAutoRefresh() {
+  if (_petchPollTimer) { clearInterval(_petchPollTimer); _petchPollTimer = null; }
+}
+
 function setupTabs() {
   $$('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -8306,10 +8330,14 @@ function setupTabs() {
       if (tab.dataset.tab === 'transfer') { refreshAssetSelect(); refreshRecipientRecents(); updateDerivedAddressHint(); refreshSatsSendBalance(); }
       if (tab.dataset.tab === 'drops') refreshDropsTab();
       if (tab.dataset.tab === 'claim') refreshClaimTab();
-      if (tab.dataset.tab === 'discover') renderDiscover();
+      if (tab.dataset.tab === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
+      else stopPetchAutoRefresh();
       if (tab.dataset.tab === 'market') renderMarket();
     };
   });
+  // If discover is already the active tab on load (deep-link or restored
+  // session), kick the polling on without waiting for a tab click.
+  if (document.querySelector('.tab.active[data-tab="discover"]')) startPetchAutoRefresh();
 }
 
 // ============== WALLET ==============
