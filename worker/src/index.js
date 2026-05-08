@@ -1099,6 +1099,88 @@ async function assetsComputeAndCache(env, network, opts) {
   return { body, status: fresh.status };
 }
 
+// ============== /market aggregate (worker-side join) ==============
+// Collapses the client's per-asset 3-way fan-out (openings + ranges + intents)
+// into a single round-trip. Without this, the Market tab issued N parallel
+// per-asset fetches at first paint — the user waited for the slowest of N×3
+// round-trips before any tile rendered. Server-side join lets one worker
+// invocation fan out within the same colo and serve the joined result from
+// edge cache for every browser request after the cron pre-warm.
+//
+// The /market response shape is a strict superset of the legacy data the
+// client built up itself: { assets, listings, meta } — listings is a flat
+// array of { kind, _asset, ...listing fields } the client can hand straight
+// to applyMarketFilters without further joining.
+const MARKET_CACHE_FRESH_MS = 60 * 1000;
+const MARKET_CACHE_STALE_MS = 5 * 60 * 1000;
+function marketCacheKey(network) {
+  const params = new URLSearchParams();
+  params.set('network', network);
+  return new Request(`https://_market-cache_/market?${params.toString()}`, { method: 'GET' });
+}
+
+// /market uses the mints=false flavour of the asset list — mints metadata is
+// dead weight on the marketplace path (counts already drive the haveAny
+// filter and the floor/breakdown tiles). Computing on this flavour keeps the
+// /market payload lean even for users on the Market tab without ever hitting
+// Discover, which still pre-warms its own mints=true cache.
+async function handleMarket(env, network, cors) {
+  const assetsResp = await handleAssetsList(env, network, {}, { limit: null, includeMints: false });
+  const assetsBody = JSON.parse(await assetsResp.text());
+  const allAssets = assetsBody.assets || [];
+  const haveAny = allAssets.filter(a =>
+    Number(a.listing_count || 0) > 0
+    || Number(a.range_listing_count || 0) > 0
+    || Number(a.atomic_intent_count || 0) > 0,
+  );
+  // Per-asset 3-way fan-out, all in this single worker invocation.
+  // Best-effort: a per-asset failure leaves an empty bucket for that kind so
+  // the rest of the response is still useful, mirroring the client's existing
+  // .catch(() => ({listings: []})) tolerance.
+  const all = await Promise.all(haveAny.map(async a => {
+    const aid = a.asset_id;
+    const [openings, ranges, intents] = await Promise.all([
+      Number(a.listing_count || 0) > 0
+        ? loadListingsForAsset(env, network, aid).catch(() => [])
+        : Promise.resolve([]),
+      Number(a.range_listing_count || 0) > 0
+        ? loadRangeListingsForAsset(env, network, aid).catch(() => [])
+        : Promise.resolve([]),
+      Number(a.atomic_intent_count || 0) > 0
+        ? loadAtomicIntentsForAsset(env, network, aid).catch(() => [])
+        : Promise.resolve([]),
+    ]);
+    // Strip expired and attach kind + _asset reference so the client can sort
+    // and filter without needing to re-join against the assets array.
+    const opens = openings.filter(l => !l.expired).map(l => ({ ...l, kind: 'opening', _asset: a }));
+    const ranges_ = ranges.filter(l => !l.expired).map(l => ({ ...l, kind: 'range', _asset: a }));
+    const intents_ = intents.filter(i => !i.expired).map(i => ({ ...i, kind: 'intent', _asset: a }));
+    return [...opens, ...ranges_, ...intents_];
+  }));
+  return jsonResponse({
+    network,
+    assets: allAssets,
+    listings: all.flat(),
+    meta: assetsBody.meta || null,
+  }, 200, cors);
+}
+
+async function marketComputeAndCache(env, network) {
+  const fresh = await handleMarket(env, network, {});
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(MARKET_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(
+      marketCacheKey(network),
+      new Response(body, { status: 200, headers: ch }),
+    );
+  }
+  return { body, status: fresh.status };
+}
+
 async function commitmentFromRevealTx(env, revealTxid, vout, network) {
   // Fallback path for attestations submitted before the cron has indexed the asset.
   // Fetch the reveal tx from mempool.space, decode the CETCH envelope at vin[0].witness[1],
@@ -1978,8 +2060,11 @@ async function handleListingPost(assetIdHex, req, env, network, cors) {
   return jsonResponse({ ok: true, listing }, 200, cors);
 }
 
-async function handleListingList(assetIdHex, env, network, cors) {
-  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+// Shared loader: list+hydrate opening listings for one asset, with the same
+// expired/claim normalisation and recency sort the public endpoint returns.
+// Extracted so the /market aggregate can fan out across many assets without
+// going through the per-asset HTTP layer.
+async function loadListingsForAsset(env, network, assetIdHex) {
   const list = await env.REGISTRY_KV.list({ prefix: listingPrefix(network, assetIdHex), limit: 1000 });
   const now = Math.floor(Date.now() / 1000);
   const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
@@ -1991,6 +2076,12 @@ async function handleListingList(assetIdHex, env, network, cors) {
     if (v.claim && v.claim.expires_at <= now) v.claim = null;
   }
   listings.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
+  return listings;
+}
+
+async function handleListingList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const listings = await loadListingsForAsset(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
 }
 
@@ -2251,8 +2342,7 @@ async function handleRangeListingPost(assetIdHex, req, env, network, cors) {
   return jsonResponse({ ok: true, listing }, 200, cors);
 }
 
-async function handleRangeListingList(assetIdHex, env, network, cors) {
-  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+async function loadRangeListingsForAsset(env, network, assetIdHex) {
   const list = await env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, assetIdHex), limit: 1000 });
   const now = Math.floor(Date.now() / 1000);
   const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
@@ -2262,6 +2352,12 @@ async function handleRangeListingList(assetIdHex, env, network, cors) {
     if (v.claim && v.claim.expires_at <= now) v.claim = null;
   }
   listings.sort((a, b) => (b.listed_at || 0) - (a.listed_at || 0));
+  return listings;
+}
+
+async function handleRangeListingList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const listings = await loadRangeListingsForAsset(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: listings.length, listings }, 200, cors);
 }
 
@@ -2548,8 +2644,7 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
 
-async function handleAtomicIntentList(assetIdHex, env, network, cors) {
-  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+async function loadAtomicIntentsForAsset(env, network, assetIdHex) {
   const list = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
   const now = Math.floor(Date.now() / 1000);
   // intent_id is the last `:`-separated segment of the KV key (see
@@ -2588,6 +2683,12 @@ async function handleAtomicIntentList(assetIdHex, env, network, cors) {
     intents.push(v);
   }
   intents.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  return intents;
+}
+
+async function handleAtomicIntentList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const intents = await loadAtomicIntentsForAsset(env, network, assetIdHex);
   return jsonResponse({ asset_id: assetIdHex, count: intents.length, intents }, 200, cors);
 }
 
@@ -3582,6 +3683,37 @@ export default {
       const result = await _computeAndCache();
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
+    if (url.pathname === '/market' && req.method === 'GET') {
+      // Same SWR pattern as /assets: HIT inside FRESH window, STALE serve +
+      // background refresh between FRESH and STALE, MISS path recomputes
+      // synchronously. Cron pre-warms /market alongside /assets so the
+      // first user after a quiet period lands on a HIT.
+      const cache = caches.default;
+      const cacheKey = marketCacheKey(network);
+      const _withCors = (body, status, kind) => {
+        const headers = new Headers();
+        headers.set('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', kind);
+        return new Response(body, { status, headers });
+      };
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        const cachedAtStr = cached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < MARKET_CACHE_FRESH_MS) {
+          return _withCors(await cached.text(), cached.status, 'HIT');
+        }
+        if (ageMs < MARKET_CACHE_STALE_MS) {
+          if (ctx && typeof ctx.waitUntil === 'function') {
+            ctx.waitUntil(marketComputeAndCache(env, network).catch(() => null));
+          }
+          return _withCors(await cached.text(), cached.status, 'STALE');
+        }
+      }
+      const result = await marketComputeAndCache(env, network);
+      return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
+    }
     if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors);
     const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
     if (m && req.method === 'GET')                             return handleAssetGet(m[1], env, network, cors);
@@ -3704,6 +3836,13 @@ export default {
       // ?limit= or ?mints=0 still pay one MISS but they're rare paths.
       await Promise.allSettled(
         NETWORKS.map(net => assetsComputeAndCache(env, net, { limit: null, includeMints: true }).catch(() => {})),
+      );
+      // Pre-warm the /market aggregate too. Internally calls handleAssetsList
+      // with mints=false (a separate cache shape from the Discover pre-warm
+      // above), so /market clients get the lean joined payload from cache
+      // without ever waiting on a synchronous KV fan-out.
+      await Promise.allSettled(
+        NETWORKS.map(net => marketComputeAndCache(env, net).catch(() => {})),
       );
     })());
   },

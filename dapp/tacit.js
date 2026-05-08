@@ -100,6 +100,10 @@ const PIN_URL      = WORKER_BASE ? WORKER_BASE + '/pin'      : '';
 const PIN_JSON_URL = WORKER_BASE ? WORKER_BASE + '/pin-json' : '';
 const FAUCET_URL   = WORKER_BASE ? WORKER_BASE + '/drip'     : '';
 const REGISTRY_URL = WORKER_BASE ? WORKER_BASE + '/assets'   : '';
+// Worker-aggregated marketplace endpoint. Returns { assets, listings: [...] }
+// pre-joined with kind + _asset reference, so the Market tab pays one
+// round-trip instead of N×3 per-asset fetches.
+const MARKET_URL   = WORKER_BASE ? WORKER_BASE + '/market'    : '';
 const HINT_URL     = WORKER_BASE ? WORKER_BASE + '/assets/hint' : '';
 const ATTEST_URL   = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/attest` : '';
 const MINT_ATTEST_URL = (assetIdHex, mintTxidHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/mints/${mintTxidHex}/attest` : '';
@@ -7760,6 +7764,10 @@ async function resolveImageUri(imageUri) {
   return p;
 }
 function getMetadataExtras(imageUri) {
+  // Hydrate the persistent cache before the synchronous read so callers that
+  // run before any resolveImageUri (e.g. holdings card skeletons) still hit
+  // warm-cache values from localStorage instead of falling back to ticker.
+  _ensureImgCacheHydrated();
   return _metadataExtraCache.get(imageUri) || null;
 }
 function setupEtchForm() {
@@ -11676,76 +11684,42 @@ async function renderHoldings() {
       return;
     }
     list.innerHTML = '';
-    // Resolve all metadata blobs + per-asset published openings in parallel —
-    // sequential awaits inside the loop turn N tokens into N back-to-back
-    // round-trips to IPFS / worker. Best-effort: errors leave the badge off,
-    // they don't break the render.
-    const [imgUrls, openingsByAsset, listingsByAsset, rangeListingsByAsset] = await Promise.all([
-      Promise.all(arr.map(h => {
-        const m = getAssetMeta(h.assetIdHex);
-        return m?.imageUri ? resolveImageUri(m.imageUri) : Promise.resolve(null);
-      })),
-      Promise.all(arr.map(h => {
-        if (!WORKER_BASE) return Promise.resolve([]);
-        return fetch(withNet(ASSET_OPENINGS_URL(h.assetIdHex)))
-          .then(r => r.ok ? r.json() : { openings: [] })
-          .then(j => Array.isArray(j.openings) ? j.openings : [])
-          .catch(() => []);
-      })),
-      Promise.all(arr.map(h => {
-        if (!WORKER_BASE) return Promise.resolve([]);
-        return fetch(withNet(LISTINGS_URL(h.assetIdHex)))
-          .then(r => r.ok ? r.json() : { listings: [] })
-          .then(j => Array.isArray(j.listings) ? j.listings : [])
-          .catch(() => []);
-      })),
-      Promise.all(arr.map(h => {
-        if (!WORKER_BASE) return Promise.resolve([]);
-        return fetch(withNet(RANGE_LISTINGS_URL(h.assetIdHex)))
-          .then(r => r.ok ? r.json() : { listings: [] })
-          .then(j => Array.isArray(j.listings) ? j.listings : [])
-          .catch(() => []);
-      })),
-    ]);
-    // DocumentFragment: build all cards then attach in one reflow rather
-    // than one reflow per card. Bigger win on wallets with many assets.
-    const frag = document.createDocumentFragment();
-    for (let i = 0; i < arr.length; i++) {
-      const h = arr[i];
-      const card = document.createElement('div');
-      card.className = 'asset-card';
-      const meta = getAssetMeta(h.assetIdHex);
-      const etchLink = meta?.etchTxid ? `${NET.explorer}/tx/${meta.etchTxid}` : '#';
-      const imgUrl = imgUrls[i];
-      const extras = meta?.imageUri ? getMetadataExtras(meta.imageUri) : null;
-      // Display name from metadata blob; falls back to ticker for assets that
-      // never set a name (older blobs, or etches without metadata at all).
-      const displayName = (extras?.name && extras.name.trim()) ? extras.name : h.ticker;
-      const avatar = imgUrl
-        ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+    const ownerPubHex = bytesToHex(wallet.pub);
+    // Render helpers — used by the initial skeleton AND by the per-asset
+    // enrichment that updates [data-region] markers in place once each card's
+    // 4 fetches resolve. Pure functions of arguments so call-sites stay
+    // declarative and the same HTML is produced however we get the data.
+    const avatarHTML = (url) => url
+      ? `<img loading="lazy" decoding="async" src="${escapeHtml(url)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+      : '';
+    const tickerSubHTML = (displayName, ticker) => displayName !== ticker
+      ? `<span class="ticker-sub">${escapeHtml(ticker)}</span>`
+      : '';
+    const descriptionHTML = (extras) => extras?.description
+      ? `<div class="muted" style="margin-top:10px;font-size:11px;font-style:italic;">${escapeHtml(extras.description)}</div>`
+      : '';
+    const externalUrlHTML = (extras) => {
+      const safe = safeExternalUrl(extras?.external_url);
+      return safe ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safe)} ↗</a></div>` : '';
+    };
+    const verifiedTagHTML = (myPublishedCount, totalUtxos) => myPublishedCount > 0
+      ? `<span class="unit" style="color:#0a8f43;">✓ ${myPublishedCount === totalUtxos ? 'verified' : `${myPublishedCount}/${totalUtxos} verified`}</span>`
+      : '';
+    const metaPublishedHTML = (myPublishedCount) => myPublishedCount > 0
+      ? ` · <span style="color:#0a8f43;">${myPublishedCount} published</span>`
+      : '';
+    const metaAssetWidePublishedHTML = (totalPublishedCount, myPublishedCount) =>
+      totalPublishedCount > myPublishedCount
+        ? ` · <span class="muted">${totalPublishedCount} openings published asset-wide</span>`
         : '';
-      // Cross-reference the published-openings list against the user's own UTXOs.
-      // "myPublishedCount" tells the user which of their balance is already public;
-      // "totalPublishedCount" is the asset-wide count for marketplace context.
-      const myUtxoKeys = new Set(h.utxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
-      const allOpenings = openingsByAsset[i] || [];
-      const myPublishedCount = allOpenings.filter(o => myUtxoKeys.has(`${o.txid}:${o.vout}`)).length;
-      const totalPublishedCount = allOpenings.length;
-      const balanceVerifiedTag = myPublishedCount > 0
-        ? `<span class="unit" style="color:#0a8f43;">✓ ${myPublishedCount === h.utxos.length ? 'verified' : `${myPublishedCount}/${h.utxos.length} verified`}</span>`
-        : '';
-      // Listings authored by this wallet, surfaced on the holdings card so the
-      // maker can see their active offers + cancel them. Both opening-based
-      // and range-disclosed variants render here.
-      const allListings = listingsByAsset[i] || [];
-      const allRangeListings = rangeListingsByAsset[i] || [];
-      const ownerPubHex = bytesToHex(wallet.pub);
+    const renderClaim = (claim) => claim
+      ? `<div style="margin-top:2px;color:#a04030;font-size:10px;">⏱ reserved by taker ${escapeHtml(shorten(claim.taker_pubkey, 6))} until ${new Date(claim.expires_at * 1000).toLocaleTimeString()} — they intend to pay; deliver via Send Privately when payment arrives</div>`
+      : '';
+    const myListingsHTML = (h, allListings, allRangeListings) => {
       const myListings = allListings.filter(l => l.owner_pubkey === ownerPubHex && !l.expired);
       const myRangeListings = allRangeListings.filter(l => l.owner_pubkey === ownerPubHex && !l.expired);
-      const renderClaim = (claim) => claim
-        ? `<div style="margin-top:2px;color:#a04030;font-size:10px;">⏱ reserved by taker ${escapeHtml(shorten(claim.taker_pubkey, 6))} until ${new Date(claim.expires_at * 1000).toLocaleTimeString()} — they intend to pay; deliver via Send Privately when payment arrives</div>`
-        : '';
-      const myListingsBlock = (myListings.length || myRangeListings.length) ? `
+      if (!myListings.length && !myRangeListings.length) return '';
+      return `
         <div style="margin-top:10px;padding:8px 10px;border:1px solid var(--ink);background:#f6f1e7;font-size:11px;">
           <strong>Your active listing${(myListings.length + myRangeListings.length)>1?'s':''}:</strong>
           ${myListings.map(l => `
@@ -11765,12 +11739,33 @@ async function renderHoldings() {
               ${renderClaim(l.claim)}
             </div>`).join('')}
         </div>
-      ` : '';
+      `;
+    };
+    // Skeleton render: paint cards immediately with everything derivable from
+    // scanHoldings + sync caches (getAssetMeta, getMetadataExtras). The four
+    // fetch-dependent regions (avatar, balance verified tag, meta published
+    // counts, my-listings block) start empty and are filled by per-asset
+    // enrichment below — no all-or-nothing wait for the slowest of 4N fetches.
+    // DocumentFragment: build all cards then attach in one reflow rather
+    // than one reflow per card. Bigger win on wallets with many assets.
+    const frag = document.createDocumentFragment();
+    const cardNodes = [];
+    for (const h of arr) {
+      const card = document.createElement('div');
+      card.className = 'asset-card';
+      const meta = getAssetMeta(h.assetIdHex);
+      const etchLink = meta?.etchTxid ? `${NET.explorer}/tx/${meta.etchTxid}` : '#';
+      // getMetadataExtras hydrates the persistent _metadataExtraCache on first
+      // call, so warm-cache loads paint with the canonical name immediately.
+      // Cold-cache: extras=null → falls back to ticker, then enrichment swaps
+      // in the canonical name/description once resolveImageUri completes.
+      const extras = meta?.imageUri ? getMetadataExtras(meta.imageUri) : null;
+      const displayName = (extras?.name && extras.name.trim()) ? extras.name : h.ticker;
       // Per-asset action grouping. Primary actions (Send / Receive) sit on top
       // for the everyday holder. Disclosure (reveal supply / mints, publish
       // balance, prove ≥ X) and Marketplace (List for sale) live behind their
-      // own collapsible sections so the card stays scannable. Burn — irreversible
-      // — gets its own Danger zone.
+      // own collapsible sections so the card stays scannable. Burn —
+      // irreversible — gets its own Danger zone.
       const isMintAuthority = meta?.mintable && meta?.mintAuthorityHex === bytesToHex(wallet.xonly());
       const canMarket = WORKER_BASE && h.utxos.length && !h.unknownAsset;
       const primaryButtons = [
@@ -11792,28 +11787,30 @@ async function renderHoldings() {
         : '';
       const dangerButtons = h.balance > 0n && !h.unknownAsset ? `<button class="danger" data-act="burn" data-aid="${h.assetIdHex}">Burn</button>` : '';
 
+      // [data-region] markers wrap the data-fetch-dependent regions so the
+      // enrichment phase can update them in place without re-rendering the
+      // whole card (which would lose any open inline-form / receive panel).
+      // The avatar wrapper uses display:contents so an empty span doesn't
+      // contribute a flex item / gap before the image lands.
       card.innerHTML = `
         <div class="head" style="display:flex;align-items:center;gap:12px;">
-          ${avatar}
+          <span data-region="avatar" style="display:contents;">${avatarHTML(null)}</span>
           <div style="flex:1;min-width:0;">
-            <div class="ticker">${escapeHtml(displayName)}${displayName !== h.ticker ? `<span class="ticker-sub">${escapeHtml(h.ticker)}</span>` : ''}<span class="id-tag" data-act="copy-aid" data-aid="${h.assetIdHex}" title="Copy asset ID">${escapeHtml(shorten(h.assetIdHex, 4))}</span></div>
-            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span>${balanceVerifiedTag}</div>
+            <div class="ticker"><span data-region="display-name">${escapeHtml(displayName)}</span><span data-region="ticker-sub">${tickerSubHTML(displayName, h.ticker)}</span><span class="id-tag" data-act="copy-aid" data-aid="${h.assetIdHex}" title="Copy asset ID">${escapeHtml(shorten(h.assetIdHex, 4))}</span></div>
+            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span><span data-region="verified-tag"></span></div>
           </div>
         </div>
         <div class="meta">
           <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(h.assetIdHex)}</div>
           <div><span class="lbl">Decimals</span> ${h.decimals}</div>
-          <div><span class="lbl">UTXOs</span> ${h.utxos.length} known${h.ghosts.length ? ` · <span style="color:var(--red);">${h.ghosts.length} ghost</span>` : ''}${myPublishedCount > 0 ? ` · <span style="color:#0a8f43;">${myPublishedCount} published</span>` : ''}</div>
-          <div><span class="lbl">Etch tx</span> ${meta?.etchTxid ? `<a href="${escapeHtml(etchLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(meta.etchTxid, 8))} ↗</a>` : '—'}${totalPublishedCount > myPublishedCount ? ` · <span class="muted">${totalPublishedCount} openings published asset-wide</span>` : ''}</div>
+          <div><span class="lbl">UTXOs</span> ${h.utxos.length} known${h.ghosts.length ? ` · <span style="color:var(--red);">${h.ghosts.length} ghost</span>` : ''}<span data-region="meta-published"></span></div>
+          <div><span class="lbl">Etch tx</span> ${meta?.etchTxid ? `<a href="${escapeHtml(etchLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(meta.etchTxid, 8))} ↗</a>` : '—'}<span data-region="meta-asset-wide-published"></span></div>
         </div>
-        ${extras?.description ? `<div class="muted" style="margin-top:10px;font-size:11px;font-style:italic;">${escapeHtml(extras.description)}</div>` : ''}
-        ${(() => {
-          const safe = safeExternalUrl(extras?.external_url);
-          return safe ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safe)} ↗</a></div>` : '';
-        })()}
+        <div data-region="description">${descriptionHTML(extras)}</div>
+        <div data-region="external-url">${externalUrlHTML(extras)}</div>
         ${h.ghosts.length ? `<div class="warn" style="margin-top:10px;font-size:11px;">⚠ ${h.ghosts.length} UTXO${h.ghosts.length>1?'s':''} hold commitments this wallet can't open. Try ↻ Rescan, or import a share-link for legacy/incompatible sends.</div>` : ''}
         ${h.inflated && h.inflated.length ? `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee;border-left-color:var(--red);"><strong>⚠ Inflation attempt detected:</strong> ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} have invalid rangeproofs. These are not counted in your balance.</div>` : ''}
-        ${myListingsBlock}
+        <div data-region="my-listings"></div>
         ${primaryButtons ? `<div class="actions">${primaryButtons}</div>` : ''}
         <div data-receive-panel="${h.assetIdHex}" style="display:none;margin-top:10px;padding:10px 12px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;">
           <strong>Your tacit pubkey</strong>
@@ -11851,6 +11848,7 @@ async function renderHoldings() {
           </details>` : ''}
       `;
       frag.appendChild(card);
+      cardNodes.push(card);
     }
     list.appendChild(frag);
     // Asset-id short / full toggle.
@@ -11862,7 +11860,11 @@ async function renderHoldings() {
         catch { /* clipboard blocked; let the user expand and select instead */ }
       };
     });
-    list.querySelectorAll('button[data-act]').forEach(b => {
+    // Per-button handler factory. Extracted from the previous inline forEach
+    // so the per-asset enrichment can re-run it on cancel-* buttons that the
+    // my-listings region adds after its data fetch resolves. Idempotent —
+    // overwrites onclick on already-wired buttons.
+    const wireBtn = (b) => {
       b.onclick = async () => {
         if (b.dataset.act === 'send') {
           $('#x-asset').value = b.dataset.aid;
@@ -12848,7 +12850,71 @@ async function renderHoldings() {
           };
         }
       };
-    });
+    };
+    list.querySelectorAll('button[data-act]').forEach(wireBtn);
+    // Per-asset progressive enrichment. Three independent pipelines per card:
+    //   • image  → resolves the canonical image_uri, then refreshes any extras-
+    //     dependent regions (avatar + display-name + ticker-sub + description
+    //     + external-url). Cold cache only; warm cache already had extras
+    //     during skeleton render via the persistent _metadataExtraCache.
+    //   • openings → /assets/:aid/openings → balance verified tag + meta
+    //     published counters.
+    //   • listings + range listings (paired) → my-listings block. Re-wires
+    //     any cancel-* buttons we just added via wireBtn.
+    // Each fires independently across assets, so one slow worker fetch on
+    // asset N+1 doesn't gate asset N's render. Errors are swallowed: a
+    // missing region stays on the skeleton's empty placeholder.
+    for (let i = 0; i < arr.length; i++) {
+      const h = arr[i];
+      const card = cardNodes[i];
+      const meta = getAssetMeta(h.assetIdHex);
+      const myUtxoKeys = new Set(h.utxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
+      // Image + extras-dependent regions
+      if (meta?.imageUri) {
+        resolveImageUri(meta.imageUri).then(imgUrl => {
+          card.querySelector('[data-region="avatar"]').innerHTML = avatarHTML(imgUrl);
+          // Re-read extras: resolveImageUri populates _metadataExtraCache as
+          // a side effect, so any blob with name/description/external_url is
+          // now visible to the synchronous getMetadataExtras call.
+          const extras2 = getMetadataExtras(meta.imageUri);
+          const displayName2 = (extras2?.name && extras2.name.trim()) ? extras2.name : h.ticker;
+          card.querySelector('[data-region="display-name"]').textContent = displayName2;
+          card.querySelector('[data-region="ticker-sub"]').innerHTML = tickerSubHTML(displayName2, h.ticker);
+          card.querySelector('[data-region="description"]').innerHTML = descriptionHTML(extras2);
+          card.querySelector('[data-region="external-url"]').innerHTML = externalUrlHTML(extras2);
+        }).catch(() => {});
+      }
+      // Openings (per-UTXO public attestations) — drives the verified badge
+      // and the per-asset count meta lines.
+      if (WORKER_BASE) {
+        fetch(withNet(ASSET_OPENINGS_URL(h.assetIdHex)))
+          .then(r => r.ok ? r.json() : { openings: [] })
+          .then(j => {
+            const openings = Array.isArray(j.openings) ? j.openings : [];
+            const myPublishedCount = openings.filter(o => myUtxoKeys.has(`${o.txid}:${o.vout}`)).length;
+            const totalPublishedCount = openings.length;
+            card.querySelector('[data-region="verified-tag"]').innerHTML = verifiedTagHTML(myPublishedCount, h.utxos.length);
+            card.querySelector('[data-region="meta-published"]').innerHTML = metaPublishedHTML(myPublishedCount);
+            card.querySelector('[data-region="meta-asset-wide-published"]').innerHTML = metaAssetWidePublishedHTML(totalPublishedCount, myPublishedCount);
+          })
+          .catch(() => {});
+      }
+      // Listings + range listings → my-listings block. Paired in one
+      // Promise.all so a half-loaded block (only openings, no ranges, or
+      // vice versa) doesn't paint and then rewrite itself when the second
+      // arm lands.
+      if (WORKER_BASE) {
+        Promise.all([
+          fetch(withNet(LISTINGS_URL(h.assetIdHex))).then(r => r.ok ? r.json() : { listings: [] }).then(j => Array.isArray(j.listings) ? j.listings : []).catch(() => []),
+          fetch(withNet(RANGE_LISTINGS_URL(h.assetIdHex))).then(r => r.ok ? r.json() : { listings: [] }).then(j => Array.isArray(j.listings) ? j.listings : []).catch(() => []),
+        ]).then(([listings, rangeListings]) => {
+          const region = card.querySelector('[data-region="my-listings"]');
+          region.innerHTML = myListingsHTML(h, listings, rangeListings);
+          // Wire the freshly-added cancel-* buttons. Idempotent.
+          region.querySelectorAll('button[data-act]').forEach(wireBtn);
+        }).catch(() => {});
+      }
+    }
     $('#holdings-status').textContent = `${arr.length} asset${arr.length > 1 ? 's' : ''}`;
   } catch (e) {
     list.innerHTML = `<div class="error">Scan failed: ${escapeHtml(e.message)}</div>`;
@@ -13182,61 +13248,93 @@ async function renderRecentEtches() {
     // worker could spoof "USDT" thumbnails on the wallet tab. Reuses the
     // verifyDiscoverAsset cache so users pay the verification cost once
     // across the wallet teaser and the Discover tab.
-    const verifications = await Promise.all(assets.map(a =>
-      verifyDiscoverAsset(a).catch(e => ({ ok: false, error: (e && e.message) || String(e) }))
-    ));
-    // Image fetches use the canonical image_uri from the verified envelope so
-    // a bad worker can't redirect tile thumbnails through a tracking IPFS CID.
-    const imgUrls = await Promise.all(assets.map((a, i) => {
-      const uri = verifications[i].ok ? verifications[i].imageUri : a.image_uri;
-      return uri ? resolveImageUri(uri) : Promise.resolve(null);
-    }));
-    const grid = document.createElement('div');
-    grid.className = 'recent-grid';
-    for (let i = 0; i < assets.length; i++) {
-      const a = assets[i];
-      const v = verifications[i];
+    //
+    // Progressive paint: tiles render immediately with worker-supplied text
+    // and a "verifying…" badge, then update in-place as each verify + image
+    // resolves. Avoids the all-or-nothing wait where the slowest of 6 ancestry
+    // walks (cold-cache CETCH validation) gates the entire grid. Same security
+    // model as Discover: worker strings are visibly marked unverified until
+    // chain-verify swaps in canonical values.
+    //
+    // Re-paints reuse the same `<a class="recent-tile">` node, so the click
+    // handler bound at construction time stays attached across updates.
+    const paintTile = (tile, a, v, imgUrl) => {
       const safeAssetId = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
       const ageMin = Math.max(0, Math.floor((Date.now()/1000 - (a.etched_at || 0)) / 60));
       const ageStr = ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.floor(ageMin/60)}h ago` : `${Math.floor(ageMin/1440)}d ago`;
-      // Display canonical ticker if verified; fall back to worker string only
-      // when on-chain validation couldn't run (the ✗ badge signals it).
-      const ticker = v.ok ? v.ticker : (typeof a.ticker === 'string' ? a.ticker : '?');
+      // Pre-verify (v=null): show worker ticker on a "verifying…" placeholder
+      // so the tile isn't blank. After verify lands we swap in canonical text.
+      const ticker = v && v.ok ? v.ticker : (typeof a.ticker === 'string' ? a.ticker : '?');
       // Read metadata-blob extras (name/description) from the *canonical*
       // image_uri when on-chain verification ran — the worker can otherwise
       // present a different image_uri whose blob spoofs name/description.
-      const _recentImg = v.ok ? v.imageUri : a.image_uri;
+      // Pre-verify we leave displayName === ticker (no extras lookup).
+      const _recentImg = v && v.ok ? v.imageUri : (v ? a.image_uri : null);
       const _recentExtras = _recentImg ? getMetadataExtras(_recentImg) : null;
       const displayName = (_recentExtras?.name && _recentExtras.name.trim()) ? _recentExtras.name : ticker;
-      const verifyMark = v.ok
-        ? (v.mismatches && v.mismatches.length ? ' · ⚠' : ' · ✓')
-        : ' · ✗';
+      const verifyMark = !v
+        ? ' · verifying…'
+        : v.ok
+          ? (v.mismatches && v.mismatches.length ? ' · ⚠' : ' · ✓')
+          : ' · ✗';
       const pending = a.pending ? ' · pending' : '';
       // Ticker-collision marker. Computed across the FULL asset list above
       // (not just these 6) so a `duplicate` flag here is meaningful even
       // when the earlier-etched sibling isn't in the recent slice.
       const dupMark = a._tickerCollision === 'duplicate' ? ' · ⚠ DUP' : '';
+      tile.title = !v
+        ? `${safeAssetId} · verifying…`
+        : v.ok
+          ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
+          : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`;
+      tile.innerHTML = `
+        ${imgUrl ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="">` : ''}
+        <div class="recent-tile-body">
+          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
+          <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}${dupMark}</div>
+        </div>`;
+    };
+    // Build placeholder tiles synchronously and attach to the DOM in a single
+    // reflow before kicking off any verify/image work.
+    const grid = document.createElement('div');
+    grid.className = 'recent-grid';
+    const tileNodes = assets.map(a => {
+      const safeAssetId = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
       const tile = document.createElement('a');
       tile.className = 'recent-tile';
       tile.href = '#';
-      tile.title = v.ok
-        ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
-        : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`;
       tile.onclick = (e) => {
         e.preventDefault();
         pendingDiscoverFocus = safeAssetId;
         $('.tab[data-tab="discover"]').click();
       };
-      tile.innerHTML = `
-        ${imgUrls[i] ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrls[i])}" alt="">` : ''}
-        <div class="recent-tile-body">
-          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
-          <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}${dupMark}</div>
-        </div>`;
+      paintTile(tile, a, null, null);
       grid.appendChild(tile);
-    }
+      return tile;
+    });
     list.innerHTML = '';
     list.appendChild(grid);
+    // Image fetches use the canonical image_uri from the verified envelope so
+    // a bad worker can't redirect tile thumbnails through a tracking IPFS CID.
+    // Per-tile pipeline: verify → repaint with badge → resolve image → repaint
+    // with thumbnail. Independent across tiles; one slow ancestry walk doesn't
+    // delay the others. Errors swallowed to keep one tile's failure from
+    // breaking the grid (placeholder remains visible).
+    for (let i = 0; i < assets.length; i++) {
+      const a = assets[i];
+      const tile = tileNodes[i];
+      verifyDiscoverAsset(a)
+        .catch(e => ({ ok: false, error: (e && e.message) || String(e) }))
+        .then(v => {
+          paintTile(tile, a, v, null);
+          const uri = v.ok ? v.imageUri : a.image_uri;
+          if (!uri) return;
+          return resolveImageUri(uri)
+            .then(url => { if (url) paintTile(tile, a, v, url); })
+            .catch(() => {});
+        })
+        .catch(() => {});
+    }
   } catch (e) {
     list.innerHTML = `<div class="muted" style="padding:14px;text-align:center;">discovery unavailable</div>`;
     console.error(e);
@@ -14876,37 +14974,21 @@ function goToMarketBrowse() { _marketView = 'browse'; renderMarket(); }
 function goToMarketAsset(assetIdHex) { _marketView = { mode: 'asset', assetId: assetIdHex }; renderMarket(); }
 
 async function fetchMarketData() {
-  if (!REGISTRY_URL) return { assets: [], listings: [] };
-  const r = await fetch(withNet(REGISTRY_URL, 'mints=0'));
+  if (!MARKET_URL) return { assets: [], listings: [] };
+  // Worker-aggregated marketplace endpoint: one round-trip, server pre-joined
+  // with kind + _asset reference per listing. Replaces the previous N×3
+  // per-asset fan-out — the slowest of N×3 round-trips no longer gates
+  // first paint of the Market tab.
+  const r = await fetch(withNet(MARKET_URL));
+  if (!r.ok) throw new Error(`market HTTP ${r.status}`);
   const j = await r.json();
-  const assets = j.assets || [];
+  const assets = Array.isArray(j.assets) ? j.assets : [];
   // Mark ticker-collision precedence over the FULL asset set (not just the
-  // ones with active listings) — otherwise an attacker could side-step the
-  // warning by listing a duplicate-ticker asset before the original lists.
+  // ones with listings). Without this an attacker could side-step the
+  // duplicate-ticker warning by listing a copycat asset before the original.
   markTickerCollisions(assets);
-  const haveAny = assets.filter(a =>
-    Number(a.listing_count || 0) > 0
-    || Number(a.range_listing_count || 0) > 0
-    || Number(a.atomic_intent_count || 0) > 0,
-  );
-  const all = await Promise.all(haveAny.map(async a => {
-    const [openings, ranges, intents] = await Promise.all([
-      Number(a.listing_count || 0) > 0
-        ? fetch(withNet(LISTINGS_URL(a.asset_id))).then(r => r.ok ? r.json() : { listings: [] }).catch(() => ({ listings: [] }))
-        : Promise.resolve({ listings: [] }),
-      Number(a.range_listing_count || 0) > 0
-        ? fetch(withNet(RANGE_LISTINGS_URL(a.asset_id))).then(r => r.ok ? r.json() : { listings: [] }).catch(() => ({ listings: [] }))
-        : Promise.resolve({ listings: [] }),
-      Number(a.atomic_intent_count || 0) > 0
-        ? fetch(withNet(ATOMIC_INTENTS_URL(a.asset_id))).then(r => r.ok ? r.json() : { intents: [] }).catch(() => ({ intents: [] }))
-        : Promise.resolve({ intents: [] }),
-    ]);
-    const opens = (openings.listings || []).filter(l => !l.expired).map(l => ({ ...l, kind: 'opening', _asset: a }));
-    const ranges_ = (ranges.listings || []).filter(l => !l.expired).map(l => ({ ...l, kind: 'range', _asset: a }));
-    const intents_ = (intents.intents || []).filter(i => !i.expired).map(i => ({ ...i, kind: 'intent', _asset: a }));
-    return [...opens, ...ranges_, ...intents_];
-  }));
-  return { assets, listings: all.flat() };
+  const listings = Array.isArray(j.listings) ? j.listings : [];
+  return { assets, listings };
 }
 
 // Background liveness prune: dispatched right after applyMarketFilters
@@ -16980,9 +17062,16 @@ async function init() {
   // immediately + every CHAIN_DIVERGE_INTERVAL_MS thereafter. Surfaces a
   // banner if the primary and secondary endpoints disagree on tip height.
   startChainDivergenceWatchdog();
+  // Lander grid (recent etches) is independent of wallet keys — kick it off
+  // BEFORE awaiting refreshWallet so the registry + per-asset verify fetches
+  // run concurrently with the wallet's mempool round-trips instead of strictly
+  // after them. On cold caches this is the difference between the lander
+  // appearing in step with the wallet card vs. several seconds later.
+  // Fire-and-forget: renderRecentEtches has its own try/catch and writes to a
+  // disjoint DOM region, so no rejection bubbles into init.
+  renderRecentEtches();
   await refreshWallet();
   renderExtWalletPanel();
-  renderRecentEtches();
   // Surface any one-time net-flip explainer queued by the network selector.
   // Runs after refreshWallet so the toast text references the current
   // network's address that's already visible in the wallet card.
