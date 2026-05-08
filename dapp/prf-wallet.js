@@ -32,7 +32,10 @@ function fromB64(s) {
 // mapping deterministic without ever returning out-of-range scalars — same
 // passkey will always reproduce the same priv. Without this guard a user
 // drawing the pathological output is wedged forever (PRF input is constant).
-function prfBytesToScalar(raw32) {
+//
+// Exported so tests/prf-wallet.test.mjs can pin the boundary branches
+// (0, N-1, N, N+1) — the load-bearing cases for the deterministic guard.
+export function prfBytesToScalar(raw32) {
   let n = 0n;
   for (const b of raw32) n = (n << 8n) | BigInt(b);
   if (n === 0n || n >= SECP_N) {
