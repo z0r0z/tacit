@@ -159,7 +159,7 @@ function corsHeaders(env, reqOrigin) {
   const allow = list.includes('*') ? '*' : (list.includes(reqOrigin) ? reqOrigin : list[0]);
   return {
     'Access-Control-Allow-Origin': allow,
-    'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Vary': 'Origin',
   };

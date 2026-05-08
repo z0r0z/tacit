@@ -7318,6 +7318,12 @@ function renderWalletCard(patch = {}) {
   // which we still call separately; here we just toggle the wrapper visibility.
   const extInfoEl = $('#ext-wallet-connected-info');
   if (extInfoEl) extInfoEl.style.display = hasExt ? '' : 'none';
+
+  // Saved passkeys list. renderPasskeyPanel hides #passkey-wallet-info when
+  // the PRF map is empty, so this is a no-op for password/ext users. Calling
+  // it here means a network flip refreshes the per-row tb1…/bc1… preview
+  // (the address is computed at render time from the persisted pubkey).
+  renderPasskeyPanel();
 }
 
 async function refreshWallet() {
@@ -12059,6 +12065,7 @@ async function renderHoldings() {
             : (confirm(`Cancel this listing? The signed offer will be removed from the marketplace immediately.`) ? false : null);
           if (includeSelfSpend === null) return;
           b.disabled = true; b.textContent = 'cancelling…';
+          let cxferBroadcast = false;
           try {
             if (includeSelfSpend && _u) {
               if (!ensureBurnerBackedUp('Cancel listing (signs a self-CXFER spending the listed UTXO)')) {
@@ -12077,6 +12084,7 @@ async function renderHoldings() {
                 amount: _u.amount,
                 forceUtxos: [_u],
               });
+              cxferBroadcast = true;
             }
             await cancelListing({ assetIdHex: aid, txidHex, vout });
             toast(includeSelfSpend
@@ -12084,8 +12092,17 @@ async function renderHoldings() {
               : 'Listing cancelled ✓', 'success');
             renderHoldings();
           } catch (e) {
-            toast('Cancel failed: ' + e.message, 'error');
-            b.disabled = false; b.textContent = 'Cancel';
+            if (cxferBroadcast) {
+              // Self-CXFER already broadcast — listed UTXO is spent, so the
+              // listing is permanently invalid. Worker DELETE failed (transient
+              // network/worker error); the worker's reaper cron will prune the
+              // stale entry once it sees the spend on chain.
+              toast('UTXO self-spent ✓ — marketplace cleanup pending (will auto-prune): ' + e.message, 'error');
+              renderHoldings();
+            } else {
+              toast('Cancel failed: ' + e.message, 'error');
+              b.disabled = false; b.textContent = 'Cancel';
+            }
           }
         } else if (b.dataset.act === 'list-range') {
           // Range-disclosed listing: aggregates all UTXOs of the asset behind a
@@ -14498,7 +14515,21 @@ function _marketLiveCountsByAsset() {
 // etched assets. Filters: ticker / asset_id, kind, price min/max. Sort: newest
 // first or by price. Cache the fetched batch so filter changes don't re-hit
 // the worker on every keystroke.
+//
+// Two display modes:
+//   • browse: one tile per asset (image, ticker, listing count, floor) — the
+//     default landing. Matches the Runes/BRC-20 marketplace pattern: pick the
+//     token first, then drill into its offers.
+//   • asset: the per-listing grid for one selected asset, fronted by a header
+//     strip with a "← All assets" affordance back to browse.
+//
+// _marketView is intentionally NOT persisted — every fresh tab visit lands on
+// browse so the user always sees the index page first. Discover deep-links
+// (pendingMarketFilter) jump straight into asset mode for the targeted asset.
 let _marketCache = null;
+let _marketView = 'browse';
+function goToMarketBrowse() { _marketView = 'browse'; renderMarket(); }
+function goToMarketAsset(assetIdHex) { _marketView = { mode: 'asset', assetId: assetIdHex }; renderMarket(); }
 
 async function fetchMarketData() {
   if (!REGISTRY_URL) return { assets: [], listings: [] };
@@ -14559,6 +14590,12 @@ function startMarketLivenessPrune() {
       if (_marketCache) {
         _marketCache.listings = _marketCache.listings.filter(x => x !== l);
       }
+      // In browse mode the aggregate counts/floor would silently drift; just
+      // re-apply filters (no fetch) to redraw the affected asset tile.
+      if (_marketView === 'browse') {
+        applyMarketFilters();
+        return;
+      }
       const key = l.kind === 'opening' ? `opening:${l.txid}:${l.vout | 0}` : `intent:${l.intent_id}`;
       const tile = grid.querySelector(`[data-listing-key="${CSS.escape(key)}"]`);
       if (!tile) return;
@@ -14587,12 +14624,12 @@ async function renderMarket() {
     return;
   }
   // Cross-tab deep-link: a Discover card's "view offers" badge sets
-  // pendingMarketFilter to an asset_id. Drop it into the search box before
-  // the first applyMarketFilters so the user lands directly on a filtered
-  // view rather than seeing the full list flash and then narrow.
+  // pendingMarketFilter to a full asset_id. Drop straight into asset mode for
+  // that asset rather than the browse index — the user already picked.
   if (pendingMarketFilter) {
-    const inputEl = $('#market-filter-asset');
-    if (inputEl) inputEl.value = pendingMarketFilter;
+    if (/^[0-9a-f]{64}$/.test(pendingMarketFilter)) {
+      _marketView = { mode: 'asset', assetId: pendingMarketFilter };
+    }
     pendingMarketFilter = null;
   }
   // Fast path: if the cache is fresh, skip the worker round-trip entirely
@@ -14640,6 +14677,19 @@ function applyMarketFilters() {
   if (filterKind !== 'all') rows = rows.filter(l => l.kind === filterKind);
   if (Number.isInteger(minPrice)) rows = rows.filter(l => Number(l.price_sats || 0) >= minPrice);
   if (Number.isInteger(maxPrice)) rows = rows.filter(l => Number(l.price_sats || 0) <= maxPrice);
+
+  // Mode dispatch. Browse renders one tile per asset (the index page); asset
+  // mode falls through to the existing per-listing grid below, scoped to the
+  // selected asset_id. The text-search input is hidden in asset mode (see
+  // updateMarketControlsVisibility) — back-out is via the "← All assets" link
+  // in the asset-detail header.
+  updateMarketControlsVisibility();
+  if (_marketView === 'browse') {
+    renderMarketBrowse(rows);
+    return;
+  }
+  rows = rows.filter(l => (l._asset?.asset_id || '') === _marketView.assetId);
+
   // Sort priority: trustless atomic intents always surface above
   // trust-required listings (within each price/recency tier). The user can
   // still see opening/range offers, but the recommended path is on top.
@@ -14685,29 +14735,30 @@ function applyMarketFilters() {
       || (b.listed_at || 0) - (a.listed_at || 0));
   }
   if (status) status.textContent = `${rows.length} live · ${_marketCache.listings.length} total`;
+  // Asset-detail header strip — image, ticker, asset_id, network, floor,
+  // count breakdown, "← All assets". Always rendered in asset mode regardless
+  // of whether listings remain (so the back affordance stays reachable even
+  // on an empty result).
+  const assetHeaderHtml = renderMarketAssetHeader(_marketView.assetId, rows);
   if (!rows.length) {
-    list.innerHTML = '<div class="empty">No listings match.</div>';
+    list.innerHTML = assetHeaderHtml + '<div class="empty">No listings match.</div>';
+    bindMarketAssetHeader(list);
     return;
   }
-  // Trust-mode breakdown banner. Atomic intents are the trustless path
-  // (single-tx settlement); opening + range listings settle off-chain and
-  // require counterparty trust. Surfacing the split pre-clicks lets a user
-  // gauge whether the current filter set has any trustless options before
-  // scrolling — and nudges them toward the kind=intent filter when none do.
+  // Asset-detail header above already shows the per-kind breakdown
+  // (⚡ atomic · opening · range) and floor — no separate banner needed here.
+  // The "no atomic offers under current filters" nudge is preserved in
+  // compact form for the all-trust-required case where it actually adds info.
   const atomicCount = rows.reduce((s, l) => s + (l.kind === 'intent' ? 1 : 0), 0);
   const trustCount = rows.length - atomicCount;
-  const trustlessLabel = atomicCount > 0
-    ? `<span style="color:#7d4ff7;"><strong>⚡ ${atomicCount} trustless</strong></span>`
-    : `<span class="muted">⚡ 0 trustless</span>`;
-  const trustLabel = trustCount > 0
-    ? `<span class="muted">${trustCount} trust-required (opening + range)</span>`
-    : `<span class="muted">0 trust-required</span>`;
+  const noAtomicHint = atomicCount === 0 && trustCount > 0
+    ? `<div style="margin-bottom:10px;font-size:11px;font-style:italic;" class="muted">no atomic offers under current filters — try kind=⚡ atomic</div>`
+    : '';
   list.innerHTML =
-    `<div style="margin-bottom:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
-       ${trustlessLabel} <span class="muted">·</span> ${trustLabel}
-       ${atomicCount === 0 && trustCount > 0 ? `<span class="muted" style="margin-left:auto;font-style:italic;">no atomic offers under current filters — try kind=⚡ atomic</span>` : ''}
-     </div>
-     <div id="market-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;"></div>`;
+    assetHeaderHtml +
+    noAtomicHint +
+    `<div id="market-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;"></div>`;
+  bindMarketAssetHeader(list);
   const grid = $('#market-grid');
   const myPubHex = bytesToHex(wallet.pub);
   // Build all tiles into a DocumentFragment first; one reflow at the end
@@ -14766,14 +14817,6 @@ function applyMarketFilters() {
       actions = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${Number(l.price_sats || 0)}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Off-chain OTC buy: pay the maker's BTC address the listed sats, then they broadcast a CXFER to your pubkey. Counterparty trust required — the maker can take the sats without delivering. Prefer ⚡ atomic intents when available." style="flex:1;font-size:11px;">Take</button>` +
                 `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing without buying it: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Safe to call as many times as you want." style="font-size:11px;">Verify</button>`;
     }
-    // Ticker-collision warning. First-etched is shown as `original` (soft);
-    // later etches under the same ticker get a stronger `duplicate` badge to
-    // push the taker to read the asset_id rather than trust the string.
-    const collisionTileBadge = a._tickerCollision === 'duplicate'
-      ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before buying.">⚠ DUP</span>`
-      : a._tickerCollision === 'original'
-        ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">earliest</span>`
-        : '';
     // Unit price: sats per whole token, accounting for decimals. For range
     // listings the threshold is a *minimum* delivery amount, so this number
     // is the worst-case (most-expensive-per-token) price — labeled "≤" since
@@ -14786,22 +14829,16 @@ function applyMarketFilters() {
     const recencyLine = listedRel
       ? `listed ${escapeHtml(listedRel)} ago · expires ${expIso}`
       : `expires ${expIso}`;
-    // Network indicator — kept as plain micro-text (no border/background) so
-    // it doesn't compete with the kind/collision badges or the action row.
-    // Mainnet keeps a warm-amber tint as a subtle "real value" hint; signet
-    // sits in the standard muted color.
-    const tileNet = (a && (a.network === 'mainnet' || a.network === 'signet')) ? a.network : NET.name;
-    const tileNetBadge = `<span style="margin-left:6px;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:${tileNet === 'mainnet' ? '#a04030' : 'var(--ink-mid)'};" title="${tileNet === 'mainnet' ? 'Bitcoin mainnet asset — has real value.' : 'Signet (Bitcoin testnet) asset — no real value, suitable for testing only.'}">${tileNet}</span>`;
+    // Ticker, asset_id, network, and ticker-collision state are already shown
+    // in the asset-detail header above; we don't repeat them on each tile.
     tile.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
-        <div><strong>${escapeHtml(a.ticker || '?')}</strong>${kindBadge}${collisionTileBadge}${tileNetBadge}</div>
+        <div>${kindBadge || '<span class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">opening</span>'}</div>
         <div style="font-size:11px;" class="muted">${recencyLine}</div>
       </div>
-      <div style="margin-top:2px;font-size:10px;color:var(--ink-mid);"><span>id </span><span class="mono-box inline" style="font-size:10px;cursor:pointer;" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 8))}</span></div>
       <div style="margin-top:6px;font-size:18px;">${l.kind === 'range' ? '<span title="Range-disclosed listing — maker proved their balance ≥ this amount via a bulletproof, without revealing the exact balance." style="cursor:help;">≥</span> ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
       <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${Number(l.price_sats || 0).toLocaleString()} sats</strong>${unitStr ? `<span class="muted" style="font-size:11px;margin-left:6px;">· ${unitStr}</span>` : ''}</div>
       <div style="margin-top:8px;font-size:10px;" class="muted">maker: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || '', 6))}</span></div>
-      ${a._tickerCollision === 'duplicate' ? `<div style="margin-top:6px;font-size:10px;color:var(--red);">⚠ ticker shared with an earlier asset — verify asset_id before trading</div>` : ''}
       <div style="margin-top:10px;display:flex;gap:6px;">${actions}</div>`;
     frag.appendChild(tile);
   }
@@ -14830,6 +14867,209 @@ function applyMarketFilters() {
   grid.querySelectorAll('button[data-act="market-cancel-intent"]').forEach(btn => {
     btn.onclick = async () => marketCancelIntentHandler(btn);
   });
+}
+
+// Browse-mode render: one tile per asset, sourced from the same filtered rows
+// applyMarketFilters computed (so kind/price filters narrow the visible set
+// the same way they would in asset mode). Aggregates per-asset count + floor
+// + kind breakdown. Click handler flips _marketView to asset mode.
+//
+// Sort: total listing count desc, then floor unit-price asc (cheapest first
+// within ties), then ticker. No user-facing sort dropdown — the per-listing
+// sort applies inside asset mode.
+function renderMarketBrowse(rows) {
+  const list = $('#market-list');
+  const status = $('#market-status');
+  if (status) status.textContent = `${rows.length} live · ${_marketCache.listings.length} total`;
+  if (!rows.length) {
+    list.innerHTML = '<div class="empty">No listings match.</div>';
+    return;
+  }
+  // Group by asset_id. Each group carries the asset metadata (taken from the
+  // first row's _asset reference, all rows for the same asset share it),
+  // per-kind counts, lowest unit price, and lowest total sats.
+  const groups = new Map();
+  for (const l of rows) {
+    const a = l._asset;
+    const aid = a?.asset_id;
+    if (!aid) continue;
+    let g = groups.get(aid);
+    if (!g) {
+      g = { asset: a, openings: 0, ranges: 0, intents: 0, total: 0,
+            floorUnit: null, floorSats: null };
+      groups.set(aid, g);
+    }
+    if (l.kind === 'opening')      g.openings++;
+    else if (l.kind === 'range')   g.ranges++;
+    else if (l.kind === 'intent')  g.intents++;
+    g.total = g.openings + g.ranges + g.intents;
+    const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    const amt = l.kind === 'range' ? l.threshold : l.amount;
+    const u = unitPriceSats(Number(l.price_sats || 0), BigInt(amt || 0), dec);
+    if (u != null && (g.floorUnit == null || u < g.floorUnit)) g.floorUnit = u;
+    const ps = Number(l.price_sats || 0);
+    if (ps > 0 && (g.floorSats == null || ps < g.floorSats)) g.floorSats = ps;
+  }
+  const tiles = Array.from(groups.values()).sort((x, y) =>
+    y.total - x.total
+    || ((x.floorUnit ?? Infinity) - (y.floorUnit ?? Infinity))
+    || String(x.asset.ticker || '').localeCompare(String(y.asset.ticker || '')),
+  );
+
+  // Trust-mode breakdown banner — same shape as asset mode for consistency.
+  const atomicCount = rows.reduce((s, l) => s + (l.kind === 'intent' ? 1 : 0), 0);
+  const trustCount = rows.length - atomicCount;
+  const trustlessLabel = atomicCount > 0
+    ? `<span style="color:#7d4ff7;"><strong>⚡ ${atomicCount} trustless</strong></span>`
+    : `<span class="muted">⚡ 0 trustless</span>`;
+  const trustLabel = trustCount > 0
+    ? `<span class="muted">${trustCount} trust-required (opening + range)</span>`
+    : `<span class="muted">0 trust-required</span>`;
+  list.innerHTML =
+    `<div style="margin-bottom:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
+       <span class="muted"><strong>${tiles.length}</strong> asset${tiles.length === 1 ? '' : 's'} with live listings</span>
+       <span class="muted">·</span> ${trustlessLabel} <span class="muted">·</span> ${trustLabel}
+     </div>
+     <div id="market-browse-grid" class="recent-grid"></div>`;
+  const grid = $('#market-browse-grid');
+  const frag = document.createDocumentFragment();
+  for (const g of tiles) {
+    const a = g.asset;
+    const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
+    const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
+    const collisionBadge = a._tickerCollision === 'duplicate'
+      ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
+      : a._tickerCollision === 'original'
+        ? `<span style="display:inline-block;padding:1px 5px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
+        : '';
+    const kindBits = [];
+    if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic intents (trustless)">⚡ ${g.intents}</span>`);
+    if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
+    if (g.ranges) kindBits.push(`<span title="range listings (trust-required OTC)">${g.ranges} range</span>`);
+    const floorLine = g.floorUnit != null
+      ? `<strong style="color:#0a8f43;">floor ${fmtUnitPriceSats(g.floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}`
+      : (g.floorSats != null
+          ? `<strong style="color:#0a8f43;">from ${g.floorSats.toLocaleString()} sats</strong>`
+          : '');
+    const tile = document.createElement('div');
+    tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);cursor:pointer;display:flex;flex-direction:column;gap:6px;';
+    tile.dataset.assetTile = safeAid;
+    tile.title = `View ${escapeHtml(a.ticker || '?')} listings`;
+    tile.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;">
+        ${imgUrl
+          ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+          : `<div style="width:36px;height:36px;border:1px solid var(--ink-mid);background:var(--bg);flex-shrink:0;"></div>`}
+        <div style="min-width:0;flex:1;">
+          <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">
+            <strong style="font-size:15px;">${escapeHtml(a.ticker || '?')}</strong>${collisionBadge}
+          </div>
+          <div style="font-size:10px;color:var(--ink-mid);font-family:var(--mono);">${escapeHtml(shorten(safeAid, 10))}</div>
+        </div>
+      </div>
+      <div style="font-size:14px;"><strong>${g.total}</strong> <span class="muted" style="font-size:11px;">offer${g.total === 1 ? '' : 's'}</span></div>
+      ${kindBits.length ? `<div style="font-size:11px;display:flex;gap:10px;flex-wrap:wrap;">${kindBits.join('<span class="muted">·</span>')}</div>` : ''}
+      ${floorLine ? `<div style="font-size:12px;">${floorLine}</div>` : ''}
+    `;
+    frag.appendChild(tile);
+  }
+  grid.appendChild(frag);
+  grid.querySelectorAll('[data-asset-tile]').forEach(el => {
+    el.onclick = () => {
+      const aid = el.dataset.assetTile;
+      if (/^[0-9a-f]{64}$/.test(aid || '')) goToMarketAsset(aid);
+    };
+  });
+}
+
+// Asset-detail header strip — sits at the top of the per-listing grid in
+// asset mode. "← All assets" returns to browse. The asset_id chip is
+// click-to-copy, mirroring the per-tile behavior. `rows` is the already-
+// filtered+scoped row set for the asset; we use it to derive a live floor.
+function renderMarketAssetHeader(assetId, rows) {
+  const a = (rows.find(l => l._asset?.asset_id === assetId)?._asset)
+         || (_marketCache?.listings.find(l => l._asset?.asset_id === assetId)?._asset)
+         || (_marketCache?.assets?.find(x => x.asset_id === assetId))
+         || { asset_id: assetId, ticker: '?', decimals: 0 };
+  const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
+  const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
+  const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+  let floorUnit = null, floorSats = null;
+  let openings = 0, ranges = 0, intents = 0;
+  for (const l of rows) {
+    if (l.kind === 'opening')      openings++;
+    else if (l.kind === 'range')   ranges++;
+    else if (l.kind === 'intent')  intents++;
+    const amt = l.kind === 'range' ? l.threshold : l.amount;
+    const u = unitPriceSats(Number(l.price_sats || 0), BigInt(amt || 0), dec);
+    if (u != null && (floorUnit == null || u < floorUnit)) floorUnit = u;
+    const ps = Number(l.price_sats || 0);
+    if (ps > 0 && (floorSats == null || ps < floorSats)) floorSats = ps;
+  }
+  const total = openings + ranges + intents;
+  const kindBits = [];
+  if (intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;">⚡ ${intents} atomic</span>`);
+  if (openings) kindBits.push(`<span class="muted">${openings} opening</span>`);
+  if (ranges) kindBits.push(`<span class="muted">${ranges} range</span>`);
+  const floorLine = floorUnit != null
+    ? `<strong style="color:#0a8f43;">floor ${fmtUnitPriceSats(floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}`
+    : (floorSats != null
+        ? `<strong style="color:#0a8f43;">from ${floorSats.toLocaleString()} sats</strong>`
+        : '<span class="muted">no priced listings</span>');
+  const collisionBadge = a._tickerCollision === 'duplicate'
+    ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
+    : a._tickerCollision === 'original'
+      ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
+      : '';
+  return `
+    <div data-market-asset-header style="border:1px solid var(--ink);padding:12px;background:var(--bg-warm);margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+      <button data-act="market-back-browse" title="Back to all assets" style="font-size:11px;padding:6px 10px;flex-shrink:0;">← All assets</button>
+      ${imgUrl
+        ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:44px;height:44px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+        : `<div style="width:44px;height:44px;border:1px solid var(--ink-mid);background:var(--bg);flex-shrink:0;"></div>`}
+      <div style="min-width:0;flex:1;">
+        <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+          <strong style="font-size:18px;">${escapeHtml(a.ticker || '?')}</strong>${collisionBadge}
+        </div>
+        <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
+          <span>id </span>
+          <span class="mono-box inline" style="font-size:10px;cursor:pointer;" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
+        </div>
+      </div>
+      <div style="text-align:right;flex-shrink:0;">
+        <div style="font-size:14px;"><strong>${total}</strong> <span class="muted" style="font-size:11px;">offer${total === 1 ? '' : 's'}</span></div>
+        ${kindBits.length ? `<div style="font-size:11px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:2px;">${kindBits.join('<span class="muted">·</span>')}</div>` : ''}
+        <div style="font-size:12px;margin-top:4px;">${floorLine}</div>
+      </div>
+    </div>`;
+}
+
+// Wires the back-button + asset_id copy chip on a freshly rendered asset
+// header. The per-tile copy handler in the grid below targets a different
+// scope, so we wire the header chip independently to keep the binding stable
+// across re-renders that only touch the grid (e.g. liveness prune).
+function bindMarketAssetHeader(scope) {
+  const back = scope.querySelector('button[data-act="market-back-browse"]');
+  if (back) back.onclick = () => goToMarketBrowse();
+  const copyEl = scope.querySelector('[data-market-asset-header] span[data-act="copy-aid"]');
+  if (copyEl) copyEl.onclick = async () => {
+    try { await navigator.clipboard.writeText(copyEl.dataset.aid); toast('Asset ID copied', 'success'); }
+    catch { /* clipboard blocked */ }
+  };
+}
+
+// Hide the ticker-prefix search input when in asset mode — it's redundant
+// once an asset is selected, and a stale value left in it would silently
+// re-narrow rows on the next applyMarketFilters call. Browse mode shows it.
+function updateMarketControlsVisibility() {
+  const txt = $('#market-filter-asset');
+  if (!txt) return;
+  if (_marketView === 'browse') {
+    txt.style.display = '';
+  } else {
+    txt.style.display = 'none';
+    if (txt.value) txt.value = '';
+  }
 }
 
 // Atomic-intent click handlers (browse-and-take flow). All four roles
