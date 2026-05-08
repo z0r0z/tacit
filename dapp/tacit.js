@@ -7828,6 +7828,12 @@ function setupEtchForm() {
   };
   $('#btn-etch-broadcast').onclick = async () => {
     if (!pendingCEtch) return;
+    // Disable immediately. ensureSatsFunded can poll for ~45s while awaiting an
+    // external wallet's funding tx; if we only disable inside the inner try
+    // (after these awaits), a second click during that window re-enters with
+    // the same pendingCEtch and runs two parallel broadcasts. Both early
+    // returns below restore the enabled state so the user can retry.
+    $('#btn-etch-broadcast').disabled = true;
     // Snapshot so a re-Preview during the async broadcast can't mutate the in-flight job.
     const job = pendingCEtch;
     // Burner-key backup gate. Etching takes custody of asset value at the
@@ -7839,14 +7845,17 @@ function setupEtchForm() {
       : 'Etch a fixed-supply asset (the in-page privkey controls all supply UTXOs)';
     if (!ensureBurnerBackedUp(opLabel)) {
       toast('Etch cancelled. Back up the in-page privkey first, then retry.', '');
+      $('#btn-etch-broadcast').disabled = false;
       return;
     }
     // Just-in-time funding: if the wallet has no sats (or not enough), pop the
     // appropriate funding flow inline before the build runs.
     const need = await estimateSatsForOp('etch');
-    if (!(await ensureSatsFunded(need, 'Etching'))) return;
+    if (!(await ensureSatsFunded(need, 'Etching'))) {
+      $('#btn-etch-broadcast').disabled = false;
+      return;
+    }
     const attestRequested = !!$('#e-attest-on-etch')?.checked;
-    $('#btn-etch-broadcast').disabled = true;
     try {
       // Build a metadataBuilder closure that pins a metadata JSON containing
       // the (supply, blinding) opening to IPFS, returns its ipfs:// CID for
@@ -16506,9 +16515,13 @@ async function _runFirstLoadChoice() {
           : await extWallet.connectUnisat();
         const verdict = reconcileWalletNetwork(st);
         if (verdict === 'reload') return 'reload';
-        wallet.ext = st;
-        if (verdict === 'unsupported') await wallet.load();
-        else                           await wallet.load(st.address);
+        // 'unsupported' = wallet is on a network tacit doesn't run on.
+        // reconcileWalletNetwork already toasted + disconnected — loop back
+        // to the welcome modal so the user can switch their wallet network
+        // and retry, or pick a different option, instead of silently
+        // creating a burner that's mislabelled as 'ext' mode.
+        if (verdict === 'unsupported') continue;
+        await wallet.load(st.address);
         setActiveWalletMode('ext');
       } else if (choice === 'passkey') {
         if (!await _showPasskeyModal()) throw new Error('cancelled');
@@ -16526,11 +16539,12 @@ async function _runFirstLoadChoice() {
       // half-bound state on reload.
       extWallet.disconnect();
       wallet.ext = null;
-      if (e && e.message === 'cancelled') {
-        toast('Setup cancelled — pick an option to continue.', '', 4000);
-      } else {
-        toast('Setup failed: ' + (e?.message || e), 'error', 5000);
-      }
+      // User-cancel (passkey modal cancel, passphrase modal cancel, ext popup
+      // dismissed) is a navigation choice, not a failure — the welcome modal
+      // re-renders on the next loop iteration, which is signal enough. Toasts
+      // here would read as errors. Reserve the toast for genuine failures.
+      if (!e || e.message === 'cancelled') continue;
+      toast('Setup failed: ' + (e?.message || e), 'error', 5000);
     }
   }
 }
@@ -16578,16 +16592,37 @@ async function init() {
   }
   if (!bootstrapped) {
     const restored = await extWallet.tryRestore().catch(() => null);
+    let extOk = false;
     if (restored) {
-      wallet.ext = restored;
       const verdict = reconcileWalletNetwork(restored);
       if (verdict === 'reload') return;
-      if (verdict === 'unsupported') await wallet.load();
-      else                           await wallet.load(restored.address);
+      extOk = verdict === 'ok';
+      // 'unsupported': reconcile already toasted + disconnected the ext
+      // wallet. Fall through so we either unlock an existing burner or
+      // run the welcome flow — never silently bind 'ext' mode against a
+      // wallet on an unsupported network.
+    }
+    if (extOk) {
+      await wallet.load(restored.address);
       setActiveWalletMode('ext');
     } else if (_hasAnyExistingWallet()) {
-      await wallet.load();
-      setActiveWalletMode('local');
+      try {
+        await wallet.load();
+        setActiveWalletMode('local');
+      } catch (e) {
+        // Returning-user unlock failures must not strand init: a throw here
+        // bubbles to init().catch(...) and aborts every setup* call below,
+        // leaving the dapp non-interactive until reload. Route them through
+        // the welcome modal so they can switch to passkey/ext, retry local,
+        // or at minimum see a usable UI. Covers: explicit cancel, exhausted
+        // passphrase attempts ('unlock failed'), and corrupt/unknown blobs
+        // ('unknown wallet storage format'). Cancel stays silent; genuine
+        // errors surface via toast so the user knows why local failed.
+        if (e?.message !== 'cancelled') {
+          toast(`Couldn't unlock local wallet: ${e?.message || e}. Pick another option below.`, 'error', 6000);
+        }
+        if (await _runFirstLoadChoice() === 'reload') return;
+      }
     } else {
       if (await _runFirstLoadChoice() === 'reload') return;
     }
