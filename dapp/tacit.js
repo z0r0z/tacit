@@ -13538,7 +13538,7 @@ function _consumeClaimUrlHash() {
 // clicks update the hash via replaceState — current state is shareable
 // via URL but back/forward isn't polluted with every casual tab click.
 const _DEEPLINK_TABS = new Set([
-  'wallet', 'holdings', 'transfer', 'discover', 'market', 'etch', 'drops', 'claim', 'about',
+  'wallet', 'holdings', 'transfer', 'discover', 'market', 'etch', 'drops', 'claim', 'about', 'mixer',
 ]);
 function _parseTabHash() {
   const h = location.hash || '';
