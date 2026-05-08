@@ -4736,6 +4736,11 @@ async function buildAndBroadcastPetch({ ticker, decimals, capAmount, mintLimit, 
     kind: 'petch', ticker, amount: cap, decimals,
     assetId: bytesToHex(aid), txid: revealTxid,
   });
+  // Mainnet's worker scanner is forward-only (backfillBlocks=0); without a
+  // hint, a T_PETCH can be silently skipped if its block was scanned before
+  // the petch-aware code went live. The hint endpoint's T_PETCH branch writes
+  // the registry entry directly, so /petch-assets surfaces it within seconds.
+  postHint(revealTxid, 0);
 
   return {
     commitTxid, revealTxid, commitHex, revealHex,
@@ -4879,6 +4884,12 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
   // Bust the petch list cache too so the next renderPetchDiscover sees the
   // new pending mint (cap progress + remaining-mints + pending counter move).
   invalidatePetchCache();
+  // Hint the worker so /petch-assets's pending_pmint_count reflects this
+  // mint immediately rather than waiting for the 5-min cron tick. The hint
+  // endpoint validates §5.9 steps 1–4 the same way the cron does and writes
+  // under the canonical (height, tx_index, txid) key — idempotent against
+  // the cron's later scan.
+  postHint(revealTxid, 0);
 
   return {
     commitTxid, revealTxid, commitHex, revealHex,
