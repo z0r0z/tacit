@@ -17056,14 +17056,20 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       const offerCount = Number(a.listing_count || 0)
                        + Number(a.range_listing_count || 0)
                        + Number(a.atomic_intent_count || 0);
-      if (offerCount <= 0) return '';
+      // Always render a Trade affordance so users can place the FIRST bid
+      // on a fresh asset. Without this, a coin with zero offers is
+      // unreachable from the in-app UI: /market filters offer_count=0
+      // assets out of the browse list, and Discover had no click path —
+      // the only way to bid was hand-typing #tab=market&aid=<aid>.
       let unit = null;
       let unitTicker = ticker;
-      const liveFloor = _marketFloorByAsset()?.get(a.asset_id);
-      if (liveFloor) { unit = liveFloor.unit; unitTicker = liveFloor.ticker || ticker; }
-      else if (verify._priceFloorPpu && verify._priceFloorPpu > 0) {
-        // _priceFloorPpu is sats per smallest unit; convert to per display unit.
-        unit = verify._priceFloorPpu * Math.pow(10, decimals);
+      if (offerCount > 0) {
+        const liveFloor = _marketFloorByAsset()?.get(a.asset_id);
+        if (liveFloor) { unit = liveFloor.unit; unitTicker = liveFloor.ticker || ticker; }
+        else if (verify._priceFloorPpu && verify._priceFloorPpu > 0) {
+          // _priceFloorPpu is sats per smallest unit; convert to per display unit.
+          unit = verify._priceFloorPpu * Math.pow(10, decimals);
+        }
       }
       const priceStr = (unit != null && Number.isFinite(unit) && unit > 0)
         ? (unit >= 1 ? unit.toFixed(unit >= 100 ? 0 : 2) : unit.toFixed(6).replace(/0+$/, '').replace(/\.$/, ''))
@@ -17071,8 +17077,11 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       const priceFragment = priceStr
         ? `<strong>${escapeHtml(priceStr)} sats/${escapeHtml(unitTicker)}</strong> floor · `
         : '';
+      const linkLabel = offerCount > 0
+        ? `${offerCount} live offer${offerCount === 1 ? '' : 's'} →`
+        : 'No offers yet · be the first to bid →';
       return `<div style="margin-top:8px;font-size:11px;">
-        💱 ${priceFragment}<a href="#tab=market&aid=${escapeHtml(safeAssetId)}" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="color:#0a7d4e;font-weight:bold;">${offerCount} live offer${offerCount === 1 ? '' : 's'} →</a>
+        💱 ${priceFragment}<a href="#tab=market&aid=${escapeHtml(safeAssetId)}" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="color:#0a7d4e;font-weight:bold;">${linkLabel}</a>
         <span class="muted" style="margin-left:6px;font-size:10px;" title="Floor reflects only listings the indexer can see; confidential holders not actively listing are invisible by design.">indexer view</span>
       </div>`;
     })()}
