@@ -1217,16 +1217,77 @@ function renderChainDivergenceBanner() {
 // fresh checks (e.g., before broadcast) still hit the chain. In-flight Map
 // dedups concurrent callers — saves N×M hits when the market liveness prune
 // runs while a Verify click hits the same UTXO.
+//
+// Persistence: confirmed spends are bound to immutable chain history so we
+// persist them across reloads. Unconfirmed spends are explicitly skipped —
+// an RBF or mempool drop can flip them back to unspent. Per-network keyed.
 const _outspendSpentCache = new Map();
 const _outspendInFlight = new Map();
+const OUTSPEND_PERSIST_KEY = 'tacit-outspend-v1';
+const OUTSPEND_PERSIST_MAX = 5000;
+function _outspendCacheStorageKey() { return `${OUTSPEND_PERSIST_KEY}:${NET.name}`; }
+let _outspendCacheHydrated = false;
+let _outspendCacheDirty = false;
+let _outspendCacheFlushTimer = null;
+function _ensureOutspendCacheHydrated() {
+  if (_outspendCacheHydrated) return;
+  _outspendCacheHydrated = true;
+  try {
+    const raw = localStorage.getItem(_outspendCacheStorageKey());
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.v !== 1 || !parsed.entries) return;
+    for (const [k, v] of Object.entries(parsed.entries)) _outspendSpentCache.set(k, v);
+  } catch { /* corrupt blob → start fresh */ }
+}
+function _writeOutspendCacheNow() {
+  if (!_outspendCacheDirty) return;
+  _outspendCacheDirty = false;
+  // Map preserves insertion order, so trimming to the last N gives a recency-
+  // ordered LRU without explicit timestamps.
+  const items = [..._outspendSpentCache.entries()];
+  const start = Math.max(0, items.length - OUTSPEND_PERSIST_MAX);
+  const entries = {};
+  for (let i = start; i < items.length; i++) entries[items[i][0]] = items[i][1];
+  try { localStorage.setItem(_outspendCacheStorageKey(), JSON.stringify({ v: 1, entries })); }
+  catch { /* quota exceeded → in-memory cache still works */ }
+}
+function _scheduleOutspendCacheFlush() {
+  _outspendCacheDirty = true;
+  if (_outspendCacheFlushTimer) return;
+  _outspendCacheFlushTimer = setTimeout(() => {
+    _outspendCacheFlushTimer = null;
+    _writeOutspendCacheNow();
+  }, 500);
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && _outspendCacheFlushTimer) {
+      clearTimeout(_outspendCacheFlushTimer); _outspendCacheFlushTimer = null;
+      _writeOutspendCacheNow();
+    }
+  });
+  window.addEventListener('beforeunload', () => {
+    if (_outspendCacheFlushTimer) {
+      clearTimeout(_outspendCacheFlushTimer); _outspendCacheFlushTimer = null;
+      _writeOutspendCacheNow();
+    }
+  });
+}
 const getOutspend = (txid, vout) => {
+  _ensureOutspendCacheHydrated();
   const key = `${txid}:${vout}`;
   if (_outspendSpentCache.has(key)) return Promise.resolve(_outspendSpentCache.get(key));
   const existing = _outspendInFlight.get(key);
   if (existing) return existing;
   const p = apiJson(`/tx/${txid}/outspend/${vout}`)
     .then((res) => {
-      if (res && res.spent) _outspendSpentCache.set(key, res);
+      if (res && res.spent) {
+        _outspendSpentCache.set(key, res);
+        // Only persist confirmed spends — an unconfirmed spend can RBF or drop
+        // and revert to unspent, which would leave a stale "spent" entry.
+        if (res.status && res.status.confirmed === true) _scheduleOutspendCacheFlush();
+      }
       return res;
     })
     .finally(() => { _outspendInFlight.delete(key); });
@@ -3041,6 +3102,47 @@ function forgetOpenOffer(commitTxid) {
   _invalidateLocalActivityCaches();
 }
 
+// Build a Map<"txid:vout", { kind, label }> of asset UTXOs that are already
+// referenced by an active listing/intent for this asset, so the picker UI can
+// flag (and disable) UTXOs the maker has already committed elsewhere. Sources:
+//   • local atomic offers (loadOpenOffers — targeted offers made on this device)
+//   • worker openings (LISTINGS_URL — opening listings)
+//   • worker atomic intents (ATOMIC_INTENTS_URL — open/intent listings)
+// Range listings cover an aggregate balance, not specific UTXOs, so they're
+// intentionally not flagged here. Best-effort: any source that errors is
+// skipped — partial knowledge is still useful in the dropdown.
+async function fetchListedUtxoTags(assetIdHex) {
+  const tags = new Map();
+  const set = (key, kind, label) => { if (!tags.has(key)) tags.set(key, { kind, label }); };
+  for (const o of loadOpenOffers()) {
+    if (o.asset_id !== assetIdHex) continue;
+    const u = o.asset_utxo;
+    if (!u || !/^[0-9a-f]{64}$/.test(String(u.txid || ''))) continue;
+    set(`${u.txid}:${u.vout | 0}`, 'atomic-offer', 'atomic offer');
+  }
+  if (!WORKER_BASE) return tags;
+  const [openingsRes, intentsRes] = await Promise.allSettled([
+    fetch(withNet(LISTINGS_URL(assetIdHex))).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(withNet(ATOMIC_INTENTS_URL(assetIdHex))).then(r => r.ok ? r.json() : null).catch(() => null),
+  ]);
+  if (openingsRes.status === 'fulfilled' && Array.isArray(openingsRes.value?.listings)) {
+    for (const l of openingsRes.value.listings) {
+      if (l.expired) continue;
+      if (!/^[0-9a-f]{64}$/.test(String(l.txid || ''))) continue;
+      set(`${l.txid}:${l.vout | 0}`, 'opening', 'opening listing');
+    }
+  }
+  if (intentsRes.status === 'fulfilled' && Array.isArray(intentsRes.value?.intents)) {
+    for (const i of intentsRes.value.intents) {
+      if (i.expired) continue;
+      const u = i.asset_utxo;
+      if (!u || !/^[0-9a-f]{64}$/.test(String(u.txid || ''))) continue;
+      set(`${u.txid}:${u.vout | 0}`, 'atomic-intent', 'atomic intent');
+    }
+  }
+  return tags;
+}
+
 // ============== ATOMIC-INTENT MAKER SECRETS ==============
 // Per-intent random recipient blinding `r`. Picked at publish time, used at
 // fulfilment time to encrypt to the claimant. Cleared on intent
@@ -3508,12 +3610,20 @@ async function _scanHoldingsImpl() {
   //      ones are ghosts/inflated. Slow path, but only hit for actual problems.
   let validatedSet = new Map();
   let rpBatch = [];
-  for (const u of utxos) {
-    // Demote thrown errors to "not validated" but log them — silent demotion to
-    // ghost makes scan failures indistinguishable from genuinely-bad ancestry,
-    // which has bitten us during debugging.
-    await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, rpBatch)
-      .catch(e => { console.warn('validateOutpoint threw for', u.txid + ':' + u.vout, e); return false; });
+  // Chunked-parallel ancestor walk. Sequential here serialised N independent
+  // /tx fetches on cold-cache scans (the slowest path). Concurrency=8 fans
+  // network out without bursting hard against mempool.space rate limits.
+  // Safe under concurrency: validatedSet is JS-single-threaded so first-write-
+  // wins memoization is preserved, getTx already dedups in-flight requests
+  // (_txInFlight), and rpBatch duplicate proofs from racing walks are harmless
+  // to bpRangeAggBatchVerify (random linear combination handles dups).
+  const SCAN_CONCURRENCY = 8;
+  for (let i = 0; i < utxos.length; i += SCAN_CONCURRENCY) {
+    const chunk = utxos.slice(i, i + SCAN_CONCURRENCY);
+    await Promise.all(chunk.map(u =>
+      validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, rpBatch)
+        .catch(e => { console.warn('validateOutpoint threw for', u.txid + ':' + u.vout, e); return false; })
+    ));
   }
   if (rpBatch.length > 0 && !bpRangeAggBatchVerify(rpBatch)) {
     // Strict re-validation: at least one rangeproof is bad. Clear the optimistic
@@ -7495,25 +7605,103 @@ async function uploadMetadataToPinata(metadata) {
 
 // Resolve an envelope's image_uri to a renderable image URL.
 // If the URI dereferences to JSON metadata (with an `image` field), follow it.
-// If it dereferences to image bytes, use the URI directly. Cached per session.
+// If it dereferences to image bytes, use the URI directly.
+//
+// Persisted to localStorage: IPFS CIDs are content-addressed so the resolved
+// value is deterministic forever for any given input URI. We only persist
+// when the fetch returned with resp.ok=true — a transient gateway failure
+// would otherwise cache the wrong "resolved" value forever. Non-deterministic
+// branches (fetch threw, resp.ok=false) stay in-memory only and re-fetch on
+// next reload. Network-agnostic (CIDs are global).
 const _resolvedImageCache = new Map();
 const _resolvedImageInFlight = new Map(); // imageUri → Promise; dedups concurrent fetches
 const _metadataExtraCache = new Map(); // imageUri → { name, description, external_url }
+const IMG_PERSIST_KEY = 'tacit-imgcache-v1';
+const IMG_PERSIST_MAX = 500;
+let _imgCacheHydrated = false;
+let _imgCacheDirty = false;
+let _imgCacheFlushTimer = null;
+let _imgCachePersisted = null; // imageUri → { resolved, extra, ts }
+function _ensureImgCacheHydrated() {
+  if (_imgCacheHydrated) return;
+  _imgCacheHydrated = true;
+  _imgCachePersisted = {};
+  try {
+    const raw = localStorage.getItem(IMG_PERSIST_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.v !== 1 || !parsed.entries) return;
+    _imgCachePersisted = parsed.entries;
+    for (const [uri, entry] of Object.entries(_imgCachePersisted)) {
+      _resolvedImageCache.set(uri, entry.resolved);
+      if (entry.extra) _metadataExtraCache.set(uri, entry.extra);
+    }
+  } catch { /* corrupt blob → start fresh */ }
+}
+function _writeImgCacheNow() {
+  if (!_imgCacheDirty || !_imgCachePersisted) return;
+  _imgCacheDirty = false;
+  // LRU evict to cap (sort by ts ascending, drop oldest).
+  const keys = Object.keys(_imgCachePersisted);
+  if (keys.length > IMG_PERSIST_MAX) {
+    keys.sort((a, b) => (_imgCachePersisted[a].ts || 0) - (_imgCachePersisted[b].ts || 0));
+    const drop = keys.length - IMG_PERSIST_MAX;
+    for (let i = 0; i < drop; i++) delete _imgCachePersisted[keys[i]];
+  }
+  try { localStorage.setItem(IMG_PERSIST_KEY, JSON.stringify({ v: 1, entries: _imgCachePersisted })); }
+  catch { /* quota exceeded → skip; in-memory still works */ }
+}
+function _scheduleImgCacheFlush() {
+  _imgCacheDirty = true;
+  if (_imgCacheFlushTimer) return;
+  _imgCacheFlushTimer = setTimeout(() => {
+    _imgCacheFlushTimer = null;
+    _writeImgCacheNow();
+  }, 500);
+}
+function _persistImgCacheEntry(imageUri, resolved, extra) {
+  _ensureImgCacheHydrated();
+  _imgCachePersisted[imageUri] = { resolved, extra: extra || null, ts: Date.now() };
+  _scheduleImgCacheFlush();
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && _imgCacheFlushTimer) {
+      clearTimeout(_imgCacheFlushTimer); _imgCacheFlushTimer = null;
+      _writeImgCacheNow();
+    }
+  });
+  window.addEventListener('beforeunload', () => {
+    if (_imgCacheFlushTimer) {
+      clearTimeout(_imgCacheFlushTimer); _imgCacheFlushTimer = null;
+      _writeImgCacheNow();
+    }
+  });
+}
 async function resolveImageUri(imageUri) {
   if (!imageUri) return null;
+  _ensureImgCacheHydrated();
   if (_resolvedImageCache.has(imageUri)) return _resolvedImageCache.get(imageUri);
   const existing = _resolvedImageInFlight.get(imageUri);
   if (existing) return existing;
   const p = (async () => {
   const url = normalizeImageUri(imageUri);
-  if (!url) { _resolvedImageCache.set(imageUri, null); return null; }
+  if (!url) {
+    _resolvedImageCache.set(imageUri, null);
+    // Rejected URI scheme is deterministic — persist so we don't re-validate
+    // every reload.
+    _persistImgCacheEntry(imageUri, null, null);
+    return null;
+  }
   let resolved = url;
   let extra = null;
+  let fetchOk = false;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 5000);
   try {
     const resp = await fetch(url, { signal: ac.signal });
     if (resp.ok) {
+      fetchOk = true;
       const ct = (resp.headers.get('content-type') || '').toLowerCase();
       if (ct.includes('json') || ct.includes('text/plain')) {
         // Treating the URI as a metadata blob. Default to no image and only
@@ -7561,6 +7749,11 @@ async function resolveImageUri(imageUri) {
   } catch {} finally { clearTimeout(timer); }
   _resolvedImageCache.set(imageUri, resolved);
   if (extra) _metadataExtraCache.set(imageUri, extra);
+  // Only persist on a successful fetch. A thrown fetch or non-200 response
+  // would have left `resolved` as the original URL — caching that for a URI
+  // that's actually a metadata blob would render JSON bytes as <img src> on
+  // every future load. resp.ok ensures we know what kind of response we got.
+  if (fetchOk) _persistImgCacheEntry(imageUri, resolved, extra);
   return resolved;
   })().finally(() => { _resolvedImageInFlight.delete(imageUri); });
   _resolvedImageInFlight.set(imageUri, p);
@@ -8150,6 +8343,51 @@ function relativeAge(unixTs) {
   if (min < 60) return `${min}m`;
   if (min < 1440) return `${Math.floor(min / 60)}h`;
   return `${Math.floor(min / 1440)}d`;
+}
+
+// Render a single UTXO-picker option label. Used by the atomic pickers
+// (publish-intent / list-atomic) so two UTXOs with identical token amounts
+// can still be told apart by their txid prefix + age. The `tag` argument is
+// optional; when present it appends a "⚠ already listed (…)" suffix that the
+// caller renders alongside `option.disabled = true` to prevent re-listing the
+// same UTXO under a second offer.
+function utxoPickerOptionLabel(u, target, tag = null) {
+  const ageStr = u.utxo.status?.confirmed
+    ? (relativeAge(u.utxo.status.block_time) ? ` · ${relativeAge(u.utxo.status.block_time)} old` : '')
+    : ' · mempool';
+  const base = `${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} · UTXO ${shorten(u.utxo.txid, 8)}:${u.utxo.vout}${ageStr}`;
+  return tag ? `${base} · ⚠ already listed (${tag.label})` : base;
+}
+
+// Post-mount enrichment for the atomic-flow UTXO picker. Fetches the active
+// listing tag map for the asset, then re-labels each option with status +
+// disables already-listed entries. If the user's currently-selected option
+// becomes disabled, falls through to the first available one. Returns the
+// loaded tag map (or an empty Map on failure) so the submit handler can
+// re-check at click time and prompt if the user somehow picked a listed UTXO
+// in the brief window before enrichment landed.
+async function enrichUtxoPicker(selectEl, sortedUtxos, target, assetIdHex) {
+  if (!selectEl) return new Map();
+  const tags = await fetchListedUtxoTags(assetIdHex).catch(() => new Map());
+  // The select may have been dismounted (form closed) while the fetch was in
+  // flight; bail silently — touching options on a detached node is harmless,
+  // but we'd rather not pay for the work.
+  if (!selectEl.isConnected) return tags;
+  let firstAvailable = null;
+  for (const opt of Array.from(selectEl.options)) {
+    const idx = parseInt(opt.value, 10);
+    const u = sortedUtxos[idx];
+    if (!u) continue;
+    const key = `${u.utxo.txid}:${u.utxo.vout | 0}`;
+    const tag = tags.get(key);
+    opt.textContent = utxoPickerOptionLabel(u, target, tag);
+    opt.disabled = !!tag;
+    if (!tag && !firstAvailable) firstAvailable = opt;
+  }
+  if (selectEl.options[selectEl.selectedIndex]?.disabled && firstAvailable) {
+    selectEl.value = firstAvailable.value;
+  }
+  return tags;
 }
 
 // Live-truncate the Send-tab amount input against the selected asset's decimals.
@@ -11998,6 +12236,10 @@ async function renderHoldings() {
             </div>`;
           formHost.style.display = 'block';
           const errEl = formHost.querySelector('[data-form-error]');
+          // Eager fetch — by submit time the response will almost always be
+          // resolved, so the await below adds no perceptible latency. On a
+          // slow network we avoid stalling the user mid-click.
+          const listedTagsP = fetchListedUtxoTags(aid).catch(() => new Map());
           formHost.querySelector('[data-form-act="cancel"]').onclick = () => {
             formHost.style.display = 'none';
             formHost.innerHTML = '';
@@ -12021,10 +12263,27 @@ async function renderHoldings() {
             if (!Number.isInteger(days) || days < 1 || days > 365) { errEl.textContent = 'days must be 1–365'; return; }
             const expiry = Math.floor(Date.now() / 1000) + days * 86400;
 
+            // Exclude UTXOs that are already in an active listing/intent —
+            // both from the exact-match search and the auto-split cover pick.
+            // Splitting an already-listed UTXO would silently invalidate the
+            // existing listing once the split tx confirms; double-listing it
+            // strands the older offer at fulfilment time.
+            const listedTags = await listedTagsP;
+            const isListed = u => listedTags.has(`${u.utxo.txid}:${u.utxo.vout | 0}`);
+            const availableUtxos = sortedUtxos.filter(u => !isListed(u));
+            const lockedCount = sortedUtxos.length - availableUtxos.length;
+            const availLargest = availableUtxos[0]?.amount || 0n;
+            if (amount > availLargest) {
+              errEl.textContent = lockedCount
+                ? `Largest free UTXO is ${fmtAssetAmount(availLargest, target.decimals)} ${target.ticker} (${lockedCount} UTXO${lockedCount === 1 ? '' : 's'} already in active listings/intents). Lower the amount or cancel an existing listing first.`
+                : `amount exceeds largest single UTXO (${fmtAssetAmount(availLargest, target.decimals)} ${target.ticker}). Consolidate first via Send Privately to your own address.`;
+              return;
+            }
+
             // Pick a UTXO. Prefer an exact match (no split needed); else pick
             // the smallest UTXO that covers the amount (minimizes the
             // post-split change UTXO size, which is more usable later).
-            const exactMatch = sortedUtxos.find(u => u.amount === amount);
+            const exactMatch = availableUtxos.find(u => u.amount === amount);
             let listUtxo = exactMatch;
             const submitBtn = ev.target;
             submitBtn.disabled = true; submitBtn.textContent = exactMatch ? 'listing…' : 'splitting + listing…';
@@ -12039,7 +12298,7 @@ async function renderHoldings() {
                 if (!(await ensureSatsFunded(need, 'Auto-split before listing'))) throw new Error('cancelled');
                 // Force the smallest covering UTXO so the change UTXO is as
                 // small as possible (future listings can take from it directly).
-                const cover = [...sortedUtxos].reverse().find(u => u.amount >= amount);
+                const cover = [...availableUtxos].reverse().find(u => u.amount >= amount);
                 if (!cover) throw new Error('no UTXO large enough (should not happen — guarded above)');
                 const splitResult = await buildAndBroadcastCXferMulti({
                   assetIdHex: aid,
@@ -12250,13 +12509,14 @@ async function renderHoldings() {
           // dropdown still shows every UTXO; users wanting to send a larger
           // one scroll down or pre-split via Send Privately.
           const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
-          const utxoOpts = sortedUtxos.map((u, idx) => `
-            <option value="${idx}">${escapeHtml(fmtAssetAmount(u.amount, target.decimals))} ${escapeHtml(target.ticker)} · UTXO ${escapeHtml(shorten(u.utxo.txid, 8))}:${u.utxo.vout}</option>
-          `).join('');
+          const utxoOpts = sortedUtxos.map((u, idx) =>
+            `<option value="${idx}">${escapeHtml(utxoPickerOptionLabel(u, target))}</option>`,
+          ).join('');
           formHost.innerHTML = `
             <div class="inline-form">
               <label>Pick UTXO to sell ▾ (smallest first; entire UTXO is sold)</label>
               <select data-field="utxo">${utxoOpts}</select>
+              <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
               <details style="margin-top:6px;">
                 <summary class="muted" style="cursor:pointer;font-size:11px;">Need a smaller UTXO? Split first ▾</summary>
                 <div style="margin-top:8px;padding:8px;border:1px dashed var(--ink-faint);background:var(--bg);">
@@ -12300,6 +12560,27 @@ async function renderHoldings() {
             </div>`;
           formHost.style.display = 'block';
           const errEl = formHost.querySelector('[data-form-error]');
+          // Enrich the picker post-mount with already-listed tags. The submit
+          // handler awaits this Promise so a fast click before enrichment
+          // lands still gets the guard — at the cost of a small wait, which is
+          // imperceptible when the fetch already resolved before submit.
+          const listedTagsP = enrichUtxoPicker(formHost.querySelector('[data-field="utxo"]'), sortedUtxos, target, aid)
+            .then(t => {
+              const statusEl = formHost.querySelector('[data-utxo-picker-status]');
+              if (statusEl) {
+                const blockedCount = Array.from(formHost.querySelectorAll('[data-field="utxo"] option')).filter(o => o.disabled).length;
+                statusEl.textContent = blockedCount
+                  ? `${blockedCount} UTXO${blockedCount === 1 ? '' : 's'} locked — already in an active listing/offer (greyed in dropdown)`
+                  : '';
+                if (!blockedCount) statusEl.style.display = 'none';
+              }
+              return t;
+            })
+            .catch(() => {
+              const statusEl = formHost.querySelector('[data-utxo-picker-status]');
+              if (statusEl) statusEl.style.display = 'none';
+              return new Map();
+            });
           formHost.querySelector('[data-form-act="cancel"]').onclick = () => {
             formHost.style.display = 'none';
             formHost.innerHTML = '';
@@ -12360,6 +12641,15 @@ async function renderHoldings() {
             const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
             const u = sortedUtxos[utxoIdx];
             if (!u) { errEl.textContent = 'pick a UTXO'; return; }
+            // Guard against double-listing the same UTXO. Awaits the
+            // enrichment promise — guarantees the check fires even if the
+            // user clicked Publish before the initial enrichment landed.
+            const listedTags = await listedTagsP;
+            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`);
+            if (listedTag) {
+              errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
+              return;
+            }
             const recipientPub = formHost.querySelector('[data-field="recipient"]').value.trim().toLowerCase().replace(/\s/g, '');
             if (!/^0[23][0-9a-f]{64}$/.test(recipientPub)) { errEl.textContent = 'recipient must be 33-byte compressed hex'; return; }
             try { secp.ProjectivePoint.fromHex(recipientPub); }
@@ -12442,13 +12732,14 @@ async function renderHoldings() {
           // dropdown; users wanting to list a larger one scroll, or split
           // bigger UTXOs via Send Privately first.
           const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
-          const utxoOpts = sortedUtxos.map((u, idx) => `
-            <option value="${idx}">${escapeHtml(fmtAssetAmount(u.amount, target.decimals))} ${escapeHtml(target.ticker)} · UTXO ${escapeHtml(shorten(u.utxo.txid, 8))}:${u.utxo.vout}</option>
-          `).join('');
+          const utxoOpts = sortedUtxos.map((u, idx) =>
+            `<option value="${idx}">${escapeHtml(utxoPickerOptionLabel(u, target))}</option>`,
+          ).join('');
           formHost.innerHTML = `
             <div class="inline-form">
               <label>Pick UTXO to sell ▾ (smallest first; whole UTXO is sold atomically — v1 doesn't support partial fills)</label>
               <select data-field="utxo">${utxoOpts}</select>
+              <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
                   <label>Price (sats)</label>
@@ -12472,6 +12763,25 @@ async function renderHoldings() {
             </div>`;
           formHost.style.display = 'block';
           const errEl = formHost.querySelector('[data-form-error]');
+          // Enrich the picker post-mount with already-listed tags. Same
+          // pattern as the targeted-atomic flow above; see comments there.
+          const listedTagsP = enrichUtxoPicker(formHost.querySelector('[data-field="utxo"]'), sortedUtxos, target, aid)
+            .then(t => {
+              const statusEl = formHost.querySelector('[data-utxo-picker-status]');
+              if (statusEl) {
+                const blockedCount = Array.from(formHost.querySelectorAll('[data-field="utxo"] option')).filter(o => o.disabled).length;
+                statusEl.textContent = blockedCount
+                  ? `${blockedCount} UTXO${blockedCount === 1 ? '' : 's'} locked — already in an active listing/intent (greyed in dropdown)`
+                  : '';
+                if (!blockedCount) statusEl.style.display = 'none';
+              }
+              return t;
+            })
+            .catch(() => {
+              const statusEl = formHost.querySelector('[data-utxo-picker-status]');
+              if (statusEl) statusEl.style.display = 'none';
+              return new Map();
+            });
           formHost.querySelector('[data-form-act="cancel"]').onclick = () => {
             formHost.style.display = 'none';
             formHost.innerHTML = '';
@@ -12481,6 +12791,12 @@ async function renderHoldings() {
             const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
             const u = sortedUtxos[utxoIdx];
             if (!u) { errEl.textContent = 'pick a UTXO'; return; }
+            const listedTags = await listedTagsP;
+            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`);
+            if (listedTag) {
+              errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
+              return;
+            }
             const priceSats = parseInt(formHost.querySelector('[data-field="price"]').value.trim(), 10);
             if (!Number.isInteger(priceSats) || priceSats < DUST) { errEl.textContent = `price must be integer ≥ ${DUST}`; return; }
             const days = parseInt(formHost.querySelector('[data-field="days"]').value.trim(), 10);
@@ -15049,9 +15365,20 @@ function renderMarketAssetHeader(assetId, rows) {
     : a._tickerCollision === 'original'
       ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
       : '';
-  return `
+  // Breadcrumb above the asset card. Critical for users who deep-link from a
+  // Discover "view offers" badge straight into asset mode — without it, the
+  // browse index is invisible and the Market reads as "all listings flat".
+  // The "← All assets" anchor mirrors the button below so either click target
+  // works; the binder's querySelectorAll picks both up.
+  const breadcrumb = `
+    <div style="font-size:12px;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      <a href="#" data-act="market-back-browse" title="Back to the asset index" style="text-decoration:underline;cursor:pointer;">← All assets</a>
+      <span class="muted">›</span>
+      <strong>${escapeHtml(a.ticker || '?')}</strong>
+      <span class="muted">offers</span>
+    </div>`;
+  return breadcrumb + `
     <div data-market-asset-header style="border:1px solid var(--ink);padding:12px;background:var(--bg-warm);margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-      <button data-act="market-back-browse" title="Back to all assets" style="font-size:11px;padding:6px 10px;flex-shrink:0;">← All assets</button>
       ${imgUrl
         ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:44px;height:44px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
         : `<div style="width:44px;height:44px;border:1px solid var(--ink-mid);background:var(--bg);flex-shrink:0;"></div>`}
@@ -15069,6 +15396,7 @@ function renderMarketAssetHeader(assetId, rows) {
         ${kindBits.length ? `<div style="font-size:11px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:2px;">${kindBits.join('<span class="muted">·</span>')}</div>` : ''}
         <div style="font-size:12px;margin-top:4px;">${floorLine}</div>
       </div>
+      <button data-act="market-back-browse" title="Back to the asset index" style="font-size:11px;padding:6px 10px;flex-shrink:0;">← All assets</button>
     </div>`;
 }
 
@@ -15077,8 +15405,13 @@ function renderMarketAssetHeader(assetId, rows) {
 // scope, so we wire the header chip independently to keep the binding stable
 // across re-renders that only touch the grid (e.g. liveness prune).
 function bindMarketAssetHeader(scope) {
-  const back = scope.querySelector('button[data-act="market-back-browse"]');
-  if (back) back.onclick = () => goToMarketBrowse();
+  // Two affordances both target the breadcrumb anchor + the in-card button
+  // — querySelectorAll picks up both in one pass. Anchor's default href="#"
+  // would jump to the top of the page if the click handler doesn't
+  // preventDefault, so we do that explicitly.
+  scope.querySelectorAll('[data-act="market-back-browse"]').forEach(el => {
+    el.onclick = (ev) => { ev.preventDefault(); goToMarketBrowse(); };
+  });
   const copyEl = scope.querySelector('[data-market-asset-header] span[data-act="copy-aid"]');
   if (copyEl) copyEl.onclick = async () => {
     try { await navigator.clipboard.writeText(copyEl.dataset.aid); toast('Asset ID copied', 'success'); }

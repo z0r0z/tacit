@@ -29,6 +29,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<!-- modulepreload: surface the ESM dependency graph to the browser at parse
+     time so vendor + prf-wallet fetch in parallel with tacit.js instead of
+     waiting one RTT for tacit.js's import statements to be discovered. CSP
+     script-src 'self' covers all three. -->
+<link rel="modulepreload" href="./tacit.js">
+<link rel="modulepreload" href="./vendor/tacit-deps.min.js">
+<link rel="modulepreload" href="./prf-wallet.js">
 <style>
 :root {
   --bg: #f4efe6;
@@ -1816,7 +1823,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
       <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;">
         <input id="discover-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
-        <select id="discover-sort" title="Sort assets">
+        <label for="discover-sort" class="muted" style="align-self:center;font-size:11px;white-space:nowrap;">sort</label>
+        <select id="discover-sort" title="Sort assets — pick Oldest first to surface long-established etches">
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
           <option value="ticker-asc">Ticker A→Z</option>
