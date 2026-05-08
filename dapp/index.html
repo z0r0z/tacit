@@ -1441,6 +1441,17 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         </div>
         <div id="x-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
 
+        <details id="x-utxo-picker-details" style="margin-top:10px;">
+          <summary class="muted" style="cursor:pointer;font-size:11px;">Choose specific UTXO to spend (advanced)</summary>
+          <div style="margin-top:8px;">
+            <label style="font-size:11px;font-weight:normal;letter-spacing:0;text-transform:none;">Use this UTXO instead of greedy-largest:</label>
+            <select id="x-utxo-pick" style="margin-top:4px;font-family:var(--mono);font-size:11px;">
+              <option value="">auto · greedy-largest (default)</option>
+            </select>
+            <div class="muted" style="margin-top:4px;font-size:11px;">When set, the amount field is locked to the chosen UTXO's exact value (you spend the whole UTXO, change goes back to you). Useful for cancelling a stale listing's UTXO without sending your full balance.</div>
+          </div>
+        </details>
+
         <div id="transfer-preview" style="display:none;"></div>
 
         <div class="flex" style="margin-top:18px;">

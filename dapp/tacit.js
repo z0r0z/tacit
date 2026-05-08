@@ -5062,6 +5062,7 @@ async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
   // a true cancel) — but it does mean we won't be re-fulfilling, so the
   // secret can go.
   forgetAxintentSecret(intentIdHex);
+  invalidateDiscoverRegistryCache();
   return j;
 }
 
@@ -6027,6 +6028,9 @@ async function cancelListing({ assetIdHex, txidHex, vout }) {
   });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+  // Bust Discover's 60s registry cache so the offer-count badge drops
+  // immediately on cards rather than waiting for TTL.
+  invalidateDiscoverRegistryCache();
   return j;
 }
 
@@ -6154,6 +6158,7 @@ async function cancelRangeListing({ assetIdHex }) {
   });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+  invalidateDiscoverRegistryCache();
   return j;
 }
 
@@ -7791,11 +7796,76 @@ function updateTransferAmountHint() {
   if (!h) {
     hint.textContent = '';
     maxBtn.disabled = true;
+    populateTransferUtxoPicker(null);
     return;
   }
   const decUnit = h.decimals === 1 ? 'decimal' : 'decimals';
   hint.textContent = `· ${h.decimals} ${decUnit} · balance ${fmtAssetAmount(h.balance, h.decimals)} ${h.ticker}`;
   maxBtn.disabled = h.balance <= 0n;
+  populateTransferUtxoPicker(h);
+}
+
+// Populate the per-UTXO picker dropdown for the Send tab. Each option carries
+// the txid:vout outpoint as its value (so the broadcast can re-locate the
+// UTXO in the live holdings snapshot at preview time) and the amount as the
+// label. The picker stays as `<auto>` by default — the broadcast then falls
+// through to `buildAndBroadcastCXfer`'s greedy-largest picker. Used by users
+// who need exact UTXO control (e.g. invalidating a stale listing's UTXO).
+function populateTransferUtxoPicker(h) {
+  const sel = $('#x-utxo-pick');
+  if (!sel) return;
+  sel.innerHTML = '<option value="">auto · greedy-largest (default)</option>';
+  if (!h || !Array.isArray(h.utxos) || h.utxos.length === 0) {
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  // Sort by amount desc so the chunkiest UTXO surfaces first (common case:
+  // user listed a single big UTXO and now wants to invalidate it).
+  const sorted = [...h.utxos].sort((a, b) => Number(b.amount - a.amount));
+  for (const u of sorted) {
+    const out = u.utxo;
+    const opt = document.createElement('option');
+    opt.value = `${out.txid}:${out.vout}`;
+    opt.textContent = `${shorten(out.txid, 6)}:${out.vout} · ${fmtAssetAmount(u.amount, h.decimals)} ${h.ticker}`;
+    sel.appendChild(opt);
+  }
+}
+
+// Lock / unlock the amount field + Max button based on UTXO-picker state.
+// When a specific UTXO is chosen, the spend amount is fixed (you spend the
+// whole UTXO, change comes back to you), so let the form reflect that and
+// disable the inputs that no longer apply.
+function applyTransferUtxoLock() {
+  const pickerSel = $('#x-utxo-pick');
+  const amountInp = $('#x-amount');
+  const maxBtn    = $('#btn-x-max');
+  const assetSel  = $('#x-asset');
+  if (!pickerSel || !amountInp || !maxBtn || !assetSel) return;
+  const pick = pickerSel.value;
+  if (!pick) {
+    amountInp.disabled = false;
+    amountInp.title = '';
+    const h = _transferHoldings.get(assetSel.value);
+    maxBtn.disabled = !h || h.balance <= 0n;
+    return;
+  }
+  const h = _transferHoldings.get(assetSel.value);
+  if (!h) return;
+  const [pickTxid, pickVoutStr] = pick.split(':');
+  const pickVout = parseInt(pickVoutStr, 10);
+  const u = h.utxos.find(x => x.utxo.txid === pickTxid && x.utxo.vout === pickVout);
+  if (!u) {
+    pickerSel.value = '';   // stale — reset to auto
+    applyTransferUtxoLock();
+    return;
+  }
+  amountInp.value = fmtAssetAmountPlain(u.amount, h.decimals);
+  amountInp.disabled = true;
+  amountInp.title = `Locked to UTXO ${shorten(pickTxid, 6)}:${pickVout}'s amount. Switch back to "auto" to edit.`;
+  maxBtn.disabled = true;
+  // Clear any pending warning since the value now matches a real UTXO.
+  const warn = $('#x-amount-warn'); if (warn) { warn.textContent = ''; warn.style.display = 'none'; }
 }
 
 // Render an asset amount in display units WITHOUT thousands separators, so the
@@ -8010,11 +8080,20 @@ function setupTransferForm() {
   }
   const assetSel = $('#x-asset');
   if (assetSel) assetSel.addEventListener('change', () => {
+    // Reset the UTXO picker — its options are per-asset, so a stale selection
+    // from the previous asset would point at a UTXO that no longer applies.
+    const pick = $('#x-utxo-pick'); if (pick) pick.value = '';
     updateTransferAmountHint();
+    applyTransferUtxoLock();
     // Re-truncate any value already in the input — e.g. user pasted 18-decimal
     // ERC-20 amount, then picked an 8-decimal asset. Without this, the trim
     // wouldn't fire until the next keystroke.
     applyAmountTruncation();
+    invalidatePreview();
+  });
+  const utxoPicker = $('#x-utxo-pick');
+  if (utxoPicker) utxoPicker.addEventListener('change', () => {
+    applyTransferUtxoLock();
     invalidatePreview();
   });
   const maxBtn = $('#btn-x-max');
@@ -8061,7 +8140,24 @@ function setupTransferForm() {
       const h = holdings.get(assetIdHex);
       if (!h || h.balance < amount) throw new Error(`insufficient balance: have ${h ? fmtAssetAmount(h.balance, meta.decimals) : 0}, need ${fmtAssetAmount(amount, meta.decimals)}`);
 
-      pendingCXfer = { assetIdHex, recipientPubHex, amount, ticker: meta.ticker, decimals: meta.decimals };
+      // UTXO-picker integration. When the user chose a specific UTXO, resolve
+      // it from the freshly-fetched holdings (the same snapshot the broadcast
+      // will use) and pass it as forceUtxos so the picker doesn't fall back
+      // to greedy-largest. Validate that the chosen UTXO covers the amount —
+      // catches the edge case where an external change spent the UTXO between
+      // form-fill and Preview.
+      let forceUtxos = null;
+      const pickerVal = $('#x-utxo-pick')?.value || '';
+      if (pickerVal) {
+        const [pTxid, pVoutStr] = pickerVal.split(':');
+        const pVout = parseInt(pVoutStr, 10);
+        const u = h.utxos.find(x => x.utxo.txid === pTxid && x.utxo.vout === pVout);
+        if (!u) throw new Error(`chosen UTXO ${shorten(pTxid, 6)}:${pVout} is no longer in holdings — refresh and try again`);
+        if (u.amount < amount) throw new Error(`chosen UTXO holds ${fmtAssetAmount(u.amount, meta.decimals)} ${meta.ticker} — less than the requested ${fmtAssetAmount(amount, meta.decimals)}`);
+        forceUtxos = [u];
+      }
+
+      pendingCXfer = { assetIdHex, recipientPubHex, amount, ticker: meta.ticker, decimals: meta.decimals, forceUtxos };
 
       const recipientPub = hexToBytes(recipientPubHex);
       const recipientAddr = bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(recipientPub))]);
@@ -11743,11 +11839,47 @@ async function renderHoldings() {
           const aid = b.dataset.aid;
           const txidHex = b.dataset.txid;
           const vout = parseInt(b.dataset.vout, 10);
-          if (!confirm(`Cancel this listing? The signed offer will be removed from the marketplace immediately.`)) return;
+          // Try to locate the listed UTXO in current holdings so we can offer
+          // a "true cancel" path: self-CXFER the exact UTXO (consumes ONLY
+          // that outpoint via forceUtxos, not the user's full balance for the
+          // asset). Worker DELETE alone is sufficient to remove the offer
+          // from the marketplace, but doesn't invalidate the published
+          // (amount, blinding) opening — a paranoid maker who wants the UTXO
+          // unusable rather than just unlisted should self-spend.
+          const _h = holdings.get(aid);
+          const _u = _h?.utxos.find(x => x.utxo.txid === txidHex && x.utxo.vout === vout);
+          const includeSelfSpend = _u
+            ? confirm(
+                `Cancel this listing?\n\n` +
+                `[OK]     Remove from marketplace AND self-send the listed UTXO so it's permanently invalidated. Pays Bitcoin fees for one CXFER.\n\n` +
+                `[Cancel] Don't change anything. Use the inline "Cancel" again and pick the marketplace-only path if you'd prefer that.`,
+              )
+            : (confirm(`Cancel this listing? The signed offer will be removed from the marketplace immediately.`) ? false : null);
+          if (includeSelfSpend === null) return;
           b.disabled = true; b.textContent = 'cancelling…';
           try {
+            if (includeSelfSpend && _u) {
+              if (!ensureBurnerBackedUp('Cancel listing (signs a self-CXFER spending the listed UTXO)')) {
+                b.disabled = false; b.textContent = 'Cancel';
+                return;
+              }
+              const need = await estimateSatsForOp('cxfer');
+              if (!(await ensureSatsFunded(need, 'Cancelling listing'))) {
+                b.disabled = false; b.textContent = 'Cancel';
+                return;
+              }
+              b.textContent = 'self-spending…';
+              await buildAndBroadcastCXfer({
+                assetIdHex: aid,
+                recipientPubHex: bytesToHex(wallet.pub),
+                amount: _u.amount,
+                forceUtxos: [_u],
+              });
+            }
             await cancelListing({ assetIdHex: aid, txidHex, vout });
-            toast('Listing cancelled ✓', 'success');
+            toast(includeSelfSpend
+              ? 'Listing cancelled · UTXO self-spent · marketplace cleared ✓'
+              : 'Listing cancelled ✓', 'success');
             renderHoldings();
           } catch (e) {
             toast('Cancel failed: ' + e.message, 'error');
@@ -11876,8 +12008,27 @@ async function renderHoldings() {
           `).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>Pick UTXO to sell ▾ (smallest first; entire UTXO is sold — split via Send Privately first if you want a different size)</label>
+              <label>Pick UTXO to sell ▾ (smallest first; entire UTXO is sold)</label>
               <select data-field="utxo">${utxoOpts}</select>
+              <details style="margin-top:6px;">
+                <summary class="muted" style="cursor:pointer;font-size:11px;">Need a smaller UTXO? Split first ▾</summary>
+                <div style="margin-top:8px;padding:8px;border:1px dashed var(--ink-faint);background:var(--bg);">
+                  <div class="muted" style="font-size:11px;line-height:1.5;">
+                    Atomic intents sell the entire UTXO — to list less than the chosen UTXO holds, broadcast a self-CXFER first that splits it into <strong>${escapeHtml(target.ticker)} you-want-to-list</strong> + <strong>change</strong>. After it confirms (~10 min), the new smaller UTXO appears in the dropdown above.
+                  </div>
+                  <div class="form-row two" style="margin-top:8px;">
+                    <div>
+                      <label>New UTXO size (display units)</label>
+                      <input type="text" inputmode="decimal" data-field="split-amount" placeholder="e.g. 100">
+                    </div>
+                    <div style="display:flex;align-items:flex-end;">
+                      <button data-form-act="split" type="button" style="font-size:11px;">Split UTXO</button>
+                    </div>
+                  </div>
+                  <div class="muted" style="margin-top:6px;font-size:10px;">Spends the UTXO selected above; produces two new ones. Costs commit + reveal Bitcoin fees.</div>
+                  <div class="error" data-split-error style="margin-top:6px;"></div>
+                </div>
+              </details>
               <label style="margin-top:8px;">Recipient public key (33-byte compressed hex, 02… or 03…)</label>
               <input type="text" data-field="recipient" placeholder="02… or 03…" autocomplete="off" spellcheck="false">
               <div class="form-row two" style="margin-top:8px;">
@@ -11905,6 +12056,57 @@ async function renderHoldings() {
           formHost.querySelector('[data-form-act="cancel"]').onclick = () => {
             formHost.style.display = 'none';
             formHost.innerHTML = '';
+          };
+          // Split-UTXO helper. Atomic intents sell a whole UTXO, so a maker
+          // who wants to list less than one of their UTXOs holds needs to
+          // pre-split. This button broadcasts a self-CXFER that consumes the
+          // selected UTXO via forceUtxos and produces (amount + change), so
+          // the new smaller UTXO can be picked from the dropdown after
+          // confirmation. Doesn't auto-list — splits and waits.
+          formHost.querySelector('[data-form-act="split"]').onclick = async () => {
+            const splitErr = formHost.querySelector('[data-split-error]');
+            splitErr.textContent = '';
+            const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
+            const u = sortedUtxos[utxoIdx];
+            if (!u) { splitErr.textContent = 'pick the source UTXO above first'; return; }
+            const sizeStr = formHost.querySelector('[data-field="split-amount"]').value.trim();
+            if (!sizeStr) { splitErr.textContent = 'enter the new UTXO size'; return; }
+            let splitAmount;
+            try { splitAmount = parseAssetAmount(sizeStr, target.decimals); }
+            catch (e) { splitErr.textContent = e.message; return; }
+            if (splitAmount <= 0n) { splitErr.textContent = 'split size must be > 0'; return; }
+            if (splitAmount >= u.amount) {
+              splitErr.textContent = `split size (${fmtAssetAmount(splitAmount, target.decimals)}) must be < the chosen UTXO's amount (${fmtAssetAmount(u.amount, target.decimals)}) — otherwise no smaller UTXO is produced`;
+              return;
+            }
+            if (!confirm(
+              `Split this UTXO?\n\n` +
+              `Source UTXO: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} (${shorten(u.utxo.txid, 8)}:${u.utxo.vout})\n\n` +
+              `New UTXO #1: ${fmtAssetAmount(splitAmount, target.decimals)} ${target.ticker} (use this for the atomic intent)\n` +
+              `New UTXO #2: ${fmtAssetAmount(u.amount - splitAmount, target.decimals)} ${target.ticker} (change, stays in your wallet)\n\n` +
+              `Cost: one CXFER (commit + reveal Bitcoin fees, ~10 min for confirmation).`,
+            )) return;
+            if (!ensureBurnerBackedUp('Split UTXO (self-CXFER consuming the selected UTXO)')) return;
+            const need = await estimateSatsForOp('cxfer');
+            if (!(await ensureSatsFunded(need, 'Splitting UTXO'))) return;
+            const splitBtn = formHost.querySelector('[data-form-act="split"]');
+            const origLabel = splitBtn.textContent;
+            splitBtn.disabled = true; splitBtn.textContent = 'broadcasting…';
+            try {
+              const r = await buildAndBroadcastCXfer({
+                assetIdHex: aid,
+                recipientPubHex: bytesToHex(wallet.pub),
+                amount: splitAmount,
+                forceUtxos: [u],
+              });
+              toast(`Split broadcast · commit=${shorten(r.commitTxid, 6)} · wait ~10 min, then re-open this form to pick the new UTXO`, 'success', 8000);
+              formHost.style.display = 'none';
+              formHost.innerHTML = '';
+              renderHoldings();
+            } catch (e) {
+              splitErr.textContent = 'Split failed: ' + e.message;
+              splitBtn.disabled = false; splitBtn.textContent = origLabel;
+            }
           };
           formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
             errEl.textContent = '';
@@ -13338,6 +13540,22 @@ async function loadDiscoverRegistry(force = false) {
   _discoverRegistryCache = { net: NET.name, fetchedAt: now, data: j };
   return j;
 }
+// Force the next loadDiscoverRegistry() call to bypass the TTL. Called by any
+// flow that mutates marketplace state (cancel-listing, cancel-atomic-intent,
+// cancel-range-listing) so the offer-count / floor / atomic-pill on Discover
+// cards reflect the change without waiting up to 60s for the TTL to lapse.
+// If Discover is currently mounted, also re-render so the user sees the
+// update without manually clicking Refresh.
+function invalidateDiscoverRegistryCache() {
+  _discoverRegistryCache = { net: null, fetchedAt: 0, data: null };
+  // Also drop the per-asset attest / mint / burn negative-cache entries
+  // — those are cheap to refetch and stale negatives can hide updates.
+  // (Etch verifies are immutable so we keep those.)
+  if (typeof renderDiscover === 'function'
+      && document.querySelector('.tab.active[data-tab="discover"]')) {
+    renderDiscover(true).catch(() => {});
+  }
+}
 
 // Populate a Discover card after verification. `verify.ok` means the
 // on-chain CETCH validated and the values shown are canonical; `!verify.ok`
@@ -13686,19 +13904,37 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     ${marketCapBadge}
     ${(() => {
       // Live-market badge — flag and link to offers when this asset has any
-      // active listings (per-UTXO, range, or atomic intent). Counts here are
-      // raw KV counts (may include expired entries the worker is GC'ing
-      // lazily); the click destination is the Market tab which filters those
-      // out at render time, so the deep-link stays correct even when a count
-      // is slightly stale.
-      const offerCount = Number(a.listing_count || 0)
-                       + Number(a.range_listing_count || 0)
-                       + Number(a.atomic_intent_count || 0);
+      // active listings. Two count sources, in priority order:
+      //   1) `_marketCache.listings` (post-liveness-prune): if the user has
+      //      visited Market this session, we have authoritative live counts
+      //      that exclude listings whose UTXO has been spent on chain.
+      //   2) Worker raw `*_count` fields: includes UTXOs that may already
+      //      be spent (worker doesn't track spentness). Stale-prone but
+      //      always available.
+      // We label the source so a user seeing 0 here can tell whether it's
+      // genuinely empty or just unverified-yet-by-us.
+      const liveMap = _marketLiveCountsByAsset();
+      const haveLiveCounts = liveMap !== null;
+      // When Market has been loaded this session, an asset missing from the
+      // live map genuinely has zero live offers (its raw count is all spent).
+      // Treat missing as { all zero } so the stale-1-offer case collapses.
+      const liveCounts = haveLiveCounts
+        ? (liveMap.get(a.asset_id) || { listings: 0, ranges: 0, intents: 0, total: 0 })
+        : null;
+      const rawTotal = Number(a.listing_count || 0)
+                     + Number(a.range_listing_count || 0)
+                     + Number(a.atomic_intent_count || 0);
+      const offerCount = liveCounts ? liveCounts.total : rawTotal;
       if (offerCount <= 0) return '';
       const breakdown = [];
-      if (Number(a.listing_count || 0) > 0)         breakdown.push(`${a.listing_count} listing${a.listing_count === 1 ? '' : 's'}`);
-      if (Number(a.range_listing_count || 0) > 0)   breakdown.push(`${a.range_listing_count} range`);
-      if (Number(a.atomic_intent_count || 0) > 0)   breakdown.push(`${a.atomic_intent_count} atomic`);
+      const lc = liveCounts || {
+        listings: Number(a.listing_count || 0),
+        ranges:   Number(a.range_listing_count || 0),
+        intents:  Number(a.atomic_intent_count || 0),
+      };
+      if (lc.listings > 0) breakdown.push(`${lc.listings} listing${lc.listings === 1 ? '' : 's'}`);
+      if (lc.ranges > 0)   breakdown.push(`${lc.ranges} range`);
+      if (lc.intents > 0)  breakdown.push(`${lc.intents} atomic`);
       // Floor-price hint, only when the user has loaded Market once this
       // session (the cache fills there). Conservative — range listings
       // contribute their per-threshold price as the unit, which is an upper
@@ -13707,9 +13943,10 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       const floorTail = floor
         ? ` · <span style="cursor:help;" title="Lowest unit price across active offers. Range listings contribute price ÷ threshold, which is an upper bound — the maker may deliver more for the same total, so an actual fill from a range entry can be cheaper than this number.">floor ${escapeHtml(fmtUnitPriceSats(floor.unit))} sats/${escapeHtml(floor.ticker)}</span>`
         : '';
+      const liveTail = haveLiveCounts ? '' : ` · <span title="Counts come from worker registry — they may include listings whose UTXO is already spent on chain. Open Market to liveness-check and dedupe.">unverified</span>`;
       return `<div style="margin-top:6px;font-size:11px;">
         <a href="#" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="display:inline-block;padding:3px 8px;background:#0a8f43;color:#fff;text-decoration:none;border:1px solid #0a8f43;font-weight:bold;letter-spacing:0.05em;">▸ ${offerCount} live offer${offerCount === 1 ? '' : 's'} on Market</a>
-        <span class="muted" style="margin-left:8px;">${escapeHtml(breakdown.join(' · '))}${floorTail}</span>
+        <span class="muted" style="margin-left:8px;">${escapeHtml(breakdown.join(' · '))}${floorTail}${liveTail}</span>
       </div>`;
     })()}
     ${(() => {
@@ -13772,8 +14009,8 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       const safe = safeExternalUrl(extras?.external_url);
       return safe ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safe)} ↗</a></div>` : '';
     })()}
-    ${verified ? `<div class="flex" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center;">
-      <button data-act="discover-place-bid" data-aid="${escapeHtml(safeAssetId)}" data-ticker="${escapeHtml(ticker)}" data-decimals="${decimals}" type="button" title="Post a buy-side bid for this asset (off-chain bid book — SPEC §5.7.7)">Place bid</button>
+    ${verified ? `<div class="flex" style="gap:10px;margin-top:8px;flex-wrap:wrap;align-items:center;font-size:11px;">
+      <button data-act="discover-place-bid" data-aid="${escapeHtml(safeAssetId)}" data-ticker="${escapeHtml(ticker)}" data-decimals="${decimals}" type="button" title="Post a buy-side bid for this asset (off-chain bid book — SPEC §5.7.7)" style="font-size:11px;padding:3px 8px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);letter-spacing:0;">Place bid</button>
       <a href="#" data-act="discover-view-bids" data-aid="${escapeHtml(safeAssetId)}" data-ticker="${escapeHtml(ticker)}" data-decimals="${decimals}" style="font-size:11px;" title="View open bids on this asset"><span data-bid-count-for="${escapeHtml(safeAssetId)}">${verify._bidCount != null ? verify._bidCount : '…'}</span> open bid${verify._bidCount === 1 ? '' : 's'} ↗</a>
     </div>
     <div data-bid-host="${escapeHtml(safeAssetId)}" style="display:none;margin-top:10px;"></div>` : ''}
@@ -14007,7 +14244,11 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
 let _marketFloorCache = { src: null, map: null };
 function _marketFloorByAsset() {
   if (!_marketCache?.listings) return null;
-  if (_marketFloorCache.src === _marketCache) return _marketFloorCache.map;
+  // Key on the listings array reference, not the _marketCache object — the
+  // liveness prune at startMarketLivenessPrune replaces .listings (filter()
+  // returns a new array) but keeps the _marketCache object identity, so a
+  // _marketCache-keyed memo would serve stale data after a prune.
+  if (_marketFloorCache.src === _marketCache.listings) return _marketFloorCache.map;
   const map = new Map();
   for (const l of _marketCache.listings) {
     const a = l._asset;
@@ -14019,7 +14260,34 @@ function _marketFloorByAsset() {
     const cur = map.get(a.asset_id);
     if (!cur || u < cur.unit) map.set(a.asset_id, { unit: u, ticker: a.ticker || 'token' });
   }
-  _marketFloorCache = { src: _marketCache, map };
+  _marketFloorCache = { src: _marketCache.listings, map };
+  return map;
+}
+
+// Per-asset live offer counts, derived from _marketCache.listings AFTER the
+// liveness prune has filtered out spent UTXOs. Used by Discover to override
+// the worker's raw `listing_count` / `range_listing_count` /
+// `atomic_intent_count` (which still include UTXOs that have been spent on
+// chain — the worker doesn't track spentness). Same memoization +
+// fall-through-when-empty contract as the floor map.
+let _marketLiveCountCache = { src: null, map: null };
+function _marketLiveCountsByAsset() {
+  if (!_marketCache?.listings) return null;
+  // Same-key rationale as _marketFloorByAsset: the liveness prune swaps
+  // _marketCache.listings for a filtered copy, so memoize on that array.
+  if (_marketLiveCountCache.src === _marketCache.listings) return _marketLiveCountCache.map;
+  const map = new Map();
+  for (const l of _marketCache.listings) {
+    const aid = l._asset?.asset_id;
+    if (!aid) continue;
+    const cur = map.get(aid) || { listings: 0, ranges: 0, intents: 0, total: 0 };
+    if (l.kind === 'opening')      cur.listings++;
+    else if (l.kind === 'range')   cur.ranges++;
+    else if (l.kind === 'intent')  cur.intents++;
+    cur.total = cur.listings + cur.ranges + cur.intents;
+    map.set(aid, cur);
+  }
+  _marketLiveCountCache = { src: _marketCache.listings, map };
   return map;
 }
 
@@ -14316,13 +14584,12 @@ function applyMarketFilters() {
     const recencyLine = listedRel
       ? `listed ${escapeHtml(listedRel)} ago · expires ${expIso}`
       : `expires ${expIso}`;
-    // Network chip — small enough to inline next to the ticker. Same source
-    // resolution as Discover (asset record's stamped network, dapp default
-    // when missing).
+    // Network indicator — kept as plain micro-text (no border/background) so
+    // it doesn't compete with the kind/collision badges or the action row.
+    // Mainnet keeps a warm-amber tint as a subtle "real value" hint; signet
+    // sits in the standard muted color.
     const tileNet = (a && (a.network === 'mainnet' || a.network === 'signet')) ? a.network : NET.name;
-    const tileNetBadge = tileNet === 'mainnet'
-      ? `<span style="display:inline-block;padding:1px 5px;background:#fff8eb;color:#a04030;font-size:9px;border:1px solid #a04030;border-radius:2px;margin-left:6px;text-transform:uppercase;letter-spacing:0.05em;">mainnet</span>`
-      : `<span style="display:inline-block;padding:1px 5px;background:var(--bg-warm);color:var(--ink-mid);font-size:9px;border:1px solid var(--ink-faint);border-radius:2px;margin-left:6px;text-transform:uppercase;letter-spacing:0.05em;">signet</span>`;
+    const tileNetBadge = `<span style="margin-left:6px;font-size:9px;text-transform:uppercase;letter-spacing:0.05em;color:${tileNet === 'mainnet' ? '#a04030' : 'var(--ink-mid)'};" title="${tileNet === 'mainnet' ? 'Bitcoin mainnet asset — has real value.' : 'Signet (Bitcoin testnet) asset — no real value, suitable for testing only.'}">${tileNet}</span>`;
     tile.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
         <div><strong>${escapeHtml(a.ticker || '?')}</strong>${kindBadge}${collisionTileBadge}${tileNetBadge}</div>
@@ -14793,13 +15060,22 @@ async function renderDiscover(force = false) {
           const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
           const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
           const expIso = new Date((l.expiry || 0) * 1000).toISOString().slice(0,10);
+          // Duplicate-ticker warning — mirrors the Market tab so a buyer
+          // browsing this footer gallery can't accidentally trust an
+          // impostor that copied an existing asset's ticker.
+          const collisionDup = a._tickerCollision === 'duplicate'
+            ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before buying.">⚠ DUP</span>`
+            : a._tickerCollision === 'original'
+              ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">earliest</span>`
+              : '';
           const tile = document.createElement('div');
           tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);';
           tile.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:baseline;">
-              <div><strong>${escapeHtml(a.ticker || '?')}</strong> <span class="muted" style="font-size:10px;">${escapeHtml(shorten(safeAid, 4))}</span></div>
+              <div><strong>${escapeHtml(a.ticker || '?')}</strong>${collisionDup} <span class="muted" style="font-size:10px;">${escapeHtml(shorten(safeAid, 4))}</span></div>
               <div style="font-size:11px;" class="muted">${(() => { const r = relativeAge(l.listed_at); return r ? `listed ${escapeHtml(r)} ago · expires ${expIso}` : `expires ${expIso}`; })()}</div>
             </div>
+            ${a._tickerCollision === 'duplicate' ? `<div style="margin-top:6px;font-size:10px;color:var(--red);">⚠ ticker shared with an earlier asset — verify asset_id before trading</div>` : ''}
             <div style="margin-top:6px;font-size:18px;">${escapeHtml(fmtAssetAmount(BigInt(l.amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
             <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${(l.price_sats || 0).toLocaleString()} sats</strong>${(() => { const u = unitPriceSats(Number(l.price_sats || 0), BigInt(l.amount || 0), dec); return u != null ? `<span class="muted" style="font-size:11px;margin-left:6px;">· ${fmtUnitPriceSats(u)} sats/${escapeHtml(a.ticker || 'token')}</span>` : ''; })()}</div>
             <div style="margin-top:8px;font-size:10px;" class="muted">maker: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || '', 6))}</span></div>
