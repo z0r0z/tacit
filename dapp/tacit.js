@@ -79,7 +79,7 @@ function currentNetworkName() {
   return v === 'signet' ? 'signet' : 'mainnet';
 }
 let NET = NETWORKS[currentNetworkName()];
-const DUST = 546; // P2WPKH dust limit, conservative
+const DUST = 546; // Bitcoin Core's P2PKH dust threshold — safe universal floor (P2WPKH is 294, P2TR is 330). Kept for marketplace compatibility: third-party wallets receiving listing/atomic-swap outputs may reject sub-546.
 
 // ============== MAINNET BETA GUARDRAILS ==============
 // Mintable etches: allowed on mainnet from day one. Single-key mint authority
@@ -8318,6 +8318,33 @@ function stopPetchAutoRefresh() {
   if (_petchPollTimer) { clearInterval(_petchPollTimer); _petchPollTimer = null; }
 }
 
+// Live-poll Holdings while ANY held asset has pending T_PMINT entries
+// awaiting cap-credit. Without this, users have to manually hit ↻ Rescan
+// to watch the pending → spendable transition that lands at depth ≥ 3
+// (~30 min after broadcast). Auto-stops as soon as no pending remain so
+// idle wallets with everything credited don't burn requests.
+const HOLDINGS_POLL_INTERVAL_MS = 30 * 1000;
+let _holdingsPollTimer = null;
+function startHoldingsAutoRefresh() {
+  if (_holdingsPollTimer) return;
+  _holdingsPollTimer = setInterval(() => {
+    if (document.hidden) return;
+    if (!document.querySelector('.tab.active[data-tab="holdings"]')) return;
+    // Re-evaluate: if cache has no pending entries, stop polling.
+    const cached = _holdingsCache?.holdings;
+    if (cached) {
+      let hasPending = false;
+      for (const h of cached.values()) if (h.pending && h.pending.length > 0) { hasPending = true; break; }
+      if (!hasPending) { stopHoldingsAutoRefresh(); return; }
+    }
+    invalidateHoldingsCache();
+    renderHoldings().catch(() => {});
+  }, HOLDINGS_POLL_INTERVAL_MS);
+}
+function stopHoldingsAutoRefresh() {
+  if (_holdingsPollTimer) { clearInterval(_holdingsPollTimer); _holdingsPollTimer = null; }
+}
+
 function setupTabs() {
   $$('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -8327,6 +8354,7 @@ function setupTabs() {
       $('#tab-' + tab.dataset.tab).classList.add('active');
       if (tab.dataset.tab === 'wallet') { refreshWallet(); renderRecentEtches(); }
       if (tab.dataset.tab === 'holdings') { renderHoldings(); renderOffers(); renderActivity(); }
+      else stopHoldingsAutoRefresh();
       if (tab.dataset.tab === 'transfer') { refreshAssetSelect(); refreshRecipientRecents(); updateDerivedAddressHint(); refreshSatsSendBalance(); }
       if (tab.dataset.tab === 'drops') refreshDropsTab();
       if (tab.dataset.tab === 'claim') refreshClaimTab();
@@ -9311,8 +9339,21 @@ function setupPetchForm() {
             reveal: <a href="${NET.explorer}/tx/${r.revealTxid}" target="_blank" rel="noopener noreferrer" class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(r.revealTxid, 10))}</a><br>
             Anyone (including you) can mint <strong>${escapeHtml(limitInput.value)} ${escapeHtml(ticker)}</strong> per mint until the cap of <strong>${escapeHtml(capInput.value)}</strong> is reached. Minting opens after the next block confirms.
           </div>
+          <div style="margin-top:10px;"><button data-act="petch-open-in-discover" data-aid="${escapeHtml(r.assetIdHex)}" type="button">Open in Discover →</button></div>
         </div>`;
       if (typeof invalidateDiscoverRegistryCache === 'function') invalidateDiscoverRegistryCache();
+      // Wire the deep-link button: switch to Discover and ask the petch
+      // section's focus consumer to scroll/highlight the new tile once it
+      // renders. The asset_id won't appear in /petch-assets until the
+      // worker indexes it (1 conf + cron tick); we set the focus regardless
+      // so the highlight fires whenever it does land.
+      const openBtn = successEl.querySelector('[data-act="petch-open-in-discover"]');
+      if (openBtn) {
+        openBtn.onclick = () => {
+          pendingDiscoverFocus = r.assetIdHex;
+          $('.tab[data-tab="discover"]')?.click();
+        };
+      }
       toast(`Deployed ${ticker} ✓`, 'success', 8000);
     } catch (e) {
       errEl.textContent = `Deploy failed: ${e.message}`;
@@ -12842,7 +12883,15 @@ async function renderHoldings() {
   setStatus('#holdings-status', 'scanning', true);
   list.innerHTML = '<div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>';
   try {
-    const holdings = await scanHoldings();
+    // Fire chain-tip fetch in parallel with the holdings scan so the conf
+    // countdown banner ("X/3 confs · credit at block N") on pending T_PMINTs
+    // can render with depth info on the first paint, without doubling the
+    // latency budget. Failure tolerated — banner falls back to depth-less
+    // copy when tip is null.
+    const [holdings, tipHeight] = await Promise.all([
+      scanHoldings(),
+      getTip().catch(() => null),
+    ]);
     const arr = [...holdings.values()].sort((a, b) => Number(b.balance - a.balance));
     if (!arr.length) {
       // Funding hint is network-aware: faucet on signet, send-to-address
@@ -13004,21 +13053,47 @@ async function renderHoldings() {
         <div data-region="external-url">${externalUrlHTML(extras)}</div>
         ${h.ghosts.length ? `<div class="warn" style="margin-top:10px;font-size:11px;">⚠ ${h.ghosts.length} UTXO${h.ghosts.length>1?'s':''} hold commitments this wallet can't open. Try ↻ Rescan, or import a share-link for legacy/incompatible sends.</div>` : ''}
         ${h.pending && h.pending.length ? (() => {
-          // Pending T_PMINT mints split into two sub-states with different
-          // user-facing copy: (a) unconfirmed — still in mempool, no block
-          // height; (b) confirmed at depth < 3 (or worker hasn't yet credited
-          // it). Same h.pending bucket but the wait-for is different, so the
-          // banner reads accurately for each. SPEC §5.9 *Confirmation depth*.
+          // Pending T_PMINT mints split into two sub-states: (a) unconfirmed
+          // — still in mempool, no block height; (b) confirmed at depth < 3
+          // (or worker hasn't yet credited). For (b), surface a real conf
+          // countdown using the chain tip so users see "1/3 confs · credit
+          // at block N" instead of the static "awaiting ≥3 confs" — closes
+          // the loop on "how much longer?" without forcing them to compute
+          // tip - block_height by hand. SPEC §5.9 *Confirmation depth*.
+          const REQ = 3;
           const total = h.pending.reduce((s, p) => s + p.amount, 0n);
           const unconfirmed = h.pending.filter(p => !p.utxo?.status?.confirmed).length;
-          const confirmed = h.pending.length - unconfirmed;
+          const confirmedPmints = h.pending.filter(p => p.utxo?.status?.confirmed && Number.isInteger(p.utxo?.status?.block_height));
+          const confirmed = confirmedPmints.length;
           const totalStr = `${escapeHtml(fmtAssetAmount(total, h.decimals))} ${escapeHtml(h.ticker)}`;
           const n = h.pending.length, plural = n > 1 ? 's' : '';
+          // Depth math only meaningful when tip is known; otherwise fall back
+          // to depth-less copy so a transient mempool.space outage doesn't
+          // turn this into "NaN/3 confs".
+          const haveTip = Number.isInteger(tipHeight) && tipHeight > 0;
           let detail;
-          if (unconfirmed === n) detail = 'broadcast · awaiting block confirmation';
-          else if (confirmed === n) detail = 'confirmed · awaiting ≥3 confs for cap credit (SPEC §5.9)';
-          else detail = `${unconfirmed} unconfirmed · ${confirmed} awaiting ≥3 confs (SPEC §5.9)`;
-          return `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed #7d4ff7;background:#f5f1ff;color:#5a36c4;"><strong>⏳ ${n} mint${plural} pending cap-credit:</strong> ${totalStr} — ${detail}. Spendable once credited; ↻ Rescan in a few minutes.</div>`;
+          if (unconfirmed === n) {
+            detail = 'broadcast · awaiting block confirmation';
+          } else if (confirmed === n) {
+            if (haveTip) {
+              const depths = confirmedPmints.map(p => Math.max(1, tipHeight - p.utxo.status.block_height + 1));
+              const minDepth = Math.min(...depths);
+              const maxDepth = Math.max(...depths);
+              const minBlock = Math.min(...confirmedPmints.map(p => p.utxo.status.block_height));
+              const creditAt = minBlock + REQ - 1;
+              const blocksLeft = Math.max(0, REQ - minDepth);
+              const depthStr = minDepth === maxDepth ? `${minDepth}/${REQ}` : `${minDepth}–${maxDepth}/${REQ}`;
+              const tail = blocksLeft === 0
+                ? `confirmed · credit landing on next ↻ Rescan`
+                : `confirmed · ${depthStr} confs · credit at block ${creditAt} (~${blocksLeft * 10} min)`;
+              detail = tail;
+            } else {
+              detail = `confirmed · awaiting ≥${REQ} confs for cap credit (SPEC §5.9)`;
+            }
+          } else {
+            detail = `${unconfirmed} unconfirmed · ${confirmed} awaiting ≥${REQ} confs (SPEC §5.9)`;
+          }
+          return `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed #7d4ff7;background:#f5f1ff;color:#5a36c4;"><strong>⏳ ${n} mint${plural} pending cap-credit:</strong> ${totalStr} — ${detail}. Spendable once credited; refreshes automatically while this tab is open.</div>`;
         })() : ''}
         ${h.inflated && h.inflated.length ? (() => {
           // Distinguish T_PMINT failures (no rangeproof — failure is cap
@@ -14213,6 +14288,12 @@ async function renderHoldings() {
     }
     setStatus('#holdings-status', `${arr.length} asset${arr.length > 1 ? 's' : ''}`);
     setTabBadge('holdings', arr.length);
+    // Kick the holdings auto-refresh poll on/off based on whether anything
+    // is awaiting cap-credit. Self-stops once all pending have credited so
+    // an idle wallet doesn't burn requests.
+    const _hasPending = arr.some(h => h.pending && h.pending.length > 0);
+    if (_hasPending) startHoldingsAutoRefresh();
+    else stopHoldingsAutoRefresh();
   } catch (e) {
     list.innerHTML = `<div class="error">Scan failed: ${escapeHtml(e.message)}</div>`;
     setStatus('#holdings-status', '');
@@ -14787,6 +14868,16 @@ function getCachedDiscoverEtch(assetId, etchTxid) {
   // sha256-bound to etch_txid) but defensive: a poisoned cache entry from
   // some unknown vector should not silently override a fresh verify.
   if (etchTxid && e.etch_txid !== etchTxid) return null;
+  // Shape-evolution check: entries written before etcherXonly was added to
+  // the saved shape return e.ok=true with etcherXonly=undefined, and the
+  // card renders "Etcher —" forever because the positive cache never
+  // re-verifies. `null` is allowed (legitimately couldn't derive it);
+  // `undefined` means pre-field — drop and re-verify on next render.
+  if (!('etcherXonly' in e)) {
+    delete c.etches[assetId];
+    _scheduleDiscoverCacheFlush();
+    return null;
+  }
   return e;
 }
 function setCachedDiscoverEtch(assetId, entry) {
@@ -17210,6 +17301,24 @@ async function renderPetchDiscover() {
     list.innerHTML = tiles;
     if (statusEl) setStatus(statusEl, `${assets.length} asset${assets.length === 1 ? '' : 's'}`);
     _lastDiscoverPetchCount = assets.length; _bumpDiscoverBadge();
+    // Resolve a pending deep-link focus if the target landed in this list.
+    // The deploy-success "Open in Discover" button sets pendingDiscoverFocus
+    // to the freshly-deployed asset_id; the CETCH-side consumer in
+    // renderDiscover may run before the worker has indexed the petch (1
+    // conf + cron tick), so we re-resolve here on every petch render until
+    // it sticks.
+    if (pendingDiscoverFocus) {
+      const _aid = pendingDiscoverFocus;
+      const _card = list.querySelector(`.asset-card[data-petch-aid="${_aid}"]`);
+      if (_card) {
+        pendingDiscoverFocus = null;
+        requestAnimationFrame(() => {
+          _card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          _card.classList.add('highlight-pulse');
+          setTimeout(() => _card.classList.remove('highlight-pulse'), 1800);
+        });
+      }
+    }
     // Wire "Mint another?" links rendered pre-broadcast (for users who already
     // have an activity-log entry from a prior session). The post-broadcast
     // version of this link is wired inline by the click handler below.
@@ -17613,18 +17722,29 @@ async function renderDiscover(force = false) {
   // user's current query and ordering stay active across re-renders.
   applyDiscoverSort();
   applyDiscoverFilter();
-  // Deep-link consumer: if a Wallet-tab tile click set a target, find the
-  // corresponding card and scroll into view with a brief highlight pulse.
+  // Deep-link consumer: if a Wallet-tab tile click or the petch deploy
+  // success card set a target, find the corresponding card and scroll into
+  // view with a brief highlight pulse. Searches both the CETCH list
+  // (#discover-list, [data-aid]) and the petch list (#petch-discover-list,
+  // [data-petch-aid]) so freshly-deployed petches and CETCH-tile clicks
+  // both resolve. If the worker hasn't indexed the petch yet, the focus
+  // sticks until renderPetchDiscover next runs (auto-poll on this tab will
+  // pick it up within 30s of the asset becoming visible).
   if (pendingDiscoverFocus) {
     const aid = pendingDiscoverFocus;
-    pendingDiscoverFocus = null;
     requestAnimationFrame(() => {
-      const card = list.querySelector(`.asset-card[data-aid="${aid}"]`);
+      const cetchCard = list.querySelector(`.asset-card[data-aid="${aid}"]`);
+      const petchCard = document.querySelector(`#petch-discover-list .asset-card[data-petch-aid="${aid}"]`);
+      const card = cetchCard || petchCard;
       if (card) {
+        pendingDiscoverFocus = null;
         card.scrollIntoView({ behavior: 'smooth', block: 'center' });
         card.classList.add('highlight-pulse');
         setTimeout(() => card.classList.remove('highlight-pulse'), 1800);
       }
+      // If neither found, leave pendingDiscoverFocus set so the next
+      // renderPetchDiscover call (auto-poll, ~30s) can resolve it once the
+      // worker indexes the asset.
     });
   }
 }
