@@ -17064,7 +17064,15 @@ async function renderPetchDiscover() {
     if (statusEl) setStatus(statusEl, '');
     return;
   }
-  list.innerHTML = `<div class="muted" style="padding:14px;font-size:12px;"><span class="live-dots">loading</span></div>`;
+  // Only show the loading splash when there's nothing rendered yet. On
+  // re-renders (auto-refresh poll, post-click) keep the existing tiles
+  // visible while we fetch fresh data — otherwise every poll would briefly
+  // wipe the list, and the post-click render would lose the optimistic
+  // numbers we want to surface immediately.
+  const _hasExistingTiles = list.querySelector('[data-petch-aid]') !== null;
+  if (!_hasExistingTiles) {
+    list.innerHTML = `<div class="muted" style="padding:14px;font-size:12px;"><span class="live-dots">loading</span></div>`;
+  }
   if (statusEl) setStatus(statusEl, 'loading', true);
   try {
     let j;
@@ -17092,22 +17100,48 @@ async function renderPetchDiscover() {
     // explicit "mint another" click to re-enable. Honest copy: the cap is
     // global, this is a UX guard against accidental double-clicks, not a
     // protocol restriction.
-    const myPmintCountByAsset = (() => {
-      const m = new Map();
-      for (const e of loadActivity()) {
-        if (e.kind === 'pmint' && /^[0-9a-f]{64}$/.test(e.assetId || '')) {
-          m.set(e.assetId, (m.get(e.assetId) || 0) + 1);
-        }
+    //
+    // We split into two counts:
+    //   - myPmintCountByAsset: total pmints this device has ever broadcast,
+    //     drives the "✓ you minted N" disabled-button state.
+    //   - myRecentPmintCountByAsset: pmints within the last 15 min, used as
+    //     an optimistic pending-count overlay so the cap bar shows the user's
+    //     contribution before the worker's cron has indexed it (typically
+    //     5–15 min behind tip). Without this overlay, auto-refresh would
+    //     reset the bar to the worker's stale numbers between clicks (the
+    //     bug that surfaced when "Mint another" left the bar at 0 instead of
+    //     incrementing to 300).
+    const myPmintCountByAsset = new Map();
+    const myRecentPmintCountByAsset = new Map();
+    const FRESH_PMINT_WINDOW_MS = 15 * 60 * 1000;
+    const _now = Date.now();
+    for (const e of loadActivity()) {
+      if (e.kind !== 'pmint') continue;
+      if (!/^[0-9a-f]{64}$/.test(e.assetId || '')) continue;
+      myPmintCountByAsset.set(e.assetId, (myPmintCountByAsset.get(e.assetId) || 0) + 1);
+      if (_now - Number(e.ts || 0) < FRESH_PMINT_WINDOW_MS) {
+        myRecentPmintCountByAsset.set(e.assetId, (myRecentPmintCountByAsset.get(e.assetId) || 0) + 1);
       }
-      return m;
-    })();
+    }
     const tiles = assets.map(a => {
       const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
       const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
       const cap = a.cap_amount ? BigInt(a.cap_amount) : 0n;
-      const mintedNow = a.cumulative_minted ? BigInt(a.cumulative_minted) : 0n;
       const limit = a.mint_limit ? BigInt(a.mint_limit) : 0n;
-      const remaining = cap - mintedNow;
+      // Worker numbers (authoritative for chain state):
+      const workerMinted = a.cumulative_minted ? BigInt(a.cumulative_minted) : 0n;
+      const workerPending = Number(a.pending_pmint_count || 0);
+      // Local optimistic overlay: count of user's recent mints (last 15 min)
+      // that the worker may not yet have indexed. max() avoids double-counting
+      // once the worker's cron picks them up.
+      const myRecent = myRecentPmintCountByAsset.get(safeAid) || 0;
+      const effectivePending = Math.max(workerPending, myRecent);
+      // Cap-bar reflects credited + pending (matches Runes-style "watch the
+      // bar fill" UX where pending mints visibly contribute even before
+      // 3-conf credit lands). Without this, the user's just-broadcast mint
+      // wouldn't move the bar until ~30 min after broadcast.
+      const mintedNow = workerMinted + BigInt(effectivePending) * limit;
+      const remaining = cap > mintedNow ? cap - mintedNow : 0n;
       const remMints = limit > 0n ? remaining / limit : 0n;
       const pct = cap > 0n ? Number(mintedNow * 10000n / cap) / 100 : 0;
       const capFull = remaining <= 0n;
@@ -17167,9 +17201,8 @@ async function renderPetchDiscover() {
           <div style="margin-top:8px;height:6px;border:1px solid var(--ink);background:var(--bg);overflow:hidden;">
             <div data-petch-progress-bar style="height:100%;background:${capFull ? '#a04030' : '#7d4ff7'};width:${pct}%;transition:width 0.2s;"></div>
           </div>
-          <div data-petch-optimistic data-optimistic-minted="0" style="display:none;margin-top:6px;font-size:10px;color:#5a36c4;font-style:italic;"></div>
-          <div data-petch-pending style="margin-top:6px;font-size:10px;color:var(--ink-mid);${a.pending_pmint_count > 0 ? '' : 'display:none;'}" data-pending-count="${a.pending_pmint_count || 0}">
-            ${a.pending_pmint_count > 0 ? `${a.pending_pmint_count} mint${a.pending_pmint_count === 1 ? '' : 's'} pending (≥3 confs to credit)` : ''}
+          <div data-petch-pending style="margin-top:6px;font-size:10px;color:var(--ink-mid);${effectivePending > 0 ? '' : 'display:none;'}">
+            ${effectivePending > 0 ? `${effectivePending} mint${effectivePending === 1 ? '' : 's'} pending (≥3 confs to credit)${myRecent > 0 ? ` · includes your ${myRecent} recent` : ''}` : ''}
           </div>
           ${isSoftDisable ? `<div style="margin-top:6px;font-size:10px;"><a href="#" data-act="petch-mint-again" data-aid="${escapeHtml(safeAid)}" style="color:var(--ink-mid);text-decoration:underline;" title="Anyone (incl. you) can mint until the global cap fills — this just re-enables the button on this device.">Mint another?</a></div>` : ''}
         </div>`;
@@ -17233,94 +17266,16 @@ async function renderPetchDiscover() {
             setProgressStrip('pmint-progress', -1);
           }, 1200);
           toast(`Minted ${limitDisp} ${ticker} — pending until ≥3 confs`, 'success', 8000);
-          // Optimistic UI update: bump cap-progress + remaining-mints + pending
-          // counter on this tile right away so the user sees their action
-          // reflected without waiting for the next /petch-assets fetch (worker
-          // takes ~5 min to re-index, plus the 30s edge cache). The next render
-          // overwrites with authoritative numbers from chain — until then this
-          // is the accurate "what just happened" view. The mint is also
-          // recorded in the activity log via recordActivity() inside
-          // buildAndBroadcastPmint, so on the next renderPetchDiscover the
-          // button defaults to the "✓ you minted N" disabled state.
-          try {
-            const card = btn.closest('[data-petch-aid]');
-            if (card) {
-              const limAmt = BigInt(card.dataset.petchLimit || limitStr || '0');
-              const capAmt = BigInt(card.dataset.petchCap || '0');
-              const cardDec = parseInt(card.dataset.petchDecimals, 10) || 0;
-              // Bump cumulative-minted display
-              const mintedEl = card.querySelector('[data-petch-minted-display]');
-              if (mintedEl && capAmt > 0n) {
-                const prior = (() => {
-                  try { return parseAssetAmount(mintedEl.textContent.trim(), cardDec); }
-                  catch { return 0n; }
-                })();
-                const next = prior + limAmt;
-                mintedEl.textContent = fmtAssetAmount(next, cardDec);
-                // Bump progress bar
-                const bar = card.querySelector('[data-petch-progress-bar]');
-                if (bar) {
-                  const pct = capAmt > 0n ? Number(next * 10000n / capAmt) / 100 : 0;
-                  bar.style.width = `${Math.min(100, pct)}%`;
-                  if (next >= capAmt) bar.style.background = '#a04030';
-                }
-                // Bump remaining-mints
-                const remEl = card.querySelector('[data-petch-rem-mints]');
-                if (remEl && limAmt > 0n) {
-                  const rem = capAmt > next ? (capAmt - next) / limAmt : 0n;
-                  remEl.textContent = `${rem.toString()} mints remaining`;
-                }
-              }
-              // Bump pending counter ("N mints pending (≥3 confs to credit)")
-              const pendEl = card.querySelector('[data-petch-pending]');
-              if (pendEl) {
-                const priorPending = parseInt(pendEl.dataset.pendingCount, 10) || 0;
-                const nextPending = priorPending + 1;
-                pendEl.dataset.pendingCount = String(nextPending);
-                pendEl.textContent = `${nextPending} mint${nextPending === 1 ? '' : 's'} pending (≥3 confs to credit)`;
-                pendEl.style.display = '';
-              }
-              // "Your fresh mint is on its way" hint, separate from the
-              // generic pending counter so the user sees their own action
-              // attributed to them.
-              const optimisticEl = card.querySelector('[data-petch-optimistic]');
-              if (optimisticEl) {
-                const prior = BigInt(optimisticEl.dataset.optimisticMinted || '0');
-                optimisticEl.dataset.optimisticMinted = String(prior + limAmt);
-                optimisticEl.textContent = `+${fmtAssetAmount(prior + limAmt, cardDec)} ${ticker} pending — your mint, awaiting ≥3 confs for cap-credit`;
-                optimisticEl.style.display = '';
-              }
-              // Soft-lock the button: protocol does NOT cap mints per user,
-              // but accidental double-clicks burn fees on duplicate
-              // commit+reveal pairs. Disable persistently and offer a
-              // separate "Mint another" link below as the deliberate opt-in.
-              btn.disabled = true;
-              btn.textContent = `✓ you minted 1`;
-              // Insert/refresh the "Mint another?" link if it isn't already
-              // there (renders post-broadcast for first-time minters; the
-              // pre-rendered version only shows for re-loaded users with
-              // prior activity-log entries).
-              if (!card.querySelector('[data-act="petch-mint-again"]')) {
-                const wrap = document.createElement('div');
-                wrap.style.cssText = 'margin-top:6px;font-size:10px;';
-                wrap.innerHTML = `<a href="#" data-act="petch-mint-again" data-aid="${escapeHtml(card.dataset.petchAid || '')}" style="color:var(--ink-mid);text-decoration:underline;" title="Anyone (incl. you) can mint until the global cap fills — this just re-enables the button on this device.">Mint another?</a>`;
-                card.appendChild(wrap);
-                wrap.querySelector('[data-act="petch-mint-again"]').onclick = (ev) => {
-                  ev.preventDefault();
-                  const b = card.querySelector('button[data-act="petch-mint"]');
-                  if (b) {
-                    b.disabled = false;
-                    b.textContent = b.dataset.defaultLabel || 'Mint';
-                  }
-                  wrap.remove();
-                };
-              }
-            }
-          } catch (e) { console.warn('optimistic petch update failed', e); }
-          // Bust holdings cache so the new pending UTXO surfaces immediately.
+          // The cap bar + pending counter + button state are all derived
+          // from worker fields and the activity log inside renderPetchDiscover.
+          // recordActivity() inside buildAndBroadcastPmint already wrote our
+          // pmint entry, so the next render reads the right myRecent count
+          // and bumps the bar accordingly. This makes the optimistic state
+          // survive auto-refresh polls, which the previous in-place DOM
+          // mutation didn't (every 30s poll re-rendered from scratch and
+          // wiped the optimistic numbers — that was the "Mint another reset
+          // bar to 0" bug).
           if (typeof invalidateHoldingsCache === 'function') invalidateHoldingsCache();
-          // Refresh the petch list so the cap progress + pending counter update.
-          // (The optimistic block above already covers the in-flight wait.)
           renderPetchDiscover();
         } catch (e) {
           if (pmintStrip && pmintStrip.style.display !== 'none') {
