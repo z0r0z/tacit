@@ -750,6 +750,13 @@ const prfWallet = {
   // created (e.g. a later password-mode unlock seeing the blob via
   // _hasAnyExistingWallet and prompting for an unguessable passphrase).
   async _setupSession({ credentialId, priv, pub, pubHex, label }) {
+    // Welcome-flow exclusivity: ext / passkey / local are alternative auth
+    // paths, never combined. If the caller is mid-session in ext mode (e.g.
+    // a saved-passkey panel row clicked while wallet.ext is bound, or any
+    // future code path that lets ext + passkey overlap) drop the ext
+    // binding first so the resulting state is single-mode and the badges,
+    // mainnet hints, and backup gate all see one consistent identity.
+    if (wallet.ext) extWallet.disconnect();
     wallet.priv = new Uint8Array(priv); // copy: caller zeroes `priv` below
     wallet.pub = pub;
     wallet.mode = 'passkey';
@@ -7278,11 +7285,23 @@ function renderWalletCard(patch = {}) {
   const fundBtn = $('#btn-ext-fund');
   const xBtn = $('#btn-ext-connect-xverse');
   const uBtn = $('#btn-ext-connect-unisat');
+  const pkBtn = $('#btn-passkey-add');
   if (dripBtn) dripBtn.style.display = (onSignet && userLow && FAUCET_URL && faucetReady) ? '' : 'none';
   if (manualFaucetBtn) manualFaucetBtn.style.display = (onSignet && userLow) ? '' : 'none';
   if (fundBtn) fundBtn.style.display = hasExt ? '' : 'none';
   if (xBtn) xBtn.style.display = hasExt ? 'none' : '';
   if (uBtn) uBtn.style.display = hasExt ? 'none' : '';
+  // Passkey upgrade affordance: parallel to the ext-connect buttons. Shown
+  // only for local-passphrase users who could plausibly upgrade — not when
+  // already in passkey mode (redundant), not when an ext is bound (the
+  // welcome flow treats ext / passkey / local as exclusive paths and we
+  // preserve that here to avoid an unintended dual-mode state), and not
+  // when WebAuthn is unsupported / the page isn't a secure context.
+  if (pkBtn) {
+    const inPasskey = wallet.mode === 'passkey';
+    const passkeyOk = typeof prfWallet !== 'undefined' && prfWallet.available();
+    pkBtn.style.display = (passkeyOk && !inPasskey && !hasExt) ? '' : 'none';
+  }
   if (!onSignet || !userLow) { const fp = $('#faucet-panel'); if (fp) fp.style.display = 'none'; }
 
   // Mode badge.
@@ -15717,7 +15736,17 @@ async function rebindToExt() {
   // privkey bound to this external wallet's address. Generates a fresh one if
   // this wallet has never been seen on this device.
   const addr = wallet.ext.address;
+  // If the user was in passkey mode (wallet.mode='passkey') we're now
+  // switching out of it — clear the marker so the backup badge, mainnet
+  // hints, and ensureBurnerBackedUp gate stop treating this session as
+  // passkey-backed. The PRF map (the credential pointers) persists; only
+  // the in-memory active-mode flag and prfWallet.state are cleared.
+  if (wallet.mode === 'passkey') {
+    wallet.mode = null;
+    prfWallet.state = null;
+  }
   await wallet.load(addr);
+  setActiveWalletMode('ext');
   await refreshWallet();
   renderExtWalletPanel();
   // Connecting an external wallet is the strongest "I'm past step 1" signal.
@@ -15825,6 +15854,34 @@ function setupExtWalletButtons() {
     if (!confirm('Disconnect external wallet? Your tacit identity stays bound to it locally — reconnecting later will restore it.')) return;
     applyExtDisconnect();
     toast('External wallet disconnected', 'success');
+  };
+}
+
+// "Use a passkey" button in the wallet card primary-actions row. Mirrors
+// setupExtWalletButtons for the ext-connect buttons: a post-onboarding entry
+// point so users who picked local-passphrase at first load can later opt in
+// to a passkey without clearing storage. Visibility is gated in
+// renderWalletCard (hidden for ext / passkey / non-secure-context users).
+function setupPasskeyButtons() {
+  const pBtn = $('#btn-passkey-add');
+  if (!pBtn) return;
+  pBtn.onclick = async () => {
+    if (pBtn.disabled) return;
+    pBtn.disabled = true;
+    const orig = pBtn.textContent;
+    pBtn.textContent = 'opening…';
+    try {
+      const ok = await _showPasskeyModal();
+      if (ok) {
+        await refreshWallet();
+        toast('Passkey wallet active', 'success');
+      }
+    } catch (e) {
+      toast('Passkey: ' + (e?.message || e), 'error');
+    } finally {
+      pBtn.disabled = false;
+      pBtn.textContent = orig;
+    }
   };
 }
 
@@ -16540,6 +16597,7 @@ async function init() {
   setupFaqModal();
   setupWalletButtons();
   setupExtWalletButtons();
+  setupPasskeyButtons();
   setupUnisatEvents();
   setupEtchForm();
   setupTransferForm();

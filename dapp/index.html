@@ -1266,6 +1266,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-ext-fund" class="primary" style="display:none;">Top up tacit</button>
         <button id="btn-ext-connect-xverse" class="primary">Connect Xverse / Leather</button>
         <button id="btn-ext-connect-unisat" class="primary">Connect UniSat</button>
+        <button id="btn-passkey-add" class="primary" style="display:none;">Use a passkey</button>
         <button id="btn-faucet">Manual faucet</button>
       </div>
 
@@ -1756,22 +1757,28 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <span id="market-status" class="muted"></span>
     </div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:14px;font-size:12px;">
-        Bilateral OTC offers across all assets. Three settlement modes:
-        <ul style="margin:6px 0 6px 18px;padding:0;">
-          <li><strong>⚡ Atomic intent (recommended)</strong> — single Bitcoin tx settles both sides; the maker's CXFER and the taker's BTC payment go in or fail together. <strong>No counterparty trust.</strong> Click <em>Claim</em> on a ⚡ tile to lock the offer for 5 min while the maker generates a partial reveal targeted at your pubkey, then <em>Take</em> to broadcast.</li>
-          <li><strong>Opening</strong> — maker publishes the exact UTXO contents (amount + blinding factor) so anyone can verify what's for sale. Settlement is off-chain: pay the maker's address, then they broadcast a CXFER to your pubkey. <strong>Counterparty trust required</strong> — the maker can take your sats without delivering. Prefer atomic intents unless the maker insists on this path.</li>
-          <li><strong>Range</strong> — maker proves their balance is at least the listed amount without revealing the exact balance. Same off-chain settlement and trust assumptions as opening listings; suited to makers who want to keep their treasury confidential.</li>
-        </ul>
-        <div style="margin-top:8px;font-size:11px;">
-          <strong>Buttons:</strong>
-          <em>Verify</em> runs the full crypto/UTXO-liveness check on a listing without buying it.
-          On opening / range tiles, <em>Take</em> = pay the maker's BTC address, then they broadcast the CXFER (off-chain, trust-required).
-          On ⚡ atomic tiles the trustless flow runs in three steps: <em>Claim</em> reserves the intent for 5 min,
-          the maker then <em>Fulfil</em>s it (their button only), and you click <em>Take</em> to broadcast the single atomic settlement tx.
-          <em>Cancel</em> on a tile you made pulls your offer.
+      <details style="margin-bottom:14px;">
+        <summary style="cursor:pointer;font-size:11px;color:var(--ink-mid);padding:4px 0;">
+          <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;margin-right:4px;">▸</span><span style="text-transform:uppercase;letter-spacing:0.08em;">how the marketplace works</span>
+          <span style="margin-left:8px;font-style:italic;">settlement modes &amp; button reference</span>
+        </summary>
+        <div class="muted" style="margin-top:8px;font-size:12px;">
+          Bilateral OTC offers across all assets. Three settlement modes:
+          <ul style="margin:6px 0 6px 18px;padding:0;">
+            <li><strong>⚡ Atomic intent (recommended)</strong> — single Bitcoin tx settles both sides; the maker's CXFER and the taker's BTC payment go in or fail together. <strong>No counterparty trust.</strong> Click <em>Claim</em> on a ⚡ tile to lock the offer for 5 min while the maker generates a partial reveal targeted at your pubkey, then <em>Take</em> to broadcast.</li>
+            <li><strong>Opening</strong> — maker publishes the exact UTXO contents (amount + blinding factor) so anyone can verify what's for sale. Settlement is off-chain: pay the maker's address, then they broadcast a CXFER to your pubkey. <strong>Counterparty trust required</strong> — the maker can take your sats without delivering. Prefer atomic intents unless the maker insists on this path.</li>
+            <li><strong>Range</strong> — maker proves their balance is at least the listed amount without revealing the exact balance. Same off-chain settlement and trust assumptions as opening listings; suited to makers who want to keep their treasury confidential.</li>
+          </ul>
+          <div style="margin-top:8px;font-size:11px;">
+            <strong>Buttons:</strong>
+            <em>Verify</em> runs the full crypto/UTXO-liveness check on a listing without buying it.
+            On opening / range tiles, <em>Take</em> = pay the maker's BTC address, then they broadcast the CXFER (off-chain, trust-required).
+            On ⚡ atomic tiles the trustless flow runs in three steps: <em>Claim</em> reserves the intent for 5 min,
+            the maker then <em>Fulfil</em>s it (their button only), and you click <em>Take</em> to broadcast the single atomic settlement tx.
+            <em>Cancel</em> on a tile you made pulls your offer.
+          </div>
         </div>
-      </div>
+      </details>
       <div class="flex" style="gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
         <input id="market-filter-asset" type="text" placeholder="ticker / asset_id prefix…" style="flex:1;min-width:140px;">
         <select id="market-filter-kind" style="flex:0;">
