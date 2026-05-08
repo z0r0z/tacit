@@ -8294,6 +8294,30 @@ let _landerSort = (() => {
 })();
 
 // ============== TABS ==============
+// Live-poll the petch registry while the Discover tab is open so users see
+// the cap progress fill in near-real-time as other people mint — matches
+// Unisat-style "watch the bar" UX. Worker edge-caches /petch-assets at 30s
+// FRESH so polling at this rate mostly hits cache (cheap), and 30s is
+// frequent enough that hot launches feel live.
+const PETCH_POLL_INTERVAL_MS = 30 * 1000;
+let _petchPollTimer = null;
+function startPetchAutoRefresh() {
+  if (_petchPollTimer) return;
+  _petchPollTimer = setInterval(() => {
+    if (document.hidden) return;                              // tab backgrounded
+    if (!document.querySelector('.tab.active[data-tab="discover"]')) return;
+    // Skip if a mint is in flight on this device — its optimistic UI
+    // mutations would otherwise get blown away mid-broadcast.
+    const strip = document.getElementById('pmint-progress');
+    if (strip && strip.style.display !== 'none') return;
+    invalidatePetchCache();
+    renderPetchDiscover().catch(() => {});
+  }, PETCH_POLL_INTERVAL_MS);
+}
+function stopPetchAutoRefresh() {
+  if (_petchPollTimer) { clearInterval(_petchPollTimer); _petchPollTimer = null; }
+}
+
 function setupTabs() {
   $$('.tab').forEach(tab => {
     tab.onclick = () => {
@@ -8306,10 +8330,14 @@ function setupTabs() {
       if (tab.dataset.tab === 'transfer') { refreshAssetSelect(); refreshRecipientRecents(); updateDerivedAddressHint(); refreshSatsSendBalance(); }
       if (tab.dataset.tab === 'drops') refreshDropsTab();
       if (tab.dataset.tab === 'claim') refreshClaimTab();
-      if (tab.dataset.tab === 'discover') renderDiscover();
+      if (tab.dataset.tab === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
+      else stopPetchAutoRefresh();
       if (tab.dataset.tab === 'market') renderMarket();
     };
   });
+  // If discover is already the active tab on load (deep-link or restored
+  // session), kick the polling on without waiting for a tab click.
+  if (document.querySelector('.tab.active[data-tab="discover"]')) startPetchAutoRefresh();
 }
 
 // ============== WALLET ==============
@@ -17057,6 +17085,22 @@ async function renderPetchDiscover() {
       return;
     }
     const myWalletReady = wallet && wallet.address && typeof wallet.address === 'function';
+    // Local activity log gives us "this device has minted asset X" without
+    // any worker round-trip. The protocol does NOT cap mints per user (anyone
+    // can mint until the global cap fills) — but most users only want to mint
+    // once, so we surface a clear "you've minted" state and require an
+    // explicit "mint another" click to re-enable. Honest copy: the cap is
+    // global, this is a UX guard against accidental double-clicks, not a
+    // protocol restriction.
+    const myPmintCountByAsset = (() => {
+      const m = new Map();
+      for (const e of loadActivity()) {
+        if (e.kind === 'pmint' && /^[0-9a-f]{64}$/.test(e.assetId || '')) {
+          m.set(e.assetId, (m.get(e.assetId) || 0) + 1);
+        }
+      }
+      return m;
+    })();
     const tiles = assets.map(a => {
       const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
       const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
@@ -17067,6 +17111,7 @@ async function renderPetchDiscover() {
       const remMints = limit > 0n ? remaining / limit : 0n;
       const pct = cap > 0n ? Number(mintedNow * 10000n / cap) / 100 : 0;
       const capFull = remaining <= 0n;
+      const myMintCount = myPmintCountByAsset.get(safeAid) || 0;
       // Height-window check is best-effort here: tip + start_height come from
       // the worker's response. If we can't determine, leave the button enabled
       // and let buildAndBroadcastPmint fail loudly downstream rather than
@@ -17082,9 +17127,21 @@ async function renderPetchDiscover() {
       else if (beforeWindow) { mintDisabled = true; mintReason = `opens at block ${startH}`; }
       else if (afterWindow) { mintDisabled = true; mintReason = 'mint window closed'; }
       else if (!myWalletReady) { mintDisabled = true; mintReason = 'wallet not ready'; }
+      // UX guard: once this device has recorded a mint for this asset, default
+      // the button to disabled. The Mint-again link below re-enables the
+      // current button (data-mint-override on this card) so users who genuinely
+      // want a second mint can opt in deliberately.
+      else if (myMintCount > 0) { mintDisabled = true; mintReason = `✓ you minted ${myMintCount}`; }
       const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
+      // Reason a user-cap disable is "soft" (overridable) vs structural
+      // (cap full, before/after window, no wallet). The mint-again link only
+      // makes sense for the soft case.
+      const isSoftDisable = !capFull && !beforeWindow && !afterWindow && myWalletReady && myMintCount > 0;
+      // Decimal-safe limit display used by the optimistic update.
+      const limitDispEsc = escapeHtml(fmtAssetAmount(limit, dec));
+      const tickerEsc = escapeHtml(a.ticker || '');
       return `
-        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);margin-bottom:10px;">
+        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);margin-bottom:10px;">
           <div style="display:flex;align-items:center;gap:12px;">
             ${imgUrl
               ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
@@ -17096,29 +17153,46 @@ async function renderPetchDiscover() {
               </div>
               <div style="font-size:10px;color:var(--ink-mid);font-family:var(--mono);margin-top:2px;">${escapeHtml(shorten(safeAid, 12))}</div>
             </div>
-            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${mintDisabled ? '' : 'background:#7d4ff7;color:#fff;border-color:#5a36c4;'}">
-              ${mintDisabled ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${escapeHtml(fmtAssetAmount(limit, dec))}`}
+            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${mintDisabled ? '' : 'background:#7d4ff7;color:#fff;border-color:#5a36c4;'}">
+              ${mintDisabled ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${limitDispEsc}`}
             </button>
           </div>
           <div style="margin-top:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;color:var(--ink-mid);">
-            <span><strong style="color:var(--ink);">${escapeHtml(fmtAssetAmount(mintedNow, dec))}</strong> / ${escapeHtml(fmtAssetAmount(cap, dec))} ${escapeHtml(a.ticker || '')}</span>
+            <span><strong style="color:var(--ink);" data-petch-minted-display>${escapeHtml(fmtAssetAmount(mintedNow, dec))}</strong> / ${escapeHtml(fmtAssetAmount(cap, dec))} ${tickerEsc}</span>
             <span>·</span>
-            <span>${escapeHtml(remMints.toString())} mints remaining</span>
+            <span data-petch-rem-mints>${escapeHtml(remMints.toString())} mints remaining</span>
             <span>·</span>
-            <span>${escapeHtml(fmtAssetAmount(limit, dec))} per mint</span>
+            <span>${limitDispEsc} per mint</span>
           </div>
           <div style="margin-top:8px;height:6px;border:1px solid var(--ink);background:var(--bg);overflow:hidden;">
-            <div style="height:100%;background:${capFull ? '#a04030' : '#7d4ff7'};width:${pct}%;transition:width 0.2s;"></div>
+            <div data-petch-progress-bar style="height:100%;background:${capFull ? '#a04030' : '#7d4ff7'};width:${pct}%;transition:width 0.2s;"></div>
           </div>
           <div data-petch-optimistic data-optimistic-minted="0" style="display:none;margin-top:6px;font-size:10px;color:#5a36c4;font-style:italic;"></div>
-          ${a.pending_pmint_count > 0
-            ? `<div class="muted" style="margin-top:6px;font-size:10px;">${a.pending_pmint_count} mint${a.pending_pmint_count === 1 ? '' : 's'} pending (≥3 confs to credit)</div>`
-            : ''}
+          <div data-petch-pending style="margin-top:6px;font-size:10px;color:var(--ink-mid);${a.pending_pmint_count > 0 ? '' : 'display:none;'}" data-pending-count="${a.pending_pmint_count || 0}">
+            ${a.pending_pmint_count > 0 ? `${a.pending_pmint_count} mint${a.pending_pmint_count === 1 ? '' : 's'} pending (≥3 confs to credit)` : ''}
+          </div>
+          ${isSoftDisable ? `<div style="margin-top:6px;font-size:10px;"><a href="#" data-act="petch-mint-again" data-aid="${escapeHtml(safeAid)}" style="color:var(--ink-mid);text-decoration:underline;" title="Anyone (incl. you) can mint until the global cap fills — this just re-enables the button on this device.">Mint another?</a></div>` : ''}
         </div>`;
     }).join('');
     list.innerHTML = tiles;
     if (statusEl) setStatus(statusEl, `${assets.length} asset${assets.length === 1 ? '' : 's'}`);
     _lastDiscoverPetchCount = assets.length; _bumpDiscoverBadge();
+    // Wire "Mint another?" links rendered pre-broadcast (for users who already
+    // have an activity-log entry from a prior session). The post-broadcast
+    // version of this link is wired inline by the click handler below.
+    list.querySelectorAll('a[data-act="petch-mint-again"]').forEach(a => {
+      a.onclick = (ev) => {
+        ev.preventDefault();
+        const card = a.closest('[data-petch-aid]');
+        if (!card) return;
+        const b = card.querySelector('button[data-act="petch-mint"]');
+        if (b) {
+          b.disabled = false;
+          b.textContent = b.dataset.defaultLabel || 'Mint';
+        }
+        a.parentElement?.remove();
+      };
+    });
     list.querySelectorAll('button[data-act="petch-mint"]').forEach(btn => {
       btn.onclick = async () => {
         const etchTxid = btn.dataset.etchTxid;
@@ -17164,30 +17238,83 @@ async function renderPetchDiscover() {
           // reflected without waiting for the next /petch-assets fetch (worker
           // takes ~5 min to re-index, plus the 30s edge cache). The next render
           // overwrites with authoritative numbers from chain — until then this
-          // is the accurate "what just happened" view.
+          // is the accurate "what just happened" view. The mint is also
+          // recorded in the activity log via recordActivity() inside
+          // buildAndBroadcastPmint, so on the next renderPetchDiscover the
+          // button defaults to the "✓ you minted N" disabled state.
           try {
             const card = btn.closest('[data-petch-aid]');
             if (card) {
-              const minted = BigInt(limitStr || '0');
+              const limAmt = BigInt(card.dataset.petchLimit || limitStr || '0');
+              const capAmt = BigInt(card.dataset.petchCap || '0');
+              const cardDec = parseInt(card.dataset.petchDecimals, 10) || 0;
+              // Bump cumulative-minted display
+              const mintedEl = card.querySelector('[data-petch-minted-display]');
+              if (mintedEl && capAmt > 0n) {
+                const prior = (() => {
+                  try { return parseAssetAmount(mintedEl.textContent.trim(), cardDec); }
+                  catch { return 0n; }
+                })();
+                const next = prior + limAmt;
+                mintedEl.textContent = fmtAssetAmount(next, cardDec);
+                // Bump progress bar
+                const bar = card.querySelector('[data-petch-progress-bar]');
+                if (bar) {
+                  const pct = capAmt > 0n ? Number(next * 10000n / capAmt) / 100 : 0;
+                  bar.style.width = `${Math.min(100, pct)}%`;
+                  if (next >= capAmt) bar.style.background = '#a04030';
+                }
+                // Bump remaining-mints
+                const remEl = card.querySelector('[data-petch-rem-mints]');
+                if (remEl && limAmt > 0n) {
+                  const rem = capAmt > next ? (capAmt - next) / limAmt : 0n;
+                  remEl.textContent = `${rem.toString()} mints remaining`;
+                }
+              }
+              // Bump pending counter ("N mints pending (≥3 confs to credit)")
+              const pendEl = card.querySelector('[data-petch-pending]');
+              if (pendEl) {
+                const priorPending = parseInt(pendEl.dataset.pendingCount, 10) || 0;
+                const nextPending = priorPending + 1;
+                pendEl.dataset.pendingCount = String(nextPending);
+                pendEl.textContent = `${nextPending} mint${nextPending === 1 ? '' : 's'} pending (≥3 confs to credit)`;
+                pendEl.style.display = '';
+              }
+              // "Your fresh mint is on its way" hint, separate from the
+              // generic pending counter so the user sees their own action
+              // attributed to them.
               const optimisticEl = card.querySelector('[data-petch-optimistic]');
               if (optimisticEl) {
                 const prior = BigInt(optimisticEl.dataset.optimisticMinted || '0');
-                optimisticEl.dataset.optimisticMinted = String(prior + minted);
-                optimisticEl.textContent = `+${fmtAssetAmount(prior + minted, dec)} ${ticker} pending — refresh in ~5 min for chain-confirmed counters`;
+                optimisticEl.dataset.optimisticMinted = String(prior + limAmt);
+                optimisticEl.textContent = `+${fmtAssetAmount(prior + limAmt, cardDec)} ${ticker} pending — your mint, awaiting ≥3 confs for cap-credit`;
                 optimisticEl.style.display = '';
               }
-              // Re-disable the button as a soft-cooldown so a frustrated double-
-              // click doesn't fan out N parallel commit+reveal pairs (each
-              // burns sats). Re-enable after 6s — long enough for the user to
-              // see the "minted" toast, short enough to allow another mint
-              // since cap-fill needs many minters anyway. Anyone (incl. this
-              // user) can mint again until cap, so we don't permanently lock.
+              // Soft-lock the button: protocol does NOT cap mints per user,
+              // but accidental double-clicks burn fees on duplicate
+              // commit+reveal pairs. Disable persistently and offer a
+              // separate "Mint another" link below as the deliberate opt-in.
               btn.disabled = true;
-              btn.textContent = `Minted · cooldown 6s`;
-              setTimeout(() => {
-                btn.disabled = false;
-                btn.textContent = origLabel;
-              }, 6000);
+              btn.textContent = `✓ you minted 1`;
+              // Insert/refresh the "Mint another?" link if it isn't already
+              // there (renders post-broadcast for first-time minters; the
+              // pre-rendered version only shows for re-loaded users with
+              // prior activity-log entries).
+              if (!card.querySelector('[data-act="petch-mint-again"]')) {
+                const wrap = document.createElement('div');
+                wrap.style.cssText = 'margin-top:6px;font-size:10px;';
+                wrap.innerHTML = `<a href="#" data-act="petch-mint-again" data-aid="${escapeHtml(card.dataset.petchAid || '')}" style="color:var(--ink-mid);text-decoration:underline;" title="Anyone (incl. you) can mint until the global cap fills — this just re-enables the button on this device.">Mint another?</a>`;
+                card.appendChild(wrap);
+                wrap.querySelector('[data-act="petch-mint-again"]').onclick = (ev) => {
+                  ev.preventDefault();
+                  const b = card.querySelector('button[data-act="petch-mint"]');
+                  if (b) {
+                    b.disabled = false;
+                    b.textContent = b.dataset.defaultLabel || 'Mint';
+                  }
+                  wrap.remove();
+                };
+              }
             }
           } catch (e) { console.warn('optimistic petch update failed', e); }
           // Bust holdings cache so the new pending UTXO surfaces immediately.
