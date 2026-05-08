@@ -553,44 +553,9 @@ function _passphraseModal({ mode, title, reason, errorHint }) {
   });
 }
 
-// Tab-session privkey cache. After a successful unlock, decrypt the privkey
-// once and stash the bytes in sessionStorage so refreshes within the same tab
-// don't re-prompt. sessionStorage is per-tab and cleared on tab close, so the
-// at-rest encryption (localStorage AES-GCM blob) remains the boundary against
-// device theft / cross-tab access. The unlocked key was already in JS memory
-// for the duration of the session, so this doesn't expand the XSS surface.
-const SESSION_PRIV_BASE = 'tacit-session-priv-v1';
-function sessionPrivKey(boundExtAddr = null) {
-  return boundExtAddr
-    ? `${SESSION_PRIV_BASE}:${NET.name}:by:${boundExtAddr.toLowerCase()}`
-    : `${SESSION_PRIV_BASE}:${NET.name}`;
-}
-function _cacheSessionPriv(privBytes, boundExtAddr) {
-  try { sessionStorage.setItem(sessionPrivKey(boundExtAddr), bytesToHex(privBytes)); }
-  catch { /* sessionStorage may be unavailable in restricted contexts */ }
-}
-function _readSessionPriv(boundExtAddr) {
-  try {
-    const hex = sessionStorage.getItem(sessionPrivKey(boundExtAddr));
-    if (!hex || !/^[0-9a-f]{64}$/.test(hex)) return null;
-    const b = hexToBytes(hex);
-    secp.getPublicKey(b, true);
-    return b;
-  } catch {
-    try { sessionStorage.removeItem(sessionPrivKey(boundExtAddr)); } catch {}
-    return null;
-  }
-}
-function clearAllSessionPriv() {
-  try {
-    const toRemove = [];
-    for (let i = 0; i < sessionStorage.length; i++) {
-      const k = sessionStorage.key(i);
-      if (k && k.startsWith(SESSION_PRIV_BASE)) toRemove.push(k);
-    }
-    toRemove.forEach(k => sessionStorage.removeItem(k));
-  } catch {}
-}
+// The unlocked privkey lives only in `wallet.priv` (JS module memory). A page
+// reload prompts for the passphrase again — there is no persistent cache that
+// a post-unlock XSS could read without standing up its own passphrase prompt.
 
 async function _promptNewPassphrase(reason) {
   return _passphraseModal({ mode: 'new', title: 'set passphrase', reason });
@@ -620,18 +585,6 @@ const wallet = {
     const key = walletStorageKey(boundExtAddr);
     const raw = localStorage.getItem(key);
     const shape = _storageShape(raw);
-    // Tab-session fast path: if this tab already unlocked the same wallet,
-    // skip the passphrase prompt on refresh. Only meaningful when the on-disk
-    // blob is encrypted — empty/plaintext shapes need to run their setup or
-    // migration paths regardless.
-    if (shape === 'encrypted') {
-      const cached = _readSessionPriv(boundExtAddr);
-      if (cached) {
-        this.priv = cached;
-        this.pub = secp.getPublicKey(this.priv, true);
-        return;
-      }
-    }
     if (shape === 'empty') {
       // Reason copy varies with binding: when the burner is being created
       // alongside an external-wallet connect, name the relationship explicitly
@@ -678,7 +631,6 @@ const wallet = {
       throw new Error(`unknown wallet storage format at ${key}`);
     }
     this.pub = secp.getPublicKey(this.priv, true);
-    _cacheSessionPriv(this.priv, boundExtAddr);
   },
 
   async setPriv(hex, boundExtAddr = null) {
@@ -691,7 +643,6 @@ const wallet = {
     this.pub = secp.getPublicKey(b, true);
     const key = walletStorageKey(boundExtAddr);
     localStorage.setItem(key, await encryptPrivkey(b, passphrase));
-    _cacheSessionPriv(b, boundExtAddr);
   },
 
   async regenerate(boundExtAddr = null) {
@@ -700,7 +651,6 @@ const wallet = {
     this.pub = secp.getPublicKey(this.priv, true);
     const key = walletStorageKey(boundExtAddr);
     localStorage.setItem(key, await encryptPrivkey(this.priv, passphrase));
-    _cacheSessionPriv(this.priv, boundExtAddr);
   },
   address() { return p2wpkhAddress(this.pub); },
   pubHex()  { return bytesToHex(this.pub); },
@@ -1063,7 +1013,27 @@ function renderChainDivergenceBanner() {
 // Fails closed: errors propagate so callers can surface "couldn't verify
 // liveness" rather than silently treating an unreachable API as "not spent"
 // — that default made stale listings exploitable during mempool downtime.
-const getOutspend = (txid, vout) => apiJson(`/tx/${txid}/outspend/${vout}`);
+// Outspend cache: only stores SPENT results (once spent, always spent; the
+// answer never changes). Unspent results vary over time and aren't cached so
+// fresh checks (e.g., before broadcast) still hit the chain. In-flight Map
+// dedups concurrent callers — saves N×M hits when the market liveness prune
+// runs while a Verify click hits the same UTXO.
+const _outspendSpentCache = new Map();
+const _outspendInFlight = new Map();
+const getOutspend = (txid, vout) => {
+  const key = `${txid}:${vout}`;
+  if (_outspendSpentCache.has(key)) return Promise.resolve(_outspendSpentCache.get(key));
+  const existing = _outspendInFlight.get(key);
+  if (existing) return existing;
+  const p = apiJson(`/tx/${txid}/outspend/${vout}`)
+    .then((res) => {
+      if (res && res.spent) _outspendSpentCache.set(key, res);
+      return res;
+    })
+    .finally(() => { _outspendInFlight.delete(key); });
+  _outspendInFlight.set(key, p);
+  return p;
+};
 const broadcast = hex => apiText('/tx', { method: 'POST', body: hex });
 // Retry broadcast a few times on transient errors. The most common failure
 // is broadcasting a child tx (reveal) before the parent (commit) has been
@@ -1140,6 +1110,10 @@ function _appendTxCacheIndex(id) {
     localStorage.setItem(_txCacheIdxKey(), JSON.stringify(idx));
   } catch {}
 }
+// In-flight dedup: concurrent callers asking for the same txid share a single
+// network request instead of each firing their own. Crucial during cold-cache
+// loads where Discover + Holdings + Market hit shared ancestry simultaneously.
+const _txInFlight = new Map();
 const getTx = async (rawId) => {
   if (typeof rawId !== 'string') return null;
   const id = rawId.toLowerCase();
@@ -1148,14 +1122,20 @@ const getTx = async (rawId) => {
     const cached = localStorage.getItem(_txCacheKey(id));
     if (cached) return JSON.parse(cached);
   } catch { /* corrupted entry — fall through to network and overwrite */ }
-  let tx = null;
-  try { tx = await apiJson(`/tx/${id}`); } catch { return null; }
-  if (!tx) return null;
-  if (tx.status && tx.status.confirmed === true) {
-    try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); _appendTxCacheIndex(id); }
-    catch { /* quota exceeded → silently skip; cache is best-effort */ }
-  }
-  return tx;
+  const inflight = _txInFlight.get(id);
+  if (inflight) return inflight;
+  const p = (async () => {
+    let tx = null;
+    try { tx = await apiJson(`/tx/${id}`); } catch { return null; }
+    if (!tx) return null;
+    if (tx.status && tx.status.confirmed === true) {
+      try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); _appendTxCacheIndex(id); }
+      catch { /* quota exceeded → silently skip; cache is best-effort */ }
+    }
+    return tx;
+  })().finally(() => { _txInFlight.delete(id); });
+  _txInFlight.set(id, p);
+  return p;
 };
 
 // Per-network fee-rate cache. Today the only path that mutates `NET` is
@@ -2623,10 +2603,41 @@ const loadOpenings = () => {
   catch (e) { console.warn('openings parse failed; resetting to empty', e); _openingsCache = {}; }
   return _openingsCache;
 };
-const saveOpenings = o => {
-  _openingsCache = o;
-  try { localStorage.setItem(openKey(), JSON.stringify(o)); } catch {}
-};
+// Persist the cache to localStorage. Used by both immediate-write paths
+// (broadcast handlers calling recordOpening once) and the debounced flush
+// path (scanHoldings discovering many openings in a tight loop).
+function _writeOpeningsNow() {
+  if (!_openingsCache) return;
+  try { localStorage.setItem(openKey(), JSON.stringify(_openingsCache)); } catch {}
+}
+// Debounced flush: when a burst of recordOpening calls happens (e.g., a fresh
+// scan recovering N openings sequentially), settle to one localStorage write
+// after 50ms of quiet. Each write is O(N) JSON serialization of a growing
+// blob — without debounce that's quadratic on first scan.
+let _openingsFlushTimer = null;
+function _scheduleOpeningsFlush() {
+  if (_openingsFlushTimer) clearTimeout(_openingsFlushTimer);
+  _openingsFlushTimer = setTimeout(() => {
+    _openingsFlushTimer = null;
+    _writeOpeningsNow();
+  }, 50);
+}
+// Belt-and-braces: flush early if the tab is being hidden or closed so a
+// debounce in-flight isn't lost.
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && _openingsFlushTimer) {
+      clearTimeout(_openingsFlushTimer); _openingsFlushTimer = null;
+      _writeOpeningsNow();
+    }
+  });
+  window.addEventListener('beforeunload', () => {
+    if (_openingsFlushTimer) {
+      clearTimeout(_openingsFlushTimer); _openingsFlushTimer = null;
+      _writeOpeningsNow();
+    }
+  });
+}
 function recordOpening(txidHex, vout, assetIdHex, amount, blinding) {
   const o = loadOpenings();
   o[`${txidHex}:${vout}`] = {
@@ -2634,7 +2645,8 @@ function recordOpening(txidHex, vout, assetIdHex, amount, blinding) {
     amount: amount.toString(),
     blinding: bytesToHex(bigintToBytes32(blinding)),
   };
-  saveOpenings(o);
+  _openingsCache = o;
+  _scheduleOpeningsFlush();
 }
 function getOpening(txidHex, vout) {
   const o = loadOpenings();
@@ -2671,6 +2683,14 @@ function loadActivity() {
 }
 function recordActivity(entry) {
   if (!entry || !entry.kind) return;
+  // Any broadcast we record changes wallet state — kill the cached scan so
+  // the next renderHoldings / Preview / sats-send re-scans from chain. Cheap
+  // (cache is a single object reference); avoids stale balances after a send.
+  invalidateHoldingsCache();
+  // Market state often changes too (listings get taken, intents fulfilled,
+  // etc.) — invalidate so the next Market render hits the worker for fresh
+  // listings. Cheap; just resets the TTL timestamp.
+  if (typeof invalidateMarketCache === 'function') invalidateMarketCache();
   const arr = loadActivity();
   arr.unshift({
     kind:     String(entry.kind),
@@ -2697,11 +2717,13 @@ let _localXferIdsCache = null;
 let _localMintIdsCache = null;
 let _localBurnIdsCache = null;
 let _localOfferIdsCache = null;
+let _localAtomicIdsCache = null;
 function _invalidateLocalActivityCaches() {
   _localXferIdsCache = null;
   _localMintIdsCache = null;
   _localBurnIdsCache = null;
   _localOfferIdsCache = null;
+  _localAtomicIdsCache = null;
 }
 function _buildLocalActivitySet(kindFilter) {
   try {
@@ -2741,6 +2763,26 @@ function _localOfferAssetIds() {
     _localOfferIdsCache = ids;
   } catch { _localOfferIdsCache = new Set(); }
   return _localOfferIdsCache;
+}
+// Atomic-intent-only set, used by the ⚡ pill. Today this is identical to
+// `_localOfferAssetIds` because per-UTXO and range listings aren't persisted
+// to localStorage (only atomics are via `recordOpenOffer`). Kept as a
+// separate helper so future expansion (e.g. local listings persistence) can
+// distinguish atomic from non-atomic offers without rewriting the pill
+// predicate.
+function _localAtomicAssetIds() {
+  if (_localAtomicIdsCache) return _localAtomicIdsCache;
+  try {
+    const ids = new Set();
+    for (const e of loadActivity()) {
+      if (e.kind === 'list-atomic' && /^[0-9a-f]{64}$/.test(e.assetId || '')) ids.add(e.assetId);
+    }
+    for (const o of loadOpenOffers()) {
+      if (/^[0-9a-f]{64}$/.test(o.asset_id || '')) ids.add(o.asset_id);
+    }
+    _localAtomicIdsCache = ids;
+  } catch { _localAtomicIdsCache = new Set(); }
+  return _localAtomicIdsCache;
 }
 
 // ============== OPEN ATOMIC OFFERS ==============
@@ -2789,10 +2831,15 @@ function recordOpenOffer(offer) {
   });
   if (filtered.length > OFFERS_MAX) filtered.length = OFFERS_MAX;
   saveOpenOffers(filtered);
+  // Pill caches (_localOfferIdsCache, _localAtomicIdsCache) read from
+  // loadOpenOffers — invalidate so a freshly-published offer surfaces on
+  // the next render without waiting for an unrelated activity-log mutation.
+  _invalidateLocalActivityCaches();
 }
 function forgetOpenOffer(commitTxid) {
   const arr = loadOpenOffers().filter(o => o.commit_txid !== commitTxid);
   saveOpenOffers(arr);
+  _invalidateLocalActivityCaches();
 }
 
 // ============== ATOMIC-INTENT MAKER SECRETS ==============
@@ -3210,7 +3257,33 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
 // For each wallet UTXO, look at its parent tx's input[0].witness[1] for a tacit envelope.
 // Decode envelope, identify which envelope output corresponds to this UTXO,
 // match against local openings, verify rangeproofs.
-async function scanHoldings() {
+// Cached scanHoldings result. The full chain walk (getUtxos + per-UTXO
+// recursive validation + bulletproof batch-verify) is the slowest part of
+// the dApp. Memoize for a short TTL so Preview-button clicks, tab-switch
+// re-renders, and other balance peeks within the window don't re-pay it.
+// Broadcast handlers explicitly invalidate so the next scan picks up the
+// new state immediately. force=true bypasses the cache (Refresh button).
+let _holdingsCache = null;
+const HOLDINGS_CACHE_TTL_MS = 30 * 1000;
+function invalidateHoldingsCache() { _holdingsCache = null; }
+let _holdingsInFlight = null;
+async function scanHoldings(force = false) {
+  if (!force && _holdingsCache && (Date.now() - _holdingsCache.fetchedAt) < HOLDINGS_CACHE_TTL_MS) {
+    return _holdingsCache.holdings;
+  }
+  if (_holdingsInFlight) return _holdingsInFlight;
+  _holdingsInFlight = (async () => {
+    try {
+      const holdings = await _scanHoldingsImpl();
+      _holdingsCache = { fetchedAt: Date.now(), holdings };
+      return holdings;
+    } finally {
+      _holdingsInFlight = null;
+    }
+  })();
+  return _holdingsInFlight;
+}
+async function _scanHoldingsImpl() {
   const utxos = await getUtxos(wallet.address());
   const holdings = new Map();
   const txCache = new Map();
@@ -4002,6 +4075,10 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
   const revealTxid = txid(revealTx);
 
   await broadcastWithRetry(revealHex);
+  // Bump the worker's per-asset transfer_count immediately. Without this the
+  // counter only ticks on the next cron block-scan (5+ min on mainnet) and
+  // any tx in a block the cron hasn't reached is invisible to Discover.
+  postHint(revealTxid, 0);
 
   // Save self-side openings: change (vout K) + any padding (vouts K+1..m-1).
   // Recipients recover their own openings from chain via ECDH.
@@ -4496,6 +4573,17 @@ async function takeAxferOffer(offer) {
   const txHex = bytesToHex(serializeTx(tx));
   const finalTxid = txid(tx);
   await broadcastWithRetry(txHex);
+  // Bump the worker's per-asset transfer_count immediately for this T_AXFER
+  // settlement; otherwise atomic-OTC fills don't surface in Discover until
+  // the next cron tick. Pass price + amount so the worker also stamps the
+  // last-traded price for this asset — the AXFER tx itself doesn't carry
+  // those (they live in the off-chain intent record), so the dapp ferries
+  // them over. Worker validates the tx is an AXFER for the asset before
+  // recording. Best-effort; trade record is decorative, not security-critical.
+  postHint(finalTxid, 0, {
+    price_sats: Number(offer.price_sats) || 0,
+    amount:     String(offer.amount || ''),
+  });
 
   // Pre-stash the recipient opening so the taker's next holdings refresh sees
   // the new UTXO instantly (rather than waiting for ECDH-recovery to scan it).
@@ -4977,6 +5065,196 @@ async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
   return j;
 }
 
+// ============== BID INTENTS (off-chain bid book — SPEC §5.7.7) ==============
+// Buyer-initiated mirror of axintents. Bids are PURELY off-chain — buyer
+// signs an intent (no on-chain lock), seller claims by spinning up a regular
+// §5.7.6 atomic intent targeted at the bidder, bidder takes via the existing
+// §5.7.6 take flow. Settlement = T_AXFER, no new wire format.
+//
+// See SPEC §5.7.7 for the full design including trust analysis.
+
+function _bidIntentMsg(assetIdBytes, bidIdBytes, buyerPubBytes, amount, priceSats, expiry, nonceBytes) {
+  const amountLE = new Uint8Array(8); new DataView(amountLE.buffer).setBigUint64(0, BigInt(amount), true);
+  const priceLE = new Uint8Array(8);  new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const expiryLE = new Uint8Array(8); new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-bid-intent-v1'),
+    assetIdBytes, bidIdBytes, buyerPubBytes,
+    amountLE, priceLE, expiryLE,
+    nonceBytes,
+  ));
+}
+function _bidClaimMsg(assetIdBytes, bidIdBytes, sellerPubBytes, axintentIdBytes) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-bid-claim-v1'),
+    assetIdBytes, bidIdBytes, sellerPubBytes, axintentIdBytes,
+  ));
+}
+function _bidCancelMsg(assetIdBytes, bidIdBytes) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-bid-cancel-v1'),
+    assetIdBytes, bidIdBytes,
+  ));
+}
+
+// Publish a signed bid intent. assetIdHex is the asset to buy; amount is in
+// base units; priceSats is the total sats the bidder offers for `amount`
+// units; expiry is unix-seconds (≤ 30 days from now). Returns the worker's
+// stored intent record.
+async function publishBidIntent({ assetIdHex, amount, priceSats, expiry }) {
+  if (!WORKER_BASE) throw new Error('worker disabled — bids require worker');
+  if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid asset_id');
+  const amt = BigInt(amount);
+  if (amt <= 0n || amt >= (1n << 64n)) throw new Error('amount must be > 0 and < 2^64');
+  if (!Number.isInteger(priceSats) || priceSats < DUST) throw new Error(`price_sats must be integer ≥ ${DUST}`);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isInteger(expiry) || expiry <= now) throw new Error('expiry must be in the future');
+  if (expiry > now + 30 * 86400) throw new Error('expiry must be within 30 days');
+
+  const buyerPubBytes = wallet.pub;
+  const assetIdBytes = hexToBytes(assetIdHex);
+  // Random per-bid nonce so a bidder can post multiple independent bids on
+  // the same asset; bid_id derives from sha256(asset || pub || nonce)[:16].
+  const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
+  const bidIdBytes = sha256(concatBytes(assetIdBytes, buyerPubBytes, nonceBytes)).slice(0, 16);
+  const msg = _bidIntentMsg(assetIdBytes, bidIdBytes, buyerPubBytes, amt, priceSats, expiry, nonceBytes);
+  const sig = signSchnorr(msg, wallet.priv);
+  const body = {
+    bid_id: bytesToHex(bidIdBytes),
+    buyer_pubkey: bytesToHex(buyerPubBytes),
+    buyer_address: wallet.address(),
+    amount: amt.toString(),
+    price_sats: priceSats,
+    expiry,
+    nonce: bytesToHex(nonceBytes),
+    intent_sig: bytesToHex(sig),
+  };
+  const url = `${WORKER_BASE}/assets/${assetIdHex}/bid-intents?network=${encodeURIComponent(NET.name)}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `worker returned ${resp.status}`);
+  return j.intent;
+}
+
+// Browse open bids on an asset (sellers' view). Returns a list of bid
+// intents with optional `claim` field if a seller has already claimed.
+async function browseBidIntents(assetIdHex) {
+  if (!WORKER_BASE) return { count: 0, intents: [] };
+  if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid asset_id');
+  const url = `${WORKER_BASE}/assets/${assetIdHex}/bid-intents?network=${encodeURIComponent(NET.name)}`;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`worker returned ${resp.status}`);
+  return resp.json();
+}
+
+// Cancel a bid (only the bidder can; cancel_sig is signed under buyer_pubkey).
+async function cancelBidIntent(assetIdHex, bidIdHex) {
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  const assetIdBytes = hexToBytes(assetIdHex);
+  const bidIdBytes = hexToBytes(bidIdHex);
+  const msg = _bidCancelMsg(assetIdBytes, bidIdBytes);
+  const sig = signSchnorr(msg, wallet.priv);
+  const url = `${WORKER_BASE}/assets/${assetIdHex}/bid-intents/${bidIdHex}?network=${encodeURIComponent(NET.name)}`;
+  const resp = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cancel_sig: bytesToHex(sig) }),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `worker returned ${resp.status}`);
+  return j;
+}
+
+// Seller flow: fulfil a bid by publishing a §5.7.6 atomic intent and linking
+// it to the bid claim. The atomic intent is an open one — by §5.7.6 design
+// any taker who derives recipBlinding via ECDH can claim, but only the
+// bidder is incentivized to (the seller has signalled to them via the bid
+// claim). The bidder takes priority via the existing 5-min claim TTL.
+//
+// The seller picks (or auto-splits) a UTXO matching the bid's amount, posts
+// the atomic intent via publishAxferIntent (which broadcasts the commit tx
+// and registers it on the worker), then signs + POSTs the bid claim.
+async function fulfilBidIntent({ bid, sellerUtxo }) {
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!bid || !bid.bid_id || !bid.asset_id) throw new Error('invalid bid');
+  // Auto-pick a UTXO of the right amount if the caller didn't pass one. If no
+  // single UTXO matches the bid amount exactly, auto-split via self-CXFER —
+  // mirrors the listing flow so sellers don't have to consolidate manually
+  // before fulfilling.
+  if (!sellerUtxo) {
+    const holdings = await scanHoldings();
+    const h = holdings.get(bid.asset_id);
+    if (!h || h.utxos.length === 0) throw new Error('you hold none of this asset');
+    const wantAmt = BigInt(bid.amount);
+    if (h.balance < wantAmt) throw new Error(`insufficient balance: hold ${h.balance}, bid wants ${wantAmt}`);
+    const exact = h.utxos.find(u => u.amount === wantAmt);
+    if (exact) {
+      sellerUtxo = exact;
+    } else {
+      const sorted = [...h.utxos].sort((a, b) => Number(a.amount - b.amount));
+      const cover = sorted.find(u => u.amount >= wantAmt);
+      if (!cover) throw new Error('no single UTXO covers bid amount — consolidate first via Send to your own address');
+      if (!ensureBurnerBackedUp('Auto-split UTXO before fulfilling bid (one extra CXFER from your active wallet)')) {
+        throw new Error('cancelled');
+      }
+      const need = await estimateSatsForOp('cxfer');
+      if (!(await ensureSatsFunded(need, 'Auto-split before fulfilling bid'))) throw new Error('cancelled');
+      const splitResult = await buildAndBroadcastCXferMulti({
+        assetIdHex: bid.asset_id,
+        recipients: [{ pubHex: bytesToHex(wallet.pub), amount: wantAmt }],
+        forceUtxos: [cover],
+      });
+      const r0 = splitResult.recipients[0];
+      // The reveal tx is broadcast but mempool.space's UTXO listing may not
+      // yet reflect the new output. publishAxferIntent below calls
+      // scanHoldings → getUtxos which would miss the freshly-minted UTXO.
+      // Wait for the reveal tx to be visible before proceeding.
+      await waitForTxVisible(splitResult.revealTxid);
+      sellerUtxo = {
+        utxo: { txid: splitResult.revealTxid, vout: r0.vout },
+        amount: wantAmt,
+        blinding: r0.blinding,
+      };
+    }
+  }
+  if (!sellerUtxo.utxo) throw new Error('invalid seller UTXO shape');
+  if (BigInt(sellerUtxo.amount) !== BigInt(bid.amount)) {
+    throw new Error('seller UTXO amount must equal bid amount');
+  }
+  // Build + broadcast the atomic intent (commit tx + worker post).
+  // publishAxferIntent registers via /atomic-intents and returns the
+  // worker's intent_id, which we link from the bid claim.
+  const offer = await publishAxferIntent({
+    utxoTxid: sellerUtxo.utxo.txid,
+    utxoVout: sellerUtxo.utxo.vout,
+    priceSats: Number(bid.price_sats),
+    expiry: bid.expiry,  // align axintent expiry with bid expiry
+  });
+  // Sign + POST the bid claim.
+  const assetIdBytes = hexToBytes(bid.asset_id);
+  const bidIdBytes = hexToBytes(bid.bid_id);
+  const axIdBytes = hexToBytes(offer.intent_id);
+  const claimMsg = _bidClaimMsg(assetIdBytes, bidIdBytes, wallet.pub, axIdBytes);
+  const claimSig = signSchnorr(claimMsg, wallet.priv);
+  const url = `${WORKER_BASE}/assets/${bid.asset_id}/bid-intents/${bid.bid_id}/claim?network=${encodeURIComponent(NET.name)}`;
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      seller_pubkey: bytesToHex(wallet.pub),
+      axintent_id: offer.intent_id,
+      sig: bytesToHex(claimSig),
+    }),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `claim POST returned ${resp.status}`);
+  return { offer, claim: j.claim };
+}
+
 // ============== MINT BUILDER ==============
 // Issuer creates an additional supply commitment for an existing mintable asset_id.
 // Structure mirrors CETCH (commit + reveal Taproot script-path), but the envelope
@@ -5233,6 +5511,9 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount }) {
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxid = txid(revealTx);
   await broadcastWithRetry(revealHex);
+  // Hint the worker so the burn record (and a counter bump for the change
+  // CXFER, if any) lands without waiting on the cron tick.
+  postHint(revealTxid, 0);
 
   if (hasChange) recordOpening(revealTxid, 0, assetIdHex, changeAmt, changeBlinding);
 
@@ -5249,6 +5530,205 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount }) {
     commitTxid, revealTxid, assetIdHex,
     burnedAmount: burnAmt, changeAmount: changeAmt,
     commitFee, revealFee,
+  };
+}
+
+// ============== SATS SEND (plain Bitcoin out of tacit address) ==============
+// Lets a user move plain bitcoin out of their tacit wallet's address — e.g.
+// recovering leftover sats after using "Top up tacit" and not consuming all of
+// it on tacit ops. The on-chain mechanic is a normal P2WPKH spend; the only
+// tacit-specific concern is making absolutely sure no asset UTXO is spent as
+// plain sats. A 546-sat asset UTXO carries a confidential commitment whose
+// value is provably > 0 via the Pedersen commitment + bulletproof rangeproof;
+// spending it as plain bitcoin destroys the commitment with no recovery path.
+//
+// Defense layers (must ALL pass for a UTXO to be selected as a sats input):
+//   1) NOT in scanHoldings()'s asset-utxo / ghost-utxo set. This is the
+//      canonical answer; same code that drives Holdings UI.
+//   2) Value > DUST. Tacit asset outputs are exactly DUST (546). Real
+//      funding-sats UTXOs are typically thousands+. Rejecting the entire
+//      dust band is a cheap sanity backstop in case (1) ever has a bug.
+// If scanHoldings() throws or returns falsy → HARD ABORT. We never proceed
+// without ground-truth on which UTXOs are asset-bearing.
+
+// Strict P2WPKH bech32 v0 decoder. Returns { hrp, version: 0, program: 20 bytes }
+// or null. Mixed-case rejected per BIP-173. Programs other than 20 bytes (i.e.
+// P2WSH at 32 bytes, or anything wrong) are rejected — the dapp only
+// understands sending to P2WPKH receive addresses.
+//
+// P2TR (bech32m v1) is intentionally NOT supported in this revision. Adding it
+// requires the vendor bundle to export `bech32m`, which it currently doesn't.
+// Recipients holding P2TR-only addresses can route through any other wallet.
+function decodeP2wpkhAddress(addr) {
+  if (typeof addr !== 'string' || addr.length < 14 || addr.length > 90) return null;
+  // BIP-173: address must be all-lowercase or all-uppercase. Mixed case → reject.
+  const lower = addr.toLowerCase();
+  if (addr !== lower && addr !== addr.toUpperCase()) return null;
+  let decoded;
+  try { decoded = bech32.decode(lower); } catch { return null; }
+  if (!decoded.words || decoded.words.length === 0) return null;
+  const version = decoded.words[0];
+  if (version !== 0) return null; // not v0
+  let program;
+  try { program = bech32.fromWords(decoded.words.slice(1)); } catch { return null; }
+  if (program.length !== 20) return null; // P2WPKH must be 20-byte program (P2WSH would be 32)
+  return { hrp: decoded.prefix, version: 0, program: new Uint8Array(program) };
+}
+
+// Build the script for an arbitrary P2WPKH address. Used to construct the
+// recipient output of a sats-send. Network HRP is checked against current NET
+// at the call site, not here.
+function p2wpkhScriptFromProgram(program20) {
+  if (!(program20 instanceof Uint8Array) || program20.length !== 20) {
+    throw new Error('program must be 20 bytes (P2WPKH hash160)');
+  }
+  return concatBytes(new Uint8Array([0x00, 0x14]), program20);
+}
+
+// Filter the user's address UTXOs down to plain-sats inputs that are SAFE to
+// spend in a non-tacit P2WPKH transaction. `holdings` MUST be the result of a
+// successful scanHoldings() call — passing null/undefined throws to prevent
+// "scan failed → assume no asset UTXOs → spend everything" footguns.
+function selectSatsUtxosSafe(allUtxos, holdings) {
+  if (!holdings || !(holdings instanceof Map)) {
+    throw new Error('asset-utxo classifier unavailable: scanHoldings() must succeed before sats-send. Aborting for safety.');
+  }
+  // Build the canonical "do not spend as sats" set from holdings. Both validated
+  // asset utxos and ghost utxos (validation incomplete but parent might be tacit)
+  // are excluded. Better to refuse a legitimate sats UTXO than spend a tacit one.
+  const exclude = new Set();
+  for (const h of holdings.values()) {
+    for (const u of (h.utxos || []))    exclude.add(`${u.txid}:${u.vout}`);
+    for (const g of (h.ghosts || []))   exclude.add(`${g.txid}:${g.vout}`);
+    for (const i of (h.inflated || [])) exclude.add(`${i.txid}:${i.vout}`);
+  }
+  return (allUtxos || []).filter(u => {
+    const key = `${u.txid}:${u.vout}`;
+    if (exclude.has(key)) return false;       // gate 1
+    if ((u.value || 0) <= DUST) return false; // gate 2: dust band is asset territory
+    return true;
+  });
+}
+
+// Vbyte estimate for a plain P2WPKH-only spend. Tx structure: marker+flag (2) +
+// version(4) + locktime(4) + counts(2) + n×(36+1+4) inputs + 1+m×(8+1+22)
+// outputs + n×(1+71+1+34) witness. We use the same per-input/output constants
+// the rest of the dapp does to stay consistent with broadcast-time fee calc.
+function estSatsSendVb(numInputs, hasChange) {
+  const numOutputs = 1 + (hasChange ? 1 : 0);
+  return 11 + numInputs * inputVbytes + numOutputs * p2wpkhOutVbytes;
+}
+
+// Build an unsigned sats-send tx given preselected inputs + outputs. Caller
+// signs with signP2wpkhInput per input. Pure helper, no network or storage.
+function buildSatsSendTx({ inputs, recipientScript, recipientValue, changeScript, changeValue }) {
+  const outputs = [{ value: recipientValue, script: recipientScript }];
+  if (changeValue > 0) outputs.push({ value: changeValue, script: changeScript });
+  return {
+    version: 2, locktime: 0,
+    inputs: inputs.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs,
+  };
+}
+
+// End-to-end sats-send: validate, classify, pick, build, sign, broadcast.
+// Throws on any precondition failure — caller surfaces the message in the UI.
+// Returns { txid, inputsSpent, recipientValue, changeValue, fee, feeRate }.
+async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
+  // (1) Address validation. Strict P2WPKH only. HRP must match current NET.
+  const decoded = decodeP2wpkhAddress(recipientAddr);
+  if (!decoded) throw new Error('recipient is not a valid P2WPKH bech32 address');
+  if (decoded.hrp !== NET.hrp) throw new Error(`recipient address is for ${decoded.hrp === 'bc' ? 'mainnet' : decoded.hrp === 'tb' ? 'signet/testnet' : decoded.hrp}, current network is ${NET.name}`);
+
+  // (2) Amount validation. Positive integer at minimum DUST.
+  const amt = Number.isFinite(amountSats) ? Math.floor(amountSats) : NaN;
+  if (!Number.isInteger(amt) || amt <= 0) throw new Error('amount must be a positive integer (sats)');
+  if (amt < DUST) throw new Error(`amount must be at least ${DUST} sats (dust limit)`);
+
+  // (3) Ground-truth holdings for the asset-UTXO exclusion set. If this throws,
+  // we MUST bail — no fallback to "assume nothing is asset UTXO."
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) {
+    throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to send. Try again or hit ↻ Refresh first.');
+  }
+
+  // (4) UTXO classification + selection.
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => b.value - a.value);
+  if (sats.length === 0) {
+    throw new Error('no plain-sats UTXOs available to send. Top up first, or all your sats are bound up in asset commitments.');
+  }
+
+  // (5) Greedy input picking + fee estimate. Iterate growing the input set until
+  // amount + fee fits; recompute fee each iteration since vbytes scale with n.
+  const feeRate = await getFeeRate();
+  const recipientScript = p2wpkhScriptFromProgram(decoded.program);
+  const changeScript = p2wpkhScript(wallet.pub);
+  let picked = [], total = 0, fee = 0, hasChange = false, change = 0;
+  for (let i = 0; i < sats.length; i++) {
+    picked.push(sats[i]); total += sats[i].value;
+    // Try with-change (assume change > DUST). If change ends up <= DUST, recompute
+    // without-change (donate dust to fee).
+    const feeWithChange = feeFor(estSatsSendVb(picked.length, true), feeRate);
+    if (total >= amt + feeWithChange + DUST) {
+      fee = feeWithChange;
+      change = total - amt - fee;
+      hasChange = true;
+      break;
+    }
+    const feeNoChange = feeFor(estSatsSendVb(picked.length, false), feeRate);
+    if (total >= amt + feeNoChange) {
+      fee = feeNoChange;
+      change = 0;
+      hasChange = false;
+      break;
+    }
+  }
+  if (fee === 0) {
+    const have = total;
+    throw new Error(`insufficient sats: have ${have}, need ${amt} + fees (~${feeFor(estSatsSendVb(picked.length, hasChange), feeRate)})`);
+  }
+
+  // (6) Belt-and-suspenders re-classification on the FINAL picked set. Catches
+  // any race where holdings changed between the scan and the build (e.g. a
+  // CXFER landed mid-flow). If any picked input has reentered the asset set,
+  // hard-abort.
+  const recheck = await scanHoldings();
+  if (recheck && recheck instanceof Map) {
+    const reExclude = new Set();
+    for (const h of recheck.values()) {
+      for (const u of (h.utxos || []))    reExclude.add(`${u.txid}:${u.vout}`);
+      for (const g of (h.ghosts || []))   reExclude.add(`${g.txid}:${g.vout}`);
+      for (const i of (h.inflated || [])) reExclude.add(`${i.txid}:${i.vout}`);
+    }
+    for (const u of picked) {
+      if (reExclude.has(`${u.txid}:${u.vout}`)) {
+        throw new Error('one of the selected inputs is now classified as an asset UTXO (race with concurrent scan). Aborted for safety. Refresh and retry.');
+      }
+    }
+  }
+
+  // (7) Assemble + sign + broadcast.
+  const tx = buildSatsSendTx({
+    inputs: picked,
+    recipientScript,
+    recipientValue: amt,
+    changeScript,
+    changeValue: change,
+  });
+  for (let i = 0; i < tx.inputs.length; i++) {
+    tx.inputs[i].witness = signP2wpkhInput(tx, i, picked[i].value);
+  }
+  const txHex = bytesToHex(serializeTx(tx));
+  const sentTxid = txid(tx);
+  await broadcast(txHex);
+  return {
+    txid: sentTxid,
+    inputsSpent: picked.map(u => ({ txid: u.txid, vout: u.vout, value: u.value })),
+    recipientValue: amt,
+    changeValue: change,
+    fee,
+    feeRate,
   };
 }
 
@@ -6444,6 +6924,25 @@ function normalizeImageUri(uri) {
   if (cid) return `${IPFS_GATEWAY}${cid}`;
   return null;
 }
+// Render the supply-attestation badge that flags an asset as having a
+// cryptographically verified Pedersen opening. For IPFS-source attestations
+// we make the (IPFS) suffix a subtle dotted-underline link to the metadata
+// blob's gateway URL with the CID in the tooltip — anyone can fetch the same
+// bytes and re-run pedersenCommit(supply, blinding) == on-chain commitment
+// without trusting the worker. Worker-cache attestations stay non-link.
+function supplyAttestBadge(attestSource, imageUri) {
+  if (attestSource === 'ipfs') {
+    const gatewayUrl = normalizeImageUri(imageUri);
+    const m = String(imageUri || '').match(/^(?:ipfs:\/\/)?([A-Za-z0-9]+)/);
+    const cid = m ? m[1] : '';
+    const ipfsTag = gatewayUrl
+      ? `<a href="${escapeHtml(gatewayUrl)}" target="_blank" rel="noopener" title="${cid ? 'metadata CID ' + escapeHtml(cid) + ' — ' : ''}open in IPFS gateway" style="color:inherit;border-bottom:1px dotted currentColor;">IPFS</a>`
+      : 'IPFS';
+    return `<span title="(supply, blinding) opening fetched from IPFS and verified to open the on-chain commitment. Content-addressed — anyone can re-verify from chain + IPFS alone, no worker trust required.">✓ verified supply (${ipfsTag})</span>`;
+  }
+  return '<span title="(supply, blinding) opening fetched from the worker\'s cache and verified to open the on-chain commitment. IPFS is the primary attestation channel; this is a fast discovery cache. Same crypto either way.">✓ verified supply (worker cache)</span>';
+}
+
 // Validate a URI for storage in CETCH (UTF-8 bytes ≤ 256, must normalize successfully)
 function validateImageUriForEtch(uri) {
   if (!uri) return null; // empty is fine — image is optional
@@ -6523,7 +7022,7 @@ function setupTabs() {
       $('#tab-' + tab.dataset.tab).classList.add('active');
       if (tab.dataset.tab === 'wallet') { refreshWallet(); renderRecentEtches(); }
       if (tab.dataset.tab === 'holdings') { renderHoldings(); renderOffers(); renderActivity(); }
-      if (tab.dataset.tab === 'transfer') { refreshAssetSelect(); refreshRecipientRecents(); updateDerivedAddressHint(); }
+      if (tab.dataset.tab === 'transfer') { refreshAssetSelect(); refreshRecipientRecents(); updateDerivedAddressHint(); refreshSatsSendBalance(); }
       if (tab.dataset.tab === 'drops') refreshDropsTab();
       if (tab.dataset.tab === 'claim') refreshClaimTab();
       if (tab.dataset.tab === 'discover') renderDiscover();
@@ -6646,15 +7145,10 @@ async function refreshWallet() {
 }
 function setupWalletButtons() {
   $('#btn-refresh').onclick = refreshWallet;
-  // Lock: drop the tab-session privkey cache and reload. The encrypted blob in
-  // localStorage is untouched, so the next page load will prompt for the
-  // passphrase as it did pre-cache. Clears all bound/unbound entries so a user
-  // who has cycled through ext-wallet bindings re-locks every cached identity.
+  // Lock: reload. `wallet.priv` is module-memory only, so a reload drops the
+  // unlocked key and the next page load will prompt for the passphrase.
   const lockBtn = $('#btn-lock');
-  if (lockBtn) lockBtn.onclick = () => {
-    clearAllSessionPriv();
-    location.reload();
-  };
+  if (lockBtn) lockBtn.onclick = () => location.reload();
   // Generic copy-to-clipboard handler for any element marked with
   // `data-copy-target="<element-id>"`. Reads .textContent of the target
   // (so users always copy what they see, not a stale state), invokes
@@ -6771,10 +7265,14 @@ async function uploadMetadataToPinata(metadata) {
 // If the URI dereferences to JSON metadata (with an `image` field), follow it.
 // If it dereferences to image bytes, use the URI directly. Cached per session.
 const _resolvedImageCache = new Map();
+const _resolvedImageInFlight = new Map(); // imageUri → Promise; dedups concurrent fetches
 const _metadataExtraCache = new Map(); // imageUri → { name, description, external_url }
 async function resolveImageUri(imageUri) {
   if (!imageUri) return null;
   if (_resolvedImageCache.has(imageUri)) return _resolvedImageCache.get(imageUri);
+  const existing = _resolvedImageInFlight.get(imageUri);
+  if (existing) return existing;
+  const p = (async () => {
   const url = normalizeImageUri(imageUri);
   if (!url) { _resolvedImageCache.set(imageUri, null); return null; }
   let resolved = url;
@@ -6832,6 +7330,9 @@ async function resolveImageUri(imageUri) {
   _resolvedImageCache.set(imageUri, resolved);
   if (extra) _metadataExtraCache.set(imageUri, extra);
   return resolved;
+  })().finally(() => { _resolvedImageInFlight.delete(imageUri); });
+  _resolvedImageInFlight.set(imageUri, p);
+  return p;
 }
 function getMetadataExtras(imageUri) {
   return _metadataExtraCache.get(imageUri) || null;
@@ -7064,21 +7565,21 @@ function setupEtchForm() {
         <div class="tx-preview" style="margin-top:18px;">
           <h4>Preview envelope</h4>
           <div class="opreturn-decode">
-            <div class="head">CETCH · Taproot envelope</div>
+            <div class="head">CETCH · confidential token issuance</div>
             <div class="data">${name ? `name = "<strong>${escapeHtml(name)}</strong>" · ` : ''}ticker = "${escapeHtml(ticker)}" · decimals = ${decimals} · supply = ${escapeHtml(supplyStr)} (${supplyBase} base units)</div>
-            ${imageUri ? `<div class="data" style="display:flex;align-items:center;gap:10px;margin-top:6px;">image: <span style="font-family:var(--mono);font-size:11px;word-break:break-all;">${escapeHtml(imageUri)}</span><img src="${escapeHtml(normalizeImageUri(imageUri) || '')}" alt="" style="width:32px;height:32px;border:1px solid var(--ink);object-fit:cover;background:#fff;"></div>` : ''}
+            ${imageUri ? `<div class="data" style="display:flex;align-items:center;gap:10px;margin-top:6px;">image: <span style="font-family:var(--mono);font-size:11px;word-break:break-all;">${escapeHtml(imageUri)}</span><img loading="lazy" decoding="async" src="${escapeHtml(normalizeImageUri(imageUri) || '')}" alt="" style="width:32px;height:32px;border:1px solid var(--ink);object-fit:cover;background:#fff;"></div>` : ''}
             ${description ? `<div class="data" style="margin-top:6px;">description: <span style="font-style:italic;">${escapeHtml(description)}</span></div>` : ''}
             ${externalUrl ? `<div class="data" style="margin-top:4px;">link: <span style="font-family:var(--mono);font-size:11px;">${escapeHtml(externalUrl)}</span></div>` : ''}
             ${(description || externalUrl) ? `<div class="data" style="margin-top:6px;color:var(--ink-mid);font-size:10px;">↑ a JSON metadata blob will be pinned and the envelope will store its CID (instead of the raw image CID)</div>` : ''}
-            <div class="data">commitment C = supply·H + r·G (33B, supply hidden) — bytes computed at broadcast from your wallet key + commit input</div>
-            <div class="data" style="margin-top:6px;color:var(--ink-mid);">+ ~688-byte aggregated bulletproof proving supply ∈ [0, 2⁶⁴) — generated at broadcast (~3–5s)</div>
-            <div class="data" style="margin-top:6px;">supply policy: <strong>${mintable ? 'mintable (you can issue more later via T_MINT)' : 'fixed (no further supply increases possible)'}</strong></div>
+            <div class="data">supply commitment: 33 bytes that hide the actual amount — derived from your wallet key at broadcast</div>
+            <div class="data" style="margin-top:6px;color:var(--ink-mid);">+ ~700-byte zero-knowledge proof that the supply is a valid 64-bit number (~3–5s to generate at broadcast)</div>
+            <div class="data" style="margin-top:6px;">supply policy: <strong>${mintable ? 'mintable (you can issue more supply later)' : 'fixed (no further supply increases possible)'}</strong></div>
           </div>
-          <h4 style="margin-top:14px;">2-tx commit-reveal flow</h4>
-          <div class="row"><span class="idx">[1]</span><span class="label">commit tx</span> creates P2TR output (envelope merkle-committed in tweak)</div>
-          <div class="row"><span class="idx">[2]</span><span class="label">reveal tx</span> spends P2TR via script-path, exposing envelope + rangeproof in witness</div>
+          <h4 style="margin-top:14px;">2 Bitcoin transactions</h4>
+          <div class="row"><span class="idx">[1]</span><span class="label">commit tx</span> creates the on-chain envelope (locked until the reveal)</div>
+          <div class="row"><span class="idx">[2]</span><span class="label">reveal tx</span> publishes the envelope + proof, etching the asset</div>
           <h4 style="margin-top:14px;">Reveal tx outputs</h4>
-          <div class="row"><span class="idx">[0]</span><span class="label">P2WPKH (you)</span> ${fmtSats(DUST)} sats · holds the supply commitment</div>
+          <div class="row"><span class="idx">[0]</span><span class="label">your address</span> ${fmtSats(DUST)} sats · holds the supply commitment</div>
           <h4 style="margin-top:14px;">Estimated fees</h4>
           <div>commit ~${commitFeeEst} sats · reveal ~${revealFeeEst} sats · total ~${totalFeeEst} sats @ ${rate} sat/vB</div>
         </div>`;
@@ -7224,7 +7725,7 @@ function setupEtchForm() {
               <strong>✓ Etched ${escapeHtml(job.ticker)}</strong>
               <div class="muted" style="font-size:11px;margin-top:4px;">
                 Asset ID <span class="mono-box inline">${escapeHtml(shorten(r.assetIdHex, 8))}</span>
-                — supply commitment lives at vout 0 of the reveal tx. The recovered amount + blinding sit in localStorage; export your key to back them up.
+                — your wallet has indexed this asset; the supply opening is cached locally. Export your key from the Wallet tab to back it up.
               </div>
               <div class="flex" style="margin-top:10px;">
                 <button class="primary" id="btn-etch-goto-holdings">View on Holdings →</button>
@@ -7308,6 +7809,41 @@ function fmtAssetAmountPlain(amt, decimals) {
   const whole = (a / div).toString();
   const frac = (a % div).toString().padStart(decimals, '0').replace(/0+$/, '');
   return frac ? `${whole}.${frac}` : whole;
+}
+
+// Compute the unit price of a listing in sats per *whole* token, accounting
+// for the asset's decimals. Returns a Number (with up to 4 fractional digits
+// of resolution) for display formatting, or null when inputs are unusable.
+// BigInt-safe: keeps the division in 10^4 fixed-point so a 10000-sat listing
+// of 100 TAC at 8 decimals correctly resolves to 100, not 0 or 100.000…001.
+function unitPriceSats(priceSats, amountBaseUnits, decimals) {
+  const p = Number(priceSats);
+  if (!Number.isFinite(p) || p <= 0) return null;
+  let amt;
+  try { amt = BigInt(amountBaseUnits); } catch { return null; }
+  if (amt <= 0n) return null;
+  const PRECISION = 4n;                 // sub-sat precision for fractional unit prices
+  const num = BigInt(Math.floor(p)) * (10n ** BigInt(decimals)) * (10n ** PRECISION);
+  const fixed = num / amt;              // sats * 10^4 per whole token, truncated
+  return Number(fixed) / 10_000;
+}
+// Display helper for a unit price computed by unitPriceSats. Strips trailing
+// zeros, keeps thousands separators for whole-sat values, falls back to a
+// short fractional form for sub-1-sat prices.
+function fmtUnitPriceSats(sats) {
+  if (sats == null) return '';
+  if (sats >= 1) return sats.toLocaleString('en-US', { maximumFractionDigits: 4 });
+  // Sub-1-sat prices: render up to 4 decimals without trailing zeros.
+  return sats.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+}
+// Relative time string for a unix timestamp ("3m", "5h", "2d"). Returns ''
+// when ts is missing/zero so callers can drop the line entirely.
+function relativeAge(unixTs) {
+  if (!Number.isFinite(unixTs) || unixTs <= 0) return '';
+  const min = Math.max(0, Math.floor((Date.now() / 1000 - unixTs) / 60));
+  if (min < 60) return `${min}m`;
+  if (min < 1440) return `${Math.floor(min / 60)}h`;
+  return `${Math.floor(min / 1440)}d`;
 }
 
 // Live-truncate the Send-tab amount input against the selected asset's decimals.
@@ -7540,18 +8076,18 @@ function setupTransferForm() {
       $('#transfer-preview').style.display = 'block';
       $('#transfer-preview').innerHTML = `
         <div class="tx-preview" style="margin-top:14px;">
-          <h4>2-tx commit-reveal flow (Taproot envelope)</h4>
-          <div class="row"><span class="idx">[1]</span><span class="label">commit tx</span> creates P2TR output (envelope merkle-committed in tweak)</div>
-          <div class="row"><span class="idx">[2]</span><span class="label">reveal tx</span> spends P2TR via script-path + your asset UTXO; exposes envelope + aggregated rangeproof (~1 KB witness at m=2)</div>
+          <h4>2 Bitcoin transactions</h4>
+          <div class="row"><span class="idx">[1]</span><span class="label">commit tx</span> creates the on-chain envelope (locked until the reveal)</div>
+          <div class="row"><span class="idx">[2]</span><span class="label">reveal tx</span> spends the envelope + your asset UTXO; the witness carries a ~1 KB privacy proof</div>
           <h4 style="margin-top:14px;">Reveal tx outputs</h4>
-          <div class="row"><span class="idx">[0]</span><span class="label">P2WPKH</span> ${fmtSats(DUST)} sats → ${escapeHtml(shorten(recipientAddr, 14))} <span class="muted">(recipient's commitment)</span></div>
-          <div class="row"><span class="idx">[1]</span><span class="label">P2WPKH (you)</span> ${fmtSats(DUST)} sats <span class="muted">(your change commitment)</span></div>
+          <div class="row"><span class="idx">[0]</span><span class="label">recipient</span> ${fmtSats(DUST)} sats → ${escapeHtml(shorten(recipientAddr, 14))} <span class="muted">(commitment to their amount)</span></div>
+          <div class="row"><span class="idx">[1]</span><span class="label">you (change)</span> ${fmtSats(DUST)} sats <span class="muted">(commitment to your remaining balance)</span></div>
           <h4 style="margin-top:14px;">What stays private</h4>
           <div class="row">recipient amount: ${fmtAssetAmount(amount, meta.decimals)} ${escapeHtml(meta.ticker)}</div>
           <div class="row">your change: ${fmtAssetAmount(h.balance - amount, meta.decimals)} ${escapeHtml(meta.ticker)}</div>
-          <div class="row" style="color:var(--ink-mid);font-style:italic;">observers see only 33-byte commitments + a single 754-byte aggregated rangeproof — neither amount visible</div>
+          <div class="row" style="color:var(--ink-mid);font-style:italic;">observers see only 33-byte commitments + a single 754-byte privacy proof — neither amount is visible</div>
           <h4 style="margin-top:14px;">After broadcast</h4>
-          <div class="row" style="color:var(--ink-mid);">a share-link will be generated — recipients can recover the amount from chain alone, but the link lets them import immediately without rescanning</div>
+          <div class="row" style="color:var(--ink-mid);">a share-link is generated — the recipient can recover their balance from chain alone, but the link lets them import immediately without rescanning</div>
           <h4 style="margin-top:14px;">Estimated fees</h4>
           <div>commit ~${commitFeeEst} sats · reveal ~${revealFeeEst} sats · total ~${totalFeeEst} sats @ ${rate} sat/vB</div>
         </div>`;
@@ -7633,6 +8169,252 @@ function setupTransferForm() {
     } finally {
       $('#btn-transfer-broadcast').disabled = false;
       $('#btn-transfer-broadcast').textContent = '2. Confirm & send';
+    }
+  };
+}
+
+// ============== SATS-SEND UI ==============
+// Plain-bitcoin-out flow on the Send tab. Mirrors the token-transfer pattern
+// (live validation, decimals/balance hint, Max button, Preview→Confirm two-
+// step) but the safety story is much heavier: the asset-UTXO exclusion logic
+// is the only thing standing between a user and accidentally burning their
+// tacit holdings. See the SATS SEND section above for the underlying
+// primitives; everything UI-side here is plumbing on top of those.
+let pendingSatsSend = null;
+
+// Cached snapshot of the most-recent sats-utxo classification. Lets the amount
+// hint and Max button render synchronously without re-scanning chain on every
+// keystroke. Populated by refreshSatsSendBalance(); cleared on tab-leave so
+// stale data doesn't drive stale Max calculations.
+let _satsSendCache = null;
+
+async function refreshSatsSendBalance() {
+  const hint = $('#s-amount-hint');
+  const maxBtn = $('#btn-s-max');
+  if (!hint || !maxBtn) return;
+  hint.textContent = 'loading…';
+  maxBtn.disabled = true;
+  try {
+    const [holdings, allUtxos] = await Promise.all([
+      scanHoldings(),
+      getUtxos(wallet.address()),
+    ]);
+    if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan unavailable');
+    const sats = selectSatsUtxosSafe(allUtxos, holdings);
+    const total = sats.reduce((acc, u) => acc + (u.value || 0), 0);
+    _satsSendCache = { sats, total, fetchedAt: Date.now() };
+    hint.textContent = sats.length
+      ? `· available ${total.toLocaleString('en-US')} sats across ${sats.length} UTXO${sats.length === 1 ? '' : 's'}`
+      : '· no plain-sats UTXOs available';
+    maxBtn.disabled = sats.length === 0;
+  } catch (e) {
+    _satsSendCache = null;
+    hint.textContent = `· unable to load: ${e.message}`;
+    maxBtn.disabled = true;
+  }
+}
+
+// Live recipient-address validation hint. Mirrors updateDerivedAddressHint
+// (token-mode) but for the bech32 P2WPKH path.
+function updateSatsRecipientHint() {
+  const inputEl = $('#s-recipient-addr');
+  const hintEl = $('#s-recipient-hint');
+  if (!inputEl || !hintEl) return;
+  const raw = inputEl.value.trim().toLowerCase().replace(/\s/g, '');
+  if (!raw) { hintEl.style.display = 'none'; hintEl.textContent = ''; return; }
+  const decoded = decodeP2wpkhAddress(raw);
+  if (!decoded) {
+    hintEl.style.display = '';
+    hintEl.style.color = 'var(--red)';
+    // Specific nudges for common confusions, same approach as the token-recipient field.
+    if (/^bc1p|^tb1p/.test(raw)) {
+      hintEl.textContent = 'looks like a P2TR (taproot) address — currently we only send to P2WPKH (bc1q… / tb1q…). Route via another wallet for P2TR.';
+    } else if (/^0x[0-9a-f]{40}$/.test(raw)) {
+      hintEl.textContent = 'looks like an Ethereum address — sats-send needs a Bitcoin P2WPKH bech32 address (bc1q… on mainnet, tb1q… on signet).';
+    } else if (/^[13]/.test(raw)) {
+      hintEl.textContent = 'looks like a legacy Bitcoin address — currently we only send to bech32 P2WPKH (bc1q… / tb1q…).';
+    } else {
+      hintEl.textContent = 'not a valid P2WPKH bech32 address';
+    }
+    return;
+  }
+  if (decoded.hrp !== NET.hrp) {
+    hintEl.style.display = '';
+    hintEl.style.color = 'var(--red)';
+    hintEl.textContent = `address is for ${decoded.hrp === 'bc' ? 'mainnet' : decoded.hrp === 'tb' ? 'signet/testnet' : decoded.hrp}, current network is ${NET.name} — switch network or use a matching address`;
+    return;
+  }
+  hintEl.style.display = '';
+  hintEl.style.color = 'var(--ink-mid)';
+  hintEl.textContent = `→ valid P2WPKH on ${NET.name}`;
+}
+
+function setupSatsSendForm() {
+  // Mode toggle — clicking either pill swaps the visible form. Token form is
+  // the default (active class set in HTML); sats form is hidden initially.
+  document.querySelectorAll('#send-mode-pills [data-send-mode]').forEach(btn => {
+    btn.onclick = () => {
+      const mode = btn.dataset.sendMode;
+      document.querySelectorAll('#send-mode-pills [data-send-mode]').forEach(b => b.classList.toggle('active', b === btn));
+      const tokenEl = $('#send-mode-token');
+      const satsEl = $('#send-mode-sats');
+      if (tokenEl) tokenEl.style.display = mode === 'token' ? '' : 'none';
+      if (satsEl) satsEl.style.display = mode === 'sats' ? '' : 'none';
+      if (mode === 'sats') refreshSatsSendBalance();
+    };
+  });
+
+  // Invalidate a stale Preview if the user edits the form afterwards. Same
+  // pattern as the token-transfer form — we never want Broadcast to operate
+  // on a job whose visible form has since changed.
+  const invalidatePreview = () => {
+    pendingSatsSend = null;
+    const broadcastBtn = $('#btn-sats-broadcast');
+    if (broadcastBtn) broadcastBtn.disabled = true;
+    const preview = $('#sats-preview');
+    if (preview) preview.style.display = 'none';
+  };
+
+  const recipInput = $('#s-recipient-addr');
+  if (recipInput) recipInput.addEventListener('input', () => {
+    updateSatsRecipientHint();
+    invalidatePreview();
+  });
+
+  const amountInput = $('#s-amount');
+  if (amountInput) amountInput.addEventListener('input', () => {
+    // Strip non-digits aggressively — sats are integers, no decimals.
+    const cleaned = amountInput.value.replace(/[^0-9]/g, '');
+    if (cleaned !== amountInput.value) amountInput.value = cleaned;
+    invalidatePreview();
+  });
+
+  const maxBtn = $('#btn-s-max');
+  if (maxBtn) maxBtn.onclick = async () => {
+    if (!_satsSendCache || _satsSendCache.sats.length === 0) {
+      await refreshSatsSendBalance();
+      if (!_satsSendCache || _satsSendCache.sats.length === 0) return;
+    }
+    // Estimate fee assuming all sats UTXOs as inputs and no change (max send).
+    let feeRate = 2;
+    try { feeRate = await getFeeRate(); } catch {}
+    const vb = estSatsSendVb(_satsSendCache.sats.length, false);
+    const fee = feeFor(vb, feeRate);
+    const max = _satsSendCache.total - fee;
+    if (max < DUST) {
+      $('#sats-error').textContent = `max amount after fees (~${fee} sats) would be below dust (${DUST}). Need more sats first.`;
+      return;
+    }
+    $('#s-amount').value = String(max);
+    $('#sats-error').textContent = '';
+    invalidatePreview();
+  };
+
+  $('#btn-sats-preview').onclick = async () => {
+    const btn = $('#btn-sats-preview');
+    const orig = btn.textContent;
+    btn.disabled = true; btn.textContent = 'previewing…';
+    $('#sats-error').textContent = '';
+    $('#sats-success').style.display = 'none';
+    try {
+      const recipient = $('#s-recipient-addr').value.trim().toLowerCase().replace(/\s/g, '');
+      const decoded = decodeP2wpkhAddress(recipient);
+      if (!decoded) throw new Error('recipient is not a valid P2WPKH bech32 address');
+      if (decoded.hrp !== NET.hrp) throw new Error(`address is for ${decoded.hrp === 'bc' ? 'mainnet' : 'signet/testnet'}, current network is ${NET.name}`);
+      const amtStr = $('#s-amount').value.trim().replace(/[\s,]/g, '');
+      const amtSats = Number(amtStr);
+      if (!Number.isInteger(amtSats) || amtSats <= 0) throw new Error('enter a positive integer (sats)');
+      if (amtSats < DUST) throw new Error(`amount must be at least ${DUST} sats`);
+
+      const holdings = await scanHoldings();
+      if (!holdings || !(holdings instanceof Map)) {
+        throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to send');
+      }
+      const allUtxos = await getUtxos(wallet.address());
+      const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => b.value - a.value);
+      if (sats.length === 0) throw new Error('no plain-sats UTXOs available to send');
+
+      const feeRate = await getFeeRate();
+      let picked = [], total = 0, fee = 0, hasChange = false, change = 0;
+      for (let i = 0; i < sats.length; i++) {
+        picked.push(sats[i]); total += sats[i].value;
+        const feeWith = feeFor(estSatsSendVb(picked.length, true), feeRate);
+        if (total >= amtSats + feeWith + DUST) {
+          fee = feeWith; change = total - amtSats - fee; hasChange = true; break;
+        }
+        const feeNo = feeFor(estSatsSendVb(picked.length, false), feeRate);
+        if (total >= amtSats + feeNo) {
+          fee = feeNo; change = 0; hasChange = false; break;
+        }
+      }
+      if (fee === 0) throw new Error(`insufficient sats: have ${total}, need ${amtSats} + fees (~${feeFor(estSatsSendVb(picked.length, true), feeRate)})`);
+
+      pendingSatsSend = { recipient, amtSats, picked, fee, change, feeRate };
+
+      // Render preview with explicit input audit so the user can sanity-check
+      // exactly which UTXOs are about to be spent.
+      $('#sats-preview').style.display = 'block';
+      $('#sats-preview').innerHTML = `
+        <div class="tx-preview" style="margin-top:14px;">
+          <h4>review · sats-send</h4>
+          <div class="row"><span class="label">Recipient</span> <code>${escapeHtml(recipient)}</code></div>
+          <div class="row"><span class="label">Send amount</span> ${amtSats.toLocaleString('en-US')} sats</div>
+          <div class="row"><span class="label">Network fee</span> ~${fee.toLocaleString('en-US')} sats @ ${feeRate} sat/vB</div>
+          <div class="row"><span class="label">Change to you</span> ${hasChange ? change.toLocaleString('en-US') + ' sats' : '0 (donated to fee)'}</div>
+          <h4 style="margin-top:14px;">inputs being spent (${picked.length})</h4>
+          ${picked.map(u => `<div class="row" style="font-family:var(--mono);font-size:11px;">${escapeHtml(u.txid.slice(0, 12))}…:${u.vout} · ${u.value.toLocaleString('en-US')} sats</div>`).join('')}
+          <div class="row" style="color:var(--ink-mid);font-style:italic;margin-top:8px;font-size:11px;">these are non-asset UTXOs at your address. asset UTXOs holding tacit tokens are excluded automatically.</div>
+        </div>`;
+      $('#btn-sats-broadcast').disabled = false;
+    } catch (e) {
+      $('#sats-error').textContent = e.message;
+      pendingSatsSend = null;
+      $('#btn-sats-broadcast').disabled = true;
+      $('#sats-preview').style.display = 'none';
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+    }
+  };
+
+  $('#btn-sats-broadcast').onclick = async () => {
+    if (!pendingSatsSend) return;
+    const job = pendingSatsSend;
+    if (!ensureBurnerBackedUp('Send sats from the local tacit wallet')) {
+      toast('Send cancelled. Back up the in-page privkey first, then retry.', '');
+      return;
+    }
+    const btn = $('#btn-sats-broadcast');
+    btn.disabled = true; btn.textContent = 'broadcasting…';
+    try {
+      // Re-run the full safety pipeline at broadcast time, not just sign and
+      // ship the previewed tx. The buildAndBroadcastSatsSend helper does the
+      // re-classification check for us so a race between Preview and Confirm
+      // can't slip an asset UTXO through.
+      const r = await buildAndBroadcastSatsSend({ recipientAddr: job.recipient, amountSats: job.amtSats });
+      toast(`Sent ${r.recipientValue.toLocaleString('en-US')} sats · ${shorten(r.txid, 6)}`, 'success');
+      if (pendingSatsSend === job) {
+        pendingSatsSend = null;
+        $('#s-amount').value = '';
+        $('#s-recipient-addr').value = '';
+        $('#sats-preview').style.display = 'none';
+        $('#sats-error').textContent = '';
+      }
+      $('#sats-success').style.display = 'block';
+      $('#sats-success').innerHTML = `
+        <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+          <strong>✓ Sent ${r.recipientValue.toLocaleString('en-US')} sats</strong>
+          <div class="muted" style="font-size:11px;margin-top:4px;">to <code>${escapeHtml(job.recipient)}</code></div>
+          <div class="flex" style="margin-top:10px;">
+            <a class="btn" href="${NET.explorer}/tx/${r.txid}" target="_blank" rel="noopener noreferrer">View tx ↗</a>
+          </div>
+        </div>`;
+      refreshWallet();
+      refreshSatsSendBalance();
+    } catch (e) {
+      $('#sats-error').textContent = e.message;
+      console.error(e);
+    } finally {
+      btn.disabled = false; btn.textContent = '2. Confirm & send';
     }
   };
 }
@@ -9516,7 +10298,7 @@ function _showEthProviderChooser() {
       const safeName = _sanitizeWalletDisplayString(p.info.name) || 'unknown wallet';
       const safeRdns = _sanitizeWalletDisplayString(p.info.rdns);
       const iconHtml = (p.info.icon && /^data:image\//.test(p.info.icon))
-        ? `<img src="${escapeHtml(p.info.icon)}" alt="" style="width:20px;height:20px;vertical-align:middle;margin-right:8px;">`
+        ? `<img loading="lazy" decoding="async" src="${escapeHtml(p.info.icon)}" alt="" style="width:20px;height:20px;vertical-align:middle;margin-right:8px;">`
         : '';
       btn.innerHTML = `
         <span class="welcome-option-title">${iconHtml}${escapeHtml(safeName)}</span>
@@ -9809,7 +10591,20 @@ async function verifyEthSigViaErc1271(msg, sigHex, expectedEthAddrHex, provider)
 function _renderClaimResult() {
   const out = $('#claim-result');
   if (!out) return;
-  if (!_claimSigned || !_claimEligibleRow) { out.style.display = 'none'; out.innerHTML = ''; return; }
+  // Pre-sign placeholder so the "5 · Send to issuer" heading isn't a bare,
+  // empty section. Mirrors step 4's preview pattern. Shown only when the
+  // user has loaded a snapshot but hasn't signed yet — fully empty before
+  // a snapshot exists so we don't push the user past steps 1–3.
+  if (!_claimSigned || !_claimEligibleRow) {
+    if (_claimSnapshot) {
+      out.style.display = 'block';
+      out.innerHTML = `<div class="muted" style="font-size:11px;font-style:italic;">Complete step 4 (sign with wallet) to populate the claim tuple here.</div>`;
+    } else {
+      out.style.display = 'none';
+      out.innerHTML = '';
+    }
+    return;
+  }
   const tuple = `${_claimEligibleRow.index},${_claimSigned.tacitPubHex},${_claimSigned.sigHex}`;
   const ticker = _claimSnapshot.asset_ticker || '?';
   const submitBlurb = WORKER_BASE
@@ -10136,6 +10931,7 @@ function setupClaimTab() {
       _renderClaimEligibility();
       _renderClaimMsgPreview();
       _refreshClaimSignAvailability();
+      _renderClaimResult();
       toast(`Snapshot loaded · ${_claimSnapshot.leaf_count || _claimSnapshot.rows.length} recipients`, 'success');
     } catch (e) {
       if (errEl) errEl.textContent = e.message;
@@ -10143,6 +10939,7 @@ function setupClaimTab() {
       _renderClaimSnapshotInfo();
       _renderClaimEligibility();
       _refreshClaimSignAvailability();
+      _renderClaimResult();
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
@@ -10169,6 +10966,7 @@ function setupClaimTab() {
       _renderClaimEligibility();
       _renderClaimMsgPreview();
       _refreshClaimSignAvailability();
+      _renderClaimResult();
       toast(`Snapshot loaded · ${_claimSnapshot.leaf_count || _claimSnapshot.rows.length} recipients`, 'success');
     } catch (e) {
       if (errEl) errEl.textContent = e.message;
@@ -10176,6 +10974,7 @@ function setupClaimTab() {
       _renderClaimSnapshotInfo();
       _renderClaimEligibility();
       _refreshClaimSignAvailability();
+      _renderClaimResult();
     }
   };
   $('#btn-claim-json-load')?.addEventListener('click', () => {
@@ -10210,8 +11009,17 @@ function setupClaimTab() {
       // already-fetched snapshots without a network round-trip.
       _renderClaimDiscoverList();
     } catch (e) {
-      toast('Ethereum wallet connect failed: ' + e.message, 'error');
-      console.error(e);
+      // User-cancelled paths are intentional, not errors: dismissing the
+      // EIP-6963 chooser ('no wallet selected') and rejecting MetaMask's
+      // eth_requestAccounts prompt (EIP-1193 code 4001 / "user rejected").
+      // Suppress the toast in those cases — the button just resets.
+      const userCancelled = e?.code === 4001
+        || e?.message === 'no wallet selected'
+        || /user rejected/i.test(e?.message || '');
+      if (!userCancelled) {
+        toast('Ethereum wallet connect failed: ' + e.message, 'error');
+        console.error(e);
+      }
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
@@ -10233,8 +11041,14 @@ function setupClaimTab() {
       _renderClaimResult();
       toast('Claim signed', 'success');
     } catch (e) {
-      if (errEl) errEl.textContent = e.message;
-      console.error(e);
+      // EIP-1193 code 4001 (user rejected) and the textual variant aren't
+      // errors — they're the user changing their mind. Mirror the connect-
+      // flow suppression so the inline error doesn't sit there shouting.
+      const userCancelled = e?.code === 4001 || /user rejected/i.test(e?.message || '');
+      if (!userCancelled) {
+        if (errEl) errEl.textContent = e.message;
+        console.error(e);
+      }
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
@@ -10323,6 +11137,9 @@ async function renderHoldings() {
           .catch(() => []);
       })),
     ]);
+    // DocumentFragment: build all cards then attach in one reflow rather
+    // than one reflow per card. Bigger win on wallets with many assets.
+    const frag = document.createDocumentFragment();
     for (let i = 0; i < arr.length; i++) {
       const h = arr[i];
       const card = document.createElement('div');
@@ -10335,7 +11152,7 @@ async function renderHoldings() {
       // never set a name (older blobs, or etches without metadata at all).
       const displayName = (extras?.name && extras.name.trim()) ? extras.name : h.ticker;
       const avatar = imgUrl
-        ? `<img src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+        ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
         : '';
       // Cross-reference the published-openings list against the user's own UTXOs.
       // "myPublishedCount" tells the user which of their balance is already public;
@@ -10441,7 +11258,7 @@ async function renderHoldings() {
           <details class="actions-group">
             <summary><span class="arrow">▸</span>Disclose · make verifiable</summary>
             <div class="group-body">
-              <div class="group-blurb">Optional public attestations — pin (amount, blinding) so anyone can verify <code>C == amount·H + r·G</code> against on-chain commitments. Permanent: published openings cannot be unpublished.</div>
+              <div class="group-blurb">Optional public attestations — pin a UTXO's amount + blinding factor so anyone can cryptographically verify it against the on-chain commitment. Permanent: published openings cannot be unpublished.</div>
               ${discloseButtons}
             </div>
           </details>` : ''}
@@ -10463,8 +11280,9 @@ async function renderHoldings() {
             </div>
           </details>` : ''}
       `;
-      list.appendChild(card);
+      frag.appendChild(card);
     }
+    list.appendChild(frag);
     // Asset-id short / full toggle.
     wireAssetIdToggles(list);
     // Click ticker id-tag to copy the asset_id without expanding.
@@ -10540,16 +11358,32 @@ async function renderHoldings() {
           const target = holdings.get(aid);
           const meta = getAssetMeta(aid);
           if (!meta?.etchTxid) { toast('Missing etch_txid for asset (rescan?)', 'error'); return; }
-          openInlineForm(b, {
-            submitLabel: 'Mint more',
+          const tickerSafe = escapeHtml(target.ticker);
+          const handle = openInlineForm(b, {
+            submitLabel: 'Mint',
             content: `
               <label>Amount to mint (display units)</label>
               <input type="text" inputmode="decimal" data-field="amount" placeholder="e.g. 1000">
-              <div class="muted" style="margin-top:6px;font-size:11px;">
-                You hold the mint authority for <strong>${escapeHtml(target.ticker)}</strong>. Each mint emits a new T_MINT envelope; supply is rangeproof-bounded to 2⁶⁴ per envelope.
+              <div data-mint-warn class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
+
+              <div data-mint-preview style="display:none;margin-top:14px;padding:10px 12px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.6;">
+                <div data-mint-impact></div>
+                <div data-mint-fee class="muted" style="margin-top:4px;"></div>
+                <div style="color:var(--red);margin-top:8px;font-weight:500;">⚠ Minting is irreversible. Once broadcast, the new supply exists on-chain forever — it can only be burned, never unminted.</div>
+              </div>
+
+              <label class="checkbox-row" style="margin-top:10px;">
+                <input type="checkbox" data-field="confirm">
+                <span class="cbx-body" style="font-size:11px;">I understand this mint is irreversible.</span>
+              </label>
+
+              <div class="muted" style="margin-top:6px;font-size:10px;">
+                You hold the mint authority for <strong>${tickerSafe}</strong>. Each mint emits a new T_MINT envelope; per-mint amount is bounded to 2⁶⁴ base units by the rangeproof.
               </div>`,
             onSubmit: async ({ host, errEl }) => {
               const raw = host.querySelector('[data-field="amount"]').value.trim();
+              const confirmed = host.querySelector('[data-field="confirm"]').checked;
+              if (!confirmed) { errEl.textContent = 'check the irreversibility box first'; return false; }
               if (!raw) { errEl.textContent = 'enter an amount'; return false; }
               let mintBase;
               try { mintBase = parseAssetAmount(raw, target.decimals); }
@@ -10588,8 +11422,64 @@ async function renderHoldings() {
                 }).catch(e => toast('Mint attestation request failed: ' + e.message, 'error'));
               }
               renderHoldings(); renderActivity();
+              // Send-tab dropdown shows balance-after-mint; refresh so a user
+              // who toggles to Send right after minting sees the new total.
+              if (typeof refreshAssetSelect === 'function') refreshAssetSelect();
             },
           });
+          // Live validation + impact preview. Wired after openInlineForm returns
+          // so we can grab the rendered DOM. Mirrors the transfer-form pattern:
+          // truncate excess decimals on the fly, render an impact card, gate
+          // the submit button on (valid amount && irreversibility checkbox).
+          if (handle) {
+            const amountInput = handle.host.querySelector('[data-field="amount"]');
+            const confirmInput = handle.host.querySelector('[data-field="confirm"]');
+            const submitBtn = handle.host.querySelector('[data-form-act="submit"]');
+            const warnEl = handle.host.querySelector('[data-mint-warn]');
+            const previewEl = handle.host.querySelector('[data-mint-preview]');
+            const impactEl = handle.host.querySelector('[data-mint-impact]');
+            const feeEl = handle.host.querySelector('[data-mint-fee]');
+            let cachedFeeRate = null;
+            const updateMintPreview = async () => {
+              const raw = amountInput.value;
+              // Live decimal truncation (same helper the transfer form uses).
+              const { trimmed, dropped } = truncateAmountToDecimals(raw, target.decimals);
+              if (trimmed !== null) {
+                amountInput.value = trimmed;
+                warnEl.textContent = `Trimmed to ${target.decimals} decimals · dropped 0.${'0'.repeat(target.decimals)}${dropped}`;
+                warnEl.style.display = '';
+              } else {
+                warnEl.textContent = '';
+                warnEl.style.display = 'none';
+              }
+              let mintBase = null;
+              try { mintBase = parseAssetAmount(amountInput.value.trim(), target.decimals); }
+              catch { /* invalid → preview hidden */ }
+              const validAmount = mintBase !== null && mintBase > 0n && mintBase < (1n << BigInt(N_BITS));
+              if (validAmount) {
+                const newBalance = (target.balance || 0n) + mintBase;
+                impactEl.innerHTML =
+                  `Adding <strong>${escapeHtml(fmtAssetAmount(mintBase, target.decimals))} ${tickerSafe}</strong> to circulating supply.<br>` +
+                  `Your balance: ${escapeHtml(fmtAssetAmount(target.balance || 0n, target.decimals))} → <strong>${escapeHtml(fmtAssetAmount(newBalance, target.decimals))}</strong>`;
+                if (cachedFeeRate == null) {
+                  try { cachedFeeRate = await getFeeRate(); } catch { cachedFeeRate = 2; }
+                }
+                const revealFee = feeFor(estCMintRevealVb(), cachedFeeRate);
+                const commitFee = feeFor(estCommitVb(1), cachedFeeRate);
+                const total = commitFee + revealFee;
+                feeEl.textContent = `Estimated network fee: ~${total.toLocaleString('en-US')} sats (commit ~${commitFee} + reveal ~${revealFee}) @ ${cachedFeeRate} sat/vB`;
+                previewEl.style.display = '';
+                submitBtn.textContent = `Mint ${fmtAssetAmount(mintBase, target.decimals)} ${target.ticker}`;
+              } else {
+                previewEl.style.display = 'none';
+                submitBtn.textContent = 'Mint';
+              }
+              submitBtn.disabled = !(validAmount && confirmInput.checked);
+            };
+            amountInput.addEventListener('input', updateMintPreview);
+            confirmInput.addEventListener('change', updateMintPreview);
+            updateMintPreview();
+          }
         } else if (b.dataset.act === 'reveal-supply') {
           const aid = b.dataset.aid;
           const target = holdings.get(aid);
@@ -10597,7 +11487,7 @@ async function renderHoldings() {
           const { supply, blinding } = target.etchOpening;
           const decimals = target.decimals;
           const display = fmtAssetAmount(supply, decimals);
-          if (!confirm(`Publish opening for ${target.ticker}?\n\nSupply: ${display} (${supply} base units)\n\nThis pins (supply, blinding) to the worker so anyone can verify C == supply·H + r·G against the on-chain commitment. Once published, this asset's supply is publicly known.`)) return;
+          if (!confirm(`Publish opening for ${target.ticker}?\n\nSupply: ${display} (${supply} base units)\n\nThis pins your supply + blinding factor to the worker so anyone can cryptographically verify the announced supply against the on-chain commitment. Once published, this asset's supply is publicly known.`)) return;
           b.disabled = true; b.textContent = 'publishing…';
           try {
             const resp = await fetch(withNet(ATTEST_URL(aid)), {
@@ -10654,8 +11544,8 @@ async function renderHoldings() {
           if (!confirm(
             `Publish ${target.utxos.length} UTXO opening${target.utxos.length>1?'s':''} for ${target.ticker}?\n\n` +
             `Total amount: ${fmtAssetAmount(total, target.decimals)}.\n\n` +
-            `Each opening pins (amount, blinding) to the worker, signed by your wallet to prove ownership. ` +
-            `Anyone can verify C == amount·H + blinding·G against the on-chain commitment.\n\n` +
+            `Each opening pins the UTXO's amount + blinding factor to the worker, signed by your wallet to prove ownership. ` +
+            `Anyone can then cryptographically verify it against the on-chain commitment.\n\n` +
             `⚠ Permanent: once published, an opening cannot be unpublished. Mirrors / archives may keep copies.`
           )) return;
           b.disabled = true; b.textContent = 'publishing…';
@@ -10734,19 +11624,26 @@ async function renderHoldings() {
             formHost.innerHTML = '';
             return;
           }
-          // Each listing is per-UTXO. Sort smallest-first so the default
-          // matches the most-common case "test the market with a small
-          // portion" — the prior largest-first default was misread as the
-          // dapp auto-picking, leaving sellers thinking they couldn't pick
-          // a smaller UTXO themselves. The dropdown still shows everything.
-          const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
-          const utxoOpts = sortedUtxos.map((u, idx) => `
-            <option value="${idx}">${escapeHtml(fmtAssetAmount(u.amount, target.decimals))} ${escapeHtml(target.ticker)} · UTXO ${escapeHtml(shorten(u.utxo.txid, 8))}:${u.utxo.vout}</option>
-          `).join('');
+          // List by AMOUNT, not by UTXO. If no UTXO matches the requested
+          // amount exactly, the dapp auto-splits via a self-CXFER first (one
+          // extra Bitcoin tx, ~$1-3 mainnet), creating a UTXO of the exact
+          // amount + change. Closes the user-reported gap where the form
+          // forced selling a whole UTXO. The largest holdable UTXO bounds
+          // what's sellable in a single listing — for amounts spanning
+          // multiple UTXOs, ask users to consolidate first via Send.
+          const sortedUtxos = [...target.utxos].sort((a, b) => Number(b.amount - a.amount));
+          const totalBal = sortedUtxos.reduce((s, u) => s + u.amount, 0n);
+          const largestUtxo = sortedUtxos[0]?.amount || 0n;
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>Pick UTXO to sell ▾ (smallest first; whole UTXO is sold)</label>
-              <select data-field="utxo">${utxoOpts}</select>
+              <label>Amount to sell (display units, e.g. 1.5)</label>
+              <input type="text" inputmode="decimal" data-field="amount" placeholder="amount">
+              <div class="muted" style="margin-top:4px;font-size:11px;">
+                Holdings: ${fmtAssetAmount(totalBal, target.decimals)} ${escapeHtml(target.ticker)} across ${sortedUtxos.length} UTXO${sortedUtxos.length === 1 ? '' : 's'}
+                (largest single: ${fmtAssetAmount(largestUtxo, target.decimals)} ${escapeHtml(target.ticker)}).
+                If the amount you enter doesn't match any single UTXO exactly, the dapp auto-splits via a self-CXFER first
+                (one extra Bitcoin tx), then lists the resulting amount-exact UTXO.
+              </div>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
                   <label>Price (sats)</label>
@@ -10759,7 +11656,7 @@ async function renderHoldings() {
               </div>
               <div class="muted" style="margin-top:10px;font-size:11px;">
                 Pay to: <span class="mono-box inline" style="font-size:10px;">${escapeHtml(wallet.address())}</span><br>
-                ⚠ Your exact balance for the chosen UTXO becomes <strong>public</strong> once listed.
+                ⚠ Your exact listed amount becomes <strong>public</strong> once listed.
               </div>
               <div class="form-buttons">
                 <button class="primary" data-form-act="publish">Publish listing</button>
@@ -10775,31 +11672,70 @@ async function renderHoldings() {
           };
           formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
             errEl.textContent = '';
-            const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
-            const u = sortedUtxos[utxoIdx];
-            if (!u) { errEl.textContent = 'pick a UTXO'; return; }
+            const amountStr = formHost.querySelector('[data-field="amount"]').value.trim();
+            if (!amountStr) { errEl.textContent = 'enter an amount'; return; }
+            let amount;
+            try { amount = parseAssetAmount(amountStr, target.decimals); }
+            catch (e) { errEl.textContent = e.message; return; }
+            if (amount <= 0n) { errEl.textContent = 'amount must be > 0'; return; }
+            if (amount > totalBal) { errEl.textContent = `amount exceeds holdings (${fmtAssetAmount(totalBal, target.decimals)} ${target.ticker})`; return; }
+            if (amount > largestUtxo) {
+              errEl.textContent = `amount exceeds largest single UTXO (${fmtAssetAmount(largestUtxo, target.decimals)} ${target.ticker}). Consolidate first via Send Privately to your own address.`;
+              return;
+            }
             const priceSats = parseInt(formHost.querySelector('[data-field="price"]').value.trim(), 10);
             if (!Number.isInteger(priceSats) || priceSats < DUST) { errEl.textContent = `price must be integer ≥ ${DUST}`; return; }
             const days = parseInt(formHost.querySelector('[data-field="days"]').value.trim(), 10);
             if (!Number.isInteger(days) || days < 1 || days > 365) { errEl.textContent = 'days must be 1–365'; return; }
             const expiry = Math.floor(Date.now() / 1000) + days * 86400;
+
+            // Pick a UTXO. Prefer an exact match (no split needed); else pick
+            // the smallest UTXO that covers the amount (minimizes the
+            // post-split change UTXO size, which is more usable later).
+            const exactMatch = sortedUtxos.find(u => u.amount === amount);
+            let listUtxo = exactMatch;
             const submitBtn = ev.target;
-            submitBtn.disabled = true; submitBtn.textContent = 'listing…';
+            submitBtn.disabled = true; submitBtn.textContent = exactMatch ? 'listing…' : 'splitting + listing…';
             try {
+              if (!exactMatch) {
+                // Auto-split: self-CXFER for the exact amount. The result's
+                // recipients[0] is what we'll list (vout 0 of the reveal tx).
+                if (!ensureBurnerBackedUp('Auto-split UTXO before listing (one extra CXFER from your active wallet)')) {
+                  throw new Error('cancelled');
+                }
+                const need = await estimateSatsForOp('cxfer');
+                if (!(await ensureSatsFunded(need, 'Auto-split before listing'))) throw new Error('cancelled');
+                // Force the smallest covering UTXO so the change UTXO is as
+                // small as possible (future listings can take from it directly).
+                const cover = [...sortedUtxos].reverse().find(u => u.amount >= amount);
+                if (!cover) throw new Error('no UTXO large enough (should not happen — guarded above)');
+                const splitResult = await buildAndBroadcastCXferMulti({
+                  assetIdHex: aid,
+                  recipients: [{ pubHex: bytesToHex(wallet.pub), amount }],
+                  forceUtxos: [cover],
+                });
+                const r0 = splitResult.recipients[0];
+                listUtxo = {
+                  utxo: { txid: splitResult.revealTxid, vout: r0.vout },
+                  amount: r0.amount,
+                  blinding: r0.blinding,
+                };
+                toast(`Split: ${fmtAssetAmount(amount, target.decimals)} ${target.ticker} carved out for listing ✓`, 'success');
+              }
               await publishListing({
                 assetIdHex: aid,
-                txidHex: u.utxo.txid,
-                vout: u.utxo.vout,
-                amount: u.amount,
-                blinding: u.blinding,
+                txidHex: listUtxo.utxo.txid,
+                vout: listUtxo.utxo.vout,
+                amount: listUtxo.amount,
+                blinding: listUtxo.blinding,
                 priceSats,
                 expiry,
                 makerAddress: wallet.address(),
               });
-              toast(`Listed ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} at ${priceSats.toLocaleString()} sats ✓`, 'success');
+              toast(`Listed ${fmtAssetAmount(listUtxo.amount, target.decimals)} ${target.ticker} at ${priceSats.toLocaleString()} sats ✓`, 'success');
               renderHoldings();
             } catch (e) {
-              errEl.textContent = 'Listing failed: ' + e.message;
+              errEl.textContent = e.message === 'cancelled' ? 'cancelled' : 'Listing failed: ' + e.message;
               submitBtn.disabled = false; submitBtn.textContent = 'Publish listing';
             }
           };
@@ -11076,8 +12012,8 @@ async function renderHoldings() {
               </div>
               <div class="muted" style="margin-top:10px;font-size:11px;line-height:1.5;">
                 Anyone can claim. Each claim has 5 min to be fulfilled by you.<br>
-                ⚠ Fulfilment is device-local — the recipient blinding scalar is held in this browser. Publishing here means fulfilment must also happen here.<br>
-                ⚠ If you fulfil a claim and need to cancel, you must self-spend the asset UTXO (commit + reveal fees) — worker cancel alone does NOT stop the taker.
+                ⚠ Fulfilment happens on this device — a per-intent secret stays in this browser, so you'll need to be back here to fulfil any incoming claim.<br>
+                ⚠ If you fulfil a claim and then need to cancel, you'll have to send the asset UTXO to yourself (Bitcoin tx fees apply). Cancelling on the worker alone doesn't stop a taker who's already received the partial tx.
               </div>
               <div class="form-buttons">
                 <button class="primary" data-form-act="publish">Publish intent</button>
@@ -11329,8 +12265,16 @@ function renderActivity() {
 // silently and the etch only appears in Discover after the next cron scan
 // (potentially many minutes on mainnet, where SCAN_BLOCKS_MAINNET=1). The cron
 // is still the source of truth; this is purely a UX fast-path.
-function postHint(revealTxid, revealVout = 0) {
+function postHint(revealTxid, revealVout = 0, opts = {}) {
   if (!HINT_URL || !revealTxid) return;
+  // Optional last-trade fields — only meaningful for AXFER hints (atomic
+  // intent settlements). The worker validates the tx is an AXFER for the
+  // declared asset before recording the trade; if the caller supplies them
+  // for a non-AXFER hint they're ignored server-side.
+  const tradeBody = (Number.isInteger(opts.price_sats) && opts.price_sats > 0
+                    && opts.amount != null)
+    ? { price_sats: opts.price_sats, amount: String(opts.amount) }
+    : null;
   const delays = [0, 3000, 8000, 20000, 60000]; // ~90s total before giving up
   (async () => {
     for (const d of delays) {
@@ -11339,7 +12283,11 @@ function postHint(revealTxid, revealVout = 0) {
         const resp = await fetch(withNet(HINT_URL), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reveal_txid: revealTxid, reveal_vout: revealVout }),
+          body: JSON.stringify({
+            reveal_txid: revealTxid,
+            reveal_vout: revealVout,
+            ...(tradeBody || {}),
+          }),
         });
         // 2xx → indexed, done. 404 → tx not yet on mempool, retry. Other 4xx/5xx
         // (rate-limit, malformed, worker error) → don't retry, cron will catch it.
@@ -11386,16 +12334,31 @@ async function renderRecentEtches() {
         s + Number(a.listing_count || 0)
           + Number(a.range_listing_count || 0)
           + Number(a.atomic_intent_count || 0), 0);
+      // Disclosed UTXOs: holders who voluntarily published (amount, blinding)
+      // openings (often as part of a marketplace listing, sometimes standalone
+      // for transparency). Range disclosures: zero-knowledge proofs of
+      // "balance ≥ K". Both surfaced here as network-health signals — neither
+      // is required by the protocol; they're opt-in transparency.
+      const totalOpenings = allAssets.reduce((s, a) => s + Number(a.opening_count || 0), 0);
+      const totalRangeDisclosures = allAssets.reduce((s, a) => s + Number(a.disclosure_count || 0), 0);
       const totalMintable = allAssets.filter(a => a.mintable).length;
       const offersLink = totalOffers > 0
-        ? `<a href="#" id="recent-etches-offers-link" style="color:var(--bg);text-decoration:underline;">${totalOffers} live offer${totalOffers === 1 ? '' : 's'}</a>`
+        ? `<a href="#" id="recent-etches-offers-link">${totalOffers} live offer${totalOffers === 1 ? '' : 's'}</a>`
         : `<span class="muted">0 live offers</span>`;
       statsEl.style.display = 'flex';
       statsEl.style.gap = '14px';
       statsEl.style.flexWrap = 'wrap';
+      const openingsLine = totalOpenings > 0
+        ? ` · <span class="muted" title="UTXOs whose holders have published an (amount, blinding) opening to the worker — opt-in transparency, often via a marketplace listing.">${totalOpenings} disclosed UTXO${totalOpenings === 1 ? '' : 's'}</span>`
+        : '';
+      const rangeLine = totalRangeDisclosures > 0
+        ? ` · <span class="muted" title="Holders who have published a zero-knowledge proof that their balance of an asset is at least K, without revealing the exact amount.">${totalRangeDisclosures} range disclosure${totalRangeDisclosures === 1 ? '' : 's'}</span>`
+        : '';
       statsEl.innerHTML =
         `<span><strong>${totalAssets}</strong> asset${totalAssets === 1 ? '' : 's'} etched</span>` +
         ` · <span>${offersLink}</span>` +
+        openingsLine +
+        rangeLine +
         ` · <span class="muted">${totalMintable} mintable</span>` +
         ` · <span class="muted">${escapeHtml(NET.name)}</span>`;
       const off = $('#recent-etches-offers-link');
@@ -11500,9 +12463,9 @@ async function renderRecentEtches() {
         $('.tab[data-tab="discover"]').click();
       };
       tile.innerHTML = `
-        ${imgUrls[i] ? `<img src="${escapeHtml(imgUrls[i])}" alt="">` : ''}
+        ${imgUrls[i] ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrls[i])}" alt="">` : ''}
         <div class="recent-tile-body">
-          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
+          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
           <div class="recent-tile-meta">${ageStr}${verifyMark}${pending}${dupMark}</div>
         </div>`;
       grid.appendChild(tile);
@@ -11814,6 +12777,9 @@ async function _processDiscoverCardVerify(card, a) {
       .catch(e => ({ ok: false, error: (e && e.message) || String(e),
                      mismatches: [], verifiedMints: {}, verifiedBurns: {}, ipfsAttest: null }));
     verify._assetId = a.asset_id;
+    if (verify.ok && verify.etcherXonly) {
+      _discoverRegisterEtcher(verify.etcherXonly, a.asset_id);
+    }
     const effectiveImageUri = verify.ok ? verify.imageUri : a.image_uri;
     const imgUrl = effectiveImageUri ? await resolveImageUri(effectiveImageUri).catch(() => null) : null;
     const extras = effectiveImageUri ? getMetadataExtras(effectiveImageUri) : null;
@@ -11848,6 +12814,12 @@ async function _processDiscoverCardVerify(card, a) {
       enrichDiscoverBurns(a, verify)
         .then(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); })
         .catch(() => { verify._burnsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); });
+      enrichDiscoverPriceFloor(a, verify)
+        .then(() => renderDiscoverCard(card, a, verify, imgUrl, extras))
+        .catch(() => {});
+      enrichDiscoverBidCount(a, verify)
+        .then(() => renderDiscoverCard(card, a, verify, imgUrl, extras))
+        .catch(() => {});
     }
   } finally {
     _discoverVerifyRelease();
@@ -11969,6 +12941,12 @@ async function _processBatchedDiscoverCardVerify(items) {
         enrichDiscoverBurns(asset, verify)
           .then(() => { verify._burnsEnriched = true; renderDiscoverCard(card, asset, verify, imgUrl, extras); })
           .catch(() => { verify._burnsEnriched = true; renderDiscoverCard(card, asset, verify, imgUrl, extras); });
+        enrichDiscoverPriceFloor(asset, verify)
+          .then(() => renderDiscoverCard(card, asset, verify, imgUrl, extras))
+          .catch(() => {});
+        enrichDiscoverBidCount(asset, verify)
+          .then(() => renderDiscoverCard(card, asset, verify, imgUrl, extras))
+          .catch(() => {});
       }
     }));
   } finally {
@@ -12255,6 +13233,93 @@ async function enrichDiscoverBurns(a, verify) {
   }
 }
 
+// Stage 5 — price floor enrichment. Fetches active per-UTXO listings and
+// atomic intents for the asset, computes the lowest sats-per-smallest-unit
+// across all of them, and stores it on `verify._priceFloorPpu`. Range
+// listings are skipped because their amount is a lower-bound ("≥ K"), not
+// an exact deliverable amount, so per-unit price isn't well-defined for them.
+//
+// Combined with the chain-attested supply (etch + Σ mint − Σ burn) this
+// gives us a coarse market cap estimate per asset for the Discover card.
+// Lowest-ask is a price-discovery floor — not a true mid-market until
+// bid-side intents (§5.7.7) ship.
+async function enrichDiscoverPriceFloor(a, verify) {
+  if (!verify || !verify.ok) return;
+  if (!WORKER_BASE) return;
+  if (verify._priceFloorEnriched) return;
+  // Ignore assets without claimed offers — saves the round-trip when there's
+  // nothing to find. The registry's coarse counts already filter this case.
+  const hasAnyOffer = Number(a.listing_count || 0) > 0 || Number(a.atomic_intent_count || 0) > 0;
+  if (!hasAnyOffer) {
+    verify._priceFloorEnriched = true;
+    verify._priceFloorPpu = null;
+    return;
+  }
+  try {
+    const [listResp, intentResp] = await Promise.all([
+      Number(a.listing_count || 0) > 0
+        ? fetch(`${WORKER_BASE}/assets/${a.asset_id}/listings?network=${encodeURIComponent(NET.name)}`).then(r => r.ok ? r.json() : null).catch(() => null)
+        : null,
+      Number(a.atomic_intent_count || 0) > 0
+        ? fetch(`${WORKER_BASE}/assets/${a.asset_id}/atomic-intents?network=${encodeURIComponent(NET.name)}`).then(r => r.ok ? r.json() : null).catch(() => null)
+        : null,
+    ]);
+    const now = Math.floor(Date.now() / 1000);
+    const items = [];
+    for (const l of (listResp?.listings || [])) {
+      if (!l || l.expired) continue;
+      if (Number(l.expiry || 0) <= now) continue;
+      items.push({ amount: l.amount, price_sats: l.price_sats });
+    }
+    for (const it of (intentResp?.intents || [])) {
+      if (!it) continue;
+      if (Number(it.expiry || 0) <= now) continue;
+      items.push({ amount: it.amount, price_sats: it.price_sats });
+    }
+    let floor = null;
+    for (const it of items) {
+      let amt;
+      try { amt = BigInt(it.amount || 0); } catch { continue; }
+      const price = Number(it.price_sats || 0);
+      if (amt <= 0n || !Number.isFinite(price) || price <= 0) continue;
+      // sats-per-smallest-unit. Use Number(amt) because amt is bounded by
+      // u64 range and any value that overflows Number's safe integer would
+      // already be unrealistically large; rendering precision matters more
+      // than perfect numerics for a UI floor display.
+      const ppu = price / Number(amt);
+      if (!Number.isFinite(ppu)) continue;
+      if (floor === null || ppu < floor) floor = ppu;
+    }
+    verify._priceFloorPpu = floor;
+  } catch {
+    verify._priceFloorPpu = null;
+  } finally {
+    verify._priceFloorEnriched = true;
+  }
+}
+
+// Stage 6 — bid-intent count. Cheap GET against /bid-intents that returns
+// an active count + the full list (which we cache for the bid panel toggle).
+// Worker GC's expired bids at read time, so the count we display reflects
+// only live, claimable bids.
+async function enrichDiscoverBidCount(a, verify) {
+  if (!verify || !verify.ok) return;
+  if (!WORKER_BASE) return;
+  if (verify._bidCountEnriched) return;
+  try {
+    const url = `${WORKER_BASE}/assets/${a.asset_id}/bid-intents?network=${encodeURIComponent(NET.name)}`;
+    const resp = await fetch(url);
+    if (!resp.ok) { verify._bidCount = 0; return; }
+    const j = await resp.json();
+    verify._bidCount = Number(j.count || 0);
+    verify._bidIntents = Array.isArray(j.intents) ? j.intents : [];
+  } catch {
+    verify._bidCount = 0;
+  } finally {
+    verify._bidCountEnriched = true;
+  }
+}
+
 // Registry response cache (E). Tab-switches don't refetch /assets unless the
 // cache is older than the TTL. The Refresh button bypasses by clearing the
 // cache before re-rendering.
@@ -12354,6 +13419,7 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   const _burnListCount = Array.isArray(a.burns) ? a.burns.length : 0;
   card.dataset.transferCount = String(_xferCount);
   card.dataset.offerCount = String(_offerCount);
+  card.dataset.atomicCount = String(Number(a.atomic_intent_count || 0));
   card.dataset.activityCount = String(_xferCount + _offerCount + _mintListCount + _burnListCount);
   const decimals = verified ? verify.decimals
                   : (Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0);
@@ -12361,7 +13427,7 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   const ageMin = Math.max(0, Math.floor((Date.now()/1000 - (a.etched_at || 0)) / 60));
   const ageStr = ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.floor(ageMin/60)}h ago` : `${Math.floor(ageMin/1440)}d ago`;
   const avatar = imgUrl
-    ? `<img src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+    ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
     : '';
 
   // Verification badge: ⏳ verifying (eager render) / ✗ unverifiable (failed) /
@@ -12370,11 +13436,11 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   if (pending) {
     verifyBadge = `<span style="font-size:10px;background:#fff8eb;color:var(--ink-mid);padding:2px 6px;border:1px solid var(--ink-faint);text-transform:uppercase;letter-spacing:0.1em;">⏳ verifying…</span>`;
   } else if (!verified) {
-    verifyBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;" title="The on-chain CETCH envelope failed local verification — the rangeproof, kernel sig, or envelope decode rejected. Treat this asset as unsafe until the dApp can re-validate from chain.">✗ unverifiable · ${escapeHtml(verify.error || 'unknown')}</span>`;
+    verifyBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="The on-chain CETCH envelope failed local verification — the rangeproof, kernel sig, or envelope decode rejected. Treat this asset as unsafe until the dApp can re-validate from chain.">✗ unverifiable · ${escapeHtml(verify.error || 'unknown')}</span>`;
   } else if (verify.mismatches && verify.mismatches.length) {
-    verifyBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;" title="Worker's metadata disagrees with the on-chain CETCH envelope. The dApp shows on-chain values (those are authoritative). Mismatches: ${escapeHtml(verify.mismatches.join('; '))}">⚠ worker mismatch</span>`;
+    verifyBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="Worker's metadata disagrees with the on-chain CETCH envelope. The dApp shows on-chain values (those are authoritative). Mismatches: ${escapeHtml(verify.mismatches.join('; '))}">⚠ worker mismatch</span>`;
   } else {
-    verifyBadge = `<span style="font-size:10px;background:#eaf6ee;color:#0a7d4e;padding:2px 6px;border:1px solid #0a7d4e;text-transform:uppercase;letter-spacing:0.1em;" title="Rangeproof and CETCH envelope decoded + verified locally from chain bytes; worker's metadata matches the on-chain values. The asset's existence is cryptographically established, not just worker-claimed.">✓ chain-verified</span>`;
+    verifyBadge = `<span style="font-size:10px;background:#eaf6ee;color:#0a7d4e;padding:2px 6px;border:1px solid #0a7d4e;text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="Rangeproof and CETCH envelope decoded + verified locally from chain bytes; worker's metadata matches the on-chain values. The asset's existence is cryptographically established, not just worker-claimed.">✓ chain-verified</span>`;
   }
 
   // Resolve etch supply attestation. Prefer the IPFS-embedded opening (which
@@ -12412,9 +13478,7 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       }
     }
     if (etchSupply !== null) {
-      const tag = attestSource === 'ipfs'
-        ? '<span title="(supply, blinding) opening fetched from IPFS and verified to open the on-chain commitment. Content-addressed — anyone can re-verify from chain + IPFS alone, no worker trust required.">✓ verified opening (IPFS)</span>'
-        : '<span title="(supply, blinding) opening fetched from the worker\'s cache and verified to open the on-chain commitment. IPFS is the primary attestation channel; this is a fast discovery cache. Same crypto either way.">✓ verified opening (worker cache)</span>';
+      const tag = supplyAttestBadge(attestSource, verify.imageUri || a.image_uri);
       supplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Etch supply: ${escapeHtml(fmtAssetAmount(etchSupply, decimals))}</strong> · ${tag}</div>`;
     }
   }
@@ -12505,14 +13569,61 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     const circulating = totalIssued - burnedSum;
     if (chainMintCount === 0 && chainBurnCount === 0) {
       // Collapsed: rewrite supplyBadge from "Etch supply: X · ✓ verified
-      // opening" to "Supply: X · ✓ verified · fixed (no mints, no burns)".
+      // supply" to "Supply: X · ✓ verified supply · fixed (no mints, no burns)".
       // Skip the totalSupplyBadge to avoid duplicating the same number.
-      const tag = attestSource === 'ipfs'
-        ? '<span title="(supply, blinding) opening fetched from IPFS and verified to open the on-chain commitment. Content-addressed — anyone can re-verify from chain + IPFS alone, no worker trust required.">✓ verified opening (IPFS)</span>'
-        : '<span title="(supply, blinding) opening fetched from the worker\'s cache and verified to open the on-chain commitment. IPFS is the primary attestation channel; this is a fast discovery cache. Same crypto either way.">✓ verified opening (worker cache)</span>';
+      const tag = supplyAttestBadge(attestSource, verify.imageUri || a.image_uri);
       supplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Supply: ${escapeHtml(fmtAssetAmount(etchSupply, decimals))}</strong> · ${tag} · fixed (no mints, no burns)</div>`;
     } else {
       totalSupplyBadge = `<div style="margin-top:6px;font-size:12px;color:#0a7d4e;"><strong>Circulating: ${escapeHtml(fmtAssetAmount(circulating, decimals))}</strong> · issued ${escapeHtml(fmtAssetAmount(totalIssued, decimals))}${burnedSum > 0n ? ` − burned ${escapeHtml(fmtAssetAmount(burnedSum, decimals))}` : ''}</div>`;
+    }
+  }
+
+  // Market-cap estimate. Two ingredients:
+  //   1. A circulating-supply number — prefer fully-attested circulating
+  //      (etch + Σ attested mints − Σ burns) when available; fall back to
+  //      the etch supply alone for fixed-supply assets that haven't yet
+  //      finished mints/burns enrichment.
+  //   2. A floor price per smallest-unit — lowest active ask across the
+  //      asset's per-UTXO listings + atomic intents (range-listings excluded
+  //      because their amount is a lower bound, not a deliverable).
+  // Both must be present for a number to render. The market cap is honestly
+  // labeled as a coarse "floor × supply" estimate — replaceable with mid-
+  // market once bid-side intents (§5.7.7) ship and produce both sides.
+  let marketCapBadge = '';
+  if (etchSupply !== null && verify._priceFloorPpu && verify._priceFloorPpu > 0) {
+    // Choose supply for the cap. Prefer circulating when both enrichments
+    // landed; fall back to etch supply otherwise (matches what users see
+    // for fixed-supply assets in supplyBadge).
+    let supplyForCap;
+    if (verify.ok && verify._mintsEnriched && verify._burnsEnriched && mintAllAttested
+        && chainMintCount === claimedMints.length && mintAttestedCount === chainMintCount) {
+      supplyForCap = etchSupply + mintAttestedSum - burnedSum;
+    } else {
+      supplyForCap = etchSupply;
+    }
+    if (supplyForCap > 0n) {
+      const capSatsApprox = Number(supplyForCap) * verify._priceFloorPpu;
+      const capDisplay = (() => {
+        if (!Number.isFinite(capSatsApprox)) return null;
+        if (capSatsApprox >= 100_000_000) {
+          // ≥ 1 BTC — show as BTC with 4 decimals max
+          const btc = capSatsApprox / 100_000_000;
+          return `${btc >= 100 ? btc.toFixed(0) : btc.toFixed(2)} BTC`;
+        }
+        if (capSatsApprox >= 1_000_000) return `${(capSatsApprox / 1_000_000).toFixed(2)}M sats`;
+        if (capSatsApprox >= 1_000) return `${(capSatsApprox / 1_000).toFixed(1)}K sats`;
+        return `${Math.round(capSatsApprox)} sats`;
+      })();
+      // Per-display-unit price (sats per token in display units, not per
+      // smallest unit). Multiply by 10^decimals to invert the smallest-unit
+      // scaling, matching how users actually quote prices.
+      const ppuDisplay = verify._priceFloorPpu * Math.pow(10, decimals);
+      const ppuStr = ppuDisplay >= 1
+        ? `${ppuDisplay.toFixed(ppuDisplay >= 100 ? 0 : 2)} sats/${escapeHtml(ticker)}`
+        : `${ppuDisplay.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')} sats/${escapeHtml(ticker)}`;
+      if (capDisplay) {
+        marketCapBadge = `<div class="muted" style="margin-top:6px;font-size:11px;" title="Market-cap estimate = circulating supply × lowest active ask. Floor-derived; replace with mid-market once bid-side intents land.">📊 Mcap ~${capDisplay} · floor ${ppuStr}</div>`;
+      }
     }
   }
 
@@ -12525,12 +13636,31 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   // assets can share one — the asset_id is the only canonical reference.
   // First-etched is shown as `original`; later etches with the same ticker
   // get a stronger duplicate badge nudging users to read the asset_id.
+  // Atomic-intents pill — surface trustless-OTC availability at the browse
+  // level so a buyer can prefer assets with atomic settlement over those
+  // with only opening/range listings (which require counterparty trust).
+  // The Market tile already uses the ⚡ accent for atomic intents; mirror
+  // that color here in a Discover-card-friendly style.
+  const atomicBadge = (Number(a.atomic_intent_count || 0) > 0 || _localAtomicAssetIds().has(a.asset_id))
+    ? `<span style="font-size:10px;background:#f5f0ff;color:#7d4ff7;padding:2px 6px;border:1px solid #7d4ff7;text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="Atomic-intent OTC settlement is active for this asset. The confidential transfer + BTC payment close in one Bitcoin tx — no counterparty trust required.">⚡ atomic</span>`
+    : '';
+  card.dataset.hasAtomic = atomicBadge ? '1' : '0';
+
+  // Network chip. Sourced from the asset record (worker stamps every entry
+  // with `network`); falls back to the dapp's current NET.name when absent
+  // so legacy records still render. Mainnet uses the same warm-amber accent
+  // as other "real value" warnings; signet stays neutral.
+  const _assetNet = (a && (a.network === 'mainnet' || a.network === 'signet')) ? a.network : NET.name;
+  const networkBadge = _assetNet === 'mainnet'
+    ? `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;" title="Bitcoin mainnet asset — has real value. Verify the asset_id and supply attestation before trading.">mainnet</span>`
+    : `<span style="font-size:10px;background:var(--bg-warm);color:var(--ink-mid);padding:2px 6px;border:1px solid var(--ink-faint);text-transform:uppercase;letter-spacing:0.1em;" title="Signet (Bitcoin testnet) asset — no real value, suitable for testing only.">signet</span>`;
+
   let collisionBadge = '', collisionDetail = '';
   if (a._tickerCollision === 'duplicate') {
-    collisionBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before sending or buying.">⚠ duplicate ticker</span>`;
+    collisionBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before sending or buying.">⚠ duplicate ticker</span>`;
     collisionDetail = `<div style="margin-top:6px;font-size:11px;color:var(--red);">⚠ This ticker is shared with ≥ 1 earlier-etched asset. <strong>Tickers are not unique on tacit</strong> — the asset_id below is the canonical reference. Confirm with the issuer before trading.</div>`;
   } else if (a._tickerCollision === 'original') {
-    collisionBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">shared ticker · earliest</span>`;
+    collisionBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">shared ticker · earliest</span>`;
   }
 
   card.innerHTML = `
@@ -12540,8 +13670,10 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
         <div class="ticker" style="font-size:24px;">${escapeHtml(displayName)}${displayName !== ticker ? `<span class="ticker-sub">${escapeHtml(ticker)}</span>` : ''}<span class="id-tag">${escapeHtml(shorten(safeAssetId, 4))}</span></div>
         <div class="muted" style="font-size:11px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <span>decimals ${decimals} · etched ${ageStr} · block ${safeHeight ?? '—'}</span>
+          ${networkBadge}
           ${verifyBadge}
           ${collisionBadge}
+          ${atomicBadge}
         </div>
       </div>
     </div>
@@ -12551,6 +13683,7 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     ${mintBadge}
     ${burnBadge}
     ${totalSupplyBadge}
+    ${marketCapBadge}
     ${(() => {
       // Live-market badge — flag and link to offers when this asset has any
       // active listings (per-UTXO, range, or atomic intent). Counts here are
@@ -12566,10 +13699,35 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       if (Number(a.listing_count || 0) > 0)         breakdown.push(`${a.listing_count} listing${a.listing_count === 1 ? '' : 's'}`);
       if (Number(a.range_listing_count || 0) > 0)   breakdown.push(`${a.range_listing_count} range`);
       if (Number(a.atomic_intent_count || 0) > 0)   breakdown.push(`${a.atomic_intent_count} atomic`);
+      // Floor-price hint, only when the user has loaded Market once this
+      // session (the cache fills there). Conservative — range listings
+      // contribute their per-threshold price as the unit, which is an upper
+      // bound; the click-through to Market shows the precise mix.
+      const floor = _marketFloorByAsset()?.get(a.asset_id);
+      const floorTail = floor
+        ? ` · <span style="cursor:help;" title="Lowest unit price across active offers. Range listings contribute price ÷ threshold, which is an upper bound — the maker may deliver more for the same total, so an actual fill from a range entry can be cheaper than this number.">floor ${escapeHtml(fmtUnitPriceSats(floor.unit))} sats/${escapeHtml(floor.ticker)}</span>`
+        : '';
       return `<div style="margin-top:6px;font-size:11px;">
         <a href="#" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="display:inline-block;padding:3px 8px;background:#0a8f43;color:#fff;text-decoration:none;border:1px solid #0a8f43;font-weight:bold;letter-spacing:0.05em;">▸ ${offerCount} live offer${offerCount === 1 ? '' : 's'} on Market</a>
-        <span class="muted" style="margin-left:8px;">${escapeHtml(breakdown.join(' · '))}</span>
+        <span class="muted" style="margin-left:8px;">${escapeHtml(breakdown.join(' · '))}${floorTail}</span>
       </div>`;
+    })()}
+    ${(() => {
+      // Last-traded price — recorded by the worker when an atomic-intent
+      // settlement broadcasts (only AXFER fills carry a verifiable price at
+      // settlement time; opening/range fulfilments settle off-chain so the
+      // dapp can't observe them). Decorative signal, not a binding quote;
+      // a malicious caller could mis-stamp the worker once per asset, which
+      // is why the tooltip flags it as best-effort.
+      const lt = a.last_trade;
+      if (!lt || !Number.isInteger(lt.price_sats) || lt.price_sats <= 0) return '';
+      const ltAmt = (() => { try { return BigInt(lt.amount); } catch { return 0n; } })();
+      if (ltAmt <= 0n) return '';
+      const ltUnit = unitPriceSats(lt.price_sats, ltAmt, decimals);
+      const ltAge = relativeAge(Number(lt.ts) || 0);
+      const unitTail = ltUnit != null ? ` · ${escapeHtml(fmtUnitPriceSats(ltUnit))} sats/${escapeHtml(ticker)}` : '';
+      const ageTail = ltAge ? ` · ${escapeHtml(ltAge)} ago` : '';
+      return `<div class="muted" style="margin-top:6px;font-size:11px;" title="Most recent atomic-intent settlement (T_AXFER) reported to the worker. Best-effort — the worker can't independently re-verify the price, only that the tx is an AXFER for this asset. Last-write-wins; bounded damage from a bad report.">💱 last sold ${Number(lt.price_sats).toLocaleString()} sats${unitTail}${ageTail}</div>`;
     })()}
     ${(() => {
       // Transfer-count signal — coarse "is anyone moving this?" indicator,
@@ -12581,11 +13739,44 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       if (xferCount <= 0) return '';
       return `<div class="muted" style="margin-top:6px;font-size:11px;">🔄 ${xferCount} indexed transfer${xferCount === 1 ? '' : 's'} <span title="counted from CXFER + AXFER envelopes seen by this worker since it began scanning — coarse popularity signal, not a legitimacy proof">(CXFER + AXFER)</span></div>`;
     })()}
+    ${(() => {
+      // Disclosure signals — opt-in transparency from holders. opening_count
+      // counts UTXOs whose (amount, blinding) opening has been published to
+      // the worker (often as part of a listing); disclosure_count counts
+      // "balance ≥ K" zero-knowledge proofs. Both link to the per-asset
+      // /openings or /disclosures endpoints for inspection. Rendered only
+      // when > 0 so quiet assets don't show empty rows.
+      const openCount = Number(a.opening_count || 0);
+      const rangeCount = Number(a.disclosure_count || 0);
+      if (openCount <= 0 && rangeCount <= 0) return '';
+      const parts = [];
+      if (openCount > 0) parts.push(`${openCount} disclosed UTXO${openCount === 1 ? '' : 's'}`);
+      if (rangeCount > 0) parts.push(`${rangeCount} range disclosure${rangeCount === 1 ? '' : 's'}`);
+      return `<div class="muted" style="margin-top:6px;font-size:11px;" title="Holder-published (amount, blinding) openings and balance-≥-K range proofs — opt-in transparency, both verifiable from chain alone.">🔓 ${parts.join(' · ')}</div>`;
+    })()}
+    ${(() => {
+      // Etcher reputation row — surfaces "this issuer has K other assets in
+      // the current registry" so a buyer can pattern-match repeat issuers
+      // (good or bad) without leaving Discover. Only shown when the etcher
+      // is verified (we have their x-only) AND they appear on at least one
+      // other asset. Click-to-filter narrows the list to that creator's
+      // full set; same handler the existing Etcher row uses below.
+      if (!etcherXonly || !etcherAddr) return '';
+      const peers = _discoverEtcherMap.get(etcherXonly);
+      const otherCount = peers ? Math.max(0, peers.size - 1) : 0;
+      if (otherCount <= 0) return '';
+      return `<div class="muted" style="margin-top:6px;font-size:11px;">📜 <a href="#" data-act="filter-etcher" data-etcher="${escapeHtml(etcherAddr)}" title="Click to filter Discover to this etcher's full set of assets">etcher has ${otherCount} other asset${otherCount === 1 ? '' : 's'} on ${escapeHtml(NET.name)}</a></div>`;
+    })()}
     ${extras?.description ? `<div class="muted" style="margin-top:8px;font-size:11px;font-style:italic;">${escapeHtml(extras.description)}</div>` : ''}
     ${(() => {
       const safe = safeExternalUrl(extras?.external_url);
       return safe ? `<div style="margin-top:6px;font-size:11px;"><a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${escapeHtml(safe)} ↗</a></div>` : '';
     })()}
+    ${verified ? `<div class="flex" style="gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center;">
+      <button data-act="discover-place-bid" data-aid="${escapeHtml(safeAssetId)}" data-ticker="${escapeHtml(ticker)}" data-decimals="${decimals}" type="button" title="Post a buy-side bid for this asset (off-chain bid book — SPEC §5.7.7)">Place bid</button>
+      <a href="#" data-act="discover-view-bids" data-aid="${escapeHtml(safeAssetId)}" data-ticker="${escapeHtml(ticker)}" data-decimals="${decimals}" style="font-size:11px;" title="View open bids on this asset"><span data-bid-count-for="${escapeHtml(safeAssetId)}">${verify._bidCount != null ? verify._bidCount : '…'}</span> open bid${verify._bidCount === 1 ? '' : 's'} ↗</a>
+    </div>
+    <div data-bid-host="${escapeHtml(safeAssetId)}" style="display:none;margin-top:10px;"></div>` : ''}
     <div class="meta">
       <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(safeAssetId)}</div>
       <div><span class="lbl">Etch tx</span> ${safeEtchTxid ? `<a href="${NET.explorer}/tx/${escapeHtml(safeEtchTxid)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(safeEtchTxid, 8))} ↗</a>` : '—'}</div>
@@ -12619,6 +13810,217 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       input.focus();
     };
   });
+  // Wire Place-Bid + View-Bids actions. Both toggle the same data-bid-host
+  // panel directly below the action row, so users can post a bid and then
+  // see it appear in the open-bids list without leaving the card.
+  card.querySelectorAll('[data-act="discover-place-bid"]').forEach(el => {
+    el.onclick = () => openDiscoverBidForm(card, el.dataset.aid, el.dataset.ticker || '?', Number(el.dataset.decimals || 0));
+  });
+  card.querySelectorAll('[data-act="discover-view-bids"]').forEach(el => {
+    el.onclick = (ev) => {
+      ev.preventDefault();
+      openDiscoverBidPanel(card, el.dataset.aid, el.dataset.ticker || '?', Number(el.dataset.decimals || 0));
+    };
+  });
+}
+
+// Renders the place-bid form into the card's data-bid-host slot. Submit calls
+// publishBidIntent (which signs with the wallet privkey + POSTs to worker).
+// On success, switches the host into "panel" mode so the new bid is visible.
+function openDiscoverBidForm(card, assetIdHex, ticker, decimals) {
+  const host = card.querySelector(`[data-bid-host="${assetIdHex}"]`);
+  if (!host) return;
+  if (host.style.display !== 'none' && host.dataset.mode === 'form') {
+    host.style.display = 'none';
+    host.dataset.mode = '';
+    host.innerHTML = '';
+    return;
+  }
+  host.style.display = 'block';
+  host.dataset.mode = 'form';
+  const tickerSafe = escapeHtml(ticker);
+  host.innerHTML = `
+    <div style="border:1px solid var(--ink-mid);padding:8px;background:var(--bg);">
+      <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">Place a bid on ${tickerSafe}</div>
+      <div class="muted" style="font-size:10px;margin-bottom:8px;">Off-chain bid book (SPEC §5.7.7). When a holder claims your bid, they spin up an atomic intent targeted at your wallet — settlement is a single Bitcoin tx, no protocol fee.</div>
+      <div class="flex" style="gap:6px;flex-wrap:wrap;">
+        <label style="font-size:10px;flex:1;min-width:120px;">Amount (${tickerSafe})
+          <input data-bid-field="amount" type="text" inputmode="decimal" placeholder="0.0" style="width:100%;font-family:var(--mono);">
+        </label>
+        <label style="font-size:10px;flex:1;min-width:120px;">Total price (sats)
+          <input data-bid-field="price" type="number" min="1" step="1" placeholder="e.g. 50000" style="width:100%;font-family:var(--mono);">
+        </label>
+        <label style="font-size:10px;flex:1;min-width:120px;">Expires (hours)
+          <input data-bid-field="expiry-hours" type="number" min="1" max="720" step="1" value="24" style="width:100%;font-family:var(--mono);">
+        </label>
+      </div>
+      <div class="flex" style="gap:6px;margin-top:8px;">
+        <button data-bid-action="submit" class="primary" type="button" style="font-size:11px;">Sign & post bid</button>
+        <button data-bid-action="cancel" type="button" style="font-size:11px;">Close</button>
+      </div>
+      <div data-bid-status="" class="muted" style="font-size:10px;margin-top:6px;"></div>
+    </div>`;
+  const status = host.querySelector('[data-bid-status=""]');
+  host.querySelector('[data-bid-action="cancel"]').onclick = () => {
+    host.style.display = 'none'; host.dataset.mode = ''; host.innerHTML = '';
+  };
+  const submitBtn = host.querySelector('[data-bid-action="submit"]');
+  submitBtn.onclick = async () => {
+    if (submitBtn.disabled) return;
+    try {
+      const amountStr = host.querySelector('[data-bid-field="amount"]').value.trim();
+      const priceSatsRaw = host.querySelector('[data-bid-field="price"]').value.trim();
+      const hoursRaw = host.querySelector('[data-bid-field="expiry-hours"]').value.trim();
+      if (!amountStr || !priceSatsRaw || !hoursRaw) throw new Error('all fields required');
+      const amount = parseAssetAmount(amountStr, decimals);
+      if (amount <= 0n) throw new Error('amount must be positive');
+      const priceSatsInt = parseInt(priceSatsRaw, 10);
+      if (!Number.isInteger(priceSatsInt) || priceSatsInt <= 0) throw new Error('price must be a positive integer');
+      const hours = Math.max(1, Math.min(720, parseInt(hoursRaw, 10) || 24));
+      const expiry = Math.floor(Date.now() / 1000) + hours * 3600;
+      submitBtn.disabled = true;
+      status.textContent = 'signing & posting…';
+      await publishBidIntent({ assetIdHex, amount, priceSats: priceSatsInt, expiry });
+      status.textContent = 'bid posted ✓';
+      toast(`Bid posted on ${ticker}`, 'success');
+      openDiscoverBidPanel(card, assetIdHex, ticker, decimals);
+    } catch (e) {
+      submitBtn.disabled = false;
+      status.textContent = 'failed: ' + (e?.message || String(e));
+    }
+  };
+}
+
+// Renders the open-bids panel into the same data-bid-host slot. Each row shows
+// amount, total price, ppu, expiry, bidder pub. Holders see Fulfil; bidders
+// see Cancel. Calling this also refreshes the cached _bidIntents on the card's
+// verify object so the bid count stays current.
+async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
+  const host = card.querySelector(`[data-bid-host="${assetIdHex}"]`);
+  if (!host) return;
+  if (host.style.display !== 'none' && host.dataset.mode === 'panel') {
+    host.style.display = 'none'; host.dataset.mode = ''; host.innerHTML = '';
+    return;
+  }
+  host.style.display = 'block';
+  host.dataset.mode = 'panel';
+  host.innerHTML = `<div class="muted" style="font-size:11px;">loading bids…</div>`;
+  let intents = [];
+  try {
+    intents = await browseBidIntents(assetIdHex);
+  } catch (e) {
+    host.innerHTML = `<div class="muted" style="font-size:11px;">load failed: ${escapeHtml(e?.message || String(e))}</div>`;
+    return;
+  }
+  // Update the count badge on the card without a full re-render.
+  const countSpan = card.querySelector(`[data-bid-count-for="${assetIdHex}"]`);
+  if (countSpan) countSpan.textContent = String(intents.length);
+  if (intents.length === 0) {
+    host.innerHTML = `
+      <div style="border:1px solid var(--ink-mid);padding:8px;background:var(--bg);">
+        <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">No open bids on ${escapeHtml(ticker)}</div>
+        <div class="muted" style="font-size:10px;">Be the first to post one — bids encourage holders to disclose pricing and surface a market for the asset.</div>
+      </div>`;
+    return;
+  }
+  const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : null;
+  const rowsHtml = intents.map((b) => {
+    const amtStr = fmtAssetAmountPlain(BigInt(b.amount || 0), decimals);
+    const ppuTotal = Number(b.price_sats || 0);
+    const amtBase = Number(b.amount || 0);
+    const ppu = (amtBase > 0) ? (ppuTotal / (amtBase / Math.pow(10, decimals))) : 0;
+    const expiresIn = Math.max(0, Number(b.expiry || 0) - Math.floor(Date.now() / 1000));
+    const expiryLbl = expiresIn > 0 ? `${Math.floor(expiresIn / 3600)}h ${Math.floor((expiresIn % 3600) / 60)}m` : 'expired';
+    const claimed = !!b.axintent_id;
+    const isMine = myPub && b.buyer_pubkey === myPub;
+    let actionsHtml;
+    if (claimed) {
+      actionsHtml = `<span class="muted" style="font-size:10px;">claimed via atomic intent ${escapeHtml(shorten(b.axintent_id, 6))}</span>`;
+    } else if (isMine) {
+      actionsHtml = `<button data-bid-action="cancel-mine" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;">Cancel</button>`;
+    } else {
+      actionsHtml = `<button data-bid-action="fulfil" data-bid-id="${escapeHtml(b.bid_id)}" class="primary" type="button" style="font-size:10px;" title="Spin up a §5.7.6 atomic intent targeted at this bidder, signed by your asset UTXO. Claiming the bid links the two so the bidder can take.">Fulfil</button>`;
+    }
+    return `
+      <div style="border:1px solid var(--ink-mid);padding:6px;margin-bottom:4px;font-size:11px;">
+        <div class="flex" style="justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">
+          <div><span class="lbl">amt</span> ${escapeHtml(amtStr)} ${escapeHtml(ticker)} · <span class="lbl">total</span> ${ppuTotal.toLocaleString()} sats · <span class="lbl">ppu</span> ${ppu.toFixed(2)} sats</div>
+          <div>${actionsHtml}</div>
+        </div>
+        <div class="muted" style="font-size:10px;margin-top:2px;">bidder ${escapeHtml(shorten(b.buyer_pubkey, 6))} · expires ${escapeHtml(expiryLbl)}${isMine ? ' · <em>your bid</em>' : ''}</div>
+      </div>`;
+  }).join('');
+  host.innerHTML = `
+    <div style="border:1px solid var(--ink-mid);padding:8px;background:var(--bg);">
+      <div class="flex" style="justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="font-size:11px;font-weight:bold;">Open bids on ${escapeHtml(ticker)} (${intents.length})</div>
+        <button data-bid-action="close-panel" type="button" style="font-size:10px;">Close</button>
+      </div>
+      ${rowsHtml}
+    </div>`;
+  host.querySelector('[data-bid-action="close-panel"]').onclick = () => {
+    host.style.display = 'none'; host.dataset.mode = ''; host.innerHTML = '';
+  };
+  host.querySelectorAll('[data-bid-action="cancel-mine"]').forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      btn.textContent = 'cancelling…';
+      try {
+        await cancelBidIntent(assetIdHex, btn.dataset.bidId);
+        toast('Bid cancelled ✓', 'success');
+        openDiscoverBidPanel(card, assetIdHex, ticker, decimals);
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Cancel';
+        toast('Cancel failed: ' + (e?.message || String(e)), 'error');
+      }
+    };
+  });
+  host.querySelectorAll('[data-bid-action="fulfil"]').forEach(btn => {
+    btn.onclick = async () => {
+      const bid = intents.find(x => x.bid_id === btn.dataset.bidId);
+      if (!bid) return;
+      btn.disabled = true;
+      btn.textContent = 'fulfilling…';
+      try {
+        await fulfilBidIntent({ bid });
+        toast('Bid fulfilled ✓ — atomic intent published, awaiting bidder take', 'success');
+        openDiscoverBidPanel(card, assetIdHex, ticker, decimals);
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = 'Fulfil';
+        toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
+      }
+    };
+  });
+}
+
+// Per-asset floor unit price, derived from _marketCache.listings. Discover
+// consults this so a card can show "▸ 5 live offers · floor X sats/TAC"
+// without re-fetching listings on every render. Memoized against the cache
+// reference so the map only rebuilds when the underlying listings change.
+// For range listings the threshold is a minimum delivery, so price/threshold
+// is an *upper* bound on the unit price — we accept that as the floor here
+// (conservative: the user clicks through and sees the actual offer mix).
+// Returns null when Market hasn't been loaded yet — Discover falls back to
+// the plain offer-count badge.
+let _marketFloorCache = { src: null, map: null };
+function _marketFloorByAsset() {
+  if (!_marketCache?.listings) return null;
+  if (_marketFloorCache.src === _marketCache) return _marketFloorCache.map;
+  const map = new Map();
+  for (const l of _marketCache.listings) {
+    const a = l._asset;
+    if (!a?.asset_id) continue;
+    const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    const amount = l.kind === 'range' ? l.threshold : l.amount;
+    const u = unitPriceSats(Number(l.price_sats || 0), BigInt(amount || 0), dec);
+    if (u == null) continue;
+    const cur = map.get(a.asset_id);
+    if (!cur || u < cur.unit) map.set(a.asset_id, { unit: u, ticker: a.ticker || 'token' });
+  }
+  _marketFloorCache = { src: _marketCache, map };
+  return map;
 }
 
 // ============== MARKET TAB ==============
@@ -12662,11 +14064,53 @@ async function fetchMarketData() {
   return { assets, listings: all.flat() };
 }
 
+// Background liveness prune: dispatched right after applyMarketFilters
+// renders. The worker doesn't track UTXO spentness (constant chain polling
+// per listing would be expensive), so without this pass takers would see
+// dead listings until they click Verify. Strategy: paint immediately with
+// what the worker returned, then in parallel hit /outspend per opening +
+// intent listing. Each spent result removes its tile from the DOM AND
+// from _marketCache.listings, so filter / sort re-renders don't bring it
+// back. Range listings are skipped — their bulletproof can stay valid
+// even after some UTXOs spend, and Verify still does the full check.
+function startMarketLivenessPrune() {
+  if (!_marketCache) return;
+  const grid = $('#market-list');
+  if (!grid) return;
+  // Snapshot at dispatch — _marketCache.listings may mutate as checks resolve.
+  for (const l of _marketCache.listings.slice()) {
+    let txid, vout;
+    if (l.kind === 'opening') { txid = l.txid; vout = l.vout | 0; }
+    else if (l.kind === 'intent') { txid = l.asset_utxo?.txid; vout = l.asset_utxo?.vout | 0; }
+    else continue;
+    if (!txid) continue;
+    getOutspend(txid, vout).then((sp) => {
+      if (!sp || !sp.spent) return;
+      if (_marketCache) {
+        _marketCache.listings = _marketCache.listings.filter(x => x !== l);
+      }
+      const key = l.kind === 'opening' ? `opening:${l.txid}:${l.vout | 0}` : `intent:${l.intent_id}`;
+      const tile = grid.querySelector(`[data-listing-key="${CSS.escape(key)}"]`);
+      if (!tile) return;
+      tile.remove();
+      if (!grid.querySelector('[data-listing-key]')) {
+        grid.innerHTML = '<div class="empty">No live listings.</div>';
+      }
+    }).catch(() => {});
+  }
+}
+
+// TTL on the worker round-trip so tab-clicks (Market → Discover → Market)
+// don't re-pay the fetch when the data is fresh. Refresh button and any
+// post-action callsite call invalidateMarketCache() (or recordActivity()
+// invalidates it transitively) to force a re-fetch on the next renderMarket.
+const MARKET_FETCH_TTL_MS = 30 * 1000;
+let _marketFetchedAt = 0;
+function invalidateMarketCache() { _marketFetchedAt = 0; }
+
 async function renderMarket() {
   const list = $('#market-list');
   const status = $('#market-status');
-  list.innerHTML = '<div class="muted" style="padding:14px;text-align:center;font-style:italic;">loading…</div>';
-  if (status) status.textContent = 'loading…';
   if (!REGISTRY_URL) {
     list.innerHTML = '<div class="muted" style="padding:14px;">marketplace disabled (no Worker)</div>';
     if (status) status.textContent = '';
@@ -12681,9 +14125,23 @@ async function renderMarket() {
     if (inputEl) inputEl.value = pendingMarketFilter;
     pendingMarketFilter = null;
   }
+  // Fast path: if the cache is fresh, skip the worker round-trip entirely
+  // and just re-apply filters against what we already have. The liveness
+  // prune already runs in the background; tiles whose UTXOs spent during
+  // the cache window are gone from _marketCache.listings.
+  if (_marketCache && (Date.now() - _marketFetchedAt) < MARKET_FETCH_TTL_MS) {
+    applyMarketFilters();
+    return;
+  }
+  list.innerHTML = '<div class="muted" style="padding:14px;text-align:center;font-style:italic;">loading…</div>';
+  if (status) status.textContent = 'loading…';
   try {
     _marketCache = await fetchMarketData();
+    _marketFetchedAt = Date.now();
     applyMarketFilters();
+    // Fire-and-forget: chain-check each listing's UTXO in parallel and
+    // remove stale tiles as results come in. Doesn't block initial paint.
+    startMarketLivenessPrune();
   } catch (e) {
     list.innerHTML = `<div class="error">Market load failed: ${escapeHtml(e.message)}</div>`;
     if (status) status.textContent = 'error';
@@ -12718,6 +14176,18 @@ function applyMarketFilters() {
   // For price sorts, atomic ↔ non-atomic at the same price stay grouped:
   // atomics first, then opening/range tied by price.
   const atomicScore = l => l.kind === 'intent' ? 0 : 1;
+  // Cache the unit price per row so the comparator doesn't recompute it on
+  // every pairwise call. Listings whose unit price can't be derived (zero
+  // amount, malformed price) sort to the bottom under unit-asc, top under
+  // unit-desc — Number.NEGATIVE_INFINITY / POSITIVE_INFINITY would invert
+  // that, so we use Infinity sentinel and flip per direction below.
+  const unitOf = l => {
+    const a = l._asset || {};
+    const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    const amt = l.kind === 'range' ? l.threshold : l.amount;
+    const u = unitPriceSats(Number(l.price_sats || 0), BigInt(amt || 0), dec);
+    return u != null ? u : null;
+  };
   if (sort === 'price-asc') {
     rows.sort((a, b) =>
       atomicScore(a) - atomicScore(b)
@@ -12726,6 +14196,19 @@ function applyMarketFilters() {
     rows.sort((a, b) =>
       atomicScore(a) - atomicScore(b)
       || Number(b.price_sats || 0) - Number(a.price_sats || 0));
+  } else if (sort === 'unit-asc' || sort === 'unit-desc') {
+    const desc = sort === 'unit-desc';
+    rows.sort((a, b) => {
+      const ax = atomicScore(a) - atomicScore(b);
+      if (ax !== 0) return ax;
+      const ua = unitOf(a), ub = unitOf(b);
+      // Listings without a derivable unit price sink to the bottom in either
+      // direction so the user always sees ranked results first.
+      if (ua == null && ub == null) return 0;
+      if (ua == null) return 1;
+      if (ub == null) return -1;
+      return desc ? ub - ua : ua - ub;
+    });
   } else {
     rows.sort((a, b) =>
       atomicScore(a) - atomicScore(b)
@@ -12736,9 +14219,30 @@ function applyMarketFilters() {
     list.innerHTML = '<div class="empty">No listings match.</div>';
     return;
   }
-  list.innerHTML = '<div id="market-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;"></div>';
+  // Trust-mode breakdown banner. Atomic intents are the trustless path
+  // (single-tx settlement); opening + range listings settle off-chain and
+  // require counterparty trust. Surfacing the split pre-clicks lets a user
+  // gauge whether the current filter set has any trustless options before
+  // scrolling — and nudges them toward the kind=intent filter when none do.
+  const atomicCount = rows.reduce((s, l) => s + (l.kind === 'intent' ? 1 : 0), 0);
+  const trustCount = rows.length - atomicCount;
+  const trustlessLabel = atomicCount > 0
+    ? `<span style="color:#7d4ff7;"><strong>⚡ ${atomicCount} trustless</strong></span>`
+    : `<span class="muted">⚡ 0 trustless</span>`;
+  const trustLabel = trustCount > 0
+    ? `<span class="muted">${trustCount} trust-required (opening + range)</span>`
+    : `<span class="muted">0 trust-required</span>`;
+  list.innerHTML =
+    `<div style="margin-bottom:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;">
+       ${trustlessLabel} <span class="muted">·</span> ${trustLabel}
+       ${atomicCount === 0 && trustCount > 0 ? `<span class="muted" style="margin-left:auto;font-style:italic;">no atomic offers under current filters — try kind=⚡ atomic</span>` : ''}
+     </div>
+     <div id="market-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;"></div>`;
   const grid = $('#market-grid');
   const myPubHex = bytesToHex(wallet.pub);
+  // Build all tiles into a DocumentFragment first; one reflow at the end
+  // instead of N reflows during the loop. Material on busy markets.
+  const frag = document.createDocumentFragment();
   for (const l of rows) {
     const a = l._asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
@@ -12747,9 +14251,19 @@ function applyMarketFilters() {
     const amount = l.kind === 'range' ? l.threshold : l.amount;
     const tile = document.createElement('div');
     tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);';
+    // Stable per-listing key so the background liveness prune can target
+    // this tile by selector when its UTXO turns out to be spent on-chain.
+    // Includes asset_id on range so a maker with range listings across
+    // multiple assets gets distinct keys (the prune doesn't query range
+    // today, but the key should still be unique if a future feature does).
+    tile.dataset.listingKey = l.kind === 'opening'
+      ? `opening:${l.txid}:${l.vout | 0}`
+      : l.kind === 'intent'
+        ? `intent:${l.intent_id}`
+        : `range:${a.asset_id}:${l.owner_pubkey || ''}`;
     const kindBadge =
-        l.kind === 'range'  ? `<span style="display:inline-block;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="Range-disclosed listing — maker proved their balance ≥ the listed amount via a bulletproof, without revealing the exact balance.">≥</span>`
-      : l.kind === 'intent' ? `<span style="display:inline-block;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="atomic — settles in one Bitcoin tx, no counterparty trust">⚡</span>`
+        l.kind === 'range'  ? `<span style="display:inline-block;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Range-disclosed listing — maker proved their balance ≥ the listed amount via a bulletproof, without revealing the exact balance.">≥</span>`
+      : l.kind === 'intent' ? `<span style="display:inline-block;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Atomic intent — the confidential token transfer and the BTC payment that pays for it close in the same Bitcoin tx. The maker can't redirect your payment; you can't get tokens without paying. No counterparty trust required.">⚡</span>`
       : '';
     // Action buttons depend on listing kind + my role on this intent.
     let actions = '';
@@ -12759,50 +14273,76 @@ function applyMarketFilters() {
       const fulfilled = !!l.fulfilment_pending;
       if (isMaker) {
         if (claim && !fulfilled) {
-          actions = `<button data-act="market-fulfil" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" style="flex:1;font-size:11px;">Fulfil claim from ${escapeHtml(shorten(claim.taker_pubkey, 6))}</button>` +
-                    `<button data-act="market-cancel-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" style="font-size:11px;">Cancel</button>`;
+          actions = `<button data-act="market-fulfil" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Maker step 2 of 3: generate the partial reveal targeted at the taker's pubkey and upload it. The taker's Take button unlocks once you've fulfilled." style="flex:1;font-size:11px;">Fulfil claim from ${escapeHtml(shorten(claim.taker_pubkey, 6))}</button>` +
+                    `<button data-act="market-cancel-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Pull this atomic intent from the worker. The active claim is invalidated; if a partial reveal was already uploaded, it becomes un-finalizable." style="font-size:11px;">Cancel</button>`;
         } else if (fulfilled) {
-          actions = `<button disabled style="flex:1;font-size:11px;">awaiting taker broadcast…</button>` +
-                    `<button data-act="market-cancel-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" style="font-size:11px;">Cancel</button>`;
+          actions = `<button disabled title="You've fulfilled the claim. The atomic settlement tx is ready for the taker to broadcast — they have until the claim window expires (~5 min from claim) to do so." style="flex:1;font-size:11px;">awaiting taker broadcast…</button>` +
+                    `<button data-act="market-cancel-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Pull this atomic intent from the worker. The active claim is invalidated; if a partial reveal was already uploaded, it becomes un-finalizable." style="font-size:11px;">Cancel</button>`;
         } else {
-          actions = `<button disabled style="flex:1;font-size:11px;">your intent · awaiting claim</button>` +
-                    `<button data-act="market-cancel-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" style="font-size:11px;">Cancel</button>`;
+          actions = `<button disabled title="Your atomic intent is published and waiting for someone to claim it. When a taker claims, this button flips to Fulfil." style="flex:1;font-size:11px;">your intent · awaiting claim</button>` +
+                    `<button data-act="market-cancel-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Pull this atomic intent from the worker. Safe to call any time before fulfilment." style="font-size:11px;">Cancel</button>`;
         }
       } else if (claim && claim.taker_pubkey === myPubHex) {
         // I claimed; check fulfilment status.
         actions = fulfilled
-          ? `<button data-act="market-take-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" style="flex:1;font-size:11px;">Take (atomic broadcast)</button>`
-          : `<button disabled style="flex:1;font-size:11px;">awaiting maker fulfilment…</button>`;
+          ? `<button data-act="market-take-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" title="Taker step 3 of 3: broadcast the single Bitcoin tx that combines the maker's partial reveal with your BTC payment. Atomic — both legs settle or both fail." style="flex:1;font-size:11px;">Take (atomic broadcast)</button>`
+          : `<button disabled title="Your claim is locked in. Waiting for the maker to upload the partial reveal targeted at your pubkey. Take unlocks the moment they fulfil — refresh to check." style="flex:1;font-size:11px;">awaiting maker fulfilment…</button>`;
       } else if (claim) {
-        actions = `<button disabled style="flex:1;font-size:11px;">claimed by ${escapeHtml(shorten(claim.taker_pubkey, 6))}</button>`;
+        actions = `<button disabled title="Another taker has the 5-minute lock on this intent. If they don't broadcast in time the lock expires and this tile becomes claimable again." style="flex:1;font-size:11px;">claimed by ${escapeHtml(shorten(claim.taker_pubkey, 6))}</button>`;
       } else {
-        actions = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" style="flex:1;font-size:11px;">Claim</button>`;
+        actions = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(l.intent_id || '')}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Taker step 1 of 3: reserve this atomic intent for 5 minutes. You commit a sat UTXO ≥ price as proof of funds; the maker then fulfils, then you Take to settle." style="flex:1;font-size:11px;">Claim</button>`;
       }
     } else {
-      actions = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${Number(l.price_sats || 0)}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" style="flex:1;font-size:11px;">Take</button>` +
-                `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" style="font-size:11px;">Verify</button>`;
+      actions = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${Number(l.price_sats || 0)}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Off-chain OTC buy: pay the maker's BTC address the listed sats, then they broadcast a CXFER to your pubkey. Counterparty trust required — the maker can take the sats without delivering. Prefer ⚡ atomic intents when available." style="flex:1;font-size:11px;">Take</button>` +
+                `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing without buying it: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Safe to call as many times as you want." style="font-size:11px;">Verify</button>`;
     }
     // Ticker-collision warning. First-etched is shown as `original` (soft);
     // later etches under the same ticker get a stronger `duplicate` badge to
     // push the taker to read the asset_id rather than trust the string.
     const collisionTileBadge = a._tickerCollision === 'duplicate'
-      ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before buying.">⚠ DUP</span>`
+      ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before buying.">⚠ DUP</span>`
       : a._tickerCollision === 'original'
-        ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">earliest</span>`
+        ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">earliest</span>`
         : '';
+    // Unit price: sats per whole token, accounting for decimals. For range
+    // listings the threshold is a *minimum* delivery amount, so this number
+    // is the worst-case (most-expensive-per-token) price — labeled "≤" since
+    // the maker may deliver more for the same total.
+    const unit = unitPriceSats(Number(l.price_sats || 0), BigInt(amount || 0), dec);
+    const unitStr = unit != null
+      ? `${l.kind === 'range' ? '≤ ' : ''}${fmtUnitPriceSats(unit)} sats/${escapeHtml(a.ticker || 'token')}`
+      : '';
+    const listedRel = relativeAge(l.listed_at);
+    const recencyLine = listedRel
+      ? `listed ${escapeHtml(listedRel)} ago · expires ${expIso}`
+      : `expires ${expIso}`;
+    // Network chip — small enough to inline next to the ticker. Same source
+    // resolution as Discover (asset record's stamped network, dapp default
+    // when missing).
+    const tileNet = (a && (a.network === 'mainnet' || a.network === 'signet')) ? a.network : NET.name;
+    const tileNetBadge = tileNet === 'mainnet'
+      ? `<span style="display:inline-block;padding:1px 5px;background:#fff8eb;color:#a04030;font-size:9px;border:1px solid #a04030;border-radius:2px;margin-left:6px;text-transform:uppercase;letter-spacing:0.05em;">mainnet</span>`
+      : `<span style="display:inline-block;padding:1px 5px;background:var(--bg-warm);color:var(--ink-mid);font-size:9px;border:1px solid var(--ink-faint);border-radius:2px;margin-left:6px;text-transform:uppercase;letter-spacing:0.05em;">signet</span>`;
     tile.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:baseline;">
-        <div><strong>${escapeHtml(a.ticker || '?')}</strong>${kindBadge}${collisionTileBadge}</div>
-        <div style="font-size:11px;" class="muted">expires ${expIso}</div>
+        <div><strong>${escapeHtml(a.ticker || '?')}</strong>${kindBadge}${collisionTileBadge}${tileNetBadge}</div>
+        <div style="font-size:11px;" class="muted">${recencyLine}</div>
       </div>
-      <div style="margin-top:2px;font-size:10px;font-family:var(--mono);color:var(--ink-mid);" title="${escapeHtml(safeAid)}">id ${escapeHtml(shorten(safeAid, 8))}</div>
-      <div style="margin-top:6px;font-size:18px;">${l.kind === 'range' ? '≥ ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
-      <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${Number(l.price_sats || 0).toLocaleString()} sats</strong></div>
+      <div style="margin-top:2px;font-size:10px;color:var(--ink-mid);"><span>id </span><span class="mono-box inline" style="font-size:10px;cursor:pointer;" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 8))}</span></div>
+      <div style="margin-top:6px;font-size:18px;">${l.kind === 'range' ? '<span title="Range-disclosed listing — maker proved their balance ≥ this amount via a bulletproof, without revealing the exact balance." style="cursor:help;">≥</span> ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
+      <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${Number(l.price_sats || 0).toLocaleString()} sats</strong>${unitStr ? `<span class="muted" style="font-size:11px;margin-left:6px;">· ${unitStr}</span>` : ''}</div>
       <div style="margin-top:8px;font-size:10px;" class="muted">maker: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || '', 6))}</span></div>
       ${a._tickerCollision === 'duplicate' ? `<div style="margin-top:6px;font-size:10px;color:var(--red);">⚠ ticker shared with an earlier asset — verify asset_id before trading</div>` : ''}
       <div style="margin-top:10px;display:flex;gap:6px;">${actions}</div>`;
-    grid.appendChild(tile);
+    frag.appendChild(tile);
   }
+  grid.appendChild(frag);
+  grid.querySelectorAll('span[data-act="copy-aid"]').forEach(el => {
+    el.onclick = async () => {
+      try { await navigator.clipboard.writeText(el.dataset.aid); toast('Asset ID copied', 'success'); }
+      catch { /* clipboard blocked; selectable via mono-box class */ }
+    };
+  });
   grid.querySelectorAll('button[data-act="market-take"]').forEach(btn => {
     btn.onclick = async () => marketTakeHandler(btn);
   });
@@ -12862,7 +14402,7 @@ async function marketFulfilIntentHandler(btn) {
   if (!claim) { toast('No active claim to fulfil', 'error'); return; }
   if (!confirm(
     `Fulfil claim from taker ${shorten(claim.taker_pubkey, 8)}?\n\n` +
-    `Generates a partial reveal targeted at the taker's pubkey, signed SIGHASH_SINGLE_ACP. ` +
+    `The dapp builds a partial Bitcoin tx targeted at the taker's pubkey, locked so they can only broadcast if they pay you. ` +
     `Posts it to the worker. The taker then broadcasts in one atomic Bitcoin tx and you receive ${intent.price_sats.toLocaleString()} sats.`,
   )) return;
   btn.disabled = true; btn.textContent = 'fulfilling…';
@@ -12890,7 +14430,7 @@ async function marketTakeIntentHandler(btn) {
       `Buying:  ${fmtAssetAmount(BigInt(intent.amount), intent.decimals || 0)} ${intent.ticker}\n` +
       `Price:   ${(intent.price_sats | 0).toLocaleString()} sats\n` +
       `Pay to:  ${intent.maker_address}\n\n` +
-      `On confirm: appends your BTC funding, signs SIGHASH_ALL (locks the maker's payment), broadcasts. Atomic, single Bitcoin tx, no trust.`,
+      `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts. Atomic, single Bitcoin tx, no trust.`,
     )) { btn.disabled = false; btn.textContent = 'Take'; return; }
     btn.textContent = 'broadcasting…';
     const r = await takeAxferIntent({ intent, fulfilment: fres.fulfilment });
@@ -12943,7 +14483,7 @@ async function marketCancelIntentHandler(btn) {
   if (intent?.fulfilment_pending) {
     if (!confirm(
       `⚠ You have fulfilled a claim. The taker can still broadcast their finalized tx within 24h unless you spend the asset UTXO yourself.\n\n` +
-      `[OK]     Spend the asset UTXO via self-CXFER (commit + reveal fees apply) AND remove the marketplace record. This is the only way to truly stop the taker.\n\n` +
+      `[OK]     Send the asset UTXO to yourself (Bitcoin tx fees apply) and remove the marketplace record. This invalidates the taker's pending tx — the only way to truly stop them.\n\n` +
       `[Cancel] Abort. No changes.`,
     )) return;
     btn.disabled = true; btn.textContent = 'self-spending…';
@@ -13140,6 +14680,16 @@ async function renderDiscover(force = false) {
     // Stamp ticker-collision precedence (first-etched wins) so each card
     // can show the right warning. Pure on-chain-derived; no centralized list.
     markTickerCollisions(j.assets);
+    // Reset the etcher reputation map for this load and pre-populate from
+    // cached etch verifications so the first card render can already show
+    // "K other assets" rows when the user has visited Discover before. Any
+    // not-yet-cached etch verifies will register their etcher when they
+    // complete (see _processDiscoverCardVerify).
+    _discoverEtcherMap = new Map();
+    for (const _a of j.assets) {
+      const _cached = getCachedDiscoverEtch(_a.asset_id, _a.etch_txid);
+      if (_cached?.etcherXonly) _discoverRegisterEtcher(_cached.etcherXonly, _a.asset_id);
+    }
     list.innerHTML = freshness;
     // EAGER RENDER. Each card mounts immediately with worker-supplied strings
     // (ticker, decimals, image, asset_id) under a "verifying…" badge — the
@@ -13248,10 +14798,10 @@ async function renderDiscover(force = false) {
           tile.innerHTML = `
             <div style="display:flex;justify-content:space-between;align-items:baseline;">
               <div><strong>${escapeHtml(a.ticker || '?')}</strong> <span class="muted" style="font-size:10px;">${escapeHtml(shorten(safeAid, 4))}</span></div>
-              <div style="font-size:11px;" class="muted">expires ${expIso}</div>
+              <div style="font-size:11px;" class="muted">${(() => { const r = relativeAge(l.listed_at); return r ? `listed ${escapeHtml(r)} ago · expires ${expIso}` : `expires ${expIso}`; })()}</div>
             </div>
             <div style="margin-top:6px;font-size:18px;">${escapeHtml(fmtAssetAmount(BigInt(l.amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
-            <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${(l.price_sats || 0).toLocaleString()} sats</strong></div>
+            <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${(l.price_sats || 0).toLocaleString()} sats</strong>${(() => { const u = unitPriceSats(Number(l.price_sats || 0), BigInt(l.amount || 0), dec); return u != null ? `<span class="muted" style="font-size:11px;margin-left:6px;">· ${fmtUnitPriceSats(u)} sats/${escapeHtml(a.ticker || 'token')}</span>` : ''; })()}</div>
             <div style="margin-top:8px;font-size:10px;" class="muted">maker: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || '', 6))}</span></div>
             <div style="margin-top:10px;display:flex;gap:6px;">
               <button data-act="take-listing" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout|0}" data-price="${l.price_sats|0}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(l.amount || '0')}" data-dec="${dec}" style="flex:1;font-size:11px;">Take</button>
@@ -13656,8 +15206,8 @@ function setupHoldingsButtons() {
           `Price:    ${offer.price_sats.toLocaleString()} sats\n` +
           `Pay to:   ${offer.maker_address}\n` +
           `Expires:  ${expIso}\n\n` +
-          `Verified: amount opens the on-chain commitment · maker_address derives from maker_pubkey · output scripts pay the right parties · rangeproof valid.\n\n` +
-          `On confirm: appends your BTC funding, signs SIGHASH_ALL (locks the maker's payment in vout[1]), and broadcasts.`,
+          `Verified: amount matches the on-chain commitment · maker address derives from maker pubkey · output scripts pay the right parties · range proof valid.\n\n` +
+          `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts.`,
         )) return false;
         try {
           const r = await takeAxferOffer(offer);
@@ -13678,6 +15228,17 @@ function setupHoldingsButtons() {
 // (which rebuilds cards) keeps the user's selection.
 let _discoverPill = 'all';
 let _discoverSort = 'newest';
+// Etcher → Set<asset_id> for the current Discover load. Populated lazily
+// from cached etch verifications at load time, then incrementally as fresh
+// verifies complete. Read by renderDiscoverCard to surface "etcher has K
+// other assets" reputation rows. Resets every renderDiscover() call so a
+// network switch or refresh starts clean.
+let _discoverEtcherMap = new Map();
+function _discoverRegisterEtcher(etcherXonly, assetId) {
+  if (!etcherXonly || !assetId) return;
+  if (!_discoverEtcherMap.has(etcherXonly)) _discoverEtcherMap.set(etcherXonly, new Set());
+  _discoverEtcherMap.get(etcherXonly).add(assetId);
+}
 function _matchesPill(card) {
   switch (_discoverPill) {
     case 'mintable': return card.dataset.mintable === '1';
@@ -13688,6 +15249,7 @@ function _matchesPill(card) {
       return t * 1000 >= Date.now() - 24 * 3600 * 1000;
     }
     case 'offers':   return card.dataset.hasOffers === '1';
+    case 'atomic':   return card.dataset.hasAtomic === '1';
     case 'minted':   return card.dataset.hasMints === '1';
     case 'burned':   return card.dataset.hasBurns === '1';
     case 'moved':    return card.dataset.hasTransfers === '1';
@@ -13718,6 +15280,11 @@ function applyDiscoverSort() {
     const d = (Number(b.dataset[key]) || 0) - (Number(a.dataset[key]) || 0);
     return d !== 0 ? d : tieByRecency(a, b);
   };
+  // Floor-asc reads from the Market cache (populated once the user has
+  // visited Market this session). Resolve the map once per sort pass; cards
+  // without a derivable floor sink under cards with one, then tie-break by
+  // recency so newer no-floor assets surface above older no-floor assets.
+  const floorMap = _discoverSort === 'floor-asc' ? _marketFloorByAsset() : null;
   cards.sort((a, b) => {
     switch (_discoverSort) {
       case 'oldest':         return (Number(a.dataset.etchedAt) || 0) - (Number(b.dataset.etchedAt) || 0);
@@ -13725,7 +15292,16 @@ function applyDiscoverSort() {
       case 'ticker-desc':    return (b.dataset.ticker || '').localeCompare(a.dataset.ticker || '');
       case 'transfers-desc': return numDesc('transferCount')(a, b);
       case 'offers-desc':    return numDesc('offerCount')(a, b);
+      case 'atomic-desc':    return numDesc('atomicCount')(a, b);
       case 'active-desc':    return numDesc('activityCount')(a, b);
+      case 'floor-asc': {
+        const fa = floorMap?.get(a.dataset.aid)?.unit;
+        const fb = floorMap?.get(b.dataset.aid)?.unit;
+        if (fa == null && fb == null) return tieByRecency(a, b);
+        if (fa == null) return 1;
+        if (fb == null) return -1;
+        return fa !== fb ? fa - fb : tieByRecency(a, b);
+      }
       case 'newest':
       default:               return tieByRecency(a, b);
     }
@@ -13768,6 +15344,48 @@ function applyDiscoverFilter() {
   }
 }
 
+// Per-network user-preference persistence for Discover + Market views. The
+// search input + asset_id filter are intentionally NOT persisted — they're
+// transient (deep-linked or one-off lookups). What does survive a reload:
+// Discover sort + active pill, Market kind/min/max/sort. Per-network keying
+// keeps signet and mainnet curations independent.
+const _PREFS_DISCOVER_KEY = (net) => `tacit-discover-prefs:${net}`;
+const _PREFS_MARKET_KEY = (net) => `tacit-market-prefs:${net}`;
+function _saveDiscoverPrefs() {
+  try {
+    localStorage.setItem(_PREFS_DISCOVER_KEY(NET.name), JSON.stringify({
+      sort: _discoverSort,
+      pill: _discoverPill,
+    }));
+  } catch { /* quota / private-mode — non-fatal */ }
+}
+function _loadDiscoverPrefs() {
+  try {
+    const raw = localStorage.getItem(_PREFS_DISCOVER_KEY(NET.name));
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return (o && typeof o === 'object') ? o : null;
+  } catch { return null; }
+}
+function _saveMarketPrefs() {
+  try {
+    localStorage.setItem(_PREFS_MARKET_KEY(NET.name), JSON.stringify({
+      kind: $('#market-filter-kind')?.value || 'all',
+      min:  $('#market-filter-min-price')?.value || '',
+      max:  $('#market-filter-max-price')?.value || '',
+      sort: $('#market-sort')?.value || 'recency',
+    }));
+  } catch {}
+}
+function _loadMarketPrefs() {
+  try {
+    const raw = localStorage.getItem(_PREFS_MARKET_KEY(NET.name));
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    return (o && typeof o === 'object') ? o : null;
+  } catch { return null; }
+}
+
 function setupDiscoverButtons() {
   const refreshBtn = $('#btn-discover-refresh');
   if (!REGISTRY_URL) { refreshBtn.disabled = true; refreshBtn.title = 'discovery disabled (no Worker)'; }
@@ -13797,16 +15415,46 @@ function setupDiscoverButtons() {
       pills.querySelectorAll('.filter-pill').forEach(b => {
         b.classList.toggle('active', b.dataset.pill === _discoverPill);
       });
+      _saveDiscoverPrefs();
       applyDiscoverFilter();
     });
   }
   // Sort dropdown — re-orders the already-mounted cards in place, no fetch.
+  // Floor-asc reads from the Market cache; nudge the user the first time they
+  // pick it without that cache loaded so the sort doesn't silently degrade
+  // to recency. One-shot per session — the flag flips after the first nudge.
+  let _floorHintShown = false;
   const sortSel = $('#discover-sort');
   if (sortSel) {
     sortSel.addEventListener('change', () => {
       _discoverSort = sortSel.value || 'newest';
+      if (_discoverSort === 'floor-asc' && !_floorHintShown
+          && (!_marketCache?.listings || !_marketFloorByAsset()?.size)) {
+        toast('Open the Market tab once to populate floor prices, then re-sort.', 'info', 5000);
+        _floorHintShown = true;
+      }
+      _saveDiscoverPrefs();
       applyDiscoverSort();
     });
+  }
+  // Restore last-used Discover prefs for this network. Validated against the
+  // dropdown's actual <option>s (and the pill set in the DOM) so a stale
+  // localStorage value from a removed sort/pill silently degrades to default.
+  const _prefs = _loadDiscoverPrefs();
+  if (_prefs) {
+    if (sortSel && typeof _prefs.sort === 'string') {
+      const valid = Array.from(sortSel.options).some(o => o.value === _prefs.sort);
+      if (valid) { sortSel.value = _prefs.sort; _discoverSort = _prefs.sort; }
+    }
+    if (pills && typeof _prefs.pill === 'string') {
+      const target = pills.querySelector(`.filter-pill[data-pill="${CSS.escape(_prefs.pill)}"]`);
+      if (target) {
+        _discoverPill = _prefs.pill;
+        pills.querySelectorAll('.filter-pill').forEach(b => {
+          b.classList.toggle('active', b.dataset.pill === _discoverPill);
+        });
+      }
+    }
   }
 }
 
@@ -13814,7 +15462,7 @@ function setupMarketButtons() {
   const refreshBtn = $('#btn-market-refresh');
   if (refreshBtn) {
     if (!REGISTRY_URL) { refreshBtn.disabled = true; refreshBtn.title = 'market disabled (no Worker)'; }
-    refreshBtn.onclick = renderMarket;
+    refreshBtn.onclick = () => { invalidateMarketCache(); renderMarket(); };
   }
   // Filters: re-apply against the cached batch on every change. Text input
   // is debounced; the others are fast enough to fire on `change`.
@@ -13828,8 +15476,27 @@ function setupMarketButtons() {
   }
   ['#market-filter-kind', '#market-filter-min-price', '#market-filter-max-price', '#market-sort'].forEach(sel => {
     const el = $(sel);
-    if (el) el.addEventListener('change', applyMarketFilters);
+    if (el) el.addEventListener('change', () => { _saveMarketPrefs(); applyMarketFilters(); });
   });
+  // Restore last-used Market prefs. Filter inputs are populated before the
+  // first applyMarketFilters runs so the user lands on their saved view.
+  const _mprefs = _loadMarketPrefs();
+  if (_mprefs) {
+    const k  = $('#market-filter-kind');
+    const mn = $('#market-filter-min-price');
+    const mx = $('#market-filter-max-price');
+    const s  = $('#market-sort');
+    if (k && typeof _mprefs.kind === 'string'
+        && Array.from(k.options).some(o => o.value === _mprefs.kind)) {
+      k.value = _mprefs.kind;
+    }
+    if (mn && typeof _mprefs.min === 'string') mn.value = _mprefs.min;
+    if (mx && typeof _mprefs.max === 'string') mx.value = _mprefs.max;
+    if (s && typeof _mprefs.sort === 'string'
+        && Array.from(s.options).some(o => o.value === _mprefs.sort)) {
+      s.value = _mprefs.sort;
+    }
+  }
 }
 
 async function autoImportShareLink() {
@@ -14132,6 +15799,7 @@ async function init() {
   setupUnisatEvents();
   setupEtchForm();
   setupTransferForm();
+  setupSatsSendForm();
   setupDropsForm();
   setupClaimTab();
   setupHoldingsButtons();
@@ -14312,6 +15980,10 @@ export {
   // regex/length checks — drift here would silently break feature endpoints
   // (the 5120 vs 0020 P2TR atomic-intent regression is the canonical example).
   p2trScript, controlBlock,
+  // Sats-send safety primitives (exported for unit tests). The asset-UTXO
+  // exclusion logic is the primary defense against accidentally destroying
+  // tacit holdings via plain-Bitcoin spends, so it gets dedicated test coverage.
+  decodeP2wpkhAddress, selectSatsUtxosSafe, estSatsSendVb, buildSatsSendTx,
   // Wire format encoders / decoders
   encodeEnvelopeScript, decodeEnvelopeScript,
   encodeCEtchPayload, decodeCEtchPayload,
@@ -14326,6 +15998,9 @@ export {
   _axintentClaimMsg as axintentClaimMsg,
   _axintentFulfilMsg as axintentFulfilmentMsg,
   _axintentCancelMsg as axintentCancelMsg,
+  _bidIntentMsg as bidIntentMsg,
+  _bidClaimMsg as bidClaimMsg,
+  _bidCancelMsg as bidCancelMsg,
   deriveAxintentBlindingKeystream, xor32,
   // Drop-announcement signing messages — exported so tests can verify cross-impl parity with the worker.
   dropAnnounceMsgBytes, dropAnnounceCancelMsgBytes,

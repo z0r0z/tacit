@@ -5,8 +5,8 @@
   "type": "module",
   "description": "Offline test + benchmark harness for tacit's crypto (bulletproofs + composition).",
   "scripts": {
-    "test": "node bulletproofs.test.mjs && node composition.test.mjs && node vectors.test.mjs && node msm.test.mjs && node bip340.test.mjs && node adversarial.test.mjs && node envelope.test.mjs && node disclosure.test.mjs && node storage.test.mjs && node worker-parity.test.mjs && node worker-contract.test.mjs && node worker-decoder.test.mjs && node dapp-parity.test.mjs && node airdrop.test.mjs && node indexer.test.mjs",
-    "test:fast": "node bulletproofs.test.mjs && node composition.test.mjs && node vectors.test.mjs && node msm.test.mjs && node bip340.test.mjs && node adversarial.test.mjs && node envelope.test.mjs && node disclosure.test.mjs && node storage.test.mjs && node worker-parity.test.mjs && node worker-contract.test.mjs && node worker-decoder.test.mjs && node dapp-parity.test.mjs && node airdrop.test.mjs",
+    "test": "node bulletproofs.test.mjs && node composition.test.mjs && node vectors.test.mjs && node msm.test.mjs && node bip340.test.mjs && node adversarial.test.mjs && node envelope.test.mjs && node disclosure.test.mjs && node storage.test.mjs && node worker-parity.test.mjs && node worker-contract.test.mjs && node worker-decoder.test.mjs && node dapp-parity.test.mjs && node airdrop.test.mjs && node sats-send.test.mjs && node sats-send-integration.test.mjs && node indexer.test.mjs",
+    "test:fast": "node bulletproofs.test.mjs && node composition.test.mjs && node vectors.test.mjs && node msm.test.mjs && node bip340.test.mjs && node adversarial.test.mjs && node envelope.test.mjs && node disclosure.test.mjs && node storage.test.mjs && node worker-parity.test.mjs && node worker-contract.test.mjs && node worker-decoder.test.mjs && node dapp-parity.test.mjs && node airdrop.test.mjs && node sats-send.test.mjs && node sats-send-integration.test.mjs",
     "test:airdrop": "node airdrop.test.mjs",
     "test:bp": "node bulletproofs.test.mjs",
     "test:composition": "node composition.test.mjs",
@@ -22,6 +22,7 @@
     "test:worker-contract": "node worker-contract.test.mjs",
     "test:worker-decoder": "node worker-decoder.test.mjs",
     "test:dapp-parity": "node dapp-parity.test.mjs",
+    "test:sats-send": "node sats-send.test.mjs",
     "bench": "node bulletproofs.bench.mjs"
   },
   "dependencies": {

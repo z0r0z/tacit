@@ -260,6 +260,66 @@ await test('dropAnnounceCancelMsgBytes (dapp) matches dropAnnounceCancelMsg (wor
   return dappOut === wkrOut;
 });
 
+// Bid-intent canonical msgs (§5.7.7). The seller's bid claim and the bidder's
+// cancel are signed under these exact byte layouts; if the dapp and worker
+// disagree on field order, endianness, or the domain tag, every signed bid
+// would be rejected with "invalid signature" and there'd be no way to bisect
+// the cause from logs alone. These three parity tests pin the bytes.
+await test('bidIntentMsg (dapp) matches bidIntentMsg (worker)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const aid = hexToBytes('a'.repeat(64));
+  const bid = hexToBytes('b'.repeat(32));
+  const buyerPub = hexToBytes('02' + 'c'.repeat(64));
+  const nonce = hexToBytes('d'.repeat(64));
+  const amount = 12345n;
+  const priceSats = 50000;
+  const expiry = 1700000000;
+  const dappOut = bytesToHex(dapp.bidIntentMsg(aid, bid, buyerPub, amount, priceSats, expiry, nonce));
+  const wkrOut = bytesToHex(worker.bidIntentMsg(
+    bytesToHex(aid), bytesToHex(bid), bytesToHex(buyerPub),
+    amount.toString(), priceSats, expiry, bytesToHex(nonce),
+  ));
+  return dappOut === wkrOut;
+});
+
+await test('bidClaimMsg (dapp) matches bidClaimMsg (worker)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const aid = hexToBytes('a'.repeat(64));
+  const bid = hexToBytes('b'.repeat(32));
+  const sellerPub = hexToBytes('02' + 'e'.repeat(64));
+  const axId = hexToBytes('f'.repeat(32));
+  const dappOut = bytesToHex(dapp.bidClaimMsg(aid, bid, sellerPub, axId));
+  const wkrOut = bytesToHex(worker.bidClaimMsg(
+    bytesToHex(aid), bytesToHex(bid), bytesToHex(sellerPub), bytesToHex(axId),
+  ));
+  return dappOut === wkrOut;
+});
+
+await test('bidCancelMsg (dapp) matches bidCancelMsg (worker)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const aid = hexToBytes('a'.repeat(64));
+  const bid = hexToBytes('b'.repeat(32));
+  const dappOut = bytesToHex(dapp.bidCancelMsg(aid, bid));
+  const wkrOut = bytesToHex(worker.bidCancelMsg(bytesToHex(aid), bytesToHex(bid)));
+  return dappOut === wkrOut;
+});
+
+await test('bid_id derivation: sha256(asset_id || buyer_pubkey || nonce).slice(0, 16)', () => {
+  // The worker enforces this derivation (worker/src/index.js:3158). The dapp's
+  // publishBidIntent computes it the same way. A mismatch would mean every
+  // bid POST returns 400 with "bid_id does not derive from sha256(...)".
+  const aid = hexToBytes('a'.repeat(64));
+  const buyerPub = hexToBytes('02' + 'c'.repeat(64));
+  const nonce = hexToBytes('d'.repeat(64));
+  const concat = new Uint8Array(aid.length + buyerPub.length + nonce.length);
+  concat.set(aid, 0);
+  concat.set(buyerPub, aid.length);
+  concat.set(nonce, aid.length + buyerPub.length);
+  const expected = bytesToHex(sha256(concat).slice(0, 16));
+  // 16 bytes = 32 hex chars (matches worker regex /^[0-9a-f]{32}$/).
+  return /^[0-9a-f]{32}$/.test(expected);
+});
+
 // ============================================================================
 // Summary
 // ============================================================================

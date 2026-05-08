@@ -629,6 +629,129 @@ The worker validates ownership at every step (P2WPKH hash160 match for the asset
 
 This primitive is implementation-defined in v1: the wire format above is the canonical reference for any implementation that wants to interoperate with the reference dApp's marketplace. Indexer-level validity is unaffected — atomic intents live entirely outside the on-chain protocol.
 
+#### 5.7.7 Bid intents (off-chain buyer-side coordination)
+
+§5.7.6 covers the seller-initiated flow: a holder publishes an intent to sell N units at price P, any taker claims. §5.7.7 mirrors that for the **buyer-initiated** direction: a would-be holder publishes an intent to BUY N units at price P, any seller claims by spinning up a §5.7.6 atomic intent **specifically targeted at the bidder's pubkey**, which the bidder then takes through the existing §5.7.3 flow. **Settlement reuses the existing T_AXFER opcode** — no new wire format, no validator change.
+
+**Why bid intents are off-chain in v1.** A naïve "buyer commits sats with a script-path P2TR" design doesn't work in current Bitcoin script: the T_AXFER envelope's kernel signature binds the seller's asset input outpoints, but those outpoints are unknown at bid-publish time, so the buyer can't precompute the envelope and can't commit it into their P2TR's tap-tree. Bitcoin script lacks the introspection covenants (no `OP_CHECKVOUTPUTSPK`, no `OP_CTV`) that would let the buyer's lock be conditionally unlocked by a tx-structure check. v1 bids therefore live entirely in the worker layer, with the trust model of any off-chain order book: the bidder is trusted to follow through on their take. Anti-spam mitigations (sig-required POSTs, per-IP rate limits, bid-expiry caps) sit in the worker.
+
+A future protocol revision with on-chain escrow (true buyer-funded atomic settlement) is feasible via either (a) BIP-119 OP_CTV / BIP-345 OP_VAULT once one ships at consensus, or (b) a two-commit architecture where buyer and seller each pre-broadcast a commit and the reveal spends both — operationally heavier (3 txs per settlement vs §5.7.6's 2) but viable today. v1 keeps the simpler off-chain pattern; v2 can add escrow as a separate primitive.
+
+##### Records
+
+The off-chain bid book stores three records per bid, all worker-managed:
+
+```
+bid_intent {
+  bid_id            16 bytes / 32 hex chars  (sha256(asset_id || buyer_pubkey || nonce)[:16])
+  asset_id          32 bytes
+  buyer_pubkey      33 bytes (compressed) — where the bid-converted axintent
+                    will deliver. The bidder's tacit recipient pubkey.
+  buyer_address     bech32, derived as P2WPKH(buyer_pubkey). Sellers compare
+                    hash160 against the eventual claim's vout[0] script.
+  amount            u64 base units (cleartext — what the bidder wants to receive)
+  price_sats        u64 (cleartext — total sats the bidder agrees to pay)
+  expiry            unix-seconds (≤ 30 days from publish — shorter than ask
+                    intents because no on-chain lock exists)
+  nonce             32 bytes (random, included so a bidder can post multiple
+                    independent bids on the same asset)
+  intent_sig        BIP-340 over bid_intent_msg, under buyer_pubkey
+  created_at        unix-seconds (worker-stamped)
+}
+
+bid_claim {
+  bid_id, seller_pubkey (33B compressed), seller_utxo_txid, seller_utxo_vout,
+  axintent_id       16B — the atomic intent the seller has published in
+                    response, targeted at this bid's buyer_pubkey
+  sig               BIP-340 over bid_claim_msg under seller_pubkey
+  claimed_at        unix-seconds, expires_at = claimed_at + 30 minutes
+}
+```
+
+There is **no separate `bid_fulfilment` record** — fulfilment is just the bidder taking the axintent the seller published, which uses §5.7.6's existing `axintent_fulfilment` flow.
+
+##### Canonical messages
+
+```
+bid_intent_msg = SHA256(
+    "tacit-bid-intent-v1"
+    || asset_id(32) || bid_id(16) || buyer_pubkey(33)
+    || amount_LE(8) || price_LE(8) || expiry_LE(8)
+    || nonce(32)
+)
+
+bid_claim_msg = SHA256(
+    "tacit-bid-claim-v1"
+    || asset_id || bid_id || seller_pubkey
+    || axintent_id(16)
+)
+
+bid_cancel_msg = SHA256("tacit-bid-cancel-v1" || asset_id || bid_id)
+```
+
+`bid_id` derives from `(asset_id, buyer_pubkey, nonce)` — same bidder can post multiple independent bids on the same asset, distinguishable by nonce.
+
+##### Lifecycle
+
+```
+[publish]   buyer:   sign bid_intent_msg → POST /bid-intents → stored
+[browse]    anyone:  GET /assets/:aid/bid-intents → discover open bids
+[accept]    seller:  decide to fulfil a bid; build an atomic intent
+                     (§5.7.6) targeted at bid.buyer_pubkey from one of their
+                     asset UTXOs; broadcast the axintent's commit tx;
+                     POST /bid-intents/:bid_id/claim with axintent_id →
+                     30-min lock on the bid record
+[take]      buyer:   GET the claim; reads the linked axintent_id; treats it
+                     as a regular §5.7.6 axintent and goes through the take
+                     flow (POST claim, GET fulfilment, append BTC funding
+                     SIGHASH_ALL, broadcast)
+[settled]   anyone:  on-chain T_AXFER is indistinguishable from a §5.7.3
+                     settlement (or §5.7.6) — bid intents converge to the
+                     same wire format
+```
+
+If the seller doesn't claim within `bid.expiry`, the bid simply expires (no on-chain reclaim needed — there was nothing locked on-chain). The buyer can re-publish at any time.
+
+##### Trust analysis
+
+Bid intents are **off-chain coordination only**. Concrete properties:
+
+- **Buyer doesn't risk sats at bid time.** Nothing is locked. They sign a directive saying "I'd pay this." If they ghost at take time, they lose nothing (and so does anyone else, since the seller hasn't broadcast the axintent yet — only the commit-tx is on chain, and the seller can self-cancel via §5.7.6's reclaim path).
+- **Seller risks one commit-tx fee** when they choose to claim a bid. If the bidder ghosts after the seller has published the axintent, the seller can reclaim their asset by self-cancelling the axintent (the existing flow). They lose only the commit-tx cost (~$1–3 mainnet).
+- **No buyer→seller trust required for delivery.** The §5.7.6 flow is fully atomic: when the bidder takes the axintent, settlement is guaranteed in one tx.
+- **Spam vector.** Bidders can post bid intents with no follow-through cost. Mitigations: (a) BIP-340 sig required on POST, so spammers must control the bidder pubkey they're impersonating; (b) per-IP rate limit on `/bid-intents` POSTs (mirrors the airdrop-claim rate-limit pattern); (c) `expiry ≤ 30 days` cap, so stale bids GC.
+- **Liveness.** Both sides must be online during the take window. Same as §5.7.6.
+
+##### Worker endpoints (reference)
+
+```
+POST   /assets/:asset_id/bid-intents
+GET    /assets/:asset_id/bid-intents
+DELETE /assets/:asset_id/bid-intents/:bid_id              (signed cancel)
+POST   /assets/:asset_id/bid-intents/:bid_id/claim        (signed by seller, links axintent_id)
+GET    /assets/:asset_id/bid-intents/:bid_id              (returns intent + claim if any)
+```
+
+The worker validates: BIP-340 sig per canonical msg; bid_id derivation from (asset_id, buyer_pubkey, nonce); reasonable amount/price/expiry bounds.
+
+##### Comparison with §5.7.6
+
+|  | §5.7.6 (ask) | §5.7.7 (bid) |
+|---|---|---|
+| Initiator | seller | buyer |
+| On-chain commit at intent | yes (seller's commit P2TR with envelope) | no — bid is purely off-chain |
+| Sats locked at intent | n/a (sats not yet involved) | no |
+| Cost to publish | ~1 commit tx fee (~$1-3 mainnet) | zero |
+| Cost to ghost | maker forfeits commit tx fee | bidder forfeits nothing (reputation risk) |
+| Settlement wire format | T_AXFER opcode 0x26 | T_AXFER opcode 0x26 (via auto-converted axintent) |
+| Settlement tx count | 2 (commit + reveal) | 3 (no buyer commit, but seller still posts an axintent commit + reveal — the bid intent itself is off-chain) |
+| Recovery semantics | §5.7.6 exception (random `r`) | inherited (the converted axintent uses §5.7.6 recovery) |
+
+Both flows can coexist on the same asset: a buyer can post a bid at the same time another holder posts an ask. Whichever gets matched first settles; the other expires.
+
+This primitive is implementation-defined in v1: the wire format above is the canonical reference for any implementation that wants to interoperate with the reference dApp's marketplace. Indexer-level validity is unaffected — bid intents live entirely outside the on-chain protocol; all settlement is normal `T_AXFER` via §5.7.6.
+
+
 ## 6. Recovery semantics
 
 A wallet with only its **private key** can recover its full balance from chain data alone for every UTXO produced by the **on-chain protocol layer** (CETCH / CXFER / T_MINT / T_BURN, including targeted §5.7.3 T_AXFER settlements). Atomic-intent recipient UTXOs are the one exception — see §5.7.6 "Recovery model exception" — because their recipient blinding is a uniform-random scalar fixed at intent-publish time rather than ECDH-derived; recovery from chain + privkey alone is impossible by design, and recovery falls back to local opening cache or re-fetching the encrypted fulfilment from the worker.

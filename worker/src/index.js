@@ -312,6 +312,34 @@ function lastScannedKey(network)       { return network === 'signet' ? 'meta:las
 function transferCountKey(network, aid) {
   return network === 'signet' ? `xfercnt:${aid}` : `xfercnt:${network}:${aid}`;
 }
+// Per-tx dedupe key for the transfer counter. Both the cron block-scanner and
+// the /assets/hint fast-path bump `xfercnt:` for the same on-chain tx; without
+// dedupe a hint-broadcast tx would be counted twice (once by the dapp's hint,
+// once by the cron when the block finally scans). 30-day TTL is comfortably
+// past any cron lag while bounding KV growth (~one entry per CXFER).
+function transferSeenKey(network, aid, txidHex) {
+  return network === 'signet' ? `xferseen:${aid}:${txidHex}` : `xferseen:${network}:${aid}:${txidHex}`;
+}
+async function bumpTransferCount(env, network, aid, txidHex) {
+  const seenKey = transferSeenKey(network, aid, txidHex);
+  if (await env.REGISTRY_KV.get(seenKey)) return false;     // already counted
+  const cntKey = transferCountKey(network, aid);
+  const cur = parseInt((await env.REGISTRY_KV.get(cntKey)) || '0', 10);
+  await env.REGISTRY_KV.put(cntKey, String(cur + 1));
+  await env.REGISTRY_KV.put(seenKey, '1', { expirationTtl: 30 * 24 * 3600 });
+  return true;
+}
+// Last-traded price record per (network, asset_id). Set by the AXFER hint
+// path when the dapp passes price + amount alongside the settlement txid;
+// surfaced on /assets and /assets/:id so cards can display "last sold at X
+// sats/TAC · 3h ago". Decorative (not security-critical) — the worker can't
+// independently verify the price (atomic-intent records may already be GC'd
+// by the time the hint arrives), so this trusts the dapp's say-so. Bounded
+// damage: a malicious caller can mis-stamp ONE last-trade per asset, gets
+// overwritten by the next legitimate trade.
+function lastTradeKey(network, aid) {
+  return network === 'signet' ? `lasttrade:${aid}` : `lasttrade:${network}:${aid}`;
+}
 
 async function apiText(env, path, opts = {}, network = 'signet') {
   const base = networkApi(env, network);
@@ -946,7 +974,7 @@ async function loadMintsForAsset(env, network, assetIdHex) {
 // latency on networks with many assets. Now everything fan-outs in one
 // Promise.all per asset.
 async function hydrateAssetSummary(env, network, v, includeMints) {
-  const [att, mints, burns, op, dc, ls, lr, ai, xfer] = await Promise.all([
+  const [att, mints, burns, op, dc, ls, lr, ai, xfer, lastTrade] = await Promise.all([
     env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
     includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
     loadBurnsForAsset(env, network, v.asset_id),
@@ -958,6 +986,7 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
     // Single KV.get of the cron-maintained transfer counter — folded into
     // the existing parallel fan-out so it adds zero round-trip latency.
     env.REGISTRY_KV.get(transferCountKey(network, v.asset_id)),
+    env.REGISTRY_KV.get(lastTradeKey(network, v.asset_id), 'json'),
   ]);
   if (att) v.attestation = att;
   if (includeMints) v.mints = mints;
@@ -968,6 +997,7 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   v.range_listing_count = lr.keys.length;
   v.atomic_intent_count = ai.keys.length;
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
+  if (lastTrade) v.last_trade = lastTrade;
 }
 
 async function handleAssetsList(env, network, cors, opts = {}) {
@@ -1243,6 +1273,72 @@ async function handleAssetHint(req, env, network, cors) {
     return jsonResponse({ ok: true, mint: mintMeta, source: 'hint', network }, 200, cors);
   }
 
+  // CXFER/AXFER hint — bump the per-asset transfer counter. Without this the
+  // counter only ticks on the next cron block-scan (5+ min lag on mainnet),
+  // and any block scanned before the cron started running is permanently
+  // missed since mainnet has zero backfill window. The xferseen dedupe in
+  // bumpTransferCount makes this idempotent against the cron.
+  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER) {
+    const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload : decodeCXferPayload;
+    const dx = decoder(decoded.payload);
+    if (!dx) return jsonResponse({ error: 'invalid transfer payload' }, 400, cors);
+    const counted = await bumpTransferCount(env, network, dx.asset_id, txidHex);
+    // Optional last-traded record. Only AXFER (atomic-OTC settlement) has a
+    // well-defined trade price the dapp can vouch for at broadcast time.
+    // Validate format strictly so a malformed body can't poison the field;
+    // the worker doesn't independently verify the price (intent record may
+    // already be GC'd), so we trust well-formed input. Last-write wins.
+    let lastTrade = null;
+    if (decoded.opcode === T_AXFER
+        && Number.isInteger(body.price_sats) && body.price_sats > 0
+        && typeof body.amount === 'string' && /^[0-9]+$/.test(body.amount)) {
+      try {
+        const amt = BigInt(body.amount);
+        if (amt > 0n && amt < (1n << 64n)) {
+          lastTrade = {
+            txid: txidHex,
+            price_sats: body.price_sats,
+            amount: body.amount,
+            ts: Math.floor(Date.now() / 1000),
+          };
+          await env.REGISTRY_KV.put(lastTradeKey(network, dx.asset_id), JSON.stringify(lastTrade));
+        }
+      } catch { /* BigInt parse failed — ignore, transfer counter bump still landed */ }
+    }
+    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    return jsonResponse({
+      ok: true, source: counted ? 'hint' : 'already-counted',
+      asset_id: dx.asset_id, kind: decoded.opcode === T_AXFER ? 'axfer' : 'cxfer',
+      ...(lastTrade ? { last_trade: lastTrade } : {}),
+      network,
+    }, 200, cors);
+  }
+
+  // BURN hint — write the burn record so the asset's supply ledger reflects
+  // it immediately. Mirrors the cron's per-burn put at scanForEtches.
+  if (decoded.opcode === T_BURN) {
+    const cb = decodeCBurnPayload(decoded.payload);
+    if (!cb) return jsonResponse({ error: 'invalid burn payload' }, 400, cors);
+    const bk = burnKeyFor(network, cb.asset_id, txidHex);
+    const existing = await env.REGISTRY_KV.get(bk, 'json');
+    if (existing && Number.isInteger(existing.burned_at_height)) {
+      await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+      return jsonResponse({ ok: true, burn: existing, source: 'registry', network }, 200, cors);
+    }
+    const burnMeta = {
+      asset_id: cb.asset_id,
+      burn_txid: txidHex,
+      burned_amount: cb.burned_amount,
+      burned_at_height: blockHeight,
+      burned_at: blockTime || Math.floor(Date.now() / 1000),
+      pending: confirmed ? undefined : true,
+      network,
+    };
+    await env.REGISTRY_KV.put(bk, JSON.stringify(burnMeta));
+    await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    return jsonResponse({ ok: true, burn: burnMeta, source: 'hint', network }, 200, cors);
+  }
+
   return jsonResponse({ error: 'unsupported envelope opcode' }, 400, cors);
 }
 
@@ -1263,6 +1359,13 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   v.range_listing_count = lr.keys.length;
   const ai = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
   v.atomic_intent_count = ai.keys.length;
+  // transfer_count + last_trade are also in the /assets list response via
+  // hydrateAssetSummary; mirror them here so single-asset clients get the
+  // same discovery metrics.
+  const xfer = await env.REGISTRY_KV.get(transferCountKey(network, assetIdHex));
+  v.transfer_count = parseInt(xfer || '0', 10) || 0;
+  const lastTrade = await env.REGISTRY_KV.get(lastTradeKey(network, assetIdHex), 'json');
+  if (lastTrade) v.last_trade = lastTrade;
   return jsonResponse(v, 200, cors);
 }
 
@@ -1710,7 +1813,7 @@ function decodeBitcoinAddress(addr) {
       // v0: P2WPKH (20 bytes) or P2WSH (32 bytes). v1: P2TR (32 bytes).
       if (version === 0 && program.length !== 20 && program.length !== 32) continue;
       if (version === 1 && program.length !== 32) continue;
-      return { hrp: d.prefix, version, programLength: program.length };
+      return { hrp: d.prefix, version, program };
     } catch {}
   }
   return null;
@@ -2982,6 +3085,264 @@ async function handleDropAnnounceDelete(rootHex, req, env, network, cors) {
   return jsonResponse({ ok: true }, 200, cors);
 }
 
+// ============== BID INTENTS (off-chain bid book — SPEC §5.7.7) ==============
+// Buyer-initiated counterpart to §5.7.6 atomic intents. Bid intents are pure
+// off-chain coordination — the buyer signs an intent (no on-chain lock), a
+// seller can claim by spinning up a §5.7.6 atomic intent targeted at the
+// bidder, and the bidder takes through the existing §5.7.6 take flow.
+// Settlement is exactly §5.7.3 (T_AXFER opcode 0x26) — no new wire format.
+//
+// Trust model: bidder-can-ghost. Spam mitigation = sig-required POST,
+// per-IP rate limit, 30-day expiry cap. v2 with covenants can replace this
+// with on-chain escrow (see SPEC §5.7.7 trust analysis).
+
+const BID_EXPIRY_MAX_DAYS = 30;
+
+function bidIntentKey(network, aid, bidIdHex) {
+  return network === 'signet'
+    ? `bidintent:${aid}:${bidIdHex}`
+    : `bidintent:${network}:${aid}:${bidIdHex}`;
+}
+function bidIntentPrefix(network, aid) {
+  return network === 'signet' ? `bidintent:${aid}:` : `bidintent:${network}:${aid}:`;
+}
+function bidClaimKey(network, aid, bidIdHex) {
+  return network === 'signet'
+    ? `bidclaim:${aid}:${bidIdHex}`
+    : `bidclaim:${network}:${aid}:${bidIdHex}`;
+}
+
+function bidIntentMsg(assetIdHex, bidIdHex, buyerPubHex, amountStr, priceSats, expiry, nonceHex) {
+  const amountLE = new Uint8Array(8);
+  new DataView(amountLE.buffer).setBigUint64(0, BigInt(amountStr), true);
+  const priceLE = new Uint8Array(8);
+  new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const expiryLE = new Uint8Array(8);
+  new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-bid-intent-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(bidIdHex),
+    hexToBytes(buyerPubHex),
+    amountLE,
+    priceLE,
+    expiryLE,
+    hexToBytes(nonceHex),
+  ));
+}
+
+function bidClaimMsg(assetIdHex, bidIdHex, sellerPubHex, axintentIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-bid-claim-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(bidIdHex),
+    hexToBytes(sellerPubHex),
+    hexToBytes(axintentIdHex),
+  ));
+}
+
+function bidCancelMsg(assetIdHex, bidIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-bid-cancel-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(bidIdHex),
+  ));
+}
+
+async function handleBidIntentPost(assetIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  const bidIdHex = String(body.bid_id ?? '').toLowerCase();
+  const buyerPubHex = String(body.buyer_pubkey ?? '').toLowerCase();
+  const buyerAddress = String(body.buyer_address ?? '');
+  const amountStr = String(body.amount ?? '');
+  const priceSatsRaw = body.price_sats;
+  const expiryRaw = body.expiry;
+  const nonceHex = String(body.nonce ?? '').toLowerCase();
+  const sigHex = String(body.intent_sig ?? '').toLowerCase();
+
+  // Format-validate before charging the rate limit so malformed bodies don't
+  // burn slots that legitimate retries might need (mirrors handleAirdropClaimPost).
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex))               return jsonResponse({ error: 'bid_id must be 32 hex chars (16 bytes)' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(buyerPubHex))       return jsonResponse({ error: 'buyer_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^\d+$/.test(amountStr))                       return jsonResponse({ error: 'amount must be base-10 integer string' }, 400, cors);
+  if (BigInt(amountStr) <= 0n || BigInt(amountStr) >= (1n << 64n)) return jsonResponse({ error: 'amount out of u64' }, 400, cors);
+  if (!Number.isInteger(priceSatsRaw) || priceSatsRaw < PRICE_MIN) return jsonResponse({ error: `price_sats must be integer ≥ ${PRICE_MIN}` }, 400, cors);
+  if (!Number.isInteger(expiryRaw))                   return jsonResponse({ error: 'expiry must be integer unix-seconds' }, 400, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if (expiryRaw <= now)                               return jsonResponse({ error: 'expiry must be in the future' }, 400, cors);
+  if (expiryRaw > now + BID_EXPIRY_MAX_DAYS * 86400)  return jsonResponse({ error: `expiry must be within ${BID_EXPIRY_MAX_DAYS} days` }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(nonceHex))               return jsonResponse({ error: 'nonce must be 32-byte hex (64 chars)' }, 400, cors);
+  if (!buyerAddress || buyerAddress.length > ADDR_MAX_LEN) return jsonResponse({ error: `buyer_address required, ≤ ${ADDR_MAX_LEN} chars` }, 400, cors);
+  const decoded = decodeBitcoinAddress(buyerAddress);
+  if (!decoded || decoded.hrp !== HRP_BY_NETWORK[network]) {
+    return jsonResponse({ error: `buyer_address must be a ${HRP_BY_NETWORK[network]}… bech32 address` }, 400, cors);
+  }
+  if (decoded.version !== 0 || decoded.program.length !== 20) {
+    return jsonResponse({ error: 'buyer_address must be a v0 P2WPKH (20-byte program)' }, 400, cors);
+  }
+  if (bytesToHex(decoded.program) !== bytesToHex(hash160(hexToBytes(buyerPubHex)))) {
+    return jsonResponse({ error: 'buyer_address does not derive from buyer_pubkey' }, 400, cors);
+  }
+  if (!/^[0-9a-f]{128}$/.test(sigHex))                return jsonResponse({ error: 'intent_sig must be 128 hex chars' }, 400, cors);
+
+  // Verify bid_id derives from sha256(asset_id || buyer_pubkey || nonce)[:16].
+  const expectedBidId = bytesToHex(sha256(concatBytes(
+    hexToBytes(assetIdHex),
+    hexToBytes(buyerPubHex),
+    hexToBytes(nonceHex),
+  ))).slice(0, 32);
+  if (bidIdHex !== expectedBidId) {
+    return jsonResponse({ error: 'bid_id does not derive from sha256(asset_id || buyer_pubkey || nonce).slice(0, 16)' }, 400, cors);
+  }
+
+  // Verify intent_sig under buyer_pubkey.
+  const msg = bidIntentMsg(assetIdHex, bidIdHex, buyerPubHex, amountStr, priceSatsRaw, expiryRaw, nonceHex);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(buyerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid intent signature' }, 403, cors);
+  }
+
+  // Charge rate limit only after sig verification — so a malformed or
+  // unsigned body can't drain the bidder's daily slots.
+  const rl = await _airdropRateLimit(req, env);
+  if (!rl.ok) return jsonResponse({ error: `bid daily limit reached: ${rl.reason}` }, 429, cors);
+
+  const intent = {
+    asset_id: assetIdHex,
+    bid_id: bidIdHex,
+    buyer_pubkey: buyerPubHex,
+    buyer_address: buyerAddress,
+    amount: amountStr,
+    price_sats: priceSatsRaw,
+    expiry: expiryRaw,
+    nonce: nonceHex,
+    intent_sig: sigHex,
+    created_at: now,
+    network,
+  };
+  await env.REGISTRY_KV.put(bidIntentKey(network, assetIdHex, bidIdHex), JSON.stringify(intent));
+  return jsonResponse({ ok: true, intent }, 200, cors);
+}
+
+async function handleBidIntentList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const list = await env.REGISTRY_KV.list({ prefix: bidIntentPrefix(network, assetIdHex), limit: 1000 });
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const intents = fetched.filter(v => v);
+  const now = Math.floor(Date.now() / 1000);
+  // Drop expired bids at read time. KV record left for lazy GC.
+  const active = intents.filter(v => (v.expiry || 0) > now);
+  // Decorate with claim status if a seller has claimed.
+  await Promise.all(active.map(async v => {
+    const claim = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, v.bid_id), 'json');
+    if (claim && claim.expires_at > now) v.claim = claim;
+  }));
+  active.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  return jsonResponse({ asset_id: assetIdHex, count: active.length, intents: active }, 200, cors);
+}
+
+async function handleBidIntentGet(assetIdHex, bidIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex))   return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
+  const intent = await env.REGISTRY_KV.get(bidIntentKey(network, assetIdHex, bidIdHex), 'json');
+  if (!intent) return jsonResponse({ error: 'no such bid' }, 404, cors);
+  const now = Math.floor(Date.now() / 1000);
+  const claim = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, bidIdHex), 'json');
+  if (claim && claim.expires_at > now) intent.claim = claim;
+  return jsonResponse({ ok: true, intent }, 200, cors);
+}
+
+async function handleBidIntentDelete(assetIdHex, bidIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex))   return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const sigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+  const intent = await env.REGISTRY_KV.get(bidIntentKey(network, assetIdHex, bidIdHex), 'json');
+  if (!intent) return jsonResponse({ error: 'no such bid' }, 404, cors);
+  const msg = bidCancelMsg(assetIdHex, bidIdHex);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(intent.buyer_pubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(bidIntentKey(network, assetIdHex, bidIdHex));
+  await env.REGISTRY_KV.delete(bidClaimKey(network, assetIdHex, bidIdHex));
+  return jsonResponse({ ok: true }, 200, cors);
+}
+
+const BID_CLAIM_TTL_SECONDS = 30 * 60;
+
+async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(bidIdHex))   return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const sellerPubHex = String(body.seller_pubkey ?? '').toLowerCase();
+  const axintentIdHex = String(body.axintent_id ?? '').toLowerCase();
+  const sigHex = String(body.sig ?? '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(sellerPubHex)) return jsonResponse({ error: 'seller_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(axintentIdHex))     return jsonResponse({ error: 'axintent_id must be 32 hex chars' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex))           return jsonResponse({ error: 'sig must be 128 hex chars' }, 400, cors);
+
+  const intent = await env.REGISTRY_KV.get(bidIntentKey(network, assetIdHex, bidIdHex), 'json');
+  if (!intent) return jsonResponse({ error: 'no such bid' }, 404, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if ((intent.expiry || 0) <= now) return jsonResponse({ error: 'bid expired' }, 410, cors);
+
+  // Reject if already claimed by a different seller within TTL window.
+  const existing = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, bidIdHex), 'json');
+  if (existing && existing.expires_at > now && existing.seller_pubkey !== sellerPubHex) {
+    return jsonResponse({ error: 'bid already claimed', claim: { expires_at: existing.expires_at } }, 409, cors);
+  }
+
+  const msg = bidClaimMsg(assetIdHex, bidIdHex, sellerPubHex, axintentIdHex);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(sellerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid claim signature' }, 403, cors);
+  }
+
+  // Verify the linked axintent exists, is active, and targets the bid's
+  // buyer_address. Without this binding a malicious seller could publish a
+  // claim pointing at any axintent (or none), wasting the bidder's time.
+  const axintent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, axintentIdHex), 'json');
+  if (!axintent) return jsonResponse({ error: 'linked axintent_id not found in atomic-intent registry' }, 400, cors);
+  if ((axintent.expiry || 0) <= now) return jsonResponse({ error: 'linked axintent already expired' }, 400, cors);
+  if (axintent.maker_pubkey !== sellerPubHex) {
+    return jsonResponse({ error: 'linked axintent.maker_pubkey != seller_pubkey' }, 400, cors);
+  }
+  // Pull the bidder's recipient hash160 from the axintent's envelope and
+  // require it to match the bid's buyer_pubkey hash160. The seller would
+  // have constructed the axintent's recipient blinding ECDH'd against
+  // buyer_pubkey, so the hash160 in the envelope's eventual P2WPKH output
+  // (encoded by the dapp at intent build time) must equal hash160(buyer_pubkey).
+  // We can't recompute the recipient_pubkey from an x-only blob, so the
+  // simplest worker-side check is by buyer_address-bytes equality:
+  const expectedBuyerH160 = bytesToHex(hash160(hexToBytes(intent.buyer_pubkey)));
+  // axintent stores p2tr_spk_hex (commit), envelope_script_hex, etc.; the
+  // recipient hash160 is reachable by decoding the envelope payload's first
+  // output commitment vs. an off-chain "intended_buyer_hash160" field.
+  // We'll require the dapp to include that field in the axintent post for
+  // bid-flow axintents; absent that, we skip and trust the dapp re-verifies
+  // at take-time (same policy as §5.6).
+  if (axintent.intended_buyer_h160 && axintent.intended_buyer_h160.toLowerCase() !== expectedBuyerH160) {
+    return jsonResponse({ error: 'linked axintent does not target buyer_address' }, 400, cors);
+  }
+
+  const claim = {
+    bid_id: bidIdHex,
+    asset_id: assetIdHex,
+    seller_pubkey: sellerPubHex,
+    axintent_id: axintentIdHex,
+    sig: sigHex,
+    claimed_at: now,
+    expires_at: now + BID_CLAIM_TTL_SECONDS,
+    network,
+  };
+  await env.REGISTRY_KV.put(bidClaimKey(network, assetIdHex, bidIdHex), JSON.stringify(claim));
+  return jsonResponse({ ok: true, claim, intent }, 200, cors);
+}
+
 // ============== Cron: scan signet + mainnet for new CETCH envelopes ==============
 async function fetchBlockTxs(env, blockHash, network) {
   const all = [];
@@ -3102,20 +3463,15 @@ async function scanForEtches(env, network) {
         found++;
       } else if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER) {
         // Confidential transfer (T_CXFER) or atomic-OTC settlement reveal
-        // (T_AXFER). Both move asset value between holders; we bump a single
+        // (T_AXFER). Both move asset value between holders; bump a single
         // per-asset counter so /assets can surface a "movement" stat without
-        // paying the cost of a full per-tx index. Counter design: read +
-        // increment + put. Idempotency is approximate — the cron's normal
-        // path advances `lastContiguous` only after the whole block scans,
-        // so a mid-block crash can re-scan a block on the next tick and
-        // double-count its transfers. The drift is bounded (≤ one block of
-        // CXFERs) and acceptable for a coarse popularity signal.
+        // paying the cost of a full per-tx index. The xferseen dedupe key
+        // makes hint+cron idempotent: whichever path sees the tx first wins,
+        // the other no-ops. Mid-block-crash re-scans no longer double-count.
         const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload : decodeCXferPayload;
         const dx = decoder(decoded.payload);
         if (!dx) continue;
-        const cntKey = transferCountKey(network, dx.asset_id);
-        const cur = parseInt((await env.REGISTRY_KV.get(cntKey)) || '0', 10);
-        await env.REGISTRY_KV.put(cntKey, String(cur + 1));
+        await bumpTransferCount(env, network, dx.asset_id, tx.txid);
         // Don't increment `found` — that counter is for new etches/mints/
         // burns specifically (used in the cron's status return). Transfers
         // happen on every active asset; counting them as "found" would be
@@ -3135,6 +3491,7 @@ export {
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
   dropAnnounceMsg, dropAnnounceCancelMsg,
+  bidIntentMsg, bidClaimMsg, bidCancelMsg,
   verifySchnorr, compressedPointFromHex,
   // Wire-format decoders + opcode constants exported so tests/worker-decoder
   // can pin down the exact return shape. The atomic-intent regression where
@@ -3265,6 +3622,18 @@ export default {
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
     if (mai4 && req.method === 'POST')                         return handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors);
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
+
+    // Bid intents (off-chain bid book — SPEC §5.7.7). Buyer-initiated mirror
+    // of atomic intents; settlement is via the seller spinning up an
+    // axintent targeted at the bidder, no new wire format.
+    const mbi = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents$/);
+    if (mbi && req.method === 'POST')                          return handleBidIntentPost(mbi[1], req, env, network, cors);
+    if (mbi && req.method === 'GET')                           return handleBidIntentList(mbi[1], env, network, cors);
+    const mbi2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents\/([0-9a-f]{32})$/);
+    if (mbi2 && req.method === 'GET')                          return handleBidIntentGet(mbi2[1], mbi2[2], env, network, cors);
+    if (mbi2 && req.method === 'DELETE')                       return handleBidIntentDelete(mbi2[1], mbi2[2], req, env, network, cors);
+    const mbi3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents\/([0-9a-f]{32})\/claim$/);
+    if (mbi3 && req.method === 'POST')                         return handleBidIntentClaim(mbi3[1], mbi3[2], req, env, network, cors);
 
     // Airdrop claim queue.
     const mac = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims$/);

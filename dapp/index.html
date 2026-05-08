@@ -171,6 +171,23 @@ input, textarea, select {
 }
 input:focus, textarea:focus { outline: 2px solid var(--orange); outline-offset: -1px; }
 
+/* Form-style selects: replace the platform-native arrow (which renders
+   off-center on Chrome/Safari with our padding) with a consistent
+   ink-colored chevron, matching .net-select's technique. The class
+   exclusion keeps the dark .net-select in the header untouched. */
+select:not(.net-select) {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 28px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%),
+                    linear-gradient(135deg, var(--ink) 50%, transparent 50%);
+  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+select:not(.net-select):focus { outline: 2px solid var(--orange); outline-offset: -1px; }
+
 label {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--ink-mid); display: block;
@@ -733,6 +750,23 @@ footer > span { min-width: 0; }
   .logo { font-size: 36px; }
   /* Footer text wraps cleaner with tighter spacing. */
   footer { font-size: 9px; gap: 6px; }
+  /* Market filter row: at the touch-device 16px input font, the
+     8-character "min sats" / "max sats" placeholder needs more
+     than 110px to render without the spinner clipping it. Flex so
+     they grow to share row width instead of staying fixed-narrow. */
+  #market-filter-min-price,
+  #market-filter-max-price {
+    flex: 1 1 130px;
+    width: auto !important;
+  }
+  /* Filter selects share the same row at narrow widths and benefit
+     from grow-to-fill so the chevron sits at the visible right edge
+     rather than far past compact text. */
+  #market-filter-kind,
+  #market-sort,
+  #discover-sort {
+    flex: 1 1 140px;
+  }
 }
 
 /* Touch-device specific tweaks. Independent of viewport width because some
@@ -908,10 +942,27 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   color: var(--ink-faint); font-weight: 400; font-style: italic;
 }
 .welcome-option-title { font-size: 13px; font-weight: 500; }
+.welcome-option-title .welcome-option-rec {
+  font-size: 10px; font-style: italic; color: var(--orange);
+  font-weight: 400; margin-left: 4px; letter-spacing: 0.04em;
+}
+.welcome-option--primary {
+  border-width: 2px;
+  border-color: var(--orange);
+}
 .welcome-option-meta {
   font-size: 10px; color: var(--ink-mid);
   text-transform: none; letter-spacing: 0;
   line-height: 1.5;
+}
+.welcome-divider {
+  margin: 14px 0 8px;
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
+  color: var(--ink-mid);
+  display: flex; align-items: center; gap: 8px;
+}
+.welcome-divider::before, .welcome-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--ink-faint);
 }
 .welcome-footer {
   margin-top: 16px; padding-top: 14px;
@@ -1098,8 +1149,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="logo">tacit</div>
   <div class="tagline">
     Confidential tokens<br>
-    indexer-validated on bitcoin<br>
-    <em>amounts hidden · downstream conservation checked · supply optionally attested</em>
+    verifiable on bitcoin<br>
+    <em>private amounts · no federation · privkey-only recovery</em>
   </div>
   <div class="net-control">
     <div class="net-row">
@@ -1140,11 +1191,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab active" data-tab="wallet">Wallet</button>
   <button class="tab" data-tab="holdings">Holdings</button>
   <button class="tab" data-tab="transfer">Send</button>
+  <button class="tab" data-tab="discover">Discover</button>
+  <button class="tab" data-tab="market">Market</button>
   <button class="tab" data-tab="etch">Etch</button>
   <button class="tab" data-tab="drops">Drops</button>
   <button class="tab" data-tab="claim">Claim</button>
-  <button class="tab" data-tab="market">Market</button>
-  <button class="tab" data-tab="discover">Discover</button>
   <button class="tab" data-tab="about">Protocol</button>
 </div>
 
@@ -1160,12 +1211,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="hero-step">
       <div class="hero-num">2</div>
       <div class="hero-title">Etch a confidential asset</div>
-      <div class="hero-text">Define ticker, supply, decimals. Supply is committed via Pedersen — only you know the amount. The chain sees a 33-byte commitment.</div>
+      <div class="hero-text">Pick a ticker, supply, and decimals. The supply is hidden on-chain — only you (and anyone you choose to tell) know the amount.</div>
     </div>
     <div class="hero-step">
       <div class="hero-num">3</div>
       <div class="hero-title">Transfer privately</div>
-      <div class="hero-text">Send to a recipient's pubkey. On-chain: only commitments. The recipient learns their amount via an ECDH-derived blinding embedded in a share-link.</div>
+      <div class="hero-text">Send to a recipient's pubkey. The amount stays hidden from observers; the recipient auto-discovers their balance from chain data on their next scan — no share-link or messaging needed.</div>
     </div>
   </div>
   <div id="hero-show" style="display:none;text-align:right;margin-top:-16px;margin-bottom:16px;">
@@ -1240,7 +1291,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           </div>
 
           <div class="muted" style="margin-top:10px;font-size:11px;line-height:1.6;">
-            Tacit needs an in-page privkey to do its confidential math (HMAC-derived blindings, kernel sigs, taproot script-path Schnorr) — primitives that external wallets don't expose. Whichever path placed the key here (auto, import, or locally bound to your Xverse / UniSat / Leather address), <strong>this is the key that controls your tacit assets</strong>. The external-wallet path stores a fresh tacit key locally per external address — clearing browser storage or switching devices loses it, so export and back it up before holding value.
+            Tacit needs its own signing key in this browser — your existing Bitcoin wallet doesn't expose the primitives confidential transactions need. Whichever path put the key here (auto-generated, imported, or locally bound to your Xverse / UniSat / Leather address), <strong>this is the key that controls your tacit assets</strong>. The external-wallet path stores a fresh tacit key per external address; clearing browser storage or switching devices loses it, so export and back it up before holding value.
           </div>
 
           <!-- Hidden status text retained for code-paths that update it; the badge
@@ -1330,7 +1381,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </label>
       <label class="checkbox-row">
         <input id="e-mintable" type="checkbox">
-        <span class="cbx-body"><strong>Mintable</strong> — your wallet's pubkey becomes the <code>mint_authority</code> and can issue more supply later via signed <code>T_MINT</code> envelopes. Default off ⇒ supply is fixed at etch (BTC-style). <strong>Permanent:</strong> a fixed-supply asset can never be made mintable later.</span>
+        <span class="cbx-body"><strong>Mintable</strong> — you (the etcher) can issue more supply later, signed by this wallet's key. Default off ⇒ supply is fixed at etch and can never increase. <strong>This choice is permanent</strong> — a fixed-supply asset can't be made mintable later.</span>
       </label>
       <div id="mintable-key-warning" style="display:none;margin-top:8px;padding:10px 12px;border:1px solid var(--red);background:#fff4f4;font-size:11px;color:var(--red);">
         <strong>⚠ Back up your private key before etching.</strong> The mint authority is your wallet's local key. Clearing browser storage, losing the device, or switching browsers without exporting the key permanently freezes the supply — there is no recovery path. Click <strong>Export key</strong> on the Wallet tab and save the hex somewhere safe before you broadcast.
@@ -1340,7 +1391,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Why is the supply hidden? · what gets pinned
         </summary>
         <div class="muted" style="padding-top:8px;border-top:1px dashed var(--ink-faint);margin-top:4px;line-height:1.6;">
-          A Pedersen commitment <code>C = supply·H + r·G</code> plus a 64-bit aggregated bulletproof go on-chain inside a Taproot script-path envelope. Only you know <code>(supply, r)</code> — observers see only the 33-byte commitment and a ~700-byte proof that the base-unit supply is in <code>[0, 2⁶⁴)</code>. The supply blinding and an 8-byte encrypted-supply field are both self-derived from your wallet privkey + commit-input anchor, so a freshly-installed wallet with only your key can recover the etched supply from chain alone — no localStorage backup needed. With 64-bit range, max supply per asset_id is ~1.84 × 10¹⁹ base units, which covers any realistic decimals setting. Etch is a 2-tx flow (commit + reveal); broadcast takes a few seconds. Image URI (≤256 bytes) is stored alongside the supply commitment and propagates to recipients through the canonical CETCH ancestor — they don't trust the share-link sender for it.
+          The supply is committed to the chain via a 33-byte cryptographic commitment plus a ~700-byte zero-knowledge proof that the value is a valid 64-bit integer — only you know the actual number; observers see only the proof. The blinding factor that hides the supply is derived from your wallet's privkey, so a fresh device with just your key recovers the etched supply from chain data alone — no localStorage backup needed. Max supply per asset is ~1.84 × 10¹⁹ base units, which covers any realistic decimals setting. Etch is a 2-tx flow (commit + reveal) and broadcasts in seconds. Optional image / metadata is bundled into the envelope and propagates to recipients alongside the supply commitment.
         </div>
       </details>
 
@@ -1359,37 +1410,76 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <!-- TRANSFER TAB -->
 <div class="tab-panel" id="tab-transfer">
   <div class="section">
-    <div class="section-header"><span>transfer · confidential send</span></div>
+    <div class="section-header"><span>send · confidential token or plain bitcoin</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:14px;">
-        Single-asset confidential transfer. Each transfer is a 2-tx flow: a commit tx creates a Taproot output committed to the envelope, then a reveal tx spends it via script-path, exposing the commitments + rangeproofs in the witness. Observers see commitments and proofs, never amounts. The recipient receives a <strong>share-link</strong> with the cleartext amount; their blinding factor is recomputable via ECDH.
+
+      <!-- Mode toggle: pick what kind of value you're sending out. -->
+      <div class="discover-pills" id="send-mode-pills" style="display:flex;gap:6px;margin-bottom:14px;">
+        <button class="filter-pill active" data-send-mode="token" type="button">Confidential token</button>
+        <button class="filter-pill" data-send-mode="sats" type="button">Plain bitcoin (sats)</button>
       </div>
 
-      <label>Asset</label>
-      <select id="x-asset"><option value="">— select —</option></select>
+      <!-- TOKEN mode -->
+      <div id="send-mode-token">
+        <div class="muted" style="margin-bottom:14px;">
+          Confidential transfer of one asset. Each send takes two Bitcoin transactions (a commit + a reveal); observers see cryptographic proofs of valid math, never the amount. The recipient auto-discovers their balance from chain data on their next scan — share-links are an optional shortcut, not required.
+        </div>
 
-      <label>Recipient public key (33-byte compressed hex, 02… or 03…)</label>
-      <input id="x-recipient-pub" placeholder="02… or 03… (66 hex chars)" autocomplete="off" spellcheck="false" list="x-recipient-recents">
-      <datalist id="x-recipient-recents"></datalist>
-      <div class="muted">Ask the recipient to share their pubkey from their Wallet tab. The address is derived from this pubkey.</div>
-      <div id="x-recipient-derived" class="muted" style="margin-top:6px;font-size:11px;display:none;"></div>
+        <label>Asset</label>
+        <select id="x-asset"><option value="">— select —</option></select>
 
-      <label>Amount to send <span id="x-amount-hint" class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:11px;"></span></label>
-      <div class="flex" style="gap:6px;align-items:stretch;">
-        <input id="x-amount" type="text" placeholder="100" autocomplete="off" style="flex:1;min-width:0;">
-        <button id="btn-x-max" type="button" title="Fill in the full balance for the selected asset" disabled>Max</button>
+        <label>Recipient public key (33-byte compressed hex, 02… or 03…)</label>
+        <input id="x-recipient-pub" placeholder="02… or 03… (66 hex chars)" autocomplete="off" spellcheck="false" list="x-recipient-recents">
+        <datalist id="x-recipient-recents"></datalist>
+        <div class="muted">Ask the recipient to share their pubkey from their Wallet tab. The address is derived from this pubkey.</div>
+        <div id="x-recipient-derived" class="muted" style="margin-top:6px;font-size:11px;display:none;"></div>
+
+        <label>Amount to send <span id="x-amount-hint" class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:11px;"></span></label>
+        <div class="flex" style="gap:6px;align-items:stretch;">
+          <input id="x-amount" type="text" placeholder="100" autocomplete="off" style="flex:1;min-width:0;">
+          <button id="btn-x-max" type="button" title="Fill in the full balance for the selected asset" disabled>Max</button>
+        </div>
+        <div id="x-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
+
+        <div id="transfer-preview" style="display:none;"></div>
+
+        <div class="flex" style="margin-top:18px;">
+          <button id="btn-transfer-preview">1. Review transfer</button>
+          <button id="btn-transfer-broadcast" class="primary" disabled title="Click 'Review transfer' first to see what you're about to send.">2. Confirm &amp; send</button>
+        </div>
+        <div class="muted" style="margin-top:6px;font-size:11px;">Review your transfer details below before broadcasting — once sent, it can't be undone.</div>
+        <div id="transfer-error" class="error"></div>
+        <div id="transfer-share" style="display:none;margin-top:18px;"></div>
       </div>
-      <div id="x-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
 
-      <div id="transfer-preview" style="display:none;"></div>
+      <!-- SATS mode -->
+      <div id="send-mode-sats" style="display:none;">
+        <div class="muted" style="margin-bottom:14px;">
+          Send plain bitcoin from your tacit wallet's address out to any P2WPKH address (<code>bc1q…</code> on mainnet, <code>tb1q…</code> on signet). Asset UTXOs holding your confidential tokens are <strong>automatically excluded</strong> — you can't accidentally destroy a tacit holding through this flow.
+        </div>
 
-      <div class="flex" style="margin-top:18px;">
-        <button id="btn-transfer-preview">1. Review transfer</button>
-        <button id="btn-transfer-broadcast" class="primary" disabled title="Click 'Review transfer' first to see what you're about to send.">2. Confirm &amp; send</button>
+        <label>Recipient bitcoin address</label>
+        <input id="s-recipient-addr" type="text" placeholder="bc1q… (mainnet) or tb1q… (signet)" autocomplete="off" spellcheck="false">
+        <div id="s-recipient-hint" class="muted" style="margin-top:6px;font-size:11px;display:none;"></div>
+
+        <label>Amount in sats <span id="s-amount-hint" class="muted" style="font-weight:normal;text-transform:none;letter-spacing:0;font-size:11px;"></span></label>
+        <div class="flex" style="gap:6px;align-items:stretch;">
+          <input id="s-amount" type="text" inputmode="numeric" placeholder="5000" autocomplete="off" style="flex:1;min-width:0;">
+          <button id="btn-s-max" type="button" title="Fill in the maximum sendable sats (after fees)" disabled>Max</button>
+        </div>
+        <div id="s-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
+
+        <div id="sats-preview" style="display:none;"></div>
+
+        <div class="flex" style="margin-top:18px;">
+          <button id="btn-sats-preview">1. Review send</button>
+          <button id="btn-sats-broadcast" class="primary" disabled title="Click 'Review send' first to see exactly which UTXOs will be spent.">2. Confirm &amp; send</button>
+        </div>
+        <div class="muted" style="margin-top:6px;font-size:11px;">Review the inputs below before broadcasting — once sent, it can't be undone.</div>
+        <div id="sats-error" class="error"></div>
+        <div id="sats-success" style="display:none;margin-top:18px;"></div>
       </div>
-      <div class="muted" style="margin-top:6px;font-size:11px;">Review your transfer details below before broadcasting — once sent, it can't be undone.</div>
-      <div id="transfer-error" class="error"></div>
-      <div id="transfer-share" style="display:none;margin-top:18px;"></div>
+
     </div>
   </div>
 </div>
@@ -1400,7 +1490,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>drops · airdrop tooling</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Issuer-side tooling for batched 1:N CXFER airdrops. Upload a snapshot CSV (<code>eth_address,amount</code> in target base units), preview the merkle commitment, pin the snapshot to IPFS, and fulfil claims in batches of up to 7 recipients per CXFER. The merkle root is the public commitment a claim portal verifies against.
+        Issuer-side tooling for batched airdrops. Upload a snapshot CSV (<code>eth_address,amount</code>), build a merkle commitment, pin the snapshot to IPFS, and fulfil incoming claims in batches of up to 7 recipients per Bitcoin tx. The merkle root is the public commitment recipients verify against in the Claim tab.
       </div>
 
       <div class="warn" style="margin-bottom:14px;">
@@ -1523,7 +1613,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>claim · airdrop recipient</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Recipient-side flow for an airdrop drop you're eligible for. Connect any Ethereum wallet (EOA or smart-contract) to discover drops your address is in; or paste a merkle root + IPFS CID below if you received a private link. Either way you sign a canonical claim binding your tacit pubkey, then send the resulting tuple to the issuer.
+        Recipient flow for airdrops you're eligible for. Connect an Ethereum wallet to find drops your address is included in, or paste a merkle root + IPFS CID below if the issuer shared a private link. You'll sign a claim binding your tacit pubkey, then submit it to the issuer (or to the worker queue).
       </div>
 
       <h3>1 · Discover available drops</h3>
@@ -1565,7 +1655,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <h3 style="margin-top:18px;">2 · Connect Ethereum wallet</h3>
       <div class="muted" style="font-size:11px;margin-bottom:6px;">Connecting also auto-filters the discovery list above to drops eligible for your address.</div>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">Works with any EIP-1193 wallet (MetaMask, Rainbow, Rabby, Coinbase Wallet, Trust, Frame). Smart-contract wallets (Ambire, Safe, Argent) are also supported via ERC-1271 fallback. If multiple wallets are installed, you'll be prompted to pick one (EIP-6963). The connection is purely for signing — no Ethereum tx is broadcast, no gas is spent. For EOAs the wallet's network doesn't matter; the signed claim binds to the drop's tacit network. Smart wallets verify against the chain the wallet is currently on, so set that to the chain holding the smart-wallet contract.</div>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Works with most Ethereum wallets — MetaMask, Rainbow, Rabby, Coinbase Wallet, Trust, Frame. Smart-contract wallets (Ambire, Safe, Argent) work too. The connection is only for signing the claim — no Ethereum transaction is broadcast, no gas is spent. The wallet's current chain doesn't matter for regular wallets; smart-contract wallets need to be on the chain that holds the contract.</div>
       <div class="flex" style="gap:6px;align-items:center;">
         <button id="btn-claim-connect-mm" type="button">Connect Ethereum wallet</button>
         <span id="claim-mm-status" class="muted" style="font-size:11px;"></span>
@@ -1654,24 +1744,34 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         Bilateral OTC offers across all assets. Three settlement modes:
         <ul style="margin:6px 0 6px 18px;padding:0;">
           <li><strong>⚡ Atomic intent (recommended)</strong> — single Bitcoin tx settles both sides; the maker's CXFER and the taker's BTC payment go in or fail together. <strong>No counterparty trust.</strong> Click <em>Claim</em> on a ⚡ tile to lock the offer for 5 min while the maker generates a partial reveal targeted at your pubkey, then <em>Take</em> to broadcast.</li>
-          <li><strong>Opening</strong> — maker publishes the full Pedersen opening of one UTXO. Settlement is off-chain: pay the maker's address in sats, then the maker broadcasts a CXFER to your pubkey. <strong>Counterparty trust required</strong> (the maker can take your sats and not deliver). Use atomic intents instead unless the maker explicitly insists on this path.</li>
-          <li><strong>Range</strong> — maker proves a lower bound on their balance without revealing the full opening. Same off-chain settlement and trust assumptions as opening listings; suited to makers who want to keep their treasury confidential.</li>
+          <li><strong>Opening</strong> — maker publishes the exact UTXO contents (amount + blinding factor) so anyone can verify what's for sale. Settlement is off-chain: pay the maker's address, then they broadcast a CXFER to your pubkey. <strong>Counterparty trust required</strong> — the maker can take your sats without delivering. Prefer atomic intents unless the maker insists on this path.</li>
+          <li><strong>Range</strong> — maker proves their balance is at least the listed amount without revealing the exact balance. Same off-chain settlement and trust assumptions as opening listings; suited to makers who want to keep their treasury confidential.</li>
         </ul>
+        <div style="margin-top:8px;font-size:11px;">
+          <strong>Buttons:</strong>
+          <em>Verify</em> runs the full crypto/UTXO-liveness check on a listing without buying it.
+          On opening / range tiles, <em>Take</em> = pay the maker's BTC address, then they broadcast the CXFER (off-chain, trust-required).
+          On ⚡ atomic tiles the trustless flow runs in three steps: <em>Claim</em> reserves the intent for 5 min,
+          the maker then <em>Fulfil</em>s it (their button only), and you click <em>Take</em> to broadcast the single atomic settlement tx.
+          <em>Cancel</em> on a tile you made pulls your offer.
+        </div>
       </div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
         <input id="market-filter-asset" type="text" placeholder="ticker / asset_id prefix…" style="flex:1;min-width:140px;">
         <select id="market-filter-kind" style="flex:0;">
           <option value="all">all kinds</option>
-          <option value="intent">⚡ atomic (trustless)</option>
-          <option value="opening">opening (exact, trust)</option>
-          <option value="range">range (≥ X, trust)</option>
+          <option value="intent" title="Atomic intent — confidential token transfer and BTC payment close in one Bitcoin tx. Maker can't redirect your payment; you can't get tokens without paying. No counterparty trust.">⚡ atomic (trustless)</option>
+          <option value="opening" title="Opening listing — maker publishes the UTXO's exact (amount, blinding) opening + price. Settlement is OTC, requires counterparty trust.">opening (exact, trust)</option>
+          <option value="range" title="Range listing — maker proves balance ≥ X via bulletproof, exact balance hidden. Settlement is OTC, requires counterparty trust.">range (≥ X, trust)</option>
         </select>
-        <input id="market-filter-min-price" type="number" placeholder="min sats" style="width:90px;" min="0">
-        <input id="market-filter-max-price" type="number" placeholder="max sats" style="width:90px;" min="0">
+        <input id="market-filter-min-price" type="number" placeholder="min sats" style="width:110px;" min="0">
+        <input id="market-filter-max-price" type="number" placeholder="max sats" style="width:110px;" min="0">
         <select id="market-sort" style="flex:0;">
           <option value="recency">newest first</option>
           <option value="price-asc">price ↑</option>
           <option value="price-desc">price ↓</option>
+          <option value="unit-asc" title="Cheapest sats per whole token, normalized across listing sizes">unit price ↑</option>
+          <option value="unit-desc" title="Most expensive sats per whole token, normalized across listing sizes">unit price ↓</option>
         </select>
         <button id="btn-market-refresh">↻ Refresh</button>
       </div>
@@ -1693,14 +1793,16 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
       <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;">
         <input id="discover-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
-        <select id="discover-sort" title="Sort assets" style="font-size:12px;">
+        <select id="discover-sort" title="Sort assets">
           <option value="newest">Newest first</option>
           <option value="oldest">Oldest first</option>
           <option value="ticker-asc">Ticker A→Z</option>
           <option value="ticker-desc">Ticker Z→A</option>
           <option value="transfers-desc">Most transferred</option>
           <option value="offers-desc">Most offers</option>
+          <option value="atomic-desc" title="Most active atomic-intent OTC offers — trustless settlement available">Most atomic</option>
           <option value="active-desc">Most active</option>
+          <option value="floor-asc" title="Cheapest floor unit price first; populated once Market has been loaded this session">Cheapest floor</option>
         </select>
         <button id="btn-discover-refresh">↻ Refresh</button>
       </div>
@@ -1710,6 +1812,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button class="filter-pill" data-pill="attested" type="button" title="Issuer published a verifiable supply attestation">Attested</button>
         <button class="filter-pill" data-pill="recent" type="button" title="Etched in the last 24h">Recent</button>
         <button class="filter-pill" data-pill="offers" type="button" title="Has at least one active marketplace offer">Has offers</button>
+        <button class="filter-pill" data-pill="atomic" type="button" title="Has at least one atomic-intent OTC offer — confidential transfer + BTC payment close in one Bitcoin tx, no counterparty trust required">⚡ Atomic</button>
         <button class="filter-pill" data-pill="minted" type="button" title="Has at least one chain-verified mint event">Has mints</button>
         <button class="filter-pill" data-pill="burned" type="button" title="Has at least one chain-verified burn event">Has burns</button>
         <button class="filter-pill" data-pill="moved" type="button" title="Has at least one CXFER/AXFER transfer the worker has indexed, OR one you've broadcast/imported locally. The worker's mainnet cron starts from tip and doesn't backfill historical transfers, so historical sends may not match unless your local activity log still has the entry.">Has transfers</button>
@@ -1861,7 +1964,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 </div>
 
 <footer>
-  <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · zero protocol fees</span>
+  <span><a href="https://github.com/z0r0z/tacit" target="_blank" rel="noopener noreferrer">tacit</a> · open-source · zero fees</span>
   <span><a href="https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki" target="_blank" rel="noopener noreferrer">BIP-341</a> · <a href="https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki" target="_blank" rel="noopener noreferrer">BIP-340</a> · <a href="https://blockstream.com/bitcoin17-final41.pdf" target="_blank" rel="noopener noreferrer">CT (Maxwell)</a></span>
 </footer>
 
@@ -1871,20 +1974,21 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="welcome-card">
     <div class="welcome-title" id="welcome-title">welcome to <span class="accent">tacit</span></div>
     <div class="welcome-lede">
-      tacit signs every confidential envelope with an in-browser key. your existing bitcoin wallet (xverse / leather / unisat) <em>funds</em> that key but cannot replace it. <strong>pick how you want to start:</strong>
+      tacit is a wallet for confidential tokens on bitcoin. its signing key lives in this browser. <strong>start fresh below</strong> — or connect an existing bitcoin wallet for one-click funding.
     </div>
     <div class="welcome-options">
+      <button id="welcome-local" class="welcome-option welcome-option--primary" type="button">
+        <span class="welcome-option-title">generate a new local wallet<span class="welcome-option-rec">(recommended)</span></span>
+        <span class="welcome-option-meta">no extension required. tacit creates a signing key in this browser, locked behind a passphrase you set next. you can export it any time. fund via the signet faucet, or send sats from any wallet.</span>
+      </button>
+      <div class="welcome-divider">already have a bitcoin wallet?</div>
       <button id="welcome-xverse" class="welcome-option" type="button">
         <span class="welcome-option-title">connect xverse / leather</span>
-        <span class="welcome-option-meta">bind tacit's signing key to your wallet's address — fund taps from xverse / leather</span>
+        <span class="welcome-option-meta">tacit creates its own signing key bound to your xverse / leather address. your existing wallet stays separate — it's used for one-click funding only.</span>
       </button>
       <button id="welcome-unisat" class="welcome-option" type="button">
         <span class="welcome-option-title">connect unisat</span>
-        <span class="welcome-option-meta">bind tacit's signing key to your unisat address — fund taps from unisat</span>
-      </button>
-      <button id="welcome-local" class="welcome-option" type="button">
-        <span class="welcome-option-title">generate a new local wallet</span>
-        <span class="welcome-option-meta">no extension required — fund via signet faucet, or import a privkey later</span>
+        <span class="welcome-option-meta">same as above, bound to your unisat address.</span>
       </button>
     </div>
     <div class="welcome-footer">
@@ -1909,7 +2013,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div class="pass-hint" id="pass-hint-2"></div>
       </div>
       <div class="pass-warn" id="pass-warn">
-        <strong>important:</strong> if you forget this passphrase AND don't have the raw privkey backed up, the wallet is unrecoverable. export the privkey separately via wallet → export key once setup completes.
+        <strong>important:</strong> the passphrase locks your tacit key in this browser. forget it without exporting the key first, and the wallet is gone for good. once setup completes, use wallet → export key to back it up somewhere safe.
       </div>
       <div class="pass-actions">
         <button type="button" id="pass-cancel">cancel</button>
@@ -1933,7 +2037,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <div class="faq-q">Why not just use Runes / Liquid / RGB?</div>
       <div class="faq-a">
-        Runes and BRC-20 publish amounts in cleartext — anyone with a block explorer sees your balance. Liquid hides them but runs on a federated sidechain with ~15 KYC'd functionaries; that's not really Bitcoin. RGB hides them on Bitcoin proper, but the recipient has to receive a proof chain from the sender off-chain — lose the proof, lose the asset. Tacit hides amounts on Bitcoin and you recover from privkey + chain alone, the way Bitcoin itself works.
+        Runes and BRC-20 publish amounts in cleartext — anyone with a block explorer sees your balance. Liquid hides amounts (and asset IDs too) but runs on a federated sidechain with ~15 KYC'd functionaries; that's not really Bitcoin. RGB hides amounts on Bitcoin proper, but the recipient has to receive a proof chain from the sender off-chain — lose the proof, lose the asset. Tacit hides amounts on Bitcoin and you recover from privkey + chain alone, the way Bitcoin itself works.
       </div>
 
       <div class="faq-q">How do I see my tacit balances?</div>

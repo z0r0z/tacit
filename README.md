@@ -134,13 +134,14 @@ it and to recover your full balance years later.
 
 **Why tacit and not Runes / Liquid / RGB?** Runes and BRC-20 publish
 amounts in cleartext — anyone with a block explorer sees your balance.
-Liquid CT hides them but runs on a federated sidechain with ~15 KYC'd
-functionaries; that's not Bitcoin and it's not trustless. RGB and Taproot
-Assets keep the substrate clean but push validation off-chain — the
-recipient has to receive and store a proof chain from the sender, and
-losing it loses the asset. Tacit hides amounts on Bitcoin proper and
-recovers from privkey + chain alone, the way Bitcoin itself works. See
-"How tacit compares" above for the longer breakdown.
+Liquid CT hides amounts (and asset IDs too) but runs on a federated
+sidechain with ~15 KYC'd functionaries; that's not Bitcoin and it's
+not trustless. RGB and Taproot Assets keep the substrate clean but
+push validation off-chain — the recipient has to receive and store a
+proof chain from the sender, and losing it loses the asset. Tacit hides
+amounts on Bitcoin proper and recovers from privkey + chain alone, the
+way Bitcoin itself works. See "How tacit compares" above for the longer
+breakdown.
 
 **How do I see my tacit balances?** In the dApp here, or in any
 third-party tacit indexer that implements [SPEC.md](./SPEC.md). Tacit
