@@ -8352,6 +8352,10 @@ function setupTabs() {
       $$('.tab-panel').forEach(p => p.classList.remove('active'));
       tab.classList.add('active');
       $('#tab-' + tab.dataset.tab).classList.add('active');
+      // Reflect tab state into the URL so refresh + share-URL restore the
+      // user's view. Guarded inside _writeTabHash against clobbering an
+      // unconsumed #recv= / #claim= hash during init.
+      _writeTabHash(tab.dataset.tab);
       if (tab.dataset.tab === 'wallet') { refreshWallet(); renderRecentEtches(); }
       if (tab.dataset.tab === 'holdings') { renderHoldings(); renderOffers(); renderActivity(); }
       else stopHoldingsAutoRefresh();
@@ -9350,8 +9354,11 @@ function setupPetchForm() {
       const openBtn = successEl.querySelector('[data-act="petch-open-in-discover"]');
       if (openBtn) {
         openBtn.onclick = () => {
-          pendingDiscoverFocus = r.assetIdHex;
-          $('.tab[data-tab="discover"]')?.click();
+          // Use the deeplink hash so the resulting URL is shareable — anyone
+          // who lands on this tab with #tab=discover&aid=<aid> sees the same
+          // focused tile. hashchange fires synchronously and routes through
+          // _consumeTabUrlHash, which switches the tab and stashes the focus.
+          location.hash = `#tab=discover&aid=${r.assetIdHex}`;
         };
       }
       toast(`Deployed ${ticker} ✓`, 'success', 8000);
@@ -12517,6 +12524,75 @@ function _consumeClaimUrlHash() {
   }
 }
 
+// ============== TAB / ASSET DEEPLINKS ==============
+// Hash format namespaced behind `#tab=` so it doesn't collide with the
+// existing `#recv=` (share-link) and `#claim=` (drop) consumers, both of
+// which self-clear after they fire.
+//
+//   #tab=<name>                  switch tabs
+//   #tab=<name>&aid=<asset_id>   switch + focus an asset (Discover only,
+//                                 today; safe no-op on other tabs)
+//
+// On load this fires after the share-link / claim consumers so they get
+// first crack at their hashes. On hashchange (back/forward navigation, or
+// a manual URL edit) we re-apply, so browser nav works as expected. Tab
+// clicks update the hash via replaceState — current state is shareable
+// via URL but back/forward isn't polluted with every casual tab click.
+const _DEEPLINK_TABS = new Set([
+  'wallet', 'holdings', 'transfer', 'discover', 'market', 'etch', 'drops', 'claim', 'about',
+]);
+function _parseTabHash() {
+  const h = location.hash || '';
+  if (!h.startsWith('#tab=')) return null;
+  let params;
+  try { params = new URLSearchParams(h.slice(1)); } catch { return null; }
+  const tab = params.get('tab');
+  if (!tab || !_DEEPLINK_TABS.has(tab)) return null;
+  const rawAid = params.get('aid') || '';
+  const aid = /^[0-9a-f]{64}$/i.test(rawAid) ? rawAid.toLowerCase() : null;
+  return { tab, aid };
+}
+function _consumeTabUrlHash() {
+  const parsed = _parseTabHash();
+  if (!parsed) return;
+  // Stash asset focus before the tab switch so renderDiscover /
+  // renderPetchDiscover see it on first paint. Currently only Discover
+  // honors aid focus; on other tabs it's a harmless dangling pointer that
+  // a later switch to Discover will pick up.
+  if (parsed.aid) pendingDiscoverFocus = parsed.aid;
+  const btn = document.querySelector(`.tab[data-tab="${parsed.tab}"]`);
+  if (!btn) return;
+  if (!btn.classList.contains('active')) {
+    btn.click();
+  } else if (parsed.aid && parsed.tab === 'discover') {
+    // Already on Discover but aid changed — re-resolve focus against the
+    // already-mounted lists so a hash-only change scrolls/highlights too.
+    requestAnimationFrame(() => {
+      const cetchCard = document.querySelector(`#discover-list .asset-card[data-aid="${parsed.aid}"]`);
+      const petchCard = document.querySelector(`#petch-discover-list .asset-card[data-petch-aid="${parsed.aid}"]`);
+      const card = cetchCard || petchCard;
+      if (card) {
+        pendingDiscoverFocus = null;
+        card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        card.classList.add('highlight-pulse');
+        setTimeout(() => card.classList.remove('highlight-pulse'), 1800);
+      }
+    });
+  }
+}
+// Browser back/forward navigation: hashchange fires for in-page hash mutations
+// too, so the tab.onclick guard below avoids feedback by checking the parsed
+// tab against the currently-active tab before clicking.
+window.addEventListener('hashchange', _consumeTabUrlHash);
+// Reflect tab state into the URL after every tab click. Guarded against
+// clobbering an unconsumed share-link / claim hash during init — those
+// consumers clear themselves; once cleared, tab clicks own the hash.
+function _writeTabHash(tabName) {
+  const cur = location.hash || '';
+  if (cur.startsWith('#recv=') || cur.startsWith('#claim=')) return;
+  try { history.replaceState(null, '', `#tab=${tabName}`); } catch {}
+}
+
 // ============== Discovery list (recipient side) ==============
 // Holds the latest /drops fetch + per-drop snapshot fetch results, keyed by
 // merkle_root. Populated by `_claimRefreshDiscover`; consumed by
@@ -14710,8 +14786,12 @@ async function renderRecentEtches() {
       tile.href = '#';
       tile.onclick = (e) => {
         e.preventDefault();
-        pendingDiscoverFocus = safeAssetId;
-        $('.tab[data-tab="discover"]').click();
+        // Drive the navigation through the deeplink hash so the resulting
+        // URL is shareable + reload-stable. hashchange fires
+        // _consumeTabUrlHash, which sets pendingDiscoverFocus and clicks
+        // the tab — same effect as the prior direct call, plus URL parity.
+        if (safeAssetId) location.hash = `#tab=discover&aid=${safeAssetId}`;
+        else $('.tab[data-tab="discover"]').click();
       };
       paintTile(tile, a, null, null);
       grid.appendChild(tile);
@@ -18909,6 +18989,10 @@ async function init() {
   consumePendingNetFlipToast();
   await autoImportShareLink();
   _consumeClaimUrlHash();
+  // Tab/asset deeplink consumer fires AFTER the share-link / claim
+  // consumers so those get first crack at their hashes (both self-clear
+  // when they match, leaving the URL clean for a tab-deeplink to follow).
+  _consumeTabUrlHash();
   // Best-effort recovery: if a previous publishAxferIntent call broadcast a
   // commit tx but the worker POST never landed (indexer race, network blip,
   // worker outage), the body was persisted to localStorage. Re-POST it now
