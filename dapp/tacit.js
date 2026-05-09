@@ -20155,7 +20155,10 @@ function applyMarketFilters() {
     ? `<div style="margin-bottom:10px;font-size:11px;font-style:italic;" class="muted">no atomic offers under current filters — try kind=⚡ atomic</div>`
     : '';
   // Asks-section header so the orderbook reads bids-on-top / asks-below.
-  const asksHeaderHtml = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;"><strong>Asks · ${rows.length}</strong> <span class="muted" style="font-size:10px;">${$('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first'} (change in sort dropdown)</span></div>`;
+  // Trust hint clarifies that asks span both ⚡ atomic (trustless settlement)
+  // and OTC opening/range (counterparty trust); per-tile badges still show the
+  // mode for each individual offer.
+  const asksHeaderHtml = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;"><strong>Asks · ${rows.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· sellers offering tokens for sats · ${$('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first'} (sort dropdown)</span></div>`;
   list.innerHTML =
     assetHeaderHtml +
     bidsLadderHtml +
@@ -20518,8 +20521,11 @@ function renderMarketBidsLadderHTML(asset) {
   const ticker = escapeHtml(asset.ticker || '?');
   return `
     <div data-market-bids-section data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">
-        <strong>Bids · <span data-market-bids-count>—</span></strong>
+      <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;gap:8px;flex-wrap:wrap;">
+        <div>
+          <strong>Bids · <span data-market-bids-count>—</span></strong>
+          <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:4px;">· signed offers, no sats locked until filled</span>
+        </div>
         <button data-act="market-bid-place" data-aid="${aid}" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">+ Place a bid on ${ticker}</button>
       </div>
       <div data-market-bid-form style="display:none;margin-top:10px;"></div>
@@ -20637,9 +20643,32 @@ function _wireMarketBidPlace(section, asset) {
     }
     formHost.style.display = '';
     formHost.dataset.open = '1';
+    // Reference prices captured when the form opens. Floor comes from the live
+    // market cache (cheapest current ask, unit price); last-traded comes from
+    // the asset record stamped by the worker on the most recent T_AXFER. Both
+    // optional — null when unavailable.
+    const _floorEntry = _marketFloorByAsset()?.get(aid) || null;
+    const _floorUnit = _floorEntry ? Number(_floorEntry.unit) : null;
+    const _lastTrade = asset.last_trade && Number.isInteger(asset.last_trade.price_sats) && Number(asset.last_trade.price_sats) > 0
+      ? asset.last_trade : null;
+    let _lastUnit = null;
+    if (_lastTrade) {
+      try { _lastUnit = unitPriceSats(Number(_lastTrade.price_sats), BigInt(_lastTrade.amount), decimals); }
+      catch { _lastUnit = null; }
+    }
+    const _refBits = [];
+    if (_floorUnit != null) _refBits.push(`floor <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}`);
+    if (_lastUnit != null) _refBits.push(`last <strong>${escapeHtml(fmtUnitPriceSats(_lastUnit))}</strong> sats/${escapeHtml(ticker)}`);
+    const _refLine = _refBits.length
+      ? `<div class="muted" style="font-size:10px;margin-bottom:6px;">reference · ${_refBits.join(' · ')}</div>`
+      : '';
+    const _useFloorBtn = (_floorUnit != null && _floorUnit > 0)
+      ? `<button data-bid-action="use-floor" type="button" title="Set price to floor × amount (lifts the cheapest current ask)" style="font-size:10px;padding:2px 6px;">Use floor price</button>`
+      : '';
     formHost.innerHTML = `
       <div style="border:1px dashed var(--ink-faint);padding:10px;background:var(--bg-warm);">
-        <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">Bid on ${escapeHtml(ticker)}</div>
+        <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">Bid on ${escapeHtml(ticker)}</div>
+        ${_refLine}
         <div class="flex" style="gap:6px;flex-wrap:wrap;">
           <label style="font-size:10px;flex:1;min-width:120px;">Amount (${escapeHtml(ticker)})
             <input data-bid-field="amount" type="text" inputmode="decimal" placeholder="100" style="width:100%;font-family:var(--mono);">
@@ -20651,15 +20680,70 @@ function _wireMarketBidPlace(section, asset) {
             <input data-bid-field="expiry-hours" type="number" min="1" max="720" step="1" value="24" style="width:100%;font-family:var(--mono);">
           </label>
         </div>
-        <div class="flex" style="gap:6px;margin-top:8px;">
+        <div data-bid-readout style="font-size:11px;margin-top:6px;min-height:14px;" class="muted"></div>
+        <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">
           <button data-bid-action="submit" class="primary" type="button" style="font-size:11px;">Sign &amp; post bid</button>
           <button data-bid-action="close" type="button" style="font-size:11px;">Close</button>
+          ${_useFloorBtn}
         </div>
         <div data-bid-status class="muted" style="font-size:10px;margin-top:6px;"></div>
       </div>`;
     const status = formHost.querySelector('[data-bid-status]');
+    const amountEl = formHost.querySelector('[data-bid-field="amount"]');
+    const priceEl = formHost.querySelector('[data-bid-field="price"]');
+    const readout = formHost.querySelector('[data-bid-readout]');
+    // Live unit-price computation. Recomputes on every keystroke in either
+    // amount or price field. Three states:
+    //   - blank/invalid: empty muted readout
+    //   - within sane range (0.5×–2× floor, or no floor reference): gray
+    //   - outside sane range: red, "Nx floor" hint to flag a likely mistake
+    // The 2× threshold is deliberate — small bid premiums above floor are
+    // legitimate (you want it to fill quickly), but anything past 2× is
+    // probably a units-confusion error like the 417× case from the audit.
+    const recomputeReadout = () => {
+      const aRaw = (amountEl?.value || '').trim();
+      const pRaw = (priceEl?.value || '').trim();
+      if (!aRaw || !pRaw || !/^\d+$/.test(pRaw)) {
+        readout.textContent = '';
+        readout.style.color = '';
+        return;
+      }
+      let amt;
+      try { amt = parseAssetAmount(aRaw, decimals); } catch { readout.textContent = ''; return; }
+      if (amt <= 0n) { readout.textContent = ''; return; }
+      const p = Number(pRaw);
+      const u = unitPriceSats(p, amt, decimals);
+      if (u == null) { readout.textContent = ''; return; }
+      let warn = '';
+      if (_floorUnit != null && _floorUnit > 0) {
+        const ratio = u / _floorUnit;
+        if (ratio > 2) warn = ` · <strong>${ratio.toFixed(1)}× floor — likely mistake</strong>`;
+        else if (ratio < 0.5) warn = ` · <strong>${(1/ratio).toFixed(1)}× below floor — unlikely to fill</strong>`;
+      }
+      readout.innerHTML = `= <strong>${escapeHtml(fmtUnitPriceSats(u))}</strong> sats/${escapeHtml(ticker)}${warn}`;
+      readout.style.color = warn ? 'var(--red, #b8341d)' : '';
+    };
+    amountEl?.addEventListener('input', recomputeReadout);
+    priceEl?.addEventListener('input', recomputeReadout);
     formHost.querySelector('[data-bid-action="close"]').onclick = () => {
       formHost.style.display = 'none'; formHost.dataset.open = ''; formHost.innerHTML = '';
+    };
+    // Use-floor: reads the current Amount input, multiplies by the captured
+    // floor unit price, rounds up so the bid actually meets/exceeds floor
+    // (not below by sub-sat truncation). Defaults amount to 1 if blank so
+    // the user can click Use-floor first and see a sensible default.
+    const useFloorBtn = formHost.querySelector('[data-bid-action="use-floor"]');
+    if (useFloorBtn) useFloorBtn.onclick = () => {
+      if (_floorUnit == null || _floorUnit <= 0) return;
+      let aRaw = (amountEl?.value || '').trim();
+      if (!aRaw) { aRaw = '1'; if (amountEl) amountEl.value = '1'; }
+      let amtBase;
+      try { amtBase = parseAssetAmount(aRaw, decimals); } catch { return; }
+      if (amtBase <= 0n) return;
+      const wholeTokens = Number(amtBase) / Math.pow(10, decimals);
+      const totalSats = Math.max(1, Math.ceil(wholeTokens * _floorUnit));
+      if (priceEl) priceEl.value = String(totalSats);
+      recomputeReadout();
     };
     const submitBtn = formHost.querySelector('[data-bid-action="submit"]');
     submitBtn.onclick = async () => {
