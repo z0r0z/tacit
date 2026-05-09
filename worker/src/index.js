@@ -5080,6 +5080,23 @@ async function scanForEtches(env, network) {
   if (startHeight > tip) return { up_to_date: true, tip, network };
 
   let scanned = 0, found = 0;
+  // Per-scan petch lookup cache. Each T_PMINT in the block-tx loop used to
+  // do its own KV.get(petchKey(...)), so a dense block on a popular fair
+  // launch (FAIR's etch+200 blocks landed ~300 reveals/block) burned
+  // ~300 subrequests per block just on petch lookups. With the per-tx
+  // KV.put for canonical entries plus the orphan-cleanup KV.delete on top,
+  // the cron tipped past the 1000-subrequest budget mid-block and silently
+  // skipped the rest of the T_PMINTs — leaving "confirmed but not credited"
+  // mints in users' wallets that no rescan would heal because last_scanned
+  // had already advanced. Caching keeps it at one petch lookup per asset
+  // per scan tick.
+  const _petchCache = new Map();
+  const _petchLookup = async (aid) => {
+    if (_petchCache.has(aid)) return _petchCache.get(aid);
+    const v = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
+    _petchCache.set(aid, v);
+    return v;
+  };
   // Seed at `startHeight - 1` so a transient API failure on the very first
   // block of a never-scanned network doesn't write `0` to KV and abandon the
   // entire backfill window. We only update `lastContiguous` after a block's
@@ -5248,7 +5265,8 @@ async function scanForEtches(env, network) {
         // §5.9 step 2: parent must be T_PETCH. Lookup by the DERIVED asset_id
         // rather than the (potentially forged) cm.asset_id so a payload that
         // somehow slipped past step 1 still resolves to the right namespace.
-        const petch = await env.REGISTRY_KV.get(petchKey(network, expectedAid), 'json');
+        // Cached across the scan invocation — see _petchLookup above for why.
+        const petch = await _petchLookup(expectedAid);
         if (!petch) continue;   // T_PETCH not yet indexed — re-scan picks it up
         // §5.9 step 3: amount equals mint_limit (BigInt compare; both are
         // base-10 strings in the metadata + decoder).
@@ -5285,15 +5303,17 @@ async function scanForEtches(env, network) {
         mintMeta.tx_index = txIndex;
         const pmk = pmintKeyFor(network, expectedAid, h, txIndex, tx.txid);
         await env.REGISTRY_KV.put(pmk, JSON.stringify(mintMeta));
-        // Clean up any height-0 orphan an older worker version wrote for this
-        // same txid via handleAssetHint's pre-fix unconfirmed path. Best-effort:
-        // a stranded orphan is now harmless thanks to loadCanonicalPmints'
-        // pending-guard, but deleting it keeps the namespace tidy and shaves
-        // KV.list cost on heavy assets.
-        const stalePendingKey = pmintKeyFor(network, expectedAid, 0, 0, tx.txid);
-        if (stalePendingKey !== pmk) {
-          env.REGISTRY_KV.delete(stalePendingKey).catch(() => {});
-        }
+        // Stale-orphan cleanup is now handled by the dedicated orphan
+        // promoter (promotePmintOrphans, run on every cron tick). The
+        // previous inline `KV.delete(stalePendingKey)` here cost one extra
+        // subrequest per T_PMINT, which on dense fair-launch blocks
+        // (~300 reveals/block on FAIR's first 100 blocks) was enough to
+        // tip the cron past the 1000-subrequest budget mid-block, silently
+        // dropping the tail of T_PMINTs from canonical indexing. Users
+        // whose mints landed in the dropped tail saw "confirmed but not
+        // credited" forever because last_scanned advanced anyway. Removing
+        // the inline delete buys ~300 subrequests/dense-block of headroom
+        // and the orphan promoter still handles legacy cleanup.
         found++;
       } else if (decoded.opcode === T_DEPOSIT) {
         // SPEC §5.10. Two payload shapes share opcode 0x29:
