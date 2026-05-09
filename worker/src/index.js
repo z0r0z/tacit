@@ -5699,6 +5699,52 @@ export default {
     // Sample N orphans starting at offset, return their on-chain status.
     // Used to check what fraction of an asset's orphan backlog is actually
     // confirmed (vs mempool-stale broadcasts that will never promote).
+    // Bulk-delete every height-0 orphan key for one petch asset. Useful when
+    // an asset's orphan backlog is so dense (e.g. FAIR's ~46k pre-fix entries)
+    // that the cron-tick promoter would take weeks to drain it AND the
+    // canonical-walk loader is starved by the orphan range. Returns the
+    // deleted count; safe to re-run (idempotent — re-runs find no keys).
+    // Canonical entries written by scanForEtches's block scan are untouched
+    // since they live under the real-height prefix, not 0000000000.
+    if (url.pathname === '/admin/delete-orphans' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid');
+        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) {
+          return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
+        }
+        const maxStr = url.searchParams.get('max');
+        const maxOps = maxStr ? Math.max(1, Math.min(5000, parseInt(maxStr, 10) || 2000)) : 2000;
+        const orphanPrefix = pmintPrefix(network, aid) + '0000000000:';
+        let deleted = 0;
+        let cursor = null;
+        const PARALLEL = 25;
+        outer: while (deleted < maxOps) {
+          const list = await env.REGISTRY_KV.list({
+            prefix: orphanPrefix,
+            limit: Math.min(1000, maxOps - deleted),
+            ...(cursor ? { cursor } : {}),
+          });
+          if (list.keys.length === 0) break;
+          for (let i = 0; i < list.keys.length; i += PARALLEL) {
+            const slice = list.keys.slice(i, Math.min(i + PARALLEL, list.keys.length));
+            await Promise.all(slice.map(k => env.REGISTRY_KV.delete(k.name).catch(() => {})));
+            deleted += slice.length;
+            if (deleted >= maxOps) break outer;
+          }
+          if (list.list_complete) break;
+          cursor = list.cursor;
+          if (!cursor) break;
+        }
+        // Bust the petch-assets cache so /petch-assets recomputes against the
+        // newly-pruned namespace immediately rather than serving 5-min-stale.
+        if (deleted > 0) {
+          await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+          ctx.waitUntil(petchAssetsComputeAndCache(env, network).catch(() => {}));
+        }
+        return jsonResponse({ network, aid, deleted, max_ops: maxOps }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
     if (url.pathname === '/admin/promote-orphans' && req.method === 'POST') {
       if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
       try {
