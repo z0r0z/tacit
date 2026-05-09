@@ -373,9 +373,13 @@ tacit/
 (the app, loaded as an ESM module by the one `<script>` tag in `index.html`),
 and `vendor/tacit-deps.min.js` (noble + scure + sats-connect, bundled —
 imported from inside `tacit.js`, not loaded by a separate `<script>` tag).
-The meta-CSP in `index.html` locks `script-src 'self'` (no `'unsafe-inline'`,
-no third-party origins), so nothing runs in the wallet's JS realm except code
-under the same IPFS CID.
+The meta-CSP in `index.html` locks `script-src 'self' 'wasm-unsafe-eval'`
+(no `'unsafe-inline'`, no `'unsafe-eval'`, no third-party origins), so nothing
+runs in the wallet's JS realm except code under the same IPFS CID.
+`'wasm-unsafe-eval'` is the narrow CSP3 token that permits
+`WebAssembly.instantiate()` (required by snarkjs for the mixer ceremony's
+Groth16 prover/verifier) without re-opening the broader eval()/Function()
+attack surface that `'unsafe-eval'` would.
 Pinning the `dapp/` directory yields one CID covering every byte of
 trust-bearing code. `connect-src` is locked down too: the only network
 endpoints reachable at runtime are `mempool.space` and `blockstream.info`

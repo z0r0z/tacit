@@ -10419,6 +10419,18 @@ async function renderMixer() {
   // to TACIT_DEFAULT_CEREMONY_HASH at module init); the call is unconditional.
   try { await ceremonyRender(); } catch {}
 
+  // Lock pool ops (deposit / withdraw / init / pool-list) until the ceremony
+  // is beacon-finalized. Default is locked: if _ceremonyState hasn't loaded
+  // yet, or fetch failed, treat the gate as closed — never accidentally
+  // expose pool ops while the trust anchor is unverified. Visual layer is
+  // CSS in index.html (.mixer-ceremony-locked dims and disables inputs);
+  // .mixer-locked-banner inside each section explains the gate.
+  const tab = document.getElementById('tab-mixer');
+  if (tab) {
+    const finalized = !!(_ceremonyState && _ceremonyState.finalized);
+    tab.classList.toggle('mixer-ceremony-locked', !finalized);
+  }
+
   // Pool list
   const list = document.getElementById('mixer-pool-list');
   if (list) {
