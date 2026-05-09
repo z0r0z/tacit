@@ -4352,6 +4352,12 @@ async function waitForTxVisible(commitTxidHex, { maxMs = 60000, initialMs = 1500
 const _pmintCreditedCache = new Map();
 const PMINT_CREDITED_TTL_MS = 30 * 1000;
 function invalidatePmintCreditedCache() { _pmintCreditedCache.clear(); }
+// Per-session set of txids we've already auto-hinted from validateOutpoint to
+// recover from a worker that's seen the orphan deleted but never written the
+// canonical entry (subrequest-exhaustion bug in dense-block scanForEtches).
+// We could clear this on rescan, but a hint is idempotent server-side and
+// stays cheap if we don't re-fire — keep the set persistent.
+const _pmintHealAttempted = new Set();
 async function _fetchPmintCredited(assetIdHex) {
   const c = _pmintCreditedCache.get(assetIdHex);
   if (c && (Date.now() - c.fetchedAt) < PMINT_CREDITED_TTL_MS) return c;
@@ -4740,6 +4746,20 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
         tagInvalid(); validatedSet.set(key, false); return false;
       }
       if (credit.credited && !credit.credited.has(txidHex)) {
+        // Auto-heal stuck mints. A confirmed T_PMINT that the worker has
+        // neither credited nor cap-overflowed is anomalous — either the
+        // worker hasn't seen the reveal block yet (cron lag, legitimately
+        // pending) or its block-scan tipped past the subrequest budget on
+        // a dense block and silently skipped this tx (orphan was deleted
+        // by the cleanup runner but canonical never written). Both cases
+        // self-heal once the hint endpoint sees the txid: it decodes the
+        // on-chain envelope, validates §5.9 steps 1–4 the same way the
+        // cron would, and writes the canonical KV entry. Fire-and-forget;
+        // bounded by _pmintHealAttempted so we don't spam on every rescan.
+        if (Number.isFinite(pmintHeight) && !_pmintHealAttempted.has(txidHex)) {
+          _pmintHealAttempted.add(txidHex);
+          postHint(txidHex, 0);
+        }
         tagPending(); validatedSet.set(key, false); return false;
       }
     }
