@@ -10810,7 +10810,11 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress) {
         continue;
       }
       const bytes = new Uint8Array(await resp.arrayBuffer());
-      const verr = validate ? validate(bytes, resp.headers) : null;
+      // Validator may be sync or async (the r1cs/ptau path awaits a CID hash
+      // check). Awaiting handles both — without await, a Promise return value
+      // is truthy and gets stringified as "[object Promise]", silently
+      // rejecting a perfectly good response.
+      const verr = validate ? await validate(bytes, resp.headers) : null;
       if (verr) { errors.push(`${gw}: ${verr}`); continue; }
       return bytes;
     } catch (e) {
@@ -19259,7 +19263,19 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     collisionBadge = `<span style="font-size:10px;background:#fff8eb;color:#a04030;padding:2px 6px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">shared ticker · earliest</span>`;
   }
 
+  // Platform-curated verification badge. Distinct from the cryptographic
+  // chain-verify badge above: this one says "the dapp's curators have
+  // attested that *this specific asset_id* is the canonical holder of the
+  // ticker." It's an editorial signal, not a trustless one — chain-verify
+  // remains independent and authoritative for the underlying envelope.
+  // Top-right corner so it reads as a stamp rather than competing with the
+  // inline meta badges; pinned via position: absolute on a `position: relative`
+  // root, which the existing .asset-card container provides.
+  const officialBadge = a.verified
+    ? `<span style="position:absolute;top:8px;right:8px;font-size:10px;background:#0a7d4e;color:#fff;padding:3px 7px;border:1px solid #0a7d4e;text-transform:uppercase;letter-spacing:0.08em;cursor:help;font-weight:600;" title="Platform-verified: tacit's curators have endorsed this asset_id as the canonical holder of its ticker. The CETCH envelope is still chain-verified independently above.">✓ verified</span>`
+    : '';
   card.innerHTML = `
+    ${officialBadge}
     <div class="head" style="display:flex;align-items:center;gap:12px;">
       ${avatar}
       <div style="flex:1;min-width:0;">
@@ -20894,8 +20910,16 @@ async function renderPetchDiscover() {
       // Decimal-safe limit display used by the optimistic update.
       const limitDispEsc = escapeHtml(fmtAssetAmount(limit, dec));
       const tickerEsc = escapeHtml(a.ticker || '');
+      // Platform-curated verified badge (top-right corner). Same semantics as
+      // the CETCH /assets badge — editorial endorsement, not trustless. The
+      // .asset-card root sets `position: relative` so the absolute-positioned
+      // span lands in the corner without escaping the card.
+      const officialBadgePetch = a.verified
+        ? `<span style="position:absolute;top:8px;right:8px;font-size:10px;background:#0a7d4e;color:#fff;padding:3px 7px;border:1px solid #0a7d4e;text-transform:uppercase;letter-spacing:0.08em;cursor:help;font-weight:600;" title="Platform-verified: tacit's curators have endorsed this asset_id as the canonical holder of its ticker.">✓ verified</span>`
+        : '';
       return `
         <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);margin-bottom:10px;">
+          ${officialBadgePetch}
           <div style="display:flex;align-items:center;gap:12px;">
             ${imgUrl
               ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
@@ -22791,4 +22815,10 @@ export {
   dropAnnounceMsgBytes, dropAnnounceCancelMsgBytes,
   // Encrypted-at-rest privkey storage
   encryptPrivkey, decryptPrivkey,
+  // Ceremony IPFS multi-gateway fetcher — exported so tests can drive its
+  // sync- and async-validator paths against a stubbed `fetch`. The async
+  // path (used for r1cs/ptau CID-hash checks) regressed once when the
+  // helper failed to await the validator and rejected good responses as
+  // "[object Promise]"; the export keeps that regression covered.
+  _ceremonyFetchIpfsWithFailover as ceremonyFetchIpfsWithFailover,
 };

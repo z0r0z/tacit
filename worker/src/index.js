@@ -225,6 +225,27 @@ function burnPrefix(network, aid)      { return network === 'signet' ? `burn:${a
 // vs SPEC.
 function petchKey(network, aid)        { return network === 'signet' ? `petch:${aid}` : `petch:${network}:${aid}`; }
 function petchPrefix(network)          { return network === 'signet' ? 'petch:' : `petch:${network}:`; }
+// Curated "verified" registry. A small set of asset_ids that admin (and
+// eventually a community signing scheme) has endorsed as the canonical
+// version of a ticker — useful when same-block ties or duplicate-ticker
+// land grabs would otherwise leave the platform's reference asset
+// indistinguishable from copycats. Surfacing this via KV (not a hardcoded
+// list in the Worker source) lets us add/remove without redeploying. The
+// VERIFICATION SIGNAL IS NOT TRUSTLESS — the dapp must still chain-verify
+// the underlying CETCH envelope; "verified" only means "platform attests
+// this is the canonical ticker holder."
+function verifiedKey(network, aid)     { return network === 'signet' ? `verified:${aid}` : `verified:${network}:${aid}`; }
+function verifiedPrefix(network)       { return network === 'signet' ? 'verified:' : `verified:${network}:`; }
+async function loadVerifiedSet(env, network) {
+  const list = await env.REGISTRY_KV.list({ prefix: verifiedPrefix(network), limit: 1000 });
+  const set = new Set();
+  const prefixLen = verifiedPrefix(network).length;
+  for (const k of list.keys) {
+    const aid = k.name.slice(prefixLen);
+    if (/^[0-9a-f]{64}$/.test(aid)) set.add(aid);
+  }
+  return set;
+}
 function pmintKeyFor(network, aid, height, txIndex, txid) {
   const h = String(height || 0).padStart(10, '0');
   const idx = String(txIndex || 0).padStart(6, '0');
@@ -1769,10 +1790,16 @@ async function handleAssetsList(env, network, cors, opts = {}) {
     apiText(env, '/blocks/tip/height', {}, network).then(s => s.trim()),
     new Promise(resolve => setTimeout(() => resolve(null), 2500)),
   ]).catch(() => null);
+  // Curated verified set fetched in parallel — per-network registry of
+  // platform-attested asset_ids. Failure to load is non-fatal; we just
+  // serve everything as unverified and let the next call try again.
+  const verifiedP = loadVerifiedSet(env, network).catch(() => new Set());
   const fetched = await Promise.all(
     wanted.map(k => env.REGISTRY_KV.get(k.name, 'json')),
   );
   const assets = fetched.filter(v => v);
+  const verifiedSet = await verifiedP;
+  for (const a of assets) a.verified = verifiedSet.has(a.asset_id);
   assets.sort((a, b) => (b.etched_at || 0) - (a.etched_at || 0));
   const trimmed = limit ? assets.slice(0, limit) : assets;
   // Lightweight counts so Discover can show "N openings · M disclosures"
@@ -2768,8 +2795,12 @@ async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) 
     apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
     new Promise(resolve => setTimeout(() => resolve(null), 2500)),
   ]).catch(() => null);
+  // Curated verified set in parallel; same semantics as /assets.
+  const verifiedP = loadVerifiedSet(env, network).catch(() => new Set());
   const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
   const assets = fetched.filter(v => v);
+  const verifiedSet = await verifiedP;
+  for (const a of assets) a.verified = verifiedSet.has(a.asset_id);
   assets.sort((a, b) => (b.etched_at || 0) - (a.etched_at || 0));
   const tipHeight = await tipP;
   // Hydrate cap progress per asset using KEY-ONLY pagination — every fact
@@ -5936,6 +5967,51 @@ export default {
           ctx.waitUntil(petchAssetsComputeAndCache(env, network).catch(() => {}));
         }
         return jsonResponse({ network, aid, deleted, max_ops: maxOps }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // Curated verified-asset registry. POST adds, DELETE removes, GET lists.
+    // Verification only attests platform-endorsement of a ticker's canonical
+    // holder; the dapp must still chain-verify the underlying CETCH envelope.
+    if (url.pathname === '/admin/verify' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const list = await env.REGISTRY_KV.list({ prefix: verifiedPrefix(network), limit: 1000 });
+        const prefixLen = verifiedPrefix(network).length;
+        const entries = await Promise.all(list.keys.map(async k => {
+          const meta = await env.REGISTRY_KV.get(k.name, 'json');
+          return { asset_id: k.name.slice(prefixLen), ...(meta || {}) };
+        }));
+        return jsonResponse({ network, count: entries.length, verified: entries }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    if (url.pathname === '/admin/verify' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid');
+        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) {
+          return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
+        }
+        const note = url.searchParams.get('note') || null;
+        const meta = { verified_at: Math.floor(Date.now() / 1000), source: 'admin', note };
+        await env.REGISTRY_KV.put(verifiedKey(network, aid), JSON.stringify(meta));
+        // Bust read-side caches so the badge surfaces on the next user request
+        // instead of waiting up to 5 min for the SWR stale window.
+        await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+        await caches.default.delete(assetsCacheKey(network, null, true)).catch(() => {});
+        return jsonResponse({ network, aid, verified: true, ...meta }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    if (url.pathname === '/admin/verify' && req.method === 'DELETE') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid');
+        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) {
+          return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
+        }
+        await env.REGISTRY_KV.delete(verifiedKey(network, aid));
+        await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+        await caches.default.delete(assetsCacheKey(network, null, true)).catch(() => {});
+        return jsonResponse({ network, aid, verified: false }, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
     if (url.pathname === '/admin/promote-orphans' && req.method === 'POST') {

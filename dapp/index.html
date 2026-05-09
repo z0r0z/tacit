@@ -357,6 +357,7 @@ label {
 .script-decode .desc { color: var(--ink-mid); font-style: italic; }
 
 .asset-card {
+  position: relative;
   border: 1px solid var(--ink);
   padding: 18px; margin-bottom: 14px;
   background: var(--bg);
@@ -384,10 +385,10 @@ label {
 }
 .asset-card .ticker .id-tag {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 9px; font-style: normal;
-  color: var(--ink-mid); letter-spacing: 0.1em;
+  font-size: 8px; font-style: normal;
+  color: var(--ink-mid); letter-spacing: 0.04em;
   text-transform: uppercase;
-  margin-left: 8px;
+  margin-left: 6px;
 }
 /* Secondary ticker tag — surfaces the on-chain identifier when the primary
    "ticker" slot is being used for the human-readable Name. */
@@ -2236,11 +2237,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="flex" style="gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
         <input id="market-filter-asset" type="text" placeholder="ticker / asset_id prefix…" style="flex:1;min-width:140px;">
         <select id="market-filter-kind" style="flex:0;">
-          <option value="all">all kinds</option>
-          <option value="intent" title="Atomic intent — confidential token transfer and BTC payment close in one Bitcoin tx. Maker can't redirect your payment; you can't get tokens without paying. No counterparty trust.">⚡ atomic (trustless)</option>
-          <option value="opening" title="Opening listing — maker publishes the UTXO's exact (amount, blinding) opening + price. Settlement is OTC, requires counterparty trust.">opening (exact, trust)</option>
-          <option value="range" title="Range listing — maker proves balance ≥ X via bulletproof, exact balance hidden. Settlement is OTC, requires counterparty trust.">range (≥ X, trust)</option>
+          <option value="intent" selected title="Atomic intent — confidential token transfer and BTC payment close in one Bitcoin tx. Maker can't redirect your payment; you can't get tokens without paying. No counterparty trust.">⚡ atomic (trustless)</option>
+          <option value="all">all kinds (incl. OTC)</option>
+          <option value="opening" title="Opening listing — maker publishes the UTXO's exact (amount, blinding) opening + price. Settlement is OTC, requires counterparty trust.">opening (OTC, trust required)</option>
+          <option value="range" title="Range listing — maker proves balance ≥ X via bulletproof, exact balance hidden. Settlement is OTC, requires counterparty trust.">range (OTC, trust required)</option>
         </select>
+        <span id="market-kind-trust-note" class="muted" style="font-size:10px;font-style:italic;flex:0 0 auto;">trustless only · switch for OTC</span>
         <input id="market-filter-min-price" type="number" placeholder="min sats" style="width:110px;" min="0">
         <input id="market-filter-max-price" type="number" placeholder="max sats" style="width:110px;" min="0">
         <select id="market-sort" style="flex:0;">
