@@ -2423,44 +2423,59 @@ const MIXER_DEPOSIT_CONFIRMATION_DEPTH = 3;
 async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmountStr, mintLimitStr) {
   const capAmount = capAmountStr != null ? BigInt(capAmountStr) : null;
   const mintLimit = mintLimitStr != null ? BigInt(mintLimitStr) : null;
-  // Cursor-paginated KV.list. Earlier code took a single 1000-entry page,
-  // which silently under-counted cumulative_minted on assets exceeding that
-  // threshold AND on assets polluted with height-0 orphan hints (those sort
-  // ahead of every real entry and could push real confirmed mints past the
-  // page boundary).
-  const allKeys = [];
+  // Two-prefix paginated KV.list. A single broad-prefix scan has a fatal
+  // failure mode on assets polluted with thousands of height-0 orphan hints:
+  // the orphans sort ahead of every canonical entry, exhaust the pagination
+  // budget before reaching them, and silently drop credited mints from the
+  // count. The split below queries each bucket separately so the orphan
+  // backlog can't starve the canonical path.
+  //
+  // Orphans (legacy hint-endpoint pre-fix entries) all have padded-height
+  // 0000000000. Canonical entries have padded-height matching the real
+  // block. We list each in turn with cursor pagination, capped per-bucket
+  // to bound Worker memory.
+  const ORPHAN_HEIGHT_TOKEN = '0000000000:';
+  const orphanPrefixStr = pmintPrefix(network, assetIdHex) + ORPHAN_HEIGHT_TOKEN;
+  // Orphan walk: we only need the txids (callers match orphans by mint_txid),
+  // not the values. Cap at 5000 — enough for a v1 backlog; the cleanup
+  // runner drains them so this cap shrinks back to ~0 over time.
+  const orphanTxids = [];
   let cursor = null;
-  for (let page = 0; page < 50; page++) {
+  for (let page = 0; page < 30; page++) {
     const list = await env.REGISTRY_KV.list({
-      prefix: pmintPrefix(network, assetIdHex),
-      limit: 500,
+      prefix: orphanPrefixStr,
+      limit: 1000,
       ...(cursor ? { cursor } : {}),
     });
-    allKeys.push(...list.keys);
-    if (list.list_complete || allKeys.length >= 8000) break;
+    for (const k of list.keys) {
+      const parts = k.name.split(':');
+      orphanTxids.push(parts[parts.length - 1]);
+    }
+    if (list.list_complete || orphanTxids.length >= 5000) break;
     cursor = list.cursor;
     if (!cursor) break;
   }
-  // Split keys into orphan (height-0) and canonical buckets via the embedded
-  // padded-height segment. Orphans are always classified as pending and
-  // their per-record metadata is never used by callers — synthesize a slim
-  // placeholder so we don't waste KV.get calls + memory just to label
-  // them pending. The orphan cleanup runner is the path that does the work
-  // of looking each one up on chain; this loader stays cheap.
-  const ORPHAN_HEIGHT_TOKEN = '0000000000:';
-  const orphanPrefixStr = pmintPrefix(network, assetIdHex) + ORPHAN_HEIGHT_TOKEN;
+  // Canonical walk: list the broader pmint:* prefix and drop orphan-range
+  // matches. Orphans sort lex-first (height segment '0000000000' < every
+  // real canonical height), so on a polluted asset the canonical entries
+  // sit *after* tens of thousands of orphans. We page past the orphan
+  // block by cursor and start collecting once we see canonical keys. Cap
+  // total work at 50 pages × 1000 keys + 5000 canonical kept — comfortably
+  // covers current mainnet pmints while bounding subrequest budget.
   const canonicalKeys = [];
-  const orphanTxids = [];
-  for (const k of allKeys) {
-    if (k.name.startsWith(orphanPrefixStr)) {
-      // Last colon-segment is the txid the orphan is tracking. Carrying it
-      // through lets callers (test suite, UI surfaces) match orphans by
-      // mint_txid even though we skip the value fetch.
-      const parts = k.name.split(':');
-      orphanTxids.push(parts[parts.length - 1]);
-    } else {
-      canonicalKeys.push(k);
+  let canonCursor = null;
+  for (let page = 0; page < 60; page++) {
+    const list = await env.REGISTRY_KV.list({
+      prefix: pmintPrefix(network, assetIdHex),
+      limit: 1000,
+      ...(canonCursor ? { cursor: canonCursor } : {}),
+    });
+    for (const k of list.keys) {
+      if (!k.name.startsWith(orphanPrefixStr)) canonicalKeys.push(k);
     }
+    if (list.list_complete || canonicalKeys.length >= 5000) break;
+    canonCursor = list.cursor;
+    if (!canonCursor) break;
   }
   // Batch the per-key KV.get calls for canonical entries only. Earlier code
   // used a single Promise.all over every key, which on a dense asset spun
@@ -5684,89 +5699,6 @@ export default {
     // Sample N orphans starting at offset, return their on-chain status.
     // Used to check what fraction of an asset's orphan backlog is actually
     // confirmed (vs mempool-stale broadcasts that will never promote).
-    if (url.pathname === '/admin/pmint-by-txid' && req.method === 'GET') {
-      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
-      try {
-        const aid = url.searchParams.get('aid');
-        const txid = url.searchParams.get('txid');
-        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required' }, 400, cors);
-        if (!txid || !/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ error: 'txid required' }, 400, cors);
-        const orphanKey = pmintKeyFor(network, aid, 0, 0, txid);
-        const orphanRecord = await env.REGISTRY_KV.get(orphanKey, 'json');
-        // Probe a wide range of likely canonical heights by listing prefix + txid suffix.
-        const prefix = pmintPrefix(network, aid);
-        const allKeys = [];
-        let cursor = null;
-        for (let page = 0; page < 50; page++) {
-          const list = await env.REGISTRY_KV.list({
-            prefix, limit: 1000,
-            ...(cursor ? { cursor } : {}),
-          });
-          for (const k of list.keys) {
-            if (k.name.endsWith(`:${txid}`)) allKeys.push(k.name);
-          }
-          if (list.list_complete) break;
-          cursor = list.cursor;
-          if (!cursor) break;
-        }
-        // Fetch the on-chain status for sanity.
-        let chainStatus = null;
-        try { chainStatus = await apiJson(env, `/tx/${txid}/status`, {}, network); } catch {}
-        return jsonResponse({
-          aid, txid, orphan_key: orphanKey, orphan_exists: !!orphanRecord,
-          orphan_record: orphanRecord,
-          all_matching_keys: allKeys, // every KV key whose suffix is :<txid>
-          on_chain: chainStatus,
-        }, 200, cors);
-      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
-    }
-    if (url.pathname === '/admin/pmint-sample' && req.method === 'GET') {
-      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
-      try {
-        const aid = url.searchParams.get('aid');
-        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required' }, 400, cors);
-        const offsetStr = url.searchParams.get('offset');
-        const sampleStr = url.searchParams.get('sample');
-        const offset = Math.max(0, parseInt(offsetStr || '0', 10) || 0);
-        const sampleN = Math.max(1, Math.min(40, parseInt(sampleStr || '20', 10) || 20));
-        const orphanPrefixStr = pmintPrefix(network, aid) + '0000000000:';
-        // Skip past `offset` orphans via repeated KV.list pagination.
-        let cursor = null;
-        let skipped = 0;
-        let collected = [];
-        while (skipped < offset + sampleN) {
-          const list = await env.REGISTRY_KV.list({
-            prefix: orphanPrefixStr,
-            limit: 100,
-            ...(cursor ? { cursor } : {}),
-          });
-          for (const k of list.keys) {
-            if (skipped >= offset && collected.length < sampleN) {
-              const parts = k.name.split(':');
-              collected.push(parts[parts.length - 1]);
-            }
-            skipped++;
-            if (collected.length >= sampleN) break;
-          }
-          if (list.list_complete || collected.length >= sampleN) break;
-          cursor = list.cursor;
-          if (!cursor) break;
-        }
-        const results = await Promise.all(collected.map(async t => {
-          try {
-            const s = await apiJson(env, `/tx/${t}/status`, {}, network);
-            return { txid: t, confirmed: !!s?.confirmed, h: s?.block_height };
-          } catch { return { txid: t, confirmed: null, error: true }; }
-        }));
-        const counts = { confirmed: 0, mempool: 0, errored: 0 };
-        for (const r of results) {
-          if (r.error) counts.errored++;
-          else if (r.confirmed) counts.confirmed++;
-          else counts.mempool++;
-        }
-        return jsonResponse({ aid, offset, sample: collected.length, counts, results }, 200, cors);
-      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
-    }
     if (url.pathname === '/admin/promote-orphans' && req.method === 'POST') {
       if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
       try {
