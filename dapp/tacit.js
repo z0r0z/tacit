@@ -19842,6 +19842,33 @@ function applyMarketFilters() {
   if (filterKind !== 'all') rows = rows.filter(l => l.kind === filterKind);
   if (Number.isInteger(minPrice)) rows = rows.filter(l => Number(l.price_sats || 0) >= minPrice);
   if (Number.isInteger(maxPrice)) rows = rows.filter(l => Number(l.price_sats || 0) <= maxPrice);
+  const _trustNote = $('#market-kind-trust-note');
+  if (_trustNote) {
+    _trustNote.classList.remove('warn');
+    if (filterKind === 'intent') {
+      _trustNote.textContent = 'trustless only · switch trade-type chip for OTC';
+    } else if (filterKind === 'opening' || filterKind === 'range') {
+      _trustNote.textContent = '⚠ OTC · counterparty trust required';
+      _trustNote.classList.add('warn');
+    } else {
+      _trustNote.textContent = 'mixed · OTC tiles still need counterparty trust';
+    }
+  }
+  // Reflect the current price-range filter on the popover-trigger chip
+  // so the chip's label tells the user at a glance whether a price filter
+  // is active without opening the popover.
+  const _priceChipLabel = $('#market-price-chip-label');
+  if (_priceChipLabel) {
+    if (Number.isInteger(minPrice) && Number.isInteger(maxPrice)) {
+      _priceChipLabel.textContent = `${minPrice.toLocaleString()}–${maxPrice.toLocaleString()} sats`;
+    } else if (Number.isInteger(minPrice)) {
+      _priceChipLabel.textContent = `≥ ${minPrice.toLocaleString()} sats`;
+    } else if (Number.isInteger(maxPrice)) {
+      _priceChipLabel.textContent = `≤ ${maxPrice.toLocaleString()} sats`;
+    } else {
+      _priceChipLabel.textContent = 'any price';
+    }
+  }
 
   // Mode dispatch. Browse renders one tile per asset (the index page); asset
   // mode falls through to the existing per-listing grid below, scoped to the
@@ -19899,7 +19926,7 @@ function applyMarketFilters() {
       atomicScore(a) - atomicScore(b)
       || (b.listed_at || 0) - (a.listed_at || 0));
   }
-  if (status) status.textContent = `${rows.length} live · ${_marketCache.listings.length} total`;
+  if (status) status.textContent = _formatMarketStatus(rows, { scope: 'asset', assetId: _marketView.assetId });
   // Asset-detail header strip — image, ticker, asset_id, network, floor,
   // count breakdown, "← All assets". Always rendered in asset mode regardless
   // of whether listings remain (so the back affordance stays reachable even
@@ -19967,6 +19994,9 @@ function applyMarketFilters() {
         l.kind === 'range'  ? `<span style="display:inline-block;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Range-disclosed listing — maker proved their balance ≥ the listed amount via a bulletproof, without revealing the exact balance.">≥</span>`
       : l.kind === 'intent' ? `<span style="display:inline-block;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Atomic intent — the confidential token transfer and the BTC payment that pays for it close in the same Bitcoin tx. The maker can't redirect your payment; you can't get tokens without paying. No counterparty trust required.">⚡</span>`
       : '';
+    const trustBadge = l.kind === 'intent'
+      ? `<span style="display:inline-block;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;margin-left:6px;cursor:help;" title="Trustless — settlement is a single atomic Bitcoin tx. The maker can't take your sats without delivering the asset, and you can't take the asset without paying.">trustless</span>`
+      : `<span style="display:inline-block;padding:1px 7px;background:#b8651d;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;margin-left:6px;cursor:help;" title="Off-chain OTC settlement — buyer pays sats first, then maker broadcasts the asset transfer. The maker can take your sats and not deliver. Use only if you trust the counterparty.">⚠ trust required</span>`;
     // Action buttons depend on listing kind + my role on this intent.
     let actions = '';
     if (l.kind === 'intent') {
@@ -20013,8 +20043,8 @@ function applyMarketFilters() {
     // Ticker, asset_id, network, and ticker-collision state are already shown
     // in the asset-detail header above; we don't repeat them on each tile.
     tile.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:baseline;">
-        <div>${kindBadge || '<span class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">opening</span>'}</div>
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">
+        <div>${kindBadge || '<span class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.05em;">opening</span>'}${trustBadge}</div>
         <div style="font-size:11px;" class="muted">${recencyLine}</div>
       </div>
       <div style="margin-top:6px;font-size:18px;">${l.kind === 'range' ? '<span title="Range-disclosed listing — maker proved their balance ≥ this amount via a bulletproof, without revealing the exact balance." style="cursor:help;">≥</span> ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
@@ -20058,10 +20088,33 @@ function applyMarketFilters() {
 // Sort: total listing count desc, then floor unit-price asc (cheapest first
 // within ties), then ticker. No user-facing sort dropdown — the per-listing
 // sort applies inside asset mode.
+// Compose a richer market-status line that shows both the filter effect
+// (post-filter count vs the universe being filtered) and the trade-type
+// breakdown so the user can see at a glance why the visible count is what
+// it is. In asset-detail mode the universe is "listings for this asset";
+// in browse mode it's "all live listings in the cache". Atomic ⚡ vs OTC
+// counts come from the universe (not the filtered rows), so flipping the
+// trust filter doesn't make it look like OTC supply vanished — it shows
+// what's hidden by the current filter.
+function _formatMarketStatus(rows, opts = {}) {
+  if (!_marketCache?.listings) return '';
+  const { scope, assetId } = opts;
+  const universe = scope === 'asset' && assetId
+    ? _marketCache.listings.filter(l => (l._asset?.asset_id || '') === assetId)
+    : _marketCache.listings;
+  const atomic = universe.filter(l => l.kind === 'intent').length;
+  const otc = universe.filter(l => l.kind === 'opening' || l.kind === 'range').length;
+  const total = universe.length;
+  const showing = rows.length;
+  const breakdown = `⚡ ${atomic} · ${otc} OTC`;
+  if (showing === total) return `${total} listing${total === 1 ? '' : 's'} · ${breakdown}`;
+  return `Showing ${showing} of ${total} · ${breakdown}`;
+}
+
 function renderMarketBrowse(rows) {
   const list = $('#market-list');
   const status = $('#market-status');
-  if (status) status.textContent = `${rows.length} live · ${_marketCache.listings.length} total`;
+  if (status) status.textContent = _formatMarketStatus(rows, { scope: 'browse' });
   if (!rows.length) {
     list.innerHTML = '<div class="empty">No listings match.</div>';
     return;
@@ -20665,6 +20718,82 @@ async function marketCancelIntentHandler(btn) {
   }
 }
 
+// Count atomic alternatives for an asset — intent listings that aren't
+// already locked by another taker. Used by the OTC take gate to suggest
+// a trustless path when one exists for the same asset.
+function _countAtomicAlternativesForAsset(assetIdHex) {
+  if (!_marketCache?.listings) return 0;
+  return _marketCache.listings.filter(l =>
+    l.kind === 'intent'
+    && (l._asset?.asset_id || '') === assetIdHex
+    && !l.claim
+  ).length;
+}
+
+// Custom confirm dialog for OTC (opening / range) Take. The default Take
+// flow is trust-required: buyer pays sats first, then the maker broadcasts
+// the asset transfer. Users coming from on-chain trading expect atomic
+// settlement, so before letting them proceed we (a) lead with the trust
+// warning, (b) show whether atomic alternatives exist for this asset, and
+// (c) offer a one-click switch to the atomic-only filter scoped to the
+// asset. Resolves to 'continue' | 'cancel' | 'switch-to-atomic'.
+function _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub }) {
+  return new Promise(resolve => {
+    const altCount = _countAtomicAlternativesForAsset(aid);
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:1020;display:grid;place-items:center;background:rgba(10,10,10,0.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);padding:24px;';
+    const card = document.createElement('div');
+    card.style.cssText = 'width:100%;max-width:520px;background:var(--bg);border:1px solid var(--ink);padding:22px;font-size:12px;line-height:1.55;';
+    const kindLabel = kind === 'range' ? 'range OTC listing' : 'opening OTC listing';
+    const altsHtml = altCount > 0
+      ? `<div style="margin:14px 0;padding:10px 12px;border:1px solid var(--orange);background:var(--bg-warm);font-size:11px;">
+           <strong>${altCount} ⚡ atomic offer${altCount === 1 ? '' : 's'} exist for ${escapeHtml(ticker)}.</strong>
+           Atomic settles in one Bitcoin tx — no counterparty trust needed.
+         </div>`
+      : `<div class="muted" style="margin:14px 0;font-size:11px;font-style:italic;">No atomic alternatives currently listed for ${escapeHtml(ticker)}.</div>`;
+    card.innerHTML = `
+      <div style="font-family:'Instrument Serif',serif;font-size:26px;font-style:italic;line-height:1;margin-bottom:8px;">
+        <span style="color:var(--orange);">⚠</span> Trust required
+      </div>
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:14px;">
+        ${kindLabel} · counterparty trust
+      </div>
+      <div style="margin-bottom:10px;">
+        You're about to <strong>send sats first</strong>, then wait for the maker to broadcast a transfer of <strong>${kind === 'range' ? '≥ ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amt), dec))} ${escapeHtml(ticker)}</strong> to your pubkey.
+      </div>
+      <div style="margin-bottom:10px;color:var(--ink);">
+        <strong>The maker can take your ${price.toLocaleString()} sats and not deliver.</strong>
+        Your only recourse is social — there's no on-chain enforcement on this path.
+      </div>
+      ${altsHtml}
+      <div style="font-size:11px;color:var(--ink-mid);margin-bottom:16px;">
+        OTC is still useful for makers who want to trade without committing to a specific UTXO upfront, or who use range-disclosure to keep their balance hidden. If you trust the counterparty (or the size is small), continue.
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${altCount > 0 ? `<button data-otc-act="switch" class="primary" type="button" style="flex:1;min-width:160px;font-size:12px;">See ${altCount} atomic offer${altCount === 1 ? '' : 's'} →</button>` : ''}
+        <button data-otc-act="continue" type="button" style="flex:1;min-width:140px;font-size:12px;">Continue with OTC</button>
+        <button data-otc-act="cancel" type="button" style="flex:0 0 auto;font-size:12px;">Cancel</button>
+      </div>`;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    let done = false;
+    const finish = (val) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener('keydown', onKey);
+      overlay.remove();
+      resolve(val);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') finish('cancel'); };
+    document.addEventListener('keydown', onKey);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) finish('cancel'); });
+    card.querySelector('[data-otc-act="cancel"]').onclick = () => finish('cancel');
+    card.querySelector('[data-otc-act="continue"]').onclick = () => finish('continue');
+    const sw = card.querySelector('[data-otc-act="switch"]');
+    if (sw) sw.onclick = () => finish('switch-to-atomic');
+  });
+}
+
 async function marketTakeHandler(btn) {
   const kind = btn.dataset.kind;
   const aid = btn.dataset.aid;
@@ -20681,6 +20810,20 @@ async function marketTakeHandler(btn) {
     btn.disabled = false; btn.textContent = 'Take';
     return;
   }
+  const gate = await _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub });
+  if (gate === 'cancel') { btn.disabled = false; btn.textContent = 'Take'; return; }
+  if (gate === 'switch-to-atomic') {
+    const k = $('#market-filter-kind');
+    const t = $('#market-filter-asset');
+    if (k) k.value = 'intent';
+    if (t && _marketView === 'browse') t.value = ticker;
+    _saveMarketPrefs();
+    applyMarketFilters();
+    btn.disabled = false; btn.textContent = 'Take';
+    toast(`Filtered to ⚡ atomic offers${_marketView === 'browse' ? ` for ${ticker}` : ''}`, 'success');
+    return;
+  }
+  // gate === 'continue' — show the existing operational confirm with steps.
   const msg =
     `Take this listing?\n\n` +
     `Buying:  ${kind === 'range' ? '≥ ' : ''}${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
@@ -20690,7 +20833,7 @@ async function marketTakeHandler(btn) {
     `2) Send your tacit pubkey to the maker (will be copied to clipboard):\n   ${myPub}\n` +
     `3) Maker broadcasts a CXFER of ${ticker} to your pubkey within 5 min.\n` +
     `4) The new UTXO appears in Holdings (auto-discovered via ECDH).\n\n` +
-    `On confirm: the listing is reserved for you for 5 min. Settlement is OTC — counterparty trust still required.`;
+    `On confirm: the listing is reserved for you for 5 min.`;
   if (!confirm(msg)) { btn.disabled = false; btn.textContent = 'Take'; return; }
   btn.textContent = 'reserving…';
   try {
@@ -21229,8 +21372,8 @@ async function renderDiscover(force = false) {
           const tile = document.createElement('div');
           tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);';
           tile.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:baseline;">
-              <div><strong>${escapeHtml(a.ticker || '?')}</strong>${collisionDup} <span class="muted" style="font-size:10px;">${escapeHtml(shorten(safeAid, 4))}</span></div>
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">
+              <div><strong>${escapeHtml(a.ticker || '?')}</strong>${collisionDup} <span class="muted" style="font-size:10px;">${escapeHtml(shorten(safeAid, 4))}</span><span style="display:inline-block;padding:1px 7px;background:#b8651d;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;margin-left:6px;cursor:help;" title="Off-chain OTC settlement — buyer pays sats first, then maker broadcasts the asset transfer. The maker can take your sats and not deliver. Use only if you trust the counterparty.">⚠ trust required</span></div>
               <div style="font-size:11px;" class="muted">${(() => { const r = relativeAge(l.listed_at); return r ? `listed ${escapeHtml(r)} ago · expires ${expIso}` : `expires ${expIso}`; })()}</div>
             </div>
             ${a._copycatInfo
@@ -21321,11 +21464,29 @@ async function renderDiscover(force = false) {
               btn.disabled = false; btn.textContent = 'Take';
               return;
             }
-            // Confirm BEFORE claiming. If the user cancels, no 5-min stale
-            // claim is left behind blocking other takers. Two takers racing
-            // past the dialog is exactly the case the claim mechanism is
-            // designed to resolve: one wins, one sees a clear "already
-            // claimed" error.
+            // Two-stage gate: first the trust-model warning (with switch-to-
+            // atomic affordance if alternatives exist for this asset), then
+            // the operational confirm with payment steps. If the user cancels
+            // either stage, no 5-min stale claim is left behind blocking other
+            // takers. Two takers racing past both dialogs is exactly the case
+            // the claim mechanism is designed to resolve: one wins, one sees a
+            // clear "already claimed" error.
+            const gate = await _showOtcTakeGate({ kind: 'opening', aid, ticker, amt, dec, price, addr, myPub });
+            if (gate === 'cancel') { btn.disabled = false; btn.textContent = 'Take'; return; }
+            if (gate === 'switch-to-atomic') {
+              // Tab over to the Market tab with kind=intent + ticker filter.
+              const k = $('#market-filter-kind');
+              const t = $('#market-filter-asset');
+              if (k) k.value = 'intent';
+              if (t) t.value = ticker;
+              _saveMarketPrefs?.();
+              const marketTab = $('.tab[data-tab="market"]');
+              if (marketTab) marketTab.click();
+              else applyMarketFilters?.();
+              btn.disabled = false; btn.textContent = 'Take';
+              toast(`Filtered to ⚡ atomic offers for ${ticker}`, 'success');
+              return;
+            }
             const msg =
               `Take this listing?\n\n` +
               `Buying:  ${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
@@ -21335,8 +21496,7 @@ async function renderDiscover(force = false) {
               `2) Send your tacit pubkey to the maker (will be copied to clipboard):\n   ${myPub}\n` +
               `3) Maker broadcasts a CXFER of ${ticker} to your pubkey within 5 min.\n` +
               `4) The new UTXO appears in Holdings (auto-discovered via ECDH).\n\n` +
-              `On confirm: the listing is reserved for you for 5 min so no one else can pay the maker for the same UTXO. ` +
-              `Settlement is OTC — counterparty trust still required.`;
+              `On confirm: the listing is reserved for you for 5 min so no one else can pay the maker for the same UTXO.`;
             if (!confirm(msg)) {
               btn.disabled = false; btn.textContent = 'Take';
               return;
@@ -21968,6 +22128,50 @@ function setupMarketButtons() {
     const el = $(sel);
     if (el) el.addEventListener('change', () => { _saveMarketPrefs(); applyMarketFilters(); });
   });
+  // Price popover: chip toggles a small panel containing the min/max
+  // inputs. Clicking outside (or the explicit "done" button) closes it;
+  // the inputs themselves still fire `change` via the listener above so
+  // re-applying filters happens immediately on edit, not just on close.
+  const priceChip = $('#market-price-chip');
+  const pricePop = $('#market-price-popover');
+  const priceClear = $('#market-price-clear');
+  const priceDone = $('#market-price-done');
+  if (priceChip && pricePop) {
+    const closePop = () => {
+      pricePop.hidden = true;
+      priceChip.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('click', _onDocClickPricePop, true);
+      document.removeEventListener('keydown', _onKeyPricePop, true);
+    };
+    const _onDocClickPricePop = (e) => {
+      if (pricePop.hidden) return;
+      if (pricePop.contains(e.target) || priceChip.contains(e.target)) return;
+      closePop();
+    };
+    const _onKeyPricePop = (e) => { if (e.key === 'Escape') closePop(); };
+    priceChip.addEventListener('click', () => {
+      const open = pricePop.hidden;
+      pricePop.hidden = !open;
+      priceChip.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (open) {
+        document.addEventListener('click', _onDocClickPricePop, true);
+        document.addEventListener('keydown', _onKeyPricePop, true);
+        $('#market-filter-min-price')?.focus();
+      } else {
+        document.removeEventListener('click', _onDocClickPricePop, true);
+        document.removeEventListener('keydown', _onKeyPricePop, true);
+      }
+    });
+    if (priceDone) priceDone.addEventListener('click', closePop);
+    if (priceClear) priceClear.addEventListener('click', () => {
+      const mn = $('#market-filter-min-price');
+      const mx = $('#market-filter-max-price');
+      if (mn) mn.value = '';
+      if (mx) mx.value = '';
+      _saveMarketPrefs();
+      applyMarketFilters();
+    });
+  }
   // Restore last-used Market prefs. Filter inputs are populated before the
   // first applyMarketFilters runs so the user lands on their saved view.
   const _mprefs = _loadMarketPrefs();

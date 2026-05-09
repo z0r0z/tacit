@@ -181,19 +181,153 @@ input:focus, textarea:focus { outline: 2px solid var(--orange); outline-offset: 
 /* Form-style selects: replace the platform-native arrow (which renders
    off-center on Chrome/Safari with our padding) with a consistent
    ink-colored chevron, matching .net-select's technique. The class
-   exclusion keeps the dark .net-select in the header untouched. */
+   exclusion keeps the dark .net-select in the header untouched.
+   Chevron geometry: each stroke is a 5px square; the two strokes butt
+   together to form a `v`. Centered visually within the 28px right
+   padding — left stroke starts 19px from right, right stroke ends 9px
+   from right, so the chevron's visual center sits at 14px from right
+   (= half the padding). Earlier values (14px / 9px) drifted toward
+   the right edge and read as off-center. */
 select:not(.net-select) {
   appearance: none;
   -webkit-appearance: none;
   padding-right: 28px;
   background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%),
                     linear-gradient(135deg, var(--ink) 50%, transparent 50%);
-  background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%;
+  background-position: calc(100% - 19px) 50%, calc(100% - 14px) 50%;
   background-size: 5px 5px, 5px 5px;
   background-repeat: no-repeat;
   cursor: pointer;
 }
 select:not(.net-select):focus { outline: 2px solid var(--orange); outline-offset: -1px; }
+
+/* Market tab filter controls. Three-row layout:
+   1. Prominent search bar (full width, inline magnifier glyph).
+   2. Chip row — kind, price (popover trigger), sort, refresh.
+   3. Trust-mode note that adapts to the kind filter.
+   The chip selects share padding so their text + chevron align with the
+   custom price-chip button. The price popover is absolutely positioned
+   under its chip so the inline row doesn't reflow when toggled. */
+.market-controls { margin-bottom: 14px; }
+.market-search-wrap {
+  position: relative;
+  margin-bottom: 8px;
+}
+.market-search-wrap input {
+  width: 100%;
+  padding: 11px 36px 11px 12px;
+  font-size: 13px;
+}
+.market-search-wrap .market-search-icon {
+  position: absolute;
+  right: 12px; top: 50%;
+  transform: translateY(-50%);
+  font-size: 14px;
+  color: var(--ink-mid);
+  pointer-events: none;
+  line-height: 1;
+}
+.market-chips-row {
+  display: flex; flex-wrap: wrap;
+  gap: 6px; align-items: center;
+}
+.market-chip-wrap { position: relative; }
+.market-chip,
+.market-chips-row select.market-chip {
+  font-size: 11px;
+  padding: 6px 26px 6px 10px;
+  height: auto;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  cursor: pointer;
+  width: auto;
+  min-width: 0;
+  letter-spacing: 0.02em;
+}
+.market-chips-row select.market-chip {
+  /* Override the default 28px right-padding chevron positions so the
+     chevron centers inside the chip's tighter right-padding (26px). */
+  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+}
+button.market-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: inherit;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+button.market-chip:hover:not(:disabled) {
+  background: var(--ink); color: var(--bg);
+}
+button.market-chip[aria-expanded="true"] {
+  background: var(--ink); color: var(--bg);
+}
+button.market-chip .chip-caret {
+  font-size: 9px;
+  margin-left: 2px;
+  opacity: 0.7;
+}
+.market-icon-btn {
+  font-size: 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--ink);
+  background: var(--bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+.market-icon-btn:hover:not(:disabled) {
+  background: var(--ink); color: var(--bg);
+}
+.market-popover {
+  position: absolute;
+  top: calc(100% + 4px); left: 0;
+  z-index: 50;
+  min-width: 240px;
+  max-width: calc(100vw - 24px);
+  background: var(--bg);
+  border: 1px solid var(--ink);
+  padding: 12px;
+  box-shadow: 4px 4px 0 var(--ink);
+}
+.market-popover[hidden] { display: none; }
+.market-popover .pop-row {
+  display: flex; gap: 8px; margin-bottom: 8px;
+}
+.market-popover label {
+  flex: 1;
+  margin: 0;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-mid);
+}
+.market-popover label input {
+  margin-top: 4px;
+  font-size: 12px;
+  padding: 7px 8px;
+  width: 100%;
+}
+.market-popover .pop-actions {
+  display: flex; gap: 6px;
+  margin-top: 4px; padding-top: 8px;
+  border-top: 1px dashed var(--ink-faint);
+}
+.market-popover .pop-actions button {
+  font-size: 10px; padding: 5px 10px;
+}
+.market-trust-note-line {
+  margin-top: 8px;
+  font-size: 10px;
+  font-style: italic;
+  color: var(--ink-mid);
+  letter-spacing: 0.02em;
+}
+.market-trust-note-line.warn { color: var(--orange); font-style: normal; font-weight: 500; }
+@media (max-width: 600px) {
+  .market-chips-row { gap: 5px; }
+  .market-chip,
+  .market-chips-row select.market-chip { font-size: 10px; padding: 6px 24px 6px 9px; }
+}
 
 label {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em;
@@ -1092,6 +1226,41 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     gap: 4px 10px;
   }
   .activity-time, .activity-tx { grid-column: 2; font-size: 10px; }
+}
+
+/* Mixer + ceremony tab content holds long base32 CIDs (~59 chars) and
+   64-char hex hashes inline (ceremony state line, attestation rows, pool
+   list rows) plus pretty-printed JSON in <pre> preview blocks. Default UA
+   styles don't wrap unbroken token sequences, so on a phone viewport these
+   strings push past the section's right edge — and since body has
+   overflow-x:hidden the overflow is clipped, not scrollable, so content
+   simply disappears.
+
+   overflow-wrap:anywhere only kicks in for tokens that would actually
+   overflow, so normal prose inside .muted/.row keeps its usual wrap.
+   <pre> additionally gets pre-wrap so the deposit/withdraw/ceremony
+   preview JSON wraps instead of horizontally scrolling. Scoped to
+   #tab-mixer so About-tab script-decode boxes (which intentionally render
+   side-by-side hex/op/desc and want their own scroll) are untouched. */
+#tab-mixer #mixer-pool-list,
+#tab-mixer #ceremony-state,
+#tab-mixer #ceremony-attestations,
+#tab-mixer pre {
+  overflow-wrap: anywhere;
+}
+#tab-mixer pre { white-space: pre-wrap; }
+/* Section headers like "mixer · shielded pools (T_DEPOSIT / T_WITHDRAW)"
+   and "ceremony · contribute to the trusted setup" exceed the header's
+   flex row at narrow widths; flex-wrap lets the status span drop below
+   cleanly instead of squeezing the title into illegibility. */
+#tab-mixer .section-header { flex-wrap: wrap; gap: 4px 12px; }
+@media (max-width: 480px) {
+  /* Primary action buttons (Preview, Deposit & broadcast, Add my
+     contribution, Initialize…) read better as full-width stacked taps on
+     phones than as small wrapped buttons hanging off the side of a filled
+     label/select. Banner action rows (retry/dismiss/copy) use inline
+     display:flex rather than .flex, so they're not affected here. */
+  #tab-mixer .flex > button { flex: 1 1 100%; }
 }
 
 /* First-load welcome modal — shown only when this network has no burner key
@@ -2214,45 +2383,73 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-body">
       <details style="margin-bottom:14px;">
         <summary style="cursor:pointer;font-size:11px;color:var(--ink-mid);padding:4px 0;">
-          <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;margin-right:4px;">▸</span><span style="text-transform:uppercase;letter-spacing:0.08em;">how the marketplace works</span>
-          <span style="margin-left:8px;font-style:italic;">settlement modes &amp; button reference</span>
+          <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;margin-right:4px;">▸</span><span style="text-transform:uppercase;letter-spacing:0.08em;">how it works</span>
+          <span style="margin-left:8px;font-style:italic;">trustless atomic vs trust-required OTC</span>
         </summary>
-        <div class="muted" style="margin-top:8px;font-size:12px;">
-          Bilateral OTC offers across all assets. Three settlement modes:
-          <ul style="margin:6px 0 6px 18px;padding:0;">
-            <li><strong>⚡ Atomic intent (recommended)</strong> — single Bitcoin tx settles both sides; the maker's CXFER and the taker's BTC payment go in or fail together. <strong>No counterparty trust.</strong> Click <em>Claim</em> on a ⚡ tile to lock the offer for 5 min while the maker generates a partial reveal targeted at your pubkey, then <em>Take</em> to broadcast.</li>
-            <li><strong>Opening</strong> — maker publishes the exact UTXO contents (amount + blinding factor) so anyone can verify what's for sale. Settlement is off-chain: pay the maker's address, then they broadcast a CXFER to your pubkey. <strong>Counterparty trust required</strong> — the maker can take your sats without delivering. Prefer atomic intents unless the maker insists on this path.</li>
-            <li><strong>Range</strong> — maker proves their balance is at least the listed amount without revealing the exact balance. Same off-chain settlement and trust assumptions as opening listings; suited to makers who want to keep their treasury confidential.</li>
+        <div class="muted" style="margin-top:8px;font-size:12px;line-height:1.55;">
+          Every tile trades a confidential token amount for sats. Two trust models:
+          <ul style="margin:8px 0 6px 18px;padding:0;">
+            <li style="margin-bottom:6px;"><strong>⚡ Atomic</strong> (default filter) — settles in one Bitcoin tx. The maker can't take your sats without delivering, and you can't take the asset without paying. <strong>No counterparty trust.</strong>
+              <div style="font-size:11px;margin-top:2px;"><em>Buy:</em> <strong>Claim</strong> (locks 5 min) → maker <strong>Fulfil</strong>s → you <strong>Take</strong> (broadcasts settlement).</div>
+            </li>
+            <li><strong>OTC</strong> — <em>opening</em> publishes the exact UTXO amount; <em>range</em> hides the amount but proves ≥ X. Both settle off-chain: pay the maker's BTC address, then they broadcast the asset transfer to your pubkey. <strong>Counterparty trust required</strong> — the maker can take your sats and not deliver.
+              <div style="font-size:11px;margin-top:2px;"><em>Buy:</em> <strong>Take</strong> → pay the maker → wait for their broadcast.</div>
+            </li>
           </ul>
           <div style="margin-top:8px;font-size:11px;">
-            <strong>Buttons:</strong>
-            <em>Verify</em> runs the full crypto/UTXO-liveness check on a listing without buying it.
-            On opening / range tiles, <em>Take</em> = pay the maker's BTC address, then they broadcast the CXFER (off-chain, trust-required).
-            On ⚡ atomic tiles the trustless flow runs in three steps: <em>Claim</em> reserves the intent for 5 min,
-            the maker then <em>Fulfil</em>s it (their button only), and you click <em>Take</em> to broadcast the single atomic settlement tx.
-            <em>Cancel</em> on a tile you made pulls your offer.
+            <strong>Bids:</strong> post a signed price intent (no sats locked). Holders can <strong>Fulfil</strong> a bid by spinning up an atomic intent targeted at you; settlement uses the trustless 3-step above.
+          </div>
+          <div style="margin-top:6px;font-size:11px;">
+            <strong>Verify</strong> runs all crypto / UTXO-liveness checks without buying. <strong>Cancel</strong> pulls your own listings.
           </div>
         </div>
       </details>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;">
-        <input id="market-filter-asset" type="text" placeholder="ticker / asset_id prefix…" style="flex:1;min-width:140px;">
-        <select id="market-filter-kind" style="flex:0;">
-          <option value="intent" selected title="Atomic intent — confidential token transfer and BTC payment close in one Bitcoin tx. Maker can't redirect your payment; you can't get tokens without paying. No counterparty trust.">⚡ atomic (trustless)</option>
-          <option value="all">all kinds (incl. OTC)</option>
-          <option value="opening" title="Opening listing — maker publishes the UTXO's exact (amount, blinding) opening + price. Settlement is OTC, requires counterparty trust.">opening (OTC, trust required)</option>
-          <option value="range" title="Range listing — maker proves balance ≥ X via bulletproof, exact balance hidden. Settlement is OTC, requires counterparty trust.">range (OTC, trust required)</option>
-        </select>
-        <span id="market-kind-trust-note" class="muted" style="font-size:10px;font-style:italic;flex:0 0 auto;">trustless only · switch for OTC</span>
-        <input id="market-filter-min-price" type="number" placeholder="min sats" style="width:110px;" min="0">
-        <input id="market-filter-max-price" type="number" placeholder="max sats" style="width:110px;" min="0">
-        <select id="market-sort" style="flex:0;">
-          <option value="recency">newest first</option>
-          <option value="price-asc">price ↑</option>
-          <option value="price-desc">price ↓</option>
-          <option value="unit-asc" title="Cheapest sats per whole token, normalized across listing sizes">unit price ↑</option>
-          <option value="unit-desc" title="Most expensive sats per whole token, normalized across listing sizes">unit price ↓</option>
-        </select>
-        <button id="btn-market-refresh">↻ Refresh</button>
+      <div class="market-controls">
+        <div class="market-search-wrap">
+          <input id="market-filter-asset" type="text" placeholder="Search by ticker or asset_id prefix…" aria-label="Search market">
+          <span class="market-search-icon" aria-hidden="true">⌕</span>
+        </div>
+        <div class="market-chips-row">
+          <div class="market-chip-wrap">
+            <select id="market-filter-kind" class="market-chip" aria-label="Trade type filter">
+              <option value="intent" selected title="Atomic intent — confidential token transfer and BTC payment close in one Bitcoin tx. Maker can't redirect your payment; you can't get tokens without paying. No counterparty trust.">⚡ atomic only</option>
+              <option value="all">all kinds (incl. OTC)</option>
+              <option value="opening" title="Opening listing — maker publishes the UTXO's exact (amount, blinding) opening + price. Settlement is OTC, requires counterparty trust.">opening (OTC)</option>
+              <option value="range" title="Range listing — maker proves balance ≥ X via bulletproof, exact balance hidden. Settlement is OTC, requires counterparty trust.">range (OTC)</option>
+            </select>
+          </div>
+          <div class="market-chip-wrap">
+            <button id="market-price-chip" class="market-chip" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="market-price-popover" title="Filter by sat price range">
+              <span id="market-price-chip-label">any price</span>
+              <span class="chip-caret" aria-hidden="true">▾</span>
+            </button>
+            <div id="market-price-popover" class="market-popover" role="dialog" aria-label="Price range filter" hidden>
+              <div class="pop-row">
+                <label>Min sats
+                  <input id="market-filter-min-price" type="number" min="0" step="1" placeholder="0">
+                </label>
+                <label>Max sats
+                  <input id="market-filter-max-price" type="number" min="0" step="1" placeholder="∞">
+                </label>
+              </div>
+              <div class="pop-actions">
+                <button id="market-price-clear" type="button">clear</button>
+                <button id="market-price-done" type="button" class="primary" style="margin-left:auto;">done</button>
+              </div>
+            </div>
+          </div>
+          <div class="market-chip-wrap">
+            <select id="market-sort" class="market-chip" aria-label="Sort order">
+              <option value="recency">newest first</option>
+              <option value="price-asc">price ↑</option>
+              <option value="price-desc">price ↓</option>
+              <option value="unit-asc" title="Cheapest sats per whole token, normalized across listing sizes">unit price ↑</option>
+              <option value="unit-desc" title="Most expensive sats per whole token, normalized across listing sizes">unit price ↓</option>
+            </select>
+          </div>
+          <button id="btn-market-refresh" class="market-icon-btn" type="button" title="Refresh listings" aria-label="Refresh">↻</button>
+        </div>
+        <div id="market-kind-trust-note" class="market-trust-note-line">trustless only · switch for OTC</div>
       </div>
       <!-- Shared 3-step strip for take/settle on whichever market tile's
            Take button is in flight. Take is single-broadcast (not commit +
