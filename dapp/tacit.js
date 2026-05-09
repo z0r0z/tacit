@@ -3344,7 +3344,15 @@ function mixerRegisterPool(assetIdHex, poolDenom, vkCid, ceremonyCid, initHeight
   if (poolRegistry.has(k)) return false;
   poolRegistry.set(k, { vkCid, ceremonyCid, initHeight, initTxid });
   poolMerkleTrees.set(k, { leaves: [], roots: [] });
-  poolNullifiers.set(k, new Set());
+  // Nullifier registry tracks the canonical OWNER (withdraw txid) of each
+  // claimed nullifier — not just "claimed by someone." Without owner
+  // tracking, scanPools preloading worker-supplied nullifiers would cause
+  // validateOutpoint to spuriously reject the user's own legitimate
+  // withdraw (its nullifier "already spent" by the same canonical tx that
+  // produced the UTXO being validated). The double-spend gate becomes
+  // "claimed by someone OTHER than the tx we're validating," not "claimed
+  // by anyone at all."
+  poolNullifiers.set(k, new Map());
   return true;
 }
 
@@ -3393,25 +3401,49 @@ function mixerHasRecentRoot(assetIdHex, denomination, root) {
 
 function mixerIsNullifierSpent(assetIdHex, denomination, nullifierHash) {
   const k = poolKey(assetIdHex, denomination);
-  const set = poolNullifiers.get(k);
-  if (!set) return false;
-  return set.has(bytesToHex(nullifierHash));
+  const m = poolNullifiers.get(k);
+  if (!m) return false;
+  return m.has(bytesToHex(nullifierHash));
 }
 
-function mixerMarkNullifierSpent(assetIdHex, denomination, nullifierHash) {
+// Owner-aware double-spend gate. Returns true iff the nullifier has been
+// claimed by a canonical withdraw OTHER than `ourTxidHex`. Used by
+// validateOutpoint(T_WITHDRAW.txid, 0) so the canonical owner can re-
+// validate their own UTXO against a Set/Map that already records their
+// claim — without it, scanPools' worker-mirroring step would cause
+// legitimate self-withdraws to disappear from the user's balance after
+// a Mixer-tab visit. SPEC §5.11.4 invariant 3 — Non-double-spend.
+function mixerIsNullifierSpentByOther(assetIdHex, denomination, nullifierHash, ourTxidHex) {
   const k = poolKey(assetIdHex, denomination);
-  let set = poolNullifiers.get(k);
-  if (!set) { set = new Set(); poolNullifiers.set(k, set); }
-  set.add(bytesToHex(nullifierHash));
+  const m = poolNullifiers.get(k);
+  if (!m) return false;
+  const owner = m.get(bytesToHex(nullifierHash));
+  if (owner === undefined) return false;
+  return owner.toLowerCase() !== String(ourTxidHex || '').toLowerCase();
+}
+
+// Record canonical ownership of a nullifier. First-write-wins: if the
+// nullifier is already in the map, the existing owner is preserved. This
+// matches the chain-canonical rule (only the first canonical T_WITHDRAW
+// for a given nullifier is the "owner"; subsequent attempts are double-
+// spends). `ownerTxidHex` may be omitted for legacy callers — they get
+// the empty string, which still fails the "by-other" check against any
+// real txid.
+function mixerMarkNullifierSpent(assetIdHex, denomination, nullifierHash, ownerTxidHex = '') {
+  const k = poolKey(assetIdHex, denomination);
+  let m = poolNullifiers.get(k);
+  if (!m) { m = new Map(); poolNullifiers.set(k, m); }
+  const key = bytesToHex(nullifierHash);
+  if (!m.has(key)) m.set(key, String(ownerTxidHex || '').toLowerCase());
 }
 
 function mixerGetPoolStats(assetIdHex, denomination) {
   const k = poolKey(assetIdHex, denomination);
   const tree = poolMerkleTrees.get(k);
-  const set = poolNullifiers.get(k);
+  const m = poolNullifiers.get(k);
   if (!tree) return null;
   const totalLeaves = tree.leaves.length;
-  const spentNullifiers = set ? set.size : 0;
+  const spentNullifiers = m ? m.size : 0;
   // Anonymity-set proxy: total deposits minus total withdrawals so far.
   // Real anonymity set is "leaves whose nullifiers haven't been published",
   // which is the same number absent operator-side leakage of (s, ν) pairs.
@@ -3623,6 +3655,69 @@ function mixerGenerateDepositSecrets() {
   crypto.getRandomValues(secret);
   crypto.getRandomValues(nullifierPreimage);
   return { secret, nullifierPreimage };
+}
+
+// Verify a T_DEPOSIT's kernel signature given only its txid and the on-chain
+// envelope fields. Mirrors the worker's verifyMixerDepositKernel (worker/src/
+// index.js) byte-for-byte. Used by scanPools as defense-in-depth before
+// applying a worker-supplied leaf to the local merkle tree.
+//
+// SPEC §5.10 / §5.11.4 invariant 1 — Conservation. A leaf is only a real
+// deposit if the BIP-340 sig over kernel_msg verifies under
+// (C_in − denomination·H).x_only(), i.e., exactly `denomination` of asset
+// value was consumed. Without this, a malicious depositor could publish a
+// well-formed envelope with a chosen (secret, ν) and garbage kernel_sig,
+// then withdraw their own leaf to steal pool value (free inflation).
+//
+// Returns true on verified, false on permanent rejection (malformed tx,
+// asset_id/denom/leaf mismatch, sig invalid — leaf can never be valid),
+// null on transient fetch failure (mempool.space hiccup — caller should
+// retry on next refresh, not log a security warning). Caller treats
+// non-true as "do not apply this leaf"; the tri-state is purely so the
+// caller can distinguish "cried wolf" from a real bogus leaf.
+async function verifyMixerDepositKernelOnChain(depositTxidHex, expectedAssetIdHex, expectedDenom, leafCommitmentBytes, fetchTx) {
+  if (typeof fetchTx !== 'function') return false;
+  const tx = await fetchTx(depositTxidHex);
+  // getTx returns null on network error and on missing txs; we can't tell
+  // them apart, so treat both as transient. A genuinely-missing deposit tx
+  // would be a worker bug (it just told us this leaf is included).
+  if (!tx) return null;
+  if (!Array.isArray(tx.vin) || tx.vin.length < 2) return false;
+  const inp = tx.vin[1];
+  if (!inp || typeof inp.txid !== 'string' || typeof inp.vout !== 'number') return false;
+  // Decode envelope from the deposit tx itself to recover kernel_sig.
+  const wit = tx.vin?.[0]?.witness;
+  if (!Array.isArray(wit) || wit.length < 3) return false;
+  let env;
+  try { env = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { return false; }
+  if (!env || env.opcode !== T_DEPOSIT) return false;
+  const dec = decodeTDepositPayload(env.payload);
+  if (!dec || dec.kind !== 'deposit') return false;
+  if (bytesToHex(dec.assetId) !== expectedAssetIdHex.toLowerCase()) return false;
+  if (BigInt(dec.denomination) !== BigInt(expectedDenom)) return false;
+  if (bytesToHex(dec.leafCommitment) !== bytesToHex(leafCommitmentBytes)) return false;
+  // Walk vin[1] to recover C_in.
+  const parent = await fetchTx(inp.txid);
+  if (!parent) return null;
+  const pwit = parent?.vin?.[0]?.witness;
+  if (!Array.isArray(pwit) || pwit.length < 3) return false;
+  let parentEnv;
+  try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { return false; }
+  if (!parentEnv) return false;
+  const pd = getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
+  if (!pd || pd.assetIdHex !== expectedAssetIdHex.toLowerCase()) return false;
+  let CinPoint;
+  try { CinPoint = bytesToPoint(pd.commitment); } catch { return false; }
+  const denomBig = BigInt(expectedDenom);
+  const denomH = denomBig === 0n ? ZERO : safeMult(H, denomBig);
+  const EPrime = CinPoint.add(denomH.negate());
+  if (EPrime.equals(ZERO)) return false;
+  const ExBytes = EPrime.toRawBytes(true).slice(1);
+  const inputTxidBE = hexToBytes(inp.txid).reverse();
+  const kernelMsg = computeDepositKernelMsg(
+    dec.assetId, denomBig, inputTxidBE, inp.vout, dec.leafCommitment,
+  );
+  return verifySchnorr(dec.kernelSig, kernelMsg, ExBytes);
 }
 
 // Build the deposit envelope payload + kernel sig, given a chosen UTXO and
@@ -4695,7 +4790,13 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     if (!mixerHasRecentRoot(aidHex, dec.denomination, dec.merkleRoot)) {
       validatedSet.set(key, false); return false;
     }
-    if (mixerIsNullifierSpent(aidHex, dec.denomination, dec.nullifierHash)) {
+    // Owner-aware double-spend gate (SPEC §5.11.4 #3). A naïve "is this
+    // nullifier in the spent-set?" check would reject the user's OWN
+    // canonical withdraw whenever scanPools has mirrored the worker's
+    // nullifier records — the worker correctly records this same tx as
+    // the canonical claimant of the nullifier, so the dapp must allow it
+    // to re-validate. Only reject if SOME OTHER tx claims the nullifier.
+    if (mixerIsNullifierSpentByOther(aidHex, dec.denomination, dec.nullifierHash, txidHex)) {
       validatedSet.set(key, false); return false;
     }
     // External secp256k1 Pedersen check (SPEC §5.11 validator step). Pairs
@@ -4730,7 +4831,15 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     // canonical chain order has already been established by the caller's
     // scanPools pass. A re-validation pass against the same (txid, vout)
     // is hit by the validatedSet memo cache before reaching this point.
-    mixerMarkNullifierSpent(aidHex, dec.denomination, dec.nullifierHash);
+    // Re-check the owner-aware gate after the await: a concurrent
+    // validateOutpoint for a different (txid, vout) but same nullifier
+    // could have marked ownership during our async proof verify. If the
+    // race-winner's txid != ours, reject; if it's ours (idempotent re-
+    // validation of the same UTXO), proceed.
+    if (mixerIsNullifierSpentByOther(aidHex, dec.denomination, dec.nullifierHash, txidHex)) {
+      validatedSet.set(key, false); return false;
+    }
+    mixerMarkNullifierSpent(aidHex, dec.denomination, dec.nullifierHash, txidHex);
     validatedSet.set(key, true);
     return true;
   }
@@ -9993,17 +10102,51 @@ async function scanPools() {
     if (remoteLeaves.length > localLeafCount) {
       // Worker sorts by canonical KV-key order; we apply leaves we don't
       // yet have. Order is critical — append-only tree state is sensitive.
+      //
+      // SPEC §5.10 / §5.11.4 invariant 1 — Conservation. Re-verify the
+      // BIP-340 kernel sig under (C_in − denomination·H).x_only() before
+      // appending. The worker is supposed to enforce this at index time,
+      // but the dapp owes the user a defense-in-depth check (three-verifier
+      // model, SPEC §5.11.4): a buggy or malicious indexer that admits an
+      // unbacked leaf would otherwise let the depositor withdraw against
+      // their own bogus deposit and inflate the pool. On any non-pass we
+      // stop applying further leaves to keep canonical append-only
+      // ordering consistent with the worker's tree; the next refresh will
+      // retry from the same index. Tri-state result lets us cry wolf only
+      // for cryptographic rejection (false), not transient fetch failures
+      // (null) — otherwise a flaky mempool.space call logs a security
+      // warning that has no real signal in it.
       for (let i = localLeafCount; i < remoteLeaves.length; i++) {
         const lc = remoteLeaves[i].leaf_commitment;
-        if (!lc) continue;
-        if (mixerAppendLeaf(aidHex, denom, hexToBytes(lc))) leavesApplied++;
+        const dtxid = remoteLeaves[i].deposit_txid;
+        if (!lc || !dtxid) break;
+        const lcBytes = hexToBytes(lc);
+        let kernelOk;
+        try {
+          kernelOk = await verifyMixerDepositKernelOnChain(
+            dtxid, aidHex, denom, lcBytes, getTx,
+          );
+        } catch { kernelOk = null; }
+        if (kernelOk === true) {
+          if (mixerAppendLeaf(aidHex, denom, lcBytes)) leavesApplied++;
+          continue;
+        }
+        if (kernelOk === false && typeof console !== 'undefined') {
+          console.warn('[mixer] rejected unbacked leaf in pool', aidHex.slice(0, 8), 'denom', denom.toString(), 'tx', dtxid);
+        }
+        break;
       }
     }
     const remoteNullifiers = Array.isArray(detail.nullifiers) ? detail.nullifiers : [];
     for (const n of remoteNullifiers) {
       if (!n.nullifier_hash) continue;
       if (!mixerIsNullifierSpent(aidHex, denom, hexToBytes(n.nullifier_hash))) {
-        mixerMarkNullifierSpent(aidHex, denom, hexToBytes(n.nullifier_hash));
+        // Pass the worker-recorded canonical owner txid so validateOutpoint
+        // can later re-validate the user's own legitimate withdraw without
+        // tripping the double-spend gate. Without an owner field the gate
+        // would treat ANY known-spent nullifier as "claimed by someone
+        // else," including the current tx's own claim.
+        mixerMarkNullifierSpent(aidHex, denom, hexToBytes(n.nullifier_hash), n.withdraw_txid || '');
         nullifiersApplied++;
       }
     }
@@ -18330,6 +18473,12 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   card.dataset.mintable = (verified && verify.mintable) ? '1' : '0';
   card.dataset.attested = (verified && verify.ipfsAttest) ? '1' : '0';
   card.dataset.etchedAt = String(Number.isFinite(a.etched_at) ? a.etched_at : 0);
+  // tx_index is the canonical same-block tiebreaker. Worker writes it for
+  // CETCHes scanned by the cron from this point on; old entries lack it and
+  // fall through to asset_id lex order in the comparator (matching today's
+  // behaviour). Empty string sentinel keeps the typeof check in the
+  // comparator simple — Number('') is NaN, distinguishing it from a real 0.
+  card.dataset.txIndex = Number.isInteger(a.tx_index) ? String(a.tx_index) : '';
   // Pill + sort signals from worker-supplied counts. Coarse — these are raw
   // KV counts that may include not-yet-GC'd or unverified entries — but for
   // a "show me assets with any market activity" filter that's the right
@@ -21031,7 +21180,24 @@ function applyDiscoverSort() {
   // never "Trending", to keep that distinction honest.
   // Tiebreaker: when two cards have the same count (e.g., both 0), fall
   // back to recency so newer assets surface above identical-but-older ones.
-  const tieByRecency = (a, b) => (Number(b.dataset.etchedAt) || 0) - (Number(a.dataset.etchedAt) || 0);
+  // Two CETCHes in the same block share `etchedAt`; use `txIndex` (canonical
+  // position-in-block) when both cards have it, then asset_id lex when not.
+  // `descending=true` flips tx_index direction for newest-first sorts so the
+  // later same-block tx ranks above the earlier one. Old entries written
+  // before the worker started recording tx_index get an empty-string dataset
+  // value → Number('') is NaN → both-sides-numeric check fails → we fall
+  // through to lex (today's behaviour, no regression).
+  const _sameTimeTiebreak = (a, b, descending) => {
+    const at = Number(a.dataset.txIndex), bt = Number(b.dataset.txIndex);
+    if (Number.isFinite(at) && Number.isFinite(bt) && at !== bt) {
+      return descending ? bt - at : at - bt;
+    }
+    return (a.dataset.aid || '').localeCompare(b.dataset.aid || '');
+  };
+  const tieByRecency = (a, b) => {
+    const d = (Number(b.dataset.etchedAt) || 0) - (Number(a.dataset.etchedAt) || 0);
+    return d !== 0 ? d : _sameTimeTiebreak(a, b, true);
+  };
   const numDesc = (key) => (a, b) => {
     const d = (Number(b.dataset[key]) || 0) - (Number(a.dataset[key]) || 0);
     return d !== 0 ? d : tieByRecency(a, b);
@@ -21049,7 +21215,10 @@ function applyDiscoverSort() {
       case 'transfers-desc': return numDesc('transferCount')(a, b);
       case 'active-desc':    return numDesc('activityCount')(a, b);
       case 'oldest':
-      default:               return (Number(a.dataset.etchedAt) || 0) - (Number(b.dataset.etchedAt) || 0);
+      default: {
+        const d = (Number(a.dataset.etchedAt) || 0) - (Number(b.dataset.etchedAt) || 0);
+        return d !== 0 ? d : _sameTimeTiebreak(a, b, false);
+      }
     }
   });
   for (const c of cards) list.appendChild(c);
@@ -22017,6 +22186,26 @@ export {
   encodeCPmintPayload, decodeCPmintPayload,
   encodeTDepositPayload, decodeTDepositPayload,
   encodeTWithdrawPayload, decodeTWithdrawPayload,
+  // T_DEPOSIT kernel-sig verifier + message helper — exported so
+  // tests/mixer-conservation can drive the dapp's defense-in-depth check
+  // directly against a stubbed fetchTx. Pairs with the worker's
+  // verifyMixerDepositKernel export to give the Conservation invariant
+  // (SPEC §5.11.4 #1) negative-test coverage on both sides.
+  computeDepositKernelMsg, verifyMixerDepositKernelOnChain,
+  // Mixer opcode constant — exported so tests can synthesize T_DEPOSIT
+  // envelopes without re-deriving the byte value.
+  T_DEPOSIT,
+  // Mixer state primitives + size constants — exported so tests can
+  // exercise the recent-roots ring buffer, nullifier owner-tracking,
+  // tree-depth cap, and cross-pool isolation without driving the full
+  // browser flow. These are the in-memory state the dapp uses to enforce
+  // SPEC §5.11.4 invariants 2 (Membership) and 3 (Non-double-spend).
+  mixerRegisterPool, mixerIsPoolRegistered,
+  mixerAppendLeaf, mixerHasRecentRoot,
+  mixerIsNullifierSpent, mixerIsNullifierSpentByOther, mixerMarkNullifierSpent,
+  mixerGetPoolStats,
+  computePoolRoot, poolEmptyLeaf,
+  POOL_TREE_DEPTH, POOL_RECENT_ROOTS_WINDOW,
   // Mixer poseidon helpers — exported for tests/mixer-envelope.test.mjs to
   // assert the dapp's leaf / nullifier shapes match what the worker decoder
   // expects on chain. computePoolLeafCommitment + computeNullifierHash close
