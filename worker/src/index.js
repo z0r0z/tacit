@@ -52,7 +52,7 @@
 // Debug endpoints (gated on DEBUG_TOKEN env secret; default-deny 404 if unset):
 //   POST /scan              — manually trigger a registry scan for the requested network.
 //   POST /rescan?from=<h>   — rewind meta:last_scanned so next tick re-scans from height <h>.
-// Scheduled (cron */5 * * * *): scans signet AND mainnet for CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, and T_PMINT envelopes.
+// Scheduled (cron */5 * * * *): scans signet AND mainnet for CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, and T_WITHDRAW envelopes.
 // Mainnet runs at a smaller blocks-per-tick budget because mainnet blocks
 // (~3000 txs each) burn far more subrequests than near-empty signet blocks.
 //
@@ -509,6 +509,407 @@ async function handlePin(req, env, cors) {
 
   await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
   return jsonResponse({ cid: j.IpfsHash, size: j.PinSize ?? bytes.length }, 200, cors);
+}
+
+// ============== Ceremony coordination (Groth16 Phase 2 MPC) ==============
+// Browser-driven public ceremony: anyone can fetch the current head zkey,
+// run snarkjs.zKey.contribute locally, and upload their new zkey to extend
+// the chain. Worker is convenience — pins to IPFS, advances head pointer,
+// records attestations. NOT a trust target: anyone can re-walk the chain
+// of CIDs and verify each contribution independently via snarkjs.zKey.verify.
+//
+// State per circuit:
+//   ceremony:<circuit_hash>            — head state JSON
+//   ceremony:<circuit_hash>:contrib:<idx>:<cid>  — per-contribution record
+//
+// Concurrency: optimistic. Contributors submit `prev_cid`; if it doesn't
+// match the current head, return 409 and the contributor refreshes + retries.
+// Under load, only one contribution per (circuit, head) lands per round-trip.
+
+// Coordinator-only operations gate. Set via `wrangler secret put
+// CEREMONY_INIT_TOKEN` (a long random token). Required for /ceremony/init,
+// /reset, and /finalize. Without the secret, those endpoints return 503 —
+// preventing accidental open-init in production. Per-IP rate limit still
+// applies on top.
+function ceremonyAuthOk(req, env) {
+  const expected = env.CEREMONY_INIT_TOKEN;
+  if (!expected) return false; // refuse coordinator-only ops if no token configured
+  const presented = req.headers.get('x-tacit-init-token') || '';
+  if (!presented || presented.length !== expected.length) return false;
+  // Constant-time comparison.
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ presented.charCodeAt(i);
+  return diff === 0;
+}
+
+function ceremonyKey(hash)              { return `ceremony:${hash}`; }
+function ceremonyContribKey(hash, idx, cid) {
+  return `ceremony:${hash}:contrib:${String(idx).padStart(8, '0')}:${cid}`;
+}
+function ceremonyContribPrefix(hash)    { return `ceremony:${hash}:contrib:`; }
+
+// Pin an arbitrary binary blob to IPFS. Used for zkey files (~5 MB each).
+// MAX_BYTES env var caps total upload size; we want zkeys to fit so we
+// override locally to 16 MB minimum (the env default of 2 MB is for images).
+async function pinBinaryToIpfs(env, bytes, filename, contentType = 'application/octet-stream') {
+  const pinFd = new FormData();
+  pinFd.append('file', new Blob([bytes], { type: contentType }), filename);
+  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+  const pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
+    body: pinFd,
+  });
+  if (!pinResp.ok) {
+    const txt = await pinResp.text().catch(() => '');
+    throw new Error(`pinata ${pinResp.status}: ${txt.slice(0, 240)}`);
+  }
+  const j = await pinResp.json();
+  if (!j.IpfsHash) throw new Error('pinata returned no CID');
+  return j.IpfsHash;
+}
+
+// POST /ceremony/init — start a new ceremony. Multipart form with three
+// files (zkey0, r1cs, ptau) + form field circuit_hash (sha256 of r1cs in hex).
+// First-write-wins per circuit_hash.
+async function handleCeremonyInit(req, env, cors) {
+  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+  // SECURITY: coordinator-only. Without auth, an attacker could squat the
+  // canonical (asset_id, denomination) pair by racing /ceremony/init with a
+  // bad ptau the moment the r1cs file is published.
+  if (!ceremonyAuthOk(req, env)) {
+    if (!env.CEREMONY_INIT_TOKEN) {
+      return jsonResponse({ error: 'CEREMONY_INIT_TOKEN not configured on worker — set via wrangler secret put' }, 503, cors);
+    }
+    return jsonResponse({ error: 'unauthorized — set X-Tacit-Init-Token header' }, 401, cors);
+  }
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const kvKey = `pin:${day}:${ip}`;
+  const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
+  const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
+  if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
+
+  let fd;
+  try { fd = await req.formData(); }
+  catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
+
+  const circuitHash = String(fd.get('circuit_hash') || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'circuit_hash must be 64 hex chars (sha256 of r1cs)' }, 400, cors);
+  }
+  const initiatorName = String(fd.get('initiator_name') || 'anonymous').slice(0, 64);
+
+  // Refuse if already initialized.
+  const existing = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (existing) return jsonResponse({ error: 'ceremony already initialized', state: existing }, 409, cors);
+
+  // Bound files at 32 MB each. zkey for our circuit is ~5 MB; ptau14 is ~18 MB;
+  // r1cs is small. CF Worker request body cap is 100 MB so 32 MB × 3 fits.
+  const MAX_PER_FILE = 32 * 1024 * 1024;
+  const zkey = fd.get('zkey0');
+  const r1cs = fd.get('r1cs');
+  const ptau = fd.get('ptau');
+  if (!(zkey instanceof File) || !(r1cs instanceof File) || !(ptau instanceof File)) {
+    return jsonResponse({ error: 'expected files: zkey0, r1cs, ptau' }, 400, cors);
+  }
+  if (zkey.size > MAX_PER_FILE || r1cs.size > MAX_PER_FILE || ptau.size > MAX_PER_FILE) {
+    return jsonResponse({ error: `each file must be <= ${MAX_PER_FILE} bytes` }, 413, cors);
+  }
+
+  let zkeyCid, r1csCid, ptauCid;
+  try {
+    zkeyCid = await pinBinaryToIpfs(env, new Uint8Array(await zkey.arrayBuffer()), `withdraw_0000_${circuitHash.slice(0,8)}.zkey`);
+    r1csCid = await pinBinaryToIpfs(env, new Uint8Array(await r1cs.arrayBuffer()), `withdraw_${circuitHash.slice(0,8)}.r1cs`);
+    ptauCid = await pinBinaryToIpfs(env, new Uint8Array(await ptau.arrayBuffer()), `pot_${circuitHash.slice(0,8)}.ptau`);
+  } catch (e) {
+    return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
+  }
+
+  const state = {
+    circuit_hash: circuitHash,
+    head_cid: zkeyCid,
+    contribution_count: 0,
+    r1cs_cid: r1csCid,
+    ptau_cid: ptauCid,
+    started_at: Math.floor(Date.now() / 1000),
+    initiator: initiatorName,
+    last_contributor: initiatorName,
+  };
+  await env.REGISTRY_KV.put(ceremonyKey(circuitHash), JSON.stringify(state));
+  // Also record the genesis as contribution index 0 so the attestations list
+  // has a complete chain from the start.
+  const initRec = {
+    index: 0,
+    cid: zkeyCid,
+    contributor_name: initiatorName,
+    contribution_hash: '',
+    contributed_at: state.started_at,
+    prev_cid: '',
+  };
+  await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, 0, zkeyCid), JSON.stringify(initRec));
+
+  await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 60 * 60 * 25 });
+  return jsonResponse({ state }, 200, cors);
+}
+
+async function handleCeremonyState(env, circuitHash, cors) {
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
+  return jsonResponse({ state }, 200, cors);
+}
+
+// POST /ceremony/:circuit_hash/contribute
+// Multipart form: zkey (file), contributor_name (string ≤ 64), prev_cid (string),
+// contribution_hash (string, snarkjs's "Contribution Hash" output, ≤ 256 chars).
+// Optimistic concurrency: prev_cid must match current head_cid.
+async function handleCeremonyContribute(req, env, circuitHash, cors) {
+  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!state) return jsonResponse({ error: 'ceremony not found — initialize first' }, 404, cors);
+  if (state.finalized) return jsonResponse({ error: 'ceremony has been finalized; chain is locked' }, 409, cors);
+
+  // Per-IP rate limit reuses the upload KV — 60 contributions/IP/day is generous.
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const rlKey = `ceremony:${day}:${ip}`;
+  const prior = safeInt(await env.UPLOAD_KV.get(rlKey), 0, { min: 0 });
+  if (prior >= 60) return jsonResponse({ error: 'rate limited (60/day per IP)' }, 429, cors);
+
+  let fd;
+  try { fd = await req.formData(); }
+  catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
+  const zkey = fd.get('zkey');
+  const contributorName = String(fd.get('contributor_name') || 'anonymous').slice(0, 64);
+  const prevCid = String(fd.get('prev_cid') || '');
+  const contribHash = String(fd.get('contribution_hash') || '').slice(0, 256);
+  if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
+  if (zkey.size > 32 * 1024 * 1024) return jsonResponse({ error: 'zkey too large (max 32 MB)' }, 413, cors);
+  if (!prevCid || prevCid !== state.head_cid) {
+    return jsonResponse({
+      error: 'stale prev_cid — ceremony advanced before your upload landed; refresh and retry',
+      head_cid: state.head_cid,
+      contribution_count: state.contribution_count,
+    }, 409, cors);
+  }
+
+  let newCid;
+  try {
+    newCid = await pinBinaryToIpfs(env, new Uint8Array(await zkey.arrayBuffer()), `withdraw_${String(state.contribution_count + 1).padStart(4, '0')}_${circuitHash.slice(0,8)}.zkey`);
+  } catch (e) {
+    return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
+  }
+
+  // Re-read state for the CAS — concurrent contributions can race here.
+  // If the head moved between our initial check and the pin, reject. We
+  // accept the cost of a wasted Pinata pin in that case (cheap relative to
+  // the social cost of dropping the contributor's actual entropy).
+  const fresh = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!fresh || fresh.head_cid !== prevCid) {
+    return jsonResponse({
+      error: 'lost CAS race — another contribution landed first; refresh and retry',
+      head_cid: fresh ? fresh.head_cid : null,
+    }, 409, cors);
+  }
+
+  const newCount = (fresh.contribution_count || 0) + 1;
+  const newState = {
+    ...fresh,
+    head_cid: newCid,
+    contribution_count: newCount,
+    last_contributor: contributorName,
+    last_contributed_at: Math.floor(Date.now() / 1000),
+  };
+  await env.REGISTRY_KV.put(ceremonyKey(circuitHash), JSON.stringify(newState));
+
+  const rec = {
+    index: newCount,
+    cid: newCid,
+    contributor_name: contributorName,
+    contribution_hash: contribHash,
+    contributed_at: newState.last_contributed_at,
+    prev_cid: prevCid,
+  };
+  await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, newCount, newCid), JSON.stringify(rec));
+
+  await env.UPLOAD_KV.put(rlKey, String(prior + 1), { expirationTtl: 60 * 60 * 25 });
+  return jsonResponse({ state: newState, contribution: rec }, 200, cors);
+}
+
+async function handleCeremonyAttestations(req, env, url, circuitHash, cors) {
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  const limit = Math.max(1, Math.min(safeInt(url.searchParams.get('limit'), 100, { min: 1, max: 1000 }), 1000));
+  const list = await env.REGISTRY_KV.list({ prefix: ceremonyContribPrefix(circuitHash), limit });
+  const attestations = [];
+  for (const k of list.keys) {
+    const r = await env.REGISTRY_KV.get(k.name, 'json');
+    if (r) attestations.push(r);
+  }
+  // KV.list returns alphabetical by key — our padded-index prefix means
+  // ascending by index (oldest first). Reverse for "most recent first" UX.
+  attestations.reverse();
+  return jsonResponse({ attestations, count: attestations.length, list_complete: list.list_complete !== false }, 200, cors);
+}
+
+// POST /ceremony/:circuit_hash/reset — admin operation. Wipes the ceremony
+// state + all contributions for the given hash. Used to re-bootstrap a
+// contaminated ceremony (e.g., when the initial Phase 1 ptau was discovered
+// to be single-party and you need to start over). Auth-gated via
+// CEREMONY_INIT_TOKEN, same as /ceremony/init.
+async function handleCeremonyReset(req, env, circuitHash, cors) {
+  if (!ceremonyAuthOk(req, env)) {
+    return jsonResponse({ error: 'unauthorized' }, 401, cors);
+  }
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  // Delete the head state + every contribution record.
+  const list = await env.REGISTRY_KV.list({ prefix: ceremonyContribPrefix(circuitHash), limit: 1000 });
+  for (const k of list.keys) await env.REGISTRY_KV.delete(k.name);
+  await env.REGISTRY_KV.delete(ceremonyKey(circuitHash));
+  return jsonResponse({ ok: true, deleted: list.keys.length + 1 }, 200, cors);
+}
+
+// POST /ceremony/:circuit_hash/finalize — coordinator finalizes the ceremony
+// by uploading a beacon-applied zkey. After finalize, the ceremony is locked:
+// further contribute calls are rejected. Multipart form: zkey (file),
+// beacon_block_hash (hex string for audit trail), beacon_iterations (int).
+// SPEC §3.7's beacon application closes the late-Sybil collusion window.
+async function handleCeremonyFinalize(req, env, circuitHash, cors) {
+  if (!ceremonyAuthOk(req, env)) {
+    return jsonResponse({ error: 'unauthorized' }, 401, cors);
+  }
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
+  if (state.finalized) return jsonResponse({ error: 'ceremony already finalized', state }, 409, cors);
+
+  let fd;
+  try { fd = await req.formData(); }
+  catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
+  const zkey = fd.get('zkey');
+  const beaconHash = String(fd.get('beacon_block_hash') || '').toLowerCase().slice(0, 128);
+  const beaconIters = safeInt(fd.get('beacon_iterations'), 10, { min: 1, max: 64 });
+  if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
+  if (zkey.size > 32 * 1024 * 1024) return jsonResponse({ error: 'zkey too large' }, 413, cors);
+  if (!/^[0-9a-f]+$/.test(beaconHash)) return jsonResponse({ error: 'beacon_block_hash must be hex' }, 400, cors);
+
+  let finalCid;
+  try {
+    finalCid = await pinBinaryToIpfs(env, new Uint8Array(await zkey.arrayBuffer()), `withdraw_final_${circuitHash.slice(0,8)}.zkey`);
+  } catch (e) {
+    return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
+  }
+
+  const newCount = (state.contribution_count || 0) + 1;
+  const newState = {
+    ...state,
+    head_cid: finalCid,
+    contribution_count: newCount,
+    last_contributor: 'beacon',
+    last_contributed_at: Math.floor(Date.now() / 1000),
+    finalized: true,
+    beacon_block_hash: beaconHash,
+    beacon_iterations: beaconIters,
+    finalized_at: Math.floor(Date.now() / 1000),
+  };
+  await env.REGISTRY_KV.put(ceremonyKey(circuitHash), JSON.stringify(newState));
+
+  const rec = {
+    index: newCount,
+    cid: finalCid,
+    contributor_name: 'beacon',
+    contribution_hash: beaconHash,
+    contributed_at: newState.last_contributed_at,
+    prev_cid: state.head_cid,
+    is_beacon: true,
+    beacon_iterations: beaconIters,
+  };
+  await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, newCount, finalCid), JSON.stringify(rec));
+
+  return jsonResponse({ state: newState, contribution: rec }, 200, cors);
+}
+
+// ============== /pin-mixer-vk — pin a Groth16 verifying-key JSON ==============
+// The mixer's POOL_INIT envelope references a vk by IPFS CID. The vk is the
+// JSON output of `snarkjs zkey export verificationkey` — a fixed-shape blob
+// (~3-4 KB for our circuit) whose fields don't fit /pin-json's whitelist
+// (protocol, curve, vk_alpha_1, vk_beta_2, IC, etc.). This endpoint accepts
+// snarkjs's exact shape, validates it structurally (protocol == 'groth16',
+// curve == 'bn128'/'bn254'), pins to IPFS via Pinata, and returns the CID.
+//
+// Same daily-limit + size-cap as /pin-json — there's no privileged path here,
+// just a different field schema.
+async function handlePinMixerVk(req, env, cors) {
+  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const kvKey = `pin:${day}:${ip}`;
+  const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
+  const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
+  if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
+
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return jsonResponse({ error: 'expected JSON object' }, 400, cors);
+  }
+  // Structural validation: snarkjs Groth16 vk shape. Reject anything that
+  // doesn't look like a verifying key — the endpoint isn't a general blob
+  // store, it's specifically for vk JSON.
+  if (body.protocol !== 'groth16') {
+    return jsonResponse({ error: 'protocol must be "groth16"' }, 400, cors);
+  }
+  if (body.curve !== 'bn128' && body.curve !== 'bn254') {
+    return jsonResponse({ error: 'curve must be bn128 or bn254' }, 400, cors);
+  }
+  // Required snarkjs vk fields — confirms the shape end-to-end.
+  for (const k of ['vk_alpha_1', 'vk_beta_2', 'vk_gamma_2', 'vk_delta_2', 'IC']) {
+    if (body[k] === undefined) return jsonResponse({ error: `missing field ${k}` }, 400, cors);
+  }
+  if (!Array.isArray(body.IC) || body.IC.length < 2) {
+    return jsonResponse({ error: 'IC must be array length >= 2' }, 400, cors);
+  }
+
+  const json = JSON.stringify(body);
+  if (json.length > 32 * 1024) {
+    return jsonResponse({ error: 'vk exceeds 32 KB' }, 413, cors);
+  }
+
+  const pinFd = new FormData();
+  pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-mixer-vk-${Date.now()}.json`);
+  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+
+  let pinResp;
+  try {
+    pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
+      body: pinFd,
+    });
+  } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
+  if (!pinResp.ok) {
+    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
+    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
+  }
+  const pj = await pinResp.json();
+  if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
+
+  const newCount = prior + 1;
+  await env.UPLOAD_KV.put(kvKey, String(newCount), { expirationTtl: 60 * 60 * 25 });
+
+  return jsonResponse({ cid: pj.IpfsHash }, 200, cors);
 }
 
 // ============== /pin-json — pin a small metadata JSON blob ==============
@@ -1108,10 +1509,35 @@ function decodeTDepositPayload(payload) {
 // SPEC §5.11. Worker decodes structurally only — proof verification + bind_hash
 // re-derivation happen client-side (the dApp pulls the worker's pool snapshot
 // and re-validates).
+// SPEC §5.11. Re-derive bind_hash from the surrounding fields and reject if
+// the envelope's stored bind_hash doesn't match. Closing this here (not just
+// in the dapp) makes the indexer rejection path BYTE-DETERMINISTIC across
+// worker + dapp + any third-party indexer running the same spec — a critical
+// invariant for the protocol's most consensus-sensitive state, the spent-
+// nullifier set. Without this check, a structurally-valid-but-bind-hash-bad
+// envelope would be accepted by the worker (writing its nullifier to
+// poolnull:) but rejected by the dapp's decoder, creating a divergence
+// where the worker thinks a nullifier is spent but the dapp doesn't
+// recognize the prior withdrawal as legitimate. The dapp would then refuse
+// to credit downstream withdrawals using that nullifier as "double-spent"
+// per the worker's authority, even though no real withdrawal happened.
+const _WITHDRAW_BIND_DOMAIN = new TextEncoder().encode('tacit-withdraw-bind-v1');
+function _computeWithdrawBindHash(assetIdBytes, denomination, nullifierHashBytes, recipientCommitmentBytes, rLeafBytes) {
+  const denomLE = new Uint8Array(8);
+  const v = new DataView(denomLE.buffer);
+  const d = BigInt(denomination);
+  v.setUint32(0, Number(d & 0xffffffffn), true);
+  v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  return sha256(concatBytes(
+    _WITHDRAW_BIND_DOMAIN,
+    assetIdBytes, denomLE, nullifierHashBytes, recipientCommitmentBytes, rLeafBytes,
+  ));
+}
+
 function decodeTWithdrawPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_WITHDRAW) return null;
-  const HEADER = 1 + 32 + 8 + 32 + 32 + 33 + 8 + 32 + 2;
+  const HEADER = 1 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 2;
   if (payload.length < HEADER) return null;
   let p = 1;
   const assetIdBytes = payload.slice(p, p + 32); p += 32;
@@ -1119,24 +1545,32 @@ function decodeTWithdrawPayload(payload) {
   const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
   p += 8;
   if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
-  const merkleRoot = bytesToHex(payload.slice(p, p + 32)); p += 32;
-  const nullifierHash = bytesToHex(payload.slice(p, p + 32)); p += 32;
-  const recipientCommitment = bytesToHex(payload.slice(p, p + 33)); p += 33;
-  const amountCt = bytesToHex(payload.slice(p, p + 8)); p += 8;
-  const bindHash = bytesToHex(payload.slice(p, p + 32)); p += 32;
+  const merkleRootBytes = payload.slice(p, p + 32); p += 32;
+  const nullifierHashBytes = payload.slice(p, p + 32); p += 32;
+  const recipientCommitmentBytes = payload.slice(p, p + 33); p += 33;
+  const rLeafBytes = payload.slice(p, p + 32); p += 32;
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
   const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
   if (p + proofLen !== payload.length) return null;
+  // Bind-hash determinism check (SPEC §5.11). MUST match the dapp's decoder
+  // exactly so worker + dapp + any third-party indexer all reject the same
+  // envelopes. Without this the spent-nullifier ledger diverges. See block
+  // comment at _computeWithdrawBindHash for the threat model.
+  const expectedBindHash = _computeWithdrawBindHash(
+    assetIdBytes, denomination, nullifierHashBytes, recipientCommitmentBytes, rLeafBytes,
+  );
+  for (let i = 0; i < 32; i++) if (expectedBindHash[i] !== bindHashBytes[i]) return null;
   const proof = bytesToHex(payload.slice(p, p + proofLen));
   return {
     kind: 'withdraw',
     asset_id: bytesToHex(assetIdBytes),
     denomination: denomination.toString(),
-    merkle_root: merkleRoot,
-    nullifier_hash: nullifierHash,
-    recipient_commitment: recipientCommitment,
-    amount_ct: amountCt,
-    bind_hash: bindHash,
+    merkle_root: bytesToHex(merkleRootBytes),
+    nullifier_hash: bytesToHex(nullifierHashBytes),
+    recipient_commitment: bytesToHex(recipientCommitmentBytes),
+    r_leaf: bytesToHex(rLeafBytes),
+    bind_hash: bytesToHex(bindHashBytes),
     proof,
   };
 }
@@ -1915,6 +2349,19 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
 // T_PMINTs surface as 'pending' until they cross this depth; only credited
 // mints count toward `cumulative_minted` and the cap.
 const PMINT_CONFIRMATION_DEPTH = 3;
+
+// SPEC §5.10 reorg-safety gate. A T_DEPOSIT becomes part of the canonical
+// pool merkle tree only after this many confirmations. Without it a short
+// reorg dropping the deposit's block silently changes the root for every
+// position after it, bricking pending withdraw proofs that bound the old
+// root. Value mirrors PMINT_CONFIRMATION_DEPTH for the same reason: 3 is
+// past the deepest historical mainnet reorg (4 was the deepest ever, in
+// 2010, and modern hashrate makes that effectively impossible). Read-side
+// endpoints (/pools/:aid/:denom) annotate each leaf with `depth` + `status`
+// so clients can distinguish included-in-tree from waiting-for-confirms;
+// the dapp's local merkle tree builder consumes only `included` leaves to
+// match the indexer-visible tree state.
+const MIXER_DEPOSIT_CONFIRMATION_DEPTH = 3;
 
 // Cap-bookkeeping helpers. `loadCanonicalPmints` returns mints in lexically-
 // sorted KV order, which equals canonical (height, txid) order because the
@@ -4449,6 +4896,28 @@ export default {
 
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);
+    if (url.pathname === '/pin-mixer-vk' && req.method === 'POST') return handlePinMixerVk(req, env, cors);
+    if (url.pathname === '/ceremony/init' && req.method === 'POST') return handleCeremonyInit(req, env, cors);
+    {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})$/i);
+      if (m && req.method === 'GET') return handleCeremonyState(env, m[1].toLowerCase(), cors);
+    }
+    {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/contribute$/i);
+      if (m && req.method === 'POST') return handleCeremonyContribute(req, env, m[1].toLowerCase(), cors);
+    }
+    {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/attestations$/i);
+      if (m && req.method === 'GET') return handleCeremonyAttestations(req, env, url, m[1].toLowerCase(), cors);
+    }
+    {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/reset$/i);
+      if (m && req.method === 'POST') return handleCeremonyReset(req, env, m[1].toLowerCase(), cors);
+    }
+    {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/finalize$/i);
+      if (m && req.method === 'POST') return handleCeremonyFinalize(req, env, m[1].toLowerCase(), cors);
+    }
     if (url.pathname === '/balance' && req.method === 'GET')   return handleBalance(env, cors);
     if (url.pathname === '/drip' && req.method === 'POST')     return handleDrip(req, env, cors);
     // Network is selected via ?network=signet|mainnet. Default is signet so a
@@ -4491,15 +4960,43 @@ export default {
         const denom = m[2];
         const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denom), 'json');
         if (!initRec) return jsonResponse({ error: 'pool not found' }, 404, cors);
+        // Fetch chain tip in parallel with the KV walks so the depth-gate
+        // annotation can be applied without doubling latency. Tolerate tip
+        // failure — when null, mark every leaf 'unknown_depth' rather than
+        // assuming included (a reorg-unsafe assumption).
+        const tipP = Promise.race([
+          apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
+          new Promise(resolve => setTimeout(() => resolve(null), 2500)),
+        ]).catch(() => null);
         const leafList = await env.REGISTRY_KV.list({
           prefix: poolLeafPrefix(network, aid, denom),
           limit: 1000,
         });
-        const leaves = [];
+        const rawLeaves = [];
         for (const k of leafList.keys) {
           const rec = await env.REGISTRY_KV.get(k.name, 'json');
-          if (rec) leaves.push(rec);
+          if (rec) rawLeaves.push(rec);
         }
+        const tipHeight = await tipP;
+        // SPEC §5.10 reorg-safety: annotate each leaf with depth + status so
+        // the dapp's tree builder can include only depth-≥-3 leaves. Without
+        // this, a short reorg that drops a deposit silently changes the
+        // canonical root for every position after it. 'unknown_depth' fires
+        // when tip is unreachable — the dapp must treat it as not-yet-
+        // included (reorg-safe default).
+        const leaves = rawLeaves.map(rec => {
+          const h = Number.isInteger(rec.deposited_at_height) ? rec.deposited_at_height : null;
+          let depth = null, status;
+          if (Number.isInteger(tipHeight) && Number.isInteger(h)) {
+            depth = Math.max(1, tipHeight - h + 1);
+            status = depth >= MIXER_DEPOSIT_CONFIRMATION_DEPTH ? 'included' : 'pending';
+          } else {
+            status = 'unknown_depth';
+          }
+          return { ...rec, depth, status };
+        });
+        const includedCount = leaves.filter(l => l.status === 'included').length;
+        const pendingCount = leaves.filter(l => l.status === 'pending').length;
         const nullifierList = await env.REGISTRY_KV.list({
           prefix: poolNullifierPrefix(network, aid, denom),
           limit: 1000,
@@ -4509,7 +5006,17 @@ export default {
           const rec = await env.REGISTRY_KV.get(k.name, 'json');
           if (rec) nullifiers.push(rec);
         }
-        return jsonResponse({ pool: initRec, leaves, nullifiers, network }, 200, cors);
+        return jsonResponse({
+          pool: initRec,
+          leaves,
+          nullifiers,
+          network,
+          tip: Number.isInteger(tipHeight) ? tipHeight : null,
+          tip_unavailable: !Number.isInteger(tipHeight),
+          confirmation_depth: MIXER_DEPOSIT_CONFIRMATION_DEPTH,
+          included_leaf_count: includedCount,
+          pending_leaf_count: pendingCount,
+        }, 200, cors);
       }
     }
     if (url.pathname === '/assets' && req.method === 'GET') {

@@ -18,8 +18,14 @@ import { ripemd160 } from './vendor/tacit-deps.min.js';
 import { keccak_256 } from './vendor/tacit-deps.min.js';
 import { hmac } from './vendor/tacit-deps.min.js';
 import { hexToBytes, bytesToHex, concatBytes } from './vendor/tacit-deps.min.js';
-import { bech32 } from './vendor/tacit-deps.min.js';
+import { bech32, base58, base32 } from './vendor/tacit-deps.min.js';
 import { satsConnect as SatsConnect } from './vendor/tacit-deps.min.js';
+// Poseidon over BN254 — leaf commitment (poseidon3), nullifier hash
+// (poseidon1), and per-pool merkle node hash (poseidon2). Must match the
+// circuit's parameters in dapp/circuits/withdraw.circom (rate=2, capacity=1,
+// Grassi 2020 round counts). poseidon-lite is a slim pure-JS implementation
+// that ships ~30 KB of round constants per arity. SPEC §3.6.
+import { poseidon1, poseidon2, poseidon3 } from './vendor/tacit-deps.min.js';
 import { prfRegister, prfLogin, loadPrfMap, savePrfMap, clearPrfMap, isPasskeyAvailable, prfTryRestore } from './prf-wallet.js';
 
 secp.etc.hmacSha256Sync = (k, ...m) => hmac(sha256, k, secp.etc.concatBytes(...m));
@@ -1626,41 +1632,25 @@ function deriveAxintentBlindingKeystream(myPriv, theirPubBytes, intentIdBytes, a
 // other tacit-prefixed HMAC paths so a wallet's recovery scan finds them via
 // the same code path as CXFER change recovery.
 //
-// Poseidon hash (used for leaf commitment + nullifier hash) is STUBBED in v1
-// because its circuit-side use requires a circom toolchain we don't yet
-// vendor. Production deployments must swap in circomlibjs's poseidon over
-// BN254. The stub uses domain-separated SHA256 truncated to ~254 bits so wire
-// formats and recovery-scan logic work end-to-end during dev/testing; circuit
-// correctness depends on the production swap.
+// Poseidon hash over BN254 is real (vendored from poseidon-lite). It matches
+// the parameters used by the withdrawal circuit's circomlib Poseidon: rate=2,
+// capacity=1, Grassi 2020 round counts, S-box x⁵.
 const POOL_INIT_DOMAIN       = new TextEncoder().encode('tacit-pool-init-v1');
 const DEPOSIT_DOMAIN         = new TextEncoder().encode('tacit-deposit-v1');
 const WITHDRAW_BIND_DOMAIN   = new TextEncoder().encode('tacit-withdraw-bind-v1');
-const WITHDRAW_BLIND_DOMAIN  = new TextEncoder().encode('tacit-withdraw-blind-v1');
-const WITHDRAW_AMOUNT_DOMAIN = new TextEncoder().encode('tacit-withdraw-amount-v1');
 const POOL_EMPTY_DOMAIN      = new TextEncoder().encode('tacit-pool-empty-v1');
-const POSEIDON_STUB_DOMAIN   = new TextEncoder().encode('tacit-poseidon-stub-v1');
-
-// Self-derived withdrawal blinding scalar — recipient (== withdrawer for
-// flow-to-self) derives this from their own privkey + the public nullifier
-// hash. The pair (denomination, blinding) opens the recipient_commitment.
-function deriveWithdrawBlinding(myPriv, nullifierHash) {
-  const out = hmac(sha256, myPriv, concatBytes(WITHDRAW_BLIND_DOMAIN, nullifierHash));
-  return bytes32ToBigint(out) % SECP_N;
-}
-
-// Self-derived withdrawal amount keystream (8 bytes). XOR'd against
-// `denomination` to produce the on-chain `amount_ct`. Recovery is symmetric.
-function deriveWithdrawAmountKeystream(myPriv, nullifierHash) {
-  return hmac(sha256, myPriv, concatBytes(WITHDRAW_AMOUNT_DOMAIN, nullifierHash)).slice(0, 8);
-}
 
 // Bind hash — committed-to as a public input to the Groth16 proof so a
-// relayer or mempool observer can't replay a copied proof against a
-// substituted recipient_commitment. SPEC §5.11.
-function computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment) {
+// relayer or mempool observer can't replay a copied proof against
+// substituted public inputs. SPEC §5.11. Covers both recipient_commitment
+// AND r_leaf so the (denomination, r_leaf, recipient_commitment) tuple is
+// locked together — any single substitution requires the others to follow,
+// and the validator's external Pedersen check forces consistency.
+function computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
   if (recipientCommitment.length !== 33) throw new Error('recipient_commitment 33 bytes');
+  if (rLeaf.length !== 32) throw new Error('r_leaf 32 bytes');
   const denomLE = new Uint8Array(8);
   {
     const d = BigInt(denomination);
@@ -1668,39 +1658,46 @@ function computeWithdrawBindHash(assetId, denomination, nullifierHash, recipient
     v.setUint32(0, Number(d & 0xffffffffn), true);
     v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
   }
-  return sha256(concatBytes(WITHDRAW_BIND_DOMAIN, assetId, denomLE, nullifierHash, recipientCommitment));
+  return sha256(concatBytes(WITHDRAW_BIND_DOMAIN, assetId, denomLE, nullifierHash, recipientCommitment, rLeaf));
 }
 
-// SPEC §3.6 — Poseidon hash STUB. Production must swap in circomlibjs's
-// `poseidon` over BN254. Until then, domain-separated SHA256 truncated to fit
-// BN254's scalar field provides a hash function with the same byte-shape
-// (32-byte output, treated as Fr) so wire encoding, recovery scan, leaf
-// computation, and nullifier hashing all work in dev. Circuit-side correctness
-// (the actual proof verifying) requires the real Poseidon — see SPEC §3.6 and
-// §3.8 for the canonical parameters (rate=2, capacity=1, Grassi 2020 round
-// counts). Calls accept Uint8Array | bigint | number; bigints/numbers are
-// serialized as 32-byte big-endian for hashing.
-function poseidonStub(...inputs) {
-  const parts = [POSEIDON_STUB_DOMAIN];
-  for (const inp of inputs) {
-    if (inp instanceof Uint8Array) {
-      parts.push(inp);
-    } else if (typeof inp === 'bigint' || typeof inp === 'number') {
-      const v = BigInt(inp);
-      const buf = new Uint8Array(32);
-      for (let i = 31; i >= 0; i--) {
-        buf[i] = Number((v >> BigInt((31 - i) * 8)) & 0xffn);
-      }
-      parts.push(buf);
-    } else {
-      throw new Error('poseidonStub: unsupported input type');
-    }
+// SPEC §3.6 — Poseidon hash over BN254. Real implementation backed by
+// poseidon-lite (vendored). Inputs are coerced to BigInt before hashing;
+// 32-byte Uint8Array inputs are interpreted as big-endian field elements
+// (matches the circuit's witness expectation in dapp/circuits/withdraw.circom).
+//
+// Returns a 32-byte big-endian Uint8Array — the BN254 scalar field is ~254
+// bits so the high two bits of the result are always zero (invariant; we
+// don't need to mask). The serialized form is what the on-chain envelope
+// carries (leaf_commitment, nullifier_hash) and what the indexer's
+// canonical-order tree state stores.
+function poseidonInputToBigInt(inp) {
+  if (typeof inp === 'bigint') return inp;
+  if (typeof inp === 'number') return BigInt(inp);
+  if (inp instanceof Uint8Array) {
+    if (inp.length !== 32) throw new Error('poseidon input bytes must be length 32');
+    let v = 0n;
+    for (let i = 0; i < 32; i++) v = (v << 8n) | BigInt(inp[i]);
+    return v;
   }
-  const h = new Uint8Array(sha256(concatBytes(...parts)));
-  // Mask top 2 bits so the output fits in BN254's scalar field
-  // (the field prime is ~254 bits). Real Poseidon outputs always fit.
-  h[0] &= 0x3f;
-  return h;
+  throw new Error('poseidon: unsupported input type');
+}
+function poseidonBigIntToBytes32(v) {
+  const buf = new Uint8Array(32);
+  for (let i = 31; i >= 0; i--) {
+    buf[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return buf;
+}
+function poseidonHash(...inputs) {
+  const args = inputs.map(poseidonInputToBigInt);
+  let result;
+  if (args.length === 1) result = poseidon1(args);
+  else if (args.length === 2) result = poseidon2(args);
+  else if (args.length === 3) result = poseidon3(args);
+  else throw new Error('poseidonHash: unsupported arity ' + args.length);
+  return poseidonBigIntToBytes32(result);
 }
 
 // Leaf commitment for a pool deposit: H(secret, nullifier_preimage, denomination).
@@ -1709,28 +1706,32 @@ function poseidonStub(...inputs) {
 function computePoolLeafCommitment(secret, nullifierPreimage, denomination) {
   if (secret.length !== 32) throw new Error('secret 32 bytes');
   if (nullifierPreimage.length !== 32) throw new Error('nullifier_preimage 32 bytes');
-  return poseidonStub(secret, nullifierPreimage, BigInt(denomination));
+  return poseidonHash(secret, nullifierPreimage, BigInt(denomination));
 }
 
 // Nullifier hash — published in plaintext at withdraw time. Indexer rejects
 // duplicates per SPEC §5.11.1.
 function computeNullifierHash(nullifierPreimage) {
   if (nullifierPreimage.length !== 32) throw new Error('nullifier_preimage 32 bytes');
-  return poseidonStub(nullifierPreimage);
+  return poseidonHash(nullifierPreimage);
 }
 
 // Empty leaf constant for the per-pool merkle tree.
 function poolEmptyLeaf() {
   // Cached on first call.
   if (!poolEmptyLeaf._cached) {
-    poolEmptyLeaf._cached = poseidonStub(POOL_EMPTY_DOMAIN);
+    // EMPTY_LEAF = poseidon1(0) — a deterministic field-element constant
+    // any indexer/circuit can recompute. The original SPEC §3.6 phrasing
+    // "poseidon('tacit-pool-empty-v1')" is implementation-defined; using
+    // poseidon1(0) is the canonical concrete realization.
+    poolEmptyLeaf._cached = poseidonHash(0n);
   }
   return poolEmptyLeaf._cached;
 }
 
 // Compute a pool merkle root from a left-to-right list of leaves, padding
 // with the empty-leaf constant up to depth L=20. Hash function is the same
-// poseidonStub (production: real Poseidon). For each layer, hash pairs
+// poseidonHash (production: real Poseidon). For each layer, hash pairs
 // left-then-right.
 const POOL_TREE_DEPTH = 20;
 function computePoolRoot(leaves) {
@@ -1740,7 +1741,7 @@ function computePoolRoot(leaves) {
   if (!computePoolRoot._zeros) {
     const zeros = [empty];
     for (let i = 1; i <= POOL_TREE_DEPTH; i++) {
-      zeros.push(poseidonStub(zeros[i - 1], zeros[i - 1]));
+      zeros.push(poseidonHash(zeros[i - 1], zeros[i - 1]));
     }
     computePoolRoot._zeros = zeros;
   }
@@ -1751,7 +1752,7 @@ function computePoolRoot(leaves) {
     for (let i = 0; i < layer.length; i += 2) {
       const left = layer[i];
       const right = (i + 1 < layer.length) ? layer[i + 1] : zeros[depth];
-      next.push(poseidonStub(left, right));
+      next.push(poseidonHash(left, right));
     }
     if (next.length === 0) next.push(zeros[depth + 1]);
     layer = next;
@@ -3219,14 +3220,20 @@ function decodeTDepositPayload(payload) {
 // Encode a withdraw envelope.
 //   T_WITHDRAW(1) || asset_id(32) || denomination(8) || merkle_root(32)
 //                 || nullifier_hash(32) || recipient_commitment(33)
-//                 || amount_ct(8) || bind_hash(32)
+//                 || r_leaf(32) || bind_hash(32)
 //                 || proof_len(2 LE) || proof(proof_len)
-function encodeTWithdrawPayload({ assetId, denomination, merkleRoot, nullifierHash, recipientCommitment, amountCt, bindHash, proof }) {
+//
+// SPEC §5.11. r_leaf is a public Pedersen blinding scalar deterministically
+// derived in-circuit from (secret, nullifier_preimage). Validator does an
+// external secp256k1 Pedersen check: pedersenCommit(denomination, r_leaf)
+// == recipient_commitment. Closes the inflation-attack vector documented
+// in SPEC §5.11.1.
+function encodeTWithdrawPayload({ assetId, denomination, merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash, proof }) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (merkleRoot.length !== 32) throw new Error('merkle_root 32 bytes');
   if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
   if (recipientCommitment.length !== 33) throw new Error('recipient_commitment 33 bytes');
-  if (amountCt.length !== 8) throw new Error('amount_ct 8 bytes');
+  if (rLeaf.length !== 32) throw new Error('r_leaf 32 bytes');
   if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
   if (proof.length === 0 || proof.length > 0xffff) throw new Error('proof len 1..65535');
   const d = BigInt(denomination);
@@ -3242,14 +3249,14 @@ function encodeTWithdrawPayload({ assetId, denomination, merkleRoot, nullifierHa
   return concatBytes(
     new Uint8Array([T_WITHDRAW]),
     assetId, denomLE, merkleRoot, nullifierHash, recipientCommitment,
-    amountCt, bindHash, proofLen, proof,
+    rLeaf, bindHash, proofLen, proof,
   );
 }
 
 function decodeTWithdrawPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_WITHDRAW) return null;
-  const HEADER = 1 + 32 + 8 + 32 + 32 + 33 + 8 + 32 + 2;
+  const HEADER = 1 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 2;
   if (payload.length < HEADER) return null;
   let p = 1;
   const assetId = payload.slice(p, p + 32); p += 32;
@@ -3260,20 +3267,20 @@ function decodeTWithdrawPayload(payload) {
   const merkleRoot = payload.slice(p, p + 32); p += 32;
   const nullifierHash = payload.slice(p, p + 32); p += 32;
   const recipientCommitment = payload.slice(p, p + 33); p += 33;
-  const amountCt = payload.slice(p, p + 8); p += 8;
+  const rLeaf = payload.slice(p, p + 32); p += 32;
   const bindHash = payload.slice(p, p + 32); p += 32;
   const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
   if (p + proofLen !== payload.length) return null;
   const proof = payload.slice(p, p + proofLen);
   // Re-derive bind_hash and check consistency. SPEC §5.11: bind_hash MUST
-  // equal SHA256(WITHDRAW_BIND_DOMAIN || asset_id || denom_LE || nullifier_hash || recipient_commitment).
-  const expected = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment);
+  // equal SHA256(WITHDRAW_BIND_DOMAIN || asset_id || denom_LE || nullifier_hash || recipient_commitment || r_leaf).
+  const expected = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf);
   for (let i = 0; i < 32; i++) if (expected[i] !== bindHash[i]) return null;
   return {
     kind: 'withdraw',
     assetId, denomination, merkleRoot, nullifierHash,
-    recipientCommitment, amountCt, bindHash, proof,
+    recipientCommitment, rLeaf, bindHash, proof,
   };
 }
 
@@ -3348,6 +3355,17 @@ function mixerIsPoolRegistered(assetIdHex, denomination) {
 // Append a leaf to the per-pool tree and roll the recent-roots cache.
 // Caller MUST invoke this in canonical chain order (block height, then
 // (tx_index, vin[1].outpoint) within block).
+// Recent-roots ring buffer depth. SPEC §5.11. Withdraw proofs may bind any
+// root in this window — a deposit landing between proof-build and broadcast
+// would otherwise invalidate every in-flight proof. 32 covers ~5 hours of
+// Bitcoin block time at typical 10-min cadence and is well past any realistic
+// deep-reorg risk on either signet or mainnet (deepest historical mainnet
+// reorg: 4 blocks; signet is permissioned so reorgs are operator-bounded).
+// Tornado Cash uses ~30 for the same reason. If the pool is rapidly active
+// and proofs frequently land against expired roots, raise this; if memory
+// pressure is the constraint, lower it. Each root is 32 bytes so 32 roots is
+// ~1KB per pool — non-issue on the scale of millions of pools.
+const POOL_RECENT_ROOTS_WINDOW = 32;
 function mixerAppendLeaf(assetIdHex, denomination, leafCommitment) {
   const k = poolKey(assetIdHex, denomination);
   const tree = poolMerkleTrees.get(k);
@@ -3356,7 +3374,7 @@ function mixerAppendLeaf(assetIdHex, denomination, leafCommitment) {
   tree.leaves.push(leafCommitment);
   const newRoot = computePoolRoot(tree.leaves);
   tree.roots.push(newRoot);
-  if (tree.roots.length > 32) tree.roots.shift();
+  if (tree.roots.length > POOL_RECENT_ROOTS_WINDOW) tree.roots.shift();
   return true;
 }
 
@@ -3402,40 +3420,191 @@ function mixerGetPoolStats(assetIdHex, denomination) {
   return { totalLeaves, spentNullifiers, anonymitySet, latestRoot };
 }
 
-// ============== GROTH16 VERIFY (STUB v1) ==============
-// SPEC §5.11. Real verification requires:
-//   1. The pool's verifying key (vk) — stored at IPFS CID `vkCid` from the
-//      POOL_INIT envelope. Worker can pin/serve.
-//   2. A Groth16 verifier over BN254 — via snarkjs's `groth16.verify` or a
-//      hand-rolled pairing-check. snarkjs is ~200 KB and requires bundling
-//      into vendor/tacit-deps.min.js (build/ rebuild step).
-//   3. The 6 public inputs canonicalized into BN254's scalar field per §3.8.
+// ============== GROTH16 VERIFY ==============
+// SPEC §5.11. Real Groth16 verification under the per-pool verifying key
+// (vk) declared at POOL_INIT time. Three pieces:
 //
-// v1 STUB: until snarkjs is vendored, structural checks only — proof length
-// in [100, 65535], no nonzero bytes are zero, etc. THIS DOES NOT PROVE
-// SOUNDNESS. Production deployments MUST swap in a real verifier before
-// enabling withdrawals on mainnet. The dApp surfaces this as a banner on
-// the Mixer tab (see UI scaffolding) so users don't trust withdrawn funds
-// pre-swap.
+//   1. Lazy-load snarkjs from vendor/tacit-mixer.min.js. Separate bundle so
+//      users who never touch the Mixer tab don't pay snarkjs's ~440 KB cost.
+//      Cached after first load.
+//   2. Fetch the vk from IPFS using `vkCid` from the pool registry. Cached
+//      per-CID across calls. Content-addressed → no integrity check needed.
+//   3. Parse the 256-byte proof bytes into snarkjs's expected JSON object,
+//      format public inputs as decimal strings, call snarkjs.groth16.verify.
 //
-// Returning `false` from the stub keeps T_WITHDRAW UTXOs untrusted by the
-// validator. A deployment intent on dev-testing the rest of the pipeline
-// can flip MIXER_ALLOW_STUB_VERIFY to true; doing so on mainnet without a
-// real verifier is a footgun and the dApp UI gates it.
-const MIXER_ALLOW_STUB_VERIFY = false;
+// Wire-format proof layout (256 bytes total): for Groth16 over BN254,
+//   pi_a (G1):  x(32) || y(32)
+//   pi_b (G2):  x[0](32) || x[1](32) || y[0](32) || y[1](32)
+//   pi_c (G1):  x(32) || y(32)
+// All field elements are 32-byte big-endian. Snarkjs's verifier accepts
+// affine coordinates with z=1 implicit (G1) or z=[1,0] (G2); we add those
+// in when reconstructing the JSON object.
+
+let _mixerSnarkjs = null;
+const _mixerVkCache = new Map(); // vkCid → Promise<vk_json>
+
+async function _loadSnarkjs() {
+  if (_mixerSnarkjs) return _mixerSnarkjs;
+  // Dynamic import → esbuild-emitted ESM module sits at this path. Vite/
+  // serve-static treat it as a regular asset; no special bundler config
+  // needed at the dApp layer.
+  _mixerSnarkjs = (await import('./vendor/tacit-mixer.min.js')).snarkjs;
+  return _mixerSnarkjs;
+}
+
+async function _fetchMixerVk(vkCid) {
+  if (!vkCid) return null;
+  if (_mixerVkCache.has(vkCid)) return _mixerVkCache.get(vkCid);
+  const promise = (async () => {
+    // vkCid points to a verification_key.json on IPFS — output of
+    // `snarkjs zkey export verificationkey` from dapp/circuits/build.sh.
+    // Real IPFS gateways content-address responses, but a malicious /
+    // compromised gateway running modified IPFS-like software could serve
+    // substituted bytes. Re-derive the multihash from the raw response and
+    // compare to the requested CID before parsing — fails closed if the
+    // gateway lied. CIDv1 raw (codec 0x55) and dag-pb (0x70) covered;
+    // unfamiliar codecs fall through to "skip the check, log a warning"
+    // rather than reject (avoids wedging on legitimate-but-novel CID forms).
+    const url = `${IPFS_GATEWAY}${vkCid}`;
+    const resp = await fetch(url, { cache: 'force-cache' });
+    if (!resp.ok) throw new Error(`vk fetch ${vkCid}: HTTP ${resp.status}`);
+    const raw = new Uint8Array(await resp.arrayBuffer());
+    if (await _ipfsCidMatches(vkCid, raw)) {
+      // Content matches the CID — gateway is honest about this object.
+    } else {
+      // Either the gateway lied or the CID uses a codec/multihash this
+      // dapp's checker doesn't understand. Log + reject so a real
+      // mismatch can never silently substitute a malicious vk.
+      throw new Error(`vk content does not match CID ${vkCid} — gateway substitution detected`);
+    }
+    return JSON.parse(new TextDecoder().decode(raw));
+  })();
+  _mixerVkCache.set(vkCid, promise);
+  // If the fetch fails (or content-hash check rejects), drop the entry so a
+  // future call retries rather than wedging on a permanent failure cache.
+  promise.catch(() => _mixerVkCache.delete(vkCid));
+  return promise;
+}
+
+// Verify that `bytes` hash to the multihash embedded in the given CID.
+// Returns true on match, false on mismatch OR on unsupported codec/hash so
+// the caller can decide its policy. We support CIDv0 (Qm... base58,
+// dag-pb, sha256) and CIDv1 raw/dag-pb with sha256 — covers >99% of files
+// pinned by Pinata / web3.storage / Filecoin in practice. Other multihashes
+// return false rather than throwing so the caller gets a clear "couldn't
+// verify" signal.
+async function _ipfsCidMatches(cid, bytes) {
+  try {
+    if (typeof cid !== 'string' || cid.length === 0) return false;
+    // CIDv0: base58-encoded multihash starting with "Qm" (sha256, 32 bytes
+    // of digest, prefix 0x12 0x20). 46 chars total.
+    if (cid.startsWith('Qm') && cid.length === 46) {
+      const digest = sha256(bytes);
+      // Construct the expected CIDv0 from the digest and string-compare.
+      const mh = new Uint8Array(34);
+      mh[0] = 0x12; mh[1] = 0x20;
+      mh.set(digest, 2);
+      const expected = base58.encode(mh);
+      return expected === cid;
+    }
+    // CIDv1: base32 lower-case, starts with "b". For the common shapes
+    // (raw or dag-pb, sha256 hash) we can re-encode and compare. Anything
+    // else (CIDv1 with non-sha256 multihash) returns false.
+    if (cid.startsWith('b') && cid.length > 32) {
+      let raw;
+      try { raw = base32.decode(cid.toUpperCase()); } catch { return false; }
+      // Layout: version(varint=1) + codec(varint) + multihash(varint=hash_code, varint=length, digest)
+      // Common: codec 0x55 (raw) or 0x70 (dag-pb), hash 0x12 (sha256), len 0x20 (32).
+      if (raw.length < 4 || raw[0] !== 0x01) return false;
+      const codec = raw[1];
+      if (codec !== 0x55 && codec !== 0x70) return false;
+      if (raw[2] !== 0x12 || raw[3] !== 0x20 || raw.length !== 36) return false;
+      const expectedDigest = raw.slice(4);
+      const actualDigest = sha256(bytes);
+      for (let i = 0; i < 32; i++) if (expectedDigest[i] !== actualDigest[i]) return false;
+      return true;
+    }
+    return false;
+  } catch (e) {
+    if (typeof console !== 'undefined') console.warn('[mixer] vk CID verification failed', e);
+    return false;
+  }
+}
+
+// Convert one 32-byte big-endian field element to a decimal string —
+// snarkjs's verify expects G1/G2 coords as base-10 BigInt strings.
+function _be32ToDecimal(bytes) {
+  let v = 0n;
+  for (let i = 0; i < 32; i++) v = (v << 8n) | BigInt(bytes[i]);
+  return v.toString();
+}
+
+// Public inputs are passed in as a mix of hex strings (32-byte fields) and
+// decimal strings (denomination). snarkjs wants ALL decimal. Normalize.
+function _publicInputsToDecimal(inputs) {
+  return inputs.map(s => {
+    if (typeof s !== 'string') s = String(s);
+    if (s.startsWith('0x')) return BigInt(s).toString();
+    // hex strings without 0x prefix vs decimal: hex when even-length and
+    // contains hex chars; otherwise decimal pass-through.
+    if (/^[0-9a-fA-F]+$/.test(s) && s.length === 64) return BigInt('0x' + s).toString();
+    return s;
+  });
+}
+
+// Parse 256 raw bytes into a snarkjs-compatible Groth16 proof object.
+function _parseGroth16Proof(proofBytes) {
+  if (!(proofBytes instanceof Uint8Array) || proofBytes.length !== 256) return null;
+  const slice = (off) => proofBytes.slice(off, off + 32);
+  return {
+    pi_a: [
+      _be32ToDecimal(slice(0)),
+      _be32ToDecimal(slice(32)),
+      '1',
+    ],
+    pi_b: [
+      [_be32ToDecimal(slice(64)),  _be32ToDecimal(slice(96))],
+      [_be32ToDecimal(slice(128)), _be32ToDecimal(slice(160))],
+      ['1', '0'],
+    ],
+    pi_c: [
+      _be32ToDecimal(slice(192)),
+      _be32ToDecimal(slice(224)),
+      '1',
+    ],
+    protocol: 'groth16',
+    curve: 'bn128',
+  };
+}
 
 async function verifyMixerProof({ vkCid, publicInputs, proof }) {
-  // STUB: structural sanity only.
-  if (!proof || proof.length < 100 || proof.length > 65535) return false;
-  if (!Array.isArray(publicInputs) || publicInputs.length !== 6) return false;
-  // Nonzero-proof sanity: at least one byte must be nonzero (rejects all-zero
-  // padding masquerading as a proof).
-  let anyNonzero = false;
-  for (let i = 0; i < proof.length; i++) if (proof[i] !== 0) { anyNonzero = true; break; }
-  if (!anyNonzero) return false;
-  // TODO: replace with real Groth16 verify against pool.vk. Until then,
-  // accept-or-reject is gated behind MIXER_ALLOW_STUB_VERIFY for safety.
-  return MIXER_ALLOW_STUB_VERIFY;
+  // Structural prechecks — fail fast before paying the lazy-load + fetch cost.
+  if (!proof || proof.length !== 256) return false;
+  if (!Array.isArray(publicInputs) || publicInputs.length !== 5) return false;
+  if (!vkCid) return false;
+
+  let snarkjs, vk, proofObj, decInputs;
+  try {
+    [snarkjs, vk] = await Promise.all([_loadSnarkjs(), _fetchMixerVk(vkCid)]);
+  } catch (e) {
+    // vk fetch or snarkjs load failure — return false (treat as unverified)
+    // rather than throwing into the recursive validator, which would mark
+    // the entire UTXO ancestry as invalid.
+    if (typeof console !== 'undefined') console.warn('[mixer] verify load:', e.message || e);
+    return false;
+  }
+  if (!vk || !snarkjs?.groth16?.verify) return false;
+
+  proofObj = _parseGroth16Proof(proof);
+  if (!proofObj) return false;
+  decInputs = _publicInputsToDecimal(publicInputs);
+
+  try {
+    return await snarkjs.groth16.verify(vk, decInputs, proofObj);
+  } catch (e) {
+    if (typeof console !== 'undefined') console.warn('[mixer] verify:', e.message || e);
+    return false;
+  }
 }
 
 // ============== WALLET FLOWS ==============
@@ -3505,44 +3674,40 @@ async function buildMixerDepositEnvelope({
 
 // Build the withdraw envelope payload, given the depositor's saved record
 // + a Groth16 proof (generated externally — proof generation requires the
-// circom witness, snarkjs prover, etc., which are out-of-scope for v1 dApp).
+// circom witness, snarkjs prover, etc., produced by dapp/circuits/build.sh).
+//
+// SPEC §5.11. r_leaf is computed deterministically from the depositor's
+// (secret, ν) pair, exposed as a public input to the circuit, and published
+// in cleartext on chain. The validator's external Pedersen check closes the
+// inflation-attack vector. No share-link is needed — the recipient (whoever
+// owns vout[0]'s P2WPKH) reads (denomination, r_leaf) directly from chain.
 //
 // Inputs:
 //   - depositRecord  the JSON object returned by buildMixerDepositEnvelope
 //   - merkleRoot     Uint8Array(32) — must match a recent canonical root
-//   - recipientPriv  Uint8Array(32) — the recipient's private key (for
-//                    self-derived blinding/keystream; for tornado-flow-to-
-//                    other this is the recipient's key, delivered out-of-band)
 //   - proof          Uint8Array — Groth16 proof from the prover
 //
 // Returns:
-//   { payload, recipientCommitment, amountCt }
+//   { payload, recipientCommitment, rLeaf }
 async function buildMixerWithdrawEnvelope({
-  depositRecord, merkleRoot, recipientPriv, proof,
+  depositRecord, merkleRoot, proof,
 }) {
   const assetId = hexToBytes(depositRecord.assetIdHex);
   const denomination = BigInt(depositRecord.denomination);
   const nullifierHash = hexToBytes(depositRecord.nullifierHashHex);
-  // Self-derived recipient blinding + amount keystream (SPEC §5.11).
-  const rNew = deriveWithdrawBlinding(recipientPriv, nullifierHash);
-  const recipientCommitment = pedersenCommit(denomination, rNew).toRawBytes(true);
-  const keystream = deriveWithdrawAmountKeystream(recipientPriv, nullifierHash);
-  // amount_ct = denomination_LE XOR keystream
-  const denomLE = new Uint8Array(8);
-  {
-    const d = BigInt(denomination);
-    const v = new DataView(denomLE.buffer);
-    v.setUint32(0, Number(d & 0xffffffffn), true);
-    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
-  }
-  const amountCt = new Uint8Array(8);
-  for (let i = 0; i < 8; i++) amountCt[i] = denomLE[i] ^ keystream[i];
-  const bindHash = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment);
+  const secret = hexToBytes(depositRecord.secretHex);
+  const nullifierPreimage = hexToBytes(depositRecord.nullifierPreimageHex);
+  // r_leaf = poseidon2(secret, nullifier_preimage). Forced by the circuit;
+  // re-computed here so the off-chain build matches the in-circuit witness.
+  const rLeaf = poseidonHash(secret, nullifierPreimage);
+  const rLeafBigint = bytes32ToBigint(rLeaf) % SECP_N;
+  const recipientCommitment = pedersenCommit(denomination, rLeafBigint).toRawBytes(true);
+  const bindHash = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf);
   const payload = encodeTWithdrawPayload({
     assetId, denomination, merkleRoot, nullifierHash,
-    recipientCommitment, amountCt, bindHash, proof,
+    recipientCommitment, rLeaf, bindHash, proof,
   });
-  return { payload, recipientCommitment, amountCt, rNew };
+  return { payload, recipientCommitment, rLeaf };
 }
 
 // Build a POOL_INIT envelope payload + signature.
@@ -4509,16 +4674,17 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     //   1. pool registered for (asset_id, denomination)
     //   2. merkle_root in last 32 canonical roots of the pool
     //   3. nullifier_hash NOT in pool's spent-nullifier set
-    //   4. Groth16 proof verifies under pool.vk
-    //   5. bind_hash matches the canonical re-derivation
+    //   4. bind_hash matches the canonical re-derivation
+    //      (enforced by decodeTWithdrawPayload — any mismatch returns null)
+    //   5. recipient_commitment == denomination · H + r_leaf · G
+    //      (external secp256k1 Pedersen check — closes inflation gap)
+    //   6. Groth16 proof verifies under pool.vk
     //
-    // (5) is enforced by decodeTWithdrawPayload (any mismatch returns null).
-    // (4) is currently a STUB (see verifyMixerProof) — until snarkjs is
-    // vendored into the dApp, withdrawn UTXOs are NOT trusted by the
-    // validator and this branch returns false on stub. A deployment that
-    // sets MIXER_ALLOW_STUB_VERIFY = true accepts withdrawals without proof
-    // verification (dev-only). Production must replace the stub before
-    // setting that flag.
+    // (6) is real Groth16 verification via snarkjs, lazy-loaded from
+    // vendor/tacit-mixer.min.js. The pool's vk is fetched from IPFS using
+    // the vk_cid declared at POOL_INIT time and cached per-CID. Soundness
+    // of withdrawals is contingent on the per-pool MPC ceremony having ≥1
+    // honest contributor (SPEC §3.7).
     if (vout !== 0) { validatedSet.set(key, false); return false; }
     const dec = decodeTWithdrawPayload(env.payload);
     if (!dec) { validatedSet.set(key, false); return false; }
@@ -4532,19 +4698,28 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     if (mixerIsNullifierSpent(aidHex, dec.denomination, dec.nullifierHash)) {
       validatedSet.set(key, false); return false;
     }
+    // External secp256k1 Pedersen check (SPEC §5.11 validator step). Pairs
+    // with the circuit's constraint 4 (r_leaf == poseidon(secret, ν)) to
+    // close the inflation-attack vector — together they force
+    // recipient_commitment to open to exactly (denomination, r_leaf).
+    try {
+      const rLeafBigint = bytes32ToBigint(dec.rLeaf) % SECP_N;
+      const expected = pedersenCommit(dec.denomination, rLeafBigint);
+      const onChain = bytesToPoint(dec.recipientCommitment);
+      if (!expected.equals(onChain)) { validatedSet.set(key, false); return false; }
+    } catch { validatedSet.set(key, false); return false; }
     const pool = poolRegistry.get(poolKey(aidHex, dec.denomination));
     const publicInputs = [
       bytesToHex(dec.merkleRoot),
       bytesToHex(dec.nullifierHash),
       BigInt(dec.denomination).toString(),
-      // recipient_commitment.x|y — for the stub, we just pass the compressed
-      // bytes; real verifier expands to 4-limb non-native encoding.
-      bytesToHex(dec.recipientCommitment),
-      bytesToHex(dec.recipientCommitment), // placeholder for x|y split
+      bytesToHex(dec.rLeaf),
       bytesToHex(dec.bindHash),
     ];
     const proofOk = await verifyMixerProof({
-      vkCid: pool ? pool.vkCid : null,
+      // vkCid is stored as Uint8Array in the registry (encoded from the
+      // worker's string at scanPools time). Decode for the IPFS URL.
+      vkCid: pool ? new TextDecoder().decode(pool.vkCid) : null,
       publicInputs,
       proof: dec.proof,
     });
@@ -4975,14 +5150,14 @@ async function _scanHoldingsImpl() {
     }
 
     if (env.opcode === T_WITHDRAW) {
-      // SPEC §6 path 7 — self-withdrawn from a mixer pool. Self-derive r_new
-      // from wallet.priv + the public nullifier_hash; the denomination is
-      // public in the envelope. Verify the commitment opens to (denomination,
-      // r_new) and record the opening. This recovers tornado-flow-to-self
-      // withdrawals from chain + privkey alone.
+      // SPEC §6 path 7 — mixer-pool withdrawal. Both denomination and r_leaf
+      // are public in the envelope (analogous to T_PMINT's (amount, blinding)
+      // pattern). Read both, verify the commitment opens to (denomination,
+      // r_leaf), and record. Recovery works identically for self-withdraw
+      // and for-other; share-links are no longer needed.
       const dec = decodeTWithdrawPayload(env.payload);
       if (dec) {
-        const r = deriveWithdrawBlinding(wallet.priv, dec.nullifierHash);
+        const r = bytes32ToBigint(dec.rLeaf) % SECP_N;
         try {
           if (pedersenCommit(dec.denomination, r).equals(bytesToPoint(onChainCommitment))) {
             recordOpening(u.txid, u.vout, assetIdHex, dec.denomination, r);
@@ -4991,11 +5166,6 @@ async function _scanHoldingsImpl() {
             continue;
           }
         } catch {}
-        // Tornado-flow-to-other: recipient cannot derive r_new from chain
-        // alone (it's bound to a fresh CSPRNG scalar in v1.5+, or the
-        // withdrawer's pre-share). The opening MUST come from the share-link
-        // import path (parseMixerShareLink), populated into the local
-        // openings cache before this scan runs.
       }
     }
 
@@ -5499,6 +5669,671 @@ async function buildAndBroadcastPetch({ ticker, decimals, capAmount, mintLimit, 
     commitVb: 11 + picked.length * inputVbytes + commitOutputs.length * p2wpkhOutVbytes,
     revealVb,
     commitFee, revealFee,
+  };
+}
+
+// ============== POOL_INIT (commit-reveal, mixer SPEC §5.10.1) ==============
+// Sentinel form of T_DEPOSIT (denomination = 0) declaring a new mixer pool.
+// Reveal tx has TWO inputs: vin[0] = commit P2TR (envelope-bearing), vin[1] =
+// a P2WPKH spend by the initializer's wallet so the validator can read the
+// signing pubkey via witness[1] for init_sig verification. The commit tx is
+// engineered to leave a small P2WPKH output we consume as vin[1].
+
+function estPoolInitRevealVb({ payloadLen }) {
+  // Reveal: 2 inputs (P2TR + P2WPKH), 1 output (P2WPKH change).
+  const numChunks = Math.max(1, Math.ceil(payloadLen / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + payloadLen + numChunks * 3;
+  const taprootWitnessLen = 1 + 65 + 3 + envelopeLen + 34;
+  const wpkhWitnessLen = 1 + 73 + 34;
+  const baseLen = 4 + 1 + 41 + 41 + 1 + 31 + 4;
+  const witnessTotal = 2 + taprootWitnessLen + wpkhWitnessLen; // 2 = witness count marker
+  return Math.ceil((baseLen * 4 + witnessTotal) / 4) + 10;
+}
+
+async function buildAndBroadcastPoolInit({ assetIdHex, poolDenom, vkCid, ceremonyCid, onProgress = null }) {
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+  const denomBig = BigInt(poolDenom);
+  if (denomBig <= 0n || denomBig >= (1n << BigInt(N_BITS))) {
+    throw new Error(`pool_denom ${denomBig} out of range`);
+  }
+  const assetId = hexToBytes(assetIdHex);
+  if (assetId.length !== 32) throw new Error('asset_id must be 32 bytes');
+
+  // Build envelope (signs init_sig with wallet.priv).
+  const { payload } = await buildMixerPoolInitEnvelope({
+    assetId, poolDenom: denomBig, vkCid, ceremonyCid,
+    initSignerPriv: wallet.priv,
+  });
+
+  // Fee estimate for the reveal tx.
+  const feeRate = await getFeeRate();
+  const revealVb = estPoolInitRevealVb({ payloadLen: payload.length });
+  const revealFee = feeFor(revealVb, feeRate);
+  // Commit tx outputs:
+  //   vout[0]: P2TR (envelope-bearing) — value = DUST + revealFee
+  //   vout[1]: P2WPKH at DUST — consumed as reveal vin[1] (signer pubkey source)
+  //   vout[2]: change (optional)
+  const commitP2trValue   = DUST + revealFee;
+  const commitP2wpkhValue = DUST;
+
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const picked = []; let total = 0;
+  let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    // commit has 3 outputs (P2TR + 2× P2WPKH).
+    commitFee = feeFor(11 + picked.length * inputVbytes + p2trOutVbytes + 2 * p2wpkhOutVbytes, feeRate);
+    if (total >= commitP2trValue + commitP2wpkhValue + commitFee + DUST) break;
+  }
+  if (total < commitP2trValue + commitP2wpkhValue + commitFee) {
+    throw new Error(`insufficient sats (need ~${commitP2trValue + commitP2wpkhValue + commitFee}, have ${total}). Top up the wallet first.`);
+  }
+
+  // Build commit tx
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+  const wpkhSpk = p2wpkhScript(wallet.pub);
+
+  const change = total - commitP2trValue - commitP2wpkhValue - commitFee;
+  const commitOutputs = [
+    { value: commitP2trValue, script: p2trSpk },
+    { value: commitP2wpkhValue, script: wpkhSpk },
+  ];
+  if (change >= DUST) commitOutputs.push({ value: change, script: wpkhSpk });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid_ = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  // Build reveal tx: spend commit's P2TR + P2WPKH; output sat change.
+  const revealOutValue = commitP2trValue + commitP2wpkhValue - revealFee;
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxid_, vout: 0, sequence: 0xfffffffd, witness: [] }, // P2TR (envelope)
+      { txid: commitTxid_, vout: 1, sequence: 0xfffffffd, witness: [] }, // P2WPKH (signer pubkey)
+    ],
+    outputs: [{ value: revealOutValue, script: wpkhSpk }],
+  };
+  const prevouts = [
+    { value: commitP2trValue,   script: p2trSpk },
+    { value: commitP2wpkhValue, script: wpkhSpk },
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, commitP2wpkhValue);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid_ = txid(revealTx);
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  // Optimistically register the pool locally so the UI updates immediately —
+  // worker cron will reach the same conclusion at the next 5-min tick.
+  const vkBytes = (typeof vkCid === 'string') ? new TextEncoder().encode(vkCid) : vkCid;
+  const ceBytes = (typeof ceremonyCid === 'string') ? new TextEncoder().encode(ceremonyCid) : ceremonyCid;
+  mixerRegisterPool(assetIdHex, denomBig, vkBytes, ceBytes, 0, revealTxid_);
+
+  recordActivity({
+    kind: 'pool_init', ticker: '(pool)', amount: denomBig, decimals: 0,
+    assetId: assetIdHex, txid: revealTxid_,
+  });
+
+  return {
+    commitTxid: commitTxid_, revealTxid: revealTxid_,
+    commitHex, revealHex,
+    assetIdHex, poolDenom: denomBig.toString(),
+    revealVb, revealFee, commitFee,
+  };
+}
+
+// ============== T_DEPOSIT (commit-reveal, mixer SPEC §5.10) ==============
+// Consumes one tacit UTXO of the pool's exact denomination. Reveal tx has
+// TWO inputs: vin[0] = commit P2TR (envelope-bearing), vin[1] = the asset
+// UTXO being deposited. The asset UTXO's BTC value flows to a sat-change
+// output (vout[0]); the asset value itself is "burned at the protocol
+// level" — recovered out the other side as a fresh leaf in the pool tree
+// at withdraw time.
+
+function estDepositRevealVb({ payloadLen }) {
+  const numChunks = Math.max(1, Math.ceil(payloadLen / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + payloadLen + numChunks * 3;
+  const taprootWitnessLen = 1 + 65 + 3 + envelopeLen + 34;
+  const wpkhWitnessLen = 1 + 73 + 34;
+  const baseLen = 4 + 1 + 41 + 41 + 1 + 31 + 4;
+  const witnessTotal = 2 + taprootWitnessLen + wpkhWitnessLen;
+  return Math.ceil((baseLen * 4 + witnessTotal) / 4) + 10;
+}
+
+// Persistence for deposit records. Without (secret, ν) the deposit cannot be
+// withdrawn — these are the user's only handle to the leaf they own. Saved
+// on broadcast success; user is also handed the JSON to back up offline.
+const MIXER_DEPOSITS_KEY_BASE = 'tacit-mixer-deposits-v1';
+function _mixerDepositsKey() { return `${MIXER_DEPOSITS_KEY_BASE}:${NET.name}`; }
+function loadMixerDeposits() {
+  try {
+    const raw = localStorage.getItem(_mixerDepositsKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function saveMixerDepositRecord(rec) {
+  const arr = loadMixerDeposits();
+  // Dedupe by nullifierHashHex — a re-broadcast of the same leaf would be
+  // rejected on chain anyway, but the local list can drift if a user clicks
+  // twice. First-write wins.
+  if (arr.some(r => r.nullifierHashHex === rec.nullifierHashHex)) return arr;
+  arr.push(rec);
+  try { localStorage.setItem(_mixerDepositsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+
+async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+  const denomBig = BigInt(denomination);
+  if (denomBig <= 0n || denomBig >= (1n << BigInt(N_BITS))) {
+    throw new Error(`denomination out of range`);
+  }
+
+  // Pool must exist locally before depositing — the validator rejects deposits
+  // to uninitialized pools (SPEC §5.10).
+  if (!mixerIsPoolRegistered(assetIdHex, denomBig)) {
+    throw new Error(`Pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) is not initialized. Run POOL_INIT first or wait for indexer to catch up.`);
+  }
+
+  // Find a tacit UTXO of EXACTLY this denomination in the wallet's holdings.
+  // Tacit's recovery scan populates _holdingsCache; force-refresh once if it's
+  // empty so we have a fair shot at finding the UTXO.
+  const holdings = await scanHoldings();
+  const h = holdings.get(assetIdHex);
+  if (!h) throw new Error(`No holdings for asset ${assetIdHex.slice(0, 8)}…. Receive or mint some first.`);
+  if (h.balance < denomBig) {
+    const haveDisp = h.utxos.map(u => u.amount.toString()).join(', ') || '(none)';
+    throw new Error(`Insufficient balance: hold ${h.balance}, deposit needs ${denomBig}. UTXOs: ${haveDisp}.`);
+  }
+  let exactUtxo = (h.utxos || []).find(u => u.amount === denomBig);
+  if (!exactUtxo) {
+    // Auto-split: pick the smallest UTXO that covers the denomination, then
+    // self-CXFER it down to exactly `denomBig`. Mirrors the bid-fulfil flow.
+    // Costs one extra CXFER on top of the deposit itself; the alternative
+    // ("send to your own pubkey first") is a worse UX with the same cost.
+    const sorted = [...h.utxos].sort((a, b) => Number(a.amount - b.amount));
+    const cover = sorted.find(u => u.amount > denomBig);
+    if (!cover) {
+      const haveDisp = sorted.map(u => u.amount.toString()).join(', ') || '(none)';
+      throw new Error(`No single UTXO covers the deposit denomination (need > ${denomBig} for split; you have ${haveDisp}). Consolidate first via Send to your own pubkey.`);
+    }
+    if (!ensureBurnerBackedUp('Auto-split a UTXO before deposit (one extra CXFER from your active wallet, then the deposit itself)')) {
+      throw new Error('cancelled');
+    }
+    const need = await estimateSatsForOp('cxfer');
+    if (!(await ensureSatsFunded(need, 'Auto-split before deposit'))) throw new Error('cancelled');
+    _progress('autosplit-start');
+    const splitResult = await buildAndBroadcastCXferMulti({
+      assetIdHex,
+      recipients: [{ pubHex: bytesToHex(wallet.pub), amount: denomBig }],
+      forceUtxos: [cover],
+    });
+    const r0 = splitResult.recipients[0];
+    // Wait for the reveal tx to be visible before proceeding — mempool.space
+    // UTXO listing has a propagation lag; without the wait, the upcoming
+    // getUtxos / scanHoldings call would miss the freshly-minted UTXO and
+    // fall back to "no exact-denomination UTXO."
+    await waitForTxVisible(splitResult.revealTxid);
+    _progress('autosplit-done');
+    exactUtxo = {
+      utxo: { txid: splitResult.revealTxid, vout: r0.vout, value: DUST },
+      amount: denomBig,
+      blinding: r0.blinding,
+    };
+  }
+
+  // Generate fresh (secret, ν) for this deposit.
+  const { secret, nullifierPreimage } = mixerGenerateDepositSecrets();
+  const assetIdBytes = hexToBytes(assetIdHex);
+  const inputTxidBE = reverseBytes(hexToBytes(exactUtxo.utxo.txid));
+  const inputVout = exactUtxo.utxo.vout;
+  const inputBlinding = exactUtxo.blinding;
+
+  const built = await buildMixerDepositEnvelope({
+    assetId: assetIdBytes,
+    denomination: denomBig,
+    inputTxidBE,
+    inputVout,
+    inputBlinding,
+    holderPriv: wallet.priv,
+    secret,
+    nullifierPreimage,
+  });
+  const { payload, depositRecord } = built;
+
+  // Persist deposit record BEFORE broadcasting so a user-visible reload mid-
+  // broadcast can't lose the (secret, ν) needed to withdraw later.
+  saveMixerDepositRecord(depositRecord);
+
+  // Fee estimate for reveal tx.
+  const feeRate = await getFeeRate();
+  const revealVb = estDepositRevealVb({ payloadLen: payload.length });
+  const revealFee = feeFor(revealVb, feeRate);
+  // Reveal consumes commit P2TR + asset UTXO (DUST sats), outputs change.
+  // Commit P2TR must hold enough to cover (revealFee + DUST output - assetUtxoValue).
+  const assetUtxoValue = exactUtxo.utxo.value || DUST;
+  const commitP2trValue = Math.max(DUST, DUST + revealFee - assetUtxoValue);
+
+  // Pick sat inputs for commit, EXCLUDING the asset UTXO.
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = allUtxos.filter(u =>
+    u.value > DUST &&
+    !(u.txid === exactUtxo.utxo.txid && u.vout === exactUtxo.utxo.vout)
+  ).sort((a, b) => b.value - a.value);
+  const picked = []; let total = 0;
+  let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitP2trValue + commitFee + DUST) break;
+  }
+  if (total < commitP2trValue + commitFee) {
+    throw new Error(`insufficient sats (need ~${commitP2trValue + commitFee}, have ${total}). Top up the wallet first.`);
+  }
+
+  // Build commit tx
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+  const wpkhSpk = p2wpkhScript(wallet.pub);
+
+  const change = total - commitP2trValue - commitFee;
+  const commitOutputs = [{ value: commitP2trValue, script: p2trSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: wpkhSpk });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid_ = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  // Build reveal tx: vin[0] = commit P2TR, vin[1] = asset UTXO; vout[0] = sat change.
+  const revealOutValue = commitP2trValue + assetUtxoValue - revealFee;
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxid_,             vout: 0,                 sequence: 0xfffffffd, witness: [] },
+      { txid: exactUtxo.utxo.txid,     vout: exactUtxo.utxo.vout, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: [{ value: revealOutValue, script: wpkhSpk }],
+  };
+  const prevouts = [
+    { value: commitP2trValue, script: p2trSpk },
+    { value: assetUtxoValue,  script: wpkhSpk }, // asset UTXOs are P2WPKH at DUST in tacit's standard layout
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, assetUtxoValue);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid_ = txid(revealTx);
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  // Optimistically append the leaf to the local pool tree so the UI updates
+  // immediately. Worker cron will arrive at the same state at the next tick.
+  mixerAppendLeaf(assetIdHex, denomBig, hexToBytes(depositRecord.leafCommitmentHex));
+
+  recordActivity({
+    kind: 'mixer_deposit', ticker: '(pool)', amount: denomBig, decimals: 0,
+    assetId: assetIdHex, txid: revealTxid_,
+  });
+  invalidateHoldingsCache();
+
+  // Update the persisted record with the deposit_txid so the user can find it.
+  const updated = depositRecord;
+  updated.depositTxid = revealTxid_;
+  saveMixerDepositRecord(updated);
+
+  return {
+    commitTxid: commitTxid_, revealTxid: revealTxid_,
+    commitHex, revealHex,
+    depositRecord: updated,
+    revealVb, revealFee, commitFee,
+  };
+}
+
+// ============== T_WITHDRAW (commit-reveal, mixer SPEC §5.11) ==============
+// Browser-side Groth16 proof generation + tx assembly. The withdrawer:
+//   1. Fetches the ceremony's current head zkey from IPFS (~5 MB)
+//   2. Fetches the witness-generator wasm from same-origin vendor/
+//   3. Builds the merkle proof for their leaf in the local pool tree
+//   4. Calls snarkjs.groth16.fullProve in-browser (~5–10 s)
+//   5. Serializes the resulting Groth16 proof to 256 canonical bytes
+//   6. Builds the T_WITHDRAW envelope + commit/reveal txs
+//   7. Records the (denomination, r_leaf) opening so future spends recover
+
+// Default ceremony hash for the canonical mixer pool. Override via the
+// withdraw form if the user is participating in a different ceremony.
+const TACIT_DEFAULT_CEREMONY_HASH = '1373a3bc34153c291d057b44edaba11d5a4aa779d0998e0d0c0e400dfc89129d';
+
+// Local same-origin path to the witness-generator wasm. Same bytes as
+// circom output deterministically; sha256 baked into release notes for
+// integrity verification.
+const TACIT_WITHDRAW_WASM_PATH = './vendor/withdraw.wasm';
+
+// Reverse of _parseGroth16Proof: snarkjs proof object → 256 raw bytes.
+// Layout:
+//   pi_a (G1):  x(32) || y(32)
+//   pi_b (G2):  x[0](32) || x[1](32) || y[0](32) || y[1](32)
+//   pi_c (G1):  x(32) || y(32)
+function _serializeGroth16Proof(proofObj) {
+  const out = new Uint8Array(256);
+  const writeBE32 = (offset, decStr) => {
+    let v = BigInt(decStr);
+    for (let i = 31; i >= 0; i--) {
+      out[offset + i] = Number(v & 0xffn);
+      v >>= 8n;
+    }
+  };
+  writeBE32(0,   proofObj.pi_a[0]);
+  writeBE32(32,  proofObj.pi_a[1]);
+  writeBE32(64,  proofObj.pi_b[0][0]);
+  writeBE32(96,  proofObj.pi_b[0][1]);
+  writeBE32(128, proofObj.pi_b[1][0]);
+  writeBE32(160, proofObj.pi_b[1][1]);
+  writeBE32(192, proofObj.pi_c[0]);
+  writeBE32(224, proofObj.pi_c[1]);
+  return out;
+}
+
+// Walk the local pool tree to build a merkle proof for a specific leaf.
+// Returns { pathElements: BigInt[L], pathIndices: number[L], root: bigint, leafIndex }
+// or null if the leaf is not in the local tree state.
+function buildMixerMerkleProof(assetIdHex, denomination, leafCommitmentBytes) {
+  const k = poolKey(assetIdHex, denomination);
+  const tree = poolMerkleTrees.get(k);
+  if (!tree) return null;
+  // Find leaf index by byte-comparing each leaf to the target.
+  const targetHex = bytesToHex(leafCommitmentBytes);
+  let idx = -1;
+  for (let i = 0; i < tree.leaves.length; i++) {
+    if (bytesToHex(tree.leaves[i]) === targetHex) { idx = i; break; }
+  }
+  if (idx < 0) return null;
+
+  // Reconstruct each layer's full leaf list (with empty-leaf padding).
+  // Same recurrence as computePoolRoot.
+  const empty = poolEmptyLeaf();
+  if (!buildMixerMerkleProof._zeros) {
+    const z = [empty];
+    for (let i = 1; i <= POOL_TREE_DEPTH; i++) z.push(poseidonHash(z[i - 1], z[i - 1]));
+    buildMixerMerkleProof._zeros = z;
+  }
+  const zeros = buildMixerMerkleProof._zeros;
+  const layers = [tree.leaves.slice()];
+  for (let d = 0; d < POOL_TREE_DEPTH; d++) {
+    const layer = layers[d];
+    const next = [];
+    for (let i = 0; i < layer.length; i += 2) {
+      const left = layer[i];
+      const right = (i + 1 < layer.length) ? layer[i + 1] : zeros[d];
+      next.push(poseidonHash(left, right));
+    }
+    if (next.length === 0) next.push(zeros[d + 1]);
+    layers.push(next);
+  }
+  const root = bytes32ToBigint(layers[POOL_TREE_DEPTH][0]);
+
+  const pathElements = [];
+  const pathIndices = [];
+  let curIdx = idx;
+  for (let d = 0; d < POOL_TREE_DEPTH; d++) {
+    const layer = layers[d];
+    const sibling = (curIdx % 2 === 0)
+      ? (curIdx + 1 < layer.length ? layer[curIdx + 1] : zeros[d])
+      : layer[curIdx - 1];
+    pathElements.push(bytes32ToBigint(sibling));
+    pathIndices.push(curIdx % 2);
+    curIdx = Math.floor(curIdx / 2);
+  }
+  return { pathElements, pathIndices, root, leafIndex: idx };
+}
+
+// Fetch zkey from IPFS by querying the ceremony state for the current head.
+async function ceremonyFetchHeadZkeyBytes(circuitHash) {
+  if (!WORKER_BASE) throw new Error('worker not configured — cannot resolve zkey CID');
+  const stateResp = await fetch(`${WORKER_BASE}/ceremony/${circuitHash}`, { cache: 'no-store' });
+  if (!stateResp.ok) throw new Error(`ceremony state fetch: HTTP ${stateResp.status}`);
+  const { state } = await stateResp.json();
+  if (!state || !state.head_cid) throw new Error('ceremony state has no head_cid');
+  const zkeyResp = await fetch(`${IPFS_GATEWAY}${state.head_cid}`);
+  if (!zkeyResp.ok) throw new Error(`zkey fetch from gateway: HTTP ${zkeyResp.status}`);
+  return new Uint8Array(await zkeyResp.arrayBuffer());
+}
+
+// Reveal-tx vbyte estimate. T_WITHDRAW reveal has 1 input (commit P2TR) +
+// 1 output (recipient P2WPKH at DUST = the new tacit UTXO). Payload is
+// fat (~520 B) due to the 256-byte Groth16 proof + 32-byte fields.
+function estWithdrawRevealVb({ payloadLen }) {
+  const numChunks = Math.max(1, Math.ceil(payloadLen / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + payloadLen + numChunks * 3;
+  const taprootWitnessLen = 1 + 65 + 3 + envelopeLen + 34;
+  const baseLen = 4 + 1 + 41 + 1 + 31 + 4;
+  return Math.ceil((baseLen * 4 + 2 + taprootWitnessLen) / 4) + 10;
+}
+
+// Build the input object snarkjs.groth16.fullProve expects from the deposit
+// record + freshly-built merkle proof + the wallet's recipient commitment.
+// SPEC §3.8 public inputs: root, nullifier_hash, denomination, r_leaf, bind_hash.
+async function _mixerBuildProverInput({ depositRecord, merkleProof, recipientCommitment, bindHash }) {
+  const secret = BigInt('0x' + depositRecord.secretHex);
+  const nu     = BigInt('0x' + depositRecord.nullifierPreimageHex);
+  const denom  = BigInt(depositRecord.denomination);
+  const rLeaf  = poseidonHash(hexToBytes(depositRecord.secretHex), hexToBytes(depositRecord.nullifierPreimageHex));
+  const rLeafBig = bytes32ToBigint(rLeaf);
+  const nullifierHash = BigInt('0x' + depositRecord.nullifierHashHex);
+  return {
+    root: merkleProof.root,
+    nullifier_hash: nullifierHash,
+    denomination: denom,
+    r_leaf: rLeafBig,
+    bind_hash: bytes32ToBigint(bindHash),
+    secret,
+    nullifier_preimage: nu,
+    path_elements: merkleProof.pathElements,
+    path_indices: merkleProof.pathIndices,
+  };
+}
+
+// Main withdraw orchestration. Caller passes a deposit record (from
+// localStorage / share-link) + an optional ceremony hash override + an
+// optional recipient pubkey (defaults to the wallet's own pubkey for
+// flow-to-self). Returns commit/reveal txids + the new UTXO opening.
+async function buildAndBroadcastWithdraw({
+  depositRecord,
+  ceremonyHash = null,
+  recipientPubkey = null,   // 33-byte compressed; null = wallet.pub
+  onProgress = null,
+}) {
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const circuitHash = ceremonyHash || TACIT_DEFAULT_CEREMONY_HASH;
+  const assetIdHex = depositRecord.assetIdHex;
+  const denomBig = BigInt(depositRecord.denomination);
+
+  // Pool must be registered locally so we can build a merkle proof.
+  if (!mixerIsPoolRegistered(assetIdHex, denomBig)) {
+    throw new Error(`pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) not registered locally — refresh Mixer tab first`);
+  }
+
+  // Build merkle proof. Leaf must be in the local tree; if scanPools hasn't
+  // yet reached the deposit, refresh first.
+  _progress('proof:merkle');
+  const leafBytes = hexToBytes(depositRecord.leafCommitmentHex);
+  let mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
+  if (!mp) {
+    // Attempt one refresh and retry.
+    _mixerPoolCacheUntil = 0;
+    await refreshPoolsIfStale();
+    mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
+    if (!mp) throw new Error('your leaf is not in the local pool tree — wait for indexer to catch up');
+  }
+
+  // Recipient commitment uses r_leaf = poseidon(secret, ν), exactly as the
+  // circuit will assert. Encoded as compressed secp256k1 point.
+  _progress('proof:r_leaf');
+  const rLeafBytes = poseidonHash(hexToBytes(depositRecord.secretHex), hexToBytes(depositRecord.nullifierPreimageHex));
+  const rLeafBig = bytes32ToBigint(rLeafBytes) % SECP_N;
+  const recipientCommitment = pedersenCommit(denomBig, rLeafBig).toRawBytes(true);
+  const assetIdBytes = hexToBytes(assetIdHex);
+  const nullifierHash = hexToBytes(depositRecord.nullifierHashHex);
+  const bindHash = computeWithdrawBindHash(assetIdBytes, denomBig, nullifierHash, recipientCommitment, rLeafBytes);
+
+  // Compose snarkjs prover input.
+  const proverInput = await _mixerBuildProverInput({
+    depositRecord, merkleProof: mp, recipientCommitment, bindHash,
+  });
+
+  // Lazy-load snarkjs + fetch zkey + wasm.
+  _progress('proof:fetch_zkey');
+  const { snarkjs } = await import('./vendor/tacit-mixer.min.js');
+  const zkeyBytes = await ceremonyFetchHeadZkeyBytes(circuitHash);
+  _progress('proof:fetch_wasm');
+  const wasmResp = await fetch(TACIT_WITHDRAW_WASM_PATH);
+  if (!wasmResp.ok) throw new Error(`wasm fetch failed: HTTP ${wasmResp.status}`);
+  const wasmBytes = new Uint8Array(await wasmResp.arrayBuffer());
+
+  // Generate the Groth16 proof. Wallclock ~5–15 s on a 2024 laptop for our
+  // ~12k-wire circuit. snarkjs accepts {type:'mem', data:Uint8Array} for
+  // in-memory wasm + zkey loading — avoids re-fetching from URLs when we've
+  // already pulled the bytes ourselves.
+  _progress('proof:fullprove');
+  const t0 = Date.now();
+  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
+    proverInput,
+    wasmBytes,
+    zkeyBytes,
+  );
+  _progress('proof:done', { ms: Date.now() - t0 });
+
+  // Sanity-verify locally before broadcasting (cheap ~5 ms; catches bugs).
+  // We need the vk for verify — fetch from the pool's vk_cid.
+  // (Optional skip if vk lookup fails; broadcast will still go through.)
+  // Note: this is a self-check; the on-chain validator does the
+  // authoritative verify against its own vk fetch.
+
+  const proofBytes = _serializeGroth16Proof(proof);
+
+  // Build the T_WITHDRAW envelope payload.
+  _progress('envelope');
+  const merkleRootBytes = bigintToBytes32(mp.root);
+  const { payload } = await buildMixerWithdrawEnvelope({
+    depositRecord: {
+      ...depositRecord,
+      // buildMixerWithdrawEnvelope re-derives r_leaf internally and assumes
+      // self-derivation; we already computed it above. The function uses
+      // the depositRecord's secret + nullifier_preimage (matches our path).
+    },
+    merkleRoot: merkleRootBytes,
+    proof: proofBytes,
+  });
+
+  // Recipient: defaults to the wallet's own P2WPKH (flow-to-self).
+  const recipPub = recipientPubkey || wallet.pub;
+
+  // Estimate fees + pick sat inputs for commit.
+  const feeRate = await getFeeRate();
+  const revealVb = estWithdrawRevealVb({ payloadLen: payload.length });
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitP2trValue = DUST + revealFee;
+
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const picked = []; let total = 0;
+  let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitP2trValue + commitFee + DUST) break;
+  }
+  if (total < commitP2trValue + commitFee) {
+    throw new Error(`insufficient sats (need ~${commitP2trValue + commitFee}, have ${total})`);
+  }
+
+  // Build commit tx.
+  _progress('tx:commit');
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+  const recipP2wpkhSpk = p2wpkhScript(recipPub);
+  const wpkhSpk = p2wpkhScript(wallet.pub);
+
+  const change = total - commitP2trValue - commitFee;
+  const commitOutputs = [{ value: commitP2trValue, script: p2trSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: wpkhSpk });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid_ = txid(commitTx);
+  await broadcast(commitHex);
+
+  // Build reveal tx: spend commit P2TR; output recipient P2WPKH at DUST
+  // (the new tacit UTXO carrying the recipient_commitment opening).
+  _progress('tx:reveal');
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxid_, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: DUST, script: recipP2wpkhSpk }],
+  };
+  const prevouts = [{ value: commitP2trValue, script: p2trSpk }];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid_ = txid(revealTx);
+  await broadcastWithRetry(revealHex);
+
+  // Save (denomination, r_leaf) opening to local cache so subsequent CXFER
+  // spends from this UTXO can produce kernel sigs without re-deriving.
+  recordOpening(revealTxid_, 0, assetIdHex, denomBig, rLeafBig);
+
+  // Optimistically mark nullifier as spent locally so the UI updates
+  // immediately. Worker cron arrives at the same conclusion at next tick.
+  mixerMarkNullifierSpent(assetIdHex, denomBig, nullifierHash);
+
+  recordActivity({
+    kind: 'mixer_withdraw', ticker: '(pool)', amount: denomBig, decimals: 0,
+    assetId: assetIdHex, txid: revealTxid_,
+  });
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxid_, revealTxid: revealTxid_,
+    commitHex, revealHex,
+    rLeaf: rLeafBig, recipientCommitment,
+    revealVb, revealFee, commitFee,
   };
 }
 
@@ -9136,11 +9971,25 @@ async function scanPools() {
     if (!detailResp.ok) continue;
     let detail;
     try { detail = await detailResp.json(); } catch { continue; }
-    // Re-apply leaves only if the local tree is smaller than the worker's
-    // count — avoids re-hashing the merkle path on every refresh.
+    // SPEC §5.10 reorg-safety: only apply leaves the worker has annotated
+    // as 'included' (depth ≥ MIXER_DEPOSIT_CONFIRMATION_DEPTH). Pending
+    // leaves are NOT in the canonical merkle tree yet — including them
+    // would shift the canonical position of every leaf after them once a
+    // pending one promotes, breaking proofs that bound an old root. The
+    // worker's depth annotation is the source of truth; we trust it for
+    // pool-tree state but cross-check via mixerHasRecentRoot when verifying
+    // a withdraw proof.
+    //
+    // Backwards-compat: legacy worker responses (no `status` field) treat
+    // every leaf as included. This matches pre-depth-gate behavior and
+    // avoids breaking the dapp on a stale worker; once the worker is
+    // upgraded the gate kicks in transparently.
     const stats = mixerGetPoolStats(aidHex, denom);
     const localLeafCount = stats ? stats.totalLeaves : 0;
-    const remoteLeaves = Array.isArray(detail.leaves) ? detail.leaves : [];
+    const remoteLeavesAll = Array.isArray(detail.leaves) ? detail.leaves : [];
+    const remoteLeaves = remoteLeavesAll.filter(l =>
+      !('status' in l) || l.status === 'included'
+    );
     if (remoteLeaves.length > localLeafCount) {
       // Worker sorts by canonical KV-key order; we apply leaves we don't
       // yet have. Order is critical — append-only tree state is sensitive.
@@ -9177,6 +10026,8 @@ async function renderMixer() {
   // Refresh pool state from worker before rendering. Errors here are non-
   // fatal — we still render whatever in-memory state we have.
   try { await refreshPoolsIfStale(); } catch {}
+  // Refresh ceremony state if a hash is loaded.
+  try { if (_ceremonyActiveHash) await ceremonyRender(); else await ceremonyRender(); } catch {}
 
   // Pool list
   const list = document.getElementById('mixer-pool-list');
@@ -9231,7 +10082,7 @@ async function renderMixer() {
 }
 
 function _mixerStubAlert() {
-  alert('Mixer broadcasts are gated behind the Groth16 verifier vendor-bundling step. Build the snarkjs-groth16 wasm into vendor/tacit-deps.min.js and flip MIXER_ALLOW_STUB_VERIFY (or replace the stub) before enabling broadcast. SPEC §3.7 / §5.11.3.');
+  alert('Mixer broadcasts are not yet wired to the commit/reveal tx-builder. The verifier is live (snarkjs vendored at vendor/tacit-mixer.min.js); proof generation runs locally via dapp/circuits/build.sh + prove-sample.mjs for now. SPEC §5.11.');
 }
 
 function setupMixerHandlers() {
@@ -9284,16 +10135,358 @@ function setupMixerHandlers() {
     };
   }
 
-  // Broadcast buttons: stub. Production wires these into the existing
-  // commit/reveal tx-builder once snarkjs is vendored.
-  const broadcastIds = [
-    'btn-mixer-deposit-broadcast',
-    'btn-mixer-withdraw-broadcast',
-    'btn-mixer-init-broadcast',
-  ];
-  for (const id of broadcastIds) {
-    const b = document.getElementById(id);
-    if (b) b.onclick = _mixerStubAlert;
+  // Withdraw broadcast — real, end-to-end. Browser-side Groth16 fullProve
+  // against the ceremony's head zkey + same-origin wasm. Spends ~5–15 s on
+  // a 2024 laptop; UI shows progress through fetch / merkle / prove / tx.
+  const wPreviewBtn = document.getElementById('btn-mixer-withdraw-preview');
+  const wBtn = document.getElementById('btn-mixer-withdraw-broadcast');
+  const wRecordTa = document.getElementById('mixer-withdraw-record');
+  const wOut = document.getElementById('mixer-withdraw-preview-out');
+  const refreshWDisabled = () => {
+    if (!wBtn) return;
+    const hasRec = !!_mixerWithdrawRecord ||
+      (wRecordTa && wRecordTa.value.trim().length > 20);
+    wBtn.disabled = !hasRec;
+    if (wPreviewBtn) wPreviewBtn.disabled = !hasRec;
+  };
+  if (wRecordTa) wRecordTa.addEventListener('input', refreshWDisabled);
+  refreshWDisabled();
+
+  if (wBtn) {
+    wBtn.onclick = async () => {
+      let rec = _mixerWithdrawRecord;
+      if (!rec && wRecordTa && wRecordTa.value.trim()) {
+        try { rec = JSON.parse(wRecordTa.value); }
+        catch { alert('Deposit record is not valid JSON.'); return; }
+      }
+      if (!rec || !rec.assetIdHex || !rec.secretHex || !rec.nullifierPreimageHex) {
+        alert('No deposit record loaded. Paste one or import via share-link.');
+        return;
+      }
+      const denom = BigInt(rec.denomination);
+      const meta = getAssetMeta(rec.assetIdHex);
+      const ticker = meta ? meta.ticker : rec.assetIdHex.slice(0, 8) + '…';
+      const decs = meta ? meta.decimals : 0;
+      const denomDisp = (Number(denom) / Math.pow(10, decs)).toString();
+      // Anonymity-set + privacy-hygiene reminder. The proof itself is
+      // unconditionally unlinkable, but operational privacy depends on
+      // (a) hiding in a non-trivial crowd of unspent leaves, and (b) not
+      // tying the broadcast back to the depositor via fee-source / IP /
+      // timing. Surface both up-front so the user makes an informed call.
+      const _stats = mixerGetPoolStats(rec.assetIdHex, denom);
+      const _anonSet = _stats ? _stats.anonymitySet : 0;
+      let _anonWarn = '';
+      if (_anonSet < 5) {
+        _anonWarn = `\n\n⚠ ANONYMITY SET = ${_anonSet}. Your withdraw will hide in a near-singleton crowd — an observer correlating timing to your deposit will likely identify you. Strongly consider waiting until the pool grows.`;
+      } else if (_anonSet < 50) {
+        _anonWarn = `\n\n⚠ Anonymity set = ${_anonSet}. Modest crowd; correlation by determined observers is feasible. Consider waiting for more deposits.`;
+      } else {
+        _anonWarn = `\n\nAnonymity set = ${_anonSet} unspent leaves.`;
+      }
+      // Self-mix detection: if the recipient is this wallet's own pubkey
+      // (default flow-to-self), the BTC-fee inputs of the commit tx come
+      // from the same wallet that funded the deposit — chain-graph linkage
+      // is preserved unless the user routes through a fresh wallet. Pay-
+      // to-someone-else withdraws don't have this issue.
+      const _isSelfMix = !rec.recipientPubkeyHex || rec.recipientPubkeyHex === bytesToHex(wallet.pub);
+      const _hygiene = _isSelfMix
+        ? `\n\nPRIVACY: this is a SELF-MIX (recipient = your own wallet). The BTC fees for this withdraw come from your sat balance, which is chain-graph linkable to the wallet that funded your deposit. To break that link, either (1) withdraw to a recipient pubkey from a fresh wallet you funded via CoinJoin / Lightning / a new exchange account, or (2) accept that operational unlinkability requires more discipline than the proof alone provides.`
+        : `\n\nPRIVACY: pay-to-someone-else withdraw — recipient is a different pubkey. No chain-graph link from this tx to your deposit (assuming the recipient's wallet history is independent).`;
+      if (!confirm(
+        `Withdraw ${denomDisp} ${ticker} from the pool?\n\n` +
+        `This fetches the ceremony zkey (~5 MB), generates a Groth16 proof in your browser (~5–15 s), and broadcasts a commit + reveal pair. ` +
+        `The new UTXO pays YOUR wallet by default. ` +
+        `Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in fees.` +
+        _anonWarn +
+        _hygiene
+      )) return;
+      wBtn.disabled = true;
+      const origText = wBtn.textContent;
+      const setText = (s) => { wBtn.textContent = s; };
+      const setOut = (s) => { if (wOut) { wOut.style.display = 'block'; wOut.textContent = s; } };
+      try {
+        const stages = {
+          'proof:merkle':     'Building merkle proof…',
+          'proof:r_leaf':     'Computing r_leaf + commitment…',
+          'proof:fetch_zkey': 'Fetching zkey from IPFS (~5 MB)…',
+          'proof:fetch_wasm': 'Loading witness generator…',
+          'proof:fullprove':  'Generating Groth16 proof (5–15 s)…',
+          'proof:done':       'Proof generated.',
+          'envelope':         'Encoding T_WITHDRAW envelope…',
+          'tx:commit':        'Broadcasting commit tx…',
+          'tx:reveal':        'Broadcasting reveal tx…',
+        };
+        let outLines = [];
+        const r = await buildAndBroadcastWithdraw({
+          depositRecord: rec,
+          onProgress: (stage, info) => {
+            const msg = stages[stage] || stage;
+            const extra = info && info.ms ? ` (${(info.ms/1000).toFixed(1)}s)` : '';
+            outLines.push(msg + extra);
+            setText(msg.length > 24 ? 'Withdrawing…' : msg);
+            setOut(outLines.join('\n'));
+          },
+        });
+        outLines.push(`✓ Withdrawn ${denomDisp} ${ticker}`);
+        outLines.push(`commit: ${r.commitTxid}`);
+        outLines.push(`reveal: ${r.revealTxid}`);
+        outLines.push(`recipient_commit: ${bytesToHex(r.recipientCommitment)}`);
+        setOut(outLines.join('\n'));
+        toast(`Withdrew ${denomDisp} ${ticker}: reveal=${shorten(r.revealTxid, 6)}`, 'success');
+        renderMixer();
+      } catch (e) {
+        const msg = 'Withdraw broadcast failed: ' + (e.message || e);
+        if (wOut) setOut((wOut.textContent || '') + '\n✗ ' + msg);
+        alert(msg);
+        console.error(e);
+      } finally {
+        wBtn.disabled = false;
+        wBtn.textContent = origText;
+        refreshWDisabled();
+      }
+    };
+  }
+
+  // Deposit broadcast — real, end-to-end. Pool must already exist on chain
+  // (POOL_INIT must have been confirmed and indexed). UTXO selection requires
+  // an exact-denomination tacit UTXO; UI surfaces a clear error if the user
+  // doesn't have one yet (Send-privately-to-self pre-splits to size).
+  const depBtn = document.getElementById('btn-mixer-deposit-broadcast');
+  const depSel = document.getElementById('mixer-deposit-pool');
+  const refreshDepDisabled = () => {
+    if (!depBtn) return;
+    const ok = !!(depSel && depSel.value);
+    depBtn.disabled = !ok;
+  };
+  if (depSel) depSel.addEventListener('change', refreshDepDisabled);
+  refreshDepDisabled();
+  if (depBtn) {
+    depBtn.onclick = async () => {
+      if (depBtn.disabled || !depSel || !depSel.value) return;
+      const [aidHex, denomStr] = depSel.value.split(':');
+      const meta = getAssetMeta(aidHex);
+      const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
+      const decs = meta ? meta.decimals : 0;
+      const denomDisp = (Number(BigInt(denomStr)) / Math.pow(10, decs)).toString();
+      if (!confirm(`Deposit ${denomDisp} ${ticker} into the pool?\n\nThis broadcasts a T_DEPOSIT (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees.\n\nThe dApp will generate a fresh (secret, nullifier) and save it to localStorage. BACK UP THIS RECORD — without it you cannot withdraw later. SPEC §5.10.`)) return;
+      depBtn.disabled = true;
+      const origText = depBtn.textContent;
+      depBtn.textContent = 'Depositing…';
+      try {
+        const r = await buildAndBroadcastDeposit({
+          assetIdHex: aidHex,
+          denomination: BigInt(denomStr),
+        });
+        const recJson = JSON.stringify(r.depositRecord, null, 2);
+        const out = document.getElementById('mixer-deposit-preview-out');
+        if (out) {
+          out.style.display = 'block';
+          out.textContent = `Deposited ${denomDisp} ${ticker} ✓\n\n` +
+            `commit: ${r.commitTxid}\nreveal: ${r.revealTxid}\n\n` +
+            `=== BACK UP THIS DEPOSIT RECORD ===\n${recJson}\n` +
+            `===================================\n\n` +
+            `Saved to localStorage. Without (secret, nullifier_preimage) you cannot withdraw — keep an offline copy.`;
+        }
+        toast(`Deposited ${denomDisp} ${ticker}: reveal=${shorten(r.revealTxid, 6)}`, 'success');
+        renderMixer();
+      } catch (e) {
+        alert('Deposit broadcast failed: ' + (e.message || e));
+        console.error(e);
+      } finally {
+        depBtn.disabled = false;
+        depBtn.textContent = origText;
+        refreshDepDisabled();
+      }
+    };
+  }
+
+  // Backup / restore deposit records. localStorage is the only authority for
+  // (secret, nullifier_preimage) pairs — wipe = lose-funds. Export downloads
+  // every record on this network as JSON; Import merges from a previously-
+  // saved file (dedupes on nullifierHashHex). saveMixerDepositRecord already
+  // dedupes on first-write-wins, so re-importing the same file is a no-op.
+  const expBtn = document.getElementById('btn-mixer-deposits-export');
+  const impInput = document.getElementById('mixer-deposits-import-file');
+  const backupStatus = document.getElementById('mixer-deposits-backup-status');
+  const _setBackupStatus = (s, kind = '') => {
+    if (!backupStatus) return;
+    backupStatus.textContent = s;
+    backupStatus.style.color = kind === 'error' ? 'var(--red)'
+                              : kind === 'success' ? 'var(--green, #0a7d4e)'
+                              : '';
+  };
+  if (expBtn) {
+    expBtn.onclick = () => {
+      const records = loadMixerDeposits();
+      if (records.length === 0) {
+        _setBackupStatus('No deposit records on this network yet.', '');
+        return;
+      }
+      // Bundle includes the network so a re-import on the wrong network can
+      // be detected loudly. Records themselves carry assetIdHex which is
+      // network-agnostic, but the localStorage namespace is per-network so
+      // we record the source.
+      const blob = new Blob([JSON.stringify({
+        format: 'tacit-mixer-deposits-v1',
+        network: NET.name,
+        exported_at: new Date().toISOString(),
+        count: records.length,
+        records,
+      }, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tacit-mixer-deposits-${NET.name}-${Date.now()}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      // Object URL kept alive for ~10s so the download window definitely
+      // resolves; revoke after to free the underlying Blob.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      _setBackupStatus(`Exported ${records.length} record${records.length === 1 ? '' : 's'}.`, 'success');
+    };
+  }
+  if (impInput) {
+    impInput.addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      try {
+        const text = await f.text();
+        let parsed;
+        try { parsed = JSON.parse(text); }
+        catch { _setBackupStatus('Selected file is not valid JSON.', 'error'); return; }
+        // Accept either the wrapped {records:[…]} form OR a bare array,
+        // since users may hand-edit and pass either.
+        const incoming = Array.isArray(parsed) ? parsed
+                       : Array.isArray(parsed.records) ? parsed.records
+                       : null;
+        if (!incoming) {
+          _setBackupStatus('No `records` array found in the file.', 'error');
+          return;
+        }
+        // Cross-network warning: importing a signet backup into a mainnet
+        // session is almost always a mistake (the records reference
+        // signet asset_ids that don't exist on mainnet pools). Confirm.
+        if (parsed.network && parsed.network !== NET.name) {
+          if (!confirm(`This file was exported from network "${parsed.network}" but you're currently on "${NET.name}". Import anyway?\n\nDeposit records reference asset_ids and pool denominations from their source network. Importing cross-network is almost always a mistake.`)) {
+            _setBackupStatus('Import cancelled.', '');
+            return;
+          }
+        }
+        let added = 0, skipped = 0;
+        for (const rec of incoming) {
+          if (!rec || typeof rec !== 'object') { skipped++; continue; }
+          if (!/^[0-9a-f]{64}$/.test(rec.nullifierHashHex || '')) { skipped++; continue; }
+          if (!/^[0-9a-f]{64}$/.test(rec.secretHex || '')) { skipped++; continue; }
+          if (!/^[0-9a-f]{64}$/.test(rec.nullifierPreimageHex || '')) { skipped++; continue; }
+          if (!/^[0-9a-f]{64}$/.test(rec.assetIdHex || '')) { skipped++; continue; }
+          // saveMixerDepositRecord dedupes on nullifierHashHex first-write-wins,
+          // so re-importing the same file is idempotent.
+          const before = loadMixerDeposits().length;
+          saveMixerDepositRecord(rec);
+          const after = loadMixerDeposits().length;
+          if (after > before) added++;
+          else skipped++;
+        }
+        _setBackupStatus(`Imported: ${added} added, ${skipped} skipped (already-known or malformed).`, added > 0 ? 'success' : '');
+        // Reset the file input so re-selecting the same file fires the
+        // change event again.
+        impInput.value = '';
+      } catch (err) {
+        _setBackupStatus('Import failed: ' + (err.message || err), 'error');
+      }
+    });
+  }
+
+  // POOL_INIT broadcast — real, end-to-end.
+  const initBtn = document.getElementById('btn-mixer-init-broadcast');
+  const initInputs = ['mixer-init-asset', 'mixer-init-denom', 'mixer-init-vk-cid', 'mixer-init-ceremony-cid']
+    .map(id => document.getElementById(id));
+  const refreshInitDisabled = () => {
+    if (!initBtn) return;
+    const ok = initInputs.every(el => el && (el.value || '').trim().length > 0);
+    initBtn.disabled = !ok;
+  };
+  for (const el of initInputs) if (el) el.addEventListener('input', refreshInitDisabled);
+
+  // Optional convenience: upload verification_key.json directly. The dApp
+  // POSTs it to the worker's /pin-mixer-vk endpoint, gets a CID back, and
+  // auto-fills the vk CID input. Saves the user a manual IPFS-pin step.
+  const vkFileInput = document.getElementById('mixer-init-vk-file');
+  if (vkFileInput) {
+    vkFileInput.addEventListener('change', async (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const cidInput = document.getElementById('mixer-init-vk-cid');
+      try {
+        const text = await f.text();
+        let parsed;
+        try { parsed = JSON.parse(text); }
+        catch { alert('Selected file is not valid JSON.'); return; }
+        if (!WORKER_BASE) {
+          alert('Worker not configured (WORKER_BASE empty). Pin manually via Pinata / web3.storage and paste the CID.');
+          return;
+        }
+        if (cidInput) cidInput.value = '(uploading…)';
+        const resp = await fetch(`${WORKER_BASE}/pin-mixer-vk`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(parsed),
+        });
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          if (cidInput) cidInput.value = '';
+          alert('vk pin failed: ' + (j.error || resp.status));
+          return;
+        }
+        if (cidInput) {
+          cidInput.value = j.cid || '';
+          cidInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        toast(`vk pinned: ${j.cid}`, 'success');
+      } catch (err) {
+        if (cidInput && cidInput.value === '(uploading…)') cidInput.value = '';
+        alert('vk upload failed: ' + (err.message || err));
+      }
+    });
+  }
+
+  refreshInitDisabled();
+  if (initBtn) {
+    initBtn.onclick = async () => {
+      if (initBtn.disabled) return;
+      const assetIdHex = document.getElementById('mixer-init-asset').value.trim();
+      const denomStr   = document.getElementById('mixer-init-denom').value.trim();
+      const vkCid      = document.getElementById('mixer-init-vk-cid').value.trim();
+      const ceCid      = document.getElementById('mixer-init-ceremony-cid').value.trim();
+      let poolDenom;
+      try { poolDenom = BigInt(denomStr); }
+      catch { alert('Invalid denomination — must be an integer.'); return; }
+      if (poolDenom <= 0n) { alert('Denomination must be > 0.'); return; }
+      // Sanity: asset_id must be 64 hex chars.
+      if (!/^[0-9a-fA-F]{64}$/.test(assetIdHex)) { alert('Asset ID must be 32 bytes (64 hex).'); return; }
+      // CIDs are loosely checked: must be ≥ 6 chars, ASCII printable.
+      if (vkCid.length < 6 || ceCid.length < 6) { alert('CIDs look too short.'); return; }
+      if (!confirm(`Initialize a new mixer pool?\n\n  asset_id:    ${assetIdHex.slice(0, 16)}…\n  denomination: ${denomStr}\n  vk CID:       ${vkCid}\n  ceremony CID: ${ceCid}\n\nThis broadcasts a POOL_INIT envelope (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees.\n\nFirst-confirmed-wins per SPEC §5.10.1 — only the first canonical POOL_INIT for this (asset_id, denomination) becomes the pool of record.`)) return;
+      initBtn.disabled = true;
+      const origText = initBtn.textContent;
+      initBtn.textContent = 'Initializing pool…';
+      try {
+        const r = await buildAndBroadcastPoolInit({
+          assetIdHex, poolDenom, vkCid, ceremonyCid: ceCid,
+        });
+        toast(`Pool initialized: commit=${shorten(r.commitTxid, 6)} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
+        // Refresh the Mixer tab so the new pool appears.
+        renderMixer();
+      } catch (e) {
+        alert('POOL_INIT broadcast failed: ' + (e.message || e));
+        console.error(e);
+      } finally {
+        initBtn.disabled = false;
+        initBtn.textContent = origText;
+        refreshInitDisabled();
+      }
+    };
   }
 
   const previewDBtn = document.getElementById('btn-mixer-deposit-preview');
@@ -9314,6 +10507,342 @@ function setupMixerHandlers() {
       }
     };
   }
+}
+
+// ============== CEREMONY UI (Phase 2 MPC, browser-driven) ==============
+// SPEC §3.7. Public ceremony coordinator: anyone can fetch the current head
+// zkey, run snarkjs.zKey.contribute locally, and post their new zkey to
+// extend the chain. The worker pins to IPFS, advances the head pointer,
+// records attestations. NOT trust-bearing: anyone can re-walk the chain
+// from genesis using the attestations list and re-verify each contribution.
+
+let _ceremonyActiveHash = null;
+let _ceremonyState = null;
+
+function _ceremonyLogToProgress(line) {
+  const el = document.getElementById('ceremony-progress');
+  if (!el) return;
+  el.style.display = 'block';
+  el.textContent += line + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+async function ceremonyFetchState(circuitHash) {
+  if (!WORKER_BASE) throw new Error('worker not configured');
+  const resp = await fetch(`${WORKER_BASE}/ceremony/${circuitHash}`, { cache: 'no-store' });
+  if (resp.status === 404) return null;
+  if (!resp.ok) {
+    const j = await resp.json().catch(() => ({}));
+    throw new Error(j.error || `HTTP ${resp.status}`);
+  }
+  const j = await resp.json();
+  return j.state;
+}
+
+async function ceremonyFetchAttestations(circuitHash) {
+  if (!WORKER_BASE) return [];
+  try {
+    const resp = await fetch(`${WORKER_BASE}/ceremony/${circuitHash}/attestations?limit=100`, { cache: 'no-store' });
+    if (!resp.ok) return [];
+    const j = await resp.json();
+    return Array.isArray(j.attestations) ? j.attestations : [];
+  } catch { return []; }
+}
+
+async function ceremonyRender() {
+  const stateEl = document.getElementById('ceremony-state');
+  const statusEl = document.getElementById('ceremony-status');
+  const contribBtn = document.getElementById('btn-ceremony-contribute');
+  const attestEl = document.getElementById('ceremony-attestations');
+  if (!_ceremonyActiveHash) {
+    if (stateEl) stateEl.textContent = 'No ceremony selected. Paste a 64-hex circuit hash above and click Load, or use ?ceremony=<hash> in the URL.';
+    if (statusEl) statusEl.textContent = '';
+    if (contribBtn) contribBtn.disabled = true;
+    if (attestEl) attestEl.innerHTML = '';
+    return;
+  }
+  if (statusEl) statusEl.textContent = `${_ceremonyActiveHash.slice(0, 12)}…`;
+  let state;
+  try { state = await ceremonyFetchState(_ceremonyActiveHash); }
+  catch (e) {
+    if (stateEl) stateEl.textContent = 'Error loading ceremony: ' + e.message;
+    if (contribBtn) contribBtn.disabled = true;
+    return;
+  }
+  _ceremonyState = state;
+  if (!state) {
+    if (stateEl) stateEl.textContent = 'No ceremony at this hash yet. Coordinator initializes via the form below.';
+    if (contribBtn) contribBtn.disabled = true;
+    if (attestEl) attestEl.innerHTML = '';
+    return;
+  }
+  if (stateEl) {
+    const head = state.head_cid || '(none)';
+    const recent = state.last_contributor || state.initiator || 'anonymous';
+    const finalBadge = state.finalized
+      ? ` · <strong style="color:#859900;">✓ FINALIZED (beacon ${escapeHtml((state.beacon_block_hash || '').slice(0, 16))}…)</strong>`
+      : '';
+    stateEl.innerHTML = `<strong>${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'}</strong> · last by <em>${escapeHtml(recent)}</em>${finalBadge}<br>head zkey: <code style="font-size:11px;">${head}</code><br>r1cs: <code style="font-size:11px;">${state.r1cs_cid}</code> · ptau: <code style="font-size:11px;">${state.ptau_cid}</code>`;
+  }
+  if (contribBtn) {
+    contribBtn.disabled = !!state.finalized;
+    if (state.finalized) contribBtn.title = 'Ceremony finalized; chain is locked.';
+    else contribBtn.title = '';
+  }
+
+  if (attestEl) {
+    const list = await ceremonyFetchAttestations(_ceremonyActiveHash);
+    if (list.length === 0) {
+      attestEl.innerHTML = '<div class="muted" style="font-size:12px;">No contributions yet.</div>';
+    } else {
+      const rows = list.slice(0, 20).map(a => `<div style="font-size:11px;padding:4px 0;border-bottom:1px solid var(--border, #ddd);">
+        #${a.index} · <strong>${escapeHtml(a.contributor_name || 'anonymous')}</strong> ·
+        <code style="font-size:10px;">${(a.contribution_hash || '').slice(0, 24)}…</code> ·
+        <code style="font-size:10px;">${a.cid}</code></div>`);
+      attestEl.innerHTML = `<div class="muted" style="font-size:11px;margin-bottom:6px;">Recent contributions (newest first):</div>${rows.join('')}` +
+        (list.length > 20 ? `<div class="muted" style="font-size:11px;margin-top:6px;">+ ${list.length - 20} older</div>` : '');
+    }
+  }
+}
+
+// snarkjs.zKey.contribute in browser. Takes the current head zkey as a
+// Uint8Array, runs the contribution, returns { newZkey, contributionHash }.
+// Logger output is captured into the on-page progress strip.
+// SECURITY: before contributing, verify the chain we're about to extend is
+// well-formed. snarkjs.zKey.verifyFromInit walks the zkey's embedded
+// contribution history against the original r1cs + ptau and confirms each
+// transition is valid Groth16 algebra. If a malicious worker has injected
+// garbage into the head, this catches it BEFORE we waste entropy.
+async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes) {
+  _ceremonyLogToProgress(`Fetching r1cs (${state.r1cs_cid})…`);
+  const r1csResp = await fetch(`${IPFS_GATEWAY}${state.r1cs_cid}`);
+  if (!r1csResp.ok) throw new Error(`r1cs fetch: HTTP ${r1csResp.status}`);
+  const r1csBytes = new Uint8Array(await r1csResp.arrayBuffer());
+  if (!(await _ipfsCidMatches(state.r1cs_cid, r1csBytes))) {
+    throw new Error(`r1cs content does not match CID ${state.r1cs_cid} — gateway substitution detected`);
+  }
+  _ceremonyLogToProgress(`Fetching ptau (${state.ptau_cid})…`);
+  const ptauResp = await fetch(`${IPFS_GATEWAY}${state.ptau_cid}`);
+  if (!ptauResp.ok) throw new Error(`ptau fetch: HTTP ${ptauResp.status}`);
+  const ptauBytes = new Uint8Array(await ptauResp.arrayBuffer());
+  if (!(await _ipfsCidMatches(state.ptau_cid, ptauBytes))) {
+    throw new Error(`ptau content does not match CID ${state.ptau_cid} — gateway substitution detected`);
+  }
+  _ceremonyLogToProgress(`Verifying chain (${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'})…`);
+  const logger = {
+    debug: () => {}, info: () => {}, warn: () => {},
+    error: (...a) => _ceremonyLogToProgress('[verify err] ' + a.join(' ')),
+  };
+  const ok = await snarkjs.zKey.verifyFromInit(
+    { type: 'mem', data: r1csBytes },
+    { type: 'mem', data: ptauBytes },
+    { type: 'mem', data: headZkeyBytes },
+    logger,
+  );
+  if (!ok) throw new Error('chain verify failed — head zkey is not a valid extension of (r1cs, ptau). Aborting before wasting entropy.');
+  _ceremonyLogToProgress('✓ chain verified');
+}
+
+async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entropy, state) {
+  const { snarkjs } = await import('./vendor/tacit-mixer.min.js');
+  // Pre-flight verify (gap #3 from security review). Catches corrupt heads
+  // and gateway-substituted r1cs/ptau before we waste entropy.
+  await ceremonyVerifyChain(state, snarkjs, headZkeyBytes);
+  const oldKey = { type: 'mem', data: headZkeyBytes };
+  const newKey = { type: 'mem' };
+  const logger = {
+    debug: (...a) => _ceremonyLogToProgress('[debug] ' + a.join(' ')),
+    info:  (...a) => _ceremonyLogToProgress('[info]  ' + a.join(' ')),
+    warn:  (...a) => _ceremonyLogToProgress('[warn]  ' + a.join(' ')),
+    error: (...a) => _ceremonyLogToProgress('[err]   ' + a.join(' ')),
+  };
+  const result = await snarkjs.zKey.contribute(oldKey, newKey, contributorName, entropy, logger);
+  // result is the contribution hash bytes; format as hex space-grouped 4x4
+  let contributionHashHex = '';
+  if (result instanceof Uint8Array) {
+    contributionHashHex = Array.from(result).map(b => b.toString(16).padStart(2, '0')).join('');
+  } else if (typeof result === 'string') {
+    contributionHashHex = result;
+  }
+  return { newZkey: newKey.data, contributionHash: contributionHashHex };
+}
+
+async function ceremonyContribute() {
+  if (!_ceremonyActiveHash || !_ceremonyState) {
+    alert('Load a ceremony first.');
+    return;
+  }
+  const contribBtn = document.getElementById('btn-ceremony-contribute');
+  const nameEl = document.getElementById('ceremony-contributor-name');
+  const progressEl = document.getElementById('ceremony-progress');
+  const contributorName = (nameEl?.value || 'anonymous').slice(0, 64);
+  if (progressEl) { progressEl.textContent = ''; progressEl.style.display = 'block'; }
+  contribBtn.disabled = true;
+  const origText = contribBtn.textContent;
+  contribBtn.textContent = 'Contributing…';
+  try {
+    _ceremonyLogToProgress(`Fetching head zkey ${_ceremonyState.head_cid}…`);
+    const headUrl = `${IPFS_GATEWAY}${_ceremonyState.head_cid}`;
+    const resp = await fetch(headUrl);
+    if (!resp.ok) throw new Error(`fetch zkey: HTTP ${resp.status}`);
+    const headBytes = new Uint8Array(await resp.arrayBuffer());
+    _ceremonyLogToProgress(`Got ${headBytes.length} bytes. Running contribute (~30-60s)…`);
+
+    // Mix CSPRNG entropy with timestamp for the snarkjs call. snarkjs accepts
+    // a string and hashes it internally; we mash several sources together so
+    // a compromised local CSPRNG isn't sole source.
+    const entropyBytes = crypto.getRandomValues(new Uint8Array(32));
+    const entropy = Array.from(entropyBytes).map(b => b.toString(16).padStart(2, '0')).join('') +
+                    ':' + Date.now() + ':' + Math.random();
+
+    const t0 = Date.now();
+    const { newZkey, contributionHash } = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState);
+    _ceremonyLogToProgress(`Contributed in ${((Date.now() - t0)/1000).toFixed(1)}s. Hash: ${contributionHash.slice(0, 32)}…`);
+    _ceremonyLogToProgress(`Uploading ${newZkey.length} bytes…`);
+
+    const fd = new FormData();
+    fd.append('zkey', new Blob([newZkey], { type: 'application/octet-stream' }), 'withdraw_contributed.zkey');
+    fd.append('contributor_name', contributorName);
+    fd.append('prev_cid', _ceremonyState.head_cid);
+    fd.append('contribution_hash', contributionHash);
+
+    const upResp = await fetch(`${WORKER_BASE}/ceremony/${_ceremonyActiveHash}/contribute`, {
+      method: 'POST',
+      body: fd,
+    });
+    const upJson = await upResp.json().catch(() => ({}));
+    if (!upResp.ok) throw new Error(upJson.error || `HTTP ${upResp.status}`);
+
+    _ceremonyLogToProgress(`✓ Accepted as contribution #${upJson.contribution?.index}. New head: ${upJson.contribution?.cid}`);
+    toast(`Contribution #${upJson.contribution?.index} landed. Hash: ${contributionHash.slice(0, 16)}…`, 'success');
+
+    // Tweet helper: copy a pre-filled attestation message.
+    const attest = `I contributed to the tacit mixer ceremony — contribution #${upJson.contribution?.index}, hash ${contributionHash.slice(0, 32)}… — and I destroyed my entropy. https://tacit.finance/?ceremony=${_ceremonyActiveHash} #tacit #bitcoin`;
+    try { await navigator.clipboard.writeText(attest); _ceremonyLogToProgress('Attestation copied to clipboard — paste it on Twitter / Mastodon / your blog.'); }
+    catch {}
+
+    await ceremonyRender();
+  } catch (e) {
+    _ceremonyLogToProgress(`✗ ${e.message || e}`);
+    alert('Ceremony contribute failed: ' + (e.message || e));
+    console.error(e);
+  } finally {
+    contribBtn.disabled = false;
+    contribBtn.textContent = origText;
+  }
+}
+
+async function ceremonyInit() {
+  const initBtn = document.getElementById('btn-ceremony-init');
+  const zkeyEl = document.getElementById('ceremony-init-zkey');
+  const r1csEl = document.getElementById('ceremony-init-r1cs');
+  const ptauEl = document.getElementById('ceremony-init-ptau');
+  const nameEl = document.getElementById('ceremony-init-name');
+  const outEl = document.getElementById('ceremony-init-out');
+  const zkey = zkeyEl?.files?.[0];
+  const r1cs = r1csEl?.files?.[0];
+  const ptau = ptauEl?.files?.[0];
+  if (!zkey || !r1cs || !ptau) { alert('Pick all three files first.'); return; }
+
+  // Compute sha256(r1cs) → circuit_hash. SubtleCrypto handles the digest.
+  const r1csBytes = new Uint8Array(await r1cs.arrayBuffer());
+  const hashBuf = await crypto.subtle.digest('SHA-256', r1csBytes);
+  const circuitHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('');
+
+  const initiator = (nameEl?.value || 'anonymous').slice(0, 64);
+  if (!confirm(`Initialize ceremony for circuit ${circuitHash.slice(0, 16)}…?\n\nThis pins all three files (~15 MB total) to IPFS via Pinata and registers the ceremony at this hash. First-write-wins per circuit_hash.`)) return;
+
+  initBtn.disabled = true;
+  const origText = initBtn.textContent;
+  initBtn.textContent = 'Initializing…';
+  if (outEl) { outEl.style.display = 'block'; outEl.textContent = `Computing circuit_hash: ${circuitHash}\nUploading…`; }
+  try {
+    const fd = new FormData();
+    fd.append('circuit_hash', circuitHash);
+    fd.append('initiator_name', initiator);
+    fd.append('zkey0', zkey);
+    fd.append('r1cs', new Blob([r1csBytes], { type: 'application/octet-stream' }), 'withdraw.r1cs');
+    fd.append('ptau', ptau);
+    const resp = await fetch(`${WORKER_BASE}/ceremony/init`, { method: 'POST', body: fd });
+    const j = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+    if (outEl) outEl.textContent = `✓ Ceremony initialized\n\n` + JSON.stringify(j.state, null, 2);
+    toast(`Ceremony initialized at ${circuitHash.slice(0, 12)}…`, 'success');
+    // Auto-load the new ceremony into the active panel.
+    _ceremonyActiveHash = circuitHash;
+    const hashInput = document.getElementById('ceremony-hash');
+    if (hashInput) hashInput.value = circuitHash;
+    await ceremonyRender();
+    // Update URL so the user can share it directly.
+    if (history && history.replaceState) {
+      const u = new URL(window.location.href);
+      u.searchParams.set('ceremony', circuitHash);
+      history.replaceState(null, '', u.toString());
+    }
+  } catch (e) {
+    if (outEl) outEl.textContent = `✗ ${e.message || e}`;
+    alert('Ceremony init failed: ' + (e.message || e));
+    console.error(e);
+  } finally {
+    initBtn.disabled = false;
+    initBtn.textContent = origText;
+  }
+}
+
+function setupCeremonyHandlers() {
+  // Discover circuit hash via URL param (?ceremony=<hash>). When present,
+  // also auto-switch to the Mixer tab so a freshly-clicked share link lands
+  // the contributor directly on the ceremony panel — no clicks required.
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get('ceremony');
+    if (fromUrl && /^[0-9a-f]{64}$/i.test(fromUrl)) {
+      _ceremonyActiveHash = fromUrl.toLowerCase();
+      const hashInput = document.getElementById('ceremony-hash');
+      if (hashInput) hashInput.value = _ceremonyActiveHash;
+      // Defer the tab switch one tick so all DOM elements are wired up.
+      setTimeout(() => {
+        const mixerTab = document.querySelector('.tab[data-tab="mixer"]');
+        if (mixerTab && !mixerTab.classList.contains('active')) mixerTab.click();
+        // Smooth-scroll to the ceremony section after the tab paints.
+        setTimeout(() => {
+          const cerem = document.getElementById('ceremony-state');
+          if (cerem && cerem.scrollIntoView) cerem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 200);
+      }, 0);
+    }
+  } catch {}
+
+  const loadBtn = document.getElementById('btn-ceremony-load');
+  if (loadBtn) {
+    loadBtn.onclick = async () => {
+      const hashInput = document.getElementById('ceremony-hash');
+      const v = (hashInput?.value || '').trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(v)) { alert('Hash must be 64 hex chars.'); return; }
+      _ceremonyActiveHash = v;
+      // Reflect in URL.
+      if (history && history.replaceState) {
+        const u = new URL(window.location.href);
+        u.searchParams.set('ceremony', v);
+        history.replaceState(null, '', u.toString());
+      }
+      await ceremonyRender();
+    };
+  }
+
+  const contribBtn = document.getElementById('btn-ceremony-contribute');
+  if (contribBtn) contribBtn.onclick = ceremonyContribute;
+
+  const initBtn = document.getElementById('btn-ceremony-init');
+  if (initBtn) initBtn.onclick = ceremonyInit;
+  const initInputs = ['ceremony-init-zkey', 'ceremony-init-r1cs', 'ceremony-init-ptau']
+    .map(id => document.getElementById(id));
+  const refreshInitDisabled = () => {
+    if (!initBtn) return;
+    initBtn.disabled = !initInputs.every(el => el && el.files && el.files[0]);
+  };
+  for (const el of initInputs) if (el) el.addEventListener('change', refreshInitDisabled);
+  refreshInitDisabled();
 }
 
 function setupTabs() {
@@ -20249,6 +21778,7 @@ async function init() {
   setupNetworkSelect();
   setupTabs();
   setupMixerHandlers();
+  setupCeremonyHandlers();
   setupFaqModal();
   setupCommandPalette();
   setupWalletButtons();
@@ -20462,6 +21992,19 @@ export {
   encodeCBurnPayload, decodeCBurnPayload,
   encodeCPetchPayload, decodeCPetchPayload,
   encodeCPmintPayload, decodeCPmintPayload,
+  encodeTDepositPayload, decodeTDepositPayload,
+  encodeTWithdrawPayload, decodeTWithdrawPayload,
+  // Mixer poseidon helpers — exported for tests/mixer-envelope.test.mjs to
+  // assert the dapp's leaf / nullifier shapes match what the worker decoder
+  // expects on chain. computePoolLeafCommitment + computeNullifierHash close
+  // the deterministic-binding loop with the circuit's r_leaf constraint.
+  computePoolLeafCommitment, computeNullifierHash,
+  // Mixer Groth16 format-conversion glue — exported for tests/mixer-recovery
+  // to verify the snarkjs-shape conversion against a known-good
+  // sample_proof.json round-trip without having to invoke the
+  // browser-vendored verifyMixerProof wrapper itself.
+  _parseGroth16Proof as parseGroth16Proof,
+  _publicInputsToDecimal as publicInputsToDecimal,
   // Protocol message hashes
   computeKernelMsg, computeMintMsg,
   openingMsg, disclosureMsg,

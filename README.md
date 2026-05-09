@@ -8,7 +8,7 @@ Confidential token meta-protocol on Bitcoin. Amounts hidden, supply enforced fro
 
 > **Status:** signet + mainnet. Sign in with an existing browser wallet (Xverse / UniSat / Leather), import a privkey, or — on signet — let the dApp generate one and grab faucet sats.
 >
-> **Live demo:** [tacit.wei.is](https://tacit.wei.is)
+> **Live demo:** [tacit.finance](https://tacit.finance)
 >
 > **Protocol spec:** [SPEC.md](./SPEC.md) — wire format, security properties, threat model. Authoritative reference for indexer implementations and audit review.
 
@@ -61,6 +61,14 @@ What that buys you, concretely:
   surface on the Market tab. Settlement uses `T_AXFER` (SPEC §5.7) and is
   **trustless single-Bitcoin-tx** for atomic flows: maker can't redirect the
   buyer's payment, buyer can't get tokens without paying, all in one block.
+- A holder can deposit a fixed-denomination UTXO into a **shielded mixer
+  pool** (`T_DEPOSIT` → `T_WITHDRAW`, Tornado-style; SPEC §5.10–§5.11) and
+  withdraw to a fresh pubkey, breaking the on-chain edge between deposit
+  and withdraw via a Groth16 proof of unspent-leaf membership. **Status:
+  v1 dev preview** — the verifier is stubbed; wire format, worker
+  indexing, and UI are shipped but the validator does not yet enforce
+  proof validity. Do not use on mainnet until the verifier lands and a
+  per-pool MPC ceremony has run.
 
 What it doesn't do:
 
@@ -507,6 +515,58 @@ T_PMINT (permissionless mint event — anyone may broadcast)
    re-blinds it back into confidential transfer mode.
 
 
+T_DEPOSIT / T_WITHDRAW (shielded mixer pool — v1 dev preview)
+─────────────────────────────────────────────────────────────
+ Tornado-style anonymity pool over any tacit asset at a fixed denomination.
+
+ POOL_INIT (T_DEPOSIT with denomination = 0 sentinel):
+     T_DEPOSIT || asset_id || denomination=0(8B)
+               || pool_denom(8B) || vk_cid_len(1) || vk_cid
+               || ceremony_cid_len(1) || ceremony_cid || init_sig(64B)
+
+ DEPOSIT (T_DEPOSIT with denomination ≠ 0):
+     T_DEPOSIT || asset_id || denomination(8B)
+               || leaf_commitment(32B) || kernel_sig(64B)
+
+   leaf_commitment = Poseidon(secret, nullifier_preimage, denomination)
+   The (secret, nullifier_preimage) pair is held by the depositor —
+   without it, the deposit cannot be withdrawn. Worker appends each
+   deposit's leaf to a per-pool merkle tree in canonical order.
+
+ WITHDRAW (T_WITHDRAW):
+     T_WITHDRAW || asset_id || denomination(8B)
+                || merkle_root(32B) || nullifier_hash(32B)
+                || recipient_commitment(33B)
+                || r_leaf(32B)        (public Pedersen blinding scalar)
+                || bind_hash(32B)     SHA256-tagged commit to the tuple
+                || proof_len(2B) || proof(Groth16, ~256B)
+
+   Public inputs to the Groth16 verifier:
+     [merkle_root, nullifier_hash, denomination, r_leaf, bind_hash]
+   Witness (private): secret, nullifier_preimage, leaf merkle path.
+
+   r_leaf is published in cleartext — same posture as T_PMINT's
+   (amount, blinding). Privacy comes from Groth16 zero-knowledge over
+   the leaf-membership statement, not from hiding r_leaf. Recovery is
+   then trivial for both self-withdraw and tornado-flow-to-other
+   (recipient reads r_leaf from chain).
+
+   Validator extras beyond the proof:
+     - bind_hash recompute matches (binds proof to the specific tuple)
+     - external secp256k1 check: recipient_commitment == denom·H + r_leaf·G
+       (closes the inflate-amount attack — circuit forces r_leaf =
+        Poseidon(secret, ν), validator forces the Pedersen equation)
+     - merkle_root in the last 32 canonical roots of this pool
+     - nullifier_hash NOT in this pool's spent set
+
+ Anonymity set = currently-unspent leaves at withdraw time. Wait for
+ the pool to fill before withdrawing.
+
+ v1 status: wire format + worker + UI shipped, Groth16 verifier stubbed.
+ Do not trust withdrawn UTXOs for value transfer until the verifier
+ lands. SPEC §5.10–§5.11 + §3.6–§3.8.
+
+
 VALIDATION (recursive, browser-side)
 ────────────────────────────────────
  For each wallet UTXO:
@@ -524,8 +584,19 @@ VALIDATION (recursive, browser-side)
    6. If T_PMINT:  resolve T_PETCH parent metadata; verify amount == mint_limit,
                    confirmed_height ∈ window, depth ≥ 3, cap not exceeded,
                    pedersenCommit(amount, blinding) == commitment
-   7. Resolve own (amount, blinding) via local cache OR trial-decrypt amount_ct
-      (T_PMINT: amount + blinding are in the envelope cleartext — no decrypt)
+   7. If T_DEPOSIT:  not a UTXO — vout[0] is BTC change, not tacit. Worker
+                     records the leaf for pool merkle-tree state. Recovery
+                     walks do not recurse through T_DEPOSIT envelopes.
+   8. If T_WITHDRAW: verify merkle_root is in the pool's last 32 canonical
+                     roots, nullifier_hash is unseen, bind_hash recomputes,
+                     `recipient_commitment == denom·H + r_leaf·G` (external
+                     secp256k1 Pedersen check), and the Groth16 proof verifies
+                     under the pool's vk over [merkle_root, nullifier_hash,
+                     denomination, r_leaf, bind_hash]. (v1 dev preview: the
+                     Groth16 verifier itself is stubbed; do not trust on mainnet.)
+   9. Resolve own (amount, blinding) via local cache OR trial-decrypt amount_ct
+      (T_PMINT and T_WITHDRAW: amount + blinding are in the envelope
+       cleartext — no decrypt; just verify the Pedersen equation)
 
  Memoized; O(N) over chain depth N. Optimistically batches all rangeproofs
  across the walk into a single multi-scalar multiplication.
@@ -543,6 +614,11 @@ RECOVERY
      envelope cleartext; no derivation. Match P2WPKH(hash160(my_pub)) to
      vout[0] to claim ownership; verify pedersenCommit(amount, blinding) ==
      commitment to reject tampered envelopes.
+   - As mixer-pool withdrawal (T_WITHDRAW) — `denomination` and `r_leaf`
+     are both in the envelope cleartext (same posture as T_PMINT). Verify
+     `pedersenCommit(denomination, r_leaf) == on_chain_commitment`. Works
+     identically whether withdrawer === recipient or not — the public
+     `r_leaf` makes share-links unnecessary for tornado-flow-to-other.
 
  (One exception: atomic-intent recipient UTXOs use a uniform-random blinding
   delivered ECDH-encrypted to the claimant at fulfilment time — recovery
@@ -699,7 +775,22 @@ See `build/README.md` for details.
     use Export JSON to back up. A Cross-check vs chain button walks the
     local ledger and verifies each fulfilled leaf actually confirmed
     on-chain.
-12. **Claim** *(recipient side)*. Paste the drop's merkle root + IPFS CID
+12. **Mixer** *(v1 dev preview — do not use on mainnet)*. Tornado-style
+    shielded pool over any tacit asset at a fixed denomination. Deposit a
+    UTXO of the pool's exact denomination; the dApp generates a
+    `(secret, nullifier_preimage)` pair and emits a Poseidon leaf
+    commitment — back up the deposit record before broadcasting, without
+    it the deposit cannot be withdrawn. Wait for the pool's anonymity set
+    to grow, then withdraw to a fresh pubkey: the dApp generates a
+    Groth16 proof of unspent-leaf membership, the worker rejects
+    duplicate nullifiers, and the resulting UTXO is unlinkable to any
+    specific deposit. Pool initialization is permissionless — declare a
+    new `(asset_id, denomination)` pair with a verifying-key CID and an
+    MPC-ceremony-transcript CID. **The Groth16 verifier in the dApp is
+    currently stubbed** (the validator does not yet enforce proof
+    validity); withdrawn UTXOs MUST NOT be trusted for value transfer
+    until the verifier ships and the per-pool ceremony runs. SPEC §5.10–§5.11.
+13. **Claim** *(recipient side)*. Paste the drop's merkle root + IPFS CID
     (from the issuer) → Load snapshot. The dApp fetches the JSON, refuses
     any blob whose rows don't match the root, and shows your row. Connect
     MetaMask (or any EIP-1193 provider) — the connection is purely for
@@ -751,6 +842,14 @@ This is strictly weaker than Mimblewimble (which hides the tx graph via
 cut-through) and weaker than Liquid CT with surjection proofs (which hides
 asset_id). It's the same scope as Liquid CT without surjection proofs:
 amount-hiding only.
+
+**The mixer pool (§5.10–§5.11)** layers an opt-in unlinkability primitive
+on top: a holder who deposits a fixed-denomination UTXO into a pool and
+later withdraws to a fresh pubkey breaks the *amount-to-address-to-amount*
+link inside that pool. Pool participation itself is still public —
+observers see *that* an address deposited or withdrew, just not which
+deposit corresponds to which withdrawal. **v1 dev preview** — see "Known
+limitations" below.
 
 ---
 
@@ -825,6 +924,17 @@ amount-hiding only.
   for v1 (e.g. cap=1000 at limit=1, or cap=21M at limit=21k); larger
   schedules need pagination patches before relying on published cap
   progress for buy/sell decisions.
+- **Mixer pool — v1 dev preview.** The shielded-pool wire format
+  (`T_DEPOSIT` / `T_WITHDRAW`, SPEC §5.10–§5.11), worker indexing
+  (`/pools`, canonical leaf order, nullifier set), and Mixer-tab UI are
+  all shipped. **The Groth16 verifier in the dApp is stubbed** — the
+  validator decodes `T_WITHDRAW` envelopes and produces a UTXO entry
+  but does not currently reject withdrawals whose proof is missing or
+  invalid. Withdrawn UTXOs MUST NOT be trusted for value transfer until
+  the verifier lands and a per-pool MPC ceremony has run. Circuit
+  synthesis, ceremony coordination, and snarkjs vendor bundling are
+  tracked separately. The Mixer tab carries an in-app "v1 dev preview"
+  banner reinforcing this.
 
 ---
 
@@ -1055,9 +1165,11 @@ and the configured CORS allowlist. It exposes:
 | `/drops/:root`                    | GET / DELETE | Single drop announcement / issuer cancels (signed). |
 | `/airdrops/:root/claims`          | GET / POST | Airdrop claim queue keyed by merkle root. Recipients POST `(leaf_index, tacit_pubkey, eth_sig)` tuples; issuers GET to pull batches and broadcast fulfilment CXFERs. Worker validates format only — it has no snapshot to verify against. Lives entirely outside the on-chain protocol; canonical truth is the resulting CXFER set. |
 | `/airdrops/:root/claims/:leaf_index` | DELETE | Removes a queued claim. Unauthenticated by design (the queue is convenience, not authority — re-submission is also unauth, "latest wins"). |
+| `/pools`                          | GET    | List initialized mixer pools (SPEC §5.10.1) with per-pool leaf and nullifier counts. dApp consumes this on Mixer-tab open. |
+| `/pools/:asset_id/:denom`         | GET    | Full per-pool state — POOL_INIT record, all deposit leaves in canonical chain order (the order the dApp must apply to reproduce the merkle root), and the spent-nullifier set. |
 | `/scan`                           | POST   | Manual scan trigger (debug)                                        |
 | `/rescan`                         | POST   | Rewind `meta:last_scanned` to a given height (debug, `?from=<h>`)   |
-| _scheduled_                       |        | `*/5 * * * *` — scan recent signet AND mainnet blocks for CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, and T_PMINT envelopes |
+| _scheduled_                       |        | `*/5 * * * *` — scan recent signet AND mainnet blocks for CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, and T_WITHDRAW envelopes |
 
 Setup steps live in `worker/README.md`. Deploy your own (and update
 `WORKER_BASE` in `dapp/tacit.js`) if you want isolated keys / quota.

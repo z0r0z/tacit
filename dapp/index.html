@@ -2346,8 +2346,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="muted" style="margin-bottom:14px;">
         Tornado-style anonymity pool over any tacit asset. Deposit a fixed-denomination UTXO, wait, withdraw to a fresh pubkey — the on-chain edge between deposit and withdraw is broken by a Groth16 proof of unspent leaf membership in the pool merkle tree. SPEC §5.10 / §5.11.
       </div>
-      <div id="mixer-stub-banner" style="border:1px solid #b58900;background:#fdf6e3;color:#657b83;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13px;">
-        <strong>v1 dev preview.</strong> The Groth16 verifier is stubbed — withdrawn UTXOs are not yet trusted by the validator. Circuit work, trusted-setup ceremony, and snarkjs vendor bundling are tracked separately. <em>Do not use on mainnet.</em>
+      <div id="mixer-stub-banner" style="border:1px solid #859900;background:#f4faff;color:#586e75;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13px;">
+        <strong>v1 preview.</strong> Groth16 verifier is live (snarkjs over BN254, lazy-loaded from <code>vendor/tacit-mixer.min.js</code>). Soundness is closed — see SPEC §3.8 and §5.11. Pool-init still requires a per-pool MPC ceremony before each pool is safe to deposit into; the dApp surfaces the ceremony CID for verification before any deposit.
       </div>
     </div>
   </div>
@@ -2372,6 +2372,18 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-mixer-deposit-broadcast" disabled>Deposit &amp; broadcast</button>
       </div>
       <pre id="mixer-deposit-preview-out" class="muted" style="margin-top:10px;display:none;"></pre>
+      <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--ink-faint);">
+        <div class="muted" style="font-size:11px;margin-bottom:6px;">
+          <strong>Backup all deposit records.</strong> Stored in localStorage per network — wiping the browser's storage = losing the secret pair = funds permanently un-withdrawable. Download a JSON of every deposit you've made on this network, then re-import on a fresh device.
+        </div>
+        <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap;">
+          <button id="btn-mixer-deposits-export" type="button" style="font-size:11px;padding:4px 10px;">↓ Export deposit records</button>
+          <label style="font-size:11px;padding:4px 10px;border:1px solid var(--ink-faint);cursor:pointer;background:var(--bg);" title="Import a JSON file produced by Export. Records are merged by nullifier_hash (no duplicates).">↑ Import
+            <input id="mixer-deposits-import-file" type="file" accept="application/json,.json" style="display:none;">
+          </label>
+          <span id="mixer-deposits-backup-status" class="muted" style="font-size:11px;"></span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2393,6 +2405,62 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 
   <div class="section">
+    <div class="section-header">
+      <span>ceremony · contribute to the trusted setup</span>
+      <span id="ceremony-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Groth16 Phase 2 MPC. Anyone can contribute random entropy to the per-circuit ceremony — soundness requires only ONE honest contributor across the chain. More contributors = stronger guarantee. Each contribution takes ~30–60 seconds in your browser; ~5 MB up + 5 MB down. SPEC §3.7 / §5.11.3.
+      </div>
+      <div id="ceremony-state" class="muted" style="font-size:12px;margin-bottom:12px;">Loading…</div>
+
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:1;min-width:240px;">Ceremony hash
+          <input id="ceremony-hash" type="text" placeholder="64-char hex (sha256 of r1cs) — paste from coordinator's announcement, or use ?ceremony=… in URL" autocomplete="off" spellcheck="false">
+        </label>
+        <button id="btn-ceremony-load">Load</button>
+      </div>
+
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
+        <label style="flex:1;min-width:200px;">Your name (public)
+          <input id="ceremony-contributor-name" type="text" placeholder="alice@github / pseudonym / leave blank for anonymous" maxlength="64" autocomplete="off">
+        </label>
+        <button id="btn-ceremony-contribute" disabled>Add my contribution</button>
+      </div>
+
+      <pre id="ceremony-progress" class="muted" style="margin-top:10px;display:none;font-size:11px;max-height:200px;overflow:auto;"></pre>
+
+      <details style="margin-top:18px;">
+        <summary class="muted" style="cursor:pointer;">Initialize a new ceremony (coordinator only)</summary>
+        <div class="muted" style="font-size:12px;margin:8px 0;">First-write-wins per circuit hash. Run <code>cd dapp/circuits &amp;&amp; bash build.sh</code> locally to produce <code>build/withdraw.r1cs</code>, <code>build/pot14_final.ptau</code>, and <code>withdraw_0000.zkey</code>. Upload all three.</div>
+        <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+          <label style="flex:1;min-width:200px;">Initiator name
+            <input id="ceremony-init-name" type="text" placeholder="alice@github" maxlength="64">
+          </label>
+        </div>
+        <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
+          <label style="flex:1;min-width:200px;">withdraw_0000.zkey
+            <input id="ceremony-init-zkey" type="file" accept=".zkey">
+          </label>
+          <label style="flex:1;min-width:200px;">withdraw.r1cs
+            <input id="ceremony-init-r1cs" type="file" accept=".r1cs">
+          </label>
+          <label style="flex:1;min-width:200px;">pot14_final.ptau
+            <input id="ceremony-init-ptau" type="file" accept=".ptau">
+          </label>
+        </div>
+        <div class="flex" style="gap:8px;align-items:flex-end;margin-top:10px;">
+          <button id="btn-ceremony-init" disabled>Initialize ceremony &amp; broadcast</button>
+        </div>
+        <pre id="ceremony-init-out" class="muted" style="margin-top:10px;display:none;font-size:11px;"></pre>
+      </details>
+
+      <div id="ceremony-attestations" style="margin-top:18px;"></div>
+    </div>
+  </div>
+
+  <div class="section">
     <div class="section-header"><span>initialize a new pool</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">Pool initialization is permissionless — anyone can declare a pool for any asset at any denomination. The first canonically-confirmed POOL_INIT for a given (asset_id, denomination) wins. You'll need a Groth16 verifying-key CID and an MPC-ceremony-transcript CID, both pinned to IPFS. SPEC §5.10.1.</div>
@@ -2408,6 +2476,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <label style="flex:1;min-width:240px;">vk CID
           <input id="mixer-init-vk-cid" type="text" placeholder="bafk…" autocomplete="off" spellcheck="false">
         </label>
+        <label style="flex:0 0 auto;">vk JSON
+          <input id="mixer-init-vk-file" type="file" accept="application/json,.json" title="Upload verification_key.json — auto-pins to IPFS via worker /pin-mixer-vk and fills the CID field above.">
+        </label>
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
         <label style="flex:1;min-width:240px;">Ceremony CID
           <input id="mixer-init-ceremony-cid" type="text" placeholder="bafk…" autocomplete="off" spellcheck="false">
         </label>
