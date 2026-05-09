@@ -559,6 +559,22 @@ function ceremonyContribKey(hash, idx, cid) {
 }
 function ceremonyContribPrefix(hash)    { return `ceremony:${hash}:contrib:`; }
 
+// Magic-byte tags at offset 0 in snarkjs file formats. Validated server-side
+// before pinning so a malicious client can't waste contributors' bandwidth
+// (and our Pinata storage) on garbage that the next contributor would only
+// detect after a 5-MB download + verifyFromInit failure.
+const _CEREMONY_MAGIC = {
+  zkey: [0x7a, 0x6b, 0x65, 0x79], // "zkey"
+  r1cs: [0x72, 0x31, 0x63, 0x73], // "r1cs"
+  ptau: [0x70, 0x74, 0x61, 0x75], // "ptau"
+};
+function _hasCeremonyMagic(bytes, kind) {
+  const m = _CEREMONY_MAGIC[kind];
+  if (!bytes || bytes.length < m.length) return false;
+  for (let i = 0; i < m.length; i++) if (bytes[i] !== m[i]) return false;
+  return true;
+}
+
 // Pin an arbitrary binary blob to IPFS. Used for zkey files (~5 MB each).
 // MAX_BYTES env var caps total upload size; we want zkeys to fit so we
 // override locally to 16 MB minimum (the env default of 2 MB is for images).
@@ -628,11 +644,27 @@ async function handleCeremonyInit(req, env, cors) {
     return jsonResponse({ error: `each file must be <= ${MAX_PER_FILE} bytes` }, 413, cors);
   }
 
+  // Read once + magic-byte sniff before any Pinata I/O. Rejects garbage uploads
+  // up front rather than letting them land in the chain head where the next
+  // contributor's snarkjs verifyFromInit would catch them after a 5-MB download.
+  const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
+  const r1csBytes = new Uint8Array(await r1cs.arrayBuffer());
+  const ptauBytes = new Uint8Array(await ptau.arrayBuffer());
+  if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
+    return jsonResponse({ error: 'zkey0 does not start with snarkjs "zkey" magic bytes' }, 400, cors);
+  }
+  if (!_hasCeremonyMagic(r1csBytes, 'r1cs')) {
+    return jsonResponse({ error: 'r1cs does not start with snarkjs "r1cs" magic bytes' }, 400, cors);
+  }
+  if (!_hasCeremonyMagic(ptauBytes, 'ptau')) {
+    return jsonResponse({ error: 'ptau does not start with snarkjs "ptau" magic bytes' }, 400, cors);
+  }
+
   let zkeyCid, r1csCid, ptauCid;
   try {
-    zkeyCid = await pinBinaryToIpfs(env, new Uint8Array(await zkey.arrayBuffer()), `withdraw_0000_${circuitHash.slice(0,8)}.zkey`);
-    r1csCid = await pinBinaryToIpfs(env, new Uint8Array(await r1cs.arrayBuffer()), `withdraw_${circuitHash.slice(0,8)}.r1cs`);
-    ptauCid = await pinBinaryToIpfs(env, new Uint8Array(await ptau.arrayBuffer()), `pot_${circuitHash.slice(0,8)}.ptau`);
+    zkeyCid = await pinBinaryToIpfs(env, zkeyBytes, `withdraw_0000_${circuitHash.slice(0,8)}.zkey`);
+    r1csCid = await pinBinaryToIpfs(env, r1csBytes, `withdraw_${circuitHash.slice(0,8)}.r1cs`);
+    ptauCid = await pinBinaryToIpfs(env, ptauBytes, `pot_${circuitHash.slice(0,8)}.ptau`);
   } catch (e) {
     return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
   }
@@ -710,9 +742,15 @@ async function handleCeremonyContribute(req, env, circuitHash, cors) {
     }, 409, cors);
   }
 
+  // Magic-byte sniff before pinning — rejects non-zkey blobs up front.
+  const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
+  if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
+    return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
+  }
+
   let newCid;
   try {
-    newCid = await pinBinaryToIpfs(env, new Uint8Array(await zkey.arrayBuffer()), `withdraw_${String(state.contribution_count + 1).padStart(4, '0')}_${circuitHash.slice(0,8)}.zkey`);
+    newCid = await pinBinaryToIpfs(env, zkeyBytes, `withdraw_${String(state.contribution_count + 1).padStart(4, '0')}_${circuitHash.slice(0,8)}.zkey`);
   } catch (e) {
     return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
   }
@@ -823,15 +861,25 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors) {
   try { fd = await req.formData(); }
   catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
   const zkey = fd.get('zkey');
-  const beaconHash = String(fd.get('beacon_block_hash') || '').toLowerCase().slice(0, 128);
+  const beaconHash = String(fd.get('beacon_block_hash') || '').toLowerCase();
   const beaconIters = safeInt(fd.get('beacon_iterations'), 10, { min: 1, max: 64 });
   if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
   if (zkey.size > 32 * 1024 * 1024) return jsonResponse({ error: 'zkey too large' }, 413, cors);
-  if (!/^[0-9a-f]+$/.test(beaconHash)) return jsonResponse({ error: 'beacon_block_hash must be hex' }, 400, cors);
+  // 64 hex = sha256 / Bitcoin block hash — what snarkjs's beacon stage expects.
+  // The previous regex accepted any-length hex which let through e.g. "ab".
+  if (!/^[0-9a-f]{64}$/.test(beaconHash)) {
+    return jsonResponse({ error: 'beacon_block_hash must be exactly 64 hex chars (Bitcoin block hash)' }, 400, cors);
+  }
+
+  // Magic-byte sniff before pinning.
+  const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
+  if (!_hasCeremonyMagic(zkeyBytes, 'zkey')) {
+    return jsonResponse({ error: 'zkey does not start with snarkjs "zkey" magic bytes' }, 400, cors);
+  }
 
   let finalCid;
   try {
-    finalCid = await pinBinaryToIpfs(env, new Uint8Array(await zkey.arrayBuffer()), `withdraw_final_${circuitHash.slice(0,8)}.zkey`);
+    finalCid = await pinBinaryToIpfs(env, zkeyBytes, `withdraw_final_${circuitHash.slice(0,8)}.zkey`);
   } catch (e) {
     return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
   }
@@ -2464,6 +2512,8 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   // covers current mainnet pmints while bounding subrequest budget.
   const canonicalKeys = [];
   let canonCursor = null;
+  let canonicalComplete = false;
+  let canonicalTruncated = false;
   for (let page = 0; page < 60; page++) {
     const list = await env.REGISTRY_KV.list({
       prefix: pmintPrefix(network, assetIdHex),
@@ -2473,10 +2523,12 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
     for (const k of list.keys) {
       if (!k.name.startsWith(orphanPrefixStr)) canonicalKeys.push(k);
     }
-    if (list.list_complete || canonicalKeys.length >= 5000) break;
+    if (list.list_complete) { canonicalComplete = true; break; }
+    if (canonicalKeys.length >= 5000) { canonicalTruncated = true; break; }
     canonCursor = list.cursor;
-    if (!canonCursor) break;
+    if (!canonCursor) { canonicalComplete = true; break; }
   }
+  if (!canonicalComplete && !canonicalTruncated) canonicalTruncated = true;
   // Batch the per-key KV.get calls for canonical entries only. Earlier code
   // used a single Promise.all over every key, which on a dense asset spun
   // up that many concurrent KV reads inside one Worker isolate; with
@@ -2551,10 +2603,17 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
     }
     return { ...e, depth, status, credited };
   });
+  // Also flag truncation if the orphan walk hit its cap. Even though orphan
+  // entries don't credit, an unbounded backlog being capped means we may
+  // have missed orphan txids the caller wanted to match against.
+  const orphanTruncated = orphanTxids.length >= 5000;
   return {
     events: annotated,
     credited_count: creditedCount.toString(),
     cumulative_minted: creditedAmount.toString(),
+    truncated: canonicalTruncated || orphanTruncated,
+    canonical_truncated: canonicalTruncated,
+    orphan_truncated: orphanTruncated,
   };
 }
 
@@ -2729,7 +2788,10 @@ async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) 
     let creditedAmount = 0n;
     let canonicalCount = 0;
     let pendingCount = 0;       // canonical entries below confirmation depth
+    let truncated = false;
+    let canonicalComplete = false;
     let cursor = null;
+    const SAFETY_CAP = 50000;
     for (let page = 0; page < 60; page++) {
       const lst = await env.REGISTRY_KV.list({
         prefix: pmintPrefix(network, aid),
@@ -2755,27 +2817,33 @@ async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) 
           creditedCount++;
           if (mintLimit != null) creditedAmount += mintLimit;
         }
-        if (canonicalCount >= 50000) break;
+        if (canonicalCount >= SAFETY_CAP) { truncated = true; break; }
       }
-      if (lst.list_complete || canonicalCount >= 50000) break;
+      if (truncated) break;
+      if (lst.list_complete) { canonicalComplete = true; break; }
       cursor = lst.cursor;
-      if (!cursor) break;
+      if (!cursor) { canonicalComplete = true; break; }
     }
+    if (!canonicalComplete && !truncated) truncated = true; // hit page-loop bound
     // Count orphan keys with a separate lightweight scan — they all share the
     // height-0 prefix and we just need a count for the UI.
     let orphanCount = 0;
+    let orphanComplete = false;
     cursor = null;
     for (let page = 0; page < 60; page++) {
       const lst = await env.REGISTRY_KV.list({ prefix: orphanPrefix, limit: 1000, ...(cursor ? { cursor } : {}) });
       orphanCount += lst.keys.length;
-      if (lst.list_complete || orphanCount >= 50000) break;
+      if (lst.list_complete) { orphanComplete = true; break; }
+      if (orphanCount >= SAFETY_CAP) { truncated = true; break; }
       cursor = lst.cursor;
-      if (!cursor) break;
+      if (!cursor) { orphanComplete = true; break; }
     }
+    if (!orphanComplete && !truncated) truncated = true;
     a.cumulative_minted = creditedAmount.toString();
     a.credited_pmint_count = creditedCount;
     a.pmint_count = canonicalCount + orphanCount;
     a.pending_pmint_count = pendingCount + orphanCount;
+    a.truncated = truncated;
     if (a.cap_amount && a.mint_limit) {
       const remaining = BigInt(a.cap_amount) - creditedAmount;
       a.mints_remaining = String(remaining < 0n ? 0n : remaining / BigInt(a.mint_limit));
@@ -2821,6 +2889,8 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
     let creditedAmount = 0n;
     let canonCursor = null;
     let collected = 0;
+    let truncated = false;
+    const SAFETY_CAP = 50000;
     for (let page = 0; page < 200; page++) {
       const list = await env.REGISTRY_KV.list({
         prefix: pmintPrefix(network, assetIdHex),
@@ -2848,12 +2918,20 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
         }
         credited_txids.push(txid);
         collected++;
-        if (collected >= 50000) break; // hard safety cap
+        if (collected >= SAFETY_CAP) { truncated = true; break; }
       }
-      if (list.list_complete || collected >= 50000) break;
+      if (truncated) break;
+      if (list.list_complete) { var canonicalComplete = true; break; }
       canonCursor = list.cursor;
-      if (!canonCursor) break;
+      if (!canonCursor) { var canonicalComplete = true; break; }
     }
+    // Issue #13 explicitly asked for this signal so consumers can distinguish
+    // "complete view" from "first N mints only." Without it the silent cap
+    // was the original v1 bug. We flag truncated unless we exited the page
+    // loop via either list_complete or a falsy cursor — both indicate the
+    // KV.list namespace was fully drained for this prefix.
+    if (typeof canonicalComplete === 'undefined') canonicalComplete = false;
+    if (!canonicalComplete && !truncated) truncated = true;
     // cap_overflow is published alongside credited so the dapp can distinguish
     // "pending — will eventually credit" from "permanently rejected — paid
     // fees for nothing." Without the overflow list, the wallet would have to
@@ -2867,6 +2945,8 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
       confirmation_depth: PMINT_CONFIRMATION_DEPTH,
       tip: Number.isInteger(tip) ? tip : null,
       tip_unavailable: !Number.isInteger(tip),
+      truncated,
+      list_complete: !truncated,
     }, 200, cors);
   }
   const r = await loadCanonicalPmints(env, network, assetIdHex, tip, petch.cap_amount, petch.mint_limit);
@@ -2883,6 +2963,8 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
     tip: Number.isInteger(tip) ? tip : null,
     tip_unavailable: !Number.isInteger(tip),
     pmints: r.events,
+    truncated: !!r.truncated,
+    list_complete: !r.truncated,
   }, 200, cors);
 }
 
