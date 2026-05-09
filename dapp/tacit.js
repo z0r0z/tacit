@@ -192,6 +192,25 @@ const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 // IPFS gateway used to render images and dereference metadata blobs. Trailing slash required.
 const IPFS_GATEWAY = 'https://content.wrappr.wtf/ipfs/';
 
+// Fallback gateways used by ceremony fetches (head zkey, r1cs, ptau) so a
+// single gateway flake (HTML error page, 502, rate-limit) doesn't kill a
+// contributor's flow. Tried in order; first one whose response passes the
+// caller's content validation wins. The primary is duplicated at index 0
+// so the failover path is the same code as the happy path.
+const IPFS_GATEWAYS_FALLBACK = [
+  IPFS_GATEWAY,
+  'https://ipfs.io/ipfs/',
+  'https://w3s.link/ipfs/',
+  'https://dweb.link/ipfs/',
+];
+
+// Mainnet readiness threshold from MIXER.md "Open / honest caveats" — at
+// least 5 disjoint trust roots before the ceremony's vk_cid is acceptable
+// for mainnet pool deployment. Surfaced in the ceremony state display as a
+// "N / 5" progress indicator so contributors see concrete momentum and can
+// decide whether their entropy is still load-bearing.
+const MAINNET_READINESS_THRESHOLD = 5;
+
 // ============== HASH HELPERS ==============
 const hash256 = b => sha256(sha256(b));
 const hash160 = b => ripemd160(sha256(b));
@@ -6430,7 +6449,10 @@ async function buildAndBroadcastWithdraw({
 
   // Optimistically mark nullifier as spent locally so the UI updates
   // immediately. Worker cron arrives at the same conclusion at next tick.
-  mixerMarkNullifierSpent(assetIdHex, denomBig, nullifierHash);
+  // Pass the canonical owner txid so a later re-validation of this UTXO
+  // via validateOutpoint(revealTxid_, 0) recognizes US as the owner and
+  // doesn't trip the by-other double-spend gate.
+  mixerMarkNullifierSpent(assetIdHex, denomBig, nullifierHash, revealTxid_);
 
   recordActivity({
     kind: 'mixer_withdraw', ticker: '(pool)', amount: denomBig, decimals: 0,
@@ -9798,6 +9820,36 @@ function setIfChanged(elOrSel, text, force = false) {
   }
 }
 
+// Curated registry of tickers belonging to known external projects worth
+// flagging as likely copycats when re-used on tacit. Today this is a small
+// hard-coded list; the shape (`{ticker, chain}`) and the `tickerCopycatInfo`
+// indirection are deliberately generic so the source can later be swapped
+// for a token-curated registry (TCR), a worker-served feed, or any other
+// signed list without touching the render sites — every place that asks
+// "is this a copycat?" goes through `tickerCopycatInfo`.
+//
+// Tickers are free-form CETCH bytes on tacit, so nothing prevents someone
+// from etching a token whose name matches an established project on another
+// chain. This list lets us surface a tailored hint at every asset surface
+// rather than the generic "another tacit asset etched this earlier" copy.
+const COPYCAT_REGISTRY = [
+  { ticker: 'zorg', chain: 'ethereum' },
+  { ticker: 'zamm', chain: 'ethereum' },
+];
+const _COPYCAT_INDEX = (() => {
+  const m = new Map();
+  for (const e of COPYCAT_REGISTRY) {
+    const k = String(e.ticker || '').trim().toLowerCase();
+    if (k) m.set(k, e);
+  }
+  return m;
+})();
+function tickerCopycatInfo(ticker) {
+  if (typeof ticker !== 'string') return null;
+  const k = ticker.trim().toLowerCase();
+  return k ? (_COPYCAT_INDEX.get(k) || null) : null;
+}
+
 // Mark assets whose ticker is shared by ≥ 2 active assets in the supplied
 // list. Tickers in tacit are free-form CETCH bytes; nothing prevents an
 // etcher from cloning a popular asset's ticker string to phish takers. The
@@ -9809,16 +9861,21 @@ function setIfChanged(elOrSel, text, force = false) {
 // same for every observer no matter which worker they query. No centralized
 // allowlist or "verified by" blessing — just objective facts.
 //
-// Mutates each asset with `_tickerCollision`:
-//   `false`      — ticker is unique in the supplied list
-//   `'original'` — multiple assets share this ticker; this one etched first
-//   `'duplicate'`— multiple assets share this ticker; this one is later
+// Mutates each asset with:
+//   `_tickerCollision`:
+//     `false`      — ticker is unique in the supplied list
+//     `'original'` — multiple assets share this ticker; this one etched first
+//     `'duplicate'`— multiple assets share this ticker; this one is later
+//   `_copycatInfo`:
+//     `null`     — ticker is not in the copycat registry
+//     `{ticker, chain}` — ticker matches a known external project
 function markTickerCollisions(assets) {
   if (!Array.isArray(assets)) return;
   // Group by normalized ticker.
   const groups = new Map();
   for (const a of assets) {
     const t = (a?.ticker || '').trim().toLowerCase();
+    a._copycatInfo = tickerCopycatInfo(a?.ticker);
     if (!t) { a._tickerCollision = false; continue; }
     if (!groups.has(t)) groups.set(t, []);
     groups.get(t).push(a);
@@ -10169,8 +10226,9 @@ async function renderMixer() {
   // Refresh pool state from worker before rendering. Errors here are non-
   // fatal — we still render whatever in-memory state we have.
   try { await refreshPoolsIfStale(); } catch {}
-  // Refresh ceremony state if a hash is loaded.
-  try { if (_ceremonyActiveHash) await ceremonyRender(); else await ceremonyRender(); } catch {}
+  // Refresh ceremony state. _ceremonyActiveHash is always populated (pinned
+  // to TACIT_DEFAULT_CEREMONY_HASH at module init); the call is unconditional.
+  try { await ceremonyRender(); } catch {}
 
   // Pool list
   const list = document.getElementById('mixer-pool-list');
@@ -10659,7 +10717,14 @@ function setupMixerHandlers() {
 // records attestations. NOT trust-bearing: anyone can re-walk the chain
 // from genesis using the attestations list and re-verify each contribution.
 
-let _ceremonyActiveHash = null;
+// The dapp is hard-locked to TACIT_DEFAULT_CEREMONY_HASH for the contribute
+// path. Initializing this to the canonical hash means /ceremony state loads
+// on tab open with no UI prompt, and any URL-param attempt to substitute a
+// different hash is ignored (see setupCeremonyHandlers below). This closes
+// the share-link phishing vector where an attacker could host a poisoned
+// ceremony at their own circuit_hash and lure contributors to it via
+// `?ceremony=<bad_hash>`.
+let _ceremonyActiveHash = TACIT_DEFAULT_CEREMONY_HASH;
 let _ceremonyState = null;
 
 function _ceremonyLogToProgress(line) {
@@ -10692,13 +10757,188 @@ async function ceremonyFetchAttestations(circuitHash) {
   } catch { return []; }
 }
 
+// Fetch IPFS content, trying each gateway in IPFS_GATEWAYS_FALLBACK
+// sequentially until one returns a response the caller's validate callback
+// accepts. `validate(bytes, headers)` returns null on success or an error
+// string on failure. Used for the three ceremony fetches (head zkey, r1cs,
+// ptau) where a single-gateway HTML/502 response is the most common cause
+// of contributor flow failures.
+//
+// Returns the validated bytes. Throws an Error with the concatenated
+// per-gateway failure reasons if every gateway fails.
+async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress) {
+  const errors = [];
+  for (const gw of IPFS_GATEWAYS_FALLBACK) {
+    const url = `${gw}${cid}`;
+    try {
+      if (onProgress) onProgress(`trying ${gw}…`);
+      const resp = await fetch(url, { cache: 'no-store' });
+      if (!resp.ok) { errors.push(`${gw}: HTTP ${resp.status}`); continue; }
+      const ct = resp.headers.get('Content-Type') || '';
+      if (/text\/html|application\/xhtml/i.test(ct)) {
+        errors.push(`${gw}: returned HTML (Content-Type: ${ct})`);
+        continue;
+      }
+      const bytes = new Uint8Array(await resp.arrayBuffer());
+      const verr = validate ? validate(bytes, resp.headers) : null;
+      if (verr) { errors.push(`${gw}: ${verr}`); continue; }
+      return bytes;
+    } catch (e) {
+      errors.push(`${gw}: ${(e && e.message) || e}`);
+    }
+  }
+  throw new Error(
+    `all ${IPFS_GATEWAYS_FALLBACK.length} IPFS gateways failed for ${cid}:\n  ` +
+    errors.join('\n  ')
+  );
+}
+
+// Persistent per-ceremony outcome record. Stored in localStorage so a
+// contributor's success/failure state survives tab close, page reload, or
+// network blip — the prior toast+alert+log flow lost the outcome the moment
+// the user dismissed the alert or refreshed. Keyed by ceremony hash so a
+// reset/new ceremony doesn't show stale outcomes.
+//
+// Shape:
+//   { kind: 'success' | 'fail', at: <unix sec>,
+//     // success-only:
+//     contribution_index, contribution_hash, contributor_name, attest_text, verified_on_chain,
+//     // fail-only:
+//     error: <string>, stage: <'fetch_head'|'verify_chain'|'snarkjs'|'upload'|'verify_after'> }
+const _CEREMONY_OUTCOME_STORAGE_PREFIX = 'tacit-ceremony-outcome-v1:';
+function _ceremonyOutcomeKey(circuitHash) {
+  return _CEREMONY_OUTCOME_STORAGE_PREFIX + (circuitHash || '').toLowerCase();
+}
+function ceremonyOutcomeRead(circuitHash) {
+  try {
+    const raw = localStorage.getItem(_ceremonyOutcomeKey(circuitHash));
+    if (!raw) return null;
+    const o = JSON.parse(raw);
+    if (!o || (o.kind !== 'success' && o.kind !== 'fail')) return null;
+    return o;
+  } catch { return null; }
+}
+function ceremonyOutcomeWrite(circuitHash, outcome) {
+  try {
+    localStorage.setItem(_ceremonyOutcomeKey(circuitHash), JSON.stringify(outcome));
+  } catch { /* quota / private mode — silent */ }
+}
+function ceremonyOutcomeClear(circuitHash) {
+  try { localStorage.removeItem(_ceremonyOutcomeKey(circuitHash)); } catch {}
+}
+
+// Re-fetch the attestations chain after a successful upload and verify the
+// new contribution actually appears at the expected index with the expected
+// contribution_hash. Catches the rare case where the worker returned 200 but
+// the contribution didn't make it into the attestations index (KV write
+// race, backend reorg, etc.). Soft check — used to upgrade the success
+// banner from "uploaded" to "verified on-chain", not to fail-close.
+async function ceremonyVerifyContributionLanded(circuitHash, expectedIndex, expectedContributionHash) {
+  try {
+    const list = await ceremonyFetchAttestations(circuitHash);
+    if (!Array.isArray(list)) return false;
+    const wantHash = (expectedContributionHash || '').toLowerCase();
+    const match = list.find(a => Number(a.index) === Number(expectedIndex) &&
+      (a.contribution_hash || '').toLowerCase() === wantHash);
+    return !!match;
+  } catch { return false; }
+}
+
+// Render the persistent success/failure banners from localStorage. Called
+// from ceremonyRender() so the state shows up on tab open / page reload.
+// Wires up the action buttons on every render — idempotent, cheap.
+function _renderCeremonyOutcomeBanners() {
+  const successEl = document.getElementById('ceremony-success-banner');
+  const errorEl = document.getElementById('ceremony-error-banner');
+  if (!successEl || !errorEl) return;
+  const outcome = ceremonyOutcomeRead(TACIT_DEFAULT_CEREMONY_HASH);
+  if (!outcome) {
+    successEl.style.display = 'none';
+    errorEl.style.display = 'none';
+    return;
+  }
+  if (outcome.kind === 'success') {
+    errorEl.style.display = 'none';
+    successEl.style.display = 'block';
+    const detailsEl = document.getElementById('ceremony-success-details');
+    const verifyEl = document.getElementById('ceremony-success-verify');
+    const attestEl = document.getElementById('ceremony-success-attest');
+    if (detailsEl) {
+      const dt = outcome.at ? new Date(outcome.at * 1000).toLocaleString() : '(unknown time)';
+      const name = escapeHtml(outcome.contributor_name || 'anonymous');
+      const idx = outcome.contribution_index;
+      const ch = (outcome.contribution_hash || '').slice(0, 32);
+      detailsEl.innerHTML =
+        `Contribution #<strong>${idx}</strong> · contributor <em>${name}</em> · ${escapeHtml(dt)}<br>` +
+        `Hash: <code style="font-size:11px;">${escapeHtml(ch)}…</code>`;
+    }
+    if (verifyEl) {
+      verifyEl.textContent = outcome.verified_on_chain
+        ? '✓ Verified on-chain — your contribution appears in the attestations index.'
+        : '⚠ Uploaded but not yet verified in attestations index. Refresh in a few seconds; if still missing, retry.';
+      verifyEl.style.color = outcome.verified_on_chain ? '#1a4314' : '#a4750a';
+    }
+    if (attestEl) attestEl.value = outcome.attest_text || '';
+    const copyBtn = document.getElementById('btn-ceremony-success-copy');
+    if (copyBtn) copyBtn.onclick = async () => {
+      try { await navigator.clipboard.writeText(outcome.attest_text || ''); toast('Attestation copied to clipboard.', 'success'); }
+      catch { toast('Copy failed — select the text manually and copy.', 'warn'); }
+    };
+    const twitterBtn = document.getElementById('btn-ceremony-success-twitter');
+    if (twitterBtn) {
+      // X Web Intent: opens x.com (post-rebrand canonical) in a new tab with
+      // the compose window pre-filled. The user reviews, then clicks X's own
+      // Post button to publish — we don't have OAuth, so this is the standard
+      // share-to-X pattern. encodeURIComponent handles the `#` in hashtags
+      // (otherwise parsed as a URL fragment) and the URL inside the text.
+      twitterBtn.href = `https://x.com/intent/tweet?text=${encodeURIComponent(outcome.attest_text || '')}`;
+    }
+    const dismissBtn = document.getElementById('btn-ceremony-success-dismiss');
+    if (dismissBtn) dismissBtn.onclick = () => {
+      ceremonyOutcomeClear(TACIT_DEFAULT_CEREMONY_HASH);
+      _renderCeremonyOutcomeBanners();
+    };
+  } else if (outcome.kind === 'fail') {
+    successEl.style.display = 'none';
+    errorEl.style.display = 'block';
+    const msgEl = document.getElementById('ceremony-error-message');
+    const whenEl = document.getElementById('ceremony-error-when');
+    if (msgEl) {
+      const stageLabel = outcome.stage ? ` (stage: ${escapeHtml(outcome.stage)})` : '';
+      msgEl.innerHTML = `${escapeHtml(outcome.error || 'unknown error')}${stageLabel}`;
+    }
+    if (whenEl) {
+      whenEl.textContent = outcome.at ? `Failed at ${new Date(outcome.at * 1000).toLocaleString()}` : '';
+    }
+    const retryBtn = document.getElementById('btn-ceremony-error-retry');
+    if (retryBtn) retryBtn.onclick = () => {
+      ceremonyOutcomeClear(TACIT_DEFAULT_CEREMONY_HASH);
+      _renderCeremonyOutcomeBanners();
+      ceremonyContribute();
+    };
+    const dismissBtn = document.getElementById('btn-ceremony-error-dismiss');
+    if (dismissBtn) dismissBtn.onclick = () => {
+      ceremonyOutcomeClear(TACIT_DEFAULT_CEREMONY_HASH);
+      _renderCeremonyOutcomeBanners();
+    };
+  }
+}
+
 async function ceremonyRender() {
+  // Render persistent outcome banners first so a returning user immediately
+  // sees "you contributed" / "your last attempt failed" before the worker
+  // state load runs (which itself can fail and leave the outcome banner as
+  // the only useful surface).
+  _renderCeremonyOutcomeBanners();
   const stateEl = document.getElementById('ceremony-state');
   const statusEl = document.getElementById('ceremony-status');
   const contribBtn = document.getElementById('btn-ceremony-contribute');
   const attestEl = document.getElementById('ceremony-attestations');
+  // _ceremonyActiveHash is always set to TACIT_DEFAULT_CEREMONY_HASH at
+  // module init — the empty-state branch is unreachable. Defensive guard
+  // remains in case a future refactor reintroduces null state.
   if (!_ceremonyActiveHash) {
-    if (stateEl) stateEl.textContent = 'No ceremony selected. Paste a 64-hex circuit hash above and click Load, or use ?ceremony=<hash> in the URL.';
+    if (stateEl) stateEl.textContent = 'Ceremony not initialized for this dapp build.';
     if (statusEl) statusEl.textContent = '';
     if (contribBtn) contribBtn.disabled = true;
     if (attestEl) attestEl.innerHTML = '';
@@ -10725,7 +10965,25 @@ async function ceremonyRender() {
     const finalBadge = state.finalized
       ? ` · <strong style="color:#859900;">✓ FINALIZED (beacon ${escapeHtml((state.beacon_block_hash || '').slice(0, 16))}…)</strong>`
       : '';
-    stateEl.innerHTML = `<strong>${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'}</strong> · last by <em>${escapeHtml(recent)}</em>${finalBadge}<br>head zkey: <code style="font-size:11px;">${head}</code><br>r1cs: <code style="font-size:11px;">${state.r1cs_cid}</code> · ptau: <code style="font-size:11px;">${state.ptau_cid}</code>`;
+    // Mainnet readiness gauge — concrete progress toward the threshold from
+    // MIXER.md (≥5 disjoint trust roots before vk_cid is acceptable for
+    // mainnet pool deployment). Hidden once finalized (it's done at that
+    // point) or at/above threshold (replaced with a "ready" badge).
+    let readinessLine = '';
+    if (!state.finalized) {
+      const n = state.contribution_count || 0;
+      const t = MAINNET_READINESS_THRESHOLD;
+      const pct = Math.min(100, Math.round(100 * n / t));
+      const barColor = n >= t ? '#859900' : '#1da1f2';
+      const label = n >= t
+        ? `<strong style="color:#859900;">✓ Mainnet readiness threshold met (${n} ≥ ${t})</strong> — pending beacon finalize.`
+        : `Mainnet readiness: <strong>${n} / ${t}</strong> contributions (≥${t} disjoint trust roots required per MIXER.md).`;
+      readinessLine =
+        `<div style="margin-top:8px;font-size:12px;">${label}</div>` +
+        `<div style="margin-top:4px;height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;">` +
+        `<div style="height:100%;width:${pct}%;background:${barColor};transition:width 0.3s;"></div></div>`;
+    }
+    stateEl.innerHTML = `<strong>${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'}</strong> · last by <em>${escapeHtml(recent)}</em>${finalBadge}<br>head zkey: <code style="font-size:11px;">${head}</code><br>r1cs: <code style="font-size:11px;">${state.r1cs_cid}</code> · ptau: <code style="font-size:11px;">${state.ptau_cid}</code>${readinessLine}`;
   }
   if (contribBtn) {
     contribBtn.disabled = !!state.finalized;
@@ -10738,10 +10996,28 @@ async function ceremonyRender() {
     if (list.length === 0) {
       attestEl.innerHTML = '<div class="muted" style="font-size:12px;">No contributions yet.</div>';
     } else {
-      const rows = list.slice(0, 20).map(a => `<div style="font-size:11px;padding:4px 0;border-bottom:1px solid var(--border, #ddd);">
-        #${a.index} · <strong>${escapeHtml(a.contributor_name || 'anonymous')}</strong> ·
-        <code style="font-size:10px;">${(a.contribution_hash || '').slice(0, 24)}…</code> ·
-        <code style="font-size:10px;">${a.cid}</code></div>`);
+      // Cross-reference each attestation with the user's localStorage outcome
+      // record so the contributor's own row is bolded + ★ flagged. Match by
+      // contribution_hash since contributor_name can collide (multiple
+      // "anonymous" rows). The lookup is O(1) per row — outcome is one entry.
+      const myOutcome = ceremonyOutcomeRead(TACIT_DEFAULT_CEREMONY_HASH);
+      const myHash = (myOutcome && myOutcome.kind === 'success' && myOutcome.contribution_hash)
+        ? myOutcome.contribution_hash.toLowerCase()
+        : null;
+      const rows = list.slice(0, 20).map(a => {
+        const ach = (a.contribution_hash || '').toLowerCase();
+        const isMine = !!myHash && ach === myHash;
+        const rowStyle = isMine
+          ? 'font-size:11px;padding:4px 6px;border-bottom:1px solid var(--border, #ddd);background:#f0fdf4;border-left:3px solid #859900;'
+          : 'font-size:11px;padding:4px 0;border-bottom:1px solid var(--border, #ddd);';
+        const mineMarker = isMine
+          ? ' <span style="color:#859900;font-weight:600;" title="This is your contribution.">★ you</span>'
+          : '';
+        return `<div style="${rowStyle}">
+          #${a.index} · <strong>${escapeHtml(a.contributor_name || 'anonymous')}</strong>${mineMarker} ·
+          <code style="font-size:10px;">${escapeHtml((a.contribution_hash || '').slice(0, 24))}…</code> ·
+          <code style="font-size:10px;">${escapeHtml(a.cid || '')}</code></div>`;
+      });
       attestEl.innerHTML = `<div class="muted" style="font-size:11px;margin-bottom:6px;">Recent contributions (newest first):</div>${rows.join('')}` +
         (list.length > 20 ? `<div class="muted" style="font-size:11px;margin-top:6px;">+ ${list.length - 20} older</div>` : '');
     }
@@ -10758,19 +11034,25 @@ async function ceremonyRender() {
 // garbage into the head, this catches it BEFORE we waste entropy.
 async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes) {
   _ceremonyLogToProgress(`Fetching r1cs (${state.r1cs_cid})…`);
-  const r1csResp = await fetch(`${IPFS_GATEWAY}${state.r1cs_cid}`);
-  if (!r1csResp.ok) throw new Error(`r1cs fetch: HTTP ${r1csResp.status}`);
-  const r1csBytes = new Uint8Array(await r1csResp.arrayBuffer());
-  if (!(await _ipfsCidMatches(state.r1cs_cid, r1csBytes))) {
-    throw new Error(`r1cs content does not match CID ${state.r1cs_cid} — gateway substitution detected`);
-  }
+  const r1csBytes = await _ceremonyFetchIpfsWithFailover(
+    state.r1cs_cid,
+    async (bytes) => {
+      // r1cs CID match is the integrity check — if any gateway returned
+      // substituted content, this rejects it and we fail over.
+      const ok = await _ipfsCidMatches(state.r1cs_cid, bytes);
+      return ok ? null : `content does not match CID ${state.r1cs_cid} (gateway substitution)`;
+    },
+    (msg) => _ceremonyLogToProgress('  r1cs: ' + msg),
+  );
   _ceremonyLogToProgress(`Fetching ptau (${state.ptau_cid})…`);
-  const ptauResp = await fetch(`${IPFS_GATEWAY}${state.ptau_cid}`);
-  if (!ptauResp.ok) throw new Error(`ptau fetch: HTTP ${ptauResp.status}`);
-  const ptauBytes = new Uint8Array(await ptauResp.arrayBuffer());
-  if (!(await _ipfsCidMatches(state.ptau_cid, ptauBytes))) {
-    throw new Error(`ptau content does not match CID ${state.ptau_cid} — gateway substitution detected`);
-  }
+  const ptauBytes = await _ceremonyFetchIpfsWithFailover(
+    state.ptau_cid,
+    async (bytes) => {
+      const ok = await _ipfsCidMatches(state.ptau_cid, bytes);
+      return ok ? null : `content does not match CID ${state.ptau_cid} (gateway substitution)`;
+    },
+    (msg) => _ceremonyLogToProgress('  ptau: ' + msg),
+  );
   _ceremonyLogToProgress(`Verifying chain (${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'})…`);
   const logger = {
     debug: () => {}, info: () => {}, warn: () => {},
@@ -10811,8 +11093,23 @@ async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entro
 }
 
 async function ceremonyContribute() {
-  if (!_ceremonyActiveHash || !_ceremonyState) {
-    alert('Load a ceremony first.');
+  // Hard-lock: contribute is only permitted against the canonical ceremony
+  // baked into this dapp build. If _ceremonyActiveHash has drifted (e.g. a
+  // coordinator inited a fresh ceremony in this session and the state panel
+  // is showing it), refuse rather than letting entropy go to a non-canonical
+  // chain that won't be the production vk_cid. The trust anchor IS the
+  // deployed dapp version's TACIT_DEFAULT_CEREMONY_HASH constant.
+  if (_ceremonyActiveHash !== TACIT_DEFAULT_CEREMONY_HASH) {
+    alert(
+      'This dapp only contributes to the canonical tacit ceremony.\n\n' +
+      `Active hash:    ${_ceremonyActiveHash}\n` +
+      `Canonical hash: ${TACIT_DEFAULT_CEREMONY_HASH}\n\n` +
+      'These differ. Reload the page to reset to the canonical ceremony.'
+    );
+    return;
+  }
+  if (!_ceremonyState) {
+    alert('Ceremony state not loaded yet — wait for the panel to populate, then retry.');
     return;
   }
   const contribBtn = document.getElementById('btn-ceremony-contribute');
@@ -10820,16 +11117,36 @@ async function ceremonyContribute() {
   const progressEl = document.getElementById('ceremony-progress');
   const contributorName = (nameEl?.value || 'anonymous').slice(0, 64);
   if (progressEl) { progressEl.textContent = ''; progressEl.style.display = 'block'; }
+  // Clear any prior outcome banner — a fresh attempt supersedes the stale
+  // success/failure record from the previous run.
+  ceremonyOutcomeClear(TACIT_DEFAULT_CEREMONY_HASH);
+  _renderCeremonyOutcomeBanners();
   contribBtn.disabled = true;
   const origText = contribBtn.textContent;
   contribBtn.textContent = 'Contributing…';
+  // Track which stage the contribution failed at so the failure banner can
+  // tell the user where to retry from (snarkjs error vs network error vs
+  // worker rejection are different mitigations).
+  let stage = 'fetch_head';
   try {
     _ceremonyLogToProgress(`Fetching head zkey ${_ceremonyState.head_cid}…`);
-    const headUrl = `${IPFS_GATEWAY}${_ceremonyState.head_cid}`;
-    const resp = await fetch(headUrl);
-    if (!resp.ok) throw new Error(`fetch zkey: HTTP ${resp.status}`);
-    const headBytes = new Uint8Array(await resp.arrayBuffer());
+    // Failover across IPFS_GATEWAYS_FALLBACK. Each gateway's response is
+    // validated for length (>= 256 bytes — anything smaller is a gateway
+    // error page) and snarkjs zkey magic bytes 'zkey' (0x7a 0x6b 0x65 0x79).
+    // Any gateway that fails either check is skipped and the next is tried.
+    const headBytes = await _ceremonyFetchIpfsWithFailover(
+      _ceremonyState.head_cid,
+      (bytes) => {
+        if (bytes.length < 256) return `unexpectedly small (${bytes.length} bytes — likely error page)`;
+        if (bytes[0] !== 0x7a || bytes[1] !== 0x6b || bytes[2] !== 0x65 || bytes[3] !== 0x79) {
+          return `does not start with "zkey" magic bytes (gateway returned wrong content)`;
+        }
+        return null;
+      },
+      (msg) => _ceremonyLogToProgress('  head: ' + msg),
+    );
     _ceremonyLogToProgress(`Got ${headBytes.length} bytes. Running contribute (~30-60s)…`);
+    stage = 'verify_chain';
 
     // Mix CSPRNG entropy with timestamp for the snarkjs call. snarkjs accepts
     // a string and hashes it internally; we mash several sources together so
@@ -10838,11 +11155,13 @@ async function ceremonyContribute() {
     const entropy = Array.from(entropyBytes).map(b => b.toString(16).padStart(2, '0')).join('') +
                     ':' + Date.now() + ':' + Math.random();
 
+    stage = 'snarkjs';
     const t0 = Date.now();
     const { newZkey, contributionHash } = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState);
     _ceremonyLogToProgress(`Contributed in ${((Date.now() - t0)/1000).toFixed(1)}s. Hash: ${contributionHash.slice(0, 32)}…`);
     _ceremonyLogToProgress(`Uploading ${newZkey.length} bytes…`);
 
+    stage = 'upload';
     const fd = new FormData();
     fd.append('zkey', new Blob([newZkey], { type: 'application/octet-stream' }), 'withdraw_contributed.zkey');
     fd.append('contributor_name', contributorName);
@@ -10854,21 +11173,76 @@ async function ceremonyContribute() {
       body: fd,
     });
     const upJson = await upResp.json().catch(() => ({}));
-    if (!upResp.ok) throw new Error(upJson.error || `HTTP ${upResp.status}`);
+    if (!upResp.ok) {
+      // Annotate the worker's error message with retry-actionable hints
+      // for the most common rejection paths.
+      const wErr = upJson.error || `HTTP ${upResp.status}`;
+      let hint = '';
+      if (/stale prev_cid|CAS race/i.test(wErr)) hint = ' — another contributor landed first; refresh the page and retry.';
+      else if (/finalized/i.test(wErr)) hint = ' — the ceremony has been beacon-finalized and is locked; no further contributions accepted.';
+      else if (/rate limit/i.test(wErr)) hint = ' — your IP hit the daily contribute cap; try again from a different network or tomorrow.';
+      throw new Error(wErr + hint);
+    }
 
     _ceremonyLogToProgress(`✓ Accepted as contribution #${upJson.contribution?.index}. New head: ${upJson.contribution?.cid}`);
     toast(`Contribution #${upJson.contribution?.index} landed. Hash: ${contributionHash.slice(0, 16)}…`, 'success');
 
-    // Tweet helper: copy a pre-filled attestation message.
-    const attest = `I contributed to the tacit mixer ceremony — contribution #${upJson.contribution?.index}, hash ${contributionHash.slice(0, 32)}… — and I destroyed my entropy. https://tacit.finance/?ceremony=${_ceremonyActiveHash} #tacit #bitcoin`;
-    try { await navigator.clipboard.writeText(attest); _ceremonyLogToProgress('Attestation copied to clipboard — paste it on Twitter / Mastodon / your blog.'); }
-    catch {}
+    // Build the attestation tweet. Share link uses the legacy
+    // `?ceremony=<canonical>` format so URLs already in circulation keep
+    // working. The hash is *ignored* by the receiver (setupCeremonyHandlers
+    // below ignores any user-supplied hash and pins the contribute UI to
+    // TACIT_DEFAULT_CEREMONY_HASH); we keep the param only to trigger the
+    // auto-jump-to-mixer-tab + scroll-to-ceremony UX. Using the constant
+    // rather than `_ceremonyActiveHash` means an in-session coordinator-init
+    // mutation can never leak a non-canonical hash into a shared URL.
+    const attest = `I contributed to the tacit mixer ceremony — contribution #${upJson.contribution?.index}, hash ${contributionHash.slice(0, 32)}… — and I destroyed my entropy. https://tacit.finance/?ceremony=${TACIT_DEFAULT_CEREMONY_HASH} #tacit #btc`;
+
+    // Auto-copy attempt as a UX nicety. Failure is silent — the persistent
+    // success banner has a Copy button that works without permission flakes.
+    try { await navigator.clipboard.writeText(attest); _ceremonyLogToProgress('Attestation copied to clipboard.'); } catch {}
+
+    // Post-flight verification (gap from the contributor-said-they-contributed
+    // bug): re-fetch the attestations index and confirm our entry actually
+    // landed. Rare but possible: worker returned 200 but KV write to the
+    // attestations index didn't propagate, or a reorg/CAS edge case dropped
+    // the record. If verification fails, we still show success (the worker
+    // accepted the upload, the chain head advanced) but flag it for retry.
+    stage = 'verify_after';
+    _ceremonyLogToProgress('Verifying contribution appears in attestations index…');
+    const verified = await ceremonyVerifyContributionLanded(
+      TACIT_DEFAULT_CEREMONY_HASH,
+      upJson.contribution?.index,
+      contributionHash,
+    );
+    _ceremonyLogToProgress(verified
+      ? '✓ Verified: your contribution is in the attestations index.'
+      : '⚠ Upload accepted but contribution not yet visible in attestations — may be eventual-consistency lag. Retry verification by refreshing in a few seconds.');
+
+    // Persist the success outcome to localStorage so it survives reload.
+    ceremonyOutcomeWrite(TACIT_DEFAULT_CEREMONY_HASH, {
+      kind: 'success',
+      at: Math.floor(Date.now() / 1000),
+      contribution_index: upJson.contribution?.index,
+      contribution_hash: contributionHash,
+      contributor_name: contributorName,
+      attest_text: attest,
+      verified_on_chain: verified,
+    });
 
     await ceremonyRender();
   } catch (e) {
-    _ceremonyLogToProgress(`✗ ${e.message || e}`);
-    alert('Ceremony contribute failed: ' + (e.message || e));
-    console.error(e);
+    const errMsg = (e && e.message) || String(e || 'unknown error');
+    _ceremonyLogToProgress(`✗ [${stage}] ${errMsg}`);
+    console.error(`ceremony contribute failed at ${stage}:`, e);
+    // Persist the failure to localStorage so the contributor sees the error
+    // banner on reload (replacing the old alert()-then-forgotten flow).
+    ceremonyOutcomeWrite(TACIT_DEFAULT_CEREMONY_HASH, {
+      kind: 'fail',
+      at: Math.floor(Date.now() / 1000),
+      error: errMsg,
+      stage,
+    });
+    _renderCeremonyOutcomeBanners();
   } finally {
     contribBtn.disabled = false;
     contribBtn.textContent = origText;
@@ -10916,19 +11290,24 @@ async function ceremonyInit() {
     });
     const j = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
-    if (outEl) outEl.textContent = `✓ Ceremony initialized\n\n` + JSON.stringify(j.state, null, 2);
-    toast(`Ceremony initialized at ${circuitHash.slice(0, 12)}…`, 'success');
-    // Auto-load the new ceremony into the active panel.
-    _ceremonyActiveHash = circuitHash;
-    const hashInput = document.getElementById('ceremony-hash');
-    if (hashInput) hashInput.value = circuitHash;
-    await ceremonyRender();
-    // Update URL so the user can share it directly.
-    if (history && history.replaceState) {
-      const u = new URL(window.location.href);
-      u.searchParams.set('ceremony', circuitHash);
-      history.replaceState(null, '', u.toString());
+    if (outEl) {
+      outEl.textContent =
+        `✓ Ceremony initialized at ${circuitHash}\n\n` +
+        `To make this the canonical ceremony for the next dapp release, update\n` +
+        `TACIT_DEFAULT_CEREMONY_HASH in dapp/tacit.js to:\n\n  ${circuitHash}\n\n` +
+        `…then rebuild + redeploy. The contribute UI is hard-locked to the\n` +
+        `canonical hash baked into the deployed dapp; in-session switching is\n` +
+        `intentionally not supported (closes share-link phishing vector).\n\n` +
+        `Worker state:\n` + JSON.stringify(j.state, null, 2);
     }
+    toast(`Ceremony initialized at ${circuitHash.slice(0, 12)}… — see panel for next steps`, 'success');
+    // Note: we deliberately do NOT mutate _ceremonyActiveHash, the hash input,
+    // or the URL here. The contribute UI must remain pinned to the canonical
+    // (currently-deployed) hash for everyone — coordinators included — to
+    // prevent any in-page state where contribution could go to a non-default
+    // chain. The coordinator verifies init via the JSON output above and
+    // promotes the new hash by updating TACIT_DEFAULT_CEREMONY_HASH and
+    // shipping a new dapp build.
   } catch (e) {
     if (outEl) outEl.textContent = `✗ ${e.message || e}`;
     alert('Ceremony init failed: ' + (e.message || e));
@@ -10940,21 +11319,69 @@ async function ceremonyInit() {
 }
 
 function setupCeremonyHandlers() {
-  // Discover circuit hash via URL param (?ceremony=<hash>). When present,
-  // also auto-switch to the Mixer tab so a freshly-clicked share link lands
-  // the contributor directly on the ceremony panel — no clicks required.
+  // Pin the visible hash to the canonical default. The input is rendered as
+  // readonly in the HTML; this sets its value at boot so visitors see what
+  // they're contributing to. URL params do NOT mutate _ceremonyActiveHash —
+  // the trust anchor is the deployed dapp's TACIT_DEFAULT_CEREMONY_HASH
+  // constant. A `?ceremony=<hash>` arrival still triggers the tab switch
+  // (auto-jump to the mixer tab is a UX convenience for share links), but
+  // the hash itself is ignored and a warning is shown if it differs.
+  const hashInput = document.getElementById('ceremony-hash');
+  if (hashInput) hashInput.value = TACIT_DEFAULT_CEREMONY_HASH;
+
+  // Hardware pre-flight. Heuristic detection of mobile / low-RAM devices
+  // where snarkjs.zKey.contribute is likely to OOM. Both signals are best-
+  // effort: navigator.deviceMemory is undefined on Safari, UA strings can
+  // be spoofed. False positives just show a dismissable banner. Dismissal
+  // is per-session (sessionStorage) so a fresh visit re-checks.
+  try {
+    const warn = document.getElementById('ceremony-hardware-warn');
+    const msg = document.getElementById('ceremony-hardware-warn-msg');
+    const btn = document.getElementById('btn-ceremony-hardware-dismiss');
+    const dismissed = (() => { try { return sessionStorage.getItem('tacit-ceremony-hw-warn-dismissed') === '1'; } catch { return false; } })();
+    if (warn && msg && !dismissed) {
+      const dm = navigator.deviceMemory;
+      const ua = navigator.userAgent || '';
+      const looksMobile = /Android|iPhone|iPad|iPod|Mobile|Tablet/i.test(ua);
+      const lowRam = typeof dm === 'number' && dm > 0 && dm < 4;
+      if (lowRam || looksMobile) {
+        const reasons = [];
+        if (lowRam) reasons.push(`detected only ${dm} GB RAM`);
+        if (looksMobile) reasons.push('your browser looks like mobile/tablet');
+        msg.textContent = reasons.join(' and ') + '. ';
+        warn.style.display = 'block';
+      }
+    }
+    if (btn) btn.onclick = () => {
+      try { sessionStorage.setItem('tacit-ceremony-hw-warn-dismissed', '1'); } catch {}
+      if (warn) warn.style.display = 'none';
+    };
+  } catch {}
   try {
     const params = new URLSearchParams(window.location.search);
     const fromUrl = params.get('ceremony');
-    if (fromUrl && /^[0-9a-f]{64}$/i.test(fromUrl)) {
-      _ceremonyActiveHash = fromUrl.toLowerCase();
-      const hashInput = document.getElementById('ceremony-hash');
-      if (hashInput) hashInput.value = _ceremonyActiveHash;
-      // Defer the tab switch one tick so all DOM elements are wired up.
+    const hadHashParam = fromUrl && /^[0-9a-f]{64}$/i.test(fromUrl);
+    if (hadHashParam && fromUrl.toLowerCase() !== TACIT_DEFAULT_CEREMONY_HASH) {
+      // A non-canonical hash was supplied via URL. Refuse to load it; warn
+      // the user that the supplied link does not match the canonical
+      // ceremony this dapp is locked to.
+      setTimeout(() => {
+        try {
+          toast(
+            'Ignored ?ceremony=… URL parameter — only the canonical tacit ceremony is loadable from this dapp.',
+            'warn',
+          );
+        } catch {}
+      }, 0);
+    }
+    if (hadHashParam) {
+      // Auto-jump to the Mixer tab + scroll to ceremony panel regardless of
+      // whether the hash was canonical. The receiver of a share link still
+      // lands on the right view; they just can't be tricked into a bogus
+      // ceremony.
       setTimeout(() => {
         const mixerTab = document.querySelector('.tab[data-tab="mixer"]');
         if (mixerTab && !mixerTab.classList.contains('active')) mixerTab.click();
-        // Smooth-scroll to the ceremony section after the tab paints.
         setTimeout(() => {
           const cerem = document.getElementById('ceremony-state');
           if (cerem && cerem.scrollIntoView) cerem.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -10962,23 +11389,6 @@ function setupCeremonyHandlers() {
       }, 0);
     }
   } catch {}
-
-  const loadBtn = document.getElementById('btn-ceremony-load');
-  if (loadBtn) {
-    loadBtn.onclick = async () => {
-      const hashInput = document.getElementById('ceremony-hash');
-      const v = (hashInput?.value || '').trim().toLowerCase();
-      if (!/^[0-9a-f]{64}$/.test(v)) { alert('Hash must be 64 hex chars.'); return; }
-      _ceremonyActiveHash = v;
-      // Reflect in URL.
-      if (history && history.replaceState) {
-        const u = new URL(window.location.href);
-        u.searchParams.set('ceremony', v);
-        history.replaceState(null, '', u.toString());
-      }
-      await ceremonyRender();
-    };
-  }
 
   const contribBtn = document.getElementById('btn-ceremony-contribute');
   if (contribBtn) contribBtn.onclick = ceremonyContribute;
@@ -15235,6 +15645,15 @@ function _consumeClaimUrlHash() {
 const _DEEPLINK_TABS = new Set([
   'wallet', 'holdings', 'transfer', 'discover', 'market', 'etch', 'drops', 'claim', 'about', 'mixer',
 ]);
+// Whitelist of allowed `section=` values per tab. A free-form section name
+// would let any URL scroll to any element id (including form inputs that
+// would auto-focus on smooth-scroll), so we pin the surface here. Today
+// only the ceremony deep-link uses this, but the structure leaves room
+// for future "land on the withdraw form" / "land on the deposit form"
+// share-link UX without re-introducing the open scroll vector.
+const _DEEPLINK_SECTIONS = {
+  mixer: new Set(['ceremony']),
+};
 function _parseTabHash() {
   const h = location.hash || '';
   if (!h.startsWith('#tab=')) return null;
@@ -15244,7 +15663,11 @@ function _parseTabHash() {
   if (!tab || !_DEEPLINK_TABS.has(tab)) return null;
   const rawAid = params.get('aid') || '';
   const aid = /^[0-9a-f]{64}$/i.test(rawAid) ? rawAid.toLowerCase() : null;
-  return { tab, aid };
+  const rawSection = params.get('section') || '';
+  const section = (_DEEPLINK_SECTIONS[tab] && _DEEPLINK_SECTIONS[tab].has(rawSection))
+    ? rawSection
+    : null;
+  return { tab, aid, section };
 }
 function _consumeTabUrlHash() {
   const parsed = _parseTabHash();
@@ -15256,6 +15679,18 @@ function _consumeTabUrlHash() {
   if (parsed.aid) {
     if (parsed.tab === 'discover') pendingDiscoverFocus = parsed.aid;
     else if (parsed.tab === 'market') pendingMarketFilter = parsed.aid;
+  }
+  // Per-tab section scroll. Defer until after the tab paints so the target
+  // element exists and has a layout. Mixer→ceremony is the only one wired
+  // today; see _DEEPLINK_SECTIONS for the whitelist.
+  if (parsed.section) {
+    setTimeout(() => {
+      let target = null;
+      if (parsed.tab === 'mixer' && parsed.section === 'ceremony') {
+        target = document.getElementById('ceremony-state');
+      }
+      if (target && target.scrollIntoView) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 250);
   }
   const btn = document.querySelector(`.tab[data-tab="${parsed.tab}"]`);
   if (!btn) return;
@@ -17456,23 +17891,37 @@ async function renderRecentEtches() {
       const pending = a.pending ? ' · pending' : '';
       // Ticker-collision marker. Computed across the FULL asset list above
       // (not just these 6) so a `duplicate` flag here is meaningful even
-      // when the earlier-etched sibling isn't in the recent slice.
-      const dupMark = a._tickerCollision === 'duplicate' ? ' · ⚠ DUP' : '';
+      // when the earlier-etched sibling isn't in the recent slice. Copycat
+      // (ticker matches a known external project — see COPYCAT_REGISTRY)
+      // takes priority over the in-tacit duplicate flag because the tailored
+      // message is more actionable.
+      const cc = a._copycatInfo;
+      const dupMark = cc
+        ? ` · ⚠ copy of ${cc.chain || 'ETH'} token`
+        : (a._tickerCollision === 'duplicate' ? ' · ⚠ DUP' : '');
       const petchMark = isPetch ? ' · ⚡ public mint' : '';
+      const collisionTitleSuffix = cc
+        ? ` · ⚠ ticker matches a known ${cc.chain || 'Ethereum'} project — likely copycat, verify asset_id`
+        : (a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : '');
       tile.title = isPetch
-        ? `${safeAssetId} · public-mint (T_PETCH) — anyone can mint up to the cap${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
+        ? `${safeAssetId} · public-mint (T_PETCH) — anyone can mint up to the cap${collisionTitleSuffix}`
         : (!v
             ? `${safeAssetId} · verifying…`
             : v.ok
-              ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${a._tickerCollision === 'duplicate' ? ' · ⚠ ticker shared with an earlier asset' : ''}`
+              ? `${safeAssetId}${v.mismatches && v.mismatches.length ? ' · worker mismatch: ' + v.mismatches.join(', ') : ' · chain-verified'}${collisionTitleSuffix}`
               : `${safeAssetId} · unverifiable: ${v.error || 'unknown'}`);
       const petchPill = isPetch
         ? ' <span style="display:inline-block;padding:0 4px;background:#7d4ff7;color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;" title="Permissionless fair-launch (T_PETCH). Anyone can mint until cap fills.">⚡</span>'
         : '';
+      const collisionPill = cc
+        ? ` <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="This ticker matches a known ${escapeHtml(cc.chain || 'Ethereum')} project. This token on tacit is likely a copy — proceed with caution and verify the asset_id below before sending or trading.">COPY</span>`
+        : (a._tickerCollision === 'duplicate'
+            ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>'
+            : '');
       tile.innerHTML = `
         ${imgUrl ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="">` : ''}
         <div class="recent-tile-body">
-          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${petchPill}${a._tickerCollision === 'duplicate' ? ' <span style="display:inline-block;padding:0 4px;background:var(--red);color:#fff;font-size:8px;border-radius:2px;font-style:normal;letter-spacing:0.05em;cursor:help;" title="Tickers aren\'t unique on tacit — asset_id is the canonical reference. Another asset claimed this ticker first; verify the asset_id before sending.">DUP</span>' : ''}</div>
+          <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${petchPill}${collisionPill}</div>
           <div class="recent-tile-meta">${ageStr}${verifyMark}${petchMark}${pending}${dupMark}</div>
         </div>`;
     };
@@ -18430,6 +18879,12 @@ function invalidateDiscoverRegistryCache() {
 function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   const safeAssetId = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
   const safeEtchTxid = /^[0-9a-f]{64}$/.test(a.etch_txid || '') ? a.etch_txid : '';
+  // Defensive copycat-flag lookup: most callers of this render hand us an
+  // asset that has been through markTickerCollisions (which sets
+  // _copycatInfo), but a deep-link / search-palette path could bypass that.
+  // The lookup is cheap, so we recompute when missing to guarantee the
+  // badge surfaces wherever this card renders.
+  if (!('_copycatInfo' in a)) a._copycatInfo = tickerCopycatInfo(a.ticker);
   // verify state machine:
   //   { ok: 'pending' }    — eager render: worker data shown, "verifying…" badge.
   //   { ok: false, error } — etch validation failed: worker data shown, ✗ badge.
@@ -18703,7 +19158,15 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     : `<span style="font-size:10px;background:var(--bg-warm);color:var(--ink-mid);padding:2px 6px;border:1px solid var(--ink-faint);text-transform:uppercase;letter-spacing:0.1em;" title="Signet (Bitcoin testnet) asset — no real value, suitable for testing only.">signet</span>`;
 
   let collisionBadge = '', collisionDetail = '';
-  if (a._tickerCollision === 'duplicate') {
+  // Copycat takes priority over the in-tacit duplicate flag — the tailored
+  // message ("matches a known external project") is more actionable than the
+  // generic "another tacit asset etched this earlier" copy, and a copycat
+  // may exist even when no second tacit etch has appeared yet.
+  if (a._copycatInfo) {
+    const _chain = a._copycatInfo.chain || 'ethereum';
+    collisionBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="This ticker matches a known ${escapeHtml(_chain)} project. This asset on tacit is likely a copy — proceed with caution and verify the asset_id below before sending, buying, or trading.">⚠ copy of ${escapeHtml(_chain)} token</span>`;
+    collisionDetail = `<div style="margin-top:6px;font-size:11px;color:var(--red);">⚠ This ticker matches a known <strong>${escapeHtml(_chain)}</strong> project. This token on tacit is <strong>likely a copy</strong> — tickers are free-form on tacit and the asset_id below is the only canonical reference. Proceed with caution and verify the asset_id with the original issuer before trading.</div>`;
+  } else if (a._tickerCollision === 'duplicate') {
     collisionBadge = `<span style="font-size:10px;background:#fee;color:var(--red);padding:2px 6px;border:1px solid var(--red);text-transform:uppercase;letter-spacing:0.1em;cursor:help;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before sending or buying.">⚠ duplicate ticker</span>`;
     collisionDetail = `<div style="margin-top:6px;font-size:11px;color:var(--red);">⚠ This ticker is shared with ≥ 1 earlier-etched asset. <strong>Tickers are not unique on tacit</strong> — the asset_id below is the canonical reference. Confirm with the issuer before trading.</div>`;
   } else if (a._tickerCollision === 'original') {
@@ -19553,11 +20016,13 @@ function renderMarketBrowse(rows) {
     const a = g.asset;
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
     const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
-    const collisionBadge = a._tickerCollision === 'duplicate'
-      ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
-      : a._tickerCollision === 'original'
-        ? `<span style="display:inline-block;padding:1px 5px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
-        : '';
+    const collisionBadge = a._copycatInfo
+      ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy — verify the asset_id before trading.">⚠ COPY</span>`
+      : a._tickerCollision === 'duplicate'
+        ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
+        : a._tickerCollision === 'original'
+          ? `<span style="display:inline-block;padding:1px 5px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
+          : '';
     const kindBits = [];
     if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic intents (trustless)">⚡ ${g.intents}</span>`);
     if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
@@ -19632,11 +20097,13 @@ function renderMarketAssetHeader(assetId, rows) {
     : (floorSats != null
         ? `<strong style="color:#0a8f43;">from ${floorSats.toLocaleString()} sats</strong>`
         : '<span class="muted">no priced listings</span>');
-  const collisionBadge = a._tickerCollision === 'duplicate'
-    ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
-    : a._tickerCollision === 'original'
-      ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
-      : '';
+  const collisionBadge = a._copycatInfo
+    ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy — verify the asset_id before trading.">⚠ COPY</span>`
+    : a._tickerCollision === 'duplicate'
+      ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
+      : a._tickerCollision === 'original'
+        ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
+        : '';
   // Breadcrumb above the asset card. Critical for users who deep-link from a
   // Discover "view offers" badge straight into asset mode — without it, the
   // browse index is invisible and the Market reads as "all listings flat".
@@ -20640,12 +21107,15 @@ async function renderDiscover(force = false) {
           const expIso = new Date((l.expiry || 0) * 1000).toISOString().slice(0,10);
           // Duplicate-ticker warning — mirrors the Market tab so a buyer
           // browsing this footer gallery can't accidentally trust an
-          // impostor that copied an existing asset's ticker.
-          const collisionDup = a._tickerCollision === 'duplicate'
-            ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before buying.">⚠ DUP</span>`
-            : a._tickerCollision === 'original'
-              ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">earliest</span>`
-              : '';
+          // impostor that copied an existing asset's ticker. Copycat (a
+          // ticker matching a known external project) takes priority.
+          const collisionDup = a._copycatInfo
+            ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy — verify the asset_id below before buying.">⚠ COPY</span>`
+            : a._tickerCollision === 'duplicate'
+              ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit — multiple assets can share a name. The asset_id is the only canonical reference. Another asset claimed this ticker first; verify the asset_id below before buying.">⚠ DUP</span>`
+              : a._tickerCollision === 'original'
+                ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This asset was etched first under this ticker, but tickers aren't unique on tacit — the asset_id is the canonical reference. Verify it before sending or buying.">earliest</span>`
+                : '';
           const tile = document.createElement('div');
           tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);';
           tile.innerHTML = `
@@ -20653,7 +21123,9 @@ async function renderDiscover(force = false) {
               <div><strong>${escapeHtml(a.ticker || '?')}</strong>${collisionDup} <span class="muted" style="font-size:10px;">${escapeHtml(shorten(safeAid, 4))}</span></div>
               <div style="font-size:11px;" class="muted">${(() => { const r = relativeAge(l.listed_at); return r ? `listed ${escapeHtml(r)} ago · expires ${expIso}` : `expires ${expIso}`; })()}</div>
             </div>
-            ${a._tickerCollision === 'duplicate' ? `<div style="margin-top:6px;font-size:10px;color:var(--red);">⚠ ticker shared with an earlier asset — verify asset_id before trading</div>` : ''}
+            ${a._copycatInfo
+              ? `<div style="margin-top:6px;font-size:10px;color:var(--red);">⚠ ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project — likely copy, verify asset_id before trading</div>`
+              : (a._tickerCollision === 'duplicate' ? `<div style="margin-top:6px;font-size:10px;color:var(--red);">⚠ ticker shared with an earlier asset — verify asset_id before trading</div>` : '')}
             <div style="margin-top:6px;font-size:18px;">${escapeHtml(fmtAssetAmount(BigInt(l.amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
             <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${(l.price_sats || 0).toLocaleString()} sats</strong>${(() => { const u = unitPriceSats(Number(l.price_sats || 0), BigInt(l.amount || 0), dec); return u != null ? `<span class="muted" style="font-size:11px;margin-left:6px;">· ${fmtUnitPriceSats(u)} sats/${escapeHtml(a.ticker || 'token')}</span>` : ''; })()}</div>
             <div style="margin-top:8px;font-size:10px;" class="muted">maker: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || '', 6))}</span></div>

@@ -2416,10 +2416,23 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div id="ceremony-state" class="muted" style="font-size:12px;margin-bottom:12px;">Loading…</div>
 
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:1;min-width:240px;">Ceremony hash
-          <input id="ceremony-hash" type="text" placeholder="64-char hex (sha256 of r1cs) — paste from coordinator's announcement, or use ?ceremony=… in URL" autocomplete="off" spellcheck="false">
+        <label style="flex:1;min-width:240px;">Ceremony hash <span class="muted" style="font-size:11px;">(canonical, baked into this dapp build)</span>
+          <input id="ceremony-hash" type="text" autocomplete="off" spellcheck="false" readonly title="The canonical ceremony hash for this dapp build. Override is not permitted: contributions are accepted only against the canonical ceremony so a phisher's `?ceremony=<bad_hash>` share link cannot redirect entropy to a poisoned chain.">
         </label>
-        <button id="btn-ceremony-load">Load</button>
+      </div>
+
+      <!-- Hardware pre-flight banner. Surfaced when navigator.deviceMemory
+           reports < 4 GB or the UA looks mobile — snarkjs.zKey.contribute
+           peaks at ~300-500MB heap on our circuit, and a mobile tab can
+           OOM-crash silently mid-compute (the JS context is killed before
+           the catch block runs, so no error banner). Telling contributors
+           up front prevents the wasted-60s-then-tab-died scenario. The
+           checks are heuristic (deviceMemory rounds down + isn't on Safari);
+           false positives are tolerable since contribute still works. -->
+      <div id="ceremony-hardware-warn" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid #b58900;background:#fdf6e3;color:#7a5800;border-radius:4px;font-size:12px;">
+        <strong>⚠ Heads up:</strong> <span id="ceremony-hardware-warn-msg"></span>
+        Contributing here may OOM-crash your tab silently — switching to a desktop browser with ≥4GB RAM is recommended. You can still try; the failure banner will surface what happens.
+        <div style="margin-top:6px;"><button id="btn-ceremony-hardware-dismiss" style="background:transparent;border:1px solid #b58900;color:#7a5800;font-size:11px;">Dismiss for this session</button></div>
       </div>
 
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
@@ -2430,6 +2443,37 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
 
       <pre id="ceremony-progress" class="muted" style="margin-top:10px;display:none;font-size:11px;max-height:200px;overflow:auto;"></pre>
+
+      <!-- Persistent failure banner. Survives page reload via localStorage so a
+           contributor whose attempt errored doesn't walk away thinking they
+           contributed. Replaces the prior alert()-based failure path which was
+           dismissed and forgotten. -->
+      <div id="ceremony-error-banner" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid var(--red,#dc322f);background:#fee;color:#a4180a;border-radius:4px;">
+        <div style="font-weight:600;font-size:13px;">✗ Your last contribution attempt failed</div>
+        <div id="ceremony-error-message" style="font-size:12px;margin-top:4px;line-height:1.4;"></div>
+        <div id="ceremony-error-when" style="font-size:11px;margin-top:4px;opacity:0.75;"></div>
+        <div style="margin-top:8px;display:flex;gap:6px;">
+          <button id="btn-ceremony-error-retry">Retry contribution</button>
+          <button id="btn-ceremony-error-dismiss" style="background:transparent;border:1px solid var(--red,#dc322f);color:#a4180a;">Dismiss</button>
+        </div>
+      </div>
+
+      <!-- Persistent success banner. Surfaces the verified attestation so the
+           contributor can re-copy the tweet, share it later, or just confirm
+           "yes, I'm in" after a page refresh. Also shows whether the chain
+           was independently verified after upload (re-fetched attestations). -->
+      <div id="ceremony-success-banner" style="display:none;margin-top:10px;padding:10px 12px;border:1px solid #859900;background:#f0fdf4;color:#1a4314;border-radius:4px;">
+        <div style="font-weight:600;font-size:13px;">✓ You contributed to the tacit ceremony</div>
+        <div id="ceremony-success-details" style="font-size:12px;margin-top:4px;line-height:1.4;"></div>
+        <div id="ceremony-success-verify" style="font-size:11px;margin-top:6px;font-style:italic;"></div>
+        <div style="margin-top:8px;font-size:12px;font-weight:600;">Your attestation post (sharing it on X strengthens the social proof of the ceremony):</div>
+        <textarea id="ceremony-success-attest" readonly style="width:100%;min-height:60px;margin-top:4px;font-size:11px;font-family:var(--mono,monospace);box-sizing:border-box;resize:vertical;"></textarea>
+        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          <a id="btn-ceremony-success-twitter" target="_blank" rel="noopener" style="display:inline-block;padding:6px 12px;background:#000;color:#fff;border-radius:4px;text-decoration:none;font-size:12px;font-weight:600;">Post on 𝕏</a>
+          <button id="btn-ceremony-success-copy">Copy text</button>
+          <button id="btn-ceremony-success-dismiss" style="background:transparent;border:1px solid #859900;color:#1a4314;">Dismiss</button>
+        </div>
+      </div>
 
       <div id="ceremony-init-coordinator-panel" style="margin-top:18px;display:none;border:1px solid #b58900;background:#fdf6e3;color:#657b83;padding:10px 12px;border-radius:6px;">
         <div style="font-weight:600;margin-bottom:6px;">Initialize a new ceremony (coordinator only)</div>

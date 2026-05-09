@@ -164,7 +164,7 @@ machinery.
 
 | Primitive | Curve / Field | Where in the flow |
 |---|---|---|
-| **Poseidon** (rate=2, capacity=1, Grassi 2020 round counts) | BN254 scalar field (Fr) | Leaf commitment (arity-3); nullifier hash (arity-1); merkle inner nodes (arity-2); `r_leaf` derivation (arity-2) |
+| **Poseidon** (Grassi et al. 2020; circomlib parametrization, BN254 Fr; capacity 1, rate = arity) | BN254 scalar field (Fr) | Leaf commitment (arity-3); nullifier hash (arity-1); merkle inner nodes (arity-2); `r_leaf` derivation (arity-2) |
 | **Groth16** (zk-SNARK) | BN254 / alt_bn128 G1 + G2 + pairing | Withdraw proof of membership + nullifier consistency + `r_leaf` binding |
 | **Pedersen commitment** (additively homomorphic) | secp256k1 (G + NUMS H) | `recipient_commit = denom·H + r_leaf·G`; validator checks the opening externally |
 | **SHA-256** (domain-separated) | n/a | `bind_hash` over the public input tuple — squared into the proof's polynomial system to bind `recipient_commit` and defeat substitution attacks |
@@ -280,8 +280,8 @@ is real, each is genuinely adjacent, none is the same composition:
   adapts it.
 - Indexer-validated meta-protocols on Bitcoin (Runes, BRC-20, Ordinals,
   STAMPS, OP_NET, Alkanes) are well-established 2023–2026 design space.
-- Confidential amounts via Pedersen + Bulletproofs trace to MimbleWimble
-  (2016) and Liquid CT (2017).
+- Confidential amounts via Pedersen + Bulletproofs trace to Maxwell's CT
+  proposal (2015), MimbleWimble (2016), and Liquid (mainnet 2018).
 - Taproot envelope binary payloads are Ordinals (2023).
 - The conceptual idea of Tornado-on-Bitcoin via meta-protocol has been
   discussed in cypherpunk and crypto-research circles for years.
@@ -312,11 +312,13 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
   (~71 contributors, Bitcoin-block-hash beacon, 2020–2022). `dapp/circuits/
   build.sh` downloads + dual-hash-checks the file (SHA256 + BLAKE2b
   matching the snarkjs README); refuses to proceed on mismatch.
-- **Phase 2 (per-circuit)**: coordinator endpoint (`/ceremony/init`,
-  `/contribute`, `/finalize`) is shipped, behind admin-auth for init +
-  finalize. Public contribute window is open. Client-side `verifyFromInit`
-  walks the contribution chain + content-checks IPFS-fetched r1cs/ptau
-  before accepting any contribution to extend.
+- **Phase 2 (per-circuit)**: coordinator endpoints (`/ceremony/init`,
+  `/ceremony/:circuit_hash/contribute`, `/ceremony/:circuit_hash/finalize`)
+  are shipped, behind admin-auth for init + finalize. The contribute
+  endpoint is publicly reachable (no auth gate); a contribution window
+  opens the moment a coordinator calls `/ceremony/init`. Client-side
+  `verifyFromInit` walks the contribution chain + content-checks IPFS-
+  fetched r1cs/ptau before accepting any contribution to extend.
 - **Beacon finalization**: applies a public-randomness beacon (Bitcoin
   block hash, ≥10 iterations) at the end of the contribution window.
   Closes the late-Sybil collusion window per SPEC §5.11.3.
@@ -339,7 +341,7 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 - ✅ Phase 1 ptau swapped to verified Hermez ceremony
 - ✅ Phase 2 ceremony coordinator (init / contribute / finalize) + auth
 - ✅ Client-side `verifyFromInit` before contribute
-- ✅ 65 mixer tests across 5 test files
+- ✅ 99 mixer tests across 7 test files
 - ⏸ **Public Phase 2 ceremony has not yet been run** — required before
   mainnet pool deployment. Coordinator + dapp UI are ready; the run
   itself is the remaining step.
