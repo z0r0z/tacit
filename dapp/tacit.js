@@ -6178,7 +6178,21 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
 
 // Default ceremony hash for the canonical mixer pool. Override via the
 // withdraw form if the user is participating in a different ceremony.
+// This IS sha256(r1cs file bytes) — same value baked into the worker's
+// /ceremony/init handshake. Used as the trustless commitment that ties an
+// IPFS-fetched r1cs to the deployed dapp build.
 const TACIT_DEFAULT_CEREMONY_HASH = '1373a3bc34153c291d057b44edaba11d5a4aa779d0998e0d0c0e400dfc89129d';
+
+// sha256 of the canonical Powers of Tau file. Hardcoded so the dapp can
+// validate ptau bytes from any IPFS gateway against a build-time commitment
+// — Pinata stores the file as chunked dag-pb (CIDv1, ~256 KB chunks), and
+// the dag-pb root multihash is over the protobuf tree, NOT over the raw
+// file bytes, so a naive sha256(bytes) === cidDigest check (the prior
+// _ipfsCidMatches path) rejected every gateway response for any chunked
+// file. Anchoring to a hardcoded sha256 of the assembled file sidesteps the
+// dag-pb dance entirely while preserving full content integrity. To rotate
+// to a different ptau, recompute via `shasum -a 256 powersOfTau28_hez_*.ptau`.
+const TACIT_DEFAULT_PTAU_SHA256 = '489be9e5ac65d524f7b1685baac8a183c6e77924fdb73d2b8105e335f277895d';
 
 // Local same-origin path to the witness-generator wasm. Same bytes as
 // circom output deterministically; sha256 baked into release notes for
@@ -11070,30 +11084,43 @@ async function ceremonyRender() {
 // contribution history against the original r1cs + ptau and confirms each
 // transition is valid Groth16 algebra. If a malicious worker has injected
 // garbage into the head, this catches it BEFORE we waste entropy.
-async function _ceremonyFetchBlobCached(cid, label) {
+async function _ceremonyFetchBlobCached(cid, label, expectedSha256Hex) {
   const cached = _ceremonyBlobCache.get(cid);
   if (cached) {
     _ceremonyLogToProgress(`Using cached ${label} (${cached.length} bytes, CID ${cid.slice(0, 16)}…)`);
     return cached;
   }
+  if (!expectedSha256Hex) throw new Error(`internal: no expected sha256 for ${label}`);
+  const expected = expectedSha256Hex.toLowerCase();
   _ceremonyLogToProgress(`Fetching ${label} (${cid})…`);
   const bytes = await _ceremonyFetchIpfsWithFailover(
     cid,
-    async (b) => {
-      const ok = await _ipfsCidMatches(cid, b);
-      return ok ? null : `content does not match CID ${cid} (gateway substitution)`;
+    (b) => {
+      // Validate the gateway-served bytes against the dapp's build-time
+      // sha256 commitment for this file. Stronger than a CID-shape check:
+      // a malicious gateway can't substitute alternate-but-valid setup
+      // params, because the digest is anchored to the deployed dapp build.
+      // Also bypasses the dag-pb chunked-file pitfall — we don't need to
+      // parse PBLink trees or re-derive multihashes from the resolved bytes.
+      const actual = bytesToHex(sha256(b));
+      if (actual !== expected) {
+        return `sha256(${actual.slice(0, 16)}…) does not match expected ${expected.slice(0, 16)}… (substituted or wrong CID)`;
+      }
+      return null;
     },
     (msg) => _ceremonyLogToProgress(`  ${label}: ${msg}`),
   );
-  // Only cache after CID-match validation passes — a substituted blob would
+  // Only cache after sha256 validation passes — a substituted blob would
   // have failed the validator above and never reach here.
   _ceremonyBlobCache.set(cid, bytes);
   return bytes;
 }
 
 async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes) {
-  const r1csBytes = await _ceremonyFetchBlobCached(state.r1cs_cid, 'r1cs');
-  const ptauBytes = await _ceremonyFetchBlobCached(state.ptau_cid, 'ptau');
+  // r1cs sha256 IS the ceremony hash — by definition. No separate constant
+  // needed; the active ceremony's hardcoded identity is the validator.
+  const r1csBytes = await _ceremonyFetchBlobCached(state.r1cs_cid, 'r1cs', _ceremonyActiveHash);
+  const ptauBytes = await _ceremonyFetchBlobCached(state.ptau_cid, 'ptau', TACIT_DEFAULT_PTAU_SHA256);
   _ceremonyLogToProgress(`Verifying chain (${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'})…`);
   const logger = {
     debug: () => {}, info: () => {}, warn: () => {},
