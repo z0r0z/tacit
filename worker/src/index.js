@@ -2713,17 +2713,71 @@ async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) 
   const assets = fetched.filter(v => v);
   assets.sort((a, b) => (b.etched_at || 0) - (a.etched_at || 0));
   const tipHeight = await tipP;
-  // Hydrate cap progress per asset. KV.list cap of 1000 is well beyond what a
-  // single asset can have for v1; if an asset ever exceeds it we'll need
-  // pagination here, but that's outside scope for the first cut.
+  // Hydrate cap progress per asset using KEY-ONLY pagination — every fact
+  // we surface (credited count, cumulative_minted, pending count) is
+  // derivable from canonical keys alone (height + tx_index + txid). Skipping
+  // the per-key value fetch is critical on heavy assets (FAIR's ~30k
+  // canonical entries) where the previous Promise.all-fetched loader hit
+  // the Worker wall-time ceiling and the whole /petch-assets response
+  // timed out.
   await Promise.all(assets.map(async a => {
-    const r = await loadCanonicalPmints(env, network, a.asset_id, tipHeight, a.cap_amount, a.mint_limit);
-    a.cumulative_minted = r.cumulative_minted;
-    a.credited_pmint_count = parseInt(r.credited_count, 10) || 0;
-    a.pmint_count = r.events.length;
-    a.pending_pmint_count = r.events.filter(e => e.status === 'pending').length;
+    const aid = a.asset_id;
+    const orphanPrefix = pmintPrefix(network, aid) + '0000000000:';
+    const capAmount = a.cap_amount != null ? BigInt(a.cap_amount) : null;
+    const mintLimit = a.mint_limit != null ? BigInt(a.mint_limit) : null;
+    let creditedCount = 0;
+    let creditedAmount = 0n;
+    let canonicalCount = 0;
+    let pendingCount = 0;       // canonical entries below confirmation depth
+    let cursor = null;
+    for (let page = 0; page < 60; page++) {
+      const lst = await env.REGISTRY_KV.list({
+        prefix: pmintPrefix(network, aid),
+        limit: 1000,
+        ...(cursor ? { cursor } : {}),
+      });
+      for (const k of lst.keys) {
+        if (k.name.startsWith(orphanPrefix)) continue;
+        canonicalCount++;
+        const parts = k.name.split(':');
+        const h = parseInt(parts[parts.length - 3], 10);
+        if (!Number.isInteger(h)) continue;
+        if (Number.isInteger(tipHeight)) {
+          const depth = Math.max(0, tipHeight - h + 1);
+          if (depth < PMINT_CONFIRMATION_DEPTH) { pendingCount++; continue; }
+        }
+        if (capAmount != null && mintLimit != null) {
+          const wouldBe = creditedAmount + mintLimit;
+          if (wouldBe > capAmount) continue; // cap_overflow — exclude from credit
+          creditedAmount = wouldBe;
+          creditedCount++;
+        } else {
+          creditedCount++;
+          if (mintLimit != null) creditedAmount += mintLimit;
+        }
+        if (canonicalCount >= 50000) break;
+      }
+      if (lst.list_complete || canonicalCount >= 50000) break;
+      cursor = lst.cursor;
+      if (!cursor) break;
+    }
+    // Count orphan keys with a separate lightweight scan — they all share the
+    // height-0 prefix and we just need a count for the UI.
+    let orphanCount = 0;
+    cursor = null;
+    for (let page = 0; page < 60; page++) {
+      const lst = await env.REGISTRY_KV.list({ prefix: orphanPrefix, limit: 1000, ...(cursor ? { cursor } : {}) });
+      orphanCount += lst.keys.length;
+      if (lst.list_complete || orphanCount >= 50000) break;
+      cursor = lst.cursor;
+      if (!cursor) break;
+    }
+    a.cumulative_minted = creditedAmount.toString();
+    a.credited_pmint_count = creditedCount;
+    a.pmint_count = canonicalCount + orphanCount;
+    a.pending_pmint_count = pendingCount + orphanCount;
     if (a.cap_amount && a.mint_limit) {
-      const remaining = BigInt(a.cap_amount) - BigInt(a.cumulative_minted);
+      const remaining = BigInt(a.cap_amount) - creditedAmount;
       a.mints_remaining = String(remaining < 0n ? 0n : remaining / BigInt(a.mint_limit));
     }
   }));
@@ -2751,18 +2805,54 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
     apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
     new Promise(resolve => setTimeout(() => resolve(null), 2500)),
   ]).catch(() => null);
-  const r = await loadCanonicalPmints(env, network, assetIdHex, tip, petch.cap_amount, petch.mint_limit);
-  // Slim payload for the dapp's validateOutpoint hot path: the only fact it
-  // needs is the set of credited mint txids. Per-event annotation (commitment,
-  // attested_amount, depth, status, …) bloats the response by ~200-500 bytes
-  // per pmint, which adds up on a popular fair launch with thousands of mints.
+  // Slim path: the dapp's validateOutpoint hot path only needs the set of
+  // credited mint txids. Every fact required for the credit decision is
+  // already encoded in the canonical key (height, tx_index, txid), so we
+  // can list keys without ever fetching values — saves N×500B of JSON
+  // payloads + N parallel KV.get calls when N is in the thousands. Without
+  // this, /pmints?credited=1 on a heavy asset (FAIR with 26k+ canonical
+  // entries) tips past the Worker wall-time ceiling.
   if (opts.creditedOnly) {
+    const orphanPrefixStr = pmintPrefix(network, assetIdHex) + '0000000000:';
+    const capAmount = petch.cap_amount != null ? BigInt(petch.cap_amount) : null;
+    const mintLimit = petch.mint_limit != null ? BigInt(petch.mint_limit) : null;
     const credited_txids = [];
     const cap_overflow_txids = [];
-    for (const e of r.events) {
-      if (!/^[0-9a-f]{64}$/.test(String(e.mint_txid || ''))) continue;
-      if (e.status === 'credited') credited_txids.push(e.mint_txid);
-      else if (e.status === 'cap_overflow') cap_overflow_txids.push(e.mint_txid);
+    let creditedAmount = 0n;
+    let canonCursor = null;
+    let collected = 0;
+    for (let page = 0; page < 200; page++) {
+      const list = await env.REGISTRY_KV.list({
+        prefix: pmintPrefix(network, assetIdHex),
+        limit: 1000,
+        ...(canonCursor ? { cursor: canonCursor } : {}),
+      });
+      for (const k of list.keys) {
+        if (k.name.startsWith(orphanPrefixStr)) continue;
+        // Key shape: pmint:<network>:<aid>:<padded_h>:<padded_idx>:<txid>
+        const parts = k.name.split(':');
+        const txid = parts[parts.length - 1];
+        const h = parseInt(parts[parts.length - 3], 10);
+        if (!/^[0-9a-f]{64}$/.test(txid) || !Number.isInteger(h)) continue;
+        if (Number.isInteger(tip)) {
+          const depth = Math.max(0, tip - h + 1);
+          if (depth < PMINT_CONFIRMATION_DEPTH) continue; // pending
+        }
+        if (capAmount != null && mintLimit != null) {
+          const wouldBe = creditedAmount + mintLimit;
+          if (wouldBe > capAmount) {
+            cap_overflow_txids.push(txid);
+            continue;
+          }
+          creditedAmount = wouldBe;
+        }
+        credited_txids.push(txid);
+        collected++;
+        if (collected >= 50000) break; // hard safety cap
+      }
+      if (list.list_complete || collected >= 50000) break;
+      canonCursor = list.cursor;
+      if (!canonCursor) break;
     }
     // cap_overflow is published alongside credited so the dapp can distinguish
     // "pending — will eventually credit" from "permanently rejected — paid
@@ -2779,6 +2869,7 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
       tip_unavailable: !Number.isInteger(tip),
     }, 200, cors);
   }
+  const r = await loadCanonicalPmints(env, network, assetIdHex, tip, petch.cap_amount, petch.mint_limit);
   return jsonResponse({
     asset_id: assetIdHex,
     network,
