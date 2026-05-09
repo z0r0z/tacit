@@ -2431,10 +2431,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <pre id="ceremony-progress" class="muted" style="margin-top:10px;display:none;font-size:11px;max-height:200px;overflow:auto;"></pre>
 
-      <details style="margin-top:18px;">
-        <summary class="muted" style="cursor:pointer;">Initialize a new ceremony (coordinator only)</summary>
-        <div class="muted" style="font-size:12px;margin:8px 0;">First-write-wins per circuit hash. Run <code>cd dapp/circuits &amp;&amp; bash build.sh</code> locally to produce <code>build/withdraw.r1cs</code>, <code>build/pot14_final.ptau</code>, and <code>withdraw_0000.zkey</code>. Upload all three.</div>
+      <div id="ceremony-init-coordinator-panel" style="margin-top:18px;display:none;border:1px solid #b58900;background:#fdf6e3;color:#657b83;padding:10px 12px;border-radius:6px;">
+        <div style="font-weight:600;margin-bottom:6px;">Initialize a new ceremony (coordinator only)</div>
+        <div class="muted" style="font-size:12px;margin:8px 0;">Requires the worker's <code>CEREMONY_INIT_TOKEN</code>. Anyone without the token will get a 401 from the worker. First-write-wins per circuit hash. Run <code>cd dapp/circuits &amp;&amp; bash build.sh</code> locally to produce <code>build/withdraw.r1cs</code>, <code>build/pot14_final.ptau</code>, and <code>withdraw_0000.zkey</code>. Upload all three.</div>
         <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+          <label style="flex:1;min-width:200px;">Coordinator token
+            <input id="ceremony-init-token" type="password" placeholder="paste CEREMONY_INIT_TOKEN" autocomplete="off" spellcheck="false">
+          </label>
           <label style="flex:1;min-width:200px;">Initiator name
             <input id="ceremony-init-name" type="text" placeholder="alice@github" maxlength="64">
           </label>
@@ -2454,7 +2457,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <button id="btn-ceremony-init" disabled>Initialize ceremony &amp; broadcast</button>
         </div>
         <pre id="ceremony-init-out" class="muted" style="margin-top:10px;display:none;font-size:11px;"></pre>
-      </details>
+      </div>
 
       <div id="ceremony-attestations" style="margin-top:18px;"></div>
     </div>
