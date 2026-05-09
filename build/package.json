@@ -12,7 +12,9 @@
     "@noble/hashes": "1.4.0",
     "@noble/secp256k1": "2.1.0",
     "@scure/base": "1.1.6",
-    "sats-connect": "^3.6.1"
+    "poseidon-lite": "^0.3.0",
+    "sats-connect": "^3.6.1",
+    "snarkjs": "^0.7.6"
   },
   "devDependencies": {
     "esbuild": "^0.24.0"

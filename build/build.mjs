@@ -19,6 +19,7 @@ const ROOT       = resolve(HERE, '..');                     // /Users/z/tacit
 const DAPP_DIR   = join(ROOT, 'dapp');                      // production output (pin this)
 const VENDOR_DIR = join(DAPP_DIR, 'vendor');
 const BUNDLE_OUT = join(VENDOR_DIR, 'tacit-deps.min.js');
+const MIXER_OUT  = join(VENDOR_DIR, 'tacit-mixer.min.js'); // separate bundle, lazy-loaded
 const HTML       = join(DAPP_DIR, 'index.html');
 const APP_JS     = join(DAPP_DIR, 'tacit.js');               // app code (extracted from inline)
 
@@ -42,6 +43,34 @@ async function bundleVendor() {
   return readFileSync(BUNDLE_OUT);
 }
 
+// Mixer bundle (snarkjs + ffjavascript). Built as a separate file so users
+// who never visit the Mixer tab don't pay the ~800 KB cost — tacit.js
+// loads it lazily via dynamic import inside verifyMixerProof.
+async function bundleMixer() {
+  if (verifyOnly) {
+    if (!existsSync(MIXER_OUT)) throw new Error(`bundle missing: ${MIXER_OUT}`);
+    return readFileSync(MIXER_OUT);
+  }
+  await build({
+    entryPoints: [join(HERE, 'entry-mixer.mjs')],
+    bundle: true,
+    format: 'esm',
+    target: 'es2020',
+    minify: true,
+    legalComments: 'inline',
+    outfile: MIXER_OUT,
+    logLevel: 'info',
+    // snarkjs uses Node-style dynamic imports for ceremony files we don't
+    // need at verify-time. Mark them external so the bundler doesn't try to
+    // resolve them — anything load-bearing (groth16.verify, ffjavascript)
+    // gets bundled; ceremony helpers like fastfile / ejs error at runtime
+    // only if a non-verify path tries to use them.
+    external: ['fastfile', 'ejs', 'logplease', 'r1csfile', 'web-worker', 'fs', 'os', 'crypto', 'readline', 'path'],
+    platform: 'browser',
+  });
+  return readFileSync(MIXER_OUT);
+}
+
 const sha384b64 = buf => 'sha384-' + createHash('sha384').update(buf).digest('base64');
 
 async function main() {
@@ -51,6 +80,11 @@ async function main() {
   const bundle = await bundleVendor();
   console.log(`  ${BUNDLE_OUT}`);
   console.log(`  ${bundle.length.toLocaleString()} bytes · ${sha384b64(bundle)}`);
+
+  console.log(verifyOnly ? '• Reading existing mixer bundle...' : '• Bundling mixer deps (snarkjs)...');
+  const mixerBundle = await bundleMixer();
+  console.log(`  ${MIXER_OUT}`);
+  console.log(`  ${mixerBundle.length.toLocaleString()} bytes · ${sha384b64(mixerBundle)}`);
 
   if (!existsSync(HTML)) throw new Error(`source not found: ${HTML}`);
   if (!existsSync(APP_JS)) throw new Error(`source not found: ${APP_JS}`);
@@ -64,9 +98,10 @@ async function main() {
   console.log('\nDone. Pin /Users/z/tacit/dapp/ to IPFS:');
   console.log('  ipfs add -r /Users/z/tacit/dapp');
   console.log('\nIntegrity hashes (publish in release notes):');
-  console.log(`  vendor/tacit-deps.min.js  ${sha384b64(bundle)}`);
-  console.log(`  tacit.js                  ${sha384b64(appJs)}`);
-  console.log(`  index.html                ${sha384b64(html)}`);
+  console.log(`  vendor/tacit-deps.min.js   ${sha384b64(bundle)}`);
+  console.log(`  vendor/tacit-mixer.min.js  ${sha384b64(mixerBundle)}`);
+  console.log(`  tacit.js                   ${sha384b64(appJs)}`);
+  console.log(`  index.html                 ${sha384b64(html)}`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
