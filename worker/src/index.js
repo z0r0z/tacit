@@ -2296,7 +2296,20 @@ async function handleAssetHint(req, env, network, cors) {
       pending: confirmed ? undefined : true,
       network,
     };
-    const pmk = pmintKeyFor(network, cm.asset_id, blockHeight || 0, txIndex, txidHex);
+    // Don't write unconfirmed PMINTs to the canonical pmint:* namespace.
+    // The canonical key embeds zero-padded block height; an unconfirmed hint
+    // would land under height 0000000000, which (a) lex-sorts ahead of every
+    // real entry — polluting the first KV.list page on heavy assets — and
+    // (b) was historically misclassified as deeply confirmed by
+    // loadCanonicalPmints, crediting it toward the cap. The cron will pick
+    // this PMINT up on confirmation and write it under its real
+    // (height, tx_index) canonical key. Caller (postHint fire-and-forget)
+    // doesn't read the body, so source='pending' is purely informational.
+    if (!confirmed || !Number.isInteger(blockHeight)) {
+      await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+      return jsonResponse({ ok: true, mint: mintMeta, source: 'pending', network }, 200, cors);
+    }
+    const pmk = pmintKeyFor(network, cm.asset_id, blockHeight, txIndex, txidHex);
     const existing = await env.REGISTRY_KV.get(pmk, 'json');
     if (existing && Number.isInteger(existing.minted_at_height)) {
       await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
@@ -2304,6 +2317,16 @@ async function handleAssetHint(req, env, network, cors) {
     }
     await env.REGISTRY_KV.put(pmk, JSON.stringify(mintMeta));
     await env.REGISTRY_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+    // Best-effort cleanup of any height-0 orphan that an earlier worker
+    // version may have written for this same txid. Loop over candidate
+    // tx_index values is unnecessary — Fix B above prevents new orphans —
+    // but the `pmintKeyFor(...,0,0,txid)` form is the only shape the old
+    // hint path produced (txIndex was 0 when blockHeight was null), so a
+    // single targeted delete suffices for live cleanup.
+    const stalePendingKey = pmintKeyFor(network, cm.asset_id, 0, 0, txidHex);
+    if (stalePendingKey !== pmk) {
+      env.REGISTRY_KV.delete(stalePendingKey).catch(() => {});
+    }
     // Delete the cached /petch-assets response and recompute. `caches.default`
     // is per-POP, so a single delete only invalidates this POP — but the
     // recompute writes a fresh entry that other POPs will pick up on their
@@ -2390,7 +2413,18 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   let creditedCount = 0n;
   let creditedAmount = 0n;
   const annotated = events.map(e => {
-    const h = Number(e.minted_at_height) || 0;
+    // Defensive: an earlier worker version (handleAssetHint T_PMINT branch)
+    // wrote unconfirmed hints into this canonical namespace with
+    // minted_at_height=null, which the previous `Number(null) || 0 = 0`
+    // computation turned into a fake `depth = tip + 1`, crediting them as
+    // deeply confirmed. Trust `pending: true` and require an integer height
+    // before doing the depth math. The cron's confirmed entry under a
+    // real-height key supersedes any orphan; the orphan stays here as
+    // 'pending' and is never credited.
+    if (e.pending === true || !Number.isInteger(e.minted_at_height)) {
+      return { ...e, depth: null, status: 'pending', credited: false };
+    }
+    const h = e.minted_at_height;
     // Bitcoin convention: a tx in block N has 1 confirmation when tip == N
     // (the tx's own block counts). SPEC §5.9 cites the standard "~1% reorg
     // risk at depth 3" threshold, which is 3 confirmations. So depth here =
@@ -2664,7 +2698,70 @@ async function commitmentForUtxo(env, txidHex, vout, network) {
     if (vout >= cb.outputs.length) throw new Error(`T_BURN vout ${vout} out of range`);
     return { commitment: cb.outputs[vout].commitment, asset_id: cb.asset_id };
   }
+  if (decoded.opcode === T_PMINT) {
+    if (vout !== 0) throw new Error('T_PMINT supply lives at vout 0 only');
+    const pm = decodeCPmintPayload(decoded.payload);
+    if (!pm) throw new Error('invalid T_PMINT payload');
+    return { commitment: pm.commitment, asset_id: pm.asset_id };
+  }
+  if (decoded.opcode === T_WITHDRAW) {
+    if (vout !== 0) throw new Error('T_WITHDRAW output lives at vout 0 only');
+    const tw = decodeTWithdrawPayload(decoded.payload);
+    if (!tw) throw new Error('invalid T_WITHDRAW payload');
+    return { commitment: tw.recipient_commitment, asset_id: tw.asset_id };
+  }
   throw new Error('unsupported envelope opcode');
+}
+
+// SPEC §5.10 — T_DEPOSIT kernel sig: BIP-340 over kernel_msg under
+// (C_in − denomination·H).x_only(). Closes the Conservation invariant
+// (SPEC §5.11.4 invariant 1): proves exactly `denomination` of `asset_id`
+// was consumed into the pool. Without this check anyone can append leaves
+// to a pool tree that aren't backed by real asset value, then withdraw
+// against their own leaf — free inflation.
+//
+// Returns true iff the deposit genuinely consumed an asset UTXO of the
+// right (asset_id, denomination). Any failure (parent fetch failure,
+// asset_id mismatch, sig verify failure) returns false.
+//
+// `tx` is the already-fetched deposit transaction object (cron has it in
+// scope), so this only spends one mempool.space subrequest per deposit
+// (the parent walk via commitmentForUtxo).
+const _DEPOSIT_DOMAIN = new TextEncoder().encode('tacit-deposit-v1');
+async function verifyMixerDepositKernel(env, tx, expectedAssetIdHex, expectedDenomStr, leafCommitmentHex, kernelSigHex, network) {
+  if (!tx || !Array.isArray(tx.vin) || tx.vin.length < 2) return false;
+  const inp = tx.vin[1];
+  if (!inp || typeof inp.txid !== 'string' || typeof inp.vout !== 'number') return false;
+  let parent;
+  try { parent = await commitmentForUtxo(env, inp.txid, inp.vout, network); }
+  catch { return false; }
+  if (!parent || parent.asset_id !== expectedAssetIdHex) return false;
+  let CinPoint;
+  try { CinPoint = compressedPointFromHex(parent.commitment); }
+  catch { return false; }
+  const denomBig = BigInt(expectedDenomStr);
+  const denomH = denomBig === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(modN(denomBig));
+  const EPrime = CinPoint.add(denomH.negate());
+  if (EPrime.equals(PEDERSEN_ZERO)) return false;
+  const ExBytes = EPrime.toRawBytes(true).slice(1);
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(denomBig & 0xffffffffn), true);
+    v.setUint32(4, Number((denomBig >> 32n) & 0xffffffffn), true);
+  }
+  const inputTxidBE = reverseBytes(hexToBytes(inp.txid));
+  const inputVoutLE = new Uint8Array(4);
+  new DataView(inputVoutLE.buffer).setUint32(0, inp.vout >>> 0, true);
+  const kernelMsg = sha256(concatBytes(
+    _DEPOSIT_DOMAIN,
+    hexToBytes(expectedAssetIdHex),
+    denomLE,
+    inputTxidBE,
+    inputVoutLE,
+    hexToBytes(leafCommitmentHex),
+  ));
+  return verifySchnorr(hexToBytes(kernelSigHex), kernelMsg, ExBytes);
 }
 
 // Canonical message the holder signs over to authorize publication. Must match
@@ -4612,6 +4709,13 @@ async function scanForEtches(env, network) {
           etch_vout: 0,
           etched_at_height: h,
           etched_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          // Position-in-block (mempool.space returns txs in canonical block
+          // order, so the array index IS the canonical tx_index). The Discover
+          // sort uses this as a same-block tiebreaker so two CETCHes in one
+          // block surface in actual chain order rather than asset_id lex
+          // order. Old entries without this field fall back to lex order at
+          // the dapp comparator; a /rescan backfills them.
+          tx_index: txIndex,
           mintable: ce.mintable,
           mint_authority: ce.mint_authority,
           network,
@@ -4769,7 +4873,17 @@ async function scanForEtches(env, network) {
         // duplicate (height, tx_index); under canonical chain order it
         // never differs.
         mintMeta.tx_index = txIndex;
-        await env.REGISTRY_KV.put(pmintKeyFor(network, expectedAid, h, txIndex, tx.txid), JSON.stringify(mintMeta));
+        const pmk = pmintKeyFor(network, expectedAid, h, txIndex, tx.txid);
+        await env.REGISTRY_KV.put(pmk, JSON.stringify(mintMeta));
+        // Clean up any height-0 orphan an older worker version wrote for this
+        // same txid via handleAssetHint's pre-fix unconfirmed path. Best-effort:
+        // a stranded orphan is now harmless thanks to loadCanonicalPmints'
+        // pending-guard, but deleting it keeps the namespace tidy and shaves
+        // KV.list cost on heavy assets.
+        const stalePendingKey = pmintKeyFor(network, expectedAid, 0, 0, tx.txid);
+        if (stalePendingKey !== pmk) {
+          env.REGISTRY_KV.delete(stalePendingKey).catch(() => {});
+        }
         found++;
       } else if (decoded.opcode === T_DEPOSIT) {
         // SPEC §5.10. Two payload shapes share opcode 0x29:
@@ -4779,9 +4893,13 @@ async function scanForEtches(env, network) {
         //   - Standard deposit: appends a leaf to the pool's merkle tree at
         //     a canonical position derived from (height, tx_index, txid).
         //
-        // The cron does NOT verify the kernel sig (would require fetching
-        // the input UTXO's parent envelope to recover C_in — heavy). The
-        // dApp re-validates client-side per SPEC §5.10's validator rules.
+        // Standard deposits are gated by the kernel sig check below, which
+        // walks vin[1] to recover C_in and verifies the BIP-340 sig under
+        // (C_in − denomination·H).x_only(). This enforces the Conservation
+        // invariant (SPEC §5.11.4 invariant 1): the leaf is only indexed if
+        // the deposit genuinely consumed `denomination` of `asset_id`. The
+        // dapp re-runs the same check as defense-in-depth before appending
+        // worker-supplied leaves to its local merkle tree.
         const td = decodeTDepositPayload(decoded.payload);
         if (!td) continue;
         if (td.kind === 'pool_init') {
@@ -4811,6 +4929,19 @@ async function scanForEtches(env, network) {
           // same scan window is silently dropped.
           const initRec = await env.REGISTRY_KV.get(poolInitKey(network, td.asset_id, td.denomination), 'json');
           if (!initRec) continue;
+          // SPEC §5.10 / §5.11.4 invariant 1 — Conservation. Verify the
+          // BIP-340 kernel sig under (C_in − denomination·H).x_only() before
+          // appending the leaf. Without this, any well-formed envelope (with
+          // garbage kernel_sig) would be indexed as a real deposit; the
+          // depositor could then withdraw their own leaf and steal pool
+          // value (free inflation). The signing message binds asset_id,
+          // denomination, the consumed input outpoint, and the leaf
+          // commitment, so no cross-leaf or cross-pool replay is possible.
+          const kernelOk = await verifyMixerDepositKernel(
+            env, tx, td.asset_id, td.denomination,
+            td.leaf_commitment, td.kernel_sig, network,
+          );
+          if (!kernelOk) continue;
           const leafKey = poolLeafKeyFor(network, td.asset_id, td.denomination, h, txIndex, tx.txid);
           const leafMeta = {
             asset_id: td.asset_id,
@@ -4880,6 +5011,13 @@ export {
   decodeCPetchPayload, decodeCPmintPayload,
   decodeTDepositPayload, decodeTWithdrawPayload,
   T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW,
+  // Mixer kernel-sig verifier — exported so tests/mixer-conservation can
+  // drive it directly against a stubbed apiJson/fetch and confirm the
+  // Conservation invariant (SPEC §5.11.4 #1) is enforced. Without dedicated
+  // negative coverage for this gate, the indexer test suite trained itself
+  // around garbage kernel sigs ('00'.repeat(64)) and missed the inflation
+  // vector when the gate wasn't wired in the cron at all.
+  verifyMixerDepositKernel, commitmentForUtxo,
   // SPEC §5.9 cap-credit policy + the function that applies it. Exported so
   // the petch-pmint test can simulate full canonical-order scenarios
   // (depth-gated crediting, cap-overflow rejection, reorg-revoke) against

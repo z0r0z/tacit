@@ -102,6 +102,13 @@ export function prfTryRestore() {
 export async function prfLogin({ credentialId }) {
   const rpId = window.location.hostname;
   const rawId = credentialId ? fromB64(credentialId) : undefined;
+  // Single-credential branch uses `eval` (not `evalByCredential`): with one
+  // entry in allowCredentials the two are equivalent, but `eval` has wider
+  // browser support — `evalByCredential` is a later spec addition and some
+  // implementations return the result under the wrong key, leaving us unable
+  // to read it. The fallback resultsByCredential lookup below still handles
+  // browsers that decide to return results that way regardless.
+  const prfExtension = { prf: { eval: { first: PRF_SALT } } };
   const publicKey = rawId
     ? {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -114,7 +121,7 @@ export async function prfLogin({ credentialId }) {
         // because their providers don't report the 'internal' transport — the
         // user gets a successful registration but no login prompt ever appears.
         allowCredentials: [{ type: 'public-key', id: rawId }],
-        extensions: { prf: { evalByCredential: { [credentialId]: { first: PRF_SALT } } } },
+        extensions: prfExtension,
       }
     : {
         challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -122,14 +129,21 @@ export async function prfLogin({ credentialId }) {
         userVerification: 'required',
         timeout: 60000,
         allowCredentials: [],
-        extensions: { prf: { eval: { first: PRF_SALT } } },
+        extensions: prfExtension,
       };
   const cred = await navigator.credentials.get({ publicKey, mediation: 'optional' });
   if (!cred) throw new Error('no passkey selected');
   const gotId = toB64(cred.rawId);
   const prfExt = cred.getClientExtensionResults()?.prf || {};
   let results = prfExt.results;
-  if (!results && prfExt.resultsByCredential && credentialId) results = prfExt.resultsByCredential[credentialId];
+  // Also try `gotId` (the actually-used credential ID): in discoverable mode
+  // we don't know `credentialId` up front, and even with allowCredentials a
+  // browser may key the result map by the canonical credential ID, which can
+  // differ in encoding from the saved one. Without this we drop a valid PRF
+  // result and throw "PRF result not returned" despite having the bytes.
+  if (!results && prfExt.resultsByCredential) {
+    results = (credentialId && prfExt.resultsByCredential[credentialId]) || prfExt.resultsByCredential[gotId];
+  }
   if (!results?.first) throw new Error('PRF result not returned');
   const raw = results.first;
   const priv = prfBytesToScalar(raw instanceof Uint8Array ? raw : new Uint8Array(raw));

@@ -232,6 +232,45 @@ await test('tipHeight=null marks every event as unknown_depth (no credit)', asyn
 });
 
 // ---------------------------------------------------------------------------
+// PENDING-GUARD — defense for an old worker bug where handleAssetHint wrote
+// unconfirmed PMINTs into the canonical pmint:* namespace with
+// minted_at_height=null. The pre-fix `Number(null) || 0 = 0` then computed
+// depth = tip + 1 and credited those orphans toward the cap. Both the
+// `pending: true` flag and a non-integer height must short-circuit the
+// depth math.
+// ---------------------------------------------------------------------------
+await test('pending: true entries are never credited, even at canonically-early position', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  // Stale orphan at height 0 (lex-sorts ahead of every real mint), with the
+  // exact shape an old handleAssetHint hint-write produced.
+  env.REGISTRY_KV.set(pmintKey(ASSET, 0, 0, 'a'.repeat(64)), {
+    ...mintEvent(0, 0, 'a'.repeat(64)),
+    minted_at_height: null,
+    pending: true,
+  });
+  // Real confirmed mint at height 100.
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'b'.repeat(64)), mintEvent(100, 0, 'b'.repeat(64)));
+  const r = await loadCanonicalPmints(env, 'signet', ASSET, 200, '1000', '100');
+  const orphan = r.events.find(e => e.mint_txid === 'a'.repeat(64));
+  const real = r.events.find(e => e.mint_txid === 'b'.repeat(64));
+  return orphan && orphan.status === 'pending' && orphan.credited === false
+    && real && real.status === 'credited' && real.credited === true
+    && r.cumulative_minted === '100';
+});
+
+await test('non-integer minted_at_height short-circuits depth math', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  env.REGISTRY_KV.set(pmintKey(ASSET, 0, 0, 'a'.repeat(64)), {
+    ...mintEvent(0, 0, 'a'.repeat(64)),
+    minted_at_height: null,   // no `pending` flag — the height check alone must catch this
+  });
+  const r = await loadCanonicalPmints(env, 'signet', ASSET, 200, '1000', '100');
+  return r.events.length === 1
+    && r.events[0].status === 'pending'
+    && r.cumulative_minted === '0';
+});
+
+// ---------------------------------------------------------------------------
 // SHAPE — invariant the dapp's _fetchPmintCredited cache depends on.
 // ---------------------------------------------------------------------------
 await test('credited events carry mint_txid in canonical hex form', async () => {
