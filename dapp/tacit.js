@@ -1189,7 +1189,102 @@ async function api(path, opts = {}) {
 }
 const apiText = (p, o) => api(p, o).then(r => r.text());
 const apiJson = (p, o) => api(p, o).then(r => r.json());
-const getUtxos = a => apiJson(`/address/${a}/utxo`);
+
+// Esplora `/address/:addr/utxo` is hard-capped at 500 unspent outputs per
+// address and returns `400 Too many unspent transaction outputs (>500)` when
+// exceeded — there is no pagination on that endpoint. Wallets that have
+// accumulated dust, faucet drips, change, or many fragmented asset UTXOs
+// cross the cap and otherwise become unscannable: the holdings tab can't
+// see anything (including their mints) until the count drops back under 500.
+//
+// Fallback: reconstruct the unspent set from paginated tx history. The
+// `/address/:addr/txs/chain` endpoint returns up to 25 confirmed txs newest-
+// first and accepts `[/:last_seen_txid]` for pagination with no ceiling on
+// the total walk; `/address/:addr/txs/mempool` covers unconfirmed activity.
+// For each tx we tally outputs paying the address (received) and inputs
+// whose `prevout.scriptpubkey_address` matches the address (spent); the
+// final UTXO set is `received \ spent`. Slower (N/25 round-trips) than the
+// indexer's pre-built view, but unbounded — the only client-visible
+// difference is latency, not correctness.
+async function _getUtxosViaTxHistory(a) {
+  const spent = new Set();      // "txid:vout" of outputs paying `a` later spent
+  const received = new Map();   // "txid:vout" -> { txid, vout, value, status }
+
+  const ingestTx = (tx) => {
+    if (!tx || typeof tx !== 'object') return;
+    const txid = tx.txid;
+    if (!txid) return;
+    const status = tx.status || { confirmed: false };
+    if (Array.isArray(tx.vout)) {
+      for (let i = 0; i < tx.vout.length; i++) {
+        const o = tx.vout[i];
+        if (o && o.scriptpubkey_address === a) {
+          received.set(`${txid}:${i}`, { txid, vout: i, value: o.value, status });
+        }
+      }
+    }
+    if (Array.isArray(tx.vin)) {
+      for (const vin of tx.vin) {
+        const po = vin && vin.prevout;
+        if (po && po.scriptpubkey_address === a && vin.txid) {
+          spent.add(`${vin.txid}:${vin.vout}`);
+        }
+      }
+    }
+  };
+
+  // Mempool first (no pagination — Esplora returns up to 50 unconfirmed txs).
+  // Failure here is non-fatal: chain history alone still yields a correct
+  // confirmed-only UTXO set, just missing in-flight activity.
+  try {
+    const mempoolTxs = await apiJson(`/address/${a}/txs/mempool`);
+    if (Array.isArray(mempoolTxs)) for (const tx of mempoolTxs) ingestTx(tx);
+  } catch { /* mempool best-effort */ }
+
+  // Chain history paginated by last_seen_txid, 25 newest-first per page. Loop
+  // terminates when a page is empty or shorter than 25 (Esplora's signal that
+  // we've reached the address's earliest tx). HARD_CAP_PAGES is defense-in-
+  // depth against a misbehaving indexer that never returns a terminating
+  // page; 4000 pages * 25 txs = 100k txs is far beyond any realistic wallet.
+  const HARD_CAP_PAGES = 4000;
+  let lastSeen = '';
+  for (let page = 0; page < HARD_CAP_PAGES; page++) {
+    const path = lastSeen
+      ? `/address/${a}/txs/chain/${lastSeen}`
+      : `/address/${a}/txs/chain`;
+    let batch;
+    try { batch = await apiJson(path); } catch { break; }
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    for (const tx of batch) ingestTx(tx);
+    if (batch.length < 25) break;
+    const tail = batch[batch.length - 1];
+    if (!tail || !tail.txid) break;
+    lastSeen = tail.txid;
+  }
+
+  const out = [];
+  for (const v of received.values()) {
+    if (!spent.has(`${v.txid}:${v.vout}`)) out.push(v);
+  }
+  return out;
+}
+
+async function getUtxos(a) {
+  try {
+    return await apiJson(`/address/${a}/utxo`);
+  } catch (e) {
+    // Esplora: `400 Too many unspent transaction outputs (>500)` → fall back
+    // to walking tx history. The `api()` wrapper formats the upstream body
+    // as `API 400: Too many unspent transaction outputs (>500). Contact
+    // support to raise limits.`, so we match on the >500 phrase rather than
+    // exact text in case the indexer ever shortens it.
+    const msg = String(e && e.message || '');
+    if (/^API 400/.test(msg) && /unspent transaction outputs/i.test(msg)) {
+      return _getUtxosViaTxHistory(a);
+    }
+    throw e;
+  }
+}
 const getTip = () => apiText('/blocks/tip/height').then(t => parseInt(t, 10) || 0);
 
 // ============== CHAIN-DIVERGENCE WATCHDOG ==============
@@ -23052,4 +23147,9 @@ export {
   // helper failed to await the validator and rejected good responses as
   // "[object Promise]"; the export keeps that regression covered.
   _ceremonyFetchIpfsWithFailover as ceremonyFetchIpfsWithFailover,
+  // Address-UTXO fetcher with the >500-cap tx-history fallback. Exported so
+  // tests can stub `fetch` and assert the fallback reconstructs the unspent
+  // set correctly when Esplora rejects `/address/:addr/utxo` with the
+  // "Too many unspent transaction outputs (>500)" 400.
+  getUtxos,
 };
