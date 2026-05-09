@@ -265,6 +265,17 @@ function poolNullifierKey(network, aid, denom, nullifierHex) {
 function poolNullifierPrefix(network, aid, denom) {
   return network === 'signet' ? `poolnull:${aid}:${denom}:` : `poolnull:${network}:${aid}:${denom}:`;
 }
+// SPEC §3.6 — fixed merkle-tree depth L = 20, so each pool caps at
+// 2^20 = 1048576 leaves. Without enforcement here, the worker would
+// continue to index leaves past the cap; the dapp's mixerAppendLeaf
+// rejects them locally so no withdraw could ever credit, but third-
+// party indexers running the SPEC strictly would diverge from a worker
+// that over-indexes. Counter is per (network, asset_id, denom).
+function poolLeafCountKey(network, aid, denom) {
+  return network === 'signet' ? `poolcount:${aid}:${denom}` : `poolcount:${network}:${aid}:${denom}`;
+}
+const POOL_TREE_DEPTH_WORKER = 20;
+const POOL_LEAF_CAP = 1 << POOL_TREE_DEPTH_WORKER;
 function attestKey(network, aid)       { return network === 'signet' ? `attest:${aid}` : `attest:${network}:${aid}`; }
 function attestMintKey(network, aid, txid) {
   return network === 'signet' ? `attest:mint:${aid}:${txid}` : `attest:${network}:mint:${aid}:${txid}`;
@@ -771,11 +782,25 @@ async function handleCeremonyReset(req, env, circuitHash, cors) {
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
   }
-  // Delete the head state + every contribution record.
-  const list = await env.REGISTRY_KV.list({ prefix: ceremonyContribPrefix(circuitHash), limit: 1000 });
-  for (const k of list.keys) await env.REGISTRY_KV.delete(k.name);
+  // Delete the head state + every contribution record. Paginate via
+  // cursor — Tornado's reference 1100-contribution ceremony exceeds the
+  // 1000-key page limit, so a single list() would leave a tail of stale
+  // records that would re-emerge under the next init's attestations
+  // endpoint with conflicting indices.
+  const prefix = ceremonyContribPrefix(circuitHash);
+  let cursor = undefined, deleted = 0;
+  for (let page = 0; page < 100; page++) {
+    const list = await env.REGISTRY_KV.list({ prefix, limit: 1000, cursor });
+    for (const k of list.keys) {
+      await env.REGISTRY_KV.delete(k.name);
+      deleted++;
+    }
+    if (list.list_complete !== false) break;
+    cursor = list.cursor;
+    if (!cursor) break;
+  }
   await env.REGISTRY_KV.delete(ceremonyKey(circuitHash));
-  return jsonResponse({ ok: true, deleted: list.keys.length + 1 }, 200, cors);
+  return jsonResponse({ ok: true, deleted: deleted + 1 }, 200, cors);
 }
 
 // POST /ceremony/:circuit_hash/finalize — coordinator finalizes the ceremony
@@ -2398,15 +2423,72 @@ const MIXER_DEPOSIT_CONFIRMATION_DEPTH = 3;
 async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmountStr, mintLimitStr) {
   const capAmount = capAmountStr != null ? BigInt(capAmountStr) : null;
   const mintLimit = mintLimitStr != null ? BigInt(mintLimitStr) : null;
-  // v1 limitation (SPEC §10): single-page list, capped at 1000 events. An
-  // asset that accrues > 1000 confirmed T_PMINTs would silently under-count
-  // cumulative_minted here. Practical implication for v1: a fair-launch
-  // sized for ≤ 1000 mints (e.g. cap=1000 with limit=1, or cap=21M with
-  // limit=21k) is fine; larger schedules need pagination via list_complete
-  // + cursor before relying on the published cap progress.
-  const list = await env.REGISTRY_KV.list({ prefix: pmintPrefix(network, assetIdHex), limit: 1000 });
-  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
-  const events = fetched.filter(v => v);
+  // Cursor-paginated KV.list. Earlier code took a single 1000-entry page,
+  // which silently under-counted cumulative_minted on assets exceeding that
+  // threshold AND on assets polluted with height-0 orphan hints (those sort
+  // ahead of every real entry and could push real confirmed mints past the
+  // page boundary).
+  const allKeys = [];
+  let cursor = null;
+  for (let page = 0; page < 50; page++) {
+    const list = await env.REGISTRY_KV.list({
+      prefix: pmintPrefix(network, assetIdHex),
+      limit: 500,
+      ...(cursor ? { cursor } : {}),
+    });
+    allKeys.push(...list.keys);
+    if (list.list_complete || allKeys.length >= 8000) break;
+    cursor = list.cursor;
+    if (!cursor) break;
+  }
+  // Split keys into orphan (height-0) and canonical buckets via the embedded
+  // padded-height segment. Orphans are always classified as pending and
+  // their per-record metadata is never used by callers — synthesize a slim
+  // placeholder so we don't waste KV.get calls + memory just to label
+  // them pending. The orphan cleanup runner is the path that does the work
+  // of looking each one up on chain; this loader stays cheap.
+  const ORPHAN_HEIGHT_TOKEN = '0000000000:';
+  const orphanPrefixStr = pmintPrefix(network, assetIdHex) + ORPHAN_HEIGHT_TOKEN;
+  const canonicalKeys = [];
+  const orphanTxids = [];
+  for (const k of allKeys) {
+    if (k.name.startsWith(orphanPrefixStr)) {
+      // Last colon-segment is the txid the orphan is tracking. Carrying it
+      // through lets callers (test suite, UI surfaces) match orphans by
+      // mint_txid even though we skip the value fetch.
+      const parts = k.name.split(':');
+      orphanTxids.push(parts[parts.length - 1]);
+    } else {
+      canonicalKeys.push(k);
+    }
+  }
+  // Batch the per-key KV.get calls for canonical entries only. Earlier code
+  // used a single Promise.all over every key, which on a dense asset spun
+  // up that many concurrent KV reads inside one Worker isolate; with
+  // /petch-assets fanning out the loader across N assets in parallel, peak
+  // memory pressure tipped past the 128 MiB ceiling. Chunked keeps in-flight
+  // count bounded without serializing the full list.
+  const canonical = [];
+  const CHUNK = 50;
+  for (let i = 0; i < canonicalKeys.length; i += CHUNK) {
+    const slice = canonicalKeys.slice(i, i + CHUNK);
+    const part = await Promise.all(slice.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+    for (const v of part) if (v) canonical.push(v);
+  }
+  // Synthesize lean orphan placeholders so callers that iterate `events`
+  // still see the right `pending_count` and can match by mint_txid without
+  // 3400 round-trips.
+  const orphanEvents = orphanTxids.map(t => ({
+    asset_id: assetIdHex,
+    mint_txid: t,
+    mint_vout: 0,
+    pending: true,
+    minted_at_height: null,
+    status: 'pending',
+    credited: false,
+    depth: null,
+  }));
+  const events = canonical.concat(orphanEvents);
   // KV.list returns keys in lex order; the embedded zero-padded
   // (height, tx_index, txid) makes that lex order equal to canonical
   // chain order — SPEC §5.9 *Cap-overflow ordering*.
@@ -2459,6 +2541,146 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
     credited_count: creditedCount.toString(),
     cumulative_minted: creditedAmount.toString(),
   };
+}
+
+// Promote height-0 orphan T_PMINTs left behind by an older worker version
+// whose hint endpoint wrote unconfirmed pmints into the canonical pmint:*
+// namespace under (height=0, idx=0, txid) keys with `pending: true,
+// minted_at_height: null`. Once the reveal tx confirms, the orphan must be
+// rewritten under its real (height, tx_index, txid) canonical key so
+// loadCanonicalPmints credits it toward the cap. The cron's per-block scan
+// does this on the fly when scanning the reveal's block, but assets whose
+// blocks pre-date deployment of the fix never get re-scanned (last_scanned
+// has already advanced past them) and the orphans sit forever as pending.
+//
+// This walker:
+//   1. Lists every petch asset (lightweight cursor scan; petches are sparse).
+//   2. For each asset, lists pmint:*:0000000000:* orphan keys.
+//   3. For each orphan, fetches /tx/<txid> from mempool.space:
+//      - confirmed → look up (height, tx_index), write canonical key, delete orphan.
+//      - unconfirmed → skip (still legitimately pending).
+//      - 404 (replaced-by-fee, dropped) → leave alone for now; a separate
+//        reaper would need to GC these but they're rare and harmless until then.
+//   4. Caps total work per call via `maxOps` so the cron's tick budget stays
+//      bounded.
+//
+// Per-block /block/<hash>/txids is cached across orphans in the same block to
+// keep the API call count near 1 per orphan rather than 2.
+async function promotePmintOrphans(env, network, { maxOps = 50, assetIdHex = null } = {}) {
+  let opsRemaining = maxOps;
+  let promoted = 0;
+  let unconfirmed = 0;
+  let errored = 0;
+  // Bounded LRU for /block/<hash>/txids responses. Each response is up to
+  // ~200KB (3000 64-hex txids), so caching unbounded blew the Worker's
+  // 128 MiB memory ceiling on bulk runs. Cap at 8 entries — orphans tend
+  // to cluster in nearby blocks so even a small cache dedupes most calls.
+  const blockTxidsCache = new Map();
+  const BLOCK_CACHE_MAX = 8;
+  const fetchBlockTxids = async (hash) => {
+    const cached = blockTxidsCache.get(hash);
+    if (cached !== undefined) return cached;
+    let txids = null;
+    try { txids = await apiJson(env, `/block/${hash}/txids`, {}, network); }
+    catch { txids = null; }
+    if (blockTxidsCache.size >= BLOCK_CACHE_MAX) {
+      // Drop oldest insertion (Map preserves insertion order).
+      const firstKey = blockTxidsCache.keys().next().value;
+      blockTxidsCache.delete(firstKey);
+    }
+    blockTxidsCache.set(hash, txids);
+    return txids;
+  };
+
+  // Walk known petch assets. Petches are sparse (one per fair launch) so a
+  // single 1000-key page covers any v1 deployment. With assetIdHex set, we
+  // narrow to a single asset — useful when bulk-draining a specific backlog
+  // (e.g. FAIR with 3000+ orphans) without spending the per-call budget on
+  // assets that are nearly drained already.
+  let petchKeys;
+  if (assetIdHex && /^[0-9a-f]{64}$/.test(assetIdHex)) {
+    const exists = await env.REGISTRY_KV.get(petchKey(network, assetIdHex), 'json');
+    petchKeys = exists ? [{ name: petchKey(network, assetIdHex) }] : [];
+  } else {
+    const petchList = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit: 1000 });
+    petchKeys = petchList.keys;
+  }
+  for (const k of petchKeys) {
+    if (opsRemaining <= 0) break;
+    const aid = k.name.slice(petchPrefix(network).length);
+    if (!/^[0-9a-f]{64}$/.test(aid)) continue;
+    // Orphan keys all share the height=0 prefix.
+    const orphanPrefix = `${pmintPrefix(network, aid)}0000000000:`;
+    let cursor = null;
+    let pageGuard = 0;
+    while (opsRemaining > 0 && pageGuard++ < 20) {
+      const orphanList = await env.REGISTRY_KV.list({
+        prefix: orphanPrefix,
+        limit: Math.min(opsRemaining, 100),
+        ...(cursor ? { cursor } : {}),
+      });
+      // Process this page's keys in fixed-size parallel batches. Sequential
+      // per-orphan was bottlenecked on mempool.space round-trip latency
+      // (~500ms each); even max=20 timed out at 60s wall clock. Parallelism
+      // of 5 keeps API calls in-flight without spiking memory or tripping
+      // mempool.space's per-IP rate limit. Per-orphan logic still serializes
+      // the KV.put → KV.delete write pair so we never lose the record.
+      const PARALLEL = 5;
+      const promoteOne = async (o) => {
+        const parts = o.name.split(':');
+        const txid = parts[parts.length - 1];
+        if (!/^[0-9a-f]{64}$/.test(txid)) return null;
+        let status;
+        try { status = await apiJson(env, `/tx/${txid}/status`, {}, network); }
+        catch { return { kind: 'errored' }; }
+        if (!status?.confirmed) return { kind: 'unconfirmed' };
+        const h = status.block_height;
+        const blockHash = status.block_hash;
+        if (!Number.isInteger(h) || !blockHash) return { kind: 'errored' };
+        const txids = await fetchBlockTxids(blockHash);
+        let txIndex = 0;
+        if (Array.isArray(txids)) {
+          const i = txids.indexOf(txid);
+          if (i >= 0) txIndex = i;
+        }
+        const orphan = await env.REGISTRY_KV.get(o.name, 'json');
+        if (!orphan) return null;
+        const promotedMeta = {
+          ...orphan,
+          minted_at_height: h,
+          minted_at: status.block_time || orphan.minted_at,
+          tx_index: txIndex,
+          kind: 'pmint',
+          network,
+        };
+        delete promotedMeta.pending;
+        const pmk = pmintKeyFor(network, aid, h, txIndex, txid);
+        // Order matters: write canonical first, then delete orphan. If the
+        // delete races with a concurrent reader, they see both entries
+        // briefly (loadCanonicalPmints handles this — the canonical entry
+        // credits, the orphan classifies as pending and returns false). If
+        // the put fails before the delete, the orphan stays for next pass.
+        await env.REGISTRY_KV.put(pmk, JSON.stringify(promotedMeta));
+        await env.REGISTRY_KV.delete(o.name);
+        return { kind: 'promoted' };
+      };
+      for (let i = 0; i < orphanList.keys.length && opsRemaining > 0; i += PARALLEL) {
+        const slice = orphanList.keys.slice(i, Math.min(i + PARALLEL, i + opsRemaining));
+        opsRemaining -= slice.length;
+        const results = await Promise.all(slice.map(promoteOne));
+        for (const r of results) {
+          if (!r) continue;
+          if (r.kind === 'promoted') promoted++;
+          else if (r.kind === 'unconfirmed') unconfirmed++;
+          else if (r.kind === 'errored') errored++;
+        }
+      }
+      if (orphanList.list_complete) break;
+      cursor = orphanList.cursor;
+      if (!cursor) break;
+    }
+  }
+  return { network, promoted, unconfirmed, errored, ops_used: maxOps - opsRemaining };
 }
 
 // GET /petch-assets — registry of T_PETCH-rooted assets. Same envelope shape
@@ -4942,6 +5164,15 @@ async function scanForEtches(env, network) {
             td.leaf_commitment, td.kernel_sig, network,
           );
           if (!kernelOk) continue;
+          // SPEC §3.6 fixed-depth merkle tree (L=20). Refuse to index a
+          // leaf that would push the pool past 2^20 entries — the dapp's
+          // mixerAppendLeaf locally enforces the same cap, and a worker
+          // over-index would diverge from any conforming indexer. Counter
+          // drift on reorgs (over-counts when a leaf reorgs out) only
+          // makes us reject earlier, never later, so it's safe.
+          const cntKey = poolLeafCountKey(network, td.asset_id, td.denomination);
+          const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+          if (cnt >= POOL_LEAF_CAP) continue;
           const leafKey = poolLeafKeyFor(network, td.asset_id, td.denomination, h, txIndex, tx.txid);
           const leafMeta = {
             asset_id: td.asset_id,
@@ -4954,6 +5185,7 @@ async function scanForEtches(env, network) {
             network,
           };
           await env.REGISTRY_KV.put(leafKey, JSON.stringify(leafMeta));
+          await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
           found++;
         }
       } else if (decoded.opcode === T_WITHDRAW) {
@@ -5414,6 +5646,146 @@ export default {
         return jsonResponse(await rewindLastScanned(env, from, network), 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 400, cors); }
     }
+    // Bulk one-shot version of the cron's per-tick orphan healer. Useful right
+    // after deploying the fix to clear an existing backlog without waiting
+    // on the cron to drain it 50 at a time. ?max= bounds the work; default
+    // 1000 fits one Worker invocation's subrequest budget comfortably (each
+    // promoted orphan = ~2 mempool.space calls + 2 KV ops).
+    if (url.pathname === '/admin/pmint-keys' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid');
+        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required' }, 400, cors);
+        const allKeys = [];
+        let cursor = null;
+        for (let page = 0; page < 50; page++) {
+          const list = await env.REGISTRY_KV.list({
+            prefix: pmintPrefix(network, aid),
+            limit: 1000,
+            ...(cursor ? { cursor } : {}),
+          });
+          allKeys.push(...list.keys.map(k => k.name));
+          if (list.list_complete) break;
+          cursor = list.cursor;
+          if (!cursor) break;
+        }
+        const orphanPrefixStr = pmintPrefix(network, aid) + '0000000000:';
+        const orphans = allKeys.filter(n => n.startsWith(orphanPrefixStr));
+        const canonical = allKeys.filter(n => !n.startsWith(orphanPrefixStr));
+        return jsonResponse({
+          total: allKeys.length,
+          orphan: orphans.length,
+          canonical: canonical.length,
+          first_canonical: canonical.slice(0, 3),
+          first_orphan: orphans.slice(0, 3),
+        }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // Sample N orphans starting at offset, return their on-chain status.
+    // Used to check what fraction of an asset's orphan backlog is actually
+    // confirmed (vs mempool-stale broadcasts that will never promote).
+    if (url.pathname === '/admin/pmint-by-txid' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid');
+        const txid = url.searchParams.get('txid');
+        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required' }, 400, cors);
+        if (!txid || !/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ error: 'txid required' }, 400, cors);
+        const orphanKey = pmintKeyFor(network, aid, 0, 0, txid);
+        const orphanRecord = await env.REGISTRY_KV.get(orphanKey, 'json');
+        // Probe a wide range of likely canonical heights by listing prefix + txid suffix.
+        const prefix = pmintPrefix(network, aid);
+        const allKeys = [];
+        let cursor = null;
+        for (let page = 0; page < 50; page++) {
+          const list = await env.REGISTRY_KV.list({
+            prefix, limit: 1000,
+            ...(cursor ? { cursor } : {}),
+          });
+          for (const k of list.keys) {
+            if (k.name.endsWith(`:${txid}`)) allKeys.push(k.name);
+          }
+          if (list.list_complete) break;
+          cursor = list.cursor;
+          if (!cursor) break;
+        }
+        // Fetch the on-chain status for sanity.
+        let chainStatus = null;
+        try { chainStatus = await apiJson(env, `/tx/${txid}/status`, {}, network); } catch {}
+        return jsonResponse({
+          aid, txid, orphan_key: orphanKey, orphan_exists: !!orphanRecord,
+          orphan_record: orphanRecord,
+          all_matching_keys: allKeys, // every KV key whose suffix is :<txid>
+          on_chain: chainStatus,
+        }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    if (url.pathname === '/admin/pmint-sample' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid');
+        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required' }, 400, cors);
+        const offsetStr = url.searchParams.get('offset');
+        const sampleStr = url.searchParams.get('sample');
+        const offset = Math.max(0, parseInt(offsetStr || '0', 10) || 0);
+        const sampleN = Math.max(1, Math.min(40, parseInt(sampleStr || '20', 10) || 20));
+        const orphanPrefixStr = pmintPrefix(network, aid) + '0000000000:';
+        // Skip past `offset` orphans via repeated KV.list pagination.
+        let cursor = null;
+        let skipped = 0;
+        let collected = [];
+        while (skipped < offset + sampleN) {
+          const list = await env.REGISTRY_KV.list({
+            prefix: orphanPrefixStr,
+            limit: 100,
+            ...(cursor ? { cursor } : {}),
+          });
+          for (const k of list.keys) {
+            if (skipped >= offset && collected.length < sampleN) {
+              const parts = k.name.split(':');
+              collected.push(parts[parts.length - 1]);
+            }
+            skipped++;
+            if (collected.length >= sampleN) break;
+          }
+          if (list.list_complete || collected.length >= sampleN) break;
+          cursor = list.cursor;
+          if (!cursor) break;
+        }
+        const results = await Promise.all(collected.map(async t => {
+          try {
+            const s = await apiJson(env, `/tx/${t}/status`, {}, network);
+            return { txid: t, confirmed: !!s?.confirmed, h: s?.block_height };
+          } catch { return { txid: t, confirmed: null, error: true }; }
+        }));
+        const counts = { confirmed: 0, mempool: 0, errored: 0 };
+        for (const r of results) {
+          if (r.error) counts.errored++;
+          else if (r.confirmed) counts.confirmed++;
+          else counts.mempool++;
+        }
+        return jsonResponse({ aid, offset, sample: collected.length, counts, results }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    if (url.pathname === '/admin/promote-orphans' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const maxStr = url.searchParams.get('max');
+        const maxOps = maxStr ? Math.max(1, Math.min(2000, parseInt(maxStr, 10) || 1000)) : 1000;
+        const aid = url.searchParams.get('aid');
+        const assetIdHex = aid && /^[0-9a-f]{64}$/.test(aid) ? aid : null;
+        const result = await promotePmintOrphans(env, network, { maxOps, assetIdHex });
+        // Bust the /petch-assets edge cache and the slim per-asset /pmints
+        // cache so the next read sees freshly-promoted credits rather than
+        // 5-min-stale "0 credited" data. Fire-and-forget; the response goes
+        // out without waiting on the recompute.
+        if (result.promoted > 0) {
+          await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+          ctx.waitUntil(petchAssetsComputeAndCache(env, network).catch(() => {}));
+        }
+        return jsonResponse(result, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
 
     return jsonResponse({ error: 'not found' }, 404, cors);
   },
@@ -5423,6 +5795,13 @@ export default {
     ctx.waitUntil((async () => {
       await Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(() => {})),
+      );
+      // Heal a small batch of height-0 orphan T_PMINTs each tick. Bounded
+      // to 15 ops/network/tick so the cron isolate stays under the 128 MiB
+      // memory ceiling even when /petch-assets pre-warm runs alongside it.
+      // A bigger backlog can be drained in one shot via /admin/promote-orphans.
+      await Promise.allSettled(
+        NETWORKS.map(net => promotePmintOrphans(env, net, { maxOps: 15 }).catch(() => {})),
       );
       // After the scan updates KV, pre-warm the /assets edge cache for both
       // networks. Without this, the first user to hit /assets after a quiet
