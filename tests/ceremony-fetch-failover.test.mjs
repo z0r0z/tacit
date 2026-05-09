@@ -181,6 +181,71 @@ await test('sha256-anchored validator: accepts bytes whose digest matches expect
   );
 });
 
+await test('chunked-dag-pb regression: legacy sha256(rawBytes)===cidDigest rejects bytes that the new sha256-anchored validator accepts', async () => {
+  // Reproduces the production failure mode that took a contributor down:
+  // the canonical r1cs (1.5 MB) is pinned as CIDv1 dag-pb, so the multihash
+  // embedded in the CID is the hash of the dag-pb root protobuf (which
+  // contains links to 256 KB chunks), NOT the hash of the assembled file.
+  // The OLD validator (sha256(rawBytes) === cidDigest) therefore rejected
+  // every gateway response for the file, even when the gateway returned
+  // the correct bytes. The fix anchors validation to a build-time sha256
+  // of the assembled file (TACIT_DEFAULT_CEREMONY_HASH for r1cs,
+  // TACIT_DEFAULT_PTAU_SHA256 for ptau) so dag-pb chunking is irrelevant.
+  //
+  // Why this test matters: the failover-loop tests above all use trivial
+  // inline validators ("length === 512 ? null : 'wrong'"). None of them
+  // exercise the actual production validator strategy against the actual
+  // bytes-vs-digest disagreement that real dag-pb chunked files produce.
+  // That's why the bug shipped — the unit tests proved the loop's contract
+  // (does it await? does it fall through?) without ever proving the
+  // validator's contract against realistic inputs.
+  const { sha256 } = await import('@noble/hashes/sha256');
+  const { bytesToHex } = await import('@noble/hashes/utils');
+  const assembled = new Uint8Array(8192);
+  crypto.getRandomValues(assembled);
+  const assembledHex = bytesToHex(sha256(assembled));
+  // Stand in for the dag-pb root multihash digest — a different sha256
+  // (of an arbitrary other byte string) representing what a real dag-pb
+  // root protobuf would hash to. We don't need to construct an actual
+  // dag-pb root for the test; we just need digest != sha256(assembled),
+  // which is the entire reason the legacy check failed in production.
+  const dagpbRootDigestHex = bytesToHex(sha256(new TextEncoder().encode('mock-dagpb-root-of-' + assembledHex)));
+  if (dagpbRootDigestHex === assembledHex) throw new Error('test setup invariant: digests must differ');
+
+  // Legacy strategy — paraphrased _ipfsCidMatches for dag-pb codec.
+  const legacyValidator = (b) => {
+    const actual = bytesToHex(sha256(b));
+    return actual === dagpbRootDigestHex ? null : 'content does not match CID digest (legacy dag-pb-broken path)';
+  };
+  let legacyCaught;
+  try {
+    await withFetchStub(
+      [() => okResponse(assembled), () => okResponse(assembled), () => okResponse(assembled), () => okResponse(assembled)],
+      async () => ceremonyFetchIpfsWithFailover(FAKE_CID, legacyValidator),
+    );
+  } catch (e) { legacyCaught = e; }
+  if (!legacyCaught) return false;
+  if (!/content does not match CID digest/.test(legacyCaught.message)) return false;
+
+  // New strategy — sha256(rawBytes) against the build-time hardcoded
+  // expected hex (here, sha256(assembled), same shape as the dapp's
+  // TACIT_DEFAULT_CEREMONY_HASH / TACIT_DEFAULT_PTAU_SHA256 constants).
+  const anchoredValidator = (b) => {
+    const actual = bytesToHex(sha256(b));
+    return actual === assembledHex ? null : 'sha256 mismatch';
+  };
+  const out = await withFetchStub(
+    [() => okResponse(assembled)],
+    async (calls) => {
+      const bytes = await ceremonyFetchIpfsWithFailover(FAKE_CID, anchoredValidator);
+      if (calls.length !== 1) throw new Error('expected single gateway call on fix path');
+      return bytes;
+    },
+  );
+  if (out.length !== 8192) return false;
+  return true;
+});
+
 await test('sha256-anchored validator: rejects substituted bytes (gateway-substitution defense)', async () => {
   // Same shape as above, but the gateway returns DIFFERENT bytes than the
   // ones we hashed. Validator must reject and the error string must
