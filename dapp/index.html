@@ -35,8 +35,10 @@
 <!-- modulepreload: surface the ESM dependency graph to the browser at parse
      time so vendor + prf-wallet fetch in parallel with tacit.js instead of
      waiting one RTT for tacit.js's import statements to be discovered. CSP
-     script-src 'self' covers all three. -->
-<link rel="modulepreload" href="./tacit.js">
+     script-src 'self' covers all three.
+     `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
+     so iOS Safari's stale-modulepreload cache flushes on every change. -->
+<link rel="modulepreload" href="./tacit.js?cb=77ad92f8">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -3046,6 +3048,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js"></script>
+<script type="module" src="./tacit.js?cb=77ad92f8"></script>
 </body>
 </html>
