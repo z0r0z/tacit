@@ -121,16 +121,31 @@ function rand(n) {
   crypto.getRandomValues(buf);
   return buf;
 }
+// snarkjs file format magic-byte tags at offset 0. The worker validates these
+// before pinning to reject garbage uploads (see _hasCeremonyMagic). Tests
+// produce files that prepend the right magic so the validator accepts them.
+const _ZKEY_MAGIC = new Uint8Array([0x7a, 0x6b, 0x65, 0x79]);
+const _R1CS_MAGIC = new Uint8Array([0x72, 0x31, 0x63, 0x73]);
+const _PTAU_MAGIC = new Uint8Array([0x70, 0x74, 0x61, 0x75]);
+function magicBlob(magic, len = 64) {
+  const out = new Uint8Array(len);
+  out.set(magic, 0);
+  crypto.getRandomValues(out.subarray(magic.length));
+  return out;
+}
 const CIRCUIT_HASH = 'a'.repeat(64);
+// Worker requires beacon_block_hash to be exactly 64 hex chars (Bitcoin block
+// hash). Default for tests that don't care about the specific value.
+const BEACON_HASH_64 = '0123abcd'.repeat(8);
 
 async function postInit(env, { token, circuit_hash = CIRCUIT_HASH, files = true, initiator = 'tester' } = {}) {
   const fd = new FormData();
   fd.append('circuit_hash', circuit_hash);
   fd.append('initiator_name', initiator);
   if (files) {
-    fd.append('zkey0', makeFile(rand(64), 'a.zkey'));
-    fd.append('r1cs', makeFile(rand(64), 'a.r1cs'));
-    fd.append('ptau', makeFile(rand(64), 'a.ptau'));
+    fd.append('zkey0', makeFile(magicBlob(_ZKEY_MAGIC), 'a.zkey'));
+    fd.append('r1cs', makeFile(magicBlob(_R1CS_MAGIC), 'a.r1cs'));
+    fd.append('ptau', makeFile(magicBlob(_PTAU_MAGIC), 'a.ptau'));
   }
   const headers = {};
   if (token) headers['x-tacit-init-token'] = token;
@@ -144,7 +159,7 @@ async function getState(env, hash = CIRCUIT_HASH) {
 }
 async function postContribute(env, { hash = CIRCUIT_HASH, prev_cid, contributor = 'alice', contrib_hash = 'abc' } = {}) {
   const fd = new FormData();
-  fd.append('zkey', makeFile(rand(64), 'c.zkey'));
+  fd.append('zkey', makeFile(magicBlob(_ZKEY_MAGIC), 'c.zkey'));
   fd.append('prev_cid', prev_cid);
   fd.append('contributor_name', contributor);
   fd.append('contribution_hash', contrib_hash);
@@ -153,9 +168,9 @@ async function postContribute(env, { hash = CIRCUIT_HASH, prev_cid, contributor 
     env,
   );
 }
-async function postFinalize(env, { token, hash = CIRCUIT_HASH, beacon = '0123abcd', iters = 10 } = {}) {
+async function postFinalize(env, { token, hash = CIRCUIT_HASH, beacon = BEACON_HASH_64, iters = 10 } = {}) {
   const fd = new FormData();
-  fd.append('zkey', makeFile(rand(64), 'f.zkey'));
+  fd.append('zkey', makeFile(magicBlob(_ZKEY_MAGIC), 'f.zkey'));
   fd.append('beacon_block_hash', beacon);
   fd.append('beacon_iterations', String(iters));
   const headers = {};
@@ -221,6 +236,42 @@ await test('init: 400 when files are missing from the form', async () => {
   return res.status === 400;
 });
 
+await test('init: 400 when zkey0 lacks the snarkjs "zkey" magic-byte tag', async () => {
+  const env = makeEnv();
+  const fd = new FormData();
+  fd.append('circuit_hash', CIRCUIT_HASH);
+  fd.append('initiator_name', 'tester');
+  fd.append('zkey0', makeFile(rand(64), 'bad.zkey')); // random — no magic prefix
+  fd.append('r1cs', makeFile(magicBlob(_R1CS_MAGIC), 'a.r1cs'));
+  fd.append('ptau', makeFile(magicBlob(_PTAU_MAGIC), 'a.ptau'));
+  const res = await worker.default.fetch(
+    new Request('http://localhost/ceremony/init', {
+      method: 'POST', body: fd, headers: { 'x-tacit-init-token': env.CEREMONY_INIT_TOKEN },
+    }),
+    env,
+  );
+  if (res.status !== 400) return false;
+  const body = await res.json();
+  return /zkey/i.test(body.error || '') && /magic/i.test(body.error || '');
+});
+
+await test('init: 400 when r1cs lacks the snarkjs "r1cs" magic-byte tag', async () => {
+  const env = makeEnv();
+  const fd = new FormData();
+  fd.append('circuit_hash', CIRCUIT_HASH);
+  fd.append('initiator_name', 'tester');
+  fd.append('zkey0', makeFile(magicBlob(_ZKEY_MAGIC), 'a.zkey'));
+  fd.append('r1cs', makeFile(rand(64), 'bad.r1cs')); // random — no magic prefix
+  fd.append('ptau', makeFile(magicBlob(_PTAU_MAGIC), 'a.ptau'));
+  const res = await worker.default.fetch(
+    new Request('http://localhost/ceremony/init', {
+      method: 'POST', body: fd, headers: { 'x-tacit-init-token': env.CEREMONY_INIT_TOKEN },
+    }),
+    env,
+  );
+  return res.status === 400;
+});
+
 await test('init: success records state with contribution_count=0 and a genesis record', async () => {
   const env = makeEnv();
   const res = await postInit(env, { token: env.CEREMONY_INIT_TOKEN, initiator: 'alice' });
@@ -266,6 +317,22 @@ await test('contribute: is publicly reachable (no token gate)', async () => {
   // Note: no x-tacit-init-token header passed.
   const res = await postContribute(env, { prev_cid: initBody.state.head_cid, contributor: 'bob' });
   return res.status === 200;
+});
+
+await test('contribute: 400 when zkey lacks the snarkjs "zkey" magic-byte tag', async () => {
+  const env = makeEnv();
+  const init = await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
+  const initBody = await init.json();
+  const fd = new FormData();
+  fd.append('zkey', makeFile(rand(64), 'bad.zkey')); // random bytes
+  fd.append('prev_cid', initBody.state.head_cid);
+  fd.append('contributor_name', 'mallory');
+  fd.append('contribution_hash', 'abc');
+  const res = await worker.default.fetch(
+    new Request(`http://localhost/ceremony/${CIRCUIT_HASH}/contribute`, { method: 'POST', body: fd }),
+    env,
+  );
+  return res.status === 400;
 });
 
 await test('contribute: 409 on stale prev_cid (does not match current head_cid)', async () => {
@@ -316,16 +383,33 @@ await test('finalize: 401 without token', async () => {
   return res.status === 401;
 });
 
+await test('finalize: 400 when beacon_block_hash is shorter than 64 hex chars', async () => {
+  const env = makeEnv();
+  await (await postInit(env, { token: env.CEREMONY_INIT_TOKEN })).json();
+  const res = await postFinalize(env, { token: env.CEREMONY_INIT_TOKEN, beacon: 'deadbeef' });
+  if (res.status !== 400) return false;
+  const body = await res.json();
+  return /64 hex/i.test(body.error || '');
+});
+
+await test('finalize: 400 when beacon_block_hash contains non-hex characters', async () => {
+  const env = makeEnv();
+  await (await postInit(env, { token: env.CEREMONY_INIT_TOKEN })).json();
+  const res = await postFinalize(env, { token: env.CEREMONY_INIT_TOKEN, beacon: 'z'.repeat(64) });
+  return res.status === 400;
+});
+
 await test('finalize: success sets finalized=true and records beacon fields', async () => {
   const env = makeEnv();
   const init = await postInit(env, { token: env.CEREMONY_INIT_TOKEN });
   const initBody = await init.json();
   await postContribute(env, { prev_cid: initBody.state.head_cid, contributor: 'bob' });
-  const res = await postFinalize(env, { token: env.CEREMONY_INIT_TOKEN, beacon: 'deadbeef', iters: 12 });
+  const beacon = 'deadbeef'.repeat(8); // 64 hex
+  const res = await postFinalize(env, { token: env.CEREMONY_INIT_TOKEN, beacon, iters: 12 });
   if (res.status !== 200) return false;
   const body = await res.json();
   if (body.state.finalized !== true) return false;
-  if (body.state.beacon_block_hash !== 'deadbeef') return false;
+  if (body.state.beacon_block_hash !== beacon) return false;
   if (body.state.beacon_iterations !== 12) return false;
   if (body.state.last_contributor !== 'beacon') return false;
   return body.contribution.is_beacon === true;
@@ -362,7 +446,7 @@ await test('attestations: returns full chain (genesis + contribs + beacon) in re
   const c1 = await postContribute(env, { prev_cid: initBody.state.head_cid, contributor: 'bob' });
   const c1Body = await c1.json();
   await postContribute(env, { prev_cid: c1Body.state.head_cid, contributor: 'carol' });
-  await postFinalize(env, { token: env.CEREMONY_INIT_TOKEN, beacon: 'cafe' });
+  await postFinalize(env, { token: env.CEREMONY_INIT_TOKEN, beacon: 'cafe'.repeat(16) });
   const res = await getAttestations(env);
   const body = await res.json();
   if (body.attestations.length !== 4) return false;
