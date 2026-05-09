@@ -24,6 +24,40 @@ transactions. Bitcoin nodes don't interpret the envelopes; indexers
 (reference: tacit's worker + every dapp client) reconstruct pool state from
 chain alone and enforce the protocol's rules client-side.
 
+### At a glance
+
+```
+  WITHOUT MIXER                          WITH TACIT MIXER
+
+  Alice                                  Alice ──┐
+    │                                            │  deposit
+    │  transfer                                  ▼
+    ▼                                  ┌─────────────────────────┐
+  Bob                                  │   POOL                  │
+                                       │                         │
+                                       │   ●  ●  ●  ●  ●  ●  ●   │
+  observer sees:                       │   opaque deposit slips  │
+  Alice ───→ Bob                       │   (all look identical)  │
+  (clearly linked)                     │                         │
+                                       │   ●  ●  ●  ●  ●  ●  ●   │
+                                       └─────────────────────────┘
+                                                 ▲
+                                                 │  withdraw +
+                                                 │  zero-knowledge proof
+                                                 │
+                                                Bob
+
+                                       observer sees:
+                                         Alice deposited (somewhere)
+                                         Bob withdrew (somewhere)
+                                         ✗ no link between them
+```
+
+That's the whole idea. Bitcoin carries the deposit slips and the withdraw
+proofs as opaque taproot envelope data; indexers reconstruct the pool;
+zero-knowledge cryptography makes the deposit→withdraw link unprovable
+even though everything is on a public chain.
+
 ## What it is not
 
 - **Not a native-BTC mixer.** The pool key is `(asset_id, denomination)` where

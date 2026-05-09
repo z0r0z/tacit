@@ -10763,7 +10763,14 @@ async function ceremonyInit() {
     fd.append('zkey0', zkey);
     fd.append('r1cs', new Blob([r1csBytes], { type: 'application/octet-stream' }), 'withdraw.r1cs');
     fd.append('ptau', ptau);
-    const resp = await fetch(`${WORKER_BASE}/ceremony/init`, { method: 'POST', body: fd });
+    const tokenEl = document.getElementById('ceremony-init-token');
+    const token = (tokenEl?.value || '').trim();
+    if (!token) throw new Error('coordinator token is required (worker rejects unauth /init with 401)');
+    const resp = await fetch(`${WORKER_BASE}/ceremony/init`, {
+      method: 'POST',
+      headers: { 'X-Tacit-Init-Token': token },
+      body: fd,
+    });
     const j = await resp.json().catch(() => ({}));
     if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
     if (outEl) outEl.textContent = `✓ Ceremony initialized\n\n` + JSON.stringify(j.state, null, 2);
@@ -10837,12 +10844,28 @@ function setupCeremonyHandlers() {
   if (initBtn) initBtn.onclick = ceremonyInit;
   const initInputs = ['ceremony-init-zkey', 'ceremony-init-r1cs', 'ceremony-init-ptau']
     .map(id => document.getElementById(id));
+  const tokenInput = document.getElementById('ceremony-init-token');
   const refreshInitDisabled = () => {
     if (!initBtn) return;
-    initBtn.disabled = !initInputs.every(el => el && el.files && el.files[0]);
+    const filesOk = initInputs.every(el => el && el.files && el.files[0]);
+    const tokenOk = tokenInput && tokenInput.value.trim().length >= 16;
+    initBtn.disabled = !(filesOk && tokenOk);
   };
   for (const el of initInputs) if (el) el.addEventListener('change', refreshInitDisabled);
+  if (tokenInput) tokenInput.addEventListener('input', refreshInitDisabled);
   refreshInitDisabled();
+
+  // Coordinator panel is hidden by default — only revealed when the URL has
+  // ?coordinator=1. Casual visitors don't see the form at all, eliminating
+  // the misleading "this might do something" confusion. The auth gate on
+  // the worker is the actual security boundary; this is just UX cleanup.
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('coordinator') === '1') {
+      const panel = document.getElementById('ceremony-init-coordinator-panel');
+      if (panel) panel.style.display = 'block';
+    }
+  } catch {}
 }
 
 function setupTabs() {
