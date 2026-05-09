@@ -4367,7 +4367,7 @@ function recordAxintentPending(intentIdHex, assetIdHex, body) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex || '')) return;
   if (!body || typeof body !== 'object') return;
   const obj = loadAxintentPendings();
-  obj[intentIdHex] = { asset_id: assetIdHex, body, savedAt: Math.floor(Date.now() / 1000) };
+  obj[intentIdHex] = { asset_id: assetIdHex, body, savedAt: Math.floor(Date.now() / 1000), status: 'pending' };
   try { localStorage.setItem(axintentPendingKey(), JSON.stringify(obj)); } catch {}
 }
 function loadAxintentPending(intentIdHex) {
@@ -4380,9 +4380,26 @@ function forgetAxintentPending(intentIdHex) {
     try { localStorage.setItem(axintentPendingKey(), JSON.stringify(obj)); } catch {}
   }
 }
+// Transition a record from "POST in flight" to "live on worker" without
+// dropping the body. resumePendingAxintents skips posted entries (no retry
+// POST needed); fulfilAxferIntent reads the persisted body to cross-check
+// the worker's intent record. Cancel/expiry call forgetAxintentPending to
+// garbage-collect.
+function markAxintentPosted(intentIdHex) {
+  const obj = loadAxintentPendings();
+  if (intentIdHex in obj) {
+    obj[intentIdHex].status = 'posted';
+    try { localStorage.setItem(axintentPendingKey(), JSON.stringify(obj)); } catch {}
+  }
+}
+// Iteration target for resumePendingAxintents. Only un-posted entries need a
+// retry POST; entries written before the status field defaulted to undefined
+// (treated as 'pending' here so the resume loop still picks them up).
 function listAxintentPendings() {
   const obj = loadAxintentPendings();
-  return Object.entries(obj).map(([intentIdHex, v]) => ({ intentIdHex, ...v }));
+  return Object.entries(obj)
+    .filter(([_, v]) => v.status !== 'posted')
+    .map(([intentIdHex, v]) => ({ intentIdHex, ...v }));
 }
 
 // Wait for the chain API to see a freshly-broadcast tx. The worker has its
@@ -7710,9 +7727,12 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
   await waitForTxVisible(commitTxidHex);
   _progress('publish-start');
   await postAxferIntentBody(assetIdHex, body);
-  // POST succeeded — discard the pending record so we don't try to re-post
-  // on next load. The secret + activity are kept (intent is now live).
-  forgetAxintentPending(intentIdHex);
+  // POST succeeded — flip the pending record to 'posted' so resumePendingAxintents
+  // stops retrying it, but keep the body so fulfilAxferIntent can cross-check
+  // worker-returned values against what we originally signed. The secret +
+  // activity are kept (intent is now live); cancelAxferIntent garbage-collects
+  // the body when the maker pulls the listing.
+  markAxintentPosted(intentIdHex);
   recordActivity({
     kind: 'list-atomic',
     ticker: target.ticker || '',
@@ -7761,7 +7781,9 @@ async function resumePendingAxintents() {
     try {
       await waitForTxVisible(p.body.commit_txid, { maxMs: 30000 });
       await postAxferIntentBody(p.asset_id, p.body);
-      forgetAxintentPending(p.intentIdHex);
+      // Same as the publish-side success path: keep the body, just mark it
+      // posted so the resume loop skips it next time.
+      markAxintentPosted(p.intentIdHex);
       console.info(`[axintent] resumed pending intent ${p.intentIdHex.slice(0, 8)}…`);
     } catch (e) {
       console.warn(`[axintent] could not resume ${p.intentIdHex.slice(0, 8)}…:`, e.message || e);
@@ -7829,6 +7851,42 @@ async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim }) {
   const rHex = loadAxintentSecret(intentIdHex);
   if (!rHex) {
     throw new Error('local intent secret missing — cannot fulfil. The blinding scalar `r` was generated on this device at publish time and is required to encrypt the opening to the claimant.');
+  }
+
+  // Cross-check the worker-returned intent against the body we POSTed at
+  // publish time. A compromised or stale worker could substitute price_sats
+  // (under-charging us), asset_utxo (signing away a different UTXO), or any
+  // of the envelope fields. The taker would catch most substitutions via
+  // verifyAxferOffer at Take time — but a lowered price would settle
+  // silently. Verifying locally means we never sign a partial reveal against
+  // terms we didn't agree to. Records published before this guard existed
+  // have no archived body; we surface that as a warning rather than blocking.
+  const _archived = loadAxintentPending(intentIdHex);
+  const _origBody = _archived?.body;
+  if (_origBody) {
+    const _mismatches = [];
+    const _check = (label, a, b) => { if (String(a) !== String(b)) _mismatches.push(`${label}: worker=${a} local=${b}`); };
+    _check('commit_txid', intent.commit_txid, _origBody.commit_txid);
+    _check('commit_value', intent.commit_value, _origBody.commit_value);
+    _check('asset_utxo.txid', intent.asset_utxo?.txid, _origBody.asset_utxo?.txid);
+    _check('asset_utxo.vout', intent.asset_utxo?.vout, _origBody.asset_utxo?.vout);
+    _check('asset_utxo.value', intent.asset_utxo?.value, _origBody.asset_utxo?.value);
+    _check('price_sats', intent.price_sats, _origBody.price_sats);
+    _check('amount', intent.amount, _origBody.amount);
+    _check('expiry', intent.expiry, _origBody.expiry);
+    _check('envelope_script_hex', intent.envelope_script_hex, _origBody.envelope_script_hex);
+    _check('control_block_hex', intent.control_block_hex, _origBody.control_block_hex);
+    _check('p2tr_spk_hex', intent.p2tr_spk_hex, _origBody.p2tr_spk_hex);
+    _check('maker_address', intent.maker_address, _origBody.maker_address);
+    if (_mismatches.length) {
+      throw new Error(
+        `worker intent record does not match the body you originally signed — refusing to fulfil. ` +
+        `Mismatches: ${_mismatches.join('; ')}. ` +
+        `If you believe this is wrong (e.g. you re-imported wallet state), cancel this intent and re-publish.`,
+      );
+    }
+  } else {
+    console.warn(`[axintent] no archived body for ${intentIdHex.slice(0, 8)}… — fulfilling without cross-check (intent may have been published before the body-archive feature was added).`);
   }
 
   const envelopeScript = hexToBytes(intent.envelope_script_hex);
@@ -7962,8 +8020,10 @@ async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
   // worker cancellation alone does NOT invalidate any partial reveal already
   // signed (the maker would need to spend the asset UTXO via self-send for
   // a true cancel) — but it does mean we won't be re-fulfilling, so the
-  // secret can go.
+  // secret can go. Also clear the archived intent body — its only consumer is
+  // fulfilAxferIntent's cross-check, which is moot once the intent is gone.
   forgetAxintentSecret(intentIdHex);
+  forgetAxintentPending(intentIdHex);
   invalidateDiscoverRegistryCache();
   return j;
 }
@@ -19821,7 +19881,17 @@ function _marketLiveCountsByAsset() {
 let _marketCache = null;
 let _marketView = 'browse';
 function goToMarketBrowse() { _marketView = 'browse'; renderMarket(); }
-function goToMarketAsset(assetIdHex) { _marketView = { mode: 'asset', assetId: assetIdHex }; renderMarket(); }
+function goToMarketAsset(assetIdHex) {
+  // Reject malformed asset_ids defensively — every regular caller validates,
+  // but this guards against a future caller forgetting to. Falls back to the
+  // browse index rather than rendering an empty asset-detail view.
+  if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || '').toLowerCase())) {
+    goToMarketBrowse();
+    return;
+  }
+  _marketView = { mode: 'asset', assetId: String(assetIdHex).toLowerCase() };
+  renderMarket();
+}
 
 async function fetchMarketData() {
   if (!MARKET_URL) return { assets: [], listings: [] };
@@ -19939,8 +20009,13 @@ function applyMarketFilters() {
   const status = $('#market-status');
   const filterText = ($('#market-filter-asset')?.value || '').trim().toLowerCase();
   const filterKind = $('#market-filter-kind')?.value || 'all';
-  const minPrice = parseInt($('#market-filter-min-price')?.value || '', 10);
-  const maxPrice = parseInt($('#market-filter-max-price')?.value || '', 10);
+  // Strict whole-number parse: parseInt('12.5') would have truncated to 12 —
+  // not what the user typed. type=number/step=1 filters most input but not
+  // every browser, so we belt-and-suspender. NaN sentinels skip the filter.
+  const _minRaw = ($('#market-filter-min-price')?.value || '').trim();
+  const _maxRaw = ($('#market-filter-max-price')?.value || '').trim();
+  const minPrice = /^\d+$/.test(_minRaw) ? Number(_minRaw) : NaN;
+  const maxPrice = /^\d+$/.test(_maxRaw) ? Number(_maxRaw) : NaN;
   // In asset-detail mode, nudge the sort dropdown from its default 'recency'
   // to 'unit-asc' so asks read as a price ladder (cheapest-first) — the
   // conventional orderbook layout. If the user has explicitly picked a
@@ -20596,9 +20671,14 @@ function _wireMarketBidPlace(section, asset) {
         if (!amountStr || !priceSatsRaw || !hoursRaw) throw new Error('all fields required');
         const amount = parseAssetAmount(amountStr, decimals);
         if (amount <= 0n) throw new Error('amount must be positive');
-        const priceSatsInt = parseInt(priceSatsRaw, 10);
-        if (!Number.isInteger(priceSatsInt) || priceSatsInt <= 0) throw new Error('price must be a positive integer');
-        const hours = Math.max(1, Math.min(720, parseInt(hoursRaw, 10) || 24));
+        // Strict integer check — parseInt('100abc', 10) returns 100, which
+        // would silently post a bid for the wrong amount of sats. Same for
+        // hours, even though the type=number input usually filters input.
+        if (!/^\d+$/.test(priceSatsRaw)) throw new Error('price must be a whole number of sats');
+        const priceSatsInt = Number(priceSatsRaw);
+        if (priceSatsInt <= 0) throw new Error('price must be > 0');
+        if (!/^\d+$/.test(hoursRaw)) throw new Error('expiry hours must be a whole number');
+        const hours = Math.max(1, Math.min(720, Number(hoursRaw) || 24));
         const expiry = Math.floor(Date.now() / 1000) + hours * 3600;
         submitBtn.disabled = true;
         status.textContent = 'signing & posting…';
@@ -20828,7 +20908,14 @@ async function marketCancelIntentHandler(btn) {
   }
   // Standard path: not fulfilled, asset still unspent. Worker DELETE is enough
   // because no partial reveal has been signed yet.
-  if (!confirm('Cancel this atomic intent? The intent is removed from the marketplace immediately. The commit-tx output stays unspent on chain — you can recover it manually if needed.')) return;
+  // Honest forfeit note: cancel discards both the recipient blinding (in
+  // forgetAxintentSecret) and the archived body, so the small commit value
+  // locked in the P2TR script-path can no longer be reconstructed for spend.
+  const _forfeitSats = Number(intent?.commit_value || 0);
+  const _forfeitNote = _forfeitSats > 0
+    ? `The committed sats (~${_forfeitSats.toLocaleString()}) locked in the P2TR are effectively forfeit — cancelling discards the recipient blinding needed to spend that output.`
+    : `The commit-tx output stays locked in the P2TR; cancelling discards the recipient blinding needed to spend it, so any committed value is effectively forfeit.`;
+  if (!confirm(`Cancel this atomic intent? The intent is removed from the marketplace immediately. ${_forfeitNote}`)) return;
   btn.disabled = true; btn.textContent = 'cancelling…';
   try {
     await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid });
