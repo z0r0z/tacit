@@ -10727,6 +10727,16 @@ function setupMixerHandlers() {
 let _ceremonyActiveHash = TACIT_DEFAULT_CEREMONY_HASH;
 let _ceremonyState = null;
 
+// Module-level cache for the ceremony's r1cs and ptau blobs. These never
+// change for a given (circuit_hash) ceremony, but each call to
+// ceremonyVerifyChain re-downloads them — ~18 MB combined per attempt. A
+// contributor who hits a CAS race or upload failure and retries pays the full
+// bandwidth bill on every retry without the cache. Keyed by CID, so a fresh
+// ceremony at a different hash naturally stores under different keys. Bytes
+// are only inserted after a successful CID-match validation, so a malicious
+// gateway can't poison the cache with substituted content.
+const _ceremonyBlobCache = new Map();
+
 function _ceremonyLogToProgress(line) {
   const el = document.getElementById('ceremony-progress');
   if (!el) return;
@@ -10953,6 +10963,10 @@ async function ceremonyRender() {
     return;
   }
   _ceremonyState = state;
+  // Place at top until finalized (SPEC §3.7 — ceremony is gating for safe
+  // pool deposits). state===null means no ceremony exists yet, which is
+  // also "not done" and belongs at top.
+  _placeCeremonySection(!!(state && state.finalized));
   if (!state) {
     if (stateEl) stateEl.textContent = 'No ceremony at this hash yet. Coordinator initializes via the form below.';
     if (contribBtn) contribBtn.disabled = true;
@@ -11032,27 +11046,30 @@ async function ceremonyRender() {
 // contribution history against the original r1cs + ptau and confirms each
 // transition is valid Groth16 algebra. If a malicious worker has injected
 // garbage into the head, this catches it BEFORE we waste entropy.
+async function _ceremonyFetchBlobCached(cid, label) {
+  const cached = _ceremonyBlobCache.get(cid);
+  if (cached) {
+    _ceremonyLogToProgress(`Using cached ${label} (${cached.length} bytes, CID ${cid.slice(0, 16)}…)`);
+    return cached;
+  }
+  _ceremonyLogToProgress(`Fetching ${label} (${cid})…`);
+  const bytes = await _ceremonyFetchIpfsWithFailover(
+    cid,
+    async (b) => {
+      const ok = await _ipfsCidMatches(cid, b);
+      return ok ? null : `content does not match CID ${cid} (gateway substitution)`;
+    },
+    (msg) => _ceremonyLogToProgress(`  ${label}: ${msg}`),
+  );
+  // Only cache after CID-match validation passes — a substituted blob would
+  // have failed the validator above and never reach here.
+  _ceremonyBlobCache.set(cid, bytes);
+  return bytes;
+}
+
 async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes) {
-  _ceremonyLogToProgress(`Fetching r1cs (${state.r1cs_cid})…`);
-  const r1csBytes = await _ceremonyFetchIpfsWithFailover(
-    state.r1cs_cid,
-    async (bytes) => {
-      // r1cs CID match is the integrity check — if any gateway returned
-      // substituted content, this rejects it and we fail over.
-      const ok = await _ipfsCidMatches(state.r1cs_cid, bytes);
-      return ok ? null : `content does not match CID ${state.r1cs_cid} (gateway substitution)`;
-    },
-    (msg) => _ceremonyLogToProgress('  r1cs: ' + msg),
-  );
-  _ceremonyLogToProgress(`Fetching ptau (${state.ptau_cid})…`);
-  const ptauBytes = await _ceremonyFetchIpfsWithFailover(
-    state.ptau_cid,
-    async (bytes) => {
-      const ok = await _ipfsCidMatches(state.ptau_cid, bytes);
-      return ok ? null : `content does not match CID ${state.ptau_cid} (gateway substitution)`;
-    },
-    (msg) => _ceremonyLogToProgress('  ptau: ' + msg),
-  );
+  const r1csBytes = await _ceremonyFetchBlobCached(state.r1cs_cid, 'r1cs');
+  const ptauBytes = await _ceremonyFetchBlobCached(state.ptau_cid, 'ptau');
   _ceremonyLogToProgress(`Verifying chain (${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'})…`);
   const logger = {
     debug: () => {}, info: () => {}, warn: () => {},
@@ -11127,8 +11144,26 @@ async function ceremonyContribute() {
   // Track which stage the contribution failed at so the failure banner can
   // tell the user where to retry from (snarkjs error vs network error vs
   // worker rejection are different mitigations).
-  let stage = 'fetch_head';
+  let stage = 'refresh_state';
   try {
+    // Re-fetch ceremony state right before any heavy I/O. The panel's
+    // _ceremonyState may be stale: a user who opened the tab and then waited
+    // (or who is retrying after a CAS race) would otherwise download an old
+    // head, spend 30-60s in snarkjs, and lose the upload to the worker's CAS
+    // check. Refreshing here cuts the wasted-compute window down to the
+    // fetch+contribute round trip.
+    _ceremonyLogToProgress('Refreshing ceremony state before contribute…');
+    let fresh;
+    try { fresh = await ceremonyFetchState(_ceremonyActiveHash); }
+    catch (e) { throw new Error('failed to refresh ceremony state: ' + (e.message || e)); }
+    if (!fresh) throw new Error('ceremony no longer exists at this hash — refresh the page');
+    if (fresh.finalized) throw new Error('ceremony has been finalized; chain is locked — no further contributions accepted');
+    if (_ceremonyState && fresh.head_cid !== _ceremonyState.head_cid) {
+      _ceremonyLogToProgress(`  head advanced since panel loaded: now ${fresh.head_cid.slice(0, 16)}… (was ${_ceremonyState.head_cid.slice(0, 16)}…)`);
+    }
+    _ceremonyState = fresh;
+
+    stage = 'fetch_head';
     _ceremonyLogToProgress(`Fetching head zkey ${_ceremonyState.head_cid}…`);
     // Failover across IPFS_GATEWAYS_FALLBACK. Each gateway's response is
     // validated for length (>= 256 bytes — anything smaller is a gateway
@@ -11318,7 +11353,38 @@ async function ceremonyInit() {
   }
 }
 
+// Move the ceremony section to the top of the mixer tab while the ceremony
+// is not yet finalized; once finalized, slide it back down between
+// withdraw and initialize-new-pool. Mainnet pools depend on a finalized
+// ceremony (SPEC §3.7), so until then the ceremony is the most important
+// thing on this tab and should not be buried below deposit/withdraw.
+function _placeCeremonySection(finalized) {
+  const ceremonySection = document.getElementById('mixer-ceremony-section');
+  const initPoolSection = document.getElementById('mixer-init-pool-section');
+  if (!ceremonySection || !initPoolSection) return;
+  const parent = ceremonySection.parentElement;
+  if (!parent) return;
+  if (finalized) {
+    if (ceremonySection.nextElementSibling !== initPoolSection) {
+      parent.insertBefore(ceremonySection, initPoolSection);
+    }
+  } else {
+    // Insert immediately after the first (intro) section so the ceremony is
+    // the first interactive panel a visitor sees on the Mixer tab.
+    const firstSection = parent.querySelector('.section');
+    if (!firstSection || firstSection === ceremonySection) return;
+    const target = firstSection.nextElementSibling;
+    if (ceremonySection !== target) {
+      parent.insertBefore(ceremonySection, target);
+    }
+  }
+}
+
 function setupCeremonyHandlers() {
+  // Default placement: at top. ceremonyRender() moves it back down once
+  // it confirms the ceremony is finalized.
+  _placeCeremonySection(false);
+
   // Pin the visible hash to the canonical default. The input is rendered as
   // readonly in the HTML; this sets its value at boot so visitors see what
   // they're contributing to. URL params do NOT mutate _ceremonyActiveHash —
