@@ -108,7 +108,12 @@ export async function prfLogin({ credentialId }) {
         rpId,
         userVerification: 'required',
         timeout: 60000,
-        allowCredentials: [{ type: 'public-key', id: rawId, transports: ['internal'] }],
+        // Omit `transports`: it's a hint that filters which authenticators the
+        // browser queries. Hardcoding ['internal'] hides credentials stored in
+        // password managers (Bitwarden, 1Password) and roaming authenticators,
+        // because their providers don't report the 'internal' transport — the
+        // user gets a successful registration but no login prompt ever appears.
+        allowCredentials: [{ type: 'public-key', id: rawId }],
         extensions: { prf: { evalByCredential: { [credentialId]: { first: PRF_SALT } } } },
       }
     : {
