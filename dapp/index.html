@@ -4,12 +4,23 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <!--
-  Content-Security-Policy. The audit-load-bearing line is `script-src 'self'`
-  — no 'unsafe-inline', no third-party origins. Inline scripts and inline
-  event-handler attributes (onerror=, onclick=, …) are blocked, so the only
-  JS that can run in the same realm as the in-page tacit privkey is what's
-  served from this same origin (./tacit.js + ./vendor/tacit-deps.min.js).
-  An IPFS pin of the dapp/ directory ties those bytes to the CID.
+  Content-Security-Policy. The audit-load-bearing line is `script-src 'self'
+  'wasm-unsafe-eval'` — no 'unsafe-inline', no 'unsafe-eval', no third-party
+  origins. Inline scripts and inline event-handler attributes (onerror=,
+  onclick=, …) are blocked, so the only JS that can run in the same realm
+  as the in-page tacit privkey is what's served from this same origin
+  (./tacit.js + ./vendor/tacit-deps.min.js). An IPFS pin of the dapp/
+  directory ties those bytes to the CID.
+
+  `'wasm-unsafe-eval'` is the narrow CSP3 token that permits
+  `WebAssembly.instantiate()` without re-opening the eval()/Function()
+  attack surface that 'unsafe-eval' would. Required by snarkjs (the mixer
+  ceremony contribute path: WASM-based Groth16 prover + verifier). All
+  WASM is served from 'self' so the IPFS-pinned bytes still anchor what
+  runs. The browser surface error before this addition was: "Refused to
+  create a WebAssembly object because 'unsafe-eval' or 'wasm-unsafe-eval'
+  is not an allowed source of script…"
+
   connect-src lists the only network endpoints the dApp fetches at runtime
   (mempool.space REST, the specific conveniences worker URL, the primary
   IPFS gateway plus three public fallbacks for ceremony files when the
@@ -26,7 +37,7 @@
   static host instead; see ./_headers for the Cloudflare Pages / Netlify
   config that adds frame-ancestors 'self' (clickjacking defense).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; connect-src 'self' https://mempool.space https://blockstream.info https://tacit-pin.rosscampbell9.workers.dev https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; img-src 'self' data: https://content.wrappr.wtf; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' https://mempool.space https://blockstream.info https://tacit-pin.rosscampbell9.workers.dev https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; img-src 'self' data: https://content.wrappr.wtf; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -38,7 +49,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=77ad92f8">
+<link rel="modulepreload" href="./tacit.js?cb=6bdc6f48">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -1266,6 +1277,40 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
      label/select. Banner action rows (retry/dismiss/copy) use inline
      display:flex rather than .flex, so they're not affected here. */
   #tab-mixer .flex > button { flex: 1 1 100%; }
+}
+
+/* Pool ops (deposit, withdraw, init, pool-list) are gated on the trusted-
+   setup ceremony being finalized. Until then we render them as preview-
+   only: dimmed, click/focus blocked, with a banner inserted at the top
+   pointing the user up to the ceremony section. The ceremony section
+   itself is never locked — it's the only path out of the locked state.
+   `_placeCeremonySection` independently keeps the ceremony section at the
+   top of the panel until finalized, so users always see the unlock first. */
+#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] {
+  position: relative;
+  opacity: 0.5;
+  filter: saturate(0.6);
+}
+#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body button,
+#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body input,
+#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body select,
+#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body textarea,
+#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body label {
+  pointer-events: none;
+}
+#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body > .mixer-locked-banner {
+  display: block;
+}
+.mixer-locked-banner {
+  display: none;
+  margin: 0 0 12px 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--ink-faint, #ccc);
+  background: var(--bg-warm, #fff8eb);
+  color: var(--ink-mid, #555);
+  border-radius: 4px;
+  font-size: 12px;
+  pointer-events: auto;
 }
 
 /* First-load welcome modal — shown only when this network has no burner key
@@ -2556,17 +2601,19 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
   </div>
 
-  <div class="section">
+  <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>pools</span></div>
     <div class="section-body">
+      <div class="mixer-locked-banner">Preview only — the trusted-setup ceremony above must be finalized before any pool operation is safe. Contribute or wait for finalization.</div>
       <div class="muted" style="margin-bottom:10px;">Initialized pools are listed below. Each row shows total deposits, total withdrawals, current anonymity-set size, and the verifying-key CID. Empty list = no pools have been initialized on this network yet.</div>
       <div id="mixer-pool-list"><div class="muted" style="font-size:12px;">No pools indexed yet.</div></div>
     </div>
   </div>
 
-  <div class="section">
+  <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>deposit</span></div>
     <div class="section-body">
+      <div class="mixer-locked-banner">Preview only — the trusted-setup ceremony above must be finalized before depositing. Until then, deposits are gated.</div>
       <div class="muted" style="margin-bottom:10px;">Spend a UTXO of a pool's exact denomination into the pool. The dApp generates a (secret, nullifier_preimage) pair — back up the resulting record before broadcasting; without it, the deposit cannot be withdrawn.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:200px;">Pool
@@ -2591,9 +2638,10 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
   </div>
 
-  <div class="section">
+  <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>withdraw</span></div>
     <div class="section-body">
+      <div class="mixer-locked-banner">Preview only — withdrawals consume the same trusted setup deposits do, and unlock once the ceremony above is finalized.</div>
       <div class="muted" style="margin-bottom:10px;">Withdraw an unspent leaf to a fresh pubkey. Paste a deposit record (the JSON the deposit flow gave you) or import via share-link. Anonymity-set size is shown beneath each pool.</div>
       <textarea id="mixer-withdraw-record" rows="4" placeholder="paste deposit record JSON, or import share-link below" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
       <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
@@ -2711,9 +2759,10 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
   </div>
 
-  <div class="section" id="mixer-init-pool-section">
+  <div class="section" id="mixer-init-pool-section" data-mixer-pool-op="true">
     <div class="section-header"><span>initialize a new pool</span></div>
     <div class="section-body">
+      <div class="mixer-locked-banner">Preview only — pool initialization is gated on ceremony finalization, since every pool's deposits depend on the same trusted-setup transcript.</div>
       <div class="muted" style="margin-bottom:10px;">Pool initialization is permissionless — anyone can declare a pool for any asset at any denomination. The first canonically-confirmed POOL_INIT for a given (asset_id, denomination) wins. You'll need a Groth16 verifying-key CID and an MPC-ceremony-transcript CID, both pinned to IPFS. SPEC §5.10.1.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:240px;">Asset
@@ -3048,6 +3097,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=77ad92f8"></script>
+<script type="module" src="./tacit.js?cb=6bdc6f48"></script>
 </body>
 </html>
