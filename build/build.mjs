@@ -73,6 +73,22 @@ async function bundleMixer() {
 
 const sha384b64 = buf => 'sha384-' + createHash('sha384').update(buf).digest('base64');
 
+// Rewrite the `?cb=<token>` cache-bust handle on tacit.js URLs in
+// index.html so it tracks the current bytes of dapp/tacit.js. iOS Safari
+// serves stale modulepreloaded ESM to long-lived tabs even with
+// max-age=0; bumping the URL forces all clients to fetch fresh on next
+// load. Token is a short sha256 prefix of tacit.js — idempotent (no-op
+// if tacit.js bytes haven't changed) and impossible to forget because
+// it runs on every build. Returns true if index.html changed.
+function updateCacheBust(htmlBytes, appJsBytes) {
+  const token = createHash('sha256').update(appJsBytes).digest('hex').slice(0, 8);
+  const before = htmlBytes.toString('utf8');
+  const after = before.replace(/(\.\/tacit\.js\?cb=)[A-Za-z0-9_-]+/g, `$1${token}`);
+  if (before === after) return { changed: false, token };
+  writeFileSync(HTML, after);
+  return { changed: true, token };
+}
+
 async function main() {
   mkdirSync(VENDOR_DIR, { recursive: true });
 
@@ -88,8 +104,15 @@ async function main() {
 
   if (!existsSync(HTML)) throw new Error(`source not found: ${HTML}`);
   if (!existsSync(APP_JS)) throw new Error(`source not found: ${APP_JS}`);
-  const html = readFileSync(HTML);
+  let html = readFileSync(HTML);
   const appJs = readFileSync(APP_JS);
+
+  if (!verifyOnly) {
+    const cb = updateCacheBust(html, appJs);
+    console.log(`• Cache-bust token: ?cb=${cb.token}${cb.changed ? ' (updated)' : ' (unchanged)'}`);
+    if (cb.changed) html = readFileSync(HTML);
+  }
+
   console.log(`  ${HTML}`);
   console.log(`  ${html.length.toLocaleString()} bytes · ${sha384b64(html)}`);
   console.log(`  ${APP_JS}`);
