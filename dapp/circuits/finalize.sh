@@ -736,24 +736,66 @@ pages=0
 total=0
 while [ $pages -lt 200 ]; do
   pages=$((pages + 1))
+  # Per-page retry loop. Pagination can ship 10k+ records across a
+  # dozen pages; with set -euo pipefail, a single transient streaming
+  # hiccup (chunked-transfer cutoff, intermediate proxy blip) would
+  # crash the whole script. Live testing has shown sporadic invalid-
+  # JSON responses that succeed cleanly on immediate retry. Retry up
+  # to 5x with linear backoff before giving up on the page.
+  #
   # limit=800 matches the worker's max (lowered from 1000 to stay
   # under Cloudflare's 1000-subrequest-per-invocation ceiling now
   # that the worker parallelizes per-page KV.gets via Promise.all).
   # 120s curl timeout is generous: parallel reads complete in 1-3s,
   # so any timeout indicates worker pathology not normal latency.
-  page=$(curl -sf --max-time 120 -A "tacit-finalize/1.0" \
-    "${WORKER}/ceremony/${CIRCUIT_HASH}/attestations?limit=800&cursor=${cursor}")
+  page=""
+  page_count=""
+  list_complete=""
+  next_cursor=""
+  for try in 1 2 3 4 5; do
+    page=$(curl -sf --max-time 120 -A "tacit-finalize/1.0" \
+      "${WORKER}/ceremony/${CIRCUIT_HASH}/attestations?limit=800&cursor=${cursor}" || echo "")
+    if [ -z "$page" ]; then
+      echo "    page $pages attempt $try: empty response, retrying…"
+      sleep $((try * 2))
+      continue
+    fi
+    # Validate JSON parses BEFORE writing to disk and before any
+    # downstream parse step that would crash under pipefail. Use
+    # python3 -c with try/except so we get a yes/no instead of an
+    # exception bubble.
+    parsed=$(echo "$page" | python3 -c "
+import json,sys
+try:
+    d = json.load(sys.stdin)
+    print('|'.join([
+      'OK',
+      str(len(d.get('attestations',[]))),
+      str(d.get('list_complete', True)),
+      d.get('cursor','') or '',
+    ]))
+except Exception as e:
+    print('FAIL|'+str(e))
+" || echo "FAIL|python_crash")
+    if [[ "$parsed" == OK* ]]; then
+      page_count=$(echo "$parsed" | awk -F'|' '{print $2}')
+      list_complete=$(echo "$parsed" | awk -F'|' '{print $3}')
+      next_cursor=$(echo "$parsed" | awk -F'|' '{print $4}')
+      break
+    fi
+    echo "    page $pages attempt $try: invalid JSON ($(echo "$parsed" | cut -c1-80)), retrying…"
+    sleep $((try * 2))
+    page=""
+  done
   if [ -z "$page" ]; then
-    echo "    ERROR: empty response on page $pages"
+    echo "    ERROR: page $pages failed after 5 retries"
+    echo "    Chain is finalized; re-run with BUNDLE_ONLY=1 to retry bundle build."
     exit 1
   fi
   # Append this page's body as one line of JSON to the JSONL file.
   echo "$page" >> build/attest_pages.jsonl
-  page_count=$(echo "$page" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('attestations',[])))")
   total=$((total + page_count))
-  list_complete=$(echo "$page" | python3 -c "import json,sys; print(json.load(sys.stdin).get('list_complete', True))")
   if [ "$list_complete" = "True" ]; then break; fi
-  next_cursor=$(echo "$page" | python3 -c "import json,sys; print(json.load(sys.stdin).get('cursor', ''))")
   if [ -z "$next_cursor" ]; then break; fi
   # URL-encode the cursor (it's opaque base64-ish, may contain + / =).
   cursor=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$next_cursor")
