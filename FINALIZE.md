@@ -94,16 +94,31 @@ strongest public-trust framing.
 
 ## The actual finalize
 
-### Step 1 — Open a fresh terminal and export the token
+### Step 1 — Open a fresh terminal and cd into the script's directory
 
 ```bash
 cd "$(git rev-parse --show-toplevel)/dapp/circuits"
-export CEREMONY_INIT_TOKEN="paste-your-token-here"
 ```
 
-The `cd` puts you in the script's directory. The export keeps the
-token out of your shell history if you also have `HISTCONTROL` set to
-ignore lines starting with a space.
+**Don't `export CEREMONY_INIT_TOKEN=...` inline.** That command — including
+your token — lands in `~/.zsh_history` / `~/.bash_history` and stays
+there until manually wiped. If your laptop is ever compromised the
+token is recoverable from that file. The script in step 2 will prompt
+you for the token via a silent read (no echo, no history) which is
+what you want.
+
+If you absolutely must set it in env first (e.g., scripted automation),
+read it from a file or secret manager rather than typing it inline:
+
+```bash
+# macOS keychain (token previously stored via `security add-generic-password`):
+export CEREMONY_INIT_TOKEN="$(security find-generic-password -s tacit-ceremony-token -w)"
+
+# OR from a file with restricted perms:
+export CEREMONY_INIT_TOKEN="$(< ~/.secrets/tacit-token)"
+```
+
+Either of those keeps the token out of shell history.
 
 ### Step 2 — Run the finalize script
 
