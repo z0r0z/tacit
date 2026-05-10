@@ -102,6 +102,43 @@ const MAINNET_ALLOW_MINTABLE = true;
 // Trust-bearing logic stays in this file; the Worker is purely cache + UX.
 // Set BASE to '' to disable all Worker-backed features (upload + auto-faucet + discover).
 const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+
+// ============================================================================
+// CANONICAL_CEREMONY_CID
+//
+// IPFS directory CID of the finalized Phase 2 trusted-setup bundle that every
+// tacit mixer pool binds to. Produced by 2,227 community contributions plus a
+// Bitcoin-block-948824 beacon, finalized 2026-05-11. The bundle directory
+// contains:
+//   • withdraw_final.zkey            — beacon-applied Groth16 proving key
+//   • withdraw_pre_beacon.zkey       — pre-beacon head zkey (for re-deriving
+//                                      the final zkey from the chain)
+//   • verification_key.json          — the canonical Groth16 vk
+//   • verification_key_final.json    — identical to verification_key.json
+//   • withdraw.r1cs                  — circuit constraint system
+//   • pot14_final.ptau               — Phase 1 powers-of-tau
+//   • attestations.json              — full chain of 21,931 attestation
+//                                      records (2,229 canonical: genesis +
+//                                      2,227 contribs + beacon)
+//   • README.md                      — audit summary + sha256s
+//
+// Auditable at:
+//   https://ipfs.io/ipfs/bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u/
+//   https://bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u.ipfs.dweb.link/
+//
+// Hardcoded rather than operator-pasted: this is the canonical setup for the
+// circuit, every pool init must reference it, and a typo at init time would
+// brick the pool. Pool consumers verify their proofs against the vk in this
+// bundle; the CID is content-addressed so any tamper would produce a
+// different CID and fail verification.
+const CANONICAL_CEREMONY_CID = 'bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u';
+// sha256 of the canonical verification_key.json in the bundle above. The
+// dapp doesn't enforce this match programmatically (operators upload the vk
+// file which auto-pins to its content-addressed CID); it's recorded here
+// for audit transparency in the mixer-page UI footer.
+const CANONICAL_VK_SHA256 = '760829334a626afbc74b24cff1058bec8f5714f802f74fb7f649b6a26ce933af';
+// ============================================================================
+
 const PIN_URL      = WORKER_BASE ? WORKER_BASE + '/pin'      : '';
 const PIN_JSON_URL = WORKER_BASE ? WORKER_BASE + '/pin-json' : '';
 const FAUCET_URL   = WORKER_BASE ? WORKER_BASE + '/drip'     : '';
@@ -11061,6 +11098,26 @@ function setupMixerHandlers() {
 
   // POOL_INIT broadcast — real, end-to-end.
   const initBtn = document.getElementById('btn-mixer-init-broadcast');
+  // Pre-fill the canonical ceremony CID and lock it. Every pool init for this
+  // circuit binds to the same trusted-setup transcript; an operator typo here
+  // would brick the pool, and offering a writable input is just a footgun.
+  // readOnly (not disabled) keeps the value submittable while making it
+  // visually clear the field is locked.
+  const ceCidEl = document.getElementById('mixer-init-ceremony-cid');
+  if (ceCidEl) {
+    ceCidEl.value = CANONICAL_CEREMONY_CID;
+    ceCidEl.readOnly = true;
+    ceCidEl.title = 'Locked: this is the canonical Phase 2 ceremony bundle every pool binds to.';
+    ceCidEl.style.opacity = '0.8';
+    ceCidEl.style.cursor = 'not-allowed';
+  }
+  const ceLinkEl = document.getElementById('mixer-canonical-ceremony-link');
+  if (ceLinkEl) {
+    // Use ipfs.io for the public link — most reliable open gateway. Auditors
+    // can also fetch via the subdomain form (<CID>.ipfs.dweb.link/) or any
+    // other gateway; ipfs.io is the default we surface.
+    ceLinkEl.href = `https://ipfs.io/ipfs/${CANONICAL_CEREMONY_CID}/`;
+  }
   const initInputs = ['mixer-init-asset', 'mixer-init-denom', 'mixer-init-vk-cid', 'mixer-init-ceremony-cid']
     .map(id => document.getElementById(id));
   const refreshInitDisabled = () => {
@@ -11069,6 +11126,7 @@ function setupMixerHandlers() {
     initBtn.disabled = !ok;
   };
   for (const el of initInputs) if (el) el.addEventListener('input', refreshInitDisabled);
+  refreshInitDisabled();  // re-run now that the ceremony CID is pre-filled
 
   // Optional convenience: upload verification_key.json directly. The dApp
   // POSTs it to the worker's /pin-mixer-vk endpoint, gets a CID back, and
