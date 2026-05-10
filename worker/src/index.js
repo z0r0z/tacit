@@ -1104,9 +1104,25 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   // Tightened range: snarkjs's beacon() rejects values outside [10, 63]
   // (cli.cjs hard-coded bound). Looser bounds here would let a hand-
   // crafted POST through worker validation only to fail at snarkjs apply
-  // time on the contributor's machine — bad UX. The script always sends
-  // 10, so this is defense-in-depth for non-script callers.
-  const beaconIters = safeInt(fd.get('beacon_iterations'), 10, { min: 10, max: 63 });
+  // time on the contributor's machine — bad UX. Reject invalid values
+  // explicitly with 400 instead of silently coercing to default 10.
+  const beaconItersRaw = String(fd.get('beacon_iterations') || '');
+  if (!/^\d+$/.test(beaconItersRaw)) {
+    return jsonResponse({ error: 'beacon_iterations must be a positive integer in [10, 63]' }, 400, cors);
+  }
+  const beaconIters = parseInt(beaconItersRaw, 10);
+  if (beaconIters < 10 || beaconIters > 63) {
+    return jsonResponse({ error: `beacon_iterations must be in [10, 63] (got ${beaconIters})` }, 400, cors);
+  }
+  // beacon_block_height — recorded in state for audit-trail purposes.
+  // beacon_block_hash alone is sufficient cryptographically (snarkjs only
+  // sees the hash), but auditors comparing against block explorers want
+  // the height too so they don't have to reverse-lookup hash → height.
+  const beaconBlockHeightRaw = String(fd.get('beacon_block_height') || '');
+  if (!/^\d+$/.test(beaconBlockHeightRaw)) {
+    return jsonResponse({ error: 'beacon_block_height must be a positive integer' }, 400, cors);
+  }
+  const beaconBlockHeight = parseInt(beaconBlockHeightRaw, 10);
   // Coordinator's expectation of which head_cid the beacon-applied zkey
   // was built on top of. Used for the post-pin CAS check below — closes
   // the lost-contribution race where a contribute lands during the
@@ -1158,17 +1174,25 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
     return jsonResponse({ error: 'ceremony was finalized between pin and CAS — race lost', state: fresh }, 409, cors);
   }
 
-  const newCount = (state.contribution_count || 0) + 1;
+  // Build newState from `fresh` (the CAS-checked re-read), NOT `state`
+  // (the original read taken before the IPFS pin). If the CAS check
+  // passed, the two are equivalent on head_cid + contribution_count by
+  // construction — but defensively using `fresh` ensures other fields
+  // (timestamps, last_contributor metadata) carry forward whatever
+  // value is most current. Same for the contrib record's prev_cid.
+  const now = Math.floor(Date.now() / 1000);
+  const newCount = (fresh.contribution_count || 0) + 1;
   const newState = {
-    ...state,
+    ...fresh,
     head_cid: finalCid,
     contribution_count: newCount,
     last_contributor: 'beacon',
-    last_contributed_at: Math.floor(Date.now() / 1000),
+    last_contributed_at: now,
     finalized: true,
     beacon_block_hash: beaconHash,
+    beacon_block_height: beaconBlockHeight,
     beacon_iterations: beaconIters,
-    finalized_at: Math.floor(Date.now() / 1000),
+    finalized_at: now,
   };
   await env.REGISTRY_KV.put(ceremonyKey(circuitHash), JSON.stringify(newState));
 
@@ -1177,9 +1201,10 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
     cid: finalCid,
     contributor_name: 'beacon',
     contribution_hash: beaconHash,
-    contributed_at: newState.last_contributed_at,
-    prev_cid: state.head_cid,
+    contributed_at: now,
+    prev_cid: fresh.head_cid,
     is_beacon: true,
+    beacon_block_height: beaconBlockHeight,
     beacon_iterations: beaconIters,
   };
   await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, newCount, finalCid), JSON.stringify(rec));

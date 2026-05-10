@@ -24,6 +24,14 @@ BLOCK_HEIGHT="${1:-}"
 CIRCUIT_HASH="${2:-1373a3bc34153c291d057b44edaba11d5a4aa779d0998e0d0c0e400dfc89129d}"
 WORKER="${WORKER:-https://tacit-pin.rosscampbell9.workers.dev}"
 GATEWAY="${GATEWAY:-https://content.wrappr.wtf/ipfs}"
+# Pinned snarkjs version. Audit reproducibility depends on contributors
+# and finalizer agreeing on the exact CLI release — different versions
+# can produce structurally-different (but cryptographically-equivalent)
+# zkey files, and verifyFromR1cs serialization has changed between
+# minor releases. The version below MUST match what the dapp's vendored
+# snarkjs bundle was built from (currently 0.7.6). Override via env
+# only if you've verified the new version produces identical output.
+SNARKJS="${SNARKJS:-npx --yes snarkjs@0.7.6}"
 
 # Auto-pick a beacon block if none was provided. Defaults to (current
 # tip - 12) so the chosen block is comfortably past the 6-confirmation
@@ -72,6 +80,11 @@ fi
 # whitespace would always be a paste artifact, never a real token char.
 CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\n'}"
 CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\r'}"
+# Scrub the var from the EXPORTED environment so child processes (npx,
+# python3, curl helpers etc.) don't inherit it. The shell variable is
+# still readable inside this script; only the process-env inheritance
+# is broken. Cheap defense even on a personal laptop.
+export -n CEREMONY_INIT_TOKEN 2>/dev/null || true
 
 mkdir -p build artifacts ceremony-bundle
 
@@ -89,6 +102,23 @@ echo "    finalized:     $FINALIZED"
 
 if [ "$FINALIZED" = "True" ]; then
   echo "    Already finalized. Aborting."
+  exit 1
+fi
+# Hard floor on contribution count. SPEC §5.11.3 minimum is ≥5 disjoint
+# trust roots; production target per MIXER.md is "ideally 100s"; gold-tier
+# (Tornado-class) is 1100. Default to 1100 so a tired coordinator can't
+# accidentally finalize at, say, 200 contributions in the middle of an
+# active push. Override via MIN_CONTRIBUTIONS=N in env if you legitimately
+# want to finalize a small ceremony (e.g., asset with low expected volume).
+MIN_CONTRIBUTIONS="${MIN_CONTRIBUTIONS:-1100}"
+if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
+  echo "    ERROR: contribution_count is not numeric: '$COUNT'"
+  exit 1
+fi
+if (( COUNT < MIN_CONTRIBUTIONS )); then
+  echo "    ERROR: contribution_count=$COUNT is below MIN_CONTRIBUTIONS=$MIN_CONTRIBUTIONS"
+  echo "    If you genuinely want to finalize at this depth, override via:"
+  echo "      MIN_CONTRIBUTIONS=$COUNT $0 ..."
   exit 1
 fi
 if [ "$COUNT" = "0" ]; then
@@ -142,7 +172,27 @@ if [ "$H_MEMPOOL" != "$H_BLOCKSTREAM" ]; then
   exit 1
 fi
 BTC_BLOCK_HASH="$H_MEMPOOL"
-echo "    block $BLOCK_HEIGHT: $BTC_BLOCK_HASH (mempool.space ≡ blockstream.info ✓)"
+# Confirmation-depth gate. Auto-pick uses (tip-12) so this is satisfied
+# by construction in that path, but if a user passes an explicit block
+# height we need to verify it's still deep enough at finalize time. A
+# block with <12 confirmations could in principle reorg out, leaving
+# the audit trail pointing at a non-canonical hash. Refuse anything
+# shallower than 12.
+TIP_NOW=$(curl -sf --max-time 30 "https://mempool.space/api/blocks/tip/height" || echo "")
+if ! [[ "$TIP_NOW" =~ ^[0-9]+$ ]]; then
+  echo "    ERROR: failed to fetch current tip for confirmation-depth check"
+  exit 1
+fi
+DEPTH=$((TIP_NOW - BLOCK_HEIGHT + 1))
+if (( DEPTH < 12 )); then
+  echo "    ERROR: beacon block has only $DEPTH confirmations; minimum required is 12"
+  echo "      tip:           $TIP_NOW"
+  echo "      beacon block:  $BLOCK_HEIGHT"
+  echo "      Wait for $((12 - DEPTH)) more block(s) and re-run, or pick an older block."
+  exit 1
+fi
+echo "    block $BLOCK_HEIGHT: $BTC_BLOCK_HASH"
+echo "    confirmations: $DEPTH (≥12 required ✓; mempool.space ≡ blockstream.info ✓)"
 
 echo
 echo "==> [4/8] Applying beacon (numIterationsExp=10 → 1024 actual iterations)"
@@ -156,12 +206,19 @@ rm -f build/withdraw_final.zkey
 # clearing it ensures no transitive npm dep can ever see the token via
 # process.env. Subshell scope means the outer script still has the
 # token for the POST in step 6.
-( CEREMONY_INIT_TOKEN= npx snarkjs zkey beacon \
-  build/withdraw_pre_beacon.zkey \
-  build/withdraw_final.zkey \
-  "$BTC_BLOCK_HASH" 10 \
-  -n "bitcoin block $BLOCK_HEIGHT beacon" \
-  > build/beacon.log 2>&1 ) || true
+#
+# Check both: (a) snarkjs's exit code, (b) the output file is non-empty.
+# snarkjs's CLI for `zkey beacon` historically didn't propagate beacon()
+# return values through exit code; checking both is defense-in-depth.
+if ! ( CEREMONY_INIT_TOKEN= $SNARKJS zkey beacon \
+    build/withdraw_pre_beacon.zkey \
+    build/withdraw_final.zkey \
+    "$BTC_BLOCK_HASH" 10 \
+    -n "bitcoin block $BLOCK_HEIGHT beacon" \
+    > build/beacon.log 2>&1 ); then
+  echo "    ✗ snarkjs zkey beacon exited nonzero. See build/beacon.log."
+  exit 1
+fi
 if [ ! -s build/withdraw_final.zkey ]; then
   echo "    ✗ beacon application produced no output."
   echo "      See build/beacon.log for the snarkjs error trail."
@@ -207,7 +264,7 @@ echo "    Running snarkjs zkey verify (this can take ~30-60s)…"
 # changed between minor versions ("ZKey OK!" → "ZKey Ok!"); the exit code
 # contract is stable. Output captured to build/verify.log for diagnostics
 # on failure.
-if ! ( CEREMONY_INIT_TOKEN= npx snarkjs zkey verify \
+if ! ( CEREMONY_INIT_TOKEN= $SNARKJS zkey verify \
     build/withdraw_chain.r1cs \
     build/pot14_chain.ptau \
     build/withdraw_final.zkey \
@@ -239,6 +296,7 @@ HTTP_CODE=$(curl -s -o build/finalize_response.json -w "%{http_code}" \
   -H "X-Tacit-Init-Token: $CEREMONY_INIT_TOKEN" \
   -F "zkey=@build/withdraw_final.zkey" \
   -F "beacon_block_hash=$BTC_BLOCK_HASH" \
+  -F "beacon_block_height=$BLOCK_HEIGHT" \
   -F "beacon_iterations=10" \
   -F "expected_head_cid=$HEAD_CID" \
   "$WORKER/ceremony/$CIRCUIT_HASH/finalize")
@@ -272,10 +330,13 @@ echo "    state: $(echo "$RESP" | python3 -c "import sys,json; s=json.load(sys.s
 
 echo
 echo "==> [7/8] Exporting verifying key"
-( CEREMONY_INIT_TOKEN= npx snarkjs zkey export verificationkey \
-  build/withdraw_final.zkey \
-  artifacts/verification_key_final.json \
-  > build/export_vk.log 2>&1 )
+if ! ( CEREMONY_INIT_TOKEN= $SNARKJS zkey export verificationkey \
+    build/withdraw_final.zkey \
+    artifacts/verification_key_final.json \
+    > build/export_vk.log 2>&1 ); then
+  echo "    ✗ snarkjs zkey export verificationkey failed. See build/export_vk.log."
+  exit 1
+fi
 N_PUBLIC=$(python3 -c "import json; print(json.load(open('artifacts/verification_key_final.json'))['nPublic'])")
 echo "    artifacts/verification_key_final.json (nPublic=$N_PUBLIC)"
 
@@ -342,7 +403,12 @@ echo "    bundled $ATTEST_COUNT attestation records (paginated across $pages pag
 
 # Compute audit-relevant hashes ONCE for use in the bundle README.
 PTAU_SHA256=$(shasum -a 256 ceremony-bundle/pot14_final.ptau | cut -d' ' -f1)
-PTAU_BLAKE2B=$(openssl dgst -blake2b512 ceremony-bundle/pot14_final.ptau 2>/dev/null | awk '{print $NF}')
+# LibreSSL on some macOS builds doesn't support -blake2b512. Fall back
+# silently — the sha256 is the load-bearing audit hash; blake2b is
+# an extra cross-check. With set -euo pipefail, a missing blake2b
+# command would otherwise abort the script *after* finalize succeeded
+# but before the bundle is written, which is the worst-case timing.
+PTAU_BLAKE2B=$(openssl dgst -blake2b512 ceremony-bundle/pot14_final.ptau 2>/dev/null | awk '{print $NF}' || true)
 FINAL_SHA256=$(shasum -a 256 ceremony-bundle/withdraw_final.zkey | cut -d' ' -f1)
 PRE_BEACON_SHA256=$(shasum -a 256 ceremony-bundle/withdraw_pre_beacon.zkey | cut -d' ' -f1)
 R1CS_SHA256=$(shasum -a 256 ceremony-bundle/withdraw.r1cs | cut -d' ' -f1)
