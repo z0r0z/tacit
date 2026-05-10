@@ -11891,11 +11891,20 @@ async function ceremonyRender() {
         const counter = isNext ? ` <span style="opacity:0.7;">(${m.count - n} to go)</span>` : '';
         return `<span style="display:inline-block;padding:3px 8px;border-radius:12px;${style}margin-right:6px;margin-bottom:4px;font-size:11px;white-space:nowrap;transition:background 0.4s,color 0.4s,border-color 0.4s;" title="${escapeHtml(m.desc)}">${icon} ${m.count} ${m.label}${counter}</span>`;
       }).join('');
+      // Past gold-tier the message stays dynamic — the count keeps
+      // climbing visibly so late contributors see their participation is
+      // adding to a still-growing number rather than landing in a frozen
+      // "tier reached" UI. Each contribution past gold is structurally
+      // additive: more entropy mixed in, more diversity, longer chain
+      // depth — the ceremony only stops when the coordinator finalizes,
+      // not when a milestone counter is hit.
+      const goldCount = CEREMONY_MILESTONES[CEREMONY_MILESTONES.length - 1].count;
+      const aboveGold = n - goldCount;
       const statusMsg = !lastReached
         ? `<strong>${n}</strong> contribution${n === 1 ? '' : 's'} so far — below the minimum sound threshold of ${CEREMONY_MILESTONES[0].count}. Pool deposits remain locked.`
         : (nextMs
             ? `<strong>${n}</strong> contribution${n === 1 ? '' : 's'} so far — past the <strong>${lastReached.label}</strong> milestone; ${nextMs.count - n} more to reach <strong>${nextMs.label}</strong>.`
-            : `<strong>${n}</strong> contribution${n === 1 ? '' : 's'} so far — gold tier reached.`);
+            : `<strong>${n}</strong> contribution${n === 1 ? '' : 's'} — gold tier reached. <span style="color:#859900;">+${aboveGold} above gold and counting</span> until coordinator finalizes the ceremony.`);
       readinessLine =
         `<div style="margin-top:8px;font-size:12px;">${statusMsg}</div>` +
         `<div style="margin-top:6px;line-height:1.8;">${pills}</div>`;
@@ -22256,10 +22265,18 @@ async function renderPetchDiscover() {
       // bar fill" UX where pending mints visibly contribute even before
       // 3-conf credit lands). Without this, the user's just-broadcast mint
       // wouldn't move the bar until ~30 min after broadcast.
-      const mintedNow = workerMinted + BigInt(effectivePending) * limit;
-      const remaining = cap > mintedNow ? cap - mintedNow : 0n;
+      const mintedRaw = workerMinted + BigInt(effectivePending) * limit;
+      // Clamp the displayed value to cap. Without this, an inflated pending
+      // overlay (legacy orphan keys that never confirmed; or the user broadcasting
+      // multiple speculative mints inside the 15-min myRecent window when only
+      // a partial slot is left) produces "1100 / 1000 FAIR" and a >100% bar —
+      // chain truth is that excess mints fail cap_overflow, so the visual
+      // ceiling matches reality. capFull is derived from the unclamped sum so
+      // we still disable the button as soon as the bar saturates.
+      const mintedNow = mintedRaw > cap ? cap : mintedRaw;
+      const remaining = cap > mintedRaw ? cap - mintedRaw : 0n;
       const remMints = limit > 0n ? remaining / limit : 0n;
-      const pct = cap > 0n ? Number(mintedNow * 10000n / cap) / 100 : 0;
+      const pct = cap > 0n ? Math.min(100, Number(mintedNow * 10000n / cap) / 100) : 0;
       const capFull = remaining <= 0n;
       const myMintCount = myPmintCountByAsset.get(safeAid) || 0;
       // Height-window check is best-effort here: tip + start_height come from
@@ -22297,9 +22314,17 @@ async function renderPetchDiscover() {
       const officialBadgePetch = a.verified
         ? `<span style="position:absolute;top:8px;right:8px;font-size:10px;background:#0a7d4e;color:#fff;padding:3px 7px;border:1px solid #0a7d4e;text-transform:uppercase;letter-spacing:0.08em;cursor:help;font-weight:600;" title="Platform-verified: tacit's curators have endorsed this asset_id as the canonical holder of its ticker.">✓ verified</span>`
         : '';
+      // Prominent sold-out badge so users can scan the list and tell which
+      // mints are still live without having to read the small-font progress
+      // copy under each tile. The verified badge sits in the same top-right
+      // corner; offset down when both apply so they don't overlap.
+      const mintOutBadge = capFull
+        ? `<span style="position:absolute;top:${a.verified ? '34px' : '8px'};right:8px;font-size:10px;background:#a04030;color:#fff;padding:3px 7px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;" title="Cap reached. All ${escapeHtml(fmtAssetAmount(cap, dec))} ${escapeHtml(a.ticker || '?')} have been minted.">✕ mint out</span>`
+        : '';
       return `
         <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);margin-bottom:10px;">
           ${officialBadgePetch}
+          ${mintOutBadge}
           <div style="display:flex;align-items:center;gap:12px;">
             ${imgUrl
               ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
@@ -22318,7 +22343,7 @@ async function renderPetchDiscover() {
           <div style="margin-top:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;color:var(--ink-mid);">
             <span><strong style="color:var(--ink);" data-petch-minted-display>${escapeHtml(fmtAssetAmount(mintedNow, dec))}</strong> / ${escapeHtml(fmtAssetAmount(cap, dec))} ${tickerEsc}</span>
             <span>·</span>
-            <span data-petch-rem-mints>${escapeHtml(remMints.toString())} mints remaining</span>
+            <span data-petch-rem-mints${capFull ? ' style="color:#a04030;font-weight:600;"' : ''}>${capFull ? 'sold out' : `${escapeHtml(remMints.toString())} mints remaining`}</span>
             <span>·</span>
             <span>${limitDispEsc} per mint</span>
           </div>
