@@ -139,7 +139,7 @@ The script will print 8 numbered steps. Expected output:
     Downloading r1cs (...)…
     Downloading ptau (...)…
     Running snarkjs zkey verify (this can take ~30-60s)…
-    ✓ ZKey OK — beacon-applied zkey verified against chain r1cs+ptau
+    ✓ ZKey Ok — beacon-applied zkey verified against chain r1cs+ptau
 
 ==> [6/8] POSTing to /finalize
     finalized head_cid: bafybeih...
@@ -156,7 +156,7 @@ The script will print 8 numbered steps. Expected output:
 ================================================================
 ```
 
-**The critical line is `✓ ZKey OK` in step 5.** That's the
+**The critical line is `✓ ZKey Ok` in step 5.** That's the
 local verification of the beacon-applied zkey against the chain's
 r1cs + ptau. If this passes, the POST will succeed. If it fails,
 the script aborts BEFORE the POST and the ceremony stays open.

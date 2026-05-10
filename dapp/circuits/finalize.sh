@@ -115,10 +115,16 @@ curl -sLf "$GATEWAY/$R1CS_CID" -o build/withdraw_chain.r1cs
 echo "    Downloading ptau ($PTAU_CID)…"
 curl -sLf "$GATEWAY/$PTAU_CID" -o build/pot14_chain.ptau
 echo "    Running snarkjs zkey verify (this can take ~30-60s)…"
+# Rely on snarkjs's exit code (0 = ZKey Ok!, 1 = verification failed) per
+# its cli.js wrapper rather than parsing output text. Output text has
+# changed between minor versions ("ZKey OK!" → "ZKey Ok!"); the exit code
+# contract is stable. Output captured to build/verify.log for diagnostics
+# on failure.
 if ! npx snarkjs zkey verify \
     build/withdraw_chain.r1cs \
     build/pot14_chain.ptau \
-    build/withdraw_final.zkey 2>&1 | tee build/verify.log | grep -q "ZKey OK"; then
+    build/withdraw_final.zkey \
+    > build/verify.log 2>&1; then
   echo
   echo "    ✗ LOCAL VERIFY FAILED. Beacon-applied zkey is NOT a valid extension"
   echo "      of the chain. Aborting before POST so the ceremony stays open."
@@ -130,7 +136,7 @@ if ! npx snarkjs zkey verify \
   echo "      • snarkjs version mismatch between contributors and finalizer"
   exit 1
 fi
-echo "    ✓ ZKey OK — beacon-applied zkey verified against chain r1cs+ptau"
+echo "    ✓ ZKey Ok — beacon-applied zkey verified against chain r1cs+ptau"
 
 echo
 echo "==> [6/8] POSTing to /finalize"
