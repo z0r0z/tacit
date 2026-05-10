@@ -98,58 +98,78 @@ fi
 # this check (the chain is already finalized; nothing to race against).
 MIN_QUIET_SECONDS="${MIN_QUIET_SECONDS:-60}"
 
-# Auto-pick a beacon block if none was provided. Defaults to (current
-# tip - 12) so the chosen block is comfortably past the 6-confirmation
-# reorg-safety threshold (Bitcoin reorgs >6 deep are essentially
-# unprecedented; 12 leaves a wide margin). Pre-announcing a specific
-# block is a transparency-max practice for very small ceremonies; at
-# scale (1000+ contributors) the coordinator's beacon choice is one of
-# thousands of independent inputs and pre-announcement adds negligible
-# auditability beyond what's verifiable from chain after the fact.
-if [ -z "$BLOCK_HEIGHT" ]; then
-  echo "==> No block height provided — auto-picking (tip - 12) for ≥12 confirmations"
-  TIP=$(curl -sf --max-time 30 "https://mempool.space/api/blocks/tip/height" || echo "")
-  if ! [[ "$TIP" =~ ^[0-9]+$ ]]; then
-    echo "    ERROR: failed to fetch tip height from mempool.space"
-    echo "    Pass an explicit block height: $0 <height>"
-    exit 1
-  fi
-  BLOCK_HEIGHT=$((TIP - 12))
-  echo "    tip=$TIP  →  beacon block height: $BLOCK_HEIGHT"
-fi
-if ! [[ "$BLOCK_HEIGHT" =~ ^[0-9]+$ ]]; then
-  echo "block height must be a positive integer"; exit 1
-fi
 if ! [[ "$CIRCUIT_HASH" =~ ^[0-9a-f]{64}$ ]]; then
   echo "circuit_hash must be 64 lowercase hex chars"; exit 1
 fi
 
 cd "$(dirname "$0")"
 
-# --- token ---
-if [ -z "${CEREMONY_INIT_TOKEN:-}" ]; then
-  printf "Paste CEREMONY_INIT_TOKEN (from your password manager): "
-  # IFS= prevents bash from trimming leading/trailing whitespace inside
-  # the read. -r disables backslash escape processing. -s silences echo
-  # so the paste doesn't appear on screen or in shell history.
-  # || true so a closed-stdin (CI / piped invocation) doesn't trip set -e
-  # before the explicit empty-token check below.
-  IFS= read -rs CEREMONY_INIT_TOKEN || true
-  echo
+# Bundle-only recovery doesn't need a Bitcoin block (no beacon to apply)
+# or the admin token (no /finalize or /drain calls). Skip both so a
+# bundle regeneration works even if mempool.space is down or the
+# coordinator's password manager is on a different machine.
+if [ "$BUNDLE_ONLY" != "1" ]; then
+  # Auto-pick a beacon block if none was provided. Defaults to (current
+  # tip - 12) so the chosen block is comfortably past the 6-confirmation
+  # reorg-safety threshold (Bitcoin reorgs >6 deep are essentially
+  # unprecedented; 12 leaves a wide margin). Pre-announcing a specific
+  # block is a transparency-max practice for very small ceremonies; at
+  # scale (1000+ contributors) the coordinator's beacon choice is one of
+  # thousands of independent inputs and pre-announcement adds negligible
+  # auditability beyond what's verifiable from chain after the fact.
+  if [ -z "$BLOCK_HEIGHT" ]; then
+    echo "==> No block height provided — auto-picking (tip - 12) for ≥12 confirmations"
+    TIP=$(curl -sf --max-time 30 "https://mempool.space/api/blocks/tip/height" || echo "")
+    if ! [[ "$TIP" =~ ^[0-9]+$ ]]; then
+      echo "    ERROR: failed to fetch tip height from mempool.space"
+      echo "    Pass an explicit block height: $0 <height>"
+      exit 1
+    fi
+    BLOCK_HEIGHT=$((TIP - 12))
+    echo "    tip=$TIP  →  beacon block height: $BLOCK_HEIGHT"
+  fi
+  if ! [[ "$BLOCK_HEIGHT" =~ ^[0-9]+$ ]]; then
+    echo "block height must be a positive integer"; exit 1
+  fi
+
+  # --- token ---
+  if [ -z "${CEREMONY_INIT_TOKEN:-}" ]; then
+    printf "Paste CEREMONY_INIT_TOKEN (from your password manager): "
+    # IFS= prevents bash from trimming leading/trailing whitespace inside
+    # the read. -r disables backslash escape processing. -s silences echo
+    # so the paste doesn't appear on screen or in shell history.
+    # || true so a closed-stdin (CI / piped invocation) doesn't trip set -e
+    # before the explicit empty-token check below.
+    IFS= read -rs CEREMONY_INIT_TOKEN || true
+    echo
+  fi
+  if [ -z "${CEREMONY_INIT_TOKEN:-}" ]; then
+    echo "no token provided"; exit 1
+  fi
+  # Defensively strip a stray trailing newline some password managers
+  # include in their copy buffer. Token chars are URL-safe alnum + dashes;
+  # whitespace would always be a paste artifact, never a real token char.
+  CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\n'}"
+  CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\r'}"
+  # Scrub the var from the EXPORTED environment so child processes (npx,
+  # python3, curl helpers etc.) don't inherit it. The shell variable is
+  # still readable inside this script; only the process-env inheritance
+  # is broken. Cheap defense even on a personal laptop.
+  export -n CEREMONY_INIT_TOKEN 2>/dev/null || true
+
+  # Write the token to a temp curl --config file so it never appears in
+  # process listings (curl -H "...$TOKEN" puts the token in argv,
+  # visible via `ps aux` for the duration of the curl call). On a
+  # personal laptop only your own user sees ps; on a shared box anyone
+  # can. Defense-in-depth: --config keeps the token out of argv
+  # entirely. File is mode 0600 (owner-only) and removed via trap.
+  CURL_CONFIG=$(mktemp -t tacit-finalize-XXXXXX)
+  chmod 600 "$CURL_CONFIG"
+  printf 'header = "X-Tacit-Init-Token: %s"\n' "$CEREMONY_INIT_TOKEN" > "$CURL_CONFIG"
+  # Add cleanup of the temp config to the existing trap on exit.
+  _cleanup_curl_config() { rm -f "$CURL_CONFIG"; }
+  trap '_cleanup_curl_config; on_exit' EXIT
 fi
-if [ -z "${CEREMONY_INIT_TOKEN:-}" ]; then
-  echo "no token provided"; exit 1
-fi
-# Defensively strip a stray trailing newline some password managers
-# include in their copy buffer. Token chars are URL-safe alnum + dashes;
-# whitespace would always be a paste artifact, never a real token char.
-CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\n'}"
-CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\r'}"
-# Scrub the var from the EXPORTED environment so child processes (npx,
-# python3, curl helpers etc.) don't inherit it. The shell variable is
-# still readable inside this script; only the process-env inheritance
-# is broken. Cheap defense even on a personal laptop.
-export -n CEREMONY_INIT_TOKEN 2>/dev/null || true
 
 mkdir -p build artifacts ceremony-bundle
 
@@ -222,22 +242,29 @@ if [ "$BUNDLE_ONLY" != "1" ]; then
   # promotion and just want to push through.
   NOW=$(date +%s)
   IDLE_FOR=$(( NOW - LAST_CONTRIBUTED_AT ))
+  # Negative IDLE_FOR means local clock is BEHIND worker timestamps.
+  # Fail closed — the rest of the script's timestamp arithmetic
+  # (depth calculation, drain coordination) depends on a sane clock.
+  # Check this BEFORE the MIN_QUIET_SECONDS comparison, otherwise the
+  # negative case would trigger the 'too active' branch and exit with
+  # a misleading message.
+  if (( IDLE_FOR < 0 )); then
+    echo "    ERROR: IDLE_FOR=${IDLE_FOR}s (negative) — local clock is BEHIND the worker."
+    echo "      The script's timestamp arithmetic isn't safe under clock skew."
+    echo "      Sync your system clock and re-run:"
+    echo "        sudo sntp -sS time.apple.com   # macOS"
+    echo "        sudo ntpdate -u pool.ntp.org   # Linux"
+    exit 1
+  fi
   if (( IDLE_FOR < MIN_QUIET_SECONDS )); then
     echo "    ERROR: last contribution was $IDLE_FOR seconds ago — too active to start finalize."
     echo "      Required quiet period: ${MIN_QUIET_SECONDS}s"
-    echo "      The pre-flight takes 3-7 min at scale; if contributions keep landing"
-    echo "      during that window, the final POST's CAS check will 409 (race lost)."
-    echo "      Wait for the rate to taper, then re-run."
-    echo "      To force-skip this check (after manually pausing promotion):"
+    echo "      The pre-flight takes 3-7 min at scale; drain will pause new"
+    echo "      contributes once started, but having the chain quiet beforehand"
+    echo "      means fewer in-flight contributors get rejected mid-mix."
+    echo "      Wait for rate to taper, then re-run. To force-skip:"
     echo "        MIN_QUIET_SECONDS=0 $0"
     exit 1
-  fi
-  if (( IDLE_FOR < 0 )); then
-    echo "    WARN: IDLE_FOR=${IDLE_FOR}s (negative) — local clock is BEHIND the worker."
-    echo "      This usually means your system clock is unsynced. Sync via:"
-    echo "        sudo sntp -sS time.apple.com"
-    echo "      The check is treating this as 'idle for a long time' and proceeding."
-    echo "      Drain in the next step will protect against active-contribute races regardless."
   fi
   echo "    quiet for: ${IDLE_FOR}s (≥${MIN_QUIET_SECONDS}s required ✓)"
 fi
@@ -257,7 +284,7 @@ if [ "$BUNDLE_ONLY" != "1" ]; then
   echo
   echo "==> Pausing new contributions for 30min (drain) — pre-flight needs a stable chain"
   DRAIN_RESP=$(curl -sf --max-time 30 -X POST \
-    -H "X-Tacit-Init-Token: $CEREMONY_INIT_TOKEN" \
+    --config "$CURL_CONFIG" \
     -F "duration_seconds=1800" \
     "$WORKER/ceremony/$CIRCUIT_HASH/drain" || echo "")
   if [ -z "$DRAIN_RESP" ]; then
@@ -456,8 +483,8 @@ echo "==> [6/8] POSTing to /finalize"
 # congested days.
 HTTP_CODE=$(curl -s -o build/finalize_response.json -w "%{http_code}" \
   --max-time 600 \
+  --config "$CURL_CONFIG" \
   -X POST \
-  -H "X-Tacit-Init-Token: $CEREMONY_INIT_TOKEN" \
   -F "zkey=@build/withdraw_final.zkey" \
   -F "beacon_block_hash=$BTC_BLOCK_HASH" \
   -F "beacon_block_height=$BLOCK_HEIGHT" \

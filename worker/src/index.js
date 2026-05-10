@@ -575,6 +575,15 @@ function ceremonyAuthOk(req, env) {
 }
 
 function ceremonyKey(hash)              { return `ceremony:${hash}`; }
+// Drain state lives in its OWN KV key, NOT inside the ceremony state
+// object. Storing drain_until in state.drain_until would create a
+// classic eventual-consistency race: drain reads state, sets the
+// flag, writes state. If a contribute lands between drain's read
+// and drain's write, drain's write overwrites the contribute's chain
+// advance. Separate key = drain and contribute never write the same
+// KV entry. Auto-expires via expirationTtl so even a coordinator
+// crash post-drain doesn't permanently block contributions.
+function ceremonyDrainKey(hash)         { return `ceremony:${hash}:drain_until`; }
 function ceremonyContribKey(hash, idx, cid) {
   return `ceremony:${hash}:contrib:${String(idx).padStart(8, '0')}:${cid}`;
 }
@@ -816,16 +825,25 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   // Drain check — coordinator may have paused contributions while
   // running finalize, since the pre-flight (download + beacon + verify)
   // takes 3-7 min at scale and any contribute landing during that
-  // window would race the final CAS check. drain_until is an absolute
-  // unix timestamp; once it's in the past, contributions auto-resume.
+  // window would race the final CAS check. drain_until lives in its own
+  // KV key (not in state) so drain and contribute never write the same
+  // entry. Once it's in the past (or absent), contributions auto-resume.
   // Returns 423 (Locked) so the dapp can distinguish from other 4xx.
-  {
+  const _checkDrain = async () => {
     const now = Math.floor(Date.now() / 1000);
-    const drainUntil = Number(state.drain_until || 0);
+    const drainStr = await env.REGISTRY_KV.get(ceremonyDrainKey(circuitHash));
+    const drainUntil = drainStr ? parseInt(drainStr, 10) : 0;
     if (drainUntil && now < drainUntil) {
+      return { rejected: true, drainUntil, remaining: drainUntil - now };
+    }
+    return { rejected: false };
+  };
+  {
+    const d = await _checkDrain();
+    if (d.rejected) {
       return jsonResponse({
-        error: `ceremony is being finalized; contributions paused for ~${drainUntil - now}s`,
-        drain_until: drainUntil,
+        error: `ceremony is being finalized; contributions paused for ~${d.remaining}s`,
+        drain_until: d.drainUntil,
       }, 423, cors);
     }
   }
@@ -885,6 +903,20 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
       error: 'lost CAS race — another contribution landed first; refresh and retry',
       head_cid: fresh ? fresh.head_cid : null,
     }, 409, cors);
+  }
+  // Re-check drain too — without this, a contribute that started just
+  // BEFORE drain was set could complete its pin AFTER drain takes effect
+  // and slip through (since head_cid is unchanged from the pre-pin read).
+  // Drain is supposed to freeze the chain during finalize; the only way
+  // to honor that is to re-check here, post-pin.
+  {
+    const d = await _checkDrain();
+    if (d.rejected) {
+      return jsonResponse({
+        error: `ceremony was put into drain during your contribute; pin pre-empted by finalize. Try again after drain expires.`,
+        drain_until: d.drainUntil,
+      }, 423, cors);
+    }
   }
 
   const newCount = (fresh.contribution_count || 0) + 1;
@@ -1147,12 +1179,18 @@ async function handleCeremonyDrain(req, env, circuitHash, cors, ctx) {
 
   const now = Math.floor(Date.now() / 1000);
   const drainUntil = now + durationSecs;
-  const newState = { ...state, drain_until: drainUntil };
-  await env.REGISTRY_KV.put(ceremonyKey(circuitHash), JSON.stringify(newState));
-  // Invalidate edge caches so /ceremony/<hash> reads see the new
-  // drain_until immediately. Without invalidation, contributors hitting
-  // a stale-cached state.drain_until=undefined would keep racing in.
-  await _invalidateCeremonyCache(ctx, circuitHash);
+  // Write to a SEPARATE KV key — never touch the ceremony state object.
+  // expirationTtl auto-cleans the key after the drain window + 5min
+  // buffer, so even a coordinator crash post-drain doesn't permanently
+  // block contributions: KV deletes the key on its own.
+  await env.REGISTRY_KV.put(
+    ceremonyDrainKey(circuitHash),
+    String(drainUntil),
+    { expirationTtl: durationSecs + 300 },
+  );
+  // No need to invalidate /ceremony/<hash> cache — drain_until is no
+  // longer in that response shape. /contribute reads the drain key
+  // directly each invocation, so it always sees the current value.
   return jsonResponse({
     ok: true,
     drain_until: drainUntil,
