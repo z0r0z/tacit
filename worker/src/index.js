@@ -739,12 +739,20 @@ async function handleCeremonyContribute(req, env, circuitHash, cors) {
   if (!state) return jsonResponse({ error: 'ceremony not found — initialize first' }, 404, cors);
   if (state.finalized) return jsonResponse({ error: 'ceremony has been finalized; chain is locked' }, 409, cors);
 
-  // Per-IP rate limit reuses the upload KV — 60 contributions/IP/day is generous.
+  // Per-IP rate limit reuses the upload KV — 500 contributions/IP/day. The
+  // cap is sized for a coordinated push toward gold-tier (1100+) where power
+  // contributors carry many contributions from the same machine; below this,
+  // a single laptop running contributions back-to-back tops out at ~5–8h of
+  // compute (each contribution ~30–60s), which is the natural sanity ceiling.
+  // The cap exists for spam mitigation, not soundness — Phase 2 is robust to
+  // repeat contributions from the same source (each still mixes fresh entropy
+  // into the chain). Raising the cap does NOT weaken the ceremony; it only
+  // affects how the diversity story reads in attestations.
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const rlKey = `ceremony:${day}:${ip}`;
   const prior = safeInt(await env.UPLOAD_KV.get(rlKey), 0, { min: 0 });
-  if (prior >= 60) return jsonResponse({ error: 'rate limited (60/day per IP)' }, 429, cors);
+  if (prior >= 500) return jsonResponse({ error: 'rate limited (500/day per IP)' }, 429, cors);
 
   let fd;
   try { fd = await req.formData(); }

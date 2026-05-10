@@ -340,7 +340,7 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 - ✅ Phase 1 ptau swapped to verified Hermez ceremony
 - ✅ Phase 2 ceremony coordinator (init / contribute / finalize) + auth
 - ✅ Client-side `verifyFromInit` before contribute
-- ✅ 103 mixer tests across 7 test files
+- ✅ 108 mixer tests across 7 test files
 - ⏸ **Public Phase 2 ceremony has not yet been run** — required before
   mainnet pool deployment. Coordinator + dapp UI are ready; the run
   itself is the remaining step.
