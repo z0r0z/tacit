@@ -717,6 +717,53 @@ async function handleCeremonyInit(req, env, cors) {
   return jsonResponse({ state }, 200, cors);
 }
 
+// Edge-cache wrapper for ceremony GET endpoints. Fronts hot-path reads
+// (state, stats, default-mode attestations) with Cloudflare's per-PoP
+// edge cache so polling traffic from many concurrent dapp tabs collapses
+// into one real KV lookup per PoP per TTL window. Without this, every
+// dapp tab that's open during a ceremony hits the KV namespace on its
+// poll interval — multiplied across thousands of contributors during a
+// public push, KV op cost dominates the worker bill.
+//
+// TTLs are intentionally short (5–30s) so dapp progress views stay
+// reactive. The cron's 5-minute scheduled scan is the upper bound on
+// "real" state-change frequency, and these TTLs are well below that.
+//
+// NOT used for cursor-based /attestations (one-shot audit walks — caching
+// across distinct cursors has no payoff) or any non-GET method.
+async function ceremonyCacheGet(ctx, cors, ttlSeconds, cacheKeyUrl, computeFn) {
+  const cache = caches.default;
+  const cacheKey = new Request(cacheKeyUrl, { method: 'GET' });
+  const cached = await cache.match(cacheKey);
+  if (cached) {
+    const cachedAtStr = cached.headers.get('X-Cached-At');
+    const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+    if (ageMs < ttlSeconds * 1000) {
+      const body = await cached.text();
+      const headers = new Headers();
+      headers.set('Content-Type', 'application/json');
+      for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+      headers.set('X-Cache', 'HIT');
+      return new Response(body, { status: cached.status, headers });
+    }
+  }
+  const fresh = await computeFn();
+  if (fresh.status === 200) {
+    const body = await fresh.clone().text();
+    const cacheHeaders = new Headers();
+    cacheHeaders.set('Content-Type', 'application/json');
+    cacheHeaders.set('X-Cached-At', String(Date.now()));
+    cacheHeaders.set('Cache-Control', `public, max-age=${ttlSeconds}`);
+    const cacheable = new Response(body, { status: 200, headers: cacheHeaders });
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(cache.put(cacheKey, cacheable));
+    } else {
+      await cache.put(cacheKey, cacheable);
+    }
+  }
+  return fresh;
+}
+
 async function handleCeremonyState(env, circuitHash, cors) {
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
@@ -5641,7 +5688,15 @@ export default {
     if (url.pathname === '/ceremony/init' && req.method === 'POST') return handleCeremonyInit(req, env, cors);
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})$/i);
-      if (m && req.method === 'GET') return handleCeremonyState(env, m[1].toLowerCase(), cors);
+      if (m && req.method === 'GET') {
+        const hash = m[1].toLowerCase();
+        // 5s edge cache: ceremony state advances at most once per
+        // contribution (~1-5 / sec at peak), so 5s is a fine staleness
+        // budget and collapses thousands of concurrent state-poll calls
+        // from open dapp tabs into one real KV lookup per PoP.
+        return ceremonyCacheGet(ctx, cors, 5, `https://_ceremony-cache_/state/${hash}`,
+          () => handleCeremonyState(env, hash, cors));
+      }
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/contribute$/i);
@@ -5649,11 +5704,32 @@ export default {
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/attestations$/i);
-      if (m && req.method === 'GET') return handleCeremonyAttestations(req, env, url, m[1].toLowerCase(), cors);
+      if (m && req.method === 'GET') {
+        const hash = m[1].toLowerCase();
+        // Cursor-based pagination is per-page audit work — caching adds
+        // no value and would just waste edge memory. Default-mode
+        // (no cursor) is the hot path that polling UIs hit; cache it.
+        if (url.searchParams.get('cursor')) {
+          return handleCeremonyAttestations(req, env, url, hash, cors);
+        }
+        // Cache key includes limit so different limit values get their
+        // own cache entry (a request for limit=20 doesn't replay a
+        // limit=100 cached body, which would be wrong).
+        const limit = url.searchParams.get('limit') || '100';
+        return ceremonyCacheGet(ctx, cors, 30, `https://_ceremony-cache_/attestations/${hash}/${limit}`,
+          () => handleCeremonyAttestations(req, env, url, hash, cors));
+      }
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/stats$/i);
-      if (m && req.method === 'GET') return handleCeremonyStats(req, env, m[1].toLowerCase(), cors);
+      if (m && req.method === 'GET') {
+        const hash = m[1].toLowerCase();
+        // 30s edge cache: stats counts grow steadily but slowly relative
+        // to typical poll rates from observers. 30s lag on a live counter
+        // is invisible UX-wise and collapses ~98% of poll cost.
+        return ceremonyCacheGet(ctx, cors, 30, `https://_ceremony-cache_/stats/${hash}`,
+          () => handleCeremonyStats(req, env, hash, cors));
+      }
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/reset$/i);
