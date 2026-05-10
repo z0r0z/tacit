@@ -132,10 +132,19 @@ const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
 // bundle; the CID is content-addressed so any tamper would produce a
 // different CID and fail verification.
 const CANONICAL_CEREMONY_CID = 'bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u';
-// sha256 of the canonical verification_key.json in the bundle above. The
-// dapp doesn't enforce this match programmatically (operators upload the vk
-// file which auto-pins to its content-addressed CID); it's recorded here
-// for audit transparency in the mixer-page UI footer.
+// Standalone IPFS file CID of `verification_key.json` inside the ceremony
+// bundle directory above. Every legitimate POOL_INIT broadcast for this
+// circuit uses this exact vk_cid — pinning a different vk would produce
+// a pool with no verifier compatibility. Hardcoded so pool init has zero
+// file pickers: the form pre-fills + locks this value, matching the
+// ceremony-CID treatment. Derived via the bundle's UnixFS directory:
+//   curl -sI https://ipfs.io/ipfs/<CANONICAL_CEREMONY_CID>/verification_key.json
+//   → x-ipfs-roots: <dir_cid>, bafkreidwbautg…
+const CANONICAL_VK_CID = 'bafkreidwbautgstcnl54oszez7yqlc7mr5lrj6ac65h3p5sjw2rgz2jtv4';
+// sha256 of the bytes addressed by CANONICAL_VK_CID, identical to the
+// bundle's verification_key.json. Documentation-only — runtime integrity
+// is enforced via the IPFS CID's content-addressing (every fetch in
+// _fetchMixerVk verifies the bytes hash back to the requested CID).
 const CANONICAL_VK_SHA256 = '760829334a626afbc74b24cff1058bec8f5714f802f74fb7f649b6a26ce933af';
 // ============================================================================
 
@@ -11098,19 +11107,30 @@ function setupMixerHandlers() {
 
   // POOL_INIT broadcast — real, end-to-end.
   const initBtn = document.getElementById('btn-mixer-init-broadcast');
-  // Pre-fill the canonical ceremony CID and lock it. Every pool init for this
-  // circuit binds to the same trusted-setup transcript; an operator typo here
-  // would brick the pool, and offering a writable input is just a footgun.
+  // Pre-fill BOTH canonical CIDs (vk + ceremony) and lock them. Every pool
+  // init for this circuit binds to the same trusted-setup transcript and the
+  // same verifying key — an operator typo at init time would brick the pool
+  // forever (vk_cid is content-addressed and immutable per-pool, SPEC §5.10.1).
   // readOnly (not disabled) keeps the value submittable while making it
   // visually clear the field is locked.
-  const ceCidEl = document.getElementById('mixer-init-ceremony-cid');
-  if (ceCidEl) {
-    ceCidEl.value = CANONICAL_CEREMONY_CID;
-    ceCidEl.readOnly = true;
-    ceCidEl.title = 'Locked: this is the canonical Phase 2 ceremony bundle every pool binds to.';
-    ceCidEl.style.opacity = '0.8';
-    ceCidEl.style.cursor = 'not-allowed';
-  }
+  const lockCanonicalCid = (el, value, hint) => {
+    if (!el) return;
+    el.value = value;
+    el.readOnly = true;
+    el.title = hint;
+    el.style.opacity = '0.8';
+    el.style.cursor = 'not-allowed';
+  };
+  lockCanonicalCid(
+    document.getElementById('mixer-init-vk-cid'),
+    CANONICAL_VK_CID,
+    'Locked: canonical verifying key from the Phase 2 ceremony. Every pool for this circuit uses the same vk.',
+  );
+  lockCanonicalCid(
+    document.getElementById('mixer-init-ceremony-cid'),
+    CANONICAL_CEREMONY_CID,
+    'Locked: canonical Phase 2 ceremony bundle every pool binds to.',
+  );
   const ceLinkEl = document.getElementById('mixer-canonical-ceremony-link');
   if (ceLinkEl) {
     // Use ipfs.io for the public link — most reliable open gateway. Auditors
@@ -11126,51 +11146,7 @@ function setupMixerHandlers() {
     initBtn.disabled = !ok;
   };
   for (const el of initInputs) if (el) el.addEventListener('input', refreshInitDisabled);
-  refreshInitDisabled();  // re-run now that the ceremony CID is pre-filled
-
-  // Optional convenience: upload verification_key.json directly. The dApp
-  // POSTs it to the worker's /pin-mixer-vk endpoint, gets a CID back, and
-  // auto-fills the vk CID input. Saves the user a manual IPFS-pin step.
-  const vkFileInput = document.getElementById('mixer-init-vk-file');
-  if (vkFileInput) {
-    vkFileInput.addEventListener('change', async (e) => {
-      const f = e.target.files && e.target.files[0];
-      if (!f) return;
-      const cidInput = document.getElementById('mixer-init-vk-cid');
-      try {
-        const text = await f.text();
-        let parsed;
-        try { parsed = JSON.parse(text); }
-        catch { alert('Selected file is not valid JSON.'); return; }
-        if (!WORKER_BASE) {
-          alert('Worker not configured (WORKER_BASE empty). Pin manually via Pinata / web3.storage and paste the CID.');
-          return;
-        }
-        if (cidInput) cidInput.value = '(uploading…)';
-        const resp = await fetch(`${WORKER_BASE}/pin-mixer-vk`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(parsed),
-        });
-        const j = await resp.json().catch(() => ({}));
-        if (!resp.ok) {
-          if (cidInput) cidInput.value = '';
-          alert('vk pin failed: ' + (j.error || resp.status));
-          return;
-        }
-        if (cidInput) {
-          cidInput.value = j.cid || '';
-          cidInput.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        toast(`vk pinned: ${j.cid}`, 'success');
-      } catch (err) {
-        if (cidInput && cidInput.value === '(uploading…)') cidInput.value = '';
-        alert('vk upload failed: ' + (err.message || err));
-      }
-    });
-  }
-
-  refreshInitDisabled();
+  refreshInitDisabled();  // re-run now that both canonical CIDs are pre-filled
   if (initBtn) {
     initBtn.onclick = async () => {
       if (initBtn.disabled) return;

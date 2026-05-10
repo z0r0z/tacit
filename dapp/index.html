@@ -2757,10 +2757,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Private send for any tacit asset. Deposit a fixed amount into a shared pool, wait, then withdraw to a fresh address — a zero-knowledge proof breaks the on-chain link between the two halves.
-      </div>
-      <div id="mixer-stub-banner" style="border:1px solid #859900;background:#f4faff;color:#586e75;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13px;">
-        <strong>Trusted setup finalized.</strong> The Phase 2 ceremony for this circuit was completed by 2,227 community contributions and beacon-finalized against a Bitcoin block hash. Every pool init binds to the canonical bundle: <a href="https://ipfs.io/ipfs/bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u/" target="_blank" rel="noopener noreferrer" style="color:inherit;">audit on IPFS ↗</a>. The zero-knowledge prover and verifier run live in your browser.
+        Private send for any tacit asset. Deposit a fixed amount into a shared pool, wait, then withdraw to a fresh address — a zero-knowledge proof breaks the on-chain link between the two halves. The zero-knowledge prover and verifier run live in your browser.
       </div>
     </div>
   </div>
@@ -2971,7 +2968,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>initialize a new pool</span></div>
     <div class="section-body">
       <div class="mixer-locked-banner">Loading ceremony state… pool init unlocks once the dapp verifies the trusted setup is finalized.</div>
-      <div class="muted" style="margin-bottom:10px;">Anyone can open a pool for any asset and any deposit size. The first confirmed pool for a given asset + amount wins. You'll need a verifying-key file and a finalized ceremony transcript, both pinned to IPFS.</div>
+      <div class="muted" style="margin-bottom:10px;">Anyone can open a pool for any asset and any deposit size. The first confirmed pool for a given asset + amount wins. The verifying key and ceremony transcript are pre-pinned and locked to the canonical Phase 2 setup — pick an asset, type a denomination, broadcast.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:240px;">Asset
           <select id="mixer-init-asset"><option value="">— pick an asset —</option></select>
@@ -2984,17 +2981,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <label style="flex:1;min-width:240px;">vk CID
           <input id="mixer-init-vk-cid" type="text" placeholder="bafk…" autocomplete="off" spellcheck="false">
         </label>
-        <label style="flex:0 0 auto;">vk JSON
-          <input id="mixer-init-vk-file" type="file" accept="application/json,.json" title="Upload verification_key.json — auto-pins to IPFS via worker /pin-mixer-vk and fills the CID field above.">
-        </label>
-      </div>
-      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
         <label style="flex:1;min-width:240px;">Ceremony CID
           <input id="mixer-init-ceremony-cid" type="text" placeholder="bafk…" autocomplete="off" spellcheck="false">
         </label>
       </div>
       <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
-        Locked to the canonical Phase 2 trusted setup — 2,227 community contributions, Bitcoin-block beacon, finalized chain.
+        Both CIDs are locked to the canonical Phase 2 trusted setup — 2,227 community contributions, Bitcoin-block beacon, finalized chain. Every pool for this circuit shares the same verifying key.
         <a id="mixer-canonical-ceremony-link" href="#" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Audit bundle on IPFS ↗</a>
       </div>
       <div class="flex" style="gap:8px;align-items:flex-end;margin-top:10px;">
