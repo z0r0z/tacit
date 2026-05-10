@@ -62,7 +62,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=6bdc6f48">
+<link rel="modulepreload" href="./tacit.js?cb=61728fc6">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -1644,6 +1644,98 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 .progress-step.done .progress-label,
 .progress-step.active .progress-label { color: var(--ink); }
 .progress-step.error .progress-label { color: var(--red); }
+/* progress-text wraps the label + tally so they stack vertically inside each
+   step. Only steps that have completed a measurable phase get a tally
+   populated (e.g. "5.13 MB · 12.3s") — this gives the strip a satisfying
+   "look how much I've done and how long it took" trail of breadcrumbs as
+   the user moves through the flow. Empty by default; the JS sets text. */
+.progress-text {
+  display: flex; flex-direction: column;
+  min-width: 0; line-height: 1.2;
+}
+.progress-tally {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint, var(--ink-mid));
+  white-space: nowrap;
+  margin-top: 1px;
+  /* Empty until set by JS; reserved height keeps step heights stable so the
+     strip doesn't reflow as each step's tally lands. */
+  min-height: 12px;
+}
+.progress-step.done .progress-tally { color: var(--orange); }
+
+/* ============== Ceremony celebration ============== */
+/* Hash forge: their contribution hash rendered in serif italic for "weight"
+   alongside the otherwise-monospace dapp. Letter-spaced for legibility of
+   long hex strings. Color is the warm orange so it reads as the headline
+   element of the success banner. */
+.forge-hash {
+  font-family: 'Instrument Serif', serif;
+  font-style: italic;
+  font-size: 18px;
+  letter-spacing: 0.04em;
+  color: var(--orange);
+  margin-top: 4px;
+  word-break: break-all;
+  line-height: 1.25;
+  /* font-feature-settings forces tabular numerals so the scramble animation
+     doesn't shift columns as digits cycle. */
+  font-variant-numeric: tabular-nums;
+}
+/* Chain rail: a row of small link glyphs, one per contribution. Wraps for
+   ceremonies that grow large; the user's link gets the .you class for
+   highlight + (one-shot) pulse animation. Hover reveals contributor name
+   via title attribute set in JS. */
+.chain-rail-wrap { margin-top: 12px; }
+.chain-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 0;
+}
+.chain-link {
+  width: 14px; height: 14px;
+  background: #d8e4cc;
+  border: 1px solid #b8c8a8;
+  border-radius: 2px;
+  position: relative;
+  cursor: default;
+  transition: transform 0.15s ease;
+}
+.chain-link:hover { transform: scale(1.25); z-index: 1; }
+.chain-link.done { background: var(--orange); border-color: #c87810; }
+.chain-link.you {
+  background: var(--orange);
+  border: 1px solid #1a4314;
+  box-shadow: 0 0 0 2px #f0fdf4, 0 0 0 3px var(--orange);
+}
+.chain-link.you.pulse {
+  animation: chain-link-pulse 1.4s ease-out 4;
+}
+@keyframes chain-link-pulse {
+  0%   { box-shadow: 0 0 0 2px #f0fdf4, 0 0 0 3px var(--orange), 0 0 0 3px rgba(247,147,26,0.6); }
+  100% { box-shadow: 0 0 0 2px #f0fdf4, 0 0 0 3px var(--orange), 0 0 0 16px rgba(247,147,26,0); }
+}
+.chain-rail-caption {
+  font-size: 11px; color: #5a7a3e;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.chain-tagline {
+  font-family: 'Instrument Serif', serif;
+  font-style: italic;
+  font-size: 13px;
+  line-height: 1.5;
+  color: #1a4314;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed #c8d4b8;
+}
+.chain-tagline strong { font-style: normal; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+  .chain-link.you.pulse { animation: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .progress-step.active .progress-num { animation: none; }
 }
@@ -2758,11 +2850,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            where snarkjs gives no progress signal. -->
       <div id="ceremony-progress-wrap" style="display:none;margin-top:14px;">
         <div id="ceremony-progress-strip" class="progress-strip" style="margin-top:0;" aria-live="polite">
-          <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Download</span></div>
-          <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Verify</span></div>
-          <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Contribute</span></div>
-          <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Upload</span></div>
-          <div class="progress-step" data-step="4"><span class="progress-num">5</span><span class="progress-label">Confirm</span></div>
+          <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-text"><span class="progress-label">Download</span><span class="progress-tally"></span></span></div>
+          <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-text"><span class="progress-label">Verify</span><span class="progress-tally"></span></span></div>
+          <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-text"><span class="progress-label">Contribute</span><span class="progress-tally"></span></span></div>
+          <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-text"><span class="progress-label">Upload</span><span class="progress-tally"></span></span></div>
+          <div class="progress-step" data-step="4"><span class="progress-num">5</span><span class="progress-text"><span class="progress-label">Confirm</span><span class="progress-tally"></span></span></div>
         </div>
         <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12px;">
           <span id="ceremony-progress-msg" style="color:var(--ink-mid);">Preparing…</span>
@@ -2800,6 +2892,22 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div style="font-weight:600;font-size:13px;">✓ You contributed to the tacit ceremony</div>
         <div id="ceremony-success-details" style="font-size:12px;margin-top:4px;line-height:1.4;"></div>
         <div id="ceremony-success-verify" style="font-size:11px;margin-top:6px;font-style:italic;"></div>
+        <!-- Celebration: hash forge + chain-of-trust rail + meaningful tagline.
+             Visible only on the success render. The hash-scramble + your-link
+             pulse animations run once per session (sessionStorage flag); the
+             static chain rail itself persists on reload as a permanent badge.
+             The chain visualizes every prior contributor — clicking through to
+             the attestations list below shows the full social register, but
+             the rail is the at-a-glance "you joined N others" proof. -->
+        <div id="ceremony-celebration" style="display:none;margin-top:12px;padding-top:10px;border-top:1px dashed #c8d4b8;">
+          <div class="forge-label" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:#5a7a3e;">Your contribution hash</div>
+          <div id="ceremony-hash-display" class="forge-hash"></div>
+          <div class="chain-rail-wrap">
+            <div class="chain-rail" id="ceremony-chain-rail" aria-label="Chain of contributors"></div>
+            <div class="chain-rail-caption" id="ceremony-chain-caption"></div>
+          </div>
+          <div class="chain-tagline" id="ceremony-chain-tagline"></div>
+        </div>
         <div style="margin-top:8px;font-size:12px;font-weight:600;">Your attestation post (sharing it on X strengthens the social proof of the ceremony):</div>
         <textarea id="ceremony-success-attest" readonly style="width:100%;min-height:60px;margin-top:4px;font-size:11px;font-family:var(--mono,monospace);box-sizing:border-box;resize:vertical;"></textarea>
         <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
@@ -3026,6 +3134,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="welcome-lede">
       tacit is a wallet for confidential tokens on bitcoin. its signing key lives in this browser. <strong>start fresh below</strong> — or connect an existing bitcoin wallet for one-click funding.
     </div>
+    <!-- Contextual prepend for visitors arriving via ?ceremony=… share links.
+         Hidden by default; revealed in JS when the URL param is canonical.
+         The local-wallet-recommended option below is the fastest path; this
+         banner just tells the share-link visitor *why* they're being asked
+         to pick a wallet before seeing the ceremony panel they came for. -->
+    <div id="welcome-ceremony-context" style="display:none;margin-bottom:14px;padding:10px 12px;border-left:3px solid var(--orange,#f7931a);background:#fff8eb;color:var(--ink,#0a0a0a);font-size:13px;line-height:1.5;border-radius:2px;">
+      You followed a share link to the <strong>tacit mixer ceremony</strong>. To contribute, you need a tacit identity in this browser. The fastest path is the highlighted <strong>local wallet</strong> option below — one click plus a passphrase, no extension required. The ceremony panel will load right after.
+    </div>
     <div class="welcome-options">
       <button id="welcome-local" class="welcome-option welcome-option--primary" type="button">
         <span class="welcome-option-title">generate a new local wallet<span class="welcome-option-rec">(recommended)</span></span>
@@ -3206,6 +3322,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=6bdc6f48"></script>
+<script type="module" src="./tacit.js?cb=61728fc6"></script>
 </body>
 </html>

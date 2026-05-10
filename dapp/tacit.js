@@ -11053,6 +11053,7 @@ function _ceremonyProgressShow() {
   if (wrap) wrap.style.display = 'block';
   setProgressStrip('ceremony-progress-strip', -1);
   _ceremonyProgressBytes(0, 0);
+  _ceremonyStepResetTallies();
   _ceremonyElapsedStart = Date.now();
   if (_ceremonyElapsedTimer) clearInterval(_ceremonyElapsedTimer);
   const tickEl = document.getElementById('ceremony-progress-elapsed');
@@ -11069,6 +11070,13 @@ function _ceremonyProgressStep(idx, msg) {
   setProgressStrip('ceremony-progress-strip', idx);
   const msgEl = document.getElementById('ceremony-progress-msg');
   if (msgEl && msg) msgEl.textContent = msg;
+  // Auto-start the timer for the entering step. The first time a given idx
+  // is set active, record its start; re-entering an already-started step
+  // (e.g. r1cs/ptau both report under step 1) keeps the original start so
+  // the eventual tally reflects the full step duration.
+  if (typeof idx === 'number' && idx >= 0 && _ceremonyStepStarts[idx] === undefined) {
+    _ceremonyStepStart(idx);
+  }
 }
 function _ceremonyProgressBytes(done, total) {
   const wrap = document.getElementById('ceremony-progress-bar-wrap');
@@ -11099,6 +11107,34 @@ function _ceremonyProgressIndeterminate(on) {
     bar.classList.remove('bar-indeterminate');
   }
 }
+
+// Per-step "X.X MB · Y.Ys" tally trail. `_ceremonyStepStarts[idx]` records
+// when each step began (ms timestamp); `_ceremonyStepDone(idx, bytes)` reads
+// that, computes elapsed, and writes "<size> · <duration>" into the step's
+// .progress-tally span. Bytes can be 0 / null for compute-only steps (just
+// the duration shows). The tally trail makes long phases (Verify / Contribute
+// at 30–60s each) feel concrete instead of opaque.
+const _ceremonyStepStarts = {};
+function _ceremonyStepStart(idx) { _ceremonyStepStarts[idx] = Date.now(); }
+function _ceremonyStepDone(idx, bytes) {
+  const start = _ceremonyStepStarts[idx];
+  if (!start) return;
+  const sec = (Date.now() - start) / 1000;
+  const dur = sec >= 60 ? `${Math.floor(sec/60)}m ${(sec%60).toFixed(0)}s` : `${sec.toFixed(1)}s`;
+  const tally = (typeof bytes === 'number' && bytes > 0)
+    ? `${_ceremonyFmtBytes(bytes)} · ${dur}`
+    : dur;
+  const strip = document.getElementById('ceremony-progress-strip');
+  const stepEl = strip && strip.querySelector(`[data-step="${idx}"] .progress-tally`);
+  if (stepEl) stepEl.textContent = tally;
+}
+function _ceremonyStepResetTallies() {
+  _ceremonyStepStarts.length = 0;
+  for (const k of Object.keys(_ceremonyStepStarts)) delete _ceremonyStepStarts[k];
+  const strip = document.getElementById('ceremony-progress-strip');
+  if (!strip) return;
+  for (const t of strip.querySelectorAll('.progress-tally')) t.textContent = '';
+}
 function _ceremonyProgressError(idx, msg) {
   // Pass `idx` as activeIdx (not -1) so steps before the failed one stay
   // marked done — losing that context after an error makes it look like
@@ -11110,6 +11146,43 @@ function _ceremonyProgressError(idx, msg) {
   _ceremonyProgressIndeterminate(false);
   _ceremonyProgressBytes(0, 0);
   if (_ceremonyElapsedTimer) { clearInterval(_ceremonyElapsedTimer); _ceremonyElapsedTimer = null; }
+}
+
+// Build a snarkjs-shaped logger that streams every line to the technical log
+// AND surfaces the latest line into the on-page progress msg label, so the
+// verify and contribute phases (each ~30–60s of opaque WASM work) show live
+// heartbeat text instead of just a marquee bar. Without this, snarkjs goes
+// silent during its longest computations and contributors reasonably wonder
+// whether the tab has hung. snarkjs emits a steady stream of `> Computing X
+// polynomial`, `> Reading section N`, etc. — each one a real progress signal.
+//
+// Throttling: snarkjs can emit dozens of info lines per second during the
+// hot loops; updating the DOM on every one would churn layout. ~120ms cap
+// matches human-perceptible update rate (≈8 fps text refresh) without
+// reflow thrash. The technical log is unthrottled — it captures everything
+// for post-hoc debugging.
+//
+// Trimming: we drop the "> " prefix and any "Length: N. Pos: M" suffix that
+// would push the label off-screen on mobile. Result fits in ~90 chars.
+function _ceremonySnarkjsLogger(stripPrefix) {
+  let lastMsgUpdate = 0;
+  const _surfaceMsg = (line) => {
+    const now = Date.now();
+    if (now - lastMsgUpdate < 120) return;
+    lastMsgUpdate = now;
+    const msgEl = document.getElementById('ceremony-progress-msg');
+    if (!msgEl) return;
+    let short = String(line).replace(/^>\s*/, '').replace(/\.\s*Length:.*$/, '').trim();
+    if (short.length > 90) short = short.slice(0, 87) + '…';
+    if (!short) return;
+    msgEl.textContent = stripPrefix ? `${stripPrefix}: ${short}` : short;
+  };
+  return {
+    debug: (...a) => { const s = a.join(' '); _ceremonyLogToProgress(s); _surfaceMsg(s); },
+    info:  (...a) => { const s = a.join(' '); _ceremonyLogToProgress(s); _surfaceMsg(s); },
+    warn:  (...a) => { const s = a.join(' '); _ceremonyLogToProgress('[warn] ' + s); _surfaceMsg(s); },
+    error: (...a) => _ceremonyLogToProgress('[err] ' + a.join(' ')),
+  };
 }
 
 async function ceremonyFetchState(circuitHash) {
@@ -11158,26 +11231,44 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
       }
       // Stream the body so we can report bytes-downloaded in real time.
       // Falls back to arrayBuffer() if the response has no readable body
-      // stream (older browsers, some service-worker shims).
+      // stream (older browsers, some service-worker shims) OR if the
+      // streaming read throws mid-flight — iOS Safari is known to abort
+      // streamed body reads on large files (>10 MB) under memory pressure
+      // with a generic "Load failed" error. Without this fallback, all 4
+      // gateways would hit the same iOS limit and the contributor would
+      // see "all 4 IPFS gateways failed" with no usable diagnostic. The
+      // arrayBuffer() path uses one allocation instead of per-chunk
+      // accumulation, which iOS handles more reliably for large fetches.
       let bytes;
       const totalHdr = parseInt(resp.headers.get('Content-Length') || '0', 10);
+      let streamErr = null;
       if (resp.body && typeof resp.body.getReader === 'function' && onBytes) {
-        const reader = resp.body.getReader();
-        const chunks = [];
-        let received = 0;
-        // eslint-disable-next-line no-constant-condition
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          chunks.push(value);
-          received += value.length;
-          try { onBytes(received, totalHdr); } catch {}
+        try {
+          const reader = resp.body.getReader();
+          const chunks = [];
+          let received = 0;
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            chunks.push(value);
+            received += value.length;
+            try { onBytes(received, totalHdr); } catch {}
+          }
+          bytes = new Uint8Array(received);
+          let off = 0;
+          for (const c of chunks) { bytes.set(c, off); off += c.length; }
+        } catch (se) {
+          streamErr = se;
+          if (onProgress) onProgress(`stream read aborted (${(se && se.message) || se}); retrying with non-streaming fetch…`);
         }
-        bytes = new Uint8Array(received);
-        let off = 0;
-        for (const c of chunks) { bytes.set(c, off); off += c.length; }
-      } else {
-        bytes = new Uint8Array(await resp.arrayBuffer());
+      }
+      if (!bytes) {
+        // Either no streaming available, or streaming threw above. Re-fetch
+        // since the body of the original Response is already consumed/locked.
+        const resp2 = streamErr ? await fetch(url, { cache: 'no-store' }) : resp;
+        if (streamErr && !resp2.ok) { errors.push(`${gw}: HTTP ${resp2.status} (after stream-fail retry)`); continue; }
+        bytes = new Uint8Array(await resp2.arrayBuffer());
         if (onBytes) { try { onBytes(bytes.length, bytes.length); } catch {} }
       }
       // Validator may be sync or async (the r1cs/ptau path awaits a CID hash
@@ -11302,6 +11393,10 @@ function _renderCeremonyOutcomeBanners() {
       ceremonyOutcomeClear(TACIT_DEFAULT_CEREMONY_HASH);
       _renderCeremonyOutcomeBanners();
     };
+    // Celebration: hash forge + chain-of-trust rail. Runs the scramble +
+    // pulse animations once per session (sessionStorage flag). The static
+    // chain rail itself stays visible on every reload as a permanent badge.
+    _renderCeremonyCelebration(outcome);
   } else if (outcome.kind === 'fail') {
     successEl.style.display = 'none';
     errorEl.style.display = 'block';
@@ -11309,7 +11404,22 @@ function _renderCeremonyOutcomeBanners() {
     const whenEl = document.getElementById('ceremony-error-when');
     if (msgEl) {
       const stageLabel = outcome.stage ? ` (stage: ${escapeHtml(outcome.stage)})` : '';
-      msgEl.innerHTML = `${escapeHtml(outcome.error || 'unknown error')}${stageLabel}`;
+      // The "all N gateways failed" error from _ceremonyFetchIpfsWithFailover
+      // is multi-line — one indented line per gateway with the actual reason
+      // (HTTP status / network error / CSP block / validator rejection). Plain
+      // escapeHtml collapses those newlines in HTML, leaving the user with an
+      // unreadable run-on that hides exactly the diagnostic info they need.
+      // Convert \n to <br> after escaping so the per-gateway breakdown stays
+      // legible. Escaping first preserves XSS safety.
+      const safe = escapeHtml(outcome.error || 'unknown error').replace(/\n/g, '<br>');
+      // Categorize the failure and prepend an actionable hint when we
+      // recognize the pattern. The raw error stays below so power users
+      // can still see exactly what snarkjs/the gateway returned.
+      const cls = _ceremonyClassifyFailure(outcome.error || '', outcome.stage || '');
+      const hintHtml = cls.hint
+        ? `<div style="padding:8px 10px;margin-bottom:8px;background:#fff8eb;border-left:3px solid var(--orange,#f7931a);border-radius:2px;font-size:12px;line-height:1.45;">${cls.hint}</div>`
+        : '';
+      msgEl.innerHTML = `${hintHtml}${safe}${stageLabel}`;
     }
     if (whenEl) {
       whenEl.textContent = outcome.at ? `Failed at ${new Date(outcome.at * 1000).toLocaleString()}` : '';
@@ -11325,7 +11435,204 @@ function _renderCeremonyOutcomeBanners() {
       ceremonyOutcomeClear(TACIT_DEFAULT_CEREMONY_HASH);
       _renderCeremonyOutcomeBanners();
     };
+    // Conditionally surface a "Copy desktop link" button when the failure
+    // pattern points to a mobile/RAM limit. The link is the canonical share
+    // URL — opens the same ceremony panel on a different device. We append
+    // the button next to the existing retry/dismiss buttons rather than
+    // adding fixed markup to keep the HTML side untouched.
+    const cls2 = _ceremonyClassifyFailure(outcome.error || '', outcome.stage || '');
+    const btnRow = document.getElementById('btn-ceremony-error-retry')?.parentElement;
+    if (btnRow) {
+      // Idempotent: remove any prior dynamically-added button before adding.
+      const prior = btnRow.querySelector('[data-dyn="copy-desktop-link"]');
+      if (prior) prior.remove();
+      if (cls2.suggestDesktop) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.dataset.dyn = 'copy-desktop-link';
+        b.textContent = 'Copy desktop link';
+        b.style.cssText = 'margin-left:6px;font-size:12px;padding:4px 10px;';
+        b.onclick = async () => {
+          const url = `https://tacit.finance/?ceremony=${TACIT_DEFAULT_CEREMONY_HASH}`;
+          try {
+            await navigator.clipboard.writeText(url);
+            b.textContent = 'Copied ✓';
+            setTimeout(() => { b.textContent = 'Copy desktop link'; }, 1800);
+          } catch {
+            // Clipboard API can be denied on insecure origins or by the user;
+            // fall back to a select-the-text prompt rather than failing silently.
+            window.prompt('Copy this link and open it on desktop:', url);
+          }
+        };
+        btnRow.appendChild(b);
+      }
+    }
   }
+}
+
+// Classify a contribute failure into a known pattern + actionable user hint.
+// Returns { hint?: string (HTML), suggestDesktop?: boolean }. Empty result for
+// failures we don't have a good story for (the raw error + technical log
+// remain the user's diagnostic surface in that case).
+//
+// Why this exists: on mobile, the most common contribute failures (iOS Safari
+// streaming abort on 19MB ptau, snarkjs OOM during newZKey/contribute/verify)
+// surface as cryptic "all N IPFS gateways failed" or generic snarkjs errors
+// with no hint that the root cause is a device limit, not a network or dapp
+// bug. Surfacing "this is a mobile RAM limit; try desktop" inline saves
+// contributors from refresh-loops on a device that can't complete the work.
+// Celebration on successful contribute. Renders three things into
+// #ceremony-celebration:
+//   1. The user's contribution hash via a "scrambling bytes resolving into the
+//      final hex" animation — feels like the proof crystallizing.
+//   2. A chain-of-trust rail: one small link glyph per contribution to date,
+//      with the user's link highlighted at the end (one-shot pulse). Hover
+//      reveals contributor name. Visualizes the social proof — "you joined N
+//      others" — in a way the bare attestations list below doesn't.
+//   3. A serif-italic tagline reframing what they actually did and why it
+//      matters: "as long as one honest contributor exists, the system is
+//      sound." Reminds them of the ≥1-honest-contributor security model.
+//
+// One-shot animations: scramble + pulse run once per session (sessionStorage
+// keyed by contribution hash so retrying with a new contribution re-fires).
+// Static chain rail + hash + tagline persist on reload — permanent badge.
+//
+// Respects prefers-reduced-motion: the scramble snaps directly to the final
+// hash and the .pulse class is skipped (guarded by the @media block in CSS).
+async function _renderCeremonyCelebration(outcome) {
+  const wrap = document.getElementById('ceremony-celebration');
+  if (!wrap) return;
+  wrap.style.display = 'block';
+  const hashEl = document.getElementById('ceremony-hash-display');
+  const railEl = document.getElementById('ceremony-chain-rail');
+  const captionEl = document.getElementById('ceremony-chain-caption');
+  const tagEl = document.getElementById('ceremony-chain-tagline');
+  if (!hashEl || !railEl || !tagEl) return;
+  const fullHash = String(outcome.contribution_hash || '');
+  const myIdx = outcome.contribution_index;
+  const reduceMotion = (() => {
+    try { return window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+    catch { return false; }
+  })();
+  // One-shot guard: animate iff this contribution hash hasn't been celebrated
+  // in this tab session. New contribution → new key → fresh celebration.
+  const sessKey = `tacit-ceremony-celebrated:${fullHash.slice(0, 16)}`;
+  let alreadyCelebrated = false;
+  try { alreadyCelebrated = sessionStorage.getItem(sessKey) === '1'; } catch {}
+  const animate = !reduceMotion && !alreadyCelebrated;
+
+  // ---- Hash forge ----
+  // Scramble: 30 frames over ~1.8s, each frame replacing N random positions
+  // with random hex while progressively revealing the true hash from left to
+  // right. The reveal order means the user sees their hash "etch into stone"
+  // rather than appearing all at once.
+  const showHash = fullHash.slice(0, 64) || ''.padEnd(64, '0');
+  if (animate && showHash.length === 64) {
+    const FRAMES = 30;
+    const HEX = '0123456789abcdef';
+    for (let f = 0; f < FRAMES; f++) {
+      const reveal = Math.floor((f / (FRAMES - 1)) * 64);
+      let line = showHash.slice(0, reveal);
+      for (let i = reveal; i < 64; i++) line += HEX[Math.floor(Math.random() * 16)];
+      hashEl.textContent = line;
+      await new Promise(r => setTimeout(r, 60));
+    }
+    hashEl.textContent = showHash;
+  } else {
+    hashEl.textContent = showHash;
+  }
+
+  // ---- Chain-of-trust rail ----
+  // Build one .chain-link per attestation. The user's row is matched by
+  // contribution_hash (more reliable than contributor_name, which can collide
+  // across "anonymous" entries). If the attestation list fetch fails we still
+  // render a single .you link so the user gets the visual anchor.
+  let attestations = [];
+  try { attestations = await ceremonyFetchAttestations(TACIT_DEFAULT_CEREMONY_HASH); } catch {}
+  const total = Math.max(attestations.length, myIdx || 1);
+  railEl.innerHTML = '';
+  const myHashLower = fullHash.toLowerCase();
+  for (let i = 0; i < total; i++) {
+    const a = attestations.find(x => Number(x.index) === i + 1) || null;
+    const isMine = a ? (a.contribution_hash || '').toLowerCase() === myHashLower
+                     : (i + 1 === myIdx);
+    const link = document.createElement('div');
+    link.className = 'chain-link done' + (isMine ? ' you' + (animate ? ' pulse' : '') : '');
+    const name = a ? (a.contributor_name || 'anonymous') : (isMine ? (outcome.contributor_name || 'anonymous') : '?');
+    const hashShort = a ? (a.contribution_hash || '').slice(0, 16) : (isMine ? fullHash.slice(0, 16) : '');
+    link.title = `#${i + 1} · ${name}${hashShort ? ' · ' + hashShort + '…' : ''}`;
+    railEl.appendChild(link);
+  }
+  if (captionEl) {
+    const others = Math.max(0, total - 1);
+    captionEl.textContent = others === 0
+      ? 'You are the first contributor in this chain.'
+      : `Joined ${others} other contributor${others === 1 ? '' : 's'} — hover any link to see who.`;
+  }
+
+  // ---- Tagline ----
+  // Reframes the technical action in human terms. Mentions the ≥1-honest
+  // security model so the user understands why their contribution mattered
+  // even though they're "just one of many".
+  if (tagEl) {
+    const idx = myIdx ? `#<strong>${myIdx}</strong>` : 'in';
+    tagEl.innerHTML =
+      `You are link ${idx} in a chain that secures every withdrawal from this pool. ` +
+      `As long as <strong>one</strong> contributor was honest, the mixer's privacy guarantees hold. ` +
+      `Your entropy mixed in, then was destroyed locally the moment it was used.`;
+  }
+
+  // Mark this contribution as celebrated for this session so a page reload
+  // shows the static state, not the scramble + pulse again.
+  if (animate) {
+    try { sessionStorage.setItem(sessKey, '1'); } catch {}
+  }
+}
+
+function _ceremonyClassifyFailure(errMsg, stage) {
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  const looksMobile = /Android|iPhone|iPad|iPod|Mobile|Tablet/i.test(ua);
+  const dm = (typeof navigator !== 'undefined') ? navigator.deviceMemory : undefined;
+  const lowRam = typeof dm === 'number' && dm > 0 && dm < 4;
+  const e = String(errMsg || '');
+
+  // Pattern 1: every gateway failed with a generic network error. Strong
+  // signal for iOS Safari aborting streamed body reads on the 19 MB ptau
+  // (or Android equivalent) — a uniform 4-gateway failure is far more
+  // consistent with a client-side limit than with 4 independent server flakes.
+  const allGatewaysFailed = /all \d+ IPFS gateways failed/i.test(e);
+  const looksLikeStreamAbort = /Load failed|NetworkError|Failed to fetch|stream read aborted|aborted/i.test(e);
+  if (allGatewaysFailed && (looksMobile || lowRam || looksLikeStreamAbort)) {
+    return {
+      hint:
+        '<strong>This looks like a mobile-browser memory limit.</strong> ' +
+        'The setup files are large (~25 MB total) and iOS Safari (plus some Android browsers) ' +
+        'sometimes abort large streamed downloads under memory pressure, so every gateway ' +
+        'fails the same way even though the files are reachable. The reliable path is to ' +
+        'contribute from a desktop browser (≥4 GB RAM). The raw per-gateway reasons are below; ' +
+        'if every line says <em>Load failed</em> or <em>aborted</em>, this is the cause.',
+      suggestDesktop: true,
+    };
+  }
+
+  // Pattern 2: snarkjs threw inside the verify/contribute compute. On mobile,
+  // newZKey/contribute/verifyFromR1cs all allocate multi-MB WASM linear-memory
+  // buffers; iOS will crash the tab silently or throw a generic compile/
+  // runtime error rather than a clean OOM. Stage 'snarkjs' is the WASM step;
+  // stage 'verify_chain' is the verifyFromR1cs preflight.
+  if ((stage === 'snarkjs' || stage === 'verify_chain') && (looksMobile || lowRam)) {
+    return {
+      hint:
+        '<strong>The proof step failed mid-compute on a mobile/low-RAM device.</strong> ' +
+        'snarkjs needs ~30-60 MB of working memory for the contribute pipeline, which exceeds ' +
+        'what some mobile browsers can reliably allocate. This is not a dapp bug; ' +
+        'the same contribute will succeed on a desktop browser with ≥4 GB RAM.',
+      suggestDesktop: true,
+    };
+  }
+
+  // No matched pattern — fall through to the raw error display.
+  return {};
 }
 
 async function ceremonyRender() {
@@ -11486,10 +11793,11 @@ async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase) {
     (done, total) => { if (onPhase) onPhase('download-ptau', { done, total }); });
   _ceremonyLogToProgress(`Verifying chain (${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'})…`);
   if (onPhase) onPhase('verify');
-  const logger = {
-    debug: () => {}, info: () => {}, warn: () => {},
-    error: (...a) => _ceremonyLogToProgress('[verify err] ' + a.join(' ')),
-  };
+  // Surface snarkjs's per-section info stream into the on-page msg label
+  // (throttled) and the technical log. Without this the verify phase is
+  // a 30–60s indeterminate marquee with zero textual feedback — exactly
+  // the "is it stuck?" UX gap that prompted this hookup.
+  const logger = _ceremonySnarkjsLogger('Verifying');
   // Use verifyFromR1cs, NOT verifyFromInit. snarkjs's verifyFromInit signature
   // is (initZkey, ptau, headZkey, logger) — its first arg must be a *zkey-
   // format* file (one produced by newZKey from r1cs+ptau), not the r1cs file
@@ -11519,12 +11827,11 @@ async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entro
   if (onPhase) onPhase('contribute');
   const oldKey = { type: 'mem', data: headZkeyBytes };
   const newKey = { type: 'mem' };
-  const logger = {
-    debug: (...a) => _ceremonyLogToProgress('[debug] ' + a.join(' ')),
-    info:  (...a) => _ceremonyLogToProgress('[info]  ' + a.join(' ')),
-    warn:  (...a) => _ceremonyLogToProgress('[warn]  ' + a.join(' ')),
-    error: (...a) => _ceremonyLogToProgress('[err]   ' + a.join(' ')),
-  };
+  // Same logger as verify: stream snarkjs's per-section heartbeat into the
+  // on-page msg label (throttled) so the contribute phase shows live text
+  // ("Computing tau", "Section 4 mixed", …) instead of a static "Mixing
+  // entropy…" message frozen for 30–60 seconds.
+  const logger = _ceremonySnarkjsLogger('Mixing');
   const result = await snarkjs.zKey.contribute(oldKey, newKey, contributorName, entropy, logger);
   // result is the contribution hash bytes; format as hex space-grouped 4x4
   let contributionHashHex = '';
@@ -11620,6 +11927,9 @@ async function ceremonyContribute() {
       },
     );
     _ceremonyLogToProgress(`Got ${headBytes.length} bytes. Running contribute (~30-60s)…`);
+    // Step 0 (Download head zkey) just finished — record the tally so the
+    // "X.X MB · Y.Ys" trail of breadcrumbs builds up as the user advances.
+    _ceremonyStepDone(0, headBytes.length);
     stage = 'verify_chain';
 
     // Mix CSPRNG entropy with timestamp for the snarkjs call. snarkjs accepts
@@ -11637,11 +11947,17 @@ async function ceremonyContribute() {
     // the bar to indeterminate marquee — combined with the elapsed-time
     // ticker, that proves to the user the page is alive even though we
     // can't say "47%".
+    // Track step 1's combined download size (r1cs + ptau) so the tally line
+    // shows the full "X MB · Y s" once Verify completes. We use the most
+    // recent `info.total` per substep — gateway responses include
+    // Content-Length so total is known up front; fall back to last `done`.
+    let step1R1csBytes = 0, step1PtauBytes = 0;
     const onPhase = (phase, info) => {
       if (phase === 'download-r1cs') {
         contribBtn.textContent = 'Verifying…';
         _ceremonyProgressStep(1, 'Downloading circuit…');
         if (info && typeof info.done === 'number') {
+          step1R1csBytes = info.total || info.done;
           _ceremonyProgressBytes(info.done, info.total || 0);
           const dispTot = info.total > 0 ? ` / ${_ceremonyFmtBytes(info.total)}` : '';
           const msgEl = document.getElementById('ceremony-progress-msg');
@@ -11650,6 +11966,7 @@ async function ceremonyContribute() {
       } else if (phase === 'download-ptau') {
         _ceremonyProgressStep(1, 'Downloading powers-of-tau…');
         if (info && typeof info.done === 'number') {
+          step1PtauBytes = info.total || info.done;
           _ceremonyProgressBytes(info.done, info.total || 0);
           const dispTot = info.total > 0 ? ` / ${_ceremonyFmtBytes(info.total)}` : '';
           const msgEl = document.getElementById('ceremony-progress-msg');
@@ -11659,6 +11976,9 @@ async function ceremonyContribute() {
         _ceremonyProgressStep(1, 'Verifying chain integrity…');
         _ceremonyProgressIndeterminate(true);
       } else if (phase === 'contribute') {
+        // Step 1 (Verify, which includes both downloads + the verifyFromR1cs
+        // compute) just finished — record its tally before Step 2 starts.
+        _ceremonyStepDone(1, step1R1csBytes + step1PtauBytes);
         contribBtn.textContent = 'Computing…';
         _ceremonyProgressStep(2, 'Mixing entropy in your browser (~30–60s typical)…');
         _ceremonyProgressIndeterminate(true);
@@ -11667,6 +11987,8 @@ async function ceremonyContribute() {
     const { newZkey, contributionHash } = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState, onPhase);
     _ceremonyLogToProgress(`Contributed in ${((Date.now() - t0)/1000).toFixed(1)}s. Hash: ${contributionHash.slice(0, 32)}…`);
     _ceremonyLogToProgress(`Uploading ${newZkey.length} bytes…`);
+    // Step 2 (Contribute) just finished — tally the produced zkey size.
+    _ceremonyStepDone(2, newZkey.length);
 
     stage = 'upload';
     contribBtn.textContent = 'Uploading…';
@@ -11717,6 +12039,8 @@ async function ceremonyContribute() {
       throw new Error(wErr + hint);
     }
     _ceremonyProgressIndeterminate(false);
+    // Step 3 (Upload) just finished — tally the upload size + duration.
+    _ceremonyStepDone(3, newZkey.length);
 
     _ceremonyLogToProgress(`✓ Accepted as contribution #${upJson.contribution?.index}. New head: ${upJson.contribution?.cid}`);
     toast(`Contribution #${upJson.contribution?.index} landed. Hash: ${contributionHash.slice(0, 16)}…`, 'success');
@@ -11729,7 +12053,7 @@ async function ceremonyContribute() {
     // auto-jump-to-mixer-tab + scroll-to-ceremony UX. Using the constant
     // rather than `_ceremonyActiveHash` means an in-session coordinator-init
     // mutation can never leak a non-canonical hash into a shared URL.
-    const attest = `I contributed to the tacit mixer ceremony — contribution #${upJson.contribution?.index}, hash ${contributionHash.slice(0, 32)}… — and I destroyed my entropy. https://tacit.finance/?ceremony=${TACIT_DEFAULT_CEREMONY_HASH} #tacit #btc`;
+    const attest = `I contributed to the tacit mixer ceremony. Contribution #${upJson.contribution?.index}, hash ${contributionHash.slice(0, 32)}. https://tacit.finance/?ceremony=${TACIT_DEFAULT_CEREMONY_HASH} #tacit #btc`;
 
     // Auto-copy attempt as a UX nicety. Failure is silent — the persistent
     // success banner has a Copy button that works without permission flakes.
@@ -11755,6 +12079,8 @@ async function ceremonyContribute() {
       ? '✓ Verified: your contribution is in the attestations index.'
       : '⚠ Upload accepted but contribution not yet visible in attestations — may be eventual-consistency lag. Retry verification by refreshing in a few seconds.');
     _ceremonyProgressIndeterminate(false);
+    // Step 4 (Confirm) just finished — duration-only tally (no bytes).
+    _ceremonyStepDone(4, 0);
     setProgressStrip('ceremony-progress-strip', 5); // mark all 5 steps done
     // Snap the bar to 100% so the strip reads as "complete" — without this
     // the bar lingers at 35% (the indeterminate-marquee width) and looks
@@ -11781,6 +12107,15 @@ async function ceremonyContribute() {
     const errMsg = (e && e.message) || String(e || 'unknown error');
     _ceremonyLogToProgress(`✗ [${stage}] ${errMsg}`);
     console.error(`ceremony contribute failed at ${stage}:`, e);
+    // Auto-expand the technical log so the per-gateway / per-stage failure
+    // reasons are visible without the contributor having to know to click
+    // "Show technical log". The single-line strip msg below truncates to
+    // 80 chars and the failure banner only shows the throw message — for
+    // "all N IPFS gateways failed for <CID>:\n  <reasons>" errors, the
+    // per-gateway breakdown is the diagnostic info that matters and it
+    // lives in the log, not the banner.
+    const logWrapEl = document.getElementById('ceremony-progress-log-wrap');
+    if (logWrapEl) { logWrapEl.style.display = 'block'; logWrapEl.open = true; }
     // Map internal stage names to the visible step indices so the strip
     // marks the right step red.
     const stageToStep = { refresh_state: 0, fetch_head: 0, verify_chain: 1, snarkjs: 2, upload: 3, verify_after: 4 };
@@ -23228,6 +23563,18 @@ function _showWelcomeModal() {
     const pBtn = document.getElementById('welcome-passkey');
     const lBtn = document.getElementById('welcome-local');
     if (!modal || !xBtn || !uBtn || !pBtn || !lBtn) { resolve('local'); return; }
+    // Reveal the share-link context banner if this visitor arrived via a
+    // canonical ?ceremony=… URL. Tells them *why* the wallet picker stands
+    // between them and the ceremony panel they were linked to. Non-canonical
+    // hashes (which init() ignores anyway) skip the banner — those visitors
+    // will land on the wallet tab, not the ceremony.
+    try {
+      const ctx = document.getElementById('welcome-ceremony-context');
+      const fromUrl = new URLSearchParams(window.location.search).get('ceremony');
+      if (ctx && fromUrl && fromUrl.toLowerCase() === TACIT_DEFAULT_CEREMONY_HASH) {
+        ctx.style.display = 'block';
+      }
+    } catch {}
     const av = extWallet.available();
     xBtn.disabled = !av.satsConnect;
     xBtn.title = av.satsConnect ? '' : 'Xverse / Leather extension not detected';

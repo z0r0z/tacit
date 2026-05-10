@@ -1,666 +1,891 @@
 # tacit AMM — approach
 
-> A **Runes-style indexer-validated meta-protocol** that adds an
-> **automated market maker** with confidential trade amounts (Pedersen),
-> mixer-style **anonymous LP positions** (Poseidon merkle tree +
-> nullifiers), and constant-product price discovery (Groth16-enforced) —
-> all anchored to Bitcoin L1 data availability. No bridges, no
-> sidechains, no federation. The cryptographic primitives reuse the
-> mixer's stack (§5.10–§5.11); the *composition* of these specific
-> things into an AMM on Bitcoin L1 appears to be without a direct
-> production peer at the time of writing.
+> A **Runes-style indexer-validated meta-protocol** that adds a
+> **uniform-clearing-price block-batched AMM** between any two
+> tacit-native confidential assets — built on the same virtual-pool
+> architecture as the mixer (no UTXO custody anywhere in the
+> protocol). Confidential per-trader amounts via Pedersen, public
+> aggregate reserves for trustless reconstruction, mixer-composable
+> LP shares for anonymous positions. All anchored to Bitcoin L1
+> data availability. No bridges, no sidechains, no federation, no
+> smart contracts. The cryptographic primitives reuse the mixer's
+> stack (§5.10–§5.11); the *composition* of these specific things
+> into an AMM on Bitcoin L1 appears to be without a direct production
+> peer at the time of writing.
 
-This document is a **design sketch** — a positioning + architecture
-summary for an AMM that builds on tacit's mixer infrastructure. The
-normative wire format will live in `SPEC.md §5.12–§5.14` once the
-sketch settles. **Status: design phase.** Nothing here ships yet.
+This document is a positioning + architecture summary. The normative
+spec will live in [`SPEC.md` §5.12–§5.14 and §11](./SPEC.md).
+
+## In plain English
+
+The mixer's central trick is that **the pool is just a number**. No
+UTXO holds the deposit funds; the indexer tracks "this pool has N
+deposits at denomination D" by reading the chain. Withdrawals
+present a ZK proof and the indexer credits a fresh UTXO. Nobody
+custodies anything; the pool is an attestation.
+
+The AMM is the same trick with two numbers and a curve. A pool of
+asset A and asset B is just two reserves the indexer tracks. LPs
+deposit, reserves go up. Traders swap, reserves rebalance along a
+constant-product curve. LPs withdraw, reserves go down. No UTXO
+holds the pool, so no party can rug.
+
+Beyond what the mixer needs, the AMM adds three things:
+
+1. **A price curve** — `R_A · R_B` stays roughly constant per
+   Uniswap V2.
+2. **Batched settlement at one fair price** — each block, anyone
+   can act as a settler: pick up outstanding swap intents, compute
+   one clearing price, settle them in one Bitcoin transaction.
+   Everyone in a batch trades at the same price, so sandwich
+   attacks become structurally impossible.
+3. **LP shares as a confidential tacit asset** — minted at deposit
+   time. Because LP shares are themselves tacit assets, the
+   existing mixer just works on them: an LP can mix their share
+   UTXO between deposit and redemption to get an anonymous LP
+   position, with no new privacy machinery invented.
+
+Real BTC sats can't fit the virtual-pool model (they would need
+real custody, and Bitcoin Script can't enforce "this UTXO can only
+be spent into a valid pool transition"). BTC trading therefore goes
+through cBTC, a wrapped-BTC tacit asset with its own bridge trust
+model — a separate document, isolated from the AMM's design.
 
 ## What it is
 
-A confidential AMM for **tacit-native assets paired against BTC**.
-A pool holds asset reserves (Pedersen-committed, confidential) and BTC
-reserves (the pool UTXO's satoshi value, public). Anyone can swap BTC
-for asset (or asset for BTC) at the constant-product price; the pool's
-state transitions are enforced by Groth16 proofs the indexer verifies.
-Liquidity providers deposit at the current ratio and receive a hidden
-share leaf (mixer-style) they later nullify to withdraw their
-proportional reserves plus accumulated fees.
+A confidential AMM for **tacit-asset ↔ tacit-asset** trading pairs.
+Each pool is keyed by an unordered pair of tacit asset_ids. Pool
+reserves and LP-share supply are tracked as **virtual public
+quantities** by the indexer — no pool UTXO holds any value, and no
+party — founder, federation, settler — custodies anything. Once per
+Bitcoin block a permissionless settler bundles all queued swap
+intents and settles them in a single batch transaction at one
+**uniform clearing price**, derived from the constant-product curve
+at the batch's net delta. Liquidity providers deposit at the current
+ratio and receive **confidential LP-share asset UTXOs**; LPs who
+want anonymous positions deposit those LP-shares into the existing
+mixer and withdraw to a fresh address.
 
 The on-chain footprint is three new envelope opcodes — `T_LP_ADD`
-(`0x2B`), `T_LP_REMOVE` (`0x2C`), and `T_SWAP` (`0x2D`) — riding on
-regular Bitcoin commit + reveal taproot transactions. Bitcoin nodes
-don't interpret the envelopes; indexers (reference: tacit's worker +
-every dapp client) reconstruct pool state from chain alone and enforce
-the protocol's rules client-side. The mixer's `POOL_INIT` pattern
-(§5.10.1) is reused for AMM-pool creation as a `T_LP_ADD` sentinel
-variant.
+(`0x2B`), `T_LP_REMOVE` (`0x2C`), and `T_SWAP_BATCH` (`0x2D`) —
+riding on regular Bitcoin commit + reveal taproot transactions.
+Bitcoin nodes don't interpret the envelopes; indexers reconstruct
+pool state from chain alone and enforce the protocol's rules
+client-side. Pool creation reuses the mixer's `POOL_INIT` pattern
+(§5.10.1) as a `T_LP_ADD` sentinel variant.
+
+### Trading BTC: via cBTC
+
+The AMM doesn't directly trade native BTC — every reserve in every
+pool is a tacit asset. To trade sats, users wrap into **cBTC**
+(tacit's wrapped-BTC asset; see README) and trade `cBTC ↔ tacit-X`
+in the AMM. The cBTC bridge has its own custody trust assumption,
+documented separately; the AMM inherits that trust without
+compounding it. Restricting the AMM to virtual-asset-only pools is
+what removes any need for in-protocol custody.
 
 ### At a glance
 
 ```
-  WITHOUT AMM                         WITH TACIT AMM
+  WITHOUT AMM                          WITH TACIT AMM
 
-  Alice has BTC                       Alice ──┐
-  Bob has TACIT-X                             │  swap BTC → TACIT-X
-                                              ▼
-  must find each other,    ┌──────────────────────────────────────┐
-  agree price, run         │   POOL  (asset_id, BTC)              │
-  atomic-intent flow,      │                                      │
-  one trade at a time      │   reserves:  C_A (Pedersen, hidden)  │
-                           │              N sats (public)         │
-                           │                                      │
-                           │   LP shares: ●  ●  ●  ●  ●  ●  ●     │
-                           │              opaque hidden leaves    │
-                           │                                      │
-                           │   invariant: (A - Δa)·(N + Δb·γ) ≥   │
-                           │              A·N    [γ = 1 - fee]    │
-                           └──────────────────────────────────────┘
-                                              ▲
-                                              │  swap or LP add/remove,
-                                              │  Groth16-proved
-                                              │
-                                             Bob (LP, earns fees)
+  Alice has TACIT-X                    Alice ──┐  swap intent
+  Bob has cBTC                         Bob ────┤  swap intent
+  Carol has cBTC                       Carol ──┤  swap intent
+                                               ▼
+  must find each other,     ┌──────────────────────────────────────┐
+  agree price, run          │   POOL  (asset_A, asset_B)  VIRTUAL  │
+  atomic-intent flow,       │                                      │
+  one trade at a time       │   reserves:  R_A  (public u64)       │
+                            │              R_B  (public u64)       │
+                            │   lp shares: S    (public u64)       │
+                            │                                      │
+                            │   ★ no UTXO holds these reserves ★   │
+                            │   indexer reconstructs from chain    │
+                            │                                      │
+                            │   each block, settler bundles all    │
+                            │   queued intents at one price:       │
+                            │                                      │
+                            │     P_clear = |Δa_net| / |Δb_net|    │
+                            │     subject to constant-product +    │
+                            │     fee invariant on net flow        │
+                            │                                      │
+                            │   one Bitcoin tx consumes N intent   │
+                            │   UTXOs → emits N receipts (opposite │
+                            │   asset, one per leg)                │
+                            └──────────────────────────────────────┘
 
-                           observer sees:
-                             pool's BTC depth  (public sats)
-                             swap volume       (BTC side public)
-                             asset reserves    ✗ hidden
-                             trade asset Δ     ✗ hidden
-                             which LP withdrew ✗ hidden
+                            observer sees:
+                              pool reserves R_A, R_B   (public)
+                              clearing price           (Δa_net / Δb_net)
+                              individual trade amounts ✗ hidden
+                              which trader did what    ✗ hidden in batch
+                              which LP redeemed        ✗ hidden (if mixed)
 ```
 
-That's the whole idea. Bitcoin carries the pool UTXO and the
-state-transition proofs as opaque taproot envelope data; indexers
-reconstruct reserves and the LP tree; Groth16 enforces the
-constant-product invariant; nullifiers prevent double-withdrawal of LP
-positions. The only public information is the BTC side — unavoidable,
-since sats live in UTXO values, not envelopes.
+Bitcoin carries the batch state-transition proofs as opaque taproot
+envelope data; indexers reconstruct reserves and the LP-share supply
+ledger; Groth16 binds each per-trader commitment to a shared uniform
+clearing price; aggregate pool state is public and trustlessly
+auditable, individual participation is hidden.
 
 ## What it is not
 
-- **Not a smart-contract AMM.** Bitcoin has no execution layer, no
-  reentrancy concerns, no upgradable contracts. The "contract" is the
-  Groth16 circuit + indexer rules, fixed at pool init by content-
-  addressed `vk_cid` (same governance posture as the mixer).
-- **Not a generalized DEX.** Each pool is a single `(asset_id, BTC)`
-  pair. Asset-to-asset trades route through BTC as two sequential swaps
-  in v1 (cf. Tempo's pathUSD hub model — BTC plays the role of the
-  routing token, with the natural advantage of being the chain's
-  native unit).
-- **Not a fully private AMM.** BTC reserves and BTC trade volumes are
-  public (UTXO values are unavoidable on Bitcoin). Asset reserves and
-  asset trade amounts are confidential (Pedersen). LP positions are
-  anonymous bearer secrets (mixer-style). The privacy story is
-  **asymmetric by construction**, not by negligence.
-- **Not novel cryptography.** Constant-product AMMs (Uniswap V2, 2020),
-  Tornado-style anonymous-bearer positions (2019), Pedersen
-  commitments on Bitcoin envelopes (MimbleWimble 2016 / RGB / tacit's
-  CXFER), Groth16 in indexer-validated meta-protocols (tacit's mixer
-  itself) — all prior art. The contribution is composition.
+- **Not a smart-contract AMM.** Bitcoin has no execution layer. The
+  "contract" is the Groth16 circuit + indexer rules, fixed at pool
+  init by content-addressed `vk_cid`.
+- **Not a per-swap CFMM.** Pricing is per-batch uniform clearing, not
+  per-swap constant product. Within a block all traders pay or
+  receive the same price; the constant-product invariant binds the
+  batch's net flow, not individual fills.
+- **Not a BTC-paired AMM.** BTC trading happens via cBTC. The
+  wrapping has its own trust model; the AMM does not.
+- **Not a custodial protocol.** No party holds any pool's funds.
+  Reserves are virtual quantities the indexer attests to, identical
+  in posture to the mixer's `(deposits − withdrawals)` accounting.
+- **Not a fully private AMM.** Pool reserves are public — the cost
+  of trustless reconstruction. Individual trades and LP positions
+  are confidential. The privacy story is **per-participant
+  confidential, per-pool transparent**, the same posture as the
+  mixer.
+- **Not novel cryptography.** Constant-product AMMs (Uniswap V2),
+  uniform-clearing batch auctions (Gnosis Protocol, Penumbra ZSwap),
+  Pedersen on Bitcoin envelopes (MimbleWimble / RGB / tacit's
+  CXFER), Groth16 in indexer-validated meta-protocols (tacit's
+  mixer) — all prior art.
 - **Not an L2.** Pool state is reconstructed from confirmed Bitcoin
-  transactions; no sidechain, no bridge, no federation operates the
-  pool. Any indexer can rebuild every pool from L1 alone.
+  transactions. Any indexer can rebuild every pool from L1 alone.
 
 ## How it works (architectural)
 
-Uniswap V2 on Ethereum is a smart contract: reserves live in contract
+Uniswap V2 on Ethereum is a smart contract: reserves live in
 storage, the constant-product check is EVM bytecode, atomic
-swap+update is one transaction's revert-safety, LP shares are an ERC20.
-Bitcoin has none of those. Each V2-required function maps to a
-different layer in tacit:
+swap+update is the transaction's revert-safety, LP shares are an
+ERC20. Penumbra's ZSwap on Cosmos is a per-block batch auction over
+shielded amounts. Bitcoin has neither runtime. The mixer already
+shows that tacit can host a UTXO-less indexer-tracked virtual pool
+with cryptographic enforcement; the AMM extends the same pattern
+from leaf-membership accounting to curve-respecting state
+transitions.
 
-| V2 needs | On Ethereum | In tacit |
-|---|---|---|
-| Place to hold pool reserves | Contract storage slots `reserve0`, `reserve1` | A single tacit pool UTXO whose sats value is BTC reserve and whose envelope commits to the asset reserve |
-| Constant-product invariant check | EVM bytecode `(x' * y') >= (x * y)` | Groth16 circuit verified by indexer over old/new reserve openings |
-| Atomic swap + update | `swap()` transaction's all-or-nothing semantics | Bitcoin tx atomicity: spending pool UTXO + creating new pool UTXO + paying trader output happens in one tx or not at all |
-| LP share token | ERC20 with `mint()` / `burn()` | Either (a) Tornado-style hidden bearer leaves in a per-pool merkle tree (default), or (b) a fresh tacit asset minted at pool init (alternative) |
-| Reentrancy guard | `nonReentrant` modifier | Not applicable — no callbacks exist |
-
-Why this works for tacit specifically: every primitive an AMM needs
-was already shipped or designed for non-AMM flows. Pedersen amount
-commitments were already there for `CXFER`. Pool merkle trees +
-nullifiers + Groth16 + per-pool `vk_cid` content addressing were
-already designed for the mixer (§5.10–§5.11). Asset-level identity
-(`asset_id` = sha256 of an etch tx) was already there. The AMM adds
-three envelope opcodes and a new (more complex) Groth16 circuit;
-everything else recombines existing machinery.
-
-### Cryptographic flow (swap)
-
-```
-┌─── TRADER ─────────────────────────┐  ┌─── INDEXER ──────────────────────────────────┐
-│                                    │  │                                              │
-│  inputs:                           │  │  on receiving the T_SWAP envelope:           │
-│    pool UTXO                       │  │                                              │
-│      (carries C_A, N_btc, root)    │  │   1. fetch current pool state                │
-│    trader's BTC payment            │  │      (C_A_old, N_btc_old) for this asset_id  │
-│                                    │  │                                              │
-│  outputs:                          │  │   2. parse envelope:                         │
-│    new pool UTXO                   │  │      C_A_new, N_btc_new (= new pool sats),   │
-│      (C_A', N_btc + Δb)            │  │      C_out (trader's asset receipt),         │
-│    trader's asset UTXO             │  │      Δb_LE (BTC paid to pool, public),       │
-│      (carries C_out)               │  │      bind_hash, proof                        │
-│                                    │  │                                              │
-│  envelope payload:                 │  │   3. recompute bind_hash; reject on mismatch │
-│    new pool commitments            │  │                                              │
-│    trader output commitment        │  │   4. Groth16.verify(pool.vk,                 │
-│    Δb (public, BTC side)           │  │        public_inputs = [                     │
-│    Groth16 proof                   │  │          C_A_old, N_btc_old,                 │
-│      • knows openings to all       │  │          C_A_new, N_btc_new,                 │
-│        Pedersen commitments        │  │          C_out, Δb, fee_bps,                 │
-│      • (A - Δa)·(N + Δb·γ) ≥ A·N   │  │          bind_hash                           │
-│      • C_A' = (A - Δa)·H + r'·G    │  │        ], proof)                             │
-│      • C_out = Δa·H + r_out·G      │  │                                              │
-│      • range proofs on Δa, A'      │  │   5. external Pedersen / range checks (those │
-│                                    │  │      cheap to do outside the circuit)        │
-│  signs spend of pool UTXO via      │  │                                              │
-│  envelope-script taproot path      │  │   6. on accept: replace pool state with new  │
-│                                    │  │      (C_A', N_btc'), credit trader's UTXO    │
-└──── broadcast to Bitcoin ──────────┘  │      as a spendable opening to (Δa, r_out)   │
-                                        └──────────────────────────────────────────────┘
-```
-
-The pool UTXO is consumed and immediately recreated at the same
-(deterministic) script address with updated state. Bitcoin enforces
-that the new pool UTXO's sats value equals `N_btc_old + Δb` (because
-the trader's BTC input + the pool's old sats must equal the new pool
-output + the trader's optional change); the Groth16 proof enforces
-that the asset side respects the constant-product invariant at the
-declared `Δb` and `Δa`.
-
-**LP add/remove use the same pool UTXO mechanism** — `T_LP_ADD` spends
-the pool UTXO, deposits asset + BTC at the current ratio, recreates
-the pool UTXO with larger reserves, and appends a new leaf to the LP
-share tree. `T_LP_REMOVE` is the mixer-style mirror: prove unspent
-membership in the share tree, nullify the leaf, withdraw proportional
-reserves, recreate the pool UTXO smaller.
-
-## The pool object
-
-A pool is uniquely identified by `asset_id` (BTC is the implicit
-counterparty). Pool init pins the Groth16 verifying key, the fee
-basis points, and any other consensus-relevant parameters at content-
-addressed `vk_cid` time, fixed forever — same posture as `POOL_INIT`
-in §5.10.1.
-
-Pool state, as reconstructed by the indexer:
-
-| Field | Type | Visibility | Source of truth |
+| AMM needs | On Ethereum (V2) | On Penumbra (ZSwap) | In tacit |
 |---|---|---|---|
-| `asset_id` | 32 B | public | pool init envelope |
-| `vk_cid` | UTF-8 IPFS CID | public | pool init envelope |
-| `fee_bps` | u16 (e.g., 30 = 0.3%) | public | pool init envelope |
-| `reserve_btc` | u64 sats | public | the pool UTXO's `value` |
-| `reserve_asset` | Pedersen commitment | hidden amount | the pool UTXO's envelope `C_A` field |
-| `lp_share_root` | 32 B (Poseidon) | public | running merkle root over LP leaves |
-| `lp_total_shares` | Pedersen commitment | hidden amount | running commitment updated by each ADD/REMOVE |
-| `lp_nullifier_set` | set<32 B> | public | accumulated from accepted T_LP_REMOVE envelopes |
-| `pool_outpoint` | (txid, vout) | public | the current head pool UTXO |
+| Place to hold reserves | Contract storage | Validator-tracked notes | Indexer-tracked virtual quantity (mixer pattern) |
+| Pool spend authorization | Implicit in contract call | Validator consensus | N/A — there is no pool UTXO to spend |
+| Constant-product check | EVM bytecode | Action handler | Indexer arithmetic on public reserves; Groth16 binds hidden per-trader amounts |
+| Atomic settle | EVM tx revert | End-of-block batch action | Bitcoin tx all-or-nothing: consumes N trader inputs, emits N receipts |
+| LP share token | ERC20 | LPNFT (Penumbra position) | Confidential tacit asset minted at pool init; mixer-composable |
+| Pricing model | Per-swap constant product | Per-block uniform clearing | Per-block uniform clearing |
+| MEV mitigation | None native | Eliminated within batch | Eliminated within batch |
+| BTC custody | N/A | N/A | Out of scope — handled by cBTC wrapper |
 
-The indexer's job each block: walk new tacit envelopes in canonical
-order, and for each AMM envelope spending the current `pool_outpoint`,
-verify the proof, update reserves, advance `pool_outpoint` to the new
-output. Conflicting spends of the same `pool_outpoint` are resolved
-by Bitcoin consensus (only one wins); the indexer follows the chain.
+Every primitive the AMM needs was already in tacit. Pedersen
+amount commitments existed for `CXFER`. The virtual-pool pattern
+(no UTXO custody, indexer attests to balances) was proven by the
+mixer. Per-pool `vk_cid` content addressing, Phase 2 ceremony
+coordination, and browser-side Groth16 proof generation /
+verification were already designed for the mixer (§5.10–§5.11).
+Asset-level identity (`asset_id` = sha256 of an etch tx) was
+already there. The AMM adds three envelope opcodes and a new
+batch-clearing Groth16 circuit; everything else recombines existing
+machinery.
 
-### Why one canonical pool per asset
-
-Multiple competing pools for the same `asset_id` would fragment
-liquidity and complicate routing. v1 enforces **one canonical pool
-per `asset_id`** by the same first-mover rule as ticker
-disambiguation in CETCH (§4): the first canonically-ordered confirmed
-`POOL_INIT` for `asset_id` becomes canonical; subsequent inits for
-the same asset are silently ignored by the indexer.
-
-## Operations
-
-### `T_LP_ADD` (`0x2B`)
-
-Adds liquidity at the current pool ratio. Mints a hidden LP share
-leaf `poseidon(secret, ν, share_amount)` into the pool's merkle tree.
+### Cryptographic flow (batched swap)
 
 ```
-T_LP_ADD(1)
-|| asset_id(32)
-|| variant(1)                   0 = add, 1 = POOL_INIT sentinel
-|| Δb_LE(8)                     BTC contributed (public, must equal sats delta)
-|| C_asset_in(33)               Pedersen commitment to asset contributed
-|| C_pool_asset_new(33)         new pool asset reserve commitment
-|| C_pool_shares_new(33)        new total-shares commitment
-|| leaf_commitment(32)          poseidon(secret, ν, share_amount) — appended to tree
-|| bind_hash(32)
-|| proof_len(2)
-|| proof(proof_len)             Groth16 proof
+┌─── INTENT POOL (off-chain) ────────┐  ┌─── SETTLER (anyone) ─────────────────────────┐
+│                                    │  │                                              │
+│  trader 1 (A→B):                   │  │  reads current pool state (R_A, R_B, S)      │
+│    input UTXO of A                 │  │  reads queued intents for this pool          │
+│    Pedersen commit C_in            │  │                                              │
+│    min_out, expiry                 │  │  picks subset {i₁, …, iₙ} that all clear     │
+│                                    │  │  at one uniform price within each min_out    │
+│  trader 2 (B→A):                   │  │                                              │
+│    input UTXO of B                 │  │  computes net flow against pool curve:       │
+│    Pedersen commit C_in            │  │    Δa_net = Σ signed_amount_A_i              │
+│    min_out, expiry                 │  │    Δb_net solved from constant-product +     │
+│                                    │  │              fee invariant                   │
+│  …                                 │  │    P_clear = |Δa_net| / |Δb_net|             │
+│                                    │  │                                              │
+│  signed by trader, BIP-340 over    │  │  for each trader i, derive their share at    │
+│  intent_msg; opening encrypted to  │  │  P_clear; verify min_out_i satisfied         │
+│  worker for settler release        │  │                                              │
+└──────────────────┬─────────────────┘  │  generates one Groth16 batch proof binding:  │
+                   │                    │    • each per-intent BN254 commit opens to   │
+                   │ batched            │      declared amount                         │
+                   ▼                    │    • each receipt opens to derived amount    │
+┌─────────────────────────────────────┐ │      with deterministic blinding             │
+│ ONE BITCOIN TRANSACTION             │ │    • Σ amounts = public Δa_net, Δb_net       │
+│                                     │ │    • uniform price across intents            │
+│  inputs:                            │ │    • each min_out_i satisfied                │
+│   N trader intent UTXOs             │ │    • range proofs                            │
+│                                     │ └─────────────────────┬────────────────────────┘
+│  outputs:                           │                       │
+│   N trader receipt UTXOs            │                       ▼
+│   1 settler tip output              │ ┌────────────────────────────────────────────┐
+│                                     │ │  INDEXER                                   │
+│  envelope: T_SWAP_BATCH with        │ │                                            │
+│  per-intent binding + 1 proof       │ │  • verify each per-intent intent_sig and   │
+│  + public Δa_net, Δb_net            │ │    cross-curve proof (out-of-circuit)      │
+└─────────────────────────────────────┘ │  • re-verify batch Groth16 against pool.vk │
+                                        │  • check constant-product invariant on     │
+                                        │    public deltas vs. current public R_A,R_B│
+                                        │  • check chain-side aggregate Pedersen     │
+                                        │    on secp256k1 (one equation per asset,   │
+                                        │    inputs and receipts both included)      │
+                                        │  • R_A → R_A + Δa_net                      │
+                                        │  • R_B → R_B + Δb_net                      │
+                                        │  • credit each receipt UTXO as spendable   │
+                                        └────────────────────────────────────────────┘
 ```
 
-Public inputs to the Groth16 verifier:
-`[C_pool_asset_old, reserve_btc_old, C_pool_asset_new, reserve_btc_new,
-  C_asset_in, Δb, C_pool_shares_old, C_pool_shares_new, leaf_commitment,
-  bind_hash]`.
+There is no pool UTXO to spend or recreate. The Bitcoin tx is
+strictly trader-input → trader-receipt + settler-tip. Pool reserves
+move as a public bookkeeping update inside the indexer's
+reconstruction. The constant-product invariant is checked by the
+indexer as plain arithmetic against public reserves and net deltas.
+The Groth16 proof's job is narrower: bind hidden per-trader amounts
+to public batch deltas, enforce uniform pricing, satisfy `min_out`,
+and prove range bounds.
 
-The circuit proves:
-1. Knowledge of openings for all Pedersen commitments.
-2. Contributed at the current ratio: `Δa / A_old == Δb / N_btc_old` (with
-   tolerance handled by the dust-rounding rule the circuit encodes).
-3. Shares minted = `min(Δa/A_old, Δb/N_btc_old) · S_old` where `S_old`
-   is the prior total share supply.
-4. New pool reserves are `A_old + Δa` and `N_btc_old + Δb`.
-5. New share total is `S_old + share_amount`.
-6. `leaf_commitment == poseidon(secret, ν, share_amount)` (binds the
-   secret leaf to the deposit).
-7. Range proofs on `Δa`, `A_new`, `share_amount` (≤ 64 bits, mixer's
-   bulletproof model).
+`T_LP_ADD` and `T_LP_REMOVE` follow the same pattern but for one LP
+per envelope (LP operations don't naturally batch — they're
+at-the-ratio, not at-a-price).
 
-#### POOL_INIT variant (`variant = 1`)
+### Pool state
 
-Pool creation is `T_LP_ADD` with `variant = 1`. The remainder of the
-payload differs:
+A pool is uniquely identified by an unordered pair `(asset_A,
+asset_B)`. Convention: `asset_A` is the lexicographically smaller of
+the two `asset_id` byte strings. The canonical `pool_id =
+SHA256("tacit-amm-pool-v1" || asset_A || asset_B)`. Pool init pins
+the Groth16 verifying key, fee basis points, and the LP-share
+asset's `lp_asset_id` at content-addressed `vk_cid` time, fixed
+forever.
+
+| Field | Type | Visibility |
+|---|---|---|
+| `pool_id` | 32 B | public |
+| `asset_A`, `asset_B` | 32 B each | public |
+| `lp_asset_id` | 32 B | public |
+| `vk_cid` | UTF-8 IPFS CID | public |
+| `fee_bps` | u16 | public |
+| `reserve_A`, `reserve_B` | u64 | public |
+| `lp_total_shares` | u64 | public |
+| `last_update_height` | u32 | public |
+
+Public reserves and supply are how the protocol stays purely
+indexer-validated — anyone can reconstruct exactly what every
+reserve is at every height by replaying confirmed envelopes.
+**Per-trader amounts** within a batch are hidden via Pedersen;
+**per-LP holdings** are hidden via the confidentiality of
+`lp_asset_id` UTXOs (CXFER-style). LPs who want anonymous positions
+deposit their LP-share UTXO into the mixer's `(lp_asset_id,
+denomination)` pool and withdraw to a fresh address.
+
+### One canonical pool per pair
+
+Multiple competing pools for the same `(asset_A, asset_B)` would
+fragment liquidity. The indexer enforces **one canonical pool per
+pair** by the same first-mover rule as ticker disambiguation in
+CETCH (§4): the first canonically-ordered confirmed `POOL_INIT` for
+a pair becomes canonical; subsequent inits for the same pair are
+silently ignored. A given asset can participate in multiple pools
+(one per counterparty asset).
+
+### Optional launcher gate
+
+Asset issuers may declare an `amm_launcher_pubkey` field in their
+CETCH / T_PETCH metadata (see `SPEC.md` §5.1 / §5.8). If both
+assets in a pair declare a launcher, `POOL_INIT` for that pair is
+rejected unless co-signed by both launcher pubkeys. If neither
+declares one, the first-canonical-wins rule above applies. The
+field is a per-asset opt-in mitigation against `POOL_INIT`
+front-running: issuers who care about controlled launches set the
+field, assets that prefer fair-launch dynamics leave it unset.
+Backward-compatible — existing asset etches without the field
+default to first-mover.
+
+The field is **load-bearing** when set: a lost privkey
+permanently prevents pool initialization for any pair involving
+that asset under the gate. Issuers SHOULD use a multisig or
+backed-up key if they set the field at all.
+
+## The three opcodes
+
+Wire formats are normative in `SPEC.md §5.12–§5.14`. Summary:
+
+**`T_LP_ADD` (`0x2B`)** — Adds liquidity at the current pool ratio.
+Consumes the LP's `asset_A` and `asset_B` input UTXOs via standard
+CXFER-style kernel signatures (Mimblewimble: signing scalar is the
+input blinding, message binds public per-leg amount). Mints
+`share_amount` of `lp_asset_id` to the depositor. Per-op amounts
+`(Δa, Δb, share_amount)` are public; the LP-share UTXO itself is
+per-UTXO confidential. The Groth16 proof asserts at-the-ratio
+deposit, share-formula correctness, and correct opening of the new
+LP-share commitment.
+
+**`T_LP_REMOVE` (`0x2C`)** — Burns `share_amount` of `lp_asset_id`
+and withdraws proportional reserves of both assets. CXFER-style
+kernel sig on the consumed LP-share UTXO. The Groth16 proof asserts
+proportional withdrawal and correct receipt-commitment openings.
+
+**`T_SWAP_BATCH` (`0x2D`)** — Settles N swap intents at one uniform
+clearing price in a single Bitcoin tx. Per-trader amounts are
+confidential; net batch deltas `(Δa_net, Δb_net)` are public. See
+"Cross-asset authorization for swaps" and "Uniform clearing" below
+for the authorization mechanism and settlement flow.
+
+### POOL_INIT (sentinel variant of `T_LP_ADD`)
+
+Pool creation reuses opcode `0x2B` with a `variant = 1` sentinel —
+the same pattern the mixer uses for `POOL_INIT` (§5.10.1). The init
+payload pins `(asset_A, asset_B, fee_bps, vk_cid, ceremony_cid,
+min_liquidity, inclusion_arbiter_pubkeys[])` and seeds initial
+reserves. Initial **total shares** = `isqrt(Δa · Δb)` (Uniswap V2
+convention); the founder receives `isqrt(Δa · Δb) −
+MINIMUM_LIQUIDITY` of those shares, and the remaining
+`MINIMUM_LIQUIDITY` (V2: 1000 base units) is locked at init via a
+NUMS-derived P2WPKH recipient (no recoverable privkey,
+Bitcoin-unspendable forever). The optional
+`inclusion_arbiter_pubkeys` field gates mandatory-inclusion
+enforcement (see Indexer determinism). First canonically-ordered
+confirmed init wins, subject to any `amm_launcher_pubkey` gate
+declared by the assets; **no other privilege governs pool
+initialization**.
+
+### Cross-asset authorization for swaps
+
+Standard CXFER kernel sigs are single-asset and require *public*
+input/output amounts to construct the verifier's expected signing
+key. `T_SWAP_BATCH` consumes one asset and emits another with
+*hidden* per-trader amounts, so the CXFER mechanism doesn't fit.
+Two concerns have to be addressed: per-trader intent authentication,
+and consistency between Bitcoin's secp256k1 Pedersen commitments
+and the BN254-Fr Groth16 circuit that enforces batch constraints.
+
+**Hybrid commitments (secp256k1 + BN254).** Tacit asset UTXOs use
+secp256k1 Pedersen commitments — load-bearing for Bitcoin
+compatibility. Groth16 circuits operate efficiently over BN254-Fr.
+The AMM bridges the two per-trader, at intent-post time:
+
+- `C_in_secp` is the on-chain Pedersen commitment carried by the
+  trader's input UTXO(s) on secp256k1. When an intent draws on
+  multiple input UTXOs of the same asset, `C_in_secp` is the
+  homomorphic sum `Σᵢ C_in_secp,i` and `r_secp` is `Σᵢ r_secp,i` —
+  the trader signs the cross-curve proof under the aggregate.
+- The intent publishes `C_amount_BN254 = Poseidon(amount, r_BN254)`
+  — BN254-native, cheap inside Groth16.
+- The intent includes a one-shot **cross-curve binding proof**: a
+  small Groth16 attestation that the trader knows openings to both
+  commitments with the same `amount`. The secp256k1 side uses
+  non-native arithmetic inside BN254 — published designs of
+  comparable shape land in the **~100K–400K constraint range**
+  (rough browser proving time ~10–30s); precise numbers depend on
+  the chosen circuit and need empirical benchmarking before the
+  spec is fixed. Cost is paid **once per intent by the trader**,
+  not per batch by the settler. The verifying key for this circuit
+  is **protocol-wide** (single `cross_curve_vk_cid` pinned in
+  `SPEC.md`, not per-pool) — every trader uses the same vk.
+
+**Intent authentication is out-of-circuit.** Each intent's
+`intent_sig` (BIP-340 over the canonical `intent_msg`) is verified
+by the indexer at envelope ingest, not in-circuit. BIP-340
+verification is microseconds in native code; in-circuit it would
+cost ~2M constraints per sig. This matches the mixer's posture of
+keeping expensive secp256k1 checks outside the circuit.
+
+**Batch proof operates only on BN254 commitments.** The settler's
+single Groth16 batch proof asserts:
+
+- **Opening of each per-intent commitment.** Knowledge of
+  `(amount_i, r_BN254_i)` such that
+  `Poseidon(amount_i, r_BN254_i) = C_amount_BN254_i`. The circuit
+  recomputes each Poseidon hash against the witness; per-direction
+  `Σᵢ amount_i` is then computed in-circuit over the cleartext
+  amounts and exposed as a public input. (Poseidon is not
+  additively homomorphic — the sum is over re-opened cleartext,
+  not over commitments. Pedersen on secp256k1 is what carries
+  homomorphic structure for the chain-side aggregate check below.)
+- **Direction-aware receipt amounts at the uniform clearing
+  ratio.** Each receipt commitment `C_receipt_BN254` opens with a
+  deterministically-derived blinding (so the trader can recover
+  the receipt offline from privkey alone) to:
+  - `amount_out_i = amount_in_i · |Δb_net| / |Δa_net|` for an A→B
+    trader (input A, receipt B)
+  - `amount_out_i = amount_in_i · |Δa_net| / |Δb_net|` for a B→A
+    trader (input B, receipt A)
+- Each `amount_out_i ≥ min_out_i`.
+- Range proofs on every per-trader amount.
+
+All in BN254 land — circuit cost is mixer-tier (~3K constraints per
+intent, ~5s browser proving for N=20).
+
+**Chain-side aggregate Pedersen check.** The on-chain envelope
+carries `R_net_A` and `R_net_B` — the per-asset net sums of
+trader blindings revealed by the settler (input-side blindings
+minus receipt-side blindings, on each asset). For each asset
+`X ∈ {A, B}` the indexer verifies, directly on secp256k1:
 
 ```
-T_LP_ADD (POOL_INIT shape)
-|| asset_id(32)
-|| variant(1) = 1
-|| Δb_LE(8)                     initial BTC reserve
-|| C_asset_in(33)               initial asset reserve commitment
-|| fee_bps(2)                   pool fee in basis points (e.g. 30 = 0.3%)
-|| vk_cid_len(1)
-|| vk_cid(vk_cid_len)
-|| ceremony_cid_len(1)
-|| ceremony_cid(...)
-|| leaf_commitment(32)          poseidon(secret, ν, sqrt(Δa·Δb))
-|| init_sig(64)                 BIP-340 over init_msg
+  Σᵢ C_in_secp,X,i  −  Σⱼ C_out_secp,X,j  −  Δx_net · H  =  R_net_X · G
 ```
 
-Initial total shares = `sqrt(Δa · Δb)` (Uniswap V2 convention; pinned
-in the circuit). `MINIMUM_LIQUIDITY` lockup analogous to V2 may apply
-— see open questions.
+where the input sum ranges over the batch's trader inputs of
+asset X and the receipt sum over the batch's receipts of asset X.
+Two equations total (one per asset).
 
-Once a pool is initialized, its `vk_cid` and `fee_bps` are fixed
-forever. No upgrade path; new fee tier or new circuit ⇒ new asset_id
-or a separately-named pool variant. **No special privilege governs
-pool initialization** — first canonically-ordered confirmed init wins.
+Aggregate-blinding leakage scales inversely with batch diversity:
+at N=1 the aggregate IS the individual blinding (and the trader's
+amount is recoverable); at N=2 a colluding settler-trader who
+knows their own blinding recovers the other trader's exactly; at
+N≥3 with no collusion the aggregate reveals only the sum of N
+unknown blindings. The dapp warns when an intent is likely to
+settle in a low-diversity batch.
 
-### `T_LP_REMOVE` (`0x2C`)
+**Per-`vin` Bitcoin-layer signature** (P2WPKH or P2TR key-path)
+authorizes each trader's UTXO spend at Bitcoin consensus level,
+exactly like any non-tacit Bitcoin input. There is no separate
+tacit kernel sig per `vin`; tacit-layer consumption is jointly
+authorized by intent_sig (out-of-circuit) + cross-curve binding
+proof (per intent) + batch proof (BN254) + aggregate Pedersen check
+(secp256k1).
 
-Burns an LP share leaf and withdraws proportional reserves. Mixer-
-style: nullifier prevents double-spend, Groth16 hides which leaf was
-the redeemer's.
+**Trader binding to clearing price.** The trader's one-shot
+`intent_sig` over `intent_msg` commits `min_out`, and the in-circuit
+`amount_out_i ≥ min_out_i` constraint ensures any settler-chosen
+`P_clear` honors the trader's worst-acceptable price. No delegated
+clearing-price-signing needed.
 
-```
-T_LP_REMOVE(1)
-|| asset_id(32)
-|| merkle_root(32)              claimed LP-tree root (must match a recent canonical root)
-|| nullifier_hash(32)           public; must be unique within this pool
-|| Δb_LE(8)                     BTC withdrawn (public, equals sats delta out of pool)
-|| C_asset_out(33)              Pedersen commitment to asset withdrawn
-|| C_pool_asset_new(33)         new pool asset reserve commitment
-|| C_pool_shares_new(33)        new total-shares commitment
-|| recipient_btc(20)            P2WPKH hash160 for BTC payout
-|| recipient_asset_commit(33)   Pedersen commitment for the asset UTXO
-|| bind_hash(32)
-|| proof_len(2)
-|| proof(proof_len)
-```
+## Uniform clearing
 
-Public inputs:
-`[C_pool_asset_old, reserve_btc_old, C_pool_asset_new, reserve_btc_new,
-  C_asset_out, Δb, C_pool_shares_old, C_pool_shares_new, merkle_root,
-  nullifier_hash, recipient_asset_commit, bind_hash]`.
+Each Bitcoin block, a settler — any participant — selects a subset
+of queued swap intents, computes one clearing price for the whole
+batch, and settles them in a single transaction.
 
-The circuit proves:
-1. The redeemer knows `(secret, ν, share_amount)` such that
-   `poseidon(secret, ν, share_amount)` is in the tree at `merkle_root`.
-2. `nullifier_hash == poseidon(ν)` (mixer convention, §3.8).
-3. Withdrawn at the current ratio: `Δa / A_old == Δb / N_btc_old ==
-   share_amount / S_old`.
-4. New pool reserves are `A_old − Δa` and `N_btc_old − Δb`.
-5. New share total is `S_old − share_amount`.
-6. `recipient_asset_commit` opens to the same `Δa` (with a fresh
-   blinding the redeemer chose).
-7. Range proofs.
+**Intent collection.** Traders post signed swap intents to a
+worker — direction, dual commitments to the input amount
+(`C_in_secp` from the trader's existing input UTXO plus a fresh
+BN254-friendly `C_amount_BN254`), a one-shot cross-curve binding
+proof, `min_out`, tip, `input_utxos` references, `expiry`, and a
+per-intent `intent_sig` under `trader_pubkey`. The opening
+`(amount_in, r_BN254)` needed to construct the batch proof is
+encrypted in an `opening_blob` released to the claiming settler at
+batch construction time. Chain observers see only commitments and
+aggregate batch deltas — never the cleartext per-trader amount.
 
-External Pedersen check (mixer pattern, §5.11):
-`recipient_asset_commit` opens to the declared `Δa` against a
-revealed `r_out` published in the envelope (omitted from the wire
-sketch above for brevity — same role as `r_leaf` in §5.11).
+**Whole-UTXO consumption only.** If a trader's available UTXO is
+larger than their intended `amount_in`, they pre-split via `CXFER`
+(§5.2) before posting the intent. v1 does not support partial-UTXO
+draws inside a swap batch; the additional split is one extra
+Bitcoin tx of trader latency.
 
-### `T_SWAP` (`0x2D`)
+**Settlement.** A settler reads the open intent set + current pool
+state and:
 
-Executes a swap through the pool. Direction is encoded by sign of the
-deltas (one side's δ is into the pool, the other's is out).
+1. Selects a subset that all clear at one price within each
+   trader's `min_out`.
+2. Computes `Δa_net` numerically and solves `Δb_net` from the
+   constant-product curve at the pool's current reserves with fee
+   `γ = (10000 − fee_bps) / 10000`.
+3. Computes `P_clear = |Δa_net| / |Δb_net|`. If any `min_out_i`
+   fails at `P_clear`, drops that intent and re-solves.
+4. Builds the Bitcoin tx: consumes N intent UTXOs → emits N
+   trader receipts + 1 settler tip.
+5. Generates one Groth16 batch proof.
+6. Broadcasts.
 
-```
-T_SWAP(1)
-|| asset_id(32)
-|| direction(1)                 0 = BTC→asset, 1 = asset→BTC
-|| Δb_LE(8)                     public BTC delta (signed by direction)
-|| C_asset_io(33)               Pedersen commitment to trader's asset I/O
-|| C_pool_asset_new(33)         new pool asset reserve commitment
-|| recipient_or_input_proof_data(varies by direction)
-|| bind_hash(32)
-|| proof_len(2)
-|| proof(proof_len)
-```
+**Fairness within a batch.** Every trader pays/receives the same
+`P_clear`. There is no in-batch ordering, no sandwich, no
+priority-fee MEV. The settler's only freedom is which subset to
+include; their incentive maximizes by including everyone whose
+`min_out` is satisfiable, since excluded intents leave tip revenue
+on the table.
 
-Public inputs (BTC→asset direction):
-`[C_pool_asset_old, reserve_btc_old, C_pool_asset_new, reserve_btc_new,
-  C_asset_io, Δb, fee_bps, recipient_asset_commit, bind_hash]`.
+**Cross-batch ordering.** Bitcoin consensus admits one batch tx
+per pool per block as the typical case (each batch consumes the
+same trader UTXOs once). If multiple batches against the same pool
+confirm in the same block, the indexer applies them in `(tx_index,
+vin[0] outpoint)` order and rejects later batches whose deltas
+violate the constant-product invariant against post-earlier-batch
+reserves. Settlers SHOULD coordinate off-chain on a one-batch-per-
+pool-per-block convention to avoid wasted proof work.
 
-The circuit proves the constant-product invariant with fee:
-```
-(A_old − Δa) · (N_btc_old + Δb) ≥ A_old · N_btc_old · (1 + Δb·fee_bps / (N·10000))
-```
-…or the more standard V2 form:
-```
-γ := (10000 − fee_bps) / 10000
-(A_old − Δa) · (N_btc_old + Δb·γ) ≥ A_old · N_btc_old
-```
-(exact form pinned by the circuit; both are constant-product with a
-0.3%-style cut routed to the pool). Plus knowledge of openings,
-recipient binding, and range proofs.
+**Settler economics.** Each intent specifies a `tip` value and
+`tip_asset` (either of the pool's two assets). The settler
+aggregates tips into one tip output and pays the Bitcoin tx fee
+from their own BTC inputs, recouping via the tip mechanism.
+Permissionless — any tacit user with a chain view + intent-pool
+read can become a settler.
 
-Asset→BTC is symmetric.
+**Pricing invariant.** The constant-product check is
+direction-aware. With `γ = (10000 − fee_bps) / 10000` and v1's
+net-flow fee policy:
 
-`fee_bps` is a public input fixed at pool init. Fee revenue accrues
-in-place: the invariant inflates by the fee fraction every swap, so
-the per-share value monotonically rises and LPs realize fees on
-withdraw. Same accounting as Uniswap V2.
+- **A→B-dominant batch** (`Δa_net > 0`, `Δb_net < 0`):
+  `(R_A + γ·Δa_net) · (R_B + Δb_net) ≥ R_A · R_B`
+- **B→A-dominant batch** (`Δa_net < 0`, `Δb_net > 0`):
+  `(R_A + Δa_net) · (R_B + γ·Δb_net) ≥ R_A · R_B`
 
-## Contention model — the batcher
+Fee `γ` applies only to the **net-inflowing side** — the cancelled
+portion of intents that net against each other within a batch pays
+no fee, only the residual that actually hits the curve does. This
+is the Penumbra-style fee policy, chosen for envelope simplicity
+(no per-direction gross-flow field on chain). A V2-style gross-
+input fee policy is a v2 variant.
 
-Single pool UTXO ⇒ at most one tx per Bitcoin block can touch it. This
-is the same constraint Cardano DEXes hit (eUTXO inheritance) and the
-same answer applies: **batchers**.
+Settlers solve for `(Δa_net, Δb_net)` off-chain; the indexer
+accepts the solution as an inequality, so any slack between LHS
+and RHS accrues to LPs as fee revenue beyond the nominal
+`fee_bps`. The inequality direction prevents settlers from
+extracting value from the pool — only from being marginally
+generous to it.
 
-### Direct mode (single trader, single block)
+## Indexer determinism rules
 
-A trader can spend the pool UTXO themselves. Works fine when contention
-is low; degrades to "first-broadcast wins, others get evicted" under
-contention. Acceptable for low-volume pools.
+Every indexer must follow these byte-identically to arrive at the
+same pool state from the same chain history (mirrors the mixer's
+§11-style determinism contract).
 
-### Batched mode (recommended for any non-trivial volume)
+**Rounding.** All AMM arithmetic operates on u64 base units; all
+divisions floor toward the pool, so rounding errors accrue as fees
+to existing LPs:
 
-Traders post **swap intents** as off-chain signed records:
+- LP_ADD: `share_amount = floor(min(Δa·S/R_A, Δb·S/R_B))`.
+- POOL_INIT: total shares at init = `isqrt(Δa·Δb)` (deterministic
+  integer square root); founder allocation =
+  `isqrt(Δa·Δb) − MINIMUM_LIQUIDITY`, with `MINIMUM_LIQUIDITY`
+  minted to the NUMS-locked output.
+- LP_REMOVE: `Δa = floor(R_A · share_amount / S)`,
+  `Δb = floor(R_B · share_amount / S)`.
+- T_SWAP_BATCH constant-product check: γ-scaling done in u128 to
+  avoid overflow; the looser inequality direction wins.
 
-```
-swap_intent {
-  intent_id     16 B (sha256(asset_id || trader_pubkey || nonce)[:16])
-  asset_id      32 B
-  direction     u8 (0 = BTC→asset, 1 = asset→BTC)
-  amount_in     u64 (cleartext for the public side, Pedersen commit for the hidden side)
-  min_out       u64 — slippage protection: settlement aborts the trader's leg if violated
-  expiry        unix-seconds
-  trader_pubkey 33 B
-  intent_sig    BIP-340 over the canonical msg
-}
-```
+**UTXO-race during batch construction.** Between batch construction
+and Bitcoin broadcast, a trader could spend one of their referenced
+`input_utxos` elsewhere. Bitcoin would reject the swap-batch tx
+(unknown input), failing the entire batch and wasting the settler's
+proof work. Mitigations are operational: settlers pre-check UTXO
+availability immediately before broadcast; workers reject
+overlapping intents; trader UI warns on locked UTXOs; intent expiry
+defaults to ~3 blocks. A future BIP-119 / OP_CTV could close the
+race fully via covenant-restricted trader inputs.
 
-Anyone can run a **batcher**: collect N intents, build one Bitcoin tx
-that spends the pool UTXO, consumes each intent's BTC inputs, and
-produces N+1 outputs (new pool UTXO + N trader receipts). The envelope
-carries one aggregate Groth16 proof showing each intent settled at the
-sequentially-applied constant-product price.
+**Reorg safety.** Pool state advances at depth ≥ 3 blocks
+(`AMM_OP_CONFIRMATION_DEPTH = 3`, mirroring
+`MIXER_DEPOSIT_CONFIRMATION_DEPTH`). Reorgs deeper than 3 force the
+indexer to roll back to the last common ancestor and replay
+forward.
 
-**Batcher economics.** Each intent specifies a tip (sats) the batcher
-keeps. Batchers compete on inclusion latency. Trader's `min_out`
-defends against adversarial reordering — if the batcher sandwiches an
-intent past its `min_out`, the proof for that intent fails and the
-intent is dropped from the batch. Permissionless (anyone can batch),
-no protocol-level batcher set.
+**Canonical ordering.** Within a block, AMM envelopes apply in
+`(tx_index, vin[0] outpoint)` order. Within a `T_SWAP_BATCH`
+envelope, per-trader inputs (`vin[1+i]`) and outputs (`vout[1+i]`)
+MUST appear in `intent_id` ascending byte-order; indexers reject
+violations.
 
-**Worker endpoints (reference, mirrors §5.7.6 atomic-intent layout):**
+**Mandatory inclusion of qualifying intents.** To eliminate
+cross-batch curation MEV (the settler's incentive to selectively
+exclude intents that would move price against their own LP
+position), the indexer enforces a forced-inclusion rule:
 
-```
-POST   /pools/:asset_id/swap-intents
-GET    /pools/:asset_id/swap-intents
-DELETE /pools/:asset_id/swap-intents/:intent_id          (signed cancel)
-GET    /pools/:asset_id/state                            (current reserves, root, etc.)
-```
+An intent is **qualifying for height H** if (a) it has been open
+in the worker's intent pool since at least height `H − K` (default
+`AMM_MANDATORY_INCLUSION_DEPTH = 2`), (b) its `expiry` has not
+lapsed, and (c) its `min_out` is satisfiable at the candidate
+batch's `P_clear`.
 
-Like atomic intents (§5.7.7), the swap-intent layer is implementation-
-defined and sits entirely outside the on-chain protocol. The on-chain
-T_SWAP envelope is identical whether the trade went through a batcher
-or direct.
+When validating a `T_SWAP_BATCH` at height H, the indexer fetches
+the canonical signed list of qualifying intents for that pool and
+rejects the envelope if any qualifying intent was excluded. The
+worker exposes a `GET /pools/:pool_id/qualifying-intents/:height`
+endpoint returning a height-stamped, BIP-340-signed list.
+
+**Inclusion arbiter pubkey.** The signed list's authority comes
+from one or more `inclusion_arbiter_pubkey` values pinned at
+`POOL_INIT`. Indexers accept the qualifying-intents list for a
+pool only if signed by at least one of that pool's pinned
+arbiters. If `POOL_INIT` pins no arbiter, mandatory inclusion is
+unenforceable for that pool and settlers operate in best-effort
+mode — curation MEV is bounded only by tip-revenue economics.
+Pools that care about strong MEV resistance SHOULD pin a multisig
+or independent-operator quorum (`k`-of-`n`) rather than a single
+key; pools that prefer minimal trust delegation leave the field
+unset and accept the weaker guarantee.
+
+This closes the curation loop for opt-in pools: settlers may pick
+which fresh-arrival intents to include from the current block's
+pool, but anything ≥ K blocks old MUST be included if
+`min_out`-satisfiable. A settler trying to chronically curate
+would fail to settle.
+
+**Intent cancellation.** A trader can cancel an intent before
+expiry by signing a cancel message under `trader_pubkey` (BIP-340
+over `SHA256("tacit-amm-intent-cancel-v1" || pool_id ||
+intent_id)`). The worker removes the intent from the open pool and
+from the qualifying set on receipt; the cancel propagates into the
+next signed list at height H+1.
 
 ## Trust model
 
-**Soundness** (= "is the pool's accounting correct?") is **trustless
-under standard cryptographic assumptions**:
+Soundness (= "is the pool's accounting correct?") is **trustless
+under standard cryptographic assumptions**, with the same trust
+profile as the mixer:
 
-- Groth16 proofs verify under the published `vk` regardless of who runs
-  the verifier; the dapp re-runs verification client-side.
-- Pool state reconstruction is byte-deterministic from chain (the
-  current pool UTXO carries the latest state in its envelope; full
-  history is recoverable from chain).
-- Nullifier set is content-addressable. Worker, dapp, third-party
-  indexers arrive at the same spent-set (SPEC §11 determinism).
+- Groth16 proofs verify under the published `vk` regardless of who
+  runs the verifier.
+- Pool state is byte-deterministic from chain.
 - Pedersen commitments are publicly checkable; range proofs prevent
-  negative-balance underflow.
+  underflow.
+- The constant-product invariant is verified by the indexer as
+  plain arithmetic on public reserves.
 
-The reference worker (and any batcher) can DoS users (refuse to relay,
-refuse to batch) but cannot cheat them. Traders' `min_out` defends
-against batcher sandwich. Anyone can run their own indexer + batcher
-from chain data alone.
+**No party custodies any pool's reserves.** This is the structural
+consequence of the virtual-pool architecture: there is no UTXO
+holding pool funds, so there is no key that can rug. Reserves are
+virtual quantities the indexer attests to, exactly as in the mixer.
 
-**Liveness** (= "can you trade?") depends on at least one working
-indexer + at least one available batcher (or willingness to spend the
-pool UTXO directly). Both are permissionless. The reference worker
-provides one indexer + one batcher; the dapp can swap to self-hosted
-in a one-line edit.
+The reference worker (and any settler) can DoS users (refuse to
+relay, refuse to settle) but cannot cheat them. Traders' `min_out`
+defends against settler price manipulation. **MEV is eliminated
+intra-batch by uniform pricing and cross-batch by the
+mandatory-inclusion rule** (see Indexer determinism); the settler's
+remaining freedom is timing — when to broadcast — not censorship.
+Liveness depends on at least one working indexer + one available
+settler; both are permissionless. Anyone can run their own indexer
++ settler from chain data alone.
+
+**Privacy delegation for swap intents.** Per-trader openings
+`(amount_in, blinding_in)` are released to the claiming settler so
+it can construct the batch Groth16 proof. The worker mediates this
+via short-lived encrypted blobs. The worker is a **privacy
+intermediary** (it can decrypt openings), not a **custody
+intermediary** (it cannot forge intents or extract value — the
+trader's `intent_sig` and the in-circuit `min_out` constraint
+prevent it). Trust-conscious traders can self-host a worker, run
+their own settler, or encrypt openings directly to a nominated
+settler's published key.
 
 ## Privacy model
 
-**What's hidden (cryptographic, unconditional under Pedersen + Groth16):**
+**Hidden** (cryptographic, unconditional under Pedersen + Groth16):
 
-- Asset reserves of every pool.
-- The asset side of every swap (how much asset moved).
-- Each LP's share size (committed in their leaf).
-- Which LP withdrew at any given `T_LP_REMOVE` (Tornado-style
-  unlinkability within the pool's anonymity set).
+- Each trader's per-intent amount in a batch (only the public batch
+  deltas are revealed).
+- Each LP's per-UTXO LP-share holding.
+- Which LP redeemed at any given `T_LP_REMOVE`, if the LP mixed
+  their share UTXO before redeeming.
+- Recipient blindings on receipt UTXOs (deterministic from privkey).
 
-**What's public (unavoidable):**
+**Public** (intentional — the cost of trustless reconstruction):
 
-- BTC reserves of every pool (UTXO sats).
-- The BTC side of every swap (delta in pool UTXO sats).
-- Total LP share supply (it's a Pedersen commitment but bracketed by
-  observable swap sizes — over time, it can be approximated). Mitigation
-  if needed: per-block reserve commitments only; no exposed totals
-  field. See open questions.
-- Pool `vk_cid`, `fee_bps`, current `pool_outpoint`.
+- Pool reserves `R_A`, `R_B` and total LP supply `S` of every pool.
+- Each batch's net deltas `(Δa_net, Δb_net)` and inferable
+  clearing price `P_clear`. The sign and magnitude of `Δa_net`
+  reveal the batch's aggregate **direction skew** (net buy vs net
+  sell pressure on the pool that block) even when individual
+  trader amounts are hidden.
+- Per-op amounts on `T_LP_ADD` / `T_LP_REMOVE` (each LP op is solo).
+- Pool init parameters.
+- **Per-trader pubkey** (`trader_pubkey`) for each intent —
+  `intent_sig` is verified out-of-circuit, so the pubkey appears
+  on chain in `T_SWAP_BATCH` envelopes. Per-trader identity is
+  linkable across intents under the same pubkey; only per-trader
+  *amounts* are hidden. Traders who want intent-level identity
+  privacy SHOULD use a fresh `trader_pubkey` per intent.
 
-**Operational privacy** (= "is your trade or LP position linkable to
-your other Bitcoin activity?") depends on the same three things as the
-mixer (§5.11.4): anonymity-set size for LP withdraws (live count
-surfaced in the dapp), Bitcoin-level fee linkage on the broadcast tx
-(use a fresh wallet or a relayer), and network/timing correlation
-(Tor + delay).
+This is the **same posture as the mixer**: aggregate state visible,
+individual user activity hidden — for the same reason (trustless
+reconstruction requires aggregate transparency).
 
-A swap is trivially linkable to the trader's Bitcoin wallet (the BTC
-input/output is theirs). The asset side is hidden, but observers learn
-"this Bitcoin wallet swapped X sats with the pool." If the trader
-wants the asset-side recipient to be unlinkable from their BTC wallet,
-they should subsequently CXFER the received UTXO to a fresh address —
-the asset blinding is only known to them, so the chain-graph link
-exists only on the BTC side.
+**LP_ADD is a public deposit action.** A depositor's contribution
+`(Δa, Δb, share_amount)` is visible on chain — analogous to
+depositing into Aave or Uniswap V2. The privacy story for LPs
+applies to the *post-deposit holding*, not to the deposit event
+itself: the LP-share UTXO that gets minted is per-UTXO confidential
+(Pedersen-committed CXFER-style), and can be made anonymous via
+mixer composition.
+
+**LP privacy via mixer composition.** After `T_LP_ADD`, the
+depositor holds an LP-share UTXO of `lp_asset_id`. To anonymize:
+deposit the UTXO into the mixer's `(lp_asset_id, denomination)`
+pool, wait for anonymity-set growth, withdraw to a fresh address.
+At redemption time, `T_LP_REMOVE` consumes the freshly-minted
+LP-share UTXO and observers cannot link back to the original
+deposit. Anonymity scales with concurrent LP-share activity in that
+pool's `lp_asset_id`; the dapp surfaces a live anonymity-set count,
+same UX discipline as the mixer.
+
+**Trader privacy in a batch.** With `n_intents ≥ 2`, no observer
+can attribute a specific amount to a specific trader — per-intent
+commitments are Pedersen-hiding, and the batch proof reveals only
+the aggregate. With `n_intents = 1`, **privacy is zero**: the batch
+deltas equal the single trader's amount and direction in the clear,
+and the trader_pubkey is on chain. The dapp MUST surface a hard
+warning when an intent is likely to settle solo — this is not a
+soft caution, it is a complete privacy collapse for that intent.
+
+**Operational privacy** depends on the same three things as the
+mixer (§5.11.4): anonymity-set size for LP withdraws, Bitcoin-level
+fee linkage on the broadcast tx (use a fresh wallet or a relayer),
+and network/timing correlation (Tor + delay).
 
 ## What's novel here
 
-The novelty is the **composition**, not any single piece. Each piece
-is prior art and we concede that immediately:
+The novelty is the **composition**, not any single piece. Each
+piece is prior art:
 
 - **Constant-product AMMs:** Uniswap V2 (2020), Bancor (2017).
-- **Tornado-style hidden-bearer LP positions:** Tornado Cash (2019),
-  Aztec (LP positions in private Plonk circuits), Penumbra (shielded
-  pool positions in ZSwap).
+- **Uniform-clearing batch auctions:** Walras (1874), Gnosis
+  Protocol (2019), Penumbra ZSwap (2023).
 - **Pedersen on Bitcoin envelopes:** MimbleWimble (2016), RGB,
   tacit's CXFER.
+- **Virtual indexer-tracked pools (no UTXO custody):** tacit's
+  mixer.
 - **Groth16 in indexer-validated meta-protocols:** tacit's mixer.
-- **Batcher pattern for UTXO-DEX contention:** Cardano DEXes
-  (SundaeSwap, Minswap, Spectrum — 2022).
-- **Routing through a single quote asset:** Tempo's pathUSD model
-  (BTC plays the analogous role for tacit).
+- **ERC20-style transferable LP shares:** Uniswap V2.
+- **Privacy via mixer composition for fungible tokens:** Tornado
+  Cash pattern; tacit's mixer for any tacit asset.
+- **Routing through a single quote asset:** Tempo's pathUSD model;
+  cBTC plays the analogous role for tacit.
 
-The claim — narrower and harder to attack than "novel cryptography" or
-"first AMM" — is that **this specific composition on Bitcoin L1**
+The claim — narrower and harder to attack than "novel cryptography"
+or "first AMM" — is that **this specific composition on Bitcoin L1**
 doesn't have a live production peer:
 
-- Indexer-validated Bitcoin meta-protocols so far have been
-  **transparent** (Runes, BRC-20, Ordinals, STAMPS, Alkanes, OP_NET)
-  and **non-AMM** (no protocol-level price discovery; trading is
-  entirely OTC marketplaces atop the asset layer).
-- AMMs on Bitcoin sidechains and rollups (Liquid SideSwap, BOB,
-  Citrea) execute off-chain with L1 verification, not as L1
-  meta-protocols.
+- Indexer-validated Bitcoin meta-protocols have been **transparent**
+  (Runes, BRC-20, Ordinals, STAMPS, Alkanes, OP_NET) and **non-AMM**
+  (no protocol-level price discovery; trading is OTC marketplaces
+  atop the asset layer).
+- AMMs on Bitcoin sidechains (Liquid SideSwap) execute under
+  federation trust models, not as L1 meta-protocols.
+- AMMs on Bitcoin rollups (Citrea, Botanix) inherit rollup operator-
+  set / fraud-proof / BitVM trust assumptions.
 - Confidential AMMs (Penumbra ZSwap, Aztec) live on Cosmos / their
   own L1.
-- Bitcoin-native trading (Magic Eden runes, Bisq, atomic-swap markets)
-  is OTC / RFQ, not pooled-liquidity AMM.
+- Bitcoin-native trading (Magic Eden runes, Bisq, atomic-swap
+  markets) is OTC / RFQ, not pooled-liquidity AMM.
+- Uniform-clearing-price batch AMMs (Gnosis, Penumbra) have not
+  been adapted to a Bitcoin L1 meta-protocol.
 
-The achievement, if shipped, is the assembly: a pooled-liquidity AMM
-with confidential trade amounts, anonymous LP positions, content-
-addressed Groth16 governance, and permissionless batchers, running as
-a meta-protocol on Bitcoin L1.
+The achievement is the assembly: a uniform-clearing-price
+confidential AMM with mixer-composable LP shares, content-addressed
+Groth16 governance, permissionless settlers, and **zero in-protocol
+custody** — running as a meta-protocol on Bitcoin L1.
 
 ### Adjacent designs reviewers will bring up
 
-- **SideSwap / Liquid AMMs.** Run on Liquid Network (federated
-  sidechain). Confidential amounts via Liquid's CT, but federation
-  trust model. Different category.
-- **Penumbra ZSwap.** Closest cryptographic analog — confidential
-  Pedersen amounts + ZK-enforced AMM. Runs on Cosmos as its own L1,
-  not as a meta-protocol on Bitcoin.
-- **Citrea / Botanix DEXes.** Bitcoin rollups with EVM execution;
-  inherit the rollup's trust model (challenge-game operator set,
-  fraud proofs, BitVM 1-of-n). Tacit's AMM doesn't need any of that
-  — it reads from L1 envelope data and computes the answer
-  deterministically.
-- **Cardano DEXes (SundaeSwap, Minswap, Spectrum).** Closest
-  architectural analog for the batcher pattern. Different VM (eUTXO
-  with Plutus scripts), but the batcher solution to single-pool-UTXO
-  contention is direct prior art.
+- **Penumbra ZSwap.** Closest cryptographic + pricing analog —
+  same uniform-clearing batch model, same Pedersen-shielded amounts.
+  Runs on Cosmos as its own L1, not as a meta-protocol on Bitcoin.
+- **Gnosis Protocol / CowSwap.** Uniform-clearing batch auctions on
+  Ethereum. Different cryptographic posture (transparent amounts,
+  solver competition).
+- **SideSwap / Liquid AMMs.** Confidential amounts via Liquid CT,
+  but federation trust. Different category.
+- **Cardano DEXes (SundaeSwap, Minswap, Spectrum).** Single-pool-
+  UTXO + batcher pattern for eUTXO chains. Different VM (Plutus,
+  transparent amounts) and different custody model (pool funds *do*
+  live in script-locked UTXOs on Cardano — Plutus scripts can
+  enforce state transitions; Bitcoin Script cannot).
+- **Bitcoin rollup DEXes (Citrea, Botanix, BOB).** Off-chain
+  execution with L1 verification or fraud proofs. Different
+  category — they inherit the rollup's trust model.
 - **RGB AMMs (research-stage).** Client-side validation on Bitcoin,
-  conceptually adjacent. No shipped pooled-liquidity AMM at the time
-  of writing.
+  conceptually adjacent. No shipped pooled-liquidity AMM at the
+  time of writing.
 
 ## What's not novel
 
 - Constant-product AMM (Uniswap V2, 2020).
-- Tornado-style nullifier-based unlinkability (2019).
-- Pedersen commitments + bulletproofs for confidential amounts (2015–
-  2018).
+- Uniform-clearing batch auction pricing (academic since Walras;
+  Gnosis 2019; Penumbra 2023).
+- Pedersen commitments + bulletproofs for confidential amounts
+  (2015–2018).
+- Virtual indexer-tracked pools on Bitcoin (tacit's own mixer).
+- ERC20-style transferable LP shares (Uniswap V2).
 - Indexer-validated meta-protocols on Bitcoin (Ordinals 2023, etc.).
-- Batcher pattern for UTXO-DEX parallelism (Cardano, 2022).
-- Pool-share lockup (`MINIMUM_LIQUIDITY`) to prevent first-LP attacks
-  (Uniswap V2 inherited from earlier Bancor designs).
+- `MINIMUM_LIQUIDITY` lockup against the first-LP attack (Uniswap V2).
+- Privacy-via-composition for token positions (Tornado-on-ERC20
+  pattern).
 
-## Differences from Uniswap V2
+## Differences from Uniswap V2 and Penumbra ZSwap
 
-| | Uniswap V2 | tacit AMM |
-|---|---|---|
-| Reserves | EVM storage slots, public uint112 | One pool UTXO; BTC = sats (public), asset = Pedersen commit (hidden) |
-| LP shares | ERC20 with public balances | Hidden bearer leaves in Poseidon merkle tree, mixer-style |
-| Invariant check | EVM bytecode | Groth16 verified by indexer |
-| Atomicity | EVM transaction revert | Bitcoin tx all-or-nothing (one tx spends pool, recreates pool, pays trader) |
-| Concurrency | Many traders per block | One pool spend per block ⇒ batcher pattern (Cardano-style) |
-| Fee | 0.3% per swap, accumulates in reserves | Same — `fee_bps` pinned at pool init, accumulates in reserves |
-| Pool creation | Permissionless (factory contract) | Permissionless (first canonical `POOL_INIT` wins per asset_id) |
-| Routing | Many pairs, n² liquidity fragmentation | One pool per asset (vs. BTC); asset↔asset routes via two swaps through BTC (Tempo pathUSD analog) |
-| Privacy | None (everything public) | Asset side hidden; BTC side public |
-| Upgrades | None (V2 is immutable) | None (each pool's `vk_cid` is content-addressed and fixed) |
-
-## Differences from Penumbra ZSwap
-
-| | Penumbra ZSwap | tacit AMM |
-|---|---|---|
-| Substrate | Penumbra L1 (Cosmos) | Bitcoin L1 (meta-protocol) |
-| Pricing model | **Frequent batch auctions** (uniform clearing price per block) | Constant product per swap; sequential within a batcher's tx |
-| MEV story | Eliminated within a batch (uniform price) | `min_out` slippage protection; uniform-price upgrade is a future extension (see open questions) |
-| LP positions | Concentrated-liquidity ranges (Uniswap V3-style), confidential | Constant-product, range = full curve; hidden bearer leaves |
-| Confidentiality | Both sides hidden (Penumbra's UM is shielded by default) | Asymmetric: asset side hidden, BTC side public |
-
-## Open design questions
-
-These are deliberately left unresolved in this sketch. Each one swings
-the design materially.
-
-1. **LP-share scheme: anonymous-bearer (mixer-style) vs. tacit-asset
-   (ERC20-style).** Sketch above assumes mixer-style. The alternative
-   is to mint a fresh tacit asset at `POOL_INIT` and use ordinary
-   `T_MINT` / `T_BURN` for LP add/remove. Pros: simpler circuit, LP
-   shares composable with the existing mixer (privacy via
-   composition), LP shares transferable / collateralizable. Cons:
-   not "mixer-AMM" anymore in the same direct sense.
-
-2. **Pricing model: per-swap constant product vs. per-batch uniform
-   clearing.** Sketch assumes per-swap. Uniform-clearing (Penumbra-
-   style) eliminates intra-batch MEV entirely but needs a more complex
-   circuit and a coordinator-of-record per batch.
-
-3. **MINIMUM_LIQUIDITY lockup.** Uniswap V2 burns 1000 wei of LP shares
-   at first deposit to prevent a class of share-rounding attacks. Same
-   problem applies; same fix should apply. Pin in circuit.
-
-4. **Batcher economics.** Tip-per-intent, fixed-fee, or
-   priority-auction? Affects intent record schema.
-
-5. **Pool UTXO loss recovery.** If a pool UTXO is malformed or burned,
-   reserves are stranded. Options: (a) accept it (the asset-side
-   reserves are still recoverable in principle from envelope data,
-   even if the BTC side is gone); (b) define an indexer-level recovery
-   rule that "republishes" the pool from the last valid state via a
-   special envelope; (c) require pool UTXOs to be created at a
-   deterministic well-known script anyone can rebuild from. Probably
-   (a) for v1 with operational discipline, (c) as a hardening measure.
-
-6. **Asset↔asset routing.** Two-hop through BTC works but doubles fees
-   and breaks atomicity (each hop is a separate Bitcoin tx). A
-   single-tx multi-hop swap envelope is feasible but adds circuit
-   complexity. Defer to v2.
-
-7. **Concentrated liquidity (V3-style).** Significantly more complex
-   circuit; defer entirely; v1 is V2-style full-range only.
-
-8. **Public vs. hidden total share supply.** Sketch above commits
-   `lp_total_shares` as a Pedersen commitment but practical observers
-   may infer it from the sequence of public BTC deltas. Decide whether
-   to even pretend it's hidden.
+| | Uniswap V2 | Penumbra ZSwap | tacit AMM |
+|---|---|---|---|
+| Substrate | Ethereum smart contract | Penumbra L1 (Cosmos) | Bitcoin L1 meta-protocol |
+| Reserve location | EVM storage | Validator-tracked notes | Indexer state — no UTXO holds them |
+| Reserve visibility | Public | Shielded | Public (cost of trustless reconstruction) |
+| Pool custody | Pool contract holds tokens | Validator notes | None — virtual reserves |
+| Pricing model | Per-swap CFMM | Per-block uniform clearing | Per-block uniform clearing |
+| LP shares | ERC20 (public balances) | Concentrated-liquidity NFT | Confidential tacit asset; mixer-composable |
+| MEV (sandwich) | Native exposure | Eliminated within batch | Eliminated within batch |
+| Per-trade privacy | None | Hidden | Hidden |
+| Settlement actor | Anyone (gas-paid tx) | Validator set | Permissionless settler |
+| Trust beyond consensus | Contract bug ⇒ total loss | Cosmos validators | Indexer rules + Groth16 — no custody surface |
 
 ## Status
 
-- ⏸ Wire format + envelope opcodes (sketched here; not yet in `SPEC.md`)
-- ⏸ Pool state object (sketched; not yet in `SPEC.md §11`)
-- ⏸ Groth16 circuits (`add.circom`, `remove.circom`, `swap.circom`)
-- ⏸ Phase 2 ceremony coordination (will reuse mixer's coordinator)
-- ⏸ Browser-side prover + verifier (will reuse mixer's snarkjs vendoring)
-- ⏸ Worker indexing of pool state, swap-intent layer, batcher logic
-- ⏸ Dapp UI (pool browser, LP add/remove, swap, intent posting)
-- ⏸ Determinism rules in `SPEC.md §11` for pool reconstruction
-- ⏸ Recovery semantics (pool UTXO loss, intent expiry, etc.)
+- ⏸ Wire format + envelope opcodes (`SPEC.md §5.12–§5.14`)
+- ⏸ Pool state object normative spec
+- ⏸ Groth16 circuits:
+  - `amm_lp_add.circom`, `amm_lp_remove.circom`, `amm_swap_batch.circom`
+  - `amm_cross_curve.circom` — per-intent secp256k1↔BN254 binding,
+    protocol-wide `cross_curve_vk_cid` pinned in `SPEC.md`
+- ⏸ Phase 2 ceremony coordination (reuses mixer's coordinator)
+- ⏸ Browser-side prover + verifier (reuses mixer's snarkjs vendoring)
+- ⏸ Worker indexing + intent-pool + settler logic
+- ⏸ Worker `qualifying-intents/:height` endpoint (signed list under
+  pool-pinned `inclusion_arbiter_pubkey`)
+- ⏸ Worker intent-opening encryption / settler-claim release flow
+- ⏸ Intent cancellation message + worker handling
+- ⏸ Dapp UI (pool browser, LP add/remove, swap intent posting,
+  cancel)
+- ⏸ Determinism rules in `SPEC.md §11` (rounding, reorg depth,
+  canonical ordering, mandatory inclusion)
+- ⏸ Trader receipt blinding derivation + recovery rules
+- ⏸ NUMS-derived burn-output derivation for `MINIMUM_LIQUIDITY`
+- ⏸ CETCH / T_PETCH `amm_launcher_pubkey` field (`SPEC.md` §5.1 / §5.8)
+- ⏸ POOL_INIT `inclusion_arbiter_pubkey` field
 - ⏸ Tests
-
-Everything is design-phase. Nothing is implemented.
+- ⏸ cBTC bridge (separate document — required for BTC trading)
 
 ## Open / honest caveats
 
-- **Asymmetric privacy.** BTC reserves and BTC trade volumes are
-  public. This is unavoidable on Bitcoin L1 — sats live in UTXO values.
-  The asset side is fully confidential, which is still a meaningful
-  privacy gain over transparent meta-protocols (Runes, BRC-20).
-- **Single-pool-UTXO contention.** Direct mode handles ≤ 1 tx per
-  block; meaningful throughput requires a working batcher layer, which
-  is permissionless but coordination-dependent. Same constraint
-  Cardano DEXes operate under daily.
-- **Circuit complexity.** Constant-product + fee + range proofs +
-  Pedersen openings + (for `T_LP_REMOVE`) Poseidon merkle proof is
-  meaningfully larger than the mixer's circuit. Per-pool `vk_cid`
-  governance applies; per-circuit Phase 2 ceremony applies.
+- **Reserves are public.** Full pool transparency is the cost of
+  trustless reconstruction — same trade the mixer makes. Per-trade
+  and per-LP privacy is preserved.
+- **BTC trading depends on cBTC.** Native sat trading goes through
+  the cBTC wrapper, which has its own trust model. The AMM doesn't
+  add custody risk on top of whatever the wrapper assumes.
+- **Single batch per pool per block.** Bitcoin's ~10-min block time
+  caps swap latency at ~10 min. The model trades latency for
+  fairness — every trader in a batch gets the same price. Not
+  suitable for HFT.
+- **Settlers see per-trader openings.** Per-trader openings are
+  released to the claiming settler so it can construct the batch
+  proof. Settler cannot extract value (intent_sig + min_out
+  constraint prevent it) but does learn batch composition.
+- **Two-layer circuit cost.** Per intent, the trader pays a
+  one-shot cross-curve binding proof bridging secp256k1 to BN254.
+  Comparable published designs land in the ~100K–400K constraint
+  range (~10–30s browser proving); precise numbers need
+  benchmarking before the spec is fixed. Per batch, the settler's
+  proof is mixer-tier (~3K constraints per intent in BN254, ~5s
+  for N=20). Trader cost dominates per-swap UX latency; settler
+  cost bounds throughput. Bitcoin tx size also bounds N (the
+  standard-tx ceiling sits in the hundreds-of-intents range).
 - **First-LP price-setting.** Whoever runs `POOL_INIT` sets the
-  initial price. Standard problem; standard fix (founder seeds at fair
-  market price; arbitrage corrects misprice quickly post-launch).
-- **Anonymity-set strength scales with pool LP count.** A pool with 3
-  LPs gives ≤ 3 anonymity for `T_LP_REMOVE`. The dapp surfaces a
-  warning, same UX as the mixer.
+  initial price. Standard problem; standard fix (founder seeds at
+  fair market price; arbitrage corrects misprice quickly).
+- **LP anonymity scales with mixer activity.** A pool whose
+  `lp_asset_id` mixer pool sees few deposits gives weak anonymity
+  for redemption. Same UX warning as the mixer.
+- **Solo-intent batches expose the trader.** A batch with
+  `n_intents = 1` has its full amounts publicly inferable from
+  the batch deltas. The dapp warns when an intent is likely to
+  settle solo.
+- **Settler races waste proof work.** When multiple settlers race
+  to include the next batch, only one wins. Off-chain coordination
+  reduces this; in steady state it's a manageable cost.
 - **Indexer-validated, not Bitcoin-consensus-enforced.** Same trust
   model as Runes / Ordinals / tacit's mixer. Well-established but
   readers should understand it.
@@ -668,28 +893,35 @@ Everything is design-phase. Nothing is implemented.
 ## Defensible one-paragraph summary
 
 > A Runes-style indexer-validated meta-protocol on Bitcoin L1 that
-> adds a constant-product AMM with confidential trade amounts
-> (Pedersen commitments) and Tornado-style anonymous LP positions
-> (Groth16 + nullifiers + Poseidon merkle tree). Reserves live in a
-> single pool UTXO per asset (BTC side public via UTXO sats; asset
-> side hidden via envelope commitment); state transitions are enforced
-> by per-pool Groth16 circuits the indexer verifies. Single-pool-UTXO
-> contention is solved by a Cardano-style permissionless batcher
-> layer. No bridges, no sidechains, no federation — pool state is
-> reconstructed from L1 envelope data; proofs are verified
-> client-side. The cryptographic primitives reuse tacit's mixer stack;
-> the *composition* of these specific things into an AMM on Bitcoin L1
-> doesn't appear to have a live production peer. Engineering and
-> integration achievement, not cryptographic invention.
+> adds a uniform-clearing-price block-batched AMM between any two
+> tacit-native confidential assets. Pool reserves are virtual public
+> quantities tracked by the indexer; **no UTXO anywhere holds pool
+> funds** — the protocol custodies nothing, exactly mirroring the
+> mixer's architecture. Per-trader amounts in a batch are confidential
+> via Pedersen; LP positions are confidential tacit assets that
+> compose with the existing mixer for anonymous participation. Each
+> Bitcoin block, a permissionless settler bundles all queued swap
+> intents and settles them in one transaction at one uniform price —
+> eliminating intra-batch MEV by construction. BTC trading flows
+> through cBTC (a separate wrapper) so the AMM never directly
+> custodies sats. The cryptographic primitives reuse tacit's mixer
+> stack; the *composition* of these specific things into an AMM on
+> Bitcoin L1 doesn't appear to have a live production peer.
+> Engineering and integration achievement, not cryptographic
+> invention.
 
 ## References
 
 - SPEC: [`SPEC.md`](./SPEC.md) — normative tacit spec
 - MIXER: [`MIXER.md`](./MIXER.md) — companion architecture summary
+  (the AMM extends the same virtual-pool pattern)
 - Uniswap V2 whitepaper: <https://uniswap.org/whitepaper.pdf>
 - Penumbra ZSwap: <https://protocol.penumbra.zone/main/zswap.html>
-- Cardano DEX batcher pattern (SundaeSwap design notes,
-  Minswap docs): <https://docs.minswap.org/>
-- Tempo DEX (pathUSD routing): <https://docs.tempo.xyz/guide/stablecoin-dex>
+- Gnosis Protocol (uniform-clearing batch auction):
+  <https://docs.gnosis.io/protocol/>
+- Cardano DEX batcher pattern (Minswap docs):
+  <https://docs.minswap.org/>
+- Tempo DEX (pathUSD routing):
+  <https://docs.tempo.xyz/guide/stablecoin-dex>
 - Tornado Cash whitepaper: <https://tornado.cash/Tornado.pdf>
 - Indexer-validated meta-protocol pattern: <https://docs.ordinals.com/>
