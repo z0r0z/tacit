@@ -56,12 +56,20 @@ cd "$(dirname "$0")"
 # --- token ---
 if [ -z "${CEREMONY_INIT_TOKEN:-}" ]; then
   printf "Paste CEREMONY_INIT_TOKEN (from your password manager): "
-  read -rs CEREMONY_INIT_TOKEN
+  # IFS= prevents bash from trimming leading/trailing whitespace inside
+  # the read. -r disables backslash escape processing. -s silences echo
+  # so the paste doesn't appear on screen or in shell history.
+  IFS= read -rs CEREMONY_INIT_TOKEN
   echo
 fi
 if [ -z "$CEREMONY_INIT_TOKEN" ]; then
   echo "no token provided"; exit 1
 fi
+# Defensively strip a stray trailing newline some password managers
+# include in their copy buffer. Token chars are URL-safe alnum + dashes;
+# whitespace would always be a paste artifact, never a real token char.
+CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\n'}"
+CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\r'}"
 
 mkdir -p build artifacts ceremony-bundle
 

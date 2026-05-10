@@ -134,19 +134,23 @@ completion (~2-3 minutes).
 
 ### Step 3 — Watch the output
 
-The script will print 8 numbered steps. Expected output:
+The script will print 8 numbered steps (preceded by an auto-pick line if
+you didn't pass an explicit block height). Expected output:
 
 ```
+==> No block height provided — auto-picking (tip - 12) for ≥12 confirmations
+    tip=948824  →  beacon block height: 948812
+
 ==> [1/8] Fetching ceremony state
     contributions: 1247
     head zkey:     bafybeib...
     finalized:     False
 
 ==> [2/8] Downloading head zkey from IPFS
-    5510531 bytes
+    5510531 bytes (zkey magic OK)
 
-==> [3/8] Fetching Bitcoin block 847123 hash from mempool.space
-    block 847123: 00000000000000000001abc...
+==> [3/8] Fetching + cross-checking Bitcoin block 948812 hash
+    block 948812: 00000000000000000001abc... (mempool.space ≡ blockstream.info ✓)
 
 ==> [4/8] Applying beacon (numIterationsExp=10 → 1024 actual iterations)
     wrote build/withdraw_final.zkey (5510531 bytes)
