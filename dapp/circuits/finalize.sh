@@ -59,10 +59,12 @@ if [ -z "${CEREMONY_INIT_TOKEN:-}" ]; then
   # IFS= prevents bash from trimming leading/trailing whitespace inside
   # the read. -r disables backslash escape processing. -s silences echo
   # so the paste doesn't appear on screen or in shell history.
-  IFS= read -rs CEREMONY_INIT_TOKEN
+  # || true so a closed-stdin (CI / piped invocation) doesn't trip set -e
+  # before the explicit empty-token check below.
+  IFS= read -rs CEREMONY_INIT_TOKEN || true
   echo
 fi
-if [ -z "$CEREMONY_INIT_TOKEN" ]; then
+if [ -z "${CEREMONY_INIT_TOKEN:-}" ]; then
   echo "no token provided"; exit 1
 fi
 # Defensively strip a stray trailing newline some password managers
@@ -92,7 +94,9 @@ fi
 if [ "$COUNT" = "0" ]; then
   echo "    Warning: ceremony has 0 contributions (only the genesis). Are you sure?"
   printf "    Continue anyway? [y/N] "
-  read -r yn
+  # || yn="" so closed-stdin (non-interactive run) defaults to N rather
+  # than tripping set -e and exiting with a confusing error.
+  read -r yn || yn=""
   [ "$yn" = "y" ] || [ "$yn" = "Y" ] || exit 0
 fi
 
@@ -147,12 +151,17 @@ echo "==> [4/8] Applying beacon (numIterationsExp=10 → 1024 actual iterations)
 # also handles the case where snarkjs's CLI swallows beacon() errors
 # (its zkeyBeacon command in cli.cjs ignores beacon's return value).
 rm -f build/withdraw_final.zkey
-npx snarkjs zkey beacon \
+# CEREMONY_INIT_TOKEN= prefixes scrub the token from snarkjs's
+# child-process env. snarkjs itself doesn't log env, but defensively
+# clearing it ensures no transitive npm dep can ever see the token via
+# process.env. Subshell scope means the outer script still has the
+# token for the POST in step 6.
+( CEREMONY_INIT_TOKEN= npx snarkjs zkey beacon \
   build/withdraw_pre_beacon.zkey \
   build/withdraw_final.zkey \
   "$BTC_BLOCK_HASH" 10 \
   -n "bitcoin block $BLOCK_HEIGHT beacon" \
-  > build/beacon.log 2>&1 || true
+  > build/beacon.log 2>&1 ) || true
 if [ ! -s build/withdraw_final.zkey ]; then
   echo "    ✗ beacon application produced no output."
   echo "      See build/beacon.log for the snarkjs error trail."
@@ -198,11 +207,11 @@ echo "    Running snarkjs zkey verify (this can take ~30-60s)…"
 # changed between minor versions ("ZKey OK!" → "ZKey Ok!"); the exit code
 # contract is stable. Output captured to build/verify.log for diagnostics
 # on failure.
-if ! npx snarkjs zkey verify \
+if ! ( CEREMONY_INIT_TOKEN= npx snarkjs zkey verify \
     build/withdraw_chain.r1cs \
     build/pot14_chain.ptau \
     build/withdraw_final.zkey \
-    > build/verify.log 2>&1; then
+    > build/verify.log 2>&1 ); then
   echo
   echo "    ✗ LOCAL VERIFY FAILED. Beacon-applied zkey is NOT a valid extension"
   echo "      of the chain. Aborting before POST so the ceremony stays open."
@@ -239,6 +248,11 @@ if [ "$HTTP_CODE" = "409" ]; then
   echo "      The ceremony is UNCHANGED; just re-run this script to pick"
   echo "      up the new head + re-beacon + re-POST."
   echo
+  echo "      TIP: wait ~60 seconds before retrying so contribute rate"
+  echo "      can settle below the pin-window race threshold. If 409"
+  echo "      fires twice in a row, pause public promotion (e.g., tweet"
+  echo "      'closing contributions in 5 min') before retrying."
+  echo
   echo "    Worker response:"
   cat build/finalize_response.json 2>/dev/null
   echo
@@ -258,10 +272,10 @@ echo "    state: $(echo "$RESP" | python3 -c "import sys,json; s=json.load(sys.s
 
 echo
 echo "==> [7/8] Exporting verifying key"
-npx snarkjs zkey export verificationkey \
+( CEREMONY_INIT_TOKEN= npx snarkjs zkey export verificationkey \
   build/withdraw_final.zkey \
   artifacts/verification_key_final.json \
-  >/dev/null 2>&1
+  > build/export_vk.log 2>&1 )
 N_PUBLIC=$(python3 -c "import json; print(json.load(open('artifacts/verification_key_final.json'))['nPublic'])")
 echo "    artifacts/verification_key_final.json (nPublic=$N_PUBLIC)"
 
@@ -277,17 +291,104 @@ cp build/withdraw_pre_beacon.zkey ceremony-bundle/withdraw_pre_beacon.zkey
 cp build/withdraw_final.zkey ceremony-bundle/withdraw_final.zkey
 cp artifacts/verification_key_final.json ceremony-bundle/verification_key_final.json
 cp artifacts/verification_key_final.json ceremony-bundle/verification_key.json
-curl -sf --max-time 120 "$WORKER/ceremony/$CIRCUIT_HASH/attestations" > ceremony-bundle/attestations.json
+
+# Paginate attestations through cursor mode so the bundle ships EVERY
+# record, not just the latest 100. /attestations (no cursor key) is
+# recent-mode and capped at the limit param; for an audit bundle we want
+# the entire chain. Walk via ?cursor= until list_complete.
+#
+# Uses curl for the network (Python's urllib is occasionally blocked by
+# Cloudflare on default User-Agent) and python for JSON merge + sort.
+# Output is a single JSON file with all attestations sorted by idx.
+echo "    Paginating attestations through cursor mode…"
+> build/attest_pages.jsonl
+cursor=""
+pages=0
+total=0
+while [ $pages -lt 200 ]; do
+  pages=$((pages + 1))
+  page=$(curl -sf --max-time 120 -A "tacit-finalize/1.0" \
+    "${WORKER}/ceremony/${CIRCUIT_HASH}/attestations?limit=1000&cursor=${cursor}")
+  if [ -z "$page" ]; then
+    echo "    ERROR: empty response on page $pages"
+    exit 1
+  fi
+  # Append this page's body as one line of JSON to the JSONL file.
+  echo "$page" >> build/attest_pages.jsonl
+  page_count=$(echo "$page" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('attestations',[])))")
+  total=$((total + page_count))
+  list_complete=$(echo "$page" | python3 -c "import json,sys; print(json.load(sys.stdin).get('list_complete', True))")
+  if [ "$list_complete" = "True" ]; then break; fi
+  next_cursor=$(echo "$page" | python3 -c "import json,sys; print(json.load(sys.stdin).get('cursor', ''))")
+  if [ -z "$next_cursor" ]; then break; fi
+  # URL-encode the cursor (it's opaque base64-ish, may contain + / =).
+  cursor=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$next_cursor")
+done
+# Merge all pages, sort by index for deterministic audit-friendly output.
+ATTEST_COUNT=$(python3 <<'PY'
+import json, sys
+out = []
+with open("build/attest_pages.jsonl") as f:
+    for line in f:
+        body = json.loads(line)
+        out.extend(body.get("attestations", []))
+out.sort(key=lambda a: (a.get("index", 0), a.get("cid", "")))
+with open("ceremony-bundle/attestations.json", "w") as g:
+    json.dump({"attestations": out, "count": len(out), "list_complete": True}, g, indent=2)
+print(len(out))
+PY
+)
+echo "    bundled $ATTEST_COUNT attestation records (paginated across $pages page(s))"
+
+# Compute audit-relevant hashes ONCE for use in the bundle README.
+PTAU_SHA256=$(shasum -a 256 ceremony-bundle/pot14_final.ptau | cut -d' ' -f1)
+PTAU_BLAKE2B=$(openssl dgst -blake2b512 ceremony-bundle/pot14_final.ptau 2>/dev/null | awk '{print $NF}')
+FINAL_SHA256=$(shasum -a 256 ceremony-bundle/withdraw_final.zkey | cut -d' ' -f1)
+PRE_BEACON_SHA256=$(shasum -a 256 ceremony-bundle/withdraw_pre_beacon.zkey | cut -d' ' -f1)
+R1CS_SHA256=$(shasum -a 256 ceremony-bundle/withdraw.r1cs | cut -d' ' -f1)
+VK_SHA256=$(shasum -a 256 ceremony-bundle/verification_key.json | cut -d' ' -f1)
+
 {
   echo "# Tacit mixer ceremony — circuit $CIRCUIT_HASH"
   echo
-  echo "- Phase 1 ptau: Polygon Hermez pot14 (BLAKE2b matches snarkjs README row 14)"
-  echo "- Phase 2: $COUNT contributions, see attestations.json"
-  echo "- Beacon: Bitcoin block $BLOCK_HEIGHT ($BTC_BLOCK_HASH), 10 iterations"
-  echo "- Final zkey sha256: $(shasum -a 256 ceremony-bundle/withdraw_final.zkey | cut -d' ' -f1)"
+  echo "## Phase 1 (Powers of Tau)"
   echo
-  echo "Verify locally:"
+  echo "Polygon Hermez ceremony output \`powersOfTau28_hez_final_14.ptau\`:"
+  echo "- 71-contributor public Phase 1 ceremony (2020–2022)"
+  echo "- Bitcoin-block-hash beacon-finalized at the end"
+  echo "- Cross-check against snarkjs/README.md row 14:"
+  echo "  https://github.com/iden3/snarkjs#7-prepare-phase-2"
+  echo
+  echo "File hashes (this bundle's \`pot14_final.ptau\`):"
+  echo "- sha256:  $PTAU_SHA256"
+  if [ -n "$PTAU_BLAKE2B" ]; then
+    echo "- blake2b: $PTAU_BLAKE2B"
+  fi
+  echo
+  echo "## Phase 2 (per-circuit MPC)"
+  echo
+  echo "- $COUNT contributions across $ATTEST_COUNT total attestation records (see \`attestations.json\`)"
+  echo "- Beacon-finalized: Bitcoin block $BLOCK_HEIGHT, hash \`$BTC_BLOCK_HASH\`, 10 iterations (= 1024 actual MiMC iterations)"
+  echo "- Cross-checked at finalize time against blockstream.info (matched mempool.space)"
+  echo
+  echo "## Files in this bundle"
+  echo
+  echo "| File | Purpose | sha256 |"
+  echo "| --- | --- | --- |"
+  echo "| \`withdraw.r1cs\`               | Circuit constraint system        | \`$R1CS_SHA256\` |"
+  echo "| \`pot14_final.ptau\`            | Phase 1 powers-of-tau (Hermez)   | \`$PTAU_SHA256\` |"
+  echo "| \`withdraw_pre_beacon.zkey\`    | Last contribution before beacon  | \`$PRE_BEACON_SHA256\` |"
+  echo "| \`withdraw_final.zkey\`         | Beacon-applied production zkey   | \`$FINAL_SHA256\` |"
+  echo "| \`verification_key.json\`       | Production verifying key         | \`$VK_SHA256\` |"
+  echo "| \`attestations.json\`           | Full Phase 2 contribution chain  | (count: $ATTEST_COUNT) |"
+  echo
+  echo "## Verify locally"
+  echo
+  echo "Confirm the beacon-applied zkey is a valid extension of the chain:"
+  echo
   echo '    npx snarkjs zkey verify withdraw.r1cs pot14_final.ptau withdraw_final.zkey'
+  echo
+  echo "Should print \`ZKey Ok!\` on success."
 } > ceremony-bundle/README.md
 
 echo "    ceremony-bundle/ ready ($(du -sh ceremony-bundle | cut -f1))"

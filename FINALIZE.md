@@ -296,7 +296,8 @@ error: ...`. The chain stays open (not finalized).
 | `401 unauthorized` | Wrong/missing `CEREMONY_INIT_TOKEN` | Re-export the correct token, re-run |
 | `404 ceremony not found` | Wrong circuit hash | Verify `TACIT_DEFAULT_CEREMONY_HASH` in dapp matches the worker's KV |
 | `409 ceremony already finalized` | Already finalized (somehow) | Verify with curl in step 4; if truly already finalized, you're done |
-| `400 beacon_block_hash must be exactly 64 hex chars` | mempool.space returned something weird | Re-pick block, try again |
+| `409 stale expected_head_cid` | A contribute landed during the IPFS pin window; chain advanced past what we beaconed | Re-run the script — auto-pick fetches fresh head + re-beacons + re-POSTs. If it fires twice in a row, wait ~60s for contribute rate to settle, then retry |
+| `400 missing expected_head_cid` | Hand-POSTing without using the script | Use `./finalize.sh`, which always sends the CAS field |
 | `502 pin failed` | Pinata is having an outage | Wait a few minutes, re-run |
 
 ### Network error mid-POST

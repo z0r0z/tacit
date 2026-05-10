@@ -905,29 +905,35 @@ async function handleCeremonyAttestations(req, env, url, circuitHash, cors) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
   }
   const limit = Math.max(1, Math.min(safeInt(url.searchParams.get('limit'), 100, { min: 1, max: 1000 }), 1000));
-  const cursor = url.searchParams.get('cursor') || undefined;
+  // Distinguish "cursor key absent" (recent mode) from "cursor key present
+  // but empty" (cursor mode starting from beginning). Auditors paginating
+  // the full chain hit `?cursor=` for the first call — without this
+  // distinction they'd land in recent mode and only see the alphabetically-
+  // last `limit` records, missing the genesis + early contributions.
+  const hasCursor = url.searchParams.has('cursor');
+  const cursor = hasCursor ? url.searchParams.get('cursor') : null;
   // Two modes:
   //
-  // 1. **Cursor mode** (`?cursor=<token>`): forward-pagination through the
-  //    full record set. Each call returns up to `limit` records starting
-  //    from the cursor, plus a next-page cursor. Used by audit tooling that
-  //    needs every record (e.g., post-finalize verification, bulk export).
+  // 1. **Cursor mode** (`?cursor=<token>` or `?cursor=` for start-of-chain):
+  //    forward-pagination through the full record set. Each call returns up
+  //    to `limit` records starting from the cursor (or from the beginning
+  //    if cursor is empty), plus a next-page cursor. Used by audit tooling
+  //    that needs every record (e.g., post-finalize verification, bulk
+  //    export, ceremony bundle attestations.json).
   //
-  // 2. **Recent mode** (no cursor, default): returns the *truly* latest
+  // 2. **Recent mode** (no cursor key, default): returns the *truly* latest
   //    `limit` records by walking every page server-side and slicing the
   //    last `limit` from the alphabetically-sorted list. This is what UI
-  //    "recent contributions" panels actually want. Without this server-
-  //    side walk, the dapp would see only the alphabetically-first `limit`
-  //    records (= lowest idx, oldest contributions), which freezes the
-  //    "recent" panel at the start of the chain once the ceremony grows
-  //    past the default limit. The walk is bounded at 50 pages × 1000 keys
-  //    = 50k records — well past any realistic ceremony scale.
-  if (cursor) {
-    const list = await env.REGISTRY_KV.list({
+  //    "recent contributions" panels actually want.
+  if (hasCursor) {
+    const listOpts = {
       prefix: ceremonyContribPrefix(circuitHash),
       limit,
-      cursor,
-    });
+    };
+    // Empty cursor string = start from beginning of the prefix range.
+    // Non-empty cursor string = continue from that opaque KV cursor.
+    if (cursor) listOpts.cursor = cursor;
+    const list = await env.REGISTRY_KV.list(listOpts);
     const attestations = [];
     for (const k of list.keys) {
       const r = await env.REGISTRY_KV.get(k.name, 'json');
@@ -1105,8 +1111,13 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   // was built on top of. Used for the post-pin CAS check below — closes
   // the lost-contribution race where a contribute lands during the
   // (multi-second) IPFS pin window and finalize would otherwise silently
-  // overwrite it. Optional for back-compat; clients SHOULD send it.
+  // overwrite it. REQUIRED — there is no legitimate flow that sends a
+  // finalize POST without this field, and accepting one would silently
+  // disable the CAS gate.
   const expectedHeadCid = String(fd.get('expected_head_cid') || '');
+  if (!expectedHeadCid) {
+    return jsonResponse({ error: 'missing expected_head_cid — required for the CAS gate that prevents lost contributions during the IPFS pin window' }, 400, cors);
+  }
   if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
   if (zkey.size > 32 * 1024 * 1024) return jsonResponse({ error: 'zkey too large' }, 413, cors);
   // 64 hex = sha256 / Bitcoin block hash — what snarkjs's beacon stage expects.
@@ -1133,23 +1144,18 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   // past what the beacon was applied to. Without this check, finalize
   // would silently overwrite the contribute's chain advance, leaving an
   // orphan contrib record and "lost" entropy for that contributor. Same
-  // pattern handleCeremonyContribute uses (line ~791-797). Soundness
-  // still holds without this check (≥1-honest is already satisfied), but
-  // we owe the contributors who land mid-pin a clean rejection so they
-  // can retry through a re-finalize cycle.
-  if (expectedHeadCid) {
-    const fresh = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
-    if (!fresh || fresh.head_cid !== expectedHeadCid) {
-      return jsonResponse({
-        error: 'stale expected_head_cid — chain advanced during finalize pin window; refresh head and retry',
-        expected: expectedHeadCid,
-        actual_head_cid: fresh ? fresh.head_cid : null,
-        actual_contribution_count: fresh ? fresh.contribution_count : null,
-      }, 409, cors);
-    }
-    if (fresh.finalized) {
-      return jsonResponse({ error: 'ceremony was finalized between pin and CAS — race lost', state: fresh }, 409, cors);
-    }
+  // pattern handleCeremonyContribute uses (line ~791-797).
+  const fresh = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!fresh || fresh.head_cid !== expectedHeadCid) {
+    return jsonResponse({
+      error: 'stale expected_head_cid — chain advanced during finalize pin window; refresh head and retry',
+      expected: expectedHeadCid,
+      actual_head_cid: fresh ? fresh.head_cid : null,
+      actual_contribution_count: fresh ? fresh.contribution_count : null,
+    }, 409, cors);
+  }
+  if (fresh.finalized) {
+    return jsonResponse({ error: 'ceremony was finalized between pin and CAS — race lost', state: fresh }, 409, cors);
   }
 
   const newCount = (state.contribution_count || 0) + 1;
@@ -5783,7 +5789,12 @@ export default {
         // Cursor-based pagination is per-page audit work — caching adds
         // no value and would just waste edge memory. Default-mode
         // (no cursor) is the hot path that polling UIs hit; cache it.
-        if (url.searchParams.get('cursor')) {
+        // Use .has() not .get() so `?cursor=` (empty value, used to
+        // start a forward walk from genesis) ALSO bypasses cache.
+        // Without .has(), `?cursor=` was sharing a cache entry with
+        // recent-mode requests at the same limit, returning newest-N
+        // records instead of the genesis-start-forward chunk.
+        if (url.searchParams.has('cursor')) {
           return handleCeremonyAttestations(req, env, url, hash, cors);
         }
         // Cache key includes limit so different limit values get their
