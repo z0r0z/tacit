@@ -12103,6 +12103,38 @@ async function ceremonyContribute() {
     }
     _ceremonyState = fresh;
 
+    // Auto-retry on stale prev_cid (CAS race loss). Each retry generates
+    // fresh entropy, downloads the new head, re-mixes, re-uploads. The
+    // proving-key chain advances during peak contention, so a contributor
+    // who started 30-60s ago will sometimes find the head moved while they
+    // were mixing — the worker correctly rejects their stale upload, and
+    // without auto-retry they'd see "stale prev_cid" and have to manually
+    // refresh + click again. Each retry is a full fresh contribute flow:
+    // - fresh head download (chain has advanced)
+    // - fresh CSPRNG entropy (NOT reusing a prior attempt's bytes)
+    // - fresh snarkjs mix
+    // - fresh upload with the now-current prev_cid
+    // No state corruption is possible because every retry re-derives from
+    // the live state. Capped at 3 attempts to avoid runaway compute on
+    // pathologically high contention.
+    const MAX_CONTRIBUTE_ATTEMPTS = 3;
+    let attemptN = 0;
+    let upStatus = 0, upBody = '', upJson = {}, contributionHash = '', newZkey;
+    let _retrySucceeded = false;
+    while (attemptN < MAX_CONTRIBUTE_ATTEMPTS) {
+      if (attemptN > 0) {
+        // Re-refresh state — chain head has advanced past us. Fresh state
+        // gives the new head_cid that this attempt will mix on top of.
+        _ceremonyLogToProgress(`Retrying — chain advanced while you were mixing (attempt ${attemptN + 1}/${MAX_CONTRIBUTE_ATTEMPTS}). Fresh entropy this time.`);
+        contribBtn.textContent = 'Retrying…';
+        _ceremonyProgressStep(0, `Refreshing for retry (attempt ${attemptN + 1}/${MAX_CONTRIBUTE_ATTEMPTS})…`);
+        let fresh2;
+        try { fresh2 = await ceremonyFetchState(_ceremonyActiveHash); }
+        catch (e) { throw new Error('failed to refresh ceremony state on retry: ' + (e.message || e)); }
+        if (!fresh2) throw new Error('ceremony no longer exists at this hash — refresh the page');
+        if (fresh2.finalized) throw new Error('ceremony was finalized between your retries — chain is locked');
+        _ceremonyState = fresh2;
+      }
     stage = 'fetch_head';
     contribBtn.textContent = 'Downloading…';
     _ceremonyProgressStep(0, `Downloading current setup file (${_ceremonyState.head_cid.slice(0, 12)}…)`);
@@ -12186,7 +12218,9 @@ async function ceremonyContribute() {
         _ceremonyProgressIndeterminate(true);
       }
     };
-    const { newZkey, contributionHash } = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState, onPhase);
+    const _mixed = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState, onPhase);
+    newZkey = _mixed.newZkey;
+    contributionHash = _mixed.contributionHash;
     _ceremonyLogToProgress(`Contributed in ${((Date.now() - t0)/1000).toFixed(1)}s. Hash: ${contributionHash.slice(0, 32)}…`);
     _ceremonyLogToProgress(`Uploading ${newZkey.length} bytes…`);
     // Step 2 (Contribute) just finished — tally the produced zkey size.
@@ -12207,7 +12241,7 @@ async function ceremonyContribute() {
     // stream doesn't expose upload progress events in any browser yet.
     // Rejection paths preserved verbatim with the same hint annotations as
     // the previous fetch-based code.
-    const { status: upStatus, body: upBody } = await new Promise((resolve, reject) => {
+    const _upResult = await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${WORKER_BASE}/ceremony/${_ceremonyActiveHash}/contribute`);
       xhr.upload.onprogress = (ev) => {
@@ -12228,17 +12262,41 @@ async function ceremonyContribute() {
       xhr.onabort = () => reject(new Error('upload aborted'));
       xhr.send(fd);
     });
-    let upJson = {};
+    upStatus = _upResult.status;
+    upBody = _upResult.body;
+    upJson = {};
     try { upJson = JSON.parse(upBody); } catch {}
-    if (upStatus < 200 || upStatus >= 300) {
-      // Annotate the worker's error message with retry-actionable hints
-      // for the most common rejection paths.
+    if (upStatus >= 200 && upStatus < 300) {
+      _retrySucceeded = true;
+      break; // out of the retry loop
+    }
+    // Upload rejected by worker. Decide whether to retry or surface the error.
+    {
       const wErr = upJson.error || `HTTP ${upStatus}`;
+      const isStale = /stale prev_cid|CAS race/i.test(wErr);
+      if (isStale && attemptN < MAX_CONTRIBUTE_ATTEMPTS - 1) {
+        // Auto-retry: race lost, but we have attempts left. Spin again
+        // with a fresh head + fresh entropy. The contributor stays put;
+        // we don't need a page refresh.
+        attemptN++;
+        toast(`Race detected — chain advanced past you. Re-mixing with fresh entropy… (${attemptN + 1}/${MAX_CONTRIBUTE_ATTEMPTS})`, 'warn');
+        continue;
+      }
+      // Either out of retries (3 stales in a row → unusually persistent
+      // contention, surface it) or a non-retryable error (finalized / rate
+      // limit / unknown).
       let hint = '';
-      if (/stale prev_cid|CAS race/i.test(wErr)) hint = ' — another contributor landed first; refresh the page and retry.';
+      if (isStale) hint = ' — chain raced past you on every attempt; try again in a few seconds when contention drops, or refresh the page if the issue persists.';
       else if (/finalized/i.test(wErr)) hint = ' — the ceremony has been beacon-finalized and is locked; no further contributions accepted.';
       else if (/rate limit/i.test(wErr)) hint = ' — your IP hit the daily contribute cap; try again from a different network or tomorrow.';
       throw new Error(wErr + hint);
+    }
+    } // end retry loop
+    if (!_retrySucceeded) {
+      // Defensive — only reachable if the loop exits without success or
+      // throw, which shouldn't happen with the current logic. Surface
+      // explicitly rather than silently proceeding to the success path.
+      throw new Error('contribute loop exited without success — this is a bug, please report');
     }
     _ceremonyProgressIndeterminate(false);
     // Step 3 (Upload) just finished — tally the upload size + duration.

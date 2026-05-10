@@ -825,7 +825,15 @@ async function handleCeremonyAttestations(req, env, url, circuitHash, cors) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
   }
   const limit = Math.max(1, Math.min(safeInt(url.searchParams.get('limit'), 100, { min: 1, max: 1000 }), 1000));
-  const list = await env.REGISTRY_KV.list({ prefix: ceremonyContribPrefix(circuitHash), limit });
+  // Cursor pagination — Cloudflare KV.list maxes at 1000 keys per call, so
+  // the cap above isn't a worker-side decision, it's the KV runtime ceiling.
+  // Callers walking the full attestation index (e.g., post-finalize audit)
+  // pass `?cursor=<token>` from the previous response's `cursor` field.
+  // Default-no-cursor preserves byte-identical behavior for existing callers.
+  const cursor = url.searchParams.get('cursor') || undefined;
+  const listOpts = { prefix: ceremonyContribPrefix(circuitHash), limit };
+  if (cursor) listOpts.cursor = cursor;
+  const list = await env.REGISTRY_KV.list(listOpts);
   const attestations = [];
   for (const k of list.keys) {
     const r = await env.REGISTRY_KV.get(k.name, 'json');
@@ -834,7 +842,74 @@ async function handleCeremonyAttestations(req, env, url, circuitHash, cors) {
   // KV.list returns alphabetical by key — our padded-index prefix means
   // ascending by index (oldest first). Reverse for "most recent first" UX.
   attestations.reverse();
-  return jsonResponse({ attestations, count: attestations.length, list_complete: list.list_complete !== false }, 200, cors);
+  const body = {
+    attestations,
+    count: attestations.length,
+    list_complete: list.list_complete !== false,
+  };
+  // Surface the next-page cursor only when there's more to fetch. Callers
+  // can stop when `list_complete: true` OR when `cursor` is absent.
+  if (!body.list_complete && list.cursor) body.cursor = list.cursor;
+  return jsonResponse(body, 200, cors);
+}
+
+// GET /ceremony/:circuit_hash/stats — lightweight progress numbers without
+// downloading the full attestations index. Walks every contribution record
+// server-side via cursor pagination and returns only the aggregate counts:
+//
+//   - contribution_count        the live state's counter (raw accepts)
+//   - total_attestation_records every contrib record in KV (some are
+//                                CAS-race orphans whose CID isn't in the
+//                                canonical chain)
+//   - unique_chain_advances     distinct `index` values across all records
+//                                — this is the *true* chain depth and the
+//                                meaningful number for ceremony soundness
+//   - distinct_contributor_names number of distinct contributor names —
+//                                a proxy for trust-root diversity
+//
+// This endpoint is the durable way to track progress past the 1000-record
+// /attestations cap. Callers should poll this endpoint, not /attestations,
+// when measuring "have we hit our gold-tier target".
+async function handleCeremonyStats(req, env, circuitHash, cors) {
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
+  const uniqueIdx = new Set();
+  const distinctNames = new Set();
+  let totalRecords = 0;
+  let cursor;
+  // Hard cap on pagination to bound the worst case — at 1000 keys per page
+  // and a safety bound of 50 pages, we cover up to 50,000 contribution
+  // records. Past that threshold the ceremony has already comfortably
+  // exceeded any sane gold-tier target and partial counts are still
+  // directionally correct.
+  for (let page = 0; page < 50; page++) {
+    const listOpts = { prefix: ceremonyContribPrefix(circuitHash), limit: 1000 };
+    if (cursor) listOpts.cursor = cursor;
+    const list = await env.REGISTRY_KV.list(listOpts);
+    for (const k of list.keys) {
+      const r = await env.REGISTRY_KV.get(k.name, 'json');
+      if (!r) continue;
+      totalRecords++;
+      if (r.index !== undefined && r.index !== null) uniqueIdx.add(r.index);
+      if (r.contributor_name) distinctNames.add(r.contributor_name);
+    }
+    if (list.list_complete !== false) break;
+    cursor = list.cursor;
+    if (!cursor) break;
+  }
+  return jsonResponse({
+    circuit_hash: circuitHash,
+    contribution_count: state.contribution_count || 0,
+    finalized: !!state.finalized,
+    total_attestation_records: totalRecords,
+    unique_chain_advances: uniqueIdx.size,
+    distinct_contributor_names: distinctNames.size,
+    last_contributor: state.last_contributor || null,
+    last_contributed_at: state.last_contributed_at || null,
+  }, 200, cors);
 }
 
 // POST /ceremony/:circuit_hash/reset — admin operation. Wipes the ceremony
@@ -5526,6 +5601,10 @@ export default {
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/attestations$/i);
       if (m && req.method === 'GET') return handleCeremonyAttestations(req, env, url, m[1].toLowerCase(), cors);
+    }
+    {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/stats$/i);
+      if (m && req.method === 'GET') return handleCeremonyStats(req, env, m[1].toLowerCase(), cors);
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/reset$/i);
