@@ -207,12 +207,14 @@ fi
 
 # Hard floor on contribution count. SPEC §5.11.3 minimum is ≥5 disjoint
 # trust roots; production target per MIXER.md is "ideally 100s"; gold-tier
-# (Tornado-class) is 1100. Default to 1100 so a tired coordinator can't
-# accidentally finalize at, say, 200 contributions in the middle of an
-# active push. Override via MIN_CONTRIBUTIONS=N in env if you legitimately
-# want to finalize a small ceremony (e.g., asset with low expected volume).
-# Skipped in BUNDLE_ONLY since chain is already finalized.
-MIN_CONTRIBUTIONS="${MIN_CONTRIBUTIONS:-1100}"
+# (Tornado-class) is 1100. Default 2000 = comfortably past gold to give
+# the headline claim more margin and to match the coordinator's stated
+# target for this specific ceremony. Override via MIN_CONTRIBUTIONS=N
+# in env (e.g., MIN_CONTRIBUTIONS=1100 for a stricter Tornado-only
+# threshold, or MIN_CONTRIBUTIONS=5 for the SPEC absolute minimum on
+# a low-volume asset). Skipped in BUNDLE_ONLY since chain is already
+# finalized.
+MIN_CONTRIBUTIONS="${MIN_CONTRIBUTIONS:-2000}"
 if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
   echo "    ERROR: contribution_count is not numeric: '$COUNT'"
   exit 1
