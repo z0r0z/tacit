@@ -1079,7 +1079,7 @@ async function handleCeremonyReset(req, env, circuitHash, cors) {
 // further contribute calls are rejected. Multipart form: zkey (file),
 // beacon_block_hash (hex string for audit trail), beacon_iterations (int).
 // SPEC §3.7's beacon application closes the late-Sybil collusion window.
-async function handleCeremonyFinalize(req, env, circuitHash, cors) {
+async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   if (!ceremonyAuthOk(req, env)) {
     return jsonResponse({ error: 'unauthorized' }, 401, cors);
   }
@@ -1143,6 +1143,12 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors) {
   };
   await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, newCount, finalCid), JSON.stringify(rec));
 
+  // Invalidate the GET-endpoint edge caches so every dapp tab globally
+  // sees finalized:true on its next poll instead of waiting up to 30s
+  // for the cache to expire. Without this, the mixer-ceremony-locked
+  // class would remain on for up to half a TTL window after finalize,
+  // gating deposit/withdraw/init buttons that should already be live.
+  await _invalidateCeremonyCache(ctx, circuitHash);
   return jsonResponse({ state: newState, contribution: rec }, 200, cors);
 }
 
@@ -5770,7 +5776,7 @@ export default {
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/finalize$/i);
-      if (m && req.method === 'POST') return handleCeremonyFinalize(req, env, m[1].toLowerCase(), cors);
+      if (m && req.method === 'POST') return handleCeremonyFinalize(req, env, m[1].toLowerCase(), cors, ctx);
     }
     if (url.pathname === '/balance' && req.method === 'GET')   return handleBalance(env, cors);
     if (url.pathname === '/drip' && req.method === 'POST')     return handleDrip(req, env, cors);
