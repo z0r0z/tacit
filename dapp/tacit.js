@@ -3847,18 +3847,36 @@ function mixerGenerateDepositSecrets() {
 // then withdraw their own leaf to steal pool value (free inflation).
 //
 // Returns true on verified, false on permanent rejection (malformed tx,
-// asset_id/denom/leaf mismatch, sig invalid — leaf can never be valid),
-// null on transient fetch failure (mempool.space hiccup — caller should
-// retry on next refresh, not log a security warning). Caller treats
-// non-true as "do not apply this leaf"; the tri-state is purely so the
-// caller can distinguish "cried wolf" from a real bogus leaf.
-async function verifyMixerDepositKernelOnChain(depositTxidHex, expectedAssetIdHex, expectedDenom, leafCommitmentBytes, fetchTx) {
+// asset_id/denom/leaf mismatch, sig invalid, claimed height disagrees with
+// chain — leaf can never be valid), null on transient fetch failure
+// (mempool.space hiccup — caller should retry on next refresh, not log a
+// security warning). Caller treats non-true as "do not apply this leaf";
+// the tri-state is purely so the caller can distinguish "cried wolf" from
+// a real bogus leaf.
+//
+// `expectedHeight` (optional): if provided, the on-chain tx's confirmed
+// block_height MUST match. This is the dapp's defense against a worker
+// that lies about a leaf's canonical position — the canonical sort is
+// (height, tx_index, txid), and if the height the worker reports doesn't
+// match chain, every position derivation downstream is poisoned. Pass
+// null/undefined to skip (back-compat with callers that don't carry the
+// claimed height). The companion check on `tx_index` lives in
+// verifyTxIndexInBlock below; together they pin all three components of
+// the canonical sort key against L1.
+async function verifyMixerDepositKernelOnChain(depositTxidHex, expectedAssetIdHex, expectedDenom, leafCommitmentBytes, fetchTx, expectedHeight) {
   if (typeof fetchTx !== 'function') return false;
   const tx = await fetchTx(depositTxidHex);
   // getTx returns null on network error and on missing txs; we can't tell
   // them apart, so treat both as transient. A genuinely-missing deposit tx
   // would be a worker bug (it just told us this leaf is included).
   if (!tx) return null;
+  if (Number.isInteger(expectedHeight)) {
+    // mempool.space sets status.block_height only on confirmed txs. A
+    // worker emitting `deposited_at_height` for an unconfirmed tx is a
+    // bug or an attack; either way we refuse the leaf.
+    if (!tx.status || tx.status.confirmed !== true) return false;
+    if (Number(tx.status.block_height) !== Number(expectedHeight)) return false;
+  }
   if (!Array.isArray(tx.vin) || tx.vin.length < 2) return false;
   const inp = tx.vin[1];
   if (!inp || typeof inp.txid !== 'string' || typeof inp.vout !== 'number') return false;
@@ -3895,6 +3913,66 @@ async function verifyMixerDepositKernelOnChain(depositTxidHex, expectedAssetIdHe
     dec.assetId, denomBig, inputTxidBE, inp.vout, dec.leafCommitment,
   );
   return verifySchnorr(dec.kernelSig, kernelMsg, ExBytes);
+}
+
+// In-memory cache of (block_hash → ordered txid list). Block contents are
+// immutable past confirmation depth so no invalidation is needed; the cache
+// is per-session (no localStorage — a single block's txids array can be
+// 100KB+, not worth burning quota across reloads). Multiple deposits in
+// the same block share a fetch.
+const _blockTxidsCache = new Map();
+const _blockTxidsInFlight = new Map();
+
+// Fetch the ordered list of txids in a block from the configured Esplora
+// endpoint (mempool.space `/block/:hash/txids` returns a JSON array of
+// txid hex strings in their canonical block-position order — vendored API
+// contract: index in the array = tx_index in the block).
+//
+// Returns the array on success, or null on transient fetch failure (so the
+// caller can distinguish "couldn't tell" from "definitely doesn't match" —
+// same tri-state contract verifyMixerDepositKernelOnChain uses).
+async function fetchBlockTxids(blockHash) {
+  if (typeof blockHash !== 'string' || !/^[0-9a-f]{64}$/i.test(blockHash)) return null;
+  const key = blockHash.toLowerCase();
+  const cached = _blockTxidsCache.get(key);
+  if (cached) return cached;
+  const inflight = _blockTxidsInFlight.get(key);
+  if (inflight) return inflight;
+  const p = (async () => {
+    try {
+      const txids = await apiJson(`/block/${key}/txids`);
+      if (!Array.isArray(txids)) return null;
+      _blockTxidsCache.set(key, txids);
+      return txids;
+    } catch { return null; }
+  })().finally(() => { _blockTxidsInFlight.delete(key); });
+  _blockTxidsInFlight.set(key, p);
+  return p;
+}
+
+// Verify that `depositTxidHex` is at position `claimedTxIndex` in the block
+// identified by `blockHash`. This closes the residual canonical-position
+// attack surface left open by verifyMixerDepositKernelOnChain's height
+// pin: a worker that tells the truth about height could still lie about
+// `tx_index`, swapping the order of two same-block deposits. The dapp
+// would compute a merkle root no honest indexer's recent-roots window
+// contains and broadcast a doomed T_WITHDRAW (DoS only — Conservation is
+// already closed — but cheap to fix completely).
+//
+// Returns:
+//   true  — txid is at claimedTxIndex in its block
+//   false — definitely not at that index (worker lied or wrong block)
+//   null  — couldn't fetch the block's txid list (transient; retry later)
+async function verifyTxIndexInBlock(depositTxidHex, blockHash, claimedTxIndex, fetchTxids) {
+  if (typeof depositTxidHex !== 'string' || !/^[0-9a-f]{64}$/i.test(depositTxidHex)) return false;
+  if (!Number.isInteger(claimedTxIndex) || claimedTxIndex < 0) return false;
+  const fetcher = typeof fetchTxids === 'function' ? fetchTxids : fetchBlockTxids;
+  const txids = await fetcher(blockHash);
+  if (!Array.isArray(txids)) return null;
+  if (claimedTxIndex >= txids.length) return false;
+  const got = txids[claimedTxIndex];
+  if (typeof got !== 'string') return false;
+  return got.toLowerCase() === depositTxidHex.toLowerCase();
 }
 
 // Build the deposit envelope payload + kernel sig, given a chosen UTXO and
@@ -10425,6 +10503,50 @@ async function scanPools() {
       // Worker sorts by canonical KV-key order; we apply leaves we don't
       // yet have. Order is critical — append-only tree state is sensitive.
       //
+      // SPEC §5.10 canonical leaf order is (deposited_at_height, tx_index,
+      // deposit_txid) ascending. A worker that re-orders real leaves within
+      // their canonical sort would push the dapp to compute a merkle root
+      // that no honest indexer's recent-roots window contains — the user
+      // would then broadcast a doomed T_WITHDRAW that other indexers
+      // reject, leaking the nullifier on chain and burning BTC fees on a
+      // rejected envelope. Conservation (kernel re-verify below) is
+      // unaffected by reordering — it can't inflate the pool — so this is
+      // a DoS-only attack, but cheap to close. We refuse to apply *any*
+      // new leaves if the worker's list violates monotonicity; next refresh
+      // (or pointing the dapp at a different worker) re-tries cleanly.
+      // Same-block ties on tx_index would mean two leaves share a slot,
+      // which is impossible by construction (one T_DEPOSIT per tx); treat
+      // as failure. Records missing height/tx_index (legacy worker) skip
+      // the check and fall back to the kernel re-verify below — which by
+      // itself still closes Conservation.
+      let canonicalOrderOk = true;
+      for (let i = 1; i < remoteLeaves.length && canonicalOrderOk; i++) {
+        const a = remoteLeaves[i - 1];
+        const b = remoteLeaves[i];
+        const ah = a.deposited_at_height, bh = b.deposited_at_height;
+        const ai = a.tx_index, bi = b.tx_index;
+        if (!Number.isInteger(ah) || !Number.isInteger(bh) ||
+            !Number.isInteger(ai) || !Number.isInteger(bi) ||
+            typeof a.deposit_txid !== 'string' ||
+            typeof b.deposit_txid !== 'string') {
+          // Legacy / malformed record: skip the order check, rely on
+          // kernel re-verify alone.
+          continue;
+        }
+        if (bh < ah) { canonicalOrderOk = false; break; }
+        if (bh > ah) continue;
+        if (bi < ai) { canonicalOrderOk = false; break; }
+        if (bi > ai) continue;
+        // Same (height, tx_index) — impossible for two distinct deposits.
+        canonicalOrderOk = false;
+      }
+      if (!canonicalOrderOk) {
+        if (typeof console !== 'undefined') {
+          console.warn('[mixer] worker leaf list violates canonical (height, tx_index, txid) order in pool', aidHex.slice(0, 8), 'denom', denom.toString());
+        }
+        // Skip this pool's leaf application entirely; nullifier set still
+        // refreshes below since it's order-independent.
+      } else {
       // SPEC §5.10 / §5.11.4 invariant 1 — Conservation. Re-verify the
       // BIP-340 kernel sig under (C_in − denomination·H).x_only() before
       // appending. The worker is supposed to enforce this at index time,
@@ -10438,25 +10560,69 @@ async function scanPools() {
       // for cryptographic rejection (false), not transient fetch failures
       // (null) — otherwise a flaky mempool.space call logs a security
       // warning that has no real signal in it.
+      //
+      // We also pass the worker-claimed `deposited_at_height` so the
+      // kernel re-verify additionally pins the on-chain block height —
+      // closes the residual "worker lies about canonical position" attack
+      // surface (matched-height claim is what makes the canonical-order
+      // check above meaningful).
       for (let i = localLeafCount; i < remoteLeaves.length; i++) {
         const lc = remoteLeaves[i].leaf_commitment;
         const dtxid = remoteLeaves[i].deposit_txid;
         if (!lc || !dtxid) break;
         const lcBytes = hexToBytes(lc);
+        const claimedHeight = Number.isInteger(remoteLeaves[i].deposited_at_height)
+          ? remoteLeaves[i].deposited_at_height : null;
+        const claimedTxIndex = Number.isInteger(remoteLeaves[i].tx_index)
+          ? remoteLeaves[i].tx_index : null;
         let kernelOk;
         try {
           kernelOk = await verifyMixerDepositKernelOnChain(
-            dtxid, aidHex, denom, lcBytes, getTx,
+            dtxid, aidHex, denom, lcBytes, getTx, claimedHeight,
           );
         } catch { kernelOk = null; }
-        if (kernelOk === true) {
-          if (mixerAppendLeaf(aidHex, denom, lcBytes)) leavesApplied++;
-          continue;
+        if (kernelOk !== true) {
+          if (kernelOk === false && typeof console !== 'undefined') {
+            console.warn('[mixer] rejected unbacked leaf in pool', aidHex.slice(0, 8), 'denom', denom.toString(), 'tx', dtxid);
+          }
+          break;
         }
-        if (kernelOk === false && typeof console !== 'undefined') {
-          console.warn('[mixer] rejected unbacked leaf in pool', aidHex.slice(0, 8), 'denom', denom.toString(), 'tx', dtxid);
+        // Final canonical-position pin: the kernel re-verify above proved
+        // the leaf is real and the height matches chain; this final step
+        // proves the worker's tx_index claim matches the deposit_txid's
+        // actual position in its block. Same tri-state semantics — false
+        // is a hard reject (worker reordered same-block leaves), null is
+        // transient (block-txids fetch failed; retry next refresh).
+        if (claimedTxIndex !== null) {
+          let blockHash = null;
+          try {
+            const tx = await getTx(dtxid);
+            blockHash = tx?.status?.confirmed === true ? tx.status.block_hash : null;
+          } catch {}
+          if (typeof blockHash === 'string') {
+            let posOk;
+            try { posOk = await verifyTxIndexInBlock(dtxid, blockHash, claimedTxIndex); }
+            catch { posOk = null; }
+            if (posOk === false) {
+              if (typeof console !== 'undefined') {
+                console.warn('[mixer] worker tx_index does not match block position in pool', aidHex.slice(0, 8), 'denom', denom.toString(), 'tx', dtxid, 'claimed', claimedTxIndex);
+              }
+              break;
+            }
+            if (posOk === null) {
+              // Transient block-txids fetch failure. Don't apply this leaf
+              // (canonical-position unverified) and stop the apply-loop
+              // here; next refresh retries from the same index.
+              break;
+            }
+          }
+          // claimedTxIndex was passed but blockHash was unavailable
+          // (e.g., tx unconfirmed in our local view) — treat as transient
+          // and stop without flagging. Mirrors the height-pin failure path.
+          else { break; }
         }
-        break;
+        if (mixerAppendLeaf(aidHex, denom, lcBytes)) leavesApplied++;
+      }
       }
     }
     const remoteNullifiers = Array.isArray(detail.nullifiers) ? detail.nullifiers : [];
@@ -12045,7 +12211,7 @@ async function ceremonyContribute() {
     _ceremonyLogToProgress(`✓ Accepted as contribution #${upJson.contribution?.index}. New head: ${upJson.contribution?.cid}`);
     toast(`Contribution #${upJson.contribution?.index} landed. Hash: ${contributionHash.slice(0, 16)}…`, 'success');
 
-    // Build the attestation tweet. Share link uses the legacy
+    // Build the attestation text. Share link uses the legacy
     // `?ceremony=<canonical>` format so URLs already in circulation keep
     // working. The hash is *ignored* by the receiver (setupCeremonyHandlers
     // below ignores any user-supplied hash and pins the contribute UI to
@@ -12053,11 +12219,13 @@ async function ceremonyContribute() {
     // auto-jump-to-mixer-tab + scroll-to-ceremony UX. Using the constant
     // rather than `_ceremonyActiveHash` means an in-session coordinator-init
     // mutation can never leak a non-canonical hash into a shared URL.
+    //
+    // The persistent success banner exposes this text via a user-initiated
+    // Copy button + an X-intent share button; we deliberately do NOT auto-
+    // write to navigator.clipboard here. Silent clipboard writes immediately
+    // after a "ceremony complete" log line read as clipboard hijacking even
+    // when the payload is benign — the user-initiated paths are sufficient.
     const attest = `I contributed to the tacit mixer ceremony. Contribution #${upJson.contribution?.index}, hash ${contributionHash.slice(0, 32)}. https://tacit.finance/?ceremony=${TACIT_DEFAULT_CEREMONY_HASH} #tacit #btc`;
-
-    // Auto-copy attempt as a UX nicety. Failure is silent — the persistent
-    // success banner has a Copy button that works without permission flakes.
-    try { await navigator.clipboard.writeText(attest); _ceremonyLogToProgress('Attestation copied to clipboard.'); } catch {}
 
     // Post-flight verification (gap from the contributor-said-they-contributed
     // bug): re-fetch the attestations index and confirm our entry actually
@@ -23946,6 +24114,10 @@ export {
   // verifyMixerDepositKernel export to give the Conservation invariant
   // (SPEC §5.11.4 #1) negative-test coverage on both sides.
   computeDepositKernelMsg, verifyMixerDepositKernelOnChain,
+  // Canonical-position pinning helpers — exported so the conservation
+  // test file can negative-test the tx_index-against-block defense
+  // without driving a full scanPools refresh.
+  verifyTxIndexInBlock, fetchBlockTxids,
   // Mixer opcode constant — exported so tests can synthesize T_DEPOSIT
   // envelopes without re-deriving the byte value.
   T_DEPOSIT,

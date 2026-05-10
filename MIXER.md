@@ -5,8 +5,7 @@
 > nullifiers)** — all anchored to Bitcoin L1 data availability. No bridges,
 > no sidechains, no federation. The cryptographic primitives are
 > well-established; the *composition* of these three specific things on
-> Bitcoin L1 appears to be without a direct production peer at the time of
-> writing.
+> Bitcoin L1 has no live production peer that we know of.
 
 This document is a short positioning + architecture summary. The normative
 spec lives in [`SPEC.md` §5.10–§5.11 and §11](./SPEC.md).
@@ -87,8 +86,8 @@ function maps to a different layer in tacit:
 | SNARK verifier | EVM opcode | snarkjs in the dapp browser; indexer optional cross-check |
 | Conditional payout (only if proof valid) | EVM transfer | Fresh tacit UTXO whose ownership is asserted by indexer rules; an invalid proof's UTXO is never credited as spendable |
 
-Why this works for tacit specifically: every primitive a Tornado-style
-mixer needs was already shipped in tacit for non-mixer flows. Pedersen
+Why it composes: every primitive a Tornado-style mixer needs was already
+shipped in tacit for non-mixer flows. Pedersen
 amount commitments were already there for `CXFER`. Taproot envelope
 payloads were already the wire format for every tacit operation. Indexer-
 validated rules are how tacit's whole protocol works. Asset-level identity
@@ -252,7 +251,7 @@ pipeline.
 ### Adjacent designs reviewers will bring up
 
 When this hits an informed audience, expect these three to come up. Each
-is real, each is genuinely adjacent, none is the same composition:
+is real and adjacent, none is the same composition:
 
 - **Citrea, BitVM, BitVMX, Strudel, Alpen.** Bitcoin rollups / optimistic
   SNARK-verification proposals. Different category: *off-chain execution
@@ -341,7 +340,7 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 - ✅ Phase 1 ptau swapped to verified Hermez ceremony
 - ✅ Phase 2 ceremony coordinator (init / contribute / finalize) + auth
 - ✅ Client-side `verifyFromInit` before contribute
-- ✅ 99 mixer tests across 7 test files
+- ✅ 103 mixer tests across 7 test files
 - ⏸ **Public Phase 2 ceremony has not yet been run** — required before
   mainnet pool deployment. Coordinator + dapp UI are ready; the run
   itself is the remaining step.

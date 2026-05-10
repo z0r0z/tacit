@@ -978,6 +978,8 @@ if envelope.opcode == T_DEPOSIT:
     return false   # T_DEPOSIT produces no tacit UTXO
 ```
 
+**Implementation note.** Indexers MAY split this validator step between (a) a forward-state crawl that performs the kernel re-verify + canonical-position tree append, and (b) a recursive ancestry-walk discriminator that returns `false` to stop ancestors from treating a T_DEPOSIT-bearing reveal-tx output as a tacit UTXO. The reference worker handles the forward-state crawl in its scheduled scan and exposes pool state via `/pools`; the dapp mirrors the worker's pool snapshot in `scanPools` (with kernel + canonical-order re-checks per the three-verifier model) and the dapp's recursive validator merely returns `false` for any T_DEPOSIT it encounters during ancestry walks. Either layout satisfies the algorithm above.
+
 `vout[0]` of the reveal tx is BTC change, not a tacit UTXO. Recovery walks (§6) do not recurse through T_DEPOSIT envelopes.
 
 #### 5.10.1 POOL_INIT (variant of T_DEPOSIT, `denomination = 0` sentinel)
@@ -1008,6 +1010,8 @@ init_msg = SHA256(
 ```
 
 Once a pool is initialized, its `vk_cid` is fixed forever — content-addressed, no rotation, no soft-fork mechanism to migrate. Multiple `POOL_INIT` envelopes for the same `(asset_id, pool_denom)` are tolerated; the indexer treats only the *first canonically-ordered confirmed* one as canonical and ignores the rest. **No special privilege governs pool initialization** — the same first-mover dynamic as ticker disambiguation in CETCH (§4) applies.
+
+**`init_sig` is attestation-of-authorship, not soundness-enforcing.** Because pool init is permissionless and first-canonically-confirmed-wins, an unsigned (or arbitrarily-signed) POOL_INIT can claim the canonical slot exactly as well as a "properly" signed one. Indexers MAY surface the initializer pubkey for off-chain reputation / UI purposes, but MUST NOT make canonicalization or any soundness check contingent on `init_sig` validity. The field is preserved in the wire format to expose initializer identity to off-chain attestation systems and to allow a future soft-rule that gates canonicalization on signature validity should one ever be needed; v1 indexers do not verify it.
 
 Pool initialization is a metadata event only — no tacit UTXO is produced and the validator returns `false` for any vout against a POOL_INIT envelope.
 
@@ -1061,7 +1065,7 @@ if envelope.opcode == T_WITHDRAW:
     # blinding for an inflated amount. SPEC §3.8 constraint 4.
     require recipient_commitment == denomination · H + r_leaf · G
     record nullifier_hash as spent
-    vout must == 0
+    require validated vout index == 0   # T_WITHDRAW produces its tacit UTXO at vout[0]; any other vout index is rejected
     return true
 ```
 
@@ -1102,7 +1106,7 @@ The cryptographic privacy of T_WITHDRAW is **unconditional under the Groth16 + P
 
 | # | Invariant | Enforcement |
 |---|---|---|
-| 1 | **Conservation** | Each `T_DEPOSIT` consumes exactly one tacit UTXO of `(asset_id, denomination)` (kernel sig over `C_in − denomination·H`). Pool reserve = `(# included leaves − # spent nullifiers) × denomination`. |
+| 1 | **Conservation** | Each `T_DEPOSIT` consumes exactly one tacit UTXO of `(asset_id, denomination)` (kernel sig over `C_in − denomination·H`). Pool reserve = `(# included leaves − # spent nullifiers) × denomination`, where "included" means a leaf whose depositing tx has reached confirmation depth ≥ `MIXER_DEPOSIT_CONFIRMATION_DEPTH` (§5.10 reorg-safety gate). |
 | 2 | **Membership** | The proven leaf must lie in a recently-canonical merkle root (last `POOL_RECENT_ROOTS_WINDOW = 32` roots per §3.6). |
 | 3 | **Non-double-spend** | The published `nullifier_hash` MUST NOT appear in the pool's spent-set. Indexers atomically check + insert. |
 | 4 | **Output validity** | Recipient commitment is bound by `pedersenCommit(denomination, r_leaf) == recipient_commitment` (validator) AND by `bind_hash` squared into the proof (circuit constraint 5). Together these close the inflation-attack vector and the relayer-replay vector. |
@@ -1120,7 +1124,7 @@ The two checks (validator-side `bind_hash` recompute + circuit-side `bind_hash²
 | Verifier | Role | Authority |
 |---|---|---|
 | **Dapp browser (snarkjs)** | Verifies the proof before the user's wallet credits the new UTXO as spendable | **Authoritative for that user's wallet credit.** A failed verify here means the user does not see the UTXO as theirs, regardless of indexer state. |
-| **Indexer cron (worker, optional)** | Indexers MAY run snarkjs offline to flag invalid proofs in returned `/pools/:aid/:denom` responses | **Convenience caching.** Reference worker is structural-only (no snarkjs); indexer correctness is bounded by the dapp's authoritative re-verify. |
+| **Indexer cron (worker)** | Indexers MAY additionally run snarkjs offline to flag invalid proofs in returned `/pools/:aid/:denom` responses; this Groth16 layer is the optional one. | **Convenience caching.** The reference worker performs structural decode + kernel-sig re-verify (Conservation) + `bind_hash` recompute, but NOT Groth16 proof verification (no snarkjs in the worker runtime). Indexer correctness is bounded by the dapp's authoritative re-verify. |
 | **Light clients / third-party indexers** | Anyone running the spec MAY verify proofs locally to maintain trustlessness without trusting our worker | **Required for trustless wallet operation.** Clients that delegate proof-validity to a remote indexer accept that indexer's honesty assumption. |
 
 #### 5.11.5 Withdraw output and post-withdraw privacy
@@ -1267,11 +1271,11 @@ Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, T
 - **Network-scoped wallet keys.** v1 stores signet and mainnet identities under separate `localStorage` keys (`tacit-wallet-v1:signet`, `tacit-wallet-v1:mainnet`, plus `…:by:<extAddr>` variants when locally bound to an external wallet). Compromise of a signet/test key does NOT compromise mainnet — they're independent secrets generated on first use of each network. The trade-off is that switching from signet to mainnet (or vice versa) presents a fresh empty wallet by default; users who want to carry an identity across networks can manually `Import key` on the destination network. Older builds used a single un-namespaced `tacit-wallet-v1`; the dApp does not auto-migrate, so existing data under that key remains accessible only via manual import.
 - **T_PMINT reorg sensitivity.** Cap correctness for T_PETCH-rooted assets requires complete, canonically-ordered T_PMINT history. Two T_PMINTs near tip can each look valid in isolation yet collectively violate the cap when canonically ordered. v1 mitigates by requiring confirmation depth ≥ 3 for cap-credit (§5.9 *Confirmation depth*); the deeper the threshold, the smaller the reorg-revocation surface but the slower mint UX. Wallets MUST surface "pending" T_PMINT UTXOs as non-spendable until the depth threshold crosses, and MUST handle revocation events when an indexer reverts a previously-credited T_PMINT under new canonical ordering. CETCH+T_MINT assets are unaffected — credit there depends only on the issuer's signature, not on aggregate chain state.
 - **Reference-indexer KV.list cap.** The reference worker's `loadCanonicalPmints` currently fetches T_PMINT events via a single `KV.list({ limit: 1000 })` call per asset. An asset that accrues more than 1000 confirmed T_PMINTs across its lifetime will under-count `cumulative_minted` until the indexer is paginated. v1 ships with this cap; deployments expecting > 1000 mints on a single asset should patch `loadCanonicalPmints` to follow the `list_complete` cursor before relying on the published cap progress for buy/sell decisions.
-- **Mixer pool — testnet-ready, mainnet-blocked on ceremony.** Wire format (§5.10–§5.11), worker indexing (`/pools` + canonical leaf order + nullifier set + reorg-safety depth gate per `MIXER_DEPOSIT_CONFIRMATION_DEPTH`), dApp UI (Mixer tab), Groth16 prove + verify pipeline (snarkjs vendored at `vendor/tacit-mixer.min.js`), `T_DEPOSIT` / `T_WITHDRAW` broadcast flows, and indexer-determinism gates (worker `bind_hash` recompute mirrors dapp's per §11) are all shipped and tested (65 tests across 5 mixer test files; see `tests/mixer*.test.mjs`). Verifier soundness is closed per §3.8 + §5.11.1.
+- **Mixer pool — testnet-ready, mainnet-blocked on ceremony.** Wire format (§5.10–§5.11), worker indexing (`/pools` + canonical leaf order + nullifier set + reorg-safety depth gate per `MIXER_DEPOSIT_CONFIRMATION_DEPTH`), dApp UI (Mixer tab), Groth16 prove + verify pipeline (snarkjs vendored at `vendor/tacit-mixer.min.js`), `T_DEPOSIT` / `T_WITHDRAW` broadcast flows, and indexer-determinism gates (worker `bind_hash` recompute mirrors dapp's per §11) are all shipped and tested (103 tests across 7 mixer test files; see `tests/mixer*.test.mjs`). Verifier soundness is closed per §3.8 + §5.11.1.
 
-  **Mainnet is gated on TWO ceremony prerequisites that v1 ships with placeholder values:**
+  **Mainnet has ONE remaining ceremony prerequisite:**
 
-  1. **Phase 1 ptau provenance.** `dapp/circuits/build.sh` currently generates `pot14_final.ptau` locally with single-party entropy — fine for testnet, fatal for mainnet (the build.sh runner holds Phase 1 toxic waste; every withdraw proof is forgeable by that party). Production deployments MUST swap in a publicly-attested Phase 1 ceremony output (e.g., the Perpetual Powers of Tau ceremony) and pin its SHA256 in the `POOL_INIT` envelope. Phase 2 contributions cannot rescue a backdoored Phase 1.
+  1. ~~**Phase 1 ptau provenance.**~~ Resolved: `dapp/circuits/build.sh` fetches the publicly-attested Polygon Hermez ceremony output (`powersOfTau28_hez_final_14.ptau`, 71 public contributors, 2020–2022, Bitcoin-block-hash beacon-finalized) and dual-checks both SHA256 and BLAKE2b-512 against the canonical hashes published in the snarkjs README before proceeding; refuses to use the file on any mismatch. Phase 2 contributions cannot rescue a backdoored Phase 1, so this verified provenance is load-bearing — but it is shipped.
   2. **Phase 2 per-pool ceremony.** The dApp's ceremony coordinator (`/ceremony/init` + `/ceremony/.../contribute`) is shipped, but each pool's actual MPC ceremony with credible contributor diversity (≥ 5 disjoint trust roots; Tornado Cash's reference: ≥ 1100 contributors) MUST be run before any production deposit lands in the pool. Indexers MAY refuse to recognize pools whose Phase 2 contribution count is below a configured threshold.
 
   Wallets MAY transact freely on signet; mainnet pools that haven't met both prerequisites should be flagged in the dApp UI and refuse to enable the deposit / withdraw buttons.

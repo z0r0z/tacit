@@ -262,6 +262,107 @@ await test('returns null (transient) when fetchTx returns null — distinct from
   return ok === null;
 });
 
+// Height-pin: SPEC §5.10 canonical leaf order is (height, tx_index, txid).
+// A worker that lies about deposited_at_height to re-order a pool's leaves
+// would push the dapp to compute a tree whose root no honest indexer's
+// recent-roots window contains. The dapp closes that vector by passing
+// the worker-claimed height into verifyMixerDepositKernelOnChain and
+// rejecting on mismatch. Below we re-stub fetchTx with an annotated
+// status object (mempool.space includes status.block_height + confirmed
+// on confirmed txs) and exercise the gate.
+console.log('\nDapp side — height pin (canonical-order defense):');
+
+const honestTxAtHeight = (h) => async (id) => {
+  const tx = store.byTxid.get(String(id).toLowerCase());
+  if (!tx) return null;
+  if (id.toLowerCase() === honest.txid.toLowerCase()) {
+    return { ...tx, status: { confirmed: true, block_height: h } };
+  }
+  return tx;
+};
+
+await test('accepts when expectedHeight matches tx.status.block_height', async () => {
+  const ok = await dapp.verifyMixerDepositKernelOnChain(
+    honest.txid, parent.assetIdHex, DENOM, honest.leaf, honestTxAtHeight(800123), 800123,
+  );
+  return ok === true;
+});
+
+await test('rejects when expectedHeight does not match the on-chain block height', async () => {
+  const ok = await dapp.verifyMixerDepositKernelOnChain(
+    honest.txid, parent.assetIdHex, DENOM, honest.leaf, honestTxAtHeight(800123), 800124,
+  );
+  return ok === false;
+});
+
+await test('rejects when expectedHeight is given but tx is unconfirmed (no status)', async () => {
+  const stubUnconfirmed = async (id) => store.byTxid.get(String(id).toLowerCase()) || null;
+  const ok = await dapp.verifyMixerDepositKernelOnChain(
+    honest.txid, parent.assetIdHex, DENOM, honest.leaf, stubUnconfirmed, 800123,
+  );
+  return ok === false;
+});
+
+await test('skips height check when expectedHeight is omitted (back-compat)', async () => {
+  // Existing scanPools-style call sites pre-height-pin pass no expectedHeight
+  // and MUST keep working unchanged. The same call without status on the tx
+  // also has to succeed.
+  const ok = await dapp.verifyMixerDepositKernelOnChain(
+    honest.txid, parent.assetIdHex, DENOM, honest.leaf, store.fetchTx,
+  );
+  return ok === true;
+});
+
+// tx_index-against-block: closes the residual canonical-position gap. Even
+// if the worker tells the truth about deposited_at_height, it could lie
+// about tx_index to swap the order of two same-block deposits. The dapp
+// fetches the block's ordered txid list and checks that depositTxid is at
+// the claimed position.
+console.log('\nDapp side — verifyTxIndexInBlock (canonical-position pin):');
+
+const FAKE_BLOCK_HASH = 'a'.repeat(64);
+const blockTxidsStub = (mapping) => async (h) => mapping.get((h || '').toLowerCase()) || null;
+
+await test('accepts when txid is at the claimed index in its block', async () => {
+  const txids = [randomTxidHex(), honest.txid, randomTxidHex(), randomTxidHex()];
+  const fetchTxids = blockTxidsStub(new Map([[FAKE_BLOCK_HASH, txids]]));
+  const ok = await dapp.verifyTxIndexInBlock(honest.txid, FAKE_BLOCK_HASH, 1, fetchTxids);
+  return ok === true;
+});
+
+await test('rejects when txid is at a different index in its block (worker reordered)', async () => {
+  const txids = [randomTxidHex(), honest.txid, randomTxidHex()];
+  const fetchTxids = blockTxidsStub(new Map([[FAKE_BLOCK_HASH, txids]]));
+  // Worker claims index 0 but the txid is at index 1.
+  const ok = await dapp.verifyTxIndexInBlock(honest.txid, FAKE_BLOCK_HASH, 0, fetchTxids);
+  return ok === false;
+});
+
+await test('rejects when claimed index is past the end of the block', async () => {
+  const txids = [randomTxidHex(), honest.txid];
+  const fetchTxids = blockTxidsStub(new Map([[FAKE_BLOCK_HASH, txids]]));
+  const ok = await dapp.verifyTxIndexInBlock(honest.txid, FAKE_BLOCK_HASH, 99, fetchTxids);
+  return ok === false;
+});
+
+await test('returns null (transient) when the block-txids fetch fails', async () => {
+  // Mirror verifyMixerDepositKernelOnChain's tri-state contract: null means
+  // "couldn't tell, retry on next refresh — do NOT log a security warning".
+  // scanPools relies on this to avoid spamming console.warn when an Esplora
+  // gateway is briefly unreachable.
+  const fetchTxids = async () => null;
+  const ok = await dapp.verifyTxIndexInBlock(honest.txid, FAKE_BLOCK_HASH, 1, fetchTxids);
+  return ok === null;
+});
+
+await test('rejects malformed inputs (negative index, non-int index, non-string txid)', async () => {
+  const fetchTxids = async () => [honest.txid];
+  const a = await dapp.verifyTxIndexInBlock(honest.txid, FAKE_BLOCK_HASH, -1, fetchTxids);
+  const b = await dapp.verifyTxIndexInBlock(honest.txid, FAKE_BLOCK_HASH, 1.5, fetchTxids);
+  const c = await dapp.verifyTxIndexInBlock(null, FAKE_BLOCK_HASH, 0, fetchTxids);
+  return a === false && b === false && c === false;
+});
+
 console.log('\nWorker side — verifyMixerDepositKernel (apiJson via fetch stub):');
 
 installWorkerFetchStub(store);
