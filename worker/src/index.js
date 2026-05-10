@@ -777,7 +777,34 @@ async function handleCeremonyState(env, circuitHash, cors) {
 // Multipart form: zkey (file), contributor_name (string ≤ 64), prev_cid (string),
 // contribution_hash (string, snarkjs's "Contribution Hash" output, ≤ 256 chars).
 // Optimistic concurrency: prev_cid must match current head_cid.
-async function handleCeremonyContribute(req, env, circuitHash, cors) {
+// Invalidate the ceremony GET endpoint caches after a contribute lands.
+// Without this, the dapp's post-flight "did my upload appear in the
+// attestations index?" check hits the stale 30s edge cache and shows
+// "Uploaded but not yet verified" until the cache expires — even though
+// the worker accepted the upload and wrote the contrib record. Called
+// from handleCeremonyContribute after every successful state advance.
+async function _invalidateCeremonyCache(ctx, circuitHash) {
+  const cache = caches.default;
+  const ops = [
+    cache.delete(`https://_ceremony-cache_/state/${circuitHash}`),
+    cache.delete(`https://_ceremony-cache_/stats/${circuitHash}`),
+  ];
+  // /attestations cache is keyed by limit because different limits return
+  // different slices. Invalidate the values dapp + tooling actually use;
+  // any limit not listed here will simply re-cache fresh on its next miss
+  // (no correctness impact — just one extra MISS hit). The default-100
+  // is the most important since the dapp's verify-after call uses it.
+  for (const limit of ['5', '10', '20', '50', '100', '1000']) {
+    ops.push(cache.delete(`https://_ceremony-cache_/attestations/${circuitHash}/${limit}`));
+  }
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(Promise.allSettled(ops));
+  } else {
+    await Promise.allSettled(ops);
+  }
+}
+
+async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
@@ -864,6 +891,12 @@ async function handleCeremonyContribute(req, env, circuitHash, cors) {
   await env.REGISTRY_KV.put(ceremonyContribKey(circuitHash, newCount, newCid), JSON.stringify(rec));
 
   await env.UPLOAD_KV.put(rlKey, String(prior + 1), { expirationTtl: 60 * 60 * 25 });
+  // Invalidate the GET-endpoint edge caches BEFORE responding so the
+  // contributor's immediate post-flight verification (which calls
+  // /attestations to look for their just-landed contribution_hash) sees
+  // a fresh response, not a 30s-stale cache miss-as-not-found. Uses
+  // ctx.waitUntil so the cache.delete fanout doesn't block the response.
+  await _invalidateCeremonyCache(ctx, circuitHash);
   return jsonResponse({ state: newState, contribution: rec }, 200, cors);
 }
 
@@ -5700,7 +5733,7 @@ export default {
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/contribute$/i);
-      if (m && req.method === 'POST') return handleCeremonyContribute(req, env, m[1].toLowerCase(), cors);
+      if (m && req.method === 'POST') return handleCeremonyContribute(req, env, m[1].toLowerCase(), cors, ctx);
     }
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/attestations$/i);
