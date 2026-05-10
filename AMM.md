@@ -442,13 +442,71 @@ N≥3 with no collusion the aggregate reveals only the sum of N
 unknown blindings. The dapp warns when an intent is likely to
 settle in a low-diversity batch.
 
-**Per-`vin` Bitcoin-layer signature** (P2WPKH or P2TR key-path)
-authorizes each trader's UTXO spend at Bitcoin consensus level,
-exactly like any non-tacit Bitcoin input. There is no separate
-tacit kernel sig per `vin`; tacit-layer consumption is jointly
-authorized by intent_sig (out-of-circuit) + cross-curve binding
-proof (per intent) + batch proof (BN254) + aggregate Pedersen check
-(secp256k1).
+**Per-`vin` Bitcoin-layer signature.** Each trader's tacit input
+needs a Bitcoin-consensus signature at broadcast time, but batch
+composition, clearing price, and per-receipt amount are settler-
+determined *after* the trader posts the intent — so a plain
+`SIGHASH_ALL` pre-sign over an unknown tx is impossible. v1
+exploits two structural properties of tacit receipts to make a
+pre-signed sighash safe: (1) tacit value lives in the envelope's
+Pedersen commitment, not in the Bitcoin output's `value` field;
+(2) the receipt's `scriptPubKey` is the trader's own receive
+address, fixed at intent-post time. The trader's receipt vout is
+therefore a known `(scriptPubKey, dust_value)` pair before any
+settler work.
+
+Traders pre-sign their input spend with **`SIGHASH_SINGLE |
+ANYONECANPAY` (0x83)** — the same sighash discipline tacit's
+atomic-listing flow uses (see `dapp/tacit.js`, search
+`SIGHASH_SINGLE_ACP`). The signature binds only the trader's own
+input prevout and the same-index output's `(scriptPubKey, value)`;
+other traders' inputs, the settler tip, and other receipt vouts
+are uncommitted — exactly what batch settlement needs. Position
+binding is the wrinkle: `SIGHASH_SINGLE` ties input index `k` to
+output index `k`, and `k` is the trader's rank in `intent_id`
+ascending sort within the included subset (per "Canonical
+ordering" under Indexer determinism). If a higher-ranked intent
+expires or cancels between sign and broadcast the trader's rank
+shifts and the sig breaks; v1 handles this with **resign-on-shift**
+— the dapp keeps a worker websocket open and auto-re-signs a fresh
+PSBT on rank change, with no confirmation prompt as long as
+`min_out`, `tip`, `expiry`, and the receipt scriptPubKey are
+unchanged. Traders offline at broadcast time accept that their
+intent may settle one block late if their rank shifts. A future
+BIP-119/OP_CTV adoption would let the trader pre-commit to a
+covenant template and remove resigning entirely.
+
+**Burn risk and worker-escrow mitigation.** A pre-signed input
+that Bitcoin accepts but the tacit indexer rejects burns the
+trader's tacit value: Bitcoin sees a valid spend, the indexer sees
+an invalid batch and credits no receipt. v1 closes this by making
+the worker the **opening-blob escrow**: the trader's
+`(amount_in, r_BN254)` opening is encrypted to the worker, not to
+any settler. A settler claims an intent by submitting a candidate
+batch (composition + proposed `(Δa_net, Δb_net)` + proposed
+Bitcoin tx skeleton with assigned indices) to the worker; the
+worker re-runs the indexer's full validation against the candidate
+— constant-product invariant, `min_out` for every included intent,
+canonical-ordering check, mandatory-inclusion check — and only on
+pass releases the openings the settler needs to construct the
+batch proof. A settler cannot broadcast a tacit-invalid batch
+because they cannot construct a valid batch proof without
+worker-released openings. The worker becomes a trust dependency
+for **liveness** (it can refuse to release openings, denying the
+settler proof material) but not for **soundness** (it cannot forge
+intents, alter `min_out`, or extract value — those are pinned by
+the trader's `intent_sig` and the in-circuit `min_out`
+constraint). Trust-conscious traders self-host a worker, run their
+own settler, or encrypt openings directly to a nominated
+settler's published key — trading the burn-risk mitigation for
+fully-trustless operation.
+
+There is no separate tacit kernel sig per `vin`. Tacit-layer
+consumption is jointly authorized by `intent_sig` (out-of-circuit,
+BIP-340), the cross-curve binding proof (per intent), the batch
+proof (BN254), and the aggregate Pedersen check (secp256k1);
+Bitcoin-layer consumption is the `SIGHASH_SINGLE | ANYONECANPAY`
+signature above.
 
 **Trader binding to clearing price.** The trader's one-shot
 `intent_sig` over `intent_msg` commits `min_out`, and the in-circuit
@@ -610,6 +668,23 @@ Pools that care about strong MEV resistance SHOULD pin a multisig
 or independent-operator quorum (`k`-of-`n`) rather than a single
 key; pools that prefer minimal trust delegation leave the field
 unset and accept the weaker guarantee.
+
+**Trade-off vs. L1-only reconstruction.** Mandatory-inclusion
+enforcement is the one place this protocol relies on data outside
+the Bitcoin chain. An indexer with only confirmed L1 envelopes can
+reconstruct every pool's reserves, supply, and per-batch deltas
+exactly — but it cannot tell whether a confirmed `T_SWAP_BATCH`
+violated mandatory inclusion at its height, because the qualifying
+set was a worker-signed off-chain artifact. To enforce the rule, an
+indexer must additionally fetch and retain the historical signed
+lists (or trust the broadcasting settler). Pools that pin no
+`inclusion_arbiter_pubkey` keep strict L1-only reconstruction at
+the cost of weaker cross-batch MEV resistance; pools that pin one
+gain MEV resistance at the cost of an off-chain data dependency.
+This is the structural cost of binding a settler to a "must
+include" rule under indexer-validated semantics — without
+smart-contract enforcement at L1, no fully-trustless mechanism
+exists.
 
 This closes the curation loop for opt-in pools: settlers may pick
 which fresh-arrival intents to include from the current block's

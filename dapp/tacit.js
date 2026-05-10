@@ -13588,6 +13588,13 @@ function setupPetchForm() {
   broadcastBtn.onclick = async () => {
     errEl.textContent = '';
     successEl.style.display = 'none';
+    // Disable immediately. ensureSatsFunded can poll for ~45s while awaiting an
+    // external wallet's funding tx; if we only disable after those awaits, a
+    // second click during the funding window re-enters and broadcasts a parallel
+    // T_PETCH (different reveal_txid → different asset_id, both burning fees).
+    // Every early-return below restores the enabled state so the user can retry.
+    // Mirrors btn-etch-broadcast's pattern.
+    broadcastBtn.disabled = true;
     let ticker, decimals, cap, lim, imageUri;
     try {
       ticker = tickerInput.value.trim().toUpperCase();
@@ -13608,15 +13615,19 @@ function setupPetchForm() {
       catch (e) { throw new Error(`image: ${e.message}`); }
     } catch (e) {
       errEl.textContent = e.message;
+      broadcastBtn.disabled = false;
       return;
     }
     if (!ensureBurnerBackedUp('Deploy a public-mint asset (T_PETCH; deployer receives no tokens)')) {
       errEl.textContent = 'Deploy cancelled. Back up the in-page privkey first, then retry.';
+      broadcastBtn.disabled = false;
       return;
     }
     const need = await estimateSatsForOp('etch');
-    if (!(await ensureSatsFunded(need, 'Deploying T_PETCH'))) return;
-    broadcastBtn.disabled = true;
+    if (!(await ensureSatsFunded(need, 'Deploying T_PETCH'))) {
+      broadcastBtn.disabled = false;
+      return;
+    }
     broadcastBtn.textContent = 'deploying…';
     const stripEl = $('#petch-progress');
     if (stripEl) stripEl.style.display = 'flex';
@@ -13660,6 +13671,14 @@ function setupPetchForm() {
         };
       }
       toast(`Deployed ${ticker} ✓`, 'success', 8000);
+      // Clear the ticker so a confused user clicking Deploy again immediately
+      // (e.g. during the 1.2s strip-hide transition while broadcastBtn is back
+      // to enabled) hits a clean "ticker required" validation error rather than
+      // accidentally deploying a duplicate of the same project. Other fields
+      // are preserved on purpose so a multi-asset launcher can re-use cap/limit
+      // /image. Mirrors CETCH's clear-only-the-identifying-field pattern.
+      tickerInput.value = '';
+      if (hint) hint.textContent = '';
     } catch (e) {
       errEl.textContent = `Deploy failed: ${e.message}`;
       // Mark in-flight step as errored; strip stays visible so the error
