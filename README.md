@@ -65,10 +65,12 @@ What that buys you, concretely:
   pool** (`T_DEPOSIT` → `T_WITHDRAW`, Tornado-style; SPEC §5.10–§5.11) and
   withdraw to a fresh pubkey, breaking the on-chain edge between deposit
   and withdraw via a Groth16 proof of unspent-leaf membership. **Status:
-  v1 dev preview** — the verifier is stubbed; wire format, worker
-  indexing, and UI are shipped but the validator does not yet enforce
-  proof validity. Do not use on mainnet until the verifier lands and a
-  per-pool MPC ceremony has run.
+  testnet-ready; mainnet pools gated on per-pool Phase 2 ceremony.** Wire
+  format, worker indexing, browser-side Groth16 prover + verifier
+  (snarkjs vendored), deposit/withdraw broadcast flows, and Phase 2
+  ceremony coordinator are all shipped; the public ceremony run is the
+  remaining mainnet prerequisite. See [MIXER.md](./MIXER.md) for full
+  status + caveats.
 
 What it doesn't do:
 
@@ -519,8 +521,8 @@ T_PMINT (permissionless mint event — anyone may broadcast)
    re-blinds it back into confidential transfer mode.
 
 
-T_DEPOSIT / T_WITHDRAW (shielded mixer pool — v1 dev preview)
-─────────────────────────────────────────────────────────────
+T_DEPOSIT / T_WITHDRAW (shielded mixer pool)
+────────────────────────────────────────────
  Tornado-style anonymity pool over any tacit asset at a fixed denomination.
 
  POOL_INIT (T_DEPOSIT with denomination = 0 sentinel):
@@ -566,9 +568,9 @@ T_DEPOSIT / T_WITHDRAW (shielded mixer pool — v1 dev preview)
  Anonymity set = currently-unspent leaves at withdraw time. Wait for
  the pool to fill before withdrawing.
 
- v1 status: wire format + worker + UI shipped, Groth16 verifier stubbed.
- Do not trust withdrawn UTXOs for value transfer until the verifier
- lands. SPEC §5.10–§5.11 + §3.6–§3.8.
+ v1 status: wire format, worker indexing, browser-side Groth16 prover +
+ verifier, and Phase 2 ceremony coordinator all shipped. Mainnet pool
+ deposits gate on per-pool MPC ceremony run. SPEC §5.10–§5.11 + §3.6–§3.8.
 
 
 VALIDATION (recursive, browser-side)
@@ -596,8 +598,7 @@ VALIDATION (recursive, browser-side)
                      `recipient_commitment == denom·H + r_leaf·G` (external
                      secp256k1 Pedersen check), and the Groth16 proof verifies
                      under the pool's vk over [merkle_root, nullifier_hash,
-                     denomination, r_leaf, bind_hash]. (v1 dev preview: the
-                     Groth16 verifier itself is stubbed; do not trust on mainnet.)
+                     denomination, r_leaf, bind_hash].
    9. Resolve own (amount, blinding) via local cache OR trial-decrypt amount_ct
       (T_PMINT and T_WITHDRAW: amount + blinding are in the envelope
        cleartext — no decrypt; just verify the Pedersen equation)
@@ -779,21 +780,20 @@ See `build/README.md` for details.
     use Export JSON to back up. A Cross-check vs chain button walks the
     local ledger and verifies each fulfilled leaf actually confirmed
     on-chain.
-12. **Mixer** *(v1 dev preview — do not use on mainnet)*. Tornado-style
-    shielded pool over any tacit asset at a fixed denomination. Deposit a
-    UTXO of the pool's exact denomination; the dApp generates a
-    `(secret, nullifier_preimage)` pair and emits a Poseidon leaf
-    commitment — back up the deposit record before broadcasting, without
-    it the deposit cannot be withdrawn. Wait for the pool's anonymity set
-    to grow, then withdraw to a fresh pubkey: the dApp generates a
-    Groth16 proof of unspent-leaf membership, the worker rejects
-    duplicate nullifiers, and the resulting UTXO is unlinkable to any
-    specific deposit. Pool initialization is permissionless — declare a
-    new `(asset_id, denomination)` pair with a verifying-key CID and an
-    MPC-ceremony-transcript CID. **The Groth16 verifier in the dApp is
-    currently stubbed** (the validator does not yet enforce proof
-    validity); withdrawn UTXOs MUST NOT be trusted for value transfer
-    until the verifier ships and the per-pool ceremony runs. SPEC §5.10–§5.11.
+12. **Mixer** *(testnet-ready; mainnet pools gated on Phase 2 ceremony)*.
+    Tornado-style shielded pool over any tacit asset at a fixed
+    denomination. Deposit a UTXO of the pool's exact denomination; the
+    dApp generates a `(secret, nullifier_preimage)` pair and emits a
+    Poseidon leaf commitment — back up the deposit record before
+    broadcasting, without it the deposit cannot be withdrawn. Wait for
+    the pool's anonymity set to grow, then withdraw to a fresh pubkey:
+    the dApp generates a Groth16 proof of unspent-leaf membership and
+    re-verifies it client-side, the worker rejects duplicate nullifiers,
+    and the resulting UTXO is unlinkable to any specific deposit. Pool
+    initialization is permissionless — declare a new `(asset_id,
+    denomination)` pair with a verifying-key CID and an MPC-ceremony-
+    transcript CID. SPEC §5.10–§5.11; full status + caveats in
+    [MIXER.md](./MIXER.md).
 13. **Claim** *(recipient side)*. Paste the drop's merkle root + IPFS CID
     (from the issuer) → Load snapshot. The dApp fetches the JSON, refuses
     any blob whose rows don't match the root, and shows your row. Connect
@@ -852,8 +852,9 @@ on top: a holder who deposits a fixed-denomination UTXO into a pool and
 later withdraws to a fresh pubkey breaks the *amount-to-address-to-amount*
 link inside that pool. Pool participation itself is still public —
 observers see *that* an address deposited or withdrew, just not which
-deposit corresponds to which withdrawal. **v1 dev preview** — see "Known
-limitations" below.
+deposit corresponds to which withdrawal. Testnet-ready; mainnet pool
+deposits gate on per-pool Phase 2 ceremony — see "Known limitations"
+below.
 
 ---
 
@@ -921,24 +922,36 @@ limitations" below.
   cap check on reorg. CETCH+T_MINT assets are unaffected (credit there
   depends only on the issuer's signature, not aggregate chain state).
   SPEC §5.9 + §10.
-- **Reference-indexer KV.list cap.** The reference worker's
-  `loadCanonicalPmints` fetches via a single `KV.list({ limit: 1000 })`
-  per asset. Assets accruing more than 1000 confirmed T_PMINTs will
-  under-count `cumulative_minted` until the indexer paginates. Practical
-  for v1 (e.g. cap=1000 at limit=1, or cap=21M at limit=21k); larger
-  schedules need pagination patches before relying on published cap
-  progress for buy/sell decisions.
-- **Mixer pool — v1 dev preview.** The shielded-pool wire format
-  (`T_DEPOSIT` / `T_WITHDRAW`, SPEC §5.10–§5.11), worker indexing
-  (`/pools`, canonical leaf order, nullifier set), and Mixer-tab UI are
-  all shipped. **The Groth16 verifier in the dApp is stubbed** — the
-  validator decodes `T_WITHDRAW` envelopes and produces a UTXO entry
-  but does not currently reject withdrawals whose proof is missing or
-  invalid. Withdrawn UTXOs MUST NOT be trusted for value transfer until
-  the verifier lands and a per-pool MPC ceremony has run. Circuit
-  synthesis, ceremony coordination, and snarkjs vendor bundling are
-  tracked separately. The Mixer tab carries an in-app "v1 dev preview"
-  banner reinforcing this.
+- **Reference-indexer KV.list cap.** The reference worker uses a single
+  un-paginated `KV.list({ limit: 1000 })` in three places: per-asset
+  `loadCanonicalPmints`, `/pools` aggregate counts, and
+  `/pools/:asset_id/:denom` leaf + nullifier lists. Assets accruing more
+  than 1000 T_PMINTs will under-count `cumulative_minted`; pools with
+  more than 1000 deposits or withdrawals will return truncated state to
+  clients consuming the worker view. Practical for v1; larger schedules
+  need pagination patches. The cap is operational, not cryptographic —
+  the dapp's local `scanPools` reconstructs from chain regardless, so a
+  worker truncation degrades freshness/UX, not soundness.
+- **Mixer pool — testnet-ready, mainnet-gated on Phase 2 ceremony.** The
+  shielded-pool wire format (`T_DEPOSIT` / `T_WITHDRAW`, SPEC §5.10–
+  §5.11), worker indexing (`/pools`, canonical leaf order, nullifier
+  set, reorg-safety depth gate), browser-side Groth16 prover + verifier
+  (snarkjs vendored at `dapp/vendor/tacit-mixer.min.js`), Phase 2
+  ceremony coordinator (init / contribute / finalize), client-side
+  `verifyFromInit` walk, and indexer rejection-path determinism are all
+  shipped (108 mixer tests across 7 files). Phase 1 ptau is the verified
+  Polygon Hermez ceremony output, dual-hash-checked at build. Mainnet
+  pool deposits gate on a credible per-pool Phase 2 MPC ceremony run
+  with contributor diversity (≥5 disjoint trust roots, ideally 100s);
+  coordinator and dApp UI are ready, the run itself is the remaining
+  step. Full status + caveats: [MIXER.md](./MIXER.md).
+- **Lost mixer note = permanent inaccessibility of the deposit.**
+  `T_WITHDRAW` requires the depositor's `(secret, ν)` pair, generated
+  by CSPRNG at deposit time and not derivable from chain alone. The
+  dApp gates first deposits behind a note-export step and offers
+  deposit-record export/import; deterministic `(secret, ν)` derivation
+  from privkey is a future UX improvement. Same out-of-band-backup
+  posture as Tornado / Privacy Pools.
 
 ---
 

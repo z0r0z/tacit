@@ -13,8 +13,16 @@
 > into an AMM on Bitcoin L1 appears to be without a direct production
 > peer at the time of writing.
 
-This document is a positioning + architecture summary. The normative
-spec will live in [`SPEC.md` §5.12–§5.14 and §11](./SPEC.md).
+This document is the architecture summary for the AMM extension
+to the tacit protocol. It adds three new opcodes (`T_LP_ADD`
+`0x2B`, `T_LP_REMOVE` `0x2C`, `T_SWAP_BATCH` `0x2D`), a
+deterministic `lp_asset_id` derivation rule, AMM-specific
+receipt-recovery derivations, and an envelope-hash `OP_RETURN`
+binding rule for batched settlement — all built on the same
+indexer-validated virtual-pool pattern as tacit's mixer
+(SPEC §5.10–§5.11). The normative spec lands in
+[`SPEC.md` §5.12–§5.14 and §11](./SPEC.md) once this design
+solidifies.
 
 ## In plain English
 
@@ -176,7 +184,7 @@ transitions.
 | Atomic settle | EVM tx revert | End-of-block batch action | Bitcoin tx all-or-nothing: consumes N trader inputs, emits N receipts |
 | LP share token | ERC20 | LPNFT (Penumbra position) | Confidential tacit asset minted at pool init; mixer-composable |
 | Pricing model | Per-swap constant product | Per-block uniform clearing | Per-block uniform clearing |
-| MEV mitigation | None native | Eliminated within batch | Eliminated within batch |
+| MEV mitigation | None native | Eliminated within batch | Intra-batch eliminated (uniform price); cross-batch curation mitigated by opt-in arbiter |
 | BTC custody | N/A | N/A | Out of scope — handled by cBTC wrapper |
 
 Every primitive the AMM needs was already in tacit. Pedersen
@@ -197,44 +205,57 @@ machinery.
 │                                    │  │                                              │
 │  trader 1 (A→B):                   │  │  reads current pool state (R_A, R_B, S)      │
 │    input UTXO of A                 │  │  reads queued intents for this pool          │
-│    Pedersen commit C_in            │  │                                              │
-│    min_out, expiry                 │  │  picks subset {i₁, …, iₙ} that all clear     │
-│                                    │  │  at one uniform price within each min_out    │
-│  trader 2 (B→A):                   │  │                                              │
-│    input UTXO of B                 │  │  computes net flow against pool curve:       │
-│    Pedersen commit C_in            │  │    Δa_net = Σ signed_amount_A_i              │
-│    min_out, expiry                 │  │    Δb_net solved from constant-product +     │
-│                                    │  │              fee invariant                   │
-│  …                                 │  │    P_clear = |Δa_net| / |Δb_net|             │
-│                                    │  │                                              │
-│  signed by trader, BIP-340 over    │  │  for each trader i, derive their share at    │
-│  intent_msg; opening encrypted to  │  │  P_clear; verify min_out_i satisfied         │
-│  worker for settler release        │  │                                              │
-└──────────────────┬─────────────────┘  │  generates one Groth16 batch proof binding:  │
-                   │                    │    • each per-intent BN254 commit opens to   │
-                   │ batched            │      declared amount                         │
-                   ▼                    │    • each receipt opens to derived amount    │
-┌─────────────────────────────────────┐ │      with deterministic blinding             │
-│ ONE BITCOIN TRANSACTION             │ │    • Σ amounts = public Δa_net, Δb_net       │
-│                                     │ │    • uniform price across intents            │
-│  inputs:                            │ │    • each min_out_i satisfied                │
-│   N trader intent UTXOs             │ │    • range proofs                            │
-│                                     │ └─────────────────────┬────────────────────────┘
-│  outputs:                           │                       │
-│   N trader receipt UTXOs            │                       ▼
-│   1 settler tip output              │ ┌────────────────────────────────────────────┐
-│                                     │ │  INDEXER                                   │
-│  envelope: T_SWAP_BATCH with        │ │                                            │
-│  per-intent binding + 1 proof       │ │  • verify each per-intent intent_sig and   │
-│  + public Δa_net, Δb_net            │ │    cross-curve proof (out-of-circuit)      │
-└─────────────────────────────────────┘ │  • re-verify batch Groth16 against pool.vk │
-                                        │  • check constant-product invariant on     │
-                                        │    public deltas vs. current public R_A,R_B│
+│    Pedersen commit C_in_secp       │  │                                              │
+│    Poseidon commit C_in_BN254      │  │  picks subset {i₁, …, iₙ}; runs deterministic│
+│    cross-curve binding proof       │  │  clearing solve over public reserves + γ:    │
+│    min_out, tip, expiry            │  │    Δa_in_net = gross A-side residual         │
+│    intent_sig (BIP-340)            │  │    Δb_out_net = floor(R_B·γ·Δa_in_net /      │
+│                                    │  │                       (R_A + γ·Δa_in_net))   │
+│  trader 2 (B→A): symmetric         │  │    P_clear   = Δa_in_net / Δb_out_net        │
+│  …                                 │  │                                              │
+│                                    │  │  drops any intent failing min_out at P_clear │
+│  trader dapps keep websockets      │  │  re-solves until stable                      │
+│  open to a worker (relay only)     │  │                                              │
+│  through `expiry`                  │  │  RTT 1: asks each trader for opening blob    │
+└──────────────────┬─────────────────┘  │  (amount_in, r_in_secp, r_in_BN254,          │
+                   │                    │  r_out_secp, r_out_BN254) encrypted to       │
+                   │ envelope assembled │  settler pubkey                              │
+                   │ from openings;     │                                              │
+                   │ RTT 2: traders     │  computes envelope_hash; assembles PSBT      │
+                   │ auto-sign PSBT     │  with vout[0] = OP_RETURN(envelope_hash);    │
+                   ▼                    │  RTT 2: traders return SIGHASH_ALL sigs      │
+┌─────────────────────────────────────┐ │  generates one Groth16 batch proof asserting:│
+│ ONE BITCOIN TRANSACTION             │ │    • each per-intent BN254 commit opens to   │
+│                                     │ │      its claimed amount_in                   │
+│  vin[0] : settler envelope input    │ │    • each receipt's amount_out_i derived     │
+│  vin[1+i]: trader inputs (sorted    │ │      from amount_in_i and P_clear            │
+│            by intent_id ascending)  │ │    • per-receipt BN254 binding (Poseidon)    │
+│                                     │ │    • per-receipt cross-curve binding         │
+│  vout[0]: OP_RETURN(envelope_hash)  │ │      (each C_out_secp opens to the same      │
+│  vout[1+i]: trader receipt outputs  │ │       amount_out as the BN254 commitment)    │
+│             (dust to receive script)│ │    • each amount_out_i ≥ min_out_i           │
+│  vout[N+1]: aggregated settler tip  │ │    • range proofs on every amount, in/out    │
+│  vout[N+2..]: optional BTC change   │ └─────────────────────┬────────────────────────┘
+│                                     │                       │
+│  envelope: T_SWAP_BATCH payload     │                       ▼
+│   - per-receipt C_out_secp + C_out_ │ ┌────────────────────────────────────────────┐
+│     BN254 (one pair per trader)     │ │  INDEXER                                   │
+│   - public Δa_net, Δb_net           │ │                                            │
+│   - per-asset R_net (aggregate r)   │ │  • verify each per-intent intent_sig +     │
+│   - per-intent trader_pubkey +      │ │    cross-curve proof (out-of-circuit)      │
+│     C_in_amount_BN254               │ │                                            │
+│   - one Groth16 batch proof         │ │                                            │
+└─────────────────────────────────────┘ │    cross-curve proof (out-of-circuit)      │
+                                        │  • re-verify vout[0] OP_RETURN data ==     │
+                                        │    sha256(envelope_payload)                │
+                                        │  • re-run deterministic clearing solve;    │
+                                        │    reject if declared deltas don't match   │
+                                        │  • re-verify batch Groth16 against pool.vk │
                                         │  • check chain-side aggregate Pedersen     │
                                         │    on secp256k1 (one equation per asset,   │
                                         │    inputs and receipts both included)      │
-                                        │  • R_A → R_A + Δa_net                      │
-                                        │  • R_B → R_B + Δb_net                      │
+                                        │  • for A→B-dominant: R_A += Δa_in_net;     │
+                                        │    R_B -= Δb_out_net (B→A symmetric)       │
                                         │  • credit each receipt UTXO as spendable   │
                                         └────────────────────────────────────────────┘
 ```
@@ -258,9 +279,17 @@ A pool is uniquely identified by an unordered pair `(asset_A,
 asset_B)`. Convention: `asset_A` is the lexicographically smaller of
 the two `asset_id` byte strings. The canonical `pool_id =
 SHA256("tacit-amm-pool-v1" || asset_A || asset_B)`. Pool init pins
-the Groth16 verifying key, fee basis points, and the LP-share
-asset's `lp_asset_id` at content-addressed `vk_cid` time, fixed
-forever.
+the Groth16 verifying key and fee basis points; the LP-share
+asset's `lp_asset_id` is **deterministically derived** as
+`lp_asset_id = SHA256("tacit-amm-lp-v1" || pool_id)`. This is a
+new asset-identity rule: where SPEC §5.1 / §5.8 derive `asset_id`
+from a `CETCH` or `T_PETCH` reveal txid, the AMM adds a third
+valid origin — a deterministic derivation from a confirmed
+`POOL_INIT`. Indexers treat the first canonical
+`T_LP_ADD(variant=1)` (= `POOL_INIT`) for a pair as the genesis of
+that pool's `lp_asset_id`; subsequent `T_LP_ADD(variant=0)` and
+`T_LP_REMOVE` envelopes mint/burn against the same `lp_asset_id`.
+No `CETCH` is required for LP shares.
 
 | Field | Type | Visibility |
 |---|---|---|
@@ -315,19 +344,52 @@ backed-up key if they set the field at all.
 Wire formats are normative in `SPEC.md §5.12–§5.14`. Summary:
 
 **`T_LP_ADD` (`0x2B`)** — Adds liquidity at the current pool ratio.
-Consumes the LP's `asset_A` and `asset_B` input UTXOs via standard
-CXFER-style kernel signatures (Mimblewimble: signing scalar is the
-input blinding, message binds public per-leg amount). Mints
-`share_amount` of `lp_asset_id` to the depositor. Per-op amounts
-`(Δa, Δb, share_amount)` are public; the LP-share UTXO itself is
-per-UTXO confidential. The Groth16 proof asserts at-the-ratio
-deposit, share-formula correctness, and correct opening of the new
-LP-share commitment.
+Per-op amounts `(Δa, Δb, share_amount)` are **public** — LP_ADD is
+a public deposit action, like depositing into Aave/Uniswap V2. The
+LP consumes input UTXOs of asset A and asset B; the envelope
+authenticates this consumption with **mixer-style kernel
+signatures** (the same shape as `T_DEPOSIT` per SPEC §5.10), one
+per asset:
+
+- For asset A: the LP signs BIP-340 over the canonical kernel
+  message under the secp256k1 key
+  `(Σᵢ C_in_secp,A,i − Δa · H).x_only()`. This proves they know
+  `Σᵢ r_in_secp,A,i` AND that the consumed inputs net to exactly
+  `Δa · H` of asset value, without the indexer needing to see
+  individual blindings.
+- For asset B: symmetric, under
+  `(Σᵢ C_in_secp,B,i − Δb · H).x_only()`.
+
+Mints `share_amount` of `lp_asset_id` to the depositor as a
+fresh tacit UTXO (Pedersen commitment to `share_amount` with
+deterministic blinding derived from depositor privkey + pool_id +
+the LP's canonical asset-A input outpoint + `lp_asset_id`; see
+Receipt recovery below). The Groth16 proof asserts:
+- at-the-ratio: `Δa / Δb == R_A / R_B` (with floor-rounding),
+- share formula: `share_amount = floor(min(Δa·S/R_A, Δb·S/R_B))`,
+- correct opening of the new LP-share commitment under both
+  curves (per-receipt cross-curve binding, same gadget as the
+  swap path).
+
+Generic CXFER kernel sigs are not used here — the mixer-style
+construction is more appropriate because each input must net to a
+public amount (the published `Δa` / `Δb`), exactly the assertion
+`T_DEPOSIT` already makes.
 
 **`T_LP_REMOVE` (`0x2C`)** — Burns `share_amount` of `lp_asset_id`
-and withdraws proportional reserves of both assets. CXFER-style
-kernel sig on the consumed LP-share UTXO. The Groth16 proof asserts
-proportional withdrawal and correct receipt-commitment openings.
+and withdraws proportional reserves of both assets. The LP
+consumes one (or more aggregated) `lp_asset_id` UTXO(s) via a
+mixer-style kernel sig under
+`(Σᵢ C_in_secp,LP,i − share_amount · H).x_only()`, proving the
+public `share_amount` was burned. The pool credits two fresh
+receipt UTXOs to the LP — one of asset A with public `Δa = floor(R_A
+· share_amount / S)` and one of asset B with public `Δb = floor(R_B
+· share_amount / S)`, both using deterministic blinding derived
+from the LP's privkey + pool_id + the consumed lp-share input
+outpoint + per-leg asset_id (see Receipt recovery below). The
+Groth16 proof asserts proportional withdrawal and correct
+receipt-commitment openings under both curves (per-receipt
+cross-curve binding).
 
 **`T_SWAP_BATCH` (`0x2D`)** — Settles N swap intents at one uniform
 clearing price in a single Bitcoin tx. Per-trader amounts are
@@ -394,31 +456,52 @@ verification is microseconds in native code; in-circuit it would
 cost ~2M constraints per sig. This matches the mixer's posture of
 keeping expensive secp256k1 checks outside the circuit.
 
-**Batch proof operates only on BN254 commitments.** The settler's
-single Groth16 batch proof asserts:
+**Batch proof: per-intent BN254 work + per-receipt cross-curve
+binding.** The settler's single Groth16 batch proof asserts:
 
-- **Opening of each per-intent commitment.** Knowledge of
-  `(amount_i, r_BN254_i)` such that
-  `Poseidon(amount_i, r_BN254_i) = C_amount_BN254_i`. The circuit
-  recomputes each Poseidon hash against the witness; per-direction
-  `Σᵢ amount_i` is then computed in-circuit over the cleartext
-  amounts and exposed as a public input. (Poseidon is not
-  additively homomorphic — the sum is over re-opened cleartext,
-  not over commitments. Pedersen on secp256k1 is what carries
-  homomorphic structure for the chain-side aggregate check below.)
-- **Direction-aware receipt amounts at the uniform clearing
-  ratio.** Each receipt commitment `C_receipt_BN254` opens with a
-  deterministically-derived blinding (so the trader can recover
-  the receipt offline from privkey alone) to:
+- **Opening of each per-intent input commitment.** Knowledge of
+  `(amount_in_i, r_in_BN254_i)` such that
+  `Poseidon(amount_in_i, r_in_BN254_i) = C_in_amount_BN254_i`. The
+  circuit recomputes each Poseidon hash against the witness;
+  per-direction `Σᵢ amount_in_i` is computed in-circuit over the
+  cleartext amounts and exposed as a public input. (Poseidon is
+  not additively homomorphic — the sum is over re-opened
+  cleartext, not over commitments. Pedersen on secp256k1 is what
+  carries homomorphic structure for the chain-side aggregate
+  check below.)
+- **Direction-aware receipt amounts at the deterministic clearing
+  ratio.** For each trader `i` the circuit derives:
   - `amount_out_i = amount_in_i · |Δb_net| / |Δa_net|` for an A→B
     trader (input A, receipt B)
   - `amount_out_i = amount_in_i · |Δa_net| / |Δb_net|` for a B→A
     trader (input B, receipt A)
+  Both sides of every division are public inputs; the circuit
+  enforces floor-rounding toward zero (favoring the pool).
+- **Per-receipt BN254 binding.** Each receipt commitment
+  `C_out_BN254_i = Poseidon(amount_out_i, r_out_BN254_i)` is opened
+  in-circuit against the derived `amount_out_i` and the trader's
+  deterministic `r_out_BN254_i` (see "Receipt recovery" below).
+- **Per-receipt cross-curve binding.** This is the load-bearing
+  fix for output-side soundness. For each receipt `i`, the circuit
+  proves — via the same non-native-secp gadget the trader uses for
+  input cross-curve binding — that the on-chain
+  `C_out_secp_i = amount_out_i · H + r_out_secp_i · G` opens to the
+  same `amount_out_i` as the BN254 commitment. Without this,
+  the chain-side aggregate Pedersen equation could balance under a
+  malicious settler who assigned the wrong secp commitment to a
+  specific trader's receipt (totals match, individual receipt is
+  unrecoverable). Cost: each receipt binding is the same shape as
+  the trader's per-intent input cross-curve gadget — roughly
+  100K–400K constraints per receipt — so the settler-side proof is
+  N times that for a batch of size N. v1 caps `N ≤ 16` to keep
+  browser proving under ~2 minutes; production deployments running
+  on a beefier prover machine can lift this.
 - Each `amount_out_i ≥ min_out_i`.
-- Range proofs on every per-trader amount.
+- Range proofs on every per-trader amount, in and out.
 
-All in BN254 land — circuit cost is mixer-tier (~3K constraints per
-intent, ~5s browser proving for N=20).
+The cross-curve gadget is the dominant cost; the Poseidon openings
+and range proofs are mixer-tier (~3K constraints per intent in
+BN254 land).
 
 **Chain-side aggregate Pedersen check.** The on-chain envelope
 carries `R_net_A` and `R_net_B` — the per-asset net sums of
@@ -442,77 +525,148 @@ N≥3 with no collusion the aggregate reveals only the sum of N
 unknown blindings. The dapp warns when an intent is likely to
 settle in a low-diversity batch.
 
-**Per-`vin` Bitcoin-layer signature.** Each trader's tacit input
-needs a Bitcoin-consensus signature at broadcast time, but batch
-composition, clearing price, and per-receipt amount are settler-
-determined *after* the trader posts the intent — so a plain
-`SIGHASH_ALL` pre-sign over an unknown tx is impossible. v1
-exploits two structural properties of tacit receipts to make a
-pre-signed sighash safe: (1) tacit value lives in the envelope's
-Pedersen commitment, not in the Bitcoin output's `value` field;
-(2) the receipt's `scriptPubKey` is the trader's own receive
-address, fixed at intent-post time. The trader's receipt vout is
-therefore a known `(scriptPubKey, dust_value)` pair before any
-settler work.
+**Per-`vin` Bitcoin-layer signature: SIGHASH_ALL bound to
+`envelope_hash`.** Each trader's tacit input needs a Bitcoin-
+consensus signature, but batch composition, clearing price,
+receipt commitments, and the envelope payload are all settler-
+determined *after* the trader posts the intent. A naive pre-signed
+`SIGHASH_SINGLE | ANYONECANPAY` (the discipline tacit's atomic-
+listing flow uses, `dapp/tacit.js` `SIGHASH_SINGLE_ACP`) is
+**unsafe here**: BIP-143 sighash never commits to witness data, so
+the envelope at `vin[0].witness` lives entirely outside the trader's
+sighash domain. A malicious settler holding a pre-signed
+`SIGHASH_SINGLE | ANYONECANPAY` could consume the trader's tacit
+UTXO into any tx whose `vout[k]` matches the trader's declared
+receive script + dust value — including a tx whose envelope is
+garbage, which the indexer rejects. Bitcoin accepts the spend; the
+indexer credits no receipt; the trader's tacit value is destroyed.
+This is the burn-grief vector. The atomic-listing pattern is safe
+only because there the maker fixes the entire tacit output
+commitment *before* signing; the AMM batch case inverts that
+ordering, so the listing pattern cannot be reused unchanged.
 
-Traders pre-sign their input spend with **`SIGHASH_SINGLE |
-ANYONECANPAY` (0x83)** — the same sighash discipline tacit's
-atomic-listing flow uses (see `dapp/tacit.js`, search
-`SIGHASH_SINGLE_ACP`). The signature binds only the trader's own
-input prevout and the same-index output's `(scriptPubKey, value)`;
-other traders' inputs, the settler tip, and other receipt vouts
-are uncommitted — exactly what batch settlement needs. Position
-binding is the wrinkle: `SIGHASH_SINGLE` ties input index `k` to
-output index `k`, and `k` is the trader's rank in `intent_id`
-ascending sort within the included subset (per "Canonical
-ordering" under Indexer determinism). If a higher-ranked intent
-expires or cancels between sign and broadcast the trader's rank
-shifts and the sig breaks; v1 handles this with **resign-on-shift**
-— the dapp keeps a worker websocket open and auto-re-signs a fresh
-PSBT on rank change, with no confirmation prompt as long as
-`min_out`, `tip`, `expiry`, and the receipt scriptPubKey are
-unchanged. Traders offline at broadcast time accept that their
-intent may settle one block late if their rank shifts. A future
-BIP-119/OP_CTV adoption would let the trader pre-commit to a
-covenant template and remove resigning entirely.
+v1 closes the burn-grief vector by binding every trader signature
+to the envelope content via two normative rules:
 
-**Burn risk and worker-escrow mitigation.** A pre-signed input
-that Bitcoin accepts but the tacit indexer rejects burns the
-trader's tacit value: Bitcoin sees a valid spend, the indexer sees
-an invalid batch and credits no receipt. v1 closes this by making
-the worker the **opening-blob escrow**: the trader's
-`(amount_in, r_BN254)` opening is encrypted to the worker, not to
-any settler. A settler claims an intent by submitting a candidate
-batch (composition + proposed `(Δa_net, Δb_net)` + proposed
-Bitcoin tx skeleton with assigned indices) to the worker; the
-worker re-runs the indexer's full validation against the candidate
-— constant-product invariant, `min_out` for every included intent,
-canonical-ordering check, mandatory-inclusion check — and only on
-pass releases the openings the settler needs to construct the
-batch proof. A settler cannot broadcast a tacit-invalid batch
-because they cannot construct a valid batch proof without
-worker-released openings. The worker becomes a trust dependency
-for **liveness** (it can refuse to release openings, denying the
-settler proof material) but not for **soundness** (it cannot forge
-intents, alter `min_out`, or extract value — those are pinned by
-the trader's `intent_sig` and the in-circuit `min_out`
-constraint). Trust-conscious traders self-host a worker, run their
-own settler, or encrypt openings directly to a nominated
-settler's published key — trading the burn-risk mitigation for
-fully-trustless operation.
+1. **Mandatory `vout[0]` = `OP_RETURN(envelope_hash)`.** Every
+   `T_SWAP_BATCH` Bitcoin tx MUST have `vout[0]` as a 0-sat
+   `OP_RETURN` whose 32-byte data is `sha256(envelope_payload)` —
+   the SHA-256 of the entire `T_SWAP_BATCH` payload at
+   `vin[0].witness`, starting from the opcode byte. Indexers
+   reject any `T_SWAP_BATCH` tx whose `vout[0]` data does not
+   equal the actual envelope hash. The OP_RETURN moves a 32-byte
+   commitment from the unsigned witness domain into the signed
+   output domain.
+2. **Trader signs `SIGHASH_ALL` (P2WPKH) or `SIGHASH_DEFAULT`
+   (P2TR key-path).** The trader's signature commits to every
+   output's `(scriptPubKey, value)` — including `vout[0]`'s
+   OP_RETURN data. Any envelope swap by the settler changes
+   `envelope_hash`, changes `vout[0]`, and invalidates **every**
+   trader signature in the batch. The malicious-broadcast attack
+   becomes structurally impossible: either the broadcast tx
+   contains exactly the envelope all traders signed against, or
+   it does not satisfy Bitcoin consensus.
 
-There is no separate tacit kernel sig per `vin`. Tacit-layer
-consumption is jointly authorized by `intent_sig` (out-of-circuit,
-BIP-340), the cross-curve binding proof (per intent), the batch
-proof (BN254), and the aggregate Pedersen check (secp256k1);
-Bitcoin-layer consumption is the `SIGHASH_SINGLE | ANYONECANPAY`
-signature above.
+Because `SIGHASH_ALL` commits to the full output set (including
+`vout[0]`'s `envelope_hash`), the trader must sign **after** the
+settler has assembled the envelope. The envelope contains
+`C_out_secp_i` for each receipt, which depends on `r_out_secp_i`
+from the trader's opening blob. So the protocol is **two round
+trips** between settler and trader (both via the worker websocket):
 
-**Trader binding to clearing price.** The trader's one-shot
-`intent_sig` over `intent_msg` commits `min_out`, and the in-circuit
-`amount_out_i ≥ min_out_i` constraint ensures any settler-chosen
-`P_clear` honors the trader's worst-acceptable price. No delegated
-clearing-price-signing needed.
+- **Intent post.** The trader posts an intent (commitments,
+  pubkey, `min_out`, `tip`, `expiry`, `intent_sig`, cross-curve
+  binding proof, receive script, `input_utxos` references) to a
+  worker; the trader's dapp opens a websocket to that worker and
+  keeps it open through `expiry`.
+- **RTT 1 — opening collection.** A claiming settler picks a
+  candidate subset and forwards `(included_intent_ids,
+  settler_pubkey, vin[0].outpoint, trader's vout_index)` to each
+  included trader's dapp via the worker. Each dapp derives
+  `r_out_secp` and `r_out_BN254` from the deterministic
+  Receipt-recovery formula and returns the encrypted opening
+  blob (5 fields, see below).
+- **Settler computes.** The settler decrypts openings, runs the
+  deterministic clearing solve, derives `amount_out_i` for each
+  trader, and computes `C_out_secp_i = amount_out_i · H +
+  r_out_secp_i · G`. It assembles the envelope payload and
+  computes `envelope_hash`. If any trader's `amount_out_i`
+  failed `min_out_i`, the settler drops them and re-iterates
+  (which may require re-soliciting openings if the subset
+  changed).
+- **RTT 2 — sig collection.** The settler forwards the assembled
+  PSBT (including `vout[0] = OP_RETURN(envelope_hash)`) to each
+  included trader's dapp. Each dapp validates locally: `min_out`,
+  `tip`, `expiry`, receipt `scriptPubKey`, derived `amount_out_i`
+  against the public deltas, and `envelope_hash` matching the
+  assembled payload. On pass, it auto-signs `SIGHASH_ALL` over
+  its trader's input — no confirmation prompt — and returns the
+  sig.
+- **Settler broadcasts.** With all sigs collected, the settler
+  generates the Groth16 batch proof using the openings as
+  witness, splices it into the envelope, and broadcasts.
+
+The trader's wallet must be online during both RTTs (a few
+seconds end-to-end), not for the entire intent lifetime.
+Closing the dapp tab simply stops auto-signing; pending intents
+that don't get a sig in time are excluded from the next batch and
+remain in the open pool until the trader reconnects or `expiry`
+lapses. Composition changes (intent added/dropped, rank shifts)
+require all included traders to re-sign, since `envelope_hash`
+shifts; the worker websocket pushes a fresh PSBT and the dapp
+auto-re-signs without prompt.
+
+**Trader-mediated opening release.** The full opening blob the
+settler needs is
+
+```
+(amount_in,
+ r_in_secp,    -- trader's existing input UTXO blinding
+ r_in_BN254,   -- trader-chosen blinding for C_in_amount_BN254
+ r_out_secp,   -- deterministic per-receipt secp blinding (see Receipt recovery)
+ r_out_BN254)  -- deterministic per-receipt BN254 blinding (see Receipt recovery)
+```
+
+— enough material for the settler to compute `C_out_secp` and
+`C_out_BN254` for the trader's receipt, populate the per-asset
+aggregate `R_net` in the envelope, and supply the witness inputs
+to both the per-intent and per-receipt cross-curve gadgets in the
+batch proof. This blob is **not** held by the worker. The trader's
+dapp transmits it directly to the claiming settler — encrypted to
+the settler's published pubkey — during RTT 1 of the interactive
+flow above (before the envelope can be assembled). The worker is
+a **message relay**, not a custodian of pre-signed sigs or
+openings; it forwards the encrypted blob from trader to settler
+without being able to decrypt it. A settler that never receives
+opening + sig cannot construct a Bitcoin-valid tx (no trader
+sig) and cannot construct a valid batch proof (no openings); a
+settler that does receive both can broadcast only the exact tx
+the trader signed against, since the trader's sig binds the
+envelope via `vout[0]`. Burn-grief is impossible at both layers.
+
+There is no separate tacit kernel sig per `vin` of a trader's
+input. Tacit-layer consumption is jointly authorized by
+`intent_sig` (out-of-circuit, BIP-340), the cross-curve binding
+proof (per intent, trader-paid), the batch proof (BN254,
+settler-paid, with per-receipt binding), and the aggregate
+Pedersen check (secp256k1, indexer-checked). Bitcoin-layer
+consumption is the `SIGHASH_ALL` signature above, bound to
+`envelope_hash` via `vout[0]` `OP_RETURN`.
+
+A future BIP-119/OP_CTV adoption would let traders pre-commit to a
+covenant template and remove the interactive-signing requirement,
+preserving burn-grief immunity for fully-async UX. v1 accepts the
+online-window cost as the price of working on today's Bitcoin.
+
+**Trader binding to clearing price.** The trader's `intent_sig`
+commits `min_out`. Because `P_clear` is itself fully determined by
+the deterministic clearing solve over the included subset, the
+settler has no pricing freedom to abuse — only subset-selection
+freedom (further constrained by mandatory-inclusion for pools
+that pin an arbiter). The in-circuit `amount_out_i ≥ min_out_i`
+check is the trader's per-intent veto: any subset whose solve
+produces a `P_clear` that fails the trader's `min_out` drops the
+intent and re-solves. No delegated clearing-price-signing needed.
 
 ## Uniform clearing
 
@@ -523,13 +677,20 @@ batch, and settles them in a single transaction.
 **Intent collection.** Traders post signed swap intents to a
 worker — direction, dual commitments to the input amount
 (`C_in_secp` from the trader's existing input UTXO plus a fresh
-BN254-friendly `C_amount_BN254`), a one-shot cross-curve binding
-proof, `min_out`, tip, `input_utxos` references, `expiry`, and a
-per-intent `intent_sig` under `trader_pubkey`. The opening
-`(amount_in, r_BN254)` needed to construct the batch proof is
-encrypted in an `opening_blob` released to the claiming settler at
-batch construction time. Chain observers see only commitments and
-aggregate batch deltas — never the cleartext per-trader amount.
+BN254-friendly `C_in_amount_BN254`), a one-shot cross-curve
+binding proof for the input, `min_out`, `tip`, `input_utxos`
+references, receive script, `expiry`, and a per-intent
+`intent_sig` under `trader_pubkey`. The full opening blob
+`(amount_in, r_in_secp, r_in_BN254, r_out_secp, r_out_BN254)` —
+spec'd in "Trader-mediated opening release" under Cross-asset
+authorization for swaps — is **held by the trader's dapp** and
+transmitted directly to the claiming settler, encrypted to the
+settler's published pubkey, at the same moment the dapp returns
+its `SIGHASH_ALL` signature against the assembled candidate
+batch. The worker is a message relay between trader dapps and
+settlers; it cannot decrypt openings or pre-stage signatures.
+Chain observers see only commitments and aggregate batch deltas
+— never the cleartext per-trader amount.
 
 **Whole-UTXO consumption only.** If a trader's available UTXO is
 larger than their intended `amount_in`, they pre-split via `CXFER`
@@ -537,20 +698,72 @@ larger than their intended `amount_in`, they pre-split via `CXFER`
 draws inside a swap batch; the additional split is one extra
 Bitcoin tx of trader latency.
 
-**Settlement.** A settler reads the open intent set + current pool
-state and:
+**Settlement.** Settlement is a **two-round-trip** flow because
+the settler cannot run the deterministic clearing solve without
+per-trader cleartext amounts (which live in opening blobs), and
+the trader cannot sign `SIGHASH_ALL` without the assembled
+envelope (which depends on the solve's output). The protocol is:
 
-1. Selects a subset that all clear at one price within each
-   trader's `min_out`.
-2. Computes `Δa_net` numerically and solves `Δb_net` from the
-   constant-product curve at the pool's current reserves with fee
-   `γ = (10000 − fee_bps) / 10000`.
-3. Computes `P_clear = |Δa_net| / |Δb_net|`. If any `min_out_i`
-   fails at `P_clear`, drops that intent and re-solves.
-4. Builds the Bitcoin tx: consumes N intent UTXOs → emits N
-   trader receipts + 1 settler tip.
-5. Generates one Groth16 batch proof.
-6. Broadcasts.
+1. Settler picks a candidate subset from the open intent pool
+   using only public intent metadata (direction, pubkey,
+   `min_out`, `tip`, `expiry`, `input_utxos`, receive script —
+   never the cleartext amount, which is hidden by Pedersen +
+   Poseidon). Subset must include all qualifying intents if the
+   pool pins an arbiter.
+
+2. **RTT 1 — opening collection.** Settler sends each included
+   trader (via the worker websocket) the candidate composition
+   `(included_intent_ids, settler_pubkey, vin[0].outpoint,
+   trader's vout_index)`. Each trader's dapp validates the
+   composition is sane, derives `r_out_secp` and `r_out_BN254`
+   from the deterministic Receipt-recovery formula against
+   `recipient_anchor_outpoint = trader_input_outpoint`, and
+   returns the full opening blob `(amount_in, r_in_secp,
+   r_in_BN254, r_out_secp, r_out_BN254)` encrypted to
+   `settler_pubkey`.
+
+3. Settler decrypts openings, computes per-direction gross flows,
+   runs the deterministic clearing solve, derives `P_clear` and
+   `amount_out_i` for each trader. If any `amount_out_i <
+   min_out_i`, drops that intent and re-solves (which may push
+   other intents below their `min_out` — iterate until stable, or
+   until the subset cannot satisfy mandatory-inclusion, in which
+   case abort and try a different subset).
+
+4. Settler computes each receipt's `C_out_secp_i = amount_out_i ·
+   H + r_out_secp_i · G` (using the trader's revealed
+   `r_out_secp_i`), assembles the `T_SWAP_BATCH` envelope payload
+   (per-receipt commitments, public deltas, per-asset `R_net`,
+   reserved space for the batch proof), and computes
+   `envelope_hash = sha256(envelope_payload)`.
+
+5. Settler builds the candidate Bitcoin tx with the normative
+   layout (see Indexer determinism): `vin[0]` envelope-bearing
+   settler input; `vin[1+i]` trader inputs in `intent_id`
+   ascending byte-order; `vout[0] = OP_RETURN(envelope_hash)`;
+   `vout[1+i]` trader receipt outputs at matching indices;
+   `vout[N+1]` aggregated settler tip; optional `vout[N+2]`
+   settler BTC change.
+
+6. **RTT 2 — sig collection.** Settler forwards the assembled
+   PSBT to each included trader's dapp via the worker websocket.
+   Each dapp validates locally: (a) `min_out`, `tip`, `expiry`,
+   receipt `scriptPubKey` match its trader's intent; (b) derived
+   `amount_out_i` from public deltas matches; (c) `vout[0]` data
+   equals `sha256(envelope_payload)` against the assembled
+   payload; (d) the trader's input is at the expected `vin`
+   index. On pass, it auto-signs `SIGHASH_ALL` over its trader's
+   input — no confirmation prompt — and returns the sig.
+
+7. On full sig set, settler generates the Groth16 batch proof
+   using the collected openings as witness, splices the proof
+   into the envelope, and broadcasts.
+
+The two RTTs both ride the worker websocket and complete in a
+few seconds end-to-end under normal conditions. Total per-batch
+latency from settler claim to broadcast is bounded by the slowest
+trader's response in either RTT plus the settler's batch-proof
+generation time (capped under ~2 minutes for `N ≤ 16`).
 
 **Fairness within a batch.** Every trader pays/receives the same
 `P_clear`. There is no in-batch ordering, no sandwich, no
@@ -561,12 +774,16 @@ on the table.
 
 **Cross-batch ordering.** Bitcoin consensus admits one batch tx
 per pool per block as the typical case (each batch consumes the
-same trader UTXOs once). If multiple batches against the same pool
-confirm in the same block, the indexer applies them in `(tx_index,
-vin[0] outpoint)` order and rejects later batches whose deltas
-violate the constant-product invariant against post-earlier-batch
-reserves. Settlers SHOULD coordinate off-chain on a one-batch-per-
-pool-per-block convention to avoid wasted proof work.
+same trader UTXOs once, and traders won't sign two competing
+batches against the same input). If multiple batches against the
+same pool nonetheless confirm in the same block (settlers racing
+with disjoint intent sets), the indexer applies them in
+`(tx_index, vin[0] outpoint)` order and re-runs the deterministic
+clearing solve for each subsequent batch against the post-earlier
+reserves; any later batch whose declared `(Δa_net, Δb_net)` does
+not match its solve at the post-earlier reserves is rejected.
+Settlers SHOULD coordinate off-chain on a one-batch-per-pool-per-
+block convention to avoid wasted proof work.
 
 **Settler economics.** Each intent specifies a `tip` value and
 `tip_asset` (either of the pool's two assets). The settler
@@ -575,28 +792,64 @@ from their own BTC inputs, recouping via the tip mechanism.
 Permissionless — any tacit user with a chain view + intent-pool
 read can become a settler.
 
-**Pricing invariant.** The constant-product check is
-direction-aware. With `γ = (10000 − fee_bps) / 10000` and v1's
-net-flow fee policy:
+**Deterministic clearing solve.** v1 specifies an **exact-output**
+clearing rule, not an inequality with slack. Given the included
+intent set's signed gross flows on each side, the settler computes
+the net asset-A flow from intents `Δa_gross_in` (sum of A→B inputs)
+and `Δa_gross_out` (sum of B→A receipts in asset A), and likewise
+for B. The CFMM solve is direction-aware with
+`γ = (10000 − fee_bps) / 10000`:
 
-- **A→B-dominant batch** (`Δa_net > 0`, `Δb_net < 0`):
-  `(R_A + γ·Δa_net) · (R_B + Δb_net) ≥ R_A · R_B`
-- **B→A-dominant batch** (`Δa_net < 0`, `Δb_net > 0`):
-  `(R_A + Δa_net) · (R_B + γ·Δb_net) ≥ R_A · R_B`
+- **A→B-dominant batch** (`Δa_gross_in > Δa_gross_out`):
+  let `Δa_in_net = Δa_gross_in − Δa_gross_out` (positive, the
+  residual that hits the curve). Then
+  `Δb_out_net = floor( R_B · γ · Δa_in_net / (R_A + γ · Δa_in_net) )`
+  with the multiplication carried in u128 to avoid overflow. The
+  pool's new reserves are `R_A' = R_A + Δa_in_net`,
+  `R_B' = R_B − Δb_out_net`. The clearing ratio for trader receipt
+  derivation is `P_clear = Δa_in_net / Δb_out_net`.
+- **B→A-dominant batch** (`Δb_gross_in > Δb_gross_out`):
+  symmetric — let `Δb_in_net = Δb_gross_in − Δb_gross_out`,
+  `Δa_out_net = floor( R_A · γ · Δb_in_net / (R_B + γ · Δb_in_net) )`,
+  `P_clear = Δa_out_net / Δb_in_net`.
+- **Zero-net batch** (`Δa_gross_in == Δa_gross_out` AND
+  `Δb_gross_in == Δb_gross_out`): the included intents perfectly
+  cancel; reserves are unchanged. `P_clear` is set to the pool's
+  current spot ratio `R_A / R_B` (with deterministic
+  floor-rounding) so trader receipts are still well-defined. No
+  fee is charged in the zero-net case.
+- **Degenerate-empty batch** (`N = 0`): `T_SWAP_BATCH` envelopes
+  with zero included intents are forbidden — indexers reject.
 
-Fee `γ` applies only to the **net-inflowing side** — the cancelled
-portion of intents that net against each other within a batch pays
-no fee, only the residual that actually hits the curve does. This
-is the Penumbra-style fee policy, chosen for envelope simplicity
-(no per-direction gross-flow field on chain). A V2-style gross-
-input fee policy is a v2 variant.
+The result `Δb_out_net` (or `Δa_out_net`) is **the** answer the
+indexer expects; envelopes whose declared `(Δa_net, Δb_net)` differ
+from this exact value by even one base unit are rejected. There is
+no settler freedom in pricing — only in subset selection. Settlers
+do all the math off-chain and the indexer re-derives the same
+result byte-identically; any disagreement rejects the envelope.
 
-Settlers solve for `(Δa_net, Δb_net)` off-chain; the indexer
-accepts the solution as an inequality, so any slack between LHS
-and RHS accrues to LPs as fee revenue beyond the nominal
-`fee_bps`. The inequality direction prevents settlers from
-extracting value from the pool — only from being marginally
-generous to it.
+Fee `γ` applies only to the **net-inflowing side**: the offsetting
+portion of intents that cancel within a batch pays no fee; only
+the residual that actually hits the curve does. This is the
+Penumbra-style net-flow fee policy. A v2 variant could charge fees
+on gross flow (Uniswap V2 style) — that would extract more from
+two-sided batches but requires a per-direction gross-flow field in
+the envelope. v1 chose net-flow for envelope simplicity; the
+trade-off is documented for LPs.
+
+**No "slack accrues to LPs."** Earlier drafts allowed settlers to
+submit inequalities and called the slack a fee bonus to LPs; that
+let a settler-LP extract value from traders by deliberately
+mispricing toward themselves. v1 forbids slack: the deterministic
+solve above pins exactly one valid answer per included subset.
+
+**Per-trader pro-rata fills.** Each included trader's
+`amount_out_i` is derived in-circuit from `amount_in_i` and
+`P_clear` exactly as specified in "Batch proof: per-intent BN254
+work + per-receipt cross-curve binding" above; floor-rounding
+favors the pool (truncated dust accrues as fee revenue to LPs, the
+only intentional source of slack and bounded above by `N` base
+units per batch).
 
 ## Indexer determinism rules
 
@@ -615,8 +868,37 @@ to existing LPs:
   minted to the NUMS-locked output.
 - LP_REMOVE: `Δa = floor(R_A · share_amount / S)`,
   `Δb = floor(R_B · share_amount / S)`.
-- T_SWAP_BATCH constant-product check: γ-scaling done in u128 to
-  avoid overflow; the looser inequality direction wins.
+- T_SWAP_BATCH net-output: per "Deterministic clearing solve"
+  above — γ-scaling carried in u128, floor toward zero (favoring
+  the pool); indexer recomputes byte-identically and rejects any
+  declared `(Δa_net, Δb_net)` that disagrees.
+
+**Envelope-hash binding (`T_SWAP_BATCH` only).** Every
+`T_SWAP_BATCH` Bitcoin tx MUST include `vout[0]` as a 0-sat
+`OP_RETURN` whose 32-byte data is `sha256(envelope_payload)` —
+the SHA-256 of the entire `T_SWAP_BATCH` payload at
+`vin[0].witness`, starting from the opcode byte. Indexers reject
+any `T_SWAP_BATCH` whose `vout[0]` data does not equal the actual
+envelope hash. This rule is what makes trader `SIGHASH_ALL`
+signatures bind to the envelope content; see "Per-`vin`
+Bitcoin-layer signature" under Cross-asset authorization for
+swaps for the full reasoning. `T_LP_ADD` and `T_LP_REMOVE`
+envelopes do NOT require this OP_RETURN — they are single-party
+ops where the LP signs their own envelope and no third-party
+substitution is possible.
+
+**T_SWAP_BATCH transaction layout.** The Bitcoin tx structure is
+fully normative (indexers reject deviations):
+
+| Index | Role |
+|---|---|
+| `vin[0]` | Settler's envelope-bearing input (Taproot script-path); witness carries the `T_SWAP_BATCH` payload. |
+| `vin[1+i]` | Trader inputs in `intent_id` ascending byte-order, `i ∈ [0, N)`. |
+| `vin[N+1..]` | Optional settler BTC funding inputs (used to pay tx fee + dust). |
+| `vout[0]` | `OP_RETURN(envelope_hash)`, 0 sat, 32-byte data. |
+| `vout[1+i]` | Trader receipt outputs at matching indices; each is a dust-value (e.g., 546 sat) output to the trader's pre-declared receive script. |
+| `vout[N+1]` | Aggregated settler tip — a tacit UTXO of `tip_asset`, dust-value at Bitcoin layer with the tip Pedersen commitment in the envelope payload. |
+| `vout[N+2..]` | Optional settler BTC change. |
 
 **UTXO-race during batch construction.** Between batch construction
 and Bitcoin broadcast, a trader could spend one of their referenced
@@ -637,19 +919,29 @@ forward.
 **Canonical ordering.** Within a block, AMM envelopes apply in
 `(tx_index, vin[0] outpoint)` order. Within a `T_SWAP_BATCH`
 envelope, per-trader inputs (`vin[1+i]`) and outputs (`vout[1+i]`)
-MUST appear in `intent_id` ascending byte-order; indexers reject
-violations.
+MUST appear in `intent_id` ascending byte-order, with the OP_RETURN
+at `vout[0]` ahead of all receipts; indexers reject violations.
 
-**Mandatory inclusion of qualifying intents.** To eliminate
-cross-batch curation MEV (the settler's incentive to selectively
-exclude intents that would move price against their own LP
-position), the indexer enforces a forced-inclusion rule:
+**Mandatory inclusion of qualifying intents (opt-in mitigation).**
+To **mitigate** cross-batch curation MEV (the settler's incentive
+to selectively exclude intents that would move price against their
+own LP position), pools that pin an inclusion arbiter enforce a
+forced-inclusion rule. Pools without an arbiter operate in
+best-effort mode and rely on tip-revenue economics alone.
 
-An intent is **qualifying for height H** if (a) it has been open
-in the worker's intent pool since at least height `H − K` (default
+An intent is **qualifying for height H against the pool's
+spot-price-derived candidate set** if (a) it has been open in the
+worker's intent pool since at least height `H − K` (default
 `AMM_MANDATORY_INCLUSION_DEPTH = 2`), (b) its `expiry` has not
-lapsed, and (c) its `min_out` is satisfiable at the candidate
-batch's `P_clear`.
+lapsed, and (c) its `min_out` is satisfiable against the **spot
+clearing price** the pool would produce if the qualifying set
+alone were settled (recursively: re-run the deterministic clearing
+solve over the qualifying set; check `min_out` for each member
+against that solve's `P_clear`). This is a deterministic
+fixed-point computation over the qualifying-set seed, not a free
+parameter the settler can tune; if it does not converge in 3
+iterations the indexer treats the empty set as canonical for that
+height.
 
 When validating a `T_SWAP_BATCH` at height H, the indexer fetches
 the canonical signed list of qualifying intents for that pool and
@@ -657,17 +949,32 @@ rejects the envelope if any qualifying intent was excluded. The
 worker exposes a `GET /pools/:pool_id/qualifying-intents/:height`
 endpoint returning a height-stamped, BIP-340-signed list.
 
-**Inclusion arbiter pubkey.** The signed list's authority comes
-from one or more `inclusion_arbiter_pubkey` values pinned at
-`POOL_INIT`. Indexers accept the qualifying-intents list for a
-pool only if signed by at least one of that pool's pinned
-arbiters. If `POOL_INIT` pins no arbiter, mandatory inclusion is
-unenforceable for that pool and settlers operate in best-effort
-mode — curation MEV is bounded only by tip-revenue economics.
-Pools that care about strong MEV resistance SHOULD pin a multisig
-or independent-operator quorum (`k`-of-`n`) rather than a single
-key; pools that prefer minimal trust delegation leave the field
-unset and accept the weaker guarantee.
+**Inclusion arbiter pubkey (optional).** The default for `POOL_INIT`
+is to pin **no arbiter**. Default pools work fine for trading —
+they are fully trustless, fully L1-reconstructible, and rely on
+tip economics + arbitrage to keep settlers from chronically
+curating (excluded intents leave tip revenue on the table; a
+chronically curating settler loses fees to less-curating
+competitors; arbitrageurs realign any spot drift). The worst case
+is **delayed inclusion + bounded slippage drift**, never value
+extraction or burn.
+
+Pools that want a stronger cryptographic guarantee against
+cross-batch curation MEV can additionally pin one or more
+`inclusion_arbiter_pubkey` values at `POOL_INIT`. Indexers then
+accept the qualifying-intents list for that pool only if signed
+by at least one of the pinned arbiters, and reject any
+`T_SWAP_BATCH` that excludes a qualifying intent. This is an
+opt-in upgrade — typically wanted only by very-high-volume pools
+where curation profit could become material — and it MUST be a
+multisig or independent-operator quorum (`k`-of-`n`); a single
+key is fragile and not recommended.
+
+Default pools (no arbiter pinned) are the right v1 starting point
+and what the dapp creates by default. Pinning an arbiter is a
+deliberate choice the pool founder makes to delegate one specific
+MEV defense to a quorum, in exchange for the off-chain data
+dependency described next.
 
 **Trade-off vs. L1-only reconstruction.** Mandatory-inclusion
 enforcement is the one place this protocol relies on data outside
@@ -720,24 +1027,141 @@ virtual quantities the indexer attests to, exactly as in the mixer.
 
 The reference worker (and any settler) can DoS users (refuse to
 relay, refuse to settle) but cannot cheat them. Traders' `min_out`
-defends against settler price manipulation. **MEV is eliminated
-intra-batch by uniform pricing and cross-batch by the
-mandatory-inclusion rule** (see Indexer determinism); the settler's
-remaining freedom is timing — when to broadcast — not censorship.
-Liveness depends on at least one working indexer + one available
-settler; both are permissionless. Anyone can run their own indexer
-+ settler from chain data alone.
+defends against settler price manipulation. **Intra-batch MEV
+(sandwich, priority-fee ordering) is eliminated** by uniform
+clearing. **Cross-batch curation MEV is mitigated** by the opt-in
+mandatory-inclusion rule for pools that pin an arbiter; for pools
+that do not pin one, curation MEV is bounded only by tip-revenue
+economics. Burn-grief — settlers broadcasting Bitcoin-valid but
+tacit-invalid txs to destroy trader UTXOs — is structurally
+impossible because trader `SIGHASH_ALL` sigs commit to
+`envelope_hash` via `vout[0]` `OP_RETURN` (see Cross-asset
+authorization for swaps). Liveness depends on at least one working
+indexer + one available settler; both are permissionless. Anyone
+can run their own indexer + settler from chain data alone.
 
-**Privacy delegation for swap intents.** Per-trader openings
-`(amount_in, blinding_in)` are released to the claiming settler so
-it can construct the batch Groth16 proof. The worker mediates this
-via short-lived encrypted blobs. The worker is a **privacy
-intermediary** (it can decrypt openings), not a **custody
-intermediary** (it cannot forge intents or extract value — the
-trader's `intent_sig` and the in-circuit `min_out` constraint
-prevent it). Trust-conscious traders can self-host a worker, run
-their own settler, or encrypt openings directly to a nominated
-settler's published key.
+**Worker is a message relay, not an escrow or privacy
+intermediary.** Under v1's interactive PSBT signing, per-trader
+opening blobs `(amount_in, r_in_secp, r_in_BN254, r_out_secp,
+r_out_BN254)` are encrypted directly by the trader's dapp to the
+claiming settler's published pubkey at sign time; the trader's
+`SIGHASH_ALL` signature is returned through the worker websocket
+but the worker cannot decrypt the opening payload.
+The worker is therefore **neither a custody intermediary nor a
+privacy intermediary** — it can only DoS (refuse to forward
+messages). Pre-signed sigs and openings never sit on the worker.
+Trust-conscious traders self-host a worker, use a peer-to-peer
+pubsub layer (e.g., Nostr) instead, or run their own settler with
+direct trader↔settler messaging. Pools that pin an
+`inclusion_arbiter_pubkey` add the arbiter as a separate liveness
++ data-availability dependency for that pool's mandatory-inclusion
+enforcement; that role is independent of the worker role and can
+be carried by a different operator or a quorum.
+
+## Receipt recovery
+
+Tacit's standard recovery posture (SPEC §6) is that a wallet armed
+with the in-page privkey can reconstruct every UTXO it owns from
+chain alone — no off-chain secret material required. AMM receipts
+must extend this property.
+
+**Deterministic blinding derivation.** Every receipt UTXO emitted
+by `T_LP_ADD`, `T_LP_REMOVE`, or `T_SWAP_BATCH` uses blindings
+derived from the recipient's privkey + on-chain identifiers known
+at intent-post / LP-op-construction time, so a wallet restoring
+from privkey alone can re-open the commitment without external
+state. The seed must be **anchored on data that is fixed before
+the envelope is assembled** — using `batch_txid` would be circular
+(the envelope contains `C_out_secp_i` which depends on
+`r_out_secp_i` which would depend on the seed which would depend
+on the txid which depends on the envelope). The anchor is instead
+the recipient's consumed input outpoint, which is known at
+intent-post and recoverable from chain.
+
+For each receipt:
+
+- **Swap receipt** (`T_SWAP_BATCH`): the recipient is a trader
+  whose tacit input outpoint `trader_input_outpoint` is consumed
+  at `vin[1+rank]`. The seed binds to that outpoint.
+- **LP-share receipt** (`T_LP_ADD`): the recipient is the LP
+  whose canonical asset-A input outpoint
+  `lp_inputA_outpoint` is consumed first.
+- **LP-withdraw receipts** (`T_LP_REMOVE`): the recipient is the
+  LP whose lp-share input outpoint `lp_share_input_outpoint` is
+  consumed.
+
+In every case let `recipient_anchor_outpoint` be that 36-byte
+outpoint (32-byte txid BE || 4-byte vout LE). Then:
+
+```
+seed_secp  = HMAC-SHA256(recipient_privkey,
+                          "tacit-amm-receipt-secp-v1"
+                          || pool_id
+                          || recipient_anchor_outpoint
+                          || asset_id)
+seed_BN254 = HMAC-SHA256(recipient_privkey,
+                          "tacit-amm-receipt-bn254-v1"
+                          || pool_id
+                          || recipient_anchor_outpoint
+                          || asset_id)
+r_out_secp_i  = seed_secp  mod n_secp     (n_secp = secp256k1 group order)
+r_out_BN254_i = seed_BN254 mod p_BN254_Fr (BN254 scalar field prime)
+```
+
+The receipt commitments are then the standard Pedersen / Poseidon:
+
+```
+C_out_secp_i  = amount_out_i · H_secp + r_out_secp_i · G_secp
+C_out_BN254_i = Poseidon(amount_out_i, r_out_BN254_i)
+```
+
+Both blindings are committed to inside the batch / LP-op proof's
+per-receipt cross-curve binding; the indexer validates that the
+on-chain `C_out_secp_i` opens to the same `amount_out_i` as the
+in-circuit BN254 commitment. The settler / LP-op assembler does
+not derive these blindings — it receives them from the recipient's
+opening blob (encrypted to the settler/assembler's published
+pubkey) at the same moment it receives the recipient's
+`SIGHASH_ALL` sig.
+
+The asset_id field in the seed is what disambiguates the LP_REMOVE
+recipient's two receipts (one of asset A, one of asset B) emitted
+against the same `lp_share_input_outpoint` anchor — each has its
+own `r_out` because the asset_id differs.
+
+**Recovery algorithm.** A wallet restoring from privkey alone
+recovers AMM receipts by:
+
+1. Scanning chain for `T_SWAP_BATCH`, `T_LP_ADD`, and
+   `T_LP_REMOVE` envelopes that consume any of the wallet's known
+   tacit UTXO outpoints in `vin[1..]`.
+2. For each match, identifying the receipt vouts that correspond
+   to the wallet (per the canonical layout: a swap trader's
+   receipt is at `vout[1 + rank_in_intent_id_sort]`; an LP_ADD
+   share is at the share-output position the envelope declares;
+   LP_REMOVE legs are at the two declared positions).
+3. Reading public envelope data (deltas, reserves at parent
+   height for swaps; declared `(Δa, Δb, share_amount)` for LP
+   ops) and computing the wallet's `amount_out` from the
+   deterministic solve / formulas.
+4. Re-deriving `r_out_secp` and `r_out_BN254` from privkey +
+   `(pool_id, recipient_anchor_outpoint, asset_id)`.
+5. Verifying the computed commitment against the on-chain
+   `C_out_secp` carried in the envelope at the corresponding
+   `vout` slot. Match → receipt credited; no match → wallet flags
+   a recovery anomaly (rare; indicates an indexer disagreement or
+   a corrupted wallet state).
+
+This makes AMM receipts first-class recoverable UTXOs, identical
+in posture to mixer-withdraw outputs (SPEC §5.11) and CXFER
+recipient outputs (SPEC §3.5). No "ghost UTXOs" after restore.
+
+**Posted intents in flight.** A wallet that restores while one of
+its intents is still open in a worker pool — or pre-included in a
+candidate batch the wallet missed signing — recovers nothing for
+that intent (the input UTXO is still spendable; the trader can
+re-post or wait for `expiry`). Only confirmed receipts are
+recoverable, by design.
 
 ## Privacy model
 
@@ -892,7 +1316,7 @@ custody** — running as a meta-protocol on Bitcoin L1.
 | Pool custody | Pool contract holds tokens | Validator notes | None — virtual reserves |
 | Pricing model | Per-swap CFMM | Per-block uniform clearing | Per-block uniform clearing |
 | LP shares | ERC20 (public balances) | Concentrated-liquidity NFT | Confidential tacit asset; mixer-composable |
-| MEV (sandwich) | Native exposure | Eliminated within batch | Eliminated within batch |
+| MEV (sandwich) | Native exposure | Eliminated within batch | Intra-batch eliminated; cross-batch curation mitigated by opt-in arbiter |
 | Per-trade privacy | None | Hidden | Hidden |
 | Settlement actor | Anyone (gas-paid tx) | Validator set | Permissionless settler |
 | Trust beyond consensus | Contract bug ⇒ total loss | Cosmos validators | Indexer rules + Groth16 — no custody surface |
@@ -903,20 +1327,34 @@ custody** — running as a meta-protocol on Bitcoin L1.
 - ⏸ Pool state object normative spec
 - ⏸ Groth16 circuits:
   - `amm_lp_add.circom`, `amm_lp_remove.circom`, `amm_swap_batch.circom`
-  - `amm_cross_curve.circom` — per-intent secp256k1↔BN254 binding,
-    protocol-wide `cross_curve_vk_cid` pinned in `SPEC.md`
+  - `amm_cross_curve.circom` — per-receipt AND per-intent
+    secp256k1↔BN254 binding gadget; protocol-wide
+    `cross_curve_vk_cid` pinned in `SPEC.md`. Note: the batch
+    circuit invokes this gadget once per input (trader-paid at
+    intent-post) AND once per receipt (settler-paid in batch
+    proof) — output-side binding is load-bearing for soundness.
 - ⏸ Phase 2 ceremony coordination (reuses mixer's coordinator)
 - ⏸ Browser-side prover + verifier (reuses mixer's snarkjs vendoring)
-- ⏸ Worker indexing + intent-pool + settler logic
+- ⏸ Worker as message relay (websocket fanout between trader dapps
+  and settlers; no opening-blob or signature escrow in v1)
 - ⏸ Worker `qualifying-intents/:height` endpoint (signed list under
   pool-pinned `inclusion_arbiter_pubkey`)
-- ⏸ Worker intent-opening encryption / settler-claim release flow
+- ⏸ Trader dapp interactive PSBT auto-signing flow (validate
+  candidate batch locally; auto-sign `SIGHASH_ALL` + encrypt
+  opening to settler pubkey)
+- ⏸ Indexer envelope-hash OP_RETURN binding rule
+- ⏸ Indexer per-receipt cross-curve binding verification path
 - ⏸ Intent cancellation message + worker handling
 - ⏸ Dapp UI (pool browser, LP add/remove, swap intent posting,
   cancel)
+- ⏸ Deterministic clearing solve + zero-net case in `SPEC.md §11`
 - ⏸ Determinism rules in `SPEC.md §11` (rounding, reorg depth,
-  canonical ordering, mandatory inclusion)
-- ⏸ Trader receipt blinding derivation + recovery rules
+  canonical ordering, T_SWAP_BATCH tx layout, mandatory inclusion)
+- ⏸ Receipt blinding derivation + recovery rules (HMAC domains
+  `tacit-amm-receipt-{secp,bn254}-v1`)
+- ⏸ Deterministic `lp_asset_id = SHA256("tacit-amm-lp-v1" || pool_id)`
+  origin rule (extends SPEC §5.1's `asset_id` derivation)
+- ⏸ Mixer-style kernel sigs for `T_LP_ADD` / `T_LP_REMOVE`
 - ⏸ NUMS-derived burn-output derivation for `MINIMUM_LIQUIDITY`
 - ⏸ CETCH / T_PETCH `amm_launcher_pubkey` field (`SPEC.md` §5.1 / §5.8)
 - ⏸ POOL_INIT `inclusion_arbiter_pubkey` field
@@ -936,18 +1374,39 @@ custody** — running as a meta-protocol on Bitcoin L1.
   fairness — every trader in a batch gets the same price. Not
   suitable for HFT.
 - **Settlers see per-trader openings.** Per-trader openings are
-  released to the claiming settler so it can construct the batch
+  released by the trader's dapp directly to the claiming settler
+  (encrypted to settler pubkey) so it can construct the batch
   proof. Settler cannot extract value (intent_sig + min_out
-  constraint prevent it) but does learn batch composition.
-- **Two-layer circuit cost.** Per intent, the trader pays a
-  one-shot cross-curve binding proof bridging secp256k1 to BN254.
-  Comparable published designs land in the ~100K–400K constraint
-  range (~10–30s browser proving); precise numbers need
-  benchmarking before the spec is fixed. Per batch, the settler's
-  proof is mixer-tier (~3K constraints per intent in BN254, ~5s
-  for N=20). Trader cost dominates per-swap UX latency; settler
-  cost bounds throughput. Bitcoin tx size also bounds N (the
-  standard-tx ceiling sits in the hundreds-of-intents range).
+  constraint + envelope_hash binding prevent it) and cannot burn
+  trader UTXOs (envelope_hash binding prevents it), but does
+  learn the batch composition and per-trader amounts of intents
+  it claims. Trust-conscious traders can route intents only to
+  self-run settlers.
+- **Interactive trader signing.** v1 requires the trader's dapp
+  to be online during the worker→dapp PSBT-forwarding window in
+  the block they want to settle (typically a few seconds). Closing
+  the dapp tab simply defers inclusion to the next block when the
+  trader reconnects, until `expiry`. This is the cost of binding
+  trader sigs to envelope content without covenants; a future
+  BIP-119 / OP_CTV adoption removes it.
+- **Resign-on-composition-change.** Under `SIGHASH_ALL`, any
+  change to the included intent set or batch structure shifts
+  `envelope_hash` and forces all included traders to re-sign. The
+  worker websocket pushes the fresh PSBT and the dapp auto-re-signs
+  without prompt as long as the trader's `(min_out, tip, expiry,
+  receipt scriptPubKey)` are still honored.
+- **Two-layer circuit cost, with output-side binding.** Per intent,
+  the trader pays a one-shot cross-curve binding proof bridging
+  secp256k1 to BN254 (~100K–400K constraints, ~10–30s browser
+  proving; needs empirical benchmarking before the spec is fixed).
+  Per batch, the settler's proof now includes per-receipt
+  cross-curve binding (same gadget shape, applied once per
+  receipt) on top of mixer-tier BN254 work — total settler cost
+  is roughly `N · cross_curve_cost + N · 3K` constraints. v1
+  caps `N ≤ 16` to keep settler proving under ~2 minutes on a
+  modern browser; production deployments running on a beefier
+  prover machine can lift this. Bitcoin tx size also bounds N
+  (standard-tx ceiling sits well above 16).
 - **First-LP price-setting.** Whoever runs `POOL_INIT` sets the
   initial price. Standard problem; standard fix (founder seeds at
   fair market price; arbitrage corrects misprice quickly).

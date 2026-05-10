@@ -138,7 +138,9 @@ machinery.
                                             │  (height, tx_index, txid) order
                                             ▼
    ┌─────────────────────────────────────────────────────────────────────────────────────┐
-   │              INDEXERS  (reference worker + every dapp client)                       │
+   │              CONFORMING VERIFIER  (dapp client — authoritative for spend)           │
+   │              Reference worker performs 1–4, 6; Groth16 (5) is dapp-side             │
+   │              (three-verifier model — SPEC §5.11.4)                                  │
    │                                                                                     │
    │   T_DEPOSIT path:                                                                   │
    │     • append Poseidon₃(s, ν, denom) to per-(asset_id, denom) pool tree              │
@@ -151,7 +153,7 @@ machinery.
    │     3. nullifier_hash ∉ spent-set for this pool                                     │
    │     4. SHA-256(domain ‖ … ‖ r_leaf) == envelope.bind_hash                           │
    │     5. snarkjs.groth16.verify(vk, [root, nullifier_hash, denom, r_leaf,             │
-   │                                    bind_hash], proof)                               │
+   │                                    bind_hash], proof)         ← dapp-authoritative  │
    │     6. denom·H + r_leaf·G == recipient_commit (Pedersen on secp256k1)               │
    │                                                                                     │
    │   → on accept: credit Bob's UTXO at vout[0] as a spendable tacit asset opening      │
@@ -202,15 +204,17 @@ Bitcoin alone.
 
 ## Privacy model
 
-- **Cryptographic privacy** is unconditional under Groth16 + Poseidon + the
-  ceremony's soundness. An observer reading on-chain `T_WITHDRAW` envelopes
-  learns no information about which deposit funded which withdraw, beyond
-  the count of currently-unspent leaves in the pool.
+- **Cryptographic privacy** is unconditional under Groth16's perfect
+  zero-knowledge + Poseidon assumptions — independent of the trusted setup,
+  which gates soundness (no false withdrawals), not privacy (SPEC §5.11.3).
+  An observer reading on-chain `T_WITHDRAW` envelopes learns no information
+  about which deposit funded which withdraw, beyond the count of currently-
+  unspent leaves in the pool.
 - **Operational privacy** depends on three things outside the protocol's
   control: anonymity-set size (live count surfaced in the dapp), Bitcoin-
-  level fee linkage (pay-to-other is unconditionally unlinkable; self-mix
-  requires a fresh BTC wallet OR a relayer), and network-level correlation
-  (Tor + timing discipline).
+  level fee linkage (pay-to-other has no chain-graph link to the depositor;
+  self-mix requires a fresh BTC wallet OR a relayer), and network-level
+  correlation (Tor + timing discipline).
 
 Full threat model + the five-invariant table + three-verifier model in
 SPEC §5.11.4. Post-withdraw privacy via CXFER chaining in §5.11.5.
@@ -361,11 +365,17 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 - **Mixer mixes tacit assets.** Native BTC mixing requires wrapping into a
   tacit asset, and that wrapping step is a separate trust assumption.
 - **Operational privacy is user-discipline-dependent for self-mix.**
-  Pay-to-someone-else is unconditionally unlinkable; self-mix requires
-  a fresh wallet for the withdraw OR a relayer to break the BTC fee-source
-  chain-graph link.
+  Pay-to-someone-else has no chain-graph link between depositor and
+  recipient; self-mix requires a fresh wallet for the withdraw OR a relayer
+  to break the BTC fee-source chain-graph link.
 - **Indexer-validated, not Bitcoin-consensus-enforced.** Same trust model
   as Runes / Ordinals — well-established, but readers should understand it.
+- **Mixer notes are minted in your browser.** `(secret, ν)` are 32 CSPRNG
+  bytes drawn locally; the reference dapp keeps them local and ships no
+  network call carrying them. Same property as Tornado's UI and every
+  browser-side mixer: whichever bytes mint the note are in the trust path,
+  so load from a pinned IPFS CID you've verified (or self-host) and
+  you're running audited bytes rather than a fork or typo-squat.
 
 ## Defensible one-paragraph summary
 
