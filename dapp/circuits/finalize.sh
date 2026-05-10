@@ -35,7 +35,7 @@ GATEWAY="${GATEWAY:-https://content.wrappr.wtf/ipfs}"
 # auditability beyond what's verifiable from chain after the fact.
 if [ -z "$BLOCK_HEIGHT" ]; then
   echo "==> No block height provided — auto-picking (tip - 12) for ≥12 confirmations"
-  TIP=$(curl -sf "https://mempool.space/api/blocks/tip/height" || echo "")
+  TIP=$(curl -sf --max-time 30 "https://mempool.space/api/blocks/tip/height" || echo "")
   if ! [[ "$TIP" =~ ^[0-9]+$ ]]; then
     echo "    ERROR: failed to fetch tip height from mempool.space"
     echo "    Pass an explicit block height: $0 <height>"
@@ -67,7 +67,7 @@ mkdir -p build artifacts ceremony-bundle
 
 echo
 echo "==> [1/8] Fetching ceremony state"
-STATE=$(curl -sf "$WORKER/ceremony/$CIRCUIT_HASH")
+STATE=$(curl -sf --max-time 30 "$WORKER/ceremony/$CIRCUIT_HASH")
 HEAD_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['head_cid'])")
 PTAU_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['ptau_cid'])")
 R1CS_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['r1cs_cid'])")
@@ -90,27 +90,76 @@ fi
 
 echo
 echo "==> [2/8] Downloading head zkey from IPFS"
-curl -sLf "$GATEWAY/$HEAD_CID" -o build/withdraw_pre_beacon.zkey
-echo "    $(wc -c < build/withdraw_pre_beacon.zkey) bytes"
+curl -sLf --max-time 120 "$GATEWAY/$HEAD_CID" -o build/withdraw_pre_beacon.zkey
+# Magic-byte check on the downloaded blob — some IPFS gateways return
+# 200 + HTML on missing CIDs, which curl -f can't catch. Reject anything
+# that doesn't start with the snarkjs zkey signature.
+if [ "$(head -c 4 build/withdraw_pre_beacon.zkey | xxd -p)" != "7a6b6579" ]; then
+  echo "    ERROR: downloaded head zkey does not start with 'zkey' magic bytes."
+  echo "    The gateway may have returned an error page. Inspect:"
+  echo "      head -c 200 build/withdraw_pre_beacon.zkey"
+  exit 1
+fi
+echo "    $(wc -c < build/withdraw_pre_beacon.zkey) bytes (zkey magic OK)"
 
 echo
-echo "==> [3/8] Fetching Bitcoin block $BLOCK_HEIGHT hash from mempool.space"
-BTC_BLOCK_HASH=$(curl -sf "https://mempool.space/api/block-height/$BLOCK_HEIGHT")
-if ! [[ "$BTC_BLOCK_HASH" =~ ^[0-9a-f]{64}$ ]]; then
-  echo "    ERROR: invalid block hash from mempool.space: '$BTC_BLOCK_HASH'"
+echo "==> [3/8] Fetching + cross-checking Bitcoin block $BLOCK_HEIGHT hash"
+# Cross-check against TWO independent block explorers. A single API
+# serving a wrong/hostile hash would otherwise pass through to finalize
+# unnoticed (snarkjs treats the beacon hash as opaque random bytes —
+# it doesn't verify the hash actually corresponds to a real block).
+# Two-explorer agreement closes that audit hole at the cost of one
+# extra curl.
+H_MEMPOOL=$(curl -sf --max-time 30 "https://mempool.space/api/block-height/$BLOCK_HEIGHT" || echo "")
+H_BLOCKSTREAM=$(curl -sf --max-time 30 "https://blockstream.info/api/block-height/$BLOCK_HEIGHT" || echo "")
+if ! [[ "$H_MEMPOOL" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "    ERROR: mempool.space returned invalid hash: '$H_MEMPOOL'"
   echo "    Has block $BLOCK_HEIGHT confirmed yet? Check https://mempool.space/block/$BLOCK_HEIGHT"
   exit 1
 fi
-echo "    block $BLOCK_HEIGHT: $BTC_BLOCK_HASH"
+if ! [[ "$H_BLOCKSTREAM" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "    ERROR: blockstream.info returned invalid hash: '$H_BLOCKSTREAM'"
+  echo "    Cross-check failed. Check https://blockstream.info/block-height/$BLOCK_HEIGHT"
+  exit 1
+fi
+if [ "$H_MEMPOOL" != "$H_BLOCKSTREAM" ]; then
+  echo "    ERROR: block hash mismatch between explorers!"
+  echo "      mempool.space:    $H_MEMPOOL"
+  echo "      blockstream.info: $H_BLOCKSTREAM"
+  echo "    One of these is wrong or compromised. Refusing to use either."
+  exit 1
+fi
+BTC_BLOCK_HASH="$H_MEMPOOL"
+echo "    block $BLOCK_HEIGHT: $BTC_BLOCK_HASH (mempool.space ≡ blockstream.info ✓)"
 
 echo
 echo "==> [4/8] Applying beacon (numIterationsExp=10 → 1024 actual iterations)"
+# Capture beacon output to a log instead of /dev/null so a beacon
+# failure leaves diagnostics behind. Explicit non-empty output check
+# also handles the case where snarkjs's CLI swallows beacon() errors
+# (its zkeyBeacon command in cli.cjs ignores beacon's return value).
+rm -f build/withdraw_final.zkey
 npx snarkjs zkey beacon \
   build/withdraw_pre_beacon.zkey \
   build/withdraw_final.zkey \
   "$BTC_BLOCK_HASH" 10 \
   -n "bitcoin block $BLOCK_HEIGHT beacon" \
-  >/dev/null 2>&1
+  > build/beacon.log 2>&1 || true
+if [ ! -s build/withdraw_final.zkey ]; then
+  echo "    ✗ beacon application produced no output."
+  echo "      See build/beacon.log for the snarkjs error trail."
+  echo "      Common causes:"
+  echo "      • beacon block hash format wrong (must be 64 lowercase hex)"
+  echo "      • build/withdraw_pre_beacon.zkey is corrupt (re-run from step 2)"
+  echo "      • snarkjs CLI version mismatch"
+  exit 1
+fi
+# Magic-byte sanity check on the beacon output.
+if [ "$(head -c 4 build/withdraw_final.zkey | xxd -p)" != "7a6b6579" ]; then
+  echo "    ✗ beacon output does not start with 'zkey' magic bytes — corrupt."
+  echo "      See build/beacon.log."
+  exit 1
+fi
 echo "    wrote build/withdraw_final.zkey ($(wc -c < build/withdraw_final.zkey) bytes)"
 
 # CRITICAL safety gate. Once we POST a malformed zkey to /finalize the
@@ -124,9 +173,17 @@ echo "    wrote build/withdraw_final.zkey ($(wc -c < build/withdraw_final.zkey) 
 echo
 echo "==> [5/8] Pre-flight: verifying beacon-applied zkey vs chain artifacts"
 echo "    Downloading r1cs ($R1CS_CID)…"
-curl -sLf "$GATEWAY/$R1CS_CID" -o build/withdraw_chain.r1cs
+curl -sLf --max-time 60 "$GATEWAY/$R1CS_CID" -o build/withdraw_chain.r1cs
+if [ "$(head -c 4 build/withdraw_chain.r1cs | xxd -p)" != "72316373" ]; then
+  echo "    ERROR: downloaded r1cs does not start with 'r1cs' magic bytes (gateway returned wrong content)."
+  exit 1
+fi
 echo "    Downloading ptau ($PTAU_CID)…"
-curl -sLf "$GATEWAY/$PTAU_CID" -o build/pot14_chain.ptau
+curl -sLf --max-time 180 "$GATEWAY/$PTAU_CID" -o build/pot14_chain.ptau
+if [ "$(head -c 4 build/pot14_chain.ptau | xxd -p)" != "70746175" ]; then
+  echo "    ERROR: downloaded ptau does not start with 'ptau' magic bytes (gateway returned wrong content)."
+  exit 1
+fi
 echo "    Running snarkjs zkey verify (this can take ~30-60s)…"
 # Rely on snarkjs's exit code (0 = ZKey Ok!, 1 = verification failed) per
 # its cli.js wrapper rather than parsing output text. Output text has
@@ -153,12 +210,40 @@ echo "    ✓ ZKey Ok — beacon-applied zkey verified against chain r1cs+ptau"
 
 echo
 echo "==> [6/8] POSTing to /finalize"
-RESP=$(curl -sf -X POST \
+# expected_head_cid pins the CAS check on the worker side: if a
+# contribute lands during the IPFS pin window, the worker rejects this
+# finalize POST instead of silently overwriting. The script then exits
+# cleanly so the user can re-run (which picks up the new head). Uses
+# --max-time 600 because the worker pins to Pinata which can be slow on
+# congested days.
+HTTP_CODE=$(curl -s -o build/finalize_response.json -w "%{http_code}" \
+  --max-time 600 \
+  -X POST \
   -H "X-Tacit-Init-Token: $CEREMONY_INIT_TOKEN" \
   -F "zkey=@build/withdraw_final.zkey" \
   -F "beacon_block_hash=$BTC_BLOCK_HASH" \
   -F "beacon_iterations=10" \
+  -F "expected_head_cid=$HEAD_CID" \
   "$WORKER/ceremony/$CIRCUIT_HASH/finalize")
+if [ "$HTTP_CODE" = "409" ]; then
+  echo "    ✗ Finalize race lost: a contribute landed during the IPFS pin"
+  echo "      window. The chain advanced past the head we beaconed."
+  echo "      The ceremony is UNCHANGED; just re-run this script to pick"
+  echo "      up the new head + re-beacon + re-POST."
+  echo
+  echo "    Worker response:"
+  cat build/finalize_response.json 2>/dev/null
+  echo
+  exit 1
+fi
+if [ "$HTTP_CODE" != "200" ]; then
+  echo "    ✗ Finalize POST failed with HTTP $HTTP_CODE"
+  echo "      Worker response:"
+  cat build/finalize_response.json 2>/dev/null
+  echo
+  exit 1
+fi
+RESP=$(cat build/finalize_response.json)
 FINAL_CID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['head_cid'])")
 echo "    finalized head_cid: $FINAL_CID"
 echo "    state: $(echo "$RESP" | python3 -c "import sys,json; s=json.load(sys.stdin)['state']; print(f\"contributions={s['contribution_count']} finalized={s.get('finalized',False)} beacon={s.get('beacon_block_hash','?')[:16]}…\")")"
@@ -184,7 +269,7 @@ cp build/withdraw_pre_beacon.zkey ceremony-bundle/withdraw_pre_beacon.zkey
 cp build/withdraw_final.zkey ceremony-bundle/withdraw_final.zkey
 cp artifacts/verification_key_final.json ceremony-bundle/verification_key_final.json
 cp artifacts/verification_key_final.json ceremony-bundle/verification_key.json
-curl -sf "$WORKER/ceremony/$CIRCUIT_HASH/attestations" > ceremony-bundle/attestations.json
+curl -sf --max-time 120 "$WORKER/ceremony/$CIRCUIT_HASH/attestations" > ceremony-bundle/attestations.json
 {
   echo "# Tacit mixer ceremony — circuit $CIRCUIT_HASH"
   echo

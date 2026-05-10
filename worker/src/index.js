@@ -1095,7 +1095,18 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
   const zkey = fd.get('zkey');
   const beaconHash = String(fd.get('beacon_block_hash') || '').toLowerCase();
-  const beaconIters = safeInt(fd.get('beacon_iterations'), 10, { min: 1, max: 64 });
+  // Tightened range: snarkjs's beacon() rejects values outside [10, 63]
+  // (cli.cjs hard-coded bound). Looser bounds here would let a hand-
+  // crafted POST through worker validation only to fail at snarkjs apply
+  // time on the contributor's machine — bad UX. The script always sends
+  // 10, so this is defense-in-depth for non-script callers.
+  const beaconIters = safeInt(fd.get('beacon_iterations'), 10, { min: 10, max: 63 });
+  // Coordinator's expectation of which head_cid the beacon-applied zkey
+  // was built on top of. Used for the post-pin CAS check below — closes
+  // the lost-contribution race where a contribute lands during the
+  // (multi-second) IPFS pin window and finalize would otherwise silently
+  // overwrite it. Optional for back-compat; clients SHOULD send it.
+  const expectedHeadCid = String(fd.get('expected_head_cid') || '');
   if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
   if (zkey.size > 32 * 1024 * 1024) return jsonResponse({ error: 'zkey too large' }, 413, cors);
   // 64 hex = sha256 / Bitcoin block hash — what snarkjs's beacon stage expects.
@@ -1115,6 +1126,30 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
     finalCid = await pinBinaryToIpfs(env, zkeyBytes, `withdraw_final_${circuitHash.slice(0,8)}.zkey`);
   } catch (e) {
     return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
+  }
+
+  // Re-read state for the CAS check — Pinata pins can take seconds and
+  // a contribute landing during that window would advance state.head_cid
+  // past what the beacon was applied to. Without this check, finalize
+  // would silently overwrite the contribute's chain advance, leaving an
+  // orphan contrib record and "lost" entropy for that contributor. Same
+  // pattern handleCeremonyContribute uses (line ~791-797). Soundness
+  // still holds without this check (≥1-honest is already satisfied), but
+  // we owe the contributors who land mid-pin a clean rejection so they
+  // can retry through a re-finalize cycle.
+  if (expectedHeadCid) {
+    const fresh = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+    if (!fresh || fresh.head_cid !== expectedHeadCid) {
+      return jsonResponse({
+        error: 'stale expected_head_cid — chain advanced during finalize pin window; refresh head and retry',
+        expected: expectedHeadCid,
+        actual_head_cid: fresh ? fresh.head_cid : null,
+        actual_contribution_count: fresh ? fresh.contribution_count : null,
+      }, 409, cors);
+    }
+    if (fresh.finalized) {
+      return jsonResponse({ error: 'ceremony was finalized between pin and CAS — race lost', state: fresh }, 409, cors);
+    }
   }
 
   const newCount = (state.contribution_count || 0) + 1;
