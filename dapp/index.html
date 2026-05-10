@@ -1467,6 +1467,31 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   margin-top: 14px;
 }
 
+/* Export-key modal reuses .pass-modal/.pass-card. The hex sits in a readonly
+   textarea so mobile long-press → Select All → Copy works on every browser
+   (some in-app browsers don't expose navigator.clipboard, so the textarea is
+   the reliable fallback). word-break: break-all wraps the 64-char hex within
+   the card on narrow viewports without horizontal scroll. */
+.export-key-area {
+  width: 100%; box-sizing: border-box;
+  font-family: var(--mono); font-size: 13px;
+  padding: 8px 10px;
+  border: 1px solid var(--ink); background: var(--bg);
+  color: var(--ink);
+  word-break: break-all; resize: none;
+  line-height: 1.5;
+}
+.export-key-area:focus { outline: 2px solid var(--orange); outline-offset: -1px; }
+.export-actions {
+  display: flex; gap: 8px; align-items: center; justify-content: space-between;
+  margin-top: 14px; flex-wrap: wrap;
+}
+.export-ack {
+  display: none; align-items: center; gap: 6px;
+  font-size: 11px; color: var(--ink-mid);
+}
+.export-ack input { margin: 0; }
+
 /* Header help button — opens the FAQ modal. Sits next to the network
    selector via .net-row inside .net-control; subtle white-on-black
    to read as reference, not workflow. */
@@ -1621,6 +1646,22 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 .progress-step.error .progress-label { color: var(--red); }
 @media (prefers-reduced-motion: reduce) {
   .progress-step.active .progress-num { animation: none; }
+}
+/* Indeterminate marquee for progress bars where the underlying op (snarkjs
+   verifyFromInit / zKey.contribute) gives no progress signal. The bar is
+   absolutely-positioned inside its wrap and slides L→R indefinitely. */
+.bar-indeterminate {
+  width: 35% !important;
+  background: var(--orange);
+  animation: bar-marquee 1.5s ease-in-out infinite;
+  transition: none !important;
+}
+@keyframes bar-marquee {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(385%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .bar-indeterminate { animation: none; transform: translateX(0); width: 100% !important; opacity: 0.5; }
 }
 @media (max-width: 480px) {
   .progress-strip { gap: 0; padding: 10px 8px; }
@@ -2606,10 +2647,10 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Tornado-style anonymity pool over any tacit asset. Deposit a fixed-denomination UTXO, wait, withdraw to a fresh pubkey — the on-chain edge between deposit and withdraw is broken by a Groth16 proof of unspent leaf membership in the pool merkle tree. SPEC §5.10 / §5.11.
+        Private send for any tacit asset. Deposit a fixed amount into a shared pool, wait, then withdraw to a fresh address — a zero-knowledge proof breaks the on-chain link between the two halves.
       </div>
       <div id="mixer-stub-banner" style="border:1px solid #859900;background:#f4faff;color:#586e75;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13px;">
-        <strong>v1 preview.</strong> Groth16 verifier is live (snarkjs over BN254, lazy-loaded from <code>vendor/tacit-mixer.min.js</code>). Soundness is closed — see SPEC §3.8 and §5.11. Pool-init still requires a per-pool MPC ceremony before each pool is safe to deposit into; the dApp surfaces the ceremony CID for verification before any deposit.
+        <strong>v1 preview.</strong> The zero-knowledge prover and verifier run live in your browser. Each pool needs a one-time trusted setup before it's safe to use — deposits and withdrawals stay locked until the ceremony below finalizes.
       </div>
     </div>
   </div>
@@ -2627,7 +2668,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>deposit</span></div>
     <div class="section-body">
       <div class="mixer-locked-banner">Preview only — the trusted-setup ceremony above must be finalized before depositing. Until then, deposits are gated.</div>
-      <div class="muted" style="margin-bottom:10px;">Spend a UTXO of a pool's exact denomination into the pool. The dApp generates a (secret, nullifier_preimage) pair — back up the resulting record before broadcasting; without it, the deposit cannot be withdrawn.</div>
+      <div class="muted" style="margin-bottom:10px;">Send the pool's exact denomination from your wallet into the pool. Your browser generates a private deposit record — back it up before broadcasting; without it, the deposit can never be withdrawn.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:200px;">Pool
           <select id="mixer-deposit-pool"><option value="">— pick a pool —</option></select>
@@ -2655,7 +2696,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>withdraw</span></div>
     <div class="section-body">
       <div class="mixer-locked-banner">Preview only — withdrawals consume the same trusted setup deposits do, and unlock once the ceremony above is finalized.</div>
-      <div class="muted" style="margin-bottom:10px;">Withdraw an unspent leaf to a fresh pubkey. Paste a deposit record (the JSON the deposit flow gave you) or import via share-link. Anonymity-set size is shown beneath each pool.</div>
+      <div class="muted" style="margin-bottom:10px;">Withdraw a deposit to a fresh address. Paste the deposit record JSON your wallet saved at deposit time, or import via share-link. The privacy set size — how many other deposits yours hides among — is shown beneath each pool.</div>
       <textarea id="mixer-withdraw-record" rows="4" placeholder="paste deposit record JSON, or import share-link below" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
       <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
         <input id="mixer-withdraw-sharelink" type="text" placeholder="#mix=…" style="flex:1;font-family:monospace;font-size:12px;">
@@ -2676,13 +2717,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Groth16 Phase 2 MPC. Anyone can contribute random entropy to the per-circuit ceremony — soundness requires only ONE honest contributor across the chain. More contributors = stronger guarantee. Each contribution takes ~30–60 seconds in your browser; ~5 MB up + 5 MB down. SPEC §3.7 / §5.11.3.
+        Each pool starts with a trusted setup ceremony that bootstraps its privacy. Anyone can contribute — and as long as <strong>one</strong> participant across the entire chain is honest, the pool is sound. More contributors means a stronger guarantee. Each turn takes ~30–60 seconds and ~10 MB of bandwidth in your browser.
       </div>
       <div id="ceremony-state" class="muted" style="font-size:12px;margin-bottom:12px;">Loading…</div>
 
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
-        <label style="flex:1;min-width:240px;">Ceremony hash <span class="muted" style="font-size:11px;">(canonical, baked into this dapp build)</span>
-          <input id="ceremony-hash" type="text" autocomplete="off" spellcheck="false" readonly title="The canonical ceremony hash for this dapp build. Override is not permitted: contributions are accepted only against the canonical ceremony so a phisher's `?ceremony=<bad_hash>` share link cannot redirect entropy to a poisoned chain.">
+        <label style="flex:1;min-width:240px;">Ceremony ID <span class="muted" style="font-size:11px;">(locked to this site, can't be overridden)</span>
+          <input id="ceremony-hash" type="text" autocomplete="off" spellcheck="false" readonly title="The official ceremony ID for this site. Locked so a phishing link with a different ceremony ID can't redirect your contribution to a poisoned chain.">
         </label>
       </div>
 
@@ -2707,7 +2748,35 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-ceremony-contribute" disabled>Add my contribution</button>
       </div>
 
-      <pre id="ceremony-progress" class="muted" style="margin-top:10px;display:none;font-size:11px;max-height:200px;overflow:auto;"></pre>
+      <!-- Live progress UI shown while a contribution is in flight. The
+           strip mirrors the mint/etch progress-strip pattern so the user
+           can see what stage they're at; the detail line below shows a
+           human stage message + an elapsed-time counter that ticks every
+           250ms so the page never looks frozen during the WASM compute.
+           The bytes bar is shown for download/upload steps (determinate)
+           and switches to an indeterminate marquee for verify/contribute
+           where snarkjs gives no progress signal. -->
+      <div id="ceremony-progress-wrap" style="display:none;margin-top:14px;">
+        <div id="ceremony-progress-strip" class="progress-strip" style="margin-top:0;" aria-live="polite">
+          <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Download</span></div>
+          <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Verify</span></div>
+          <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Contribute</span></div>
+          <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Upload</span></div>
+          <div class="progress-step" data-step="4"><span class="progress-num">5</span><span class="progress-label">Confirm</span></div>
+        </div>
+        <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:12px;">
+          <span id="ceremony-progress-msg" style="color:var(--ink-mid);">Preparing…</span>
+          <span id="ceremony-progress-elapsed" style="font-variant-numeric:tabular-nums;color:var(--ink-mid);"></span>
+        </div>
+        <div id="ceremony-progress-bar-wrap" style="margin-top:6px;height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;display:none;">
+          <div id="ceremony-progress-bar" style="height:100%;width:0%;background:var(--orange);transition:width 0.15s linear;"></div>
+        </div>
+      </div>
+
+      <details id="ceremony-progress-log-wrap" style="margin-top:10px;display:none;">
+        <summary style="cursor:pointer;font-size:11px;color:var(--ink-mid);">Show technical log</summary>
+        <pre id="ceremony-progress" class="muted" style="margin-top:6px;font-size:11px;max-height:200px;overflow:auto;"></pre>
+      </details>
 
       <!-- Persistent failure banner. Survives page reload via localStorage so a
            contributor whose attempt errored doesn't walk away thinking they
@@ -2776,7 +2845,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>initialize a new pool</span></div>
     <div class="section-body">
       <div class="mixer-locked-banner">Preview only — pool initialization is gated on ceremony finalization, since every pool's deposits depend on the same trusted-setup transcript.</div>
-      <div class="muted" style="margin-bottom:10px;">Pool initialization is permissionless — anyone can declare a pool for any asset at any denomination. The first canonically-confirmed POOL_INIT for a given (asset_id, denomination) wins. You'll need a Groth16 verifying-key CID and an MPC-ceremony-transcript CID, both pinned to IPFS. SPEC §5.10.1.</div>
+      <div class="muted" style="margin-bottom:10px;">Anyone can open a pool for any asset and any deposit size. The first confirmed pool for a given asset + amount wins. You'll need a verifying-key file and a finalized ceremony transcript, both pinned to IPFS.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:240px;">Asset
           <select id="mixer-init-asset"><option value="">— pick an asset —</option></select>
@@ -3006,6 +3075,33 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button type="submit" id="pass-submit" class="primary" disabled>continue</button>
       </div>
     </form>
+  </div>
+</div>
+
+<!-- Export-key modal — replaces native prompt() for showing the wallet hex.
+     prompt() silently returns null on Chrome/Edge mobile once the user has
+     ticked "block dialogs from this page" (which the welcome flow's stacked
+     dialogs trigger), and is blocked outright in many in-app browsers
+     (Twitter, Slack). The textarea + explicit Copy button works everywhere. -->
+<div id="export-modal" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="export-title" style="display:none;">
+  <div class="pass-card">
+    <div class="pass-title" id="export-title">export key</div>
+    <div class="pass-reason" id="export-reason">
+      this private key (hex) controls every tacit asset utxo in this browser. save it somewhere safe — there is no recovery if you lose it.
+    </div>
+    <div class="pass-field">
+      <label for="export-key-text">private key (hex)</label>
+      <textarea id="export-key-text" class="export-key-area" readonly rows="3"
+                autocomplete="off" autocapitalize="off" autocorrect="off"
+                spellcheck="false" wrap="soft"></textarea>
+    </div>
+    <div class="export-actions">
+      <button type="button" id="export-copy">copy</button>
+      <label id="export-ack-label" class="export-ack">
+        <input type="checkbox" id="export-ack"> mark as backed up
+      </label>
+      <button type="button" id="export-done" class="primary">done</button>
+    </div>
   </div>
 </div>
 

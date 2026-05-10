@@ -607,6 +607,69 @@ async function _promptUnlockPassphrase(errorHint) {
   });
 }
 
+// DOM-based key-export modal — replaces prompt() for the same reason as
+// _passphraseModal. On Chrome/Edge mobile, prompt() returns null silently once
+// the user dismisses the "block dialogs from this page" checkbox (which the
+// welcome flow's stacked dialogs train them to tick); on Twitter/Slack/other
+// in-app browsers, prompt() is blocked outright. The textarea is the
+// load-bearing piece — even if navigator.clipboard is missing or denied, the
+// user can long-press → Select All → Copy. Resolves to true if the user ticked
+// the "mark as backed up" box (only shown when allowAck && !alreadyAcked),
+// false otherwise.
+function _exportKeyModal({ hex, allowAck, alreadyAcked }) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('export-modal');
+    const text = document.getElementById('export-key-text');
+    const copyBtn = document.getElementById('export-copy');
+    const doneBtn = document.getElementById('export-done');
+    const ackLabel = document.getElementById('export-ack-label');
+    const ackBox = document.getElementById('export-ack');
+    if (!modal || !text || !copyBtn || !doneBtn || !ackBox || !ackLabel) {
+      // Modal missing from DOM — last-resort fall back to prompt() so the user
+      // at least sees the hex. Should never happen in the shipped HTML.
+      try { prompt('Your private key (hex). Save somewhere safe — there is no recovery:', hex); } catch {}
+      resolve(false);
+      return;
+    }
+    text.value = hex;
+    ackBox.checked = false;
+    ackLabel.style.display = (allowAck && !alreadyAcked) ? 'inline-flex' : 'none';
+
+    const onCopy = async () => {
+      let ok = false;
+      try {
+        await navigator.clipboard.writeText(hex);
+        ok = true;
+      } catch {
+        try {
+          text.focus();
+          text.select();
+          text.setSelectionRange(0, hex.length);
+          ok = !!(document.execCommand && document.execCommand('copy'));
+        } catch {}
+      }
+      if (ok) toast('Copied to clipboard.', 'success', 1500);
+      else toast('Clipboard unavailable — long-press the value and tap Copy.', '', 3000);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); finish(false); } };
+    const finish = (acked) => {
+      copyBtn.onclick = null;
+      doneBtn.onclick = null;
+      document.removeEventListener('keydown', onKey, true);
+      modal.style.display = 'none';
+      // Wipe the textarea so the hex doesn't linger in the DOM after close.
+      text.value = '';
+      resolve(!!acked);
+    };
+
+    copyBtn.onclick = onCopy;
+    doneBtn.onclick = () => finish(allowAck && !alreadyAcked && ackBox.checked);
+    document.addEventListener('keydown', onKey, true);
+    modal.style.display = 'grid';
+    requestAnimationFrame(() => { try { text.focus(); } catch {} });
+  });
+}
+
 const wallet = {
   priv: null, pub: null,
   // External-wallet session info — single source of truth lives in
@@ -6390,15 +6453,28 @@ function buildMixerMerkleProof(assetIdHex, denomination, leafCommitmentBytes) {
 }
 
 // Fetch zkey from IPFS by querying the ceremony state for the current head.
+// Uses the same gateway-failover + magic-byte validator as the contribute
+// path: a single-gateway flake (HTML error page from content.wrappr.wtf, 502
+// from a CDN, rate-limit) on the primary would otherwise feed snarkjs a
+// non-zkey blob and surface as the unhelpful "[object Object]: Invalid File
+// format" error mid-prove. Validator mirrors the contribute path's check
+// (length >= 256 + "zkey" magic) — same heuristic, same defense.
 async function ceremonyFetchHeadZkeyBytes(circuitHash) {
   if (!WORKER_BASE) throw new Error('worker not configured — cannot resolve zkey CID');
   const stateResp = await fetch(`${WORKER_BASE}/ceremony/${circuitHash}`, { cache: 'no-store' });
   if (!stateResp.ok) throw new Error(`ceremony state fetch: HTTP ${stateResp.status}`);
   const { state } = await stateResp.json();
   if (!state || !state.head_cid) throw new Error('ceremony state has no head_cid');
-  const zkeyResp = await fetch(`${IPFS_GATEWAY}${state.head_cid}`);
-  if (!zkeyResp.ok) throw new Error(`zkey fetch from gateway: HTTP ${zkeyResp.status}`);
-  return new Uint8Array(await zkeyResp.arrayBuffer());
+  return await _ceremonyFetchIpfsWithFailover(
+    state.head_cid,
+    (bytes) => {
+      if (bytes.length < 256) return `unexpectedly small (${bytes.length} bytes — likely error page)`;
+      if (bytes[0] !== 0x7a || bytes[1] !== 0x6b || bytes[2] !== 0x65 || bytes[3] !== 0x79) {
+        return `does not start with "zkey" magic bytes (gateway returned wrong content)`;
+      }
+      return null;
+    },
+  );
 }
 
 // Reveal-tx vbyte estimate. T_WITHDRAW reveal has 1 input (commit P2TR) +
@@ -10941,9 +11017,99 @@ const _ceremonyBlobCache = new Map();
 function _ceremonyLogToProgress(line) {
   const el = document.getElementById('ceremony-progress');
   if (!el) return;
-  el.style.display = 'block';
+  // Show the wrapping <details> (the log itself stays inside; user expands
+  // to see it). Doesn't auto-open — the live UI above is the primary surface.
+  const wrap = document.getElementById('ceremony-progress-log-wrap');
+  if (wrap) wrap.style.display = 'block';
   el.textContent += line + '\n';
   el.scrollTop = el.scrollHeight;
+}
+
+// Live ceremony progress UI driver. Exposes:
+//   _ceremonyProgressShow()                — reveal the strip + reset state
+//   _ceremonyProgressHide()                — tear down (success or full reset)
+//   _ceremonyProgressStep(idx, msg)        — advance to step idx, set human msg
+//   _ceremonyProgressBytes(done, total)    — show determinate bytes bar
+//   _ceremonyProgressIndeterminate(on)     — toggle marquee animation
+//   _ceremonyProgressError(idx, msg)       — mark step idx as failed
+//
+// An elapsed-time ticker (250ms) updates the right-hand readout while the
+// strip is visible so the page never looks frozen during the WASM compute
+// step (which is otherwise opaque — snarkjs gives no progress callbacks).
+let _ceremonyElapsedTimer = null;
+let _ceremonyElapsedStart = 0;
+function _ceremonyFmtElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  return m > 0 ? `${m}m ${(s % 60).toString().padStart(2, '0')}s` : `${s}.${Math.floor((ms % 1000) / 100)}s`;
+}
+function _ceremonyFmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+function _ceremonyProgressShow() {
+  const wrap = document.getElementById('ceremony-progress-wrap');
+  if (wrap) wrap.style.display = 'block';
+  setProgressStrip('ceremony-progress-strip', -1);
+  _ceremonyProgressBytes(0, 0);
+  _ceremonyElapsedStart = Date.now();
+  if (_ceremonyElapsedTimer) clearInterval(_ceremonyElapsedTimer);
+  const tickEl = document.getElementById('ceremony-progress-elapsed');
+  const tick = () => { if (tickEl) tickEl.textContent = _ceremonyFmtElapsed(Date.now() - _ceremonyElapsedStart) + ' elapsed'; };
+  tick();
+  _ceremonyElapsedTimer = setInterval(tick, 250);
+}
+function _ceremonyProgressHide() {
+  if (_ceremonyElapsedTimer) { clearInterval(_ceremonyElapsedTimer); _ceremonyElapsedTimer = null; }
+  const wrap = document.getElementById('ceremony-progress-wrap');
+  if (wrap) wrap.style.display = 'none';
+}
+function _ceremonyProgressStep(idx, msg) {
+  setProgressStrip('ceremony-progress-strip', idx);
+  const msgEl = document.getElementById('ceremony-progress-msg');
+  if (msgEl && msg) msgEl.textContent = msg;
+}
+function _ceremonyProgressBytes(done, total) {
+  const wrap = document.getElementById('ceremony-progress-bar-wrap');
+  const bar = document.getElementById('ceremony-progress-bar');
+  if (!wrap || !bar) return;
+  if (!total && !done) { wrap.style.display = 'none'; bar.classList.remove('bar-indeterminate'); bar.style.width = '0%'; return; }
+  wrap.style.display = 'block';
+  if (total > 0) {
+    bar.classList.remove('bar-indeterminate');
+    const pct = Math.min(100, Math.round(100 * done / total));
+    bar.style.width = pct + '%';
+  } else {
+    // Bytes flowing but no Content-Length to compute %. Flip to marquee
+    // so the user sees motion instead of an empty 0%-wide bar.
+    bar.style.width = '35%';
+    bar.classList.add('bar-indeterminate');
+  }
+}
+function _ceremonyProgressIndeterminate(on) {
+  const wrap = document.getElementById('ceremony-progress-bar-wrap');
+  const bar = document.getElementById('ceremony-progress-bar');
+  if (!wrap || !bar) return;
+  if (on) {
+    wrap.style.display = 'block';
+    bar.style.width = '35%';
+    bar.classList.add('bar-indeterminate');
+  } else {
+    bar.classList.remove('bar-indeterminate');
+  }
+}
+function _ceremonyProgressError(idx, msg) {
+  // Pass `idx` as activeIdx (not -1) so steps before the failed one stay
+  // marked done — losing that context after an error makes it look like
+  // the whole flow rolled back. The errorAt option then paints step `idx`
+  // red, overriding the would-be 'active'.
+  setProgressStrip('ceremony-progress-strip', idx, { errorAt: idx });
+  const msgEl = document.getElementById('ceremony-progress-msg');
+  if (msgEl) msgEl.textContent = '✗ ' + (msg || 'failed');
+  _ceremonyProgressIndeterminate(false);
+  _ceremonyProgressBytes(0, 0);
+  if (_ceremonyElapsedTimer) { clearInterval(_ceremonyElapsedTimer); _ceremonyElapsedTimer = null; }
 }
 
 async function ceremonyFetchState(circuitHash) {
@@ -10977,7 +11143,7 @@ async function ceremonyFetchAttestations(circuitHash) {
 //
 // Returns the validated bytes. Throws an Error with the concatenated
 // per-gateway failure reasons if every gateway fails.
-async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress) {
+async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes) {
   const errors = [];
   for (const gw of IPFS_GATEWAYS_FALLBACK) {
     const url = `${gw}${cid}`;
@@ -10990,7 +11156,30 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress) {
         errors.push(`${gw}: returned HTML (Content-Type: ${ct})`);
         continue;
       }
-      const bytes = new Uint8Array(await resp.arrayBuffer());
+      // Stream the body so we can report bytes-downloaded in real time.
+      // Falls back to arrayBuffer() if the response has no readable body
+      // stream (older browsers, some service-worker shims).
+      let bytes;
+      const totalHdr = parseInt(resp.headers.get('Content-Length') || '0', 10);
+      if (resp.body && typeof resp.body.getReader === 'function' && onBytes) {
+        const reader = resp.body.getReader();
+        const chunks = [];
+        let received = 0;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          try { onBytes(received, totalHdr); } catch {}
+        }
+        bytes = new Uint8Array(received);
+        let off = 0;
+        for (const c of chunks) { bytes.set(c, off); off += c.length; }
+      } else {
+        bytes = new Uint8Array(await resp.arrayBuffer());
+        if (onBytes) { try { onBytes(bytes.length, bytes.length); } catch {} }
+      }
       // Validator may be sync or async (the r1cs/ptau path awaits a CID hash
       // check). Awaiting handles both — without await, a Promise return value
       // is truthy and gets stringified as "[object Promise]", silently
@@ -11195,14 +11384,14 @@ async function ceremonyRender() {
       const pct = Math.min(100, Math.round(100 * n / t));
       const barColor = n >= t ? '#859900' : '#1da1f2';
       const label = n >= t
-        ? `<strong style="color:#859900;">✓ Mainnet readiness threshold met (${n} ≥ ${t})</strong> — pending beacon finalize.`
-        : `Mainnet readiness: <strong>${n} / ${t}</strong> contributions (≥${t} disjoint trust roots required per MIXER.md).`;
+        ? `<strong style="color:#859900;">✓ Pool readiness threshold met (${n} ≥ ${t})</strong> — pending final beacon.`
+        : `Pool readiness: <strong>${n} / ${t}</strong> contributions (${t} independent contributors recommended before the pool opens).`;
       readinessLine =
         `<div style="margin-top:8px;font-size:12px;">${label}</div>` +
         `<div style="margin-top:4px;height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;">` +
         `<div style="height:100%;width:${pct}%;background:${barColor};transition:width 0.3s;"></div></div>`;
     }
-    stateEl.innerHTML = `<strong>${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'}</strong> · last by <em>${escapeHtml(recent)}</em>${finalBadge}<br>head zkey: <code style="font-size:11px;">${head}</code><br>r1cs: <code style="font-size:11px;">${state.r1cs_cid}</code> · ptau: <code style="font-size:11px;">${state.ptau_cid}</code>${readinessLine}`;
+    stateEl.innerHTML = `<strong>${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'}</strong> · last by <em>${escapeHtml(recent)}</em>${finalBadge}<br>Current transcript: <code style="font-size:11px;">${head}</code><br>Circuit: <code style="font-size:11px;">${state.r1cs_cid}</code> · Powers-of-tau: <code style="font-size:11px;">${state.ptau_cid}</code>${readinessLine}`;
   }
   if (contribBtn) {
     contribBtn.disabled = !!state.finalized;
@@ -11247,14 +11436,16 @@ async function ceremonyRender() {
 // Uint8Array, runs the contribution, returns { newZkey, contributionHash }.
 // Logger output is captured into the on-page progress strip.
 // SECURITY: before contributing, verify the chain we're about to extend is
-// well-formed. snarkjs.zKey.verifyFromInit walks the zkey's embedded
-// contribution history against the original r1cs + ptau and confirms each
-// transition is valid Groth16 algebra. If a malicious worker has injected
-// garbage into the head, this catches it BEFORE we waste entropy.
-async function _ceremonyFetchBlobCached(cid, label, expectedSha256Hex) {
+// well-formed. snarkjs.zKey.verifyFromR1cs rebuilds the init zkey from the
+// hash-anchored r1cs + ptau, then walks the head zkey's embedded contribution
+// history and confirms each transition is valid Groth16 algebra. If a
+// malicious worker has injected garbage into the head, this catches it BEFORE
+// we waste entropy.
+async function _ceremonyFetchBlobCached(cid, label, expectedSha256Hex, onBytes) {
   const cached = _ceremonyBlobCache.get(cid);
   if (cached) {
     _ceremonyLogToProgress(`Using cached ${label} (${cached.length} bytes, CID ${cid.slice(0, 16)}…)`);
+    if (onBytes) { try { onBytes(cached.length, cached.length); } catch {} }
     return cached;
   }
   if (!expectedSha256Hex) throw new Error(`internal: no expected sha256 for ${label}`);
@@ -11276,6 +11467,7 @@ async function _ceremonyFetchBlobCached(cid, label, expectedSha256Hex) {
       return null;
     },
     (msg) => _ceremonyLogToProgress(`  ${label}: ${msg}`),
+    onBytes,
   );
   // Only cache after sha256 validation passes — a substituted blob would
   // have failed the validator above and never reach here.
@@ -11283,17 +11475,33 @@ async function _ceremonyFetchBlobCached(cid, label, expectedSha256Hex) {
   return bytes;
 }
 
-async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes) {
+async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase) {
   // r1cs sha256 IS the ceremony hash — by definition. No separate constant
   // needed; the active ceremony's hardcoded identity is the validator.
-  const r1csBytes = await _ceremonyFetchBlobCached(state.r1cs_cid, 'r1cs', _ceremonyActiveHash);
-  const ptauBytes = await _ceremonyFetchBlobCached(state.ptau_cid, 'ptau', TACIT_DEFAULT_PTAU_SHA256);
+  if (onPhase) onPhase('download-r1cs');
+  const r1csBytes = await _ceremonyFetchBlobCached(state.r1cs_cid, 'r1cs', _ceremonyActiveHash,
+    (done, total) => { if (onPhase) onPhase('download-r1cs', { done, total }); });
+  if (onPhase) onPhase('download-ptau');
+  const ptauBytes = await _ceremonyFetchBlobCached(state.ptau_cid, 'ptau', TACIT_DEFAULT_PTAU_SHA256,
+    (done, total) => { if (onPhase) onPhase('download-ptau', { done, total }); });
   _ceremonyLogToProgress(`Verifying chain (${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'})…`);
+  if (onPhase) onPhase('verify');
   const logger = {
     debug: () => {}, info: () => {}, warn: () => {},
     error: (...a) => _ceremonyLogToProgress('[verify err] ' + a.join(' ')),
   };
-  const ok = await snarkjs.zKey.verifyFromInit(
+  // Use verifyFromR1cs, NOT verifyFromInit. snarkjs's verifyFromInit signature
+  // is (initZkey, ptau, headZkey, logger) — its first arg must be a *zkey-
+  // format* file (one produced by newZKey from r1cs+ptau), not the r1cs file
+  // itself. Passing r1csBytes there fails the magic-byte check immediately:
+  // verifyFromInit reads the first 4 bytes expecting "zkey", sees "r1cs",
+  // and throws "[object Object]: Invalid File format" (the {type:'mem',data:…}
+  // descriptor stringifies as [object Object]). The contributor sees that in
+  // the progress log and the ceremony stalls before any entropy is mixed.
+  // verifyFromR1cs(r1cs, ptau, headZkey, logger) is the right entry point: it
+  // internally calls newZKey(r1cs, ptau, …) to build the init zkey and then
+  // calls verifyFromInit with the right shape.
+  const ok = await snarkjs.zKey.verifyFromR1cs(
     { type: 'mem', data: r1csBytes },
     { type: 'mem', data: ptauBytes },
     { type: 'mem', data: headZkeyBytes },
@@ -11303,11 +11511,12 @@ async function ceremonyVerifyChain(state, snarkjs, headZkeyBytes) {
   _ceremonyLogToProgress('✓ chain verified');
 }
 
-async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entropy, state) {
+async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entropy, state, onPhase) {
   const { snarkjs } = await import('./vendor/tacit-mixer.min.js');
   // Pre-flight verify (gap #3 from security review). Catches corrupt heads
   // and gateway-substituted r1cs/ptau before we waste entropy.
-  await ceremonyVerifyChain(state, snarkjs, headZkeyBytes);
+  await ceremonyVerifyChain(state, snarkjs, headZkeyBytes, onPhase);
+  if (onPhase) onPhase('contribute');
   const oldKey = { type: 'mem', data: headZkeyBytes };
   const newKey = { type: 'mem' };
   const logger = {
@@ -11351,14 +11560,18 @@ async function ceremonyContribute() {
   const nameEl = document.getElementById('ceremony-contributor-name');
   const progressEl = document.getElementById('ceremony-progress');
   const contributorName = (nameEl?.value || 'anonymous').slice(0, 64);
-  if (progressEl) { progressEl.textContent = ''; progressEl.style.display = 'block'; }
+  if (progressEl) { progressEl.textContent = ''; }
+  const logWrap = document.getElementById('ceremony-progress-log-wrap');
+  if (logWrap) logWrap.style.display = 'none';
   // Clear any prior outcome banner — a fresh attempt supersedes the stale
   // success/failure record from the previous run.
   ceremonyOutcomeClear(TACIT_DEFAULT_CEREMONY_HASH);
   _renderCeremonyOutcomeBanners();
   contribBtn.disabled = true;
   const origText = contribBtn.textContent;
-  contribBtn.textContent = 'Contributing…';
+  contribBtn.textContent = 'Working…';
+  _ceremonyProgressShow();
+  _ceremonyProgressStep(0, 'Refreshing ceremony state…');
   // Track which stage the contribution failed at so the failure banner can
   // tell the user where to retry from (snarkjs error vs network error vs
   // worker rejection are different mitigations).
@@ -11382,6 +11595,8 @@ async function ceremonyContribute() {
     _ceremonyState = fresh;
 
     stage = 'fetch_head';
+    contribBtn.textContent = 'Downloading…';
+    _ceremonyProgressStep(0, `Downloading current setup file (${_ceremonyState.head_cid.slice(0, 12)}…)`);
     _ceremonyLogToProgress(`Fetching head zkey ${_ceremonyState.head_cid}…`);
     // Failover across IPFS_GATEWAYS_FALLBACK. Each gateway's response is
     // validated for length (>= 256 bytes — anything smaller is a gateway
@@ -11397,6 +11612,12 @@ async function ceremonyContribute() {
         return null;
       },
       (msg) => _ceremonyLogToProgress('  head: ' + msg),
+      (done, total) => {
+        _ceremonyProgressBytes(done, total);
+        const dispTot = total > 0 ? ` / ${_ceremonyFmtBytes(total)}` : '';
+        const msgEl = document.getElementById('ceremony-progress-msg');
+        if (msgEl) msgEl.textContent = `Downloading current setup file (${_ceremonyFmtBytes(done)}${dispTot})`;
+      },
     );
     _ceremonyLogToProgress(`Got ${headBytes.length} bytes. Running contribute (~30-60s)…`);
     stage = 'verify_chain';
@@ -11410,32 +11631,92 @@ async function ceremonyContribute() {
 
     stage = 'snarkjs';
     const t0 = Date.now();
-    const { newZkey, contributionHash } = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState);
+    // Phase callback drives the live UI through Verify (downloads circuit +
+    // ptau, then runs verifyFromR1cs) and Contribute (the snarkjs WASM
+    // entropy mix). The contribute phase has no progress signal so we flip
+    // the bar to indeterminate marquee — combined with the elapsed-time
+    // ticker, that proves to the user the page is alive even though we
+    // can't say "47%".
+    const onPhase = (phase, info) => {
+      if (phase === 'download-r1cs') {
+        contribBtn.textContent = 'Verifying…';
+        _ceremonyProgressStep(1, 'Downloading circuit…');
+        if (info && typeof info.done === 'number') {
+          _ceremonyProgressBytes(info.done, info.total || 0);
+          const dispTot = info.total > 0 ? ` / ${_ceremonyFmtBytes(info.total)}` : '';
+          const msgEl = document.getElementById('ceremony-progress-msg');
+          if (msgEl) msgEl.textContent = `Downloading circuit (${_ceremonyFmtBytes(info.done)}${dispTot})`;
+        }
+      } else if (phase === 'download-ptau') {
+        _ceremonyProgressStep(1, 'Downloading powers-of-tau…');
+        if (info && typeof info.done === 'number') {
+          _ceremonyProgressBytes(info.done, info.total || 0);
+          const dispTot = info.total > 0 ? ` / ${_ceremonyFmtBytes(info.total)}` : '';
+          const msgEl = document.getElementById('ceremony-progress-msg');
+          if (msgEl) msgEl.textContent = `Downloading powers-of-tau (${_ceremonyFmtBytes(info.done)}${dispTot})`;
+        }
+      } else if (phase === 'verify') {
+        _ceremonyProgressStep(1, 'Verifying chain integrity…');
+        _ceremonyProgressIndeterminate(true);
+      } else if (phase === 'contribute') {
+        contribBtn.textContent = 'Computing…';
+        _ceremonyProgressStep(2, 'Mixing entropy in your browser (~30–60s typical)…');
+        _ceremonyProgressIndeterminate(true);
+      }
+    };
+    const { newZkey, contributionHash } = await ceremonyContributeInBrowser(headBytes, contributorName, entropy, _ceremonyState, onPhase);
     _ceremonyLogToProgress(`Contributed in ${((Date.now() - t0)/1000).toFixed(1)}s. Hash: ${contributionHash.slice(0, 32)}…`);
     _ceremonyLogToProgress(`Uploading ${newZkey.length} bytes…`);
 
     stage = 'upload';
+    contribBtn.textContent = 'Uploading…';
+    _ceremonyProgressStep(3, `Uploading your contribution (${_ceremonyFmtBytes(newZkey.length)})…`);
+    _ceremonyProgressIndeterminate(false);
+    _ceremonyProgressBytes(0, newZkey.length);
     const fd = new FormData();
     fd.append('zkey', new Blob([newZkey], { type: 'application/octet-stream' }), 'withdraw_contributed.zkey');
     fd.append('contributor_name', contributorName);
     fd.append('prev_cid', _ceremonyState.head_cid);
     fd.append('contribution_hash', contributionHash);
 
-    const upResp = await fetch(`${WORKER_BASE}/ceremony/${_ceremonyActiveHash}/contribute`, {
-      method: 'POST',
-      body: fd,
+    // XHR (not fetch) so we can report upload byte progress — fetch's body
+    // stream doesn't expose upload progress events in any browser yet.
+    // Rejection paths preserved verbatim with the same hint annotations as
+    // the previous fetch-based code.
+    const { status: upStatus, body: upBody } = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${WORKER_BASE}/ceremony/${_ceremonyActiveHash}/contribute`);
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable) {
+          _ceremonyProgressBytes(ev.loaded, ev.total);
+          const msgEl = document.getElementById('ceremony-progress-msg');
+          if (msgEl) msgEl.textContent = `Uploading your contribution (${_ceremonyFmtBytes(ev.loaded)} / ${_ceremonyFmtBytes(ev.total)})`;
+          if (ev.loaded >= ev.total) {
+            // Upload bytes done; the worker is now pinning to IPFS — flip to
+            // indeterminate so the user knows we're still waiting.
+            _ceremonyProgressIndeterminate(true);
+            if (msgEl) msgEl.textContent = 'Pinning your contribution to IPFS (worker)…';
+          }
+        }
+      };
+      xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+      xhr.onerror = () => reject(new Error('upload network error'));
+      xhr.onabort = () => reject(new Error('upload aborted'));
+      xhr.send(fd);
     });
-    const upJson = await upResp.json().catch(() => ({}));
-    if (!upResp.ok) {
+    let upJson = {};
+    try { upJson = JSON.parse(upBody); } catch {}
+    if (upStatus < 200 || upStatus >= 300) {
       // Annotate the worker's error message with retry-actionable hints
       // for the most common rejection paths.
-      const wErr = upJson.error || `HTTP ${upResp.status}`;
+      const wErr = upJson.error || `HTTP ${upStatus}`;
       let hint = '';
       if (/stale prev_cid|CAS race/i.test(wErr)) hint = ' — another contributor landed first; refresh the page and retry.';
       else if (/finalized/i.test(wErr)) hint = ' — the ceremony has been beacon-finalized and is locked; no further contributions accepted.';
       else if (/rate limit/i.test(wErr)) hint = ' — your IP hit the daily contribute cap; try again from a different network or tomorrow.';
       throw new Error(wErr + hint);
     }
+    _ceremonyProgressIndeterminate(false);
 
     _ceremonyLogToProgress(`✓ Accepted as contribution #${upJson.contribution?.index}. New head: ${upJson.contribution?.cid}`);
     toast(`Contribution #${upJson.contribution?.index} landed. Hash: ${contributionHash.slice(0, 16)}…`, 'success');
@@ -11461,6 +11742,9 @@ async function ceremonyContribute() {
     // the record. If verification fails, we still show success (the worker
     // accepted the upload, the chain head advanced) but flag it for retry.
     stage = 'verify_after';
+    contribBtn.textContent = 'Confirming…';
+    _ceremonyProgressStep(4, 'Confirming your contribution landed on the chain…');
+    _ceremonyProgressIndeterminate(true);
     _ceremonyLogToProgress('Verifying contribution appears in attestations index…');
     const verified = await ceremonyVerifyContributionLanded(
       TACIT_DEFAULT_CEREMONY_HASH,
@@ -11470,6 +11754,16 @@ async function ceremonyContribute() {
     _ceremonyLogToProgress(verified
       ? '✓ Verified: your contribution is in the attestations index.'
       : '⚠ Upload accepted but contribution not yet visible in attestations — may be eventual-consistency lag. Retry verification by refreshing in a few seconds.');
+    _ceremonyProgressIndeterminate(false);
+    setProgressStrip('ceremony-progress-strip', 5); // mark all 5 steps done
+    // Snap the bar to 100% so the strip reads as "complete" — without this
+    // the bar lingers at 35% (the indeterminate-marquee width) and looks
+    // like progress halted mid-stream.
+    _ceremonyProgressBytes(1, 1);
+    const finalMsg = document.getElementById('ceremony-progress-msg');
+    if (finalMsg) finalMsg.textContent = verified
+      ? '✓ Done — your contribution is on the chain.'
+      : '✓ Done — confirmation pending propagation.';
 
     // Persist the success outcome to localStorage so it survives reload.
     ceremonyOutcomeWrite(TACIT_DEFAULT_CEREMONY_HASH, {
@@ -11487,6 +11781,11 @@ async function ceremonyContribute() {
     const errMsg = (e && e.message) || String(e || 'unknown error');
     _ceremonyLogToProgress(`✗ [${stage}] ${errMsg}`);
     console.error(`ceremony contribute failed at ${stage}:`, e);
+    // Map internal stage names to the visible step indices so the strip
+    // marks the right step red.
+    const stageToStep = { refresh_state: 0, fetch_head: 0, verify_chain: 1, snarkjs: 2, upload: 3, verify_after: 4 };
+    const errIdx = stage in stageToStep ? stageToStep[stage] : 0;
+    _ceremonyProgressError(errIdx, errMsg.length > 80 ? errMsg.slice(0, 77) + '…' : errMsg);
     // Persist the failure to localStorage so the contributor sees the error
     // banner on reload (replacing the old alert()-then-forgotten flow).
     ceremonyOutcomeWrite(TACIT_DEFAULT_CEREMONY_HASH, {
@@ -11499,6 +11798,11 @@ async function ceremonyContribute() {
   } finally {
     contribBtn.disabled = false;
     contribBtn.textContent = origText;
+    // Stop the elapsed-time ticker once we're no longer in flight. The strip
+    // itself stays visible so the user can read the final state (success or
+    // error) — they can dismiss via the persistent outcome banners or by
+    // starting a new attempt.
+    if (_ceremonyElapsedTimer) { clearInterval(_ceremonyElapsedTimer); _ceremonyElapsedTimer = null; }
   }
 }
 
@@ -11923,15 +12227,24 @@ function setupWalletButtons() {
   });
   $('#btn-export').onclick = async () => {
     if (wallet.mode === 'passkey') {
+      let priv;
       try {
-        const { priv } = await prfLogin({ credentialId: prfWallet.state?.credentialId });
-        prompt('Your private key (hex). Save somewhere safe — there is no recovery:', bytesToHex(priv));
+        ({ priv } = await prfLogin({ credentialId: prfWallet.state?.credentialId }));
+      } catch (e) { toast('Export cancelled: ' + e.message, 'error'); return; }
+      try {
+        // Passkey is the backup itself — no ack option to surface.
+        await _exportKeyModal({ hex: bytesToHex(priv), allowAck: false });
+      } finally {
         priv.fill(0);
-      } catch (e) { toast('Export cancelled: ' + e.message, 'error'); }
+      }
       return;
     }
-    prompt('Your private key (hex). Save somewhere safe — there is no recovery:', bytesToHex(wallet.priv));
-    if (!isBurnerBackedUp() && confirm('Mark this burner key as backed up?\n\nClick OK only if you copied the hex above to a safe location. This skips the export prompt before future tacit operations.')) {
+    const acked = await _exportKeyModal({
+      hex: bytesToHex(wallet.priv),
+      allowAck: true,
+      alreadyAcked: isBurnerBackedUp(),
+    });
+    if (acked) {
       markBurnerBackedUp();
       toast('Burner key marked as backed up.', 'success');
       setupNetworkSelect();
@@ -15193,11 +15506,14 @@ let _claimEthAddr = null;      // lowercase 40-hex (no 0x); from MetaMask
 let _claimEligibleRow = null;  // matched row from snapshot, or null
 let _claimSigned = null;       // { msg, sigHex } once user signs
 
-const IPFS_GATEWAYS = [
-  'https://gateway.pinata.cloud/ipfs/',
-  'https://ipfs.io/ipfs/',
-  'https://cloudflare-ipfs.com/ipfs/',
-];
+// Claim-snapshot fetches reuse IPFS_GATEWAYS_FALLBACK (defined near the
+// ceremony block). The previous local list included gateway.pinata.cloud and
+// cloudflare-ipfs.com — neither is in the meta-CSP `connect-src`, so two of
+// the three gateways failed silently with CSP rejects inside the failover
+// loop (each one logged as just a fetch error, never as "blocked by CSP"),
+// leaving only ipfs.io as the actual working option. Reusing the ceremony's
+// CSP-allowed gateway list (content.wrappr.wtf, ipfs.io, w3s.link, dweb.link)
+// gives 4 real attempts and matches what the rest of the dapp uses.
 
 // Strip "ipfs://" prefix and any path; return bare CID. Tolerates spaces.
 function _claimNormaliseCid(input) {
@@ -15218,7 +15534,7 @@ const _CLAIM_SNAPSHOT_MAX_BYTES = 50 * 1024 * 1024;
 
 async function _claimFetchSnapshot(cid) {
   const errors = [];
-  for (const gw of IPFS_GATEWAYS) {
+  for (const gw of IPFS_GATEWAYS_FALLBACK) {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), _CLAIM_SNAPSHOT_TIMEOUT_MS);
     try {

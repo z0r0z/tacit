@@ -583,7 +583,7 @@ function ceremonyContribPrefix(hash)    { return `ceremony:${hash}:contrib:`; }
 // Magic-byte tags at offset 0 in snarkjs file formats. Validated server-side
 // before pinning so a malicious client can't waste contributors' bandwidth
 // (and our Pinata storage) on garbage that the next contributor would only
-// detect after a 5-MB download + verifyFromInit failure.
+// detect after a 5-MB download + verifyFromR1cs failure.
 const _CEREMONY_MAGIC = {
   zkey: [0x7a, 0x6b, 0x65, 0x79], // "zkey"
   r1cs: [0x72, 0x31, 0x63, 0x73], // "r1cs"
@@ -667,7 +667,7 @@ async function handleCeremonyInit(req, env, cors) {
 
   // Read once + magic-byte sniff before any Pinata I/O. Rejects garbage uploads
   // up front rather than letting them land in the chain head where the next
-  // contributor's snarkjs verifyFromInit would catch them after a 5-MB download.
+  // contributor's snarkjs verifyFromR1cs would catch them after a 5-MB download.
   const zkeyBytes = new Uint8Array(await zkey.arrayBuffer());
   const r1csBytes = new Uint8Array(await r1cs.arrayBuffer());
   const ptauBytes = new Uint8Array(await ptau.arrayBuffer());
