@@ -232,7 +232,58 @@ if [ "$BUNDLE_ONLY" != "1" ]; then
     echo "        MIN_QUIET_SECONDS=0 $0"
     exit 1
   fi
+  if (( IDLE_FOR < 0 )); then
+    echo "    WARN: IDLE_FOR=${IDLE_FOR}s (negative) — local clock is BEHIND the worker."
+    echo "      This usually means your system clock is unsynced. Sync via:"
+    echo "        sudo sntp -sS time.apple.com"
+    echo "      The check is treating this as 'idle for a long time' and proceeding."
+    echo "      Drain in the next step will protect against active-contribute races regardless."
+  fi
   echo "    quiet for: ${IDLE_FOR}s (≥${MIN_QUIET_SECONDS}s required ✓)"
+fi
+
+# Drain new contributions for the duration of pre-flight + finalize.
+# Without this, at sustained contribution rate (>1/min) the CAS check
+# at finalize POST time will 409 because contributions land during the
+# 3-7 min pre-flight window. Drain pauses the /contribute endpoint at
+# the worker level for a bounded window (default 30 min); the chain is
+# stable while we beacon. drain_until is an absolute timestamp that
+# expires automatically — even if this script crashes mid-run,
+# contributions resume after the drain window without manual undrain.
+#
+# Skipped in BUNDLE_ONLY mode (chain is already finalized; no need to
+# pause anything).
+if [ "$BUNDLE_ONLY" != "1" ]; then
+  echo
+  echo "==> Pausing new contributions for 30min (drain) — pre-flight needs a stable chain"
+  DRAIN_RESP=$(curl -sf --max-time 30 -X POST \
+    -H "X-Tacit-Init-Token: $CEREMONY_INIT_TOKEN" \
+    -F "duration_seconds=1800" \
+    "$WORKER/ceremony/$CIRCUIT_HASH/drain" || echo "")
+  if [ -z "$DRAIN_RESP" ]; then
+    echo "    ERROR: drain request failed. The worker may not have the /drain"
+    echo "    endpoint deployed yet. Run 'cd worker && wrangler deploy', then retry."
+    exit 1
+  fi
+  DRAIN_UNTIL=$(echo "$DRAIN_RESP" | python3 -c "import json,sys; print(json.load(sys.stdin).get('drain_until',''))")
+  if [ -z "$DRAIN_UNTIL" ]; then
+    echo "    ERROR: drain endpoint returned no drain_until field."
+    echo "    Response: $DRAIN_RESP"
+    exit 1
+  fi
+  echo "    drain set: contributions paused until unix=$DRAIN_UNTIL"
+  # Wait briefly for in-flight contributes that started before drain
+  # took effect to either complete or 423 — gives the chain a moment
+  # to settle before we read the head_cid for beaconing.
+  echo "    waiting 8s for in-flight contributes to settle…"
+  sleep 8
+  # Re-fetch state AFTER drain settled — pick up any contributes that
+  # landed in the brief window between our state-read in step 1 and
+  # the drain taking effect. This is the head we'll actually beacon.
+  STATE=$(curl -sf --max-time 30 "$WORKER/ceremony/$CIRCUIT_HASH")
+  HEAD_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['head_cid'])")
+  COUNT=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['contribution_count'])")
+  echo "    post-drain state: contributions=$COUNT, head=${HEAD_CID:0:12}…"
 fi
 
 if [ "$BUNDLE_ONLY" = "1" ]; then
@@ -460,12 +511,57 @@ if [ "$BUNDLE_ONLY" = "1" ]; then
   BLOCK_HEIGHT=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state'].get('beacon_block_height',''))")
   # Download the FINAL zkey (post-beacon, what's now state.head_cid).
   curl -sLf --max-time 120 "$GATEWAY/$HEAD_CID" -o build/withdraw_final.zkey
+  if [ "$(head -c 4 build/withdraw_final.zkey | xxd -p)" != "7a6b6579" ]; then
+    echo "    ERROR: downloaded final zkey does not start with 'zkey' magic bytes."
+    exit 1
+  fi
   # Also download r1cs + ptau for the bundle.
   curl -sLf --max-time 60 "$GATEWAY/$R1CS_CID" -o build/withdraw_chain.r1cs
+  if [ "$(head -c 4 build/withdraw_chain.r1cs | xxd -p)" != "72316373" ]; then
+    echo "    ERROR: downloaded r1cs does not start with 'r1cs' magic bytes."
+    exit 1
+  fi
   curl -sLf --max-time 300 "$GATEWAY/$PTAU_CID" -o build/pot14_chain.ptau
-  # We can't recover the pre-beacon zkey in BUNDLE_ONLY mode (it's not
-  # state.head_cid anymore). Use a placeholder file with a note.
-  echo "(pre-beacon zkey not reconstructable in BUNDLE_ONLY recovery mode)" > build/withdraw_pre_beacon.zkey
+  if [ "$(head -c 4 build/pot14_chain.ptau | xxd -p)" != "70746175" ]; then
+    echo "    ERROR: downloaded ptau does not start with 'ptau' magic bytes."
+    exit 1
+  fi
+  # Recover the pre-beacon zkey from the beacon attestation's prev_cid.
+  # The beacon record (is_beacon: true) is the last contribution; its
+  # prev_cid points at the head zkey at the moment finalize POSTed —
+  # i.e., the pre-beacon zkey. Without this, the bundle would have a
+  # placeholder file with a misleading sha256, breaking auditor trust.
+  echo "    Recovering pre-beacon zkey via beacon attestation's prev_cid…"
+  PRE_BEACON_CID=$(curl -sf --max-time 30 -A "tacit-finalize/1.0" \
+    "${WORKER}/ceremony/${CIRCUIT_HASH}/attestations?limit=20" \
+    | python3 -c "import json,sys; ats=json.load(sys.stdin)['attestations']; b=next((a for a in ats if a.get('is_beacon')), None); print(b['prev_cid'] if b else '')")
+  if [ -z "$PRE_BEACON_CID" ]; then
+    echo "    WARN: couldn't find beacon record's prev_cid. Bundle will omit pre-beacon zkey."
+    rm -f build/withdraw_pre_beacon.zkey
+  else
+    curl -sLf --max-time 120 "$GATEWAY/$PRE_BEACON_CID" -o build/withdraw_pre_beacon.zkey
+    if [ "$(head -c 4 build/withdraw_pre_beacon.zkey | xxd -p)" != "7a6b6579" ]; then
+      echo "    WARN: pre-beacon zkey download failed magic-byte check; bundle will omit it."
+      rm -f build/withdraw_pre_beacon.zkey
+    else
+      echo "    pre-beacon zkey recovered: $PRE_BEACON_CID ($(wc -c < build/withdraw_pre_beacon.zkey) bytes)"
+    fi
+  fi
+  # Re-verify the downloaded final zkey against the chain artifacts.
+  # Cheap defense (~5s) against IPFS gateway corruption that magic-byte
+  # checks would miss (e.g., truncated download with valid header).
+  echo "    Re-verifying downloaded final zkey vs chain r1cs+ptau…"
+  if ! ( CEREMONY_INIT_TOKEN= $SNARKJS zkey verify \
+      build/withdraw_chain.r1cs \
+      build/pot14_chain.ptau \
+      build/withdraw_final.zkey \
+      > build/verify.log 2>&1 ); then
+    echo "    ✗ Downloaded final zkey does NOT verify against chain. Bundle aborted."
+    echo "      The IPFS gateway may have served a corrupt blob. Try a different gateway:"
+    echo "        GATEWAY=https://ipfs.io/ipfs $0"
+    exit 1
+  fi
+  echo "    ✓ Final zkey re-verified against chain"
 fi
 
 echo
@@ -488,7 +584,16 @@ echo "==> [8/8] Staging ceremony bundle"
 # build.sh. Renamed in the bundle to match snarkjs's expected filenames.
 cp build/withdraw_chain.r1cs ceremony-bundle/withdraw.r1cs
 cp build/pot14_chain.ptau ceremony-bundle/pot14_final.ptau
-cp build/withdraw_pre_beacon.zkey ceremony-bundle/withdraw_pre_beacon.zkey
+# Pre-beacon zkey is conditional in BUNDLE_ONLY mode (see step where
+# we attempt recovery via the beacon attestation's prev_cid). In normal
+# mode it's always present. Only copy if the file exists AND has the
+# zkey magic bytes — never ship a placeholder file with a misleading
+# sha256 in the bundle's hash table.
+PRE_BEACON_PRESENT=0
+if [ -s build/withdraw_pre_beacon.zkey ] && [ "$(head -c 4 build/withdraw_pre_beacon.zkey | xxd -p 2>/dev/null)" = "7a6b6579" ]; then
+  cp build/withdraw_pre_beacon.zkey ceremony-bundle/withdraw_pre_beacon.zkey
+  PRE_BEACON_PRESENT=1
+fi
 cp build/withdraw_final.zkey ceremony-bundle/withdraw_final.zkey
 cp artifacts/verification_key_final.json ceremony-bundle/verification_key_final.json
 cp artifacts/verification_key_final.json ceremony-bundle/verification_key.json
@@ -555,7 +660,11 @@ PTAU_SHA256=$(shasum -a 256 ceremony-bundle/pot14_final.ptau | cut -d' ' -f1)
 # but before the bundle is written, which is the worst-case timing.
 PTAU_BLAKE2B=$(openssl dgst -blake2b512 ceremony-bundle/pot14_final.ptau 2>/dev/null | awk '{print $NF}' || true)
 FINAL_SHA256=$(shasum -a 256 ceremony-bundle/withdraw_final.zkey | cut -d' ' -f1)
-PRE_BEACON_SHA256=$(shasum -a 256 ceremony-bundle/withdraw_pre_beacon.zkey | cut -d' ' -f1)
+if [ "$PRE_BEACON_PRESENT" = "1" ]; then
+  PRE_BEACON_SHA256=$(shasum -a 256 ceremony-bundle/withdraw_pre_beacon.zkey | cut -d' ' -f1)
+else
+  PRE_BEACON_SHA256=""
+fi
 R1CS_SHA256=$(shasum -a 256 ceremony-bundle/withdraw.r1cs | cut -d' ' -f1)
 VK_SHA256=$(shasum -a 256 ceremony-bundle/verification_key.json | cut -d' ' -f1)
 
@@ -588,7 +697,9 @@ VK_SHA256=$(shasum -a 256 ceremony-bundle/verification_key.json | cut -d' ' -f1)
   echo "| --- | --- | --- |"
   echo "| \`withdraw.r1cs\`               | Circuit constraint system        | \`$R1CS_SHA256\` |"
   echo "| \`pot14_final.ptau\`            | Phase 1 powers-of-tau (Hermez)   | \`$PTAU_SHA256\` |"
-  echo "| \`withdraw_pre_beacon.zkey\`    | Last contribution before beacon  | \`$PRE_BEACON_SHA256\` |"
+  if [ "$PRE_BEACON_PRESENT" = "1" ]; then
+    echo "| \`withdraw_pre_beacon.zkey\`    | Last contribution before beacon  | \`$PRE_BEACON_SHA256\` |"
+  fi
   echo "| \`withdraw_final.zkey\`         | Beacon-applied production zkey   | \`$FINAL_SHA256\` |"
   echo "| \`verification_key.json\`       | Production verifying key         | \`$VK_SHA256\` |"
   echo "| \`attestations.json\`           | Full Phase 2 contribution chain  | (count: $ATTEST_COUNT) |"

@@ -813,6 +813,23 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   if (!state) return jsonResponse({ error: 'ceremony not found — initialize first' }, 404, cors);
   if (state.finalized) return jsonResponse({ error: 'ceremony has been finalized; chain is locked' }, 409, cors);
 
+  // Drain check — coordinator may have paused contributions while
+  // running finalize, since the pre-flight (download + beacon + verify)
+  // takes 3-7 min at scale and any contribute landing during that
+  // window would race the final CAS check. drain_until is an absolute
+  // unix timestamp; once it's in the past, contributions auto-resume.
+  // Returns 423 (Locked) so the dapp can distinguish from other 4xx.
+  {
+    const now = Math.floor(Date.now() / 1000);
+    const drainUntil = Number(state.drain_until || 0);
+    if (drainUntil && now < drainUntil) {
+      return jsonResponse({
+        error: `ceremony is being finalized; contributions paused for ~${drainUntil - now}s`,
+        drain_until: drainUntil,
+      }, 423, cors);
+    }
+  }
+
   // Per-IP rate limit reuses the upload KV — 500 contributions/IP/day. The
   // cap is sized for a coordinated push toward gold-tier (1100+) where power
   // contributors carry many contributions from the same machine; below this,
@@ -1096,6 +1113,54 @@ async function handleCeremonyReset(req, env, circuitHash, cors) {
 // further contribute calls are rejected. Multipart form: zkey (file),
 // beacon_block_hash (hex string for audit trail), beacon_iterations (int).
 // SPEC §3.7's beacon application closes the late-Sybil collusion window.
+// POST /ceremony/:circuit_hash/drain — coordinator pauses new contributes
+// for a bounded window. Used before running finalize at scale: the pre-
+// flight (download + beacon + verify) takes 3-7 min for a 2000+ contrib
+// chain, and any contribute landing during that window would race the
+// final CAS check. Setting a drain window before pre-flight starts
+// guarantees the chain is stable while we beacon. drain_until is an
+// absolute timestamp; expires automatically (no separate undrain
+// needed) so a failed finalize doesn't permanently block contributions.
+//
+// Multipart form: duration_seconds (optional, default 1800 = 30 min,
+// max 7200 = 2 hours).
+async function handleCeremonyDrain(req, env, circuitHash, cors, ctx) {
+  if (!ceremonyAuthOk(req, env)) {
+    return jsonResponse({ error: 'unauthorized' }, 401, cors);
+  }
+  if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
+    return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
+  }
+  const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
+  if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
+  if (state.finalized) return jsonResponse({ error: 'ceremony already finalized; drain is moot' }, 409, cors);
+
+  let durationSecs = 1800;
+  try {
+    const fd = await req.formData();
+    const ds = String(fd.get('duration_seconds') || '');
+    if (ds) {
+      const parsed = safeInt(ds, 1800, { min: 60, max: 7200 });
+      if (Number.isFinite(parsed)) durationSecs = parsed;
+    }
+  } catch { /* form-data parse failure → use default duration */ }
+
+  const now = Math.floor(Date.now() / 1000);
+  const drainUntil = now + durationSecs;
+  const newState = { ...state, drain_until: drainUntil };
+  await env.REGISTRY_KV.put(ceremonyKey(circuitHash), JSON.stringify(newState));
+  // Invalidate edge caches so /ceremony/<hash> reads see the new
+  // drain_until immediately. Without invalidation, contributors hitting
+  // a stale-cached state.drain_until=undefined would keep racing in.
+  await _invalidateCeremonyCache(ctx, circuitHash);
+  return jsonResponse({
+    ok: true,
+    drain_until: drainUntil,
+    duration_seconds: durationSecs,
+    message: `contributions paused until ${new Date(drainUntil * 1000).toISOString()}`,
+  }, 200, cors);
+}
+
 async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   if (!ceremonyAuthOk(req, env)) {
     return jsonResponse({ error: 'unauthorized' }, 401, cors);
@@ -5859,6 +5924,10 @@ export default {
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/finalize$/i);
       if (m && req.method === 'POST') return handleCeremonyFinalize(req, env, m[1].toLowerCase(), cors, ctx);
+    }
+    {
+      const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})\/drain$/i);
+      if (m && req.method === 'POST') return handleCeremonyDrain(req, env, m[1].toLowerCase(), cors, ctx);
     }
     if (url.pathname === '/balance' && req.method === 'GET')   return handleBalance(env, cors);
     if (url.pathname === '/drip' && req.method === 'POST')     return handleDrip(req, env, cors);

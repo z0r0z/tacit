@@ -126,6 +126,23 @@ Either of those keeps the token out of shell history.
 - Use the canonical ceremony hash baked into the script default.
 - Prompt you for `CEREMONY_INIT_TOKEN` via a silent read (no echo, no
   shell history pollution).
+- **Pause new contributions for 30 minutes** via the worker's `/drain`
+  endpoint. This protects against CAS races during the 3-7 minute
+  pre-flight at scale — without drain, contributions landing during the
+  pre-flight would force the final POST's CAS check to 409 repeatedly.
+  Drain expires automatically (no manual undrain needed); if your
+  finalize fails for any reason, contributions resume after 30 min.
+
+**On a hot ceremony with sustained contributions** (the script's idle
+check fires because contributors keep landing every 30-60s), override
+with:
+
+```bash
+MIN_QUIET_SECONDS=0 ./finalize.sh
+```
+
+This skips the idle-quiet check; drain still runs, so the chain is
+still stable for the actual finalize work.
 
 **Do not run any other shell commands while it's working.** Don't
 switch terminal windows, don't paste anything besides the token when
