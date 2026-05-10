@@ -28,3 +28,6 @@ dapp/circuits/build/
 # Verified Phase 1 ptau (~18 MB) — regenerable via build.sh's hash-checked
 # curl. Keeping it out of git history.
 dapp/circuits/verified-ptau/
+# Ceremony finalize bundle (~32 MB) — staged by finalize.sh for IPFS
+# pinning. Auditable via the published IPFS CID; no need in git history.
+dapp/circuits/ceremony-bundle/

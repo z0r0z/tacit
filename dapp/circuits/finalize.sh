@@ -2,7 +2,9 @@
 # Finalize the tacit mixer ceremony in one shot.
 #
 # Usage:
-#   ./finalize.sh <bitcoin_block_height> [circuit_hash]
+#   ./finalize.sh [bitcoin_block_height] [circuit_hash]
+#   ./finalize.sh                          # auto-pick (tip - 12)
+#   BUNDLE_ONLY=1 ./finalize.sh           # regenerate bundle only
 #
 # What it does (no manual steps in the middle):
 #   1. Reads CEREMONY_INIT_TOKEN from env or stdin (required for /finalize)
@@ -35,6 +37,20 @@ done
 # bundle README (sha256 is mandatory and uses shasum). Missing openssl
 # falls through silently via the `|| true` on the blake2b call later.
 # Don't gate finalize on it.
+
+# Detect a timeout wrapper for the slow snarkjs zkey verify call.
+# Linux: 'timeout' is in coreutils. macOS stock has neither; Homebrew
+# coreutils installs 'gtimeout'. Falling back to no wrapper just
+# means snarkjs would hang forever on a pathological input — but
+# that's no worse than the pre-round-7 behavior, and the verify itself
+# is reliable. Best-effort defense.
+if command -v timeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+  TIMEOUT_CMD="gtimeout"
+else
+  TIMEOUT_CMD=""  # no timeout available; rely on snarkjs reliability
+fi
 
 # Track whether the chain is finalized so an abort during steps 7-8
 # (bundle prep) prints a clear "chain is fine, bundle failed" message
@@ -189,10 +205,13 @@ if [ "$BUNDLE_ONLY" != "1" ]; then
   # entirely. File is mode 0600 (owner-only) and removed via trap.
   CURL_CONFIG=$(mktemp -t tacit-finalize-XXXXXX)
   chmod 600 "$CURL_CONFIG"
-  printf 'header = "X-Tacit-Init-Token: %s"\n' "$CEREMONY_INIT_TOKEN" > "$CURL_CONFIG"
-  # Add cleanup of the temp config to the existing trap on exit.
+  # Register the cleanup trap BEFORE writing the token to the file. If
+  # printf or anything between mktemp and trap-set fails, we still want
+  # the temp file (mode 0600) cleaned up rather than left behind with
+  # whatever partial content snuck in. trap-update is idempotent.
   _cleanup_curl_config() { rm -f "$CURL_CONFIG"; }
   trap '_cleanup_curl_config; on_exit' EXIT
+  printf 'header = "X-Tacit-Init-Token: %s"\n' "$CEREMONY_INIT_TOKEN" > "$CURL_CONFIG"
 fi
 
 mkdir -p build artifacts ceremony-bundle
@@ -481,7 +500,11 @@ echo "    Running snarkjs zkey verify against $COUNT contributions (this can tak
 # changed between minor versions ("ZKey OK!" → "ZKey Ok!"); the exit code
 # contract is stable. Output captured to build/verify.log for diagnostics
 # on failure.
-if ! ( CEREMONY_INIT_TOKEN= $SNARKJS zkey verify \
+# Wrap with a hard timeout (15 min) so a hung snarkjs doesn't lock up
+# the script indefinitely. At 2000+ contributions the verify normally
+# takes 3-6 min; 900s is generous. Hitting the timeout = something is
+# very wrong (snarkjs bug, OOM, fork bomb), surface it loudly.
+if ! ( CEREMONY_INIT_TOKEN= ${TIMEOUT_CMD:+$TIMEOUT_CMD 900} $SNARKJS zkey verify \
     build/withdraw_chain.r1cs \
     build/pot14_chain.ptau \
     build/withdraw_final.zkey \
@@ -551,13 +574,17 @@ if [ "$HTTP_CODE" != "200" ]; then
   echo
   exit 1
 fi
+# Chain is now finalized — set the flag IMMEDIATELY after confirming
+# HTTP 200, BEFORE we parse the response body. If python3 chokes on a
+# malformed/empty 200 response (extremely unlikely but possible), set
+# -e would otherwise exit with CHAIN_FINALIZED=0 and the trap would
+# print the wrong recovery hint ("chain is open" when the worker
+# actually accepted).
+CHAIN_FINALIZED=1
 RESP=$(cat build/finalize_response.json)
 FINAL_CID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['head_cid'])")
 echo "    finalized head_cid: $FINAL_CID"
 echo "    state: $(echo "$RESP" | python3 -c "import sys,json; s=json.load(sys.stdin)['state']; print(f\"contributions={s['contribution_count']} finalized={s.get('finalized',False)} beacon={s.get('beacon_block_hash','?')[:16]}…\")")"
-# Chain is now finalized. Trap on EXIT will print a recovery hint if
-# anything in steps 7-8 fails after this point.
-CHAIN_FINALIZED=1
 
 fi  # end BUNDLE_ONLY skip block — steps 2-6 done (or skipped for bundle-only)
 

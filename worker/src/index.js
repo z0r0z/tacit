@@ -1137,6 +1137,11 @@ async function handleCeremonyReset(req, env, circuitHash, cors) {
     if (!cursor) break;
   }
   await env.REGISTRY_KV.delete(ceremonyKey(circuitHash));
+  // Clear the drain key too — without this, post-reset contributes are
+  // 423'd until the drain TTL expires (up to ~35 min), with no way to
+  // undo. drain key may not exist if drain was never set; .delete is
+  // idempotent so this is safe regardless.
+  await env.REGISTRY_KV.delete(ceremonyDrainKey(circuitHash));
   return jsonResponse({ ok: true, deleted: deleted + 1 }, 200, cors);
 }
 
