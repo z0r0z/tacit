@@ -19,6 +19,48 @@
 
 set -euo pipefail
 
+# Track whether the chain is finalized so an abort during steps 7-8
+# (bundle prep) prints a clear "chain is fine, bundle failed" message
+# rather than just dying silently. Set to 1 after the /finalize POST
+# returns 200; trap fires on script exit and adds context if non-zero.
+CHAIN_FINALIZED=0
+on_exit() {
+  local exit_code=$?
+  if [ "$exit_code" = "0" ]; then return; fi
+  if [ "${BUNDLE_ONLY:-0}" = "1" ] && [ "$CHAIN_FINALIZED" = "1" ]; then
+    # Already in recovery mode; another retry won't help. Print plain
+    # diagnostic guidance without the recovery hint.
+    echo
+    echo "================================================================"
+    echo "  ⚠ Bundle regeneration failed in BUNDLE_ONLY mode"
+    echo "================================================================"
+    echo
+    echo "  The ceremony chain is fine; bundle generation failed AGAIN."
+    echo "  Check the logs in build/ for what step failed:"
+    echo "      ls -la build/"
+    echo "      cat build/*.log"
+    echo
+    return
+  fi
+  if [ "$CHAIN_FINALIZED" = "1" ]; then
+    echo
+    echo "================================================================"
+    echo "  ⚠ CHAIN IS FINALIZED, but bundle generation failed"
+    echo "================================================================"
+    echo
+    echo "  The ceremony itself is fine — finalized=true on the worker."
+    echo "  Only the audit bundle (ceremony-bundle/) is broken."
+    echo
+    echo "  Recover it with:"
+    echo "      BUNDLE_ONLY=1 $0"
+    echo
+    echo "  This re-runs ONLY step 8 against the now-finalized state,"
+    echo "  redownloading r1cs/ptau/finalzkey and rebuilding the bundle."
+    echo
+  fi
+}
+trap on_exit EXIT
+
 # --- args ---
 BLOCK_HEIGHT="${1:-}"
 CIRCUIT_HASH="${2:-1373a3bc34153c291d057b44edaba11d5a4aa779d0998e0d0c0e400dfc89129d}"
@@ -32,6 +74,29 @@ GATEWAY="${GATEWAY:-https://content.wrappr.wtf/ipfs}"
 # snarkjs bundle was built from (currently 0.7.6). Override via env
 # only if you've verified the new version produces identical output.
 SNARKJS="${SNARKJS:-npx --yes snarkjs@0.7.6}"
+
+# BUNDLE_ONLY=1 skips steps 1-7 (chain finalize) and runs ONLY step 8
+# (bundle staging) against an already-finalized ceremony. Recovery path
+# for the case where finalize succeeded but bundle generation failed
+# mid-step-8 (e.g., IPFS gateway flake during attestation pagination).
+# Without this, you'd be left with a finalized chain and no way to
+# regenerate the audit bundle short of manually replicating the script's
+# step 8 logic. The chain itself is unaffected by bundle-only; this is
+# pure packaging.
+BUNDLE_ONLY="${BUNDLE_ONLY:-0}"
+if [ "$BUNDLE_ONLY" = "1" ]; then
+  echo "==> BUNDLE_ONLY=1 — skipping chain finalize, regenerating audit bundle only"
+fi
+
+# Minimum quiet period before we'll start finalize: refuse to begin if
+# a contribute landed within this many seconds. The pre-flight (download
+# zkey, beacon, download r1cs+ptau, snarkjs verify) takes 3-7 min at
+# scale; any contribute landing during that window will 409 the final
+# POST via the CAS gate. Forcing a 60s quiet period before starting
+# means we're at least starting from a calm chain. Override via env
+# only if you've already manually paused promotion. BUNDLE_ONLY skips
+# this check (the chain is already finalized; nothing to race against).
+MIN_QUIET_SECONDS="${MIN_QUIET_SECONDS:-60}"
 
 # Auto-pick a beacon block if none was provided. Defaults to (current
 # tip - 12) so the chosen block is comfortably past the 6-confirmation
@@ -96,39 +161,85 @@ PTAU_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdi
 R1CS_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['r1cs_cid'])")
 COUNT=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['contribution_count'])")
 FINALIZED=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state'].get('finalized', False))")
+LAST_CONTRIBUTED_AT=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state'].get('last_contributed_at', 0))")
 echo "    contributions: $COUNT"
 echo "    head zkey:     $HEAD_CID"
 echo "    finalized:     $FINALIZED"
 
 if [ "$FINALIZED" = "True" ]; then
-  echo "    Already finalized. Aborting."
+  if [ "$BUNDLE_ONLY" != "1" ]; then
+    echo "    Already finalized. Aborting."
+    echo "    To regenerate the audit bundle from this finalized state:"
+    echo "      BUNDLE_ONLY=1 $0"
+    exit 1
+  fi
+  echo "    Already finalized — proceeding with bundle regeneration."
+  # Mark chain as finalized so the trap differentiates this from a
+  # pre-finalize abort (different recovery instructions).
+  CHAIN_FINALIZED=1
+elif [ "$BUNDLE_ONLY" = "1" ]; then
+  echo "    BUNDLE_ONLY=1 set but ceremony is NOT finalized (finalized=$FINALIZED)."
+  echo "    Bundle-only mode is for recovery AFTER a successful finalize. Either:"
+  echo "      • Drop BUNDLE_ONLY=1 and run normal finalize, OR"
+  echo "      • Verify state at: $WORKER/ceremony/$CIRCUIT_HASH"
   exit 1
 fi
+
 # Hard floor on contribution count. SPEC §5.11.3 minimum is ≥5 disjoint
 # trust roots; production target per MIXER.md is "ideally 100s"; gold-tier
 # (Tornado-class) is 1100. Default to 1100 so a tired coordinator can't
 # accidentally finalize at, say, 200 contributions in the middle of an
 # active push. Override via MIN_CONTRIBUTIONS=N in env if you legitimately
 # want to finalize a small ceremony (e.g., asset with low expected volume).
+# Skipped in BUNDLE_ONLY since chain is already finalized.
 MIN_CONTRIBUTIONS="${MIN_CONTRIBUTIONS:-1100}"
 if ! [[ "$COUNT" =~ ^[0-9]+$ ]]; then
   echo "    ERROR: contribution_count is not numeric: '$COUNT'"
   exit 1
 fi
-if (( COUNT < MIN_CONTRIBUTIONS )); then
-  echo "    ERROR: contribution_count=$COUNT is below MIN_CONTRIBUTIONS=$MIN_CONTRIBUTIONS"
-  echo "    If you genuinely want to finalize at this depth, override via:"
-  echo "      MIN_CONTRIBUTIONS=$COUNT $0 ..."
-  exit 1
+if [ "$BUNDLE_ONLY" != "1" ]; then
+  if (( COUNT < MIN_CONTRIBUTIONS )); then
+    echo "    ERROR: contribution_count=$COUNT is below MIN_CONTRIBUTIONS=$MIN_CONTRIBUTIONS"
+    echo "    If you genuinely want to finalize at this depth, override via:"
+    echo "      MIN_CONTRIBUTIONS=$COUNT $0 ..."
+    exit 1
+  fi
+  # COUNT=0 prompt is unreachable under default MIN_CONTRIBUTIONS=1100 (the
+  # floor check above would have already exited). Only reached when an
+  # explicit MIN_CONTRIBUTIONS=0 override is set, in which case the
+  # "are you sure" prompt is genuinely useful.
+  if [ "$COUNT" = "0" ]; then
+    echo "    Warning: ceremony has 0 contributions (only the genesis). Are you sure?"
+    printf "    Continue anyway? [y/N] "
+    read -r yn || yn=""
+    [ "$yn" = "y" ] || [ "$yn" = "Y" ] || exit 0
+  fi
+  # Idle-quiet check: refuse to start if a contribute landed within
+  # MIN_QUIET_SECONDS. The pre-flight (download zkey + beacon + verify)
+  # takes 3-7 min at scale; any contribute during that window will 409
+  # the final CAS check. Forcing a quiet start lowers the chance of
+  # losing the race. Override via env only if you've manually paused
+  # promotion and just want to push through.
+  NOW=$(date +%s)
+  IDLE_FOR=$(( NOW - LAST_CONTRIBUTED_AT ))
+  if (( IDLE_FOR < MIN_QUIET_SECONDS )); then
+    echo "    ERROR: last contribution was $IDLE_FOR seconds ago — too active to start finalize."
+    echo "      Required quiet period: ${MIN_QUIET_SECONDS}s"
+    echo "      The pre-flight takes 3-7 min at scale; if contributions keep landing"
+    echo "      during that window, the final POST's CAS check will 409 (race lost)."
+    echo "      Wait for the rate to taper, then re-run."
+    echo "      To force-skip this check (after manually pausing promotion):"
+    echo "        MIN_QUIET_SECONDS=0 $0"
+    exit 1
+  fi
+  echo "    quiet for: ${IDLE_FOR}s (≥${MIN_QUIET_SECONDS}s required ✓)"
 fi
-if [ "$COUNT" = "0" ]; then
-  echo "    Warning: ceremony has 0 contributions (only the genesis). Are you sure?"
-  printf "    Continue anyway? [y/N] "
-  # || yn="" so closed-stdin (non-interactive run) defaults to N rather
-  # than tripping set -e and exiting with a confusing error.
-  read -r yn || yn=""
-  [ "$yn" = "y" ] || [ "$yn" = "Y" ] || exit 0
-fi
+
+if [ "$BUNDLE_ONLY" = "1" ]; then
+  echo
+  echo "==> Skipping steps 2-6 (chain already finalized)"
+  echo "    Will redownload r1cs/ptau/zkey from IPFS for the bundle in step 7-8."
+else
 
 echo
 echo "==> [2/8] Downloading head zkey from IPFS"
@@ -329,6 +440,33 @@ RESP=$(cat build/finalize_response.json)
 FINAL_CID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['head_cid'])")
 echo "    finalized head_cid: $FINAL_CID"
 echo "    state: $(echo "$RESP" | python3 -c "import sys,json; s=json.load(sys.stdin)['state']; print(f\"contributions={s['contribution_count']} finalized={s.get('finalized',False)} beacon={s.get('beacon_block_hash','?')[:16]}…\")")"
+# Chain is now finalized. Trap on EXIT will print a recovery hint if
+# anything in steps 7-8 fails after this point.
+CHAIN_FINALIZED=1
+
+fi  # end BUNDLE_ONLY skip block — steps 2-6 done (or skipped for bundle-only)
+
+# In BUNDLE_ONLY mode the chain is already finalized; the head_cid we
+# need for the bundle is what's in state (which is the post-beacon zkey
+# the worker pinned at finalize time). Re-fetch to pick up beacon_block_*
+# fields from the finalized state.
+if [ "$BUNDLE_ONLY" = "1" ]; then
+  STATE=$(curl -sf --max-time 30 "$WORKER/ceremony/$CIRCUIT_HASH")
+  HEAD_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['head_cid'])")
+  PTAU_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['ptau_cid'])")
+  R1CS_CID=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['r1cs_cid'])")
+  COUNT=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state']['contribution_count'])")
+  BTC_BLOCK_HASH=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state'].get('beacon_block_hash',''))")
+  BLOCK_HEIGHT=$(echo "$STATE" | python3 -c "import sys,json; print(json.load(sys.stdin)['state'].get('beacon_block_height',''))")
+  # Download the FINAL zkey (post-beacon, what's now state.head_cid).
+  curl -sLf --max-time 120 "$GATEWAY/$HEAD_CID" -o build/withdraw_final.zkey
+  # Also download r1cs + ptau for the bundle.
+  curl -sLf --max-time 60 "$GATEWAY/$R1CS_CID" -o build/withdraw_chain.r1cs
+  curl -sLf --max-time 300 "$GATEWAY/$PTAU_CID" -o build/pot14_chain.ptau
+  # We can't recover the pre-beacon zkey in BUNDLE_ONLY mode (it's not
+  # state.head_cid anymore). Use a placeholder file with a note.
+  echo "(pre-beacon zkey not reconstructable in BUNDLE_ONLY recovery mode)" > build/withdraw_pre_beacon.zkey
+fi
 
 echo
 echo "==> [7/8] Exporting verifying key"

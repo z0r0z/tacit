@@ -299,6 +299,28 @@ error: ...`. The chain stays open (not finalized).
 | `409 stale expected_head_cid` | A contribute landed during the IPFS pin window; chain advanced past what we beaconed | Re-run the script — auto-pick fetches fresh head + re-beacons + re-POSTs. If it fires twice in a row, wait ~60s for contribute rate to settle, then retry |
 | `400 missing expected_head_cid` | Hand-POSTing without using the script | Use `./finalize.sh`, which always sends the CAS field |
 | `502 pin failed` | Pinata is having an outage | Wait a few minutes, re-run |
+| `ERROR: last contribution was Ns ago — too active` | Pre-flight idle check tripped — chain is too active to safely start finalize (CAS would 409 during the ~5-min pre-flight window) | Wait for contribute rate to taper, OR set `MIN_QUIET_SECONDS=0` to force-skip after manually pausing promotion |
+
+### Bundle generation failed AFTER chain was finalized
+
+**Symptom:** Script prints `⚠ CHAIN IS FINALIZED, but bundle generation failed`
+followed by recovery instructions.
+
+**What this means:** Steps 1-6 succeeded — the chain IS finalized
+on the worker, finalized=true, the verifying key is correct, the
+mixer pool is unlocked. Step 7 (vk export) or step 8 (bundle staging)
+failed, leaving you with no `ceremony-bundle/` directory.
+
+**Recovery — single command:**
+
+```bash
+BUNDLE_ONLY=1 ./finalize.sh
+```
+
+Bundle-only mode skips steps 1-7 (chain is already done), redownloads
+the canonical r1cs / ptau / final zkey from IPFS, repaginates all
+attestations, and rebuilds `ceremony-bundle/`. No effect on the
+ceremony chain itself.
 
 ### Network error mid-POST
 
