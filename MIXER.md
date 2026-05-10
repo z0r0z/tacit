@@ -14,8 +14,9 @@ spec lives in [`SPEC.md` §5.10–§5.11 and §11](./SPEC.md).
 
 A privacy layer for **tacit-native confidential assets**. Users deposit a
 fixed-denomination asset UTXO into a per-`(asset_id, denomination)` pool;
-later, anyone holding the deposit secret can withdraw to a fresh address
-with a zero-knowledge proof that breaks the on-chain link to the deposit.
+later, anyone holding the mixer note — `(secret, ν)` — can withdraw to a
+fresh address with a zero-knowledge proof that breaks the on-chain link
+to the deposit.
 
 The on-chain footprint is two new envelope opcodes — `T_DEPOSIT` (`0x29`)
 and `T_WITHDRAW` (`0x2A`) — riding on regular Bitcoin commit + reveal taproot
@@ -204,9 +205,9 @@ Bitcoin alone.
 
 ## Privacy model
 
-- **Cryptographic privacy** is unconditional under Groth16's perfect
-  zero-knowledge + Poseidon assumptions — independent of the trusted setup,
-  which gates soundness (no false withdrawals), not privacy (SPEC §5.11.3).
+- **Cryptographic unlinkability** follows from Groth16's zero-knowledge
+  property and the hiding/binding assumptions of the commitment + hash
+  construction; trusted setup affects soundness, not privacy (SPEC §5.11.3).
   An observer reading on-chain `T_WITHDRAW` envelopes learns no information
   about which deposit funded which withdraw, beyond the count of currently-
   unspent leaves in the pool.
@@ -318,13 +319,18 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 - **Phase 2 (per-circuit)**: coordinator endpoints (`/ceremony/init`,
   `/ceremony/:circuit_hash/contribute`, `/ceremony/:circuit_hash/finalize`)
   are shipped, behind admin-auth for init + finalize. The contribute
-  endpoint is publicly reachable (no auth gate); a contribution window
-  opens the moment a coordinator calls `/ceremony/init`. Client-side
-  `verifyFromInit` walks the contribution chain + content-checks IPFS-
-  fetched r1cs/ptau before accepting any contribution to extend.
-- **Beacon finalization**: applies a public-randomness beacon (Bitcoin
-  block hash, ≥10 iterations) at the end of the contribution window.
-  Closes the late-Sybil collusion window per SPEC §5.11.3.
+  endpoint was publicly reachable during the contribution window;
+  client-side `verifyFromInit` walked the contribution chain + content-
+  checked IPFS-fetched r1cs/ptau before accepting any contribution to
+  extend. For the live circuit, the contribute endpoint now returns HTTP
+  409 (`ceremony has been finalized; chain is locked`) — the chain is
+  immutable.
+- **Beacon finalization**: applied a public-randomness beacon (Bitcoin
+  block 948824 hash, 10 MiMC iterations) at the end of the contribution
+  window — closes the late-Sybil collusion window per SPEC §5.11.3. The
+  finalize coordinator script cross-checks the block hash against
+  mempool.space and blockstream.info before applying the beacon and
+  refuses to finalize if confirmation depth is < 12 blocks.
 
 ## Status
 
@@ -345,20 +351,31 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 - ✅ Phase 2 ceremony coordinator (init / contribute / finalize) + auth
 - ✅ Client-side `verifyFromInit` before contribute
 - ✅ 108 mixer tests across 7 test files
-- ⏸ **Public Phase 2 ceremony has not yet been run** — required before
-  mainnet pool deployment. Coordinator + dapp UI are ready; the run
-  itself is the remaining step.
+- ✅ **Phase 2 ceremony finalized** — 2,227 community contributions +
+  Bitcoin-block-948824 beacon (10 MiMC iterations). Canonical bundle
+  pinned to IPFS as a directory under
+  `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`;
+  contains `withdraw_final.zkey`, `verification_key.json`,
+  `withdraw_pre_beacon.zkey`, `withdraw.r1cs`, `pot14_final.ptau`, and
+  the full 21,931-record attestation chain (2,229 canonical: genesis +
+  2,227 contribs + beacon). Dapp hardcodes the bundle CID as
+  `CANONICAL_CEREMONY_CID` so every pool init binds to the same trust
+  anchor — operator typo is impossible.
 - ⏸ Deterministic `(secret, ν)` derivation from privkey (UX improvement;
   current behavior matches Tornado / Privacy Pools — secrets must be
   backed up out-of-band)
 
 ## Open / honest caveats
 
-- **Mainnet readiness gates on the public Phase 2 ceremony.** Until that
-  runs with credible contributor diversity (≥5 disjoint trust roots, ideally
-  100s) and finalizes via beacon, the published `vk_cid` is rooted in a
-  local single-contributor zkey for testing only. Production wallets MUST
-  fetch the ceremony's finalized `head_cid` rather than the local artifact.
+- **Ceremony trust anchor.** The Phase 2 ceremony finalized at 2,227
+  contributions with a Bitcoin-block beacon — ~2× Tornado.cash's
+  Phase 2 (1,114 contributors), with a public-randomness final round
+  that closes the late-Sybil window per SPEC §5.11.3. Pool soundness
+  holds as long as ≥1 of those contributors was honest. Contributor
+  diversity is openly observable — the chain-walk in the bundle's
+  `attestations.json` shows every contributor name + Bitcoin block hash
+  the contribution committed to. Any party who finds a sole-honest
+  participant in the chain can re-derive the security claim.
 - **Anonymity-set strength scales with per-pool volume.** A pool that sees
   40 deposits a year is structurally sound but practically not private.
   The dapp surfaces a warning; users should heed it.
@@ -386,9 +403,11 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 > data; proofs are verified client-side. The cryptographic primitives are
 > well-known; the *composition* of these three specific things on Bitcoin
 > L1 doesn't appear to have a live production peer. Phase 1 trusted setup
-> is the verified Polygon Hermez ceremony output; per-pool Phase 2
-> ceremony coordination is built and ready to run. Engineering and
-> integration achievement, not cryptographic invention.
+> is the verified Polygon Hermez ceremony output; Phase 2 is finalized
+> with 2,227 community contributions and a Bitcoin-block beacon, pinned
+> to IPFS at
+> `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`.
+> Engineering and integration achievement, not cryptographic invention.
 
 ## References
 

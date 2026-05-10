@@ -65,12 +65,14 @@ What that buys you, concretely:
   pool** (`T_DEPOSIT` → `T_WITHDRAW`, Tornado-style; SPEC §5.10–§5.11) and
   withdraw to a fresh pubkey, breaking the on-chain edge between deposit
   and withdraw via a Groth16 proof of unspent-leaf membership. **Status:
-  testnet-ready; mainnet pools gated on per-pool Phase 2 ceremony.** Wire
-  format, worker indexing, browser-side Groth16 prover + verifier
-  (snarkjs vendored), deposit/withdraw broadcast flows, and Phase 2
-  ceremony coordinator are all shipped; the public ceremony run is the
-  remaining mainnet prerequisite. See [MIXER.md](./MIXER.md) for full
-  status + caveats.
+  production.** Wire format, worker indexing, browser-side Groth16 prover
+  + verifier (snarkjs vendored), deposit/withdraw broadcast flows, and a
+  finalized Phase 2 trusted-setup ceremony (2,227 community contributions
+  + Bitcoin-block beacon) are all shipped. The canonical ceremony bundle
+  is pinned at IPFS
+  `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u` and
+  hardcoded as the trust anchor in the dapp. See [MIXER.md](./MIXER.md)
+  for full status + caveats.
 
 What it doesn't do:
 
@@ -569,8 +571,9 @@ T_DEPOSIT / T_WITHDRAW (shielded mixer pool)
  the pool to fill before withdrawing.
 
  v1 status: wire format, worker indexing, browser-side Groth16 prover +
- verifier, and Phase 2 ceremony coordinator all shipped. Mainnet pool
- deposits gate on per-pool MPC ceremony run. SPEC §5.10–§5.11 + §3.6–§3.8.
+ verifier, Phase 2 ceremony coordinator, and the public ceremony run
+ (2,227 contributions + Bitcoin-block beacon) all shipped. Canonical
+ bundle CID is hardcoded in the dapp. SPEC §5.10–§5.11 + §3.6–§3.8.
 
 
 VALIDATION (recursive, browser-side)
@@ -780,7 +783,7 @@ See `build/README.md` for details.
     use Export JSON to back up. A Cross-check vs chain button walks the
     local ledger and verifies each fulfilled leaf actually confirmed
     on-chain.
-12. **Mixer** *(testnet-ready; mainnet pools gated on Phase 2 ceremony)*.
+12. **Mixer** *(production — Phase 2 finalized 2026-05-11)*.
     Tornado-style shielded pool over any tacit asset at a fixed
     denomination. Deposit a UTXO of the pool's exact denomination; the
     dApp generates a `(secret, nullifier_preimage)` pair and emits a
@@ -791,8 +794,11 @@ See `build/README.md` for details.
     re-verifies it client-side, the worker rejects duplicate nullifiers,
     and the resulting UTXO is unlinkable to any specific deposit. Pool
     initialization is permissionless — declare a new `(asset_id,
-    denomination)` pair with a verifying-key CID and an MPC-ceremony-
-    transcript CID. SPEC §5.10–§5.11; full status + caveats in
+    denomination)` pair with a verifying-key CID; the canonical
+    Phase 2 ceremony bundle is hardcoded in the dapp at IPFS
+    `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`
+    (2,227 community contributions + Bitcoin-block beacon, finalized
+    chain). SPEC §5.10–§5.11; full status + caveats in
     [MIXER.md](./MIXER.md).
 13. **Claim** *(recipient side)*. Paste the drop's merkle root + IPFS CID
     (from the issuer) → Load snapshot. The dApp fetches the JSON, refuses
@@ -852,9 +858,8 @@ on top: a holder who deposits a fixed-denomination UTXO into a pool and
 later withdraws to a fresh pubkey breaks the *amount-to-address-to-amount*
 link inside that pool. Pool participation itself is still public —
 observers see *that* an address deposited or withdrew, just not which
-deposit corresponds to which withdrawal. Testnet-ready; mainnet pool
-deposits gate on per-pool Phase 2 ceremony — see "Known limitations"
-below.
+deposit corresponds to which withdrawal. Phase 2 trusted setup finalized
+2026-05-11 with 2,227 community contributions and a Bitcoin-block beacon.
 
 ---
 
@@ -932,19 +937,21 @@ below.
   need pagination patches. The cap is operational, not cryptographic —
   the dapp's local `scanPools` reconstructs from chain regardless, so a
   worker truncation degrades freshness/UX, not soundness.
-- **Mixer pool — testnet-ready, mainnet-gated on Phase 2 ceremony.** The
-  shielded-pool wire format (`T_DEPOSIT` / `T_WITHDRAW`, SPEC §5.10–
-  §5.11), worker indexing (`/pools`, canonical leaf order, nullifier
-  set, reorg-safety depth gate), browser-side Groth16 prover + verifier
-  (snarkjs vendored at `dapp/vendor/tacit-mixer.min.js`), Phase 2
-  ceremony coordinator (init / contribute / finalize), client-side
-  `verifyFromInit` walk, and indexer rejection-path determinism are all
-  shipped (108 mixer tests across 7 files). Phase 1 ptau is the verified
-  Polygon Hermez ceremony output, dual-hash-checked at build. Mainnet
-  pool deposits gate on a credible per-pool Phase 2 MPC ceremony run
-  with contributor diversity (≥5 disjoint trust roots, ideally 100s);
-  coordinator and dApp UI are ready, the run itself is the remaining
-  step. Full status + caveats: [MIXER.md](./MIXER.md).
+- **Mixer pool — production, Phase 2 finalized.** The shielded-pool wire
+  format (`T_DEPOSIT` / `T_WITHDRAW`, SPEC §5.10–§5.11), worker indexing
+  (`/pools`, canonical leaf order, nullifier set, reorg-safety depth
+  gate), browser-side Groth16 prover + verifier (snarkjs vendored at
+  `dapp/vendor/tacit-mixer.min.js`), Phase 2 ceremony coordinator (init
+  / contribute / finalize), client-side `verifyFromInit` walk, and
+  indexer rejection-path determinism are all shipped (108 mixer tests
+  across 7 files). Phase 1 ptau is the verified Polygon Hermez ceremony
+  output, dual-hash-checked at build. Phase 2 was run publicly via the
+  coordinator: 2,227 community contributions + Bitcoin-block-948824
+  beacon (10 MiMC iterations), finalized 2026-05-11. The canonical
+  bundle is pinned to IPFS at
+  `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u` and
+  hardcoded in the dapp as the trust anchor every pool init binds to.
+  Full status + bundle contents: [MIXER.md](./MIXER.md).
 - **Lost mixer note = permanent inaccessibility of the deposit.**
   `T_WITHDRAW` requires the depositor's `(secret, ν)` pair, generated
   by CSPRNG at deposit time and not derivable from chain alone. The

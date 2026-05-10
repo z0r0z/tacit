@@ -2760,7 +2760,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         Private send for any tacit asset. Deposit a fixed amount into a shared pool, wait, then withdraw to a fresh address — a zero-knowledge proof breaks the on-chain link between the two halves.
       </div>
       <div id="mixer-stub-banner" style="border:1px solid #859900;background:#f4faff;color:#586e75;padding:10px 12px;border-radius:6px;margin-bottom:14px;font-size:13px;">
-        <strong>v1 preview.</strong> The zero-knowledge prover and verifier run live in your browser. Each pool needs a one-time trusted setup before it's safe to use — deposits and withdrawals stay locked until the ceremony below finalizes.
+        <strong>Trusted setup finalized.</strong> The Phase 2 ceremony for this circuit was completed by 2,227 community contributions and beacon-finalized against a Bitcoin block hash. Every pool init binds to the canonical bundle: <a href="https://ipfs.io/ipfs/bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u/" target="_blank" rel="noopener noreferrer" style="color:inherit;">audit on IPFS ↗</a>. The zero-knowledge prover and verifier run live in your browser.
       </div>
     </div>
   </div>
@@ -2768,7 +2768,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>pools</span></div>
     <div class="section-body">
-      <div class="mixer-locked-banner">Preview only — the trusted-setup ceremony above must be finalized before any pool operation is safe. Contribute or wait for finalization.</div>
+      <div class="mixer-locked-banner">Loading ceremony state… pool operations unlock once the dapp verifies the trusted setup is finalized. If this persists, refresh.</div>
       <div class="muted" style="margin-bottom:10px;">Initialized pools are listed below. Each row shows total deposits, total withdrawals, current anonymity-set size, and the verifying-key CID. Empty list = no pools have been initialized on this network yet.</div>
       <div id="mixer-pool-list"><div class="muted" style="font-size:12px;">No pools indexed yet.</div></div>
     </div>
@@ -2777,7 +2777,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>deposit</span></div>
     <div class="section-body">
-      <div class="mixer-locked-banner">Preview only — the trusted-setup ceremony above must be finalized before depositing. Until then, deposits are gated.</div>
+      <div class="mixer-locked-banner">Loading ceremony state… deposit unlocks once the dapp verifies the trusted setup is finalized.</div>
       <div class="muted" style="margin-bottom:10px;">Send the pool's exact denomination from your wallet into the pool. Your browser generates a private deposit record — back it up before broadcasting; without it, the deposit can never be withdrawn.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:200px;">Pool
@@ -2805,7 +2805,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>withdraw</span></div>
     <div class="section-body">
-      <div class="mixer-locked-banner">Preview only — withdrawals consume the same trusted setup deposits do, and unlock once the ceremony above is finalized.</div>
+      <div class="mixer-locked-banner">Loading ceremony state… withdraw unlocks once the dapp verifies the trusted setup is finalized.</div>
       <div class="muted" style="margin-bottom:10px;">Withdraw a deposit to a fresh address. Paste the deposit record JSON your wallet saved at deposit time, or import via share-link. The privacy set size — how many other deposits yours hides among — is shown beneath each pool.</div>
       <textarea id="mixer-withdraw-record" rows="4" placeholder="paste deposit record JSON, or import share-link below" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
       <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
@@ -2970,7 +2970,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" id="mixer-init-pool-section" data-mixer-pool-op="true">
     <div class="section-header"><span>initialize a new pool</span></div>
     <div class="section-body">
-      <div class="mixer-locked-banner">Preview only — pool initialization is gated on ceremony finalization, since every pool's deposits depend on the same trusted-setup transcript.</div>
+      <div class="mixer-locked-banner">Loading ceremony state… pool init unlocks once the dapp verifies the trusted setup is finalized.</div>
       <div class="muted" style="margin-bottom:10px;">Anyone can open a pool for any asset and any deposit size. The first confirmed pool for a given asset + amount wins. You'll need a verifying-key file and a finalized ceremony transcript, both pinned to IPFS.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:240px;">Asset
