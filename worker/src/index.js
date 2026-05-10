@@ -1214,6 +1214,20 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
   if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
   if (state.finalized) return jsonResponse({ error: 'ceremony already finalized', state }, 409, cors);
 
+  // Defense-in-depth contribution-count floor. The operator's finalize.sh
+  // enforces MIN_CONTRIBUTIONS=2000 (overridable), but a hand-POSTed finalize
+  // bypasses that. MIN_CEREMONY_CONTRIBUTIONS is an opt-in env var (no
+  // default — preserves existing behavior unless deliberately set) so a fresh
+  // operator deploying a new ceremony can choose their floor without code
+  // changes. Mismatch returns 400 so the caller can correct + retry rather
+  // than silently shipping a low-trust ceremony.
+  const minContribs = safeInt(env.MIN_CEREMONY_CONTRIBUTIONS, 0, { min: 0 });
+  if (minContribs > 0 && (state.contribution_count || 0) < minContribs) {
+    return jsonResponse({
+      error: `contribution_count=${state.contribution_count || 0} below MIN_CEREMONY_CONTRIBUTIONS=${minContribs}`,
+    }, 400, cors);
+  }
+
   let fd;
   try { fd = await req.formData(); }
   catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
@@ -5982,94 +5996,226 @@ export default {
     // pool's POOL_INIT record + leaf/nullifier counts. The dApp consumes
     // this on Mixer-tab open; per-pool detail (full leaf list + nullifier
     // set) lives at /pools/:asset_id/:denom.
+    //
+    // Pagination: ?cursor=<opaque> + ?limit=<N> for forward pagination.
+    // Default (no cursor): returns the first page; response includes a
+    // cursor field if more pools exist. Limit is capped to keep within the
+    // 1000-subrequest-per-invocation worker budget — each pool costs 3
+    // subrequests (1 init record get + 2 KV.list calls for leaf/null counts).
     if (url.pathname === '/pools' && req.method === 'GET') {
+      const POOLS_PAGE_MAX = 200; // 200 × 3 = 600 subrequests, safe under cap
+      const reqLimit = safeInt(url.searchParams.get('limit'), POOLS_PAGE_MAX,
+                                { min: 1, max: POOLS_PAGE_MAX });
+      const cursor = url.searchParams.get('cursor') || undefined;
+      const listOpts = { prefix: poolPrefix(network), limit: reqLimit };
+      if (cursor) listOpts.cursor = cursor;
+      const list = await env.REGISTRY_KV.list(listOpts);
       const pools = [];
-      const list = await env.REGISTRY_KV.list({ prefix: poolPrefix(network), limit: 1000 });
-      for (const k of list.keys) {
+      // Parallelize the per-pool fanout (init record + 1 counter get +
+      // 1 nullifier list call each) so latency stays bounded as pool
+      // count grows. Sequential awaits would 3×-multiply round-trip
+      // latency for large pages.
+      //
+      // Leaf count comes from the dedicated poolLeafCountKey counter
+      // (maintained on every indexed deposit, see scanForEtches). It's
+      // exact and O(1) — preferred over KV.list.keys.length which capped
+      // at 1000 and silently truncated past that. Nullifier count still
+      // uses KV.list since there's no nullifier counter; capped at 1000
+      // with a truncated flag for honest reporting.
+      const perPool = await Promise.all(list.keys.map(async k => {
         const rec = await env.REGISTRY_KV.get(k.name, 'json');
-        if (!rec) continue;
-        // Lightweight stats: counts only, not full lists (the detail
-        // endpoint is for that).
-        const leafCount = (await env.REGISTRY_KV.list({
-          prefix: poolLeafPrefix(network, rec.asset_id, rec.pool_denom),
-          limit: 1000,
-        })).keys.length;
-        const nullifierCount = (await env.REGISTRY_KV.list({
-          prefix: poolNullifierPrefix(network, rec.asset_id, rec.pool_denom),
-          limit: 1000,
-        })).keys.length;
-        pools.push({ ...rec, leaf_count: leafCount, nullifier_count: nullifierCount });
-      }
-      return jsonResponse({ pools, network }, 200, cors);
+        if (!rec) return null;
+        const [leafCntStr, nullL] = await Promise.all([
+          env.REGISTRY_KV.get(poolLeafCountKey(network, rec.asset_id, rec.pool_denom)),
+          env.REGISTRY_KV.list({
+            prefix: poolNullifierPrefix(network, rec.asset_id, rec.pool_denom),
+            limit: 1000,
+          }),
+        ]);
+        const leafCount = parseInt(leafCntStr || '0', 10) || 0;
+        return {
+          ...rec,
+          leaf_count: leafCount,
+          nullifier_count: nullL.keys.length,
+          // leaf count is exact (counter); nullifier count remains a
+          // lower bound past 1000 until a counter is added.
+          nullifier_count_truncated: nullL.list_complete === false,
+        };
+      }));
+      for (const p of perPool) if (p) pools.push(p);
+      const body = {
+        pools,
+        network,
+        list_complete: list.list_complete !== false,
+      };
+      if (list.list_complete === false && list.cursor) body.cursor = list.cursor;
+      return jsonResponse(body, 200, cors);
     }
     // /pools/:asset_id/:denom — full per-pool state. Leaves are returned
     // in canonical KV-key order (height-padded + tx_index-padded), which
     // is the order the dApp must apply them in to reproduce the canonical
     // merkle tree.
+    //
+    // Pagination: ?leaves_cursor=<opaque> and/or ?nullifiers_cursor=<opaque>
+    // for forward pagination of either list. Default (neither cursor)
+    // returns the first page of both plus pool metadata + tip. With a
+    // cursor: returns ONLY that paginated list, without the metadata bundle
+    // (saves the dapp from re-receiving init/tip on every page). Limit is
+    // capped to fit the 1000-subrequest-per-invocation worker budget:
+    // ~4 fixed (init + tip race + 2 KV.lists) + N leaf gets + M nullifier
+    // gets ≤ 1000 → cap default page at 400 each, cursor pages at 800 each.
     {
       const m = url.pathname.match(/^\/pools\/([0-9a-f]{64})\/(\d+)$/i);
       if (m && req.method === 'GET') {
         const aid = m[1].toLowerCase();
         const denom = m[2];
+        const leavesCursor = url.searchParams.get('leaves_cursor');
+        const nullifiersCursor = url.searchParams.get('nullifiers_cursor');
+        // Page-size budget: cursor pages fetch only one list, so they get
+        // the full 800 budget. Default page fetches both, so each gets 400.
+        const PAGE_DEFAULT = 400;
+        const PAGE_CURSOR  = 800;
+
+        // _annotateLeaves: stamps each raw leaf record with depth + status
+        // for the dapp's reorg-safe filter. Mirrors the SPEC §5.10 depth
+        // gate so the worker is the source of truth for inclusion.
+        const _annotateLeaves = (rawLeaves, tipHeight, fallbackTipHeight) => {
+          // L1 fix: tip-unavailable fallback. When mempool.space is slow or
+          // unreachable, fall back to the highest deposited_at_height we've
+          // observed in this pool's leaves as a tip estimate. A leaf at
+          // height H with N other leaves at heights > H is by construction
+          // at depth ≥ N — using max(observed_heights) as the tip floor
+          // makes leaves whose height is ≥3 below that floor 'included'
+          // rather than 'unknown_depth'. Conservative for the very latest
+          // leaves (which still get 'unknown_depth'), accurate for older
+          // ones. Without this, a tip-unreachable response leaves the
+          // dapp's local pool view appearing empty.
+          const tipFloor = Number.isInteger(tipHeight)
+            ? tipHeight
+            : (Number.isInteger(fallbackTipHeight) ? fallbackTipHeight : null);
+          const tipFromExplorer = Number.isInteger(tipHeight);
+          return rawLeaves.map(rec => {
+            const h = Number.isInteger(rec.deposited_at_height) ? rec.deposited_at_height : null;
+            let depth = null, status;
+            if (Number.isInteger(tipFloor) && Number.isInteger(h)) {
+              depth = Math.max(1, tipFloor - h + 1);
+              if (depth >= MIXER_DEPOSIT_CONFIRMATION_DEPTH) {
+                status = 'included';
+              } else {
+                // Fallback tip is a *lower bound*, not authoritative — if
+                // the real tip is higher this leaf may already be included.
+                // Without tip-from-explorer, refuse to call it pending and
+                // mark 'unknown_depth' so the reorg-safe filter holds.
+                status = tipFromExplorer ? 'pending' : 'unknown_depth';
+              }
+            } else {
+              status = 'unknown_depth';
+            }
+            return { ...rec, depth, status };
+          });
+        };
+        const _fetchListPage = async (prefix, cursor, limit) => {
+          const opts = { prefix, limit };
+          if (cursor) opts.cursor = cursor;
+          const list = await env.REGISTRY_KV.list(opts);
+          const fetched = await Promise.all(
+            list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json'))
+          );
+          return {
+            records: fetched.filter(r => r),
+            list_complete: list.list_complete !== false,
+            next_cursor: (list.list_complete === false && list.cursor) ? list.cursor : null,
+          };
+        };
+
+        // Cursor mode (leaves only). Skip pool metadata + nullifier walk —
+        // the dapp accumulated those from the first call. tip is included
+        // for the depth annotation; cheap (1 subrequest).
+        if (leavesCursor !== null && nullifiersCursor === null) {
+          const tipP = Promise.race([
+            apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
+            new Promise(resolve => setTimeout(() => resolve(null), 2500)),
+          ]).catch(() => null);
+          const page = await _fetchListPage(
+            poolLeafPrefix(network, aid, denom),
+            leavesCursor || undefined,
+            PAGE_CURSOR,
+          );
+          const tipHeight = await tipP;
+          const fallback = page.records.reduce((acc, r) =>
+            Number.isInteger(r.deposited_at_height) && (acc === null || r.deposited_at_height > acc)
+              ? r.deposited_at_height : acc, null);
+          const leaves = _annotateLeaves(page.records, tipHeight, fallback);
+          const body = {
+            leaves,
+            list_complete: page.list_complete,
+            tip: Number.isInteger(tipHeight) ? tipHeight : null,
+            tip_unavailable: !Number.isInteger(tipHeight),
+          };
+          if (page.next_cursor) body.leaves_cursor = page.next_cursor;
+          return jsonResponse(body, 200, cors);
+        }
+
+        // Cursor mode (nullifiers only). Same structural shape as leaves.
+        if (nullifiersCursor !== null && leavesCursor === null) {
+          const page = await _fetchListPage(
+            poolNullifierPrefix(network, aid, denom),
+            nullifiersCursor || undefined,
+            PAGE_CURSOR,
+          );
+          const body = {
+            nullifiers: page.records,
+            list_complete: page.list_complete,
+          };
+          if (page.next_cursor) body.nullifiers_cursor = page.next_cursor;
+          return jsonResponse(body, 200, cors);
+        }
+        // Reject ambiguous "both cursors at once" — forces the dapp to
+        // paginate one list at a time so each call stays within budget.
+        if (leavesCursor !== null && nullifiersCursor !== null) {
+          return jsonResponse({
+            error: 'pass at most one of leaves_cursor / nullifiers_cursor per call',
+          }, 400, cors);
+        }
+
+        // Default mode: pool metadata + first page of both lists.
         const initRec = await env.REGISTRY_KV.get(poolInitKey(network, aid, denom), 'json');
         if (!initRec) return jsonResponse({ error: 'pool not found' }, 404, cors);
         // Fetch chain tip in parallel with the KV walks so the depth-gate
         // annotation can be applied without doubling latency. Tolerate tip
-        // failure — when null, mark every leaf 'unknown_depth' rather than
-        // assuming included (a reorg-unsafe assumption).
+        // failure — when null, _annotateLeaves uses lex-max deposited
+        // height as a fallback (L1).
         const tipP = Promise.race([
           apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
           new Promise(resolve => setTimeout(() => resolve(null), 2500)),
         ]).catch(() => null);
-        const leafList = await env.REGISTRY_KV.list({
-          prefix: poolLeafPrefix(network, aid, denom),
-          limit: 1000,
-        });
-        const rawLeaves = [];
-        for (const k of leafList.keys) {
-          const rec = await env.REGISTRY_KV.get(k.name, 'json');
-          if (rec) rawLeaves.push(rec);
-        }
+        const [leafPage, nullPage] = await Promise.all([
+          _fetchListPage(poolLeafPrefix(network, aid, denom), undefined, PAGE_DEFAULT),
+          _fetchListPage(poolNullifierPrefix(network, aid, denom), undefined, PAGE_DEFAULT),
+        ]);
         const tipHeight = await tipP;
-        // SPEC §5.10 reorg-safety: annotate each leaf with depth + status so
-        // the dapp's tree builder can include only depth-≥-3 leaves. Without
-        // this, a short reorg that drops a deposit silently changes the
-        // canonical root for every position after it. 'unknown_depth' fires
-        // when tip is unreachable — the dapp must treat it as not-yet-
-        // included (reorg-safe default).
-        const leaves = rawLeaves.map(rec => {
-          const h = Number.isInteger(rec.deposited_at_height) ? rec.deposited_at_height : null;
-          let depth = null, status;
-          if (Number.isInteger(tipHeight) && Number.isInteger(h)) {
-            depth = Math.max(1, tipHeight - h + 1);
-            status = depth >= MIXER_DEPOSIT_CONFIRMATION_DEPTH ? 'included' : 'pending';
-          } else {
-            status = 'unknown_depth';
-          }
-          return { ...rec, depth, status };
-        });
+        const fallback = leafPage.records.reduce((acc, r) =>
+          Number.isInteger(r.deposited_at_height) && (acc === null || r.deposited_at_height > acc)
+            ? r.deposited_at_height : acc, null);
+        const leaves = _annotateLeaves(leafPage.records, tipHeight, fallback);
         const includedCount = leaves.filter(l => l.status === 'included').length;
         const pendingCount = leaves.filter(l => l.status === 'pending').length;
-        const nullifierList = await env.REGISTRY_KV.list({
-          prefix: poolNullifierPrefix(network, aid, denom),
-          limit: 1000,
-        });
-        const nullifiers = [];
-        for (const k of nullifierList.keys) {
-          const rec = await env.REGISTRY_KV.get(k.name, 'json');
-          if (rec) nullifiers.push(rec);
-        }
-        return jsonResponse({
+        const body = {
           pool: initRec,
           leaves,
-          nullifiers,
+          nullifiers: nullPage.records,
           network,
           tip: Number.isInteger(tipHeight) ? tipHeight : null,
           tip_unavailable: !Number.isInteger(tipHeight),
           confirmation_depth: MIXER_DEPOSIT_CONFIRMATION_DEPTH,
           included_leaf_count: includedCount,
           pending_leaf_count: pendingCount,
-        }, 200, cors);
+          leaves_list_complete: leafPage.list_complete,
+          nullifiers_list_complete: nullPage.list_complete,
+        };
+        if (leafPage.next_cursor) body.leaves_cursor = leafPage.next_cursor;
+        if (nullPage.next_cursor) body.nullifiers_cursor = nullPage.next_cursor;
+        return jsonResponse(body, 200, cors);
       }
     }
     if (url.pathname === '/assets' && req.method === 'GET') {

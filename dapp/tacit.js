@@ -4137,21 +4137,6 @@ async function buildMixerPoolInitEnvelope({
   return { payload, initSig };
 }
 
-// Build a "share-link" string for tornado-flow-to-other: the withdrawer
-// can't compute the recipient's blinding (recipient's privkey isn't in the
-// withdrawer's wallet), so they hand the recipient (secret, nullifier_preimage)
-// + denomination + asset_id, and the recipient self-derives blinding/keystream
-// after the withdraw confirms. SPEC §5.11. Mirror of the CXFER #recv= pattern.
-function buildMixerShareLink(depositRecord) {
-  const params = new URLSearchParams({
-    a: depositRecord.assetIdHex,
-    d: depositRecord.denomination,
-    s: depositRecord.secretHex,
-    n: depositRecord.nullifierPreimageHex,
-  });
-  return `#mix=${params.toString()}`;
-}
-
 function parseMixerShareLink(hashFragment) {
   if (!hashFragment) return null;
   const m = hashFragment.match(/#mix=(.+)$/);
@@ -5290,6 +5275,13 @@ async function scanHoldings(force = false) {
   return _holdingsInFlight;
 }
 async function _scanHoldingsImpl() {
+  // Refresh the pool registry before walking UTXOs. Without this, a user who
+  // receives a pay-to-other T_WITHDRAW and hasn't visited the Mixer tab sees
+  // the validator's mixerIsPoolRegistered check fail (poolRegistry is empty)
+  // and the UTXO is marked invalid in their holdings card. Funds are still
+  // recoverable on chain; this is a discoverability bug, not a loss-of-funds
+  // bug. refreshPoolsIfStale is throttled (60s cache) so the cost is bounded.
+  try { await refreshPoolsIfStale(); } catch {}
   const utxos = await getUtxos(wallet.address());
   const holdings = new Map();
   const txCache = new Map();
@@ -10510,14 +10502,27 @@ let _mixerWithdrawRecord = null;
 // (height-padded:tx_index-padded), so plain iteration reproduces the tree.
 async function scanPools() {
   if (!WORKER_BASE) return { skipped: 'worker disabled' };
-  let listResp;
-  try {
-    listResp = await fetch(`${WORKER_BASE}/pools?network=${NET.name}`, { cache: 'no-store' });
-  } catch (e) { return { error: 'fetch failed' }; }
-  if (!listResp.ok) return { error: `HTTP ${listResp.status}` };
-  let listJson;
-  try { listJson = await listResp.json(); } catch { return { error: 'bad JSON' }; }
-  const pools = Array.isArray(listJson.pools) ? listJson.pools : [];
+  // Walk /pools across all cursor pages so pools past the first 200 are
+  // still registered. Without this, lex-later pools become invisible to
+  // the dapp once the worker has more than one page worth of pools.
+  const pools = [];
+  let listCursor = '';
+  for (let page = 0; page < 50; page++) {
+    let listResp;
+    const url = `${WORKER_BASE}/pools?network=${NET.name}` +
+                (listCursor ? `&cursor=${encodeURIComponent(listCursor)}` : '');
+    try {
+      listResp = await fetch(url, { cache: 'no-store' });
+    } catch (e) { return { error: 'fetch failed' }; }
+    if (!listResp.ok) return { error: `HTTP ${listResp.status}` };
+    let listJson;
+    try { listJson = await listResp.json(); } catch { return { error: 'bad JSON' }; }
+    const pagePools = Array.isArray(listJson.pools) ? listJson.pools : [];
+    pools.push(...pagePools);
+    if (listJson.list_complete !== false) break;
+    if (!listJson.cursor) break;
+    listCursor = listJson.cursor;
+  }
   let registered = 0, leavesApplied = 0, nullifiersApplied = 0;
   for (const p of pools) {
     const aidHex = p.asset_id;
@@ -10532,7 +10537,11 @@ async function scanPools() {
       );
       registered++;
     }
-    // Fetch full state and apply (idempotent).
+    // Fetch full state and apply (idempotent). Walk leaves_cursor /
+    // nullifiers_cursor so pools past the first 400 leaves or nullifiers
+    // are fully indexed locally — without this, the dapp's merkle tree
+    // stops growing past page 1 and withdraws against later leaves
+    // produce roots no honest indexer accepts.
     let detailResp;
     try {
       detailResp = await fetch(
@@ -10543,6 +10552,40 @@ async function scanPools() {
     if (!detailResp.ok) continue;
     let detail;
     try { detail = await detailResp.json(); } catch { continue; }
+    // Follow leaves_cursor through additional pages. Cursor responses
+    // include only the paginated list; the worker re-annotates depth +
+    // status server-side using the live tip so the dapp's filter below
+    // sees consistent values across all pages.
+    let leavesCursor = detail.leaves_cursor || '';
+    for (let p2 = 0; p2 < 200 && leavesCursor; p2++) {
+      let moreResp;
+      try {
+        moreResp = await fetch(
+          `${WORKER_BASE}/pools/${aidHex}/${p.pool_denom}?network=${NET.name}&leaves_cursor=${encodeURIComponent(leavesCursor)}`,
+          { cache: 'no-store' },
+        );
+      } catch { break; }
+      if (!moreResp.ok) break;
+      let more;
+      try { more = await moreResp.json(); } catch { break; }
+      if (Array.isArray(more.leaves)) detail.leaves.push(...more.leaves);
+      leavesCursor = more.leaves_cursor || '';
+    }
+    let nullifiersCursor = detail.nullifiers_cursor || '';
+    for (let p2 = 0; p2 < 200 && nullifiersCursor; p2++) {
+      let moreResp;
+      try {
+        moreResp = await fetch(
+          `${WORKER_BASE}/pools/${aidHex}/${p.pool_denom}?network=${NET.name}&nullifiers_cursor=${encodeURIComponent(nullifiersCursor)}`,
+          { cache: 'no-store' },
+        );
+      } catch { break; }
+      if (!moreResp.ok) break;
+      let more;
+      try { more = await moreResp.json(); } catch { break; }
+      if (Array.isArray(more.nullifiers)) detail.nullifiers.push(...more.nullifiers);
+      nullifiersCursor = more.nullifiers_cursor || '';
+    }
     // SPEC §5.10 reorg-safety: only apply leaves the worker has annotated
     // as 'included' (depth ≥ MIXER_DEPOSIT_CONFIRMATION_DEPTH). Pending
     // leaves are NOT in the canonical merkle tree yet — including them
@@ -10788,10 +10831,6 @@ async function renderMixer() {
   }
 }
 
-function _mixerStubAlert() {
-  alert('Mixer broadcasts are not yet wired to the commit/reveal tx-builder. The verifier is live (snarkjs vendored at vendor/tacit-mixer.min.js); proof generation runs locally via dapp/circuits/build.sh + prove-sample.mjs for now. SPEC §5.11.');
-}
-
 function setupMixerHandlers() {
   const importBtn = document.getElementById('btn-mixer-import-sharelink');
   if (importBtn) {
@@ -10907,6 +10946,10 @@ function setupMixerHandlers() {
         _anonWarn +
         _hygiene
       )) return;
+      // The withdraw's recipient defaults to wallet.pub = burner, so the new
+      // UTXO is burner-controlled. Without a backup, losing localStorage loses
+      // the withdrawn UTXO. Same gate every other burner-signing op uses.
+      if (!ensureBurnerBackedUp('Withdraw from mixer pool (new UTXO is owned by the burner unless you set a custom recipient)')) return;
       wBtn.disabled = true;
       const origText = wBtn.textContent;
       const setText = (s) => { wBtn.textContent = s; };
@@ -10976,6 +11019,12 @@ function setupMixerHandlers() {
       const decs = meta ? meta.decimals : 0;
       const denomDisp = (Number(BigInt(denomStr)) / Math.pow(10, decs)).toString();
       if (!confirm(`Deposit ${denomDisp} ${ticker} into the pool?\n\nThis broadcasts a T_DEPOSIT (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees.\n\nThe dApp will generate a fresh (secret, nullifier) and save it to localStorage. BACK UP THIS RECORD — without it you cannot withdraw later. SPEC §5.10.`)) return;
+      // T_DEPOSIT consumes a tacit UTXO whose Pedersen blinding lives only in
+      // localStorage. If the user loses localStorage they lose the ability to
+      // open ANY of their pre-deposit holdings — the deposit doesn't move
+      // funds out of the burner's control, but the burner key + per-UTXO
+      // blindings are both required for the asset side. Same gate as CXFER.
+      if (!ensureBurnerBackedUp('Deposit confidential asset into mixer pool (consumes a tacit UTXO whose blinding is in localStorage)')) return;
       depBtn.disabled = true;
       const origText = depBtn.textContent;
       depBtn.textContent = 'Depositing…';
