@@ -19,6 +19,19 @@
 
 set -euo pipefail
 
+# Dependency preflight — fail fast if any required tool is missing,
+# BEFORE we do any work. Without this, the script could drain the
+# ceremony (pause contributions for 30 min) and then die mid-pre-flight
+# on a missing `npx` or `xxd`, leaving contributors locked out for the
+# remainder of the drain window.
+for _cmd in curl python3 npx xxd shasum awk du openssl mktemp; do
+  command -v "$_cmd" >/dev/null 2>&1 || {
+    echo "ERROR: missing required dependency: $_cmd"
+    echo "Install it before running finalize."
+    exit 1
+  }
+done
+
 # Track whether the chain is finalized so an abort during steps 7-8
 # (bundle prep) prints a clear "chain is fine, bundle failed" message
 # rather than just dying silently. Set to 1 after the /finalize POST
@@ -52,7 +65,14 @@ on_exit() {
     echo "  Only the audit bundle (ceremony-bundle/) is broken."
     echo
     echo "  Recover it with:"
-    echo "      BUNDLE_ONLY=1 $0"
+    # Preserve circuit hash if it was overridden via positional arg —
+    # the BUNDLE_ONLY rerun needs to point at the same ceremony.
+    if [ -n "${CIRCUIT_HASH:-}" ] && \
+       [ "$CIRCUIT_HASH" != "1373a3bc34153c291d057b44edaba11d5a4aa779d0998e0d0c0e400dfc89129d" ]; then
+      echo "      BUNDLE_ONLY=1 $0 \"\" \"$CIRCUIT_HASH\""
+    else
+      echo "      BUNDLE_ONLY=1 $0"
+    fi
     echo
     echo "  This re-runs ONLY step 8 against the now-finalized state,"
     echo "  redownloading r1cs/ptau/finalzkey and rebuilding the bundle."
@@ -477,6 +497,17 @@ echo "    ✓ ZKey Ok — beacon-applied zkey verified against chain r1cs+ptau"
 
 echo
 echo "==> [6/8] POSTing to /finalize"
+# Pre-POST size check. Worker rejects zkey > 32 MiB hard. For our
+# circuit (~5-7k constraints) the zkey is ~5.5 MB so this is purely
+# defensive against a corrupt-large download — but if the check fails
+# we want to know BEFORE wasting the multi-second upload.
+FINAL_BYTES=$(wc -c < build/withdraw_final.zkey | awk '{print $1}')
+if (( FINAL_BYTES > 32 * 1024 * 1024 )); then
+  echo "    ERROR: final zkey is $FINAL_BYTES bytes; worker hard-limit is 32 MiB."
+  echo "    The beacon-applied zkey is unexpectedly large — likely a snarkjs bug or"
+  echo "    corrupt input. Inspect build/withdraw_final.zkey before retrying."
+  exit 1
+fi
 # expected_head_cid pins the CAS check on the worker side: if a
 # contribute lands during the IPFS pin window, the worker rejects this
 # finalize POST instead of silently overwriting. The script then exits
@@ -664,7 +695,10 @@ while [ $pages -lt 200 ]; do
   # URL-encode the cursor (it's opaque base64-ish, may contain + / =).
   cursor=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$next_cursor")
 done
-# Merge all pages, sort by index for deterministic audit-friendly output.
+# Merge all pages, sort by index, walk the prev_cid chain to confirm
+# the chain is internally consistent (no orphans, no broken links from
+# beacon back to genesis). Audit-quality check that the bundle isn't
+# missing records from a partial pagination or a bug in the worker.
 ATTEST_COUNT=$(python3 <<'PY'
 import json, sys
 out = []
@@ -672,13 +706,69 @@ with open("build/attest_pages.jsonl") as f:
     for line in f:
         body = json.loads(line)
         out.extend(body.get("attestations", []))
+# Sort by index for deterministic output. Race orphans with the same
+# idx tie-break by cid for stability across runs.
 out.sort(key=lambda a: (a.get("index", 0), a.get("cid", "")))
+
+# Build a CID → record map so we can walk prev_cid links.
+by_cid = {}
+for r in out:
+    cid = r.get("cid")
+    if cid:
+        by_cid[cid] = r
+
+# Find the canonical chain: start from the beacon record (is_beacon=True)
+# and walk backwards via prev_cid until prev_cid is empty (genesis).
+beacon = next((r for r in out if r.get("is_beacon")), None)
+canonical_chain = []
+walk_warnings = []
+if beacon:
+    cur = beacon
+    seen = set()
+    while cur is not None:
+        cid = cur.get("cid")
+        if cid in seen:
+            walk_warnings.append(f"chain cycle detected at cid={cid}")
+            break
+        seen.add(cid)
+        canonical_chain.append(cur)
+        prev = cur.get("prev_cid", "")
+        if not prev:
+            break  # reached genesis
+        cur = by_cid.get(prev)
+        if cur is None:
+            walk_warnings.append(f"chain break: prev_cid={prev} not in bundle")
+            break
+    canonical_chain.reverse()  # genesis-first
+else:
+    walk_warnings.append("no beacon record found in attestations")
+
 with open("ceremony-bundle/attestations.json", "w") as g:
-    json.dump({"attestations": out, "count": len(out), "list_complete": True}, g, indent=2)
+    json.dump({
+        "attestations": out,
+        "count": len(out),
+        "canonical_chain_length": len(canonical_chain),
+        "canonical_chain_cids": [r.get("cid") for r in canonical_chain],
+        "chain_walk_warnings": walk_warnings,
+        "list_complete": True,
+    }, g, indent=2)
+sys.stderr.write(f"chain_walk: canonical_chain_length={len(canonical_chain)}, warnings={len(walk_warnings)}\n")
+for w in walk_warnings:
+    sys.stderr.write(f"  WARN: {w}\n")
 print(len(out))
 PY
 )
 echo "    bundled $ATTEST_COUNT attestation records (paginated across $pages page(s))"
+# In BUNDLE_ONLY mode, the worker's contribution_count INCLUDES the
+# beacon entry (it's the post-finalize state). Adjust for bundle README
+# consistency so the "Phase 2: N contributions" line means "real human
+# contributions" in both normal and recovery flows.
+if [ "$BUNDLE_ONLY" = "1" ] && [ "$COUNT" -gt 0 ]; then
+  COUNT_DISPLAY=$((COUNT - 1))
+  echo "    bundle README will show contributions=$COUNT_DISPLAY (excludes beacon entry)"
+else
+  COUNT_DISPLAY="$COUNT"
+fi
 
 # Compute audit-relevant hashes ONCE for use in the bundle README.
 PTAU_SHA256=$(shasum -a 256 ceremony-bundle/pot14_final.ptau | cut -d' ' -f1)
@@ -716,7 +806,7 @@ VK_SHA256=$(shasum -a 256 ceremony-bundle/verification_key.json | cut -d' ' -f1)
   echo
   echo "## Phase 2 (per-circuit MPC)"
   echo
-  echo "- $COUNT contributions across $ATTEST_COUNT total attestation records (see \`attestations.json\`)"
+  echo "- $COUNT_DISPLAY contributions across $ATTEST_COUNT total attestation records (see \`attestations.json\`)"
   echo "- Beacon-finalized: Bitcoin block $BLOCK_HEIGHT, hash \`$BTC_BLOCK_HASH\`, 10 iterations (= 1024 actual MiMC iterations)"
   echo "- Cross-checked at finalize time against blockstream.info (matched mempool.space)"
   echo
