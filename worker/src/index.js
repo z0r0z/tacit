@@ -1172,14 +1172,13 @@ async function handleCeremonyDrain(req, env, circuitHash, cors, ctx) {
   if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
   if (state.finalized) return jsonResponse({ error: 'ceremony already finalized; drain is moot' }, 409, cors);
 
+  // safeInt always returns a finite number (clamps invalid/missing
+  // input to default), so no isFinite guard needed. Default 1800s
+  // covers a typical pre-flight window with margin.
   let durationSecs = 1800;
   try {
     const fd = await req.formData();
-    const ds = String(fd.get('duration_seconds') || '');
-    if (ds) {
-      const parsed = safeInt(ds, 1800, { min: 60, max: 7200 });
-      if (Number.isFinite(parsed)) durationSecs = parsed;
-    }
+    durationSecs = safeInt(fd.get('duration_seconds'), 1800, { min: 60, max: 7200 });
   } catch { /* form-data parse failure → use default duration */ }
 
   const now = Math.floor(Date.now() / 1000);

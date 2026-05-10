@@ -61,17 +61,20 @@ on_exit() {
   local exit_code=$?
   if [ "$exit_code" = "0" ]; then return; fi
   if [ "${BUNDLE_ONLY:-0}" = "1" ] && [ "$CHAIN_FINALIZED" = "1" ]; then
-    # Already in recovery mode; another retry won't help. Print plain
-    # diagnostic guidance without the recovery hint.
     echo
     echo "================================================================"
     echo "  ⚠ Bundle regeneration failed in BUNDLE_ONLY mode"
     echo "================================================================"
     echo
-    echo "  The ceremony chain is fine; bundle generation failed AGAIN."
-    echo "  Check the logs in build/ for what step failed:"
+    echo "  The ceremony chain is fine; only the bundle failed to build."
+    echo
+    echo "  If the failure looks transient (IPFS gateway timeout, network"
+    echo "  blip, mempool/blockstream hiccup) — just re-run BUNDLE_ONLY=1."
+    echo "  If the chain itself is broken (gap warning, missing beacon),"
+    echo "  inspect the build logs and warnings before retrying:"
     echo "      ls -la build/"
-    echo "      cat build/*.log"
+    echo "      cat build/verify.log build/beacon.log 2>/dev/null"
+    echo "      jq '.chain_walk_warnings' ceremony-bundle/attestations.json 2>/dev/null"
     echo
     return
   fi
@@ -144,6 +147,29 @@ fi
 
 cd "$(dirname "$0")"
 
+# Single-instance mutex via mkdir (atomic on POSIX; portable across
+# macOS/Linux without needing flock). If a second ./finalize.sh tries
+# to start while one is already running, mkdir on an existing dir
+# fails and we abort. Without this guard, two parallel invocations
+# could both pass the not-finalized check, both run pre-flight on the
+# same head, and both POST /finalize — KV's get-modify-write isn't
+# atomic enough to guarantee one wins cleanly. Cleanup is registered
+# in the trap that already exists for the curl config + on_exit.
+mkdir -p build
+LOCKDIR="build/.finalize.lock"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  echo "ERROR: another finalize.sh appears to be running."
+  echo "  Lockdir exists: $LOCKDIR"
+  echo "  If you're certain no other instance is running, remove it:"
+  echo "    rmdir $LOCKDIR"
+  exit 1
+fi
+_cleanup_lockdir() { rmdir "$LOCKDIR" 2>/dev/null || true; }
+# The existing trap chain (set later for curl config + on_exit) will
+# include this; for now register a basic trap so a crash before the
+# real trap is set still releases the lock.
+trap '_cleanup_lockdir; on_exit' EXIT
+
 # Bundle-only recovery doesn't need a Bitcoin block (no beacon to apply)
 # or the admin token (no /finalize or /drain calls). Skip both so a
 # bundle regeneration works even if mempool.space is down or the
@@ -186,11 +212,12 @@ if [ "$BUNDLE_ONLY" != "1" ]; then
   if [ -z "${CEREMONY_INIT_TOKEN:-}" ]; then
     echo "no token provided"; exit 1
   fi
-  # Defensively strip a stray trailing newline some password managers
-  # include in their copy buffer. Token chars are URL-safe alnum + dashes;
-  # whitespace would always be a paste artifact, never a real token char.
-  CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\n'}"
-  CEREMONY_INIT_TOKEN="${CEREMONY_INIT_TOKEN%$'\r'}"
+  # Defensively strip leading + trailing whitespace (newline, CR, space,
+  # tab) some password managers / file copies include around the token.
+  # Token chars are URL-safe alnum + dashes; whitespace is always a paste
+  # artifact, never a real token char. xargs trims both ends in one shot
+  # — handles all whitespace variants, not just \n / \r.
+  CEREMONY_INIT_TOKEN="$(printf '%s' "$CEREMONY_INIT_TOKEN" | xargs)"
   # Scrub the var from the EXPORTED environment so child processes (npx,
   # python3, curl helpers etc.) don't inherit it. The shell variable is
   # still readable inside this script; only the process-env inheritance
@@ -210,7 +237,7 @@ if [ "$BUNDLE_ONLY" != "1" ]; then
   # the temp file (mode 0600) cleaned up rather than left behind with
   # whatever partial content snuck in. trap-update is idempotent.
   _cleanup_curl_config() { rm -f "$CURL_CONFIG"; }
-  trap '_cleanup_curl_config; on_exit' EXIT
+  trap '_cleanup_curl_config; _cleanup_lockdir; on_exit' EXIT
   printf 'header = "X-Tacit-Init-Token: %s"\n' "$CEREMONY_INIT_TOKEN" > "$CURL_CONFIG"
 fi
 
@@ -388,6 +415,11 @@ echo "==> [3/8] Fetching + cross-checking Bitcoin block $BLOCK_HEIGHT hash"
 # extra curl.
 H_MEMPOOL=$(curl -sf --max-time 30 "https://mempool.space/api/block-height/$BLOCK_HEIGHT" || echo "")
 H_BLOCKSTREAM=$(curl -sf --max-time 30 "https://blockstream.info/api/block-height/$BLOCK_HEIGHT" || echo "")
+# Defensive lowercase: both APIs return lowercase by convention today,
+# but a future cosmetic change to either would break the regex below.
+# Coerce both before validation + comparison.
+H_MEMPOOL=$(echo "$H_MEMPOOL" | tr 'A-F' 'a-f')
+H_BLOCKSTREAM=$(echo "$H_BLOCKSTREAM" | tr 'A-F' 'a-f')
 if ! [[ "$H_MEMPOOL" =~ ^[0-9a-f]{64}$ ]]; then
   echo "    ERROR: mempool.space returned invalid hash: '$H_MEMPOOL'"
   echo "    Has block $BLOCK_HEIGHT confirmed yet? Check https://mempool.space/block/$BLOCK_HEIGHT"
@@ -698,7 +730,7 @@ cp artifacts/verification_key_final.json ceremony-bundle/verification_key.json
 # Cloudflare on default User-Agent) and python for JSON merge + sort.
 # Output is a single JSON file with all attestations sorted by idx.
 echo "    Paginating attestations through cursor mode…"
-> build/attest_pages.jsonl
+: > build/attest_pages.jsonl  # truncate (`:` is the no-op builtin; portable form of empty redirect)
 cursor=""
 pages=0
 total=0
