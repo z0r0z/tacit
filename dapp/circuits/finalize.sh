@@ -253,12 +253,14 @@ if [ "$(head -c 4 build/withdraw_chain.r1cs | xxd -p)" != "72316373" ]; then
   exit 1
 fi
 echo "    Downloading ptau ($PTAU_CID)…"
-curl -sLf --max-time 180 "$GATEWAY/$PTAU_CID" -o build/pot14_chain.ptau
+# 18 MB file; bumped from 180s → 300s in case the IPFS gateway is
+# under load. 300s at 50KB/sec covers worst-case throttled paths.
+curl -sLf --max-time 300 "$GATEWAY/$PTAU_CID" -o build/pot14_chain.ptau
 if [ "$(head -c 4 build/pot14_chain.ptau | xxd -p)" != "70746175" ]; then
   echo "    ERROR: downloaded ptau does not start with 'ptau' magic bytes (gateway returned wrong content)."
   exit 1
 fi
-echo "    Running snarkjs zkey verify (this can take ~30-60s)…"
+echo "    Running snarkjs zkey verify against $COUNT contributions (this can take 2-6 min)…"
 # Rely on snarkjs's exit code (0 = ZKey Ok!, 1 = verification failed) per
 # its cli.js wrapper rather than parsing output text. Output text has
 # changed between minor versions ("ZKey OK!" → "ZKey Ok!"); the exit code
@@ -368,8 +370,13 @@ pages=0
 total=0
 while [ $pages -lt 200 ]; do
   pages=$((pages + 1))
+  # limit=800 matches the worker's max (lowered from 1000 to stay
+  # under Cloudflare's 1000-subrequest-per-invocation ceiling now
+  # that the worker parallelizes per-page KV.gets via Promise.all).
+  # 120s curl timeout is generous: parallel reads complete in 1-3s,
+  # so any timeout indicates worker pathology not normal latency.
   page=$(curl -sf --max-time 120 -A "tacit-finalize/1.0" \
-    "${WORKER}/ceremony/${CIRCUIT_HASH}/attestations?limit=1000&cursor=${cursor}")
+    "${WORKER}/ceremony/${CIRCUIT_HASH}/attestations?limit=800&cursor=${cursor}")
   if [ -z "$page" ]; then
     echo "    ERROR: empty response on page $pages"
     exit 1

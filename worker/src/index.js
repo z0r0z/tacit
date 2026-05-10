@@ -904,7 +904,13 @@ async function handleCeremonyAttestations(req, env, url, circuitHash, cors) {
   if (!/^[0-9a-f]{64}$/.test(circuitHash)) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
   }
-  const limit = Math.max(1, Math.min(safeInt(url.searchParams.get('limit'), 100, { min: 1, max: 1000 }), 1000));
+  // Cap at 800 (down from 1000) so the per-page KV.gets — now run via
+  // Promise.all below for ~100x speedup over sequential — stay under
+  // Cloudflare's 1000-subrequest-per-invocation ceiling. 800 KV.gets +
+  // 1 KV.list + headroom for cache + auth checks. Without parallelism
+  // the worker's per-page response time was 130-180s for 1000 records,
+  // exceeding the 120s curl timeout in the bundle pagination script.
+  const limit = Math.max(1, Math.min(safeInt(url.searchParams.get('limit'), 100, { min: 1, max: 800 }), 800));
   // Distinguish "cursor key absent" (recent mode) from "cursor key present
   // but empty" (cursor mode starting from beginning). Auditors paginating
   // the full chain hit `?cursor=` for the first call — without this
@@ -934,11 +940,14 @@ async function handleCeremonyAttestations(req, env, url, circuitHash, cors) {
     // Non-empty cursor string = continue from that opaque KV cursor.
     if (cursor) listOpts.cursor = cursor;
     const list = await env.REGISTRY_KV.list(listOpts);
-    const attestations = [];
-    for (const k of list.keys) {
-      const r = await env.REGISTRY_KV.get(k.name, 'json');
-      if (r) attestations.push(r);
-    }
+    // Parallel KV.gets — Promise.all over 800 reads completes in 1-3s
+    // vs the 130-180s a sequential await loop would take. KV is reliable
+    // enough that fail-fast (Promise.all) is fine; allSettled-and-filter
+    // would just hide transient errors that the caller should retry on.
+    const fetched = await Promise.all(
+      list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')),
+    );
+    const attestations = fetched.filter(r => r);
     attestations.reverse();
     const body = {
       attestations,
@@ -962,12 +971,14 @@ async function handleCeremonyAttestations(req, env, url, circuitHash, cors) {
   }
   // Slice the alphabetically-last `limit` keys = highest idx values =
   // most recent contributions. Then reverse for newest-first UI ordering.
+  // Parallel KV.gets via Promise.all for the same speedup as cursor mode.
+  // limit is already capped at 800 above; combined with the ~20 sequential
+  // KV.list calls in the walk above, we stay under the 1000-subrequest cap.
   const recentKeys = allKeys.slice(Math.max(0, allKeys.length - limit));
-  const attestations = [];
-  for (const k of recentKeys) {
-    const r = await env.REGISTRY_KV.get(k.name, 'json');
-    if (r) attestations.push(r);
-  }
+  const fetched = await Promise.all(
+    recentKeys.map(k => env.REGISTRY_KV.get(k.name, 'json')),
+  );
+  const attestations = fetched.filter(r => r);
   attestations.reverse();
   return jsonResponse({
     attestations,
