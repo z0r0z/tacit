@@ -204,12 +204,29 @@ const IPFS_GATEWAYS_FALLBACK = [
   'https://dweb.link/ipfs/',
 ];
 
-// Mainnet readiness threshold from MIXER.md "Open / honest caveats" — at
-// least 5 disjoint trust roots before the ceremony's vk_cid is acceptable
-// for mainnet pool deployment. Surfaced in the ceremony state display as a
-// "N / 5" progress indicator so contributors see concrete momentum and can
-// decide whether their entropy is still load-bearing.
-const MAINNET_READINESS_THRESHOLD = 5;
+// Phase 2 contribution milestones. Soundness only requires ≥1 honest
+// contributor mathematically; the milestones are about *credibility* —
+// "would a sceptical reviewer accept this ceremony?" Anchors:
+//   - 5    floor:    SPEC §5.11.3 minimum disjoint-trust-roots threshold
+//                    (below this the published `vk_cid` is not acceptable
+//                    for mainnet pool deployment per MIXER.md caveats).
+//   - 30   comfort:  cryptographer-comfort range for credible Phase 2
+//                    ceremonies (small but non-trivial trust-root spread).
+//   - 100  strong:   MIXER.md's "ideally 100s" target — production-ready.
+//   - 1100 gold:     Tornado Cash's reference ceremony scale; over-spec
+//                    for v1 but sets the upper bar.
+// Surfaced in the ceremony state display as colour-coded milestone pills
+// so contributors see progress + concrete momentum-crossings (each pill
+// flips from grey to green as its count is reached).
+const CEREMONY_MILESTONES = [
+  { count: 5,    label: 'floor',   desc: 'minimum sound — SPEC §5.11.3 disjoint-trust-roots threshold' },
+  { count: 30,   label: 'comfort', desc: 'cryptographer-comfort range for credible Phase 2 ceremonies' },
+  { count: 100,  label: 'strong',  desc: 'production-ready (MIXER.md "ideally 100s" target)' },
+  { count: 1100, label: 'gold',    desc: 'Tornado Cash reference scale' },
+];
+// Floor milestone — kept as a named alias for the soundness gate. Below
+// this count the ceremony's vk_cid SHOULD be treated as testnet-only.
+const MAINNET_READINESS_THRESHOLD = CEREMONY_MILESTONES[0].count;
 
 // ============== HASH HELPERS ==============
 const hash256 = b => sha256(sha256(b));
@@ -11846,23 +11863,42 @@ async function ceremonyRender() {
     const finalBadge = state.finalized
       ? ` · <strong style="color:#859900;">✓ FINALIZED (beacon ${escapeHtml((state.beacon_block_hash || '').slice(0, 16))}…)</strong>`
       : '';
-    // Mainnet readiness gauge — concrete progress toward the threshold from
-    // MIXER.md (≥5 disjoint trust roots before vk_cid is acceptable for
-    // mainnet pool deployment). Hidden once finalized (it's done at that
-    // point) or at/above threshold (replaced with a "ready" badge).
+    // Mainnet readiness gauge — milestone strip. Each pill turns green as
+    // its count is crossed, the next unreached pill is highlighted with a
+    // "x to go" hint, and the strip as a whole gives contributors a sense
+    // of momentum without overclaiming what soundness requires (still ≥1
+    // honest contributor mathematically — the milestones are about ceremony
+    // *credibility* to a sceptical reviewer). Hidden once finalized.
     let readinessLine = '';
     if (!state.finalized) {
       const n = state.contribution_count || 0;
-      const t = MAINNET_READINESS_THRESHOLD;
-      const pct = Math.min(100, Math.round(100 * n / t));
-      const barColor = n >= t ? '#859900' : '#1da1f2';
-      const label = n >= t
-        ? `<strong style="color:#859900;">✓ Pool readiness threshold met (${n} ≥ ${t})</strong> — pending final beacon.`
-        : `Pool readiness: <strong>${n} / ${t}</strong> contributions (${t} independent contributors recommended before the pool opens).`;
+      const nextMs = CEREMONY_MILESTONES.find(m => n < m.count) || null;
+      const lastReached = [...CEREMONY_MILESTONES].reverse().find(m => n >= m.count) || null;
+      const pills = CEREMONY_MILESTONES.map(m => {
+        const reached = n >= m.count;
+        const isNext = nextMs && m.count === nextMs.count;
+        let style, icon;
+        if (reached) {
+          style = 'background:#dff0d8;color:#1a4314;border:1px solid #859900;';
+          icon = '✓';
+        } else if (isNext) {
+          style = 'background:#e7f4ff;color:#0b4d7a;border:1px solid #1da1f2;';
+          icon = '●';
+        } else {
+          style = 'background:#f4f4f4;color:#888;border:1px solid #ddd;';
+          icon = '○';
+        }
+        const counter = isNext ? ` <span style="opacity:0.7;">(${m.count - n} to go)</span>` : '';
+        return `<span style="display:inline-block;padding:3px 8px;border-radius:12px;${style}margin-right:6px;margin-bottom:4px;font-size:11px;white-space:nowrap;transition:background 0.4s,color 0.4s,border-color 0.4s;" title="${escapeHtml(m.desc)}">${icon} ${m.count} ${m.label}${counter}</span>`;
+      }).join('');
+      const statusMsg = !lastReached
+        ? `<strong>${n}</strong> contribution${n === 1 ? '' : 's'} so far — below the minimum sound threshold of ${CEREMONY_MILESTONES[0].count}. Pool deposits remain locked.`
+        : (nextMs
+            ? `<strong>${n}</strong> contribution${n === 1 ? '' : 's'} so far — past the <strong>${lastReached.label}</strong> milestone; ${nextMs.count - n} more to reach <strong>${nextMs.label}</strong>.`
+            : `<strong>${n}</strong> contribution${n === 1 ? '' : 's'} so far — gold tier reached.`);
       readinessLine =
-        `<div style="margin-top:8px;font-size:12px;">${label}</div>` +
-        `<div style="margin-top:4px;height:6px;background:#e0e0e0;border-radius:3px;overflow:hidden;">` +
-        `<div style="height:100%;width:${pct}%;background:${barColor};transition:width 0.3s;"></div></div>`;
+        `<div style="margin-top:8px;font-size:12px;">${statusMsg}</div>` +
+        `<div style="margin-top:6px;line-height:1.8;">${pills}</div>`;
     }
     stateEl.innerHTML = `<strong>${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'}</strong> · last by <em>${escapeHtml(recent)}</em>${finalBadge}<br>Current transcript: <code style="font-size:11px;">${head}</code><br>Circuit: <code style="font-size:11px;">${state.r1cs_cid}</code> · Powers-of-tau: <code style="font-size:11px;">${state.ptau_cid}</code>${readinessLine}`;
   }
