@@ -825,32 +825,70 @@ async function handleCeremonyAttestations(req, env, url, circuitHash, cors) {
     return jsonResponse({ error: 'invalid circuit_hash' }, 400, cors);
   }
   const limit = Math.max(1, Math.min(safeInt(url.searchParams.get('limit'), 100, { min: 1, max: 1000 }), 1000));
-  // Cursor pagination — Cloudflare KV.list maxes at 1000 keys per call, so
-  // the cap above isn't a worker-side decision, it's the KV runtime ceiling.
-  // Callers walking the full attestation index (e.g., post-finalize audit)
-  // pass `?cursor=<token>` from the previous response's `cursor` field.
-  // Default-no-cursor preserves byte-identical behavior for existing callers.
   const cursor = url.searchParams.get('cursor') || undefined;
-  const listOpts = { prefix: ceremonyContribPrefix(circuitHash), limit };
-  if (cursor) listOpts.cursor = cursor;
-  const list = await env.REGISTRY_KV.list(listOpts);
+  // Two modes:
+  //
+  // 1. **Cursor mode** (`?cursor=<token>`): forward-pagination through the
+  //    full record set. Each call returns up to `limit` records starting
+  //    from the cursor, plus a next-page cursor. Used by audit tooling that
+  //    needs every record (e.g., post-finalize verification, bulk export).
+  //
+  // 2. **Recent mode** (no cursor, default): returns the *truly* latest
+  //    `limit` records by walking every page server-side and slicing the
+  //    last `limit` from the alphabetically-sorted list. This is what UI
+  //    "recent contributions" panels actually want. Without this server-
+  //    side walk, the dapp would see only the alphabetically-first `limit`
+  //    records (= lowest idx, oldest contributions), which freezes the
+  //    "recent" panel at the start of the chain once the ceremony grows
+  //    past the default limit. The walk is bounded at 50 pages × 1000 keys
+  //    = 50k records — well past any realistic ceremony scale.
+  if (cursor) {
+    const list = await env.REGISTRY_KV.list({
+      prefix: ceremonyContribPrefix(circuitHash),
+      limit,
+      cursor,
+    });
+    const attestations = [];
+    for (const k of list.keys) {
+      const r = await env.REGISTRY_KV.get(k.name, 'json');
+      if (r) attestations.push(r);
+    }
+    attestations.reverse();
+    const body = {
+      attestations,
+      count: attestations.length,
+      list_complete: list.list_complete !== false,
+    };
+    if (!body.list_complete && list.cursor) body.cursor = list.cursor;
+    return jsonResponse(body, 200, cors);
+  }
+  // Recent mode — walk every page, take the last `limit` keys.
+  let allKeys = [];
+  let walkCursor;
+  for (let p = 0; p < 50; p++) {
+    const opts = { prefix: ceremonyContribPrefix(circuitHash), limit: 1000 };
+    if (walkCursor) opts.cursor = walkCursor;
+    const list = await env.REGISTRY_KV.list(opts);
+    allKeys = allKeys.concat(list.keys);
+    if (list.list_complete !== false) break;
+    walkCursor = list.cursor;
+    if (!walkCursor) break;
+  }
+  // Slice the alphabetically-last `limit` keys = highest idx values =
+  // most recent contributions. Then reverse for newest-first UI ordering.
+  const recentKeys = allKeys.slice(Math.max(0, allKeys.length - limit));
   const attestations = [];
-  for (const k of list.keys) {
+  for (const k of recentKeys) {
     const r = await env.REGISTRY_KV.get(k.name, 'json');
     if (r) attestations.push(r);
   }
-  // KV.list returns alphabetical by key — our padded-index prefix means
-  // ascending by index (oldest first). Reverse for "most recent first" UX.
   attestations.reverse();
-  const body = {
+  return jsonResponse({
     attestations,
     count: attestations.length,
-    list_complete: list.list_complete !== false,
-  };
-  // Surface the next-page cursor only when there's more to fetch. Callers
-  // can stop when `list_complete: true` OR when `cursor` is absent.
-  if (!body.list_complete && list.cursor) body.cursor = list.cursor;
-  return jsonResponse(body, 200, cors);
+    total: allKeys.length,
+    list_complete: true,
+  }, 200, cors);
 }
 
 // GET /ceremony/:circuit_hash/stats — lightweight progress numbers without
@@ -876,25 +914,37 @@ async function handleCeremonyStats(req, env, circuitHash, cors) {
   }
   const state = await env.REGISTRY_KV.get(ceremonyKey(circuitHash), 'json');
   if (!state) return jsonResponse({ error: 'ceremony not found' }, 404, cors);
+  // Walk all contribution keys via KV.list ONLY — no per-record KV.get.
+  // KV.get on every record would scale at ~5–30ms × N and blow past the
+  // Cloudflare worker CPU budget once the ceremony grows past ~1000
+  // records. The KV key itself encodes everything we need for counts:
+  //
+  //   ceremony:<hash>:contrib:<padded-idx>:<cid>
+  //
+  // We parse `padded-idx` directly out of the key after stripping the
+  // prefix, so the loop is O(records) in list calls (≈ records/1000) and
+  // does zero per-record reads. This keeps the stats endpoint fast even
+  // as the ceremony grows past 10k+ raw records.
+  //
+  // Note: distinct contributor name count was dropped from this endpoint
+  // for the same scale reason — that field requires KV.get per record.
+  // Anyone who wants distinct-name counting can paginate through
+  // /attestations?cursor=… and aggregate client-side, or we can ship a
+  // separate (cached) /contributor-names endpoint later if needed.
+  const prefix = ceremonyContribPrefix(circuitHash);
   const uniqueIdx = new Set();
-  const distinctNames = new Set();
   let totalRecords = 0;
   let cursor;
-  // Hard cap on pagination to bound the worst case — at 1000 keys per page
-  // and a safety bound of 50 pages, we cover up to 50,000 contribution
-  // records. Past that threshold the ceremony has already comfortably
-  // exceeded any sane gold-tier target and partial counts are still
-  // directionally correct.
   for (let page = 0; page < 50; page++) {
-    const listOpts = { prefix: ceremonyContribPrefix(circuitHash), limit: 1000 };
+    const listOpts = { prefix, limit: 1000 };
     if (cursor) listOpts.cursor = cursor;
     const list = await env.REGISTRY_KV.list(listOpts);
     for (const k of list.keys) {
-      const r = await env.REGISTRY_KV.get(k.name, 'json');
-      if (!r) continue;
       totalRecords++;
-      if (r.index !== undefined && r.index !== null) uniqueIdx.add(r.index);
-      if (r.contributor_name) distinctNames.add(r.contributor_name);
+      const tail = k.name.slice(prefix.length);
+      const idxStr = tail.split(':')[0];
+      const idxNum = parseInt(idxStr, 10);
+      if (Number.isFinite(idxNum)) uniqueIdx.add(idxNum);
     }
     if (list.list_complete !== false) break;
     cursor = list.cursor;
@@ -906,7 +956,6 @@ async function handleCeremonyStats(req, env, circuitHash, cors) {
     finalized: !!state.finalized,
     total_attestation_records: totalRecords,
     unique_chain_advances: uniqueIdx.size,
-    distinct_contributor_names: distinctNames.size,
     last_contributor: state.last_contributor || null,
     last_contributed_at: state.last_contributed_at || null,
   }, 200, cors);
