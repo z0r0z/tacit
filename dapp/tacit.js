@@ -11846,11 +11846,62 @@ async function ceremonyRender() {
     if (contribBtn) contribBtn.disabled = true;
     return;
   }
+  // Capture pre-update finalize state so we can detect the !finalized →
+  // finalized transition for celebration UX. Compared *before* we
+  // overwrite _ceremonyState below.
+  const _prevFinalized = !!(_ceremonyState && _ceremonyState.finalized);
   _ceremonyState = state;
   // Place at top until finalized (SPEC §3.7 — ceremony is gating for safe
   // pool deposits). state===null means no ceremony exists yet, which is
   // also "not done" and belongs at top.
   _placeCeremonySection(!!(state && state.finalized));
+  // Celebration UX (#1: one-time toast on transition; #2: persistent
+  // banner for the 24h window post-finalize). Both gate on finalized=true
+  // and use localStorage flags so refreshing or polling doesn't re-fire
+  // the toast or un-dismiss the banner. The 24h window keeps the banner
+  // from outliving its celebratory moment — the FINALIZED badge in the
+  // ceremony state line is sufficient signaling beyond that.
+  if (state && state.finalized) {
+    const beaconShort = (state.beacon_block_hash || '').slice(0, 12);
+    const celebKey = `tacit:ceremony:${_ceremonyActiveHash}:celebrated`;
+    // Fire the celebration toast once per browser per ceremony — either on
+    // the live transition we just observed, or for users arriving after
+    // finalize who haven't seen the toast yet.
+    if ((!_prevFinalized || !localStorage.getItem(celebKey))) {
+      try {
+        toast(`🎉 Ceremony finalized — mixer is now live. Beacon ${beaconShort}…`, 'success', 12000);
+        localStorage.setItem(celebKey, '1');
+      } catch {}
+    }
+    // Persistent banner — render stats + reveal if within 24h of finalize
+    // and not yet dismissed by this browser.
+    const banner = document.getElementById('mixer-finalized-banner');
+    const dismissKey = `tacit:ceremony:${_ceremonyActiveHash}:banner-dismissed`;
+    const ageMs = state.finalized_at ? Date.now() - (state.finalized_at * 1000) : Infinity;
+    const within24h = ageMs < 24 * 60 * 60 * 1000;
+    if (banner) {
+      if (within24h && !localStorage.getItem(dismissKey)) {
+        const statsEl = document.getElementById('mixer-finalized-banner-stats');
+        if (statsEl) {
+          const finalizedAt = state.finalized_at
+            ? new Date(state.finalized_at * 1000).toLocaleString()
+            : '(unknown time)';
+          const beaconFull = (state.beacon_block_hash || '').slice(0, 16);
+          statsEl.innerHTML =
+            `<strong>${state.contribution_count}</strong> chain advances` +
+            ` · finalized ${escapeHtml(finalizedAt)}` +
+            ` · beacon <code style="font-size:11px;">${escapeHtml(beaconFull)}…</code>`;
+        }
+        banner.style.display = 'block';
+      } else {
+        banner.style.display = 'none';
+      }
+    }
+  } else {
+    // Pre-finalize: keep banner hidden defensively.
+    const banner = document.getElementById('mixer-finalized-banner');
+    if (banner) banner.style.display = 'none';
+  }
   if (!state) {
     if (stateEl) stateEl.textContent = 'No ceremony at this hash yet. Coordinator initializes via the form below.';
     if (contribBtn) contribBtn.disabled = true;
@@ -12512,6 +12563,24 @@ function setupCeremonyHandlers() {
   // Default placement: at top. ceremonyRender() moves it back down once
   // it confirms the ceremony is finalized.
   _placeCeremonySection(false);
+
+  // Wire the post-finalize banner's dismiss button. Each browser sticks a
+  // localStorage flag so refreshing or re-loading doesn't bring the banner
+  // back. The 24h finalize-celebration window auto-hides past that
+  // regardless of dismiss state, so the flag is local-and-bounded.
+  const finBannerDismiss = document.getElementById('mixer-finalized-banner-dismiss');
+  if (finBannerDismiss) {
+    finBannerDismiss.onclick = () => {
+      try {
+        localStorage.setItem(
+          `tacit:ceremony:${_ceremonyActiveHash}:banner-dismissed`,
+          '1',
+        );
+      } catch {}
+      const banner = document.getElementById('mixer-finalized-banner');
+      if (banner) banner.style.display = 'none';
+    };
+  }
 
   // Pin the visible hash to the canonical default. The input is rendered as
   // readonly in the HTML; this sets its value at boot so visitors see what

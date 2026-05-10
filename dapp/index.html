@@ -2732,6 +2732,24 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
 <!-- ABOUT TAB -->
 <div class="tab-panel" id="tab-mixer">
+  <!--
+    Persistent post-finalize celebration banner. Hidden by default; revealed
+    by ceremonyRender() when state.finalized=true and within the
+    finalize-celebration window (24h post-finalize). Each browser gets one
+    "dismiss" via the X button which sets a localStorage flag so refreshing
+    doesn't bring the banner back. Expires automatically after 24h regardless
+    of dismiss state — past that the FINALIZED badge in the ceremony state
+    line is sufficient signaling.
+  -->
+  <div id="mixer-finalized-banner" style="display:none;border:1px solid #859900;background:#f0fdf4;color:#1a4314;padding:14px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+      <div style="flex:1;">
+        <strong style="font-size:15px;">🎉 Ceremony finalized — mixer is live</strong>
+        <div id="mixer-finalized-banner-stats" style="margin-top:6px;font-size:12px;color:#586e75;"></div>
+      </div>
+      <button id="mixer-finalized-banner-dismiss" type="button" style="background:none;border:1px solid #859900;color:#1a4314;cursor:pointer;font-size:11px;padding:4px 10px;border-radius:4px;flex-shrink:0;" title="Hide this banner">Dismiss</button>
+    </div>
+  </div>
   <div class="section">
     <div class="section-header">
       <span>mixer · shielded pools (T_DEPOSIT / T_WITHDRAW)</span>
