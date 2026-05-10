@@ -70,25 +70,18 @@ CEREMONY_INIT_TOKEN` when you initialized the ceremony. Store it
 somewhere accessible (password manager). The script will prompt for it
 if not in env, or you can export it inline.
 
-### 5. Pick a Bitcoin block to use as the beacon
+### 5. Beacon block selection — handled automatically
 
-Open https://mempool.space/ and pick a block that is:
+If you run the script with no block-height argument (recommended), it
+auto-picks `(current tip − 12)` from mempool.space, well past the
+6-confirmation reorg-safety threshold. **You don't need to pick
+anything yourself.**
 
-- **Recent**: within the last ~1–6 hours
-- **Deeply confirmed**: tip height minus your chosen block height ≥6
-  (so it can't reorg out)
-- **Not under your control**: any block from a public miner is fine —
-  you cannot grind a block hash since you don't control mining
-
-Note the **block height** (a number like `847123`). You don't need the
-hash itself — the script fetches it from mempool.space.
-
-**Best practice (optional but ideal):** announce the block height
-publicly *before* running finalize. *"Will use Bitcoin block 847123
-as the beacon"* tweeted before the finalize POST closes the
-"could the coordinator have picked a favorable block" question
-preemptively. Not required for soundness; required for the
-strongest public-trust framing.
+If you ever want to override (e.g., to pre-announce a specific block
+height publicly before finalize), pass it as the first argument:
+`./finalize.sh 847123`. For your scale (1000+ contributors)
+pre-announcement is overkill — the coordinator's beacon choice is one
+of thousands of independent inputs, not a load-bearing decision.
 
 ---
 
@@ -122,14 +115,22 @@ Either of those keeps the token out of shell history.
 
 ### Step 2 — Run the finalize script
 
-Replace `847123` with the block height you picked:
-
 ```bash
-./finalize.sh 847123
+./finalize.sh
 ```
 
-That's it. The script does everything else. **Do not run any other
-shell commands while it's working.**
+**Run with no arguments.** The script will:
+
+- Auto-fetch Bitcoin tip height from mempool.space and pick `(tip − 12)`
+  as the beacon block (≥12 confirmations, well past reorg risk).
+- Use the canonical ceremony hash baked into the script default.
+- Prompt you for `CEREMONY_INIT_TOKEN` via a silent read (no echo, no
+  shell history pollution).
+
+**Do not run any other shell commands while it's working.** Don't
+switch terminal windows, don't paste anything besides the token when
+prompted, don't suspend the script with Ctrl+Z. Let it run to
+completion (~2-3 minutes).
 
 ### Step 3 — Watch the output
 

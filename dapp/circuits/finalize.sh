@@ -25,11 +25,24 @@ CIRCUIT_HASH="${2:-1373a3bc34153c291d057b44edaba11d5a4aa779d0998e0d0c0e400dfc891
 WORKER="${WORKER:-https://tacit-pin.rosscampbell9.workers.dev}"
 GATEWAY="${GATEWAY:-https://content.wrappr.wtf/ipfs}"
 
+# Auto-pick a beacon block if none was provided. Defaults to (current
+# tip - 12) so the chosen block is comfortably past the 6-confirmation
+# reorg-safety threshold (Bitcoin reorgs >6 deep are essentially
+# unprecedented; 12 leaves a wide margin). Pre-announcing a specific
+# block is a transparency-max practice for very small ceremonies; at
+# scale (1000+ contributors) the coordinator's beacon choice is one of
+# thousands of independent inputs and pre-announcement adds negligible
+# auditability beyond what's verifiable from chain after the fact.
 if [ -z "$BLOCK_HEIGHT" ]; then
-  echo "usage: $0 <bitcoin_block_height> [circuit_hash]"
-  echo "  block height: a confirmed Bitcoin block to use as the beacon source"
-  echo "                (you announced this height before contributors finished)"
-  exit 1
+  echo "==> No block height provided — auto-picking (tip - 12) for ≥12 confirmations"
+  TIP=$(curl -sf "https://mempool.space/api/blocks/tip/height" || echo "")
+  if ! [[ "$TIP" =~ ^[0-9]+$ ]]; then
+    echo "    ERROR: failed to fetch tip height from mempool.space"
+    echo "    Pass an explicit block height: $0 <height>"
+    exit 1
+  fi
+  BLOCK_HEIGHT=$((TIP - 12))
+  echo "    tip=$TIP  →  beacon block height: $BLOCK_HEIGHT"
 fi
 if ! [[ "$BLOCK_HEIGHT" =~ ^[0-9]+$ ]]; then
   echo "block height must be a positive integer"; exit 1
