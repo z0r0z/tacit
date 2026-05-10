@@ -24,13 +24,17 @@ set -euo pipefail
 # ceremony (pause contributions for 30 min) and then die mid-pre-flight
 # on a missing `npx` or `xxd`, leaving contributors locked out for the
 # remainder of the drain window.
-for _cmd in curl python3 npx xxd shasum awk du openssl mktemp; do
+for _cmd in curl python3 npx xxd shasum awk du mktemp; do
   command -v "$_cmd" >/dev/null 2>&1 || {
     echo "ERROR: missing required dependency: $_cmd"
     echo "Install it before running finalize."
     exit 1
   }
 done
+# openssl is OPTIONAL — used only for the bonus blake2b hash in the
+# bundle README (sha256 is mandatory and uses shasum). Missing openssl
+# falls through silently via the `|| true` on the blake2b call later.
+# Don't gate finalize on it.
 
 # Track whether the chain is finalized so an abort during steps 7-8
 # (bundle prep) prints a clear "chain is fine, bundle failed" message
@@ -769,6 +773,44 @@ if [ "$BUNDLE_ONLY" = "1" ] && [ "$COUNT" -gt 0 ]; then
 else
   COUNT_DISPLAY="$COUNT"
 fi
+
+# Bundle integrity gate — make chain-walk warnings FATAL. The python
+# heredoc above wrote chain_walk_warnings into attestations.json if the
+# canonical prev_cid chain has issues (cycle, broken link, missing
+# beacon). For an audit bundle, we'd rather die now than ship a bundle
+# auditors can't verify back to genesis.
+CHAIN_WARN_COUNT=$(python3 -c "
+import json
+j = json.load(open('ceremony-bundle/attestations.json'))
+print(len(j.get('chain_walk_warnings', [])))
+")
+if [ "$CHAIN_WARN_COUNT" != "0" ]; then
+  echo "    ✗ canonical attestation chain has $CHAIN_WARN_COUNT warning(s):"
+  python3 -c "
+import json
+for w in json.load(open('ceremony-bundle/attestations.json')).get('chain_walk_warnings', []):
+    print('      WARN:', w)
+"
+  echo "    Refusing to ship an audit bundle with broken/missing prev_cid links."
+  echo "    The chain itself is sound (verified pre-POST); only the bundle is incomplete."
+  echo "    Investigate the warning, then re-run with BUNDLE_ONLY=1 to regenerate."
+  exit 1
+fi
+# Canonical chain length sanity: genesis (idx 0) + N human contributes
+# (idx 1..N) + beacon (idx N+1) = N + 2 records. COUNT_DISPLAY is N.
+EXPECTED_CHAIN_LEN=$((COUNT_DISPLAY + 2))
+ACTUAL_CHAIN_LEN=$(python3 -c "
+import json
+print(json.load(open('ceremony-bundle/attestations.json')).get('canonical_chain_length', 0))
+")
+if [ "$ACTUAL_CHAIN_LEN" != "$EXPECTED_CHAIN_LEN" ]; then
+  echo "    ✗ canonical chain length mismatch:"
+  echo "      expected: $EXPECTED_CHAIN_LEN  (genesis + $COUNT_DISPLAY contribs + beacon)"
+  echo "      actual:   $ACTUAL_CHAIN_LEN"
+  echo "    Bundle is incomplete. Re-run with BUNDLE_ONLY=1 to regenerate."
+  exit 1
+fi
+echo "    ✓ canonical chain walks cleanly: $ACTUAL_CHAIN_LEN records (genesis → beacon)"
 
 # Compute audit-relevant hashes ONCE for use in the bundle README.
 PTAU_SHA256=$(shasum -a 256 ceremony-bundle/pot14_final.ptau | cut -d' ' -f1)
