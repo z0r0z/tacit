@@ -480,8 +480,14 @@ if ! ( CEREMONY_INIT_TOKEN= $SNARKJS zkey beacon \
     build/withdraw_pre_beacon.zkey \
     build/withdraw_final.zkey \
     "$BTC_BLOCK_HASH" 10 \
-    -n "bitcoin block $BLOCK_HEIGHT beacon" \
     > build/beacon.log 2>&1 ); then
+  # NOTE: do NOT pass -n / --name here. snarkjs 0.7.6's `zkey beacon`
+  # CLI accepts only 4 positional args (old, new, hash, numIterExp);
+  # any extra arg trips "Invalid number of parameters". The beacon hash
+  # itself (a Bitcoin block hash, anchored at finalize time) is the
+  # auditable source; no human-readable name is needed in the zkey
+  # metadata. The beacon contribution record on-chain DOES carry
+  # beacon_block_height + beacon_block_hash for human readability.
   echo "    ✗ snarkjs zkey beacon exited nonzero. See build/beacon.log."
   exit 1
 fi
