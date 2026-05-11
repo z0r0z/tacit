@@ -3745,9 +3745,12 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
   // would add up to 2.5s of mempool.space round-trip on a hot dapp call.
   // Defer the fetch unless we actually need to walk canonical keys.
   const needsLiveTip = !opts.creditedOnly || opts.includeTxids !== false;
-  const tip = needsLiveTip
-    ? await fetchTipHeight(env, network)
-    : null;
+  // Kick off tip + snapshot in parallel. For fat-path callers that need
+  // both, this saves the smaller-of-the-two await (typically ~50-200ms,
+  // up to ~2.5s if mempool.space is stalling). For the slim path we don't
+  // start the tip fetch at all.
+  const tipP = needsLiveTip ? fetchTipHeight(env, network) : Promise.resolve(null);
+  const snapP = readPetchProgress(env, network, assetIdHex);
   // Slim path: the dapp's validateOutpoint hot path only needs the set of
   // credited mint txids. Every fact required for the credit decision is
   // already encoded in the canonical key (height, tx_index, txid), so we
@@ -3763,7 +3766,7 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
     // mints by membership, and consumers past SAFETY_CAP fall back to the
     // position-comparison path (compare their (h, ti, txid) against
     // last_credited_(h, ti, txid)).
-    const snap = await readPetchProgress(env, network, assetIdHex);
+    const [tip, snap] = await Promise.all([tipP, snapP]);
     const orphanPrefixStr = pmintPrefix(network, assetIdHex) + '0000000000:';
     const capAmount = petch.cap_amount != null ? BigInt(petch.cap_amount) : null;
     const mintLimit = petch.mint_limit != null ? BigInt(petch.mint_limit) : null;
@@ -3881,8 +3884,11 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
   // per-event detail array (`pmints`) still comes from loadCanonicalPmints
   // and is capped at 5000 events; consumers needing exhaustive per-event
   // access should use ?credited=1 for txid-only or paginate via cursor (future).
+  // tip + snapshot were kicked off as parallel promises near the top of the
+  // function; the credited-only branch above didn't consume them (it
+  // returned early), so we await them here.
+  const [tip, snap] = await Promise.all([tipP, snapP]);
   const r = await loadCanonicalPmints(env, network, assetIdHex, tip, petch.cap_amount, petch.mint_limit);
-  const snap = await readPetchProgress(env, network, assetIdHex);
   return jsonResponse({
     asset_id: assetIdHex,
     network,
@@ -6901,8 +6907,13 @@ export default {
       // 30s worker ceiling and inconsistent with /petch-assets's 50000-key
       // counts. The snapshot is the single source of truth maintained by
       // the cron + hint write paths.
-      const tip = await fetchTipHeight(env, network);
-      let snap = await readPetchProgress(env, network, aid);
+      // Parallel: tip fetch (mempool.space, 50ms–2.5s) and snapshot KV.get
+      // (~10-50ms) are independent. Sequential awaits added the smaller of
+      // the two to every cold response unnecessarily.
+      let [tip, snap] = await Promise.all([
+        fetchTipHeight(env, network),
+        readPetchProgress(env, network, aid),
+      ]);
       if (!snap) {
         snap = await refreshAndStorePetchProgress(env, network, aid, tip, v).catch(() => null);
       }
