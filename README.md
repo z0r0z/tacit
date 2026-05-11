@@ -1159,6 +1159,8 @@ and the configured CORS allowlist. It exposes:
 | --------------------------------- | ------ | ------------------------------------------------------------------ |
 | `/pin`                            | POST   | Image upload to IPFS via Pinata                                    |
 | `/pin-json`                       | POST   | Metadata-blob pin (used when etching with description / URL)        |
+| `/pin-mixer-vk`                   | POST   | Pin a snarkjs Groth16 verifying-key JSON (mixer ceremony output)    |
+| `/pin-airdrop-snapshot`           | POST   | Pin a tacit-airdrop-v1 snapshot JSON (≤16 MB, ≤100k rows)           |
 | `/drip`                           | POST   | Send 20K signet sats to `{address}` — 1/IP/day, 1/addr/day         |
 | `/balance`                        | GET    | Faucet wallet's signet balance + funding address                   |
 | `/assets`                         | GET    | List of all etched assets + per-asset mint history (cron-populated) |

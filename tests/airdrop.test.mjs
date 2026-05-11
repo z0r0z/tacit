@@ -742,5 +742,253 @@ test('claim sig binds to tacit pubkey: cannot redirect to a different tacit iden
   return !verifyAirdropClaimSig(msgB, sigA, addr);
 });
 
+console.log('\nDiscovery snapshot integrity (recompute root from rows):');
+
+// Mirrors the dapp's `_claimReconstructDiscoveredRows` so a hostile gateway
+// can't slip tampered rows into the discovery list. The dapp validates this
+// for every discovered snapshot before displaying eligibility; without it,
+// the recipient sees a forged amount on the discovery card.
+function _discoveryValidateAndRecompute(blob, expectedRootHex) {
+  if (!blob || !Array.isArray(blob.rows)) throw new Error('snapshot has no rows[]');
+  const parsed = blob.rows.map((r, i) => {
+    const ethAddrHex = String(r.eth_address || r.eth_addr || '').toLowerCase().replace(/^0x/, '');
+    if (!/^[0-9a-f]{40}$/.test(ethAddrHex)) throw new Error(`row ${i} has invalid eth_address`);
+    const amount = BigInt(r.amount);
+    if (amount < 0n || amount >= (1n << 64n)) throw new Error(`row ${i} amount out of u64 range`);
+    const index = Number.isInteger(r.index) ? r.index : i;
+    return { ethAddrHex, ethAddrBytes: hexToBytes(ethAddrHex), amount, index };
+  });
+  const sorted = [...parsed].sort((a, b) => a.index - b.index);
+  for (let i = 0; i < sorted.length; i++) {
+    if (sorted[i].index !== i) throw new Error(`indexes not contiguous`);
+  }
+  const seenAddrs = new Set();
+  for (const r of sorted) {
+    if (seenAddrs.has(r.ethAddrHex)) {
+      throw new Error(`duplicate eth_address: 0x${r.ethAddrHex}`);
+    }
+    seenAddrs.add(r.ethAddrHex);
+  }
+  const leaves = sorted.map(r => airdropLeafHash(r.ethAddrBytes, r.amount, r.index));
+  const { root } = buildAirdropMerkle(leaves);
+  if (bytesToHex(root) !== expectedRootHex) {
+    throw new Error('snapshot rows do NOT hash to announcement root — gateway-tampered or corrupt');
+  }
+  return parsed;
+}
+
+test('discovery: untampered snapshot validates clean', () => {
+  const rows = [
+    { eth_address: '0x' + '1'.repeat(40), amount: '100', index: 0 },
+    { eth_address: '0x' + '2'.repeat(40), amount: '200', index: 1 },
+    { eth_address: '0x' + '3'.repeat(40), amount: '300', index: 2 },
+  ];
+  const parsed = rows.map(r => ({
+    ethAddrBytes: hexToBytes(r.eth_address.slice(2)),
+    amount: BigInt(r.amount),
+    index: r.index,
+  }));
+  const leaves = parsed.map(p => airdropLeafHash(p.ethAddrBytes, p.amount, p.index));
+  const { root } = buildAirdropMerkle(leaves);
+  const blob = { schema: 'tacit-airdrop-v1', merkle_root: bytesToHex(root), rows };
+  try { _discoveryValidateAndRecompute(blob, bytesToHex(root)); return true; }
+  catch { return false; }
+});
+
+test('discovery: tampered amount with intact merkle_root field is REJECTED', () => {
+  // A hostile gateway returns a blob whose `merkle_root` field equals the
+  // legitimate announcement root, but whose `rows[0].amount` is inflated.
+  // The recipient's discovery card would otherwise display the inflated
+  // amount, and an unwary user could waste an EIP-191 signature on a tuple
+  // the issuer will reject at fulfilment time.
+  const realRows = [
+    { eth_address: '0x' + '1'.repeat(40), amount: '100', index: 0 },
+    { eth_address: '0x' + '2'.repeat(40), amount: '200', index: 1 },
+  ];
+  const parsed = realRows.map(r => ({
+    ethAddrBytes: hexToBytes(r.eth_address.slice(2)),
+    amount: BigInt(r.amount),
+    index: r.index,
+  }));
+  const leaves = parsed.map(p => airdropLeafHash(p.ethAddrBytes, p.amount, p.index));
+  const { root } = buildAirdropMerkle(leaves);
+  // Tamper: keep the announcement root in the blob but inflate row 0.
+  const tamperedRows = [
+    { eth_address: '0x' + '1'.repeat(40), amount: '999999', index: 0 },
+    { eth_address: '0x' + '2'.repeat(40), amount: '200', index: 1 },
+  ];
+  const tamperedBlob = { schema: 'tacit-airdrop-v1', merkle_root: bytesToHex(root), rows: tamperedRows };
+  try { _discoveryValidateAndRecompute(tamperedBlob, bytesToHex(root)); return false; }
+  catch (e) { return /do NOT hash|tampered/i.test(e.message); }
+});
+
+test('discovery: extra row appended is REJECTED', () => {
+  const realRows = [
+    { eth_address: '0x' + 'a'.repeat(40), amount: '50', index: 0 },
+    { eth_address: '0x' + 'b'.repeat(40), amount: '60', index: 1 },
+  ];
+  const parsed = realRows.map(r => ({
+    ethAddrBytes: hexToBytes(r.eth_address.slice(2)),
+    amount: BigInt(r.amount),
+    index: r.index,
+  }));
+  const leaves = parsed.map(p => airdropLeafHash(p.ethAddrBytes, p.amount, p.index));
+  const { root } = buildAirdropMerkle(leaves);
+  const attackerRows = [
+    ...realRows,
+    { eth_address: '0x' + 'c'.repeat(40), amount: '999', index: 2 },
+  ];
+  const tamperedBlob = { schema: 'tacit-airdrop-v1', merkle_root: bytesToHex(root), rows: attackerRows };
+  try { _discoveryValidateAndRecompute(tamperedBlob, bytesToHex(root)); return false; }
+  catch { return true; }
+});
+
+test('discovery: out-of-order indexes are REJECTED', () => {
+  // Even if row hashes would coincidentally produce the right root, the
+  // index field on each row must be contiguous 0..N-1 — that's what
+  // `airdropLeafHash` commits to. A hostile blob that reorders rows or
+  // skips an index lands here.
+  const rows = [
+    { eth_address: '0x' + 'a'.repeat(40), amount: '1', index: 0 },
+    { eth_address: '0x' + 'b'.repeat(40), amount: '2', index: 2 },  // skip 1
+  ];
+  const blob = { schema: 'tacit-airdrop-v1', merkle_root: '00'.repeat(32), rows };
+  try { _discoveryValidateAndRecompute(blob, '00'.repeat(32)); return false; }
+  catch (e) { return /contiguous|not contiguous/i.test(e.message); }
+});
+
+test('discovery: u64-overflowing amount is REJECTED', () => {
+  const blob = {
+    schema: 'tacit-airdrop-v1',
+    merkle_root: '00'.repeat(32),
+    rows: [{ eth_address: '0x' + 'a'.repeat(40), amount: (1n << 64n).toString(), index: 0 }],
+  };
+  try { _discoveryValidateAndRecompute(blob, '00'.repeat(32)); return false; }
+  catch (e) { return /u64/.test(e.message); }
+});
+
+test('discovery: duplicate eth_address is REJECTED (consistency with manual-load path)', () => {
+  // The issuer-side builder dedupes addresses, so a snapshot with two leaves
+  // at the same address is anomalous. The manual-load path rejects it; the
+  // discovery path must too, otherwise the eligibility .find() picks only
+  // the first occurrence and the user clicks Claim → gets a confusing
+  // post-load error instead of an upfront one.
+  const rows = [
+    { eth_address: '0x' + 'a'.repeat(40), amount: '100', index: 0 },
+    { eth_address: '0x' + 'a'.repeat(40), amount: '200', index: 1 },  // same addr
+  ];
+  // Compute the root that DOES match these (dup) rows so the test isolates
+  // the dup check from the root-recompute check.
+  const parsed = rows.map(r => ({
+    ethAddrBytes: hexToBytes(r.eth_address.slice(2)),
+    amount: BigInt(r.amount),
+    index: r.index,
+  }));
+  const leaves = parsed.map(p => airdropLeafHash(p.ethAddrBytes, p.amount, p.index));
+  const { root } = buildAirdropMerkle(leaves);
+  const blob = { schema: 'tacit-airdrop-v1', merkle_root: bytesToHex(root), rows };
+  try { _discoveryValidateAndRecompute(blob, bytesToHex(root)); return false; }
+  catch (e) { return /duplicate/i.test(e.message); }
+});
+
+console.log('\nAnnouncement-vs-snapshot cross-checks (audit fix H1):');
+
+// Audit H1: a hostile announcer could pin a valid-looking snapshot for asset
+// B and announce it as asset A. The discovery card shows A's
+// ticker/decimals (from announcement-derived metadata), but the canonical
+// claim message binds to the snapshot's asset_id (B). The recipient signs a
+// claim authorising B even though they thought they were claiming A. Same
+// shape for network mismatches. The discovery flow must reject any snapshot
+// whose declared asset_id or network disagrees with the announcement before
+// surfacing eligibility. Test mirrors the dapp guard at the point where the
+// snapshot blob is first matched against announcement metadata.
+function _discoveryAnnouncementCrosscheck(announcement, blob) {
+  if (String(blob.merkle_root || '').toLowerCase() !== announcement.merkle_root) {
+    throw new Error('snapshot root does not match announcement');
+  }
+  if (String(blob.asset_id || '').toLowerCase() !== announcement.asset_id) {
+    throw new Error('snapshot asset_id does not match announcement');
+  }
+  if (blob.network && blob.network !== announcement.network) {
+    throw new Error(`snapshot network (${blob.network}) does not match announcement (${announcement.network})`);
+  }
+  return true;
+}
+
+test('discovery cross-check: matching announcement passes', () => {
+  const rows = [
+    { eth_address: '0x' + '1'.repeat(40), amount: '100', index: 0 },
+    { eth_address: '0x' + '2'.repeat(40), amount: '200', index: 1 },
+  ];
+  const parsed = rows.map(r => ({
+    ethAddrBytes: hexToBytes(r.eth_address.slice(2)),
+    amount: BigInt(r.amount), index: r.index,
+  }));
+  const leaves = parsed.map(p => airdropLeafHash(p.ethAddrBytes, p.amount, p.index));
+  const { root } = buildAirdropMerkle(leaves);
+  const announcement = {
+    asset_id: 'a'.repeat(64), merkle_root: bytesToHex(root), network: 'mainnet',
+  };
+  const blob = {
+    schema: 'tacit-airdrop-v1', asset_id: 'a'.repeat(64), network: 'mainnet',
+    merkle_root: bytesToHex(root), rows,
+  };
+  return _discoveryAnnouncementCrosscheck(announcement, blob) === true;
+});
+
+test('discovery cross-check: announcement asset_id ≠ snapshot asset_id is REJECTED', () => {
+  // Announcer claims this snapshot is for asset A, but the pinned blob is
+  // actually for asset B. Without the cross-check the recipient signs a
+  // claim binding to B, not the A they thought they were claiming.
+  const announcement = {
+    asset_id: 'aa'.repeat(32), merkle_root: '11'.repeat(32), network: 'mainnet',
+  };
+  const blob = {
+    schema: 'tacit-airdrop-v1',
+    asset_id: 'bb'.repeat(32),    // mismatched
+    network: 'mainnet',
+    merkle_root: '11'.repeat(32),
+    rows: [{ eth_address: '0x' + '1'.repeat(40), amount: '100', index: 0 }],
+  };
+  try { _discoveryAnnouncementCrosscheck(announcement, blob); return false; }
+  catch (e) { return /asset_id.*does not match/i.test(e.message); }
+});
+
+test('discovery cross-check: announcement network ≠ snapshot network is REJECTED', () => {
+  // A signet announcement linking to a mainnet snapshot would bind the
+  // recipient's claim to mainnet tacit keys (or vice versa) — funds
+  // strand on the wrong network. Reject upstream so discovery never
+  // surfaces the mismatch.
+  const announcement = {
+    asset_id: 'a'.repeat(64), merkle_root: '11'.repeat(32), network: 'signet',
+  };
+  const blob = {
+    schema: 'tacit-airdrop-v1',
+    asset_id: 'a'.repeat(64),
+    network: 'mainnet',          // mismatched
+    merkle_root: '11'.repeat(32),
+    rows: [{ eth_address: '0x' + '1'.repeat(40), amount: '100', index: 0 }],
+  };
+  try { _discoveryAnnouncementCrosscheck(announcement, blob); return false; }
+  catch (e) { return /network.*does not match/i.test(e.message); }
+});
+
+test('discovery cross-check: missing snapshot asset_id is REJECTED', () => {
+  // Hand-rolled snapshot that omits asset_id passes neither the
+  // tightened manual-load validator nor the discovery cross-check.
+  const announcement = {
+    asset_id: 'a'.repeat(64), merkle_root: '11'.repeat(32), network: 'mainnet',
+  };
+  const blob = {
+    schema: 'tacit-airdrop-v1',
+    network: 'mainnet',
+    merkle_root: '11'.repeat(32),
+    // asset_id omitted
+    rows: [{ eth_address: '0x' + '1'.repeat(40), amount: '100', index: 0 }],
+  };
+  try { _discoveryAnnouncementCrosscheck(announcement, blob); return false; }
+  catch (e) { return /asset_id.*does not match/i.test(e.message); }
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail > 0 ? 1 : 0);

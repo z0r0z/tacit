@@ -4,6 +4,7 @@
 # Editors
 .vscode/
 .idea/
+.claude/
 *.swp
 
 # Node / Wrangler

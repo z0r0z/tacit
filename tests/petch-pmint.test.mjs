@@ -21,6 +21,8 @@ import {
   decodeCPetchPayload, decodeCPmintPayload,
   T_PETCH, T_PMINT,
   PMINT_CONFIRMATION_DEPTH, loadCanonicalPmints,
+  refreshPetchProgress, refreshAndStorePetchProgress, readPetchProgress,
+  markPetchDirty, petchProgressKey, petchDirtyKey,
 } from '../worker/src/index.js';
 
 let pass = 0, fail = 0;
@@ -35,30 +37,38 @@ function test(label, fn) {
 }
 
 // In-memory KV stub matching the worker's REGISTRY_KV interface surface
-// loadCanonicalPmints actually uses: list({ prefix, limit }) returning
-// { keys: [{ name }] } and get(name, 'json') returning the parsed value.
-// This is the smallest shim that lets us test the real production logic
-// without bringing up Cloudflare's miniflare runtime.
+// loadCanonicalPmints + the snapshot helpers actually use: list({ prefix,
+// limit, cursor }) returning { keys, list_complete, cursor }, get(name,
+// 'json') returning the parsed value, put(name, stringValue, options?) for
+// writes, and delete(name). This is the smallest shim that lets us test the
+// real production logic without bringing up Cloudflare's miniflare runtime.
 function makeKvStub(initial = {}) {
   const data = new Map(Object.entries(initial));
   return {
     _data: data,
-    async list({ prefix, limit = 1000 }) {
-      const keys = [];
+    async list({ prefix, limit = 1000, cursor = null } = {}) {
       // Lex-sort matches the production KV.list contract; consumers depend
       // on this for canonical chain ordering when keys embed zero-padded
       // height (see pmintKeyFor in worker/src/index.js).
       const sorted = Array.from(data.keys()).filter(k => k.startsWith(prefix)).sort();
-      for (const k of sorted.slice(0, limit)) keys.push({ name: k });
-      return { keys };
+      const startIdx = cursor ? Number(cursor) : 0;
+      const slice = sorted.slice(startIdx, startIdx + limit);
+      const nextIdx = startIdx + slice.length;
+      const list_complete = nextIdx >= sorted.length;
+      return {
+        keys: slice.map(name => ({ name })),
+        list_complete,
+        cursor: list_complete ? null : String(nextIdx),
+      };
     },
     async get(key, type) {
       const v = data.get(key);
       if (v === undefined) return null;
       return type === 'json' ? JSON.parse(v) : v;
     },
+    async put(key, stringValue /* , options */) { data.set(key, stringValue); },
     set(key, jsonValue) { data.set(key, JSON.stringify(jsonValue)); },
-    delete(key) { data.delete(key); },
+    async delete(key) { data.delete(key); },
   };
 }
 
@@ -311,6 +321,144 @@ await test('decodeCPetchPayload rejects payload with T_CETCH opcode byte', () =>
   dv.setUint32(12, 100, true); dv.setUint32(16, 0, true); // limit = 100
   // start_height (20..23) = 0; end_height (24..27) = 0; img_len (28..29) = 0
   return decodeCPetchPayload(buf) === null;
+});
+
+// ---------------------------------------------------------------------------
+// CAP-PROGRESS SNAPSHOT — the O(1) read layer replacing loadCanonicalPmints
+// for /petch-assets reads. Validates that the snapshot's aggregate fields
+// match loadCanonicalPmints' canonical computation across the same scenarios
+// covered above (depth gating, cap-overflow, last_credited tracking).
+// ---------------------------------------------------------------------------
+const PETCH = {
+  asset_id: ASSET,
+  ticker: 'FAIR',
+  decimals: 0,
+  cap_amount: '1000',
+  mint_limit: '100',
+  mint_start_height: 0,
+  mint_end_height: 0,
+  etched_at_height: 50,
+};
+
+await test('snapshot: empty asset yields zero counts + bootstrapped:true', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, PETCH);
+  return snap.credited_count === 0
+    && snap.credited_amount === '0'
+    && snap.cap_overflow_count === 0
+    && snap.canonical_count === 0
+    && snap.last_credited_height === null
+    && snap.last_credited_tx_index === null
+    && snap.last_credited_txid === null
+    && snap.bootstrapped === true
+    && snap.truncated === false
+    && snap.schema_version === 1;
+});
+
+await test('snapshot: mixed pending/credited matches loadCanonicalPmints', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  // Tip 104; mints at 100..104; first 3 credit, last 2 pending. Same as the
+  // earlier "mixed pending + credited" loadCanonicalPmints test.
+  for (let i = 0; i < 5; i++) {
+    env.REGISTRY_KV.set(pmintKey(ASSET, 100 + i, 0, String.fromCharCode(97 + i).repeat(64)),
+                         mintEvent(100 + i, 0, String.fromCharCode(97 + i).repeat(64)));
+  }
+  const lc = await loadCanonicalPmints(env, 'signet', ASSET, 104, '1000', '100');
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 104, PETCH);
+  return snap.credited_count === 3
+    && snap.credited_amount === lc.cumulative_minted
+    && snap.pending_count === 2
+    && snap.canonical_count === 5
+    && snap.last_credited_height === 102
+    && snap.last_credited_tx_index === 0
+    && snap.last_credited_txid === 'c'.repeat(64);
+});
+
+await test('snapshot: cap-overflow recorded with txid + count', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  // Cap 200, limit 100 → only 2 mints fit. Third is overflow.
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 101, 0, 'b'.repeat(64)), mintEvent(101, 0, 'b'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 102, 0, 'c'.repeat(64)), mintEvent(102, 0, 'c'.repeat(64)));
+  const tinyPetch = { ...PETCH, cap_amount: '200' };
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, tinyPetch);
+  return snap.credited_count === 2
+    && snap.credited_amount === '200'
+    && snap.cap_overflow_count === 1
+    && Array.isArray(snap.cap_overflow_txids)
+    && snap.cap_overflow_txids.length === 1
+    && snap.cap_overflow_txids[0] === 'c'.repeat(64)
+    && snap.last_credited_height === 101
+    && snap.last_credited_txid === 'b'.repeat(64);
+});
+
+await test('snapshot: refreshAndStorePetchProgress persists under petchProgressKey', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  const snap = await refreshAndStorePetchProgress(env, 'signet', ASSET, 200, PETCH);
+  const stored = await readPetchProgress(env, 'signet', ASSET);
+  // Stored snapshot must round-trip identically through KV.
+  return snap.credited_count === 1
+    && stored !== null
+    && stored.credited_count === 1
+    && stored.credited_amount === '100'
+    && stored.schema_version === 1
+    && stored.last_credited_txid === 'a'.repeat(64);
+});
+
+await test('snapshot: readPetchProgress returns null for missing snapshot', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const r = await readPetchProgress(env, 'signet', ASSET);
+  return r === null;
+});
+
+await test('snapshot: readPetchProgress rejects wrong schema_version', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  // Simulate a legacy v0 snapshot (no schema_version) being read by current code.
+  await env.REGISTRY_KV.put(petchProgressKey('signet', ASSET),
+    JSON.stringify({ credited_count: 99, schema_version: 0 }));
+  const r = await readPetchProgress(env, 'signet', ASSET);
+  // Must reject — otherwise old fields would surface and break new consumers.
+  return r === null;
+});
+
+await test('snapshot: markPetchDirty writes dirty marker under petchDirtyKey', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  await markPetchDirty(env, 'signet', ASSET);
+  const v = env.REGISTRY_KV._data.get(petchDirtyKey('signet', ASSET));
+  return v === '1';
+});
+
+await test('snapshot: orphan entries excluded from credited count', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  // Legacy height-0 orphan; a real canonical entry at height 100 with depth ≥ 3.
+  env.REGISTRY_KV.set(pmintKey(ASSET, 0,   0, 'o'.repeat(64)), mintEvent(0,   0, 'o'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, PETCH);
+  // Orphan must NOT credit (it's pending forever until promoter fixes it).
+  // Canonical entry credits at depth ≥ 3.
+  return snap.credited_count === 1
+    && snap.credited_amount === '100'
+    && snap.orphan_count === 1
+    && snap.last_credited_txid === 'a'.repeat(64);
+});
+
+await test('snapshot: last_credited advances past cap_overflow gaps', async () => {
+  // Cap-overflow doesn't advance last_credited_* — the next-credited mint
+  // does. SPEC §5.9 *Cap-overflow ordering*: overflow mints occupy a
+  // canonical slot but don't get credit, so position-based lookups must
+  // treat them as gaps rather than as the new frontier.
+  const env = { REGISTRY_KV: makeKvStub() };
+  // Cap 200 + limit 100 in this PETCH. Sequence: credit, credit (cap full),
+  // overflow at height 102. last_credited should be (101, 0, 'b...').
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 101, 0, 'b'.repeat(64)), mintEvent(101, 0, 'b'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 102, 0, 'c'.repeat(64)), mintEvent(102, 0, 'c'.repeat(64)));
+  const tinyPetch = { ...PETCH, cap_amount: '200' };
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, tinyPetch);
+  return snap.last_credited_height === 101
+    && snap.last_credited_txid === 'b'.repeat(64)
+    && snap.cap_overflow_count === 1;
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);

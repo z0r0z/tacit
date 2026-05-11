@@ -802,7 +802,8 @@ function buildAirdropClaimMsg({ rootHex, network, assetIdHex, ethAddrHex, leafIn
   const amt = BigInt(amount);
   if (amt < 0n || amt >= (1n << 64n)) throw new Error('amount out of u64');
   if (typeof ticker !== 'string') throw new Error('ticker required');
-  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18) throw new Error('decimals 0..18');
+  // Mirror of dapp/tacit.js: CETCH caps asset decimals at 8.
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 8) throw new Error('decimals 0..8 (CETCH max)');
   const cleanPub = String(tacitPubHex).toLowerCase().replace(/\s/g, '');
   if (!/^0[23][0-9a-f]{64}$/.test(cleanPub)) throw new Error('tacitPubHex must be 33-byte compressed');
   const display = _fmtAssetAmountPlain(amt, decimals);

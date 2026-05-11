@@ -235,6 +235,40 @@ await test('drop cancel DELETE body shape matches worker handler', () => {
       && WORKER.schnorrSigHex.test(dappBody.cancel_sig);
 });
 
+await test('pin-airdrop-snapshot body shape matches worker validator', () => {
+  // The dapp's `_pinDropSnapshot` posts a tacit-airdrop-v1 snapshot to the
+  // dedicated /pin-airdrop-snapshot endpoint (the generic /pin-json would
+  // strip every airdrop field and silently produce an empty pinned blob).
+  // Pin the body shape so a field rename on either side surfaces here
+  // instead of as "snapshot not in tacit-airdrop-v1 schema" at claim time.
+  const dappBody = {
+    schema: 'tacit-airdrop-v1',
+    network: 'mainnet',
+    asset_id: 'f'.repeat(64),
+    asset_ticker: 'TAC',
+    asset_decimals: 8,
+    merkle_root: 'a'.repeat(64),
+    leaf_count: 2,
+    total_amount: '300',
+    rows: [
+      { index: 0, eth_address: '0x' + '1'.repeat(40), amount: '100' },
+      { index: 1, eth_address: '0x' + '2'.repeat(40), amount: '200' },
+    ],
+  };
+  // The worker's validator requires these keys with these shapes:
+  return dappBody.schema === 'tacit-airdrop-v1'
+      && (dappBody.network === 'signet' || dappBody.network === 'mainnet')
+      && /^[0-9a-f]{64}$/.test(dappBody.asset_id)
+      && /^[0-9a-f]{64}$/.test(dappBody.merkle_root)
+      && Array.isArray(dappBody.rows) && dappBody.rows.length > 0
+      && Number.isInteger(dappBody.leaf_count) && dappBody.leaf_count === dappBody.rows.length
+      && dappBody.rows.every((r, i) =>
+        /^0x[0-9a-fA-F]{40}$/.test(r.eth_address)
+        && /^\d+$/.test(r.amount)
+        && Number.isInteger(r.index) && r.index === i
+      );
+});
+
 await test('dropAnnounceMsgBytes (dapp) matches dropAnnounceMsg (worker) for fixture', async () => {
   // Cross-realm parity check: the dapp computes the signing message via
   // `dropAnnounceMsgBytes`; the worker re-computes via `dropAnnounceMsg`.

@@ -3600,6 +3600,35 @@ function mixerIsPoolRegistered(assetIdHex, denomination) {
   return poolRegistry.has(poolKey(assetIdHex, denomination));
 }
 
+// Canonical-pool gate. A POOL_INIT can declare ANY vk_cid + ceremony_cid, and
+// the first-confirmed-wins rule (SPEC §5.10.1) means anyone can front-run
+// canonical pool creation for a popular (asset_id, denomination) with their
+// own non-canonical setup. If a non-canonical pool is honored by the dapp's
+// validator, an attacker who retained the MPC trapdoor of the fake setup
+// can forge unlimited withdraw proofs against their own vk and inflate the
+// asset_id's supply for the cost of a single real deposit (one real deposit
+// is required to populate the pool's recent-roots window; after that, the
+// trapdoor lets the attacker pick arbitrary nullifiers and root entries from
+// the window indefinitely). Tacit has exactly one canonical Phase-1+Phase-2
+// trusted setup (CANONICAL_VK_CID, CANONICAL_CEREMONY_CID); pools that
+// declare anything else are out-of-protocol and the validator MUST refuse
+// to credit their withdrawals. The UI also hides non-canonical pools from
+// deposit selectors so honest users don't fund them by mistake.
+function isPoolCanonical(info) {
+  if (!info) return false;
+  let vkStr, ceStr;
+  try { vkStr = (info.vkCid instanceof Uint8Array) ? new TextDecoder().decode(info.vkCid) : String(info.vkCid || ''); }
+  catch { return false; }
+  try { ceStr = (info.ceremonyCid instanceof Uint8Array) ? new TextDecoder().decode(info.ceremonyCid) : String(info.ceremonyCid || ''); }
+  catch { return false; }
+  return vkStr === CANONICAL_VK_CID && ceStr === CANONICAL_CEREMONY_CID;
+}
+
+function mixerIsPoolCanonical(assetIdHex, denomination) {
+  const info = poolRegistry.get(poolKey(assetIdHex, denomination));
+  return isPoolCanonical(info);
+}
+
 // Append a leaf to the per-pool tree and roll the recent-roots cache.
 // Caller MUST invoke this in canonical chain order (block height, then
 // (tx_index, vin[1].outpoint) within block).
@@ -4150,6 +4179,31 @@ function parseMixerShareLink(hashFragment) {
   };
 }
 
+// Inverse of parseMixerShareLink. Produces a `#mix=…` URL fragment carrying
+// just the four fields the recipient needs to reconstruct a withdraw record
+// (asset_id, denomination, secret, nullifier_preimage). The depositor sends
+// this to a recipient out-of-band (Signal / Tor / paper); the recipient
+// pastes it into the dapp's "Import share-link" field and withdraws to a
+// fresh address. Keeping the format minimal (no commit/reveal txids, no
+// timestamps) means a leaked link doesn't disclose anything the chain
+// doesn't already publish.
+function buildMixerShareLink(record, { absoluteUrl = false } = {}) {
+  if (!record) return '';
+  const params = new URLSearchParams();
+  params.set('a', String(record.assetIdHex || '').toLowerCase());
+  params.set('d', String(record.denomination || ''));
+  params.set('s', String(record.secretHex || '').toLowerCase());
+  params.set('n', String(record.nullifierPreimageHex || '').toLowerCase());
+  const fragment = `#mix=${params.toString()}`;
+  if (!absoluteUrl) return fragment;
+  try {
+    const base = `${location.origin}${location.pathname}`;
+    return `${base}${fragment}`;
+  } catch {
+    return fragment;
+  }
+}
+
 // ============== STORAGE ==============
 // Both the asset-metadata registry and the per-UTXO opening cache are
 // network-namespaced. asset_ids and txids can't collide cross-network
@@ -4687,7 +4741,25 @@ async function _fetchPmintCredited(assetIdHex) {
     for (const t of (j.cap_overflow_txids || [])) {
       if (/^[0-9a-f]{64}$/.test(String(t))) capOverflow.add(t);
     }
-    const entry = { credited, capOverflow, workerAvailable: true, fetchedAt: Date.now() };
+    // Snapshot fields: when credited_txids is truncated (FAIR-scale assets
+    // where the canonical list exceeds 50k), set membership can't answer
+    // "is my own mint credited" for users whose mints landed in the
+    // newest-tail past the truncation cutoff. The worker's snapshot exposes
+    // last_credited_(h, ti, txid) which we use as a position cutoff: any
+    // mint at canonical position ≤ last_credited AND not in capOverflow is
+    // credited, even if it isn't in the truncated list. SPEC §5.9's
+    // canonical (height, tx_index) ordering makes this comparison sound.
+    const entry = {
+      credited,
+      capOverflow,
+      truncated: !!j.truncated,
+      lastCreditedHeight: Number.isInteger(j.last_credited_height) ? j.last_credited_height : null,
+      lastCreditedTxIndex: Number.isInteger(j.last_credited_tx_index) ? j.last_credited_tx_index : null,
+      lastCreditedTxid: typeof j.last_credited_txid === 'string' ? j.last_credited_txid : null,
+      snapshotBootstrapped: !!j.snapshot_bootstrapped,
+      workerAvailable: true,
+      fetchedAt: Date.now(),
+    };
     _pmintCreditedCache.set(assetIdHex, entry);
     return entry;
   } catch {
@@ -5046,7 +5118,44 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
       if (credit.capOverflow && credit.capOverflow.has(txidHex)) {
         tagInvalid(); validatedSet.set(key, false); return false;
       }
-      if (credit.credited && !credit.credited.has(txidHex)) {
+      // Position-based credit check for truncated lists. On FAIR-scale assets
+      // the worker's credited_txids may be truncated (currently SAFETY_CAP =
+      // 50000) and KV.list returns oldest-first, so the user's own newly-
+      // broadcast mints land in the tail past the cutoff and would
+      // false-negative on set membership alone. Fall back to comparing
+      // canonical (height, _, txid) against last_credited_(h, _, txid) from
+      // the worker snapshot: any mint at canonical position ≤ last_credited
+      // is credited (SPEC §5.9 canonical ordering), and we've already ruled
+      // out cap_overflow above.
+      if (credit.credited && !credit.credited.has(txidHex) && credit.truncated && Number.isFinite(pmintHeight)) {
+        const lh = credit.lastCreditedHeight;
+        if (Number.isInteger(lh)) {
+          if (pmintHeight < lh) {
+            // Strictly older than the snapshot's frontier — credited (we
+            // already excluded cap_overflow above, and depth is by definition
+            // ≥ 3 if the snapshot saw it).
+            // Fall through to acceptance.
+          } else if (pmintHeight === lh) {
+            // Same-height boundary: tx_index disambiguation needed. Without
+            // an on-chain tx_index lookup here (would cost a block fetch),
+            // the safe default is pending — the cron's next snapshot
+            // refresh will resolve it within 5 min.
+            tagPending(); validatedSet.set(key, false); return false;
+          } else {
+            // pmintHeight > lh: mint is newer than the snapshot's last
+            // credited. Pending until cron catches up.
+            tagPending(); validatedSet.set(key, false); return false;
+          }
+        } else {
+          // Snapshot has no last_credited yet (asset still bootstrapping).
+          // Pending — auto-heal hint below.
+          if (Number.isFinite(pmintHeight) && !_pmintHealAttempted.has(txidHex)) {
+            _pmintHealAttempted.add(txidHex);
+            postHint(txidHex, 0);
+          }
+          tagPending(); validatedSet.set(key, false); return false;
+        }
+      } else if (credit.credited && !credit.credited.has(txidHex)) {
         // Auto-heal stuck mints. A confirmed T_PMINT that the worker has
         // neither credited nor cap-overflowed is anomalous — either the
         // worker hasn't seen the reveal block yet (cron lag, legitimately
@@ -5125,6 +5234,15 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     if (!dec) { validatedSet.set(key, false); return false; }
     const aidHex = bytesToHex(dec.assetId);
     if (!mixerIsPoolRegistered(aidHex, dec.denomination)) {
+      validatedSet.set(key, false); return false;
+    }
+    // SPEC §5.11.4 soundness gate. A POOL_INIT can declare an arbitrary
+    // vk_cid; an attacker who ran their own MPC and kept the trapdoor can
+    // forge proofs that verify under their fake vk and credit unlimited
+    // withdrawals from a single real deposit (asset-id inflation). Refuse
+    // any withdraw from a pool whose (vk_cid, ceremony_cid) doesn't match
+    // the canonical pair this dapp build was compiled against.
+    if (!mixerIsPoolCanonical(aidHex, dec.denomination)) {
       validatedSet.set(key, false); return false;
     }
     if (!mixerHasRecentRoot(aidHex, dec.denomination, dec.merkleRoot)) {
@@ -6235,12 +6353,23 @@ async function buildAndBroadcastPoolInit({ assetIdHex, poolDenom, vkCid, ceremon
   _progress('reveal-start');
   await broadcastWithRetry(revealHex);
 
-  // Optimistically register the pool locally so the UI updates immediately —
-  // worker cron will reach the same conclusion at the next 5-min tick.
-  const vkBytes = (typeof vkCid === 'string') ? new TextEncoder().encode(vkCid) : vkCid;
-  const ceBytes = (typeof ceremonyCid === 'string') ? new TextEncoder().encode(ceremonyCid) : ceremonyCid;
-  mixerRegisterPool(assetIdHex, denomBig, vkBytes, ceBytes, 0, revealTxid_);
-
+  // No optimistic local register. Reason: POOL_INIT first-confirmed-wins
+  // means a front-runner could publish a non-canonical pool for the same
+  // (asset_id, denomination) and confirm before this broadcast. If we
+  // optimistically registered locally with the user's (canonical) CIDs,
+  // mixerRegisterPool's first-write-wins would lock the local entry to
+  // canonical metadata while chain reality is the front-runner's non-
+  // canonical entry — diverging local view from canonical, and worse,
+  // mixerIsPoolCanonical would return true locally so deposits would
+  // proceed against a pool whose chain-canonical vk is the attacker's.
+  // Holding off the register until scanPools reads canonical state from
+  // the worker eliminates this divergence: chain wins, period.
+  //
+  // Side benefit: also blocks the same-block deposit-before-init race —
+  // the dapp's deposit UI gates on mixerIsPoolRegistered, which won't be
+  // true until the worker indexes the POOL_INIT after canonical confirmation,
+  // so the user can't accidentally broadcast a deposit whose canonical
+  // tx_index lands before their own POOL_INIT's.
   recordActivity({
     kind: 'pool_init', ticker: '(pool)', amount: denomBig, decimals: 0,
     assetId: assetIdHex, txid: revealTxid_,
@@ -6251,6 +6380,202 @@ async function buildAndBroadcastPoolInit({ assetIdHex, poolDenom, vkCid, ceremon
     commitHex, revealHex,
     assetIdHex, poolDenom: denomBig.toString(),
     revealVb, revealFee, commitFee,
+  };
+}
+
+// Pending-pool-init tracker. Persisted to localStorage so the creator
+// sees their in-flight broadcast across reloads until scanPools picks up
+// the canonical chain entry. Each record holds enough to render a row
+// (ticker + decimals + denomination + reveal txid) and a broadcast
+// timestamp for the "elapsed" hint. Entries auto-clear when the
+// corresponding poolKey appears in poolRegistry, OR when the broadcast
+// is older than 6 hours (likely the tx was never mined; the user can
+// re-broadcast if needed).
+const MIXER_PENDING_INITS_KEY_BASE = 'tacit-mixer-pending-inits-v1';
+const MIXER_PENDING_INIT_TTL_MS = 6 * 60 * 60 * 1000;
+function _pendingPoolInitsKey() { return `${MIXER_PENDING_INITS_KEY_BASE}:${NET.name}`; }
+function _loadPendingPoolInits() {
+  try {
+    const raw = localStorage.getItem(_pendingPoolInitsKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function _savePendingPoolInit(rec) {
+  const arr = _loadPendingPoolInits();
+  // Dedupe on revealTxid first-write-wins.
+  if (arr.some(r => r.revealTxid === rec.revealTxid)) return arr;
+  arr.push(rec);
+  try { localStorage.setItem(_pendingPoolInitsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+function _prunePendingPoolInits() {
+  const now = Date.now();
+  const arr = _loadPendingPoolInits().filter(r => {
+    // Drop if older than TTL (probably never mined).
+    if (now - (r.broadcastAt || 0) > MIXER_PENDING_INIT_TTL_MS) return false;
+    // Drop if the pool is now registered locally (scanPools saw it).
+    if (mixerIsPoolRegistered(r.assetIdHex, BigInt(r.poolDenom))) return false;
+    return true;
+  });
+  try { localStorage.setItem(_pendingPoolInitsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+
+// Pending-deposit tracker. Mirrors the pending-pool-inits tracker just
+// above: a localStorage list of recently-broadcast T_DEPOSIT reveal txids
+// the worker hasn't yet canonicalized at depth ≥ 3. Surfaced in the UI
+// above the pool list so the creator can see their in-flight deposit
+// instead of staring at an unchanged pool list for ~30 min. Pruned when
+// scanPools applies the leaf to the local pool tree (canonical signal),
+// or after the 24h TTL (likely the broadcast never confirmed; user can
+// re-broadcast manually).
+const MIXER_PENDING_DEPOSITS_KEY_BASE = 'tacit-mixer-pending-deposits-v1';
+const MIXER_PENDING_DEPOSIT_TTL_MS = 24 * 60 * 60 * 1000;
+function _pendingDepositsKey() { return `${MIXER_PENDING_DEPOSITS_KEY_BASE}:${NET.name}`; }
+function _loadPendingDeposits() {
+  try {
+    const raw = localStorage.getItem(_pendingDepositsKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function _savePendingDeposit(rec) {
+  const arr = _loadPendingDeposits();
+  // Dedupe on revealTxid first-write-wins.
+  if (arr.some(r => r.revealTxid === rec.revealTxid)) return arr;
+  arr.push(rec);
+  try { localStorage.setItem(_pendingDepositsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+function _prunePendingDeposits() {
+  const now = Date.now();
+  const arr = _loadPendingDeposits().filter(r => {
+    if (now - (r.broadcastAt || 0) > MIXER_PENDING_DEPOSIT_TTL_MS) return false;
+    // Drop if the leaf is now in the local pool tree (scanPools canonicalized
+    // it). Looking up the tree's leaves directly avoids round-tripping through
+    // mixerAppendLeaf and is robust whether the pool has 0 or 100k leaves.
+    if (r.leafCommitmentHex) {
+      const tree = poolMerkleTrees.get(poolKey(r.assetIdHex, BigInt(r.denomination)));
+      if (tree) {
+        const targetHex = r.leafCommitmentHex.toLowerCase();
+        if (tree.leaves.some(l => bytesToHex(l) === targetHex)) return false;
+      }
+    }
+    return true;
+  });
+  try { localStorage.setItem(_pendingDepositsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+
+// Pending-withdraw tracker. Mirrors pending-deposits / pending-inits: a
+// localStorage list of recently-broadcast T_WITHDRAW reveal txids the
+// worker hasn't yet indexed in its nullifier set. Surfaced above the
+// pool list with elapsed-time copy so the user sees their in-flight
+// withdraw instead of staring at an unchanged Holdings tab for ~10 min.
+// Pruned when scanPools mirrors the worker's nullifier record into the
+// local set (mixerIsNullifierSpent → true), or after 24h.
+const MIXER_PENDING_WITHDRAWS_KEY_BASE = 'tacit-mixer-pending-withdraws-v1';
+const MIXER_PENDING_WITHDRAW_TTL_MS = 24 * 60 * 60 * 1000;
+function _pendingWithdrawsKey() { return `${MIXER_PENDING_WITHDRAWS_KEY_BASE}:${NET.name}`; }
+function _loadPendingWithdraws() {
+  try {
+    const raw = localStorage.getItem(_pendingWithdrawsKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function _savePendingWithdraw(rec) {
+  const arr = _loadPendingWithdraws();
+  if (arr.some(r => r.revealTxid === rec.revealTxid)) return arr;
+  arr.push(rec);
+  try { localStorage.setItem(_pendingWithdrawsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+function _prunePendingWithdraws() {
+  const now = Date.now();
+  const arr = _loadPendingWithdraws().filter(r => {
+    if (now - (r.broadcastAt || 0) > MIXER_PENDING_WITHDRAW_TTL_MS) return false;
+    // Drop if the nullifier is now in the local spent-set (scanPools
+    // mirrored the worker's record). mixerIsNullifierSpent reads from the
+    // canonical-only Map populated by scanPools.
+    if (r.nullifierHashHex && r.assetIdHex && r.denomination) {
+      try {
+        const denomBig = BigInt(r.denomination);
+        const nh = hexToBytes(r.nullifierHashHex);
+        if (mixerIsNullifierSpent(r.assetIdHex, denomBig, nh)) return false;
+      } catch {}
+    }
+    return true;
+  });
+  try { localStorage.setItem(_pendingWithdrawsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+
+// Validate a withdraw record (paste / share-link / saved) up-front so the
+// UI can fail fast with a clear message instead of throwing inside snarkjs.
+// Returns:
+//   { ok: true,  rec: <normalized record> }     — submittable
+//   { ok: false, error: <string> }              — show error inline
+// Re-derives leaf_commitment and nullifier_hash from (secret, ν, denom) and
+// compares against the stored values; a mismatched preimage→hash pair is a
+// guaranteed prover failure later, much better caught here.
+function _validateWithdrawRecord(rec) {
+  if (!rec || typeof rec !== 'object') {
+    return { ok: false, error: 'No deposit record loaded.' };
+  }
+  const aidHex = String(rec.assetIdHex || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aidHex)) {
+    return { ok: false, error: 'asset_id must be 64 hex chars.' };
+  }
+  let denomBig;
+  try { denomBig = BigInt(rec.denomination); }
+  catch { return { ok: false, error: 'denomination is not an integer.' }; }
+  if (denomBig <= 0n || denomBig >= (1n << BigInt(N_BITS))) {
+    return { ok: false, error: `denomination must be in (0, 2^${N_BITS}).` };
+  }
+  const secretHex = String(rec.secretHex || '').toLowerCase();
+  const nuHex     = String(rec.nullifierPreimageHex || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(secretHex)) {
+    return { ok: false, error: 'secret must be 64 hex chars (32 bytes).' };
+  }
+  if (!/^[0-9a-f]{64}$/.test(nuHex)) {
+    return { ok: false, error: 'nullifier_preimage must be 64 hex chars (32 bytes).' };
+  }
+  let secret, nu, leaf, nh;
+  try {
+    secret = hexToBytes(secretHex);
+    nu     = hexToBytes(nuHex);
+    leaf   = computePoolLeafCommitment(secret, nu, denomBig);
+    nh     = computeNullifierHash(nu);
+  } catch (e) {
+    return { ok: false, error: `failed to recompute leaf/nullifier: ${e.message || e}` };
+  }
+  const leafHex = bytesToHex(leaf);
+  const nhHex   = bytesToHex(nh);
+  // If the record carries stored values, they MUST match the re-derivation.
+  // Records produced by buildAndBroadcastDeposit always carry both; share-
+  // link imports recompute them at import time so they also match.
+  if (rec.leafCommitmentHex && rec.leafCommitmentHex.toLowerCase() !== leafHex) {
+    return { ok: false, error: 'leaf_commitment in record does not match recomputed value from (secret, ν, denomination). Record is corrupt.' };
+  }
+  if (rec.nullifierHashHex && rec.nullifierHashHex.toLowerCase() !== nhHex) {
+    return { ok: false, error: 'nullifier_hash in record does not match recomputed value from nullifier_preimage. Record is corrupt.' };
+  }
+  return {
+    ok: true,
+    rec: {
+      ...rec,
+      assetIdHex: aidHex,
+      denomination: denomBig.toString(),
+      secretHex,
+      nullifierPreimageHex: nuHex,
+      leafCommitmentHex: leafHex,
+      nullifierHashHex: nhHex,
+    },
   };
 }
 
@@ -6307,6 +6632,12 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
   // to uninitialized pools (SPEC §5.10).
   if (!mixerIsPoolRegistered(assetIdHex, denomBig)) {
     throw new Error(`Pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) is not initialized. Run POOL_INIT first or wait for indexer to catch up.`);
+  }
+  // Refuse to deposit into a pool whose vk/ceremony don't match the canonical
+  // trusted-setup. Non-canonical pools may have a retained trapdoor that lets
+  // the initializer drain anyone else's deposits — never deposit into them.
+  if (!mixerIsPoolCanonical(assetIdHex, denomBig)) {
+    throw new Error(`Pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) declares a non-canonical vk_cid/ceremony_cid. The dapp refuses to deposit here — a non-canonical pool may have a retained MPC trapdoor.`);
   }
 
   // Find a tacit UTXO of EXACTLY this denomination in the wallet's holdings.
@@ -6451,10 +6782,22 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
   _progress('reveal-start');
   await broadcastWithRetry(revealHex);
 
-  // Optimistically append the leaf to the local pool tree so the UI updates
-  // immediately. Worker cron will arrive at the same state at the next tick.
-  mixerAppendLeaf(assetIdHex, denomBig, hexToBytes(depositRecord.leafCommitmentHex));
-
+  // No optimistic local-tree append. The earlier behavior — pushing the
+  // leaf into poolMerkleTrees the moment the reveal-tx broadcast returned —
+  // placed the leaf at the local tree's tail, which only equals the
+  // canonical (deposited_at_height, tx_index, txid) position when there is
+  // no concurrent deposit activity. Under any race (another user's deposit
+  // confirming in the same block at a lower tx_index, or any unrelated
+  // deposit confirming between this broadcast and the next scanPools), the
+  // canonical position the worker assigns to this leaf would differ from
+  // the local one, and every subsequent merkle root the dapp computed
+  // would fail any honest indexer's recent-roots check at withdraw time —
+  // burning BTC fees and consuming the nullifier on an envelope no one
+  // credits. Wait for the worker to canonicalize the leaf at depth ≥ 3
+  // (≈ 30 min on mainnet) via scanPools; withdraw needs depth ≥ 3 anyway
+  // per SPEC §5.10, so this changes nothing about user-visible withdraw
+  // eligibility — only the UI's "anonymity set just incremented" feedback
+  // moves from optimistic to chain-confirmed.
   recordActivity({
     kind: 'mixer_deposit', ticker: '(pool)', amount: denomBig, decimals: 0,
     assetId: assetIdHex, txid: revealTxid_,
@@ -6465,6 +6808,21 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
   const updated = depositRecord;
   updated.depositTxid = revealTxid_;
   saveMixerDepositRecord(updated);
+
+  // Track as an in-flight deposit until scanPools sees the leaf at canonical
+  // depth ≥ 3. The pending-deposits UI block above the pool list renders
+  // this entry with elapsed-time + "waiting for confirmation" copy until
+  // _prunePendingDeposits drops it on the next leaf-match.
+  const _meta = getAssetMeta(assetIdHex);
+  _savePendingDeposit({
+    assetIdHex,
+    denomination: denomBig.toString(),
+    ticker: _meta?.ticker || assetIdHex.slice(0, 8) + '…',
+    decimals: _meta ? (Number(_meta.decimals) || 0) : 0,
+    leafCommitmentHex: depositRecord.leafCommitmentHex,
+    revealTxid: revealTxid_,
+    broadcastAt: Date.now(),
+  });
 
   return {
     commitTxid: commitTxid_, revealTxid: revealTxid_,
@@ -6663,6 +7021,29 @@ async function buildAndBroadcastWithdraw({
   if (!mixerIsPoolRegistered(assetIdHex, denomBig)) {
     throw new Error(`pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) not registered locally — refresh Mixer tab first`);
   }
+  // Refuse to broadcast a withdraw against a non-canonical pool. The proof
+  // wouldn't verify under the canonical validator anyway (vk mismatch), and
+  // broadcasting still burns BTC fees + leaks the nullifier on chain.
+  if (!mixerIsPoolCanonical(assetIdHex, denomBig)) {
+    throw new Error(`pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) declares a non-canonical vk_cid/ceremony_cid. The dapp refuses to withdraw — the validator would reject the proof anyway.`);
+  }
+  // Re-broadcast guard. If the nullifier is already in the local spent-set
+  // (scanPools mirrored the worker's view), the on-chain envelope would be
+  // a duplicate that the worker silently ignores AND the dapp validator
+  // rejects — but the user pays BTC fees and leaks no extra info either
+  // way. Refuse pre-broadcast so the user doesn't burn fees on a doomed
+  // tx. SPEC §5.11.4 invariant 3 — Non-double-spend.
+  try {
+    const nhCheck = hexToBytes(depositRecord.nullifierHashHex);
+    if (mixerIsNullifierSpent(assetIdHex, denomBig, nhCheck)) {
+      throw new Error(`this deposit was already withdrawn (nullifier ${depositRecord.nullifierHashHex.slice(0, 16)}… is in the canonical spent-set). Re-broadcasting would burn fees on a doomed tx.`);
+    }
+  } catch (e) {
+    // Re-throw "already withdrawn" but swallow any other parse error (the
+    // shape-check above already validated nullifierHashHex; this catch
+    // exists only to surface the spent-detect message clearly).
+    if (e && /already withdrawn/.test(e.message || '')) throw e;
+  }
 
   // Build merkle proof. Leaf must be in the local tree; if scanPools hasn't
   // yet reached the deposit, refresh first.
@@ -6674,7 +7055,7 @@ async function buildAndBroadcastWithdraw({
     _mixerPoolCacheUntil = 0;
     await refreshPoolsIfStale();
     mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
-    if (!mp) throw new Error('your leaf is not in the local pool tree — wait for indexer to catch up');
+    if (!mp) throw new Error('your leaf is not in the local pool tree — wait for indexer to catch up (depth ≥ 3 confirmations required)');
   }
 
   // Recipient commitment uses r_leaf = poseidon(secret, ν), exactly as the
@@ -6714,13 +7095,48 @@ async function buildAndBroadcastWithdraw({
   );
   _progress('proof:done', { ms: Date.now() - t0 });
 
-  // Sanity-verify locally before broadcasting (cheap ~5 ms; catches bugs).
-  // We need the vk for verify — fetch from the pool's vk_cid.
-  // (Optional skip if vk lookup fails; broadcast will still go through.)
-  // Note: this is a self-check; the on-chain validator does the
-  // authoritative verify against its own vk fetch.
-
   const proofBytes = _serializeGroth16Proof(proof);
+
+  // Local sanity-verify before broadcasting (cheap ~5 ms; catches bugs in
+  // _serializeGroth16Proof, input shaping, public-input ordering, etc.).
+  // If this fails the chain-side validator will reject too, but here we
+  // throw cleanly with a clear message instead of letting the user burn
+  // BTC fees on a doomed envelope + leak the nullifier in the process.
+  // The vk comes from the pool's registered vkCid (already canonical-
+  // gated by mixerIsPoolCanonical above).
+  _progress('proof:verify');
+  try {
+    const _pool = poolRegistry.get(poolKey(assetIdHex, denomBig));
+    const _vkCid = _pool ? new TextDecoder().decode(_pool.vkCid) : null;
+    if (_vkCid) {
+      const _publicInputs = [
+        bytesToHex(bigintToBytes32(mp.root)),
+        bytesToHex(nullifierHash),
+        denomBig.toString(),
+        bytesToHex(rLeafBytes),
+        bytesToHex(bindHash),
+      ];
+      const _ok = await verifyMixerProof({
+        vkCid: _vkCid, publicInputs: _publicInputs, proof: proofBytes,
+      });
+      if (!_ok) {
+        throw new Error(
+          'local Groth16 sanity-verify failed — proof would be rejected on chain. ' +
+          'This usually means a bug in proof serialization or public-input shaping; ' +
+          'aborting before BTC fees burn on a doomed envelope.',
+        );
+      }
+    }
+    // If vkCid is null (pool registry empty / decode failed), skip the
+    // self-check rather than block — the on-chain validator will catch
+    // any real issue, and missing vkCid here means the canonical-pool
+    // gate above also would have refused us earlier.
+  } catch (e) {
+    if (e && /sanity-verify failed/.test(e.message || '')) throw e;
+    // Otherwise tolerate the self-check failure (e.g., snarkjs load
+    // hiccup) — broadcast still goes through; the validator will gate.
+    if (typeof console !== 'undefined') console.warn('[mixer] withdraw local sanity-verify skipped:', e.message || e);
+  }
 
   // Build the T_WITHDRAW envelope payload.
   _progress('envelope');
@@ -9738,9 +10154,12 @@ function computeAirdropCommitment(rows) {
 }
 
 // Serialise a snapshot for IPFS pinning. Stable JSON, no Uint8Array values,
-// so any client can re-parse and recompute the root.
-function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, decimals }) {
-  return {
+// so any client can re-parse and recompute the root. The optional `source`
+// argument records where the rows came from (ERC-20 contract + chain id +
+// block height) so auditors can independently reproduce the (addr, amount)
+// tuples and re-derive the merkle root. Audit fix M6.
+function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, decimals, source }) {
+  const out = {
     schema: 'tacit-airdrop-v1',
     network,                         // 'signet' or 'mainnet'
     asset_id: assetIdHex,
@@ -9755,6 +10174,13 @@ function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, dec
       amount: r.amount.toString(),
     })),
   };
+  if (source && typeof source === 'object') {
+    if (Number.isInteger(source.chain_id))     out.source_chain_id = source.chain_id;
+    if (typeof source.contract === 'string')   out.source_contract = source.contract;
+    if (Number.isInteger(source.block_height)) out.source_block_height = source.block_height;
+    if (typeof source.method === 'string')     out.source_method = source.method;
+  }
+  return out;
 }
 
 // ============== AIRDROP CLAIM (recipient-side EIP-191) ==============
@@ -10599,12 +11025,54 @@ async function scanPools() {
     // every leaf as included. This matches pre-depth-gate behavior and
     // avoids breaking the dapp on a stale worker; once the worker is
     // upgraded the gate kicks in transparently.
-    const stats = mixerGetPoolStats(aidHex, denom);
-    const localLeafCount = stats ? stats.totalLeaves : 0;
     const remoteLeavesAll = Array.isArray(detail.leaves) ? detail.leaves : [];
     const remoteLeaves = remoteLeavesAll.filter(l =>
       !('status' in l) || l.status === 'included'
     );
+    // Local-prefix-divergence reset. The default append-only path (loop
+    // below) trusts that local indices [0..localLeafCount-1] already match
+    // remoteLeaves at the same indices; if they don't (e.g., a prior dapp
+    // version that performed an optimistic append, a reorg that re-ordered
+    // the canonical tail, a worker swap, or any other source of drift),
+    // every subsequent computed root would diverge from canonical and
+    // every withdraw would burn fees + nullifier on an envelope no honest
+    // indexer credits. Detect divergence by comparing local leaves byte-
+    // for-byte against the overlapping remoteLeaves prefix; on any
+    // mismatch, blow away the local tree and rebuild from canonical.
+    // Cheap: leaf compare is 32-byte hex, executed only on the overlap
+    // window which is bounded by the pool's current size.
+    const localTree = poolMerkleTrees.get(poolKey(aidHex, denom));
+    let localLeafCount = localTree ? localTree.leaves.length : 0;
+    let prefixDiverged = false;
+    if (localTree && localLeafCount > 0) {
+      const overlap = Math.min(localLeafCount, remoteLeaves.length);
+      for (let i = 0; i < overlap; i++) {
+        const remoteHex = remoteLeaves[i].leaf_commitment;
+        if (typeof remoteHex !== 'string') continue; // legacy/malformed — skip check at this index
+        if (bytesToHex(localTree.leaves[i]) !== remoteHex.toLowerCase()) {
+          prefixDiverged = true;
+          break;
+        }
+      }
+      // Local has more leaves than worker reports as included. This is
+      // the optimistic-append legacy state (or a leaf that reorg'd out).
+      // Treat as divergence: canonical state is the worker's.
+      if (!prefixDiverged && localLeafCount > remoteLeaves.length) {
+        prefixDiverged = true;
+      }
+    }
+    if (prefixDiverged) {
+      if (typeof console !== 'undefined') {
+        console.warn('[mixer] local pool tree diverged from canonical — resetting and rebuilding from worker. pool', aidHex.slice(0, 8), 'denom', denom.toString());
+      }
+      // Reset in place so any held references to the tree object see the
+      // fresh state. roots[] is cleared too — none of the prior local roots
+      // were canonical, and the recent-roots window will refill as the
+      // rebuild appends leaves below.
+      localTree.leaves.length = 0;
+      localTree.roots.length = 0;
+      localLeafCount = 0;
+    }
     if (remoteLeaves.length > localLeafCount) {
       // Worker sorts by canonical KV-key order; we apply leaves we don't
       // yet have. Order is critical — append-only tree state is sensitive.
@@ -10779,41 +11247,191 @@ async function renderMixer() {
     tab.classList.toggle('mixer-ceremony-locked', !finalized);
   }
 
-  // Pool list
+  // Pool list. Canonical pools (vk_cid + ceremony_cid match this dapp's
+  // hardcoded constants) are surfaced normally; non-canonical pools are
+  // pushed into a clearly-labelled "unverified" block so the user can see
+  // they exist on chain but never confuses them with depositable pools.
+  // Pending pool-inits and pending deposits (broadcast by this dapp
+  // instance but not yet canonicalized by the worker) render above the
+  // registered pool list so the creator can track in-flight broadcasts
+  // across reloads.
+  const pendingInits = _prunePendingPoolInits();
+  const pendingDeposits = _prunePendingDeposits();
+  const pendingWithdraws = _prunePendingWithdraws();
   const list = document.getElementById('mixer-pool-list');
   if (list) {
-    if (poolRegistry.size === 0) {
+    let pendingHtml = '';
+    if (pendingInits.length > 0) {
+      const pendingRows = pendingInits.map(r => {
+        const ageMs = Date.now() - (r.broadcastAt || Date.now());
+        const ageMin = Math.max(0, Math.floor(ageMs / 60000));
+        const denomDisp = fmtAssetAmount(BigInt(r.poolDenom), Number(r.decimals) || 0);
+        return `<div class="row" style="padding:8px 10px;border:1px dashed #888;border-radius:6px;margin-bottom:6px;">
+          <div style="font-size:12px;"><strong>${escapeHtml(r.ticker || r.assetIdHex.slice(0,8)+'…')}</strong> · denom ${escapeHtml(denomDisp)} · <span class="muted">broadcast ${ageMin}m ago · waiting for Bitcoin confirmation</span></div>
+          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <code>${escapeHtml(r.revealTxid)}</code></div>
+        </div>`;
+      }).join('');
+      pendingHtml = `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--border, #ddd);border-radius:6px;background:rgba(0,0,0,0.02);">
+        <div style="font-size:12px;font-weight:bold;margin-bottom:6px;">⏳ Pending pool inits (${pendingInits.length})</div>
+        <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">These POOL_INIT broadcasts are waiting for Bitcoin confirmation. The pool will move to the registered list below once the worker indexes it (~5–15 min after confirmation, depending on block time + 5-min cron cadence).</div>
+        ${pendingRows}
+      </div>`;
+    }
+    // Pending withdraws block — same shape as the others. Auto-clears
+    // when scanPools mirrors the nullifier into the local spent-set.
+    if (pendingWithdraws.length > 0) {
+      const wRows = pendingWithdraws.map(r => {
+        const ageMs = Date.now() - (r.broadcastAt || Date.now());
+        const ageMin = Math.max(0, Math.floor(ageMs / 60000));
+        const denomDisp = fmtAssetAmount(BigInt(r.denomination), Number(r.decimals) || 0);
+        const recipNote = r.isSelfMix ? '(self-mix)' : '(pay-to-other)';
+        return `<div class="row" style="padding:8px 10px;border:1px dashed #888;border-radius:6px;margin-bottom:6px;">
+          <div style="font-size:12px;"><strong>${escapeHtml(r.ticker || r.assetIdHex.slice(0,8)+'…')}</strong> · ${escapeHtml(denomDisp)} ${escapeHtml(recipNote)} · <span class="muted">broadcast ${ageMin}m ago · waiting for confirmation</span></div>
+          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <code>${escapeHtml(r.revealTxid)}</code></div>
+        </div>`;
+      }).join('');
+      pendingHtml += `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--border, #ddd);border-radius:6px;background:rgba(0,0,0,0.02);">
+        <div style="font-size:12px;font-weight:bold;margin-bottom:6px;">⏳ Pending withdraws (${pendingWithdraws.length})</div>
+        <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">These T_WITHDRAW broadcasts are waiting for Bitcoin confirmation. Each row auto-clears once the worker records the nullifier in the canonical spent-set.</div>
+        ${wRows}
+      </div>`;
+    }
+    // Pending deposits block — same shape as pending inits. Auto-clears
+    // when scanPools applies the leaf to the local tree.
+    if (pendingDeposits.length > 0) {
+      const depRows = pendingDeposits.map(r => {
+        const ageMs = Date.now() - (r.broadcastAt || Date.now());
+        const ageMin = Math.max(0, Math.floor(ageMs / 60000));
+        const denomDisp = fmtAssetAmount(BigInt(r.denomination), Number(r.decimals) || 0);
+        return `<div class="row" style="padding:8px 10px;border:1px dashed #888;border-radius:6px;margin-bottom:6px;">
+          <div style="font-size:12px;"><strong>${escapeHtml(r.ticker || r.assetIdHex.slice(0,8)+'…')}</strong> · ${escapeHtml(denomDisp)} · <span class="muted">broadcast ${ageMin}m ago · waiting for depth ≥ 3</span></div>
+          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <code>${escapeHtml(r.revealTxid)}</code></div>
+        </div>`;
+      }).join('');
+      pendingHtml += `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--border, #ddd);border-radius:6px;background:rgba(0,0,0,0.02);">
+        <div style="font-size:12px;font-weight:bold;margin-bottom:6px;">⏳ Pending deposits (${pendingDeposits.length})</div>
+        <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">These T_DEPOSIT broadcasts are waiting for Bitcoin confirmation + the worker's depth-3 confirmation gate. Your leaf becomes withdrawable once it lands at depth ≥ 3 (~30 min on mainnet, ~5 min on signet). The row auto-clears once the leaf is in your local pool tree.</div>
+        ${depRows}
+      </div>`;
+    }
+    if (poolRegistry.size === 0 && pendingInits.length === 0 && pendingDeposits.length === 0 && pendingWithdraws.length === 0) {
       list.innerHTML = '<div class="muted" style="font-size:12px;">No pools indexed yet. Initialize one below or wait for chain scan.</div>';
+    } else if (poolRegistry.size === 0) {
+      list.innerHTML = pendingHtml + '<div class="muted" style="font-size:12px;">No registered pools yet.</div>';
     } else {
-      const rows = [];
+      const canonicalRows = [];
+      const unverifiedRows = [];
       for (const [k, info] of poolRegistry.entries()) {
         const [aidHex, denomStr] = k.split(':');
         const denom = BigInt(denomStr);
         const stats = mixerGetPoolStats(aidHex, denom);
         const meta = getAssetMeta(aidHex);
         const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
-        const decs = meta ? meta.decimals : 0;
-        const denomDisp = (Number(denom) / Math.pow(10, decs)).toString();
-        rows.push(`<div class="row" style="border:1px solid var(--border, #ddd);padding:10px;border-radius:6px;margin-bottom:8px;">
-          <div><strong>${ticker}</strong> · denom ${denomDisp} · anonymity-set <strong>${stats ? stats.anonymitySet : 0}</strong> (${stats ? stats.totalLeaves : 0} deposits − ${stats ? stats.spentNullifiers : 0} withdraws)</div>
-          <div class="muted" style="font-size:11px;margin-top:4px;">vk CID: ${new TextDecoder().decode(info.vkCid)} · init height ${info.initHeight}</div>
+        const decs = meta ? (Number(meta.decimals) || 0) : 0;
+        // fmtAssetAmount handles arbitrary-precision BigInt division so a
+        // pool with denom > 2^53 doesn't lose digits the way Number(...) does.
+        const denomDisp = fmtAssetAmount(denom, decs);
+        const vkCidStr = new TextDecoder().decode(info.vkCid);
+        const target = isPoolCanonical(info) ? canonicalRows : unverifiedRows;
+        // vk_cid is parsed from a chain envelope (1..64 UTF-8 bytes, no validation
+        // on charset), and ticker is parsed from CETCH/PETCH. Both are attacker-
+        // controllable for non-canonical pools. innerHTML-escape both to defuse
+        // a `<script>` or `<img onerror>` payload smuggled into either field.
+        target.push(`<div class="row" style="border:1px solid var(--border, #ddd);padding:10px;border-radius:6px;margin-bottom:8px;">
+          <div><strong>${escapeHtml(ticker)}</strong> · denom ${denomDisp} · anonymity-set <strong>${stats ? stats.anonymitySet : 0}</strong> (${stats ? stats.totalLeaves : 0} deposits − ${stats ? stats.spentNullifiers : 0} withdraws)</div>
+          <div class="muted" style="font-size:11px;margin-top:4px;">vk CID: ${escapeHtml(vkCidStr)} · init height ${info.initHeight}</div>
         </div>`);
       }
-      list.innerHTML = rows.join('');
+      let html = canonicalRows.join('');
+      if (unverifiedRows.length > 0) {
+        html += `<div style="margin-top:14px;padding:8px 10px;border:1px solid #cc8000;border-radius:6px;background:rgba(204,128,0,0.08);">
+          <div style="font-size:12px;font-weight:bold;color:#cc8000;">⚠ Unverified pools (${unverifiedRows.length}) — DO NOT DEPOSIT</div>
+          <div class="muted" style="font-size:11px;margin:4px 0 8px 0;line-height:1.5;">These pools declare a non-canonical vk_cid or ceremony_cid. Whoever initialized them may have kept the trusted-setup trapdoor and could drain any deposit. The dapp blocks deposits + withdraws against them.
+          <br><br><strong>The (asset_id, denomination) slot is permanently bricked</strong> (POOL_INIT is first-confirmed-wins per SPEC §5.10.1, no re-init). To use the mixer for this asset, initialize a fresh pool at a <em>different denomination</em> below — the griefer would have to brick that slot too, which costs them more BTC fees each time. Common workarounds: pick an unusual denomination (e.g. 17, 1234, etc.) that's unlikely to be pre-griefed.</div>
+          ${unverifiedRows.join('')}
+        </div>`;
+      }
+      if (!html) html = '<div class="muted" style="font-size:12px;">No canonical pools indexed yet. Initialize one below or wait for chain scan.</div>';
+      // Prepend pending-init block (in-flight broadcasts) above the
+      // canonical + unverified pool rows so the creator sees their
+      // recent broadcast immediately.
+      list.innerHTML = pendingHtml + html;
     }
   }
 
-  // Populate deposit pool select
+  // Populate deposit pool select — canonical pools only. Non-canonical pools
+  // are filtered out so the user can never accidentally fund one.
   const sel = document.getElementById('mixer-deposit-pool');
   if (sel) {
     const opts = ['<option value="">— pick a pool —</option>'];
-    for (const k of poolRegistry.keys()) {
+    for (const [k, info] of poolRegistry.entries()) {
+      if (!isPoolCanonical(info)) continue;
       const [aidHex, denomStr] = k.split(':');
+      const denomBig = BigInt(denomStr);
       const meta = getAssetMeta(aidHex);
       const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
-      opts.push(`<option value="${k}">${ticker} · ${denomStr}</option>`);
+      const decs = meta ? (Number(meta.decimals) || 0) : 0;
+      // Display the denomination decimal-adjusted (whole tokens) so the
+      // selector reads "TICKER · 1" not "TICKER · 100000000". The pool
+      // list above it uses the same formatting; option text now matches.
+      // ticker comes from a CETCH/PETCH envelope on chain — escape before
+      // injecting into <option> innerHTML.
+      const denomDisp = fmtAssetAmount(denomBig, decs);
+      // Anonymity-set indicator helps the user pick a pool that's actually
+      // worth depositing into — a pool with 0 unspent leaves gives them
+      // a set of 1 (just themselves) after their deposit lands, which is
+      // no privacy at all. Surfacing this at selection time makes the
+      // trade-off legible without forcing them to switch tabs.
+      const stats = mixerGetPoolStats(aidHex, denomBig);
+      const anonSet = stats ? stats.anonymitySet : 0;
+      const setLabel = ` · ${anonSet} unspent`;
+      opts.push(`<option value="${escapeHtml(k)}">${escapeHtml(ticker)} · ${escapeHtml(denomDisp)}${escapeHtml(setLabel)}</option>`);
     }
     sel.innerHTML = opts.join('');
+  }
+
+  // Populate the saved-deposits picker on the withdraw panel. Each entry
+  // shows ticker / decimal-denom / deposit time / withdrawn status so the
+  // user can pick a withdrawable deposit without hand-pasting the JSON.
+  // Withdrawn entries are kept in the list (with a strikethrough marker)
+  // so users can see what they've already spent, but selecting them is
+  // a no-op (the broadcast guard refuses anyway).
+  const savedSel = document.getElementById('mixer-withdraw-saved-select');
+  if (savedSel) {
+    const records = loadMixerDeposits();
+    const opts = ['<option value="">— pick a saved deposit or paste below —</option>'];
+    // Render newest first. Records either carry `depositedAt` (own deposits
+    // via buildAndBroadcastDeposit) or `importedAt` (share-links imported
+    // from another depositor); fall back to either so imports don't always
+    // sink to the bottom of the list.
+    const _ts = r => Number(r.depositedAt) || Number(r.importedAt) || 0;
+    const sorted = [...records].sort((a, b) => _ts(b) - _ts(a));
+    for (const r of sorted) {
+      try {
+        const aidHex = String(r.assetIdHex || '').toLowerCase();
+        const denomBig = BigInt(r.denomination || 0);
+        const meta = getAssetMeta(aidHex);
+        const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
+        const decs = meta ? (Number(meta.decimals) || 0) : 0;
+        const denomDisp = fmtAssetAmount(denomBig, decs);
+        // Mark already-withdrawn entries via the local nullifier set
+        // (populated by scanPools). spent → strike-through marker.
+        let spent = false;
+        try {
+          spent = !!(r.nullifierHashHex &&
+            mixerIsNullifierSpent(aidHex, denomBig, hexToBytes(r.nullifierHashHex)));
+        } catch {}
+        const tsRaw = Number(r.depositedAt) || Number(r.importedAt) || 0;
+        const ts = tsRaw ? new Date(tsRaw).toLocaleString() : '(unknown date)';
+        const sourceTag = !r.depositedAt && r.importedAt ? ' · imported' : '';
+        const label = `${ticker} · ${denomDisp} · ${ts}${sourceTag}${spent ? '  ✓ withdrawn' : ''}`;
+        // Encode the full record into the option value as a base64 blob so
+        // the click handler can hydrate without re-fetching from localStorage.
+        const payload = btoa(unescape(encodeURIComponent(JSON.stringify(r))));
+        opts.push(`<option value="${escapeHtml(payload)}">${escapeHtml(label)}</option>`);
+      } catch {}
+    }
+    savedSel.innerHTML = opts.join('');
   }
 
   // Populate init-asset select with known assets
@@ -10854,30 +11472,148 @@ function setupMixerHandlers() {
         importedAt: Date.now(),
       };
       _mixerWithdrawRecord = rec;
+      // Persist to localStorage so a page reload doesn't strand a
+      // recipient who only had the share-link in memory. Dedupes on
+      // nullifierHashHex (first-write-wins), so re-importing the same
+      // share-link is a no-op. Recipients can also delete records
+      // manually via the export/edit/import workflow if they want
+      // ephemerality, but the default favors "don't accidentally lose
+      // a withdrawable note."
+      try { saveMixerDepositRecord(rec); } catch {}
       const ta = document.getElementById('mixer-withdraw-record');
-      if (ta) ta.value = JSON.stringify(rec, null, 2);
+      if (ta) {
+        ta.value = JSON.stringify(rec, null, 2);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      // Re-render to refresh the saved-deposits dropdown with the
+      // new entry visible.
+      try { renderMixer(); } catch {}
     };
+  }
+
+  // Saved-deposits dropdown — picking an entry hydrates the textarea +
+  // _mixerWithdrawRecord with that deposit's JSON. Option values are
+  // base64-encoded record blobs (set up in renderMixer above).
+  const savedSel = document.getElementById('mixer-withdraw-saved-select');
+  if (savedSel) {
+    savedSel.addEventListener('change', () => {
+      const val = savedSel.value;
+      if (!val) return;
+      let rec;
+      try {
+        const json = decodeURIComponent(escape(atob(val)));
+        rec = JSON.parse(json);
+      } catch (e) {
+        if (typeof console !== 'undefined') console.warn('[mixer] saved-select decode failed', e);
+        return;
+      }
+      _mixerWithdrawRecord = rec;
+      const ta = document.getElementById('mixer-withdraw-record');
+      if (ta) {
+        ta.value = JSON.stringify(rec, null, 2);
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
   }
 
   const previewWBtn = document.getElementById('btn-mixer-withdraw-preview');
   if (previewWBtn) {
-    previewWBtn.onclick = () => {
+    previewWBtn.onclick = async () => {
       const ta = document.getElementById('mixer-withdraw-record');
-      let rec = _mixerWithdrawRecord;
-      if (!rec && ta && ta.value.trim()) {
-        try { rec = JSON.parse(ta.value); } catch {}
-      }
       const out = document.getElementById('mixer-withdraw-preview-out');
-      if (!rec) { if (out) { out.style.display = 'block'; out.textContent = 'No deposit record loaded.'; } return; }
-      if (out) {
-        out.style.display = 'block';
-        out.textContent = `Withdraw preview\n----------------\n` +
-          `asset_id     ${rec.assetIdHex}\n` +
-          `denomination ${rec.denomination}\n` +
-          `nullifier    ${rec.nullifierHashHex}\n` +
-          `leaf         ${rec.leafCommitmentHex}\n\n` +
-          `Stub mode: structural payload would be ${1 + 32 + 8 + 32 + 32 + 33 + 8 + 32 + 2}-byte header + Groth16 proof bytes (~256 B Groth16 / ~1 KB Halo2). Broadcast disabled until verifier vendor-bundle ships.`;
+      if (!out) return;
+      out.style.display = 'block';
+      // Source the record from in-memory state if set (share-link import
+      // or saved-deposit pick), else parse the textarea.
+      let raw = _mixerWithdrawRecord;
+      if (!raw && ta && ta.value.trim()) {
+        try { raw = JSON.parse(ta.value); }
+        catch { out.textContent = 'Pasted JSON is not valid.'; return; }
       }
+      if (!raw) { out.textContent = 'No deposit record loaded. Pick a saved deposit, paste JSON, or import a share-link.'; return; }
+      // Full structural + cryptographic validation up-front so the preview
+      // distinguishes "broken record" from "everything fine, ready to go."
+      const vr = _validateWithdrawRecord(raw);
+      if (!vr.ok) { out.textContent = `⚠ Record invalid: ${vr.error}`; return; }
+      const rec = vr.rec;
+      const denomBig = BigInt(rec.denomination);
+      const meta = getAssetMeta(rec.assetIdHex);
+      const ticker = meta ? meta.ticker : rec.assetIdHex.slice(0, 8) + '…';
+      const decs = meta ? (Number(meta.decimals) || 0) : 0;
+      const denomDisp = fmtAssetAmount(denomBig, decs);
+      // Pool gates.
+      const poolReg = mixerIsPoolRegistered(rec.assetIdHex, denomBig);
+      const poolCan = poolReg && mixerIsPoolCanonical(rec.assetIdHex, denomBig);
+      // Anonymity-set health.
+      const stats = mixerGetPoolStats(rec.assetIdHex, denomBig);
+      const anonSet = stats ? stats.anonymitySet : 0;
+      let anonHint;
+      if (anonSet < 5) anonHint = '⚠ very small — you will be easy to single out';
+      else if (anonSet < 30) anonHint = 'okay for casual privacy';
+      else if (anonSet < 100) anonHint = 'healthy — well-mixed';
+      else anonHint = 'large — strong anonymity';
+      // Leaf-in-tree status.
+      let leafStatus;
+      if (!poolReg) {
+        leafStatus = '⚠ pool not yet registered locally — refresh the Mixer tab';
+      } else {
+        const leafBytes = hexToBytes(rec.leafCommitmentHex);
+        leafStatus = buildMixerMerkleProof(rec.assetIdHex, denomBig, leafBytes)
+          ? 'in local tree — ready to prove'
+          : '⏳ NOT yet in local tree (deposit still pending depth ≥ 3, ~30 min on mainnet)';
+      }
+      // Already-withdrawn detect.
+      let spentStatus = 'no — nullifier is unspent';
+      try {
+        const nh = hexToBytes(rec.nullifierHashHex);
+        if (mixerIsNullifierSpent(rec.assetIdHex, denomBig, nh)) {
+          spentStatus = '✓ ALREADY WITHDRAWN (nullifier is in the canonical spent-set) — re-broadcast would burn fees';
+        }
+      } catch {}
+      // Recipient + self-mix detection. The recipient field is optional;
+      // empty means flow-to-self. A pasted pubkey hex (66 chars, 02/03
+      // prefix) means pay-to-other.
+      const recipInput = (document.getElementById('mixer-withdraw-recipient')?.value || '').trim();
+      let recipDisp, recipHint, recipValid;
+      if (recipInput) {
+        recipValid = /^0[23][0-9a-fA-F]{64}$/.test(recipInput);
+        recipDisp = recipValid ? recipInput.toLowerCase() : `⚠ invalid (must be 66 hex chars, 02/03 prefix)`;
+        const selfMix = recipValid && recipInput.toLowerCase() === bytesToHex(wallet.pub).toLowerCase();
+        recipHint = recipValid
+          ? (selfMix
+            ? 'self-mix — recipient matches this wallet (chain-graph linkable to your deposit unless you fund commit fees from a fresh wallet)'
+            : 'pay-to-other — recipient is a different pubkey; no chain-graph link to your deposit')
+          : '';
+      } else {
+        recipValid = true;
+        recipDisp = `(this wallet — ${bytesToHex(wallet.pub).slice(0, 16)}…)`;
+        recipHint = 'self-mix — commit-fee inputs come from this wallet; chain-graph link to deposit unless you route via fresh BTC';
+      }
+      // Fee estimate.
+      let feeLine;
+      try {
+        const sats = await estimateSatsForOp('etch');
+        feeLine = `~${sats.toLocaleString()} sats`;
+      } catch {
+        feeLine = '(fee oracle unavailable)';
+      }
+      out.textContent = `Withdraw preview\n` +
+        `----------------\n` +
+        `asset:            ${ticker} (${rec.assetIdHex.slice(0, 16)}…)\n` +
+        `denomination:     ${denomDisp} ${ticker}\n` +
+        `pool registered:  ${poolReg ? 'yes' : '⚠ no'}\n` +
+        `pool canonical:   ${poolCan ? 'yes — canonical vk + ceremony' : '⚠ no — DO NOT BROADCAST'}\n` +
+        `pool state:       ${anonSet} unspent leaves — ${anonHint}\n` +
+        `leaf status:      ${leafStatus}\n` +
+        `already withdrawn: ${spentStatus}\n` +
+        `recipient:        ${recipDisp}\n` +
+        `privacy:          ${recipHint}\n` +
+        `est. BTC fee:     ${feeLine}\n\n` +
+        `On broadcast the dapp will: fetch the ceremony zkey (~5 MB) and witness-generator wasm, ` +
+        `build a merkle proof against the current pool root, generate a Groth16 proof in your ` +
+        `browser (~5–15 s), locally sanity-verify it, then broadcast a commit+reveal pair. The ` +
+        `recipient UTXO carries an opening to (denomination, r_leaf) that any tacit dapp can re-` +
+        `verify from the chain.`;
     };
   }
 
@@ -10900,60 +11636,84 @@ function setupMixerHandlers() {
 
   if (wBtn) {
     wBtn.onclick = async () => {
-      let rec = _mixerWithdrawRecord;
-      if (!rec && wRecordTa && wRecordTa.value.trim()) {
-        try { rec = JSON.parse(wRecordTa.value); }
-        catch { alert('Deposit record is not valid JSON.'); return; }
+      const setOut = (s) => { if (wOut) { wOut.style.display = 'block'; wOut.textContent = s; } };
+      // Load + validate record up-front. _validateWithdrawRecord normalizes
+      // hex case, re-derives leaf + nullifier hash, and compares against
+      // stored values — catches corrupt records before snarkjs trips on them.
+      let raw = _mixerWithdrawRecord;
+      if (!raw && wRecordTa && wRecordTa.value.trim()) {
+        try { raw = JSON.parse(wRecordTa.value); }
+        catch { setOut('✗ Deposit record is not valid JSON.'); return; }
       }
-      if (!rec || !rec.assetIdHex || !rec.secretHex || !rec.nullifierPreimageHex) {
-        alert('No deposit record loaded. Paste one or import via share-link.');
-        return;
-      }
+      const vr = _validateWithdrawRecord(raw);
+      if (!vr.ok) { setOut(`✗ ${vr.error}`); return; }
+      const rec = vr.rec;
       const denom = BigInt(rec.denomination);
       const meta = getAssetMeta(rec.assetIdHex);
       const ticker = meta ? meta.ticker : rec.assetIdHex.slice(0, 8) + '…';
-      const decs = meta ? meta.decimals : 0;
-      const denomDisp = (Number(denom) / Math.pow(10, decs)).toString();
-      // Anonymity-set + privacy-hygiene reminder. The proof itself is
-      // unconditionally unlinkable, but operational privacy depends on
-      // (a) hiding in a non-trivial crowd of unspent leaves, and (b) not
-      // tying the broadcast back to the depositor via fee-source / IP /
-      // timing. Surface both up-front so the user makes an informed call.
+      const decs = meta ? (Number(meta.decimals) || 0) : 0;
+      const denomDisp = fmtAssetAmount(denom, decs);
+      // Already-withdrawn pre-flight. Refuse with a clear error before the
+      // confirm dialog so the user doesn't authorize a doomed broadcast.
+      try {
+        const nh = hexToBytes(rec.nullifierHashHex);
+        if (mixerIsNullifierSpent(rec.assetIdHex, denom, nh)) {
+          setOut(`✗ This deposit was already withdrawn — nullifier ${rec.nullifierHashHex.slice(0, 16)}… is in the canonical spent-set. Re-broadcast would burn fees on a doomed envelope.`);
+          return;
+        }
+      } catch {}
+      // Recipient picker — empty input = self-mix (wallet.pub). A 66-char
+      // 02/03 hex pubkey = pay-to-other. Anything else is invalid and we
+      // refuse before broadcasting.
+      const recipInputRaw = (document.getElementById('mixer-withdraw-recipient')?.value || '').trim();
+      let recipientPubkey = null; // null → wallet.pub
+      let isSelfMix = true;
+      if (recipInputRaw) {
+        if (!/^0[23][0-9a-fA-F]{64}$/.test(recipInputRaw)) {
+          setOut('✗ Recipient pubkey is not 66 hex chars with a 02/03 prefix. Leave empty for self-mix.');
+          return;
+        }
+        recipientPubkey = hexToBytes(recipInputRaw.toLowerCase());
+        const walletPubHex = bytesToHex(wallet.pub).toLowerCase();
+        isSelfMix = recipInputRaw.toLowerCase() === walletPubHex;
+      }
+      // Anonymity-set + privacy hygiene. The proof itself is unconditionally
+      // unlinkable, but operational privacy depends on (a) hiding in a non-
+      // trivial crowd of unspent leaves, and (b) not tying the broadcast
+      // back to the depositor via fee-source / IP / timing. Surface both
+      // up-front so the user makes an informed call. _isSelfMix is now
+      // computed from the actual recipient at withdraw time, not a non-
+      // existent field on the deposit record.
       const _stats = mixerGetPoolStats(rec.assetIdHex, denom);
       const _anonSet = _stats ? _stats.anonymitySet : 0;
-      let _anonWarn = '';
+      let _anonWarn;
       if (_anonSet < 5) {
         _anonWarn = `\n\n⚠ ANONYMITY SET = ${_anonSet}. Your withdraw will hide in a near-singleton crowd — an observer correlating timing to your deposit will likely identify you. Strongly consider waiting until the pool grows.`;
       } else if (_anonSet < 50) {
-        _anonWarn = `\n\n⚠ Anonymity set = ${_anonSet}. Modest crowd; correlation by determined observers is feasible. Consider waiting for more deposits.`;
+        _anonWarn = `\n\n⚠ Anonymity set = ${_anonSet}. Modest crowd; correlation by determined observers is feasible.`;
       } else {
         _anonWarn = `\n\nAnonymity set = ${_anonSet} unspent leaves.`;
       }
-      // Self-mix detection: if the recipient is this wallet's own pubkey
-      // (default flow-to-self), the BTC-fee inputs of the commit tx come
-      // from the same wallet that funded the deposit — chain-graph linkage
-      // is preserved unless the user routes through a fresh wallet. Pay-
-      // to-someone-else withdraws don't have this issue.
-      const _isSelfMix = !rec.recipientPubkeyHex || rec.recipientPubkeyHex === bytesToHex(wallet.pub);
-      const _hygiene = _isSelfMix
-        ? `\n\nPRIVACY: this is a SELF-MIX (recipient = your own wallet). The BTC fees for this withdraw come from your sat balance, which is chain-graph linkable to the wallet that funded your deposit. To break that link, either (1) withdraw to a recipient pubkey from a fresh wallet you funded via CoinJoin / Lightning / a new exchange account, or (2) accept that operational unlinkability requires more discipline than the proof alone provides.`
-        : `\n\nPRIVACY: pay-to-someone-else withdraw — recipient is a different pubkey. No chain-graph link from this tx to your deposit (assuming the recipient's wallet history is independent).`;
+      const _hygiene = isSelfMix
+        ? `\n\nPRIVACY: SELF-MIX (recipient = this wallet). BTC fees come from this wallet's sat balance, chain-graph-linkable to the wallet that funded your deposit. To break that link, withdraw to a recipient pubkey from a fresh wallet you funded independently.`
+        : `\n\nPRIVACY: pay-to-other (recipient is a different pubkey, ${recipInputRaw.slice(0, 16)}…). No chain-graph link from this tx to your deposit, assuming the recipient's wallet history is independent.`;
       if (!confirm(
         `Withdraw ${denomDisp} ${ticker} from the pool?\n\n` +
-        `This fetches the ceremony zkey (~5 MB), generates a Groth16 proof in your browser (~5–15 s), and broadcasts a commit + reveal pair. ` +
-        `The new UTXO pays YOUR wallet by default. ` +
-        `Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in fees.` +
+        `This fetches the ceremony zkey (~5 MB), generates a Groth16 proof in your browser (~5–15 s), locally sanity-verifies it, then broadcasts a commit+reveal pair. ` +
+        `Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in BTC fees.` +
         _anonWarn +
         _hygiene
       )) return;
-      // The withdraw's recipient defaults to wallet.pub = burner, so the new
-      // UTXO is burner-controlled. Without a backup, losing localStorage loses
-      // the withdrawn UTXO. Same gate every other burner-signing op uses.
-      if (!ensureBurnerBackedUp('Withdraw from mixer pool (new UTXO is owned by the burner unless you set a custom recipient)')) return;
+      // The withdraw's commit tx is signed with the burner; new UTXO is
+      // recipient-controlled. Without a burner backup, losing localStorage
+      // loses the ability to spend YOUR future tx fees from this wallet.
+      // Same gate every other burner-signing op uses.
+      if (!ensureBurnerBackedUp(isSelfMix
+        ? 'Withdraw from mixer pool (new UTXO owned by this wallet — losing localStorage loses the UTXO opening)'
+        : 'Withdraw from mixer pool (new UTXO owned by the recipient; burner signs the commit tx)')) return;
       wBtn.disabled = true;
       const origText = wBtn.textContent;
       const setText = (s) => { wBtn.textContent = s; };
-      const setOut = (s) => { if (wOut) { wOut.style.display = 'block'; wOut.textContent = s; } };
       try {
         const stages = {
           'proof:merkle':     'Building merkle proof…',
@@ -10962,6 +11722,7 @@ function setupMixerHandlers() {
           'proof:fetch_wasm': 'Loading witness generator…',
           'proof:fullprove':  'Generating Groth16 proof (5–15 s)…',
           'proof:done':       'Proof generated.',
+          'proof:verify':     'Local sanity-verify…',
           'envelope':         'Encoding T_WITHDRAW envelope…',
           'tx:commit':        'Broadcasting commit tx…',
           'tx:reveal':        'Broadcasting reveal tx…',
@@ -10969,6 +11730,7 @@ function setupMixerHandlers() {
         let outLines = [];
         const r = await buildAndBroadcastWithdraw({
           depositRecord: rec,
+          recipientPubkey,
           onProgress: (stage, info) => {
             const msg = stages[stage] || stage;
             const extra = info && info.ms ? ` (${(info.ms/1000).toFixed(1)}s)` : '';
@@ -10977,17 +11739,96 @@ function setupMixerHandlers() {
             setOut(outLines.join('\n'));
           },
         });
-        outLines.push(`✓ Withdrawn ${denomDisp} ${ticker}`);
-        outLines.push(`commit: ${r.commitTxid}`);
-        outLines.push(`reveal: ${r.revealTxid}`);
-        outLines.push(`recipient_commit: ${bytesToHex(r.recipientCommitment)}`);
-        setOut(outLines.join('\n'));
+        // Track as in-flight so the pool-list pending-withdraw block
+        // surfaces it until scanPools mirrors the nullifier into the
+        // canonical local spent-set.
+        _savePendingWithdraw({
+          assetIdHex: rec.assetIdHex,
+          denomination: denom.toString(),
+          ticker,
+          decimals: decs,
+          nullifierHashHex: rec.nullifierHashHex,
+          revealTxid: r.revealTxid,
+          broadcastAt: Date.now(),
+          isSelfMix,
+        });
+        // Rich success view: explorer link, copy txid buttons, "View in
+        // Holdings" nudge (only meaningful for self-mix), and a paragraph
+        // explaining the depth-of-confirmation wait.
+        const recipHexForView = recipientPubkey ? bytesToHex(recipientPubkey) : bytesToHex(wallet.pub);
+        const explorerBase = NET.name === 'signet'
+          ? 'https://mempool.space/signet/tx/'
+          : 'https://mempool.space/tx/';
+        if (wOut) {
+          wOut.innerHTML =
+            `<div style="font-weight:bold;color:var(--green, #0a7d4e);margin-bottom:6px;">` +
+            `✓ Withdrew ${escapeHtml(denomDisp)} ${escapeHtml(ticker)} to ${isSelfMix ? 'this wallet' : 'recipient'}</div>` +
+            `<div style="font-size:11px;line-height:1.6;margin-bottom:8px;">` +
+            `commit: <a href="${escapeHtml(explorerBase + r.commitTxid)}" target="_blank" rel="noopener noreferrer"><code>${escapeHtml(r.commitTxid)}</code></a><br>` +
+            `reveal: <a href="${escapeHtml(explorerBase + r.revealTxid)}" target="_blank" rel="noopener noreferrer"><code>${escapeHtml(r.revealTxid)}</code></a><br>` +
+            `recipient: <code>${escapeHtml(recipHexForView)}</code>${isSelfMix ? ' <span class="muted">(this wallet)</span>' : ''}</div>` +
+            `<div class="flex" style="gap:6px;flex-wrap:wrap;margin-bottom:8px;">` +
+            `<button type="button" id="btn-mixer-w-copy-commit" style="font-size:11px;padding:4px 10px;">📋 Copy commit txid</button>` +
+            `<button type="button" id="btn-mixer-w-copy-reveal" style="font-size:11px;padding:4px 10px;">📋 Copy reveal txid</button>` +
+            `<span id="mixer-w-action-status" class="muted" style="font-size:11px;align-self:center;"></span>` +
+            `</div>` +
+            `<div class="muted" style="font-size:11px;line-height:1.5;">` +
+            (isSelfMix
+              ? `The new tacit UTXO arrives in your Holdings once the reveal tx confirms (~10 min on mainnet, ~1 min on signet). `
+              : `The recipient sees the new UTXO in their Holdings once their dapp scans the reveal tx. The pubkey owns it via P2WPKH; only they can spend. `) +
+            `Track confirmation progress in the Pending withdraws block above the pool list. After confirmation the leaf's nullifier appears in the spent-set and re-broadcasts are blocked.</div>`;
+          // Wire the copy buttons.
+          const _setStatus = (s, kind = '') => {
+            const el = document.getElementById('mixer-w-action-status');
+            if (!el) return;
+            el.textContent = s;
+            el.style.color = kind === 'error' ? 'var(--red)'
+                            : kind === 'success' ? 'var(--green, #0a7d4e)'
+                            : '';
+            setTimeout(() => { if (el.textContent === s) el.textContent = ''; }, 3000);
+          };
+          const _copy = async (text, ok, err) => {
+            try {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+              } else {
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.top = '-1000px';
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+              }
+              _setStatus(ok, 'success');
+            } catch { _setStatus(err, 'error'); }
+          };
+          const cpC = document.getElementById('btn-mixer-w-copy-commit');
+          if (cpC) cpC.onclick = () => _copy(r.commitTxid, 'Commit txid copied.', 'Copy failed.');
+          const cpR = document.getElementById('btn-mixer-w-copy-reveal');
+          if (cpR) cpR.onclick = () => _copy(r.revealTxid, 'Reveal txid copied.', 'Copy failed.');
+        }
+        // Reset the form so the user can't accidentally re-broadcast the
+        // same record. The deposit-record entry remains in localStorage
+        // (and in the saved-deposits dropdown, now marked ✓ withdrawn);
+        // we only clear the in-flight UI state.
+        _mixerWithdrawRecord = null;
+        if (wRecordTa) wRecordTa.value = '';
+        const recipEl = document.getElementById('mixer-withdraw-recipient');
+        if (recipEl) recipEl.value = '';
+        const sl = document.getElementById('mixer-withdraw-sharelink');
+        if (sl) sl.value = '';
+        const savedSelEl = document.getElementById('mixer-withdraw-saved-select');
+        if (savedSelEl) savedSelEl.value = '';
         toast(`Withdrew ${denomDisp} ${ticker}: reveal=${shorten(r.revealTxid, 6)}`, 'success');
         renderMixer();
       } catch (e) {
-        const msg = 'Withdraw broadcast failed: ' + (e.message || e);
-        if (wOut) setOut((wOut.textContent || '') + '\n✗ ' + msg);
-        alert(msg);
+        // Inline error rendering — no blocking alert. Accumulated progress
+        // lines stay visible above the failure marker so the user can see
+        // exactly which stage failed.
+        const msg = e && e.message ? e.message : String(e);
+        const cur = wOut ? (wOut.textContent || '') : '';
+        setOut(cur + (cur ? '\n' : '') + `✗ Withdraw failed: ${msg}`);
         console.error(e);
       } finally {
         wBtn.disabled = false;
@@ -11014,11 +11855,57 @@ function setupMixerHandlers() {
     depBtn.onclick = async () => {
       if (depBtn.disabled || !depSel || !depSel.value) return;
       const [aidHex, denomStr] = depSel.value.split(':');
+      const denomBig = BigInt(denomStr);
       const meta = getAssetMeta(aidHex);
       const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
-      const decs = meta ? meta.decimals : 0;
-      const denomDisp = (Number(BigInt(denomStr)) / Math.pow(10, decs)).toString();
-      if (!confirm(`Deposit ${denomDisp} ${ticker} into the pool?\n\nThis broadcasts a T_DEPOSIT (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees.\n\nThe dApp will generate a fresh (secret, nullifier) and save it to localStorage. BACK UP THIS RECORD — without it you cannot withdraw later. SPEC §5.10.`)) return;
+      const decs = meta ? (Number(meta.decimals) || 0) : 0;
+      const denomDisp = fmtAssetAmount(denomBig, decs);
+      // Same-wallet repeated-deposit privacy warning. Multiple deposits to
+      // the same pool from this browser correlate on the asset-side input
+      // chain — each subsequent deposit ties back to the previous one's
+      // change UTXO, so an observer can group them as "same depositor." That
+      // doesn't defeat the cryptographic unlinkability at withdraw time, but
+      // it reduces the effective anonymity set you're hiding in. Flag the
+      // count up front so users can choose to wait, use a fresh burner, or
+      // proceed knowing the trade-off.
+      const _priorCount = loadMixerDeposits().filter(r =>
+        r.assetIdHex === aidHex && BigInt(r.denomination || 0) === denomBig
+      ).length;
+      const priorWarning = _priorCount > 0
+        ? `\n\n⚠ This browser has already made ${_priorCount} deposit(s) into this same pool. ` +
+          `Repeated deposits from the same wallet correlate on chain via the asset-side ` +
+          `inputs. Consider a fresh burner (settings → burner) before this one if you want ` +
+          `tighter privacy.`
+        : '';
+      // Heads-up if auto-split will fire. Cheap synchronous check from the
+      // holdings cache: if no exact-denom UTXO exists, the deposit flow does
+      // an extra CXFER before broadcasting the T_DEPOSIT. User should know
+      // about the extra fee + extra confirm prompt mid-flow.
+      let autosplitWarning = '';
+      let willAutosplit = false;
+      try {
+        const _h = (_holdingsCache?.holdings || new Map()).get(aidHex);
+        const _hasExact = !!(_h?.utxos || []).find(u => u.amount === denomBig);
+        if (!_hasExact) {
+          willAutosplit = true;
+          autosplitWarning = `\n\nℹ You have no UTXO of exactly ${denomDisp} ${ticker}. ` +
+            `The dapp will auto-split a larger UTXO via one extra CXFER (a self-transfer ` +
+            `down to the exact denom) before broadcasting the deposit. This adds ~one ` +
+            `extra commit+reveal pair of BTC fees and one extra confirmation prompt.`;
+        }
+      } catch {}
+      // Fee estimate. When auto-split fires the actual cost is ~2x the
+      // baseline "etch" estimate (one CXFER + one T_DEPOSIT, each a
+      // commit+reveal pair). Surface the realistic total instead of
+      // the misleading half-cost figure.
+      let _feeSats;
+      try { _feeSats = await estimateSatsForOp('etch'); }
+      catch { _feeSats = 0; }
+      const _totalFee = willAutosplit ? _feeSats * 2 : _feeSats;
+      const _feeStr = _totalFee > 0
+        ? `~${_totalFee.toLocaleString()} sats` + (willAutosplit ? ' (auto-split + deposit, two commit+reveal pairs)' : '')
+        : '(fee oracle unavailable)';
+      if (!confirm(`Deposit ${denomDisp} ${ticker} into the pool?\n\nThis broadcasts a T_DEPOSIT (commit + reveal). Cost: ${_feeStr} in Bitcoin fees.${autosplitWarning}\n\nThe dApp will generate a fresh (secret, nullifier) and save it to localStorage. BACK UP THIS RECORD — without it you cannot withdraw later. SPEC §5.10.${priorWarning}`)) return;
       // T_DEPOSIT consumes a tacit UTXO whose Pedersen blinding lives only in
       // localStorage. If the user loses localStorage they lose the ability to
       // open ANY of their pre-deposit holdings — the deposit doesn't move
@@ -11028,25 +11915,126 @@ function setupMixerHandlers() {
       depBtn.disabled = true;
       const origText = depBtn.textContent;
       depBtn.textContent = 'Depositing…';
+      const out = document.getElementById('mixer-deposit-preview-out');
+      const setOut = (txt) => { if (out) { out.style.display = 'block'; out.textContent = txt; } };
+      // Live stage labels for the inline progress view — mirrors the
+      // withdraw flow's onProgress pattern. Each stage line accumulates
+      // so the user can watch the full timeline without losing earlier
+      // messages.
+      const stages = {
+        'autosplit-start': 'Auto-splitting a larger UTXO down to exact denomination…',
+        'autosplit-done':  'Auto-split confirmed; building deposit envelope…',
+        'commit-start':    'Broadcasting commit tx…',
+        'reveal-start':    'Broadcasting reveal tx…',
+      };
+      const outLines = [`Depositing ${denomDisp} ${ticker}…`];
+      setOut(outLines.join('\n'));
       try {
         const r = await buildAndBroadcastDeposit({
           assetIdHex: aidHex,
           denomination: BigInt(denomStr),
+          onProgress: (stage) => {
+            const msg = stages[stage] || stage;
+            outLines.push(msg);
+            setOut(outLines.join('\n'));
+          },
         });
         const recJson = JSON.stringify(r.depositRecord, null, 2);
-        const out = document.getElementById('mixer-deposit-preview-out');
+        const shareLink = buildMixerShareLink(r.depositRecord, { absoluteUrl: false });
         if (out) {
           out.style.display = 'block';
-          out.textContent = `Deposited ${denomDisp} ${ticker} ✓\n\n` +
-            `commit: ${r.commitTxid}\nreveal: ${r.revealTxid}\n\n` +
-            `=== BACK UP THIS DEPOSIT RECORD ===\n${recJson}\n` +
-            `===================================\n\n` +
-            `Saved to localStorage. Without (secret, nullifier_preimage) you cannot withdraw — keep an offline copy.`;
+          // Rich success view with inline actions. The "Copy record" and
+          // "Download JSON" buttons make backup one click instead of a
+          // triple-click + Ctrl-C + paste; the share-link button surfaces
+          // the pay-to-other URL the depositor can send to a recipient.
+          // Defense-in-depth: the deposit record is also already saved to
+          // localStorage by buildAndBroadcastDeposit, so this view exists
+          // for the user's *offline* backup, not for the dapp's own
+          // record-keeping.
+          out.innerHTML =
+            `<div style="font-weight:bold;color:var(--green, #0a7d4e);margin-bottom:6px;">` +
+            `✓ Deposited ${escapeHtml(denomDisp)} ${escapeHtml(ticker)}</div>` +
+            `<div style="font-size:11px;line-height:1.6;margin-bottom:8px;">` +
+            `commit: <code>${escapeHtml(r.commitTxid)}</code><br>` +
+            `reveal: <code>${escapeHtml(r.revealTxid)}</code></div>` +
+            `<div style="border:1px solid #cc8000;background:rgba(204,128,0,0.06);padding:8px 10px;border-radius:6px;margin-bottom:8px;">` +
+            `<div style="font-size:12px;font-weight:bold;color:#cc8000;">⚠ BACK UP THIS DEPOSIT RECORD</div>` +
+            `<div class="muted" style="font-size:11px;margin:4px 0 8px 0;">Saved to localStorage on this browser only. Without (secret, nullifier_preimage) you cannot withdraw — copy or download a copy now and store it offline.</div>` +
+            `<div class="flex" style="gap:6px;flex-wrap:wrap;margin-bottom:8px;">` +
+            `<button type="button" id="btn-mixer-dep-copy-record" style="font-size:11px;padding:4px 10px;">📋 Copy record</button>` +
+            `<button type="button" id="btn-mixer-dep-download-record" style="font-size:11px;padding:4px 10px;">💾 Download JSON</button>` +
+            `<button type="button" id="btn-mixer-dep-copy-sharelink" style="font-size:11px;padding:4px 10px;">🔗 Copy share-link</button>` +
+            `<span id="mixer-dep-action-status" class="muted" style="font-size:11px;align-self:center;"></span>` +
+            `</div>` +
+            `<pre style="font-size:11px;background:rgba(0,0,0,0.04);padding:6px;border-radius:4px;margin:0;overflow:auto;max-height:240px;">${escapeHtml(recJson)}</pre>` +
+            `</div>` +
+            `<div class="muted" style="font-size:11px;">Your leaf will become withdrawable after ~3 confirmations (~30 min on mainnet, ~5 min on signet). Track progress in the Pending deposits block above the pool list.</div>`;
+          // Wire post-render action buttons. innerHTML reset above wipes
+          // any prior handlers; re-attach fresh.
+          const _setStatus = (s, kind = '') => {
+            const el = document.getElementById('mixer-dep-action-status');
+            if (!el) return;
+            el.textContent = s;
+            el.style.color = kind === 'error' ? 'var(--red)'
+                            : kind === 'success' ? 'var(--green, #0a7d4e)'
+                            : '';
+            // Auto-clear status after 3s so the next action starts clean.
+            setTimeout(() => { if (el.textContent === s) el.textContent = ''; }, 3000);
+          };
+          const _copy = async (text, ok, err) => {
+            try {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+              } else {
+                // Fallback: hidden textarea + execCommand. Old Safari / non-secure
+                // contexts fall here. Best-effort.
+                const ta = document.createElement('textarea');
+                ta.value = text;
+                ta.style.position = 'fixed';
+                ta.style.top = '-1000px';
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); } finally { document.body.removeChild(ta); }
+              }
+              _setStatus(ok, 'success');
+            } catch {
+              _setStatus(err, 'error');
+            }
+          };
+          const cpRec = document.getElementById('btn-mixer-dep-copy-record');
+          if (cpRec) cpRec.onclick = () => _copy(recJson, 'Record copied to clipboard.', 'Copy failed — select the text manually.');
+          const cpShare = document.getElementById('btn-mixer-dep-copy-sharelink');
+          if (cpShare) cpShare.onclick = () => _copy(shareLink, 'Share-link copied — send out-of-band to the recipient.', 'Copy failed — copy the URL manually.');
+          const dlRec = document.getElementById('btn-mixer-dep-download-record');
+          if (dlRec) dlRec.onclick = () => {
+            try {
+              const blob = new Blob([recJson], { type: 'application/json' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              // Filename ties to the reveal txid prefix so the user can
+              // identify which deposit each downloaded record is for if
+              // they accumulate multiple downloads.
+              a.download = `tacit-deposit-${(r.revealTxid || '').slice(0, 12)}.json`;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+              _setStatus('Downloaded.', 'success');
+            } catch {
+              _setStatus('Download failed.', 'error');
+            }
+          };
         }
         toast(`Deposited ${denomDisp} ${ticker}: reveal=${shorten(r.revealTxid, 6)}`, 'success');
         renderMixer();
       } catch (e) {
-        alert('Deposit broadcast failed: ' + (e.message || e));
+        // Inline error rendering replaces the blocking alert(). The
+        // accumulated progress lines stay visible above the failure
+        // marker so the user can see which stage failed.
+        const msg = e && e.message ? e.message : String(e);
+        outLines.push(`✗ Deposit failed: ${msg}`);
+        setOut(outLines.join('\n'));
         console.error(e);
       } finally {
         depBtn.disabled = false;
@@ -11129,22 +12117,35 @@ function setupMixerHandlers() {
             return;
           }
         }
-        let added = 0, skipped = 0;
+        let added = 0, skipped = 0, corrupt = 0;
         for (const rec of incoming) {
           if (!rec || typeof rec !== 'object') { skipped++; continue; }
-          if (!/^[0-9a-f]{64}$/.test(rec.nullifierHashHex || '')) { skipped++; continue; }
-          if (!/^[0-9a-f]{64}$/.test(rec.secretHex || '')) { skipped++; continue; }
-          if (!/^[0-9a-f]{64}$/.test(rec.nullifierPreimageHex || '')) { skipped++; continue; }
-          if (!/^[0-9a-f]{64}$/.test(rec.assetIdHex || '')) { skipped++; continue; }
+          // Full crypto-consistency validation, not just hex-shape check.
+          // _validateWithdrawRecord re-derives leaf_commitment and
+          // nullifier_hash from (secret, ν, denomination) and rejects on
+          // mismatch — catches corrupted backups at import time instead of
+          // letting them sit until withdraw blows up with a cryptic
+          // snarkjs error months later.
+          const vr = _validateWithdrawRecord(rec);
+          if (!vr.ok) {
+            if (typeof console !== 'undefined') {
+              console.warn('[mixer] import rejected corrupt record:', vr.error);
+            }
+            corrupt++;
+            continue;
+          }
           // saveMixerDepositRecord dedupes on nullifierHashHex first-write-wins,
           // so re-importing the same file is idempotent.
           const before = loadMixerDeposits().length;
-          saveMixerDepositRecord(rec);
+          saveMixerDepositRecord(vr.rec);
           const after = loadMixerDeposits().length;
           if (after > before) added++;
           else skipped++;
         }
-        _setBackupStatus(`Imported: ${added} added, ${skipped} skipped (already-known or malformed).`, added > 0 ? 'success' : '');
+        const parts = [`${added} added`];
+        if (skipped > 0) parts.push(`${skipped} skipped (already-known)`);
+        if (corrupt > 0) parts.push(`${corrupt} rejected (crypto-inconsistent — check console for details)`);
+        _setBackupStatus(`Imported: ${parts.join(', ')}.`, corrupt > 0 ? 'error' : (added > 0 ? 'success' : ''));
         // Reset the file input so re-selecting the same file fires the
         // change event again.
         impInput.value = '';
@@ -11189,12 +12190,50 @@ function setupMixerHandlers() {
   }
   const initInputs = ['mixer-init-asset', 'mixer-init-denom', 'mixer-init-vk-cid', 'mixer-init-ceremony-cid']
     .map(id => document.getElementById(id));
+  const initDenomHintEl = document.getElementById('mixer-init-denom-hint');
+  // The on-chain `pool_denom` field is a raw u64 in base units; humans think
+  // in whole tokens. Bridge: take user input as whole tokens, multiply by
+  // 10^decimals from the selected asset's CETCH/PETCH meta, and surface the
+  // resolved u64 live so power users (and anyone double-checking) see what
+  // actually goes on chain. Returns:
+  //   { ok: true, raw: bigint, asset: meta, hint: string }   — submittable
+  //   { ok: false, hint: string }                            — show warning
+  const _resolveInitDenom = () => {
+    const assetIdHex = (document.getElementById('mixer-init-asset')?.value || '').trim().toLowerCase();
+    const denomStr   = (document.getElementById('mixer-init-denom')?.value || '').trim();
+    if (!assetIdHex) return { ok: false, hint: 'Pick an asset first.' };
+    const meta = getAssetMeta(assetIdHex);
+    if (!meta) return { ok: false, hint: 'Asset metadata not loaded — refresh the Discover tab.' };
+    const decimals = Number(meta.decimals) || 0;
+    const ticker = meta.ticker || assetIdHex.slice(0, 8) + '…';
+    if (!denomStr) {
+      return { ok: false, hint: `Asset has ${decimals} decimals. Type a whole-token amount above.` };
+    }
+    let raw;
+    try { raw = parseAssetAmount(denomStr, decimals); }
+    catch (e) { return { ok: false, hint: `Invalid amount: ${e.message || e}` }; }
+    if (raw <= 0n) return { ok: false, hint: 'Denomination must be > 0.' };
+    if (raw >= (1n << BigInt(N_BITS))) return { ok: false, hint: `Denomination overflows u${N_BITS} — too large.` };
+    return {
+      ok: true,
+      raw,
+      asset: meta,
+      hint: `= ${fmtAssetAmount(raw, decimals)} ${ticker}  ·  on-chain u64: ${raw.toString()}`,
+    };
+  };
   const refreshInitDisabled = () => {
     if (!initBtn) return;
-    const ok = initInputs.every(el => el && (el.value || '').trim().length > 0);
-    initBtn.disabled = !ok;
+    const cidsFilled = ['mixer-init-vk-cid', 'mixer-init-ceremony-cid']
+      .every(id => (document.getElementById(id)?.value || '').trim().length > 0);
+    const resolved = _resolveInitDenom();
+    if (initDenomHintEl) {
+      initDenomHintEl.textContent = resolved.hint;
+      initDenomHintEl.style.color = resolved.ok ? '' : '#cc8000';
+    }
+    initBtn.disabled = !(cidsFilled && resolved.ok);
   };
   for (const el of initInputs) if (el) el.addEventListener('input', refreshInitDisabled);
+  for (const el of initInputs) if (el) el.addEventListener('change', refreshInitDisabled);
   refreshInitDisabled();  // re-run now that both canonical CIDs are pre-filled
   if (initBtn) {
     initBtn.onclick = async () => {
@@ -11203,15 +12242,16 @@ function setupMixerHandlers() {
       const denomStr   = document.getElementById('mixer-init-denom').value.trim();
       const vkCid      = document.getElementById('mixer-init-vk-cid').value.trim();
       const ceCid      = document.getElementById('mixer-init-ceremony-cid').value.trim();
-      let poolDenom;
-      try { poolDenom = BigInt(denomStr); }
-      catch { alert('Invalid denomination — must be an integer.'); return; }
-      if (poolDenom <= 0n) { alert('Denomination must be > 0.'); return; }
+      const resolved = _resolveInitDenom();
+      if (!resolved.ok) { alert(resolved.hint); return; }
+      const poolDenom = resolved.raw;
+      const decimals  = Number(resolved.asset.decimals) || 0;
+      const ticker    = resolved.asset.ticker || assetIdHex.slice(0, 8) + '…';
       // Sanity: asset_id must be 64 hex chars.
       if (!/^[0-9a-fA-F]{64}$/.test(assetIdHex)) { alert('Asset ID must be 32 bytes (64 hex).'); return; }
       // CIDs are loosely checked: must be ≥ 6 chars, ASCII printable.
       if (vkCid.length < 6 || ceCid.length < 6) { alert('CIDs look too short.'); return; }
-      if (!confirm(`Initialize a new mixer pool?\n\n  asset_id:    ${assetIdHex.slice(0, 16)}…\n  denomination: ${denomStr}\n  vk CID:       ${vkCid}\n  ceremony CID: ${ceCid}\n\nThis broadcasts a POOL_INIT envelope (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees.\n\nFirst-confirmed-wins per SPEC §5.10.1 — only the first canonical POOL_INIT for this (asset_id, denomination) becomes the pool of record.`)) return;
+      if (!confirm(`Initialize a new mixer pool?\n\n  asset_id:    ${assetIdHex.slice(0, 16)}…\n  ticker:       ${ticker}\n  denomination: ${fmtAssetAmount(poolDenom, decimals)} ${ticker}\n  (on-chain u64: ${poolDenom.toString()})\n  vk CID:       ${vkCid}\n  ceremony CID: ${ceCid}\n\nThis broadcasts a POOL_INIT envelope (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees.\n\nFirst-confirmed-wins per SPEC §5.10.1 — only the first canonical POOL_INIT for this (asset_id, denomination) becomes the pool of record.`)) return;
       initBtn.disabled = true;
       const origText = initBtn.textContent;
       initBtn.textContent = 'Initializing pool…';
@@ -11219,8 +12259,25 @@ function setupMixerHandlers() {
         const r = await buildAndBroadcastPoolInit({
           assetIdHex, poolDenom, vkCid, ceremonyCid: ceCid,
         });
-        toast(`Pool initialized: commit=${shorten(r.commitTxid, 6)} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
-        // Refresh the Mixer tab so the new pool appears.
+        // Track the broadcast as pending until scanPools sees it on chain.
+        // The dapp deliberately does NOT register the pool locally on
+        // broadcast (front-run + same-block-deposit safety); this list is
+        // the creator's only feedback that their broadcast is in flight.
+        _savePendingPoolInit({
+          assetIdHex,
+          poolDenom: poolDenom.toString(),
+          ticker,
+          decimals,
+          commitTxid: r.commitTxid,
+          revealTxid: r.revealTxid,
+          broadcastAt: Date.now(),
+        });
+        toast(
+          `Pool initialized: ${fmtAssetAmount(poolDenom, decimals)} ${ticker} ` +
+          `· reveal=${shorten(r.revealTxid, 6)}. Pool will appear in the list ` +
+          `once Bitcoin confirms (~5–15 min).`,
+          'success',
+        );
         renderMixer();
       } catch (e) {
         alert('POOL_INIT broadcast failed: ' + (e.message || e));
@@ -11235,20 +12292,76 @@ function setupMixerHandlers() {
 
   const previewDBtn = document.getElementById('btn-mixer-deposit-preview');
   if (previewDBtn) {
-    previewDBtn.onclick = () => {
+    previewDBtn.onclick = async () => {
       const sel = document.getElementById('mixer-deposit-pool');
       const out = document.getElementById('mixer-deposit-preview-out');
-      if (!sel || !sel.value) { if (out) { out.style.display = 'block'; out.textContent = 'Pick a pool first.'; } return; }
+      if (!out) return;
+      out.style.display = 'block';
+      if (!sel || !sel.value) { out.textContent = 'Pick a pool first.'; return; }
       const [aidHex, denomStr] = sel.value.split(':');
+      const denomBig = BigInt(denomStr);
       const meta = getAssetMeta(aidHex);
       const ticker = meta ? meta.ticker : aidHex.slice(0, 8) + '…';
-      if (out) {
-        out.style.display = 'block';
-        out.textContent = `Deposit preview\n----------------\n` +
-          `asset:        ${ticker}  (${aidHex})\n` +
-          `denomination: ${denomStr}\n\n` +
-          `On broadcast: dApp would (1) generate (secret, nullifier_preimage) via CSPRNG, (2) compute leaf = poseidon(secret, ν, denom), (3) sign kernel under (C_in − denom·H).x_only(), (4) build commit/reveal txs. Wire-encoded payload size: 137 bytes. Broadcast disabled until verifier vendor-bundle ships.`;
+      const decs = meta ? (Number(meta.decimals) || 0) : 0;
+      const denomDisp = fmtAssetAmount(denomBig, decs);
+      const stats = mixerGetPoolStats(aidHex, denomBig);
+      const anonSet = stats ? stats.anonymitySet : 0;
+      const totalLeaves = stats ? stats.totalLeaves : 0;
+      const spentNulls = stats ? stats.spentNullifiers : 0;
+      // Anonymity-set health hint. Tornado-style mixers' privacy scales with
+      // unspent-leaves; below ~5 the set is basically named, ~5–30 is okay
+      // for casual privacy, 30+ is comfortably anonymous. Surface this as
+      // a one-line nudge so the user understands what they're buying.
+      let anonHint;
+      if (anonSet < 5) anonHint = '⚠ very small — your deposit will be easy to single out';
+      else if (anonSet < 30) anonHint = 'okay for casual privacy; bigger pools are better';
+      else anonHint = 'healthy — well-mixed';
+      // UTXO availability + auto-split heads-up. Synchronous check against
+      // the holdings cache; if the cache is stale the deposit-broadcast path
+      // refreshes scanHoldings before picking a UTXO anyway.
+      let utxoLine, splitLine;
+      try {
+        const h = (_holdingsCache?.holdings || new Map()).get(aidHex);
+        const have = h ? h.balance : 0n;
+        const hasExact = !!(h?.utxos || []).find(u => u.amount === denomBig);
+        utxoLine = `your balance:    ${fmtAssetAmount(have, decs)} ${ticker}` +
+          (have < denomBig ? '  ⚠ insufficient (mint or receive more first)' : '');
+        splitLine = hasExact
+          ? `auto-split:      not needed — you have an exact-${denomDisp}-${ticker} UTXO`
+          : `auto-split:      needed — no exact-${denomDisp}-${ticker} UTXO; one extra CXFER before deposit`;
+      } catch {
+        utxoLine = `your balance:    (cache empty — open Holdings to refresh)`;
+        splitLine = `auto-split:      (cache empty — open Holdings to refresh)`;
       }
+      // Fee estimate. 'etch' is the standard commit+reveal pair the mixer
+      // deposit envelope uses (similar payload size, similar witness).
+      let feeLine;
+      try {
+        const sats = await estimateSatsForOp('etch');
+        feeLine = `est. BTC fee:    ~${sats.toLocaleString()} sats`;
+      } catch {
+        feeLine = `est. BTC fee:    (fee oracle unavailable)`;
+      }
+      const priorCount = loadMixerDeposits().filter(r =>
+        r.assetIdHex === aidHex && BigInt(r.denomination || 0) === denomBig
+      ).length;
+      const priorLine = priorCount > 0
+        ? `prior deposits:  ${priorCount} from this browser  ⚠ same-wallet correlation`
+        : `prior deposits:  none from this browser`;
+      out.textContent = `Deposit preview\n` +
+        `----------------\n` +
+        `asset:           ${ticker} (${aidHex.slice(0, 16)}…)\n` +
+        `denomination:    ${denomDisp} ${ticker}\n` +
+        `pool state:      ${totalLeaves} total deposits − ${spentNulls} withdraws = ${anonSet} unspent leaves\n` +
+        `anonymity:       ${anonHint}\n` +
+        `${utxoLine}\n` +
+        `${splitLine}\n` +
+        `${feeLine}\n` +
+        `${priorLine}\n\n` +
+        `On broadcast the dapp will: generate fresh (secret, nullifier_preimage) via CSPRNG, ` +
+        `compute leaf = poseidon3(secret, ν, denomination), sign the kernel under (C_in − denom·H).x_only(), ` +
+        `and broadcast a 137-byte T_DEPOSIT envelope as commit+reveal txs. The (secret, ν) pair is saved ` +
+        `to localStorage — back it up immediately or you cannot withdraw later.`;
     };
   }
 }
@@ -11969,11 +13082,16 @@ async function ceremonyRender() {
           const finalizedAt = state.finalized_at
             ? new Date(state.finalized_at * 1000).toLocaleString()
             : '(unknown time)';
-          const beaconFull = (state.beacon_block_hash || '').slice(0, 16);
+          const beaconFullHex = (state.beacon_block_hash || '').toLowerCase();
+          const beaconShort = beaconFullHex ? beaconFullHex.slice(0, 16) + '…' : '';
+          const beaconTitle = beaconFullHex
+            ? `Bitcoin-block beacon (full): ${beaconFullHex}` +
+              (Number.isInteger(state.beacon_iterations) ? `\nMiMC iterations: ${state.beacon_iterations}` : '')
+            : '';
           statsEl.innerHTML =
             `<strong>${state.contribution_count}</strong> chain advances` +
             ` · finalized ${escapeHtml(finalizedAt)}` +
-            ` · beacon <code style="font-size:11px;">${escapeHtml(beaconFull)}…</code>`;
+            ` · beacon <code title="${escapeHtml(beaconTitle)}" style="font-size:11px;cursor:help;">${escapeHtml(beaconShort)}</code>`;
         }
         banner.style.display = 'block';
       } else {
@@ -11994,8 +13112,20 @@ async function ceremonyRender() {
   if (stateEl) {
     const head = state.head_cid || '(none)';
     const recent = state.last_contributor || state.initiator || 'anonymous';
+    // Bitcoin block hashes have a long leading run of zeroes (proof-of-work
+    // difficulty), so a naive truncation looks like "0000000000000000…" with
+    // no signal in it. Render the truncated form for the badge text but stash
+    // the full 64-char hex in a `title` tooltip + use `<code>` so users who
+    // hover or copy-paste see the real value. The full beacon block hash +
+    // iteration count are the auditable inputs to the finalization commit.
+    const fullBeacon = (state.beacon_block_hash || '').toLowerCase();
+    const shortBeacon = fullBeacon ? fullBeacon.slice(0, 16) + '…' : '';
+    const beaconTitle = fullBeacon
+      ? `Bitcoin-block beacon (full): ${fullBeacon}` +
+        (Number.isInteger(state.beacon_iterations) ? `\nMiMC iterations: ${state.beacon_iterations}` : '')
+      : '';
     const finalBadge = state.finalized
-      ? ` · <strong style="color:#859900;">✓ FINALIZED (beacon ${escapeHtml((state.beacon_block_hash || '').slice(0, 16))}…)</strong>`
+      ? ` · <strong style="color:#859900;">✓ FINALIZED (beacon <code title="${escapeHtml(beaconTitle)}" style="cursor:help;">${escapeHtml(shortBeacon)}</code>)</strong>`
       : '';
     // Mainnet readiness gauge — milestone strip. Each pill turns green as
     // its count is crossed, the next unreached pill is highlighted with a
@@ -12616,10 +13746,11 @@ async function ceremonyInit() {
 }
 
 // Move the ceremony section to the top of the mixer tab while the ceremony
-// is not yet finalized; once finalized, slide it back down between
-// withdraw and initialize-new-pool. Mainnet pools depend on a finalized
+// is not yet finalized; once finalized, slide it to the absolute bottom of
+// the tab (below initialize-new-pool). Mainnet pools depend on a finalized
 // ceremony (SPEC §3.7), so until then the ceremony is the most important
-// thing on this tab and should not be buried below deposit/withdraw.
+// thing on this tab; once finalized it becomes historical context and
+// belongs out of the way of the active deposit/withdraw/init flows.
 function _placeCeremonySection(finalized) {
   const ceremonySection = document.getElementById('mixer-ceremony-section');
   const initPoolSection = document.getElementById('mixer-init-pool-section');
@@ -12627,8 +13758,11 @@ function _placeCeremonySection(finalized) {
   const parent = ceremonySection.parentElement;
   if (!parent) return;
   if (finalized) {
-    if (ceremonySection.nextElementSibling !== initPoolSection) {
-      parent.insertBefore(ceremonySection, initPoolSection);
+    // Bottom: append after the init-pool section so the ceremony is the
+    // last block on the tab. appendChild moves the existing node — idempotent
+    // when re-invoked, no duplication.
+    if (parent.lastElementChild !== ceremonySection) {
+      parent.appendChild(ceremonySection);
     }
   } else {
     // Insert immediately after the first (intro) section so the ceremony is
@@ -13017,12 +14151,34 @@ function setupWalletButtons() {
     }
     const v = prompt('Paste private key (hex, 64 chars):');
     if (!v) return;
-    try { await wallet.setPriv(v, wallet.ext?.address || null); toast('Wallet imported', 'success'); refreshWallet(); renderExtWalletPanel(); }
+    try {
+      await wallet.setPriv(v, wallet.ext?.address || null);
+      // Holdings cache is keyed by global wallet state; without explicit
+      // invalidation the next 30 seconds of scanHoldings calls would return
+      // the previous wallet's holdings, falsely showing tokens this key
+      // doesn't control. Affects any post-import balance-checking flow —
+      // Send privately's balance preview, the Drops Verify batch's
+      // balance gate, the mixer deposit selector, etc.
+      invalidateHoldingsCache();
+      toast('Wallet imported', 'success');
+      refreshWallet();
+      renderExtWalletPanel();
+      // Re-render the Drops tab's active-wallet indicator so users who
+      // import while on Drops see the change without a tab re-click.
+      try { _renderDropActiveWallet(); } catch {}
+    }
     catch (e) { toast('Import failed: ' + e.message, 'error'); }
   };
   $('#btn-regen').onclick = async () => {
     if (!confirm('Generate a new wallet? Your old key will be replaced (export it first if you want to keep it).')) return;
-    try { await wallet.regenerate(wallet.ext?.address || null); toast('New wallet generated', 'success'); refreshWallet(); renderExtWalletPanel(); }
+    try {
+      await wallet.regenerate(wallet.ext?.address || null);
+      invalidateHoldingsCache();   // see comment in btn-import handler
+      toast('New wallet generated', 'success');
+      refreshWallet();
+      renderExtWalletPanel();
+      try { _renderDropActiveWallet(); } catch {}
+    }
     catch (e) { toast('Wallet regeneration cancelled: ' + e.message, ''); }
   };
   const dripBtn = $('#btn-drip');
@@ -14699,7 +15855,24 @@ function loadSavedDrops() {
   catch { return []; }
 }
 function saveDrops(arr) {
-  localStorage.setItem(_dropsStorageKey(), JSON.stringify(arr));
+  // Quota-exceeded errors throw QuotaExceededError (Firefox), code 22 / "DOM
+  // Exception" (Chrome), or similar. Re-raise with a clearer message so the
+  // fulfilment / save handlers can surface a user-readable failure instead
+  // of a cryptic "DOMException: The quota has been exceeded." Without this,
+  // a phase-1 write that fails on quota would leave the broadcast handler
+  // in an unknown state.
+  try {
+    localStorage.setItem(_dropsStorageKey(), JSON.stringify(arr));
+  } catch (e) {
+    const name = e?.name || '';
+    if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED' || /quota/i.test(e?.message || '')) {
+      throw new Error(
+        'browser localStorage quota exceeded — drop record is too large to persist. ' +
+        'Either split the snapshot into smaller drops, or export your current drops via Export JSON and clear older records before saving this one.',
+      );
+    }
+    throw e;
+  }
 }
 function _dropIdFor(rootHex, assetIdHex) {
   // Stable per (root, asset) so duplicate save attempts overwrite the same record.
@@ -14833,7 +16006,34 @@ function refreshDropsTab() {
   _renderDropSources();
   _renderDropAssetMeta();
   renderSavedDropsList();
+  _renderDropActiveWallet();
   if (_dropBuilt) _renderBuildPreview();
+}
+
+// Active-wallet indicator at the top of the Drops tab. Renders the address
+// the next "Fulfil claims" / "Pin snapshot announcement" / "Cancel" signing
+// op will use, so the issuer can see at a glance whether they're operating
+// from their main wallet or from a treasury. Pulled out of refreshDropsTab
+// so the treasury-switch flow can re-render it without a full tab refresh.
+function _renderDropActiveWallet() {
+  const out = $('#drop-active-wallet');
+  if (!out) return;
+  if (!wallet.pub) {
+    out.style.display = 'none';
+    out.innerHTML = '';
+    return;
+  }
+  const addr = wallet.address();
+  const pubHex = bytesToHex(wallet.pub);
+  out.style.display = '';
+  out.innerHTML = `
+    <div class="flex" style="gap:8px;align-items:center;flex-wrap:wrap;">
+      <span class="label">active wallet</span>
+      <code>${escapeHtml(shorten(addr, 12))}</code>
+      <span class="muted" style="font-size:10px;">pubkey ${escapeHtml(shorten(pubHex, 10))}</span>
+      <span class="muted" style="font-size:11px;flex:1;text-align:right;">signs every fulfilment + announcement on this tab</span>
+    </div>
+  `;
 }
 
 function refreshDropAssetSelect() {
@@ -14907,6 +16107,7 @@ function renderSavedDropsList() {
           <button data-act="drop-fulfil" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Fulfil claims</button>
           <button data-act="drop-publish" data-drop-id="${escapeHtml(d.drop_id)}" type="button" ${canPublish ? '' : 'disabled'} title="${escapeHtml(publishTitle)}">${escapeHtml(publishLabel)}</button>
           ${announced ? `<button data-act="drop-unpublish" data-drop-id="${escapeHtml(d.drop_id)}" type="button" title="Sign a cancel and remove the announcement from discovery">Unpublish</button>` : ''}
+          <button data-act="drop-sweep" data-drop-id="${escapeHtml(d.drop_id)}" type="button" title="Send the active wallet's remaining balance of this airdrop asset to a destination address — useful for sweeping the treasury back to your main wallet after the airdrop completes">↗ Sweep balance</button>
           <button data-act="drop-crosscheck" data-drop-id="${escapeHtml(d.drop_id)}" type="button" title="Verify each fulfilled[] entry against on-chain state">Cross-check</button>
           <button data-act="drop-export" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Export JSON</button>
           <button data-act="drop-copy-root" data-drop-id="${escapeHtml(d.drop_id)}" type="button">Copy root</button>
@@ -14948,6 +16149,8 @@ function _handleDropRowAction(act, dropId) {
     if (_dropFulfilCurrent && _dropFulfilCurrent.drop_id === dropId) _closeDropFulfil();
     if (_dropCrossCheckCurrent && _dropCrossCheckCurrent.drop_id === dropId) _closeDropCrossCheck();
     toast('Drop record deleted', 'success');
+  } else if (act === 'drop-sweep') {
+    _sweepTreasuryToAddress(d);
   } else if (act === 'drop-publish') {
     _publishDropAnnouncement(d);
   } else if (act === 'drop-unpublish') {
@@ -15090,6 +16293,54 @@ async function _unpublishDropAnnouncement(d) {
   } catch (e) {
     toast('unpublish failed: ' + e.message, 'error');
   }
+}
+
+// Sweep the active wallet's remaining balance of this drop's asset. CXFER
+// recipients need a 33-byte compressed pubkey, not just an address (the ECDH
+// blinding derivation requires the pubkey), so we can't take a bech32 alone.
+// The recommended path is to navigate to the Holdings tab — that surface
+// already has the polished Send privately UX, takes a pubkey, validates it,
+// shows balance, etc. Re-implementing it here would be duplicative and
+// error-prone. The Drops tab's role here is to surface the affordance so
+// post-fulfilment cleanup is discoverable; the actual send happens through
+// the existing flow.
+async function _sweepTreasuryToAddress(d) {
+  // Check the active wallet's current balance of this asset. If zero, tell
+  // the user there's nothing to sweep so they don't burn fees on an empty
+  // CXFER. If non-zero, surface the figure + a deep-link to Holdings.
+  let balance = 0n;
+  try {
+    const holdings = await scanHoldings();
+    const h = holdings.get(d.asset_id_hex);
+    balance = h ? h.balance : 0n;
+  } catch { /* network may be flaky; surface "unknown" below */ }
+  const decimals = d.asset_decimals || 0;
+  const ticker = d.asset_ticker || '?';
+  const fmtBalance = balance > 0n
+    ? fmtAssetAmountPlain(balance, decimals) + ' ' + ticker
+    : balance === 0n ? `0 ${ticker}` : '?';
+  const note = balance === 0n
+    ? `Active wallet has 0 ${ticker} — nothing to sweep.\n\nIf you expected a balance, confirm the active wallet is the treasury (top of this tab) and that fulfilment CXFERs were broadcast under it.`
+    : `Active wallet has ${fmtBalance} of this airdrop asset remaining.\n\nThe Holdings tab is where Send privately lives. ` +
+      `Clicking OK switches to Holdings — find the ${ticker} card and click Send privately to send the remainder to your main wallet's tacit pubkey. ` +
+      `(You'll need the destination's 33-byte compressed pubkey, not the bech32 address — the recipient's wallet shows this under Wallet → pubkey.)`;
+  if (!confirm(note)) return;
+  if (balance === 0n) return;   // nothing more to do
+  // Navigate to Holdings. Re-uses the deep-link mechanism the dapp already
+  // wires for #tab= URLs; no new code path needed.
+  const tabBtn = document.querySelector('.tab[data-tab="holdings"]');
+  if (tabBtn) tabBtn.click();
+  // Focus the matching asset card after the tab paints so the user lands
+  // directly on the row they want to sweep. The asset card is stamped with
+  // `data-aid` in renderHoldings (the same hook applyOptimisticDebit uses).
+  setTimeout(() => {
+    const card = document.querySelector(`.asset-card[data-aid="${d.asset_id_hex}"]`);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      card.classList.add('highlight-pulse');
+      setTimeout(() => card.classList.remove('highlight-pulse'), 1800);
+    }
+  }, 300);
 }
 
 function _refreshDropSaveButtonState() {
@@ -15268,7 +16519,14 @@ function _buildDropSnapshot() {
 
   const merged = mergeAirdropRows(rowSets);
   if (merged.length === 0) throw new Error('all rows excluded — check blacklist or sources');
-  if (merged.length > (1 << 20)) throw new Error(`merged snapshot too large: ${merged.length} rows (cap 2^20)`);
+  // localStorage has a per-origin quota of ~5-10MB. A drop record stores the
+  // full row list to allow Verify / Export / Import without re-fetching the
+  // snapshot from IPFS. At ~110 bytes/row JSON-encoded, 50k recipients ≈ 5MB
+  // (within budget on most browsers; tight on Safari mobile). The previous
+  // 2^20 cap was a crypto-layer bound; the storage cap is the practical one.
+  if (merged.length > 100_000) {
+    throw new Error(`merged snapshot too large: ${merged.length} rows (cap 100,000 for browser localStorage; split into multiple drops if needed)`);
+  }
 
   const commit = computeAirdropCommitment(merged);
   _dropBuilt = {
@@ -15337,15 +16595,25 @@ async function _pinDropSnapshot() {
     total: s.total.toString(),
   }));
   blob.blacklist_size = _dropBuilt.blacklistSize;
-  const resp = await fetch(WORKER_BASE + '/pin-json', {
+  // Use the dedicated /pin-airdrop-snapshot endpoint. The general /pin-json
+  // route can't handle airdrop blobs — its metadata whitelist strips every
+  // airdrop field (schema, merkle_root, rows, …) and its 4 KB cap is far
+  // below a realistic snapshot. The dedicated route mirrors the pattern
+  // already used for the mixer's /pin-mixer-vk. If the worker hasn't been
+  // upgraded with this endpoint, surface a clear error rather than silently
+  // pinning an empty blob.
+  const resp = await fetch(WORKER_BASE + '/pin-airdrop-snapshot', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(blob),
   });
-  if (!resp.ok) throw new Error(`pin-json failed: ${resp.status} ${await resp.text().catch(() => '')}`);
+  if (resp.status === 404) {
+    throw new Error('worker is out of date — /pin-airdrop-snapshot endpoint missing. Update worker/src/index.js + redeploy, or paste the snapshot JSON manually into Pinata.');
+  }
+  if (!resp.ok) throw new Error(`pin-airdrop-snapshot failed: ${resp.status} ${await resp.text().catch(() => '')}`);
   const j = await resp.json();
   const cid = j.IpfsHash || j.cid || j.Hash;
-  if (!cid) throw new Error('worker /pin-json returned no CID');
+  if (!cid) throw new Error('worker /pin-airdrop-snapshot returned no CID');
   _dropPinnedCid = `ipfs://${cid}`;
   return _dropPinnedCid;
 }
@@ -15472,9 +16740,46 @@ async function _crossCheckOneEntry(drop, entry) {
   // blinding via ECDH (we're the sender — deterministic from anchor + recipient
   // pubkey), commit to the local-record amount, compare against the on-chain
   // commitment at the matched vout. Catches hand-edited amount fields.
+  //
+  // The derivation needs `wallet.priv` to be the priv that signed the
+  // original CXFER. If the user switched wallets after fulfilment (e.g. they
+  // imported a backup of a drop record after rotating treasuries, or they're
+  // running cross-check from a different machine), the symmetric ECDH won't
+  // match and every entry will falsely fail. Detect that case and surface it
+  // as a distinct "unverifiable from this wallet" status rather than a hard
+  // mismatch, so the user knows to switch back to the original signer.
   if (foundVout >= dec.outputs.length) {
     return { ok: false, reason: `output ${foundVout} is outside the envelope's tacit-output range (${dec.outputs.length})` };
   }
+  // The active wallet was the sender iff its pubkey hashes into one of the
+  // tx's tacit-output P2WPKH scripts (those are the recipients, not the
+  // sender) AND its hash160 appears in the sats-change vout at index m for
+  // change. Simpler proxy: the sender's pubkey appears in the witness of the
+  // P2WPKH asset-input spends. vin[1] is the first asset input.
+  let activeWalletWasSender = false;
+  try {
+    const activeXOnly = wallet.xonly ? bytesToHex(wallet.xonly()) : null;
+    if (activeXOnly && tx.vin?.[1]?.witness?.[1]) {
+      const inputPub = tx.vin[1].witness[1];   // 33-byte compressed hex
+      if (typeof inputPub === 'string' && inputPub.length === 66) {
+        activeWalletWasSender = inputPub.slice(2).toLowerCase() === activeXOnly.toLowerCase();
+      }
+    }
+  } catch { /* fall through; treat as unknown signer */ }
+
+  if (!activeWalletWasSender) {
+    // Skip the ECDH commitment check — it would falsely fail. The other
+    // checks (asset_id match, P2WPKH-to-tacit-pubkey output exists) still
+    // verify the entry is genuine; the amount check just isn't reachable
+    // from this wallet's keys.
+    return {
+      ok: true,
+      label,
+      foundVout,
+      partial: 'active wallet was not the original sender; skipped on-chain commitment-equality check',
+    };
+  }
+
   try {
     const firstAssetIn = tx.vin[1];
     if (firstAssetIn?.txid != null && Number.isInteger(firstAssetIn.vout)) {
@@ -15539,18 +16844,24 @@ async function _runDropCrossCheck() {
     results.push({ entry, ...r });
   }
   if (progress) progress.textContent = '';
-  const okCount = results.filter(r => r.ok).length;
+  const okCount = results.filter(r => r.ok && !r.partial).length;
+  const partialCount = results.filter(r => r.ok && r.partial).length;
   const pendingCount = results.filter(r => r.pending).length;
-  const failCount = results.length - okCount - pendingCount;
-  const summary = (failCount === 0 && pendingCount === 0)
-    ? `<div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);"><strong>✓ All ${okCount} fulfilled entries match chain</strong></div>`
+  const failCount = results.length - okCount - partialCount - pendingCount;
+  const allOk = (failCount === 0 && pendingCount === 0);
+  const summary = allOk
+    ? partialCount > 0
+      ? `<div class="warn" style="border-left-color:var(--orange);background:var(--bg-warm);"><strong>✓ All ${okCount + partialCount} entries reference on-chain CXFERs</strong> · ${partialCount} could not be amount-verified (active wallet differs from the original sender; switch to that wallet to run the full check).</div>`
+      : `<div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);"><strong>✓ All ${okCount} fulfilled entries match chain</strong></div>`
     : pendingCount > 0
-      ? `<div class="warn" style="border-left-color:var(--orange);"><strong>${okCount} ✓ &nbsp; ${pendingCount} ⏳ pending &nbsp; ${failCount} ✗</strong> · ${pendingCount} entr${pendingCount === 1 ? 'y' : 'ies'} have no on-chain txid (broadcast may have crashed); ${failCount} mismatch${failCount === 1 ? '' : 'es'}.</div>`
-      : `<div class="warn"><strong>${okCount} ✓ &nbsp; ${failCount} ✗</strong> · ${failCount} entr${failCount === 1 ? 'y' : 'ies'} failed cross-check (details below)</div>`;
+      ? `<div class="warn" style="border-left-color:var(--orange);"><strong>${okCount + partialCount} ✓ &nbsp; ${pendingCount} ⏳ pending &nbsp; ${failCount} ✗</strong> · ${pendingCount} entr${pendingCount === 1 ? 'y' : 'ies'} have no on-chain txid (broadcast may have crashed); ${failCount} mismatch${failCount === 1 ? '' : 'es'}.</div>`
+      : `<div class="warn"><strong>${okCount + partialCount} ✓ &nbsp; ${failCount} ✗</strong> · ${failCount} entr${failCount === 1 ? 'y' : 'ies'} failed cross-check (details below)</div>`;
   const rows = results.map(r => {
     const e = r.entry;
     const status = r.ok
-      ? `<span style="color:var(--green);">✓ ${escapeHtml(r.label)}</span>`
+      ? r.partial
+        ? `<span style="color:var(--orange);">◐ ${escapeHtml(r.label)} · ${escapeHtml(r.partial)}</span>`
+        : `<span style="color:var(--green);">✓ ${escapeHtml(r.label)}</span>`
       : r.pending
         ? `<span style="color:var(--orange);">⏳ ${escapeHtml(r.reason)}</span>`
         : `<span style="color:var(--red);">✗ ${escapeHtml(r.reason)}</span>`;
@@ -15679,6 +16990,31 @@ async function _verifyDropFulfilBatch() {
       amount: row.amount,
       sigVerified,
     });
+  }
+  // Surface insufficient balance up-front. Without this, Verify reports the
+  // batch as ready, the user clicks Broadcast, phase-1 writes the pending
+  // entries to localStorage, and only then does buildAndBroadcastCXferMulti
+  // throw — leaving "pending: true" entries that must be manually cleaned up.
+  // A defensive read here saves both the bad UX and the cleanup burden.
+  try {
+    const holdings = await scanHoldings();
+    const h = holdings.get(drop.asset_id_hex);
+    const balance = h ? h.balance : 0n;
+    const batchTotal = items.reduce((s, it) => s + it.amount, 0n);
+    if (balance < batchTotal) {
+      const decimals = drop.asset_decimals || 0;
+      const ticker = drop.asset_ticker || '?';
+      throw new Error(
+        `insufficient asset balance in active wallet: have ${fmtAssetAmountPlain(balance, decimals)} ${ticker}, ` +
+        `batch needs ${fmtAssetAmountPlain(batchTotal, decimals)} ${ticker}. ` +
+        `Either top up the treasury via Send privately from another wallet, or split this batch into smaller groups.`,
+      );
+    }
+  } catch (e) {
+    // Re-throw the insufficient-balance check; tolerate transient
+    // holdings-scan failures (treat as "unknown balance, let broadcast
+    // surface the actual error" rather than blocking on a flaky network).
+    if (/insufficient asset balance/.test(e.message)) throw e;
   }
   return items;
 }
@@ -15901,33 +17237,169 @@ function setupDropsForm() {
     }
   });
 
-  // Generate treasury (one-shot reveal of fresh privkey hex)
+  // Generate treasury (one-shot reveal of fresh privkey hex). Offers three
+  // post-generation actions: copy privkey (cold-storage path), copy address
+  // (fund-from-external-wallet path), or switch active wallet to this key
+  // (one-click adoption — replaces the lengthy "open separate browser profile
+  // → Wallet → Import key" recipe with a single confirm-protected button).
+  // The switch path is gated on the user having already exported the
+  // currently-active wallet's key, mirroring the existing wallet-replacement
+  // warnings in `setupWalletButtons`.
   $('#btn-drop-gen-treasury')?.addEventListener('click', () => {
     const priv = secp.utils.randomPrivateKey();
     const pub = secp.getPublicKey(priv, true);
     const addr = bech32.encode(NET.hrp, [0, ...bech32.toWords(hash160(pub))]);
+    const privHex = bytesToHex(priv);
+    const pubHex = bytesToHex(pub);
     const out = $('#drop-treasury-out');
     if (!out) return;
     out.style.display = '';
     out.innerHTML = `
       <div class="warn" style="border-left-color:var(--orange);background:var(--bg-warm);">
         <strong>⚠ Treasury privkey — shown ONCE</strong>
-        <div class="muted" style="font-size:11px;margin-top:4px;">Copy this now. The dapp does NOT persist it. To use this treasury, switch wallets via <em>Wallet → Import key</em> in a separate browser profile, then fund it from your main wallet via Send.</div>
+        <div class="muted" style="font-size:11px;margin-top:4px;">The dapp does NOT persist this key. Pick a path below, then store the privkey somewhere safe (a password manager, a paper backup, or an encrypted file).</div>
         <div style="margin-top:10px;font-family:var(--mono);font-size:11px;word-break:break-all;background:var(--bg-warm);padding:8px;border-radius:4px;">
-          <div><span class="label">privkey</span> <code id="drop-treasury-priv">${escapeHtml(bytesToHex(priv))}</code></div>
-          <div style="margin-top:4px;"><span class="label">pubkey</span> <code>${escapeHtml(bytesToHex(pub))}</code></div>
-          <div style="margin-top:4px;"><span class="label">address</span> <code>${escapeHtml(addr)}</code></div>
+          <div><span class="label">privkey</span> <code id="drop-treasury-priv">${escapeHtml(privHex)}</code></div>
+          <div style="margin-top:4px;"><span class="label">pubkey</span> <code>${escapeHtml(pubHex)}</code></div>
+          <div style="margin-top:4px;"><span class="label">address</span> <code id="drop-treasury-addr">${escapeHtml(addr)}</code></div>
         </div>
-        <div class="flex" style="gap:6px;margin-top:8px;">
-          <button id="btn-drop-treasury-copy" type="button">Copy privkey</button>
+        <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
+          <button id="btn-drop-treasury-switch" type="button" class="primary" title="Replace the active wallet with this treasury key. Send / Fulfil flows will sign from this key. Backs up the current wallet first.">↪ Switch active wallet to this treasury</button>
+          <button id="btn-drop-treasury-copy" type="button" title="Copy the privkey for offline / separate-profile storage">Copy privkey</button>
+          <button id="btn-drop-treasury-copy-addr" type="button" title="Copy the bech32 address so you can fund it from your main wallet">Copy address</button>
           <button id="btn-drop-treasury-hide" type="button">Hide</button>
+        </div>
+        <div id="drop-treasury-next-steps" class="muted" style="font-size:11px;margin-top:8px;line-height:1.5;">
+          <strong>Next steps:</strong>
+          <ol style="margin:4px 0 0 18px;padding:0;">
+            <li><strong>Switch active wallet to this treasury</strong> (the button above) — fulfilment CXFERs will sign from the treasury, bounding blast radius if it's compromised mid-airdrop.</li>
+            <li><strong>Fund the treasury with TWO things</strong> — both flow to the address above:
+              <ul style="margin:2px 0 0 14px;padding:0;list-style:disc;">
+                <li><strong>The airdrop asset supply</strong> — from the wallet that holds it, use Holdings → Send privately to transfer the total payout amount (plus a little headroom).</li>
+                <li><strong>Bitcoin sats for CXFER fees</strong> — every fulfilment batch is one CXFER (commit + reveal pair), and the eventual sweep is one more CXFER. Send sats from your external Bitcoin wallet (Xverse / Leather / UniSat / any other) to the address. Rough budget: ~3 K sats per batch on signet, ~15–30 K sats per batch on mainnet at typical fee rates. Multiply by (recipients ÷ 7 + 1) — the +1 covers the sweep.</li>
+              </ul>
+              <span style="display:block;margin-top:2px;">If you under-fund, Fulfil / Send privately will prompt you to top up at broadcast time, so no need to precompute exactly — pre-funding once is just cheaper than per-batch drips.</span>
+            </li>
+            <li><strong>Fulfil</strong> queued claims under §7 below. <strong>Sweep</strong> the remaining asset balance back to your main wallet via Holdings → Send privately (or the ↗ Sweep balance button on each saved drop card) when the airdrop is done.</li>
+          </ol>
         </div>
       </div>
     `;
     $('#btn-drop-treasury-copy').onclick = () => {
-      navigator.clipboard?.writeText(bytesToHex(priv))
+      navigator.clipboard?.writeText(privHex)
         .then(() => toast('Treasury privkey copied — store it safely', 'success'))
-        .catch(() => prompt('Copy treasury privkey:', bytesToHex(priv)));
+        .catch(() => prompt('Copy treasury privkey:', privHex));
+    };
+    $('#btn-drop-treasury-copy-addr').onclick = () => {
+      navigator.clipboard?.writeText(addr)
+        .then(() => toast('Treasury address copied', 'success'))
+        .catch(() => prompt('Copy treasury address:', addr));
+    };
+    $('#btn-drop-treasury-switch').onclick = async () => {
+      // Symmetric with the Wallet tab's "Import key" warning. The current
+      // wallet's tokens become unrecoverable if its privkey wasn't exported,
+      // since this network slot's localStorage entry is overwritten by
+      // wallet.setPriv. Refuse the switch unless the user has acknowledged
+      // their backup (the same gate that protects Send / Receive flows).
+      if (!ensureBurnerBackedUp('Switch active wallet to this treasury (replaces the wallet currently loaded; export the existing key first if you haven\'t)')) return;
+      const currentAddr = wallet.address ? wallet.address() : '(none)';
+      if (!confirm(
+        `Switch the active wallet to this treasury?\n\n` +
+        `Current wallet address: ${currentAddr}\n` +
+        `New (treasury) address: ${addr}\n\n` +
+        `The current wallet's privkey is replaced in this browser's storage. ` +
+        `Anything it controlled will be inaccessible from this device unless you've exported its privkey via Wallet → Export key. ` +
+        `(You backed it up — the previous gate confirmed that.)`,
+      )) return;
+      try {
+        await wallet.setPriv(privHex, wallet.ext?.address || null);
+      } catch (e) {
+        toast('Switch failed: ' + e.message, 'error');
+        return;
+      }
+      // CRITICAL: blow away the holdings cache. scanHoldings has a 30-second
+      // in-memory cache keyed by global wallet state — without explicit
+      // invalidation, the next 30 seconds of scanHoldings calls would return
+      // the PREVIOUS wallet's holdings, falsely showing the treasury as
+      // already funded (or, worse, letting the user pre-stage a Verify batch
+      // against balance that doesn't actually belong to the new active key).
+      // The regular Wallet → Import flow has the same latent issue, but its
+      // typical UX path is slow enough that the cache TTL expires before the
+      // next scanHoldings; the Drops flow expects fresh post-switch data
+      // immediately for the "fund the treasury" step.
+      try { invalidateHoldingsCache(); } catch {}
+      // Re-render every surface that snapshots the active wallet's pubkey
+      // so the user sees the change land immediately (no stale balance, no
+      // stale "signing as" line on the Fulfil panel).
+      try { await refreshWallet(); } catch { /* network may be flaky */ }
+      try { renderExtWalletPanel(); } catch { /* not on every page */ }
+      try { renderHoldings(); } catch { /* lazy load on tab switch */ }
+      try { _renderDropActiveWallet(); } catch { /* function added below */ }
+      try { _renderDropAssetMeta(); } catch {}
+      // Drop any staged Fulfil batch from the previous wallet's verify pass —
+      // its `items[].amount` was checked against the previous wallet's
+      // balance, and broadcasting would now spend the treasury's UTXOs
+      // (zero on a fresh key) against a stale batch. Force the user to
+      // re-run Verify under the new wallet. Re-rendering the Fulfil panel
+      // below clears the preview block so the broadcast button disables.
+      _dropFulfilStaged = null;
+      const preview = $('#drop-fulfil-preview');
+      if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
+      const broadcastBtn = $('#btn-drop-fulfil-broadcast');
+      if (broadcastBtn) broadcastBtn.disabled = true;
+      // If a Fulfil panel is open against a drop, re-render its "signing as"
+      // line so the user sees the treasury pubkey instead of the prior one.
+      if (_dropFulfilCurrent) {
+        try { _openDropFulfil(_dropFulfilCurrent); } catch {}
+      }
+      // Keep the privkey visible in the success panel. If the user hasn't
+      // copied it yet, replacing the entire panel with a "switched ✓" card
+      // would strand them — the privkey display is the only place this
+      // session's randomly-generated treasury key is rendered. Wallet →
+      // Export key would also work (it'd prompt for the new passphrase),
+      // but that's an extra step we shouldn't force on someone whose first
+      // instinct after switching is to fund this address. Banner + privkey
+      // block + address block all stay visible; the "Switch" button removes
+      // itself since the switch is already done. Copy privkey / Copy address
+      // remain usable.
+      out.innerHTML = `
+        <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+          <strong>✓ Active wallet switched to treasury — privkey still visible below, copy it now</strong>
+          <div class="muted" style="font-size:11px;margin-top:4px;">
+            Address <code style="font-family:var(--mono);">${escapeHtml(addr)}</code> is now your active wallet on ${escapeHtml(NET.name)}. <strong>Save the privkey before leaving this tab</strong> — it lives only in this browser; if you clear localStorage without exporting it, the airdrop is unrecoverable.
+          </div>
+          <div style="margin-top:10px;font-family:var(--mono);font-size:11px;word-break:break-all;background:var(--bg);padding:8px;border-radius:4px;border:1px solid var(--ink);">
+            <div><span class="label">privkey</span> <code id="drop-treasury-priv">${escapeHtml(privHex)}</code></div>
+            <div style="margin-top:4px;"><span class="label">pubkey</span> <code>${escapeHtml(pubHex)}</code></div>
+            <div style="margin-top:4px;"><span class="label">address</span> <code id="drop-treasury-addr">${escapeHtml(addr)}</code></div>
+          </div>
+          <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
+            <button id="btn-drop-treasury-copy" type="button" class="primary">Copy privkey</button>
+            <button id="btn-drop-treasury-copy-addr" type="button">Copy address</button>
+            <button id="btn-drop-treasury-hide" type="button" title="Closes this panel. Privkey will then ONLY be retrievable via Wallet → Export key.">Hide (after copying)</button>
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:10px;line-height:1.5;">
+            <strong>Now fund it:</strong> send sats + the airdrop asset to the address above. Sats can come from any Bitcoin wallet (Xverse / Leather / UniSat / etc.); the airdrop asset has to come from the wallet that holds the supply via its Holdings → Send privately. Both flow to the treasury address since this dapp is now operating as the treasury.
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">
+            <strong>To sweep later:</strong> when the airdrop is done, Holdings → Send privately on the airdrop asset back to your main wallet's tacit pubkey (or use the ↗ Sweep balance button on each saved drop card).
+          </div>
+        </div>
+      `;
+      // Re-bind the copy buttons. Same handlers as the pre-switch panel; we
+      // re-bind because innerHTML replacement wiped the listeners.
+      $('#btn-drop-treasury-copy').onclick = () => {
+        navigator.clipboard?.writeText(privHex)
+          .then(() => toast('Treasury privkey copied — store it safely', 'success'))
+          .catch(() => prompt('Copy treasury privkey:', privHex));
+      };
+      $('#btn-drop-treasury-copy-addr').onclick = () => {
+        navigator.clipboard?.writeText(addr)
+          .then(() => toast('Treasury address copied', 'success'))
+          .catch(() => prompt('Copy treasury address:', addr));
+      };
+      $('#btn-drop-treasury-hide').onclick = () => { out.style.display = 'none'; out.innerHTML = ''; };
+      toast(`Active wallet switched to treasury · ${shorten(addr, 8)}`, 'success');
     };
     $('#btn-drop-treasury-hide').onclick = () => { out.style.display = 'none'; out.innerHTML = ''; };
   });
@@ -16050,6 +17522,8 @@ function setupDropsForm() {
       const idx = drops.findIndex(d => d.drop_id === drop.drop_id);
       if (idx < 0) {
         $('#drop-fulfil-err').textContent = 'Drop record vanished — refusing to broadcast against a record that no longer exists locally.';
+        // Drop the lease we just acquired so the next attempt isn't blocked.
+        releaseDropLease(drop.drop_id);
         btn.disabled = false; btn.textContent = 'Broadcast batch CXFER';
         return;
       }
@@ -16066,10 +17540,32 @@ function setupDropsForm() {
           pending: true,
         });
       }
-      saveDrops(drops);
+      try {
+        saveDrops(drops);
+      } catch (e) {
+        // Phase-1 write failed (typically QuotaExceeded). The broadcast has
+        // NOT happened yet, so there's nothing on-chain to reconcile. Bail
+        // cleanly and surface the error so the user can shrink the drop or
+        // export+clear old records.
+        $('#drop-fulfil-err').textContent = `pre-broadcast persistence failed: ${e.message}`;
+        releaseDropLease(drop.drop_id);
+        btn.disabled = false; btn.textContent = 'Broadcast batch CXFER';
+        if (dropStrip) dropStrip.style.display = 'none';
+        setProgressStrip('drop-fulfil-progress', -1);
+        return;
+      }
       _dropFulfilCurrent = drops[idx];
     }
 
+    // Keep the lease alive during broadcast. Commit + reveal usually complete
+    // in seconds, but a congested mempool or a slow Pinata-hosted blob fetch
+    // could push past the 10-min TTL — without a periodic refresh, the lease
+    // would lapse mid-flight and another tab could acquire it, racing
+    // overlapping leaves into a double-pay. The interval is half the TTL so
+    // even a missed tick can't time out the lease.
+    const leaseHeartbeat = setInterval(() => {
+      try { refreshDropLease(drop.drop_id); } catch { /* best-effort */ }
+    }, Math.floor(DROP_LEASE_TTL_MS / 2));
     try {
       const recipients = items.map(x => ({ pubHex: x.tacitPubHex, amount: x.amount }));
       // Airdrop batches can legitimately have multiple leaves consolidating
@@ -16092,6 +17588,7 @@ function setupDropsForm() {
       // fresh because cross-check or other tabs may have touched the record.
       const drops = loadSavedDrops();
       const idx = drops.findIndex(d => d.drop_id === drop.drop_id);
+      let phase2SaveFailed = null;
       if (idx >= 0) {
         const now = Math.floor(Date.now() / 1000);
         for (const f of (drops[idx].fulfilled || [])) {
@@ -16101,10 +17598,28 @@ function setupDropsForm() {
             delete f.pending;
           }
         }
-        saveDrops(drops);
-        _dropFulfilCurrent = drops[idx];
+        try {
+          saveDrops(drops);
+          _dropFulfilCurrent = drops[idx];
+        } catch (e) {
+          // The CXFER IS on-chain now. Persisting the txid failed
+          // (typically QuotaExceeded). The pending entry from phase 1 is
+          // still there with txid=null — the local record will look like
+          // a crashed broadcast even though the chain is fine. Capture the
+          // error so we can surface it prominently and nudge the user to
+          // Export JSON + reduce localStorage before re-trying.
+          phase2SaveFailed = e;
+          console.error('phase-2 saveDrops failed; pending entries persist with txid=null:', e);
+        }
       }
       $('#drop-fulfil-result').style.display = 'block';
+      const phase2Banner = phase2SaveFailed
+        ? `<div class="warn" style="border-left-color:var(--red);background:#fee;margin-top:8px;">
+             <strong>⚠ Broadcast succeeded but local persistence failed</strong>
+             <div class="muted" style="font-size:11px;margin-top:4px;">${escapeHtml(phase2SaveFailed.message)}</div>
+             <div class="muted" style="font-size:11px;margin-top:4px;">The CXFER is on-chain (recipients will recover their funds on next scan). Local pending entries did NOT get their txid attached — Cross-check will show them as "pending." Click "Download backup JSON" below to capture the current state, then export+delete older drops to free up localStorage before retrying.</div>
+           </div>`
+        : '';
       $('#drop-fulfil-result').innerHTML = `
         <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
           <strong>✓ Batch broadcast</strong>
@@ -16115,9 +17630,12 @@ function setupDropsForm() {
           </div>
           <div class="muted" style="font-size:10px;margin-top:4px;">Saving is recommended after every batch — clearing browser data without a backup loses the local fulfilled-leaf ledger (chain unaffected).</div>
         </div>
+        ${phase2Banner}
       `;
       // Wire backup button to the post-merge drop record (loaded fresh inside
-      // the closure so it includes the entries we just appended).
+      // the closure so it includes the entries we just appended). When
+      // phase-2 save failed, drops[idx] still has the txid flipped in
+      // memory — exporting captures that even if localStorage didn't.
       const dropForBackup = drops[idx];
       $('#btn-drop-fulfil-backup').onclick = () => _downloadDropBackup(dropForBackup);
       $('#drop-fulfil-claims').value = '';
@@ -16182,6 +17700,10 @@ function setupDropsForm() {
       }
       console.error(e);
     } finally {
+      // Stop the lease heartbeat first so it can't accidentally extend the
+      // lease after we release it (subtle race: heartbeat fires between
+      // releaseDropLease and clearInterval, re-establishing ownership).
+      try { clearInterval(leaseHeartbeat); } catch { /* nothing to clean up */ }
       // Release the multi-tab lease unconditionally on broadcast finish
       // (success OR failure). Pending entries persist independently — the
       // lease is just the in-flight serializer for the broadcast handler.
@@ -16359,10 +17881,15 @@ function _claimValidateSnapshot(rootHexInput, blob) {
       throw new Error(`snapshot leaf_count (${typeof blob.leaf_count === 'string' ? blob.leaf_count.slice(0, 32) : blob.leaf_count}) ≠ rows.length (${blob.rows.length})`);
     }
   }
-  if (blob.network != null && blob.network !== 'signet' && blob.network !== 'mainnet') {
+  // Network + asset_id are load-bearing: the canonical claim message binds
+  // to both, so a snapshot missing either would let an attacker omit binding
+  // entirely. `buildAirdropClaimMsg` rejects malformed asset_id at sign time,
+  // but rejecting at load gives a clearer error and prevents the UI from
+  // surfacing eligibility for an unsignable claim.
+  if (blob.network !== 'signet' && blob.network !== 'mainnet') {
     throw new Error(`snapshot network must be "signet" or "mainnet"`);
   }
-  if (blob.asset_id != null && !/^[0-9a-f]{64}$/.test(String(blob.asset_id).toLowerCase())) {
+  if (typeof blob.asset_id !== 'string' || !/^[0-9a-f]{64}$/.test(blob.asset_id.toLowerCase())) {
     throw new Error('snapshot asset_id must be 64-char hex');
   }
   if (blob.asset_decimals != null && (!Number.isInteger(blob.asset_decimals) || blob.asset_decimals < 0 || blob.asset_decimals > 8)) {
@@ -16390,6 +17917,36 @@ function _claimValidateSnapshot(rootHexInput, blob) {
     }
     try { const _t = BigInt(blob.total_amount); if (_t < 0n) throw new Error('negative'); }
     catch { throw new Error('snapshot total_amount unparseable as BigInt'); }
+  }
+  // Optional source-provenance fields (audit fix M6). When present, surfaced
+  // by the claim UI so the recipient can verify the issuer's CSV against the
+  // declared ERC-20 contract + chain + block. Strictly validated so a hostile
+  // gateway can't smuggle bad values that the UI would render verbatim.
+  if (blob.source_chain_id != null) {
+    if (!Number.isInteger(blob.source_chain_id) || blob.source_chain_id < 0) {
+      throw new Error('snapshot source_chain_id must be a non-negative integer');
+    }
+  }
+  if (blob.source_contract != null) {
+    if (typeof blob.source_contract !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(blob.source_contract)) {
+      throw new Error('snapshot source_contract must be 0x + 40 hex chars');
+    }
+  }
+  if (blob.source_block_height != null) {
+    if (!Number.isInteger(blob.source_block_height) || blob.source_block_height < 0) {
+      throw new Error('snapshot source_block_height must be a non-negative integer');
+    }
+  }
+  if (blob.source_method != null) {
+    if (typeof blob.source_method !== 'string' || blob.source_method.length === 0 || blob.source_method.length > 64) {
+      throw new Error('snapshot source_method must be a string of length 1..64');
+    }
+    for (let i = 0; i < blob.source_method.length; i++) {
+      const cp = blob.source_method.codePointAt(i);
+      if (cp < 0x20 || cp === 0x7f || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069)) {
+        throw new Error('snapshot source_method contains control or bidi characters');
+      }
+    }
   }
 
   const reconstructedRows = blob.rows.map((r, i) => {
@@ -16481,6 +18038,20 @@ function _renderClaimSnapshotInfo() {
   const networkBadge = s.network === 'mainnet'
     ? `<span style="color:var(--orange);">⚠ MAINNET</span>`
     : `<span style="color:var(--ink-mid);">signet</span>`;
+  // Source-provenance row: only renders when the snapshot declares at least
+  // one source_* field. Audit fix M6 — gives recipients a starting point to
+  // independently reproduce the (addr, amount) tuples by re-pulling holders
+  // of `source_contract` at `source_block_height` on chain `source_chain_id`.
+  const hasSource = s.source_chain_id != null || s.source_contract != null
+                 || s.source_block_height != null || s.source_method != null;
+  const sourceParts = [];
+  if (s.source_method) sourceParts.push(escapeHtml(s.source_method));
+  if (s.source_contract) sourceParts.push(`contract <code>${escapeHtml(shorten(s.source_contract, 10))}</code>`);
+  if (s.source_chain_id != null) sourceParts.push(`chain ${s.source_chain_id}`);
+  if (s.source_block_height != null) sourceParts.push(`block ${s.source_block_height}`);
+  const sourceRow = hasSource
+    ? `<div class="row"><span class="label">source</span>${sourceParts.join(' · ')}</div>`
+    : '';
   out.style.display = 'block';
   out.innerHTML = `
     <div class="tx-preview">
@@ -16490,6 +18061,7 @@ function _renderClaimSnapshotInfo() {
       <div class="row"><span class="label">recipients</span>${s.leaf_count || s.rows.length}</div>
       <div class="row"><span class="label">total payout</span>${fmtAssetAmountPlain(total, decimals)} ${escapeHtml(ticker)}</div>
       <div class="row"><span class="label">root</span><code style="font-size:11px;">${escapeHtml(s.merkle_root)}</code></div>
+      ${sourceRow}
     </div>
   `;
 }
@@ -16532,8 +18104,11 @@ function _ethProviderLabel() {
 // Strip control + bidi characters from a wallet-supplied display string. A
 // malicious or misconfigured wallet that announces itself with a name like
 // "Trust‮kellaW" could visually invert text in the chooser; strip those
-// codepoints. Same defense as the snapshot ticker validator.
-function _sanitizeWalletDisplayString(s) {
+// codepoints. Same defense as the snapshot ticker validator. maxLen caps
+// the rendered length so a long name can't blow out the layout (default 80
+// for wallet-name use; callers with longer fields like the 200-char drop
+// announcement note can pass their own cap).
+function _sanitizeWalletDisplayString(s, maxLen = 80) {
   if (typeof s !== 'string') return '';
   let out = '';
   for (let i = 0; i < s.length; i++) {
@@ -16541,7 +18116,7 @@ function _sanitizeWalletDisplayString(s) {
     if (cp < 0x20 || cp === 0x7f || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069)) continue;
     out += s[i];
   }
-  return out.slice(0, 80);  // cap length so a long name can't blow out the layout
+  return out.slice(0, maxLen);
 }
 
 // Modal chooser — shown when ≥2 EIP-6963 providers are detected and none has
@@ -16778,14 +18353,35 @@ async function _claimSign() {
   if (_claimSnapshot.network !== NET.name) {
     throw new Error(`This drop is for ${_claimSnapshot.network}. Switch tacit to ${_claimSnapshot.network} (top-right network selector) before signing — otherwise the issuer fulfils on ${_claimSnapshot.network} to your ${NET.name} wallet's pubkey, which doesn't exist on ${_claimSnapshot.network}.`);
   }
+  // Re-find the snapshot row from the *current* eth address. If MetaMask
+  // switched accounts between the eligibility render and this click (the
+  // accountsChanged listener resets _claimEligibleRow to null, but a
+  // fast-clicker or a provider that suppresses the event could leave a stale
+  // row pointing to the previous address), the signed message would have
+  // msg.ethAddrHex from the new account but msg.leafIndex/amount from the
+  // old account's row. The issuer's verify path rebuilds msg using
+  // row.ethAddrHex (the snapshot's address), and the recipient's sig would
+  // fail to recover to it — the claim becomes silently un-fulfillable.
+  // Re-resolving here keeps msg internally consistent regardless of staleness.
+  const liveRow = _claimSnapshot._reconstructedRows.find(r => r.ethAddrHex === _claimEthAddr) || null;
+  if (!liveRow) {
+    throw new Error(`Connected Ethereum address 0x${_claimEthAddr} is not in this drop's snapshot. If you just switched accounts in your wallet, click Sign again — the eligibility view will refresh.`);
+  }
+  if (liveRow.index !== _claimEligibleRow.index || liveRow.amount !== _claimEligibleRow.amount) {
+    // Self-heal silently: replace the stale row reference and re-render so
+    // the message preview matches what we're about to sign.
+    _claimEligibleRow = liveRow;
+    _renderClaimEligibility();
+    _renderClaimMsgPreview();
+  }
   const tacitPubHex = bytesToHex(wallet.pub);
   const msg = buildAirdropClaimMsg({
     rootHex: _claimSnapshot.merkle_root,
     network: _claimSnapshot.network,
     assetIdHex: _claimSnapshot.asset_id,
     ethAddrHex: _claimEthAddr,
-    leafIndex: _claimEligibleRow.index,
-    amount: _claimEligibleRow.amount,
+    leafIndex: liveRow.index,
+    amount: liveRow.amount,
     ticker: _claimSnapshot.asset_ticker || '?',
     decimals: Number.isInteger(_claimSnapshot.asset_decimals) ? _claimSnapshot.asset_decimals : 0,
     tacitPubHex,
@@ -17128,8 +18724,21 @@ async function _claimRefreshDiscover() {
     const resp = await fetch(withNet(DROPS_URL));
     if (!resp.ok) throw new Error(`worker ${resp.status}`);
     const j = await resp.json();
-    _claimDiscoverDrops = Array.isArray(j.drops) ? j.drops : [];
-    if (status) status.textContent = `${_claimDiscoverDrops.length} active`;
+    // Defense-in-depth network filter. Older worker builds that don't filter
+    // server-side (the signet KV prefix `drop-announce:` matches mainnet keys
+    // too — see worker handleDropAnnounceList) would leak mainnet drops into
+    // a signet recipient's list. The strict snapshot.network check at sign
+    // time blocks any actual cross-network claim, but the discovery card UX
+    // shouldn't mislead — hide drops whose stored network doesn't match the
+    // dapp's current network. Treat missing network as signet (matches the
+    // legacy KV layout where signet was the unprefixed form).
+    const raw = Array.isArray(j.drops) ? j.drops : [];
+    _claimDiscoverDrops = raw.filter(d => (d?.network || 'signet') === NET.name);
+    if (status) {
+      const filteredOut = raw.length - _claimDiscoverDrops.length;
+      const note = filteredOut > 0 ? ` (${filteredOut} cross-network hidden)` : '';
+      status.textContent = `${_claimDiscoverDrops.length} active${note}`;
+    }
   } catch (e) {
     if (status) status.textContent = `error: ${e.message}`;
     _claimDiscoverDrops = [];
@@ -17142,14 +18751,31 @@ async function _claimRefreshDiscover() {
       _claimDiscoverSnapshots.set(d.merkle_root, { fetching: true });
       _claimFetchSnapshot(d.ipfs_cid)
         .then(blob => {
-          // The full root-recompute happens on the manual-load path the user
-          // triggers via "Claim →"; the lighter-weight check here just
-          // ensures the blob's declared root matches the announcement, so
-          // we never display rows that disagree with what we'd verify later.
+          // Defense-in-depth check that the blob's declared root agrees with
+          // the announcement before we trust anything else from it. The full
+          // row-hash recompute below is the load-bearing check that prevents
+          // a hostile gateway from serving tampered rows under a matching
+          // root field — without it the discovery card would surface forged
+          // amounts even though the eventual claim flow would catch it.
           if (String(blob.merkle_root || '').toLowerCase() !== d.merkle_root) {
             throw new Error('snapshot root does not match announcement');
           }
-          const rows = _claimReconstructDiscoveredRows(blob);
+          // Asset binding: announcement carries `asset_id` which the discovery
+          // card uses to look up ticker/decimals from local asset metadata,
+          // but the canonical claim message binds to `_claimSnapshot.asset_id`
+          // (the blob's claim). Without this check, a hostile announcer could
+          // pin a snapshot for asset B while advertising it as asset A — the
+          // user sees A's metadata on the card, signs for B in the message.
+          // Network has the same shape — announcement vs blob must agree, or
+          // a signet announcement could surface a mainnet snapshot whose
+          // claim message would target a different network's tacit keys.
+          if (String(blob.asset_id || '').toLowerCase() !== d.asset_id) {
+            throw new Error('snapshot asset_id does not match announcement');
+          }
+          if (blob.network && blob.network !== d.network) {
+            throw new Error(`snapshot network (${blob.network}) does not match announcement (${d.network})`);
+          }
+          const rows = _claimReconstructDiscoveredRows(blob, d.merkle_root);
           _claimDiscoverSnapshots.set(d.merkle_root, { rows });
           _renderClaimDiscoverList();
         })
@@ -17162,16 +18788,57 @@ async function _claimRefreshDiscover() {
   _renderClaimDiscoverList();
 }
 
-function _claimReconstructDiscoveredRows(blob) {
+function _claimReconstructDiscoveredRows(blob, expectedRootHex) {
   if (!blob || !Array.isArray(blob.rows)) throw new Error('snapshot has no rows[]');
-  return blob.rows.map((r, i) => {
+  // Parse + bounds-check every row. A hostile gateway could otherwise plant
+  // an oversized amount (BigInt accepts arbitrary-size inputs) that overflows
+  // u64 — issuer-side rejection would surface as a confusing "merkle proof
+  // failed" downstream. Catch it here so the discovery card shows the
+  // gateway-tampered error explicitly.
+  const parsed = blob.rows.map((r, i) => {
+    if (!r || typeof r !== 'object') throw new Error(`row ${i} not an object`);
     const ethAddrHex = String(r.eth_address || r.eth_addr || '').toLowerCase().replace(/^0x/, '');
     if (!/^[0-9a-f]{40}$/.test(ethAddrHex)) throw new Error(`row ${i} has invalid eth_address`);
     let amount;
     try { amount = BigInt(r.amount); } catch { throw new Error(`row ${i} has invalid amount`); }
+    if (amount < 0n || amount >= (1n << 64n)) throw new Error(`row ${i} amount out of u64 range`);
     const index = Number.isInteger(r.index) ? r.index : i;
-    return { ethAddrHex, amount, index };
+    if (index < 0) throw new Error(`row ${i} has negative index`);
+    return { ethAddrHex, ethAddrBytes: hexToBytes(ethAddrHex), amount, index };
   });
+  // Recompute root and refuse the blob if rows don't hash to the expected
+  // root. A hostile gateway could otherwise serve a blob whose `merkle_root`
+  // field matches the announcement (trivial equality check passes upstream)
+  // but whose `rows` are tampered — recipients would see inflated/forged
+  // eligibility on the discovery card. Verifying here closes that gap so the
+  // amount the user is told they can claim is the same one the issuer will
+  // accept at fulfilment time.
+  if (typeof expectedRootHex === 'string' && /^[0-9a-f]{64}$/.test(expectedRootHex)) {
+    const sorted = [...parsed].sort((a, b) => a.index - b.index);
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].index !== i) throw new Error(`snapshot indexes are not contiguous 0..N-1 (saw index ${sorted[i].index} at slot ${i})`);
+    }
+    // Duplicate eth_address rejection — same gate the manual-load path
+    // (`_claimValidateSnapshot`) applies. The issuer-side builder dedupes
+    // addresses via mergeAirdropRows, so a snapshot with dups is anomalous
+    // and the recipient-side eligibility lookup uses `.find()` which would
+    // only return the first occurrence. Without this, the discovery card
+    // would show "eligible" for the first leaf at that address but the
+    // strict claim-load path would later reject — confusing for the user.
+    const seenAddrs = new Set();
+    for (const r of sorted) {
+      if (seenAddrs.has(r.ethAddrHex)) {
+        throw new Error(`snapshot contains duplicate eth_address: 0x${r.ethAddrHex} (each address must appear at most once)`);
+      }
+      seenAddrs.add(r.ethAddrHex);
+    }
+    const leaves = sorted.map(r => airdropLeafHash(r.ethAddrBytes, r.amount, r.index));
+    const { root } = buildAirdropMerkle(leaves);
+    if (bytesToHex(root) !== expectedRootHex) {
+      throw new Error('snapshot rows do NOT hash to announcement root — gateway-tampered or corrupt');
+    }
+  }
+  return parsed.map(r => ({ ethAddrHex: r.ethAddrHex, amount: r.amount, index: r.index }));
 }
 
 // Provenance heuristic: 'matches_etcher' | 'self_announced' | 'unknown'.
@@ -17242,8 +18909,13 @@ function _renderClaimDiscoverList() {
       amountLine = `<div style="font-size:13px;color:var(--green);"><strong>✓ ${escapeHtml(fmtAssetAmountPlain(eligibleRow.amount, decimals))} ${escapeHtml(ticker)}</strong> <span class="muted">· leaf #${eligibleRow.index}</span></div>`;
       actionLine = `<button data-act="claim-discover-pick" data-root="${escapeHtml(d.merkle_root)}" data-cid="${escapeHtml(d.ipfs_cid)}" class="primary" style="font-size:11px;">Claim →</button>`;
     }
+    // Sanitise control + bidi codepoints out of the note before rendering.
+    // escapeHtml stops XSS but doesn't strip RLO/LRO/PDF overrides that can
+    // visually scramble the displayed text — the announcement signs the raw
+    // bytes, but the recipient sees the rendered form and could be misled.
+    // Same defense applied to asset_ticker by `_claimValidateSnapshot`.
     const noteLine = d.note
-      ? `<div class="muted" style="font-size:11px;margin-top:4px;font-style:italic;">"${escapeHtml(d.note)}"</div>`
+      ? `<div class="muted" style="font-size:11px;margin-top:4px;font-style:italic;">"${escapeHtml(_sanitizeWalletDisplayString(d.note, 200))}"</div>`
       : '';
     const selfAnnouncedHint = (provenance === 'self_announced')
       ? `<div class="muted" style="font-size:10px;margin-top:4px;">announcer ${escapeHtml(issuerShort)} is not the asset's etcher — verify the drop is legit before claiming</div>`
@@ -22493,9 +24165,9 @@ async function renderPetchDiscover() {
             </button>
           </div>
           <div style="margin-top:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;color:var(--ink-mid);">
-            <span><strong style="color:var(--ink);" data-petch-minted-display>${escapeHtml(fmtAssetAmount(mintedNow, dec))}</strong> / ${escapeHtml(fmtAssetAmount(cap, dec))} ${tickerEsc}</span>
+            <span><strong style="color:var(--ink);" data-petch-minted-display>${escapeHtml(fmtAssetAmount(mintedNow, dec))}</strong>${a.truncated && !a.bootstrapped ? '<span title="Worker is still bootstrapping this asset\'s cap counter — the displayed total is a lower bound. Refreshes on the next cron tick." style="color:var(--ink-mid);">+</span>' : ''} / ${escapeHtml(fmtAssetAmount(cap, dec))} ${tickerEsc}</span>
             <span>·</span>
-            <span data-petch-rem-mints${capFull ? ' style="color:#a04030;font-weight:600;"' : ''}>${capFull ? 'sold out' : `${escapeHtml(remMints.toString())} mints remaining`}</span>
+            <span data-petch-rem-mints${capFull ? ' style="color:#a04030;font-weight:600;"' : ''}>${capFull ? 'sold out' : `${escapeHtml(remMints.toString())} mints remaining`}${a.truncated && !a.bootstrapped ? ' (estimate)' : ''}</span>
             <span>·</span>
             <span>${limitDispEsc} per mint</span>
           </div>
@@ -24040,6 +25712,24 @@ function _showWelcomeModal() {
     uBtn.title = av.unisat ? '' : 'UniSat extension not detected';
     pBtn.disabled = !prfWallet.available();
     pBtn.title = prfWallet.available() ? '' : 'Passkey requires HTTPS (or localhost)';
+    // Passkey is the recommended path when WebAuthn is available (one-tap
+    // unlock, no per-refresh passphrase). When it isn't — insecure context,
+    // no PublicKeyCredential, in-app webview without WebAuthn — swap the
+    // primary styling and the (recommended) tag to the local-wallet option
+    // so the user is never staring at a disabled "recommended" choice.
+    const passkeyRec = document.getElementById('welcome-passkey-rec');
+    const localRec = document.getElementById('welcome-local-rec');
+    if (prfWallet.available()) {
+      pBtn.classList.add('welcome-option--primary');
+      lBtn.classList.remove('welcome-option--primary');
+      if (passkeyRec) passkeyRec.style.display = '';
+      if (localRec) localRec.style.display = 'none';
+    } else {
+      pBtn.classList.remove('welcome-option--primary');
+      lBtn.classList.add('welcome-option--primary');
+      if (passkeyRec) passkeyRec.style.display = 'none';
+      if (localRec) localRec.style.display = '';
+    }
     const close = (choice) => {
       xBtn.onclick = uBtn.onclick = pBtn.onclick = lBtn.onclick = null;
       modal.style.display = 'none';

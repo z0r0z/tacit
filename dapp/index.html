@@ -2323,7 +2323,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
 
       <div class="warn" style="margin-bottom:14px;">
-        <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by your <em>active wallet</em>. To bound blast radius, generate a fresh treasury identity below, fund it from your main wallet via Send, then use Wallet → Import key in a separate browser profile to switch to the treasury before fulfilling.
+        <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by the <em>active wallet</em> (shown below). To bound blast radius if the airdrop wallet is compromised mid-campaign, generate a fresh treasury identity below and use the <em>↪ Switch active wallet</em> button to adopt it in one click — no separate browser profile required (export your current wallet's key first so you can switch back).
       </div>
 
       <details style="margin-bottom:14px;"><summary class="muted" style="cursor:pointer;font-size:11px;">Trust model: where the worker fits, and how to self-host</summary>
@@ -2332,8 +2332,10 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         </div>
       </details>
 
+      <div id="drop-active-wallet" class="mono-box" style="font-size:11px;margin-bottom:14px;display:none;"></div>
+
       <h3 style="margin-top:18px;">1 · Treasury (optional)</h3>
-      <div class="muted" style="font-size:12px;margin-bottom:8px;">Generate a fresh tacit identity dedicated to this drop. The privkey is shown <strong>once</strong>; copy it now and store it somewhere safe.</div>
+      <div class="muted" style="font-size:12px;margin-bottom:8px;">Generate a fresh tacit identity dedicated to this drop. The privkey is shown <strong>once</strong>; the "Switch active wallet" button below adopts it in-place so you can immediately fund it from another wallet and fulfil from this one.</div>
       <div class="flex" style="gap:6px;">
         <button id="btn-drop-gen-treasury" type="button">Generate treasury key</button>
       </div>
@@ -2783,7 +2785,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-mixer-deposit-preview" disabled>Preview</button>
         <button id="btn-mixer-deposit-broadcast" disabled>Deposit &amp; broadcast</button>
       </div>
-      <pre id="mixer-deposit-preview-out" class="muted" style="margin-top:10px;display:none;"></pre>
+      <div id="mixer-deposit-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
       <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--ink-faint);">
         <div class="muted" style="font-size:11px;margin-bottom:6px;">
           <strong>Backup all deposit records.</strong> Stored in localStorage per network — wiping the browser's storage = losing the secret pair = funds permanently un-withdrawable. Download a JSON of every deposit you've made on this network, then re-import on a fresh device.
@@ -2803,17 +2805,27 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>withdraw</span></div>
     <div class="section-body">
       <div class="mixer-locked-banner">Loading ceremony state… withdraw unlocks once the dapp verifies the trusted setup is finalized.</div>
-      <div class="muted" style="margin-bottom:10px;">Withdraw a deposit to a fresh address. Paste the deposit record JSON your wallet saved at deposit time, or import via share-link. The privacy set size — how many other deposits yours hides among — is shown beneath each pool.</div>
-      <textarea id="mixer-withdraw-record" rows="4" placeholder="paste deposit record JSON, or import share-link below" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+      <div class="muted" style="margin-bottom:10px;">Withdraw a deposit to a fresh address. Pick a saved deposit, paste a deposit record JSON, or import a share-link. The privacy set size — how many other deposits yours hides among — is shown beneath each pool.</div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px;">
+        <label style="flex:1;min-width:240px;">Saved deposits on this browser
+          <select id="mixer-withdraw-saved-select"><option value="">— pick a saved deposit or paste below —</option></select>
+        </label>
+      </div>
+      <textarea id="mixer-withdraw-record" rows="4" placeholder="…or paste deposit record JSON / use share-link below" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
       <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
         <input id="mixer-withdraw-sharelink" type="text" placeholder="#mix=…" style="flex:1;font-family:monospace;font-size:12px;">
         <button id="btn-mixer-import-sharelink">Import</button>
       </div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
+        <label style="flex:1;min-width:240px;">Recipient pubkey <span class="muted" style="font-size:11px;">(optional — empty = this wallet)</span>
+          <input id="mixer-withdraw-recipient" type="text" placeholder="02… or 03… (66 hex chars; leave empty for self-mix)" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
         <button id="btn-mixer-withdraw-preview" disabled>Preview</button>
         <button id="btn-mixer-withdraw-broadcast" disabled>Withdraw &amp; broadcast</button>
       </div>
-      <pre id="mixer-withdraw-preview-out" class="muted" style="margin-top:10px;display:none;"></pre>
+      <div id="mixer-withdraw-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
   </div>
 
@@ -2973,9 +2985,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <label style="flex:1;min-width:240px;">Asset
           <select id="mixer-init-asset"><option value="">— pick an asset —</option></select>
         </label>
-        <label style="flex:0 0 140px;">Denomination
-          <input id="mixer-init-denom" type="text" placeholder="e.g. 100000000" inputmode="decimal">
+        <label style="flex:0 0 160px;">Denomination
+          <input id="mixer-init-denom" type="text" placeholder="e.g. 100" inputmode="decimal">
         </label>
+      </div>
+      <div id="mixer-init-denom-hint" class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
+        Enter the deposit size in whole tokens. Pick an asset first to see the resolved on-chain u64.
       </div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
         <label style="flex:1;min-width:240px;">vk CID
@@ -3154,17 +3169,17 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
          banner just tells the share-link visitor *why* they're being asked
          to pick a wallet before seeing the ceremony panel they came for. -->
     <div id="welcome-ceremony-context" style="display:none;margin-bottom:14px;padding:10px 12px;border-left:3px solid var(--orange,#f7931a);background:#fff8eb;color:var(--ink,#0a0a0a);font-size:13px;line-height:1.5;border-radius:2px;">
-      You followed a share link to the <strong>tacit mixer ceremony</strong>. To contribute, you need a tacit identity in this browser. The fastest path is the highlighted <strong>local wallet</strong> option below — one click plus a passphrase, no extension required. The ceremony panel will load right after.
+      You followed a share link to the <strong>tacit mixer ceremony</strong>. To contribute, you need a tacit identity in this browser. The fastest path is the highlighted option below — passkey when your device supports it (one tap, no typing), passphrase otherwise. The ceremony panel will load right after.
     </div>
     <div class="welcome-options">
-      <button id="welcome-local" class="welcome-option welcome-option--primary" type="button">
-        <span class="welcome-option-title">generate a new local wallet<span class="welcome-option-rec">(recommended)</span></span>
-        <span class="welcome-option-meta">no extension required. tacit creates a signing key in this browser, locked behind a passphrase you set next. you can export it any time. fund via the signet faucet, or send sats from any wallet.</span>
+      <button id="welcome-passkey" class="welcome-option welcome-option--primary" type="button">
+        <span class="welcome-option-title">use a passkey<span class="welcome-option-rec" id="welcome-passkey-rec">(recommended)</span></span>
+        <span class="welcome-option-meta">one-tap unlock with Touch ID / Windows Hello / your hardware key. WebAuthn PRF derives the signing key on each load — no passphrase to retype on refresh. Same encryption as the passphrase option, less ceremony.</span>
       </button>
-      <div class="welcome-divider" style="margin-top:14px;">or use a passkey</div>
-      <button id="welcome-passkey" class="welcome-option" type="button">
-        <span class="welcome-option-title">use a passkey</span>
-        <span class="welcome-option-meta">WebAuthn PRF maps your biometric to a deterministic private key — same passkey, same key, every time. Wrapped in PBKDF2+AES-GCM so every signing path is identical to password wallets.</span>
+      <div class="welcome-divider" style="margin-top:14px;">or use a passphrase</div>
+      <button id="welcome-local" class="welcome-option" type="button">
+        <span class="welcome-option-title">generate a local wallet<span class="welcome-option-rec" id="welcome-local-rec" style="display:none;">(recommended)</span></span>
+        <span class="welcome-option-meta">works in every browser. tacit creates a signing key locked behind a passphrase you set next — you'll re-enter it on each refresh. you can export the key any time. fund via the signet faucet, or send sats from any wallet.</span>
       </button>
       <div class="welcome-divider">already have a bitcoin wallet?</div>
       <button id="welcome-xverse" class="welcome-option" type="button">
@@ -3177,7 +3192,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </button>
     </div>
     <div class="welcome-footer">
-      next step → set a passphrase to encrypt the in-browser signing key at rest. you can connect or switch wallets at any time from the wallet tab.
+      next step → register a passkey or set a passphrase to encrypt the in-browser signing key at rest. you can connect or switch wallets at any time from the wallet tab.
     </div>
   </div>
 </div>

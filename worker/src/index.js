@@ -7,7 +7,10 @@
 // (asset:<aid>), mainnet uses asset:mainnet:<aid>.
 //
 // Endpoints:
-//   POST /pin               — upload an image; returns { cid, size }
+//   POST /pin                    — upload an image; returns { cid, size }
+//   POST /pin-json               — pin a small (≤4KB) metadata JSON (name/description/etc)
+//   POST /pin-mixer-vk           — pin a snarkjs Groth16 verifying-key JSON (≤32KB)
+//   POST /pin-airdrop-snapshot   — pin a tacit-airdrop-v1 snapshot JSON (≤16MB, ≤100k rows)
 //   GET  /balance           — faucet wallet balance + address (signet only)
 //   POST /drip { address }  — send DRIP_SATS to a signet address (signet only)
 //   GET  /assets            — list etched assets on the requested network
@@ -252,6 +255,23 @@ function pmintKeyFor(network, aid, height, txIndex, txid) {
   return network === 'signet' ? `pmint:${aid}:${h}:${idx}:${txid}` : `pmint:${network}:${aid}:${h}:${idx}:${txid}`;
 }
 function pmintPrefix(network, aid)     { return network === 'signet' ? `pmint:${aid}:` : `pmint:${network}:${aid}:`; }
+
+// Per-asset cap-progress snapshot. Maintained by cron + hint so user-facing
+// reads don't pay O(N) KV.list cost for assets with tens of thousands of
+// canonical pmints (FAIR hit 50k+ where the inline per-request derivation
+// blew past 30s wall-time and 1000 subrequest budgets, and the legacy
+// loadCanonicalPmints value-fetch path took 45s for ~5800 entries before
+// truncating). Read endpoints return this snapshot directly; writers
+// schedule async refreshes via ctx.waitUntil.
+function petchProgressKey(network, aid) {
+  return network === 'signet' ? `petch_progress:${aid}` : `petch_progress:${network}:${aid}`;
+}
+// Per-asset "dirty since last cron refresh" marker. Writers (hint + cron block
+// scan) set this when they write a new canonical pmint key; the cron clears
+// it after refreshing the snapshot. TTL prevents stuck flags after a restart.
+function petchDirtyKey(network, aid) {
+  return network === 'signet' ? `petch_dirty:${aid}` : `petch_dirty:${network}:${aid}`;
+}
 
 // Mixer-pool KV layout (SPEC §5.10 / §5.11). Three namespaces:
 //   pool:<aid>:<denom>                 — POOL_INIT record (vk_cid, ceremony_cid, init_height, init_txid).
@@ -1493,6 +1513,150 @@ async function handlePinJson(req, env, cors) {
   return jsonResponse({ cid: j.IpfsHash }, 200, cors);
 }
 
+// ============== /pin-airdrop-snapshot — pin a tacit-airdrop-v1 snapshot ==============
+// The dapp's Drops tab pins a snapshot JSON keyed by merkle root; recipients
+// fetch it from IPFS to verify their leaf and sign their claim. The snapshot
+// schema (`schema`, `network`, `asset_id`, `merkle_root`, `leaf_count`,
+// `total_amount`, `rows[]`, `sources`, `blacklist_size`, …) doesn't fit
+// /pin-json's metadata whitelist (which would strip every airdrop field) and
+// the 4 KB cap there is too tight (even a 50-recipient drop is ~5 KB). Same
+// pattern as /pin-mixer-vk: dedicated endpoint with a shape validator + a
+// schema-appropriate size cap. Same daily-limit semantics.
+async function handlePinAirdropSnapshot(req, env, cors) {
+  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const kvKey = `pin:${day}:${ip}`;
+  const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
+  const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
+  if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
+
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return jsonResponse({ error: 'expected JSON object' }, 400, cors);
+  }
+
+  // Structural validation — refuse anything that isn't a tacit-airdrop-v1
+  // snapshot. The recipient's dapp will refuse it on load anyway (schema
+  // check + root recompute), so rejecting up front gives the issuer a fast,
+  // clear error instead of a silent "CID returned but no one can claim."
+  if (body.schema !== 'tacit-airdrop-v1') {
+    return jsonResponse({ error: 'schema must be "tacit-airdrop-v1"' }, 400, cors);
+  }
+  if (body.network !== 'signet' && body.network !== 'mainnet') {
+    return jsonResponse({ error: 'network must be "signet" or "mainnet"' }, 400, cors);
+  }
+  if (typeof body.asset_id !== 'string' || !/^[0-9a-f]{64}$/.test(body.asset_id)) {
+    return jsonResponse({ error: 'asset_id must be 64-char hex' }, 400, cors);
+  }
+  if (typeof body.merkle_root !== 'string' || !/^[0-9a-f]{64}$/.test(body.merkle_root)) {
+    return jsonResponse({ error: 'merkle_root must be 64-char hex' }, 400, cors);
+  }
+  if (!Array.isArray(body.rows) || body.rows.length === 0) {
+    return jsonResponse({ error: 'rows must be a non-empty array' }, 400, cors);
+  }
+  // Cap row count to match the dapp's localStorage-quota-driven cap. Anything
+  // larger would not be storable on a recipient's machine anyway, and burns
+  // Pinata storage for blobs no one can load.
+  if (body.rows.length > 100_000) {
+    return jsonResponse({ error: 'rows length exceeds 100,000 — split into multiple drops' }, 413, cors);
+  }
+  if (body.leaf_count != null) {
+    if (!Number.isInteger(body.leaf_count) || body.leaf_count !== body.rows.length) {
+      return jsonResponse({ error: 'leaf_count must equal rows.length' }, 400, cors);
+    }
+  }
+  if (body.asset_decimals != null) {
+    if (!Number.isInteger(body.asset_decimals) || body.asset_decimals < 0 || body.asset_decimals > 8) {
+      return jsonResponse({ error: 'asset_decimals must be integer 0..8' }, 400, cors);
+    }
+  }
+  if (body.asset_ticker != null) {
+    if (typeof body.asset_ticker !== 'string' || body.asset_ticker.length === 0 || body.asset_ticker.length > 16) {
+      return jsonResponse({ error: 'asset_ticker must be a string of length 1..16' }, 400, cors);
+    }
+  }
+  if (body.total_amount != null && (typeof body.total_amount !== 'string' || !/^\d+$/.test(body.total_amount))) {
+    return jsonResponse({ error: 'total_amount must be a base-10 integer string' }, 400, cors);
+  }
+  // Optional source-provenance fields: let the issuer record where the
+  // snapshot rows came from so auditors can independently reproduce the
+  // (eth_address, amount) tuples and re-derive the merkle root. None of
+  // these are cryptographically anchored — the snapshot is still trust-
+  // the-issuer — but having a chain_id + contract + block_height makes the
+  // claim auditable. Audit fix M6.
+  if (body.source_chain_id != null) {
+    if (!Number.isInteger(body.source_chain_id) || body.source_chain_id < 0) {
+      return jsonResponse({ error: 'source_chain_id must be a non-negative integer (EIP-155 chain id)' }, 400, cors);
+    }
+  }
+  if (body.source_contract != null) {
+    if (typeof body.source_contract !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(body.source_contract)) {
+      return jsonResponse({ error: 'source_contract must be 0x + 40 hex chars (ERC-20 contract address)' }, 400, cors);
+    }
+  }
+  if (body.source_block_height != null) {
+    if (!Number.isInteger(body.source_block_height) || body.source_block_height < 0) {
+      return jsonResponse({ error: 'source_block_height must be a non-negative integer' }, 400, cors);
+    }
+  }
+  if (body.source_method != null) {
+    if (typeof body.source_method !== 'string' || body.source_method.length === 0 || body.source_method.length > 64) {
+      return jsonResponse({ error: 'source_method must be a string of length 1..64' }, 400, cors);
+    }
+  }
+  // Validate every row's shape. The prior 16-row sample let blobs with bad
+  // rows[N] (N≥16) pin successfully; recipient-side validation would catch
+  // them at load time but the issuer had already burned the pin slot on an
+  // unusable blob. Four regex tests per row over ≤100k rows fits comfortably
+  // in Workers CPU budget. Tightened by audit fix M9.
+  for (let i = 0; i < body.rows.length; i++) {
+    const r = body.rows[i];
+    if (!r || typeof r !== 'object') return jsonResponse({ error: `rows[${i}] not an object` }, 400, cors);
+    if (typeof r.eth_address !== 'string' || !/^0x[0-9a-fA-F]{40}$/.test(r.eth_address)) {
+      return jsonResponse({ error: `rows[${i}].eth_address must be 0x + 40 hex chars` }, 400, cors);
+    }
+    if (typeof r.amount !== 'string' || !/^\d+$/.test(r.amount)) {
+      return jsonResponse({ error: `rows[${i}].amount must be a base-10 integer string` }, 400, cors);
+    }
+    if (!Number.isInteger(r.index) || r.index < 0) {
+      return jsonResponse({ error: `rows[${i}].index must be a non-negative integer` }, 400, cors);
+    }
+  }
+
+  const json = JSON.stringify(body);
+  // 16 MB cap. 100k recipients × ~110 bytes/row ≈ 11 MB; the extra headroom
+  // covers source/blacklist metadata and JSON whitespace from re-pretty-printing.
+  // CF Worker body limits and Pinata both accept well over this.
+  if (json.length > 16 * 1024 * 1024) {
+    return jsonResponse({ error: 'snapshot exceeds 16 MB' }, 413, cors);
+  }
+
+  const pinFd = new FormData();
+  pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-airdrop-${body.merkle_root.slice(0, 12)}.json`);
+  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+
+  let pinResp;
+  try {
+    pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
+      body: pinFd,
+    });
+  } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
+  if (!pinResp.ok) {
+    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
+    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
+  }
+  const pj = await pinResp.json();
+  if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
+
+  await env.UPLOAD_KV.put(kvKey, String(prior + 1), { expirationTtl: 90000 });
+  return jsonResponse({ cid: pj.IpfsHash, IpfsHash: pj.IpfsHash }, 200, cors);
+}
+
 // ============== Bitcoin tx primitives (P2WPKH only — what the faucet needs) ==============
 class W {
   constructor() { this.parts = []; }
@@ -2535,7 +2699,7 @@ async function handleAttest(assetIdHex, req, env, network, cors) {
 // mempool.space (which serves unconfirmed txs too), validates the TACIT envelope,
 // and writes the registry entry immediately. The cron later overwrites with
 // confirmed metadata once the tx lands in a block.
-async function handleAssetHint(req, env, network, cors) {
+async function handleAssetHint(req, env, network, cors, ctx) {
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
   const txidHex = String(body.reveal_txid ?? body.txid ?? '').toLowerCase();
@@ -2843,14 +3007,29 @@ async function handleAssetHint(req, env, network, cors) {
     if (stalePendingKey !== pmk) {
       env.REGISTRY_KV.delete(stalePendingKey).catch(() => {});
     }
-    // Delete the cached /petch-assets response and recompute. `caches.default`
-    // is per-POP, so a single delete only invalidates this POP — but the
-    // recompute writes a fresh entry that other POPs will pick up on their
-    // next miss / FRESH-window expiry. Without the delete, this POP keeps
-    // serving the pre-hint FRESH entry for up to PETCH_ASSETS_CACHE_FRESH_MS
-    // even though we just wrote new state.
-    await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
-    petchAssetsComputeAndCache(env, network).catch(() => {});
+    // Mark the asset dirty so the next cron tick refreshes its snapshot.
+    // Sync mark is cheap (one KV.put with TTL); the actual snapshot refresh
+    // happens in the background so the hint response stays fast.
+    await markPetchDirty(env, network, cm.asset_id);
+    // Schedule snapshot refresh + cache invalidation in the background. The
+    // hint response returns immediately; the refresh runs after via
+    // ctx.waitUntil so cron-cache pre-warm doesn't have to wait until the
+    // next 5-min tick to surface a freshly-broadcast mint.
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil((async () => {
+        try {
+          const tip = await fetchTipHeight(env, network);
+          await refreshAndStorePetchProgress(env, network, cm.asset_id, tip, petch);
+          await caches.default.delete(petchAssetsCacheKey(network));
+          await petchAssetsComputeAndCache(env, network);
+        } catch { /* best-effort: cron will reconcile on next tick */ }
+      })());
+    } else {
+      // No ctx (synchronous caller path, e.g. tests). Fall back to the legacy
+      // cache-bust behavior so the next reader at minimum sees a fresh recompute.
+      await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+      petchAssetsComputeAndCache(env, network).catch(() => {});
+    }
     return jsonResponse({ ok: true, mint: mintMeta, source: 'hint', network }, 200, cors);
   }
 
@@ -3060,6 +3239,161 @@ async function loadCanonicalPmints(env, network, assetIdHex, tipHeight, capAmoun
   };
 }
 
+// SAFETY_CAP / page bounds for snapshot refresh. The key-only scan is far
+// cheaper than loadCanonicalPmints's value-fetch path, so we can afford a
+// much larger window. 300k keys ≈ 300 KV.list calls (one per 1000-key page)
+// — sequential at ~50ms each, ~15s wall-time, well within the cron's
+// 30s budget but too costly for synchronous user requests (hence the
+// snapshot indirection: this runs in the background via ctx.waitUntil).
+// Covers any current fair-launch asset (FAIR's cap of 21M/100 = 210k mints
+// fits with ~40% headroom for cap_overflow + out-of-window events that
+// don't credit but still occupy canonical key slots).
+const PETCH_REFRESH_MAX_PAGES = 300;
+const PETCH_REFRESH_SAFETY_CAP = 300000;
+// Mark a petch asset as dirty so the next cron tick refreshes its snapshot.
+// Short TTL: a dropped flag just delays refresh by one tick (5 min) — not
+// data loss, since the snapshot recomputes from canonical KV state anyway.
+const PETCH_DIRTY_TTL_SECS = 30 * 60;
+
+// Compute a fresh cap-progress snapshot for one asset by key-only scan of
+// canonical pmint:* entries. Returns the snapshot object (NOT written to KV
+// — caller decides). Mirrors handlePetchAssetsList's per-asset loop semantics
+// (depth gate, cap-overflow ordering, orphan skip) but produces an aggregate
+// that read endpoints can return in O(1) per asset.
+async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
+  if (!petch) return null;
+  const orphanPrefixStr = pmintPrefix(network, aid) + '0000000000:';
+  const capAmount = petch.cap_amount != null ? BigInt(petch.cap_amount) : null;
+  const mintLimit = petch.mint_limit != null ? BigInt(petch.mint_limit) : null;
+  let creditedCount = 0;
+  let creditedAmount = 0n;
+  let capOverflowCount = 0;
+  let pendingCount = 0;
+  let canonicalCount = 0;
+  let lastCreditedH = null;
+  let lastCreditedTi = null;
+  let lastCreditedTxid = null;
+  // cap_overflow_txids stored on the snapshot so the dapp can identify
+  // permanently-rejected mints without paging through the full /pmints list.
+  // Bounded: only the cap-saturation tail produces overflows, so the list
+  // stays small in practice (CONF currently has 86; pre-saturation assets
+  // have 0). Cap at 10000 entries to guard against pathological cases.
+  const capOverflowTxids = [];
+  const CAP_OVERFLOW_TXIDS_MAX = 10000;
+  let truncated = false;
+  let canonicalComplete = false;
+  let cursor = null;
+  for (let page = 0; page < PETCH_REFRESH_MAX_PAGES; page++) {
+    const lst = await env.REGISTRY_KV.list({
+      prefix: pmintPrefix(network, aid),
+      limit: 1000,
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const k of lst.keys) {
+      if (k.name.startsWith(orphanPrefixStr)) continue;
+      canonicalCount++;
+      const parts = k.name.split(':');
+      const txid = parts[parts.length - 1];
+      const ti = parseInt(parts[parts.length - 2], 10);
+      const h = parseInt(parts[parts.length - 3], 10);
+      if (!Number.isInteger(h) || !Number.isInteger(ti) || !/^[0-9a-f]{64}$/.test(txid)) continue;
+      if (Number.isInteger(tipHeight)) {
+        const depth = Math.max(0, tipHeight - h + 1);
+        if (depth < PMINT_CONFIRMATION_DEPTH) { pendingCount++; continue; }
+      }
+      if (capAmount != null && mintLimit != null) {
+        const wouldBe = creditedAmount + mintLimit;
+        if (wouldBe > capAmount) {
+          capOverflowCount++;
+          if (capOverflowTxids.length < CAP_OVERFLOW_TXIDS_MAX) capOverflowTxids.push(txid);
+          continue;
+        }
+        creditedAmount = wouldBe;
+        creditedCount++;
+        lastCreditedH = h;
+        lastCreditedTi = ti;
+        lastCreditedTxid = txid;
+      } else {
+        creditedCount++;
+        lastCreditedH = h;
+        lastCreditedTi = ti;
+        lastCreditedTxid = txid;
+        if (mintLimit != null) creditedAmount += mintLimit;
+      }
+      if (canonicalCount >= PETCH_REFRESH_SAFETY_CAP) { truncated = true; break; }
+    }
+    if (truncated) break;
+    if (lst.list_complete) { canonicalComplete = true; break; }
+    cursor = lst.cursor;
+    if (!cursor) { canonicalComplete = true; break; }
+  }
+  if (!canonicalComplete && !truncated) truncated = true;
+  // Orphan count: separate key-only scan, capped at 5000 (legacy backlog).
+  let orphanCount = 0;
+  let orphanComplete = false;
+  cursor = null;
+  for (let page = 0; page < 60; page++) {
+    const lst = await env.REGISTRY_KV.list({ prefix: orphanPrefixStr, limit: 1000, ...(cursor ? { cursor } : {}) });
+    orphanCount += lst.keys.length;
+    if (lst.list_complete) { orphanComplete = true; break; }
+    if (orphanCount >= 5000) break;
+    cursor = lst.cursor;
+    if (!cursor) { orphanComplete = true; break; }
+  }
+  return {
+    credited_count: creditedCount,
+    credited_amount: creditedAmount.toString(),
+    cap_overflow_count: capOverflowCount,
+    cap_overflow_txids: capOverflowTxids,
+    cap_overflow_truncated: capOverflowCount > capOverflowTxids.length,
+    pending_count: pendingCount + orphanCount,
+    canonical_count: canonicalCount,
+    orphan_count: orphanCount,
+    last_credited_height: lastCreditedH,
+    last_credited_tx_index: lastCreditedTi,
+    last_credited_txid: lastCreditedTxid,
+    tip_at_update: Number.isInteger(tipHeight) ? tipHeight : null,
+    updated_at: Math.floor(Date.now() / 1000),
+    truncated,
+    bootstrapped: !truncated && orphanComplete,
+    schema_version: 1,
+  };
+}
+
+// Refresh + write the snapshot. Returns the snapshot. Use this from cron and
+// from hint POST's ctx.waitUntil callback.
+async function refreshAndStorePetchProgress(env, network, aid, tipHeight, petch) {
+  const snap = await refreshPetchProgress(env, network, aid, tipHeight, petch);
+  if (snap) {
+    await env.REGISTRY_KV.put(petchProgressKey(network, aid), JSON.stringify(snap));
+  }
+  return snap;
+}
+
+// Read snapshot; returns null if missing or schema-mismatched.
+async function readPetchProgress(env, network, aid) {
+  const v = await env.REGISTRY_KV.get(petchProgressKey(network, aid), 'json');
+  if (!v || v.schema_version !== 1) return null;
+  return v;
+}
+
+// Mark asset dirty so the next cron tick re-refreshes the snapshot.
+async function markPetchDirty(env, network, aid) {
+  try {
+    await env.REGISTRY_KV.put(petchDirtyKey(network, aid), '1', { expirationTtl: PETCH_DIRTY_TTL_SECS });
+  } catch { /* dropping a dirty marker just delays refresh; not fatal */ }
+}
+
+// Helper: fetch tip, time-bounded so a slow mempool.space endpoint doesn't
+// stall the whole snapshot refresh. Mirrors the inline tipP idiom used by
+// handlePetchAssetsList today.
+async function fetchTipHeight(env, network, timeoutMs = 2500) {
+  return Promise.race([
+    apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
+    new Promise(resolve => setTimeout(() => resolve(null), timeoutMs)),
+  ]).catch(() => null);
+}
+
 // Promote height-0 orphan T_PMINTs left behind by an older worker version
 // whose hint endpoint wrote unconfirmed pmints into the canonical pmint:*
 // namespace under (height=0, idx=0, txid) keys with `pending: true,
@@ -3200,17 +3534,74 @@ async function promotePmintOrphans(env, network, { maxOps = 50, assetIdHex = nul
   return { network, promoted, unconfirmed, errored, ops_used: maxOps - opsRemaining };
 }
 
+// Refresh cap-progress snapshots for petch assets that have new activity.
+// Walks the dirty-marker namespace (set by hint POSTs + cron block scan)
+// and recomputes the snapshot for each, capped per-tick so a flurry of
+// new mints across many assets doesn't blow the cron's wall-time budget.
+// Also opportunistically bootstraps assets that have no snapshot yet
+// (e.g. petches created before this code shipped). The MAX_PER_TICK cap
+// ensures FAIR-scale heavy assets get refreshed in priority order without
+// starving smaller assets — anything not refreshed this tick gets picked
+// up on the next 5-min tick.
+async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {}) {
+  let refreshed = 0;
+  let bootstrapped = 0;
+  let errored = 0;
+  const tip = await fetchTipHeight(env, network);
+  // Walk dirty markers first; these reflect "something landed this tick"
+  // and are highest priority. Limit batch size so the cron stays bounded.
+  const dirtyList = await env.REGISTRY_KV.list({
+    prefix: network === 'signet' ? 'petch_dirty:' : `petch_dirty:${network}:`,
+    limit: maxPerTick * 2,
+  });
+  const dirtyAids = [];
+  const dirtyPrefixLen = (network === 'signet' ? 'petch_dirty:' : `petch_dirty:${network}:`).length;
+  for (const k of dirtyList.keys) {
+    const aid = k.name.slice(dirtyPrefixLen);
+    if (/^[0-9a-f]{64}$/.test(aid)) dirtyAids.push(aid);
+  }
+  for (const aid of dirtyAids.slice(0, maxPerTick)) {
+    try {
+      const petch = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
+      if (!petch) { await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {}); continue; }
+      await refreshAndStorePetchProgress(env, network, aid, tip, petch);
+      await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {});
+      refreshed++;
+    } catch { errored++; }
+  }
+  // Then bootstrap any assets with no snapshot at all (one per tick is fine —
+  // post-deploy backfill is amortized over multiple ticks).
+  if (refreshed < maxPerTick) {
+    const petches = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit: 100 });
+    for (const k of petches.keys) {
+      const aid = k.name.slice(petchPrefix(network).length);
+      if (!/^[0-9a-f]{64}$/.test(aid)) continue;
+      const existing = await readPetchProgress(env, network, aid);
+      if (existing) continue;
+      try {
+        const petch = await env.REGISTRY_KV.get(k.name, 'json');
+        if (!petch) continue;
+        await refreshAndStorePetchProgress(env, network, aid, tip, petch);
+        bootstrapped++;
+        if (refreshed + bootstrapped >= maxPerTick) break;
+      } catch { errored++; }
+    }
+  }
+  return { network, refreshed, bootstrapped, errored, tip };
+}
+
 // GET /petch-assets — registry of T_PETCH-rooted assets. Same envelope shape
 // as /assets plus per-asset cap progress (cumulative_minted / cap_amount /
-// remaining) computed at read time. Kept distinct from /assets so a Discover
-// UI can present each issuance model in its own pane without the other
-// polluting; consumers wanting a unified list union both endpoints.
+// remaining) read from the petch_progress snapshot. The snapshot is
+// maintained by the cron tick (full refresh) and by hint POSTs (async
+// refresh via ctx.waitUntil), so this endpoint pays O(1) per asset instead
+// of the O(N) KV.list scan the previous version did. Kept distinct from
+// /assets so a Discover UI can present each issuance model in its own pane
+// without the other polluting; consumers wanting a unified list union both
+// endpoints.
 async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) {
   const list = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit });
-  const tipP = Promise.race([
-    apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
-    new Promise(resolve => setTimeout(() => resolve(null), 2500)),
-  ]).catch(() => null);
+  const tipP = fetchTipHeight(env, network);
   // Curated verified set in parallel; same semantics as /assets.
   const verifiedP = loadVerifiedSet(env, network).catch(() => new Set());
   const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
@@ -3219,80 +3610,44 @@ async function handlePetchAssetsList(env, network, cors, { limit = 1000 } = {}) 
   for (const a of assets) a.verified = verifiedSet.has(a.asset_id);
   assets.sort((a, b) => (b.etched_at || 0) - (a.etched_at || 0));
   const tipHeight = await tipP;
-  // Hydrate cap progress per asset using KEY-ONLY pagination — every fact
-  // we surface (credited count, cumulative_minted, pending count) is
-  // derivable from canonical keys alone (height + tx_index + txid). Skipping
-  // the per-key value fetch is critical on heavy assets (FAIR's ~30k
-  // canonical entries) where the previous Promise.all-fetched loader hit
-  // the Worker wall-time ceiling and the whole /petch-assets response
-  // timed out.
+  // Read per-asset snapshot. Missing snapshots fall back to an inline
+  // refresh — bounded by PETCH_REFRESH_SAFETY_CAP so even a brand-new
+  // FAIR-scale asset returns in <30s. The cron's next tick produces a
+  // persistent snapshot so subsequent reads are O(1).
   await Promise.all(assets.map(async a => {
     const aid = a.asset_id;
-    const orphanPrefix = pmintPrefix(network, aid) + '0000000000:';
-    const capAmount = a.cap_amount != null ? BigInt(a.cap_amount) : null;
-    const mintLimit = a.mint_limit != null ? BigInt(a.mint_limit) : null;
-    let creditedCount = 0;
-    let creditedAmount = 0n;
-    let canonicalCount = 0;
-    let pendingCount = 0;       // canonical entries below confirmation depth
-    let truncated = false;
-    let canonicalComplete = false;
-    let cursor = null;
-    const SAFETY_CAP = 50000;
-    for (let page = 0; page < 60; page++) {
-      const lst = await env.REGISTRY_KV.list({
-        prefix: pmintPrefix(network, aid),
-        limit: 1000,
-        ...(cursor ? { cursor } : {}),
-      });
-      for (const k of lst.keys) {
-        if (k.name.startsWith(orphanPrefix)) continue;
-        canonicalCount++;
-        const parts = k.name.split(':');
-        const h = parseInt(parts[parts.length - 3], 10);
-        if (!Number.isInteger(h)) continue;
-        if (Number.isInteger(tipHeight)) {
-          const depth = Math.max(0, tipHeight - h + 1);
-          if (depth < PMINT_CONFIRMATION_DEPTH) { pendingCount++; continue; }
-        }
-        if (capAmount != null && mintLimit != null) {
-          const wouldBe = creditedAmount + mintLimit;
-          if (wouldBe > capAmount) continue; // cap_overflow — exclude from credit
-          creditedAmount = wouldBe;
-          creditedCount++;
-        } else {
-          creditedCount++;
-          if (mintLimit != null) creditedAmount += mintLimit;
-        }
-        if (canonicalCount >= SAFETY_CAP) { truncated = true; break; }
-      }
-      if (truncated) break;
-      if (lst.list_complete) { canonicalComplete = true; break; }
-      cursor = lst.cursor;
-      if (!cursor) { canonicalComplete = true; break; }
+    let snap = await readPetchProgress(env, network, aid);
+    if (!snap) {
+      // First sight of this asset — compute inline AND persist so subsequent
+      // requests hit the fast path.
+      snap = await refreshAndStorePetchProgress(env, network, aid, tipHeight, a).catch(() => null);
     }
-    if (!canonicalComplete && !truncated) truncated = true; // hit page-loop bound
-    // Count orphan keys with a separate lightweight scan — they all share the
-    // height-0 prefix and we just need a count for the UI.
-    let orphanCount = 0;
-    let orphanComplete = false;
-    cursor = null;
-    for (let page = 0; page < 60; page++) {
-      const lst = await env.REGISTRY_KV.list({ prefix: orphanPrefix, limit: 1000, ...(cursor ? { cursor } : {}) });
-      orphanCount += lst.keys.length;
-      if (lst.list_complete) { orphanComplete = true; break; }
-      if (orphanCount >= SAFETY_CAP) { truncated = true; break; }
-      cursor = lst.cursor;
-      if (!cursor) { orphanComplete = true; break; }
+    if (snap) {
+      a.cumulative_minted = snap.credited_amount;
+      a.credited_pmint_count = snap.credited_count;
+      a.cap_overflow_count = snap.cap_overflow_count || 0;
+      a.pmint_count = snap.canonical_count + (snap.orphan_count || 0);
+      a.pending_pmint_count = snap.pending_count;
+      a.snapshot_updated_at = snap.updated_at;
+      a.snapshot_tip = snap.tip_at_update;
+      a.truncated = !!snap.truncated;
+      a.bootstrapped = !!snap.bootstrapped;
+    } else {
+      // Snapshot read AND refresh both failed (KV error). Surface honest empties
+      // rather than fake zeros — the dapp's truncated check will signal
+      // "data unavailable" instead of "0 minted".
+      a.cumulative_minted = '0';
+      a.credited_pmint_count = 0;
+      a.cap_overflow_count = 0;
+      a.pmint_count = 0;
+      a.pending_pmint_count = 0;
+      a.truncated = true;
+      a.bootstrapped = false;
+      a.snapshot_unavailable = true;
     }
-    if (!orphanComplete && !truncated) truncated = true;
-    a.cumulative_minted = creditedAmount.toString();
-    a.credited_pmint_count = creditedCount;
-    a.pmint_count = canonicalCount + orphanCount;
-    a.pending_pmint_count = pendingCount + orphanCount;
-    a.truncated = truncated;
     if (a.cap_amount && a.mint_limit) {
-      const remaining = BigInt(a.cap_amount) - creditedAmount;
+      const minted = BigInt(a.cumulative_minted || '0');
+      const remaining = BigInt(a.cap_amount) - minted;
       a.mints_remaining = String(remaining < 0n ? 0n : remaining / BigInt(a.mint_limit));
     }
   }));
@@ -3328,16 +3683,28 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
   // this, /pmints?credited=1 on a heavy asset (FAIR with 26k+ canonical
   // entries) tips past the Worker wall-time ceiling.
   if (opts.creditedOnly) {
+    // Read the cap-progress snapshot. The snapshot has authoritative aggregate
+    // fields (credited_count, last_credited_*, cap_overflow_txids) regardless
+    // of canonical list size. For the per-txid membership check, we still
+    // page through credited_txids up to SAFETY_CAP — wallets check their own
+    // mints by membership, and consumers past SAFETY_CAP fall back to the
+    // position-comparison path (compare their (h, ti, txid) against
+    // last_credited_(h, ti, txid)).
+    const snap = await readPetchProgress(env, network, assetIdHex);
     const orphanPrefixStr = pmintPrefix(network, assetIdHex) + '0000000000:';
     const capAmount = petch.cap_amount != null ? BigInt(petch.cap_amount) : null;
     const mintLimit = petch.mint_limit != null ? BigInt(petch.mint_limit) : null;
     const credited_txids = [];
-    const cap_overflow_txids = [];
+    // For cap_overflow_txids, prefer the snapshot's list (it's authoritative).
+    // Inline scan still populates as backup for assets without a snapshot.
+    const cap_overflow_txids = snap?.cap_overflow_txids ? [...snap.cap_overflow_txids] : [];
+    const haveOverflowFromSnapshot = !!snap?.cap_overflow_txids;
     let creditedAmount = 0n;
     let canonCursor = null;
     let collected = 0;
     let truncated = false;
     const SAFETY_CAP = 50000;
+    let canonicalComplete = false;
     for (let page = 0; page < 200; page++) {
       const list = await env.REGISTRY_KV.list({
         prefix: pmintPrefix(network, assetIdHex),
@@ -3358,7 +3725,7 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
         if (capAmount != null && mintLimit != null) {
           const wouldBe = creditedAmount + mintLimit;
           if (wouldBe > capAmount) {
-            cap_overflow_txids.push(txid);
+            if (!haveOverflowFromSnapshot) cap_overflow_txids.push(txid);
             continue;
           }
           creditedAmount = wouldBe;
@@ -3368,27 +3735,29 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
         if (collected >= SAFETY_CAP) { truncated = true; break; }
       }
       if (truncated) break;
-      if (list.list_complete) { var canonicalComplete = true; break; }
+      if (list.list_complete) { canonicalComplete = true; break; }
       canonCursor = list.cursor;
-      if (!canonCursor) { var canonicalComplete = true; break; }
+      if (!canonCursor) { canonicalComplete = true; break; }
     }
-    // Issue #13 explicitly asked for this signal so consumers can distinguish
-    // "complete view" from "first N mints only." Without it the silent cap
-    // was the original v1 bug. We flag truncated unless we exited the page
-    // loop via either list_complete or a falsy cursor — both indicate the
-    // KV.list namespace was fully drained for this prefix.
-    if (typeof canonicalComplete === 'undefined') canonicalComplete = false;
     if (!canonicalComplete && !truncated) truncated = true;
-    // cap_overflow is published alongside credited so the dapp can distinguish
-    // "pending — will eventually credit" from "permanently rejected — paid
-    // fees for nothing." Without the overflow list, the wallet would have to
-    // either fall back to the full /pmints endpoint or treat overflow as
-    // pending indefinitely (audit fix #1 partial).
     return jsonResponse({
       asset_id: assetIdHex,
       network,
       credited_txids,
       cap_overflow_txids,
+      // Snapshot-derived fields. Consumers (the dapp) use these for
+      // position-based credit checks when credited_txids is truncated and
+      // the user's own mint sits past SAFETY_CAP — they can't rely on
+      // set membership, but they can compare (h, ti, txid) against
+      // last_credited_(h, ti, txid).
+      credited_count: snap?.credited_count ?? null,
+      credited_amount: snap?.credited_amount ?? null,
+      cap_overflow_count: snap?.cap_overflow_count ?? cap_overflow_txids.length,
+      last_credited_height: snap?.last_credited_height ?? null,
+      last_credited_tx_index: snap?.last_credited_tx_index ?? null,
+      last_credited_txid: snap?.last_credited_txid ?? null,
+      snapshot_updated_at: snap?.updated_at ?? null,
+      snapshot_bootstrapped: !!snap?.bootstrapped,
       confirmation_depth: PMINT_CONFIRMATION_DEPTH,
       tip: Number.isInteger(tip) ? tip : null,
       tip_unavailable: !Number.isInteger(tip),
@@ -3396,20 +3765,34 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
       list_complete: !truncated,
     }, 200, cors);
   }
+  // Full event list path. Aggregate fields (cumulative_minted, credited_count,
+  // cap_overflow_count) come from the snapshot when present so this endpoint
+  // agrees with /petch-assets numbers — explorers/auditors hitting both
+  // shouldn't see drift driven by where the cap walk happened to stop. The
+  // per-event detail array (`pmints`) still comes from loadCanonicalPmints
+  // and is capped at 5000 events; consumers needing exhaustive per-event
+  // access should use ?credited=1 for txid-only or paginate via cursor (future).
   const r = await loadCanonicalPmints(env, network, assetIdHex, tip, petch.cap_amount, petch.mint_limit);
+  const snap = await readPetchProgress(env, network, assetIdHex);
   return jsonResponse({
     asset_id: assetIdHex,
     network,
     cap_amount: petch.cap_amount,
     mint_limit: petch.mint_limit,
-    cumulative_minted: r.cumulative_minted,
-    credited_count: parseInt(r.credited_count, 10) || 0,
-    pending_count: r.events.filter(e => e.status === 'pending').length,
-    cap_overflow_count: r.events.filter(e => e.status === 'cap_overflow').length,
+    cumulative_minted: snap?.credited_amount ?? r.cumulative_minted,
+    credited_count: snap?.credited_count ?? (parseInt(r.credited_count, 10) || 0),
+    pending_count: snap?.pending_count ?? r.events.filter(e => e.status === 'pending').length,
+    cap_overflow_count: snap?.cap_overflow_count ?? r.events.filter(e => e.status === 'cap_overflow').length,
+    last_credited_height: snap?.last_credited_height ?? null,
+    last_credited_tx_index: snap?.last_credited_tx_index ?? null,
+    last_credited_txid: snap?.last_credited_txid ?? null,
+    snapshot_updated_at: snap?.updated_at ?? null,
+    snapshot_bootstrapped: !!snap?.bootstrapped,
     confirmation_depth: PMINT_CONFIRMATION_DEPTH,
     tip: Number.isInteger(tip) ? tip : null,
     tip_unavailable: !Number.isInteger(tip),
     pmints: r.events,
+    events_truncated: !!r.truncated,
     truncated: !!r.truncated,
     list_complete: !r.truncated,
   }, 200, cors);
@@ -4908,7 +5291,13 @@ async function handleAtomicIntentFulfilGet(assetIdHex, intentIdHex, env, network
 //   - eth_sig:     65 bytes (130 hex chars, 0x prefix optional).
 const AIRDROP_LEAF_INDEX_MAX = 0xffffffff;
 const AIRDROP_LIST_PAGE = 1000;     // KV's max per call
-const AIRDROP_LIST_HARD_CAP = 10000; // total per response; bound size + cost
+// Each returned claim costs one KV.get subrequest. CF Workers paid plan caps
+// at 1000 subrequests per invocation; the prior 10000 cap would deterministically
+// fail once a queue grew past ~1000 entries because we'd attempt 10000 gets in
+// one invocation. The dapp's pull loop paginates via PAGE_GUARD_CAP=16, so a
+// lower per-call cap is invisible in normal use and keeps every pull within
+// the subrequest budget. Tightened by audit fix M1.
+const AIRDROP_LIST_HARD_CAP = 900;  // total per response; bound size + subrequest cost
 
 // Layered daily rate limit for airdrop-claim POST and DELETE. Without this an
 // attacker could fill KV with junk submissions for any root, or wipe a
@@ -5168,8 +5557,22 @@ async function handleDropAnnounceList(env, network, cors) {
   const drops = [];
   for (const v of fetched) {
     if (!v) continue;
+    // Signet keeps the legacy unprefixed KV form (`drop-announce:<root>`),
+    // and KV's prefix scan does raw string matching with no awareness of
+    // our colon-separated network namespacing. The signet prefix
+    // `drop-announce:` therefore matches every mainnet key
+    // `drop-announce:mainnet:<root>` too, so a signet listing pulls in
+    // mainnet announcements. Filter records to the requested network so
+    // recipients on signet don't see mainnet drops in their discovery list
+    // (the snapshot-load + sign step would block them anyway via the
+    // network-mismatch banner, but surfacing mismatched drops upstream is
+    // confusing UX). Records prior to the network field's introduction
+    // default to signet — matches the legacy KV layout.
+    if ((v.network || 'signet') !== network) continue;
     if (v.expires_at && v.expires_at <= now) {
       // Lazy GC: fire-and-forget delete on read. Cheaper than a sweeper cron.
+      // The filter above guarantees v.network === network, so reconstructing
+      // the key from `network + v.merkle_root` matches the actual stored key.
       env.REGISTRY_KV.delete(dropAnnounceKey(network, v.merkle_root)).catch(() => {});
       continue;
     }
@@ -5544,6 +5947,12 @@ async function scanForEtches(env, network) {
     _petchCache.set(aid, v);
     return v;
   };
+  // Per-scan dedupe set for petch_dirty markers. The T_PMINT branch below
+  // would otherwise KV.put the same `petch_dirty:<aid>` key once per pmint —
+  // for a dense fair-launch block (~300 reveals on FAIR), that's 300 writes
+  // of the same value to the same key. Same scaling concern as the petch
+  // lookup cache above. Batched once at end-of-scan.
+  const _dirtyPetchAids = new Set();
   // Seed at `startHeight - 1` so a transient API failure on the very first
   // block of a never-scanned network doesn't write `0` to KV and abandon the
   // entire backfill window. We only update `lastContiguous` after a block's
@@ -5750,6 +6159,11 @@ async function scanForEtches(env, network) {
         mintMeta.tx_index = txIndex;
         const pmk = pmintKeyFor(network, expectedAid, h, txIndex, tx.txid);
         await env.REGISTRY_KV.put(pmk, JSON.stringify(mintMeta));
+        // Stage this asset for dirty-marking. Deferred to end-of-scan so a
+        // dense block with 300 pmints for one asset writes the marker once
+        // (≤1 KV.put) instead of 300 times. The end-of-scan loop converts
+        // the Set into actual KV writes.
+        _dirtyPetchAids.add(expectedAid);
         // Stale-orphan cleanup is now handled by the dedicated orphan
         // promoter (promotePmintOrphans, run on every cron tick). The
         // previous inline `KV.delete(stalePendingKey)` here cost one extra
@@ -5875,6 +6289,16 @@ async function scanForEtches(env, network) {
     }
     lastContiguous = h;
   }
+  // Flush deferred petch_dirty markers BEFORE advancing lastScanned. One
+  // write per unique asset that saw a confirmed T_PMINT this scan. Ordering
+  // matters: if the worker is killed between these two writes, the next
+  // tick must re-scan the same blocks to re-create the dirty markers.
+  // Writing lastScanned first would advance past those blocks, leaving
+  // their assets' snapshots stale until another pmint or admin rebuild.
+  // markPetchDirty is idempotent so re-scans cost no extra correctness.
+  for (const aid of _dirtyPetchAids) {
+    await markPetchDirty(env, network, aid);
+  }
   await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
   return { scanned_txs: scanned, found_etches: found, from: startHeight, to: lastContiguous, tip, network };
 }
@@ -5910,6 +6334,12 @@ export {
   // (depth-gated crediting, cap-overflow rejection, reorg-revoke) against
   // an in-memory KV stub without spinning up Cloudflare's runtime.
   PMINT_CONFIRMATION_DEPTH, loadCanonicalPmints,
+  // Snapshot-based cap-progress layer (the O(1) read replacement for
+  // loadCanonicalPmints fan-out). Exported so tests can simulate the
+  // refresh/read/dirty-mark lifecycle without a live Cloudflare runtime.
+  refreshPetchProgress, refreshAndStorePetchProgress, readPetchProgress,
+  markPetchDirty, refreshDirtyPetchSnapshots,
+  petchProgressKey, petchDirtyKey,
 };
 
 // ============== ROUTER ==============
@@ -5922,6 +6352,7 @@ export default {
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);
     if (url.pathname === '/pin-mixer-vk' && req.method === 'POST') return handlePinMixerVk(req, env, cors);
+    if (url.pathname === '/pin-airdrop-snapshot' && req.method === 'POST') return handlePinAirdropSnapshot(req, env, cors);
     if (url.pathname === '/ceremony/init' && req.method === 'POST') return handleCeremonyInit(req, env, cors);
     {
       const m = url.pathname.match(/^\/ceremony\/([0-9a-f]{64})$/i);
@@ -6313,7 +6744,7 @@ export default {
       return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     if (url.pathname === '/holdings' && req.method === 'POST') return handleHoldings(req, env, network, cors);
-    if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors);
+    if (url.pathname === '/assets/hint' && req.method === 'POST') return handleAssetHint(req, env, network, cors, ctx);
     // Permissionless-mint registry (T_PETCH-rooted). Kept separate from
     // /assets so consumers can filter cleanly without one mode polluting the
     // other; clients wanting "every asset" union /assets and /petch-assets.
@@ -6352,18 +6783,43 @@ export default {
     }
     const mpa = url.pathname.match(/^\/petch-assets\/([0-9a-f]{64})$/);
     if (mpa && req.method === 'GET') {
-      const v = await env.REGISTRY_KV.get(petchKey(network, mpa[1]), 'json');
+      const aid = mpa[1];
+      const v = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
       if (!v) return jsonResponse({ error: 'unknown petch asset_id' }, 404, cors);
-      const tip = await Promise.race([
-        apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
-        new Promise(resolve => setTimeout(() => resolve(null), 2500)),
-      ]).catch(() => null);
-      const r = await loadCanonicalPmints(env, network, mpa[1], tip, v.cap_amount, v.mint_limit);
-      v.cumulative_minted = r.cumulative_minted;
-      v.credited_pmint_count = parseInt(r.credited_count, 10) || 0;
-      v.pmint_count = r.events.length;
+      // Read snapshot first. The previous implementation called
+      // loadCanonicalPmints which value-fetched every canonical key and took
+      // ~45s wall-time on FAIR before truncating at 5000 entries — over the
+      // 30s worker ceiling and inconsistent with /petch-assets's 50000-key
+      // counts. The snapshot is the single source of truth maintained by
+      // the cron + hint write paths.
+      const tip = await fetchTipHeight(env, network);
+      let snap = await readPetchProgress(env, network, aid);
+      if (!snap) {
+        snap = await refreshAndStorePetchProgress(env, network, aid, tip, v).catch(() => null);
+      }
+      if (snap) {
+        v.cumulative_minted = snap.credited_amount;
+        v.credited_pmint_count = snap.credited_count;
+        v.cap_overflow_count = snap.cap_overflow_count || 0;
+        v.pmint_count = snap.canonical_count + (snap.orphan_count || 0);
+        v.pending_pmint_count = snap.pending_count;
+        v.snapshot_updated_at = snap.updated_at;
+        v.snapshot_tip = snap.tip_at_update;
+        v.truncated = !!snap.truncated;
+        v.bootstrapped = !!snap.bootstrapped;
+      } else {
+        v.cumulative_minted = '0';
+        v.credited_pmint_count = 0;
+        v.cap_overflow_count = 0;
+        v.pmint_count = 0;
+        v.pending_pmint_count = 0;
+        v.truncated = true;
+        v.bootstrapped = false;
+        v.snapshot_unavailable = true;
+      }
       if (v.cap_amount && v.mint_limit) {
-        const remaining = BigInt(v.cap_amount) - BigInt(v.cumulative_minted);
+        const minted = BigInt(v.cumulative_minted || '0');
+        const remaining = BigInt(v.cap_amount) - minted;
         v.mints_remaining = String(remaining < 0n ? 0n : remaining / BigInt(v.mint_limit));
       }
       return jsonResponse(v, 200, cors);
@@ -6438,8 +6894,8 @@ export default {
           return jsonResponse({ error: 'limit must be a non-negative integer' }, 400, cors);
         }
         const lim = parseInt(limitRaw, 10);
-        if (lim < 1 || lim > 10000) {
-          return jsonResponse({ error: 'limit must be between 1 and 10000' }, 400, cors);
+        if (lim < 1 || lim > AIRDROP_LIST_HARD_CAP) {
+          return jsonResponse({ error: `limit must be between 1 and ${AIRDROP_LIST_HARD_CAP}` }, 400, cors);
         }
         opts.limit = lim;
       }
@@ -6623,6 +7079,47 @@ export default {
         return jsonResponse(result, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
+    // Force a cap-progress snapshot refresh. ?aid=<hex> targets one asset;
+    // ?all=1 walks the petch namespace and refreshes every asset (bounded
+    // by the worker's wall-time budget — heavy ones might need multiple
+    // calls). Use this after a deploy to backfill FAIR-scale assets that
+    // would otherwise wait one cron tick per asset for bootstrap.
+    if (url.pathname === '/admin/petch-progress/rebuild' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid');
+        const all = url.searchParams.get('all') === '1';
+        const tip = await fetchTipHeight(env, network);
+        if (aid && /^[0-9a-f]{64}$/.test(aid)) {
+          const petch = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
+          if (!petch) return jsonResponse({ error: 'unknown petch asset_id' }, 404, cors);
+          const snap = await refreshAndStorePetchProgress(env, network, aid, tip, petch);
+          await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {});
+          await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+          return jsonResponse({ network, aid, snapshot: snap }, 200, cors);
+        }
+        if (all) {
+          const petches = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit: 1000 });
+          const results = [];
+          for (const k of petches.keys) {
+            const a = k.name.slice(petchPrefix(network).length);
+            if (!/^[0-9a-f]{64}$/.test(a)) continue;
+            try {
+              const petch = await env.REGISTRY_KV.get(k.name, 'json');
+              if (!petch) continue;
+              const snap = await refreshAndStorePetchProgress(env, network, a, tip, petch);
+              await env.REGISTRY_KV.delete(petchDirtyKey(network, a)).catch(() => {});
+              results.push({ aid: a, credited_count: snap.credited_count, truncated: snap.truncated });
+            } catch (e) {
+              results.push({ aid: a, error: e.message });
+            }
+          }
+          await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
+          return jsonResponse({ network, count: results.length, results }, 200, cors);
+        }
+        return jsonResponse({ error: 'pass ?aid=<hex> or ?all=1' }, 400, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
 
     return jsonResponse({ error: 'not found' }, 404, cors);
   },
@@ -6657,10 +7154,18 @@ export default {
       await Promise.allSettled(
         NETWORKS.map(net => marketComputeAndCache(env, net).catch(() => {})),
       );
-      // Pre-warm /petch-assets. Each MISS fans out to loadCanonicalPmints
-      // per asset (the costliest /petch-assets payload on the system), so
-      // keeping cache fresh keeps Discover's public-mint section snappy
-      // even after long quiet periods.
+      // Refresh per-asset cap-progress snapshots for assets that received
+      // new pmints this tick (dirty markers set by scanForEtches's T_PMINT
+      // branch and by /assets/hint POSTs). Bootstrap any asset that has no
+      // snapshot yet. Snapshot reads are O(1) for the /petch-assets endpoint
+      // so this is where the O(N) key-only scan cost gets amortized — at
+      // most once per asset per 5-min tick instead of once per user request.
+      await Promise.allSettled(
+        NETWORKS.map(net => refreshDirtyPetchSnapshots(env, net).catch(() => {})),
+      );
+      // Pre-warm /petch-assets. With snapshots in place the MISS path is
+      // cheap (one KV.get per asset), but the cron still warms it so the
+      // first user request after a deploy or cache flush hits HIT immediately.
       await Promise.allSettled(
         NETWORKS.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
       );
