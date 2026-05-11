@@ -179,8 +179,47 @@ const ATOMIC_INTENT_FULFILMENT_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? 
 const PETCH_REGISTRY_URL = WORKER_BASE ? WORKER_BASE + '/petch-assets' : '';
 const PETCH_ASSET_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/petch-assets/${assetIdHex}` : '';
 const PMINTS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/pmints` : '';
+// Defensive cross-indexer cap gate. Public tacitscan endpoint returns the
+// set of T_PETCH asset_ids it has confirmed minted-out per SPEC §5.9
+// (Pedersen + parent + amount + height-window). Used to disable the Mint
+// button when the worker's `cumulative_minted` is stale (e.g. the cron
+// missed a dense-mint asset and the dapp's browser-side fallback hasn't
+// caught up). Failure-mode is graceful: if tacitscan is unreachable, the
+// dapp falls back to worker-only state — identical to today's behavior.
+const TACITSCAN_MINTED_OUT_URL = 'https://tacitscan.io/api/minted-out';
 const DROPS_URL = WORKER_BASE ? WORKER_BASE + '/drops' : '';
 const DROP_URL  = (rootHex) => WORKER_BASE ? `${WORKER_BASE}/drops/${rootHex}` : '';
+// Cross-indexer minted-out gate. Cached per network for 60s — cap state
+// can't flip more frequently than blocks land, and the endpoint itself
+// edge-caches at 30s, so 60s in the dapp tolerates one stale poll
+// without falsely re-enabling a button that should stay disabled.
+// Always returns a Set (possibly empty) so callers don't need null checks.
+let _tacitscanMintedOutCache = new Map(); // network -> { set, fetchedAt }
+const _TACITSCAN_TTL_MS = 60_000;
+async function fetchTacitscanMintedOut(network) {
+  const cached = _tacitscanMintedOutCache.get(network);
+  if (cached && Date.now() - cached.fetchedAt < _TACITSCAN_TTL_MS) return cached.set;
+  try {
+    const r = await fetch(`${TACITSCAN_MINTED_OUT_URL}?network=${encodeURIComponent(network)}`, {
+      signal: AbortSignal.timeout(3500),
+    });
+    if (!r.ok) return cached?.set ?? new Set();
+    const data = await r.json();
+    // Only trust the response if it self-identifies as the right network.
+    // Defensive: a misconfigured indexer that mainnet-tags signet rows would
+    // otherwise mis-disable the wrong assets here. Mismatched payload =
+    // don't override worker state.
+    if (data && data.network && data.network !== network) {
+      return cached?.set ?? new Set();
+    }
+    const set = new Set((data?.assets || []).map((a) => a.asset_id).filter(Boolean));
+    _tacitscanMintedOutCache.set(network, { set, fetchedAt: Date.now() });
+    return set;
+  } catch {
+    return cached?.set ?? new Set();
+  }
+}
+
 // Append the active network as a query param. The worker's registry endpoints
 // are network-scoped. The dapp defaults to mainnet; users opt into signet
 // via the network selector.
@@ -24758,6 +24797,12 @@ async function renderPetchDiscover() {
       _petchCache = j;
       _petchFetchedAt = Date.now();
     }
+    // Cross-indexer minted-out gate. Independent of the worker — if the
+    // worker's cap counter is stale (e.g. cron skipped a dense-mint asset
+    // and `cumulative_minted` lags), tacitscan's set still lets us disable
+    // the Mint button so users don't burn fees on cap-overflow. Empty set
+    // on tacitscan unreachable → identical to pre-change behavior.
+    const tacitscanMintedOut = await fetchTacitscanMintedOut(NET.name);
     const assets = Array.isArray(j.assets) ? j.assets : [];
     if (!assets.length) {
       list.innerHTML = `<div class="empty">No public-mint assets deployed on ${escapeHtml(NET.name)} yet. <a href="#" data-goto-tab="etch">Deploy one →</a></div>`;
@@ -24822,7 +24867,11 @@ async function renderPetchDiscover() {
         const cap = a.cap_amount ? BigInt(a.cap_amount) : 0n;
         const minted = a.cumulative_minted ? BigInt(a.cumulative_minted) : 0n;
         const pending = BigInt(Number(a.pending_pmint_count || 0)) * (a.mint_limit ? BigInt(a.mint_limit) : 0n);
-        const capFull = cap > 0n && (minted + pending) >= cap;
+        // tacitscan's secondary signal: an asset_id we never want to
+        // bucket as 'live' if a second indexer has confirmed it minted-out.
+        // Keeps the sort consistent with the per-tile button state below.
+        const tacitscanFull = tacitscanMintedOut.has(a.asset_id || '');
+        const capFull = tacitscanFull || (cap > 0n && (minted + pending) >= cap);
         const endH = Number(a.mint_end_height) || 0;
         const after = _tip != null && endH > 0 && _tip > endH;
         if (capFull || after) return 2;
@@ -24881,7 +24930,15 @@ async function renderPetchDiscover() {
       const remaining = cap > mintedRaw ? cap - mintedRaw : 0n;
       const remMints = limit > 0n ? remaining / limit : 0n;
       const pct = cap > 0n ? Math.min(100, Number(mintedNow * 10000n / cap) / 100) : 0;
-      const capFull = remaining <= 0n;
+      // capFull is true if either (a) the worker's counters say the cap
+      // is reached, or (b) tacitscan's secondary index confirms minted-out
+      // per its own SPEC §5.9 validator pass. The OR is intentional: the
+      // worker is authoritative when healthy, tacitscan is a defensive
+      // fallback when the worker's KV state is stale. A second indexer
+      // agreeing on "full" is more trustworthy than either alone.
+      const workerCapFull = remaining <= 0n;
+      const tacitscanCapFull = tacitscanMintedOut.has(safeAid);
+      const capFull = workerCapFull || tacitscanCapFull;
       const myMintCount = myPmintCountByAsset.get(safeAid) || 0;
       // Height-window check is best-effort here: tip + start_height come from
       // the worker's response. If we can't determine, leave the button enabled
@@ -24894,7 +24951,12 @@ async function renderPetchDiscover() {
       const afterWindow = tip != null && endH > 0 && tip > endH;
       let mintReason = '';
       let mintDisabled = false;
-      if (capFull) { mintDisabled = true; mintReason = 'cap reached'; }
+      if (capFull) {
+        mintDisabled = true;
+        // Distinguish the source so a user (or fork operator) can tell
+        // when the worker is lagging behind tacitscan's view.
+        mintReason = workerCapFull ? 'cap reached' : 'cap reached (per tacitscan)';
+      }
       else if (beforeWindow) { mintDisabled = true; mintReason = `opens at block ${startH}`; }
       else if (afterWindow) { mintDisabled = true; mintReason = 'mint window closed'; }
       else if (!myWalletReady) { mintDisabled = true; mintReason = 'wallet not ready'; }
