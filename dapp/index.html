@@ -193,6 +193,35 @@ button.primary:hover {
 }
 button.danger:hover { background: var(--red); color: #fff; border-color: var(--red); }
 
+/* Petch mint button. Distinct purple fill in the enabled state to signal
+   "permissionless action — anyone can do this." Inline styles previously
+   set the background, which won the specificity fight against the generic
+   button:hover rule above and broke the hover affordance. Pinning the
+   styling here lets :hover invert to the standard ink/black background
+   like every other button on the site.
+   Mobile: `(hover: hover)` scopes the inversion to true-hover devices so
+   the touch-tap doesn't leave a "stuck" black state after release. :active
+   covers the press feedback on touch (also fires under mouse-down). The
+   subtle scale-down on press reads as tactile and helps the user confirm
+   the tap registered before the cap-progress UI updates. */
+button[data-act="petch-mint"]:not(:disabled) {
+  background: #7d4ff7; color: #fff; border-color: #5a36c4;
+  transition: background 0.12s ease-out, transform 0.08s ease-out;
+}
+@media (hover: hover) {
+  button[data-act="petch-mint"]:not(:disabled):hover {
+    background: var(--ink); color: #fff; border-color: var(--ink);
+  }
+}
+button[data-act="petch-mint"]:not(:disabled):active {
+  background: var(--ink); color: #fff; border-color: var(--ink);
+  transform: scale(0.96);
+}
+@media (prefers-reduced-motion: reduce) {
+  button[data-act="petch-mint"]:not(:disabled) { transition: none; }
+  button[data-act="petch-mint"]:not(:disabled):active { transform: none; }
+}
+
 /* Compact copy buttons next to mono-box address/pubkey rows. Visually
    secondary to primary actions; click → navigator.clipboard + toast. */
 .btn-copy {

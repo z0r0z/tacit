@@ -22687,11 +22687,15 @@ async function renderRecentEtches() {
         else $('.tab[data-tab="discover"]').click();
       };
       paintTile(tile, a, null, null);
-      // If this asset's credited count exceeds the last-flashed baseline,
-      // pulse the tile in purple. Shared baseline across Discover+lander, so
-      // each mint event flashes the asset once on whichever pane is open.
+      // If this asset's activity total (credited + pending) exceeds the
+      // last-flashed baseline, pulse the tile purple. Sum lets the flash
+      // fire on broadcast (pending tick) rather than only on 3-confirm
+      // credit — feels more alive given Bitcoin's 10-min block cadence.
+      // Shared baseline across Discover + lander, so each mint event
+      // flashes the asset once on whichever pane is open.
       if (tile.dataset.petchAid) {
-        _applyPetchMintFlashIfNew(tile, tile.dataset.petchAid, a.credited_pmint_count);
+        const activity = (Number(a.credited_pmint_count) || 0) + (Number(a.pending_pmint_count) || 0);
+        _applyPetchMintFlashIfNew(tile, tile.dataset.petchAid, activity);
       }
       grid.appendChild(tile);
       return tile;
@@ -25689,16 +25693,27 @@ function invalidatePetchCache() { _petchFetchedAt = 0; }
 
 // Mint-activity heartbeat. Petch tile renderers (Discover + lander preview)
 // each call _applyPetchMintFlashIfNew per tile they paint, passing the
-// asset's current credited_pmint_count. A shared Map tracks the count we
-// last flashed for that aid; if the rendered count exceeds the baseline,
-// the tile gets a brief purple flash and the baseline advances. Cross-pane
-// safe: once one pane flashes for count=N the other won't re-flash for the
-// same N. First-sight per aid establishes the baseline silently — no
-// page-load flash storm on initial discover/lander render.
-const _petchFlashedAtCount = new Map();   // asset_id -> credited_count_at_last_flash
-function _applyPetchMintFlashIfNew(tileEl, aid, currentCredited) {
+// asset's CURRENT activity total — sum of credited_pmint_count and
+// pending_pmint_count. Sum is the right signal because:
+//   - credited alone only ticks up at depth ≥ 3 (~30 min after broadcast).
+//     With Bitcoin's 10-min block time the user would see very few flashes
+//     and the page would feel dead between confirmations.
+//   - pending ticks up within seconds of a wallet broadcast (the worker's
+//     hint endpoint indexes it on receipt). Visible "someone just clicked
+//     Mint" within one poll cycle.
+//   - Sum is monotonically non-decreasing in steady state: a pending mint
+//     either credits (pending--, credited++, sum unchanged) or stays
+//     pending (no change). Reorg-evicted mints can flap; the helper's
+//     `cur <= last` guard absorbs noise so we only flash on real growth.
+// Shared Map tracks the activity total we last flashed for that aid; if
+// the rendered total exceeds the baseline, the tile pulses purple and the
+// baseline advances. Cross-pane safe: once one pane flashes for total=N
+// the other won't re-flash for the same N. First-sight per aid sets the
+// baseline silently — no page-load flash storm on initial render.
+const _petchFlashedAtCount = new Map();   // asset_id -> activity_total_at_last_flash
+function _applyPetchMintFlashIfNew(tileEl, aid, currentActivityTotal) {
   if (!tileEl || !aid) return;
-  const cur = Number(currentCredited || 0);
+  const cur = Number(currentActivityTotal || 0);
   if (!Number.isFinite(cur)) return;
   const last = _petchFlashedAtCount.get(aid);
   if (last === undefined) {
@@ -25954,7 +25969,7 @@ async function renderPetchDiscover() {
       else if (_petchStatus === 'sold-out') _ctSold++;
       else _ctSoon++;
       return `
-        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" data-petch-credited="${escapeHtml(String(a.credited_pmint_count || 0))}" data-filter-key="${escapeHtml(_petchFilterKey)}" data-petch-status="${_petchStatus}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);">
+        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" data-petch-activity="${escapeHtml(String((Number(a.credited_pmint_count) || 0) + (Number(a.pending_pmint_count) || 0)))}" data-filter-key="${escapeHtml(_petchFilterKey)}" data-petch-status="${_petchStatus}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);">
           ${officialBadgePetch}
           ${youMintedBadge}
           <div style="display:flex;align-items:center;gap:12px;">
@@ -25965,7 +25980,7 @@ async function renderPetchDiscover() {
               <strong style="font-size:16px;">${escapeHtml(a.ticker || '?')}</strong>
               <div style="font-size:10px;color:var(--ink-mid);font-family:var(--mono);margin-top:2px;">${escapeHtml(shorten(safeAid, 12))}</div>
             </div>
-            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${(isSoftDisable || capFull) ? 'display:none;' : ''}${mintDisabled ? '' : 'background:#7d4ff7;color:#fff;border-color:#5a36c4;'}">
+            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${(isSoftDisable || capFull) ? 'display:none;' : ''}">
               ${mintDisabled && !isSoftDisable && !capFull ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${limitDispEsc}`}
             </button>
           </div>
@@ -25987,14 +26002,17 @@ async function renderPetchDiscover() {
         </div>`;
     }).join('');
     list.innerHTML = tiles;
-    // Apply purple mint-flash to tiles whose credited count exceeds our
-    // last-flashed baseline for that aid. The shared _petchFlashedAtCount
-    // Map ensures the same mint event flashes the lander tile once and the
-    // Discover tile once but doesn't re-flash either on a stale re-render.
+    // Apply purple mint-flash to tiles whose activity total (credited +
+    // pending) exceeds the last-flashed baseline for that aid. Sum is what
+    // makes the flash feel responsive on Bitcoin's slow block cadence —
+    // pending mints land in the worker within seconds of broadcast, so the
+    // tile pulses when "someone just clicked Mint" rather than only after
+    // 3-confirm credit. Shared _petchFlashedAtCount ensures the same mint
+    // event flashes lander once and Discover once across pane switches.
     for (const el of list.querySelectorAll('[data-petch-aid]')) {
       const aid = el.getAttribute('data-petch-aid');
-      const cnt = el.getAttribute('data-petch-credited');
-      _applyPetchMintFlashIfNew(el, aid, cnt);
+      const total = el.getAttribute('data-petch-activity');
+      _applyPetchMintFlashIfNew(el, aid, total);
     }
     // Status header: prefer a status breakdown when more than one state is
     // present (e.g. "5 live · 2 sold out"), fall back to total count when
