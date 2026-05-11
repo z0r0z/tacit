@@ -114,7 +114,7 @@ header {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--ink-mid); border-left: 1px solid var(--ink); padding-left: 12px;
 }
-.tagline em { display: block; margin-top: 2px; font-size: 9px; letter-spacing: 0.08em; color: var(--ink-faint); font-style: normal; }
+.tagline em { display: block; margin-top: 2px; font-size: 9px; letter-spacing: 0.08em; color: var(--orange); opacity: 0.5; font-style: normal; }
 .net-badge {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em;
   font-weight: 700; padding: 6px 12px;
@@ -990,6 +990,26 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 }
 @media (prefers-reduced-motion: reduce) {
   .live-dots::after { animation: none; opacity: 0.55; }
+}
+
+/* Brief purple pulse fired on a petch tile (Discover + lander preview) when
+   the worker's snapshot reports a new credited mint since the last poll.
+   Purpose: ambient liveness signal so users see fair-launch activity happen
+   without scrolling or refreshing. Triggered by JS on poll-delta detection
+   and self-clears via animationend so the next mint can re-fire. Color
+   matches the Mint button's purple (`#7d4ff7`). Respects reduced-motion. */
+@keyframes petch-mint-flash {
+  0%   { background: rgba(125, 79, 247, 0.35); box-shadow: 0 0 0 0 rgba(125, 79, 247, 0.55); }
+  60%  { background: rgba(125, 79, 247, 0.10); box-shadow: 0 0 0 6px rgba(125, 79, 247, 0); }
+  100% { background: var(--bg-warm);            box-shadow: 0 0 0 0 rgba(125, 79, 247, 0); }
+}
+.asset-card.petch-mint-flash,
+.recent-tile.petch-mint-flash {
+  animation: petch-mint-flash 1.2s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .asset-card.petch-mint-flash,
+  .recent-tile.petch-mint-flash { animation: none; }
 }
 
 /* Brief flash applied to a scrolled-into-view card when it's the deep-link

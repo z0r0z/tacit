@@ -11154,7 +11154,12 @@ function parseAirdropCSV(csvText, opts = {}) {
   const addressColumn = Number.isInteger(opts.addressColumn) ? opts.addressColumn : 0;
   const amountColumn = Number.isInteger(opts.amountColumn) ? opts.amountColumn : 1;
 
-  const lines = csvText.split(/\r?\n/);
+  // Strip leading UTF-8 BOM. Excel-exported CSVs and some Etherscan downloads
+  // ship with U+FEFF at the start; without this, header detection works (the
+  // BOM-prefixed first cell isn't a 40-hex address) but a header-less CSV
+  // would reject row 0 with "invalid eth_address" pointing at ﻿0x...
+  const normalised = csvText.charCodeAt(0) === 0xfeff ? csvText.slice(1) : csvText;
+  const lines = normalised.split(/\r?\n/);
   const rows = [];
   let assignedIndex = 0;
   let headerSeen = false;
@@ -19130,8 +19135,51 @@ function setupDropsForm() {
       if (/^0+$/.test(merkleRootRaw)) {
         throw new Error('all-zero merkle root = open FCFS (deferred to v2). Paste the actual snapshot root from §5 above.');
       }
+      // Uniform-amount gate. The on-chain T_DCLAIM validator (SPEC §5.13)
+      // recomputes the merkle leaf as airdropLeafHash(eth_addr, drop.per_claim,
+      // leaf_index) — it ignores the row's recorded amount because T_DROP mints
+      // exactly drop.per_claim per claim. If any snapshot row was built with a
+      // different amount (the worker-mediated airdrop allows varying amounts),
+      // every recipient's claim proof fails on-chain and they burn commit+reveal
+      // fees for nothing. Look up the saved drop record by merkle_root_hex and
+      // refuse to broadcast if it has any row.amount ≠ per_claim. If the issuer
+      // pasted a root that doesn't match any saved record, surface a confirm
+      // prompt — we can't verify uniformity offline.
+      {
+        const saved = loadSavedDrops().find(d => d.merkle_root_hex === merkleRootRaw);
+        if (saved) {
+          if (!Array.isArray(saved.rows) || saved.rows.length === 0) {
+            throw new Error('saved drop record for this root has no rows[] — cannot verify uniform per-claim. Rebuild the snapshot in §1–§5 above.');
+          }
+          const mismatched = [];
+          for (const r of saved.rows) {
+            let a;
+            try { a = BigInt(r.amount); } catch { mismatched.push({ index: r.index, amount: String(r.amount) }); continue; }
+            if (a !== perClaim) mismatched.push({ index: r.index, amount: a.toString() });
+            if (mismatched.length >= 5) break;
+          }
+          if (mismatched.length > 0) {
+            const sample = mismatched.map(m => `leaf ${m.index}: ${m.amount}`).join(', ');
+            throw new Error(
+              `Cannot broadcast T_DROP: snapshot has rows whose amount ≠ per-claim (${perClaim}). ` +
+              `T_DCLAIM mints exactly per-claim and the on-chain validator hashes the leaf with per-claim, ` +
+              `so recipients whose snapshot rows differ would all fail merkle verification on-chain. ` +
+              `Sample mismatches: ${sample}. ` +
+              `Either set per-claim to match every row, or rebuild §1–§5 with a uniform amount, or use the worker-mediated fulfilment above instead of T_DROP.`,
+            );
+          }
+        } else {
+          if (!confirm(
+            'No local snapshot matches this merkle root. The on-chain T_DCLAIM flow only works when EVERY snapshot row has amount = per_claim. ' +
+            'If your snapshot was built elsewhere with varying amounts, recipients will burn commit+reveal fees on claims that fail merkle verification on-chain.\n\n' +
+            'Proceed only if you are certain every leaf in this snapshot has amount = ' + perClaim.toString() + '.'
+          )) {
+            throw new Error('cancelled — snapshot uniformity could not be verified');
+          }
+        }
+      }
       const merkleRoot = hexToBytes(merkleRootRaw);
-      if (!ensureBurnerBackedUp('Broadcast on-chain T_DROP (locks asset UTXOs summing to cap_amount)')) return;
+      if (!await ensureBurnerBackedUp('Broadcast on-chain T_DROP (locks asset UTXOs summing to cap_amount)')) return;
       const need = await estimateSatsForOp('cxfer');
       if (!(await ensureSatsFunded(need, 'Broadcasting T_DROP'))) return;
       const res = await buildAndBroadcastTDrop({
@@ -19253,7 +19301,7 @@ function setupDropsForm() {
     return;
     // (unreachable; kept for the future open-FCFS reactivation path)
     // eslint-disable-next-line no-unreachable
-    if (!ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
+    if (!await ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
     const need = await estimateSatsForOp('cxfer');
     if (!(await ensureSatsFunded(need, 'Claiming from on-chain pool'))) return;
     try {
@@ -19367,13 +19415,20 @@ function _claimValidateSnapshot(rootHexInput, blob) {
   if (typeof blob.asset_id !== 'string' || !/^[0-9a-f]{64}$/.test(blob.asset_id.toLowerCase())) {
     throw new Error('snapshot asset_id must be 64-char hex');
   }
-  if (blob.asset_decimals != null && (!Number.isInteger(blob.asset_decimals) || blob.asset_decimals < 0 || blob.asset_decimals > 8)) {
-    throw new Error('snapshot asset_decimals must be integer 0..8 (CETCH max)');
+  // asset_decimals + asset_ticker are required at load time, not optional.
+  // The canonical claim msg interpolates both: if the snapshot omits decimals
+  // the recipient signs with a fallback (decimals=0, ticker='?') while the
+  // issuer verifies with the asset's actual decimals/ticker — sig recovery
+  // then fails and the claim is rejected as "forged" even though it was
+  // legitimately signed. Reject up-front so the failure is visible at snapshot
+  // load instead of buried in a "signature mismatch" downstream.
+  if (!Number.isInteger(blob.asset_decimals) || blob.asset_decimals < 0 || blob.asset_decimals > 8) {
+    throw new Error('snapshot asset_decimals required: integer 0..8 (CETCH max)');
   }
-  if (blob.asset_ticker != null) {
-    if (typeof blob.asset_ticker !== 'string' || blob.asset_ticker.length === 0 || blob.asset_ticker.length > 16) {
-      throw new Error('snapshot asset_ticker must be a string of length 1..16');
-    }
+  if (typeof blob.asset_ticker !== 'string' || blob.asset_ticker.length === 0 || blob.asset_ticker.length > 16) {
+    throw new Error('snapshot asset_ticker required: string of length 1..16');
+  }
+  {
     // Reject control characters and bidi marks. The ticker is interpolated
     // verbatim into the EIP-191 message MetaMask shows when signing; a
     // newline or right-to-left override could visually rearrange the
@@ -20255,7 +20310,17 @@ async function _claimRefreshDiscover() {
             throw new Error(`snapshot network (${blob.network}) does not match announcement (${d.network})`);
           }
           const rows = _claimReconstructDiscoveredRows(blob, d.merkle_root);
-          _claimDiscoverSnapshots.set(d.merkle_root, { rows });
+          // Stash the snapshot's declared ticker + decimals alongside the rows
+          // so the discover card renders the eligible amount with the SAME
+          // ticker/decimals the recipient's canonical claim msg will bind to.
+          // Falling back to local asset metadata would misrender drops where
+          // the snapshot disagrees with the locally-cached asset record (e.g.
+          // an issuer that pinned a stale or hostile decimals field): the card
+          // would show one amount, the signed message another. Validation
+          // upstream guarantees both fields are well-formed when present.
+          const snapTicker = (typeof blob.asset_ticker === 'string' && blob.asset_ticker) ? blob.asset_ticker : null;
+          const snapDecimals = Number.isInteger(blob.asset_decimals) ? blob.asset_decimals : null;
+          _claimDiscoverSnapshots.set(d.merkle_root, { rows, ticker: snapTicker, decimals: snapDecimals });
           _renderClaimDiscoverList();
         })
         .catch(e => {
@@ -20360,8 +20425,16 @@ function _renderClaimDiscoverList() {
 
   list.innerHTML = rendered.map(({ d, snap, eligibleRow, snapshotState }) => {
     const meta = getAssetMeta(d.asset_id);
-    const ticker = meta?.ticker || '?';
-    const decimals = Number.isInteger(meta?.decimals) ? meta.decimals : 0;
+    // Prefer the snapshot's own ticker/decimals over the local meta when the
+    // snapshot has loaded. The signed claim message binds to the snapshot's
+    // declared values, so the discover card must render with the SAME values
+    // — otherwise the user sees "100 USDC" on the card and signs "10000000.0
+    // USDC" (decimals mismatch) in their wallet. Local meta is only the
+    // fallback while the snapshot is still fetching.
+    const snapTicker = snap?.ticker ?? null;
+    const snapDecimals = Number.isInteger(snap?.decimals) ? snap.decimals : null;
+    const ticker = snapTicker || meta?.ticker || '?';
+    const decimals = snapDecimals != null ? snapDecimals : (Number.isInteger(meta?.decimals) ? meta.decimals : 0);
     const expIso = new Date((d.expires_at || 0) * 1000).toISOString().slice(0, 10);
     const issuerShort = shorten(d.issuer_pubkey || '', 10);
     const provenance = _claimProvenance(d, meta);
@@ -20707,7 +20780,7 @@ function setupClaimTab() {
       toast('Sign the claim message first (step 4 above), then come back here', 'error');
       return;
     }
-    if (!ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
+    if (!await ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
     const need = await estimateSatsForOp('cxfer');
     if (!(await ensureSatsFunded(need, 'Claiming from on-chain pool'))) return;
     // Build witness from the signed claim. Note the snapshot already has the
@@ -22599,6 +22672,11 @@ async function renderRecentEtches() {
       const tile = document.createElement('a');
       tile.className = 'recent-tile';
       tile.href = '#';
+      // data-petch-aid is the hook the mint-flash animation targets — petch
+      // tiles in the lander get the same purple flash as Discover tiles when
+      // their `credited_pmint_count` ticks up between polls. Only set for
+      // petch-kind so cetch tiles don't accidentally flash.
+      if (a.kind === 'petch' && safeAssetId) tile.dataset.petchAid = safeAssetId;
       tile.onclick = (e) => {
         e.preventDefault();
         // Drive the navigation through the deeplink hash so the resulting
@@ -22609,6 +22687,12 @@ async function renderRecentEtches() {
         else $('.tab[data-tab="discover"]').click();
       };
       paintTile(tile, a, null, null);
+      // If this asset's credited count exceeds the last-flashed baseline,
+      // pulse the tile in purple. Shared baseline across Discover+lander, so
+      // each mint event flashes the asset once on whichever pane is open.
+      if (tile.dataset.petchAid) {
+        _applyPetchMintFlashIfNew(tile, tile.dataset.petchAid, a.credited_pmint_count);
+      }
       grid.appendChild(tile);
       return tile;
     });
@@ -25603,6 +25687,38 @@ let _petchCache = null;
 let _petchFetchedAt = 0;
 function invalidatePetchCache() { _petchFetchedAt = 0; }
 
+// Mint-activity heartbeat. Petch tile renderers (Discover + lander preview)
+// each call _applyPetchMintFlashIfNew per tile they paint, passing the
+// asset's current credited_pmint_count. A shared Map tracks the count we
+// last flashed for that aid; if the rendered count exceeds the baseline,
+// the tile gets a brief purple flash and the baseline advances. Cross-pane
+// safe: once one pane flashes for count=N the other won't re-flash for the
+// same N. First-sight per aid establishes the baseline silently — no
+// page-load flash storm on initial discover/lander render.
+const _petchFlashedAtCount = new Map();   // asset_id -> credited_count_at_last_flash
+function _applyPetchMintFlashIfNew(tileEl, aid, currentCredited) {
+  if (!tileEl || !aid) return;
+  const cur = Number(currentCredited || 0);
+  if (!Number.isFinite(cur)) return;
+  const last = _petchFlashedAtCount.get(aid);
+  if (last === undefined) {
+    _petchFlashedAtCount.set(aid, cur);
+    return;
+  }
+  if (cur <= last) return;
+  _petchFlashedAtCount.set(aid, cur);
+  // Re-trigger the keyframe even if the class is somehow still present:
+  // remove → reflow → re-add. animationend self-cleans for next time.
+  tileEl.classList.remove('petch-mint-flash');
+  void tileEl.offsetWidth;
+  tileEl.classList.add('petch-mint-flash');
+  const handler = () => {
+    tileEl.classList.remove('petch-mint-flash');
+    tileEl.removeEventListener('animationend', handler);
+  };
+  tileEl.addEventListener('animationend', handler);
+}
+
 async function renderPetchDiscover() {
   const list = $('#petch-discover-list');
   const statusEl = $('#petch-discover-status');
@@ -25838,7 +25954,7 @@ async function renderPetchDiscover() {
       else if (_petchStatus === 'sold-out') _ctSold++;
       else _ctSoon++;
       return `
-        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" data-filter-key="${escapeHtml(_petchFilterKey)}" data-petch-status="${_petchStatus}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);">
+        <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" data-petch-credited="${escapeHtml(String(a.credited_pmint_count || 0))}" data-filter-key="${escapeHtml(_petchFilterKey)}" data-petch-status="${_petchStatus}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);">
           ${officialBadgePetch}
           ${youMintedBadge}
           <div style="display:flex;align-items:center;gap:12px;">
@@ -25871,6 +25987,15 @@ async function renderPetchDiscover() {
         </div>`;
     }).join('');
     list.innerHTML = tiles;
+    // Apply purple mint-flash to tiles whose credited count exceeds our
+    // last-flashed baseline for that aid. The shared _petchFlashedAtCount
+    // Map ensures the same mint event flashes the lander tile once and the
+    // Discover tile once but doesn't re-flash either on a stale re-render.
+    for (const el of list.querySelectorAll('[data-petch-aid]')) {
+      const aid = el.getAttribute('data-petch-aid');
+      const cnt = el.getAttribute('data-petch-credited');
+      _applyPetchMintFlashIfNew(el, aid, cnt);
+    }
     // Status header: prefer a status breakdown when more than one state is
     // present (e.g. "5 live · 2 sold out"), fall back to total count when
     // everything's in one bucket. The 'soon' bucket is rare on signet but
