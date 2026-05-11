@@ -2571,10 +2571,10 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <h3>1 · Discover available drops</h3>
       <div class="muted" style="font-size:11px;margin-bottom:6px;">
-        Active issuer-published drops on <span id="claim-discover-network">…</span>. Connect an Ethereum wallet to filter to drops your address is eligible for.
+        Active issuer-published drops on <span id="claim-discover-network">…</span>.
       </div>
-      <div class="flex" style="gap:6px;align-items:center;margin-bottom:8px;">
-        <button id="btn-claim-discover-refresh" type="button">↻ Refresh</button>
+      <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
+        <button id="btn-claim-discover-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active drops from the worker">↻ Refresh</button>
         <span id="claim-discover-status" class="muted" style="font-size:11px;"></span>
       </div>
       <div id="claim-discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no drops loaded yet · click Refresh</div></div>
@@ -2584,8 +2584,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
             Self-service claim pools backed by on-chain <strong>T_DROP</strong> envelopes (SPEC §5.12 / §5.13). Permissionless: anyone may claim FCFS, up to the cap declared by the issuer. Merkle-gated drops additionally require an ETH signature proving your address is in the snapshot (sign the canonical claim message first via the discovery list above). Issuer pays nothing per claim — <strong>you</strong> pay the ~$5-10 mainnet reveal-tx fee.
           </div>
-          <div class="flex" style="gap:6px;align-items:center;margin-bottom:8px;">
-            <button id="btn-onclaim-refresh" type="button">↻ Refresh</button>
+          <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
+            <button id="btn-onclaim-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active on-chain T_DROP pools from the worker">↻ Refresh</button>
             <span id="onclaim-list-status" class="muted" style="font-size:11px;"></span>
           </div>
           <div id="onclaim-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no on-chain drops loaded yet · click Refresh</div></div>
@@ -2651,6 +2651,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div id="claim-sign-err" class="error" style="margin-top:8px;"></div>
 
       <h3 style="margin-top:18px;">5 · Send to issuer</h3>
+      <div id="claim-result-placeholder" class="muted" style="font-size:11px;">Complete step 4 to generate the issuer-bound payload here.</div>
       <div id="claim-result" style="display:none;"></div>
     </div>
   </div>

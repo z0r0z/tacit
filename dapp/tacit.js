@@ -19800,6 +19800,7 @@ async function verifyEthSigViaErc1271(msg, sigHex, expectedEthAddrHex, provider)
 function _renderClaimResult() {
   const out = $('#claim-result');
   if (!out) return;
+  const placeholder = $('#claim-result-placeholder');
   // Pre-sign placeholder so the "5 · Send to issuer" heading isn't a bare,
   // empty section. Mirrors step 4's preview pattern. Shown only when the
   // user has loaded a snapshot but hasn't signed yet — fully empty before
@@ -19808,12 +19809,15 @@ function _renderClaimResult() {
     if (_claimSnapshot) {
       out.style.display = 'block';
       out.innerHTML = `<div class="muted" style="font-size:11px;font-style:italic;">Complete step 4 (sign with wallet) to populate the claim tuple here.</div>`;
+      if (placeholder) placeholder.style.display = 'none';
     } else {
       out.style.display = 'none';
       out.innerHTML = '';
+      if (placeholder) placeholder.style.display = '';
     }
     return;
   }
+  if (placeholder) placeholder.style.display = 'none';
   const tuple = `${_claimEligibleRow.index},${_claimSigned.tacitPubHex},${_claimSigned.sigHex}`;
   const ticker = _claimSnapshot.asset_ticker || '?';
   const submitBlurb = WORKER_BASE
@@ -25645,13 +25649,6 @@ async function renderPetchDiscover() {
       const officialBadgePetch = a.verified
         ? `<span style="position:absolute;top:8px;right:8px;font-size:10px;background:#0a7d4e;color:#fff;padding:3px 7px;border:1px solid #0a7d4e;text-transform:uppercase;letter-spacing:0.08em;cursor:help;font-weight:600;" title="Platform-verified: tacit's curators have endorsed this asset_id as the canonical holder of its ticker.">✓ verified</span>`
         : '';
-      // Prominent sold-out badge so users can scan the list and tell which
-      // mints are still live without having to read the small-font progress
-      // copy under each tile. The verified badge sits in the same top-right
-      // corner; offset down when both apply so they don't overlap.
-      const mintOutBadge = capFull
-        ? `<span style="position:absolute;top:${a.verified ? '34px' : '8px'};right:8px;font-size:10px;background:#a04030;color:#fff;padding:3px 7px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;" title="Cap reached. All ${escapeHtml(fmtAssetAmount(cap, dec))} ${escapeHtml(a.ticker || '?')} have been minted.">✕ minted out</span>`
-        : '';
       // Subtle "✓ you minted N" corner indicator (no box, just text). Replaces
       // the big disabled "Mint · ✓ you minted N" button when this device has
       // already minted — keeps the card visually quiet. The "Mint another?"
@@ -25676,7 +25673,6 @@ async function renderPetchDiscover() {
       return `
         <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" data-filter-key="${escapeHtml(_petchFilterKey)}" data-petch-status="${_petchStatus}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);">
           ${officialBadgePetch}
-          ${mintOutBadge}
           ${youMintedBadge}
           <div style="display:flex;align-items:center;gap:12px;">
             ${imgUrl
@@ -25686,8 +25682,8 @@ async function renderPetchDiscover() {
               <strong style="font-size:16px;">${escapeHtml(a.ticker || '?')}</strong>
               <div style="font-size:10px;color:var(--ink-mid);font-family:var(--mono);margin-top:2px;">${escapeHtml(shorten(safeAid, 12))}</div>
             </div>
-            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${isSoftDisable ? 'display:none;' : ''}${mintDisabled ? '' : 'background:#7d4ff7;color:#fff;border-color:#5a36c4;'}">
-              ${mintDisabled && !isSoftDisable ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${limitDispEsc}`}
+            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${(isSoftDisable || capFull) ? 'display:none;' : ''}${mintDisabled ? '' : 'background:#7d4ff7;color:#fff;border-color:#5a36c4;'}">
+              ${mintDisabled && !isSoftDisable && !capFull ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${limitDispEsc}`}
             </button>
           </div>
           <div style="margin-top:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;color:var(--ink-mid);">
