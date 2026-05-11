@@ -4063,9 +4063,19 @@ function pmintBackfillCursorKey(network, aid) {
   return `pmint_backfill:${network}:${aid}`;
 }
 async function runPmintBackfills(env) {
+  // Time budget: process blocks until 20s of wall-clock has elapsed inside
+  // backfill, then yield. Leaves ~10s headroom for CF wall-time limits (which
+  // are shared with the main cron block's ctx.waitUntil). Early FAIR blocks
+  // have very few PMINTs and finish in <1s; dense blocks take ~10s; mixing
+  // lets us chew through the sparse range fast.
+  const deadline = Date.now() + 20_000;
   for (const cfg of PMINT_BACKFILLS) {
-    try { await runOnePmintBackfill(env, cfg); }
-    catch { /* swallow per-backfill errors — next tick retries */ }
+    try {
+      while (Date.now() < deadline) {
+        const result = await runOnePmintBackfill(env, cfg);
+        if (result === 'done' || result === 'skip') break;
+      }
+    } catch { /* swallow per-backfill errors — next tick retries */ }
   }
 }
 async function runOnePmintBackfill(env, cfg) {
@@ -4073,7 +4083,7 @@ async function runOnePmintBackfill(env, cfg) {
   const cursorKey = pmintBackfillCursorKey(network, aid);
   let cursor = await env.REGISTRY_KV.get(cursorKey, 'json');
   // Done marker — no-op forever once set.
-  if (cursor && cursor.completed_at) return;
+  if (cursor && cursor.completed_at) return 'done';
   if (!cursor) {
     cursor = {
       next_height: from_height,
@@ -4088,11 +4098,11 @@ async function runOnePmintBackfill(env, cfg) {
     cursor.completed_at = Math.floor(Date.now() / 1000);
     await env.REGISTRY_KV.put(cursorKey, JSON.stringify(cursor));
     await markPetchDirty(env, network, aid);
-    return;
+    return 'done';
   }
   const petch = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
   // Petch not yet indexed (e.g. fresh deploy on a different network) — defer.
-  if (!petch) return;
+  if (!petch) return 'skip';
   const h = cursor.next_height;
   let blockHash;
   try { blockHash = (await apiText(env, `/block-height/${h}`, {}, network)).trim(); }
@@ -4100,7 +4110,7 @@ async function runOnePmintBackfill(env, cfg) {
     cursor.last_error = `block-height/${h} fetch failed: ${e.message}`;
     cursor.last_tick_at = Math.floor(Date.now() / 1000);
     await env.REGISTRY_KV.put(cursorKey, JSON.stringify(cursor)).catch(() => {});
-    return;
+    return 'skip';
   }
   let txs;
   // Use sequential fetchBlockTxs (proven-working in the cron context for the
@@ -4115,7 +4125,7 @@ async function runOnePmintBackfill(env, cfg) {
     cursor.last_error = `fetchBlockTxs(${blockHash}) failed: ${e.message}`;
     cursor.last_tick_at = Math.floor(Date.now() / 1000);
     await env.REGISTRY_KV.put(cursorKey, JSON.stringify(cursor)).catch(() => {});
-    return;
+    return 'skip';
   }
   cursor.last_block_txs_scanned = txs.length;
   // Build the set of canonical keys already at this height in one KV.list —
@@ -4191,6 +4201,8 @@ async function runOnePmintBackfill(env, cfg) {
   cursor.last_tick_rejected = rejected;
   cursor.total_wrote = (cursor.total_wrote || 0) + wrote;
   cursor.total_rejected = (cursor.total_rejected || 0) + rejected;
+  // Clear stale error from a previous tick now that this one succeeded.
+  delete cursor.last_error;
   if (cursor.next_height > cursor.end_height) {
     cursor.completed_at = Math.floor(Date.now() / 1000);
   }
@@ -4199,6 +4211,7 @@ async function runOnePmintBackfill(env, cfg) {
   if (wrote > 0 || cursor.completed_at) {
     await markPetchDirty(env, network, aid);
   }
+  return cursor.completed_at ? 'done' : 'ok';
 }
 
 // GET /petch-assets — registry of T_PETCH-rooted assets. Same envelope shape
@@ -7790,20 +7803,30 @@ export default {
       // Inline cap-progress computation. For scale a drop_progress snapshot
       // (parallel to petch_progress) is the right answer; MVP uses a
       // KV.list scan capped at 10000 claims.
+      //
+      // CAP-OVERFLOW HANDLING: the cron writes every structurally-valid
+      // T_DCLAIM to dclaim:*, including ones that collectively exceed cap.
+      // Cap-overflow resolution per SPEC §5.13 step 5 picks the first
+      // `max_claims` claims in canonical (height, tx_index, txid) order.
+      // KV.list returns the prefix in lex order which equals canonical order
+      // (height + tx_index are zero-padded in dclaimKeyFor). We cap
+      // claim_count at max_claims when reporting `claimed_amount` so the
+      // remaining/claims_remaining math doesn't go negative when an issuer
+      // sees a brief over-claim flurry.
       const claimList = await env.REGISTRY_KV.list({
         prefix: dclaimPrefix(network, dropId),
         limit: 10000,
       });
-      let claim_count = 0;
-      let claimed_amount = 0n;
       const perClaim = BigInt(v.per_claim);
-      for (const _k of claimList.keys) {
-        claim_count++;
-        claimed_amount += perClaim;
-      }
-      v.claim_count = claim_count;
-      v.claimed_amount = claimed_amount.toString();
       const capAmount = BigInt(v.cap_amount);
+      const maxClaimsBig = capAmount / perClaim;
+      const totalSeen = claimList.keys.length;
+      const creditedCount = Math.min(totalSeen, Number(maxClaimsBig));
+      const claimed_amount = BigInt(creditedCount) * perClaim;
+      v.claim_count = creditedCount;            // claims credited toward cap
+      v.claim_total_seen = totalSeen;           // includes cap-overflow rejects
+      v.cap_overflow_count = totalSeen - creditedCount;
+      v.claimed_amount = claimed_amount.toString();
       const remainingAmount = capAmount - claimed_amount;
       v.remaining_amount = (remainingAmount < 0n ? 0n : remainingAmount).toString();
       v.claims_remaining = String(remainingAmount > 0n ? remainingAmount / perClaim : 0n);
@@ -7847,8 +7870,18 @@ export default {
       try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
       const txid = String(body?.txid || '').toLowerCase();
       if (!/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ error: 'txid must be 64-char hex' }, 400, cors);
+      // Per-IP daily cap, same posture as /assets/hint: hints only echo data
+      // already on chain (or in mempool), so abuse is bounded — but we still
+      // don't want an attacker fetching every txid in their flood through
+      // the worker's subrequest budget.
+      const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+      const day = new Date().toISOString().slice(0, 10);
+      const hintKey = `hint:${day}:${ip}`;
+      const hintLimit = safeInt(env.HINT_LIMIT, 200, { min: 0 });
+      const hintPrior = safeInt(await env.REGISTRY_KV.get(hintKey), 0, { min: 0 });
+      if (hintPrior >= hintLimit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
       let tx;
-      try { tx = await apiJson(env, network, `/tx/${txid}`); }
+      try { tx = await apiJson(env, `/tx/${txid}`, {}, network); }
       catch (e) { return jsonResponse({ error: `tx fetch failed: ${e.message}` }, 502, cors); }
       if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) {
         return jsonResponse({ error: 'tx vin[0] does not carry a tacit envelope' }, 400, cors);
@@ -7882,8 +7915,12 @@ export default {
             network,
           };
           await env.REGISTRY_KV.put(dropKey(network, dropId), JSON.stringify(meta));
+          // Bump the per-IP hint counter on success only — a 400/502 response
+          // doesn't consume budget. Same TTL as the /assets/hint precedent.
+          await env.REGISTRY_KV.put(hintKey, String(hintPrior + 1), { expirationTtl: 90000 });
           return jsonResponse({ ok: true, drop_id: dropId, kind: 'drop' }, 200, cors);
         } else {
+          await env.REGISTRY_KV.put(hintKey, String(hintPrior + 1), { expirationTtl: 90000 });
           return jsonResponse({ ok: true, kind: 'drop-reclaim', note: 'reclaim variant — credit gated on scanDrops future work' }, 200, cors);
         }
       }
@@ -7937,6 +7974,7 @@ export default {
         };
         const dck = dclaimKeyFor(network, dropId, h, txIndex, txid);
         await env.REGISTRY_KV.put(dck, JSON.stringify(claimMeta));
+        await env.REGISTRY_KV.put(hintKey, String(hintPrior + 1), { expirationTtl: 90000 });
         return jsonResponse({ ok: true, drop_id: dropId, kind: 'dclaim' }, 200, cors);
       }
       return jsonResponse({ error: `not a T_DROP or T_DCLAIM envelope (opcode 0x${decoded.opcode.toString(16)})` }, 400, cors);
@@ -8511,12 +8549,15 @@ export default {
       await Promise.allSettled(
         NETWORKS.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
       );
-      // One-shot PMINT backfill for FAIR (issue #31 recovery). Self-managed
-      // KV cursor; no-op after `completed_at` is set on the cursor. Runs LAST
-      // so it has whatever wall-time budget remains after the cron's regular
-      // work — partial-block writes are idempotent (the next tick retries the
-      // same height until the cursor advances).
-      await runPmintBackfills(env).catch(() => {});
     })());
+
+    // PMINT backfill runs in a SEPARATE ctx.waitUntil block (issue #31 FAIR
+    // recovery). The main cron block above gets crowded by FAIR's heavy
+    // snapshot refresh (94k+ KV entries to scan) plus 2-network forward scan
+    // plus pre-warms — leaving no wall-time budget for backfill. Splitting
+    // into two blocks doesn't grant separate wall-time per CF docs, but it
+    // does ensure backfill starts even if the main block is killed mid-way.
+    // No-op after `cursor.completed_at` is set.
+    ctx.waitUntil(runPmintBackfills(env).catch(() => {}));
   },
 };

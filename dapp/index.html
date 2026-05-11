@@ -2454,6 +2454,51 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <span id="drop-import-status" class="muted" style="font-size:11px;align-self:center;"></span>
       </div>
       <div id="drop-list"><div class="empty" style="font-size:12px;">No drops saved yet.</div></div>
+
+      <h3 style="margin-top:24px;">8 · On-chain claim pool (SPEC §5.12 / §5.13)</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
+        Alternative to the worker-mediated airdrop above: lock supply into a <strong>T_DROP</strong> envelope, recipients <strong>self-claim</strong> with their own tx fees. Issuer pays one tx (~$5-10 mainnet) instead of one CXFER per batch of 7. Cap is enforced by the chain indexer. Optional merkle gate (paste a snapshot's merkle root) restricts claims to specific ETH addresses; leaving the root empty makes the drop FCFS for anyone.
+      </div>
+      <div class="muted" style="font-size:11px;margin-bottom:14px;">
+        <strong>Trade-off vs. worker-mediated:</strong> each T_DCLAIM is publicly attributable (claimer address + leaf_index on chain). For a CETCH-rooted asset, T_DROP <em>does not</em> change asset_id or migrate holders — it's a one-tx pool that spends some of your existing supply.
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:1;min-width:240px;">Asset
+          <select id="ondrop-asset"><option value="">— pick a token —</option></select>
+        </label>
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:10px;">
+        <label style="flex:1;min-width:140px;">Per-claim amount (display units)
+          <input id="ondrop-per-claim" type="text" placeholder="e.g. 100" inputmode="decimal" autocomplete="off">
+        </label>
+        <label style="flex:1;min-width:140px;">Cap amount (display units)
+          <input id="ondrop-cap" type="text" placeholder="e.g. 1000000" inputmode="decimal" autocomplete="off">
+        </label>
+        <label style="flex:0 0 140px;">Expiry block (0 = none)
+          <input id="ondrop-expiry" type="number" min="0" placeholder="0" autocomplete="off">
+        </label>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:6px;">
+        Cap MUST be evenly divisible by per-claim. <code>max_claims = cap ÷ per_claim</code>.
+      </div>
+      <label style="margin-top:10px;">Merkle root (optional — for eligibility-gated drops; paste the 64-hex root from the snapshot composer above)
+        <input id="ondrop-merkle-root" type="text" placeholder="leave empty for open FCFS drop" autocomplete="off" spellcheck="false" style="font-family:var(--mono);font-size:12px;">
+      </label>
+      <div class="flex" style="gap:6px;margin-top:14px;">
+        <button id="btn-ondrop-broadcast" type="button" class="primary">Broadcast T_DROP</button>
+      </div>
+      <div id="ondrop-err" class="error" style="margin-top:8px;"></div>
+      <div id="ondrop-result" style="display:none;margin-top:14px;"></div>
+
+      <h3 style="margin-top:24px;">9 · Active on-chain pools</h3>
+      <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
+        Pools you (or anyone) created via T_DROP, on this network. Updated when the worker indexer scans (every ~5 min) or via the <em>↻ Refresh</em> button. Click into a pool for claim stats + reclaim controls if you're the issuer.
+      </div>
+      <div class="flex" style="gap:6px;margin-bottom:10px;">
+        <button id="btn-ondrop-refresh" type="button">↻ Refresh</button>
+        <span id="ondrop-list-status" class="muted" style="font-size:11px;align-self:center;"></span>
+      </div>
+      <div id="ondrop-list"><div class="empty" style="font-size:12px;">No on-chain pools loaded · click Refresh.</div></div>
     </div>
   </div>
 
@@ -2533,6 +2578,19 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <span id="claim-discover-status" class="muted" style="font-size:11px;"></span>
       </div>
       <div id="claim-discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no drops loaded yet · click Refresh</div></div>
+
+      <details style="margin-top:18px;"><summary class="muted" style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> On-chain claim pools (T_DROP — you pay your own tx fee)</summary>
+        <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+          <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
+            Self-service claim pools backed by on-chain <strong>T_DROP</strong> envelopes (SPEC §5.12 / §5.13). Permissionless: anyone may claim FCFS, up to the cap declared by the issuer. Merkle-gated drops additionally require an ETH signature proving your address is in the snapshot (sign the canonical claim message first via the discovery list above). Issuer pays nothing per claim — <strong>you</strong> pay the ~$5-10 mainnet reveal-tx fee.
+          </div>
+          <div class="flex" style="gap:6px;align-items:center;margin-bottom:8px;">
+            <button id="btn-onclaim-refresh" type="button">↻ Refresh</button>
+            <span id="onclaim-list-status" class="muted" style="font-size:11px;"></span>
+          </div>
+          <div id="onclaim-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no on-chain drops loaded yet · click Refresh</div></div>
+        </div>
+      </details>
 
       <details id="claim-manual-entry" style="margin-top:18px;">
         <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
@@ -2742,7 +2800,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <span class="muted" style="font-size:11px;" id="discover-nav-petch-count">—</span>
     </a>
     <a href="#cetch-discover-section" data-discover-nav="cetch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg-warm);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
-      <span>etched assets <span class="muted" style="font-size:11px;">· confidential supply</span></span>
+      <span>assets <span class="muted" style="font-size:11px;">· confidential supply</span></span>
       <span class="muted" style="font-size:11px;" id="discover-nav-cetch-count">—</span>
     </a>
   </div>
@@ -2760,9 +2818,10 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
     <div class="section-body">
       <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:14px;">
-        Anyone can mint a fixed tranche until the cap fills. Supply is publicly auditable from chain alone. SPEC §5.8 / §5.9.
+        Anyone can mint a fixed tranche until the cap fills. Supply is publicly auditable from chain alone.
       </div>
       <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;flex-wrap:wrap;">
+        <input id="petch-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
         <label for="petch-sort" class="muted" style="align-self:center;font-size:11px;white-space:nowrap;">sort</label>
         <select id="petch-sort" title="Order public mints — newest surfaces fresh launches, fill-asc shows tranches with the most supply still available, fill-desc surfaces near-completion mints.">
           <option value="newest">Newest first</option>
@@ -2771,12 +2830,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <option value="fill-desc">Most filled</option>
           <option value="ticker-asc">Ticker A→Z</option>
         </select>
+        <button id="btn-petch-discover-refresh" type="button">↻ Refresh</button>
       </div>
       <div class="discover-pills" id="petch-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
         <button class="filter-pill active" data-petch-pill="all" type="button">All</button>
         <button class="filter-pill" data-petch-pill="live" type="button" title="Cap not yet reached and mint window is open">Live</button>
         <button class="filter-pill" data-petch-pill="opening-soon" type="button" title="Mint window hasn't opened yet (mint_start_height &gt; tip)">Opening soon</button>
-        <button class="filter-pill" data-petch-pill="sold-out" type="button" title="Cap reached or mint window closed">Sold out</button>
+        <button class="filter-pill" data-petch-pill="sold-out" type="button" title="Cap reached or mint window closed">Minted out</button>
       </div>
       <!-- Shared progress strip for whichever tile's Mint button is in
            flight. Hidden until a mint click; the click handler also stamps
@@ -2797,7 +2857,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
   <div class="section" id="cetch-discover-section">
     <div class="section-header">
-      <span id="discover-header-title">etched assets · confidential supply</span>
+      <span id="discover-header-title">assets · confidential supply</span>
       <span id="discover-status" class="muted"></span>
     </div>
     <div class="section-body">
@@ -2807,22 +2867,21 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;">
         <input id="discover-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
         <label for="discover-sort" class="muted" style="align-self:center;font-size:11px;white-space:nowrap;">sort</label>
-        <select id="discover-sort" title="Sort assets — Oldest first surfaces long-established etches; market-related sorts (offers / floor / last-traded) live on the Market tab.">
-          <option value="oldest">Oldest first</option>
+        <select id="discover-sort" title="Sort assets — Newest first surfaces fresh launches, Oldest first surfaces long-established etches; market-related sorts (offers / floor / last-traded) live on the Market tab.">
           <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
           <option value="ticker-asc">Ticker A→Z</option>
           <option value="ticker-desc">Ticker Z→A</option>
-          <option value="transfers-desc">Most transferred</option>
           <option value="active-desc">Most active</option>
         </select>
         <button id="btn-discover-refresh">↻ Refresh</button>
       </div>
       <div class="discover-pills" id="discover-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
         <button class="filter-pill active" data-pill="all" type="button">All</button>
+        <button class="filter-pill" data-pill="verified" type="button" title="Platform-curated: tacit's curators have endorsed this asset_id as the canonical holder of its ticker. Editorial endorsement, not trustless.">Verified</button>
         <button class="filter-pill" data-pill="mintable" type="button" title="Issuer can mint additional supply">Mintable</button>
         <button class="filter-pill" data-pill="attested" type="button" title="Issuer published a cryptographic proof of total supply (tacit_attest)">Supply proven</button>
         <button class="filter-pill" data-pill="recent" type="button" title="Etched in the last 24h">Recent</button>
-        <button class="filter-pill" data-pill="minted" type="button" title="Has at least one chain-verified mint event">Issued</button>
         <button class="filter-pill" data-pill="burned" type="button" title="Has at least one chain-verified burn event">Burned</button>
         <button class="filter-pill" data-pill="moved" type="button" title="Has at least one CXFER/AXFER transfer the worker has indexed, OR one you've broadcast/imported locally. The worker's mainnet cron starts from tip and doesn't backfill historical transfers, so historical sends may not match unless your local activity log still has the entry.">Active</button>
       </div>

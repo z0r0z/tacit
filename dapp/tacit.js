@@ -7831,6 +7831,422 @@ async function buildAndBroadcastWithdraw({
   };
 }
 
+// ============== T_DROP / T_DCLAIM (commit-reveal) ==============
+// SPEC §5.12 / §5.13. Two new broadcast paths:
+//
+//   T_DROP — locks Σ asset UTXOs of asset_id summing to cap_amount into a
+//   public-claim pool. Produces no asset UTXO. Kernel sig over
+//   (Σ C_in − cap_amount · H).x_only() proves balance, same mechanism as
+//   T_DEPOSIT. Issuer pays one commit + one reveal tx (~$5-10 mainnet).
+//
+//   T_DCLAIM — anyone (subject to merkle gate) self-claims drop.per_claim
+//   tokens from the pool to a fresh UTXO at vout 0. No asset input;
+//   claimant pays their own commit + reveal fees. Supply comes from the
+//   pool's accumulated balance, NOT a directly-consumed input — accounting
+//   is indexer-state, same as T_PMINT.
+
+function estTDropRevealVb({ payloadLen, numAssetIn }) {
+  const numChunks = Math.max(1, Math.ceil(payloadLen / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + payloadLen + numChunks * 3;
+  const taprootInVb = Math.ceil((envelopeLen + 200) / 4);
+  const wpkhInVb = 68;
+  const outVb = 31;
+  return 11 + taprootInVb + numAssetIn * wpkhInVb + 2 * outVb;
+}
+
+async function buildAndBroadcastTDrop({
+  assetIdHex,
+  capAmount,
+  perClaim,
+  merkleRoot = null,    // Uint8Array(32); null/all-zero ⇒ open FCFS
+  expiryHeight = 0,     // 0 ⇒ no expiry
+  ticker = '',          // 0-16 bytes UTF-8 (convenience copy for claim msg)
+  decimals = 0,
+  onProgress = null,
+}) {
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+  const capBig = BigInt(capAmount);
+  const perBig = BigInt(perClaim);
+  if (capBig <= 0n || capBig >= (1n << 64n)) throw new Error('cap_amount out of u64 range');
+  if (perBig <= 0n || perBig >= (1n << 64n)) throw new Error('per_claim out of u64 range');
+  if (capBig % perBig !== 0n) throw new Error('cap_amount must be evenly divisible by per_claim');
+
+  const meta = getAssetMeta(assetIdHex);
+  if (!meta) throw new Error(`unknown asset ${assetIdHex.slice(0, 8)}…`);
+
+  // Find UTXOs summing to exactly cap_amount. Try single-exact, then greedy
+  // multi-input (up to 16), then auto-split a single larger UTXO.
+  const holdings = await scanHoldings();
+  const h = holdings.get(assetIdHex);
+  if (!h) throw new Error(`no holdings for asset ${assetIdHex.slice(0, 8)}…`);
+  if (h.balance < capBig) {
+    throw new Error(`insufficient balance: have ${h.balance}, drop needs ${capBig}`);
+  }
+  let pickedUtxos = (h.utxos || []).filter(u => u.amount === capBig).slice(0, 1);
+  if (pickedUtxos.length === 0) {
+    const sorted = [...h.utxos].sort((a, b) => Number(b.amount - a.amount));
+    let acc = 0n; const picked = [];
+    for (const u of sorted) {
+      picked.push(u); acc += u.amount;
+      if (acc === capBig) break;
+      if (acc > capBig) { picked.length = 0; acc = 0n; break; }
+      if (picked.length >= 16) break;
+    }
+    if (acc === capBig && picked.length <= 16) {
+      pickedUtxos = picked;
+    } else {
+      const cover = sorted.find(u => u.amount > capBig);
+      if (!cover) {
+        throw new Error(`no UTXO combination sums exactly to ${capBig} and no single UTXO covers it for auto-split. Consolidate first.`);
+      }
+      if (!await ensureBurnerBackedUp('Auto-split a UTXO before T_DROP (one extra CXFER, then the drop)')) {
+        throw new Error('cancelled');
+      }
+      const need = await estimateSatsForOp('cxfer');
+      if (!(await ensureSatsFunded(need, 'Auto-split before drop'))) throw new Error('cancelled');
+      _progress('autosplit-start');
+      const splitResult = await buildAndBroadcastCXferMulti({
+        assetIdHex,
+        recipients: [{ pubHex: bytesToHex(wallet.pub), amount: capBig }],
+        forceUtxos: [cover],
+      });
+      const r0 = splitResult.recipients[0];
+      await waitForTxVisible(splitResult.revealTxid);
+      _progress('autosplit-done');
+      pickedUtxos = [{
+        utxo: { txid: splitResult.revealTxid, vout: r0.vout, value: DUST },
+        amount: capBig,
+        blinding: r0.blinding,
+      }];
+    }
+  }
+
+  // Kernel sig: signed under (Σ C_in − cap_amount · H).x_only(); signer's
+  // scalar is Σ r_in.
+  const assetIdBytes = hexToBytes(assetIdHex);
+  const merkleRootBytes = (merkleRoot instanceof Uint8Array && merkleRoot.length === 32)
+    ? merkleRoot
+    : new Uint8Array(32);
+  const assetInputs = pickedUtxos.map(u => ({ txid: u.utxo.txid, vout: u.utxo.vout }));
+  const kernelMsg = dropKernelMsg({
+    assetId: assetIdBytes,
+    capAmount: capBig,
+    perClaim: perBig,
+    merkleRoot: merkleRootBytes,
+    expiryHeight,
+    assetInputCount: pickedUtxos.length,
+    assetInputs,
+  });
+  const excess = pickedUtxos.reduce((s, u) => modN(s + BigInt(u.blinding)), 0n);
+  const excessBytes = bigintToBytes32(excess);
+  const kernelSig = signSchnorr(kernelMsg, excessBytes);
+
+  const payload = encodeCDropPayload({
+    assetId: assetIdBytes,
+    capAmount: capBig,
+    perClaim: perBig,
+    merkleRoot: merkleRootBytes,
+    expiryHeight,
+    ticker,
+    decimals,
+    assetInputCount: pickedUtxos.length,
+    kernelSig,
+  });
+
+  const feeRate = await getFeeRate();
+  const revealVb = estTDropRevealVb({ payloadLen: payload.length, numAssetIn: pickedUtxos.length });
+  const revealFee = feeFor(revealVb, feeRate);
+  const wpkhSpk = p2wpkhScript(wallet.pub);
+  const assetInputTotal = pickedUtxos.reduce((s, u) => s + (u.utxo.value || DUST), 0);
+  const totalOutputDust = DUST;
+
+  let satsChange = 0;
+  let commitValue = totalOutputDust + revealFee - assetInputTotal;
+  if (commitValue < DUST) {
+    commitValue = DUST + revealFee;
+    satsChange = commitValue + assetInputTotal - totalOutputDust - revealFee;
+  }
+  if (satsChange < DUST) satsChange = 0;
+
+  const allUtxos = await getUtxos(wallet.address());
+  const assetUtxoKeys = new Set(pickedUtxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
+  const sats = allUtxos
+    .filter(u => !assetUtxoKeys.has(`${u.txid}:${u.vout}`))
+    .filter(u => u.value > DUST)
+    .sort((a, b) => b.value - a.value);
+  const pickedSats = []; let totalSats = 0; let commitFee = 500;
+  for (const u of sats) {
+    pickedSats.push(u); totalSats += u.value;
+    commitFee = feeFor(estCommitVb(pickedSats.length), feeRate);
+    if (totalSats >= commitValue + commitFee + DUST) break;
+  }
+  if (totalSats < commitValue + commitFee) {
+    throw new Error(`insufficient sats for commit (need ~${commitValue + commitFee}, have ${totalSats})`);
+  }
+
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const commitChange = totalSats - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: p2trSpk }];
+  if (commitChange >= DUST) commitOutputs.push({ value: commitChange, script: wpkhSpk });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: pickedSats.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, pickedSats[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid_ = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  const revealOutputs = [{ value: DUST, script: wpkhSpk }];
+  if (satsChange >= DUST) revealOutputs.push({ value: satsChange, script: wpkhSpk });
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxid_, vout: 0, sequence: 0xfffffffd, witness: [] },
+      ...pickedUtxos.map(u => ({ txid: u.utxo.txid, vout: u.utxo.vout, sequence: 0xfffffffd, witness: [] })),
+    ],
+    outputs: revealOutputs,
+  };
+  const prevouts = [
+    { value: commitValue, script: p2trSpk },
+    ...pickedUtxos.map(u => ({ value: u.utxo.value || DUST, script: wpkhSpk })),
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  for (let i = 1; i < revealTx.inputs.length; i++) {
+    revealTx.inputs[i].witness = signP2wpkhInput(revealTx, i, prevouts[i].value);
+  }
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid_ = txid(revealTx);
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  // Nudge the worker for immediate indexing. Cron would catch it within 5 min.
+  if (WORKER_BASE) {
+    fetch(`${WORKER_BASE}/drops-hint?network=${encodeURIComponent(NET.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txid: revealTxid_ }),
+    }).catch(() => {});
+  }
+
+  recordActivity({
+    kind: 'drop_init', ticker: meta.ticker || '(drop)', amount: capBig, decimals: meta.decimals || 0,
+    assetId: assetIdHex, txid: revealTxid_,
+  });
+  invalidateHoldingsCache();
+
+  const dropId = bytesToHex(dropIdFromRevealTxid(revealTxid_));
+  return {
+    commitTxid: commitTxid_,
+    revealTxid: revealTxid_,
+    dropId,
+    assetIdHex,
+    capAmount: capBig,
+    perClaim: perBig,
+    merkleRootHex: bytesToHex(merkleRootBytes),
+    expiryHeight,
+    commitFee, revealFee,
+  };
+}
+
+function estTDClaimRevealVb({ payloadLen }) {
+  const numChunks = Math.max(1, Math.ceil(payloadLen / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + payloadLen + numChunks * 3;
+  const taprootInVb = Math.ceil((envelopeLen + 200) / 4);
+  const outVb = 31;
+  // Reveal layout: vin[0] = commit P2TR; vout[0] = tacit UTXO, vout[1] = sats change.
+  return 11 + taprootInVb + 2 * outVb;
+}
+
+// witness: { ethAddress, ethSig, leafIndex, proofPath } for merkle-gated;
+// pass null/undefined for open drops.
+async function buildAndBroadcastTDClaim({
+  dropRevealTxidHex,
+  witness = null,
+  onProgress = null,
+}) {
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+  if (!/^[0-9a-f]{64}$/i.test(dropRevealTxidHex)) {
+    throw new Error('drop_reveal_txid must be 64-char hex');
+  }
+  const dropRevealTxid = dropRevealTxidHex.toLowerCase();
+  const dropId = bytesToHex(dropIdFromRevealTxid(dropRevealTxid));
+
+  // Look up drop metadata. Prefer the worker's /drops-onchain/:drop_id index
+  // (knows remaining_amount). Fall back to fetching the parent T_DROP tx and
+  // decoding its envelope — works offline / when the worker is unavailable.
+  let drop = null;
+  if (WORKER_BASE) {
+    try {
+      const resp = await fetch(`${WORKER_BASE}/drops-onchain/${dropId}?network=${encodeURIComponent(NET.name)}`);
+      if (resp.ok) drop = await resp.json();
+    } catch { /* worker unavailable; fall through */ }
+  }
+  if (!drop) {
+    const dropTx = await getTx(dropRevealTxid);
+    if (!dropTx?.vin?.[0]?.witness || dropTx.vin[0].witness.length < 3) {
+      throw new Error('parent T_DROP tx has no envelope');
+    }
+    let env;
+    try { env = decodeEnvelopeScript(hexToBytes(dropTx.vin[0].witness[1])); } catch { env = null; }
+    if (!env || env.opcode !== T_DROP) throw new Error('parent tx is not a T_DROP');
+    const dec = decodeCDropPayload(env.payload);
+    if (!dec || dec.kind !== 'cdrop') throw new Error('parent T_DROP payload invalid');
+    drop = {
+      drop_id: dropId,
+      drop_reveal_txid: dropRevealTxid,
+      asset_id: bytesToHex(dec.assetId),
+      cap_amount: dec.capAmount.toString(),
+      per_claim: dec.perClaim.toString(),
+      merkle_root: bytesToHex(dec.merkleRoot),
+      expiry_height: dec.expiryHeight,
+      ticker: dec.ticker,
+      decimals: dec.decimals,
+    };
+  }
+  if (drop.remaining_amount != null) {
+    const remaining = BigInt(drop.remaining_amount);
+    if (remaining < BigInt(drop.per_claim)) {
+      throw new Error(`drop pool drained (remaining ${remaining}, per_claim ${drop.per_claim})`);
+    }
+  }
+
+  // Witness shape gate.
+  const merkleRootZero = /^0+$/.test(drop.merkle_root);
+  let witnessBytes = new Uint8Array(0);
+  if (!merkleRootZero) {
+    if (!witness) throw new Error('merkle-gated drop requires a witness ({ ethAddress, ethSig, leafIndex, proofPath })');
+    witnessBytes = encodeCDClaimWitness({
+      recipientPub: wallet.pub,
+      leafIndex: witness.leafIndex,
+      ethAddress: witness.ethAddress,
+      ethSig: witness.ethSig,
+      proofPath: witness.proofPath,
+    });
+  } else if (witness) {
+    throw new Error('open drop must not carry a witness');
+  }
+
+  // Fresh blinding for this claim. The on-chain (amount, blinding) is public
+  // by design (SPEC §5.13 Privacy disclosure), so randomness only protects
+  // against deterministic collisions, not confidentiality.
+  const perClaimBig = BigInt(drop.per_claim);
+  const blindingBytes = crypto.getRandomValues(new Uint8Array(32));
+  if (blindingBytes.every(b => b === 0)) blindingBytes[31] = 1;
+  const blindingBig = BigInt('0x' + bytesToHex(blindingBytes)) % SECP_N;
+  const commitmentPt = pedersenCommit(perClaimBig, blindingBig);
+  const commitmentBytes = pointToBytes(commitmentPt);
+
+  const assetIdBytes = hexToBytes(drop.asset_id);
+  const dropRevealTxidBytes = hexToBytes(dropRevealTxid);
+  const payload = encodeCDClaimPayload({
+    assetId: assetIdBytes,
+    dropRevealTxid: dropRevealTxidBytes,
+    commitment: commitmentBytes,
+    amount: perClaimBig,
+    blinding: blindingBytes,
+    witness: witnessBytes,
+  });
+
+  // Fee planning. T_DCLAIM has no asset input; the claimant funds everything
+  // (commit + reveal) from their own sats. The fresh UTXO at vout 0 holds
+  // perClaim asset value committed; the underlying Bitcoin output is DUST.
+  const feeRate = await getFeeRate();
+  const revealVb = estTDClaimRevealVb({ payloadLen: payload.length });
+  const revealFee = feeFor(revealVb, feeRate);
+  const wpkhSpk = p2wpkhScript(wallet.pub);
+  const commitValue = DUST + revealFee;
+
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const pickedSats = []; let totalSats = 0; let commitFee = 500;
+  for (const u of sats) {
+    pickedSats.push(u); totalSats += u.value;
+    commitFee = feeFor(estCommitVb(pickedSats.length), feeRate);
+    if (totalSats >= commitValue + commitFee + DUST) break;
+  }
+  if (totalSats < commitValue + commitFee) {
+    throw new Error(`insufficient sats for claim (need ~${commitValue + commitFee}, have ${totalSats})`);
+  }
+  const satsChange = totalSats - commitValue - commitFee;
+
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const commitOutputs = [{ value: commitValue, script: p2trSpk }];
+  if (satsChange >= DUST) commitOutputs.push({ value: satsChange, script: wpkhSpk });
+
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: pickedSats.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, pickedSats[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxid_ = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  // Reveal: vin[0] = commit P2TR; vout[0] = claimant's tacit UTXO at DUST.
+  // No sats change here (the commit tx already absorbed it).
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxid_, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: DUST, script: wpkhSpk }],
+  };
+  const prevouts = [{ value: commitValue, script: p2trSpk }];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxid_ = txid(revealTx);
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  if (WORKER_BASE) {
+    fetch(`${WORKER_BASE}/drops-hint?network=${encodeURIComponent(NET.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ txid: revealTxid_ }),
+    }).catch(() => {});
+  }
+
+  // Cache the opening locally so scanHoldings credits the UTXO immediately
+  // without an ancestor walk. The validator's path 8 (T_DCLAIM) would re-
+  // derive the same (amount, blinding) from the envelope, but caching
+  // avoids the round-trip on the user's first refresh post-broadcast.
+  recordOpening(revealTxid_, 0, drop.asset_id, perClaimBig, blindingBig);
+  recordActivity({
+    kind: 'dclaim', ticker: drop.ticker || '(drop)', amount: perClaimBig, decimals: drop.decimals || 0,
+    assetId: drop.asset_id, txid: revealTxid_,
+  });
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxid_,
+    revealTxid: revealTxid_,
+    dropId,
+    assetIdHex: drop.asset_id,
+    amount: perClaimBig,
+    blinding: blindingBig,
+    commitmentBytes,
+    commitFee, revealFee,
+  };
+}
+
 // ============== T_PMINT (commit-reveal) ==============
 // SPEC §5.9 — permissionless mint event. Wire payload is fixed at 138 bytes
 // (asset_id + etch_txid + commitment + amount + blinding). No signature; no
@@ -18531,6 +18947,188 @@ function setupDropsForm() {
       btn.disabled = false; btn.textContent = orig;
     }
   });
+
+  // ============== ON-CHAIN T_DROP / T_DCLAIM UI ==============
+  // Sections 8 + 9 of the Drops tab — issuer composer wires
+  // buildAndBroadcastTDrop; active-pools list pulls /drops-onchain.
+  // SPEC §5.12 / §5.13.
+
+  const _refreshOndropAssetSelect = () => {
+    const sel = $('#ondrop-asset');
+    if (!sel) return;
+    scanHoldings().then(holdings => {
+      const prev = sel.value;
+      sel.innerHTML = '<option value="">— pick a token —</option>';
+      for (const [aid, h] of holdings) {
+        if (h.balance <= 0n) continue;
+        const opt = document.createElement('option');
+        opt.value = aid;
+        opt.textContent = `${h.ticker || '???'} · balance ${fmtAssetAmount(h.balance, h.decimals)} · ${shorten(aid, 10)}`;
+        sel.appendChild(opt);
+      }
+      if (prev) sel.value = prev;
+    }).catch(() => { /* network may be flaky; user retries */ });
+  };
+  _refreshOndropAssetSelect();
+
+  $('#btn-ondrop-broadcast')?.addEventListener('click', async () => {
+    const btn = $('#btn-ondrop-broadcast');
+    const errEl = $('#ondrop-err');
+    const resultEl = $('#ondrop-result');
+    if (errEl) errEl.textContent = '';
+    if (resultEl) { resultEl.style.display = 'none'; resultEl.innerHTML = ''; }
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'broadcasting…';
+    try {
+      const assetIdHex = $('#ondrop-asset')?.value || '';
+      if (!/^[0-9a-f]{64}$/.test(assetIdHex)) throw new Error('pick a token first');
+      const meta = getAssetMeta(assetIdHex);
+      if (!meta) throw new Error('asset metadata missing — let scanHoldings finish first');
+      const perRaw = ($('#ondrop-per-claim')?.value || '').trim();
+      const capRaw = ($('#ondrop-cap')?.value || '').trim();
+      if (!perRaw) throw new Error('per-claim required');
+      if (!capRaw) throw new Error('cap required');
+      const perClaim = parseAssetAmount(perRaw, meta.decimals);
+      const capAmount = parseAssetAmount(capRaw, meta.decimals);
+      const expiryInput = ($('#ondrop-expiry')?.value || '').trim();
+      const expiryHeight = expiryInput ? parseInt(expiryInput, 10) : 0;
+      if (!Number.isInteger(expiryHeight) || expiryHeight < 0) throw new Error('expiry must be a non-negative integer (0 = no expiry)');
+      const merkleRootRaw = ($('#ondrop-merkle-root')?.value || '').trim().toLowerCase().replace(/^0x/, '');
+      let merkleRoot = new Uint8Array(32);
+      if (merkleRootRaw) {
+        if (!/^[0-9a-f]{64}$/.test(merkleRootRaw)) throw new Error('merkle_root must be 64 hex chars (or empty for open drop)');
+        merkleRoot = hexToBytes(merkleRootRaw);
+      }
+      if (!ensureBurnerBackedUp('Broadcast on-chain T_DROP (locks asset UTXOs summing to cap_amount)')) return;
+      const need = await estimateSatsForOp('cxfer');
+      if (!(await ensureSatsFunded(need, 'Broadcasting T_DROP'))) return;
+      const res = await buildAndBroadcastTDrop({
+        assetIdHex,
+        capAmount,
+        perClaim,
+        merkleRoot,
+        expiryHeight,
+        ticker: meta.ticker || '',
+        decimals: meta.decimals || 0,
+      });
+      const shareUrl = `${location.origin}${location.pathname}#dclaim=${res.revealTxid}`;
+      if (resultEl) {
+        resultEl.style.display = 'block';
+        resultEl.innerHTML = `
+          <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+            <strong>✓ T_DROP broadcast</strong>
+            <div style="margin-top:4px;font-size:11px;">commit <code>${escapeHtml(shorten(res.commitTxid, 10))}</code> · reveal <code>${escapeHtml(shorten(res.revealTxid, 10))}</code></div>
+            <div style="margin-top:6px;font-size:11px;">drop_id <code>${escapeHtml(res.dropId)}</code></div>
+            <div class="muted" style="margin-top:8px;font-size:11px;line-height:1.5;">
+              cap: ${escapeHtml(fmtAssetAmountPlain(res.capAmount, meta.decimals))} ${escapeHtml(meta.ticker)} ·
+              per-claim: ${escapeHtml(fmtAssetAmountPlain(res.perClaim, meta.decimals))} ${escapeHtml(meta.ticker)} ·
+              max claims: ${(res.capAmount / res.perClaim).toString()}
+            </div>
+            <div class="muted" style="margin-top:8px;font-size:11px;word-break:break-all;">
+              Share this URL: <code style="font-size:11px;">${escapeHtml(shareUrl)}</code>
+            </div>
+          </div>
+        `;
+      }
+      toast(`T_DROP broadcast · drop_id ${shorten(res.dropId, 10)}`, 'success');
+      setTimeout(() => _refreshOndropList(), 1500);
+    } catch (e) {
+      if (errEl) errEl.textContent = e.message;
+      console.error(e);
+    } finally {
+      btn.disabled = false; btn.textContent = orig;
+    }
+  });
+
+  async function _refreshOndropList() {
+    const out = $('#ondrop-list');
+    const status = $('#ondrop-list-status');
+    if (!out) return;
+    if (!WORKER_BASE) {
+      out.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">Worker disabled — on-chain pool listing requires WORKER_BASE</div>`;
+      return;
+    }
+    if (status) status.textContent = 'loading…';
+    try {
+      const resp = await fetch(`${WORKER_BASE}/drops-onchain?network=${encodeURIComponent(NET.name)}`);
+      if (!resp.ok) throw new Error(`worker ${resp.status}`);
+      const j = await resp.json();
+      const drops = Array.isArray(j.drops) ? j.drops : [];
+      if (status) status.textContent = `${drops.length} active`;
+      if (!drops.length) {
+        out.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">No active on-chain pools on ${escapeHtml(NET.name)}.</div>`;
+        return;
+      }
+      out.innerHTML = drops.map(d => {
+        const meta = getAssetMeta(d.asset_id);
+        const ticker = d.ticker || meta?.ticker || '?';
+        const decimals = Number.isInteger(d.decimals) ? d.decimals : (meta?.decimals || 0);
+        const cap = BigInt(d.cap_amount || '0');
+        const per = BigInt(d.per_claim || '1');
+        const claimed = BigInt(d.claimed_amount || '0');
+        const remaining = cap - claimed;
+        const maxClaims = cap / per;
+        const claimCount = d.claim_count || 0;
+        const expiryStr = d.expiry_height ? `expires at block ${d.expiry_height}` : 'no expiry';
+        const merkleGate = /^0+$/.test(d.merkle_root || '') ? '<span class="status-pill" style="background:var(--bg-warm);font-size:9px;">open FCFS</span>' : '<span class="status-pill confirmed" style="font-size:9px;">merkle-gated</span>';
+        const shareUrl = `${location.origin}${location.pathname}#dclaim=${d.drop_reveal_txid}`;
+        return `
+          <div class="card" style="margin-bottom:8px;padding:12px;border:1px solid var(--ink);background:var(--bg);">
+            <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+              <div style="min-width:0;flex:1;">
+                <strong>${escapeHtml(ticker)}</strong> ${merkleGate}
+                <span class="muted" style="font-size:11px;"> · drop_id <code>${escapeHtml(shorten(d.drop_id, 10))}</code></span>
+              </div>
+              <button data-act="ondrop-claim" data-drop-reveal-txid="${escapeHtml(d.drop_reveal_txid)}" data-merkle-root="${escapeHtml(d.merkle_root)}" class="primary" style="font-size:11px;">Claim →</button>
+            </div>
+            <div style="margin-top:6px;font-size:11px;">
+              ${claimCount} / ${maxClaims.toString()} claims · ${escapeHtml(fmtAssetAmountPlain(remaining, decimals))} ${escapeHtml(ticker)} remaining
+            </div>
+            <div class="muted" style="margin-top:4px;font-size:11px;">
+              per-claim ${escapeHtml(fmtAssetAmountPlain(per, decimals))} ${escapeHtml(ticker)} · ${escapeHtml(expiryStr)}
+            </div>
+            <div class="muted" style="margin-top:4px;font-size:10px;word-break:break-all;">share: ${escapeHtml(shareUrl)}</div>
+          </div>
+        `;
+      }).join('');
+      out.querySelectorAll('button[data-act="ondrop-claim"]').forEach(btn => {
+        btn.onclick = () => _onChainClaimClick(btn.dataset.dropRevealTxid, btn.dataset.merkleRoot);
+      });
+    } catch (e) {
+      if (status) status.textContent = `error: ${e.message}`;
+      out.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">load failed: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+  $('#btn-ondrop-refresh')?.addEventListener('click', _refreshOndropList);
+  // Expose so the Claim tab's parallel button can reuse the same list code.
+  if (typeof window !== 'undefined') window._refreshOndropList = _refreshOndropList;
+
+  // Handle an issuer-side "Claim →" click. Open drops can broadcast directly.
+  // Merkle-gated drops route to the Claim tab for the eth_sig flow.
+  async function _onChainClaimClick(dropRevealTxid, merkleRootHex) {
+    const merkleZero = /^0+$/.test(merkleRootHex || '');
+    if (!merkleZero) {
+      toast('merkle-gated drop — go to the Claim tab to sign with your ETH wallet first', '', 6000);
+      const claimTabBtn = $('.tab[data-tab="claim"]');
+      if (claimTabBtn) claimTabBtn.click();
+      return;
+    }
+    if (!ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
+    const need = await estimateSatsForOp('cxfer');
+    if (!(await ensureSatsFunded(need, 'Claiming from on-chain pool'))) return;
+    try {
+      const res = await buildAndBroadcastTDClaim({
+        dropRevealTxidHex: dropRevealTxid,
+        witness: null,
+      });
+      toast(`Claim broadcast · reveal ${shorten(res.revealTxid, 10)}`, 'success');
+      setTimeout(() => _refreshOndropList(), 1500);
+    } catch (e) {
+      toast('claim failed: ' + e.message, 'error');
+      console.error(e);
+    }
+  }
+
+  $('#ondrop-asset')?.addEventListener('focus', _refreshOndropAssetSelect);
 }
 
 // ============== CLAIM (recipient airdrop tab) ==============
@@ -19860,6 +20458,134 @@ function setupClaimTab() {
       _renderClaimResult();
       _renderClaimDiscoverList();
     });
+  }
+
+  // ============== ON-CHAIN T_DROP CLAIM LIST (Claim tab) ==============
+  // Mirrors the issuer-side list on the Drops tab. Recipients see open
+  // drops they can claim directly + merkle-gated drops they're eligible
+  // for (matched on _claimEthAddr after MetaMask connect). SPEC §5.13.
+  async function _refreshOnChainClaimList() {
+    const out = $('#onclaim-list');
+    const status = $('#onclaim-list-status');
+    if (!out) return;
+    if (!WORKER_BASE) {
+      out.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">Worker disabled — on-chain pool listing requires WORKER_BASE</div>`;
+      return;
+    }
+    if (status) status.textContent = 'loading…';
+    try {
+      const resp = await fetch(`${WORKER_BASE}/drops-onchain?network=${encodeURIComponent(NET.name)}`);
+      if (!resp.ok) throw new Error(`worker ${resp.status}`);
+      const j = await resp.json();
+      const drops = Array.isArray(j.drops) ? j.drops : [];
+      if (status) status.textContent = `${drops.length} active`;
+      if (!drops.length) {
+        out.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">No active on-chain pools on ${escapeHtml(NET.name)}.</div>`;
+        return;
+      }
+      out.innerHTML = drops.map(d => {
+        const meta = getAssetMeta(d.asset_id);
+        const ticker = d.ticker || meta?.ticker || '?';
+        const decimals = Number.isInteger(d.decimals) ? d.decimals : (meta?.decimals || 0);
+        const per = BigInt(d.per_claim || '1');
+        const remaining = BigInt(d.remaining_amount || '0');
+        const merkleZero = /^0+$/.test(d.merkle_root || '');
+        const merkleBadge = merkleZero
+          ? '<span class="status-pill" style="background:var(--bg-warm);font-size:9px;">open FCFS</span>'
+          : '<span class="status-pill confirmed" style="font-size:9px;">merkle-gated</span>';
+        const drainedBadge = remaining < per
+          ? '<span class="status-pill" style="background:#fee;color:var(--red);border-color:var(--red);font-size:9px;">drained</span>'
+          : '';
+        const canClaim = remaining >= per;
+        return `
+          <div class="card" style="margin-bottom:8px;padding:12px;border:1px solid var(--ink);background:var(--bg);">
+            <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+              <div style="min-width:0;flex:1;">
+                <strong>${escapeHtml(ticker)}</strong> ${merkleBadge}${drainedBadge}
+                <span class="muted" style="font-size:11px;"> · drop_id <code>${escapeHtml(shorten(d.drop_id, 10))}</code></span>
+              </div>
+              <button data-act="onclaim-go" data-drop-reveal-txid="${escapeHtml(d.drop_reveal_txid)}" data-merkle-root="${escapeHtml(d.merkle_root)}" ${canClaim ? '' : 'disabled'} class="primary" style="font-size:11px;">
+                ${canClaim ? `Claim ${escapeHtml(fmtAssetAmountPlain(per, decimals))} ${escapeHtml(ticker)}` : 'drained'}
+              </button>
+            </div>
+            <div class="muted" style="margin-top:6px;font-size:11px;">
+              ${escapeHtml(fmtAssetAmountPlain(remaining, decimals))} ${escapeHtml(ticker)} remaining · per-claim ${escapeHtml(fmtAssetAmountPlain(per, decimals))} ${escapeHtml(ticker)}
+            </div>
+          </div>
+        `;
+      }).join('');
+      out.querySelectorAll('button[data-act="onclaim-go"]').forEach(btn => {
+        btn.onclick = () => _onChainClaimFromClaimTab(btn.dataset.dropRevealTxid, btn.dataset.merkleRoot);
+      });
+    } catch (e) {
+      if (status) status.textContent = `error: ${e.message}`;
+      out.innerHTML = `<div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">load failed: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+  $('#btn-onclaim-refresh')?.addEventListener('click', _refreshOnChainClaimList);
+
+  async function _onChainClaimFromClaimTab(dropRevealTxid, merkleRootHex) {
+    const merkleZero = /^0+$/.test(merkleRootHex || '');
+    if (merkleZero) {
+      // Open drop: claim directly
+      if (!ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
+      const need = await estimateSatsForOp('cxfer');
+      if (!(await ensureSatsFunded(need, 'Claiming from on-chain pool'))) return;
+      try {
+        const res = await buildAndBroadcastTDClaim({ dropRevealTxidHex: dropRevealTxid, witness: null });
+        toast(`Claim broadcast · reveal ${shorten(res.revealTxid, 10)}`, 'success');
+        setTimeout(() => _refreshOnChainClaimList(), 1500);
+      } catch (e) {
+        toast('claim failed: ' + e.message, 'error');
+        console.error(e);
+      }
+      return;
+    }
+    // Merkle-gated: require existing _claimSigned with matching merkle_root,
+    // plus _claimEligibleRow. Walk the user through signing if needed.
+    if (!_claimEthAddr) {
+      toast('Connect an Ethereum wallet first (step 2 above)', 'error');
+      return;
+    }
+    if (!_claimSnapshot || _claimSnapshot.merkle_root.toLowerCase() !== merkleRootHex.toLowerCase()) {
+      toast('Load the snapshot for this drop (merkle root must match) — use Discover above or paste manually', 'error');
+      return;
+    }
+    if (!_claimEligibleRow) {
+      toast('Your address is not in this drop\'s snapshot', 'error');
+      return;
+    }
+    if (!_claimSigned) {
+      toast('Sign the claim message first (step 4 above), then come back here', 'error');
+      return;
+    }
+    if (!ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
+    const need = await estimateSatsForOp('cxfer');
+    if (!(await ensureSatsFunded(need, 'Claiming from on-chain pool'))) return;
+    // Build witness from the signed claim. Note the snapshot already has the
+    // merkle proof per leaf; recompute it locally.
+    try {
+      const rows = _claimSnapshot._reconstructedRows;
+      const leaves = rows.map(r => airdropLeafHash(r.ethAddrBytes, r.amount, r.index));
+      const tree = buildAirdropMerkle(leaves);
+      const proofPath = airdropMerkleProof(tree.layers, _claimEligibleRow.index);
+      const ethSigHex = String(_claimSigned.sigHex).replace(/^0x/, '');
+      const witness = {
+        ethAddress: hexToBytes(_claimEthAddr),
+        ethSig: hexToBytes(ethSigHex),
+        leafIndex: _claimEligibleRow.index,
+        proofPath,
+      };
+      const res = await buildAndBroadcastTDClaim({
+        dropRevealTxidHex: dropRevealTxid,
+        witness,
+      });
+      toast(`Claim broadcast · reveal ${shorten(res.revealTxid, 10)}`, 'success');
+      setTimeout(() => _refreshOnChainClaimList(), 1500);
+    } catch (e) {
+      toast('claim failed: ' + e.message, 'error');
+      console.error(e);
+    }
   }
 }
 
@@ -22716,6 +23442,7 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   // commitment. Etched timestamp drives the "Recent" pill (24h window).
   card.dataset.mintable = (verified && verify.mintable) ? '1' : '0';
   card.dataset.attested = (verified && verify.ipfsAttest) ? '1' : '0';
+  card.dataset.verified = a.verified ? '1' : '0';
   card.dataset.etchedAt = String(Number.isFinite(a.etched_at) ? a.etched_at : 0);
   // tx_index is the canonical same-block tiebreaker. Worker writes it for
   // CETCHes scanned by the cron from this point on; old entries lack it and
@@ -24923,7 +25650,14 @@ async function renderPetchDiscover() {
       // copy under each tile. The verified badge sits in the same top-right
       // corner; offset down when both apply so they don't overlap.
       const mintOutBadge = capFull
-        ? `<span style="position:absolute;top:${a.verified ? '34px' : '8px'};right:8px;font-size:10px;background:#a04030;color:#fff;padding:3px 7px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;" title="Cap reached. All ${escapeHtml(fmtAssetAmount(cap, dec))} ${escapeHtml(a.ticker || '?')} have been minted.">✕ mint out</span>`
+        ? `<span style="position:absolute;top:${a.verified ? '34px' : '8px'};right:8px;font-size:10px;background:#a04030;color:#fff;padding:3px 7px;border:1px solid #a04030;text-transform:uppercase;letter-spacing:0.08em;font-weight:600;" title="Cap reached. All ${escapeHtml(fmtAssetAmount(cap, dec))} ${escapeHtml(a.ticker || '?')} have been minted.">✕ minted out</span>`
+        : '';
+      // Subtle "✓ you minted N" corner indicator (no box, just text). Replaces
+      // the big disabled "Mint · ✓ you minted N" button when this device has
+      // already minted — keeps the card visually quiet. The "Mint another?"
+      // link below restores the full button for users who want a second mint.
+      const youMintedBadge = isSoftDisable
+        ? `<span data-petch-you-minted style="position:absolute;top:${a.verified ? '34px' : '10px'};right:10px;font-size:10px;color:#0a7d4e;letter-spacing:0.04em;font-weight:600;" title="You have minted ${myMintCount} on this device.">✓ you minted ${myMintCount}</span>`
         : '';
       // data-filter-key mirrors the CETCH cards' format so the Discover-tab
       // search input can match petch tiles too — name + ticker + asset_id,
@@ -24943,6 +25677,7 @@ async function renderPetchDiscover() {
         <div class="asset-card" data-petch-aid="${escapeHtml(safeAid)}" data-petch-cap="${escapeHtml(cap.toString())}" data-petch-limit="${escapeHtml(limit.toString())}" data-petch-decimals="${dec}" data-petch-ticker="${tickerEsc}" data-filter-key="${escapeHtml(_petchFilterKey)}" data-petch-status="${_petchStatus}" style="border:1px solid var(--ink);padding:14px;background:var(--bg-warm);">
           ${officialBadgePetch}
           ${mintOutBadge}
+          ${youMintedBadge}
           <div style="display:flex;align-items:center;gap:12px;">
             ${imgUrl
               ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
@@ -24951,14 +25686,14 @@ async function renderPetchDiscover() {
               <strong style="font-size:16px;">${escapeHtml(a.ticker || '?')}</strong>
               <div style="font-size:10px;color:var(--ink-mid);font-family:var(--mono);margin-top:2px;">${escapeHtml(shorten(safeAid, 12))}</div>
             </div>
-            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${mintDisabled ? '' : 'background:#7d4ff7;color:#fff;border-color:#5a36c4;'}">
-              ${mintDisabled ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${limitDispEsc}`}
+            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${isSoftDisable ? 'display:none;' : ''}${mintDisabled ? '' : 'background:#7d4ff7;color:#fff;border-color:#5a36c4;'}">
+              ${mintDisabled && !isSoftDisable ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${limitDispEsc}`}
             </button>
           </div>
           <div style="margin-top:10px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;color:var(--ink-mid);">
             <span><strong style="color:var(--ink);" data-petch-minted-display>${escapeHtml(fmtAssetAmount(mintedNow, dec))}</strong>${!a.bootstrapped ? `<span title="${a.truncated ? 'Worker is still bootstrapping this asset\'s cap counter — the displayed total is a lower bound. Refreshes on the next cron tick.' : 'Cap counter is live — new mints can land any block. Displayed total is the snapshot value at the worker\'s last refresh.'}" style="color:var(--ink-mid);">+</span>` : ''} / ${escapeHtml(fmtAssetAmount(cap, dec))} ${tickerEsc}</span>
             <span>·</span>
-            <span data-petch-rem-mints${capFull ? ' style="color:#a04030;font-weight:600;"' : ''}>${capFull ? 'sold out' : `${escapeHtml(remMints.toString())} mints remaining`}${!a.bootstrapped && !capFull ? ' (estimate)' : ''}</span>
+            <span data-petch-rem-mints${capFull ? ' style="color:#a04030;font-weight:600;"' : ''}>${capFull ? 'minted out' : `${escapeHtml(remMints.toString())} mints remaining`}${!a.bootstrapped && !capFull ? ' (estimate)' : ''}</span>
             <span>·</span>
             <span>${limitDispEsc} per mint</span>
           </div>
@@ -24979,7 +25714,7 @@ async function renderPetchDiscover() {
     if (statusEl) {
       const _ctBuckets = (_ctLive ? 1 : 0) + (_ctSold ? 1 : 0) + (_ctSoon ? 1 : 0);
       const _statusText = _ctBuckets > 1
-        ? [_ctLive ? `${_ctLive} live` : '', _ctSoon ? `${_ctSoon} soon` : '', _ctSold ? `${_ctSold} sold out` : ''].filter(Boolean).join(' · ')
+        ? [_ctLive ? `${_ctLive} live` : '', _ctSoon ? `${_ctSoon} soon` : '', _ctSold ? `${_ctSold} minted out` : ''].filter(Boolean).join(' · ')
         : `${assets.length} asset${assets.length === 1 ? '' : 's'}`;
       setStatus(statusEl, _statusText);
     }
@@ -25019,7 +25754,13 @@ async function renderPetchDiscover() {
         if (b) {
           b.disabled = false;
           b.textContent = b.dataset.defaultLabel || 'Mint';
+          b.style.display = '';
+          b.style.background = '#7d4ff7';
+          b.style.color = '#fff';
+          b.style.borderColor = '#5a36c4';
         }
+        const badge = card.querySelector('[data-petch-you-minted]');
+        if (badge) badge.remove();
         a.parentElement?.remove();
       };
     });
@@ -25550,10 +26291,10 @@ function setupHoldingsButtons() {
 // offers/minted/burned each add one. Held in module scope so a re-render
 // (which rebuilds cards) keeps the user's selection.
 let _discoverPill = 'all';
-// Default to oldest-first so long-established assets surface ahead of fresh
-// etches (which can be junk during high-traffic windows). The dropdown still
-// exposes Newest first; persisted prefs override this default per-network.
-let _discoverSort = 'oldest';
+// Default to newest-first to match the petch section's default — Discover is
+// a "what's new" surface, so fresh etches surface ahead of long-established
+// ones. Persisted prefs override this default per-network.
+let _discoverSort = 'newest';
 // Petch (public-mint) section uses a parallel pair of controls. Defaults
 // favour newest (fresh launches are the most action-ready surface) and the
 // 'live' pill so users land on actionable mints by default; explicit clicks
@@ -25575,6 +26316,7 @@ function _matchesPill(card) {
   switch (_discoverPill) {
     case 'mintable': return card.dataset.mintable === '1';
     case 'attested': return card.dataset.attested === '1';
+    case 'verified': return card.dataset.verified === '1';
     case 'recent': {
       const t = Number(card.dataset.etchedAt) || 0;
       if (!t) return false;
@@ -25582,7 +26324,6 @@ function _matchesPill(card) {
     }
     case 'offers':   return card.dataset.hasOffers === '1';
     case 'atomic':   return card.dataset.hasAtomic === '1';
-    case 'minted':   return card.dataset.hasMints === '1';
     case 'burned':   return card.dataset.hasBurns === '1';
     case 'moved':    return card.dataset.hasTransfers === '1';
     default: return true;
@@ -25639,7 +26380,6 @@ function applyDiscoverSort() {
       case 'newest':         return tieByRecency(a, b);
       case 'ticker-asc':     return (a.dataset.ticker || '').localeCompare(b.dataset.ticker || '');
       case 'ticker-desc':    return (b.dataset.ticker || '').localeCompare(a.dataset.ticker || '');
-      case 'transfers-desc': return numDesc('transferCount')(a, b);
       case 'active-desc':    return numDesc('activityCount')(a, b);
       case 'oldest':
       default: {
@@ -25815,13 +26555,39 @@ function setupDiscoverButtons() {
   }
   // Filter wiring. Debounced so a rapid stream of keystrokes doesn't spam
   // querySelectorAll on a large list. 80ms keeps it feeling immediate.
+  // applyDiscoverFilter already cross-filters both petch + cetch tiles off
+  // #discover-filter; the petch-section input below is a second surface
+  // (kept in sync) so users don't have to scroll to the CETCH section to
+  // search.
   const filterInput = $('#discover-filter');
+  const petchFilterInput = $('#petch-filter');
   if (filterInput) {
     let t = null;
     filterInput.addEventListener('input', () => {
+      if (petchFilterInput && petchFilterInput.value !== filterInput.value) {
+        petchFilterInput.value = filterInput.value;
+      }
       clearTimeout(t);
       t = setTimeout(applyDiscoverFilter, 80);
     });
+  }
+  if (petchFilterInput && filterInput) {
+    let pt = null;
+    petchFilterInput.addEventListener('input', () => {
+      filterInput.value = petchFilterInput.value;
+      clearTimeout(pt);
+      pt = setTimeout(applyDiscoverFilter, 80);
+    });
+  }
+  // Petch refresh — parallel to btn-discover-refresh on the CETCH side.
+  // Bypasses the petch cache so the user gets fresh worker data.
+  const petchRefreshBtn = $('#btn-petch-discover-refresh');
+  if (petchRefreshBtn) {
+    if (!REGISTRY_URL) { petchRefreshBtn.disabled = true; petchRefreshBtn.title = 'discovery disabled (no Worker)'; }
+    petchRefreshBtn.onclick = () => {
+      invalidatePetchCache();
+      renderPetchDiscover().catch(() => {});
+    };
   }
   // Pill toggles. Single-selection (radio-like) — clicking a pill replaces
   // the active predicate. Delegated so a re-render of the discover list
@@ -25845,7 +26611,7 @@ function setupDiscoverButtons() {
   const sortSel = $('#discover-sort');
   if (sortSel) {
     sortSel.addEventListener('change', () => {
-      _discoverSort = sortSel.value || 'oldest';
+      _discoverSort = sortSel.value || 'newest';
       _saveDiscoverPrefs();
       applyDiscoverSort();
     });
@@ -26039,7 +26805,7 @@ function setupNetworkSelect() {
   if (!sel) return;
   sel.value = NET.name;
   const dh = $('#discover-header-title');
-  if (dh) dh.textContent = `etched assets · confidential supply on ${NET.name}`;
+  if (dh) dh.textContent = `assets · confidential supply on ${NET.name}`;
   // Mainnet banner: real BTC at stake, but show only until the user has
   // acknowledged ("× Acknowledge and hide" button). Once dismissed,
   // MAINNET_OK_KEY persists the ack and the banner stays hidden for that
@@ -26198,7 +26964,7 @@ function buildCommandPaletteItems() {
     { id: 'wallet', title: 'Wallet', hint: 'address · balance · backup' },
     { id: 'holdings', title: 'Holdings', hint: 'your confidential assets' },
     { id: 'transfer', title: 'Send', hint: 'token or plain bitcoin' },
-    { id: 'discover', title: 'Discover', hint: 'browse all etched assets' },
+    { id: 'discover', title: 'Discover', hint: 'browse all assets' },
     { id: 'market', title: 'Market', hint: 'open listings' },
     { id: 'etch', title: 'Etch', hint: 'mint a new asset' },
     { id: 'drops', title: 'Drops', hint: 'airdrop tooling' },
