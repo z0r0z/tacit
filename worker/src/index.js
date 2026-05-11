@@ -272,6 +272,20 @@ function petchProgressKey(network, aid) {
 function petchDirtyKey(network, aid) {
   return network === 'signet' ? `petch_dirty:${aid}` : `petch_dirty:${network}:${aid}`;
 }
+// Per-asset debounce marker for hint-triggered snapshot refreshes. When a
+// burst of pmints lands for the same asset (e.g. FAIR-launch hour with many
+// concurrent minters), each hint would otherwise schedule its own
+// ~50-page KV.list refresh via ctx.waitUntil — wasted work since the
+// snapshot derived by any one of them already incorporates all the others.
+// The marker collapses the burst: first hint sets the key (with TTL), every
+// hint inside the window short-circuits. Dirty marker still set so the next
+// cron tick reconciles regardless. SPEC §5.9 cap-credit lag is bounded by
+// PETCH_REFRESH_DEBOUNCE_SECS + cron interval.
+function petchRefreshDebounceKey(network, aid) {
+  return network === 'signet'
+    ? `petch_refresh_debounce:${aid}`
+    : `petch_refresh_debounce:${network}:${aid}`;
+}
 
 // Mixer-pool KV layout (SPEC §5.10 / §5.11). Three namespaces:
 //   pool:<aid>:<denom>                 — POOL_INIT record (vk_cid, ceremony_cid, init_height, init_txid).
@@ -3043,13 +3057,20 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     // Sync mark is cheap (one KV.put with TTL); the actual snapshot refresh
     // happens in the background so the hint response stays fast.
     await markPetchDirty(env, network, cm.asset_id);
-    // Schedule snapshot refresh + cache invalidation in the background. The
-    // hint response returns immediately; the refresh runs after via
-    // ctx.waitUntil so cron-cache pre-warm doesn't have to wait until the
-    // next 5-min tick to surface a freshly-broadcast mint.
+    // Schedule snapshot refresh + cache invalidation in the background.
+    // Debounced via PETCH_REFRESH_DEBOUNCE_SECS so a burst of hints for the
+    // same asset doesn't trigger N parallel snapshot scans — the first hint
+    // in the window wins, every subsequent hint short-circuits (the mint is
+    // already in the canonical KV namespace, markPetchDirty above ensures
+    // the next cron tick reconciles). Hint response returns immediately; the
+    // refresh runs after via ctx.waitUntil.
     if (ctx && typeof ctx.waitUntil === 'function') {
       ctx.waitUntil((async () => {
         try {
+          const debounceKey = petchRefreshDebounceKey(network, cm.asset_id);
+          const recent = await env.REGISTRY_KV.get(debounceKey);
+          if (recent) return; // another hint refreshed inside the debounce window
+          await env.REGISTRY_KV.put(debounceKey, '1', { expirationTtl: PETCH_REFRESH_DEBOUNCE_SECS });
           const tip = await fetchTipHeight(env, network);
           await refreshAndStorePetchProgress(env, network, cm.asset_id, tip, petch);
           await caches.default.delete(petchAssetsCacheKey(network));
@@ -3286,6 +3307,13 @@ const PETCH_REFRESH_SAFETY_CAP = 300000;
 // Short TTL: a dropped flag just delays refresh by one tick (5 min) — not
 // data loss, since the snapshot recomputes from canonical KV state anyway.
 const PETCH_DIRTY_TTL_SECS = 30 * 60;
+// Hint-triggered refresh debounce window. First hint POST for a given asset
+// refreshes its snapshot inside ctx.waitUntil; subsequent hints inside this
+// window short-circuit (the just-broadcast pmint will be in the next
+// scheduled refresh anyway, since markPetchDirty is still called). 30s
+// matches the dapp's _pmintCreditedCache local TTL — staleness past that
+// window is already tolerated by clients.
+const PETCH_REFRESH_DEBOUNCE_SECS = 30;
 
 // Compute a fresh cap-progress snapshot for one asset by key-only scan of
 // canonical pmint:* entries. Returns the snapshot object (NOT written to KV
@@ -3597,14 +3625,13 @@ async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {})
       const petch = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
       if (!petch) { await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {}); continue; }
       await refreshAndStorePetchProgress(env, network, aid, tip, petch);
-      // Pre-warm the /pmints?credited=1 edge cache while we're refreshing
-      // this asset anyway. The cache is per-POP, so this only warms the POP
-      // running the cron — other POPs still pay one cold MISS each — but
-      // it's a meaningful win for the dapp's holdings flow because the
-      // first user to land on the cron's POP after a refresh tick gets an
-      // instant HIT instead of a 7s inline scan. Best-effort; cache failure
-      // doesn't roll back the snapshot.
-      await pmintCreditedComputeAndCache(env, network, aid).catch(() => {});
+      // We deliberately do NOT pre-warm the /pmints?credited=1 fat-path edge
+      // cache here. The new dapp uses ?include_txids=0 (slim path, ~50ms,
+      // served directly from the snapshot we just refreshed) and bypasses
+      // that cache entirely. Old dapp clients still in stale browser caches
+      // pay one cold MISS per 30s FRESH window per POP, which is acceptable
+      // for a deprecated path. Saves ~14s of cron CPU per FAIR-scale asset
+      // and the per-POP edge storage of a 3.3MB response.
       await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {});
       refreshed++;
     } catch { errored++; }
