@@ -679,7 +679,7 @@ async function _promptUnlockPassphrase(errorHint) {
 // user can long-press → Select All → Copy. Resolves to true if the user ticked
 // the "mark as backed up" box (only shown when allowAck && !alreadyAcked),
 // false otherwise.
-function _exportKeyModal({ hex, allowAck, alreadyAcked }) {
+function _exportKeyModal({ hex, allowAck, alreadyAcked, title = null, reason = null }) {
   return new Promise((resolve) => {
     const modal = document.getElementById('export-modal');
     const text = document.getElementById('export-key-text');
@@ -687,6 +687,8 @@ function _exportKeyModal({ hex, allowAck, alreadyAcked }) {
     const doneBtn = document.getElementById('export-done');
     const ackLabel = document.getElementById('export-ack-label');
     const ackBox = document.getElementById('export-ack');
+    const titleEl = document.getElementById('export-title');
+    const reasonEl = document.getElementById('export-reason');
     if (!modal || !text || !copyBtn || !doneBtn || !ackBox || !ackLabel) {
       // Modal missing from DOM — last-resort fall back to prompt() so the user
       // at least sees the hex. Should never happen in the shipped HTML.
@@ -694,6 +696,13 @@ function _exportKeyModal({ hex, allowAck, alreadyAcked }) {
       resolve(false);
       return;
     }
+    // Cache the static defaults so callers can override per-invocation
+    // (e.g. ensureBurnerBackedUp uses op-specific copy) without permanently
+    // mutating the modal's resting state for the next caller.
+    const defaultTitle = titleEl ? titleEl.textContent : '';
+    const defaultReason = reasonEl ? reasonEl.textContent : '';
+    if (titleEl) titleEl.textContent = title || defaultTitle;
+    if (reasonEl) reasonEl.textContent = reason || defaultReason;
     text.value = hex;
     ackBox.checked = false;
     ackLabel.style.display = (allowAck && !alreadyAcked) ? 'inline-flex' : 'none';
@@ -722,6 +731,10 @@ function _exportKeyModal({ hex, allowAck, alreadyAcked }) {
       modal.style.display = 'none';
       // Wipe the textarea so the hex doesn't linger in the DOM after close.
       text.value = '';
+      // Restore default title/reason so the next caller starts from a clean
+      // resting state (per-invocation overrides above don't leak across uses).
+      if (titleEl) titleEl.textContent = defaultTitle;
+      if (reasonEl) reasonEl.textContent = defaultReason;
       resolve(!!acked);
     };
 
@@ -852,26 +865,28 @@ function markBurnerBackedUp() {
 // Surface the export modal, then record an ack on success. Returns true if
 // the user acknowledges, false if they cancel. Caller should refuse the
 // pending op on `false`.
-function ensureBurnerBackedUp(opLabel) {
+async function ensureBurnerBackedUp(opLabel) {
   // Passkey credential is the backup — skip export/ack gate.
   if (wallet.mode === 'passkey') return true;
   if (isBurnerBackedUp()) return true;
   const onMainnet = NET.name === 'mainnet';
-  const tier = onMainnet ? '⚠ MAINNET' : 'signet';
-  const body =
-    `[${tier}] ${opLabel}\n\n` +
-    'The privkey in your browser (the one shown on the Wallet tab) is what controls every tacit asset UTXO you create. ' +
-    'If you lose this browser\'s localStorage — cache clear, device loss, switching browsers — those assets are unrecoverable.\n\n' +
-    'Click OK to view the key now and save it somewhere safe (password manager, paper backup, hardware-wallet seed slip). Click Cancel to abort.';
-  if (!confirm(body)) return false;
-  // Show the key. We use prompt() because it's the only built-in modal that
-  // also lets the user select+copy the value; the broader UX cleanup (replace
-  // with a styled modal) is tracked separately in the production-readiness
-  // notes (see B17).
-  prompt('Your private key (hex). Save somewhere safe — there is no recovery:', bytesToHex(wallet.priv));
-  // Second confirm so a single "OK" click can't ack-and-proceed; the user has
-  // to actively assert they wrote it down.
-  if (!confirm('Did you save the private key somewhere you can recover it from?\n\nOK = yes, save the acknowledgement and proceed. Cancel = stop.')) return false;
+  const tier = onMainnet ? '⚠ mainnet' : 'signet';
+  // One-modal gate: shows the key with copy + an explicit "mark as backed up"
+  // checkbox. Native confirm()/prompt() are unsuitable here (the dialogs are
+  // silently suppressed by Chrome/Edge after the wallet popup user-activation
+  // window closes, so the gate could auto-cancel an op or skip recording the
+  // ack — see _passphraseModal comment for the same reason it was rebuilt in
+  // the DOM). Returns false when the user closes without ticking the box.
+  const acked = await _exportKeyModal({
+    hex: bytesToHex(wallet.priv),
+    allowAck: true,
+    alreadyAcked: false,
+    title: `back up before: ${opLabel}`,
+    reason:
+      `[${tier}] this private key controls every tacit asset utxo in this browser. if you lose this browser's localStorage — cache clear, device loss, switching browsers — those assets are unrecoverable. ` +
+      'copy the key into a password manager, paper backup, or hardware-wallet seed slip, then tick "mark as backed up" below to proceed. close without ticking to abort.',
+  });
+  if (!acked) return false;
   markBurnerBackedUp();
   return true;
 }
@@ -909,8 +924,8 @@ const prfWallet = {
   // the password was never persisted, so the blob was unreadable next
   // session and contributed nothing but a stale entry under WALLET_KEY_BASE.
   // Skipping the round-trip eliminates that orphan and the failure modes it
-  // created (e.g. a later password-mode unlock seeing the blob via
-  // _hasAnyExistingWallet and prompting for an unguessable passphrase).
+  // created (e.g. a later password-mode unlock seeing the blob via the
+  // first-load existence check and prompting for an unguessable passphrase).
   async _setupSession({ credentialId, priv, pub, pubHex, label }) {
     // Welcome-flow exclusivity: ext / passkey / local are alternative auth
     // paths, never combined. If the caller is mid-session in ext mode (e.g.
@@ -4204,6 +4219,67 @@ function buildMixerShareLink(record, { absoluteUrl = false } = {}) {
   }
 }
 
+// Tornado-style compact note format: `tacit-{ticker}-{denom}-{network}-0x{hex}`
+// where hex = secret(32B) || nullifier_preimage(32B). Asset is identified by
+// (ticker, network) — the dapp's local registry resolves ticker → asset_id
+// at parse time (with optional asset_id fallback embedded in the trailing
+// hex if needed in future). Ticker case is normalized lowercase. Compact
+// enough to tweet (~150 chars vs ~280 for the URL share-link).
+//
+// Tradeoff vs share-link: the compact note carries TICKER (human label)
+// not asset_id (32-byte cryptographic identifier), so it relies on the
+// recipient's wallet having the ticker registered. If the recipient is on
+// the same network and has seen the asset's CETCH/PETCH, the resolver
+// works. For unfamiliar assets, fall back to the share-link.
+function buildMixerCompactNote(record) {
+  if (!record) return '';
+  const meta = getAssetMeta(String(record.assetIdHex || '').toLowerCase());
+  // Without a known ticker we can't build a compact note; caller should
+  // fall back to share-link in that case.
+  if (!meta || !meta.ticker) return '';
+  const ticker = String(meta.ticker).toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!ticker) return '';
+  const secret = String(record.secretHex || '').toLowerCase();
+  const nu     = String(record.nullifierPreimageHex || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(secret) || !/^[0-9a-f]{64}$/.test(nu)) return '';
+  return `tacit-${ticker}-${record.denomination}-${NET.name}-0x${secret}${nu}`;
+}
+
+// Parse a compact note. Returns { assetIdHex, denomination, secretHex,
+// nullifierPreimageHex } or null. Resolves ticker → asset_id via the
+// local registry; if the recipient hasn't seen the asset's CETCH/PETCH,
+// the resolver fails and the caller should ask them to import via
+// share-link instead.
+function parseMixerCompactNote(s) {
+  if (typeof s !== 'string') return null;
+  const m = s.trim().match(/^tacit-([a-z0-9]+)-(\d+)-([a-z]+)-0x([0-9a-fA-F]{128})$/i);
+  if (!m) return null;
+  const [, ticker, denom, network, hex] = m;
+  // Network mismatch is a hard fail — the recipient is on a different
+  // network than the depositor, the asset_id wouldn't exist locally.
+  if (network.toLowerCase() !== NET.name) return null;
+  // Resolve ticker → asset_id by scanning the local registry. Lower-case
+  // compare for tolerance.
+  const tickerLower = ticker.toLowerCase();
+  let assetIdHex = null;
+  try {
+    const reg = JSON.parse(localStorage.getItem(regKey()) || '{}');
+    for (const [aid, meta] of Object.entries(reg)) {
+      if (String(meta?.ticker || '').toLowerCase().replace(/[^a-z0-9]/g, '') === tickerLower) {
+        assetIdHex = aid;
+        break;
+      }
+    }
+  } catch {}
+  if (!assetIdHex) return null;
+  return {
+    assetIdHex,
+    denomination: denom,
+    secretHex: hex.slice(0, 64).toLowerCase(),
+    nullifierPreimageHex: hex.slice(64, 128).toLowerCase(),
+  };
+}
+
 // ============== STORAGE ==============
 // Both the asset-metadata registry and the per-UTXO opening cache are
 // network-namespaced. asset_ids and txids can't collide cross-network
@@ -4722,11 +4798,15 @@ async function _fetchPmintCredited(assetIdHex) {
     return fallback;
   }
   try {
-    // ?credited=1 short-circuit: worker returns just credited_txids, skipping
-    // the per-event annotation that bloats the response by ~200-500 bytes per
-    // pmint. Every cold scanHoldings walk hits one of these per unique petch
-    // asset in the wallet, so wire-payload weight matters here.
-    const r = await fetch(withNet(PMINTS_URL(assetIdHex), 'credited=1'));
+    // ?credited=1&include_txids=0 — slim path. We deliberately opt out of the
+    // credited_txids list (3.3MB for FAIR; ~7s inline scan worker-side). All
+    // per-mint decisions go through validateOutpoint's position check against
+    // last_credited_(h, ti, txid) from the snapshot, which is sound for any
+    // mint past confirmation depth (SPEC §5.9 canonical ordering). The slim
+    // response is ~3KB and ~50ms. Old worker versions that don't recognize
+    // include_txids return the full list; the dapp tolerates either shape
+    // (empty credited Set → position check fires).
+    const r = await fetch(withNet(PMINTS_URL(assetIdHex), 'credited=1&include_txids=0'));
     if (!r.ok) {
       const fallback = { credited: null, capOverflow: null, workerAvailable: false, fetchedAt: Date.now() };
       _pmintCreditedCache.set(assetIdHex, fallback);
@@ -6662,7 +6742,7 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
       const haveDisp = sorted.map(u => u.amount.toString()).join(', ') || '(none)';
       throw new Error(`No single UTXO covers the deposit denomination (need > ${denomBig} for split; you have ${haveDisp}). Consolidate first via Send to your own pubkey.`);
     }
-    if (!ensureBurnerBackedUp('Auto-split a UTXO before deposit (one extra CXFER from your active wallet, then the deposit itself)')) {
+    if (!await ensureBurnerBackedUp('Auto-split a UTXO before deposit (one extra CXFER from your active wallet, then the deposit itself)')) {
       throw new Error('cancelled');
     }
     const need = await estimateSatsForOp('cxfer');
@@ -8786,7 +8866,7 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
       const sorted = [...h.utxos].sort((a, b) => Number(a.amount - b.amount));
       const cover = sorted.find(u => u.amount >= wantAmt);
       if (!cover) throw new Error('no single UTXO covers bid amount — consolidate first via Send to your own address');
-      if (!ensureBurnerBackedUp('Auto-split UTXO before fulfilling bid (one extra CXFER from your active wallet)')) {
+      if (!await ensureBurnerBackedUp('Auto-split UTXO before fulfilling bid (one extra CXFER from your active wallet)')) {
         throw new Error('cancelled');
       }
       const need = await estimateSatsForOp('cxfer');
@@ -11258,9 +11338,49 @@ async function renderMixer() {
   const pendingInits = _prunePendingPoolInits();
   const pendingDeposits = _prunePendingDeposits();
   const pendingWithdraws = _prunePendingWithdraws();
+  // Backup-reminder nudge. localStorage is the ONLY authority for
+  // (secret, ν) pairs on this device; wiping it loses every deposit
+  // forever. Stamp last-export time when the user hits export and
+  // surface a non-blocking yellow banner if there are >0 records and
+  // either (a) no export ever recorded, or (b) the last export is
+  // older than the reminder threshold AND there are records added since
+  // then. The threshold is 7 days — short enough that aging deposits
+  // get nudged regularly, long enough that the banner doesn't pester
+  // someone who exported yesterday.
+  const _REMINDER_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+  let needsBackupReminder = false;
+  let backupReminderText = '';
+  try {
+    const recs = loadMixerDeposits();
+    if (recs.length > 0) {
+      const lastExportRaw = localStorage.getItem(`tacit-mixer-last-export-v1:${NET.name}`);
+      const lastExportTs = lastExportRaw ? Number(lastExportRaw) : 0;
+      if (!lastExportTs) {
+        needsBackupReminder = true;
+        backupReminderText = `You have ${recs.length} deposit record${recs.length === 1 ? '' : 's'} on this device, never backed up. localStorage wipe = permanent loss.`;
+      } else if (Date.now() - lastExportTs > _REMINDER_INTERVAL_MS) {
+        const daysSince = Math.floor((Date.now() - lastExportTs) / (24 * 60 * 60 * 1000));
+        // Only re-nudge if records were added since last export.
+        const newSinceExport = recs.some(r => {
+          const t = Number(r.depositedAt) || Number(r.importedAt) || 0;
+          return t > lastExportTs;
+        });
+        if (newSinceExport) {
+          needsBackupReminder = true;
+          backupReminderText = `Last backup was ${daysSince} days ago. New deposits have been added since — back up again to capture them.`;
+        }
+      }
+    }
+  } catch {}
   const list = document.getElementById('mixer-pool-list');
   if (list) {
     let pendingHtml = '';
+    if (needsBackupReminder) {
+      pendingHtml = `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid #cc8000;border-radius:6px;background:rgba(204,128,0,0.08);">
+        <div style="font-size:12px;font-weight:bold;color:#cc8000;">📦 Back up your deposit records</div>
+        <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">${escapeHtml(backupReminderText)} Use <strong>↓ Export deposit records</strong> in the deposit panel below to download a JSON of every record on this network. The single biggest cause of "lost mixer funds" is a wiped browser profile.</div>
+      </div>`;
+    }
     if (pendingInits.length > 0) {
       const pendingRows = pendingInits.map(r => {
         const ageMs = Date.now() - (r.broadcastAt || Date.now());
@@ -11268,7 +11388,7 @@ async function renderMixer() {
         const denomDisp = fmtAssetAmount(BigInt(r.poolDenom), Number(r.decimals) || 0);
         return `<div class="row" style="padding:8px 10px;border:1px dashed #888;border-radius:6px;margin-bottom:6px;">
           <div style="font-size:12px;"><strong>${escapeHtml(r.ticker || r.assetIdHex.slice(0,8)+'…')}</strong> · denom ${escapeHtml(denomDisp)} · <span class="muted">broadcast ${ageMin}m ago · waiting for Bitcoin confirmation</span></div>
-          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <code>${escapeHtml(r.revealTxid)}</code></div>
+          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <a href="${escapeHtml(NET.explorer + '/tx/' + r.revealTxid)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;"><code>${escapeHtml(r.revealTxid)}</code></a></div>
         </div>`;
       }).join('');
       pendingHtml = `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--border, #ddd);border-radius:6px;background:rgba(0,0,0,0.02);">
@@ -11287,7 +11407,7 @@ async function renderMixer() {
         const recipNote = r.isSelfMix ? '(self-mix)' : '(pay-to-other)';
         return `<div class="row" style="padding:8px 10px;border:1px dashed #888;border-radius:6px;margin-bottom:6px;">
           <div style="font-size:12px;"><strong>${escapeHtml(r.ticker || r.assetIdHex.slice(0,8)+'…')}</strong> · ${escapeHtml(denomDisp)} ${escapeHtml(recipNote)} · <span class="muted">broadcast ${ageMin}m ago · waiting for confirmation</span></div>
-          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <code>${escapeHtml(r.revealTxid)}</code></div>
+          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <a href="${escapeHtml(NET.explorer + '/tx/' + r.revealTxid)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;"><code>${escapeHtml(r.revealTxid)}</code></a></div>
         </div>`;
       }).join('');
       pendingHtml += `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--border, #ddd);border-radius:6px;background:rgba(0,0,0,0.02);">
@@ -11299,13 +11419,22 @@ async function renderMixer() {
     // Pending deposits block — same shape as pending inits. Auto-clears
     // when scanPools applies the leaf to the local tree.
     if (pendingDeposits.length > 0) {
+      // Network-typical block time for the ETA estimate. Mainnet targets
+      // 10 min; signet's permissioned faucet emits roughly every 30s but
+      // we conservatively assume 60s. Confirmation-depth gate is 3 blocks.
+      const blockMinutes = NET.name === 'signet' ? 1 : 10;
+      const targetMinutes = blockMinutes * 3;
       const depRows = pendingDeposits.map(r => {
         const ageMs = Date.now() - (r.broadcastAt || Date.now());
         const ageMin = Math.max(0, Math.floor(ageMs / 60000));
+        const remainMin = Math.max(0, targetMinutes - ageMin);
+        const etaHint = remainMin > 0
+          ? `est. ~${remainMin}m more to depth ≥ 3`
+          : `should be canonicalized by now — next scanPools tick will pick it up`;
         const denomDisp = fmtAssetAmount(BigInt(r.denomination), Number(r.decimals) || 0);
         return `<div class="row" style="padding:8px 10px;border:1px dashed #888;border-radius:6px;margin-bottom:6px;">
-          <div style="font-size:12px;"><strong>${escapeHtml(r.ticker || r.assetIdHex.slice(0,8)+'…')}</strong> · ${escapeHtml(denomDisp)} · <span class="muted">broadcast ${ageMin}m ago · waiting for depth ≥ 3</span></div>
-          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <code>${escapeHtml(r.revealTxid)}</code></div>
+          <div style="font-size:12px;"><strong>${escapeHtml(r.ticker || r.assetIdHex.slice(0,8)+'…')}</strong> · ${escapeHtml(denomDisp)} · <span class="muted">broadcast ${ageMin}m ago · ${escapeHtml(etaHint)}</span></div>
+          <div class="muted" style="font-size:11px;margin-top:2px;">reveal: <a href="${escapeHtml(NET.explorer + '/tx/' + r.revealTxid)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;"><code>${escapeHtml(r.revealTxid)}</code></a></div>
         </div>`;
       }).join('');
       pendingHtml += `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid var(--border, #ddd);border-radius:6px;background:rgba(0,0,0,0.02);">
@@ -11315,7 +11444,10 @@ async function renderMixer() {
       </div>`;
     }
     if (poolRegistry.size === 0 && pendingInits.length === 0 && pendingDeposits.length === 0 && pendingWithdraws.length === 0) {
-      list.innerHTML = '<div class="muted" style="font-size:12px;">No pools indexed yet. Initialize one below or wait for chain scan.</div>';
+      list.innerHTML = `<div style="padding:14px 16px;border:1px dashed var(--ink-faint);border-radius:6px;text-align:center;">
+        <div style="font-size:13px;font-weight:bold;margin-bottom:6px;">No pools indexed yet</div>
+        <div class="muted" style="font-size:12px;line-height:1.6;">Be the first to initialize a pool for an asset. Scroll down to <strong>"Initialize a new pool"</strong> — pick an asset from your registry, type a denomination in whole tokens, and broadcast. The pool becomes live for everyone once Bitcoin confirms (~5–15 min). First-confirmed-wins per SPEC §5.10.1.</div>
+      </div>`;
     } else if (poolRegistry.size === 0) {
       list.innerHTML = pendingHtml + '<div class="muted" style="font-size:12px;">No registered pools yet.</div>';
     } else {
@@ -11337,9 +11469,12 @@ async function renderMixer() {
         // on charset), and ticker is parsed from CETCH/PETCH. Both are attacker-
         // controllable for non-canonical pools. innerHTML-escape both to defuse
         // a `<script>` or `<img onerror>` payload smuggled into either field.
+        // Full asset_id available on hover; same UX pattern as the FINALIZED
+        // beacon hex tooltip — keep the visible label short, surface the
+        // exact 32-byte value via title so users can copy / verify.
         target.push(`<div class="row" style="border:1px solid var(--border, #ddd);padding:10px;border-radius:6px;margin-bottom:8px;">
-          <div><strong>${escapeHtml(ticker)}</strong> · denom ${denomDisp} · anonymity-set <strong>${stats ? stats.anonymitySet : 0}</strong> (${stats ? stats.totalLeaves : 0} deposits − ${stats ? stats.spentNullifiers : 0} withdraws)</div>
-          <div class="muted" style="font-size:11px;margin-top:4px;">vk CID: ${escapeHtml(vkCidStr)} · init height ${info.initHeight}</div>
+          <div><strong title="${escapeHtml('asset_id: ' + aidHex)}" style="cursor:help;">${escapeHtml(ticker)}</strong> · denom ${escapeHtml(denomDisp)} · anonymity-set <strong>${stats ? stats.anonymitySet : 0}</strong> (${stats ? stats.totalLeaves : 0} deposits − ${stats ? stats.spentNullifiers : 0} withdraws)</div>
+          <div class="muted" style="font-size:11px;margin-top:4px;">vk CID: ${escapeHtml(vkCidStr)} · init height ${info.initHeight} · asset_id: <code title="${escapeHtml(aidHex)}" style="cursor:help;">${escapeHtml(aidHex.slice(0, 16) + '…')}</code></div>
         </div>`);
       }
       let html = canonicalRows.join('');
@@ -11632,6 +11767,83 @@ function setupMixerHandlers() {
     if (wPreviewBtn) wPreviewBtn.disabled = !hasRec;
   };
   if (wRecordTa) wRecordTa.addEventListener('input', refreshWDisabled);
+  // Live recipient-pubkey validation — surface ✓/⚠ feedback inline as the
+  // user types so they know if a paste went well before clicking Preview.
+  const recipEl = document.getElementById('mixer-withdraw-recipient');
+  const recipStatusEl = document.getElementById('mixer-withdraw-recipient-status');
+  const _updateRecipStatus = () => {
+    if (!recipEl || !recipStatusEl) return;
+    const v = (recipEl.value || '').trim();
+    if (!v) {
+      recipStatusEl.textContent = '✓ Empty — will withdraw to this wallet (self-mix).';
+      recipStatusEl.style.color = '';
+      return;
+    }
+    if (!/^0[23][0-9a-fA-F]{64}$/.test(v)) {
+      recipStatusEl.textContent = '⚠ Must be a 66-char compressed pubkey hex (starts with 02 or 03).';
+      recipStatusEl.style.color = '#cc8000';
+      return;
+    }
+    const walletPubHex = bytesToHex(wallet.pub).toLowerCase();
+    const isSelf = v.toLowerCase() === walletPubHex;
+    recipStatusEl.textContent = isSelf
+      ? '✓ Valid — matches this wallet (self-mix).'
+      : '✓ Valid — pay-to-other (different wallet, breaks chain-graph link to your deposit).';
+    recipStatusEl.style.color = 'var(--green, #0a7d4e)';
+  };
+  if (recipEl) recipEl.addEventListener('input', _updateRecipStatus);
+  _updateRecipStatus();
+  // Auto-detect share-link pasted into the JSON textarea — users often
+  // don't realize there's a separate input. Detect on paste: if the
+  // pasted text starts with `#mix=` or `mix=` (with or without the
+  // hash), route it through the share-link import flow and clear the
+  // textarea. Falls through to standard textarea paste for JSON.
+  if (wRecordTa) {
+    wRecordTa.addEventListener('paste', (ev) => {
+      try {
+        const text = (ev.clipboardData || window.clipboardData)?.getData('text') || '';
+        const trimmed = text.trim();
+        if (/^#?mix=/i.test(trimmed)) {
+          ev.preventDefault();
+          // Route through the share-link import button's handler.
+          const sl = document.getElementById('mixer-withdraw-sharelink');
+          const imp = document.getElementById('btn-mixer-import-sharelink');
+          if (sl) sl.value = trimmed;
+          if (imp) imp.click();
+        }
+        // For compact note format (tacit-...), route through that handler.
+        else if (/^tacit-[^\s]+-\d+-[a-z]+-0x[0-9a-fA-F]+$/i.test(trimmed)) {
+          ev.preventDefault();
+          try {
+            const parsed = parseMixerCompactNote(trimmed);
+            if (parsed) {
+              const secret = hexToBytes(parsed.secretHex);
+              const nu     = hexToBytes(parsed.nullifierPreimageHex);
+              const d      = BigInt(parsed.denomination);
+              const leaf   = computePoolLeafCommitment(secret, nu, d);
+              const nh     = computeNullifierHash(nu);
+              const rec = {
+                assetIdHex: parsed.assetIdHex,
+                denomination: parsed.denomination,
+                secretHex: parsed.secretHex,
+                nullifierPreimageHex: parsed.nullifierPreimageHex,
+                leafCommitmentHex: bytesToHex(leaf),
+                nullifierHashHex: bytesToHex(nh),
+                importedAt: Date.now(),
+              };
+              _mixerWithdrawRecord = rec;
+              try { saveMixerDepositRecord(rec); } catch {}
+              wRecordTa.value = JSON.stringify(rec, null, 2);
+              wRecordTa.dispatchEvent(new Event('input', { bubbles: true }));
+              try { renderMixer(); } catch {}
+            }
+          } catch (e) {
+            if (typeof console !== 'undefined') console.warn('[mixer] compact-note paste decode failed', e);
+          }
+        }
+      } catch {}
+    });
+  }
   refreshWDisabled();
 
   if (wBtn) {
@@ -11708,7 +11920,7 @@ function setupMixerHandlers() {
       // recipient-controlled. Without a burner backup, losing localStorage
       // loses the ability to spend YOUR future tx fees from this wallet.
       // Same gate every other burner-signing op uses.
-      if (!ensureBurnerBackedUp(isSelfMix
+      if (!await ensureBurnerBackedUp(isSelfMix
         ? 'Withdraw from mixer pool (new UTXO owned by this wallet — losing localStorage loses the UTXO opening)'
         : 'Withdraw from mixer pool (new UTXO owned by the recipient; burner signs the commit tx)')) return;
       wBtn.disabled = true;
@@ -11911,7 +12123,7 @@ function setupMixerHandlers() {
       // open ANY of their pre-deposit holdings — the deposit doesn't move
       // funds out of the burner's control, but the burner key + per-UTXO
       // blindings are both required for the asset side. Same gate as CXFER.
-      if (!ensureBurnerBackedUp('Deposit confidential asset into mixer pool (consumes a tacit UTXO whose blinding is in localStorage)')) return;
+      if (!await ensureBurnerBackedUp('Deposit confidential asset into mixer pool (consumes a tacit UTXO whose blinding is in localStorage)')) return;
       depBtn.disabled = true;
       const origText = depBtn.textContent;
       depBtn.textContent = 'Depositing…';
@@ -11941,6 +12153,7 @@ function setupMixerHandlers() {
         });
         const recJson = JSON.stringify(r.depositRecord, null, 2);
         const shareLink = buildMixerShareLink(r.depositRecord, { absoluteUrl: false });
+        const compactNote = buildMixerCompactNote(r.depositRecord);
         if (out) {
           out.style.display = 'block';
           // Rich success view with inline actions. The "Copy record" and
@@ -11955,8 +12168,8 @@ function setupMixerHandlers() {
             `<div style="font-weight:bold;color:var(--green, #0a7d4e);margin-bottom:6px;">` +
             `✓ Deposited ${escapeHtml(denomDisp)} ${escapeHtml(ticker)}</div>` +
             `<div style="font-size:11px;line-height:1.6;margin-bottom:8px;">` +
-            `commit: <code>${escapeHtml(r.commitTxid)}</code><br>` +
-            `reveal: <code>${escapeHtml(r.revealTxid)}</code></div>` +
+            `commit: <a href="${escapeHtml(NET.explorer + '/tx/' + r.commitTxid)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;"><code>${escapeHtml(r.commitTxid)}</code></a><br>` +
+            `reveal: <a href="${escapeHtml(NET.explorer + '/tx/' + r.revealTxid)}" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;"><code>${escapeHtml(r.revealTxid)}</code></a></div>` +
             `<div style="border:1px solid #cc8000;background:rgba(204,128,0,0.06);padding:8px 10px;border-radius:6px;margin-bottom:8px;">` +
             `<div style="font-size:12px;font-weight:bold;color:#cc8000;">⚠ BACK UP THIS DEPOSIT RECORD</div>` +
             `<div class="muted" style="font-size:11px;margin:4px 0 8px 0;">Saved to localStorage on this browser only. Without (secret, nullifier_preimage) you cannot withdraw — copy or download a copy now and store it offline.</div>` +
@@ -11964,6 +12177,7 @@ function setupMixerHandlers() {
             `<button type="button" id="btn-mixer-dep-copy-record" style="font-size:11px;padding:4px 10px;">📋 Copy record</button>` +
             `<button type="button" id="btn-mixer-dep-download-record" style="font-size:11px;padding:4px 10px;">💾 Download JSON</button>` +
             `<button type="button" id="btn-mixer-dep-copy-sharelink" style="font-size:11px;padding:4px 10px;">🔗 Copy share-link</button>` +
+            (compactNote ? `<button type="button" id="btn-mixer-dep-copy-compact" style="font-size:11px;padding:4px 10px;" title="Single-line note like Tornado Cash's format — tweet-friendly. Requires recipient to have the asset's ticker registered.">✍ Copy compact note</button>` : '') +
             `<span id="mixer-dep-action-status" class="muted" style="font-size:11px;align-self:center;"></span>` +
             `</div>` +
             `<pre style="font-size:11px;background:rgba(0,0,0,0.04);padding:6px;border-radius:4px;margin:0;overflow:auto;max-height:240px;">${escapeHtml(recJson)}</pre>` +
@@ -12005,6 +12219,8 @@ function setupMixerHandlers() {
           if (cpRec) cpRec.onclick = () => _copy(recJson, 'Record copied to clipboard.', 'Copy failed — select the text manually.');
           const cpShare = document.getElementById('btn-mixer-dep-copy-sharelink');
           if (cpShare) cpShare.onclick = () => _copy(shareLink, 'Share-link copied — send out-of-band to the recipient.', 'Copy failed — copy the URL manually.');
+          const cpCompact = document.getElementById('btn-mixer-dep-copy-compact');
+          if (cpCompact) cpCompact.onclick = () => _copy(compactNote, 'Compact note copied — short, tweet-friendly form.', 'Copy failed.');
           const dlRec = document.getElementById('btn-mixer-dep-download-record');
           if (dlRec) dlRec.onclick = () => {
             try {
@@ -12066,6 +12282,10 @@ function setupMixerHandlers() {
         _setBackupStatus('No deposit records on this network yet.', '');
         return;
       }
+      // Stamp last-export time so renderMixer's reminder banner hides.
+      // Re-render is deferred so the actual download click fires first.
+      try { localStorage.setItem(`tacit-mixer-last-export-v1:${NET.name}`, String(Date.now())); } catch {}
+      setTimeout(() => { try { renderMixer(); } catch {} }, 0);
       // Bundle includes the network so a re-import on the wrong network can
       // be detected loudly. Records themselves carry assetIdHex which is
       // network-agnostic, but the localStorage namespace is per-network so
@@ -14682,7 +14902,7 @@ function setupEtchForm() {
     const opLabel = job.mintable
       ? 'Etch a MINTABLE asset (the in-page privkey becomes the permanent mint authority)'
       : 'Etch a fixed-supply asset (the in-page privkey controls all supply UTXOs)';
-    if (!ensureBurnerBackedUp(opLabel)) {
+    if (!await ensureBurnerBackedUp(opLabel)) {
       toast('Etch cancelled. Back up the in-page privkey first, then retry.', '');
       $('#btn-etch-broadcast').disabled = false;
       return;
@@ -14935,7 +15155,7 @@ function setupPetchForm() {
       broadcastBtn.disabled = false;
       return;
     }
-    if (!ensureBurnerBackedUp('Deploy a public-mint asset (T_PETCH; deployer receives no tokens)')) {
+    if (!await ensureBurnerBackedUp('Deploy a public-mint asset (T_PETCH; deployer receives no tokens)')) {
       errEl.textContent = 'Deploy cancelled. Back up the in-page privkey first, then retry.';
       broadcastBtn.disabled = false;
       return;
@@ -15502,7 +15722,7 @@ function setupTransferForm() {
     if (!pendingCXfer) return;
     // Snapshot so a re-Preview during the async broadcast can't mutate the in-flight job.
     const job = pendingCXfer;
-    if (!ensureBurnerBackedUp('Transfer confidential asset (sender change UTXO is owned by the burner)')) {
+    if (!await ensureBurnerBackedUp('Transfer confidential asset (sender change UTXO is owned by the burner)')) {
       toast('Transfer cancelled. Back up the in-page privkey first, then retry.', '');
       return;
     }
@@ -15796,7 +16016,7 @@ function setupSatsSendForm() {
   $('#btn-sats-broadcast').onclick = async () => {
     if (!pendingSatsSend) return;
     const job = pendingSatsSend;
-    if (!ensureBurnerBackedUp('Send sats from the local tacit wallet')) {
+    if (!await ensureBurnerBackedUp('Send sats from the local tacit wallet')) {
       toast('Send cancelled. Back up the in-page privkey first, then retry.', '');
       return;
     }
@@ -17301,7 +17521,7 @@ function setupDropsForm() {
       // since this network slot's localStorage entry is overwritten by
       // wallet.setPriv. Refuse the switch unless the user has acknowledged
       // their backup (the same gate that protects Send / Receive flows).
-      if (!ensureBurnerBackedUp('Switch active wallet to this treasury (replaces the wallet currently loaded; export the existing key first if you haven\'t)')) return;
+      if (!await ensureBurnerBackedUp('Switch active wallet to this treasury (replaces the wallet currently loaded; export the existing key first if you haven\'t)')) return;
       const currentAddr = wallet.address ? wallet.address() : '(none)';
       if (!confirm(
         `Switch the active wallet to this treasury?\n\n` +
@@ -17479,7 +17699,7 @@ function setupDropsForm() {
     const { drop, items } = _dropFulfilStaged;
     const btn = $('#btn-drop-fulfil-broadcast');
     if (!confirm(`Broadcast ${items.length}-recipient CXFER for ${drop.asset_ticker}?\n\nThis signs with your active wallet (${shorten(bytesToHex(wallet.pub || new Uint8Array()), 12)}). Total: ${fmtAssetAmountPlain(items.reduce((s, x) => s + x.amount, 0n), drop.asset_decimals)} ${drop.asset_ticker}.\n\nFulfilled leaves are recorded locally to prevent double-pay; this does NOT block someone else's wallet from CXFERing the same asset to a leaf if they hold the same key.`)) return;
-    if (!ensureBurnerBackedUp('Fulfil airdrop batch (signs with active wallet)')) return;
+    if (!await ensureBurnerBackedUp('Fulfil airdrop batch (signs with active wallet)')) return;
     const need = await estimateSatsForOp('cxfer');
     if (!(await ensureSatsFunded(need, 'Fulfilling airdrop batch'))) return;
 
@@ -19465,7 +19685,7 @@ async function renderHoldings() {
               try { burnBase = parseAssetAmount(raw, target.decimals); }
               catch (e) { errEl.textContent = 'parse error: ' + e.message; return false; }
               if (burnBase <= 0n || burnBase > target.balance) { errEl.textContent = 'amount out of range'; return false; }
-              if (!ensureBurnerBackedUp(`Burn ${target.ticker} (change UTXO is owned by the burner)`)) {
+              if (!await ensureBurnerBackedUp(`Burn ${target.ticker} (change UTXO is owned by the burner)`)) {
                 errEl.textContent = 'Back up the in-page privkey first, then retry.'; return false;
               }
               const need = await estimateSatsForOp('burn');
@@ -19544,7 +19764,7 @@ async function renderHoldings() {
               try { mintBase = parseAssetAmount(raw, target.decimals); }
               catch (e) { errEl.textContent = 'parse error: ' + e.message; return false; }
               if (mintBase <= 0n || mintBase >= (1n << BigInt(N_BITS))) { errEl.textContent = 'amount out of range'; return false; }
-              if (!ensureBurnerBackedUp(`Mint additional ${target.ticker} (mint authority is the local burner key)`)) {
+              if (!await ensureBurnerBackedUp(`Mint additional ${target.ticker} (mint authority is the local burner key)`)) {
                 errEl.textContent = 'Back up the in-page privkey first, then retry.'; return false;
               }
               const need = await estimateSatsForOp('mint');
@@ -19896,7 +20116,7 @@ async function renderHoldings() {
               if (!exactMatch) {
                 // Auto-split: self-CXFER for the exact amount. The result's
                 // recipients[0] is what we'll list (vout 0 of the reveal tx).
-                if (!ensureBurnerBackedUp('Auto-split UTXO before listing (one extra CXFER from your active wallet)')) {
+                if (!await ensureBurnerBackedUp('Auto-split UTXO before listing (one extra CXFER from your active wallet)')) {
                   throw new Error('cancelled');
                 }
                 const need = await estimateSatsForOp('cxfer');
@@ -19960,7 +20180,7 @@ async function renderHoldings() {
           let cxferBroadcast = false;
           try {
             if (includeSelfSpend && _u) {
-              if (!ensureBurnerBackedUp('Cancel listing (signs a self-CXFER spending the listed UTXO)')) {
+              if (!await ensureBurnerBackedUp('Cancel listing (signs a self-CXFER spending the listed UTXO)')) {
                 b.disabled = false; b.textContent = 'Cancel';
                 return;
               }
@@ -20219,7 +20439,7 @@ async function renderHoldings() {
               `New UTXO #2: ${fmtAssetAmount(u.amount - splitAmount, target.decimals)} ${target.ticker} (change, stays in your wallet)\n\n` +
               `Cost: one CXFER (commit + reveal Bitcoin fees, ~10 min for confirmation).`,
             )) return;
-            if (!ensureBurnerBackedUp('Split UTXO (self-CXFER consuming the selected UTXO)')) return;
+            if (!await ensureBurnerBackedUp('Split UTXO (self-CXFER consuming the selected UTXO)')) return;
             const need = await estimateSatsForOp('cxfer');
             if (!(await ensureSatsFunded(need, 'Splitting UTXO'))) return;
             const splitBtn = formHost.querySelector('[data-form-act="split"]');
@@ -20274,7 +20494,7 @@ async function renderHoldings() {
               `Expires: ${days} day${days>1?'s':''}\n\n` +
               `On confirm: a commit tx will be broadcast (one-time fee ≈ ${feeFor(150, 10)} sats), and a partial reveal tx will be signed and copied to clipboard.`,
             )) return;
-            if (!ensureBurnerBackedUp('Create atomic offer (the in-page privkey signs the partial reveal)')) {
+            if (!await ensureBurnerBackedUp('Create atomic offer (the in-page privkey signs the partial reveal)')) {
               errEl.textContent = 'Back up the in-page privkey first, then retry.'; return;
             }
             const need = await estimateSatsForOp('cxfer');
@@ -20423,7 +20643,7 @@ async function renderHoldings() {
               `Expires: ${days} day${days>1?'s':''}\n\n` +
               `On confirm: a commit tx will be broadcast and the intent will be posted to the marketplace. The recipient blinding scalar is generated locally and stored in this browser only.`,
             )) return;
-            if (!ensureBurnerBackedUp('Publish atomic intent (commits an asset UTXO; partial reveal generated at fulfilment time)')) {
+            if (!await ensureBurnerBackedUp('Publish atomic intent (commits an asset UTXO; partial reveal generated at fulfilment time)')) {
               errEl.textContent = 'Back up the in-page privkey first, then retry.'; return;
             }
             const need = await estimateSatsForOp('cxfer');
@@ -23740,7 +23960,7 @@ async function marketCancelIntentHandler(btn) {
         x.utxo.txid === intent.asset_utxo.txid && x.utxo.vout === intent.asset_utxo.vout,
       );
       if (!u) throw new Error('asset UTXO is not in holdings — the taker may have already broadcast.');
-      if (!ensureBurnerBackedUp('Cancel fulfilled atomic intent (spends the listed asset UTXO via self-send)')) {
+      if (!await ensureBurnerBackedUp('Cancel fulfilled atomic intent (spends the listed asset UTXO via self-send)')) {
         btn.disabled = false; btn.textContent = 'Cancel';
         return;
       }
@@ -24225,7 +24445,7 @@ async function renderPetchDiscover() {
         const dec = parseInt(btn.dataset.decimals, 10) || 0;
         const limitDisp = fmtAssetAmount(BigInt(limitStr || '0'), dec);
         if (!confirm(`Mint ${limitDisp} ${ticker}?\n\nThis broadcasts a T_PMINT (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees. The minted UTXO appears in your Holdings; cap-credit lands after 3 confirmations.`)) return;
-        if (!ensureBurnerBackedUp('Mint a public-mint asset (T_PMINT; broadcasts a commit+reveal pair)')) return;
+        if (!await ensureBurnerBackedUp('Mint a public-mint asset (T_PMINT; broadcasts a commit+reveal pair)')) return;
         const need = await estimateSatsForOp('etch');
         if (!(await ensureSatsFunded(need, 'Minting'))) return;
         const origLabel = btn.textContent;
@@ -25435,16 +25655,16 @@ function consumePendingNetFlipToast() {
   );
 }
 
-// First-load detection — true only when this device has never set up any
-// tacit wallet (no global blob, no network-scoped blob, no ext-bound blob).
-// Returning users with an existing encrypted blob skip the welcome modal and
-// go straight to the unlock prompt.
-function _hasAnyExistingWallet() {
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k && k.startsWith(WALLET_KEY_BASE)) return true;
-  }
-  return false;
+// First-load detection — true when an unbound encrypted blob exists for the
+// current network (i.e. exactly the key `wallet.load()` with no arg will
+// look at). Scoped narrowly on purpose: an ext-bound-only user whose ext
+// restore failed (extension uninstalled, locked, reconnect denied) must not
+// be silently routed to a fresh-burner-passphrase prompt against a key that
+// doesn't exist — that produces a phantom unbound blob and leaves the real
+// (ext-bound) blob inaccessible. Falling through to the welcome modal lets
+// them re-connect their ext wallet or pick another mode.
+function _hasUnboundLocalWallet() {
+  return localStorage.getItem(walletStorageKey()) !== null;
 }
 
 // FAQ modal: opened by the "?" button in the header. Static reference content
@@ -25847,7 +26067,7 @@ async function init() {
     if (extOk) {
       await wallet.load(restored.address);
       setActiveWalletMode('ext');
-    } else if (_hasAnyExistingWallet()) {
+    } else if (_hasUnboundLocalWallet()) {
       try {
         await wallet.load();
         setActiveWalletMode('local');

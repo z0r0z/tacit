@@ -3734,6 +3734,13 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
     const orphanPrefixStr = pmintPrefix(network, assetIdHex) + '0000000000:';
     const capAmount = petch.cap_amount != null ? BigInt(petch.cap_amount) : null;
     const mintLimit = petch.mint_limit != null ? BigInt(petch.mint_limit) : null;
+    // Slim path: caller opts out of the credited_txids list entirely (the
+    // 3.3MB-for-FAIR payload + 7s inline scan). Consumers that do per-mint
+    // credit decisions via position-comparison against last_credited_*
+    // don't need the list. Backwards-compatible: omitted param defaults to
+    // include_txids=1, so existing clients see no change. The new dapp
+    // passes include_txids=0 to get a ~3KB response in ~50ms.
+    const includeTxids = opts.includeTxids !== false;
     const credited_txids = [];
     // For cap_overflow_txids, prefer the snapshot's list (it's authoritative).
     // Inline scan still populates as backup for assets without a snapshot.
@@ -3744,7 +3751,31 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
     let collected = 0;
     let truncated = false;
     const SAFETY_CAP = 50000;
-    let canonicalComplete = false;
+    let canonicalComplete = !includeTxids; // slim path skips the scan entirely
+    if (!includeTxids) {
+      // Slim path: no inline scan. Snapshot provides all needed fields.
+      // cap_overflow_txids still comes from snapshot if available, else empty.
+      return jsonResponse({
+        asset_id: assetIdHex,
+        network,
+        credited_txids,                            // intentionally empty (slim)
+        cap_overflow_txids,
+        credited_count: snap?.credited_count ?? null,
+        credited_amount: snap?.credited_amount ?? null,
+        cap_overflow_count: snap?.cap_overflow_count ?? cap_overflow_txids.length,
+        last_credited_height: snap?.last_credited_height ?? null,
+        last_credited_tx_index: snap?.last_credited_tx_index ?? null,
+        last_credited_txid: snap?.last_credited_txid ?? null,
+        snapshot_updated_at: snap?.updated_at ?? null,
+        snapshot_bootstrapped: !!snap?.bootstrapped,
+        confirmation_depth: PMINT_CONFIRMATION_DEPTH,
+        tip: Number.isInteger(tip) ? tip : null,
+        tip_unavailable: !Number.isInteger(tip),
+        slim: true,                                // signal to consumers that the list is empty by design
+        truncated: true,                           // the list IS truncated (to zero); use last_credited_* for membership
+        list_complete: false,
+      }, 200, cors);
+    }
     for (let page = 0; page < 200; page++) {
       const list = await env.REGISTRY_KV.list({
         prefix: pmintPrefix(network, assetIdHex),
@@ -6867,15 +6898,22 @@ export default {
     const mpm = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/pmints$/);
     if (mpm && req.method === 'GET') {
       const creditedOnly = url.searchParams.get('credited') === '1';
-      // SWR cache for the credited-only fast path. Same pattern as
-      // /petch-assets: HIT inside FRESH, STALE-serve + background refresh
-      // between FRESH and STALE, MISS recomputes synchronously. For FAIR-
-      // scale assets the underlying inline scan is ~7s and ~3.3MB; the
-      // cache collapses concurrent reads at each Cloudflare POP into one
-      // real scan per 30s window. The full /pmints path (events array) is
-      // explorer-only and not worth caching the multi-MB events response.
-      if (creditedOnly) {
+      // Slim path: caller opts out of credited_txids list. Response is just
+      // snapshot fields (~3KB) and the underlying call is one KV.get of the
+      // snapshot — ~50ms wall-time. Skip edge cache entirely: there's nothing
+      // costly enough to merit caching, and the snapshot has its own freshness
+      // contract (refreshed by cron every 5 min). The new dapp passes
+      // include_txids=0 to take this path.
+      const includeTxids = url.searchParams.get('include_txids') !== '0';
+      if (creditedOnly && includeTxids) {
         const aid = mpm[1];
+        // SWR cache for the legacy fat-list path. Same pattern as
+        // /petch-assets: HIT inside FRESH, STALE-serve + background refresh
+        // between FRESH and STALE, MISS recomputes synchronously. For FAIR-
+        // scale assets the underlying inline scan is ~7s and ~3.3MB; the
+        // cache collapses concurrent reads at each Cloudflare POP into one
+        // real scan per 30s window. The full /pmints path (events array) is
+        // explorer-only and not worth caching the multi-MB events response.
         const cache = caches.default;
         const cacheKey = pmintCreditedCacheKey(network, aid);
         const _withCors = (body, status, kind) => {
@@ -6902,7 +6940,7 @@ export default {
         const result = await pmintCreditedComputeAndCache(env, network, aid);
         return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
       }
-      return handlePmintList(mpm[1], env, network, cors, { creditedOnly });
+      return handlePmintList(mpm[1], env, network, cors, { creditedOnly, includeTxids });
     }
     const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
     if (m && req.method === 'GET')                             return handleAssetGet(m[1], env, network, cors);
