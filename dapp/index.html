@@ -50,7 +50,7 @@
   static host instead; see ./_headers for the Cloudflare Pages / Netlify
   config that adds frame-ancestors 'self' (clickjacking defense).
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://mempool.space https://blockstream.info https://tacit-pin.rosscampbell9.workers.dev https://tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; img-src 'self' data: https://content.wrappr.wtf; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self' https://mempool.space https://blockstream.info https://tacit-pin.rosscampbell9.workers.dev https://www.tacitscan.io https://content.wrappr.wtf https://ipfs.io https://w3s.link https://*.ipfs.w3s.link https://dweb.link https://*.ipfs.dweb.link; img-src 'self' data: https://content.wrappr.wtf; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; base-uri 'self'; form-action 'none'">
 <title>tacit</title>
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><style>.r{stroke:%230a0a0a}@media(prefers-color-scheme:dark){.r{stroke:%23f4efe6}}</style><circle class="r" cx="16" cy="16" r="13" fill="none" stroke-width="2.5"/><path d="M17.5 7L13 22.5Q13 25 18 24" fill="none" stroke="%23f7931a" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11L21 11" stroke="%23f7931a" stroke-width="2.4" stroke-linecap="round"/></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -114,7 +114,7 @@ header {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em;
   color: var(--ink-mid); border-left: 1px solid var(--ink); padding-left: 12px;
 }
-.tagline em { color: var(--orange); font-style: normal; }
+.tagline em { display: block; margin-top: 2px; font-size: 9px; letter-spacing: 0.08em; color: var(--ink-faint); font-style: normal; }
 .net-badge {
   font-size: 10px; text-transform: uppercase; letter-spacing: 0.15em;
   font-weight: 700; padding: 6px 12px;
@@ -2479,11 +2479,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         </label>
       </div>
       <div class="muted" style="font-size:11px;margin-top:6px;">
-        Cap MUST be evenly divisible by per-claim. <code>max_claims = cap ÷ per_claim</code>.
+        Cap MUST be evenly divisible by per-claim. <code>max_claims = cap ÷ per_claim</code>. Size cap to <strong>exactly</strong> the count of eligible leaves × per_claim — unclaimed tokens are stranded in the pool until the reclaim flow ships (v2). Build the snapshot above first; the merkle root and leaf count are produced by the build step.
       </div>
-      <label style="margin-top:10px;">Merkle root (optional — for eligibility-gated drops; paste the 64-hex root from the snapshot composer above)
-        <input id="ondrop-merkle-root" type="text" placeholder="leave empty for open FCFS drop" autocomplete="off" spellcheck="false" style="font-family:var(--mono);font-size:12px;">
+      <label style="margin-top:10px;">Merkle root (REQUIRED — paste the 64-hex root from §5 above; open FCFS drops are deferred to v2 pending the reclaim flow)
+        <input id="ondrop-merkle-root" type="text" placeholder="64-hex from snapshot Build merged snapshot" autocomplete="off" spellcheck="false" style="font-family:var(--mono);font-size:12px;" required>
       </label>
+      <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
+        <strong>⚠ Stranding risk:</strong> if recipients don't claim by expiry (or if cap exceeds the eligible-claim total), those tokens lock indefinitely. Reclaim is wired through the SPEC but not yet through the dapp; coming in v2.
+      </div>
       <div class="flex" style="gap:6px;margin-top:14px;">
         <button id="btn-ondrop-broadcast" type="button" class="primary">Broadcast T_DROP</button>
       </div>
@@ -2579,46 +2582,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
       <div id="claim-discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no drops loaded yet · click Refresh</div></div>
 
-      <details style="margin-top:18px;"><summary class="muted" style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> On-chain claim pools (T_DROP — you pay your own tx fee)</summary>
-        <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
-          <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
-            Self-service claim pools backed by on-chain <strong>T_DROP</strong> envelopes (SPEC §5.12 / §5.13). Permissionless: anyone may claim FCFS, up to the cap declared by the issuer. Merkle-gated drops additionally require an ETH signature proving your address is in the snapshot (sign the canonical claim message first via the discovery list above). Issuer pays nothing per claim — <strong>you</strong> pay the ~$5-10 mainnet reveal-tx fee.
-          </div>
-          <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
-            <button id="btn-onclaim-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active on-chain T_DROP pools from the worker">↻ Refresh</button>
-            <span id="onclaim-list-status" class="muted" style="font-size:11px;"></span>
-          </div>
-          <div id="onclaim-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no on-chain drops loaded yet · click Refresh</div></div>
-        </div>
-      </details>
-
-      <details id="claim-manual-entry" style="margin-top:18px;">
-        <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
-          <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Have a merkle root + CID? Manual entry
-        </summary>
-        <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
-          <label>Merkle root</label>
-          <input id="claim-root" type="text" autocomplete="off" spellcheck="false" placeholder="64-char hex" style="font-family:var(--mono);font-size:12px;">
-          <label style="margin-top:10px;">Snapshot IPFS CID (or full <code>ipfs://</code> URI)</label>
-          <input id="claim-cid" type="text" autocomplete="off" spellcheck="false" placeholder="Qm… or bafy…" style="font-family:var(--mono);font-size:12px;">
-          <div class="flex" style="margin-top:8px;gap:6px;">
-            <button id="btn-claim-load" type="button">Load snapshot</button>
-            <button id="btn-claim-clear" type="button">Clear</button>
-          </div>
-          <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">…or paste / upload the snapshot JSON directly (fallback if IPFS gateways are unreachable)</summary>
-            <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any blob whose rows don't match the root above.</div>
-            <input id="claim-json-file" type="file" accept=".json,application/json" style="display:none;">
-            <div class="flex" style="gap:6px;margin-top:6px;">
-              <button id="btn-claim-json-upload" type="button">Upload JSON file</button>
-              <button id="btn-claim-json-load" type="button">Load pasted JSON</button>
-            </div>
-            <textarea id="claim-json-text" rows="6" style="margin-top:6px;font-family:var(--mono);font-size:11px;" placeholder='{"schema":"tacit-airdrop-v1","merkle_root":"…","rows":[…]}'></textarea>
-          </details>
-          <div id="claim-load-err" class="error" style="margin-top:8px;"></div>
-          <div id="claim-load-out" style="display:none;margin-top:14px;"></div>
-        </div>
-      </details>
-
       <h3 style="margin-top:18px;">2 · Connect Ethereum wallet</h3>
       <div class="muted" style="font-size:11px;margin-bottom:6px;">Auto-filters the discovery list above to drops eligible for your address. Signing only — no Ethereum tx is broadcast, no gas spent.</div>
       <details style="margin-bottom:6px;">
@@ -2653,6 +2616,51 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <h3 style="margin-top:18px;">5 · Send to issuer</h3>
       <div id="claim-result-placeholder" class="muted" style="font-size:11px;">Complete step 4 to generate the issuer-bound payload here.</div>
       <div id="claim-result" style="display:none;"></div>
+
+      <div style="margin-top:32px;padding-top:18px;border-top:1px dashed var(--ink-faint);">
+        <div class="muted" style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);margin-bottom:10px;">Other ways to claim</div>
+        <div class="muted" style="font-size:11px;margin-bottom:10px;line-height:1.5;">For drops outside the worker-published list above — separate discovery surfaces with their own claim mechanics. Loading a snapshot here populates steps 2–5 above.</div>
+
+        <details><summary class="muted" style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> On-chain claim pools (T_DROP — you pay your own tx fee)</summary>
+          <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+            <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
+              Self-service claim pools backed by on-chain <strong>T_DROP</strong> envelopes (SPEC §5.12 / §5.13). Permissionless: anyone may claim FCFS, up to the cap declared by the issuer. Merkle-gated drops additionally require an ETH signature proving your address is in the snapshot (sign the canonical claim message first via the discovery list above). Issuer pays nothing per claim — <strong>you</strong> pay the ~$5-10 mainnet reveal-tx fee.
+            </div>
+            <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
+              <button id="btn-onclaim-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active on-chain T_DROP pools from the worker">↻ Refresh</button>
+              <span id="onclaim-list-status" class="muted" style="font-size:11px;"></span>
+            </div>
+            <div id="onclaim-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no on-chain drops loaded yet · click Refresh</div></div>
+          </div>
+        </details>
+
+        <details id="claim-manual-entry" style="margin-top:10px;">
+          <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
+            <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Have a merkle root + CID? Manual entry
+          </summary>
+          <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+            <label>Merkle root</label>
+            <input id="claim-root" type="text" autocomplete="off" spellcheck="false" placeholder="64-char hex" style="font-family:var(--mono);font-size:12px;">
+            <label style="margin-top:10px;">Snapshot IPFS CID (or full <code>ipfs://</code> URI)</label>
+            <input id="claim-cid" type="text" autocomplete="off" spellcheck="false" placeholder="Qm… or bafy…" style="font-family:var(--mono);font-size:12px;">
+            <div class="flex" style="margin-top:8px;gap:6px;">
+              <button id="btn-claim-load" type="button">Load snapshot</button>
+              <button id="btn-claim-clear" type="button">Clear</button>
+            </div>
+            <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">…or paste / upload the snapshot JSON directly (fallback if IPFS gateways are unreachable)</summary>
+              <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any blob whose rows don't match the root above.</div>
+              <input id="claim-json-file" type="file" accept=".json,application/json" style="display:none;">
+              <div class="flex" style="gap:6px;margin-top:6px;">
+                <button id="btn-claim-json-upload" type="button">Upload JSON file</button>
+                <button id="btn-claim-json-load" type="button">Load pasted JSON</button>
+              </div>
+              <textarea id="claim-json-text" rows="6" style="margin-top:6px;font-family:var(--mono);font-size:11px;" placeholder='{"schema":"tacit-airdrop-v1","merkle_root":"…","rows":[…]}'></textarea>
+            </details>
+            <div id="claim-load-err" class="error" style="margin-top:8px;"></div>
+            <div id="claim-load-out" style="display:none;margin-top:14px;"></div>
+          </div>
+        </details>
+      </div>
     </div>
   </div>
 </div>

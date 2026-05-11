@@ -7845,11 +7845,36 @@ export default {
       if (!drop) return jsonResponse({ error: 'unknown drop_id' }, 404, cors);
       const limit = Math.min(Number(url.searchParams.get('limit')) || 1000, 10000);
       const cursor = url.searchParams.get('cursor') || undefined;
+      // Slim path: caller passes ?credited=1&include_txids=1 to get just the
+      // set of canonically-credited claim txids — used by the dapp validator
+      // for the rewrap-supply-inflation gate (SPEC §5.13 *Replay analysis*).
+      // Identical posture to /assets/:aid/pmints?credited=1&include_txids=1.
+      // No JSON-per-record overhead; for 1000 claims this is ~70KB vs.
+      // ~500KB for the full record path.
+      const slim = url.searchParams.get('credited') === '1' && url.searchParams.get('include_txids') === '1';
       const list = await env.REGISTRY_KV.list({
         prefix: dclaimPrefix(network, dropId),
         limit,
         cursor,
       });
+      if (slim) {
+        // KV key suffix is `…:<padded_height>:<padded_tx_index>:<txid>`.
+        // Extract just the trailing txid. The cron's nullifier check means
+        // every key here corresponds to ONE canonical claim per leaf — rewraps
+        // never make it into this list.
+        const credited_txids = [];
+        for (const k of list.keys) {
+          const txid = k.name.split(':').pop();
+          if (/^[0-9a-f]{64}$/.test(txid)) credited_txids.push(txid);
+        }
+        return jsonResponse({
+          drop_id: dropId,
+          network,
+          credited_count: credited_txids.length,
+          credited_txids,
+          truncated: !list.list_complete,
+        }, 200, cors);
+      }
       const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
       const claims = fetched.filter(v => v && v.kind === 'dclaim');
       return jsonResponse({

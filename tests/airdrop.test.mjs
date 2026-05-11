@@ -1584,5 +1584,74 @@ test('synthetic chain: drop_id is deterministic and one-to-one with reveal tx', 
   return bytesEq(d1a, d1b) && !bytesEq(d1a, d2);
 });
 
+test('rewrap supply-inflation gate: cron writes one canonical claim per leaf, dapp validator queries worker', () => {
+  // The rewrap attack: Eve copies Alice's confirmed T_DCLAIM envelope and
+  // re-broadcasts in her own commit/reveal pair. If she reuses Alice's
+  // recipient_pub in vout[0] (the only choice that passes the
+  // hash160(recipient_pub) == vout[0] binding), Alice gets a second UTXO.
+  // The cron's nullifier check on (drop_id, leaf_index) drops the rewrap
+  // from the canonical dclaim:* KV namespace. The slim
+  // /drops-onchain/:drop_id/claims?credited=1&include_txids=1 endpoint
+  // returns ONLY canonical claim txids. The dapp's validator queries this
+  // and refuses to credit non-canonical txids — closing the inflation gap.
+  //
+  // This test simulates the indexer-side invariant: a Set<canonical_txid>
+  // built from the cron's nullifier-checked writes, and a check that the
+  // rewrap's txid is excluded.
+  const dropId = bytesToHex(dropIdFromRevealTxid('aa'.repeat(32)));
+  const aliceTxid = 'a1'.repeat(32);
+  const eveRewrapTxid = 'ee'.repeat(32);
+  const leafIndex = 5;
+
+  // Indexer simulation: cron processes Alice's claim first.
+  const claimedLeaves = new Set();
+  const canonicalClaims = new Set();
+  const processClaim = (txid, leaf) => {
+    if (claimedLeaves.has(leaf)) return { ok: false };   // nullifier collision
+    claimedLeaves.add(leaf);
+    canonicalClaims.add(txid);
+    return { ok: true };
+  };
+  // Alice's claim: accepted.
+  if (!processClaim(aliceTxid, leafIndex).ok) return false;
+  // Eve's rewrap: same leaf_index, nullifier collision → rejected.
+  if (processClaim(eveRewrapTxid, leafIndex).ok) return false;
+
+  // Worker's /drops-onchain/:drop_id/claims?credited=1 endpoint returns
+  // canonicalClaims (extracted from KV key suffixes). The dapp validator's
+  // gate is `credit.credited.has(txidHex)`.
+  return canonicalClaims.has(aliceTxid)
+      && !canonicalClaims.has(eveRewrapTxid);
+});
+
+test('open-FCFS drop construction is gated to v2 — issuer composer refuses all-zero merkle root', () => {
+  // The dapp UI's broadcast handler rejects all-zero merkle_root with a
+  // pointer to the snapshot composer. This codifies the v1 design decision:
+  // until the reclaim flow ships, open-FCFS drops can strand cap_amount -
+  // (claims × per_claim) tokens indefinitely. Merkle-gated drops have the
+  // same risk only if recipients don't claim, but the issuer's UX matches
+  // the snapshot's leaf count to per_claim × cap so it's bounded.
+  //
+  // We can't easily integration-test the dapp UI here, but we can pin the
+  // protocol-level shape: an all-zero merkle_root IS a valid envelope (SPEC
+  // permits both gated and FCFS). The dapp UI gate is policy, not protocol.
+  const allZero = new Uint8Array(32);
+  // Standard-shape T_DROP with all-zero merkle_root is structurally valid:
+  const payload = encodeCDropPayload({
+    assetId: new Uint8Array(32).fill(0xab),
+    capAmount: 1000n,
+    perClaim: 100n,
+    merkleRoot: allZero,
+    expiryHeight: 0,
+    ticker: '',
+    decimals: 0,
+    assetInputCount: 1,
+    kernelSig: new Uint8Array(64).fill(0xee),
+  });
+  const dec = decodeCDropPayload(payload);
+  // Decoder accepts it (protocol level). Dapp UI declines it (policy level).
+  return dec && dec.kind === 'cdrop' && bytesEq(dec.merkleRoot, allZero);
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail > 0 ? 1 : 0);

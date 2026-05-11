@@ -186,7 +186,13 @@ const PMINTS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetI
 // missed a dense-mint asset and the dapp's browser-side fallback hasn't
 // caught up). Failure-mode is graceful: if tacitscan is unreachable, the
 // dapp falls back to worker-only state — identical to today's behavior.
-const TACITSCAN_MINTED_OUT_URL = 'https://tacitscan.io/api/minted-out';
+// Use the www.tacitscan.io subdomain directly: the apex tacitscan.io
+// 307-redirects to www, and a browser fetch from the apex hits CSP recheck
+// on the redirected URL. The dapp's CSP whitelist is per-host, so apex →
+// www would need both hosts allowed. Plus the apex redirect adds ~1s round-
+// trip which the 3.5s timeout below can't reliably absorb on slow networks.
+// Hitting www directly is single-hop and stays within budget.
+const TACITSCAN_MINTED_OUT_URL = 'https://www.tacitscan.io/api/minted-out';
 const DROPS_URL = WORKER_BASE ? WORKER_BASE + '/drops' : '';
 const DROP_URL  = (rootHex) => WORKER_BASE ? `${WORKER_BASE}/drops/${rootHex}` : '';
 // Cross-indexer minted-out gate. Cached per network for 60s — cap state
@@ -5226,6 +5232,61 @@ async function _fetchPmintCredited(assetIdHex) {
   }
 }
 
+// ============== T_DCLAIM CAP-CREDIT GATE (SPEC §5.13 Replay analysis) ==============
+// Without this gate, an attacker can rewrap a published T_DCLAIM envelope
+// into their own commit/reveal pair — paying ~$10 mainnet to gift the
+// original recipient an extra UTXO. Each rewrap doesn't profit the attacker
+// (they can't substitute the recipient pubkey without invalidating the
+// eth_sig recovery), but the dapp's local validator credits ALL structurally-
+// valid claims, so the recipient's wallet (and any chain analyst tracing
+// claims locally) sees inflated supply. The worker's cron correctly drops
+// rewraps via the (drop_id, leaf_index) nullifier check, so the canonical
+// dclaim:* KV namespace contains exactly one entry per leaf. Querying it
+// here closes the inflation gap.
+//
+// Same posture + cache contract as _fetchPmintCredited above. 30s TTL is
+// the same — a fresh-broadcast T_DCLAIM's worker hint typically lands within
+// the same window, so the cache rarely surfaces stale "uncredited" for a
+// legitimate claim.
+const _dclaimCreditedCache = new Map();
+const DCLAIM_CREDITED_TTL_MS = 30 * 1000;
+function invalidateDclaimCreditedCache() { _dclaimCreditedCache.clear(); }
+async function _fetchDclaimCredited(dropIdHex) {
+  const c = _dclaimCreditedCache.get(dropIdHex);
+  if (c && (Date.now() - c.fetchedAt) < DCLAIM_CREDITED_TTL_MS) return c;
+  if (!WORKER_BASE) {
+    const fallback = { credited: null, workerAvailable: false, fetchedAt: Date.now() };
+    _dclaimCreditedCache.set(dropIdHex, fallback);
+    return fallback;
+  }
+  try {
+    const url = `${WORKER_BASE}/drops-onchain/${dropIdHex}/claims?network=${encodeURIComponent(NET.name)}&credited=1&include_txids=1`;
+    const r = await fetch(url);
+    if (!r.ok) {
+      const fallback = { credited: null, workerAvailable: false, fetchedAt: Date.now() };
+      _dclaimCreditedCache.set(dropIdHex, fallback);
+      return fallback;
+    }
+    const j = await r.json();
+    const credited = new Set();
+    for (const t of (j.credited_txids || [])) {
+      if (/^[0-9a-f]{64}$/.test(String(t))) credited.add(t);
+    }
+    const entry = {
+      credited,
+      truncated: !!j.truncated,
+      workerAvailable: true,
+      fetchedAt: Date.now(),
+    };
+    _dclaimCreditedCache.set(dropIdHex, entry);
+    return entry;
+  } catch {
+    const fallback = { credited: null, workerAvailable: false, fetchedAt: Date.now() };
+    _dclaimCreditedCache.set(dropIdHex, fallback);
+    return fallback;
+  }
+}
+
 // pmintStatusOut (optional, last positional) is a Map<"txid:vout", 'pending' | 'invalid'>
 // scanHoldings populates so it can distinguish T_PMINT failures that may
 // promote later (mempool, depth < 3, worker says not credited yet) from
@@ -5893,6 +5954,30 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     } else {
       // Open drop: witness MUST be empty per SPEC §5.13.
       if (dec.witness) { validatedSet.set(key, false); return false; }
+    }
+    // CAP-CREDIT GATE (SPEC §5.13 *Replay analysis*). Without this, an
+    // attacker rewrapping a published T_DCLAIM into a fresh commit/reveal
+    // pair inflates supply by per_claim per rewrap — the dapp credits BOTH
+    // UTXOs locally even though the worker's cron correctly drops the
+    // rewrap via the nullifier check. Querying the worker's canonical
+    // credited set closes the gap. Same posture as T_PMINT (see
+    // _fetchPmintCredited above), with graceful degradation when the
+    // worker is unreachable: an offline dapp continues to credit the
+    // claim optimistically (the only soundness regression vs. worker-online
+    // is the rewrap-inflation window). Production users on mainnet should
+    // always run against a live worker.
+    const dropIdHex = bytesToHex(dropIdFromRevealTxid(dropTxidHex));
+    const credit = await _fetchDclaimCredited(dropIdHex);
+    if (credit.workerAvailable) {
+      if (credit.credited && !credit.credited.has(txidHex)) {
+        // Worker says this txid is not canonically credited. Either it's a
+        // rewrap (the cron's nullifier check dropped it) OR it's a fresh
+        // claim the cron hasn't indexed yet. Tag pending so a re-scan can
+        // promote it after the next cron tick; meanwhile, refuse to credit
+        // — this is the load-bearing supply-correctness check.
+        validatedSet.set(key, false);
+        return false;
+      }
     }
     // Surface drop's asset metadata so scanHoldings renders the card without
     // an extra ancestor walk. Mirrors the T_PMINT branch above.
@@ -19032,11 +19117,20 @@ function setupDropsForm() {
       const expiryHeight = expiryInput ? parseInt(expiryInput, 10) : 0;
       if (!Number.isInteger(expiryHeight) || expiryHeight < 0) throw new Error('expiry must be a non-negative integer (0 = no expiry)');
       const merkleRootRaw = ($('#ondrop-merkle-root')?.value || '').trim().toLowerCase().replace(/^0x/, '');
-      let merkleRoot = new Uint8Array(32);
-      if (merkleRootRaw) {
-        if (!/^[0-9a-f]{64}$/.test(merkleRootRaw)) throw new Error('merkle_root must be 64 hex chars (or empty for open drop)');
-        merkleRoot = hexToBytes(merkleRootRaw);
+      if (!merkleRootRaw) {
+        throw new Error('merkle root required (open-FCFS drops are deferred to v2 pending the reclaim flow — without reclaim, unclaimed tokens are stranded forever)');
       }
+      if (!/^[0-9a-f]{64}$/.test(merkleRootRaw)) {
+        throw new Error('merkle_root must be 64 hex chars');
+      }
+      // Reject the all-zero root explicitly — that's the on-chain sentinel for
+      // "open FCFS" which we're not shipping in v1. The merkle proof witness
+      // wouldn't verify against an all-zero root anyway, but rejecting up-front
+      // gives the issuer a clearer error than "claims can't verify."
+      if (/^0+$/.test(merkleRootRaw)) {
+        throw new Error('all-zero merkle root = open FCFS (deferred to v2). Paste the actual snapshot root from §5 above.');
+      }
+      const merkleRoot = hexToBytes(merkleRootRaw);
       if (!ensureBurnerBackedUp('Broadcast on-chain T_DROP (locks asset UTXOs summing to cap_amount)')) return;
       const need = await estimateSatsForOp('cxfer');
       if (!(await ensureSatsFunded(need, 'Broadcasting T_DROP'))) return;
@@ -19141,16 +19235,24 @@ function setupDropsForm() {
   // Expose so the Claim tab's parallel button can reuse the same list code.
   if (typeof window !== 'undefined') window._refreshOndropList = _refreshOndropList;
 
-  // Handle an issuer-side "Claim →" click. Open drops can broadcast directly.
-  // Merkle-gated drops route to the Claim tab for the eth_sig flow.
+  // Handle an issuer-side "Claim →" click. All v1 drops are merkle-gated
+  // (the issuer composer rejects all-zero merkle roots), so this routes
+  // recipients to the Claim tab where the eth_sig flow lives. Open-FCFS
+  // drops surface here only if they pre-existed v1 (from a non-dapp
+  // issuer); the toast tells the user the dapp UI can't claim those
+  // directly and points them to the manual claim flow.
   async function _onChainClaimClick(dropRevealTxid, merkleRootHex) {
     const merkleZero = /^0+$/.test(merkleRootHex || '');
-    if (!merkleZero) {
-      toast('merkle-gated drop — go to the Claim tab to sign with your ETH wallet first', '', 6000);
-      const claimTabBtn = $('.tab[data-tab="claim"]');
-      if (claimTabBtn) claimTabBtn.click();
+    if (merkleZero) {
+      toast('open-FCFS claim flow deferred to v2 (pending reclaim flow). Skip this drop.', '', 8000);
       return;
     }
+    toast('merkle-gated drop — go to the Claim tab to sign with your ETH wallet first', '', 6000);
+    const claimTabBtn = $('.tab[data-tab="claim"]');
+    if (claimTabBtn) claimTabBtn.click();
+    return;
+    // (unreachable; kept for the future open-FCFS reactivation path)
+    // eslint-disable-next-line no-unreachable
     if (!ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
     const need = await estimateSatsForOp('cxfer');
     if (!(await ensureSatsFunded(need, 'Claiming from on-chain pool'))) return;
@@ -20534,12 +20636,19 @@ function setupClaimTab() {
         const remaining = BigInt(d.remaining_amount || '0');
         const merkleZero = /^0+$/.test(d.merkle_root || '');
         const merkleBadge = merkleZero
-          ? '<span class="status-pill" style="background:var(--bg-warm);font-size:9px;">open FCFS</span>'
+          ? '<span class="status-pill" style="background:var(--bg-warm);font-size:9px;">open FCFS (v2)</span>'
           : '<span class="status-pill confirmed" style="font-size:9px;">merkle-gated</span>';
         const drainedBadge = remaining < per
           ? '<span class="status-pill" style="background:#fee;color:var(--red);border-color:var(--red);font-size:9px;">drained</span>'
           : '';
-        const canClaim = remaining >= per;
+        // Open-FCFS drops in v1: the dapp doesn't surface a one-click claim
+        // path because reclaim isn't wired (issuer can't recover unclaimed
+        // tokens, which makes them stranding-prone by design). Merkle-gated
+        // drops are the supported v1 flow.
+        const canClaim = remaining >= per && !merkleZero;
+        const buttonLabel = !canClaim
+          ? (merkleZero ? 'open FCFS — v2' : 'drained')
+          : `Claim ${escapeHtml(fmtAssetAmountPlain(per, decimals))} ${escapeHtml(ticker)}`;
         return `
           <div class="card" style="margin-bottom:8px;padding:12px;border:1px solid var(--ink);background:var(--bg);">
             <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
@@ -20548,7 +20657,7 @@ function setupClaimTab() {
                 <span class="muted" style="font-size:11px;"> · drop_id <code>${escapeHtml(shorten(d.drop_id, 10))}</code></span>
               </div>
               <button data-act="onclaim-go" data-drop-reveal-txid="${escapeHtml(d.drop_reveal_txid)}" data-merkle-root="${escapeHtml(d.merkle_root)}" ${canClaim ? '' : 'disabled'} class="primary" style="font-size:11px;">
-                ${canClaim ? `Claim ${escapeHtml(fmtAssetAmountPlain(per, decimals))} ${escapeHtml(ticker)}` : 'drained'}
+                ${buttonLabel}
               </button>
             </div>
             <div class="muted" style="margin-top:6px;font-size:11px;">
@@ -20570,18 +20679,14 @@ function setupClaimTab() {
   async function _onChainClaimFromClaimTab(dropRevealTxid, merkleRootHex) {
     const merkleZero = /^0+$/.test(merkleRootHex || '');
     if (merkleZero) {
-      // Open drop: claim directly
-      if (!ensureBurnerBackedUp('Claim from on-chain pool (you pay your own commit + reveal tx fees)')) return;
-      const need = await estimateSatsForOp('cxfer');
-      if (!(await ensureSatsFunded(need, 'Claiming from on-chain pool'))) return;
-      try {
-        const res = await buildAndBroadcastTDClaim({ dropRevealTxidHex: dropRevealTxid, witness: null });
-        toast(`Claim broadcast · reveal ${shorten(res.revealTxid, 10)}`, 'success');
-        setTimeout(() => _refreshOnChainClaimList(), 1500);
-      } catch (e) {
-        toast('claim failed: ' + e.message, 'error');
-        console.error(e);
-      }
+      // Open-FCFS claim flow is deferred to v2 — without the reclaim path
+      // wired through the dapp's validator + UTXO production, the issuer
+      // can't recover unclaimed tokens, so the feature is stranding-prone
+      // by design. Surfacing an unusable button would be a UX trap. The
+      // recipient can still construct + broadcast the envelope manually
+      // (the codec + worker are wired); we just don't offer a one-click
+      // UI path for it in v1.
+      toast('open-FCFS claim flow deferred to v2 (pending reclaim wire-up). Use a merkle-gated drop instead.', 'error', 8000);
       return;
     }
     // Merkle-gated: require existing _claimSigned with matching merkle_root,
@@ -25754,6 +25859,7 @@ async function renderPetchDiscover() {
             <span data-petch-rem-mints${capFull ? ' style="color:#a04030;font-weight:600;"' : ''}>${capFull ? 'minted out' : `${escapeHtml(remMints.toString())} mints remaining`}${!a.bootstrapped && !capFull ? ' (estimate)' : ''}</span>
             <span>·</span>
             <span>${limitDispEsc} per mint</span>
+            ${NET.name === 'mainnet' ? `<span>·</span><a href="https://www.tacitscan.io/assets/${escapeHtml(safeAid)}" target="_blank" rel="noopener noreferrer" style="color:var(--ink-mid);text-decoration:underline;" title="View this asset on tacitscan (independent block explorer)">tacitscan ↗</a>` : ''}
           </div>
           <div style="margin-top:8px;height:3px;background:var(--ink-faint);overflow:hidden;">
             <div data-petch-progress-bar style="height:100%;background:${capFull ? '#a04030' : 'var(--ink)'};width:${pct}%;transition:width 0.2s;"></div>
