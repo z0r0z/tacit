@@ -23,7 +23,13 @@ import {
   PMINT_CONFIRMATION_DEPTH, loadCanonicalPmints,
   refreshPetchProgress, refreshAndStorePetchProgress, readPetchProgress,
   markPetchDirty, petchProgressKey, petchDirtyKey,
+  pmintCommitmentOpens, pedersenCommit,
 } from '../worker/src/index.js';
+
+// Local hex helper — keeps the test free of a direct noble import so the
+// only crypto contract under test is the worker's own pedersenCommit output.
+const pointToCompressedHex = p =>
+  Array.from(p.toRawBytes(true)).map(b => b.toString(16).padStart(2, '0')).join('');
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -340,7 +346,11 @@ const PETCH = {
   etched_at_height: 50,
 };
 
-await test('snapshot: empty asset yields zero counts + bootstrapped:true', async () => {
+await test('snapshot: empty asset yields zero counts + scan-complete', async () => {
+  // Under the tightened bootstrapped semantic (issue #31), an empty asset
+  // with an open mint window and an unmet cap is NOT bootstrapped — the cap
+  // counter can still change with the next block. Only snapshot_scan_complete
+  // is true (the KV scan itself terminated cleanly).
   const env = { REGISTRY_KV: makeKvStub() };
   const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, PETCH);
   return snap.credited_count === 0
@@ -350,9 +360,27 @@ await test('snapshot: empty asset yields zero counts + bootstrapped:true', async
     && snap.last_credited_height === null
     && snap.last_credited_tx_index === null
     && snap.last_credited_txid === null
-    && snap.bootstrapped === true
+    && snap.snapshot_scan_complete === true
+    && snap.bootstrapped === false
+    && snap.cap_counter_final === false
     && snap.truncated === false
     && snap.schema_version === 1;
+});
+
+await test('snapshot: null tip refuses to refresh (returns null)', async () => {
+  // SPEC §5.9 depth-3 credit gate needs a tip. Without it, refreshing would
+  // either over-credit (count every confirmed mint regardless of depth) or
+  // silently misclassify. Better to keep the existing snapshot.
+  const env = { REGISTRY_KV: makeKvStub() };
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  const r = await refreshPetchProgress(env, 'signet', ASSET, null, PETCH);
+  return r === null;
+});
+
+await test('snapshot: null petch metadata refuses to refresh (returns null)', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const r = await refreshPetchProgress(env, 'signet', ASSET, 200, null);
+  return r === null;
 });
 
 await test('snapshot: mixed pending/credited matches loadCanonicalPmints', async () => {
@@ -422,6 +450,7 @@ await test('snapshot: readPetchProgress rejects wrong schema_version', async () 
   return r === null;
 });
 
+
 await test('snapshot: markPetchDirty writes dirty marker under petchDirtyKey', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
   await markPetchDirty(env, 'signet', ASSET);
@@ -459,6 +488,118 @@ await test('snapshot: last_credited advances past cap_overflow gaps', async () =
   return snap.last_credited_height === 101
     && snap.last_credited_txid === 'b'.repeat(64)
     && snap.cap_overflow_count === 1;
+});
+
+// ---------------------------------------------------------------------------
+// COMMITMENT OPENING — SPEC §5.9 step 5. T_PMINT envelopes ship public
+// (amount, blinding) so any indexer can verify pedersenCommit(amount, blinding)
+// equals the declared commitment. Issue #31 Problem #3: the cron + hint paths
+// previously skipped this check, so structurally-valid envelopes with forged
+// commitments would land in canonical KV and credit toward the cap. The dapp
+// always re-checked client-side, so a worker that skipped it was silently more
+// permissive than every wallet.
+// ---------------------------------------------------------------------------
+await test('pmintCommitmentOpens accepts a matching (amount, blinding) opening', () => {
+  const amount = 100n;
+  const blinding = 1n + (1n << 200n);   // non-trivial, comfortably below curve order
+  const C = pedersenCommit(amount, blinding);
+  const commitmentHex = pointToCompressedHex(C);
+  const blindingHex = blinding.toString(16).padStart(64, '0');
+  return pmintCommitmentOpens('100', blindingHex, commitmentHex) === true;
+});
+
+await test('pmintCommitmentOpens rejects a mismatched amount', () => {
+  // Build a valid (amount, blinding, C) tuple, then flip the amount. The
+  // commitment no longer opens to the new amount — gate must reject.
+  const blinding = 7n;
+  const C = pedersenCommit(100n, blinding);
+  const commitmentHex = pointToCompressedHex(C);
+  const blindingHex = blinding.toString(16).padStart(64, '0');
+  return pmintCommitmentOpens('200', blindingHex, commitmentHex) === false;
+});
+
+await test('pmintCommitmentOpens rejects a mismatched blinding', () => {
+  const C = pedersenCommit(100n, 7n);
+  const commitmentHex = pointToCompressedHex(C);
+  const wrongBlinding = '08' + '00'.repeat(31);
+  return pmintCommitmentOpens('100', wrongBlinding, commitmentHex) === false;
+});
+
+await test('pmintCommitmentOpens rejects a malformed compressed point', () => {
+  // 33-byte hex with a non-curve x coordinate. compressedPointFromHex throws,
+  // which the helper must swallow into a false return rather than propagating.
+  const malformed = '02' + 'ff'.repeat(32);   // not a valid x for secp256k1
+  return pmintCommitmentOpens('100', '07' + '00'.repeat(31), malformed) === false;
+});
+
+await test('pmintCommitmentOpens rejects an uncompressed point prefix', () => {
+  // 0x04 prefix would be uncompressed (65-byte form). The strict 33-byte parser
+  // rejects anything that isn't 02/03 prefix + 32-byte x.
+  const wrongPrefix = '04' + 'aa'.repeat(32);
+  return pmintCommitmentOpens('100', '07' + '00'.repeat(31), wrongPrefix) === false;
+});
+
+await test('pmintCommitmentOpens rejects oversized / undersized hex', () => {
+  // 32 bytes (too short) and 34 bytes (too long) must both reject without throwing.
+  const tooShort = '02' + 'aa'.repeat(31);
+  const tooLong  = '02' + 'aa'.repeat(33);
+  return pmintCommitmentOpens('100', '07' + '00'.repeat(31), tooShort) === false
+      && pmintCommitmentOpens('100', '07' + '00'.repeat(31), tooLong) === false;
+});
+
+// ---------------------------------------------------------------------------
+// BOOTSTRAPPED SEMANTIC — issue #31 acceptance criterion #3. `bootstrapped`
+// now means "cap counter is authoritative", not just "scan completed".
+// Sufficient conditions: capFull OR window-closed at tip.
+// ---------------------------------------------------------------------------
+await test('snapshot: capFull asset is bootstrapped=true', async () => {
+  // Cap = 200, limit = 100 → 2 mints fill the cap exactly. Both credit at
+  // depth ≥ 3. credited_amount === cap_amount triggers bootstrapped.
+  const env = { REGISTRY_KV: makeKvStub() };
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  env.REGISTRY_KV.set(pmintKey(ASSET, 101, 0, 'b'.repeat(64)), mintEvent(101, 0, 'b'.repeat(64)));
+  const fullPetch = { ...PETCH, cap_amount: '200' };
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, fullPetch);
+  return snap.credited_amount === '200'
+    && snap.cap_counter_final === true
+    && snap.bootstrapped === true;
+});
+
+await test('snapshot: window-closed asset is bootstrapped=true even if cap not full', async () => {
+  // mint_end_height=150, tip=200 > 150+3 → window closed, no future pmint can
+  // be valid → cap counter can no longer change → bootstrapped.
+  const env = { REGISTRY_KV: makeKvStub() };
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  const closedPetch = { ...PETCH, cap_amount: '10000', mint_end_height: 150 };
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, closedPetch);
+  return snap.credited_amount === '100'    // far short of cap
+    && snap.cap_counter_final === true
+    && snap.bootstrapped === true;
+});
+
+await test('snapshot: open-window mid-mint asset is bootstrapped=false', async () => {
+  // The FAIR-shape scenario — cap not yet filled, mint_end_height=0 (open).
+  // Even though the scan completed cleanly, the counter is NOT authoritative
+  // because the next block can credit more mints. Issue #31 motivating case.
+  const env = { REGISTRY_KV: makeKvStub() };
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 200, PETCH);
+  return snap.credited_amount === '100'
+    && snap.snapshot_scan_complete === true   // scan itself worked
+    && snap.cap_counter_final === false
+    && snap.bootstrapped === false;
+});
+
+await test('snapshot: window-closed but tip too shallow stays bootstrapped=false', async () => {
+  // tip = mint_end_height + 1 — the SPEC §5.9 confirmation-depth gate (3) means
+  // a pmint mined AT the end height isn't yet considered final until tip
+  // advances past end+confDepth. Helper guards against premature finality.
+  const env = { REGISTRY_KV: makeKvStub() };
+  env.REGISTRY_KV.set(pmintKey(ASSET, 100, 0, 'a'.repeat(64)), mintEvent(100, 0, 'a'.repeat(64)));
+  const closedPetch = { ...PETCH, cap_amount: '10000', mint_end_height: 150 };
+  const snap = await refreshPetchProgress(env, 'signet', ASSET, 151, closedPetch);
+  return snap.cap_counter_final === false
+    && snap.bootstrapped === false;
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);

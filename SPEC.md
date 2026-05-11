@@ -23,6 +23,8 @@ Operations:
 | `0x28` | `T_PMINT` | Permissionless mint event against a `T_PETCH` ancestor. Anyone may broadcast. Mints exactly `mint_limit` tokens; reveals `(amount, blinding)` so any chain reader can audit cumulative supply against the cap. §5.9. |
 | `0x29` | `T_DEPOSIT` | Lock a fixed-denomination UTXO into a shielded pool — appends a Poseidon leaf commitment `Poseidon(secret, ν, denomination)` to the pool's Merkle tree. Deposit itself is publicly attributable; unlinkability comes at withdraw time (§5.11). The same opcode with `denomination = 0` is `POOL_INIT` (creates a new pool). §5.10. |
 | `0x2A` | `T_WITHDRAW` | Anonymous mint from a shielded pool. Produces a fresh tacit UTXO of the pool's denomination at vout[0], gated on a Groth16 proof of unspent leaf membership. Withdraw recipient is unlinkable to any specific deposit. §5.11. |
+| `0x2B` | `T_DROP` | Lock existing supply of an asset into a public-claim pool. Spends one or more tacit UTXOs of `asset_id` summing to `cap_amount`; declares `(per_claim, cap_amount, merkle_root)` in the envelope. Supply-preserving — the deposited tokens are not destroyed, they shift from the depositor's wallet into the pool's accounting. Creates **no** tacit UTXO of the asset. §5.12. |
+| `0x2C` | `T_DCLAIM` | Permissionless claim event against a `T_DROP` ancestor. Anyone may broadcast (subject to the parent drop's optional Merkle-eligibility gate). Mints exactly `per_claim` tokens from the drop pool to `vout[0]`; reveals `(per_claim, blinding)` so chain readers can audit cumulative claims against the cap. Claimant pays their own Bitcoin tx fee. §5.13. |
 
 ## 2. Trust model
 
@@ -126,7 +128,7 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags **f
 | `tacit-etch-amount-v1` | Etcher's supply keystream (8B) | CETCH `amount_ct` |
 | `tacit-mint-amount-v1` | Issuer's mint keystream (8B) | T_MINT `amount_ct` |
 
-Other domain-separated v1 tags appear where they're used and are not part of this table: BIP-340 Schnorr signature-message tags (`tacit-kernel-v1` §5.2, `tacit-mint-v1` §5.3, `tacit-disclosure-v1` §5.6, `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` §5.7.6, `tacit-pool-init-v1` §5.10.1, `tacit-deposit-v1` §5.10, `tacit-withdraw-bind-v1` §5.11) — note `tacit-withdraw-bind-v1` is the SHA256 domain for the withdraw bind_hash, not a Schnorr message; a related HMAC keystream `tacit-axintent-blinding-v1` (§5.7.6); generator derivations `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1); the bulletproof Fiat-Shamir transcript domain `tacit-bp-v1` (§3.3); and off-chain coordination tags (`tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1}`) defined by their worker endpoints in §8 — these last live entirely outside the on-chain protocol.
+Other domain-separated v1 tags appear where they're used and are not part of this table: BIP-340 Schnorr signature-message tags (`tacit-kernel-v1` §5.2, `tacit-mint-v1` §5.3, `tacit-disclosure-v1` §5.6, `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` §5.7.6, `tacit-pool-init-v1` §5.10.1, `tacit-deposit-v1` §5.10, `tacit-withdraw-bind-v1` §5.11, `tacit-drop-v1` §5.12, `tacit-drop-reclaim-v1` §5.12.1) — note `tacit-withdraw-bind-v1` is the SHA256 domain for the withdraw bind_hash, not a Schnorr message; a related HMAC keystream `tacit-axintent-blinding-v1` (§5.7.6); generator derivations `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1); the bulletproof Fiat-Shamir transcript domain `tacit-bp-v1` (§3.3); and off-chain coordination tags (`tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1}`, `tacit-airdrop-claim-v1` reused by §5.13's canonical claim msg) defined by their worker endpoints in §8 — these last live entirely outside the on-chain protocol except where §5.13 explicitly reuses the airdrop leaf/node/claim-msg formats.
 
 **Endianness convention.** Throughout this spec, `txid_BE` denotes the txid in the byte order that `SHA256(serialized_tx)` natively produces — the same bytes a Bitcoin transaction puts on the wire when it references a previous output. This is the **reverse** of the displayed/RPC hex form (e.g. `getrawtransaction` output, block-explorer URLs). In wider Bitcoin documentation this on-wire order is often called "internal" or "LE"; tacit's `_BE` label is not standard but is fixed by the test vectors in §3.1 (and `tests/vectors.test.mjs`). Implementers should treat any `_BE` field as `reverseBytes(hexToBytes(displayed_txid))`. `_LE` on integer fields (e.g. `vout_LE`, `amount_LE`) means standard little-endian integer encoding.
 
@@ -325,6 +327,8 @@ The validator inspects bytes at `tx.vin[0].witness[1]` and tries to decode them 
 - **CETCH.** No kernel sig and no anchor sig — anyone can broadcast a CETCH-shaped envelope. This is intentional: there is no "the asset" to forge, because `asset_id = SHA256(reveal_txid_BE || 0_LE)` makes every well-formed CETCH a *new* asset whose identity is bound to the tx that carried it. Soundness for CETCH is just that its supply commitment carries a valid range proof; a forger has nothing to gain by re-using bytes from another etch since they would only be re-etching it under a fresh `asset_id`.
 - **T_PETCH.** Same posture as CETCH — no sig, no anchor. Forging gives a fresh `asset_id` under the forger's reveal-tx, not control of an existing one. Soundness here additionally requires `cap_amount % mint_limit == 0` and the height-window invariants (§5.8) so the mint state machine is well-defined.
 - **T_PMINT.** No signature. Soundness rests on three indexer-enforced invariants, all derivable from confirmed chain state: (1) `amount == petch.mint_limit`, (2) the T_PMINT's confirmed block height lies within the height window declared by the parent T_PETCH, and (3) the cumulative count of canonically-earlier valid T_PMINTs against the same `asset_id`, multiplied by `mint_limit`, is strictly less than `cap_amount`. Replay of a published T_PMINT envelope into a fresh commit/reveal pair is allowed but cost-symmetric with honest minting (§5.9 *Replay analysis*) — it consumes a cap slot at full Bitcoin-fee cost and produces a UTXO at the rewrapper's output script with the same opening; it does not steal the original miner's UTXO.
+- **T_DROP.** Kernel sig on the asset-side balance equation `Σ C_in − cap_amount · H == excess · G`, exactly as in T_DEPOSIT (§5.10). The Mimblewimble argument is identical: the depositor cannot produce a valid x-only signature unless the consumed inputs' committed amounts sum to `cap_amount`. Per-drop `(per_claim, cap_amount, merkle_root, expiry_height)` are envelope plaintext; the indexer fixes them at drop-creation time and they cannot subsequently mutate.
+- **T_DCLAIM.** No signature on the claim itself — the *eligibility witness* (eth_sig + merkle proof) IS the authentication when the parent drop sets a non-zero `merkle_root`. Soundness rests on four indexer-enforced invariants, all derivable from confirmed chain state: (1) `amount == drop.per_claim`, (2) `confirmed_height ≤ drop.expiry_height` (or no expiry if zero), (3) cumulative `(prior valid T_DCLAIMs against drop_id) × per_claim + amount ≤ cap_amount`, and (4) if `drop.merkle_root ≠ 0`, then the witness's merkle proof verifies against `(eth_address, per_claim, leaf_index)`, the eth_sig recovers `eth_address` from the EIP-191 hash of the canonical claim msg over `vout[0]`'s recipient pubkey, and `(drop_id, leaf_index)` is not already in the claimed-leaf set. Replay of a published T_DCLAIM envelope into a fresh commit/reveal pair is allowed but cost-symmetric with honest claiming (§5.13 *Replay analysis*).
 
 The Taproot script-path framing in §5 (`OP_FALSE OP_IF` envelope, NUMS internal key) describes the canonical encoding — what writers SHOULD produce — and is what makes the witness slot cheap and inert under Bitcoin consensus. Validators do not enforce it. A future revision that requires Taproot validation would not change protocol soundness; it would only narrow what a writer is allowed to produce.
 
@@ -406,6 +410,52 @@ validateOutpoint(txid, vout):
             [merkle_root, nullifier_hash, denomination,
              recipient_commitment.x, recipient_commitment.y, bind_hash]
         record nullifier_hash as spent
+        vout must == 0
+        return true
+    if envelope.opcode == T_DROP:
+        # See §5.12. Consumes asset inputs whose committed amounts sum to
+        # cap_amount; declares the drop pool's parameters; produces no tacit
+        # UTXO of the asset. The pool's accounting (cap_amount, per_claim,
+        # merkle_root, cumulative_claimed, claimed_leaf_set) is maintained
+        # by the cron-mode scan path; the recursive validator merely returns
+        # false so ancestors don't treat the reveal tx's vout 0 as a tacit
+        # asset UTXO.
+        return false
+    if envelope.opcode == T_DCLAIM:
+        # Parent lookup is a metadata read, not an ancestry recursion: T_DROP
+        # consumes the supply and produces no asset UTXO. The validator
+        # fetches the parent tx by drop_reveal_txid (carried in the T_DCLAIM
+        # payload) and decodes its envelope; drop_id = SHA256(drop_reveal_txid_BE
+        # || 0_LE) is the indexer's KV key, derived locally.
+        drop_id = SHA256(drop_reveal_txid_BE || 0_LE)
+        parent_tx = fetch(drop_reveal_txid)
+        parent_env = decode(parent_tx.vin[0].witness[1])
+        require parent_env != null and parent_env.opcode == T_DROP
+        drop = decodeDropPayload(parent_env.payload)
+        require drop != null and drop.per_claim > 0    # reject reclaim variant as a claim parent
+        verify asset_id == drop.asset_id
+        verify amount == drop.per_claim
+        let effective_end = drop.expiry_height ≠ 0 ? drop.expiry_height : ∞
+        verify confirmed_height ≤ effective_end
+        verify (count of canonically-earlier confirmed T_DCLAIMs against this
+                drop_id at depth ≥ 3) * per_claim + amount <= cap_amount
+        if drop.merkle_root != 0:
+            # Eligibility-gated drop. Witness MUST carry (recipient_pub,
+            # leaf_index, eth_address, eth_sig, merkle_proof). recipient_pub
+            # is the 33-byte compressed pubkey controlling vout[0]; the
+            # eth_sig binds them by signing the canonical claim msg over
+            # their tacit pubkey.
+            verify hash160(witness.recipient_pub) == vout[0].scriptpubkey[2:22]
+            verify merkle_proof(drop.merkle_root, witness.leaf_index,
+                                leaf(witness.eth_address, per_claim, witness.leaf_index))
+            verify eth_sig recovers witness.eth_address from EIP-191 hash of
+                canonical_claim_msg(drop.merkle_root, drop.network, asset_id,
+                                    witness.eth_address, witness.leaf_index, per_claim,
+                                    drop.ticker, drop.decimals, witness.recipient_pub)
+            verify (drop_id, witness.leaf_index) NOT in claimed_leaf_set
+            record (drop_id, witness.leaf_index) as claimed
+        verify 0 < blinding < curve_order
+        verify pedersenCommit(amount, blinding) == commitment
         vout must == 0
         return true
     return false
@@ -1135,9 +1185,256 @@ The `T_WITHDRAW` reveal tx produces one tacit UTXO at `vout[0]` with the `recipi
 
 **Caveat: post-withdraw identity if recipient wallet is publicly linked.** If the withdraw recipient's pubkey is publicly associated with a real-world identity (e.g., reused across known-person addresses), the chain-graph privacy of the *withdraw* is preserved but the *recipient* is identified as "received funds from this pool's mixer." For full anonymity, the recipient pubkey should be a fresh wallet whose history begins with the withdraw.
 
+### 5.12 T_DROP (`0x2B`) — public-claim pool over existing supply
+
+`T_DROP` consumes one or more existing tacit UTXOs of `asset_id` and locks the total committed amount into a **public-claim pool**. Anyone (subject to an optional Merkle-eligibility gate) may subsequently claim `per_claim` tokens from the pool via `T_DCLAIM` (§5.13) until the cumulative claimed amount reaches `cap_amount`, at which point the pool is drained.
+
+This is the existing-supply analog of `T_PETCH` (§5.8). `T_PETCH` creates *new* supply permissionlessly out of nothing under a declared cap; `T_DROP` *redistributes* already-issued supply under the same FCFS-with-cap model. The two complement each other: a CETCH-rooted asset can be airdropped via `T_DROP` without ever migrating to `T_PETCH` semantics, and a `T_PETCH`-rooted asset's mint output can be re-routed through `T_DROP` for downstream redistribution. Asset identity (`asset_id`) is invariant across both.
+
+`T_DROP` is **supply-preserving**, like `T_DEPOSIT` (§5.10): the deposited tokens are not destroyed and re-minted but rather shifted from the depositor's wallet into the pool's accounting, and reconstituted at each claimant's wallet by `T_DCLAIM`. Total `asset_id` supply is invariant across the full lifecycle.
+
+```
+T_DROP(1)
+|| asset_id(32)              the existing token's asset_id (CETCH, T_PETCH, T_MINT, or T_PMINT root)
+|| cap_amount(8)             u64 LE base units, > 0 — total pool supply, MUST equal Σ consumed input amounts
+|| per_claim(8)              u64 LE base units, > 0 — exact per-T_DCLAIM amount
+|| merkle_root(32)           eligibility gate; all-zeros = open FCFS, otherwise the root of an off-chain
+                             (eth_address, per_claim, leaf_index) merkle tree per the §8 airdrop helpers
+|| expiry_height(4)          u32 LE — 0 ⇒ no expiry; otherwise highest height at which T_DCLAIM is accepted
+|| ticker_len(1)             u8, 0..16 — convenience copy for claim-msg construction; MAY be 0 (deferred to drop's CETCH/T_PETCH ancestor)
+|| ticker(ticker_len)        UTF-8 (typically copied from the asset's parent etch envelope)
+|| decimals(1)               u8, 0..8 — convenience copy; same role as ticker
+|| asset_input_count(1)      u8, 1..16 — number of asset inputs being consumed
+|| kernel_sig(64)            Schnorr sig over kernel_msg (below)
+```
+
+`drop_id` is derived from the reveal tx the same way `asset_id` derives from CETCH (§4):
+```
+drop_id = SHA256(reveal_txid_BE || 0_LE)
+```
+
+Tx structure:
+```
+vin[0]     = commit P2TR     ← taproot script-path spend; envelope in witness[1]
+vin[1..N]  = asset UTXOs of asset_id summing to cap_amount   ← signed P2WPKH SIGHASH_ALL
+            (N = asset_input_count)
+vin[N+1..] = (optional) sats funding inputs                  ← signed P2WPKH SIGHASH_ALL
+vout[0]    = (no tacit UTXO of asset_id is created — pool marker; safe to spend as a regular Bitcoin output)
+vout[1..]  = sats change to depositor (regular P2WPKH)
+```
+
+Kernel message:
+```
+kernel_msg = SHA256(
+    "tacit-drop-v1"
+    || asset_id(32)
+    || cap_amount_LE(8)
+    || per_claim_LE(8)
+    || merkle_root(32)
+    || expiry_height_LE(4)
+    || asset_input_count(1)
+    || for each asset input i in [1..N]:
+         input_txid_BE(32) || input_vout_LE(4)
+)
+```
+
+The kernel sig verifies under `(Σ C_in − cap_amount · H).x_only()` where `C_in` is each asset input's parent-envelope commitment. Sign with `excess = Σ r_in` (the sum of input blindings — the depositor knows these because they're spending their own UTXOs). If the consumed inputs' committed amounts sum to exactly `cap_amount`, the H component vanishes and the residual `(Σ r_in) · G` is a valid x-only signing key; if they don't, the residual H component makes producing a valid x-only signature equivalent to breaking DLP for `H` w.r.t. `G` — the same Mimblewimble argument as §5.2 and §5.10. No additional blinding field appears in the envelope — `T_DROP` is supply-locking, not supply-creating, so unlike `T_PMINT` it has no output commitment whose opening would need to be published.
+
+Constraints (envelope-level; rejected as malformed if violated):
+- `cap_amount > 0`, `per_claim > 0`.
+- `cap_amount % per_claim == 0`. The cap MUST be reachable — a non-divisible cap leaves a residual that can never be claimed (same reasoning as `T_PETCH`'s `cap_amount % mint_limit` constraint, §5.8).
+- `asset_input_count ∈ [1, 16]`. The cap on the number of inputs bounds tx size and kernel-msg length; a depositor with more than 16 small UTXOs MUST first consolidate via CXFER.
+- `merkle_root` is 32 bytes; an all-zero value is the canonical "open FCFS, no eligibility gate" sentinel.
+- `expiry_height = 0` means no expiry. Non-zero values MUST satisfy `expiry_height > drop_reveal_height` (a drop cannot expire in its own block — symmetric with §5.8's deferred-start constraint).
+- If `ticker_len ≠ 0`, then `ticker_len ∈ [1, 16]` and `decimals ∈ [0, 8]`. If `ticker_len = 0`, the `decimals` byte is still present (set to 0) and the indexer / dapp resolves both fields from the asset's parent etch envelope at claim-msg construction time.
+
+Properties:
+- **No tacit UTXO is created.** Vout 0 of the `T_DROP` reveal tx is treated as a regular Bitcoin output by tacit; it carries no asset balance. `validateOutpoint(T_DROP_reveal_txid, 0)` returns `false`. The depositor typically uses vout 0 as the pool-marker dust slot and `vout[1+]` for sats change.
+- **No range proof.** `cap_amount` is plaintext, so range-proof bounding is unnecessary; the soundness invariant is `Σ C_in − cap_amount · H == excess · G`, which the kernel sig already enforces.
+- **Anyone may broadcast a `T_DROP` against any `asset_id`.** Posting a drop is permissionless at the protocol layer; the soundness gate is "the depositor controlled UTXOs summing to `cap_amount`." A depositor cannot publish a drop they cannot fund.
+- **Pool accounting is indexer-state.** Like `T_PETCH`, `T_DROP` is reached during ancestry walks only when a wallet accidentally treats the reveal tx's `vout[0]` as a tacit UTXO; the correct answer there is "not a tacit UTXO." Indexer cron records `T_DROP` metadata via a separate non-recursive scan path (parallel to T_PETCH's metadata path in §5.8).
+- **First-canonically-confirmed-wins per `drop_id`.** Two `T_DROP` envelopes computing the same `drop_id` are impossible by construction (`drop_id` derives from the reveal tx). Distinct `drop_id`s for the same `asset_id` coexist freely; a token can be airdropped across multiple concurrent campaigns.
+
+Soundness for T_DROP. Like CETCH and T_PETCH, T_DROP has no anchor sig — the kernel sig binds the asset inputs but not the commit_anchor, so rewrapping the same envelope bytes into a fresh commit/reveal pair is allowed in principle. However, the rewrapped tx would need to spend the same set of asset inputs (the kernel msg commits to each `(input_txid, input_vout)`); since those inputs are spent by the original `T_DROP`, the rewrap cannot confirm. Replay across asset_ids is prevented because `asset_id` is in the kernel msg. Replay against a different cap/per_claim/merkle_root is prevented because each of those fields is in the kernel msg.
+
+**Reorg sensitivity.** If a confirmed `T_DROP` is reorged out, all `T_DCLAIM`s referencing its `drop_id` become invalid — they reference a non-existent parent. The standard Bitcoin 3-confirmation rule (§5.9 *Confirmation depth*) applies symmetrically: indexers SHOULD NOT credit `T_DCLAIM` outputs whose parent `T_DROP` is at depth < 3. Drops in tip-state are surfaced as "pending" to UI layers; claims against them are likewise pending until depth crosses the threshold.
+
+#### 5.12.1 Reclaim path
+
+If `expiry_height ≠ 0` and the current chain height exceeds it, the depositor may reclaim any unclaimed remainder of the pool by broadcasting a follow-up `T_DROP_RECLAIM` envelope.
+
+Reclaim is not a separate opcode — it reuses `T_DROP` (`0x2B`) with `per_claim = 0` as the "reclaim variant" sentinel. The payload diverges:
+
+```
+T_DROP (RECLAIM shape, per_claim = 0)
+|| asset_id(32)
+|| cap_amount(8)             u64 LE — MUST equal the unclaimed remainder
+                                       = original_cap - (count_of_valid_T_DCLAIMs * original_per_claim)
+|| cap_blinding(32)          opening for the synthetic output commitment recipient_commitment
+|| per_claim(8) = 0          sentinel
+|| reclaim_drop_id(32)       reference to the original T_DROP being reclaimed
+|| reclaim_sig(64)           BIP-340 sig under depositor pubkey over reclaim_msg (below)
+```
+
+```
+reclaim_msg = SHA256(
+    "tacit-drop-reclaim-v1"
+    || reclaim_drop_id(32)
+    || asset_id(32)
+    || cap_amount_LE(8)
+)
+```
+
+The depositor pubkey is the x-only pubkey at the original `T_DROP`'s `vin[1].witness[1]` (the first asset input's P2WPKH controller). Reclaim produces one fresh tacit UTXO of `asset_id` at `vout[0]` with `pedersenCommit(cap_amount, cap_blinding)` opening to the unclaimed remainder. The pool is closed; subsequent `T_DCLAIM` envelopes against the original `drop_id` are rejected.
+
+Validator algorithm for the reclaim shape:
+```
+require reclaim_drop_id resolves to a confirmed T_DROP at depth ≥ 3
+require current_height > original_drop.expiry_height
+require cap_amount == (original_drop.cap_amount
+                      - count_of_valid_T_DCLAIMs(reclaim_drop_id) * original_drop.per_claim)
+require reclaim_sig verifies under (depositor_pubkey).x_only() over reclaim_msg
+verify pedersenCommit(cap_amount, cap_blinding) == output_commitment at vout[0]
+mark drop_id as closed
+return true   # produces a tacit UTXO at vout[0]
+```
+
+The reclaim-variant `T_DROP` is the **only** opcode the protocol allows to mint a fresh asset UTXO without a kernel sig over input commitments — and only because the pool's accumulated reserve is a function of indexer state (the original drop's commit minus the cumulative claims), not of a freshly-consumed input. Soundness here is symmetric with `T_WITHDRAW` (§5.11) where the asset value also comes from accumulated indexer state rather than a directly-consumed input.
+
+**Reclaim broadcast timing (UX gate, not consensus rule).** The depositor MUST wait for the chain to settle past `expiry_height` before broadcasting a reclaim. Specifically: the canonical T_DCLAIM count used in the equality check `cap_amount == original_cap - count_of_valid_T_DCLAIMs × per_claim` is recomputed at **reclaim's depth-3 acceptance**, not at broadcast time. A T_DCLAIM mined at `height = expiry_height` reaches depth 3 at `expiry_height + 2`; if Bob broadcasts a reclaim at `expiry_height + 1` declaring a count that excludes that pending T_DCLAIM, the reclaim is REJECTED when the canonical count overshoots Bob's declaration (no inflation: reject prevents overshoot). Bob can re-broadcast with the corrected count, but he has burned the failed-reclaim's fees. Recommended discipline: wait `current_height ≥ expiry_height + 2 * confirmation_depth = expiry_height + 6` before constructing the reclaim, so the canonical T_DCLAIM count is stable. The protocol enforces no minimum-wait; the rejection-on-mismatch is the safety mechanism, and the UX gate is purely fee-saving.
+
+### 5.13 T_DCLAIM (`0x2C`) — permissionless claim event
+
+```
+T_DCLAIM(1)
+|| asset_id(32)              must equal drop.asset_id
+|| drop_reveal_txid(32)      the on-chain txid of the originating T_DROP reveal tx;
+                             validator fetches parent envelope from this txid
+                             (same pattern as T_PMINT's `etch_txid`, §5.9)
+|| commitment(33)            Pedersen C = amount · H + blinding · G (compressed)
+|| amount(8)                 u64 LE — public; MUST equal drop.per_claim
+|| blinding(32)              public scalar — 0 < blinding < curve_order
+|| witness_len(2)            u16 LE — 0 for open drops, > 0 if drop.merkle_root ≠ 0
+|| witness(witness_len)      eligibility witness; see structure below
+```
+
+`drop_id` (the indexer's KV key, used for cap accounting and the claimed-leaf nullifier set) is derived as `SHA256(drop_reveal_txid_BE || 0_LE)` — the same construction as `asset_id` from a CETCH `etch_txid` (§4). The wire payload carries `drop_reveal_txid` (not `drop_id`) so the validator can fetch the parent T_DROP tx directly; `drop_id` is a per-indexer derivation.
+
+For Merkle-gated drops (`drop.merkle_root ≠ 0`), the witness is:
+```
+witness:
+|| recipient_pub(33)         compressed pubkey controlling vout[0]; MUST satisfy hash160(recipient_pub) == vout[0].scriptpubkey[2:22]
+|| leaf_index(4)             u32 LE — position of the claimant's leaf in the snapshot merkle tree
+|| eth_address(20)           the claimant's Ethereum address bound in the snapshot leaf
+|| eth_sig(65)               r(32) || s(32) || v(1), EIP-191 signature over canonical_claim_msg
+|| proof_len(1)              u8, 0..32 — number of 32-byte sibling hashes
+|| proof_path(proof_len * 32) sibling hashes, ordered leaf-up
+```
+
+`recipient_pub` is published in the witness rather than recovered from the reveal tx because Bitcoin P2WPKH outputs commit only to `HASH160(pubkey)`, not the pubkey itself — the validator needs the full pubkey to reconstruct the canonical claim msg and verify the eth_sig recovery. The `hash160(recipient_pub) == vout[0].scriptpubkey[2:22]` check binds the witness-supplied pubkey to the actual output script.
+
+For open drops (`drop.merkle_root == 0`), `witness_len` MUST be `0` and any non-zero witness payload is rejected as malformed.
+
+The canonical claim msg the eth_sig MUST sign is **byte-for-byte identical** to the §8 worker-mediated airdrop msg — including the `Drop: merkle_root_hex` line. The on-chain and off-chain flows share the same wire format so a recipient's eth_sig is interchangeable between them; an issuer who has accumulated signed tuples for the worker flow can reuse them directly in T_DCLAIM witnesses.
+
+```
+canonical_claim_msg = utf8(
+    "tacit airdrop claim v1\n"
+  + "\n"
+  + "Drop:    " + merkle_root_hex + "\n"
+  + "Network: " + ("mainnet" | "signet") + "\n"
+  + "Asset:   " + asset_id_hex + "\n"
+  + "Address: 0x" + eth_address_hex + "\n"
+  + "Leaf:    " + decimal(leaf_index) + "\n"
+  + "Amount:  " + display(per_claim, decimals) + " " + ticker
+                  + " (" + decimal(per_claim) + ")\n"
+  + "Tacit:   " + recipient_pub_compressed_hex + "\n"
+  + "\n"
+  + "By signing, you authorize the airdrop issuer to send the above amount of "
+  + ticker + " to the tacit pubkey listed."
+)
+```
+
+**Cross-pool sig replay note.** Because `merkle_root` (not `drop_id`) keys the canonical msg, a recipient's eth_sig is valid for *any* `T_DROP` using the same snapshot. This is intentional: if a depositor publishes two `T_DROP`s against the same snapshot (e.g., to top up an exhausted pool), the recipient is entitled to claim from both with one signing operation. Each `T_DROP` has its own `(drop_id, leaf_index)` nullifier set, so the leaf is independently single-use per drop — no double-claim within a single drop, but two drops against the same snapshot is by-design two distinct campaigns.
+
+The merkle leaf is computed exactly as in §8:
+```
+leaf = SHA256(
+    "tacit-airdrop-leaf-v1"
+    || eth_address(20)
+    || per_claim_LE(8)
+    || leaf_index_LE(4)
+)
+```
+
+Sort-pair sibling hashes (`SHA256("tacit-airdrop-node-v1" || min(L,R) || max(L,R))`) are also identical, so a snapshot built by the existing dapp airdrop tooling is directly usable as a `T_DROP` snapshot with no re-hashing.
+
+Validator checks:
+1. `asset_id == drop.asset_id`. Mismatch is rejected.
+2. Compute `drop_id = SHA256(drop_reveal_txid_BE || 0_LE)`. Fetch the parent tx at `drop_reveal_txid`; decode its `vin[0].witness[1]` envelope. The envelope MUST be `T_DROP` (opcode `0x2B`) with `per_claim ≠ 0` (the reclaim variant is not a valid `T_DCLAIM` parent). The drop must be at confirmation depth ≥ 3 (§5.12 reorg sensitivity).
+3. `amount == drop.per_claim`.
+4. If `drop.expiry_height ≠ 0`, the T_DCLAIM's confirmed block height MUST satisfy `confirmed_height ≤ drop.expiry_height`. Claims past expiry are rejected even if cap remains.
+5. Let `prior_count` be the count of valid T_DCLAIMs against this `drop_id` confirmed at canonically-earlier `(height, tx_index)` positions and at depth ≥ 3. Reject if `(prior_count + 1) × drop.per_claim > drop.cap_amount`.
+6. If `drop.merkle_root ≠ 0` (Merkle-gated):
+   - Read `recipient_pub` from the witness. Verify `hash160(recipient_pub) == vout[0].scriptpubkey[2:22]` (i.e., vout[0] is a P2WPKH paying the supplied pubkey). Reject on mismatch.
+   - Recompute `canonical_claim_msg` using `drop.merkle_root`, `drop.network`, `asset_id`, witness `eth_address`, witness `leaf_index`, `drop.per_claim`, `drop.ticker`, `drop.decimals`, and `witness.recipient_pub`. If `drop.ticker_len == 0`, resolve `ticker`/`decimals` from the asset's parent etch envelope.
+   - Recover `eth_addr_recovered` from `keccak256(EIP-191(canonical_claim_msg))` and witness `eth_sig`. Reject if `eth_addr_recovered ≠ witness.eth_address`.
+   - Recompute `leaf` from `(witness.eth_address, drop.per_claim, witness.leaf_index)`. Verify the merkle proof against `drop.merkle_root` using sort-pair sibling hashes.
+   - Reject if `(drop_id, witness.leaf_index)` is already in the claimed-leaf set.
+   - Record `(drop_id, witness.leaf_index)` as claimed.
+7. If `drop.merkle_root == 0` (open FCFS): no witness checks beyond `witness_len == 0`. Anti-sybil is by Bitcoin tx fees — each claim costs the claimant a real fee.
+8. Verify `0 < blinding < curve_order` and `pedersenCommit(amount, blinding) == commitment`.
+9. `vout = 0` of the reveal tx holds the new supply UTXO at `P2WPKH(hash160(recipient_pub))`.
+
+The new supply UTXO can subsequently be CXFER'd, T_AXFER'd, BURN'd, or DEPOSIT'd like any other holding.
+
+**Cap-overflow ordering.** Two T_DCLAIMs mined in the same block whose claims would collectively exceed the cap are ordered by `tx_index`: lower wins (identical to §5.9 *Cap-overflow ordering*). The losing claim's commit/reveal pair stays on chain and produces no spendable tacit UTXO. The claimant forfeits their Bitcoin tx fees and (if Merkle-gated) the `(drop_id, leaf_index)` is NOT recorded as claimed — they may re-attempt in a later block.
+
+**Why no Schnorr sig on the envelope itself.** `T_DCLAIM` carries no protocol-layer Schnorr signature, mirroring `T_PMINT` (§5.9). The validity gate is (a) for Merkle-gated drops, the eth_sig recovering the snapshot's eth_address from the canonical claim msg, and (b) for open drops, simply the cap counter. The recipient is implicit (whoever controls `vout[0]`'s output script) — claimants signal their tacit identity by funding the reveal tx from a wallet they control.
+
+Replay analysis. An attacker who copies a published `T_DCLAIM` envelope and rewraps its bytes into their own commit/reveal pair:
+
+- **Open drop case.** The rewrapped tx produces a fresh `vout[0]` UTXO at *their* output script with the same `(amount, blinding)` opening. This is not theft (the original claimant's UTXO at the original reveal tx's `vout[0]` is permanent), but it does consume one cap slot. Since reproducing a `T_DCLAIM` costs the same as honest claiming, there is no asymmetric grief vector — the rewrap path *is* the honest path under a different label. Identical posture to `T_PMINT` (§5.9).
+- **Merkle-gated drop case.** The witness's `canonical_claim_msg` binds `recipient_pubkey_compressed_hex`. An attacker who rewraps a published `T_DCLAIM` MUST also substitute the recipient pubkey at `vout[0]` (otherwise they're just paying fees to deposit dust to the original claimant). But substituting the recipient changes the canonical msg, which changes the EIP-191 hash, which changes what `eth_sig` recovers to. The rewrap fails step 6 (eth_addr_recovered ≠ witness.eth_address). The merkle gate is therefore robust to envelope-byte replay — a recipient's signed claim is bound to their tacit pubkey by the same mechanism that closes the relayer-substitution attack in `T_WITHDRAW` (§5.11.4).
+
+Cross-network replay is prevented by Bitcoin's network-level tx isolation (signet and mainnet `drop_id`s derive from different reveal txids) and additionally by the `Network:` field in the canonical claim msg.
+
+**Privacy disclosure.** Like `T_PMINT`, `T_DCLAIM` publishes `(amount, blinding)` in cleartext and `amount == drop.per_claim` is public. Cumulative claims are fully observable on chain (`cumulative_claimed = (count of valid T_DCLAIMs against drop_id) × per_claim`). For Merkle-gated drops, the witness additionally publishes `(eth_address, leaf_index)` per claim — the snapshot's eligibility list is already public information (anchored in the IPFS-pinned snapshot blob), so this leaks no new identity but does timestamp which leaves have been claimed when. Per-holder balances regain confidentiality on the first CXFER (§3.5 re-blinds outputs).
+
+Wallets SHOULD surface this distinction at drop-creation time so depositors understand the trade-off vs. the §8 worker-mediated airdrop (which preserves per-claim privacy until fulfilment broadcast, modulo the IPFS-pinned snapshot which is identical in both flows).
+
+**Smart-contract wallet limitation.** On-chain `T_DCLAIM` only supports recipients whose snapshot `eth_address` is controlled by an ECDSA private key (EOA wallets — MetaMask, Rainbow, Rabby, Coinbase Wallet, Trust, Frame). Smart-contract wallets (Safe, Argent, Ambire) that authenticate via ERC-1271's `isValidSignature(bytes32, bytes)` cannot have their sigs verified by a Bitcoin-context validator — ERC-1271 verification requires an `eth_call` to the contract, which is not available in the validator's execution environment. Smart-wallet recipients MUST use the §8 worker-mediated airdrop flow (which retains the ERC-1271 fallback path) for any drop whose snapshot includes their address. Issuers SHOULD either filter smart-contract wallets out of merkle-gated `T_DROP` snapshots, or publish dual coverage (a `T_DROP` for EOA recipients + a worker-mediated airdrop offering the same merkle root for smart-wallet recipients).
+
+#### 5.13.1 Soundness
+
+| # | Invariant | Enforcement |
+|---|---|---|
+| 1 | **Conservation** | The drop pool's reserve = `cap_amount - cumulative_claimed`. `T_DROP` kernel sig binds inputs summing to `cap_amount`. Each `T_DCLAIM` decrements the reserve by exactly `per_claim`. `T_DROP_RECLAIM` (5.12.1) consumes the remainder. The cumulative invariant `(claims × per_claim) + (reclaim_amount) ≤ cap_amount` holds across the pool's lifecycle. |
+| 2 | **Cap enforcement** | Step 5 of the T_DCLAIM validator: `(prior_count + 1) × per_claim ≤ cap_amount`. Indexers compute `prior_count` only over T_DCLAIMs at depth ≥ 3. |
+| 3 | **No double-claim (Merkle-gated)** | The `(drop_id, leaf_index)` tuple acts as the nullifier — analogous to `nullifier_hash` in `T_WITHDRAW`. The indexer maintains a per-`drop_id` claimed-leaf set; step 6 rejects reuse. |
+| 4 | **No relayer substitution (Merkle-gated)** | `recipient_pub` is bound into the canonical claim msg; substituting recipient invalidates the eth_sig recovery (replay analysis above). |
+| 5 | **Output validity** | Pedersen binding: `pedersenCommit(amount, blinding) == commitment`. `amount` and `blinding` are both public; the commitment field is what subsequent CXFER / BURN walks consume as an input commitment for kernel-sig verification (§5.2 / §5.4). |
+| 6 | **Reorg safety** | All cap-counter / claimed-leaf-set updates run at depth ≥ 3. On a reorg, indexers MUST re-run steps 2 and 5 over the new canonical chain. A previously-credited `T_DCLAIM` may become invalid under new ordering and its UTXO MUST be revoked from holdings. Stronger reorg sensitivity than CETCH+T_MINT, matching `T_PMINT`'s posture. |
+
+#### 5.13.2 Comparison: T_DCLAIM vs. §8 worker-mediated airdrop
+
+Both flows use the same merkle-leaf schema (`tacit-airdrop-leaf-v1`), the same node-hash schema (`tacit-airdrop-node-v1`), and the same canonical claim msg (modulo `drop_id` vs. `merkle_root` in the `Drop:` line). A snapshot built by the existing dapp Drops-tab tooling is directly usable in either flow.
+
+|  | §8 worker-mediated airdrop | §5.12/§5.13 T_DROP/T_DCLAIM |
+|---|---|---|
+| **Issuer cost (N=1000 mainnet)** | ~$1–1.4K (143 batched CXFERs × 7 recipients each) | ~$10 (one T_DROP tx) |
+| **Recipient cost** | $0 (issuer pays) | ~$5–10/claim (claimant pays own reveal) |
+| **Self-service** | No — recipients submit claims to the worker queue and wait for the issuer to fulfil | Yes — claimants self-broadcast `T_DCLAIM` without issuer involvement |
+| **Eligibility gate** | Off-chain (issuer verifies merkle + eth_sig before broadcasting CXFER) | On-chain (indexer verifies merkle + eth_sig as part of `T_DCLAIM` validation) |
+| **Privacy of claim list** | Tuples sit in worker queue until fulfilled; chain only reveals the final batched CXFER amounts under Pedersen | Each `T_DCLAIM` publishes `(eth_address, leaf_index)` and `(per_claim, blinding)` in plaintext, identical to T_PMINT's posture |
+| **Trust model** | Worker is dumb-storage; canonical truth is the issuer's batched CXFERs | Pure protocol; no worker trust needed for claim validity |
+| **When to choose** | Small-to-medium drops where issuer wants to control timing, keep per-claim amounts private until fulfilment, or batch into fewer txs | Large public drops, fair-launch-style distributions of existing supply, or any scenario where issuer being online for N fulfilments is impractical |
+
+The two flows coexist: an issuer may publish both an §8 announcement and a `T_DROP` against the same snapshot, letting recipients pick which path they prefer. The snapshot, merkle root, and eth_sig wire formats are identical across both, so there is no per-flow re-tooling.
+
 ## 6. Recovery semantics
 
-A wallet with only its **private key** can recover its full balance from chain data alone for every UTXO produced by the **on-chain protocol layer** (CETCH / CXFER / T_MINT / T_BURN / T_PMINT, including targeted §5.7.3 T_AXFER settlements). Atomic-intent recipient UTXOs are the one exception — see §5.7.6 "Recovery model exception" — because their recipient blinding is a uniform-random scalar fixed at intent-publish time rather than ECDH-derived; recovery from chain + privkey alone is impossible by design, and recovery falls back to local opening cache or re-fetching the encrypted fulfilment from the worker. T_PMINT recovery is the *easiest* of all paths because `(amount, blinding)` are published in the envelope rather than derived — no HMAC keystream, no ECDH (§5.9 *Recovery semantics*).
+A wallet with only its **private key** can recover its full balance from chain data alone for every UTXO produced by the **on-chain protocol layer** (CETCH / CXFER / T_MINT / T_BURN / T_PMINT / T_DCLAIM, including targeted §5.7.3 T_AXFER settlements and reclaim-shape T_DROP outputs). Atomic-intent recipient UTXOs are the one exception — see §5.7.6 "Recovery model exception" — because their recipient blinding is a uniform-random scalar fixed at intent-publish time rather than ECDH-derived; recovery from chain + privkey alone is impossible by design, and recovery falls back to local opening cache or re-fetching the encrypted fulfilment from the worker. T_PMINT and T_DCLAIM recovery are the *easiest* of all paths because `(amount, blinding)` are published in the envelope rather than derived — no HMAC keystream, no ECDH (§5.9 *Recovery semantics*, §5.13 *Privacy disclosure*).
 
 For each UTXO the wallet owns:
 
@@ -1148,6 +1445,8 @@ For each UTXO the wallet owns:
 5. **As own minted supply (T_MINT)**: Try `tacit-mint-blind-v1` + `tacit-mint-amount-v1` against the mint commit-input anchor.
 6. **As T_PMINT-minted supply (own or other)**: Read `(amount, blinding)` directly from the T_PMINT envelope. No derivation required — both fields are public. The wallet recognizes ownership by matching its pubkey's HASH160 against `vout[0].scriptpubkey`. Confirm `pedersenCommit(amount, blinding) == commitment` to reject tampered envelopes (the same authenticity check as paths 2–5).
 7. **As mixer-pool withdrawal (T_WITHDRAW)**: Read `denomination` and `r_leaf` directly from the envelope (both are public — same recovery pattern as T_PMINT). Verify `pedersenCommit(denomination, r_leaf) == on_chain_commitment` to reject tampered envelopes. Recovery works identically whether the withdrawer === recipient or not — the public `r_leaf` makes share-links unnecessary.
+8. **As T_DCLAIM-claimed supply**: Read `(amount, blinding)` directly from the envelope (both public — identical recovery pattern to T_PMINT, §5.13). The wallet recognizes ownership by matching its pubkey's HASH160 against `vout[0].scriptpubkey`. Verify `pedersenCommit(amount, blinding) == commitment` to reject tampered envelopes. For Merkle-gated drops the witness's `(eth_address, leaf_index)` is also on chain, but those fields are not required for amount-side recovery — only for re-verifying eligibility post-hoc.
+9. **As T_DROP reclaim output**: Read `(cap_amount, cap_blinding)` from the reclaim-shape envelope payload (§5.12.1). Same opening primitive as paths 6–8.
 
 If none of the paths produce a valid `(amount, blinding)` opening, the UTXO is recorded as a **"ghost"** — the wallet sees that it owns the BTC sat output but cannot decrypt the asset amount. This indicates either a legacy/incompatible sender, a misuse, or an atomic-intent recipient whose local cache and remote encrypted fulfilment are both unavailable; it does not represent loss of value (the BTC sats are still spendable by the wallet privkey).
 
@@ -1272,6 +1571,7 @@ Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, T
 - **Network-scoped wallet keys.** v1 stores signet and mainnet identities under separate `localStorage` keys (`tacit-wallet-v1:signet`, `tacit-wallet-v1:mainnet`, plus `…:by:<extAddr>` variants when locally bound to an external wallet). Compromise of a signet/test key does NOT compromise mainnet — they're independent secrets generated on first use of each network. The trade-off is that switching from signet to mainnet (or vice versa) presents a fresh empty wallet by default; users who want to carry an identity across networks can manually `Import key` on the destination network. Older builds used a single un-namespaced `tacit-wallet-v1`; the dApp does not auto-migrate, so existing data under that key remains accessible only via manual import.
 - **T_PMINT reorg sensitivity.** Cap correctness for T_PETCH-rooted assets requires complete, canonically-ordered T_PMINT history. Two T_PMINTs near tip can each look valid in isolation yet collectively violate the cap when canonically ordered. v1 mitigates by requiring confirmation depth ≥ 3 for cap-credit (§5.9 *Confirmation depth*); the deeper the threshold, the smaller the reorg-revocation surface but the slower mint UX. Wallets MUST surface "pending" T_PMINT UTXOs as non-spendable until the depth threshold crosses, and MUST handle revocation events when an indexer reverts a previously-credited T_PMINT under new canonical ordering. CETCH+T_MINT assets are unaffected — credit there depends only on the issuer's signature, not on aggregate chain state.
 - **Reference-indexer KV.list cap.** The reference worker uses a single un-paginated `KV.list({ limit: 1000 })` call in three load-bearing places: (a) `loadCanonicalPmints` per asset, (b) the `/pools` aggregate endpoint's per-pool leaf + nullifier counts, and (c) the `/pools/:asset_id/:denom` detail endpoint's leaf list and nullifier list. An asset that accrues more than 1000 confirmed T_PMINTs will under-count `cumulative_minted`; a pool that accrues more than 1000 deposits or 1000 withdrawals will return a truncated state to clients that consume the worker view. v1 ships with this cap; deployments expecting > 1000 mints on a single asset OR planning to operate a pool past 1000 leaves/nullifiers should patch the relevant call sites to follow the `list_complete` cursor before relying on the worker's aggregate view. The cap is operational, not cryptographic — the dapp's local `scanPools` reconstructs from chain regardless, so a worker truncation degrades freshness/UX, not soundness.
+- **T_DROP / T_DCLAIM (§5.12–§5.13) — spec drafted, implementation pending.** Wire format, validator pseudocode, soundness invariants, and the §8-airdrop interop story are specified. Implementation deliverables for v1: (a) dapp envelope encode/decode for both opcodes mirroring the existing T_PETCH/T_PMINT codec; (b) recursive-validator branches in `dapp/tacit.js` `validateOutpoint`; (c) indexer (worker cron) drop-metadata KV layout `drop:<network>:<drop_id>` parallel to `petch:<network>:<asset_id>`, plus `dclaim:<network>:<drop_id>:<height>:<tx_index>:<txid>` for cap accounting parallel to `pmint:…`; (d) dapp UI for issuer create-drop composer + recipient discovery/claim card; (e) `T_DROP_RECLAIM` flow; (f) test suite covering happy-path claims, cap-overflow ordering, expiry, merkle-gate eligibility, double-claim-via-leaf-index, replay across drop_ids, and reorg revocation. The opcodes are reserved in this version of the spec; v1 indexers without §5.12/§5.13 support MUST reject (return `false` from `validateOutpoint`) for opcodes `0x2B` and `0x2C` rather than silently accepting them under a default branch — soft-fork forward-compatibility is preserved because the unknown-opcode path is already `return false` per §5.5.
 - **Mixer pool — production, Phase 2 ceremony finalized.** Wire format (§5.10–§5.11), worker indexing (`/pools` + canonical leaf order + nullifier set + reorg-safety depth gate per `MIXER_DEPOSIT_CONFIRMATION_DEPTH`), dApp UI (Mixer tab), Groth16 prove + verify pipeline (snarkjs vendored at `vendor/tacit-mixer.min.js`), `T_DEPOSIT` / `T_WITHDRAW` broadcast flows, and indexer-determinism gates (worker `bind_hash` recompute mirrors dapp's per §11) are all shipped and tested (108 tests across 7 mixer test files; see `tests/mixer*.test.mjs`). Verifier soundness is closed per §3.8 + §5.11.1.
 
   **Both ceremony prerequisites are resolved:**

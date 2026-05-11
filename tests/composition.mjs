@@ -331,6 +331,8 @@ const T_CETCH = 0x21;
 const T_CXFER = 0x23;
 const T_MINT  = 0x24;
 const T_BURN  = 0x25;
+const T_DROP   = 0x2B;   // public-claim pool over existing supply (SPEC §5.12)
+const T_DCLAIM = 0x2C;   // permissionless claim event against a T_DROP ancestor (SPEC §5.13)
 
 const MINT_AUTH_NONE = new Uint8Array(32);
 const _isZeroAuth = b => { for (let i = 0; i < 32; i++) if (b[i] !== 0) return false; return true; };
@@ -509,6 +511,257 @@ function decodeCXferPayload(payload) {
   if (p + rpLen !== payload.length) return null;
   const rangeproof = payload.slice(p, p + rpLen);
   return { kind: 'cxfer', assetId, kernelSig, outputs, rangeproof };
+}
+
+// ============== T_DROP / T_DCLAIM (SPEC §5.12 / §5.13) ==============
+// Wire-format mirror of dapp/tacit.js — kept in sync via a dedicated parity
+// test. Any change to the byte layout below MUST also update the dapp side
+// and the test vectors in tests/airdrop.test.mjs.
+//
+// T_DROP payload — standard shape (per_claim > 0):
+//   T_DROP(1) || asset_id(32) || cap_amount_LE(8) || per_claim_LE(8) ||
+//   merkle_root(32) || expiry_height_LE(4) || ticker_len(1) || ticker(tlen) ||
+//   decimals(1) || asset_input_count(1) || kernel_sig(64)
+//
+// Reclaim shape (per_claim = 0 sentinel; SPEC §5.12.1):
+//   T_DROP(1) || asset_id(32) || cap_amount_LE(8) || per_claim_LE(8) = 0 ||
+//   reclaim_drop_id(32) || reclaim_sig(64) || cap_blinding(32)
+function encodeCDropPayload({ assetId, capAmount, perClaim, merkleRoot, expiryHeight, ticker, decimals, assetInputCount, kernelSig }) {
+  if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
+  const cap = BigInt(capAmount);
+  const per = BigInt(perClaim);
+  if (cap <= 0n || cap >= (1n << 64n)) throw new Error('cap_amount out of u64');
+  if (per <= 0n || per >= (1n << 64n)) throw new Error('per_claim out of u64');
+  if (cap % per !== 0n) throw new Error('cap_amount must be divisible by per_claim');
+  if (!(merkleRoot instanceof Uint8Array) || merkleRoot.length !== 32) throw new Error('merkle_root 32');
+  const exp = Number(expiryHeight);
+  if (!Number.isInteger(exp) || exp < 0 || exp > 0xffffffff) throw new Error('expiry_height u32');
+  const tk = ticker ? new TextEncoder().encode(String(ticker)) : new Uint8Array(0);
+  if (tk.length > 16) throw new Error('ticker too long');
+  const dec = Number(decimals) || 0;
+  if (!Number.isInteger(dec) || dec < 0 || dec > 8) throw new Error('decimals 0..8');
+  const aic = Number(assetInputCount);
+  if (!Number.isInteger(aic) || aic < 1 || aic > 16) throw new Error('asset_input_count 1..16');
+  if (!(kernelSig instanceof Uint8Array) || kernelSig.length !== 64) throw new Error('kernel_sig 64');
+  const capLE = new Uint8Array(8);
+  { const v = new DataView(capLE.buffer); v.setUint32(0, Number(cap & 0xffffffffn), true); v.setUint32(4, Number((cap >> 32n) & 0xffffffffn), true); }
+  const perLE = new Uint8Array(8);
+  { const v = new DataView(perLE.buffer); v.setUint32(0, Number(per & 0xffffffffn), true); v.setUint32(4, Number((per >> 32n) & 0xffffffffn), true); }
+  const expLE = new Uint8Array(4); new DataView(expLE.buffer).setUint32(0, exp >>> 0, true);
+  return concatBytes(
+    new Uint8Array([T_DROP]), assetId, capLE, perLE, merkleRoot, expLE,
+    new Uint8Array([tk.length]), tk, new Uint8Array([dec]),
+    new Uint8Array([aic]), kernelSig,
+  );
+}
+
+function encodeCDropReclaimPayload({ assetId, capAmount, reclaimDropId, reclaimSig, capBlinding }) {
+  if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
+  const cap = BigInt(capAmount);
+  if (cap <= 0n || cap >= (1n << 64n)) throw new Error('cap_amount out of u64');
+  if (!(reclaimDropId instanceof Uint8Array) || reclaimDropId.length !== 32) throw new Error('reclaim_drop_id 32');
+  if (!(reclaimSig instanceof Uint8Array) || reclaimSig.length !== 64) throw new Error('reclaim_sig 64');
+  if (!(capBlinding instanceof Uint8Array) || capBlinding.length !== 32) throw new Error('cap_blinding 32');
+  let bNonZero = false;
+  for (let i = 0; i < 32; i++) if (capBlinding[i] !== 0) { bNonZero = true; break; }
+  if (!bNonZero) throw new Error('cap_blinding must be non-zero');
+  const capLE = new Uint8Array(8);
+  { const v = new DataView(capLE.buffer); v.setUint32(0, Number(cap & 0xffffffffn), true); v.setUint32(4, Number((cap >> 32n) & 0xffffffffn), true); }
+  const perZeroLE = new Uint8Array(8);
+  return concatBytes(
+    new Uint8Array([T_DROP]), assetId, capLE, perZeroLE,
+    reclaimDropId, reclaimSig, capBlinding,
+  );
+}
+
+function decodeCDropPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 152) return null;
+  if (payload[0] !== T_DROP) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const capView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const capAmount = (BigInt(capView.getUint32(4, true)) << 32n) | BigInt(capView.getUint32(0, true));
+  p += 8;
+  const perView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const perClaim = (BigInt(perView.getUint32(4, true)) << 32n) | BigInt(perView.getUint32(0, true));
+  p += 8;
+  if (capAmount <= 0n) return null;
+  if (perClaim === 0n) {
+    if (payload.length !== 1 + 32 + 8 + 8 + 32 + 64 + 32) return null;
+    const reclaimDropId = payload.slice(p, p + 32); p += 32;
+    const reclaimSig = payload.slice(p, p + 64); p += 64;
+    const capBlinding = payload.slice(p, p + 32); p += 32;
+    if (p !== payload.length) return null;
+    let bNonZero = false;
+    for (let i = 0; i < 32; i++) if (capBlinding[i] !== 0) { bNonZero = true; break; }
+    if (!bNonZero) return null;
+    return { kind: 'cdrop-reclaim', assetId, capAmount, reclaimDropId, reclaimSig, capBlinding };
+  }
+  if (perClaim >= (1n << 64n)) return null;
+  if (capAmount % perClaim !== 0n) return null;
+  const merkleRoot = payload.slice(p, p + 32); p += 32;
+  const expView = new DataView(payload.buffer, payload.byteOffset + p, 4);
+  const expiryHeight = expView.getUint32(0, true); p += 4;
+  if (p + 1 > payload.length) return null;
+  const tlen = payload[p]; p += 1;
+  if (tlen > 16) return null;
+  if (p + tlen + 1 + 1 + 64 > payload.length) return null;
+  let ticker = null;
+  if (tlen > 0) {
+    try { ticker = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + tlen)); } catch { return null; }
+  }
+  p += tlen;
+  const decimals = payload[p]; p += 1;
+  if (decimals > 8) return null;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount < 1 || assetInputCount > 16) return null;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+  return { kind: 'cdrop', assetId, capAmount, perClaim, merkleRoot, expiryHeight, ticker, decimals, assetInputCount, kernelSig };
+}
+
+// T_DCLAIM payload:
+//   T_DCLAIM(1) || asset_id(32) || drop_reveal_txid(32) || commitment(33) ||
+//   amount_LE(8) || blinding(32) || witness_len_LE(2) || witness(witness_len)
+//
+// drop_reveal_txid is the raw txid of the originating T_DROP reveal tx.
+// "drop_id" (the KV key, derived as SHA256(drop_reveal_txid_BE || 0_LE)) is
+// a per-indexer derivation; the wire format does NOT carry it.
+//
+// Witness (merkle-gated): recipient_pub(33) || leaf_index_LE(4) ||
+//   eth_address(20) || eth_sig(65) || proof_len(1) || proof_path(proof_len*32)
+// Witness (open): empty (witness_len == 0).
+function encodeCDClaimPayload({ assetId, dropRevealTxid, commitment, amount, blinding, witness }) {
+  if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
+  if (!(dropRevealTxid instanceof Uint8Array) || dropRevealTxid.length !== 32) throw new Error('drop_reveal_txid 32');
+  if (!(commitment instanceof Uint8Array) || commitment.length !== 33) throw new Error('commitment 33');
+  const amt = BigInt(amount);
+  if (amt <= 0n || amt >= (1n << 64n)) throw new Error('amount out of u64');
+  if (!(blinding instanceof Uint8Array) || blinding.length !== 32) throw new Error('blinding 32');
+  let bNonZero = false;
+  for (let i = 0; i < 32; i++) if (blinding[i] !== 0) { bNonZero = true; break; }
+  if (!bNonZero) throw new Error('blinding must be non-zero');
+  const witnessBytes = witness instanceof Uint8Array ? witness : new Uint8Array(0);
+  if (witnessBytes.length > 65535) throw new Error('witness too large');
+  const amtLE = new Uint8Array(8);
+  { const v = new DataView(amtLE.buffer); v.setUint32(0, Number(amt & 0xffffffffn), true); v.setUint32(4, Number((amt >> 32n) & 0xffffffffn), true); }
+  const wLen = new Uint8Array(2); new DataView(wLen.buffer).setUint16(0, witnessBytes.length, true);
+  return concatBytes(
+    new Uint8Array([T_DCLAIM]), assetId, dropRevealTxid, commitment, amtLE, blinding,
+    wLen, witnessBytes,
+  );
+}
+
+function encodeCDClaimWitness({ recipientPub, leafIndex, ethAddress, ethSig, proofPath }) {
+  if (!(recipientPub instanceof Uint8Array) || recipientPub.length !== 33) throw new Error('recipient_pub 33');
+  if (recipientPub[0] !== 0x02 && recipientPub[0] !== 0x03) throw new Error('recipient_pub must start with 02 or 03');
+  if (!Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex > 0xffffffff) throw new Error('leaf_index u32');
+  if (!(ethAddress instanceof Uint8Array) || ethAddress.length !== 20) throw new Error('eth_address 20');
+  if (!(ethSig instanceof Uint8Array) || ethSig.length !== 65) throw new Error('eth_sig 65');
+  if (!Array.isArray(proofPath)) throw new Error('proof_path must be an array');
+  if (proofPath.length > 32) throw new Error('proof_path too deep');
+  for (const s of proofPath) {
+    if (!(s instanceof Uint8Array) || s.length !== 32) throw new Error('proof_path entries must be 32-byte');
+  }
+  const liLE = new Uint8Array(4); new DataView(liLE.buffer).setUint32(0, leafIndex >>> 0, true);
+  return concatBytes(
+    recipientPub, liLE, ethAddress, ethSig,
+    new Uint8Array([proofPath.length]),
+    ...proofPath,
+  );
+}
+
+function decodeCDClaimPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 140) return null;
+  if (payload[0] !== T_DCLAIM) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const dropRevealTxid = payload.slice(p, p + 32); p += 32;
+  const commitment = payload.slice(p, p + 33); p += 33;
+  const amtView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const amount = (BigInt(amtView.getUint32(4, true)) << 32n) | BigInt(amtView.getUint32(0, true));
+  p += 8;
+  if (amount <= 0n || amount >= (1n << 64n)) return null;
+  const blinding = payload.slice(p, p + 32); p += 32;
+  let bNonZero = false;
+  for (let i = 0; i < 32; i++) if (blinding[i] !== 0) { bNonZero = true; break; }
+  if (!bNonZero) return null;
+  const wView = new DataView(payload.buffer, payload.byteOffset + p, 2);
+  const witnessLen = wView.getUint16(0, true); p += 2;
+  if (p + witnessLen !== payload.length) return null;
+  const witnessBytes = payload.slice(p, p + witnessLen); p += witnessLen;
+  let witness = null;
+  if (witnessLen > 0) {
+    const headerSize = 33 + 4 + 20 + 65 + 1;
+    if (witnessLen < headerSize) return null;
+    let wp = 0;
+    const recipientPub = witnessBytes.slice(wp, wp + 33); wp += 33;
+    if (recipientPub[0] !== 0x02 && recipientPub[0] !== 0x03) return null;
+    const liView = new DataView(witnessBytes.buffer, witnessBytes.byteOffset + wp, 4);
+    const leafIndex = liView.getUint32(0, true); wp += 4;
+    const ethAddress = witnessBytes.slice(wp, wp + 20); wp += 20;
+    const ethSig = witnessBytes.slice(wp, wp + 65); wp += 65;
+    const proofLen = witnessBytes[wp]; wp += 1;
+    if (proofLen > 32) return null;
+    if (wp + proofLen * 32 !== witnessBytes.length) return null;
+    const proofPath = [];
+    for (let i = 0; i < proofLen; i++) {
+      proofPath.push(witnessBytes.slice(wp, wp + 32));
+      wp += 32;
+    }
+    witness = { recipientPub, leafIndex, ethAddress, ethSig, proofPath };
+  }
+  return { kind: 'cdclaim', assetId, dropRevealTxid, commitment, amount, blinding, witness };
+}
+
+function dropIdFromRevealTxid(revealTxidHex) {
+  const txidBE = (() => { const b = hexToBytes(revealTxidHex); return b.reverse ? b.reverse() : new Uint8Array([...b].reverse()); })();
+  const voutLE = new Uint8Array(4);
+  return sha256(concatBytes(txidBE, voutLE));
+}
+
+function dropKernelMsg({ assetId, capAmount, perClaim, merkleRoot, expiryHeight, assetInputCount, assetInputs }) {
+  if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
+  if (!(merkleRoot instanceof Uint8Array) || merkleRoot.length !== 32) throw new Error('merkle_root 32');
+  const cap = BigInt(capAmount);
+  const per = BigInt(perClaim);
+  const capLE = new Uint8Array(8);
+  { const v = new DataView(capLE.buffer); v.setUint32(0, Number(cap & 0xffffffffn), true); v.setUint32(4, Number((cap >> 32n) & 0xffffffffn), true); }
+  const perLE = new Uint8Array(8);
+  { const v = new DataView(perLE.buffer); v.setUint32(0, Number(per & 0xffffffffn), true); v.setUint32(4, Number((per >> 32n) & 0xffffffffn), true); }
+  const expLE = new Uint8Array(4); new DataView(expLE.buffer).setUint32(0, Number(expiryHeight) >>> 0, true);
+  const aicByte = new Uint8Array([assetInputCount & 0xff]);
+  const inputsBytes = [];
+  if (!Array.isArray(assetInputs) || assetInputs.length !== assetInputCount) {
+    throw new Error('assetInputs.length must equal assetInputCount');
+  }
+  for (const inp of assetInputs) {
+    if (typeof inp.txid !== 'string' || !/^[0-9a-f]{64}$/i.test(inp.txid)) throw new Error('input.txid 64-hex');
+    if (!Number.isInteger(inp.vout) || inp.vout < 0 || inp.vout > 0xffffffff) throw new Error('input.vout u32');
+    const bytes = hexToBytes(inp.txid);
+    inputsBytes.push(new Uint8Array([...bytes].reverse()));
+    const voutLE = new Uint8Array(4); new DataView(voutLE.buffer).setUint32(0, inp.vout >>> 0, true);
+    inputsBytes.push(voutLE);
+  }
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-drop-v1'),
+    assetId, capLE, perLE, merkleRoot, expLE, aicByte,
+    ...inputsBytes,
+  ));
+}
+
+function dropReclaimMsg({ reclaimDropId, assetId, capAmount }) {
+  if (!(reclaimDropId instanceof Uint8Array) || reclaimDropId.length !== 32) throw new Error('reclaim_drop_id 32');
+  if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
+  const cap = BigInt(capAmount);
+  const capLE = new Uint8Array(8);
+  { const v = new DataView(capLE.buffer); v.setUint32(0, Number(cap & 0xffffffffn), true); v.setUint32(4, Number((cap >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-drop-reclaim-v1'),
+    reclaimDropId, assetId, capLE,
+  ));
 }
 
 // ============== AIRDROP / SNAPSHOT HELPERS ==============
@@ -874,7 +1127,7 @@ function _ethAddrFromPriv(privBytes) {
 }
 
 export {
-  N_BITS, T_CETCH, T_CXFER, T_MINT, T_BURN,
+  N_BITS, T_CETCH, T_CXFER, T_MINT, T_BURN, T_DROP, T_DCLAIM,
   reverseBytes, assetIdFor,
   deriveBlinding, deriveChangeBlinding, deriveEtchBlinding, deriveMintBlinding,
   deriveAmountKeystreamECDH, deriveAmountKeystreamSelf, deriveEtchAmountKeystream, deriveMintAmountKeystream,
@@ -888,6 +1141,10 @@ export {
   encodeCXferPayload, decodeCXferPayload,
   encodeCMintPayload, decodeCMintPayload,
   encodeCBurnPayload, decodeCBurnPayload,
+  // T_DROP / T_DCLAIM (SPEC §5.12 / §5.13). Mirror of dapp/tacit.js.
+  encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
+  encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
+  dropIdFromRevealTxid, dropKernelMsg, dropReclaimMsg,
   // Airdrop / snapshot helpers (mirror of dapp/tacit.js, see § AIRDROP)
   AIRDROP_LEAF_TAG, AIRDROP_NODE_TAG,
   airdropLeafHash, buildAirdropMerkle, airdropMerkleProof, verifyAirdropMerkleProof,

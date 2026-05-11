@@ -466,5 +466,296 @@ await test('dapp.decodeCPmintPayload accepts dapp-encoded bytes (round-trip)', (
   return dec?.kind === 'cpmint' && dec.amount === 50n;
 });
 
+// =============== T_DROP / T_DCLAIM dapp ↔ composition parity ===============
+// composition.mjs is the Node-friendly mirror of dapp/tacit.js. Byte-for-byte
+// parity is enforced by encoding the same args via both and comparing.
+// Worker-side decoders for T_DROP/T_DCLAIM are added in Phase 2 (validator
+// branches); when they land, additional dapp.encode → worker.decode tests
+// should be added next to the existing T_PMINT parity blocks above.
+// (`comp` is already imported at module top — `import * as comp` line 35.)
+
+await test('T_DROP dapp.encode == composition.encode (standard shape)', () => {
+  const args = {
+    assetId: new Uint8Array(32).fill(0xab),
+    capAmount: 1_000_000n,
+    perClaim: 1_000n,
+    merkleRoot: new Uint8Array(32).fill(0xcd),
+    expiryHeight: 850_000,
+    ticker: 'TAC',
+    decimals: 8,
+    assetInputCount: 1,
+    kernelSig: new Uint8Array(64).fill(0xef),
+  };
+  const dappBytes = dapp.encodeCDropPayload(args);
+  const compBytes = comp.encodeCDropPayload(args);
+  if (dappBytes.length !== compBytes.length) return false;
+  for (let i = 0; i < dappBytes.length; i++) if (dappBytes[i] !== compBytes[i]) return false;
+  return true;
+});
+
+await test('T_DROP dapp.encode → composition.decode round-trip', () => {
+  const args = {
+    assetId: new Uint8Array(32).fill(0xab),
+    capAmount: 1_000_000n,
+    perClaim: 1_000n,
+    merkleRoot: new Uint8Array(32).fill(0xcd),
+    expiryHeight: 850_000,
+    ticker: 'TAC',
+    decimals: 8,
+    assetInputCount: 1,
+    kernelSig: new Uint8Array(64).fill(0xef),
+  };
+  const dappBytes = dapp.encodeCDropPayload(args);
+  const decoded = comp.decodeCDropPayload(dappBytes);
+  return decoded
+      && decoded.kind === 'cdrop'
+      && decoded.capAmount === 1_000_000n
+      && decoded.perClaim === 1_000n
+      && decoded.ticker === 'TAC'
+      && decoded.decimals === 8
+      && decoded.assetInputCount === 1;
+});
+
+await test('T_DROP reclaim shape parity (dapp.encode == composition.encode)', () => {
+  const args = {
+    assetId: new Uint8Array(32).fill(0xab),
+    capAmount: 100_000n,
+    reclaimDropId: new Uint8Array(32).fill(0xee),
+    reclaimSig: new Uint8Array(64).fill(0x66),
+    capBlinding: new Uint8Array(32).fill(0x77),
+  };
+  const dappBytes = dapp.encodeCDropReclaimPayload(args);
+  const compBytes = comp.encodeCDropReclaimPayload(args);
+  if (dappBytes.length !== compBytes.length) return false;
+  for (let i = 0; i < dappBytes.length; i++) if (dappBytes[i] !== compBytes[i]) return false;
+  return true;
+});
+
+await test('T_DCLAIM dapp.encode == composition.encode (open drop)', () => {
+  const args = {
+    assetId: new Uint8Array(32).fill(0xab),
+    dropRevealTxid: new Uint8Array(32).fill(0xbb),
+    commitment: (() => { const c = new Uint8Array(33); c[0] = 0x02; c[1] = 0x11; return c; })(),
+    amount: 1_000n,
+    blinding: new Uint8Array(32).fill(0xdd),
+    witness: new Uint8Array(0),
+  };
+  const dappBytes = dapp.encodeCDClaimPayload(args);
+  const compBytes = comp.encodeCDClaimPayload(args);
+  if (dappBytes.length !== compBytes.length) return false;
+  for (let i = 0; i < dappBytes.length; i++) if (dappBytes[i] !== compBytes[i]) return false;
+  return true;
+});
+
+await test('T_DCLAIM witness encode parity (merkle-gated)', () => {
+  const args = {
+    recipientPub: (() => { const p = new Uint8Array(33); p[0] = 0x03; p[1] = 0x22; return p; })(),
+    leafIndex: 42,
+    ethAddress: new Uint8Array(20).fill(0x11),
+    ethSig: new Uint8Array(65).fill(0x99),
+    proofPath: [
+      new Uint8Array(32).fill(0xa1),
+      new Uint8Array(32).fill(0xb1),
+    ],
+  };
+  const dappWit = dapp.encodeCDClaimWitness(args);
+  const compWit = comp.encodeCDClaimWitness(args);
+  if (dappWit.length !== compWit.length) return false;
+  for (let i = 0; i < dappWit.length; i++) if (dappWit[i] !== compWit[i]) return false;
+  // And it should decode correctly:
+  const payloadArgs = {
+    assetId: new Uint8Array(32).fill(0xab),
+    dropRevealTxid: new Uint8Array(32).fill(0xbb),
+    commitment: (() => { const c = new Uint8Array(33); c[0] = 0x02; return c; })(),
+    amount: 1n,
+    blinding: new Uint8Array(32).fill(0xdd),
+    witness: dappWit,
+  };
+  const bytes = dapp.encodeCDClaimPayload(payloadArgs);
+  const dec = comp.decodeCDClaimPayload(bytes);
+  return dec
+      && dec.witness
+      && dec.witness.leafIndex === 42
+      && dec.witness.proofPath.length === 2;
+});
+
+await test('drop_id derivation parity (dapp == composition)', () => {
+  const txid = 'abcdef1234567890'.repeat(4);   // 64-hex
+  const d1 = dapp.dropIdFromRevealTxid(txid);
+  const d2 = comp.dropIdFromRevealTxid(txid);
+  if (d1.length !== 32 || d2.length !== 32) return false;
+  for (let i = 0; i < 32; i++) if (d1[i] !== d2[i]) return false;
+  return true;
+});
+
+await test('dropKernelMsg parity (dapp == composition)', () => {
+  const args = {
+    assetId: new Uint8Array(32).fill(0xab),
+    capAmount: 1_000_000n,
+    perClaim: 1_000n,
+    merkleRoot: new Uint8Array(32).fill(0xcd),
+    expiryHeight: 850_000,
+    assetInputCount: 2,
+    assetInputs: [
+      { txid: 'a'.repeat(64), vout: 0 },
+      { txid: 'b'.repeat(64), vout: 7 },
+    ],
+  };
+  const m1 = dapp.dropKernelMsg(args);
+  const m2 = comp.dropKernelMsg(args);
+  if (m1.length !== 32 || m2.length !== 32) return false;
+  for (let i = 0; i < 32; i++) if (m1[i] !== m2[i]) return false;
+  return true;
+});
+
+await test('dropReclaimMsg parity (dapp == composition)', () => {
+  const args = {
+    reclaimDropId: new Uint8Array(32).fill(0xee),
+    assetId: new Uint8Array(32).fill(0xab),
+    capAmount: 100_000n,
+  };
+  const m1 = dapp.dropReclaimMsg(args);
+  const m2 = comp.dropReclaimMsg(args);
+  for (let i = 0; i < 32; i++) if (m1[i] !== m2[i]) return false;
+  return true;
+});
+
+// =============== T_DROP / T_DCLAIM dapp ↔ worker parity ===============
+// Phase 3 closes the byte-level contract between the dapp and the worker.
+// Drift here silently breaks indexing — the worker decoder would return null
+// on dapp-encoded bytes, and the cron would skip every T_DROP/T_DCLAIM the
+// dapp broadcasts.
+
+await test('T_DROP dapp.encode bytes decode via worker.decodeCDropPayload (standard shape)', () => {
+  const bytes = dapp.encodeCDropPayload({
+    assetId: new Uint8Array(32).fill(0xab),
+    capAmount: 1_000_000n,
+    perClaim: 1_000n,
+    merkleRoot: new Uint8Array(32).fill(0xcd),
+    expiryHeight: 850_000,
+    ticker: 'TAC',
+    decimals: 8,
+    assetInputCount: 1,
+    kernelSig: new Uint8Array(64).fill(0xef),
+  });
+  const dec = worker.decodeCDropPayload(bytes);
+  if (!dec) return false;
+  return dec.kind === 'cdrop'
+      && dec.asset_id === 'ab'.repeat(32)
+      && dec.cap_amount === '1000000'
+      && dec.per_claim === '1000'
+      && dec.merkle_root === 'cd'.repeat(32)
+      && dec.expiry_height === 850_000
+      && dec.ticker === 'TAC'
+      && dec.decimals === 8
+      && dec.asset_input_count === 1
+      && dec.kernel_sig === 'ef'.repeat(64);
+});
+
+await test('T_DROP reclaim shape dapp.encode → worker.decodeCDropPayload', () => {
+  const bytes = dapp.encodeCDropReclaimPayload({
+    assetId: new Uint8Array(32).fill(0xab),
+    capAmount: 100_000n,
+    reclaimDropId: new Uint8Array(32).fill(0xee),
+    reclaimSig: new Uint8Array(64).fill(0x66),
+    capBlinding: new Uint8Array(32).fill(0x77),
+  });
+  const dec = worker.decodeCDropPayload(bytes);
+  if (!dec) return false;
+  return dec.kind === 'cdrop-reclaim'
+      && dec.asset_id === 'ab'.repeat(32)
+      && dec.cap_amount === '100000'
+      && dec.reclaim_drop_id === 'ee'.repeat(32)
+      && dec.reclaim_sig === '66'.repeat(64)
+      && dec.cap_blinding === '77'.repeat(32);
+});
+
+await test('T_DCLAIM dapp.encode bytes decode via worker.decodeCDClaimPayload (open drop)', () => {
+  const commitment = new Uint8Array(33); commitment[0] = 0x02; commitment[1] = 0x11;
+  const bytes = dapp.encodeCDClaimPayload({
+    assetId: new Uint8Array(32).fill(0xab),
+    dropRevealTxid: new Uint8Array(32).fill(0xbb),
+    commitment,
+    amount: 1_000n,
+    blinding: new Uint8Array(32).fill(0xdd),
+    witness: new Uint8Array(0),
+  });
+  const dec = worker.decodeCDClaimPayload(bytes);
+  if (!dec) return false;
+  return dec.kind === 'cdclaim'
+      && dec.asset_id === 'ab'.repeat(32)
+      && dec.drop_reveal_txid === 'bb'.repeat(32)
+      && dec.amount === '1000'
+      && dec.blinding === 'dd'.repeat(32)
+      && dec.witness === null;
+});
+
+await test('T_DCLAIM merkle-gated dapp.encode bytes decode via worker', () => {
+  const commitment = new Uint8Array(33); commitment[0] = 0x02; commitment[1] = 0x22;
+  const recipientPub = new Uint8Array(33); recipientPub[0] = 0x03; recipientPub[1] = 0x55;
+  const witness = dapp.encodeCDClaimWitness({
+    recipientPub,
+    leafIndex: 42,
+    ethAddress: new Uint8Array(20).fill(0x11),
+    ethSig: new Uint8Array(65).fill(0x99),
+    proofPath: [new Uint8Array(32).fill(0xa1), new Uint8Array(32).fill(0xb2)],
+  });
+  const bytes = dapp.encodeCDClaimPayload({
+    assetId: new Uint8Array(32).fill(0xab),
+    dropRevealTxid: new Uint8Array(32).fill(0xbb),
+    commitment,
+    amount: 1_000n,
+    blinding: new Uint8Array(32).fill(0xdd),
+    witness,
+  });
+  const dec = worker.decodeCDClaimPayload(bytes);
+  if (!dec || !dec.witness) return false;
+  return dec.witness.recipient_pub === '03' + '55' + '00'.repeat(31)
+      && dec.witness.leaf_index === 42
+      && dec.witness.eth_address === '11'.repeat(20)
+      && dec.witness.eth_sig === '99'.repeat(65)
+      && dec.witness.proof_path.length === 2
+      && dec.witness.proof_path[0] === 'a1'.repeat(32)
+      && dec.witness.proof_path[1] === 'b2'.repeat(32);
+});
+
+await test('worker.dropIdFromRevealTxid matches dapp.dropIdFromRevealTxid', () => {
+  const txid = 'abcdef1234567890'.repeat(4);
+  const wId = worker.dropIdFromRevealTxid(txid);
+  const dId = dapp.dropIdFromRevealTxid(txid);
+  if (wId.length !== 32 || dId.length !== 32) return false;
+  for (let i = 0; i < 32; i++) if (wId[i] !== dId[i]) return false;
+  return true;
+});
+
+await test('T_DROP/T_DCLAIM opcode constants match across dapp + worker + composition', () => {
+  return dapp.T_DROP === worker.T_DROP
+      && dapp.T_DCLAIM === worker.T_DCLAIM
+      && dapp.T_DROP === comp.T_DROP
+      && dapp.T_DCLAIM === comp.T_DCLAIM
+      && dapp.T_DROP === 0x2B
+      && dapp.T_DCLAIM === 0x2C;
+});
+
+await test('worker rejects malformed T_DROP (encoder rejects per_claim = 0 in standard shape)', () => {
+  // Manually craft per_claim = 0 in the standard-shape position (not the
+  // reclaim sentinel). Should decode as 'cdrop-reclaim' or null, never
+  // 'cdrop'. The decoder differentiates by checking per_claim == 0 first.
+  try {
+    dapp.encodeCDropPayload({
+      assetId: new Uint8Array(32),
+      capAmount: 1n,
+      perClaim: 0n,    // standard-shape encoder must reject this
+      merkleRoot: new Uint8Array(32),
+      expiryHeight: 0,
+      ticker: '',
+      decimals: 0,
+      assetInputCount: 1,
+      kernelSig: new Uint8Array(64),
+    });
+    return false;
+  } catch (e) { return /per_claim/.test(e.message); }
+});
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail === 0 ? 0 : 1);

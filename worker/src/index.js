@@ -11,6 +11,10 @@
 //   POST /pin-json               — pin a small (≤4KB) metadata JSON (name/description/etc)
 //   POST /pin-mixer-vk           — pin a snarkjs Groth16 verifying-key JSON (≤32KB)
 //   POST /pin-airdrop-snapshot   — pin a tacit-airdrop-v1 snapshot JSON (≤16MB, ≤100k rows)
+//   GET  /drops-onchain          — list T_DROP-rooted on-chain claim pools (SPEC §5.12)
+//   GET  /drops-onchain/:drop_id        — single drop metadata + cap progress
+//   GET  /drops-onchain/:drop_id/claims — paginated T_DCLAIM event list (SPEC §5.13)
+//   POST /drops-hint             — targeted index of a fresh T_DROP / T_DCLAIM broadcast
 //   GET  /balance           — faucet wallet balance + address (signet only)
 //   POST /drip { address }  — send DRIP_SATS to a signet address (signet only)
 //   GET  /assets            — list etched assets on the requested network
@@ -102,6 +106,8 @@ const T_BURN     = 0x25;
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
 const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
 const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
+const T_DROP     = 0x2B; // public-claim pool over existing supply (SPEC §5.12)
+const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor (SPEC §5.13)
 const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
@@ -139,6 +145,24 @@ function pedersenCommit(amount, blinding) {
   const aH = a === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(a);
   const rG = r === 0n ? PEDERSEN_ZERO : PEDERSEN_G.multiply(r);
   return aH.add(rG);
+}
+
+// SPEC §5.9: T_PMINT envelopes carry public (amount, blinding) alongside the
+// commitment, so any indexer can recompute the binding before crediting.
+// Returns true iff `pedersenCommit(amount, blinding)` equals the declared
+// compressed point. The dapp's PMINT recovery path (path 6 in §5.13) already
+// rejects mismatches client-side; indexing without the same gate lets bogus
+// envelopes occupy canonical (height, tx_index) slots and feed `cumulative_minted`.
+// Inputs are taken in decoder format: `amount` as decimal string or BigInt,
+// `blindingHex` / `commitmentHex` as lowercase hex (no `0x`). Returns false on
+// any parse error so callers can use it as a single boolean gate.
+function pmintCommitmentOpens(amount, blindingHex, commitmentHex) {
+  let claimed, onchain;
+  try {
+    claimed = pedersenCommit(BigInt(amount), BigInt('0x' + blindingHex));
+    onchain = compressedPointFromHex(commitmentHex);
+  } catch { return false; }
+  return claimed.equals(onchain);
 }
 
 // Strict 33-byte compressed-point parser: pins the length and prefix before
@@ -256,6 +280,61 @@ function pmintKeyFor(network, aid, height, txIndex, txid) {
 }
 function pmintPrefix(network, aid)     { return network === 'signet' ? `pmint:${aid}:` : `pmint:${network}:${aid}:`; }
 
+// SPEC §5.12 / §5.13 — T_DROP / T_DCLAIM indexer state.
+//
+// drop_id = SHA256(drop_reveal_txid_BE || 0_LE), 64-hex string. Derived KV
+// identifier (not in the wire format — T_DCLAIM carries drop_reveal_txid
+// directly so validators can fetch the parent tx without an index lookup).
+//
+// Per-drop metadata: `drop:<network>:<drop_id>` (signet drops the network
+// segment per the legacy unprefixed convention). Stored at hint/cron when
+// the worker first sees the T_DROP reveal tx.
+function dropKey(network, dropId)         { return network === 'signet' ? `drop:${dropId}` : `drop:${network}:${dropId}`; }
+function dropPrefix(network)              { return network === 'signet' ? 'drop:' : `drop:${network}:`; }
+
+// Per-claim canonical-order record. Padded by (height, tx_index) so KV.list
+// returns claims in canonical chain order, identical to the pmint pattern.
+// The trailing :<txid> disambiguates same-block same-tx-index claims (which
+// can't happen on Bitcoin but the convention is robust).
+function dclaimKeyFor(network, dropId, height, txIndex, txid) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  return network === 'signet'
+    ? `dclaim:${dropId}:${h}:${idx}:${txid}`
+    : `dclaim:${network}:${dropId}:${h}:${idx}:${txid}`;
+}
+function dclaimPrefix(network, dropId)    { return network === 'signet' ? `dclaim:${dropId}:` : `dclaim:${network}:${dropId}:`; }
+
+// Per-leaf nullifier set for double-claim prevention (merkle-gated drops
+// only — open drops have no nullifier). Padded leaf_index so KV.list returns
+// claimed leaves in ascending order. The trailing :<txid> records which
+// specific T_DCLAIM consumed the leaf, useful for reorg revocation.
+function dclaimLeafKey(network, dropId, leafIndex) {
+  const idx = String(leafIndex || 0).padStart(10, '0');
+  return network === 'signet'
+    ? `dclaim-leaf:${dropId}:${idx}`
+    : `dclaim-leaf:${network}:${dropId}:${idx}`;
+}
+function dclaimLeafPrefix(network, dropId) {
+  return network === 'signet' ? `dclaim-leaf:${dropId}:` : `dclaim-leaf:${network}:${dropId}:`;
+}
+
+// Per-drop cap-progress snapshot, mirroring petchProgressKey. Lets read
+// endpoints return cumulative_claimed + remaining without an O(N) KV.list
+// over the dclaim namespace.
+function dropProgressKey(network, dropId) {
+  return network === 'signet' ? `drop_progress:${dropId}` : `drop_progress:${network}:${dropId}`;
+}
+
+// Per-drop dirty marker. Set when a new dclaim key lands; cleared after the
+// progress snapshot is rebuilt. TTL prevents stuck flags after a restart.
+function dropDirtyKey(network, dropId) {
+  return network === 'signet' ? `drop_dirty:${dropId}` : `drop_dirty:${network}:${dropId}`;
+}
+function dropDirtyPrefix(network) {
+  return network === 'signet' ? 'drop_dirty:' : `drop_dirty:${network}:`;
+}
+
 // Per-asset cap-progress snapshot. Maintained by cron + hint so user-facing
 // reads don't pay O(N) KV.list cost for assets with tens of thousands of
 // canonical pmints (FAIR hit 50k+ where the inline per-request derivation
@@ -271,6 +350,9 @@ function petchProgressKey(network, aid) {
 // it after refreshing the snapshot. TTL prevents stuck flags after a restart.
 function petchDirtyKey(network, aid) {
   return network === 'signet' ? `petch_dirty:${aid}` : `petch_dirty:${network}:${aid}`;
+}
+function petchDirtyPrefix(network) {
+  return network === 'signet' ? 'petch_dirty:' : `petch_dirty:${network}:`;
 }
 // Per-asset debounce marker for hint-triggered snapshot refreshes. When a
 // burst of pmints lands for the same asset (e.g. FAIR-launch hour with many
@@ -2139,9 +2221,249 @@ function decodeCPmintPayload(payload) {
   };
 }
 
-// T_BURN structural decoder. Burns are simpler than mints because the burned
-// amount is public — no Pedersen indirection. We only extract asset_id and
-// burned_amount. The kernel sig + remaining outputs are validated client-side.
+// ============== T_DROP / T_DCLAIM CODEC (SPEC §5.12 / §5.13) ==============
+// Mirror of dapp/tacit.js's encoders/decoders. Wire format pinned in
+// tests/airdrop.test.mjs + tests/dapp-parity.test.mjs. Byte-for-byte parity
+// with the dapp is enforced via dapp-parity tests; any drift breaks there.
+//
+// T_DROP payload — standard shape (per_claim > 0):
+//   T_DROP(1) || asset_id(32) || cap_amount_LE(8) || per_claim_LE(8) ||
+//   merkle_root(32) || expiry_height_LE(4) || ticker_len(1) || ticker(tlen) ||
+//   decimals(1) || asset_input_count(1) || kernel_sig(64)
+//
+// Reclaim shape (per_claim = 0 sentinel; SPEC §5.12.1):
+//   T_DROP(1) || asset_id(32) || cap_amount_LE(8) || per_claim_LE(8) = 0 ||
+//   reclaim_drop_id(32) || reclaim_sig(64) || cap_blinding(32)
+//
+// The worker doesn't need encoders (it only reads chain bytes) but exposing
+// them keeps dapp-parity testing trivial and supports future tooling.
+function encodeCDropPayload({ assetId, capAmount, perClaim, merkleRoot, expiryHeight, ticker, decimals, assetInputCount, kernelSig }) {
+  if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
+  const cap = BigInt(capAmount);
+  const per = BigInt(perClaim);
+  if (cap <= 0n || cap >= (1n << 64n)) throw new Error('cap_amount out of u64');
+  if (per <= 0n || per >= (1n << 64n)) throw new Error('per_claim out of u64');
+  if (cap % per !== 0n) throw new Error('cap_amount must be divisible by per_claim');
+  if (!(merkleRoot instanceof Uint8Array) || merkleRoot.length !== 32) throw new Error('merkle_root 32');
+  const exp = Number(expiryHeight);
+  if (!Number.isInteger(exp) || exp < 0 || exp > 0xffffffff) throw new Error('expiry_height u32');
+  const tk = ticker ? new TextEncoder().encode(String(ticker)) : new Uint8Array(0);
+  if (tk.length > 16) throw new Error('ticker too long');
+  const dec = Number(decimals) || 0;
+  if (!Number.isInteger(dec) || dec < 0 || dec > 8) throw new Error('decimals 0..8');
+  const aic = Number(assetInputCount);
+  if (!Number.isInteger(aic) || aic < 1 || aic > 16) throw new Error('asset_input_count 1..16');
+  if (!(kernelSig instanceof Uint8Array) || kernelSig.length !== 64) throw new Error('kernel_sig 64');
+  const capLE = new Uint8Array(8);
+  { const v = new DataView(capLE.buffer); v.setUint32(0, Number(cap & 0xffffffffn), true); v.setUint32(4, Number((cap >> 32n) & 0xffffffffn), true); }
+  const perLE = new Uint8Array(8);
+  { const v = new DataView(perLE.buffer); v.setUint32(0, Number(per & 0xffffffffn), true); v.setUint32(4, Number((per >> 32n) & 0xffffffffn), true); }
+  const expLE = new Uint8Array(4); new DataView(expLE.buffer).setUint32(0, exp >>> 0, true);
+  return concatBytes(
+    new Uint8Array([T_DROP]), assetId, capLE, perLE, merkleRoot, expLE,
+    new Uint8Array([tk.length]), tk, new Uint8Array([dec]),
+    new Uint8Array([aic]), kernelSig,
+  );
+}
+
+function encodeCDropReclaimPayload({ assetId, capAmount, reclaimDropId, reclaimSig, capBlinding }) {
+  if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
+  const cap = BigInt(capAmount);
+  if (cap <= 0n || cap >= (1n << 64n)) throw new Error('cap_amount out of u64');
+  if (!(reclaimDropId instanceof Uint8Array) || reclaimDropId.length !== 32) throw new Error('reclaim_drop_id 32');
+  if (!(reclaimSig instanceof Uint8Array) || reclaimSig.length !== 64) throw new Error('reclaim_sig 64');
+  if (!(capBlinding instanceof Uint8Array) || capBlinding.length !== 32) throw new Error('cap_blinding 32');
+  let bNonZero = false;
+  for (let i = 0; i < 32; i++) if (capBlinding[i] !== 0) { bNonZero = true; break; }
+  if (!bNonZero) throw new Error('cap_blinding must be non-zero');
+  const capLE = new Uint8Array(8);
+  { const v = new DataView(capLE.buffer); v.setUint32(0, Number(cap & 0xffffffffn), true); v.setUint32(4, Number((cap >> 32n) & 0xffffffffn), true); }
+  const perZeroLE = new Uint8Array(8);
+  return concatBytes(
+    new Uint8Array([T_DROP]), assetId, capLE, perZeroLE,
+    reclaimDropId, reclaimSig, capBlinding,
+  );
+}
+
+function decodeCDropPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 152) return null;   // 1+32+8+8+32+4+1+0+1+1+64 minimum
+  if (payload[0] !== T_DROP) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const capView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const capAmount = (BigInt(capView.getUint32(4, true)) << 32n) | BigInt(capView.getUint32(0, true));
+  p += 8;
+  const perView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const perClaim = (BigInt(perView.getUint32(4, true)) << 32n) | BigInt(perView.getUint32(0, true));
+  p += 8;
+  if (capAmount <= 0n) return null;
+  // Reclaim shape sentinel.
+  if (perClaim === 0n) {
+    if (payload.length !== 1 + 32 + 8 + 8 + 32 + 64 + 32) return null;
+    const reclaimDropId = payload.slice(p, p + 32); p += 32;
+    const reclaimSig = payload.slice(p, p + 64); p += 64;
+    const capBlinding = payload.slice(p, p + 32); p += 32;
+    if (p !== payload.length) return null;
+    let bNonZero = false;
+    for (let i = 0; i < 32; i++) if (capBlinding[i] !== 0) { bNonZero = true; break; }
+    if (!bNonZero) return null;
+    return {
+      kind: 'cdrop-reclaim',
+      asset_id: bytesToHex(assetId),
+      cap_amount: capAmount.toString(),
+      reclaim_drop_id: bytesToHex(reclaimDropId),
+      reclaim_sig: bytesToHex(reclaimSig),
+      cap_blinding: bytesToHex(capBlinding),
+    };
+  }
+  if (perClaim >= (1n << 64n)) return null;
+  if (capAmount % perClaim !== 0n) return null;
+  const merkleRoot = payload.slice(p, p + 32); p += 32;
+  const expView = new DataView(payload.buffer, payload.byteOffset + p, 4);
+  const expiryHeight = expView.getUint32(0, true); p += 4;
+  if (p + 1 > payload.length) return null;
+  const tlen = payload[p]; p += 1;
+  if (tlen > 16) return null;
+  if (p + tlen + 1 + 1 + 64 > payload.length) return null;
+  let ticker = null;
+  if (tlen > 0) {
+    try { ticker = new TextDecoder('utf-8', { fatal: true }).decode(payload.slice(p, p + tlen)); } catch { return null; }
+  }
+  p += tlen;
+  const decimals = payload[p]; p += 1;
+  if (decimals > 8) return null;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount < 1 || assetInputCount > 16) return null;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+  return {
+    kind: 'cdrop',
+    asset_id: bytesToHex(assetId),
+    cap_amount: capAmount.toString(),
+    per_claim: perClaim.toString(),
+    merkle_root: bytesToHex(merkleRoot),
+    expiry_height: expiryHeight,
+    ticker, decimals,
+    asset_input_count: assetInputCount,
+    kernel_sig: bytesToHex(kernelSig),
+  };
+}
+
+// T_DCLAIM payload:
+//   T_DCLAIM(1) || asset_id(32) || drop_reveal_txid(32) || commitment(33) ||
+//   amount_LE(8) || blinding(32) || witness_len_LE(2) || witness(witness_len)
+//
+// Witness (merkle-gated): recipient_pub(33) || leaf_index_LE(4) ||
+//   eth_address(20) || eth_sig(65) || proof_len(1) || proof_path(proof_len*32)
+// Witness (open): empty (witness_len == 0).
+function encodeCDClaimPayload({ assetId, dropRevealTxid, commitment, amount, blinding, witness }) {
+  if (!(assetId instanceof Uint8Array) || assetId.length !== 32) throw new Error('asset_id 32');
+  if (!(dropRevealTxid instanceof Uint8Array) || dropRevealTxid.length !== 32) throw new Error('drop_reveal_txid 32');
+  if (!(commitment instanceof Uint8Array) || commitment.length !== 33) throw new Error('commitment 33');
+  const amt = BigInt(amount);
+  if (amt <= 0n || amt >= (1n << 64n)) throw new Error('amount out of u64');
+  if (!(blinding instanceof Uint8Array) || blinding.length !== 32) throw new Error('blinding 32');
+  let bNonZero = false;
+  for (let i = 0; i < 32; i++) if (blinding[i] !== 0) { bNonZero = true; break; }
+  if (!bNonZero) throw new Error('blinding must be non-zero');
+  const witnessBytes = witness instanceof Uint8Array ? witness : new Uint8Array(0);
+  if (witnessBytes.length > 65535) throw new Error('witness too large');
+  const amtLE = new Uint8Array(8);
+  { const v = new DataView(amtLE.buffer); v.setUint32(0, Number(amt & 0xffffffffn), true); v.setUint32(4, Number((amt >> 32n) & 0xffffffffn), true); }
+  const wLen = new Uint8Array(2); new DataView(wLen.buffer).setUint16(0, witnessBytes.length, true);
+  return concatBytes(
+    new Uint8Array([T_DCLAIM]), assetId, dropRevealTxid, commitment, amtLE, blinding,
+    wLen, witnessBytes,
+  );
+}
+
+function encodeCDClaimWitness({ recipientPub, leafIndex, ethAddress, ethSig, proofPath }) {
+  if (!(recipientPub instanceof Uint8Array) || recipientPub.length !== 33) throw new Error('recipient_pub 33');
+  if (recipientPub[0] !== 0x02 && recipientPub[0] !== 0x03) throw new Error('recipient_pub must start with 02 or 03');
+  if (!Number.isInteger(leafIndex) || leafIndex < 0 || leafIndex > 0xffffffff) throw new Error('leaf_index u32');
+  if (!(ethAddress instanceof Uint8Array) || ethAddress.length !== 20) throw new Error('eth_address 20');
+  if (!(ethSig instanceof Uint8Array) || ethSig.length !== 65) throw new Error('eth_sig 65');
+  if (!Array.isArray(proofPath)) throw new Error('proof_path must be an array');
+  if (proofPath.length > 32) throw new Error('proof_path too deep');
+  for (const s of proofPath) {
+    if (!(s instanceof Uint8Array) || s.length !== 32) throw new Error('proof_path entries must be 32-byte');
+  }
+  const liLE = new Uint8Array(4); new DataView(liLE.buffer).setUint32(0, leafIndex >>> 0, true);
+  return concatBytes(
+    recipientPub, liLE, ethAddress, ethSig,
+    new Uint8Array([proofPath.length]),
+    ...proofPath,
+  );
+}
+
+function decodeCDClaimPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 140) return null;   // 1+32+32+33+8+32+2 minimum
+  if (payload[0] !== T_DCLAIM) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const dropRevealTxid = payload.slice(p, p + 32); p += 32;
+  const commitment = payload.slice(p, p + 33); p += 33;
+  const amtView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const amount = (BigInt(amtView.getUint32(4, true)) << 32n) | BigInt(amtView.getUint32(0, true));
+  p += 8;
+  if (amount <= 0n || amount >= (1n << 64n)) return null;
+  const blinding = payload.slice(p, p + 32); p += 32;
+  let bNonZero = false;
+  for (let i = 0; i < 32; i++) if (blinding[i] !== 0) { bNonZero = true; break; }
+  if (!bNonZero) return null;
+  const wView = new DataView(payload.buffer, payload.byteOffset + p, 2);
+  const witnessLen = wView.getUint16(0, true); p += 2;
+  if (p + witnessLen !== payload.length) return null;
+  const witnessBytes = payload.slice(p, p + witnessLen); p += witnessLen;
+  let witness = null;
+  if (witnessLen > 0) {
+    const headerSize = 33 + 4 + 20 + 65 + 1;
+    if (witnessLen < headerSize) return null;
+    let wp = 0;
+    const recipientPub = witnessBytes.slice(wp, wp + 33); wp += 33;
+    if (recipientPub[0] !== 0x02 && recipientPub[0] !== 0x03) return null;
+    const liView = new DataView(witnessBytes.buffer, witnessBytes.byteOffset + wp, 4);
+    const leafIndex = liView.getUint32(0, true); wp += 4;
+    const ethAddress = witnessBytes.slice(wp, wp + 20); wp += 20;
+    const ethSig = witnessBytes.slice(wp, wp + 65); wp += 65;
+    const proofLen = witnessBytes[wp]; wp += 1;
+    if (proofLen > 32) return null;
+    if (wp + proofLen * 32 !== witnessBytes.length) return null;
+    const proofPath = [];
+    for (let i = 0; i < proofLen; i++) {
+      proofPath.push(bytesToHex(witnessBytes.slice(wp, wp + 32)));
+      wp += 32;
+    }
+    witness = {
+      recipient_pub: bytesToHex(recipientPub),
+      leaf_index: leafIndex,
+      eth_address: bytesToHex(ethAddress),
+      eth_sig: bytesToHex(ethSig),
+      proof_path: proofPath,
+    };
+  }
+  return {
+    kind: 'cdclaim',
+    asset_id: bytesToHex(assetId),
+    drop_reveal_txid: bytesToHex(dropRevealTxid),
+    commitment: bytesToHex(commitment),
+    amount: amount.toString(),
+    blinding: bytesToHex(blinding),
+    witness,
+  };
+}
+
+// drop_id derives from the reveal tx the same way asset_id does for CETCH
+// (SPEC §4): SHA256(reveal_txid_BE || 0_LE). This is the KV-key identifier,
+// not a wire-format field; the T_DCLAIM payload carries drop_reveal_txid.
+function dropIdFromRevealTxid(revealTxidHex) {
+  const txidBE = (() => { const b = hexToBytes(revealTxidHex); return new Uint8Array([...b].reverse()); })();
+  const voutLE = new Uint8Array(4);
+  return sha256(concatBytes(txidBE, voutLE));
+}
+
 // SPEC §5.10. Two payload shapes: POOL_INIT (denomination = 0 sentinel) and
 // standard deposit. Returned shape's `kind` discriminates.
 function decodeTDepositPayload(payload) {
@@ -2995,6 +3317,12 @@ async function handleAssetHint(req, env, network, cors, ctx) {
         }
       }
     }
+    // §5.9 step 5: Pedersen binding. Same check the cron path performs — see
+    // the matching block in scanForEtches for rationale. Hint callers that
+    // ship a forged commitment get rejected here rather than poisoning KV.
+    if (!pmintCommitmentOpens(cm.amount, cm.blinding, cm.commitment)) {
+      return jsonResponse({ error: 'commitment does not open to (amount, blinding)' }, 400, cors);
+    }
     // Need the block's ordered txid list to find the canonical tx_index. Use
     // /block/<hash>/txids which returns the entire ordered list in one shot
     // (vs the paginated /block/<hash>/txs that scanForEtches walks).
@@ -3322,6 +3650,13 @@ const PETCH_REFRESH_DEBOUNCE_SECS = 30;
 // that read endpoints can return in O(1) per asset.
 async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
   if (!petch) return null;
+  // Without a tip we can't enforce SPEC §5.9's depth-3 credit gate. The
+  // alternative — crediting every confirmed mint regardless of depth — would
+  // race the cron's next tick (which DOES have a tip) and produce
+  // over-counts in the interim. Refuse to refresh; the existing snapshot (if
+  // any) keeps serving and the next tick retries with a fresh tip. Matches
+  // loadCanonicalPmints's `unknown_depth` semantics applied to the aggregate.
+  if (!Number.isInteger(tipHeight)) return null;
   const orphanPrefixStr = pmintPrefix(network, aid) + '0000000000:';
   const capAmount = petch.cap_amount != null ? BigInt(petch.cap_amount) : null;
   const mintLimit = petch.mint_limit != null ? BigInt(petch.mint_limit) : null;
@@ -3357,10 +3692,8 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
       const ti = parseInt(parts[parts.length - 2], 10);
       const h = parseInt(parts[parts.length - 3], 10);
       if (!Number.isInteger(h) || !Number.isInteger(ti) || !/^[0-9a-f]{64}$/.test(txid)) continue;
-      if (Number.isInteger(tipHeight)) {
-        const depth = Math.max(0, tipHeight - h + 1);
-        if (depth < PMINT_CONFIRMATION_DEPTH) { pendingCount++; continue; }
-      }
+      const depth = Math.max(0, tipHeight - h + 1);
+      if (depth < PMINT_CONFIRMATION_DEPTH) { pendingCount++; continue; }
       if (capAmount != null && mintLimit != null) {
         const wouldBe = creditedAmount + mintLimit;
         if (wouldBe > capAmount) {
@@ -3400,6 +3733,25 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
     cursor = lst.cursor;
     if (!cursor) { orphanComplete = true; break; }
   }
+  // `cap_counter_final` is the strict authoritativeness signal: it's true iff
+  // cumulative_minted / mints_remaining / credited_pmint_count can no longer
+  // change as new blocks arrive. Two sufficient conditions:
+  //   1. credited_amount == cap_amount — cap is full, additional confirmed
+  //      pmints can only be cap_overflow (don't move cumulative_minted).
+  //   2. mint window has closed at the snapshot's tip (mint_end_height set
+  //      AND tip_at_update > mint_end_height + PMINT_CONFIRMATION_DEPTH);
+  //      no future pmint can ever pass the §5.9 step 4 height-window gate.
+  // Anything else — including healthy in-progress fair launches — is NOT
+  // authoritative: the snapshot may be momentarily complete but the very next
+  // block can credit more mints. Per issue #31's acceptance criterion,
+  // cumulative_minted etc. are only authoritative when accounting is complete.
+  const capFull = (capAmount != null && creditedAmount === capAmount);
+  const windowClosed = (
+    Number.isInteger(petch.mint_end_height) && petch.mint_end_height > 0 &&
+    Number.isInteger(tipHeight) &&
+    tipHeight > petch.mint_end_height + PMINT_CONFIRMATION_DEPTH
+  );
+  const capCounterFinal = capFull || windowClosed;
   return {
     credited_count: creditedCount,
     credited_amount: creditedAmount.toString(),
@@ -3415,7 +3767,26 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
     tip_at_update: Number.isInteger(tipHeight) ? tipHeight : null,
     updated_at: Math.floor(Date.now() / 1000),
     truncated,
-    bootstrapped: !truncated && orphanComplete,
+    // Snapshot KV scan completed without hitting its page/key caps. Distinct
+    // from `bootstrapped` (which now requires positive cap-counter finality);
+    // surfaced for consumers that want to distinguish "scan worked end-to-end"
+    // from "the cap counter is authoritative".
+    snapshot_scan_complete: !truncated && orphanComplete,
+    cap_counter_final: capCounterFinal,
+    // `bootstrapped` is the cap-counter-authoritativeness signal — true only
+    // when both the snapshot scan completed AND the cap counter is final
+    // (capFull or windowClosed). Under the prior weaker definition this was
+    // true for any scan-complete asset, which misled consumers into treating
+    // mid-mint counts as final. Issue #31 acceptance criterion #3.
+    //
+    // schema_version stays at 1 even though the meaning of `bootstrapped`
+    // tightened and new fields (cap_counter_final, snapshot_scan_complete)
+    // were added. The additions are backward-compatible — old consumers ignore
+    // unknown fields, and new consumers reading an old snapshot see
+    // `cap_counter_final = undefined` (falsy, treated as "not final"), which
+    // is the safe default. The cron rewrites every snapshot within one tick
+    // (5 min), so any drift between old and new field meanings is bounded.
+    bootstrapped: !truncated && orphanComplete && capCounterFinal,
     schema_version: 1,
   };
 }
@@ -3611,11 +3982,11 @@ async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {})
   // Walk dirty markers first; these reflect "something landed this tick"
   // and are highest priority. Limit batch size so the cron stays bounded.
   const dirtyList = await env.REGISTRY_KV.list({
-    prefix: network === 'signet' ? 'petch_dirty:' : `petch_dirty:${network}:`,
+    prefix: petchDirtyPrefix(network),
     limit: maxPerTick * 2,
   });
   const dirtyAids = [];
-  const dirtyPrefixLen = (network === 'signet' ? 'petch_dirty:' : `petch_dirty:${network}:`).length;
+  const dirtyPrefixLen = petchDirtyPrefix(network).length;
   for (const k of dirtyList.keys) {
     const aid = k.name.slice(dirtyPrefixLen);
     if (/^[0-9a-f]{64}$/.test(aid)) dirtyAids.push(aid);
@@ -3624,7 +3995,7 @@ async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {})
     try {
       const petch = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
       if (!petch) { await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {}); continue; }
-      await refreshAndStorePetchProgress(env, network, aid, tip, petch);
+      const snap = await refreshAndStorePetchProgress(env, network, aid, tip, petch);
       // We deliberately do NOT pre-warm the /pmints?credited=1 fat-path edge
       // cache here. The new dapp uses ?include_txids=0 (slim path, ~50ms,
       // served directly from the snapshot we just refreshed) and bypasses
@@ -3632,14 +4003,22 @@ async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {})
       // pay one cold MISS per 30s FRESH window per POP, which is acceptable
       // for a deprecated path. Saves ~14s of cron CPU per FAIR-scale asset
       // and the per-POP edge storage of a 3.3MB response.
-      await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {});
-      refreshed++;
+      if (snap) {
+        // Only clear the dirty marker on successful refresh. If refresh
+        // returned null (tip unavailable), leave the marker so the next tick
+        // retries — otherwise we'd lose the signal and the snapshot would
+        // sit stale until another pmint reset the marker.
+        await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {});
+        refreshed++;
+      }
     } catch { errored++; }
   }
   // Then bootstrap any assets with no snapshot at all (one per tick is fine —
-  // post-deploy backfill is amortized over multiple ticks).
-  if (refreshed < maxPerTick) {
-    const petches = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit: 100 });
+  // post-deploy backfill is amortized over multiple ticks). Skip entirely if
+  // tip is unavailable: refresh would return null anyway, just wasting a
+  // KV.list + per-asset KV.get.
+  if (refreshed < maxPerTick && Number.isInteger(tip)) {
+    const petches = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit: 1000 });
     for (const k of petches.keys) {
       const aid = k.name.slice(petchPrefix(network).length);
       if (!/^[0-9a-f]{64}$/.test(aid)) continue;
@@ -3648,13 +4027,178 @@ async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {})
       try {
         const petch = await env.REGISTRY_KV.get(k.name, 'json');
         if (!petch) continue;
-        await refreshAndStorePetchProgress(env, network, aid, tip, petch);
-        bootstrapped++;
+        const snap = await refreshAndStorePetchProgress(env, network, aid, tip, petch);
+        if (snap) bootstrapped++;
         if (refreshed + bootstrapped >= maxPerTick) break;
       } catch { errored++; }
     }
   }
   return { network, refreshed, bootstrapped, errored, tip };
+}
+
+// ============== PMINT BACKFILL (one-time FAIR recovery for issue #31) =======
+// FAIR's mainnet etch landed during dense fair-launch reveal blocks (3000-5500
+// txs/block) and the cron's per-tick subrequest budget ran out before the
+// block's pmint tail was indexed — silently dropping ~125k canonical entries
+// across blocks 948488..948700 (issue #31 Problem #4 + utx0set's clarifying
+// comment). The HTTP /admin/pmint-backfill endpoint exists for one-shot
+// recovery, but FAIR-era blocks are too large to fit in a single CF wall-time
+// budget. This cron-driven variant processes one block per tick (~5 min
+// cadence), persists progress in a KV cursor, and self-terminates when
+// complete. Configuration is intentionally hardcoded — this is migration code
+// for a specific historical incident, not a generic feature.
+//
+// Removal: after FAIR completes (cursor.completed_at set), this function is
+// a no-op forever. Safe to delete the call site + function in a follow-up
+// commit once the snapshot has read as bootstrapped=true for a tick.
+const PMINT_BACKFILLS = [
+  {
+    network: 'mainnet',
+    aid: 'c4a678d6d674cdd0f4a1a9df0cb5980bd1255bd0b62f8ddc886e61bd43f56b83',  // FAIR
+    from_height: 948488,
+    end_height: 948700,
+  },
+];
+function pmintBackfillCursorKey(network, aid) {
+  return `pmint_backfill:${network}:${aid}`;
+}
+async function runPmintBackfills(env) {
+  for (const cfg of PMINT_BACKFILLS) {
+    try { await runOnePmintBackfill(env, cfg); }
+    catch { /* swallow per-backfill errors — next tick retries */ }
+  }
+}
+async function runOnePmintBackfill(env, cfg) {
+  const { network, aid, from_height, end_height } = cfg;
+  const cursorKey = pmintBackfillCursorKey(network, aid);
+  let cursor = await env.REGISTRY_KV.get(cursorKey, 'json');
+  // Done marker — no-op forever once set.
+  if (cursor && cursor.completed_at) return;
+  if (!cursor) {
+    cursor = {
+      next_height: from_height,
+      end_height,
+      started_at: Math.floor(Date.now() / 1000),
+      total_wrote: 0,
+      total_rejected: 0,
+    };
+    await env.REGISTRY_KV.put(cursorKey, JSON.stringify(cursor));
+  }
+  if (cursor.next_height > cursor.end_height) {
+    cursor.completed_at = Math.floor(Date.now() / 1000);
+    await env.REGISTRY_KV.put(cursorKey, JSON.stringify(cursor));
+    await markPetchDirty(env, network, aid);
+    return;
+  }
+  const petch = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
+  // Petch not yet indexed (e.g. fresh deploy on a different network) — defer.
+  if (!petch) return;
+  const h = cursor.next_height;
+  let blockHash;
+  try { blockHash = (await apiText(env, `/block-height/${h}`, {}, network)).trim(); }
+  catch (e) {
+    cursor.last_error = `block-height/${h} fetch failed: ${e.message}`;
+    cursor.last_tick_at = Math.floor(Date.now() / 1000);
+    await env.REGISTRY_KV.put(cursorKey, JSON.stringify(cursor)).catch(() => {});
+    return;
+  }
+  let txs;
+  // Use sequential fetchBlockTxs (proven-working in the cron context for the
+  // forward scanner). The parallel variant triggers mempool.space rate-limits
+  // for dense legacy blocks. The sequential walk's 5000-tx cap is the same
+  // bug that caused the silent drops in the first place — we lift it here so
+  // backfill sees the full block. CF subrequest budget (1000) is the real
+  // ceiling; 8000 txs ~ 320 pages, well within the 1000 cap even with our
+  // other cron work.
+  try { txs = await fetchBlockTxs(env, blockHash, network, { maxTxs: 8000 }); }
+  catch (e) {
+    cursor.last_error = `fetchBlockTxs(${blockHash}) failed: ${e.message}`;
+    cursor.last_tick_at = Math.floor(Date.now() / 1000);
+    await env.REGISTRY_KV.put(cursorKey, JSON.stringify(cursor)).catch(() => {});
+    return;
+  }
+  cursor.last_block_txs_scanned = txs.length;
+  // Build the set of canonical keys already at this height in one KV.list —
+  // a single height has at most a few hundred PMINTs, so this is cheap and
+  // saves N×KV.get probes. Scoped to FAIR's per-height prefix.
+  const heightPrefix = pmintPrefix(network, aid) + String(h).padStart(10, '0') + ':';
+  const existing = new Set();
+  {
+    let lc = null;
+    for (let page = 0; page < 5; page++) {   // 5×1000 ≫ any plausible per-block PMINT count
+      const lst = await env.REGISTRY_KV.list({
+        prefix: heightPrefix,
+        limit: 1000,
+        ...(lc ? { cursor: lc } : {}),
+      });
+      for (const k of lst.keys) existing.add(k.name);
+      if (lst.list_complete) break;
+      lc = lst.cursor;
+      if (!lc) break;
+    }
+  }
+  let wrote = 0;
+  let alreadyPresent = 0;
+  let rejected = 0;
+  let txIndex = -1;
+  for (const tx of txs) {
+    txIndex++;
+    if (!tx.vin || !tx.vin[0] || !tx.vin[0].witness || tx.vin[0].witness.length < 3) continue;
+    let envBytes;
+    try { envBytes = hexToBytes(tx.vin[0].witness[1]); } catch { continue; }
+    const decoded = decodeEnvelopeScript(envBytes);
+    if (!decoded || decoded.opcode !== T_PMINT) continue;
+    const cm = decodeCPmintPayload(decoded.payload);
+    if (!cm) { rejected++; continue; }
+    const derivedAid = assetIdFor(cm.etch_txid, 0);
+    if (derivedAid !== cm.asset_id || derivedAid !== aid) { rejected++; continue; }
+    try {
+      if (BigInt(cm.amount) !== BigInt(petch.mint_limit)) { rejected++; continue; }
+    } catch { rejected++; continue; }
+    const startH = Number(petch.mint_start_height) || 0;
+    const endH = Number(petch.mint_end_height) || 0;
+    const etchedAt = Number(petch.etched_at_height) || 0;
+    const effectiveStart = startH !== 0 ? startH : etchedAt + 1;
+    if (h < effectiveStart || (endH !== 0 && h > endH)) { rejected++; continue; }
+    if (!pmintCommitmentOpens(cm.amount, cm.blinding, cm.commitment)) { rejected++; continue; }
+    const pmk = pmintKeyFor(network, derivedAid, h, txIndex, tx.txid);
+    if (existing.has(pmk)) { alreadyPresent++; continue; }
+    const mintMeta = {
+      asset_id: derivedAid,
+      etch_txid: cm.etch_txid,
+      mint_txid: tx.txid,
+      mint_vout: 0,
+      commitment: cm.commitment,
+      amount: cm.amount,
+      blinding: cm.blinding,
+      minted_at_height: h,
+      minted_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+      kind: 'pmint',
+      tx_index: txIndex,
+      network,
+    };
+    await env.REGISTRY_KV.put(pmk, JSON.stringify(mintMeta));
+    existing.add(pmk);
+    wrote++;
+  }
+  // Cursor write is LAST so a mid-block timeout retries the same block on
+  // next tick (KV puts above are idempotent via `existing` set).
+  cursor.next_height = h + 1;
+  cursor.last_tick_at = Math.floor(Date.now() / 1000);
+  cursor.last_tick_height = h;
+  cursor.last_tick_wrote = wrote;
+  cursor.last_tick_already_present = alreadyPresent;
+  cursor.last_tick_rejected = rejected;
+  cursor.total_wrote = (cursor.total_wrote || 0) + wrote;
+  cursor.total_rejected = (cursor.total_rejected || 0) + rejected;
+  if (cursor.next_height > cursor.end_height) {
+    cursor.completed_at = Math.floor(Date.now() / 1000);
+  }
+  await env.REGISTRY_KV.put(cursorKey, JSON.stringify(cursor));
+  // Mark snapshot dirty so the next refresh tick picks up the new entries.
+  if (wrote > 0 || cursor.completed_at) {
+    await markPetchDirty(env, network, aid);
+  }
 }
 
 // GET /petch-assets — registry of T_PETCH-rooted assets. Same envelope shape
@@ -5995,7 +6539,7 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
 }
 
 // ============== Cron: scan signet + mainnet for new CETCH envelopes ==============
-async function fetchBlockTxs(env, blockHash, network) {
+async function fetchBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}) {
   const all = [];
   let startIdx = 0;
   while (true) {
@@ -6006,9 +6550,52 @@ async function fetchBlockTxs(env, blockHash, network) {
     all.push(...txs);
     if (txs.length < 25) break;
     startIdx += 25;
-    // Mainnet blocks can be 3000+ txs (120+ pages); cap at 5000 to bound work
-    // per cron tick. The hint endpoint catches anything missed by truncation.
-    if (all.length >= 5000) break;
+    // Mainnet blocks can be 3000+ txs (120+ pages); default cap of 5000 bounds
+    // work per cron tick for the live-tip forward scan. The hint endpoint
+    // catches anything missed by truncation. Backfill (issue #31 FAIR
+    // recovery) passes a higher cap since dense legacy blocks are 5500+ txs
+    // and we want the full tail to avoid reproducing the original silent-drop
+    // bug. Subrequest budget is the real ceiling at 1000/invocation.
+    if (all.length >= maxTxs) break;
+  }
+  return all;
+}
+
+// Backfill-only parallel variant of fetchBlockTxs. The sequential version
+// above is fine for the cron's live-tip scan (1 block/tick, only the tail
+// few pages matter); but the FAIR recovery walk has to revisit dense legacy
+// blocks where mempool.space's /block/<hash>/txs/<N> endpoint takes 5+s per
+// page and 22+ pages per block → 110s sequential, past CF's wall-time budget.
+// Batches PARALLEL page-fetches at a time. Stops early when a partial page
+// or empty array signals end-of-block. Drops the cron's 5000-tx cap because
+// the backfill is rate-limited by the caller's height range, not by a
+// per-block subrequest budget. Pages that error are surfaced as `null` and
+// terminate the walk to avoid silently truncating mid-block.
+async function fetchBlockTxsParallel(env, blockHash, network, { batch = 16, maxTxs = 8000 } = {}) {
+  const pageSize = 25;
+  const all = [];
+  let startIdx = 0;
+  while (all.length < maxTxs) {
+    const offsets = [];
+    for (let i = 0; i < batch; i++) offsets.push(startIdx + i * pageSize);
+    // Retry each failed page once. Single transient failures in a parallel
+    // batch shouldn't truncate the block; only persistent failures should
+    // surface as an early-stop signal (returned via reject below).
+    const pages = await Promise.all(offsets.map(async off => {
+      try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, {}, network); }
+      catch {
+        try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, {}, network); }
+        catch { throw new Error(`page ${off} failed twice`); }
+      }
+    }));
+    let done = false;
+    for (const page of pages) {
+      if (!Array.isArray(page) || page.length === 0) { done = true; break; }
+      all.push(...page);
+      if (page.length < pageSize) { done = true; break; }
+    }
+    if (done) break;
+    startIdx += batch * pageSize;
   }
   return all;
 }
@@ -6068,6 +6655,9 @@ async function scanForEtches(env, network) {
   // of the same value to the same key. Same scaling concern as the petch
   // lookup cache above. Batched once at end-of-scan.
   const _dirtyPetchAids = new Set();
+  // Same pattern for T_DCLAIM (SPEC §5.12 / §5.13). One drop_progress dirty
+  // marker per drop_id that saw a confirmed T_DCLAIM this scan.
+  const _dirtyDropIds = new Set();
   // Seed at `startHeight - 1` so a transient API failure on the very first
   // block of a never-scanned network doesn't write `0` to KV and abandon the
   // entire backfill window. We only update `lastContiguous` after a block's
@@ -6253,6 +6843,15 @@ async function scanForEtches(env, network) {
         const effectiveStart = startH !== 0 ? startH : etchedAt + 1;
         if (h < effectiveStart) continue;
         if (endH !== 0 && h > endH) continue;
+        // §5.9 step 5: Pedersen binding. (amount, blinding) are public in the
+        // envelope, so the indexer must recompute pedersenCommit(amount, blinding)
+        // and verify it equals the declared commitment. Without this gate, any
+        // structurally-valid envelope with a forged commitment lands in the
+        // canonical pmint:* namespace, occupies a slot in cap accounting, and
+        // (for the dapp consumer) is recognized as not-mine but credit-bearing.
+        // The dapp's recovery path always re-checks this binding, so a worker
+        // that skips it is silently more permissive than every wallet.
+        if (!pmintCommitmentOpens(cm.amount, cm.blinding, cm.commitment)) continue;
         const mintMeta = {
           asset_id: expectedAid,   // canonical derived id, not the claimed one
           etch_txid: cm.etch_txid,
@@ -6400,6 +6999,173 @@ async function scanForEtches(env, network) {
           await env.REGISTRY_KV.put(nKey, JSON.stringify(meta));
           found++;
         }
+      } else if (decoded.opcode === T_DROP) {
+        // SPEC §5.12. Two payload shapes share opcode 0x2B:
+        //   - Standard (per_claim > 0): registers a new claim pool keyed by
+        //     drop_id = SHA256(reveal_txid_BE || 0_LE). Cron extracts the
+        //     declared (asset_id, cap, per_claim, merkle_root, expiry,
+        //     ticker, decimals) and pins them under drop:<network>:<drop_id>.
+        //     No tacit UTXO is produced — vout 0 is a pool marker.
+        //   - Reclaim (per_claim = 0 sentinel, SPEC §5.12.1): depositor
+        //     reclaims the unclaimed remainder. Produces ONE tacit UTXO at
+        //     vout 0. The cron's role here is to recognize the shape; the
+        //     cap-credit verification (cap_amount == canonical remainder)
+        //     happens at the dapp's validator + a future scanDrops pass.
+        //     Today we record the reclaim event under a reclaim:<...> key
+        //     so the original drop's drop_progress snapshot can show it as
+        //     "closed by reclaim" without scanning every tx.
+        const cd = decodeCDropPayload(decoded.payload);
+        if (!cd) continue;
+        if (cd.kind === 'cdrop') {
+          // Standard drop: derive drop_id and write metadata. The kernel-sig
+          // soundness gate (Σ C_in − cap_amount·H verifies) requires walking
+          // the asset inputs and their parent commitments — that's the
+          // dapp validator's job. The cron stores the declared metadata so
+          // downstream readers (the dapp's T_DCLAIM validator, GET endpoints)
+          // can look it up by drop_id; structurally-malformed drops are
+          // already rejected by decodeCDropPayload.
+          const dropId = bytesToHex(dropIdFromRevealTxid(tx.txid));
+          const meta = {
+            drop_id: dropId,
+            drop_reveal_txid: tx.txid,
+            asset_id: cd.asset_id,
+            cap_amount: cd.cap_amount,
+            per_claim: cd.per_claim,
+            merkle_root: cd.merkle_root,
+            expiry_height: cd.expiry_height,
+            ticker: cd.ticker,
+            decimals: cd.decimals,
+            asset_input_count: cd.asset_input_count,
+            drop_at_height: h,
+            drop_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            kind: 'drop',
+            network,
+          };
+          // First-canonically-confirmed-wins per drop_id — but drop_id derives
+          // from the reveal tx itself, so two confirmed T_DROPs with the same
+          // drop_id are structurally impossible. A re-scan that hits the same
+          // reveal tx re-writes the same metadata, which is idempotent.
+          await env.REGISTRY_KV.put(dropKey(network, dropId), JSON.stringify(meta));
+          found++;
+        } else if (cd.kind === 'cdrop-reclaim') {
+          // Reclaim shape: record under the original drop's progress for
+          // discoverability. The reclaim's own UTXO credit is gated on a
+          // future scanDrops pass that knows the canonical cumulative
+          // claim count at reclaim's depth-3 acceptance. Recording the
+          // event here is informational only.
+          const meta = {
+            kind: 'drop-reclaim',
+            reclaim_drop_id: cd.reclaim_drop_id,
+            reclaim_txid: tx.txid,
+            asset_id: cd.asset_id,
+            cap_amount: cd.cap_amount,    // declared by depositor; verified at consume time
+            cap_blinding: cd.cap_blinding,
+            reclaim_sig: cd.reclaim_sig,
+            reclaim_at_height: h,
+            reclaim_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            network,
+          };
+          const reclaimKey = network === 'signet'
+            ? `drop-reclaim:${cd.reclaim_drop_id}`
+            : `drop-reclaim:${network}:${cd.reclaim_drop_id}`;
+          await env.REGISTRY_KV.put(reclaimKey, JSON.stringify(meta));
+          found++;
+        }
+      } else if (decoded.opcode === T_DCLAIM) {
+        // SPEC §5.13. Permissionless claim event against a T_DROP parent.
+        // Cron-side validation mirrors T_PMINT's gate:
+        //   §5.13 step 2: drop_id derives from drop_reveal_txid; parent envelope
+        //                 at drop_reveal_txid is T_DROP standard (not reclaim).
+        //   §5.13 step 3: amount == drop.per_claim.
+        //   §5.13 step 5: cumulative_claimed + amount ≤ cap_amount (cap_overflow).
+        //   §5.13 step 6: if merkle-gated, witness verifies (recipient_pub
+        //                 binding, merkle proof, eth_sig recovery) AND
+        //                 (drop_id, leaf_index) not previously claimed.
+        //   §5.13 step 7: Pedersen open: pedersenCommit(amount, blinding) == commitment.
+        //
+        // The dapp's validateOutpoint covers all of these client-side too, so
+        // wallets never credit a bad UTXO regardless of whether the cron
+        // indexed it. The cron's job is the cap-progress snapshot + the
+        // claimed-leaf nullifier set, which read-side endpoints surface.
+        const cdc = decodeCDClaimPayload(decoded.payload);
+        if (!cdc) continue;
+        const dropId = bytesToHex(dropIdFromRevealTxid(cdc.drop_reveal_txid));
+        // Parent drop must be indexed first. If we hit this in the same scan
+        // window as the parent T_DROP and the T_DROP comes after the T_DCLAIM
+        // in canonical order (impossible on Bitcoin chain — drop must confirm
+        // before its claims spend its drop_id reference), or if the parent is
+        // unknown (cron lag, reorg), skip and let a re-scan catch it.
+        const drop = await env.REGISTRY_KV.get(dropKey(network, dropId), 'json');
+        if (!drop || drop.kind !== 'drop') continue;
+        // §5.13 step 3: amount == drop.per_claim.
+        try {
+          if (BigInt(cdc.amount) !== BigInt(drop.per_claim)) continue;
+        } catch { continue; }
+        // Expiry: confirmed_height ≤ drop.expiry_height (when set).
+        if (drop.expiry_height !== 0 && h > drop.expiry_height) continue;
+        // §5.13 step 7: Pedersen binding. Reuses pmintCommitmentOpens since
+        // both opcodes carry plaintext (amount, blinding) and a Pedersen
+        // commitment — identical opening check.
+        if (!pmintCommitmentOpens(cdc.amount, cdc.blinding, cdc.commitment)) continue;
+        // §5.13 step 6: eligibility gate. Merkle-gated drops require witness;
+        // open drops require empty witness.
+        const merkleRootZero = /^0+$/.test(drop.merkle_root);
+        if (merkleRootZero) {
+          if (cdc.witness) continue;
+        } else {
+          if (!cdc.witness) continue;
+          // (drop_id, leaf_index) nullifier check. Indexer atomically
+          // checks + inserts — if the leaf is already in the set, this
+          // T_DCLAIM is a double-claim and is rejected.
+          const leafKey = dclaimLeafKey(network, dropId, cdc.witness.leaf_index);
+          const existingLeaf = await env.REGISTRY_KV.get(leafKey);
+          if (existingLeaf) continue;
+          // Merkle proof + eth_sig + recipient_pub binding are NOT re-verified
+          // here — they're the dapp's validator job, identical to how T_PMINT
+          // structural verification is dapp-side. The cron's role is the cap
+          // counter + nullifier set + metadata cache. A T_DCLAIM that passes
+          // here but has a bad merkle proof is rejected by every wallet on
+          // load; the only "regression" is that it still occupies a cap slot
+          // — same cost-symmetric posture as T_PMINT rewrap (SPEC §5.13
+          // Replay analysis).
+          await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+            drop_id: dropId,
+            leaf_index: cdc.witness.leaf_index,
+            eth_address: cdc.witness.eth_address,
+            claim_txid: tx.txid,
+            claimed_at_height: h,
+            network,
+          }));
+        }
+        // §5.13 step 5: cap_overflow ordering. Same KV.list-based canonical
+        // ordering as T_PMINT — keys embed (height, tx_index, txid) so a
+        // lex sort = canonical chain order. The CAP check happens at
+        // read time via the drop_progress snapshot, NOT here, so dense-block
+        // dclaim flows aren't bottlenecked on a serial KV.list per claim
+        // (matching the T_PMINT optimization that was load-bearing for
+        // FAIR's fair-launch hour).
+        const claimMeta = {
+          drop_id: dropId,
+          drop_reveal_txid: cdc.drop_reveal_txid,
+          asset_id: cdc.asset_id,
+          commitment: cdc.commitment,
+          amount: cdc.amount,
+          blinding: cdc.blinding,
+          witness: cdc.witness,    // null for open drops, object for merkle-gated
+          claim_txid: tx.txid,
+          claim_vout: 0,
+          tx_index: txIndex,
+          claimed_at_height: h,
+          claimed_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          kind: 'dclaim',
+          network,
+        };
+        const dck = dclaimKeyFor(network, dropId, h, txIndex, tx.txid);
+        await env.REGISTRY_KV.put(dck, JSON.stringify(claimMeta));
+        // Stage dirty marker; the end-of-scan loop materializes one KV write
+        // per dirty drop_id (mirrors the petch dirty-set pattern).
+        if (typeof _dirtyDropIds === 'object' && _dirtyDropIds) _dirtyDropIds.add(dropId);
+        found++;
       }
     }
     lastContiguous = h;
@@ -6413,6 +7179,14 @@ async function scanForEtches(env, network) {
   // markPetchDirty is idempotent so re-scans cost no extra correctness.
   for (const aid of _dirtyPetchAids) {
     await markPetchDirty(env, network, aid);
+  }
+  // Same flush for T_DCLAIM-touched drops. Schedules a drop_progress
+  // recompute on the next read or admin rebuild.
+  for (const dropId of _dirtyDropIds) {
+    // TTL keeps the marker bounded so a permanently-stuck recompute (e.g.,
+    // a malformed drop record) doesn't leak storage. The 1-day TTL matches
+    // petch_dirty's posture.
+    await env.REGISTRY_KV.put(dropDirtyKey(network, dropId), '1', { expirationTtl: 86400 });
   }
   await env.REGISTRY_KV.put(lastScannedKey(network), String(lastContiguous));
   return { scanned_txs: scanned, found_etches: found, from: startHeight, to: lastContiguous, tip, network };
@@ -6436,7 +7210,10 @@ export {
   decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeAxferPayload, decodeCBurnPayload,
   decodeCPetchPayload, decodeCPmintPayload,
   decodeTDepositPayload, decodeTWithdrawPayload,
-  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW,
+  encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
+  encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
+  dropIdFromRevealTxid,
+  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
   // Mixer kernel-sig verifier — exported so tests/mixer-conservation can
   // drive it directly against a stubbed apiJson/fetch and confirm the
   // Conservation invariant (SPEC §5.11.4 #1) is enforced. Without dedicated
@@ -6449,6 +7226,12 @@ export {
   // (depth-gated crediting, cap-overflow rejection, reorg-revoke) against
   // an in-memory KV stub without spinning up Cloudflare's runtime.
   PMINT_CONFIRMATION_DEPTH, loadCanonicalPmints,
+  // Commitment-opening gate applied by the cron + hint indexers (issue #31
+  // Problem #3). Exported so tests can pin the valid / mismatch / malformed-
+  // point cases without reaching into the cron's block loop. `pedersenCommit`
+  // is exported alongside so tests can synthesize valid (amount, blinding,
+  // commitment) tuples without re-deriving the NUMS-H generator.
+  pmintCommitmentOpens, pedersenCommit,
   // Snapshot-based cap-progress layer (the O(1) read replacement for
   // loadCanonicalPmints fan-out). Exported so tests can simulate the
   // refresh/read/dirty-mark lifecycle without a live Cloudflare runtime.
@@ -6863,6 +7646,30 @@ export default {
     // Permissionless-mint registry (T_PETCH-rooted). Kept separate from
     // /assets so consumers can filter cleanly without one mode polluting the
     // other; clients wanting "every asset" union /assets and /petch-assets.
+    // Public read-only progress endpoint for the cron-driven PMINT backfill
+    // (issue #31 FAIR recovery). Returns each configured backfill's cursor
+    // state — current height, total writes, completion timestamp. No auth
+    // because it exposes nothing sensitive and no destructive operations;
+    // op visibility is useful while the multi-hour backfill is in flight.
+    if (url.pathname === '/pmint-backfills' && req.method === 'GET') {
+      try {
+        const out = [];
+        for (const cfg of PMINT_BACKFILLS) {
+          const cursor = await env.REGISTRY_KV.get(pmintBackfillCursorKey(cfg.network, cfg.aid), 'json');
+          out.push({
+            network: cfg.network,
+            asset_id: cfg.aid,
+            from_height: cfg.from_height,
+            end_height: cfg.end_height,
+            cursor: cursor || null,
+            progress_pct: cursor
+              ? Math.min(100, Math.round(((cursor.next_height - cfg.from_height) / (cfg.end_height - cfg.from_height + 1)) * 100))
+              : 0,
+          });
+        }
+        return jsonResponse({ backfills: out }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
     if (url.pathname === '/petch-assets' && req.method === 'GET') {
       // Same SWR pattern as /assets and /market: HIT inside FRESH window,
       // STALE-serve + background refresh between FRESH and STALE, MISS path
@@ -6944,6 +7751,197 @@ export default {
       }
       return jsonResponse(v, 200, cors);
     }
+
+    // ============== /drops-onchain (SPEC §5.12 / §5.13) ==============
+    // Distinct from /drops, which lists off-chain worker-mediated airdrop
+    // announcements. This namespace surfaces T_DROP-rooted on-chain claim
+    // pools indexed by the cron scanner. Three endpoints:
+    //   GET /drops-onchain                  — list active drops on this network
+    //   GET /drops-onchain/:drop_id         — single drop metadata + progress
+    //   GET /drops-onchain/:drop_id/claims  — paginated T_DCLAIM event list
+    //   POST /drops-hint                    — targeted indexing for fresh broadcasts
+    if (url.pathname === '/drops-onchain' && req.method === 'GET') {
+      const list = await env.REGISTRY_KV.list({ prefix: dropPrefix(network), limit: 1000 });
+      const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+      const drops = [];
+      const tip = await fetchTipHeight(env, network).catch(() => null);
+      for (const v of fetched) {
+        if (!v || v.kind !== 'drop') continue;
+        // Cross-network bleed guard: prefix lookups on signet match mainnet
+        // keys too (legacy unprefixed-signet convention). Same fix pattern
+        // as handleDropAnnounceList.
+        if ((v.network || 'signet') !== network) continue;
+        // Expiry: omit expired drops by default. Callers wanting to see
+        // expired drops (for reclaim UX) can pass ?include_expired=1.
+        const includeExpired = url.searchParams.get('include_expired') === '1';
+        if (!includeExpired && v.expiry_height && Number.isFinite(tip) && tip > v.expiry_height) continue;
+        drops.push(v);
+      }
+      // Newest first so freshly-confirmed drops surface immediately.
+      drops.sort((a, b) => (b.drop_at_height || 0) - (a.drop_at_height || 0));
+      return jsonResponse({ network, count: drops.length, drops, tip }, 200, cors);
+    }
+    const mdo = url.pathname.match(/^\/drops-onchain\/([0-9a-f]{64})$/);
+    if (mdo && req.method === 'GET') {
+      const dropId = mdo[1];
+      const v = await env.REGISTRY_KV.get(dropKey(network, dropId), 'json');
+      if (!v) return jsonResponse({ error: 'unknown drop_id' }, 404, cors);
+      if (v.kind !== 'drop') return jsonResponse({ error: 'drop_id does not resolve to a T_DROP record' }, 404, cors);
+      // Inline cap-progress computation. For scale a drop_progress snapshot
+      // (parallel to petch_progress) is the right answer; MVP uses a
+      // KV.list scan capped at 10000 claims.
+      const claimList = await env.REGISTRY_KV.list({
+        prefix: dclaimPrefix(network, dropId),
+        limit: 10000,
+      });
+      let claim_count = 0;
+      let claimed_amount = 0n;
+      const perClaim = BigInt(v.per_claim);
+      for (const _k of claimList.keys) {
+        claim_count++;
+        claimed_amount += perClaim;
+      }
+      v.claim_count = claim_count;
+      v.claimed_amount = claimed_amount.toString();
+      const capAmount = BigInt(v.cap_amount);
+      const remainingAmount = capAmount - claimed_amount;
+      v.remaining_amount = (remainingAmount < 0n ? 0n : remainingAmount).toString();
+      v.claims_remaining = String(remainingAmount > 0n ? remainingAmount / perClaim : 0n);
+      v.list_complete = !!claimList.list_complete;
+      const reclaimKey = network === 'signet'
+        ? `drop-reclaim:${dropId}`
+        : `drop-reclaim:${network}:${dropId}`;
+      const reclaim = await env.REGISTRY_KV.get(reclaimKey, 'json');
+      if (reclaim) v.reclaimed = reclaim;
+      return jsonResponse(v, 200, cors);
+    }
+    const mdoc = url.pathname.match(/^\/drops-onchain\/([0-9a-f]{64})\/claims$/);
+    if (mdoc && req.method === 'GET') {
+      const dropId = mdoc[1];
+      const drop = await env.REGISTRY_KV.get(dropKey(network, dropId), 'json');
+      if (!drop) return jsonResponse({ error: 'unknown drop_id' }, 404, cors);
+      const limit = Math.min(Number(url.searchParams.get('limit')) || 1000, 10000);
+      const cursor = url.searchParams.get('cursor') || undefined;
+      const list = await env.REGISTRY_KV.list({
+        prefix: dclaimPrefix(network, dropId),
+        limit,
+        cursor,
+      });
+      const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+      const claims = fetched.filter(v => v && v.kind === 'dclaim');
+      return jsonResponse({
+        drop_id: dropId,
+        count: claims.length,
+        claims,
+        cursor: list.list_complete ? null : list.cursor,
+        list_complete: !!list.list_complete,
+      }, 200, cors);
+    }
+    // POST /drops-hint — targeted indexing for a freshly-broadcast T_DROP or
+    // T_DCLAIM, mirrors POST /assets/hint for T_PMINT. Lets a dapp force
+    // immediate KV write after broadcast without waiting up to 5 min for the
+    // next cron tick. Idempotent: re-hinting a tx re-decodes and re-writes
+    // with the same metadata; no-op for already-indexed entries.
+    if (url.pathname === '/drops-hint' && req.method === 'POST') {
+      let body;
+      try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+      const txid = String(body?.txid || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(txid)) return jsonResponse({ error: 'txid must be 64-char hex' }, 400, cors);
+      let tx;
+      try { tx = await apiJson(env, network, `/tx/${txid}`); }
+      catch (e) { return jsonResponse({ error: `tx fetch failed: ${e.message}` }, 502, cors); }
+      if (!tx?.vin?.[0]?.witness || tx.vin[0].witness.length < 3) {
+        return jsonResponse({ error: 'tx vin[0] does not carry a tacit envelope' }, 400, cors);
+      }
+      let decoded;
+      try { decoded = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1])); } catch { decoded = null; }
+      if (!decoded) return jsonResponse({ error: 'envelope decode failed' }, 400, cors);
+      const h = Number(tx.status?.block_height) || 0;
+      const txIndex = 0;   // hint can't know canonical tx_index without a block fetch;
+                           // cron's next pass will overwrite with the right value (T_PMINT precedent).
+      if (decoded.opcode === T_DROP) {
+        const cd = decodeCDropPayload(decoded.payload);
+        if (!cd) return jsonResponse({ error: 'invalid T_DROP payload' }, 400, cors);
+        if (cd.kind === 'cdrop') {
+          const dropId = bytesToHex(dropIdFromRevealTxid(txid));
+          const meta = {
+            drop_id: dropId,
+            drop_reveal_txid: txid,
+            asset_id: cd.asset_id,
+            cap_amount: cd.cap_amount,
+            per_claim: cd.per_claim,
+            merkle_root: cd.merkle_root,
+            expiry_height: cd.expiry_height,
+            ticker: cd.ticker,
+            decimals: cd.decimals,
+            asset_input_count: cd.asset_input_count,
+            drop_at_height: h,
+            drop_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            kind: 'drop',
+            hinted: true,
+            network,
+          };
+          await env.REGISTRY_KV.put(dropKey(network, dropId), JSON.stringify(meta));
+          return jsonResponse({ ok: true, drop_id: dropId, kind: 'drop' }, 200, cors);
+        } else {
+          return jsonResponse({ ok: true, kind: 'drop-reclaim', note: 'reclaim variant — credit gated on scanDrops future work' }, 200, cors);
+        }
+      }
+      if (decoded.opcode === T_DCLAIM) {
+        const cdc = decodeCDClaimPayload(decoded.payload);
+        if (!cdc) return jsonResponse({ error: 'invalid T_DCLAIM payload' }, 400, cors);
+        const dropId = bytesToHex(dropIdFromRevealTxid(cdc.drop_reveal_txid));
+        const drop = await env.REGISTRY_KV.get(dropKey(network, dropId), 'json');
+        if (!drop || drop.kind !== 'drop') {
+          return jsonResponse({ error: 'parent T_DROP not indexed yet — hint the drop first' }, 400, cors);
+        }
+        try {
+          if (BigInt(cdc.amount) !== BigInt(drop.per_claim)) return jsonResponse({ error: 'amount != drop.per_claim' }, 400, cors);
+        } catch { return jsonResponse({ error: 'amount parse failed' }, 400, cors); }
+        if (drop.expiry_height !== 0 && h > drop.expiry_height) return jsonResponse({ error: 'claim past expiry' }, 400, cors);
+        if (!pmintCommitmentOpens(cdc.amount, cdc.blinding, cdc.commitment)) return jsonResponse({ error: 'Pedersen open failed' }, 400, cors);
+        const merkleRootZero = /^0+$/.test(drop.merkle_root);
+        if (merkleRootZero) {
+          if (cdc.witness) return jsonResponse({ error: 'open drop must have empty witness' }, 400, cors);
+        } else {
+          if (!cdc.witness) return jsonResponse({ error: 'merkle-gated drop requires witness' }, 400, cors);
+          const leafKey = dclaimLeafKey(network, dropId, cdc.witness.leaf_index);
+          const existingLeaf = await env.REGISTRY_KV.get(leafKey);
+          if (existingLeaf) return jsonResponse({ error: 'leaf already claimed' }, 400, cors);
+          await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+            drop_id: dropId,
+            leaf_index: cdc.witness.leaf_index,
+            eth_address: cdc.witness.eth_address,
+            claim_txid: txid,
+            claimed_at_height: h,
+            hinted: true,
+            network,
+          }));
+        }
+        const claimMeta = {
+          drop_id: dropId,
+          drop_reveal_txid: cdc.drop_reveal_txid,
+          asset_id: cdc.asset_id,
+          commitment: cdc.commitment,
+          amount: cdc.amount,
+          blinding: cdc.blinding,
+          witness: cdc.witness,
+          claim_txid: txid,
+          claim_vout: 0,
+          tx_index: txIndex,
+          claimed_at_height: h,
+          claimed_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          kind: 'dclaim',
+          hinted: true,
+          network,
+        };
+        const dck = dclaimKeyFor(network, dropId, h, txIndex, txid);
+        await env.REGISTRY_KV.put(dck, JSON.stringify(claimMeta));
+        return jsonResponse({ ok: true, drop_id: dropId, kind: 'dclaim' }, 200, cors);
+      }
+      return jsonResponse({ error: `not a T_DROP or T_DCLAIM envelope (opcode 0x${decoded.opcode.toString(16)})` }, 400, cors);
+    }
+
     const mpm = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/pmints$/);
     if (mpm && req.method === 'GET') {
       const creditedOnly = url.searchParams.get('credited') === '1';
@@ -7328,6 +8326,142 @@ export default {
         }, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
+    // POST /admin/pmint-backfill?aid=<hex>&from=<h>&to=<h>[&max_blocks=N][&dry_run=1]
+    // Rescans the chain across [from, min(to, from+max_blocks-1)] for T_PMINT
+    // envelopes against `aid` and writes any canonical pmint:* entries the
+    // cron missed. Recovers dense fair-launch blocks where the per-cron-tick
+    // subrequest budget tipped past 1000 before the block's pmint tail was
+    // indexed (silent-drop case documented at the §5.9 cron block). Applies
+    // §5.9 steps 1-5 identically to the cron — including the commitment-
+    // opening check — so this never indexes anything the cron would have
+    // rejected. Asset-scoped + height-bounded; long ranges walk in chunks.
+    if (url.pathname === '/admin/pmint-backfill' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid');
+        if (!aid || !/^[0-9a-f]{64}$/.test(aid)) {
+          return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
+        }
+        const from = parseInt(url.searchParams.get('from') || '', 10);
+        const to = parseInt(url.searchParams.get('to') || '', 10);
+        if (!Number.isInteger(from) || from < 0) return jsonResponse({ error: 'from required (non-negative int)' }, 400, cors);
+        if (!Number.isInteger(to) || to < from) return jsonResponse({ error: 'to required (>= from)' }, 400, cors);
+        // 5 blocks fits a single Worker invocation comfortably on dense FAIR-
+        // scale assets: ~12 page-fetches/block + ~300 pmints/block × (KV.get
+        // already-present probe is replaced by the upfront list, so per-pmint
+        // cost is ~1 KV.put). Total subrequests stay under the 1000 ceiling
+        // with headroom for the upfront key-list (≤300 calls for FAIR's ~93k
+        // existing entries). Capped at 50 so a runaway parameter can't loop.
+        const maxBlocks = Math.max(1, Math.min(50, parseInt(url.searchParams.get('max_blocks') || '5', 10) || 5));
+        const dryRun = url.searchParams.get('dry_run') === '1';
+        const endHeight = Math.min(to, from + maxBlocks - 1);
+        const petch = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
+        if (!petch) return jsonResponse({ error: 'unknown petch asset_id' }, 404, cors);
+        // Build the set of canonical (h, ti, txid) keys already in KV. One
+        // KV.list pass up front replaces a per-candidate KV.get probe inside
+        // the block loop — for FAIR (~94k existing entries) that's ~94 list
+        // calls vs ~1500 gets if we did one per candidate. The orphan range
+        // is included in the set so we don't double-write a pmint that's
+        // already pending at height-0 (the orphan promoter will rewrite it).
+        const existing = new Set();
+        {
+          let cursor = null;
+          for (let page = 0; page < PETCH_REFRESH_MAX_PAGES; page++) {
+            const lst = await env.REGISTRY_KV.list({
+              prefix: pmintPrefix(network, aid),
+              limit: 1000,
+              ...(cursor ? { cursor } : {}),
+            });
+            for (const k of lst.keys) existing.add(k.name);
+            if (lst.list_complete) break;
+            cursor = lst.cursor;
+            if (!cursor) break;
+          }
+        }
+        const stats = {
+          blocks_scanned: 0,
+          txs_scanned: 0,
+          wrote: 0,
+          already_present: 0,
+          rejected_decoder: 0,
+          rejected_aid_derivation: 0,
+          rejected_wrong_asset: 0,
+          rejected_wrong_amount: 0,
+          rejected_out_of_window: 0,
+          rejected_commitment_mismatch: 0,
+        };
+        for (let h = from; h <= endHeight; h++) {
+          let blockHash;
+          try { blockHash = (await apiText(env, `/block-height/${h}`, {}, network)).trim(); }
+          catch { break; }
+          let txs;
+          try { txs = await fetchBlockTxsParallel(env, blockHash, network); }
+          catch { break; }
+          stats.blocks_scanned++;
+          let txIndex = -1;
+          for (const tx of txs) {
+            txIndex++;
+            stats.txs_scanned++;
+            if (!tx.vin || !tx.vin[0] || !tx.vin[0].witness || tx.vin[0].witness.length < 3) continue;
+            let envBytes;
+            try { envBytes = hexToBytes(tx.vin[0].witness[1]); } catch { continue; }
+            const decoded = decodeEnvelopeScript(envBytes);
+            if (!decoded || decoded.opcode !== T_PMINT) continue;
+            const cm = decodeCPmintPayload(decoded.payload);
+            if (!cm) { stats.rejected_decoder++; continue; }
+            const derivedAid = assetIdFor(cm.etch_txid, 0);
+            if (derivedAid !== cm.asset_id) { stats.rejected_aid_derivation++; continue; }
+            // Asset filter — pmints for other assets in the same block are
+            // irrelevant to this call. A separate backfill run handles them.
+            if (derivedAid !== aid) { stats.rejected_wrong_asset++; continue; }
+            try {
+              if (BigInt(cm.amount) !== BigInt(petch.mint_limit)) { stats.rejected_wrong_amount++; continue; }
+            } catch { stats.rejected_wrong_amount++; continue; }
+            const startH = Number(petch.mint_start_height) || 0;
+            const endH = Number(petch.mint_end_height) || 0;
+            const etchedAt = Number(petch.etched_at_height) || 0;
+            const effectiveStart = startH !== 0 ? startH : etchedAt + 1;
+            if (h < effectiveStart || (endH !== 0 && h > endH)) { stats.rejected_out_of_window++; continue; }
+            if (!pmintCommitmentOpens(cm.amount, cm.blinding, cm.commitment)) {
+              stats.rejected_commitment_mismatch++; continue;
+            }
+            const pmk = pmintKeyFor(network, derivedAid, h, txIndex, tx.txid);
+            if (existing.has(pmk)) { stats.already_present++; continue; }
+            if (!dryRun) {
+              const mintMeta = {
+                asset_id: derivedAid,
+                etch_txid: cm.etch_txid,
+                mint_txid: tx.txid,
+                mint_vout: 0,
+                commitment: cm.commitment,
+                amount: cm.amount,
+                blinding: cm.blinding,
+                minted_at_height: h,
+                minted_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+                kind: 'pmint',
+                tx_index: txIndex,
+                network,
+              };
+              await env.REGISTRY_KV.put(pmk, JSON.stringify(mintMeta));
+              existing.add(pmk);
+            }
+            stats.wrote++;
+          }
+        }
+        if (stats.wrote > 0 && !dryRun) {
+          await markPetchDirty(env, network, aid);
+          const tip = await fetchTipHeight(env, network);
+          ctx.waitUntil(refreshAndStorePetchProgress(env, network, aid, tip, petch).catch(() => {}));
+          ctx.waitUntil(caches.default.delete(petchAssetsCacheKey(network)).catch(() => {}));
+        }
+        return jsonResponse({
+          network, aid, dry_run: dryRun,
+          from, to: endHeight, requested_to: to,
+          complete: endHeight >= to,
+          ...stats,
+        }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
 
     return jsonResponse({ error: 'not found' }, 404, cors);
   },
@@ -7377,6 +8511,12 @@ export default {
       await Promise.allSettled(
         NETWORKS.map(net => petchAssetsComputeAndCache(env, net).catch(() => {})),
       );
+      // One-shot PMINT backfill for FAIR (issue #31 recovery). Self-managed
+      // KV cursor; no-op after `completed_at` is set on the cursor. Runs LAST
+      // so it has whatever wall-time budget remains after the cron's regular
+      // work — partial-block writes are idempotent (the next tick retries the
+      // same height until the cursor advances).
+      await runPmintBackfills(env).catch(() => {});
     })());
   },
 };

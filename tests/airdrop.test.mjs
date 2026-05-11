@@ -18,6 +18,11 @@ import {
   truncateAmountDecimals, mergeAirdropRows, parseBlacklist,
   buildAirdropClaimMsg, eip191Hash, recoverEthAddrFromSig, verifyAirdropClaimSig,
   _signEip191WithPriv, _ethAddrFromPriv,
+  // T_DROP / T_DCLAIM codec (SPEC §5.12 / §5.13)
+  T_DROP, T_DCLAIM,
+  encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
+  encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
+  dropIdFromRevealTxid, dropKernelMsg, dropReclaimMsg,
 } from './composition.mjs';
 import * as secp from '@noble/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3';
@@ -988,6 +993,384 @@ test('discovery cross-check: missing snapshot asset_id is REJECTED', () => {
   };
   try { _discoveryAnnouncementCrosscheck(announcement, blob); return false; }
   catch (e) { return /asset_id.*does not match/i.test(e.message); }
+});
+
+console.log('\nT_DROP / T_DCLAIM wire format (SPEC §5.12 / §5.13):');
+
+// Fixed test fixtures so wire-format breaks are detectable byte-for-byte.
+const DROP_ASSET_ID = hexToBytes('f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b');
+const DROP_MERKLE_ROOT = hexToBytes('aa'.repeat(32));
+const DROP_KERNEL_SIG = hexToBytes('cc'.repeat(64));
+const DROP_REVEAL_TXID = hexToBytes('bb'.repeat(32));
+const DROP_COMMITMENT = hexToBytes('02' + '11'.repeat(32));   // dummy 33-byte compressed
+const DROP_BLINDING = hexToBytes('dd'.repeat(32));
+const DROP_RECIPIENT_PUB = hexToBytes('03' + '22'.repeat(32));
+const DROP_ETH_ADDR = hexToBytes('11'.repeat(20));
+const DROP_ETH_SIG = hexToBytes('99'.repeat(65));
+
+test('T_DROP encode → decode round-trip (standard shape, ticker present)', () => {
+  const payload = encodeCDropPayload({
+    assetId: DROP_ASSET_ID,
+    capAmount: 1_000_000n,
+    perClaim: 1_000n,
+    merkleRoot: DROP_MERKLE_ROOT,
+    expiryHeight: 850_000,
+    ticker: 'TAC',
+    decimals: 8,
+    assetInputCount: 1,
+    kernelSig: DROP_KERNEL_SIG,
+  });
+  const d = decodeCDropPayload(payload);
+  return d
+      && d.kind === 'cdrop'
+      && bytesEq(d.assetId, DROP_ASSET_ID)
+      && d.capAmount === 1_000_000n
+      && d.perClaim === 1_000n
+      && bytesEq(d.merkleRoot, DROP_MERKLE_ROOT)
+      && d.expiryHeight === 850_000
+      && d.ticker === 'TAC'
+      && d.decimals === 8
+      && d.assetInputCount === 1
+      && bytesEq(d.kernelSig, DROP_KERNEL_SIG);
+});
+
+test('T_DROP encode → decode round-trip (no ticker, open drop)', () => {
+  // ticker_len = 0, merkle_root = all-zeros (open FCFS)
+  const payload = encodeCDropPayload({
+    assetId: DROP_ASSET_ID,
+    capAmount: 1_000_000n,
+    perClaim: 1_000n,
+    merkleRoot: new Uint8Array(32),
+    expiryHeight: 0,
+    ticker: '',
+    decimals: 0,
+    assetInputCount: 3,
+    kernelSig: DROP_KERNEL_SIG,
+  });
+  const d = decodeCDropPayload(payload);
+  if (!d || d.kind !== 'cdrop') return false;
+  if (d.ticker !== null) return false;
+  if (d.decimals !== 0) return false;
+  if (d.assetInputCount !== 3) return false;
+  if (d.expiryHeight !== 0) return false;
+  // merkle_root all-zeros = open
+  for (let i = 0; i < 32; i++) if (d.merkleRoot[i] !== 0) return false;
+  return true;
+});
+
+test('T_DROP byte layout pinned: first 9 bytes are opcode + asset_id[0..7]', () => {
+  // Domain-tag-style pin: if the encoder ever rearranges fields, the first
+  // 9 bytes of the encoded payload would shift. Lock the byte position so
+  // any reordering breaks here, not at a downstream consumer.
+  const payload = encodeCDropPayload({
+    assetId: DROP_ASSET_ID,
+    capAmount: 1n, perClaim: 1n,
+    merkleRoot: new Uint8Array(32), expiryHeight: 0,
+    ticker: '', decimals: 0, assetInputCount: 1, kernelSig: DROP_KERNEL_SIG,
+  });
+  if (payload[0] !== T_DROP) return false;
+  for (let i = 0; i < 8; i++) if (payload[1 + i] !== DROP_ASSET_ID[i]) return false;
+  return true;
+});
+
+test('T_DROP encoder rejects cap_amount = 0', () => {
+  try {
+    encodeCDropPayload({
+      assetId: DROP_ASSET_ID, capAmount: 0n, perClaim: 1n,
+      merkleRoot: new Uint8Array(32), expiryHeight: 0,
+      ticker: '', decimals: 0, assetInputCount: 1, kernelSig: DROP_KERNEL_SIG,
+    });
+    return false;
+  } catch (e) { return /cap_amount.*u64/.test(e.message); }
+});
+
+test('T_DROP encoder rejects per_claim = 0 (standard shape)', () => {
+  try {
+    encodeCDropPayload({
+      assetId: DROP_ASSET_ID, capAmount: 1n, perClaim: 0n,
+      merkleRoot: new Uint8Array(32), expiryHeight: 0,
+      ticker: '', decimals: 0, assetInputCount: 1, kernelSig: DROP_KERNEL_SIG,
+    });
+    return false;
+  } catch (e) { return /per_claim.*u64/.test(e.message); }
+});
+
+test('T_DROP encoder rejects non-divisible cap', () => {
+  try {
+    encodeCDropPayload({
+      assetId: DROP_ASSET_ID, capAmount: 100n, perClaim: 33n,
+      merkleRoot: new Uint8Array(32), expiryHeight: 0,
+      ticker: '', decimals: 0, assetInputCount: 1, kernelSig: DROP_KERNEL_SIG,
+    });
+    return false;
+  } catch (e) { return /divisible/.test(e.message); }
+});
+
+test('T_DROP encoder rejects asset_input_count out of range', () => {
+  for (const aic of [0, 17, 100]) {
+    try {
+      encodeCDropPayload({
+        assetId: DROP_ASSET_ID, capAmount: 1n, perClaim: 1n,
+        merkleRoot: new Uint8Array(32), expiryHeight: 0,
+        ticker: '', decimals: 0, assetInputCount: aic, kernelSig: DROP_KERNEL_SIG,
+      });
+      return false;
+    } catch { /* expected */ }
+  }
+  return true;
+});
+
+test('T_DROP reclaim shape round-trip', () => {
+  const reclaimDropId = hexToBytes('ee'.repeat(32));
+  const reclaimSig = hexToBytes('66'.repeat(64));
+  const capBlinding = hexToBytes('77'.repeat(32));
+  const payload = encodeCDropReclaimPayload({
+    assetId: DROP_ASSET_ID,
+    capAmount: 100_000n,
+    reclaimDropId,
+    reclaimSig,
+    capBlinding,
+  });
+  const d = decodeCDropPayload(payload);
+  return d
+      && d.kind === 'cdrop-reclaim'
+      && bytesEq(d.assetId, DROP_ASSET_ID)
+      && d.capAmount === 100_000n
+      && bytesEq(d.reclaimDropId, reclaimDropId)
+      && bytesEq(d.reclaimSig, reclaimSig)
+      && bytesEq(d.capBlinding, capBlinding);
+});
+
+test('T_DROP reclaim rejects zero cap_blinding', () => {
+  try {
+    encodeCDropReclaimPayload({
+      assetId: DROP_ASSET_ID,
+      capAmount: 1n,
+      reclaimDropId: hexToBytes('ee'.repeat(32)),
+      reclaimSig: hexToBytes('66'.repeat(64)),
+      capBlinding: new Uint8Array(32),    // all-zero
+    });
+    return false;
+  } catch (e) { return /cap_blinding.*non-zero/.test(e.message); }
+});
+
+test('T_DROP reclaim payload distinguishable from standard by per_claim=0 sentinel', () => {
+  const reclaim = encodeCDropReclaimPayload({
+    assetId: DROP_ASSET_ID,
+    capAmount: 1n,
+    reclaimDropId: hexToBytes('ee'.repeat(32)),
+    reclaimSig: hexToBytes('66'.repeat(64)),
+    capBlinding: hexToBytes('77'.repeat(32)),
+  });
+  // per_claim bytes are at offset 1 + 32 + 8 = 41. All zero for reclaim.
+  for (let i = 0; i < 8; i++) if (reclaim[41 + i] !== 0) return false;
+  // Standard shape has non-zero per_claim:
+  const std = encodeCDropPayload({
+    assetId: DROP_ASSET_ID,
+    capAmount: 1n, perClaim: 1n,
+    merkleRoot: new Uint8Array(32), expiryHeight: 0,
+    ticker: '', decimals: 0, assetInputCount: 1, kernelSig: DROP_KERNEL_SIG,
+  });
+  // Standard has per_claim = 1, so byte 41 should be 0x01
+  return std[41] === 0x01;
+});
+
+test('T_DCLAIM encode → decode round-trip (open drop, no witness)', () => {
+  const payload = encodeCDClaimPayload({
+    assetId: DROP_ASSET_ID,
+    dropRevealTxid: DROP_REVEAL_TXID,
+    commitment: DROP_COMMITMENT,
+    amount: 1_000n,
+    blinding: DROP_BLINDING,
+    witness: new Uint8Array(0),
+  });
+  const d = decodeCDClaimPayload(payload);
+  return d
+      && d.kind === 'cdclaim'
+      && bytesEq(d.assetId, DROP_ASSET_ID)
+      && bytesEq(d.dropRevealTxid, DROP_REVEAL_TXID)
+      && bytesEq(d.commitment, DROP_COMMITMENT)
+      && d.amount === 1_000n
+      && bytesEq(d.blinding, DROP_BLINDING)
+      && d.witness === null;
+});
+
+test('T_DCLAIM encode → decode round-trip (merkle-gated, witness present)', () => {
+  const proofPath = [
+    hexToBytes('aa'.repeat(32)),
+    hexToBytes('bb'.repeat(32)),
+    hexToBytes('cc'.repeat(32)),
+  ];
+  const witness = encodeCDClaimWitness({
+    recipientPub: DROP_RECIPIENT_PUB,
+    leafIndex: 42,
+    ethAddress: DROP_ETH_ADDR,
+    ethSig: DROP_ETH_SIG,
+    proofPath,
+  });
+  const payload = encodeCDClaimPayload({
+    assetId: DROP_ASSET_ID,
+    dropRevealTxid: DROP_REVEAL_TXID,
+    commitment: DROP_COMMITMENT,
+    amount: 1_000n,
+    blinding: DROP_BLINDING,
+    witness,
+  });
+  const d = decodeCDClaimPayload(payload);
+  if (!d || d.kind !== 'cdclaim' || d.witness === null) return false;
+  if (!bytesEq(d.witness.recipientPub, DROP_RECIPIENT_PUB)) return false;
+  if (d.witness.leafIndex !== 42) return false;
+  if (!bytesEq(d.witness.ethAddress, DROP_ETH_ADDR)) return false;
+  if (!bytesEq(d.witness.ethSig, DROP_ETH_SIG)) return false;
+  if (d.witness.proofPath.length !== 3) return false;
+  for (let i = 0; i < 3; i++) {
+    if (!bytesEq(d.witness.proofPath[i], proofPath[i])) return false;
+  }
+  return true;
+});
+
+test('T_DCLAIM merkle-gated witness with empty proof_path (leaf == root edge case)', () => {
+  const witness = encodeCDClaimWitness({
+    recipientPub: DROP_RECIPIENT_PUB,
+    leafIndex: 0,
+    ethAddress: DROP_ETH_ADDR,
+    ethSig: DROP_ETH_SIG,
+    proofPath: [],
+  });
+  const payload = encodeCDClaimPayload({
+    assetId: DROP_ASSET_ID, dropRevealTxid: DROP_REVEAL_TXID, commitment: DROP_COMMITMENT,
+    amount: 1n, blinding: DROP_BLINDING, witness,
+  });
+  const d = decodeCDClaimPayload(payload);
+  return d && d.witness && d.witness.proofPath.length === 0;
+});
+
+test('T_DCLAIM byte layout: opcode + asset_id pinned at offset 0..32', () => {
+  const payload = encodeCDClaimPayload({
+    assetId: DROP_ASSET_ID, dropRevealTxid: DROP_REVEAL_TXID, commitment: DROP_COMMITMENT,
+    amount: 1n, blinding: DROP_BLINDING, witness: new Uint8Array(0),
+  });
+  if (payload[0] !== T_DCLAIM) return false;
+  for (let i = 0; i < 8; i++) if (payload[1 + i] !== DROP_ASSET_ID[i]) return false;
+  return true;
+});
+
+test('T_DCLAIM decoder rejects zero blinding', () => {
+  // Forge a payload where blinding bytes are all zero; decoder must reject.
+  // We bypass the encoder (which would itself reject) by manually assembling.
+  const amtLE = new Uint8Array(8); amtLE[0] = 1;
+  const wLen = new Uint8Array(2);
+  const payload = concatBytes(
+    new Uint8Array([T_DCLAIM]), DROP_ASSET_ID, DROP_REVEAL_TXID, DROP_COMMITMENT,
+    amtLE, new Uint8Array(32), wLen,
+  );
+  return decodeCDClaimPayload(payload) === null;
+});
+
+test('T_DCLAIM decoder rejects malformed recipient_pub prefix (must be 02 or 03)', () => {
+  // Craft a witness with prefix 0x04 (uncompressed-style) — must reject.
+  const badPub = new Uint8Array(33); badPub[0] = 0x04;
+  const wHeader = concatBytes(
+    badPub,
+    new Uint8Array(4),   // leaf_index
+    new Uint8Array(20),  // eth_address
+    new Uint8Array(65),  // eth_sig
+    new Uint8Array([0]), // proof_len = 0
+  );
+  const payload = encodeCDClaimPayload({
+    assetId: DROP_ASSET_ID, dropRevealTxid: DROP_REVEAL_TXID, commitment: DROP_COMMITMENT,
+    amount: 1n, blinding: DROP_BLINDING, witness: wHeader,
+  });
+  return decodeCDClaimPayload(payload) === null;
+});
+
+test('dropIdFromRevealTxid: SHA256(reveal_txid_BE || 0_LE) matches asset_id derivation', () => {
+  // Test vector: known reveal txid → expected drop_id
+  const revealTxidHex = 'a'.repeat(64);
+  const got = dropIdFromRevealTxid(revealTxidHex);
+  // Reproduce inline: drop_id = SHA256(reverse(reveal_txid) || 0_LE_4)
+  const expected = sha256(concatBytes(
+    new Uint8Array([...hexToBytes(revealTxidHex)].reverse()),
+    new Uint8Array(4),
+  ));
+  return got.length === 32 && got.every((b, i) => b === expected[i]);
+});
+
+test('dropKernelMsg: deterministic for fixed inputs', () => {
+  const args = {
+    assetId: DROP_ASSET_ID,
+    capAmount: 1_000_000n,
+    perClaim: 1_000n,
+    merkleRoot: DROP_MERKLE_ROOT,
+    expiryHeight: 850_000,
+    assetInputCount: 2,
+    assetInputs: [
+      { txid: 'a'.repeat(64), vout: 0 },
+      { txid: 'b'.repeat(64), vout: 7 },
+    ],
+  };
+  const m1 = dropKernelMsg(args);
+  const m2 = dropKernelMsg(args);
+  return m1.length === 32 && bytesEq(m1, m2);
+});
+
+test('dropKernelMsg: differs when asset_inputs differ (rewrap-replay defense)', () => {
+  // Two T_DROPs with identical metadata but different asset inputs MUST
+  // produce different kernel msgs — this is the rewrap-replay defense.
+  const base = {
+    assetId: DROP_ASSET_ID,
+    capAmount: 1n, perClaim: 1n,
+    merkleRoot: DROP_MERKLE_ROOT, expiryHeight: 0,
+    assetInputCount: 1,
+  };
+  const m1 = dropKernelMsg({ ...base, assetInputs: [{ txid: 'a'.repeat(64), vout: 0 }] });
+  const m2 = dropKernelMsg({ ...base, assetInputs: [{ txid: 'b'.repeat(64), vout: 0 }] });
+  return !bytesEq(m1, m2);
+});
+
+test('dropKernelMsg: differs when cap_amount differs', () => {
+  const base = {
+    assetId: DROP_ASSET_ID,
+    perClaim: 1n,
+    merkleRoot: DROP_MERKLE_ROOT, expiryHeight: 0,
+    assetInputCount: 1,
+    assetInputs: [{ txid: 'a'.repeat(64), vout: 0 }],
+  };
+  const m1 = dropKernelMsg({ ...base, capAmount: 1n });
+  const m2 = dropKernelMsg({ ...base, capAmount: 2n });
+  return !bytesEq(m1, m2);
+});
+
+test('dropReclaimMsg: deterministic + binds reclaim_drop_id + cap_amount', () => {
+  const args = {
+    reclaimDropId: hexToBytes('ee'.repeat(32)),
+    assetId: DROP_ASSET_ID,
+    capAmount: 100_000n,
+  };
+  const m1 = dropReclaimMsg(args);
+  const m2 = dropReclaimMsg(args);
+  if (!bytesEq(m1, m2)) return false;
+  // Different cap_amount → different msg (prevents an attacker from claiming
+  // a different reclaim amount with the same sig)
+  const m3 = dropReclaimMsg({ ...args, capAmount: 100_001n });
+  return !bytesEq(m1, m3);
+});
+
+test('domain separation: T_DROP kernel msg uses tacit-drop-v1 tag, T_DROP reclaim uses tacit-drop-reclaim-v1', () => {
+  // Both functions take similar (assetId, capAmount) but their domain tags
+  // differ — sig over one MUST NOT verify against the other.
+  const m1 = dropKernelMsg({
+    assetId: DROP_ASSET_ID, capAmount: 1n, perClaim: 1n,
+    merkleRoot: new Uint8Array(32), expiryHeight: 0,
+    assetInputCount: 1,
+    assetInputs: [{ txid: 'a'.repeat(64), vout: 0 }],
+  });
+  const m2 = dropReclaimMsg({
+    reclaimDropId: hexToBytes('ee'.repeat(32)),
+    assetId: DROP_ASSET_ID,
+    capAmount: 1n,
+  });
+  return !bytesEq(m1, m2);
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);

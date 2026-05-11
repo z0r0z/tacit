@@ -344,14 +344,6 @@ button.market-chip .chip-caret {
 .market-popover .pop-actions button {
   font-size: 10px; padding: 5px 10px;
 }
-.market-trust-note-line {
-  margin-top: 8px;
-  font-size: 10px;
-  font-style: italic;
-  color: var(--ink-mid);
-  letter-spacing: 0.02em;
-}
-.market-trust-note-line.warn { color: var(--orange); font-style: normal; font-weight: 500; }
 @media (max-width: 600px) {
   .market-chips-row { gap: 5px; }
   .market-chip,
@@ -519,6 +511,53 @@ label {
 .script-decode .op { color: var(--orange); font-weight: 700; white-space: nowrap; }
 .script-decode .desc { color: var(--ink-mid); font-style: italic; }
 
+/* Protocol-page subsection heading. Used both as a regular <h3> (the always-
+   visible Validation-model section) and as <summary class="protocol-h3">
+   inside the collapsible deeper sections. The summary variant overlays a
+   disclosure triangle that rotates on open. */
+.protocol-h3 {
+  margin-top: 18px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+summary.protocol-h3 {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+summary.protocol-h3::-webkit-details-marker { display: none; }
+summary.protocol-h3::before {
+  content: "▸";
+  display: inline-block;
+  width: 14px;
+  margin-right: 4px;
+  color: var(--ink-mid);
+  transition: transform 0.12s;
+}
+details.protocol-section[open] > summary.protocol-h3::before {
+  transform: rotate(90deg);
+}
+details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
+/* In-tab anchor index for the protocol page. Small comma-separated links
+   so it doesn't compete with the body copy; just gives readers a jumpable
+   table of contents. */
+.protocol-toc {
+  margin-top: 18px;
+  padding: 10px 14px;
+  border: 1px dashed var(--ink-faint);
+  background: var(--bg-warm);
+  font-size: 11px;
+  line-height: 1.7;
+}
+.protocol-toc strong {
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-mid);
+  margin-right: 8px;
+}
+.protocol-toc a { margin-right: 14px; }
+
 .asset-card {
   position: relative;
   border: 1px solid var(--ink);
@@ -535,6 +574,42 @@ label {
     transform: translateY(-1px);
     box-shadow: 3px 3px 0 var(--ink);
   }
+}
+/* Petch tiles whose cap is reached / window closed dim out so live mints
+   visually dominate the list. Hover restores full opacity so users can
+   still read the cap copy + verify on-chain. Pure CSS — no JS cost. */
+#petch-discover-list .asset-card[data-petch-status="sold-out"] {
+  opacity: 0.55;
+}
+@media (hover: hover) {
+  #petch-discover-list .asset-card[data-petch-status="sold-out"]:hover {
+    opacity: 1;
+  }
+}
+/* Petch tiles auto-fit into a responsive grid so wide screens see 2–3
+   mints side-by-side instead of one full-width tile per row. minmax(300px,
+   1fr) collapses to a single column under ~620px (factoring in the section
+   padding). Tile margins are zeroed via the JS template; grid `gap` owns
+   inter-tile spacing. */
+#petch-discover-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 10px;
+}
+/* Empty / error / muted-loading states are single divs and would otherwise
+   render as one narrow cell on the left. Span the full grid so they read
+   as a centered list message. Skeleton tiles render as normal grid cells. */
+#petch-discover-list > .empty,
+#petch-discover-list > .error,
+#petch-discover-list > .muted {
+  grid-column: 1 / -1;
+}
+/* Sticky discover-nav: subtle drop shadow under the nav so the boundary
+   between the nav and scrolling content reads cleanly once stuck. The
+   shadow is barely visible at rest (no content above to "cast" against)
+   and natural when content scrolls underneath. CSS-only — no observer. */
+#discover-nav {
+  box-shadow: 0 8px 8px -8px rgba(0, 0, 0, 0.18);
 }
 .asset-card .head {
   display: flex; justify-content: space-between; align-items: baseline;
@@ -1294,11 +1369,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
 /* Pool ops (deposit, withdraw, init, pool-list) are gated on the trusted-
    setup ceremony being finalized. Until then we render them as preview-
-   only: dimmed, click/focus blocked, with a banner inserted at the top
-   pointing the user up to the ceremony section. The ceremony section
-   itself is never locked — it's the only path out of the locked state.
-   `_placeCeremonySection` independently keeps the ceremony section at the
-   top of the panel until finalized, so users always see the unlock first. */
+   only: dimmed + click/focus blocked. A single `#mixer-lock-banner` at the
+   top of the tab explains the gate (vs. one inline banner per section
+   previously). The ceremony section itself is never locked — it's the only
+   path out of the locked state. `_placeCeremonySection` independently keeps
+   the ceremony section at the top of the panel until finalized, so users
+   always see the unlock first. */
 #tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] {
   position: relative;
   opacity: 0.5;
@@ -1311,19 +1387,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 #tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body label {
   pointer-events: none;
 }
-#tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] .section-body > .mixer-locked-banner {
+#tab-mixer.mixer-ceremony-locked #mixer-lock-banner {
   display: block;
-}
-.mixer-locked-banner {
-  display: none;
-  margin: 0 0 12px 0;
-  padding: 8px 10px;
-  border: 1px dashed var(--ink-faint, #ccc);
-  background: var(--bg-warm, #fff8eb);
-  color: var(--ink-mid, #555);
-  border-radius: 4px;
-  font-size: 12px;
-  pointer-events: auto;
 }
 
 /* First-load welcome modal — shown only when this network has no burner key
@@ -1941,7 +2006,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="hero-step">
       <div class="hero-num">1</div>
       <div class="hero-title">Connect a wallet</div>
-      <div class="hero-text">Use your existing Xverse / UniSat / Leather (one click), import a privkey, or — on signet — let the dApp generate one and grab faucet sats.</div>
+      <div class="hero-text">Use Xverse / UniSat / Leather (one click), import a privkey, or — on signet — let the dApp generate one and faucet some sats.</div>
     </div>
     <div class="hero-step">
       <div class="hero-num">2</div>
@@ -1996,8 +2061,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            when an ext wallet is connected; faucet shows on signet only. -->
       <div class="flex" style="margin-top:18px;gap:8px;flex-wrap:wrap;">
         <button id="btn-refresh">↻ Refresh</button>
-        <button id="btn-lock" title="Lock the in-browser tacit signing key. You'll be prompted for the passphrase on the next action.">🔒 Lock</button>
-        <button id="btn-drip" class="primary">⚡ Demo drip</button>
+        <button id="btn-lock" title="Lock the in-browser tacit signing key. You'll be prompted for the passphrase on the next action.">Lock</button>
+        <button id="btn-drip" class="primary">Demo drip</button>
         <button id="btn-ext-fund" class="primary" style="display:none;">Top up tacit</button>
         <button id="btn-ext-connect-xverse" class="primary">Connect Xverse / Leather</button>
         <button id="btn-ext-connect-unisat" class="primary">Connect UniSat</button>
@@ -2032,7 +2097,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           </div>
 
           <div class="muted" style="margin-top:10px;font-size:11px;line-height:1.6;">
-            Tacit needs its own signing key in this browser — your existing Bitcoin wallet doesn't expose the primitives confidential transactions need. Whichever path put the key here (auto-generated, imported, or locally bound to your Xverse / UniSat / Leather address), <strong>this is the key that controls your tacit assets</strong>. The external-wallet path stores a fresh tacit key per external address; clearing browser storage or switching devices loses it, so export and back it up before holding value.
+            Tacit needs its own signing key in this browser — confidential transactions use primitives existing Bitcoin wallets don't expose. <strong>This is the key that controls your tacit assets</strong>; export and back it up before holding value, since clearing browser storage loses it.
           </div>
 
           <!-- Hidden status text retained for code-paths that update it; the badge
@@ -2064,7 +2129,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
   <div class="section" id="recent-etches-section">
     <div class="section-header">
-      <span>discover · recently etched</span>
+      <span>recently etched</span>
       <a href="#" id="recent-etches-all" class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--bg);">browse all ↗</a>
     </div>
     <div class="section-body">
@@ -2164,12 +2229,10 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
        T_PETCH deploys a public-mint schedule and the deployer receives zero
        tokens. Different commitment story → different form. -->
   <div class="section">
-    <div class="section-header"><span>etch · public mint (fair launch)</span></div>
+    <div class="section-header"><span>etch · public mint</span></div>
     <div class="section-body">
       <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:14px;">
-        Deploy a token with a fixed lifetime cap and a fixed per-mint amount.
-        <strong>You receive zero tokens at deploy</strong> — to hold any, broadcast a mint like everyone else.
-        Anyone can mint until the cap fills. Mints publicly reveal <code>(amount, blinding)</code> so the cap is auditable from chain alone — supply is fully observable for these assets (different from confidential CETCH supply). SPEC §5.8 / §5.9.
+        Deploy a token with a fixed cap and per-mint amount. <strong>You receive zero tokens at deploy</strong> — anyone can mint until the cap fills.
       </div>
       <div class="form-row two">
         <div>
@@ -2195,10 +2258,16 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <label style="margin-top:14px;">Image URI (optional)</label>
       <input id="p-image" type="text" placeholder="ipfs://bafybeih... or bare CID" spellcheck="false">
       <div class="muted" style="margin-top:8px;font-size:11px;line-height:1.6;">
-        ⚠ <strong>Cap is permanent.</strong> Once the cap is reached, no more T_PMINTs are accepted.<br>
-        ⚠ <strong>Per-mint amount is permanent</strong> and must divide the cap evenly (no remainder).<br>
-        Minting opens at the next confirmed block after this T_PETCH lands; deployer same-block mints are rejected at validation.
+        ⚠ Cap and per-mint amount are <strong>permanent</strong>; per-mint must divide the cap evenly. Minting opens at the next confirmed block after this deploy lands.
       </div>
+      <details class="etch-why" style="margin-top:14px;">
+        <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
+          <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> How is this different from a confidential etch?
+        </summary>
+        <div class="muted" style="padding-top:8px;border-top:1px dashed var(--ink-faint);margin-top:4px;line-height:1.6;">
+          Mints publicly reveal <code>(amount, blinding)</code>, so the cap is auditable from chain alone — supply is fully observable, unlike CETCH where supply is committed but hidden. The deploy is a 2-tx flow (commit + reveal). Once the cap fills, no more T_PMINTs are accepted. SPEC §5.8 / §5.9.
+        </div>
+      </details>
       <div class="flex" style="margin-top:18px;">
         <button id="btn-petch-broadcast" class="primary">Deploy public-mint asset</button>
       </div>
@@ -2220,7 +2289,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <!-- TRANSFER TAB -->
 <div class="tab-panel" id="tab-transfer">
   <div class="section">
-    <div class="section-header"><span>send · confidential token or plain bitcoin</span></div>
+    <div class="section-header"><span>send</span></div>
     <div class="section-body">
 
       <!-- Mode toggle: pick what kind of value you're sending out. -->
@@ -2232,13 +2301,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <!-- TOKEN mode -->
       <div id="send-mode-token">
         <div class="muted" style="margin-bottom:14px;">
-          Confidential transfer of one asset. Each send takes two Bitcoin transactions (a commit + a reveal); observers see cryptographic proofs of valid math, never the amount. The recipient auto-discovers their balance from chain data on their next scan — share-links are an optional shortcut, not required.
+          Confidential transfer of one asset. Observers see only that valid math happened, never the amount. Recipients auto-discover their balance from chain data on their next scan — share-links are optional.
         </div>
 
         <label>Asset</label>
         <select id="x-asset"><option value="">— select —</option></select>
 
-        <label>Recipient public key (33-byte compressed hex, 02… or 03…)</label>
+        <label>Recipient public key</label>
         <input id="x-recipient-pub" placeholder="02… or 03… (66 hex chars)" autocomplete="off" spellcheck="false" list="x-recipient-recents">
         <datalist id="x-recipient-recents"></datalist>
         <div class="muted">Ask the recipient to share their pubkey from their Wallet tab. The address is derived from this pubkey.</div>
@@ -2319,11 +2388,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>drops · airdrop tooling</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Issuer-side tooling for batched airdrops. Upload a snapshot CSV (<code>eth_address,amount</code>), build a merkle commitment, pin the snapshot to IPFS, and fulfil incoming claims in batches of up to 7 recipients per Bitcoin tx. The merkle root is the public commitment recipients verify against in the Claim tab.
+        Issuer-side tooling for batched airdrops. Build a merkle commitment from snapshot CSVs, pin to IPFS, fulfil incoming claims in batches.
       </div>
 
       <div class="warn" style="margin-bottom:14px;">
-        <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by the <em>active wallet</em> (shown below). To bound blast radius if the airdrop wallet is compromised mid-campaign, generate a fresh treasury identity below and use the <em>↪ Switch active wallet</em> button to adopt it in one click — no separate browser profile required (export your current wallet's key first so you can switch back).
+        <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by the active wallet. To bound blast radius mid-campaign, generate a dedicated treasury identity in step 1.
       </div>
 
       <details style="margin-bottom:14px;"><summary class="muted" style="cursor:pointer;font-size:11px;">Trust model: where the worker fits, and how to self-host</summary>
@@ -2377,7 +2446,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <h3 style="margin-top:18px;">7 · Saved drops</h3>
       <div class="muted" style="font-size:11px;margin-bottom:8px;">
-        Drop records (including the local <code>fulfilled[]</code> ledger) live in this browser's localStorage. Use <strong>Export JSON</strong> on each row to back up; clearing browser data without a backup means losing the "this leaf was paid" record (the chain is unaffected — fulfilled CXFERs stay valid). To restore from a backup, use Import below.
+        Drop records live in this browser's localStorage — <strong>Export JSON</strong> on each row to back up the local <code>fulfilled[]</code> ledger; <strong>Import</strong> below to restore.
       </div>
       <div class="flex" style="gap:6px;margin-bottom:10px;">
         <input id="drop-import-file" type="file" accept=".json,application/json" style="display:none;">
@@ -2392,7 +2461,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>cross-check vs chain</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Walks each entry in this drop's local <code>fulfilled[]</code> and verifies it against on-chain state. Catches: corrupted local records, fulfilled leaves where the broadcast didn't actually confirm, and mismatches where a tx exists but doesn't pay the expected tacit pubkey. Does NOT reconstruct missing entries — for that, restore from a backup JSON via Import.
+        Walks each entry in this drop's local <code>fulfilled[]</code> ledger and verifies against on-chain state. Catches corrupted records, unconfirmed broadcasts, and tx/pubkey mismatches. Does <strong>not</strong> reconstruct missing entries — restore from a backup JSON for that.
       </div>
       <div id="drop-crosscheck-meta" class="mono-box" style="font-size:11px;"></div>
       <div class="flex" style="gap:6px;margin-top:14px;">
@@ -2408,7 +2477,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>fulfil claims · batched CXFER</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Paste claim tuples (one per line). Format: <code>leaf_index,tacit_pubkey_hex,eth_signature_hex</code> (the third column is what the recipient produces in the Claim tab). The dapp looks up <code>(eth_address, amount)</code> from the saved drop, verifies the merkle inclusion, recovers the eth address from the signature, and stages a batch CXFER. Claims are batched in groups of up to 7 per CXFER.
+        Paste claim tuples (<code>leaf_index,tacit_pubkey_hex,eth_signature_hex</code>, one per line) — the third column is what recipients produce in the Claim tab. The dapp verifies the merkle inclusion and signature, then stages a batch CXFER (up to 7 recipients per Bitcoin tx).
       </div>
       <label>Active drop</label>
       <div id="drop-fulfil-meta" class="mono-box" style="font-size:11px;"></div>
@@ -2452,7 +2521,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>claim · airdrop recipient</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Recipient flow for airdrops you're eligible for. Connect an Ethereum wallet to find drops your address is included in, or paste a merkle root + IPFS CID below if the issuer shared a private link. You'll sign a claim binding your tacit pubkey, then submit it to the issuer (or to the worker queue).
+        Connect an Ethereum wallet to find eligible drops (or paste a merkle root + IPFS CID for a private one), then sign a claim binding your tacit pubkey.
       </div>
 
       <h3>1 · Discover available drops</h3>
@@ -2493,8 +2562,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </details>
 
       <h3 style="margin-top:18px;">2 · Connect Ethereum wallet</h3>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">Connecting also auto-filters the discovery list above to drops eligible for your address.</div>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">Works with most Ethereum wallets — MetaMask, Rainbow, Rabby, Coinbase Wallet, Trust, Frame. Smart-contract wallets (Ambire, Safe, Argent) work too. The connection is only for signing the claim — no Ethereum transaction is broadcast, no gas is spent. The wallet's current chain doesn't matter for regular wallets; smart-contract wallets need to be on the chain that holds the contract.</div>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Auto-filters the discovery list above to drops eligible for your address. Signing only — no Ethereum tx is broadcast, no gas spent.</div>
+      <details style="margin-bottom:6px;">
+        <summary class="muted" style="cursor:pointer;font-size:11px;">Compatible wallets</summary>
+        <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
+          Most Ethereum wallets work: MetaMask, Rainbow, Rabby, Coinbase Wallet, Trust, Frame. Smart-contract wallets (Ambire, Safe, Argent) work too — those need to be on the chain that holds the contract; regular wallets work regardless of current chain.
+        </div>
+      </details>
       <div class="flex" style="gap:6px;align-items:center;">
         <button id="btn-claim-connect-mm" type="button">Connect Ethereum wallet</button>
         <span id="claim-mm-status" class="muted" style="font-size:11px;"></span>
@@ -2528,35 +2602,35 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div class="tab-panel" id="tab-holdings">
   <div class="section">
     <div class="section-header">
-      <span>holdings · confidential</span>
+      <span>holdings</span>
       <span id="holdings-status" class="muted"></span>
     </div>
     <div class="section-body">
       <div class="flex" style="margin-bottom:14px;">
         <button id="btn-rescan">↻ Rescan UTXOs</button>
-        <button id="btn-import-share">＋ Import received share-link</button>
-        <button id="btn-take-atomic">＋ Take atomic offer</button>
+        <button id="btn-import-share">Import share-link</button>
+        <button id="btn-take-atomic">Take atomic offer</button>
       </div>
       <div id="holdings-list"></div>
     </div>
   </div>
   <div class="section" id="offers-section" style="margin-top:14px;display:none;">
     <div class="section-header">
-      <span>tacit.offers · outstanding atomic</span>
+      <span>your atomic offers</span>
       <span class="muted" style="display:flex;gap:10px;align-items:center;">
         <span id="offers-status"></span>
       </span>
     </div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;font-size:11px;">
-        Atomic offers you've created on this device. Status is recomputed from chain on each render. Cancel by spending the listed asset UTXO via a self-send CXFER (the original commit value is forfeit; the asset is preserved).
+        Atomic offers you've created on this device — chain-verified on every render.
       </div>
       <div id="offers-list"></div>
     </div>
   </div>
   <div class="section" id="activity-section" style="margin-top:14px;">
     <div class="section-header">
-      <span>tacit.activity · local log</span>
+      <span>activity · local log</span>
       <span class="muted" style="display:flex;gap:10px;align-items:center;">
         <span id="activity-status"></span>
         <button id="btn-activity-clear" type="button" style="font-size:9px;padding:3px 8px;letter-spacing:0.1em;display:none;">clear</button>
@@ -2575,7 +2649,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div class="tab-panel" id="tab-market">
   <div class="section">
     <div class="section-header">
-      <span>market · open listings</span>
+      <span>market</span>
       <span id="market-status" class="muted"></span>
     </div>
     <div class="section-body">
@@ -2585,21 +2659,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <span style="margin-left:8px;font-style:italic;">trustless atomic vs trust-required OTC</span>
         </summary>
         <div class="muted" style="margin-top:8px;font-size:12px;line-height:1.55;">
-          Every tile trades a confidential token amount for sats. Two trust models:
+          Every tile trades confidential tokens for sats. Two trust models:
           <ul style="margin:8px 0 6px 18px;padding:0;">
-            <li style="margin-bottom:6px;"><strong>⚡ Atomic</strong> (default filter) — settles in one Bitcoin tx. The maker can't take your sats without delivering, and you can't take the asset without paying. <strong>No counterparty trust.</strong>
-              <div style="font-size:11px;margin-top:2px;"><em>Buy:</em> <strong>Claim</strong> (locks 5 min) → maker <strong>Fulfil</strong>s → you <strong>Take</strong> (broadcasts settlement).</div>
-            </li>
-            <li><strong>OTC</strong> — <em>opening</em> publishes the exact UTXO amount; <em>range</em> hides the amount but proves ≥ X. Both settle off-chain: pay the maker's BTC address, then they broadcast the asset transfer to your pubkey. <strong>Counterparty trust required</strong> — the maker can take your sats and not deliver.
-              <div style="font-size:11px;margin-top:2px;"><em>Buy:</em> <strong>Take</strong> → pay the maker → wait for their broadcast.</div>
-            </li>
+            <li style="margin-bottom:4px;"><strong>⚡ Atomic</strong> — settles in one Bitcoin tx. No counterparty trust. <span style="font-size:11px;">Buy: <strong>Claim</strong> → maker <strong>Fulfil</strong>s → <strong>Take</strong>.</span></li>
+            <li><strong>OTC</strong> — settles off-chain: pay the maker's BTC address, they broadcast the asset to your pubkey. Counterparty trust required. <span style="font-size:11px;">Buy: <strong>Take</strong> → pay → wait.</span></li>
           </ul>
-          <div style="margin-top:8px;font-size:11px;">
-            <strong>Bids:</strong> post a signed price intent (no sats locked). Holders can <strong>Fulfil</strong> a bid by spinning up an atomic intent targeted at you; settlement uses the trustless 3-step above.
-          </div>
-          <div style="margin-top:6px;font-size:11px;">
-            <strong>Verify</strong> runs all crypto / UTXO-liveness checks without buying. <strong>Cancel</strong> pulls your own listings.
-          </div>
+          <div style="margin-top:6px;font-size:11px;"><strong>Bids</strong> are signed price intents (no sats locked); a holder can fulfil one into an atomic settlement.</div>
+          <div style="margin-top:4px;font-size:11px;"><strong>Verify</strong> runs all crypto + liveness checks without buying. <strong>Cancel</strong> pulls your own listings.</div>
         </div>
       </details>
       <div class="market-controls">
@@ -2647,7 +2713,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           </div>
           <button id="btn-market-refresh" class="market-icon-btn" type="button" title="Refresh listings" aria-label="Refresh">↻</button>
         </div>
-        <div id="market-kind-trust-note" class="market-trust-note-line">trustless only · switch for OTC</div>
       </div>
       <!-- Shared 3-step strip for take/settle on whichever market tile's
            Take button is in flight. Take is single-broadcast (not commit +
@@ -2667,14 +2732,77 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
 <!-- DISCOVER TAB -->
 <div class="tab-panel" id="tab-discover">
-  <div class="section">
+  <!-- In-tab quick nav. Two anchors that scroll to each section so users
+       can jump without scrolling past one to reach the other. Counts are
+       populated by renderDiscover / renderPetchDiscover and double as
+       glanceable totals. -->
+  <div id="discover-nav" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;position:sticky;top:0;z-index:10;padding:8px 0;background:var(--bg);">
+    <a href="#petch-discover-section" data-discover-nav="petch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg-warm);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
+      <span>public mints <span class="muted" style="font-size:11px;">· fair launch</span></span>
+      <span class="muted" style="font-size:11px;" id="discover-nav-petch-count">—</span>
+    </a>
+    <a href="#cetch-discover-section" data-discover-nav="cetch" style="flex:1;min-width:160px;border:1px solid var(--ink);padding:10px 12px;background:var(--bg-warm);text-decoration:none;color:var(--ink);display:flex;justify-content:space-between;align-items:center;gap:8px;">
+      <span>etched assets <span class="muted" style="font-size:11px;">· confidential supply</span></span>
+      <span class="muted" style="font-size:11px;" id="discover-nav-cetch-count">—</span>
+    </a>
+  </div>
+
+  <!-- Permissionless-mint registry (T_PETCH-rooted) is shown first so the
+       most action-ready surface (anyone can mint, cap fills until gone) is
+       the user's landing view. CETCH lives below in its own section to keep
+       trust models visually distinct — same envelope-version binary on
+       chain, different issuance semantics that users should not confuse at
+       a glance. -->
+  <div class="section" id="petch-discover-section">
     <div class="section-header">
-      <span id="discover-header-title">discover · all etched assets</span>
+      <span>public mints · fair launch</span>
+      <span id="petch-discover-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:14px;">
+        Anyone can mint a fixed tranche until the cap fills. Supply is publicly auditable from chain alone. SPEC §5.8 / §5.9.
+      </div>
+      <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;flex-wrap:wrap;">
+        <label for="petch-sort" class="muted" style="align-self:center;font-size:11px;white-space:nowrap;">sort</label>
+        <select id="petch-sort" title="Order public mints — newest surfaces fresh launches, fill-asc shows tranches with the most supply still available, fill-desc surfaces near-completion mints.">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="fill-asc">Least filled</option>
+          <option value="fill-desc">Most filled</option>
+          <option value="ticker-asc">Ticker A→Z</option>
+        </select>
+      </div>
+      <div class="discover-pills" id="petch-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
+        <button class="filter-pill active" data-petch-pill="all" type="button">All</button>
+        <button class="filter-pill" data-petch-pill="live" type="button" title="Cap not yet reached and mint window is open">Live</button>
+        <button class="filter-pill" data-petch-pill="opening-soon" type="button" title="Mint window hasn't opened yet (mint_start_height &gt; tip)">Opening soon</button>
+        <button class="filter-pill" data-petch-pill="sold-out" type="button" title="Cap reached or mint window closed">Sold out</button>
+      </div>
+      <!-- Shared progress strip for whichever tile's Mint button is in
+           flight. Hidden until a mint click; the click handler also stamps
+           the in-flight ticker into the strip's data-ticker attr so a
+           parallel render doesn't blow it away. -->
+      <div id="pmint-progress" class="progress-strip" style="display:none;" aria-live="polite">
+        <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Pending</span></div>
+      </div>
+      <div id="petch-discover-list">
+        <div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>
+        <div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section" id="cetch-discover-section">
+    <div class="section-header">
+      <span id="discover-header-title">etched assets · confidential supply</span>
       <span id="discover-status" class="muted"></span>
     </div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;" id="discover-blurb">
-        Browse confidential tokens etched on Bitcoin — tickers public, supplies optionally proven, amounts always hidden. Tap any asset's ticker to copy its asset_id, or click the etch tx to verify on-chain.
+        Confidential tokens on Bitcoin — tickers public, amounts hidden. Tap a ticker to copy its asset_id.
       </div>
       <div class="flex" style="margin-bottom:10px;gap:8px;align-items:stretch;">
         <input id="discover-filter" type="text" placeholder="filter by name, ticker, or asset_id prefix…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;">
@@ -2692,42 +2820,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="discover-pills" id="discover-pills" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;">
         <button class="filter-pill active" data-pill="all" type="button">All</button>
         <button class="filter-pill" data-pill="mintable" type="button" title="Issuer can mint additional supply">Mintable</button>
-        <button class="filter-pill" data-pill="attested" type="button" title="Issuer published a verifiable supply attestation">Attested</button>
+        <button class="filter-pill" data-pill="attested" type="button" title="Issuer published a cryptographic proof of total supply (tacit_attest)">Supply proven</button>
         <button class="filter-pill" data-pill="recent" type="button" title="Etched in the last 24h">Recent</button>
-        <button class="filter-pill" data-pill="minted" type="button" title="Has at least one chain-verified mint event">Has mints</button>
-        <button class="filter-pill" data-pill="burned" type="button" title="Has at least one chain-verified burn event">Has burns</button>
-        <button class="filter-pill" data-pill="moved" type="button" title="Has at least one CXFER/AXFER transfer the worker has indexed, OR one you've broadcast/imported locally. The worker's mainnet cron starts from tip and doesn't backfill historical transfers, so historical sends may not match unless your local activity log still has the entry.">Has transfers</button>
+        <button class="filter-pill" data-pill="minted" type="button" title="Has at least one chain-verified mint event">Issued</button>
+        <button class="filter-pill" data-pill="burned" type="button" title="Has at least one chain-verified burn event">Burned</button>
+        <button class="filter-pill" data-pill="moved" type="button" title="Has at least one CXFER/AXFER transfer the worker has indexed, OR one you've broadcast/imported locally. The worker's mainnet cron starts from tip and doesn't backfill historical transfers, so historical sends may not match unless your local activity log still has the entry.">Active</button>
       </div>
       <div id="discover-verify-stats" class="muted" style="font-size:11px;margin-bottom:10px;display:none;" title="Each asset card validates the on-chain CETCH envelope locally before its ✓ badge appears. Cards out of view defer their walk until you scroll them into view to save CPU + battery."></div>
       <div id="discover-list"><div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div></div>
-    </div>
-  </div>
-
-  <!-- Permissionless-mint registry (T_PETCH-rooted). Lives in its own
-       section to keep CETCH (confidential supply) and T_PETCH (public
-       fair-launch) trust models visually distinct — same envelope-version
-       binary on chain, different issuance semantics that users should not
-       confuse at a glance. Cap-progress + Mint button render here. -->
-  <div class="section" id="petch-discover-section">
-    <div class="section-header">
-      <span>fair launch · public-mint assets</span>
-      <span id="petch-discover-status" class="muted"></span>
-    </div>
-    <div class="section-body">
-      <div class="muted" style="font-size:12px;line-height:1.6;margin-bottom:14px;">
-        Permissionless-mint deployments — anyone can mint a fixed tranche until the cap fills. Supply is publicly auditable from chain alone (different from CETCH). SPEC §5.8 / §5.9.
-      </div>
-      <!-- Shared progress strip for whichever tile's Mint button is in
-           flight. Hidden until a mint click; the click handler also stamps
-           the in-flight ticker into the strip's data-ticker attr so a
-           parallel render doesn't blow it away. -->
-      <div id="pmint-progress" class="progress-strip" style="display:none;" aria-live="polite">
-        <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
-        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
-        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
-        <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Pending</span></div>
-      </div>
-      <div id="petch-discover-list"><div class="muted" style="padding:14px;font-size:12px;"><span class="live-dots">loading</span></div></div>
     </div>
   </div>
 </div>
@@ -2746,15 +2846,23 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div id="mixer-finalized-banner" style="display:none;border:1px solid #859900;background:#f0fdf4;color:#1a4314;padding:14px 16px;border-radius:8px;margin-bottom:16px;font-size:14px;">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
       <div style="flex:1;">
-        <strong style="font-size:15px;">🎉 Ceremony finalized — mixer is live</strong>
+        <strong style="font-size:15px;">Ceremony finalized · mixer is live</strong>
         <div id="mixer-finalized-banner-stats" style="margin-top:6px;font-size:12px;color:#586e75;"></div>
       </div>
       <button id="mixer-finalized-banner-dismiss" type="button" style="background:none;border:1px solid #859900;color:#1a4314;cursor:pointer;font-size:11px;padding:4px 10px;border-radius:4px;flex-shrink:0;" title="Hide this banner">Dismiss</button>
     </div>
   </div>
+  <!-- Consolidated lock banner. One copy at the top of the tab instead of
+       four inside each gated section. Visibility is driven by the same
+       `.mixer-ceremony-locked` class JS toggles on #tab-mixer; the dim +
+       pointer-events:none on each section's form elements still uses the
+       per-section [data-mixer-pool-op] hook. -->
+  <div id="mixer-lock-banner" style="display:none;margin-bottom:14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
+    Loading ceremony state… pool operations (list / deposit / withdraw / init) unlock once the dapp verifies the trusted setup is finalized. If this persists, refresh.
+  </div>
   <div class="section">
     <div class="section-header">
-      <span>mixer · shielded pools (T_DEPOSIT / T_WITHDRAW)</span>
+      <span>mixer · shielded pools</span>
       <span id="mixer-status" class="muted"></span>
     </div>
     <div class="section-body">
@@ -2767,7 +2875,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>pools</span></div>
     <div class="section-body">
-      <div class="mixer-locked-banner">Loading ceremony state… pool operations unlock once the dapp verifies the trusted setup is finalized. If this persists, refresh.</div>
       <div class="muted" style="margin-bottom:10px;">Initialized pools are listed below. Each row shows total deposits, total withdrawals, current anonymity-set size, and the verifying-key CID. Empty list = no pools have been initialized on this network yet.</div>
       <div id="mixer-pool-list"><div class="muted" style="font-size:12px;">No pools indexed yet.</div></div>
     </div>
@@ -2776,7 +2883,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>deposit</span></div>
     <div class="section-body">
-      <div class="mixer-locked-banner">Loading ceremony state… deposit unlocks once the dapp verifies the trusted setup is finalized.</div>
       <div class="muted" style="margin-bottom:10px;">Send the pool's exact denomination from your wallet into the pool. Your browser generates a private deposit record — back it up before broadcasting; without it, the deposit can never be withdrawn.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:200px;">Pool
@@ -2804,7 +2910,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>withdraw</span></div>
     <div class="section-body">
-      <div class="mixer-locked-banner">Loading ceremony state… withdraw unlocks once the dapp verifies the trusted setup is finalized.</div>
       <div class="muted" style="margin-bottom:10px;">Withdraw a deposit to a fresh address. Pick a saved deposit, paste a deposit record JSON, or import a share-link. The privacy set size — how many other deposits yours hides among — is shown beneath each pool.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px;">
         <label style="flex:1;min-width:240px;">Saved deposits on this browser
@@ -2945,8 +3050,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         </div>
       </div>
 
-      <div id="ceremony-init-coordinator-panel" style="margin-top:18px;display:none;border:1px solid #b58900;background:#fdf6e3;color:#657b83;padding:10px 12px;border-radius:6px;">
-        <div style="font-weight:600;margin-bottom:6px;">Initialize a new ceremony (coordinator only)</div>
+      <!-- Coordinator-only ceremony-init panel. Even when revealed (the
+           visibility toggle is JS-controlled by a coordinator-detect check),
+           the inner <details> defaults closed so a coordinator gets a quiet
+           landing — they opt in by expanding rather than being confronted
+           with the full file-upload form on every visit. -->
+      <details id="ceremony-init-coordinator-panel" style="margin-top:18px;display:none;border:1px solid var(--ink-faint);background:var(--bg-warm);padding:10px 12px;border-radius:6px;">
+        <summary style="cursor:pointer;font-weight:600;font-size:13px;color:var(--ink-mid);">Initialize a new ceremony (coordinator only)</summary>
         <div class="muted" style="font-size:12px;margin:8px 0;">Requires the worker's <code>CEREMONY_INIT_TOKEN</code>. Anyone without the token will get a 401 from the worker. First-write-wins per circuit hash. Run <code>cd dapp/circuits &amp;&amp; bash build.sh</code> locally to produce <code>build/withdraw.r1cs</code>, <code>build/pot14_final.ptau</code>, and <code>withdraw_0000.zkey</code>. Upload all three.</div>
         <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
           <label style="flex:1;min-width:200px;">Coordinator token
@@ -2971,7 +3081,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <button id="btn-ceremony-init" disabled>Initialize ceremony &amp; broadcast</button>
         </div>
         <pre id="ceremony-init-out" class="muted" style="margin-top:10px;display:none;font-size:11px;"></pre>
-      </div>
+      </details>
 
       <div id="ceremony-attestations" style="margin-top:18px;"></div>
     </div>
@@ -2980,7 +3090,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section" id="mixer-init-pool-section" data-mixer-pool-op="true">
     <div class="section-header"><span>initialize a new pool</span></div>
     <div class="section-body">
-      <div class="mixer-locked-banner">Loading ceremony state… pool init unlocks once the dapp verifies the trusted setup is finalized.</div>
       <div class="muted" style="margin-bottom:10px;">Anyone can open a pool for any asset and any deposit size. The first confirmed pool for a given asset + amount wins. The verifying key and ceremony transcript are pre-pinned and locked to the canonical Phase 2 setup — pick an asset, type a denomination, broadcast.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:240px;">Asset
@@ -3014,22 +3123,57 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
 <div class="tab-panel" id="tab-about">
   <div class="section">
-                <div class="section-header"><span>tacit.protocol</span></div>
+    <div class="section-header"><span>protocol</span></div>
     <div class="section-body" style="line-height:1.75;">
-      <p>Confidential single-asset token meta-protocol on Bitcoin. Pedersen commitments hide amounts; rangeproofs and kernel signatures together enforce supply conservation without trusting any participant.</p>
+      <p>Confidential token meta-protocol on Bitcoin. Amounts are hidden by default via Pedersen commitments + bulletproof rangeproofs + Mimblewimble-style kernel signatures. <strong>Full address-graph privacy is available</strong> through the built-in shielded mixer pool (Poseidon Merkle tree + Groth16 zk-SNARK withdrawals) — so tacit covers both amount-hiding and unlinkability, not just one or the other. The protocol also includes atomic single-tx OTC settlement, permissionless fair-launch mints with publicly-auditable caps, and on-chain claim pools (airdrops). Single asset per envelope.</p>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Validation model</h3>
-      <p style="margin-top:8px;">Like every Bitcoin token meta-protocol (Runes, BRC-20, Ordinals, Taproot Assets, RGB, Counterparty), tacit's token rules are <strong>not enforced by Bitcoin nodes</strong>. Bitcoin validates the underlying tx structure and Taproot signatures; an external indexer validates the token-level rules (commitments, rangeproofs, kernel signatures, asset_id consistency).</p>
-      <p>Architecturally tacit is an <strong>indexer-validated meta-protocol</strong> — same family as Runes, BRC-20, and Ordinals. All data needed to validate any UTXO lives on Bitcoin's chain. An indexer with chain-only access can recursively walk every UTXO back to its CETCH root and reach the same verdict as any other indexer running the same rules. No federation, no off-band proof exchange, no out-of-band coordination.</p>
-      <p>This is distinct from <strong>proof-distribution protocols</strong> (RGB, Taproot Assets) where the recipient must receive validity proofs out-of-band; an indexer with chain-only access cannot reconstruct token state. It's also distinct from <strong>fully-validated chains</strong> (Liquid, Mimblewimble) where consensus enforces the rules natively. Tacit's contribution is bringing CT-style amount-hiding into the indexer-validated meta-protocol family — the only thing that travels out-of-band is the recipient's own opening (cleartext amount + blinding) via share-link, which lets them <em>see</em> their balance but is not required for any indexer to <em>validate</em> the UTXO.</p>
+      <h3 class="protocol-h3" id="proto-validation">Validation model</h3>
+      <p style="margin-top:8px;">Like every Bitcoin token meta-protocol (Runes, BRC-20, Ordinals, Taproot Assets, RGB, Counterparty), tacit's token rules are <strong>not enforced by Bitcoin nodes</strong>. Bitcoin validates the underlying tx structure and Taproot signatures; an external indexer validates the token-level rules (commitments, rangeproofs, kernel signatures, asset_id consistency, pool nullifier sets).</p>
+      <p>Architecturally tacit is an <strong>indexer-validated meta-protocol</strong> — same family as Runes, BRC-20, and Ordinals. All data needed to validate any UTXO lives on Bitcoin's chain. An indexer with chain-only access can recursively walk every UTXO back to its etch root (CETCH or T_PETCH) and reach the same verdict as any other indexer running the same rules. No consensus change, no federation, no out-of-band proof exchange.</p>
+      <p>This is distinct from <strong>proof-distribution protocols</strong> (RGB, Taproot Assets) where the recipient must receive validity proofs out-of-band; an indexer with chain-only access cannot reconstruct token state. It's also distinct from <strong>fully-validated chains</strong> (Liquid, Mimblewimble) where consensus enforces the rules natively. Tacit's contribution is bringing CT-style amount-hiding into the indexer-validated meta-protocol family — the only thing that ever travels out-of-band is the recipient's own opening (cleartext amount + blinding) via share-link, which lets them <em>see</em> their balance but is not required for any indexer to <em>validate</em> the UTXO.</p>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Cryptography</h3>
+      <nav class="protocol-toc" aria-label="Protocol sections">
+        <strong>Jump to:</strong>
+        <a href="#proto-ops">Operations</a>
+        <a href="#proto-cryptography">Cryptography</a>
+        <a href="#proto-wire">Wire format</a>
+        <a href="#proto-attacks">Attacks blocked</a>
+        <a href="#proto-blinding">Blinding + recovery</a>
+        <a href="#proto-indexer">Indexer rules</a>
+        <a href="#proto-privacy">Privacy scope</a>
+        <a href="#proto-cost">Validation cost</a>
+        <a href="#proto-trust">Trust model</a>
+      </nav>
+
+      <details class="protocol-section" id="proto-ops" open>
+        <summary class="protocol-h3">Operations</summary>
+      <p style="margin-top:8px;">v1 envelope version is <code>0x01</code>; opcodes <code>0x21</code>–<code>0x2C</code>. Every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal.</p>
+      <div class="script-decode" style="margin:10px 0;">
+        <span class="hex">0x21</span><span class="op">CETCH</span><span class="desc">issue new asset; hidden initial supply, optionally mintable</span>
+        <span class="hex">0x23</span><span class="op">CXFER</span><span class="desc">confidential transfer; split into 1, 2, 4, or 8 outputs</span>
+        <span class="hex">0x24</span><span class="op">T_MINT</span><span class="desc">issuer-signed additional supply on a mintable CETCH</span>
+        <span class="hex">0x25</span><span class="op">T_BURN</span><span class="desc">any holder destroys supply; public burned_amount</span>
+        <span class="hex">0x26</span><span class="op">T_AXFER</span><span class="desc">CXFER variant with aux BTC inputs — single-tx atomic OTC</span>
+        <span class="hex">0x27</span><span class="op">T_PETCH</span><span class="desc">permissionless-mint deployment: cap + per-mint amount + height window; deployer gets zero tokens</span>
+        <span class="hex">0x28</span><span class="op">T_PMINT</span><span class="desc">anyone mints exactly <code>mint_limit</code>; reveals (amount, blinding) so the cap is auditable from chain</span>
+        <span class="hex">0x29</span><span class="op">T_DEPOSIT</span><span class="desc">lock a fixed-denomination UTXO into a shielded pool (Poseidon leaf)</span>
+        <span class="hex">0x2A</span><span class="op">T_WITHDRAW</span><span class="desc">Groth16-gated mint from a pool; recipient unlinkable to any specific deposit</span>
+        <span class="hex">0x2B</span><span class="op">T_DROP</span><span class="desc">lock existing supply into a public claim pool with optional Merkle eligibility gate</span>
+        <span class="hex">0x2C</span><span class="op">T_DCLAIM</span><span class="desc">permissionless claim from a drop; reveals (per_claim, blinding) for audit</span>
+      </div>
+      <p style="margin-top:8px;">Wire-format examples below cover the core four (CETCH / CXFER / T_MINT / T_BURN). The remaining opcodes follow the same envelope shape with their own payload layouts and validator rules — see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">SPEC.md</a> §5.7–§5.13 for the byte-exact specifications.</p>
+      </details>
+
+      <details class="protocol-section" id="proto-cryptography" open>
+        <summary class="protocol-h3">Cryptography</summary>
       <p style="margin-top:8px;">Commitments: <code>C = a·H + r·G</code>, additively homomorphic. <code>H</code> is a NUMS generator (no known discrete log w.r.t. <code>G</code>) derived deterministically by hash-to-curve from the seed <code>"tacit-generator-H-v1"</code>. The protocol carries <code>C</code> on chain; <code>(a, r)</code> stay private.</p>
       <p>Rangeproofs: <strong>aggregated Bulletproofs</strong> (Bünz et al. 2017) at n=64 bits, meaning each committed value is proven to lie in <code>[0, 2⁶⁴)</code>. A single proof can cover m ∈ {1, 2, 4, 8} commitments simultaneously via the inner-product argument, with witness size O(log(n·m)). On secp256k1: <strong>688 B at m=1, 754 B at m=2, 820 B at m=4, 886 B at m=8</strong>. ~250 ms to prove and ~150 ms to verify in-browser per proof; the indexer batches multiple proofs into a single multi-scalar multiplication for sub-linear amortized cost.</p>
-      <p>64-bit range bounds any single Pedersen commitment to 1.84 × 10¹⁹ base units. With 8 decimals that's 184 quintillion display units per UTXO — well past anything practical. Wallets still spread holdings across multiple UTXOs (1–8 per CXFER) for change tracking, but the per-UTXO cap is no longer a real constraint for any practical decimals/supply combination.</p>
+      <p>64-bit range bounds any single Pedersen commitment to 2⁶⁴ − 1 ≈ 1.84 × 10¹⁹ base units (~184 billion display units at the maximum 8 decimals; ~18 quintillion at 0 decimals). Wallets still spread holdings across multiple UTXOs (1–8 per CXFER) for change tracking, but the per-UTXO cap is not a practical constraint.</p>
+      </details>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Wire format (Taproot envelope)</h3>
-      <p style="margin-top:8px;">Rangeproofs and aggregated payloads don't fit in 80-byte OP_RETURN, so payload moves into a Taproot script-path leaf. Each operation is <strong>2 transactions</strong>: a <em>commit</em> tx that creates a P2TR output committed to the envelope's leaf hash (internal pubkey = BIP-341 NUMS, so script-path is the only spend), and a <em>reveal</em> tx that spends the P2TR via script-path, exposing the envelope script in the witness. Indexers scan <code>tx.vin[0].witness[1]</code> for envelopes.</p>
+      <details class="protocol-section" id="proto-wire">
+        <summary class="protocol-h3">Wire format (Taproot envelope)</summary>
+        <p style="margin-top:8px;">Rangeproofs and aggregated payloads don't fit in 80-byte OP_RETURN, so payload moves into a Taproot script-path leaf. Each operation is <strong>2 transactions</strong>: a <em>commit</em> tx that creates a P2TR output committed to the envelope's leaf hash (internal pubkey = BIP-341 NUMS, so script-path is the only spend), and a <em>reveal</em> tx that spends the P2TR via script-path, exposing the envelope script in the witness. Indexers scan <code>tx.vin[0].witness[1]</code> for envelopes.</p>
       <h4 style="margin-top:14px;font-size:12px;color:var(--purple);">Envelope leaf script</h4>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">32B</span><span class="op">&lt;signing pubkey x-only&gt;</span><span class="desc">wallet pubkey allowed to sign reveal</span>
@@ -3091,9 +3235,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <span class="hex">2B</span><span class="op">rp_len</span><span class="desc">u16 LE (0 if N=0)</span>
         <span class="hex">..</span><span class="op">rangeproof</span><span class="desc">aggregated bulletproof on N change commitments</span>
       </div>
+      </details>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">How attacks are blocked</h3>
-      <p style="margin-top:8px;"><strong>Negative amounts (mod N).</strong> A "−1000" is just <code>N − 1000</code> as a scalar; bulletproofs reject any value outside <code>[0, 2⁶⁴)</code>. The proof's inner-product argument cannot be satisfied for a value that doesn't fit in 64 bits, so the verifier rejects.</p>
+      <details class="protocol-section" id="proto-attacks" open>
+        <summary class="protocol-h3">How attacks are blocked</summary>
+        <p style="margin-top:8px;"><strong>Negative amounts (mod N).</strong> A "−1000" is just <code>N − 1000</code> as a scalar; bulletproofs reject any value outside <code>[0, 2⁶⁴)</code>. The proof's inner-product argument cannot be satisfied for a value that doesn't fit in 64 bits, so the verifier rejects.</p>
       <p style="margin-top:8px;"><strong>Unbalanced amounts (CXFER).</strong> Even with rangeproofs, a sender holding 100 USDV could try to construct outputs (30 to recipient, 200 to themselves) — both with valid rangeproofs — and mint 130 from nothing. Kernel signatures block this:</p>
       <ul style="margin-left:20px;margin-top:8px;">
         <li>Sender computes <code>excess = Σr_out − Σr_in</code> and signs <code>kernel_msg</code> with priv = excess (BIP-340 Schnorr).</li>
@@ -3104,17 +3250,21 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <p style="margin-top:8px;"><strong>Unbalanced amounts (BURN).</strong> Same kernel construction with <code>burned_amount</code> made explicit: the verifier checks <code>E' = ΣC_out + burned·H − ΣC_in = excess·G</code>. The public <code>burned_amount</code> field is bound into <code>kernel_msg</code> so claiming a smaller burn than was actually destroyed shifts the message and breaks the sig.</p>
       <p style="margin-top:8px;"><strong>Mint forgery.</strong> Only the holder of <code>mint_authority</code>'s private key can issue valid <code>T_MINT</code> envelopes for an asset. The validator fetches the parent CETCH, confirms the asset is mintable (mint_authority ≠ zero), and verifies the issuer Schnorr sig under that x-only key. The signed message binds the <code>commit_anchor</code> (commit-tx's first input outpoint) so an observer cannot rewrap the on-chain envelope payload into their own commit/reveal pair. The mint itself is rangeproof-bounded to <code>[0, 2⁶⁴)</code> per envelope; the authority can mint any number of times.</p>
       <p style="margin-top:8px;"><strong>Cross-asset confusion.</strong> A sender could declare a CXFER as USDV but spend GOLDC inputs. The indexer fetches each input's parent envelope, reads its declared asset_id (across all four opcodes — CETCH, MINT, CXFER, BURN — via a unified parent-resolver), and rejects the CXFER if any input's asset_id differs from the current claim.</p>
+      </details>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Blinding delivery + amount recovery</h3>
-      <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout_LE)</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The anchor's per-tx entropy prevents cross-tx commitment correlation: without it, two transfers between the same parties at the same vout would produce identical blindings, and an observer could compute <code>(C₁ − C₂) = (a₁ − a₂)·H</code> to learn the difference of amounts.</p>
+      <details class="protocol-section" id="proto-blinding" open>
+        <summary class="protocol-h3">Blinding delivery + amount recovery</summary>
+        <p style="margin-top:8px;">Recipient blinding: <code>r_recip = HMAC-SHA256(ECDH(sender_priv, recipient_pub), "tacit-blind-v1" ‖ anchor ‖ vout_LE)</code>, where <code>anchor = first_asset_input_txid_BE ‖ first_asset_input_vout_LE</code>. The anchor's per-tx entropy prevents cross-tx commitment correlation: without it, two transfers between the same parties at the same vout would produce identical blindings, and an observer could compute <code>(C₁ − C₂) = (a₁ − a₂)·H</code> to learn the difference of amounts.</p>
       <p>Sender's change blinding: <code>r_change = HMAC-SHA256(sender_priv, "tacit-change-v1" ‖ anchor ‖ vout_LE)</code>, where <code>vout_LE</code> is the change output's index in the reveal tx (typically 1 for a 2-output CXFER, but parameterized so multi-output CXFERs with N=4 or N=8 can place change at higher vouts). Deterministic from the wallet privkey so it's recoverable from chain alone.</p>
       <p>Etcher's supply blinding: <code>r_supply = HMAC-SHA256(etcher_priv, "tacit-etch-v1" ‖ etch_anchor)</code>, where <code>etch_anchor</code> = first input outpoint of the <em>commit</em> tx. The anchor predates the envelope (a pre-existing UTXO), breaking the cycle that would otherwise arise from anchoring on the reveal txid. Scanners read it via <code>reveal_tx.vin[0]</code> → fetch commit tx → <code>commit_tx.vin[0]</code>.</p>
       <p>Each commitment also carries an <strong>encrypted amount</strong> (8 bytes, u64 LE XOR'd with an HMAC-keystream). For CXFER outputs, the keystream uses ECDH-derived keying for recipients (so recipient can decrypt with their priv + sender pub) and self-derived keying for change. For CETCH supply, the keystream is self-derived from <code>etcher_priv</code> + <code>etch_anchor</code> — only the etcher can decrypt; observers see opaque bytes. After decryption, the wallet verifies <code>C == amount·H + r·G</code>; tampering with the ciphertext makes verification fail.</p>
       <p>For self-derived roles (CETCH supply, MINT amount, CXFER change), <strong>blinding and keystream are derived under distinct HMAC domain tags</strong> (<code>tacit-etch-v1</code> vs <code>tacit-etch-amount-v1</code>; <code>tacit-mint-blind-v1</code> vs <code>tacit-mint-amount-v1</code>) so the 8-byte keystream output cannot leak any structure of the 32-byte blinding scalar.</p>
       <p>This means <strong>share-links are optional notifications, not required for recovery</strong>. A freshly-installed wallet with only its privkey can auto-discover its full balance from chain alone — incoming CXFER transfers (via ECDH), its own CXFER change (via self-derived), and its own CETCH supply (via etch-anchor self-derived).</p>
+      </details>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Indexer rules (recursive validation)</h3>
-      <ol style="margin-left:20px;margin-top:8px;">
+      <details class="protocol-section" id="proto-indexer">
+        <summary class="protocol-h3">Indexer rules (recursive validation)</summary>
+        <ol style="margin-left:20px;margin-top:8px;">
         <li>For each wallet UTXO, fetch parent tx; read <code>vin[0].witness[1]</code>; decode as tacit envelope.</li>
         <li>Recursively validate the outpoint: walk the ancestry back to its CETCH root, validating each step. Memoize results to keep cost O(N) over a chain of length N. Depth-bounded at 200 hops.</li>
         <li><strong>Aggregated rangeproof verification.</strong> A single bulletproof per envelope covers all m commitments (m ∈ {1,2,4,8}). The walker can additionally <em>batch</em> proofs across the entire ancestry into one multi-scalar multiplication via <code>bpRangeAggBatchVerify</code>, with random per-proof scalars α<sub>i</sub>, β<sub>i</sub> ensuring soundness preservation.</li>
@@ -3125,24 +3275,34 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <li>Any failure anywhere in the ancestry → the UTXO is flagged as inflation attempt and excluded from balance. <code>markAll</code> propagates the verdict to every sibling output of a failed envelope.</li>
         <li>Resolve <code>(amount, blinding)</code> for the commitment: try local opening first, then trial-decrypt the on-chain <code>amount_ct</code> (ECDH against sender pubkey for incoming, self-derived for own change/etch/mint). Verify <code>C == a·H + r·G</code>. If known or recovered → balance += a; if neither path works → "ghost".</li>
       </ol>
+      </details>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Privacy scope</h3>
-      <p style="margin-top:8px;">Tacit hides <strong>amounts</strong>. It does NOT hide:</p>
+      <details class="protocol-section" id="proto-privacy">
+        <summary class="protocol-h3">Privacy scope</summary>
+        <p style="margin-top:8px;"><strong>Amounts:</strong> hidden by default in every CETCH, T_MINT, CXFER, T_AXFER, and BURN-change commitment (32-byte commitment + 8-byte HMAC-encrypted u64 on chain).</p>
+        <p><strong>Address graph:</strong> publicly linkable on the base layer, but the mixer pool (T_DEPOSIT / T_WITHDRAW, §5.10–§5.11) cuts the link. A holder deposits a fixed-denomination UTXO into a Poseidon Merkle tree, then later withdraws under a Groth16 proof of unspent leaf membership. The withdraw recipient is unlinkable to any specific deposit; the anonymity set is the count of currently-unspent leaves at withdraw time. So end-to-end: amount-hiding is on by default and full address-graph privacy is opt-in via the pool — a stricter posture than Liquid CT and approaching the privacy scope of Mimblewimble or shielded Zcash for the assets that route through it.</p>
+        <p>What remains public, even after pooling:</p>
       <ul style="margin-left:20px;margin-top:8px;">
-        <li><strong>Address graph.</strong> Sender and recipient Bitcoin addresses are visible on chain like any tx.</li>
-        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in the envelope).</li>
-        <li><strong>Sender pubkey.</strong> Visible in <code>tx.vin[1].witness[1]</code> (P2WPKH witness); recipient needs it for ECDH blinding recovery.</li>
-        <li><strong>Tx graph.</strong> Inputs and outputs are linkable like any UTXO chain.</li>
+        <li><strong>Asset_id.</strong> Which asset is being transferred is public (32-byte asset_id in every non-pool envelope).</li>
+        <li><strong>Sender pubkey.</strong> Visible in <code>tx.vin[1].witness[1]</code> (P2WPKH witness) on non-pool transfers; recipient needs it for ECDH blinding recovery.</li>
+        <li><strong>Pool participation.</strong> Deposit and withdraw events themselves are public — observers see <em>that</em> an address deposited or withdrew, just not which deposit corresponds to which withdrawal.</li>
+        <li><strong>Pool size and denomination.</strong> Public on chain; the same fact that grants anonymity sets is visible to observers.</li>
       </ul>
-      <p style="margin-top:8px;">This is strictly weaker than Mimblewimble (which hides tx graph via cut-through) and weaker than Liquid CT with surjection proofs (which hides asset_id). It's the same scope as Liquid CT without surjection proofs: amount-hiding only.</p>
+      </details>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Validation cost</h3>
-      <p style="margin-top:8px;">Recursive validation is <strong>O(chain depth)</strong> on a cold cache. With aggregated bulletproofs and batched verification, the practical cost is dominated by ECDSA/Schnorr verification across the ancestry, not rangeproofs (~150 ms verify per BP, batched into one multi-exp across the full walk). Memoization keeps subsequent scans O(new UTXOs) within the same session. For a fresh wallet on mobile, deep ancestries (≥50 hops) will still be slow; production deployments would want a persistent validation cache (across sessions) or a shared indexer service. The "single-file dApp" claim holds for cryptographic correctness; the practical UX for deep chains benefits from server-side help.</p>
+      <details class="protocol-section" id="proto-cost">
+        <summary class="protocol-h3">Validation cost</summary>
+        <p style="margin-top:8px;">Recursive validation is <strong>O(chain depth)</strong> on a cold cache, depth-bounded at 200 hops. With aggregated bulletproofs and batched verification, the practical cost is dominated by BIP-340 Schnorr verification (kernel sigs + mint sigs) across the ancestry, not rangeproofs (~150 ms verify per BP, batched into one multi-exp across the full walk). Memoization keeps subsequent scans O(new UTXOs) within the same session. For a fresh wallet on mobile, deep ancestries (≥50 hops) will still be slow; production deployments benefit from a persistent validation cache or a shared indexer service. Cryptographic correctness holds without either; the gain is purely UX.</p>
+      </details>
 
-      <h3 style="margin-top:18px;font-size:14px;text-transform:uppercase;letter-spacing:0.1em;">Trust model</h3>
-      <p style="margin-top:8px;"><strong>Issuer at etch.</strong> The initial supply commitment is hidden, so no kernel-sig constraint applies — the issuer chooses any value in <code>[0, 2⁶⁴)</code>. The dApp publishes the <code>(supply, blinding)</code> opening by default — embedded in the asset's IPFS metadata blob (content-addressed) and pinned to the discovery worker as a cache. Anyone verifies <code>C == supply·H + r·G</code> against the on-chain commitment, no issuer trust required. Issuers explicitly opt out of attestation only if they have a reason to keep the total confidential; the dApp surfaces that as a deliberate uncheck.</p>
-      <p style="margin-top:8px;"><strong>Mint authority for mintable assets.</strong> If <code>mint_authority ≠ 0</code> in the CETCH envelope, that x-only pubkey can issue additional supply via <code>T_MINT</code> envelopes — bounded only by 2⁶⁴ per envelope, unlimited in count. This is the standard signature-gated mint pattern: holders trust the mint-authority key not to be abused, and compromise of that private key means uncapped inflation. The dApp auto-attests every mint by default so the supply remains publicly auditable across mint events. Fixed-supply assets (<code>mint_authority</code> all-zero) cannot be expanded — for those, etch-time attestation gives you provably and permanently public supply.</p>
-      <p style="margin-top:8px;"><strong>After issuance.</strong> No participant can inflate (kernel sig blocks unbalanced CXFER), burn covertly (BURN's <code>burned_amount</code> is public and bound into the kernel msg), or substitute assets (asset_id consistency checked across every input's parent envelope). The recursive client-side validation guarantees this independent of any indexer's honesty.</p>
+      <details class="protocol-section" id="proto-trust">
+        <summary class="protocol-h3">Trust model</summary>
+        <p style="margin-top:8px;"><strong>Issuer at CETCH.</strong> The initial supply commitment is hidden, so no kernel-sig constraint applies — the issuer chooses any value in <code>[0, 2⁶⁴)</code>. The dApp publishes the <code>(supply, blinding)</code> opening by default — embedded in the asset's IPFS metadata blob (content-addressed) and pinned to the discovery worker as a cache. Anyone verifies <code>C == supply·H + r·G</code> against the on-chain commitment, no issuer trust required. Issuers explicitly opt out of attestation only if they have a reason to keep the total confidential; the dApp surfaces that as a deliberate uncheck.</p>
+      <p style="margin-top:8px;"><strong>Mint authority for mintable assets.</strong> If <code>mint_authority ≠ 0</code> in the CETCH envelope, that x-only pubkey can issue additional supply via <code>T_MINT</code> envelopes — bounded only by 2⁶⁴ per envelope, unlimited in count. Standard signature-gated mint pattern: holders trust the mint-authority key not to be abused, and compromise of that private key means uncapped inflation. The dApp auto-attests every mint by default so supply remains publicly auditable. Fixed-supply CETCHes (<code>mint_authority</code> all-zero) cannot be expanded — for those, etch-time attestation gives provably and permanently public supply.</p>
+      <p style="margin-top:8px;"><strong>T_PETCH (permissionless mints).</strong> No issuer trust at all. The deploy declares <code>cap_amount</code>, <code>mint_limit</code>, and an optional height window; deployer receives zero tokens. Each <code>T_PMINT</code> reveals <code>(amount, blinding)</code> on chain, so cumulative supply against the cap is auditable from chain alone — no attestation channel needed.</p>
+      <p style="margin-top:8px;"><strong>Mixer pools (T_DEPOSIT / T_WITHDRAW).</strong> Each pool runs its own per-circuit Groth16 MPC ceremony at init time; soundness rests on ≥ 1 honest contributor in that ceremony. Privacy (zero-knowledge) is unconditional and does <em>not</em> depend on the ceremony. Pools pin ceremony transcripts to IPFS by content hash; the canonical mixer-circuit ceremony for v1 (Phase 2, beacon-finalized 2026-05-11, 2,227 contributors) is hardcoded in the dApp. Consumers should verify contributor diversity before depositing into any pool not bound to the canonical bundle.</p>
+      <p style="margin-top:8px;"><strong>After issuance.</strong> No participant can inflate (kernel sig blocks unbalanced CXFER / T_AXFER / T_BURN; <code>T_PMINT</code> caps are chain-auditable), burn covertly (BURN's <code>burned_amount</code> is public and bound into the kernel msg), or substitute assets (asset_id consistency checked across every input's parent envelope). Recursive client-side validation guarantees this independent of any indexer's honesty.</p>
+      </details>
 
       <p class="muted" style="margin-top:24px;font-size:11px;">
         Pedersen commits via @noble/secp256k1 projective ops. NUMS H from deterministic hash-to-curve. BIP-340 Schnorr + BIP-341 Taproot inlined. Aggregated bulletproofs (Bünz et al. 2017) + Mimblewimble-style kernel sigs in pure JS, with Pippenger MSM for batched verification.
@@ -3162,7 +3322,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="welcome-card">
     <div class="welcome-title" id="welcome-title">welcome to <span class="accent">tacit</span></div>
     <div class="welcome-lede">
-      tacit is a wallet for confidential tokens on bitcoin. its signing key lives in this browser. <strong>start fresh below</strong> — or connect an existing bitcoin wallet for one-click funding.
+      tacit holds confidential tokens on bitcoin. the signing key lives in this browser — <strong>pick how to set it up below</strong>.
     </div>
     <!-- Contextual prepend for visitors arriving via ?ceremony=… share links.
          Hidden by default; revealed in JS when the URL param is canonical.
@@ -3170,7 +3330,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
          banner just tells the share-link visitor *why* they're being asked
          to pick a wallet before seeing the ceremony panel they came for. -->
     <div id="welcome-ceremony-context" style="display:none;margin-bottom:14px;padding:10px 12px;border-left:3px solid var(--orange,#f7931a);background:#fff8eb;color:var(--ink,#0a0a0a);font-size:13px;line-height:1.5;border-radius:2px;">
-      You followed a share link to the <strong>tacit mixer ceremony</strong>. To contribute, you need a tacit identity in this browser. The fastest path is the highlighted option below — passkey when your device supports it (one tap, no typing), passphrase otherwise. The ceremony panel will load right after.
+      You followed a share link to the <strong>tacit mixer ceremony</strong>. Pick a wallet setup below — passkey is the one-tap path; the ceremony panel loads right after.
     </div>
     <div class="welcome-options">
       <button id="welcome-passkey" class="welcome-option welcome-option--primary" type="button">
@@ -3193,7 +3353,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </button>
     </div>
     <div class="welcome-footer">
-      next step → register a passkey or set a passphrase to encrypt the in-browser signing key at rest. you can connect or switch wallets at any time from the wallet tab.
+      you can connect or switch wallets anytime from the wallet tab.
     </div>
   </div>
 </div>
