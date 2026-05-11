@@ -3738,10 +3738,16 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   const petch = await env.REGISTRY_KV.get(petchKey(network, assetIdHex), 'json');
   if (!petch) return jsonResponse({ error: 'unknown petch asset_id' }, 404, cors);
-  const tip = await Promise.race([
-    apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
-    new Promise(resolve => setTimeout(() => resolve(null), 2500)),
-  ]).catch(() => null);
+  // Tip is only load-bearing for the inline scan paths (depth-3 filter on
+  // canonical pmint keys). The slim path returns snapshot fields directly,
+  // and the snapshot already records `tip_at_update` from when it was
+  // refreshed — fetching a live tip here just to repeat it in the response
+  // would add up to 2.5s of mempool.space round-trip on a hot dapp call.
+  // Defer the fetch unless we actually need to walk canonical keys.
+  const needsLiveTip = !opts.creditedOnly || opts.includeTxids !== false;
+  const tip = needsLiveTip
+    ? await fetchTipHeight(env, network)
+    : null;
   // Slim path: the dapp's validateOutpoint hot path only needs the set of
   // credited mint txids. Every fact required for the credit decision is
   // already encoded in the canonical key (height, tx_index, txid), so we
@@ -3796,8 +3802,13 @@ async function handlePmintList(assetIdHex, env, network, cors, opts = {}) {
         snapshot_updated_at: snap?.updated_at ?? null,
         snapshot_bootstrapped: !!snap?.bootstrapped,
         confirmation_depth: PMINT_CONFIRMATION_DEPTH,
-        tip: Number.isInteger(tip) ? tip : null,
-        tip_unavailable: !Number.isInteger(tip),
+        // Slim path skipped the live tip fetch; surface snapshot's tip
+        // instead so consumers still see the chain height the snapshot was
+        // computed against. tip_unavailable stays true here because callers
+        // shouldn't use this for live-chain reasoning (it's the snapshot's
+        // tip, not the current chain tip).
+        tip: snap?.tip_at_update ?? null,
+        tip_unavailable: true,
         slim: true,                                // signal to consumers that the list is empty by design
         truncated: true,                           // the list IS truncated (to zero); use last_credited_* for membership
         list_complete: false,
@@ -7258,6 +7269,52 @@ export default {
           return jsonResponse({ network, count: results.length, results }, 200, cors);
         }
         return jsonResponse({ error: 'pass ?aid=<hex> or ?all=1' }, 400, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // Snapshot health audit for ops. Lists every petch asset with its
+    // snapshot's key health fields — credited_count, bootstrapped state,
+    // last refresh timestamp, dirty flag. Pure read, no side effects.
+    // Useful for: spotting un-bootstrapped assets, detecting stale snapshots
+    // (cron stuck?), confirming admin rebuilds landed, debugging mint
+    // discrepancies between dapp and worker.
+    if (url.pathname === '/admin/petch-progress/status' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const now = Math.floor(Date.now() / 1000);
+        const petches = await env.REGISTRY_KV.list({ prefix: petchPrefix(network), limit: 1000 });
+        const results = await Promise.all(petches.keys.map(async k => {
+          const aid = k.name.slice(petchPrefix(network).length);
+          if (!/^[0-9a-f]{64}$/.test(aid)) return null;
+          const [petch, snap, dirty] = await Promise.all([
+            env.REGISTRY_KV.get(k.name, 'json').catch(() => null),
+            readPetchProgress(env, network, aid).catch(() => null),
+            env.REGISTRY_KV.get(petchDirtyKey(network, aid)).catch(() => null),
+          ]);
+          return {
+            aid,
+            ticker: petch?.ticker ?? null,
+            has_snapshot: !!snap,
+            bootstrapped: !!snap?.bootstrapped,
+            truncated: !!snap?.truncated,
+            credited_count: snap?.credited_count ?? null,
+            credited_amount: snap?.credited_amount ?? null,
+            cap_overflow_count: snap?.cap_overflow_count ?? null,
+            cap_overflow_truncated: !!snap?.cap_overflow_truncated,
+            orphan_count: snap?.orphan_count ?? null,
+            last_credited_height: snap?.last_credited_height ?? null,
+            snapshot_updated_at: snap?.updated_at ?? null,
+            snapshot_age_secs: snap?.updated_at ? now - snap.updated_at : null,
+            tip_at_update: snap?.tip_at_update ?? null,
+            dirty: !!dirty,
+          };
+        }));
+        const assets = results.filter(r => r);
+        return jsonResponse({
+          network,
+          count: assets.length,
+          now,
+          assets: assets.sort((a, b) => (b.credited_count || 0) - (a.credited_count || 0)),
+        }, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
 
