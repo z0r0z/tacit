@@ -2542,6 +2542,38 @@ async function petchAssetsComputeAndCache(env, network) {
   return { body, status: fresh.status };
 }
 
+// /pmints?credited=1 edge cache. The response is a flat list of credited
+// txids (up to 50k) plus the snapshot fields — currently 3.3MB and ~7s
+// cold-read for FAIR-scale assets. SWR (30s FRESH + 5min STALE) collapses
+// concurrent reads across users/tabs at each Cloudflare POP so only the
+// first request per window pays the inline-scan cost; everyone else gets an
+// instant edge response. FRESH aligns with the dapp's local 30s
+// _pmintCreditedCache so staleness doesn't exceed what the client already
+// tolerates. STALE-while-revalidate keeps responses snappy past the FRESH
+// window while a background refresh runs.
+const PMINT_CREDITED_CACHE_FRESH_MS = 30 * 1000;
+const PMINT_CREDITED_CACHE_STALE_MS = 5 * 60 * 1000;
+function pmintCreditedCacheKey(network, aid) {
+  const params = new URLSearchParams();
+  params.set('network', network);
+  return new Request(`https://_pmints-credited-cache_/${aid}?${params.toString()}`, { method: 'GET' });
+}
+async function pmintCreditedComputeAndCache(env, network, aid) {
+  const fresh = await handlePmintList(aid, env, network, {}, { creditedOnly: true });
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(PMINT_CREDITED_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(
+      pmintCreditedCacheKey(network, aid),
+      new Response(body, { status: 200, headers: ch }),
+    );
+  }
+  return { body, status: fresh.status };
+}
+
 async function marketComputeAndCache(env, network) {
   const fresh = await handleMarket(env, network, {});
   const body = await fresh.text();
@@ -3565,6 +3597,14 @@ async function refreshDirtyPetchSnapshots(env, network, { maxPerTick = 5 } = {})
       const petch = await env.REGISTRY_KV.get(petchKey(network, aid), 'json');
       if (!petch) { await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {}); continue; }
       await refreshAndStorePetchProgress(env, network, aid, tip, petch);
+      // Pre-warm the /pmints?credited=1 edge cache while we're refreshing
+      // this asset anyway. The cache is per-POP, so this only warms the POP
+      // running the cron — other POPs still pay one cold MISS each — but
+      // it's a meaningful win for the dapp's holdings flow because the
+      // first user to land on the cron's POP after a refresh tick gets an
+      // instant HIT instead of a 7s inline scan. Best-effort; cache failure
+      // doesn't roll back the snapshot.
+      await pmintCreditedComputeAndCache(env, network, aid).catch(() => {});
       await env.REGISTRY_KV.delete(petchDirtyKey(network, aid)).catch(() => {});
       refreshed++;
     } catch { errored++; }
@@ -6827,6 +6867,41 @@ export default {
     const mpm = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/pmints$/);
     if (mpm && req.method === 'GET') {
       const creditedOnly = url.searchParams.get('credited') === '1';
+      // SWR cache for the credited-only fast path. Same pattern as
+      // /petch-assets: HIT inside FRESH, STALE-serve + background refresh
+      // between FRESH and STALE, MISS recomputes synchronously. For FAIR-
+      // scale assets the underlying inline scan is ~7s and ~3.3MB; the
+      // cache collapses concurrent reads at each Cloudflare POP into one
+      // real scan per 30s window. The full /pmints path (events array) is
+      // explorer-only and not worth caching the multi-MB events response.
+      if (creditedOnly) {
+        const aid = mpm[1];
+        const cache = caches.default;
+        const cacheKey = pmintCreditedCacheKey(network, aid);
+        const _withCors = (body, status, kind) => {
+          const headers = new Headers();
+          headers.set('Content-Type', 'application/json');
+          for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+          headers.set('X-Cache', kind);
+          return new Response(body, { status, headers });
+        };
+        const cached = await cache.match(cacheKey);
+        if (cached) {
+          const cachedAtStr = cached.headers.get('X-Cached-At');
+          const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+          if (ageMs < PMINT_CREDITED_CACHE_FRESH_MS) {
+            return _withCors(await cached.text(), cached.status, 'HIT');
+          }
+          if (ageMs < PMINT_CREDITED_CACHE_STALE_MS) {
+            if (ctx && typeof ctx.waitUntil === 'function') {
+              ctx.waitUntil(pmintCreditedComputeAndCache(env, network, aid).catch(() => null));
+            }
+            return _withCors(await cached.text(), cached.status, 'STALE');
+          }
+        }
+        const result = await pmintCreditedComputeAndCache(env, network, aid);
+        return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
+      }
       return handlePmintList(mpm[1], env, network, cors, { creditedOnly });
     }
     const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
