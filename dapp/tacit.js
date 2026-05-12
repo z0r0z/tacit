@@ -22335,9 +22335,33 @@ async function _renderClaimTreasuryFundPanel() {
   // claim sits unfulfilled, the recipient comes back and tips.
   const freeClaimsLikely = (balanceSats != null && pendingClaims != null) &&
     (balanceSats >= Math.max(50000, (pendingClaims + 7) * shareSats * 2));
-  const payBtnLabel = extConnected
-    ? `Tip ${shareSats.toLocaleString()} sats & claim ${escapeHtml(ticker)}`
-    : `Connect Bitcoin wallet to tip & claim`;
+  // In-browser tacit wallet sats check: if the recipient's own tacit wallet
+  // already holds enough plain sats to cover the tip + tx fee, they don't
+  // need to connect an external Bitcoin wallet at all. selectSatsUtxosSafe
+  // excludes asset (DUST) UTXOs by design, so this is only counting truly-
+  // spendable plain sats. Spendable threshold: tip + ~1000 sat fee headroom.
+  let tacitSpendableSats = 0;
+  if (wallet.priv && wallet.pub) {
+    try {
+      const allUtxos = await getUtxos(wallet.address());
+      const holdings = await scanHoldings();
+      tacitSpendableSats = selectSatsUtxosSafe(allUtxos, holdings)
+        .reduce((s, u) => s + (u.value || 0), 0);
+    } catch { /* network blip; fall back to ext-wallet flow */ }
+  }
+  const tacitCanPay = tacitSpendableSats >= shareSats + 1000;
+  // Primary-button label cascade:
+  //   1. free claim possible (treasury fully funded) — handled in the
+  //      button-row template below
+  //   2. tacit wallet has enough sats — use the embedded wallet, no
+  //      external connect needed (this is the new "graceful" path)
+  //   3. external Bitcoin wallet already connected — use that
+  //   4. nothing — prompt to connect an external wallet
+  const payBtnLabel = tacitCanPay
+    ? `Tip ${shareSats.toLocaleString()} sats from your tacit wallet`
+    : extConnected
+      ? `Tip ${shareSats.toLocaleString()} sats via ${escapeHtml(wallet.ext.provider || 'BTC wallet')}`
+      : `Connect Bitcoin wallet to tip & claim`;
   out.innerHTML = `
     <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
       ${freeClaimsLikely
@@ -22429,39 +22453,62 @@ async function _renderClaimTreasuryFundPanel() {
     }
     const btn = $('#btn-claim-treasury-pay');
     const orig = btn.textContent;
-    // Inline BTC wallet connect: if the user has no external BTC wallet
-    // connected yet, the button triggers the connect flow IN-PLACE instead
-    // of telling them to find another button somewhere. Picks Sats-Connect
-    // (Xverse / Leather / Sparrow) first if available, falls back to UniSat.
-    // After successful connect, falls through to the tip-send below — one
-    // click takes them from "no wallet" to "tipped + claim submitted".
-    if (!wallet.ext) {
-      const av = extWallet.available();
-      if (!av.satsConnect && !av.unisat) {
-        if (status) status.innerHTML = `<span style="color:var(--orange);">No Bitcoin wallet extension detected in this browser. Install Xverse (xverse.app), Leather (leather.io), or UniSat (unisat.io) — then refresh this page and click again.</span>`;
+    // Tacit-wallet-first: if the recipient's own in-browser tacit wallet
+    // holds enough plain sats, tip from there directly — no external
+    // wallet connect needed. buildAndBroadcastSatsSend uses
+    // selectSatsUtxosSafe internally so asset UTXOs are excluded; only
+    // genuine plain sats fund the tip.
+    let fundingTxid;
+    if (tacitCanPay && wallet.priv) {
+      btn.disabled = true; btn.textContent = 'sending tip from tacit wallet…';
+      try {
+        const res = await buildAndBroadcastSatsSend({ recipientAddr: treasury, amountSats: shareSats });
+        fundingTxid = res.txid;
+      } catch (e) {
+        if (status) status.innerHTML = `<span style="color:var(--red);">✗ Tip from tacit wallet failed: ${escapeHtml(e.message || String(e))}</span>`;
+        btn.disabled = false; btn.textContent = orig;
         return;
       }
-      btn.disabled = true; btn.textContent = 'connecting Bitcoin wallet…';
-      try {
-        const st = av.satsConnect ? await extWallet.connectSatsConnect() : await extWallet.connectUnisat();
-        if (reconcileWalletNetwork(st) !== 'ok') {
-          // reconcile already handled the disconnect / network mismatch UX
+    } else {
+      // External wallet path: inline-connect if not yet linked, then send via
+      // Sats-Connect / UniSat. One click takes a fresh user from "no wallet"
+      // to "tipped + claim submitted" — no scavenger hunt for a separate
+      // Connect button.
+      if (!wallet.ext) {
+        const av = extWallet.available();
+        if (!av.satsConnect && !av.unisat) {
+          if (status) status.innerHTML = `<span style="color:var(--orange);">No Bitcoin wallet extension detected in this browser. Install Xverse (xverse.app), Leather (leather.io), or UniSat (unisat.io) — then refresh this page and click again.</span>`;
+          return;
+        }
+        btn.disabled = true; btn.textContent = 'connecting Bitcoin wallet…';
+        try {
+          const st = av.satsConnect ? await extWallet.connectSatsConnect() : await extWallet.connectUnisat();
+          if (reconcileWalletNetwork(st) !== 'ok') {
+            btn.disabled = false; btn.textContent = orig;
+            return;
+          }
+          await rebindToExt();
+          toast('Connected ' + st.provider, 'success');
+        } catch (e) {
+          if (status) status.innerHTML = `<span style="color:var(--red);">✗ Connect failed: ${escapeHtml(e.message || String(e))}</span>`;
           btn.disabled = false; btn.textContent = orig;
           return;
         }
-        await rebindToExt();
-        toast('Connected ' + st.provider, 'success');
-        // wallet.ext is now populated; fall through to send the tip immediately
-        // without requiring the user to click a second time.
+      }
+      btn.disabled = true; btn.textContent = 'sending tip…';
+      try {
+        fundingTxid = await extWallet.sendSats(treasury, shareSats);
       } catch (e) {
-        if (status) status.innerHTML = `<span style="color:var(--red);">✗ Connect failed: ${escapeHtml(e.message || String(e))}</span>`;
+        if (status) status.innerHTML = `<span style="color:var(--red);">✗ Tip failed: ${escapeHtml(e.message || String(e))}</span>`;
         btn.disabled = false; btn.textContent = orig;
         return;
       }
     }
-    btn.disabled = true; btn.textContent = 'sending tip…';
     try {
-      const fundingTxid = await extWallet.sendSats(treasury, shareSats);
+      // Shared post-tip flow regardless of source wallet.
+      // (Outer try keeps the existing structure that POSTs the claim with
+      // funding_txid below; this just removes the inner `await sendSats`
+      // since we already have fundingTxid above.)
       // Anti-steal: stash the funding_txid so the upcoming claim POST binds
       // this tip to THIS leaf+tacit-pubkey via the worker's per-root
       // funding nullifier. Without this, anyone reading the mempool could
