@@ -12357,6 +12357,55 @@ function dropAnnounceCancelMsgBytes(network, rootHex, issuerPubHex) {
   ));
 }
 
+// Canonical message for DELETE /airdrops/:root/claims/:leaf_index. The
+// issuer signs this with their announcement privkey; the worker verifies
+// against the announcement's `issuer_pubkey` and a ±5 min timestamp window.
+// Must match worker's `airdropClaimDeleteMsg` byte-for-byte (parity tested
+// in tests/airdrop.test.mjs).
+function airdropClaimDeleteMsgBytes(network, rootHex, leafIndex, issuerPubHex, timestamp) {
+  if (network !== 'signet' && network !== 'mainnet') throw new Error(`airdropClaimDeleteMsgBytes: invalid network "${network}"`);
+  if (!/^[0-9a-f]{64}$/i.test(String(rootHex || ''))) throw new Error('airdropClaimDeleteMsgBytes: merkle_root must be 64-char hex');
+  if (!/^0[23][0-9a-f]{64}$/i.test(String(issuerPubHex || ''))) throw new Error('airdropClaimDeleteMsgBytes: issuer_pubkey must be 33-byte compressed hex');
+  if (!Number.isInteger(leafIndex) || leafIndex < 0) throw new Error('airdropClaimDeleteMsgBytes: leaf_index must be a non-negative integer');
+  if (!Number.isInteger(timestamp) || timestamp <= 0) throw new Error('airdropClaimDeleteMsgBytes: timestamp must be a positive unix-seconds integer');
+  const leafLE = new Uint8Array(8); new DataView(leafLE.buffer).setBigUint64(0, BigInt(leafIndex), true);
+  const tsLE = new Uint8Array(8); new DataView(tsLE.buffer).setBigUint64(0, BigInt(timestamp), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-airdrop-claim-delete-v1'),
+    new Uint8Array([_dropNetworkByte(network)]),
+    hexToBytes(rootHex.toLowerCase()),
+    leafLE,
+    hexToBytes(issuerPubHex.toLowerCase()),
+    tsLE,
+  ));
+}
+
+// Issuer-side helper: sign + DELETE a single claim from the worker queue.
+// Used by the dapp's Fulfil-batch flows AND by the auto-fulfil daemon (which
+// imports this same module). Requires `wallet.priv` to be the privkey
+// matching the announcement's `issuer_pubkey` — i.e. the treasury wallet for
+// drops that followed the recommended setup order. Returns the parsed JSON
+// response; throws on signing failure or HTTP error so the caller can log.
+async function signedAirdropClaimDelete(rootHex, leafIndex, network) {
+  if (!WORKER_BASE) throw new Error('signedAirdropClaimDelete: WORKER_BASE not configured');
+  if (!wallet.priv || !wallet.pub) throw new Error('signedAirdropClaimDelete: no active wallet privkey');
+  const issuerPubHex = bytesToHex(wallet.pub);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const msg = airdropClaimDeleteMsgBytes(network, rootHex, leafIndex, issuerPubHex, timestamp);
+  const sig = signSchnorr(msg, wallet.priv);
+  const url = `${WORKER_BASE}/airdrops/${rootHex}/claims/${leafIndex}?network=${encodeURIComponent(network)}`;
+  const r = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cancel_sig: bytesToHex(sig), timestamp }),
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '');
+    throw new Error(`worker returned ${r.status}: ${txt.slice(0, 200)}`);
+  }
+  return r.json();
+}
+
 // One-shot verify. True iff the sig recovers to expectedEthAddrHex.
 function verifyAirdropClaimSig(msg, sigHex, expectedEthAddrHex) {
   try {
@@ -19722,8 +19771,12 @@ async function _autoFulfilTick(drop) {
   if (stOk) stOk.consecutiveBroadcastFailures = 0;
   _autoFulfilLog(dropId, 'broadcast', `✓ batch broadcast · ${verified.length} recipients · reveal ${result.revealTxid.slice(0, 16)}…`);
   // Best-effort queue cleanup so the next pull doesn't redeliver these.
+  // Worker now requires an issuer-signed DELETE (cancel_sig under the
+  // announcement's issuer_pubkey) — so the active wallet must be the
+  // treasury wallet at this point, which the publish-after-switch guard
+  // already enforces upstream.
   for (const v of verified) {
-    fetch(`${WORKER_BASE}/airdrops/${fresh.merkle_root_hex}/claims/${v.leafIndex}?network=${encodeURIComponent(fresh.network || NET.name)}`, { method: 'DELETE' })
+    signedAirdropClaimDelete(fresh.merkle_root_hex, v.leafIndex, fresh.network || NET.name)
       .catch(() => {});
   }
   // Re-render any visible Drops UI so fulfilled count updates.
@@ -20833,7 +20886,7 @@ function setupDropsForm() {
       // for double-pay prevention regardless of queue state.
       if (WORKER_BASE) {
         for (const it of items) {
-          fetch(`${WORKER_BASE}/airdrops/${drop.merkle_root_hex}/claims/${it.leafIndex}?network=${encodeURIComponent(drop.network || NET.name)}`, { method: 'DELETE' })
+          signedAirdropClaimDelete(drop.merkle_root_hex, it.leafIndex, drop.network || NET.name)
             .catch(e => console.warn('queue delete failed for leaf', it.leafIndex, e));
         }
       }
@@ -23024,13 +23077,15 @@ function _recordClaimSubmission(rec) {
   };
   _saveClaimSubs(all);
 }
-// "Dequeued" = the worker's claim queue no longer lists this leaf. Could mean
-// the issuer fulfilled, OR could mean someone DELETEd it (the endpoint is
-// intentionally unauth — see worker §AIRDROP CLAIM QUEUE). So queue-absence
-// is necessary-but-not-sufficient for "fulfilled". We only promote to
-// `verified_at` (the truly-fulfilled state) when on-chain holdings also
-// confirm receipt. Backward-compat: legacy `fulfilled_at` writes are
-// preserved by `_markClaimVerified` so v1 entries don't disappear.
+// "Dequeued" = the worker's claim queue no longer lists this leaf. With the
+// issuer-signed DELETE in place (worker requires BIP-340 sig under the
+// announcement's issuer_pubkey), dequeue is now a STRONG signal that the
+// issuer themselves removed the entry — typically post-fulfilment. We still
+// promote to `verified_at` only when on-chain holdings confirm receipt
+// because (a) the issuer's DELETE could in principle race the broadcast and
+// (b) absence could be a stale-cache artifact. Backward-compat: legacy
+// `fulfilled_at` writes are preserved by `_markClaimVerified` so v1 entries
+// don't disappear.
 function _markClaimDequeued(merkle_root, leaf_index) {
   const all = _loadClaimSubs();
   const key = `${merkle_root}:${leaf_index}`;
@@ -23074,10 +23129,11 @@ function _purgeOldClaimSubs() {
 // Poll the worker's claim queue + the recipient's on-chain holdings to update
 // each submission's status. Two layered signals:
 //   1. dequeue — the worker's claim queue no longer lists this leaf. The
-//      issuer's daemon DELETEs after fulfilling, BUT the DELETE endpoint is
-//      intentionally unauth (rate-limited per IP), so absence is NECESSARY
-//      but NOT SUFFICIENT for fulfilment. A DELETE-DoS could otherwise
-//      silently mark legitimate claims as "fulfilled" with no recourse.
+//      DELETE endpoint is issuer-authenticated (BIP-340 sig under the
+//      announcement's issuer_pubkey + ±5 min freshness), so dequeue is now
+//      a STRONG fulfilment signal — only the announcement issuer can have
+//      caused it. We still treat it as necessary-but-not-sufficient and
+//      cross-check holdings below in case the DELETE raced the broadcast.
 //   2. holdings — the recipient's tacit wallet holds at least claim.amount
 //      of the drop's asset_id. Probable-fulfilment signal; combined with
 //      dequeue it's strong enough to display "✓ received." False positives
@@ -31498,7 +31554,10 @@ export {
   publishPreauthSale, cancelPreauthSale, takePreauthSale, fetchPreauthSale,
   deriveAxintentBlindingKeystream, xor32,
   // Drop-announcement signing messages — exported so tests can verify cross-impl parity with the worker.
-  dropAnnounceMsgBytes, dropAnnounceCancelMsgBytes,
+  dropAnnounceMsgBytes, dropAnnounceCancelMsgBytes, airdropClaimDeleteMsgBytes,
+  // Issuer-side signed-DELETE helper. Exported so the auto-fulfil daemon can
+  // call the same code path the dapp uses for queue cleanup.
+  signedAirdropClaimDelete,
   // Encrypted-at-rest privkey storage
   encryptPrivkey, decryptPrivkey,
   // Ceremony IPFS multi-gateway fetcher — exported so tests can drive its

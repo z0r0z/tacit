@@ -488,6 +488,23 @@ function airdropClaimPrefix(network, rootHex) {
     ? `airdrop:claim:${rootHex}:`
     : `airdrop:claim:${network}:${rootHex}:`;
 }
+// Canonical signing message for DELETE /airdrops/:root/claims/:leaf_index.
+// Must match the dapp's `airdropClaimDeleteMsgBytes` byte-for-byte.
+// Replay is bounded by the timestamp (±5 min window enforced in the handler)
+// — without it, a captured sig over a stale claim record could be replayed
+// to delete a fresh resubmission of the same leaf_index.
+function airdropClaimDeleteMsg(network, rootHex, leafIndex, issuerPubHex, timestamp) {
+  const leafLE = new Uint8Array(8); new DataView(leafLE.buffer).setBigUint64(0, BigInt(leafIndex), true);
+  const tsLE = new Uint8Array(8); new DataView(tsLE.buffer).setBigUint64(0, BigInt(timestamp), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-airdrop-claim-delete-v1'),
+    new Uint8Array([_networkByte(network)]),
+    hexToBytes(rootHex),
+    leafLE,
+    hexToBytes(issuerPubHex),
+    tsLE,
+  ));
+}
 // Range-disclosed listings: one per (maker, asset). Different KV namespace
 // from per-UTXO listings so GET prefix-lists don't collide.
 function rangeListingKey(network, aid, ownerPubHex) {
@@ -6764,21 +6781,51 @@ async function handleAirdropClaimList(rootHex, env, network, cors, opts = {}) {
 
 async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
-  // Same per-IP caps as POST (global + per-root). The endpoint is
-  // intentionally unauthenticated — the issuer's dapp calls DELETE after
-  // pulling each leaf for fulfilment, and doesn't have the claimant's
-  // private key to sign with. Adding sig auth would break the existing
-  // flow; the rate limits bound the blast radius of a malicious deleter to
-  // AIRDROP_DAILY_LIMIT_ROOT_IP entries per day per IP per drop, which
-  // combined with claimants storing their submission locally, the 90-day
-  // claim TTL, and the issuer re-pulling on each fulfilment session makes
-  // mass-wipe impractical.
-  const rl = await _airdropRateLimit(req, env, null, rootHex);   // null pubkey → IP-only
-  if (!rl.ok) return jsonResponse({ error: `airdrop limit reached: ${rl.reason}` }, 429, cors);
   const leafIndex = safeInt(leafIndexStr, -1, { min: 0, max: AIRDROP_LEAF_INDEX_MAX });
-  if (leafIndex < 0) {
-    return jsonResponse({ error: 'invalid leaf_index' }, 400, cors);
+  if (leafIndex < 0) return jsonResponse({ error: 'invalid leaf_index' }, 400, cors);
+
+  // Issuer-authenticated DELETE. The body must carry a BIP-340 signature
+  // over `airdropClaimDeleteMsg(network, root, leaf_index, issuer_pubkey, timestamp)`
+  // verifiable under the announcement's `issuer_pubkey`. Without auth, a
+  // single curl attacker could DELETE-wipe the entire queue (DoS), and
+  // queue-absence could be falsely interpreted as fulfilment by recipient
+  // dashboards. The sig binds the request to: the originating issuer (key
+  // gate), the specific leaf, and a fresh timestamp (replay gate).
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const sigHex = String(body.cancel_sig ?? '').toLowerCase();
+  const tsRaw = body.timestamp;
+  const timestamp = Number.isInteger(tsRaw) ? tsRaw : Number(tsRaw);
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return jsonResponse({ error: 'cancel_sig must be 128 hex chars (BIP-340)' }, 400, cors);
+  if (!Number.isInteger(timestamp) || timestamp <= 0) return jsonResponse({ error: 'timestamp required (unix seconds, integer)' }, 400, cors);
+
+  // ±5 min freshness window. Prevents replay of a stale sig against a later
+  // resubmission of the same leaf_index. Five minutes covers ordinary NTP
+  // skew + brief network detours without being so wide that an attacker
+  // could harvest sigs and replay them at scale.
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - timestamp) > 300) {
+    return jsonResponse({ error: 'timestamp not fresh (must be within ±5 min of server time)' }, 403, cors);
   }
+
+  // Authoritative issuer_pubkey comes from the announcement, not from the
+  // request body. This way the caller can't pretend to be a different issuer
+  // by claiming a key they don't own — the sig must verify against the
+  // pubkey on file, period. Missing announcement → no authorization is
+  // possible → reject. (Issuers can re-announce if they accidentally
+  // cancelled the announcement; existing claims persist independent of
+  // announcement state.)
+  const stored = await env.REGISTRY_KV.get(dropAnnounceKey(network, rootHex), 'json');
+  if (!stored) return jsonResponse({ error: 'no announcement for this root — cannot authorize delete' }, 404, cors);
+  const issuerPubHex = String(stored.issuer_pubkey || '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(issuerPubHex)) return jsonResponse({ error: 'stored issuer_pubkey malformed' }, 500, cors);
+
+  const issuerXOnly = hexToBytes(issuerPubHex).slice(1);
+  const msg = airdropClaimDeleteMsg(network, rootHex, leafIndex, issuerPubHex, timestamp);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, issuerXOnly)) {
+    return jsonResponse({ error: 'invalid cancel_sig (must be BIP-340 signed by the announcement issuer)' }, 403, cors);
+  }
+
   await env.REGISTRY_KV.delete(airdropClaimKey(network, rootHex, leafIndex));
   return jsonResponse({ ok: true }, 200, cors);
 }
@@ -7915,7 +7962,7 @@ export {
   // verification on every POST.
   preauthSaleAuthMsg, preauthSaleCancelMsg, preauthSaleIdHex,
   preauthSellerSpendSighash, derToCompactSig, verifyEcdsaDerSig,
-  dropAnnounceMsg, dropAnnounceCancelMsg,
+  dropAnnounceMsg, dropAnnounceCancelMsg, airdropClaimDeleteMsg,
   bidIntentMsg, bidClaimMsg, bidCancelMsg,
   verifySchnorr, compressedPointFromHex,
   // Wire-format decoders + opcode constants exported so tests/worker-decoder

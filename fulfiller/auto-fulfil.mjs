@@ -251,11 +251,15 @@ async function pullQueue() {
 
 async function deleteFromQueue(leafIndex) {
   if (DRY_RUN) return;
-  const url = `${WORKER_BASE}/airdrops/${drop.merkle_root_hex}/claims/${leafIndex}?network=${encodeURIComponent(NETWORK_NAME)}`;
+  // Worker enforces issuer-signed DELETE; the treasury privkey was loaded
+  // into m.wallet above, and the announcement's issuer_pubkey is the
+  // treasury pubkey, so the same key signs both. signedAirdropClaimDelete
+  // builds the BIP-340 cancel_sig + fresh timestamp and posts the DELETE.
   try {
-    const r = await fetch(url, { method: 'DELETE' });
-    if (!r.ok) log('warn', 'queue delete failed', { leaf_index: leafIndex, status: r.status });
-  } catch (e) { log('warn', 'queue delete threw', { leaf_index: leafIndex, err: e.message }); }
+    await m.signedAirdropClaimDelete(drop.merkle_root_hex, leafIndex, NETWORK_NAME);
+  } catch (e) {
+    log('warn', 'queue delete failed', { leaf_index: leafIndex, err: e.message });
+  }
 }
 
 // ---- Per-claim verification ----
