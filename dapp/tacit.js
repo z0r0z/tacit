@@ -23075,18 +23075,21 @@ async function _claimRefreshDiscover() {
     _claimDiscoverDrops = [];
   }
   // Asset metadata hydration: for every asset_id appearing in the discover
-  // list that the recipient's local registry doesn't already know about,
-  // fetch the metadata (ticker, decimals, image_uri, etcher info) from the
-  // worker's /assets/:asset_id endpoint. Populates the registry so the
-  // claim card avatars + ticker labels render with the issuer's logo even
-  // on a fresh dapp install — without requiring the recipient to have
-  // touched the asset elsewhere first. Each completion re-renders the
-  // discover list so cards "snap" from placeholder to real logo as
-  // metadata arrives. Parallel; each fetch is independent.
+  // list, hydrate metadata from the worker's /assets/:asset_id endpoint when
+  // the recipient's local registry either (a) doesn't know about the asset
+  // at all OR (b) knows about it but is missing imageUri. Without (b), a
+  // user whose registry was populated via a path that didn't capture the
+  // image would never get the logo on their claim card — same UX bug as
+  // having no entry at all.
   if (WORKER_BASE) {
     const unknownAssetIds = new Set();
     for (const d of _claimDiscoverDrops) {
-      if (d.asset_id && /^[0-9a-f]{64}$/.test(d.asset_id) && !getAssetMeta(d.asset_id)) {
+      if (!d.asset_id || !/^[0-9a-f]{64}$/.test(d.asset_id)) continue;
+      const localMeta = getAssetMeta(d.asset_id);
+      // Fetch if no local entry OR local entry is missing imageUri (an
+      // earlier scan may have populated ticker+decimals from a path that
+      // didn't carry image_uri — top up rather than leave it half-populated).
+      if (!localMeta || !localMeta.imageUri) {
         unknownAssetIds.add(d.asset_id);
       }
     }
@@ -23180,7 +23183,12 @@ async function _claimRefreshDiscover() {
           // upstream guarantees both fields are well-formed when present.
           const snapTicker = (typeof blob.asset_ticker === 'string' && blob.asset_ticker) ? blob.asset_ticker : null;
           const snapDecimals = Number.isInteger(blob.asset_decimals) ? blob.asset_decimals : null;
-          _claimDiscoverSnapshots.set(d.merkle_root, { rows, ticker: snapTicker, decimals: snapDecimals });
+          // Carry the snapshot's asset_image field through to the discover map
+          // so the card render can use it as a fallback when local registry
+          // has no image. Validated by _claimValidateSnapshot upstream (IPFS
+          // CIDs only), so trusting it for rendering is safe.
+          const snapImage = (typeof blob.asset_image === 'string' && blob.asset_image.length > 0) ? blob.asset_image : null;
+          _claimDiscoverSnapshots.set(d.merkle_root, { rows, ticker: snapTicker, decimals: snapDecimals, asset_image: snapImage });
           _renderClaimDiscoverList();
         })
         .catch(e => {
@@ -23979,12 +23987,22 @@ async function renderHoldings() {
         h.utxos.length && !h.unknownAsset && WORKER_BASE ? `<button data-act="publish-balance" data-aid="${h.assetIdHex}">Publish balance (${h.utxos.length} UTXO${h.utxos.length>1?'s':''})</button>` : '',
         h.balance > 0n && !h.unknownAsset && WORKER_BASE ? `<button data-act="prove-balance" data-aid="${h.assetIdHex}">Prove ≥ threshold</button>` : '',
       ].filter(Boolean).join('');
+      // Primary trading CTA: preauth-sale (instant, buyer-completable). The
+      // legacy listing flavours (per-UTXO opening, range, atomic-targeted,
+      // atomic-intent open) cover specialised privacy/OTC needs but aren't
+      // what a first-time seller wants — they're tucked behind a single
+      // "Advanced listing types ▾" disclosure.
       const marketButtons = canMarket
         ? `<button class="primary" data-act="list-preauth" data-aid="${h.assetIdHex}">List (Instant)</button>` +
-          `<button data-act="list-sale" data-aid="${h.assetIdHex}">List a UTXO for sale</button>` +
-          `<button data-act="list-range" data-aid="${h.assetIdHex}">List (hidden balance)</button>` +
-          `<button data-act="list-atomic" data-aid="${h.assetIdHex}">Atomic (targeted)</button>` +
-          `<button data-act="publish-intent" data-aid="${h.assetIdHex}">Atomic intent (open)</button>`
+          `<details data-advanced-listings="${h.assetIdHex}" style="display:inline-block;">` +
+            `<summary style="font-size:11px;color:var(--ink-mid);cursor:pointer;padding:6px 8px;list-style:none;">Advanced listing types ▾</summary>` +
+            `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">` +
+              `<button data-act="list-sale" data-aid="${h.assetIdHex}">List a UTXO for sale</button>` +
+              `<button data-act="list-range" data-aid="${h.assetIdHex}">List (hidden balance)</button>` +
+              `<button data-act="list-atomic" data-aid="${h.assetIdHex}">Atomic (targeted)</button>` +
+              `<button data-act="publish-intent" data-aid="${h.assetIdHex}">Atomic intent (open)</button>` +
+            `</div>` +
+          `</details>`
         : '';
       const dangerButtons = h.balance > 0n && !h.unknownAsset ? `<button class="danger" data-act="burn" data-aid="${h.assetIdHex}">Burn</button>` : '';
 
@@ -28088,19 +28106,23 @@ function renderMarketAssetHeader(assetId, rows) {
   const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
   const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
   let floorUnit = null, floorSats = null;
-  let openings = 0, ranges = 0, intents = 0;
+  let openings = 0, ranges = 0, intents = 0, preauths = 0;
   for (const l of rows) {
     if (l.kind === 'opening')      openings++;
     else if (l.kind === 'range')   ranges++;
     else if (l.kind === 'intent')  intents++;
-    const amt = l.kind === 'range' ? l.threshold : l.amount;
-    const u = unitPriceSats(Number(l.price_sats || 0), BigInt(amt || 0), dec);
+    else if (l.kind === 'preauth') preauths++;
+    const amt = l.kind === 'range' ? l.threshold
+              : l.kind === 'preauth' ? (l.asset_opening?.amount)
+              : l.amount;
+    const priceSats = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+    const u = unitPriceSats(priceSats, BigInt(amt || 0), dec);
     if (u != null && (floorUnit == null || u < floorUnit)) floorUnit = u;
-    const ps = Number(l.price_sats || 0);
-    if (ps > 0 && (floorSats == null || ps < floorSats)) floorSats = ps;
+    if (priceSats > 0 && (floorSats == null || priceSats < floorSats)) floorSats = priceSats;
   }
-  const total = openings + ranges + intents;
+  const total = openings + ranges + intents + preauths;
   const kindBits = [];
+  if (preauths) kindBits.push(`<span style="color:#0a8f43;font-weight:bold;">⚡ ${preauths} instant</span>`);
   if (intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;">⚡ ${intents} atomic</span>`);
   if (openings) kindBits.push(`<span class="muted">${openings} opening</span>`);
   if (ranges) kindBits.push(`<span class="muted">${ranges} range</span>`);
@@ -28128,6 +28150,14 @@ function renderMarketAssetHeader(assetId, rows) {
       <strong>${escapeHtml(a.ticker || '?')}</strong>
       <span class="muted">offers</span>
     </div>`;
+  // Show a prominent "List this asset" CTA if the user already holds it.
+  // Uses cached holdings — no forced rescan. If holdings cache is empty
+  // (first visit) the button is hidden; user can still list via Holdings tab.
+  // The click handler jumps to Holdings + auto-opens the list-preauth form.
+  const userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(safeAid));
+  const listCtaHtml = userHoldsAsset
+    ? `<button class="primary" data-act="market-quick-list-preauth" data-aid="${escapeHtml(safeAid)}" title="You hold this asset — list one of your UTXOs for sale via an Instant listing. Opens the Holdings tab with the form pre-expanded." style="font-size:11px;padding:6px 10px;flex-shrink:0;background:#0a8f43;border-color:#0a7d3a;color:#fff;">+ List for sale</button>`
+    : '';
   return breadcrumb + `
     <div data-market-asset-header style="border:1px solid var(--ink);padding:12px;background:var(--bg-warm);margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
       ${imgUrl
@@ -28162,6 +28192,7 @@ function renderMarketAssetHeader(assetId, rows) {
           return `<div class="muted" style="font-size:11px;margin-top:2px;" title="Most recent atomic-intent settlement (T_AXFER) reported to the worker. Best-effort: opening / range fills settle off-chain and don't carry an observable price.">💱 last ${Number(lt.price_sats).toLocaleString()} sats${unitTail}${ageTail}</div>`;
         })()}
       </div>
+      ${listCtaHtml}
       <button data-act="market-back-browse" title="Back to the asset index" style="font-size:11px;padding:6px 10px;flex-shrink:0;">← All assets</button>
     </div>`;
 }
@@ -28453,6 +28484,28 @@ function bindMarketAssetHeader(scope) {
     try { await navigator.clipboard.writeText(copyEl.dataset.aid); toast('Asset ID copied', 'success'); }
     catch { /* clipboard blocked */ }
   };
+  // "+ List for sale" jumps to Holdings tab, scrolls the matching asset card
+  // into view, and triggers its list-preauth button. The Holdings tab's render
+  // re-runs on every tab activation, so we defer with a microtask + retry to
+  // catch the case where the card hasn't been laid out yet.
+  scope.querySelectorAll('[data-act="market-quick-list-preauth"]').forEach(btn => {
+    btn.onclick = (ev) => {
+      ev.preventDefault();
+      const aid = btn.dataset.aid;
+      const holdingsTab = $('.tab[data-tab="holdings"]');
+      if (holdingsTab) holdingsTab.click();
+      const triggerList = (attempt = 0) => {
+        const target = document.querySelector(`button[data-act="list-preauth"][data-aid="${CSS.escape(aid)}"]`);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.click();
+          return;
+        }
+        if (attempt < 20) setTimeout(() => triggerList(attempt + 1), 100);
+      };
+      setTimeout(triggerList, 50);
+    };
+  });
 }
 
 // Hide the ticker-prefix search input when in asset mode — it's redundant
