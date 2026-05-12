@@ -12191,7 +12191,7 @@ function computeAirdropCommitment(rows) {
 // argument records where the rows came from (ERC-20 contract + chain id +
 // block height) so auditors can independently reproduce the (addr, amount)
 // tuples and re-derive the merkle root. Audit fix M6.
-function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, decimals, source }) {
+function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, decimals, source, imageUri }) {
   const out = {
     schema: 'tacit-airdrop-v1',
     network,                         // 'signet' or 'mainnet'
@@ -12207,6 +12207,15 @@ function serialiseAirdropSnapshot({ assetIdHex, network, rows, root, ticker, dec
       amount: r.amount.toString(),
     })),
   };
+  // Carry the asset image URI inline so recipients who've never seen the
+  // asset before get the issuer's logo on their claim card without
+  // needing a separate per-asset registry round-trip. Same field name
+  // pattern as `asset_ticker` / `asset_decimals`. The recipient's dapp
+  // also registers it into the local meta cache on load so subsequent
+  // views (Holdings, Discover, Send privately) all show the logo too.
+  if (typeof imageUri === 'string' && imageUri.length > 0) {
+    out.asset_image = imageUri;
+  }
   if (source && typeof source === 'object') {
     if (Number.isInteger(source.chain_id))     out.source_chain_id = source.chain_id;
     if (typeof source.contract === 'string')   out.source_contract = source.contract;
@@ -12883,10 +12892,14 @@ function wireAssetIdToggles(container) {
   });
 }
 
-function toast(msg, kind = '', ms = 4000) {
+function toast(msg, kind = '', ms = 4000, title = '') {
   const el = document.createElement('div');
   el.className = 'toast ' + kind;
   el.textContent = msg;
+  if (title) {
+    el.title = title;
+    el.style.cursor = 'help';
+  }
   $('#toast-container').appendChild(el);
   setTimeout(() => el.remove(), ms);
 }
@@ -15254,14 +15267,22 @@ async function ceremonyRender() {
   // from outliving its celebratory moment — the FINALIZED badge in the
   // ceremony state line is sufficient signaling beyond that.
   if (state && state.finalized) {
-    const beaconShort = (state.beacon_block_hash || '').slice(0, 12);
+    // Bitcoin block hashes have ~19 leading hex zeros from PoW, so a naive
+    // head-slice shows only zeros. Render head…tail so the unique entropy is
+    // visible, and stash the full 64-char hash in the toast's `title` so a
+    // user who wants to inspect/copy it can hover.
+    const beaconFull = (state.beacon_block_hash || '').toLowerCase();
+    const beaconDisplay = beaconFull
+      ? `${beaconFull.slice(0, 8)}…${beaconFull.slice(-12)}`
+      : '(unknown)';
+    const beaconTitle = beaconFull ? `Bitcoin-block beacon (full): ${beaconFull}` : '';
     const celebKey = `tacit:ceremony:${_ceremonyActiveHash}:celebrated`;
     // Fire the celebration toast once per browser per ceremony — either on
     // the live transition we just observed, or for users arriving after
     // finalize who haven't seen the toast yet.
     if ((!_prevFinalized || !localStorage.getItem(celebKey))) {
       try {
-        toast(`🎉 Ceremony finalized — mixer is now live. Beacon ${beaconShort}…`, 'success', 12000);
+        toast(`🎉 Ceremony finalized — mixer is now live. Beacon ${beaconDisplay}`, 'success', 12000, beaconTitle);
         localStorage.setItem(celebKey, '1');
       } catch {}
     }
@@ -19116,6 +19137,11 @@ async function _probeSnapshotReachability(bareCid) {
 async function _pinDropSnapshot() {
   if (!_dropBuilt) throw new Error('build a snapshot first');
   if (!WORKER_BASE) throw new Error('worker disabled — set WORKER_BASE to enable IPFS pinning');
+  // Pull the asset's image URI from the issuer's local registry (populated
+  // when they CETCH'd or scanned the asset). If present, embed in the
+  // snapshot so recipients see the logo on their claim card without
+  // a prior interaction with the asset.
+  const _issuerMeta = getAssetMeta(_dropBuilt.targetAssetId);
   const blob = serialiseAirdropSnapshot({
     assetIdHex: _dropBuilt.targetAssetId,
     network: NET.name,
@@ -19123,6 +19149,7 @@ async function _pinDropSnapshot() {
     root: _dropBuilt.commit.root,
     ticker: _dropBuilt.targetTicker,
     decimals: _dropBuilt.targetDecimals,
+    imageUri: _issuerMeta?.imageUri || null,
   });
   // Decorate with source-stat metadata so auditors can verify the merge later.
   blob.sources = _dropBuilt.sourceStats.map(s => ({
@@ -21481,6 +21508,19 @@ function _claimValidateSnapshot(rootHexInput, blob) {
       }
     }
   }
+  // Optional asset_image: IPFS-only URI for the asset's logo, surfaced on
+  // recipient claim cards. Strict validation: must be a string, and must
+  // normalise to a valid IPFS URL via normalizeImageUri (which only accepts
+  // ipfs://CID or bare Qm/bafy CIDs). Anything else is dropped silently —
+  // the field is best-effort cosmetic, not load-bearing.
+  if (blob.asset_image != null) {
+    if (typeof blob.asset_image !== 'string' || blob.asset_image.length > 256) {
+      // Tolerate by dropping rather than rejecting — image is cosmetic.
+      blob.asset_image = null;
+    } else if (!normalizeImageUri(blob.asset_image)) {
+      blob.asset_image = null;
+    }
+  }
 
   const reconstructedRows = blob.rows.map((r, i) => {
     if (!r || typeof r !== 'object') throw new Error(`row ${i} not an object`);
@@ -21539,6 +21579,21 @@ function _claimValidateSnapshot(rootHexInput, blob) {
   _claimSnapshot = blob;
   _claimEligibleRow = null;
   _claimSigned = null;
+  // Register the asset metadata locally so other tabs (Holdings, Discover,
+  // Send privately) also pick up the logo for this asset. The snapshot is
+  // the recipient's first interaction with the asset, so this is often the
+  // only path their dapp learns about it. Tolerate registry failure — the
+  // claim flow doesn't depend on local meta being persisted.
+  try {
+    const existing = getAssetMeta(blob.asset_id.toLowerCase()) || {};
+    registerAsset({
+      ...existing,
+      assetIdHex: blob.asset_id.toLowerCase(),
+      ticker: blob.asset_ticker || existing.ticker,
+      decimals: blob.asset_decimals,
+      imageUri: blob.asset_image || existing.imageUri || null,
+    });
+  } catch (e) { /* best-effort */ }
   return blob;
 }
 
@@ -23247,15 +23302,19 @@ function _renderClaimDiscoverList() {
     const snapDecimals = Number.isInteger(snap?.decimals) ? snap.decimals : null;
     const ticker = snapTicker || meta?.ticker || '?';
     const decimals = snapDecimals != null ? snapDecimals : (Number.isInteger(meta?.decimals) ? meta.decimals : 0);
-    // Asset avatar pulled from the local registry (Discover/Holdings populate
-    // it when the recipient has touched this asset before). The image isn't in
-    // the snapshot schema — local meta is the only source, so a fresh wallet
-    // sees the placeholder until it scans the asset elsewhere. Acceptable: the
-    // canonical claim path doesn't depend on the image.
-    const imgUrl = meta ? normalizeImageUri(meta.imageUri) : null;
+    // Asset avatar resolution order:
+    //   1. local registry (Discover/Holdings populated it on prior interaction)
+    //   2. snapshot blob's `asset_image` field (issuer embedded the URI at pin time)
+    //   3. fallback: colored letter
+    // Order matters because the local registry may have a fresher image
+    // (e.g., user updated their metadata since the issuer pinned).
+    const snapImageUri = (typeof snap?.asset_image === 'string' && snap.asset_image.length > 0)
+      ? snap.asset_image
+      : null;
+    const imgUrl = (meta && normalizeImageUri(meta.imageUri)) || (snapImageUri && normalizeImageUri(snapImageUri));
     const avatar = imgUrl
       ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
-      : assetImageFallback(d.asset_id, meta?.ticker, 36);
+      : assetImageFallback(d.asset_id, meta?.ticker || snap?.ticker, 36);
     const safeAid = /^[0-9a-f]{64}$/.test(d.asset_id || '') ? d.asset_id : '';
     // Asset_id chip: click-to-copy (mirrors Holdings/Market). Tacitscan link is
     // mainnet-only — same gate as the petch tile (`tacit.js:26239`), since
