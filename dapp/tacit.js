@@ -22453,6 +22453,11 @@ async function _renderClaimTreasuryFundPanel() {
     }
     const btn = $('#btn-claim-treasury-pay');
     const orig = btn.textContent;
+    // Immediate visible feedback so the click never feels like a dead button.
+    // Both paths (tacit wallet + external wallet) can take 5-30s to broadcast,
+    // and without an in-status indicator the user assumes nothing happened.
+    if (status) status.innerHTML = `<span class="muted">Preparing tip…</span>`;
+    toast('Tip starting…', '');
     // Tacit-wallet-first: if the recipient's own in-browser tacit wallet
     // holds enough plain sats, tip from there directly — no external
     // wallet connect needed. buildAndBroadcastSatsSend uses
@@ -22460,10 +22465,12 @@ async function _renderClaimTreasuryFundPanel() {
     // genuine plain sats fund the tip.
     let fundingTxid;
     if (tacitCanPay && wallet.priv) {
-      btn.disabled = true; btn.textContent = 'sending tip from tacit wallet…';
+      btn.disabled = true; btn.textContent = 'sending tip…';
+      if (status) status.innerHTML = `<span class="muted">Building Bitcoin tx from your tacit wallet (no external wallet popup will appear)…</span>`;
       try {
         const res = await buildAndBroadcastSatsSend({ recipientAddr: treasury, amountSats: shareSats });
         fundingTxid = res.txid;
+        if (status) status.innerHTML = `<span style="color:var(--green);">✓ Tip broadcast · tx <code>${escapeHtml(shorten(fundingTxid, 14))}</code> · binding to your claim…</span>`;
       } catch (e) {
         if (status) status.innerHTML = `<span style="color:var(--red);">✗ Tip from tacit wallet failed: ${escapeHtml(e.message || String(e))}</span>`;
         btn.disabled = false; btn.textContent = orig;
@@ -22480,7 +22487,8 @@ async function _renderClaimTreasuryFundPanel() {
           if (status) status.innerHTML = `<span style="color:var(--orange);">No Bitcoin wallet extension detected in this browser. Install Xverse (xverse.app), Leather (leather.io), or UniSat (unisat.io) — then refresh this page and click again.</span>`;
           return;
         }
-        btn.disabled = true; btn.textContent = 'connecting Bitcoin wallet…';
+        btn.disabled = true; btn.textContent = 'connecting…';
+        if (status) status.innerHTML = `<span class="muted">Waiting for Bitcoin wallet connection (check the popup)…</span>`;
         try {
           const st = av.satsConnect ? await extWallet.connectSatsConnect() : await extWallet.connectUnisat();
           if (reconcileWalletNetwork(st) !== 'ok') {
@@ -22489,6 +22497,7 @@ async function _renderClaimTreasuryFundPanel() {
           }
           await rebindToExt();
           toast('Connected ' + st.provider, 'success');
+          if (status) status.innerHTML = `<span class="muted">Connected. Sending tip…</span>`;
         } catch (e) {
           if (status) status.innerHTML = `<span style="color:var(--red);">✗ Connect failed: ${escapeHtml(e.message || String(e))}</span>`;
           btn.disabled = false; btn.textContent = orig;
@@ -22496,8 +22505,10 @@ async function _renderClaimTreasuryFundPanel() {
         }
       }
       btn.disabled = true; btn.textContent = 'sending tip…';
+      if (status) status.innerHTML = `<span class="muted">Waiting for Bitcoin wallet to sign + broadcast the tip…</span>`;
       try {
         fundingTxid = await extWallet.sendSats(treasury, shareSats);
+        if (status) status.innerHTML = `<span style="color:var(--green);">✓ Tip broadcast · tx <code>${escapeHtml(shorten(fundingTxid, 14))}</code> · binding to your claim…</span>`;
       } catch (e) {
         if (status) status.innerHTML = `<span style="color:var(--red);">✗ Tip failed: ${escapeHtml(e.message || String(e))}</span>`;
         btn.disabled = false; btn.textContent = orig;
@@ -23401,19 +23412,13 @@ function _renderClaimDiscoverList() {
     const snapDecimals = Number.isInteger(snap?.decimals) ? snap.decimals : null;
     const ticker = snapTicker || meta?.ticker || '?';
     const decimals = snapDecimals != null ? snapDecimals : (Number.isInteger(meta?.decimals) ? meta.decimals : 0);
-    // Asset avatar resolution order:
-    //   1. local registry (Discover/Holdings populated it on prior interaction)
-    //   2. snapshot blob's `asset_image` field (issuer embedded the URI at pin time)
-    //   3. fallback: colored letter
-    // Order matters because the local registry may have a fresher image
-    // (e.g., user updated their metadata since the issuer pinned).
-    const snapImageUri = (typeof snap?.asset_image === 'string' && snap.asset_image.length > 0)
-      ? snap.asset_image
-      : null;
-    const imgUrl = (meta && normalizeImageUri(meta.imageUri)) || (snapImageUri && normalizeImageUri(snapImageUri));
-    const avatar = imgUrl
-      ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
-      : assetImageFallback(d.asset_id, meta?.ticker || snap?.ticker, 36);
+    // Avatar resolution: render the colored-letter fallback initially, then
+    // post-render async-resolve via resolveImageUri (which handles ERC-721-style
+    // metadata-JSON indirection — image_uri commonly points to a JSON blob whose
+    // .image field is the real image CID). Same pattern Holdings uses
+    // (`tacit.js:25398`). The async swap happens in the post-render loop
+    // below. Wrap the fallback in a tagged span so we can find + replace it.
+    const avatar = `<span data-region="claim-avatar" data-aid="${escapeHtml(d.asset_id || '')}" style="display:inline-block;flex-shrink:0;">${assetImageFallback(d.asset_id, meta?.ticker || snap?.ticker, 36)}</span>`;
     const safeAid = /^[0-9a-f]{64}$/.test(d.asset_id || '') ? d.asset_id : '';
     // Asset_id chip: click-to-copy (mirrors Holdings/Market). Tacitscan link is
     // mainnet-only — same gate as the petch tile (`tacit.js:26239`), since
@@ -23429,12 +23434,9 @@ function _renderClaimDiscoverList() {
     // status to past-tense so a recipient pasting a stale link gets a clear
     // "you missed it" rather than a confusing fully-active-looking card.
     const exp = _relExpiry(d.expires_at || 0);
-    // "new" pill for drops announced in the last 24h — helps users prioritise
-    // fresh drops when scanning a long list.
-    const announcedAgoSec = Math.floor(Date.now() / 1000) - Number(d.announced_at || 0);
-    const newPill = (announcedAgoSec >= 0 && announcedAgoSec < 86400)
-      ? `<span class="status-pill confirmed" style="font-size:9px;background:#7d4ff7;color:#fff;border-color:#7d4ff7;">new</span>`
-      : '';
+    // "new" pill was redundant when the list usually contains a single drop —
+    // dropped to keep the card uncluttered.
+    const newPill = '';
     const issuerShort = shorten(d.issuer_pubkey || '', 10);
     const provenance = _claimProvenance(d, meta);
     const provBadge = provenance === 'matches_etcher'
@@ -23507,6 +23509,26 @@ function _renderClaimDiscoverList() {
       </div>
     `;
   }).join('');
+
+  // Async avatar hydration: each card was rendered with a colored-letter
+  // fallback. For every asset_id that has an imageUri (local or in the
+  // snapshot blob), kick off resolveImageUri — which handles ERC-721-style
+  // metadata-JSON indirection (image_uri → JSON → .image → real image CID).
+  // On resolution, swap the avatar slot's innerHTML to an actual <img>.
+  // Mirrors the Holdings pattern at `tacit.js:25398`. Errors are silent so a
+  // flaky gateway just leaves the colored-letter placeholder visible.
+  for (const { d, snap } of rendered) {
+    const meta = getAssetMeta(d.asset_id);
+    const uri = (meta && meta.imageUri) || (snap && snap.asset_image) || null;
+    if (!uri) continue;
+    resolveImageUri(uri).then(imgUrl => {
+      if (!imgUrl) return;
+      const slot = list.querySelector(`[data-region="claim-avatar"][data-aid="${d.asset_id}"]`);
+      if (slot) {
+        slot.innerHTML = `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`;
+      }
+    }).catch(() => { /* keep colored-letter placeholder on failure */ });
+  }
 
   list.querySelectorAll('button[data-act="claim-discover-pick"]').forEach(btn => {
     btn.onclick = () => {
