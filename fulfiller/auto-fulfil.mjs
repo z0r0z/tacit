@@ -87,6 +87,17 @@ const MIN_QUEUE_TO_BROADCAST = Number.isInteger(cfg.min_queue_to_broadcast) ? cf
 const REQUIRE_ETH_SIGS = cfg.require_eth_sigs !== false;
 const REQUIRE_FUNDING = cfg.require_funding !== false;  // default: require recipient tip per claim
 const MIN_FUNDING_SATS = Number.isInteger(cfg.min_funding_sats) ? cfg.min_funding_sats : 3000;
+// Issuer-subsidised "free claims" knob. When treasury balance is above this
+// threshold, the daemon accepts claims without a funding_txid — the issuer
+// effectively covers the recipient's tip from their pre-funded sats. As
+// treasury balance drops below the threshold (via fulfilment broadcasts
+// consuming sats), strict require_funding kicks back in automatically.
+// Default 0 = disabled = today's behavior (every claim must tip).
+// Recommended starting value: 50000 sats on mainnet (covers ~7 batches'
+// worth of free fulfilment before recipients have to tip again).
+const FREE_CLAIMS_TREASURY_THRESHOLD = Number.isInteger(cfg.free_claims_when_treasury_above_sats)
+  ? Math.max(0, cfg.free_claims_when_treasury_above_sats)
+  : 0;
 // Confirmation threshold for funding txs. Mempool-only txs can be RBF'd to
 // remove the treasury output AFTER we credit the claim, so we refuse to
 // accept a funding_txid until it has confirmed. Default 1 conf is enough to
@@ -370,9 +381,37 @@ async function verifyClaim(claim) {
   // Without this, anyone could submit a claim and ride the treasury's
   // existing sats balance for free, depleting the pool that other
   // recipients funded for their own claims.
+  //
+  // Exception: when FREE_CLAIMS_TREASURY_THRESHOLD > 0 AND the treasury
+  // currently holds more than that threshold, unfunded claims are accepted —
+  // the issuer is voluntarily covering the recipient's tip from their
+  // pre-funded sats. Each fulfilment broadcast drains the treasury, so
+  // once balance drops below the threshold, strict require_funding kicks
+  // back in automatically. This gives "first N free, then tip" UX with
+  // a single config knob.
   let fundingTxid = String(claim.funding_txid || '').toLowerCase().replace(/^0x/, '');
   if (!fundingTxid) {
-    if (REQUIRE_FUNDING) return { ok: false, reason: 'no funding_txid (require_funding=true) — recipient must tip the treasury and re-submit with the tip txid' };
+    if (REQUIRE_FUNDING) {
+      if (FREE_CLAIMS_TREASURY_THRESHOLD > 0) {
+        // Check live treasury balance against the issuer-set threshold.
+        try {
+          const utxos = await m.getUtxos(TREASURY_ADDR);
+          const sats = utxos.reduce((s, u) => s + (u.value || 0), 0);
+          if (sats >= FREE_CLAIMS_TREASURY_THRESHOLD) {
+            // Accept: treasury covers it.
+            log('info', 'accepting unfunded claim (issuer-subsidised)', {
+              leaf_index: leafIdx, treasury_sats: sats, threshold: FREE_CLAIMS_TREASURY_THRESHOLD,
+            });
+            return { ok: true, leafIndex: leafIdx, tacitPubHex, amount: row.amount, fundingTxid: null };
+          }
+          return { ok: false, reason: `no funding_txid; treasury below subsidy threshold (${sats} < ${FREE_CLAIMS_TREASURY_THRESHOLD} sats) — recipient must tip` };
+        } catch (e) {
+          // Failed to fetch balance — fail safe to strict mode (don't accept).
+          return { ok: false, reason: `no funding_txid; treasury balance check failed (${(e?.message || '').slice(0, 60)}) — falling back to strict mode` };
+        }
+      }
+      return { ok: false, reason: 'no funding_txid (require_funding=true) — recipient must tip the treasury and re-submit with the tip txid' };
+    }
   } else {
     if (!/^[0-9a-f]{64}$/.test(fundingTxid)) return { ok: false, reason: 'malformed funding_txid' };
     const consumedBy = state.consumed_funding[fundingTxid];

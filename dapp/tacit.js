@@ -4880,7 +4880,7 @@ function _localOfferAssetIds() {
     // session whose activity entry has aged out of the 200-entry log.
     const ids = new Set();
     for (const e of loadActivity()) {
-      if (e.kind === 'list-atomic' && /^[0-9a-f]{64}$/.test(e.assetId || '')) ids.add(e.assetId);
+      if ((e.kind === 'list-atomic' || e.kind === 'list-preauth') && /^[0-9a-f]{64}$/.test(e.assetId || '')) ids.add(e.assetId);
     }
     for (const o of loadOpenOffers()) {
       if (/^[0-9a-f]{64}$/.test(o.asset_id || '')) ids.add(o.asset_id);
@@ -4900,7 +4900,7 @@ function _localAtomicAssetIds() {
   try {
     const ids = new Set();
     for (const e of loadActivity()) {
-      if (e.kind === 'list-atomic' && /^[0-9a-f]{64}$/.test(e.assetId || '')) ids.add(e.assetId);
+      if ((e.kind === 'list-atomic' || e.kind === 'list-preauth') && /^[0-9a-f]{64}$/.test(e.assetId || '')) ids.add(e.assetId);
     }
     for (const o of loadOpenOffers()) {
       if (/^[0-9a-f]{64}$/.test(o.asset_id || '')) ids.add(o.asset_id);
@@ -18731,11 +18731,27 @@ async function _fundTreasuryWithTAC(d) {
 // sats over time, but the issuer benefits from a starter pool so the first
 // few batches don't deadlock on "no tips yet, no broadcasts, no fulfilment."
 async function _fundTreasuryWithSats(d) {
+  // Inline BTC wallet connect if not already linked. Same pattern as the
+  // claim-side tip flow — one click takes you from "no wallet" to "sent",
+  // no scavenger hunt across the UI for a separate Connect button.
   if (!wallet.ext) {
-    alert(
-      'Connect a Bitcoin wallet (Xverse / Leather / UniSat) first via the "Connect Bitcoin wallet" button in the right-side connect panel, then click Fund: sats again.',
-    );
-    return;
+    const av = extWallet.available();
+    if (!av.satsConnect && !av.unisat) {
+      alert(
+        'No Bitcoin wallet extension detected in this browser. Install Xverse (xverse.app), Leather (leather.io), or UniSat (unisat.io) — then refresh this page and click Fund: sats again.',
+      );
+      return;
+    }
+    try {
+      const st = av.satsConnect ? await extWallet.connectSatsConnect() : await extWallet.connectUnisat();
+      if (reconcileWalletNetwork(st) !== 'ok') return;
+      await rebindToExt();
+      toast('Connected ' + st.provider, 'success');
+      // wallet.ext is now populated; fall through to the prompts below.
+    } catch (e) {
+      toast('Connect failed: ' + e.message, 'error');
+      return;
+    }
   }
   const ticker = d.asset_ticker || '?';
   const address = prompt(
@@ -22122,17 +22138,25 @@ function _renderClaimResult() {
   out.innerHTML = `
     <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
       <strong>✓ Signed</strong>
-      <div class="muted" style="font-size:11px;margin-top:4px;">${submitBlurb}</div>
-      <textarea id="claim-tuple-out" rows="4" readonly style="margin-top:8px;font-family:var(--mono);font-size:11px;">${escapeHtml(tuple)}</textarea>
-      <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
-        ${WORKER_BASE ? `<button id="btn-claim-submit" type="button" class="primary">Submit to issuer queue</button>` : ''}
-        <button id="btn-claim-copy" type="button">Copy claim line</button>
-        <button id="btn-claim-copy-msg" type="button" title="The full canonical message you signed">Copy signed message</button>
-      </div>
-      <div id="claim-submit-status" style="margin-top:8px;font-size:11px;"></div>
-      <div class="muted" style="font-size:11px;margin-top:8px;">Once the issuer fulfils, your tacit wallet auto-recovers ${escapeHtml(ticker)} from chain on next scan. No further action needed on your end.</div>
+      <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">To finish your claim, tip the issuer's treasury below. The tip pays for the Bitcoin tx that delivers your ${escapeHtml(ticker)} — without it, your claim sits in the queue indefinitely.</div>
     </div>
     <div id="claim-treasury-fund" style="margin-top:10px;"></div>
+    <details style="margin-top:10px;">
+      <summary class="muted" style="cursor:pointer;font-size:11px;">Don't have Bitcoin right now? Or want to hand-deliver the claim?</summary>
+      <div style="padding:10px;margin-top:6px;background:var(--bg-warm);border:1px dashed var(--ink-faint);">
+        <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
+          You can submit the claim now and come back later to tip from a Bitcoin wallet, but your claim will sit unfulfilled until then. Or copy the line below and hand it to the issuer through whatever channel they specified.
+        </div>
+        <textarea id="claim-tuple-out" rows="4" readonly style="font-family:var(--mono);font-size:11px;">${escapeHtml(tuple)}</textarea>
+        <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
+          ${WORKER_BASE ? `<button id="btn-claim-submit" type="button">Submit without tip (sits unfunded)</button>` : ''}
+          <button id="btn-claim-copy" type="button">Copy claim line</button>
+          <button id="btn-claim-copy-msg" type="button" title="The full canonical message you signed">Copy signed message</button>
+        </div>
+        <div id="claim-submit-status" style="margin-top:8px;font-size:11px;"></div>
+      </div>
+    </details>
+    <div class="muted" style="font-size:11px;margin-top:8px;">Once a fulfilment batch broadcasts, your tacit wallet auto-recovers ${escapeHtml(ticker)} from chain on next scan. No further action needed on your end.</div>
   `;
   // Async render the treasury-fund panel (needs fee-rate fetch + treasury
   // address lookup). Independent of submit state — recipient can fund any
@@ -22240,46 +22264,52 @@ async function _renderClaimTreasuryFundPanel() {
       }
     } catch {}
   }
-  // Heuristic: if balance ≥ pending × per-recipient share, treasury is
-  // already "funded for the queue" and the recipient's tip would be extra
-  // headroom. Surface that distinction so power users don't double-fund.
-  if (balanceSats != null && pendingClaims != null && pendingClaims > 0) {
-    recentlyFunded = balanceSats >= pendingClaims * shareSats;
-  }
   const balanceLine = balanceSats == null
     ? `<span class="muted">balance: checking…</span>`
     : `<span>balance: <strong>${balanceSats.toLocaleString()}</strong> sats</span>`;
   const queueLine = pendingClaims == null
     ? `<span class="muted">queue: —</span>`
     : `<span>queue: <strong>${pendingClaims}</strong> pending</span>`;
-  const headlineColour = recentlyFunded ? 'var(--green)' : 'var(--orange)';
-  const headline = recentlyFunded
-    ? 'Treasury looks funded for the current queue.'
-    : 'Help fund the issuer\'s treasury';
-  const blurb = recentlyFunded
-    ? 'You can still tip if you want to top it up — but the next batch can broadcast as-is.'
-    : `Fulfilment batches cost the issuer ~${(shareSats * 7).toLocaleString()} sats each (one CXFER per 7 recipients). Tipping ~${shareSats.toLocaleString()} sats — your fair share of the next batch — speeds up broadcasts and covers your seat in the batch. Voluntary.`;
+  const ticker = _claimSnapshot.asset_ticker || '?';
   const extConnected = !!wallet.ext;
+  // Free-claim heuristic: if the issuer's treasury comfortably exceeds what
+  // the current queue + this recipient need, the issuer is plausibly running
+  // their daemon with subsidy mode on (fulfiller's
+  // `free_claims_when_treasury_above_sats` knob). The dapp can't see the
+  // daemon's exact threshold so this is a best-effort signal: if the free
+  // claim sits unfulfilled, the recipient comes back and tips.
+  const freeClaimsLikely = (balanceSats != null && pendingClaims != null) &&
+    (balanceSats >= Math.max(50000, (pendingClaims + 7) * shareSats * 2));
   const payBtnLabel = extConnected
-    ? `Tip ${shareSats.toLocaleString()} sats via ${escapeHtml(wallet.ext.provider || 'BTC wallet')}`
-    : `Connect BTC wallet to tip`;
+    ? `Tip ${shareSats.toLocaleString()} sats & claim ${escapeHtml(ticker)}`
+    : `Connect Bitcoin wallet to tip & claim`;
   out.innerHTML = `
-    <div class="warn" style="border-left-color:${headlineColour};background:var(--bg-warm);">
-      <strong>${escapeHtml(headline)}</strong>
-      <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">${escapeHtml(blurb)}</div>
+    <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+      ${freeClaimsLikely
+        ? `<strong>🎁 Treasury well-funded — you may be able to claim free</strong>
+           <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">
+             The issuer's treasury holds enough to plausibly cover your batch fee without your tip. Try <em>Submit free claim</em>; if the issuer's daemon honours it, you receive ${escapeHtml(ticker)} at no cost. If the claim sits unfulfilled for ~24h, come back and tip to guarantee.
+           </div>`
+        : `<strong>Tip ${shareSats.toLocaleString()} sats to claim your ${escapeHtml(ticker)}</strong>
+           <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">
+             Your tip pays the Bitcoin tx fee that delivers your tokens. The issuer batches up to 7 recipients per tx, so your share is roughly 1/7th of the batch cost. One click — Bitcoin wallet pays + your claim is submitted automatically.
+           </div>`}
       <div style="margin-top:8px;font-family:var(--mono);font-size:11px;word-break:break-all;background:var(--bg);padding:8px;border-radius:4px;">
-        <div><span class="label">address</span> <code id="claim-treasury-addr">${escapeHtml(treasury)}</code></div>
+        <div><span class="label">treasury</span> <code id="claim-treasury-addr">${escapeHtml(treasury)}</code></div>
         <div style="margin-top:4px;display:flex;gap:14px;flex-wrap:wrap;font-size:11px;">${balanceLine}${queueLine}</div>
       </div>
       <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
-        <button id="btn-claim-treasury-pay" type="button" class="primary">${escapeHtml(payBtnLabel)}</button>
+        ${freeClaimsLikely
+          ? `<button id="btn-claim-treasury-free" type="button" class="primary">🎁 Submit free claim</button>
+             <button id="btn-claim-treasury-pay" type="button">Tip anyway (${shareSats.toLocaleString()} sats)</button>`
+          : `<button id="btn-claim-treasury-pay" type="button" class="primary">${payBtnLabel}</button>`}
         <button id="btn-claim-treasury-copy" type="button">Copy address</button>
         <button id="btn-claim-treasury-refresh" type="button" title="Re-fetch balance + queue">↻ Refresh</button>
       </div>
       <div id="claim-treasury-fund-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
-      <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">Why am I being asked to fund this?</summary>
+      <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">Why am I tipping to claim?</summary>
         <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
-          Bitcoin tx fees are paid by whoever signs the tx. For airdrops where the issuer doesn't want to absorb thousands of dollars in CXFER fees, recipients contribute their fair share to the treasury wallet. The treasury then broadcasts a single multi-recipient CXFER that fulfils up to 7 recipients per tx — your share covers your seat in that batch. <strong>Trust model:</strong> you send sats to the issuer's treasury BEFORE your claim is fulfilled. The issuer could in theory take the tip without broadcasting — same trust as buying a $2 item from an online stranger. The pending-queue count above + the issuer's own published fulfilment history give you a real-time read on whether they're delivering.
+          Every Bitcoin transaction costs a fee, paid by whoever signs it. For this airdrop, the issuer batches up to 7 recipients into one transaction — and your tip covers your seat in that batch. Without it, your claim sits in the queue indefinitely. <strong>Trust model:</strong> you send sats to the issuer's treasury before receiving your tokens — same trust as any prepaid product. The pending-queue count above shows how many other recipients are waiting; the issuer's batch broadcasts are visible on chain, so you can confirm they're delivering before paying if you're cautious.
         </div>
       </details>
     </div>
@@ -22290,6 +22320,51 @@ async function _renderClaimTreasuryFundPanel() {
       .catch(() => prompt('Copy treasury address:', treasury));
   };
   $('#btn-claim-treasury-refresh').onclick = () => _renderClaimTreasuryFundPanel().catch(() => {});
+  // "Submit free claim" path: POST the claim with NO funding_txid. The
+  // daemon's verifyClaim accepts it iff the operator has set
+  // `free_claims_when_treasury_above_sats` and the live treasury balance
+  // exceeds that threshold. If the daemon is in strict mode, the claim
+  // sits in the queue indefinitely — the recipient can come back and tip
+  // via the panel later to bind a funding_txid and unstuck the claim.
+  const freeBtn = $('#btn-claim-treasury-free');
+  if (freeBtn) freeBtn.onclick = async () => {
+    const status = $('#claim-treasury-fund-status');
+    if (status) status.textContent = '';
+    if (!_claimSigned || !_claimEligibleRow) {
+      if (status) status.innerHTML = `<span style="color:var(--orange);">Complete step 4 (sign with wallet) first.</span>`;
+      return;
+    }
+    const orig = freeBtn.textContent;
+    freeBtn.disabled = true; freeBtn.textContent = 'submitting…';
+    try {
+      const r = await fetch(`${WORKER_BASE}/airdrops/${_claimSnapshot.merkle_root}/claims?network=${encodeURIComponent(_claimSnapshot.network)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          leaf_index: _claimEligibleRow.index,
+          tacit_pubkey: _claimSigned.tacitPubHex,
+          eth_sig: _claimSigned.sigHex,
+          // Intentionally no funding_txid — relying on issuer subsidy.
+        }),
+      });
+      if (!r.ok) throw new Error(`worker returned ${r.status}: ${(await r.text().catch(() => '')).slice(0, 200)}`);
+      _recordClaimSubmission({
+        merkle_root: _claimSnapshot.merkle_root,
+        leaf_index: _claimEligibleRow.index,
+        asset_id: _claimSnapshot.asset_id,
+        ticker: _claimSnapshot.asset_ticker || '?',
+        decimals: Number.isInteger(_claimSnapshot.asset_decimals) ? _claimSnapshot.asset_decimals : 0,
+        amount: _claimEligibleRow.amount,
+        tacit_pub: _claimSigned.tacitPubHex,
+      });
+      _renderClaimSubmissions();
+      if (status) status.innerHTML = `<span style="color:var(--green);">✓ Free claim submitted. The issuer's daemon will fulfil it if their treasury is in subsidy mode. Check back in a few hours — if still pending, click "Tip anyway" to guarantee.</span>`;
+      toast('Free claim submitted', 'success');
+    } catch (e) {
+      if (status) status.innerHTML = `<span style="color:var(--red);">✗ Submit failed: ${escapeHtml(e.message || String(e))}</span>`;
+    } finally {
+      freeBtn.disabled = false; freeBtn.textContent = orig;
+    }
+  };
   $('#btn-claim-treasury-pay').onclick = async () => {
     const status = $('#claim-treasury-fund-status');
     if (status) status.textContent = '';
@@ -22297,12 +22372,39 @@ async function _renderClaimTreasuryFundPanel() {
       if (status) status.innerHTML = `<span style="color:var(--orange);">Complete step 4 (sign with wallet) first — your tip must be bound to a signed claim, or another recipient could claim the slot you funded.</span>`;
       return;
     }
-    if (!wallet.ext) {
-      if (status) status.innerHTML = `<span style="color:var(--orange);">Connect a Bitcoin wallet (Xverse / Leather / UniSat) via the "Connect Bitcoin wallet" button in the connect panel, then click Tip again.</span>`;
-      return;
-    }
     const btn = $('#btn-claim-treasury-pay');
-    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'sending…';
+    const orig = btn.textContent;
+    // Inline BTC wallet connect: if the user has no external BTC wallet
+    // connected yet, the button triggers the connect flow IN-PLACE instead
+    // of telling them to find another button somewhere. Picks Sats-Connect
+    // (Xverse / Leather / Sparrow) first if available, falls back to UniSat.
+    // After successful connect, falls through to the tip-send below — one
+    // click takes them from "no wallet" to "tipped + claim submitted".
+    if (!wallet.ext) {
+      const av = extWallet.available();
+      if (!av.satsConnect && !av.unisat) {
+        if (status) status.innerHTML = `<span style="color:var(--orange);">No Bitcoin wallet extension detected in this browser. Install Xverse (xverse.app), Leather (leather.io), or UniSat (unisat.io) — then refresh this page and click again.</span>`;
+        return;
+      }
+      btn.disabled = true; btn.textContent = 'connecting Bitcoin wallet…';
+      try {
+        const st = av.satsConnect ? await extWallet.connectSatsConnect() : await extWallet.connectUnisat();
+        if (reconcileWalletNetwork(st) !== 'ok') {
+          // reconcile already handled the disconnect / network mismatch UX
+          btn.disabled = false; btn.textContent = orig;
+          return;
+        }
+        await rebindToExt();
+        toast('Connected ' + st.provider, 'success');
+        // wallet.ext is now populated; fall through to send the tip immediately
+        // without requiring the user to click a second time.
+      } catch (e) {
+        if (status) status.innerHTML = `<span style="color:var(--red);">✗ Connect failed: ${escapeHtml(e.message || String(e))}</span>`;
+        btn.disabled = false; btn.textContent = orig;
+        return;
+      }
+    }
+    btn.disabled = true; btn.textContent = 'sending tip…';
     try {
       const fundingTxid = await extWallet.sendSats(treasury, shareSats);
       // Anti-steal: stash the funding_txid so the upcoming claim POST binds
@@ -22393,9 +22495,20 @@ function _treasuryAddressForRoot(rootHex) {
 async function _recipientShareSatsForNextBatch() {
   let feeRate;
   try { feeRate = await getFeeRate(); } catch { return Math.max(5000, AUTOFULFIL_MIN_FUNDING_SATS); }
-  const revealFee = feeFor(estCXferRevealVb({ m: 7, numAssetIn: 2, hasSatsChange: true }), feeRate);
+  // Worst-realistic batch shape: 7 recipients, 1 asset input (single big asset
+  // UTXO at the treasury — common when issuer just funded the treasury via
+  // one CXFER), sats-change output back to treasury. numAssetIn=1 maximises
+  // the dust-value cost because zero recyling happens (vs numAssetIn=2 which
+  // saves 1 dust by recycling an asset input back into a recipient output).
+  const revealFee = feeFor(estCXferRevealVb({ m: 7, numAssetIn: 1, hasSatsChange: true }), feeRate);
   const commitFee = feeFor(estCommitVb(2), feeRate);
-  const perBatch = commitFee + revealFee + 8 * DUST + 1000;
+  // DUST accounting (audit M6 follow-up): each batch creates 7 recipient dust
+  // outputs + 1 change dust output, consumes numAssetIn dust outputs. Net new
+  // dust locked = (8 - numAssetIn) × DUST. The previous calculation hardcoded
+  // 8 × DUST which over-counted by 546-1092 sats. Using numAssetIn=1 as the
+  // conservative case gives 7 × DUST = 3822 sats — tracks reality within ~5%.
+  const netDustLocked = 7 * DUST;
+  const perBatch = commitFee + revealFee + netDustLocked + 1000;  // +1000 buffer for fee-rate variance
   return Math.max(AUTOFULFIL_MIN_FUNDING_SATS, Math.ceil(perBatch / 7));
 }
 
@@ -23033,17 +23146,24 @@ function _claimReconstructDiscoveredRows(blob, expectedRootHex) {
   return parsed.map(r => ({ ethAddrHex: r.ethAddrHex, amount: r.amount, index: r.index }));
 }
 
-// Provenance heuristic: 'matches_etcher' | 'self_announced' | 'unknown'.
-// Conservative — for non-mintable assets we don't have the etcher's
-// signing-pubkey cached locally, so the badge falls back to 'unknown' rather
-// than misleading the user with a false-positive green flag.
+// Provenance heuristic: 'matches_etcher' | 'self_announced' | 'fixed_supply' | 'unknown'.
+// Conservative — we never claim a positive verification we can't substantiate.
+//   matches_etcher → asset has a mint authority + it signed the announcement (cryptographic match)
+//   self_announced → asset has a mint authority but a DIFFERENT key signed the announcement (warn)
+//   fixed_supply   → asset has NO mint authority (non-mintable CETCH); off-chain provenance only,
+//                    surfaced as a neutral factual property rather than an alarming "unverified"
+//   unknown        → metadata not yet loaded (transient, mid-fetch)
 function _claimProvenance(d, meta) {
-  if (!d || !d.issuer_pubkey || !meta) return 'unknown';
+  if (!d || !d.issuer_pubkey) return 'unknown';
+  if (!meta) return 'unknown';     // metadata still fetching
   const issuerXOnly = String(d.issuer_pubkey).slice(2).toLowerCase();
   if (meta.mintAuthorityHex && /^[0-9a-f]{64}$/.test(meta.mintAuthorityHex)) {
     return meta.mintAuthorityHex.toLowerCase() === issuerXOnly ? 'matches_etcher' : 'self_announced';
   }
-  return 'unknown';
+  // Asset metadata exists and has no mint authority → CETCH'd as non-mintable.
+  // That's a factual property of the token (capped supply, no inflation possible).
+  // Surface it neutrally; recipients still trust the share-link source for legitimacy.
+  return 'fixed_supply';
 }
 
 function _renderClaimDiscoverList() {
@@ -23163,7 +23283,9 @@ function _renderClaimDiscoverList() {
       ? `<span class="status-pill confirmed" style="font-size:9px;">issued by etcher</span>`
       : provenance === 'self_announced'
         ? `<span class="status-pill" style="background:var(--bg-warm);color:var(--orange);border-color:var(--orange);font-size:9px;">⚠ self-announced</span>`
-        : `<span class="status-pill pending" style="font-size:9px;">unverified provenance</span>`;
+        : provenance === 'fixed_supply'
+          ? `<span class="status-pill" style="background:var(--bg-warm);color:var(--ink-mid);border-color:var(--ink-faint);font-size:9px;">fixed supply</span>`
+          : '';  // unknown: metadata still loading — no pill yet, will recompute on re-render
     let amountLine = '';
     let actionLine = '';
     if (snapshotState === 'fetching') {
@@ -23202,9 +23324,9 @@ function _renderClaimDiscoverList() {
     const expiredFade = exp.expired ? 'opacity:0.55;' : '';
     const expColor = exp.expired ? 'color:#a04030;' : '';
     return `
-      <div class="card" style="margin-bottom:8px;padding:12px;border:1px solid var(--ink);${borderLeft}background:var(--bg);${expiredFade}">
-        <div class="flex" style="justify-content:space-between;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-          <div style="display:flex;gap:10px;align-items:center;min-width:0;flex:1;">
+      <div class="card claim-discover-card" style="margin-bottom:8px;padding:12px;border:1px solid var(--ink);${borderLeft}background:var(--bg);${expiredFade}">
+        <div class="cdc-row">
+          <div class="cdc-title">
             ${avatar}
             <div style="min-width:0;flex:1;">
               <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">
@@ -23212,12 +23334,12 @@ function _renderClaimDiscoverList() {
                 ${newPill}
                 ${provBadge}
               </div>
-              ${aidChip ? `<div style="margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${aidChip}${aidExplorer}</div>` : ''}
-              <div class="muted" style="font-size:11px;margin-top:2px;">root <code>${escapeHtml(shorten(d.merkle_root, 10))}</code> · <span style="${expColor}">${escapeHtml(exp.text)}</span></div>
+              ${aidChip ? `<div class="cdc-aidrow" style="margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${aidChip}${aidExplorer}</div>` : ''}
+              <div class="muted" style="font-size:11px;margin-top:2px;word-break:break-all;">root <code>${escapeHtml(shorten(d.merkle_root, 10))}</code> · <span style="${expColor}">${escapeHtml(exp.text)}</span></div>
             </div>
           </div>
-          <div style="display:flex;gap:4px;align-items:center;">
-            <button data-act="claim-discover-share" data-root="${escapeHtml(d.merkle_root)}" data-cid="${escapeHtml(d.ipfs_cid)}" data-net="${escapeHtml(d.network || NET.name)}" title="Copy share link" style="font-size:11px;padding:2px 6px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">↗ share</button>
+          <div class="cdc-actions">
+            <button data-act="claim-discover-share" data-root="${escapeHtml(d.merkle_root)}" data-cid="${escapeHtml(d.ipfs_cid)}" data-net="${escapeHtml(d.network || NET.name)}" title="Copy share link" style="font-size:11px;padding:4px 10px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">↗ share</button>
             ${actionLine}
           </div>
         </div>
@@ -25484,7 +25606,7 @@ async function renderRecentEtches() {
           return (Number(a.transfer_count || 0)) + (Number(a.pmint_count || 0));
         }
         return (Number(a.transfer_count || 0))
-             + (Number(a.listing_count || 0)) + (Number(a.range_listing_count || 0)) + (Number(a.atomic_intent_count || 0))
+             + (Number(a.listing_count || 0)) + (Number(a.range_listing_count || 0)) + (Number(a.atomic_intent_count || 0)) + (Number(a.preauth_sale_count || 0))
              + (Array.isArray(a.mints) ? a.mints.length : 0)
              + (Array.isArray(a.burns) ? a.burns.length : 0);
       };
@@ -26451,7 +26573,7 @@ async function enrichDiscoverPriceFloor(a, verify) {
   if (verify._priceFloorEnriched) return;
   // Ignore assets without claimed offers — saves the round-trip when there's
   // nothing to find. The registry's coarse counts already filter this case.
-  const hasAnyOffer = Number(a.listing_count || 0) > 0 || Number(a.atomic_intent_count || 0) > 0;
+  const hasAnyOffer = Number(a.listing_count || 0) > 0 || Number(a.atomic_intent_count || 0) > 0 || Number(a.preauth_sale_count || 0) > 0;
   if (!hasAnyOffer) {
     verify._priceFloorEnriched = true;
     verify._priceFloorPpu = null;
@@ -26626,7 +26748,8 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   card.dataset.ticker = String(ticker || '').toLowerCase();
   const _offerCount = Number(a.listing_count || 0)
                     + Number(a.range_listing_count || 0)
-                    + Number(a.atomic_intent_count || 0);
+                    + Number(a.atomic_intent_count || 0)
+                    + Number(a.preauth_sale_count || 0);
   // Pill predicates: the worker's counts only reflect what its cron has
   // indexed since it started running (mainnet starts at tip with no
   // backfill, signet backfills 2 weeks). Augment each pill with the user's
@@ -26831,7 +26954,7 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   // mixing in marketplace chrome. The dataset attr remains because the
   // ⚡ Atomic filter pill (when present) reads it; if you want to also drop
   // the pill, see index.html's #discover-pills.
-  card.dataset.hasAtomic = (Number(a.atomic_intent_count || 0) > 0 || _localAtomicAssetIds().has(a.asset_id)) ? '1' : '0';
+  card.dataset.hasAtomic = (Number(a.atomic_intent_count || 0) > 0 || Number(a.preauth_sale_count || 0) > 0 || _localAtomicAssetIds().has(a.asset_id)) ? '1' : '0';
 
   // Network chip. Sourced from the asset record (worker stamps every entry
   // with `network`); falls back to the dapp's current NET.name when absent
@@ -26916,7 +27039,8 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       // away — clicking through to Market shows the precise mix.
       const offerCount = Number(a.listing_count || 0)
                        + Number(a.range_listing_count || 0)
-                       + Number(a.atomic_intent_count || 0);
+                       + Number(a.atomic_intent_count || 0)
+                       + Number(a.preauth_sale_count || 0);
       // Always render a Trade affordance so users can place the FIRST bid
       // on a fresh asset. Without this, a coin with zero offers is
       // unreachable from the in-app UI: /market filters offer_count=0
@@ -27440,9 +27564,14 @@ function applyMarketFilters() {
       return ticker.includes(filterText) || aid.startsWith(filterText);
     });
   }
-  if (filterKind !== 'all') rows = rows.filter(l => l.kind === filterKind);
-  if (Number.isInteger(minPrice)) rows = rows.filter(l => Number(l.price_sats || 0) >= minPrice);
-  if (Number.isInteger(maxPrice)) rows = rows.filter(l => Number(l.price_sats || 0) <= maxPrice);
+  if (filterKind === 'trustless') {
+    rows = rows.filter(l => l.kind === 'intent' || l.kind === 'preauth');
+  } else if (filterKind !== 'all') {
+    rows = rows.filter(l => l.kind === filterKind);
+  }
+  const _priceOf = l => l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+  if (Number.isInteger(minPrice)) rows = rows.filter(l => _priceOf(l) >= minPrice);
+  if (Number.isInteger(maxPrice)) rows = rows.filter(l => _priceOf(l) <= maxPrice);
   // (Trust-mode note line removed — per-tile `⚠ trust required` badge on
   // each OTC listing already warns at the point of action, and the trade-
   // type chip itself reads "⚡ atomic only" so the top-level reminder was
@@ -27480,7 +27609,7 @@ function applyMarketFilters() {
   // still see opening/range offers, but the recommended path is on top.
   // For price sorts, atomic ↔ non-atomic at the same price stay grouped:
   // atomics first, then opening/range tied by price.
-  const atomicScore = l => l.kind === 'intent' ? 0 : 1;
+  const atomicScore = l => (l.kind === 'intent' || l.kind === 'preauth') ? 0 : 1;
   // Cache the unit price per row so the comparator doesn't recompute it on
   // every pairwise call. Listings whose unit price can't be derived (zero
   // amount, malformed price) sort to the bottom under unit-asc, top under

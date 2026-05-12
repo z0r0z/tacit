@@ -827,6 +827,33 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 .status-pill.pending { background: var(--bg-warm); color: var(--ink); }
 .status-pill.etch { background: var(--purple); color: #fff; border-color: var(--purple); }
 
+/* Claim-tab discovery card: responsive layout. Desktop = title-left, buttons-
+   right; mobile (< 600px) = stack title block on top, buttons full-width below.
+   Without this, the buttons cluster + push the title into ~200px on iPhone-SE
+   widths, which truncates the ticker and forces the pills to wrap awkwardly. */
+.claim-discover-card .cdc-row {
+  display: flex; gap: 8px; align-items: flex-start;
+  justify-content: space-between; flex-wrap: wrap;
+}
+.claim-discover-card .cdc-title {
+  display: flex; gap: 10px; align-items: center;
+  min-width: 0; flex: 1 1 200px;
+}
+.claim-discover-card .cdc-actions {
+  display: flex; gap: 4px; align-items: center;
+  flex-shrink: 0;
+}
+@media (max-width: 600px) {
+  .claim-discover-card { padding: 10px !important; }
+  .claim-discover-card .cdc-actions {
+    width: 100%; margin-top: 8px;
+    border-top: 1px dashed var(--ink-faint); padding-top: 8px;
+  }
+  .claim-discover-card .cdc-actions > * { flex: 1 1 auto; text-align: center; min-height: 32px; }
+  .claim-discover-card .cdc-aidrow { font-size: 10px; }
+  .claim-discover-card .cdc-aidrow code { font-size: 10px; }
+}
+
 .toast {
   position: fixed; bottom: 24px; right: 24px;
   padding: 14px 22px; background: var(--ink); color: var(--bg);
@@ -2460,7 +2487,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </details>
 
       <div class="warn" style="margin-bottom:14px;">
-        <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by the active wallet. Generate a dedicated treasury in §1 and fund only what each batch needs — limits blast radius if the key leaks.
+        <strong>Hot-wallet hygiene.</strong> The active wallet signs every payout. Generate a dedicated treasury wallet in §1 below and fund only what each batch needs — limits exposure if the key leaks.
       </div>
 
       <details style="margin-bottom:14px;"><summary class="muted" style="cursor:pointer;font-size:11px;">Trust model: where the worker fits, and how to self-host</summary>
@@ -2530,7 +2557,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <h3 style="margin-top:24px;">7 · On-chain claim pool (advanced — SPEC §5.12 / §5.13)</h3>
       <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
-        Alternative to the worker-mediated airdrop above: lock supply into a <strong>T_DROP</strong> envelope, recipients <strong>self-claim</strong> with their own tx fees. Issuer pays one tx (~$5-10 mainnet) instead of one CXFER per batch of 7. Cap is enforced by the chain indexer. Optional merkle gate (paste a snapshot's merkle root) restricts claims to specific ETH addresses; leaving the root empty makes the drop FCFS for anyone.
+        Alternative to the recipient-funded airdrop above: lock the payout supply into a public on-chain pool. Recipients <strong>self-claim</strong> and pay their own ~$5-10 Bitcoin tx fee. Issuer pays once (the pool-creation tx) instead of one Bitcoin tx per batch of 7. The cap is enforced on chain. Optional eligibility gate (paste a snapshot's merkle root) restricts claims to specific ETH addresses; leaving the root empty opens the pool to anyone, first-come-first-served.
       </div>
       <div class="muted" style="font-size:11px;margin-bottom:14px;">
         <strong>Trade-off vs. worker-mediated:</strong> each T_DCLAIM is publicly attributable (claimer address + leaf_index on chain). For a CETCH-rooted asset, T_DROP <em>does not</em> change asset_id or migrate holders — it's a one-tx pool that spends some of your existing supply.
@@ -2595,7 +2622,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 
   <div class="section" id="drop-fulfil-section" style="display:none;">
-    <div class="section-header"><span>fulfil claims · batched CXFER</span></div>
+    <div class="section-header"><span>fulfil claims · batched payout</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
         Paste claim tuples (<code>leaf_index,tacit_pubkey_hex,eth_signature_hex</code>, one per line) — the third column is what recipients produce in the Claim tab. The dapp verifies the merkle inclusion and signature, then stages a batch CXFER (up to 7 recipients per Bitcoin tx).
@@ -2664,12 +2691,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="section-header"><span>claim · airdrop recipient</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:14px;">
-        Connect an Ethereum wallet to find eligible drops (or paste a merkle root + IPFS CID for a private one), then sign a claim binding your tacit pubkey.
+        Connect your Ethereum wallet to see airdrops you're eligible for, then sign a message to claim your tokens. No gas, no Ethereum transaction.
       </div>
 
       <h3>1 · Discover available drops</h3>
       <div class="muted" style="font-size:11px;margin-bottom:6px;">
-        Active issuer-published drops on <span id="claim-discover-network">…</span>.
+        Live drops on <span id="claim-discover-network">…</span>.
       </div>
       <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
         <button id="btn-claim-discover-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active drops from the worker">↻ Refresh</button>
@@ -2700,7 +2727,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
 
       <h3 style="margin-top:18px;">4 · Sign claim</h3>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">Your wallet will display the full canonical claim message. Read every field before signing.</div>
+      <div class="muted" style="font-size:11px;margin-bottom:6px;">Your wallet will show a short authorization message. Read every field before signing — no gas spent.</div>
       <details style="margin:8px 0;"><summary class="muted" style="cursor:pointer;font-size:11px;">Preview the message that will be signed</summary>
         <pre id="claim-msg-preview" style="margin-top:6px;font-size:11px;background:var(--bg-warm);padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;"></pre>
       </details>
@@ -2710,17 +2737,17 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div id="claim-sign-err" class="error" style="margin-top:8px;"></div>
 
       <h3 style="margin-top:18px;">5 · Send to issuer</h3>
-      <div id="claim-result-placeholder" class="muted" style="font-size:11px;">Complete step 4 to generate the issuer-bound payload here.</div>
+      <div id="claim-result-placeholder" class="muted" style="font-size:11px;">Sign the message above to generate your claim ticket here.</div>
       <div id="claim-result" style="display:none;"></div>
 
       <div style="margin-top:32px;padding-top:18px;border-top:1px dashed var(--ink-faint);">
         <div class="muted" style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);margin-bottom:10px;">Other ways to claim</div>
-        <div class="muted" style="font-size:11px;margin-bottom:10px;line-height:1.5;">For drops outside the worker-published list above — separate discovery surfaces with their own claim mechanics. Loading a snapshot here populates steps 2–5 above.</div>
+        <div class="muted" style="font-size:11px;margin-bottom:10px;line-height:1.5;">Have a private drop or a direct share link from the issuer? Use the options below.</div>
 
-        <details><summary class="muted" style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> On-chain claim pools (T_DROP — you pay your own tx fee)</summary>
+        <details><summary class="muted" style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Self-claim on-chain (you pay your own Bitcoin tx fee)</summary>
           <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
             <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
-              Self-service claim pools backed by on-chain <strong>T_DROP</strong> envelopes (SPEC §5.12 / §5.13). Permissionless: anyone may claim FCFS, up to the cap declared by the issuer. Merkle-gated drops additionally require an ETH signature proving your address is in the snapshot (sign the canonical claim message first via the discovery list above). Issuer pays nothing per claim — <strong>you</strong> pay the ~$5-10 mainnet reveal-tx fee.
+              For drops where the issuer locked tokens into a public claim pool on Bitcoin. Anyone in the snapshot can self-claim first-come-first-served until the cap runs out. For drops with an eligibility list, you'll also need to sign with your Ethereum wallet (use the discovery list above to do that first). Cost: roughly $5-10 in Bitcoin tx fees per claim, paid by you instead of the issuer.
             </div>
             <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
               <button id="btn-onclaim-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active on-chain T_DROP pools from the worker">↻ Refresh</button>
@@ -2744,7 +2771,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
               <button id="btn-claim-clear" type="button">Clear</button>
             </div>
             <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">…or paste / upload the snapshot JSON directly (fallback if IPFS gateways are unreachable)</summary>
-              <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any blob whose rows don't match the root above.</div>
+              <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any snapshot whose rows don't match the declared root.</div>
               <input id="claim-json-file" type="file" accept=".json,application/json" style="display:none;">
               <div class="flex" style="gap:6px;margin-top:6px;">
                 <button id="btn-claim-json-upload" type="button">Upload JSON file</button>
@@ -2839,7 +2866,9 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div class="market-chips-row">
           <div class="market-chip-wrap">
             <select id="market-filter-kind" class="market-chip" aria-label="Trade type filter">
-              <option value="intent" selected title="Atomic intent — confidential token transfer and BTC payment close in one Bitcoin tx. Maker can't redirect your payment; you can't get tokens without paying. No counterparty trust.">⚡ atomic only</option>
+              <option value="trustless" selected title="Atomic settlement — token transfer and BTC payment close in one Bitcoin tx. No counterparty trust required. Includes ⚡ instant (seller offline) and ⚡ atomic (claim-fulfil-take) listings.">⚡ trustless only</option>
+              <option value="preauth" title="Instant listing (SPEC §5.7.8) — seller signed once at listing, buyer completes alone via ECDH. No seller-online step.">⚡ instant only</option>
+              <option value="intent" title="Atomic intent — confidential token transfer and BTC payment close in one Bitcoin tx. Maker must fulfil after a buyer claims.">⚡ atomic only</option>
               <option value="all">all kinds (incl. OTC)</option>
               <option value="opening" title="Opening listing — maker publishes the UTXO's exact (amount, blinding) opening + price. Settlement is OTC, requires counterparty trust.">opening (OTC)</option>
               <option value="range" title="Range listing — maker proves balance ≥ X via bulletproof, exact balance hidden. Settlement is OTC, requires counterparty trust.">range (OTC)</option>
