@@ -23045,7 +23045,15 @@ function _consumeTabUrlHash() {
 // Browser back/forward navigation: hashchange fires for in-page hash mutations
 // too, so the tab.onclick guard below avoids feedback by checking the parsed
 // tab against the currently-active tab before clicking.
-window.addEventListener('hashchange', _consumeTabUrlHash);
+// Dispatch by hash prefix — `#claim=...` deep-links (banner clicks, in-app
+// share-link buttons) need `_consumeClaimUrlHash`; `#tab=...` switches need
+// the tab consumer. Without the claim dispatch, clicking a `<a href="#claim=...">`
+// link changes the URL but does nothing visible (init-only consumer never re-fires).
+window.addEventListener('hashchange', () => {
+  const h = location.hash || '';
+  if (h.startsWith('#claim=')) _consumeClaimUrlHash();
+  else if (h.startsWith('#tab=')) _consumeTabUrlHash();
+});
 // Reflect tab state into the URL after every tab click. Guarded against
 // clobbering an unconsumed share-link / claim hash during init — those
 // consumers clear themselves; once cleared, tab clicks own the hash.
