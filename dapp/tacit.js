@@ -22397,6 +22397,95 @@ async function _renderClaimTreasuryFundPanel() {
     out.innerHTML = '';
     return;
   }
+
+  // Already-submitted guard. Without this branch, a recipient who tipped 30s
+  // ago could click the tip button again and broadcast a second funding tx —
+  // the on-chain nullifiers (worker `airdrop:funding:` per-tx + daemon's
+  // local `fulfilled_leaves`) prevent actual double-pay of tokens, but the
+  // duplicate tip's sats sit orphaned in the treasury (no refund). UI gating
+  // is the only thing that catches the wasted-sats case.
+  //
+  // Lifecycle branches (read from localStorage submission record):
+  //   verified_at → terminal "✓ already claimed", no tip CTA
+  //   dequeued_at → "pickup in flight", live tracker, no tip CTA
+  //   funding_txid set, not yet fulfilled → "tipped, tracking", live tracker;
+  //                                          re-tip only via explicit disclosure
+  //                                          with a confirm() guard
+  //   funding_txid unset (free claim record) → fall through to normal panel
+  //                                            (the "tip anyway" path is the
+  //                                            primary CTA there)
+  //   no record → fall through to normal panel
+  const existing = _claimEligibleRow
+    ? _loadClaimSubs()[`${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`]
+    : null;
+  const tickerForTerminal = _claimSnapshot.asset_ticker || '?';
+  if (existing?.verified_at) {
+    out.innerHTML = `
+      <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+        <strong>✓ Already claimed.</strong> Your ${escapeHtml(tickerForTerminal)} is in your tacit wallet — open the <a href="#tab=holdings" id="claim-already-holdings-link">Holdings tab</a>.
+      </div>
+    `;
+    return;
+  }
+  if (existing?.dequeued_at || existing?.funding_txid) {
+    const tipTxShort = existing.funding_txid ? shorten(existing.funding_txid, 14) : null;
+    out.innerHTML = `
+      <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+        <strong>✓ Tip + claim submitted.</strong> Tracking live below — the issuer's daemon batches every ~10 min.
+        ${tipTxShort ? `<div class="muted" style="font-family:var(--mono);font-size:11px;margin-top:4px;">tip tx <code>${escapeHtml(tipTxShort)}</code></div>` : ''}
+        <div id="claim-treasury-fund-status" class="muted" style="font-size:11px;margin-top:8px;"></div>
+        <details style="margin-top:10px;">
+          <summary class="muted" style="cursor:pointer;font-size:11px;">Looks stuck? Force-resubmit with a fresh tip</summary>
+          <div style="padding:8px;margin-top:6px;background:var(--bg);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;">
+            Only re-tip if your first tip has been confirmed for 30+ min AND the live tracker still shows "awaiting daemon." Re-tipping spends another batch share — your first tip stays in the treasury and won't refund.
+            <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
+              <button id="btn-claim-treasury-retip" type="button">Re-tip with fresh tx</button>
+              <button id="btn-claim-treasury-copy" type="button">Copy treasury</button>
+              <button id="btn-claim-treasury-refresh" type="button" title="Re-fetch state">↻ Refresh</button>
+            </div>
+          </div>
+        </details>
+      </div>
+    `;
+    // Wire the live tracker so the user sees current stage without having to
+    // re-tip. resolveImageUri etc. handled by the poller itself.
+    _startClaimReactivePoller({
+      fundingTxid: existing.funding_txid || null,
+      merkleRoot: _claimSnapshot.merkle_root,
+      leafIndex: _claimEligibleRow.index,
+      ticker: tickerForTerminal,
+    });
+    $('#btn-claim-treasury-copy')?.addEventListener('click', () => {
+      navigator.clipboard?.writeText(treasury)
+        .then(() => toast('Treasury address copied', 'success'))
+        .catch(() => prompt('Copy treasury address:', treasury));
+    });
+    $('#btn-claim-treasury-refresh')?.addEventListener('click', () => _renderClaimTreasuryFundPanel().catch(() => {}));
+    // Re-tip recovery path. Confirm() with the actual prior-tip txid so the
+    // user can't autopilot through. On confirm, wipe the local funding_txid
+    // (NOT the rest of the record) and re-render — the normal panel then
+    // shows the tip button and the user can broadcast a fresh tx. The
+    // worker accepts the new funding_txid (overwriting the claim record);
+    // the OLD funding nullifier becomes orphaned but its TTL expires.
+    $('#btn-claim-treasury-retip')?.addEventListener('click', () => {
+      const msg = existing.funding_txid
+        ? `Re-tip will cost another batch share. Your prior tip\n\n${existing.funding_txid}\n\nstays in the treasury and won't refund. Continue only if 30+ min have passed with no fulfilment.`
+        : `Re-tip will cost another batch share. Continue only if your prior claim is stuck.`;
+      if (!confirm(msg)) return;
+      const all = _loadClaimSubs();
+      const k = `${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`;
+      if (all[k]) {
+        delete all[k].funding_txid;
+        delete all[k].dequeued_at;
+        try { localStorage.setItem(_claimSubsKey(), JSON.stringify(all)); } catch {}
+      }
+      _claimFundingTxid = null;
+      _stopClaimReactivePoller();
+      _renderClaimTreasuryFundPanel().catch(() => {});
+    });
+    return;
+  }
+
   const shareSats = await _recipientShareSatsForNextBatch();
   // Fetch treasury balance + queue size in parallel. Both are best-effort —
   // if either fails the panel still renders with the address + pay button.
@@ -22510,6 +22599,18 @@ async function _renderClaimTreasuryFundPanel() {
       if (status) status.innerHTML = `<span style="color:var(--orange);">Complete step 4 (sign with wallet) first.</span>`;
       return;
     }
+    // Same short-circuit as the tip button: refuse to re-submit if a record
+    // already exists for this leaf. The render-time guard hides this button
+    // once a submission lands, but in case of a stale DOM ref we still
+    // re-check at click time.
+    {
+      const existingSub = _loadClaimSubs()[`${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`];
+      if (existingSub) {
+        if (status) status.innerHTML = `<span style="color:var(--orange);">Claim already submitted for this drop — no second submission needed. Watch the live tracker below.</span>`;
+        _renderClaimTreasuryFundPanel().catch(() => {});
+        return;
+      }
+    }
     const orig = freeBtn.textContent;
     freeBtn.disabled = true; freeBtn.textContent = 'submitting…';
     try {
@@ -22553,6 +22654,24 @@ async function _renderClaimTreasuryFundPanel() {
     if (!_claimSigned || !_claimEligibleRow) {
       if (status) status.innerHTML = `<span style="color:var(--orange);">Complete step 4 (sign with wallet) first — your tip must be bound to a signed claim, or another recipient could claim the slot you funded.</span>`;
       return;
+    }
+    // In-handler double-submit short-circuit. The render-time guard above
+    // hides this button for already-submitted claims, but a stale DOM
+    // reference (button rendered before the local record landed) could
+    // still trigger this handler. Re-check the canonical localStorage
+    // record at click time and refuse to broadcast a second tip.
+    {
+      const existingSub = _loadClaimSubs()[`${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`];
+      if (existingSub?.verified_at) {
+        if (status) status.innerHTML = `<span style="color:var(--green);">✓ This drop is already claimed — your tokens are in your tacit wallet (Holdings tab). No second tip needed.</span>`;
+        _renderClaimTreasuryFundPanel().catch(() => {});
+        return;
+      }
+      if (existingSub?.funding_txid) {
+        if (status) status.innerHTML = `<span style="color:var(--orange);">You already tipped (tx <code>${escapeHtml(shorten(existingSub.funding_txid, 14))}</code>) and the claim is bound. To force a fresh tip while the prior one is in flight, use the "Force-resubmit" disclosure on the panel — a bare click here is suppressed to avoid wasted sats.</span>`;
+        _renderClaimTreasuryFundPanel().catch(() => {});
+        return;
+      }
     }
     const btn = $('#btn-claim-treasury-pay');
     const orig = btn.textContent;
@@ -22666,6 +22785,12 @@ async function _renderClaimTreasuryFundPanel() {
           _renderClaimSubmissions();
           if (status) status.innerHTML = `<span style="color:var(--green);">✓ Tipped + claim bound to txid <code>${escapeHtml(shorten(fundingTxid, 14))}</code>. The issuer's daemon will fulfil this seat in the next batch.</span>`;
           toast('Claim funded and bound', 'success');
+          // Re-render the fund panel so the already-submitted guard branches
+          // to the "tipped + tracking" view (hides the tip button, surfaces
+          // the live tracker). Without this re-render, the `finally` block
+          // below re-enables the original tip button — a user could click
+          // again and broadcast another wasted tip.
+          _renderClaimTreasuryFundPanel().catch(() => {});
         } catch (e) {
           if (status) status.innerHTML = `<span style="color:var(--orange);">Tip landed but binding-submit failed: ${escapeHtml(e.message)}. Manually re-submit via "Submit to issuer queue" — the dapp will include funding_txid automatically.</span>`;
         }
