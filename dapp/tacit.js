@@ -22436,8 +22436,14 @@ async function _renderClaimTreasuryFundPanel() {
         tacit_pub: _claimSigned.tacitPubHex,
       });
       _renderClaimSubmissions();
-      if (status) status.innerHTML = `<span style="color:var(--green);">✓ Free claim submitted. The issuer's daemon will fulfil it if their treasury is in subsidy mode. Check back in a few hours — if still pending, click "Tip anyway" to guarantee.</span>`;
+      if (status) status.innerHTML = `<span style="color:var(--green);">✓ Free claim submitted. Tracking live below — the issuer's daemon will fulfil if their treasury is in subsidy mode. If still pending after a few hours, click "Tip anyway" to guarantee.</span>`;
       toast('Free claim submitted', 'success');
+      _startClaimReactivePoller({
+        fundingTxid: null,
+        merkleRoot: _claimSnapshot.merkle_root,
+        leafIndex: _claimEligibleRow.index,
+        ticker: _claimSnapshot.asset_ticker || '',
+      });
     } catch (e) {
       if (status) status.innerHTML = `<span style="color:var(--red);">✗ Submit failed: ${escapeHtml(e.message || String(e))}</span>`;
     } finally {
@@ -22567,13 +22573,131 @@ async function _renderClaimTreasuryFundPanel() {
           if (status) status.innerHTML = `<span style="color:var(--orange);">Tip landed but binding-submit failed: ${escapeHtml(e.message)}. Manually re-submit via "Submit to issuer queue" — the dapp will include funding_txid automatically.</span>`;
         }
       }
-      setTimeout(() => _renderClaimTreasuryFundPanel().catch(() => {}), 3000);
+      // Kick off live status tracking — replaces the silent post-submit gap
+      // with a four-stage progress readout (mempool → confirmed → dequeued →
+      // fulfilled). Skip the auto-rerender that used to fire here; it wiped
+      // the success state and the live tracker now keeps the panel coherent.
+      _startClaimReactivePoller({
+        fundingTxid,
+        merkleRoot: _claimSnapshot.merkle_root,
+        leafIndex: _claimEligibleRow.index,
+        ticker: _claimSnapshot.asset_ticker || '',
+      });
     } catch (e) {
       if (status) status.innerHTML = `<span style="color:var(--red);">✗ Tip failed: ${escapeHtml(e.message || String(e))}</span>`;
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
   };
+}
+
+// Live status tracker for a just-submitted claim. Polls until the claim is
+// verified on-chain, or 1h elapses. Updates `#claim-treasury-fund-status` with
+// the current stage so a recipient who tipped 2 minutes ago can see whether
+// the network has confirmed their tip yet, whether the issuer's daemon has
+// picked up their claim, and finally whether their tokens have landed in
+// their tacit wallet — without having to refresh or guess.
+//
+//   Stage A (tip only): "tip in mempool, waiting for 1 confirmation"
+//   Stage B (tip confirmed): "queued for issuer's next batch (~10 min cycles)"
+//   Stage C (claim dequeued): "issuer picked up your claim, delivery in flight"
+//   Stage D (verified on-chain): "fulfilled — tokens in your wallet"
+//
+// Free-claim path (no funding_txid) skips Stage A and starts at the
+// "awaiting daemon" line. Per tick: at most one getTx, one worker fetch,
+// and one wallet holdings scan via `_pollClaimSubmissionsStatus`. Cadence
+// is 30s for the first 2 min, then 60s; total runtime capped at 1h.
+let _claimReactivePollerTimer = null;
+let _claimReactivePollerKey = null;
+function _stopClaimReactivePoller() {
+  if (_claimReactivePollerTimer) {
+    clearTimeout(_claimReactivePollerTimer);
+    _claimReactivePollerTimer = null;
+  }
+  _claimReactivePollerKey = null;
+}
+async function _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, ticker, startedAt }) {
+  _stopClaimReactivePoller();
+  const startMs = startedAt || Date.now();
+  const TIMEOUT_MS = 60 * 60 * 1000;
+  const key = `${merkleRoot}:${leafIndex}`;
+  _claimReactivePollerKey = key;
+  let funderConfirmed = !fundingTxid;
+  let funderBlock = null;
+  const tName = ticker || 'tokens';
+
+  const fmtSince = () => {
+    const s = Math.floor((Date.now() - startMs) / 1000);
+    if (s < 60) return `${s}s ago`;
+    if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+    return `${Math.floor(s / 3600)}h ago`;
+  };
+  const liveBadge = `<span class="muted" style="font-size:10px;display:block;margin-top:4px;"><span style="color:var(--green);">●</span> live · updates every 30-60s</span>`;
+
+  const tick = async () => {
+    if (_claimReactivePollerKey !== key) return; // superseded by a newer claim
+    const status = document.getElementById('claim-treasury-fund-status');
+    // Panel may be temporarily unmounted (user toggled tab); keep polling so
+    // when they come back the status is current. Re-schedule and bail.
+    if (!status) {
+      _claimReactivePollerTimer = setTimeout(tick, 30_000);
+      return;
+    }
+
+    let claim;
+    try {
+      const all = _loadClaimSubs();
+      claim = all[key];
+    } catch { /* localStorage flake; tick again next time */ }
+
+    if (claim?.verified_at) {
+      status.innerHTML = `<span style="color:var(--green);">✓ <strong>Fulfilled!</strong> Your ${escapeHtml(tName)} arrived in your tacit wallet — check the Coins panel above.</span>`;
+      _stopClaimReactivePoller();
+      return;
+    }
+
+    let header = '';
+    if (claim?.dequeued_at) {
+      header = `<span style="color:var(--green);">✓ Issuer picked up your claim — ${escapeHtml(tName)} delivery in flight. Holdings scan will confirm within a few minutes.</span>`;
+    } else if (!funderConfirmed && fundingTxid) {
+      // Stage A → B: poll the funding tx for its first confirmation.
+      try {
+        const tx = await getTx(fundingTxid);
+        if (tx?.status?.confirmed) {
+          funderConfirmed = true;
+          funderBlock = tx.status.block_height;
+        }
+      } catch { /* mempool API blip — keep checking */ }
+      header = funderConfirmed
+        ? `<span style="color:var(--green);">✓ Tip confirmed${funderBlock ? ` in block ${funderBlock}` : ''} · queued for the issuer's next batch (~10 min cycles).</span>`
+        : `<span class="muted">⏳ Tip in mempool (broadcast ${fmtSince()}) · waiting for 1 Bitcoin confirmation (blocks land ~10 min apart).</span>`;
+    } else if (funderConfirmed) {
+      header = `<span style="color:var(--green);">✓ Tip confirmed · queued for the issuer's next batch (~10 min cycles). Submitted ${fmtSince()}.</span>`;
+    } else {
+      // Free-claim path — no tip to confirm; just wait on the daemon.
+      header = `<span class="muted">⏳ Awaiting the issuer's daemon (~10 min batch cycles). Submitted ${fmtSince()}.</span>`;
+    }
+    status.innerHTML = header + liveBadge;
+
+    // Heavier check runs every tick — refreshes dequeued/verified on the
+    // entry, so the next tick will pick up the new state without a refresh.
+    try { await _pollClaimSubmissionsStatus(); } catch { /* leave state as-is */ }
+
+    if (Date.now() - startMs >= TIMEOUT_MS) {
+      const el = document.getElementById('claim-treasury-fund-status');
+      if (el) {
+        el.innerHTML = header + `<span class="muted" style="font-size:10px;display:block;margin-top:4px;">Live updates paused after 1h. Refresh the page to keep watching, or check the submitted-claims panel below.</span>`;
+      }
+      _stopClaimReactivePoller();
+      return;
+    }
+
+    const elapsed = Date.now() - startMs;
+    const nextMs = elapsed < 2 * 60_000 ? 30_000 : 60_000;
+    _claimReactivePollerTimer = setTimeout(tick, nextMs);
+  };
+
+  tick();
 }
 
 // Look up the announcement record for a merkle root in the discover list and
@@ -23439,13 +23563,14 @@ function _renderClaimDiscoverList() {
     const newPill = '';
     const issuerShort = shorten(d.issuer_pubkey || '', 10);
     const provenance = _claimProvenance(d, meta);
+    // Only the two informative provenance states get a pill. "fixed_supply"
+    // and "unknown" both render nothing — fixed-supply was crowding the card
+    // without telling a recipient anything they can act on.
     const provBadge = provenance === 'matches_etcher'
       ? `<span class="status-pill confirmed" style="font-size:9px;">issued by etcher</span>`
       : provenance === 'self_announced'
         ? `<span class="status-pill" style="background:var(--bg-warm);color:var(--orange);border-color:var(--orange);font-size:9px;">⚠ self-announced</span>`
-        : provenance === 'fixed_supply'
-          ? `<span class="status-pill" style="background:var(--bg-warm);color:var(--ink-mid);border-color:var(--ink-faint);font-size:9px;">fixed supply</span>`
-          : '';  // unknown: metadata still loading — no pill yet, will recompute on re-render
+        : '';
     let amountLine = '';
     let actionLine = '';
     if (snapshotState === 'fetching') {
