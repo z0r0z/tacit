@@ -16185,6 +16185,16 @@ function setupTabs() {
       if (tab.dataset.tab === 'drops') refreshDropsTab();
       if (tab.dataset.tab === 'claim') { refreshClaimTab(); startClaimAutoRefresh(); }
       else stopClaimAutoRefresh();
+      // Hide the zFi airdrop banner once the user is on Claim (redundant
+      // there) and show it again when they leave Claim — visibility otherwise
+      // stays stale until the next setupNetworkSelect tick.
+      {
+        const zfiB = $('#zfi-airdrop-banner');
+        if (zfiB) {
+          const dismissed = localStorage.getItem('tacit-zfi-airdrop-banner-dismissed-v1') === '1';
+          zfiB.style.display = (NET.name === 'mainnet' && !dismissed && tab.dataset.tab !== 'claim') ? 'block' : 'none';
+        }
+      }
       if (tab.dataset.tab === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
       else stopPetchAutoRefresh();
       if (tab.dataset.tab === 'market') renderMarket();
@@ -21396,6 +21406,17 @@ let _claimEthAddr = null;      // lowercase 40-hex (no 0x); from MetaMask
 let _claimEligibleRow = null;  // matched row from snapshot, or null
 let _claimSigned = null;       // { msg, sigHex } once user signs
 let _claimFundingTxid = null;  // 64-hex tip-tx id, set when the recipient tips the issuer's treasury; included in claim POST to bind tip→claim and prevent another recipient from front-running our tip
+// Claim tab has two mutually-exclusive views: 'discover' (default — browse the
+// list of announced drops + side paths like on-chain self-claim and manual
+// entry) and 'wizard' (entered by clicking Claim → on a card; focuses on a
+// single drop with sequential steps). The wizard state below tracks which
+// step is the user's current focus; renderers compute step status from
+// _claimEligibleRow / _claimSigned / etc., so this only stores intent (e.g.
+// "user explicitly clicked back from step 3 to edit step 2").
+let _claimView = 'discover';   // 'discover' | 'wizard'
+let _claimWizActiveStep = null; // 'eligibility' | 'identity' | 'sign' | 'submit' — null = auto
+let _claimIdentityAck = false;  // user has confirmed they backed up the tacit key
+let _claimWizLoadError = null;  // last snapshot-load error string, surfaced inside the wizard drop header so failures from a deep link don't sit silently on "Loading snapshot…"
 // Smart-contract wallet detection. Per SPEC §5.13, on-chain T_DCLAIM cannot
 // authenticate ERC-1271 signatures (the Bitcoin-context validator has no
 // eth_call), so smart-wallet recipients (Safe / Argent / Ambire) MUST use the
@@ -21983,6 +22004,20 @@ function _renderClaimEligibility() {
 
   if (!_claimEthAddr) {
     if (status) status.textContent = '';
+    // Inside the wizard, the eligibility step's body would otherwise be empty
+    // when the user lands without an active ETH session (deep link, manual
+    // entry from a disconnected state). Surface a clear prompt + an inline
+    // connect button so the step has something actionable.
+    if (_claimView === 'wizard') {
+      out.style.display = 'block';
+      out.innerHTML = `
+        <div class="muted" style="margin-bottom:10px;font-size:11px;line-height:1.5;">
+          Connect your Ethereum wallet to check eligibility for this drop. Signing only — no Ethereum tx is broadcast, no gas spent.
+        </div>
+        <div class="flex" style="gap:6px;">
+          <button id="btn-claim-wiz-connect-mm" type="button" class="primary">Connect Ethereum wallet</button>
+        </div>`;
+    }
     return;
   }
   if (status) status.innerHTML = `connected: <code>0x${escapeHtml(_claimEthAddr)}</code>`;
@@ -22037,6 +22072,10 @@ function _renderClaimEligibility() {
   `;
   _refreshClaimSignAvailability();
   _renderClaimMsgPreview();
+  // Wizard view depends on _claimEligibleRow + _claimSnapshot.network — both
+  // mutated above, so step gating needs a re-render.
+  _renderClaimWizSteps();
+  _renderClaimWizDropHeader();
 }
 
 function _renderClaimTacitId() {
@@ -22220,23 +22259,28 @@ function _renderClaimResult() {
   const out = $('#claim-result');
   if (!out) return;
   const placeholder = $('#claim-result-placeholder');
-  // Pre-sign placeholder so the "5 · Send to issuer" heading isn't a bare,
-  // empty section. Mirrors step 4's preview pattern. Shown only when the
-  // user has loaded a snapshot but hasn't signed yet — fully empty before
-  // a snapshot exists so we don't push the user past steps 1–3.
+  // Pre-sign placeholder so the submit step isn't a bare, empty section.
+  // Shown only when the user has loaded a snapshot but hasn't signed yet —
+  // fully empty before a snapshot exists so we don't push the user past
+  // the earlier steps.
   if (!_claimSigned || !_claimEligibleRow) {
     if (_claimSnapshot) {
       out.style.display = 'block';
-      out.innerHTML = `<div class="muted" style="font-size:11px;font-style:italic;">Complete step 4 (sign with wallet) to populate the claim tuple here.</div>`;
+      out.innerHTML = `<div class="muted" style="font-size:11px;font-style:italic;">Sign with your wallet (step 3) to generate the claim tuple here.</div>`;
       if (placeholder) placeholder.style.display = 'none';
     } else {
       out.style.display = 'none';
       out.innerHTML = '';
       if (placeholder) placeholder.style.display = '';
     }
+    // Wizard step gating depends on _claimSigned — re-render so step 4 stays
+    // disabled until step 3 completes.
+    _renderClaimWizSteps();
     return;
   }
   if (placeholder) placeholder.style.display = 'none';
+  // Wizard step gating: a successful sign means step 3 just completed.
+  _renderClaimWizSteps();
   const tuple = `${_claimEligibleRow.index},${_claimSigned.tacitPubHex},${_claimSigned.sigHex}`;
   const ticker = _claimSnapshot.asset_ticker || '?';
   const submitBlurb = WORKER_BASE
@@ -22689,6 +22733,21 @@ async function _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, t
 
   const tick = async () => {
     if (_claimReactivePollerKey !== key) return; // superseded by a newer claim
+    // Drop-scope guard: if the user has navigated to a different drop's
+    // claim panel, `_claimSnapshot.merkle_root` will have changed. Writing
+    // status for the original drop into the panel for a different drop is
+    // confusing and wrong — pause the tick by re-scheduling. The poller
+    // resumes writing once the user returns to (or doesn't touch) the
+    // original drop. If 1h elapses while still mis-scoped, the outer
+    // timeout below tears the poller down cleanly.
+    const onOriginalDrop = !_claimSnapshot || _claimSnapshot.merkle_root === merkleRoot;
+    if (!onOriginalDrop) {
+      _claimReactivePollerTimer = setTimeout(tick, 30_000);
+      // Fall through to the timeout check at the bottom so we still terminate
+      // after TIMEOUT_MS even if the user never comes back.
+      if (Date.now() - startMs >= TIMEOUT_MS) _stopClaimReactivePoller();
+      return;
+    }
     const status = document.getElementById('claim-treasury-fund-status');
     // Panel may be temporarily unmounted (user toggled tab); keep polling so
     // when they come back the status is current. Re-schedule and bail.
@@ -22880,11 +22939,10 @@ function _consumeClaimUrlHash() {
   // Switch to the Claim tab automatically.
   const claimTabBtn = $('.tab[data-tab="claim"]');
   if (claimTabBtn) claimTabBtn.click();
-  // Full link → fill both inputs and auto-load.
+  // Full link → enter the wizard directly. The wizard's snapshot loader runs
+  // the same validation path as the manual #btn-claim-load handler.
   if (root && cid) {
-    const rEl = $('#claim-root'); if (rEl) rEl.value = root;
-    const cEl = $('#claim-cid'); if (cEl) cEl.value = cid;
-    setTimeout(() => $('#btn-claim-load')?.click(), 50);
+    setTimeout(() => _enterClaimWizard(root, cid).catch(() => {}), 50);
     return;
   }
   // Bare-root link → stash the root; `_claimRefreshDiscover` will resolve it
@@ -23063,6 +23121,10 @@ function _saveClaimSubs(obj) {
 function _recordClaimSubmission(rec) {
   const all = _loadClaimSubs();
   const key = `${rec.merkle_root}:${rec.leaf_index}`;
+  // funding_txid is read by the submission panel to decide whether to show
+  // the "tip required" pill — without it stored, every record looks unfunded
+  // even after the tip lands. Normalize to null for free claims so the
+  // schema is uniform and downstream falsiness checks are unambiguous.
   all[key] = {
     merkle_root: rec.merkle_root,
     leaf_index: rec.leaf_index,
@@ -23071,6 +23133,7 @@ function _recordClaimSubmission(rec) {
     decimals: rec.decimals,
     amount: String(rec.amount),
     tacit_pub: rec.tacit_pub,
+    funding_txid: rec.funding_txid || null,
     network: NET.name,
     submitted_at: Math.floor(Date.now() / 1000),
     fulfilled_at: null,
@@ -23368,14 +23431,8 @@ async function _claimRefreshDiscover() {
   if (_pendingClaimRoot) {
     const match = _claimDiscoverDrops.find(d => d.merkle_root === _pendingClaimRoot);
     if (match) {
-      const rEl = $('#claim-root');
-      const cEl = $('#claim-cid');
-      if (rEl) rEl.value = match.merkle_root;
-      if (cEl) cEl.value = match.ipfs_cid;
-      const m = $('#claim-manual-entry');
-      if (m) m.open = true;
       _pendingClaimRoot = null;
-      setTimeout(() => $('#btn-claim-load')?.click(), 50);
+      setTimeout(() => _enterClaimWizard(match.merkle_root, match.ipfs_cid).catch(() => {}), 50);
     }
   }
   // Kick off snapshot fetches in parallel — each completion re-renders so
@@ -23713,13 +23770,7 @@ function _renderClaimDiscoverList() {
 
   list.querySelectorAll('button[data-act="claim-discover-pick"]').forEach(btn => {
     btn.onclick = () => {
-      const rEl = $('#claim-root');
-      const cEl = $('#claim-cid');
-      if (rEl) rEl.value = btn.dataset.root;
-      if (cEl) cEl.value = btn.dataset.cid;
-      const m = $('#claim-manual-entry');
-      if (m) m.open = true;
-      $('#btn-claim-load')?.click();
+      _enterClaimWizard(btn.dataset.root, btn.dataset.cid).catch(() => {});
     };
   });
   // Asset_id click-to-copy on each card. Same pattern as Holdings/Market
@@ -23755,6 +23806,201 @@ function _renderClaimDiscoverList() {
   });
 }
 
+// ============== CLAIM WIZARD VIEW MANAGEMENT ==============
+// Toggles the Claim tab between 'discover' (the list of announced drops + side
+// paths) and 'wizard' (single-drop, step-by-step). _enterClaimWizard takes the
+// chosen drop's root + CID, loads the snapshot, and switches the view.
+// _exitClaimWizard returns to the list without clearing state — so a user can
+// switch between several drops without losing their connected ETH session.
+function _setClaimView(view) {
+  _claimView = (view === 'wizard') ? 'wizard' : 'discover';
+  const discoverEl = $('#claim-discover-view');
+  const wizardEl = $('#claim-wizard-view');
+  if (discoverEl) discoverEl.style.display = (_claimView === 'discover') ? '' : 'none';
+  if (wizardEl)  wizardEl.style.display  = (_claimView === 'wizard')  ? '' : 'none';
+  if (_claimView === 'wizard') {
+    _renderClaimWizDropHeader();
+    _renderClaimWizSteps();
+  }
+}
+
+async function _enterClaimWizard(rootHex, cidStr) {
+  // Reset per-drop wizard state on entry. Keep _claimEthAddr (the connected
+  // wallet survives view switches) and _claimSnapshot (will be replaced by the
+  // load below). Clear the tipping txid too — a stale tip from a previous
+  // drop would otherwise get bound to this drop's submit POST. Tipping is per
+  // drop, so picking a new one means starting clean.
+  _claimIdentityAck = false;
+  _claimWizActiveStep = null;
+  _claimSigned = null;
+  _claimEligibleRow = null;
+  _claimFundingTxid = null;
+  _claimWizLoadError = null;
+  _setClaimView('wizard');
+  // Populate the manual-entry inputs so the existing loader can run unchanged
+  // (and so a user who opens the manual-entry fold sees what's in flight).
+  const rEl = $('#claim-root'); if (rEl) rEl.value = rootHex || '';
+  const cEl = $('#claim-cid');  if (cEl) cEl.value  = cidStr || '';
+  // Trigger the same load path the manual-entry button uses. On failure we
+  // surface the message in two places: the wizard drop header (visible) and
+  // the manual-entry inline #claim-load-err (so a power user who switches
+  // back to discover view can still see what went wrong).
+  try {
+    await _claimLoadSnapshot(rootHex, cidStr);
+    _renderClaimSnapshotInfo();
+    _renderClaimEligibility();
+    _renderClaimMsgPreview();
+    _refreshClaimSignAvailability();
+    _renderClaimResult();
+    _renderClaimWizDropHeader();
+    _renderClaimWizSteps();
+  } catch (e) {
+    _claimWizLoadError = e.message || 'snapshot load failed';
+    const errEl = $('#claim-load-err');
+    if (errEl) errEl.textContent = _claimWizLoadError;
+    _renderClaimWizDropHeader();
+    _renderClaimWizSteps();
+  }
+}
+
+function _exitClaimWizard() {
+  _claimWizActiveStep = null;
+  _claimIdentityAck = false;
+  _claimWizLoadError = null;
+  _setClaimView('discover');
+}
+
+// Compute the current step state map. A step is 'done' when its completion
+// gate fires, 'active' when it's the earliest non-done step, 'pending' for
+// later steps. The user can explicitly re-enter an earlier step by clicking
+// "edit" on its summary — that sets _claimWizActiveStep, which overrides the
+// auto-resolved active step.
+function _claimWizStepStates() {
+  const eligibilityDone = !!(_claimSnapshot && _claimEligibleRow
+    && _claimSnapshot.network === NET.name);
+  const identityDone = eligibilityDone && !!wallet.pub && _claimIdentityAck;
+  const signDone = identityDone && !!_claimSigned;
+  // submit step has no terminal "done" state — once active it stays active
+  // until the user navigates away.
+  const order = ['eligibility', 'identity', 'sign', 'submit'];
+  const doneSet = new Set();
+  if (eligibilityDone) doneSet.add('eligibility');
+  if (identityDone)    doneSet.add('identity');
+  if (signDone)        doneSet.add('sign');
+  // Pick active step: explicit override (from "edit" click) first; otherwise
+  // the first non-done step.
+  let active = _claimWizActiveStep;
+  if (!active || doneSet.has(active)) {
+    active = order.find(s => !doneSet.has(s)) || 'submit';
+  }
+  const out = {};
+  for (const s of order) {
+    if (doneSet.has(s) && s !== active) out[s] = 'done';
+    else if (s === active) out[s] = 'active';
+    else out[s] = 'pending';
+  }
+  return out;
+}
+
+// Render the compact header card at the top of the wizard: chosen drop's
+// asset, eligible amount (if known), network warning.
+function _renderClaimWizDropHeader() {
+  const out = $('#claim-wiz-drop-header');
+  if (!out) return;
+  // Error state takes precedence over the loading skeleton — a stuck
+  // "Loading snapshot…" on a flaky gateway or a failed validation would
+  // otherwise leave the user with no actionable feedback.
+  if (_claimWizLoadError && !_claimSnapshot) {
+    out.innerHTML = `
+      <div class="cwdh-meta">
+        <div class="error" style="margin:0;"><strong>Snapshot load failed</strong></div>
+        <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">${escapeHtml(_claimWizLoadError)}</div>
+        <div class="muted" style="font-size:11px;margin-top:6px;">Click <strong>← all drops</strong> above to return to the list, or try opening the drop again.</div>
+      </div>`;
+    return;
+  }
+  if (!_claimSnapshot) {
+    out.innerHTML = `
+      <div class="cwdh-meta">
+        <div class="muted" style="font-style:italic;">Loading snapshot…</div>
+      </div>`;
+    return;
+  }
+  const s = _claimSnapshot;
+  const ticker = s.asset_ticker || '?';
+  const decimals = Number.isInteger(s.asset_decimals) ? s.asset_decimals : 0;
+  const meta = getAssetMeta(String(s.asset_id || '').toLowerCase());
+  const imgUrl = meta ? normalizeImageUri(meta.imageUri) : null;
+  const avatar = imgUrl
+    ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:42px;height:42px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+    : assetImageFallback(s.asset_id, ticker, 42);
+  const networkMismatch = s.network !== NET.name;
+  const networkLine = networkMismatch
+    ? `<span style="color:var(--red);">⚠ drop on ${escapeHtml(s.network)} · you are on ${escapeHtml(NET.name)}</span>`
+    : `<span class="muted">on ${escapeHtml(s.network)}</span>`;
+  let amountLine = '';
+  if (_claimEligibleRow) {
+    amountLine = `<div class="cwdh-amount">✓ ${escapeHtml(fmtAssetAmountPlain(_claimEligibleRow.amount, decimals))} ${escapeHtml(ticker)}</div>`;
+  } else if (!_claimEthAddr) {
+    amountLine = `<div class="muted" style="font-size:11px;">connect Ethereum wallet to check eligibility</div>`;
+  } else {
+    amountLine = `<div class="muted" style="font-size:11px;color:var(--red);">your address is not in this drop's snapshot</div>`;
+  }
+  out.innerHTML = `
+    ${avatar}
+    <div class="cwdh-meta">
+      <div style="font-weight:600;font-size:13px;">${escapeHtml(ticker)}</div>
+      <div style="font-size:11px;margin-top:2px;">${networkLine}</div>
+      ${amountLine}
+    </div>
+  `;
+}
+
+// Render the four wizard steps: set data-state on each container, populate the
+// per-step summary lines for done steps. The body content (eligibility panel,
+// tacit-id panel, sign button, result panel) is rendered by the existing
+// _renderClaim* functions — this just controls visibility + state styling.
+function _renderClaimWizSteps() {
+  if (_claimView !== 'wizard') return;
+  const states = _claimWizStepStates();
+  const setStep = (id, state) => {
+    const el = document.getElementById(id);
+    if (el) el.dataset.state = state;
+  };
+  setStep('claim-wiz-step-eligibility', states.eligibility);
+  setStep('claim-wiz-step-identity',    states.identity);
+  setStep('claim-wiz-step-sign',        states.sign);
+  setStep('claim-wiz-step-submit',      states.submit);
+
+  // Per-step summary lines (only visible when state === 'done').
+  const sumEligibility = $('#claim-wiz-summary-eligibility');
+  if (sumEligibility) {
+    if (states.eligibility === 'done' && _claimEligibleRow && _claimSnapshot) {
+      const ticker = _claimSnapshot.asset_ticker || '?';
+      const decimals = Number.isInteger(_claimSnapshot.asset_decimals) ? _claimSnapshot.asset_decimals : 0;
+      sumEligibility.innerHTML = `✓ ${escapeHtml(fmtAssetAmountPlain(_claimEligibleRow.amount, decimals))} ${escapeHtml(ticker)} · leaf #${_claimEligibleRow.index}`;
+    } else {
+      sumEligibility.textContent = '';
+    }
+  }
+  const sumIdentity = $('#claim-wiz-summary-identity');
+  if (sumIdentity) {
+    if (states.identity === 'done' && wallet.pub) {
+      sumIdentity.innerHTML = `✓ <code>${escapeHtml(shorten(bytesToHex(wallet.pub), 12))}</code>`;
+    } else {
+      sumIdentity.textContent = '';
+    }
+  }
+  const sumSign = $('#claim-wiz-summary-sign');
+  if (sumSign) {
+    if (states.sign === 'done' && _claimSigned) {
+      sumSign.innerHTML = `✓ signed by <code>0x${escapeHtml(shorten(_claimEthAddr || '', 10))}</code>`;
+    } else {
+      sumSign.textContent = '';
+    }
+  }
+}
+
 function refreshClaimTab() {
   _renderClaimTacitId();
   _renderClaimSnapshotInfo();
@@ -23770,13 +24016,50 @@ function refreshClaimTab() {
     _refreshClaimSignAvailability();
     // Re-render the discover list so eligibility flags pick up the recovered ETH address.
     _renderClaimDiscoverList();
+    _renderClaimWizSteps();
+    _renderClaimWizDropHeader();
   });
   _renderClaimEligibility();
   _renderClaimMsgPreview();
   _renderClaimResult();
+  _renderClaimWizSteps();
+  _renderClaimWizDropHeader();
 }
 
 function setupClaimTab() {
+  // Wizard back button: returns to the discovery view without clearing the
+  // connected ETH wallet (the user may pick a different drop next). Snapshot
+  // state is reset on next _enterClaimWizard call so a re-pick re-loads fresh.
+  $('#btn-claim-wiz-back')?.addEventListener('click', () => {
+    _exitClaimWizard();
+  });
+
+  // Wizard identity-ack: explicit "I've backed up my key" confirmation gating
+  // the sign step. Surfaces the back-up-your-key warning as a deliberate
+  // checkpoint rather than something the user can scroll past.
+  $('#btn-claim-wiz-identity-ack')?.addEventListener('click', () => {
+    _claimIdentityAck = true;
+    _renderClaimWizSteps();
+  });
+
+  // Edit buttons on completed steps — let the user jump back to a previous
+  // step to re-do it. Only meaningful for eligibility (reconnect a different
+  // ETH address) and identity (re-confirm the back-up warning); the sign step
+  // can be re-triggered by clicking the sign button regardless of state.
+  document.querySelectorAll('button[data-edit]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const target = btn.dataset.edit;
+      if (target === 'identity') {
+        _claimIdentityAck = false;
+      } else if (target === 'sign') {
+        _claimSigned = null;
+        _renderClaimResult();
+      }
+      _claimWizActiveStep = target;
+      _renderClaimWizSteps();
+    });
+  });
+
   $('#btn-claim-load')?.addEventListener('click', async () => {
     const errEl = $('#claim-load-err');
     if (errEl) errEl.textContent = '';
@@ -23792,6 +24075,15 @@ function setupClaimTab() {
       _refreshClaimSignAvailability();
       _renderClaimResult();
       toast(`Snapshot loaded · ${_claimSnapshot.leaf_count || _claimSnapshot.rows.length} recipients`, 'success');
+      // Manual-entry produces the same focused single-drop state as picking
+      // from the discover list — drop the user into the wizard so the steps
+      // (eligibility / identity / sign / submit) become reachable.
+      _claimIdentityAck = false;
+      _claimWizActiveStep = null;
+      _claimSigned = null;
+      _claimFundingTxid = null;
+      _claimWizLoadError = null;
+      _setClaimView('wizard');
     } catch (e) {
       if (errEl) errEl.textContent = e.message;
       _claimSnapshot = null;
@@ -23827,6 +24119,14 @@ function setupClaimTab() {
       _refreshClaimSignAvailability();
       _renderClaimResult();
       toast(`Snapshot loaded · ${_claimSnapshot.leaf_count || _claimSnapshot.rows.length} recipients`, 'success');
+      // Same as the IPFS-load path — drop into the wizard so subsequent steps
+      // (eligibility, identity, sign, submit) are reachable.
+      _claimIdentityAck = false;
+      _claimWizActiveStep = null;
+      _claimSigned = null;
+      _claimFundingTxid = null;
+      _claimWizLoadError = null;
+      _setClaimView('wizard');
     } catch (e) {
       if (errEl) errEl.textContent = e.message;
       _claimSnapshot = null;
@@ -23856,22 +24156,22 @@ function setupClaimTab() {
     }
   });
 
-  $('#btn-claim-connect-mm')?.addEventListener('click', async () => {
-    const btn = $('#btn-claim-connect-mm');
+  // Shared connect handler for both the discover-view connect button and the
+  // wizard's inline "connect" affordance (rendered by _renderClaimEligibility
+  // when the user lands in the wizard without an active ETH session, e.g. via
+  // a #claim deep link or manual entry from a disconnected state).
+  const _onClaimConnectClick = async (btn) => {
+    if (!btn) return;
     btn.disabled = true; const orig = btn.textContent; btn.textContent = 'connecting…';
     try {
       await _claimConnectMetaMask();
       _renderClaimEligibility();
       _renderClaimMsgPreview();
       _refreshClaimSignAvailability();
-      // Re-render the discovery list so eligibility flags fill in for any
-      // already-fetched snapshots without a network round-trip.
       _renderClaimDiscoverList();
+      _renderClaimWizSteps();
+      _renderClaimWizDropHeader();
     } catch (e) {
-      // User-cancelled paths are intentional, not errors: dismissing the
-      // EIP-6963 chooser ('no wallet selected') and rejecting MetaMask's
-      // eth_requestAccounts prompt (EIP-1193 code 4001 / "user rejected").
-      // Suppress the toast in those cases — the button just resets.
       const userCancelled = e?.code === 4001
         || e?.message === 'no wallet selected'
         || /user rejected/i.test(e?.message || '');
@@ -23882,6 +24182,15 @@ function setupClaimTab() {
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
+  };
+  $('#btn-claim-connect-mm')?.addEventListener('click', (e) => _onClaimConnectClick(e.currentTarget));
+  // Delegated wire for the wizard-inline connect button — it lives inside
+  // #claim-eligibility, which is re-rendered every time _renderClaimEligibility
+  // runs, so direct addEventListener wouldn't survive renders. Click delegation
+  // on the wizard view container catches it regardless of render churn.
+  $('#claim-wizard-view')?.addEventListener('click', (e) => {
+    const t = e.target.closest('#btn-claim-wiz-connect-mm');
+    if (t) _onClaimConnectClick(t);
   });
 
   $('#btn-claim-discover-refresh')?.addEventListener('click', () => {
@@ -30725,6 +31034,28 @@ function setupNetworkSelect() {
     closeBtn.onclick = () => {
       localStorage.setItem('tacit-mainnet-consented-v1', '1');
       const b = $('#mainnet-banner'); if (b) b.style.display = 'none';
+    };
+  }
+  // zFi-community TAC airdrop banner: mainnet-only, hidden when the user is
+  // already on the Claim tab (no value re-advertising what they're looking at),
+  // dismissible via × with a per-browser sticky flag. Same render cadence as
+  // the mainnet banner — runs every setupNetworkSelect, so visibility tracks
+  // tab/network changes without dedicated event wiring.
+  const zfiBanner = $('#zfi-airdrop-banner');
+  const zfiDismissed = localStorage.getItem('tacit-zfi-airdrop-banner-dismissed-v1') === '1';
+  const onClaimTab = !!document.querySelector('.tab.active[data-tab="claim"]');
+  if (zfiBanner) {
+    zfiBanner.style.display = (NET.name === 'mainnet' && !zfiDismissed && !onClaimTab) ? 'block' : 'none';
+  }
+  const zfiClose = $('#zfi-airdrop-banner-close');
+  if (zfiClose && !zfiClose._wired) {
+    zfiClose._wired = true;
+    zfiClose.onclick = (e) => {
+      // Stop the click from also triggering the parent <a> nav to #claim=...
+      e.preventDefault();
+      e.stopPropagation();
+      localStorage.setItem('tacit-zfi-airdrop-banner-dismissed-v1', '1');
+      if (zfiBanner) zfiBanner.style.display = 'none';
     };
   }
   // When an external wallet is connected, the wallet drives the network

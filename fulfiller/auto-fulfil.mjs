@@ -182,6 +182,51 @@ log('info', 'drop validated', {
   recipients: dropRows.length, root: drop.merkle_root_hex,
 });
 
+// Treasury-pubkey ↔ announcement-issuer parity check.
+// The worker now requires DELETE /airdrops/.../claims to be signed by the
+// announcement's `issuer_pubkey`. If the daemon's treasury_privkey doesn't
+// correspond to that pubkey, every queue cleanup will silently 403 and
+// claims pile up undeleted (recipients get fulfilled CXFERs but their
+// dashboards keep showing "waiting"). Fail loudly at startup so the
+// operator notices the misconfig before broadcasting anything.
+if (WORKER_BASE) {
+  try {
+    const annUrl = `${WORKER_BASE}/drops/${drop.merkle_root_hex}?network=${encodeURIComponent(NETWORK_NAME)}`;
+    const annResp = await fetch(annUrl);
+    if (annResp.ok) {
+      const j = await annResp.json();
+      const ann = j.drop || j;  // GET /drops/:root wraps as { drop: {...} }
+      const announced = String(ann.issuer_pubkey || '').toLowerCase();
+      const treasury = bytesToHex(m.wallet.pub).toLowerCase();
+      if (!/^0[23][0-9a-f]{64}$/.test(announced)) {
+        log('error', 'announcement issuer_pubkey malformed', { announced });
+        process.exit(1);
+      }
+      if (announced !== treasury) {
+        log('error', 'treasury_privkey does not match announcement issuer_pubkey — every queue DELETE will fail', {
+          treasury_pubkey: treasury,
+          announcement_issuer_pubkey: announced,
+          fix: 'reload the daemon with the privkey that published the announcement (the publish-before-switch guard should have prevented this)',
+        });
+        process.exit(1);
+      }
+      log('info', 'treasury matches announcement issuer', { issuer_pubkey: announced });
+    } else if (annResp.status === 404) {
+      // No announcement yet (private drop, or operator forgot to publish).
+      // The dapp won't surface this in discover, and the signed-DELETE
+      // requires an announcement, so we refuse to start.
+      log('error', 'no announcement found for this root — publish first, then re-start the daemon', {
+        root: drop.merkle_root_hex,
+      });
+      process.exit(1);
+    } else {
+      log('warn', 'announcement check returned unexpected status — proceeding anyway', { status: annResp.status });
+    }
+  } catch (e) {
+    log('warn', 'announcement check failed (network error) — proceeding anyway', { err: e.message });
+  }
+}
+
 // ---- Load fulfilment state ----
 let state = { fulfilled_leaves: {}, batches: [], consumed_funding: {} };
 // consumed_funding: { "<funding_txid>": leaf_index } — daemon-side nullifier

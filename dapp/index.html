@@ -854,6 +854,88 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
   .claim-discover-card .cdc-aidrow code { font-size: 10px; }
 }
 
+/* Claim wizard — once a recipient picks a drop, the tab switches from the
+   discovery list to a single-drop, step-by-step view. Each step is a card with
+   a numbered index + state: pending (greyed, body hidden), active (full body
+   visible, ink border), done (collapsed to a one-line summary). The user only
+   interacts with the active step at any time; previous steps stay visible as
+   summaries so the journey is legible without dominating the screen. */
+.claim-wiz-step {
+  border: 1px solid var(--ink-faint);
+  background: var(--bg);
+  padding: 14px;
+  margin-bottom: 10px;
+  transition: background 0.12s, border-color 0.12s, opacity 0.12s;
+}
+.claim-wiz-step[data-state="active"] {
+  border-color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink-faint);
+}
+.claim-wiz-step[data-state="done"] {
+  background: var(--bg-warm);
+  border-color: var(--ink-faint);
+}
+.claim-wiz-step[data-state="pending"] {
+  opacity: 0.55;
+}
+.claim-wiz-step-head {
+  display: flex; gap: 10px; align-items: center;
+  font-size: 13px; font-weight: 600;
+}
+.claim-wiz-step-num {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  border: 1px solid var(--ink); border-radius: 50%;
+  font-size: 11px; font-weight: 600;
+  background: var(--bg); color: var(--ink);
+  flex-shrink: 0;
+}
+.claim-wiz-step[data-state="active"] .claim-wiz-step-num {
+  background: var(--ink); color: var(--bg);
+}
+.claim-wiz-step[data-state="done"] .claim-wiz-step-num {
+  background: var(--green); color: #fff; border-color: var(--green);
+}
+.claim-wiz-step-title { flex: 1; min-width: 0; }
+.claim-wiz-step-edit {
+  font-size: 11px; padding: 2px 8px;
+  background: transparent; color: var(--ink-mid);
+  border: 1px solid var(--ink-faint);
+  cursor: pointer;
+}
+.claim-wiz-step[data-state="done"] .claim-wiz-step-edit { display: inline-block; }
+.claim-wiz-step:not([data-state="done"]) .claim-wiz-step-edit { display: none; }
+.claim-wiz-step-body { margin-top: 12px; }
+.claim-wiz-step:not([data-state="active"]) .claim-wiz-step-body { display: none; }
+.claim-wiz-step-summary {
+  margin-top: 6px; margin-left: 32px;
+  font-size: 11px; color: var(--ink-mid);
+}
+.claim-wiz-step[data-state="active"] .claim-wiz-step-summary,
+.claim-wiz-step[data-state="pending"] .claim-wiz-step-summary { display: none; }
+
+.claim-wiz-drop-header {
+  display: flex; gap: 12px; align-items: center;
+  padding: 12px; margin-bottom: 14px;
+  border: 1px solid var(--ink); background: var(--bg-warm);
+}
+.claim-wiz-drop-header .cwdh-meta {
+  flex: 1; min-width: 0; font-size: 12px;
+}
+.claim-wiz-drop-header .cwdh-amount {
+  font-size: 14px; font-weight: 600; color: var(--green);
+}
+.claim-wiz-back {
+  font-size: 11px; padding: 4px 10px;
+  background: transparent; color: var(--ink-mid);
+  border: 1px solid var(--ink-faint); cursor: pointer;
+}
+.claim-wiz-back:hover { color: var(--ink); border-color: var(--ink); }
+@media (max-width: 600px) {
+  .claim-wiz-step { padding: 12px; }
+  .claim-wiz-step-summary { margin-left: 0; }
+}
+
 .toast {
   position: fixed; bottom: 24px; right: 24px;
   padding: 14px 22px; background: var(--ink); color: var(--bg);
@@ -2062,6 +2144,19 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 -->
 <div id="chain-divergence-banner" style="display:none;background:#fff8eb;border:2px solid #a04030;color:#a04030;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
 
+<!--
+  zFi-community TAC airdrop banner. Mainnet-only, dismissible via × (sticky
+  per browser via tacit-zfi-airdrop-banner-dismissed-v1), hidden once the
+  Claim tab is active (redundant once the user is there). Click anywhere on
+  the body → switches to Claim tab pre-loaded with the drop's root + CID.
+-->
+<a id="zfi-airdrop-banner"
+   href="#claim=3c578c51bbf33f583eee9e571514616775b8d9ae4e1b282e1fb9c4b5b268c545&cid=bafybeihyyqncdp2q6kfdgecaccpdoy7uyzumjgbqxj6xbf472fzhn3drbi&net=mainnet"
+   style="display:none;position:relative;background:var(--bg-warm);border:2px solid var(--orange);padding:11px 40px 11px 16px;font-size:12px;color:var(--ink);text-align:center;margin-bottom:16px;text-decoration:none;line-height:1.45;">
+  <button id="zfi-airdrop-banner-close" type="button" aria-label="Dismiss airdrop banner" title="Dismiss" style="position:absolute;top:6px;right:8px;background:transparent;border:1px solid transparent;color:var(--ink-mid);font-size:18px;line-height:1;width:24px;height:24px;padding:0;cursor:pointer;text-transform:none;letter-spacing:0;">×</button>
+  <strong style="color:var(--orange);">TAC airdrop is live</strong> for the zFi community (ZAMM + ZORG holders) — <span style="text-decoration:underline;">claim your share →</span>
+</a>
+
 <div class="tabs">
   <button class="tab active" data-tab="wallet">Wallet</button>
   <button class="tab" data-tab="holdings">Holdings</button>
@@ -2687,105 +2782,164 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
 <!-- CLAIM TAB -->
 <div class="tab-panel" id="tab-claim">
-  <div class="section">
-    <div class="section-header"><span>claim · airdrop recipient</span></div>
-    <div class="section-body">
-      <div class="muted" style="margin-bottom:14px;">
-        Connect your Ethereum wallet to see airdrops you're eligible for, then sign a message to claim your tokens. No gas, no Ethereum transaction.
-      </div>
 
-      <h3>1 · Discover available drops</h3>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">
-        Live drops on <span id="claim-discover-network">…</span>.
-      </div>
-      <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
-        <button id="btn-claim-discover-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active drops from the worker">↻ Refresh</button>
-        <span id="claim-discover-status" class="muted" style="font-size:11px;"></span>
-      </div>
-      <div id="claim-submissions"></div>
-      <div id="claim-discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no drops loaded yet · click Refresh</div></div>
-
-      <h3 style="margin-top:18px;">2 · Connect Ethereum wallet</h3>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">Auto-filters the discovery list above to drops eligible for your address. Signing only — no Ethereum tx is broadcast, no gas spent.</div>
-      <details style="margin-bottom:6px;">
-        <summary class="muted" style="cursor:pointer;font-size:11px;">Compatible wallets</summary>
-        <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
-          Most Ethereum wallets work: MetaMask, Rainbow, Rabby, Coinbase Wallet, Trust, Frame. Smart-contract wallets (Ambire, Safe, Argent) work too — those need to be on the chain that holds the contract; regular wallets work regardless of current chain.
+  <!-- ============== DISCOVER VIEW (default landing) ============== -->
+  <div id="claim-discover-view">
+    <div class="section">
+      <div class="section-header"><span>claim · airdrop recipient</span></div>
+      <div class="section-body">
+        <div class="muted" style="margin-bottom:14px;">
+          Connect your Ethereum wallet to see airdrops you're eligible for, then pick one to start a guided claim. No gas, no Ethereum transaction.
         </div>
-      </details>
-      <div class="flex" style="gap:6px;align-items:center;">
-        <button id="btn-claim-connect-mm" type="button">Connect Ethereum wallet</button>
-        <span id="claim-mm-status" class="muted" style="font-size:11px;"></span>
-      </div>
-      <div id="claim-eligibility" style="display:none;margin-top:14px;"></div>
 
-      <h3 style="margin-top:18px;">3 · Receiving tacit identity</h3>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">The airdrop will be sent to your <strong>active dapp tacit pubkey</strong>. To use a different tacit identity, switch via <em>Wallet → Import key</em> (or <em>Regenerate</em>) before signing the claim.</div>
-      <div id="claim-tacit-id" class="mono-box" style="font-size:11px;"></div>
-      <div class="warn" style="margin-top:10px;font-size:11px;">
-        <strong>⚠ Back up your tacit privkey before signing.</strong> The privkey controlling this pubkey lives only in this browser's localStorage. If you clear it before the issuer fulfills, the airdrop is unrecoverable. Use <em>Wallet → Export key</em> now if you haven't already.
-      </div>
-
-      <h3 style="margin-top:18px;">4 · Sign claim</h3>
-      <div class="muted" style="font-size:11px;margin-bottom:6px;">Your wallet will show a short authorization message. Read every field before signing — no gas spent.</div>
-      <details style="margin:8px 0;"><summary class="muted" style="cursor:pointer;font-size:11px;">Preview the message that will be signed</summary>
-        <pre id="claim-msg-preview" style="margin-top:6px;font-size:11px;background:var(--bg-warm);padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;"></pre>
-      </details>
-      <div class="flex" style="gap:6px;">
-        <button id="btn-claim-sign" type="button" class="primary" disabled title="Connect a wallet + load an eligible drop first">Sign with wallet</button>
-      </div>
-      <div id="claim-sign-err" class="error" style="margin-top:8px;"></div>
-
-      <h3 style="margin-top:18px;">5 · Send to issuer</h3>
-      <div id="claim-result-placeholder" class="muted" style="font-size:11px;">Sign the message above to generate your claim ticket here.</div>
-      <div id="claim-result" style="display:none;"></div>
-
-      <div style="margin-top:32px;padding-top:18px;border-top:1px dashed var(--ink-faint);">
-        <div class="muted" style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);margin-bottom:10px;">Other ways to claim</div>
-        <div class="muted" style="font-size:11px;margin-bottom:10px;line-height:1.5;">Have a private drop or a direct share link from the issuer? Use the options below.</div>
-
-        <details><summary class="muted" style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Self-claim on-chain (you pay your own Bitcoin tx fee)</summary>
-          <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
-            <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
-              For drops where the issuer locked tokens into a public claim pool on Bitcoin. Anyone in the snapshot can self-claim first-come-first-served until the cap runs out. For drops with an eligibility list, you'll also need to sign with your Ethereum wallet (use the discovery list above to do that first). Cost: roughly $5-10 in Bitcoin tx fees per claim, paid by you instead of the issuer.
-            </div>
-            <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
-              <button id="btn-onclaim-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active on-chain T_DROP pools from the worker">↻ Refresh</button>
-              <span id="onclaim-list-status" class="muted" style="font-size:11px;"></span>
-            </div>
-            <div id="onclaim-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no on-chain drops loaded yet · click Refresh</div></div>
+        <div class="flex" style="gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:14px;">
+          <button id="btn-claim-connect-mm" type="button">Connect Ethereum wallet</button>
+          <span id="claim-mm-status" class="muted" style="font-size:11px;"></span>
+        </div>
+        <details style="margin-bottom:14px;">
+          <summary class="muted" style="cursor:pointer;font-size:11px;">Compatible wallets</summary>
+          <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
+            Most Ethereum wallets work: MetaMask, Rainbow, Rabby, Coinbase Wallet, Trust, Frame. Smart-contract wallets (Ambire, Safe, Argent) work too — those need to be on the chain that holds the contract; regular wallets work regardless of current chain.
           </div>
         </details>
 
-        <details id="claim-manual-entry" style="margin-top:10px;">
-          <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
-            <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Have a merkle root + CID? Manual entry
-          </summary>
-          <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
-            <label>Merkle root</label>
-            <input id="claim-root" type="text" autocomplete="off" spellcheck="false" placeholder="64-char hex" style="font-family:var(--mono);font-size:12px;">
-            <label style="margin-top:10px;">Snapshot IPFS CID (or full <code>ipfs://</code> URI)</label>
-            <input id="claim-cid" type="text" autocomplete="off" spellcheck="false" placeholder="Qm… or bafy…" style="font-family:var(--mono);font-size:12px;">
-            <div class="flex" style="margin-top:8px;gap:6px;">
-              <button id="btn-claim-load" type="button">Load snapshot</button>
-              <button id="btn-claim-clear" type="button">Clear</button>
-            </div>
-            <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">…or paste / upload the snapshot JSON directly (fallback if IPFS gateways are unreachable)</summary>
-              <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any snapshot whose rows don't match the declared root.</div>
-              <input id="claim-json-file" type="file" accept=".json,application/json" style="display:none;">
-              <div class="flex" style="gap:6px;margin-top:6px;">
-                <button id="btn-claim-json-upload" type="button">Upload JSON file</button>
-                <button id="btn-claim-json-load" type="button">Load pasted JSON</button>
+        <h3>Available drops</h3>
+        <div class="muted" style="font-size:11px;margin-bottom:6px;">
+          Live drops on <span id="claim-discover-network">…</span>.
+        </div>
+        <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
+          <button id="btn-claim-discover-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active drops from the worker">↻ Refresh</button>
+          <span id="claim-discover-status" class="muted" style="font-size:11px;"></span>
+        </div>
+        <div id="claim-submissions"></div>
+        <div id="claim-discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no drops loaded yet · click Refresh</div></div>
+
+        <div style="margin-top:32px;padding-top:18px;border-top:1px dashed var(--ink-faint);">
+          <div class="muted" style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);margin-bottom:10px;">Other ways to claim</div>
+          <div class="muted" style="font-size:11px;margin-bottom:10px;line-height:1.5;">Have a private drop or a direct share link from the issuer? Use the options below.</div>
+
+          <details><summary class="muted" style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Self-claim on-chain (you pay your own Bitcoin tx fee)</summary>
+            <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+              <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
+                For drops where the issuer locked tokens into a public claim pool on Bitcoin. Anyone in the snapshot can self-claim first-come-first-served until the cap runs out. For drops with an eligibility list, you'll also need to sign with your Ethereum wallet (use the discovery list above to do that first). Cost: roughly $5-10 in Bitcoin tx fees per claim, paid by you instead of the issuer.
               </div>
-              <textarea id="claim-json-text" rows="6" style="margin-top:6px;font-family:var(--mono);font-size:11px;" placeholder='{"schema":"tacit-airdrop-v1","merkle_root":"…","rows":[…]}'></textarea>
-            </details>
-            <div id="claim-load-err" class="error" style="margin-top:8px;"></div>
-            <div id="claim-load-out" style="display:none;margin-top:14px;"></div>
-          </div>
-        </details>
+              <div class="flex" style="gap:8px;align-items:center;margin-bottom:8px;">
+                <button id="btn-onclaim-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active on-chain T_DROP pools from the worker">↻ Refresh</button>
+                <span id="onclaim-list-status" class="muted" style="font-size:11px;"></span>
+              </div>
+              <div id="onclaim-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no on-chain drops loaded yet · click Refresh</div></div>
+            </div>
+          </details>
+
+          <details id="claim-manual-entry" style="margin-top:10px;">
+            <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
+              <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Have a merkle root + CID? Manual entry
+            </summary>
+            <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+              <label>Merkle root</label>
+              <input id="claim-root" type="text" autocomplete="off" spellcheck="false" placeholder="64-char hex" style="font-family:var(--mono);font-size:12px;">
+              <label style="margin-top:10px;">Snapshot IPFS CID (or full <code>ipfs://</code> URI)</label>
+              <input id="claim-cid" type="text" autocomplete="off" spellcheck="false" placeholder="Qm… or bafy…" style="font-family:var(--mono);font-size:12px;">
+              <div class="flex" style="margin-top:8px;gap:6px;">
+                <button id="btn-claim-load" type="button">Load snapshot</button>
+                <button id="btn-claim-clear" type="button">Clear</button>
+              </div>
+              <details style="margin-top:8px;"><summary class="muted" style="cursor:pointer;font-size:11px;">…or paste / upload the snapshot JSON directly (fallback if IPFS gateways are unreachable)</summary>
+                <div class="muted" style="font-size:11px;margin-top:6px;">Useful when corporate proxies block IPFS gateways or for offline review. The dapp still recomputes the merkle root locally and refuses any snapshot whose rows don't match the declared root.</div>
+                <input id="claim-json-file" type="file" accept=".json,application/json" style="display:none;">
+                <div class="flex" style="gap:6px;margin-top:6px;">
+                  <button id="btn-claim-json-upload" type="button">Upload JSON file</button>
+                  <button id="btn-claim-json-load" type="button">Load pasted JSON</button>
+                </div>
+                <textarea id="claim-json-text" rows="6" style="margin-top:6px;font-family:var(--mono);font-size:11px;" placeholder='{"schema":"tacit-airdrop-v1","merkle_root":"…","rows":[…]}'></textarea>
+              </details>
+              <div id="claim-load-err" class="error" style="margin-top:8px;"></div>
+              <div id="claim-load-out" style="display:none;margin-top:14px;"></div>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
   </div>
+
+  <!-- ============== WIZARD VIEW (entered via Claim → on a discover card) ============== -->
+  <div id="claim-wizard-view" style="display:none;">
+    <div class="section">
+      <div class="section-header" style="display:flex;align-items:center;gap:10px;">
+        <button id="btn-claim-wiz-back" type="button" class="claim-wiz-back" title="Return to the list of available drops">← all drops</button>
+        <span>claim · guided</span>
+      </div>
+      <div class="section-body">
+        <div id="claim-wiz-drop-header" class="claim-wiz-drop-header"></div>
+
+        <!-- STEP 1 · Eligibility -->
+        <div class="claim-wiz-step" id="claim-wiz-step-eligibility" data-state="active">
+          <div class="claim-wiz-step-head">
+            <span class="claim-wiz-step-num">1</span>
+            <span class="claim-wiz-step-title">Confirm eligibility</span>
+          </div>
+          <div class="claim-wiz-step-summary" id="claim-wiz-summary-eligibility"></div>
+          <div class="claim-wiz-step-body">
+            <div class="muted" style="font-size:11px;margin-bottom:8px;">Your connected Ethereum address is matched against the snapshot. The amount and leaf index shown below are exactly what the issuer will fulfil.</div>
+            <div id="claim-eligibility"></div>
+          </div>
+        </div>
+
+        <!-- STEP 2 · Receiving identity -->
+        <div class="claim-wiz-step" id="claim-wiz-step-identity" data-state="pending">
+          <div class="claim-wiz-step-head">
+            <span class="claim-wiz-step-num">2</span>
+            <span class="claim-wiz-step-title">Receiving tacit identity</span>
+            <button class="claim-wiz-step-edit" type="button" data-edit="identity">edit</button>
+          </div>
+          <div class="claim-wiz-step-summary" id="claim-wiz-summary-identity"></div>
+          <div class="claim-wiz-step-body">
+            <div class="muted" style="font-size:11px;margin-bottom:8px;">The airdrop will be sent to your <strong>active dapp tacit pubkey</strong>. To use a different identity, switch via <em>Wallet → Import key</em> (or <em>Regenerate</em>) before signing.</div>
+            <div id="claim-tacit-id" class="mono-box" style="font-size:11px;"></div>
+            <div class="warn" style="margin-top:10px;font-size:11px;">
+              <strong>⚠ Back up your tacit privkey before signing.</strong> The privkey controlling this pubkey lives only in this browser's localStorage. If you clear it before the issuer fulfills, the airdrop is unrecoverable. Use <em>Wallet → Export key</em> now if you haven't already.
+            </div>
+            <div class="flex" style="gap:6px;margin-top:12px;">
+              <button id="btn-claim-wiz-identity-ack" type="button" class="primary">I've backed up my key · continue →</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- STEP 3 · Sign -->
+        <div class="claim-wiz-step" id="claim-wiz-step-sign" data-state="pending">
+          <div class="claim-wiz-step-head">
+            <span class="claim-wiz-step-num">3</span>
+            <span class="claim-wiz-step-title">Sign with your Ethereum wallet</span>
+            <button class="claim-wiz-step-edit" type="button" data-edit="sign">edit</button>
+          </div>
+          <div class="claim-wiz-step-summary" id="claim-wiz-summary-sign"></div>
+          <div class="claim-wiz-step-body">
+            <div class="muted" style="font-size:11px;margin-bottom:6px;">Your wallet will show a short authorization message. Read every field before signing — no gas spent.</div>
+            <details style="margin:8px 0;"><summary class="muted" style="cursor:pointer;font-size:11px;">Preview the message that will be signed</summary>
+              <pre id="claim-msg-preview" style="margin-top:6px;font-size:11px;background:var(--bg-warm);padding:8px;border-radius:4px;white-space:pre-wrap;word-break:break-all;"></pre>
+            </details>
+            <div class="flex" style="gap:6px;">
+              <button id="btn-claim-sign" type="button" class="primary" disabled title="Connect a wallet + load an eligible drop first">Sign with wallet</button>
+            </div>
+            <div id="claim-sign-err" class="error" style="margin-top:8px;"></div>
+          </div>
+        </div>
+
+        <!-- STEP 4 · Tip + submit -->
+        <div class="claim-wiz-step" id="claim-wiz-step-submit" data-state="pending">
+          <div class="claim-wiz-step-head">
+            <span class="claim-wiz-step-num">4</span>
+            <span class="claim-wiz-step-title">Tip the treasury · submit claim</span>
+          </div>
+          <div class="claim-wiz-step-body">
+            <div id="claim-result-placeholder" class="muted" style="font-size:11px;">Complete step 3 to generate your claim ticket and fund the issuer's treasury.</div>
+            <div id="claim-result" style="display:none;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <!-- HOLDINGS TAB -->

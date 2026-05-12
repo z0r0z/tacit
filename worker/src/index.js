@@ -6816,7 +6816,9 @@ async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network
   // cancelled the announcement; existing claims persist independent of
   // announcement state.)
   const stored = await env.REGISTRY_KV.get(dropAnnounceKey(network, rootHex), 'json');
-  if (!stored) return jsonResponse({ error: 'no announcement for this root — cannot authorize delete' }, 404, cors);
+  if (!stored) return jsonResponse({
+    error: 'no announcement for this root — cannot authorize delete. Re-publish the announcement (POST /drops) with the original issuer_pubkey, then retry the DELETE. The announcement record is the worker\'s only persistent record of which key may sign claim cancels for this drop.',
+  }, 404, cors);
   const issuerPubHex = String(stored.issuer_pubkey || '').toLowerCase();
   if (!/^0[23][0-9a-f]{64}$/.test(issuerPubHex)) return jsonResponse({ error: 'stored issuer_pubkey malformed' }, 500, cors);
 
