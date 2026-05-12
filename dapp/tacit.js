@@ -23389,6 +23389,10 @@ async function _pollClaimSubmissionsStatus() {
     }
   }
   _renderClaimSubmissions();
+  // Re-render the discover list too — a freshly-verified claim should drop
+  // its card from the list immediately, not wait up to a full poll cycle for
+  // the next `_claimRefreshDiscover` tick.
+  _renderClaimDiscoverList();
 }
 
 function _renderClaimSubmissions() {
@@ -23720,6 +23724,14 @@ function _renderClaimDiscoverList() {
     };
     return;
   }
+  // Hide drops the user has already truly claimed (verified_at set, meaning the
+  // tokens are confirmed in their tacit wallet). In-progress submissions stay
+  // visible so the recipient can monitor fulfilment — only the terminal
+  // "received" state filters out. Reuses the same submission ledger the wizard's
+  // terminal-state branch reads, so what the discover list hides and what the
+  // wizard says "✓ Already claimed" for stay in lockstep.
+  const submitted = _loadClaimSubs();
+  let hiddenClaimedCount = 0;
   // Sort: eligible first, then announced_at desc.
   const rendered = _claimDiscoverDrops.map(d => {
     const snap = _claimDiscoverSnapshots.get(d.merkle_root);
@@ -23731,6 +23743,11 @@ function _renderClaimDiscoverList() {
       if (_claimEthAddr) eligibleRow = snap.rows.find(r => r.ethAddrHex === _claimEthAddr) || null;
     }
     return { d, snap, eligibleRow, snapshotState };
+  }).filter(r => {
+    if (!r.eligibleRow) return true;
+    const sub = submitted[`${r.d.merkle_root}:${r.eligibleRow.index}`];
+    if (sub && sub.verified_at) { hiddenClaimedCount++; return false; }
+    return true;
   });
   rendered.sort((a, b) => {
     const aE = a.eligibleRow ? 1 : 0, bE = b.eligibleRow ? 1 : 0;
@@ -23755,6 +23772,9 @@ function _renderClaimDiscoverList() {
     eligibleTotals.set(tk, cur);
   }
   setTabBadge('claim', eligibleCount);
+  const claimedHiddenLine = hiddenClaimedCount > 0
+    ? `<div class="muted" style="font-size:11px;margin-top:4px;">${hiddenClaimedCount} eligible drop${hiddenClaimedCount === 1 ? '' : 's'} already claimed and hidden — see <a href="#tab=holdings">Holdings</a>.</div>`
+    : '';
   const summaryRow = (eligibleCount > 0)
     ? `<div class="card" style="margin-bottom:10px;padding:10px 12px;border:1px solid var(--green);background:var(--bg-warm);">
          <div style="font-size:12px;color:var(--green);">
@@ -23765,10 +23785,18 @@ function _renderClaimDiscoverList() {
            ).join(' + ')}
            <span class="muted" style="color:var(--ink-mid);font-weight:normal;"> awaiting your claim</span>
          </div>
+         ${claimedHiddenLine}
        </div>`
-    : ((!_claimEthAddr)
-      ? `<div class="muted" style="font-size:11px;margin-bottom:10px;font-style:italic;">Connect an Ethereum wallet above to check eligibility against ${rendered.length} announced drop${rendered.length === 1 ? '' : 's'}.</div>`
-      : '');
+    : (hiddenClaimedCount > 0)
+      ? `<div class="card" style="margin-bottom:10px;padding:10px 12px;border:1px solid var(--green);background:var(--bg-warm);">
+           <div style="font-size:12px;color:var(--green);">
+             <strong>✓ All ${hiddenClaimedCount} of your eligible drop${hiddenClaimedCount === 1 ? '' : 's'} claimed.</strong>
+             <span class="muted" style="color:var(--ink-mid);font-weight:normal;"> Open <a href="#tab=holdings">Holdings</a> to see your tokens.</span>
+           </div>
+         </div>`
+      : ((!_claimEthAddr)
+        ? `<div class="muted" style="font-size:11px;margin-bottom:10px;font-style:italic;">Connect an Ethereum wallet above to check eligibility against ${rendered.length} announced drop${rendered.length === 1 ? '' : 's'}.</div>`
+        : '');
 
   list.innerHTML = summaryRow + rendered.map(({ d, snap, eligibleRow, snapshotState }) => {
     const meta = getAssetMeta(d.asset_id);
