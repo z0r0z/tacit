@@ -23074,6 +23074,50 @@ async function _claimRefreshDiscover() {
     if (status) status.textContent = `error: ${e.message}`;
     _claimDiscoverDrops = [];
   }
+  // Asset metadata hydration: for every asset_id appearing in the discover
+  // list that the recipient's local registry doesn't already know about,
+  // fetch the metadata (ticker, decimals, image_uri, etcher info) from the
+  // worker's /assets/:asset_id endpoint. Populates the registry so the
+  // claim card avatars + ticker labels render with the issuer's logo even
+  // on a fresh dapp install — without requiring the recipient to have
+  // touched the asset elsewhere first. Each completion re-renders the
+  // discover list so cards "snap" from placeholder to real logo as
+  // metadata arrives. Parallel; each fetch is independent.
+  if (WORKER_BASE) {
+    const unknownAssetIds = new Set();
+    for (const d of _claimDiscoverDrops) {
+      if (d.asset_id && /^[0-9a-f]{64}$/.test(d.asset_id) && !getAssetMeta(d.asset_id)) {
+        unknownAssetIds.add(d.asset_id);
+      }
+    }
+    for (const aid of unknownAssetIds) {
+      fetch(`${WORKER_BASE}/assets/${aid}?network=${encodeURIComponent(NET.name)}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+          if (!j || typeof j.asset_id !== 'string' || j.asset_id.toLowerCase() !== aid) return;
+          // Strict-validate the fields we'll use in UI before registering.
+          // The worker is trusted-but-verify: a malicious or compromised
+          // worker shouldn't be able to inject control chars into the
+          // ticker that ends up signed at claim time.
+          const ticker = typeof j.ticker === 'string' && j.ticker.length > 0 && j.ticker.length <= 16 ? j.ticker : null;
+          const decimals = Number.isInteger(j.decimals) && j.decimals >= 0 && j.decimals <= 8 ? j.decimals : null;
+          if (ticker && decimals != null) {
+            registerAsset({
+              assetIdHex: aid,
+              ticker, decimals,
+              imageUri: typeof j.image_uri === 'string' ? j.image_uri : null,
+              etchTxid: typeof j.etch_txid === 'string' ? j.etch_txid : null,
+              etchVout: Number.isInteger(j.etch_vout) ? j.etch_vout : 0,
+              mintAuthorityHex: typeof j.mint_authority === 'string' ? j.mint_authority : null,
+            });
+            // Re-render so newly-registered logo + ticker appear on the cards.
+            _renderClaimDiscoverList();
+          }
+        })
+        .catch(() => { /* network blip; user can refresh later */ });
+    }
+  }
+
   // Bare-root deep-link resolution: if the page was opened with `#claim=<root>`
   // (no CID), match the root against the worker's announcement list and
   // auto-fill + auto-load. Run before per-card snapshot fetches kick off so the
