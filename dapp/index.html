@@ -62,7 +62,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=61728fc6">
+<link rel="modulepreload" href="./tacit.js?cb=4517106d">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -2428,8 +2428,31 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div id="p-divisibility-hint" class="muted" style="margin-top:6px;font-size:11px;"></div>
       <label style="margin-top:14px;">Image URI (optional)</label>
       <input id="p-image" type="text" placeholder="ipfs://bafybeih... or bare CID" spellcheck="false">
+      <details style="margin-top:10px;">
+        <summary class="muted" style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
+          <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Advanced: mint window (optional)
+        </summary>
+        <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:4px;">
+          <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
+            Restrict T_PMINTs to a Bitcoin block-height window. Leave both blank (or 0) for open-ended minting until the cap fills — that's the default. <strong>Both fields are permanent and locked at deploy</strong>; can't be changed after broadcast.
+          </div>
+          <div class="form-row two">
+            <div>
+              <label>Mint start height (optional)</label>
+              <input id="p-mint-start" type="number" min="0" max="4294967295" placeholder="e.g. 950000" autocomplete="off">
+            </div>
+            <div>
+              <label>Mint end height (optional)</label>
+              <input id="p-mint-end" type="number" min="0" max="4294967295" placeholder="e.g. 980000" autocomplete="off">
+            </div>
+          </div>
+          <div class="muted" style="font-size:11px;margin-top:8px;line-height:1.5;">
+            Validation: start must be ≥ <em>deploy block + 1</em>, end must be > start, both must fit in u32. If start = 0 the dapp uses <em>deploy block + 1</em>; if end = 0 minting stays open until the cap fills. SPEC §5.8.
+          </div>
+        </div>
+      </details>
       <div class="muted" style="margin-top:8px;font-size:11px;line-height:1.6;">
-        ⚠ Cap and per-mint amount are <strong>permanent</strong>; per-mint must divide the cap evenly. Minting opens at the next confirmed block after this deploy lands.
+        ⚠ Cap and per-mint amount are <strong>permanent</strong>; per-mint must divide the cap evenly. Minting opens at the next confirmed block after this deploy lands (or at the start height above, if set).
       </div>
       <details class="etch-why" style="margin-top:14px;">
         <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;list-style:none;">
@@ -3263,7 +3286,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <select id="mixer-withdraw-saved-select"><option value="">— pick a saved deposit or paste below —</option></select>
         </label>
       </div>
-      <textarea id="mixer-withdraw-record" rows="4" placeholder="…or paste deposit record JSON / use share-link below" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
+      <textarea id="mixer-withdraw-record" rows="4" placeholder="…or paste deposit record JSON / use share-link below" aria-label="Deposit record JSON" style="width:100%;font-family:monospace;font-size:12px;"></textarea>
       <div class="flex" style="gap:8px;align-items:center;margin-top:8px;">
         <input id="mixer-withdraw-sharelink" type="text" placeholder="#mix=…" style="flex:1;font-family:monospace;font-size:12px;">
         <button id="btn-mixer-import-sharelink">Import</button>
@@ -3459,7 +3482,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
       <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
         Both CIDs are locked to the canonical Phase 2 trusted setup — 2,227 community contributions, Bitcoin-block beacon, finalized chain. Every pool for this circuit shares the same verifying key.
-        <a id="mixer-canonical-ceremony-link" href="#" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Audit bundle on IPFS ↗</a>
+        <a id="mixer-canonical-ceremony-link" href="https://ipfs.io/ipfs/bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u/" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Audit bundle on IPFS ↗</a>
       </div>
       <div class="flex" style="gap:8px;align-items:flex-end;margin-top:10px;">
         <button id="btn-mixer-init-broadcast" disabled>Initialize pool &amp; broadcast</button>
@@ -3758,6 +3781,34 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
+<!--
+  Import wallet modal. Replaces the prior native prompt() flow which silently
+  failed on Chrome/Edge mobile when stacked with the welcome modal. Mirrors
+  the export-modal pattern: DOM textarea + paste + explicit confirm/cancel
+  buttons. Same `pass-modal` styling so it composes with the rest of the
+  wallet modals.
+-->
+<div id="import-modal" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" style="display:none;">
+  <div class="pass-card">
+    <div class="pass-title" id="import-title">import key</div>
+    <div class="pass-reason" id="import-reason">
+      paste a 64-char hex private key. this replaces the wallet currently loaded in this slot — make sure you've exported the existing key first if you want to keep it.
+    </div>
+    <div class="pass-field">
+      <label for="import-key-text">private key (hex, 64 chars)</label>
+      <textarea id="import-key-text" class="export-key-area" rows="3"
+                autocomplete="off" autocapitalize="off" autocorrect="off"
+                spellcheck="false" wrap="soft"
+                placeholder="paste 64 hex chars here"></textarea>
+    </div>
+    <div id="import-error" class="error" style="margin-top:8px;font-size:11px;"></div>
+    <div class="export-actions">
+      <button type="button" id="import-cancel">cancel</button>
+      <button type="button" id="import-confirm" class="primary">import</button>
+    </div>
+  </div>
+</div>
+
 <div id="faq-modal" class="faq-modal" role="dialog" aria-modal="true" aria-labelledby="faq-title" style="display:none;">
   <div class="faq-card">
     <div class="faq-head">
@@ -3773,6 +3824,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="faq-q">Why not just use Runes / Liquid / RGB?</div>
       <div class="faq-a">
         Runes and BRC-20 publish amounts in cleartext — anyone with a block explorer sees your balance. Liquid hides amounts (and asset IDs too) but runs on a federated sidechain with ~15 KYC'd functionaries; that's not really Bitcoin. RGB hides amounts on Bitcoin proper, but the recipient has to receive a proof chain from the sender off-chain — lose the proof, lose the asset. Tacit hides amounts on Bitcoin and you recover from privkey + chain alone, the way Bitcoin itself works.
+      </div>
+
+      <div class="faq-q">What else can I do besides send / receive?</div>
+      <div class="faq-a">
+        Three production extensions, each with its own dapp tab. <strong>Drops</strong> (<code>T_DROP</code> → <code>T_DCLAIM</code>, SPEC §5.12–§5.13) — lock existing supply into a public claim pool, optionally ETH-Merkle-gated; recipients self-claim first-come-first-served until the cap drains. <strong>Mixer</strong> (<code>T_DEPOSIT</code> → <code>T_WITHDRAW</code>, SPEC §5.10–§5.11) — deposit a fixed-denomination UTXO into a shielded pool and withdraw to a fresh pubkey via Groth16 proof; breaks the on-chain deposit→withdraw link. <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>, SPEC §5.8–§5.9) — deploy a permissionless mint under a public cap; anyone broadcasts mint tx until the cap fills, supply auditable from chain alone.
       </div>
 
       <div class="faq-q">How do I see my tacit balances?</div>
@@ -3859,6 +3915,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=61728fc6"></script>
+<script type="module" src="./tacit.js?cb=4517106d"></script>
 </body>
 </html>

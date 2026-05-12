@@ -73,6 +73,15 @@ What that buys you, concretely:
   `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u` and
   hardcoded as the trust anchor in the dapp. See [MIXER.md](./MIXER.md)
   for full status + caveats.
+- A holder can **lock existing supply into a public-claim pool** (`T_DROP`
+  → `T_DCLAIM`, SPEC §5.12–§5.13) — recipients self-claim a fixed
+  `per_claim` tranche on a first-come-first-served basis until the
+  declared `cap_amount` drains, optionally gated by an ETH-address Merkle
+  list (eth_sig + merkle proof). Each claimant pays their own Bitcoin tx
+  fee. Supply-preserving: tokens shift from depositor to pool to claimant
+  with no destruction/re-mint. **Status: production.** Wire format, kernel
+  sig over the asset-side balance equation, optional eligibility-witness
+  verification, and the browser-side claim flow are all shipped.
 
 What it doesn't do:
 
@@ -127,7 +136,11 @@ What tacit does that nothing else does in one package:
 
 Where tacit isn't the right choice:
 
-- **NFTs / inscriptions.** Ordinals is purpose-built for this; tacit isn't.
+- **On-chain inscriptions (file bytes in Bitcoin witnesses).** Ordinals
+  embeds the file directly into the witness; tacit carries only an
+  `imageUri` on-chain and pins media to IPFS. Unique-token use cases
+  (0-decimal asset with cap = 1 + an image) work fine on tacit — what's
+  out of scope is "the JPEG is provably on Bitcoin forever."
 - **Lightning-native assets.** Taproot Assets is built into the LN stack;
   tacit is on-chain only in v1.
 - **Highest-frequency, lowest-cost fungible transfers.** Runes wins on raw

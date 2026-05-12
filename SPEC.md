@@ -1,6 +1,6 @@
 # tacit protocol specification
 
-> **Status:** v1. Wire format is envelope version `0x01`, opcodes 0x21–0x2A (0x26 = `T_AXFER`, atomic OTC settlement; §5.7. 0x27 / 0x28 = `T_PETCH` / `T_PMINT`, permissionless public-mint mode; §5.8–§5.9. 0x29 / 0x2A = `T_DEPOSIT` / `T_WITHDRAW`, shielded mixer pool; §5.10–§5.11 — Groth16 verifier in production, Phase 2 trusted setup finalized 2026-05-11 with 2,227 contributions + Bitcoin-block beacon, see §10). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2). This spec is the authoritative reference for indexer implementations and audit review.
+> **Status:** v1. Wire format is envelope version `0x01`, opcodes `0x21, 0x23–0x2C` (0x22 reserved/unused; 0x26 = `T_AXFER`, atomic OTC settlement; §5.7. 0x27 / 0x28 = `T_PETCH` / `T_PMINT`, permissionless public-mint mode; §5.8–§5.9. 0x29 / 0x2A = `T_DEPOSIT` / `T_WITHDRAW`, shielded mixer pool; §5.10–§5.11 — Groth16 verifier in production, Phase 2 trusted setup finalized 2026-05-11 with 2,227 contributions + Bitcoin-block beacon, see §10. 0x2B / 0x2C = `T_DROP` / `T_DCLAIM`, public-claim pool over existing supply with optional Merkle-eligibility gating; §5.12–§5.13). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2). This spec is the authoritative reference for indexer implementations and audit review.
 
 ## 1. Overview
 
@@ -128,7 +128,14 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags **f
 | `tacit-etch-amount-v1` | Etcher's supply keystream (8B) | CETCH `amount_ct` |
 | `tacit-mint-amount-v1` | Issuer's mint keystream (8B) | T_MINT `amount_ct` |
 
-Other domain-separated v1 tags appear where they're used and are not part of this table: BIP-340 Schnorr signature-message tags (`tacit-kernel-v1` §5.2, `tacit-mint-v1` §5.3, `tacit-disclosure-v1` §5.6, `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` §5.7.6, `tacit-preauth-sale-{v1,cancel-v1}` §5.7.8, `tacit-pool-init-v1` §5.10.1, `tacit-deposit-v1` §5.10, `tacit-withdraw-bind-v1` §5.11, `tacit-drop-v1` §5.12, `tacit-drop-reclaim-v1` §5.12.1) — note `tacit-withdraw-bind-v1` is the SHA256 domain for the withdraw bind_hash, not a Schnorr message; a related HMAC keystream `tacit-axintent-blinding-v1` (§5.7.6); generator derivations `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1); the bulletproof Fiat-Shamir transcript domain `tacit-bp-v1` (§3.3); and off-chain coordination tags (`tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1}`, `tacit-airdrop-claim-v1` reused by §5.13's canonical claim msg) defined by their worker endpoints in §8 — these last live entirely outside the on-chain protocol except where §5.13 explicitly reuses the airdrop leaf/node/claim-msg formats.
+Other domain-separated v1 tags appear where they're used and are not part of this table:
+
+- **BIP-340 Schnorr signature-message tags:** `tacit-kernel-v1` (§5.2, §5.4, §5.7), `tacit-mint-v1` (§5.3), `tacit-disclosure-v1` (§5.6), `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` (§5.7.6), `tacit-bid-{intent-v1,claim-v1,cancel-v1}` (§5.7.7), `tacit-preauth-sale-{v1,cancel-v1}` (§5.7.8), `tacit-pool-init-v1` (§5.10.1), `tacit-deposit-v1` (§5.10), `tacit-drop-v1` (§5.12), `tacit-drop-reclaim-v1` (§5.12.1).
+- **SHA256 domains (not Schnorr messages):** `tacit-withdraw-bind-v1` is the SHA256 domain for the `T_WITHDRAW` `bind_hash` (§5.11).
+- **HMAC keystream domains:** `tacit-axintent-blinding-v1` for the per-intent `r` encryption ciphertext (§5.7.6).
+- **Generator derivations:** `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1).
+- **Bulletproof Fiat-Shamir transcript:** `tacit-bp-v1` (§3.3).
+- **Off-chain coordination tags** (defined by their worker endpoints in §8): `tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1,claim-v1,claim-delete-v1}` — the airdrop leaf/node/claim-v1 formats are reused by §5.13's on-chain canonical claim msg; the other off-chain tags live entirely outside the on-chain protocol.
 
 **Endianness convention.** Throughout this spec, `txid_BE` denotes the txid in the byte order that `SHA256(serialized_tx)` natively produces — the same bytes a Bitcoin transaction puts on the wire when it references a previous output. This is the **reverse** of the displayed/RPC hex form (e.g. `getrawtransaction` output, block-explorer URLs). In wider Bitcoin documentation this on-wire order is often called "internal" or "LE"; tacit's `_BE` label is not standard but is fixed by the test vectors in §3.1 (and `tests/vectors.test.mjs`). Implementers should treat any `_BE` field as `reverseBytes(hexToBytes(displayed_txid))`. `_LE` on integer fields (e.g. `vout_LE`, `amount_LE`) means standard little-endian integer encoding.
 
@@ -407,8 +414,9 @@ validateOutpoint(txid, vout):
         require merkle_root in last 32 canonical roots of this pool
         require nullifier_hash NOT in this pool's spent-nullifier set
         verify Groth16 proof under pool.vk over public inputs
-            [merkle_root, nullifier_hash, denomination,
-             recipient_commitment.x, recipient_commitment.y, bind_hash]
+            [merkle_root, nullifier_hash, denomination, r_leaf, bind_hash]
+        # External secp256k1 Pedersen check — closes inflation attack (§3.8 c4)
+        require recipient_commitment == denomination · H + r_leaf · G
         record nullifier_hash as spent
         vout must == 0
         return true
@@ -1432,10 +1440,12 @@ T_DROP (RECLAIM shape, per_claim = 0)
 || asset_id(32)
 || cap_amount(8)             u64 LE — MUST equal the unclaimed remainder
                                        = original_cap - (count_of_valid_T_DCLAIMs * original_per_claim)
-|| cap_blinding(32)          opening for the synthetic output commitment recipient_commitment
-|| per_claim(8) = 0          sentinel
+|| per_claim(8) = 0          sentinel — discriminates reclaim from standard shape
+                             (same byte offset as standard T_DROP's per_claim field, so
+                             decoders can read it before branching on shape)
 || reclaim_drop_id(32)       reference to the original T_DROP being reclaimed
 || reclaim_sig(64)           BIP-340 sig under depositor pubkey over reclaim_msg (below)
+|| cap_blinding(32)          opening for the synthetic output commitment at vout[0]
 ```
 
 ```
@@ -1596,7 +1606,7 @@ The two flows coexist: an issuer may publish both an §8 announcement and a `T_D
 
 ## 6. Recovery semantics
 
-A wallet with only its **private key** can recover its full balance from chain data alone for every UTXO produced by the **on-chain protocol layer** (CETCH / CXFER / T_MINT / T_BURN / T_PMINT / T_DCLAIM, including targeted §5.7.3 T_AXFER settlements and reclaim-shape T_DROP outputs). Atomic-intent recipient UTXOs are the one exception — see §5.7.6 "Recovery model exception" — because their recipient blinding is a uniform-random scalar fixed at intent-publish time rather than ECDH-derived; recovery from chain + privkey alone is impossible by design, and recovery falls back to local opening cache or re-fetching the encrypted fulfilment from the worker. T_PMINT and T_DCLAIM recovery are the *easiest* of all paths because `(amount, blinding)` are published in the envelope rather than derived — no HMAC keystream, no ECDH (§5.9 *Recovery semantics*, §5.13 *Privacy disclosure*).
+A wallet with only its **private key** can recover its full balance from chain data alone for every UTXO produced by the **on-chain protocol layer** (CETCH / CXFER / T_MINT / T_BURN / T_PMINT / T_WITHDRAW / T_DCLAIM, including targeted §5.7.3 T_AXFER settlements and reclaim-shape T_DROP outputs). Atomic-intent recipient UTXOs are the one exception — see §5.7.6 "Recovery model exception" — because their recipient blinding is a uniform-random scalar fixed at intent-publish time rather than ECDH-derived; recovery from chain + privkey alone is impossible by design, and recovery falls back to local opening cache or re-fetching the encrypted fulfilment from the worker. T_PMINT, T_WITHDRAW, and T_DCLAIM recovery are the *easiest* of all paths because the opening fields are published in the envelope rather than derived — no HMAC keystream, no ECDH (§5.9 *Recovery semantics*, §5.11 *Recipient blinding & amount recovery*, §5.13 *Privacy disclosure*).
 
 For each UTXO the wallet owns:
 
@@ -1759,8 +1769,8 @@ Every envelope decoder, in every implementation, MUST:
 3. **Return null (not throw, not partial)** on any malformed input. Throwing surfaces as different failure modes in different runtimes; null is unambiguous.
 4. **Validate semantic invariants in the decoder**, not in the consumer. Specifically:
    - `T_WITHDRAW`: `bind_hash` recompute MUST be in `decodeTWithdrawPayload` (not in a separate validator step). Otherwise a worker that uses the structural decoder without the validator step writes nullifiers for envelopes the dapp would reject — see §5.11.4 invariant 5.
-   - `T_PETCH`: `cap_amount % mint_limit == 0` and `cap_amount > mint_limit` MUST be in `decodeCPetchPayload`.
-   - `T_PMINT`: `0 < amount < 2^N_BITS` and `nullifier_hash != 0` MUST be in `decodeCPmintPayload`.
+   - `T_PETCH`: `cap_amount % mint_limit == 0` and `mint_limit <= cap_amount` MUST be in `decodeCPetchPayload`.
+   - `T_PMINT`: `0 < amount < 2^N_BITS` and `blinding != 0` MUST be in `decodeCPmintPayload`.
 5. **Use byte-exact field encoding.** Little-endian for u64 / u32 / u16 fields (e.g., `denomination`, `mint_limit`, `proof_len`); big-endian for hash digests treated as field elements (e.g., `bind_hash` SHA256 output is a 32-byte BE field). Mixed encoding silently breaks indexer parity.
 
 ### 11.2 Cross-implementation enforcement

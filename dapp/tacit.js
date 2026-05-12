@@ -554,11 +554,30 @@ async function encryptPrivkey(privBytes, passphrase) {
   const keyBytes = await _deriveKDFKey(passphrase, salt, PBKDF2_ITER);
   const aesKey = await crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
   const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, privBytes);
+  // `pub` is the secp256k1 compressed pubkey (non-secret — derives from chain
+  // the first time the address spends). Stored alongside the ciphertext so
+  // init() can render the wallet address and sat balance on reload without
+  // prompting for the passphrase. The priv stays encrypted until a sign-time
+  // action triggers ensurePrivkey().
+  const pub = secp.getPublicKey(privBytes, true);
   return JSON.stringify({
     v: STORAGE_FORMAT_VERSION, kdf: 'pbkdf2', iter: PBKDF2_ITER,
     salt: bytesToHex(salt), iv: bytesToHex(iv),
     ct: bytesToHex(new Uint8Array(ct)),
+    pub: bytesToHex(pub),
   });
+}
+
+// Read the public-only fields from a stored blob without decrypting. Returns
+// null if the blob is malformed or predates the pub field — callers that need
+// the address pre-unlock fall back to lazy decrypt on first sign action.
+function readBlobPub(blobJson) {
+  try {
+    const blob = JSON.parse(blobJson);
+    if (blob.v !== STORAGE_FORMAT_VERSION) return null;
+    if (typeof blob.pub !== 'string' || !/^0[23][0-9a-f]{64}$/.test(blob.pub)) return null;
+    return hexToBytes(blob.pub);
+  } catch { return null; }
 }
 
 async function decryptPrivkey(blobJson, passphrase) {
@@ -702,9 +721,16 @@ function _passphraseModal({ mode, title, reason, errorHint }) {
   });
 }
 
-// The unlocked privkey lives only in `wallet.priv` (JS module memory). A page
-// reload prompts for the passphrase again — there is no persistent cache that
-// a post-unlock XSS could read without standing up its own passphrase prompt.
+// The unlocked privkey lives only in `wallet.priv` (JS module memory) and is
+// loaded lazily: on reload we restore `wallet.pub` from non-secret metadata
+// (the encrypted blob carries the pub; the PRF map carries it for passkey
+// mode) and leave `wallet.priv` null. Read-only paths — address rendering,
+// sat balance, browsing Discover/Market — run without ever holding the priv.
+// First sign-time action calls ensurePrivkey() to surface the passphrase or
+// biometric prompt; subsequent signs in the same tab reuse the cached priv.
+// XSS posture: there's still no persistent cache a post-unlock XSS could read
+// without standing up its own passphrase/biometric prompt, and the priv-in-
+// memory window is strictly narrower than the previous unlock-at-boot flow.
 
 async function _promptNewPassphrase(reason) {
   return _passphraseModal({ mode: 'new', title: 'set passphrase', reason });
@@ -836,10 +862,12 @@ const wallet = {
       localStorage.setItem(key, await encryptPrivkey(this.priv, passphrase));
     } else if (shape === 'encrypted') {
       let priv = null, lastErr = null, errorHint = '';
+      let usedPassphrase = null;
       for (let attempt = 0; attempt < 3 && !priv; attempt++) {
         try {
           const passphrase = await _promptUnlockPassphrase(errorHint);
           priv = await decryptPrivkey(raw, passphrase);
+          usedPassphrase = passphrase;
         } catch (e) {
           lastErr = e;
           if (e.message === 'cancelled') break;
@@ -852,6 +880,16 @@ const wallet = {
       }
       if (!priv) throw lastErr || new Error('unlock failed');
       this.priv = priv;
+      // One-time migration to the lazy-unlock format: legacy blobs predate
+      // the `pub` field, so init() can't render the address on reload
+      // without prompting for the passphrase. Re-encrypt now (we have the
+      // passphrase from the just-successful unlock) so the next reload
+      // hydrates wallet.pub from the blob and skips the prompt. Idempotent
+      // — readBlobPub returns non-null for already-migrated blobs.
+      if (!readBlobPub(raw) && usedPassphrase) {
+        try { localStorage.setItem(key, await encryptPrivkey(priv, usedPassphrase)); }
+        catch { /* quota / localStorage unavailable; user can still sign — only the next-reload smoothing is lost */ }
+      }
     } else {
       throw new Error(`unknown wallet storage format at ${key}`);
     }
@@ -1021,6 +1059,43 @@ const prfWallet = {
     return result;
   },
 };
+
+// Lazy-unlock gate. Returns once `wallet.priv` is loaded; if it's null,
+// triggers the passkey biometric prompt (passkey mode) or passphrase prompt
+// (local / ext mode). Used by every signing path so we never load the priv on
+// page boot — only when the user takes an action that actually needs it.
+//
+// Bail propagation: when the user cancels the prompt, the underlying call
+// throws ('cancelled' for the passphrase modal, NotAllowedError for WebAuthn).
+// Callers should catch and abort cleanly so the UI returns to the pre-action
+// state without surfacing a confusing error toast on user cancellation.
+let _ensurePrivkeyInFlight = null;
+async function ensurePrivkey() {
+  if (wallet.priv) return;
+  // Coalesce concurrent calls: two parallel actions (e.g. user double-clicks
+  // Broadcast, or scanHoldings fires while a sign handler is already awaiting)
+  // would otherwise each pop their own unlock prompt. Share the in-flight
+  // promise so exactly one prompt fires and both callers resume on success.
+  if (_ensurePrivkeyInFlight) return _ensurePrivkeyInFlight;
+  _ensurePrivkeyInFlight = (async () => {
+    try {
+      if (wallet.mode === 'passkey') {
+        const label = prfWallet.state?.label;
+        if (!label) throw new Error('passkey state missing — reconnect from Manage Wallet');
+        await prfWallet.login({ label });
+        return;
+      }
+      // Local / ext-bound burner: re-run the existing load path. wallet.load
+      // handles the encrypted-blob unlock (the only shape ensurePrivkey
+      // should encounter — empty/plaintext would have routed through the
+      // welcome flow at init time).
+      await wallet.load(wallet.ext?.address || null);
+    } finally {
+      _ensurePrivkeyInFlight = null;
+    }
+  })();
+  return _ensurePrivkeyInFlight;
+}
 
 // Tracks which wallet path was last used so init() can prefer it on reload
 // instead of always running the passkey path first. Without this, a user
@@ -1354,17 +1429,28 @@ const extWallet = {
   // method, which is enough to fund the in-browser tacit identity.
   async sendSats(toAddress, sats) {
     if (!this.state) throw new Error('no external wallet connected');
+    let txid;
     if (this.state.provider === 'unisat') {
-      return await window.unisat.sendBitcoin(toAddress, Number(sats));
-    }
-    if (this.state.provider === 'sats-connect') {
+      txid = await window.unisat.sendBitcoin(toAddress, Number(sats));
+    } else if (this.state.provider === 'sats-connect') {
       const resp = await SatsConnect.request('sendTransfer', {
         recipients: [{ address: toAddress, amount: Number(sats) }],
       });
       if (resp?.status !== 'success') throw new Error('sendTransfer: ' + JSON.stringify(resp));
-      return resp.result.txid;
+      txid = resp.result?.txid;
+    } else {
+      throw new Error('unknown provider: ' + this.state.provider);
     }
-    throw new Error('unknown provider: ' + this.state.provider);
+    // Format validation: wallets occasionally return undefined/empty/malformed
+    // strings on edge cases (cancelled tx, provider quirks). Without this, the
+    // caller would store garbage as the funding_txid and POST it to the worker,
+    // which would either 4xx or accept-then-reject downstream — surfacing a
+    // confusing "claim invalid" error instead of "wallet didn't broadcast." Be
+    // strict here so the failure mode is clear.
+    if (typeof txid !== 'string' || !/^[a-f0-9]{64}$/i.test(txid)) {
+      throw new Error(`${this.state.provider} returned an invalid txid (got: ${JSON.stringify(txid)?.slice(0, 80)}). The transaction may not have broadcast — check your wallet's recent activity before retrying.`);
+    }
+    return txid.toLowerCase();
   },
 };
 
@@ -4573,12 +4659,17 @@ function parseMixerShareLink(hashFragment) {
   const m = hashFragment.match(/#mix=(.+)$/);
   if (!m) return null;
   const params = new URLSearchParams(m[1]);
-  return {
-    assetIdHex: params.get('a'),
-    denomination: params.get('d'),
-    secretHex: params.get('s'),
-    nullifierPreimageHex: params.get('n'),
-  };
+  const assetIdHex = (params.get('a') || '').toLowerCase();
+  const denomination = params.get('d') || '';
+  const secretHex = (params.get('s') || '').toLowerCase();
+  const nullifierPreimageHex = (params.get('n') || '').toLowerCase();
+  // Reject malformed links so the caller's "could not parse share-link" alert
+  // fires instead of hexToBytes(null) throwing an uncaught error.
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return null;
+  if (!/^\d+$/.test(denomination)) return null;
+  if (!/^[0-9a-f]{64}$/.test(secretHex)) return null;
+  if (!/^[0-9a-f]{64}$/.test(nullifierPreimageHex)) return null;
+  return { assetIdHex, denomination, secretHex, nullifierPreimageHex };
 }
 
 // Inverse of parseMixerShareLink. Produces a `#mix=…` URL fragment carrying
@@ -6252,8 +6343,17 @@ async function scanHoldings(force = false) {
     return _holdingsCache.holdings;
   }
   if (_holdingsInFlight) return _holdingsInFlight;
+  // Confidential amount recovery uses ECDH/keystream derivations against
+  // `wallet.priv` (deriveAmountKeystreamECDH, deriveBlinding, etc.), so the
+  // scan can't proceed locked. Trigger the unlock prompt inside the IIFE —
+  // doing it before the `_holdingsInFlight` assignment would let a concurrent
+  // caller slip past the in-flight guard while we're awaiting the prompt,
+  // and both callers would then race to set the in-flight slot. Holdings tab
+  // click, Transfer preview, Drops, and every other balance-aware path
+  // routes through here, so one gate covers them all.
   _holdingsInFlight = (async () => {
     try {
+      await ensurePrivkey();
       const holdings = await _scanHoldingsImpl();
       _holdingsCache = { fetchedAt: Date.now(), holdings };
       return holdings;
@@ -6851,6 +6951,7 @@ function signTaprootScriptPathInputWithSighash(tx, prevouts, envelopeScript, con
 // the envelope's image_uri). Return value: the final image_uri to embed in
 // the on-chain envelope, or null/undefined to keep `imageUri` unchanged.
 async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri = null, mintable = false, metadataBuilder = null, onProgress = null }) {
+  await ensurePrivkey();
   // onProgress(stage) is invoked at the major checkpoints inside this
   // function so the caller can drive a UI strip without re-implementing
   // the orchestration. Stages: 'commit-broadcast', 'reveal-broadcast'.
@@ -7022,6 +7123,7 @@ function estPetchRevealVb({ tickerLen = 8, imageUriLen = 0 } = {}) {
 }
 
 async function buildAndBroadcastPetch({ ticker, decimals, capAmount, mintLimit, mintStartHeight = 0, mintEndHeight = 0, imageUri = null, metadataBuilder = null, onProgress = null }) {
+  await ensurePrivkey();
   // onProgress(stage) parity with buildAndBroadcastCEtch: 'commit-start'
   // and 'reveal-start' fire right before each broadcast so the caller's
   // progress strip's active step matches what's in flight.
@@ -7161,6 +7263,7 @@ function estPoolInitRevealVb({ payloadLen }) {
 }
 
 async function buildAndBroadcastPoolInit({ assetIdHex, poolDenom, vkCid, ceremonyCid, onProgress = null }) {
+  await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   const denomBig = BigInt(poolDenom);
   if (denomBig <= 0n || denomBig >= (1n << BigInt(N_BITS))) {
@@ -7518,6 +7621,7 @@ function saveMixerDepositRecord(rec) {
 }
 
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
+  await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   const denomBig = BigInt(denomination);
   if (denomBig <= 0n || denomBig >= (1n << BigInt(N_BITS))) {
@@ -7908,6 +8012,7 @@ async function buildAndBroadcastWithdraw({
   recipientPubkey = null,   // 33-byte compressed; null = wallet.pub
   onProgress = null,
 }) {
+  await ensurePrivkey();
   const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
   const circuitHash = ceremonyHash || TACIT_DEFAULT_CEREMONY_HASH;
   const assetIdHex = depositRecord.assetIdHex;
@@ -7953,6 +8058,14 @@ async function buildAndBroadcastWithdraw({
     mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
     if (!mp) throw new Error('your leaf is not in the local pool tree — wait for indexer to catch up (depth ≥ 3 confirmations required)');
   }
+  // Snapshot pool depth at proof-construction time. After proof generation
+  // (5-15s on a fast machine; longer on low-RAM), force-refresh and compare.
+  // If pool advanced by more than (POOL_RECENT_ROOTS_WINDOW − safety_margin)
+  // leaves, our proof's bound root may have fallen out of the validator's
+  // ring buffer — broadcasting then would silently burn BTC fees + leak the
+  // nullifier on chain. SPEC §5.11.
+  const _poolAtProofGen = poolRegistry.get(poolKey(assetIdHex, denomBig));
+  const _leafCountAtProofGen = _poolAtProofGen?.tree?.leaves?.length || 0;
 
   // Recipient commitment uses r_leaf = poseidon(secret, ν), exactly as the
   // circuit will assert. Encoded as compressed secp256k1 point.
@@ -7984,12 +8097,62 @@ async function buildAndBroadcastWithdraw({
   // already pulled the bytes ourselves.
   _progress('proof:fullprove');
   const t0 = Date.now();
-  const { proof, publicSignals } = await snarkjs.groth16.fullProve(
-    proverInput,
-    wasmBytes,
-    zkeyBytes,
-  );
+  // Wallclock budget for snarkjs.groth16.fullProve. The CPU work itself is
+  // not cancellable (no AbortSignal support in snarkjs), but Promise.race
+  // with a timeout surfaces a clear error to the user instead of the UI
+  // hanging indefinitely on a low-RAM device. The race-winning timeout
+  // unsticks the await even if snarkjs continues running in the background
+  // — at that point the user can reload to recover. 180s budgets low-RAM
+  // mobile devices (~60-90s worst case) with margin.
+  const PROOF_TIMEOUT_MS = 180_000;
+  let proof, publicSignals;
+  try {
+    const _proofPromise = snarkjs.groth16.fullProve(proverInput, wasmBytes, zkeyBytes);
+    const _timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(
+        `Groth16 proof generation timed out after ${PROOF_TIMEOUT_MS / 1000}s. Your device may be low on memory — close other tabs / apps and try again, or use a desktop browser if you're on mobile. Tab reload is safe; your deposit note is in localStorage.`,
+      )), PROOF_TIMEOUT_MS);
+    });
+    ({ proof, publicSignals } = await Promise.race([_proofPromise, _timeoutPromise]));
+  } catch (e) {
+    // Distinguish timeout / OOM from other proof-gen failures so the user
+    // gets actionable guidance instead of a raw stack trace. snarkjs's OOM
+    // surfaces as RangeError ("Memory access out of bounds") or a generic
+    // exception from inside the WASM runtime.
+    const _msg = String(e?.message || e || '');
+    if (/timed out/i.test(_msg)) throw e;
+    if (/memory|RangeError|wasm/i.test(_msg)) {
+      throw new Error(`Groth16 proof generation failed: ${_msg}. Your device likely ran out of memory — close other tabs / apps and try again, or use a desktop browser. Your deposit note is safe in localStorage.`);
+    }
+    throw e;
+  }
   _progress('proof:done', { ms: Date.now() - t0 });
+
+  // Stale-root check. Force-refresh pool state and verify the worker hasn't
+  // indexed enough new deposits to push our proof's root out of the
+  // POOL_RECENT_ROOTS_WINDOW=32-deep ring buffer. 4-leaf safety margin
+  // leaves headroom for deposits landing between this check and the reveal-
+  // tx broadcast. Refresh failure tolerated — on transient worker outage we
+  // let the chain-side validator be the truth.
+  _progress('proof:freshness_check');
+  try {
+    _mixerPoolCacheUntil = 0;
+    await scanPools();
+    const _poolNow = poolRegistry.get(poolKey(assetIdHex, denomBig));
+    const _leafCountNow = _poolNow?.tree?.leaves?.length ?? _leafCountAtProofGen;
+    const _growth = _leafCountNow - _leafCountAtProofGen;
+    const _STALE_MARGIN = 4;
+    if (_growth > POOL_RECENT_ROOTS_WINDOW - _STALE_MARGIN) {
+      throw new Error(
+        `pool grew by ${_growth} deposits since your proof was generated (window = ${POOL_RECENT_ROOTS_WINDOW}). ` +
+        `your proof's root may have fallen out of the validator's ring buffer — broadcasting would burn BTC fees ` +
+        `on a silently-rejected tx. close this dialog and re-open the withdraw flow to regenerate a fresh proof.`,
+      );
+    }
+  } catch (e) {
+    if (e && /pool grew by/.test(e.message || '')) throw e;
+    if (typeof console !== 'undefined') console.warn('[mixer] pool freshness re-scan failed; trusting on-chain validator:', e?.message || e);
+  }
 
   const proofBytes = _serializeGroth16Proof(proof);
 
@@ -8168,6 +8331,7 @@ async function buildAndBroadcastTDrop({
   decimals = 0,
   onProgress = null,
 }) {
+  await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   const capBig = BigInt(capAmount);
   const perBig = BigInt(perClaim);
@@ -8379,6 +8543,7 @@ async function buildAndBroadcastTDClaim({
   witness = null,
   onProgress = null,
 }) {
+  await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   if (!/^[0-9a-f]{64}$/i.test(dropRevealTxidHex)) {
     throw new Error('drop_reveal_txid must be 64-char hex');
@@ -8575,6 +8740,7 @@ async function buildAndBroadcastTDropReclaim({
   reclaimDropIdHex,
   onProgress = null,
 }) {
+  await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   if (!/^[0-9a-f]{64}$/i.test(reclaimDropIdHex)) {
     throw new Error('reclaim_drop_id must be 64-char hex');
@@ -8657,7 +8823,6 @@ async function buildAndBroadcastTDropReclaim({
     assetId: assetIdBytes,
     capAmount: capAmountBig,
   });
-  if (!wallet.priv) throw new Error('wallet locked — unlock to sign reclaim');
   const reclaimSig = signSchnorr(reclaimMsg, wallet.priv);
 
   const payload = encodeCDropReclaimPayload({
@@ -8768,6 +8933,7 @@ function estPmintRevealVb() {
 }
 
 async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
+  await ensurePrivkey();
   // onProgress(stage) parity with buildAndBroadcastCEtch: 'commit-start'
   // and 'reveal-start' fire right before each broadcast.
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -8915,6 +9081,7 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
 // of 2. Padding outputs are indistinguishable from change to outsiders; the
 // wallet auto-recovers them as 0-amount UTXOs (DUST sats are returned).
 async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null }) {
+  await ensurePrivkey();
   // onProgress(stage) parity with buildAndBroadcastCEtch — fires
   // 'commit-start' / 'reveal-start' right before each broadcast.
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -9196,6 +9363,7 @@ const AXFER_OFFER_VERSION = 1;
 const SIGHASH_SINGLE_ACP = 0x83;
 
 async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats, expiry }) {
+  await ensurePrivkey();
   if (!Number.isInteger(priceSats) || priceSats < DUST) throw new Error(`price_sats must be ≥ ${DUST}`);
   if (!Number.isInteger(expiry) || expiry <= Math.floor(Date.now() / 1000)) {
     throw new Error('expiry must be a future unix-seconds timestamp');
@@ -9516,6 +9684,7 @@ function verifyAxferOffer(offer) {
 // payment-to-maker output at vout[1]) plus an optional taker BTC change output.
 // Broadcasts the result. Returns the broadcast txid.
 async function takeAxferOffer(offer, { onProgress = null } = {}) {
+  await ensurePrivkey();
   // onProgress(stage). Single-broadcast settlement (no commit/reveal pair),
   // so stages map to: 'verify-start' (cryptographic + on-chain verification
   // before touching funds) → 'sign-start' (assembling + signing the
@@ -9661,6 +9830,7 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
 //   • asset UTXO from the offer is still in our holdings (not yet taken)
 //   • we have the local opening so we can build the CXFER
 async function cancelAxferOffer(commitTxid) {
+  await ensurePrivkey();
   const stored = loadOpenOffers().find(o => o.commit_txid === commitTxid);
   if (!stored) throw new Error('offer not found in local storage (already forgotten?)');
   if (!stored.asset_utxo) throw new Error('stored offer is missing asset_utxo metadata');
@@ -9850,6 +10020,7 @@ function _preauthSellerSpendSkeletonTx({ assetOutpoint, sellerPayoutScript, minP
 }
 
 async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onProgress = null }) {
+  await ensurePrivkey();
   // onProgress(stage). Stages, in order:
   //   'commit-start'  — about to broadcast the commit tx
   //   'wait-visible'  — commit broadcast resolved; waiting for chain API to index
@@ -10040,6 +10211,7 @@ async function resumePendingAxintents() {
 }
 
 async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!Number.isInteger(priceSats) || priceSats < 1) {
     throw new Error('price_sats must be a positive integer to reserve');
@@ -10085,6 +10257,7 @@ async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
 }
 
 async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (intent.maker_pubkey !== bytesToHex(wallet.pub)) throw new Error('not your intent');
   if (!claim) throw new Error('no active claim to fulfil');
@@ -10205,6 +10378,7 @@ async function fetchAxferFulfilment({ assetIdHex, intentIdHex }) {
 }
 
 async function takeAxferIntent({ intent, fulfilment, onProgress = null }) {
+  await ensurePrivkey();
   if (!intent || !fulfilment) throw new Error('intent + fulfilment required');
   // Decrypt the recipient blinding the maker shipped at fulfilment. The
   // ciphertext is symmetric ECDH between (maker, taker), so deriving the
@@ -10252,6 +10426,7 @@ async function takeAxferIntent({ intent, fulfilment, onProgress = null }) {
 }
 
 async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const cMsg = _axintentCancelMsg(hexToBytes(assetIdHex), hexToBytes(intentIdHex));
   const sig = signSchnorr(cMsg, wallet.priv);
@@ -10281,6 +10456,7 @@ async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
 // settlement alone.
 
 async function publishPreauthSale({ utxoTxid, utxoVout, minPriceSats, expiry, sellerPayoutScript = null, onProgress = null }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!Number.isInteger(minPriceSats) || minPriceSats < DUST) throw new Error(`min_price_sats must be integer ≥ ${DUST}`);
   const now = Math.floor(Date.now() / 1000);
@@ -10377,6 +10553,7 @@ async function publishPreauthSale({ utxoTxid, utxoVout, minPriceSats, expiry, se
 }
 
 async function cancelPreauthSale({ assetIdHex, saleIdHex }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid asset_id');
   if (!/^[0-9a-f]{32}$/.test(String(saleIdHex || ''))) throw new Error('invalid sale_id');
@@ -10407,6 +10584,7 @@ async function fetchPreauthSale({ assetIdHex, saleIdHex }) {
 // broadcasts the commit tx, waits for visibility, then broadcasts the
 // reveal tx with the seller's pre-signed asset-input witness.
 async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress = null }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   _progress('fetch-start');
@@ -10718,6 +10896,7 @@ function _bidCancelMsg(assetIdBytes, bidIdBytes) {
 // units; expiry is unix-seconds (≤ 30 days from now). Returns the worker's
 // stored intent record.
 async function publishBidIntent({ assetIdHex, amount, priceSats, expiry }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled — bids require worker');
   if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid asset_id');
   const amt = BigInt(amount);
@@ -10769,6 +10948,7 @@ async function browseBidIntents(assetIdHex) {
 
 // Cancel a bid (only the bidder can; cancel_sig is signed under buyer_pubkey).
 async function cancelBidIntent(assetIdHex, bidIdHex) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const assetIdBytes = hexToBytes(assetIdHex);
   const bidIdBytes = hexToBytes(bidIdHex);
@@ -10795,6 +10975,7 @@ async function cancelBidIntent(assetIdHex, bidIdHex) {
 // the atomic intent via publishAxferIntent (which broadcasts the commit tx
 // and registers it on the worker), then signs + POSTs the bid claim.
 async function fulfilBidIntent({ bid, sellerUtxo }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!bid || !bid.bid_id || !bid.asset_id) throw new Error('invalid bid');
   // Auto-pick a UTXO of the right amount if the caller didn't pass one. If no
@@ -10877,6 +11058,7 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
 // is T_MINT and the new UTXO at reveal vout=0 is the issuer's. mint_authority
 // must be the wallet's xonly pubkey (so we can sign).
 async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount, onProgress = null }) {
+  await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   const amt = BigInt(amount);
   if (amt <= 0n || amt >= (1n << BigInt(N_BITS))) {
@@ -10996,6 +11178,7 @@ async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount, onProgr
 // Burned amount is public in the envelope. Kernel sig binds (asset_id, inputs,
 // outputs, burned_amount) and verifies under E' = Σ C_out + burned·H − Σ C_in.
 async function buildAndBroadcastCBurn({ assetIdHex, amount, onProgress = null }) {
+  await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
   const burnAmt = BigInt(amount);
   if (burnAmt <= 0n || burnAmt >= (1n << BigInt(N_BITS))) {
@@ -11261,6 +11444,7 @@ function buildSatsSendTx({ inputs, recipientScript, recipientValue, changeScript
 // Throws on any precondition failure — caller surfaces the message in the UI.
 // Returns { txid, inputsSpent, recipientValue, changeValue, fee, feeRate }.
 async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
+  await ensurePrivkey();
   // (1) Address validation. Strict P2WPKH only. HRP must match current NET.
   const decoded = decodeP2wpkhAddress(recipientAddr);
   if (!decoded) throw new Error('recipient is not a valid P2WPKH bech32 address');
@@ -11383,6 +11567,7 @@ function openingMsg(assetIdBytes, txidHex, vout, amountBigint, blindingBytes, ow
 }
 
 async function publishOpening({ assetIdHex, txidHex, vout, amount, blinding }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled (WORKER_BASE empty)');
   const blindingBytes = bigintToBytes32(blinding);
   const ownerPubBytes = wallet.pub; // 33-byte compressed
@@ -11442,6 +11627,7 @@ function disclosureMsg(assetIdBytes, utxos, thresholdBig, rangeproofBytes, owner
 }
 
 async function proveRangeDisclosure({ assetIdHex, threshold, holding }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled (WORKER_BASE empty)');
   if (!holding?.utxos?.length) throw new Error('no openable UTXOs');
   const K = BigInt(threshold);
@@ -11608,6 +11794,7 @@ function cancelMsgBytes(assetIdBytes, txidHex, vout) {
 }
 
 async function publishListing({ assetIdHex, txidHex, vout, amount, blinding, priceSats, expiry, makerAddress }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled (WORKER_BASE empty)');
   if (!Number.isInteger(priceSats) || priceSats < DUST) throw new Error(`price_sats must be ≥ ${DUST}`);
   if (!Number.isInteger(expiry) || expiry <= Math.floor(Date.now() / 1000)) throw new Error('expiry must be in the future');
@@ -11641,6 +11828,7 @@ async function publishListing({ assetIdHex, txidHex, vout, amount, blinding, pri
 }
 
 async function cancelListing({ assetIdHex, txidHex, vout }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const cMsg = cancelMsgBytes(hexToBytes(assetIdHex), txidHex, vout);
   const sig = signSchnorr(cMsg, wallet.priv);
@@ -11673,6 +11861,7 @@ function claimMsgBytes(assetIdBytes, txidHex, vout, takerPubBytes) {
 }
 
 async function claimListing({ assetIdHex, txidHex, vout }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const takerPubBytes = wallet.pub;
   const cMsg = claimMsgBytes(hexToBytes(assetIdHex), txidHex, vout, takerPubBytes);
@@ -11729,6 +11918,7 @@ function rangeListingClaimMsgBytes(assetIdBytes, makerPubBytes, takerPubBytes) {
 }
 
 async function publishRangeListing({ assetIdHex, holding, availableAmount, priceSats, expiry, makerAddress }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!holding?.utxos?.length) throw new Error('no openable UTXOs');
   if (!Number.isInteger(priceSats) || priceSats < DUST) throw new Error(`price_sats must be ≥ ${DUST}`);
@@ -11773,6 +11963,7 @@ async function publishRangeListing({ assetIdHex, holding, availableAmount, price
 }
 
 async function cancelRangeListing({ assetIdHex }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const ownerPubBytes = wallet.pub;
   const cMsg = rangeListingCancelMsgBytes(hexToBytes(assetIdHex), ownerPubBytes);
@@ -11789,6 +11980,7 @@ async function cancelRangeListing({ assetIdHex }) {
 }
 
 async function claimRangeListing({ assetIdHex, makerPubHex }) {
+  await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const takerPubBytes = wallet.pub;
   const cMsg = rangeListingClaimMsgBytes(hexToBytes(assetIdHex), hexToBytes(makerPubHex), takerPubBytes);
@@ -12388,7 +12580,7 @@ function airdropClaimDeleteMsgBytes(network, rootHex, leafIndex, issuerPubHex, t
 // response; throws on signing failure or HTTP error so the caller can log.
 async function signedAirdropClaimDelete(rootHex, leafIndex, network) {
   if (!WORKER_BASE) throw new Error('signedAirdropClaimDelete: WORKER_BASE not configured');
-  if (!wallet.priv || !wallet.pub) throw new Error('signedAirdropClaimDelete: no active wallet privkey');
+  await ensurePrivkey();
   const issuerPubHex = bytesToHex(wallet.pub);
   const timestamp = Math.floor(Date.now() / 1000);
   const msg = airdropClaimDeleteMsgBytes(network, rootHex, leafIndex, issuerPubHex, timestamp);
@@ -12461,6 +12653,7 @@ function decodeShareLinkHash(hash) {
   } catch { return null; }
 }
 async function importShareLink(linkOrHash) {
+  await ensurePrivkey();
   const hash = linkOrHash.includes('#recv=') ? linkOrHash.slice(linkOrHash.indexOf('#recv=')) : linkOrHash;
   const d = decodeShareLinkHash(hash);
   if (!d) throw new Error('invalid share-link');
@@ -13026,12 +13219,13 @@ function stopHoldingsAutoRefresh() {
   if (_holdingsPollTimer) { clearInterval(_holdingsPollTimer); _holdingsPollTimer = null; }
 }
 
-// ============== MIXER UI (v1 dev preview) ==============
-// Light scaffolding for the Mixer tab. Pool list reads from in-memory
-// poolRegistry / poolMerkleTrees / poolNullifiers, populated by the cron-mode
-// scan path (TODO: wire scanPools into the chain-divergence watchdog cron).
-// Deposit/withdraw broadcast is gated behind the Groth16 verifier swap; until
-// then, the Preview buttons format the wire payload but Broadcast is a no-op.
+// ============== MIXER UI ==============
+// Mixer tab rendering. Pool list reads from in-memory poolRegistry /
+// poolMerkleTrees / poolNullifiers, populated by the cron-mode scan path
+// (TODO: wire scanPools into the chain-divergence watchdog cron). Deposit
+// and withdraw broadcast paths are live — see the T_DEPOSIT pipeline
+// (SPEC §5.10, this file ~L7489) and the T_WITHDRAW pipeline (SPEC §5.11,
+// ~L7742).
 let _mixerWithdrawRecord = null;
 
 // Fetch pool state from the worker's /pools + /pools/:asset_id/:denom
@@ -13601,7 +13795,11 @@ async function renderMixer() {
         // Encode the full record into the option value as a base64 blob so
         // the click handler can hydrate without re-fetching from localStorage.
         const payload = btoa(unescape(encodeURIComponent(JSON.stringify(r))));
-        opts.push(`<option value="${escapeHtml(payload)}">${escapeHtml(label)}</option>`);
+        // Already-withdrawn records are dead-ends — the broadcast guard refuses
+        // them — so disable the <option> instead of letting it hydrate the form
+        // and surface a delayed "already withdrawn" error.
+        const disabledAttr = spent ? ' disabled' : '';
+        opts.push(`<option value="${escapeHtml(payload)}"${disabledAttr}>${escapeHtml(label)}</option>`);
       } catch {}
     }
     savedSel.innerHTML = opts.join('');
@@ -13615,7 +13813,11 @@ async function renderMixer() {
       const reg = JSON.parse(localStorage.getItem(regKey()) || '{}');
       for (const aidHex of Object.keys(reg)) {
         const m = reg[aidHex];
-        opts.push(`<option value="${aidHex}">${m.ticker || aidHex.slice(0, 8)} · ${aidHex.slice(0, 12)}…</option>`);
+        // ticker is from a CETCH/PETCH envelope (attacker-controllable bytes);
+        // escape before injecting into <option> innerHTML to match the other
+        // mixer-tab selectors. aidHex is 64-char hex, safe to interpolate raw.
+        const label = m.ticker || aidHex.slice(0, 8);
+        opts.push(`<option value="${aidHex}">${escapeHtml(label)} · ${aidHex.slice(0, 12)}…</option>`);
       }
     } catch {}
     initAsset.innerHTML = opts.join('');
@@ -13686,6 +13888,11 @@ function setupMixerHandlers() {
         ta.value = JSON.stringify(rec, null, 2);
         ta.dispatchEvent(new Event('input', { bubbles: true }));
       }
+      // Reset the picker so re-selecting the same entry fires `change` again
+      // (browsers skip the event when value is unchanged). Without this, a
+      // user who picked A → edited the textarea → wants to re-pick A is
+      // stuck: the select still shows A but no change event fires.
+      savedSel.value = '';
     });
   }
 
@@ -13804,7 +14011,16 @@ function setupMixerHandlers() {
     wBtn.disabled = !hasRec;
     if (wPreviewBtn) wPreviewBtn.disabled = !hasRec;
   };
-  if (wRecordTa) wRecordTa.addEventListener('input', refreshWDisabled);
+  if (wRecordTa) wRecordTa.addEventListener('input', (e) => {
+    // Real user keystrokes drop the in-memory record so the broadcast/preview
+    // handlers re-parse the textarea — otherwise an edit after picking a
+    // saved deposit / importing a share-link is silently shadowed by the
+    // stale record. Synthetic input events dispatched by the loaders are
+    // untrusted (e.isTrusted === false) and must NOT clear the record they
+    // just set.
+    if (e && e.isTrusted) _mixerWithdrawRecord = null;
+    refreshWDisabled();
+  });
   // Live recipient-pubkey validation — surface ✓/⚠ feedback inline as the
   // user types so they know if a paste went well before clicking Preview.
   const recipEl = document.getElementById('mixer-withdraw-recipient');
@@ -13818,15 +14034,27 @@ function setupMixerHandlers() {
       return;
     }
     if (!/^0[23][0-9a-fA-F]{64}$/.test(v)) {
-      recipStatusEl.textContent = '⚠ Must be a 66-char compressed pubkey hex (starts with 02 or 03).';
+      // Distinguish "pasted a bc1q/tb1q address" from generic bad hex so the
+      // user knows to convert/look up the recipient's pubkey instead.
+      const looksLikeAddr = /^(bc1q|tb1q)/i.test(v);
+      recipStatusEl.textContent = looksLikeAddr
+        ? '⚠ This is a Bitcoin address, not a pubkey. Ask the recipient for their compressed pubkey (02/03… in their Wallet tab).'
+        : '⚠ Must be a 66-char compressed pubkey hex (starts with 02 or 03).';
       recipStatusEl.style.color = '#cc8000';
       return;
     }
     const walletPubHex = bytesToHex(wallet.pub).toLowerCase();
     const isSelf = v.toLowerCase() === walletPubHex;
-    recipStatusEl.textContent = isSelf
-      ? '✓ Valid — matches this wallet (self-mix).'
-      : '✓ Valid — pay-to-other (different wallet, breaks chain-graph link to your deposit).';
+    // Derive the P2WPKH address so the user sees where funds will actually
+    // land. Mirrors the Send-tab pattern. Defensive try/catch — a malformed
+    // pubkey that passed the regex should be impossible, but errors here
+    // mustn't break the live status update.
+    let addrDisp = '';
+    try { addrDisp = p2wpkhAddress(hexToBytes(v.toLowerCase())); } catch {}
+    const tag = isSelf
+      ? '✓ Valid — matches this wallet (self-mix)'
+      : '✓ Valid — pay-to-other (different wallet, breaks chain-graph link to your deposit)';
+    recipStatusEl.textContent = addrDisp ? `${tag} · ${addrDisp}` : `${tag}.`;
     recipStatusEl.style.color = 'var(--green, #0a7d4e)';
   };
   if (recipEl) recipEl.addEventListener('input', _updateRecipStatus);
@@ -13936,13 +14164,18 @@ function setupMixerHandlers() {
       // existent field on the deposit record.
       const _stats = mixerGetPoolStats(rec.assetIdHex, denom);
       const _anonSet = _stats ? _stats.anonymitySet : 0;
+      // Ladder kept in sync with the withdraw-preview + deposit-preview hints
+      // (5 / 30 / 100) so the same pool size produces the same verbal tier
+      // across every mixer surface.
       let _anonWarn;
       if (_anonSet < 5) {
-        _anonWarn = `\n\n⚠ ANONYMITY SET = ${_anonSet}. Your withdraw will hide in a near-singleton crowd — an observer correlating timing to your deposit will likely identify you. Strongly consider waiting until the pool grows.`;
-      } else if (_anonSet < 50) {
-        _anonWarn = `\n\n⚠ Anonymity set = ${_anonSet}. Modest crowd; correlation by determined observers is feasible.`;
+        _anonWarn = `\n\n⚠ Anonymity set = ${_anonSet} — very small. Your withdraw will hide in a near-singleton crowd; an observer correlating timing to your deposit will likely identify you. Strongly consider waiting until the pool grows.`;
+      } else if (_anonSet < 30) {
+        _anonWarn = `\n\n⚠ Anonymity set = ${_anonSet} — okay for casual privacy, but correlation by determined observers is feasible.`;
+      } else if (_anonSet < 100) {
+        _anonWarn = `\n\nAnonymity set = ${_anonSet} unspent leaves — healthy, well-mixed.`;
       } else {
-        _anonWarn = `\n\nAnonymity set = ${_anonSet} unspent leaves.`;
+        _anonWarn = `\n\nAnonymity set = ${_anonSet} unspent leaves — large, strong anonymity.`;
       }
       const _hygiene = isSelfMix
         ? `\n\nPRIVACY: SELF-MIX (recipient = this wallet). BTC fees come from this wallet's sat balance, chain-graph-linkable to the wallet that funded your deposit. To break that link, withdraw to a recipient pubkey from a fresh wallet you funded independently.`
@@ -14439,13 +14672,6 @@ function setupMixerHandlers() {
     CANONICAL_CEREMONY_CID,
     'Locked: canonical Phase 2 ceremony bundle every pool binds to.',
   );
-  const ceLinkEl = document.getElementById('mixer-canonical-ceremony-link');
-  if (ceLinkEl) {
-    // Use ipfs.io for the public link — most reliable open gateway. Auditors
-    // can also fetch via the subdomain form (<CID>.ipfs.dweb.link/) or any
-    // other gateway; ipfs.io is the default we surface.
-    ceLinkEl.href = `https://ipfs.io/ipfs/${CANONICAL_CEREMONY_CID}/`;
-  }
   const initInputs = ['mixer-init-asset', 'mixer-init-denom', 'mixer-init-vk-cid', 'mixer-init-ceremony-cid']
     .map(id => document.getElementById(id));
   const initDenomHintEl = document.getElementById('mixer-init-denom-hint');
@@ -14567,13 +14793,14 @@ function setupMixerHandlers() {
       const totalLeaves = stats ? stats.totalLeaves : 0;
       const spentNulls = stats ? stats.spentNullifiers : 0;
       // Anonymity-set health hint. Tornado-style mixers' privacy scales with
-      // unspent-leaves; below ~5 the set is basically named, ~5–30 is okay
-      // for casual privacy, 30+ is comfortably anonymous. Surface this as
-      // a one-line nudge so the user understands what they're buying.
+      // unspent-leaves. Ladder kept in sync with the withdraw preview + broadcast
+      // confirm (5 / 30 / 100) so the same pool size shows the same verbal tier
+      // across every mixer surface.
       let anonHint;
       if (anonSet < 5) anonHint = '⚠ very small — your deposit will be easy to single out';
-      else if (anonSet < 30) anonHint = 'okay for casual privacy; bigger pools are better';
-      else anonHint = 'healthy — well-mixed';
+      else if (anonSet < 30) anonHint = 'okay for casual privacy';
+      else if (anonSet < 100) anonHint = 'healthy — well-mixed';
+      else anonHint = 'large — strong anonymity';
       // UTXO availability + auto-split heads-up. Synchronous check against
       // the holdings cache; if the cache is stale the deposit-broadcast path
       // refreshes scanHoldings before picking a UTXO anyway.
@@ -14855,11 +15082,18 @@ async function ceremonyFetchAttestations(circuitHash) {
 // per-gateway failure reasons if every gateway fails.
 async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes) {
   const errors = [];
+  // Per-gateway wallclock cap. Without this, a slow/hung gateway can hold
+  // the UI on "Fetching zkey from IPFS (~5 MB)…" indefinitely. 45s fits a
+  // 5 MB zkey at 1 Mbps with margin; faster gateways finish well under it.
+  // Per-gateway (not total) so the outer failover can move on to the next.
+  const PER_GATEWAY_TIMEOUT_MS = 45_000;
   for (const gw of IPFS_GATEWAYS_FALLBACK) {
     const url = `${gw}${cid}`;
+    const _ac = new AbortController();
+    const _timer = setTimeout(() => _ac.abort(), PER_GATEWAY_TIMEOUT_MS);
     try {
       if (onProgress) onProgress(`trying ${gw}…`);
-      const resp = await fetch(url, { cache: 'no-store' });
+      const resp = await fetch(url, { cache: 'no-store', signal: _ac.signal });
       if (!resp.ok) { errors.push(`${gw}: HTTP ${resp.status}`); continue; }
       const ct = resp.headers.get('Content-Type') || '';
       if (/text\/html|application\/xhtml/i.test(ct)) {
@@ -14914,9 +15148,18 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
       // rejecting a perfectly good response.
       const verr = validate ? await validate(bytes, resp.headers) : null;
       if (verr) { errors.push(`${gw}: ${verr}`); continue; }
+      clearTimeout(_timer);
       return bytes;
     } catch (e) {
-      errors.push(`${gw}: ${(e && e.message) || e}`);
+      // Distinguish AbortError (our own timeout) from other failures so the
+      // per-gateway error line tells the user what actually happened.
+      if (_ac.signal.aborted) {
+        errors.push(`${gw}: timed out after ${PER_GATEWAY_TIMEOUT_MS / 1000}s`);
+      } else {
+        errors.push(`${gw}: ${(e && e.message) || e}`);
+      }
+    } finally {
+      clearTimeout(_timer);
     }
   }
   throw new Error(
@@ -15439,7 +15682,7 @@ async function ceremonyRender() {
         `<div style="margin-top:8px;font-size:12px;">${statusMsg}</div>` +
         `<div style="margin-top:6px;line-height:1.8;">${pills}</div>`;
     }
-    stateEl.innerHTML = `<strong>${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'}</strong> · last by <em>${escapeHtml(recent)}</em>${finalBadge}<br>Current transcript: <code style="font-size:11px;">${head}</code><br>Circuit: <code style="font-size:11px;">${state.r1cs_cid}</code> · Powers-of-tau: <code style="font-size:11px;">${state.ptau_cid}</code>${readinessLine}`;
+    stateEl.innerHTML = `<strong>${state.contribution_count} contribution${state.contribution_count === 1 ? '' : 's'}</strong> · last by <em>${escapeHtml(recent)}</em>${finalBadge}<br>Current transcript: <code style="font-size:11px;">${escapeHtml(head)}</code><br>Circuit: <code style="font-size:11px;">${escapeHtml(state.r1cs_cid || '')}</code> · Powers-of-tau: <code style="font-size:11px;">${escapeHtml(state.ptau_cid || '')}</code>${readinessLine}`;
   }
   if (contribBtn) {
     contribBtn.disabled = !!state.finalized;
@@ -16373,7 +16616,9 @@ async function refreshWallet() {
 function setupWalletButtons() {
   $('#btn-refresh').onclick = refreshWallet;
   // Lock: reload. `wallet.priv` is module-memory only, so a reload drops the
-  // unlocked key and the next page load will prompt for the passphrase.
+  // unlocked key. With lazy unlock the next page load shows the wallet card
+  // without prompting; the next sign action triggers the passphrase or
+  // biometric prompt.
   const lockBtn = $('#btn-lock');
   if (lockBtn) lockBtn.onclick = () => location.reload();
   // Generic copy-to-clipboard handler for any element marked with
@@ -16410,6 +16655,12 @@ function setupWalletButtons() {
       }
       return;
     }
+    // Lazy unlock: under the new model wallet.priv may be null until first
+    // sign action. Surface the unlock prompt so the local-mode hex is
+    // recoverable without forcing the user to broadcast a throwaway action
+    // first.
+    try { await ensurePrivkey(); }
+    catch (e) { toast('Export cancelled: ' + (e?.message || e), ''); return; }
     const acked = await _exportKeyModal({
       hex: bytesToHex(wallet.priv),
       allowAck: true,
@@ -16425,17 +16676,28 @@ function setupWalletButtons() {
     // Importing replaces the currently-loaded wallet identity in this network /
     // ext-binding slot. If the user hasn't exported the existing key, those
     // tokens become unrecoverable. Match the symmetric warning used by btn-regen.
-    if (wallet.priv) {
+    // Under lazy unlock, wallet.priv may be null even though a wallet exists;
+    // gate on wallet.pub instead so the warning still fires for returning users
+    // who reload and haven't signed yet this session.
+    if (wallet.pub) {
       if (!confirm('Importing replaces the wallet currently loaded in this slot. If you haven\'t exported the existing key, the tokens it controls will become unrecoverable.\n\nProceed?')) return;
     }
-    const v = prompt('Paste private key (hex, 64 chars):');
-    if (!v) return;
-    try {
+    // DOM modal instead of native prompt(). Chrome/Edge mobile silently
+    // suppress stacked native prompts after the welcome flow; the modal
+    // pattern (mirrors #export-modal) survives that and is keyboard/paste-
+    // friendly on every platform. Defensive fallback to prompt() if the
+    // modal markup is missing (older index.html still in browser cache).
+    const _modal = document.getElementById('import-modal');
+    const _txt = document.getElementById('import-key-text');
+    const _errEl = document.getElementById('import-error');
+    const _okBtn = document.getElementById('import-confirm');
+    const _cancelBtn = document.getElementById('import-cancel');
+    const _doImport = async (v) => {
       await wallet.setPriv(v, wallet.ext?.address || null);
       // Holdings cache is keyed by global wallet state; without explicit
       // invalidation the next 30 seconds of scanHoldings calls would return
       // the previous wallet's holdings, falsely showing tokens this key
-      // doesn't control. Affects any post-import balance-checking flow —
+      // doesn't control. Affects post-import balance-checking flows —
       // Send privately's balance preview, the Drops Verify batch's
       // balance gate, the mixer deposit selector, etc.
       invalidateHoldingsCache();
@@ -16445,8 +16707,40 @@ function setupWalletButtons() {
       // Re-render the Drops tab's active-wallet indicator so users who
       // import while on Drops see the change without a tab re-click.
       try { _renderDropActiveWallet(); } catch {}
+    };
+    if (!_modal || !_txt || !_okBtn || !_cancelBtn) {
+      const v = prompt('Paste private key (hex, 64 chars):');
+      if (!v) return;
+      try { await _doImport(v); } catch (e) { toast('Import failed: ' + e.message, 'error'); }
+      return;
     }
-    catch (e) { toast('Import failed: ' + e.message, 'error'); }
+    _txt.value = '';
+    if (_errEl) _errEl.textContent = '';
+    _modal.style.display = 'flex';
+    // Defer focus so iOS Safari's modal-display animation doesn't eat the
+    // focus event (known quirk: focus() on just-displayed element gets
+    // ignored mid-animation).
+    setTimeout(() => _txt.focus(), 50);
+    await new Promise((resolve) => {
+      const cleanup = () => {
+        _okBtn.onclick = null;
+        _cancelBtn.onclick = null;
+        _modal.style.display = 'none';
+        if (_errEl) _errEl.textContent = '';
+        _txt.value = '';
+        resolve();
+      };
+      _okBtn.onclick = async () => {
+        const v = (_txt.value || '').trim();
+        if (!v) {
+          if (_errEl) _errEl.textContent = 'paste a private key first';
+          return;
+        }
+        try { await _doImport(v); cleanup(); }
+        catch (e) { if (_errEl) _errEl.textContent = 'import failed: ' + e.message; }
+      };
+      _cancelBtn.onclick = cleanup;
+    });
   };
   $('#btn-regen').onclick = async () => {
     if (!confirm('Generate a new wallet? Your old key will be replaced (export it first if you want to keep it).')) return;
@@ -17191,7 +17485,7 @@ function setupPetchForm() {
     // Every early-return below restores the enabled state so the user can retry.
     // Mirrors btn-etch-broadcast's pattern.
     broadcastBtn.disabled = true;
-    let ticker, decimals, cap, lim, imageUri;
+    let ticker, decimals, cap, lim, imageUri, mintStartHeight, mintEndHeight;
     try {
       ticker = tickerInput.value.trim().toUpperCase();
       if (!/^[A-Z0-9]{1,8}$/.test(ticker)) throw new Error('ticker must be 1–8 chars (A–Z, 0–9)');
@@ -17209,6 +17503,19 @@ function setupPetchForm() {
       if (cap % lim !== 0n) throw new Error('cap is not evenly divisible by per-mint amount');
       try { imageUri = validateImageUriForEtch(imageInput.value); }
       catch (e) { throw new Error(`image: ${e.message}`); }
+      // Optional height-window fields (SPEC §5.8). Both blank/0 = open-ended
+      // mint window (default). encodeCPetchPayload re-validates u32 bounds +
+      // start<end; mirroring here means the user sees a clear inline error
+      // instead of a deep encoder throw.
+      const _startRaw = ($('#p-mint-start')?.value || '').trim();
+      const _endRaw = ($('#p-mint-end')?.value || '').trim();
+      mintStartHeight = _startRaw === '' ? 0 : parseInt(_startRaw, 10);
+      mintEndHeight = _endRaw === '' ? 0 : parseInt(_endRaw, 10);
+      if (!Number.isInteger(mintStartHeight) || mintStartHeight < 0 || mintStartHeight > 0xffffffff) throw new Error('mint start height must be a non-negative integer ≤ 2³²−1');
+      if (!Number.isInteger(mintEndHeight) || mintEndHeight < 0 || mintEndHeight > 0xffffffff) throw new Error('mint end height must be a non-negative integer ≤ 2³²−1');
+      if (mintStartHeight !== 0 && mintEndHeight !== 0 && mintEndHeight <= mintStartHeight) {
+        throw new Error('mint end height must be greater than mint start height (or leave end blank for open-ended)');
+      }
     } catch (e) {
       errEl.textContent = e.message;
       broadcastBtn.disabled = false;
@@ -17231,6 +17538,7 @@ function setupPetchForm() {
     try {
       const r = await buildAndBroadcastPetch({
         ticker, decimals, capAmount: cap, mintLimit: lim, imageUri,
+        mintStartHeight, mintEndHeight,
         onProgress: (stage) => {
           if (stage === 'commit-start') setProgressStrip('petch-progress', 1);
           else if (stage === 'reveal-start') setProgressStrip('petch-progress', 2);
@@ -18498,6 +18806,8 @@ const _DROP_DEFAULT_TTL_DAYS = 90;
 async function _publishDropAnnouncement(d) {
   if (!WORKER_BASE) { toast('Worker not configured', 'error'); return; }
   if (!d.snapshot_cid) { toast('Pin the snapshot to IPFS first', 'error'); return; }
+  try { await ensurePrivkey(); }
+  catch (e) { toast(`unlock cancelled: ${e?.message || e}`, ''); return; }
   // Foot-gun guard: the announcement's issuer_pubkey IS what recipients see
   // as the "treasury" they tip to (treasuryAddressForRoot derives it). If
   // the user publishes from their main wallet (large TAC balance) instead
@@ -18617,6 +18927,8 @@ async function _publishDropAnnouncement(d) {
 async function _unpublishDropAnnouncement(d) {
   if (!WORKER_BASE) { toast('Worker not configured', 'error'); return; }
   if (!confirm(`Remove "${d.asset_ticker}" from discovery?\n\nRecipients who already saved the (root, CID) can still claim manually. This only hides the announcement from the Claim tab's eligible-drops list.`)) return;
+  try { await ensurePrivkey(); }
+  catch (e) { toast(`unlock cancelled: ${e?.message || e}`, ''); return; }
   const issuerPub = wallet.pub;
   const issuerXOnly = issuerPub.slice(1);
   const network = d.network || NET.name;
@@ -18733,7 +19045,9 @@ function _refreshDropSaveButtonState() {
 // broadcast. The active wallet must hold the TAC supply (typically the main
 // wallet at this point in the flow — BEFORE switching to the treasury).
 async function _fundTreasuryWithTAC(d) {
-  if (!wallet.priv || !wallet.pub) { toast('unlock your wallet first', 'error'); return; }
+  try { await ensurePrivkey(); }
+  catch (e) { toast(`unlock cancelled: ${e?.message || e}`, ''); return; }
+  if (!wallet.pub) { toast('unlock your wallet first', 'error'); return; }
   let holdings;
   try { holdings = await scanHoldings(); }
   catch (e) { toast('holdings scan failed: ' + e.message, 'error'); return; }
@@ -19951,6 +20265,10 @@ function _closeDropCrossCheck() {
 async function _runDropCrossCheck() {
   const drop = _dropCrossCheckCurrent;
   if (!drop) return;
+  // Cross-check derives a per-entry ECDH blinding from wallet.priv to verify
+  // commitment equality. Unlock now so the loop below doesn't have to bail
+  // mid-batch if the user reloads into the cross-check view.
+  await ensurePrivkey();
   const fulfilled = drop.fulfilled || [];
   const progress = $('#drop-crosscheck-progress');
   const out = $('#drop-crosscheck-results');
@@ -21123,7 +21441,11 @@ function setupDropsForm() {
       if (prev) sel.value = prev;
     }).catch(() => { /* network may be flaky; user retries */ });
   };
-  _refreshOndropAssetSelect();
+  // Don't refresh at setup time — that would call scanHoldings(), trigger
+  // ensurePrivkey(), and surface the unlock prompt on every page boot
+  // (setupDropsForm runs unconditionally in init). The focus listener wired
+  // below handles initial population the moment the user actually touches
+  // the select, which is the intent of lazy unlock.
 
   $('#btn-ondrop-broadcast')?.addEventListener('click', async () => {
     const btn = $('#btn-ondrop-broadcast');
@@ -22286,12 +22608,33 @@ function _renderClaimResult() {
   const submitBlurb = WORKER_BASE
     ? `Submit to the issuer's queue with one click, OR copy the line below and send through whatever channel the issuer specified. Submission to the queue is dumb storage — the issuer's dapp re-verifies before broadcasting.`
     : `Worker is disabled in this dapp build, so manual hand-off is the only option. Copy the line below and send through whatever channel the issuer specified.`;
+  // Header copy depends on whether the user has already submitted. Three
+  // distinct states reach this branch:
+  //   • Just signed (no record yet) → guide them to tip
+  //   • Submitted with a tip → they're done; reassure clearly so they don't
+  //     keep poking at the "Looks stuck?" disclosure below
+  //   • Submitted without a tip (free claim) → fulfilment is best-effort;
+  //     tipping below is still useful as a guarantee
+  const _existingSub = _loadClaimSubs()[`${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`];
+  const _hasTip = !!_existingSub?.funding_txid;
+  const _hasSubmitted = !!_existingSub?.submitted_at;
+  const headerBlock = (_hasSubmitted && _hasTip)
+    ? `<div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+         <strong>✓ Submitted with tip</strong>
+         <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">You're done — nothing else needed on your end. Your tacit wallet will auto-credit when the issuer's batch broadcasts (typical wait 10–30 min from tip confirmation). Live status below.</div>
+       </div>`
+    : (_hasSubmitted && !_hasTip)
+      ? `<div class="warn" style="border-left-color:var(--orange);background:var(--bg-warm);">
+           <strong>✓ Submitted · no tip yet</strong>
+           <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">The issuer's daemon will only fulfil this claim if their treasury is in subsidy mode. Add a tip below to guarantee fulfilment in the next batch.</div>
+         </div>`
+      : `<div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
+           <strong>✓ Signed</strong>
+           <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">To finish your claim, tip the issuer's treasury below. The tip pays for the Bitcoin tx that delivers your ${escapeHtml(ticker)} — without it, your claim sits in the queue indefinitely.</div>
+         </div>`;
   out.style.display = 'block';
   out.innerHTML = `
-    <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
-      <strong>✓ Signed</strong>
-      <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">To finish your claim, tip the issuer's treasury below. The tip pays for the Bitcoin tx that delivers your ${escapeHtml(ticker)} — without it, your claim sits in the queue indefinitely.</div>
-    </div>
+    ${headerBlock}
     <div id="claim-treasury-fund" style="margin-top:10px;"></div>
     <details style="margin-top:10px;">
       <summary class="muted" style="cursor:pointer;font-size:11px;">Don't have Bitcoin right now? Or want to hand-deliver the claim?</summary>
@@ -22431,13 +22774,13 @@ async function _renderClaimTreasuryFundPanel() {
     const tipTxShort = existing.funding_txid ? shorten(existing.funding_txid, 14) : null;
     out.innerHTML = `
       <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
-        <strong>✓ Tip + claim submitted.</strong> Tracking live below — the issuer's daemon batches every ~10 min.
-        ${tipTxShort ? `<div class="muted" style="font-family:var(--mono);font-size:11px;margin-top:4px;">tip tx <code>${escapeHtml(tipTxShort)}</code></div>` : ''}
+        <strong>✓ Tip + claim submitted.</strong> Nothing else to do — your tacit wallet will auto-credit when the issuer's batch broadcasts. The daemon batches every ~10 min; typical wait is 10–30 min from tip confirmation.
+        ${tipTxShort ? `<div class="muted" style="font-family:var(--mono);font-size:11px;margin-top:4px;">tip tx <a href="${escapeHtml(NET.explorer)}/tx/${escapeHtml(existing.funding_txid)}" target="_blank" rel="noopener noreferrer" title="Verify your tip on a block explorer">${escapeHtml(tipTxShort)} ↗</a></div>` : ''}
         <div id="claim-treasury-fund-status" class="muted" style="font-size:11px;margin-top:8px;"></div>
         <details style="margin-top:10px;">
-          <summary class="muted" style="cursor:pointer;font-size:11px;">Looks stuck? Force-resubmit with a fresh tip</summary>
+          <summary class="muted" style="cursor:pointer;font-size:11px;">Pending past ~1h? Diagnostics + re-tip option</summary>
           <div style="padding:8px;margin-top:6px;background:var(--bg);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;">
-            Only re-tip if your first tip has been confirmed for 30+ min AND the live tracker still shows "awaiting daemon." Re-tipping spends another batch share — your first tip stays in the treasury and won't refund.
+            Before re-tipping, sanity-check: (1) verify your tip's funding tx is confirmed and paid the treasury (look it up on mempool.space); (2) confirm the live tracker above still shows "queued for next batch," not "dequeued"; (3) wait at least 60 min from tip confirmation — the daemon can pause briefly when the treasury dips below its subsidy threshold or when a batch slot is waiting to fill. Re-tip only after all three; it costs another batch share. <strong>Your prior tip stays in the treasury (won't refund) — it becomes surplus that funds free claims for the next recipients in this drop, so it's not wasted.</strong>
             <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
               <button id="btn-claim-treasury-retip" type="button">Re-tip with fresh tx</button>
               <button id="btn-claim-treasury-copy" type="button">Copy treasury</button>
@@ -22481,7 +22824,11 @@ async function _renderClaimTreasuryFundPanel() {
       }
       _claimFundingTxid = null;
       _stopClaimReactivePoller();
-      _renderClaimTreasuryFundPanel().catch(() => {});
+      // Refresh the OUTER container so the state-aware header reflects the
+      // wiped funding_txid (header switches from "✓ Submitted with tip" back
+      // to "✓ Submitted · no tip yet" since `_hasTip` is now false).
+      // _renderClaimResult internally re-renders the treasury fund panel.
+      _renderClaimResult();
     });
     return;
   }
@@ -22536,6 +22883,24 @@ async function _renderClaimTreasuryFundPanel() {
     } catch { /* network blip; fall back to ext-wallet flow */ }
   }
   const tacitCanPay = tacitSpendableSats >= shareSats + 1000;
+  // Pre-flight external-wallet affordability. Only relevant when the tip would
+  // route through the connected ext wallet (i.e., tacit can't cover it).
+  // Skipped otherwise to save an unnecessary getUtxos call. A null result
+  // (network blip, malformed address, etc.) is treated as "unknown" — we
+  // don't block the user, just fall back to today's behavior where the real
+  // error surfaces at broadcast time. Headroom is 2000 sats: ext wallets pick
+  // their own fee rate (often higher priority than ours), so we leave a wider
+  // pad than the 1000 sat one used for the in-browser tacit wallet.
+  const EXT_FEE_HEADROOM = 2000;
+  let extSpendableSats = null;
+  if (extConnected && wallet.ext.address && !tacitCanPay) {
+    try {
+      const extUtxos = await getUtxos(wallet.ext.address);
+      extSpendableSats = extUtxos.reduce((s, u) => s + (u.value || 0), 0);
+    } catch { /* unknown balance — fall through */ }
+  }
+  const extKnownShort = extSpendableSats != null && extSpendableSats < shareSats + EXT_FEE_HEADROOM;
+  const extShortBy = extKnownShort ? (shareSats + EXT_FEE_HEADROOM) - extSpendableSats : 0;
   // Primary-button label cascade:
   //   1. free claim possible (treasury fully funded) — handled in the
   //      button-row template below
@@ -22548,7 +22913,19 @@ async function _renderClaimTreasuryFundPanel() {
     : extConnected
       ? `Tip ${shareSats.toLocaleString()} sats via ${escapeHtml(wallet.ext.provider || 'BTC wallet')}`
       : `Connect Bitcoin wallet to tip & claim`;
+  // Advisory banner: connected ext wallet doesn't have enough plain sats to
+  // cover the tip + a typical fee. Doesn't disable the button — balance can
+  // be stale (recent receive not indexed yet) and the broadcast attempt will
+  // surface the authoritative error if the wallet refuses. Reduces the rate
+  // at which users click Tip → wallet popup → cryptic provider error.
+  const insufficientExtBanner = extKnownShort
+    ? `<div class="warn" style="border-left-color:var(--orange);background:#fff8ec;margin-bottom:8px;font-size:11px;line-height:1.5;">
+         <strong>⚠ Connected ${escapeHtml(wallet.ext.provider || 'wallet')} looks short.</strong>
+         Balance: <strong>${extSpendableSats.toLocaleString()}</strong> sats · needed: ~<strong>${(shareSats + EXT_FEE_HEADROOM).toLocaleString()}</strong> sats (tip + ~${EXT_FEE_HEADROOM.toLocaleString()} sat fee headroom). Top up by ~${extShortBy.toLocaleString()} sats then ↻ Refresh — or click Tip anyway if you think this balance is stale.
+       </div>`
+    : '';
   out.innerHTML = `
+    ${insufficientExtBanner}
     <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
       ${freeClaimsLikely
         ? `<strong>🎁 Treasury well-funded — you may be able to claim free</strong>
@@ -22607,7 +22984,7 @@ async function _renderClaimTreasuryFundPanel() {
       const existingSub = _loadClaimSubs()[`${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`];
       if (existingSub) {
         if (status) status.innerHTML = `<span style="color:var(--orange);">Claim already submitted for this drop — no second submission needed. Watch the live tracker below.</span>`;
-        _renderClaimTreasuryFundPanel().catch(() => {});
+        _renderClaimResult();
         return;
       }
     }
@@ -22634,7 +23011,12 @@ async function _renderClaimTreasuryFundPanel() {
         tacit_pub: _claimSigned.tacitPubHex,
       });
       _renderClaimSubmissions();
-      if (status) status.innerHTML = `<span style="color:var(--green);">✓ Free claim submitted. Tracking live below — the issuer's daemon will fulfil if their treasury is in subsidy mode. If still pending after a few hours, click "Tip anyway" to guarantee.</span>`;
+      // Refresh the outer container so the state-aware header reflects the
+      // new "✓ Submitted · no tip yet" state instead of the stale "✓ Signed /
+      // tip the treasury below" copy. _renderClaimResult re-mounts the inner
+      // treasury panel + status element; the poller below re-binds to the
+      // fresh element on its first tick.
+      _renderClaimResult();
       toast('Free claim submitted', 'success');
       _startClaimReactivePoller({
         fundingTxid: null,
@@ -22664,12 +23046,12 @@ async function _renderClaimTreasuryFundPanel() {
       const existingSub = _loadClaimSubs()[`${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`];
       if (existingSub?.verified_at) {
         if (status) status.innerHTML = `<span style="color:var(--green);">✓ This drop is already claimed — your tokens are in your tacit wallet (Holdings tab). No second tip needed.</span>`;
-        _renderClaimTreasuryFundPanel().catch(() => {});
+        _renderClaimResult();
         return;
       }
       if (existingSub?.funding_txid) {
         if (status) status.innerHTML = `<span style="color:var(--orange);">You already tipped (tx <code>${escapeHtml(shorten(existingSub.funding_txid, 14))}</code>) and the claim is bound. To force a fresh tip while the prior one is in flight, use the "Force-resubmit" disclosure on the panel — a bare click here is suppressed to avoid wasted sats.</span>`;
-        _renderClaimTreasuryFundPanel().catch(() => {});
+        _renderClaimResult();
         return;
       }
     }
@@ -22785,12 +23167,14 @@ async function _renderClaimTreasuryFundPanel() {
           _renderClaimSubmissions();
           if (status) status.innerHTML = `<span style="color:var(--green);">✓ Tipped + claim bound to txid <code>${escapeHtml(shorten(fundingTxid, 14))}</code>. The issuer's daemon will fulfil this seat in the next batch.</span>`;
           toast('Claim funded and bound', 'success');
-          // Re-render the fund panel so the already-submitted guard branches
-          // to the "tipped + tracking" view (hides the tip button, surfaces
-          // the live tracker). Without this re-render, the `finally` block
-          // below re-enables the original tip button — a user could click
-          // again and broadcast another wasted tip.
-          _renderClaimTreasuryFundPanel().catch(() => {});
+          // Re-render the OUTER container so both the state-aware header
+          // ("✓ Submitted with tip" instead of stale "✓ Signed / tip below")
+          // AND the inner fund panel (now in the "tipped + tracking" view —
+          // hides the tip button, surfaces the live tracker) update in one
+          // shot. Without this, the `finally` block below re-enables the
+          // original tip button while the header still says "tip the
+          // treasury" — confusing and could lead to a wasted re-tip click.
+          _renderClaimResult();
         } catch (e) {
           if (status) status.innerHTML = `<span style="color:var(--orange);">Tip landed but binding-submit failed: ${escapeHtml(e.message)}. Manually re-submit via "Submit to issuer queue" — the dapp will include funding_txid automatically.</span>`;
         }
@@ -22831,6 +23215,16 @@ async function _renderClaimTreasuryFundPanel() {
 // is 30s for the first 2 min, then 60s; total runtime capped at 1h.
 let _claimReactivePollerTimer = null;
 let _claimReactivePollerKey = null;
+// Queue-health snapshot for the live tracker. Populated by
+// _pollClaimSubmissionsStatus (which already fetches /claims per pending
+// root each tick — we just compute two extra stats from the same response).
+// Read by the poller tick to render "queue · N in queue · K ahead of you ·
+// oldest Xm ago" — gives the recipient real signal about whether the daemon
+// is alive and whether their wait is normal-for-backlog vs daemon-stuck.
+// Keyed by merkle_root. Entries hold { depth, sortedLeaves, oldestSubmitted
+// (unix seconds), fetchedAt (ms) }; cache is short-lived (~5 min) so a
+// paused poller doesn't show stale numbers.
+const _claimQueueHealthByRoot = new Map();
 function _stopClaimReactivePoller() {
   if (_claimReactivePollerTimer) {
     clearTimeout(_claimReactivePollerTimer);
@@ -22848,8 +23242,14 @@ async function _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, t
   let funderBlock = null;
   const tName = ticker || 'tokens';
 
-  const fmtSince = () => {
-    const s = Math.floor((Date.now() - startMs) / 1000);
+  // Caller passes a reference ms-since-epoch (typically `claim.submitted_at *
+  // 1000` from the durable localStorage record). Falls back to the in-memory
+  // `startMs` for the brief window between submit and `_recordClaimSubmission`
+  // completing. Using the durable timestamp means "Submitted 4h ago" survives
+  // page reloads instead of resetting to "Submitted 0s ago" each render.
+  const fmtSince = (atMs) => {
+    const refMs = (Number.isFinite(atMs) && atMs > 0) ? atMs : startMs;
+    const s = Math.max(0, Math.floor((Date.now() - refMs) / 1000));
     if (s < 60) return `${s}s ago`;
     if (s < 3600) return `${Math.floor(s / 60)}m ago`;
     return `${Math.floor(s / 3600)}h ago`;
@@ -22905,16 +23305,67 @@ async function _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, t
           funderBlock = tx.status.block_height;
         }
       } catch { /* mempool API blip — keep checking */ }
+      const submittedAtMs = claim?.submitted_at ? claim.submitted_at * 1000 : startMs;
+      const blockLink = funderBlock
+        ? ` in block <a href="${escapeHtml(NET.explorer)}/block/${funderBlock}" target="_blank" rel="noopener noreferrer" title="View confirmation block on explorer" style="color:inherit;">${funderBlock} ↗</a>`
+        : '';
       header = funderConfirmed
-        ? `<span style="color:var(--green);">✓ Tip confirmed${funderBlock ? ` in block ${funderBlock}` : ''} · queued for the issuer's next batch (~10 min cycles).</span>`
-        : `<span class="muted">⏳ Tip in mempool (broadcast ${fmtSince()}) · waiting for 1 Bitcoin confirmation (blocks land ~10 min apart).</span>`;
+        ? `<span style="color:var(--green);">✓ Tip confirmed${blockLink} · queued for the issuer's next batch (~10 min cycles).</span>`
+        : `<span class="muted">⏳ Tip in mempool (broadcast ${fmtSince(submittedAtMs)}) · waiting for 1 Bitcoin confirmation (blocks land ~10 min apart).</span>`;
     } else if (funderConfirmed) {
-      header = `<span style="color:var(--green);">✓ Tip confirmed · queued for the issuer's next batch (~10 min cycles). Submitted ${fmtSince()}.</span>`;
+      const submittedAtMs = claim?.submitted_at ? claim.submitted_at * 1000 : startMs;
+      header = `<span style="color:var(--green);">✓ Tip confirmed · queued for the issuer's next batch (~10 min cycles). Submitted ${fmtSince(submittedAtMs)}.</span>`;
     } else {
       // Free-claim path — no tip to confirm; just wait on the daemon.
-      header = `<span class="muted">⏳ Awaiting the issuer's daemon (~10 min batch cycles). Submitted ${fmtSince()}.</span>`;
+      const submittedAtMs = claim?.submitted_at ? claim.submitted_at * 1000 : startMs;
+      header = `<span class="muted">⏳ Awaiting the issuer's daemon (~10 min batch cycles). Submitted ${fmtSince(submittedAtMs)}.</span>`;
     }
-    status.innerHTML = header + liveBadge;
+    // Stale-wait advisory. The default "queued for next batch (~10 min cycles)"
+    // copy reads the same at 5 min and 5 hours — users asking "should I re-tip?"
+    // get no escalation signal. After 45 min from `claim.submitted_at` (durable
+    // across reloads, unlike the in-memory startMs that fmtSince uses), surface
+    // a hint pointing to the Force-resubmit disclosure with the diagnostic
+    // checklist. 45 min covers a worst-case-normal: 1 Bitcoin block (~10 min)
+    // + 1-2 daemon cycles (~20 min) + slack. Past that, the most common cause
+    // is operator-side (treasury below subsidy threshold, daemon paused, batch
+    // slot waiting to fill at low volume) and the recipient's escape hatch is
+    // the existing Re-tip flow — gated on verifying the prior tip is actually
+    // in the treasury via a block explorer (the prior tip won't refund).
+    // Queue-health hint: position in queue + depth + age of oldest. Reads
+    // from the cache populated by _pollClaimSubmissionsStatus (called at the
+    // bottom of this tick, so on the first tick the cache is empty and the
+    // hint stays hidden until the next 30-60s tick). 5-min freshness cap
+    // guards against showing wildly stale numbers if the poller stalled.
+    let queueHint = '';
+    const qh = _claimQueueHealthByRoot.get(merkleRoot);
+    const QH_FRESH_MS = 5 * 60 * 1000;
+    if (qh && funderConfirmed && !claim?.dequeued_at && (Date.now() - qh.fetchedAt) < QH_FRESH_MS && qh.depth > 0) {
+      const ahead = qh.sortedLeaves.indexOf(leafIndex);
+      const nowSec = Math.floor(Date.now() / 1000);
+      const oldestAgeSec = Math.max(0, nowSec - qh.oldestSubmitted);
+      const fmtAge = (s) => s >= 3600 ? `${Math.floor(s / 3600)}h` : (s >= 60 ? `${Math.floor(s / 60)}m` : `${s}s`);
+      const parts = [`<strong>${qh.depth}</strong> in queue`];
+      if (ahead === 0) parts.push(`you're next`);
+      else if (ahead > 0) parts.push(`${ahead} ahead of you`);
+      if (oldestAgeSec >= 60) parts.push(`oldest ${fmtAge(oldestAgeSec)} ago`);
+      queueHint = `<div class="muted" style="font-size:10px;margin-top:4px;color:var(--ink-mid);">queue · ${parts.join(' · ')}</div>`;
+    }
+
+    let staleHint = '';
+    const submittedMs = claim?.submitted_at ? claim.submitted_at * 1000 : null;
+    const dequeuedYet = !!claim?.dequeued_at;
+    if (submittedMs && !dequeuedYet) {
+      const waitMs = Date.now() - submittedMs;
+      const STALE_MS = 45 * 60 * 1000;
+      if (waitMs > STALE_MS && (funderConfirmed || !fundingTxid)) {
+        const waitMin = Math.floor(waitMs / 60_000);
+        const noTipNote = fundingTxid
+          ? `If the wait passes ~1h, expand the diagnostics disclosure below — but verify your prior tip landed in the treasury on a block explorer first; the prior tip won't refund (it becomes surplus that funds free claims for future recipients in this drop).`
+          : `This claim was submitted without a tip — the issuer's daemon will only fulfil it if their treasury is in subsidy mode. After ~1h with no fulfilment, consider adding a tip via the panel.`;
+        staleHint = `<div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;color:var(--ink-mid);">⏳ Queued <strong>${waitMin}m</strong> — past the typical 10–30 min cycle. Common causes: treasury fell below subsidy threshold mid-batch, daemon paused, or batch slot waiting to fill. ${noTipNote}</div>`;
+      }
+    }
+    status.innerHTML = header + queueHint + staleHint + liveBadge;
 
     // Heavier check runs every tick — refreshes dequeued/verified on the
     // entry, so the next tick will pick up the new state without a refresh.
@@ -23367,7 +23818,27 @@ async function _pollClaimSubmissionsStatus() {
       const r = await fetch(url);
       if (r.ok) {
         const j = await r.json();
-        queued = new Set((Array.isArray(j.claims) ? j.claims : []).map(x => Number(x.leaf_index)));
+        const claimsList = Array.isArray(j.claims) ? j.claims : [];
+        queued = new Set(claimsList.map(x => Number(x.leaf_index)));
+        // Populate queue-health cache. The daemon processes leaves in
+        // ascending order (KV list iteration matches the padded suffix on
+        // the claim key), so the position-from-front of the user's leaf
+        // within `sortedLeaves` is an honest "claims ahead of you" count.
+        const sortedLeaves = claimsList
+          .map(x => Number(x.leaf_index))
+          .filter(Number.isInteger)
+          .sort((a, b) => a - b);
+        const nowSec = Math.floor(Date.now() / 1000);
+        const oldestSubmitted = claimsList.reduce((mn, x) => {
+          const t = Number(x.submitted_at);
+          return Number.isFinite(t) ? Math.min(mn, t) : mn;
+        }, nowSec);
+        _claimQueueHealthByRoot.set(root, {
+          depth: claimsList.length,
+          sortedLeaves,
+          oldestSubmitted,
+          fetchedAt: Date.now(),
+        });
       }
     } catch { /* network blip — try again next tick */ }
     for (const c of claims) {
@@ -23629,6 +24100,44 @@ async function _claimRefreshDiscover() {
         });
     }
   }
+  // Queue-health probe per drop. Populates the shared _claimQueueHealthByRoot
+  // cache so the discover-list render can surface a "backlogged · oldest Xh"
+  // badge when a drop's queue is clearly stale (daemon paused, treasury short,
+  // etc.) — gives a recipient *about to claim* an honest expectation before
+  // they tip. Skipped when the cache already has fresh (<90s) data from
+  // another path (the live-tracker poller writes to the same cache for the
+  // user's own active claims).
+  if (WORKER_BASE) {
+    for (const d of _claimDiscoverDrops) {
+      if (!/^[0-9a-f]{64}$/.test(d.merkle_root || '')) continue;
+      const cached = _claimQueueHealthByRoot.get(d.merkle_root);
+      if (cached && (Date.now() - cached.fetchedAt) < 90_000) continue;
+      const dropNet = d.network || NET.name;
+      fetch(`${WORKER_BASE}/airdrops/${d.merkle_root}/claims?network=${encodeURIComponent(dropNet)}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(j => {
+          if (!j) return;
+          const claimsList = Array.isArray(j.claims) ? j.claims : [];
+          const sortedLeaves = claimsList
+            .map(x => Number(x.leaf_index))
+            .filter(Number.isInteger)
+            .sort((a, b) => a - b);
+          const nowSec = Math.floor(Date.now() / 1000);
+          const oldestSubmitted = claimsList.reduce((mn, x) => {
+            const t = Number(x.submitted_at);
+            return Number.isFinite(t) ? Math.min(mn, t) : mn;
+          }, nowSec);
+          _claimQueueHealthByRoot.set(d.merkle_root, {
+            depth: claimsList.length,
+            sortedLeaves,
+            oldestSubmitted,
+            fetchedAt: Date.now(),
+          });
+          _renderClaimDiscoverList();
+        })
+        .catch(() => { /* network blip — try again next refresh */ });
+    }
+  }
   _renderClaimDiscoverList();
 }
 
@@ -23742,11 +24251,26 @@ function _renderClaimDiscoverList() {
       snapshotState = 'loaded';
       if (_claimEthAddr) eligibleRow = snap.rows.find(r => r.ethAddrHex === _claimEthAddr) || null;
     }
-    return { d, snap, eligibleRow, snapshotState };
+    // Local submission state (network-scoped via _loadClaimSubs). When set, the
+    // discover card surfaces "✓ submitted / tipped" instead of a fresh
+    // "Claim →" CTA, so a user landing back on the tab doesn't burn another
+    // signature on a drop they already signed for. Wizard re-entry still works
+    // — it has its own terminal-state branch at `_renderClaimTreasuryFundPanel`
+    // that surfaces the live tracker / re-tip path.
+    let subState = null;
+    if (eligibleRow) {
+      const sub = submitted[`${d.merkle_root}:${eligibleRow.index}`];
+      if (sub) {
+        subState = sub.verified_at ? 'verified'
+                 : sub.dequeued_at ? 'dequeued'
+                 : sub.funding_txid ? 'tipped'
+                 : 'submitted';
+      }
+    }
+    return { d, snap, eligibleRow, snapshotState, subState };
   }).filter(r => {
     if (!r.eligibleRow) return true;
-    const sub = submitted[`${r.d.merkle_root}:${r.eligibleRow.index}`];
-    if (sub && sub.verified_at) { hiddenClaimedCount++; return false; }
+    if (r.subState === 'verified') { hiddenClaimedCount++; return false; }
     return true;
   });
   rendered.sort((a, b) => {
@@ -23798,7 +24322,7 @@ function _renderClaimDiscoverList() {
         ? `<div class="muted" style="font-size:11px;margin-bottom:10px;font-style:italic;">Connect an Ethereum wallet above to check eligibility against ${rendered.length} announced drop${rendered.length === 1 ? '' : 's'}.</div>`
         : '');
 
-  list.innerHTML = summaryRow + rendered.map(({ d, snap, eligibleRow, snapshotState }) => {
+  list.innerHTML = summaryRow + rendered.map(({ d, snap, eligibleRow, snapshotState, subState }) => {
     const meta = getAssetMeta(d.asset_id);
     // Prefer the snapshot's own ticker/decimals over the local meta when the
     // snapshot has loaded. The signed claim message binds to the snapshot's
@@ -23845,6 +24369,25 @@ function _renderClaimDiscoverList() {
       : provenance === 'self_announced'
         ? `<span class="status-pill" style="background:var(--bg-warm);color:var(--orange);border-color:var(--orange);font-size:9px;">⚠ self-announced</span>`
         : '';
+    // Queue-health badge. Shows when the drop's oldest queued claim is > 2h
+    // old — strong signal the fulfiller daemon is paused/stuck (typical batch
+    // cycle is ~10 min, so 2h+ without dequeues means something's off
+    // operator-side). Gives recipients ABOUT to tip an honest expectation
+    // before they commit sats. Data comes from _claimQueueHealthByRoot,
+    // populated by the per-drop /claims probe at the bottom of
+    // _claimRefreshDiscover. Skipped when the cache is empty (no data yet)
+    // or stale (>10 min — discover refresh has paused).
+    let backlogBadge = '';
+    const _qh = _claimQueueHealthByRoot.get(d.merkle_root);
+    if (_qh && _qh.depth > 0 && (Date.now() - _qh.fetchedAt) < 10 * 60 * 1000) {
+      const _oldestAgeSec = Math.max(0, Math.floor(Date.now() / 1000) - _qh.oldestSubmitted);
+      if (_oldestAgeSec > 2 * 3600) {
+        const _ageStr = _oldestAgeSec >= 3600
+          ? `${Math.floor(_oldestAgeSec / 3600)}h`
+          : `${Math.floor(_oldestAgeSec / 60)}m`;
+        backlogBadge = `<span class="status-pill" style="background:#fff8ec;color:var(--orange);border-color:var(--orange);font-size:9px;" title="The fulfiller daemon hasn't broadcast a batch in a while — your claim may queue for longer than the typical 10–30 min. Check with the issuer if you've already tipped and it persists past 1h.">⏳ backlogged · oldest ${_ageStr}</span>`;
+      }
+    }
     let amountLine = '';
     let actionLine = '';
     if (snapshotState === 'fetching') {
@@ -23862,6 +24405,24 @@ function _renderClaimDiscoverList() {
     } else if (!eligibleRow) {
       amountLine = `<div class="muted" style="font-size:11px;">not eligible (your address not in this drop)</div>`;
       actionLine = `<button disabled style="font-size:11px;">not eligible</button>`;
+    } else if (subState === 'tipped') {
+      // Already submitted with a tip — wizard's terminal-state branch renders
+      // the live fulfilment tracker. Re-entering is safe; signing isn't needed.
+      amountLine = `<div style="font-size:13px;color:var(--green);"><strong>✓ ${escapeHtml(fmtAssetAmountPlain(eligibleRow.amount, decimals))} ${escapeHtml(ticker)}</strong> <span class="muted">· tipped · awaiting issuer</span></div>`;
+      actionLine = `<button data-act="claim-discover-pick" data-root="${escapeHtml(d.merkle_root)}" data-cid="${escapeHtml(d.ipfs_cid)}" style="font-size:11px;">Track →</button>`;
+    } else if (subState === 'dequeued') {
+      // Worker queue no longer lists this leaf, but on-chain credit hasn't been
+      // observed yet. Could be a fresh fulfilment whose holdings scan is
+      // catching up, or a DELETE-wipe. Either way: the wizard's terminal-state
+      // branch surfaces re-tip + diagnostics.
+      amountLine = `<div style="font-size:13px;color:var(--orange);"><strong>${escapeHtml(fmtAssetAmountPlain(eligibleRow.amount, decimals))} ${escapeHtml(ticker)}</strong> <span class="muted">· no longer queued · check status</span></div>`;
+      actionLine = `<button data-act="claim-discover-pick" data-root="${escapeHtml(d.merkle_root)}" data-cid="${escapeHtml(d.ipfs_cid)}" style="font-size:11px;">View status →</button>`;
+    } else if (subState === 'submitted') {
+      // Submitted without a tip — wizard's normal panel still shows the "tip
+      // anyway" CTA so the recipient can fund their existing claim instead of
+      // re-signing.
+      amountLine = `<div style="font-size:13px;color:var(--orange);"><strong>${escapeHtml(fmtAssetAmountPlain(eligibleRow.amount, decimals))} ${escapeHtml(ticker)}</strong> <span class="muted">· submitted · tip required to fulfil</span></div>`;
+      actionLine = `<button data-act="claim-discover-pick" data-root="${escapeHtml(d.merkle_root)}" data-cid="${escapeHtml(d.ipfs_cid)}" style="font-size:11px;">View status →</button>`;
     } else {
       amountLine = `<div style="font-size:13px;color:var(--green);"><strong>✓ ${escapeHtml(fmtAssetAmountPlain(eligibleRow.amount, decimals))} ${escapeHtml(ticker)}</strong> <span class="muted">· leaf #${eligibleRow.index}</span></div>`;
       actionLine = `<button data-act="claim-discover-pick" data-root="${escapeHtml(d.merkle_root)}" data-cid="${escapeHtml(d.ipfs_cid)}" class="primary" style="font-size:11px;">Claim →</button>`;
@@ -23892,6 +24453,7 @@ function _renderClaimDiscoverList() {
                 <strong>${escapeHtml(ticker)}</strong>
                 ${newPill}
                 ${provBadge}
+                ${backlogBadge}
               </div>
               ${aidChip ? `<div class="cdc-aidrow" style="margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${aidChip}${aidExplorer}</div>` : ''}
               <div class="muted" style="font-size:11px;margin-top:2px;word-break:break-all;">root <code>${escapeHtml(shorten(d.merkle_root, 10))}</code> · <span style="${expColor}">${escapeHtml(exp.text)}</span></div>
@@ -24731,6 +25293,12 @@ async function renderHoldings() {
       // whole card (which would lose any open inline-form / receive panel).
       // The avatar wrapper uses display:contents so an empty span doesn't
       // contribute a flex item / gap before the image lands.
+      // Tacitscan link is mainnet-only — tacitscan doesn't index signet, so a
+      // signet link would 404. Mirrors the Discover/Claim pattern.
+      const safeAidForScan = /^[0-9a-f]{64}$/.test(h.assetIdHex || '') ? h.assetIdHex : '';
+      const tacitscanLink = (safeAidForScan && NET.name === 'mainnet')
+        ? ` <a href="https://www.tacitscan.io/assets/${escapeHtml(safeAidForScan)}" target="_blank" rel="noopener noreferrer" style="color:var(--ink-mid);text-decoration:underline;font-size:11px;" title="View this asset on tacitscan (independent block explorer)">tacitscan ↗</a>`
+        : '';
       card.innerHTML = `
         <div class="head" style="display:flex;align-items:center;gap:12px;">
           <span data-region="avatar" style="display:contents;">${avatarHTML(null)}</span>
@@ -24740,7 +25308,7 @@ async function renderHoldings() {
           </div>
         </div>
         <div class="meta">
-          <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(h.assetIdHex)}</div>
+          <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(h.assetIdHex)}${tacitscanLink}</div>
           <div><span class="lbl">Decimals</span> ${h.decimals}</div>
           <div><span class="lbl">UTXOs</span> ${h.utxos.length} known${h.ghosts.length ? ` · <span style="color:var(--red);">${h.ghosts.length} ghost</span>` : ''}<span data-region="meta-published"></span></div>
           <div><span class="lbl">Etch tx</span> ${meta?.etchTxid ? `<a href="${escapeHtml(etchLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(meta.etchTxid, 8))} ↗</a>` : '—'}<span data-region="meta-asset-wide-published"></span></div>
@@ -26120,7 +26688,14 @@ async function renderHoldings() {
         })
         .catch(() => {});
     }
-    setStatus('#holdings-status', `${arr.length} asset${arr.length > 1 ? 's' : ''}`);
+    // Surface when the scan completed so a user who's been idle on the tab
+    // for 30 min can tell their data isn't seconds-fresh. Local-time HH:MM is
+    // unambiguous at any later glance; the existing "↻ Rescan UTXOs" button
+    // above (index.html:2954) is the explicit refresh path.
+    const _scanTime = new Date();
+    const _hh = String(_scanTime.getHours()).padStart(2, '0');
+    const _mm = String(_scanTime.getMinutes()).padStart(2, '0');
+    setStatus('#holdings-status', `${arr.length} asset${arr.length > 1 ? 's' : ''} · scanned ${_hh}:${_mm}`);
     setTabBadge('holdings', arr.length);
     // Kick the holdings auto-refresh poll on/off based on whether anything
     // is awaiting cap-credit. Self-stops once all pending have credited so
@@ -27621,9 +28196,14 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
   const safeHeight = Number.isInteger(a.etched_at_height) ? a.etched_at_height : null;
   const ageMin = Math.max(0, Math.floor((Date.now()/1000 - (a.etched_at || 0)) / 60));
   const ageStr = ageMin < 60 ? `${ageMin}m ago` : ageMin < 1440 ? `${Math.floor(ageMin/60)}h ago` : `${Math.floor(ageMin/1440)}d ago`;
+  // Fallback to a colored-letter avatar when no imgUrl is available OR when
+  // the IPFS gateway fails to load the image post-render. Without this, cards
+  // with missing/failed images show a blank gap where the avatar would be —
+  // visually worse than the petch tile's avatar pattern (line 30303) and the
+  // Holdings card's. Matches the consistent identity-by-color treatment.
   const avatar = imgUrl
     ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
-    : '';
+    : (safeAssetId ? assetImageFallback(safeAssetId, a.ticker, 36) : '');
 
   // Verification badge: ⏳ verifying (eager render) / ✗ unverifiable (failed) /
   // ⚠ mismatch (worker disagrees) / ✓ chain-verified (clean).
@@ -27941,7 +28521,7 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
     ${/* Place-bid / open-bids row moved to the Market tab so Discover cards
         stay a clean directory view. */ ''}
     <div class="meta">
-      <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(safeAssetId)}</div>
+      <div><span class="lbl">Asset ID</span> ${assetIdRowHTML(safeAssetId)}${(safeAssetId && NET.name === 'mainnet') ? ` <a href="https://www.tacitscan.io/assets/${escapeHtml(safeAssetId)}" target="_blank" rel="noopener noreferrer" style="color:var(--ink-mid);text-decoration:underline;font-size:11px;" title="View this asset on tacitscan (independent block explorer)">tacitscan ↗</a>` : ''}</div>
       <div><span class="lbl">Etch tx</span> ${safeEtchTxid ? `<a href="${NET.explorer}/tx/${escapeHtml(safeEtchTxid)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(safeEtchTxid, 8))} ↗</a>` : '—'}</div>
       <div><span class="lbl">Etcher</span> ${etcherAddr ? `<a href="#" data-act="filter-etcher" data-etcher="${escapeHtml(etcherAddr)}" title="Click to filter Discover by this etcher's assets">${escapeHtml(shorten(etcherAddr, 10))}</a>` : '—'}</div>
     </div>`;
@@ -28413,6 +28993,13 @@ function applyMarketFilters() {
   const _priceOf = l => l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
   if (Number.isInteger(minPrice)) rows = rows.filter(l => _priceOf(l) >= minPrice);
   if (Number.isInteger(maxPrice)) rows = rows.filter(l => _priceOf(l) <= maxPrice);
+  // Drop expired listings. Worker flags them with `l.expired === true` but
+  // continues to surface them on the /listings endpoint for a short grace
+  // window (so makers can verify expiry / clean up). The Holdings tab's "Your
+  // active listings" panel already filters these out at tacit.js:24879-24880;
+  // applying the same filter here keeps Market browse consistent with
+  // Holdings and prevents takers from clicking Take on a doomed listing.
+  rows = rows.filter(l => !l.expired);
   // (Trust-mode note line removed — per-tile `⚠ trust required` badge on
   // each OTC listing already warns at the point of action, and the trade-
   // type chip itself reads "⚡ atomic only" so the top-level reminder was
@@ -28616,11 +29203,25 @@ function applyMarketFilters() {
         primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Buy instantly: builds a commit + atomic settlement tx that pays the seller's signed payout script and delivers the asset to your wallet in one Bitcoin tx. No claim window, no fulfilment step." style="flex:1;font-size:11px;">Buy</button>`;
       }
     } else {
-      // Take is the primary action; Verify is a secondary power-user check
-      // (run the crypto chain without buying). Demoted to a muted, narrower
-      // chip-style button so the tile's focal CTA stays Take.
-      primaryAction = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${Number(l.price_sats || 0)}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Off-chain OTC buy: pay the maker's BTC address the listed sats, then they broadcast a CXFER to your pubkey. Counterparty trust required — the maker can take the sats without delivering. Prefer ⚡ atomic intents when available." style="flex:1;font-size:11px;">Take</button>`;
-      secondaryAction = `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing without buying it: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Safe to call as many times as you want." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" aria-label="Verify listing">verify</button>`;
+      // Opening / range OTC listings. Intent (28846) and preauth (28874)
+      // branches already have explicit isMaker/isSeller ownership checks; this
+      // branch did not — a maker viewing the Market would see their own
+      // listing with a Take button visible, and clicking it would either
+      // race-claim their own listing or fail with a confusing error. Mirror
+      // the pattern: if you own this listing, show a status indicator
+      // pointing to the Holdings panel for cancel (no cancel handler exists
+      // in this branch). Otherwise render the normal Take + Verify buttons.
+      const isMakerOTC = (l.owner_pubkey || '') === myPubHex;
+      if (isMakerOTC) {
+        statusLine = `<span title="Your listing — manage from Holdings → Your active listings.">⏳ your listing · awaiting taker</span>`;
+        secondaryAction = `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Confirms the listing is well-formed and live." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" aria-label="Verify listing">verify</button>`;
+      } else {
+        // Take is the primary action; Verify is a secondary power-user check
+        // (run the crypto chain without buying). Demoted to a muted, narrower
+        // chip-style button so the tile's focal CTA stays Take.
+        primaryAction = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${Number(l.price_sats || 0)}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Off-chain OTC buy: pay the maker's BTC address the listed sats, then they broadcast a CXFER to your pubkey. Counterparty trust required — the maker can take the sats without delivering. Prefer ⚡ atomic intents when available." style="flex:1;font-size:11px;">Take</button>`;
+        secondaryAction = `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing without buying it: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Safe to call as many times as you want." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" aria-label="Verify listing">verify</button>`;
+      }
     }
     const statusRow = statusLine
       ? `<div class="muted" style="margin-top:8px;font-size:11px;">${statusLine}</div>`
@@ -30019,7 +30620,7 @@ async function renderPetchDiscover() {
               <strong style="font-size:16px;">${escapeHtml(a.ticker || '?')}</strong>
               <div style="font-size:10px;color:var(--ink-mid);font-family:var(--mono);margin-top:2px;">${escapeHtml(shorten(safeAid, 12))}</div>
             </div>
-            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${(isSoftDisable || capFull) ? 'display:none;' : ''}">
+            <button data-act="petch-mint" data-etch-txid="${escapeHtml(a.etch_txid || '')}" data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-limit="${escapeHtml(a.mint_limit || '0')}" data-decimals="${dec}" data-rem-mints="${escapeHtml(remMints.toString())}" data-default-label="Mint ${limitDispEsc}" ${mintDisabled ? 'disabled' : ''} style="flex-shrink:0;${(isSoftDisable || capFull) ? 'display:none;' : ''}">
               ${mintDisabled && !isSoftDisable && !capFull ? `Mint · ${escapeHtml(mintReason)}` : `Mint ${limitDispEsc}`}
             </button>
           </div>
@@ -30117,7 +30718,18 @@ async function renderPetchDiscover() {
         const limitStr = btn.dataset.limit;
         const dec = parseInt(btn.dataset.decimals, 10) || 0;
         const limitDisp = fmtAssetAmount(BigInt(limitStr || '0'), dec);
-        if (!confirm(`Mint ${limitDisp} ${ticker}?\n\nThis broadcasts a T_PMINT (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees. The minted UTXO appears in your Holdings; cap-credit lands after 3 confirmations.`)) return;
+        // Near-cap race warning. When there's only 1 mint slot left, two
+        // users broadcasting T_PMINT against the same cap will canonical-
+        // order resolve — one wins, the other lands at cap_overflow and
+        // forfeits the broadcast fees. The bar shows the scarcity but the
+        // confirm dialog never said "you might race." Loud-warn here so a
+        // user about to commit ~5-15k sats in fees does it with eyes open.
+        const remMintsStr = btn.dataset.remMints || '';
+        const remMints = /^\d+$/.test(remMintsStr) ? BigInt(remMintsStr) : 0n;
+        const raceWarn = remMints <= 1n
+          ? `⚠ ONLY 1 MINT SLOT LEFT — if another user broadcasts T_PMINT around the same time, one of you loses the race and forfeits Bitcoin fees (~${(await estimateSatsForOp('etch')).toLocaleString()} sats). Proceed only if you're OK with that risk.\n\n`
+          : '';
+        if (!confirm(`${raceWarn}Mint ${limitDisp} ${ticker}?\n\nThis broadcasts a T_PMINT (commit + reveal). Cost: ~${(await estimateSatsForOp('etch')).toLocaleString()} sats in Bitcoin fees. The minted UTXO appears in your Holdings; cap-credit lands after 3 confirmations.`)) return;
         if (!await ensureBurnerBackedUp('Mint a public-mint asset (T_PMINT; broadcasts a commit+reveal pair)')) return;
         const need = await estimateSatsForOp('etch');
         if (!(await ensureSatsFunded(need, 'Minting'))) return;
@@ -31680,24 +32292,44 @@ async function init() {
   }
   // Restore order is preference-driven: ACTIVE_MODE_KEY records what the user
   // last successfully unlocked, so reloads don't surface a passkey OS prompt
-  // for users whose primary wallet is an extension (and vice versa). On a
-  // cancelled passkey prompt we DON'T wipe the PRF map — WebAuthn returns the
-  // same NotAllowedError for "user cancelled" and "credential missing", and
-  // cancels are far more common than genuinely stale credentials. The user
-  // can clear stale entries from the Manage Wallet drawer if needed.
+  // for users whose primary wallet is an extension (and vice versa).
+  //
+  // Lazy unlock: this bootstrap only hydrates `wallet.pub` from non-secret
+  // metadata (PRF map's stored pubkey for passkey mode; the `pub` field on
+  // the encrypted blob for local/ext mode). `wallet.priv` stays null until a
+  // sign-time action triggers ensurePrivkey(). Reload → no biometric prompt,
+  // no passphrase prompt; the user only sees one when they actually sign.
+  // Legacy blobs that predate the `pub` field fall back to eager unlock for
+  // that one load — encryptPrivkey re-saves with the field, so the next
+  // reload is lazy.
   const activeMode = getActiveWalletMode();
   const restoredPasskey = prfWallet.tryRestore();
   let bootstrapped = false;
   if (restoredPasskey && activeMode !== 'ext' && activeMode !== 'local') {
-    try {
-      await prfWallet.login({ label: restoredPasskey.label });
-      bootstrapped = true;
-    } catch (e) {
-      prfWallet.lock();
-      console.warn('passkey auto-login failed:', e.message);
-      // Stay on this path only if the user explicitly chose passkey last
-      // time; otherwise fall through to the other restore paths so a single
-      // cancelled prompt doesn't strand the user.
+    if (restoredPasskey.pubkey) {
+      // Pubkey-only passkey restore: set up the active state so ensurePrivkey()
+      // can find the label later, but skip the WebAuthn assertion until needed.
+      try {
+        wallet.pub = hexToBytes(restoredPasskey.pubkey);
+        wallet.mode = 'passkey';
+        bootstrapped = true;
+      } catch (e) {
+        // Malformed pubkey hex in the PRF map — drop the cached state and
+        // fall through to other restore paths.
+        console.warn('passkey pubkey hydration failed:', e.message);
+        prfWallet.state = null;
+      }
+    } else {
+      // Legacy PRF entry predates the stored pubkey field. One-time eager
+      // login populates `pubkey` via _setupSession, so the next reload runs
+      // the pubkey-only fast path.
+      try {
+        await prfWallet.login({ label: restoredPasskey.label });
+        bootstrapped = true;
+      } catch (e) {
+        prfWallet.lock();
+        console.warn('passkey legacy auto-login failed:', e.message);
+      }
     }
   }
   if (!bootstrapped) {
@@ -31713,25 +32345,51 @@ async function init() {
       // wallet on an unsupported network.
     }
     if (extOk) {
-      await wallet.load(restored.address);
-      setActiveWalletMode('ext');
-    } else if (_hasUnboundLocalWallet()) {
-      try {
-        await wallet.load();
-        setActiveWalletMode('local');
-      } catch (e) {
-        // Returning-user unlock failures must not strand init: a throw here
-        // bubbles to init().catch(...) and aborts every setup* call below,
-        // leaving the dapp non-interactive until reload. Route them through
-        // the welcome modal so they can switch to passkey/ext, retry local,
-        // or at minimum see a usable UI. Covers: explicit cancel, exhausted
-        // passphrase attempts ('unlock failed'), and corrupt/unknown blobs
-        // ('unknown wallet storage format'). Cancel stays silent; genuine
-        // errors surface via toast so the user knows why local failed.
-        if (e?.message !== 'cancelled') {
-          toast(`Couldn't unlock local wallet: ${e?.message || e}. Pick another option below.`, 'error', 6000);
+      // Pubkey-only ext-bound restore: parse `pub` from the encrypted blob;
+      // fall back to eager unlock when the blob predates the `pub` field.
+      const key = walletStorageKey(restored.address);
+      const raw = localStorage.getItem(key);
+      const pub = raw ? readBlobPub(raw) : null;
+      if (pub) {
+        wallet.pub = pub;
+        setActiveWalletMode('ext');
+      } else {
+        // Legacy / no blob: run the existing load path. wallet.load() will
+        // prompt for passphrase if the blob is encrypted, or create a new
+        // burner (ext-bound) if missing. Re-saves with `pub`.
+        try {
+          await wallet.load(restored.address);
+          setActiveWalletMode('ext');
+        } catch (e) {
+          if (e?.message !== 'cancelled') {
+            toast(`Couldn't unlock burner: ${e?.message || e}.`, 'error', 6000);
+          }
+          if (await _runFirstLoadChoice() === 'reload') return;
         }
-        if (await _runFirstLoadChoice() === 'reload') return;
+      }
+    } else if (_hasUnboundLocalWallet()) {
+      // Pubkey-only local restore: same pattern as ext-bound — parse `pub`
+      // without decrypting, fall back to eager unlock for legacy blobs.
+      const raw = localStorage.getItem(walletStorageKey());
+      const pub = readBlobPub(raw);
+      if (pub) {
+        wallet.pub = pub;
+        setActiveWalletMode('local');
+      } else {
+        try {
+          await wallet.load();
+          setActiveWalletMode('local');
+        } catch (e) {
+          // Returning-user unlock failures must not strand init: a throw here
+          // bubbles to init().catch(...) and aborts every setup* call below,
+          // leaving the dapp non-interactive until reload. Route them through
+          // the welcome modal so they can switch to passkey/ext, retry local,
+          // or at minimum see a usable UI.
+          if (e?.message !== 'cancelled') {
+            toast(`Couldn't unlock local wallet: ${e?.message || e}. Pick another option below.`, 'error', 6000);
+          }
+          if (await _runFirstLoadChoice() === 'reload') return;
+        }
       }
     } else {
       if (await _runFirstLoadChoice() === 'reload') return;

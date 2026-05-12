@@ -85,16 +85,18 @@ function maps to a different layer in tacit:
 | Place to publish deposit slips | Contract storage | Taproot envelope payload (`T_DEPOSIT`) |
 | Per-pool merkle tree of deposits | EVM-computed, contract-stored | Reconstructed by indexers from chain in canonical `(height, tx_index, txid)` order |
 | SNARK verifier | EVM opcode | snarkjs in the dapp browser; indexer optional cross-check |
-| Conditional payout (only if proof valid) | EVM transfer | Fresh tacit UTXO whose ownership is asserted by indexer rules; an invalid proof's UTXO is never credited as spendable |
+| Conditional payout (only if proof valid) | EVM transfer gated by SNARK verifier call | Fresh tacit UTXO whose ownership is asserted by indexer rules; an invalid proof's UTXO is never credited as spendable |
 
 Why it composes: every primitive a Tornado-style mixer needs was already
-shipped in tacit for non-mixer flows. Pedersen
-amount commitments were already there for `CXFER`. Taproot envelope
-payloads were already the wire format for every tacit operation. Indexer-
-validated rules are how tacit's whole protocol works. Asset-level identity
-(`asset_id` = sha256 of an etch tx) was already there. The mixer adds two
-envelope opcodes and a Groth16 circuit; everything else recombines existing
-machinery.
+shipped in tacit for non-mixer flows. Pedersen amount commitments were
+already there for `CXFER`. Taproot envelope payloads were already the wire
+format for every tacit operation. Indexer-validated rules are how tacit's
+whole protocol works. Asset-level identity (`asset_id` = sha256 of an etch
+tx) was already there — and because pools are keyed by `(asset_id,
+denomination)` rather than per-deployed-contract, one mixer composition
+works uniformly for every tacit asset, present and future, with no new
+deployment per token. The mixer adds two envelope opcodes and a Groth16
+circuit; everything else recombines existing machinery.
 
 ### Cryptographic flow (deposit → withdraw)
 
@@ -183,7 +185,8 @@ when paired with the circuit's `r_leaf == Poseidon₂(s, ν)` constraint
 ## Trust model
 
 **Soundness** (= "is the rule enforced correctly when used?") is **trustless
-under standard cryptographic assumptions**:
+under standard cryptographic assumptions** (including the Phase 1 + Phase 2
+ceremony assumption — see "Open / honest caveats" below):
 
 - Groth16 proof verifies under the published `vk` regardless of who runs the
   verifier; the dapp re-runs verification client-side.
@@ -211,6 +214,31 @@ Bitcoin alone.
   An observer reading on-chain `T_WITHDRAW` envelopes learns no information
   about which deposit funded which withdraw, beyond the count of currently-
   unspent leaves in the pool.
+- **Shielded on two axes.** The pool's denomination is public — required so
+  deposits at one size all look alike — but everything *around* the pool is
+  amount-hidden by Pedersen. Tornado on Ethereum shields only the
+  deposit→withdraw linkage; observers still see a depositor's ETH balance
+  drop by exactly `denom` and a recipient's address gain exactly `denom`,
+  re-deriving participant edges the SNARK was supposed to hide. Tacit
+  shields both axes: linkage via Groth16, ambient amount via Pedersen. The
+  mixer breaks the linkage; confidential amounts keep that broken linkage
+  from being re-stitched via balance arithmetic on the surrounding
+  transfers.
+- **Three side channels the composition closes**, all present in a
+  transparent-asset mixer and structurally absent here:
+  1. *Pre-deposit balance subtraction* — observer sees `X → X − denom` in
+     the depositor's wallet exactly when a deposit lands. Tacit hides `X`
+     in the first place via CXFER's Pedersen commitments, so there is
+     nothing to subtract from.
+  2. *Post-withdraw balance addition* — withdraw output at the recipient
+     is publicly `denom`, but the recipient's first CXFER after the
+     withdraw re-blinds the amount and it disappears from chain analysis
+     from that point on.
+  3. *Peel-off precision* — real wallets don't hold exact multiples of
+     `denom`. On a transparent chain, carving off a deposit-sized chunk
+     leaves a visible remainder bound to the depositor. Tacit's auto-split
+     (Status section below) uses a CXFER, so the carve is itself amount-
+     hidden.
 - **Operational privacy** depends on three things outside the protocol's
   control: anonymity-set size (live count surfaced in the dapp), Bitcoin-
   level fee linkage (pay-to-other has no chain-graph link to the depositor;
@@ -230,6 +258,22 @@ prior art and we concede that immediately:
 - **Groth16 mixers**: not new (Tornado Cash 2019, Aztec, Penumbra, Railgun).
 - **Indexer-validated meta-protocols on Bitcoin**: not new (Ordinals 2023,
   BRC-20, Runes, STAMPS, Alkanes, OP_NET).
+
+**Why these primitives compose at all.** All three share the same execution
+model: data on Bitcoin L1 (commit/reveal taproot envelopes), validation
+off-chain by anyone who reads the chain bytes. Pedersen commitments
+validate by recomputing on secp256k1. Groth16 proofs verify by re-running
+snarkjs against a published `vk`. Runes-style metaprotocol state recomputes
+by walking the chain in canonical order. Once you notice all three fit the
+same *data-on-chain / validation-off-chain* pattern, "Bitcoin Script can't
+verify SNARKs" stops being an objection — nothing in tacit's enforcement
+path needs Script-level verification. That's the structural reason the
+composition works, and it's also the reason it stayed unbuilt: each
+adjacent community was working under a different assumption about where
+computation should live (metaprotocol people optimized for cheap-and-viral
+transparent designs; zk-mixer people assumed L1 execution was required and
+went elsewhere; Bitcoin-privacy people stayed in cooperative-spend
+CoinJoin).
 
 The claim — narrower and harder to attack than "novel cryptography" or
 "first mixer" — is that **these three specific things composed together on
@@ -252,6 +296,24 @@ The achievement is the assembly: shipping a working integration on Bitcoin
 L1 with closed soundness gates, indexer-determinism guarantees, browser-
 side proof generation + verification, and a coordinated Phase 2 ceremony
 pipeline.
+
+**The mixer is one application of a substrate, not a point feature.** The
+same composition extends with no new privacy machinery to: airdrops with
+confidential per-recipient amounts (SPEC §5.12–§5.13, shipped), atomic-
+intent OTC trades with confidential settled amounts (SPEC §5.7, shipped),
+range-disclosed listings that prove `balance ≥ K` without revealing the
+exact balance (SPEC §5.6, shipped), and a designed confidential AMM whose
+LP shares are themselves mixable tacit assets ([AMM.md](./AMM.md)). The
+mixer is the load-bearing privacy primitive, but the bigger claim is the
+substrate: once amounts are hidden at the asset layer and linkage can be
+broken at the pool layer, every new opcode inherits both properties for
+free. Tornado-on-ETH was a single point feature; this is a privacy
+substrate that the rest of the protocol consumes. The substrate also
+extends *temporally*: a Tornado withdraw exits to a transparent ETH
+balance and erodes the recipient's anonymity the moment the funds are
+touched; a tacit withdraw exits to a UTXO of public `denom`, but the
+recipient's first CXFER re-blinds the amount and the on-chain trail
+becomes amount-opaque from that point on.
 
 ### Adjacent designs reviewers will bring up
 
@@ -331,6 +393,15 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
   finalize coordinator script cross-checks the block hash against
   mempool.space and blockstream.info before applying the beacon and
   refuses to finalize if confirmation depth is < 12 blocks.
+- **Canonical bundle**: Phase 2 finalized at 2,227 community contributions
+  + the beacon above. The artifact is pinned to IPFS as a directory at
+  `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`,
+  containing `withdraw_final.zkey`, `verification_key.json`,
+  `withdraw_pre_beacon.zkey`, `withdraw.r1cs`, `pot14_final.ptau`, and
+  the full 21,931-record attestation chain (2,229 canonical: genesis +
+  2,227 contribs + beacon). The dapp hardcodes the bundle CID as
+  `CANONICAL_CEREMONY_CID` so every pool init binds to the same trust
+  anchor — operator typo is impossible.
 
 ## Status
 
@@ -351,16 +422,8 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 - ✅ Phase 2 ceremony coordinator (init / contribute / finalize) + auth
 - ✅ Client-side `verifyFromInit` before contribute
 - ✅ 108 mixer tests across 7 test files
-- ✅ **Phase 2 ceremony finalized** — 2,227 community contributions +
-  Bitcoin-block-948824 beacon (10 MiMC iterations). Canonical bundle
-  pinned to IPFS as a directory under
-  `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`;
-  contains `withdraw_final.zkey`, `verification_key.json`,
-  `withdraw_pre_beacon.zkey`, `withdraw.r1cs`, `pot14_final.ptau`, and
-  the full 21,931-record attestation chain (2,229 canonical: genesis +
-  2,227 contribs + beacon). Dapp hardcodes the bundle CID as
-  `CANONICAL_CEREMONY_CID` so every pool init binds to the same trust
-  anchor — operator typo is impossible.
+- ✅ **Phase 2 ceremony finalized + beacon applied** — see Trusted setup
+  for contribution count, beacon details, and the canonical bundle CID.
 - ⏸ Deterministic `(secret, ν)` derivation from privkey (UX improvement;
   current behavior matches Tornado / Privacy Pools — secrets must be
   backed up out-of-band)
@@ -398,16 +461,22 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
 
 > A Runes-style indexer-validated meta-protocol on Bitcoin L1 that adds
 > confidential amounts (Pedersen commitments) and a Tornado-style shielded
-> pool (Groth16 + nullifiers + Poseidon merkle tree). No bridges, no
-> sidechains, no federation — pool state is reconstructed from L1 envelope
-> data; proofs are verified client-side. The cryptographic primitives are
-> well-known; the *composition* of these three specific things on Bitcoin
-> L1 doesn't appear to have a live production peer. Phase 1 trusted setup
-> is the verified Polygon Hermez ceremony output; Phase 2 is finalized
-> with 2,227 community contributions and a Bitcoin-block beacon, pinned
-> to IPFS at
-> `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`.
-> Engineering and integration achievement, not cryptographic invention.
+> pool (Groth16 + nullifiers + Poseidon merkle tree) — shielded on two
+> axes (linkage via SNARK, ambient amount via Pedersen) where Tornado-on-
+> ETH shields only one. All three primitives share the same data-on-chain
+> / validation-off-chain execution model, which is why they compose and
+> why nothing has to be added to Bitcoin Script. No bridges, no sidechains,
+> no federation — pool state is reconstructed from L1 envelope data;
+> proofs are verified client-side. The cryptographic primitives are well-
+> known; the *composition* of these three specific things on Bitcoin L1
+> doesn't appear to have a live production peer. Phase 1 trusted setup is
+> the verified Polygon Hermez ceremony output; Phase 2 is finalized with
+> 2,227 community contributions and a Bitcoin-block beacon, pinned to IPFS
+> at `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u`. The
+> mixer is one application of the substrate; the same composition extends
+> to drops, atomic-intent OTC, range-disclosed listings, and a designed
+> confidential AMM. Engineering and integration achievement, not
+> cryptographic invention.
 
 ## References
 

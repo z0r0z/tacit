@@ -7,15 +7,9 @@ adapted to tacit's SPEC §3.6 / §3.8 / §5.11. See the inline header in
 ## Status
 
 **Production.** Compiles, generates proofs, verifies, and is wired into the
-live dapp. The Phase 2 trusted-setup ceremony for this circuit finalized
-2026-05-11 with 2,227 community contributions and a Bitcoin-block-948824
-beacon. The canonical ceremony bundle is pinned at IPFS
-`bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u` and the
-verifying key at `bafkreidwbautgstcnl54oszez7yqlc7mr5lrj6ac65h3p5sjw2rgz2jtv4`;
-both CIDs are hardcoded in `dapp/tacit.js` as `CANONICAL_CEREMONY_CID` and
-`CANONICAL_VK_CID`. Soundness against the inflation-attack vector is closed
-by the deterministic `r_leaf` binding (constraint 4 — see **Soundness note**
-below).
+live dapp. Soundness against the inflation-attack vector is closed by the
+deterministic `r_leaf` binding (constraint 4 — see **Soundness note** below).
+Trusted-setup details are in the [Trusted setup](#trusted-setup) section.
 
 ## Toolchain setup
 
@@ -72,11 +66,16 @@ performs the field-injection in `verifyMixerProof`.
 
 ## Trusted setup
 
-The production ceremony for this circuit is **complete**. The build script's
-single-contributor zkey is for local development only; the live dapp uses
-the canonical Phase 2 bundle pinned at IPFS
-`bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u` (2,227
-contributions + Bitcoin-block-948824 beacon, finalized 2026-05-11).
+The production ceremony for this circuit is **complete**, finalized
+2026-05-11 with **2,227 community contributions + a Bitcoin-block-948824
+beacon** (10 MiMC iterations). The build script's single-contributor zkey
+is for local development only; the live dapp uses the canonical Phase 2
+bundle.
+
+| Artifact | IPFS CID | Hardcoded in `dapp/tacit.js` as |
+|---|---|---|
+| Ceremony bundle (zkey + attestation chain) | `bafybeidq2ahzte4sfiqjsmhqta62ufenpppzpch5ppry55tzxzlvltxy2u` | `CANONICAL_CEREMONY_CID` |
+| Verifying key (`verification_key.json`) | `bafkreidwbautgstcnl54oszez7yqlc7mr5lrj6ac65h3p5sjw2rgz2jtv4` | `CANONICAL_VK_CID` |
 
 Groth16's toxic-waste assumption requires that at least one honest
 contributor across the ceremony chain discarded their entropy. With 2,227
