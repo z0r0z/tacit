@@ -1,0 +1,15 @@
+{
+  "drop_id": "deadbeef00000000000000000000abcd",
+  "network": "signet",
+  "asset_id_hex": "0000000000000000000000000000000000000000000000000000000000000001",
+  "asset_ticker": "TST",
+  "asset_decimals": 8,
+  "merkle_root_hex": "1226ce3e269758ae0278c8b43c326e2773b8bf2f7f7fdfb81d4fb2c68b76bd2c",
+  "total_amount": "30",
+  "count": 3,
+  "rows": [
+    { "index": 0, "eth_address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "amount": "10" },
+    { "index": 1, "eth_address": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "amount": "10" },
+    { "index": 2, "eth_address": "0xcccccccccccccccccccccccccccccccccccccccc", "amount": "10" }
+  ]
+}

@@ -32,3 +32,6 @@ dapp/circuits/verified-ptau/
 # Ceremony finalize bundle (~32 MB) — staged by finalize.sh for IPFS
 # pinning. Auditable via the published IPFS CID; no need in git history.
 dapp/circuits/ceremony-bundle/
+
+# Signet e2e state (test/ephemeral wallet privs — regenerable, never commit).
+.local/

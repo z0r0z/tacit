@@ -355,6 +355,90 @@ await test('bid_id derivation: sha256(asset_id || buyer_pubkey || nonce).slice(0
 });
 
 // ============================================================================
+// Airdrop merkle helpers — worker recomputes the snapshot's merkle root in
+// /pin-airdrop-snapshot and refuses rows-don't-hash-to-declared-root pins.
+// Byte-for-byte parity with the dapp's airdropLeafHash / buildAirdropMerkle is
+// load-bearing: drift here silently lets buggy snapshots through the pin gate
+// (the dapp recipient's _claimValidateSnapshot rejects them later, but pin +
+// announce slots have already been burned).
+// ============================================================================
+console.log('\nDapp ↔ worker airdrop merkle parity:');
+
+await test('worker _airdropLeafHash matches dapp airdropLeafHash (single leaf)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const ethAddr = hexToBytes('a'.repeat(40));
+  const amount = 12345n;
+  const idx = 7;
+  const dappOut = bytesToHex(dapp.airdropLeafHash(ethAddr, amount, idx));
+  const wkrOut = bytesToHex(worker._airdropLeafHash(ethAddr, amount, idx));
+  return dappOut === wkrOut;
+});
+
+await test('worker _airdropLeafHash matches dapp airdropLeafHash (u64 boundary)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const ethAddr = hexToBytes('5'.repeat(40));
+  // Max u64 - 1. Worker uses setBigUint64 LE; dapp does the same. Drift on
+  // endianness or width would diverge here.
+  const amount = (1n << 64n) - 1n;
+  const idx = 0xffffffff;
+  const dappOut = bytesToHex(dapp.airdropLeafHash(ethAddr, amount, idx));
+  const wkrOut = bytesToHex(worker._airdropLeafHash(ethAddr, amount, idx));
+  return dappOut === wkrOut;
+});
+
+await test('worker _buildAirdropMerkleRoot matches dapp buildAirdropMerkle (3 leaves, odd promotion)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const rows = [
+    { addr: 'a'.repeat(40), amt: 10n, idx: 0 },
+    { addr: 'b'.repeat(40), amt: 10n, idx: 1 },
+    { addr: 'c'.repeat(40), amt: 10n, idx: 2 },
+  ];
+  const dappLeaves = rows.map(r => dapp.airdropLeafHash(hexToBytes(r.addr), r.amt, r.idx));
+  const wkrLeaves = rows.map(r => worker._airdropLeafHash(hexToBytes(r.addr), r.amt, r.idx));
+  const dappRoot = bytesToHex(dapp.buildAirdropMerkle(dappLeaves).root);
+  const wkrRoot = bytesToHex(worker._buildAirdropMerkleRoot(wkrLeaves));
+  return dappRoot === wkrRoot;
+});
+
+await test('worker _buildAirdropMerkleRoot matches dapp (single leaf — root == leaf)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const ethAddr = hexToBytes('f'.repeat(40));
+  const leaf = dapp.airdropLeafHash(ethAddr, 42n, 0);
+  const dappRoot = bytesToHex(dapp.buildAirdropMerkle([leaf]).root);
+  const wkrRoot = bytesToHex(worker._buildAirdropMerkleRoot([leaf]));
+  return dappRoot === wkrRoot && dappRoot === bytesToHex(leaf);
+});
+
+await test('worker _buildAirdropMerkleRoot matches dapp (8 leaves, balanced tree)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const leaves = [];
+  for (let i = 0; i < 8; i++) {
+    leaves.push(dapp.airdropLeafHash(hexToBytes((i + 1).toString(16).padStart(2, '0').repeat(20)), BigInt(100 + i), i));
+  }
+  const dappRoot = bytesToHex(dapp.buildAirdropMerkle(leaves).root);
+  const wkrRoot = bytesToHex(worker._buildAirdropMerkleRoot(leaves));
+  return dappRoot === wkrRoot;
+});
+
+await test('worker _buildAirdropMerkleRoot matches dapp (5 leaves, two odd-promotion layers)', async () => {
+  // N=5 exercises the rare case of consecutive odd-count layers:
+  //   layer 0: [L0,L1,L2,L3,L4] (odd → L4 promoted)
+  //   layer 1: [H(L0,L1), H(L2,L3), L4] (odd → L4 promoted again)
+  //   layer 2: [H(H(L0,L1), H(L2,L3)), L4]
+  //   layer 3: [H(H(H(L0,L1),H(L2,L3)), L4)]
+  // Any drift in the worker's odd-leaf branch (`else next.push(layer[i])`)
+  // would surface here.
+  const worker = await import('../worker/src/index.js');
+  const leaves = [];
+  for (let i = 0; i < 5; i++) {
+    leaves.push(dapp.airdropLeafHash(hexToBytes((i + 1).toString(16).padStart(2, '0').repeat(20)), BigInt(100 + i), i));
+  }
+  const dappRoot = bytesToHex(dapp.buildAirdropMerkle(leaves).root);
+  const wkrRoot = bytesToHex(worker._buildAirdropMerkleRoot(leaves));
+  return dappRoot === wkrRoot;
+});
+
+// ============================================================================
 // Summary
 // ============================================================================
 console.log(`\n${pass} passed, ${fail} failed.`);

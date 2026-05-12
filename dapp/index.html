@@ -799,7 +799,7 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
   display: inline-block; min-width: 30px; color: var(--orange); font-weight: 600;
 }
 .tx-preview .row .label {
-  display: inline-block; min-width: 100px; color: var(--ink-mid);
+  display: inline-block; min-width: 150px; padding-right: 12px; color: var(--ink-mid);
 }
 
 .opreturn-decode {
@@ -2436,12 +2436,31 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="section">
     <div class="section-header"><span>drops · airdrop tooling</span></div>
     <div class="section-body">
-      <div class="muted" style="margin-bottom:14px;">
-        Issuer-side tooling for batched airdrops. Build a merkle commitment from snapshot CSVs, pin to IPFS, fulfil incoming claims in batches.
+      <div class="muted" style="margin-bottom:14px;line-height:1.5;">
+        Airdrop a tacit token to holders of any Ethereum ERC-20. Drop the Etherscan token-holder CSVs into <em>3 · Source CSVs</em> below, pick the tacit asset you're sending in <em>2 · Target asset</em>, click <em>Launch this drop</em>, then fund the treasury and enable auto-fulfil — recipients tip ~3,500 sats each to claim, you don't pay per-batch fees.
       </div>
 
+      <details style="margin-bottom:14px;" open><summary style="cursor:pointer;font-size:12px;font-weight:500;">📋 Setup order at a glance — order matters</summary>
+        <ol style="margin:8px 0 0 18px;padding:0;font-size:11px;line-height:1.7;color:var(--ink-mid);">
+          <li><strong>Generate a treasury</strong> (§1) — copy its <em>privkey</em> to cold backup + copy its <em>pubkey</em> and <em>bech32 address</em>. DON'T switch wallets yet.</li>
+          <li><strong>Pick the tacit asset</strong> you're airdropping (§2).</li>
+          <li><strong>Add Etherscan CSVs</strong> (§3). Source decimals default to 18 (correct for most ERC-20s).</li>
+          <li><strong>Blacklist</strong> (§4) — zero address, dead address, CEX hot wallets, your own team addresses.</li>
+          <li><strong>Click Launch this drop</strong> (§5) — builds merkle snapshot, pins to IPFS, saves drop record in one click.</li>
+          <li>On the saved drop card (§6), while <strong>main wallet</strong> is still active:
+            <ul style="margin:2px 0 0 14px;padding:0;list-style:disc;">
+              <li><strong>Fund: TAC →</strong> send your payout supply to the treasury pubkey.</li>
+              <li><strong>Fund: sats →</strong> send bootstrap sats to the treasury bech32.</li>
+            </ul>
+          </li>
+          <li><strong>Drops §1 → Switch active wallet to the treasury.</strong> All remaining steps sign with the treasury key.</li>
+          <li>On the saved drop card: <strong>Publish to discovery</strong>. ⚠ <strong>This MUST happen after switching to the treasury</strong> — the announcement's signer pubkey is what recipients see as the tip destination. Publishing from any other wallet routes tips to that wallet instead of the treasury.</li>
+          <li>On the saved drop card: <strong>Fulfil claims → expand ⚙ Auto-fulfil → Enable</strong>. Walk away. Recipients tip + claim; the dapp broadcasts batches automatically.</li>
+        </ol>
+      </details>
+
       <div class="warn" style="margin-bottom:14px;">
-        <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by the active wallet. To bound blast radius mid-campaign, generate a dedicated treasury identity in step 1.
+        <strong>Hot-wallet hygiene.</strong> Fulfilment CXFERs are signed by the active wallet. Generate a dedicated treasury in §1 and fund only what each batch needs — limits blast radius if the key leaks.
       </div>
 
       <details style="margin-bottom:14px;"><summary class="muted" style="cursor:pointer;font-size:11px;">Trust model: where the worker fits, and how to self-host</summary>
@@ -2479,21 +2498,26 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="muted" style="font-size:11px;margin-bottom:6px;">Addresses listed here are excluded even if present in any source CSV. One per line, with or without 0x prefix. Comments (<code>#</code>, <code>//</code>) ignored.</div>
       <textarea id="drop-blacklist" rows="3" style="font-family:var(--mono);font-size:11px;" placeholder="# exclude these addresses&#10;0x1111111111111111111111111111111111111111&#10;0x2222222222222222222222222222222222222222"></textarea>
 
-      <h3 style="margin-top:18px;">5 · Build snapshot</h3>
-      <div class="flex" style="gap:6px;">
-        <button id="btn-drop-build" type="button" class="primary">Build merged snapshot</button>
+      <h3 style="margin-top:18px;">5 · Build + publish</h3>
+      <div class="muted" style="font-size:12px;margin-bottom:8px;line-height:1.5;">
+        <strong>Easy path:</strong> click <em>Launch this drop</em> to run all three steps in sequence — build the merkle snapshot, pin it to IPFS, and save the drop record. Then the saved drop card below lights up with one-click <em>Fund: TAC</em> / <em>Fund: sats</em> / <em>Publish to discovery</em> buttons.
+      </div>
+      <div class="flex" style="gap:6px;flex-wrap:wrap;">
+        <button id="btn-drop-launch" type="button" class="primary">🚀 Launch this drop (build + pin + save)</button>
+        <details style="align-self:center;"><summary class="muted" style="cursor:pointer;font-size:11px;">advanced: run steps individually</summary>
+          <div class="flex" style="gap:6px;margin-top:6px;flex-wrap:wrap;">
+            <button id="btn-drop-build" type="button">Build merged snapshot</button>
+            <button id="btn-drop-pin-snapshot" type="button" disabled title="Build a snapshot first">Pin to IPFS</button>
+            <button id="btn-drop-save" type="button" disabled title="Build a snapshot first">Save drop record</button>
+          </div>
+        </details>
       </div>
       <div id="drop-build-err" class="error" style="margin-top:8px;"></div>
+      <div id="drop-launch-status" style="margin-top:8px;font-size:11px;"></div>
       <div id="drop-build-preview" style="display:none;margin-top:14px;"></div>
-
-      <h3 style="margin-top:18px;">6 · Publish</h3>
-      <div class="flex" style="gap:6px;">
-        <button id="btn-drop-pin-snapshot" type="button" disabled title="Build a snapshot first">Pin snapshot to IPFS</button>
-        <button id="btn-drop-save" type="button" class="primary" disabled title="Build a snapshot first">Save drop record</button>
-      </div>
       <div id="drop-save-out" class="muted" style="font-size:11px;margin-top:8px;"></div>
 
-      <h3 style="margin-top:18px;">7 · Saved drops</h3>
+      <h3 style="margin-top:18px;">6 · Saved drops</h3>
       <div class="muted" style="font-size:11px;margin-bottom:8px;">
         Drop records live in this browser's localStorage — <strong>Export JSON</strong> on each row to back up the local <code>fulfilled[]</code> ledger; <strong>Import</strong> below to restore.
       </div>
@@ -2504,7 +2528,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </div>
       <div id="drop-list"><div class="empty" style="font-size:12px;">No drops saved yet.</div></div>
 
-      <h3 style="margin-top:24px;">8 · On-chain claim pool (SPEC §5.12 / §5.13)</h3>
+      <h3 style="margin-top:24px;">7 · On-chain claim pool (advanced — SPEC §5.12 / §5.13)</h3>
       <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
         Alternative to the worker-mediated airdrop above: lock supply into a <strong>T_DROP</strong> envelope, recipients <strong>self-claim</strong> with their own tx fees. Issuer pays one tx (~$5-10 mainnet) instead of one CXFER per batch of 7. Cap is enforced by the chain indexer. Optional merkle gate (paste a snapshot's merkle root) restricts claims to specific ETH addresses; leaving the root empty makes the drop FCFS for anyone.
       </div>
@@ -2528,13 +2552,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         </label>
       </div>
       <div class="muted" style="font-size:11px;margin-top:6px;">
-        Cap MUST be evenly divisible by per-claim. <code>max_claims = cap ÷ per_claim</code>. Size cap to <strong>exactly</strong> the count of eligible leaves × per_claim — unclaimed tokens are stranded in the pool until the reclaim flow ships (v2). Build the snapshot above first; the merkle root and leaf count are produced by the build step.
+        Cap MUST be evenly divisible by per-claim. <code>max_claims = cap ÷ per_claim</code>. For merkle-gated drops, size cap to the count of eligible leaves × per-claim. For open FCFS drops, set a non-zero expiry — any unclaimed remainder is recoverable by you via Reclaim once expiry passes (SPEC §5.12.1).
       </div>
-      <label style="margin-top:10px;">Merkle root (REQUIRED — paste the 64-hex root from §5 above; open FCFS drops are deferred to v2 pending the reclaim flow)
-        <input id="ondrop-merkle-root" type="text" placeholder="64-hex from snapshot Build merged snapshot" autocomplete="off" spellcheck="false" style="font-family:var(--mono);font-size:12px;" required>
+      <label style="margin-top:10px;">Merkle root (paste 64-hex from §5 above, or leave empty for open FCFS)
+        <input id="ondrop-merkle-root" type="text" placeholder="64-hex from Build merged snapshot — or empty for open FCFS" autocomplete="off" spellcheck="false" style="font-family:var(--mono);font-size:12px;">
       </label>
       <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
-        <strong>⚠ Stranding risk:</strong> if recipients don't claim by expiry (or if cap exceeds the eligible-claim total), those tokens lock indefinitely. Reclaim is wired through the SPEC but not yet through the dapp; coming in v2.
+        Merkle-gated: only addresses in the snapshot can claim. Open FCFS (empty merkle root): anyone can claim, first-come-first-serve. Open FCFS requires an expiry block so unclaimed tokens can be reclaimed by you afterward.
       </div>
       <div class="flex" style="gap:6px;margin-top:14px;">
         <button id="btn-ondrop-broadcast" type="button" class="primary">Broadcast T_DROP</button>
@@ -2542,7 +2566,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div id="ondrop-err" class="error" style="margin-top:8px;"></div>
       <div id="ondrop-result" style="display:none;margin-top:14px;"></div>
 
-      <h3 style="margin-top:24px;">9 · Active on-chain pools</h3>
+      <h3 style="margin-top:24px;">8 · Active on-chain pools (advanced)</h3>
       <div class="muted" style="font-size:11px;margin-bottom:8px;line-height:1.5;">
         Pools you (or anyone) created via T_DROP, on this network. Updated when the worker indexer scans (every ~5 min) or via the <em>↻ Refresh</em> button. Click into a pool for claim stats + reclaim controls if you're the issuer.
       </div>
@@ -2592,6 +2616,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </label>
       <div class="muted" style="font-size:11px;margin-top:4px;">Uncheck only if you're fulfilling a hand-curated batch you trust without claimant proof. With the box checked, every tuple must include a signature that recovers to the row's eth_address.</div>
 
+      <label style="margin-top:8px;display:flex;align-items:center;gap:6px;font-weight:normal;">
+        <input id="drop-fulfil-autobackup" type="checkbox" checked>
+        <span>Auto-download backup JSON after each successful batch</span>
+      </label>
+      <div class="muted" style="font-size:11px;margin-top:4px;">Saves the updated drop record (with this batch's fulfilment entries) to your downloads folder. Recommended — clearing browser data without a backup loses the local fulfilled-leaf ledger (chain unaffected).</div>
+
       <div class="flex" style="margin-top:14px;gap:6px;">
         <button id="btn-drop-fulfil-verify" type="button">Verify batch</button>
         <button id="btn-drop-fulfil-broadcast" type="button" class="primary" disabled title="Verify first">Broadcast batch CXFER</button>
@@ -2608,6 +2638,22 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div id="drop-fulfil-err" class="error" style="margin-top:8px;"></div>
       <div id="drop-fulfil-preview" style="display:none;margin-top:14px;"></div>
       <div id="drop-fulfil-result" style="display:none;margin-top:14px;"></div>
+
+      <details id="drop-autofulfil-details" style="margin-top:18px;padding-top:14px;border-top:1px dashed var(--ink-faint);">
+        <summary style="cursor:pointer;font-size:12px;font-weight:500;">⚙ Auto-fulfil — poll queue + broadcast on a timer</summary>
+        <div style="margin-top:10px;">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:normal;flex-wrap:wrap;">
+            <input id="drop-autofulfil-toggle" type="checkbox">
+            <span>Enable · poll every</span>
+            <input id="drop-autofulfil-interval" type="number" value="10" min="1" max="60" style="width:60px;">
+            <span>min</span>
+          </label>
+          <div class="muted" style="font-size:11px;margin-top:6px;line-height:1.5;">
+            The dapp pulls the queue, verifies any new claims with valid funding_txids, and broadcasts batches up to 7 recipients — same logic as the daemon, running in this tab. Keep this tab open. Closing pauses auto-fulfil; re-checking the box resumes from where it left off. Requires the treasury wallet to be active (Drops §1 → Switch active wallet).
+          </div>
+          <div id="drop-autofulfil-status" style="margin-top:10px;font-size:11px;font-family:var(--mono);max-height:240px;overflow-y:auto;border:1px dashed var(--ink-faint);padding:8px;background:var(--bg-warm);"></div>
+        </div>
+      </details>
     </div>
   </div>
 </div>
@@ -2629,6 +2675,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-claim-discover-refresh" type="button" style="font-size:11px;padding:2px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" title="Re-fetch active drops from the worker">↻ Refresh</button>
         <span id="claim-discover-status" class="muted" style="font-size:11px;"></span>
       </div>
+      <div id="claim-submissions"></div>
       <div id="claim-discover-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;font-size:11px;">no drops loaded yet · click Refresh</div></div>
 
       <h3 style="margin-top:18px;">2 · Connect Ethereum wallet</h3>

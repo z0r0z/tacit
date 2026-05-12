@@ -36,7 +36,9 @@ import * as comp from './composition.mjs';
 import * as bp from './bulletproofs.mjs';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { sha256 } from '@noble/hashes/sha256';
+import { ripemd160 } from '@noble/hashes/ripemd160';
 import * as secp from '@noble/secp256k1';
+const hash160 = (b) => ripemd160(sha256(b));
 
 // Dynamic import so jsdom shim is in place first.
 const dapp = await import('../dapp/tacit.js');
@@ -198,6 +200,155 @@ await test('axintentCancelMsg', () => eqBytes(
   dapp.axintentCancelMsg(ASSET_ID, INTENT_ID),
   comp.axintentCancelMsg(ASSET_ID, INTENT_ID),
 ));
+
+console.log('\n§5.7.8 Preauth-sale message hashes:');
+// Fixtures shared with the worker-parity block so both halves of the
+// dapp/worker/composition triangle test the same inputs.
+const PREAUTH_OUTPOINT_TXID = '11'.repeat(32);
+const PREAUTH_OUTPOINT_VOUT = 1;
+const PREAUTH_OUTPOINT_VALUE = 5460;
+const PREAUTH_AMOUNT = 1000n;
+const PREAUTH_BLINDING_HEX = '22'.repeat(32);
+const PREAUTH_BLINDING_BYTES = hexToBytes(PREAUTH_BLINDING_HEX);
+const PREAUTH_MIN_PRICE = 50000;
+const PREAUTH_PAYOUT_SCRIPT_HEX = '0014' + 'cd'.repeat(20);
+const PREAUTH_PAYOUT_SCRIPT_BYTES = hexToBytes(PREAUTH_PAYOUT_SCRIPT_HEX);
+const PREAUTH_EXPIRY = 1900000000;
+// Use a realistic DER-shaped signature placeholder ending in 0x83 so length
+// and trailing-byte invariants are exercised. Real signature verification is
+// covered by the integration test below.
+const PREAUTH_SPEND_SIG_HEX = '3044022001020304050607080102030405060708010203040506070801020304050607080220080706050403020108070605040302010807060504030201080706050403020183';
+const PREAUTH_SPEND_SIG_BYTES = hexToBytes(PREAUTH_SPEND_SIG_HEX);
+const PREAUTH_NONCE_BYTES = hexToBytes('33'.repeat(16));
+const PREAUTH_SALE_ID_HEX = comp.preauthSaleIdHex(
+  PREAUTH_OUTPOINT_TXID, PREAUTH_OUTPOINT_VOUT, PK_A, PREAUTH_NONCE_BYTES,
+);
+const PREAUTH_SALE_ID_BYTES = hexToBytes(PREAUTH_SALE_ID_HEX);
+
+await test('preauthSaleIdHex dapp ↔ comp', () => {
+  const a = dapp.preauthSaleIdHex(PREAUTH_OUTPOINT_TXID, PREAUTH_OUTPOINT_VOUT, PK_A, PREAUTH_NONCE_BYTES);
+  const b = comp.preauthSaleIdHex(PREAUTH_OUTPOINT_TXID, PREAUTH_OUTPOINT_VOUT, PK_A, PREAUTH_NONCE_BYTES);
+  return a === b && /^[0-9a-f]{32}$/.test(a);
+});
+
+await test('preauthSaleIdHex changes when nonce changes', () => {
+  const a = dapp.preauthSaleIdHex(PREAUTH_OUTPOINT_TXID, PREAUTH_OUTPOINT_VOUT, PK_A, PREAUTH_NONCE_BYTES);
+  const otherNonce = hexToBytes('44'.repeat(16));
+  const b = dapp.preauthSaleIdHex(PREAUTH_OUTPOINT_TXID, PREAUTH_OUTPOINT_VOUT, PK_A, otherNonce);
+  return a !== b;
+});
+
+const PREAUTH_AUTH_ARGS = {
+  assetIdBytes: ASSET_ID,
+  saleIdBytes: PREAUTH_SALE_ID_BYTES,
+  sellerPubBytes: PK_A,
+  assetOutpointTxidHex: PREAUTH_OUTPOINT_TXID,
+  assetOutpointVout: PREAUTH_OUTPOINT_VOUT,
+  assetUtxoValue: PREAUTH_OUTPOINT_VALUE,
+  amount: PREAUTH_AMOUNT,
+  blindingBytes: PREAUTH_BLINDING_BYTES,
+  minPriceSats: PREAUTH_MIN_PRICE,
+  sellerPayoutScriptBytes: PREAUTH_PAYOUT_SCRIPT_BYTES,
+  expiry: PREAUTH_EXPIRY,
+  sellerAssetSpendSigBytes: PREAUTH_SPEND_SIG_BYTES,
+  nonceBytes: PREAUTH_NONCE_BYTES,
+};
+
+await test('preauthSaleAuthMsg dapp ↔ comp', () => eqBytes(
+  dapp.preauthSaleAuthMsg(PREAUTH_AUTH_ARGS),
+  comp.preauthSaleAuthMsg(PREAUTH_AUTH_ARGS),
+));
+
+// Sanity: changing any signed field flips the hash. Catches accidental
+// missing-binding regressions (e.g., forgetting to include `expiry` in the
+// preimage would leave this passing for unrelated fields but would let an
+// attacker rebind a captured signature to a different expiry).
+await test('preauthSaleAuthMsg binds min_price_sats', () => {
+  const base = dapp.preauthSaleAuthMsg(PREAUTH_AUTH_ARGS);
+  const tweaked = dapp.preauthSaleAuthMsg({ ...PREAUTH_AUTH_ARGS, minPriceSats: PREAUTH_MIN_PRICE + 1 });
+  return !eqBytes(base, tweaked);
+});
+await test('preauthSaleAuthMsg binds expiry', () => {
+  const base = dapp.preauthSaleAuthMsg(PREAUTH_AUTH_ARGS);
+  const tweaked = dapp.preauthSaleAuthMsg({ ...PREAUTH_AUTH_ARGS, expiry: PREAUTH_EXPIRY + 1 });
+  return !eqBytes(base, tweaked);
+});
+await test('preauthSaleAuthMsg binds seller_payout_script', () => {
+  const base = dapp.preauthSaleAuthMsg(PREAUTH_AUTH_ARGS);
+  const otherScript = hexToBytes('0014' + 'ab'.repeat(20));
+  const tweaked = dapp.preauthSaleAuthMsg({ ...PREAUTH_AUTH_ARGS, sellerPayoutScriptBytes: otherScript });
+  return !eqBytes(base, tweaked);
+});
+await test('preauthSaleAuthMsg binds seller_asset_spend_sig', () => {
+  const base = dapp.preauthSaleAuthMsg(PREAUTH_AUTH_ARGS);
+  const otherSig = hexToBytes(PREAUTH_SPEND_SIG_HEX.slice(0, -2) + '00'); // flip the trailing byte
+  const tweaked = dapp.preauthSaleAuthMsg({ ...PREAUTH_AUTH_ARGS, sellerAssetSpendSigBytes: otherSig });
+  return !eqBytes(base, tweaked);
+});
+await test('preauthSaleAuthMsg binds opening blinding', () => {
+  const base = dapp.preauthSaleAuthMsg(PREAUTH_AUTH_ARGS);
+  const otherBlinding = hexToBytes('ee'.repeat(32));
+  const tweaked = dapp.preauthSaleAuthMsg({ ...PREAUTH_AUTH_ARGS, blindingBytes: otherBlinding });
+  return !eqBytes(base, tweaked);
+});
+
+await test('preauthSaleCancelMsg dapp ↔ comp', () => eqBytes(
+  dapp.preauthSaleCancelMsg(ASSET_ID, PREAUTH_SALE_ID_BYTES),
+  comp.preauthSaleCancelMsg(ASSET_ID, PREAUTH_SALE_ID_BYTES),
+));
+
+// Skeleton tx shape — used by the dapp at publish time to produce the
+// BIP-143 sighash that the seller signs. Pin the exact byte layout so a
+// silent change in skeleton (e.g., flipping sequence to 0xffffffff) would
+// fail this test instead of silently producing signatures the worker can't
+// verify against its independently-reconstructed preimage.
+await test('preauthSellerSpendSkeletonTx pins shape', () => {
+  const skel = dapp.preauthSellerSpendSkeletonTx({
+    assetOutpoint: { txid: PREAUTH_OUTPOINT_TXID, vout: PREAUTH_OUTPOINT_VOUT },
+    sellerPayoutScript: PREAUTH_PAYOUT_SCRIPT_BYTES,
+    minPriceSats: PREAUTH_MIN_PRICE,
+  });
+  return skel.version === 2
+      && skel.locktime === 0
+      && skel.inputs.length === 2
+      && skel.inputs[1].txid === PREAUTH_OUTPOINT_TXID
+      && skel.inputs[1].vout === PREAUTH_OUTPOINT_VOUT
+      && skel.inputs[1].sequence === 0xfffffffd
+      && skel.outputs.length === 2
+      && skel.outputs[1].value === PREAUTH_MIN_PRICE
+      && bytesToHex(skel.outputs[1].script) === PREAUTH_PAYOUT_SCRIPT_HEX;
+});
+
+// CRITICAL: the bytes the seller signs (dapp's sighashV0WithType applied to
+// the canonical skeleton) MUST byte-equal what the worker reconstructs from
+// the sale-auth fields. Without this test, a silent divergence in either
+// the skeleton layout or the BIP-143 sighash formula would let every dapp-
+// signed listing POST get rejected by the worker with "seller_asset_spend
+// invalid" — and only an end-to-end run would catch it. This test pins the
+// two implementations together at the byte level so any drift fails CI.
+await test('dapp sighashV0WithType ↔ comp preauthSellerSpendSighash byte equality', () => {
+  const skel = dapp.preauthSellerSpendSkeletonTx({
+    assetOutpoint: { txid: PREAUTH_OUTPOINT_TXID, vout: PREAUTH_OUTPOINT_VOUT },
+    sellerPayoutScript: PREAUTH_PAYOUT_SCRIPT_BYTES,
+    minPriceSats: PREAUTH_MIN_PRICE,
+  });
+  // scriptCode = P2WPKH(seller_pub) = 0x76 0xa9 0x14 || hash160(pubkey) || 0x88 0xac.
+  const scriptCode = concatBytes(
+    new Uint8Array([0x76, 0xa9, 0x14]),
+    hash160(PK_A),
+    new Uint8Array([0x88, 0xac]),
+  );
+  const dappSighash = dapp.sighashV0WithType(skel, 1, scriptCode, PREAUTH_OUTPOINT_VALUE, 0x83);
+  const compSighash = comp.preauthSellerSpendSighash({
+    assetOutpointTxidHex: PREAUTH_OUTPOINT_TXID,
+    assetOutpointVout: PREAUTH_OUTPOINT_VOUT,
+    assetUtxoValue: PREAUTH_OUTPOINT_VALUE,
+    sellerPubBytes: PK_A,
+    sellerPayoutScriptBytes: PREAUTH_PAYOUT_SCRIPT_BYTES,
+    minPriceSats: PREAUTH_MIN_PRICE,
+  });
+  return eqBytes(dappSighash, compSighash);
+});
 
 console.log('\n§5c Atomic-intent recipient_blinding ECDH encryption (round-trip):');
 await test('keystream symmetric maker(SK_A,PK_B) === taker(SK_B,PK_A)', () => eqBytes(

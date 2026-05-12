@@ -305,7 +305,92 @@ Step 4) and taker (with ≥ 60k signet sats and an empty atomic-intents tab).
    shows that UTXO as inflated permanently — its on-chain commitment exists
    but never validates as ancestry.
 
-## Step 14 — Mempool.space API contract sanity (renumbered from 11)
+## Step 14 — Open-FCFS T_DROP deploy (SPEC §5.12)
+
+Tests the non-ETH airdrop path end-to-end. Prerequisite: an existing tacit
+asset in your wallet with at least 500 base-unit balance (use the asset from
+Step 1 or Step 11 — any CETCH or T_PETCH-rooted asset works).
+
+1. Drops tab → "§8 Create on-chain pool".
+2. Pick an asset whose balance ≥ 500. Fill: per-claim `100`, cap `500`,
+   expiry block = `current_tip + 20` (look it up in the dApp's top-right tip
+   indicator; ~20 signet blocks ≈ 3 min).
+3. Leave the merkle-root field **empty** — this triggers the open-FCFS path.
+4. Click Broadcast. Confirm the open-FCFS warning dialog ("Anyone may claim.
+   Unclaimed remainder can be reclaimed by you after expiry…").
+5. **Expected on-chain:**
+   - Two txs: commit + reveal.
+   - Reveal vin[0].witness[1] decodes (via the worker decoder or
+     `decodeCDropPayload` in DevTools) with `merkle_root = 00..00` (32 zero
+     bytes), `per_claim = 100`, `cap_amount = 500`, `expiry_height` set.
+   - Reveal vout[0] is **not** a tacit UTXO (no balance credited to deployer).
+   - Asset inputs at vin[1+] now spent — deployer's balance drops by 500.
+6. Wait for the worker cron (≤5 min) or POST `/drops-hint`. Reload §9 Active
+   on-chain pools → the new drop should appear with the `open FCFS` badge,
+   `0 / 5 claims`, `500 <ticker> remaining`, and `expires at block <N>`.
+
+## Step 15 — Open-FCFS T_DCLAIM (no ETH wallet required)
+
+1. Switch to a different burner (or different browser profile — `tacit
+   import-key` or generate fresh on a new profile). Fund with ~10k sats from
+   the faucet.
+2. Drops tab → §9. Click "Claim →" on the open-FCFS pool from Step 14.
+3. Approve burner-backup + JIT funding prompts. No MetaMask, no ETH signing.
+4. **Expected on-chain:**
+   - Two txs: commit + reveal.
+   - Reveal vin[0].witness[1] decodes via `decodeCDClaimPayload` —
+     `drop_reveal_txid` matches Step 14's reveal txid, `amount = 100`,
+     `witness_len = 0` (open drop has no witness).
+   - Reveal vout[0] is your wallet's P2WPKH at DUST sats.
+5. Holdings tab: the new UTXO appears as **inflated** until worker indexes.
+6. Wait for ≥ 1 confirmation + worker cron tick. Reload:
+   - The UTXO promotes to a real holding of `100 <ticker>`.
+   - The pool card in §9 now shows `1 / 5 claims`, `400 <ticker> remaining`.
+7. Repeat from a third burner to confirm FCFS works for arbitrary claimants
+   (no eligibility check, anyone with sats can claim).
+
+## Step 16 — Reclaim unclaimed remainder (SPEC §5.12.1)
+
+1. From the **depositor** burner (the one that broadcast Step 14), wait for
+   the chain tip to pass `expiry_height + 6`. Watch the §9 pool card: the
+   Claim button changes to "Reclaim in N blk" (disabled), then to "Reclaim →"
+   (enabled) once `tip ≥ expiry + 6`.
+2. Click Reclaim →. Approve burner-backup + JIT funding.
+3. **Expected on-chain:**
+   - Two txs: commit + reveal.
+   - Reveal vin[0].witness[1] decodes via `decodeCDropPayload` with
+     `kind = 'cdrop-reclaim'`, `per_claim = 0` (sentinel), `reclaim_drop_id`
+     matching Step 14's drop_id, and a Schnorr `reclaim_sig`.
+   - Reveal vout[0] is a tacit UTXO holding
+     `pedersenCommit(remaining_amount, fresh_blinding)`.
+4. Holdings tab: a new UTXO appears as **inflated** until worker indexes.
+5. Wait ≥ 1 confirmation + cron tick. Reload:
+   - UTXO promotes to `(cap - claim_count × per_claim) <ticker>` balance.
+     With 2 claims from Step 15, that's `500 - 2×100 = 300`.
+   - §9 pool card shows `reclaimed` badge; the button is disabled.
+6. Verify that further claim attempts against the same drop_id are rejected:
+   broadcast a `T_DCLAIM` from a third burner against the now-reclaimed pool;
+   the dapp should refuse to credit the resulting UTXO (worker's drop record
+   exposes `reclaimed`; downstream wallets see no balance increase).
+
+## Step 17 — Reclaim failure modes
+
+1. **Wrong wallet:** From a non-depositor burner, attempt to reclaim a pool
+   whose depositor is someone else. The broadcaster's identity check
+   (`buildAndBroadcastTDropReclaim`) should refuse pre-broadcast with
+   "this wallet (…) did not deposit this drop. Depositor: (…)".
+2. **Before expiry+6:** With the Reclaim button still showing "Reclaim in N
+   blk" (i.e., `tip < expiry_height + 6`), the button is disabled. If you
+   force a broadcast via DevTools, the broadcaster throws "recommended to
+   wait N more block(s) for claim count to settle past expiry." Don't burn
+   fees in this state.
+3. **Cap fully drained:** If §15 was repeated 5 times so all 500 tokens were
+   claimed before expiry, the pool's `remaining_amount = 0` and the Reclaim
+   button should not appear; the card shows `drained` instead. No reclaim
+   tx is constructable (broadcaster throws "drop has no remaining amount
+   to reclaim").
+
+## Step 18 — Mempool.space API contract sanity (renumbered from 11)
 
 1. In DevTools, watch the Network panel during a normal scan.
 2. Confirm the dApp hits these endpoints:

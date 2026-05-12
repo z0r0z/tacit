@@ -13,8 +13,11 @@
 // Run from this directory: `node composition.test.mjs`.
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
+import { ripemd160 } from '@noble/hashes/ripemd160';
 import { hmac } from '@noble/hashes/hmac';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
+
+const hash160 = (b) => ripemd160(sha256(b));
 import {
   G, H, ZERO, SECP_N, modN,
   pedersenCommit, pointToBytes, bytesToPoint,
@@ -141,6 +144,114 @@ function axintentCancelMsg(assetIdBytes, intentIdBytes) {
     new TextEncoder().encode('tacit-axintent-cancel-v1'),
     assetIdBytes, intentIdBytes,
   ));
+}
+
+// ---- Preauth-sale messages (SPEC §5.7.8) ----
+// Independent reference implementation; parity tests cross-check this
+// against the dApp and worker copies to catch silent drift.
+
+function _bitcoinVarintBytes(n) {
+  const v = Number(n);
+  if (v < 0xfd) return new Uint8Array([v]);
+  if (v < 0x10000) { const b = new Uint8Array(3); b[0] = 0xfd; new DataView(b.buffer).setUint16(1, v, true); return b; }
+  if (v < 0x100000000) { const b = new Uint8Array(5); b[0] = 0xfe; new DataView(b.buffer).setUint32(1, v, true); return b; }
+  const b = new Uint8Array(9); b[0] = 0xff; new DataView(b.buffer).setBigUint64(1, BigInt(v), true); return b;
+}
+function _varslice(bytes) {
+  return concatBytes(_bitcoinVarintBytes(bytes.length), bytes);
+}
+
+function preauthSaleIdHex(assetOutpointTxidHex, assetOutpointVout, sellerPubBytes, nonceBytes) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, assetOutpointVout >>> 0, true);
+  const h = sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-sale-id-v1'),
+    reverseBytes(hexToBytes(assetOutpointTxidHex)),
+    voutLE,
+    sellerPubBytes,
+    nonceBytes,
+  ));
+  return bytesToHex(h.slice(0, 16));
+}
+
+function preauthSaleAuthMsg({
+  assetIdBytes, saleIdBytes, sellerPubBytes,
+  assetOutpointTxidHex, assetOutpointVout, assetUtxoValue,
+  amount, blindingBytes,
+  minPriceSats,
+  sellerPayoutScriptBytes,
+  expiry,
+  sellerAssetSpendSigBytes,
+  nonceBytes,
+}) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, assetOutpointVout >>> 0, true);
+  const valueLE = new Uint8Array(8);
+  new DataView(valueLE.buffer).setBigUint64(0, BigInt(assetUtxoValue), true);
+  const amountLE = new Uint8Array(8);
+  new DataView(amountLE.buffer).setBigUint64(0, BigInt(amount), true);
+  const priceLE = new Uint8Array(8);
+  new DataView(priceLE.buffer).setBigUint64(0, BigInt(minPriceSats), true);
+  const expiryLE = new Uint8Array(8);
+  new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-sale-v1'),
+    assetIdBytes,
+    saleIdBytes,
+    sellerPubBytes,
+    reverseBytes(hexToBytes(assetOutpointTxidHex)),
+    voutLE,
+    valueLE,
+    amountLE,
+    blindingBytes,
+    priceLE,
+    _varslice(sellerPayoutScriptBytes),
+    expiryLE,
+    _varslice(sellerAssetSpendSigBytes),
+    nonceBytes,
+  ));
+}
+
+function preauthSaleCancelMsg(assetIdBytes, saleIdBytes) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-sale-cancel-v1'),
+    assetIdBytes, saleIdBytes,
+  ));
+}
+
+// BIP-143 sighash preimage the seller signs at publish time. Reconstructible
+// from the sale-auth body alone — both worker (verification) and buyer (when
+// placing the signature into vin[1].witness) end up at the same 32-byte hash.
+function preauthSellerSpendSighash({
+  assetOutpointTxidHex, assetOutpointVout, assetUtxoValue,
+  sellerPubBytes, sellerPayoutScriptBytes, minPriceSats,
+}) {
+  const u32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  const u64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
+  const zero32 = new Uint8Array(32);
+  const hash256 = (b) => sha256(sha256(b));
+  // P2WPKH scriptCode = 0x76 0xa9 0x14 || hash160(seller_pubkey) || 0x88 0xac.
+  const scriptCode = concatBytes(
+    new Uint8Array([0x76, 0xa9, 0x14]),
+    hash160(sellerPubBytes),
+    new Uint8Array([0x88, 0xac]),
+  );
+  const vout1Serialized = concatBytes(u64(minPriceSats), _varslice(sellerPayoutScriptBytes));
+  const hashOutputs = hash256(vout1Serialized);
+  const preimage = concatBytes(
+    u32(2),                                          // nVersion
+    zero32,                                          // hashPrevouts
+    zero32,                                          // hashSequence
+    reverseBytes(hexToBytes(assetOutpointTxidHex)),  // outpoint.txid (BE wire)
+    u32(assetOutpointVout),                          // outpoint.vout
+    _varslice(scriptCode),                           // scriptCode
+    u64(assetUtxoValue),                             // value
+    u32(0xfffffffd),                                 // nSequence
+    hashOutputs,                                     // hashOutputs (vout[1] only)
+    u32(0),                                          // nLocktime
+    u32(0x83),                                       // nHashType
+  );
+  return hash256(preimage);
 }
 
 // ---- XOR-OTP amount encryption ----
@@ -918,6 +1029,8 @@ function parseAirdropCSV(csvText, opts = {}) {
   const rows = [];
   let assignedIndex = 0;
   let headerSeen = false;
+  let droppedDust = 0;
+  let droppedBlacklist = 0;
   for (let lineNo = 0; lineNo < lines.length; lineNo++) {
     const raw = lines[lineNo].trim();
     if (!raw) continue;
@@ -940,7 +1053,7 @@ function parseAirdropCSV(csvText, opts = {}) {
     catch (e) { throw new Error(`csv line ${lineNo + 1}: ${e.message}`); }
     const ethAddrHex = bytesToHex(ethAddrBytes);
 
-    if (blacklist && blacklist.has(ethAddrHex)) continue;
+    if (blacklist && blacklist.has(ethAddrHex)) { droppedBlacklist++; continue; }
 
     let amount;
     try { amount = _parseAmountCell(amtCell, sourceDecimals); }
@@ -950,11 +1063,14 @@ function parseAirdropCSV(csvText, opts = {}) {
     }
     if (amount < 0n) throw new Error(`csv line ${lineNo + 1}: negative amount`);
     if (amount >= (1n << 64n)) throw new Error(`csv line ${lineNo + 1}: amount overflows u64 after conversion to ${targetDecimals} decimals`);
-    if (amount === 0n) continue;
+    if (amount === 0n) { droppedDust++; continue; }
 
     rows.push({ ethAddrHex, ethAddrBytes, amount, index: assignedIndex });
     assignedIndex++;
   }
+  // Mirror dapp's parity: expose counts as array properties for UI preview.
+  rows.droppedDust = droppedDust;
+  rows.droppedBlacklist = droppedBlacklist;
   return rows;
 }
 
@@ -1110,6 +1226,42 @@ function verifyAirdropClaimSig(msg, sigHex, expectedEthAddrHex) {
   } catch { return false; }
 }
 
+// ERC-1271 fallback verifier — mirror of dapp/tacit.js verifyEthSigViaErc1271.
+// Used by the issuer-side worker-mediated fulfilment to authenticate smart-
+// contract wallet recipients. The dapp implementation pipes through the user's
+// connected EIP-1193 provider; tests substitute a mock provider that returns
+// the contract's expected response. SPEC §5.13 calls out that this path is
+// REQUIRED for smart-wallet recipients and unavailable on the on-chain T_DCLAIM
+// path (the Bitcoin-context validator can't run eth_call).
+const ERC1271_MAGIC = '0x1626ba7e';
+async function verifyEthSigViaErc1271(msg, sigHex, expectedEthAddrHex, provider) {
+  if (!provider || typeof provider.request !== 'function') return false;
+  const cleanAddr = String(expectedEthAddrHex).toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]{40}$/.test(cleanAddr)) return false;
+  const cleanSig = String(sigHex).toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]+$/.test(cleanSig) || cleanSig.length % 2) return false;
+  const hash = eip191Hash(msg);
+  const sigBytes = cleanSig.length / 2;
+  const padBytes = (32 - (sigBytes % 32)) % 32;
+  const calldata = '0x' +
+    ERC1271_MAGIC.slice(2) +
+    bytesToHex(hash) +
+    '0000000000000000000000000000000000000000000000000000000000000040' +
+    sigBytes.toString(16).padStart(64, '0') +
+    cleanSig +
+    '00'.repeat(padBytes);
+  let result;
+  try {
+    result = await provider.request({
+      method: 'eth_call',
+      params: [{ to: '0x' + cleanAddr, data: calldata }, 'latest'],
+    });
+  } catch {
+    return false;
+  }
+  return typeof result === 'string' && result.toLowerCase().startsWith(ERC1271_MAGIC);
+}
+
 // Helper for tests: sign an EIP-191 message with a known privkey.
 // Mirrors what MetaMask does on the recipient side.
 function _signEip191WithPriv(msg, privBytes) {
@@ -1137,6 +1289,7 @@ export {
   computeKernelMsg, computeMintMsg,
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   axintentMsg, axintentClaimMsg, axintentFulfilmentMsg, axintentCancelMsg,
+  preauthSaleAuthMsg, preauthSaleCancelMsg, preauthSaleIdHex, preauthSellerSpendSighash,
   encodeCEtchPayload, decodeCEtchPayload,
   encodeCXferPayload, decodeCXferPayload,
   encodeCMintPayload, decodeCMintPayload,
@@ -1152,5 +1305,6 @@ export {
   truncateAmountDecimals, mergeAirdropRows, parseBlacklist,
   // Airdrop claim message + EIP-191 + ECDSA recover
   buildAirdropClaimMsg, eip191Hash, recoverEthAddrFromSig, verifyAirdropClaimSig,
+  ERC1271_MAGIC, verifyEthSigViaErc1271,
   _signEip191WithPriv, _ethAddrFromPriv,
 };

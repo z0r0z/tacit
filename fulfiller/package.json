@@ -1,0 +1,17 @@
+{
+  "name": "tacit-fulfiller",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless airdrop fulfilment daemon for tacit. Imports dapp/tacit.js under a jsdom shim, polls the worker's claim queue, verifies each tuple, and broadcasts batched CXFERs signed by the treasury wallet. Runs on Node 20+.",
+  "dependencies": {
+    "@noble/hashes": "^1.4.0",
+    "@noble/secp256k1": "^2.1.0",
+    "@scure/base": "^1.1.6",
+    "jsdom": "^24.0.0"
+  },
+  "scripts": {
+    "start": "node auto-fulfil.mjs",
+    "dry-run": "node auto-fulfil.mjs --dry-run"
+  }
+}

@@ -47,3 +47,22 @@ SCAN_BLOCKS_MAINNET = "1"
 # Faucet rate limits per UTC day
 FAUCET_IP_LIMIT = "1"
 FAUCET_ADDR_LIMIT = "1"
+
+# Airdrop claim-queue rate limits (per UTC day). Defaults in code are tuned
+# for a 50-recipient hobby drop; production drops with thousands of recipients
+# need these raised. The defaults bite hardest on:
+#   1. AIRDROP_DAILY_LIMIT_ROOT_IP — the issuer's daemon/dapp DELETEs each
+#      fulfilled leaf from this IP. For a 3000-recipient drop in batches of 7
+#      that's ~430 DELETEs. Default 50 throttles after ~7 batches.
+#   2. AIRDROP_DAILY_LIMIT — claimants on shared IPs (mobile carriers, corp
+#      NATs) collide on the per-IP global. Default 200 is fine until a single
+#      IP fronts hundreds of users.
+#   3. AIRDROP_DAILY_LIMIT_ROOT_PUBKEY — a recipient who retries their POST
+#      after re-tipping (treasury fund flow) hits this; default 25 allows ~12
+#      tip-retry cycles, raise if expecting volatile fee markets / many resubmits.
+# Soundness is not affected: the daemon's anti-double-pay still applies. These
+# only control how aggressively the worker throttles legitimate traffic.
+AIRDROP_DAILY_LIMIT = "500"
+AIRDROP_DAILY_LIMIT_ROOT_IP = "5000"
+AIRDROP_DAILY_LIMIT_PUBKEY = "200"
+AIRDROP_DAILY_LIMIT_ROOT_PUBKEY = "50"

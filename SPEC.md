@@ -128,7 +128,7 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags **f
 | `tacit-etch-amount-v1` | Etcher's supply keystream (8B) | CETCH `amount_ct` |
 | `tacit-mint-amount-v1` | Issuer's mint keystream (8B) | T_MINT `amount_ct` |
 
-Other domain-separated v1 tags appear where they're used and are not part of this table: BIP-340 Schnorr signature-message tags (`tacit-kernel-v1` §5.2, `tacit-mint-v1` §5.3, `tacit-disclosure-v1` §5.6, `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` §5.7.6, `tacit-pool-init-v1` §5.10.1, `tacit-deposit-v1` §5.10, `tacit-withdraw-bind-v1` §5.11, `tacit-drop-v1` §5.12, `tacit-drop-reclaim-v1` §5.12.1) — note `tacit-withdraw-bind-v1` is the SHA256 domain for the withdraw bind_hash, not a Schnorr message; a related HMAC keystream `tacit-axintent-blinding-v1` (§5.7.6); generator derivations `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1); the bulletproof Fiat-Shamir transcript domain `tacit-bp-v1` (§3.3); and off-chain coordination tags (`tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1}`, `tacit-airdrop-claim-v1` reused by §5.13's canonical claim msg) defined by their worker endpoints in §8 — these last live entirely outside the on-chain protocol except where §5.13 explicitly reuses the airdrop leaf/node/claim-msg formats.
+Other domain-separated v1 tags appear where they're used and are not part of this table: BIP-340 Schnorr signature-message tags (`tacit-kernel-v1` §5.2, `tacit-mint-v1` §5.3, `tacit-disclosure-v1` §5.6, `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` §5.7.6, `tacit-preauth-sale-{v1,cancel-v1}` §5.7.8, `tacit-pool-init-v1` §5.10.1, `tacit-deposit-v1` §5.10, `tacit-withdraw-bind-v1` §5.11, `tacit-drop-v1` §5.12, `tacit-drop-reclaim-v1` §5.12.1) — note `tacit-withdraw-bind-v1` is the SHA256 domain for the withdraw bind_hash, not a Schnorr message; a related HMAC keystream `tacit-axintent-blinding-v1` (§5.7.6); generator derivations `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1); the bulletproof Fiat-Shamir transcript domain `tacit-bp-v1` (§3.3); and off-chain coordination tags (`tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1}`, `tacit-airdrop-claim-v1` reused by §5.13's canonical claim msg) defined by their worker endpoints in §8 — these last live entirely outside the on-chain protocol except where §5.13 explicitly reuses the airdrop leaf/node/claim-msg formats.
 
 **Endianness convention.** Throughout this spec, `txid_BE` denotes the txid in the byte order that `SHA256(serialized_tx)` natively produces — the same bytes a Bitcoin transaction puts on the wire when it references a previous output. This is the **reverse** of the displayed/RPC hex form (e.g. `getrawtransaction` output, block-explorer URLs). In wider Bitcoin documentation this on-wire order is often called "internal" or "LE"; tacit's `_BE` label is not standard but is fixed by the test vectors in §3.1 (and `tests/vectors.test.mjs`). Implementers should treat any `_BE` field as `reverseBytes(hexToBytes(displayed_txid))`. `_LE` on integer fields (e.g. `vout_LE`, `amount_LE`) means standard little-endian integer encoding.
 
@@ -905,6 +905,168 @@ Both flows can coexist on the same asset: a buyer can post a bid at the same tim
 
 This primitive is implementation-defined in v1: the wire format above is the canonical reference for any implementation that wants to interoperate with the reference dApp's marketplace. Indexer-level validity is unaffected — bid intents live entirely outside the on-chain protocol; all settlement is normal `T_AXFER` via §5.7.6.
 
+#### 5.7.8 Preauth sales (buyer-completable T_AXFER)
+
+§5.7.6 atomic intents require the maker to come back online during the 5-min claim window: the recipient blinding `r` is a uniform-random scalar fixed at intent-publish time and has to be encrypted to a specific taker at fulfilment. That round-trip is fine for trader-to-trader OTC but rules out the UniSat-style flow most marketplace users expect ("seller lists once, walks away; buyer clicks Buy"). Preauth sales remove the maker-online requirement by making one specific exchange: the maker publishes the listed UTXO's `(amount, blinding)` opening at listing time, and the buyer derives an ECDH-recoverable `r_out` against the maker's pubkey per §5.7.3 — same recovery path as targeted offers. The crypto delta is exactly one bit: random per-intent `r` (§5.7.6, encrypted at fulfilment) → ECDH-derived `r_out` (§5.7.3 / §3.5, recoverable from chain + privkey). No new opcode, no validator change, no consensus implication: on-chain bytes are indistinguishable from a §5.7.3 targeted settlement.
+
+The maker still has to authorize the sale before going offline. That authorization has two parts:
+
+1. **A signed sale message** (`tacit-preauth-sale-v1` below) that binds asset_id, exact asset outpoint, opening, min price, payout script, expiry, and a per-listing nonce — all under the maker's BIP-340 key.
+2. **A pre-signed P2WPKH spend signature for `vin[1]`** with `SIGHASH_SINGLE | ANYONECANPAY` (= `0x83`), binding the asset input to `vout[1] = seller_payout_script` paying `min_price_sats`. This is the Bitcoin-consensus authorization that lets the buyer's later settlement tx actually spend the listed UTXO without the maker present.
+
+The seller-spend signature is the load-bearing piece. Without it, the buyer can construct a valid tacit kernel + envelope (the opening is public), but Bitcoin consensus rejects the tx because `vin[1]`'s witness is missing. With it, the buyer composes the rest of the tx around the maker's signed input/output pair and Bitcoin consensus enforces the maker's payout terms.
+
+##### The seller_asset_spend signature
+
+The maker signs a deterministic skeleton tx with `SIGHASH_SINGLE | ANYONECANPAY` over the asset input. Per BIP-143:
+
+```
+hashPrevouts  = 0x00..00   (ANYONECANPAY set → other inputs' outpoints don't sign)
+hashSequence  = 0x00..00   (ANYONECANPAY set → other inputs' sequences don't sign)
+hashOutputs   = dSHA256(out_value_LE(8) || out_scriptpubkey_varslice)
+                where out_value = min_price_sats, out_scriptpubkey = seller_payout_script
+                (SIGHASH_SINGLE on input_index=1 signs only vout[1])
+
+preimage =
+    nVersion_LE(4)                     // integer 2
+ || hashPrevouts(32)                   // 32 zero bytes
+ || hashSequence(32)                   // 32 zero bytes
+ || outpoint_BE(32) || vout_LE(4)      // asset_outpoint
+ || scriptCode_varslice                // P2WPKH scriptCode: 19 || 76 a9 14 || hash160(seller_pubkey) || 88 ac
+ || value_LE(8)                        // asset_outpoint.value (sats)
+ || nSequence_LE(4)                    // integer 0xfffffffd (BIP-125 RBF-opt-in, matches reference dApp)
+ || hashOutputs(32)                    // dSHA256(min_price_sats_LE(8) || varslice(seller_payout_script))
+ || nLocktime_LE(4)                    // integer 0
+ || nHashType_LE(4)                    // integer 0x83 (SIGHASH_SINGLE | SIGHASH_ANYONECANPAY)
+
+sighash = dSHA256(preimage)
+signature_bytes = DER(sign_ecdsa_lowS(sighash, seller_priv)) || byte 0x83
+```
+
+Every field above is derivable from the sale-auth message, so the worker (and any verifier) reconstructs the preimage byte-for-byte and rejects the listing if `ecdsa_verify(sighash, signature_bytes[:-1], seller_pubkey)` fails or if the trailing byte is not `0x83`. The buyer's settlement tx must place this signature in `vin[1].witness = [signature_bytes, seller_pubkey]`; Bitcoin consensus rejects any settlement that modifies the asset outpoint, the payout value, or the payout script — the maker's signature would simply not verify.
+
+The buyer is free to add `vin[0]` (commit/envelope), `vin[2..]` (BTC funding, signed `SIGHASH_ALL`), and `vout[0]` (buyer's tacit output), `vout[2..]` (change, fees). None of those touch the maker's sighash preimage.
+
+##### Records
+
+The off-chain marketplace stores one record per active sale plus an event log:
+
+```
+sale {
+  sale_id              16 bytes / 32 hex chars (sha256("tacit-preauth-sale-id-v1" || asset_outpoint_txid_BE
+                       || asset_outpoint_vout_LE || seller_pubkey || nonce)[:16])
+  asset_id, seller_pubkey (33B compressed),
+  asset_outpoint       { txid, vout, value }
+  asset_opening        { amount: u64_str, blinding: 32B hex }   // cleartext disclosure of the listed UTXO
+  min_price_sats       u64
+  seller_payout_script raw script bytes (typically P2WPKH(seller_pubkey), but ANY locking script is fine
+                       as long as the wallet/relay accepts it as a P2WPKH-style output)
+  expiry               unix-seconds (≤ 365 days from publish, matching §5.7.6)
+  seller_asset_spend   { signature_hex: DER+0x83, derivable from the fields above per the preimage recipe }
+  auth_sig             BIP-340 over sale_auth_msg, under seller_pubkey
+  nonce                16 random bytes (lets the seller cancel + re-list the same outpoint with a fresh sale_id)
+  status               'live' | 'taken' | 'cancelled' | 'expired' | 'stale_spent'
+}
+
+cancel { sale_id, asset_id, seller_pubkey, sig }    // explicit signed teardown
+```
+
+The recipient blinding `r_out` is **not** stored on the worker. The buyer derives it locally at take time via `deriveBlinding(buyer_priv, seller_pubkey, asset_outpoint_anchor, 0)` (§3.5 / §5.7.6 ECDH symmetry) — same primitive the official wallet's recovery loop uses, so the buyer's new UTXO is recoverable from chain + privkey alone with no local-cache dependency.
+
+##### Canonical messages
+
+```
+sale_auth_msg = SHA256(
+    "tacit-preauth-sale-v1"
+    || asset_id(32) || sale_id(16) || seller_pubkey(33)
+    || asset_outpoint_txid_BE(32) || asset_outpoint_vout_LE(4) || asset_utxo_value_LE(8)
+    || amount_LE(8) || blinding(32)
+    || min_price_sats_LE(8)
+    || varslice(seller_payout_script)
+    || expiry_LE(8)
+    || varslice(seller_asset_spend_signature)        // DER || 0x83
+    || nonce(16)
+)
+
+sale_cancel_msg = SHA256("tacit-preauth-sale-cancel-v1" || asset_id || sale_id)
+```
+
+`varslice(x)` is `varint(len(x)) || x` matching Bitcoin's wire format. Network is implicit through `asset_id` uniqueness (asset_ids derive from per-network etch txids, so cross-network replay is excluded by 1/2^256 chain divergence — same convention as §5.7.6).
+
+##### Lifecycle (state machine)
+
+```
+[publish]   seller:  build sale-auth body + seller_asset_spend → POST /preauth-sales
+                     (no on-chain footprint at this stage — pure off-chain listing)
+[browse]    anyone:  GET /preauth-sales → discover open listings
+[take]      buyer:   GET /preauth-sales/:sale_id → reconstruct skeleton, build commit P2TR,
+                     compute r_out via ECDH, build T_AXFER envelope + kernel sig + bulletproof,
+                     append BTC funding signed SIGHASH_ALL, broadcast reveal
+[settled]   anyone:  on-chain T_AXFER is indistinguishable from §5.7.3 settlement
+[cancel]    seller:  POST /preauth-sales/:sale_id/cancel (signed) → status = 'cancelled'
+            anyone:  asset outpoint spent in any tx → worker marks 'stale_spent' on next scan
+                     expiry passes → worker marks 'expired' on read
+```
+
+There is no claim/lock step. The settlement tx itself is the lock: Bitcoin consensus settles exactly one spend of the asset UTXO. Two buyers racing the same listing both build valid settlement txs locally; the one that confirms wins, the other is rejected by node mempool policy (double-spend) or by reorg-rescan. A worker-side per-sale lock during take is still recommended as a UX courtesy (returns 409 to losing buyers immediately instead of waiting for mempool rejection), but it's not load-bearing for correctness.
+
+##### Trust analysis
+
+Inherits §5.7.2 soundness from `T_AXFER` plus two coordination-layer guarantees:
+
+- **Seller can't lose the asset without receiving the signed payout.** `seller_asset_spend` is `SIGHASH_SINGLE | ANYONECANPAY` over `(vin[1], vout[1])` only. Any settlement tx that omits `vout[1]`, redirects it, lowers its value, or replaces the script invalidates the seller's signature → Bitcoin consensus rejects.
+- **Buyer can't get the asset without paying.** Buyer's BTC funding inputs sign `SIGHASH_ALL`. Removing the seller payout output from the broadcast tx changes the buyer's sighash → buyer's own signature becomes invalid. Buyer can't produce a fresh sig that excludes the payout because the seller's `vin[1]` sig (unchanged) would then bind a nonexistent output.
+
+What preauth sales *don't* protect against:
+
+- **Seller double-spend race.** Between publish and settlement broadcast, the seller can spend the asset UTXO in a different tx (e.g., a private transfer to themselves). Same race as §5.7.6 atomic intents and as every off-chain Bitcoin marketplace; mitigation is worker-side outspend monitoring + read-time stale filtering + buyer rebroadcast with CPFP if their settlement loses the race.
+- **Buyer payment-UTXO double-spend.** A buyer could broadcast their settlement and then RBF a different tx spending the same BTC funding inputs to themselves before the settlement confirms. This is a CPFP/RBF arms race indistinguishable from any other Bitcoin take. Mitigation: worker pre-checks buyer payment outpoints are unspent at take time; UI shows confirmation depth before treating the sale as final.
+- **Vout[2..] outputs.** The seller's `SIGHASH_SINGLE | ANYONECANPAY` signature binds vout[1] only. Marketplace fees, creator royalties, or any other auxiliary outputs are **not** bound by the seller's signature and can be added/omitted/redirected by a custom buyer client without invalidating the seller's spend. Any fee enforcement above the protocol must live in worker validation and the official dApp's tx construction; alternative clients may bypass.
+
+##### Recovery semantics
+
+Unlike §5.7.6 atomic-intent recipients (random `r`, recovery via local cache or 24h-TTL re-fetch), preauth-sale recipients use ECDH-derived `r_out`. The buyer's recipient UTXO recovers via §6 path 2 from chain + privkey alone — `vin[1].witness[1]` exposes the seller pubkey, the buyer's wallet redoes the ECDH against its own privkey, recomputes the same `r_out`, decrypts `amount_ct`, and verifies `pedersenCommit(amount, r_out) == output_commitment`. No worker dependency post-confirmation.
+
+The seller's own change UTXOs (if any — preauth sales typically sell whole UTXOs, but a buyer-completable variant that splits and returns change to the seller is possible by adding another tacit vout) recover via §6 path 4 (self-derived blinding), same as any CXFER change. The seller's recovery is unaffected by preauth sales: their listed UTXO's `(amount, blinding)` were already known to them, and the new state after settlement is just "that UTXO is now spent."
+
+##### Confidentiality footprint
+
+Publishing the listed UTXO's `(amount, blinding)` reveals exactly one historical UTXO. The disclosure is permanent for that UTXO (anyone can recompute `pedersenCommit(amount, blinding) == on_chain_C` forever) but is bounded:
+
+- The seller's **other** asset UTXOs of the same asset stay confidential — their commitments are unrelated points and revealing one opening tells an observer nothing about another.
+- The seller's **balance** in any other asset is unaffected.
+- After settlement, the **new owner**'s recipient UTXO uses a fresh ECDH-derived `r_out` and is confidential again. The historical listed UTXO remains in the chain's spent set with its opening permanently known, but the new owner's holding is private.
+- A holder who values lot-level privacy more than UX can route through §5.7.6 atomic intents instead (the listed amount is still public, but `r` stays private to the seller).
+
+This is a deliberate tradeoff: §5.7.6 = no lot-level opening, requires seller online; §5.7.8 = public lot-level opening, seller can go offline. The reference dApp ships both and lets the seller choose per listing.
+
+##### Worker endpoints
+
+```
+POST   /assets/:asset_id/preauth-sales
+GET    /assets/:asset_id/preauth-sales
+GET    /assets/:asset_id/preauth-sales/:sale_id
+DELETE /assets/:asset_id/preauth-sales/:sale_id          (signed cancel)
+```
+
+Worker validation on POST must:
+
+```
+verify auth_sig under seller_pubkey over sale_auth_msg
+verify asset_outpoint exists, is unspent, and is owned by seller_pubkey (P2WPKH hash160 match)
+verify asset_opening commits to the on-chain commitment for that outpoint
+reconstruct the seller_asset_spend sighash preimage from the sale-auth fields and verify
+  ecdsa(sighash, signature[:-1], seller_pubkey) succeeds and signature[-1] == 0x83
+reject if a live preauth-sale already exists for the same asset_outpoint
+enforce expiry ≤ 365 days from now
+```
+
+On read, the worker filters out sales whose asset_outpoint has been spent (outspend check, same SWR/cache pattern as §5.6 listings) and surfaces a `stale_spent` flag rather than silently hiding them so the seller sees what happened.
+
+Worker validation on take is not strictly required (Bitcoin consensus enforces the seller's terms regardless), but the reference dApp's official take path SHOULD re-verify (a) asset_outpoint still unspent, (b) buyer payment outpoints unspent, (c) the settlement tx the dApp built includes the exact vout[1] the seller signed — this catches buyer-side bugs before broadcast and gives the buyer a chance to fix them locally instead of paying a relay fee for a tx the network will reject.
+
+This primitive is implementation-defined in v1: the wire format above is the canonical reference for any implementation that wants to interoperate with the reference dApp's marketplace. Indexer-level validity is unaffected — preauth sales live entirely outside the on-chain protocol; all settlement is normal `T_AXFER` and validates identically to a §5.7.3 targeted offer.
+
 
 ### 5.8 T_PETCH (`0x27`) — permissionless-mint deployment record
 
@@ -1571,9 +1733,8 @@ Cron (`*/5 * * * *`) scans recent signet AND mainnet blocks for CETCH, T_MINT, T
 - **Network-scoped wallet keys.** v1 stores signet and mainnet identities under separate `localStorage` keys (`tacit-wallet-v1:signet`, `tacit-wallet-v1:mainnet`, plus `…:by:<extAddr>` variants when locally bound to an external wallet). Compromise of a signet/test key does NOT compromise mainnet — they're independent secrets generated on first use of each network. The trade-off is that switching from signet to mainnet (or vice versa) presents a fresh empty wallet by default; users who want to carry an identity across networks can manually `Import key` on the destination network. Older builds used a single un-namespaced `tacit-wallet-v1`; the dApp does not auto-migrate, so existing data under that key remains accessible only via manual import.
 - **T_PMINT reorg sensitivity.** Cap correctness for T_PETCH-rooted assets requires complete, canonically-ordered T_PMINT history. Two T_PMINTs near tip can each look valid in isolation yet collectively violate the cap when canonically ordered. v1 mitigates by requiring confirmation depth ≥ 3 for cap-credit (§5.9 *Confirmation depth*); the deeper the threshold, the smaller the reorg-revocation surface but the slower mint UX. Wallets MUST surface "pending" T_PMINT UTXOs as non-spendable until the depth threshold crosses, and MUST handle revocation events when an indexer reverts a previously-credited T_PMINT under new canonical ordering. CETCH+T_MINT assets are unaffected — credit there depends only on the issuer's signature, not on aggregate chain state.
 - **Reference-indexer KV.list cap.** The reference worker uses a single un-paginated `KV.list({ limit: 1000 })` call in three load-bearing places: (a) `loadCanonicalPmints` per asset, (b) the `/pools` aggregate endpoint's per-pool leaf + nullifier counts, and (c) the `/pools/:asset_id/:denom` detail endpoint's leaf list and nullifier list. An asset that accrues more than 1000 confirmed T_PMINTs will under-count `cumulative_minted`; a pool that accrues more than 1000 deposits or 1000 withdrawals will return a truncated state to clients that consume the worker view. v1 ships with this cap; deployments expecting > 1000 mints on a single asset OR planning to operate a pool past 1000 leaves/nullifiers should patch the relevant call sites to follow the `list_complete` cursor before relying on the worker's aggregate view. The cap is operational, not cryptographic — the dapp's local `scanPools` reconstructs from chain regardless, so a worker truncation degrades freshness/UX, not soundness.
-- **T_DROP / T_DCLAIM (§5.12–§5.13) — protocol shipped, dapp UI restricted to merkle-gated drops in v1.** Wire format, validator pseudocode, codec, worker indexer (`drop:<network>:<drop_id>` + `dclaim:<network>:<drop_id>:<height>:<tx_index>:<txid>` KV layout parallel to `petch:` / `pmint:`), broadcast paths, and recursive-validator branches in `dapp/tacit.js` are live and tested. Two v1 boundary conditions:
-  1. **Rewrap-credit gate.** A T_DCLAIM envelope can be copied off-chain and re-published under a different reveal txid that still binds to the same `recipient_pub` (the binding check is hash160-only, by design — see §5.13). Independent indexers ALL reject the rewrap deterministically via the `(drop_id, leaf_index)` nullifier rule. The dapp's *local* validator additionally queries the worker's `/drops-onchain/:drop_id/claims?credited=1&include_txids=1` slim view to confirm a candidate T_DCLAIM txid is the canonical winner before crediting the recipient's UTXO graph; without this gate, a recipient running purely from local validation could be tricked into double-counting the rewrap as a second balance entry until the next full rescan. The worker query mirrors `_fetchPmintCredited` used for T_PMINT. When the worker is unreachable, the validator credits optimistically (`workerAvailable: false`) and a subsequent rescan once the worker is back will correct the local view — chain truth (the nullifier rule) is unchanged either way.
-  2. **Open-FCFS strands cap remainder.** A merkle-gated drop is sized to its snapshot (issuer composes the leaf set, so cap ≈ leaf_count × per_claim). An open / FCFS drop (`merkle_root = 0`) admits any claimant up to cap_amount and has no natural exhaustion guarantee: if claimants stop arriving before cap is reached, `cap_amount − (claims × per_claim)` units remain locked in the unspent T_DROP outpoint. The `T_DROP_RECLAIM` shape (§5.12, `per_claim = 0` sentinel) is wire-format specified but broadcaster + validator + UTXO production are deferred to v2. To keep v1 ship-safe, the reference dapp's issuer composer requires a non-zero merkle_root; open-FCFS drops remain protocol-valid for third-party implementations and forward compatibility. v1 indexers process both shapes identically.
+- **T_DROP / T_DCLAIM / T_DROP_RECLAIM (§5.12–§5.13) — shipped.** Wire format, validator pseudocode, codec, worker indexer (`drop:<network>:<drop_id>`, `dclaim:<network>:<drop_id>:<height>:<tx_index>:<txid>`, `drop-reclaim:<network>:<drop_id>` KV layout parallel to `petch:` / `pmint:`), broadcast paths for all three opcodes, recursive-validator branches in `dapp/tacit.js`, and dapp UI for create-drop / claim / reclaim are live and tested. One v1 operational note:
+  - **Rewrap-credit gate.** A T_DCLAIM envelope can be copied off-chain and re-published under a different reveal txid that still binds to the same `recipient_pub` (the binding check is hash160-only, by design — see §5.13). Independent indexers ALL reject the rewrap deterministically via the `(drop_id, leaf_index)` nullifier rule. The dapp's *local* validator additionally queries the worker's `/drops-onchain/:drop_id/claims?credited=1&include_txids=1` slim view to confirm a candidate T_DCLAIM txid is the canonical winner before crediting the recipient's UTXO graph; without this gate, a recipient running purely from local validation could be tricked into double-counting the rewrap as a second balance entry until the next full rescan. The worker query mirrors `_fetchPmintCredited` used for T_PMINT. When the worker is unreachable, the validator credits optimistically (`workerAvailable: false`) and a subsequent rescan once the worker is back will correct the local view — chain truth (the nullifier rule) is unchanged either way. The same posture applies to T_DROP_RECLAIM: the dapp validator requires worker-confirmed `claim_count` to verify the declared `cap_amount` equals the canonical remainder before crediting the reclaimed UTXO; without the worker, the reclaim shape is rejected (the safety-critical case where an over-declaration would inflate supply).
 - **Mixer pool — production, Phase 2 ceremony finalized.** Wire format (§5.10–§5.11), worker indexing (`/pools` + canonical leaf order + nullifier set + reorg-safety depth gate per `MIXER_DEPOSIT_CONFIRMATION_DEPTH`), dApp UI (Mixer tab), Groth16 prove + verify pipeline (snarkjs vendored at `vendor/tacit-mixer.min.js`), `T_DEPOSIT` / `T_WITHDRAW` broadcast flows, and indexer-determinism gates (worker `bind_hash` recompute mirrors dapp's per §11) are all shipped and tested (108 tests across 7 mixer test files; see `tests/mixer*.test.mjs`). Verifier soundness is closed per §3.8 + §5.11.1.
 
   **Both ceremony prerequisites are resolved:**

@@ -110,6 +110,168 @@ await test('atomicIntentFulfilmentMsg', () => {
   );
 });
 
+// Preauth-sale message hashes (SPEC §5.7.8). Same byte-parity discipline as
+// the atomic-intent block: the worker reconstructs sale_auth_msg /
+// sale_cancel_msg / sale_id and the BIP-143 sighash for the seller's
+// pre-signed input. Drift between worker and dapp here causes every POST to
+// /preauth-sales to fail with "invalid auth signature" or "seller_asset_spend
+// invalid"; pinned byte equality catches the drift before it ships.
+const PRE_OUTPOINT_TXID_HEX = '11'.repeat(32);
+const PRE_OUTPOINT_VOUT = 1;
+const PRE_OUTPOINT_VALUE = 5460;
+const PRE_AMOUNT = 1000n;
+const PRE_BLINDING_HEX = '22'.repeat(32);
+const PRE_BLINDING_BYTES = hexToBytes(PRE_BLINDING_HEX);
+const PRE_MIN_PRICE_SATS = 50000;
+const PRE_PAYOUT_SCRIPT_HEX = '0014' + 'cd'.repeat(20);
+const PRE_PAYOUT_SCRIPT_BYTES = hexToBytes(PRE_PAYOUT_SCRIPT_HEX);
+const PRE_EXPIRY = 1900000000;
+const PRE_SPEND_SIG_HEX = '3044022001020304050607080102030405060708010203040506070801020304050607080220080706050403020108070605040302010807060504030201080706050403020183';
+const PRE_SPEND_SIG_BYTES = hexToBytes(PRE_SPEND_SIG_HEX);
+const PRE_NONCE_HEX = '33'.repeat(16);
+const PRE_NONCE_BYTES = hexToBytes(PRE_NONCE_HEX);
+
+await test('preauthSaleIdHex worker ↔ composition', () => {
+  const w = worker.preauthSaleIdHex(PRE_OUTPOINT_TXID_HEX, PRE_OUTPOINT_VOUT, OWNER_PUB_HEX, PRE_NONCE_HEX);
+  const c = composition.preauthSaleIdHex(PRE_OUTPOINT_TXID_HEX, PRE_OUTPOINT_VOUT, OWNER_PUB_BYTES, PRE_NONCE_BYTES);
+  return w === c && /^[0-9a-f]{32}$/.test(w);
+});
+
+const PRE_SALE_ID_HEX = worker.preauthSaleIdHex(PRE_OUTPOINT_TXID_HEX, PRE_OUTPOINT_VOUT, OWNER_PUB_HEX, PRE_NONCE_HEX);
+const PRE_SALE_ID_BYTES = hexToBytes(PRE_SALE_ID_HEX);
+
+await test('preauthSaleAuthMsg worker ↔ composition', () => eq(
+  worker.preauthSaleAuthMsg({
+    assetIdHex: ASSET_ID_HEX,
+    saleIdHex: PRE_SALE_ID_HEX,
+    sellerPubHex: OWNER_PUB_HEX,
+    assetOutpointTxidHex: PRE_OUTPOINT_TXID_HEX,
+    assetOutpointVout: PRE_OUTPOINT_VOUT,
+    assetUtxoValue: PRE_OUTPOINT_VALUE,
+    amountStr: PRE_AMOUNT.toString(),
+    blindingHex: PRE_BLINDING_HEX,
+    minPriceSats: PRE_MIN_PRICE_SATS,
+    sellerPayoutScriptHex: PRE_PAYOUT_SCRIPT_HEX,
+    expiry: PRE_EXPIRY,
+    sellerAssetSpendSigHex: PRE_SPEND_SIG_HEX,
+    nonceHex: PRE_NONCE_HEX,
+  }),
+  composition.preauthSaleAuthMsg({
+    assetIdBytes: ASSET_ID_BYTES,
+    saleIdBytes: PRE_SALE_ID_BYTES,
+    sellerPubBytes: OWNER_PUB_BYTES,
+    assetOutpointTxidHex: PRE_OUTPOINT_TXID_HEX,
+    assetOutpointVout: PRE_OUTPOINT_VOUT,
+    assetUtxoValue: PRE_OUTPOINT_VALUE,
+    amount: PRE_AMOUNT,
+    blindingBytes: PRE_BLINDING_BYTES,
+    minPriceSats: PRE_MIN_PRICE_SATS,
+    sellerPayoutScriptBytes: PRE_PAYOUT_SCRIPT_BYTES,
+    expiry: PRE_EXPIRY,
+    sellerAssetSpendSigBytes: PRE_SPEND_SIG_BYTES,
+    nonceBytes: PRE_NONCE_BYTES,
+  }),
+));
+
+await test('preauthSaleCancelMsg worker ↔ composition', () => eq(
+  worker.preauthSaleCancelMsg(ASSET_ID_HEX, PRE_SALE_ID_HEX),
+  composition.preauthSaleCancelMsg(ASSET_ID_BYTES, PRE_SALE_ID_BYTES),
+));
+
+await test('preauthSellerSpendSighash worker ↔ composition', () => eq(
+  worker.preauthSellerSpendSighash({
+    assetOutpointTxidHex: PRE_OUTPOINT_TXID_HEX,
+    assetOutpointVout: PRE_OUTPOINT_VOUT,
+    assetUtxoValue: PRE_OUTPOINT_VALUE,
+    sellerPubHex: OWNER_PUB_HEX,
+    sellerPayoutScriptHex: PRE_PAYOUT_SCRIPT_HEX,
+    minPriceSats: PRE_MIN_PRICE_SATS,
+  }),
+  composition.preauthSellerSpendSighash({
+    assetOutpointTxidHex: PRE_OUTPOINT_TXID_HEX,
+    assetOutpointVout: PRE_OUTPOINT_VOUT,
+    assetUtxoValue: PRE_OUTPOINT_VALUE,
+    sellerPubBytes: OWNER_PUB_BYTES,
+    sellerPayoutScriptBytes: PRE_PAYOUT_SCRIPT_BYTES,
+    minPriceSats: PRE_MIN_PRICE_SATS,
+  }),
+));
+
+// Integration test: a real ECDSA signature produced over the BIP-143
+// sighash must verify under the seller pubkey via the worker's DER-aware
+// path. Catches drift between the seller-side signer (signP2wpkhInputWithSighash)
+// and the worker-side reconstructor: if either changes the preimage byte
+// layout, this test fails even when the worker↔composition hash equality
+// above still passes.
+await test('seller signature verifies via worker.verifyEcdsaDerSig', () => {
+  const sighash = worker.preauthSellerSpendSighash({
+    assetOutpointTxidHex: PRE_OUTPOINT_TXID_HEX,
+    assetOutpointVout: PRE_OUTPOINT_VOUT,
+    assetUtxoValue: PRE_OUTPOINT_VALUE,
+    sellerPubHex: OWNER_PUB_HEX,
+    sellerPayoutScriptHex: PRE_PAYOUT_SCRIPT_HEX,
+    minPriceSats: PRE_MIN_PRICE_SATS,
+  });
+  // ECDSA sign with the same priv that owns OWNER_PUB_BYTES.
+  const sig = secp.sign(sighash, OWNER_SK, { lowS: true });
+  const compact = sig.toCompactRawBytes();
+  // Re-encode as DER (worker's verifyEcdsaDerSig strips the trailing
+  // sighash byte itself; we don't append 0x83 here because we're calling
+  // verifyEcdsaDerSig with the DER body directly).
+  const der = (() => {
+    const trim = (bytes) => {
+      let i = 0; while (i < bytes.length - 1 && bytes[i] === 0) i++;
+      let trimmed = bytes.slice(i);
+      if (trimmed[0] & 0x80) trimmed = new Uint8Array([0, ...trimmed]);
+      return trimmed;
+    };
+    const r = trim(compact.slice(0, 32));
+    const s = trim(compact.slice(32, 64));
+    return new Uint8Array([
+      0x30, 4 + r.length + s.length,
+      0x02, r.length, ...r,
+      0x02, s.length, ...s,
+    ]);
+  })();
+  return worker.verifyEcdsaDerSig(der, sighash, OWNER_PUB_BYTES);
+});
+
+await test('worker.verifyEcdsaDerSig rejects sig under wrong pubkey', () => {
+  const sighash = worker.preauthSellerSpendSighash({
+    assetOutpointTxidHex: PRE_OUTPOINT_TXID_HEX,
+    assetOutpointVout: PRE_OUTPOINT_VOUT,
+    assetUtxoValue: PRE_OUTPOINT_VALUE,
+    sellerPubHex: OWNER_PUB_HEX,
+    sellerPayoutScriptHex: PRE_PAYOUT_SCRIPT_HEX,
+    minPriceSats: PRE_MIN_PRICE_SATS,
+  });
+  const sig = secp.sign(sighash, OWNER_SK, { lowS: true });
+  const compact = sig.toCompactRawBytes();
+  const der = (() => {
+    const trim = (bytes) => {
+      let i = 0; while (i < bytes.length - 1 && bytes[i] === 0) i++;
+      let trimmed = bytes.slice(i);
+      if (trimmed[0] & 0x80) trimmed = new Uint8Array([0, ...trimmed]);
+      return trimmed;
+    };
+    const r = trim(compact.slice(0, 32));
+    const s = trim(compact.slice(32, 64));
+    return new Uint8Array([
+      0x30, 4 + r.length + s.length,
+      0x02, r.length, ...r,
+      0x02, s.length, ...s,
+    ]);
+  })();
+  // Use a different priv's pubkey to verify under — should fail.
+  const wrongPub = secp.ProjectivePoint.BASE.multiply(7n).toRawBytes(true);
+  return worker.verifyEcdsaDerSig(der, sighash, wrongPub) === false;
+});
+
+await test('worker.derToCompactSig rejects malformed DER', () => {
+  const bad = hexToBytes('30050201ff020100'); // wrong inner length tag
+  return worker.derToCompactSig(bad) === null;
+});
+
 // Drop-announcement message hashes — pinned-vector regression sentinels.
 // composition.mjs doesn't (yet) mirror these helpers, so we pin the worker's
 // expected output for a known fixture; any drift in the field layout, domain

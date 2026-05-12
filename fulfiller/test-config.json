@@ -1,0 +1,6 @@
+{
+  "treasury_privkey": "0000000000000000000000000000000000000000000000000000000000000001",
+  "drop_record_path": "./test-drop.json",
+  "worker_base": "https://tacit-pin.rosscampbell9.workers.dev",
+  "network": "signet"
+}

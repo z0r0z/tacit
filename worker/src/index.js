@@ -56,6 +56,16 @@
 //   GET  /assets/:asset_id/listings-range — list active range-listings.
 //   DELETE /assets/:asset_id/listings-range/:owner_pubkey — explicit cancel by maker.
 //   POST /assets/:asset_id/listings-range/:maker_pubkey/claim — taker reservation, 5 min TTL.
+//   POST /assets/:asset_id/preauth-sales — buyer-completable T_AXFER listing (SPEC §5.7.8).
+//                                   Body carries the sale-auth fields + a pre-signed P2WPKH
+//                                   spend signature for vin[1] bound to vout[1]; worker verifies
+//                                   auth_sig, opening, outpoint ownership/liveness, and rebuilds
+//                                   the BIP-143 sighash to ECDSA-verify seller_asset_spend_sig.
+//                                   One live sale per asset_outpoint (409 on duplicate).
+//   GET  /assets/:asset_id/preauth-sales — list active preauth sales (with expired flag).
+//   GET  /assets/:asset_id/preauth-sales/:sale_id — single preauth sale record.
+//   DELETE /assets/:asset_id/preauth-sales/:sale_id — signed cancel; requires cancel_sig from
+//                                   seller_pubkey. (Implicit cancellation: spend the asset UTXO.)
 // Debug endpoints (gated on DEBUG_TOKEN env secret; default-deny 404 if unset):
 //   POST /scan              — manually trigger a registry scan for the requested network.
 //   POST /rescan?from=<h>   — rewind meta:last_scanned so next tick re-scans from height <h>.
@@ -448,6 +458,25 @@ function listingPrefix(network, aid) {
 // pull them in batches. Worker is dumb storage — no signature or merkle
 // validation (the issuer's dapp re-verifies before broadcast). Per-leaf KV
 // keys, zero-padded so KV.list returns claims in numeric leaf-index order.
+// Per-root funding-txid nullifier set. Closes the tip-stealing race: a
+// recipient who tipped the treasury includes their funding_txid in the claim
+// submission; the worker writes both the claim record AND a marker keyed by
+// txid in a single KV.put pair. A second submission citing the same
+// funding_txid (whether honest retry or an attacker trying to ride someone
+// else's tip) fails the existence check and is rejected.
+//
+// Trade-off: a malicious frontrunner could still see a tip broadcast in the
+// mempool and race a claim citing it before the honest recipient submits.
+// Closing that fully requires the funding tx to commit to the recipient's
+// eth_address (OP_RETURN or a per-eth-address derived funding address), which
+// is a bigger feature deferred to a hardened-mode follow-up. For a community
+// drop with ~5 USD tips, the race window is small and the attack uneconomic.
+function airdropFundingKey(network, rootHex, fundingTxidHex) {
+  return network === 'signet'
+    ? `airdrop:funding:${rootHex}:${fundingTxidHex}`
+    : `airdrop:funding:${network}:${rootHex}:${fundingTxidHex}`;
+}
+
 function airdropClaimKey(network, rootHex, leafIndex) {
   const idxPad = String(leafIndex).padStart(10, '0');
   return network === 'signet'
@@ -1609,6 +1638,45 @@ async function handlePinJson(req, env, cors) {
   return jsonResponse({ cid: j.IpfsHash }, 200, cors);
 }
 
+// ============== airdrop merkle helpers (SPEC §5.13 + §8) ==============
+// Byte-for-byte parity with `dapp/tacit.js` airdropLeafHash / buildAirdropMerkle.
+// Sort-pair sibling hashing + tagged sha256 = standard OpenZeppelin shape.
+// Used at /pin-airdrop-snapshot to recompute the root from rows and refuse
+// snapshots whose declared root doesn't match — closes the footgun where an
+// issuer pins a tampered/buggy snapshot, burns the pin slot + announcement,
+// and only discovers the mismatch when no recipient can claim.
+const _AIRDROP_LEAF_TAG = new TextEncoder().encode('tacit-airdrop-leaf-v1');
+const _AIRDROP_NODE_TAG = new TextEncoder().encode('tacit-airdrop-node-v1');
+function _airdropLeafHash(ethAddrBytes, amountBig, indexU32) {
+  const amtLE = new Uint8Array(8);
+  new DataView(amtLE.buffer).setBigUint64(0, amountBig, true);
+  const idxLE = new Uint8Array(4);
+  new DataView(idxLE.buffer).setUint32(0, indexU32 >>> 0, true);
+  return sha256(concatBytes(_AIRDROP_LEAF_TAG, ethAddrBytes, amtLE, idxLE));
+}
+function _airdropNodeHash(a, b) {
+  let cmp = 0;
+  for (let i = 0; i < 32; i++) {
+    if (a[i] !== b[i]) { cmp = a[i] < b[i] ? -1 : 1; break; }
+  }
+  const [lo, hi] = cmp <= 0 ? [a, b] : [b, a];
+  return sha256(concatBytes(_AIRDROP_NODE_TAG, lo, hi));
+}
+function _buildAirdropMerkleRoot(leaves) {
+  if (leaves.length === 0) return null;
+  if (leaves.length === 1) return leaves[0];
+  let layer = leaves;
+  while (layer.length > 1) {
+    const next = [];
+    for (let i = 0; i < layer.length; i += 2) {
+      if (i + 1 < layer.length) next.push(_airdropNodeHash(layer[i], layer[i + 1]));
+      else next.push(layer[i]);
+    }
+    layer = next;
+  }
+  return layer[0];
+}
+
 // ============== /pin-airdrop-snapshot — pin a tacit-airdrop-v1 snapshot ==============
 // The dapp's Drops tab pins a snapshot JSON keyed by merkle root; recipients
 // fetch it from IPFS to verify their leaf and sign their claim. The snapshot
@@ -1664,14 +1732,27 @@ async function handlePinAirdropSnapshot(req, env, cors) {
       return jsonResponse({ error: 'leaf_count must equal rows.length' }, 400, cors);
     }
   }
-  if (body.asset_decimals != null) {
-    if (!Number.isInteger(body.asset_decimals) || body.asset_decimals < 0 || body.asset_decimals > 8) {
-      return jsonResponse({ error: 'asset_decimals must be integer 0..8' }, 400, cors);
-    }
+  // asset_decimals + asset_ticker are required (not optional). The canonical
+  // claim msg interpolates both — if a snapshot omits them, recipients sign
+  // with the fallback `decimals=0, ticker='?'` while the issuer's fulfiller
+  // rebuilds the msg from the on-chain CETCH ticker/decimals → sig recovery
+  // fails and the claim is rejected as "forged" even though it was
+  // legitimately signed. Recipient-side `_claimValidateSnapshot` already
+  // refuses such snapshots; enforcing the same up-front prevents the issuer
+  // from burning a pin slot + announce slot on a dead snapshot.
+  if (!Number.isInteger(body.asset_decimals) || body.asset_decimals < 0 || body.asset_decimals > 8) {
+    return jsonResponse({ error: 'asset_decimals required: integer 0..8 (CETCH max)' }, 400, cors);
   }
-  if (body.asset_ticker != null) {
-    if (typeof body.asset_ticker !== 'string' || body.asset_ticker.length === 0 || body.asset_ticker.length > 16) {
-      return jsonResponse({ error: 'asset_ticker must be a string of length 1..16' }, 400, cors);
+  if (typeof body.asset_ticker !== 'string' || body.asset_ticker.length === 0 || body.asset_ticker.length > 16) {
+    return jsonResponse({ error: 'asset_ticker required: string of length 1..16' }, 400, cors);
+  }
+  // Reject control / bidi codepoints in the ticker — it's interpolated
+  // verbatim into the EIP-191 msg MetaMask shows the recipient at sign
+  // time. Same defense as the dapp's _claimValidateSnapshot ticker check.
+  for (let i = 0; i < body.asset_ticker.length; i++) {
+    const cp = body.asset_ticker.codePointAt(i);
+    if (cp < 0x20 || cp === 0x7f || (cp >= 0x202a && cp <= 0x202e) || (cp >= 0x2066 && cp <= 0x2069)) {
+      return jsonResponse({ error: 'asset_ticker contains control or bidi characters' }, 400, cors);
     }
   }
   if (body.total_amount != null && (typeof body.total_amount !== 'string' || !/^\d+$/.test(body.total_amount))) {
@@ -1703,11 +1784,14 @@ async function handlePinAirdropSnapshot(req, env, cors) {
       return jsonResponse({ error: 'source_method must be a string of length 1..64' }, 400, cors);
     }
   }
-  // Validate every row's shape. The prior 16-row sample let blobs with bad
-  // rows[N] (N≥16) pin successfully; recipient-side validation would catch
-  // them at load time but the issuer had already burned the pin slot on an
-  // unusable blob. Four regex tests per row over ≤100k rows fits comfortably
-  // in Workers CPU budget. Tightened by audit fix M9.
+  // Validate every row's shape AND collect the parsed fields so we can
+  // recompute the merkle root in a single pass. The prior 16-row sample let
+  // blobs with bad rows[N] (N≥16) pin successfully; recipient-side validation
+  // would catch them at load time but the issuer had already burned the pin
+  // slot on an unusable blob. Tightened by audit fix M9 and M2 (root
+  // recompute).
+  const parsedRows = new Array(body.rows.length);
+  let summed = 0n;
   for (let i = 0; i < body.rows.length; i++) {
     const r = body.rows[i];
     if (!r || typeof r !== 'object') return jsonResponse({ error: `rows[${i}] not an object` }, 400, cors);
@@ -1720,6 +1804,66 @@ async function handlePinAirdropSnapshot(req, env, cors) {
     if (!Number.isInteger(r.index) || r.index < 0) {
       return jsonResponse({ error: `rows[${i}].index must be a non-negative integer` }, 400, cors);
     }
+    let amountBig;
+    try { amountBig = BigInt(r.amount); }
+    catch { return jsonResponse({ error: `rows[${i}].amount unparseable as BigInt` }, 400, cors); }
+    if (amountBig < 0n || amountBig >= (1n << 64n)) {
+      return jsonResponse({ error: `rows[${i}].amount out of u64 range` }, 400, cors);
+    }
+    parsedRows[i] = {
+      ethAddrBytes: hexToBytes(r.eth_address.slice(2).toLowerCase()),
+      amount: amountBig,
+      index: r.index,
+    };
+    summed += amountBig;
+  }
+  // Recipient validator (`dapp/tacit.js:_claimValidateSnapshot`) requires
+  // indexes be contiguous 0..N-1 and rejects duplicates / bad ordering. If
+  // the pin passes those gates server-side too, an issuer-side bug surfaces
+  // at the /pin call rather than at recipient claim time after pin + announce
+  // slots have already been burned.
+  const sortedByIndex = [...parsedRows].sort((a, b) => a.index - b.index);
+  for (let i = 0; i < sortedByIndex.length; i++) {
+    if (sortedByIndex[i].index !== i) {
+      return jsonResponse({ error: `rows indexes must be contiguous 0..${sortedByIndex.length - 1} (saw index ${sortedByIndex[i].index} at slot ${i})` }, 400, cors);
+    }
+  }
+  const seenAddrs = new Set();
+  for (const r of parsedRows) {
+    const k = bytesToHex(r.ethAddrBytes);
+    if (seenAddrs.has(k)) {
+      return jsonResponse({ error: `duplicate eth_address: 0x${k} (each address must appear at most once)` }, 400, cors);
+    }
+    seenAddrs.add(k);
+  }
+  // total_amount consistency. The recipient validator also enforces this;
+  // surfacing it server-side keeps the pin from succeeding on a snapshot
+  // whose displayed total is wrong.
+  if (body.total_amount != null) {
+    const declared = BigInt(body.total_amount);
+    if (declared !== summed) {
+      return jsonResponse({ error: `total_amount (${declared}) does not equal sum of rows (${summed})` }, 400, cors);
+    }
+  }
+  // Recompute the merkle root from rows and refuse mismatches. Without this,
+  // a buggy issuer build could pin a snapshot whose `merkle_root` doesn't
+  // hash from `rows[]` — every recipient's `_claimValidateSnapshot` rejects
+  // it, but the pin + announce + treasury setup have already cost real $.
+  // 100k sha256 ops + log2(100k)=17 layers of pairwise hashing comfortably
+  // fits the CF Worker CPU budget (paid tier 30s, free tier 50ms is borderline
+  // for very large drops — issuers near the free-tier limit should split).
+  // SHA256 is fast — ~250ns/op in V8 — so 200k ops ≈ 50ms even at full row count.
+  const leaves = parsedRows.map(r => _airdropLeafHash(r.ethAddrBytes, r.amount, r.index));
+  // Sort leaves by the parsed index to ensure leaf-order matches the canonical
+  // (sorted) ordering recipients use. Indexes were already validated to be
+  // contiguous 0..N-1, so sorting by index gives leaves[i] = leaf-for-index-i.
+  const orderedLeaves = new Array(parsedRows.length);
+  for (let i = 0; i < parsedRows.length; i++) orderedLeaves[parsedRows[i].index] = leaves[i];
+  const computedRoot = _buildAirdropMerkleRoot(orderedLeaves);
+  if (!computedRoot || bytesToHex(computedRoot) !== body.merkle_root) {
+    return jsonResponse({
+      error: `merkle_root mismatch — declared ${body.merkle_root} but rows hash to ${computedRoot ? bytesToHex(computedRoot) : '<empty>'}. Rebuild the snapshot in the dapp's Drops tab.`,
+    }, 400, cors);
   }
 
   const json = JSON.stringify(body);
@@ -1734,17 +1878,43 @@ async function handlePinAirdropSnapshot(req, env, cors) {
   pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-airdrop-${body.merkle_root.slice(0, 12)}.json`);
   pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
 
-  let pinResp;
-  try {
-    pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
-      body: pinFd,
-    });
-  } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
-  if (!pinResp.ok) {
-    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
-    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
+  // Retry on transient failures. A single Pinata blip (network glitch, edge
+  // cold-start, or 5xx) shouldn't fail the whole drop publish flow — the
+  // issuer is mid-ceremony and there's no graceful manual retry path. Three
+  // attempts with exponential backoff covers ~7s of total wait while a
+  // recipient-blocking outage rarely lasts that long. 4xx is NOT retried —
+  // those are deterministic (auth, payload) and re-sending won't help.
+  let pinResp = null;
+  let lastErr = '';
+  const PIN_RETRY_DELAYS_MS = [500, 1500, 3500];
+  for (let attempt = 0; attempt < PIN_RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) {
+      await new Promise(r => setTimeout(r, PIN_RETRY_DELAYS_MS[attempt - 1]));
+    }
+    try {
+      pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
+        body: pinFd,
+      });
+    } catch (e) {
+      lastErr = `network error: ${e?.message || 'unknown'}`;
+      pinResp = null;
+      continue;
+    }
+    if (pinResp.ok) break;
+    // 4xx is the caller's fault (bad JWT, malformed payload). 5xx and 429
+    // are Pinata's transient signals — retry on those only.
+    if (pinResp.status >= 400 && pinResp.status < 500 && pinResp.status !== 429) {
+      try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
+      return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
+    }
+    try { lastErr = `pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`; } catch { lastErr = `pinata ${pinResp.status}`; }
+    pinResp = null;
+  }
+  if (!pinResp || !pinResp.ok) {
+    if (lastErr) try { console.error(lastErr); } catch {}
+    return jsonResponse({ error: lastErr || 'pinata unreachable after retries' }, 502, cors);
   }
   const pj = await pinResp.json();
   if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
@@ -2654,7 +2824,7 @@ async function loadMintsForAsset(env, network, assetIdHex) {
 // latency on networks with many assets. Now everything fan-outs in one
 // Promise.all per asset.
 async function hydrateAssetSummary(env, network, v, includeMints) {
-  const [att, mints, burns, op, dc, ls, lr, ai, xfer, lastTrade] = await Promise.all([
+  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade] = await Promise.all([
     env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
     includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
     loadBurnsForAsset(env, network, v.asset_id),
@@ -2663,6 +2833,7 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
     env.REGISTRY_KV.list({ prefix: listingPrefix(network, v.asset_id), limit: 1000 }),
     env.REGISTRY_KV.list({ prefix: rangeListingPrefix(network, v.asset_id), limit: 1000 }),
     env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, v.asset_id), limit: 1000 }),
+    env.REGISTRY_KV.list({ prefix: preauthSalePrefix(network, v.asset_id), limit: 1000 }),
     // Single KV.get of the cron-maintained transfer counter — folded into
     // the existing parallel fan-out so it adds zero round-trip latency.
     env.REGISTRY_KV.get(transferCountKey(network, v.asset_id)),
@@ -2676,6 +2847,7 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   v.listing_count = ls.keys.length;
   v.range_listing_count = lr.keys.length;
   v.atomic_intent_count = ai.keys.length;
+  v.preauth_sale_count = ps.keys.length;
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
   if (lastTrade) v.last_trade = lastTrade;
 }
@@ -2817,15 +2989,16 @@ async function handleMarket(env, network, cors) {
   const haveAny = allAssets.filter(a =>
     Number(a.listing_count || 0) > 0
     || Number(a.range_listing_count || 0) > 0
-    || Number(a.atomic_intent_count || 0) > 0,
+    || Number(a.atomic_intent_count || 0) > 0
+    || Number(a.preauth_sale_count || 0) > 0,
   );
-  // Per-asset 3-way fan-out, all in this single worker invocation.
+  // Per-asset 4-way fan-out, all in this single worker invocation.
   // Best-effort: a per-asset failure leaves an empty bucket for that kind so
   // the rest of the response is still useful, mirroring the client's existing
   // .catch(() => ({listings: []})) tolerance.
   const all = await Promise.all(haveAny.map(async a => {
     const aid = a.asset_id;
-    const [openings, ranges, intents] = await Promise.all([
+    const [openings, ranges, intents, preauths] = await Promise.all([
       Number(a.listing_count || 0) > 0
         ? loadListingsForAsset(env, network, aid).catch(() => [])
         : Promise.resolve([]),
@@ -2835,13 +3008,17 @@ async function handleMarket(env, network, cors) {
       Number(a.atomic_intent_count || 0) > 0
         ? loadAtomicIntentsForAsset(env, network, aid).catch(() => [])
         : Promise.resolve([]),
+      Number(a.preauth_sale_count || 0) > 0
+        ? loadPreauthSalesForAsset(env, network, aid).catch(() => [])
+        : Promise.resolve([]),
     ]);
     // Strip expired and attach kind + _asset reference so the client can sort
     // and filter without needing to re-join against the assets array.
     const opens = openings.filter(l => !l.expired).map(l => ({ ...l, kind: 'opening', _asset: a }));
     const ranges_ = ranges.filter(l => !l.expired).map(l => ({ ...l, kind: 'range', _asset: a }));
     const intents_ = intents.filter(i => !i.expired).map(i => ({ ...i, kind: 'intent', _asset: a }));
-    return [...opens, ...ranges_, ...intents_];
+    const preauths_ = preauths.filter(p => !p.expired).map(p => ({ ...p, kind: 'preauth', _asset: a }));
+    return [...opens, ...ranges_, ...intents_, ...preauths_];
   }));
   return jsonResponse({
     network,
@@ -3434,6 +3611,8 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   v.range_listing_count = lr.keys.length;
   const ai = await env.REGISTRY_KV.list({ prefix: atomicIntentPrefix(network, assetIdHex), limit: 1000 });
   v.atomic_intent_count = ai.keys.length;
+  const ps = await env.REGISTRY_KV.list({ prefix: preauthSalePrefix(network, assetIdHex), limit: 1000 });
+  v.preauth_sale_count = ps.keys.length;
   // transfer_count + last_trade are also in the /assets list response via
   // hydrateAssetSummary; mirror them here so single-asset clients get the
   // same discovery metrics.
@@ -5576,6 +5755,170 @@ function atomicIntentCancelMsg(assetIdHex, intentIdHex) {
   ));
 }
 
+// ============== PREAUTH SALES (SPEC §5.7.8) ==============
+// Buyer-completable T_AXFER: seller signs once at listing time, buyer
+// completes settlement alone via ECDH-derived r_out (§5.7.3-style recovery).
+// Storage: one record per sale, plus an outpoint→sale_id index so POST
+// can reject duplicates in O(1) and cron outspend-scans can mark spent
+// outpoints stale without iterating every presale.
+
+function preauthSaleKey(network, aid, saleIdHex) {
+  return network === 'signet'
+    ? `presale:${aid}:${saleIdHex}`
+    : `presale:${network}:${aid}:${saleIdHex}`;
+}
+function preauthSalePrefix(network, aid) {
+  return network === 'signet' ? `presale:${aid}:` : `presale:${network}:${aid}:`;
+}
+function preauthOutpointIndexKey(network, aid, txidHex, vout) {
+  return network === 'signet'
+    ? `presale-by-outpoint:${aid}:${txidHex}:${vout}`
+    : `presale-by-outpoint:${network}:${aid}:${txidHex}:${vout}`;
+}
+
+// Bitcoin varint encoding — matches the wire format used in serialized
+// scripts and in the BIP-143 sighash preimage's scriptCode/varslice fields.
+function _writeBitcoinVarint(n) {
+  const v = Number(n);
+  if (v < 0xfd) return new Uint8Array([v]);
+  if (v < 0x10000) { const b = new Uint8Array(3); b[0] = 0xfd; new DataView(b.buffer).setUint16(1, v, true); return b; }
+  if (v < 0x100000000) { const b = new Uint8Array(5); b[0] = 0xfe; new DataView(b.buffer).setUint32(1, v, true); return b; }
+  const b = new Uint8Array(9); b[0] = 0xff; new DataView(b.buffer).setBigUint64(1, BigInt(v), true); return b;
+}
+function _varslice(bytes) {
+  return concatBytes(_writeBitcoinVarint(bytes.length), bytes);
+}
+
+// sale_id derivation pins each listing to its outpoint + seller + a per-
+// publish nonce. Cancel + re-list yields a fresh sale_id; outpoint
+// uniqueness is enforced separately via preauthOutpointIndexKey.
+function preauthSaleIdHex(assetOutpointTxidHex, assetOutpointVout, sellerPubHex, nonceHex) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, assetOutpointVout >>> 0, true);
+  const h = sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-sale-id-v1'),
+    reverseBytes(hexToBytes(assetOutpointTxidHex)),
+    voutLE,
+    hexToBytes(sellerPubHex),
+    hexToBytes(nonceHex),
+  ));
+  return bytesToHex(h.slice(0, 16));
+}
+
+function preauthSaleAuthMsg({
+  assetIdHex, saleIdHex, sellerPubHex,
+  assetOutpointTxidHex, assetOutpointVout, assetUtxoValue,
+  amountStr, blindingHex,
+  minPriceSats,
+  sellerPayoutScriptHex,
+  expiry,
+  sellerAssetSpendSigHex,
+  nonceHex,
+}) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, assetOutpointVout >>> 0, true);
+  const valueLE = new Uint8Array(8);
+  new DataView(valueLE.buffer).setBigUint64(0, BigInt(assetUtxoValue), true);
+  const amountLE = new Uint8Array(8);
+  new DataView(amountLE.buffer).setBigUint64(0, BigInt(amountStr), true);
+  const priceLE = new Uint8Array(8);
+  new DataView(priceLE.buffer).setBigUint64(0, BigInt(minPriceSats), true);
+  const expiryLE = new Uint8Array(8);
+  new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-sale-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(saleIdHex),
+    hexToBytes(sellerPubHex),
+    reverseBytes(hexToBytes(assetOutpointTxidHex)),
+    voutLE,
+    valueLE,
+    amountLE,
+    hexToBytes(blindingHex),
+    priceLE,
+    _varslice(hexToBytes(sellerPayoutScriptHex)),
+    expiryLE,
+    _varslice(hexToBytes(sellerAssetSpendSigHex)),
+    hexToBytes(nonceHex),
+  ));
+}
+
+function preauthSaleCancelMsg(assetIdHex, saleIdHex) {
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-preauth-sale-cancel-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(saleIdHex),
+  ));
+}
+
+// BIP-143 sighash reconstruction for the seller's pre-signed asset input.
+// SPEC §5.7.8: vin[1] = asset outpoint, vout[1] = seller payout, version 2,
+// locktime 0, nSequence 0xfffffffd, SIGHASH_SINGLE|ANYONECANPAY (0x83).
+// Every field comes from the sale-auth body, so this is deterministic and
+// replayable; the worker rejects the listing if the signature doesn't
+// verify against this exact preimage.
+function preauthSellerSpendSighash({
+  assetOutpointTxidHex, assetOutpointVout, assetUtxoValue,
+  sellerPubHex, sellerPayoutScriptHex, minPriceSats,
+}) {
+  const u32 = (n) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  const u64 = (n) => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(n), true); return b; };
+  const zero32 = new Uint8Array(32);
+  // P2WPKH scriptCode = 0x76 0xa9 0x14 || hash160(pubkey) || 0x88 0xac.
+  const scriptCode = concatBytes(
+    new Uint8Array([0x76, 0xa9, 0x14]),
+    hash160(hexToBytes(sellerPubHex)),
+    new Uint8Array([0x88, 0xac]),
+  );
+  // SIGHASH_SINGLE on input_index=1 → hashOutputs covers only vout[1].
+  const vout1Serialized = concatBytes(u64(minPriceSats), _varslice(hexToBytes(sellerPayoutScriptHex)));
+  const hashOutputs = hash256(vout1Serialized);
+  const preimage = concatBytes(
+    u32(2),                                          // nVersion
+    zero32,                                          // hashPrevouts (ANYONECANPAY)
+    zero32,                                          // hashSequence (ANYONECANPAY)
+    reverseBytes(hexToBytes(assetOutpointTxidHex)),  // outpoint.txid (BE wire form)
+    u32(assetOutpointVout),                          // outpoint.vout
+    _varslice(scriptCode),                           // scriptCode
+    u64(assetUtxoValue),                             // value
+    u32(0xfffffffd),                                 // nSequence
+    hashOutputs,                                     // hashOutputs (vout[1] only)
+    u32(0),                                          // nLocktime
+    u32(0x83),                                       // nHashType (SIGHASH_SINGLE | ANYONECANPAY)
+  );
+  return hash256(preimage);
+}
+
+// DER → compact (64-byte r||s) for noble's verify(), which is compact-only.
+// Returns null if DER is malformed; caller treats null as a verification failure.
+function derToCompactSig(derBytes) {
+  if (!(derBytes instanceof Uint8Array) || derBytes.length < 8 || derBytes.length > 72) return null;
+  if (derBytes[0] !== 0x30) return null;
+  if (derBytes[1] !== derBytes.length - 2) return null;
+  if (derBytes[2] !== 0x02) return null;
+  const rLen = derBytes[3];
+  if (rLen < 1 || rLen > 33 || 4 + rLen >= derBytes.length) return null;
+  let r = derBytes.slice(4, 4 + rLen);
+  if (derBytes[4 + rLen] !== 0x02) return null;
+  const sLen = derBytes[5 + rLen];
+  if (sLen < 1 || sLen > 33 || 6 + rLen + sLen !== derBytes.length) return null;
+  let s = derBytes.slice(6 + rLen, 6 + rLen + sLen);
+  // Strip the leading sign-padding byte that DER adds when the high bit is set.
+  if (r.length === 33) { if (r[0] !== 0x00) return null; r = r.slice(1); }
+  if (s.length === 33) { if (s[0] !== 0x00) return null; s = s.slice(1); }
+  if (r.length > 32 || s.length > 32) return null;
+  const compact = new Uint8Array(64);
+  compact.set(r, 32 - r.length);
+  compact.set(s, 64 - s.length);
+  return compact;
+}
+
+function verifyEcdsaDerSig(derSigBytes, msgHash32, pubkeyBytes33) {
+  const compact = derToCompactSig(derSigBytes);
+  if (!compact) return false;
+  try { return secp.verify(compact, msgHash32, pubkeyBytes33, { lowS: true }); } catch { return false; }
+}
+
 async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   let body;
@@ -5943,6 +6286,261 @@ async function handleAtomicIntentFulfilGet(assetIdHex, intentIdHex, env, network
   return jsonResponse({ ok: true, fulfilment, intent }, 200, cors);
 }
 
+// ============== PREAUTH SALE HANDLERS (SPEC §5.7.8) ==============
+// Validation flow mirrors handleAtomicIntentPost / handleListingPost: shape
+// checks first, then chain-state checks, then signature verifications, then
+// the new piece — reconstruct the BIP-143 sighash from the sale-auth body
+// and ECDSA-verify the seller_asset_spend signature against it.
+
+async function handlePreauthSalePost(assetIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  const sellerPubHex = String(body.seller_pubkey ?? '').toLowerCase();
+  const assetOutpoint = body.asset_outpoint;
+  const assetOutpointTxidHex = String(assetOutpoint?.txid ?? '').toLowerCase();
+  const assetOutpointVoutRaw = assetOutpoint?.vout;
+  const assetUtxoValueRaw = assetOutpoint?.value;
+  const assetOpening = body.asset_opening;
+  const amountStr = String(assetOpening?.amount ?? '');
+  const blindingHex = String(assetOpening?.blinding ?? '').toLowerCase();
+  const minPriceSatsRaw = body.min_price_sats;
+  const sellerPayoutScriptHex = String(body.seller_payout_script ?? '').toLowerCase();
+  const sellerPayoutAddress = String(body.seller_payout_address ?? '');
+  const expiryRaw = body.expiry;
+  const sellerAssetSpendSigHex = String(body.seller_asset_spend_sig ?? '').toLowerCase();
+  const nonceHex = String(body.nonce ?? '').toLowerCase();
+  const authSigHex = String(body.auth_sig ?? '').toLowerCase();
+  const ticker = String(body.ticker ?? '');
+  const decimals = body.decimals;
+
+  // ---------- shape checks ----------
+  if (!/^0[23][0-9a-f]{64}$/.test(sellerPubHex))         return jsonResponse({ error: 'seller_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(assetOutpointTxidHex))      return jsonResponse({ error: 'asset_outpoint.txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(assetOutpointVoutRaw) || assetOutpointVoutRaw < 0 || assetOutpointVoutRaw > 0xffff) {
+    return jsonResponse({ error: 'asset_outpoint.vout must be a u16 integer' }, 400, cors);
+  }
+  if (!Number.isInteger(assetUtxoValueRaw) || assetUtxoValueRaw < DUST) {
+    return jsonResponse({ error: `asset_outpoint.value must be integer ≥ ${DUST}` }, 400, cors);
+  }
+  if (!/^\d+$/.test(amountStr))                          return jsonResponse({ error: 'asset_opening.amount must be base-10 integer string' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(blindingHex))               return jsonResponse({ error: 'asset_opening.blinding must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(minPriceSatsRaw) || minPriceSatsRaw < PRICE_MIN || minPriceSatsRaw > Number.MAX_SAFE_INTEGER) {
+    return jsonResponse({ error: `min_price_sats must be integer ≥ ${PRICE_MIN}` }, 400, cors);
+  }
+  // P2WPKH or P2TR payout scripts only at v1: 22 bytes (0014 + 20B hash160) or
+  // 34 bytes (5120 + 32B tweaked output key). Both are universal-relay; other
+  // scripts (P2SH, P2PKH legacy, bare scripts) are deferred until the dApp's
+  // tx builder can construct + sign them on the buyer side.
+  if (!(/^0014[0-9a-f]{40}$/.test(sellerPayoutScriptHex) || /^5120[0-9a-f]{64}$/.test(sellerPayoutScriptHex))) {
+    return jsonResponse({ error: 'seller_payout_script must be P2WPKH (0014…) or P2TR (5120…) hex' }, 400, cors);
+  }
+  if (!Number.isInteger(expiryRaw))                      return jsonResponse({ error: 'expiry must be integer unix-seconds' }, 400, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if (expiryRaw <= now)                                  return jsonResponse({ error: 'expiry must be in the future' }, 400, cors);
+  if (expiryRaw > now + EXPIRY_MAX_DAYS * 86400)         return jsonResponse({ error: `expiry must be within ${EXPIRY_MAX_DAYS} days` }, 400, cors);
+  // DER (≤72B) + 1B sighash flag → 8..73 bytes = 16..146 hex chars.
+  if (!/^[0-9a-f]+$/.test(sellerAssetSpendSigHex) || sellerAssetSpendSigHex.length < 16 || sellerAssetSpendSigHex.length > 146) {
+    return jsonResponse({ error: 'seller_asset_spend_sig must be DER+sighash hex (16–146 chars)' }, 400, cors);
+  }
+  if (!sellerAssetSpendSigHex.endsWith('83')) {
+    return jsonResponse({ error: 'seller_asset_spend_sig must end with sighash byte 0x83 (SIGHASH_SINGLE|ANYONECANPAY)' }, 400, cors);
+  }
+  if (!/^[0-9a-f]{32}$/.test(nonceHex))                  return jsonResponse({ error: 'nonce must be 32 hex chars (16 bytes)' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(authSigHex))               return jsonResponse({ error: 'auth_sig must be 128 hex chars' }, 400, cors);
+  if (sellerPayoutAddress.length > ADDR_MAX_LEN)         return jsonResponse({ error: `seller_payout_address must be ≤ ${ADDR_MAX_LEN} chars` }, 400, cors);
+  // Address is optional (script is the load-bearing field) but if present it
+  // must match the network so client display stays consistent.
+  if (sellerPayoutAddress) {
+    const decoded = decodeBitcoinAddress(sellerPayoutAddress);
+    if (!decoded || decoded.hrp !== HRP_BY_NETWORK[network]) {
+      return jsonResponse({ error: `seller_payout_address must be a ${HRP_BY_NETWORK[network]}… bech32 address` }, 400, cors);
+    }
+  }
+
+  // sale_id must derive from (outpoint, seller, nonce) per SPEC §5.7.8.
+  const expectedSaleIdHex = preauthSaleIdHex(assetOutpointTxidHex, assetOutpointVoutRaw, sellerPubHex, nonceHex);
+  const saleIdHex = String(body.sale_id ?? '').toLowerCase();
+  if (saleIdHex !== expectedSaleIdHex) {
+    return jsonResponse({ error: 'sale_id does not derive from (asset_outpoint, seller_pubkey, nonce)' }, 400, cors);
+  }
+
+  // ---------- chain-state checks ----------
+  // The seller must control the asset outpoint as P2WPKH(hash160(seller_pubkey)).
+  let assetTx;
+  try { assetTx = await fetchFreshTxJson(env, assetOutpointTxidHex, network); }
+  catch (e) { return jsonResponse({ error: 'asset outpoint tx not found after retries: ' + e.message }, 400, cors); }
+  const out = assetTx?.vout?.[assetOutpointVoutRaw];
+  if (!out?.scriptpubkey) return jsonResponse({ error: 'asset outpoint missing scriptpubkey' }, 400, cors);
+  const spk = hexToBytes(out.scriptpubkey);
+  if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) {
+    return jsonResponse({ error: 'asset outpoint is not P2WPKH' }, 400, cors);
+  }
+  if (bytesToHex(spk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(sellerPubHex)))) {
+    return jsonResponse({ error: 'seller_pubkey does not control the asset outpoint' }, 403, cors);
+  }
+  if (out.value !== assetUtxoValueRaw) {
+    return jsonResponse({ error: `asset_outpoint.value mismatch (declared ${assetUtxoValueRaw}, on-chain ${out.value})` }, 400, cors);
+  }
+  // Outpoint must currently be unspent.
+  let outspend;
+  try { outspend = await apiJson(env, `/tx/${assetOutpointTxidHex}/outspend/${assetOutpointVoutRaw}`, {}, network); }
+  catch { outspend = null; }
+  if (outspend && outspend.spent) {
+    return jsonResponse({ error: 'asset outpoint is already spent' }, 409, cors);
+  }
+
+  // Asset outpoint must be a tacit UTXO of the declared asset_id. Mirrors
+  // handleListingPost / handleAtomicIntentPost path via commitmentForUtxo.
+  let resolved;
+  try { resolved = await commitmentForUtxo(env, assetOutpointTxidHex, assetOutpointVoutRaw, network); }
+  catch (e) { return jsonResponse({ error: 'commitment lookup failed: ' + e.message }, 400, cors); }
+  if (resolved.asset_id !== assetIdHex) {
+    return jsonResponse({ error: 'asset outpoint is for a different asset' }, 400, cors);
+  }
+
+  // Pedersen opening must commit to the on-chain commitment for that outpoint.
+  let amount;
+  try { amount = BigInt(amountStr); } catch { return jsonResponse({ error: 'unparseable amount' }, 400, cors); }
+  if (amount < 0n || amount >= (1n << BigInt(N_BITS))) {
+    return jsonResponse({ error: `amount must be in [0, 2^${N_BITS})` }, 400, cors);
+  }
+  let claimed, onchain;
+  try {
+    claimed = pedersenCommit(amount, BigInt('0x' + blindingHex));
+    onchain = compressedPointFromHex(resolved.commitment);
+  } catch (e) {
+    return jsonResponse({ error: 'commitment math failed: ' + e.message }, 400, cors);
+  }
+  if (!claimed.equals(onchain)) {
+    return jsonResponse({ error: 'asset_opening does not match on-chain commitment' }, 400, cors);
+  }
+
+  // ---------- signature checks ----------
+  // Seller's BIP-340 auth signature covers the whole sale-auth body.
+  const authMsg = preauthSaleAuthMsg({
+    assetIdHex, saleIdHex, sellerPubHex,
+    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
+    assetUtxoValue: assetUtxoValueRaw,
+    amountStr, blindingHex,
+    minPriceSats: minPriceSatsRaw,
+    sellerPayoutScriptHex,
+    expiry: expiryRaw,
+    sellerAssetSpendSigHex,
+    nonceHex,
+  });
+  if (!verifySchnorr(hexToBytes(authSigHex), authMsg, hexToBytes(sellerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid auth signature' }, 403, cors);
+  }
+
+  // Seller's pre-signed P2WPKH spend: ECDSA over the BIP-143 sighash that
+  // binds vin[1] (asset outpoint) to vout[1] (payout). Reconstruct the
+  // sighash from the same fields the seller signed; reject if the signature
+  // doesn't verify against this preimage under seller_pubkey.
+  const spendSigBytes = hexToBytes(sellerAssetSpendSigHex);
+  const spendDer = spendSigBytes.slice(0, spendSigBytes.length - 1);
+  const sighash = preauthSellerSpendSighash({
+    assetOutpointTxidHex, assetOutpointVout: assetOutpointVoutRaw,
+    assetUtxoValue: assetUtxoValueRaw,
+    sellerPubHex, sellerPayoutScriptHex,
+    minPriceSats: minPriceSatsRaw,
+  });
+  if (!verifyEcdsaDerSig(spendDer, sighash, hexToBytes(sellerPubHex))) {
+    return jsonResponse({ error: 'seller_asset_spend_sig does not verify against the BIP-143 sighash' }, 403, cors);
+  }
+
+  // ---------- one-live-sale-per-outpoint ----------
+  // Check the outpoint index BEFORE the main record so a duplicate doesn't
+  // leak a partial KV write. KV's eventual consistency means two near-
+  // simultaneous POSTs could race past this check; the dApp side handles the
+  // 409 path on the second insert by reading back the existing sale_id.
+  const existingSaleIdHex = await env.REGISTRY_KV.get(
+    preauthOutpointIndexKey(network, assetIdHex, assetOutpointTxidHex, assetOutpointVoutRaw),
+  );
+  if (existingSaleIdHex) {
+    return jsonResponse({
+      error: 'a live preauth-sale already exists for this asset_outpoint; cancel it first',
+      existing_sale_id: existingSaleIdHex,
+    }, 409, cors);
+  }
+
+  const sale = {
+    asset_id: assetIdHex,
+    sale_id: saleIdHex,
+    seller_pubkey: sellerPubHex,
+    seller_payout_script: sellerPayoutScriptHex,
+    seller_payout_address: sellerPayoutAddress || '',
+    asset_outpoint: { txid: assetOutpointTxidHex, vout: assetOutpointVoutRaw, value: assetUtxoValueRaw },
+    asset_opening: { amount: amountStr, blinding: blindingHex },
+    min_price_sats: minPriceSatsRaw,
+    expiry: expiryRaw,
+    seller_asset_spend_sig: sellerAssetSpendSigHex,
+    nonce: nonceHex,
+    auth_sig: authSigHex,
+    ticker: ticker || '',
+    decimals: Number.isInteger(decimals) ? decimals : 0,
+    created_at: now,
+    network,
+  };
+  await env.REGISTRY_KV.put(preauthSaleKey(network, assetIdHex, saleIdHex), JSON.stringify(sale));
+  await env.REGISTRY_KV.put(
+    preauthOutpointIndexKey(network, assetIdHex, assetOutpointTxidHex, assetOutpointVoutRaw),
+    saleIdHex,
+  );
+  return jsonResponse({ ok: true, sale }, 200, cors);
+}
+
+async function loadPreauthSalesForAsset(env, network, assetIdHex) {
+  const list = await env.REGISTRY_KV.list({ prefix: preauthSalePrefix(network, assetIdHex), limit: 1000 });
+  const now = Math.floor(Date.now() / 1000);
+  const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+  const sales = [];
+  for (const v of fetched) {
+    if (!v) continue;
+    v.expired = (v.expiry || 0) <= now;
+    sales.push(v);
+  }
+  sales.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  return sales;
+}
+
+async function handlePreauthSaleList(assetIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  const sales = await loadPreauthSalesForAsset(env, network, assetIdHex);
+  return jsonResponse({ asset_id: assetIdHex, count: sales.length, sales }, 200, cors);
+}
+
+async function handlePreauthSaleGet(assetIdHex, saleIdHex, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(saleIdHex)) return jsonResponse({ error: 'invalid sale_id' }, 400, cors);
+  const sale = await env.REGISTRY_KV.get(preauthSaleKey(network, assetIdHex, saleIdHex), 'json');
+  if (!sale) return jsonResponse({ error: 'no sale found' }, 404, cors);
+  const now = Math.floor(Date.now() / 1000);
+  sale.expired = (sale.expiry || 0) <= now;
+  return jsonResponse({ ok: true, sale }, 200, cors);
+}
+
+async function handlePreauthSaleDelete(assetIdHex, saleIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(saleIdHex)) return jsonResponse({ error: 'invalid sale_id' }, 400, cors);
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const cancelSigHex = String(body.cancel_sig ?? '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(cancelSigHex)) return jsonResponse({ error: 'cancel_sig must be 128 hex chars' }, 400, cors);
+  const stored = await env.REGISTRY_KV.get(preauthSaleKey(network, assetIdHex, saleIdHex), 'json');
+  if (!stored) return jsonResponse({ error: 'no sale found' }, 404, cors);
+  const msg = preauthSaleCancelMsg(assetIdHex, saleIdHex);
+  if (!verifySchnorr(hexToBytes(cancelSigHex), msg, hexToBytes(stored.seller_pubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid cancel signature' }, 403, cors);
+  }
+  await env.REGISTRY_KV.delete(preauthSaleKey(network, assetIdHex, saleIdHex));
+  await env.REGISTRY_KV.delete(preauthOutpointIndexKey(
+    network, assetIdHex, stored.asset_outpoint.txid, stored.asset_outpoint.vout,
+  ));
+  return jsonResponse({ ok: true }, 200, cors);
+}
+
 // ============== AIRDROP CLAIM QUEUE ==============
 // Recipients submit signed claim tuples here; issuers pull them in batches.
 // The worker performs format validation only — it doesn't have the snapshot
@@ -5963,6 +6561,12 @@ async function handleAtomicIntentFulfilGet(assetIdHex, intentIdHex, env, network
 //   - eth_sig:     65 bytes (130 hex chars, 0x prefix optional).
 const AIRDROP_LEAF_INDEX_MAX = 0xffffffff;
 const AIRDROP_LIST_PAGE = 1000;     // KV's max per call
+// 90-day TTL on claim records. Bounds stale entries when issuers abandon a
+// drop and limits the attack surface of an unauthenticated DELETE: legitimate
+// recipients re-POST during fulfilment, attackers must keep wiping under the
+// per-IP rate limit, and any drop that hasn't fulfilled in 90 days is
+// effectively dead anyway.
+const AIRDROP_CLAIM_TTL_SECONDS = 90 * 24 * 3600;
 // Each returned claim costs one KV.get subrequest. CF Workers paid plan caps
 // at 1000 subrequests per invocation; the prior 10000 cap would deterministically
 // fail once a queue grew past ~1000 entries because we'd attempt 10000 gets in
@@ -5973,25 +6577,60 @@ const AIRDROP_LIST_HARD_CAP = 900;  // total per response; bound size + subreque
 
 // Layered daily rate limit for airdrop-claim POST and DELETE. Without this an
 // attacker could fill KV with junk submissions for any root, or wipe a
-// recipient's submission before the issuer pulls. The IP cap is generous so a
-// legitimate recipient who needs to re-sign isn't blocked; the per-pubkey cap
-// (POST-only — DELETE has no signed pubkey) forces a determined attacker to
-// rotate keys as well as IPs, mirroring the layered defense on /drops.
-async function _airdropRateLimit(req, env, tacitPubHex) {
+// recipient's submission before the issuer pulls.
+//
+// Four counters compose:
+//   1. ip-global: per-IP, all drops combined. Generous so legitimate
+//      recipients who claim from multiple drops aren't throttled.
+//   2. pk-global: per tacit-pubkey, all drops. Forces a determined attacker
+//      to rotate tacit keys as well as IPs (mirrors /drops posture).
+//   3. ip-per-root: per-IP within a single drop. Scopes a targeted attack
+//      against one drop — without this, an attacker could burn the global
+//      limit on a single root and prevent legitimate claimants from there.
+//   4. pk-per-root: per tacit-pubkey within a single drop. Stops a single
+//      identity from spamming many leaves in one drop.
+//
+// DELETE only checks ip-global + ip-per-root (no signed pubkey to bind).
+async function _airdropRateLimit(req, env, tacitPubHex, rootHex) {
   const ip = req.headers.get('CF-Connecting-IP') || 'anon';
   const day = new Date().toISOString().slice(0, 10);
   const ipKey = `airdrop-rl:ip:${day}:${ip}`;
   const ipLimit = safeInt(env.AIRDROP_DAILY_LIMIT, 200, { min: 1 });
   const ipPrior = safeInt(await env.REGISTRY_KV.get(ipKey), 0, { min: 0 });
   if (ipPrior >= ipLimit) return { ok: false, reason: `IP daily limit (${ipLimit}/day)` };
-  if (tacitPubHex) {
-    const pkKey = `airdrop-rl:pk:${day}:${tacitPubHex}`;
-    const pkLimit = safeInt(env.AIRDROP_DAILY_LIMIT_PUBKEY, 50, { min: 1 });
-    const pkPrior = safeInt(await env.REGISTRY_KV.get(pkKey), 0, { min: 0 });
-    if (pkPrior >= pkLimit) return { ok: false, reason: `pubkey daily limit (${pkLimit}/day)` };
-    await env.REGISTRY_KV.put(pkKey, String(pkPrior + 1), { expirationTtl: 90000 });
+  // Per-root + IP: scopes per-drop abuse without throttling cross-drop use.
+  // Default 50/day/IP/drop covers re-sign churn (account swap, retry) on a
+  // single drop without enabling fill-the-queue attacks.
+  let ipRootKey = null;
+  let ipRootPrior = 0;
+  if (rootHex) {
+    ipRootKey = `airdrop-rl:root-ip:${day}:${rootHex}:${ip}`;
+    const ipRootLimit = safeInt(env.AIRDROP_DAILY_LIMIT_ROOT_IP, 50, { min: 1 });
+    ipRootPrior = safeInt(await env.REGISTRY_KV.get(ipRootKey), 0, { min: 0 });
+    if (ipRootPrior >= ipRootLimit) return { ok: false, reason: `per-drop IP limit (${ipRootLimit}/day)` };
   }
+  let pkKey = null;
+  let pkPrior = 0;
+  let pkRootKey = null;
+  let pkRootPrior = 0;
+  if (tacitPubHex) {
+    pkKey = `airdrop-rl:pk:${day}:${tacitPubHex}`;
+    const pkLimit = safeInt(env.AIRDROP_DAILY_LIMIT_PUBKEY, 50, { min: 1 });
+    pkPrior = safeInt(await env.REGISTRY_KV.get(pkKey), 0, { min: 0 });
+    if (pkPrior >= pkLimit) return { ok: false, reason: `pubkey daily limit (${pkLimit}/day)` };
+    if (rootHex) {
+      pkRootKey = `airdrop-rl:root-pk:${day}:${rootHex}:${tacitPubHex}`;
+      const pkRootLimit = safeInt(env.AIRDROP_DAILY_LIMIT_ROOT_PUBKEY, 25, { min: 1 });
+      pkRootPrior = safeInt(await env.REGISTRY_KV.get(pkRootKey), 0, { min: 0 });
+      if (pkRootPrior >= pkRootLimit) return { ok: false, reason: `per-drop pubkey limit (${pkRootLimit}/day)` };
+    }
+  }
+  // Commit counters only after every gate has passed so a rejection upstream
+  // doesn't burn slots on the limits downstream of it.
   await env.REGISTRY_KV.put(ipKey, String(ipPrior + 1), { expirationTtl: 90000 });
+  if (ipRootKey) await env.REGISTRY_KV.put(ipRootKey, String(ipRootPrior + 1), { expirationTtl: 90000 });
+  if (pkKey) await env.REGISTRY_KV.put(pkKey, String(pkPrior + 1), { expirationTtl: 90000 });
+  if (pkRootKey) await env.REGISTRY_KV.put(pkRootKey, String(pkRootPrior + 1), { expirationTtl: 90000 });
   return { ok: true };
 }
 
@@ -6004,6 +6643,17 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
   const tacitPubHex = String(body.tacit_pubkey ?? '').toLowerCase();
   let ethSigHex = String(body.eth_sig ?? '').toLowerCase();
   if (ethSigHex.startsWith('0x')) ethSigHex = ethSigHex.slice(2);
+  // Optional funding_txid: the tip tx that paid the issuer's treasury for
+  // this claim's seat in a fulfilment batch. Daemon-side enforcement (the
+  // fulfiller refuses to broadcast claims lacking a verified funding_txid)
+  // is what closes the free-rider attack; the worker's role here is to
+  // (a) format-validate and (b) prevent two claims from citing the same
+  // funding_txid — that's the race-condition mitigation.
+  let fundingTxidHex = String(body.funding_txid ?? '').toLowerCase();
+  if (fundingTxidHex.startsWith('0x')) fundingTxidHex = fundingTxidHex.slice(2);
+  if (fundingTxidHex && !/^[0-9a-f]{64}$/.test(fundingTxidHex)) {
+    return jsonResponse({ error: 'funding_txid must be 64 hex chars when present' }, 400, cors);
+  }
 
   // Format-validate before charging the rate limit so malformed bodies don't
   // burn slots that legitimate retries might need.
@@ -6017,8 +6667,22 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
     return jsonResponse({ error: 'eth_sig must be 65 bytes (130 hex chars)' }, 400, cors);
   }
 
-  const rl = await _airdropRateLimit(req, env, tacitPubHex);
+  const rl = await _airdropRateLimit(req, env, tacitPubHex, rootHex);
   if (!rl.ok) return jsonResponse({ error: `airdrop limit reached: ${rl.reason}` }, 429, cors);
+
+  // Funding-txid nullifier. If the submission cites a funding_txid, refuse
+  // when that txid was already used by another claim against this root.
+  // Distinct roots can share a funding_txid (no cross-drop interference) —
+  // legitimate only in the unusual case where the same tip tx fronts two
+  // different drops, but harmless either way.
+  if (fundingTxidHex) {
+    const existing = await env.REGISTRY_KV.get(airdropFundingKey(network, rootHex, fundingTxidHex));
+    if (existing && existing !== String(leafIndex)) {
+      return jsonResponse({
+        error: `funding_txid already used by claim for leaf_index ${existing}; tip again with a fresh tx and retry`,
+      }, 409, cors);
+    }
+  }
 
   const record = {
     root: rootHex,
@@ -6028,7 +6692,28 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
     eth_sig: '0x' + ethSigHex,
     submitted_at: Math.floor(Date.now() / 1000),
   };
-  await env.REGISTRY_KV.put(airdropClaimKey(network, rootHex, leafIndex), JSON.stringify(record));
+  if (fundingTxidHex) record.funding_txid = fundingTxidHex;
+  // 90-day TTL bounds stale records and self-heals after a mass-delete
+  // attack: legitimate recipients re-POST on their next visit and the
+  // attacker has to keep wiping under the existing rate-limit ceiling.
+  // The issuer's pull window is typically days, not months, so any drop
+  // active long enough to exceed this TTL has already been fulfilled and
+  // the dropbox is just a leak.
+  await env.REGISTRY_KV.put(
+    airdropClaimKey(network, rootHex, leafIndex),
+    JSON.stringify(record),
+    { expirationTtl: AIRDROP_CLAIM_TTL_SECONDS },
+  );
+  if (fundingTxidHex) {
+    // Marker outlives the claim record by 30 days so an attacker can't wait
+    // for a TTL'd record to expire, then race the original funding_txid
+    // back into a different claim. Same TTL anchors both flows once expired.
+    await env.REGISTRY_KV.put(
+      airdropFundingKey(network, rootHex, fundingTxidHex),
+      String(leafIndex),
+      { expirationTtl: AIRDROP_CLAIM_TTL_SECONDS + 30 * 24 * 3600 },
+    );
+  }
   return jsonResponse({ ok: true, claim: record }, 200, cors);
 }
 
@@ -6079,14 +6764,16 @@ async function handleAirdropClaimList(rootHex, env, network, cors, opts = {}) {
 
 async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
-  // Same per-IP cap as POST. The endpoint is intentionally unauthenticated —
-  // the issuer's dapp calls DELETE after pulling each leaf for fulfilment, and
-  // doesn't have the claimant's private key to sign with. Adding sig auth
-  // would break the existing flow; the rate limit bounds the blast radius of
-  // a malicious deleter to AIRDROP_DAILY_LIMIT entries per day per IP, which
-  // combined with claimants storing their submission locally and the issuer
-  // re-pulling on each fulfilment session makes mass-wipe impractical.
-  const rl = await _airdropRateLimit(req, env, null);   // null pubkey → IP-only
+  // Same per-IP caps as POST (global + per-root). The endpoint is
+  // intentionally unauthenticated — the issuer's dapp calls DELETE after
+  // pulling each leaf for fulfilment, and doesn't have the claimant's
+  // private key to sign with. Adding sig auth would break the existing
+  // flow; the rate limits bound the blast radius of a malicious deleter to
+  // AIRDROP_DAILY_LIMIT_ROOT_IP entries per day per IP per drop, which
+  // combined with claimants storing their submission locally, the 90-day
+  // claim TTL, and the issuer re-pulling on each fulfilment session makes
+  // mass-wipe impractical.
+  const rl = await _airdropRateLimit(req, env, null, rootHex);   // null pubkey → IP-only
   if (!rl.ok) return jsonResponse({ error: `airdrop limit reached: ${rl.reason}` }, 429, cors);
   const leafIndex = safeInt(leafIndexStr, -1, { min: 0, max: AIRDROP_LEAF_INDEX_MAX });
   if (leafIndex < 0) {
@@ -6218,7 +6905,18 @@ async function handleDropAnnouncePost(req, env, network, cors) {
     announce_sig: sigHex,
     announced_at: Math.floor(Date.now() / 1000),
   };
-  await env.REGISTRY_KV.put(dropAnnounceKey(network, rootHex), JSON.stringify(record));
+  // Native TTL on the KV key so expired announcements GC even if no client
+  // ever lists/reads them — the lazy-on-read path below still applies but
+  // can't keep up with announcements that get pinned to localStorage and
+  // then never re-read on the worker side. +60s of slack to ensure the GC
+  // doesn't race a final read at the boundary.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ttlSeconds = Math.max(60, expiresAt - nowSec + 60);
+  await env.REGISTRY_KV.put(
+    dropAnnounceKey(network, rootHex),
+    JSON.stringify(record),
+    { expirationTtl: ttlSeconds },
+  );
   return jsonResponse({ ok: true, drop: record }, 200, cors);
 }
 
@@ -7211,6 +7909,12 @@ async function scanForEtches(env, network) {
 export {
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
+  // Preauth-sale helpers (SPEC §5.7.8). Exported so the dapp/worker parity
+  // tests can pin message-byte equality + cross-check the BIP-143 sighash
+  // reconstruction; drift here silently breaks the seller-spend signature
+  // verification on every POST.
+  preauthSaleAuthMsg, preauthSaleCancelMsg, preauthSaleIdHex,
+  preauthSellerSpendSighash, derToCompactSig, verifyEcdsaDerSig,
   dropAnnounceMsg, dropAnnounceCancelMsg,
   bidIntentMsg, bidClaimMsg, bidCancelMsg,
   verifySchnorr, compressedPointFromHex,
@@ -7251,6 +7955,13 @@ export {
   refreshPetchProgress, refreshAndStorePetchProgress, readPetchProgress,
   markPetchDirty, refreshDirtyPetchSnapshots,
   petchProgressKey, petchDirtyKey,
+  // Airdrop merkle helpers (SPEC §5.13). Exported so tests/worker-contract
+  // can pin byte-for-byte parity with the dapp's airdropLeafHash /
+  // buildAirdropMerkle — the worker uses these in /pin-airdrop-snapshot to
+  // recompute the root and refuse rows-don't-hash-to-declared-root pins.
+  // A regression here would silently let buggy snapshots through the pin
+  // gate and surface only when recipients fail to claim.
+  _airdropLeafHash, _buildAirdropMerkleRoot,
 };
 
 // ============== ROUTER ==============
@@ -7801,8 +8512,11 @@ export default {
       if (!v) return jsonResponse({ error: 'unknown drop_id' }, 404, cors);
       if (v.kind !== 'drop') return jsonResponse({ error: 'drop_id does not resolve to a T_DROP record' }, 404, cors);
       // Inline cap-progress computation. For scale a drop_progress snapshot
-      // (parallel to petch_progress) is the right answer; MVP uses a
-      // KV.list scan capped at 10000 claims.
+      // (parallel to petch_progress) is the right answer; MVP paginates the
+      // KV.list scan up to DCLAIM_PROGRESS_PAGE_GUARD pages — enough for any
+      // realistic drop (32 × 1000 = 32000 claims past any cap a single drop
+      // would reasonably hold). The list-only walk costs no per-key gets,
+      // so the page-budget here only bounds list calls, not subrequests.
       //
       // CAP-OVERFLOW HANDLING: the cron writes every structurally-valid
       // T_DCLAIM to dclaim:*, including ones that collectively exceed cap.
@@ -7813,14 +8527,32 @@ export default {
       // claim_count at max_claims when reporting `claimed_amount` so the
       // remaining/claims_remaining math doesn't go negative when an issuer
       // sees a brief over-claim flurry.
-      const claimList = await env.REGISTRY_KV.list({
-        prefix: dclaimPrefix(network, dropId),
-        limit: 10000,
-      });
       const perClaim = BigInt(v.per_claim);
       const capAmount = BigInt(v.cap_amount);
       const maxClaimsBig = capAmount / perClaim;
-      const totalSeen = claimList.keys.length;
+      const DCLAIM_PROGRESS_PAGE_GUARD = 32;
+      let totalSeen = 0;
+      let kvCursor = undefined;
+      let listComplete = false;
+      for (let page = 0; page < DCLAIM_PROGRESS_PAGE_GUARD; page++) {
+        const opts = { prefix: dclaimPrefix(network, dropId), limit: 1000 };
+        if (kvCursor) opts.cursor = kvCursor;
+        const claimList = await env.REGISTRY_KV.list(opts);
+        totalSeen += claimList.keys.length;
+        // Early-exit once we've enumerated enough claims to fully account
+        // for cap_overflow. Past the cap we don't credit further claims,
+        // so the exact count of overflow is informational only — but the
+        // canonical-order winners are already in the first maxClaims of
+        // the lex-sorted prefix scan, so once totalSeen ≥ maxClaims the
+        // creditedCount answer is locked in regardless of further pages.
+        if (BigInt(totalSeen) >= maxClaimsBig && claimList.list_complete) {
+          listComplete = true;
+          break;
+        }
+        if (claimList.list_complete) { listComplete = true; break; }
+        if (!claimList.cursor) { listComplete = true; break; }
+        kvCursor = claimList.cursor;
+      }
       const creditedCount = Math.min(totalSeen, Number(maxClaimsBig));
       const claimed_amount = BigInt(creditedCount) * perClaim;
       v.claim_count = creditedCount;            // claims credited toward cap
@@ -7830,7 +8562,7 @@ export default {
       const remainingAmount = capAmount - claimed_amount;
       v.remaining_amount = (remainingAmount < 0n ? 0n : remainingAmount).toString();
       v.claims_remaining = String(remainingAmount > 0n ? remainingAmount / perClaim : 0n);
-      v.list_complete = !!claimList.list_complete;
+      v.list_complete = listComplete;
       const reclaimKey = network === 'signet'
         ? `drop-reclaim:${dropId}`
         : `drop-reclaim:${network}:${dropId}`;
@@ -7872,6 +8604,8 @@ export default {
           network,
           credited_count: credited_txids.length,
           credited_txids,
+          cursor: list.list_complete ? null : list.cursor,
+          list_complete: !!list.list_complete,
           truncated: !list.list_complete,
         }, 200, cors);
       }
@@ -7915,9 +8649,31 @@ export default {
       try { decoded = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1])); } catch { decoded = null; }
       if (!decoded) return jsonResponse({ error: 'envelope decode failed' }, 400, cors);
       const h = Number(tx.status?.block_height) || 0;
-      const txIndex = 0;   // hint can't know canonical tx_index without a block fetch;
-                           // cron's next pass will overwrite with the right value (T_PMINT precedent).
+      // We don't fetch the block to recover canonical tx_index, so the hint's
+      // dclaim:* key uses tx_index=0 as a placeholder. For merkle-gated drops
+      // the cron's later pass sees the leafKey already set and SKIPS writing
+      // its own canonical-tx_index record (leaving the hint's record in
+      // place) — so claim_count stays correct, but cap-overflow ordering for
+      // same-block ties favors hinted claims. Acceptable trade-off for the
+      // immediate-index UX. (Earlier comment claimed cron "overwrites" — it
+      // doesn't; the keys differ.)
+      const txIndex = 0;
       if (decoded.opcode === T_DROP) {
+        // Reject unconfirmed T_DROP hints. An attacker who broadcasts a
+        // valid-looking T_DROP envelope (locking real asset UTXOs as inputs)
+        // could RBF it out before confirmation while the worker's drop:*
+        // record persists indefinitely. Recipients seeing the phantom drop
+        // via /drops-onchain would attempt T_DCLAIMs against a parent that
+        // never confirmed and burn their own commit + reveal fees. The
+        // attacker's RBF replacement reclaims their inputs — they pay
+        // nothing for the grief. Cron picks up confirmed T_DROPs on its
+        // next tick (≤5 min), so the only UX cost is a short wait between
+        // broadcast and discovery.
+        if (!tx.status?.confirmed) {
+          return jsonResponse({
+            error: 'T_DROP hint requires a confirmed tx — retry after the first confirmation (the cron will pick it up automatically)',
+          }, 400, cors);
+        }
         const cd = decodeCDropPayload(decoded.payload);
         if (!cd) return jsonResponse({ error: 'invalid T_DROP payload' }, 400, cors);
         if (cd.kind === 'cdrop') {
@@ -7945,11 +8701,53 @@ export default {
           await env.REGISTRY_KV.put(hintKey, String(hintPrior + 1), { expirationTtl: 90000 });
           return jsonResponse({ ok: true, drop_id: dropId, kind: 'drop' }, 200, cors);
         } else {
+          // SPEC §5.12.1 — reclaim variant. Write the same drop-reclaim KV
+          // record the cron writes, so /drops-onchain/:drop_id surfaces it
+          // immediately. The dapp validator independently re-checks the cap
+          // equality + reclaim_sig against the live drop record, so an
+          // attacker hinting a fake reclaim cannot inflate supply — the
+          // record's existence is informational, soundness lives in the
+          // dapp's validator against the worker's authoritative drop_id state.
+          const reclaimMeta = {
+            kind: 'drop-reclaim',
+            reclaim_drop_id: cd.reclaim_drop_id,
+            reclaim_txid: txid,
+            asset_id: cd.asset_id,
+            cap_amount: cd.cap_amount,
+            cap_blinding: cd.cap_blinding,
+            reclaim_sig: cd.reclaim_sig,
+            reclaim_at_height: h,
+            reclaim_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            hinted: true,
+            network,
+          };
+          const reclaimKey = network === 'signet'
+            ? `drop-reclaim:${cd.reclaim_drop_id}`
+            : `drop-reclaim:${network}:${cd.reclaim_drop_id}`;
+          await env.REGISTRY_KV.put(reclaimKey, JSON.stringify(reclaimMeta));
           await env.REGISTRY_KV.put(hintKey, String(hintPrior + 1), { expirationTtl: 90000 });
-          return jsonResponse({ ok: true, kind: 'drop-reclaim', note: 'reclaim variant — credit gated on scanDrops future work' }, 200, cors);
+          return jsonResponse({ ok: true, reclaim_drop_id: cd.reclaim_drop_id, kind: 'drop-reclaim' }, 200, cors);
         }
       }
       if (decoded.opcode === T_DCLAIM) {
+        // Hinting a T_DCLAIM has soundness implications the T_DROP hint
+        // doesn't: it writes a leaf nullifier that PERMANENTLY locks
+        // (drop_id, leaf_index) in this KV namespace. If we accepted a
+        // mempool-only tx, an attacker could broadcast a low-fee /
+        // RBF-replaceable T_DCLAIM with a valid Pedersen open for any
+        // victim's leaf, hint it, then drop or RBF the tx — leaf
+        // nullifier persists indefinitely, blocking the legitimate
+        // claimant. The cost is ~zero (the attacker's RBF replacement
+        // pays them, not the network). Refuse mempool hints; the
+        // claimant retries after first confirmation, or the cron picks
+        // the tx up on its next scan once confirmed. For drops the
+        // posture is different (the metadata is only ever additive and
+        // cron corrects it on confirmation), so we don't gate those.
+        if (!tx.status?.confirmed) {
+          return jsonResponse({
+            error: 'T_DCLAIM hint requires a confirmed tx — retry after the first confirmation (the cron will pick it up automatically)',
+          }, 400, cors);
+        }
         const cdc = decodeCDClaimPayload(decoded.payload);
         if (!cdc) return jsonResponse({ error: 'invalid T_DCLAIM payload' }, 400, cors);
         const dropId = bytesToHex(dropIdFromRevealTxid(cdc.drop_reveal_txid));
@@ -8091,6 +8889,15 @@ export default {
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
     if (mai4 && req.method === 'POST')                         return handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors);
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
+
+    // Preauth sales (buyer-completable T_AXFER — SPEC §5.7.8). Seller signs once,
+    // buyer completes settlement alone via ECDH-derived recipient blinding.
+    const mps = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-sales$/);
+    if (mps && req.method === 'POST')                          return handlePreauthSalePost(mps[1], req, env, network, cors);
+    if (mps && req.method === 'GET')                           return handlePreauthSaleList(mps[1], env, network, cors);
+    const mps2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-sales\/([0-9a-f]{32})$/);
+    if (mps2 && req.method === 'GET')                          return handlePreauthSaleGet(mps2[1], mps2[2], env, network, cors);
+    if (mps2 && req.method === 'DELETE')                       return handlePreauthSaleDelete(mps2[1], mps2[2], req, env, network, cors);
 
     // Bid intents (off-chain bid book — SPEC §5.7.7). Buyer-initiated mirror
     // of atomic intents; settlement is via the seller spinning up an
