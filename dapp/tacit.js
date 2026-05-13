@@ -31909,6 +31909,22 @@ function _saveMarketSimple(on) {
   try { localStorage.setItem(_MARKET_SIMPLE_KEY, on ? '1' : '0'); } catch {}
 }
 let _marketSimpleMode = _loadMarketSimple();
+// "Mine only" toggles for the asks and bids ladders, persisted
+// independently. When ON, filters the corresponding ladder to entries
+// where the user is the maker/seller (asks) or buyer (bids).
+// Off by default — most users want to see the market, not just their
+// own orders. Power users flip this on to manage their open positions
+// without scrolling a 200-row book.
+const _MARKET_MINE_ASKS_KEY = 'tacit-market-mine-asks-v1';
+const _MARKET_MINE_BIDS_KEY = 'tacit-market-mine-bids-v1';
+function _loadMarketMine(key) {
+  try { return localStorage.getItem(key) === '1'; } catch { return false; }
+}
+function _saveMarketMine(key, on) {
+  try { localStorage.setItem(key, on ? '1' : '0'); } catch {}
+}
+let _marketMineOnlyAsks = _loadMarketMine(_MARKET_MINE_ASKS_KEY);
+let _marketMineOnlyBids = _loadMarketMine(_MARKET_MINE_BIDS_KEY);
 // Mirror Market navigation into the URL hash so a tile click produces a
 // shareable deep-link (#tab=market&aid=<aid>), and "← All assets" /
 // browser-back returns to the browse index without a re-fetch. Uses
@@ -32478,10 +32494,16 @@ function applyMarketFilters() {
   // through. Atomic intents and OTC openings/ranges stay invisible until
   // the user explicitly clicks "Show all offers". Counts in the header
   // reflect both views so the user can see what's hidden.
+  const _myPubHexFilter = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
+  const _isMyAsk = (l) => l.maker_pubkey === _myPubHexFilter
+                       || l.seller_pubkey === _myPubHexFilter
+                       || l.owner_pubkey === _myPubHexFilter;
   const rowsFull = rows;
   const rowsSimple = rowsFull.filter(l => l.kind === 'preauth');
-  const rowsForGrid = _marketSimpleMode ? rowsSimple : rowsFull;
+  let rowsForGrid = _marketSimpleMode ? rowsSimple : rowsFull;
+  if (_marketMineOnlyAsks) rowsForGrid = rowsForGrid.filter(_isMyAsk);
   const hiddenByMode = rowsFull.length - rowsSimple.length;
+  const minedAsksCount = rowsFull.filter(_isMyAsk).length;
   // Asset-detail header above already shows the per-kind breakdown
   // (⚡ atomic · opening · range) and floor — no separate banner needed here.
   // The "no atomic offers under current filters" nudge is preserved in
@@ -32509,9 +32531,19 @@ function applyMarketFilters() {
   const _askFormSlot = _userHoldsAsset
     ? `<div data-market-ask-form data-aid="${escapeHtml(_marketView.assetId)}" style="display:none;margin-bottom:10px;"></div>`
     : '';
+  // "Mine" toggle — filters the asks ladder to entries the user is the
+  // maker / seller / owner of. Only shown when the user has at least
+  // one active ask (otherwise toggling would just produce an empty
+  // grid). Persists to localStorage independently from the bids-side
+  // toggle so power users can manage one side without affecting the other.
+  const _mineAsksChip = minedAsksCount > 0
+    ? (_marketMineOnlyAsks
+        ? `<button data-act="market-mine-asks-toggle" type="button" title="Showing only your asks (${minedAsksCount}). Click to show all asks." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">Mine · ${minedAsksCount}</button>`
+        : `<button data-act="market-mine-asks-toggle" type="button" title="Filter to your asks only (${minedAsksCount} active). Useful for managing your own listings." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Mine</button>`)
+    : '';
   const asksHeaderHtml = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><strong>Asks · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel}</span></div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${modeChip}</div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${_mineAsksChip}${modeChip}</div>
     </div>${_askFormSlot}`;
   // Swap tile: the primary trading action surface, modeled on Uniswap /
   // Jupiter-style "from / to" swap UIs. Top input is editable (what you
@@ -32592,7 +32624,7 @@ function applyMarketFilters() {
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <input data-swap-input="from" type="text" inputmode="decimal" placeholder="0" style="flex:1 1 auto;font-family:var(--mono);font-size:22px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;">
-          <div data-swap-pill="from" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:5px 12px;background:#f7931a;color:#fff;border-radius:16px;font-weight:600;font-size:13px;border:1px solid #f7931a;">
+          <div data-swap-pill="from" title="Click to toggle sats ↔ USD on the buy side" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:5px 12px;background:#f7931a;color:#fff;border-radius:16px;font-weight:600;font-size:13px;border:1px solid #f7931a;cursor:pointer;user-select:none;">
             ${btcLogoHtml}<span data-swap-token="from">sats</span>
           </div>
         </div>
@@ -32656,6 +32688,17 @@ function applyMarketFilters() {
     btn.onclick = () => {
       _marketSimpleMode = !_marketSimpleMode;
       _saveMarketSimple(_marketSimpleMode);
+      applyMarketFilters();
+    };
+  });
+  // "Mine" toggle on the asks ladder. Same pattern as Simple — flips the
+  // module flag, persists, re-applies filters. The bids-side toggle is
+  // wired in populateMarketBidsLadder since that's where the bids ladder
+  // re-renders.
+  list.querySelectorAll('[data-act="market-mine-asks-toggle"]').forEach(btn => {
+    btn.onclick = () => {
+      _marketMineOnlyAsks = !_marketMineOnlyAsks;
+      _saveMarketMine(_MARKET_MINE_ASKS_KEY, _marketMineOnlyAsks);
       applyMarketFilters();
     };
   });
@@ -34080,9 +34123,9 @@ async function populateMarketBidsLadder(scope, asset) {
   // for try/catch); we surface a load-failed-style empty state only when
   // the worker is unreachable, which a separate WORKER_BASE check covers
   // upstream.
-  const intents = await _fetchBidIntentsCached(aid);
-  if (countEl) countEl.textContent = String(intents.length);
-  if (!intents.length) {
+  const intentsAll = await _fetchBidIntentsCached(aid);
+  if (countEl) countEl.textContent = String(intentsAll.length);
+  if (!intentsAll.length) {
     list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} — be the first to post one.</div>`;
     _wireMarketBidPlace(section, asset);
     return;
@@ -34091,6 +34134,13 @@ async function populateMarketBidsLadder(scope, asset) {
   // asks ladder which surfaces cheapest-first; together they read like a
   // standard orderbook.
   const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : null;
+  // "Mine only" filter — same pattern as the asks ladder. Counted from
+  // the full intent set so the chip label shows the actual mine count
+  // regardless of which filter is currently active.
+  const minedBidsCount = myPub ? intentsAll.filter(b => b.buyer_pubkey === myPub).length : 0;
+  const intents = _marketMineOnlyBids && myPub
+    ? intentsAll.filter(b => b.buyer_pubkey === myPub)
+    : intentsAll;
   const ladder = intents.map(b => {
     const amt = BigInt(b.amount || 0);
     const sats = Number(b.price_sats || 0);
@@ -34130,7 +34180,26 @@ async function populateMarketBidsLadder(scope, asset) {
         <div style="flex:0 0 auto;">${action}</div>
       </div>`;
   }).join('');
-  list.innerHTML = rowsHtml;
+  // "Mine" filter chip for the bids ladder — sits in a small filter
+  // row above the rows. Only rendered when the user has at least one
+  // active bid (otherwise nothing to filter). Persists independently
+  // from the asks-side toggle.
+  const _mineBidsChip = minedBidsCount > 0
+    ? (_marketMineOnlyBids
+        ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">Mine · ${minedBidsCount}</button>`
+        : `<button data-act="market-mine-bids-toggle" type="button" title="Filter to your bids only (${minedBidsCount} active). Useful for managing your open buy orders." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Mine</button>`)
+    : '';
+  const filterRowHtml = _mineBidsChip
+    ? `<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap;margin-bottom:4px;">${_mineBidsChip}</div>`
+    : '';
+  list.innerHTML = filterRowHtml + rowsHtml;
+  list.querySelectorAll('[data-act="market-mine-bids-toggle"]').forEach(btn => {
+    btn.onclick = () => {
+      _marketMineOnlyBids = !_marketMineOnlyBids;
+      _saveMarketMine(_MARKET_MINE_BIDS_KEY, _marketMineOnlyBids);
+      populateMarketBidsLadder(scope, asset);
+    };
+  });
   list.querySelectorAll('[data-bid-action="fulfil-mkt"]').forEach(btn => {
     btn.onclick = async () => {
       const bid = ladder.find(x => x.bid_id === btn.dataset.bidId);
@@ -34248,11 +34317,19 @@ function _wireSwapTile(scope) {
   // on bottom (you receive ticker); flip inverts.
   const buyPillHtml = fromPill ? fromPill.innerHTML : '';
   const sellPillHtml = toPill ? toPill.innerHTML : '';
+  // USD-mode pill: replaces the BTC + "sats" pill when the user toggles
+  // input to dollars. Same square footprint and green color so the
+  // button still reads as "click me to swap". The from-pill click
+  // handler flips data-pay-unit between sats / usd on the buy direction
+  // (sell direction's from-pill is the asset and doesn't toggle).
+  const usdPillHtml = `<span style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#fff;color:#0a8f43;font-size:14px;font-weight:700;flex-shrink:0;border:1px solid #0a7d3a;">$</span><span data-swap-token="from">USD</span>`;
   const PILL = {
-    sats:   { bg: '#f7931a', fg: '#fff',         border: '#f7931a' },
+    sats:   { bg: '#f7931a', fg: '#fff', border: '#f7931a' },
+    usd:    { bg: '#0a8f43', fg: '#fff', border: '#0a7d3a' },
     ticker: { bg: 'var(--bg)', fg: 'var(--ink)', border: 'var(--ink-faint)' },
   };
   const getDirection = () => widget.dataset.direction || 'buy';
+  const getPayUnit = () => widget.dataset.payUnit || 'sats';
   const getSlipRatio = () => {
     const pct = parseFloat(slipSel?.value || '20');
     return Number.isFinite(pct) ? pct / 100 : 0.20;
@@ -34320,15 +34397,30 @@ function _wireSwapTile(scope) {
   };
   // Pill direction: swap which side is sats vs ticker. Doesn't touch the
   // inputs (caller decides whether to clear). Updates action-button color.
+  // On buy direction, the from-pill respects data-pay-unit (sats/usd)
+  // so the user's click-to-toggle survives re-renders.
   const applyDirection = () => {
     const dir = getDirection();
     const isBuy = dir === 'buy';
+    const payUnit = getPayUnit();
     if (fromPill) {
-      fromPill.innerHTML = isBuy ? buyPillHtml : sellPillHtml;
-      const style = isBuy ? PILL.sats : PILL.ticker;
-      fromPill.style.background = style.bg;
-      fromPill.style.color = style.fg;
-      fromPill.style.border = `1px solid ${style.border}`;
+      if (isBuy) {
+        fromPill.innerHTML = payUnit === 'usd' ? usdPillHtml : buyPillHtml;
+        const style = payUnit === 'usd' ? PILL.usd : PILL.sats;
+        fromPill.style.background = style.bg;
+        fromPill.style.color = style.fg;
+        fromPill.style.border = `1px solid ${style.border}`;
+        fromPill.style.cursor = 'pointer';
+        fromPill.title = payUnit === 'usd' ? 'Click to switch input back to sats' : 'Click to switch input to USD';
+      } else {
+        fromPill.innerHTML = sellPillHtml;
+        fromPill.style.background = PILL.ticker.bg;
+        fromPill.style.color = PILL.ticker.fg;
+        fromPill.style.border = `1px solid ${PILL.ticker.border}`;
+        // No toggle on the sell-side from pill (it's the asset itself).
+        fromPill.style.cursor = 'default';
+        fromPill.title = '';
+      }
     }
     if (toPill) {
       toPill.innerHTML = isBuy ? sellPillHtml : buyPillHtml;
@@ -34337,8 +34429,10 @@ function _wireSwapTile(scope) {
       toPill.style.color = style.fg;
       toPill.style.border = `1px solid ${style.border}`;
     }
-    fromInput.placeholder = isBuy ? 'sats to spend' : `${ticker} to sell`;
-    fromInput.setAttribute('inputmode', isBuy ? 'numeric' : 'decimal');
+    fromInput.placeholder = isBuy
+      ? (payUnit === 'usd' ? 'USD to spend' : 'sats to spend')
+      : `${ticker} to sell`;
+    fromInput.setAttribute('inputmode', isBuy && payUnit === 'usd' ? 'decimal' : (isBuy ? 'numeric' : 'decimal'));
     actionBtn.style.background = isBuy ? '#0a8f43' : '#b8341d';
     actionBtn.style.borderColor = isBuy ? '#0a7d3a' : '#9b2a16';
     // The asset logo lives inside one of the two pills (whichever holds
@@ -34366,11 +34460,35 @@ function _wireSwapTile(scope) {
       return;
     }
     if (dir === 'buy') {
-      const sats = parseInt(raw.replace(/[, ]/g, ''), 10);
+      // Parse the from-side input by current pay unit. USD mode converts
+      // dollars to sats via the cached BTC/USD oracle; sats mode parses
+      // a whole-sats integer. Both paths land at the same planBuy(sats).
+      const payUnit = getPayUnit();
+      let sats;
+      if (payUnit === 'usd') {
+        const usd = parseFloat(raw.replace(/[$, ]/g, ''));
+        if (!Number.isFinite(usd) || usd <= 0) {
+          toInput.value = ''; toMeta.textContent = '';
+          actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+          actionBtn.textContent = 'invalid USD';
+          infoEl.textContent = '';
+          return;
+        }
+        if (!Number.isFinite(btcUsd) || btcUsd <= 0) {
+          toInput.value = ''; toMeta.textContent = '';
+          actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+          actionBtn.textContent = 'BTC/USD price unavailable';
+          infoEl.textContent = 'Switch back to sats — oracle missing';
+          return;
+        }
+        sats = Math.floor(usd * 100_000_000 / btcUsd);
+      } else {
+        sats = parseInt(raw.replace(/[, ]/g, ''), 10);
+      }
       if (!Number.isFinite(sats) || sats <= 0) {
         toInput.value = ''; toMeta.textContent = '';
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-        actionBtn.textContent = 'invalid sats';
+        actionBtn.textContent = payUnit === 'usd' ? 'invalid USD' : 'invalid sats';
         infoEl.textContent = '';
         return;
       }
@@ -34488,6 +34606,41 @@ function _wireSwapTile(scope) {
     widget.dataset.direction = getDirection() === 'buy' ? 'sell' : 'buy';
     fromInput.value = '';
     toInput.value = '';
+    applyDirection();
+    update();
+  };
+  // From-pill click: toggle pay-unit between sats and USD (buy direction
+  // only). Auto-converts the current input value to the new unit so the
+  // user doesn't lose what they typed. Uses the cached BTC/USD oracle —
+  // no-ops the toggle if the oracle isn't available (rare; cached on
+  // every fetchMarketData via _prewarmBtcUsd).
+  if (fromPill) fromPill.onclick = () => {
+    if (getDirection() !== 'buy') return;
+    const cur = getPayUnit();
+    const next = cur === 'sats' ? 'usd' : 'sats';
+    if (next === 'usd' && (!Number.isFinite(btcUsd) || btcUsd <= 0)) {
+      // No oracle → don't strand the user in USD mode they can't compute.
+      return;
+    }
+    // Best-effort value preservation: re-cast what's in the input to the
+    // new unit so the user doesn't have to retype after a toggle.
+    const raw = (fromInput.value || '').trim();
+    if (raw) {
+      if (cur === 'sats' && next === 'usd') {
+        const sats = parseInt(raw.replace(/[, ]/g, ''), 10);
+        if (Number.isFinite(sats) && sats > 0 && btcUsd > 0) {
+          const usd = sats * btcUsd / 100_000_000;
+          // Match the precision used elsewhere (4 decimals below $1).
+          fromInput.value = usd >= 1 ? usd.toFixed(2) : usd.toFixed(4);
+        }
+      } else if (cur === 'usd' && next === 'sats') {
+        const usd = parseFloat(raw.replace(/[$, ]/g, ''));
+        if (Number.isFinite(usd) && usd > 0 && btcUsd > 0) {
+          fromInput.value = String(Math.floor(usd * 100_000_000 / btcUsd));
+        }
+      }
+    }
+    widget.dataset.payUnit = next;
     applyDirection();
     update();
   };
