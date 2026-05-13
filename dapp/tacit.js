@@ -31862,6 +31862,30 @@ function _isDustAsk(askUnit, markUnit, totalSats) {
   if (!Number.isFinite(totalSats) || totalSats <= 0) return false;
   return (askUnit < markUnit * 0.2) && (totalSats < 1000);
 }
+// Recent-activity window for the market card/row "⚡ active" pulse — any
+// asset whose newest trade is within this window gets a subtle border
+// pulse so users can spot which markets are alive right now without
+// reading the volume column. 5 minutes is short enough to mean "trading
+// happened just now" yet long enough to cover Bitcoin's ~10-min block
+// jitter (a settlement seen 4 min ago is still actively settling).
+const RECENT_ACTIVITY_WINDOW_MS = 5 * 60 * 1000;
+function _assetHasRecentActivity(asset) {
+  if (!asset) return false;
+  const trades = Array.isArray(asset.trades) ? asset.trades : null;
+  let newest = 0;
+  if (trades) {
+    for (const t of trades) {
+      const ts = Number(t?.ts);
+      if (Number.isFinite(ts) && ts > newest) newest = ts;
+    }
+  }
+  const last = Number(asset.last_trade?.ts);
+  if (Number.isFinite(last) && last > newest) newest = last;
+  if (!newest) return false;
+  // last_trade.ts is unix seconds; trades ring ts is also unix seconds.
+  // Convert to ms for the threshold comparison.
+  return (Date.now() - newest * 1000) < RECENT_ACTIVITY_WINDOW_MS;
+}
 // Live-reactivity snapshot: maps listing key → last seen unit price. When
 // the orderbook re-renders, _annotateLiveDiff() compares each tile's
 // current unit price to the snapshot and tags new/changed tiles with
@@ -32853,9 +32877,17 @@ function applyMarketFilters() {
           </div>
         </div>
       </div>
-      <!-- FLIP button — overlaps the gap between the two sides. -->
-      <div style="display:flex;justify-content:center;margin:-12px 0;position:relative;z-index:1;">
-        <button data-swap-flip type="button" title="Flip direction (buy ↔ sell)" style="background:var(--bg);border:1px solid var(--ink);width:32px;height:32px;border-radius:50%;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;">↕</button>
+      <!-- FLIP button — Uniswap-style circular swap toggle that sits in
+           the gap between pay and receive. SVG arrows (down + up) read as
+           "swap these two sides" rather than the bare "↕" glyph that
+           rendered as text-style and looked unfinished. -->
+      <div style="display:flex;justify-content:center;margin:-14px 0;position:relative;z-index:2;pointer-events:none;">
+        <button data-swap-flip type="button" title="Flip direction (buy ↔ sell)" aria-label="Flip swap direction" style="pointer-events:auto;background:var(--bg);border:2px solid var(--ink);width:36px;height:36px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:2px 2px 0 var(--ink);transition:transform 120ms ease-out;">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 1 L4 11 M1.5 8.5 L4 11 L6.5 8.5"></path>
+            <path d="M10 13 L10 3 M7.5 5.5 L10 3 L12.5 5.5"></path>
+          </svg>
+        </button>
       </div>
       <!-- BOTTOM side: read-only estimate. -->
       <div data-swap-side="to" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:12px;margin-bottom:10px;">
@@ -33026,11 +33058,16 @@ function applyMarketFilters() {
     const displayId = marketListingDisplayId(l);
     // Ticker, asset_id, network, and ticker-collision state are already shown
     // in the asset-detail header above; we don't repeat them on each tile.
+    // Tile header: ticker is redundant on the asset-detail view (we're
+    // already on the per-asset page). Drop ticker there; in Simple Mode,
+    // the kind badge is also redundant since every visible tile is
+    // "Instant listing" by definition — collapse the top row entirely.
+    const _isAssetDetail = (typeof _marketView === 'object' && _marketView && _marketView.mode === 'asset');
+    const _tileTopHtml = (_isAssetDetail && _marketSimpleMode)
+      ? ''
+      : `<div class="market-listing-top">${_isAssetDetail ? '' : `<span>${escapeHtml(a.ticker || '')}</span>`}${kindTrustBadge}</div>`;
     tile.innerHTML = `
-      <div class="market-listing-top">
-        <span>${escapeHtml(a.ticker || '')}</span>
-        ${kindTrustBadge}
-      </div>
+      ${_tileTopHtml}
       <div class="market-listing-amount">${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}</div>
       <div class="market-listing-unit">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
@@ -33811,6 +33848,10 @@ function renderMarketBrowse(rows) {
     tile.className = 'market-asset-tile';
     tile.dataset.assetTile = safeAid;
     tile.title = `View ${escapeHtml(a.ticker || '?')} listings`;
+    // Subtle "⚡ active" pulse if the asset has a trade within the
+    // recent-activity window. Drives the .market-asset-tile[data-recent-
+    // activity] CSS animation + the ::after badge appended to the id row.
+    if (_assetHasRecentActivity(a)) tile.dataset.recentActivity = '1';
     const _logoStyle = 'width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;';
     const logoHtml = cachedResolved
       ? `<img loading="lazy" decoding="async" src="${escapeHtml(cachedResolved)}" alt="" style="${_logoStyle}">`
@@ -33921,7 +33962,7 @@ function renderMarketBrowseTable(rows) {
     const volumeBtc = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : '—';
     const transfers = Number(a.transfer_count || 0);
     return `
-      <tr data-market-asset-row="${escapeHtml(safeAid)}">
+      <tr data-market-asset-row="${escapeHtml(safeAid)}"${_assetHasRecentActivity(a) ? ' data-recent-activity="1"' : ''}>
         <td>
           <div class="market-token-cell">
             ${marketAssetImageHtml(a, 44)}
@@ -34333,13 +34374,13 @@ function marketActivityRowsHtml(asset, events) {
     const id = ev.id || ev.txid || '';
     return `
       <tr data-market-activity-row data-market-activity-event="${escapeHtml(ev.event || 'listing')}">
-        <td>${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(id, 8))}</a>` : escapeHtml(shorten(id, 8))}</td>
+        <td>${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(id, 6))}</a>` : escapeHtml(shorten(id, 6))}</td>
         <td><span class="${labelClass}">${escapeHtml(ev.label || 'Listed')}</span></td>
-        <td><strong class="market-sats-price">${escapeHtml(unitText)}</strong><br><span class="market-table-sub">/${escapeHtml(ticker)}</span>${unitUsd ? `<br><span class="market-table-sub market-usd-price">${escapeHtml(unitUsd)}</span>` : ''}</td>
+        <td><strong class="market-sats-price">${escapeHtml(unitText)}/${escapeHtml(ticker)}</strong>${unitUsd ? `<br><span class="market-table-sub market-usd-price">${escapeHtml(unitUsd)}</span>` : ''}</td>
         <td><strong>${escapeHtml(marketActivityAmountText(ev.amount, dec))}</strong></td>
-        <td><strong class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSats))}</strong><br><span class="market-table-sub market-usd-price">${escapeHtml(totalUsd)}</span></td>
-        <td>${ev.from ? escapeHtml(shorten(ev.from, 10)) : '&mdash;'}</td>
-        <td>${ev.to ? escapeHtml(shorten(ev.to, 10)) : '&mdash;'}</td>
+        <td><strong class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSats))}</strong>${totalUsd ? `<br><span class="market-table-sub market-usd-price">${escapeHtml(totalUsd)}</span>` : ''}</td>
+        <td>${ev.from ? escapeHtml(shorten(ev.from, 6)) : '&mdash;'}</td>
+        <td>${ev.to ? escapeHtml(shorten(ev.to, 6)) : '&mdash;'}</td>
         <td>${escapeHtml(rel || 'now')}${href ? `<br><a class="activity-track" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">Track</a>` : ''}</td>
       </tr>`;
   }).join('');
@@ -34460,12 +34501,15 @@ function renderMarketAssetHeader(assetId, rows) {
     : a._tickerCollision === 'duplicate'
       ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="Tickers are not unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">DUP</span>`
       : verifiedBadgeHTML(a, { size: 'lg' });
+  // Breadcrumb anchor is a clear back affordance — styled as a chip so
+  // it reads as clickable. "Esc" keyboard shortcut is also bound in
+  // bindMarketAssetHeader so power users can pop back without
+  // mouse-targeting. We drop the redundant "TAC offers" text after the
+  // arrow since the <h2>TAC</h2> below is the primary title.
   const breadcrumb = `
-    <div style="font-size:12px;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-      <a href="#" data-act="market-back-browse" title="Back to the asset index" style="text-decoration:underline;cursor:pointer;">&larr; All assets</a>
-      <span class="muted">&rsaquo;</span>
-      <strong>${escapeHtml(a.ticker || '?')}</strong>
-      <span class="muted">offers</span>
+    <div style="font-size:12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <a href="#" data-act="market-back-browse" title="Back to all markets (Esc)" style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;text-decoration:none;border:1px solid var(--ink);background:var(--bg-warm);color:var(--ink);font-weight:600;cursor:pointer;">&larr; All markets</a>
+      <span class="muted" style="font-size:10px;letter-spacing:0.06em;text-transform:uppercase;">or press <kbd style="padding:1px 5px;border:1px solid var(--ink-faint);background:var(--bg);font-family:var(--mono);font-size:9px;">Esc</kbd></span>
     </div>`;
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
@@ -34504,13 +34548,14 @@ function renderMarketAssetHeader(assetId, rows) {
       </div>
       <div>
         <div class="market-asset-stats">
-          <div><span>24h Volume</span><strong>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '$0') : '—')}</strong><small>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Price</span><strong class="market-sats-price">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(priceUsd || 'no USD quote')}</small></div>
+          <div><span>24h Volume</span><strong>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '$0') : '—')}</strong><small>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Market Cap</span><strong>${escapeHtml(mcapUsd)}</strong><small>${escapeHtml(mcapBtc)}</small></div>
           <div><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
         </div>
-        <div class="market-asset-actions">
-          <button data-act="market-back-browse" title="Back to the asset index">&larr; All Assets</button>
+        <!-- Bottom back button dropped — the breadcrumb at top is the
+             single back affordance. Two back links flanking a tall stats
+             grid felt redundant when there's nothing else in this slot. -->
         </div>
       </div>
     </div>
@@ -37095,6 +37140,26 @@ function bindMarketAssetHeader(scope) {
   scope.querySelectorAll('[data-act="market-back-browse"]').forEach(el => {
     el.onclick = (ev) => { ev.preventDefault(); goToMarketBrowse(); };
   });
+  // Esc-to-browse shortcut: bound on the window so the asset detail can
+  // be dismissed without mouse targeting. Cleared on next asset entry
+  // (this function runs on every renderMarket → idempotent because the
+  // listener carries a tag we remove before re-binding).
+  if (typeof window !== 'undefined') {
+    if (window._marketEscHandler) window.removeEventListener('keydown', window._marketEscHandler);
+    window._marketEscHandler = (ev) => {
+      if (ev.key !== 'Escape') return;
+      const stillOnAssetView = typeof _marketView === 'object' && _marketView && _marketView.mode === 'asset';
+      const tabActive = document.querySelector('.tab.active[data-tab="market"]');
+      if (!stillOnAssetView || !tabActive) return;
+      // Skip when focus is inside an input/textarea so typists aren't
+      // surprised — Esc in those contexts should clear / blur, not nav.
+      const tag = (document.activeElement?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+      ev.preventDefault();
+      goToMarketBrowse();
+    };
+    window.addEventListener('keydown', window._marketEscHandler);
+  }
   // Resolve any IPFS-metadata image_uris embedded in the header into
   // real images. Without this, etcher-pinned JSON blobs render as
   // broken images (the URI points at the metadata, not the image

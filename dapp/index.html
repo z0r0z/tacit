@@ -494,6 +494,27 @@ button.market-chip .chip-caret {
   .market-listing-tile[data-market-anim],
   [data-market-anim] { animation: none !important; }
   .market-live-dot { animation: none !important; }
+  [data-recent-activity] { animation: none !important; }
+}
+/* Recent-activity indicator on market cards/rows: a slow border-glow
+   pulse for any asset whose most-recent trade is within the activity
+   window (RECENT_ACTIVITY_WINDOW_MS in tacit.js). Subtle on purpose —
+   does not steal attention from the per-tile animations above. */
+@keyframes market-recent-activity-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(10,143,67,0); }
+  40%  { box-shadow: 0 0 0 3px rgba(10,143,67,0.22); }
+  100% { box-shadow: 0 0 0 0 rgba(10,143,67,0); }
+}
+.market-asset-tile[data-recent-activity],
+tr[data-recent-activity] {
+  animation: market-recent-activity-pulse 2400ms ease-out infinite;
+}
+.market-asset-tile[data-recent-activity] .market-asset-id::after,
+tr[data-recent-activity] .market-token-sub::after {
+  content: " · ⚡ active";
+  color: var(--green, #0a8f43);
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 .market-asset-head {
   display: flex;
@@ -1014,8 +1035,9 @@ button.market-chip .chip-caret {
 }
 .market-activity-table {
   width: 100%;
-  min-width: 1050px;
+  min-width: 720px;
   border-collapse: collapse;
+  font-size: 12px;
 }
 .market-activity-table th,
 .market-activity-table td {
@@ -4146,15 +4168,15 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <span style="margin-left:8px;font-style:italic;">instant listings, bids, atomic settlement</span>
         </summary>
         <div class="muted" style="margin-top:8px;font-size:12px;line-height:1.55;">
-          This market indexes Tacit offers from the official worker and lets buyers settle tokens for BTC without a custodian. Settlement is Bitcoin-native, Tacit takes 0% protocol fees, and a listed UTXO reveals only that offer's amount/opening; the seller's other holdings stay private.
+          This market indexes tacit offers from the worker (anyone can re-derive the index from chain via the SPEC opcodes) and lets buyers settle tokens for BTC without a custodian. Settlement is Bitcoin-native, tacit takes 0% protocol fees, and a listed UTXO only reveals its own amount/opening — the seller's other holdings stay confidential.
           <ul style="margin:8px 0 6px 18px;padding:0;">
-            <li style="margin-bottom:4px;"><strong>Instant Listings</strong> are the default path: the seller signs once, can go offline, and the buyer completes BTC payment + token transfer atomically with <strong>Buy</strong>. No claim window and no seller fulfil step.</li>
-            <li style="margin-bottom:4px;"><strong>Atomic Intent</strong> is the manual trustless path: buyer <strong>Claim</strong>s, seller <strong>Fulfil</strong>s, buyer <strong>Take</strong>s. It is still atomic, but the seller must come back online during the claim window.</li>
-            <li style="margin-bottom:4px;"><strong>OTC / range listings</strong> are advanced and trust-required: the buyer pays the maker's BTC address first, then waits for the maker to transfer the asset. Use only when you accept counterparty risk.</li>
-            <li><strong>Bids</strong> are signed buy offers. They do not lock sats upfront; a token holder can fulfil a bid into an atomic settlement, then the bidder has to take it.</li>
+            <li style="margin-bottom:4px;"><strong>Instant Listings</strong> (default): the seller signs once and can go offline; the buyer completes BTC payment + token transfer in a single Bitcoin tx with <strong>Buy</strong>. No claim window, no seller fulfil step. Spec §5.7.8 preauth listings.</li>
+            <li style="margin-bottom:4px;"><strong>Atomic Intent</strong>: the manual trustless path — buyer <strong>Claim</strong>s, seller <strong>Fulfil</strong>s, buyer <strong>Take</strong>s. Still atomic, but the seller must come back online during the claim window. Spec §5.7.6.</li>
+            <li style="margin-bottom:4px;"><strong>OTC / range listings</strong>: trust-required — the buyer pays the maker's BTC address first, then waits for the maker to transfer the asset. Only use when you accept counterparty risk.</li>
+            <li><strong>Bids</strong>: signed buy offers (§5.7.7). The bidder's sats aren't escrowed — they must be available in the bidder's wallet when a seller fulfils. A token holder fulfilling a bid commits the trade as an atomic intent; the bidder then takes it.</li>
           </ul>
-          <div style="margin-top:6px;font-size:11px;"><strong>Prices</strong> use the current floor when offers exist; if there is no floor, the UI can fall back to the last trade for market stats. Volume comes from worker aggregates when available, otherwise the latest indexed trade is used as a minimum fallback.</div>
-          <div style="margin-top:4px;font-size:11px;"><strong>Verify</strong> checks signatures, ownership, commitments, proofs, and UTXO liveness without buying. <strong>Cancel</strong> removes your own listing from the worker; for a hard cancel of a signed offer, spend the listed asset UTXO back to yourself.</div>
+          <div style="margin-top:6px;font-size:11px;"><strong>Prices</strong> use the cheapest open ask (best ask) when one exists; otherwise the mark price falls back to the worker's last-trade with a 5×/0.2× outlier guard against the recent-trades-ring median. <strong>24h Volume</strong> is the worker's rolling today+yesterday UTC daily-bucket sum. <strong>Recent Volume</strong> sums the worker's recent-trades ring buffer per asset (bounded; there's no lifetime aggregator yet).</div>
+          <div style="margin-top:4px;font-size:11px;"><strong>Verify</strong> checks signatures, commitments, range proofs, and UTXO liveness without buying. <strong>Cancel</strong> removes your listing from the worker index; for a hard cancel of a signed offer, spend the listed asset UTXO back to yourself — the signed authorization can no longer settle once the UTXO is gone.</div>
         </div>
       </details>
       <div class="market-controls">
