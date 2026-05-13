@@ -184,6 +184,105 @@ Constraints:
 
 Total constraint count is dominated by the merkle path (20 levels × 1 Poseidon-2) plus 3 standalone Poseidons (leaf, nullifier, r_leaf) ≈ **5–7k constraints**. Prove time on a 2024 laptop is sub-second; verify is microseconds. The footprint fits comfortably in pot17 (130k constraints) so smaller ceremonies are practical.
 
+### 3.9 BabyJubJub (embedded curve, AMM only)
+
+The AMM (§§5.14–5.16) introduces a second elliptic curve: **BabyJubJub**, the twisted Edwards curve `a·u² + v² = 1 + d·u²·v²` over the BN254 scalar field. Mixer envelopes (§§5.10–5.11) do not touch BabyJubJub.
+
+| Parameter | Value |
+|---|---|
+| Field prime `p_Fr` | `21888242871839275222246405745257275088548364400416034343698204186575808495617` |
+| `a` | `168700` |
+| `d` | `168696` |
+| Full group order | `21888242871839275222246405745257275088614511777268538073601725287587578984328` |
+| Prime subgroup order `n_BJJ` | full / 8 = `2736030358979909402780800718157159386076813972158567259200215660948447373041` |
+| Cofactor | `8` |
+
+Parameters match circomlib's BabyJubJub byte-for-byte. Points are encoded as **compressed Edwards**: 32-byte little-endian v-coordinate with the sign of u in the high bit of byte 31. This matches circomlib's `packPoint`.
+
+**NUMS generators.** AMM-side Pedersen commitments use two NUMS generators `H_BJJ` and `G_BJJ` derived by try-and-increment under domain tags `"tacit-amm-bjj-H-v1"` and `"tacit-amm-bjj-G-v1"`. Algorithm (matches AMM.md §"BabyJubJub NUMS try-and-increment"):
+
+```
+counter = 0
+loop:
+    digest = SHA256(seed_utf8 || counter_LE_u32(4))
+    u      = bigint_be(digest) mod p_Fr
+    lhs    = a·u² mod p_Fr
+    num    = (1 - lhs) mod p_Fr
+    den    = (1 - d·u²) mod p_Fr
+    if den == 0: counter++; continue
+    v²     = num · den⁻¹ mod p_Fr
+    if v² is not a quadratic residue mod p_Fr: counter++; continue
+    v      = sqrt(v²); pick the root with EVEN least-significant bit
+    P      = (u, v)
+    Q      = 8 · P
+    if Q == identity: counter++; continue
+    if n_BJJ · Q ≠ identity: counter++; continue
+    return Q
+```
+
+The canonical generator coordinates (normative; any deviation indicates a domain-tag typo, wrong endianness, or wrong sqrt sign rule):
+
+```
+H_BJJ counter = 2
+  u = 0x13969c921b0a36e78280a9ff5415b7756761b630fd5fa30d7537e3640cbf6da5
+  v = 0x1553d34ea48b8d61df6de5ca9ae5d95183746714ba21af253a46c18a6c2279e4
+
+G_BJJ counter = 2
+  u = 0x16b271021d857578ee55d438a32eed9081bfe28579f6e671c87c58a035b49b7b
+  v = 0x2447904d61713ffa77c624c908255001a5f369e2548764cb4adbc6e454ae9884
+```
+
+Reference implementation: `tests/amm-bjj.mjs`. Parity suite: `tests/amm-bjj.test.mjs` (36 tests).
+
+### 3.10 Sigma cross-curve binding (Camenisch-Stadler)
+
+AMM intent/receipt Pedersen commitments live on both **secp256k1** (for on-chain Bitcoin compatibility) and **BabyJubJub** (for in-circuit Groth16 arithmetic). A 157-byte sigma proof binds the two commitments to the same hidden u64 amount `a`, without doing non-native secp256k1 EC arithmetic inside a BN254 circuit (which would cost ~600K–1M constraints per opening). The sigma is SNARK-free, no trusted setup, microseconds to prove/verify.
+
+**Statement:** prover knows `(a, r_secp, r_BJJ)` with `a < 2^64` such that
+```
+C_in_secp = a·H_secp + r_secp·G_secp    (on secp256k1)
+C_in_BJJ  = a·H_BJJ  + r_BJJ ·G_BJJ     (on BabyJubJub)
+```
+
+**Protocol.** Prover:
+```
+α       sampled uniformly in [0, 2^224 − 2^144)  via 28-byte rejection sample
+β_secp  sampled uniformly in [0, n_secp)
+β_BJJ   sampled uniformly in [0, n_BJJ)
+
+A_secp  = α·H_secp + β_secp·G_secp      (on secp256k1)
+A_BJJ   = α·H_BJJ  + β_BJJ ·G_BJJ       (on BabyJubJub)
+
+e       = bigint_be(SHA256("tacit-amm-xcurve-v1"
+                            || C_secp_compressed(33)
+                            || C_BJJ_packed(32)
+                            || A_secp_compressed(33)
+                            || A_BJJ_packed(32))[22:32])
+        (i.e., the low 80 bits of the digest read big-endian)
+
+z_a      = α + e·a                       (over the integers)
+z_r_secp = β_secp + e·r_secp mod n_secp
+z_r_BJJ  = β_BJJ  + e·r_BJJ  mod n_BJJ
+```
+
+**Proof bytes (157 total, exactly):**
+```
+A_secp(33) || A_BJJ(32) || z_a(28, BE) || z_r_secp(32, BE) || z_r_BJJ(32, BE)
+```
+
+**Verifier:**
+1. Parse proof and decode points (reject on malformation).
+2. Range-check: `z_a < 2^224`, `z_r_secp < n_secp`, `z_r_BJJ < n_BJJ`.
+3. Recompute `e` from the public transcript.
+4. Check `z_a·H_secp + z_r_secp·G_secp == A_secp + e·C_in_secp` on secp256k1.
+5. Check `z_a·H_BJJ + z_r_BJJ ·G_BJJ == A_BJJ + e·C_in_BJJ` on BabyJubJub.
+
+Both reductions of the same integer `z_a` into the two scalar fields are identity (since `z_a < 2^224 < min(n_secp, n_BJJ) ≈ 2^251`), which is what binds the same `a` across groups.
+
+**Soundness:** 80-bit Fiat-Shamir (challenge space 2^80). **Statistical ZK:** 80-bit margin on `a`. The 80-bit ceiling is structural — see AMM.md §"Why 80-bit and not 128-bit" for the derivation from `n_BJJ ≈ 2^251`, the u64 witness bound, and the 28-byte `z_a` slot. This is the protocol's lowest cryptographic strength margin; all other primitives are at ≥ 128 bits.
+
+Reference implementation: `tests/amm-sigma-xcurve.mjs`. Parity suite: `tests/amm-sigma-xcurve.test.mjs` (30 tests).
+
 ## 4. Asset identity
 
 `asset_id = SHA256(reveal_txid_BE || reveal_vout_LE)` where `reveal_vout = 0` for CETCH and T_PETCH (the etch envelope is always at the start of the reveal tx and asset_id keys off the canonical first-output position regardless of whether that vout actually carries a tacit UTXO).
@@ -191,6 +290,29 @@ Total constraint count is dominated by the merkle path (20 levels × 1 Poseidon-
 This deterministically derives a 32-byte asset_id from the etch reveal transaction. T_MINT and T_PMINT envelopes reference the same `asset_id` and include `etch_txid` so the validator can resolve the originating etch envelope (CETCH for T_MINT, T_PETCH for T_PMINT — the validator rejects any cross-mode reference).
 
 The `ticker` field is **not** unique. Multiple etches with `ticker = "USDC"` are valid; they will have distinct `asset_id` values. Wallets must display `asset_id` alongside ticker for disambiguation (same as ERC-20 contract addresses). Ticker collisions span CETCH and T_PETCH alike — the etch mode is part of an asset's identity but not part of its display name, so a CETCH `"USDC"` and a T_PETCH `"USDC"` collide on display the same way two CETCH `"USDC"` etches would.
+
+### 4.1 LP-share asset_id (AMM origin, third asset-id origin path)
+
+The AMM (§§5.14–5.16) introduces a third canonical asset-id origin: LP shares issued at pool initialization. The deterministic derivation is:
+
+```
+pool_id      = SHA256("tacit-amm-pool-v1" || asset_A || asset_B)
+lp_asset_id  = SHA256("tacit-amm-lp-v1"   || pool_id)
+```
+
+where `asset_A` is the lexicographically smaller of the two pool assets under unsigned big-endian byte compare (`asset_A < asset_B`).
+
+**Three-origin resolution.** When an indexer or validator encounters an `asset_id` it does not yet recognize, it resolves the origin by checking — in order — whether:
+
+1. A confirmed `CETCH` (§5.1) exists whose reveal-tx satisfies `asset_id == SHA256(reveal_txid_BE || 0_LE)`.
+2. A confirmed `T_PETCH` (§5.8) exists whose reveal-tx satisfies the same equation. (CETCH and T_PETCH are mutually exclusive — a given `asset_id` matches at most one.)
+3. A confirmed canonical `POOL_INIT` (§5.14 variant=1) exists whose `pool_id` satisfies `asset_id == SHA256("tacit-amm-lp-v1" || pool_id)`.
+
+Domain separation between paths is structural: path (1)/(2) SHA256 preimages are 36 bytes (`txid_BE(32) || vout_LE(4)`); path (3) preimages are 47 bytes (`"tacit-amm-lp-v1"(15) || pool_id(32)`). Cross-origin collisions reduce to SHA256 preimage-finding under distinct domain separations and are cryptographically negligible.
+
+Indexers maintain a reverse map keyed by `asset_id` so the lookup is constant time. The §5.5 validator algorithm extends with one additional branch: when walking an ancestry that lands on a `T_LP_ADD` or `T_LP_REMOVE` (§§5.14–5.15) producing an `lp_asset_id` UTXO, resolution path (3) is what authorises that UTXO as a real tacit asset.
+
+Reference implementation: `tests/amm-asset.mjs`. Parity suite: `tests/amm-asset.test.mjs` (23 tests).
 
 ## 5. Envelope wire format
 
@@ -470,6 +592,36 @@ validateOutpoint(txid, vout):
 ```
 
 Recursion is memoized via a `(txid, vout) → bool` map. In production-mode optimization, all rangeproofs are deferred into a batched bulletproof verify (one multi-exp); falls back to per-proof verify if batch fails.
+
+**AMM opcode branches** (added by §§5.14–5.16). The §5.5 dispatch grows three branches, each described in full above:
+
+```
+if envelope.opcode == T_LP_ADD (0x2D):
+    # See §5.14. Public (delta_A, delta_B, share_amount); per-asset Mimblewimble-
+    # style kernel sigs; Groth16 proof asserts at-the-ratio + share formula. For
+    # variant=1 (POOL_INIT), register pool metadata + verify launcher gate;
+    # otherwise mint LP-share UTXO at the declared share vout under lp_asset_id.
+
+if envelope.opcode == T_LP_REMOVE (0x2E):
+    # See §5.15. Public share_amount; kernel sig on consumed LP-share UTXO
+    # under (Σ C_in_LP − share_amount·H).x_only(); Groth16 asserts proportional
+    # withdrawal. Mints two receipt UTXOs (one of asset A, one of asset B).
+
+if envelope.opcode == T_SWAP_BATCH (0x2F):
+    # See §5.16. Confidential per-trader amounts; settler-bundled. Sigma
+    # cross-curve proofs verified out-of-circuit (per-intent AND per-receipt).
+    # Groth16 batch proof verifies in-circuit BabyJubJub openings + clearing
+    # arithmetic. Chain-side aggregate Pedersen check on secp256k1.
+    require vout[0] == OP_RETURN(sha256(payload))
+    decode payload; if pool has arbiter, verify arbiter_sig + qualifying_set_hash
+    for each per-intent and per-receipt sigma proof: verify against (C_secp, C_BJJ)
+    verify Groth16 batch proof under pool.vk
+    verify chain-side aggregate Pedersen check per asset
+    verify direction consistency + constant-product invariant on declared deltas
+    advance pool reserves; credit each receipt UTXO at vout[1+i]
+```
+
+The existing CETCH / CXFER / T_MINT / T_BURN / T_AXFER / T_PETCH / T_PMINT / T_DEPOSIT / T_WITHDRAW / T_DROP / T_DCLAIM logic is unchanged. AMM envelopes (opcodes `0x2D`–`0x2F`) do not recurse through the ancestry walk for asset-id resolution beyond the §4.1 three-origin rule; LP-share UTXO produced by `T_LP_ADD` and the locked MINIMUM_LIQUIDITY output are authorized by the canonical POOL_INIT existence (path 3 of §4.1), not by recursive parent walking.
 
 ### 5.6 Range disclosure (`balance ≥ K`)
 
@@ -1604,6 +1756,212 @@ Both flows use the same merkle-leaf schema (`tacit-airdrop-leaf-v1`), the same n
 
 The two flows coexist: an issuer may publish both an §8 announcement and a `T_DROP` against the same snapshot, letting recipients pick which path they prefer. The snapshot, merkle root, and eth_sig wire formats are identical across both, so there is no per-flow re-tooling.
 
+### 5.14 T_LP_ADD (`0x2D`) — add liquidity / POOL_INIT
+
+**Architectural summary in `AMM.md` §"The three opcodes" and §1 of "Implementation specification."** This subsection pins the byte-level wire format and validator algorithm.
+
+Two variants:
+- `variant = 0` — add liquidity to an existing pool at the current ratio.
+- `variant = 1` — POOL_INIT: create a pool with initial reserves.
+
+**Wire format (variant 0, standard add):**
+
+```
+opcode(1)                  = 0x2D
+variant(1)                 = 0x00
+asset_A(32)                # lex-smaller of the two pool asset_ids
+asset_B(32)                # lex-larger
+delta_A_LE(8)              # u64, > 0 — public asset_A added
+delta_B_LE(8)              # u64, > 0 — public asset_B added
+share_amount_LE(8)         # u64, > 0 — public LP shares minted
+share_C_secp(33)           # compressed Pedersen-secp commitment of share_amount
+share_C_BJJ(32)            # packed BabyJubJub Pedersen commitment (§3.9 encoding)
+share_xcurve_sigma(157)    # sigma cross-curve binding (§3.10) for the share output
+kernel_sig_A(64)           # BIP-340 over kernel_msg_A (below) under (Σ C_in_A − Δa·H).x_only()
+kernel_sig_B(64)           # BIP-340 over kernel_msg_B
+proof_len_LE(2)
+proof(proof_len)           # Groth16 batch proof under pool.vk
+```
+
+Fixed-prefix bytes: `442 + proof_len`.
+
+**Wire format (variant 1, POOL_INIT)** is the standard layout above with this block appended **before** the proof:
+
+```
+fee_bps_LE(2)                       # u16, 0..1000 (capped at 10%)
+vk_cid_len(1)                       # u8, 1..64
+vk_cid(vk_cid_len)                  # IPFS CID, UTF-8
+ceremony_cid_len(1)                 # u8, 1..64
+ceremony_cid(ceremony_cid_len)      # IPFS CID, UTF-8
+arbiter_count(1)                    # u8, 0..16
+arbiter_pubkeys(33 * arbiter_count) # compressed secp256k1
+launcher_sig_count(1)               # u8, 0..2
+launcher_sigs(64 * launcher_sig_count)  # BIP-340 each
+```
+
+POOL_INIT additionally requires the reveal tx to include the locked MINIMUM_LIQUIDITY output at `vout[1]` per AMM.md §"MINIMUM_LIQUIDITY burn-output construction".
+
+**kernel_msg_X** (X ∈ {A, B}):
+```
+kernel_msg_X = SHA256(
+    "tacit-amm-lp-add-v1"
+    || variant(1) || pool_id(32) || asset_X(32)
+    || delta_X_LE(8) || share_amount_LE(8) || share_C_secp(33)
+    || in_count_X(1) || (in_txid_BE(32) || in_vout_LE(4)) * in_count_X
+)
+```
+Sign with `excess_X = Σᵢ r_in_secp,X,i`. The `variant` byte distinguishes regular `LP_ADD` from `POOL_INIT` so the same bytes cannot be replayed across modes.
+
+**Validator algorithm** (extends §5.5):
+1. Decode payload. Reject on any structural error or trailing bytes.
+2. Reject if `asset_A ≥ asset_B` (lex order).
+3. Recompute `pool_id = SHA256("tacit-amm-pool-v1" || asset_A || asset_B)`.
+4. **If `variant == 1`:**
+   a. Reject if a pool already exists for this `pool_id`.
+   b. Fetch each asset's metadata blob by its envelope-committed CID; if `tacit_amm_launcher` is set per the JCS rules of §3.9 / §4.1, verify the corresponding BIP-340 sig in `launcher_sigs` over `SHA256("tacit-amm-launcher-gate-v1" || pool_id || vk_cid_bytes || fee_bps_LE)`. Reject on missing or invalid sig.
+   c. Verify `share_amount == isqrt(delta_A · delta_B) − MINIMUM_LIQUIDITY` (founder portion; v1 fixes `MINIMUM_LIQUIDITY = 1000`).
+   d. Verify the MINIMUM_LIQUIDITY locked output at `vout[1]` matches the deterministic NUMS construction (AMM.md §"MINIMUM_LIQUIDITY burn-output construction"; reference impl `tests/amm-min-liq.mjs`).
+5. **If `variant == 0`:** require an existing pool with `pool.pool_id == pool_id`. Verify `share_amount == floor(min(delta_A·S/R_A, delta_B·S/R_B))`.
+6. Verify `kernel_sig_A` and `kernel_sig_B` under the respective `(Σ C_in_X − delta_X·H_secp).x_only()` keys.
+7. Verify `share_xcurve_sigma` binds `share_C_secp` and `share_C_BJJ` to a shared u64 amount (§3.10).
+8. Verify Groth16 `proof` under `pool.vk` over the canonical public-input vector (AMM.md §6 of "Implementation specification").
+9. If all checks pass: register pool (POOL_INIT) or apply `R_A += delta_A, R_B += delta_B, S += share_amount`; credit the LP-share UTXO at the declared `vout`.
+
+Reference impl: `tests/amm-validator.mjs` (`validateLpAdd`).
+
+### 5.15 T_LP_REMOVE (`0x2E`) — burn LP shares for proportional withdrawal
+
+```
+opcode(1)                  = 0x2E
+asset_A(32)
+asset_B(32)
+share_amount_LE(8)         # u64, > 0 — public LP shares burned
+delta_A_LE(8)              # u64, public — receipt of asset A
+delta_B_LE(8)              # u64, public — receipt of asset B
+recv_A_C_secp(33)          # asset-A receipt Pedersen-secp commitment
+recv_A_C_BJJ(32)           # packed BabyJubJub commitment
+recv_A_xcurve_sigma(157)   # sigma cross-curve binding for the asset-A receipt
+recv_B_C_secp(33)
+recv_B_C_BJJ(32)
+recv_B_xcurve_sigma(157)
+kernel_sig_LP(64)          # BIP-340 over kernel_msg_LP under (Σ C_in_LP − share_amount·H).x_only()
+proof_len_LE(2)
+proof(proof_len)
+```
+
+Fixed prefix: `599 + proof_len`.
+
+**kernel_msg_LP:**
+```
+kernel_msg_LP = SHA256(
+    "tacit-amm-lp-remove-v1"
+    || pool_id(32) || share_amount_LE(8)
+    || delta_A_LE(8) || delta_B_LE(8)
+    || recv_A_C_secp(33) || recv_B_C_secp(33)
+    || lp_in_count(1) || (lp_in_txid_BE(32) || lp_in_vout_LE(4)) * lp_in_count
+)
+```
+
+**Validator algorithm:**
+1. Decode payload. Reject on structural error.
+2. Require existing pool. Recompute `pool_id` and verify it matches.
+3. Verify proportional withdrawal: `delta_A == floor(R_A · share_amount / S)`, `delta_B == floor(R_B · share_amount / S)`.
+4. Verify `kernel_sig_LP` under `(Σ C_in_LP − share_amount·H_secp).x_only()`.
+5. Verify both receipts' sigma cross-curve bindings (§3.10).
+6. Verify Groth16 `proof`.
+7. On success: apply `R_A -= delta_A, R_B -= delta_B, S -= share_amount`; credit the two receipt UTXOs at `vout[0]` (asset A) and `vout[1]` (asset B).
+
+Reference impl: `tests/amm-validator.mjs` (`validateLpRemove`).
+
+### 5.16 T_SWAP_BATCH (`0x2F`) — uniform-price block-batch settlement
+
+**Architectural summary in AMM.md §"Uniform clearing".** Per-trader amounts are confidential via Pedersen; the envelope publishes only the aggregate batch deltas `(Δa_net, Δb_net)` and per-asset aggregate blinding residues `R_net_X`.
+
+**Wire format:**
+```
+opcode(1)                  = 0x2F
+asset_A(32)
+asset_B(32)
+n_intents(1)               # u8, 1..16
+delta_A_net_signed(9)      # 1-byte sign (0=positive A-in, 1=negative) || 8-byte u64 LE magnitude
+delta_B_net_signed(9)      # same encoding
+R_net_A(32)                # secp256k1 scalar (BE) — aggregate blinding residue for asset A
+R_net_B(32)
+fee_bps_at_settle_LE(2)    # u16 — captured pool.fee_bps at settlement height
+tip_A_amount_LE(8)         # u64 — aggregate asset-A tip
+tip_B_amount_LE(8)         # u64 — aggregate asset-B tip
+tip_A_C_secp(33)           # aggregate asset-A tip commitment
+tip_B_C_secp(33)
+r_tip_A_LE(32)             # secp256k1 scalar — opening for tip_A_C_secp (published for indexer verification)
+r_tip_B_LE(32)
+
+# Arbiter block, present iff pool has inclusion_arbiter_pubkeys:
+expected_height_LE(4)
+qualifying_set_hash(32)
+arbiter_sig(64)
+
+# Per-intent block, repeated n_intents times in intent_id ascending order:
+direction(1)               # 0 = A→B, 1 = B→A
+trader_pubkey(33)
+C_in_secp(33)
+C_in_BJJ(32)
+in_xcurve_sigma(157)
+min_out_LE(8)
+tip_amount_LE(8)
+expiry_height_LE(4)
+intent_sig(64)             # BIP-340 over SHA256(intent_msg) under trader_pubkey
+
+# Per-receipt block, repeated n_intents times in same intent_id order:
+C_out_secp(33)
+C_out_BJJ(32)
+out_xcurve_sigma(157)
+
+# Tail:
+proof_len_LE(2)
+proof(proof_len)
+```
+
+Per-intent block: 340 B. Per-receipt block: 222 B. For N=16, envelope ≈ 9.5 KB (see AMM.md §"Fee-market sensitivity" for the full size table).
+
+**intent_msg** is constructed per AMM.md §"Cross-asset authorization for swaps"; reference impl: `tests/amm-intent.mjs` `buildIntentMsg`.
+
+**Bitcoin transaction layout (normative — indexers reject deviations):**
+
+| Index | Role |
+|---|---|
+| `vin[0]` | Settler's envelope-bearing input (Taproot script-path); witness carries the T_SWAP_BATCH payload |
+| `vin[1+i]` | Trader inputs in `intent_id` ascending byte-order, `i ∈ [0, n_intents)` |
+| `vin[N+1..]` | Optional settler BTC funding inputs |
+| `vout[0]` | `OP_RETURN(envelope_hash)` — 0 sat, 32-byte data; `envelope_hash = SHA256(payload)` over the entire T_SWAP_BATCH payload |
+| `vout[1+i]` | Trader receipt: dust P2WPKH paying the trader's pre-declared `receive_scriptPubKey` |
+| `vout[N+1]` | Aggregate asset-A tip output (dust P2WPKH paying settler) — present iff `tip_A_amount > 0` |
+| `vout[N+2]` | Aggregate asset-B tip output — present iff `tip_B_amount > 0` |
+| `vout[N+3..]` | Optional settler BTC change |
+
+The `vout[0]` OP_RETURN binding rule is what makes trader `SIGHASH_ALL` signatures bind to the envelope content (otherwise a malicious settler could re-wrap the trader's input into a different envelope and burn the trader's value). See AMM.md §"Per-vin Bitcoin-layer signature" for the threat model.
+
+**Validator algorithm:**
+1. Verify `vout[0]` is a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`.
+2. Decode payload (with `hasArbiter` hint from `pool.inclusion_arbiter_pubkeys`).
+3. Require existing pool. Recompute `pool_id` and verify match. Verify `fee_bps_at_settle == pool.fee_bps`.
+4. **Arbiter block:** if pool has pinned arbiters, verify the arbiter block is present; verify `arbiter_sig` under one of `pool.inclusion_arbiter_pubkeys`; fetch the canonical list bytes by `qualifying_set_hash` and verify every listed `intent_id` appears in the batch. If pool has no arbiter and envelope contains an arbiter block, reject.
+5. Verify per-intent ordering: `intent_id` values are strictly ascending byte-order.
+6. For each intent: verify `intent_sig` (BIP-340 over `SHA256(intent_msg)` under `trader_pubkey`); verify `in_xcurve_sigma` binds `C_in_secp` and `C_in_BJJ` (§3.10); reject if `expiry_height < current_height`.
+7. For each receipt: verify `out_xcurve_sigma` binds `C_out_secp` and `C_out_BJJ`.
+8. Verify Groth16 batch `proof` under `pool.vk` over the canonical public-input vector (AMM.md §6 of "Implementation specification").
+9. **Chain-side aggregate Pedersen check** (per asset `X ∈ {A, B}`):
+   ```
+   Σ_{X→Y traders} C_in_secp,i  −  Σ_{Y→X traders} C_out_secp,i
+     −  tip_X_C_secp  −  delta_X_net_signed · H_secp  ==  R_net_X · G_secp
+   ```
+10. Verify direction consistency: `(delta_A_net, delta_B_net)` signs are `(+, -)` for A→B-dom, `(-, +)` for B→A-dom, or `(0, 0)` for spot.
+11. Verify post-batch reserves are positive and the constant-product invariant holds: `(R_A + Δa_net)·(R_B + Δb_net) ≥ R_A·R_B` (with sign-aware Δ).
+12. On success: apply reserves; credit each receipt UTXO at `vout[1+i]`.
+
+The deterministic clearing-solve algorithm (§AMM.md §4 of "Implementation specification") is verified implicitly: the Groth16 proof binds per-trader amounts to per-trader Pedersen commitments and to `P_clear = X/(Y+Δb_net)` (or its B-dom equivalent), and the aggregate Pedersen check binds the batch totals to the declared deltas.
+
+Reference impl: `tests/amm-validator.mjs` (`validateSwapBatch`).
+
 ## 6. Recovery semantics
 
 A wallet with only its **private key** can recover its full balance from chain data alone for every UTXO produced by the **on-chain protocol layer** (CETCH / CXFER / T_MINT / T_BURN / T_PMINT / T_WITHDRAW / T_DCLAIM, including targeted §5.7.3 T_AXFER settlements and reclaim-shape T_DROP outputs). Atomic-intent recipient UTXOs are the one exception — see §5.7.6 "Recovery model exception" — because their recipient blinding is a uniform-random scalar fixed at intent-publish time rather than ECDH-derived; recovery from chain + privkey alone is impossible by design, and recovery falls back to local opening cache or re-fetching the encrypted fulfilment from the worker. T_PMINT, T_WITHDRAW, and T_DCLAIM recovery are the *easiest* of all paths because the opening fields are published in the envelope rather than derived — no HMAC keystream, no ECDH (§5.9 *Recovery semantics*, §5.11 *Recipient blinding & amount recovery*, §5.13 *Privacy disclosure*).
@@ -1619,6 +1977,27 @@ For each UTXO the wallet owns:
 7. **As mixer-pool withdrawal (T_WITHDRAW)**: Read `denomination` and `r_leaf` directly from the envelope (both are public — same recovery pattern as T_PMINT). Verify `pedersenCommit(denomination, r_leaf) == on_chain_commitment` to reject tampered envelopes. Recovery works identically whether the withdrawer === recipient or not — the public `r_leaf` makes share-links unnecessary.
 8. **As T_DCLAIM-claimed supply**: Read `(amount, blinding)` directly from the envelope (both public — identical recovery pattern to T_PMINT, §5.13). The wallet recognizes ownership by matching its pubkey's HASH160 against `vout[0].scriptpubkey`. Verify `pedersenCommit(amount, blinding) == commitment` to reject tampered envelopes. For Merkle-gated drops the witness's `(eth_address, leaf_index)` is also on chain, but those fields are not required for amount-side recovery — only for re-verifying eligibility post-hoc.
 9. **As T_DROP reclaim output**: Read `(cap_amount, cap_blinding)` from the reclaim-shape envelope payload (§5.12.1). Same opening primitive as paths 6–8.
+10. **As AMM receipt (T_SWAP_BATCH, T_LP_ADD, T_LP_REMOVE)**: blindings are HMAC-derived from `(recipient_privkey, pool_id, recipient_anchor_outpoint, asset_id)` under the domain tags `tacit-amm-receipt-secp-v1` and `tacit-amm-receipt-bjj-v1`. The anchor is the recipient's **consumed input outpoint** in the parent envelope:
+   - Swap receipt (T_SWAP_BATCH): trader's tacit input outpoint at `vin[1+rank]`.
+   - LP-share receipt (T_LP_ADD): LP's canonical (first) asset-A input outpoint.
+   - LP-withdraw receipts (T_LP_REMOVE): LP's lp_asset_id input outpoint. Two receipts are emitted (one per asset side); they share the anchor but differ by `asset_id` in the HMAC preimage.
+
+   Derivation:
+   ```
+   anchor_outpoint = txid_BE(32) || vout_LE(4)            # 36 bytes
+   seed_secp = HMAC-SHA256(recipient_privkey,
+                           "tacit-amm-receipt-secp-v1"
+                           || pool_id || anchor_outpoint || asset_id)
+   seed_BJJ  = HMAC-SHA256(recipient_privkey,
+                           "tacit-amm-receipt-bjj-v1"
+                           || pool_id || anchor_outpoint || asset_id)
+   r_out_secp = bigint_be(seed_secp) mod n_secp
+   r_out_BJJ  = bigint_be(seed_BJJ)  mod n_BJJ
+   ```
+
+   The recipient recovers `amount_out` from public envelope data (deltas + clearing-price arithmetic for swaps; declared `delta_A`/`delta_B` for LP ops) and verifies `pedersenCommit(amount_out, r_out_secp) == C_out_secp` from the envelope. Reference impl: `tests/amm-receipt.mjs`.
+
+   Anchoring on the input outpoint (rather than the parent txid) avoids circularity: the envelope contains `C_out_secp` which depends on `r_out_secp`, which would otherwise depend on the txid, which depends on the envelope.
 
 If none of the paths produce a valid `(amount, blinding)` opening, the UTXO is recorded as a **"ghost"** — the wallet sees that it owns the BTC sat output but cannot decrypt the asset amount. This indicates either a legacy/incompatible sender, a misuse, or an atomic-intent recipient whose local cache and remote encrypted fulfilment are both unavailable; it does not represent loss of value (the BTC sats are still spendable by the wallet privkey).
 
@@ -1788,6 +2167,33 @@ For each envelope opcode, indexer implementers MUST verify:
 - [ ] Recompute-and-compare invariants (e.g., `T_WITHDRAW.bind_hash`, `T_PMINT` Pedersen consistency at the recovery layer) are documented and tested.
 - [ ] Rejection produces `null` (or the language's equivalent), never a throw or a partial parse.
 - [ ] No envelope-level state is exposed via decoder return values that differs between accept-and-fail-later vs reject-now paths. The decoder's verdict is final at the structural layer.
+
+### 11.1 AMM determinism rules (T_LP_ADD, T_LP_REMOVE, T_SWAP_BATCH)
+
+Indexer implementers MUST follow these byte-for-byte to arrive at the same pool state from the same chain history.
+
+**Rounding.** All AMM arithmetic operates on u64 base units; all divisions floor toward the pool, so rounding errors accrue as fees to existing LPs:
+
+- `T_LP_ADD` (standard): `share_amount = floor(min(delta_A · S / R_A, delta_B · S / R_B))`.
+- `T_LP_ADD` (POOL_INIT): `total_shares = isqrt(delta_A · delta_B)` via Newton-method integer square root; founder receives `total_shares − MINIMUM_LIQUIDITY` (with `MINIMUM_LIQUIDITY = 1000` base units locked to the NUMS recipient per AMM.md §"MINIMUM_LIQUIDITY burn-output construction").
+- `T_LP_REMOVE`: `delta_A = floor(R_A · share_amount / S)`, `delta_B = floor(R_B · share_amount / S)`.
+- `T_SWAP_BATCH` net deltas: per AMM.md §4 "Deterministic clearing-solve algorithm" — γ-scaling carried in u128, floor toward zero (favoring the pool). Indexer recomputes byte-identically and rejects any declared `(delta_A_net, delta_B_net)` that disagrees. Reference impl: `tests/amm-clearing.mjs`.
+
+**Envelope-hash binding (T_SWAP_BATCH only).** Every T_SWAP_BATCH Bitcoin transaction MUST include `vout[0]` as a 0-sat `OP_RETURN` whose 32-byte data equals `SHA256(payload)`, where `payload` is the full T_SWAP_BATCH envelope payload (opcode byte through final byte of `proof`). Indexers reject any T_SWAP_BATCH whose `vout[0]` data does not match the recomputed hash. `T_LP_ADD` and `T_LP_REMOVE` do NOT require this OP_RETURN — they are single-party ops where the LP signs their own envelope and no third-party substitution is possible.
+
+**T_SWAP_BATCH Bitcoin tx layout.** Indexers reject deviations from the layout specified in §5.16 (`vin[0]` settler envelope, `vin[1+i]` trader inputs in `intent_id` ascending order, `vout[0]` OP_RETURN, `vout[1+i]` trader receipts at matching indices, optional aggregate tip outputs at `vout[N+1..N+2]`, optional settler change after).
+
+**Canonical ordering.** Within a block, AMM envelopes apply in `(tx_index, vin[0] outpoint)` order. Within a T_SWAP_BATCH envelope, per-trader inputs and outputs MUST appear in `intent_id` ascending byte-order; the OP_RETURN at `vout[0]` precedes all receipts.
+
+**Reorg safety.** AMM pool state advances at depth ≥ 3 blocks (`AMM_OP_CONFIRMATION_DEPTH = 3`, mirroring `MIXER_DEPOSIT_CONFIRMATION_DEPTH`). Reorgs deeper than 3 force the indexer to roll back to the last common ancestor and replay forward.
+
+**Metadata blob canonicalization (launcher gate).** When validating a POOL_INIT against assets that pin a launcher pubkey, the indexer fetches each asset's metadata blob by its envelope-committed CID and treats the blob as JCS-canonical per RFC 8785. If the fetched bytes are not byte-identical to their canonical re-serialization, the indexer treats the launcher gate as **absent** (first-mover wins). The `tacit_amm_launcher` field must be a 66-character lowercase hex string with prefix `02` or `03` (33-byte compressed secp256k1 pubkey); malformed values fall back to "no gate." Reference impl: `tests/amm-jcs.mjs`.
+
+**Three-origin asset-id resolution.** When resolving an unrecognized `asset_id`, indexers check CETCH (§5.1) → T_PETCH (§5.8) → POOL_INIT (§5.14 variant=1, via path 3 of §4.1) in order. Constant-time lookup via a reverse map keyed by `asset_id`. Cross-origin collisions are negligible (different SHA256 preimage lengths under distinct domain tags).
+
+**Qualifying-intent fixed-point** (arbiter-pinned pools only). Per AMM.md §5 of "Implementation specification": iterate `len(candidate_set)` times maximum; each iter strictly shrinks the set or converges; on non-convergence return empty set. The fixed-point computation is over cleartext amounts the arbiter has obtained out-of-band (encrypted to the arbiter's pubkey by trader dapps at intent-post time). Reference impl: `tests/amm-clearing.mjs` `qualifyingFixedPoint`.
+
+**Cross-batch ordering.** Multiple T_SWAP_BATCH envelopes against the same pool in the same block: apply in `(tx_index, vin[0] outpoint)` order; for each subsequent batch, re-run the deterministic clearing solve against the post-earlier reserves and reject any envelope whose declared `(delta_A_net, delta_B_net)` does not match.
 
 ## 12. Acknowledgements
 

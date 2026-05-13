@@ -863,15 +863,20 @@ await test('metadataOut populated via MINT path (ticker comes from CETCH)', asyn
   return meta && meta.ticker === 'MINTED' && meta.decimals === 2 && meta.mintable === true;
 });
 
-console.log('\nDepth limit:');
+console.log('\nDeep chain (no depth bound):');
 
-await test('Depth-bound enforcement (chain longer than 200 hops rejects)', async () => {
-  // Construct a chain of 202 CXFERs. validateOutpoint depth-limit kicks in at >200.
+await test('Deep chain validates (300-hop CXFER chain accepts)', async () => {
+  // The old recursive validateOutpoint had a hard depth cap (>200 hops
+  // rejected). Issuer wallets fulfilling large airdrops accumulate ancestry
+  // hop-counts equal to the batch count, so the cap was silently routing
+  // deep change UTXOs into `h.inflated` and under-counting holdings.
+  // The iterative refactor drops the cap; this test pins that behaviour.
+  // 300 hops is comfortably past the old 200 cap (the old code would have
+  // rejected this) without paying for stress-test runtime.
   const store = new TxStore();
   const etch = synthCETCH(store, { supply: 1000n });
   let prev = { txid: etch.txid, vout: 0, amount: 1000n, blinding: etch.blinding };
-  // Each hop is a CXFER with single output (no change)
-  for (let i = 0; i < 202; i++) {
+  for (let i = 0; i < 300; i++) {
     const r = randomScalar();
     const x = synthCXFER(store, {
       assetIdHex: etch.assetIdHex,
@@ -881,7 +886,7 @@ await test('Depth-bound enforcement (chain longer than 200 hops rejects)', async
     prev = { txid: x.txid, vout: 0, amount: 1000n, blinding: r };
   }
   const set = new Map();
-  return !(await validateOutpoint(prev.txid, prev.vout, set, store.fetch));
+  return await validateOutpoint(prev.txid, prev.vout, set, store.fetch);
 }, 600000);
 
 console.log(`\n${pass} passed, ${fail} failed.`);

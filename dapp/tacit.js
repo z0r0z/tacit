@@ -74,6 +74,11 @@ const CHAIN_DIVERGE_TOLERANCE = 3;
 // a useful window.
 const CHAIN_DIVERGE_INTERVAL_MS = 5 * 60 * 1000;
 const NET_KEY = 'tacit-network-v1';
+// Persisted one-time mainnet consent flag. Defined here (rather than inside a
+// handler) so every reader uses the same constant rather than re-typing the
+// literal string — the latter is what created the 4× drift across this file
+// before this refactor.
+const MAINNET_OK_KEY = 'tacit-mainnet-consented-v1';
 // Default to mainnet for new visitors. Existing users who previously chose
 // signet keep their preference via localStorage. The persistent mainnet
 // banner + backup-acknowledgement gates (ensureBurnerBackedUp, the export
@@ -275,7 +280,7 @@ function reconcileWalletNetwork(state) {
   // chose that network in their wallet UI, so treat that as consent — also
   // record it in MAINNET_OK_KEY so a later disconnect to burner mode doesn't
   // re-prompt for something they already opted into.
-  if (norm === 'mainnet') localStorage.setItem('tacit-mainnet-consented-v1', '1');
+  if (norm === 'mainnet') localStorage.setItem(MAINNET_OK_KEY, '1');
   localStorage.setItem(NET_KEY, norm);
   toast(`Switching to ${norm} to match your wallet…`, 'success');
   // Brief delay so the toast renders before reload nukes the page.
@@ -499,33 +504,88 @@ function walletStorageKey(boundExtAddr = null) {
     : `${WALLET_KEY_BASE}:${NET.name}`;
 }
 const EXT_MODE_KEY = 'tacit-ext-mode-v1';   // 'sats-connect' | 'unisat' | null
-// Tab-session ext-wallet state cache. The `{provider, address, pubkey, network}`
-// blob is non-secret (all addresses/pubkeys go on chain), so caching it in
-// sessionStorage lets refresh skip the wallet's getAccounts/requestAccounts
-// round-trip — which on some wallets surfaces a "reconnect?" popup even when
-// the origin is already authorized. Cleared on disconnect; tab-scoped so a new
-// tab still gets the official authorization flow.
+// Browser-profile ext-wallet state cache. The `{provider, address, pubkey,
+// network}` blob is non-secret (all four fields are derivable from chain),
+// so caching it in localStorage lets every reload — including close-tab-and-
+// reopen-in-new-tab AND browser restart — skip the wallet's
+// getAccounts/requestAccounts round-trip. That round-trip is what surfaces
+// a "reconnect?" popup on some wallets (Xverse most reliably) even when the
+// origin is already authorized.
+//
+// We previously used sessionStorage to be conservative (a brand-new tab
+// would re-auth through the wallet's official flow). For a dapp the user
+// opens daily, the conservative path produces a popup on every new tab and
+// reads as user-hostile noise. The data isn't sensitive, so localStorage
+// is strictly safer-UX-without-security-loss.
+//
+// Stale-cache failure modes:
+//   • User revokes wallet permission externally → cache thinks we're still
+//     connected → first sign action fails when the wallet rejects. The user
+//     can recover via Manage Wallet → Disconnect → reconnect.
+//   • User uninstalls the wallet extension → defensive check in
+//     _readCachedExtState clears the cache when the provider API is missing.
+//   • User switches accounts in the wallet between sessions → cache has the
+//     old address. UniSat's accountsChanged event updates us across tabs;
+//     Xverse doesn't expose events, so a cross-session Xverse account switch
+//     is detected at sign time (Xverse's signing UI shows the actual active
+//     account; user can cancel).
 const EXT_STATE_KEY = 'tacit-ext-state-v1';
 function _cacheExtState(state) {
   try {
     if (state && state.provider && state.address) {
-      sessionStorage.setItem(EXT_STATE_KEY, JSON.stringify(state));
+      localStorage.setItem(EXT_STATE_KEY, JSON.stringify(state));
     }
-  } catch { /* sessionStorage may be unavailable */ }
+  } catch { /* localStorage may be unavailable / quota exceeded */ }
 }
 function _readCachedExtState() {
   try {
-    const raw = sessionStorage.getItem(EXT_STATE_KEY);
-    if (!raw) return null;
+    let raw = localStorage.getItem(EXT_STATE_KEY);
+    if (!raw) {
+      // One-shot migration from the previous sessionStorage-only cache: if
+      // the user reloaded their existing same-tab session after this build
+      // landed, lift the sessionStorage entry to localStorage so the
+      // transition is invisible. (For users opening a new tab post-deploy,
+      // sessionStorage is empty too — those see one provider round-trip
+      // before localStorage gets seeded.)
+      const legacy = sessionStorage.getItem(EXT_STATE_KEY);
+      if (legacy) {
+        raw = legacy;
+        try { localStorage.setItem(EXT_STATE_KEY, legacy); } catch {}
+        try { sessionStorage.removeItem(EXT_STATE_KEY); } catch {}
+      } else {
+        return null;
+      }
+    }
     const j = JSON.parse(raw);
     if (!j || typeof j !== 'object' || !j.provider || !j.address) return null;
+    // Provider-availability sanity check. If the cache was written by a
+    // previous session that had the wallet extension installed, and the
+    // extension is now uninstalled or disabled, every downstream sign /
+    // top-up call would throw `Cannot read properties of undefined` on
+    // window.unisat or SatsConnect. Invalidate here so the welcome modal
+    // can route the user to a working option (reinstall, switch mode, or
+    // run in burner-only mode) instead of hitting a confusing TypeError
+    // mid-broadcast.
+    if (j.provider === 'unisat' && typeof window !== 'undefined' && !window.unisat) {
+      _clearCachedExtState();
+      return null;
+    }
+    if (j.provider === 'sats-connect' && (typeof SatsConnect === 'undefined' || !SatsConnect?.request)) {
+      _clearCachedExtState();
+      return null;
+    }
     return j;
   } catch {
-    try { sessionStorage.removeItem(EXT_STATE_KEY); } catch {}
+    try { localStorage.removeItem(EXT_STATE_KEY); } catch {}
     return null;
   }
 }
 function _clearCachedExtState() {
+  try { localStorage.removeItem(EXT_STATE_KEY); } catch {}
+  // Defense-in-depth: clear any sessionStorage entry from the old per-tab
+  // cache scheme so users migrating from the previous build don't end up
+  // with two diverging caches across reloads. Drop after a couple of
+  // releases when no one's running pre-localStorage clients anymore.
   try { sessionStorage.removeItem(EXT_STATE_KEY); } catch {}
 }
 
@@ -625,7 +685,32 @@ const PASSPHRASE_MIN_LEN = 12;
 // closes (user-activation expires), which is exactly when we need to ask for a
 // passphrase; (2) inline char-count + match validation gives the user a hint
 // before they submit instead of after. Resolves to the entered string or
-// rejects with Error('cancelled').
+// rejects with an Error whose .cancelled === true so callers can distinguish
+// "user dismissed the prompt" from genuine failures via isUnlockCancelled().
+function _newUnlockCancelledError() {
+  // The `unlockCancelled` marker is what isUnlockCancelled() narrows on; the
+  // legacy `cancelled` marker + 'cancelled' message preserve back-compat with
+  // pre-refactor `e.message === 'cancelled'` checks elsewhere in the file.
+  const e = new Error('cancelled');
+  e.name = 'UnlockCancelled';
+  e.cancelled = true;
+  e.unlockCancelled = true;
+  return e;
+}
+// Recognizes ONLY genuine unlock-prompt cancellations: passphrase modal Escape
+// (sets the marker via _newUnlockCancelledError), WebAuthn dismissal (native
+// NotAllowedError), and ensurePrivkey's normalization. Deliberately does NOT
+// match a plain `Error('cancelled')` — many other paths (ensureBurnerBackedUp
+// returning false, ensureSatsFunded bailing, passkey-modal Cancel) throw the
+// same string, and labelling those as "Unlock cancelled" misrepresents what
+// the user actually clicked.
+function isUnlockCancelled(e) {
+  if (!e) return false;
+  if (e.unlockCancelled === true) return true;
+  if (e.name === 'UnlockCancelled') return true;
+  if (e.name === 'NotAllowedError') return true;
+  return false;
+}
 function _passphraseModal({ mode, title, reason, errorHint }) {
   return new Promise((resolve, reject) => {
     const modal   = document.getElementById('pass-modal');
@@ -713,7 +798,7 @@ function _passphraseModal({ mode, title, reason, errorHint }) {
       cleanup();
       resolve(v);
     };
-    cancelBtn.onclick = () => { cleanup(); reject(new Error('cancelled')); };
+    cancelBtn.onclick = () => { cleanup(); reject(_newUnlockCancelledError()); };
     modal.style.display = 'grid';
     // requestAnimationFrame so the modal is painted before focus moves;
     // otherwise some browsers skip the focus when display flips from none.
@@ -888,7 +973,12 @@ const wallet = {
       // — readBlobPub returns non-null for already-migrated blobs.
       if (!readBlobPub(raw) && usedPassphrase) {
         try { localStorage.setItem(key, await encryptPrivkey(priv, usedPassphrase)); }
-        catch { /* quota / localStorage unavailable; user can still sign — only the next-reload smoothing is lost */ }
+        catch (migrationErr) {
+          // Quota / localStorage unavailable. User can still sign this session
+          // — only the next-reload smoothing is lost. Warn once so the
+          // failure is debuggable; previously this was swallowed.
+          console.warn('[tacit] lazy-unlock migration write failed; next reload will eager-unlock:', migrationErr?.message || migrationErr);
+        }
       }
     } else {
       throw new Error(`unknown wallet storage format at ${key}`);
@@ -1083,13 +1173,30 @@ async function ensurePrivkey() {
         const label = prfWallet.state?.label;
         if (!label) throw new Error('passkey state missing — reconnect from Manage Wallet');
         await prfWallet.login({ label });
-        return;
+      } else {
+        // Local / ext-bound burner: re-run the existing load path. wallet.load
+        // handles the encrypted-blob unlock (the only shape ensurePrivkey
+        // should encounter — empty/plaintext would have routed through the
+        // welcome flow at init time).
+        await wallet.load(wallet.ext?.address || null);
       }
-      // Local / ext-bound burner: re-run the existing load path. wallet.load
-      // handles the encrypted-blob unlock (the only shape ensurePrivkey
-      // should encounter — empty/plaintext would have routed through the
-      // welcome flow at init time).
-      await wallet.load(wallet.ext?.address || null);
+      // Flip the Wallet card's 🔒 → 🔓 indicator immediately so the user sees
+      // the unlock landed even if they don't re-visit the Wallet tab. Best-
+      // effort; failures don't gate the actual sign flow.
+      try { renderWalletCard(); } catch {}
+      // Resume the maker-side claim poller now that the wallet can act on
+      // an arriving claim. startMakerClaimPoller is idempotent — no-op if
+      // already running (e.g. when ensurePrivkey is called for a routine
+      // sign rather than after a lock cycle).
+      try { startMakerClaimPoller(); } catch {}
+    } catch (e) {
+      // Normalize every cancellation surface (passphrase modal Escape, passkey
+      // OS-prompt dismissal, wallet.load 3-attempt give-up after a final
+      // cancel) into one sentinel so isUnlockCancelled() at the broadcast
+      // boundary can render a gentle "Unlock cancelled" message instead of
+      // "Deposit failed: cancelled".
+      if (isUnlockCancelled(e)) throw _newUnlockCancelledError();
+      throw e;
     } finally {
       _ensurePrivkeyInFlight = null;
     }
@@ -1298,12 +1405,53 @@ async function ensureSatsFunded(targetSats, opLabel) {
   }
 
   // Path 3: mainnet, no ext wallet, no faucet → tell the user the address and bail.
-  alert(
-    `${opLabel} needs ~${fmt(targetSats)} sats for fees (you have ${fmt(balance)}).\n\n` +
-    `Send at least ${fmt(needed)} sats to your tacit address from any Bitcoin wallet:\n\n${wallet.address()}\n\n` +
-    `Then retry the action. Tip: clicking "Connect Xverse / Leather / UniSat" on the Wallet tab makes this a one-click flow next time.`,
-  );
+  // Native alert() loses the address the moment the user dismisses — they have
+  // to remember a 42-char bech32 string mid-action. Render a dismissable inline
+  // modal with copy buttons for the address + sat amount so the user can fund
+  // and retry without re-triggering the op just to see the address again.
+  const addr = wallet.address();
+  await _showFundingNeededModal({ opLabel, need: needed, have: balance, address: addr, fmt });
   return false;
+}
+
+// One-off modal for the "no ext wallet, send sats manually" flow. Built
+// programmatically (no static markup needed) so this stays self-contained.
+// Resolves when the user dismisses; never rejects — the caller already
+// returns false to signal "funding not arranged."
+function _showFundingNeededModal({ opLabel, need, have, address, fmt }) {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);display:grid;place-items:center;z-index:9999;';
+    const modal = document.createElement('div');
+    modal.style.cssText = 'background:var(--bg, #fff);border:1px solid var(--ink, #0a0a0a);padding:20px 22px;max-width:520px;width:calc(100% - 32px);font-family:inherit;font-size:13px;line-height:1.5;';
+    modal.innerHTML = `
+      <h3 style="margin:0 0 12px 0;font-family:serif;font-style:italic;">Need to fund your tacit wallet</h3>
+      <p style="margin:0 0 10px 0;">${escapeHtml(opLabel)} needs <strong>~${escapeHtml(fmt(need))} sats</strong> for Bitcoin tx fees. You currently have ${escapeHtml(fmt(have))} sats.</p>
+      <p style="margin:0 0 6px 0;">Send at least <strong>${escapeHtml(fmt(need))} sats</strong> to your tacit address from any Bitcoin wallet:</p>
+      <div style="display:flex;gap:6px;align-items:flex-start;margin:0 0 12px 0;">
+        <code id="_fund-addr" style="flex:1;min-width:0;padding:6px 8px;border:1px solid var(--ink-faint, #ccc);background:var(--bg-warm, #faf9f5);font-size:11px;word-break:break-all;">${escapeHtml(address)}</code>
+        <button type="button" id="_fund-copy" style="font-size:11px;padding:6px 10px;flex-shrink:0;">Copy</button>
+      </div>
+      <p class="muted" style="margin:0 0 14px 0;font-size:11px;">Tip: clicking <strong>Connect Xverse / Leather / UniSat</strong> on the Wallet tab makes funding a one-click flow next time.</p>
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button type="button" id="_fund-ok" class="primary">Got it</button>
+      </div>
+    `;
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    const cleanup = () => { try { document.body.removeChild(backdrop); } catch {} resolve(); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); document.removeEventListener('keydown', onKey, true); cleanup(); } };
+    document.addEventListener('keydown', onKey, true);
+    modal.querySelector('#_fund-ok').onclick = () => { document.removeEventListener('keydown', onKey, true); cleanup(); };
+    backdrop.onclick = (e) => { if (e.target === backdrop) { document.removeEventListener('keydown', onKey, true); cleanup(); } };
+    modal.querySelector('#_fund-copy').onclick = async () => {
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(address);
+        else { const sel = window.getSelection(); const r = document.createRange(); r.selectNodeContents(modal.querySelector('#_fund-addr')); sel.removeAllRanges(); sel.addRange(r); document.execCommand('copy'); sel.removeAllRanges(); }
+        toast('Address copied', 'success');
+      } catch { toast('Copy failed — select the address text and copy manually.', 'warn'); }
+    };
+  });
 }
 
 // Heuristic upper-bound on sats needed to broadcast one tacit op (commit + reveal).
@@ -1455,13 +1603,55 @@ const extWallet = {
 };
 
 // ============== mempool.space API ==============
-async function api(path, opts = {}) {
-  const r = await fetch(NET.api + path, opts);
-  if (!r.ok) {
-    const t = await r.text();
-    throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
+// Global concurrency cap on every indexer request. Without this, validateOutpoint's
+// BFS pass-1 (FETCH_CONCURRENCY=16) × scanHoldings (SCAN_CONCURRENCY=8) can burst
+// to >100 simultaneous /tx fetches on a cold scan, plus whatever Discover /
+// Market / refresh paths are doing in parallel. mempool.space rate-limits bursts
+// and returns 429s; getTx's catch swallows those to `null`, which the BFS
+// validator then treats as "tx unavailable" and silently classifies legitimate
+// UTXOs as inflated — the exact failure mode this cap exists to prevent.
+//
+// Cap = 12: high enough that a normal scan stays brisk (cold-cache ancestry of
+// a ~50-UTXO wallet finishes in ~10s vs. ~6s uncapped), low enough to stay well
+// under the indexer's burst threshold. Active wallets that pile on more work
+// (multiple tabs open, big merkle drops, market refresh) queue gracefully
+// instead of fanning out and triggering rate-limit cascades.
+const _API_MAX_INFLIGHT = 12;
+let _apiInflight = 0;
+const _apiQueue = [];
+function _apiAcquire() {
+  if (_apiInflight < _API_MAX_INFLIGHT) {
+    _apiInflight++;
+    return Promise.resolve();
   }
-  return r;
+  // Wait-list: resolved by _apiRelease in FIFO order so the system is fair
+  // (a long-running scan doesn't starve a single Discover-tab fetch).
+  return new Promise(resolve => _apiQueue.push(resolve));
+}
+function _apiRelease() {
+  if (_apiQueue.length) {
+    // Hand the slot directly to the oldest waiter; inflight count is unchanged.
+    const next = _apiQueue.shift();
+    next();
+  } else {
+    _apiInflight--;
+  }
+}
+async function api(path, opts = {}) {
+  await _apiAcquire();
+  try {
+    const r = await fetch(NET.api + path, opts);
+    if (!r.ok) {
+      const t = await r.text();
+      throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
+    }
+    return r;
+  } finally {
+    // Release at headers-received rather than after body-read: response body
+    // is buffered locally, so the indexer's per-IP burst counter has already
+    // decremented by the time the caller awaits .json()/.text().
+    _apiRelease();
+  }
 }
 const apiText = (p, o) => api(p, o).then(r => r.text());
 const apiJson = (p, o) => api(p, o).then(r => r.json());
@@ -1545,7 +1735,46 @@ async function _getUtxosViaTxHistory(a) {
   return out;
 }
 
+// Heavy-wallet shortcut state. Addresses that have hit the >500 fallback at
+// least once in this session get a different code path: instead of trying
+// /utxo (which 400s and burns a round-trip) and then walking 25-tx pages
+// (~7s for a 1800-tx wallet), we sniff /address/<a> (~100-500ms, returns
+// chain_stats.tx_count) and reuse the cached UTXO list when tx_count is
+// unchanged. Small wallets stay on the direct /utxo path with no sniff
+// overhead. Cleared by invalidateHoldingsCache so broadcasts force a refetch.
+const _heavyAddresses = new Set();
+const _utxoCacheByTxCount = new Map(); // addr -> { txCount, utxos }
+function invalidateUtxoCache() { _utxoCacheByTxCount.clear(); _heavyAddresses.clear(); }
+async function _populateUtxoCache(a, utxos) {
+  // Background sniff: fetch chain_stats.tx_count and stash alongside the just-
+  // fetched utxos so the next getUtxos call can short-circuit. Fire-and-forget;
+  // if it fails the next call just re-walks history.
+  try {
+    const info = await apiJson(`/address/${a}`);
+    const txCount = (info?.chain_stats?.tx_count || 0) + (info?.mempool_stats?.tx_count || 0);
+    _utxoCacheByTxCount.set(a, { txCount, utxos });
+  } catch {}
+}
+
 async function getUtxos(a) {
+  if (_heavyAddresses.has(a)) {
+    // Heavy path: try the sniff-then-cache shortcut.
+    const cached = _utxoCacheByTxCount.get(a);
+    if (cached) {
+      try {
+        const info = await apiJson(`/address/${a}`);
+        const txCount = (info?.chain_stats?.tx_count || 0) + (info?.mempool_stats?.tx_count || 0);
+        if (cached.txCount === txCount) return cached.utxos;
+      } catch { /* sniff failed; fall through to history walk */ }
+    }
+    const utxos = await _getUtxosViaTxHistory(a);
+    _populateUtxoCache(a, utxos); // background; don't await
+    return utxos;
+  }
+
+  // Light path: direct /utxo. If the indexer says >500, switch the address
+  // to heavy mode for the rest of the session and fall back to the history
+  // walk; the next getUtxos call will use the cached path above.
   try {
     return await apiJson(`/address/${a}/utxo`);
   } catch (e) {
@@ -1556,7 +1785,10 @@ async function getUtxos(a) {
     // exact text in case the indexer ever shortens it.
     const msg = String(e && e.message || '');
     if (/^API 400/.test(msg) && /unspent transaction outputs/i.test(msg)) {
-      return _getUtxosViaTxHistory(a);
+      _heavyAddresses.add(a);
+      const utxos = await _getUtxosViaTxHistory(a);
+      _populateUtxoCache(a, utxos);
+      return utxos;
     }
     throw e;
   }
@@ -1657,7 +1889,16 @@ function _writeOutspendCacheNow() {
   const entries = {};
   for (let i = start; i < items.length; i++) entries[items[i][0]] = items[i][1];
   try { localStorage.setItem(_outspendCacheStorageKey(), JSON.stringify({ v: 1, entries })); }
-  catch { /* quota exceeded → in-memory cache still works */ }
+  catch (e) {
+    // Quota exceeded → in-memory cache still works this session, but next
+    // reload starts cold (re-fetches every outspend). One-time warn so the
+    // failure mode is debuggable. Toggle via the dirty flag so subsequent
+    // writes within the session don't spam the console.
+    if (!_writeOutspendCacheNow._warned) {
+      _writeOutspendCacheNow._warned = true;
+      console.warn('[tacit] outspend cache flush failed; persistence disabled this session:', e?.message || e);
+    }
+  }
 }
 function _scheduleOutspendCacheFlush() {
   _outspendCacheDirty = true;
@@ -4908,7 +5149,7 @@ function recordActivity(entry) {
   // listings. Cheap; just resets the TTL timestamp.
   if (typeof invalidateMarketCache === 'function') invalidateMarketCache();
   const arr = loadActivity();
-  arr.unshift({
+  const out = {
     kind:     String(entry.kind),
     ticker:   typeof entry.ticker === 'string' ? entry.ticker : '',
     amount:   entry.amount != null ? entry.amount.toString() : '',
@@ -4916,7 +5157,15 @@ function recordActivity(entry) {
     assetId:  /^[0-9a-f]{64}$/.test(entry.assetId || '') ? entry.assetId : '',
     txid:     /^[0-9a-f]{64}$/.test(entry.txid || '') ? entry.txid : '',
     ts:       Number(entry.ts) || Date.now(),
-  });
+  };
+  // Free-form `extra` for kinds that need to persist context the core fields
+  // don't capture — e.g. 'otc-reserved' carries maker_address + price_sats +
+  // claim_expires_at so the user has a durable obligation record after they
+  // close the Market tab. Plain JSON object; renderers ignore unknown keys.
+  if (entry.extra && typeof entry.extra === 'object') {
+    try { out.extra = JSON.parse(JSON.stringify(entry.extra)); } catch { /* skip on serialization failure */ }
+  }
+  arr.unshift(out);
   if (arr.length > ACTIVITY_MAX) arr.length = ACTIVITY_MAX;
   try { localStorage.setItem(activityKey(), JSON.stringify(arr)); } catch {}
   _invalidateLocalActivityCaches();  // any pill might be affected by a new entry
@@ -5058,18 +5307,32 @@ function forgetOpenOffer(commitTxid) {
   _invalidateLocalActivityCaches();
 }
 
-// Build a Map<"txid:vout", { kind, label }> of asset UTXOs that are already
-// referenced by an active listing/intent for this asset, so the picker UI can
-// flag (and disable) UTXOs the maker has already committed elsewhere. Sources:
+// Build a Map<"txid:vout", { kind, label, severity }> of asset UTXOs that are
+// already referenced by an active listing/intent for this asset, so the picker
+// UI can flag (and optionally disable) UTXOs the maker has already committed
+// elsewhere. Sources:
 //   • local atomic offers (loadOpenOffers — targeted offers made on this device)
 //   • worker openings (LISTINGS_URL — opening listings)
 //   • worker atomic intents (ATOMIC_INTENTS_URL — open/intent listings)
-// Range listings cover an aggregate balance, not specific UTXOs, so they're
-// intentionally not flagged here. Best-effort: any source that errors is
+//   • worker preauth sales (PREAUTH_SALES_URL — instant listings)
+//   • worker range listings (RANGE_LISTINGS_URL — soft warning only, see below)
+// Range-listing tags use `severity: 'soft'` because a range listing proves an
+// aggregate balance ≥ K rather than locking a specific UTXO — atomic-spending
+// one UTXO is only a problem if it drops the maker's remaining balance below
+// the range threshold. The picker keeps soft-tagged options enabled and shows
+// a warning label; the maker can still proceed knowingly. Hard-tagged options
+// (opening / atomic intent / preauth / atomic offer) directly reference a
+// specific UTXO and stay disabled. Best-effort: any source that errors is
 // skipped — partial knowledge is still useful in the dropdown.
 async function fetchListedUtxoTags(assetIdHex) {
   const tags = new Map();
-  const set = (key, kind, label) => { if (!tags.has(key)) tags.set(key, { kind, label }); };
+  // `set` skips if a HARD tag is already present (no demotion), but a soft
+  // tag can be upgraded by a later hard match for the same UTXO.
+  const set = (key, kind, label, severity = 'hard') => {
+    const existing = tags.get(key);
+    if (existing && existing.severity === 'hard') return;
+    tags.set(key, { kind, label, severity });
+  };
   for (const o of loadOpenOffers()) {
     if (o.asset_id !== assetIdHex) continue;
     const u = o.asset_utxo;
@@ -5077,10 +5340,13 @@ async function fetchListedUtxoTags(assetIdHex) {
     set(`${u.txid}:${u.vout | 0}`, 'atomic-offer', 'atomic offer');
   }
   if (!WORKER_BASE) return tags;
-  const [openingsRes, intentsRes, preauthsRes] = await Promise.allSettled([
+  const [openingsRes, intentsRes, preauthsRes, rangesRes] = await Promise.allSettled([
     fetch(withNet(LISTINGS_URL(assetIdHex))).then(r => r.ok ? r.json() : null).catch(() => null),
     fetch(withNet(ATOMIC_INTENTS_URL(assetIdHex))).then(r => r.ok ? r.json() : null).catch(() => null),
     fetch(withNet(PREAUTH_SALES_URL(assetIdHex))).then(r => r.ok ? r.json() : null).catch(() => null),
+    (typeof RANGE_LISTINGS_URL === 'function')
+      ? fetch(withNet(RANGE_LISTINGS_URL(assetIdHex))).then(r => r.ok ? r.json() : null).catch(() => null)
+      : Promise.resolve(null),
   ]);
   if (openingsRes.status === 'fulfilled' && Array.isArray(openingsRes.value?.listings)) {
     for (const l of openingsRes.value.listings) {
@@ -5103,6 +5369,29 @@ async function fetchListedUtxoTags(assetIdHex) {
       const u = p.asset_outpoint;
       if (!u || !/^[0-9a-f]{64}$/.test(String(u.txid || ''))) continue;
       set(`${u.txid}:${u.vout | 0}`, 'preauth-sale', 'instant listing');
+    }
+  }
+  // Range listings: maker has published "balance ≥ K". A specific UTXO isn't
+  // pinned, but spending it via an atomic listing can drop the remaining
+  // balance below K and break the range listing on fulfilment. Tag every
+  // UTXO of this asset that belongs to a maker we know about — the picker
+  // forms run per-asset so we don't filter by maker_pubkey here (the maker
+  // would only see their own UTXOs in the picker anyway). Soft severity so
+  // the picker doesn't lock the maker out of normal trading.
+  if (rangesRes && rangesRes.status === 'fulfilled' && Array.isArray(rangesRes.value?.range_listings)) {
+    const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : null;
+    const mineActive = rangesRes.value.range_listings.some(rl =>
+      !rl.expired && rl.owner_pubkey === myPub,
+    );
+    if (mineActive) {
+      // Mark every UTXO of this asset (the picker only loads the maker's
+      // own UTXOs) with a soft warning. The exact UTXO isn't the
+      // problematic level here — the warning is at the wallet-balance level.
+      // The form's submit handler reads this tag and surfaces a confirm
+      // before publishing, rather than hard-blocking.
+      // (We don't enumerate UTXOs here; consumers handle the 'range-listed'
+      // tag generically by checking it for ANY UTXO that has no other tag.)
+      tags.set('__range_active__', { kind: 'range-listing', label: 'your active range listing — atomic-listing this UTXO may break it on fulfilment', severity: 'soft', global: true });
     }
   }
   return tags;
@@ -5206,6 +5495,137 @@ function listAxintentPendings() {
   return Object.entries(obj)
     .filter(([_, v]) => v.status !== 'posted')
     .map(([intentIdHex, v]) => ({ intentIdHex, ...v }));
+}
+
+// ============== PREAUTH-TAKE RECOVERY RECORDS ==============
+// Buyer-side preauth-sale settlement is a two-leg flow: a commit tx that
+// locks `commitValue` sats in a P2TR (script-path-only) followed by a reveal
+// tx that consumes the commit + the seller's pre-signed asset input + the
+// buyer's funding inputs. If the reveal leg fails after the commit has
+// broadcast (network blip, indexer lag, fee-rate spike, page reload, …) the
+// buyer's commit sats sit locked in a P2TR with no automatic recovery path.
+// Persisting (commit_txid, envelope_script, control_block, recip_blinding,
+// sale_id, …) before the reveal broadcasts gives the buyer enough material
+// to either (a) reuse the record on a manual retry, or (b) hand it to a
+// recovery script that script-path-spends the commit back into a regular
+// P2WPKH using their wallet privkey. The forget call runs on reveal success.
+//
+// Storage: tacit-preauth-take-pending-v1:<network> → { [commit_txid]: {...} }
+const PREAUTH_TAKE_PENDING_KEY_BASE = 'tacit-preauth-take-pending-v1';
+function preauthTakePendingKey() { return `${PREAUTH_TAKE_PENDING_KEY_BASE}:${NET.name}`; }
+function loadPreauthTakePendings() {
+  try {
+    const raw = localStorage.getItem(preauthTakePendingKey());
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : {};
+  } catch { return {}; }
+}
+function recordPreauthTakePending(commitTxidHex, record) {
+  if (!/^[0-9a-f]{64}$/.test(commitTxidHex || '')) return;
+  if (!record || typeof record !== 'object') return;
+  const obj = loadPreauthTakePendings();
+  obj[commitTxidHex] = { ...record, savedAt: Math.floor(Date.now() / 1000) };
+  try { localStorage.setItem(preauthTakePendingKey(), JSON.stringify(obj)); } catch {}
+}
+function forgetPreauthTakePending(commitTxidHex) {
+  const obj = loadPreauthTakePendings();
+  if (commitTxidHex in obj) {
+    delete obj[commitTxidHex];
+    try { localStorage.setItem(preauthTakePendingKey(), JSON.stringify(obj)); } catch {}
+  }
+}
+function listPreauthTakePendings() {
+  const obj = loadPreauthTakePendings();
+  return Object.entries(obj).map(([commitTxidHex, v]) => ({ commitTxidHex, ...v }));
+}
+
+// Direct recovery of stranded commit-locked sats. The buyer's preauth-take
+// commit P2TR has a tapscript leaf shaped as
+//   PUSH(signingPubXonly) OP_CHECKSIG OP_FALSE OP_IF [payload] OP_ENDIF
+// Bitcoin consensus executes the CHECKSIG against signingPubXonly, then
+// OP_FALSE OP_IF skips the IF block entirely (the payload exists for off-
+// chain indexers, not for script execution). So the buyer's wallet privkey
+// alone can spend the commit output via script-path; no asset input, no
+// envelope semantics, no seller involvement. The recovery tx pays the
+// recovered sats back to the buyer's own address minus the recovery fee.
+//
+// Pre-conditions checked: commit output still unspent; the saved
+// envelope_script's embedded signing pubkey matches the active wallet's
+// xonly (a different wallet can't recover — the user must restore the
+// wallet that did the original commit).
+async function recoverPreauthCommit(commitTxidHex) {
+  await ensurePrivkey();
+  const record = loadPreauthTakePendings()[commitTxidHex];
+  if (!record) throw new Error(`no recovery record for ${commitTxidHex}`);
+  const envelopeScript = hexToBytes(record.envelope_script_hex);
+  const cb = hexToBytes(record.control_block_hex);
+  const commitValue = Number(record.commit_value) || 0;
+  if (commitValue <= 0) throw new Error('saved commit_value is invalid');
+  // The envelope's first push is the signingPubXonly. Match it against the
+  // current wallet so the user doesn't burn a fee on a recovery tx that
+  // will be rejected at consensus (sig from the wrong key).
+  if (envelopeScript.length < 33 || envelopeScript[0] !== 32) {
+    throw new Error('saved envelope_script is malformed');
+  }
+  const expectedXonly = envelopeScript.slice(1, 33);
+  const haveXonly = wallet.xonly();
+  for (let i = 0; i < 32; i++) {
+    if (expectedXonly[i] !== haveXonly[i]) {
+      throw new Error('this wallet did not sign the original commit — restore the wallet that took the preauth sale and retry');
+    }
+  }
+  // Confirm the commit output is still unspent. If a prior retry / manual
+  // recovery already consumed it, garbage-collect the record and bail.
+  const sp = await getOutspend(commitTxidHex, 0).catch(() => null);
+  if (sp?.spent) {
+    forgetPreauthTakePending(commitTxidHex);
+    throw new Error('commit output already spent — no recovery needed (record cleaned up)');
+  }
+  // Derive the commit P2TR scriptpubkey from the saved envelope. This is the
+  // prevout script the tapscript spend signs over; reconstructing it locally
+  // avoids trusting a stored hex.
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  // Fee estimate: one taproot script-path input + one P2WPKH output.
+  // Witness: 64-byte sig (SIGHASH_DEFAULT, no flag byte) + envelope (varies)
+  // + control block (33 + 32*depth, depth=0 here so just 33). Vbytes are
+  // (non-witness bytes * 4 + witness bytes) / 4. The non-witness portion of
+  // a taproot input is the 36-byte outpoint + 4-byte sequence + scriptSig
+  // length(1) = ~41. Add 11 for tx overhead + 31 for the P2WPKH output.
+  const witnessBytes = 64 + (envelopeScript.length + 1) + (cb.length + 1) + 1; // +1 each for varlen length prefix; +1 for witness item count
+  const baseBytes = 11 + 41 + 31;
+  const recoveryVbEst = Math.ceil((baseBytes * 4 + witnessBytes) / 4);
+  const feeRate = await getFeeRate();
+  const recoveryFee = feeFor(recoveryVbEst, feeRate);
+  const recoverable = commitValue - recoveryFee;
+  if (recoverable < DUST) {
+    throw new Error(`commit_value ${commitValue} too small to cover recovery fee at ${feeRate} sat/vB (need ≥ ${recoveryFee + DUST}). Wait for a lower fee rate and retry.`);
+  }
+  const recoveryTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: recoverable, script: p2wpkhScript(wallet.pub) }],
+  };
+  const prevouts = [{ value: commitValue, script: p2trSpk }];
+  recoveryTx.inputs[0].witness = signTaprootScriptPathInputWithSighash(
+    recoveryTx, prevouts, envelopeScript, cb, 0x00,
+  );
+  const recoveryHex = bytesToHex(serializeTx(recoveryTx));
+  const recoveryTxidHex = txid(recoveryTx);
+  await broadcast(recoveryHex);
+  forgetPreauthTakePending(commitTxidHex);
+  recordActivity({
+    kind: 'preauth-recover',
+    ticker: 'sats',
+    amount: BigInt(recoverable),
+    decimals: 0,
+    assetId: '',
+    txid: recoveryTxidHex,
+    extra: { fee_sats: recoveryFee, original_commit_txid: commitTxidHex },
+  });
+  return { recovery_txid: recoveryTxidHex, recovered_sats: recoverable, fee_sats: recoveryFee };
 }
 
 // Wait for the chain API to see a freshly-broadcast tx. The worker has its
@@ -5426,10 +5846,116 @@ async function _fetchDclaimCredited(dropIdHex) {
 // holdings UI — a user who just successfully clicked Mint saw a scary
 // warning on their own legitimate mint until cron + 3 confs caught up.
 // Audit fix #1: pending mints render as a separate, accurate UI tier.
-async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0, metadataOut = null, rpBatch = null, pmintStatusOut = null) {
+//
+// Iterative driver. Earlier versions of this function were directly recursive
+// — each CXFER/BURN/AXFER awaited validateOutpoint on every asset input, and
+// T_MINT awaited validateOutpoint on its CETCH ancestor. That worked but had
+// a 200-hop safety cap that silently rejected change UTXOs deep in long
+// CXFER chains: an issuer fulfilling a multi-thousand-recipient airdrop ends
+// up with a treasury change UTXO at ancestry-depth ≈ batch-count, and once
+// that crossed 200 the holdings card under-counted by everything past the
+// cap (deep UTXOs landed in `h.inflated` instead of `h.balance`).
+// Now we split into two explicit passes: a BFS pre-walk that enumerates the
+// ancestry DAG with parallel tx fetches, then a reverse-topo validation pass
+// that runs the same per-opcode checks reading parent results from
+// validatedSet instead of recursing. Total work is unchanged (each unique
+// outpoint validates once, memoized via validatedSet); the cap is gone.
+// The `depth` parameter is now unused and accepted only for call-site
+// signature compatibility — it was already always 0 at every external call.
+async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _depthUnused = 0, metadataOut = null, rpBatch = null, pmintStatusOut = null) {
+  const rootKey = `${rootTxid}:${rootVout}`;
+  if (validatedSet.has(rootKey)) return validatedSet.get(rootKey);
+
+  // ============== Pass 1: BFS ancestor enumeration ==============
+  // Walk the ancestry DAG breadth-first to discover every (txid, vout) that
+  // will need validating. The walk descends only through:
+  //   - asset-input ancestry of CXFER / BURN / AXFER (vin[1..] or vin[1..1+aic])
+  //   - the CETCH ancestor of T_MINT (etchTxid, vout 0)
+  // All other opcodes (CETCH, PMINT, PETCH, DEPOSIT, WITHDRAW, DROP, DCLAIM)
+  // validate self-contained — their "parent" lookups (e.g. T_PETCH parent for
+  // T_PMINT, T_DROP parent for T_DCLAIM) are direct fetches handled inside
+  // the per-opcode block in _validateOutpointSingle, not recursive validations.
+  const topoList = [];        // [{ txid, vout, key }, ...] in BFS order (root first)
+  const enqueued = new Set(); // outpoint keys already in topoList (this call)
+
+  const enqueue = (txid, vout) => {
+    const k = `${txid}:${vout}`;
+    if (enqueued.has(k) || validatedSet.has(k)) return;
+    enqueued.add(k);
+    topoList.push({ txid, vout, key: k });
+  };
+
+  enqueue(rootTxid, rootVout);
+
+  // Level-batched expansion. Each pass through the while drains newly-enqueued
+  // nodes (those past `cursor`), parallel-fetches their unique txs, then
+  // expands each node's ancestry into the queue. FETCH_CONCURRENCY caps
+  // in-flight tx fetches per level so a wide ancestry doesn't burst the
+  // upstream indexer. fetchTx has its own session-wide tx cache + in-flight
+  // dedup (getTx + _txInFlight), so repeat calls across passes are free.
+  const FETCH_CONCURRENCY = 16;
+  let cursor = 0;
+  while (cursor < topoList.length) {
+    const levelEnd = topoList.length;
+    const slice = topoList.slice(cursor, levelEnd);
+    cursor = levelEnd;
+    const uniqTxids = [...new Set(slice.map(n => n.txid))];
+    const decodedMap = new Map(); // txid -> { tx, env } for this level
+    for (let i = 0; i < uniqTxids.length; i += FETCH_CONCURRENCY) {
+      const chunk = uniqTxids.slice(i, i + FETCH_CONCURRENCY);
+      await Promise.all(chunk.map(async t => {
+        let tx = null;
+        try { tx = await fetchTx(t); } catch { /* unfetchable; pass 2 marks false */ }
+        let env = null;
+        if (tx?.vin?.[0]?.witness && tx.vin[0].witness.length >= 3) {
+          try { env = decodeEnvelopeScript(hexToBytes(tx.vin[0].witness[1])); } catch { env = null; }
+        }
+        decodedMap.set(t, { tx, env });
+      }));
+    }
+    for (const node of slice) {
+      const { tx, env } = decodedMap.get(node.txid) || { tx: null, env: null };
+      if (!tx || !env) continue;
+      if (env.opcode === T_CXFER || env.opcode === T_BURN) {
+        for (let i = 1; i < tx.vin.length; i++) enqueue(tx.vin[i].txid, tx.vin[i].vout);
+      } else if (env.opcode === T_AXFER) {
+        const dec = decodeAxferPayload(env.payload);
+        if (dec) {
+          const aic = dec.assetInputCount;
+          for (let i = 1; i < 1 + aic && i < tx.vin.length; i++) {
+            enqueue(tx.vin[i].txid, tx.vin[i].vout);
+          }
+        }
+      } else if (env.opcode === T_MINT) {
+        const dec = decodeCMintPayload(env.payload);
+        if (dec) enqueue(bytesToHex(dec.etchTxid), 0);
+      }
+    }
+  }
+
+  // ============== Pass 2: validate in reverse-BFS order ==============
+  // BFS appended parents after children, so iterating end → 0 gives us
+  // bottom-up topology: by the time we reach a CXFER/BURN/AXFER/T_MINT
+  // consumer, every (parent_txid, parent_vout) it depends on is already in
+  // validatedSet (set by the prior iteration's _validateOutpointSingle).
+  for (let i = topoList.length - 1; i >= 0; i--) {
+    const { txid, vout, key } = topoList[i];
+    if (validatedSet.has(key)) continue;
+    await _validateOutpointSingle(txid, vout, validatedSet, fetchTx, metadataOut, rpBatch, pmintStatusOut);
+  }
+
+  return validatedSet.has(rootKey) ? validatedSet.get(rootKey) : false;
+}
+
+// Per-(txid, vout) validation. Same per-opcode checks the recursive version
+// did, with the recursive `await validateOutpoint(parent)` calls replaced by
+// `validatedSet.get(parent_key) === true` lookups — pass 2 guarantees the
+// parent was validated in a prior iteration. Side effects (rpBatch pushes,
+// metadataOut writes, pmintStatusOut tags, mixer nullifier marking,
+// validatedSet/markAll writes) are unchanged.
+async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, metadataOut = null, rpBatch = null, pmintStatusOut = null) {
   const key = `${txidHex}:${vout}`;
   if (validatedSet.has(key)) return validatedSet.get(key);
-  if (depth > 200) { validatedSet.set(key, false); return false; } // depth bound
 
   const tx = await fetchTx(txidHex);
   if (!tx || !tx.vin || !tx.vin[0]) { validatedSet.set(key, false); return false; }
@@ -5490,14 +6016,14 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     if (!etchEnv || etchEnv.opcode !== T_CETCH) { validatedSet.set(key, false); return false; }
     const etchDec = decodeCEtchPayload(etchEnv.payload);
     if (!etchDec || !etchDec.mintable) { validatedSet.set(key, false); return false; }
-    // Recursively validate the CETCH ancestor itself. T_MINT's soundness
-    // doesn't depend on the etch's range proof (mint commits fresh supply
-    // gated only by the issuer's mint-authority signature), but accepting a
-    // mint whose parent etch fails validation would be inconsistent with the
-    // CXFER/BURN ancestry rule and surprising to anyone reading the spec.
-    // The recursive call is memoized via validatedSet so repeated mints under
-    // the same etch only walk the etch once per scan.
-    const etchValid = await validateOutpoint(etchTxidHex, 0, validatedSet, fetchTx, depth + 1, metadataOut, rpBatch);
+    // Validate the CETCH ancestor itself. T_MINT's soundness doesn't depend
+    // on the etch's range proof (mint commits fresh supply gated only by the
+    // issuer's mint-authority signature), but accepting a mint whose parent
+    // etch fails validation would be inconsistent with the CXFER/BURN
+    // ancestry rule and surprising to anyone reading the spec. The outer
+    // BFS driver pre-walks the CETCH ancestor and validates it in an earlier
+    // iteration of pass 2, so we just read its result here.
+    const etchValid = validatedSet.get(`${etchTxidHex}:0`) === true;
     if (!etchValid) { validatedSet.set(key, false); return false; }
     // Re-derive the commit-input anchor from the reveal tx's parent commit tx.
     // The issuer signs over this anchor; without it, replay of the envelope into
@@ -5555,7 +6081,7 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     if (tx.vin.length - 1 > 255) { markAll(Math.max(N, 1), false); return false; }
     for (let i = 1; i < tx.vin.length; i++) {
       const inp = tx.vin[i];
-      const parentValid = await validateOutpoint(inp.txid, inp.vout, validatedSet, fetchTx, depth + 1, metadataOut, rpBatch);
+      const parentValid = validatedSet.get(`${inp.txid}:${inp.vout}`) === true;
       if (!parentValid) { markAll(Math.max(N, 1), false); return false; }
     }
 
@@ -5626,7 +6152,7 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     if (tx.vin.length < 1 + aic) { markAll(N, false); return false; }
     for (let i = 1; i < 1 + aic; i++) {
       const inp = tx.vin[i];
-      const parentValid = await validateOutpoint(inp.txid, inp.vout, validatedSet, fetchTx, depth + 1, metadataOut, rpBatch);
+      const parentValid = validatedSet.get(`${inp.txid}:${inp.vout}`) === true;
       if (!parentValid) { markAll(N, false); return false; }
     }
     let Cpts;
@@ -6336,8 +6862,41 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
 // new state immediately. force=true bypasses the cache (Refresh button).
 let _holdingsCache = null;
 const HOLDINGS_CACHE_TTL_MS = 30 * 1000;
-function invalidateHoldingsCache() { _holdingsCache = null; }
+// Cross-TTL "nothing changed" cache. Keyed by the wallet's UTXO-set signature
+// at last successful scan. When Refresh fires (or the 30s TTL expires) and the
+// UTXO set is bit-for-bit identical AND the cached result has no transient
+// entries (pending pmints / inflated UTXOs whose status can change without
+// a chain edit), the cached holdings are reused without re-running validation
+// or the main per-UTXO loop. Heavy wallets save the ~1-2s per-UTXO work on
+// every Refresh that wouldn't have produced a different answer. Cleared by
+// invalidateHoldingsCache (broadcast handlers, network switch, etc.).
+let _lastFullScan = null; // { utxoSig, hasUnresolved, holdings }
+function invalidateHoldingsCache() { _holdingsCache = null; _lastFullScan = null; invalidateUtxoCache(); }
+// Session-persistent validated-outpoint cache, per network. Holds ONLY
+// confirmed-true entries — outpoints whose ancestry has been fully validated
+// (rangeproof verified, kernel sig OK, asset_id chain-consistent end to end).
+// Reusing it across scans saves the dominant cost on heavy wallets: after
+// Refresh, post-broadcast invalidation, or 30s-TTL expiry, previously-walked
+// ancestry doesn't get re-verified. `false` entries are NOT persisted —
+// they may be transient (mempool pending, network flake, T_PMINT awaiting
+// worker credit). Memory-only; cleared on page reload. Reorg posture
+// matches the rest of the dapp (confirmed txs treated as immutable; a
+// reorg would invalidate the localStorage tx cache too, and the user's
+// next ↻ Rescan after a reload re-walks from chain).
+const _persistedValidatedTrue = new Map(); // NET.name -> Map<"txid:vout", true>
+function _getPersistedValidatedTrue() {
+  let m = _persistedValidatedTrue.get(NET.name);
+  if (!m) { m = new Map(); _persistedValidatedTrue.set(NET.name, m); }
+  return m;
+}
 let _holdingsInFlight = null;
+// Monotonic generation token. Incremented at the start of every scan; the
+// background _scanHoldingsImpl checks it before committing to _holdingsCache
+// so a previously-timed-out impl that finally resolves can't overwrite a
+// fresh result produced by a retry after invalidateHoldingsCache(). Without
+// this guard, the user clicks ↻ Retry → fresh scan finishes → orphan scan
+// from before the timeout completes a few seconds later → stale balances.
+let _holdingsLatestGen = 0;
 async function scanHoldings(force = false) {
   if (!force && _holdingsCache && (Date.now() - _holdingsCache.fetchedAt) < HOLDINGS_CACHE_TTL_MS) {
     return _holdingsCache.holdings;
@@ -6351,12 +6910,40 @@ async function scanHoldings(force = false) {
   // and both callers would then race to set the in-flight slot. Holdings tab
   // click, Transfer preview, Drops, and every other balance-aware path
   // routes through here, so one gate covers them all.
+  const myGen = ++_holdingsLatestGen;
   _holdingsInFlight = (async () => {
     try {
       await ensurePrivkey();
-      const holdings = await _scanHoldingsImpl();
-      _holdingsCache = { fetchedAt: Date.now(), holdings };
-      return holdings;
+      // Wallclock budget. Without this, a slow / flaky mempool.space leaves
+      // the Holdings tab spinning indefinitely with no feedback; the user
+      // can't tell "scan in progress" from "scan dead." 90s is generous
+      // enough for a cold-cache 100-UTXO wallet on a marginal connection
+      // (~SCAN_CONCURRENCY=8 → ~12 round-trips of ancestor walks). The
+      // underlying _scanHoldingsImpl keeps going on timeout; the generation
+      // guard below ensures only the freshest scan's result populates
+      // _holdingsCache (a stale orphan from before a retry doesn't overwrite).
+      const SCAN_TIMEOUT_MS = 90_000;
+      let timeoutId;
+      const timeoutP = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(
+          `Holdings scan exceeded ${SCAN_TIMEOUT_MS / 1000}s — your indexer (mempool.space) is likely slow or unreachable. The scan continues in the background; the next click of ↻ Rescan will start a fresh scan and supersede this one.`,
+        )), SCAN_TIMEOUT_MS);
+      });
+      const implP = (async () => {
+        try {
+          const h = await _scanHoldingsImpl();
+          // Stale-write guard: only commit to the cache if this is still the
+          // newest scan. After a user-triggered retry (invalidateHoldingsCache
+          // + new scanHoldings call), _holdingsLatestGen has incremented and
+          // this orphan run's myGen no longer matches — drop the result so
+          // the retry's value is what the user sees.
+          if (myGen === _holdingsLatestGen) {
+            _holdingsCache = { fetchedAt: Date.now(), holdings: h };
+          }
+          return h;
+        } finally { clearTimeout(timeoutId); }
+      })();
+      return await Promise.race([implP, timeoutP]);
     } finally {
       _holdingsInFlight = null;
     }
@@ -6372,6 +6959,16 @@ async function _scanHoldingsImpl() {
   // bug. refreshPoolsIfStale is throttled (60s cache) so the cost is bounded.
   try { await refreshPoolsIfStale(); } catch {}
   const utxos = await getUtxos(wallet.address());
+  // UTXO-set signature: if identical to the last successful scan AND that
+  // scan had no transient entries (pending pmint / inflated dclaim or other
+  // worker-credited types that can transition without a UTXO edit), the
+  // result hasn't changed and we return the cached holdings directly.
+  // Stable ghosts are fine to keep cached — they only transition via an
+  // explicit Import share-link, which clears the cache via invalidate.
+  const utxoSig = utxos.map(u => `${u.txid}:${u.vout}`).sort().join(',');
+  if (_lastFullScan && _lastFullScan.utxoSig === utxoSig && !_lastFullScan.hasUnresolved) {
+    return _lastFullScan.holdings;
+  }
   const holdings = new Map();
   const txCache = new Map();
   // Canonical CETCH metadata discovered during recursive validation. Lets a fresh
@@ -6394,7 +6991,14 @@ async function _scanHoldingsImpl() {
   //   3) If the batch fails, the wallet has at least one bad UTXO. Re-walk in
   //      strict mode (one rangeproof verify each) so we can mark exactly which
   //      ones are ghosts/inflated. Slow path, but only hit for actual problems.
-  let validatedSet = new Map();
+  //
+  // Prime validatedSet from the session-persistent true-cache. Every entry
+  // there was verified by a prior scan's successful batch (or strict re-walk),
+  // so the BFS pre-walk in validateOutpoint short-circuits on them and we
+  // skip re-fetching / re-verifying that subtree. After this scan completes,
+  // any newly-confirmed-true entries get merged back.
+  const persistedTrue = _getPersistedValidatedTrue();
+  let validatedSet = new Map(persistedTrue);
   let rpBatch = [];
   // Scan-scoped T_PMINT failure-mode map. Lives across the optimistic and
   // strict walks below so a pmint that gets tagged 'pending' in the first
@@ -6412,8 +7016,35 @@ async function _scanHoldingsImpl() {
   // (_txInFlight), and rpBatch duplicate proofs from racing walks are harmless
   // to bpRangeAggBatchVerify (random linear combination handles dups).
   const SCAN_CONCURRENCY = 8;
-  for (let i = 0; i < utxos.length; i += SCAN_CONCURRENCY) {
+  // Progress hint on the Holdings status pill so a long scan (slow indexer,
+  // deep ancestry) shows visible progress instead of an indefinite "scanning"
+  // spinner. setStatus is a no-op if the element isn't present (e.g. when
+  // scanHoldings is called from a non-Holdings tab handler), so this stays
+  // safe even when invoked off-tab. Only emit when there's enough work to
+  // justify the UI churn — small wallets blink the message faster than the
+  // user can read it.
+  const _showProgress = utxos.length >= 12;
+  // Sequential prime walk before parallel chunks: validate one UTXO alone so
+  // its ancestry lands in validatedSet (or hits the persistent cache and
+  // returns instantly). Otherwise the first chunk of 8 parallel walks each
+  // re-decode envelopes, re-walk BFS, and re-verify kernel sigs for the same
+  // shared ancestors (CETCH root, common CXFER hops). JS is single-threaded
+  // so parallel walks can't actually parallelize CPU work — they interleave;
+  // cost is ~chunk_size × single-walk CPU. After the prime, the remaining
+  // parallel walks short-circuit on validatedSet for shared ancestry. Net
+  // win: dominant on the first cold scan of a treasury / heavy single-asset
+  // wallet (one root, many UTXOs); partial for multi-asset wallets (only
+  // primes one root). With persistent validatedSet, this only matters on
+  // the first scan after page load.
+  if (utxos.length > 1) {
+    if (_showProgress) setStatus('#holdings-status', `priming · 0 / ${utxos.length} UTXOs`, true);
+    await validateOutpoint(utxos[0].txid, utxos[0].vout, validatedSet, fetchTx, 0, metadataOut, rpBatch, pmintStatusOut)
+      .catch(e => { console.warn('validateOutpoint threw for', utxos[0].txid + ':' + utxos[0].vout, e); return false; });
+  }
+  const _scanStart = utxos.length > 1 ? 1 : 0;
+  for (let i = _scanStart; i < utxos.length; i += SCAN_CONCURRENCY) {
     const chunk = utxos.slice(i, i + SCAN_CONCURRENCY);
+    if (_showProgress) setStatus('#holdings-status', `scanning · ${Math.min(i + chunk.length, utxos.length)} / ${utxos.length} UTXOs`, true);
     await Promise.all(chunk.map(u =>
       validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, rpBatch, pmintStatusOut)
         .catch(e => { console.warn('validateOutpoint threw for', u.txid + ':' + u.vout, e); return false; })
@@ -6427,8 +7058,11 @@ async function _scanHoldingsImpl() {
     // rangeproofs would have failed individually, so re-derive from the strict
     // walk to avoid attacker-chosen ticker/imageUri leaking into the registry.
     // pmintStatusOut also clears: a strict re-walk re-classifies T_PMINT failures
-    // from scratch.
-    validatedSet = new Map();
+    // from scratch. Re-prime from persistedTrue: those entries were verified
+    // by an earlier scan's independently-passing batch, so the failure in
+    // THIS scan's batch can't impeach them — only the new entries this scan
+    // added are suspect, and the strict re-walk isolates them.
+    validatedSet = new Map(persistedTrue);
     rpBatch = null;
     metadataOut.clear();
     pmintStatusOut.clear();
@@ -6796,6 +7430,26 @@ async function _scanHoldingsImpl() {
 
     h.ghosts.push({ utxo: u, commitment: onChainCommitment });
   }
+  // Merge confirmed-true entries into the session-persistent cache so the
+  // next scan (Refresh, post-broadcast, 30s-TTL expiry) skips this ancestry.
+  // Only true entries — false may be transient (mempool pending, T_PMINT
+  // awaiting worker credit, network flake) and would falsely poison the
+  // cache if persisted. validatedSet was already primed from persistedTrue
+  // at the top of this function, so this is a delta-merge of newly-confirmed
+  // entries plus a no-op refresh of existing ones.
+  for (const [key, ok] of validatedSet) {
+    if (ok === true) persistedTrue.set(key, true);
+  }
+  // Record this scan for the UTXO-set-signature fast path. hasUnresolved is
+  // true if any holding has a pending pmint or an inflated entry — those can
+  // transition without a UTXO edit (pmint credit at depth ≥ 3, worker-side
+  // dclaim credit), so we re-scan when present. Ghosts and clean h.utxos[]
+  // entries are stable and don't trigger re-scan.
+  const hasUnresolved = [...holdings.values()].some(h =>
+    (h.pending && h.pending.length > 0) ||
+    (h.inflated && h.inflated.length > 0)
+  );
+  _lastFullScan = { utxoSig, hasUnresolved, holdings };
   return holdings;
 }
 
@@ -7656,7 +8310,7 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
     // self-CXFER it down to exactly `denomBig`. Mirrors the bid-fulfil flow.
     // Costs one extra CXFER on top of the deposit itself; the alternative
     // ("send to your own pubkey first") is a worse UX with the same cost.
-    const sorted = [...h.utxos].sort((a, b) => Number(a.amount - b.amount));
+    const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
     const cover = sorted.find(u => u.amount > denomBig);
     if (!cover) {
       const haveDisp = sorted.map(u => u.amount.toString()).join(', ') || '(none)';
@@ -8352,7 +9006,7 @@ async function buildAndBroadcastTDrop({
   }
   let pickedUtxos = (h.utxos || []).filter(u => u.amount === capBig).slice(0, 1);
   if (pickedUtxos.length === 0) {
-    const sorted = [...h.utxos].sort((a, b) => Number(b.amount - a.amount));
+    const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
     let acc = 0n; const picked = [];
     for (const u of sorted) {
       picked.push(u); acc += u.amount;
@@ -9131,7 +9785,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     }
     if (inAmt < totalSendAmt) throw new Error(`forced utxos provide ${inAmt}, need ${totalSendAmt}`);
   } else {
-    const sortedUtxos = [...h.utxos].sort((a, b) => Number(b.amount - a.amount));
+    const sortedUtxos = [...h.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
     pickedAssetUtxos = [];
     for (const x of sortedUtxos) {
       pickedAssetUtxos.push(x); inAmt += x.amount; inBlindingSum = modN(inBlindingSum + BigInt(x.blinding));
@@ -10584,6 +11238,12 @@ async function fetchPreauthSale({ assetIdHex, saleIdHex }) {
 // broadcasts the commit tx, waits for visibility, then broadcasts the
 // reveal tx with the seller's pre-signed asset-input witness.
 async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress = null }) {
+  // Sentinel for error decoration. Flips to true once the commit tx has
+  // broadcast successfully — any throw past that point means commit-locked
+  // sats are stranded and the user needs the recovery record.
+  let _commitTxidHexForRecovery = null;
+  let _commitValueForRecovery = 0;
+  try {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -10721,6 +11381,26 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   const commitTxidHex = txid(commitTx);
   _progress('commit-start');
   await broadcast(commitHex);
+  // Persist enough to recover the commit-locked sats BEFORE the wait/reveal
+  // legs run. waitForTxVisible can stall on a slow indexer, the funding
+  // picker below can throw on insufficient sats, and the reveal broadcast
+  // can fail on relay-policy / fee-bump. In all three cases the commit tx
+  // is already on chain and the locked commitValue sats need either a
+  // manual retry or a script-path spend to recover. The forget call below
+  // (after reveal success) garbage-collects on the happy path.
+  recordPreauthTakePending(commitTxidHex, {
+    sale_id: saleIdHex,
+    asset_id: assetIdHex,
+    amount: amount.toString(),
+    ticker: sale.ticker || '',
+    decimals: Number.isInteger(sale.decimals) ? sale.decimals : 0,
+    commit_value: commitValue,
+    envelope_script_hex: bytesToHex(envelopeScript),
+    control_block_hex: bytesToHex(cb),
+    recip_blinding_hex: bytesToHex(bigintToBytes32(recipBlinding)),
+  });
+  _commitTxidHexForRecovery = commitTxidHex;
+  _commitValueForRecovery = commitValue;
   _progress('wait-visible');
   await waitForTxVisible(commitTxidHex);
 
@@ -10781,7 +11461,7 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
     if (totalFunding >= fundingNeeded + DUST) break;
   }
   if (totalFunding < fundingNeeded) {
-    throw new Error(`insufficient sats for reveal (need ${fundingNeeded}, have ${totalFunding}). The commit tx broadcast — recover the locked sats via script-path spend of ${commitTxidHex}:0 with the envelope script and your wallet privkey.`);
+    throw new Error(`insufficient sats for reveal (need ${fundingNeeded}, have ${totalFunding}). The commit tx broadcast — ${commitValue} sats locked at ${commitTxidHex}:0. A recovery record (envelope + control block + blinding) has been saved to localStorage under tacit-preauth-take-pending-v1:${NET.name}. Top up the wallet and retry, or script-path-spend the commit back to a P2WPKH using the saved record.`);
   }
   const buyerChange = totalFunding + assetValue - sale.min_price_sats;
   const payoutScriptBytes = hexToBytes(sale.seller_payout_script);
@@ -10837,6 +11517,9 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   const revealTxidHex = txid(revealTx);
   _progress('broadcast-start');
   await broadcast(revealHex);
+  // Reveal landed — commit-locked sats are now consumed into the settlement
+  // and the recovery record is no longer needed.
+  forgetPreauthTakePending(commitTxidHex);
 
   // Record the recipient opening locally so the next holdings refresh sees
   // the new UTXO without waiting for ECDH-recovery scan.
@@ -10857,6 +11540,16 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
     });
   } catch {}
   return { commit_txid: commitTxidHex, reveal_txid: revealTxidHex, hex: revealHex };
+  } catch (e) {
+    // Decorate post-commit errors with the recovery record pointer. The
+    // insufficient-sats branch above already builds its own verbose hint;
+    // the regex guard avoids double-stamping.
+    if (_commitTxidHexForRecovery && !/recovery record|locked at/.test(String(e?.message || ''))) {
+      const tail = ` · Commit tx broadcast — ${_commitValueForRecovery} sats locked at ${_commitTxidHexForRecovery}:0; recovery record saved (tacit-preauth-take-pending-v1:${NET.name}). Retry from the Market tab when the issue is resolved.`;
+      e.message = (e?.message || String(e)) + tail;
+    }
+    throw e;
+  }
 }
 
 // ============== BID INTENTS (off-chain bid book — SPEC §5.7.7) ==============
@@ -10992,7 +11685,7 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
     if (exact) {
       sellerUtxo = exact;
     } else {
-      const sorted = [...h.utxos].sort((a, b) => Number(a.amount - b.amount));
+      const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
       const cover = sorted.find(u => u.amount >= wantAmt);
       if (!cover) throw new Error('no single UTXO covers bid amount — consolidate first via Send to your own address');
       if (!await ensureBurnerBackedUp('Auto-split UTXO before fulfilling bid (one extra CXFER from your active wallet)')) {
@@ -11189,7 +11882,7 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount, onProgress = null })
   if (!h) throw new Error(`no holdings for asset ${assetIdHex}`);
   if (h.balance < burnAmt) throw new Error(`insufficient balance: have ${h.balance}, need ${burnAmt}`);
 
-  const sortedUtxos = [...h.utxos].sort((a, b) => Number(b.amount - a.amount));
+  const sortedUtxos = [...h.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
   const pickedAssetUtxos = []; let inAmt = 0n; let inBlindingSum = 0n;
   for (const x of sortedUtxos) {
     pickedAssetUtxos.push(x); inAmt += x.amount; inBlindingSum = modN(inBlindingSum + BigInt(x.blinding));
@@ -13219,6 +13912,197 @@ function stopHoldingsAutoRefresh() {
   if (_holdingsPollTimer) { clearInterval(_holdingsPollTimer); _holdingsPollTimer = null; }
 }
 
+// ============== MAKER-SIDE CLAIM POLLER ==============
+// Background poller that watches the maker's active OTC listings (opening +
+// range) for new claims. When a buyer reserves a listing, the worker stamps
+// `claim` on the listing record; the maker otherwise wouldn't see it until
+// they next visit the Holdings tab. The poller closes that gap:
+//   • Visible tab → 30s tick. Hidden tab → 60s tick (less wasted bandwidth).
+//   • On first appearance of a previously-unseen claim, fires:
+//      – an in-app toast,
+//      – a tab-title flicker ("🎯 NEW CLAIM · …") so a backgrounded tab
+//        catches the maker's eye in the browser tab bar,
+//      – a browser Notification IF the maker has already granted permission
+//        (we never auto-prompt; the user opts in via the wallet card's
+//        "Enable claim alerts" toggle).
+//   • Tab focus stops the title flicker.
+// All data fed in is public (claim.taker_pubkey, listing.price_sats); no
+// secret leaks via the notification body.
+const CLAIM_POLL_INTERVAL_VISIBLE_MS = 30 * 1000;
+const CLAIM_POLL_INTERVAL_HIDDEN_MS  = 60 * 1000;
+let _claimPollerTimer = null;
+let _lastSeenClaimStates = new Map(); // listing_key → taker_pubkey (or '')
+let _claimPollerSeeded = false;       // first poll only seeds state, doesn't notify
+function startMakerClaimPoller() {
+  if (_claimPollerTimer) return;
+  if (!wallet.pub) return;
+  _claimPollerSeeded = false;
+  const tick = async () => {
+    try { await _pollMakerListings(); } catch (e) { /* swallow; next tick will retry */ }
+    if (_claimPollerTimer) {
+      clearTimeout(_claimPollerTimer);
+      _claimPollerTimer = setTimeout(tick, document.hidden ? CLAIM_POLL_INTERVAL_HIDDEN_MS : CLAIM_POLL_INTERVAL_VISIBLE_MS);
+    }
+  };
+  // Kick off the first tick after a 5s delay so we don't fire during the
+  // init storm. _holdingsCache should be primed by then on a normal load.
+  _claimPollerTimer = setTimeout(tick, 5000);
+}
+function stopMakerClaimPoller() {
+  if (_claimPollerTimer) { clearTimeout(_claimPollerTimer); _claimPollerTimer = null; }
+  _lastSeenClaimStates.clear();
+  _claimPollerSeeded = false;
+  // Stop the title flicker too — a locked wallet can't act on the claim
+  // anyway, so leaving "🎯 NEW CLAIM" in the tab bar misleads the user.
+  if (_titleFlickerInterval) {
+    clearInterval(_titleFlickerInterval);
+    _titleFlickerInterval = null;
+    if (_titleFlickerOriginalTitle != null) {
+      document.title = _titleFlickerOriginalTitle;
+      _titleFlickerOriginalTitle = null;
+    }
+  }
+}
+async function _pollMakerListings() {
+  if (!wallet.pub || !WORKER_BASE) return;
+  // The HOLDINGS_URL endpoint returns listings keyed by asset_id when given
+  // {owner_pubkey, asset_ids}. We need a list of asset_ids the maker has
+  // listings on; using the holdings cache as the source means we only poll
+  // for assets the maker actually holds. Edge case: a maker who listed an
+  // asset and then sold ALL their holdings would still have an unspent
+  // listing on chain — that's rare (the listing's UTXO would have been
+  // spent in the sale), and a manual Holdings tab visit recovers.
+  const cachedHoldings = _holdingsCache?.holdings;
+  if (!cachedHoldings || cachedHoldings.size === 0) return;
+  const assetIds = [...cachedHoldings.keys()];
+  const ownerPubHex = bytesToHex(wallet.pub);
+  let j = null;
+  try {
+    const resp = await fetch(withNet(HOLDINGS_URL), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner_pubkey: ownerPubHex, asset_ids: assetIds }),
+    });
+    if (resp.ok) j = await resp.json();
+  } catch { return; }
+  if (!j) return;
+  const current = new Map();
+  const newClaims = [];
+  for (const aid of assetIds) {
+    const listings = Array.isArray(j.listings?.[aid]) ? j.listings[aid] : [];
+    for (const l of listings) {
+      if (l.expired) continue;
+      if (l.owner_pubkey !== ownerPubHex) continue;
+      const key = `opening:${aid}:${l.txid}:${l.vout}`;
+      const claimPub = l.claim?.taker_pubkey || '';
+      current.set(key, claimPub);
+      const prev = _lastSeenClaimStates.get(key) || '';
+      if (claimPub && prev !== claimPub) {
+        newClaims.push({ kind: 'opening', aid, listing: l, claim: l.claim, ticker: cachedHoldings.get(aid)?.ticker || '?' });
+      }
+    }
+    const ranges = Array.isArray(j.range_listings?.[aid]) ? j.range_listings[aid] : [];
+    for (const l of ranges) {
+      if (l.expired) continue;
+      if (l.owner_pubkey !== ownerPubHex) continue;
+      const key = `range:${aid}:${l.owner_pubkey}`;
+      const claimPub = l.claim?.taker_pubkey || '';
+      current.set(key, claimPub);
+      const prev = _lastSeenClaimStates.get(key) || '';
+      if (claimPub && prev !== claimPub) {
+        newClaims.push({ kind: 'range', aid, listing: l, claim: l.claim, ticker: cachedHoldings.get(aid)?.ticker || '?' });
+      }
+    }
+  }
+  _lastSeenClaimStates = current;
+  if (!_claimPollerSeeded) { _claimPollerSeeded = true; return; }  // first tick seeds, never notifies
+  for (const evt of newClaims) _onMakerClaimArrival(evt);
+}
+function _onMakerClaimArrival({ kind, aid, listing, claim, ticker }) {
+  const price = Number(listing.price_sats) || 0;
+  const takerShort = shorten(claim.taker_pubkey || '', 6);
+  toast(`🎯 New claim on your ${ticker} listing — taker ${takerShort} reserved for ${price.toLocaleString()} sats. Verify payment then Deliver.`, 'success', 12000);
+  _flickerTitleForClaim();
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try {
+      new Notification('tacit · new OTC claim', {
+        body: `${price.toLocaleString()} sats reserved for your ${ticker} listing. Verify payment then deliver.`,
+        tag: `tacit-claim-${aid}-${listing.txid || listing.owner_pubkey || ''}`,
+        renotify: true,
+        silent: false,
+      });
+    } catch { /* Notification quirks vary by platform; the toast covers it */ }
+  }
+  // Re-render Holdings if visible so the maker's tile shows the claim row
+  // with Copy/Deliver buttons without waiting for the next manual refresh.
+  if (document.querySelector('.tab.active[data-tab="holdings"]')) {
+    try { renderHoldings(); } catch {}
+  }
+}
+let _titleFlickerInterval = null;
+let _titleFlickerOriginalTitle = null;
+// Generic countdown ticker. Any DOM element tagged with `data-expires-at`
+// (unix-seconds) gets its textContent rewritten every 15s in the form
+// "Xm Ys left" (or "expired" past zero). One global interval drives every
+// countdown on the page — cheap and avoids per-card setInterval leaks.
+const _COUNTDOWN_TICK_MS = 15 * 1000;
+let _countdownTickTimer = null;
+function _formatCountdown(expiresAt) {
+  const remaining = Math.max(0, Math.floor(expiresAt) - Math.floor(Date.now() / 1000));
+  if (remaining <= 0) return 'expired';
+  if (remaining < 60) return `${remaining}s left`;
+  if (remaining < 3600) return `${Math.floor(remaining / 60)}m ${remaining % 60}s left`;
+  return `${Math.floor(remaining / 3600)}h ${Math.floor((remaining % 3600) / 60)}m left`;
+}
+function _tickCountdowns() {
+  const nodes = document.querySelectorAll('[data-expires-at]');
+  if (!nodes.length) return;
+  for (const el of nodes) {
+    const expiresAt = parseInt(el.dataset.expiresAt || '0', 10) || 0;
+    if (!expiresAt) continue;
+    const txt = _formatCountdown(expiresAt);
+    if (el.textContent !== txt) el.textContent = txt;
+    // Once expired, swap to a muted style so the row stands out as stale.
+    if (Math.floor(expiresAt) <= Math.floor(Date.now() / 1000)) {
+      if (!el.dataset.expiredStyled) {
+        el.dataset.expiredStyled = '1';
+        el.style.color = 'var(--red, #b8341d)';
+      }
+    }
+  }
+}
+function startCountdownTicker() {
+  if (_countdownTickTimer) return;
+  _countdownTickTimer = setInterval(_tickCountdowns, _COUNTDOWN_TICK_MS);
+  // Tick once immediately so freshly-rendered countdowns aren't frozen at
+  // their initial value for the first 15s.
+  _tickCountdowns();
+}
+function _flickerTitleForClaim() {
+  if (_titleFlickerInterval) return;
+  _titleFlickerOriginalTitle = document.title;
+  let on = true;
+  _titleFlickerInterval = setInterval(() => {
+    document.title = on ? `🎯 NEW CLAIM · ${_titleFlickerOriginalTitle}` : _titleFlickerOriginalTitle;
+    on = !on;
+  }, 1500);
+  const stop = () => {
+    if (_titleFlickerInterval) {
+      clearInterval(_titleFlickerInterval);
+      _titleFlickerInterval = null;
+    }
+    if (_titleFlickerOriginalTitle != null) {
+      document.title = _titleFlickerOriginalTitle;
+      _titleFlickerOriginalTitle = null;
+    }
+    window.removeEventListener('focus', stop);
+    document.removeEventListener('visibilitychange', visStop);
+  };
+  const visStop = () => { if (!document.hidden) stop(); };
+  window.addEventListener('focus', stop);
+  document.addEventListener('visibilitychange', visStop);
+}
+
 // ============== MIXER UI ==============
 // Mixer tab rendering. Pool list reads from in-memory poolRegistry /
 // poolMerkleTrees / poolNullifiers, populated by the cron-mode scan path
@@ -14311,8 +15195,16 @@ function setupMixerHandlers() {
         // exactly which stage failed.
         const msg = e && e.message ? e.message : String(e);
         const cur = wOut ? (wOut.textContent || '') : '';
-        setOut(cur + (cur ? '\n' : '') + `✗ Withdraw failed: ${msg}`);
-        console.error(e);
+        // Unlock-cancel is a navigation choice (Escape/cancel on the unlock
+        // prompt before any tx was built). Distinguish from real failures so
+        // the strip doesn't scream "Withdraw failed" at a user who chose
+        // not to unlock.
+        if (isUnlockCancelled(e)) {
+          setOut(cur + (cur ? '\n' : '') + '· Unlock cancelled — nothing was broadcast.');
+        } else {
+          setOut(cur + (cur ? '\n' : '') + `✗ Withdraw failed: ${msg}`);
+          console.error(e);
+        }
       } finally {
         wBtn.disabled = false;
         wBtn.textContent = origText;
@@ -14519,10 +15411,14 @@ function setupMixerHandlers() {
         // Inline error rendering replaces the blocking alert(). The
         // accumulated progress lines stay visible above the failure
         // marker so the user can see which stage failed.
-        const msg = e && e.message ? e.message : String(e);
-        outLines.push(`✗ Deposit failed: ${msg}`);
+        if (isUnlockCancelled(e)) {
+          outLines.push('· Unlock cancelled — nothing was broadcast.');
+        } else {
+          const msg = e && e.message ? e.message : String(e);
+          outLines.push(`✗ Deposit failed: ${msg}`);
+          console.error(e);
+        }
         setOut(outLines.join('\n'));
-        console.error(e);
       } finally {
         depBtn.disabled = false;
         depBtn.textContent = origText;
@@ -14764,8 +15660,12 @@ function setupMixerHandlers() {
         );
         renderMixer();
       } catch (e) {
-        alert('POOL_INIT broadcast failed: ' + (e.message || e));
-        console.error(e);
+        if (isUnlockCancelled(e)) {
+          toast('Unlock cancelled — nothing was broadcast.', '');
+        } else {
+          alert('POOL_INIT broadcast failed: ' + (e.message || e));
+          console.error(e);
+        }
       } finally {
         initBtn.disabled = false;
         initBtn.textContent = origText;
@@ -16547,6 +17447,40 @@ function renderWalletCard(patch = {}) {
   }
   if (!onSignet || !userLow) { const fp = $('#faucet-panel'); if (fp) fp.style.display = 'none'; }
 
+  // Lock-state badge. Under lazy unlock, `wallet.pub` is present but
+  // `wallet.priv` may still be null until the user takes a sign action. The
+  // badge gives them a visible cue so a follow-up unlock prompt isn't a
+  // surprise. Hidden entirely when no wallet identity exists yet
+  // (welcome modal still active).
+  const lockEl = $('#wallet-lock-badge');
+  const lockBtnEl = $('#btn-lock');
+  if (lockEl) {
+    if (!wallet.pub) {
+      lockEl.style.display = 'none';
+    } else {
+      lockEl.style.display = '';
+      if (wallet.priv) {
+        lockEl.textContent = '· 🔓 unlocked';
+        lockEl.style.color = 'var(--green, #0a7d4e)';
+        lockEl.title = 'Signing key is loaded in this tab\'s memory. Click Lock to forget it; reload also clears it.';
+        if (lockBtnEl) {
+          lockBtnEl.disabled = false;
+          lockBtnEl.textContent = 'Lock';
+          lockBtnEl.title = 'Forget the signing key from memory. Next sign action re-prompts for the passphrase or biometric.';
+        }
+      } else {
+        lockEl.textContent = '· 🔒 locked';
+        lockEl.style.color = 'var(--orange)';
+        lockEl.title = 'Signing key is not loaded. Any sign action will prompt to unlock.';
+        if (lockBtnEl) {
+          lockBtnEl.disabled = true;
+          lockBtnEl.textContent = 'Locked';
+          lockBtnEl.title = 'Already locked — sign action prompts to unlock.';
+        }
+      }
+    }
+  }
+
   // Mode badge.
   const modeEl = $('#wallet-mode-badge');
   if (modeEl) {
@@ -16615,12 +17549,52 @@ async function refreshWallet() {
 }
 function setupWalletButtons() {
   $('#btn-refresh').onclick = refreshWallet;
-  // Lock: reload. `wallet.priv` is module-memory only, so a reload drops the
-  // unlocked key. With lazy unlock the next page load shows the wallet card
-  // without prompting; the next sign action triggers the passphrase or
-  // biometric prompt.
+  // Soft lock: zero the priv from JS module memory without reloading. The
+  // previous handler called location.reload() — correct for security but
+  // hostile to UX (loses scroll position, open dialogs, in-flight requests).
+  // Now that the priv lives only in `wallet.priv` and every sign path gates
+  // on ensurePrivkey(), forgetting the priv in place is equivalent for
+  // security: any subsequent action prompts to unlock just as a reload would.
+  // Order matters: null `wallet.priv` BEFORE zeroing the bytes. Otherwise an
+  // in-flight reader (e.g. a sign path that already captured the reference)
+  // could see `wallet.priv` still pointing at the now-zeroed Uint8Array and
+  // hand a zero-scalar to noble, which then throws a cryptic "private key
+  // out of range" mid-broadcast.
+  //
+  // Holdings / Transfer / sats-send re-render so their "Unlock to load
+  // balances" affordance replaces the previously-displayed amounts (otherwise
+  // the user might think their balance survived the lock when the cards are
+  // just stale).
   const lockBtn = $('#btn-lock');
-  if (lockBtn) lockBtn.onclick = () => location.reload();
+  if (lockBtn) lockBtn.onclick = () => {
+    // Snapshot, null, then zero. Renderers check `wallet.priv` synchronously;
+    // any reader that grabs the reference between the null and the fill(0)
+    // sees the array but is then asked for sign — noble rejects zero scalars
+    // with a clearer error than a downstream "verification failed" mystery.
+    // (The disabled-button state from renderWalletCard prevents the
+    // already-locked re-click path from firing, so no `if (!wallet.priv)`
+    // guard is needed here.)
+    const oldPriv = wallet.priv;
+    if (!oldPriv) return;
+    wallet.priv = null;
+    try { oldPriv.fill(0); } catch { /* defensive — array could be detached */ }
+    // Holdings auto-refresh would re-render with stale cached amounts; stop
+    // it so the locked-state affordance shows on the next tab visit.
+    try { stopHoldingsAutoRefresh(); } catch {}
+    // The claim poller burns bandwidth comparing listings against the
+    // worker; useless when locked (the maker can't act on a claim without
+    // unlocking anyway). Stops here; restarts after the next unlock so the
+    // maker doesn't drop a 30s polling window.
+    try { stopMakerClaimPoller(); } catch {}
+    invalidateHoldingsCache();
+    try { renderWalletCard(); } catch {}
+    // Re-render only the tabs that show balances; refreshAssetSelect /
+    // refreshSatsSendBalance / renderHoldings all detect the locked state
+    // and switch to the affordance branch added earlier in this PR.
+    try { if (document.querySelector('.tab.active[data-tab="holdings"]')) renderHoldings(); } catch {}
+    try { if (document.querySelector('.tab.active[data-tab="transfer"]')) { refreshAssetSelect(); refreshSatsSendBalance(); } } catch {}
+    toast('Wallet locked.', 'success');
+  };
   // Generic copy-to-clipboard handler for any element marked with
   // `data-copy-target="<element-id>"`. Reads .textContent of the target
   // (so users always copy what they see, not a stale state), invokes
@@ -17413,18 +18387,28 @@ function setupEtchForm() {
       }
       refreshWallet();
     } catch (e) {
-      $('#etch-error').textContent = e.message;
-      // Mark the in-flight step as errored. The strip stays visible — it
-      // shows the user exactly which stage failed (build / commit / reveal)
-      // so the error message has context. Hidden again on the next attempt
-      // or when the user navigates away.
-      const stripEl = $('#etch-progress');
-      if (stripEl && stripEl.style.display !== 'none') {
-        const activeStep = stripEl.querySelector('.progress-step.active');
-        const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
-        if (errIdx >= 0) setProgressStrip('etch-progress', -1, { errorAt: errIdx });
+      // Unlock-cancel before any chain action is a navigation choice — clear
+      // the strip silently and surface a muted message rather than colouring
+      // it as a hard error.
+      if (isUnlockCancelled(e)) {
+        $('#etch-error').textContent = 'Unlock cancelled — nothing was broadcast.';
+        const stripEl = $('#etch-progress');
+        if (stripEl) stripEl.style.display = 'none';
+        setProgressStrip('etch-progress', -1);
+      } else {
+        $('#etch-error').textContent = e.message;
+        // Mark the in-flight step as errored. The strip stays visible — it
+        // shows the user exactly which stage failed (build / commit / reveal)
+        // so the error message has context. Hidden again on the next attempt
+        // or when the user navigates away.
+        const stripEl = $('#etch-progress');
+        if (stripEl && stripEl.style.display !== 'none') {
+          const activeStep = stripEl.querySelector('.progress-step.active');
+          const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
+          if (errIdx >= 0) setProgressStrip('etch-progress', -1, { errorAt: errIdx });
+        }
+        console.error(e);
       }
-      console.error(e);
     } finally {
       $('#btn-etch-broadcast').disabled = false;
       $('#btn-etch-broadcast').textContent = 'Etch & broadcast';
@@ -17584,15 +18568,21 @@ function setupPetchForm() {
       tickerInput.value = '';
       if (hint) hint.textContent = '';
     } catch (e) {
-      errEl.textContent = `Deploy failed: ${e.message}`;
-      // Mark in-flight step as errored; strip stays visible so the error
-      // line has visual context (which stage failed).
-      if (stripEl && stripEl.style.display !== 'none') {
-        const activeStep = stripEl.querySelector('.progress-step.active');
-        const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
-        if (errIdx >= 0) setProgressStrip('petch-progress', -1, { errorAt: errIdx });
+      if (isUnlockCancelled(e)) {
+        errEl.textContent = 'Unlock cancelled — nothing was broadcast.';
+        if (stripEl) stripEl.style.display = 'none';
+        setProgressStrip('petch-progress', -1);
+      } else {
+        errEl.textContent = `Deploy failed: ${e.message}`;
+        // Mark in-flight step as errored; strip stays visible so the error
+        // line has visual context (which stage failed).
+        if (stripEl && stripEl.style.display !== 'none') {
+          const activeStep = stripEl.querySelector('.progress-step.active');
+          const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
+          if (errIdx >= 0) setProgressStrip('petch-progress', -1, { errorAt: errIdx });
+        }
+        console.error(e);
       }
-      console.error(e);
     } finally {
       broadcastBtn.disabled = false;
       broadcastBtn.textContent = 'Deploy public-mint asset';
@@ -17611,6 +18601,25 @@ const _transferHoldings = new Map();
 async function refreshAssetSelect() {
   const sel = $('#x-asset');
   if (!sel) return;
+  // Lazy-unlock: scanHoldings forces ensurePrivkey, so a Transfer-tab click
+  // pops the unlock prompt with no preamble. Skip the scan while locked —
+  // populate a single "Unlock to load balances" option that triggers the
+  // unlock on focus. The Confirm-and-send button will eventually unlock
+  // anyway, so this just keeps the prompt tied to user intent.
+  if (!wallet.priv && wallet.pub) {
+    _transferHoldings.clear();
+    sel.innerHTML = '<option value="">🔒 Unlock to load balances</option>';
+    if (!sel._lazyUnlockWired) {
+      sel._lazyUnlockWired = true;
+      sel.addEventListener('focus', async () => {
+        if (wallet.priv) return;
+        try { await ensurePrivkey(); refreshAssetSelect(); refreshWallet(); }
+        catch (e) { if (!isUnlockCancelled(e)) toast('Unlock failed: ' + (e?.message || e), 'error'); }
+      }, { once: false });
+    }
+    updateTransferAmountHint();
+    return;
+  }
   const holdings = await scanHoldings().catch(() => new Map());
   const knownNonZero = [...holdings.values()].filter(h => !h.unknownAsset && h.balance > 0n);
   _transferHoldings.clear();
@@ -17663,7 +18672,7 @@ function populateTransferUtxoPicker(h) {
   sel.disabled = false;
   // Sort by amount desc so the chunkiest UTXO surfaces first (common case:
   // user listed a single big UTXO and now wants to invalidate it).
-  const sorted = [...h.utxos].sort((a, b) => Number(b.amount - a.amount));
+  const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
   for (const u of sorted) {
     const out = u.utxo;
     const opt = document.createElement('option');
@@ -17768,7 +18777,12 @@ function utxoPickerOptionLabel(u, target, tag = null) {
     ? (relativeAge(u.utxo.status.block_time) ? ` · ${relativeAge(u.utxo.status.block_time)} old` : '')
     : ' · mempool';
   const base = `${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} · UTXO ${shorten(u.utxo.txid, 8)}:${u.utxo.vout}${ageStr}`;
-  return tag ? `${base} · ⚠ already listed (${tag.label})` : base;
+  if (!tag) return base;
+  // Soft tags warn but don't block — the maker can still pick the UTXO if
+  // they accept the implication (e.g. their own range listing might break
+  // on fulfilment if this listing fills).
+  if (tag.severity === 'soft') return `${base} · ⚠ ${tag.label}`;
+  return `${base} · ⚠ already listed (${tag.label})`;
 }
 
 // Post-mount enrichment for the atomic-flow UTXO picker. Fetches the active
@@ -17785,16 +18799,24 @@ async function enrichUtxoPicker(selectEl, sortedUtxos, target, assetIdHex) {
   // flight; bail silently — touching options on a detached node is harmless,
   // but we'd rather not pay for the work.
   if (!selectEl.isConnected) return tags;
+  // Asset-wide soft tag (e.g. active range listing). Applies to every UTXO
+  // that doesn't have a HARD tag of its own.
+  const rangeSoft = tags.get('__range_active__');
   let firstAvailable = null;
   for (const opt of Array.from(selectEl.options)) {
     const idx = parseInt(opt.value, 10);
     const u = sortedUtxos[idx];
     if (!u) continue;
     const key = `${u.utxo.txid}:${u.utxo.vout | 0}`;
-    const tag = tags.get(key);
+    let tag = tags.get(key);
+    // Apply the asset-wide soft tag only when no UTXO-specific tag exists.
+    if (!tag && rangeSoft) tag = rangeSoft;
     opt.textContent = utxoPickerOptionLabel(u, target, tag);
-    opt.disabled = !!tag;
-    if (!tag && !firstAvailable) firstAvailable = opt;
+    // Disable only on HARD tags; soft tags stay clickable so the maker can
+    // proceed after reading the warning. The form's submit handler is the
+    // last gate — it confirms with the user when a soft tag is present.
+    opt.disabled = !!(tag && tag.severity !== 'soft');
+    if (!opt.disabled && !firstAvailable) firstAvailable = opt;
   }
   if (selectEl.options[selectEl.selectedIndex]?.disabled && firstAvailable) {
     selectEl.value = firstAvailable.value;
@@ -18087,17 +19109,29 @@ function setupTransferForm() {
   };
   $('#btn-transfer-broadcast').onclick = async () => {
     if (!pendingCXfer) return;
+    // Disable immediately, BEFORE any awaits. ensureSatsFunded can poll for
+    // ~45s while awaiting an external wallet's funding tx; if we only
+    // disable inside the inner try (after these awaits), a second click
+    // during that window re-enters with the same pendingCXfer and runs
+    // two parallel CXFER broadcasts against the same asset UTXO — the
+    // second tx would conflict on input and fail mid-broadcast after
+    // fees were already committed. Mirrors btn-etch-broadcast's pattern.
+    // Each early-return below restores the enabled state so the user can retry.
+    $('#btn-transfer-broadcast').disabled = true;
     // Snapshot so a re-Preview during the async broadcast can't mutate the in-flight job.
     const job = pendingCXfer;
     if (!await ensureBurnerBackedUp('Transfer confidential asset (sender change UTXO is owned by the burner)')) {
       toast('Transfer cancelled. Back up the in-page privkey first, then retry.', '');
+      $('#btn-transfer-broadcast').disabled = false;
       return;
     }
     // Just-in-time funding: covers tx fees only. CXFER pulls the asset UTXO
     // for value, but the commit/reveal still need plain sats for the fee.
     const need = await estimateSatsForOp('cxfer');
-    if (!(await ensureSatsFunded(need, 'Transferring'))) return;
-    $('#btn-transfer-broadcast').disabled = true;
+    if (!(await ensureSatsFunded(need, 'Transferring'))) {
+      $('#btn-transfer-broadcast').disabled = false;
+      return;
+    }
     $('#btn-transfer-broadcast').textContent = 'Sending…';
     const xferStrip = $('#transfer-progress');
     if (xferStrip) xferStrip.style.display = 'flex';
@@ -18163,13 +19197,19 @@ function setupTransferForm() {
       // wallet card's ↻ Refresh.
       refreshAssetSelect();
     } catch (e) {
-      $('#transfer-error').textContent = e.message;
-      if (xferStrip && xferStrip.style.display !== 'none') {
-        const activeStep = xferStrip.querySelector('.progress-step.active');
-        const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
-        if (errIdx >= 0) setProgressStrip('transfer-progress', -1, { errorAt: errIdx });
+      if (isUnlockCancelled(e)) {
+        $('#transfer-error').textContent = 'Unlock cancelled — nothing was broadcast.';
+        if (xferStrip) xferStrip.style.display = 'none';
+        setProgressStrip('transfer-progress', -1);
+      } else {
+        $('#transfer-error').textContent = e.message;
+        if (xferStrip && xferStrip.style.display !== 'none') {
+          const activeStep = xferStrip.querySelector('.progress-step.active');
+          const errIdx = activeStep ? Number(activeStep.dataset.step) : -1;
+          if (errIdx >= 0) setProgressStrip('transfer-progress', -1, { errorAt: errIdx });
+        }
+        console.error(e);
       }
-      console.error(e);
     } finally {
       $('#btn-transfer-broadcast').disabled = false;
       $('#btn-transfer-broadcast').textContent = '2. Confirm & send';
@@ -18196,6 +19236,16 @@ async function refreshSatsSendBalance() {
   const hint = $('#s-amount-hint');
   const maxBtn = $('#btn-s-max');
   if (!hint || !maxBtn) return;
+  // Lazy-unlock: same reasoning as refreshAssetSelect — sats-send needs the
+  // asset-UTXO classifier from scanHoldings to safely exclude asset UTXOs,
+  // and scanHoldings forces unlock. Defer until the user takes a sign action;
+  // the Confirm-and-send button re-runs the full safety pipeline post-unlock.
+  if (!wallet.priv && wallet.pub) {
+    hint.textContent = '· 🔒 unlock to load balances';
+    maxBtn.disabled = true;
+    _satsSendCache = null;
+    return;
+  }
   hint.textContent = 'loading…';
   maxBtn.disabled = true;
   try {
@@ -18382,13 +19432,21 @@ function setupSatsSendForm() {
 
   $('#btn-sats-broadcast').onclick = async () => {
     if (!pendingSatsSend) return;
+    // Disable BEFORE any awaits. ensureBurnerBackedUp can show a backup
+    // modal that the user takes seconds to acknowledge; a double-click in
+    // that window would run two parallel sats-sends with the same
+    // pendingSatsSend snapshot, racing on the same plain-sats UTXOs (second
+    // would error on input conflict after fees committed). Mirrors btn-
+    // etch-broadcast / btn-transfer-broadcast's pattern.
+    const btn = $('#btn-sats-broadcast');
+    btn.disabled = true;
     const job = pendingSatsSend;
     if (!await ensureBurnerBackedUp('Send sats from the local tacit wallet')) {
       toast('Send cancelled. Back up the in-page privkey first, then retry.', '');
+      btn.disabled = false;
       return;
     }
-    const btn = $('#btn-sats-broadcast');
-    btn.disabled = true; btn.textContent = 'broadcasting…';
+    btn.textContent = 'broadcasting…';
     try {
       // Re-run the full safety pipeline at broadcast time, not just sign and
       // ship the previewed tx. The buildAndBroadcastSatsSend helper does the
@@ -18415,8 +19473,12 @@ function setupSatsSendForm() {
       refreshWallet();
       refreshSatsSendBalance();
     } catch (e) {
-      $('#sats-error').textContent = e.message;
-      console.error(e);
+      if (isUnlockCancelled(e)) {
+        $('#sats-error').textContent = 'Unlock cancelled — nothing was broadcast.';
+      } else {
+        $('#sats-error').textContent = e.message;
+        console.error(e);
+      }
     } finally {
       btn.disabled = false; btn.textContent = '2. Confirm & send';
     }
@@ -21039,7 +22101,16 @@ function setupDropsForm() {
         if (!confirm(`This drop's announcement expired ${expiredAgo}.\n\nRecipients trusted the expiry as a deadline; late fulfilment is a trust violation if signed claims came in after that date. Broadcast anyway?`)) return;
       }
     }
-    if (!confirm(`Broadcast ${items.length}-recipient CXFER for ${drop.asset_ticker}?\n\nThis signs with your active wallet (${shorten(bytesToHex(wallet.pub || new Uint8Array()), 12)}). Total: ${fmtAssetAmountPlain(items.reduce((s, x) => s + x.amount, 0n), drop.asset_decimals)} ${drop.asset_ticker}.\n\nFulfilled leaves are recorded locally to prevent double-pay; this does NOT block someone else's wallet from CXFERing the same asset to a leaf if they hold the same key.`)) return;
+    // Bail early if no wallet identity is loaded — the previous version
+    // rendered `shorten(bytesToHex(new Uint8Array()), 12)` (twelve zeroes)
+    // which masked the missing pubkey behind plausible-looking output and
+    // let the user confirm against the wrong (zero) signer. Better to
+    // refuse than silently sign with a null-pub fallback.
+    if (!wallet.pub) {
+      toast('No wallet identity loaded — unlock from the Wallet tab and retry.', 'error');
+      return;
+    }
+    if (!confirm(`Broadcast ${items.length}-recipient CXFER for ${drop.asset_ticker}?\n\nThis signs with your active wallet (${shorten(bytesToHex(wallet.pub), 12)}). Total: ${fmtAssetAmountPlain(items.reduce((s, x) => s + x.amount, 0n), drop.asset_decimals)} ${drop.asset_ticker}.\n\nFulfilled leaves are recorded locally to prevent double-pay; this does NOT block someone else's wallet from CXFERing the same asset to a leaf if they hold the same key.`)) return;
     if (!await ensureBurnerBackedUp('Fulfil airdrop batch (signs with active wallet)')) return;
     const need = await estimateSatsForOp('cxfer');
     if (!(await ensureSatsFunded(need, 'Fulfilling airdrop batch'))) return;
@@ -21222,6 +22293,32 @@ function setupDropsForm() {
       renderSavedDropsList();
       toast(`Batch fulfilled · ${items.length} leaves`, 'success');
     } catch (e) {
+      // Unlock-cancel fast path: ensurePrivkey() is the first await inside
+      // buildAndBroadcastCXferMulti, so we KNOW no chain action happened.
+      // Safe to drop the phase-1 pending entries here so the user can retry
+      // without running Cross-check + manual reconciliation.
+      if (isUnlockCancelled(e)) {
+        try {
+          const dropsAfter = loadSavedDrops();
+          const idxAfter = dropsAfter.findIndex(d => d.drop_id === drop.drop_id);
+          if (idxAfter >= 0 && Array.isArray(dropsAfter[idxAfter].fulfilled)) {
+            const before = dropsAfter[idxAfter].fulfilled.length;
+            dropsAfter[idxAfter].fulfilled = dropsAfter[idxAfter].fulfilled.filter(
+              f => !(f && f.pending === true && f.txid == null && itemLeaves.has(f.leaf_index)),
+            );
+            if (dropsAfter[idxAfter].fulfilled.length !== before) {
+              saveDrops(dropsAfter);
+              _dropFulfilCurrent = dropsAfter[idxAfter];
+            }
+          }
+        } catch (cleanupErr) {
+          console.warn('phase-1 cleanup after unlock-cancel failed:', cleanupErr);
+        }
+        $('#drop-fulfil-err').textContent = 'Unlock cancelled — nothing was broadcast.';
+        if (dropStrip) dropStrip.style.display = 'none';
+        setProgressStrip('drop-fulfil-progress', -1);
+        return;
+      }
       // Broadcast errored. Per the safety review, we DON'T roll back pending
       // entries automatically — the error could have come from anywhere in
       // the pipeline (commit broadcast, reveal broadcast, recordOpening,
@@ -21573,8 +22670,12 @@ function setupDropsForm() {
       toast(`T_DROP broadcast · drop_id ${shorten(res.dropId, 10)}`, 'success');
       setTimeout(() => _refreshOndropList(), 1500);
     } catch (e) {
-      if (errEl) errEl.textContent = e.message;
-      console.error(e);
+      if (isUnlockCancelled(e)) {
+        if (errEl) errEl.textContent = 'Unlock cancelled — nothing was broadcast.';
+      } else {
+        if (errEl) errEl.textContent = e.message;
+        console.error(e);
+      }
     } finally {
       btn.disabled = false; btn.textContent = orig;
     }
@@ -21683,8 +22784,12 @@ function setupDropsForm() {
       toast(`Reclaim broadcast · reveal ${shorten(res.revealTxid, 10)}`, 'success');
       setTimeout(() => _refreshOndropList(), 1500);
     } catch (e) {
-      toast('reclaim failed: ' + e.message, 'error', 8000);
-      console.error(e);
+      if (isUnlockCancelled(e)) {
+        toast('Unlock cancelled — nothing was broadcast.', '');
+      } else {
+        toast('reclaim failed: ' + e.message, 'error', 8000);
+        console.error(e);
+      }
     }
   }
 
@@ -21712,8 +22817,12 @@ function setupDropsForm() {
       toast(`Claim broadcast · reveal ${shorten(res.revealTxid, 10)}`, 'success');
       setTimeout(() => _refreshOndropList(), 1500);
     } catch (e) {
-      toast('claim failed: ' + e.message, 'error');
-      console.error(e);
+      if (isUnlockCancelled(e)) {
+        toast('Unlock cancelled — nothing was broadcast.', '');
+      } else {
+        toast('claim failed: ' + e.message, 'error');
+        console.error(e);
+      }
     }
   }
 
@@ -23802,9 +24911,16 @@ async function _pollClaimSubmissionsStatus() {
     if (!byRoot.has(c.merkle_root)) byRoot.set(c.merkle_root, []);
     byRoot.get(c.merkle_root).push(c);
   }
-  // One holdings scan, lazily fetched + tick-scoped.
+  // One holdings scan, lazily fetched + tick-scoped. Skip the scan entirely
+  // when the wallet is still locked under lazy-unlock — otherwise this 60s
+  // background poller pops a passphrase / biometric prompt without any user
+  // action. The "credited on chain" enrichment is a nice-to-have; the rest of
+  // the status update (queue position, claim state) works fine without it.
+  // Once the user signs anywhere else, wallet.priv is set and the next poll
+  // tick picks up the scan automatically.
   let holdings = null;
   const holdingsFor = async (assetIdHex) => {
+    if (!wallet.priv) return undefined;
     if (!holdings) {
       try { holdings = await scanHoldings(); }
       catch { holdings = new Map(); }
@@ -25053,8 +26169,8 @@ function setupClaimTab() {
         toast(`Claim broadcast · reveal ${shorten(res.revealTxid, 10)}`, 'success');
         setTimeout(() => _refreshOnChainClaimList(), 1500);
       } catch (e) {
-        toast('claim failed: ' + e.message, 'error');
-        console.error(e);
+        if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+        else { toast('claim failed: ' + e.message, 'error'); console.error(e); }
       }
       return;
     }
@@ -25109,8 +26225,8 @@ function setupClaimTab() {
       toast(`Claim broadcast · reveal ${shorten(res.revealTxid, 10)}`, 'success');
       setTimeout(() => _refreshOnChainClaimList(), 1500);
     } catch (e) {
-      toast('claim failed: ' + e.message, 'error');
-      console.error(e);
+      if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+      else { toast('claim failed: ' + e.message, 'error'); console.error(e); }
     }
   }
 }
@@ -25129,6 +26245,36 @@ function parseAssetAmount(input, decimals) {
 // ============== HOLDINGS UI ==============
 async function renderHoldings() {
   const list = $('#holdings-list');
+  // Lazy-unlock affordance: confidential amounts are recovered via ECDH against
+  // wallet.priv (deriveAmountKeystreamECDH, deriveBlinding), so scanHoldings
+  // would force a passphrase / biometric prompt on every Holdings-tab click.
+  // Surface a Unlock button instead so the prompt only fires on explicit
+  // intent — matches the Drops tab pattern (focus-driven scan, not click-
+  // driven). After unlock the same function re-runs and falls through.
+  if (!wallet.priv && wallet.pub) {
+    setStatus('#holdings-status', '');
+    list.innerHTML = `
+      <div class="empty" style="padding:32px 24px;text-align:center;">
+        <div style="font-size:13px;font-weight:500;margin-bottom:6px;">🔒 Balances locked</div>
+        <div class="muted" style="font-size:11px;line-height:1.6;margin-bottom:14px;">Confidential amounts are decrypted with your wallet key. Unlock to load balances — your key stays in this tab's memory and is dropped on reload.</div>
+        <button class="primary" id="btn-holdings-unlock">Unlock to view balances</button>
+      </div>`;
+    const unlockBtn = document.getElementById('btn-holdings-unlock');
+    if (unlockBtn) {
+      unlockBtn.onclick = async () => {
+        unlockBtn.disabled = true; const orig = unlockBtn.textContent; unlockBtn.textContent = 'unlocking…';
+        try {
+          await ensurePrivkey();
+          renderHoldings();
+          refreshWallet();
+        } catch (e) {
+          if (!isUnlockCancelled(e)) toast('Unlock failed: ' + (e?.message || e), 'error');
+          unlockBtn.disabled = false; unlockBtn.textContent = orig;
+        }
+      };
+    }
+    return;
+  }
   setStatus('#holdings-status', 'scanning', true);
   list.innerHTML = '<div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>';
   try {
@@ -25141,7 +26287,7 @@ async function renderHoldings() {
       scanHoldings(),
       getTip().catch(() => null),
     ]);
-    const arr = [...holdings.values()].sort((a, b) => Number(b.balance - a.balance));
+    const arr = [...holdings.values()].sort((a, b) => a.balance < b.balance ? 1 : a.balance > b.balance ? -1 : 0);
     if (!arr.length) {
       // Funding hint is network-aware: faucet on signet, send-to-address
       // (or connect-and-fund) on mainnet. The protocol flow is otherwise
@@ -25183,9 +26329,28 @@ async function renderHoldings() {
       totalPublishedCount > myPublishedCount
         ? ` · <span class="muted">${totalPublishedCount} openings published asset-wide</span>`
         : '';
-    const renderClaim = (claim) => claim
-      ? `<div style="margin-top:2px;color:#a04030;font-size:10px;">⏱ reserved by taker ${escapeHtml(shorten(claim.taker_pubkey, 6))} until ${new Date(claim.expires_at * 1000).toLocaleTimeString()} — they intend to pay; deliver via Send Privately when payment arrives</div>`
-      : '';
+    // Maker-side OTC claim row. Shows the full taker pubkey (so the maker
+    // can copy it for any out-of-band verification) and a Deliver button
+    // that jumps to Send Privately with the recipient pubkey + amount +
+    // asset pre-filled — closes the biggest manual handoff in the OTC
+    // settlement loop ("now go transfer the asset to this pubkey, here are
+    // the parameters you need to remember"). The maker still verifies
+    // payment off-chain before clicking Deliver.
+    const renderClaim = (claim, h, deliveryAmountStr) => {
+      if (!claim) return '';
+      const fullPub = String(claim.taker_pubkey || '');
+      const expiresAt = Number(claim.expires_at || 0);
+      const countdownText = expiresAt ? _formatCountdown(expiresAt) : '?';
+      return `
+        <div style="margin-top:4px;padding:6px 8px;background:#fff8e8;border:1px solid var(--orange);font-size:10px;line-height:1.5;">
+          <div style="color:#a04030;">⏱ reserved · <span data-expires-at="${expiresAt}">${escapeHtml(countdownText)}</span> — verify payment off-chain, then click <strong>Deliver</strong>.</div>
+          <div style="display:flex;align-items:center;gap:6px;margin-top:4px;flex-wrap:wrap;">
+            <code style="flex:1;min-width:0;padding:2px 4px;background:var(--bg);border:1px solid var(--ink-faint);word-break:break-all;font-size:10px;">${escapeHtml(fullPub)}</code>
+            <button data-act="copy-taker-pub" data-pub="${escapeHtml(fullPub)}" type="button" style="font-size:10px;padding:2px 8px;">Copy</button>
+            <button data-act="deliver-to-taker" data-aid="${h.assetIdHex}" data-pub="${escapeHtml(fullPub)}" data-amount="${escapeHtml(deliveryAmountStr)}" type="button" style="font-size:10px;padding:2px 10px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;">Deliver →</button>
+          </div>
+        </div>`;
+    };
     const myListingsHTML = (h, allListings, allRangeListings) => {
       const myListings = allListings.filter(l => l.owner_pubkey === ownerPubHex && !l.expired);
       const myRangeListings = allRangeListings.filter(l => l.owner_pubkey === ownerPubHex && !l.expired);
@@ -25199,7 +26364,7 @@ async function renderHoldings() {
                 <span>${escapeHtml(fmtAssetAmount(BigInt(l.amount), h.decimals))} (UTXO opening) for <strong>${l.price_sats.toLocaleString()} sats</strong> · expires ${new Date(l.expiry * 1000).toISOString().slice(0,10)}</span>
                 <button data-act="cancel-listing" data-aid="${h.assetIdHex}" data-txid="${escapeHtml(l.txid)}" data-vout="${l.vout}" style="padding:2px 8px;font-size:10px;">Cancel</button>
               </div>
-              ${renderClaim(l.claim)}
+              ${renderClaim(l.claim, h, fmtAssetAmount(BigInt(l.amount), h.decimals))}
             </div>`).join('')}
           ${myRangeListings.map(l => `
             <div style="margin-top:4px;">
@@ -25207,7 +26372,7 @@ async function renderHoldings() {
                 <span>≥ ${escapeHtml(fmtAssetAmount(BigInt(l.threshold), h.decimals))} (range-disclosed) for <strong>${l.price_sats.toLocaleString()} sats</strong> · expires ${new Date(l.expiry * 1000).toISOString().slice(0,10)}</span>
                 <button data-act="cancel-range-listing" data-aid="${h.assetIdHex}" style="padding:2px 8px;font-size:10px;">Cancel</button>
               </div>
-              ${renderClaim(l.claim)}
+              ${renderClaim(l.claim, h, fmtAssetAmount(BigInt(l.threshold), h.decimals))}
             </div>`).join('')}
         </div>
       `;
@@ -25444,6 +26609,44 @@ async function renderHoldings() {
         } else if (b.dataset.act === 'copy-pub') {
           try { await navigator.clipboard.writeText(wallet.pubHex()); toast('Pubkey copied', 'success'); }
           catch { toast('Could not copy — select the text manually', 'error'); }
+        } else if (b.dataset.act === 'copy-taker-pub') {
+          // OTC delivery helper: copy the taker's pubkey verbatim from the
+          // claim row so the maker can paste it into Send Privately (or
+          // verify off-chain) without having to reconstruct it from a
+          // shortened display.
+          const pub = b.dataset.pub || '';
+          try { await navigator.clipboard.writeText(pub); toast('Taker pubkey copied', 'success'); }
+          catch { toast('Could not copy — select the text manually', 'error'); }
+        } else if (b.dataset.act === 'deliver-to-taker') {
+          // Pre-fill Send Privately with the OTC taker's pubkey + the
+          // listed amount + the right asset, then jump the user there. The
+          // maker still clicks Preview → Confirm to actually sign and
+          // broadcast — this just removes the manual data entry step that
+          // was the biggest friction point in the OTC settlement loop.
+          const aid = b.dataset.aid;
+          const pub = b.dataset.pub || '';
+          const amount = b.dataset.amount || '';
+          $('.tab[data-tab="transfer"]').click();
+          // refreshAssetSelect is async; wait so the select has the option
+          // before we set its value (otherwise the value sticks to the
+          // pre-existing first option).
+          try { await refreshAssetSelect(); } catch {}
+          const sel = $('#x-asset');
+          if (sel) { sel.value = aid; sel.dispatchEvent(new Event('change', { bubbles: true })); }
+          const recipEl = $('#x-recipient-pub');
+          if (recipEl) {
+            recipEl.value = pub;
+            recipEl.dispatchEvent(new Event('input', { bubbles: true }));
+            recipEl.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+          const amtEl = $('#x-amount');
+          if (amtEl) {
+            amtEl.value = amount;
+            amtEl.dispatchEvent(new Event('input', { bubbles: true }));
+          }
+          toast('Pre-filled Send Privately — review the parameters then click Preview to confirm.', 'success', 8000);
+          // Scroll the Transfer form into view for the maker.
+          try { recipEl?.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
         } else if (b.dataset.act === 'burn') {
           const aid = b.dataset.aid;
           const target = holdings.get(aid);
@@ -25811,7 +27014,7 @@ async function renderHoldings() {
           // forced selling a whole UTXO. The largest holdable UTXO bounds
           // what's sellable in a single listing — for amounts spanning
           // multiple UTXOs, ask users to consolidate first via Send.
-          const sortedUtxos = [...target.utxos].sort((a, b) => Number(b.amount - a.amount));
+          const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
           const totalBal = sortedUtxos.reduce((s, u) => s + u.amount, 0n);
           const largestUtxo = sortedUtxos[0]?.amount || 0n;
           formHost.innerHTML = `
@@ -25996,6 +27199,9 @@ async function renderHoldings() {
               // stale entry once it sees the spend on chain.
               toast('UTXO self-spent ✓ — marketplace cleanup pending (will auto-prune): ' + e.message, 'error');
               renderHoldings();
+            } else if (isUnlockCancelled(e)) {
+              toast('Unlock cancelled — nothing was broadcast.', '');
+              b.disabled = false; b.textContent = 'Cancel';
             } else {
               toast('Cancel failed: ' + e.message, 'error');
               b.disabled = false; b.textContent = 'Cancel';
@@ -26082,7 +27288,9 @@ async function renderHoldings() {
               toast(`Range listing published ✓ ${fmtAssetAmount(availBase, target.decimals)} ${target.ticker} for ${priceSats} sats`, 'success');
               renderHoldings();
             } catch (e) {
-              errEl.textContent = 'Range listing failed: ' + e.message;
+              errEl.textContent = isUnlockCancelled(e)
+                ? 'Unlock cancelled — nothing was published.'
+                : 'Range listing failed: ' + e.message;
               submitBtn.disabled = false; submitBtn.textContent = 'Prove & publish';
             }
           };
@@ -26095,7 +27303,8 @@ async function renderHoldings() {
             toast('Range listing cancelled ✓', 'success');
             renderHoldings();
           } catch (e) {
-            toast('Cancel failed: ' + e.message, 'error');
+            if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+            else toast('Cancel failed: ' + e.message, 'error');
             b.disabled = false; b.textContent = 'Cancel';
           }
         } else if (b.dataset.act === 'list-atomic') {
@@ -26118,7 +27327,7 @@ async function renderHoldings() {
           // "send a small portion atomically to a specific recipient". The
           // dropdown still shows every UTXO; users wanting to send a larger
           // one scroll down or pre-split via Send Privately.
-          const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
+          const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
           const utxoOpts = sortedUtxos.map((u, idx) =>
             `<option value="${idx}">${escapeHtml(utxoPickerOptionLabel(u, target))}</option>`,
           ).join('');
@@ -26255,10 +27464,17 @@ async function renderHoldings() {
             // enrichment promise — guarantees the check fires even if the
             // user clicked Publish before the initial enrichment landed.
             const listedTags = await listedTagsP;
-            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`);
-            if (listedTag) {
+            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`)
+              || listedTags?.get('__range_active__');  // asset-wide soft tag
+            if (listedTag && listedTag.severity !== 'soft') {
               errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
               return;
+            }
+            if (listedTag && listedTag.severity === 'soft') {
+              // Soft tag (today: only the asset-wide range-listing warning).
+              // Require explicit confirm rather than block — the maker may
+              // well know what they're doing.
+              if (!confirm(`⚠ ${listedTag.label}\n\nProceed anyway?`)) return;
             }
             const recipientPub = formHost.querySelector('[data-field="recipient"]').value.trim().toLowerCase().replace(/\s/g, '');
             if (!/^0[23][0-9a-f]{64}$/.test(recipientPub)) { errEl.textContent = 'recipient must be 33-byte compressed hex'; return; }
@@ -26341,7 +27557,7 @@ async function renderHoldings() {
           // market with a small portion" case. Every UTXO appears in the
           // dropdown; users wanting to list a larger one scroll, or split
           // bigger UTXOs via Send Privately first.
-          const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
+          const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
           const utxoOpts = sortedUtxos.map((u, idx) =>
             `<option value="${idx}">${escapeHtml(utxoPickerOptionLabel(u, target))}</option>`,
           ).join('');
@@ -26411,10 +27627,17 @@ async function renderHoldings() {
             const u = sortedUtxos[utxoIdx];
             if (!u) { errEl.textContent = 'pick a UTXO'; return; }
             const listedTags = await listedTagsP;
-            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`);
-            if (listedTag) {
+            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`)
+              || listedTags?.get('__range_active__');  // asset-wide soft tag
+            if (listedTag && listedTag.severity !== 'soft') {
               errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
               return;
+            }
+            if (listedTag && listedTag.severity === 'soft') {
+              // Soft tag (today: only the asset-wide range-listing warning).
+              // Require explicit confirm rather than block — the maker may
+              // well know what they're doing.
+              if (!confirm(`⚠ ${listedTag.label}\n\nProceed anyway?`)) return;
             }
             const priceSats = parseInt(formHost.querySelector('[data-field="price"]').value.trim(), 10);
             if (!Number.isInteger(priceSats) || priceSats < DUST) { errEl.textContent = `price must be integer ≥ ${DUST}`; return; }
@@ -26470,11 +27693,17 @@ async function renderHoldings() {
                 formHost.innerHTML = '';
               };
             } catch (e) {
-              errEl.textContent = 'Intent failed: ' + e.message;
-              if (pubStrip) {
-                const a = pubStrip.querySelector('.progress-step.active');
-                const idx = a ? Number(a.dataset.step) : -1;
-                if (idx >= 0) setProgressStrip(pubStrip, -1, { errorAt: idx });
+              if (isUnlockCancelled(e)) {
+                errEl.textContent = 'Unlock cancelled — nothing was broadcast.';
+                if (pubStrip) pubStrip.style.display = 'none';
+                setProgressStrip(pubStrip, -1);
+              } else {
+                errEl.textContent = 'Intent failed: ' + e.message;
+                if (pubStrip) {
+                  const a = pubStrip.querySelector('.progress-step.active');
+                  const idx = a ? Number(a.dataset.step) : -1;
+                  if (idx >= 0) setProgressStrip(pubStrip, -1, { errorAt: idx });
+                }
               }
               submitBtn.disabled = false; submitBtn.textContent = 'Publish intent';
             }
@@ -26494,7 +27723,7 @@ async function renderHoldings() {
             formHost.innerHTML = '';
             return;
           }
-          const sortedUtxos = [...target.utxos].sort((a, b) => Number(a.amount - b.amount));
+          const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
           const utxoOpts = sortedUtxos.map((u, idx) =>
             `<option value="${idx}">${escapeHtml(utxoPickerOptionLabel(u, target))}</option>`,
           ).join('');
@@ -26559,10 +27788,17 @@ async function renderHoldings() {
             const u = sortedUtxos[utxoIdx];
             if (!u) { errEl.textContent = 'pick a UTXO'; return; }
             const listedTags = await listedTagsP;
-            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`);
-            if (listedTag) {
+            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`)
+              || listedTags?.get('__range_active__');  // asset-wide soft tag
+            if (listedTag && listedTag.severity !== 'soft') {
               errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
               return;
+            }
+            if (listedTag && listedTag.severity === 'soft') {
+              // Soft tag (today: only the asset-wide range-listing warning).
+              // Require explicit confirm rather than block — the maker may
+              // well know what they're doing.
+              if (!confirm(`⚠ ${listedTag.label}\n\nProceed anyway?`)) return;
             }
             const minPriceSats = parseInt(formHost.querySelector('[data-field="price"]').value.trim(), 10);
             if (!Number.isInteger(minPriceSats) || minPriceSats < DUST) { errEl.textContent = `min price must be integer ≥ ${DUST}`; return; }
@@ -26611,7 +27847,9 @@ async function renderHoldings() {
               };
               renderActivity();
             } catch (e) {
-              errEl.textContent = 'Instant listing failed: ' + e.message;
+              errEl.textContent = isUnlockCancelled(e)
+                ? 'Unlock cancelled — nothing was published.'
+                : 'Instant listing failed: ' + e.message;
               submitBtn.disabled = false; submitBtn.textContent = 'List for sale';
             }
           };
@@ -26704,8 +27942,21 @@ async function renderHoldings() {
     if (_hasPending) startHoldingsAutoRefresh();
     else stopHoldingsAutoRefresh();
   } catch (e) {
-    list.innerHTML = `<div class="error">Scan failed: ${escapeHtml(e.message)}</div>`;
-    setStatus('#holdings-status', '');
+    // Timeout errors carry a verbose message with a retry hint; render them
+    // with a Retry button instead of a generic error pill so the user has a
+    // clear next action without re-clicking Holdings (which would re-enter
+    // the in-flight promise).
+    const isTimeout = /exceeded \d+s/.test(e?.message || '');
+    if (isTimeout) {
+      list.innerHTML = `<div class="error" style="padding:14px;line-height:1.6;">⏱ ${escapeHtml(e.message)} <button id="btn-holdings-retry" class="primary" style="margin-top:10px;display:block;">↻ Retry scan</button></div>`;
+      document.getElementById('btn-holdings-retry')?.addEventListener('click', () => {
+        invalidateHoldingsCache();
+        renderHoldings();
+      });
+    } else {
+      list.innerHTML = `<div class="error">Scan failed: ${escapeHtml(e.message)}</div>`;
+    }
+    setStatus('#holdings-status', isTimeout ? 'scan timed out' : '');
     console.error(e);
   }
 }
@@ -26833,6 +28084,14 @@ const ACTIVITY_VERBS = {
   // generic verbs that hide the difference.
   'petch':        'Deployed',
   'pmint':        'Minted',
+  // OTC reservation — buyer claimed an opening/range listing and owes the
+  // maker BTC. No on-chain leg yet; rendered specially below so the maker
+  // address + price + claim expiry are visible in the row.
+  'otc-reserved': 'OTC reserved',
+  // Direct script-path spend of a stranded preauth-take commit. Distinct
+  // from the normal Received row so the user (and tester) can verify the
+  // recovery flow worked.
+  'preauth-recover': 'Recovered',
 };
 function relTime(ts) {
   const d = Math.max(0, Date.now() - Number(ts));
@@ -26848,15 +28107,26 @@ function renderActivity() {
   const clearBtn = $('#btn-activity-clear');
   if (!list) return;
   const entries = loadActivity();
-  if (!entries.length) {
+  // Pending preauth-take recovery records render BEFORE the activity log
+  // (and BEFORE the empty-state copy) so the user can act on stranded
+  // commit sats even when their activity log is otherwise empty (e.g. they
+  // imported a wallet that had a failed preauth-take in a prior session).
+  const recoveryBannerHtml = _renderPreauthRecoveryBannerHtml();
+  if (!entries.length && !recoveryBannerHtml) {
     list.innerHTML = `<div class="empty" style="font-size:12px;">No activity yet on ${escapeHtml(NET.name)}. Etches, transfers, mints, burns, and received share-links you process on this device will appear here.</div>`;
     if (status) status.textContent = '';
     if (clearBtn) clearBtn.style.display = 'none';
     return;
   }
-  if (status) status.textContent = `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}`;
+  if (status) {
+    status.textContent = entries.length
+      ? `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}`
+      : (recoveryBannerHtml ? 'recovery pending' : '');
+  }
   if (clearBtn) {
-    clearBtn.style.display = '';
+    // No activity rows means nothing to clear, even when a recovery banner
+    // is showing — banner items have their own Forget button.
+    clearBtn.style.display = entries.length ? '' : 'none';
     clearBtn.onclick = () => {
       if (!confirm(`Clear ${entries.length} local activity ${entries.length === 1 ? 'entry' : 'entries'} for ${NET.name}?`)) return;
       try { localStorage.removeItem(activityKey()); } catch {}
@@ -26871,15 +28141,188 @@ function renderActivity() {
     const txLink = e.txid
       ? `<a href="${NET.explorer}/tx/${escapeHtml(e.txid)}" target="_blank" rel="noopener noreferrer" class="muted" style="font-size:10px;">tx ${escapeHtml(shorten(e.txid, 6))} ↗</a>`
       : '';
+    // OTC reservation rows need to surface the obligation context (maker
+    // address, price, expiry) inline so a user who closes Market can find
+    // it in Activity and follow through. The extra object is stamped by
+    // marketTakeHandler at claim time.
+    let extraLine = '';
+    if (e.kind === 'otc-reserved' && e.extra) {
+      const price = Number(e.extra.price_sats || 0);
+      const expiresAt = Number(e.extra.claim_expires_at || 0);
+      const countdownText = expiresAt ? _formatCountdown(expiresAt) : '';
+      const addr = String(e.extra.maker_address || '');
+      const addrHtml = addr
+        ? `<span class="mono-box inline" style="font-size:10px;">${escapeHtml(addr)}</span>`
+        : '<span class="muted">(maker address missing)</span>';
+      // Payment-proof note (local). Buyer can paste their BTC payment txid
+      // here for their own records — also useful in disputes. Stored in
+      // extra.payment_txid; never sent to the worker. The maker won't see
+      // it unless the buyer shares it off-chain.
+      const paidTxid = String(e.extra.payment_txid || '').toLowerCase();
+      const paidValid = /^[a-f0-9]{64}$/.test(paidTxid);
+      const paidLine = paidValid
+        ? `<div class="muted" style="font-size:10px;margin-top:2px;">paid · <a href="${NET.explorer}/tx/${escapeHtml(paidTxid)}" target="_blank" rel="noopener noreferrer">tx ${escapeHtml(shorten(paidTxid, 10))} ↗</a> <button data-act="otc-clear-paid" data-otc-ts="${Number(e.ts)}" type="button" style="font-size:9px;padding:1px 5px;margin-left:6px;">clear</button></div>`
+        : `<div style="font-size:10px;margin-top:4px;display:flex;gap:4px;align-items:center;">
+            <input data-act="otc-paid-input" data-otc-ts="${Number(e.ts)}" type="text" placeholder="paste BTC payment txid (64 hex)…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;font-family:var(--mono);font-size:10px;padding:2px 4px;">
+            <button data-act="otc-save-paid" data-otc-ts="${Number(e.ts)}" type="button" style="font-size:10px;padding:2px 8px;">Mark paid</button>
+          </div>`;
+      extraLine = `
+        <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">
+          Pay ${price.toLocaleString()} sats to ${addrHtml}${expiresAt ? ` · <span data-expires-at="${expiresAt}">${escapeHtml(countdownText)}</span>` : ''}
+        </div>
+        ${paidLine}`;
+    }
     return `
       <div class="activity-row">
         <span class="activity-kind activity-${escapeHtml(e.kind)}">${escapeHtml(verb)}</span>
         <span class="activity-amount">${escapeHtml(amtStr)}${tickerStr ? ' ' + tickerStr : ''}</span>
         <span class="activity-time muted">${escapeHtml(relTime(e.ts))}</span>
         <span class="activity-tx">${txLink}</span>
+        ${extraLine}
       </div>`;
   }).join('');
-  list.innerHTML = rows;
+  list.innerHTML = recoveryBannerHtml + rows;
+  _wirePreauthRecoveryButtons(list);
+  _wireOtcPaidButtons(list);
+}
+
+// Wires the "Mark paid" / clear / input buttons on otc-reserved activity
+// rows. Edits the activity entry's `extra.payment_txid` in place via the
+// timestamp key (recordActivity stamps `ts`; we use it as a stable
+// per-entry handle since the array index can shift after new entries).
+function _wireOtcPaidButtons(scope) {
+  const mutateOtcEntry = (ts, mutate) => {
+    let arr;
+    try { arr = JSON.parse(localStorage.getItem(activityKey()) || '[]'); }
+    catch { arr = []; }
+    if (!Array.isArray(arr)) return false;
+    const idx = arr.findIndex(e => Number(e.ts) === Number(ts) && e.kind === 'otc-reserved');
+    if (idx < 0) return false;
+    mutate(arr[idx]);
+    try { localStorage.setItem(activityKey(), JSON.stringify(arr)); } catch {}
+    return true;
+  };
+  scope.querySelectorAll('button[data-act="otc-save-paid"]').forEach(btn => {
+    btn.onclick = () => {
+      const ts = Number(btn.dataset.otcTs);
+      const input = scope.querySelector(`input[data-act="otc-paid-input"][data-otc-ts="${ts}"]`);
+      if (!input) return;
+      const raw = String(input.value || '').trim().toLowerCase();
+      if (!/^[a-f0-9]{64}$/.test(raw)) {
+        toast('Payment txid must be 64 hex chars.', 'error');
+        return;
+      }
+      const ok = mutateOtcEntry(ts, entry => {
+        entry.extra = entry.extra || {};
+        entry.extra.payment_txid = raw;
+        entry.extra.payment_saved_at = Math.floor(Date.now() / 1000);
+      });
+      if (ok) {
+        toast('Payment txid saved locally. The maker won\'t see it unless you share it off-chain.', 'success', 8000);
+        renderActivity();
+      } else {
+        toast('Couldn\'t locate the activity entry — try refreshing.', 'error');
+      }
+    };
+  });
+  scope.querySelectorAll('button[data-act="otc-clear-paid"]').forEach(btn => {
+    btn.onclick = () => {
+      const ts = Number(btn.dataset.otcTs);
+      if (!confirm('Clear the saved payment txid for this reservation?')) return;
+      const ok = mutateOtcEntry(ts, entry => {
+        if (entry.extra) {
+          delete entry.extra.payment_txid;
+          delete entry.extra.payment_saved_at;
+        }
+      });
+      if (ok) renderActivity();
+    };
+  });
+  // Submit on Enter inside the input.
+  scope.querySelectorAll('input[data-act="otc-paid-input"]').forEach(input => {
+    input.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const ts = input.dataset.otcTs;
+      const btn = scope.querySelector(`button[data-act="otc-save-paid"][data-otc-ts="${ts}"]`);
+      if (btn) btn.click();
+    });
+  });
+}
+
+// Renders a banner block listing every pending preauth-take recovery
+// record. Empty string if none. Called inline from renderActivity so the
+// banner refreshes on every Activity-tab visit / after every Recover click.
+function _renderPreauthRecoveryBannerHtml() {
+  const pendings = listPreauthTakePendings();
+  if (!pendings.length) return '';
+  // Newest first — most likely the one the user is trying to resolve.
+  pendings.sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  const rows = pendings.map(p => {
+    const ageSecs = Math.max(0, Math.floor(Date.now() / 1000) - (p.savedAt || 0));
+    const ageStr = ageSecs < 60
+      ? `${ageSecs}s ago`
+      : ageSecs < 3600 ? `${Math.floor(ageSecs / 60)}m ago`
+      : ageSecs < 86400 ? `${Math.floor(ageSecs / 3600)}h ago`
+      : `${Math.floor(ageSecs / 86400)}d ago`;
+    const sats = Number(p.commit_value || 0);
+    const ticker = escapeHtml(p.ticker || '?');
+    const amtBig = p.amount ? BigInt(p.amount) : 0n;
+    const amtStr = amtBig > 0n ? fmtAssetAmount(amtBig, p.decimals || 0) : '';
+    const explorer = `${NET.explorer}/tx/${escapeHtml(p.commitTxidHex)}`;
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--ink-faint);font-size:11px;">
+        <div style="flex:1;min-width:0;">
+          <div><strong>${sats.toLocaleString()} sats</strong> locked${amtStr ? ` · attempted ${escapeHtml(amtStr)} ${ticker}` : ''} · ${escapeHtml(ageStr)}</div>
+          <div class="muted" style="font-size:10px;margin-top:2px;">commit <a href="${explorer}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(p.commitTxidHex, 8))} ↗</a></div>
+        </div>
+        <button data-act="preauth-recover" data-commit-txid="${escapeHtml(p.commitTxidHex)}" type="button" style="font-size:11px;padding:5px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;">Recover</button>
+        <button data-act="preauth-recover-forget" data-commit-txid="${escapeHtml(p.commitTxidHex)}" type="button" title="Drop the local record without recovering. The commit sats remain locked on chain." style="font-size:10px;padding:5px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Forget</button>
+      </div>`;
+  }).join('');
+  return `
+    <div style="border:1px solid var(--orange);background:var(--bg-warm, #fff8e8);padding:10px 12px;margin-bottom:14px;">
+      <div style="font-size:12px;font-weight:bold;margin-bottom:4px;">⚠ ${pendings.length} stranded preauth-take commit${pendings.length === 1 ? '' : 's'}</div>
+      <div class="muted" style="font-size:11px;line-height:1.5;">An instant-listing purchase broadcast its commit tx but the settlement leg never landed. Click Recover to script-path-spend the commit-locked sats back to your wallet (one Bitcoin tx, costs a small fee).</div>
+      ${rows}
+    </div>`;
+}
+
+function _wirePreauthRecoveryButtons(scope) {
+  scope.querySelectorAll('button[data-act="preauth-recover"]').forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      const commitTxidHex = btn.dataset.commitTxid;
+      if (!confirm(
+        `Recover commit-locked sats?\n\n` +
+        `This builds and broadcasts a single Bitcoin tx that spends the stranded P2TR commit back to your tacit address (minus a small fee). The original sale is NOT settled; if you still want the asset, take the listing again separately.`,
+      )) return;
+      btn.disabled = true;
+      const origText = btn.textContent;
+      btn.textContent = 'recovering…';
+      try {
+        const r = await recoverPreauthCommit(commitTxidHex);
+        toast(`Recovered ${r.recovered_sats.toLocaleString()} sats ✓ (fee ${r.fee_sats} sats)`, 'success', 8000);
+        renderActivity();
+        refreshWallet();
+      } catch (e) {
+        if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+        else toast('Recovery failed: ' + (e?.message || String(e)), 'error', 10000);
+        btn.disabled = false; btn.textContent = origText;
+      }
+    };
+  });
+  scope.querySelectorAll('button[data-act="preauth-recover-forget"]').forEach(btn => {
+    btn.onclick = () => {
+      const commitTxidHex = btn.dataset.commitTxid;
+      if (!confirm(
+        `Drop this recovery record?\n\n` +
+        `The commit_value sats stay locked on chain — Forget only removes the local pointer. If you change your mind, the record cannot be regenerated; you'd need the commit_txid + envelope + control_block from another source to recover later.`,
+      )) return;
+      forgetPreauthTakePending(commitTxidHex);
+      renderActivity();
+    };
+  });
 }
 
 // Fire-and-forget targeted-scan hint. After a successful etch/mint broadcast,
@@ -28636,7 +30079,9 @@ function openDiscoverBidForm(card, assetIdHex, ticker, decimals) {
       openDiscoverBidPanel(card, assetIdHex, ticker, decimals);
     } catch (e) {
       submitBtn.disabled = false;
-      status.textContent = 'failed: ' + (e?.message || String(e));
+      status.textContent = isUnlockCancelled(e)
+        ? 'unlock cancelled — bid not posted'
+        : 'failed: ' + (e?.message || String(e));
     }
   };
 }
@@ -28722,7 +30167,8 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
       } catch (e) {
         btn.disabled = false;
         btn.textContent = 'Cancel';
-        toast('Cancel failed: ' + (e?.message || String(e)), 'error');
+        if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+        else toast('Cancel failed: ' + (e?.message || String(e)), 'error');
       }
     };
   });
@@ -28739,7 +30185,8 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
       } catch (e) {
         btn.disabled = false;
         btn.textContent = 'Fulfil';
-        toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
+        if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+        else toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
       }
     };
   });
@@ -29182,14 +30629,14 @@ function applyMarketFilters() {
         }
       } else if (claim && claim.taker_pubkey === myPubHex) {
         if (fulfilled) {
-          primaryAction = `<button data-act="market-take-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" title="Taker step 3 of 3: broadcast the single Bitcoin tx that combines the maker's partial reveal with your BTC payment. Atomic — both legs settle or both fail." style="flex:1;font-size:11px;">Take</button>`;
+          primaryAction = `<button data-act="market-take-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-expiry="${Number(l.expiry || 0)}" title="Taker step 3 of 3: broadcast the single Bitcoin tx that combines the maker's partial reveal with your BTC payment. Atomic — both legs settle or both fail." style="flex:1;font-size:11px;">Take</button>`;
         } else {
           statusLine = `<span title="Your claim is locked in. Waiting for the maker to fulfil — Take unlocks the moment they do.">⏳ awaiting maker fulfilment</span>`;
         }
       } else if (claim) {
         statusLine = `<span title="Another taker has the 5-minute lock on this intent. If they don't broadcast in time the lock expires and this tile becomes claimable again.">🔒 claimed by <span class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(claim.taker_pubkey, 6))}</span></span>`;
       } else {
-        primaryAction = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Taker step 1 of 3: reserve this atomic intent for 5 minutes. You commit a sat UTXO ≥ price as proof of funds; the maker then fulfils, then you Take to settle." style="flex:1;font-size:11px;">Claim</button>`;
+        primaryAction = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Taker step 1 of 3: reserve this atomic intent for 5 minutes. You commit a sat UTXO ≥ price as proof of funds; the maker then fulfils, then you Take to settle." style="flex:1;font-size:11px;">Claim</button>`;
       }
     } else if (l.kind === 'preauth') {
       // Buyer-completable T_AXFER (SPEC §5.7.8). Seller can be offline; any
@@ -29197,10 +30644,10 @@ function applyMarketFilters() {
       const isSeller = (l.seller_pubkey || '') === myPubHex;
       const sid = l.sale_id || '';
       if (isSeller) {
-        secondaryAction = `<button data-act="market-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" title="Pull this instant listing from the worker. Buyers won't be able to take it after cancellation lands. Note: the seller's pre-signed asset spend can't be invalidated off-chain; for a true cancel, also spend the listed UTXO yourself." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button>`;
+        secondaryAction = `<button data-act="market-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Pull this instant listing from the worker. Buyers won't be able to take it after cancellation lands. Note: the seller's pre-signed asset spend can't be invalidated off-chain; for a true cancel, also spend the listed UTXO yourself." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button>`;
         statusLine = `<span title="Your instant listing is live. Any buyer can complete the purchase atomically; no fulfilment step required from you.">⏳ your instant listing · awaiting buyer</span>`;
       } else {
-        primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Buy instantly: builds a commit + atomic settlement tx that pays the seller's signed payout script and delivers the asset to your wallet in one Bitcoin tx. No claim window, no fulfilment step." style="flex:1;font-size:11px;">Buy</button>`;
+        primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy instantly: builds a commit + atomic settlement tx that pays the seller's signed payout script and delivers the asset to your wallet in one Bitcoin tx. No claim window, no fulfilment step." style="flex:1;font-size:11px;">Buy</button>`;
       }
     } else {
       // Opening / range OTC listings. Intent (28846) and preauth (28874)
@@ -29219,7 +30666,7 @@ function applyMarketFilters() {
         // Take is the primary action; Verify is a secondary power-user check
         // (run the crypto chain without buying). Demoted to a muted, narrower
         // chip-style button so the tile's focal CTA stays Take.
-        primaryAction = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${Number(l.price_sats || 0)}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Off-chain OTC buy: pay the maker's BTC address the listed sats, then they broadcast a CXFER to your pubkey. Counterparty trust required — the maker can take the sats without delivering. Prefer ⚡ atomic intents when available." style="flex:1;font-size:11px;">Take</button>`;
+        primaryAction = `<button data-act="market-take" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" data-price="${Number(l.price_sats || 0)}" data-addr="${escapeHtml(l.maker_address || '')}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Off-chain OTC buy: pay the maker's BTC address the listed sats, then they broadcast a CXFER to your pubkey. Counterparty trust required — the maker can take the sats without delivering. Prefer ⚡ atomic intents when available." style="flex:1;font-size:11px;">Take</button>`;
         secondaryAction = `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing without buying it: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Safe to call as many times as you want." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" aria-label="Verify listing">verify</button>`;
       }
     }
@@ -29617,7 +31064,8 @@ async function populateMarketBidsLadder(scope, asset) {
         populateMarketBidsLadder(scope, asset);
       } catch (e) {
         btn.disabled = false; btn.textContent = 'Fulfil';
-        toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
+        if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+        else toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
       }
     };
   });
@@ -29626,12 +31074,13 @@ async function populateMarketBidsLadder(scope, asset) {
       if (!confirm('Cancel this bid?')) return;
       btn.disabled = true; btn.textContent = 'cancelling…';
       try {
-        await cancelBidIntent({ assetIdHex: aid, bidIdHex: btn.dataset.bidId });
+        await cancelBidIntent(aid, btn.dataset.bidId);
         toast('Bid cancelled', 'success');
         populateMarketBidsLadder(scope, asset);
       } catch (e) {
         btn.disabled = false; btn.textContent = 'Cancel';
-        toast('Cancel failed: ' + (e?.message || String(e)), 'error');
+        if (isUnlockCancelled(e)) toast('Cancelled — nothing was broadcast.', '');
+        else toast('Cancel failed: ' + (e?.message || String(e)), 'error');
       }
     };
   });
@@ -29782,7 +31231,9 @@ function _wireMarketBidPlace(section, asset) {
         populateMarketBidsLadder(section.parentElement, asset);
       } catch (e) {
         submitBtn.disabled = false;
-        status.textContent = 'failed: ' + (e?.message || String(e));
+        status.textContent = isUnlockCancelled(e)
+          ? 'unlock cancelled — bid not posted'
+          : 'failed: ' + (e?.message || String(e));
       }
     };
   };
@@ -29847,26 +31298,48 @@ function updateMarketControlsVisibility() {
 // (maker/taker × claim/fulfil/take/cancel) sit on the Market tab; the
 // state-aware buttons in the tile rendering pick the right one.
 async function marketClaimIntentHandler(btn) {
+  if (btn.disabled) return;
   const aid = btn.dataset.aid;
   const iid = btn.dataset.iid;
   const price = parseInt(btn.dataset.price, 10);
   const ticker = btn.dataset.ticker;
   const amt = btn.dataset.amount;
   const dec = parseInt(btn.dataset.dec, 10);
+  const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
+  // Pre-check expiry BEFORE confirm so the user doesn't waste a wallet-
+  // unlock prompt only for the worker to reject as expired. The button's
+  // dataset.expiry is stamped from the listing render and is conservative
+  // (a few seconds of clock drift can still slip through; the worker's
+  // server-side check is the authoritative gate).
+  if (expiry > 0 && expiry <= Math.floor(Date.now() / 1000)) {
+    toast('This atomic intent has expired — refresh the Market tab.', 'error');
+    return;
+  }
+  // Disable BEFORE confirm so a fast double-click can't queue two confirms
+  // and fire two signed claim POSTs at the worker. confirm() blocks the
+  // event loop synchronously, but the second click is dispatched once the
+  // first confirm returns and `await claimAxferIntent` releases the loop —
+  // by that point the original btn.disabled assignment had already run too
+  // late to matter.
+  btn.disabled = true;
+  const origText = btn.textContent;
+  const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
   if (!confirm(
     `Claim atomic intent?\n\n` +
     `Buying:  ${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
     `Price:   ${price.toLocaleString()} sats\n\n` +
     `On confirm: you'll commit one of your own confirmed sat UTXOs (≥ price) as proof of funds, and the intent locks for 5 min so no one else can claim it. The maker then generates a partial reveal targeted at your pubkey. Once they fulfil, you click Take to finalize and broadcast — atomic, single Bitcoin tx, no trust.`,
-  )) return;
-  btn.disabled = true; btn.textContent = 'claiming…';
+  )) { restore(); return; }
+  btn.textContent = 'claiming…';
   try {
     await claimAxferIntent({ assetIdHex: aid, intentIdHex: iid, priceSats: price });
     toast('Claim placed ✓ — wait for the maker to fulfil (refresh Market tab)', 'success', 6000);
+    invalidateMarketCache();
     setTimeout(() => renderMarket(), 1000);
   } catch (e) {
-    toast('Claim failed: ' + e.message, 'error');
-    btn.disabled = false; btn.textContent = 'Claim';
+    if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+    else toast('Claim failed: ' + e.message, 'error');
+    restore();
   }
 }
 
@@ -29891,14 +31364,21 @@ async function marketFulfilIntentHandler(btn) {
     toast('Fulfilment posted ✓ — taker can now broadcast', 'success', 6000);
     setTimeout(() => renderMarket(), 1000);
   } catch (e) {
-    toast('Fulfilment failed: ' + e.message, 'error');
+    if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+    else toast('Fulfilment failed: ' + e.message, 'error');
     btn.disabled = false; btn.textContent = 'Fulfil claim';
   }
 }
 
 async function marketTakeIntentHandler(btn) {
+  if (btn.disabled) return;
   const aid = btn.dataset.aid;
   const iid = btn.dataset.iid;
+  const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
+  if (expiry > 0 && expiry <= Math.floor(Date.now() / 1000)) {
+    toast('This atomic intent has expired — refresh the Market tab.', 'error');
+    return;
+  }
   btn.disabled = true; btn.textContent = 'fetching…';
   try {
     const fres = await fetchAxferFulfilment({ assetIdHex: aid, intentIdHex: iid });
@@ -29909,8 +31389,8 @@ async function marketTakeIntentHandler(btn) {
       `Take this atomic intent?\n\n` +
       `Buying:  ${fmtAssetAmount(BigInt(intent.amount), intent.decimals || 0)} ${intent.ticker}\n` +
       `Price:   ${(intent.price_sats | 0).toLocaleString()} sats\n` +
-      `Pay to:  ${intent.maker_address}\n\n` +
-      `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts. Atomic, single Bitcoin tx, no trust.`,
+      `Maker receives at:  ${intent.maker_address}\n\n` +
+      `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts. Atomic, single Bitcoin tx — you don't send a separate payment, your funding inputs are spent into the maker's payout output in one settlement tx.`,
     )) { btn.disabled = false; btn.textContent = 'Take'; return; }
     btn.textContent = 'broadcasting…';
     const takeStrip = $('#market-take-progress');
@@ -29932,12 +31412,20 @@ async function marketTakeIntentHandler(btn) {
     renderHoldings();
   } catch (e) {
     const takeStrip = $('#market-take-progress');
-    if (takeStrip && takeStrip.style.display !== 'none') {
-      const a = takeStrip.querySelector('.progress-step.active');
-      const idx = a ? Number(a.dataset.step) : -1;
-      if (idx >= 0) setProgressStrip('market-take-progress', -1, { errorAt: idx });
+    if (isUnlockCancelled(e)) {
+      // Pre-broadcast cancel — hide the strip cleanly rather than marking
+      // the active step as errored.
+      if (takeStrip) takeStrip.style.display = 'none';
+      setProgressStrip('market-take-progress', -1);
+      toast('Unlock cancelled — nothing was broadcast.', '');
+    } else {
+      if (takeStrip && takeStrip.style.display !== 'none') {
+        const a = takeStrip.querySelector('.progress-step.active');
+        const idx = a ? Number(a.dataset.step) : -1;
+        if (idx >= 0) setProgressStrip('market-take-progress', -1, { errorAt: idx });
+      }
+      toast('Take failed: ' + e.message, 'error');
     }
-    toast('Take failed: ' + e.message, 'error');
     btn.disabled = false; btn.textContent = 'Take';
   }
 }
@@ -29968,7 +31456,8 @@ async function marketCancelIntentHandler(btn) {
       toast('Marketplace record removed ✓', 'success');
       setTimeout(() => renderMarket(), 500);
     } catch (e) {
-      toast('Cleanup failed: ' + e.message, 'error');
+      if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+      else toast('Cleanup failed: ' + e.message, 'error');
       btn.disabled = false; btn.textContent = 'Cancel';
     }
     return;
@@ -30016,7 +31505,8 @@ async function marketCancelIntentHandler(btn) {
       toast('Intent cancelled · asset UTXO spent · taker can no longer broadcast ✓', 'success', 6000);
       setTimeout(() => { renderMarket(); renderHoldings(); renderActivity(); }, 500);
     } catch (e) {
-      toast('Cancel failed: ' + e.message, 'error');
+      if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+      else toast('Cancel failed: ' + e.message, 'error');
       btn.disabled = false; btn.textContent = 'Cancel';
     }
     return;
@@ -30037,7 +31527,8 @@ async function marketCancelIntentHandler(btn) {
     toast('Intent cancelled ✓', 'success');
     setTimeout(() => renderMarket(), 500);
   } catch (e) {
-    toast('Cancel failed: ' + e.message, 'error');
+    if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+    else toast('Cancel failed: ' + e.message, 'error');
     btn.disabled = false; btn.textContent = 'Cancel';
   }
 }
@@ -30122,27 +31613,42 @@ function _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub }) {
 // runs the dapp's pre-flight outspend check, then broadcasts the commit +
 // reveal txs that atomically settle the sale.
 async function marketTakePreauthHandler(btn) {
+  if (btn.disabled) return;
   const aid = btn.dataset.aid;
   const sid = btn.dataset.sid;
   const price = Number(btn.dataset.price || 0);
   const ticker = btn.dataset.ticker || '?';
   const amount = btn.dataset.amount || '0';
   const dec = parseInt(btn.dataset.dec || '0', 10) || 0;
+  const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
+  // Pre-check expiry before any prompt/unlock work. Spares the user a wallet-
+  // unlock dance just for the worker to reject as expired downstream.
+  if (expiry > 0 && expiry <= Math.floor(Date.now() / 1000)) {
+    toast('This instant listing has expired — refresh the Market tab.', 'error');
+    return;
+  }
+  // Disable BEFORE confirm so a fast double-click can't queue two parallel
+  // takePreauthSale runs — each would broadcast its own commit tx (~3-5k sats
+  // wasted per duplicate) and only one reveal could succeed because the
+  // second hits "asset outpoint already spent".
+  btn.disabled = true;
+  const origText = btn.textContent;
+  const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
   if (!confirm(
     `Buy instant listing?\n\n` +
     `Asset:    ${fmtAssetAmount(BigInt(amount), dec)} ${ticker}\n` +
     `Pay:      ${price.toLocaleString()} sats to seller\n` +
     `Network fee: ~3-5k sats (commit + reveal)\n\n` +
     `On confirm: a commit tx and a settlement reveal tx will be broadcast. Both legs settle atomically — you receive the asset only if you pay the seller; the seller receives BTC only if you receive the asset. No claim window, no fulfilment step.`,
-  )) return;
+  )) { restore(); return; }
   if (!await ensureBurnerBackedUp('Buy instant listing (broadcasts commit + reveal txs and creates a new tacit UTXO in your wallet)')) {
-    toast('Back up the in-page privkey first, then retry.', 'error'); return;
+    toast('Back up the in-page privkey first, then retry.', 'error'); restore(); return;
   }
   const need = await estimateSatsForOp('cxfer');
   if (!(await ensureSatsFunded(need + price, 'Taking instant listing'))) {
-    toast('Funding cancelled.', 'error'); return;
+    toast('Funding cancelled.', 'error'); restore(); return;
   }
-  btn.disabled = true; btn.textContent = 'buying…';
+  btn.textContent = 'buying…';
   try {
     const r = await takePreauthSale({
       assetIdHex: aid,
@@ -30155,10 +31661,19 @@ async function marketTakePreauthHandler(btn) {
       },
     });
     toast(`Instant buy complete ✓ — reveal ${shorten(r.reveal_txid, 6)}; asset will appear in Holdings after confirmation`, 'success', 10000);
+    invalidateMarketCache();
     setTimeout(() => { renderActivity(); renderMarket(); }, 800);
+    // Leave button disabled on success — renderMarket replaces the tile.
   } catch (e) {
-    toast('Instant buy failed: ' + e.message, 'error', 12000);
-    btn.disabled = false; btn.textContent = 'Buy';
+    if (isUnlockCancelled(e)) {
+      toast('Unlock cancelled — nothing was broadcast.', '');
+    } else {
+      // takePreauthSale's error message already references the persisted
+      // recovery record + commit_txid when reveal-leg failure stranded the
+      // commit-value sats. Show it long enough to read.
+      toast('Instant buy failed: ' + e.message, 'error', 12000);
+    }
+    restore();
   }
 }
 
@@ -30169,25 +31684,41 @@ async function marketTakePreauthHandler(btn) {
 // listed UTXO (CXFER to themselves), which moots the pre-signed spend at
 // Bitcoin consensus.
 async function marketCancelPreauthHandler(btn) {
+  if (btn.disabled) return;
   const aid = btn.dataset.aid;
   const sid = btn.dataset.sid;
+  const price = Number(btn.dataset.price || 0);
+  const ticker = btn.dataset.ticker || '?';
+  const amount = btn.dataset.amount || '0';
+  const dec = parseInt(btn.dataset.dec || '0', 10) || 0;
+  // Show the listing's price/amount in the confirm so a maker with several
+  // active listings can verify they're cancelling the right one.
+  const detail = (amount !== '0' && price > 0)
+    ? `\nListing: ${fmtAssetAmount(BigInt(amount), dec)} ${ticker} for ${price.toLocaleString()} sats\n`
+    : '';
+  btn.disabled = true;
+  const origText = btn.textContent;
+  const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
   if (!confirm(
-    `Cancel instant listing?\n\n` +
+    `Cancel instant listing?${detail}\n` +
     `This removes the worker record so buyers won't see it. The pre-signed asset spend remains valid until you spend the listed UTXO yourself.\n\n` +
     `For a hard cancel, after this completes, do a Send Privately of the listed UTXO to yourself.`,
-  )) return;
-  btn.disabled = true; btn.textContent = 'cancelling…';
+  )) { restore(); return; }
+  btn.textContent = 'cancelling…';
   try {
     await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
     toast('Instant listing cancelled ✓', 'success');
+    invalidateMarketCache();
     setTimeout(() => renderMarket(), 500);
   } catch (e) {
-    toast('Cancel failed: ' + e.message, 'error');
-    btn.disabled = false; btn.textContent = 'Cancel';
+    if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+    else toast('Cancel failed: ' + e.message, 'error');
+    restore();
   }
 }
 
 async function marketTakeHandler(btn) {
+  if (btn.disabled) return;
   const kind = btn.dataset.kind;
   const aid = btn.dataset.aid;
   const addr = btn.dataset.addr;
@@ -30195,6 +31726,11 @@ async function marketTakeHandler(btn) {
   const ticker = btn.dataset.ticker;
   const amt = btn.dataset.amount;
   const dec = parseInt(btn.dataset.dec, 10);
+  const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
+  if (expiry > 0 && expiry <= Math.floor(Date.now() / 1000)) {
+    toast('This listing has expired — refresh the Market tab.', 'error');
+    return;
+  }
   const myPub = bytesToHex(wallet.pub);
   btn.disabled = true; btn.textContent = 'checking…';
   const v = await marketValidate(kind, aid, btn).catch(e => ({ ok: false, reason: e.message }));
@@ -30217,6 +31753,15 @@ async function marketTakeHandler(btn) {
     return;
   }
   // gate === 'continue' — show the existing operational confirm with steps.
+  // Defensive: marketValidate should have caught a missing addr, but if a
+  // listing somehow lacks maker_address by the time it reaches confirm, fail
+  // loudly here rather than show "Pay …\n   " with a blank line that a user
+  // might miss entirely and end up "paying nowhere."
+  if (!addr) {
+    toast('Take blocked: listing is missing the maker BTC address (worker may have served a partial record). Refresh the Market tab.', 'error');
+    btn.disabled = false; btn.textContent = 'Take';
+    return;
+  }
   const msg =
     `Take this listing?\n\n` +
     `Buying:  ${kind === 'range' ? '≥ ' : ''}${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
@@ -30238,13 +31783,44 @@ async function marketTakeHandler(btn) {
       await claimRangeListing({ assetIdHex: aid, makerPubHex: btn.dataset.maker });
     }
   } catch (e) {
-    toast('Take blocked: ' + e.message, 'error');
+    if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+    else toast('Take blocked: ' + e.message, 'error');
     btn.disabled = false; btn.textContent = 'Take';
     return;
   }
   navigator.clipboard?.writeText(myPub).catch(() => {});
-  toast('Reserved 5 min · pubkey copied · pay the maker, then send pubkey to them', 'success', 8000);
+  // Persist the reservation locally so the user has a durable record of
+  // "I owe maker $addr $price sats for $amount $ticker, expires at X" even
+  // if they close the tab. Without this, a tab close = total knowledge loss
+  // of the OTC obligation (the only on-chain trace is the worker's claim
+  // record which expires in 5 min). Activity log surfaces this in the
+  // Activity tab; the 5-min expiry is best-effort because the worker is
+  // the source of truth for actual reservation state.
+  recordActivity({
+    kind: 'otc-reserved',
+    ticker,
+    amount: BigInt(amt),
+    decimals: dec,
+    assetId: aid,
+    // No txid yet — this is a pre-payment reservation. We record the
+    // maker's address + price so the user can still pay even if the
+    // listing tile disappears (maker cancels, expiry hits, etc.) before
+    // they get back to the Market tab.
+    txid: null,
+    extra: {
+      maker_address: addr,
+      maker_pubkey: btn.dataset.maker || '',
+      price_sats: price,
+      claim_expires_at: Math.floor(Date.now() / 1000) + 5 * 60,
+      kind_subtype: kind, // 'opening' or 'range'
+      txid_hex: btn.dataset.txid || '',
+      vout: kind === 'opening' ? parseInt(btn.dataset.vout, 10) || 0 : null,
+    },
+  });
+  toast('Reserved 5 min · pubkey copied · pay the maker, then send pubkey to them. Details saved to Activity.', 'success', 8000);
   btn.textContent = '✓ reserved';
+  invalidateMarketCache();
+  setTimeout(() => renderMarket(), 500);
 }
 
 async function marketVerifyHandler(btn) {
@@ -31751,10 +33327,19 @@ async function autoImportShareLink() {
     return;
   }
   const human = `${fmtAssetAmount(claim.amount, claim.decimals)} ${claim.ticker || '???'}`;
+  // Pre-warn about the follow-up unlock prompt when the wallet is locked.
+  // importShareLink calls ensurePrivkey() to ECDH-derive the recipient
+  // blinding; without the heads-up, a user who clicks OK gets a second prompt
+  // (passphrase or biometric) with no explanation and may dismiss it
+  // thinking it's a duplicate of the import confirm.
+  const needsUnlock = !!wallet.pub && !wallet.priv;
   const ok = confirm(
     `Import received share-link?\n\n` +
     `Claim: ${human}\nAsset: ${claim.assetIdHex.slice(0, 16)}…\nUTXO: ${claim.txid.slice(0, 16)}…:${claim.vout}\n\n` +
-    `Importing will validate the claim against on-chain data and (if valid) record an opening in your local wallet. Cancel if you didn't expect this link.`,
+    `Importing will validate the claim against on-chain data and (if valid) record an opening in your local wallet. Cancel if you didn't expect this link.` +
+    (needsUnlock
+      ? `\n\nAfter you click OK, you'll be prompted to unlock your wallet — the import needs your key to derive the recipient blinding.`
+      : ''),
   );
   // Always strip the hash so a refusal isn't re-prompted on every reload.
   history.replaceState(null, '', location.pathname + location.search);
@@ -31768,8 +33353,12 @@ async function autoImportShareLink() {
     markOnboarded();
     $('.tab[data-tab="holdings"]').click();
   } catch (e) {
-    toast('Auto-import failed: ' + e.message, 'error');
-    console.error('auto-import failed:', e);
+    if (isUnlockCancelled(e)) {
+      toast('Unlock cancelled — share-link not imported. Re-open the link to retry.', '');
+    } else {
+      toast('Auto-import failed: ' + e.message, 'error');
+      console.error('auto-import failed:', e);
+    }
   }
 }
 
@@ -31786,7 +33375,7 @@ function setupNetworkSelect() {
   // browser. The persistent red `mainnet` text inside the network selector
   // is the lighter-touch indicator that remains.
   const banner = $('#mainnet-banner');
-  const mainnetAcked = localStorage.getItem('tacit-mainnet-consented-v1') === '1';
+  const mainnetAcked = localStorage.getItem(MAINNET_OK_KEY) === '1';
   if (banner) {
     banner.style.display = (NET.name === 'mainnet' && !mainnetAcked) ? 'block' : 'none';
   }
@@ -31805,7 +33394,7 @@ function setupNetworkSelect() {
   if (closeBtn && !closeBtn._wired) {
     closeBtn._wired = true;
     closeBtn.onclick = () => {
-      localStorage.setItem('tacit-mainnet-consented-v1', '1');
+      localStorage.setItem(MAINNET_OK_KEY, '1');
       const b = $('#mainnet-banner'); if (b) b.style.display = 'none';
     };
   }
@@ -31862,7 +33451,6 @@ function setupNetworkSelect() {
     if (next === NET.name) return;
     // Mainnet flip uses real BTC. Make the user explicitly opt in once;
     // remember the consent so subsequent toggles don't re-prompt.
-    const MAINNET_OK_KEY = 'tacit-mainnet-consented-v1';
     if (next === 'mainnet' && !localStorage.getItem(MAINNET_OK_KEY)) {
       const ok = confirm(
         '⚠ Switch to Bitcoin MAINNET?\n\n' +
@@ -32459,6 +34047,29 @@ async function init() {
       );
     }
   }).catch(e => console.warn('[axintent] resume failed:', e));
+  // Surface stranded preauth-take commits at init so the user sees their
+  // recoverable sats without having to navigate to Activity. Toast links to
+  // the Activity tab where the dedicated Recover button lives.
+  const preauthPendings = listPreauthTakePendings();
+  if (preauthPendings.length) {
+    const totalSats = preauthPendings.reduce((s, p) => s + (Number(p.commit_value) || 0), 0);
+    toast(
+      `⚠ ${preauthPendings.length} stranded preauth-take commit${preauthPendings.length === 1 ? '' : 's'} ` +
+      `(~${totalSats.toLocaleString()} sats recoverable). Open Activity → Recover.`,
+      'warn', 15000,
+    );
+  }
+  // Start the maker-side claim poller so a buyer's reservation surfaces as
+  // a toast + title flicker even while the maker is on another tab. Only
+  // makes sense once a wallet identity is loaded — locked wallets see the
+  // public pubkey but a poll without listings to compare against burns
+  // bandwidth for nothing. Stops on lock; restarts on unlock.
+  if (wallet.pub) startMakerClaimPoller();
+  // One global ticker drives every `[data-expires-at]` countdown on the
+  // page — maker claim tiles, otc-reserved Activity rows, anywhere else
+  // that surfaces a deadline. Cheap (single querySelectorAll every 15s),
+  // and means any future deadline UI inherits the live update for free.
+  startCountdownTicker();
 }
 // Gate the auto-init for offline test harnesses. Setting __TACIT_NO_INIT__ on
 // globalThis BEFORE importing this module (e.g. from a Node parity test) skips
@@ -32567,7 +34178,13 @@ function openInlineForm(triggerBtn, { content, submitLabel = 'Confirm', submitCl
       if (r === false) return;
       close();
     } catch (e) {
-      errEl.textContent = e?.message || String(e);
+      // Render unlock-cancel as a navigation choice rather than an error so
+      // every inline-form consumer (mint, burn, opening, share-link import,
+      // listing publish/cancel) gets consistent gentle copy without each
+      // having to special-case it in their own catch.
+      errEl.textContent = isUnlockCancelled(e)
+        ? 'Unlock cancelled — nothing was broadcast.'
+        : (e?.message || String(e));
     } finally {
       submitBtn.disabled = false; cancelBtn.disabled = false;
       submitBtn.textContent = orig;

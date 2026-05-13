@@ -131,12 +131,80 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
   return null;
 }
 
-// Recursive ancestry validator, mirrored from tacit.html.
+// Iterative ancestry validator, mirrored from dapp/tacit.js.
 // fetchTx: async (txidHex) => { vin: [{ txid, vout, witness: [hex...] }, ...] } | null
-async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0, metadataOut = null, rpBatch = null) {
+//
+// Two-pass driver: BFS pre-walks the ancestry DAG (enqueueing every asset
+// input of every CXFER/BURN we encounter), then validates in reverse-topo
+// order so each consumer's parent results are already in validatedSet. No
+// async recursion = no engine-stack concern and no hop-count cap; the
+// earlier 200-depth bound silently rejected change UTXOs in deep CXFER
+// chains (e.g. issuer wallets fulfilling large airdrops). The `depth`
+// parameter is accepted only for backward signature compatibility.
+async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _depthUnused = 0, metadataOut = null, rpBatch = null) {
+  const rootKey = `${rootTxid}:${rootVout}`;
+  if (validatedSet.has(rootKey)) return validatedSet.get(rootKey);
+
+  // Pass 1: BFS-enumerate the ancestry DAG. CXFER/BURN expand on their asset
+  // inputs (vin[1..]); T_MINT expands on its CETCH ancestor (etchTxid, vout 0)
+  // so pass 2 can read its result from validatedSet, matching the dapp's
+  // dapp/tacit.js validateOutpoint structure. CETCH leaves validate self-
+  // contained and have no parents to enqueue.
+  const topoList = [];
+  const enqueued = new Set();
+  const enqueue = (txid, vout) => {
+    const k = `${txid}:${vout}`;
+    if (enqueued.has(k) || validatedSet.has(k)) return;
+    enqueued.add(k);
+    topoList.push({ txid, vout, key: k });
+  };
+  enqueue(rootTxid, rootVout);
+
+  const FETCH_CONCURRENCY = 16;
+  let cursor = 0;
+  while (cursor < topoList.length) {
+    const levelEnd = topoList.length;
+    const slice = topoList.slice(cursor, levelEnd);
+    cursor = levelEnd;
+    const uniqTxids = [...new Set(slice.map(n => n.txid))];
+    const decodedMap = new Map();
+    for (let i = 0; i < uniqTxids.length; i += FETCH_CONCURRENCY) {
+      const chunk = uniqTxids.slice(i, i + FETCH_CONCURRENCY);
+      await Promise.all(chunk.map(async t => {
+        let txd = null;
+        try { txd = await fetchTx(t); } catch { /* unfetchable; pass 2 marks false */ }
+        let envd = null;
+        if (txd?.vin?.[0]?.witness && txd.vin[0].witness.length >= 3) {
+          try { envd = decodeEnvelopeScript(hexToBytes(txd.vin[0].witness[1])); } catch { envd = null; }
+        }
+        decodedMap.set(t, { tx: txd, env: envd });
+      }));
+    }
+    for (const node of slice) {
+      const { tx: ntx, env: nenv } = decodedMap.get(node.txid) || { tx: null, env: null };
+      if (!ntx || !nenv) continue;
+      if (nenv.opcode === T_CXFER || nenv.opcode === T_BURN) {
+        for (let i = 1; i < ntx.vin.length; i++) enqueue(ntx.vin[i].txid, ntx.vin[i].vout);
+      } else if (nenv.opcode === T_MINT) {
+        const dec = decodeCMintPayload(nenv.payload);
+        if (dec) enqueue(bytesToHex(dec.etchTxid), 0);
+      }
+    }
+  }
+
+  // Pass 2: validate in reverse-BFS order so parents land in validatedSet
+  // before their consumers read them.
+  for (let i = topoList.length - 1; i >= 0; i--) {
+    const { txid, vout, key } = topoList[i];
+    if (validatedSet.has(key)) continue;
+    await _validateOutpointSingle(txid, vout, validatedSet, fetchTx, metadataOut, rpBatch);
+  }
+  return validatedSet.has(rootKey) ? validatedSet.get(rootKey) : false;
+}
+
+async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, metadataOut = null, rpBatch = null) {
   const key = `${txidHex}:${vout}`;
   if (validatedSet.has(key)) return validatedSet.get(key);
-  if (depth > 200) { validatedSet.set(key, false); return false; }
 
   const tx = await fetchTx(txidHex);
   if (!tx || !tx.vin || !tx.vin[0]) { validatedSet.set(key, false); return false; }
@@ -188,6 +256,10 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     if (!etchEnv || etchEnv.opcode !== T_CETCH) { validatedSet.set(key, false); return false; }
     const etchDec = decodeCEtchPayload(etchEnv.payload);
     if (!etchDec || !etchDec.mintable) { validatedSet.set(key, false); return false; }
+    // The outer BFS pre-walked the CETCH ancestor and validated it in an
+    // earlier iteration of pass 2; read its result here (mirrors dapp).
+    const etchValid = validatedSet.get(`${etchTxidHex}:0`) === true;
+    if (!etchValid) { validatedSet.set(key, false); return false; }
     // SPEC §5.3 anchor binding: re-derive commit_anchor from the mint reveal's
     // parent commit tx so the issuer sig can't be replayed into a different
     // (commit, reveal) pair.
@@ -233,7 +305,7 @@ async function validateOutpoint(txidHex, vout, validatedSet, fetchTx, depth = 0,
     if (tx.vin.length < 2) { markAll(Math.max(N, 1), false); return false; }
     for (let i = 1; i < tx.vin.length; i++) {
       const inp = tx.vin[i];
-      const parentValid = await validateOutpoint(inp.txid, inp.vout, validatedSet, fetchTx, depth + 1, metadataOut, rpBatch);
+      const parentValid = validatedSet.get(`${inp.txid}:${inp.vout}`) === true;
       if (!parentValid) { markAll(Math.max(N, 1), false); return false; }
     }
 
