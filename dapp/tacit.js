@@ -30715,6 +30715,19 @@ async function fetchMarketData() {
 // from _marketCache.listings, so filter / sort re-renders don't bring it
 // back. Range listings are skipped — their bulletproof can stay valid
 // even after some UTXOs spend, and Verify still does the full check.
+// Debounced re-render dispatch for liveness-prune resolutions. Multiple
+// stale-UTXO discoveries that fire within ~250ms collapse into a single
+// applyMarketFilters call, preventing the cascade of grid replacements
+// that otherwise caused visible flashing on initial Market loads.
+let _marketPruneRenderTimer = null;
+function _scheduleMarketPruneRender() {
+  if (_marketPruneRenderTimer) clearTimeout(_marketPruneRenderTimer);
+  _marketPruneRenderTimer = setTimeout(() => {
+    _marketPruneRenderTimer = null;
+    if (_marketView === 'browse') applyMarketFilters();
+  }, 250);
+}
+
 function startMarketLivenessPrune() {
   if (!_marketCache) return;
   const grid = $('#market-list');
@@ -30734,8 +30747,12 @@ function startMarketLivenessPrune() {
       }
       // In browse mode the aggregate counts/floor would silently drift; just
       // re-apply filters (no fetch) to redraw the affected asset tile.
+      // Debounced — without this, N stale listings produce N sequential
+      // re-renders within a second, each replaying the grid's fade-in
+      // animation and flashing the screen. Batching to ~250ms collapses
+      // the burst into one update.
       if (_marketView === 'browse') {
-        applyMarketFilters();
+        _scheduleMarketPruneRender();
         return;
       }
       const key = l.kind === 'opening' ? `opening:${l.txid}:${l.vout | 0}`
@@ -31249,8 +31266,19 @@ function renderMarketBrowse(rows) {
 
   // Trust-mode breakdown is already in the section status line ("X listings
   // · ⚡ N · M OTC"); a banner row above the grid would just repeat it.
-  list.innerHTML = `<div id="market-browse-grid" class="recent-grid"></div>`;
-  const grid = $('#market-browse-grid');
+  //
+  // Preserve the grid element across re-renders so the CSS row-fade-in
+  // animation only plays once on initial paint. Without this, every
+  // applyMarketFilters call (filter change, liveness prune, refresh)
+  // recreates the grid div and replays the fade — visible as flashing
+  // when the prune resolutions arrive in a burst after first load.
+  let grid = document.getElementById('market-browse-grid');
+  if (!grid) {
+    list.innerHTML = `<div id="market-browse-grid" class="recent-grid"></div>`;
+    grid = document.getElementById('market-browse-grid');
+  } else {
+    grid.innerHTML = '';
+  }
   const frag = document.createDocumentFragment();
   for (const g of tiles) {
     const a = g.asset;
