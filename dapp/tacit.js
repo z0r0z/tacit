@@ -32431,14 +32431,50 @@ function applyMarketFilters() {
       <path fill="#fff" d="M21.8 14.6c.3-2-1.2-3-3.3-3.7l.7-2.8-1.7-.4-.7 2.7c-.5-.1-.9-.2-1.4-.3l.7-2.7-1.7-.4-.7 2.8c-.4-.1-.7-.2-1.1-.3l-2.3-.6-.4 1.8s1.2.3 1.2.3c.7.2.8.6.8.9l-.8 3.2c0 .1.1.1.2.2l-.2-.1-1.1 4.5c-.1.2-.3.5-.7.4 0 .1-1.2-.3-1.2-.3l-.8 1.9 2.2.5c.4.1.8.2 1.2.3l-.7 2.8 1.7.4.7-2.8c.5.1.9.2 1.3.3l-.7 2.8 1.7.4.7-2.8c2.9.5 5.1.3 6-2.3.7-2.1-.1-3.2-1.5-4 1.1-.2 1.9-1 2.1-2.4Zm-3.7 5.3c-.5 2-3.9 1-5 .6l.9-3.7c1.1.3 4.6.8 4.1 3Zm.5-5.4c-.5 1.8-3.4.9-4.3.6l.8-3.4c.9.2 3.9.7 3.5 2.8Z"/>
     </svg>`;
     const slippagePct = 20;
-    return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg);padding:14px;">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
-        <div style="font-size:12px;font-weight:bold;display:flex;align-items:center;gap:6px;">
-          ${btcLogoHtml} <span>sats / ${escapeHtml(ticker)}</span> ${assetLogoHtml}
+    return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg);padding:16px;">
+      <!-- Header: pair name with logos. Slippage moved to footer row
+           so it doesn't compete with the inputs for horizontal space. -->
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:13px;font-weight:bold;">
+        ${btcLogoHtml} <span>sats / ${escapeHtml(ticker)}</span> ${assetLogoHtml}
+      </div>
+      <!-- TOP side: editable input. data-side="from" tracks which
+           token is on top regardless of direction (the wireup swaps
+           the labels + logos in place on flip). -->
+      <div data-swap-side="from" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:12px;margin-bottom:6px;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);">You pay</span>
+          <span data-swap-meta="from" class="muted" style="font-size:10px;text-align:right;"></span>
         </div>
-        <label style="font-size:10px;display:flex;align-items:center;gap:4px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <input data-swap-input="from" type="text" inputmode="decimal" placeholder="0" style="flex:1 1 auto;font-family:var(--mono);font-size:22px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;">
+          <div data-swap-pill="from" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:5px 12px;background:#f7931a;color:#fff;border-radius:16px;font-weight:600;font-size:13px;border:1px solid #f7931a;">
+            ${btcLogoHtml}<span data-swap-token="from">sats</span>
+          </div>
+        </div>
+      </div>
+      <!-- FLIP button — overlaps the gap between the two sides. -->
+      <div style="display:flex;justify-content:center;margin:-12px 0;position:relative;z-index:1;">
+        <button data-swap-flip type="button" title="Flip direction (buy ↔ sell)" style="background:var(--bg);border:1px solid var(--ink);width:32px;height:32px;border-radius:50%;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;">↕</button>
+      </div>
+      <!-- BOTTOM side: read-only estimate. -->
+      <div data-swap-side="to" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:12px;margin-bottom:10px;">
+        <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:6px;">
+          <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);">You receive (est.)</span>
+          <span data-swap-meta="to" class="muted" style="font-size:10px;text-align:right;"></span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <input data-swap-input="to" type="text" placeholder="0" readonly style="flex:1 1 auto;font-family:var(--mono);font-size:22px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;color:var(--ink);">
+          <div data-swap-pill="to" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:5px 12px;background:var(--bg);color:var(--ink);border:1px solid var(--ink-faint);border-radius:16px;font-weight:600;font-size:13px;">
+            ${assetLogoHtml}<span data-swap-token="to">${escapeHtml(ticker)}</span>
+          </div>
+        </div>
+      </div>
+      <!-- Route summary + slippage on one balanced row above the action. -->
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+        <div data-swap-info class="muted" style="font-size:10px;flex:1 1 auto;min-width:0;line-height:1.5;overflow-wrap:anywhere;"></div>
+        <label style="font-size:10px;display:flex;align-items:center;gap:6px;flex:0 0 auto;">
           <span class="muted">slippage</span>
-          <select data-swap-slippage style="font-size:10px;padding:2px 4px;">
+          <select data-swap-slippage style="font-size:11px;padding:3px 6px;">
             <option value="1">1%</option>
             <option value="5">5%</option>
             <option value="20" selected>20%</option>
@@ -32446,38 +32482,8 @@ function applyMarketFilters() {
           </select>
         </label>
       </div>
-      <!-- TOP side: editable input. data-side="from" tracks which
-           token is on top regardless of direction (the wireup swaps
-           the labels + logos in place on flip). -->
-      <div data-swap-side="from" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:10px;margin-bottom:4px;">
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);margin-bottom:4px;">You pay</div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <input data-swap-input="from" type="text" inputmode="decimal" placeholder="0" style="flex:1 1 auto;font-family:var(--mono);font-size:20px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;">
-          <div data-swap-pill="from" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 10px;background:#f7931a;color:#fff;border-radius:14px;font-weight:600;font-size:13px;">
-            ${btcLogoHtml}<span data-swap-token="from">sats</span>
-          </div>
-        </div>
-        <div data-swap-meta="from" class="muted" style="font-size:10px;margin-top:4px;min-height:13px;"></div>
-      </div>
-      <!-- FLIP button. Reverses which side is sats vs ticker. -->
-      <div style="display:flex;justify-content:center;margin:-8px 0;position:relative;z-index:1;">
-        <button data-swap-flip type="button" title="Flip direction (buy ↔ sell)" style="background:var(--bg);border:1px solid var(--ink);width:28px;height:28px;border-radius:50%;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;">↕</button>
-      </div>
-      <!-- BOTTOM side: read-only estimate. -->
-      <div data-swap-side="to" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:10px;margin-bottom:10px;">
-        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);margin-bottom:4px;">You receive (est.)</div>
-        <div style="display:flex;align-items:center;gap:8px;">
-          <input data-swap-input="to" type="text" placeholder="0" readonly style="flex:1 1 auto;font-family:var(--mono);font-size:20px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;color:var(--ink);">
-          <div data-swap-pill="to" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--bg);color:var(--ink);border:1px solid var(--ink-faint);border-radius:14px;font-weight:600;font-size:13px;">
-            ${assetLogoHtml}<span data-swap-token="to">${escapeHtml(ticker)}</span>
-          </div>
-        </div>
-        <div data-swap-meta="to" class="muted" style="font-size:10px;margin-top:4px;min-height:13px;"></div>
-      </div>
-      <!-- Route / impact summary -->
-      <div data-swap-info class="muted" style="font-size:10px;margin-bottom:10px;min-height:13px;line-height:1.5;"></div>
       <!-- Primary action -->
-      <button data-swap-action type="button" disabled style="display:block;width:100%;padding:12px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
+      <button data-swap-action type="button" disabled style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
     </div>`;
   })();
   list.innerHTML =
@@ -32954,11 +32960,10 @@ function renderMarketAssetHeader(assetId, rows) {
   // The "← All assets" anchor mirrors the button below so either click target
   // works; the binder's querySelectorAll picks both up.
   const breadcrumb = `
-    <div style="font-size:12px;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-      <a href="#" data-act="market-back-browse" title="Back to the asset index" style="text-decoration:underline;cursor:pointer;">← All assets</a>
-      <span class="muted">›</span>
-      <strong>${escapeHtml(a.ticker || '?')}</strong>
-      <span class="muted">offers</span>
+    <div style="font-size:11px;margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--ink-mid);">
+      <a href="#" data-act="market-back-browse" title="Back to all assets" style="text-decoration:none;color:var(--ink-mid);padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg);border-radius:2px;cursor:pointer;">← Markets</a>
+      <span class="muted">/</span>
+      <strong style="color:var(--ink);">${escapeHtml(a.ticker || '?')}</strong>
     </div>`;
   // Show a prominent "List this asset" CTA if the user already holds it.
   // Uses cached holdings — no forced rescan. If holdings cache is empty
@@ -33027,13 +33032,19 @@ function renderMarketAssetHeader(assetId, rows) {
           if (ltAmt <= 0n) return '';
           const ltUnit = unitPriceSats(lt.price_sats, ltAmt, dec);
           const ltAge = relativeAge(Number(lt.ts) || 0);
-          const unitTail = ltUnit != null ? ` · ${escapeHtml(fmtUnitPriceSats(ltUnit))} sats/${escapeHtml(a.ticker || 'token')}` : '';
+          // Per-token USD inline so users see 1-TICKER cost without doing
+          // sats/BTC × BTC/USD mental math. fmtUnitUsd handles the sub-
+          // penny range tacit tokens commonly trade in.
+          const _ltBtcUsd = _cachedBtcUsd();
+          const ltUnitUsd = (ltUnit != null && _ltBtcUsd) ? fmtUnitUsd(ltUnit, _ltBtcUsd) : null;
+          const unitTail = ltUnit != null
+            ? ` · ${escapeHtml(fmtUnitPriceSats(ltUnit))} sats/${escapeHtml(a.ticker || 'token')}${ltUnitUsd ? ` (${escapeHtml(ltUnitUsd)})` : ''}`
+            : '';
           const ageTail = ltAge ? ` · ${escapeHtml(ltAge)} ago` : '';
           return `<div class="muted" style="font-size:11px;margin-top:2px;" title="Most recent atomic-intent settlement (T_AXFER) reported to the worker. Best-effort: opening / range fills settle off-chain and don't carry an observable price.">💱 last ${Number(lt.price_sats).toLocaleString()} sats${unitTail}${ageTail}</div>`;
         })()}
       </div>
       ${listCtaHtml}
-      <button data-act="market-back-browse" title="Back to the asset index" style="font-size:11px;padding:6px 10px;flex-shrink:0;">← All assets</button>
     </div>
     ${askFormHostHtml}
     ${descriptionBlockHtml}`;
@@ -33257,7 +33268,10 @@ async function populateMarketAssetStats(scope, asset) {
       const u = unitPriceSats(Number(last.price_sats), BigInt(last.amount), decimals);
       const ageSecs = Math.max(0, Math.floor(Date.now() / 1000) - Number(last.ts || 0));
       const ageStr = ageSecs < 60 ? `${ageSecs}s` : ageSecs < 3600 ? `${Math.floor(ageSecs / 60)}m` : ageSecs < 86400 ? `${Math.floor(ageSecs / 3600)}h` : `${Math.floor(ageSecs / 86400)}d`;
-      lastStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)} · ${ageStr} ago` : `${Number(last.price_sats).toLocaleString()} sats · ${ageStr} ago`;
+      const _lastBtcUsd = btcUsd;
+      const uUsd = (u != null && _lastBtcUsd) ? fmtUnitUsd(u, _lastBtcUsd) : null;
+      const uUsdTail = uUsd ? ` (${uUsd})` : '';
+      lastStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}${uUsdTail} · ${ageStr} ago` : `${Number(last.price_sats).toLocaleString()} sats · ${ageStr} ago`;
     } catch { lastStr = `${Number(last.price_sats).toLocaleString()} sats`; }
   }
   const setText = (sel, text, isHtml = false) => {
@@ -34087,11 +34101,25 @@ function _wireSwapTile(scope) {
         infoEl.textContent = '';
         return;
       }
+      // Sat-balance pre-check: budget + estimated fees must fit within
+      // wallet's known sat balance. Reading from _walletCardState avoids
+      // an extra getUtxos call on every keystroke; refreshWallet() keeps
+      // it warm and the freshness banner makes any staleness visible.
+      const satBal = Number(_walletCardState?.balance || 0);
+      if (satBal > 0 && sats > satBal) {
+        toInput.value = '';
+        fromMeta.textContent = `wallet: ${satBal.toLocaleString()} sats`;
+        toMeta.textContent = '';
+        infoEl.textContent = `insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`;
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'insufficient balance';
+        return;
+      }
       const result = planBuy(sats);
       if (myToken !== updateToken) return;
       if (!result) {
         toInput.value = '';
-        infoEl.textContent = `no preauth asks within ${slipSel.value}% slippage · raise slippage, or use Sweep buy below for a custom cap`;
+        infoEl.textContent = `no instant asks within ${slipSel.value}% slippage · raise slippage, or use Sweep buy below for a custom cap`;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'no route';
         return;
@@ -34099,17 +34127,22 @@ function _wireSwapTile(scope) {
       const accStr = fmtAssetAmount(result.totalAmt, decimals);
       toInput.value = accStr;
       const fromUsd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
-      fromMeta.textContent = fromUsd ? `spending ${result.totalSats.toLocaleString()} sats · ${fromUsd}` : `spending ${result.totalSats.toLocaleString()} sats`;
+      const feeEst = result.plan.length * 800;
+      const reserveOk = satBal === 0 || (result.totalSats + feeEst) <= satBal;
+      const fromTail = reserveOk ? '' : ' · ⚠ low sat reserve for fees';
+      fromMeta.textContent = fromUsd
+        ? `spending ${result.totalSats.toLocaleString()} sats · ${fromUsd}${fromTail}`
+        : `spending ${result.totalSats.toLocaleString()} sats${fromTail}`;
       const avgU = result.totalAmt > 0n
         ? (result.totalSats * Math.pow(10, decimals)) / Number(result.totalAmt)
         : null;
-      toMeta.textContent = avgU != null ? `avg ${fmtUnitPriceSats(avgU)} sats/${ticker}` : '';
+      const avgUsd = (avgU != null && btcUsd) ? fmtUnitUsd(avgU, btcUsd) : null;
+      toMeta.textContent = avgU != null ? `avg ${fmtUnitPriceSats(avgU)} sats/${ticker}${avgUsd ? ` (${avgUsd})` : ''}` : '';
       const cheapU = result.plan[0].u;
       const dearU = result.plan[result.plan.length - 1].u;
       const rangeStr = result.plan.length === 1
         ? `${fmtUnitPriceSats(cheapU)} sats/${ticker}`
         : `${fmtUnitPriceSats(cheapU)}–${fmtUnitPriceSats(dearU)} sats/${ticker}`;
-      const feeEst = result.plan.length * 800;
       const residHint = result.residualSats > 100
         ? ` · ${result.residualSats.toLocaleString()} sats unspent (asks ran out at cap)`
         : '';
@@ -34151,15 +34184,26 @@ function _wireSwapTile(scope) {
       const rangeStr = result.plan.length === 1
         ? `${fmtUnitPriceSats(highU)} sats/${ticker}`
         : `${fmtUnitPriceSats(lowU)}–${fmtUnitPriceSats(highU)} sats/${ticker}`;
+      // Each fulfilment publishes an atomic intent → commit tx (~800 sats
+      // fee) + a possible self-CXFER auto-split tx (~800 sats fee when
+      // no exact-amount UTXO matches the bid). Estimate × 2 reflects the
+      // worst case where every fill triggers a split.
       const feeEst = result.plan.length * 800 * 2;
+      const satBal = Number(_walletCardState?.balance || 0);
+      const reserveOk = satBal === 0 || feeEst <= satBal;
+      const reserveHint = reserveOk ? '' : ` · ⚠ wallet has ${satBal.toLocaleString()} sats but fees need ~${feeEst.toLocaleString()}`;
       const residHint = result.residualAmt > 0n
         ? ` · ${fmtAssetAmount(result.residualAmt, decimals)} ${ticker} unfilled at floor`
         : '';
       const autoHint = _isAutoFulfilEnabled() ? '' : ' · ⚠ enable Auto-fulfil to auto-sign claims';
-      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${residHint}${autoHint}`;
-      actionBtn.disabled = false; actionBtn.style.opacity = '1';
-      const accStr = fmtAssetAmount(result.totalAmt, decimals);
-      actionBtn.textContent = `SWAP → ${result.totalSats.toLocaleString()} sats`;
+      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${reserveHint}${residHint}${autoHint}`;
+      if (!reserveOk) {
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'top up sats for fees';
+      } else {
+        actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        actionBtn.textContent = `SWAP → ${result.totalSats.toLocaleString()} sats`;
+      }
     }
   };
   // Initial paint + wiring.
