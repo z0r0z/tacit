@@ -32491,14 +32491,22 @@ function applyMarketFilters() {
     const haveBuyLiquidity = preauthAsks.length > 0;
     const userHolds = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId) && _holdingsCache.holdings.get(_marketView.assetId).balance > 0n);
     if (!haveBuyLiquidity && !userHolds) return '';
-    // Asset logo: prefer the etcher's image_uri, fall back to the colored
-    // initial pill rendered by assetImageFallback. Both are 28px square
-    // here — the swap tile is the most prominent surface for the logo
-    // and the chip-style render needs a clean square.
-    const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
-    const assetLogoHtml = imgUrl
-      ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--ink-faint);background:#fff;object-fit:cover;flex-shrink:0;">`
-      : assetImageFallback(safeAid, ticker, 24);
+    // Asset logo: prefer the cached resolved image URL (from IPFS
+    // metadata-blob walk) for sync paint; fall back to a data-asset-
+    // logo-slot placeholder that _resolveAssetLogosIn swaps in later
+    // when the metadata fetch lands. The swap tile is the most
+    // prominent logo surface on the page, so a broken-image flash
+    // (the old normalizeImageUri-points-at-metadata path) was the
+    // most jarring; now it's never rendered.
+    const _swapImgUriRaw = a.image_uri || a.imageUri;
+    const _swapImgCached = _swapImgUriRaw && typeof _resolvedImageCache !== 'undefined'
+      ? _resolvedImageCache.get(_swapImgUriRaw) : null;
+    const _swapLogoStyle = 'width:24px;height:24px;border-radius:50%;border:1px solid var(--ink-faint);background:#fff;object-fit:cover;flex-shrink:0;';
+    const assetLogoHtml = _swapImgCached
+      ? `<img loading="lazy" decoding="async" src="${escapeHtml(_swapImgCached)}" alt="" style="${_swapLogoStyle}">`
+      : (_swapImgUriRaw
+          ? `<span data-asset-logo-slot data-uri="${escapeHtml(_swapImgUriRaw)}" style="display:inline-flex;flex-shrink:0;">${assetImageFallback(safeAid, ticker, 24)}</span>`
+          : assetImageFallback(safeAid, ticker, 24));
     // Bitcoin logo SVG — inline so it loads with the page (no extra
     // round-trip, no broken-image fallback). Standard ₿ on bitcoin-
     // orange background.
@@ -34271,6 +34279,13 @@ function _wireSwapTile(scope) {
     fromInput.setAttribute('inputmode', isBuy ? 'numeric' : 'decimal');
     actionBtn.style.background = isBuy ? '#0a8f43' : '#b8341d';
     actionBtn.style.borderColor = isBuy ? '#0a7d3a' : '#9b2a16';
+    // The asset logo lives inside one of the two pills (whichever holds
+    // the ticker side). When direction flips, the pill innerHTML is
+    // restored from the captured snapshot which may contain a
+    // [data-asset-logo-slot] placeholder. Re-run the resolver so the
+    // newly-mounted slot gets the real image. Idempotent — no-op on
+    // pills that already hold an <img>.
+    _resolveAssetLogosIn(widget, 'width:24px;height:24px;border-radius:50%;border:1px solid var(--ink-faint);background:#fff;object-fit:cover;flex-shrink:0;');
   };
   // Single update path — runs on every keystroke + direction change +
   // slippage change. Async because sell plans await the bids cache.
