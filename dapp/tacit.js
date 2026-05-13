@@ -33103,8 +33103,12 @@ function renderMarketBidsLadderHTML(asset) {
           <strong>Bids · <span data-market-bids-count>—</span></strong>
           <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:4px;">· signed offers, no sats locked until filled</span>
         </div>
-        <button data-act="market-bid-place" data-aid="${aid}" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">+ Place a bid on ${ticker}</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button data-act="market-sweep-buy" data-aid="${aid}" type="button" title="Buy a target amount immediately by sweeping the asks ladder. Walks cheapest-first under your price cap; each fill is one Bitcoin tx. Trustless (preauth Instant listings only)." style="font-size:11px;padding:4px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;">⚡ Sweep buy</button>
+          <button data-act="market-bid-place" data-aid="${aid}" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">+ Place a bid on ${ticker}</button>
+        </div>
       </div>
+      <div data-market-sweep-form style="display:none;margin-top:10px;"></div>
       <div data-market-bid-form style="display:none;margin-top:10px;"></div>
       <div data-market-bids-list style="margin-top:10px;font-size:11px;">
         <div class="muted" style="font-size:11px;"><span class="live-dots">loading bids</span></div>
@@ -33384,6 +33388,216 @@ async function populateMarketBidsLadder(scope, asset) {
     };
   });
   _wireMarketBidPlace(section, asset);
+  _wireMarketSweepBuy(section, asset);
+}
+
+// Sweep buy: limit-buy a target amount by walking the asks ladder
+// cheapest-first under a user-set price cap. Each fill is one Bitcoin tx
+// (preauth Instant listings only — atomic intents are excluded from v1
+// because their 3-step claim-fulfil-take flow would turn a single sweep
+// into a multi-minute babysit). Pre-flight shows what will fill before
+// any signing. Sequential broadcast (not parallel: preauth take spends
+// the buyer's sat UTXOs, so two concurrent takes would race on the same
+// inputs and one would fail). Stops on first error; reports partial
+// progress. Residual (couldn't fill enough at the cap price) → optional
+// bid intent posted at the cap.
+function _wireMarketSweepBuy(section, asset) {
+  const aid = section.dataset.aid;
+  const ticker = asset.ticker || '?';
+  const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  const btn = section.querySelector('[data-act="market-sweep-buy"]');
+  const formHost = section.querySelector('[data-market-sweep-form]');
+  if (!btn || !formHost) return;
+  btn.onclick = () => {
+    if (formHost.dataset.open === '1') {
+      formHost.dataset.open = ''; formHost.style.display = 'none'; formHost.innerHTML = '';
+      return;
+    }
+    formHost.dataset.open = '1'; formHost.style.display = 'block';
+    // Pre-compute references so the user has anchors when choosing a cap:
+    // floor (cheapest current ask) and last trade (most recent settlement).
+    const _floorEntry = _marketFloorByAsset()?.get(aid) || null;
+    const _floorUnit = _floorEntry ? Number(_floorEntry.unit) : null;
+    const _lastTrade = asset.last_trade && Number.isInteger(asset.last_trade.price_sats) && Number(asset.last_trade.price_sats) > 0 ? asset.last_trade : null;
+    let _lastUnit = null;
+    if (_lastTrade) {
+      try { _lastUnit = unitPriceSats(Number(_lastTrade.price_sats), BigInt(_lastTrade.amount), decimals); } catch {}
+    }
+    const _btcUsd = _cachedBtcUsd();
+    const _usdPerToken = (u) => (_btcUsd != null && u != null) ? fmtSatsAsUsd(u, _btcUsd) : null;
+    const _refBits = [];
+    if (_floorUnit != null) {
+      const us = _usdPerToken(_floorUnit);
+      _refBits.push(`floor <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+    }
+    if (_lastUnit != null) {
+      const us = _usdPerToken(_lastUnit);
+      _refBits.push(`last <strong>${escapeHtml(fmtUnitPriceSats(_lastUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+    }
+    const _refLine = _refBits.length
+      ? `<div class="muted" style="font-size:10px;margin-bottom:6px;">reference · ${_refBits.join(' · ')}</div>`
+      : '';
+    formHost.innerHTML = `
+      <div style="border:1px dashed var(--ink-faint);padding:10px;background:var(--bg-warm);">
+        <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">⚡ Sweep buy ${escapeHtml(ticker)} (Instant listings only)</div>
+        <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:6px;">Walks the asks ladder cheapest-first under your price cap. Each fill is one Bitcoin tx, broadcast sequentially. Trustless — preauth Instant listings only. Stops on first failure; partial fills are reported.</div>
+        ${_refLine}
+        <div class="flex" style="gap:6px;flex-wrap:wrap;">
+          <label style="font-size:10px;flex:1;min-width:120px;">Target amount (${escapeHtml(ticker)})
+            <input data-sweep-field="amount" type="text" inputmode="decimal" placeholder="1000" style="width:100%;font-family:var(--mono);">
+          </label>
+          <label style="font-size:10px;flex:1;min-width:120px;">Max price per ${escapeHtml(ticker)} (sats)
+            <input data-sweep-field="cap" type="text" inputmode="decimal" placeholder="${_lastUnit != null ? Math.ceil(_lastUnit) : '600'}" style="width:100%;font-family:var(--mono);">
+          </label>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:10px;margin-top:8px;">
+          <input data-sweep-field="residual-to-bid" type="checkbox" checked>
+          <span>Post leftover as a bid at the cap if asks run out</span>
+        </label>
+        <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">
+          <button data-sweep-action="preview" class="primary" type="button" style="font-size:11px;">Preview sweep</button>
+          <button data-sweep-action="close" type="button" style="font-size:11px;">Close</button>
+        </div>
+        <div data-sweep-plan style="margin-top:10px;font-size:11px;"></div>
+        <div data-sweep-status class="muted" style="font-size:10px;margin-top:6px;"></div>
+      </div>`;
+    const amountEl = formHost.querySelector('[data-sweep-field="amount"]');
+    const capEl    = formHost.querySelector('[data-sweep-field="cap"]');
+    const residualEl = formHost.querySelector('[data-sweep-field="residual-to-bid"]');
+    const planEl   = formHost.querySelector('[data-sweep-plan]');
+    const statusEl = formHost.querySelector('[data-sweep-status]');
+    formHost.querySelector('[data-sweep-action="close"]').onclick = () => {
+      formHost.dataset.open = ''; formHost.style.display = 'none'; formHost.innerHTML = '';
+    };
+    formHost.querySelector('[data-sweep-action="preview"]').onclick = () => {
+      planEl.innerHTML = '';
+      statusEl.textContent = '';
+      const aRaw = (amountEl.value || '').trim();
+      const pRaw = (capEl.value || '').trim();
+      if (!aRaw || !pRaw) { statusEl.textContent = 'enter amount + price cap'; return; }
+      let targetAmtBig;
+      try { targetAmtBig = parseAssetAmount(aRaw, decimals); }
+      catch { statusEl.textContent = 'amount invalid'; return; }
+      if (targetAmtBig <= 0n) { statusEl.textContent = 'amount must be > 0'; return; }
+      const capUnit = Number(pRaw);
+      if (!Number.isFinite(capUnit) || capUnit <= 0) { statusEl.textContent = 'cap must be > 0 sats/token'; return; }
+      // Walk preauth listings for this asset. Filter: not mine, not expired,
+      // unit price ≤ cap. Sort cheapest first; accumulate until we'd
+      // overshoot. Each preauth sells a whole UTXO — can't partial-take —
+      // so the accumulated total may stop short of target if the next ask
+      // would overshoot.
+      const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
+      const nowSec = Math.floor(Date.now() / 1000);
+      const candidates = (_marketCache?.listings || [])
+        .filter(l => l.kind === 'preauth' && l._asset?.asset_id === aid)
+        .filter(l => l.seller_pubkey !== myPub)
+        .filter(l => Number(l.expiry || 0) > nowSec && !l.expired)
+        .map(l => {
+          const amt = BigInt(l.asset_opening?.amount || 0);
+          const ps  = Number(l.min_price_sats || 0);
+          const u   = unitPriceSats(ps, amt, decimals);
+          return { l, amt, ps, u };
+        })
+        .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= capUnit && c.amt > 0n)
+        .sort((x, y) => x.u - y.u);
+      if (!candidates.length) {
+        planEl.innerHTML = `<div class="muted" style="font-size:11px;">No preauth Instant listings under ${capUnit.toLocaleString()} sats/${escapeHtml(ticker)}. ${residualEl.checked ? 'Submit will post your target as a bid.' : 'Raise the cap or use Place a bid instead.'}</div>`;
+        return;
+      }
+      const plan = [];
+      let acc = 0n;
+      for (const c of candidates) {
+        if (acc >= targetAmtBig) break;
+        if (acc + c.amt > targetAmtBig) {
+          // Allow the LAST fill to slightly overshoot ONLY if we haven't
+          // reached the target yet; this is a strict-fit gate. Toggle to
+          // accept overshoot would be a separate UX option.
+          continue;
+        }
+        plan.push(c);
+        acc += c.amt;
+      }
+      // If strict-fit found nothing (every candidate would overshoot), allow
+      // the SINGLE cheapest one as a best-effort fill so the user can buy
+      // SOMETHING; otherwise the sweep silently produces an empty plan.
+      if (!plan.length && candidates.length > 0) {
+        plan.push(candidates[0]);
+        acc = candidates[0].amt;
+      }
+      const totalSats = plan.reduce((s, c) => s + c.ps, 0);
+      const residualAmt = acc < targetAmtBig ? (targetAmtBig - acc) : 0n;
+      const wholeTotal = Number(acc) / Math.pow(10, decimals);
+      const usdTotal = _btcUsd ? fmtSatsAsUsd(totalSats, _btcUsd) : null;
+      const feeEstPerTx = 800; // rough; revealVbEst × 1 sat/vB at minfee. Order of magnitude only.
+      const feeEstTotal = plan.length * feeEstPerTx;
+      const usdFees = _btcUsd ? fmtSatsAsUsd(feeEstTotal, _btcUsd) : null;
+      const fillsHtml = plan.map((c, i) => `<div style="display:flex;gap:8px;font-size:10px;padding:2px 0;font-family:var(--mono);">
+          <span style="opacity:0.6;">${i + 1}.</span>
+          <span style="flex:1;">${escapeHtml(fmtAssetAmount(c.amt, decimals))} @ ${escapeHtml(fmtUnitPriceSats(c.u))} sats/${escapeHtml(ticker)} = ${c.ps.toLocaleString()} sats</span>
+        </div>`).join('');
+      const residualHtml = residualAmt > 0n
+        ? `<div class="muted" style="font-size:10px;margin-top:6px;">Leftover: ${escapeHtml(fmtAssetAmount(residualAmt, decimals))} ${escapeHtml(ticker)} ${residualEl.checked ? `→ will post as a bid at ${capUnit} sats/${escapeHtml(ticker)} for 24h` : '(unchecked — leftover will not be bid)'}</div>`
+        : '';
+      planEl.innerHTML = `
+        <div style="border-top:1px solid var(--ink-faint);padding-top:8px;">
+          <div style="font-size:11px;margin-bottom:4px;"><strong>Plan: ${plan.length} fill${plan.length === 1 ? '' : 's'} · ${escapeHtml(fmtAssetAmount(acc, decimals))} ${escapeHtml(ticker)} · ${totalSats.toLocaleString()} sats${usdTotal ? ` · ${escapeHtml(usdTotal)}` : ''}</strong></div>
+          ${fillsHtml}
+          <div class="muted" style="font-size:10px;margin-top:6px;">Bitcoin fees: ~${feeEstTotal.toLocaleString()} sats across ${plan.length} tx${plan.length === 1 ? '' : 's'}${usdFees ? ` (~${escapeHtml(usdFees)})` : ''} · feerate-dependent, actual may differ</div>
+          ${residualHtml}
+          <div class="flex" style="gap:6px;margin-top:10px;flex-wrap:wrap;">
+            <button data-sweep-action="confirm" class="primary" type="button" style="font-size:11px;background:#0a8f43;border-color:#0a7d3a;">Confirm &amp; broadcast ${plan.length} tx${plan.length === 1 ? '' : 's'}</button>
+            <button data-sweep-action="cancel-plan" type="button" style="font-size:11px;">Cancel</button>
+          </div>
+          <div data-sweep-progress style="margin-top:8px;font-size:10px;font-family:var(--mono);"></div>
+        </div>`;
+      planEl.querySelector('[data-sweep-action="cancel-plan"]').onclick = () => { planEl.innerHTML = ''; };
+      planEl.querySelector('[data-sweep-action="confirm"]').onclick = async (ev) => {
+        const cBtn = ev.currentTarget;
+        cBtn.disabled = true; cBtn.textContent = 'broadcasting…';
+        const progEl = planEl.querySelector('[data-sweep-progress]');
+        const fills = [];
+        const fails = [];
+        for (let i = 0; i < plan.length; i++) {
+          const c = plan[i];
+          const saleId = c.l.sale_id;
+          progEl.innerHTML = `${fills.length}/${plan.length} filled · sending tx ${i + 1}…`;
+          try {
+            const r = await takePreauthSale({ assetIdHex: aid, saleIdHex: saleId, sale: c.l });
+            fills.push({ saleId, txid: r?.reveal_txid || r?.commit_txid, amt: c.amt, ps: c.ps });
+          } catch (e) {
+            fails.push({ saleId, err: e?.message || String(e) });
+            break;
+          }
+        }
+        const fillsTotal = fills.reduce((s, f) => s + f.ps, 0);
+        const fillsAmt = fills.reduce((s, f) => s + f.amt, 0n);
+        progEl.innerHTML = `<div style="margin-top:4px;"><strong>${fills.length}/${plan.length} filled</strong> · bought ${escapeHtml(fmtAssetAmount(fillsAmt, decimals))} ${escapeHtml(ticker)} for ${fillsTotal.toLocaleString()} sats</div>` +
+          (fails.length ? `<div class="error" style="font-size:10px;margin-top:4px;">stopped at fill ${fills.length + 1}: ${escapeHtml(fails[0].err)}</div>` : '');
+        // Residual → bid intent. Computes the unfilled remainder against the
+        // ORIGINAL target (not the plan total) so a sweep stopped by a
+        // failure also offers to bid the unfilled portion.
+        const filledAmt = fillsAmt;
+        const residualAmt2 = targetAmtBig > filledAmt ? (targetAmtBig - filledAmt) : 0n;
+        if (residualEl.checked && residualAmt2 > 0n) {
+          try {
+            const wholeRem = Number(residualAmt2) / Math.pow(10, decimals);
+            const bidPriceSats = Math.max(DUST, Math.ceil(wholeRem * capUnit));
+            const bidExpiry = Math.floor(Date.now() / 1000) + 24 * 3600;
+            await publishBidIntent({ assetIdHex: aid, amount: residualAmt2, priceSats: bidPriceSats, expiry: bidExpiry });
+            progEl.innerHTML += `<div style="margin-top:4px;color:#0a7d3a;">Residual ${escapeHtml(fmtAssetAmount(residualAmt2, decimals))} ${escapeHtml(ticker)} posted as a bid at ${capUnit} sats/${escapeHtml(ticker)} (24h)</div>`;
+            _invalidateBidsCache(aid);
+          } catch (e) {
+            progEl.innerHTML += `<div class="error" style="font-size:10px;margin-top:4px;">residual bid failed: ${escapeHtml(e?.message || String(e))}</div>`;
+          }
+        }
+        invalidateMarketCache();
+        invalidateHoldingsCache();
+        cBtn.disabled = false; cBtn.textContent = 'Done';
+        // Re-render after a short delay so the user sees the final state.
+        setTimeout(() => renderMarket(), 1500);
+      };
+    };
+  };
 }
 
 function _wireMarketBidPlace(section, asset) {
