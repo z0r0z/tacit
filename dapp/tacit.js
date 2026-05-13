@@ -36203,6 +36203,14 @@ function _wireSwapTile(scope) {
     // pills that already hold an <img>.
     _resolveAssetLogosIn(widget, 'width:24px;height:24px;border-radius:50%;border:1px solid var(--ink-faint);background:#fff;object-fit:cover;flex-shrink:0;');
   };
+  // Wallet-lock-aware action label: prefix SWAP with 🔒 when the priv
+  // isn't loaded yet. Clicking still works — the underlying
+  // takePreauthSale / fulfilBidIntent paths call ensurePrivkey() and
+  // pop the passphrase/passkey prompt before broadcasting — but the
+  // label now telegraphs that an unlock step is coming, instead of
+  // sitting as a plain "SWAP" that surprises the user with a modal.
+  const _isLocked = () => !wallet.priv;
+  const swapLabel = (action) => _isLocked() ? `🔒 Unlock & ${action.toLowerCase()}` : action;
   // Single update path — runs on every keystroke + direction change +
   // slippage change. Async because sell plans await the bids cache.
   let updateToken = 0;
@@ -36225,7 +36233,7 @@ function _wireSwapTile(scope) {
       toMeta.textContent = '';
       infoEl.textContent = '';
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-      actionBtn.textContent = 'enter an amount';
+      actionBtn.textContent = _isLocked() ? '🔒 Wallet locked · enter amount to unlock & swap' : 'enter an amount';
       return;
     }
     // EXACT-OUT: user typed receive side. Whole-UTXO atomicity → cumulative
@@ -36273,7 +36281,7 @@ function _wireSwapTile(scope) {
           actionBtn.textContent = 'insufficient balance';
         } else {
           actionBtn.disabled = false; actionBtn.style.opacity = '1';
-          actionBtn.textContent = `SWAP ≥ ${accStr} ${ticker}`;
+          actionBtn.textContent = swapLabel(`SWAP ≥ ${accStr} ${ticker}`);
         }
         return;
       }
@@ -36319,7 +36327,7 @@ function _wireSwapTile(scope) {
         actionBtn.textContent = `need ${accStr} ${ticker}, only ${fmtAssetAmount(bal, decimals)} held`;
       } else {
         actionBtn.disabled = false; actionBtn.style.opacity = '1';
-        actionBtn.textContent = `SWAP ${accStr} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats`;
+        actionBtn.textContent = swapLabel(`SWAP ${accStr} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats`);
       }
       return;
     }
@@ -36400,7 +36408,7 @@ function _wireSwapTile(scope) {
         : '';
       infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${residHint}`;
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
-      actionBtn.textContent = `SWAP → ${accStr} ${ticker}`;
+      actionBtn.textContent = swapLabel(`SWAP → ${accStr} ${ticker}`);
     } else {
       // SELL direction: raw is ticker amount.
       let amt;
@@ -36454,7 +36462,7 @@ function _wireSwapTile(scope) {
         actionBtn.textContent = 'top up sats for fees';
       } else {
         actionBtn.disabled = false; actionBtn.style.opacity = '1';
-        actionBtn.textContent = `SWAP → ${result.totalSats.toLocaleString()} sats`;
+        actionBtn.textContent = swapLabel(`SWAP → ${result.totalSats.toLocaleString()} sats`);
       }
     }
   };
