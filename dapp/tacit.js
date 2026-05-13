@@ -32759,7 +32759,7 @@ function applyMarketFilters() {
         <div data-swap-info class="muted" style="font-size:10px;flex:1 1 auto;min-width:0;line-height:1.5;overflow-wrap:anywhere;"></div>
         <label style="font-size:10px;display:flex;align-items:center;gap:6px;flex:0 0 auto;">
           <span class="muted">slippage</span>
-          <select data-swap-slippage style="font-size:11px;padding:3px 6px;">
+          <select data-swap-slippage title="Click to change · max acceptable price drift before the swap refuses to route" style="font-size:11px;padding:3px 8px;-webkit-appearance:none;-moz-appearance:none;appearance:none;background:var(--bg);border:1px solid var(--ink-faint);border-radius:3px;cursor:pointer;font-family:var(--mono);text-align:center;min-width:48px;">
             <option value="1">1%</option>
             <option value="5">5%</option>
             <option value="20" selected>20%</option>
@@ -33293,8 +33293,28 @@ function renderMarketAssetHeader(assetId, rows) {
     ? Number(a.mark_price.unit) : null;
   const _hdrIsDust = floorUnit != null && floorSats != null
     && _isDustAsk(floorUnit, _hdrMarkUnit, floorSats);
-  const floorLine = floorUnit != null
-    ? `<strong style="color:#0a8f43;">best ask ${fmtUnitPriceSats(floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}${_hdrIsDust ? ' <span class="muted" style="font-size:9px;color:var(--red,#b8341d);" title="Best ask is far below the typical trading range and total order size is small — likely a dust listing. See the swap tile for the outlier-guarded mark price (what TAC actually trades at).">⚠ dust</span>' : ''}`
+  // Distinguish the simple-mode-visible best ask from the absolute best.
+  // When the dust ask comes from an OTC opening / range listing (Simple
+  // mode hides those), the header shouldn't claim "best ask 0.18" when
+  // the visible asks ladder starts at 0.71. Recompute the floor scoped
+  // to preauth-only when Simple mode is on so they agree.
+  let _hdrVisibleFloor = floorUnit;
+  if (_marketSimpleMode) {
+    let preauthMin = null;
+    for (const l of rows) {
+      if (l.kind !== 'preauth') continue;
+      const amt = BigInt(l.asset_opening?.amount || 0);
+      const ps = Number(l.min_price_sats || 0);
+      if (amt <= 0n || ps <= 0) continue;
+      const u = unitPriceSats(ps, amt, dec);
+      if (u != null && (preauthMin == null || u < preauthMin)) preauthMin = u;
+    }
+    if (preauthMin != null) _hdrVisibleFloor = preauthMin;
+  }
+  const _hdrVisibleIsDust = _hdrVisibleFloor != null && floorSats != null
+    && _isDustAsk(_hdrVisibleFloor, _hdrMarkUnit, floorSats);
+  const floorLine = _hdrVisibleFloor != null
+    ? `<strong style="color:#0a8f43;">best ask ${fmtUnitPriceSats(_hdrVisibleFloor)} sats</strong>/${escapeHtml(a.ticker || 'token')}${_hdrVisibleIsDust ? ' <span class="muted" style="font-size:9px;color:var(--red,#b8341d);" title="Best visible ask is far below the typical trading range — likely a dust listing. The swap tile uses the outlier-guarded mark price instead.">⚠ dust</span>' : ''}`
     : (floorSats != null
         ? `<strong style="color:#0a8f43;">from ${floorSats.toLocaleString()} sats</strong>`
         : '<span class="muted">no priced listings</span>');
@@ -33377,28 +33397,6 @@ function renderMarketAssetHeader(assetId, rows) {
         <div style="font-size:14px;"><strong>${total}</strong> <span class="muted" style="font-size:11px;">offer${total === 1 ? '' : 's'}</span></div>
         ${kindBits.length ? `<div style="font-size:11px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:2px;">${kindBits.join('<span class="muted">·</span>')}</div>` : ''}
         <div style="font-size:12px;margin-top:4px;">${floorLine}</div>
-        ${(() => {
-          // Last-traded line. Only AXFER (atomic-intent settlement) carries
-          // a verifiable price at broadcast time — opening / range fills
-          // settle off-chain so we can't observe their prices. Decorative
-          // signal, tooltip explains the partiality.
-          const lt = a.last_trade;
-          if (!lt || !Number.isInteger(lt.price_sats) || lt.price_sats <= 0) return '';
-          const ltAmt = (() => { try { return BigInt(lt.amount); } catch { return 0n; } })();
-          if (ltAmt <= 0n) return '';
-          const ltUnit = unitPriceSats(lt.price_sats, ltAmt, dec);
-          const ltAge = relativeAge(Number(lt.ts) || 0);
-          // Per-token USD inline so users see 1-TICKER cost without doing
-          // sats/BTC × BTC/USD mental math. fmtUnitUsd handles the sub-
-          // penny range tacit tokens commonly trade in.
-          const _ltBtcUsd = _cachedBtcUsd();
-          const ltUnitUsd = (ltUnit != null && _ltBtcUsd) ? fmtUnitUsd(ltUnit, _ltBtcUsd) : null;
-          const unitTail = ltUnit != null
-            ? ` · ${escapeHtml(fmtUnitPriceSats(ltUnit))} sats/${escapeHtml(a.ticker || 'token')}${ltUnitUsd ? ` (${escapeHtml(ltUnitUsd)})` : ''}`
-            : '';
-          const ageTail = ltAge ? ` · ${escapeHtml(ltAge)} ago` : '';
-          return `<div class="muted" style="font-size:11px;margin-top:2px;" title="Most recent atomic-intent settlement (T_AXFER) reported to the worker. Best-effort: opening / range fills settle off-chain and don't carry an observable price.">💱 last ${Number(lt.price_sats).toLocaleString()} sats${unitTail}${ageTail}</div>`;
-        })()}
       </div>
     </div>
     ${descriptionBlockHtml}`;
@@ -33872,20 +33870,28 @@ async function populateMarketAssetStats(scope, asset) {
   }
   if (last24h.length >= 1 && latestUnit != null) {
     // Reference price for Δ%: the LAST trade that landed before the 24h
-    // window opened (so Δ% reads as "vs 24h ago" rather than "vs the
-    // oldest in-window trade"). Falls back to the oldest in-window trade
-    // when the ring doesn't extend past 24h.
-    const ref = tradePoints.find(p => p.ts < _24hAgo) || last24h[last24h.length - 1];
+    // window opened (so Δ% reads as "vs 24h ago"). When the ring doesn't
+    // extend past 24h, we don't compute a "24h" delta — the all-time
+    // delta below covers that case with the correct label, so showing a
+    // 24h figure derived from a shorter window would be a false promise.
+    const ref = tradePoints.find(p => p.ts < _24hAgo);
     if (ref && ref.u > 0) delta24Pct = ((latestUnit - ref.u) / ref.u) * 100;
   }
-  const deltaHtml = (delta24Pct == null)
-    ? '—'
-    : (() => {
-        const sign = delta24Pct >= 0 ? '+' : '';
-        const color = delta24Pct >= 0 ? '#0a7d3a' : '#b8341d';
-        return `<span style="color:${color};">${sign}${delta24Pct.toFixed(2)}%</span>`;
-      })();
-  setText('[data-market-stat-delta]', deltaHtml, true);
+  // Locate the wrapper so we can hide the whole slot (label + value)
+  // when the 24h figure isn't truly 24h. Drops the "24h Δ -4.05% /
+  // all-time Δ -4.05%" duplicate that traders find confusing on
+  // markets younger than a day.
+  const _delta24Wrap = section.querySelector('[data-market-stat-delta]')?.parentElement;
+  if (delta24Pct == null) {
+    if (_delta24Wrap) _delta24Wrap.style.display = 'none';
+  } else {
+    if (_delta24Wrap) _delta24Wrap.style.display = '';
+    const sign = delta24Pct >= 0 ? '+' : '';
+    const color = delta24Pct >= 0 ? '#0a7d3a' : '#b8341d';
+    setText('[data-market-stat-delta]',
+      `<span style="color:${color};">${sign}${delta24Pct.toFixed(2)}%</span>`,
+      true);
+  }
   setText('[data-market-stat-high]', high24 != null ? `${fmtUnitPriceSats(high24)} sats/${escapeHtml(ticker)}` : '—', true);
   setText('[data-market-stat-low]',  low24  != null ? `${fmtUnitPriceSats(low24)} sats/${escapeHtml(ticker)}`  : '—', true);
 
