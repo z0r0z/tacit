@@ -25864,10 +25864,26 @@ window.addEventListener('hashchange', () => {
 // Reflect tab state into the URL after every tab click. Guarded against
 // clobbering an unconsumed share-link / claim hash during init — those
 // consumers clear themselves; once cleared, tab clicks own the hash.
+//
+// Market tab special-case: preserve any `&aid=<assetId>` already in the URL
+// so a deep-link landing flow doesn't erase the focused-asset signal. The
+// click that _consumeTabUrlHash fires during deep-link consumption goes
+// through here BEFORE renderMarket has had a chance to consume
+// pendingMarketFilter; without preservation the URL silently downgraded
+// to "#tab=market", losing the aid for reload + share.
 function _writeTabHash(tabName) {
   const cur = location.hash || '';
   if (cur.startsWith('#recv=') || cur.startsWith('#claim=')) return;
-  try { history.replaceState(null, '', `#tab=${tabName}`); } catch {}
+  let target = `#tab=${tabName}`;
+  if (tabName === 'market' && cur.startsWith('#tab=market')) {
+    try {
+      const params = new URLSearchParams(cur.slice(1));
+      const aid = params.get('aid') || '';
+      if (/^[0-9a-f]{64}$/i.test(aid)) target = `#tab=market&aid=${aid.toLowerCase()}`;
+    } catch {}
+  }
+  if (cur === target) return;
+  try { history.replaceState(null, '', target); } catch {}
 }
 
 // ============== Discovery list (recipient side) ==============
@@ -31748,6 +31764,22 @@ async function fetchMarketData() {
   // duplicate-ticker warning by listing a copycat asset before the original.
   markTickerCollisions(assets);
   const listings = Array.isArray(j.listings) ? j.listings : [];
+  // Rebind each listing's _asset to the marked registry entry so the
+  // verified / copycat / duplicate signals flow through to listing-tile
+  // and asset-page renders. The worker serializes listing._asset as a
+  // separate object copy of the registry asset; without this remap, the
+  // ticker-collision marks set above on `assets[]` never reach the
+  // listing-side render paths (which is why the asset-page header was
+  // missing the green verified pill while the browse-grid tile had it).
+  if (assets.length && listings.length) {
+    const byId = new Map(assets.map(a => [a.asset_id, a]));
+    for (const l of listings) {
+      const id = l._asset?.asset_id;
+      if (!id) continue;
+      const reg = byId.get(id);
+      if (reg) l._asset = reg;
+    }
+  }
   return { assets, listings };
 }
 
@@ -31837,6 +31869,20 @@ async function renderMarket() {
       _marketView = { mode: 'asset', assetId: pendingMarketFilter };
     }
     pendingMarketFilter = null;
+  }
+  // Sync the URL hash to whatever asset-mode state we're about to render.
+  // Two reasons:
+  //   1) The tab click that consumed pendingMarketFilter went through
+  //      _writeTabHash which downgraded the URL to "#tab=market" before
+  //      renderMarket ran. Without this re-write the URL loses the aid
+  //      even though the asset view is rendering correctly.
+  //   2) Anyone landing here with _marketView already set (back-button into
+  //      a previously-rendered asset, manual goToMarketAsset call) should
+  //      see the URL reflect that state for shareability.
+  if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
+    _writeMarketHash(_marketView.assetId);
+  } else {
+    _writeMarketHash(null);
   }
   // Fast path: if the cache is fresh, skip the worker round-trip entirely
   // and just re-apply filters against what we already have. The liveness
