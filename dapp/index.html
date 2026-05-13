@@ -1019,10 +1019,19 @@ button.market-chip .chip-caret {
 }
 .market-activity-table th,
 .market-activity-table td {
-  padding: 15px 16px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--ink-faint);
   text-align: left;
   vertical-align: middle;
+  white-space: nowrap;
+}
+/* First cell (listing ID + truncated event label) is the only column
+   allowed to wrap — keeps id/label readable when the table is squeezed,
+   while numeric columns stay on one line so the eye can scan rows. */
+.market-activity-table td:first-child,
+.market-activity-table th:first-child {
+  white-space: normal;
+  word-break: break-word;
 }
 .market-activity-table th {
   background: var(--ink);

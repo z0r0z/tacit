@@ -33422,7 +33422,7 @@ function marketTrustedVolumeCandidate(asset, keys) {
   return null;
 }
 function marketVolumeSats(asset) {
-  return marketTrustedVolumeCandidate(asset, [
+  const explicit = marketTrustedVolumeCandidate(asset, [
     'sale_volume_sats',
     'total_sale_volume_sats',
     'market_sale_volume_sats',
@@ -33431,6 +33431,21 @@ function marketVolumeSats(asset) {
     'volume_sats',
     'market_volume_sats',
   ]);
+  if (explicit != null) return explicit;
+  // Worker doesn't emit a lifetime sale-volume aggregator (only the rolling
+  // volume_24h_sats bucket). As a fallback, sum the recent-trades ring
+  // buffer — it's bounded at TRADES_RING_CAP entries so this approximates
+  // "last N trades" rather than true lifetime, but it makes the Total
+  // Volume column meaningful instead of permanently '—' until/unless we
+  // add a worker-side lifetime counter.
+  const trades = Array.isArray(asset?.trades) ? asset.trades : null;
+  if (!trades || !trades.length) return null;
+  let sum = 0;
+  for (const t of trades) {
+    const n = Number(t?.price_sats);
+    if (Number.isFinite(n) && n > 0) sum += n;
+  }
+  return sum > 0 ? sum : null;
 }
 function marketVolume24hSats(asset) {
   for (const k of ['volume_24h_sats', 'volume24h_sats', 'volume_sats_24h', 'day_volume_sats']) {
@@ -33949,7 +33964,7 @@ function renderMarketBrowseTable(rows) {
             <th>Price</th>
             <th>Market Cap</th>
             <th>24h Volume</th>
-            <th>Total Volume</th>
+            <th title="Sum of the worker's recent-trades ring buffer (most-recent N trades per asset). Worker doesn't yet keep a lifetime aggregator — once it does, this column will switch to the true cumulative value automatically.">Recent Volume</th>
             <th>Listings</th>
           </tr>
         </thead>
