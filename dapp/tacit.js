@@ -33606,7 +33606,17 @@ async function populateMarketAssetStats(scope, asset) {
     return u != null ? { u, ts, price } : null;
   }).filter(Boolean);
   // trades is newest-first → tradePoints inherits that. Index 0 is latest.
-  const latestUnit = tradePoints.length ? tradePoints[0].u : null;
+  // For Δ% we use the worker's outlier-guarded mark_price (when present)
+  // instead of the raw last trade — same reasoning as market cap. If the
+  // latest print is a fat-finger (worker source = 'median_outlier_guard'),
+  // headline Δ% reflects the median, not the outlier. Stat HIGH/LOW are
+  // still computed from the literal trade ring so the trader sees actual
+  // observed prices (with the outlier visible) rather than a sanitized
+  // band that hides real history.
+  const latestUnitRaw = tradePoints.length ? tradePoints[0].u : null;
+  const _deltaMarkUnit = (j.mark_price && Number.isFinite(j.mark_price.unit) && j.mark_price.unit > 0)
+    ? Number(j.mark_price.unit) : null;
+  const latestUnit = _deltaMarkUnit != null ? _deltaMarkUnit : latestUnitRaw;
   const last24h = tradePoints.filter(p => p.ts >= _24hAgo);
   let delta24Pct = null, high24 = null, low24 = null;
   if (last24h.length >= 1) {
