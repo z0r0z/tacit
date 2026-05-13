@@ -14687,35 +14687,22 @@ function markTickerCollisions(assets) {
     for (let i = 1; i < group.length; i++) group[i]._tickerCollision = 'duplicate';
   }
 }
-// "Verified" status for a tacit asset. Decentralized — no allowlist, no
-// curator. An asset is verified when:
-//   - its ticker is NOT a known external-project copycat (COPYCAT_REGISTRY),
-//     AND
-//   - it's either the unique etcher under its ticker on tacit, OR it etched
-//     FIRST under that ticker (markTickerCollisions tags this `'original'`).
-// Duplicate etchers (`_tickerCollision === 'duplicate'`) and known copycats
-// (`_copycatInfo` set) are NOT verified — the rendering surfaces a red
-// warning badge for those.
+// "Verified" status for a tacit asset. Tied to the worker-curated
+// allowlist (`asset.verified === true`, set when the asset_id is in
+// KV under the `verified:` prefix). Editorial endorsement from the
+// tacit operators — NOT a decentralized first-etcher claim. The
+// canonical "first to etch this ticker" signal still exists as
+// _tickerCollision === 'original' and surfaces via the green
+// asset_id color in assetIdColorForAsset, but doesn't get the loud
+// ✓ pill on its own.
 //
-// The badge isn't a trust claim about the issuer; it's a "first/only on
-// tacit, not impersonating off-chain" marker. Users hovering on the badge
-// see exactly that in the tooltip.
+// To add an asset to the curated list: POST /admin/verify?aid=<aid>
+// on the worker with the DEBUG_TOKEN secret. The badge appears
+// within ~5 min after read-side caches refresh.
 function isAssetVerified(asset) {
   if (!asset || typeof asset !== 'object') return false;
   if (asset._copycatInfo) return false;
-  // Two paths to verified:
-  //   1. asset.verified === true — platform-curated endorsement from the
-  //      worker (a.k.a. "official"; a small editorial allowlist for the
-  //      most-traded tokens). This stays the loud signal.
-  //   2. Decentralized fallback: this asset is the unique or earliest
-  //      etcher of its ticker on tacit AND not a known external copycat.
-  //      Set by markTickerCollisions(_tickerCollision === false | 'original')
-  //      and tickerCopycatInfo (a._copycatInfo).
-  // Either condition is sufficient. Unset _tickerCollision falls through
-  // to "not verified" — callers that want the badge should run the asset
-  // through markTickerCollisions on the registry list first.
-  if (asset.verified === true) return true;
-  return asset._tickerCollision === false || asset._tickerCollision === 'original';
+  return asset.verified === true;
 }
 // Compact green pill rendered next to ticker / asset_id where space allows.
 // Returns empty string when the asset isn't verified, so the caller can
@@ -14724,8 +14711,8 @@ function verifiedBadgeHTML(asset, { size = 'sm' } = {}) {
   if (!isAssetVerified(asset)) return '';
   const ticker = String(asset.ticker || '').trim();
   const tip = ticker
-    ? `Canonical: first asset etched under the ticker "${escapeHtml(ticker)}" on tacit, and not a known off-chain project copycat. No central authority verifies this — derived purely from etched_at_height ordering.`
-    : `Canonical: first etcher of this ticker on tacit and not a known off-chain copycat.`;
+    ? `Verified: ${escapeHtml(ticker)} is in the tacit-curated allowlist. Editorial endorsement from the tacit operators that this asset_id is the official representation of the named token (not a copycat etching). Add via /admin/verify on the worker.`
+    : `Verified: tacit-curated allowlist endorses this asset_id as the official representation.`;
   const padding = size === 'lg' ? '2px 7px' : '1px 5px';
   const fontSize = size === 'lg' ? '10px' : '9px';
   return `<span style="display:inline-block;padding:${padding};background:#0a8f43;color:#fff;font-size:${fontSize};border-radius:2px;margin-left:5px;cursor:help;font-weight:600;letter-spacing:0.04em;" title="${tip}">✓ verified</span>`;
