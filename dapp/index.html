@@ -2239,7 +2239,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <div class="muted" style="margin-top:4px;">share with senders so they can transfer assets to you</div>
         </dd>
         <dt>Balance</dt>
-        <dd><span class="amount" id="w-balance">—</span><span class="unit">sats</span></dd>
+        <dd><span class="amount" id="w-balance">—</span><span class="unit">sats</span><span class="unit" id="w-balance-usd" style="color:#0a7d3a;"></span></dd>
         <dt>Block height</dt>
         <dd id="w-height">—</dd>
       </dl>
@@ -2595,6 +2595,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <input id="s-amount" type="text" inputmode="numeric" placeholder="5000" autocomplete="off" style="flex:1;min-width:0;">
           <button id="btn-s-max" type="button" title="Fill in the maximum sendable sats (after fees)" disabled>Max</button>
         </div>
+        <div id="s-amount-usd" class="muted" style="margin-top:2px;font-size:11px;color:#0a7d3a;display:none;"></div>
         <div id="s-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
 
         <div id="sats-preview" style="display:none;"></div>

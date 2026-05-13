@@ -103,6 +103,18 @@ const DUST = 546; // Bitcoin Core's P2PKH dust threshold — safe universal floo
 // mintable etches behind multisig.
 const MAINNET_ALLOW_MINTABLE = true;
 
+// "User has been onboarded" sticky flag. Toggled true on the first
+// meaningful interaction (asset etched / received / transferred / ext
+// wallet connected / share-link imported / hero × dismissed) so the
+// 3-step "Getting started" hero strip auto-hides. Declared up here
+// rather than alongside isOnboarded()/markOnboarded() at the bottom of
+// the file because init() — which transitively reads this via
+// setupHero → applyHeroVisibility — is called BEFORE the bottom-of-
+// file declarations execute. Without this hoist, a fresh signet load
+// could hit "Cannot access 'ONBOARDED_KEY' before initialization"
+// during init's synchronous prologue.
+const ONBOARDED_KEY = 'tacit-onboarded-v1';
+
 // Convenience Worker (image upload, demo faucet, asset directory).
 // Trust-bearing logic stays in this file; the Worker is purely cache + UX.
 // Set BASE to '' to disable all Worker-backed features (upload + auto-faucet + discover).
@@ -1859,6 +1871,102 @@ async function api(path, opts = {}) {
 const apiText = (p, o) => api(p, o).then(r => r.text());
 const apiJson = (p, o) => api(p, o).then(r => r.json());
 
+// ============== BTC / USD price oracle ==============
+// Single in-memory + localStorage-persisted cache of the spot BTC/USD price.
+// Used by the Holdings + Market pages to surface a USD-equivalent next to
+// every sats valuation. Decorative — never security-critical, never gates a
+// broadcast; if the fetch fails entirely we render sats-only with no fallback
+// price (better than a stale or fabricated number).
+//
+// Source preference:
+//   1. mempool.space/api/v1/prices — same provider we already use for chain
+//      data, returns { USD, EUR, GBP, ... } with CORS open
+//   2. api.coinbase.com/v2/prices/BTC-USD/spot — public, CORS open, free
+//   3. cached localStorage value (any age) — keeps the UI populated when
+//      both live sources fail
+//
+// TTL = 5 minutes. Reasonable for treasury-display purposes; a power user
+// who needs sub-minute precision should use a real trading terminal.
+const BTC_USD_TTL_MS = 5 * 60 * 1000;
+const BTC_USD_CACHE_KEY = 'tacit-btc-usd-v1';
+let _btcUsdMemCache = { price: null, fetchedAt: 0 };
+function _loadBtcUsdFromStorage() {
+  try {
+    const raw = localStorage.getItem(BTC_USD_CACHE_KEY);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (!j || typeof j !== 'object') return null;
+    if (!Number.isFinite(j.price) || j.price <= 0) return null;
+    if (!Number.isFinite(j.fetchedAt) || j.fetchedAt <= 0) return null;
+    return j;
+  } catch { return null; }
+}
+function _saveBtcUsdToStorage(price) {
+  try { localStorage.setItem(BTC_USD_CACHE_KEY, JSON.stringify({ price, fetchedAt: Date.now() })); } catch {}
+}
+let _btcUsdInFlight = null;
+async function getBtcUsdPrice() {
+  const now = Date.now();
+  if (_btcUsdMemCache.price != null && (now - _btcUsdMemCache.fetchedAt) < BTC_USD_TTL_MS) {
+    return _btcUsdMemCache.price;
+  }
+  if (_btcUsdInFlight) return _btcUsdInFlight;
+  // Warm from localStorage so the FIRST render of Holdings on a cold tab
+  // gets a USD figure within microseconds. The fresh fetch still kicks
+  // off and overwrites on success.
+  if (_btcUsdMemCache.price == null) {
+    const persisted = _loadBtcUsdFromStorage();
+    if (persisted) _btcUsdMemCache = persisted;
+  }
+  _btcUsdInFlight = (async () => {
+    // Source 1: mempool.space. Their /api/v1/prices is mainnet-only; on
+    // signet NET.api points at /signet/api which doesn't have it, so we
+    // hardcode the mainnet URL — BTC price doesn't depend on the tacit
+    // network setting. Fire-and-forget on failure (next source).
+    try {
+      const r = await fetch('https://mempool.space/api/v1/prices');
+      if (r.ok) {
+        const j = await r.json();
+        const usd = Number(j?.USD || 0);
+        if (Number.isFinite(usd) && usd > 0) {
+          _btcUsdMemCache = { price: usd, fetchedAt: Date.now() };
+          _saveBtcUsdToStorage(usd);
+          return usd;
+        }
+      }
+    } catch {}
+    // Source 2: Coinbase public spot.
+    try {
+      const r = await fetch('https://api.coinbase.com/v2/prices/BTC-USD/spot');
+      if (r.ok) {
+        const j = await r.json();
+        const usd = Number(j?.data?.amount || 0);
+        if (Number.isFinite(usd) && usd > 0) {
+          _btcUsdMemCache = { price: usd, fetchedAt: Date.now() };
+          _saveBtcUsdToStorage(usd);
+          return usd;
+        }
+      }
+    } catch {}
+    // Both live sources failed. Return whatever localStorage had, even
+    // if stale — better than null for UI continuity.
+    return _btcUsdMemCache.price;
+  })().finally(() => { _btcUsdInFlight = null; });
+  return _btcUsdInFlight;
+}
+// Format sats as USD using the cached BTC price. Returns null when the
+// price isn't available — caller should render sats-only in that case.
+function fmtSatsAsUsd(sats, btcUsd) {
+  if (!Number.isFinite(sats) || sats <= 0) return null;
+  if (!Number.isFinite(btcUsd) || btcUsd <= 0) return null;
+  const usd = sats * btcUsd / 100_000_000;
+  if (usd < 0.01) return '<$0.01';
+  if (usd < 1)   return '$' + usd.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
+  if (usd < 10)  return '$' + usd.toFixed(2);
+  if (usd < 1000) return '$' + usd.toFixed(2);
+  return '$' + usd.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
 // Esplora `/address/:addr/utxo` is hard-capped at 500 unspent outputs per
 // address and returns `400 Too many unspent transaction outputs (>500)` when
 // exceeded — there is no pagination on that endpoint. Wallets that have
@@ -2162,12 +2270,26 @@ async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
       // succeeded (mempool / mined). Treat as success — retrying just re-fails
       // the same way and surfaces a fake error to a user whose tx is fine.
       if (/already in block|already known/i.test(msg)) return null;
+      // `too-long-mempool-chain` means our inputs spend from an unconfirmed
+      // ancestry of ≥25 txs (Bitcoin core's default mempool policy limit).
+      // Retrying with the SAME inputs will fail the same way — the chain
+      // shortens only when one of the ancestors confirms. Fail fast with a
+      // user-actionable message rather than silently retrying for ~10s.
+      if (/too-long-mempool-chain/i.test(msg)) {
+        throw new Error(
+          'Bitcoin mempool ancestor-chain limit hit (25 unconfirmed parents). ' +
+          'Your sats UTXOs depend on a long chain of unconfirmed self-sends. ' +
+          'Wait for one of your unconfirmed txs to confirm (signet: ~5–15 min), ' +
+          'then retry. Or top up from a fresh source (e.g. signet faucet) — ' +
+          'fresh sats have no shared ancestry and bypass the limit.'
+        );
+      }
       // Only retry on errors that suggest propagation/indexing delay. Notably we
       // do NOT retry on `non-mandatory-script-verify-flag` (the tx is invalid
       // under mainnet policy — retry just hides the real bug) or
       // `bad-txns-inputs-missingorspent` (already covered by `missing inputs`
       // and otherwise indicates a permanent double-spend, not a race).
-      if (!/missing inputs|mempool-conflict|too-long-mempool-chain/i.test(msg)) {
+      if (!/missing inputs|mempool-conflict/i.test(msg)) {
         throw e;
       }
     }
@@ -7224,6 +7346,36 @@ let _holdingsCache = null;
 // result. Cleared on lock since the user might flip to a different wallet
 // identity for which the assertion doesn't hold.
 let _holdingsEverSeenAssets = false;
+
+// Stale-tolerant render state for the Holdings tab. _holdingsLastRenderOk =
+// true after any successful render (assets, fresh-empty, or transient-empty
+// banner — anything that's not the error path); reset on wallet lock /
+// regenerate. On subsequent refreshes we skip the skeleton flash, and on
+// error we keep the prior list visible with a "stale · …" indicator instead
+// of wiping to a red block. Symmetric to the wallet bar's stale-tolerant
+// pattern.
+let _holdingsLastRenderOk = false;
+const _HOLDINGS_RETRY_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 60_000];
+let _holdingsRetryAttempt = 0;
+let _holdingsRetryTimer = null;
+function _scheduleHoldingsRetry() {
+  if (_holdingsRetryTimer) return;
+  const idx = Math.min(_holdingsRetryAttempt, _HOLDINGS_RETRY_BACKOFF_MS.length - 1);
+  const ms = _HOLDINGS_RETRY_BACKOFF_MS[idx];
+  _holdingsRetryAttempt++;
+  _holdingsRetryTimer = setTimeout(() => {
+    _holdingsRetryTimer = null;
+    // Only retry if Holdings is still the active tab — otherwise the user
+    // navigated away and the next tab activation will run a fresh scan.
+    if (document.querySelector('.tab.active[data-tab="holdings"]')) {
+      renderHoldings();
+    }
+  }, ms);
+}
+function _cancelHoldingsRetry() {
+  if (_holdingsRetryTimer) { clearTimeout(_holdingsRetryTimer); _holdingsRetryTimer = null; }
+  _holdingsRetryAttempt = 0;
+}
 function _holdingsSeenKey() {
   if (!wallet.pub) return null;
   let pubHex; try { pubHex = bytesToHex(wallet.pub); } catch { return null; }
@@ -12757,8 +12909,17 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   }
 
   // (4) UTXO classification + selection.
+  // Confirmed UTXOs are preferred over unconfirmed at any given value tier:
+  // spending the confirmed pile first keeps the unconfirmed ancestor chain
+  // short (Bitcoin mempool policy caps at 25 ancestors). Within each
+  // confirmation tier, larger UTXOs come first to minimize the input count.
   const allUtxos = await getUtxos(wallet.address());
-  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => b.value - a.value);
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
   if (sats.length === 0) {
     throw new Error('no plain-sats UTXOs available to send. Top up first, or all your sats are bound up in asset commitments.');
   }
@@ -12826,7 +12987,27 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   }
   const txHex = bytesToHex(serializeTx(tx));
   const sentTxid = txid(tx);
-  await broadcast(txHex);
+  // Use broadcastWithRetry so the friendly `too-long-mempool-chain` message
+  // surfaces (the retry wrapper detects it and throws an actionable error
+  // instead of the raw RPC string). Other transient errors get the
+  // standard backoff treatment.
+  try {
+    await broadcastWithRetry(txHex);
+  } catch (e) {
+    const msg = (e && e.message) || '';
+    // If we somehow get the raw RPC string here (e.g. direct broadcast call
+    // upstream of the retry), translate it to the same friendly form.
+    if (/too-long-mempool-chain/i.test(msg)) {
+      throw new Error(
+        'Bitcoin mempool ancestor-chain limit hit (25 unconfirmed parents). ' +
+        'Your sats UTXOs depend on a long chain of unconfirmed self-sends. ' +
+        'Wait for one of your unconfirmed txs to confirm (signet: ~5–15 min), ' +
+        'then retry. Or top up from a fresh source (e.g. signet faucet) — ' +
+        'fresh sats have no shared ancestry and bypass the limit.'
+      );
+    }
+    throw e;
+  }
   return {
     txid: sentTxid,
     inputsSpent: picked.map(u => ({ txid: u.txid, vout: u.vout, value: u.value })),
@@ -18275,6 +18456,15 @@ async function refreshWallet() {
     setIfChanged('#w-height', height);
     setStatus('#wallet-status', `synced · ${rate} sat/vB`);
     renderWalletCard({ balance, faucetReady });
+    // USD-equivalent — non-blocking. Fires the oracle fetch in the
+    // background and patches the chip when it resolves; the sats figure
+    // is already painted by the time this runs.
+    getBtcUsdPrice().then(btcUsd => {
+      const el = document.getElementById('w-balance-usd');
+      if (!el) return;
+      const usd = fmtSatsAsUsd(balance, btcUsd);
+      el.textContent = (usd && balance > 0) ? `· ${usd}` : '';
+    }).catch(() => {});
     _cancelWalletRetry();
   } catch (e) {
     const msg = String(e?.message || e);
@@ -18404,6 +18594,10 @@ function setupWalletButtons() {
     // (selected after lock + reconnect) doesn't inherit this one's flag
     // and mis-classify its fresh-scan empty as a hiccup.
     _holdingsEverSeenAssets = false;
+    // Reset stale-tolerant render state too — a different identity means
+    // any prior render isn't a valid fallback for this one.
+    _holdingsLastRenderOk = false;
+    _cancelHoldingsRetry();
     invalidateHoldingsCache();
     try { renderWalletCard(); } catch {}
     // Re-render only the tabs that show balances; refreshAssetSelect /
@@ -20060,6 +20254,24 @@ let pendingSatsSend = null;
 // stale data doesn't drive stale Max calculations.
 let _satsSendCache = null;
 
+// Live USD readout for the Send Sats amount input. Fires on every input
+// event + on warm cache hit at form mount. Hides cleanly when the input
+// is empty/zero or the BTC price oracle isn't reachable.
+async function _refreshSatsSendUsdReadout() {
+  const input = document.getElementById('s-amount');
+  const out = document.getElementById('s-amount-usd');
+  if (!input || !out) return;
+  const raw = (input.value || '').replace(/[^0-9]/g, '');
+  const sats = raw ? Number(raw) : 0;
+  if (!sats || sats <= 0) { out.style.display = 'none'; out.textContent = ''; return; }
+  let btcUsd = null;
+  try { btcUsd = await getBtcUsdPrice(); } catch {}
+  const usd = fmtSatsAsUsd(sats, btcUsd);
+  if (!usd) { out.style.display = 'none'; out.textContent = ''; return; }
+  out.textContent = `≈ ${usd}`;
+  out.style.display = '';
+}
+
 async function refreshSatsSendBalance() {
   const hint = $('#s-amount-hint');
   const maxBtn = $('#btn-s-max');
@@ -20164,12 +20376,19 @@ function setupSatsSendForm() {
   });
 
   const amountInput = $('#s-amount');
-  if (amountInput) amountInput.addEventListener('input', () => {
-    // Strip non-digits aggressively — sats are integers, no decimals.
-    const cleaned = amountInput.value.replace(/[^0-9]/g, '');
-    if (cleaned !== amountInput.value) amountInput.value = cleaned;
-    invalidatePreview();
-  });
+  if (amountInput) {
+    amountInput.addEventListener('input', () => {
+      // Strip non-digits aggressively — sats are integers, no decimals.
+      const cleaned = amountInput.value.replace(/[^0-9]/g, '');
+      if (cleaned !== amountInput.value) amountInput.value = cleaned;
+      invalidatePreview();
+      _refreshSatsSendUsdReadout();
+    });
+    // Initial paint (warm cache or persisted price) + listener for cold-
+    // cache async resolves so the USD readout doesn't stay blank if the
+    // user types before the oracle fetch returns.
+    _refreshSatsSendUsdReadout();
+  }
 
   const maxBtn = $('#btn-s-max');
   if (maxBtn) maxBtn.onclick = async () => {
@@ -20213,7 +20432,15 @@ function setupSatsSendForm() {
         throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to send');
       }
       const allUtxos = await getUtxos(wallet.address());
-      const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => b.value - a.value);
+      // Prefer confirmed UTXOs to keep the unconfirmed ancestor chain short
+      // (Bitcoin mempool policy caps at 25 ancestors). Within each tier,
+      // larger UTXOs first to minimize input count.
+      const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+        const ac = a.status?.confirmed === true ? 1 : 0;
+        const bc = b.status?.confirmed === true ? 1 : 0;
+        if (ac !== bc) return bc - ac;
+        return b.value - a.value;
+      });
       if (sats.length === 0) throw new Error('no plain-sats UTXOs available to send');
 
       const feeRate = await getFeeRate();
@@ -27103,8 +27330,16 @@ async function renderHoldings() {
     }
     return;
   }
-  setStatus('#holdings-status', 'scanning', true);
-  list.innerHTML = '<div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>';
+  // First-load shows a skeleton; subsequent refreshes keep the prior list
+  // visible so a transient 429 doesn't wipe rendered assets to a skeleton-
+  // then-red-block flash. Tracked via _holdingsLastRenderOk: set true after
+  // a successful render (any branch — assets, fresh-empty, transient-empty),
+  // reset only on tab leave / wallet change.
+  const _holdingsIsFirstRender = !_holdingsLastRenderOk;
+  setStatus('#holdings-status', _holdingsIsFirstRender ? 'scanning' : 'refreshing', true);
+  if (_holdingsIsFirstRender) {
+    list.innerHTML = '<div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>';
+  }
   try {
     // Fire chain-tip fetch in parallel with the holdings scan so the conf
     // countdown banner ("X/3 confs · credit at block N") on pending T_PMINTs
@@ -27166,6 +27401,7 @@ async function renderHoldings() {
         };
         setStatus('#holdings-status', 'scan returned zero · likely transient');
         setTabBadge('holdings', 0);
+        _holdingsLastRenderOk = true;
         return;
       }
       // Genuinely fresh wallet — show the funding/etch guidance.
@@ -27175,6 +27411,7 @@ async function renderHoldings() {
       list.innerHTML = `<div class="empty">No tacit assets on ${escapeHtml(NET.name)} yet. ${fundingHint} — or use <strong>Import share-link</strong> above if someone sent you one.</div>`;
       setStatus('#holdings-status', '');
       setTabBadge('holdings', 0);
+      _holdingsLastRenderOk = true;
       return;
     }
     // Stamp the "ever seen assets" flag (session + persisted) so a
@@ -27353,7 +27590,7 @@ async function renderHoldings() {
           <span data-region="avatar" style="display:contents;">${avatarHTML(null)}</span>
           <div style="flex:1;min-width:0;">
             <div class="ticker"><span data-region="display-name">${escapeHtml(displayName)}</span>${petchBadgeHTML}<span data-region="ticker-sub">${tickerSubHTML(displayName, h.ticker)}</span><span class="id-tag" data-act="copy-aid" data-aid="${h.assetIdHex}" title="Copy asset ID">${escapeHtml(shorten(h.assetIdHex, 4))}</span></div>
-            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span><span data-region="verified-tag"></span></div>
+            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span><span data-region="verified-tag"></span><span data-region="market-value-sats"></span></div>
           </div>
         </div>
         <div class="meta">
@@ -28847,8 +29084,81 @@ async function renderHoldings() {
     const _scanTime = new Date();
     const _hh = String(_scanTime.getHours()).padStart(2, '0');
     const _mm = String(_scanTime.getMinutes()).padStart(2, '0');
-    setStatus('#holdings-status', `${arr.length} asset${arr.length > 1 ? 's' : ''} · scanned ${_hh}:${_mm}`);
+    // Hydrate per-card market valuations from the in-memory market floor
+    // map. Reads the same `_marketFloorByAsset()` cache the Market tab uses
+    // for tile floors; if the Market tab hasn't been opened this session
+    // the map is empty and we silently skip (cards just don't show a sats
+    // estimate). We also kick fetchMarketData() in the background here so
+    // a Holdings-first user gets valuations on the next scan or render.
+    let totalValuationSats = 0;
+    let valuationCount = 0;
+    // BTC/USD price — used for the optional "≈$X" line beside the sats
+    // valuation. Fetched off the same persisted oracle the wallet card
+    // uses; cache is warm if the wallet card painted first this session.
+    let btcUsd = null;
+    try { btcUsd = await getBtcUsdPrice(); } catch {}
+    const _renderUsdSuffix = (sats) => {
+      const usd = fmtSatsAsUsd(sats, btcUsd);
+      return usd ? ` · ${escapeHtml(usd)}` : '';
+    };
+    try {
+      const floors = (typeof _marketFloorByAsset === 'function') ? _marketFloorByAsset() : null;
+      if (floors && floors.size > 0) {
+        for (let i = 0; i < arr.length; i++) {
+          const h = arr[i];
+          const f = floors.get(h.assetIdHex);
+          if (!f || !Number.isFinite(f.unit) || f.unit <= 0) continue;
+          const balanceBig = h.balance;
+          if (balanceBig <= 0n) continue;
+          // Whole-token count: balance / 10^decimals, BigInt-safe.
+          const div = 10n ** BigInt(h.decimals || 0);
+          const whole = balanceBig / div;
+          const frac = balanceBig - whole * div;
+          const wholeNum = Number(whole) + (h.decimals > 0 ? Number(frac) / Number(div) : 0);
+          const valSats = wholeNum * f.unit;
+          if (!Number.isFinite(valSats) || valSats <= 0) continue;
+          totalValuationSats += valSats;
+          valuationCount++;
+          const card = cardNodes[i];
+          if (!card) continue;
+          const slot = card.querySelector('[data-region="market-value-sats"]');
+          if (!slot) continue;
+          const rounded = Math.round(valSats);
+          const usdTail = _renderUsdSuffix(rounded);
+          slot.innerHTML = `<span class="unit" style="color:#0a7d3a;" title="Estimated value at the current market floor (${fmtUnitPriceSats(f.unit)} sats/${escapeHtml(h.ticker)}). Decorative — actual sale at this price isn't guaranteed.">~${rounded.toLocaleString()} sats${usdTail}</span>`;
+        }
+      } else if (typeof fetchMarketData === 'function' && WORKER_BASE) {
+        // Warm the market cache in the background so the NEXT renderHoldings
+        // call has floor data. Single fetch; reuses MARKET_FETCH_TTL_MS so
+        // hitting Market right after won't double-pay.
+        fetchMarketData().then(data => {
+          _marketCache = data;
+          _marketFetchedAt = Date.now();
+        }).catch(() => {});
+      }
+    } catch (e) { console.warn('[holdings] valuation hydrate failed:', e); }
+    // Total wallet value = sats balance + asset valuations. Reads the
+    // current Wallet card balance (always rendered before Holdings on
+    // tab-switch). Falls back to skipping the sats portion when the
+    // balance hasn't been hydrated yet.
+    const _walletSatsTxt = (document.getElementById('w-balance')?.textContent || '').replace(/[^\d]/g, '');
+    const walletSats = Number(_walletSatsTxt) || 0;
+    const grandTotalSats = Math.round(totalValuationSats) + walletSats;
+    const _grandUsd = grandTotalSats > 0 ? fmtSatsAsUsd(grandTotalSats, btcUsd) : null;
+    // Status line: rolling totals when any signal is available.
+    const _statusBits = [`${arr.length} asset${arr.length > 1 ? 's' : ''}`, `scanned ${_hh}:${_mm}`];
+    if (grandTotalSats > 0) {
+      const _grandTail = _grandUsd
+        ? `~${grandTotalSats.toLocaleString()} sats · ${_grandUsd}`
+        : `~${grandTotalSats.toLocaleString()} sats`;
+      _statusBits.push(_grandTail);
+    } else if (valuationCount > 0) {
+      _statusBits.push(`~${Math.round(totalValuationSats).toLocaleString()} sats across ${valuationCount} priced asset${valuationCount === 1 ? '' : 's'}`);
+    }
+    setStatus('#holdings-status', _statusBits.join(' · '));
     setTabBadge('holdings', arr.length);
+    _holdingsLastRenderOk = true;
+    _cancelHoldingsRetry();
     // Kick the holdings auto-refresh poll on/off based on whether anything
     // is awaiting cap-credit. Self-stops once all pending have credited so
     // an idle wallet doesn't burn requests.
@@ -28856,21 +29166,37 @@ async function renderHoldings() {
     if (_hasPending) startHoldingsAutoRefresh();
     else stopHoldingsAutoRefresh();
   } catch (e) {
-    // Timeout errors carry a verbose message with a retry hint; render them
-    // with a Retry button instead of a generic error pill so the user has a
-    // clear next action without re-clicking Holdings (which would re-enter
-    // the in-flight promise).
-    const isTimeout = /exceeded \d+s/.test(e?.message || '');
+    const msg = String(e?.message || e);
+    const isTimeout = /exceeded \d+s/.test(msg);
+    const isRateLimited = /rate limited|429/i.test(msg);
+    // Stale-tolerant path: if a prior scan succeeded this session, keep the
+    // rendered list visible and surface a discreet pill instead of wiping
+    // to a red block. The auto-retry quietly recovers in the background;
+    // the user keeps seeing their assets.
+    if (_holdingsLastRenderOk && !isTimeout) {
+      setStatus('#holdings-status', isRateLimited ? 'stale · rate limited' : 'stale · retrying');
+      _scheduleHoldingsRetry();
+      console.warn('holdings refresh failed (keeping stale render):', msg);
+      return;
+    }
+    // First-load or timeout failures: surface the error block as before.
+    // Timeout carries a verbose message with a retry hint, so we render
+    // an explicit Retry button instead of a generic pill.
     if (isTimeout) {
-      list.innerHTML = `<div class="error" style="padding:14px;line-height:1.6;">⏱ ${escapeHtml(e.message)} <button id="btn-holdings-retry" class="primary" style="margin-top:10px;display:block;">↻ Retry scan</button></div>`;
+      list.innerHTML = `<div class="error" style="padding:14px;line-height:1.6;">⏱ ${escapeHtml(msg)} <button id="btn-holdings-retry" class="primary" style="margin-top:10px;display:block;">↻ Retry scan</button></div>`;
       document.getElementById('btn-holdings-retry')?.addEventListener('click', () => {
         invalidateHoldingsCache();
         renderHoldings();
       });
+    } else if (isRateLimited) {
+      // Soften the first-load rate-limit message — no JSON, just the cause
+      // and an auto-recovery hint. The backoff timer will retry on its own.
+      list.innerHTML = `<div class="error" style="padding:14px;line-height:1.6;">Chain indexers are throttling tacit right now. Auto-retrying — or add your own Esplora URL in <em>Manage wallet → Advanced: chain indexer</em> to bypass public rate limits.</div>`;
+      _scheduleHoldingsRetry();
     } else {
-      list.innerHTML = `<div class="error">Scan failed: ${escapeHtml(e.message)}</div>`;
+      list.innerHTML = `<div class="error">Scan failed: ${escapeHtml(msg)}</div>`;
     }
-    setStatus('#holdings-status', isTimeout ? 'scan timed out' : '');
+    setStatus('#holdings-status', isTimeout ? 'scan timed out' : (isRateLimited ? 'rate limited · retrying' : ''));
     console.error(e);
   }
 }
@@ -31207,7 +31533,25 @@ function _marketLiveCountsByAsset() {
 // (pendingMarketFilter) jump straight into asset mode for the targeted asset.
 let _marketCache = null;
 let _marketView = 'browse';
-function goToMarketBrowse() { _marketView = 'browse'; renderMarket(); }
+// Mirror Market navigation into the URL hash so a tile click produces a
+// shareable deep-link (#tab=market&aid=<aid>), and "← All assets" /
+// browser-back returns to the browse index without a re-fetch. Uses
+// history.replaceState so the navigation doesn't pile up history entries
+// for every tile click; users who want a discrete back-stack entry can
+// click the explicit "← All assets" button (still a single state) or
+// share/bookmark the URL. The hashchange listener at line ~25599 picks
+// up external link clicks + back/forward and re-routes accordingly.
+function _writeMarketHash(aidOrNull) {
+  const cur = location.hash || '';
+  // Don't clobber an unconsumed claim/recv hash during init flow.
+  if (cur.startsWith('#recv=') || cur.startsWith('#claim=')) return;
+  const target = aidOrNull
+    ? `#tab=market&aid=${aidOrNull}`
+    : `#tab=market`;
+  if (cur === target) return;
+  try { history.replaceState(null, '', target); } catch {}
+}
+function goToMarketBrowse() { _marketView = 'browse'; _writeMarketHash(null); renderMarket(); }
 function goToMarketAsset(assetIdHex) {
   // Reject malformed asset_ids defensively — every regular caller validates,
   // but this guards against a future caller forgetting to. Falls back to the
@@ -31216,7 +31560,9 @@ function goToMarketAsset(assetIdHex) {
     goToMarketBrowse();
     return;
   }
-  _marketView = { mode: 'asset', assetId: String(assetIdHex).toLowerCase() };
+  const aid = String(assetIdHex).toLowerCase();
+  _marketView = { mode: 'asset', assetId: aid };
+  _writeMarketHash(aid);
   renderMarket();
 }
 
@@ -31844,16 +32190,26 @@ function renderMarketBrowse(rows) {
       : (g.floorSats != null
           ? `<strong style="color:#0a8f43;">from ${g.floorSats.toLocaleString()} sats</strong>`
           : '');
-    // 24h Δ% chip — worker stamps `price_24h_change_pct` on the asset
-    // summary when the trades ring has data points spanning the window.
-    // Green for positive, red for negative, hidden when no data. Tooltip
-    // explains the reference (vs trade as of 24h ago, or first known
-    // trade for very young markets).
-    const delta = Number.isFinite(a.price_24h_change_pct) ? Number(a.price_24h_change_pct) : null;
-    const deltaChip = delta == null ? '' : (() => {
-      const sign = delta >= 0 ? '+' : '';
-      const color = delta >= 0 ? '#0a7d3a' : '#b8341d';
-      return `<span style="display:inline-block;font-size:10px;padding:1px 5px;background:${color};color:#fff;border-radius:2px;margin-left:6px;" title="24h price change vs trade as of 24h ago (or first known trade if the ring doesn't span 24h yet)">${sign}${delta.toFixed(2)}%</span>`;
+    // Price-change chip — worker computes deltas for 1h/4h/24h/7d/all and
+    // picks the tightest meaningful window in price_change_primary_*. For
+    // mature markets that's 24h; for assets trading <24h, the worker
+    // auto-falls-back to 4h/1h/all so the tile always shows a sensible
+    // delta when there's data. Falls back to the legacy 24h-only field
+    // for clients hitting an older worker build.
+    const primaryPct = Number.isFinite(a.price_change_primary_pct)
+      ? Number(a.price_change_primary_pct)
+      : (Number.isFinite(a.price_24h_change_pct) ? Number(a.price_24h_change_pct) : null);
+    const primaryWindow = typeof a.price_change_primary_window === 'string'
+      ? a.price_change_primary_window
+      : '24h';
+    const _windowLbl = primaryWindow === 'all' ? '·' : primaryWindow;
+    const deltaChip = primaryPct == null ? '' : (() => {
+      const sign = primaryPct >= 0 ? '+' : '';
+      const color = primaryPct >= 0 ? '#0a7d3a' : '#b8341d';
+      const tip = primaryWindow === 'all'
+        ? 'Change since first indexed trade — market is younger than 1h or trades are sparse.'
+        : `${primaryWindow} price change · vs trade as of ${primaryWindow} ago`;
+      return `<span style="display:inline-block;font-size:10px;padding:1px 5px;background:${color};color:#fff;border-radius:2px;margin-left:6px;" title="${escapeHtml(tip)}">${escapeHtml(_windowLbl)} ${sign}${primaryPct.toFixed(2)}%</span>`;
     })();
     // Sparkline — compact unit-price line over the last 10 trades the
     // worker shipped on this tile. Renders inline below the offer count,
@@ -31954,6 +32310,26 @@ function renderMarketAssetHeader(assetId, rows) {
   const listCtaHtml = userHoldsAsset
     ? `<button class="primary" data-act="market-quick-list-preauth" data-aid="${escapeHtml(safeAid)}" title="You hold this asset — list one of your UTXOs for sale via an Instant listing. Opens the Holdings tab with the form pre-expanded." style="font-size:11px;padding:6px 10px;flex-shrink:0;background:#0a8f43;border-color:#0a7d3a;color:#fff;">+ List for sale</button>`
     : '';
+  // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
+  // optional name + description + external_url. Lookup is best-effort and
+  // synchronous against the warm cache (resolveImageUri populates it on
+  // first sight). Falls through to no-description-line when missing.
+  const _metaImg = a.image_uri || a.imageUri;
+  const _metaExtras = _metaImg ? getMetadataExtras(_metaImg) : null;
+  const _displayName = (_metaExtras?.name && _metaExtras.name.trim()) ? _metaExtras.name.trim() : null;
+  const _description = (_metaExtras?.description && String(_metaExtras.description).trim()) ? String(_metaExtras.description).trim() : null;
+  const _externalUrl = _metaExtras?.external_url ? safeExternalUrl(String(_metaExtras.external_url)) : null;
+  // Description / external-url block rendered BELOW the header card so it
+  // gets full width and doesn't squeeze the ticker / floor stats out of
+  // the top row. Both lines are optional; if neither is present the block
+  // collapses entirely.
+  const descriptionBlockHtml = (_description || _externalUrl)
+    ? `<div style="margin-bottom:14px;padding:10px 12px;border:1px dashed var(--ink-faint);background:var(--bg);font-size:11px;line-height:1.55;">
+        ${_description ? `<div>${escapeHtml(_description)}</div>` : ''}
+        ${_externalUrl ? `<div style="margin-top:${_description ? '6px' : '0'};"><a href="${escapeHtml(_externalUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(_externalUrl)} ↗</a></div>` : ''}
+       </div>`
+    : '';
+
   return breadcrumb + `
     <div data-market-asset-header style="border:1px solid var(--ink);padding:12px;background:var(--bg-warm);margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
       ${imgUrl
@@ -31961,7 +32337,9 @@ function renderMarketAssetHeader(assetId, rows) {
         : assetImageFallback(safeAid, a.ticker, 44)}
       <div style="min-width:0;flex:1;">
         <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-          <strong style="font-size:18px;">${escapeHtml(a.ticker || '?')}</strong>${collisionBadge}
+          <strong style="font-size:18px;">${escapeHtml(_displayName || a.ticker || '?')}</strong>
+          ${_displayName && a.ticker && _displayName !== a.ticker ? `<span class="muted" style="font-size:12px;">${escapeHtml(a.ticker)}</span>` : ''}
+          ${collisionBadge}
         </div>
         <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
           <span>id </span>
@@ -31990,7 +32368,8 @@ function renderMarketAssetHeader(assetId, rows) {
       </div>
       ${listCtaHtml}
       <button data-act="market-back-browse" title="Back to the asset index" style="font-size:11px;padding:6px 10px;flex-shrink:0;">← All assets</button>
-    </div>`;
+    </div>
+    ${descriptionBlockHtml}`;
 }
 
 // Render a Bids ladder for the asset-detail Market view. Returns the
@@ -32012,6 +32391,8 @@ function renderMarketAssetStatsHTML(asset) {
       <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
         <div><span class="muted">last trade</span> <strong data-market-stat-last>—</strong></div>
         <div><span class="muted">24h Δ</span> <strong data-market-stat-delta>—</strong></div>
+        <div data-market-stat-delta7d-wrap style="display:none;"><span class="muted">7d Δ</span> <strong data-market-stat-delta7d>—</strong></div>
+        <div data-market-stat-deltaall-wrap style="display:none;"><span class="muted" data-market-stat-deltaall-label>all-time Δ</span> <strong data-market-stat-deltaall>—</strong></div>
         <div><span class="muted">24h high</span> <strong data-market-stat-high>—</strong></div>
         <div><span class="muted">24h low</span> <strong data-market-stat-low>—</strong></div>
         <div><span class="muted">24h volume</span> <strong data-market-stat-vol24>—</strong></div>
@@ -32086,24 +32467,52 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   const yLo = Math.max(0, minU - pad);
   const yHi = maxU + pad;
   const ySpan = Math.max(yHi - yLo, 1e-12);
-  // viewBox-relative coords. Logical 600×140 canvas; CSS sizes the SVG to
-  // 100% width so it reflows on mobile without layout math.
-  const W = 600, H = 140;
-  const PL = 8, PR = 8, PT = 8, PB = 18;  // padding for axis label area
+  // viewBox-relative coords. Logical 600×160 canvas; CSS sizes the SVG to
+  // 100% width and uses preserveAspectRatio="xMidYMid meet" so it scales
+  // proportionally on mobile (the old "none" stretched everything).
+  // Switched to time-proportional X — points are placed by REAL timestamp
+  // rather than index-evenly, so a market with a burst of trades followed
+  // by quiet shows the burst as a dense cluster (true to chain timing)
+  // rather than a smeared line.
+  const W = 600, H = 160;
+  const PL = 36, PR = 8, PT = 12, PB = 22;   // wider PL so Y labels don't crowd the line
   const plotW = W - PL - PR;
   const plotH = H - PT - PB;
   const xOf = ts => PL + ((ts - ts0) / tsSpan) * plotW;
   const yOf = u  => PT + (1 - (u - yLo) / ySpan) * plotH;
-  const polyline = points.map(p => `${xOf(p.ts).toFixed(2)},${yOf(p.u).toFixed(2)}`).join(' ');
-  // Area under the line (faint fill) reads as a price-history shape even
-  // when the line itself is thin on a busy chart.
-  const areaPath =
-    `M ${xOf(points[0].ts).toFixed(2)} ${(PT + plotH).toFixed(2)} ` +
-    `L ${points.map(p => `${xOf(p.ts).toFixed(2)} ${yOf(p.u).toFixed(2)}`).join(' L ')} ` +
-    `L ${xOf(points[points.length - 1].ts).toFixed(2)} ${(PT + plotH).toFixed(2)} Z`;
+  // Smooth the line via Catmull-Rom-to-Bézier — looks natural for sparse
+  // trade data (avoids the jagged sawtooth a polyline gives over uneven
+  // timestamps). Degenerates to straight segments when there are <3 points.
+  const _smoothPath = (pts) => {
+    if (pts.length < 2) return '';
+    if (pts.length === 2) {
+      return `M ${xOf(pts[0].ts).toFixed(2)} ${yOf(pts[0].u).toFixed(2)} L ${xOf(pts[1].ts).toFixed(2)} ${yOf(pts[1].u).toFixed(2)}`;
+    }
+    let d = `M ${xOf(pts[0].ts).toFixed(2)} ${yOf(pts[0].u).toFixed(2)}`;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i - 1] || pts[i];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2] || p2;
+      // Catmull-Rom tangents → Bézier control points. Tension=0.5 gives a
+      // natural-looking ease; higher values curl more, lower goes linear.
+      const t = 0.5;
+      const c1x = xOf(p1.ts) + (xOf(p2.ts) - xOf(p0.ts)) / 6 * t;
+      const c1y = yOf(p1.u) + (yOf(p2.u) - yOf(p0.u)) / 6 * t;
+      const c2x = xOf(p2.ts) - (xOf(p3.ts) - xOf(p1.ts)) / 6 * t;
+      const c2y = yOf(p2.u) - (yOf(p3.u) - yOf(p1.u)) / 6 * t;
+      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${xOf(p2.ts).toFixed(2)} ${yOf(p2.u).toFixed(2)}`;
+    }
+    return d;
+  };
+  const linePath = _smoothPath(points);
+  const areaPath = linePath
+    ? `${linePath} L ${xOf(tsN).toFixed(2)} ${(PT + plotH).toFixed(2)} L ${xOf(ts0).toFixed(2)} ${(PT + plotH).toFixed(2)} Z`
+    : '';
   // Per-point dots with title tooltips (native SVG title — no JS hover wiring
   // needed). Each tooltip carries unit price + age + total sats so the user
-  // can read the trade history without leaving the chart.
+  // can read the trade history without leaving the chart. Dot radius scales
+  // down on dense datasets so a 200-trade ring doesn't read as a solid bar.
   const _ageStr = (ts) => {
     const sec = Math.max(0, Math.floor(Date.now() / 1000) - ts);
     if (sec < 60) return `${sec}s ago`;
@@ -32111,14 +32520,20 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
     if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
     return `${Math.floor(sec / 86400)}d ago`;
   };
+  const dotR = points.length > 80 ? 1.5 : (points.length > 40 ? 2 : 2.5);
   const dots = points.map(p => {
     const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}`;
-    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="2.5" fill="#0a8f43"><title>${escapeHtml(tip)}</title></circle>`;
+    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="#0a8f43"><title>${escapeHtml(tip)}</title></circle>`;
   }).join('');
-  // Y-axis min / max labels at the corners; X-axis oldest/newest age labels
-  // at the bottom corners. Lightweight — full axis ticks would dominate
-  // the chart at this size.
+  // Horizontal gridlines at the Y min / mid / max — gives the eye a
+  // reference without committing to full axis ticks. Dashed light strokes
+  // so they don't compete with the price line.
+  const yMid = (yLo + yHi) / 2;
+  const gridlines = [yLo, yMid, yHi].map(u =>
+    `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yOf(u).toFixed(2)}" y2="${yOf(u).toFixed(2)}" stroke="var(--ink-faint)" stroke-width="0.5" stroke-dasharray="2,3"/>`
+  ).join('');
   const minLbl = fmtUnitPriceSats(yLo);
+  const midLbl = fmtUnitPriceSats(yMid);
   const maxLbl = fmtUnitPriceSats(yHi);
   const oldLbl = _ageStr(ts0);
   const newLbl = _ageStr(tsN);
@@ -32127,14 +32542,16 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
       <strong>Price history</strong>
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}</span>
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:140px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
-      <path d="${areaPath}" fill="#0a8f43" fill-opacity="0.08" stroke="none"/>
-      <polyline points="${polyline}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round"/>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
+      ${gridlines}
+      ${areaPath ? `<path d="${areaPath}" fill="#0a8f43" fill-opacity="0.10" stroke="none"/>` : ''}
+      ${linePath ? `<path d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
       ${dots}
-      <text x="${PL}" y="${PT - 1}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(maxLbl)}</text>
-      <text x="${PL}" y="${(PT + plotH + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(minLbl)}</text>
-      <text x="${PL}" y="${H - 4}" font-size="9" fill="var(--ink-mid)">${escapeHtml(oldLbl)}</text>
-      <text x="${W - PR}" y="${H - 4}" font-size="9" fill="var(--ink-mid)" text-anchor="end">${escapeHtml(newLbl)}</text>
+      <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
+      <text x="${PL - 4}" y="${yOf(yMid).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(midLbl)}</text>
+      <text x="${PL - 4}" y="${yOf(yLo).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
+      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)">${escapeHtml(oldLbl)}</text>
+      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" text-anchor="end">${escapeHtml(newLbl)}</text>
     </svg>`;
 }
 
@@ -32173,9 +32590,29 @@ async function populateMarketAssetStats(scope, asset) {
     if (!el) return;
     if (isHtml) el.innerHTML = text; else el.textContent = text;
   };
-  setText('[data-market-stat-vol24]', volSats > 0 ? `${volSats.toLocaleString()} sats` : '—');
+  // BTC/USD spot for sats→USD suffixes on volume + last trade. Best-
+  // effort; falls back to sats-only if oracle is unavailable. Non-blocking
+  // is unnecessary here because getBtcUsdPrice returns instantly when
+  // the cache is warm (which it usually is — the wallet card primed it).
+  let btcUsd = null;
+  try { btcUsd = await getBtcUsdPrice(); } catch {}
+  const _usdSuffix = (sats) => {
+    const usd = fmtSatsAsUsd(sats, btcUsd);
+    return usd ? ` <span class="muted" style="font-weight:normal;">· ${escapeHtml(usd)}</span>` : '';
+  };
+  setText('[data-market-stat-vol24]',
+    volSats > 0 ? `${volSats.toLocaleString()} sats${_usdSuffix(volSats)}` : '—',
+    true);
   setText('[data-market-stat-xfers]', xfers > 0 ? xfers.toLocaleString() : '—');
-  setText('[data-market-stat-last]', lastStr, true);
+  // last trade — append the USD value of the total settlement, not the
+  // unit price (a $X.XX/token figure would mislead given tacit's decimal
+  // ranges; the total sats is what changed hands).
+  let lastWithUsd = lastStr;
+  if (last && Number.isInteger(last.price_sats) && last.price_sats > 0) {
+    const usd = fmtSatsAsUsd(last.price_sats, btcUsd);
+    if (usd) lastWithUsd = `${lastStr}<span class="muted" style="font-weight:normal;"> · ${escapeHtml(usd)}</span>`;
+  }
+  setText('[data-market-stat-last]', lastWithUsd, true);
 
   // Recent-trades ring (newest-first). Powers chart, 24h delta + high/low.
   const trades = Array.isArray(j.trades) ? j.trades : [];
@@ -32218,6 +32655,50 @@ async function populateMarketAssetStats(scope, asset) {
   setText('[data-market-stat-delta]', deltaHtml, true);
   setText('[data-market-stat-high]', high24 != null ? `${fmtUnitPriceSats(high24)} sats/${escapeHtml(ticker)}` : '—', true);
   setText('[data-market-stat-low]',  low24  != null ? `${fmtUnitPriceSats(low24)} sats/${escapeHtml(ticker)}`  : '—', true);
+
+  // 7d Δ% — worker-computed when the ring spans the window. Hide the slot
+  // entirely when the field is absent (young market, ring shorter than 7d)
+  // rather than show a "—" placeholder that competes with real data.
+  const _renderDeltaSlot = (selector, pct, wrapSelector) => {
+    const wrap = wrapSelector ? section.querySelector(wrapSelector) : null;
+    if (pct == null || !Number.isFinite(pct)) { if (wrap) wrap.style.display = 'none'; return; }
+    if (wrap) wrap.style.display = '';
+    const sign = pct >= 0 ? '+' : '';
+    const color = pct >= 0 ? '#0a7d3a' : '#b8341d';
+    setText(selector, `<span style="color:${color};">${sign}${pct.toFixed(2)}%</span>`, true);
+  };
+  _renderDeltaSlot('[data-market-stat-delta7d]', Number.isFinite(j.price_7d_change_pct) ? Number(j.price_7d_change_pct) : null, '[data-market-stat-delta7d-wrap]');
+  // All-time Δ% slot — only render when the ring's oldest trade is OLDER
+  // than 7 days (so the all-time figure is meaningfully more historical
+  // than the 7d one). On young markets where 24h Δ% IS the all-time figure,
+  // the worker computes both but we hide all-time to avoid redundancy.
+  const allTimePct = Number.isFinite(j.price_all_change_pct) ? Number(j.price_all_change_pct) : null;
+  const sevenDayPct = Number.isFinite(j.price_7d_change_pct) ? Number(j.price_7d_change_pct) : null;
+  const oldestTradeTs = (() => {
+    const tr = j.trades;
+    if (!Array.isArray(tr) || !tr.length) return null;
+    let oldest = null;
+    for (const t of tr) {
+      const ts = Number(t?.ts) || 0;
+      if (ts > 0 && (oldest == null || ts < oldest)) oldest = ts;
+    }
+    return oldest;
+  })();
+  const allTimeMeaningful = allTimePct != null
+    && (sevenDayPct == null
+        || (oldestTradeTs != null && oldestTradeTs < (Math.floor(Date.now() / 1000) - 7 * 86400)));
+  _renderDeltaSlot('[data-market-stat-deltaall]', allTimeMeaningful ? allTimePct : null, '[data-market-stat-deltaall-wrap]');
+  // Label tweak: "all-time" is technically "since first known trade" since
+  // the worker's ring caps at TRADES_RING_CAP (200). For most assets that's
+  // months of history; for very-high-volume assets it's days. Tooltip
+  // clarifies so the user isn't misled.
+  if (allTimeMeaningful) {
+    const lblEl = section.querySelector('[data-market-stat-deltaall-label]');
+    if (lblEl) {
+      const ageStr = oldestTradeTs ? relativeAge(oldestTradeTs) : '';
+      lblEl.title = `Compared to the oldest trade in the indexed ring (${ageStr ? `~${ageStr} old` : 'first known trade'}). The ring caps at 200 trades, so this is "since first indexed trade" rather than literal all-time.`;
+    }
+  }
 
   // Bid-ask spread. Cheapest ask = floor from _marketCache.listings for
   // this asset. Highest bid = top of the bid intents (fetched once and
@@ -32444,12 +32925,12 @@ async function _populateDepthChart(section, aid, decimals, ticker) {
       <strong>Depth</strong>
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best ${escapeHtml(fmtUnitPriceSats(bestBid))} / ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}</span>
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:140px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
       <path d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1"/>
       <path d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1"/>
       <line x1="${midX.toFixed(2)}" y1="${PT}" x2="${midX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2,3"/>
-      <text x="${PL}" y="${H - 4}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
-      <text x="${W - PR}" y="${H - 4}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
+      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
+      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
       <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</text>
     </svg>`;
   out.style.display = '';
@@ -35573,7 +36054,8 @@ if (!globalThis.__TACIT_NO_INIT__) {
 // backed up, asset etched / transferred / received), the hero becomes
 // noise. Hide it persistently and surface a small "↺ show getting started"
 // link next to it so it can be brought back.
-const ONBOARDED_KEY = 'tacit-onboarded-v1';
+// (ONBOARDED_KEY is hoisted to the top-of-file constants section so init's
+// synchronous prologue can read it without hitting TDZ — see comment there.)
 function isOnboarded() {
   return localStorage.getItem(ONBOARDED_KEY) === '1';
 }

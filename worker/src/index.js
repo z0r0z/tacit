@@ -2927,30 +2927,74 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
       return (u != null && ts > 0) ? { ts, u } : null;
     }).filter(Boolean);
     if (pts.length > 0) v.price_summary = pts;
-    // 24h Δ% — compare latest (pts[0]) to the price as of 24h ago. Walk
-    // back through the full ring to find the closest pre-24h-ago trade.
+    // Window-based price-change deltas. Compute multiple windows so the
+    // asset page can surface whichever ones have data, and the tile/preview
+    // can pick the BEST available (tightest meaningful window) for young
+    // markets where 24h Δ% would otherwise be undefined.
     if (pts.length > 0) {
       const nowSec = Math.floor(Date.now() / 1000);
-      const cutoff = nowSec - 86400;
       const latestU = pts[0].u;
-      let refU = null;
-      for (const t of ring) {
-        const ts = Number(t.ts) || 0;
-        if (ts >= cutoff) continue;
-        refU = _unit(t.price_sats, t.amount);
-        if (refU != null && refU > 0) break;
-      }
-      // Fall back to the oldest trade we DO have if none predate 24h —
-      // gives a "since first known trade" delta rather than null.
-      if (refU == null) {
-        for (let i = ring.length - 1; i >= 0; i--) {
-          const t = ring[i];
+      // Lazy reference-finder: for a given cutoff (seconds), return the
+      // unit price of the latest trade that landed BEFORE the cutoff.
+      // Walks newest→oldest so the first hit is the closest reference.
+      const refForCutoff = (cutoffSec) => {
+        for (const t of ring) {
+          const ts = Number(t.ts) || 0;
+          if (ts >= cutoffSec) continue;
           const u = _unit(t.price_sats, t.amount);
-          if (u != null && u > 0) { refU = u; break; }
+          if (u != null && u > 0) return { u, ts };
         }
+        return null;
+      };
+      // Oldest-overall fallback for the "since first indexed trade" view.
+      let oldestRef = null;
+      for (let i = ring.length - 1; i >= 0; i--) {
+        const u = _unit(ring[i].price_sats, ring[i].amount);
+        const ts = Number(ring[i].ts) || 0;
+        if (u != null && u > 0 && ts > 0) { oldestRef = { u, ts }; break; }
       }
-      if (refU != null && refU > 0 && latestU != null) {
-        v.price_24h_change_pct = ((latestU - refU) / refU) * 100;
+      const _pct = (latest, ref) => (ref && ref.u > 0 && latest != null)
+        ? ((latest - ref.u) / ref.u) * 100
+        : null;
+      // Per-window deltas. Tile/preview picks the tightest available;
+      // asset-page surfaces all that exist.
+      const r1h  = refForCutoff(nowSec -      3600);
+      const r4h  = refForCutoff(nowSec -  4 * 3600);
+      const r24h = refForCutoff(nowSec -     86400);
+      const r7d  = refForCutoff(nowSec - 7 * 86400);
+      const p1h  = _pct(latestU, r1h);
+      const p4h  = _pct(latestU, r4h);
+      const p24h = _pct(latestU, r24h);
+      const p7d  = _pct(latestU, r7d);
+      if (p1h  != null) v.price_1h_change_pct  = p1h;
+      if (p4h  != null) v.price_4h_change_pct  = p4h;
+      if (p24h != null) v.price_24h_change_pct = p24h;
+      if (p7d  != null) v.price_7d_change_pct  = p7d;
+      // "All-time within indexed ring" delta. Distinct field so the UI
+      // can label correctly ("since first known trade") rather than
+      // overloading the windowed slots.
+      const pAll = _pct(latestU, oldestRef);
+      if (pAll != null && oldestRef && oldestRef.u !== latestU) {
+        v.price_all_change_pct = pAll;
+        v.price_first_trade_ts = oldestRef.ts;
+      }
+      // Primary window — the tightest 1h/4h/24h/7d delta we have data
+      // for, plus the window label. Preference order prefers a stable
+      // 24h figure when available, falling back to tighter windows for
+      // markets younger than 24h. 7d is only chosen when 24h failed AND
+      // the market has 7d+ history (i.e., we're on a quiet asset where
+      // 24h-bucket had no trades) — rare.
+      const candidates = [
+        { window: '24h', pct: p24h },
+        { window: '4h',  pct: p4h },
+        { window: '1h',  pct: p1h },
+        { window: '7d',  pct: p7d },
+        { window: 'all', pct: pAll },
+      ];
+      const primary = candidates.find(c => c.pct != null);
+      if (primary) {
+        v.price_change_primary_pct = primary.pct;
+        v.price_change_primary_window = primary.window;
       }
     }
   }
