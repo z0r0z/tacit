@@ -5862,7 +5862,7 @@ async function _fetchDclaimCredited(dropIdHex) {
 // outpoint validates once, memoized via validatedSet); the cap is gone.
 // The `depth` parameter is now unused and accepted only for call-site
 // signature compatibility — it was already always 0 at every external call.
-async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _depthUnused = 0, metadataOut = null, rpBatch = null, pmintStatusOut = null) {
+async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _depthUnused = 0, metadataOut = null, rpBatch = null, pmintStatusOut = null, validatedReasons = null) {
   const rootKey = `${rootTxid}:${rootVout}`;
   if (validatedSet.has(rootKey)) return validatedSet.get(rootKey);
 
@@ -5941,7 +5941,7 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
   for (let i = topoList.length - 1; i >= 0; i--) {
     const { txid, vout, key } = topoList[i];
     if (validatedSet.has(key)) continue;
-    await _validateOutpointSingle(txid, vout, validatedSet, fetchTx, metadataOut, rpBatch, pmintStatusOut);
+    await _validateOutpointSingle(txid, vout, validatedSet, fetchTx, metadataOut, rpBatch, pmintStatusOut, validatedReasons);
   }
 
   return validatedSet.has(rootKey) ? validatedSet.get(rootKey) : false;
@@ -5953,20 +5953,56 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
 // parent was validated in a prior iteration. Side effects (rpBatch pushes,
 // metadataOut writes, pmintStatusOut tags, mixer nullifier marking,
 // validatedSet/markAll writes) are unchanged.
-async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, metadataOut = null, rpBatch = null, pmintStatusOut = null) {
+// Reason codes recorded into the optional `validatedReasons` Map when a
+// node ends up marked invalid. Renderer uses these to distinguish
+// transient failures (fetch-failed — retry will likely fix) from genuine
+// protocol violations (invalid-proof / invalid-sig / etc. — UTXO is
+// actually malformed). Without this distinction, a flaky indexer makes
+// every cascade look like an inflation attempt.
+const _REASON_FETCH_FAILED = 'fetch-failed';
+const _REASON_INVALID = 'invalid';
+
+function _markInvalid(validatedSet, validatedReasons, key, reason) {
+  validatedSet.set(key, false);
+  if (validatedReasons) validatedReasons.set(key, reason);
+}
+// When a node is invalidated because its PARENT was invalid, propagate
+// the parent's reason. fetch-failed cascades down; invalid stays invalid.
+function _markInvalidFromParent(validatedSet, validatedReasons, key, parentKey) {
+  validatedSet.set(key, false);
+  if (validatedReasons) {
+    const parentReason = validatedReasons.get(parentKey);
+    validatedReasons.set(key, parentReason === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID);
+  }
+}
+
+async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, metadataOut = null, rpBatch = null, pmintStatusOut = null, validatedReasons = null) {
   const key = `${txidHex}:${vout}`;
   if (validatedSet.has(key)) return validatedSet.get(key);
 
   const tx = await fetchTx(txidHex);
-  if (!tx || !tx.vin || !tx.vin[0]) { validatedSet.set(key, false); return false; }
+  if (!tx || !tx.vin || !tx.vin[0]) {
+    // Distinct from "malformed envelope": getTx returned null (network /
+    // indexer flake). Tag fetch-failed so the renderer can surface a soft
+    // "couldn't verify · retry" instead of an inflation warning.
+    _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED);
+    return false;
+  }
   const wit = tx.vin[0].witness;
-  if (!wit || wit.length < 3) { validatedSet.set(key, false); return false; }
+  if (!wit || wit.length < 3) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
   let env;
   try { env = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { env = null; }
-  if (!env) { validatedSet.set(key, false); return false; }
+  if (!env) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
 
-  // Helper: mark all sibling outputs of this tx with a result
-  const markAll = (n, ok) => { for (let j = 0; j < n; j++) validatedSet.set(`${txidHex}:${j}`, ok); };
+  // Helper: mark all sibling outputs of this tx with a result. When marking
+  // invalid, also stamp the failure reason so the scan-level renderer can
+  // route fetch-failed vs invalid into separate buckets.
+  const markAll = (n, ok, reason = _REASON_INVALID) => {
+    for (let j = 0; j < n; j++) {
+      validatedSet.set(`${txidHex}:${j}`, ok);
+      if (!ok && validatedReasons) validatedReasons.set(`${txidHex}:${j}`, reason);
+    }
+  };
 
   // When rpBatch is provided we defer rangeproof verification — push to the batch
   // and accept tentatively. The caller resolves the batch once the whole walk
@@ -6023,8 +6059,12 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // ancestry rule and surprising to anyone reading the spec. The outer
     // BFS driver pre-walks the CETCH ancestor and validates it in an earlier
     // iteration of pass 2, so we just read its result here.
-    const etchValid = validatedSet.get(`${etchTxidHex}:0`) === true;
-    if (!etchValid) { validatedSet.set(key, false); return false; }
+    const etchParentKey = `${etchTxidHex}:0`;
+    const etchValid = validatedSet.get(etchParentKey) === true;
+    if (!etchValid) {
+      _markInvalidFromParent(validatedSet, validatedReasons, key, etchParentKey);
+      return false;
+    }
     // Re-derive the commit-input anchor from the reveal tx's parent commit tx.
     // The issuer signs over this anchor; without it, replay of the envelope into
     // a different (commit, reveal) pair would still verify and let an attacker
@@ -6081,8 +6121,15 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     if (tx.vin.length - 1 > 255) { markAll(Math.max(N, 1), false); return false; }
     for (let i = 1; i < tx.vin.length; i++) {
       const inp = tx.vin[i];
-      const parentValid = validatedSet.get(`${inp.txid}:${inp.vout}`) === true;
-      if (!parentValid) { markAll(Math.max(N, 1), false); return false; }
+      const parentKey = `${inp.txid}:${inp.vout}`;
+      const parentValid = validatedSet.get(parentKey) === true;
+      if (!parentValid) {
+        // Inherit the parent's failure reason so a fetch-failed cascade
+        // doesn't masquerade as a malformed-envelope failure downstream.
+        const parentReason = validatedReasons?.get(parentKey);
+        markAll(Math.max(N, 1), false, parentReason === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID);
+        return false;
+      }
     }
 
     // Step 2: aggregated bulletproof verifies all output commitments. Skipped
@@ -6152,8 +6199,13 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     if (tx.vin.length < 1 + aic) { markAll(N, false); return false; }
     for (let i = 1; i < 1 + aic; i++) {
       const inp = tx.vin[i];
-      const parentValid = validatedSet.get(`${inp.txid}:${inp.vout}`) === true;
-      if (!parentValid) { markAll(N, false); return false; }
+      const parentKey = `${inp.txid}:${inp.vout}`;
+      const parentValid = validatedSet.get(parentKey) === true;
+      if (!parentValid) {
+        const parentReason = validatedReasons?.get(parentKey);
+        markAll(N, false, parentReason === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID);
+        return false;
+      }
     }
     let Cpts;
     try { Cpts = dec.outputs.map(o => bytesToPoint(o.commitment)); }
@@ -6999,6 +7051,11 @@ async function _scanHoldingsImpl() {
   // any newly-confirmed-true entries get merged back.
   const persistedTrue = _getPersistedValidatedTrue();
   let validatedSet = new Map(persistedTrue);
+  // Parallel Map<key, reason> populated when validatedSet.set(key, false).
+  // Lets the per-UTXO classification below distinguish a fetch-failure
+  // cascade (transient → h.unverified) from a genuine protocol failure
+  // (→ h.inflated). Cleared on strict re-walk alongside validatedSet.
+  let validatedReasons = new Map();
   let rpBatch = [];
   // Scan-scoped T_PMINT failure-mode map. Lives across the optimistic and
   // strict walks below so a pmint that gets tagged 'pending' in the first
@@ -7038,7 +7095,7 @@ async function _scanHoldingsImpl() {
   // the first scan after page load.
   if (utxos.length > 1) {
     if (_showProgress) setStatus('#holdings-status', `priming · 0 / ${utxos.length} UTXOs`, true);
-    await validateOutpoint(utxos[0].txid, utxos[0].vout, validatedSet, fetchTx, 0, metadataOut, rpBatch, pmintStatusOut)
+    await validateOutpoint(utxos[0].txid, utxos[0].vout, validatedSet, fetchTx, 0, metadataOut, rpBatch, pmintStatusOut, validatedReasons)
       .catch(e => { console.warn('validateOutpoint threw for', utxos[0].txid + ':' + utxos[0].vout, e); return false; });
   }
   const _scanStart = utxos.length > 1 ? 1 : 0;
@@ -7046,7 +7103,7 @@ async function _scanHoldingsImpl() {
     const chunk = utxos.slice(i, i + SCAN_CONCURRENCY);
     if (_showProgress) setStatus('#holdings-status', `scanning · ${Math.min(i + chunk.length, utxos.length)} / ${utxos.length} UTXOs`, true);
     await Promise.all(chunk.map(u =>
-      validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, rpBatch, pmintStatusOut)
+      validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, rpBatch, pmintStatusOut, validatedReasons)
         .catch(e => { console.warn('validateOutpoint threw for', u.txid + ':' + u.vout, e); return false; })
     ));
   }
@@ -7058,11 +7115,11 @@ async function _scanHoldingsImpl() {
     // rangeproofs would have failed individually, so re-derive from the strict
     // walk to avoid attacker-chosen ticker/imageUri leaking into the registry.
     // pmintStatusOut also clears: a strict re-walk re-classifies T_PMINT failures
-    // from scratch. Re-prime from persistedTrue: those entries were verified
-    // by an earlier scan's independently-passing batch, so the failure in
-    // THIS scan's batch can't impeach them — only the new entries this scan
-    // added are suspect, and the strict re-walk isolates them.
+    // from scratch. validatedReasons clears alongside validatedSet so the
+    // strict walk can re-classify reasons cleanly. Re-prime from persistedTrue:
+    // those entries were verified by an earlier scan's successful batch.
     validatedSet = new Map(persistedTrue);
+    validatedReasons = new Map();
     rpBatch = null;
     metadataOut.clear();
     pmintStatusOut.clear();
@@ -7144,6 +7201,12 @@ async function _scanHoldingsImpl() {
       holdings.set(assetIdHex, {
         assetIdHex, ticker, decimals,
         balance: 0n, utxos: [], ghosts: [], inflated: [], pending: [],
+        // `unverified` separates transient-failure UTXOs (couldn't fetch
+        // an ancestor tx; indexer flake) from genuinely malformed ones
+        // (h.inflated). The renderer uses a softer "couldn't verify yet —
+        // retry" message for unverified and reserves the alarming
+        // inflation-attempt warning for actual protocol violations.
+        unverified: [],
         unknownAsset: !getAssetMeta(assetIdHex),
       });
     }
@@ -7159,7 +7222,7 @@ async function _scanHoldingsImpl() {
     // to the right h.* bucket below. It MUST be the same Map the optimistic
     // walk used — see audit fix #1, plus the comment at its declaration for
     // why a per-UTXO Map here mis-classified pending pmints as inflated.
-    const valid = await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, null, pmintStatusOut);
+    const valid = await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, null, pmintStatusOut, validatedReasons);
 
     // Register any newly-discovered canonical metadata. Honors first-seen wins;
     // the registry is keyed by asset_id which is itself derived from the CETCH
@@ -7212,7 +7275,16 @@ async function _scanHoldingsImpl() {
           } catch {}
         }
       }
-      h.inflated.push({ utxo: u, commitment: onChainCommitment });
+      // Route fetch-failed cascades to `unverified` so the renderer can
+      // surface them as "retry to refetch" instead of "inflation attempt".
+      // Everything else (genuine protocol failure: bad rangeproof / sig /
+      // conservation / asset_id mismatch) stays in `inflated`.
+      const reason = validatedReasons?.get(`${u.txid}:${u.vout}`);
+      if (reason === _REASON_FETCH_FAILED) {
+        h.unverified.push({ utxo: u, commitment: onChainCommitment });
+      } else {
+        h.inflated.push({ utxo: u, commitment: onChainCommitment });
+      }
       continue;
     }
 
@@ -7447,7 +7519,11 @@ async function _scanHoldingsImpl() {
   // entries are stable and don't trigger re-scan.
   const hasUnresolved = [...holdings.values()].some(h =>
     (h.pending && h.pending.length > 0) ||
-    (h.inflated && h.inflated.length > 0)
+    (h.inflated && h.inflated.length > 0) ||
+    // unverified UTXOs can transition to valid on retry (transient fetch
+    // failed), so they're unresolved-by-definition — force a re-scan on
+    // the next signature check rather than serving the cache.
+    (h.unverified && h.unverified.length > 0)
   );
   _lastFullScan = { utxoSig, hasUnresolved, holdings };
   return holdings;
@@ -26526,25 +26602,21 @@ async function renderHoldings() {
           }
           return `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed #7d4ff7;background:#f5f1ff;color:#5a36c4;"><strong>⏳ ${n} mint${plural} pending cap-credit:</strong> ${totalStr} — ${detail}. Spendable once credited; refreshes automatically while this tab is open.</div>`;
         })() : ''}
+        ${h.unverified && h.unverified.length ? `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed var(--ink-faint);background:#fff8e8;">
+          <strong>⏳ ${h.unverified.length} UTXO${h.unverified.length>1?'s':''} couldn't be verified this scan</strong> — the indexer didn't return one or more ancestor transactions (rate-limit / lag / network blip). Not an inflation issue. Retry usually clears it.
+          <div style="margin-top:6px;"><button data-act="retry-inflated" data-aid="${h.assetIdHex}" type="button" style="font-size:10px;padding:3px 10px;">↻ Retry verification</button></div>
+        </div>` : ''}
         ${h.inflated && h.inflated.length ? (() => {
-          // Distinguish T_PMINT failures (no rangeproof — failure is cap
-          // overflow, asset_id forgery, or wrong amount) from CETCH/CXFER
-          // rangeproof failures so the warning copy matches the actual issue.
-          // Petch-rooted UTXOs carry public (amount, blinding) and never have
-          // a rangeproof to fail, so a different failure mode applies.
-          //
-          // Common-case copy: "couldn't verify" rather than "inflation attempt
-          // detected." A genuine inflation attempt is rare — most failures
-          // here are transient (indexer rate-limited a parent /tx fetch
-          // during a deep ancestry walk; the parent's null result cascades
-          // forward as "validation failed" for every descendant). A loud
-          // security-alert framing led users to think their tokens were
-          // being stolen when ↻ Rescan would have cleared it.
+          // h.inflated now reserved for GENUINE protocol failures (rangeproof
+          // verify failed, kernel sig invalid, conservation violation, etc.).
+          // Transient fetch-failure cascades route to h.unverified above with
+          // softer copy. Reaching this branch means the validator computed a
+          // negative answer with all inputs available — worth investigating.
           const reason = isPetchRooted
             ? `failed cap-credit or §5.9 validation (envelope decoded but not creditable — e.g. cap-overflow or wrong amount)`
-            : `couldn't verify rangeproofs — often transient (indexer fetch failure during a deep ancestry walk). Click Retry below; if it persists across multiple scans, the UTXO may be genuinely malformed`;
-          return `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee8d6;border-left-color:var(--orange);">
-            <strong>⚠ ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} unverified:</strong> ${reason}. Not counted in your balance until verification succeeds.
+            : `failed rangeproof / kernel-sig / conservation check. If the same UTXO stays here across multiple retries, the on-chain envelope is malformed`;
+          return `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee;border-left-color:var(--red);">
+            <strong>⚠ ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} failed validation:</strong> ${reason}. Not counted in your balance.
             <div style="margin-top:6px;">
               <button data-act="retry-inflated" data-aid="${h.assetIdHex}" type="button" style="font-size:10px;padding:3px 10px;">↻ Retry verification</button>
             </div>
