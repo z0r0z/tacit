@@ -1954,6 +1954,27 @@ async function getBtcUsdPrice() {
   })().finally(() => { _btcUsdInFlight = null; });
   return _btcUsdInFlight;
 }
+// Synchronous read of the in-memory BTC/USD cache. Used by render paths
+// that can't or shouldn't block on a network round-trip — falls through
+// to localStorage if memory is cold. Returns null when no price is
+// available; callers should render sats-only.
+function _cachedBtcUsd() {
+  if (Number.isFinite(_btcUsdMemCache.price) && _btcUsdMemCache.price > 0) {
+    return _btcUsdMemCache.price;
+  }
+  try {
+    const persisted = _loadBtcUsdFromStorage?.();
+    if (persisted && Number.isFinite(persisted.price) && persisted.price > 0) {
+      _btcUsdMemCache = persisted;
+      return persisted.price;
+    }
+  } catch {}
+  return null;
+}
+// Pre-warm hook: fire a non-blocking getBtcUsdPrice() so the cache is hot
+// before market tiles paint. Safe to call multiple times; getBtcUsdPrice
+// dedupes via _btcUsdInFlight + TTL.
+function _prewarmBtcUsd() { try { getBtcUsdPrice().catch(() => {}); } catch {} }
 // Format sats as USD using the cached BTC price. Returns null when the
 // price isn't available — caller should render sats-only in that case.
 function fmtSatsAsUsd(sats, btcUsd) {
@@ -2023,14 +2044,39 @@ async function _getUtxosViaTxHistory(a) {
   // we've reached the address's earliest tx). HARD_CAP_PAGES is defense-in-
   // depth against a misbehaving indexer that never returns a terminating
   // page; 4000 pages * 25 txs = 100k txs is far beyond any realistic wallet.
+  //
+  // Per-page fallback: api() rotates across providers on 429/5xx but throws
+  // immediately on 4xx (deterministic per-query response). For the chain-walk
+  // route specifically, that assumption is wrong — mempool.space and
+  // blockstream.info have *different* history-depth limits, so the same page
+  // path may 4xx on one provider and 200 on the other. We do the manual
+  // rotation here: when api() throws, raw-fetch the same path from any other
+  // configured base before treating the page as terminal.
   const HARD_CAP_PAGES = 4000;
   let lastSeen = '';
+  let truncatedByIndexer = false;
   for (let page = 0; page < HARD_CAP_PAGES; page++) {
     const path = lastSeen
       ? `/address/${a}/txs/chain/${lastSeen}`
       : `/address/${a}/txs/chain`;
-    let batch;
-    try { batch = await apiJson(path); } catch { break; }
+    let batch = null;
+    try { batch = await apiJson(path); }
+    catch (primaryErr) {
+      // Try every other configured base directly. apiJson already exhausted
+      // its rotation list for 429/5xx; for 4xx it short-circuited. Either
+      // way, walking _apiBases() here lets a tx-history-tolerant secondary
+      // serve the page when the primary refused.
+      const bases = (typeof _apiBases === 'function') ? _apiBases() : [];
+      for (const base of bases) {
+        try {
+          const r = await fetch(base + path);
+          if (!r.ok) continue;
+          batch = await r.json();
+          break;
+        } catch { /* network — try next base */ }
+      }
+      if (batch == null) { truncatedByIndexer = true; break; }
+    }
     if (!Array.isArray(batch) || batch.length === 0) break;
     for (const tx of batch) ingestTx(tx);
     if (batch.length < 25) break;
@@ -2043,6 +2089,9 @@ async function _getUtxosViaTxHistory(a) {
   for (const v of received.values()) {
     if (!spent.has(`${v.txid}:${v.vout}`)) out.push(v);
   }
+  // Tag the array (not the elements) so scanHoldings can surface a
+  // "partial scan" banner. Decorative; the elements themselves are valid.
+  if (truncatedByIndexer) out._truncated = true;
   return out;
 }
 
@@ -2083,19 +2132,29 @@ async function getUtxos(a) {
     return utxos;
   }
 
-  // Light path: direct /utxo. If the indexer says >500, switch the address
-  // to heavy mode for the rest of the session and fall back to the history
-  // walk; the next getUtxos call will use the cached path above.
+  // Light path: direct /utxo. Any 4xx that signals the indexer can't compute
+  // the UTXO set for this address → switch to heavy mode and walk history.
+  // Esplora variants we've observed:
+  //   "Too many unspent transaction outputs (>500)" — result cap on /utxo
+  //   "Too many history entries"                    — UTXO computation
+  //                                                   refused because the
+  //                                                   underlying address tx
+  //                                                   history is too long
+  //                                                   (heavy treasury / drop
+  //                                                   wallets hit this).
+  //   "Address has too many transactions"           — community-mirror variant
+  // The history walk handles each — provider limits differ, so even when
+  // mempool.space refuses, blockstream often succeeds (see api() rotation).
   try {
     return await apiJson(`/address/${a}/utxo`);
   } catch (e) {
-    // Esplora: `400 Too many unspent transaction outputs (>500)` → fall back
-    // to walking tx history. The `api()` wrapper formats the upstream body
-    // as `API 400: Too many unspent transaction outputs (>500). Contact
-    // support to raise limits.`, so we match on the >500 phrase rather than
-    // exact text in case the indexer ever shortens it.
     const msg = String(e && e.message || '');
-    if (/^API 400/.test(msg) && /unspent transaction outputs/i.test(msg)) {
+    const isHeavyAddrError = /^API 4\d\d/.test(msg) && (
+      /unspent transaction outputs/i.test(msg)
+      || /too many history/i.test(msg)
+      || /too many transactions/i.test(msg)
+    );
+    if (isHeavyAddrError) {
       _heavyAddresses.add(a);
       const utxos = await _getUtxosViaTxHistory(a);
       _populateUtxoCache(a, utxos);
@@ -7336,6 +7395,7 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
 // Broadcast handlers explicitly invalidate so the next scan picks up the
 // new state immediately. force=true bypasses the cache (Refresh button).
 let _holdingsCache = null;
+let _holdingsTruncatedScan = false;
 // Sticky "this wallet has ever had assets" flag — persisted to localStorage
 // keyed by (network, owner_pubkey) so it survives page reload. Without
 // persistence, a heavy treasury wallet on first page load (whose first scan
@@ -7489,6 +7549,13 @@ async function _scanHoldingsImpl() {
   // bug. refreshPoolsIfStale is throttled (60s cache) so the cost is bounded.
   try { await refreshPoolsIfStale(); } catch {}
   const utxos = await getUtxos(wallet.address());
+  // Surface a partial-scan flag (set by _getUtxosViaTxHistory when every
+  // configured indexer refused a deep page of address history). The
+  // holdings shown reflect only the UTXOs we WERE able to enumerate;
+  // older confidential outputs are still recoverable from chain but
+  // won't appear in the list until an indexer with deeper history is
+  // available. renderHoldings reads this off the module flag.
+  _holdingsTruncatedScan = !!(utxos && utxos._truncated);
   // UTXO-set signature: if identical to the last successful scan AND that
   // scan had no transient entries (pending pmint / inflated dclaim or other
   // worker-credited types that can transition without a UTXO edit), the
@@ -29159,6 +29226,15 @@ async function renderHoldings() {
     } else if (valuationCount > 0) {
       _statusBits.push(`~${Math.round(totalValuationSats).toLocaleString()} sats across ${valuationCount} priced asset${valuationCount === 1 ? '' : 's'}`);
     }
+    // Partial-scan signal — heavy treasury / drop wallets sometimes exceed
+    // mempool.space's address-history depth limit. Holdings shown still
+    // reflect valid UTXOs that were enumerated; older outputs are on chain
+    // and recoverable but won't appear until an indexer with deeper history
+    // is available. Worth flagging because a power user would otherwise
+    // wonder why a known balance didn't show.
+    if (_holdingsTruncatedScan) {
+      _statusBits.push('partial · indexer history limit hit');
+    }
     setStatus('#holdings-status', _statusBits.join(' · '));
     setTabBadge('holdings', arr.length);
     _holdingsLastRenderOk = true;
@@ -31656,6 +31732,9 @@ function goToMarketAsset(assetIdHex) {
 
 async function fetchMarketData() {
   if (!MARKET_URL) return { assets: [], listings: [] };
+  // Pre-warm BTC/USD so per-tile USD suffixes paint synchronously off the
+  // memory cache rather than every tile waiting on its own oracle hit.
+  _prewarmBtcUsd();
   // Worker-aggregated marketplace endpoint: one round-trip, server pre-joined
   // with kind + _asset reference per listing. Replaces the previous N×3
   // per-asset fan-out — the slowest of N×3 round-trips no longer gates
@@ -32077,6 +32156,11 @@ function applyMarketFilters() {
     const recencyLine = listedRel
       ? `listed ${escapeHtml(listedRel)} ago · expires ${expIso}`
       : `expires ${expIso}`;
+    // USD suffix on the price line — decorative anchor for sats-illiterate
+    // traders. Reads sync cache; absent when the oracle hasn't filled yet.
+    const _tileBtcUsd = _cachedBtcUsd();
+    const _tileUsdStr = _tileBtcUsd ? fmtSatsAsUsd(priceSatsRaw, _tileBtcUsd) : null;
+    const _tileUsdTail = _tileUsdStr ? ` <span class="muted" style="font-size:11px;font-weight:normal;">· ${escapeHtml(_tileUsdStr)}</span>` : '';
     // Ticker, asset_id, network, and ticker-collision state are already shown
     // in the asset-detail header above; we don't repeat them on each tile.
     tile.innerHTML = `
@@ -32085,7 +32169,7 @@ function applyMarketFilters() {
         <div style="font-size:11px;" class="muted">${recencyLine}</div>
       </div>
       <div style="margin-top:6px;font-size:18px;">${l.kind === 'range' ? '<span title="Range-disclosed listing — maker proved their balance ≥ this amount via a bulletproof, without revealing the exact balance." style="cursor:help;">≥</span> ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
-      <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${priceSatsRaw.toLocaleString()} sats${l.kind === 'preauth' ? ' min' : ''}</strong>${unitStr ? `<span class="muted" style="font-size:11px;margin-left:6px;">· ${unitStr}</span>` : ''}</div>
+      <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${priceSatsRaw.toLocaleString()} sats${l.kind === 'preauth' ? ' min' : ''}</strong>${_tileUsdTail}${unitStr ? `<span class="muted" style="font-size:11px;margin-left:6px;">· ${unitStr}</span>` : ''}</div>
       <div style="margin-top:8px;font-size:10px;" class="muted">${l.kind === 'preauth' ? 'seller' : 'maker'}: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || l.seller_payout_address || '', 6))}</span></div>
       ${statusRow}
       ${actionRow}`;
@@ -32871,19 +32955,36 @@ function renderMarketBidsLadderHTML(asset) {
 // Per-asset bid-intent cache so populateMarketBidsLadder + the new
 // spread/depth helpers share one round-trip. TTL aligns with the rest of
 // the market cache (30s). Returns a promise so concurrent calls dedupe.
+// Resolved intents also land on `value` so sync render paths (place-bid
+// form's "Beat best bid" chip) can read without re-awaiting.
 const _BIDS_FETCH_TTL_MS = 30 * 1000;
-const _bidsCache = new Map();  // aid → { ts, promise }
+const _bidsCache = new Map();  // aid → { ts, promise, value? }
 function _fetchBidIntentsCached(aid) {
   const cached = _bidsCache.get(aid);
   if (cached && (Date.now() - cached.ts) < _BIDS_FETCH_TTL_MS) return cached.promise;
   const promise = browseBidIntents(aid).then(raw => {
-    return Array.isArray(raw?.intents) ? raw.intents : [];
-  }).catch(() => []);
+    const arr = Array.isArray(raw?.intents) ? raw.intents : [];
+    const entry = _bidsCache.get(aid);
+    if (entry && entry.promise === promise) entry.value = arr;
+    return arr;
+  }).catch(() => {
+    const entry = _bidsCache.get(aid);
+    if (entry && entry.promise === promise) entry.value = [];
+    return [];
+  });
   _bidsCache.set(aid, { ts: Date.now(), promise });
   return promise;
 }
 function _invalidateBidsCache(aid) {
   if (aid) _bidsCache.delete(aid); else _bidsCache.clear();
+}
+// Synchronous read of the bid cache. Returns null when no fetch has
+// resolved yet for this aid; otherwise the most recent intents array.
+function _bidCachePeek(aid) {
+  const c = _bidsCache.get(aid);
+  if (!c || !('value' in c)) return null;
+  if ((Date.now() - c.ts) > _BIDS_FETCH_TTL_MS) return null;
+  return c.value;
 }
 
 // Bid-ask spread row populator. Cheapest ask comes from the in-memory
@@ -33063,6 +33164,9 @@ async function populateMarketBidsLadder(scope, asset) {
     if (ub == null) return -1;
     return ub - ua;
   });
+  // USD pricing on every row when the oracle cache is hot. Decorative;
+  // a missing price falls through to sats-only without breaking layout.
+  const _bidBtcUsd = _cachedBtcUsd();
   const rowsHtml = ladder.map(b => {
     const amtStr = fmtAssetAmount(BigInt(b.amount || 0), decimals);
     const sats = Number(b.price_sats || 0);
@@ -33076,10 +33180,15 @@ async function populateMarketBidsLadder(scope, asset) {
     else if (b._isMine) action = `<button data-bid-action="cancel-mkt" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;padding:3px 8px;">Cancel</button>`;
     else if (b._expiresIn <= 0) action = `<span class="muted" style="font-size:10px;">expired</span>`;
     else action = `<button data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;padding:3px 8px;background:#0a8f43;color:#fff;border-color:#0a7d3a;">Fulfil</button>`;
+    const _usdStr = _bidBtcUsd ? fmtSatsAsUsd(sats, _bidBtcUsd) : null;
+    const _usdTail = _usdStr ? ` · ${escapeHtml(_usdStr)}` : '';
+    // Click-to-prefill: the row's price/amount get echoed into the place-bid
+    // form via the data-* attrs on the row. The Use-bid-as-template chip in
+    // the form's quick-fill row reads these to auto-fill amount + total.
     return `
-      <div data-bid-row data-bid-id="${escapeHtml(b.bid_id)}" style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid var(--ink-faint);flex-wrap:wrap;">
+      <div data-bid-row data-bid-id="${escapeHtml(b.bid_id)}" data-row-unit="${b._unit != null ? b._unit : ''}" data-row-amount="${escapeHtml(amtStr)}" data-row-sats="${sats}" style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid var(--ink-faint);flex-wrap:wrap;">
         <div style="flex:0 0 auto;font-family:var(--mono);"><strong>${escapeHtml(unitStr)}</strong></div>
-        <div style="flex:1 1 120px;min-width:0;font-size:11px;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${sats.toLocaleString()} sats · ${expiry}${b._isMine ? ' · <strong>you</strong>' : ''}</div>
+        <div style="flex:1 1 120px;min-width:0;font-size:11px;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${sats.toLocaleString()} sats${_usdTail} · ${expiry}${b._isMine ? ' · <strong>you</strong>' : ''}</div>
         <div style="flex:0 0 auto;">${action}</div>
       </div>`;
   }).join('');
@@ -33134,10 +33243,11 @@ function _wireMarketBidPlace(section, asset) {
     }
     formHost.style.display = '';
     formHost.dataset.open = '1';
-    // Reference prices captured when the form opens. Floor comes from the live
-    // market cache (cheapest current ask, unit price); last-traded comes from
-    // the asset record stamped by the worker on the most recent T_AXFER. Both
-    // optional — null when unavailable.
+    // Reference prices captured when the form opens. Floor (cheapest current
+    // ask) and last-trade (most recent T_AXFER) come from local caches —
+    // best-bid is derived live from the cached bid-intents ladder so the
+    // "match best bid +1" quick-fill aligns with what the user is looking
+    // at. All three are optional; chips render only for available signals.
     const _floorEntry = _marketFloorByAsset()?.get(aid) || null;
     const _floorUnit = _floorEntry ? Number(_floorEntry.unit) : null;
     const _lastTrade = asset.last_trade && Number.isInteger(asset.last_trade.price_sats) && Number(asset.last_trade.price_sats) > 0
@@ -33147,19 +33257,58 @@ function _wireMarketBidPlace(section, asset) {
       try { _lastUnit = unitPriceSats(Number(_lastTrade.price_sats), BigInt(_lastTrade.amount), decimals); }
       catch { _lastUnit = null; }
     }
+    // Best bid — derive from the cached bid-intent ladder (already fetched
+    // when the bids panel rendered above this form). Sync read; no fetch.
+    let _bestBidUnit = null;
+    try {
+      const cached = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+      if (Array.isArray(cached) && cached.length > 0) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        let best = 0;
+        for (const b of cached) {
+          if (Number(b.expiry || 0) <= nowSec) continue;
+          if (b.axintent_id) continue;
+          const u = unitPriceSats(Number(b.price_sats || 0), BigInt(b.amount || 0), decimals);
+          if (u != null && u > best) best = u;
+        }
+        if (best > 0) _bestBidUnit = best;
+      }
+    } catch {}
+    const _refBtcUsd = _cachedBtcUsd();
+    const _usdPerToken = (u) => (_refBtcUsd != null && u != null)
+      ? fmtSatsAsUsd(u, _refBtcUsd) : null;
     const _refBits = [];
-    if (_floorUnit != null) _refBits.push(`floor <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}`);
-    if (_lastUnit != null) _refBits.push(`last <strong>${escapeHtml(fmtUnitPriceSats(_lastUnit))}</strong> sats/${escapeHtml(ticker)}`);
+    if (_floorUnit != null) {
+      const us = _usdPerToken(_floorUnit);
+      _refBits.push(`floor <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+    }
+    if (_lastUnit != null) {
+      const us = _usdPerToken(_lastUnit);
+      _refBits.push(`last <strong>${escapeHtml(fmtUnitPriceSats(_lastUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+    }
+    if (_bestBidUnit != null) {
+      const us = _usdPerToken(_bestBidUnit);
+      _refBits.push(`best bid <strong>${escapeHtml(fmtUnitPriceSats(_bestBidUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+    }
     const _refLine = _refBits.length
       ? `<div class="muted" style="font-size:10px;margin-bottom:6px;">reference · ${_refBits.join(' · ')}</div>`
       : '';
-    const _useFloorBtn = (_floorUnit != null && _floorUnit > 0)
-      ? `<button data-bid-action="use-floor" type="button" title="Set price to floor × amount (lifts the cheapest current ask)" style="font-size:10px;padding:2px 6px;">Use floor price</button>`
+    // Quick-fill chips. Each chip fills the Total-price input by computing
+    // unit × current-amount. Available chips depend on which reference
+    // prices we have; rendered as a single row above the inputs so the
+    // user doesn't have to do mental sats math for a normal bid.
+    const _chipBits = [];
+    if (_floorUnit != null && _floorUnit > 0) _chipBits.push(`<button data-bid-quick="floor" data-unit="${_floorUnit}" type="button" title="Match the cheapest current ask — your bid is one fill away from clearing." style="font-size:10px;padding:3px 8px;">Match floor</button>`);
+    if (_lastUnit != null && _lastUnit > 0)  _chipBits.push(`<button data-bid-quick="last"  data-unit="${_lastUnit}"  type="button" title="Match the most recent atomic settlement price." style="font-size:10px;padding:3px 8px;">Match last trade</button>`);
+    if (_bestBidUnit != null && _bestBidUnit > 0) _chipBits.push(`<button data-bid-quick="overbid" data-unit="${_bestBidUnit}" type="button" title="Beat the current best bid by 1% — front of the queue without overpaying." style="font-size:10px;padding:3px 8px;">Beat best bid</button>`);
+    const _chipsRow = _chipBits.length
+      ? `<div class="flex" style="gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;"><span class="muted" style="font-size:10px;">quick fill</span>${_chipBits.join('')}</div>`
       : '';
     formHost.innerHTML = `
       <div style="border:1px dashed var(--ink-faint);padding:10px;background:var(--bg-warm);">
         <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">Bid on ${escapeHtml(ticker)}</div>
         ${_refLine}
+        ${_chipsRow}
         <div class="flex" style="gap:6px;flex-wrap:wrap;">
           <label style="font-size:10px;flex:1;min-width:120px;">Amount (${escapeHtml(ticker)})
             <input data-bid-field="amount" type="text" inputmode="decimal" placeholder="100" style="width:100%;font-family:var(--mono);">
@@ -33175,7 +33324,6 @@ function _wireMarketBidPlace(section, asset) {
         <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">
           <button data-bid-action="submit" class="primary" type="button" style="font-size:11px;">Sign &amp; post bid</button>
           <button data-bid-action="close" type="button" style="font-size:11px;">Close</button>
-          ${_useFloorBtn}
         </div>
         <div data-bid-status class="muted" style="font-size:10px;margin-top:6px;"></div>
       </div>`;
@@ -33211,7 +33359,14 @@ function _wireMarketBidPlace(section, asset) {
         if (ratio > 2) warn = ` · <strong>${ratio.toFixed(1)}× floor — likely mistake</strong>`;
         else if (ratio < 0.5) warn = ` · <strong>${(1/ratio).toFixed(1)}× below floor — unlikely to fill</strong>`;
       }
-      readout.innerHTML = `= <strong>${escapeHtml(fmtUnitPriceSats(u))}</strong> sats/${escapeHtml(ticker)}${warn}`;
+      // Per-token and total USD readouts, off the same cached oracle as
+      // the reference line. Adds zero round-trip; null-tolerant.
+      const usdPerTok = _refBtcUsd ? fmtSatsAsUsd(u, _refBtcUsd) : null;
+      const usdTotal  = _refBtcUsd ? fmtSatsAsUsd(p, _refBtcUsd) : null;
+      const usdTail = usdPerTok && usdTotal
+        ? ` · <span class="muted" style="font-weight:normal;">${escapeHtml(usdPerTok)}/${escapeHtml(ticker)} · total ${escapeHtml(usdTotal)}</span>`
+        : '';
+      readout.innerHTML = `= <strong>${escapeHtml(fmtUnitPriceSats(u))}</strong> sats/${escapeHtml(ticker)}${usdTail}${warn}`;
       readout.style.color = warn ? 'var(--red, #b8341d)' : '';
     };
     amountEl?.addEventListener('input', recomputeReadout);
@@ -33219,23 +33374,29 @@ function _wireMarketBidPlace(section, asset) {
     formHost.querySelector('[data-bid-action="close"]').onclick = () => {
       formHost.style.display = 'none'; formHost.dataset.open = ''; formHost.innerHTML = '';
     };
-    // Use-floor: reads the current Amount input, multiplies by the captured
-    // floor unit price, rounds up so the bid actually meets/exceeds floor
-    // (not below by sub-sat truncation). Defaults amount to 1 if blank so
-    // the user can click Use-floor first and see a sensible default.
-    const useFloorBtn = formHost.querySelector('[data-bid-action="use-floor"]');
-    if (useFloorBtn) useFloorBtn.onclick = () => {
-      if (_floorUnit == null || _floorUnit <= 0) return;
-      let aRaw = (amountEl?.value || '').trim();
-      if (!aRaw) { aRaw = '1'; if (amountEl) amountEl.value = '1'; }
-      let amtBase;
-      try { amtBase = parseAssetAmount(aRaw, decimals); } catch { return; }
-      if (amtBase <= 0n) return;
-      const wholeTokens = Number(amtBase) / Math.pow(10, decimals);
-      const totalSats = Math.max(1, Math.ceil(wholeTokens * _floorUnit));
-      if (priceEl) priceEl.value = String(totalSats);
-      recomputeReadout();
-    };
+    // Quick-fill chips: floor / last / beat-best-bid. Each reads the current
+    // Amount input, multiplies by the chip's unit price, rounds up so a
+    // sub-sat truncation doesn't put the bid below intent, and updates the
+    // Total-price input + live readout. Floor / last match exactly; beat
+    // best bid adds 1% so the bidder takes the front of the queue without
+    // overpaying. Defaults amount to 1 when blank so chip-first flow works.
+    formHost.querySelectorAll('[data-bid-quick]').forEach(chip => {
+      chip.onclick = () => {
+        const unit = Number(chip.dataset.unit || 0);
+        if (!Number.isFinite(unit) || unit <= 0) return;
+        let aRaw = (amountEl?.value || '').trim();
+        if (!aRaw) { aRaw = '1'; if (amountEl) amountEl.value = '1'; }
+        let amtBase;
+        try { amtBase = parseAssetAmount(aRaw, decimals); } catch { return; }
+        if (amtBase <= 0n) return;
+        const wholeTokens = Number(amtBase) / Math.pow(10, decimals);
+        const mode = chip.dataset.bidQuick;
+        const effUnit = mode === 'overbid' ? unit * 1.01 : unit;
+        const totalSats = Math.max(1, Math.ceil(wholeTokens * effUnit));
+        if (priceEl) priceEl.value = String(totalSats);
+        recomputeReadout();
+      };
+    });
     const submitBtn = formHost.querySelector('[data-bid-action="submit"]');
     submitBtn.onclick = async () => {
       if (submitBtn.disabled) return;
