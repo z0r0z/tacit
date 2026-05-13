@@ -5666,6 +5666,44 @@ function loadActivity() {
     return Array.isArray(arr) ? arr : [];
   } catch (e) { console.warn('activity-log parse failed; resetting', e); return []; }
 }
+// Weighted-average entry-price helper for the Holdings P&L pill. Walks
+// the activity log (most-recent capped at ACTIVITY_MAX entries) and
+// sums (amount × price_sats) over recorded buy-side trades, where the
+// price was stamped in extra.price_sats by takePreauthSale and
+// takeAxferOffer. Returns null when no buy-side activity exists for
+// the asset — most users acquire assets via airdrop / etch / direct
+// transfer-in with no associated cost, and we don't want to display
+// a P&L bracket against a basis of zero.
+//
+// Caveat: sell-side dispositions aren't (yet) tracked in activity
+// extras with a price stamp, so the basis only shrinks when the user
+// has zero remaining balance (filtered out by the holdings card
+// rendering — empty balances aren't shown). For typical hodl-after-
+// buying behavior the figure is accurate; users who actively sell
+// then re-buy should treat this as approximate.
+function _computeAssetPnl(assetIdHex, decimals, markUnit) {
+  if (!Number.isFinite(markUnit) || markUnit <= 0) return null;
+  let activity;
+  try { activity = loadActivity(); } catch { return null; }
+  if (!Array.isArray(activity) || !activity.length) return null;
+  let totalAmtBase = 0n;
+  let totalCostSats = 0;
+  for (const e of activity) {
+    if (e.assetId !== assetIdHex) continue;
+    if (e.kind !== 'transfer-in') continue;
+    const ps = Number(e.extra?.price_sats);
+    if (!Number.isFinite(ps) || ps <= 0) continue;
+    let amt = 0n;
+    try { amt = BigInt(e.amount); } catch { continue; }
+    if (amt <= 0n) continue;
+    totalAmtBase += amt;
+    totalCostSats += ps;
+  }
+  if (totalAmtBase <= 0n || totalCostSats <= 0) return null;
+  const wholeBought = Number(totalAmtBase) / Math.pow(10, decimals);
+  if (!Number.isFinite(wholeBought) || wholeBought <= 0) return null;
+  return { avgUnit: totalCostSats / wholeBought, totalCostSats, wholeBought };
+}
 function recordActivity(entry) {
   if (!entry || !entry.kind) return;
   // Any broadcast we record changes wallet state — kill the cached scan so
@@ -11345,6 +11383,8 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
     decimals: Number.isInteger(offer.decimals) ? offer.decimals : 0,
     assetId: offer.asset_id,
     txid: finalTxid,
+    // Cost basis for P&L: sats spent on this atomic-intent settlement.
+    extra: { price_sats: Number(offer.price_sats) || 0, source: 'atomic-take' },
   });
 
   return { txid: finalTxid, hex: txHex };
@@ -12477,6 +12517,10 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
     decimals: Number.isInteger(sale.decimals) ? sale.decimals : 0,
     assetId: assetIdHex,
     txid: revealTxidHex,
+    // Cost basis for P&L tracking — sats spent on this acquisition.
+    // Holdings card's computeAssetPnl reads this to derive weighted-avg
+    // entry price across all trade acquisitions for the asset.
+    extra: { price_sats: Number(sale.min_price_sats) || 0, source: 'preauth-take' },
   });
   // Worker stamps last-traded price + bumps transfer count. Best-effort.
   try {
@@ -27849,7 +27893,7 @@ async function renderHoldings() {
           <span data-region="avatar" style="display:contents;">${avatarHTML(null)}</span>
           <div style="flex:1;min-width:0;">
             <div class="ticker"><span data-region="display-name">${escapeHtml(displayName)}</span>${petchBadgeHTML}<span data-region="ticker-sub">${tickerSubHTML(displayName, h.ticker)}</span><span class="id-tag" data-act="copy-aid" data-aid="${h.assetIdHex}" title="Copy asset ID">${escapeHtml(shorten(h.assetIdHex, 4))}</span></div>
-            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span><span data-region="verified-tag"></span><span data-region="market-value-sats"></span></div>
+            <div class="balance">${fmtAssetAmount(h.balance, h.decimals)}<span class="unit">${h.unknownAsset ? 'unknown asset' : 'confidential'}</span><span data-region="verified-tag"></span><span data-region="market-value-sats"></span><span data-region="market-pnl"></span></div>
           </div>
         </div>
         <div class="meta">
@@ -29389,6 +29433,26 @@ async function renderHoldings() {
                           : 'lowest open ask (floor)';
           const _ageTail = (m.source === 'last' && m.ts) ? `, ${relativeAge(m.ts)} ago` : '';
           slot.innerHTML = `<span class="unit" style="color:#0a7d3a;" title="Estimated at ${_srcLabel} (${fmtUnitPriceSats(m.unit)} sats/${escapeHtml(h.ticker)}${_ageTail}). Decorative — actual sale at this price isn't guaranteed.">~${rounded.toLocaleString()} sats${usdTail}</span>`;
+          // P&L pill: weighted-avg entry price (from recorded
+          // transfer-in activity with extra.price_sats) vs current mark.
+          // Skipped when there are no buy-side activity entries for the
+          // asset — most assets the user received via airdrop / etch / mint
+          // have no cost basis to display.
+          const pnl = _computeAssetPnl(h.assetIdHex, h.decimals, m.unit);
+          if (pnl) {
+            const wholeNow = wholeNum;
+            const pnlSats = Math.round((m.unit - pnl.avgUnit) * wholeNow);
+            const pnlPct = pnl.avgUnit > 0 ? ((m.unit - pnl.avgUnit) / pnl.avgUnit) * 100 : 0;
+            const pnlEl = card.querySelector('[data-region="market-pnl"]');
+            if (pnlEl) {
+              const sign = pnlSats >= 0 ? '+' : '';
+              const color = pnlSats >= 0 ? '#0a7d3a' : '#b8341d';
+              const pnlUsd = btcUsd ? fmtSatsAsUsd(Math.abs(pnlSats), btcUsd) : null;
+              const usdPart = pnlUsd ? ` · ${sign === '+' ? '+' : '-'}${pnlUsd}` : '';
+              const tip = `Cost basis: ${fmtUnitPriceSats(pnl.avgUnit)} sats/${h.ticker} avg across ${pnl.wholeBought.toLocaleString(undefined,{maximumFractionDigits:4})} ${h.ticker} bought via recorded trade-takes. Mark: ${fmtUnitPriceSats(m.unit)} sats/${h.ticker}. P&L = (mark − basis) × current balance. Sell-side dispositions aren't tracked yet so basis reflects buys only.`;
+              pnlEl.innerHTML = ` <span class="unit" style="color:${color};" title="${escapeHtml(tip)}">${sign}${pnlPct.toFixed(1)}%${sign}${pnlSats.toLocaleString()}s${usdPart}</span>`;
+            }
+          }
         }
       } else if (typeof fetchMarketData === 'function' && WORKER_BASE) {
         // Warm the market cache in the background so the NEXT renderHoldings
@@ -32661,6 +32725,7 @@ function applyMarketFilters() {
       </div>
       <!-- Primary action -->
       <button data-swap-action type="button" disabled style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
+      <div data-swap-progress style="display:none;margin-top:10px;font-size:11px;"></div>
     </div>`;
   })();
   // Empty grid hint when simple mode hides all asks. Surfaces a clear
@@ -34289,6 +34354,46 @@ function _wireAutoFulfilToggle(section) {
 // Reuses takePreauthSale + fulfilBidIntent so the underlying execution
 // path is shared with the legacy Sweep forms (and the _markTxInputsSpent
 // indexer-lag guard applies the same way).
+// Per-fill progress row component. Renders an N-line strip showing
+// each planned fill's state: queued (gray) / broadcasting (green
+// spinner) / done (✓ with mempool.space link). Called during the
+// sweep loop in _wireSwapTile and the dedicated Sweep buy/sell forms
+// so users see exactly which fills landed vs which are pending.
+function _renderSwapProgressStep(item) {
+  const label = item.label || '';
+  if (item.status === 'done' && item.txid && NET?.explorer) {
+    const short = item.txid.slice(0, 6) + '…' + item.txid.slice(-6);
+    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--ink-mid);">
+      <span style="color:#0a8f43;font-weight:700;">✓</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(label)}</span>
+      <a href="${escapeHtml(NET.explorer)}/tx/${escapeHtml(item.txid)}" target="_blank" rel="noopener noreferrer" style="font-family:var(--mono);font-size:10px;">${escapeHtml(short)} ↗</a>
+    </div>`;
+  }
+  if (item.status === 'broadcasting') {
+    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--ink);">
+      <span class="live-dots" style="display:inline-block;width:12px;color:#0a8f43;">○</span>
+      <span style="flex:1;min-width:0;">${escapeHtml(label)}</span>
+      <span class="muted" style="font-family:var(--mono);font-size:10px;">broadcasting…</span>
+    </div>`;
+  }
+  if (item.status === 'failed') {
+    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--red,#b8341d);">
+      <span style="font-weight:700;">✗</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(label)}</span>
+      <span style="font-family:var(--mono);font-size:10px;">${escapeHtml((item.err || '').slice(0, 60))}</span>
+    </div>`;
+  }
+  return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--ink-mid);opacity:0.6;">
+    <span>·</span>
+    <span style="flex:1;min-width:0;">${escapeHtml(label)}</span>
+    <span class="muted" style="font-size:10px;">queued</span>
+  </div>`;
+}
+function _renderSwapProgress(host, items) {
+  if (!host) return;
+  host.style.display = items.length ? 'block' : 'none';
+  host.innerHTML = items.map(_renderSwapProgressStep).join('');
+}
 function _wireSwapTile(scope) {
   const widget = scope.querySelector('[data-swap-tile]');
   if (!widget) return;
@@ -34660,24 +34765,46 @@ function _wireSwapTile(scope) {
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
       if (!confirm(
         `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?\n\n` +
-        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} vian instant listings.\n` +
+        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} via instant listings.\n` +
         `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
         (usd ? `≈ ${usd}\n` : '') +
         `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast.`
       )) return;
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       const origLabel = actionBtn.textContent;
+      // Build per-fill progress items so the user sees which fill is
+      // broadcasting now + the txid of each completed fill (with a
+      // clickable mempool.space link). Far more informative than the
+      // bare "1/3 filled…" string.
+      const progressEl = widget.querySelector('[data-swap-progress]');
+      const progressItems = result.plan.map((c, idx) => ({
+        label: `${idx + 1}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} @ ${fmtUnitPriceSats(c.u)} sats/${ticker} — ${c.ps.toLocaleString()} sats`,
+        status: 'queued',
+        txid: null,
+      }));
+      _renderSwapProgress(progressEl, progressItems);
       let filled = 0, lastErr = null;
       for (let i = 0; i < result.plan.length; i++) {
         const c = result.plan[i];
         actionBtn.textContent = `${filled}/${result.plan.length} filled…`;
+        progressItems[i].status = 'broadcasting';
+        _renderSwapProgress(progressEl, progressItems);
         try {
           const r = await takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l });
           filled++;
+          progressItems[i].status = 'done';
+          progressItems[i].txid = r?.reveal_txid || r?.commit_txid || null;
+          _renderSwapProgress(progressEl, progressItems);
           const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
           await Promise.all([_mark(r?.commit_txid), _mark(r?.reveal_txid)]);
           if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
-        } catch (e) { lastErr = e?.message || String(e); break; }
+        } catch (e) {
+          lastErr = e?.message || String(e);
+          progressItems[i].status = 'failed';
+          progressItems[i].err = lastErr;
+          _renderSwapProgress(progressEl, progressItems);
+          break;
+        }
       }
       invalidateMarketCache();
       invalidateHoldingsCache();
@@ -34707,17 +34834,38 @@ function _wireSwapTile(scope) {
       )) return;
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       const origLabel = actionBtn.textContent;
+      const progressEl = widget.querySelector('[data-swap-progress]');
+      const progressItems = result.plan.map((c, idx) => ({
+        label: `${idx + 1}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} → ${c.ps.toLocaleString()} sats @ ${fmtUnitPriceSats(c.u)} sats/${ticker}`,
+        status: 'queued',
+        txid: null,
+      }));
+      _renderSwapProgress(progressEl, progressItems);
       let filled = 0, lastErr = null;
       for (let i = 0; i < result.plan.length; i++) {
         const c = result.plan[i];
         actionBtn.textContent = `${filled}/${result.plan.length} fulfilled…`;
+        progressItems[i].status = 'broadcasting';
+        _renderSwapProgress(progressEl, progressItems);
         try {
           const r = await fulfilBidIntent({ bid: c.b });
           filled++;
+          progressItems[i].status = 'done';
+          // Sell-side: commit_txid is what just broadcast. The settle tx
+          // happens later when the bidder Takes (which we don't observe
+          // from here), so we surface the commit as the visible artifact.
+          progressItems[i].txid = r?.commit_txid || null;
+          _renderSwapProgress(progressEl, progressItems);
           const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
           await Promise.all([_mark(r?.commit_txid), _mark(r?.split_txid)]);
           if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
-        } catch (e) { lastErr = e?.message || String(e); break; }
+        } catch (e) {
+          lastErr = e?.message || String(e);
+          progressItems[i].status = 'failed';
+          progressItems[i].err = lastErr;
+          _renderSwapProgress(progressEl, progressItems);
+          break;
+        }
       }
       invalidateMarketCache();
       invalidateHoldingsCache();
