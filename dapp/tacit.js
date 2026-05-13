@@ -32433,15 +32433,25 @@ function applyMarketFilters() {
   const noAtomicHint = !_marketSimpleMode && atomicCount === 0 && trustCount > 0
     ? `<div style="margin-bottom:10px;font-size:11px;font-style:italic;" class="muted">no atomic offers under current filters — try kind=⚡ atomic</div>`
     : '';
-  // Asks-section header with mode toggle. Sort hint kept compact.
+  // Asks-section header: title + sort hint on the left; controls on the
+  // right. "+ List" sits with the other seller-side affordances (Simple
+  // toggle, and the form host that expands underneath) so a holder
+  // wanting to add liquidity sees the action in context — the asks
+  // ladder they're contributing to.
   const sortLabel = $('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first';
   const modeChip = _marketSimpleMode
-    ? `<button data-act="market-simple-toggle" type="button" title="Simple mode hides atomic intents and OTC offers. Click to show all offers — including ⚡ atomic (3-step trustless flow) and ⚠ OTC (counterparty trust required)." style="font-size:10px;padding:2px 8px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` (+${hiddenByMode} hidden)` : ''}</button>`
-    : `<button data-act="market-simple-toggle" type="button" title="Show only one-click trustless instant listings (what the swap tile routes through). Hides atomic intents and OTC offers." style="font-size:10px;padding:2px 8px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
+    ? `<button data-act="market-simple-toggle" type="button" title="Simple mode hides atomic intents and OTC offers. Click to show all offers — including ⚡ atomic (3-step trustless flow) and ⚠ OTC (counterparty trust required)." style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` (+${hiddenByMode} hidden)` : ''}</button>`
+    : `<button data-act="market-simple-toggle" type="button" title="Show only one-click trustless instant listings (what the swap tile routes through). Hides atomic intents and OTC offers." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
+  const _listChip = userHoldsAsset
+    ? `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(_marketView.assetId)}" title="You hold this asset — list one of your UTXOs for sale via an instant listing (signed once at listing time, buyer completes settlement)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink);color:var(--ink);cursor:pointer;">+ List</button>`
+    : '';
+  const _askFormSlot = userHoldsAsset
+    ? `<div data-market-ask-form data-aid="${escapeHtml(_marketView.assetId)}" style="display:none;margin-bottom:10px;"></div>`
+    : '';
   const asksHeaderHtml = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><strong>Asks · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel}</span></div>
-      ${modeChip}
-    </div>`;
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${modeChip}</div>
+    </div>${_askFormSlot}`;
   // Swap tile: the primary trading action surface, modeled on Uniswap /
   // Jupiter-style "from / to" swap UIs. Top input is editable (what you
   // pay); bottom is a live estimate (what you receive). Click-to-flip
@@ -33062,15 +33072,13 @@ function renderMarketAssetHeader(assetId, rows) {
       <span class="muted">/</span>
       <strong style="color:var(--ink);">${escapeHtml(a.ticker || '?')}</strong>
     </div>`;
-  // Show a prominent "List this asset" CTA if the user already holds it.
-  // Uses cached holdings — no forced rescan. If holdings cache is empty
-  // (first visit) the button is hidden; user can still list via Holdings tab.
-  // The click handler opens an in-page Place Ask form below the header (no
-  // tab bounce). _wireMarketAskPlace mounts the form into [data-market-ask-form].
+  // userHoldsAsset is consumed below to decide whether to render the
+  // ask-form host element. The "+ List for sale" button itself now
+  // lives in the asks-section header next to the Simple/All toggle —
+  // a logically seller-side surface, paired with the form host that
+  // gets mounted directly under it so the form opens in view rather
+  // than scrolling up to the asset header.
   const userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(safeAid));
-  const listCtaHtml = userHoldsAsset
-    ? `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" title="You hold this asset — list one of your UTXOs for sale via an instant listing (signed once at listing time, buyer completes settlement)." style="font-size:11px;padding:6px 10px;flex-shrink:0;background:#0a8f43;border-color:#0a7d3a;color:#fff;">+ List for sale</button>`
-    : '';
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
   // synchronous against the warm cache (resolveImageUri populates it on
@@ -33091,13 +33099,12 @@ function renderMarketAssetHeader(assetId, rows) {
        </div>`
     : '';
 
-  // In-page Place Ask form host. Mounted empty by default; populated by
-  // _wireMarketAskPlace when the "+ List for sale" button toggles it open.
-  // Lives directly under the asset header so the CTA's effect is visible
-  // in-place (no tab bounce).
-  const askFormHostHtml = userHoldsAsset
-    ? `<div data-market-ask-form data-aid="${escapeHtml(safeAid)}" style="display:none;margin-bottom:14px;"></div>`
-    : '';
+  // Place-Ask form host now lives next to the asks ladder (rendered in
+  // the asks-header block by applyMarketFilters), so this function no
+  // longer emits a separate host div. The button + form are paired in
+  // a seller-side context rather than orphaned at the bottom of the
+  // asset header card.
+  //
   // Async-resolve the asset logo via the metadata blob (most etcher
   // image_uris point to IPFS JSON metadata, not the image directly).
   // bindMarketAssetHeader runs _resolveAssetLogosIn after this HTML mounts.
@@ -33151,9 +33158,7 @@ function renderMarketAssetHeader(assetId, rows) {
           return `<div class="muted" style="font-size:11px;margin-top:2px;" title="Most recent atomic-intent settlement (T_AXFER) reported to the worker. Best-effort: opening / range fills settle off-chain and don't carry an observable price.">💱 last ${Number(lt.price_sats).toLocaleString()} sats${unitTail}${ageTail}</div>`;
         })()}
       </div>
-      ${listCtaHtml}
     </div>
-    ${askFormHostHtml}
     ${descriptionBlockHtml}`;
 }
 
