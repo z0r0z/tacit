@@ -32763,7 +32763,7 @@ function applyMarketFilters() {
           <span data-swap-meta="to" class="muted" style="font-size:10px;text-align:right;"></span>
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
-          <input data-swap-input="to" type="text" placeholder="0" readonly style="flex:1 1 auto;font-family:var(--mono);font-size:22px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;color:var(--ink);">
+          <input data-swap-input="to" type="text" inputmode="decimal" placeholder="0" style="flex:1 1 auto;font-family:var(--mono);font-size:22px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;color:var(--ink);">
           <div data-swap-pill="to" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:5px 12px;background:var(--bg);color:var(--ink);border:1px solid var(--ink-faint);border-radius:16px;font-weight:600;font-size:13px;">
             ${assetLogoHtml}<span data-swap-token="to">${escapeHtml(ticker)}</span>
           </div>
@@ -35544,6 +35544,12 @@ function _wireSwapTile(scope) {
   };
   const getDirection = () => widget.dataset.direction || 'buy';
   const getPayUnit = () => widget.dataset.payUnit || 'sats';
+  // Active side tracks which input the user is driving. 'from' = exact-in
+  // (default — type what you pay, see what you get). 'to' = exact-out
+  // (type what you want to receive, see what it costs). Whole-UTXO
+  // atomicity means "exact out" is really "≥ requested" — last fill may
+  // overshoot since you can't partial-take a single ask/bid.
+  const getActiveSide = () => widget.dataset.activeSide || 'from';
   const getSlipRatio = () => {
     const pct = parseFloat(slipSel?.value || '20');
     return Number.isFinite(pct) ? pct / 100 : 0.20;
@@ -35609,6 +35615,67 @@ function _wireSwapTile(scope) {
     if (!plan.length) return null;
     return { plan, totalAmt, totalSats, residualAmt: targetTacBig - totalAmt, targetAmt: targetTacBig, floor };
   };
+  // BUY exact-out: user types target TICKER amount; walk asks cheapest-
+  // first under slippage cap, accumulate until cumulative ≥ target.
+  // Whole-UTXO atomicity → last ask may overshoot; result is honestly
+  // framed as "≥ requested for at most Y sats."
+  const planBuyExactOut = (targetTacBig) => {
+    if (targetTacBig <= 0n) return null;
+    const cap = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 + getSlipRatio()) : Infinity;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const candidates = (_marketCache?.listings || [])
+      .filter(l => l.kind === 'preauth' && l._asset?.asset_id === aid)
+      .filter(l => l.seller_pubkey !== myPubHex)
+      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired)
+      .map(l => {
+        const amt = BigInt(l.asset_opening?.amount || 0);
+        const ps  = Number(l.min_price_sats || 0);
+        const u   = unitPriceSats(ps, amt, decimals);
+        return { l, amt, ps, u };
+      })
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= cap && c.amt > 0n && c.ps > 0)
+      .sort((x, y) => x.u - y.u);
+    if (!candidates.length) return null;
+    const plan = []; let totalSats = 0; let totalAmt = 0n;
+    for (const c of candidates) {
+      if (totalAmt >= targetTacBig) break;
+      plan.push(c); totalSats += c.ps; totalAmt += c.amt;
+    }
+    if (!plan.length) return null;
+    return { plan, totalAmt, totalSats, target: targetTacBig, overshoot: totalAmt > targetTacBig ? totalAmt - targetTacBig : 0n, shortfall: totalAmt < targetTacBig ? targetTacBig - totalAmt : 0n, cap, exactOut: true };
+  };
+  // SELL exact-out: user types target SATS to receive; walk bids
+  // highest-first above slippage floor, accumulate until cumulative sats
+  // ≥ target. Last bid can overshoot by ≤ one bid's worth of sats.
+  const planSellExactOut = async (targetSatsTotal) => {
+    if (!Number.isFinite(targetSatsTotal) || targetSatsTotal <= 0) return null;
+    let bids;
+    try { bids = await _fetchBidIntentsCached(aid); }
+    catch { return null; }
+    if (!Array.isArray(bids) || bids.length === 0) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const floor = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 - getSlipRatio()) : 0;
+    const candidates = bids
+      .filter(b => b.buyer_pubkey !== myPubHex)
+      .filter(b => Number(b.expiry || 0) > nowSec)
+      .filter(b => !b.axintent_id)
+      .map(b => {
+        const amt = BigInt(b.amount || 0);
+        const ps  = Number(b.price_sats || 0);
+        const u   = unitPriceSats(ps, amt, decimals);
+        return { b, amt, ps, u };
+      })
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floor && c.amt > 0n && c.ps > 0)
+      .sort((x, y) => y.u - x.u);
+    if (!candidates.length) return null;
+    const plan = []; let totalSats = 0; let totalAmt = 0n;
+    for (const c of candidates) {
+      if (totalSats >= targetSatsTotal) break;
+      plan.push(c); totalSats += c.ps; totalAmt += c.amt;
+    }
+    if (!plan.length) return null;
+    return { plan, totalAmt, totalSats, targetSats: targetSatsTotal, overshootSats: totalSats > targetSatsTotal ? totalSats - targetSatsTotal : 0, shortfallSats: totalSats < targetSatsTotal ? targetSatsTotal - totalSats : 0, floor, exactOut: true };
+  };
   // Pill direction: swap which side is sats vs ticker. Doesn't touch the
   // inputs (caller decides whether to clear). Updates action-button color.
   const applyDirection = () => {
@@ -35659,15 +35726,119 @@ function _wireSwapTile(scope) {
   let updateToken = 0;
   const update = async () => {
     const myToken = ++updateToken;
-    const raw = (fromInput.value || '').trim();
     const dir = getDirection();
+    const activeSide = getActiveSide();
+    // Read whichever input the user is driving. The inactive side gets
+    // cleared + filled by the planner output. 'from' → exact-in (existing
+    // behavior). 'to' → exact-out (new — planner walks asks/bids until
+    // cumulative ≥ target).
+    const raw = activeSide === 'to'
+      ? (toInput.value || '').trim()
+      : (fromInput.value || '').trim();
     if (!raw) {
-      toInput.value = '';
+      // Only blank the OTHER side; preserve whichever input is active.
+      if (activeSide === 'to') fromInput.value = '';
+      else toInput.value = '';
       fromMeta.textContent = '';
       toMeta.textContent = '';
       infoEl.textContent = '';
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       actionBtn.textContent = 'enter an amount';
+      return;
+    }
+    // EXACT-OUT: user typed receive side. Whole-UTXO atomicity → cumulative
+    // is "≥ requested" with overshoot ≤ last fill's size.
+    if (activeSide === 'to') {
+      if (dir === 'buy') {
+        let amt;
+        try { amt = parseAssetAmount(raw, decimals); }
+        catch { fromInput.value = ''; actionBtn.disabled = true; actionBtn.style.opacity = '0.5'; actionBtn.textContent = 'invalid amount'; infoEl.textContent = ''; return; }
+        if (amt <= 0n) { fromInput.value = ''; actionBtn.disabled = true; actionBtn.style.opacity = '0.5'; actionBtn.textContent = 'amount must be > 0'; infoEl.textContent = ''; return; }
+        const result = planBuyExactOut(amt);
+        if (myToken !== updateToken) return;
+        if (!result) {
+          fromInput.value = '';
+          infoEl.textContent = `no asks within ${slipSel.value}% slippage · raise slippage or reduce amount`;
+          actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+          actionBtn.textContent = 'no route';
+          return;
+        }
+        const satBal = Number(_walletCardState?.balance || 0);
+        const insufficient = satBal > 0 && result.totalSats > satBal;
+        const payUnit = getPayUnit();
+        if (payUnit === 'usd' && Number.isFinite(btcUsd) && btcUsd > 0) {
+          const usd = result.totalSats * btcUsd / 100_000_000;
+          fromInput.value = usd >= 1 ? usd.toFixed(2) : usd.toFixed(4);
+        } else {
+          fromInput.value = result.totalSats.toLocaleString();
+        }
+        const accStr = fmtAssetAmount(result.totalAmt, decimals);
+        const overshootStr = result.overshoot > 0n
+          ? ` (+${fmtAssetAmount(result.overshoot, decimals)} overshoot — whole-UTXO)`
+          : '';
+        const usdTotal = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+        fromMeta.textContent = `will receive ${accStr} ${ticker}${overshootStr}`;
+        toMeta.textContent = usdTotal ? `cost ${result.totalSats.toLocaleString()} sats · ${usdTotal}` : `cost ${result.totalSats.toLocaleString()} sats`;
+        const cheapU = result.plan[0].u;
+        const dearU = result.plan[result.plan.length - 1].u;
+        const rangeStr = result.plan.length === 1
+          ? `${fmtUnitPriceSats(cheapU)} sats/${ticker}`
+          : `${fmtUnitPriceSats(cheapU)}–${fmtUnitPriceSats(dearU)} sats/${ticker}`;
+        const feeEst = result.plan.length * 800;
+        infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats · exact-out (≥ requested)`;
+        if (insufficient) {
+          actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+          actionBtn.textContent = 'insufficient balance';
+        } else {
+          actionBtn.disabled = false; actionBtn.style.opacity = '1';
+          actionBtn.textContent = `SWAP ≥ ${accStr} ${ticker}`;
+        }
+        return;
+      }
+      // SELL exact-out: receive side is sats.
+      const targetSats = parseInt(raw.replace(/[, ]/g, ''), 10);
+      if (!Number.isFinite(targetSats) || targetSats <= 0) {
+        fromInput.value = '';
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'invalid sats';
+        infoEl.textContent = '';
+        return;
+      }
+      infoEl.textContent = 'finding route…';
+      const result = await planSellExactOut(targetSats);
+      if (myToken !== updateToken) return;
+      if (!result) {
+        fromInput.value = '';
+        infoEl.textContent = `no bids within ${slipSel.value}% slippage · raise slippage or reduce target sats`;
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'no route';
+        return;
+      }
+      const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+      const insufficient = result.totalAmt > bal;
+      const accStr = fmtAssetAmount(result.totalAmt, decimals);
+      fromInput.value = accStr;
+      const overshootStr = result.overshootSats > 0
+        ? ` (+${result.overshootSats.toLocaleString()} sats overshoot)`
+        : '';
+      const usdTotal = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+      fromMeta.textContent = `will sell ${accStr} ${ticker}${insufficient ? ' — INSUFFICIENT' : ''}`;
+      toMeta.textContent = usdTotal ? `receive ${result.totalSats.toLocaleString()} sats${overshootStr} · ${usdTotal}` : `receive ${result.totalSats.toLocaleString()} sats${overshootStr}`;
+      const highU = result.plan[0].u;
+      const lowU = result.plan[result.plan.length - 1].u;
+      const rangeStr = result.plan.length === 1
+        ? `${fmtUnitPriceSats(highU)} sats/${ticker}`
+        : `${fmtUnitPriceSats(lowU)}–${fmtUnitPriceSats(highU)} sats/${ticker}`;
+      const feeEst = result.plan.length * 800 * 2;
+      const autoHint = _isAutoFulfilEnabled() ? '' : ' · ⚠ enable Auto-fulfil';
+      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats · exact-out (≥ requested)${autoHint}`;
+      if (insufficient) {
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = `need ${accStr} ${ticker}, only ${fmtAssetAmount(bal, decimals)} held`;
+      } else {
+        actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        actionBtn.textContent = `SWAP ${accStr} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats`;
+      }
       return;
     }
     if (dir === 'buy') {
@@ -35808,11 +35979,22 @@ function _wireSwapTile(scope) {
   // Initial paint + wiring.
   applyDirection();
   update();
-  fromInput.addEventListener('input', update);
+  // Typing in either input flags it as the active side. Top → exact-in;
+  // bottom → exact-out. update() reads the active side and routes through
+  // the appropriate planner.
+  fromInput.addEventListener('input', () => {
+    widget.dataset.activeSide = 'from';
+    update();
+  });
+  toInput.addEventListener('input', () => {
+    widget.dataset.activeSide = 'to';
+    update();
+  });
   if (slipSel) slipSel.addEventListener('change', update);
   if (flipBtn) flipBtn.onclick = () => {
     widget.dataset.direction = getDirection() === 'buy' ? 'sell' : 'buy';
     widget.dataset.payUnit = 'sats';
+    widget.dataset.activeSide = 'from';
     fromInput.value = '';
     toInput.value = '';
     applyDirection();
@@ -35846,9 +36028,106 @@ function _wireSwapTile(scope) {
   // user typed) → confirm() → sequential broadcast with the same
   // _markTxInputsSpent indexer-lag guard as Sweep forms.
   actionBtn.onclick = async () => {
+    const dir = getDirection();
+    const activeSide = getActiveSide();
+    // EXACT-OUT path: re-plan at click time, confirm with "≥ requested"
+    // semantics (whole-UTXO atomicity → overshoot ≤ last fill), then run
+    // the same per-fill broadcast loop as exact-in.
+    if (activeSide === 'to') {
+      const rawTo = (toInput.value || '').trim();
+      if (!rawTo) return;
+      let result;
+      if (dir === 'buy') {
+        let amt;
+        try { amt = parseAssetAmount(rawTo, decimals); } catch { return; }
+        if (amt <= 0n) return;
+        result = planBuyExactOut(amt);
+      } else {
+        const targetSats = parseInt(rawTo.replace(/[, ]/g, ''), 10);
+        if (!Number.isFinite(targetSats) || targetSats <= 0) return;
+        result = await planSellExactOut(targetSats);
+      }
+      if (!result) { toast('No route available', 'error'); return; }
+      const accStr = fmtAssetAmount(result.totalAmt, decimals);
+      const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+      if (dir === 'buy') {
+        const overshootStr = result.overshoot > 0n
+          ? `\n\nWhole-UTXO atomicity → you'll receive +${fmtAssetAmount(result.overshoot, decimals)} ${ticker} overshoot vs your ${fmtAssetAmount(result.target, decimals)} ${ticker} target.`
+          : '';
+        if (!confirm(
+          `Swap ${result.totalSats.toLocaleString()} sats → ≥ ${accStr} ${ticker}?\n\n` +
+          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} via instant listings.\n` +
+          `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
+          (usd ? `≈ ${usd}\n` : '') +
+          `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast.` +
+          overshootStr
+        )) return;
+      } else {
+        const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+        if (result.totalAmt > bal) { toast(`You only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`, 'error'); return; }
+        const overshootStr = result.overshootSats > 0
+          ? `\n\nLast bid overshoots your ${result.targetSats.toLocaleString()} sats target by +${result.overshootSats.toLocaleString()} sats.`
+          : '';
+        if (!confirm(
+          `Swap ${accStr} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats?\n\n` +
+          `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} via atomic intents.\n` +
+          `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}\n` +
+          (usd ? `≈ ${usd}\n` : '') +
+          `Settlement awaits each bidder's Take (~1–30 min). ` +
+          `${_isAutoFulfilEnabled() ? 'Auto-fulfil is ON.' : 'Enable Auto-fulfil first to keep this tab signing claims.'}` +
+          overshootStr
+        )) return;
+      }
+      actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+      const origLabel = actionBtn.textContent;
+      const progressEl = widget.querySelector('[data-swap-progress]');
+      const progressItems = result.plan.map((c, idx) => dir === 'buy' ? ({
+        label: `${idx + 1}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} @ ${fmtUnitPriceSats(c.u)} sats/${ticker} — ${c.ps.toLocaleString()} sats`,
+        status: 'queued', txid: null,
+      }) : ({
+        label: `${idx + 1}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} → ${c.ps.toLocaleString()} sats @ ${fmtUnitPriceSats(c.u)} sats/${ticker}`,
+        status: 'queued', txid: null,
+      }));
+      _renderSwapProgress(progressEl, progressItems);
+      let filled = 0, lastErr = null;
+      for (let i = 0; i < result.plan.length; i++) {
+        const c = result.plan[i];
+        actionBtn.textContent = `${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'}…`;
+        progressItems[i].status = 'broadcasting';
+        _renderSwapProgress(progressEl, progressItems);
+        try {
+          const r = dir === 'buy'
+            ? await takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l })
+            : await fulfilBidIntent({ bid: c.b });
+          filled++;
+          progressItems[i].status = 'done';
+          progressItems[i].txid = r?.reveal_txid || r?.commit_txid || null;
+          _renderSwapProgress(progressEl, progressItems);
+          const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
+          await Promise.all([_mark(r?.commit_txid), _mark(r?.reveal_txid || r?.split_txid)]);
+          if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
+        } catch (e) {
+          lastErr = e?.message || String(e);
+          progressItems[i].status = 'failed';
+          progressItems[i].err = lastErr;
+          _renderSwapProgress(progressEl, progressItems);
+          break;
+        }
+      }
+      invalidateMarketCache();
+      invalidateHoldingsCache();
+      if (dir === 'sell') _invalidateBidsCache(aid);
+      if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
+      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'} · ${lastErr}`, 'error', 8000);
+      else if (dir === 'buy') toast(`Swapped → ${accStr} ${ticker} ✓`, 'success', 5000);
+      else toast(`Selling ${accStr} ${ticker} ✓ (pending bidder Takes)`, 'success', 5000);
+      actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      actionBtn.textContent = origLabel;
+      setTimeout(() => renderMarket(), 1500);
+      return;
+    }
     const raw = (fromInput.value || '').trim();
     if (!raw) return;
-    const dir = getDirection();
     if (dir === 'buy') {
       const sats = getPayUnit() === 'usd'
         ? Math.floor(parseFloat(raw.replace(/[$, ]/g, '')) * 100_000_000 / btcUsd)
