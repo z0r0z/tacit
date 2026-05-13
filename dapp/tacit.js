@@ -197,6 +197,7 @@ const ATOMIC_INTENT_FULFILMENT_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? 
 // buyer completes settlement alone via ECDH-derived recipient blinding.
 const PREAUTH_SALES_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/preauth-sales` : '';
 const PREAUTH_SALE_URL = (assetIdHex, saleIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/preauth-sales/${saleIdHex}` : '';
+const ASSET_DETAIL_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}` : '';
 const PETCH_REGISTRY_URL = WORKER_BASE ? WORKER_BASE + '/petch-assets' : '';
 const PETCH_ASSET_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/petch-assets/${assetIdHex}` : '';
 const PMINTS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/pmints` : '';
@@ -11369,6 +11370,9 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
   postHint(finalTxid, 0, {
     price_sats: Number(offer.price_sats) || 0,
     amount:     String(offer.amount || ''),
+    seller_address: offer.maker_address || '',
+    buyer_address: wallet.address(),
+    listing_kind: 'atomic',
   });
 
   // Pre-stash the recipient opening so the taker's next holdings refresh sees
@@ -12527,6 +12531,9 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
     postHint(revealTxidHex, 0, {
       price_sats: Number(sale.min_price_sats) || 0,
       amount: String(amount),
+      seller_address: sale.seller_payout_address || '',
+      buyer_address: wallet.address(),
+      listing_kind: 'instant',
     });
   } catch {}
   return { commit_txid: commitTxidHex, reveal_txid: revealTxidHex, hex: revealHex };
@@ -14748,9 +14755,6 @@ function isAssetVerified(asset) {
   if (asset._copycatInfo) return false;
   return asset.verified === true;
 }
-// Compact green pill rendered next to ticker / asset_id where space allows.
-// Returns empty string when the asset isn't verified, so the caller can
-// append unconditionally without a wrapping check at every callsite.
 function verifiedBadgeHTML(asset, { size = 'sm' } = {}) {
   if (!isAssetVerified(asset)) return '';
   const ticker = String(asset.ticker || '').trim();
@@ -14761,14 +14765,9 @@ function verifiedBadgeHTML(asset, { size = 'sm' } = {}) {
   const fontSize = size === 'lg' ? '10px' : '9px';
   return `<span style="display:inline-block;padding:${padding};background:#0a8f43;color:#fff;font-size:${fontSize};border-radius:2px;margin-left:5px;cursor:help;font-weight:600;letter-spacing:0.04em;" title="${tip}">✓ verified</span>`;
 }
-// Color hint for asset_id renderings. Verified assets get the affirming
-// green; non-verified stay on the default ink color so the eye is drawn
-// to the verified ones in dense lists. Used as inline `color: ${...}` in
-// the mono-box span that renders asset_id everywhere.
 function assetIdColorForAsset(asset) {
   return isAssetVerified(asset) ? '#0a7d3a' : 'var(--ink-mid)';
 }
-
 // Asset-metadata `external_url` fields are issuer-controlled. Even with HTML
 // attribute escaping, an `href="javascript:…"` (or `data:`, `vbscript:`, etc.)
 // would execute the moment a user clicks. Restrict to https:// — anything
@@ -29938,6 +29937,11 @@ function postHint(revealTxid, revealVout = 0, opts = {}) {
                     && opts.amount != null)
     ? { price_sats: opts.price_sats, amount: String(opts.amount) }
     : null;
+  if (tradeBody) {
+    for (const k of ['seller_address', 'buyer_address', 'listing_kind']) {
+      if (typeof opts[k] === 'string' && opts[k].trim()) tradeBody[k] = opts[k].trim();
+    }
+  }
   const delays = [0, 3000, 8000, 20000, 60000]; // ~90s total before giving up
   (async () => {
     for (const d of delays) {
@@ -31967,6 +31971,22 @@ function _marketLiveCountsByAsset() {
 // (pendingMarketFilter) jump straight into asset mode for the targeted asset.
 let _marketCache = null;
 let _marketView = 'browse';
+let _marketBrowsePage = 1;
+let _marketListingPage = 1;
+const MARKET_BROWSE_PAGE_SIZE = 20;
+const MARKET_LISTING_PAGE_SIZE = 12;
+const MARKET_ACTIVITY_PAGE_SIZE = 25;
+const MARKET_ACTIVITY_MAX_ROWS = 500;
+const MARKET_ASSET_STATS_TTL_MS = 60 * 1000;
+const MARKET_ASSET_STATS_CONCURRENCY = 6;
+const _marketAssetStatsCache = new Map();
+const _marketAssetStatsInFlight = new Set();
+const _marketAssetStatsQueue = [];
+const _marketTradeAddressCache = new Map();
+let _marketAssetStatsRefreshTimer = 0;
+let _marketAssetStatsActive = 0;
+let _marketAssetStatsChanged = false;
+
 // Simple-mode toggle for the asks ladder. When true (default), the
 // ladder hides atomic intents (claim/fulfil/take dance) and OTC
 // opening/range listings (counterparty-trust required) so the user
@@ -31987,12 +32007,6 @@ function _saveMarketSimple(on) {
   try { localStorage.setItem(_MARKET_SIMPLE_KEY, on ? '1' : '0'); } catch {}
 }
 let _marketSimpleMode = _loadMarketSimple();
-// "Mine only" toggles for the asks and bids ladders, persisted
-// independently. When ON, filters the corresponding ladder to entries
-// where the user is the maker/seller (asks) or buyer (bids).
-// Off by default — most users want to see the market, not just their
-// own orders. Power users flip this on to manage their open positions
-// without scrolling a 200-row book.
 const _MARKET_MINE_ASKS_KEY = 'tacit-market-mine-asks-v1';
 const _MARKET_MINE_BIDS_KEY = 'tacit-market-mine-bids-v1';
 function _loadMarketMine(key) {
@@ -32004,16 +32018,10 @@ function _saveMarketMine(key, on) {
 let _marketMineOnlyAsks = _loadMarketMine(_MARKET_MINE_ASKS_KEY);
 let _marketMineOnlyBids = _loadMarketMine(_MARKET_MINE_BIDS_KEY);
 // Mirror Market navigation into the URL hash so a tile click produces a
-// shareable deep-link (#tab=market&aid=<aid>), and "← All assets" /
-// browser-back returns to the browse index without a re-fetch. Uses
-// history.replaceState so the navigation doesn't pile up history entries
-// for every tile click; users who want a discrete back-stack entry can
-// click the explicit "← All assets" button (still a single state) or
-// share/bookmark the URL. The hashchange listener at line ~25599 picks
-// up external link clicks + back/forward and re-routes accordingly.
+// shareable deep-link (#tab=market&aid=<aid>) and browser navigation can
+// restore the asset view without a fresh search.
 function _writeMarketHash(aidOrNull) {
   const cur = location.hash || '';
-  // Don't clobber an unconsumed claim/recv hash during init flow.
   if (cur.startsWith('#recv=') || cur.startsWith('#claim=')) return;
   const target = aidOrNull
     ? `#tab=market&aid=${aidOrNull}`
@@ -32021,7 +32029,15 @@ function _writeMarketHash(aidOrNull) {
   if (cur === target) return;
   try { history.replaceState(null, '', target); } catch {}
 }
-function goToMarketBrowse() { _marketView = 'browse'; _writeMarketHash(null); renderMarket(); }
+function marketViewScope() {
+  return _marketView === 'browse' ? 'browse' : 'asset';
+}
+function goToMarketBrowse() {
+  _marketView = 'browse';
+  _writeMarketHash(null);
+  _applyMarketPrefsToControls('browse');
+  renderMarket();
+}
 function goToMarketAsset(assetIdHex) {
   // Reject malformed asset_ids defensively — every regular caller validates,
   // but this guards against a future caller forgetting to. Falls back to the
@@ -32032,8 +32048,61 @@ function goToMarketAsset(assetIdHex) {
   }
   const aid = String(assetIdHex).toLowerCase();
   _marketView = { mode: 'asset', assetId: aid };
+  _marketListingPage = 1;
+  _applyMarketPrefsToControls('asset');
   _writeMarketHash(aid);
   renderMarket();
+}
+
+function normalizeMarketPetchAssets(payload) {
+  const arr = Array.isArray(payload?.assets) ? payload.assets
+            : Array.isArray(payload?.petch_assets) ? payload.petch_assets
+            : Array.isArray(payload?.items) ? payload.items
+            : [];
+  return arr
+    .filter(a => /^[0-9a-f]{64}$/.test(String(a?.asset_id || '').toLowerCase()))
+    .map(a => ({
+      ...a,
+      asset_id: String(a.asset_id).toLowerCase(),
+      kind: 'petch',
+      public_mint: true,
+      total_supply: a.total_supply || a.supply || a.cap_amount || '',
+      listing_count: Number(a.listing_count || 0),
+      range_listing_count: Number(a.range_listing_count || 0),
+      atomic_intent_count: Number(a.atomic_intent_count || 0),
+      preauth_sale_count: Number(a.preauth_sale_count || 0),
+    }));
+}
+
+function mergeMarketPetchAssets(assets, petchAssets) {
+  const byId = new Map();
+  for (const a of assets || []) {
+    const aid = String(a?.asset_id || '').toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(aid)) byId.set(aid, { ...a, asset_id: aid });
+  }
+  for (const p of petchAssets || []) {
+    const aid = String(p?.asset_id || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(aid)) continue;
+    const existing = byId.get(aid);
+    if (!existing) {
+      byId.set(aid, p);
+      continue;
+    }
+    byId.set(aid, {
+      ...p,
+      ...existing,
+      asset_id: aid,
+      kind: existing.kind || p.kind,
+      public_mint: existing.public_mint || p.public_mint,
+      image_uri: existing.image_uri || p.image_uri,
+      total_supply: existing.total_supply || existing.supply || p.total_supply || p.cap_amount || '',
+      cap_amount: existing.cap_amount || p.cap_amount,
+      mint_limit: existing.mint_limit || p.mint_limit,
+      cumulative_minted: existing.cumulative_minted || p.cumulative_minted,
+      pending_pmint_count: existing.pending_pmint_count || p.pending_pmint_count,
+    });
+  }
+  return Array.from(byId.values());
 }
 
 async function fetchMarketData() {
@@ -32045,10 +32114,20 @@ async function fetchMarketData() {
   // with kind + _asset reference per listing. Replaces the previous N×3
   // per-asset fan-out — the slowest of N×3 round-trips no longer gates
   // first paint of the Market tab.
-  const r = await fetch(withNet(MARKET_URL));
+  const [r, petchJ] = await Promise.all([
+    fetch(withNet(MARKET_URL)),
+    PETCH_REGISTRY_URL
+      ? fetch(withNet(PETCH_REGISTRY_URL))
+          .then(x => x.ok ? x.json() : { assets: [] })
+          .catch(() => ({ assets: [] }))
+      : Promise.resolve({ assets: [] }),
+  ]);
   if (!r.ok) throw new Error(`market HTTP ${r.status}`);
   const j = await r.json();
-  const assets = Array.isArray(j.assets) ? j.assets : [];
+  const assets = mergeMarketPetchAssets(
+    Array.isArray(j.assets) ? j.assets : [],
+    normalizeMarketPetchAssets(petchJ),
+  );
   // Mark ticker-collision precedence over the FULL asset set (not just the
   // ones with listings). Without this an attacker could side-step the
   // duplicate-ticker warning by listing a copycat asset before the original.
@@ -32333,6 +32412,7 @@ async function renderMarket() {
   if (pendingMarketFilter) {
     if (/^[0-9a-f]{64}$/.test(pendingMarketFilter)) {
       _marketView = { mode: 'asset', assetId: pendingMarketFilter };
+      _applyMarketPrefsToControls('asset');
     }
     pendingMarketFilter = null;
   }
@@ -32366,6 +32446,7 @@ async function renderMarket() {
     // round-trip. _marketCache + _marketFetchedAt get populated inside
     // fetchMarketDataDeduped on success.
     await fetchMarketDataDeduped();
+    refreshMarketBtcUsd().then(() => applyMarketFilters()).catch(() => {});
     applyMarketFilters();
     setTabBadge('market', _marketCache?.listings?.length || 0);
     // Fire-and-forget: chain-check each listing's UTXO in parallel and
@@ -32391,17 +32472,13 @@ function applyMarketFilters() {
   const _maxRaw = ($('#market-filter-max-price')?.value || '').trim();
   const minPrice = /^\d+$/.test(_minRaw) ? Number(_minRaw) : NaN;
   const maxPrice = /^\d+$/.test(_maxRaw) ? Number(_maxRaw) : NaN;
-  // In asset-detail mode, nudge the sort dropdown from its default 'recency'
-  // to 'unit-asc' so asks read as a price ladder (cheapest-first) — the
-  // conventional orderbook layout. If the user has explicitly picked a
-  // different sort it stays. Mutating the dropdown value (rather than
-  // overriding at read-time only) means the user sees the active sort
-  // reflected in the UI and can switch back to recency manually.
+  // Browse and asset-detail pages share these DOM controls, but each page has
+  // independent saved preferences: token index sorts by market metrics, while
+  // an asset's asks default to an orderbook-like price ladder.
   const _sortSel = $('#market-sort');
-  if (_marketView !== 'browse' && _sortSel && _sortSel.value === 'recency') {
-    _sortSel.value = 'unit-asc';
-  }
-  const sort = _sortSel?.value || (_marketView !== 'browse' ? 'unit-asc' : 'recency');
+  const sort = marketViewScope() === 'asset'
+    ? 'unit-asc'
+    : (_sortSel?.value || 'volume-desc');
   let rows = _marketCache.listings.slice();
   if (filterText) {
     rows = rows.filter(l => {
@@ -32453,7 +32530,7 @@ function applyMarketFilters() {
   // in the asset-detail header.
   updateMarketControlsVisibility();
   if (_marketView === 'browse') {
-    renderMarketBrowse(rows);
+    renderMarketBrowseTable(rows);
     return;
   }
   rows = rows.filter(l => (l._asset?.asset_id || '') === _marketView.assetId);
@@ -32472,17 +32549,7 @@ function applyMarketFilters() {
   const unitOf = l => {
     const a = l._asset || {};
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-    // Per-kind shape (the bug that broke "cheapest first" on Simple-mode
-    // pages where every row was preauth: preauth uses asset_opening.amount
-    // + min_price_sats, not amount + price_sats, so the sort comparator
-    // saw null for every row and the rows retained insertion order).
-    const amt = l.kind === 'range' ? l.threshold
-              : l.kind === 'preauth' ? (l.asset_opening?.amount)
-              : l.amount;
-    const ps  = l.kind === 'preauth' ? Number(l.min_price_sats || 0)
-              : Number(l.price_sats || 0);
-    if (!ps || !amt) return null;
-    const u = unitPriceSats(ps, BigInt(amt), dec);
+    const u = unitPriceSats(marketListingPriceSats(l), BigInt(marketListingAmount(l) || 0), dec);
     return u != null ? u : null;
   };
   if (sort === 'price-asc') {
@@ -32523,78 +32590,21 @@ function applyMarketFilters() {
                      || (_marketCache?.listings.find(l => l._asset?.asset_id === _marketView.assetId)?._asset)
                      || (_marketCache?.assets?.find(x => x.asset_id === _marketView.assetId))
                      || { asset_id: _marketView.assetId, ticker: '?', decimals: 0 };
+  const marketTabActionHtml = marketAssetListCtaHtml(_assetForBids);
   const bidsLadderHtml = renderMarketBidsLadderHTML(_assetForBids);
-  const statsHtml = renderMarketAssetStatsHTML(_assetForBids);
-  // Headline price banner: prominent "Last X sats/TICKER ($Y) · +Z% 24h"
-  // strip between the asset header card and the rest of the stats. Every
-  // trading view (CoinGecko, Jupiter, etc.) puts the headline price right
-  // above the chart; tacit was burying it in the small-stat row below
-  // the chart, which buyers had to hunt for.
-  const _headlineHtml = (() => {
-    const a = _assetForBids;
-    const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-    const tk = a.ticker || '?';
-    // Prefer mark_price (outlier-guarded) over raw last_trade for the
-    // headline number — same number that drives market cap + holdings
-    // valuation, so the user sees a consistent figure across the page.
-    const markU = (a.mark_price && Number.isFinite(a.mark_price.unit) && a.mark_price.unit > 0)
-      ? Number(a.mark_price.unit) : null;
-    let unitU = markU;
-    let ageSec = null;
-    let lastTotalSats = null;
-    const lt = a.last_trade;
-    if (lt && Number.isInteger(lt.price_sats) && lt.price_sats > 0) {
-      try {
-        const lAmt = BigInt(lt.amount);
-        if (lAmt > 0n) {
-          const u = unitPriceSats(lt.price_sats, lAmt, dec);
-          if (Number.isFinite(u) && u > 0 && unitU == null) unitU = u;
-          ageSec = Math.max(0, Math.floor(Date.now() / 1000) - Number(lt.ts || 0));
-          lastTotalSats = Number(lt.price_sats);
-        }
-      } catch {}
-    }
-    if (unitU == null) return '';
-    const _btcUsd = _cachedBtcUsd();
-    const usdPerToken = _btcUsd ? fmtUnitUsd(unitU, _btcUsd) : null;
-    const ageStr = ageSec == null ? null
-      : ageSec < 60 ? `${ageSec}s` : ageSec < 3600 ? `${Math.floor(ageSec / 60)}m`
-      : ageSec < 86400 ? `${Math.floor(ageSec / 3600)}h` : `${Math.floor(ageSec / 86400)}d`;
-    // Δ% — prefer the worker's primary-window pick (24h for mature
-    // markets, tighter windows on young ones) so the chip is never "—".
-    const primaryPct = Number.isFinite(a.price_change_primary_pct)
-      ? Number(a.price_change_primary_pct)
-      : (Number.isFinite(a.price_24h_change_pct) ? Number(a.price_24h_change_pct) : null);
-    const primaryWindow = typeof a.price_change_primary_window === 'string'
-      ? a.price_change_primary_window
-      : '24h';
-    const deltaChip = primaryPct == null ? '' : (() => {
-      const sign = primaryPct >= 0 ? '+' : '';
-      const color = primaryPct >= 0 ? '#0a8f43' : '#b8341d';
-      const winLbl = primaryWindow === 'all' ? 'all' : primaryWindow;
-      return `<span title="${escapeHtml(winLbl)} change · vs trade as of ${escapeHtml(winLbl)} ago. Computed against the outlier-guarded mark price." style="display:inline-block;padding:4px 10px;background:${color};color:#fff;font-size:14px;font-weight:700;border-radius:3px;">${sign}${primaryPct.toFixed(2)}% <span style="font-weight:400;opacity:0.85;font-size:11px;">${escapeHtml(winLbl)}</span></span>`;
-    })();
-    const _markFlag = a.mark_price?.source === 'median_outlier_guard'
-      ? ` <span class="muted" style="font-size:10px;cursor:help;" title="Mark price flipped to the recent-ring median because the last trade was an outlier (>5× or <0.2× of the median). Headline reflects the real trading band.">· median-guarded</span>`
-      : '';
-    return `<div data-market-headline style="border:1px solid var(--ink);background:var(--bg-warm);padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">
-      <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;min-width:0;">
-        <strong style="font-size:22px;font-family:var(--mono);line-height:1.1;">${escapeHtml(fmtUnitPriceSats(unitU))} <span class="muted" style="font-size:11px;font-family:var(--sans);font-weight:400;">sats/${escapeHtml(tk)}</span></strong>
-        ${usdPerToken ? `<span class="muted" style="font-size:14px;font-family:var(--mono);">${escapeHtml(usdPerToken)}/${escapeHtml(tk)}</span>` : ''}
-        ${ageStr && lastTotalSats != null ? `<span class="muted" style="font-size:11px;">last trade ${ageStr} ago · ${lastTotalSats.toLocaleString()} sats</span>` : ''}
-        ${_markFlag}
-      </div>
-      ${deltaChip}
-    </div>`;
-  })();
+  const allAssetRows = (_marketCache?.listings || []).filter(l => (l._asset?.asset_id || l.asset_id || '') === _marketView.assetId);
+  const activityPanelHtml = marketActivityPanelHtml(_assetForBids, allAssetRows);
   if (!rows.length) {
     // No asks but bids might still exist — render the ladder + place-bid CTA
     // so makers without active listings can still see / capture buy-side
     // demand. Empty asks copy clarifies the ask side specifically.
-    list.innerHTML = assetHeaderHtml + statsHtml + bidsLadderHtml + '<div class="empty">No active asks. Bids above; post one if you want to buy.</div>';
+    const listedPaneHtml = `${bidsLadderHtml}<div class="empty">No active asks. Bids above; post one if you want to buy.</div>`;
+    list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+    hydrateMarketImages(list);
     bindMarketAssetHeader(list);
+    bindMarketAssetTabs(list);
     populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
-    populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
+    populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
     return;
   }
   // Simple mode (default ON) filters the asks ladder to one-tx trustless
@@ -32602,24 +32612,34 @@ function applyMarketFilters() {
   // through. Atomic intents and OTC openings/ranges stay invisible until
   // the user explicitly clicks "Show all offers". Counts in the header
   // reflect both views so the user can see what's hidden.
-  const _myPubHexFilter = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
-  const _isMyAsk = (l) => l.maker_pubkey === _myPubHexFilter
-                       || l.seller_pubkey === _myPubHexFilter
-                       || l.owner_pubkey === _myPubHexFilter;
+  const myPubHexForMarket = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
+  const isMyAsk = (l) => !!myPubHexForMarket && (
+    l.maker_pubkey === myPubHexForMarket
+    || l.seller_pubkey === myPubHexForMarket
+    || l.owner_pubkey === myPubHexForMarket
+  );
   const rowsFull = rows;
   const rowsSimple = rowsFull.filter(l => l.kind === 'preauth');
   let rowsForGrid = _marketSimpleMode ? rowsSimple : rowsFull;
-  if (_marketMineOnlyAsks) rowsForGrid = rowsForGrid.filter(_isMyAsk);
+  const minedAsksCount = rowsFull.filter(isMyAsk).length;
+  if (_marketMineOnlyAsks) rowsForGrid = rowsForGrid.filter(isMyAsk);
   const hiddenByMode = rowsFull.length - rowsSimple.length;
-  const minedAsksCount = rowsFull.filter(_isMyAsk).length;
   // Asset-detail header above already shows the per-kind breakdown
   // (⚡ atomic · opening · range) and floor — no separate banner needed here.
   // The "no atomic offers under current filters" nudge is preserved in
   // compact form for the all-trust-required case where it actually adds info.
-  const atomicCount = rowsForGrid.reduce((s, l) => s + (l.kind === 'intent' ? 1 : 0), 0);
+  const atomicCount = rowsForGrid.reduce((s, l) => s + ((l.kind === 'intent' || l.kind === 'preauth') ? 1 : 0), 0);
   const trustCount = rowsForGrid.length - atomicCount;
+  const totalAskRows = rowsForGrid.length;
+  const totalAskPages = Math.max(1, Math.ceil(totalAskRows / MARKET_LISTING_PAGE_SIZE));
+  if (!Number.isInteger(_marketListingPage) || _marketListingPage < 1) _marketListingPage = 1;
+  if (_marketListingPage > totalAskPages) _marketListingPage = totalAskPages;
+  const askStartIndex = (_marketListingPage - 1) * MARKET_LISTING_PAGE_SIZE;
+  const pageRows = rowsForGrid.slice(askStartIndex, askStartIndex + MARKET_LISTING_PAGE_SIZE);
+  const askShowingStart = totalAskRows ? askStartIndex + 1 : 0;
+  const askShowingEnd = askStartIndex + pageRows.length;
   const noAtomicHint = !_marketSimpleMode && atomicCount === 0 && trustCount > 0
-    ? `<div style="margin-bottom:10px;font-size:11px;font-style:italic;" class="muted">no atomic offers under current filters — try kind=⚡ atomic</div>`
+    ? `<div style="margin-bottom:10px;font-size:11px;font-style:italic;" class="muted">no atomic offers under current filters &mdash; try Atomic only</div>`
     : '';
   // Asks-section header: title + sort hint on the left; controls on the
   // right. "+ List" sits with the other seller-side affordances (Simple
@@ -32639,19 +32659,14 @@ function applyMarketFilters() {
   const _askFormSlot = _userHoldsAsset
     ? `<div data-market-ask-form data-aid="${escapeHtml(_marketView.assetId)}" style="display:none;margin-bottom:10px;"></div>`
     : '';
-  // "Mine" toggle — filters the asks ladder to entries the user is the
-  // maker / seller / owner of. Only shown when the user has at least
-  // one active ask (otherwise toggling would just produce an empty
-  // grid). Persists to localStorage independently from the bids-side
-  // toggle so power users can manage one side without affecting the other.
-  const _mineAsksChip = minedAsksCount > 0
+  const mineAsksChip = minedAsksCount > 0
     ? (_marketMineOnlyAsks
-        ? `<button data-act="market-mine-asks-toggle" type="button" title="Showing only your asks (${minedAsksCount}). Click to show all asks." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">Mine · ${minedAsksCount}</button>`
-        : `<button data-act="market-mine-asks-toggle" type="button" title="Filter to your asks only (${minedAsksCount} active). Useful for managing your own listings." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Mine</button>`)
+        ? `<button data-act="market-mine-asks-toggle" type="button" title="Showing only your asks (${minedAsksCount}). Click to show all asks." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">Mine - ${minedAsksCount}</button>`
+        : `<button data-act="market-mine-asks-toggle" type="button" title="Filter to your asks only (${minedAsksCount} active)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Mine</button>`)
     : '';
   const asksHeaderHtml = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><strong>Asks · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel}</span></div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${_mineAsksChip}${modeChip}</div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}</div>
     </div>${_askFormSlot}`;
   // Swap tile: the primary trading action surface, modeled on Uniswap /
   // Jupiter-style "from / to" swap UIs. Top input is editable (what you
@@ -32732,7 +32747,7 @@ function applyMarketFilters() {
         </div>
         <div style="display:flex;align-items:center;gap:10px;">
           <input data-swap-input="from" type="text" inputmode="decimal" placeholder="0" style="flex:1 1 auto;font-family:var(--mono);font-size:22px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;">
-          <div data-swap-pill="from" title="Click to toggle sats ↔ USD on the buy side" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:5px 12px;background:#f7931a;color:#fff;border-radius:16px;font-weight:600;font-size:13px;border:1px solid #f7931a;cursor:pointer;user-select:none;">
+          <div data-swap-pill="from" title="Click to toggle sats / USD on the buy side" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:5px 12px;background:#f7931a;color:#fff;border-radius:16px;font-weight:600;font-size:13px;border:1px solid #f7931a;cursor:pointer;user-select:none;">
             ${btcLogoHtml}<span data-swap-token="from">sats</span>
           </div>
         </div>
@@ -32757,9 +32772,9 @@ function applyMarketFilters() {
       <!-- Route summary + slippage on one balanced row above the action. -->
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
         <div data-swap-info class="muted" style="font-size:10px;flex:1 1 auto;min-width:0;line-height:1.5;overflow-wrap:anywhere;"></div>
-        <label style="font-size:10px;display:flex;align-items:center;gap:6px;flex:0 0 auto;">
-          <span class="muted">slippage</span>
-          <select data-swap-slippage title="Click to change · max acceptable price drift before the swap refuses to route" style="font-size:11px;padding:3px 8px;-webkit-appearance:none;-moz-appearance:none;appearance:none;background:var(--bg);border:1px solid var(--ink-faint);border-radius:3px;cursor:pointer;font-family:var(--mono);text-align:center;min-width:48px;">
+        <label style="font-size:10px;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:170px;">
+          <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;">Slippage</span>
+          <select data-swap-slippage title="Click to change max acceptable price drift before the swap refuses to route" style="box-sizing:border-box;min-width:78px;height:28px;font-family:var(--mono);font-size:11px;line-height:1.2;padding:4px 22px 4px 8px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);-webkit-appearance:none;-moz-appearance:none;appearance:none;cursor:pointer;">
             <option value="1">1%</option>
             <option value="5">5%</option>
             <option value="20" selected>20%</option>
@@ -32772,23 +32787,14 @@ function applyMarketFilters() {
       <div data-swap-progress style="display:none;margin-top:10px;font-size:11px;"></div>
     </div>`;
   })();
-  // Empty grid hint when simple mode hides all asks. Surfaces a clear
-  // way out so the user isn't staring at an empty orderbook on an
-  // atomic-heavy / OTC-only market.
   const simpleEmptyHint = _marketSimpleMode && rowsForGrid.length === 0 && rowsFull.length > 0
-    ? `<div class="empty" style="padding:14px;text-align:center;font-size:11px;border:1px dashed var(--ink-faint);"><strong>No instant listings.</strong> <span class="muted">${rowsFull.length} offer${rowsFull.length === 1 ? '' : 's'} available — switch to <em>All offers</em> above to see atomic intents and OTC listings.</span></div>`
+    ? `<div class="empty" style="padding:14px;text-align:center;font-size:11px;border:1px dashed var(--ink-faint);"><strong>No instant listings.</strong> <span class="muted">${rowsFull.length} offer${rowsFull.length === 1 ? '' : 's'} available - switch to <em>All offers</em> above to see atomic intents and OTC listings.</span></div>`
     : '';
-  list.innerHTML =
-    assetHeaderHtml +
-    _headlineHtml +
-    statsHtml +
-    _swapTileHtml +
-    bidsLadderHtml +
-    asksHeaderHtml +
-    noAtomicHint +
-    simpleEmptyHint +
-    `<div id="market-grid" style="display:flex;flex-direction:column;gap:0;border:1px solid var(--ink);background:var(--bg);${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>`;
+  const listedPaneHtml = `${_swapTileHtml}${bidsLadderHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="market-listing-grid" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}`;
+  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+  hydrateMarketImages(list);
   bindMarketAssetHeader(list);
+  bindMarketAssetTabs(list);
   _wireSwapTile(list);
   // Simple-mode toggle in the asks header. Click flips the flag,
   // persists to localStorage, and re-applies filters so the ladder
@@ -32800,10 +32806,6 @@ function applyMarketFilters() {
       applyMarketFilters();
     };
   });
-  // "Mine" toggle on the asks ladder. Same pattern as Simple — flips the
-  // module flag, persists, re-applies filters. The bids-side toggle is
-  // wired in populateMarketBidsLadder since that's where the bids ladder
-  // re-renders.
   list.querySelectorAll('[data-act="market-mine-asks-toggle"]').forEach(btn => {
     btn.onclick = () => {
       _marketMineOnlyAsks = !_marketMineOnlyAsks;
@@ -32812,46 +32814,28 @@ function applyMarketFilters() {
     };
   });
   populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
-  populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
+  populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
   const grid = $('#market-grid');
   const myPubHex = bytesToHex(wallet.pub);
   // Build all tiles into a DocumentFragment first; one reflow at the end
   // instead of N reflows during the loop. Material on busy markets.
   const frag = document.createDocumentFragment();
-  for (const l of rowsForGrid) {
+  for (const l of pageRows) {
     const a = l._asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
     const expIso = new Date((l.expiry || 0) * 1000).toISOString().slice(0, 10);
-    const amount = l.kind === 'range' ? l.threshold
-                 : l.kind === 'preauth' ? (l.asset_opening?.amount)
-                 : l.amount;
-    const priceSatsRaw = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+    const amount = marketListingAmount(l);
+    const priceSatsRaw = marketListingPriceSats(l);
     const tile = document.createElement('div');
-    // Row-style ladder layout (matches the bids ladder). Each row is a single
-    // line on wide viewports and wraps gracefully on narrow ones. Border
-    // between rows comes from `border-top` on every row, plus the parent
-    // container's outer border — gives a clean orderbook table feel.
-    tile.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 10px;border-top:1px solid var(--ink-faint);flex-wrap:wrap;font-size:12px;';
+    tile.className = 'market-listing-tile';
     // Stable per-listing key so the background liveness prune can target
-    // this row by selector when its UTXO turns out to be spent on-chain.
-    tile.dataset.listingKey = l.kind === 'opening'
-      ? `opening:${l.txid}:${l.vout | 0}`
-      : l.kind === 'intent'
-        ? `intent:${l.intent_id}`
-        : l.kind === 'preauth'
-          ? `preauth:${l.sale_id}`
-          : `range:${a.asset_id}:${l.owner_pubkey || ''}`;
-    // Compact kind+trust chip — same per-mode colors, smaller footprint so
-    // a row of badges + price + amount + total + action fits one line on
-    // a typical desktop viewport. Tooltips preserve the full explanation.
-    const kindTrustBadge = l.kind === 'intent'
-      ? `<span style="flex:0 0 auto;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Atomic intent — confidential token transfer + BTC payment close in one Bitcoin tx. No counterparty trust required. Seller must come back online to fulfil after a buyer claims.">⚡ atomic</span>`
-      : l.kind === 'preauth'
-        ? `<span style="flex:0 0 auto;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Instant listing (SPEC §5.7.8) — seller pre-signed at listing time, so the buyer completes settlement in ONE Bitcoin tx without a back-and-forth. Atomic on chain (asset and sats both move or neither does). Trustless. Note: 'one tx' means one broadcast — still needs Bitcoin confirmation like any other tx.">⚡ instant</span>`
-        : l.kind === 'range'
-          ? `<span style="flex:0 0 auto;padding:1px 6px;background:#b8651d;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Range-disclosed OTC — maker proved balance ≥ amount via bulletproof, exact balance hidden. Off-chain settlement; counterparty trust required.">⚠ OTC range</span>`
-          : `<span style="flex:0 0 auto;padding:1px 6px;background:#b8651d;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Opening OTC — maker published the exact (amount, blinding) opening. Off-chain settlement; counterparty trust required.">⚠ OTC opening</span>`;
+    // this tile by selector when its UTXO turns out to be spent on-chain.
+    tile.dataset.listingKey = marketListingKey(l, a);
+    // Composite kind+trust badge. Both atomic-intent and preauth-sale are
+    // trustless; the distinction is whether the seller must come back online
+    // (atomic intent requires fulfilment after a buyer claims; instant does not).
+    const kindTrustBadge = `<span class="market-mode-badge ${escapeHtml(marketModeClass(l))}" title="${escapeHtml(marketModeLabel(l))}">${escapeHtml(marketModeLabel(l))}</span>`;
     // Tile action surface: split into a status line (passive state) and an
     // action row (primary CTA + optional secondary). Sentences-inside-disabled-
     // buttons are status, not action — so they live above the row in muted
@@ -32871,20 +32855,20 @@ function applyMarketFilters() {
         secondaryAction = _cancelBtn(iid);
         if (claim && !fulfilled) {
           primaryAction = `<button data-act="market-fulfil" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" title="Maker step 2 of 3: generate the partial reveal targeted at the taker's pubkey. The taker's Take button unlocks once you've fulfilled." style="flex:1;font-size:11px;">Fulfil claim</button>`;
-          statusLine = `<span title="A taker has locked this intent for 5 min. Fulfil now or the lock expires.">🎯 claim from <span class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(claim.taker_pubkey, 6))}</span></span>`;
+          statusLine = `<span title="A taker has locked this intent for 5 min. Fulfil now or the lock expires.">claim from <span class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(claim.taker_pubkey, 6))}</span></span>`;
         } else if (fulfilled) {
-          statusLine = `<span title="You've fulfilled the claim. The atomic settlement tx is ready for the taker to broadcast — they have until the claim window expires (~5 min from claim) to do so.">⏳ awaiting taker broadcast</span>`;
+          statusLine = `<span title="You've fulfilled the claim. The atomic settlement tx is ready for the taker to broadcast - they have until the claim window expires (~5 min from claim) to do so.">awaiting taker broadcast</span>`;
         } else {
-          statusLine = `<span title="Your atomic intent is published and waiting for someone to claim it. When a taker claims, a Fulfil button appears here.">⏳ your intent · awaiting claim</span>`;
+          statusLine = `<span title="Your atomic intent is published and waiting for someone to claim it. When a taker claims, a Fulfil button appears here.">your intent &middot; awaiting claim</span>`;
         }
       } else if (claim && claim.taker_pubkey === myPubHex) {
         if (fulfilled) {
           primaryAction = `<button data-act="market-take-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-expiry="${Number(l.expiry || 0)}" title="Taker step 3 of 3: broadcast the single Bitcoin tx that combines the maker's partial reveal with your BTC payment. Atomic — both legs settle or both fail." style="flex:1;font-size:11px;">Take</button>`;
         } else {
-          statusLine = `<span title="Your claim is locked in. Waiting for the maker to fulfil — Take unlocks the moment they do.">⏳ awaiting maker fulfilment</span>`;
+          statusLine = `<span title="Your claim is locked in. Waiting for the maker to fulfil - Take unlocks the moment they do.">awaiting maker fulfilment</span>`;
         }
       } else if (claim) {
-        statusLine = `<span title="Another taker has the 5-minute lock on this intent. If they don't broadcast in time the lock expires and this tile becomes claimable again.">🔒 claimed by <span class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(claim.taker_pubkey, 6))}</span></span>`;
+        statusLine = `<span title="Another taker has the 5-minute lock on this intent. If they don't broadcast in time the lock expires and this tile becomes claimable again.">claimed by <span class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(claim.taker_pubkey, 6))}</span></span>`;
       } else {
         primaryAction = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Taker step 1 of 3: reserve this atomic intent for 5 minutes. You commit a sat UTXO ≥ price as proof of funds; the maker then fulfils, then you Take to settle." style="flex:1;font-size:11px;">Claim</button>`;
       }
@@ -32920,19 +32904,11 @@ function applyMarketFilters() {
         secondaryAction = `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing without buying it: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Safe to call as many times as you want." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" aria-label="Verify listing">verify</button>`;
       }
     }
-    // Row-format buttons: shrink the per-row button to chip size, matching
-    // the bids ladder's row styling. Primary action keeps its color
-    // affordance; secondary is compact and muted.
-    const _shrinkBtn = (html) => html
-      .replace(/style="flex:1;font-size:11px;"/g, 'style="font-size:10px;padding:3px 8px;"')
-      .replace(/font-size:10px;padding:4px 8px;/g, 'font-size:10px;padding:3px 8px;');
-    const primaryActionRow    = _shrinkBtn(primaryAction);
-    const secondaryActionRow  = _shrinkBtn(secondaryAction);
-    const actionRow = (primaryActionRow || secondaryActionRow)
-      ? `<div style="flex:0 0 auto;display:flex;gap:4px;">${primaryActionRow}${secondaryActionRow}</div>`
-      : '';
     const statusRow = statusLine
-      ? `<span class="muted" style="flex:0 0 auto;font-size:10px;">${statusLine}</span>`
+      ? `<div class="muted" style="margin-top:8px;font-size:10px;">${statusLine}</div>`
+      : '';
+    const actionRow = (primaryAction || secondaryAction)
+      ? `<div class="market-listing-actions">${primaryAction}${secondaryAction}</div>`
       : '';
     // Unit price: sats per whole token, accounting for decimals. For range
     // listings the threshold is a *minimum* delivery amount, so this number
@@ -32940,40 +32916,52 @@ function applyMarketFilters() {
     // the maker may deliver more for the same total.
     const unit = unitPriceSats(priceSatsRaw, BigInt(amount || 0), dec);
     const unitStr = unit != null
-      ? `${l.kind === 'range' ? '≤ ' : ''}${fmtUnitPriceSats(unit)} sats/${escapeHtml(a.ticker || 'token')}`
-      : '— sats/—';
+      ? `${l.kind === 'range' ? '&le; ' : ''}${fmtMarketUnitSats(unit)}/${escapeHtml(a.ticker || 'token')}`
+      : '';
     const listedRel = relativeAge(l.listed_at || l.created_at);
     const recencyLine = listedRel
-      ? `${escapeHtml(listedRel)} ago`
-      : '';
-    // USD suffix on the total — decorative anchor for sats-illiterate
-    // traders. Reads sync cache; absent when the oracle hasn't filled yet.
-    const _tileBtcUsd = _cachedBtcUsd();
-    const _tileUsdStr = _tileBtcUsd ? fmtSatsAsUsd(priceSatsRaw, _tileBtcUsd) : null;
-    const _tileUsdTail = _tileUsdStr ? ` · <span style="color:#0a7d3a;">${escapeHtml(_tileUsdStr)}</span>` : '';
-    // Row layout (left → right):
-    //   chip · unit price · amount + ticker · total sats + USD · meta (recency · maker) · status · action
-    // The middle three (price/amount/total) take fixed-ish slots; meta flexes
-    // and is hidden on narrow widths so the action button always stays visible.
-    const minPrefix = l.kind === 'preauth' ? ' min' : '';
-    const rangePrefix = l.kind === 'range' ? '≥ ' : '';
-    const _whoLabel = l.kind === 'preauth' ? 'seller' : 'maker';
-    const _whoAddr = shorten(l.maker_address || l.seller_payout_address || '', 5);
-    const _metaBits = [];
-    if (recencyLine) _metaBits.push(recencyLine);
-    if (_whoAddr) _metaBits.push(`${_whoLabel} <span class="mono-box inline" style="font-size:9px;">${escapeHtml(_whoAddr)}</span>`);
-    _metaBits.push(`exp ${expIso}`);
+      ? `listed ${escapeHtml(listedRel)} ago - expires ${expIso}`
+      : `expires ${expIso}`;
+    const displayId = marketListingDisplayId(l);
+    // Ticker, asset_id, network, and ticker-collision state are already shown
+    // in the asset-detail header above; we don't repeat them on each tile.
     tile.innerHTML = `
-      ${kindTrustBadge}
-      <span style="flex:0 0 auto;font-family:var(--mono);min-width:90px;"><strong>${escapeHtml(unitStr)}</strong></span>
-      <span style="flex:0 0 auto;min-width:80px;">${rangePrefix}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span class="muted" style="font-size:10px;">${escapeHtml(a.ticker || '')}</span></span>
-      <span style="flex:0 0 auto;color:#0a8f43;min-width:100px;"><strong>${priceSatsRaw.toLocaleString()} sats${minPrefix}</strong>${_tileUsdTail}</span>
-      <span style="flex:1 1 auto;min-width:0;font-size:10px;color:var(--ink-mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_metaBits.join(' · ')}</span>
+      <div class="market-listing-top">
+        <span>${escapeHtml(a.ticker || '')}</span>
+        ${kindTrustBadge}
+      </div>
+      <div class="market-listing-amount">${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}</div>
+      <div class="market-listing-unit">
+        <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
+        <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` per token` : ''}</small>
+      </div>
+      <div class="market-listing-id">#${escapeHtml(shorten(displayId, 8))}</div>
+      <div class="muted" style="margin-top:8px;font-size:10px;">${escapeHtml(recencyLine)}</div>
+      <div style="margin-top:8px;font-size:10px;" class="muted">${l.kind === 'preauth' ? 'seller' : 'maker'}: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || l.seller_payout_address || '', 6))}</span></div>
       ${statusRow}
+      <div class="market-listing-total">
+        <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSatsRaw))}</span>
+        <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSatsRaw, ''))}</span>
+      </div>
       ${actionRow}`;
     frag.appendChild(tile);
   }
   grid.appendChild(frag);
+  list.querySelectorAll('[data-market-listing-page]').forEach(btn => {
+    btn.onclick = () => {
+      if (btn.dataset.marketListingPage === 'prev') _marketListingPage = Math.max(1, _marketListingPage - 1);
+      else if (btn.dataset.marketListingPage === 'next') _marketListingPage = Math.min(totalAskPages, _marketListingPage + 1);
+      applyMarketFilters();
+    };
+  });
+  const listingPageSelect = list.querySelector('[data-market-listing-page-select]');
+  if (listingPageSelect) {
+    listingPageSelect.onchange = () => {
+      const p = Number(listingPageSelect.value || 1);
+      _marketListingPage = Number.isInteger(p) ? Math.max(1, Math.min(totalAskPages, p)) : 1;
+      applyMarketFilters();
+    };
+  }
   grid.querySelectorAll('span[data-act="copy-aid"]').forEach(el => {
     el.onclick = async () => {
       try { await navigator.clipboard.writeText(el.dataset.aid); toast('Asset ID copied', 'success'); }
@@ -33023,6 +33011,526 @@ function applyMarketFilters() {
 // Sort: total listing count desc, then floor unit-price asc (cheapest first
 // within ties), then ticker. No user-facing sort dropdown — the per-listing
 // sort applies inside asset mode.
+let _marketBtcUsd = 0;
+let _marketBtcUsdFetchedAt = 0;
+async function refreshMarketBtcUsd() {
+  if (_marketBtcUsd > 0 && (Date.now() - _marketBtcUsdFetchedAt) < 5 * 60 * 1000) return;
+  try {
+    const r = await fetch('https://mempool.space/api/v1/prices', { cache: 'no-store' });
+    const j = await r.json().catch(() => ({}));
+    const usd = Number(j.USD || j.usd || 0);
+    if (Number.isFinite(usd) && usd > 0) {
+      _marketBtcUsd = usd;
+      _marketBtcUsdFetchedAt = Date.now();
+    }
+  } catch { /* fiat is decorative; never block market rendering */ }
+}
+function marketSatsToUsd(sats) {
+  const n = Number(sats || 0);
+  return _marketBtcUsd > 0 && Number.isFinite(n) ? (n / 100_000_000) * _marketBtcUsd : null;
+}
+function fmtMarketUsdValue(usd, empty = 'n/a') {
+  const n = Number(usd);
+  if (!Number.isFinite(n) || n <= 0) return empty;
+  if (n >= 1) {
+    return `$${n.toLocaleString('en-US', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    })}`;
+  }
+  return `$${n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`;
+}
+function fmtMarketUsdFromSats(sats, empty = 'n/a') {
+  return fmtMarketUsdValue(marketSatsToUsd(sats), empty);
+}
+function fmtMarketUsdWholeFromSats(sats, empty = 'n/a') {
+  const n = Number(marketSatsToUsd(sats));
+  if (!Number.isFinite(n) || n <= 0) return empty;
+  return `$${Math.trunc(n).toLocaleString('en-US')}`;
+}
+function fmtMarketUsdUnitFromSats(sats, empty = 'n/a') {
+  const n = Number(marketSatsToUsd(sats));
+  if (!Number.isFinite(n) || n <= 0) return empty;
+  if (n < 0.01) {
+    const fixed = n.toFixed(12).replace(/0+$/, '').replace(/\.$/, '');
+    return `$${fixed !== '0' ? fixed : n.toPrecision(3)}`;
+  }
+  if (n >= 1000) return fmtMarketUsdValue(n, empty);
+  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function fmtMarketBtc(sats) {
+  const n = Number(sats || 0);
+  if (!Number.isFinite(n) || n <= 0) return '0 BTC';
+  return `${(n / 100_000_000).toFixed(8).replace(/0+$/, '').replace(/\.$/, '')} BTC`;
+}
+function fmtMarketUnitSats(sats) {
+  const n = Number(sats);
+  if (!Number.isFinite(n) || n <= 0) return '0 sats';
+  if (n >= 1) return `${Math.round(n).toLocaleString('en-US')} sats`;
+  return `${n.toLocaleString('en-US', { maximumFractionDigits: 4 })} sats`;
+}
+function marketAssetImageHtml(asset, sizePx = 44, cls = 'market-token-icon') {
+  const aid = asset?.asset_id || '';
+  const ticker = asset?.ticker || '?';
+  const imageUri = String(asset?.image_uri || asset?.imageUri || '').trim();
+  const hex = typeof aid === 'string' ? aid : '';
+  const hue = hex.length >= 6 ? (parseInt(hex.slice(0, 6), 16) % 360) : 280;
+  const bg = `hsl(${hue}, 38%, 48%)`;
+  const initial = String(ticker || '?').slice(0, 2).toUpperCase();
+  const fontSize = Math.max(10, Math.round(sizePx * 0.42));
+  const data = imageUri ? ` data-market-img-uri="${escapeHtml(imageUri)}"` : '';
+  return `<span class="${escapeHtml(cls)}"${data} style="width:${sizePx}px;height:${sizePx}px;background:${bg};font-size:${fontSize}px;" aria-hidden="true"><span>${escapeHtml(initial)}</span></span>`;
+}
+function hydrateMarketImages(scope = document) {
+  const root = scope && scope.querySelectorAll ? scope : document;
+  root.querySelectorAll('[data-market-img-uri]').forEach(slot => {
+    const uri = slot.getAttribute('data-market-img-uri') || '';
+    if (!uri || slot.dataset.marketImgLoaded === '1') return;
+    slot.dataset.marketImgLoaded = '1';
+    resolveImageUri(uri).then(imgUrl => {
+      if (!imgUrl || !slot.isConnected) return;
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.alt = '';
+      img.src = imgUrl;
+      slot.appendChild(img);
+    }).catch(() => {
+      if (slot?.dataset) delete slot.dataset.marketImgLoaded;
+    });
+  });
+}
+function marketTokenName(asset) {
+  const name = String(asset?.name || asset?.metadata?.name || '').trim();
+  const ticker = String(asset?.ticker || '?').trim();
+  return name && name.toUpperCase() !== ticker.toUpperCase() ? name : ticker;
+}
+function marketListingTimestamp(l) {
+  return Number(l?.listed_at || l?.created_at || l?.ts || 0);
+}
+function marketListingAmount(l) {
+  return l.kind === 'range' ? l.threshold
+       : l.kind === 'preauth' ? (l.asset_opening?.amount)
+       : l.amount;
+}
+function marketListingPriceSats(l) {
+  return l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+}
+function marketListingUnitPrice(l, asset = l?._asset || {}) {
+  const dec = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  return unitPriceSats(marketListingPriceSats(l), BigInt(marketListingAmount(l) || 0), dec);
+}
+function marketSupplyBase(asset) {
+  const s = asset?.attestation?.supply || asset?.supply || asset?.total_supply || asset?.cap_amount || asset?.cumulative_minted || '';
+  if (!/^\d+$/.test(String(s))) return null;
+  try { return BigInt(s); } catch { return null; }
+}
+const _marketSupplyAttestInFlight = new Set();
+function marketSetVerifiedSupply(assetIdHex, attest) {
+  if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) return false;
+  if (!attest || !/^\d+$/.test(String(attest.supply || ''))) return false;
+  let changed = false;
+  const apply = (a) => {
+    if (!a || String(a.asset_id || '').toLowerCase() !== assetIdHex) return;
+    a.attestation = { ...(a.attestation || {}), supply: String(attest.supply), blinding: attest.blinding || a.attestation?.blinding || '' };
+    if (!a.total_supply) a.total_supply = String(attest.supply);
+    a._marketSupplySource = 'ipfs-attest';
+    changed = true;
+  };
+  for (const a of _marketCache?.assets || []) apply(a);
+  for (const l of _marketCache?.listings || []) apply(l?._asset);
+  return changed;
+}
+async function enrichMarketSupplyFromAttestation(asset) {
+  const aid = String(asset?.asset_id || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aid)) return false;
+  if (marketSupplyBase(asset) != null) return false;
+  const commitment = String(asset?.commitment || '').toLowerCase();
+  const imageUri = asset?.image_uri || asset?.imageUri || '';
+  if (!/^[0-9a-f]{66}$/.test(commitment) || !imageUri) return false;
+  const verify = { ok: true, _assetId: aid, imageUri, commitment, ipfsAttest: null };
+  const attest = await enrichDiscoverAttestation(verify);
+  return attest?.supply ? marketSetVerifiedSupply(aid, attest) : false;
+}
+function scheduleMarketSupplyEnrichment(groups) {
+  if (!Array.isArray(groups) || !_marketCache) return;
+  for (const g of groups) {
+    if (!g || marketGroupReferenceUnit(g) == null || g.marketCapSats != null) continue;
+    const aid = String(g.asset?.asset_id || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(aid)) continue;
+    const key = `${NET.name}:${aid}`;
+    if (_marketSupplyAttestInFlight.has(key)) continue;
+    _marketSupplyAttestInFlight.add(key);
+    enrichMarketSupplyFromAttestation(g.asset)
+      .then(changed => {
+        if (changed && _marketCache && document.querySelector('.tab.active[data-tab="market"]')) {
+          applyMarketFilters();
+        }
+      })
+      .catch(() => {})
+      .finally(() => _marketSupplyAttestInFlight.delete(key));
+  }
+}
+function marketApplyAssetStats(asset, stats) {
+  if (!asset || !stats) return false;
+  let changed = false;
+  const copyKeys = [
+    'last_trade',
+    'mark_price',
+    'trades',
+    'volume_24h_sats',
+    'volume24h_sats',
+    'volume_sats_24h',
+    'day_volume_sats',
+    'sale_volume_24h_sats',
+    'total_volume_sats',
+    'volume_sats',
+    'market_volume_sats',
+    'sale_volume_sats',
+    'total_sale_volume_sats',
+    'market_sale_volume_sats',
+    'confirmed_sale_volume_sats',
+    'opening_count',
+    'disclosure_count',
+    'listing_count',
+    'range_listing_count',
+    'atomic_intent_count',
+    'preauth_sale_count',
+    'transfer_count',
+    'attestation',
+    'supply',
+    'total_supply',
+  ];
+  for (const key of copyKeys) {
+    if (!Object.prototype.hasOwnProperty.call(stats, key)) continue;
+    const before = asset[key];
+    const after = stats[key];
+    if (before === after) continue;
+    if (typeof before === 'object' || typeof after === 'object') {
+      try {
+        if (JSON.stringify(before) === JSON.stringify(after)) continue;
+      } catch {}
+    }
+    asset[key] = after;
+    changed = true;
+  }
+  asset._marketAssetStatsLoadedAt = Date.now();
+  return changed;
+}
+function marketMarkAssetStatsLoaded(assetIdHex) {
+  const aid = String(assetIdHex || '').toLowerCase();
+  const mark = (a) => {
+    if (a && String(a.asset_id || '').toLowerCase() === aid) a._marketAssetStatsLoadedAt = Date.now();
+  };
+  for (const a of _marketCache?.assets || []) mark(a);
+  for (const l of _marketCache?.listings || []) mark(l?._asset);
+}
+function marketApplyAssetStatsEverywhere(assetIdHex, stats) {
+  const aid = String(assetIdHex || '').toLowerCase();
+  let changed = false;
+  const apply = (a) => {
+    if (a && String(a.asset_id || '').toLowerCase() === aid) changed = marketApplyAssetStats(a, stats) || changed;
+  };
+  for (const a of _marketCache?.assets || []) apply(a);
+  for (const l of _marketCache?.listings || []) apply(l?._asset);
+  return changed;
+}
+function scheduleMarketAssetStatsRefresh() {
+  clearTimeout(_marketAssetStatsRefreshTimer);
+  _marketAssetStatsRefreshTimer = setTimeout(() => {
+    if (_marketCache && document.querySelector('.tab.active[data-tab="market"]')) {
+      applyMarketFilters();
+    }
+  }, 80);
+}
+function marketFlushAssetStatsRefreshIfIdle() {
+  if (_marketAssetStatsActive > 0 || _marketAssetStatsQueue.length || !_marketAssetStatsChanged) return;
+  _marketAssetStatsChanged = false;
+  scheduleMarketAssetStatsRefresh();
+}
+function marketDrainAssetStatsQueue() {
+  while (_marketAssetStatsActive < MARKET_ASSET_STATS_CONCURRENCY && _marketAssetStatsQueue.length) {
+    const aid = _marketAssetStatsQueue.shift();
+    const key = marketAssetStatsKey(aid);
+    _marketAssetStatsActive++;
+    fetchMarketAssetStats(aid)
+      .then(stats => {
+        if (stats) {
+          if (marketApplyAssetStatsEverywhere(aid, stats)) _marketAssetStatsChanged = true;
+        } else {
+          marketMarkAssetStatsLoaded(aid);
+        }
+      })
+      .catch(() => marketMarkAssetStatsLoaded(aid))
+      .finally(() => {
+        _marketAssetStatsActive = Math.max(0, _marketAssetStatsActive - 1);
+        _marketAssetStatsInFlight.delete(key);
+        marketDrainAssetStatsQueue();
+        marketFlushAssetStatsRefreshIfIdle();
+      });
+  }
+}
+function scheduleMarketAssetStatsEnrichment(groups) {
+  if (!Array.isArray(groups) || !_marketCache) return;
+  const now = Date.now();
+  for (const g of groups) {
+    const aid = String(g?.asset?.asset_id || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(aid)) continue;
+    const loadedAt = Number(g?.asset?._marketAssetStatsLoadedAt || 0);
+    if (loadedAt && now - loadedAt <= MARKET_ASSET_STATS_TTL_MS) continue;
+    const key = marketAssetStatsKey(aid);
+    if (_marketAssetStatsInFlight.has(key)) continue;
+    _marketAssetStatsInFlight.add(key);
+    _marketAssetStatsQueue.push(aid);
+  }
+  marketDrainAssetStatsQueue();
+}
+function marketCapSats(asset, unitPrice) {
+  const supply = marketSupplyBase(asset);
+  if (supply == null || unitPrice == null) return null;
+  const dec = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  const wholeSupply = Number(supply) / (10 ** dec);
+  const sats = wholeSupply * Number(unitPrice);
+  return Number.isFinite(sats) && sats > 0 ? sats : null;
+}
+function marketLastTradeUnitPrice(asset) {
+  const last = asset?.last_trade;
+  if (!last) return null;
+  const priceSats = Number(last.price_sats || 0);
+  if (!Number.isFinite(priceSats) || priceSats <= 0) return null;
+  const dec = Number.isInteger(asset?.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  try { return unitPriceSats(priceSats, BigInt(last.amount || 0), dec); }
+  catch { return null; }
+}
+function marketGroupReferenceUnit(group) {
+  return group?.floorUnit != null ? group.floorUnit : (group?.lastTradeUnit ?? null);
+}
+function marketTrustedVolumeCandidate(asset, keys) {
+  for (const k of keys) {
+    if (!Object.prototype.hasOwnProperty.call(asset || {}, k)) continue;
+    const n = Number(asset?.[k]);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return null;
+}
+function marketVolumeSats(asset) {
+  return marketTrustedVolumeCandidate(asset, [
+    'sale_volume_sats',
+    'total_sale_volume_sats',
+    'market_sale_volume_sats',
+    'confirmed_sale_volume_sats',
+    'total_volume_sats',
+    'volume_sats',
+    'market_volume_sats',
+  ]);
+}
+function marketVolume24hSats(asset) {
+  for (const k of ['volume_24h_sats', 'volume24h_sats', 'volume_sats_24h', 'day_volume_sats']) {
+    if (!Object.prototype.hasOwnProperty.call(asset || {}, k)) continue;
+    const n = Number(asset?.[k]);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return marketTrustedVolumeCandidate(asset, [
+    'sale_volume_24h_sats',
+    'volume_24h_sale_sats',
+    'market_sale_volume_24h_sats',
+    'confirmed_sale_volume_24h_sats',
+    'volume_24h_sats',
+    'volume24h_sats',
+    'volume_sats_24h',
+    'day_volume_sats',
+  ]);
+}
+function marketAssetStatsKey(assetIdHex) {
+  return `${NET.name}:${String(assetIdHex || '').toLowerCase()}`;
+}
+function marketEtchSortValue(asset) {
+  const ts = Number(asset?.etched_at || 0);
+  if (ts > 0) return ts;
+  const h = Number(asset?.etched_at_height || 0);
+  if (h > 0) return h;
+  return Number.MAX_SAFE_INTEGER;
+}
+function marketEtchAge(asset) {
+  const age = relativeAge(Number(asset?.etched_at || 0));
+  if (age) return `etched ${age} ago`;
+  const h = Number(asset?.etched_at_height || 0);
+  return h > 0 ? `block ${h.toLocaleString('en-US')}` : 'etch unknown';
+}
+function marketTacPriority(group) {
+  const a = group?.asset || {};
+  const ticker = String(a.ticker || '').trim().toUpperCase();
+  return ticker === 'TAC' && a.verified ? 0 : 1;
+}
+function compareMarketTacFirst(a, b) {
+  return marketTacPriority(a) - marketTacPriority(b);
+}
+function compareMarketGroupTie(a, b) {
+  return marketEtchSortValue(a.asset) - marketEtchSortValue(b.asset)
+      || String(a.asset?.ticker || '').localeCompare(String(b.asset?.ticker || ''));
+}
+function marketGroupVolumeRankSats(group) {
+  const n = Number(group?.volumeSats ?? group?.volume24hSats ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+function marketModeLabel(l) {
+  if (l.kind === 'preauth') return 'Instant listing';
+  if (l.kind === 'intent') return 'Atomic intent';
+  if (l.kind === 'range') return 'Range listing';
+  if (l.kind === 'opening') return 'Opening listing';
+  return 'Listing';
+}
+function marketModeClass(l) {
+  return l.kind === 'preauth' ? 'preauth'
+       : l.kind === 'intent' ? 'intent'
+       : l.kind === 'range' ? 'range'
+       : l.kind === 'opening' ? 'opening'
+       : 'indexed';
+}
+function marketListingKey(l, asset) {
+  if (l.kind === 'opening') return `opening:${l.txid}:${l.vout | 0}`;
+  if (l.kind === 'intent') return `intent:${l.intent_id}`;
+  if (l.kind === 'preauth') return `preauth:${l.sale_id}`;
+  return `range:${asset?.asset_id || l.asset_id}:${l.owner_pubkey || ''}`;
+}
+function marketListingDisplayId(l) {
+  if (l.kind === 'preauth') return l.sale_id || l.asset_opening?.txid || '';
+  if (l.kind === 'intent') return l.intent_id || '';
+  if (l.kind === 'range') return (l.utxos && l.utxos[0]?.txid) || l.owner_pubkey || '';
+  return l.txid || '';
+}
+function marketAssetHasMarketSurface(asset) {
+  if (!asset) return false;
+  if (asset.verified) return true;
+  if (asset.last_trade) return true;
+  return Number(asset.listing_count || 0) > 0
+      || Number(asset.range_listing_count || 0) > 0
+      || Number(asset.atomic_intent_count || 0) > 0
+      || Number(asset.preauth_sale_count || 0) > 0;
+}
+function marketBrowsePagerHtml(total, page, totalPages, start, end) {
+  if (totalPages <= 1) {
+    return `<div class="market-pagination"><span>${total ? `${start}-${end} of ${total}` : '0 of 0'} tokens</span><span>${MARKET_BROWSE_PAGE_SIZE} per page</span></div>`;
+  }
+  const opts = Array.from({ length: totalPages }, (_, i) => {
+    const p = i + 1;
+    return `<option value="${p}"${p === page ? ' selected' : ''}>Page ${p}</option>`;
+  }).join('');
+  return `
+    <div class="market-pagination">
+      <span>${start}-${end} of ${total} tokens &middot; ${MARKET_BROWSE_PAGE_SIZE} per page</span>
+      <div class="market-pagination-controls">
+        <button type="button" data-market-page="prev"${page <= 1 ? ' disabled' : ''}>&lsaquo;</button>
+        <select data-market-page-select aria-label="Market token page">${opts}</select>
+        <button type="button" data-market-page="next"${page >= totalPages ? ' disabled' : ''}>&rsaquo;</button>
+      </div>
+    </div>`;
+}
+function marketListingPagerHtml(total, page, totalPages, start, end) {
+  if (totalPages <= 1) {
+    return `<div class="market-pagination"><span>${total ? `${start}-${end} of ${total}` : '0 of 0'} listings</span><span>${MARKET_LISTING_PAGE_SIZE} per page</span></div>`;
+  }
+  const opts = Array.from({ length: totalPages }, (_, i) => {
+    const p = i + 1;
+    return `<option value="${p}"${p === page ? ' selected' : ''}>Page ${p}</option>`;
+  }).join('');
+  return `
+    <div class="market-pagination market-listing-pagination">
+      <span>${start}-${end} of ${total} listings &middot; ${MARKET_LISTING_PAGE_SIZE} per page</span>
+      <div class="market-pagination-controls">
+        <button type="button" data-market-listing-page="prev"${page <= 1 ? ' disabled' : ''}>&lsaquo;</button>
+        <select data-market-listing-page-select aria-label="Listing page">${opts}</select>
+        <button type="button" data-market-listing-page="next"${page >= totalPages ? ' disabled' : ''}>&rsaquo;</button>
+      </div>
+    </div>`;
+}
+function newMarketGroup(asset) {
+  return { asset, openings: 0, ranges: 0, intents: 0, preauths: 0, total: 0,
+           floorUnit: null, floorSats: null, instantFloorUnit: null, instantFloorSats: null,
+           lastTradeUnit: null, referenceUnit: null, newestListing: 0 };
+}
+function marketGroupRows(rows, assets = []) {
+  const groups = new Map();
+  for (const a of assets || []) {
+    const aid = a?.asset_id;
+    if (!aid || groups.has(aid)) continue;
+    groups.set(aid, newMarketGroup(a));
+  }
+  for (const l of rows) {
+    const a = l._asset;
+    const aid = a?.asset_id;
+    if (!aid) continue;
+    let g = groups.get(aid);
+    if (!g) {
+      g = newMarketGroup(a);
+      groups.set(aid, g);
+    }
+    if (l.kind === 'opening')      g.openings++;
+    else if (l.kind === 'range')   g.ranges++;
+    else if (l.kind === 'intent')  g.intents++;
+    else if (l.kind === 'preauth') g.preauths++;
+    g.total = g.openings + g.ranges + g.intents + g.preauths;
+    g.newestListing = Math.max(g.newestListing, Number(l.listed_at || l.created_at || 0));
+    const u = marketListingUnitPrice(l, a);
+    if (u != null && (g.floorUnit == null || u < g.floorUnit)) g.floorUnit = u;
+    if (l.kind === 'preauth' && u != null && (g.instantFloorUnit == null || u < g.instantFloorUnit)) {
+      g.instantFloorUnit = u;
+    }
+    const ps = marketListingPriceSats(l);
+    if (ps > 0 && (g.floorSats == null || ps < g.floorSats)) g.floorSats = ps;
+    if (l.kind === 'preauth' && ps > 0 && (g.instantFloorSats == null || ps < g.instantFloorSats)) {
+      g.instantFloorSats = ps;
+    }
+  }
+  for (const g of groups.values()) {
+    if (g.instantFloorUnit != null) g.floorUnit = g.instantFloorUnit;
+    if (g.instantFloorSats != null) g.floorSats = g.instantFloorSats;
+    g.lastTradeUnit = marketLastTradeUnitPrice(g.asset);
+    g.referenceUnit = marketGroupReferenceUnit(g);
+    g.volumeSats = marketVolumeSats(g.asset);
+    g.volume24hSats = marketVolume24hSats(g.asset);
+    g.marketCapSats = marketCapSats(g.asset, g.referenceUnit);
+  }
+  return Array.from(groups.values());
+}
+function sortMarketGroups(groups, sort) {
+  return [...groups].sort((a, b) => {
+    const tacFirst = compareMarketTacFirst(a, b);
+    if (tacFirst) return tacFirst;
+    if (sort === 'oldest-etch') {
+      return marketEtchSortValue(a.asset) - marketEtchSortValue(b.asset)
+          || String(a.asset.ticker || '').localeCompare(String(b.asset.ticker || ''));
+    }
+    if (sort === 'volume-desc') {
+      return marketGroupVolumeRankSats(b) - marketGroupVolumeRankSats(a)
+          || compareMarketGroupTie(a, b)
+          || Number(b.total || 0) - Number(a.total || 0);
+    }
+    if (sort === 'marketcap-desc') {
+      return Number(b.marketCapSats || 0) - Number(a.marketCapSats || 0)
+          || compareMarketGroupTie(a, b);
+    }
+    if (sort === 'unit-asc' || sort === 'price-asc') {
+      return (marketGroupReferenceUnit(a) ?? Infinity) - (marketGroupReferenceUnit(b) ?? Infinity)
+          || Number(a.floorSats ?? Infinity) - Number(b.floorSats ?? Infinity)
+          || compareMarketGroupTie(a, b);
+    }
+    if (sort === 'unit-desc' || sort === 'price-desc') {
+      return (marketGroupReferenceUnit(b) ?? -Infinity) - (marketGroupReferenceUnit(a) ?? -Infinity)
+          || Number(b.floorSats ?? -Infinity) - Number(a.floorSats ?? -Infinity)
+          || compareMarketGroupTie(a, b);
+    }
+    if (sort === 'recency') {
+      return Number(b.newestListing || 0) - Number(a.newestListing || 0)
+          || compareMarketGroupTie(a, b);
+    }
+    return marketGroupVolumeRankSats(b) - marketGroupVolumeRankSats(a)
+        || compareMarketGroupTie(a, b)
+        || Number(b.preauths || 0) - Number(a.preauths || 0)
+        || Number(b.total || 0) - Number(a.total || 0);
+  });
+}
+
 // Compose a richer market-status line that shows both the filter effect
 // (post-filter count vs the universe being filtered) and the trade-type
 // breakdown so the user can see at a glance why the visible count is what
@@ -33037,13 +33545,14 @@ function _formatMarketStatus(rows, opts = {}) {
   const universe = scope === 'asset' && assetId
     ? _marketCache.listings.filter(l => (l._asset?.asset_id || '') === assetId)
     : _marketCache.listings;
+  const instant = universe.filter(l => l.kind === 'preauth').length;
   const atomic = universe.filter(l => l.kind === 'intent').length;
   const otc = universe.filter(l => l.kind === 'opening' || l.kind === 'range').length;
   const total = universe.length;
   const showing = rows.length;
-  const breakdown = `⚡ ${atomic} · ${otc} OTC`;
-  if (showing === total) return `${total} listing${total === 1 ? '' : 's'} · ${breakdown}`;
-  return `Showing ${showing} of ${total} · ${breakdown}`;
+  const breakdown = `${instant} instant - ${atomic} atomic - ${otc} OTC`;
+  if (showing === total) return `${total} listing${total === 1 ? '' : 's'} - ${breakdown}`;
+  return `Showing ${showing} of ${total} - ${breakdown}`;
 }
 
 function renderMarketBrowse(rows) {
@@ -33090,45 +33599,8 @@ function renderMarketBrowse(rows) {
     }
     return;
   }
-  // Group by asset_id. Each group carries the asset metadata (taken from the
-  // first row's _asset reference, all rows for the same asset share it),
-  // per-kind counts, lowest unit price, and lowest total sats.
-  const groups = new Map();
-  for (const l of rows) {
-    const a = l._asset;
-    const aid = a?.asset_id;
-    if (!aid) continue;
-    let g = groups.get(aid);
-    if (!g) {
-      g = { asset: a, openings: 0, ranges: 0, intents: 0, total: 0,
-            floorUnit: null, floorSats: null };
-      groups.set(aid, g);
-    }
-    if (l.kind === 'opening')      g.openings++;
-    else if (l.kind === 'range')   g.ranges++;
-    else if (l.kind === 'intent')  g.intents++;
-    else if (l.kind === 'preauth') g.preauths = (g.preauths || 0) + 1;
-    g.total = g.openings + g.ranges + g.intents + (g.preauths || 0);
-    const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-    // Instant listings live in a different shape (asset_opening.amount +
-    // min_price_sats) than opening/intent (amount + price_sats) or range
-    // (threshold + price_sats). Walking the same union means we have to
-    // map per-kind — previously the browse grid silently skipped preauth
-    // from both the floor calc (price_sats is undefined → 0) and the tile
-    // total. Markets with only instant listings showed "0 offers · no floor".
-    const amt = l.kind === 'range' ? l.threshold
-              : l.kind === 'preauth' ? (l.asset_opening?.amount)
-              : l.amount;
-    const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
-    const u = unitPriceSats(ps, BigInt(amt || 0), dec);
-    if (u != null && (g.floorUnit == null || u < g.floorUnit)) g.floorUnit = u;
-    if (ps > 0 && (g.floorSats == null || ps < g.floorSats)) g.floorSats = ps;
-  }
-  const tiles = Array.from(groups.values()).sort((x, y) =>
-    y.total - x.total
-    || ((x.floorUnit ?? Infinity) - (y.floorUnit ?? Infinity))
-    || String(x.asset.ticker || '').localeCompare(String(y.asset.ticker || '')),
-  );
+  const sort = $('#market-sort')?.value || 'volume-desc';
+  const tiles = sortMarketGroups(marketGroupRows(rows), sort);
 
   // Trust-mode breakdown is already in the section status line ("X listings
   // · ⚡ N · M OTC"); a banner row above the grid would just repeat it.
@@ -33140,19 +33612,10 @@ function renderMarketBrowse(rows) {
   // when the prune resolutions arrive in a burst after first load.
   let grid = document.getElementById('market-browse-grid');
   if (!grid) {
-    // Differentiator strip — single line, muted, explains what makes
-    // tacit's marketplace different from typical DEXes. Visible on
-    // first land so traders know what they're trading for.
-    const _browseValueStrip = `<div style="margin-bottom:14px;padding:10px 14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);font-size:11px;color:var(--ink-mid);display:flex;align-items:center;gap:14px;flex-wrap:wrap;line-height:1.5;">
-      <span title="Token amounts are Pedersen-committed on chain. Only you and your counterparty know what was transferred — neither the worker, nor anyone watching the chain, can see the value. Math-hidden, not policy-hidden.">🔒 <strong>Confidential</strong> amounts on every trade</span>
-      <span class="muted">·</span>
-      <span title="Tokens ARE Bitcoin UTXOs. No bridges, no wrapped representations, no L2 trust assumption. Settlement is a single Bitcoin transaction; first confirmation is final.">⚡ <strong>Bitcoin-native</strong> settlement (no bridges)</span>
-      <span class="muted">·</span>
-      <span title="The tacit protocol takes no fees on trades. You pay only the underlying Bitcoin tx fee for each fill (~1,000 sats). No 0.3% LP fee, no taker fee, no protocol cut.">💸 <strong>0% protocol fees</strong></span>
-    </div>`;
-    list.innerHTML = _browseValueStrip + `<div id="market-browse-grid" class="recent-grid"></div>`;
+    list.innerHTML = `<div id="market-browse-grid" class="market-asset-grid"></div>`;
     grid = document.getElementById('market-browse-grid');
   } else {
+    grid.className = 'market-asset-grid';
     grid.innerHTML = '';
   }
   const frag = document.createDocumentFragment();
@@ -33222,7 +33685,7 @@ function renderMarketBrowse(rows) {
     // single SVG element so it can be laid out flush with the floor row.
     const sparkSvg = _renderTileSparklineSVG(a.price_summary);
     const tile = document.createElement('div');
-    tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);cursor:pointer;display:flex;flex-direction:column;gap:6px;';
+    tile.className = 'market-asset-tile';
     tile.dataset.assetTile = safeAid;
     tile.title = `View ${escapeHtml(a.ticker || '?')} listings`;
     const _logoStyle = 'width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;';
@@ -33231,28 +33694,44 @@ function renderMarketBrowse(rows) {
       : (imageUriRaw
           ? `<span data-asset-logo-slot data-uri="${escapeHtml(imageUriRaw)}" style="display:inline-block;flex-shrink:0;">${assetImageFallback(safeAid, a.ticker, 36)}</span>`
           : assetImageFallback(safeAid, a.ticker, 36));
+    const verifiedBadge = a._copycatInfo
+      ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy - verify the asset_id before trading.">COPY</span>`
+      : a._tickerCollision === 'duplicate'
+        ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers are not unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">DUP</span>`
+        : verifiedBadgeHTML(a);
+    const instantLine = g.preauths
+      ? `<div class="market-instant-line">${g.preauths.toLocaleString('en-US')} instant</div>`
+      : `<div class="market-instant-line empty">0 instant</div>`;
+    const refUnit = marketGroupReferenceUnit(g);
+    const floorValue = refUnit != null ? fmtMarketUnitSats(refUnit) : 'none';
+    const volumeValue = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : '—';
+    const mcapValue = g.marketCapSats != null ? fmtMarketUsdWholeFromSats(g.marketCapSats) : 'n/a';
     tile.innerHTML = `
-      <div style="display:flex;align-items:center;gap:10px;">
+      <div class="market-asset-head">
         ${logoHtml}
         <div style="min-width:0;flex:1;">
-          <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">
-            <strong style="font-size:15px;">${escapeHtml(a.ticker || '?')}</strong>${collisionBadge}${deltaChip}
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <strong>${escapeHtml(a.ticker || '?')}</strong>${verifiedBadge}
           </div>
-          <div style="font-size:10px;color:${assetIdColorForAsset(a)};font-family:var(--mono);">${escapeHtml(shorten(safeAid, 10))}</div>
+          <div class="market-asset-id" style="color:${assetIdColorForAsset(a)};">${escapeHtml(shorten(safeAid, 8))}</div>
         </div>
       </div>
-      <div style="font-size:14px;"><strong>${g.total}</strong> <span class="muted" style="font-size:11px;">offer${g.total === 1 ? '' : 's'}</span></div>
-      ${kindBits.length ? `<div style="font-size:11px;display:flex;gap:10px;flex-wrap:wrap;">${kindBits.join('<span class="muted">·</span>')}</div>` : ''}
-      ${floorLine ? `<div style="font-size:12px;">${floorLine}</div>` : ''}
-      ${sparkSvg}
+      ${instantLine}
+      <dl class="market-card-stats">
+        <div><dt>Offers</dt><dd>${g.total.toLocaleString('en-US')}</dd></div>
+        <div><dt>Price</dt><dd>${escapeHtml(floorValue)}</dd></div>
+        <div><dt>Volume</dt><dd>${escapeHtml(volumeValue)}</dd></div>
+        <div><dt>Market cap</dt><dd class="market-usd-price">${escapeHtml(mcapValue)}</dd></div>
+      </dl>
+      <div class="market-card-foot">
+        <span>${escapeHtml(marketEtchAge(a))}</span>
+        ${g.intents ? `<span>${g.intents.toLocaleString('en-US')} atomic</span>` : ''}
+      </div>
     `;
     frag.appendChild(tile);
   }
   grid.appendChild(frag);
-  // Async-resolve any IPFS-metadata-blob image_uris into actual images.
-  // The placeholder fallback stays visible until each resolve lands, so
-  // the tiles never flash an empty/broken image.
-  _resolveAssetLogosIn(grid, 'width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;');
+  hydrateMarketImages(grid);
   grid.querySelectorAll('[data-asset-tile]').forEach(el => {
     el.onclick = () => {
       const aid = el.dataset.assetTile;
@@ -33261,10 +33740,571 @@ function renderMarketBrowse(rows) {
   });
 }
 
+function renderMarketBrowseTable(rows) {
+  const list = $('#market-list');
+  const status = $('#market-status');
+  const sort = $('#market-sort')?.value || 'volume-desc';
+  const filterText = ($('#market-filter-asset')?.value || '').trim().toLowerCase();
+  const filterKind = $('#market-filter-kind')?.value || 'all';
+  const minRaw = ($('#market-filter-min-price')?.value || '').trim();
+  const maxRaw = ($('#market-filter-max-price')?.value || '').trim();
+  const hasPriceFilter = /^\d+$/.test(minRaw) || /^\d+$/.test(maxRaw);
+  const includeAllAssets = !hasPriceFilter && (filterKind === 'all' || !!filterText);
+  const marketAssets = includeAllAssets && Array.isArray(_marketCache?.assets) ? _marketCache.assets.filter(a => {
+    if (!a?.asset_id) return false;
+    if (!filterText) return true;
+    const ticker = String(a.ticker || '').toLowerCase();
+    const aid = String(a.asset_id || '').toLowerCase();
+    return ticker.includes(filterText) || aid.startsWith(filterText);
+  }) : [];
+  const groups = sortMarketGroups(marketGroupRows(rows, marketAssets), sort);
+  scheduleMarketAssetStatsEnrichment(groups);
+  scheduleMarketSupplyEnrichment(groups);
+  if (!groups.length) {
+    list.innerHTML = '<div class="empty">No listings match.</div>';
+    return;
+  }
+  const totalGroups = groups.length;
+  const totalPages = Math.max(1, Math.ceil(totalGroups / MARKET_BROWSE_PAGE_SIZE));
+  if (!Number.isInteger(_marketBrowsePage) || _marketBrowsePage < 1) _marketBrowsePage = 1;
+  if (_marketBrowsePage > totalPages) _marketBrowsePage = totalPages;
+  const startIndex = (_marketBrowsePage - 1) * MARKET_BROWSE_PAGE_SIZE;
+  const pageGroups = groups.slice(startIndex, startIndex + MARKET_BROWSE_PAGE_SIZE);
+  const showingStart = startIndex + 1;
+  const showingEnd = startIndex + pageGroups.length;
+  if (status) {
+    const universe = _marketCache?.listings || [];
+    const instant = universe.filter(l => l.kind === 'preauth').length;
+    const atomic = universe.filter(l => l.kind === 'intent').length;
+    const otc = universe.filter(l => l.kind === 'opening' || l.kind === 'range').length;
+    status.textContent = `${groups.length} tokens - ${rows.length} live listing${rows.length === 1 ? '' : 's'} - ${instant} instant - ${atomic} atomic - ${otc} OTC`;
+  }
+  if (status) status.textContent += ` - page ${_marketBrowsePage}/${totalPages}`;
+  const body = pageGroups.map(g => {
+    const a = g.asset || {};
+    const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
+    const ticker = a.ticker || '?';
+    const verifiedBadge = a.verified
+      ? `<span class="market-verified-check" title="Platform-verified Tacit asset">&#10003;</span>`
+      : '';
+    const refUnit = marketGroupReferenceUnit(g);
+    const floor = refUnit != null ? `${fmtMarketUnitSats(refUnit)}/${ticker}` : 'no price';
+    const floorUsd = refUnit != null ? `${fmtMarketUsdUnitFromSats(refUnit, 'no USD quote')} per token` : 'no USD price';
+    const mcapUsd = g.marketCapSats != null ? fmtMarketUsdWholeFromSats(g.marketCapSats) : 'n/a';
+    const mcapBtc = g.marketCapSats != null ? fmtMarketBtc(g.marketCapSats) : '0 BTC';
+    const volume24hUsd = g.volume24hSats != null ? fmtMarketUsdWholeFromSats(g.volume24hSats, '$0') : '—';
+    const volume24hBtc = g.volume24hSats != null ? fmtMarketBtc(g.volume24hSats) : '—';
+    const volumeUsd = g.volumeSats != null ? fmtMarketUsdWholeFromSats(g.volumeSats, '$0') : '—';
+    const volumeBtc = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : '—';
+    const transfers = Number(a.transfer_count || 0);
+    return `
+      <tr data-market-asset-row="${escapeHtml(safeAid)}">
+        <td>
+          <div class="market-token-cell">
+            ${marketAssetImageHtml(a, 44)}
+            <div>
+              <span class="market-token-title">${escapeHtml(ticker)}${verifiedBadge}</span>
+              <span class="market-token-sub">${escapeHtml(shorten(safeAid, 8))}</span>
+            </div>
+          </div>
+        </td>
+        <td>
+          <span class="market-table-value ${refUnit != null ? 'market-sats-price' : ''}">${escapeHtml(floor)}</span>
+          <span class="market-table-sub market-usd-price">${escapeHtml(floorUsd)}</span>
+        </td>
+        <td>
+          <span class="market-table-value">${escapeHtml(mcapUsd)}</span>
+          <span class="market-table-sub">${escapeHtml(mcapBtc)}</span>
+        </td>
+        <td>
+          <span class="market-table-value">${escapeHtml(volume24hUsd)}</span>
+          <span class="market-table-sub">${escapeHtml(volume24hBtc)}</span>
+        </td>
+        <td>
+          <span class="market-table-value">${escapeHtml(volumeUsd)}</span>
+          <span class="market-table-sub">${escapeHtml(volumeBtc)}</span>
+        </td>
+        <td>
+          <span class="market-table-sub">${g.preauths.toLocaleString('en-US')} instant &middot; ${transfers.toLocaleString('en-US')} txs</span>
+        </td>
+      </tr>`;
+  }).join('');
+  const pagerHtml = marketBrowsePagerHtml(totalGroups, _marketBrowsePage, totalPages, showingStart, showingEnd)
+    .replace('class="market-pagination"', 'class="market-pagination market-pagination--top"');
+  list.innerHTML = `
+    ${pagerHtml}
+    <div class="market-token-table-wrap">
+      <table class="market-token-table">
+        <thead>
+          <tr>
+            <th>Token</th>
+            <th>Price</th>
+            <th>Market Cap</th>
+            <th>24h Volume</th>
+            <th>Total Volume</th>
+            <th>Listings</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+  list.querySelectorAll('[data-market-asset-row]').forEach(el => {
+    el.onclick = () => {
+      const aid = el.dataset.marketAssetRow;
+      if (/^[0-9a-f]{64}$/.test(aid || '')) goToMarketAsset(aid);
+    };
+  });
+  hydrateMarketImages(list);
+  list.querySelectorAll('[data-market-page]').forEach(btn => {
+    btn.onclick = () => {
+      if (btn.dataset.marketPage === 'prev') _marketBrowsePage = Math.max(1, _marketBrowsePage - 1);
+      else if (btn.dataset.marketPage === 'next') _marketBrowsePage = Math.min(totalPages, _marketBrowsePage + 1);
+      applyMarketFilters();
+    };
+  });
+  const pageSelect = list.querySelector('[data-market-page-select]');
+  if (pageSelect) {
+    pageSelect.onchange = () => {
+      const p = Number(pageSelect.value || 1);
+      _marketBrowsePage = Number.isInteger(p) ? Math.max(1, Math.min(totalPages, p)) : 1;
+      applyMarketFilters();
+    };
+  }
+}
+
+function marketAssetTabsHtml(listedHtml, activityHtml, actionHtml = '') {
+  return `
+    <div class="market-asset-tabbar">
+      <div class="market-asset-tabs" role="tablist" aria-label="Asset market sections">
+        <button class="market-asset-tab active" data-market-asset-tab="listed" role="tab" aria-selected="true" type="button">Listed</button>
+        <button class="market-asset-tab" data-market-asset-tab="activity" role="tab" aria-selected="false" type="button">Activity</button>
+      </div>
+      <div class="market-asset-tab-actions">${actionHtml || ''}</div>
+    </div>
+    <div class="market-asset-pane active" data-market-asset-pane="listed" role="tabpanel">${listedHtml}</div>
+    <div class="market-asset-pane" data-market-asset-pane="activity" role="tabpanel">${activityHtml}</div>`;
+}
+
+function bindMarketAssetTabs(scope) {
+  const tabs = Array.from(scope.querySelectorAll('[data-market-asset-tab]'));
+  if (!tabs.length) return;
+  const panes = Array.from(scope.querySelectorAll('[data-market-asset-pane]'));
+  const activate = (name) => {
+    tabs.forEach(tab => {
+      const on = tab.dataset.marketAssetTab === name;
+      tab.classList.toggle('active', on);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    panes.forEach(pane => pane.classList.toggle('active', pane.dataset.marketAssetPane === name));
+  };
+  tabs.forEach(tab => {
+    tab.onclick = () => activate(tab.dataset.marketAssetTab || 'listed');
+  });
+  bindMarketActivityTable(scope);
+}
+
+function bindMarketActivityTable(scope) {
+  const filter = scope.querySelector('[data-market-activity-filter]');
+  if (!filter) return;
+  const panel = scope.querySelector('[data-market-activity-panel]') || scope;
+  const count = scope.querySelector('[data-market-activity-count]');
+  const prev = scope.querySelector('[data-market-activity-page="prev"]');
+  const next = scope.querySelector('[data-market-activity-page="next"]');
+  const select = scope.querySelector('[data-market-activity-page-select]');
+  const pageSize = MARKET_ACTIVITY_PAGE_SIZE;
+  const setPage = (page) => {
+    panel.dataset.marketActivityPage = String(Math.max(1, Number(page) || 1));
+  };
+  const update = () => {
+    const rows = Array.from(scope.querySelectorAll('[data-market-activity-row]'));
+    const kind = filter.value || 'all';
+    const matching = rows.filter(row => kind === 'all' || row.dataset.marketActivityEvent === kind);
+    const total = matching.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const currentPage = Math.min(totalPages, Math.max(1, Number(panel.dataset.marketActivityPage || 1) || 1));
+    panel.dataset.marketActivityPage = String(currentPage);
+    const start = total ? (currentPage - 1) * pageSize + 1 : 0;
+    const end = total ? Math.min(total, start + pageSize - 1) : 0;
+    rows.forEach(row => { row.style.display = 'none'; });
+    matching.slice(start ? start - 1 : 0, end).forEach(row => { row.style.display = ''; });
+    if (count) count.textContent = total ? `${start}-${end} of ${total}` : `0 of ${rows.length}`;
+    if (select) {
+      if (select.options.length !== totalPages) {
+        select.innerHTML = Array.from({ length: totalPages }, (_, i) => `<option value="${i + 1}">Page ${i + 1}</option>`).join('');
+      }
+      select.value = String(currentPage);
+      select.disabled = totalPages <= 1;
+    }
+    if (prev) prev.disabled = currentPage <= 1 || totalPages <= 1;
+    if (next) next.disabled = currentPage >= totalPages || totalPages <= 1;
+  };
+  if (!filter.dataset.bound) {
+    filter.dataset.bound = '1';
+    filter.addEventListener('change', () => {
+      setPage(1);
+      update();
+    });
+  }
+  if (prev && !prev.dataset.bound) {
+    prev.dataset.bound = '1';
+    prev.addEventListener('click', () => {
+      setPage((Number(panel.dataset.marketActivityPage || 1) || 1) - 1);
+      update();
+    });
+  }
+  if (next && !next.dataset.bound) {
+    next.dataset.bound = '1';
+    next.addEventListener('click', () => {
+      setPage((Number(panel.dataset.marketActivityPage || 1) || 1) + 1);
+      update();
+    });
+  }
+  if (select && !select.dataset.bound) {
+    select.dataset.bound = '1';
+    select.addEventListener('change', () => {
+      setPage(select.value);
+      update();
+    });
+  }
+  update();
+}
+
+function marketAssetListCtaHtml(asset) {
+  const safeAid = /^[0-9a-f]{64}$/.test(asset?.asset_id || '') ? asset.asset_id : '';
+  const userHoldsAsset = !!(safeAid && _holdingsCache?.holdings && _holdingsCache.holdings.get(safeAid));
+  return `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" data-preview-only="${userHoldsAsset ? '0' : '1'}" title="${userHoldsAsset ? 'You hold this asset - list one of your UTXOs for sale via an Instant listing.' : 'Preview the listing panel. Connect a wallet holding this asset to publish.'}">List Assets</button>`;
+}
+
+function findMarketAssetById(assetId) {
+  const aid = String(assetId || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aid)) return null;
+  return (_marketCache?.assets || []).find(x => String(x.asset_id || '').toLowerCase() === aid)
+      || (_marketCache?.listings || []).find(x => String(x._asset?.asset_id || x.asset_id || '').toLowerCase() === aid)?._asset
+      || null;
+}
+
+function showMarketListPreviewModal(assetId) {
+  const a = findMarketAssetById(assetId) || { asset_id: assetId, ticker: 'token', decimals: 0 };
+  const ticker = a.ticker || 'token';
+  const overlay = document.createElement('div');
+  overlay.className = 'market-buy-overlay';
+  overlay.innerHTML = `
+    <div class="market-buy-card" role="dialog" aria-modal="true" aria-label="List asset preview">
+      <div class="market-buy-head">
+        <div>
+          <span class="market-buy-kind">List assets</span>
+          <h3>List ${escapeHtml(ticker)}</h3>
+        </div>
+        <button class="market-buy-close" type="button" data-market-list-preview-close aria-label="Close">x</button>
+      </div>
+      <div class="market-buy-row">
+        <div>
+          <div class="market-buy-label">Asset</div>
+          <div class="market-buy-sub">Selected token</div>
+        </div>
+        <div>
+          <div class="market-buy-value">${escapeHtml(ticker)}</div>
+          <div class="market-buy-sub">${escapeHtml(shorten(a.asset_id || '', 10))}</div>
+        </div>
+      </div>
+      <div class="market-buy-row">
+        <div>
+          <div class="market-buy-label">Asset UTXO</div>
+          <div class="market-buy-sub">Exact lot to sell</div>
+        </div>
+        <div>
+          <div class="market-buy-value">Wallet required</div>
+          <div class="market-buy-sub">Connect a wallet holding ${escapeHtml(ticker)}</div>
+        </div>
+      </div>
+      <div class="market-buy-row">
+        <div>
+          <div class="market-buy-label">Token amount</div>
+          <div class="market-buy-sub">Whole selected UTXO</div>
+        </div>
+        <div>
+          <div class="market-buy-value">Auto-filled</div>
+          <div class="market-buy-sub">One listing = one asset UTXO</div>
+        </div>
+      </div>
+      <div class="market-buy-row">
+        <div>
+          <div class="market-buy-label">Total price in sats</div>
+          <div class="market-buy-sub">Seller receives</div>
+        </div>
+        <div>
+          <div class="market-buy-value">Editable</div>
+          <div class="market-buy-sub">Buyer pays this amount atomically</div>
+        </div>
+      </div>
+      <div class="market-buy-note">
+        Preview only: the real listing panel appears when the connected wallet holds this asset. Publishing an Instant Listing signs a sale authorization for the selected UTXO; buyers can then complete payment and transfer atomically.
+      </div>
+      <div class="market-buy-actions">
+        <button type="button" data-market-list-preview-close>Close</button>
+        <button type="button" class="primary" disabled title="Connect a wallet holding this asset to publish">Publish listing</button>
+      </div>
+    </div>`;
+  const close = () => {
+    document.removeEventListener('keydown', onKey, true);
+    overlay.remove();
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+  };
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.querySelectorAll('[data-market-list-preview-close]').forEach(b => b.addEventListener('click', close, { once: true }));
+  document.addEventListener('keydown', onKey, true);
+  document.body.appendChild(overlay);
+  overlay.querySelector('[data-market-list-preview-close]')?.focus();
+}
+
+function marketActivityLegacyPanelHtml(asset, rows) {
+  const a = asset || {};
+  const ticker = a.ticker || '?';
+  const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+  const events = [...(rows || [])]
+    .sort((x, y) => marketListingTimestamp(y) - marketListingTimestamp(x))
+    .slice(0, 25);
+  const eventHtml = events.map(l => {
+    const amount = marketListingAmount(l);
+    const priceSats = marketListingPriceSats(l);
+    const unit = marketListingUnitPrice(l, a);
+    const rel = relativeAge(marketListingTimestamp(l));
+    const maker = l.maker_address || l.seller_payout_address || l.owner_address || '';
+    const id = marketListingDisplayId(l);
+    return `
+      <article class="market-activity-event listing">
+        <div class="market-activity-line"><strong>Listing</strong><span>${escapeHtml(rel ? `${rel} ago` : 'now')}</span></div>
+        <div>${escapeHtml(unit != null ? fmtMarketUnitSats(unit) : `${priceSats.toLocaleString('en-US')} sats`)}/${escapeHtml(ticker)} x ${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}</div>
+        <span><span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSats))}</span> <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSats, ''))}</span></span>
+        <small>${escapeHtml(shorten(id, 8))}${maker ? ` &middot; ${escapeHtml(shorten(maker, 10))}` : ''}</small>
+      </article>`;
+  }).join('');
+  return `
+    <section class="market-activity-panel">
+      <div class="market-activity-rail-head">
+        <h3>Activity</h3>
+      </div>
+      <div class="market-activity-filters">
+        <button class="active" type="button">All</button>
+        <button type="button">Sale</button>
+        <button type="button">Listing</button>
+        <button type="button">Cancel</button>
+      </div>
+      <div class="market-activity-events">${eventHtml || '<div class="empty">No activity</div>'}</div>
+    </section>`;
+}
+
 // Asset-detail header strip — sits at the top of the per-listing grid in
 // asset mode. "← All assets" returns to browse. The asset_id chip is
 // click-to-copy, mirroring the per-tile behavior. `rows` is the already-
 // filtered+scoped row set for the asset; we use it to derive a live floor.
+async function fetchMarketAssetStats(assetIdHex) {
+  const aid = String(assetIdHex || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aid) || !ASSET_DETAIL_URL(aid)) return null;
+  const key = marketAssetStatsKey(aid);
+  const cached = _marketAssetStatsCache.get(key);
+  if (cached && Date.now() - Number(cached.updatedAt || 0) <= MARKET_ASSET_STATS_TTL_MS) return cached.data;
+  const resp = await fetch(withNet(ASSET_DETAIL_URL(aid)));
+  if (resp.status === 404) return null;
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  _marketAssetStatsCache.set(key, { data, updatedAt: Date.now() });
+  return data;
+}
+
+async function marketTradeAddressesFromTx(txid) {
+  const id = String(txid || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(id)) return { seller_address: '', buyer_address: '' };
+  if (_marketTradeAddressCache.has(id)) return _marketTradeAddressCache.get(id);
+  const promise = (async () => {
+    const tx = await getTx(id);
+    const vout = Array.isArray(tx?.vout) ? tx.vout : [];
+    return {
+      // Instant sales settle as buyer asset output first, seller BTC output second.
+      buyer_address: vout[0]?.scriptpubkey_address || '',
+      seller_address: vout[1]?.scriptpubkey_address || '',
+    };
+  })().catch(() => ({ seller_address: '', buyer_address: '' }));
+  _marketTradeAddressCache.set(id, promise);
+  return promise;
+}
+
+function marketActivityAmountText(amount, decimals) {
+  try {
+    const s = String(amount || '0');
+    return /^\d+$/.test(s) ? fmtAssetAmount(BigInt(s), decimals) : '0';
+  } catch { return '0'; }
+}
+
+function marketActivityEventsFromListings(asset, rows) {
+  const a = asset || {};
+  return [...(rows || [])].map(l => {
+    const id = marketListingDisplayId(l);
+    return {
+      event: 'listing',
+      label: 'Listed',
+      ts: marketListingTimestamp(l),
+      txid: l.txid || l.asset_outpoint?.txid || l.asset_opening?.txid || l.asset_utxo?.txid || (/^[0-9a-f]{64}$/i.test(id) ? id : ''),
+      id,
+      amount: String(marketListingAmount(l) || '0'),
+      price_sats: marketListingPriceSats(l),
+      unit: marketListingUnitPrice(l, a),
+      from: l.maker_address || l.seller_payout_address || l.owner_address || '',
+      to: l.taker_address || l.buyer_address || '',
+    };
+  });
+}
+
+function marketActivityEventFromTrade(asset, trade, txAddresses = null) {
+  const amount = String(trade?.amount || '0');
+  const priceSats = Number(trade?.price_sats || 0);
+  let unit = null;
+  try { unit = unitPriceSats(priceSats, BigInt(amount), Number.isInteger(asset?.decimals) ? asset.decimals : 0); }
+  catch { unit = null; }
+  return {
+    event: 'sale',
+    label: 'Sold',
+    ts: Number(trade?.ts || trade?.block_time || 0),
+    txid: String(trade?.txid || ''),
+    id: String(trade?.txid || ''),
+    amount,
+    price_sats: priceSats,
+    unit,
+    from: trade?.seller_address || txAddresses?.seller_address || '',
+    to: trade?.buyer_address || txAddresses?.buyer_address || '',
+  };
+}
+
+function mergeMarketActivityEvents(...lists) {
+  const merged = new Map();
+  for (const ev of lists.flat()) {
+    if (!ev || !Number.isFinite(Number(ev.ts))) continue;
+    const txid = String(ev.txid || '').toLowerCase();
+    const key = /^[0-9a-f]{64}$/.test(txid) ? `${ev.event || 'event'}:${txid}` : `${ev.event || 'event'}:${ev.id || ''}:${ev.ts || 0}`;
+    const prev = merged.get(key);
+    if (!prev) {
+      merged.set(key, ev);
+      continue;
+    }
+    const prevScore = (prev.from ? 1 : 0) + (prev.to ? 1 : 0) + (Number(prev.price_sats || 0) > 0 ? 1 : 0);
+    const nextScore = (ev.from ? 1 : 0) + (ev.to ? 1 : 0) + (Number(ev.price_sats || 0) > 0 ? 1 : 0);
+    if (nextScore > prevScore) merged.set(key, { ...prev, ...ev });
+  }
+  return Array.from(merged.values());
+}
+
+function marketActivityRowsHtml(asset, events) {
+  const a = asset || {};
+  const ticker = a.ticker || '?';
+  const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+  return events.map(ev => {
+    const priceSats = Number(ev.price_sats || 0);
+    const href = /^[0-9a-f]{64}$/i.test(ev.txid || '') ? `${NET.explorer}/tx/${ev.txid}` : '';
+    const unitText = ev.unit != null ? fmtMarketUnitSats(ev.unit) : `${priceSats.toLocaleString('en-US')} sats`;
+    const unitUsd = ev.unit != null ? fmtMarketUsdUnitFromSats(ev.unit, '') : '';
+    const totalUsd = fmtMarketUsdFromSats(priceSats, '');
+    const rel = relativeAge(ev.ts || 0);
+    const labelClass = ev.event === 'sale' ? 'event-sale' : ev.event === 'cancel' ? 'event-cancel' : 'event-listed';
+    const id = ev.id || ev.txid || '';
+    return `
+      <tr data-market-activity-row data-market-activity-event="${escapeHtml(ev.event || 'listing')}">
+        <td>${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(id, 8))}</a>` : escapeHtml(shorten(id, 8))}</td>
+        <td><span class="${labelClass}">${escapeHtml(ev.label || 'Listed')}</span></td>
+        <td><strong class="market-sats-price">${escapeHtml(unitText)}</strong><br><span class="market-table-sub">/${escapeHtml(ticker)}</span>${unitUsd ? `<br><span class="market-table-sub market-usd-price">${escapeHtml(unitUsd)}</span>` : ''}</td>
+        <td><strong>${escapeHtml(marketActivityAmountText(ev.amount, dec))}</strong></td>
+        <td><strong class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSats))}</strong><br><span class="market-table-sub market-usd-price">${escapeHtml(totalUsd)}</span></td>
+        <td>${ev.from ? escapeHtml(shorten(ev.from, 10)) : '&mdash;'}</td>
+        <td>${ev.to ? escapeHtml(shorten(ev.to, 10)) : '&mdash;'}</td>
+        <td>${escapeHtml(rel || 'now')}${href ? `<br><a class="activity-track" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">Track</a>` : ''}</td>
+      </tr>`;
+  }).join('');
+}
+
+async function populateMarketActivityPanel(scope, asset, rows) {
+  const panel = scope.querySelector('[data-market-activity-panel]');
+  const body = panel?.querySelector('[data-market-activity-body]');
+  if (!panel || !body) return;
+  const aid = String(asset?.asset_id || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aid)) return;
+  let assetStats = null;
+  try {
+    assetStats = await fetchMarketAssetStats(aid);
+    if (assetStats && typeof assetStats === 'object') {
+      Object.assign(asset, {
+        volume_24h_sats: assetStats.volume_24h_sats,
+        last_trade: assetStats.last_trade || asset.last_trade,
+        trades: Array.isArray(assetStats.trades) ? assetStats.trades : asset.trades,
+      });
+    }
+  } catch (err) {
+    console.warn('asset stats load failed', err);
+  }
+  const officialTrades = Array.isArray(assetStats?.trades) ? assetStats.trades : [];
+  const tradeEvents = await Promise.all(officialTrades.slice(0, MARKET_ACTIVITY_MAX_ROWS).map(async (t) => {
+    const txAddresses = await marketTradeAddressesFromTx(t?.txid);
+    return marketActivityEventFromTrade(asset, t, txAddresses);
+  }));
+  const events = mergeMarketActivityEvents(
+    marketActivityEventsFromListings(asset, rows),
+    tradeEvents,
+  )
+    .sort((x, y) => (y.ts || 0) - (x.ts || 0))
+    .slice(0, MARKET_ACTIVITY_MAX_ROWS);
+  body.innerHTML = marketActivityRowsHtml(asset, events) || '<tr><td colspan="8" class="empty">No activity</td></tr>';
+  bindMarketActivityTable(panel);
+}
+
+function marketActivityPanelHtml(asset, rows) {
+  const events = marketActivityEventsFromListings(asset, rows)
+    .sort((x, y) => (y.ts || 0) - (x.ts || 0))
+    .slice(0, MARKET_ACTIVITY_MAX_ROWS);
+  const eventHtml = marketActivityRowsHtml(asset, events);
+  const visibleEnd = Math.min(events.length, MARKET_ACTIVITY_PAGE_SIZE);
+  const visibleText = events.length ? `1-${visibleEnd} of ${events.length}` : '0 of 0';
+  return `
+    <section class="market-activity-panel" data-market-activity-panel>
+      <div class="market-activity-toolbar">
+        <label>Event:
+          <select data-market-activity-filter>
+            <option value="all">All</option>
+            <option value="sale">Sale</option>
+            <option value="listing">Listing</option>
+          </select>
+        </label>
+        <div class="market-activity-pager">
+          <span class="market-activity-count" data-market-activity-count>${visibleText}</span>
+          <div class="market-pagination-controls">
+            <button type="button" data-market-activity-page="prev" disabled>&lsaquo;</button>
+            <select data-market-activity-page-select aria-label="Activity page">
+              <option value="1">Page 1</option>
+            </select>
+            <button type="button" data-market-activity-page="next"${events.length <= MARKET_ACTIVITY_PAGE_SIZE ? ' disabled' : ''}>&rsaquo;</button>
+          </div>
+        </div>
+      </div>
+      <div class="market-activity-table-wrap">
+        <table class="market-activity-table">
+          <thead>
+            <tr>
+              <th>Inscription</th>
+              <th>Event</th>
+              <th>Price</th>
+              <th>Quantity</th>
+              <th>Total Value</th>
+              <th>From</th>
+              <th>To</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody data-market-activity-body>${eventHtml || '<tr><td colspan="8" class="empty">No activity</td></tr>'}</tbody>
+        </table>
+      </div>
+    </section>`;
+}
+
+// Asset-detail header strip, shown above the bid/ask/activity panes.
 function renderMarketAssetHeader(assetId, rows) {
   const a = (rows.find(l => l._asset?.asset_id === assetId)?._asset)
          || (_marketCache?.listings.find(l => l._asset?.asset_id === assetId)?._asset)
@@ -33272,93 +34312,38 @@ function renderMarketAssetHeader(assetId, rows) {
          || { asset_id: assetId, ticker: '?', decimals: 0 };
   const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
   const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
-  const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-  let floorUnit = null, floorSats = null;
-  let openings = 0, ranges = 0, intents = 0, preauths = 0;
-  for (const l of rows) {
-    if (l.kind === 'opening')      openings++;
-    else if (l.kind === 'range')   ranges++;
-    else if (l.kind === 'intent')  intents++;
-    else if (l.kind === 'preauth') preauths++;
-    const amt = l.kind === 'range' ? l.threshold
-              : l.kind === 'preauth' ? (l.asset_opening?.amount)
-              : l.amount;
-    const priceSats = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
-    const u = unitPriceSats(priceSats, BigInt(amt || 0), dec);
-    if (u != null && (floorUnit == null || u < floorUnit)) floorUnit = u;
-    if (priceSats > 0 && (floorSats == null || priceSats < floorSats)) floorSats = priceSats;
-  }
-  const total = openings + ranges + intents + preauths;
-  const kindBits = [];
-  if (preauths) kindBits.push(`<span style="color:#0a8f43;font-weight:bold;">⚡ ${preauths} instant</span>`);
-  if (intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;">⚡ ${intents} atomic</span>`);
-  if (openings) kindBits.push(`<span class="muted">${openings} opening</span>`);
-  if (ranges) kindBits.push(`<span class="muted">${ranges} range</span>`);
-  // Asset-header best-ask display. Dust badge fires when the absolute
-  // min ask is wildly out-of-band vs mark price AND the total ask sats
-  // are tiny — preventing a single 546-sat OTC ask at 0.05 sats/TAC
-  // from making the prominent header read "floor 0.05" when real
-  // trades clear at 350+.
-  const _hdrMarkUnit = (a.mark_price && Number.isFinite(a.mark_price.unit) && a.mark_price.unit > 0)
-    ? Number(a.mark_price.unit) : null;
-  const _hdrIsDust = floorUnit != null && floorSats != null
-    && _isDustAsk(floorUnit, _hdrMarkUnit, floorSats);
-  // Distinguish the simple-mode-visible best ask from the absolute best.
-  // When the dust ask comes from an OTC opening / range listing (Simple
-  // mode hides those), the header shouldn't claim "best ask 0.18" when
-  // the visible asks ladder starts at 0.71. Recompute the floor scoped
-  // to preauth-only when Simple mode is on so they agree.
-  let _hdrVisibleFloor = floorUnit;
-  if (_marketSimpleMode) {
-    let preauthMin = null;
-    for (const l of rows) {
-      if (l.kind !== 'preauth') continue;
-      const amt = BigInt(l.asset_opening?.amount || 0);
-      const ps = Number(l.min_price_sats || 0);
-      if (amt <= 0n || ps <= 0) continue;
-      const u = unitPriceSats(ps, amt, dec);
-      if (u != null && (preauthMin == null || u < preauthMin)) preauthMin = u;
-    }
-    if (preauthMin != null) _hdrVisibleFloor = preauthMin;
-  }
-  const _hdrVisibleIsDust = _hdrVisibleFloor != null && floorSats != null
-    && _isDustAsk(_hdrVisibleFloor, _hdrMarkUnit, floorSats);
-  const floorLine = _hdrVisibleFloor != null
-    ? `<strong style="color:#0a8f43;">best ask ${fmtUnitPriceSats(_hdrVisibleFloor)} sats</strong>/${escapeHtml(a.ticker || 'token')}${_hdrVisibleIsDust ? ' <span class="muted" style="font-size:9px;color:var(--red,#b8341d);" title="Best visible ask is far below the typical trading range — likely a dust listing. The swap tile uses the outlier-guarded mark price instead.">⚠ dust</span>' : ''}`
-    : (floorSats != null
-        ? `<strong style="color:#0a8f43;">from ${floorSats.toLocaleString()} sats</strong>`
-        : '<span class="muted">no priced listings</span>');
-  const collisionBadge = a._copycatInfo
-    ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy — verify the asset_id before trading.">⚠ COPY</span>`
+  const allRows = (_marketCache?.listings || []).filter(l => (l._asset?.asset_id || l.asset_id || '') === safeAid);
+  const visibleRows = (rows || []).filter(l => (l._asset?.asset_id || l.asset_id || '') === safeAid);
+  const fallbackGroup = {
+    asset: a, openings: 0, ranges: 0, intents: 0, preauths: 0, total: 0,
+    floorUnit: null, floorSats: null, lastTradeUnit: marketLastTradeUnitPrice(a), referenceUnit: null,
+    volumeSats: marketVolumeSats(a),
+    volume24hSats: marketVolume24hSats(a),
+    marketCapSats: null,
+  };
+  const allGroup = marketGroupRows(allRows, [a])[0] || fallbackGroup;
+  const priceGroup = marketGroupRows(visibleRows, [a])[0] || fallbackGroup;
+  priceGroup.referenceUnit = marketGroupReferenceUnit(priceGroup);
+  const headerMarketCapSats = marketCapSats(priceGroup.asset || a, priceGroup.referenceUnit);
+  scheduleMarketSupplyEnrichment([priceGroup]);
+  const total = Number(allGroup.total || 0);
+  const priceLine = priceGroup.referenceUnit != null ? fmtMarketUnitSats(priceGroup.referenceUnit) : 'no price';
+  const priceUsd = priceGroup.referenceUnit != null ? fmtMarketUsdUnitFromSats(priceGroup.referenceUnit, '') : '';
+  const mcapUsd = headerMarketCapSats != null ? fmtMarketUsdWholeFromSats(headerMarketCapSats) : 'n/a';
+  const mcapBtc = headerMarketCapSats != null ? fmtMarketBtc(headerMarketCapSats) : '0 BTC';
+  const transfers = Number(a.transfer_count || 0);
+  const verifiedBadge = a._copycatInfo
+    ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy - verify the asset_id before trading.">COPY</span>`
     : a._tickerCollision === 'duplicate'
-      ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
+      ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="Tickers are not unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">DUP</span>`
       : verifiedBadgeHTML(a, { size: 'lg' });
-  // Breadcrumb above the asset card. Critical for users who deep-link from a
-  // Discover "view offers" badge straight into asset mode — without it, the
-  // browse index is invisible and the Market reads as "all listings flat".
-  // The "← All assets" anchor mirrors the button below so either click target
-  // works; the binder's querySelectorAll picks both up.
   const breadcrumb = `
-    <div style="font-size:11px;margin-bottom:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;color:var(--ink-mid);">
-      <a href="#" data-act="market-back-browse" title="Back to all assets" style="text-decoration:none;color:var(--ink-mid);padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg);border-radius:2px;cursor:pointer;">← Markets</a>
-      <span class="muted">/</span>
-      <strong style="color:var(--ink);">${escapeHtml(a.ticker || '?')}</strong>
-      <span style="flex:1;"></span>
-      <span class="muted" style="font-size:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <span title="Token amounts are Pedersen-committed on chain. Only you and your counterparty know what was transferred — neither the worker, nor anyone watching the chain, can see the value. Math-hidden, not policy-hidden.">🔒 confidential</span>
-        <span class="muted">·</span>
-        <span title="Tokens ARE Bitcoin UTXOs. No bridges, no wrapped representations, no L2 trust assumption. Settlement is a single Bitcoin transaction; first confirmation is final.">⚡ Bitcoin-native</span>
-        <span class="muted">·</span>
-        <span title="The tacit protocol takes no fees on trades. You pay only the underlying Bitcoin tx fee for each fill (~1,000 sats). No 0.3% LP fee, no taker fee, no protocol cut.">0% protocol fees</span>
-      </span>
+    <div style="font-size:12px;margin-bottom:8px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+      <a href="#" data-act="market-back-browse" title="Back to the asset index" style="text-decoration:underline;cursor:pointer;">&larr; All assets</a>
+      <span class="muted">&rsaquo;</span>
+      <strong>${escapeHtml(a.ticker || '?')}</strong>
+      <span class="muted">offers</span>
     </div>`;
-  // userHoldsAsset is consumed below to decide whether to render the
-  // ask-form host element. The "+ List for sale" button itself now
-  // lives in the asks-section header next to the Simple/All toggle —
-  // a logically seller-side surface, paired with the form host that
-  // gets mounted directly under it so the form opens in view rather
-  // than scrolling up to the asset header.
-  const userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(safeAid));
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
   // synchronous against the warm cache (resolveImageUri populates it on
@@ -33379,42 +34364,31 @@ function renderMarketAssetHeader(assetId, rows) {
        </div>`
     : '';
 
-  // Place-Ask form host now lives next to the asks ladder (rendered in
-  // the asks-header block by applyMarketFilters), so this function no
-  // longer emits a separate host div. The button + form are paired in
-  // a seller-side context rather than orphaned at the bottom of the
-  // asset header card.
-  //
-  // Async-resolve the asset logo via the metadata blob (most etcher
-  // image_uris point to IPFS JSON metadata, not the image directly).
-  // bindMarketAssetHeader runs _resolveAssetLogosIn after this HTML mounts.
-  const _hdrImgUriRaw = a.image_uri || a.imageUri;
-  const _hdrCached = _hdrImgUriRaw && typeof _resolvedImageCache !== 'undefined'
-    ? _resolvedImageCache.get(_hdrImgUriRaw) : null;
-  const _hdrLogoStyle = 'width:44px;height:44px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;';
-  const _hdrLogoHtml = _hdrCached
-    ? `<img loading="lazy" decoding="async" src="${escapeHtml(_hdrCached)}" alt="" style="${_hdrLogoStyle}">`
-    : (_hdrImgUriRaw
-        ? `<span data-asset-logo-slot data-uri="${escapeHtml(_hdrImgUriRaw)}" style="display:inline-block;flex-shrink:0;">${assetImageFallback(safeAid, a.ticker, 44)}</span>`
-        : assetImageFallback(safeAid, a.ticker, 44));
   return breadcrumb + `
-    <div data-market-asset-header style="border:1px solid var(--ink);padding:12px;background:var(--bg-warm);margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-      ${_hdrLogoHtml}
-      <div style="min-width:0;flex:1;">
-        <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-          <strong style="font-size:18px;">${escapeHtml(_displayName || a.ticker || '?')}</strong>
-          ${_displayName && a.ticker && _displayName !== a.ticker ? `<span class="muted" style="font-size:12px;">${escapeHtml(a.ticker)}</span>` : ''}
-          ${collisionBadge}
-        </div>
-        <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
-          <span>id </span>
-          <span class="mono-box inline" style="font-size:10px;cursor:pointer;color:${assetIdColorForAsset(a)};" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
+      <div data-market-asset-header class="market-asset-detail">
+      <div class="market-asset-title">
+        ${marketAssetImageHtml(a, 64, 'market-token-icon market-token-icon--large')}
+        <div style="min-width:0;">
+          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-mid);">tacit / ${escapeHtml(a.ticker || '?')}</div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <h2>${escapeHtml(a.ticker || '?')}</h2>${verifiedBadge}
+          </div>
+          <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
+            <span>id </span>
+            <span class="mono-box inline" style="font-size:10px;cursor:pointer;color:${assetIdColorForAsset(a)};" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
+          </div>
         </div>
       </div>
-      <div style="text-align:right;flex-shrink:0;">
-        <div style="font-size:14px;"><strong>${total}</strong> <span class="muted" style="font-size:11px;">offer${total === 1 ? '' : 's'}</span></div>
-        ${kindBits.length ? `<div style="font-size:11px;display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:2px;">${kindBits.join('<span class="muted">·</span>')}</div>` : ''}
-        <div style="font-size:12px;margin-top:4px;">${floorLine}</div>
+      <div>
+        <div class="market-asset-stats">
+          <div><span>24h Volume</span><strong>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '$0') : '—')}</strong><small>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
+          <div><span>Price</span><strong class="market-sats-price">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(priceUsd || 'no USD quote')}</small></div>
+          <div><span>Market Cap</span><strong>${escapeHtml(mcapUsd)}</strong><small>${escapeHtml(mcapBtc)}</small></div>
+          <div><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
+        </div>
+        <div class="market-asset-actions">
+          <button data-act="market-back-browse" title="Back to the asset index">&larr; All Assets</button>
+        </div>
       </div>
     </div>
     ${descriptionBlockHtml}`;
@@ -34024,23 +34998,24 @@ function renderMarketBidsLadderHTML(asset) {
   const aid = /^[0-9a-f]{64}$/.test(asset.asset_id || '') ? asset.asset_id : '';
   const ticker = escapeHtml(asset.ticker || '?');
   return `
-    <div data-market-bids-section data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;text-transform:uppercase;letter-spacing:0.08em;gap:8px;flex-wrap:wrap;">
-        <div>
-          <strong>Bids · <span data-market-bids-count>—</span></strong>
-          <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:4px;">· signed offers, no sats locked until filled</span>
+    <div data-market-bids-section data-aid="${aid}" class="market-bids-panel">
+      <div class="market-bids-head">
+        <div class="market-bids-title">
+          <strong>Bids &middot; <span data-market-bids-count>&mdash;</span></strong>
+          <span>signed buy offers, no sats locked until filled</span>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;">
-          <button data-act="auto-fulfil-toggle" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">🤖 Auto-fulfil: OFF</button>
-          <button data-act="market-sweep-buy" data-aid="${aid}" type="button" title="Buy a target amount immediately by sweeping the asks ladder. Walks cheapest-first under your price cap; each fill is one Bitcoin tx. Trustless (instant listings only)." style="font-size:11px;padding:4px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;">⚡ Sweep buy</button>
-          <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell into the bids ladder by sweeping highest-priced bids first. Each fill publishes an atomic intent — settlement awaits each bidder's Take (typically 1-30 min). Trustless." style="font-size:11px;padding:4px 10px;background:#b8341d;border:1px solid #9b2a16;color:#fff;font-weight:600;">⚡ Sweep sell</button>
-          <button data-act="market-bid-place" data-aid="${aid}" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">+ Place a bid on ${ticker}</button>
+        <div class="market-bids-actions">
+          <button data-act="auto-fulfil-toggle" type="button" title="Automatically fulfils claimed atomic intents while this tab is open.">Auto-fulfil: OFF</button>
+          <button data-act="market-bids-toggle" type="button" aria-expanded="false">Show bids</button>
+          <button data-act="market-sweep-buy" data-aid="${aid}" type="button" title="Buy a target amount immediately by sweeping the asks ladder. Walks cheapest-first under your price cap; each fill is one Bitcoin tx. Trustless instant listings only.">Sweep Buy</button>
+          <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell into the bids ladder by sweeping highest-priced bids first. Each fill publishes an atomic intent; settlement awaits each bidder's Take.">Sweep Sell</button>
+          <button data-act="market-bid-place" data-aid="${aid}" type="button">+ Place a bid on ${ticker}</button>
         </div>
       </div>
       <div data-market-sweep-form style="display:none;margin-top:10px;"></div>
       <div data-market-sweep-sell-form style="display:none;margin-top:10px;"></div>
       <div data-market-bid-form style="display:none;margin-top:10px;"></div>
-      <div data-market-bids-list style="margin-top:10px;font-size:11px;">
+      <div data-market-bids-list hidden class="market-bids-list">
         <div class="muted" style="font-size:11px;"><span class="live-dots">loading bids</span></div>
       </div>
     </div>`;
@@ -34270,16 +35245,29 @@ async function populateMarketBidsLadder(scope, asset) {
   const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
   const list = section.querySelector('[data-market-bids-list]');
   const countEl = section.querySelector('[data-market-bids-count]');
-  // Share the 30s-TTL bid-intent cache with the spread + depth helpers
-  // on the same asset page so we don't issue three identical fetches per
-  // asset render. _fetchBidIntentsCached returns [] on error (no need
-  // for try/catch); we surface a load-failed-style empty state only when
-  // the worker is unreachable, which a separate WORKER_BASE check covers
-  // upstream.
-  const intentsAll = await _fetchBidIntentsCached(aid);
+  const toggleBtn = section.querySelector('[data-act="market-bids-toggle"]');
+  if (toggleBtn && list && !toggleBtn.dataset.bound) {
+    toggleBtn.dataset.bound = '1';
+    toggleBtn.onclick = () => {
+      const open = list.hidden;
+      list.hidden = !open;
+      toggleBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+      const n = countEl && /^\d+$/.test(countEl.textContent || '') ? Number(countEl.textContent) : 0;
+      toggleBtn.textContent = open ? 'Hide bids' : `Show bids${n ? ` (${n})` : ''}`;
+    };
+  }
+  let intentsAll;
+  try { intentsAll = await _fetchBidIntentsCached(aid); }
+  catch (e) {
+    list.innerHTML = `<div class="muted" style="font-size:10px;">load failed: ${escapeHtml(e?.message || String(e))}</div>`;
+    if (countEl) countEl.textContent = '?';
+    _wireMarketBidPlace(section, asset);
+    return;
+  }
   if (countEl) countEl.textContent = String(intentsAll.length);
+  if (toggleBtn && list) toggleBtn.textContent = list.hidden ? `Show bids${intentsAll.length ? ` (${intentsAll.length})` : ''}` : 'Hide bids';
   if (!intentsAll.length) {
-    list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} — be the first to post one.</div>`;
+    list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} &mdash; be the first to post one.</div>`;
     _wireMarketBidPlace(section, asset);
     return;
   }
@@ -34287,9 +35275,6 @@ async function populateMarketBidsLadder(scope, asset) {
   // asks ladder which surfaces cheapest-first; together they read like a
   // standard orderbook.
   const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : null;
-  // "Mine only" filter — same pattern as the asks ladder. Counted from
-  // the full intent set so the chip label shows the actual mine count
-  // regardless of which filter is currently active.
   const minedBidsCount = myPub ? intentsAll.filter(b => b.buyer_pubkey === myPub).length : 0;
   const intents = _marketMineOnlyBids && myPub
     ? intentsAll.filter(b => b.buyer_pubkey === myPub)
@@ -34314,38 +35299,79 @@ async function populateMarketBidsLadder(scope, asset) {
   const rowsHtml = ladder.map(b => {
     const amtStr = fmtAssetAmount(BigInt(b.amount || 0), decimals);
     const sats = Number(b.price_sats || 0);
-    const unitStr = b._unit != null ? `${fmtUnitPriceSats(b._unit)} sats/${escapeHtml(ticker)}` : '— sats/—';
+    const unitVal = b._unit != null ? fmtUnitPriceSats(b._unit) : 'n/a';
+    const unitUsd = b._unit != null ? fmtMarketUsdUnitFromSats(b._unit, '') : '';
+    const bidder = b.buyer_address || b.buyer_pubkey || '';
+    const bidId = b.bid_id || '';
     const expiry = b._expiresIn > 0
       ? `${Math.floor(b._expiresIn / 3600)}h${Math.floor((b._expiresIn % 3600) / 60)}m`
-      : '<span style="color:var(--red);">expired</span>';
+      : 'expired';
     const claimed = !!b.axintent_id;
     let action;
-    if (claimed) action = `<span class="muted" style="font-size:10px;">claimed · awaiting fulfil</span>`;
-    else if (b._isMine) action = `<button data-bid-action="cancel-mkt" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;padding:3px 8px;">Cancel</button>`;
-    else if (b._expiresIn <= 0) action = `<span class="muted" style="font-size:10px;">expired</span>`;
-    else action = `<button data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;padding:3px 8px;background:#0a8f43;color:#fff;border-color:#0a7d3a;">Fulfil</button>`;
-    const _usdStr = _bidBtcUsd ? fmtSatsAsUsd(sats, _bidBtcUsd) : null;
-    const _usdTail = _usdStr ? ` · ${escapeHtml(_usdStr)}` : '';
+    let state = '';
+    if (claimed) {
+      state = 'claimed';
+      action = `<span class="market-bid-state market-bid-state--pending">Awaiting fulfil</span>`;
+    } else if (b._isMine) {
+      state = 'mine';
+      action = `<button class="market-bid-cancel" data-bid-action="cancel-mkt" data-bid-id="${escapeHtml(bidId)}" type="button">Cancel</button>`;
+    } else if (b._expiresIn <= 0) {
+      state = 'expired';
+      action = `<span class="market-bid-state market-bid-state--expired">Expired</span>`;
+    } else {
+      action = `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(bidId)}" type="button">Fulfil</button>`;
+    }
+    const rowClass = [
+      'market-bids-row',
+      state ? `market-bids-row--${state}` : '',
+      b._isMine ? 'market-bids-row--mine' : '',
+    ].filter(Boolean).join(' ');
     return `
-      <div data-bid-row data-bid-id="${escapeHtml(b.bid_id)}" style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid var(--ink-faint);flex-wrap:wrap;">
-        <div style="flex:0 0 auto;font-family:var(--mono);"><strong>${escapeHtml(unitStr)}</strong></div>
-        <div style="flex:1 1 120px;min-width:0;font-size:11px;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${sats.toLocaleString()} sats${_usdTail} · ${expiry}${b._isMine ? ' · <strong>you</strong>' : ''}</div>
-        <div style="flex:0 0 auto;">${action}</div>
+      <div data-bid-row data-bid-id="${escapeHtml(bidId)}" class="${rowClass}">
+        <div class="market-bid-price">
+          <strong class="market-sats-price">${escapeHtml(unitVal)} sats/${escapeHtml(ticker)}</strong>
+          <small class="market-usd-price">${unitUsd ? `${escapeHtml(unitUsd)} per token` : 'no USD quote'}</small>
+        </div>
+        <div class="market-bid-cell">
+          <strong>${escapeHtml(amtStr)}</strong>
+          <small>${escapeHtml(ticker)}</small>
+        </div>
+        <div class="market-bid-cell">
+          <strong>${escapeHtml(fmtMarketBtc(sats))}</strong>
+          <small><span class="market-sats-price">${escapeHtml(sats.toLocaleString('en-US'))} sats</span>${fmtMarketUsdFromSats(sats, '') ? ` &middot; <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(sats, ''))}</span>` : ''}</small>
+        </div>
+        <div class="market-bid-cell">
+          <strong>${bidder ? escapeHtml(shorten(bidder, 10)) : '&mdash;'}</strong>
+          <small>${b._isMine ? 'your bid' : 'bidder'}</small>
+        </div>
+        <div class="market-bid-cell">
+          <strong class="${state === 'expired' ? 'market-bid-expired' : ''}">${escapeHtml(expiry)}</strong>
+          <small>expires</small>
+        </div>
+        <div class="market-bid-action">${action}</div>
       </div>`;
-  }).join('');
-  // "Mine" filter chip for the bids ladder — sits in a small filter
-  // row above the rows. Only rendered when the user has at least one
-  // active bid (otherwise nothing to filter). Persists independently
-  // from the asks-side toggle.
-  const _mineBidsChip = minedBidsCount > 0
+  }).join('') || `<div class="muted" style="font-size:11px;">No bids match this filter.</div>`;
+  const mineBidsChip = minedBidsCount > 0
     ? (_marketMineOnlyBids
-        ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">Mine · ${minedBidsCount}</button>`
-        : `<button data-act="market-mine-bids-toggle" type="button" title="Filter to your bids only (${minedBidsCount} active). Useful for managing your open buy orders." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Mine</button>`)
+        ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids.">Mine - ${minedBidsCount}</button>`
+        : `<button data-act="market-mine-bids-toggle" type="button" title="Filter to your bids only (${minedBidsCount} active).">Mine</button>`)
     : '';
-  const filterRowHtml = _mineBidsChip
-    ? `<div style="display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap;margin-bottom:4px;">${_mineBidsChip}</div>`
+  const mineFilterRow = mineBidsChip
+    ? `<div class="market-bids-filter-row">${mineBidsChip}</div>`
     : '';
-  list.innerHTML = filterRowHtml + rowsHtml;
+  list.innerHTML = `
+    ${mineFilterRow}
+    <div class="market-bids-table" role="table" aria-label="${escapeHtml(ticker)} bids">
+      <div class="market-bids-row market-bids-row-head" role="row">
+        <span>Bid</span>
+        <span>Quantity</span>
+        <span>Total</span>
+        <span>Bidder</span>
+        <span>Expires</span>
+        <span>Action</span>
+      </div>
+      ${rowsHtml}
+    </div>`;
   list.querySelectorAll('[data-act="market-mine-bids-toggle"]').forEach(btn => {
     btn.onclick = () => {
       _marketMineOnlyBids = !_marketMineOnlyBids;
@@ -34357,7 +35383,7 @@ async function populateMarketBidsLadder(scope, asset) {
     btn.onclick = async () => {
       const bid = ladder.find(x => x.bid_id === btn.dataset.bidId);
       if (!bid) return;
-      btn.disabled = true; btn.textContent = 'fulfilling…';
+      btn.disabled = true; btn.textContent = 'fulfilling...';
       try {
         await fulfilBidIntent({ bid });
         toast('Bid fulfilled — atomic intent published, awaiting bidder Take', 'success');
@@ -34373,7 +35399,7 @@ async function populateMarketBidsLadder(scope, asset) {
   list.querySelectorAll('[data-bid-action="cancel-mkt"]').forEach(btn => {
     btn.onclick = async () => {
       if (!confirm('Cancel this bid?')) return;
-      btn.disabled = true; btn.textContent = 'cancelling…';
+      btn.disabled = true; btn.textContent = 'cancelling...';
       try {
         await cancelBidIntent(aid, btn.dataset.bidId);
         toast('Bid cancelled', 'success');
@@ -34510,15 +35536,10 @@ function _wireSwapTile(scope) {
   // on bottom (you receive ticker); flip inverts.
   const buyPillHtml = fromPill ? fromPill.innerHTML : '';
   const sellPillHtml = toPill ? toPill.innerHTML : '';
-  // USD-mode pill: replaces the BTC + "sats" pill when the user toggles
-  // input to dollars. Same square footprint and green color so the
-  // button still reads as "click me to swap". The from-pill click
-  // handler flips data-pay-unit between sats / usd on the buy direction
-  // (sell direction's from-pill is the asset and doesn't toggle).
   const usdPillHtml = `<span style="display:flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:50%;background:#fff;color:#0a8f43;font-size:14px;font-weight:700;flex-shrink:0;border:1px solid #0a7d3a;">$</span><span data-swap-token="from">USD</span>`;
   const PILL = {
-    sats:   { bg: '#f7931a', fg: '#fff', border: '#f7931a' },
-    usd:    { bg: '#0a8f43', fg: '#fff', border: '#0a7d3a' },
+    sats:   { bg: '#f7931a', fg: '#fff',         border: '#f7931a' },
+    usd:    { bg: '#0a8f43', fg: '#fff',         border: '#0a7d3a' },
     ticker: { bg: 'var(--bg)', fg: 'var(--ink)', border: 'var(--ink-faint)' },
   };
   const getDirection = () => widget.dataset.direction || 'buy';
@@ -34590,8 +35611,6 @@ function _wireSwapTile(scope) {
   };
   // Pill direction: swap which side is sats vs ticker. Doesn't touch the
   // inputs (caller decides whether to clear). Updates action-button color.
-  // On buy direction, the from-pill respects data-pay-unit (sats/usd)
-  // so the user's click-to-toggle survives re-renders.
   const applyDirection = () => {
     const dir = getDirection();
     const isBuy = dir === 'buy';
@@ -34610,7 +35629,6 @@ function _wireSwapTile(scope) {
         fromPill.style.background = PILL.ticker.bg;
         fromPill.style.color = PILL.ticker.fg;
         fromPill.style.border = `1px solid ${PILL.ticker.border}`;
-        // No toggle on the sell-side from pill (it's the asset itself).
         fromPill.style.cursor = 'default';
         fromPill.title = '';
       }
@@ -34653,9 +35671,6 @@ function _wireSwapTile(scope) {
       return;
     }
     if (dir === 'buy') {
-      // Parse the from-side input by current pay unit. USD mode converts
-      // dollars to sats via the cached BTC/USD oracle; sats mode parses
-      // a whole-sats integer. Both paths land at the same planBuy(sats).
       const payUnit = getPayUnit();
       let sats;
       if (payUnit === 'usd') {
@@ -34670,8 +35685,8 @@ function _wireSwapTile(scope) {
         if (!Number.isFinite(btcUsd) || btcUsd <= 0) {
           toInput.value = ''; toMeta.textContent = '';
           actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-          actionBtn.textContent = 'BTC/USD price unavailable';
-          infoEl.textContent = 'Switch back to sats — oracle missing';
+          actionBtn.textContent = 'BTC/USD unavailable';
+          infoEl.textContent = 'Switch back to sats - oracle missing';
           return;
         }
         sats = Math.floor(usd * 100_000_000 / btcUsd);
@@ -34797,33 +35812,23 @@ function _wireSwapTile(scope) {
   if (slipSel) slipSel.addEventListener('change', update);
   if (flipBtn) flipBtn.onclick = () => {
     widget.dataset.direction = getDirection() === 'buy' ? 'sell' : 'buy';
+    widget.dataset.payUnit = 'sats';
     fromInput.value = '';
     toInput.value = '';
     applyDirection();
     update();
   };
-  // From-pill click: toggle pay-unit between sats and USD (buy direction
-  // only). Auto-converts the current input value to the new unit so the
-  // user doesn't lose what they typed. Uses the cached BTC/USD oracle —
-  // no-ops the toggle if the oracle isn't available (rare; cached on
-  // every fetchMarketData via _prewarmBtcUsd).
   if (fromPill) fromPill.onclick = () => {
     if (getDirection() !== 'buy') return;
     const cur = getPayUnit();
     const next = cur === 'sats' ? 'usd' : 'sats';
-    if (next === 'usd' && (!Number.isFinite(btcUsd) || btcUsd <= 0)) {
-      // No oracle → don't strand the user in USD mode they can't compute.
-      return;
-    }
-    // Best-effort value preservation: re-cast what's in the input to the
-    // new unit so the user doesn't have to retype after a toggle.
+    if (next === 'usd' && (!Number.isFinite(btcUsd) || btcUsd <= 0)) return;
     const raw = (fromInput.value || '').trim();
     if (raw) {
       if (cur === 'sats' && next === 'usd') {
         const sats = parseInt(raw.replace(/[, ]/g, ''), 10);
         if (Number.isFinite(sats) && sats > 0 && btcUsd > 0) {
           const usd = sats * btcUsd / 100_000_000;
-          // Match the precision used elsewhere (4 decimals below $1).
           fromInput.value = usd >= 1 ? usd.toFixed(2) : usd.toFixed(4);
         }
       } else if (cur === 'usd' && next === 'sats') {
@@ -34845,7 +35850,9 @@ function _wireSwapTile(scope) {
     if (!raw) return;
     const dir = getDirection();
     if (dir === 'buy') {
-      const sats = parseInt(raw.replace(/[, ]/g, ''), 10);
+      const sats = getPayUnit() === 'usd'
+        ? Math.floor(parseFloat(raw.replace(/[$, ]/g, '')) * 100_000_000 / btcUsd)
+        : parseInt(raw.replace(/[, ]/g, ''), 10);
       if (!Number.isFinite(sats) || sats <= 0) return;
       const result = planBuy(sats);
       if (!result) { toast('No route available', 'error'); return; }
@@ -35017,7 +36024,7 @@ function _wireMarketSweepBuy(section, asset) {
             <input data-sweep-field="cap" type="text" inputmode="decimal" placeholder="${_lastUnit != null ? Math.ceil(_lastUnit) : '600'}" style="width:100%;font-family:var(--mono);">
           </label>
         </div>
-        <label style="display:flex;align-items:center;gap:6px;font-size:10px;margin-top:8px;">
+        <label class="market-inline-check">
           <input data-sweep-field="residual-to-bid" type="checkbox" checked>
           <span>Post leftover as a bid at the cap if asks run out</span>
         </label>
@@ -35210,10 +36217,16 @@ function _wireMarketSweepSell(section, asset) {
   const btn = section.querySelector('[data-act="market-sweep-sell"]');
   const formHost = section.querySelector('[data-market-sweep-sell-form]');
   if (!btn || !formHost) return;
-  // Hide the button entirely if the wallet doesn't hold the asset — a
-  // user with zero balance has nothing to sweep-sell with.
+  // Keep the action visible for discoverability, but do not let a wallet
+  // with no held asset open the sweep-sell form.
   const userHolds = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(aid) && _holdingsCache.holdings.get(aid).balance > 0n);
-  if (!userHolds) { btn.style.display = 'none'; return; }
+  if (!userHolds) {
+    btn.disabled = true;
+    btn.title = `No ${ticker} held in this wallet to sweep sell.`;
+    btn.style.opacity = '0.55';
+    btn.style.cursor = 'not-allowed';
+    return;
+  }
   btn.onclick = () => {
     if (formHost.dataset.open === '1') {
       formHost.dataset.open = ''; formHost.style.display = 'none'; formHost.innerHTML = '';
@@ -35506,7 +36519,7 @@ function _wireMarketBidPlace(section, asset) {
       _refBits.push(`best bid <strong>${escapeHtml(fmtUnitPriceSats(_bestBidUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
     }
     const _refLine = _refBits.length
-      ? `<div class="muted" style="font-size:10px;margin-bottom:6px;">reference · ${_refBits.join(' · ')}</div>`
+      ? `<div class="muted" style="font-size:10px;margin-bottom:6px;">reference &middot; ${_refBits.join(' &middot; ')}</div>`
       : '';
     // Quick-fill chips. Each chip fills the Total-price input by computing
     // unit × current-amount. Available chips depend on which reference
@@ -35555,7 +36568,7 @@ function _wireMarketBidPlace(section, asset) {
     // Live unit-price computation. Recomputes on every keystroke in either
     // amount or price field. Three states:
     //   - blank/invalid: empty muted readout
-    //   - within sane range (0.5×–2× floor, or no floor reference): gray
+    //   - within sane range (0.5x-2x floor, or no floor reference): gray
     //   - outside sane range: red, "Nx floor" hint to flag a likely mistake
     // The 2× threshold is deliberate — small bid premiums above floor are
     // legitimate (you want it to fill quickly), but anything past 2× is
@@ -35577,8 +36590,8 @@ function _wireMarketBidPlace(section, asset) {
       let warn = '';
       if (_floorUnit != null && _floorUnit > 0) {
         const ratio = u / _floorUnit;
-        if (ratio > 2) warn = ` · <strong>${ratio.toFixed(1)}× floor — likely mistake</strong>`;
-        else if (ratio < 0.5) warn = ` · <strong>${(1/ratio).toFixed(1)}× below floor — unlikely to fill</strong>`;
+        if (ratio > 2) warn = ` &middot; <strong>${ratio.toFixed(1)}x floor &mdash; likely mistake</strong>`;
+        else if (ratio < 0.5) warn = ` &middot; <strong>${(1/ratio).toFixed(1)}x below floor &mdash; unlikely to fill</strong>`;
       }
       // Per-token and total USD readouts, off the same cached oracle as
       // the reference line. Adds zero round-trip; null-tolerant.
@@ -35638,9 +36651,9 @@ function _wireMarketBidPlace(section, asset) {
         const hours = Math.max(1, Math.min(720, Number(hoursRaw) || 24));
         const expiry = Math.floor(Date.now() / 1000) + hours * 3600;
         submitBtn.disabled = true;
-        status.textContent = 'signing & posting…';
+        status.textContent = 'signing and posting...';
         await publishBidIntent({ assetIdHex: aid, amount, priceSats: priceSatsInt, expiry });
-        status.textContent = 'bid posted ✓';
+        status.textContent = 'bid posted OK';
         toast(`Bid posted on ${ticker}`, 'success');
         formHost.style.display = 'none'; formHost.dataset.open = ''; formHost.innerHTML = '';
         _invalidateBidsCache(aid);
@@ -35677,30 +36690,30 @@ function bindMarketAssetHeader(scope) {
     try { await navigator.clipboard.writeText(copyEl.dataset.aid); toast('Asset ID copied', 'success'); }
     catch { /* clipboard blocked */ }
   };
-  // "+ List for sale" opens an in-page Place Ask form below the asset header.
-  // Toggles open/closed on repeat clicks. Falls back to the Holdings-tab
-  // bounce flow only if the holdings cache is missing the asset (race
-  // condition: header was rendered against stale data and user just lost
-  // the UTXO between renders).
+  // "List Assets" opens the existing Holdings instant-list form for wallets
+  // that hold this asset, or shows a read-only preview when no sellable UTXO
+  // is available in the current wallet.
   scope.querySelectorAll('[data-act="market-ask-place"]').forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
       const aid = btn.dataset.aid;
-      const formHost = scope.querySelector(`[data-market-ask-form][data-aid="${CSS.escape(aid)}"]`);
-      if (!formHost) {
-        // Form host not in DOM (shouldn't happen with current renderer);
-        // fall back to Holdings tab bounce for safety.
-        const holdingsTab = $('.tab[data-tab="holdings"]');
-        if (holdingsTab) holdingsTab.click();
+      if (btn.dataset.previewOnly === '1') {
+        showMarketListPreviewModal(aid);
         return;
       }
-      if (formHost.dataset.open === '1') {
-        formHost.dataset.open = '';
-        formHost.style.display = 'none';
-        formHost.innerHTML = '';
-        return;
-      }
-      _renderMarketAskForm(formHost, aid);
+      const holdingsTab = $('.tab[data-tab="holdings"]');
+      if (holdingsTab) holdingsTab.click();
+      const triggerList = (attempt = 0) => {
+        const target = document.querySelector(`button[data-act="list-preauth"][data-aid="${CSS.escape(aid)}"]`);
+        if (target) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          target.click();
+          return;
+        }
+        if (attempt < 20) setTimeout(() => triggerList(attempt + 1), 100);
+        else showMarketListPreviewModal(aid);
+      };
+      setTimeout(triggerList, 50);
     };
   });
 }
@@ -35857,12 +36870,20 @@ function _renderMarketAskForm(formHost, aid) {
 // re-narrow rows on the next applyMarketFilters call. Browse mode shows it.
 function updateMarketControlsVisibility() {
   const txt = $('#market-filter-asset');
-  if (!txt) return;
+  const wrap = txt?.closest('.market-search-wrap') || $('.market-search-wrap');
+  const sort = $('#market-sort');
+  const sortWrap = sort?.closest('.market-chip-wrap') || sort;
   if (_marketView === 'browse') {
-    txt.style.display = '';
+    if (wrap) wrap.style.display = '';
+    if (txt) txt.style.display = '';
+    if (sortWrap) sortWrap.style.display = '';
   } else {
-    txt.style.display = 'none';
-    if (txt.value) txt.value = '';
+    if (wrap) wrap.style.display = 'none';
+    if (sortWrap) sortWrap.style.display = 'none';
+    if (txt) {
+      txt.style.display = '';
+      if (txt.value) txt.value = '';
+    }
   }
 }
 
@@ -35930,10 +36951,10 @@ async function marketFulfilIntentHandler(btn) {
     `The dapp builds a partial Bitcoin tx targeted at the taker's pubkey, locked so they can only broadcast if they pay you. ` +
     `Posts it to the worker. The taker then broadcasts in one atomic Bitcoin tx and you receive ${intent.price_sats.toLocaleString()} sats.`,
   )) return;
-  btn.disabled = true; btn.textContent = 'fulfilling…';
+  btn.disabled = true; btn.textContent = 'fulfilling...';
   try {
     await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent, claim });
-    toast('Fulfilment posted ✓ — taker can now broadcast', 'success', 6000);
+    toast('Fulfilment posted OK - taker can now broadcast', 'success', 6000);
     setTimeout(() => renderMarket(), 1000);
   } catch (e) {
     if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
@@ -35964,7 +36985,7 @@ async function marketTakeIntentHandler(btn) {
       `Maker receives at:  ${intent.maker_address}\n\n` +
       `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts. Atomic, single Bitcoin tx — you don't send a separate payment, your funding inputs are spent into the maker's payout output in one settlement tx.`,
     )) { btn.disabled = false; btn.textContent = 'Take'; return; }
-    btn.textContent = 'broadcasting…';
+    btn.textContent = 'broadcasting...';
     const takeStrip = $('#market-take-progress');
     if (takeStrip) takeStrip.style.display = 'flex';
     setProgressStrip('market-take-progress', 0);
@@ -35978,8 +36999,8 @@ async function marketTakeIntentHandler(btn) {
     });
     setProgressStrip('market-take-progress', 3);
     setTimeout(() => { if (takeStrip) takeStrip.style.display = 'none'; setProgressStrip('market-take-progress', -1); }, 1200);
-    toast(`Atomic take broadcast ✓ tx=${shorten(r.txid, 8)}`, 'success', 8000);
-    btn.textContent = '✓ broadcast';
+    toast(`Atomic take broadcast OK tx=${shorten(r.txid, 8)}`, 'success', 8000);
+    btn.textContent = 'broadcast OK';
     setTimeout(() => renderMarket(), 2000);
     renderHoldings();
   } catch (e) {
@@ -36005,7 +37026,7 @@ async function marketTakeIntentHandler(btn) {
 async function marketCancelIntentHandler(btn) {
   const aid = btn.dataset.aid;
   const iid = btn.dataset.iid;
-  // Re-fetch fresh intent state — the cached `fulfilment_pending` could be
+  // Re-fetch fresh intent state - the cached `fulfilment_pending` could be
   // stale relative to the worker, which decides our safety-rail branch below.
   let intent = null;
   try {
@@ -36013,7 +37034,7 @@ async function marketCancelIntentHandler(btn) {
     const j = await r.json().catch(() => ({}));
     intent = (j.intents || []).find(x => x.intent_id === iid) || null;
   } catch { /* fall through with intent=null; standard path will report */ }
-  // Liveness: if the asset UTXO is already spent, the intent is moot — either
+  // Liveness: if the asset UTXO is already spent, the intent is moot - either
   // the taker raced ahead or the maker already self-spent. Just clean up.
   let assetSpent = false;
   if (intent?.asset_utxo) {
@@ -36021,11 +37042,11 @@ async function marketCancelIntentHandler(btn) {
     assetSpent = !!sp?.spent;
   }
   if (assetSpent) {
-    if (!confirm('Asset UTXO already spent — the intent has settled or been cancelled elsewhere. Remove the marketplace record?')) return;
-    btn.disabled = true; btn.textContent = 'cleaning up…';
+    if (!confirm('Asset UTXO already spent - the intent has settled or been cancelled elsewhere. Remove the marketplace record?')) return;
+    btn.disabled = true; btn.textContent = 'cleaning up...';
     try {
       await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid });
-      toast('Marketplace record removed ✓', 'success');
+      toast('Marketplace record removed OK', 'success');
       setTimeout(() => renderMarket(), 500);
     } catch (e) {
       if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
@@ -36041,11 +37062,11 @@ async function marketCancelIntentHandler(btn) {
   // now-spent outpoint and Bitcoin consensus rejects it.
   if (intent?.fulfilment_pending) {
     if (!confirm(
-      `⚠ You have fulfilled a claim. The taker can still broadcast their finalized tx within 24h unless you spend the asset UTXO yourself.\n\n` +
-      `[OK]     Send the asset UTXO to yourself (Bitcoin tx fees apply) and remove the marketplace record. This invalidates the taker's pending tx — the only way to truly stop them.\n\n` +
+      `Warning: you have fulfilled a claim. The taker can still broadcast their finalized tx within 24h unless you spend the asset UTXO yourself.\n\n` +
+      `[OK]     Send the asset UTXO to yourself (Bitcoin tx fees apply) and remove the marketplace record. This invalidates the taker's pending tx - the only way to truly stop them.\n\n` +
       `[Cancel] Abort. No changes.`,
     )) return;
-    btn.disabled = true; btn.textContent = 'self-spending…';
+    btn.disabled = true; btn.textContent = 'self-spending...';
     try {
       // Locate the asset UTXO in our holdings to source the local opening that
       // buildAndBroadcastCXfer needs (amount + blinding).
@@ -36054,7 +37075,7 @@ async function marketCancelIntentHandler(btn) {
       const u = h?.utxos.find(x =>
         x.utxo.txid === intent.asset_utxo.txid && x.utxo.vout === intent.asset_utxo.vout,
       );
-      if (!u) throw new Error('asset UTXO is not in holdings — the taker may have already broadcast.');
+      if (!u) throw new Error('asset UTXO is not in holdings - the taker may have already broadcast.');
       if (!await ensureBurnerBackedUp('Cancel fulfilled atomic intent (spends the listed asset UTXO via self-send)')) {
         btn.disabled = false; btn.textContent = 'Cancel';
         return;
@@ -36064,7 +37085,7 @@ async function marketCancelIntentHandler(btn) {
         btn.disabled = false; btn.textContent = 'Cancel';
         return;
       }
-      btn.textContent = 'broadcasting…';
+      btn.textContent = 'broadcasting...';
       await buildAndBroadcastCXfer({
         assetIdHex: aid,
         recipientPubHex: bytesToHex(wallet.pub),
@@ -36074,7 +37095,7 @@ async function marketCancelIntentHandler(btn) {
       // The on-chain self-CXFER is what actually invalidated the partial reveal.
       // Worker DELETE is now best-effort cleanup so the entry stops appearing.
       await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid }).catch(() => {});
-      toast('Intent cancelled · asset UTXO spent · taker can no longer broadcast ✓', 'success', 6000);
+      toast('Intent cancelled - asset UTXO spent - taker can no longer broadcast OK', 'success', 6000);
       setTimeout(() => { renderMarket(); renderHoldings(); renderActivity(); }, 500);
     } catch (e) {
       if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
@@ -36090,13 +37111,13 @@ async function marketCancelIntentHandler(btn) {
   // locked in the P2TR script-path can no longer be reconstructed for spend.
   const _forfeitSats = Number(intent?.commit_value || 0);
   const _forfeitNote = _forfeitSats > 0
-    ? `The committed sats (~${_forfeitSats.toLocaleString()}) locked in the P2TR are effectively forfeit — cancelling discards the recipient blinding needed to spend that output.`
+    ? `The committed sats (~${_forfeitSats.toLocaleString()}) locked in the P2TR are effectively forfeit - cancelling discards the recipient blinding needed to spend that output.`
     : `The commit-tx output stays locked in the P2TR; cancelling discards the recipient blinding needed to spend it, so any committed value is effectively forfeit.`;
   if (!confirm(`Cancel this atomic intent? The intent is removed from the marketplace immediately. ${_forfeitNote}`)) return;
-  btn.disabled = true; btn.textContent = 'cancelling…';
+  btn.disabled = true; btn.textContent = 'cancelling...';
   try {
     await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid });
-    toast('Intent cancelled ✓', 'success');
+    toast('Intent cancelled OK', 'success');
     setTimeout(() => renderMarket(), 500);
   } catch (e) {
     if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
@@ -36127,19 +37148,6 @@ function _countAtomicAlternativesForAsset(assetIdHex) {
 function _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub }) {
   return new Promise(resolve => {
     const altCount = _countAtomicAlternativesForAsset(aid);
-    // Resolve the asset record for verification status. The OTC take path
-    // is the highest-stakes moment for copycat protection (user is about
-    // to send sats first), so we surface the verified/copycat badge
-    // prominently in the modal header.
-    const _assetForGate =
-      (_marketCache?.listings.find(l => l._asset?.asset_id === aid)?._asset)
-      || (_marketCache?.assets?.find(x => x.asset_id === aid))
-      || { asset_id: aid, ticker, decimals: dec };
-    const _verifiedBits = _assetForGate._copycatInfo
-      ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="This ticker matches a known ${escapeHtml(_assetForGate._copycatInfo.chain || 'Ethereum')} project. Likely a copycat on tacit.">⚠ COPY</span>`
-      : _assetForGate._tickerCollision === 'duplicate'
-        ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first.">⚠ DUP</span>`
-        : verifiedBadgeHTML(_assetForGate, { size: 'lg' });
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;z-index:1020;display:grid;place-items:center;background:rgba(10,10,10,0.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);padding:24px;';
     const card = document.createElement('div');
@@ -36147,34 +37155,30 @@ function _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub }) {
     const kindLabel = kind === 'range' ? 'range OTC listing' : 'opening OTC listing';
     const altsHtml = altCount > 0
       ? `<div style="margin:14px 0;padding:10px 12px;border:1px solid var(--orange);background:var(--bg-warm);font-size:11px;">
-           <strong>${altCount} ⚡ atomic offer${altCount === 1 ? '' : 's'} exist for ${escapeHtml(ticker)}.</strong>
-           Atomic settles in one Bitcoin tx — no counterparty trust needed.
+           <strong>${altCount} atomic offer${altCount === 1 ? '' : 's'} exist for ${escapeHtml(ticker)}.</strong>
+           Atomic settles in one Bitcoin tx - no counterparty trust needed.
          </div>`
       : `<div class="muted" style="margin:14px 0;font-size:11px;font-style:italic;">No atomic alternatives currently listed for ${escapeHtml(ticker)}.</div>`;
     card.innerHTML = `
       <div style="font-family:'Instrument Serif',serif;font-size:26px;font-style:italic;line-height:1;margin-bottom:8px;">
         <span style="color:var(--orange);">⚠</span> Trust required
       </div>
-      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">
-        ${kindLabel} · counterparty trust
-      </div>
-      <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
-        <strong style="font-size:14px;">${escapeHtml(ticker)}</strong>${_verifiedBits}
-        <span style="font-size:10px;color:${assetIdColorForAsset(_assetForGate)};font-family:var(--mono);">${escapeHtml(shorten(aid, 12))}</span>
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:14px;">
+        ${kindLabel} &middot; counterparty trust
       </div>
       <div style="margin-bottom:10px;">
-        You're about to <strong>send sats first</strong>, then wait for the maker to broadcast a transfer of <strong>${kind === 'range' ? '≥ ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amt), dec))} ${escapeHtml(ticker)}</strong> to your pubkey.
+        You're about to <strong>send sats first</strong>, then wait for the maker to broadcast a transfer of <strong>${kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amt), dec))} ${escapeHtml(ticker)}</strong> to your pubkey.
       </div>
       <div style="margin-bottom:10px;color:var(--ink);">
         <strong>The maker can take your ${price.toLocaleString()} sats and not deliver.</strong>
-        Your only recourse is social — there's no on-chain enforcement on this path.
+        Your only recourse is social - there's no on-chain enforcement on this path.
       </div>
       ${altsHtml}
       <div style="font-size:11px;color:var(--ink-mid);margin-bottom:16px;">
         OTC is still useful for makers who want to trade without committing to a specific UTXO upfront, or who use range-disclosure to keep their balance hidden. If you trust the counterparty (or the size is small), continue.
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        ${altCount > 0 ? `<button data-otc-act="switch" class="primary" type="button" style="flex:1;min-width:160px;font-size:12px;">See ${altCount} atomic offer${altCount === 1 ? '' : 's'} →</button>` : ''}
+        ${altCount > 0 ? `<button data-otc-act="switch" class="primary" type="button" style="flex:1;min-width:160px;font-size:12px;">See ${altCount} atomic offer${altCount === 1 ? '' : 's'} &rarr;</button>` : ''}
         <button data-otc-act="continue" type="button" style="flex:1;min-width:140px;font-size:12px;">Continue with OTC</button>
         <button data-otc-act="cancel" type="button" style="flex:0 0 auto;font-size:12px;">Cancel</button>
       </div>`;
@@ -36198,6 +37202,109 @@ function _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub }) {
   });
 }
 
+async function marketConfirmPreauthTake({ ticker, amount, dec, price }) {
+  await refreshMarketBtcUsd().catch(() => {});
+  const amountBase = (() => { try { return BigInt(amount || '0'); } catch { return 0n; } })();
+  const amountStr = fmtAssetAmount(amountBase, dec);
+  const feeLow = 3000;
+  const feeHigh = 5000;
+  const priceSats = Number(price || 0);
+  const unit = (() => {
+    try { return unitPriceSats(priceSats, amountBase, dec); }
+    catch { return null; }
+  })();
+  const unitLine = unit != null
+    ? `<span class="market-sats-price">${escapeHtml(fmtMarketUnitSats(unit))}/${escapeHtml(ticker)}</span>`
+    : `<span class="market-sats-price">n/a/${escapeHtml(ticker)}</span>`;
+  const unitUsd = unit != null ? fmtMarketUsdUnitFromSats(unit, 'n/a') : 'n/a';
+  const sellerUsd = fmtMarketUsdFromSats(priceSats, 'n/a');
+  const feeUsdLow = fmtMarketUsdFromSats(feeLow, 'n/a');
+  const feeUsdHigh = fmtMarketUsdFromSats(feeHigh, 'n/a');
+  const totalLow = priceSats + feeLow;
+  const totalHigh = priceSats + feeHigh;
+  const totalUsdLow = fmtMarketUsdFromSats(totalLow, 'n/a');
+  const totalUsdHigh = fmtMarketUsdFromSats(totalHigh, 'n/a');
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'market-buy-overlay';
+    overlay.innerHTML = `
+      <div class="market-buy-card" role="dialog" aria-modal="true" aria-label="Buy instant listing">
+        <div class="market-buy-head">
+          <div>
+            <span class="market-buy-kind">Buy</span>
+            <h3>${escapeHtml(amountStr)} ${escapeHtml(ticker)}</h3>
+          </div>
+          <button class="market-buy-close" type="button" data-market-buy-cancel aria-label="Close">x</button>
+        </div>
+        <div class="market-buy-row">
+          <div>
+            <div class="market-buy-label">Seller receives</div>
+            <div class="market-buy-sub">Total asset price</div>
+          </div>
+          <div>
+            <div class="market-buy-value market-usd-price">${escapeHtml(sellerUsd)}</div>
+            <div class="market-buy-sub"><span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSats))}</span> &middot; <span class="market-sats-price">${priceSats.toLocaleString('en-US')} sats</span></div>
+          </div>
+        </div>
+        <div class="market-buy-row">
+          <div>
+            <div class="market-buy-label">Price per token</div>
+            <div class="market-buy-sub">Unit price</div>
+          </div>
+          <div>
+            <div class="market-buy-value market-usd-price">${escapeHtml(unitUsd)}</div>
+            <div class="market-buy-sub">${unitLine}</div>
+          </div>
+        </div>
+        <div class="market-buy-row">
+          <div>
+            <div class="market-buy-label">Bitcoin network fee</div>
+            <div class="market-buy-sub">Commit + reveal txs</div>
+          </div>
+          <div>
+            <div class="market-buy-value market-usd-price">${escapeHtml(feeUsdLow)} - ${escapeHtml(feeUsdHigh)}</div>
+            <div class="market-buy-sub"><span class="market-sats-price">~3-5k sats</span></div>
+          </div>
+        </div>
+        <div class="market-buy-row total">
+          <div>
+            <div class="market-buy-label">Estimated total</div>
+            <div class="market-buy-sub">Seller price + network fee</div>
+          </div>
+          <div>
+            <div class="market-buy-value market-usd-price">${escapeHtml(totalUsdLow)} - ${escapeHtml(totalUsdHigh)}</div>
+            <div class="market-buy-sub"><span class="market-btc-price">${escapeHtml(fmtMarketBtc(totalLow))}</span> - <span class="market-btc-price">${escapeHtml(fmtMarketBtc(totalHigh))}</span></div>
+          </div>
+        </div>
+        <div class="market-buy-note">
+          On confirm: a commit tx and a settlement reveal tx will be broadcast. Both legs settle atomically: you receive the asset only if you pay the seller; the seller receives BTC only if you receive the asset. No claim window, no fulfilment step.
+        </div>
+        <div class="market-buy-actions">
+          <button type="button" data-market-buy-cancel>Cancel</button>
+          <button type="button" class="primary" data-market-buy-confirm>Buy instant listing</button>
+        </div>
+      </div>`;
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    };
+    const finish = (ok) => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(ok);
+    };
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) finish(false);
+    });
+    overlay.querySelectorAll('[data-market-buy-cancel]').forEach(b => {
+      b.addEventListener('click', () => finish(false), { once: true });
+    });
+    overlay.querySelector('[data-market-buy-confirm]')?.addEventListener('click', () => finish(true), { once: true });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(overlay);
+    overlay.querySelector('[data-market-buy-confirm]')?.focus();
+  });
+}
+
 // Buy a preauth-sale (SPEC §5.7.8 instant listing). Confirms with the user,
 // runs the dapp's pre-flight outspend check, then broadcasts the commit +
 // reveal txs that atomically settle the sale.
@@ -36210,26 +37317,14 @@ async function marketTakePreauthHandler(btn) {
   const amount = btn.dataset.amount || '0';
   const dec = parseInt(btn.dataset.dec || '0', 10) || 0;
   const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
-  // Pre-check expiry before any prompt/unlock work. Spares the user a wallet-
-  // unlock dance just for the worker to reject as expired downstream.
   if (expiry > 0 && expiry <= Math.floor(Date.now() / 1000)) {
-    toast('This instant listing has expired — refresh the Market tab.', 'error');
+    toast('This instant listing has expired - refresh the Market tab.', 'error');
     return;
   }
-  // Disable BEFORE confirm so a fast double-click can't queue two parallel
-  // takePreauthSale runs — each would broadcast its own commit tx (~3-5k sats
-  // wasted per duplicate) and only one reveal could succeed because the
-  // second hits "asset outpoint already spent".
   btn.disabled = true;
   const origText = btn.textContent;
   const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
-  if (!confirm(
-    `Buy instant listing?\n\n` +
-    `Asset:    ${fmtAssetAmount(BigInt(amount), dec)} ${ticker}\n` +
-    `Pay:      ${price.toLocaleString()} sats to seller\n` +
-    `Network fee: ~3-5k sats (commit + reveal)\n\n` +
-    `On confirm: a commit tx and a settlement reveal tx will be broadcast. Both legs settle atomically — you receive the asset only if you pay the seller; the seller receives BTC only if you receive the asset. No claim window, no fulfilment step.`,
-  )) { restore(); return; }
+  if (!await marketConfirmPreauthTake({ ticker, amount, dec, price })) { restore(); return; }
   if (!await ensureBurnerBackedUp('Buy instant listing (broadcasts commit + reveal txs and creates a new tacit UTXO in your wallet)')) {
     toast('Back up the in-page privkey first, then retry.', 'error'); restore(); return;
   }
@@ -36237,25 +37332,25 @@ async function marketTakePreauthHandler(btn) {
   if (!(await ensureSatsFunded(need + price, 'Taking instant listing'))) {
     toast('Funding cancelled.', 'error'); restore(); return;
   }
-  btn.textContent = 'buying…';
+  btn.textContent = 'buying...';
   try {
     const r = await takePreauthSale({
       assetIdHex: aid,
       saleIdHex: sid,
       onProgress: (stage) => {
-        // Stages: fetch-start → commit-start → wait-visible → broadcast-start
-        if (stage === 'commit-start')   btn.textContent = 'broadcasting commit…';
-        else if (stage === 'wait-visible') btn.textContent = 'waiting for indexer…';
-        else if (stage === 'broadcast-start') btn.textContent = 'broadcasting reveal…';
+        // Stages: fetch-start -> commit-start -> wait-visible -> broadcast-start
+        if (stage === 'commit-start')   btn.textContent = 'broadcasting commit...';
+        else if (stage === 'wait-visible') btn.textContent = 'waiting for indexer...';
+        else if (stage === 'broadcast-start') btn.textContent = 'broadcasting reveal...';
       },
     });
-    toast(`Preauth buy complete ✓ — reveal ${shorten(r.reveal_txid, 6)}; asset will appear in Holdings after confirmation`, 'success', 10000);
+    toast(`Instant buy complete OK - reveal ${shorten(r.reveal_txid, 6)}; asset will appear in Holdings after confirmation`, 'success', 10000);
     invalidateMarketCache();
     setTimeout(() => { renderActivity(); renderMarket(); }, 800);
-    // Leave button disabled on success — renderMarket replaces the tile.
+    // Leave button disabled on success; renderMarket replaces the tile.
   } catch (e) {
     if (isUnlockCancelled(e)) {
-      toast('Unlock cancelled — nothing was broadcast.', '');
+      toast('Unlock cancelled - nothing was broadcast.', '');
     } else {
       // takePreauthSale's error message already references the persisted
       // recovery record + commit_txid when reveal-leg failure stranded the
@@ -36268,7 +37363,7 @@ async function marketTakePreauthHandler(btn) {
 
 // Cancel a preauth-sale (seller side). Pulls the worker record so buyers
 // can't see the listing. NOTE: the seller's pre-signed asset spend can't be
-// invalidated off-chain — a determined buyer with the saved record could
+// invalidated off-chain - a determined buyer with the saved record could
 // still broadcast. For a hard cancel, the seller should self-spend the
 // listed UTXO (CXFER to themselves), which moots the pre-signed spend at
 // Bitcoin consensus.
@@ -36293,14 +37388,14 @@ async function marketCancelPreauthHandler(btn) {
     `This removes the worker record so buyers won't see it. The pre-signed asset spend remains valid until you spend the listed UTXO yourself.\n\n` +
     `For a hard cancel, after this completes, do a Send Privately of the listed UTXO to yourself.`,
   )) { restore(); return; }
-  btn.textContent = 'cancelling…';
+  btn.textContent = 'cancelling...';
   try {
     await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
-    toast('instant listing cancelled ✓', 'success');
+    toast('Instant listing cancelled OK', 'success');
     invalidateMarketCache();
     setTimeout(() => renderMarket(), 500);
   } catch (e) {
-    if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+    if (isUnlockCancelled(e)) toast('Unlock cancelled - nothing was broadcast.', '');
     else toast('Cancel failed: ' + e.message, 'error');
     restore();
   }
@@ -36317,11 +37412,11 @@ async function marketTakeHandler(btn) {
   const dec = parseInt(btn.dataset.dec, 10);
   const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
   if (expiry > 0 && expiry <= Math.floor(Date.now() / 1000)) {
-    toast('This listing has expired — refresh the Market tab.', 'error');
+    toast('This listing has expired - refresh the Market tab.', 'error');
     return;
   }
   const myPub = bytesToHex(wallet.pub);
-  btn.disabled = true; btn.textContent = 'checking…';
+  btn.disabled = true; btn.textContent = 'checking...';
   const v = await marketValidate(kind, aid, btn).catch(e => ({ ok: false, reason: e.message }));
   if (!v.ok) {
     toast('Take blocked: ' + v.reason, 'error');
@@ -36338,14 +37433,14 @@ async function marketTakeHandler(btn) {
     _saveMarketPrefs();
     applyMarketFilters();
     btn.disabled = false; btn.textContent = 'Take';
-    toast(`Filtered to ⚡ atomic offers${_marketView === 'browse' ? ` for ${ticker}` : ''}`, 'success');
+    toast(`Filtered to atomic offers${_marketView === 'browse' ? ` for ${ticker}` : ''}`, 'success');
     return;
   }
-  // gate === 'continue' — show the existing operational confirm with steps.
+  // gate === 'continue' - show the existing operational confirm with steps.
   // Defensive: marketValidate should have caught a missing addr, but if a
   // listing somehow lacks maker_address by the time it reaches confirm, fail
-  // loudly here rather than show "Pay …\n   " with a blank line that a user
-  // might miss entirely and end up "paying nowhere."
+  // loudly here rather than show a blank payment address that a user might
+  // miss entirely and end up paying nowhere.
   if (!addr) {
     toast('Take blocked: listing is missing the maker BTC address (worker may have served a partial record). Refresh the Market tab.', 'error');
     btn.disabled = false; btn.textContent = 'Take';
@@ -36353,7 +37448,7 @@ async function marketTakeHandler(btn) {
   }
   const msg =
     `Take this listing?\n\n` +
-    `Buying:  ${kind === 'range' ? '≥ ' : ''}${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
+    `Buying:  ${kind === 'range' ? '>= ' : ''}${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
     `Price:   ${price.toLocaleString()} sats\n\n` +
     `STEPS:\n` +
     `1) Pay ${price.toLocaleString()} sats to:\n   ${addr}\n` +
@@ -36362,7 +37457,7 @@ async function marketTakeHandler(btn) {
     `4) The new UTXO appears in Holdings (auto-discovered via ECDH).\n\n` +
     `On confirm: the listing is reserved for you for 5 min.`;
   if (!confirm(msg)) { btn.disabled = false; btn.textContent = 'Take'; return; }
-  btn.textContent = 'reserving…';
+  btn.textContent = 'reserving...';
   try {
     if (kind === 'opening') {
       const txidHex = btn.dataset.txid;
@@ -36372,52 +37467,40 @@ async function marketTakeHandler(btn) {
       await claimRangeListing({ assetIdHex: aid, makerPubHex: btn.dataset.maker });
     }
   } catch (e) {
-    if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+    if (isUnlockCancelled(e)) toast('Unlock cancelled - nothing was broadcast.', '');
     else toast('Take blocked: ' + e.message, 'error');
     btn.disabled = false; btn.textContent = 'Take';
     return;
   }
   navigator.clipboard?.writeText(myPub).catch(() => {});
-  // Persist the reservation locally so the user has a durable record of
-  // "I owe maker $addr $price sats for $amount $ticker, expires at X" even
-  // if they close the tab. Without this, a tab close = total knowledge loss
-  // of the OTC obligation (the only on-chain trace is the worker's claim
-  // record which expires in 5 min). Activity log surfaces this in the
-  // Activity tab; the 5-min expiry is best-effort because the worker is
-  // the source of truth for actual reservation state.
   recordActivity({
     kind: 'otc-reserved',
     ticker,
     amount: BigInt(amt),
     decimals: dec,
     assetId: aid,
-    // No txid yet — this is a pre-payment reservation. We record the
-    // maker's address + price so the user can still pay even if the
-    // listing tile disappears (maker cancels, expiry hits, etc.) before
-    // they get back to the Market tab.
     txid: null,
     extra: {
       maker_address: addr,
       maker_pubkey: btn.dataset.maker || '',
       price_sats: price,
       claim_expires_at: Math.floor(Date.now() / 1000) + 5 * 60,
-      kind_subtype: kind, // 'opening' or 'range'
+      kind_subtype: kind,
       txid_hex: btn.dataset.txid || '',
       vout: kind === 'opening' ? parseInt(btn.dataset.vout, 10) || 0 : null,
     },
   });
-  toast('Reserved 5 min · pubkey copied · pay the maker, then send pubkey to them. Details saved to Activity.', 'success', 8000);
-  btn.textContent = '✓ reserved';
+  toast('Reserved 5 min - pubkey copied - pay the maker, then send pubkey to them. Details saved to Activity.', 'success', 8000);
+  btn.textContent = 'reserved';
   invalidateMarketCache();
   setTimeout(() => renderMarket(), 500);
 }
-
 async function marketVerifyHandler(btn) {
-  btn.disabled = true; btn.textContent = 'verifying…';
+  btn.disabled = true; btn.textContent = 'verifying...';
   const v = await marketValidate(btn.dataset.kind, btn.dataset.aid, btn).catch(e => ({ ok: false, reason: e.message }));
   if (v.ok) {
-    btn.textContent = '✓ verified';
-    toast('Listing verified — sigs ✓ ownership ✓ commitment/proof ✓ live ✓', 'success');
+    btn.textContent = 'verified';
+    toast('Listing verified - sigs OK - ownership OK - commitment/proof OK - live OK', 'success');
   } else {
     btn.disabled = false; btn.textContent = 'Verify';
     toast('Verify failed: ' + v.reason, 'error');
@@ -36463,7 +37546,7 @@ async function marketValidate(kind, aid, btn) {
       if (!claimed.equals(bytesToPoint(pd.commitment))) return { ok: false, reason: 'opening does not match on-chain commitment' };
     } catch (e) { return { ok: false, reason: 'commitment math failed: ' + e.message }; }
     const sp = await getOutspend(txidHex, vout).catch(() => null);
-    if (!sp || sp.spent) return { ok: false, reason: 'UTXO already spent — listing stale' };
+    if (!sp || sp.spent) return { ok: false, reason: 'UTXO already spent - listing stale' };
     return { ok: true };
   } else {
     const makerPub = btn.dataset.maker;
@@ -37630,23 +38713,92 @@ function _loadDiscoverPrefs() {
     return (o && typeof o === 'object') ? o : null;
   } catch { return null; }
 }
-function _saveMarketPrefs() {
-  try {
-    localStorage.setItem(_PREFS_MARKET_KEY(NET.name), JSON.stringify({
-      kind: $('#market-filter-kind')?.value || 'all',
-      min:  $('#market-filter-min-price')?.value || '',
-      max:  $('#market-filter-max-price')?.value || '',
-      sort: $('#market-sort')?.value || 'recency',
-    }));
-  } catch {}
+function _marketDefaultPrefs(scope) {
+  return scope === 'asset'
+    ? { kind: 'preauth', min: '', max: '', sort: 'unit-asc' }
+    : { kind: 'preauth', min: '', max: '', sort: 'volume-desc' };
+}
+function _validSelectValue(sel, value) {
+  const el = $(sel);
+  return !!(el && typeof value === 'string' && Array.from(el.options).some(o => o.value === value));
+}
+function _normaliseMarketPrefs(o) {
+  const out = {
+    version: 4,
+    browse: _marketDefaultPrefs('browse'),
+    asset: _marketDefaultPrefs('asset'),
+  };
+  if (!o || typeof o !== 'object') return out;
+  // Migration from the old single-scope pref object. It often captured the
+  // asset-page "Cheapest First" sort, so browse deliberately resets to its
+  // index default instead of inheriting a polluted unit-asc value.
+  if (!o.browse && !o.asset) {
+    out.browse = {
+      ...out.browse,
+      kind: _validSelectValue('#market-filter-kind', o.kind) && o.kind !== 'all' ? o.kind : out.browse.kind,
+      min: typeof o.min === 'string' ? o.min : '',
+      max: typeof o.max === 'string' ? o.max : '',
+      sort: _validSelectValue('#market-sort', o.sort) && o.sort !== 'unit-asc' ? o.sort : out.browse.sort,
+    };
+    out.asset = {
+      ...out.asset,
+      kind: _validSelectValue('#market-filter-kind', o.kind) && o.kind !== 'all' ? o.kind : out.asset.kind,
+      min: typeof o.min === 'string' ? o.min : '',
+      max: typeof o.max === 'string' ? o.max : '',
+      sort: _validSelectValue('#market-sort', o.sort) ? o.sort : out.asset.sort,
+    };
+    return out;
+  }
+  for (const scope of ['browse', 'asset']) {
+    const src = o[scope];
+    if (!src || typeof src !== 'object') continue;
+    out[scope] = {
+      ...out[scope],
+      kind: _validSelectValue('#market-filter-kind', src.kind) ? src.kind : out[scope].kind,
+      min: typeof src.min === 'string' ? src.min : '',
+      max: typeof src.max === 'string' ? src.max : '',
+      sort: _validSelectValue('#market-sort', src.sort) ? src.sort : out[scope].sort,
+    };
+  }
+  if ((Number(o.version) || 0) < 4 && out.asset.kind === 'all') {
+    out.asset.kind = _marketDefaultPrefs('asset').kind;
+  }
+  return out;
 }
 function _loadMarketPrefs() {
   try {
     const raw = localStorage.getItem(_PREFS_MARKET_KEY(NET.name));
-    if (!raw) return null;
-    const o = JSON.parse(raw);
-    return (o && typeof o === 'object') ? o : null;
-  } catch { return null; }
+    if (!raw) return _normaliseMarketPrefs(null);
+    return _normaliseMarketPrefs(JSON.parse(raw));
+  } catch { return _normaliseMarketPrefs(null); }
+}
+function _marketPrefsForScope(scope) {
+  const prefs = _loadMarketPrefs();
+  return prefs[scope] || _marketDefaultPrefs(scope);
+}
+function _applyMarketPrefsToControls(scope = marketViewScope()) {
+  const prefs = _marketPrefsForScope(scope);
+  const k = $('#market-filter-kind');
+  const mn = $('#market-filter-min-price');
+  const mx = $('#market-filter-max-price');
+  const s = $('#market-sort');
+  if (k && _validSelectValue('#market-filter-kind', prefs.kind)) k.value = prefs.kind;
+  if (mn) mn.value = prefs.min || '';
+  if (mx) mx.value = prefs.max || '';
+  if (s && _validSelectValue('#market-sort', prefs.sort)) s.value = prefs.sort;
+}
+function _saveMarketPrefs(scope = marketViewScope()) {
+  try {
+    const prefs = _loadMarketPrefs();
+    prefs[scope] = {
+      kind: $('#market-filter-kind')?.value || _marketDefaultPrefs(scope).kind,
+      min:  $('#market-filter-min-price')?.value || '',
+      max:  $('#market-filter-max-price')?.value || '',
+      sort: scope === 'asset' ? 'unit-asc' : ($('#market-sort')?.value || _marketDefaultPrefs(scope).sort),
+    };
+    prefs.version = 4;
+    localStorage.setItem(_PREFS_MARKET_KEY(NET.name), JSON.stringify(prefs));
+  } catch {}
 }
 
 // Writes the count badge on a discover-nav anchor (petch | cetch). Each
@@ -37830,12 +38982,12 @@ function setupMarketButtons() {
     let t = null;
     txt.addEventListener('input', () => {
       clearTimeout(t);
-      t = setTimeout(applyMarketFilters, 80);
+      t = setTimeout(() => { _marketBrowsePage = 1; _marketListingPage = 1; applyMarketFilters(); }, 80);
     });
   }
   ['#market-filter-kind', '#market-filter-min-price', '#market-filter-max-price', '#market-sort'].forEach(sel => {
     const el = $(sel);
-    if (el) el.addEventListener('change', () => { _saveMarketPrefs(); applyMarketFilters(); });
+    if (el) el.addEventListener('change', () => { _marketBrowsePage = 1; _marketListingPage = 1; _saveMarketPrefs(); applyMarketFilters(); });
   });
   // Price popover: chip toggles a small panel containing the min/max
   // inputs. Clicking outside (or the explicit "done" button) closes it;
@@ -37877,29 +39029,15 @@ function setupMarketButtons() {
       const mx = $('#market-filter-max-price');
       if (mn) mn.value = '';
       if (mx) mx.value = '';
+      _marketBrowsePage = 1;
+      _marketListingPage = 1;
       _saveMarketPrefs();
       applyMarketFilters();
     });
   }
-  // Restore last-used Market prefs. Filter inputs are populated before the
-  // first applyMarketFilters runs so the user lands on their saved view.
-  const _mprefs = _loadMarketPrefs();
-  if (_mprefs) {
-    const k  = $('#market-filter-kind');
-    const mn = $('#market-filter-min-price');
-    const mx = $('#market-filter-max-price');
-    const s  = $('#market-sort');
-    if (k && typeof _mprefs.kind === 'string'
-        && Array.from(k.options).some(o => o.value === _mprefs.kind)) {
-      k.value = _mprefs.kind;
-    }
-    if (mn && typeof _mprefs.min === 'string') mn.value = _mprefs.min;
-    if (mx && typeof _mprefs.max === 'string') mx.value = _mprefs.max;
-    if (s && typeof _mprefs.sort === 'string'
-        && Array.from(s.options).some(o => o.value === _mprefs.sort)) {
-      s.value = _mprefs.sort;
-    }
-  }
+  // Restore only the browse-index preferences at startup. Asset-detail
+  // preferences are applied when the user enters a token page.
+  _applyMarketPrefsToControls('browse');
 }
 
 async function autoImportShareLink() {
