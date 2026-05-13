@@ -32348,18 +32348,27 @@ function applyMarketFilters() {
   const unitOf = l => {
     const a = l._asset || {};
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-    const amt = l.kind === 'range' ? l.threshold : l.amount;
-    const u = unitPriceSats(Number(l.price_sats || 0), BigInt(amt || 0), dec);
+    // Per-kind shape (the bug that broke "cheapest first" on Simple-mode
+    // pages where every row was preauth: preauth uses asset_opening.amount
+    // + min_price_sats, not amount + price_sats, so the sort comparator
+    // saw null for every row and the rows retained insertion order).
+    const amt = l.kind === 'range' ? l.threshold
+              : l.kind === 'preauth' ? (l.asset_opening?.amount)
+              : l.amount;
+    const ps  = l.kind === 'preauth' ? Number(l.min_price_sats || 0)
+              : Number(l.price_sats || 0);
+    if (!ps || !amt) return null;
+    const u = unitPriceSats(ps, BigInt(amt), dec);
     return u != null ? u : null;
   };
   if (sort === 'price-asc') {
     rows.sort((a, b) =>
       atomicScore(a) - atomicScore(b)
-      || Number(a.price_sats || 0) - Number(b.price_sats || 0));
+      || _priceOf(a) - _priceOf(b));
   } else if (sort === 'price-desc') {
     rows.sort((a, b) =>
       atomicScore(a) - atomicScore(b)
-      || Number(b.price_sats || 0) - Number(a.price_sats || 0));
+      || _priceOf(b) - _priceOf(a));
   } else if (sort === 'unit-asc' || sort === 'unit-desc') {
     const desc = sort === 'unit-desc';
     rows.sort((a, b) => {
@@ -32392,6 +32401,68 @@ function applyMarketFilters() {
                      || { asset_id: _marketView.assetId, ticker: '?', decimals: 0 };
   const bidsLadderHtml = renderMarketBidsLadderHTML(_assetForBids);
   const statsHtml = renderMarketAssetStatsHTML(_assetForBids);
+  // Headline price banner: prominent "Last X sats/TICKER ($Y) · +Z% 24h"
+  // strip between the asset header card and the rest of the stats. Every
+  // trading view (CoinGecko, Jupiter, etc.) puts the headline price right
+  // above the chart; tacit was burying it in the small-stat row below
+  // the chart, which buyers had to hunt for.
+  const _headlineHtml = (() => {
+    const a = _assetForBids;
+    const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    const tk = a.ticker || '?';
+    // Prefer mark_price (outlier-guarded) over raw last_trade for the
+    // headline number — same number that drives market cap + holdings
+    // valuation, so the user sees a consistent figure across the page.
+    const markU = (a.mark_price && Number.isFinite(a.mark_price.unit) && a.mark_price.unit > 0)
+      ? Number(a.mark_price.unit) : null;
+    let unitU = markU;
+    let ageSec = null;
+    let lastTotalSats = null;
+    const lt = a.last_trade;
+    if (lt && Number.isInteger(lt.price_sats) && lt.price_sats > 0) {
+      try {
+        const lAmt = BigInt(lt.amount);
+        if (lAmt > 0n) {
+          const u = unitPriceSats(lt.price_sats, lAmt, dec);
+          if (Number.isFinite(u) && u > 0 && unitU == null) unitU = u;
+          ageSec = Math.max(0, Math.floor(Date.now() / 1000) - Number(lt.ts || 0));
+          lastTotalSats = Number(lt.price_sats);
+        }
+      } catch {}
+    }
+    if (unitU == null) return '';
+    const _btcUsd = _cachedBtcUsd();
+    const usdPerToken = _btcUsd ? fmtUnitUsd(unitU, _btcUsd) : null;
+    const ageStr = ageSec == null ? null
+      : ageSec < 60 ? `${ageSec}s` : ageSec < 3600 ? `${Math.floor(ageSec / 60)}m`
+      : ageSec < 86400 ? `${Math.floor(ageSec / 3600)}h` : `${Math.floor(ageSec / 86400)}d`;
+    // Δ% — prefer the worker's primary-window pick (24h for mature
+    // markets, tighter windows on young ones) so the chip is never "—".
+    const primaryPct = Number.isFinite(a.price_change_primary_pct)
+      ? Number(a.price_change_primary_pct)
+      : (Number.isFinite(a.price_24h_change_pct) ? Number(a.price_24h_change_pct) : null);
+    const primaryWindow = typeof a.price_change_primary_window === 'string'
+      ? a.price_change_primary_window
+      : '24h';
+    const deltaChip = primaryPct == null ? '' : (() => {
+      const sign = primaryPct >= 0 ? '+' : '';
+      const color = primaryPct >= 0 ? '#0a8f43' : '#b8341d';
+      const winLbl = primaryWindow === 'all' ? 'all' : primaryWindow;
+      return `<span title="${escapeHtml(winLbl)} change · vs trade as of ${escapeHtml(winLbl)} ago. Computed against the outlier-guarded mark price." style="display:inline-block;padding:4px 10px;background:${color};color:#fff;font-size:14px;font-weight:700;border-radius:3px;">${sign}${primaryPct.toFixed(2)}% <span style="font-weight:400;opacity:0.85;font-size:11px;">${escapeHtml(winLbl)}</span></span>`;
+    })();
+    const _markFlag = a.mark_price?.source === 'median_outlier_guard'
+      ? ` <span class="muted" style="font-size:10px;cursor:help;" title="Mark price flipped to the recent-ring median because the last trade was an outlier (>5× or <0.2× of the median). Headline reflects the real trading band.">· median-guarded</span>`
+      : '';
+    return `<div data-market-headline style="border:1px solid var(--ink);background:var(--bg-warm);padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;min-width:0;">
+        <strong style="font-size:22px;font-family:var(--mono);line-height:1.1;">${escapeHtml(fmtUnitPriceSats(unitU))} <span class="muted" style="font-size:11px;font-family:var(--sans);font-weight:400;">sats/${escapeHtml(tk)}</span></strong>
+        ${usdPerToken ? `<span class="muted" style="font-size:14px;font-family:var(--mono);">${escapeHtml(usdPerToken)}/${escapeHtml(tk)}</span>` : ''}
+        ${ageStr && lastTotalSats != null ? `<span class="muted" style="font-size:11px;">last trade ${ageStr} ago · ${lastTotalSats.toLocaleString()} sats</span>` : ''}
+        ${_markFlag}
+      </div>
+      ${deltaChip}
+    </div>`;
+  })();
   if (!rows.length) {
     // No asks but bids might still exist — render the ladder + place-bid CTA
     // so makers without active listings can still see / capture buy-side
@@ -32568,6 +32639,7 @@ function applyMarketFilters() {
     : '';
   list.innerHTML =
     assetHeaderHtml +
+    _headlineHtml +
     statsHtml +
     _swapTileHtml +
     bidsLadderHtml +
