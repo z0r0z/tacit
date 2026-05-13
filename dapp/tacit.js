@@ -31798,6 +31798,20 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
 // Returns null when Market hasn't been loaded yet — Discover falls back to
 // the plain offer-count badge.
 let _marketFloorCache = { src: null, map: null };
+// Dust-ask detection for display labeling. An ask is considered dust
+// when it's wildly out-of-band vs mark price AND its total price is
+// trivially small. Either alone might be legitimate (cheap-but-real
+// or pricey-but-tiny), but both together signals a dust posting that
+// doesn't reflect real takable liquidity. The threshold of <20% of
+// mark + <1000 sats total matches what's been observed on tacit's
+// busiest markets where deliberate 546-sat OTC dust drags the
+// displayed floor 1000× below the real trading band.
+function _isDustAsk(askUnit, markUnit, totalSats) {
+  if (!Number.isFinite(markUnit) || markUnit <= 0) return false;
+  if (!Number.isFinite(askUnit) || askUnit <= 0) return false;
+  if (!Number.isFinite(totalSats) || totalSats <= 0) return false;
+  return (askUnit < markUnit * 0.2) && (totalSats < 1000);
+}
 function _marketFloorByAsset() {
   if (!_marketCache?.listings) return null;
   // Key on the listings array reference, not the _marketCache object — the
@@ -33126,11 +33140,22 @@ function renderMarketBrowse(rows) {
     if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic offers (trustless, claim-and-take)">⚡ ${g.intents} atomic</span>`);
     if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
     if (g.ranges) kindBits.push(`<span title="range listings (trust-required OTC)">${g.ranges} range</span>`);
-    const floorLine = g.floorUnit != null
-      ? `<strong style="color:#0a8f43;">floor ${fmtUnitPriceSats(g.floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}`
-      : (g.floorSats != null
-          ? `<strong style="color:#0a8f43;">from ${g.floorSats.toLocaleString()} sats</strong>`
-          : '');
+    // Prefer mark price for the browse tile's at-a-glance number — it's
+    // the outlier-guarded "real trading band" figure, more representative
+    // for cross-asset comparison than raw min-ask which can be dust.
+    // Fall back to best-ask only when the worker hasn't computed a mark
+    // (asset has no trade history yet).
+    const _tileMarkUnit = (a.mark_price && Number.isFinite(a.mark_price.unit) && a.mark_price.unit > 0)
+      ? Number(a.mark_price.unit) : null;
+    let floorLine = '';
+    if (_tileMarkUnit != null) {
+      floorLine = `<strong style="color:#0a8f43;">mark ${fmtUnitPriceSats(_tileMarkUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}`;
+    } else if (g.floorUnit != null) {
+      const isDust = _isDustAsk(g.floorUnit, _tileMarkUnit, g.floorSats);
+      floorLine = `<strong style="color:#0a8f43;">best ask ${fmtUnitPriceSats(g.floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}${isDust ? ' <span class="muted" style="font-size:9px;color:var(--red,#b8341d);" title="Best ask is far below the typical trading range and total order size is small — likely a dust listing not meant to reflect real liquidity.">⚠ dust</span>' : ''}`;
+    } else if (g.floorSats != null) {
+      floorLine = `<strong style="color:#0a8f43;">from ${g.floorSats.toLocaleString()} sats</strong>`;
+    }
     // Price-change chip — worker computes deltas for 1h/4h/24h/7d/all and
     // picks the tightest meaningful window in price_change_primary_*. For
     // mature markets that's 24h; for assets trading <24h, the worker
@@ -33229,8 +33254,17 @@ function renderMarketAssetHeader(assetId, rows) {
   if (intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;">⚡ ${intents} atomic</span>`);
   if (openings) kindBits.push(`<span class="muted">${openings} opening</span>`);
   if (ranges) kindBits.push(`<span class="muted">${ranges} range</span>`);
+  // Asset-header best-ask display. Dust badge fires when the absolute
+  // min ask is wildly out-of-band vs mark price AND the total ask sats
+  // are tiny — preventing a single 546-sat OTC ask at 0.05 sats/TAC
+  // from making the prominent header read "floor 0.05" when real
+  // trades clear at 350+.
+  const _hdrMarkUnit = (a.mark_price && Number.isFinite(a.mark_price.unit) && a.mark_price.unit > 0)
+    ? Number(a.mark_price.unit) : null;
+  const _hdrIsDust = floorUnit != null && floorSats != null
+    && _isDustAsk(floorUnit, _hdrMarkUnit, floorSats);
   const floorLine = floorUnit != null
-    ? `<strong style="color:#0a8f43;">floor ${fmtUnitPriceSats(floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}`
+    ? `<strong style="color:#0a8f43;">best ask ${fmtUnitPriceSats(floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}${_hdrIsDust ? ' <span class="muted" style="font-size:9px;color:var(--red,#b8341d);" title="Best ask is far below the typical trading range and total order size is small — likely a dust listing. See the swap tile for the outlier-guarded mark price (what TAC actually trades at).">⚠ dust</span>' : ''}`
     : (floorSats != null
         ? `<strong style="color:#0a8f43;">from ${floorSats.toLocaleString()} sats</strong>`
         : '<span class="muted">no priced listings</span>');
@@ -34907,7 +34941,7 @@ function _wireMarketSweepBuy(section, asset) {
     const _refBits = [];
     if (_floorUnit != null) {
       const us = _usdPerToken(_floorUnit);
-      _refBits.push(`floor <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+      _refBits.push(`best ask <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
     }
     if (_lastUnit != null) {
       const us = _usdPerToken(_lastUnit);
@@ -35407,7 +35441,7 @@ function _wireMarketBidPlace(section, asset) {
     const _refBits = [];
     if (_floorUnit != null) {
       const us = _usdPerToken(_floorUnit);
-      _refBits.push(`floor <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+      _refBits.push(`best ask <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
     }
     if (_lastUnit != null) {
       const us = _usdPerToken(_lastUnit);
@@ -35425,7 +35459,7 @@ function _wireMarketBidPlace(section, asset) {
     // prices we have; rendered as a single row above the inputs so the
     // user doesn't have to do mental sats math for a normal bid.
     const _chipBits = [];
-    if (_floorUnit != null && _floorUnit > 0) _chipBits.push(`<button data-bid-quick="floor" data-unit="${_floorUnit}" type="button" title="Match the cheapest current ask — your bid is one fill away from clearing." style="font-size:10px;padding:3px 8px;">Match floor</button>`);
+    if (_floorUnit != null && _floorUnit > 0) _chipBits.push(`<button data-bid-quick="floor" data-unit="${_floorUnit}" type="button" title="Match the cheapest current ask — your bid is one fill away from clearing." style="font-size:10px;padding:3px 8px;">Match best ask</button>`);
     if (_lastUnit != null && _lastUnit > 0)  _chipBits.push(`<button data-bid-quick="last"  data-unit="${_lastUnit}"  type="button" title="Match the most recent atomic settlement price." style="font-size:10px;padding:3px 8px;">Match last trade</button>`);
     if (_bestBidUnit != null && _bestBidUnit > 0) {
       const _bbTip = _bestBidClamped
