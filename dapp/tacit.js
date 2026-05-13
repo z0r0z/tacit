@@ -31573,10 +31573,15 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
         ? `<strong>${escapeHtml(priceStr)} sats/${escapeHtml(unitTicker)}</strong> floor · `
         : '';
       const linkLabel = offerCount > 0
-        ? `${offerCount} live offer${offerCount === 1 ? '' : 's'} →`
-        : 'No offers yet · be the first to bid →';
-      return `<div style="margin-top:8px;font-size:11px;" title="Floor reflects only listings the indexer can see; confidential holders not actively listing are invisible by design.">
-        💱 ${priceFragment}<a href="#tab=market&aid=${escapeHtml(safeAssetId)}" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="color:#0a7d4e;font-weight:bold;">${linkLabel}</a>
+        ? `Open market · ${offerCount} offer${offerCount === 1 ? '' : 's'} →`
+        : 'Open market · be the first to bid →';
+      // Promoted to chip-style button so the discover→market path is a
+      // clear CTA rather than an inline anchor lost in the text. Whole
+      // chip is clickable; the floor + USD price still render to the
+      // left as supporting context.
+      return `<div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11px;" title="Floor reflects only listings the indexer can see; confidential holders not actively listing are invisible by design.">
+        ${priceFragment ? `<span style="color:var(--ink-mid);">💱 ${priceFragment}</span>` : ''}
+        <a href="#tab=market&aid=${escapeHtml(safeAssetId)}" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-weight:700;text-decoration:none;font-size:11px;letter-spacing:0.04em;box-shadow:2px 2px 0 var(--ink);">${linkLabel}</a>
       </div>`;
     })()}
     ${(() => {
@@ -32722,13 +32727,17 @@ function applyMarketFilters() {
   if (!rows.length) {
     // No asks but bids might still exist — render the ladder + place-bid CTA
     // so makers without active listings can still see / capture buy-side
-    // demand. Empty asks copy clarifies the ask side specifically.
+    // demand. Empty asks copy clarifies the ask side specifically. We
+    // still mount the rich stats strip so supply/attestation/charts are
+    // visible even on assets with no live asks.
     const listedPaneHtml = `${bidsLadderHtml}<div class="empty">No active asks. Bids above; post one if you want to buy.</div>`;
-    list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+    const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
+    list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
     hydrateMarketImages(list);
     bindMarketAssetHeader(list);
     bindMarketAssetTabs(list);
     populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
+    populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
     populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
     return;
   }
@@ -32924,11 +32933,19 @@ function applyMarketFilters() {
     ? `<div class="empty" style="padding:14px;text-align:center;font-size:11px;border:1px dashed var(--ink-faint);"><strong>No instant listings.</strong> <span class="muted">${rowsFull.length} offer${rowsFull.length === 1 ? '' : 's'} available - switch to <em>All offers</em> above to see atomic intents and OTC listings.</span></div>`
     : '';
   const listedPaneHtml = `${_swapTileHtml}${bidsLadderHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="market-listing-grid" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}`;
-  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+  // Rich stats strip — supply (with IPFS-attestation badge), market cap
+  // with proof, 24h Δ, depth chart, recent-trades feed. The header above
+  // shows the 4 condensed cells; this strip below carries the deeper
+  // cryptographic context: which supply you're seeing, how it was
+  // attested, and how to re-verify it. Populated async by
+  // populateMarketAssetStats from the single-asset worker endpoint.
+  const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
+  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
   hydrateMarketImages(list);
   bindMarketAssetHeader(list);
   bindMarketAssetTabs(list);
   _wireSwapTile(list);
+  populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
   // Simple-mode toggle in the asks header. Click flips the flag,
   // persists to localStorage, and re-applies filters so the ladder
   // redraws immediately with the new set.
@@ -33956,9 +33973,9 @@ function renderMarketBrowseTable(rows) {
     const floorUsd = refUnit != null ? `${fmtMarketUsdUnitFromSats(refUnit, 'no USD quote')} per token` : 'no USD price';
     const mcapUsd = g.marketCapSats != null ? fmtMarketUsdWholeFromSats(g.marketCapSats) : 'n/a';
     const mcapBtc = g.marketCapSats != null ? fmtMarketBtc(g.marketCapSats) : '0 BTC';
-    const volume24hUsd = g.volume24hSats != null ? fmtMarketUsdWholeFromSats(g.volume24hSats, '$0') : '—';
+    const volume24hUsd = g.volume24hSats != null ? fmtMarketUsdWholeFromSats(g.volume24hSats, '—') : '—';
     const volume24hBtc = g.volume24hSats != null ? fmtMarketBtc(g.volume24hSats) : '—';
-    const volumeUsd = g.volumeSats != null ? fmtMarketUsdWholeFromSats(g.volumeSats, '$0') : '—';
+    const volumeUsd = g.volumeSats != null ? fmtMarketUsdWholeFromSats(g.volumeSats, '—') : '—';
     const volumeBtc = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : '—';
     const transfers = Number(a.transfer_count || 0);
     return `
@@ -34549,7 +34566,7 @@ function renderMarketAssetHeader(assetId, rows) {
       <div>
         <div class="market-asset-stats">
           <div><span>Price</span><strong class="market-sats-price">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(priceUsd || 'no USD quote')}</small></div>
-          <div><span>24h Volume</span><strong>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '$0') : '—')}</strong><small>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
+          <div><span>24h Volume</span><strong>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Market Cap</span><strong>${escapeHtml(mcapUsd)}</strong><small>${escapeHtml(mcapBtc)}</small></div>
           <div><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
         </div>
