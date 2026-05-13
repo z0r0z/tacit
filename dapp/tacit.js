@@ -31870,6 +31870,151 @@ async function fetchMarketData() {
   return { assets, listings };
 }
 
+// ============== AUTO-FULFIL DAEMON ==============
+// Closes the "maker must come back online" gap on atomic intents. While
+// enabled, this polls the market periodically and auto-fulfils any claim
+// landed on one of the user's intent listings (or on intents created
+// indirectly via fulfilBidIntent during sweep-sell). The user posted the
+// intent at a price they accepted; if a buyer commits proof-of-funds via
+// a claim, fulfilling is non-controversial — no per-claim decision needed.
+//
+// Hard constraints:
+//   • Wallet must be UNLOCKED. fulfilAxferIntent calls ensurePrivkey, which
+//     would prompt for biometric/passphrase. A daemon can't prompt; on a
+//     locked wallet we just skip the cycle and try again next tick. The
+//     toggle stays ON; first user interaction unlocks the wallet and the
+//     next poll succeeds.
+//   • Cancelled unlock = explicit user "stop" signal. Daemon disables
+//     itself so we don't pester. User must re-enable manually.
+//   • State persists across reloads via localStorage. The init bootstrap
+//     restarts the daemon if the flag was on at last close.
+const _AUTO_FULFIL_KEY = 'tacit-auto-fulfil-v1';
+const _AUTO_FULFIL_POLL_MS = 20 * 1000;
+let _autoFulfilEnabled = false;
+let _autoFulfilTimer = null;
+let _autoFulfilPolling = false;
+const _autoFulfilStatus = { lastPollAt: 0, armed: 0, lastFulfilAt: 0, lastError: null };
+const _autoFulfilRecentlyDone = new Set();  // intent_id → skip on next polls (~10 min)
+function _loadAutoFulfilFlag() {
+  try { return localStorage.getItem(_AUTO_FULFIL_KEY) === '1'; } catch { return false; }
+}
+function _saveAutoFulfilFlag(on) {
+  try { localStorage.setItem(_AUTO_FULFIL_KEY, on ? '1' : '0'); } catch {}
+}
+function _isAutoFulfilEnabled() { return _autoFulfilEnabled; }
+function startAutoFulfilDaemon() {
+  if (_autoFulfilTimer) return;
+  _autoFulfilEnabled = true;
+  _saveAutoFulfilFlag(true);
+  _autoFulfilTimer = setInterval(_autoFulfilPollOnce, _AUTO_FULFIL_POLL_MS);
+  _autoFulfilPollOnce();  // fire immediately rather than waiting one tick
+  _renderAxintentAutoFulfilStatus();
+}
+function stopAutoFulfilDaemon() {
+  if (_autoFulfilTimer) { clearInterval(_autoFulfilTimer); _autoFulfilTimer = null; }
+  _autoFulfilEnabled = false;
+  _saveAutoFulfilFlag(false);
+  _renderAxintentAutoFulfilStatus();
+}
+async function _autoFulfilPollOnce() {
+  if (_autoFulfilPolling || !_autoFulfilEnabled || !WORKER_BASE) return;
+  // Locked wallet → can't sign. Skip this cycle silently; the toggle stays
+  // on and the next poll will pick up automatically after unlock.
+  if (!wallet?.priv) {
+    _autoFulfilStatus.lastPollAt = Date.now();
+    _autoFulfilStatus.armed = 0;
+    _renderAxintentAutoFulfilStatus();
+    return;
+  }
+  _autoFulfilPolling = true;
+  try {
+    let data;
+    try { data = await fetchMarketData(); }
+    catch (e) {
+      _autoFulfilStatus.lastPollAt = Date.now();
+      _autoFulfilStatus.lastError = String(e?.message || e);
+      _renderAxintentAutoFulfilStatus();
+      return;
+    }
+    const myPubHex = bytesToHex(wallet.pub);
+    const candidates = (data.listings || []).filter(l =>
+      l.kind === 'intent' &&
+      l.maker_pubkey === myPubHex &&
+      l.claim &&
+      !l.fulfilment_pending &&
+      !_autoFulfilRecentlyDone.has(l.intent_id)
+    );
+    _autoFulfilStatus.armed = candidates.length;
+    _autoFulfilStatus.lastPollAt = Date.now();
+    _autoFulfilStatus.lastError = null;
+    _renderAxintentAutoFulfilStatus();
+    for (const l of candidates) {
+      const aid = l._asset?.asset_id;
+      const iid = l.intent_id;
+      if (!aid || !iid) continue;
+      try {
+        // Re-fetch FRESH intent+claim state; the listings snapshot may have
+        // lagged the worker (another tab fulfilled, or the bidder cancelled
+        // their claim already). Avoid signing fulfilments we don't need.
+        const r = await fetch(withNet(ATOMIC_INTENTS_URL(aid)));
+        const jj = await r.json().catch(() => ({}));
+        const fresh = (jj.intents || []).find(x => x.intent_id === iid);
+        if (!fresh || !fresh.claim || fresh.fulfilment_pending) continue;
+        await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent: fresh, claim: fresh.claim });
+        _autoFulfilStatus.lastFulfilAt = Date.now();
+        _autoFulfilRecentlyDone.add(iid);
+        // Self-clear from the dedupe set after the claim TTL window has
+        // passed in worst case — if the bidder doesn't Take and the claim
+        // expires, a future claim on the same intent re-arms it.
+        setTimeout(() => _autoFulfilRecentlyDone.delete(iid), 10 * 60 * 1000);
+        const ticker = l._asset?.ticker || 'asset';
+        const takerShort = shorten(fresh.claim.taker_pubkey, 6);
+        toast(`Auto-fulfilled ${escapeHtml(ticker)} claim · taker ${escapeHtml(takerShort)} can now Take`, 'success', 5000);
+        invalidateMarketCache();
+        _renderAxintentAutoFulfilStatus();
+      } catch (e) {
+        // User cancelled the unlock prompt → they explicitly don't want
+        // to sign right now. Disable the daemon so we don't keep
+        // prompting. User can re-enable when ready.
+        if (isUnlockCancelled(e)) {
+          stopAutoFulfilDaemon();
+          toast('Auto-fulfil disabled — unlock was cancelled. Re-enable from any asset page.', '');
+          return;
+        }
+        console.warn('auto-fulfil failed for', iid, e?.message || e);
+        _autoFulfilStatus.lastError = String(e?.message || e);
+        _renderAxintentAutoFulfilStatus();
+      }
+    }
+  } finally {
+    _autoFulfilPolling = false;
+  }
+}
+// Re-paint every visible auto-fulfil toggle/status pill. Toggles live in
+// the bids section header of every asset page; the function walks them
+// all in case the user has multiple asset pages stacked in DOM (browse
+// back-button history) and updates all in one pass.
+function _renderAxintentAutoFulfilStatus() {
+  const all = document.querySelectorAll('[data-act="auto-fulfil-toggle"]');
+  for (const btn of all) {
+    if (_autoFulfilEnabled) {
+      btn.style.background = '#0a8f43';
+      btn.style.borderColor = '#0a7d3a';
+      btn.style.color = '#fff';
+      btn.textContent = _autoFulfilStatus.armed > 0
+        ? `🤖 Auto-fulfil: ON (${_autoFulfilStatus.armed} armed)`
+        : `🤖 Auto-fulfil: ON`;
+      btn.title = `Auto-fulfilling claims on your atomic-intent listings. Last poll ${_autoFulfilStatus.lastPollAt ? Math.round((Date.now() - _autoFulfilStatus.lastPollAt) / 1000) + 's ago' : 'pending'}. Click to disable.`;
+    } else {
+      btn.style.background = 'transparent';
+      btn.style.borderColor = 'var(--ink-faint)';
+      btn.style.color = 'var(--ink)';
+      btn.textContent = '🤖 Auto-fulfil: OFF';
+      btn.title = 'Stay online: while enabled, this tab auto-fulfils any claim landed on your atomic-intent listings so settlement doesn\'t wait for you to come back. Wallet must be unlocked. Click to enable.';
+    }
+  }
+}
+
 // Background liveness prune: dispatched right after applyMarketFilters
 // renders. The worker doesn't track UTXO spentness (constant chain polling
 // per listing would be expensive), so without this pass takers would see
@@ -33160,6 +33305,7 @@ function renderMarketBidsLadderHTML(asset) {
           <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;margin-left:4px;">· signed offers, no sats locked until filled</span>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button data-act="auto-fulfil-toggle" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">🤖 Auto-fulfil: OFF</button>
           <button data-act="market-sweep-buy" data-aid="${aid}" type="button" title="Buy a target amount immediately by sweeping the asks ladder. Walks cheapest-first under your price cap; each fill is one Bitcoin tx. Trustless (preauth Instant listings only)." style="font-size:11px;padding:4px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;">⚡ Sweep buy</button>
           <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell into the bids ladder by sweeping highest-priced bids first. Each fill publishes an atomic intent — settlement awaits each bidder's Take (typically 1-30 min). Trustless." style="font-size:11px;padding:4px 10px;background:#b8341d;border:1px solid #9b2a16;color:#fff;font-weight:600;">⚡ Sweep sell</button>
           <button data-act="market-bid-place" data-aid="${aid}" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">+ Place a bid on ${ticker}</button>
@@ -33448,6 +33594,30 @@ async function populateMarketBidsLadder(scope, asset) {
   _wireMarketBidPlace(section, asset);
   _wireMarketSweepBuy(section, asset);
   _wireMarketSweepSell(section, asset);
+  _wireAutoFulfilToggle(section);
+}
+
+// Toggle wireup. Single click = enable/disable. Paints the current state
+// onto the button on every bids-ladder render so a fresh asset page picks
+// up whatever the daemon is currently doing (e.g., armed-count updates
+// arrive automatically without the user toggling).
+function _wireAutoFulfilToggle(section) {
+  const btn = section.querySelector('[data-act="auto-fulfil-toggle"]');
+  if (!btn) return;
+  btn.onclick = () => {
+    if (_isAutoFulfilEnabled()) {
+      stopAutoFulfilDaemon();
+      toast('Auto-fulfil disabled. Your atomic-intent claims will wait until you click Fulfil manually.', '');
+    } else {
+      if (!wallet?.priv) {
+        toast('Unlock your wallet first — auto-fulfil signs claim responses with your privkey.', 'error');
+        return;
+      }
+      startAutoFulfilDaemon();
+      toast('Auto-fulfil enabled. While this tab stays open, claims on your atomic-intent listings are auto-signed.', 'success', 6000);
+    }
+  };
+  _renderAxintentAutoFulfilStatus();
 }
 
 // Sweep buy: limit-buy a target amount by walking the asks ladder
@@ -37111,6 +37281,13 @@ async function init() {
   // consumers so those get first crack at their hashes (both self-clear
   // when they match, leaving the URL clean for a tab-deeplink to follow).
   _consumeTabUrlHash();
+  // Auto-fulfil bootstrap. If the user enabled the daemon in a prior
+  // session, restart it now that the wallet is initialized. The daemon
+  // itself handles the locked-wallet case (skips quietly until unlock);
+  // we don't need to wait for unlock here.
+  if (_loadAutoFulfilFlag()) {
+    try { startAutoFulfilDaemon(); } catch (e) { console.warn('auto-fulfil bootstrap failed:', e); }
+  }
   // Best-effort recovery: if a previous publishAxferIntent call broadcast a
   // commit tx but the worker POST never landed (indexer race, network blip,
   // worker outage), the body was persisted to localStorage. Re-POST it now
