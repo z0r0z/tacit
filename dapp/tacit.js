@@ -32068,16 +32068,61 @@ function applyMarketFilters() {
     : '';
   // Asks-section header so the orderbook reads bids-on-top / asks-below.
   // Trust hint clarifies that asks span both ⚡ atomic (trustless settlement)
-  // and OTC opening/range (counterparty trust); per-tile badges still show the
+  // and OTC opening/range (counterparty trust); per-row badges still show the
   // mode for each individual offer.
   const asksHeaderHtml = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;"><strong>Asks · ${rows.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· sellers offering tokens for sats · ${$('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first'} (sort dropdown)</span></div>`;
+  // Quick-buy CTA: surfaces the cheapest trustless ask (preauth first since
+  // it's one-click "Buy"; atomic intent second since it's the same trust
+  // profile but takes 3 steps) so a user with no trading muscle memory has
+  // an obvious primary action above the orderbook. Skipped when the cheapest
+  // trustless option belongs to the user (can't buy your own listing) or
+  // when no trustless option exists at all (OTC-only markets).
+  const _quickBuyCtaHtml = (() => {
+    const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
+    const preauthAsks = rows.filter(l => l.kind === 'preauth' && l.seller_pubkey !== myPub);
+    const intentAsks  = rows.filter(l => l.kind === 'intent'  && l.maker_pubkey  !== myPub && !l.claim);
+    const _unitOf = (l) => {
+      const a = l._asset || {};
+      const d = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+      const amt = l.kind === 'preauth' ? (l.asset_opening?.amount) : l.amount;
+      const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+      return unitPriceSats(ps, BigInt(amt || 0), d);
+    };
+    const sortByUnit = (arr) => arr
+      .map(l => ({ l, u: _unitOf(l) }))
+      .filter(x => Number.isFinite(x.u) && x.u > 0)
+      .sort((x, y) => x.u - y.u);
+    const bestPreauth = sortByUnit(preauthAsks)[0];
+    const bestIntent  = sortByUnit(intentAsks)[0];
+    const pick = bestPreauth || bestIntent;
+    if (!pick) return '';
+    const l = pick.l;
+    const a = l._asset || {};
+    const d = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    const amt = l.kind === 'preauth' ? (l.asset_opening?.amount) : l.amount;
+    const ps  = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+    const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
+    const ticker = a.ticker || '?';
+    const amtStr = fmtAssetAmount(BigInt(amt || '0'), d);
+    const _btcUsd = _cachedBtcUsd();
+    const _usdStr = _btcUsd ? fmtSatsAsUsd(ps, _btcUsd) : null;
+    const _usdTail = _usdStr ? ` · <span style="opacity:0.85;">${escapeHtml(_usdStr)}</span>` : '';
+    const _kindLabel = l.kind === 'preauth' ? 'instant' : 'atomic';
+    const _kindTip   = l.kind === 'preauth'
+      ? 'Cheapest preauth (instant) ask — one Bitcoin tx, no claim window, no fulfilment step. Trustless.'
+      : 'Cheapest atomic intent — 3-step claim/fulfil/take flow, no counterparty trust required.';
+    const _btnAct = l.kind === 'preauth' ? 'quick-buy-preauth' : 'quick-buy-intent';
+    const _ridAttr = l.kind === 'preauth' ? `data-sid="${escapeHtml(l.sale_id || '')}"` : `data-iid="${escapeHtml(l.intent_id || '')}"`;
+    return `<button data-act="${_btnAct}" data-aid="${escapeHtml(safeAid)}" ${_ridAttr} data-price="${ps}" data-ticker="${escapeHtml(ticker)}" data-amount="${escapeHtml(String(amt || '0'))}" data-dec="${d}" data-expiry="${Number(l.expiry || 0)}" title="${escapeHtml(_kindTip)}" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:10px 14px;margin-bottom:10px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-size:13px;cursor:pointer;font-weight:600;"><span>Buy ${escapeHtml(amtStr)} ${escapeHtml(ticker)} for ${ps.toLocaleString()} sats${_usdTail}</span><span style="opacity:0.9;font-size:10px;background:rgba(255,255,255,0.18);padding:2px 6px;border-radius:2px;letter-spacing:0.04em;">⚡ ${_kindLabel}</span></button>`;
+  })();
   list.innerHTML =
     assetHeaderHtml +
     statsHtml +
     bidsLadderHtml +
+    _quickBuyCtaHtml +
     asksHeaderHtml +
     noAtomicHint +
-    `<div id="market-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;"></div>`;
+    `<div id="market-grid" style="display:flex;flex-direction:column;gap:0;border:1px solid var(--ink);background:var(--bg);"></div>`;
   bindMarketAssetHeader(list);
   populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
   populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
@@ -32096,9 +32141,13 @@ function applyMarketFilters() {
                  : l.amount;
     const priceSatsRaw = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
     const tile = document.createElement('div');
-    tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);';
+    // Row-style ladder layout (matches the bids ladder). Each row is a single
+    // line on wide viewports and wraps gracefully on narrow ones. Border
+    // between rows comes from `border-top` on every row, plus the parent
+    // container's outer border — gives a clean orderbook table feel.
+    tile.style.cssText = 'display:flex;align-items:center;gap:10px;padding:8px 10px;border-top:1px solid var(--ink-faint);flex-wrap:wrap;font-size:12px;';
     // Stable per-listing key so the background liveness prune can target
-    // this tile by selector when its UTXO turns out to be spent on-chain.
+    // this row by selector when its UTXO turns out to be spent on-chain.
     tile.dataset.listingKey = l.kind === 'opening'
       ? `opening:${l.txid}:${l.vout | 0}`
       : l.kind === 'intent'
@@ -32106,16 +32155,16 @@ function applyMarketFilters() {
         : l.kind === 'preauth'
           ? `preauth:${l.sale_id}`
           : `range:${a.asset_id}:${l.owner_pubkey || ''}`;
-    // Composite kind+trust badge. Both atomic-intent and preauth-sale are
-    // trustless; the distinction is whether the seller must come back online
-    // (atomic intent requires fulfilment after a buyer claims; instant does not).
+    // Compact kind+trust chip — same per-mode colors, smaller footprint so
+    // a row of badges + price + amount + total + action fits one line on
+    // a typical desktop viewport. Tooltips preserve the full explanation.
     const kindTrustBadge = l.kind === 'intent'
-      ? `<span style="display:inline-block;padding:2px 8px;background:#7d4ff7;color:#fff;font-size:10px;letter-spacing:0.04em;border-radius:2px;cursor:help;" title="Atomic intent — confidential token transfer + BTC payment close in one Bitcoin tx. No counterparty trust required. Seller must come back online to fulfil after a buyer claims.">⚡ atomic</span>`
+      ? `<span style="flex:0 0 auto;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Atomic intent — confidential token transfer + BTC payment close in one Bitcoin tx. No counterparty trust required. Seller must come back online to fulfil after a buyer claims.">⚡ atomic</span>`
       : l.kind === 'preauth'
-        ? `<span style="display:inline-block;padding:2px 8px;background:#0a8f43;color:#fff;font-size:10px;letter-spacing:0.04em;border-radius:2px;cursor:help;" title="Instant listing (SPEC §5.7.8) — seller signed once at listing time, buyer completes settlement alone via ECDH-derived recipient blinding. No counterparty trust required, no seller-online step. Discloses the listed UTXO's amount + blinding.">⚡ instant</span>`
+        ? `<span style="flex:0 0 auto;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Instant listing (SPEC §5.7.8) — seller signed once at listing time, buyer completes settlement alone via ECDH-derived recipient blinding. No counterparty trust required, no seller-online step. Discloses the listed UTXO's amount + blinding.">⚡ instant</span>`
         : l.kind === 'range'
-          ? `<span style="display:inline-block;padding:2px 8px;background:#b8651d;color:#fff;font-size:10px;letter-spacing:0.04em;border-radius:2px;cursor:help;" title="Range-disclosed OTC — maker proved balance ≥ amount via bulletproof, exact balance hidden. Off-chain settlement; counterparty trust required.">⚠ OTC range</span>`
-          : `<span style="display:inline-block;padding:2px 8px;background:#b8651d;color:#fff;font-size:10px;letter-spacing:0.04em;border-radius:2px;cursor:help;" title="Opening OTC — maker published the exact (amount, blinding) opening. Off-chain settlement; counterparty trust required.">⚠ OTC opening</span>`;
+          ? `<span style="flex:0 0 auto;padding:1px 6px;background:#b8651d;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Range-disclosed OTC — maker proved balance ≥ amount via bulletproof, exact balance hidden. Off-chain settlement; counterparty trust required.">⚠ OTC range</span>`
+          : `<span style="flex:0 0 auto;padding:1px 6px;background:#b8651d;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Opening OTC — maker published the exact (amount, blinding) opening. Off-chain settlement; counterparty trust required.">⚠ OTC opening</span>`;
     // Tile action surface: split into a status line (passive state) and an
     // action row (primary CTA + optional secondary). Sentences-inside-disabled-
     // buttons are status, not action — so they live above the row in muted
@@ -32184,11 +32233,19 @@ function applyMarketFilters() {
         secondaryAction = `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing without buying it: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Safe to call as many times as you want." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" aria-label="Verify listing">verify</button>`;
       }
     }
-    const statusRow = statusLine
-      ? `<div class="muted" style="margin-top:8px;font-size:11px;">${statusLine}</div>`
+    // Row-format buttons: shrink the per-row button to chip size, matching
+    // the bids ladder's row styling. Primary action keeps its color
+    // affordance; secondary is compact and muted.
+    const _shrinkBtn = (html) => html
+      .replace(/style="flex:1;font-size:11px;"/g, 'style="font-size:10px;padding:3px 8px;"')
+      .replace(/font-size:10px;padding:4px 8px;/g, 'font-size:10px;padding:3px 8px;');
+    const primaryActionRow    = _shrinkBtn(primaryAction);
+    const secondaryActionRow  = _shrinkBtn(secondaryAction);
+    const actionRow = (primaryActionRow || secondaryActionRow)
+      ? `<div style="flex:0 0 auto;display:flex;gap:4px;">${primaryActionRow}${secondaryActionRow}</div>`
       : '';
-    const actionRow = (primaryAction || secondaryAction)
-      ? `<div style="margin-top:10px;display:flex;gap:6px;">${primaryAction}${secondaryAction}</div>`
+    const statusRow = statusLine
+      ? `<span class="muted" style="flex:0 0 auto;font-size:10px;">${statusLine}</span>`
       : '';
     // Unit price: sats per whole token, accounting for decimals. For range
     // listings the threshold is a *minimum* delivery amount, so this number
@@ -32197,26 +32254,34 @@ function applyMarketFilters() {
     const unit = unitPriceSats(priceSatsRaw, BigInt(amount || 0), dec);
     const unitStr = unit != null
       ? `${l.kind === 'range' ? '≤ ' : ''}${fmtUnitPriceSats(unit)} sats/${escapeHtml(a.ticker || 'token')}`
-      : '';
+      : '— sats/—';
     const listedRel = relativeAge(l.listed_at || l.created_at);
     const recencyLine = listedRel
-      ? `listed ${escapeHtml(listedRel)} ago · expires ${expIso}`
-      : `expires ${expIso}`;
-    // USD suffix on the price line — decorative anchor for sats-illiterate
+      ? `${escapeHtml(listedRel)} ago`
+      : '';
+    // USD suffix on the total — decorative anchor for sats-illiterate
     // traders. Reads sync cache; absent when the oracle hasn't filled yet.
     const _tileBtcUsd = _cachedBtcUsd();
     const _tileUsdStr = _tileBtcUsd ? fmtSatsAsUsd(priceSatsRaw, _tileBtcUsd) : null;
-    const _tileUsdTail = _tileUsdStr ? ` <span class="muted" style="font-size:11px;font-weight:normal;">· ${escapeHtml(_tileUsdStr)}</span>` : '';
-    // Ticker, asset_id, network, and ticker-collision state are already shown
-    // in the asset-detail header above; we don't repeat them on each tile.
+    const _tileUsdTail = _tileUsdStr ? ` · <span style="color:#0a7d3a;">${escapeHtml(_tileUsdStr)}</span>` : '';
+    // Row layout (left → right):
+    //   chip · unit price · amount + ticker · total sats + USD · meta (recency · maker) · status · action
+    // The middle three (price/amount/total) take fixed-ish slots; meta flexes
+    // and is hidden on narrow widths so the action button always stays visible.
+    const minPrefix = l.kind === 'preauth' ? ' min' : '';
+    const rangePrefix = l.kind === 'range' ? '≥ ' : '';
+    const _whoLabel = l.kind === 'preauth' ? 'seller' : 'maker';
+    const _whoAddr = shorten(l.maker_address || l.seller_payout_address || '', 5);
+    const _metaBits = [];
+    if (recencyLine) _metaBits.push(recencyLine);
+    if (_whoAddr) _metaBits.push(`${_whoLabel} <span class="mono-box inline" style="font-size:9px;">${escapeHtml(_whoAddr)}</span>`);
+    _metaBits.push(`exp ${expIso}`);
     tile.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">
-        <div>${kindTrustBadge}</div>
-        <div style="font-size:11px;" class="muted">${recencyLine}</div>
-      </div>
-      <div style="margin-top:6px;font-size:18px;">${l.kind === 'range' ? '<span title="Range-disclosed listing — maker proved their balance ≥ this amount via a bulletproof, without revealing the exact balance." style="cursor:help;">≥</span> ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span style="font-size:11px;" class="muted">${escapeHtml(a.ticker || '')}</span></div>
-      <div style="margin-top:4px;font-size:14px;color:#0a8f43;"><strong>${priceSatsRaw.toLocaleString()} sats${l.kind === 'preauth' ? ' min' : ''}</strong>${_tileUsdTail}${unitStr ? `<span class="muted" style="font-size:11px;margin-left:6px;">· ${unitStr}</span>` : ''}</div>
-      <div style="margin-top:8px;font-size:10px;" class="muted">${l.kind === 'preauth' ? 'seller' : 'maker'}: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || l.seller_payout_address || '', 6))}</span></div>
+      ${kindTrustBadge}
+      <span style="flex:0 0 auto;font-family:var(--mono);min-width:90px;"><strong>${escapeHtml(unitStr)}</strong></span>
+      <span style="flex:0 0 auto;min-width:80px;">${rangePrefix}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))} <span class="muted" style="font-size:10px;">${escapeHtml(a.ticker || '')}</span></span>
+      <span style="flex:0 0 auto;color:#0a8f43;min-width:100px;"><strong>${priceSatsRaw.toLocaleString()} sats${minPrefix}</strong>${_tileUsdTail}</span>
+      <span style="flex:1 1 auto;min-width:0;font-size:10px;color:var(--ink-mid);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_metaBits.join(' · ')}</span>
       ${statusRow}
       ${actionRow}`;
     frag.appendChild(tile);
@@ -32251,6 +32316,15 @@ function applyMarketFilters() {
   });
   grid.querySelectorAll('button[data-act="market-cancel-preauth"]').forEach(btn => {
     btn.onclick = async () => marketCancelPreauthHandler(btn);
+  });
+  // Quick-buy CTA above the grid uses the same take-preauth / claim-intent
+  // handlers as the per-row buttons. Wire on the list scope (not grid)
+  // because the CTA is rendered as a sibling above #market-grid.
+  list.querySelectorAll('button[data-act="quick-buy-preauth"]').forEach(btn => {
+    btn.onclick = async () => marketTakePreauthHandler(btn);
+  });
+  list.querySelectorAll('button[data-act="quick-buy-intent"]').forEach(btn => {
+    btn.onclick = async () => marketClaimIntentHandler(btn);
   });
 }
 
@@ -32523,10 +32597,11 @@ function renderMarketAssetHeader(assetId, rows) {
   // Show a prominent "List this asset" CTA if the user already holds it.
   // Uses cached holdings — no forced rescan. If holdings cache is empty
   // (first visit) the button is hidden; user can still list via Holdings tab.
-  // The click handler jumps to Holdings + auto-opens the list-preauth form.
+  // The click handler opens an in-page Place Ask form below the header (no
+  // tab bounce). _wireMarketAskPlace mounts the form into [data-market-ask-form].
   const userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(safeAid));
   const listCtaHtml = userHoldsAsset
-    ? `<button class="primary" data-act="market-quick-list-preauth" data-aid="${escapeHtml(safeAid)}" title="You hold this asset — list one of your UTXOs for sale via an Instant listing. Opens the Holdings tab with the form pre-expanded." style="font-size:11px;padding:6px 10px;flex-shrink:0;background:#0a8f43;border-color:#0a7d3a;color:#fff;">+ List for sale</button>`
+    ? `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" title="You hold this asset — list one of your UTXOs for sale via an Instant listing (signed once at listing time, buyer completes settlement)." style="font-size:11px;padding:6px 10px;flex-shrink:0;background:#0a8f43;border-color:#0a7d3a;color:#fff;">+ List for sale</button>`
     : '';
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
@@ -32548,6 +32623,13 @@ function renderMarketAssetHeader(assetId, rows) {
        </div>`
     : '';
 
+  // In-page Place Ask form host. Mounted empty by default; populated by
+  // _wireMarketAskPlace when the "+ List for sale" button toggles it open.
+  // Lives directly under the asset header so the CTA's effect is visible
+  // in-place (no tab bounce).
+  const askFormHostHtml = userHoldsAsset
+    ? `<div data-market-ask-form data-aid="${escapeHtml(safeAid)}" style="display:none;margin-bottom:14px;"></div>`
+    : '';
   return breadcrumb + `
     <div data-market-asset-header style="border:1px solid var(--ink);padding:12px;background:var(--bg-warm);margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
       ${imgUrl
@@ -32587,6 +32669,7 @@ function renderMarketAssetHeader(assetId, rows) {
       ${listCtaHtml}
       <button data-act="market-back-browse" title="Back to the asset index" style="font-size:11px;padding:6px 10px;flex-shrink:0;">← All assets</button>
     </div>
+    ${askFormHostHtml}
     ${descriptionBlockHtml}`;
 }
 
@@ -33521,28 +33604,179 @@ function bindMarketAssetHeader(scope) {
     try { await navigator.clipboard.writeText(copyEl.dataset.aid); toast('Asset ID copied', 'success'); }
     catch { /* clipboard blocked */ }
   };
-  // "+ List for sale" jumps to Holdings tab, scrolls the matching asset card
-  // into view, and triggers its list-preauth button. The Holdings tab's render
-  // re-runs on every tab activation, so we defer with a microtask + retry to
-  // catch the case where the card hasn't been laid out yet.
-  scope.querySelectorAll('[data-act="market-quick-list-preauth"]').forEach(btn => {
+  // "+ List for sale" opens an in-page Place Ask form below the asset header.
+  // Toggles open/closed on repeat clicks. Falls back to the Holdings-tab
+  // bounce flow only if the holdings cache is missing the asset (race
+  // condition: header was rendered against stale data and user just lost
+  // the UTXO between renders).
+  scope.querySelectorAll('[data-act="market-ask-place"]').forEach(btn => {
     btn.onclick = (ev) => {
       ev.preventDefault();
       const aid = btn.dataset.aid;
-      const holdingsTab = $('.tab[data-tab="holdings"]');
-      if (holdingsTab) holdingsTab.click();
-      const triggerList = (attempt = 0) => {
-        const target = document.querySelector(`button[data-act="list-preauth"][data-aid="${CSS.escape(aid)}"]`);
-        if (target) {
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          target.click();
-          return;
-        }
-        if (attempt < 20) setTimeout(() => triggerList(attempt + 1), 100);
-      };
-      setTimeout(triggerList, 50);
+      const formHost = scope.querySelector(`[data-market-ask-form][data-aid="${CSS.escape(aid)}"]`);
+      if (!formHost) {
+        // Form host not in DOM (shouldn't happen with current renderer);
+        // fall back to Holdings tab bounce for safety.
+        const holdingsTab = $('.tab[data-tab="holdings"]');
+        if (holdingsTab) holdingsTab.click();
+        return;
+      }
+      if (formHost.dataset.open === '1') {
+        formHost.dataset.open = '';
+        formHost.style.display = 'none';
+        formHost.innerHTML = '';
+        return;
+      }
+      _renderMarketAskForm(formHost, aid);
     };
   });
+}
+
+// Mount an in-page Place Ask form (Instant / preauth listing) into a host
+// element on the asset page. Mirrors the Holdings list-preauth form's
+// fields + submit logic but lives directly under the asset header so the
+// user doesn't have to leave the orderbook view to make a market.
+//
+// Fields: UTXO picker (smallest-first; locked-listing tags greyed),
+// min price (sats), days (1–30). Submit calls publishPreauthSale and
+// re-fetches the market on success.
+function _renderMarketAskForm(formHost, aid) {
+  if (!_holdingsCache?.holdings) {
+    formHost.style.display = 'block';
+    formHost.dataset.open = '1';
+    formHost.innerHTML = `<div class="empty" style="padding:14px;border:1px dashed var(--ink-faint);background:var(--bg);">Holdings haven't been scanned yet. Open Holdings tab once to populate, then come back.</div>`;
+    return;
+  }
+  const target = _holdingsCache.holdings.get(aid);
+  if (!target || !target.utxos?.length) {
+    formHost.style.display = 'block';
+    formHost.dataset.open = '1';
+    formHost.innerHTML = `<div class="empty" style="padding:14px;border:1px dashed var(--ink-faint);background:var(--bg);">You don't have any UTXOs to list for this asset.</div>`;
+    return;
+  }
+  formHost.style.display = 'block';
+  formHost.dataset.open = '1';
+  const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
+  const utxoOpts = sortedUtxos.map((u, idx) =>
+    `<option value="${idx}">${escapeHtml(utxoPickerOptionLabel(u, target))}</option>`,
+  ).join('');
+  formHost.innerHTML = `
+    <div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;">
+      <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">⚡ List ${escapeHtml(target.ticker || 'token')} for sale (Instant)</div>
+      <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:8px;">Sign once at listing time. Any buyer completes settlement alone via ECDH-derived recipient blinding — no fulfilment step from you. Discloses the listed UTXO's (amount, blinding).</div>
+      <label style="font-size:10px;">Pick UTXO to sell ▾ (smallest first; whole UTXO sold atomically)</label>
+      <select data-field="utxo">${utxoOpts}</select>
+      <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
+      <div class="form-row two" style="margin-top:8px;">
+        <div>
+          <label style="font-size:10px;">Min price (sats)</label>
+          <input type="text" inputmode="numeric" data-field="price" value="50000">
+        </div>
+        <div>
+          <label style="font-size:10px;">Expires in (days, 1–30)</label>
+          <input type="number" min="1" max="30" data-field="days" value="7">
+        </div>
+      </div>
+      <div class="form-buttons" style="margin-top:10px;">
+        <button class="primary" data-form-act="publish" style="font-size:11px;">List for sale</button>
+        <button data-form-act="cancel" style="font-size:11px;">Close</button>
+      </div>
+      <div class="error" data-form-error style="margin-top:6px;font-size:11px;"></div>
+      <div class="progress-strip" data-publish-progress style="display:none;margin-top:10px;" aria-live="polite">
+        <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Publish</span></div>
+      </div>
+    </div>`;
+  const errEl = formHost.querySelector('[data-form-error]');
+  const listedTagsP = enrichUtxoPicker(formHost.querySelector('[data-field="utxo"]'), sortedUtxos, target, aid)
+    .then(t => {
+      const statusEl = formHost.querySelector('[data-utxo-picker-status]');
+      if (statusEl) {
+        const blockedCount = Array.from(formHost.querySelectorAll('[data-field="utxo"] option')).filter(o => o.disabled).length;
+        statusEl.textContent = blockedCount
+          ? `${blockedCount} UTXO${blockedCount === 1 ? '' : 's'} locked — already in an active listing/intent (greyed in dropdown)`
+          : '';
+        if (!blockedCount) statusEl.style.display = 'none';
+      }
+      return t;
+    })
+    .catch(() => {
+      const statusEl = formHost.querySelector('[data-utxo-picker-status]');
+      if (statusEl) statusEl.style.display = 'none';
+      return new Map();
+    });
+  formHost.querySelector('[data-form-act="cancel"]').onclick = () => {
+    formHost.style.display = 'none';
+    formHost.dataset.open = '';
+    formHost.innerHTML = '';
+  };
+  formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
+    errEl.textContent = '';
+    const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
+    const u = sortedUtxos[utxoIdx];
+    if (!u) { errEl.textContent = 'pick a UTXO'; return; }
+    const listedTags = await listedTagsP;
+    const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`)
+      || listedTags?.get('__range_active__');
+    if (listedTag && listedTag.severity !== 'soft') {
+      errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
+      return;
+    }
+    if (listedTag && listedTag.severity === 'soft') {
+      if (!confirm(`⚠ ${listedTag.label}\n\nProceed anyway?`)) return;
+    }
+    const minPriceSats = parseInt(formHost.querySelector('[data-field="price"]').value.trim(), 10);
+    if (!Number.isInteger(minPriceSats) || minPriceSats < DUST) {
+      errEl.textContent = `min price must be integer ≥ ${DUST}`;
+      return;
+    }
+    const days = parseInt(formHost.querySelector('[data-field="days"]').value.trim(), 10);
+    if (!Number.isInteger(days) || days < 1 || days > 30) {
+      errEl.textContent = 'days must be 1–30';
+      return;
+    }
+    const expiry = Math.floor(Date.now() / 1000) + days * 86400;
+    if (!confirm(
+      `Publish Instant listing on the Market?\n\n` +
+      `Selling: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} (whole UTXO)\n` +
+      `Min price: ${minPriceSats.toLocaleString()} sats\n` +
+      `Expires: ${days} day${days>1?'s':''}\n\n` +
+      `Discloses the listed UTXO's amount + blinding so any buyer can complete the sale without you online. Other holdings stay confidential.`,
+    )) return;
+    if (!await ensureBurnerBackedUp('Publish Instant listing (signs a sale authorization; no on-chain broadcast)')) {
+      errEl.textContent = 'Back up the in-page privkey first, then retry.';
+      return;
+    }
+    const submitBtn = ev.target;
+    submitBtn.disabled = true; submitBtn.textContent = 'publishing…';
+    const pubStrip = formHost.querySelector('[data-publish-progress]');
+    if (pubStrip) pubStrip.style.display = 'flex';
+    setProgressStrip(pubStrip, 0);
+    await new Promise(r => setTimeout(r, 50));
+    try {
+      const r = await publishPreauthSale({
+        utxoTxid: u.utxo.txid,
+        utxoVout: u.utxo.vout,
+        minPriceSats,
+        expiry,
+        onProgress: (stage) => {
+          if (stage === 'publish-start') setProgressStrip(pubStrip, 1);
+        },
+      });
+      setProgressStrip(pubStrip, 2);
+      toast(`Instant listing ${shorten(r.sale_id, 6)} published ✓`, 'success', 8000);
+      formHost.style.display = 'none';
+      formHost.dataset.open = '';
+      formHost.innerHTML = '';
+      invalidateMarketCache();
+      invalidateHoldingsCache();
+      renderMarket();
+    } catch (e) {
+      submitBtn.disabled = false; submitBtn.textContent = 'List for sale';
+      if (isUnlockCancelled(e)) errEl.textContent = 'Cancelled — nothing was published.';
+      else errEl.textContent = e?.message || String(e);
+    }
+  };
 }
 
 // Hide the ticker-prefix search input when in asset mode — it's redundant
@@ -36607,6 +36841,10 @@ export {
   sighashV0WithType,
   // Buyer/seller flow exports.
   publishPreauthSale, cancelPreauthSale, takePreauthSale, fetchPreauthSale,
+  // §5.7.6 atomic-intent flow exports — used by the signet e2e harness to
+  // drive publish → claim → fulfil → take headlessly without the browser UI.
+  publishAxferIntent, claimAxferIntent, fulfilAxferIntent,
+  fetchAxferFulfilment, takeAxferIntent, cancelAxferIntent,
   deriveAxintentBlindingKeystream, xor32,
   // §5.7.6 on-chain encrypted (amount, blinding) helpers. Exported for parity
   // tests against the test-side mirror, and for any reference implementation
