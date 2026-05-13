@@ -32878,14 +32878,22 @@ function applyMarketFilters() {
     const ticker = a.ticker || '?';
     const decimals = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
-    // Reference price for slippage caps.
-    const lt = a.last_trade;
+    // Reference price for slippage caps + dust filtering. Prefer the
+    // worker's outlier-guarded mark price (the same value the rich
+    // stats strip uses for market cap) since it ignores obvious dust
+    // and fat-finger prints. Falls back to last trade, then floor,
+    // when no mark is available.
     let refUnit = null;
-    if (lt && Number.isInteger(lt.price_sats) && lt.price_sats > 0) {
-      const amt = (() => { try { return BigInt(lt.amount); } catch { return 0n; } })();
-      if (amt > 0n) {
-        const u = unitPriceSats(lt.price_sats, amt, decimals);
-        if (Number.isFinite(u) && u > 0) refUnit = u;
+    const markRaw = Number(a?.mark_price?.unit);
+    if (Number.isFinite(markRaw) && markRaw > 0) refUnit = markRaw;
+    if (refUnit == null) {
+      const lt = a.last_trade;
+      if (lt && Number.isInteger(lt.price_sats) && lt.price_sats > 0) {
+        const amt = (() => { try { return BigInt(lt.amount); } catch { return 0n; } })();
+        if (amt > 0n) {
+          const u = unitPriceSats(lt.price_sats, amt, decimals);
+          if (Number.isFinite(u) && u > 0) refUnit = u;
+        }
       }
     }
     if (refUnit == null) {
@@ -36016,6 +36024,18 @@ function _wireSwapTile(scope) {
     const pct = parseFloat(slipSel?.value || '20');
     return Number.isFinite(pct) ? pct / 100 : 0.20;
   };
+  // Dust floor / outlier ceiling for swap-tile auto-routing. Asks below
+  // 0.2× ref or bids above 5× ref are treated as anomalies (likely
+  // fat-finger or stale listings) and skipped — same thresholds the
+  // worker's outlier guard uses on mark_price. Users can still sweep
+  // outliers manually via Sweep Buy / Sweep Sell which have explicit
+  // price caps. Without these filters, "buy 100 TAC" on a market with
+  // a 0.71 sats/TAC dust ask routes through the dust and hands the
+  // buyer a 984-TAC overshoot, and "sell 100 TAC" through a 5000-sat
+  // outlier bid risks atomic-settlement failure when the buyer's wallet
+  // can't actually cover the inflated commitment.
+  const dustFloorUnit  = (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * 0.2 : 0;
+  const outlierCeilUnit = (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * 5 : Infinity;
   // BUY plan: walk preauth asks cheapest-first; include each ask whose
   // total price fits within the remaining sats budget. Unit-price cap =
   // ref × (1 + slippage). Returns null if no fillable ask under cap.
@@ -36033,7 +36053,7 @@ function _wireSwapTile(scope) {
         const u   = unitPriceSats(ps, amt, decimals);
         return { l, amt, ps, u };
       })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= cap && c.amt > 0n && c.ps > 0)
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= cap && c.u >= dustFloorUnit && c.amt > 0n && c.ps > 0)
       .sort((x, y) => x.u - y.u);
     if (!candidates.length) return null;
     const plan = []; let totalSats = 0; let totalAmt = 0n;
@@ -36065,7 +36085,7 @@ function _wireSwapTile(scope) {
         const u   = unitPriceSats(ps, amt, decimals);
         return { b, amt, ps, u };
       })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floor && c.amt > 0n && c.ps > 0)
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floor && c.u <= outlierCeilUnit && c.amt > 0n && c.ps > 0)
       .sort((x, y) => y.u - x.u);
     if (!candidates.length) return null;
     const plan = []; let totalAmt = 0n; let totalSats = 0;
@@ -36095,7 +36115,7 @@ function _wireSwapTile(scope) {
         const u   = unitPriceSats(ps, amt, decimals);
         return { l, amt, ps, u };
       })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= cap && c.amt > 0n && c.ps > 0)
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= cap && c.u >= dustFloorUnit && c.amt > 0n && c.ps > 0)
       .sort((x, y) => x.u - y.u);
     if (!candidates.length) return null;
     const plan = []; let totalSats = 0; let totalAmt = 0n;
@@ -36127,7 +36147,7 @@ function _wireSwapTile(scope) {
         const u   = unitPriceSats(ps, amt, decimals);
         return { b, amt, ps, u };
       })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floor && c.amt > 0n && c.ps > 0)
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floor && c.u <= outlierCeilUnit && c.amt > 0n && c.ps > 0)
       .sort((x, y) => y.u - x.u);
     if (!candidates.length) return null;
     const plan = []; let totalSats = 0; let totalAmt = 0n;
@@ -37205,6 +37225,16 @@ function _wireMarketBidPlace(section, asset) {
       try { _lastUnit = unitPriceSats(Number(_lastTrade.price_sats), BigInt(_lastTrade.amount), decimals); }
       catch { _lastUnit = null; }
     }
+    // Mark price — outlier-guarded sats/token from the worker. This is
+    // the realistic "fair market" anchor for bid-readout warnings + the
+    // "Match mark price" chip. Falls back to last trade if mark isn't
+    // available yet. Dust-floor detection (best_ask < 0.2× mark) hides
+    // the misleading "Match best ask" chip when the floor is dust.
+    const _markUnitRaw = Number(asset?.mark_price?.unit);
+    const _markUnit = (Number.isFinite(_markUnitRaw) && _markUnitRaw > 0)
+      ? _markUnitRaw
+      : (_lastUnit != null && _lastUnit > 0 ? _lastUnit : null);
+    const _floorIsDust = (_floorUnit != null && _markUnit != null && _floorUnit < _markUnit * 0.2);
     // Best bid — derive from the cached bid-intent ladder (already fetched
     // when the bids panel rendered above this form). Sync read; no fetch.
     // Outlier clamp: a "best bid" anchored on a stale 1000× -above-market
@@ -37247,9 +37277,14 @@ function _wireMarketBidPlace(section, asset) {
     const _usdPerToken = (u) => (_refBtcUsd != null && u != null)
       ? fmtSatsAsUsd(u, _refBtcUsd) : null;
     const _refBits = [];
+    if (_markUnit != null) {
+      const us = _usdPerToken(_markUnit);
+      _refBits.push(`mark <strong>${escapeHtml(fmtUnitPriceSats(_markUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+    }
     if (_floorUnit != null) {
       const us = _usdPerToken(_floorUnit);
-      _refBits.push(`best ask <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+      const dustTag = _floorIsDust ? ' <span style="color:var(--red);">(dust)</span>' : '';
+      _refBits.push(`best ask <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}${dustTag}`);
     }
     if (_lastUnit != null) {
       const us = _usdPerToken(_lastUnit);
@@ -37267,7 +37302,20 @@ function _wireMarketBidPlace(section, asset) {
     // prices we have; rendered as a single row above the inputs so the
     // user doesn't have to do mental sats math for a normal bid.
     const _chipBits = [];
-    if (_floorUnit != null && _floorUnit > 0) _chipBits.push(`<button data-bid-quick="floor" data-unit="${_floorUnit}" type="button" title="Match the cheapest current ask — your bid is one fill away from clearing." style="font-size:10px;padding:3px 8px;">Match best ask</button>`);
+    // Match mark price chip leads when available — it's the outlier-
+    // guarded fair-market reference. Without this, on a dust-floored
+    // market like TAC the "Match best ask" chip would fill 1 sat/TAC,
+    // which is useless.
+    if (_markUnit != null && _markUnit > 0) {
+      _chipBits.push(`<button data-bid-quick="mark" data-unit="${_markUnit}" type="button" title="Match the outlier-guarded mark price — what the asset actually trades at, ignoring obvious dust and fat-finger prints." style="font-size:10px;padding:3px 8px;">Match mark price</button>`);
+    }
+    // Match best ask: only show when the floor is NOT dust. On a
+    // dust-floored market this chip is misleading (would post a 1-sat
+    // bid). Users who genuinely want to chase dust can type the price
+    // manually.
+    if (_floorUnit != null && _floorUnit > 0 && !_floorIsDust) {
+      _chipBits.push(`<button data-bid-quick="floor" data-unit="${_floorUnit}" type="button" title="Match the cheapest current ask — your bid is one fill away from clearing." style="font-size:10px;padding:3px 8px;">Match best ask</button>`);
+    }
     if (_lastUnit != null && _lastUnit > 0)  _chipBits.push(`<button data-bid-quick="last"  data-unit="${_lastUnit}"  type="button" title="Match the most recent atomic settlement price." style="font-size:10px;padding:3px 8px;">Match last trade</button>`);
     if (_bestBidUnit != null && _bestBidUnit > 0) {
       const _bbTip = _bestBidClamped
