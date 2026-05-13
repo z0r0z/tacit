@@ -32290,6 +32290,33 @@ function startMarketLivenessPrune() {
 // invalidates it transitively) to force a re-fetch on the next renderMarket.
 const MARKET_FETCH_TTL_MS = 30 * 1000;
 let _marketFetchedAt = 0;
+// In-flight fetch promise. Deep-link pre-fetch (kicked off at init when
+// the URL points at a market page) AND user-initiated tab renders both
+// consult this — if a fetch is already running, callers await the same
+// promise instead of issuing a duplicate round-trip. Clears on settle
+// (success or failure) so the next caller after the TTL window kicks
+// a fresh one.
+let _marketFetchInFlight = null;
+async function fetchMarketDataDeduped() {
+  if (_marketCache && (Date.now() - _marketFetchedAt) < MARKET_FETCH_TTL_MS) {
+    return _marketCache;
+  }
+  if (_marketFetchInFlight) return _marketFetchInFlight;
+  _marketFetchInFlight = fetchMarketData()
+    .then(data => {
+      if (data) {
+        _marketCache = data;
+        _marketFetchedAt = Date.now();
+      }
+      _marketFetchInFlight = null;
+      return data;
+    })
+    .catch(e => {
+      _marketFetchInFlight = null;
+      throw e;
+    });
+  return _marketFetchInFlight;
+}
 function invalidateMarketCache() { _marketFetchedAt = 0; }
 
 async function renderMarket() {
@@ -32334,8 +32361,11 @@ async function renderMarket() {
   list.innerHTML = '<div class="muted" style="padding:14px;text-align:center;font-style:italic;"><span class="live-dots">loading</span></div>';
   setStatus(status, 'loading', true);
   try {
-    _marketCache = await fetchMarketData();
-    _marketFetchedAt = Date.now();
+    // Deduped fetch: if a deep-link pre-fetch is already in flight from
+    // init, we await the same promise instead of issuing a duplicate
+    // round-trip. _marketCache + _marketFetchedAt get populated inside
+    // fetchMarketDataDeduped on success.
+    await fetchMarketDataDeduped();
     applyMarketFilters();
     setTabBadge('market', _marketCache?.listings?.length || 0);
     // Fire-and-forget: chain-check each listing's UTXO in parallel and
@@ -38412,6 +38442,24 @@ async function init() {
   if (location.protocol === 'file:') {
     const w = document.getElementById('file-protocol-warning');
     if (w) w.style.display = 'block';
+  }
+  // Deep-link pre-fetch: when the URL points at a market page, kick off
+  // fetchMarketData() in parallel with the wallet sync. Without this,
+  // _consumeTabUrlHash (which runs at the END of init, after the wallet's
+  // sat-balance round-trip + autoImportShareLink + claim hash consumer)
+  // is the first point that triggers a market fetch — so a fresh load of
+  // tacit.finance/#tab=market&aid=... waits ~3–5s on the wallet sync
+  // before the market round-trip even starts. With this pre-fetch, the
+  // market data is typically ready by the time renderMarket runs and the
+  // fast-path cache hit fires instead of a second fetch.
+  //
+  // Fire-and-forget: failures are non-fatal (renderMarket will retry on
+  // demand), and the cache lives in module scope so we just populate it
+  // when the promise resolves. No await — wallet init proceeds in parallel.
+  if (location.hash && location.hash.startsWith('#tab=market') && typeof fetchMarketDataDeduped === 'function' && typeof MARKET_URL === 'string' && MARKET_URL) {
+    try {
+      fetchMarketDataDeduped().catch(e => console.warn('[market] deep-link pre-fetch failed:', e?.message || e));
+    } catch {}
   }
   // Restore order is preference-driven: ACTIVE_MODE_KEY records what the user
   // last successfully unlocked, so reloads don't surface a passkey OS prompt
