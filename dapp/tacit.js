@@ -6031,7 +6031,29 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     return false;
   }
   const wit = tx.vin[0].witness;
-  if (!wit || wit.length < 3) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
+  // Witness-missing / empty / very-short cases. mempool.space sometimes
+  // returns a tx whose .vin[0].witness array is empty or 1-2 entries when
+  // the tx was JUST mined and the indexer hasn't finished populating the
+  // witness data — usually fully populated within a few seconds. Treat
+  // this as fetch-failed (transient) rather than invalid so the dapp's
+  // auto-retry pass picks it up cleanly. A genuinely-malformed envelope
+  // would have a 3+-entry witness whose witness[1] fails to decode, and
+  // that path still routes to invalid below.
+  if (!wit || wit.length === 0) {
+    _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED);
+    return false;
+  }
+  if (wit.length < 3) {
+    // Witness present but too short for a tacit envelope (which always has
+    // 3 entries: [sig, envelope_script, control_block]). Either indexer-
+    // partial or a non-tacit spend (e.g. P2WPKH has 2-entry witness).
+    // Either way the UTXO isn't a tacit asset envelope — but if the witness
+    // looks indexer-partial (any length other than the canonical 2 for
+    // P2WPKH) lean toward fetch-failed; otherwise invalid.
+    const looksLikeP2wpkhSpend = wit.length === 2;
+    _markInvalid(validatedSet, validatedReasons, key, looksLikeP2wpkhSpend ? _REASON_INVALID : _REASON_FETCH_FAILED);
+    return false;
+  }
   let env;
   try { env = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { env = null; }
   if (!env) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
@@ -6962,6 +6984,14 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
 // Broadcast handlers explicitly invalidate so the next scan picks up the
 // new state immediately. force=true bypasses the cache (Refresh button).
 let _holdingsCache = null;
+// Sticky "this wallet has ever had assets" flag, scoped to the page session.
+// Stamped to true the first time scanHoldings returns a non-empty result and
+// stays true for the rest of the session. Used by renderHoldings to
+// distinguish "transient zero-UTXO scan" (likely indexer hiccup, surface a
+// retry banner) from "wallet is genuinely fresh" (surface the friendly
+// funding/etch hint). Cleared on lock since the user might be flipping to
+// a different wallet identity for which the assertion doesn't hold.
+let _holdingsEverSeenAssets = false;
 const HOLDINGS_CACHE_TTL_MS = 30 * 1000;
 // Cross-TTL "nothing changed" cache. Keyed by the wallet's UTXO-set signature
 // at last successful scan. When Refresh fires (or the 30s TTL expires) and the
@@ -17877,6 +17907,10 @@ function setupWalletButtons() {
     // unlocking anyway). Stops here; restarts after the next unlock so the
     // maker doesn't drop a 30s polling window.
     try { stopMakerClaimPoller(); } catch {}
+    // Clear the "ever seen assets" sticky so a different wallet identity
+    // (selected after lock + reconnect) doesn't inherit this one's flag
+    // and mis-classify its fresh-scan empty as a hiccup.
+    _holdingsEverSeenAssets = false;
     invalidateHoldingsCache();
     try { renderWalletCard(); } catch {}
     // Re-render only the tabs that show balances; refreshAssetSelect /
@@ -26580,9 +26614,33 @@ async function renderHoldings() {
     ]);
     const arr = [...holdings.values()].sort((a, b) => a.balance < b.balance ? 1 : a.balance > b.balance ? -1 : 0);
     if (!arr.length) {
-      // Funding hint is network-aware: faucet on signet, send-to-address
-      // (or connect-and-fund) on mainnet. The protocol flow is otherwise
-      // identical, but the funding path differs sharply.
+      // Distinguish "wallet is actually empty" from "previous scan had
+      // assets, this one came back empty" (transient indexer hiccup —
+      // /address/X/utxo returned 0 entries despite the wallet holding
+      // value). A treasury wallet seeing "no assets yet" between refreshes
+      // is alarming; that empty state should only show when the wallet
+      // has *never* had assets in this browser session.
+      const hadAssetsBefore = _holdingsEverSeenAssets;
+      if (hadAssetsBefore) {
+        list.innerHTML = `
+          <div class="empty" style="padding:24px;text-align:center;">
+            <div style="font-weight:bold;margin-bottom:6px;">⏳ Scan returned zero UTXOs at your address.</div>
+            <div class="muted" style="font-size:11px;line-height:1.6;margin-bottom:10px;">Likely a transient indexer hiccup — your wallet had assets on the previous scan, so the chain state hasn't actually changed. Click Retry; if the indexer is genuinely down across multiple retries, your assets are still on chain and recoverable.</div>
+            <button type="button" id="btn-holdings-rescan-empty" style="font-size:11px;padding:5px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;">↻ Retry scan</button>
+          </div>`;
+        const btn = document.getElementById('btn-holdings-rescan-empty');
+        if (btn) btn.onclick = async () => {
+          btn.disabled = true;
+          const orig = btn.textContent;
+          btn.textContent = 'rescanning…';
+          try { invalidateHoldingsCache(); await scanHoldings(true); renderHoldings(); }
+          catch (e) { btn.disabled = false; btn.textContent = orig; toast('Retry failed: ' + (e?.message || e), 'error'); }
+        };
+        setStatus('#holdings-status', 'scan returned zero · likely transient');
+        setTabBadge('holdings', 0);
+        return;
+      }
+      // Genuinely fresh wallet — show the funding/etch guidance.
       const fundingHint = NET.name === 'signet'
         ? `Hit the <strong>faucet</strong> for some signet sats, then go to <strong>Etch</strong> to mint your first token`
         : `Fund your wallet (connect Xverse / UniSat / Leather, or send sats to your address from any Bitcoin wallet) and head to <strong>Etch</strong> to mint your first token`;
@@ -26591,6 +26649,9 @@ async function renderHoldings() {
       setTabBadge('holdings', 0);
       return;
     }
+    // Stamp the "ever seen assets" flag so a subsequent zero-result scan
+    // can distinguish hiccup from genuine empty.
+    _holdingsEverSeenAssets = true;
     list.innerHTML = '';
     const ownerPubHex = bytesToHex(wallet.pub);
     // Render helpers — used by the initial skeleton AND by the per-asset
