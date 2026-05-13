@@ -254,12 +254,10 @@ function burnPrefix(network, aid)      { return network === 'signet' ? `burn:${a
 // from `asset:*` so /assets and /petch-assets stay cleanly separable. Pmint
 // keys embed zero-padded (height, tx_index) in the key so KV.list returns
 // canonical chain order — SPEC §5.9 *Cap-overflow ordering* mandates
-// (height, tx_index) as the canonical sort, not (height, txid). The audit
-// caught my v1 mistake of using txid as the tiebreaker (lex order ≠
-// position-in-block); fix #2 plumbs the cron's loop index through and
-// pads it to 6 digits (1M txs/block headroom). Without this, two
-// same-block T_PMINTs picking the last cap slot pick the wrong winner
-// vs SPEC.
+// (height, tx_index) as the canonical sort, not (height, txid). The cron's
+// loop index is plumbed through and padded to 6 digits (1M txs/block
+// headroom). Without this, two same-block T_PMINTs picking the last cap
+// slot would pick the wrong winner vs SPEC.
 function petchKey(network, aid)        { return network === 'signet' ? `petch:${aid}` : `petch:${network}:${aid}`; }
 function petchPrefix(network)          { return network === 'signet' ? 'petch:' : `petch:${network}:`; }
 // Curated "verified" registry. A small set of asset_ids that admin (and
@@ -1780,7 +1778,7 @@ async function handlePinAirdropSnapshot(req, env, cors) {
   // (eth_address, amount) tuples and re-derive the merkle root. None of
   // these are cryptographically anchored — the snapshot is still trust-
   // the-issuer — but having a chain_id + contract + block_height makes the
-  // claim auditable. Audit fix M6.
+  // claim auditable.
   if (body.source_chain_id != null) {
     if (!Number.isInteger(body.source_chain_id) || body.source_chain_id < 0) {
       return jsonResponse({ error: 'source_chain_id must be a non-negative integer (EIP-155 chain id)' }, 400, cors);
@@ -1802,11 +1800,10 @@ async function handlePinAirdropSnapshot(req, env, cors) {
     }
   }
   // Validate every row's shape AND collect the parsed fields so we can
-  // recompute the merkle root in a single pass. The prior 16-row sample let
-  // blobs with bad rows[N] (N≥16) pin successfully; recipient-side validation
-  // would catch them at load time but the issuer had already burned the pin
-  // slot on an unusable blob. Tightened by audit fix M9 and M2 (root
-  // recompute).
+  // recompute the merkle root in a single pass. Sampling only the first
+  // rows would let blobs with bad rows[N] (N≥sample) pin successfully and
+  // burn the issuer's pin slot on an unusable blob — recipient-side
+  // validation catches them at load time but only after the cost.
   const parsedRows = new Array(body.rows.length);
   let summed = 0n;
   for (let i = 0; i < body.rows.length; i++) {
@@ -3939,8 +3936,8 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
   //      no future pmint can ever pass the §5.9 step 4 height-window gate.
   // Anything else — including healthy in-progress fair launches — is NOT
   // authoritative: the snapshot may be momentarily complete but the very next
-  // block can credit more mints. Per issue #31's acceptance criterion,
-  // cumulative_minted etc. are only authoritative when accounting is complete.
+  // block can credit more mints. cumulative_minted etc. are only
+  // authoritative when accounting is complete.
   const capFull = (capAmount != null && creditedAmount === capAmount);
   const windowClosed = (
     Number.isInteger(petch.mint_end_height) && petch.mint_end_height > 0 &&
@@ -3964,24 +3961,15 @@ async function refreshPetchProgress(env, network, aid, tipHeight, petch) {
     updated_at: Math.floor(Date.now() / 1000),
     truncated,
     // Snapshot KV scan completed without hitting its page/key caps. Distinct
-    // from `bootstrapped` (which now requires positive cap-counter finality);
+    // from `bootstrapped` (which also requires positive cap-counter finality);
     // surfaced for consumers that want to distinguish "scan worked end-to-end"
     // from "the cap counter is authoritative".
     snapshot_scan_complete: !truncated && orphanComplete,
     cap_counter_final: capCounterFinal,
     // `bootstrapped` is the cap-counter-authoritativeness signal — true only
     // when both the snapshot scan completed AND the cap counter is final
-    // (capFull or windowClosed). Under the prior weaker definition this was
-    // true for any scan-complete asset, which misled consumers into treating
-    // mid-mint counts as final. Issue #31 acceptance criterion #3.
-    //
-    // schema_version stays at 1 even though the meaning of `bootstrapped`
-    // tightened and new fields (cap_counter_final, snapshot_scan_complete)
-    // were added. The additions are backward-compatible — old consumers ignore
-    // unknown fields, and new consumers reading an old snapshot see
-    // `cap_counter_final = undefined` (falsy, treated as "not final"), which
-    // is the safe default. The cron rewrites every snapshot within one tick
-    // (5 min), so any drift between old and new field meanings is bounded.
+    // (capFull or windowClosed). Consumers should treat mid-mint counts as
+    // non-final until this flag flips.
     bootstrapped: !truncated && orphanComplete && capCounterFinal,
     schema_version: 1,
   };
@@ -4165,8 +4153,8 @@ async function promotePmintOrphans(env, network, { maxOps = 50, assetIdHex = nul
 // Walks the dirty-marker namespace (set by hint POSTs + cron block scan)
 // and recomputes the snapshot for each, capped per-tick so a flurry of
 // new mints across many assets doesn't blow the cron's wall-time budget.
-// Also opportunistically bootstraps assets that have no snapshot yet
-// (e.g. petches created before this code shipped). The MAX_PER_TICK cap
+// Also opportunistically bootstraps assets that have no snapshot yet.
+// The MAX_PER_TICK cap
 // ensures FAIR-scale heavy assets get refreshed in priority order without
 // starving smaller assets — anything not refreshed this tick gets picked
 // up on the next 5-min tick.
@@ -5734,11 +5722,11 @@ function atomicIntentMsg(assetIdHex, intentIdHex, makerPubHex, amountStr, priceS
   ));
 }
 
-// Bumped to v2: message now binds the taker's committed sat UTXO. Without
-// the binding, a third party could replay a captured v1 sig pointing the
-// claim at a different UTXO. Worker enforces value >= price_sats on this
-// UTXO at claim time so a sig over (asset, intent, pub, utxo) attests to
-// "this pubkey controlled funds ≥ price_sats sitting at this outpoint".
+// The claim message binds the taker's committed sat UTXO so a third party
+// can't replay a captured sig at a different UTXO. Worker enforces
+// value >= price_sats on this UTXO at claim time, so a sig over
+// (asset, intent, pub, utxo) attests to "this pubkey controlled funds
+// ≥ price_sats sitting at this outpoint".
 function atomicIntentClaimMsg(assetIdHex, intentIdHex, takerPubHex, takerUtxoTxidHex, takerUtxoVout) {
   const txidBE = reverseBytes(hexToBytes(takerUtxoTxidHex));
   const voutLE = new Uint8Array(4);
@@ -6585,11 +6573,9 @@ const AIRDROP_LIST_PAGE = 1000;     // KV's max per call
 // effectively dead anyway.
 const AIRDROP_CLAIM_TTL_SECONDS = 90 * 24 * 3600;
 // Each returned claim costs one KV.get subrequest. CF Workers paid plan caps
-// at 1000 subrequests per invocation; the prior 10000 cap would deterministically
-// fail once a queue grew past ~1000 entries because we'd attempt 10000 gets in
-// one invocation. The dapp's pull loop paginates via PAGE_GUARD_CAP=16, so a
-// lower per-call cap is invisible in normal use and keeps every pull within
-// the subrequest budget. Tightened by audit fix M1.
+// at 1000 subrequests per invocation; the cap below keeps us comfortably
+// under that ceiling. The dapp's pull loop paginates via PAGE_GUARD_CAP=16,
+// so this per-call cap is invisible in normal use.
 const AIRDROP_LIST_HARD_CAP = 900;  // total per response; bound size + subrequest cost
 
 // Layered daily rate limit for airdrop-claim POST and DELETE. Without this an
@@ -6985,8 +6971,7 @@ async function handleDropAnnounceList(env, network, cors) {
     // recipients on signet don't see mainnet drops in their discovery list
     // (the snapshot-load + sign step would block them anyway via the
     // network-mismatch banner, but surfacing mismatched drops upstream is
-    // confusing UX). Records prior to the network field's introduction
-    // default to signet — matches the legacy KV layout.
+    // confusing UX). Records without a network field default to signet.
     if ((v.network || 'signet') !== network) continue;
     if (v.expires_at && v.expires_at <= now) {
       // Lazy GC: fire-and-forget delete on read. Cheaper than a sweeper cron.
@@ -7431,9 +7416,9 @@ async function scanForEtches(env, network) {
     try { txs = await fetchBlockTxs(env, blockHash, network); }
     catch { break; }
     // Track tx_index alongside the iteration so T_PMINT KV keys can record
-    // the canonical block position (audit fix #2 + SPEC §5.9 ordering).
-    // mempool.space's /block/<hash>/txs endpoint returns txs in block order,
-    // so the array index IS the canonical tx_index.
+    // the canonical block position (SPEC §5.9 ordering). mempool.space's
+    // /block/<hash>/txs endpoint returns txs in block order, so the array
+    // index IS the canonical tx_index.
     let txIndex = -1;
     for (const tx of txs) {
       txIndex++;
@@ -7547,9 +7532,9 @@ async function scanForEtches(env, network) {
         await env.REGISTRY_KV.put(petchKey(network, aid), JSON.stringify(meta));
         found++;
       } else if (decoded.opcode === T_PMINT) {
-        // Permissionless mint event (SPEC §5.9). Cron-side validation block
-        // (audit fix #3 + #4): structurally-valid envelopes pass the decoder
-        // length/opcode checks but the cron must additionally enforce:
+        // Permissionless mint event (SPEC §5.9). Cron-side validation block:
+        // structurally-valid envelopes pass the decoder length/opcode checks
+        // but the cron must additionally enforce:
         //
         //   §5.9 step 1: asset_id == sha256(etch_txid_BE || 0_LE). Without
         //     this an attacker can broadcast a T_PMINT claiming a victim's
@@ -7638,17 +7623,12 @@ async function scanForEtches(env, network) {
         // (≤1 KV.put) instead of 300 times. The end-of-scan loop converts
         // the Set into actual KV writes.
         _dirtyPetchAids.add(expectedAid);
-        // Stale-orphan cleanup is now handled by the dedicated orphan
-        // promoter (promotePmintOrphans, run on every cron tick). The
-        // previous inline `KV.delete(stalePendingKey)` here cost one extra
-        // subrequest per T_PMINT, which on dense fair-launch blocks
-        // (~300 reveals/block on FAIR's first 100 blocks) was enough to
-        // tip the cron past the 1000-subrequest budget mid-block, silently
-        // dropping the tail of T_PMINTs from canonical indexing. Users
-        // whose mints landed in the dropped tail saw "confirmed but not
-        // credited" forever because last_scanned advanced anyway. Removing
-        // the inline delete buys ~300 subrequests/dense-block of headroom
-        // and the orphan promoter still handles legacy cleanup.
+        // Stale-orphan cleanup is delegated to the dedicated orphan
+        // promoter (promotePmintOrphans, run on every cron tick) rather
+        // than inline KV.delete — on dense fair-launch blocks (~300
+        // reveals each), an inline delete per T_PMINT can tip the cron
+        // past the 1000-subrequest budget mid-block and silently drop
+        // the tail of T_PMINTs from canonical indexing.
         found++;
       } else if (decoded.opcode === T_DEPOSIT) {
         // SPEC §5.10. Two payload shapes share opcode 0x29:

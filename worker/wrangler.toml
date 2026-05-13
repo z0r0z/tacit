@@ -18,13 +18,6 @@ crons = ["*/5 * * * *"]
 
 [vars]
 # CORS allowlist (comma-separated). "*" allows any origin.
-# Public production origins only. For local dev, temporarily prepend your
-# dev origins here without committing: e.g.
-#   "http://localhost:8000,http://127.0.0.1:8000,null,<existing list…>"
-# `null` covers file:// loads. Localhost CORS has near-zero security value
-# anyway (the worker's mutating endpoints are signature-gated and the
-# read endpoints serve public data), so keeping the deployed list clean
-# is a hygiene improvement, not a security fix.
 ALLOWED_ORIGINS = "https://tacit.finance,https://www.tacit.finance,https://tacitscan.io,https://www.tacitscan.io,https://tacit-ioq0.onrender.com,https://tacit.wei.is"
 
 # Per-IP /pin uploads per UTC day
