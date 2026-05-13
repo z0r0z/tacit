@@ -6046,7 +6046,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // Fetch CETCH ancestor, confirm mintable, get mint_authority pubkey.
     const etchTxidHex = bytesToHex(dec.etchTxid);
     const etchTx = await fetchTx(etchTxidHex);
-    if (!etchTx?.vin?.[0]?.witness || etchTx.vin[0].witness.length < 3) { validatedSet.set(key, false); return false; }
+    if (!etchTx) { _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false; }
+    if (!etchTx.vin?.[0]?.witness || etchTx.vin[0].witness.length < 3) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
     let etchEnv;
     try { etchEnv = decodeEnvelopeScript(hexToBytes(etchTx.vin[0].witness[1])); } catch { etchEnv = null; }
     if (!etchEnv || etchEnv.opcode !== T_CETCH) { validatedSet.set(key, false); return false; }
@@ -6070,7 +6071,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // a different (commit, reveal) pair would still verify and let an attacker
     // plant a "valid" supply UTXO at any address.
     const mintCommitTx = await fetchTx(tx.vin[0].txid);
-    if (!mintCommitTx?.vin?.[0]) { validatedSet.set(key, false); return false; }
+    if (!mintCommitTx) { _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false; }
+    if (!mintCommitTx.vin?.[0]) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
     const ci = mintCommitTx.vin[0];
     const mintAnchor = concatBytes(
       reverseBytes(hexToBytes(ci.txid)),
@@ -6153,7 +6155,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     for (let i = 1; i < tx.vin.length; i++) {
       const inp = tx.vin[i];
       const parent = await fetchTx(inp.txid);
-      const pwit = parent?.vin?.[0]?.witness;
+      if (!parent) { markAll(Math.max(N, 1), false, _REASON_FETCH_FAILED); return false; }
+      const pwit = parent.vin?.[0]?.witness;
       if (!pwit || pwit.length < 3) { markAll(Math.max(N, 1), false); return false; }
       let parentEnv;
       try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
@@ -6220,7 +6223,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     for (let i = 1; i < 1 + aic; i++) {
       const inp = tx.vin[i];
       const parent = await fetchTx(inp.txid);
-      const pwit = parent?.vin?.[0]?.witness;
+      if (!parent) { markAll(N, false, _REASON_FETCH_FAILED); return false; }
+      const pwit = parent.vin?.[0]?.witness;
       if (!pwit || pwit.length < 3) { markAll(N, false); return false; }
       let parentEnv;
       try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
@@ -6286,7 +6290,8 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     // path since no UTXO is produced). The lookup IS the recursion endpoint.
     const etchTxidHex = bytesToHex(dec.etchTxid);
     const etchTx = await fetchTx(etchTxidHex);
-    if (!etchTx?.vin?.[0]?.witness || etchTx.vin[0].witness.length < 3) { tagInvalid(); validatedSet.set(key, false); return false; }
+    if (!etchTx) { _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false; }
+    if (!etchTx.vin?.[0]?.witness || etchTx.vin[0].witness.length < 3) { tagInvalid(); validatedSet.set(key, false); return false; }
     let petchEnv;
     try { petchEnv = decodeEnvelopeScript(hexToBytes(etchTx.vin[0].witness[1])); } catch { petchEnv = null; }
     if (!petchEnv || petchEnv.opcode !== T_PETCH) { tagInvalid(); validatedSet.set(key, false); return false; }
@@ -6604,10 +6609,11 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     //    P2WPKH controller).
     let dropTx;
     try { dropTx = await fetchTx(dropMeta.drop_reveal_txid); }
-    catch { validatedSet.set(key, false); return false; }
+    catch { dropTx = null; }
+    if (!dropTx) { _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false; }
     const depositorPubHex = dropTx?.vin?.[1]?.witness?.[1];
     if (!depositorPubHex || !/^[0-9a-f]{66}$/i.test(depositorPubHex)) {
-      validatedSet.set(key, false); return false;
+      _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
     }
     const depositorXonly = hexToBytes(depositorPubHex).slice(1);
     let reclaimMsg;
@@ -6682,9 +6688,10 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     const dropTxidHex = bytesToHex(dec.dropRevealTxid);
     let dropTx;
     try { dropTx = await fetchTx(dropTxidHex); }
-    catch { validatedSet.set(key, false); return false; }
-    if (!dropTx?.vin?.[0]?.witness || dropTx.vin[0].witness.length < 3) {
-      validatedSet.set(key, false); return false;
+    catch { dropTx = null; }
+    if (!dropTx) { _markInvalid(validatedSet, validatedReasons, key, _REASON_FETCH_FAILED); return false; }
+    if (!dropTx.vin?.[0]?.witness || dropTx.vin[0].witness.length < 3) {
+      _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
     }
     let dropEnv;
     try { dropEnv = decodeEnvelopeScript(hexToBytes(dropTx.vin[0].witness[1])); } catch { dropEnv = null; }
@@ -31067,7 +31074,43 @@ function renderMarketBrowse(rows) {
   const status = $('#market-status');
   if (status) status.textContent = _formatMarketStatus(rows, { scope: 'browse' });
   if (!rows.length) {
-    list.innerHTML = '<div class="empty">No listings match.</div>';
+    // Differentiate "filter excluded everything" from "the network has
+    // nothing listed." Both render an empty grid, but the actionable
+    // guidance is different — clear-filters vs go-be-the-first.
+    const allCount = (_marketCache?.listings || []).length;
+    const filters = {
+      kind:     $('#market-filter-kind')?.value || 'trustless',
+      ticker:   ($('#market-filter-asset')?.value || '').trim(),
+      minPrice: ($('#market-filter-min-price')?.value || '').trim(),
+      maxPrice: ($('#market-filter-max-price')?.value || '').trim(),
+    };
+    const hasNarrowing = (filters.kind && filters.kind !== 'all') || filters.ticker || filters.minPrice || filters.maxPrice;
+    if (allCount > 0 && hasNarrowing) {
+      list.innerHTML = `
+        <div class="empty" style="padding:24px;text-align:center;">
+          <div style="font-weight:bold;margin-bottom:6px;">No listings match these filters.</div>
+          <div class="muted" style="font-size:11px;line-height:1.6;margin-bottom:10px;">${allCount} listing${allCount === 1 ? '' : 's'} live on ${escapeHtml(NET.name)} — try widening your filter.</div>
+          <button type="button" id="market-clear-filters" style="font-size:11px;padding:5px 12px;">Clear filters</button>
+        </div>`;
+      const clr = document.getElementById('market-clear-filters');
+      if (clr) clr.onclick = () => {
+        const k = $('#market-filter-kind'); if (k) k.value = 'trustless';
+        const a = $('#market-filter-asset'); if (a) a.value = '';
+        const mn = $('#market-filter-min-price'); if (mn) mn.value = '';
+        const mx = $('#market-filter-max-price'); if (mx) mx.value = '';
+        _saveMarketPrefs();
+        applyMarketFilters();
+      };
+    } else {
+      // Genuinely empty market — no listings on the network. Encourage
+      // the user to seed it (assumes they hold something to list) and
+      // point them at Discover for asset/issuer browsing in the meantime.
+      list.innerHTML = `
+        <div class="empty" style="padding:24px;text-align:center;">
+          <div style="font-weight:bold;margin-bottom:6px;">No live listings on ${escapeHtml(NET.name)} yet.</div>
+          <div class="muted" style="font-size:11px;line-height:1.6;">Hold a tacit asset? Open <strong>Holdings</strong> → click <strong>List for sale</strong> to seed the order book.<br>Want to browse the asset registry? Try the <strong>Discover</strong> tab.</div>
+        </div>`;
+    }
     return;
   }
   // Group by asset_id. Each group carries the asset metadata (taken from the
