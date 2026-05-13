@@ -33696,7 +33696,9 @@ async function populateMarketAssetStats(scope, asset) {
   // from _marketCache.listings (already loaded) and bids from the same
   // _bidsForSpreadCache that populateBidAskSpread fills, so it triggers
   // exactly one bid-intents fetch shared across spread + depth + ladder.
-  _populateDepthChart(section, aid, decimals, ticker).catch(() => {});
+  // markUnit (from j.mark_price) anchors the chart's center line and
+  // drives the log-scale switch when the orderbook spans many decades.
+  _populateDepthChart(section, aid, decimals, ticker, _deltaMarkUnit).catch(() => {});
   // Price chart: rendered above the trade table when we have ≥2 trades.
   // Uses the FULL ring (up to 50) for max chart density; the table below
   // stays capped at 10 rows so the section doesn't get unwieldy.
@@ -33855,7 +33857,7 @@ async function _populateBidAskSpread(section, aid, decimals, ticker) {
 }
 
 // Cumulative depth chart. Step-line areas on either side of the spread.
-async function _populateDepthChart(section, aid, decimals, ticker) {
+async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const out = section.querySelector('[data-market-depth-chart]');
   if (!out) return;
   const _toWholeNumber = (amtBig) => {
@@ -33899,16 +33901,39 @@ async function _populateDepthChart(section, aid, decimals, ticker) {
   const bestAsk = askCum[0].u;
   const lowestBid = bidCum[bidCum.length - 1].u;
   const highestAsk = askCum[askCum.length - 1].u;
-  const xLo = Math.min(lowestBid, bestAsk);
-  const xHi = Math.max(highestAsk, bestBid);
-  if (xHi <= xLo) { out.style.display = 'none'; return; }
+  const isCrossed = bestBid > bestAsk;
+  const xLoRaw = Math.min(lowestBid, bestAsk, bestBid);
+  const xHiRaw = Math.max(highestAsk, bestBid, bestAsk);
+  if (xHiRaw <= xLoRaw) { out.style.display = 'none'; return; }
   const yMax = Math.max(cumA, cumB);
   if (yMax <= 0) { out.style.display = 'none'; return; }
+  // Log x-axis when the book spans more than ~1.7 decades. Same heuristic
+  // as the price chart: small-cap / volatile tokens regularly have dust
+  // orders 4+ decades from the trading band, and a linear axis squashes
+  // 99% of depth into a thin strip. Log makes both edges legible.
+  const isLog = (xLoRaw > 0) && (xHiRaw / xLoRaw > 50);
   const W = 600, H = 140;
   const PL = 8, PR = 8, PT = 8, PB = 18;
   const plotW = W - PL - PR;
   const plotH = H - PT - PB;
-  const xOf = u => PL + ((u - xLo) / (xHi - xLo)) * plotW;
+  let xOf;
+  let xLo = xLoRaw, xHi = xHiRaw;
+  if (isLog) {
+    const logLo = Math.log10(xLoRaw);
+    const logHi = Math.log10(xHiRaw);
+    const logPad = (logHi - logLo) * 0.04;
+    const lLo = logLo - logPad;
+    const lHi = logHi + logPad;
+    const lSpan = Math.max(lHi - lLo, 1e-9);
+    xLo = Math.pow(10, lLo);
+    xHi = Math.pow(10, lHi);
+    xOf = (u) => PL + ((Math.log10(Math.max(u, 1e-12)) - lLo) / lSpan) * plotW;
+  } else {
+    const pad = (xHiRaw - xLoRaw) * 0.04;
+    xLo = Math.max(0, xLoRaw - pad);
+    xHi = xHiRaw + pad;
+    xOf = (u) => PL + ((u - xLo) / (xHi - xLo)) * plotW;
+  }
   const yOf = c => PT + (1 - c / yMax) * plotH;
   const stepPath = (pts, dir) => {
     if (!pts.length) return '';
@@ -33929,16 +33954,36 @@ async function _populateDepthChart(section, aid, decimals, ticker) {
   };
   const askPath = stepPath(askCum, 1);
   const bidPath = stepPath(bidCum, -1);
-  const midX = xOf((bestBid + bestAsk) / 2);
+  // Center line: mark_price when available (median-guarded against
+  // outlier prints, see hydrateAssetSummary), else the geometric mean of
+  // bestBid + bestAsk on log scale, else arithmetic mean. The old
+  // "(bestBid + bestAsk) / 2" was meaningless on crossed books — it put
+  // the line at 2500 for TAC's 5000/0.18 cross, which has no relation
+  // to where TAC actually trades.
+  let centerU = null;
+  if (Number.isFinite(markUnit) && markUnit > 0) {
+    centerU = markUnit;
+  } else if (isLog && bestBid > 0 && bestAsk > 0) {
+    centerU = Math.sqrt(bestBid * bestAsk);
+  } else if (bestBid > 0 && bestAsk > 0) {
+    centerU = (bestBid + bestAsk) / 2;
+  }
+  const centerX = centerU != null ? xOf(centerU) : null;
+  const _logBadge = isLog
+    ? `<span title="Auto-switched to log scale because the orderbook spans &gt;50× from low to high. Mark price line stays anchored to the real trading band." style="font-size:9px;padding:1px 5px;background:var(--ink-faint);color:var(--ink);border-radius:2px;letter-spacing:0.05em;cursor:help;">log</span>`
+    : '';
+  const _crossedBadge = isCrossed
+    ? `<span title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades." style="font-size:9px;padding:1px 5px;background:var(--red, #b8341d);color:#fff;border-radius:2px;letter-spacing:0.05em;cursor:help;">crossed</span>`
+    : '';
   out.innerHTML = `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-      <strong>Depth</strong>
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best ${escapeHtml(fmtUnitPriceSats(bestBid))} / ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}</span>
+      <strong>Depth</strong>${_logBadge}${_crossedBadge}
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best bid ${escapeHtml(fmtUnitPriceSats(bestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''}</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
       <path d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1"/>
       <path d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1"/>
-      <line x1="${midX.toFixed(2)}" y1="${PT}" x2="${midX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2,3"/>
+      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-mid)" stroke-width="1" stroke-dasharray="3,3"/>` : ''}
       <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
       <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
       <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</text>
