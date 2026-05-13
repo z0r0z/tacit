@@ -31933,11 +31933,42 @@ function _startMarketAutoRefresh() {
     const tab = (typeof window !== 'undefined' && window.location?.hash || '');
     if (!tab.includes('tab=market')) return;
     try {
+      // Snapshot what the listings looked like BEFORE the refresh so we
+      // can skip the heavy applyMarketFilters() re-render when nothing
+      // material changed. The full re-render destroys charts + swap tile
+      // state on every tick, which the user reports as flicker — only
+      // pay that cost when listings actually changed.
+      const beforeSig = _marketListingsSignature();
       await fetchMarketDataDeduped();
-      if (_marketView === 'browse') applyMarketFilters();
-      else if (_marketView && typeof _marketView === 'object') applyMarketFilters();
+      const afterSig = _marketListingsSignature();
+      if (beforeSig === afterSig) return;
+      if (_marketView === 'browse') {
+        // Browse has no fragile elements (no chart, no swap tile state),
+        // so a full re-render is safe and lets per-tile animations fire.
+        applyMarketFilters();
+      }
+      // Asset-view: skip the full re-render. The asks grid still receives
+      // updated data via the next user-triggered render (filter toggle,
+      // simple-mode flip, manual refresh). For now we accept that the
+      // grid lags slightly between user actions in exchange for stable
+      // charts and a non-jittery swap tile. A proper fix is a partial
+      // re-render of just #market-grid + bids ladder; tracked separately.
     } catch {}
   }, MARKET_AUTO_REFRESH_MS);
+}
+// Cheap signature of the listings array so we can skip no-op re-renders.
+// Listings ids + their unit prices are sufficient — any add/remove or
+// price change changes the string. O(n) but n is bounded by what the
+// worker returns (~100s).
+function _marketListingsSignature() {
+  const ls = _marketCache?.listings;
+  if (!Array.isArray(ls)) return '';
+  const parts = [];
+  for (const l of ls) {
+    const id = l.sale_id || l.intent_id || l.listing_id || '';
+    parts.push(`${id}:${l.kind || ''}:${l.min_price_sats || l.price_sats || 0}:${l.expired ? 1 : 0}`);
+  }
+  return parts.join('|');
 }
 function _stopMarketAutoRefresh() {
   if (_marketAutoRefreshTimer) { clearInterval(_marketAutoRefreshTimer); _marketAutoRefreshTimer = null; }
@@ -32780,7 +32811,11 @@ function applyMarketFilters() {
   // toggle, and the form host that expands underneath) so a holder
   // wanting to add liquidity sees the action in context — the asks
   // ladder they're contributing to.
-  const sortLabel = $('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first';
+  // Asset view always force-sorts unit-asc (see the const sort = ... above),
+  // so the label reads "cheapest first" regardless of the browse-view's
+  // dropdown selection. Without this clamp, a stale "recency" pick would
+  // mislabel an actually-cheapest-first ladder as "newest first".
+  const sortLabel = 'cheapest first';
   const modeChip = _marketSimpleMode
     ? `<button data-act="market-simple-toggle" type="button" title="Simple mode hides atomic intents and OTC offers. Click to show all offers — including ⚡ atomic (3-step trustless flow) and ⚠ OTC (counterparty trust required)." style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` (+${hiddenByMode} hidden)` : ''}</button>`
     : `<button data-act="market-simple-toggle" type="button" title="Show only one-click trustless instant listings (what the swap tile routes through). Hides atomic intents and OTC offers." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
@@ -33177,12 +33212,22 @@ let _marketBtcUsd = 0;
 let _marketBtcUsdFetchedAt = 0;
 async function refreshMarketBtcUsd() {
   if (_marketBtcUsd > 0 && (Date.now() - _marketBtcUsdFetchedAt) < 5 * 60 * 1000) return;
+  // Adopt whatever the global oracle has already cached (mempool +
+  // coinbase fallback chain via getBtcUsdPrice, plus localStorage
+  // warm-start). This avoids a "no USD quote" gap when mempool's
+  // /api/v1/prices is CORS-blocked / rate-limited but Coinbase or a
+  // previous session's persisted price is available.
+  const warmCached = _cachedBtcUsd();
+  if (Number.isFinite(warmCached) && warmCached > 0) {
+    _marketBtcUsd = warmCached;
+    _marketBtcUsdFetchedAt = Date.now();
+  }
+  // Then kick the live fetch through the multi-source oracle so we
+  // upgrade to a fresher price as soon as one resolves.
   try {
-    const r = await fetch('https://mempool.space/api/v1/prices', { cache: 'no-store' });
-    const j = await r.json().catch(() => ({}));
-    const usd = Number(j.USD || j.usd || 0);
-    if (Number.isFinite(usd) && usd > 0) {
-      _marketBtcUsd = usd;
+    const live = await getBtcUsdPrice();
+    if (Number.isFinite(live) && live > 0) {
+      _marketBtcUsd = live;
       _marketBtcUsdFetchedAt = Date.now();
     }
   } catch { /* fiat is decorative; never block market rendering */ }
@@ -34194,8 +34239,8 @@ function showMarketListPreviewModal(assetId) {
           <div class="market-buy-sub">Exact lot to sell</div>
         </div>
         <div>
-          <div class="market-buy-value">Wallet required</div>
-          <div class="market-buy-sub">Connect a wallet holding ${escapeHtml(ticker)}</div>
+          <div class="market-buy-value">${wallet.priv ? 'No ' + escapeHtml(ticker) + ' in this wallet' : 'Wallet locked'}</div>
+          <div class="market-buy-sub">${wallet.priv ? `This wallet doesn't hold ${escapeHtml(ticker)}. Acquire some, or switch wallets.` : `Unlock to check if you hold ${escapeHtml(ticker)}`}</div>
         </div>
       </div>
       <div class="market-buy-row">
@@ -34223,7 +34268,9 @@ function showMarketListPreviewModal(assetId) {
       </div>
       <div class="market-buy-actions">
         <button type="button" data-market-list-preview-close>Close</button>
-        <button type="button" class="primary" disabled title="Connect a wallet holding this asset to publish">Publish listing</button>
+        ${wallet.priv
+          ? `<button type="button" class="primary" data-market-list-preview-goto-holdings title="Acquire ${escapeHtml(ticker)} or switch wallets from the Holdings tab">Manage wallet ↗</button>`
+          : `<button type="button" class="primary" data-market-list-preview-unlock title="Unlock your wallet to check if you hold ${escapeHtml(ticker)}. If you do, the real listing panel will replace this preview.">Unlock wallet</button>`}
       </div>
     </div>`;
   const close = () => {
@@ -34235,6 +34282,44 @@ function showMarketListPreviewModal(assetId) {
   };
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
   overlay.querySelectorAll('[data-market-list-preview-close]').forEach(b => b.addEventListener('click', close, { once: true }));
+  // Unlock-wallet CTA when wallet is locked: trigger the standard lazy-
+  // unlock prompt, then on success close the preview and re-open the
+  // List Assets flow. If the user actually holds the asset, the click
+  // path in bindMarketAssetHeader → market-ask-place will now route to
+  // the real form instead of bouncing back here.
+  overlay.querySelector('[data-market-list-preview-unlock]')?.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const btn = e.currentTarget;
+    if (!(btn instanceof HTMLButtonElement)) return;
+    btn.disabled = true;
+    btn.textContent = 'unlocking…';
+    try {
+      await ensurePrivkey();
+      // Refresh holdings so the preview-vs-real-form decision sees the
+      // user's actual UTXOs. If we hold the asset, jump to the real list
+      // panel via the holdings tab path; otherwise leave the modal with
+      // updated copy ("No TAC in this wallet").
+      try { await scanHoldings({ silent: true }); } catch {}
+      close();
+      const userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(assetId));
+      if (userHoldsAsset) {
+        const holdingsTab = $('.tab[data-tab="holdings"]');
+        if (holdingsTab) holdingsTab.click();
+      } else {
+        showMarketListPreviewModal(assetId);
+      }
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Unlock wallet';
+      if (!isUnlockCancelled(err)) toast('Unlock failed: ' + (err?.message || String(err)), 'error');
+    }
+  });
+  overlay.querySelector('[data-market-list-preview-goto-holdings]')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    close();
+    const holdingsTab = $('.tab[data-tab="holdings"]');
+    if (holdingsTab) holdingsTab.click();
+  });
   document.addEventListener('keydown', onKey, true);
   document.body.appendChild(overlay);
   overlay.querySelector('[data-market-list-preview-close]')?.focus();
@@ -34593,6 +34678,25 @@ function renderMarketAssetHeader(assetId, rows) {
 // response for KV-subrequest budget reasons).
 function renderMarketAssetStatsHTML(asset) {
   const aid = /^[0-9a-f]{64}$/.test(asset.asset_id || '') ? asset.asset_id : '';
+  // Pre-paint the chart from cached stats so a re-render (filter toggle,
+  // simple-mode flip, sort change) doesn't show empty→filled flash for
+  // an asset we already have data on. populateMarketAssetStats will
+  // overwrite once the live fetch returns; the cached SVG is visually
+  // stable in the meantime.
+  let prePaintedChartHtml = '';
+  let prePaintedChartStyle = 'margin-top:10px;font-size:11px;display:none;';
+  try {
+    const cached = _marketAssetStatsCache?.get?.(marketAssetStatsKey(aid));
+    if (cached?.data && Array.isArray(cached.data.trades) && cached.data.trades.length) {
+      const dec = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+      const ticker = asset.ticker || '?';
+      const svg = renderMarketPriceChartSVG(cached.data.trades, ticker, dec);
+      if (svg) {
+        prePaintedChartHtml = svg;
+        prePaintedChartStyle = 'margin-top:10px;font-size:11px;';
+      }
+    }
+  } catch { /* pre-paint is best-effort */ }
   return `
     <div data-market-asset-stats data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
       <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
@@ -34614,7 +34718,7 @@ function renderMarketAssetStatsHTML(asset) {
         <div data-market-stat-liq-bids><span class="muted">bids liquidity</span> <strong data-market-stat-bidsval>—</strong></div>
       </div>
       <div data-market-attest-cta style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;"></div>
-      <div data-market-price-chart style="margin-top:10px;font-size:11px;display:none;"></div>
+      <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
       <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;"></div>
       <div data-market-recent-trades style="margin-top:10px;font-size:11px;">
         <div class="muted" style="font-size:11px;"><span class="live-dots">loading recent trades</span></div>
