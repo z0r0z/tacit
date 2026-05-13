@@ -31520,6 +31520,22 @@ function _marketMarkPriceByAsset() {
     if (!a?.asset_id) continue;
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
     const ticker = a.ticker || 'token';
+    // 0) Worker's canonical mark_price — present on responses from a
+    //    server that's running the post-mark-price deploy. Same priority
+    //    logic as below; using it avoids cross-client drift and saves
+    //    the BigInt math per render.
+    if (a.mark_price && Number.isFinite(Number(a.mark_price.unit)) && Number(a.mark_price.unit) > 0) {
+      const src = a.mark_price.source === 'last_trade' ? 'last'
+                : a.mark_price.source === 'median' ? 'median'
+                : 'last';
+      map.set(a.asset_id, {
+        unit: Number(a.mark_price.unit),
+        source: src,
+        ts: Number(a.mark_price.ts) || 0,
+        ticker,
+      });
+      continue;
+    }
     // 1) last_trade — worker emits this from the most recent atomic-intent
     //    settlement (T_AXFER hint). Authoritative when present.
     const lt = a.last_trade;

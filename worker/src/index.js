@@ -2902,6 +2902,43 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   v.preauth_sale_count = ps.keys.length;
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
   if (lastTrade) v.last_trade = lastTrade;
+  // Canonical mark price for valuation. Computed server-side so every API
+  // client (dapp Holdings, third-party portfolio tools, future SDKs) sees
+  // the same reference number. Priority matches how equities and crypto
+  // exchanges mark holdings: last trade → median of recent trades. Floor
+  // (lowest open ask) is NOT included here — it's a thin signal that
+  // collapses on a single dust ask. Clients still get floor by walking
+  // listings themselves.
+  if (Number.isInteger(v.decimals)) {
+    const _dec = v.decimals;
+    const _u = (priceSats, amountStr) => {
+      const p = Number(priceSats);
+      if (!Number.isFinite(p) || p <= 0) return null;
+      let a; try { a = BigInt(amountStr || '0'); } catch { return null; }
+      if (a <= 0n) return null;
+      const num = BigInt(Math.floor(p)) * (10n ** BigInt(_dec)) * 100000000n;
+      return Number(num / a) / 1e8;
+    };
+    // 1) last_trade unit price — authoritative when present.
+    if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
+      const u = _u(lastTrade.price_sats, lastTrade.amount);
+      if (u != null && u > 0) {
+        v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
+      }
+    }
+    // 2) Median of recent ring as a manipulation-resistant fallback when
+    //    last_trade is missing but the ring has entries.
+    if (!v.mark_price && Array.isArray(ring) && ring.length > 0) {
+      const units = ring.map(t => _u(t.price_sats, t.amount))
+        .filter(u => Number.isFinite(u) && u > 0)
+        .sort((a, b) => a - b);
+      if (units.length > 0) {
+        const mid = units.length >> 1;
+        const med = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
+        v.mark_price = { unit: med, source: 'median', sample: units.length };
+      }
+    }
+  }
   // Compact trade summary for tile-side rendering. Keep it small — every
   // asset in the list response carries this, so we trim to 10 (ts, unit
   // price) pairs + a single price_24h_change_pct number rather than
@@ -3833,6 +3870,36 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   let trades = [];
   if (ringJson) { try { const j = JSON.parse(ringJson); if (Array.isArray(j)) trades = j; } catch {} }
   v.trades = trades;
+  // mark_price — same priority as hydrateAssetSummary so single-asset and
+  // list responses agree. Decimals comes from the asset record above; if a
+  // legacy asset is missing decimals we skip rather than guess.
+  if (Number.isInteger(v.decimals)) {
+    const _dec = v.decimals;
+    const _u = (priceSats, amountStr) => {
+      const p = Number(priceSats);
+      if (!Number.isFinite(p) || p <= 0) return null;
+      let a; try { a = BigInt(amountStr || '0'); } catch { return null; }
+      if (a <= 0n) return null;
+      const num = BigInt(Math.floor(p)) * (10n ** BigInt(_dec)) * 100000000n;
+      return Number(num / a) / 1e8;
+    };
+    if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
+      const u = _u(lastTrade.price_sats, lastTrade.amount);
+      if (u != null && u > 0) {
+        v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
+      }
+    }
+    if (!v.mark_price && trades.length > 0) {
+      const units = trades.map(t => _u(t.price_sats, t.amount))
+        .filter(u => Number.isFinite(u) && u > 0)
+        .sort((a, b) => a - b);
+      if (units.length > 0) {
+        const mid = units.length >> 1;
+        const med = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
+        v.mark_price = { unit: med, source: 'median', sample: units.length };
+      }
+    }
+  }
   return jsonResponse(v, 200, cors);
 }
 
