@@ -3973,6 +3973,75 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
       v.mark_price = { unit: _ringMedian, source: 'median', sample: _ringSampleCount };
     }
   }
+  // Per-window price-change deltas — same computation as
+  // hydrateAssetSummary so single-asset clients see the same Δ% the
+  // bulk /assets response carries. Previously only the bulk path
+  // computed these, leaving the asset page's headline Δ% banner +
+  // stats strip's 24h Δ row reading null and rendering "—" even when
+  // the data was clearly there in the trade ring below.
+  if (Number.isInteger(v.decimals) && trades.length > 0) {
+    const _dec = v.decimals;
+    const _u = (priceSats, amountStr) => {
+      const p = Number(priceSats);
+      if (!Number.isFinite(p) || p <= 0) return null;
+      let a; try { a = BigInt(amountStr || '0'); } catch { return null; }
+      if (a <= 0n) return null;
+      const num = BigInt(Math.floor(p)) * (10n ** BigInt(_dec)) * 100000000n;
+      return Number(num / a) / 1e8;
+    };
+    const ring = trades;
+    const latestU = _u(ring[0].price_sats, ring[0].amount);
+    if (latestU != null && latestU > 0) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const refForCutoff = (cutoffSec) => {
+        for (const t of ring) {
+          const ts = Number(t.ts) || 0;
+          if (ts >= cutoffSec) continue;
+          const u = _u(t.price_sats, t.amount);
+          if (u != null && u > 0) return { u, ts };
+        }
+        return null;
+      };
+      let oldestRef = null;
+      for (let i = ring.length - 1; i >= 0; i--) {
+        const u = _u(ring[i].price_sats, ring[i].amount);
+        const ts = Number(ring[i].ts) || 0;
+        if (u != null && u > 0 && ts > 0) { oldestRef = { u, ts }; break; }
+      }
+      const _pct = (latest, ref) => (ref && ref.u > 0 && latest != null)
+        ? ((latest - ref.u) / ref.u) * 100
+        : null;
+      const r1h  = refForCutoff(nowSec -      3600);
+      const r4h  = refForCutoff(nowSec -  4 * 3600);
+      const r24h = refForCutoff(nowSec -     86400);
+      const r7d  = refForCutoff(nowSec - 7 * 86400);
+      const p1h  = _pct(latestU, r1h);
+      const p4h  = _pct(latestU, r4h);
+      const p24h = _pct(latestU, r24h);
+      const p7d  = _pct(latestU, r7d);
+      if (p1h  != null) v.price_1h_change_pct  = p1h;
+      if (p4h  != null) v.price_4h_change_pct  = p4h;
+      if (p24h != null) v.price_24h_change_pct = p24h;
+      if (p7d  != null) v.price_7d_change_pct  = p7d;
+      const pAll = _pct(latestU, oldestRef);
+      if (pAll != null && oldestRef && oldestRef.u !== latestU) {
+        v.price_all_change_pct = pAll;
+        v.price_first_trade_ts = oldestRef.ts;
+      }
+      const candidates = [
+        { window: '24h', pct: p24h },
+        { window: '4h',  pct: p4h },
+        { window: '1h',  pct: p1h },
+        { window: '7d',  pct: p7d },
+        { window: 'all', pct: pAll },
+      ];
+      const primary = candidates.find(c => c.pct != null);
+      if (primary) {
+        v.price_change_primary_pct = primary.pct;
+        v.price_change_primary_window = primary.window;
+      }
+    }
+  }
   return jsonResponse(v, 200, cors);
 }
 
