@@ -1637,10 +1637,52 @@ function _apiRelease() {
     _apiInflight--;
   }
 }
+// Per-session provider preference. When the primary (NET.api) starts
+// throwing — CORS-headerless 5xx, transient outage, regional block — we
+// flip this for the rest of the session so we don't burn a round-trip
+// against the broken provider on every request. Reset on network switch
+// (page reload), which is correct: the user's IP-vs-cloudfront mapping
+// changes per session and a previously-bad provider may recover.
+let _preferredApiBase = null;
 async function api(path, opts = {}) {
   await _apiAcquire();
   try {
-    const r = await fetch(NET.api + path, opts);
+    // Try the session's preferred base first (defaults to NET.api). Both
+    // mempool.space and blockstream.info expose the same Esplora schema,
+    // so the fallback is response-shape compatible for every endpoint the
+    // dapp uses (/tx, /address, /utxo, /txs/chain, /outspend).
+    const primary = _preferredApiBase || NET.api;
+    const secondary = NET.api2 && primary !== NET.api2 ? NET.api2 : null;
+
+    let r = null;
+    let primaryErr = null;
+    try {
+      r = await fetch(primary + path, opts);
+    } catch (e) {
+      // fetch() threw — network error, CORS rejection (mempool.space
+      // sometimes serves error pages without Access-Control-Allow-Origin
+      // headers, which the browser surfaces as a CORS block even though
+      // the actual failure was upstream), DNS, certificate, etc. All
+      // recoverable via the fallback.
+      primaryErr = e;
+    }
+    // 5xx is also fallback-worthy. 4xx is intentionally NOT — it's a real
+    // client-side signal (e.g. /utxo's 400 for >500 UTXOs).
+    const needsFallback = primaryErr || (r && r.status >= 500);
+    if (needsFallback && secondary) {
+      try {
+        const r2 = await fetch(secondary + path, opts);
+        if (r2.ok || r2.status < 500) {
+          // Latch the working provider for the rest of the session.
+          _preferredApiBase = secondary;
+          r = r2;
+          primaryErr = null;
+        }
+      } catch (_e2) {
+        // Both providers down — fall through to throw the original error.
+      }
+    }
+    if (primaryErr) throw primaryErr;
     if (!r.ok) {
       const t = await r.text();
       throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
