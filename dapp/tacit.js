@@ -29102,12 +29102,12 @@ async function renderHoldings() {
       return usd ? ` · ${escapeHtml(usd)}` : '';
     };
     try {
-      const floors = (typeof _marketFloorByAsset === 'function') ? _marketFloorByAsset() : null;
-      if (floors && floors.size > 0) {
+      const marks = (typeof _marketMarkPriceByAsset === 'function') ? _marketMarkPriceByAsset() : null;
+      if (marks && marks.size > 0) {
         for (let i = 0; i < arr.length; i++) {
           const h = arr[i];
-          const f = floors.get(h.assetIdHex);
-          if (!f || !Number.isFinite(f.unit) || f.unit <= 0) continue;
+          const m = marks.get(h.assetIdHex);
+          if (!m || !Number.isFinite(m.unit) || m.unit <= 0) continue;
           const balanceBig = h.balance;
           if (balanceBig <= 0n) continue;
           // Whole-token count: balance / 10^decimals, BigInt-safe.
@@ -29115,7 +29115,7 @@ async function renderHoldings() {
           const whole = balanceBig / div;
           const frac = balanceBig - whole * div;
           const wholeNum = Number(whole) + (h.decimals > 0 ? Number(frac) / Number(div) : 0);
-          const valSats = wholeNum * f.unit;
+          const valSats = wholeNum * m.unit;
           if (!Number.isFinite(valSats) || valSats <= 0) continue;
           totalValuationSats += valSats;
           valuationCount++;
@@ -29125,7 +29125,11 @@ async function renderHoldings() {
           if (!slot) continue;
           const rounded = Math.round(valSats);
           const usdTail = _renderUsdSuffix(rounded);
-          slot.innerHTML = `<span class="unit" style="color:#0a7d3a;" title="Estimated value at the current market floor (${fmtUnitPriceSats(f.unit)} sats/${escapeHtml(h.ticker)}). Decorative — actual sale at this price isn't guaranteed.">~${rounded.toLocaleString()} sats${usdTail}</span>`;
+          const _srcLabel = m.source === 'last' ? 'last trade'
+                          : m.source === 'median' ? 'recent-trade median'
+                          : 'lowest open ask (floor)';
+          const _ageTail = (m.source === 'last' && m.ts) ? `, ${relativeAge(m.ts)} ago` : '';
+          slot.innerHTML = `<span class="unit" style="color:#0a7d3a;" title="Estimated at ${_srcLabel} (${fmtUnitPriceSats(m.unit)} sats/${escapeHtml(h.ticker)}${_ageTail}). Decorative — actual sale at this price isn't guaranteed.">~${rounded.toLocaleString()} sats${usdTail}</span>`;
         }
       } else if (typeof fetchMarketData === 'function' && WORKER_BASE) {
         // Warm the market cache in the background so the NEXT renderHoldings
@@ -31484,6 +31488,74 @@ function _marketFloorByAsset() {
     if (!cur || u < cur.unit) map.set(a.asset_id, { unit: u, ticker: a.ticker || 'token' });
   }
   _marketFloorCache = { src: _marketCache.listings, map };
+  return map;
+}
+
+// Per-asset mark price for holdings valuation. Floor (lowest open ask) is
+// fragile: a single dust ask (e.g., 546 sats / 11,000 TAC = 0.0496 sats/TAC)
+// drags valuation 1000× below the actual market clearing price. Mark price
+// here follows the conventional last-trade rule used by equities and crypto
+// exchanges:
+//   1) `last_trade` unit price if the worker reports one for the asset
+//   2) median of `price_summary[]` (worker's compact recent-trades summary)
+//      as a manipulation-resistant fallback when the ring has multiple trades
+//      but no canonical "last_trade" record was hydrated
+//   3) floor — only for never-traded assets, matches legacy behavior
+// Returns Map<assetId, { unit, source: 'last'|'median'|'floor', ts?, ticker }>.
+let _marketMarkCache = { src: null, map: null };
+function _marketMarkPriceByAsset() {
+  if (!_marketCache) return null;
+  // Memo on the assets+listings pair — assets carry last_trade + price_summary;
+  // listings drive the floor fallback. Cache invalidates when either swaps.
+  const memoKey = [_marketCache.assets, _marketCache.listings];
+  if (_marketMarkCache.src
+      && _marketMarkCache.src[0] === memoKey[0]
+      && _marketMarkCache.src[1] === memoKey[1]) {
+    return _marketMarkCache.map;
+  }
+  const map = new Map();
+  const floors = _marketFloorByAsset();
+  const assets = Array.isArray(_marketCache.assets) ? _marketCache.assets : [];
+  for (const a of assets) {
+    if (!a?.asset_id) continue;
+    const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    const ticker = a.ticker || 'token';
+    // 1) last_trade — worker emits this from the most recent atomic-intent
+    //    settlement (T_AXFER hint). Authoritative when present.
+    const lt = a.last_trade;
+    if (lt && Number.isInteger(lt.price_sats) && lt.price_sats > 0) {
+      let amtBig = 0n;
+      try { amtBig = BigInt(lt.amount); } catch {}
+      if (amtBig > 0n) {
+        const u = unitPriceSats(lt.price_sats, amtBig, dec);
+        if (u != null && u > 0) {
+          map.set(a.asset_id, { unit: u, source: 'last', ts: Number(lt.ts) || 0, ticker });
+          continue;
+        }
+      }
+    }
+    // 2) median of price_summary (worker ships up to 10 pre-divided unit prices)
+    if (Array.isArray(a.price_summary) && a.price_summary.length > 0) {
+      const units = a.price_summary
+        .map(p => Number(p?.u))
+        .filter(u => Number.isFinite(u) && u > 0)
+        .sort((x, y) => x - y);
+      if (units.length > 0) {
+        const mid = units.length >> 1;
+        const median = (units.length % 2)
+          ? units[mid]
+          : (units[mid - 1] + units[mid]) / 2;
+        map.set(a.asset_id, { unit: median, source: 'median', ticker });
+        continue;
+      }
+    }
+    // 3) floor fallback — never-traded asset.
+    const f = floors?.get(a.asset_id);
+    if (f && Number.isFinite(f.unit) && f.unit > 0) {
+      map.set(a.asset_id, { unit: f.unit, source: 'floor', ticker });
+    }
+  }
+  _marketMarkCache = { src: memoKey, map };
   return map;
 }
 
