@@ -33182,11 +33182,8 @@ async function populateMarketBidsLadder(scope, asset) {
     else action = `<button data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;padding:3px 8px;background:#0a8f43;color:#fff;border-color:#0a7d3a;">Fulfil</button>`;
     const _usdStr = _bidBtcUsd ? fmtSatsAsUsd(sats, _bidBtcUsd) : null;
     const _usdTail = _usdStr ? ` · ${escapeHtml(_usdStr)}` : '';
-    // Click-to-prefill: the row's price/amount get echoed into the place-bid
-    // form via the data-* attrs on the row. The Use-bid-as-template chip in
-    // the form's quick-fill row reads these to auto-fill amount + total.
     return `
-      <div data-bid-row data-bid-id="${escapeHtml(b.bid_id)}" data-row-unit="${b._unit != null ? b._unit : ''}" data-row-amount="${escapeHtml(amtStr)}" data-row-sats="${sats}" style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid var(--ink-faint);flex-wrap:wrap;">
+      <div data-bid-row data-bid-id="${escapeHtml(b.bid_id)}" style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid var(--ink-faint);flex-wrap:wrap;">
         <div style="flex:0 0 auto;font-family:var(--mono);"><strong>${escapeHtml(unitStr)}</strong></div>
         <div style="flex:1 1 120px;min-width:0;font-size:11px;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${sats.toLocaleString()} sats${_usdTail} · ${expiry}${b._isMine ? ' · <strong>you</strong>' : ''}</div>
         <div style="flex:0 0 auto;">${action}</div>
@@ -33259,19 +33256,40 @@ function _wireMarketBidPlace(section, asset) {
     }
     // Best bid — derive from the cached bid-intent ladder (already fetched
     // when the bids panel rendered above this form). Sync read; no fetch.
+    // Outlier clamp: a "best bid" anchored on a stale 1000× -above-market
+    // print produces a comically overpriced bid the moment Beat-best-bid
+    // fires. We exclude any bid above 2× the fair-value anchor (last trade
+    // first, floor as fallback). The clamped highest is the "real" front
+    // of the queue — the line a normal trader would have to beat to
+    // actually clear. When everything's above the threshold (genuinely
+    // illiquid asset, no last_trade) we fall back to the raw best bid;
+    // the readout's 2×-floor warning still catches the egregious case.
     let _bestBidUnit = null;
+    let _bestBidClamped = false;
     try {
       const cached = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
       if (Array.isArray(cached) && cached.length > 0) {
         const nowSec = Math.floor(Date.now() / 1000);
-        let best = 0;
+        const fairAnchor = (_lastUnit && _lastUnit > 0) ? _lastUnit
+                         : (_floorUnit && _floorUnit > 0) ? _floorUnit
+                         : null;
+        const outlierCap = fairAnchor != null ? fairAnchor * 2 : Infinity;
+        let bestReal = 0;
+        let bestAny  = 0;
         for (const b of cached) {
           if (Number(b.expiry || 0) <= nowSec) continue;
           if (b.axintent_id) continue;
           const u = unitPriceSats(Number(b.price_sats || 0), BigInt(b.amount || 0), decimals);
-          if (u != null && u > best) best = u;
+          if (u == null || u <= 0) continue;
+          if (u > bestAny) bestAny = u;
+          if (u <= outlierCap && u > bestReal) bestReal = u;
         }
-        if (best > 0) _bestBidUnit = best;
+        if (bestReal > 0) {
+          _bestBidUnit = bestReal;
+          _bestBidClamped = (bestAny > bestReal);
+        } else if (bestAny > 0) {
+          _bestBidUnit = bestAny;
+        }
       }
     } catch {}
     const _refBtcUsd = _cachedBtcUsd();
@@ -33300,7 +33318,13 @@ function _wireMarketBidPlace(section, asset) {
     const _chipBits = [];
     if (_floorUnit != null && _floorUnit > 0) _chipBits.push(`<button data-bid-quick="floor" data-unit="${_floorUnit}" type="button" title="Match the cheapest current ask — your bid is one fill away from clearing." style="font-size:10px;padding:3px 8px;">Match floor</button>`);
     if (_lastUnit != null && _lastUnit > 0)  _chipBits.push(`<button data-bid-quick="last"  data-unit="${_lastUnit}"  type="button" title="Match the most recent atomic settlement price." style="font-size:10px;padding:3px 8px;">Match last trade</button>`);
-    if (_bestBidUnit != null && _bestBidUnit > 0) _chipBits.push(`<button data-bid-quick="overbid" data-unit="${_bestBidUnit}" type="button" title="Beat the current best bid by 1% — front of the queue without overpaying." style="font-size:10px;padding:3px 8px;">Beat best bid</button>`);
+    if (_bestBidUnit != null && _bestBidUnit > 0) {
+      const _bbTip = _bestBidClamped
+        ? `Beat the highest non-outlier bid by 1%. The actual top of the ladder is an outlier (>2× last trade) and was excluded so this chip doesn't post a wildly overpriced bid.`
+        : `Beat the current best bid by 1% — front of the queue without overpaying.`;
+      const _bbLabel = _bestBidClamped ? 'Beat best real bid' : 'Beat best bid';
+      _chipBits.push(`<button data-bid-quick="overbid" data-unit="${_bestBidUnit}" type="button" title="${escapeHtml(_bbTip)}" style="font-size:10px;padding:3px 8px;">${_bbLabel}</button>`);
+    }
     const _chipsRow = _chipBits.length
       ? `<div class="flex" style="gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;"><span class="muted" style="font-size:10px;">quick fill</span>${_chipBits.join('')}</div>`
       : '';
