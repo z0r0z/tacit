@@ -13973,6 +13973,57 @@ function markTickerCollisions(assets) {
     for (let i = 1; i < group.length; i++) group[i]._tickerCollision = 'duplicate';
   }
 }
+// "Verified" status for a tacit asset. Decentralized — no allowlist, no
+// curator. An asset is verified when:
+//   - its ticker is NOT a known external-project copycat (COPYCAT_REGISTRY),
+//     AND
+//   - it's either the unique etcher under its ticker on tacit, OR it etched
+//     FIRST under that ticker (markTickerCollisions tags this `'original'`).
+// Duplicate etchers (`_tickerCollision === 'duplicate'`) and known copycats
+// (`_copycatInfo` set) are NOT verified — the rendering surfaces a red
+// warning badge for those.
+//
+// The badge isn't a trust claim about the issuer; it's a "first/only on
+// tacit, not impersonating off-chain" marker. Users hovering on the badge
+// see exactly that in the tooltip.
+function isAssetVerified(asset) {
+  if (!asset || typeof asset !== 'object') return false;
+  if (asset._copycatInfo) return false;
+  // Two paths to verified:
+  //   1. asset.verified === true — platform-curated endorsement from the
+  //      worker (a.k.a. "official"; a small editorial allowlist for the
+  //      most-traded tokens). This stays the loud signal.
+  //   2. Decentralized fallback: this asset is the unique or earliest
+  //      etcher of its ticker on tacit AND not a known external copycat.
+  //      Set by markTickerCollisions(_tickerCollision === false | 'original')
+  //      and tickerCopycatInfo (a._copycatInfo).
+  // Either condition is sufficient. Unset _tickerCollision falls through
+  // to "not verified" — callers that want the badge should run the asset
+  // through markTickerCollisions on the registry list first.
+  if (asset.verified === true) return true;
+  return asset._tickerCollision === false || asset._tickerCollision === 'original';
+}
+// Compact green pill rendered next to ticker / asset_id where space allows.
+// Returns empty string when the asset isn't verified, so the caller can
+// append unconditionally without a wrapping check at every callsite.
+function verifiedBadgeHTML(asset, { size = 'sm' } = {}) {
+  if (!isAssetVerified(asset)) return '';
+  const ticker = String(asset.ticker || '').trim();
+  const tip = ticker
+    ? `Canonical: first asset etched under the ticker "${escapeHtml(ticker)}" on tacit, and not a known off-chain project copycat. No central authority verifies this — derived purely from etched_at_height ordering.`
+    : `Canonical: first etcher of this ticker on tacit and not a known off-chain copycat.`;
+  const padding = size === 'lg' ? '2px 7px' : '1px 5px';
+  const fontSize = size === 'lg' ? '10px' : '9px';
+  return `<span style="display:inline-block;padding:${padding};background:#0a8f43;color:#fff;font-size:${fontSize};border-radius:2px;margin-left:5px;cursor:help;font-weight:600;letter-spacing:0.04em;" title="${tip}">✓ verified</span>`;
+}
+// Color hint for asset_id renderings. Verified assets get the affirming
+// green; non-verified stay on the default ink color so the eye is drawn
+// to the verified ones in dense lists. Used as inline `color: ${...}` in
+// the mono-box span that renders asset_id everywhere.
+function assetIdColorForAsset(asset) {
+  return isAssetVerified(asset) ? '#0a7d3a' : 'var(--ink-mid)';
+}
+
 // Asset-metadata `external_url` fields are issuer-controlled. Even with HTML
 // attribute escaping, an `href="javascript:…"` (or `data:`, `vbscript:`, etc.)
 // would execute the moment a user clicks. Restrict to https:// — anything
@@ -31284,13 +31335,15 @@ function renderMarketBrowse(rows) {
     const a = g.asset;
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
     const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
+    // Trust badge: green ✓ verified when the asset is the unique or
+    // earliest etcher of its ticker AND not a known external copycat;
+    // red ⚠ COPY/DUP otherwise. Replaces the orange "earliest" tag in
+    // the canonical case (less alarming, more affirming).
     const collisionBadge = a._copycatInfo
       ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy — verify the asset_id before trading.">⚠ COPY</span>`
       : a._tickerCollision === 'duplicate'
         ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
-        : a._tickerCollision === 'original'
-          ? `<span style="display:inline-block;padding:1px 5px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
-          : '';
+        : verifiedBadgeHTML(a);
     const kindBits = [];
     if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic intents (trustless)">⚡ ${g.intents}</span>`);
     if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
@@ -31313,7 +31366,7 @@ function renderMarketBrowse(rows) {
           <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">
             <strong style="font-size:15px;">${escapeHtml(a.ticker || '?')}</strong>${collisionBadge}
           </div>
-          <div style="font-size:10px;color:var(--ink-mid);font-family:var(--mono);">${escapeHtml(shorten(safeAid, 10))}</div>
+          <div style="font-size:10px;color:${assetIdColorForAsset(a)};font-family:var(--mono);">${escapeHtml(shorten(safeAid, 10))}</div>
         </div>
       </div>
       <div style="font-size:14px;"><strong>${g.total}</strong> <span class="muted" style="font-size:11px;">offer${g.total === 1 ? '' : 's'}</span></div>
@@ -31373,9 +31426,7 @@ function renderMarketAssetHeader(assetId, rows) {
     ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy — verify the asset_id before trading.">⚠ COPY</span>`
     : a._tickerCollision === 'duplicate'
       ? `<span style="display:inline-block;padding:1px 6px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
-      : a._tickerCollision === 'original'
-        ? `<span style="display:inline-block;padding:1px 6px;background:#a04030;color:#fff;font-size:9px;border-radius:2px;margin-left:6px;cursor:help;" title="Etched first under this ticker, but tickers aren't unique on tacit — asset_id is canonical.">earliest</span>`
-        : '';
+      : verifiedBadgeHTML(a, { size: 'lg' });
   // Breadcrumb above the asset card. Critical for users who deep-link from a
   // Discover "view offers" badge straight into asset mode — without it, the
   // browse index is invisible and the Market reads as "all listings flat".
@@ -31407,7 +31458,7 @@ function renderMarketAssetHeader(assetId, rows) {
         </div>
         <div style="font-size:10px;color:var(--ink-mid);margin-top:2px;">
           <span>id </span>
-          <span class="mono-box inline" style="font-size:10px;cursor:pointer;" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
+          <span class="mono-box inline" style="font-size:10px;cursor:pointer;color:${assetIdColorForAsset(a)};" data-act="copy-aid" data-aid="${escapeHtml(safeAid)}" title="Click to copy full asset_id: ${escapeHtml(safeAid)}">${escapeHtml(shorten(safeAid, 12))}</span>
         </div>
       </div>
       <div style="text-align:right;flex-shrink:0;">
@@ -32125,6 +32176,19 @@ function _countAtomicAlternativesForAsset(assetIdHex) {
 function _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub }) {
   return new Promise(resolve => {
     const altCount = _countAtomicAlternativesForAsset(aid);
+    // Resolve the asset record for verification status. The OTC take path
+    // is the highest-stakes moment for copycat protection (user is about
+    // to send sats first), so we surface the verified/copycat badge
+    // prominently in the modal header.
+    const _assetForGate =
+      (_marketCache?.listings.find(l => l._asset?.asset_id === aid)?._asset)
+      || (_marketCache?.assets?.find(x => x.asset_id === aid))
+      || { asset_id: aid, ticker, decimals: dec };
+    const _verifiedBits = _assetForGate._copycatInfo
+      ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="This ticker matches a known ${escapeHtml(_assetForGate._copycatInfo.chain || 'Ethereum')} project. Likely a copycat on tacit.">⚠ COPY</span>`
+      : _assetForGate._tickerCollision === 'duplicate'
+        ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first.">⚠ DUP</span>`
+        : verifiedBadgeHTML(_assetForGate, { size: 'lg' });
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;z-index:1020;display:grid;place-items:center;background:rgba(10,10,10,0.55);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);padding:24px;';
     const card = document.createElement('div');
@@ -32140,8 +32204,12 @@ function _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub }) {
       <div style="font-family:'Instrument Serif',serif;font-size:26px;font-style:italic;line-height:1;margin-bottom:8px;">
         <span style="color:var(--orange);">⚠</span> Trust required
       </div>
-      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:14px;">
+      <div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;">
         ${kindLabel} · counterparty trust
+      </div>
+      <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin-bottom:12px;">
+        <strong style="font-size:14px;">${escapeHtml(ticker)}</strong>${_verifiedBits}
+        <span style="font-size:10px;color:${assetIdColorForAsset(_assetForGate)};font-family:var(--mono);">${escapeHtml(shorten(aid, 12))}</span>
       </div>
       <div style="margin-bottom:10px;">
         You're about to <strong>send sats first</strong>, then wait for the maker to broadcast a transfer of <strong>${kind === 'range' ? '≥ ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amt), dec))} ${escapeHtml(ticker)}</strong> to your pubkey.
