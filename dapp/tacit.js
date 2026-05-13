@@ -28460,10 +28460,10 @@ function renderActivity() {
       const paidTxid = String(e.extra.payment_txid || '').toLowerCase();
       const paidValid = /^[a-f0-9]{64}$/.test(paidTxid);
       const paidLine = paidValid
-        ? `<div class="muted" style="font-size:10px;margin-top:2px;">paid · <a href="${NET.explorer}/tx/${escapeHtml(paidTxid)}" target="_blank" rel="noopener noreferrer">tx ${escapeHtml(shorten(paidTxid, 10))} ↗</a> <button data-act="otc-clear-paid" data-otc-ts="${Number(e.ts)}" type="button" style="font-size:9px;padding:1px 5px;margin-left:6px;">clear</button></div>`
-        : `<div style="font-size:10px;margin-top:4px;display:flex;gap:4px;align-items:center;">
-            <input data-act="otc-paid-input" data-otc-ts="${Number(e.ts)}" type="text" placeholder="paste BTC payment txid (64 hex)…" autocomplete="off" spellcheck="false" style="flex:1;min-width:0;font-family:var(--mono);font-size:10px;padding:2px 4px;">
-            <button data-act="otc-save-paid" data-otc-ts="${Number(e.ts)}" type="button" style="font-size:10px;padding:2px 8px;">Mark paid</button>
+        ? `<div class="muted" style="font-size:10px;margin-top:2px;">paid · <a href="${NET.explorer}/tx/${escapeHtml(paidTxid)}" target="_blank" rel="noopener noreferrer">tx ${escapeHtml(shorten(paidTxid, 10))} ↗</a> <button data-act="otc-clear-paid" data-otc-ts="${Number(e.ts)}" type="button" style="font-size:9px;padding:2px 8px;margin-left:6px;">clear</button></div>`
+        : `<div style="font-size:10px;margin-top:4px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
+            <input data-act="otc-paid-input" data-otc-ts="${Number(e.ts)}" type="text" placeholder="paste BTC payment txid (64 hex)…" autocomplete="off" spellcheck="false" style="flex:1 1 140px;min-width:0;font-family:var(--mono);font-size:10px;padding:4px 6px;">
+            <button data-act="otc-save-paid" data-otc-ts="${Number(e.ts)}" type="button" style="font-size:10px;padding:5px 10px;">Mark paid</button>
           </div>`;
       extraLine = `
         <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">
@@ -28570,8 +28570,8 @@ function _renderPreauthRecoveryBannerHtml() {
     const amtStr = amtBig > 0n ? fmtAssetAmount(amtBig, p.decimals || 0) : '';
     const explorer = `${NET.explorer}/tx/${escapeHtml(p.commitTxidHex)}`;
     return `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--ink-faint);font-size:11px;">
-        <div style="flex:1;min-width:0;">
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--ink-faint);font-size:11px;flex-wrap:wrap;">
+        <div style="flex:1 1 180px;min-width:0;">
           <div><strong>${sats.toLocaleString()} sats</strong> locked${amtStr ? ` · attempted ${escapeHtml(amtStr)} ${ticker}` : ''} · ${escapeHtml(ageStr)}</div>
           <div class="muted" style="font-size:10px;margin-top:2px;">commit <a href="${explorer}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(p.commitTxidHex, 8))} ↗</a></div>
         </div>
@@ -31399,9 +31399,9 @@ async function populateMarketAssetStats(scope, asset) {
       ? `<a href="${NET.explorer}/tx/${escapeHtml(t.txid)}" target="_blank" rel="noopener noreferrer" class="muted" style="font-size:10px;">${escapeHtml(txidShort)} ↗</a>`
       : `<span class="muted" style="font-size:10px;">${escapeHtml(txidShort)}</span>`;
     return `
-      <div style="display:flex;align-items:center;gap:10px;padding:4px 0;border-top:1px solid var(--ink-faint);font-size:11px;">
+      <div style="display:flex;align-items:center;gap:10px;padding:4px 0;border-top:1px solid var(--ink-faint);font-size:11px;flex-wrap:wrap;">
         <div style="flex:0 0 auto;font-family:var(--mono);"><strong>${escapeHtml(unitStr)}</strong></div>
-        <div style="flex:1;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${price.toLocaleString()} sats</div>
+        <div style="flex:1 1 100px;min-width:0;color:var(--ink-mid);overflow-wrap:anywhere;">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${price.toLocaleString()} sats</div>
         <div style="flex:0 0 auto;" class="muted">${escapeHtml(ageStr)} ago</div>
         <div style="flex:0 0 auto;">${txLink}</div>
       </div>`;
@@ -31485,9 +31485,9 @@ async function populateMarketBidsLadder(scope, asset) {
     else if (b._expiresIn <= 0) action = `<span class="muted" style="font-size:10px;">expired</span>`;
     else action = `<button data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;padding:3px 8px;background:#0a8f43;color:#fff;border-color:#0a7d3a;">Fulfil</button>`;
     return `
-      <div data-bid-row data-bid-id="${escapeHtml(b.bid_id)}" style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid var(--ink-faint);">
+      <div data-bid-row data-bid-id="${escapeHtml(b.bid_id)}" style="display:flex;align-items:center;gap:10px;padding:6px 4px;border-top:1px solid var(--ink-faint);flex-wrap:wrap;">
         <div style="flex:0 0 auto;font-family:var(--mono);"><strong>${escapeHtml(unitStr)}</strong></div>
-        <div style="flex:1;font-size:11px;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${sats.toLocaleString()} sats · ${expiry}${b._isMine ? ' · <strong>you</strong>' : ''}</div>
+        <div style="flex:1 1 120px;min-width:0;font-size:11px;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${sats.toLocaleString()} sats · ${expiry}${b._isMine ? ' · <strong>you</strong>' : ''}</div>
         <div style="flex:0 0 auto;">${action}</div>
       </div>`;
   }).join('');
