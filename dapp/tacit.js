@@ -11854,6 +11854,37 @@ async function fetchAxferFulfilment({ assetIdHex, intentIdHex }) {
 async function takeAxferIntent({ intent, fulfilment, onProgress = null }) {
   await ensurePrivkey();
   if (!intent || !fulfilment) throw new Error('intent + fulfilment required');
+  // Defense-in-depth: independently verify the maker's Schnorr signature
+  // over (asset_id, intent_id, taker_pubkey, SHA256(partial_reveal_json))
+  // before trusting any of the fulfilment fields. The worker verified the
+  // same signature at POST time, so under an honest worker this is
+  // redundant — but a compromised or buggy worker that swapped the
+  // partial_reveal would fail this check with a clear "fulfilment
+  // tampered" error instead of letting us derive blindings + build a tx
+  // that bitcoind would reject at broadcast with a generic script error.
+  //
+  // Stringify with no extra spaces / sort to match the worker's
+  // JSON.stringify(partialReveal). Both runtimes are V8 and preserve the
+  // partial_reveal object's key insertion order from the maker's POST,
+  // so the bytes line up. Any drift here surfaces as a verify failure
+  // (which we'd want to surface, not silently broadcast).
+  {
+    const fSigHex = String(fulfilment.fulfilment_sig || '').toLowerCase();
+    if (!/^[0-9a-f]{128}$/.test(fSigHex)) {
+      throw new Error('fulfilment is missing fulfilment_sig — incompatible with worker version');
+    }
+    const partialJson = JSON.stringify(fulfilment.partial_reveal);
+    const fMsg = _axintentFulfilMsg(
+      hexToBytes(intent.asset_id),
+      hexToBytes(intent.intent_id),
+      wallet.pub,
+      partialJson,
+    );
+    const makerPubXOnly = hexToBytes(intent.maker_pubkey).slice(1);
+    if (!verifySchnorr(hexToBytes(fSigHex), fMsg, makerPubXOnly)) {
+      throw new Error('fulfilment signature does not bind to the served partial_reveal — possible worker tampering. Refusing to broadcast.');
+    }
+  }
   // Decrypt the recipient blinding the maker shipped at fulfilment. The
   // ciphertext is symmetric ECDH between (maker, taker), so deriving the
   // keystream with our own priv against maker.pub yields the same scalar.
