@@ -31869,6 +31869,26 @@ function _marketLiveCountsByAsset() {
 // (pendingMarketFilter) jump straight into asset mode for the targeted asset.
 let _marketCache = null;
 let _marketView = 'browse';
+// Simple-mode toggle for the asks ladder. When true (default), the
+// ladder hides atomic intents (claim/fulfil/take dance) and OTC
+// opening/range listings (counterparty-trust required) so the user
+// only sees one-click trustless "instant" preauth listings — which
+// is exactly what the swap tile routes through. Power users can flip
+// to "All offers" to see the full book. State persists via
+// localStorage so the choice survives reloads.
+const _MARKET_SIMPLE_KEY = 'tacit-market-simple-v1';
+function _loadMarketSimple() {
+  try {
+    const v = localStorage.getItem(_MARKET_SIMPLE_KEY);
+    if (v === '0') return false;
+    if (v === '1') return true;
+  } catch {}
+  return true;  // default: simple mode ON
+}
+function _saveMarketSimple(on) {
+  try { localStorage.setItem(_MARKET_SIMPLE_KEY, on ? '1' : '0'); } catch {}
+}
+let _marketSimpleMode = _loadMarketSimple();
 // Mirror Market navigation into the URL hash so a tile click produces a
 // shareable deep-link (#tab=market&aid=<aid>), and "← All assets" /
 // browser-back returns to the browse index without a re-fetch. Uses
@@ -32362,20 +32382,33 @@ function applyMarketFilters() {
     populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
     return;
   }
+  // Simple mode (default ON) filters the asks ladder to one-tx trustless
+  // preauth listings only — matching what the swap tile actually buys
+  // through. Atomic intents and OTC openings/ranges stay invisible until
+  // the user explicitly clicks "Show all offers". Counts in the header
+  // reflect both views so the user can see what's hidden.
+  const rowsFull = rows;
+  const rowsSimple = rowsFull.filter(l => l.kind === 'preauth');
+  const rowsForGrid = _marketSimpleMode ? rowsSimple : rowsFull;
+  const hiddenByMode = rowsFull.length - rowsSimple.length;
   // Asset-detail header above already shows the per-kind breakdown
   // (⚡ atomic · opening · range) and floor — no separate banner needed here.
   // The "no atomic offers under current filters" nudge is preserved in
   // compact form for the all-trust-required case where it actually adds info.
-  const atomicCount = rows.reduce((s, l) => s + (l.kind === 'intent' ? 1 : 0), 0);
-  const trustCount = rows.length - atomicCount;
-  const noAtomicHint = atomicCount === 0 && trustCount > 0
+  const atomicCount = rowsForGrid.reduce((s, l) => s + (l.kind === 'intent' ? 1 : 0), 0);
+  const trustCount = rowsForGrid.length - atomicCount;
+  const noAtomicHint = !_marketSimpleMode && atomicCount === 0 && trustCount > 0
     ? `<div style="margin-bottom:10px;font-size:11px;font-style:italic;" class="muted">no atomic offers under current filters — try kind=⚡ atomic</div>`
     : '';
-  // Asks-section header so the orderbook reads bids-on-top / asks-below.
-  // Trust hint clarifies that asks span both ⚡ atomic (trustless settlement)
-  // and OTC opening/range (counterparty trust); per-row badges still show the
-  // mode for each individual offer.
-  const asksHeaderHtml = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;"><strong>Asks · ${rows.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· sellers offering tokens for sats · ${$('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first'} (sort dropdown)</span></div>`;
+  // Asks-section header with mode toggle. Sort hint kept compact.
+  const sortLabel = $('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first';
+  const modeChip = _marketSimpleMode
+    ? `<button data-act="market-simple-toggle" type="button" title="Simple mode hides atomic intents and OTC offers. Click to show all offers — including ⚡ atomic (3-step trustless flow) and ⚠ OTC (counterparty trust required)." style="font-size:10px;padding:2px 8px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` (+${hiddenByMode} hidden)` : ''}</button>`
+    : `<button data-act="market-simple-toggle" type="button" title="Show only one-click trustless instant listings (what the swap tile routes through). Hides atomic intents and OTC offers." style="font-size:10px;padding:2px 8px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
+  const asksHeaderHtml = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><strong>Asks · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel}</span></div>
+      ${modeChip}
+    </div>`;
   // Swap tile: the primary trading action surface, modeled on Uniswap /
   // Jupiter-style "from / to" swap UIs. Top input is editable (what you
   // pay); bottom is a live estimate (what you receive). Click-to-flip
@@ -32486,6 +32519,12 @@ function applyMarketFilters() {
       <button data-swap-action type="button" disabled style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
     </div>`;
   })();
+  // Empty grid hint when simple mode hides all asks. Surfaces a clear
+  // way out so the user isn't staring at an empty orderbook on an
+  // atomic-heavy / OTC-only market.
+  const simpleEmptyHint = _marketSimpleMode && rowsForGrid.length === 0 && rowsFull.length > 0
+    ? `<div class="empty" style="padding:14px;text-align:center;font-size:11px;border:1px dashed var(--ink-faint);"><strong>No instant listings.</strong> <span class="muted">${rowsFull.length} offer${rowsFull.length === 1 ? '' : 's'} available — switch to <em>All offers</em> above to see atomic intents and OTC listings.</span></div>`
+    : '';
   list.innerHTML =
     assetHeaderHtml +
     statsHtml +
@@ -32493,9 +32532,20 @@ function applyMarketFilters() {
     bidsLadderHtml +
     asksHeaderHtml +
     noAtomicHint +
-    `<div id="market-grid" style="display:flex;flex-direction:column;gap:0;border:1px solid var(--ink);background:var(--bg);"></div>`;
+    simpleEmptyHint +
+    `<div id="market-grid" style="display:flex;flex-direction:column;gap:0;border:1px solid var(--ink);background:var(--bg);${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>`;
   bindMarketAssetHeader(list);
   _wireSwapTile(list);
+  // Simple-mode toggle in the asks header. Click flips the flag,
+  // persists to localStorage, and re-applies filters so the ladder
+  // redraws immediately with the new set.
+  list.querySelectorAll('[data-act="market-simple-toggle"]').forEach(btn => {
+    btn.onclick = () => {
+      _marketSimpleMode = !_marketSimpleMode;
+      _saveMarketSimple(_marketSimpleMode);
+      applyMarketFilters();
+    };
+  });
   populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
   populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
   const grid = $('#market-grid');
@@ -32503,7 +32553,7 @@ function applyMarketFilters() {
   // Build all tiles into a DocumentFragment first; one reflow at the end
   // instead of N reflows during the loop. Material on busy markets.
   const frag = document.createDocumentFragment();
-  for (const l of rows) {
+  for (const l of rowsForGrid) {
     const a = l._asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
