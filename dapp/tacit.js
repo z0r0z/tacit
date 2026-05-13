@@ -7508,6 +7508,7 @@ async function _scanHoldingsImpl() {
           ? firstIn.witness[1] : null;
         const ct = dec.outputs[u.vout].encryptedAmount;
         let recovered = null;
+        let recoveryPath = null; // 'ecdh' (recipient) or 'self' (change/padding); informs OTC settlement linking below
         if (senderPubHex) {
           const senderPub = hexToBytes(senderPubHex);
           const ks = deriveAmountKeystreamECDH(wallet.priv, senderPub, anchorBytes, u.vout);
@@ -7517,6 +7518,7 @@ async function _scanHoldingsImpl() {
             try {
               if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
                 recovered = { amount: candidate, blinding: r };
+                recoveryPath = 'ecdh';
               }
             } catch {}
           }
@@ -7530,6 +7532,7 @@ async function _scanHoldingsImpl() {
             try {
               if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
                 recovered = { amount: candidate, blinding: r };
+                recoveryPath = 'self';
               }
             } catch {}
           }
@@ -7538,7 +7541,17 @@ async function _scanHoldingsImpl() {
           // Persist for future scans (cheap)
           recordOpening(u.txid, u.vout, assetIdHex, recovered.amount, recovered.blinding);
           h.balance += recovered.amount;
-          h.utxos.push({ utxo: u, amount: recovered.amount, blinding: recovered.blinding, commitment: onChainCommitment });
+          // Stamp senderPubHex onto the UTXO entry so the post-scan OTC
+          // settlement reconciler can match received deliveries against
+          // outstanding `otc-reserved` activity entries (same asset_id +
+          // amount + maker_pubkey). Only meaningful when recoveryPath==='ecdh'
+          // — self-derived (change/padding) outputs have no upstream sender
+          // distinct from us.
+          h.utxos.push({
+            utxo: u, amount: recovered.amount, blinding: recovered.blinding, commitment: onChainCommitment,
+            senderPubHex: recoveryPath === 'ecdh' ? senderPubHex : null,
+            blockTime: u.status?.block_time || null,
+          });
           continue;
         }
       }
@@ -7570,7 +7583,66 @@ async function _scanHoldingsImpl() {
     (h.unverified && h.unverified.length > 0)
   );
   _lastFullScan = { utxoSig, hasUnresolved, holdings };
+  // OTC settlement reconciler. Walks open `otc-reserved` activity entries
+  // and marks any whose expected delivery has arrived. Match heuristic:
+  // same asset_id + amount ≥ reserved + sender_pubkey == maker_pubkey from
+  // the reservation + tx timestamp > reservation ts. Bounded scope — only
+  // entries from after the last reconciliation — so this stays cheap even
+  // on heavy activity logs. No coordinator involvement: the entire match
+  // happens locally against the buyer's own holdings + activity history.
+  try { _reconcileOtcSettlements(holdings); } catch (e) { console.warn('otc reconcile failed:', e); }
   return holdings;
+}
+
+// Match outstanding otc-reserved activity entries against newly-received
+// asset UTXOs and stamp them `settled` so the Activity tab can render
+// the obligation as closed instead of leaving it indefinitely.
+function _reconcileOtcSettlements(holdings) {
+  let arr;
+  try { arr = JSON.parse(localStorage.getItem(activityKey()) || '[]'); }
+  catch { return; }
+  if (!Array.isArray(arr) || !arr.length) return;
+  let mutated = false;
+  for (const entry of arr) {
+    if (entry.kind !== 'otc-reserved') continue;
+    if (entry.extra?.settled_txid) continue;  // already linked
+    const aid = entry.assetId || '';
+    if (!/^[0-9a-f]{64}$/.test(aid)) continue;
+    const h = holdings.get(aid);
+    if (!h || !h.utxos || !h.utxos.length) continue;
+    const reservedAmount = (() => { try { return BigInt(entry.amount || '0'); } catch { return 0n; } })();
+    if (reservedAmount <= 0n) continue;
+    const makerPub = String(entry.extra?.maker_pubkey || '').toLowerCase();
+    const reservedTs = Number(entry.ts) ? Math.floor(Number(entry.ts) / 1000) : 0;
+    // Find a UTXO that fits:
+    //   - amount ≥ reserved (for range listings: maker delivers ≥ threshold;
+    //     for opening listings: maker delivers exactly the reserved amount)
+    //   - senderPubHex matches the maker we reserved from (when known)
+    //   - confirmed AFTER the reservation timestamp (avoids matching pre-
+    //     existing UTXOs that happen to fit by accident)
+    const match = h.utxos.find(u => {
+      if (u.amount < reservedAmount) return false;
+      if (makerPub && u.senderPubHex && u.senderPubHex.toLowerCase() !== makerPub) return false;
+      if (reservedTs && u.blockTime && u.blockTime < reservedTs) return false;
+      return true;
+    });
+    if (match) {
+      entry.extra = entry.extra || {};
+      entry.extra.settled_txid = match.utxo.txid;
+      entry.extra.settled_vout = match.utxo.vout;
+      entry.extra.settled_at = match.blockTime || Math.floor(Date.now() / 1000);
+      mutated = true;
+    }
+  }
+  if (mutated) {
+    try { localStorage.setItem(activityKey(), JSON.stringify(arr)); } catch {}
+    // Best-effort re-render so the badge flips immediately when the user is
+    // on the Holdings tab (Activity panel lives there). Tabs are detected
+    // via the active class; off-tab Activity will re-render on next visit.
+    if (typeof document !== 'undefined') {
+      try { if (document.querySelector('.tab.active[data-tab="holdings"]')) renderActivity(); } catch {}
+    }
+  }
 }
 
 // ============== FEE EST ==============
@@ -28304,6 +28376,26 @@ function renderActivity() {
       const addrHtml = addr
         ? `<span class="mono-box inline" style="font-size:10px;">${escapeHtml(addr)}</span>`
         : '<span class="muted">(maker address missing)</span>';
+      // Settled branch — _reconcileOtcSettlements (post-scan) matched a
+      // received UTXO against this reservation by asset + amount + sender.
+      // Collapse the row to a settled-✓ confirmation so the obligation
+      // reads as closed; user can still see the original details below.
+      if (e.extra.settled_txid && /^[0-9a-f]{64}$/.test(String(e.extra.settled_txid))) {
+        const settledTx = String(e.extra.settled_txid);
+        extraLine = `
+          <div style="font-size:11px;margin-top:4px;line-height:1.5;color:#0a7d3a;">
+            ✓ Settled · maker delivered → <a href="${NET.explorer}/tx/${escapeHtml(settledTx)}" target="_blank" rel="noopener noreferrer" style="color:#0a7d3a;">tx ${escapeHtml(shorten(settledTx, 8))} ↗</a>
+          </div>
+          <div class="muted" style="font-size:10px;margin-top:2px;">paid ${price.toLocaleString()} sats to ${addrHtml}</div>`;
+        return `
+          <div class="activity-row">
+            <span class="activity-kind activity-${escapeHtml(e.kind)}" style="background:#e8f5ec;color:#0a7d3a;">${escapeHtml(verb)} ✓</span>
+            <span class="activity-amount">${escapeHtml(amtStr)}${tickerStr ? ' ' + tickerStr : ''}</span>
+            <span class="activity-time muted">${escapeHtml(relTime(e.ts))}</span>
+            <span class="activity-tx">${txLink}</span>
+            ${extraLine}
+          </div>`;
+      }
       // Payment-proof note (local). Buyer can paste their BTC payment txid
       // here for their own records — also useful in disputes. Stored in
       // extra.payment_txid; never sent to the worker. The maker won't see
