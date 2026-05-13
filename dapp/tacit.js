@@ -2104,6 +2104,43 @@ async function _getUtxosViaTxHistory(a) {
 // overhead. Cleared by invalidateHoldingsCache so broadcasts force a refetch.
 const _heavyAddresses = new Set();
 const _utxoCacheByTxCount = new Map(); // addr -> { txCount, utxos }
+// Session-scoped "this UTXO was just spent by a tx we broadcast" tracker.
+// Solves the indexer-lag race during back-to-back broadcasts (sweep buy,
+// rapid sends): mempool.space's /utxo endpoint can take 2–5s to reflect
+// a freshly-broadcast tx, so a second call to getUtxos may re-pick UTXOs
+// that are already spent in mempool, producing a "missing inputs" tx
+// rejection on the next broadcast.
+//
+// Keyed by "txid:vout". Each entry has an expiry timestamp; expired
+// entries are lazily cleaned on read (no timer needed). 90s TTL is well
+// above the worst-observed indexer lag and self-clears after the indexer
+// has long since caught up.
+const _recentlySpentUtxos = new Map(); // "txid:vout" -> expiresAtMs
+const _RECENT_SPENT_TTL_MS = 90 * 1000;
+function _markUtxoSpent(txid, vout) {
+  _recentlySpentUtxos.set(`${txid}:${vout | 0}`, Date.now() + _RECENT_SPENT_TTL_MS);
+}
+// Mark every input of an Esplora-shape tx (.vin[] with .txid + .vout)
+// as just-spent. Used after broadcasting to make getUtxos honest about
+// the new mempool state even before mempool.space reindexes /utxo.
+function _markTxInputsSpent(tx) {
+  if (!tx || !Array.isArray(tx.vin)) return;
+  for (const vin of tx.vin) {
+    if (vin && typeof vin.txid === 'string' && Number.isInteger(vin.vout)) {
+      _markUtxoSpent(vin.txid, vin.vout);
+    }
+  }
+}
+function _isRecentlySpent(txid, vout) {
+  const key = `${txid}:${vout | 0}`;
+  const exp = _recentlySpentUtxos.get(key);
+  if (!exp) return false;
+  if (exp <= Date.now()) {
+    _recentlySpentUtxos.delete(key);
+    return false;
+  }
+  return true;
+}
 function invalidateUtxoCache() { _utxoCacheByTxCount.clear(); _heavyAddresses.clear(); }
 async function _populateUtxoCache(a, utxos) {
   // Background sniff: fetch chain_stats.tx_count and stash alongside the just-
@@ -2117,6 +2154,15 @@ async function _populateUtxoCache(a, utxos) {
 }
 
 async function getUtxos(a) {
+  // Indexer-lag guard: filter out any UTXOs we *know* are spent in mempool
+  // (recorded by _markTxInputsSpent right after each broadcast we issued)
+  // but which the indexer's /utxo response may still include during the
+  // 2–5s reindex window. Applied to every getUtxos return path so any
+  // back-to-back broadcast — sweep buy, manual rapid sends, AMM
+  // — is safe from double-spending the same UTXO across two txs.
+  const _filterRecent = (utxos) => Array.isArray(utxos)
+    ? utxos.filter(u => !_isRecentlySpent(u.txid, u.vout))
+    : utxos;
   if (_heavyAddresses.has(a)) {
     // Heavy path: try the sniff-then-cache shortcut.
     const cached = _utxoCacheByTxCount.get(a);
@@ -2124,12 +2170,12 @@ async function getUtxos(a) {
       try {
         const info = await apiJson(`/address/${a}`);
         const txCount = (info?.chain_stats?.tx_count || 0) + (info?.mempool_stats?.tx_count || 0);
-        if (cached.txCount === txCount) return cached.utxos;
+        if (cached.txCount === txCount) return _filterRecent(cached.utxos);
       } catch { /* sniff failed; fall through to history walk */ }
     }
     const utxos = await _getUtxosViaTxHistory(a);
     _populateUtxoCache(a, utxos); // background; don't await
-    return utxos;
+    return _filterRecent(utxos);
   }
 
   // Light path: direct /utxo. Any 4xx that signals the indexer can't compute
@@ -2146,7 +2192,7 @@ async function getUtxos(a) {
   // The history walk handles each — provider limits differ, so even when
   // mempool.space refuses, blockstream often succeeds (see api() rotation).
   try {
-    return await apiJson(`/address/${a}/utxo`);
+    return _filterRecent(await apiJson(`/address/${a}/utxo`));
   } catch (e) {
     const msg = String(e && e.message || '');
     const isHeavyAddrError = /^API 4\d\d/.test(msg) && (
@@ -2158,7 +2204,7 @@ async function getUtxos(a) {
       _heavyAddresses.add(a);
       const utxos = await _getUtxosViaTxHistory(a);
       _populateUtxoCache(a, utxos);
-      return utxos;
+      return _filterRecent(utxos);
     }
     throw e;
   }
@@ -33564,6 +33610,26 @@ function _wireMarketSweepBuy(section, asset) {
           try {
             const r = await takePreauthSale({ assetIdHex: aid, saleIdHex: saleId, sale: c.l });
             fills.push({ saleId, txid: r?.reveal_txid || r?.commit_txid, amt: c.amt, ps: c.ps });
+            // Critical for multi-fill sweeps: tell getUtxos which inputs
+            // we just consumed so the NEXT fill doesn't re-pick them.
+            // mempool.space's /utxo endpoint can take 2–5s to reflect a
+            // freshly-broadcast tx; without this, a 3rd or 4th fill would
+            // reliably double-spend its own ancestor and fail with
+            // "missing inputs". Fetch both commit + reveal so all
+            // buyer-side inputs across both legs land in the set.
+            const _mark = async (txid) => {
+              if (!txid) return;
+              try { const tx = await getTx(txid); _markTxInputsSpent(tx); }
+              catch { /* indexer lag — fall back to TTL'd entries others may have */ }
+            };
+            await Promise.all([_mark(r?.commit_txid), _mark(r?.reveal_txid)]);
+            // Brief settle delay before the next fill so the broadcast
+            // propagates through mempool.space's edge cache. Combined with
+            // the _recentlySpentUtxos filter above, this gives the indexer
+            // a chance to reflect both txs before the next getUtxos call.
+            if (i < plan.length - 1) {
+              await new Promise(res => setTimeout(res, 1500));
+            }
           } catch (e) {
             fails.push({ saleId, err: e?.message || String(e) });
             break;
