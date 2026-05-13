@@ -19116,6 +19116,21 @@ async function resolveImageUri(imageUri) {
                 description: typeof j.description === 'string' ? j.description : null,
                 external_url: safeExternal,
               };
+              // Capture the supply-attestation block when present so the
+              // Market asset page can compute market cap without a
+              // worker /attest record (etchers who pinned attestation
+              // to IPFS but never POSTed to the worker). Verification
+              // (pedersen_commit(supply, blinding) == on-chain
+              // commitment) happens at use-site, not here — we just
+              // carry the raw fields through.
+              if (j.tacit_attest
+                  && /^\d+$/.test(String(j.tacit_attest.supply || ''))
+                  && /^[0-9a-f]{64}$/.test(String(j.tacit_attest.blinding || ''))) {
+                extra.tacit_attest = {
+                  supply: String(j.tacit_attest.supply),
+                  blinding: String(j.tacit_attest.blinding),
+                };
+              }
             }
           } catch {}
         }
@@ -33239,18 +33254,62 @@ async function populateMarketAssetStats(scope, asset) {
     ? Number(j.mark_price.unit) : null;
   let supplyHtml = '<span class="muted" style="font-weight:normal;">hidden · etcher hasn\'t attested</span>';
   let mcapHtml = '<span class="muted" style="font-weight:normal;">—</span>';
+  // Resolve supply from one of three sources, in order of trust:
+  //   1) Worker attestation (j.attestation) — set when the etcher POSTed
+  //      (supply, blinding) to /attest and the worker verified it.
+  //   2) IPFS metadata tacit_attest block — embedded by the dapp's etch
+  //      builder. The (supply, blinding) here is content-addressed by
+  //      the IPFS CID that the on-chain envelope's image_uri points to,
+  //      so substitution is detectable. We verify locally:
+  //         pedersen_commit(supply, blinding) == on-chain commitment
+  //      If that holds, we treat it as authoritative even when the
+  //      worker has no /attest record. Resolved supply gets a
+  //      "(from IPFS metadata)" attribution tail.
+  //   3) Otherwise: hidden.
+  let resolvedSupplyBig = null;
+  let supplySourceLabel = null;
   if (att && typeof att.supply === 'string') {
     let supplyBig = 0n; try { supplyBig = BigInt(att.supply); } catch {}
     if (supplyBig > 0n) {
-      supplyHtml = `${escapeHtml(fmtAssetAmount(supplyBig, decimals))} ${escapeHtml(ticker)}`;
-      if (markUnit != null) {
-        const wholeSupply = Number(supplyBig) / Math.pow(10, decimals);
-        const mcapSats = Math.round(wholeSupply * markUnit);
-        const mcapUsd = btcUsd ? fmtSatsAsUsd(mcapSats, btcUsd) : null;
-        mcapHtml = `${mcapSats.toLocaleString()} sats${mcapUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(mcapUsd)}</span>` : ''}`;
-      } else {
-        mcapHtml = '<span class="muted" style="font-weight:normal;">need mark price</span>';
-      }
+      resolvedSupplyBig = supplyBig;
+      supplySourceLabel = 'worker';
+    }
+  }
+  if (!resolvedSupplyBig && j.image_uri && /^[0-9a-f]{66}$/.test(String(j.commitment || ''))) {
+    // Ensure IPFS metadata is fetched + cached. resolveImageUri dedupes
+    // in-flight, so this is cheap when the asset header already
+    // triggered it. Returns the resolved gateway URL; we read tacit_attest
+    // out of the cache map.
+    try { await resolveImageUri(j.image_uri); } catch {}
+    const extras = getMetadataExtras(j.image_uri);
+    const ipfsAtt = extras?.tacit_attest;
+    if (ipfsAtt && /^\d+$/.test(String(ipfsAtt.supply || '')) && /^[0-9a-f]{64}$/.test(String(ipfsAtt.blinding || ''))) {
+      try {
+        const sup = BigInt(ipfsAtt.supply);
+        const r = BigInt('0x' + ipfsAtt.blinding);
+        if (sup > 0n && sup < (1n << BigInt(N_BITS)) && r > 0n && r < SECP_N) {
+          const expected = pedersenCommit(sup, r);
+          const onChain = bytesToPoint(hexToBytes(j.commitment));
+          if (expected.equals(onChain)) {
+            resolvedSupplyBig = sup;
+            supplySourceLabel = 'ipfs';
+          }
+        }
+      } catch { /* malformed IPFS attest — fall through to hidden */ }
+    }
+  }
+  if (resolvedSupplyBig != null) {
+    const supTail = supplySourceLabel === 'ipfs'
+      ? `<span class="muted" style="font-weight:normal;" title="Total supply revealed in the etch's IPFS metadata. Verified locally: pedersen_commit(supply, blinding) == on-chain commitment."> (IPFS-verified)</span>`
+      : `<span class="muted" style="font-weight:normal;" title="Total supply attested to the worker by the etcher; verified at POST time against the on-chain commitment."> (worker-attested)</span>`;
+    supplyHtml = `${escapeHtml(fmtAssetAmount(resolvedSupplyBig, decimals))} ${escapeHtml(ticker)}${supTail}`;
+    if (markUnit != null) {
+      const wholeSupply = Number(resolvedSupplyBig) / Math.pow(10, decimals);
+      const mcapSats = Math.round(wholeSupply * markUnit);
+      const mcapUsd = btcUsd ? fmtSatsAsUsd(mcapSats, btcUsd) : null;
+      mcapHtml = `${mcapSats.toLocaleString()} sats${mcapUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(mcapUsd)}</span>` : ''}`;
+    } else {
+      mcapHtml = '<span class="muted" style="font-weight:normal;">need mark price</span>';
     }
   }
   setText('[data-market-stat-mcap]', mcapHtml, true);
@@ -33317,18 +33376,21 @@ async function populateMarketAssetStats(scope, asset) {
       ? `${bidsTotalSats.toLocaleString()} sats${bidsUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(bidsUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${bidsCount} bid${bidsCount === 1 ? '' : 's'}</span>`
       : '—',
     true);
-  // Etcher CTA: when no attestation exists, surface the path to reveal
-  // supply. Different copy for the etcher (actionable) vs everyone else
-  // (informational about what's hidden).
+  // Etcher CTA: shown only when NO supply source resolved (neither
+  // worker /attest nor IPFS tacit_attest). IPFS-verified supply is just
+  // as legitimate as worker-attested — both ultimately verify
+  // pedersen_commit(supply, blinding) against the on-chain commitment —
+  // so we hide the CTA either way. When neither is present, the etcher
+  // gets actionable copy; everyone else gets the honest explanation.
   const ctaEl = section.querySelector('[data-market-attest-cta]');
-  if (ctaEl && !att) {
+  if (ctaEl && resolvedSupplyBig == null) {
     let amEtcher = false;
     try { amEtcher = !!_holdingsCache?.holdings?.get(aid)?.isEtcher; } catch {}
     if (amEtcher) {
-      ctaEl.innerHTML = `<strong>You're the etcher of ${escapeHtml(ticker)}.</strong> Total supply is committed on chain (your CETCH envelope locked <code>(supply, blinding)</code>) but publicly hidden. Click <strong>Reveal initial supply</strong> on your ${escapeHtml(ticker)} card in Holdings to publish the opening so anyone can verify and so market cap becomes computable.`;
+      ctaEl.innerHTML = `<strong>You're the etcher of ${escapeHtml(ticker)}.</strong> Total supply is committed on chain but no public opening exists yet. The dapp can pin the (supply, blinding) opening into IPFS metadata at re-etch time, or you can POST to the worker's /attest endpoint. Click <strong>Reveal initial supply</strong> on your ${escapeHtml(ticker)} card in Holdings to publish.`;
       ctaEl.style.display = '';
     } else {
-      ctaEl.innerHTML = `<span class="muted">Total supply is confidential — the etcher hasn't published the attestation. The on-chain commitment is real (verified by every node), but its value is hidden. <strong>Disclosed ≥</strong> below is a public lower bound from per-UTXO openings.</span>`;
+      ctaEl.innerHTML = `<span class="muted">Total supply is confidential — no attestation found via the worker or IPFS metadata. The on-chain commitment is real (verified by every node), but its value is hidden. <strong>Disclosed ≥</strong> below is a public lower bound from per-UTXO openings.</span>`;
       ctaEl.style.display = '';
     }
   } else if (ctaEl) {
