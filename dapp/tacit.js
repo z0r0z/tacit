@@ -7125,6 +7125,50 @@ async function _scanHoldingsImpl() {
     pmintStatusOut.clear();
   }
 
+  // Auto-retry pass for fetch-failed cascades. Before letting any UTXO land
+  // in h.unverified, give the failed ancestor fetches one more shot with a
+  // fresh network round-trip (the per-scan txCache memoized null on the
+  // first try; evict those nulls so the retry actually re-fetches). With
+  // the global api() semaphore in place, the retry is throttled rather
+  // than bursting against rate limits a second time. Self-heals the
+  // overwhelmingly-common case where one indexer call returned null mid-
+  // walk, eliminating user-visible "couldn't verify" warnings for the
+  // standard rate-limit-blip scenario.
+  const fetchFailedKeys = [];
+  for (const [k, reason] of validatedReasons) {
+    if (reason === _REASON_FETCH_FAILED) fetchFailedKeys.push(k);
+  }
+  if (fetchFailedKeys.length > 0) {
+    // Evict per-scan txCache entries for ancestors whose first fetch
+    // returned null; without this, getTx's per-scan memoization would
+    // serve the cached null on the retry and we'd loop forever.
+    const failedTxids = new Set(fetchFailedKeys.map(k => k.split(':')[0]));
+    for (const txid of failedTxids) {
+      if (txCache.get(txid) === null) txCache.delete(txid);
+    }
+    // Clear the false-marks (and reasons) for the fetch-failed entries so
+    // the re-walk isn't short-circuited by the cached negative result.
+    // True entries stay — they're verified and short-circuit appropriately.
+    for (const k of fetchFailedKeys) {
+      validatedSet.delete(k);
+      validatedReasons.delete(k);
+    }
+    // Re-walk every wallet UTXO whose result was (or whose ancestor was)
+    // fetch-failed. The validator's BFS + validatedSet memoization means
+    // most of the re-walk completes from the persistent cache; only the
+    // previously-failed ancestors actually hit the network. rpBatch=null
+    // so individual rangeproofs verify directly — the batched optimistic
+    // path was already either consumed or invalidated above.
+    const retryUtxoKeys = new Set(
+      fetchFailedKeys.filter(k => utxos.some(u => `${u.txid}:${u.vout}` === k)),
+    );
+    for (const u of utxos) {
+      if (!retryUtxoKeys.has(`${u.txid}:${u.vout}`)) continue;
+      await validateOutpoint(u.txid, u.vout, validatedSet, fetchTx, 0, metadataOut, null, pmintStatusOut, validatedReasons)
+        .catch(e => { console.warn('auto-retry validateOutpoint threw for', u.txid + ':' + u.vout, e); return false; });
+    }
+  }
+
   for (const u of utxos) {
     const tx = await fetchTx(u.txid);
     if (!tx || !tx.vin || !tx.vin[0]) continue;
