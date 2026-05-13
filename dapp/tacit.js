@@ -18969,28 +18969,41 @@ function setupWalletButtons() {
     }
     _txt.value = '';
     if (_errEl) _errEl.textContent = '';
-    _modal.style.display = 'flex';
-    // Defer focus so iOS Safari's modal-display animation doesn't eat the
-    // focus event (known quirk: focus() on just-displayed element gets
-    // ignored mid-animation).
+    // Reset inline display to '' so the .pass-modal CSS rules (display:
+    // grid; place-items: center) take over. Previously we hardcoded
+    // 'flex' which clobbered the grid centering and shoved the card to
+    // the viewport's left edge on wide screens.
+    _modal.style.display = '';
     setTimeout(() => _txt.focus(), 50);
     await new Promise((resolve) => {
-      const cleanup = () => {
+      const closeModal = () => {
         _okBtn.onclick = null;
         _cancelBtn.onclick = null;
         _modal.style.display = 'none';
         if (_errEl) _errEl.textContent = '';
         _txt.value = '';
-        resolve();
       };
+      const cleanup = () => { closeModal(); resolve(); };
       _okBtn.onclick = async () => {
         const v = (_txt.value || '').trim();
         if (!v) {
           if (_errEl) _errEl.textContent = 'paste a private key first';
           return;
         }
-        try { await _doImport(v); cleanup(); }
-        catch (e) { if (_errEl) _errEl.textContent = 'import failed: ' + e.message; }
+        // Close the import modal BEFORE calling _doImport — setPriv
+        // opens a follow-up passphrase modal, and without this the
+        // import modal lingers visibly behind the passphrase prompt
+        // until both flows finish. User then has to click out twice.
+        closeModal();
+        try {
+          await _doImport(v);
+        } catch (e) {
+          // setPriv failed (bad hex or user cancelled passphrase) —
+          // surface the error as a toast since the import modal is
+          // already gone.
+          toast('Import failed: ' + (e?.message || String(e)), 'error');
+        }
+        resolve();
       };
       _cancelBtn.onclick = cleanup;
     });
@@ -34759,9 +34772,11 @@ function renderMarketAssetStatsHTML(asset) {
       <div data-market-attest-cta style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;"></div>
       <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
       <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;"></div>
-      <div data-market-recent-trades style="margin-top:10px;font-size:11px;">
-        <div class="muted" style="font-size:11px;"><span class="live-dots">loading recent trades</span></div>
-      </div>
+      <!-- Recent-trades mini-list intentionally removed: redundant with
+           the Activity tab below, which shows the same events plus
+           listings + cancellations, paginated and filterable. The chart
+           above visualizes the same data spatially; the table form
+           lives in Activity. -->
     </div>`;
 }
 
@@ -35683,14 +35698,26 @@ async function populateMarketBidsLadder(scope, asset) {
   catch (e) {
     list.innerHTML = `<div class="muted" style="font-size:10px;">load failed: ${escapeHtml(e?.message || String(e))}</div>`;
     if (countEl) countEl.textContent = '?';
+    // Wire all panel-header buttons even on failure — Sweep Buy works
+    // against the asks ladder (independent of bids), and Auto-fulfil is
+    // a global daemon toggle. Without this, all four would be inert on
+    // assets that 4xx'd on /bids.
     _wireMarketBidPlace(section, asset);
+    _wireMarketSweepBuy(section, asset);
+    _wireMarketSweepSell(section, asset);
+    _wireAutoFulfilToggle(section);
     return;
   }
   if (countEl) countEl.textContent = String(intentsAll.length);
   if (toggleBtn && list) toggleBtn.textContent = list.hidden ? `Show bids${intentsAll.length ? ` (${intentsAll.length})` : ''}` : 'Hide bids';
   if (!intentsAll.length) {
     list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} &mdash; be the first to post one.</div>`;
+    // Same fix: an asset with no bids should still have working
+    // Sweep Buy / Sweep Sell / Auto-fulfil controls.
     _wireMarketBidPlace(section, asset);
+    _wireMarketSweepBuy(section, asset);
+    _wireMarketSweepSell(section, asset);
+    _wireAutoFulfilToggle(section);
     return;
   }
   // Best bid (highest unit price) at the top of the ladder. Mirror of the
@@ -37435,17 +37462,37 @@ function bindMarketAssetHeader(scope) {
         showMarketListPreviewModal(aid);
         return;
       }
+      // Visible feedback: button was inert-looking because the navigate +
+      // poll-for-list-button flow could take 1-2s on a cold Holdings
+      // render, during which the user saw no change. Tap a toast and
+      // briefly mark the button as "opening…" so the click reads.
+      const origLabel = btn.textContent;
+      btn.textContent = 'opening…';
+      btn.disabled = true;
+      try { toast('Opening listing form…', '', 1500); } catch {}
       const holdingsTab = $('.tab[data-tab="holdings"]');
       if (holdingsTab) holdingsTab.click();
+      const MAX_ATTEMPTS = 50; // 50 * 100ms = 5s — generous on cold renders
       const triggerList = (attempt = 0) => {
         const target = document.querySelector(`button[data-act="list-preauth"][data-aid="${CSS.escape(aid)}"]`);
         if (target) {
           target.scrollIntoView({ behavior: 'smooth', block: 'center' });
           target.click();
+          btn.textContent = origLabel;
+          btn.disabled = false;
           return;
         }
-        if (attempt < 20) setTimeout(() => triggerList(attempt + 1), 100);
-        else showMarketListPreviewModal(aid);
+        if (attempt < MAX_ATTEMPTS) setTimeout(() => triggerList(attempt + 1), 100);
+        else {
+          // Holdings tab never rendered the list button for this asset
+          // — could be a stale _holdingsCache flag, a slow scan, or a
+          // wallet that has since been swapped. Fall back to the
+          // preview modal (now wired with Unlock + Manage Wallet CTAs)
+          // so the user has a path forward.
+          btn.textContent = origLabel;
+          btn.disabled = false;
+          showMarketListPreviewModal(aid);
+        }
       };
       setTimeout(triggerList, 50);
     };
