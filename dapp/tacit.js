@@ -27775,7 +27775,7 @@ async function renderHoldings() {
           `<details data-advanced-listings="${h.assetIdHex}" style="display:inline-block;">` +
             `<summary style="font-size:11px;color:var(--ink-mid);cursor:pointer;padding:6px 8px;list-style:none;">More listing options ▾</summary>` +
             `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">` +
-              `<button data-act="publish-intent" data-aid="${h.assetIdHex}" title="Trustless. Post an open offer; takers claim & you fulfil. Same atomic settlement as Instant but you stay online to fulfil.">Atomic offer (open)</button>` +
+              `<button data-act="publish-intent" data-aid="${h.assetIdHex}" title="Trustless. Post an open offer; takers claim & you fulfil. Same atomic settlement as preauth but you stay online to fulfil.">Atomic offer (open)</button>` +
               `<button data-act="list-atomic" data-aid="${h.assetIdHex}" title="Trustless, targeted. Generate a share-link offer for one specific recipient.">Targeted offer (share-link)</button>` +
               `<button data-act="list-sale" data-aid="${h.assetIdHex}" title="OTC (requires counterparty trust). Publish a per-UTXO opening + price; settlement is off-chain.">OTC · per-UTXO opening</button>` +
               `<button data-act="list-range" data-aid="${h.assetIdHex}" title="OTC + privacy. Publish a zero-knowledge proof of balance ≥ K; settlement is off-chain.">OTC · hidden balance</button>` +
@@ -29104,7 +29104,7 @@ async function renderHoldings() {
                 </div>
               </div>
               <div class="muted" style="margin-top:10px;font-size:11px;line-height:1.5;">
-                ⚡ <strong>Instant listing</strong> — you can go offline after publishing. Any buyer can complete the sale by paying ≥ min price to your wallet; no fulfilment step required.<br>
+                ⚡ <strong>instant listing</strong> — you can go offline after publishing. Any buyer can complete the sale by paying ≥ min price to your wallet; no fulfilment step required.<br>
                 ⚠ This publishes the listed UTXO's (amount, blinding) opening. Per-lot disclosure; other holdings unaffected.<br>
                 ⚠ Cancel by clicking Cancel here or by spending the listed UTXO yourself — either invalidates the listing on the next on-chain check.
               </div>
@@ -32498,7 +32498,7 @@ function applyMarketFilters() {
     const kindTrustBadge = l.kind === 'intent'
       ? `<span style="flex:0 0 auto;padding:1px 6px;background:#7d4ff7;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Atomic intent — confidential token transfer + BTC payment close in one Bitcoin tx. No counterparty trust required. Seller must come back online to fulfil after a buyer claims.">⚡ atomic</span>`
       : l.kind === 'preauth'
-        ? `<span style="flex:0 0 auto;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Instant listing (SPEC §5.7.8) — seller signed once at listing time, buyer completes settlement alone via ECDH-derived recipient blinding. No counterparty trust required, no seller-online step. Discloses the listed UTXO's amount + blinding.">⚡ instant</span>`
+        ? `<span style="flex:0 0 auto;padding:1px 6px;background:#0a8f43;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Instant listing (SPEC §5.7.8) — seller pre-signed at listing time, so the buyer completes settlement in ONE Bitcoin tx without a back-and-forth. Atomic on chain (asset and sats both move or neither does). Trustless. Note: 'one tx' means one broadcast — still needs Bitcoin confirmation like any other tx.">⚡ instant</span>`
         : l.kind === 'range'
           ? `<span style="flex:0 0 auto;padding:1px 6px;background:#b8651d;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Range-disclosed OTC — maker proved balance ≥ amount via bulletproof, exact balance hidden. Off-chain settlement; counterparty trust required.">⚠ OTC range</span>`
           : `<span style="flex:0 0 auto;padding:1px 6px;background:#b8651d;color:#fff;font-size:9px;letter-spacing:0.04em;border-radius:2px;cursor:help;font-weight:600;" title="Opening OTC — maker published the exact (amount, blinding) opening. Off-chain settlement; counterparty trust required.">⚠ OTC opening</span>`;
@@ -32760,12 +32760,12 @@ function renderMarketBrowse(rows) {
     else if (l.kind === 'preauth') g.preauths = (g.preauths || 0) + 1;
     g.total = g.openings + g.ranges + g.intents + (g.preauths || 0);
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-    // Preauth listings live in a different shape (asset_opening.amount +
+    // Instant listings live in a different shape (asset_opening.amount +
     // min_price_sats) than opening/intent (amount + price_sats) or range
     // (threshold + price_sats). Walking the same union means we have to
     // map per-kind — previously the browse grid silently skipped preauth
     // from both the floor calc (price_sats is undefined → 0) and the tile
-    // total. Markets with only preauth listings showed "0 offers · no floor".
+    // total. Markets with only instant listings showed "0 offers · no floor".
     const amt = l.kind === 'range' ? l.threshold
               : l.kind === 'preauth' ? (l.asset_opening?.amount)
               : l.amount;
@@ -32810,7 +32810,7 @@ function renderMarketBrowse(rows) {
         ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
         : verifiedBadgeHTML(a);
     const kindBits = [];
-    if (g.preauths) kindBits.push(`<span style="color:#0a8f43;font-weight:bold;" title="instant listings (trustless, seller offline)">⚡ ${g.preauths} instant</span>`);
+    if (g.preauths) kindBits.push(`<span style="color:#0a8f43;font-weight:bold;" title="instant listings (trustless, seller offline)">⚡ ${preauths} instant</span>`);
     if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic offers (trustless, claim-and-take)">⚡ ${g.intents} atomic</span>`);
     if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
     if (g.ranges) kindBits.push(`<span title="range listings (trust-required OTC)">${g.ranges} range</span>`);
@@ -32938,7 +32938,7 @@ function renderMarketAssetHeader(assetId, rows) {
   // tab bounce). _wireMarketAskPlace mounts the form into [data-market-ask-form].
   const userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(safeAid));
   const listCtaHtml = userHoldsAsset
-    ? `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" title="You hold this asset — list one of your UTXOs for sale via an Instant listing (signed once at listing time, buyer completes settlement)." style="font-size:11px;padding:6px 10px;flex-shrink:0;background:#0a8f43;border-color:#0a7d3a;color:#fff;">+ List for sale</button>`
+    ? `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" title="You hold this asset — list one of your UTXOs for sale via an instant listing (signed once at listing time, buyer completes settlement)." style="font-size:11px;padding:6px 10px;flex-shrink:0;background:#0a8f43;border-color:#0a7d3a;color:#fff;">+ List for sale</button>`
     : '';
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
@@ -33570,7 +33570,7 @@ function renderMarketBidsLadderHTML(asset) {
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button data-act="auto-fulfil-toggle" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">🤖 Auto-fulfil: OFF</button>
-          <button data-act="market-sweep-buy" data-aid="${aid}" type="button" title="Buy a target amount immediately by sweeping the asks ladder. Walks cheapest-first under your price cap; each fill is one Bitcoin tx. Trustless (preauth Instant listings only)." style="font-size:11px;padding:4px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;">⚡ Sweep buy</button>
+          <button data-act="market-sweep-buy" data-aid="${aid}" type="button" title="Buy a target amount immediately by sweeping the asks ladder. Walks cheapest-first under your price cap; each fill is one Bitcoin tx. Trustless (instant listings only)." style="font-size:11px;padding:4px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;">⚡ Sweep buy</button>
           <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell into the bids ladder by sweeping highest-priced bids first. Each fill publishes an atomic intent — settlement awaits each bidder's Take (typically 1-30 min). Trustless." style="font-size:11px;padding:4px 10px;background:#b8341d;border:1px solid #9b2a16;color:#fff;font-weight:600;">⚡ Sweep sell</button>
           <button data-act="market-bid-place" data-aid="${aid}" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">+ Place a bid on ${ticker}</button>
         </div>
@@ -33886,7 +33886,7 @@ function _wireAutoFulfilToggle(section) {
 
 // Sweep buy: limit-buy a target amount by walking the asks ladder
 // cheapest-first under a user-set price cap. Each fill is one Bitcoin tx
-// (preauth Instant listings only — atomic intents are excluded from v1
+// (instant listings only — atomic intents are excluded from v1
 // because their 3-step claim-fulfil-take flow would turn a single sweep
 // into a multi-minute babysit). Pre-flight shows what will fill before
 // any signing. Sequential broadcast (not parallel: preauth take spends
@@ -34161,7 +34161,7 @@ function _wireSwapTile(scope) {
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
       if (!confirm(
         `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?\n\n` +
-        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} via preauth Instant listings.\n` +
+        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} vian instant listings.\n` +
         `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
         (usd ? `≈ ${usd}\n` : '') +
         `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast.`
@@ -34271,8 +34271,8 @@ function _wireMarketSweepBuy(section, asset) {
       : '';
     formHost.innerHTML = `
       <div style="border:1px dashed var(--ink-faint);padding:10px;background:var(--bg-warm);">
-        <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">⚡ Sweep buy ${escapeHtml(ticker)} (Instant listings only)</div>
-        <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:6px;">Walks the asks ladder cheapest-first under your price cap. Each fill is one Bitcoin tx, broadcast sequentially. Trustless — preauth Instant listings only. Stops on first failure; partial fills are reported.</div>
+        <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">⚡ Sweep buy ${escapeHtml(ticker)} (instant listings only)</div>
+        <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:6px;">Walks the asks ladder cheapest-first under your price cap. Each fill is one Bitcoin tx, broadcast sequentially. Trustless — instant listings only. Stops on first failure; partial fills are reported.</div>
         ${_refLine}
         <div class="flex" style="gap:6px;flex-wrap:wrap;">
           <label style="font-size:10px;flex:1;min-width:120px;">Target amount (${escapeHtml(ticker)})
@@ -34313,7 +34313,7 @@ function _wireMarketSweepBuy(section, asset) {
       if (targetAmtBig <= 0n) { statusEl.textContent = 'amount must be > 0'; return; }
       const capUnit = Number(pRaw);
       if (!Number.isFinite(capUnit) || capUnit <= 0) { statusEl.textContent = 'cap must be > 0 sats/token'; return; }
-      // Walk preauth listings for this asset. Filter: not mine, not expired,
+      // Walk instant listings for this asset. Filter: not mine, not expired,
       // unit price ≤ cap. Sort cheapest first; accumulate until we'd
       // overshoot. Each preauth sells a whole UTXO — can't partial-take —
       // so the accumulated total may stop short of target if the next ask
@@ -34333,7 +34333,7 @@ function _wireMarketSweepBuy(section, asset) {
         .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= capUnit && c.amt > 0n)
         .sort((x, y) => x.u - y.u);
       if (!candidates.length) {
-        planEl.innerHTML = `<div class="muted" style="font-size:11px;">No preauth Instant listings under ${capUnit.toLocaleString()} sats/${escapeHtml(ticker)}. ${residualEl.checked ? 'Submit will post your target as a bid.' : 'Raise the cap or use Place a bid instead.'}</div>`;
+        planEl.innerHTML = `<div class="muted" style="font-size:11px;">No instant listings under ${capUnit.toLocaleString()} sats/${escapeHtml(ticker)}. ${residualEl.checked ? 'Submit will post your target as a bid.' : 'Raise the cap or use Place a bid instead.'}</div>`;
         return;
       }
       const plan = [];
@@ -34579,7 +34579,7 @@ function _wireMarketSweepSell(section, asset) {
       try { bids = await _fetchBidIntentsCached(aid); }
       catch { statusEl.textContent = 'failed to fetch bids — check connection'; return; }
       if (!Array.isArray(bids) || bids.length === 0) {
-        planEl.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} yet. Use "+ List for sale" to create a preauth listing instead.</div>`;
+        planEl.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} yet. Use "+ List for sale" to create an instant listing instead.</div>`;
         return;
       }
       const candidates = bids
@@ -34965,7 +34965,7 @@ function bindMarketAssetHeader(scope) {
   });
 }
 
-// Mount an in-page Place Ask form (Instant / preauth listing) into a host
+// Mount an in-page Place Ask form (instant listing) into a host
 // element on the asset page. Mirrors the Holdings list-preauth form's
 // fields + submit logic but lives directly under the asset header so the
 // user doesn't have to leave the orderbook view to make a market.
@@ -34995,7 +34995,7 @@ function _renderMarketAskForm(formHost, aid) {
   ).join('');
   formHost.innerHTML = `
     <div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;">
-      <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">⚡ List ${escapeHtml(target.ticker || 'token')} for sale (Instant)</div>
+      <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">⚡ List ${escapeHtml(target.ticker || 'token')} for sale (preauth)</div>
       <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:8px;">Sign once at listing time. Any buyer completes settlement alone via ECDH-derived recipient blinding — no fulfilment step from you. Discloses the listed UTXO's (amount, blinding).</div>
       <label style="font-size:10px;">Pick UTXO to sell ▾ (smallest first; whole UTXO sold atomically)</label>
       <select data-field="utxo">${utxoOpts}</select>
@@ -35509,7 +35509,7 @@ async function marketTakePreauthHandler(btn) {
         else if (stage === 'broadcast-start') btn.textContent = 'broadcasting reveal…';
       },
     });
-    toast(`Instant buy complete ✓ — reveal ${shorten(r.reveal_txid, 6)}; asset will appear in Holdings after confirmation`, 'success', 10000);
+    toast(`Preauth buy complete ✓ — reveal ${shorten(r.reveal_txid, 6)}; asset will appear in Holdings after confirmation`, 'success', 10000);
     invalidateMarketCache();
     setTimeout(() => { renderActivity(); renderMarket(); }, 800);
     // Leave button disabled on success — renderMarket replaces the tile.
@@ -35520,7 +35520,7 @@ async function marketTakePreauthHandler(btn) {
       // takePreauthSale's error message already references the persisted
       // recovery record + commit_txid when reveal-leg failure stranded the
       // commit-value sats. Show it long enough to read.
-      toast('Instant buy failed: ' + e.message, 'error', 12000);
+      toast('Preauth buy failed: ' + e.message, 'error', 12000);
     }
     restore();
   }
@@ -35556,7 +35556,7 @@ async function marketCancelPreauthHandler(btn) {
   btn.textContent = 'cancelling…';
   try {
     await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
-    toast('Instant listing cancelled ✓', 'success');
+    toast('instant listing cancelled ✓', 'success');
     invalidateMarketCache();
     setTimeout(() => renderMarket(), 500);
   } catch (e) {
