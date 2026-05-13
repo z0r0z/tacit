@@ -2919,24 +2919,54 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
       const num = BigInt(Math.floor(p)) * (10n ** BigInt(_dec)) * 100000000n;
       return Number(num / a) / 1e8;
     };
-    // 1) last_trade unit price — authoritative when present.
-    if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
-      const u = _u(lastTrade.price_sats, lastTrade.amount);
-      if (u != null && u > 0) {
-        v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
-      }
-    }
-    // 2) Median of recent ring as a manipulation-resistant fallback when
-    //    last_trade is missing but the ring has entries.
-    if (!v.mark_price && Array.isArray(ring) && ring.length > 0) {
+    // Compute the recent-ring median up-front so the last_trade path can
+    // outlier-guard against it. A single fat-finger or wash trade
+    // shouldn't swing the entire asset's mark price (which feeds market
+    // cap, holdings valuation, swap-tile reference) by orders of
+    // magnitude — but the previous "last_trade wins unconditionally"
+    // logic let exactly that happen on small-cap volatile tokens.
+    let _ringMedian = null;
+    let _ringSampleCount = 0;
+    if (Array.isArray(ring) && ring.length > 0) {
       const units = ring.map(t => _u(t.price_sats, t.amount))
         .filter(u => Number.isFinite(u) && u > 0)
         .sort((a, b) => a - b);
       if (units.length > 0) {
         const mid = units.length >> 1;
-        const med = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
-        v.mark_price = { unit: med, source: 'median', sample: units.length };
+        _ringMedian = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
+        _ringSampleCount = units.length;
       }
+    }
+    // 1) last_trade unit price — authoritative when within 5× of the
+    //    recent-ring median. Above that, the print is treated as an
+    //    outlier and the median takes over with source='median_outlier_guard'
+    //    so callers can tell the difference (e.g., chart can show "fat-
+    //    finger filtered").
+    if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
+      const u = _u(lastTrade.price_sats, lastTrade.amount);
+      if (u != null && u > 0) {
+        if (_ringMedian != null && _ringSampleCount >= 5) {
+          const ratio = u / _ringMedian;
+          if (ratio > 5 || ratio < 0.2) {
+            v.mark_price = {
+              unit: _ringMedian,
+              source: 'median_outlier_guard',
+              sample: _ringSampleCount,
+              last_trade_unit: u,
+              last_trade_ratio_to_median: ratio,
+            };
+          } else {
+            v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
+          }
+        } else {
+          v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
+        }
+      }
+    }
+    // 2) Median of recent ring as a manipulation-resistant fallback when
+    //    last_trade is missing but the ring has entries.
+    if (!v.mark_price && _ringMedian != null) {
+      v.mark_price = { unit: _ringMedian, source: 'median', sample: _ringSampleCount };
     }
   }
   // Compact trade summary for tile-side rendering. Keep it small — every
@@ -3903,21 +3933,44 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
       const num = BigInt(Math.floor(p)) * (10n ** BigInt(_dec)) * 100000000n;
       return Number(num / a) / 1e8;
     };
-    if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
-      const u = _u(lastTrade.price_sats, lastTrade.amount);
-      if (u != null && u > 0) {
-        v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
-      }
-    }
-    if (!v.mark_price && trades.length > 0) {
+    // Same outlier-guarded mark_price logic as hydrateAssetSummary
+    // (single-asset endpoint mirrors the bulk endpoint so clients hit
+    // either path and see identical mark_price semantics).
+    let _ringMedian = null;
+    let _ringSampleCount = 0;
+    if (trades.length > 0) {
       const units = trades.map(t => _u(t.price_sats, t.amount))
         .filter(u => Number.isFinite(u) && u > 0)
         .sort((a, b) => a - b);
       if (units.length > 0) {
         const mid = units.length >> 1;
-        const med = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
-        v.mark_price = { unit: med, source: 'median', sample: units.length };
+        _ringMedian = (units.length % 2) ? units[mid] : (units[mid - 1] + units[mid]) / 2;
+        _ringSampleCount = units.length;
       }
+    }
+    if (lastTrade && Number.isInteger(lastTrade.price_sats) && lastTrade.price_sats > 0) {
+      const u = _u(lastTrade.price_sats, lastTrade.amount);
+      if (u != null && u > 0) {
+        if (_ringMedian != null && _ringSampleCount >= 5) {
+          const ratio = u / _ringMedian;
+          if (ratio > 5 || ratio < 0.2) {
+            v.mark_price = {
+              unit: _ringMedian,
+              source: 'median_outlier_guard',
+              sample: _ringSampleCount,
+              last_trade_unit: u,
+              last_trade_ratio_to_median: ratio,
+            };
+          } else {
+            v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
+          }
+        } else {
+          v.mark_price = { unit: u, source: 'last_trade', ts: Number(lastTrade.ts) || 0 };
+        }
+      }
+    }
+    if (!v.mark_price && _ringMedian != null) {
+      v.mark_price = { unit: _ringMedian, source: 'median', sample: _ringSampleCount };
     }
   }
   return jsonResponse(v, 200, cors);

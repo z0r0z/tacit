@@ -33247,19 +33247,43 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
     return (u != null && ts > 0) ? { u, ts, txid: String(t.txid || ''), price } : null;
   }).filter(Boolean).sort((a, b) => a.ts - b.ts);
   if (points.length < 2) return '';
-  // Range computation. Use unit prices for Y; min and max bound the chart
-  // with a 5% headroom so dots don't sit on the edges. Fall back to a
-  // 0..max range when min == max (flat price line — uncommon).
+  // Range computation. Small-cap / volatile tacit tokens regularly post
+  // trades that span 4+ orders of magnitude (e.g., a dust OTC at 0.05
+  // sats/TAC alongside a 25,000 sats/TAC fat-finger print). A linear
+  // y-axis squashes 99% of trades into a thin band at the bottom; an
+  // automatic log scale when the range is extreme lets all trades read.
+  //
+  // Heuristic: if max/min > 50 (~1.7 decades), switch to log10. Gridline
+  // labels keep showing real sats/TAC values; only the spatial mapping
+  // changes. A "log scale" badge in the chart header signals the switch
+  // so traders don't misread a log slope as a linear one.
   const ts0 = points[0].ts;
   const tsN = points[points.length - 1].ts;
   const tsSpan = Math.max(1, tsN - ts0);
   let minU = Infinity, maxU = -Infinity;
   for (const p of points) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
-  if (minU === maxU) { minU = Math.max(0, minU * 0.95); maxU = maxU * 1.05 || 1; }
-  const pad = (maxU - minU) * 0.08;
-  const yLo = Math.max(0, minU - pad);
-  const yHi = maxU + pad;
-  const ySpan = Math.max(yHi - yLo, 1e-12);
+  if (minU === maxU) { minU = Math.max(1e-9, minU * 0.95); maxU = maxU * 1.05 || 1; }
+  const isLog = (minU > 0) && (maxU / minU > 50);
+  let yLo, yHi, ySpan, yOf;
+  if (isLog) {
+    // Pad in log space — same 8% feel on each side.
+    const logLo = Math.log10(minU);
+    const logHi = Math.log10(maxU);
+    const logPad = (logHi - logLo) * 0.08;
+    const logYLo = logLo - logPad;
+    const logYHi = logHi + logPad;
+    const logSpan = Math.max(logYHi - logYLo, 1e-9);
+    yLo = Math.pow(10, logYLo);
+    yHi = Math.pow(10, logYHi);
+    ySpan = logSpan;
+    yOf = (u) => PT + (1 - (Math.log10(Math.max(u, 1e-12)) - logYLo) / logSpan) * plotH;
+  } else {
+    const pad = (maxU - minU) * 0.08;
+    yLo = Math.max(0, minU - pad);
+    yHi = maxU + pad;
+    ySpan = Math.max(yHi - yLo, 1e-12);
+    yOf = (u) => PT + (1 - (u - yLo) / ySpan) * plotH;
+  }
   // viewBox-relative coords. Logical 600×160 canvas; CSS sizes the SVG to
   // 100% width and uses preserveAspectRatio="xMidYMid meet" so it scales
   // proportionally on mobile (the old "none" stretched everything).
@@ -33272,7 +33296,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   const plotW = W - PL - PR;
   const plotH = H - PT - PB;
   const xOf = ts => PL + ((ts - ts0) / tsSpan) * plotW;
-  const yOf = u  => PT + (1 - (u - yLo) / ySpan) * plotH;
+  // yOf is defined above conditionally (linear vs log scale).
   // Smooth the line via Catmull-Rom-to-Bézier — looks natural for sparse
   // trade data (avoids the jagged sawtooth a polyline gives over uneven
   // timestamps). Degenerates to straight segments when there are <3 points.
@@ -33321,7 +33345,9 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   // Horizontal gridlines at the Y min / mid / max — gives the eye a
   // reference without committing to full axis ticks. Dashed light strokes
   // so they don't compete with the price line.
-  const yMid = (yLo + yHi) / 2;
+  // Mid label uses geometric mean on log scale (the visual middle of
+  // the chart is √(lo·hi) under log), arithmetic mean on linear scale.
+  const yMid = isLog ? Math.sqrt(yLo * yHi) : (yLo + yHi) / 2;
   const gridlines = [yLo, yMid, yHi].map(u =>
     `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yOf(u).toFixed(2)}" y2="${yOf(u).toFixed(2)}" stroke="var(--ink-faint)" stroke-width="0.5" stroke-dasharray="2,3"/>`
   ).join('');
@@ -33330,9 +33356,12 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   const maxLbl = fmtUnitPriceSats(yHi);
   const oldLbl = _ageStr(ts0);
   const newLbl = _ageStr(tsN);
+  const _logBadge = isLog
+    ? `<span title="Auto-switched to log scale because max/min &gt; 50. The visual slope reflects ratio change, not absolute. Linear scale would squash 99% of trades into a thin strip." style="font-size:9px;padding:1px 5px;background:var(--ink-faint);color:var(--ink);border-radius:2px;letter-spacing:0.05em;cursor:help;">log</span>`
+    : '';
   return `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-      <strong>Price history</strong>
+      <strong>Price history</strong>${_logBadge}
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
