@@ -32327,23 +32327,16 @@ function applyMarketFilters() {
   // and OTC opening/range (counterparty trust); per-row badges still show the
   // mode for each individual offer.
   const asksHeaderHtml = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;"><strong>Asks · ${rows.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· sellers offering tokens for sats · ${$('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first'} (sort dropdown)</span></div>`;
-  // Market-trade widget: the simplest "type amount + click" buy/sell path.
-  // Replaces the older single-ask Quick Buy banner with a two-row widget
-  // (buy / sell-if-you-hold) that walks the trustless orderbook with a
-  // 20% default slippage tolerance. Power users can still hit Sweep buy
-  // / Sweep sell below for explicit price caps and residual-to-bid
-  // semantics; this widget is for "I want N TAC at market, just do it".
+  // Swap tile: the primary trading action surface, modeled on Uniswap /
+  // Jupiter-style "from / to" swap UIs. Top input is editable (what you
+  // pay); bottom is a live estimate (what you receive). Click-to-flip
+  // toggles direction. Slippage selector controls the orderbook walk's
+  // price cap. Buy walks preauth asks; sell walks bid intents.
   //
-  // Buy side: walks preauth asks cheapest-first under last_trade × 1.2
-  //           (or floor × 1.2 when no last trade). One Bitcoin tx per fill.
-  // Sell side: walks bids highest-first above last_trade × 0.8 (or
-  //            floor × 0.8). Each fill publishes an atomic intent —
-  //            settlement awaits the bidder's Take (auto-fulfil daemon
-  //            closes that loop when enabled).
-  //
-  // The HTML is rendered inline; _wireMarketTradeWidget binds inputs
-  // and button handlers after paint.
-  const _marketWidgetHtml = (() => {
+  // Bitcoin SVG ₿ marks the SATS side; the asset's image_uri (resolved
+  // via normalizeImageUri) marks the TICKER side. Falls back to the
+  // colored initial pill (assetImageFallback) when image_uri is absent.
+  const _swapTileHtml = (() => {
     const myPubHex = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
     const _btcUsd = _cachedBtcUsd();
     const a = (rows.find(l => l._asset?.asset_id === _marketView.assetId)?._asset)
@@ -32353,8 +32346,7 @@ function applyMarketFilters() {
     const ticker = a.ticker || '?';
     const decimals = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
-    // Reference price for market-order slippage caps. Last trade is the
-    // canonical mark; floor falls back when no trade has happened yet.
+    // Reference price for slippage caps.
     const lt = a.last_trade;
     let refUnit = null;
     if (lt && Number.isInteger(lt.price_sats) && lt.price_sats > 0) {
@@ -32368,49 +32360,87 @@ function applyMarketFilters() {
       const fEntry = _marketFloorByAsset()?.get(_marketView.assetId);
       if (fEntry && Number.isFinite(fEntry.unit) && fEntry.unit > 0) refUnit = fEntry.unit;
     }
-    // Available preauth liquidity on the buy side.
+    // Hide entirely when neither buy nor sell is possible (no asks AND
+    // user doesn't hold the asset).
     const preauthAsks = rows.filter(l => l.kind === 'preauth' && l.seller_pubkey !== myPubHex);
     const haveBuyLiquidity = preauthAsks.length > 0;
     const userHolds = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId) && _holdingsCache.holdings.get(_marketView.assetId).balance > 0n);
     if (!haveBuyLiquidity && !userHolds) return '';
-    const refLine = refUnit != null
-      ? `<div class="muted" style="font-size:10px;margin-bottom:8px;">market reference · <strong>${escapeHtml(fmtUnitPriceSats(refUnit))}</strong> sats/${escapeHtml(ticker)}${_btcUsd ? ` (${escapeHtml(fmtSatsAsUsd(refUnit, _btcUsd))}/${escapeHtml(ticker)})` : ''} · 20% slippage cap</div>`
-      : `<div class="muted" style="font-size:10px;margin-bottom:8px;">market reference · no recent trade — defaults to best-ask × 1.2 / best-bid × 0.8</div>`;
-    const buyRow = haveBuyLiquidity
-      ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;margin-bottom:6px;">
-          <strong style="font-size:13px;flex:0 0 auto;">Buy</strong>
-          <input data-mt-side="buy" data-mt-field="amount" type="text" inputmode="decimal" placeholder="amount" style="flex:0 1 100px;font-family:var(--mono);background:rgba(255,255,255,0.95);color:#0a4d23;border:1px solid #0a4d23;padding:4px 6px;font-size:12px;">
-          <span style="flex:0 0 auto;font-size:11px;opacity:0.9;">${escapeHtml(ticker)}</span>
-          <span data-mt-side="buy" data-mt-readout style="flex:1 1 200px;font-size:11px;opacity:0.95;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">enter an amount</span>
-          <button data-mt-side="buy" data-mt-action="execute" type="button" disabled style="flex:0 0 auto;font-size:12px;padding:6px 14px;background:#fff;color:#0a4d23;border:1px solid #0a4d23;font-weight:700;cursor:pointer;opacity:0.5;">Buy now</button>
-        </div>`
-      : '';
-    const sellRow = userHolds
-      ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;background:#b8341d;color:#fff;border:1px solid #9b2a16;">
-          <strong style="font-size:13px;flex:0 0 auto;">Sell</strong>
-          <input data-mt-side="sell" data-mt-field="amount" type="text" inputmode="decimal" placeholder="amount" style="flex:0 1 100px;font-family:var(--mono);background:rgba(255,255,255,0.95);color:#7a2410;border:1px solid #7a2410;padding:4px 6px;font-size:12px;">
-          <span style="flex:0 0 auto;font-size:11px;opacity:0.9;">${escapeHtml(ticker)}</span>
-          <span data-mt-side="sell" data-mt-readout style="flex:1 1 200px;font-size:11px;opacity:0.95;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">enter an amount</span>
-          <button data-mt-side="sell" data-mt-action="execute" type="button" disabled style="flex:0 0 auto;font-size:12px;padding:6px 14px;background:#fff;color:#7a2410;border:1px solid #7a2410;font-weight:700;cursor:pointer;opacity:0.5;">Sell now</button>
-        </div>`
-      : '';
-    return `<div data-market-trade-widget data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg-warm);padding:10px 12px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;"><strong>Market</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· type amount, click — auto-walks the book with 20% slippage</span></div>
-      ${refLine}
-      ${buyRow}
-      ${sellRow}
+    // Asset logo: prefer the etcher's image_uri, fall back to the colored
+    // initial pill rendered by assetImageFallback. Both are 28px square
+    // here — the swap tile is the most prominent surface for the logo
+    // and the chip-style render needs a clean square.
+    const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
+    const assetLogoHtml = imgUrl
+      ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:24px;height:24px;border-radius:50%;border:1px solid var(--ink-faint);background:#fff;object-fit:cover;flex-shrink:0;">`
+      : assetImageFallback(safeAid, ticker, 24);
+    // Bitcoin logo SVG — inline so it loads with the page (no extra
+    // round-trip, no broken-image fallback). Standard ₿ on bitcoin-
+    // orange background.
+    const btcLogoHtml = `<svg viewBox="0 0 32 32" width="24" height="24" style="flex-shrink:0;border-radius:50%;display:block;">
+      <circle cx="16" cy="16" r="16" fill="#f7931a"/>
+      <path fill="#fff" d="M21.8 14.6c.3-2-1.2-3-3.3-3.7l.7-2.8-1.7-.4-.7 2.7c-.5-.1-.9-.2-1.4-.3l.7-2.7-1.7-.4-.7 2.8c-.4-.1-.7-.2-1.1-.3l-2.3-.6-.4 1.8s1.2.3 1.2.3c.7.2.8.6.8.9l-.8 3.2c0 .1.1.1.2.2l-.2-.1-1.1 4.5c-.1.2-.3.5-.7.4 0 .1-1.2-.3-1.2-.3l-.8 1.9 2.2.5c.4.1.8.2 1.2.3l-.7 2.8 1.7.4.7-2.8c.5.1.9.2 1.3.3l-.7 2.8 1.7.4.7-2.8c2.9.5 5.1.3 6-2.3.7-2.1-.1-3.2-1.5-4 1.1-.2 1.9-1 2.1-2.4Zm-3.7 5.3c-.5 2-3.9 1-5 .6l.9-3.7c1.1.3 4.6.8 4.1 3Zm.5-5.4c-.5 1.8-3.4.9-4.3.6l.8-3.4c.9.2 3.9.7 3.5 2.8Z"/>
+    </svg>`;
+    const slippagePct = 20;
+    return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg);padding:14px;">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+        <div style="font-size:12px;font-weight:bold;display:flex;align-items:center;gap:6px;">
+          ${btcLogoHtml} <span>sats / ${escapeHtml(ticker)}</span> ${assetLogoHtml}
+        </div>
+        <label style="font-size:10px;display:flex;align-items:center;gap:4px;">
+          <span class="muted">slippage</span>
+          <select data-swap-slippage style="font-size:10px;padding:2px 4px;">
+            <option value="1">1%</option>
+            <option value="5">5%</option>
+            <option value="20" selected>20%</option>
+            <option value="50">50%</option>
+          </select>
+        </label>
+      </div>
+      <!-- TOP side: editable input. data-side="from" tracks which
+           token is on top regardless of direction (the wireup swaps
+           the labels + logos in place on flip). -->
+      <div data-swap-side="from" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:10px;margin-bottom:4px;">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);margin-bottom:4px;">You pay</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input data-swap-input="from" type="text" inputmode="decimal" placeholder="0" style="flex:1 1 auto;font-family:var(--mono);font-size:20px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;">
+          <div data-swap-pill="from" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 10px;background:#f7931a;color:#fff;border-radius:14px;font-weight:600;font-size:13px;">
+            ${btcLogoHtml}<span data-swap-token="from">sats</span>
+          </div>
+        </div>
+        <div data-swap-meta="from" class="muted" style="font-size:10px;margin-top:4px;min-height:13px;"></div>
+      </div>
+      <!-- FLIP button. Reverses which side is sats vs ticker. -->
+      <div style="display:flex;justify-content:center;margin:-8px 0;position:relative;z-index:1;">
+        <button data-swap-flip type="button" title="Flip direction (buy ↔ sell)" style="background:var(--bg);border:1px solid var(--ink);width:28px;height:28px;border-radius:50%;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;line-height:1;">↕</button>
+      </div>
+      <!-- BOTTOM side: read-only estimate. -->
+      <div data-swap-side="to" style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:10px;margin-bottom:10px;">
+        <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-mid);margin-bottom:4px;">You receive (est.)</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input data-swap-input="to" type="text" placeholder="0" readonly style="flex:1 1 auto;font-family:var(--mono);font-size:20px;font-weight:bold;border:none;background:transparent;outline:none;padding:0;min-width:0;width:100%;color:var(--ink);">
+          <div data-swap-pill="to" style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 10px;background:var(--bg);color:var(--ink);border:1px solid var(--ink-faint);border-radius:14px;font-weight:600;font-size:13px;">
+            ${assetLogoHtml}<span data-swap-token="to">${escapeHtml(ticker)}</span>
+          </div>
+        </div>
+        <div data-swap-meta="to" class="muted" style="font-size:10px;margin-top:4px;min-height:13px;"></div>
+      </div>
+      <!-- Route / impact summary -->
+      <div data-swap-info class="muted" style="font-size:10px;margin-bottom:10px;min-height:13px;line-height:1.5;"></div>
+      <!-- Primary action -->
+      <button data-swap-action type="button" disabled style="display:block;width:100%;padding:12px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
     </div>`;
   })();
   list.innerHTML =
     assetHeaderHtml +
     statsHtml +
+    _swapTileHtml +
     bidsLadderHtml +
-    _marketWidgetHtml +
     asksHeaderHtml +
     noAtomicHint +
     `<div id="market-grid" style="display:flex;flex-direction:column;gap:0;border:1px solid var(--ink);background:var(--bg);"></div>`;
   bindMarketAssetHeader(list);
-  _wireMarketTradeWidget(list);
+  _wireSwapTile(list);
   populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
   populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
   const grid = $('#market-grid');
@@ -33797,15 +33827,25 @@ function _wireAutoFulfilToggle(section) {
 // inputs and one would fail). Stops on first error; reports partial
 // progress. Residual (couldn't fill enough at the cap price) → optional
 // bid intent posted at the cap.
-// Market-trade widget wireup. Two side-by-side input rows ("Buy N TAC" /
-// "Sell N TAC") with live-update readouts that show what would fill at the
-// current orderbook state + 20% slippage cap. Clicking the side's Execute
-// button fires a confirm() dialog with the resolved plan and broadcasts.
-// Re-uses the existing takePreauthSale (buy) and fulfilBidIntent (sell)
-// flows with the same _markTxInputsSpent indexer-lag guard as the
-// dedicated sweep forms — for the user it's just "type, click, done."
-function _wireMarketTradeWidget(scope) {
-  const widget = scope.querySelector('[data-market-trade-widget]');
+// Swap-tile wireup. The tile is the "type amount, click swap" surface
+// modeled on Uniswap / Jupiter. The top input is always editable; the
+// bottom is a live estimate. The Flip button reverses direction —
+// "buy" (sats → ticker) and "sell" (ticker → sats) toggle the labels
+// + logos in place rather than re-rendering. Slippage cap is a select
+// (1% / 5% / 20% / 50%) that scales the orderbook-walk price bound.
+//
+// Buy: types sats (the "pay" amount). We walk preauth asks
+//      cheapest-first until cumulative cost ≤ sats budget, capped at
+//      ref × (1 + slippage). Computed TAC = sum of fill amounts.
+// Sell: types ticker amount. We walk bid intents highest-first until
+//       cumulative amount fills the target, floor = ref × (1 - slippage).
+//       Computed sats = sum of bid prices.
+//
+// Reuses takePreauthSale + fulfilBidIntent so the underlying execution
+// path is shared with the legacy Sweep forms (and the _markTxInputsSpent
+// indexer-lag guard applies the same way).
+function _wireSwapTile(scope) {
+  const widget = scope.querySelector('[data-swap-tile]');
   if (!widget) return;
   const aid = widget.dataset.aid;
   const ticker = widget.dataset.ticker || '?';
@@ -33813,22 +33853,40 @@ function _wireMarketTradeWidget(scope) {
   const refUnitRaw = widget.dataset.refUnit;
   const refUnit = refUnitRaw ? Number(refUnitRaw) : null;
   const btcUsd = _cachedBtcUsd();
-  const SLIPPAGE_BUY = 1.2;   // walk asks up to last_trade × 1.2
-  const SLIPPAGE_SELL = 0.8;  // walk bids down to last_trade × 0.8
   const myPubHex = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
-  // Plan computation per side. Returns { plan, accumulated, totalSats,
-  // refCap, residual } or null if no fillable asks / bids.
-  const _computeBuyPlan = (targetAmtBig) => {
-    if (!Number.isFinite(refUnit) || refUnit <= 0) {
-      // No last-trade reference: fall back to walking ALL preauths
-      // (cheapest first, no cap). This is "market at any price" which is
-      // typically what users want on a brand-new market.
-      const cap = Infinity;
-      return _planBuy(targetAmtBig, cap);
-    }
-    return _planBuy(targetAmtBig, refUnit * SLIPPAGE_BUY);
+  const fromInput = widget.querySelector('[data-swap-input="from"]');
+  const toInput   = widget.querySelector('[data-swap-input="to"]');
+  const fromMeta  = widget.querySelector('[data-swap-meta="from"]');
+  const toMeta    = widget.querySelector('[data-swap-meta="to"]');
+  const fromPill  = widget.querySelector('[data-swap-pill="from"]');
+  const toPill    = widget.querySelector('[data-swap-pill="to"]');
+  const flipBtn   = widget.querySelector('[data-swap-flip]');
+  const slipSel   = widget.querySelector('[data-swap-slippage]');
+  const infoEl    = widget.querySelector('[data-swap-info]');
+  const actionBtn = widget.querySelector('[data-swap-action]');
+  if (!fromInput || !toInput || !actionBtn) return;
+  // Snapshot the pill innerHTML once at wireup. The HTML carries the
+  // inline SVG (BTC) or <img> (asset logo); the flip handler swaps the
+  // two pills' contents in place so direction toggles without a full
+  // re-render. The "buy" direction has BTC on top (you pay sats), asset
+  // on bottom (you receive ticker); flip inverts.
+  const buyPillHtml = fromPill ? fromPill.innerHTML : '';
+  const sellPillHtml = toPill ? toPill.innerHTML : '';
+  const PILL = {
+    sats:   { bg: '#f7931a', fg: '#fff',         border: '#f7931a' },
+    ticker: { bg: 'var(--bg)', fg: 'var(--ink)', border: 'var(--ink-faint)' },
   };
-  const _planBuy = (targetAmtBig, capUnit) => {
+  const getDirection = () => widget.dataset.direction || 'buy';
+  const getSlipRatio = () => {
+    const pct = parseFloat(slipSel?.value || '20');
+    return Number.isFinite(pct) ? pct / 100 : 0.20;
+  };
+  // BUY plan: walk preauth asks cheapest-first; include each ask whose
+  // total price fits within the remaining sats budget. Unit-price cap =
+  // ref × (1 + slippage). Returns null if no fillable ask under cap.
+  const planBuy = (satsBudget) => {
+    if (!Number.isFinite(satsBudget) || satsBudget <= 0) return null;
+    const cap = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 + getSlipRatio()) : Infinity;
     const nowSec = Math.floor(Date.now() / 1000);
     const candidates = (_marketCache?.listings || [])
       .filter(l => l.kind === 'preauth' && l._asset?.asset_id === aid)
@@ -33840,29 +33898,28 @@ function _wireMarketTradeWidget(scope) {
         const u   = unitPriceSats(ps, amt, decimals);
         return { l, amt, ps, u };
       })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= capUnit && c.amt > 0n)
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= cap && c.amt > 0n && c.ps > 0)
       .sort((x, y) => x.u - y.u);
     if (!candidates.length) return null;
-    const plan = [];
-    let acc = 0n;
+    const plan = []; let totalSats = 0; let totalAmt = 0n;
     for (const c of candidates) {
-      if (acc >= targetAmtBig) break;
-      if (acc + c.amt > targetAmtBig) continue;
-      plan.push(c); acc += c.amt;
+      if (totalSats + c.ps > satsBudget) continue;
+      plan.push(c); totalSats += c.ps; totalAmt += c.amt;
     }
-    if (!plan.length) { plan.push(candidates[0]); acc = candidates[0].amt; }
-    const totalSats = plan.reduce((s, c) => s + c.ps, 0);
-    return { plan, accumulated: acc, totalSats, refCap: capUnit, residual: targetAmtBig - acc };
+    if (!plan.length) return null;
+    return { plan, totalAmt, totalSats, residualSats: satsBudget - totalSats, satsBudget, cap };
   };
-  const _planSell = async (targetAmtBig) => {
+  // SELL plan: walk bid intents highest-first; include each bid whose
+  // amount fits within the remaining target. Unit-price floor = ref ×
+  // (1 - slippage). Returns null if no fillable bid above floor.
+  const planSell = async (targetTacBig) => {
+    if (targetTacBig <= 0n) return null;
     let bids;
     try { bids = await _fetchBidIntentsCached(aid); }
     catch { return null; }
     if (!Array.isArray(bids) || bids.length === 0) return null;
     const nowSec = Math.floor(Date.now() / 1000);
-    const floorUnit = (Number.isFinite(refUnit) && refUnit > 0)
-      ? refUnit * SLIPPAGE_SELL
-      : 0;
+    const floor = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 - getSlipRatio()) : 0;
     const candidates = bids
       .filter(b => b.buyer_pubkey !== myPubHex)
       .filter(b => Number(b.expiry || 0) > nowSec)
@@ -33873,228 +33930,240 @@ function _wireMarketTradeWidget(scope) {
         const u   = unitPriceSats(ps, amt, decimals);
         return { b, amt, ps, u };
       })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floorUnit && c.amt > 0n)
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floor && c.amt > 0n && c.ps > 0)
       .sort((x, y) => y.u - x.u);
     if (!candidates.length) return null;
-    const plan = [];
-    let acc = 0n;
+    const plan = []; let totalAmt = 0n; let totalSats = 0;
     for (const c of candidates) {
-      if (acc >= targetAmtBig) break;
-      if (acc + c.amt > targetAmtBig) continue;
-      plan.push(c); acc += c.amt;
+      if (totalAmt >= targetTacBig) break;
+      if (totalAmt + c.amt > targetTacBig) continue;
+      plan.push(c); totalAmt += c.amt; totalSats += c.ps;
     }
-    if (!plan.length) { plan.push(candidates[0]); acc = candidates[0].amt; }
-    const totalSats = plan.reduce((s, c) => s + c.ps, 0);
-    return { plan, accumulated: acc, totalSats, refFloor: floorUnit, residual: targetAmtBig - acc };
+    if (!plan.length) return null;
+    return { plan, totalAmt, totalSats, residualAmt: targetTacBig - totalAmt, targetAmt: targetTacBig, floor };
   };
-  // Live readout updater. Runs on every keystroke; resolves the plan and
-  // updates the side's text + button label + enabled state.
-  const updateBuyReadout = () => {
-    const inputEl = widget.querySelector('[data-mt-side="buy"][data-mt-field="amount"]');
-    const readEl  = widget.querySelector('[data-mt-side="buy"][data-mt-readout]');
-    const btnEl   = widget.querySelector('[data-mt-side="buy"][data-mt-action="execute"]');
-    if (!inputEl || !readEl || !btnEl) return;
-    const raw = (inputEl.value || '').trim();
+  // Pill direction: swap which side is sats vs ticker. Doesn't touch the
+  // inputs (caller decides whether to clear). Updates action-button color.
+  const applyDirection = () => {
+    const dir = getDirection();
+    const isBuy = dir === 'buy';
+    if (fromPill) {
+      fromPill.innerHTML = isBuy ? buyPillHtml : sellPillHtml;
+      const style = isBuy ? PILL.sats : PILL.ticker;
+      fromPill.style.background = style.bg;
+      fromPill.style.color = style.fg;
+      fromPill.style.border = `1px solid ${style.border}`;
+    }
+    if (toPill) {
+      toPill.innerHTML = isBuy ? sellPillHtml : buyPillHtml;
+      const style = isBuy ? PILL.ticker : PILL.sats;
+      toPill.style.background = style.bg;
+      toPill.style.color = style.fg;
+      toPill.style.border = `1px solid ${style.border}`;
+    }
+    fromInput.placeholder = isBuy ? 'sats to spend' : `${ticker} to sell`;
+    fromInput.setAttribute('inputmode', isBuy ? 'numeric' : 'decimal');
+    actionBtn.style.background = isBuy ? '#0a8f43' : '#b8341d';
+    actionBtn.style.borderColor = isBuy ? '#0a7d3a' : '#9b2a16';
+  };
+  // Single update path — runs on every keystroke + direction change +
+  // slippage change. Async because sell plans await the bids cache.
+  let updateToken = 0;
+  const update = async () => {
+    const myToken = ++updateToken;
+    const raw = (fromInput.value || '').trim();
+    const dir = getDirection();
     if (!raw) {
-      readEl.textContent = 'enter an amount';
-      btnEl.disabled = true; btnEl.style.opacity = '0.5';
-      btnEl.textContent = 'Buy now';
+      toInput.value = '';
+      fromMeta.textContent = '';
+      toMeta.textContent = '';
+      infoEl.textContent = '';
+      actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+      actionBtn.textContent = 'enter an amount';
       return;
     }
-    let amt;
-    try { amt = parseAssetAmount(raw, decimals); }
-    catch { readEl.textContent = '✗ invalid amount'; btnEl.disabled = true; btnEl.style.opacity = '0.5'; return; }
-    if (amt <= 0n) { readEl.textContent = '✗ amount must be > 0'; btnEl.disabled = true; btnEl.style.opacity = '0.5'; return; }
-    const result = _computeBuyPlan(amt);
-    if (!result) {
-      readEl.textContent = `no asks at market — try sweep buy with a custom cap`;
-      btnEl.disabled = true; btnEl.style.opacity = '0.5';
-      return;
-    }
-    const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
-    const usdTail = usd ? ` · ${usd}` : '';
-    const lowest = result.plan[0].u, highest = result.plan[result.plan.length - 1].u;
-    const rangeStr = result.plan.length === 1
-      ? `${fmtUnitPriceSats(lowest)} sats/${ticker}`
-      : `${fmtUnitPriceSats(lowest)}–${fmtUnitPriceSats(highest)} sats/${ticker}`;
-    const accStr = fmtAssetAmount(result.accumulated, decimals);
-    const residStr = result.residual > 0n
-      ? ` · ${fmtAssetAmount(result.residual, decimals)} ${ticker} unavailable at slippage cap`
-      : '';
-    readEl.textContent = `≈ ${result.totalSats.toLocaleString()} sats${usdTail} · ${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr}${residStr}`;
-    btnEl.disabled = false; btnEl.style.opacity = '1';
-    btnEl.textContent = `Buy ${accStr} ${ticker}`;
-    btnEl.dataset.mtPlanAmount = String(amt);
-    btnEl.dataset.mtPlanFills = String(result.plan.length);
-    btnEl.dataset.mtPlanTotal = String(result.totalSats);
-  };
-  // Sell readout is async (needs bid intents from worker — same 30s
-  // cache the bids ladder uses; effectively free after first paint).
-  // Debounced via a token so a fast typist doesn't pile up promises.
-  let sellReadoutToken = 0;
-  const updateSellReadout = async () => {
-    const myToken = ++sellReadoutToken;
-    const inputEl = widget.querySelector('[data-mt-side="sell"][data-mt-field="amount"]');
-    const readEl  = widget.querySelector('[data-mt-side="sell"][data-mt-readout]');
-    const btnEl   = widget.querySelector('[data-mt-side="sell"][data-mt-action="execute"]');
-    if (!inputEl || !readEl || !btnEl) return;
-    const raw = (inputEl.value || '').trim();
-    if (!raw) {
-      readEl.textContent = 'enter an amount';
-      btnEl.disabled = true; btnEl.style.opacity = '0.5';
-      btnEl.textContent = 'Sell now';
-      return;
-    }
-    let amt;
-    try { amt = parseAssetAmount(raw, decimals); }
-    catch { readEl.textContent = '✗ invalid amount'; btnEl.disabled = true; btnEl.style.opacity = '0.5'; return; }
-    if (amt <= 0n) { readEl.textContent = '✗ amount must be > 0'; btnEl.disabled = true; btnEl.style.opacity = '0.5'; return; }
-    const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
-    if (amt > bal) {
-      readEl.textContent = `✗ you only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`;
-      btnEl.disabled = true; btnEl.style.opacity = '0.5';
-      return;
-    }
-    readEl.textContent = 'computing…';
-    const result = await _planSell(amt);
-    if (sellReadoutToken !== myToken) return;  // stale; user typed more
-    if (!result) {
-      readEl.textContent = `no bids at market — try sweep sell with a custom floor`;
-      btnEl.disabled = true; btnEl.style.opacity = '0.5';
-      return;
-    }
-    const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
-    const usdTail = usd ? ` · ${usd}` : '';
-    const highest = result.plan[0].u, lowest = result.plan[result.plan.length - 1].u;
-    const rangeStr = result.plan.length === 1
-      ? `${fmtUnitPriceSats(highest)} sats/${ticker}`
-      : `${fmtUnitPriceSats(lowest)}–${fmtUnitPriceSats(highest)} sats/${ticker}`;
-    const accStr = fmtAssetAmount(result.accumulated, decimals);
-    const residStr = result.residual > 0n
-      ? ` · ${fmtAssetAmount(result.residual, decimals)} ${ticker} unfilled at slippage floor`
-      : '';
-    readEl.textContent = `≈ ${result.totalSats.toLocaleString()} sats${usdTail} · ${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr}${residStr}`;
-    btnEl.disabled = false; btnEl.style.opacity = '1';
-    btnEl.textContent = `Sell ${accStr} ${ticker}`;
-    btnEl.dataset.mtPlanAmount = String(amt);
-    btnEl.dataset.mtPlanFills = String(result.plan.length);
-    btnEl.dataset.mtPlanTotal = String(result.totalSats);
-  };
-  // Bind input events
-  const buyInput  = widget.querySelector('[data-mt-side="buy"][data-mt-field="amount"]');
-  const sellInput = widget.querySelector('[data-mt-side="sell"][data-mt-field="amount"]');
-  if (buyInput)  buyInput.addEventListener('input', updateBuyReadout);
-  if (sellInput) sellInput.addEventListener('input', updateSellReadout);
-  // Bind execute buttons. Both re-compute the plan fresh at click time
-  // (the readout could be stale if the market refreshed mid-typing) and
-  // gate on a confirm() with the resolved plan in plain language.
-  const buyBtn  = widget.querySelector('[data-mt-side="buy"][data-mt-action="execute"]');
-  const sellBtn = widget.querySelector('[data-mt-side="sell"][data-mt-action="execute"]');
-  if (buyBtn) buyBtn.onclick = async () => {
-    const raw = (buyInput?.value || '').trim();
-    if (!raw) return;
-    let amt;
-    try { amt = parseAssetAmount(raw, decimals); } catch { return; }
-    if (amt <= 0n) return;
-    const result = _computeBuyPlan(amt);
-    if (!result) { toast('No asks available at market', 'error'); return; }
-    const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
-    const accStr = fmtAssetAmount(result.accumulated, decimals);
-    if (!confirm(
-      `Buy ${accStr} ${ticker} at market?\n\n` +
-      `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${result.totalSats.toLocaleString()} sats${usd ? ` (~${usd})` : ''}\n` +
-      `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n\n` +
-      `Each fill is one Bitcoin tx. Total fees ~${(result.plan.length * 800).toLocaleString()} sats. Broadcasts sequentially; stops on first failure.`
-    )) return;
-    buyBtn.disabled = true;
-    const origLabel = buyBtn.textContent;
-    buyBtn.textContent = 'broadcasting…';
-    let filled = 0;
-    let lastErr = null;
-    for (let i = 0; i < result.plan.length; i++) {
-      const c = result.plan[i];
-      buyBtn.textContent = `${filled}/${result.plan.length} filled…`;
-      try {
-        const r = await takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l });
-        filled++;
-        const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
-        await Promise.all([_mark(r?.commit_txid), _mark(r?.reveal_txid)]);
-        if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
-      } catch (e) {
-        lastErr = e?.message || String(e);
-        break;
+    if (dir === 'buy') {
+      const sats = parseInt(raw.replace(/[, ]/g, ''), 10);
+      if (!Number.isFinite(sats) || sats <= 0) {
+        toInput.value = ''; toMeta.textContent = '';
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'invalid sats';
+        infoEl.textContent = '';
+        return;
       }
-    }
-    invalidateMarketCache();
-    invalidateHoldingsCache();
-    if (lastErr && filled === 0) {
-      toast(`Buy failed: ${lastErr}`, 'error');
-    } else if (lastErr) {
-      toast(`Buy partial: ${filled}/${result.plan.length} filled · ${lastErr}`, 'error', 8000);
-    } else {
-      toast(`Bought ${accStr} ${ticker} ✓`, 'success', 5000);
-    }
-    buyBtn.disabled = false;
-    buyBtn.textContent = origLabel;
-    setTimeout(() => renderMarket(), 1500);
-  };
-  if (sellBtn) sellBtn.onclick = async () => {
-    const raw = (sellInput?.value || '').trim();
-    if (!raw) return;
-    let amt;
-    try { amt = parseAssetAmount(raw, decimals); } catch { return; }
-    if (amt <= 0n) return;
-    const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
-    if (amt > bal) { toast(`You only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`, 'error'); return; }
-    const result = await _planSell(amt);
-    if (!result) { toast('No bids available at market', 'error'); return; }
-    const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
-    const accStr = fmtAssetAmount(result.accumulated, decimals);
-    if (!confirm(
-      `Sell ${accStr} ${ticker} at market?\n\n` +
-      `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} · ${result.totalSats.toLocaleString()} sats${usd ? ` (~${usd})` : ''}\n` +
-      `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}\n\n` +
-      `Each fulfilment publishes an atomic intent. Settlement awaits each bidder's Take (~1–30 min). ` +
-      `${_isAutoFulfilEnabled() ? 'Auto-fulfil is ON.' : 'Enable Auto-fulfil first to keep this tab signing claims automatically.'}`
-    )) return;
-    sellBtn.disabled = true;
-    const origLabel = sellBtn.textContent;
-    sellBtn.textContent = 'fulfilling…';
-    let filled = 0;
-    let lastErr = null;
-    for (let i = 0; i < result.plan.length; i++) {
-      const c = result.plan[i];
-      sellBtn.textContent = `${filled}/${result.plan.length} filled…`;
-      try {
-        const r = await fulfilBidIntent({ bid: c.b });
-        filled++;
-        const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
-        await Promise.all([_mark(r?.commit_txid), _mark(r?.split_txid)]);
-        if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
-      } catch (e) {
-        lastErr = e?.message || String(e);
-        break;
+      const result = planBuy(sats);
+      if (myToken !== updateToken) return;
+      if (!result) {
+        toInput.value = '';
+        infoEl.textContent = `no preauth asks within ${slipSel.value}% slippage · raise slippage, or use Sweep buy below for a custom cap`;
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'no route';
+        return;
       }
-    }
-    invalidateMarketCache();
-    invalidateHoldingsCache();
-    _invalidateBidsCache(aid);
-    if (lastErr && filled === 0) {
-      toast(`Sell failed: ${lastErr}`, 'error');
-    } else if (lastErr) {
-      toast(`Sell partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}`, 'error', 8000);
+      const accStr = fmtAssetAmount(result.totalAmt, decimals);
+      toInput.value = accStr;
+      const fromUsd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+      fromMeta.textContent = fromUsd ? `spending ${result.totalSats.toLocaleString()} sats · ${fromUsd}` : `spending ${result.totalSats.toLocaleString()} sats`;
+      const avgU = result.totalAmt > 0n
+        ? (result.totalSats * Math.pow(10, decimals)) / Number(result.totalAmt)
+        : null;
+      toMeta.textContent = avgU != null ? `avg ${fmtUnitPriceSats(avgU)} sats/${ticker}` : '';
+      const cheapU = result.plan[0].u;
+      const dearU = result.plan[result.plan.length - 1].u;
+      const rangeStr = result.plan.length === 1
+        ? `${fmtUnitPriceSats(cheapU)} sats/${ticker}`
+        : `${fmtUnitPriceSats(cheapU)}–${fmtUnitPriceSats(dearU)} sats/${ticker}`;
+      const feeEst = result.plan.length * 800;
+      const residHint = result.residualSats > 100
+        ? ` · ${result.residualSats.toLocaleString()} sats unspent (asks ran out at cap)`
+        : '';
+      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${residHint}`;
+      actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      actionBtn.textContent = `SWAP → ${accStr} ${ticker}`;
     } else {
-      toast(`Selling ${accStr} ${ticker} ✓ (pending bidder Takes)`, 'success', 5000);
+      // SELL direction: raw is ticker amount.
+      let amt;
+      try { amt = parseAssetAmount(raw, decimals); }
+      catch { toInput.value = ''; actionBtn.textContent = 'invalid amount'; actionBtn.disabled = true; actionBtn.style.opacity = '0.5'; infoEl.textContent = ''; return; }
+      if (amt <= 0n) { toInput.value = ''; actionBtn.textContent = 'amount must be > 0'; actionBtn.disabled = true; actionBtn.style.opacity = '0.5'; infoEl.textContent = ''; return; }
+      const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+      const balStr = fmtAssetAmount(bal, decimals);
+      if (amt > bal) {
+        toInput.value = '';
+        fromMeta.textContent = `balance: ${balStr} ${ticker}`;
+        actionBtn.textContent = `only hold ${balStr} ${ticker}`;
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        infoEl.textContent = '';
+        return;
+      }
+      fromMeta.textContent = `balance: ${balStr} ${ticker}`;
+      infoEl.textContent = 'finding route…';
+      const result = await planSell(amt);
+      if (myToken !== updateToken) return;
+      if (!result) {
+        toInput.value = '';
+        infoEl.textContent = `no bids within ${slipSel.value}% slippage · raise slippage, or use Sweep sell below for a custom floor`;
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'no route';
+        return;
+      }
+      toInput.value = result.totalSats.toLocaleString();
+      const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+      toMeta.textContent = usd ? `≈ ${usd}` : '';
+      const highU = result.plan[0].u;
+      const lowU = result.plan[result.plan.length - 1].u;
+      const rangeStr = result.plan.length === 1
+        ? `${fmtUnitPriceSats(highU)} sats/${ticker}`
+        : `${fmtUnitPriceSats(lowU)}–${fmtUnitPriceSats(highU)} sats/${ticker}`;
+      const feeEst = result.plan.length * 800 * 2;
+      const residHint = result.residualAmt > 0n
+        ? ` · ${fmtAssetAmount(result.residualAmt, decimals)} ${ticker} unfilled at floor`
+        : '';
+      const autoHint = _isAutoFulfilEnabled() ? '' : ' · ⚠ enable Auto-fulfil to auto-sign claims';
+      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${residHint}${autoHint}`;
+      actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      const accStr = fmtAssetAmount(result.totalAmt, decimals);
+      actionBtn.textContent = `SWAP → ${result.totalSats.toLocaleString()} sats`;
     }
-    sellBtn.disabled = false;
-    sellBtn.textContent = origLabel;
-    setTimeout(() => renderMarket(), 1500);
   };
-  // Trigger an initial readout pass in case the form repopulated with
-  // stale values from a re-render (e.g., the input had focus during the
-  // grid-prune debounce). No-op when inputs are empty.
-  updateBuyReadout();
-  updateSellReadout().catch(() => {});
+  // Initial paint + wiring.
+  applyDirection();
+  update();
+  fromInput.addEventListener('input', update);
+  if (slipSel) slipSel.addEventListener('change', update);
+  if (flipBtn) flipBtn.onclick = () => {
+    widget.dataset.direction = getDirection() === 'buy' ? 'sell' : 'buy';
+    fromInput.value = '';
+    toInput.value = '';
+    applyDirection();
+    update();
+  };
+  // Execute: re-compute plan at click time (cache may have shifted while
+  // user typed) → confirm() → sequential broadcast with the same
+  // _markTxInputsSpent indexer-lag guard as Sweep forms.
+  actionBtn.onclick = async () => {
+    const raw = (fromInput.value || '').trim();
+    if (!raw) return;
+    const dir = getDirection();
+    if (dir === 'buy') {
+      const sats = parseInt(raw.replace(/[, ]/g, ''), 10);
+      if (!Number.isFinite(sats) || sats <= 0) return;
+      const result = planBuy(sats);
+      if (!result) { toast('No route available', 'error'); return; }
+      const accStr = fmtAssetAmount(result.totalAmt, decimals);
+      const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+      if (!confirm(
+        `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?\n\n` +
+        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} via preauth Instant listings.\n` +
+        `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
+        (usd ? `≈ ${usd}\n` : '') +
+        `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast.`
+      )) return;
+      actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+      const origLabel = actionBtn.textContent;
+      let filled = 0, lastErr = null;
+      for (let i = 0; i < result.plan.length; i++) {
+        const c = result.plan[i];
+        actionBtn.textContent = `${filled}/${result.plan.length} filled…`;
+        try {
+          const r = await takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l });
+          filled++;
+          const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
+          await Promise.all([_mark(r?.commit_txid), _mark(r?.reveal_txid)]);
+          if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
+        } catch (e) { lastErr = e?.message || String(e); break; }
+      }
+      invalidateMarketCache();
+      invalidateHoldingsCache();
+      if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
+      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}`, 'error', 8000);
+      else toast(`Swapped → ${accStr} ${ticker} ✓`, 'success', 5000);
+      actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      actionBtn.textContent = origLabel;
+      setTimeout(() => renderMarket(), 1500);
+    } else {
+      let amt;
+      try { amt = parseAssetAmount(raw, decimals); } catch { return; }
+      if (amt <= 0n) return;
+      const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+      if (amt > bal) { toast(`You only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`, 'error'); return; }
+      const result = await planSell(amt);
+      if (!result) { toast('No route available', 'error'); return; }
+      const accStr = fmtAssetAmount(result.totalAmt, decimals);
+      const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+      if (!confirm(
+        `Swap ${accStr} ${ticker} → ${result.totalSats.toLocaleString()} sats?\n\n` +
+        `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} via atomic intents.\n` +
+        `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}\n` +
+        (usd ? `≈ ${usd}\n` : '') +
+        `Settlement awaits each bidder's Take (~1–30 min). ` +
+        `${_isAutoFulfilEnabled() ? 'Auto-fulfil is ON.' : 'Enable Auto-fulfil first to keep this tab signing claims.'}`
+      )) return;
+      actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+      const origLabel = actionBtn.textContent;
+      let filled = 0, lastErr = null;
+      for (let i = 0; i < result.plan.length; i++) {
+        const c = result.plan[i];
+        actionBtn.textContent = `${filled}/${result.plan.length} fulfilled…`;
+        try {
+          const r = await fulfilBidIntent({ bid: c.b });
+          filled++;
+          const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
+          await Promise.all([_mark(r?.commit_txid), _mark(r?.split_txid)]);
+          if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
+        } catch (e) { lastErr = e?.message || String(e); break; }
+      }
+      invalidateMarketCache();
+      invalidateHoldingsCache();
+      _invalidateBidsCache(aid);
+      if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
+      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}`, 'error', 8000);
+      else toast(`Selling ${accStr} ${ticker} ✓ (pending bidder Takes)`, 'success', 5000);
+      actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      actionBtn.textContent = origLabel;
+      setTimeout(() => renderMarket(), 1500);
+    }
+  };
 }
 
 function _wireMarketSweepBuy(section, asset) {
