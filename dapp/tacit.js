@@ -32135,7 +32135,13 @@ const MARKET_LISTING_PAGE_SIZE = 12;
 const MARKET_ACTIVITY_PAGE_SIZE = 25;
 const MARKET_ACTIVITY_MAX_ROWS = 500;
 const MARKET_ASSET_STATS_TTL_MS = 60 * 1000;
-const MARKET_ASSET_STATS_CONCURRENCY = 6;
+// Concurrency bumped from 6 → 12 so a busy gallery (50+ tokens) finishes
+// per-asset enrichment in roughly half the time. Each fetch is a small
+// /assets/{aid} round-trip the worker serves out of KV; 12 parallel
+// connections stays well under the worker's per-IP cap and most browsers'
+// 6-per-host HTTP/1.1 limit (HTTP/2+ on the worker means we're not
+// bottlenecked there).
+const MARKET_ASSET_STATS_CONCURRENCY = 12;
 const _marketAssetStatsCache = new Map();
 const _marketAssetStatsInFlight = new Set();
 const _marketAssetStatsQueue = [];
@@ -32767,6 +32773,9 @@ function applyMarketFilters() {
     hydrateMarketImages(list);
     bindMarketAssetHeader(list);
     bindMarketAssetTabs(list);
+    // Wire cursor on any pre-painted chart from the cached stats so the
+    // hover-tooltip path works immediately, before the live fetch lands.
+    _wireMarketPriceChartCursor(list.querySelector('[data-market-price-chart]'));
     populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
     populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
     populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
@@ -32980,6 +32989,7 @@ function applyMarketFilters() {
   bindMarketAssetHeader(list);
   bindMarketAssetTabs(list);
   _wireSwapTile(list);
+  _wireMarketPriceChartCursor(list.querySelector('[data-market-price-chart]'));
   populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
   // Simple-mode toggle in the asks header. Click flips the flag,
   // persists to localStorage, and re-applies filters so the ladder
@@ -34013,15 +34023,33 @@ function renderMarketBrowseTable(rows) {
     const verifiedBadge = a.verified
       ? `<span class="market-verified-check" title="Platform-verified Tacit asset">&#10003;</span>`
       : '';
-    const refUnit = marketGroupReferenceUnit(g);
+    // Prefer the worker's outlier-guarded mark price over the raw floor:
+    // dust 0.71-sat asks otherwise drag the table price down to 1/1000th
+    // of where the asset actually trades, and the row's market cap is
+    // then computed against that bogus price. Falls back to floor / last
+    // trade when no mark is available.
+    const markUnit = Number(a.mark_price?.unit);
+    const refUnit = (Number.isFinite(markUnit) && markUnit > 0)
+      ? markUnit
+      : marketGroupReferenceUnit(g);
     const floor = refUnit != null ? `${fmtMarketUnitSats(refUnit)}/${ticker}` : 'no price';
     const floorUsd = refUnit != null ? `${fmtMarketUsdUnitFromSats(refUnit, 'no USD quote')} per token` : 'no USD price';
-    const mcapUsd = g.marketCapSats != null ? fmtMarketUsdWholeFromSats(g.marketCapSats) : 'n/a';
-    const mcapBtc = g.marketCapSats != null ? fmtMarketBtc(g.marketCapSats) : '0 BTC';
-    const volume24hUsd = g.volume24hSats != null ? fmtMarketUsdWholeFromSats(g.volume24hSats, '—') : '—';
-    const volume24hBtc = g.volume24hSats != null ? fmtMarketBtc(g.volume24hSats) : '—';
-    const volumeUsd = g.volumeSats != null ? fmtMarketUsdWholeFromSats(g.volumeSats, '—') : '—';
-    const volumeBtc = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : '—';
+    // Recompute market cap against the chosen header price (not the
+    // floor-derived g.marketCapSats which would still reflect dust).
+    const rowMarketCap = marketCapSats(a, refUnit);
+    const mcapUsd = rowMarketCap != null ? fmtMarketUsdWholeFromSats(rowMarketCap) : 'n/a';
+    const mcapBtc = rowMarketCap != null ? fmtMarketBtc(rowMarketCap) : '0 BTC';
+    // Distinguish "not loaded yet" from "no trades": once per-asset
+    // enrichment has fired (_marketAssetStatsLoadedAt set), '—' means
+    // truly zero. Before that, show a faint "…" so the user knows data
+    // is coming. Enrichment fires from scheduleMarketAssetStatsEnrichment
+    // at table render time with concurrency MARKET_ASSET_STATS_CONCURRENCY.
+    const statsLoaded = !!a._marketAssetStatsLoadedAt;
+    const loadingPlaceholder = '…';
+    const volume24hUsd = g.volume24hSats != null ? fmtMarketUsdWholeFromSats(g.volume24hSats, '—') : (statsLoaded ? '—' : loadingPlaceholder);
+    const volume24hBtc = g.volume24hSats != null ? fmtMarketBtc(g.volume24hSats) : (statsLoaded ? '—' : loadingPlaceholder);
+    const volumeUsd = g.volumeSats != null ? fmtMarketUsdWholeFromSats(g.volumeSats, '—') : (statsLoaded ? '—' : loadingPlaceholder);
+    const volumeBtc = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : (statsLoaded ? '—' : loadingPlaceholder);
     const transfers = Number(a.transfer_count || 0);
     return `
       <tr data-market-asset-row="${escapeHtml(safeAid)}"${_assetHasRecentActivity(a) ? ' data-recent-activity="1"' : ''}>
@@ -34590,11 +34618,22 @@ function renderMarketAssetHeader(assetId, rows) {
   const allGroup = marketGroupRows(allRows, [a])[0] || fallbackGroup;
   const priceGroup = marketGroupRows(visibleRows, [a])[0] || fallbackGroup;
   priceGroup.referenceUnit = marketGroupReferenceUnit(priceGroup);
-  const headerMarketCapSats = marketCapSats(priceGroup.asset || a, priceGroup.referenceUnit);
+  // Prefer the worker's outlier-guarded mark price for the header card.
+  // The raw floor can be dragged to absurd lows by dust 0.7114-sat asks
+  // even when the real trading band is hundreds of sats — using mark
+  // price keeps the header consistent with what the rich strip below
+  // shows for market cap, and matches what users see in the activity
+  // feed. Falls back to referenceUnit (floor / last trade) when no
+  // mark price is available yet.
+  const markUnit = Number(a.mark_price?.unit);
+  const headerUnit = (Number.isFinite(markUnit) && markUnit > 0)
+    ? markUnit
+    : priceGroup.referenceUnit;
+  const headerMarketCapSats = marketCapSats(priceGroup.asset || a, headerUnit);
   scheduleMarketSupplyEnrichment([priceGroup]);
   const total = Number(allGroup.total || 0);
-  const priceLine = priceGroup.referenceUnit != null ? fmtMarketUnitSats(priceGroup.referenceUnit) : 'no price';
-  const priceUsd = priceGroup.referenceUnit != null ? fmtMarketUsdUnitFromSats(priceGroup.referenceUnit, '') : '';
+  const priceLine = headerUnit != null ? fmtMarketUnitSats(headerUnit) : 'no price';
+  const priceUsd = headerUnit != null ? fmtMarketUsdUnitFromSats(headerUnit, '') : '';
   const mcapUsd = headerMarketCapSats != null ? fmtMarketUsdWholeFromSats(headerMarketCapSats) : 'n/a';
   const mcapBtc = headerMarketCapSats != null ? fmtMarketBtc(headerMarketCapSats) : '0 BTC';
   const transfers = Number(a.transfer_count || 0);
@@ -34885,12 +34924,16 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   const _logBadge = isLog
     ? `<span title="Auto-switched to log scale because max/min &gt; 50. The visual slope reflects ratio change, not absolute. Linear scale would squash 99% of trades into a thin strip." style="font-size:9px;padding:1px 5px;background:var(--ink-faint);color:var(--ink);border-radius:2px;letter-spacing:0.05em;cursor:help;">log</span>`
     : '';
+  // Serialize points data for the cursor handler. JSON in a data attr is
+  // smaller than reading back from each <circle>'s <title> text.
+  const cursorData = points.map(p => ({ ts: p.ts, u: p.u, x: xOf(p.ts), y: yOf(p.u), price: p.price, txid: p.txid }));
+  const cursorDataAttr = escapeHtml(JSON.stringify(cursorData));
   return `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
       <strong>Price history</strong>${_logBadge}
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}</span>
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);cursor:crosshair;">
       ${gridlines}
       ${areaPath ? `<path d="${areaPath}" fill="#0a8f43" fill-opacity="0.10" stroke="none"/>` : ''}
       ${linePath ? `<path d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
@@ -34900,7 +34943,96 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
       <text x="${PL - 4}" y="${yOf(yLo).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
       <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)">${escapeHtml(oldLbl)}</text>
       <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" text-anchor="end">${escapeHtml(newLbl)}</text>
+      <!-- Cursor overlay: invisible rect captures mousemove across the
+           full plot area. The crosshair group below is positioned by
+           _wireMarketPriceChartCursor on mousemove; hidden until first
+           hover so the chart reads as static at rest. -->
+      <rect data-chart-overlay x="${PL}" y="${PT}" width="${plotW}" height="${plotH}" fill="transparent" pointer-events="all"></rect>
+      <g data-chart-crosshair style="display:none;pointer-events:none;">
+        <line data-chart-vline x1="0" x2="0" y1="${PT}" y2="${PT + plotH}" stroke="var(--ink)" stroke-width="0.7" stroke-dasharray="3,2" opacity="0.55"></line>
+        <circle data-chart-active-dot cx="0" cy="0" r="3.5" fill="#0a8f43" stroke="#fff" stroke-width="1.2"></circle>
+        <g data-chart-tooltip transform="translate(0,0)">
+          <rect data-chart-tooltip-bg x="0" y="0" width="0" height="0" fill="var(--ink)" rx="2" ry="2"></rect>
+          <text data-chart-tooltip-text font-size="10" font-family="var(--mono, monospace)" fill="var(--bg)" x="0" y="0" dominant-baseline="hanging"></text>
+        </g>
+      </g>
     </svg>`;
+}
+// Bind cursor traversal to a rendered price chart. Reads serialized
+// points from data-cursor-points on the <svg>, then on mousemove finds
+// the nearest point by x-distance and reveals the crosshair group with
+// tooltip showing price + age. Idempotent — re-binding the same host
+// is safe since we set a sentinel on the svg element.
+function _wireMarketPriceChartCursor(host) {
+  if (!host) return;
+  const svg = host.querySelector('[data-chart-svg]');
+  if (!svg || svg._cursorBound) return;
+  svg._cursorBound = true;
+  let points = [];
+  try { points = JSON.parse(svg.dataset.cursorPoints || '[]'); } catch { points = []; }
+  if (!points.length) return;
+  const overlay = svg.querySelector('[data-chart-overlay]');
+  const cross = svg.querySelector('[data-chart-crosshair]');
+  const vline = svg.querySelector('[data-chart-vline]');
+  const activeDot = svg.querySelector('[data-chart-active-dot]');
+  const tooltipG = svg.querySelector('[data-chart-tooltip]');
+  const tooltipBg = svg.querySelector('[data-chart-tooltip-bg]');
+  const tooltipText = svg.querySelector('[data-chart-tooltip-text]');
+  if (!overlay || !cross || !vline || !activeDot || !tooltipG || !tooltipBg || !tooltipText) return;
+  const ticker = svg.dataset.ticker || '?';
+  const PL = Number(svg.dataset.plotPl || 0);
+  const PR = Number(svg.dataset.plotPr || 0);
+  const PT = Number(svg.dataset.plotPt || 0);
+  const W = Number(svg.dataset.plotW || 600);
+  const H = Number(svg.dataset.plotH || 160);
+  const ageStr = (ts) => {
+    const sec = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
+  };
+  const move = (ev) => {
+    // Convert screen coords to SVG viewBox coords via the SVG CTM.
+    const pt = svg.createSVGPoint();
+    pt.x = ev.clientX; pt.y = ev.clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return;
+    const local = pt.matrixTransform(ctm.inverse());
+    // Find nearest point by x distance.
+    let best = points[0], bestDx = Math.abs(points[0].x - local.x);
+    for (let i = 1; i < points.length; i++) {
+      const dx = Math.abs(points[i].x - local.x);
+      if (dx < bestDx) { bestDx = dx; best = points[i]; }
+    }
+    cross.style.display = '';
+    vline.setAttribute('x1', best.x.toFixed(2));
+    vline.setAttribute('x2', best.x.toFixed(2));
+    activeDot.setAttribute('cx', best.x.toFixed(2));
+    activeDot.setAttribute('cy', best.y.toFixed(2));
+    // Tooltip text: price + age. Position to the right of the active
+    // dot unless near the right edge, in which case flip left.
+    const priceStr = `${fmtUnitPriceSats(best.u)} sats/${ticker}`;
+    const ageStrV = ageStr(best.ts);
+    tooltipText.textContent = `${priceStr} · ${ageStrV}`;
+    // Measure text and size the background.
+    let bbox;
+    try { bbox = tooltipText.getBBox(); } catch { bbox = { width: 120, height: 12 }; }
+    const padX = 5, padY = 3;
+    const tipW = bbox.width + padX * 2;
+    const tipH = bbox.height + padY * 2;
+    const rightEdge = W - PR;
+    const flipLeft = best.x + 10 + tipW > rightEdge;
+    const tipX = flipLeft ? best.x - 10 - tipW : best.x + 10;
+    const tipY = Math.max(PT, Math.min(H - tipH - 2, best.y - tipH / 2));
+    tooltipG.setAttribute('transform', `translate(${tipX},${tipY})`);
+    tooltipBg.setAttribute('width', tipW);
+    tooltipBg.setAttribute('height', tipH);
+    tooltipText.setAttribute('x', padX);
+    tooltipText.setAttribute('y', padY);
+  };
+  overlay.addEventListener('mousemove', move);
+  overlay.addEventListener('mouseleave', () => { cross.style.display = 'none'; });
 }
 
 async function populateMarketAssetStats(scope, asset) {
@@ -35242,6 +35374,7 @@ async function populateMarketAssetStats(scope, asset) {
     if (chartHtml) {
       chartEl.innerHTML = chartHtml;
       chartEl.style.display = '';
+      _wireMarketPriceChartCursor(chartEl);
     } else {
       chartEl.innerHTML = '';
       chartEl.style.display = 'none';
