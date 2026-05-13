@@ -3044,12 +3044,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div class="market-chips-row">
           <div class="market-chip-wrap">
             <select id="market-filter-kind" class="market-chip" aria-label="Trade type filter">
-              <option value="trustless" selected title="Atomic settlement — token transfer and BTC payment close in one Bitcoin tx. No counterparty trust required. Includes ⚡ instant (seller offline) and ⚡ atomic (claim-fulfil-take) listings.">⚡ trustless only</option>
-              <option value="preauth" title="Instant listing (SPEC §5.7.8) — seller signed once at listing, buyer completes alone via ECDH. No seller-online step.">⚡ instant only</option>
-              <option value="intent" title="Atomic intent — confidential token transfer and BTC payment close in one Bitcoin tx. Maker must fulfil after a buyer claims.">⚡ atomic only</option>
-              <option value="all">all kinds (incl. OTC)</option>
-              <option value="opening" title="Opening listing — maker publishes the UTXO's exact (amount, blinding) opening + price. Settlement is OTC, requires counterparty trust.">opening (OTC)</option>
-              <option value="range" title="Range listing — maker proves balance ≥ X via bulletproof, exact balance hidden. Settlement is OTC, requires counterparty trust.">range (OTC)</option>
+              <option value="trustless" selected title="Atomic settlement — token transfer and BTC payment close in one Bitcoin tx. No counterparty trust required. Covers both instant and atomic-offer listings.">⚡ Trustless</option>
+              <option value="preauth" title="Instant listing — seller signed once at listing, any buyer completes alone. No seller-online step required.">⚡ Instant</option>
+              <option value="intent" title="Atomic offer — buyer claims, seller fulfils, atomic settlement. Both legs settle in one Bitcoin tx or neither does.">⚡ Atomic offer</option>
+              <option value="all">All listings (incl. OTC)</option>
+              <option value="opening" title="OTC · per-UTXO opening — maker publishes a specific UTXO's amount + blinding + price. Settlement is off-chain; counterparty trust required.">OTC · per-UTXO</option>
+              <option value="range" title="OTC · hidden balance — maker proves balance ≥ K via zero-knowledge bulletproof, exact amount hidden. Settlement is off-chain; counterparty trust required.">OTC · hidden balance</option>
             </select>
           </div>
           <div class="market-chip-wrap">

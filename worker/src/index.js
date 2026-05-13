@@ -589,6 +589,35 @@ function lastTradeKey(network, aid) {
   return network === 'signet' ? `lasttrade:${aid}` : `lasttrade:${network}:${aid}`;
 }
 
+// Daily volume bucket. One key per (network, asset, UTC-day) holding the
+// summed sats traded that day. Read-side sums the last two buckets to
+// build a rolling-24h figure (cheap: at most 2 KV.gets per asset). The
+// 7-day expirationTtl auto-collects stale buckets without a sweeper cron.
+function tradeDayKey(network, aid, yyyymmdd) {
+  return network === 'signet'
+    ? `trade-day:${aid}:${yyyymmdd}`
+    : `trade-day:${network}:${aid}:${yyyymmdd}`;
+}
+function _utcYyyymmdd(tsSeconds) {
+  const d = new Date(Math.floor(tsSeconds) * 1000);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}${m}${dd}`;
+}
+
+// Recent-trades ring buffer per asset. Bounded at TRADES_RING_CAP entries.
+// Newest first; older entries fall off the end. Each entry is the same
+// shape we write to lastTradeKey so client renderers can reuse the same
+// formatting code. Stored as a JSON array under one KV key; one read per
+// asset page, one write per trade hint. No expirationTtl — once an asset
+// has any trades, the ring is "always interesting"; if the asset goes
+// idle, the ring is small (≤cap entries × ~100 bytes) and harmless.
+const TRADES_RING_CAP = 50;
+function tradesRingKey(network, aid) {
+  return network === 'signet' ? `trades-ring:${aid}` : `trades-ring:${network}:${aid}`;
+}
+
 async function apiText(env, path, opts = {}, network = 'signet') {
   const base = networkApi(env, network);
   const r = await fetch(`${base}${path}`, opts);
@@ -3379,6 +3408,35 @@ async function handleAssetHint(req, env, network, cors, ctx) {
             ts: Math.floor(Date.now() / 1000),
           };
           await env.REGISTRY_KV.put(lastTradeKey(network, dx.asset_id), JSON.stringify(lastTrade));
+          // Daily volume bucket. Add this trade's sats to today's bucket so
+          // the asset endpoint can sum (today + yesterday) for a rolling 24h
+          // figure. Bucket expires in 7 days — long after it's left the
+          // window — to auto-collect without a sweeper.
+          const dayKey = tradeDayKey(network, dx.asset_id, _utcYyyymmdd(lastTrade.ts));
+          try {
+            const prevDay = await env.REGISTRY_KV.get(dayKey);
+            const prevSats = prevDay ? (Number(prevDay) || 0) : 0;
+            await env.REGISTRY_KV.put(dayKey, String(prevSats + body.price_sats), { expirationTtl: 7 * 86400 });
+          } catch { /* KV blip — bucket missing this trade is acceptable, last_trade still landed */ }
+          // Recent-trades ring buffer. Append (newest-first) and trim to
+          // TRADES_RING_CAP. Best-effort; failure here doesn't void the
+          // last_trade write above.
+          try {
+            const ringKey = tradesRingKey(network, dx.asset_id);
+            const prevRingJson = await env.REGISTRY_KV.get(ringKey);
+            let ring = [];
+            if (prevRingJson) {
+              try { const j = JSON.parse(prevRingJson); if (Array.isArray(j)) ring = j; } catch {}
+            }
+            // Dedup: if a hint replay arrives for the same txid, don't
+            // double-append. The worker accepts the same hint twice when
+            // its 90k-second counter expires; we still want one row per tx.
+            if (!ring.some(r => r && r.txid === lastTrade.txid)) {
+              ring.unshift(lastTrade);
+              if (ring.length > TRADES_RING_CAP) ring.length = TRADES_RING_CAP;
+              await env.REGISTRY_KV.put(ringKey, JSON.stringify(ring));
+            }
+          } catch { /* ring is best-effort */ }
         }
       } catch { /* BigInt parse failed — ignore, transfer counter bump still landed */ }
     }
@@ -3629,11 +3687,33 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   v.preauth_sale_count = ps.keys.length;
   // transfer_count + last_trade are also in the /assets list response via
   // hydrateAssetSummary; mirror them here so single-asset clients get the
-  // same discovery metrics.
+  // same discovery metrics. The single-asset endpoint additionally returns
+  // volume_24h_sats (rolling) and trades (recent ring buffer) — kept off
+  // the list response to stay within the per-invocation subrequest budget
+  // on big asset directories.
   const xfer = await env.REGISTRY_KV.get(transferCountKey(network, assetIdHex));
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
   const lastTrade = await env.REGISTRY_KV.get(lastTradeKey(network, assetIdHex), 'json');
   if (lastTrade) v.last_trade = lastTrade;
+  // Rolling 24h volume = sum of today's + yesterday's UTC daily buckets.
+  // The sum slightly over-counts (it covers up to 48h worst case) but a
+  // straight 24h cutoff would require timestamped per-trade scanning; the
+  // bucket sum is one-order-cheaper and the over-count is bounded.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const todayKey = tradeDayKey(network, assetIdHex, _utcYyyymmdd(nowSec));
+  const yestKey  = tradeDayKey(network, assetIdHex, _utcYyyymmdd(nowSec - 86400));
+  const [todaySats, yestSats] = await Promise.all([
+    env.REGISTRY_KV.get(todayKey),
+    env.REGISTRY_KV.get(yestKey),
+  ]);
+  v.volume_24h_sats = (Number(todaySats) || 0) + (Number(yestSats) || 0);
+  // Recent trades. JSON array of up to TRADES_RING_CAP entries, newest
+  // first. Empty array (rather than omission) so consumers can render
+  // "no recent trades" without an undefined-vs-empty distinction.
+  const ringJson = await env.REGISTRY_KV.get(tradesRingKey(network, assetIdHex));
+  let trades = [];
+  if (ringJson) { try { const j = JSON.parse(ringJson); if (Array.isArray(j)) trades = j; } catch {} }
+  v.trades = trades;
   return jsonResponse(v, 200, cors);
 }
 

@@ -26434,20 +26434,20 @@ async function renderHoldings() {
         h.utxos.length && !h.unknownAsset && WORKER_BASE ? `<button data-act="publish-balance" data-aid="${h.assetIdHex}">Publish balance (${h.utxos.length} UTXO${h.utxos.length>1?'s':''})</button>` : '',
         h.balance > 0n && !h.unknownAsset && WORKER_BASE ? `<button data-act="prove-balance" data-aid="${h.assetIdHex}">Prove ≥ threshold</button>` : '',
       ].filter(Boolean).join('');
-      // Primary trading CTA: preauth-sale (instant, buyer-completable). The
-      // legacy listing flavours (per-UTXO opening, range, atomic-targeted,
-      // atomic-intent open) cover specialised privacy/OTC needs but aren't
-      // what a first-time seller wants — they're tucked behind a single
-      // "Advanced listing types ▾" disclosure.
+      // Primary trading CTA: instant listing (buyer-completable, no
+      // seller-online step). Other listing flavours cover specialised
+      // privacy / OTC needs but aren't what a first-time seller wants —
+      // they're tucked behind one "More listing options ▾" disclosure
+      // labelled in plain English.
       const marketButtons = canMarket
-        ? `<button class="primary" data-act="list-preauth" data-aid="${h.assetIdHex}">List (Instant)</button>` +
+        ? `<button class="primary" data-act="list-preauth" data-aid="${h.assetIdHex}" title="Recommended. Sign once at listing; any buyer completes settlement atomically without you needing to be online.">List for sale</button>` +
           `<details data-advanced-listings="${h.assetIdHex}" style="display:inline-block;">` +
-            `<summary style="font-size:11px;color:var(--ink-mid);cursor:pointer;padding:6px 8px;list-style:none;">Advanced listing types ▾</summary>` +
+            `<summary style="font-size:11px;color:var(--ink-mid);cursor:pointer;padding:6px 8px;list-style:none;">More listing options ▾</summary>` +
             `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">` +
-              `<button data-act="list-sale" data-aid="${h.assetIdHex}">List a UTXO for sale</button>` +
-              `<button data-act="list-range" data-aid="${h.assetIdHex}">List (hidden balance)</button>` +
-              `<button data-act="list-atomic" data-aid="${h.assetIdHex}">Atomic (targeted)</button>` +
-              `<button data-act="publish-intent" data-aid="${h.assetIdHex}">Atomic intent (open)</button>` +
+              `<button data-act="publish-intent" data-aid="${h.assetIdHex}" title="Trustless. Post an open offer; takers claim & you fulfil. Same atomic settlement as Instant but you stay online to fulfil.">Atomic offer (open)</button>` +
+              `<button data-act="list-atomic" data-aid="${h.assetIdHex}" title="Trustless, targeted. Generate a share-link offer for one specific recipient.">Targeted offer (share-link)</button>` +
+              `<button data-act="list-sale" data-aid="${h.assetIdHex}" title="OTC (requires counterparty trust). Publish a per-UTXO opening + price; settlement is off-chain.">OTC · per-UTXO opening</button>` +
+              `<button data-act="list-range" data-aid="${h.assetIdHex}" title="OTC + privacy. Publish a zero-knowledge proof of balance ≥ K; settlement is off-chain.">OTC · hidden balance</button>` +
             `</div>` +
           `</details>`
         : '';
@@ -30536,13 +30536,15 @@ function applyMarketFilters() {
                      || (_marketCache?.assets?.find(x => x.asset_id === _marketView.assetId))
                      || { asset_id: _marketView.assetId, ticker: '?', decimals: 0 };
   const bidsLadderHtml = renderMarketBidsLadderHTML(_assetForBids);
+  const statsHtml = renderMarketAssetStatsHTML(_assetForBids);
   if (!rows.length) {
     // No asks but bids might still exist — render the ladder + place-bid CTA
     // so makers without active listings can still see / capture buy-side
     // demand. Empty asks copy clarifies the ask side specifically.
-    list.innerHTML = assetHeaderHtml + bidsLadderHtml + '<div class="empty">No active asks. Bids above; post one if you want to buy.</div>';
+    list.innerHTML = assetHeaderHtml + statsHtml + bidsLadderHtml + '<div class="empty">No active asks. Bids above; post one if you want to buy.</div>';
     bindMarketAssetHeader(list);
     populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
+    populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
     return;
   }
   // Asset-detail header above already shows the per-kind breakdown
@@ -30561,12 +30563,14 @@ function applyMarketFilters() {
   const asksHeaderHtml = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;"><strong>Asks · ${rows.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· sellers offering tokens for sats · ${$('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first'} (sort dropdown)</span></div>`;
   list.innerHTML =
     assetHeaderHtml +
+    statsHtml +
     bidsLadderHtml +
     asksHeaderHtml +
     noAtomicHint +
     `<div id="market-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;"></div>`;
   bindMarketAssetHeader(list);
   populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
+  populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
   const grid = $('#market-grid');
   const myPubHex = bytesToHex(wallet.pub);
   // Build all tiles into a DocumentFragment first; one reflow at the end
@@ -30972,6 +30976,106 @@ function renderMarketAssetHeader(assetId, rows) {
 // holder fulfils one by issuing a partial AXFER reveal targeted at the
 // bidder, which closes via the standard atomic-intent take flow. Showing
 // bids next to asks gives a confidential analog of an orderbook.
+// Skeleton for the per-asset stats strip (24h volume + recent trades).
+// Populated asynchronously by populateMarketAssetStats — fetches the
+// single-asset endpoint, which is the only place 24h volume + the
+// recent-trades ring buffer are exposed (kept off the /assets list
+// response for KV-subrequest budget reasons).
+function renderMarketAssetStatsHTML(asset) {
+  const aid = /^[0-9a-f]{64}$/.test(asset.asset_id || '') ? asset.asset_id : '';
+  return `
+    <div data-market-asset-stats data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
+      <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
+        <div><span class="muted">24h volume</span> <strong data-market-stat-vol24>—</strong></div>
+        <div><span class="muted">total trades</span> <strong data-market-stat-xfers>—</strong></div>
+        <div><span class="muted">last trade</span> <strong data-market-stat-last>—</strong></div>
+      </div>
+      <div data-market-recent-trades style="margin-top:10px;font-size:11px;">
+        <div class="muted" style="font-size:11px;"><span class="live-dots">loading recent trades</span></div>
+      </div>
+    </div>`;
+}
+
+async function populateMarketAssetStats(scope, asset) {
+  const section = scope.querySelector('[data-market-asset-stats]');
+  if (!section) return;
+  const aid = section.dataset.aid;
+  if (!aid || !WORKER_BASE) return;
+  const ticker = asset.ticker || '?';
+  const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  let j;
+  try {
+    const r = await fetch(withNet(`${WORKER_BASE}/assets/${aid}`));
+    if (!r.ok) throw new Error(`worker returned ${r.status}`);
+    j = await r.json();
+  } catch (e) {
+    const recentEl = section.querySelector('[data-market-recent-trades]');
+    if (recentEl) recentEl.innerHTML = `<div class="muted" style="font-size:10px;">stats unavailable: ${escapeHtml(e?.message || String(e))}</div>`;
+    return;
+  }
+  // Top-line stats.
+  const volSats = Number(j.volume_24h_sats || 0);
+  const xfers = Number(j.transfer_count || 0);
+  const last = j.last_trade && Number.isInteger(j.last_trade.price_sats) && Number(j.last_trade.price_sats) > 0 ? j.last_trade : null;
+  let lastStr = '—';
+  if (last) {
+    try {
+      const u = unitPriceSats(Number(last.price_sats), BigInt(last.amount), decimals);
+      const ageSecs = Math.max(0, Math.floor(Date.now() / 1000) - Number(last.ts || 0));
+      const ageStr = ageSecs < 60 ? `${ageSecs}s` : ageSecs < 3600 ? `${Math.floor(ageSecs / 60)}m` : ageSecs < 86400 ? `${Math.floor(ageSecs / 3600)}h` : `${Math.floor(ageSecs / 86400)}d`;
+      lastStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)} · ${ageStr} ago` : `${Number(last.price_sats).toLocaleString()} sats · ${ageStr} ago`;
+    } catch { lastStr = `${Number(last.price_sats).toLocaleString()} sats`; }
+  }
+  const setText = (sel, text, isHtml = false) => {
+    const el = section.querySelector(sel);
+    if (!el) return;
+    if (isHtml) el.innerHTML = text; else el.textContent = text;
+  };
+  setText('[data-market-stat-vol24]', volSats > 0 ? `${volSats.toLocaleString()} sats` : '—');
+  setText('[data-market-stat-xfers]', xfers > 0 ? xfers.toLocaleString() : '—');
+  setText('[data-market-stat-last]', lastStr, true);
+
+  // Recent-trades table. Each entry: { txid, price_sats, amount, ts }.
+  // Newest first (worker stores in that order). Cap display at 10 rows so
+  // the section stays compact; full ring buffer (up to 50) is available
+  // for callers that fetch the asset endpoint directly.
+  const trades = Array.isArray(j.trades) ? j.trades : [];
+  const recentEl = section.querySelector('[data-market-recent-trades]');
+  if (!recentEl) return;
+  if (!trades.length) {
+    recentEl.innerHTML = `<div class="muted" style="font-size:10px;">no recent trades on ${escapeHtml(ticker)} yet — be the first.</div>`;
+    return;
+  }
+  const visible = trades.slice(0, 10);
+  const rowsHtml = visible.map(t => {
+    const price = Number(t.price_sats) || 0;
+    const amtBig = (() => { try { return BigInt(t.amount || '0'); } catch { return 0n; } })();
+    const amtStr = amtBig > 0n ? fmtAssetAmount(amtBig, decimals) : '?';
+    let unitStr = '—';
+    if (amtBig > 0n) {
+      const u = unitPriceSats(price, amtBig, decimals);
+      if (u != null) unitStr = `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}`;
+    }
+    const ts = Number(t.ts || 0);
+    const ageSecs = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    const ageStr = ageSecs < 60 ? `${ageSecs}s` : ageSecs < 3600 ? `${Math.floor(ageSecs / 60)}m` : ageSecs < 86400 ? `${Math.floor(ageSecs / 3600)}h` : `${Math.floor(ageSecs / 86400)}d`;
+    const txidShort = /^[0-9a-f]{64}$/.test(String(t.txid || '')) ? shorten(t.txid, 6) : '?';
+    const txLink = /^[0-9a-f]{64}$/.test(String(t.txid || ''))
+      ? `<a href="${NET.explorer}/tx/${escapeHtml(t.txid)}" target="_blank" rel="noopener noreferrer" class="muted" style="font-size:10px;">${escapeHtml(txidShort)} ↗</a>`
+      : `<span class="muted" style="font-size:10px;">${escapeHtml(txidShort)}</span>`;
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:4px 0;border-top:1px solid var(--ink-faint);font-size:11px;">
+        <div style="flex:0 0 auto;font-family:var(--mono);"><strong>${escapeHtml(unitStr)}</strong></div>
+        <div style="flex:1;color:var(--ink-mid);">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${price.toLocaleString()} sats</div>
+        <div style="flex:0 0 auto;" class="muted">${escapeHtml(ageStr)} ago</div>
+        <div style="flex:0 0 auto;">${txLink}</div>
+      </div>`;
+  }).join('');
+  recentEl.innerHTML = `
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;"><strong>Recent trades</strong> <span class="muted" style="text-transform:none;letter-spacing:0;">· last ${visible.length} of ${trades.length}</span></div>
+    ${rowsHtml}`;
+}
+
 function renderMarketBidsLadderHTML(asset) {
   const aid = /^[0-9a-f]{64}$/.test(asset.asset_id || '') ? asset.asset_id : '';
   const ticker = escapeHtml(asset.ticker || '?');
