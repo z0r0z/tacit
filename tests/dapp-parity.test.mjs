@@ -390,6 +390,91 @@ await test('outsider cannot decrypt (wrong privkey → wrong r)', () => {
   return !eqBytes(decBad, r);
 });
 
+console.log('\n§5d Atomic-intent on-chain (amount + blinding) OP_RETURN encryption (round-trip):');
+await test('AXINTENT_ONCHAIN_PAYLOAD_BYTES parity', () =>
+  dapp.AXINTENT_ONCHAIN_PAYLOAD_BYTES === comp.AXINTENT_ONCHAIN_PAYLOAD_BYTES &&
+  dapp.AXINTENT_ONCHAIN_PAYLOAD_BYTES === 40
+);
+await test('onchain keystream symmetric maker(SK_A,PK_B) === taker(SK_B,PK_A)', () => {
+  const ksMaker = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
+  const ksTaker = dapp.deriveAxintentOnchainKeystreams(SK_B, PK_A, INTENT_ID, ASSET_ID, 0);
+  return eqBytes(ksMaker.amountKs, ksTaker.amountKs) && eqBytes(ksMaker.blindingKs, ksTaker.blindingKs);
+});
+await test('dapp keystream === comp keystream', () => {
+  const dappKs = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
+  const compKs = comp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
+  return eqBytes(dappKs.amountKs, compKs.amountKs) && eqBytes(dappKs.blindingKs, compKs.blindingKs);
+});
+await test('keystream binds vout_idx (different vout → different keystream)', () => {
+  const k0 = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
+  const k1 = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 1);
+  return !eqBytes(k0.amountKs, k1.amountKs) && !eqBytes(k0.blindingKs, k1.blindingKs);
+});
+await test('encrypt/decrypt round-trip recovers amount + blinding', () => {
+  const amount = 123_456_789n;
+  const blinding = hexToBytes('7a'.repeat(32));
+  const ksMaker = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
+  const cipher = dapp.encodeAxintentOnchainPayload(amount, blinding, ksMaker);
+  if (cipher.length !== 40) return false;
+  const ksTaker = dapp.deriveAxintentOnchainKeystreams(SK_B, PK_A, INTENT_ID, ASSET_ID, 0);
+  const dec = dapp.decodeAxintentOnchainPayload(cipher, ksTaker);
+  return dec.amount === amount && eqBytes(dec.blindingBytes, blinding);
+});
+await test('encrypt/decrypt round-trip via comp.encode → dapp.decode', () => {
+  const amount = 999_999_999n;
+  const blinding = hexToBytes('3c'.repeat(32));
+  const ksMaker = comp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 1);
+  const cipher = comp.encodeAxintentOnchainPayload(amount, blinding, ksMaker);
+  const ksTaker = dapp.deriveAxintentOnchainKeystreams(SK_B, PK_A, INTENT_ID, ASSET_ID, 1);
+  const dec = dapp.decodeAxintentOnchainPayload(cipher, ksTaker);
+  return dec.amount === amount && eqBytes(dec.blindingBytes, blinding);
+});
+await test('OP_RETURN script encodes as 0x6a 0x28 || 40 bytes', () => {
+  const cipher = new Uint8Array(40);
+  for (let i = 0; i < 40; i++) cipher[i] = i;
+  const script = dapp.encodeAxintentOnchainOpReturn(cipher);
+  return script.length === 42 && script[0] === 0x6a && script[1] === 0x28 &&
+         eqBytes(script.slice(2), cipher);
+});
+await test('tryExtractAxintentOnchainOpReturn round-trips', () => {
+  const cipher = new Uint8Array(40);
+  for (let i = 0; i < 40; i++) cipher[i] = (i * 7 + 1) & 0xff;
+  const script = dapp.encodeAxintentOnchainOpReturn(cipher);
+  const out = dapp.tryExtractAxintentOnchainOpReturn(script);
+  return out !== null && eqBytes(out, cipher);
+});
+await test('tryExtractAxintentOnchainOpReturn rejects wrong length', () =>
+  dapp.tryExtractAxintentOnchainOpReturn(hexToBytes('6a' + '00'.repeat(30))) === null &&
+  dapp.tryExtractAxintentOnchainOpReturn(hexToBytes('6a28' + '00'.repeat(39))) === null
+);
+await test('tryExtractAxintentOnchainOpReturn rejects non-OP_RETURN', () => {
+  const wrong = new Uint8Array(42);
+  wrong[0] = 0x76; wrong[1] = 0x28; // wrong opcode
+  return dapp.tryExtractAxintentOnchainOpReturn(wrong) === null;
+});
+await test('outsider cannot decrypt onchain payload (wrong privkey)', () => {
+  const amount = 42n;
+  const blinding = hexToBytes('5a'.repeat(32));
+  const ksMaker = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
+  const cipher = dapp.encodeAxintentOnchainPayload(amount, blinding, ksMaker);
+  // Attacker with SK_C tries to decrypt against the maker's pubkey.
+  const SK_C = hexToBytes('07'.repeat(32));
+  const ksOut = dapp.deriveAxintentOnchainKeystreams(SK_C, PK_A, INTENT_ID, ASSET_ID, 0);
+  const decBad = dapp.decodeAxintentOnchainPayload(cipher, ksOut);
+  return decBad.amount !== amount && !eqBytes(decBad.blindingBytes, blinding);
+});
+await test('replay protection: ciphertext bound to (intent_id, asset_id, vout)', () => {
+  const amount = 1000n;
+  const blinding = hexToBytes('aa'.repeat(32));
+  const ksMaker = dapp.deriveAxintentOnchainKeystreams(SK_A, PK_B, INTENT_ID, ASSET_ID, 0);
+  const cipher = dapp.encodeAxintentOnchainPayload(amount, blinding, ksMaker);
+  // Try to decrypt the same ciphertext under a DIFFERENT intent_id.
+  const otherIntent = hexToBytes('ab'.repeat(16));
+  const ksWrong = dapp.deriveAxintentOnchainKeystreams(SK_B, PK_A, otherIntent, ASSET_ID, 0);
+  const decBad = dapp.decodeAxintentOnchainPayload(cipher, ksWrong);
+  return decBad.amount !== amount && !eqBytes(decBad.blindingBytes, blinding);
+});
+
 console.log('\n§5 Envelope encoders / decoders (cross-decode round-trip):');
 const fakeRangeproof = hexToBytes('aa'.repeat(688));
 const fakeKernelSig = hexToBytes('bb'.repeat(64));

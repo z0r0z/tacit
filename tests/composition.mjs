@@ -108,6 +108,63 @@ function xor32(a, b) {
   return out;
 }
 
+// ---- §5.7.6 on-chain recovery: encrypted amount + blinding for OP_RETURN ----
+// Mirror of dapp/tacit.js helpers. Maker derives at fulfilment time using
+// (maker.priv, taker.pub); taker (or any wallet restoring from seed) derives
+// using (taker.priv, maker.pub) — symmetric ECDH. Domain-separated and bound
+// to (intent_id, asset_id, vout_idx) so one ciphertext can't decrypt another
+// or replay against a different output index.
+const AXINTENT_ONCHAIN_AMOUNT_DOMAIN   = new TextEncoder().encode('tacit-axintent-onchain-amount-v1');
+const AXINTENT_ONCHAIN_BLINDING_DOMAIN = new TextEncoder().encode('tacit-axintent-onchain-blinding-v1');
+const AXINTENT_ONCHAIN_PAYLOAD_BYTES   = 40;
+
+function deriveAxintentOnchainKeystreams(myPriv, theirPubBytes, intentIdBytes, assetIdBytes, voutIdx) {
+  const shared = secp.getSharedSecret(myPriv, theirPubBytes);
+  const seed = sha256(shared.slice(1));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, voutIdx >>> 0, true);
+  const amountKs = hmac(sha256, seed, concatBytes(
+    AXINTENT_ONCHAIN_AMOUNT_DOMAIN, intentIdBytes, assetIdBytes, voutLE,
+  )).slice(0, 8);
+  const blindingKs = hmac(sha256, seed, concatBytes(
+    AXINTENT_ONCHAIN_BLINDING_DOMAIN, intentIdBytes, assetIdBytes, voutLE,
+  ));
+  return { amountKs, blindingKs };
+}
+
+function encodeAxintentOnchainPayload(amountBigint, blindingBytes32, ks) {
+  if (!(blindingBytes32 instanceof Uint8Array) || blindingBytes32.length !== 32) {
+    throw new Error('blinding must be 32 bytes');
+  }
+  const amountCt = encryptAmount(amountBigint, ks.amountKs);
+  const blindingCt = xor32(blindingBytes32, ks.blindingKs);
+  return concatBytes(amountCt, blindingCt);
+}
+
+function decodeAxintentOnchainPayload(ciphertext40, ks) {
+  if (!(ciphertext40 instanceof Uint8Array) || ciphertext40.length !== AXINTENT_ONCHAIN_PAYLOAD_BYTES) {
+    throw new Error(`axintent on-chain ciphertext must be ${AXINTENT_ONCHAIN_PAYLOAD_BYTES} bytes`);
+  }
+  const amount = decryptAmount(ciphertext40.slice(0, 8), ks.amountKs);
+  const blindingBytes = xor32(ciphertext40.slice(8, 40), ks.blindingKs);
+  return { amount, blindingBytes };
+}
+
+function encodeAxintentOnchainOpReturn(ciphertext40) {
+  if (!(ciphertext40 instanceof Uint8Array) || ciphertext40.length !== AXINTENT_ONCHAIN_PAYLOAD_BYTES) {
+    throw new Error(`axintent on-chain ciphertext must be ${AXINTENT_ONCHAIN_PAYLOAD_BYTES} bytes`);
+  }
+  return concatBytes(new Uint8Array([0x6a, AXINTENT_ONCHAIN_PAYLOAD_BYTES]), ciphertext40);
+}
+
+function tryExtractAxintentOnchainOpReturn(scriptBytes) {
+  if (!(scriptBytes instanceof Uint8Array)) return null;
+  if (scriptBytes.length !== 2 + AXINTENT_ONCHAIN_PAYLOAD_BYTES) return null;
+  if (scriptBytes[0] !== 0x6a) return null;
+  if (scriptBytes[1] !== AXINTENT_ONCHAIN_PAYLOAD_BYTES) return null;
+  return scriptBytes.slice(2);
+}
+
 // ---- Atomic-intent message hashes (mirror of dapp/worker domain tags) ----
 function axintentMsg(assetIdBytes, intentIdBytes, makerPubBytes, amount, priceSats, expiry, commitTxidHex, assetUtxoTxidHex, assetUtxoVout) {
   const priceLE = new Uint8Array(8); new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
@@ -1284,6 +1341,10 @@ export {
   deriveBlinding, deriveChangeBlinding, deriveEtchBlinding, deriveMintBlinding,
   deriveAmountKeystreamECDH, deriveAmountKeystreamSelf, deriveEtchAmountKeystream, deriveMintAmountKeystream,
   deriveAxintentBlindingKeystream, xor32,
+  deriveAxintentOnchainKeystreams,
+  encodeAxintentOnchainPayload, decodeAxintentOnchainPayload,
+  encodeAxintentOnchainOpReturn, tryExtractAxintentOnchainOpReturn,
+  AXINTENT_ONCHAIN_PAYLOAD_BYTES,
   encryptAmount, decryptAmount,
   signSchnorr, verifySchnorr,
   computeKernelMsg, computeMintMsg,

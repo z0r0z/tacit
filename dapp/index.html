@@ -2288,6 +2288,25 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
             Tacit needs its own signing key in this browser — confidential transactions use primitives existing Bitcoin wallets don't expose. <strong>This is the key that controls your tacit assets</strong>; export and back it up before holding value, since clearing browser storage loses it.
           </div>
 
+          <!-- Custom chain indexer. Defaults to mempool.space + blockstream.info
+               rotating fallback; advanced users can point at their own Esplora
+               (Start9, Umbrel, Citadel, VPS) to bypass public rate limits. -->
+          <details style="margin-top:14px;">
+            <summary style="cursor:pointer;font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:0.12em;color:var(--ink-mid);padding:6px 0;"><span class="det-arrow" style="display:inline-block;transition:transform 0.1s;">▸</span> Advanced: chain indexer</summary>
+            <div style="padding-top:10px;border-top:1px dashed var(--ink-faint);margin-top:6px;">
+              <div class="muted" style="font-size:11px;line-height:1.6;margin-bottom:8px;">
+                The dapp rotates across <strong>mempool.space</strong> + <strong>blockstream.info</strong> by default; both are public Esplora endpoints with per-IP rate limits. To avoid 429s on heavy use, point at your own Esplora (Start9, Umbrel, Citadel, or a self-hosted node) — your URL takes priority and the public endpoints become fallback only.
+              </div>
+              <div style="font-size:11px;color:var(--ink-mid);margin-bottom:4px;">Custom Esplora URL <span class="muted">(for the active network)</span></div>
+              <div class="flex" style="gap:6px;flex-wrap:wrap;align-items:center;">
+                <input id="custom-api-url" type="url" placeholder="https://esplora.example.com/api" style="flex:1;min-width:220px;padding:6px 8px;font-family:inherit;font-size:12px;" />
+                <button id="btn-custom-api-test" type="button">Test &amp; save</button>
+                <button id="btn-custom-api-clear" type="button" class="danger" title="Remove the custom URL for this network">Clear</button>
+              </div>
+              <div id="custom-api-status" class="muted" style="font-size:11px;margin-top:6px;line-height:1.6;"></div>
+            </div>
+          </details>
+
           <!-- Hidden status text retained for code-paths that update it; the badge
                in the section header is the visible signal now. -->
           <span id="ext-wallet-status" style="display:none;">not connected</span>

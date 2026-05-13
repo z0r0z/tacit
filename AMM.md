@@ -2156,7 +2156,13 @@ arbiter_pubkeys(33 * arbiter_count)  # compressed secp256k1
 launcher_sig_count(1)      # u8, 0..2 — number of launcher-gate sigs
 launcher_sigs(64 * launcher_sig_count)  # BIP-340 each, ordered by
                                         # asset_A's pubkey first
+protocol_fee_address(33)   # compressed secp256k1; all-zeros = disabled
+protocol_fee_bps_LE(2)     # u16, 0..1000 (= 0..10% of LP-fee growth)
 ```
+`protocol_fee_address` and `protocol_fee_bps` are founder-set and
+immutable. All-zeros address with bps=0 disables the protocol fee
+(default); the decoder rejects mismatched (zero address with non-zero
+bps, or non-zero address with zero bps). See "Protocol fee mechanism".
 The MINIMUM_LIQUIDITY locked LP-share is at `vout[k_min_liq]` where
 `k_min_liq = 1` (POOL_INIT's `vout[0]` is the LP-share output for
 the founder, `vout[1]` is the MINIMUM_LIQUIDITY lock). The founder's
@@ -2721,6 +2727,332 @@ qualifying-intent fixed-point computation, T_SWAP_BATCH tx
 layout, reorg handling for arbiter pools. Same role as the
 existing §11 for the mixer.
 
+## Preconfirmation layer (T_AMM_ATTEST)
+
+The protocol layer (T_SWAP_BATCH, T_LP_ADD, T_LP_REMOVE) settles at
+the Bitcoin block clock (~10 min). For perceived-UX latency the
+worker maintains a **sparse Merkle tree (SMT) of the open intent
+set** and signs attestations of the current root. Traders receive a
+membership proof for their intent within ~30 s of submission, well
+before chain confirmation. Once per Bitcoin block, the worker (or
+any participant) broadcasts a `T_AMM_ATTEST` envelope on chain so
+the attestation chain is anchored to Bitcoin — equivocation is
+detectable at depth-1.
+
+### Two layers, independent
+
+```
+SOFT CONFIRM (worker layer, ~30 s):
+    trader → worker websocket
+              ↓
+    worker SMT.insert(intent_id, SHA256(intent_msg))
+              ↓
+    worker periodically signs (pool_id, root, height, timestamp, count, cid)
+              ↓
+    trader receives {merkle_proof, root, worker_sig, ipfs_cid}
+              ↓
+    trader verifies proof locally → "soft confirmed"
+
+HARD CONFIRM (settlement layer, ~10 min):
+    trader ↔ settler RTT-1/RTT-2 (independent of preconf layer)
+              ↓
+    T_SWAP_BATCH envelope on chain
+              ↓
+    indexer credits receipt at depth-3
+
+L1 ANCHOR (worker → chain, per block):
+    worker (or any party) broadcasts T_AMM_ATTEST
+              ↓
+    indexer records (pool_id, worker_pubkey, height) → root
+              ↓
+    equivocation detection: two valid attestations from same
+    (worker, pool, height) with different roots ⇒ worker flagged
+```
+
+The two layers compose: the preconf layer gives modern-dApp
+responsiveness; the hard-confirm layer gives Bitcoin-L1 settlement.
+**If the preconf layer is offline or compromised, the hard-confirm
+layer still works trustlessly** — traders just don't get the soft
+confirm. Settlement does not depend on worker honesty for soundness.
+
+### T_AMM_ATTEST (opcode `0x30`) wire format
+
+```
+opcode(1)             = 0x30
+pool_id(32)
+root(32)              Merkle root of the worker's open-intent SMT
+height_LE(4)          u32 — Bitcoin block height the root is "as of"
+timestamp_LE(8)       u64 — worker's wall-clock unix seconds at sign
+intent_count_LE(2)    u16 — number of intents in the attested tree
+ipfs_cid_len(1)       u8, 1..64
+ipfs_cid(ipfs_cid_len) UTF-8 IPFS CID for the pinned leaf set
+worker_pubkey(33)     compressed secp256k1
+worker_sig(64)        BIP-340 over SHA256("tacit-amm-attest-v1" || all preceding fields)
+```
+
+Wire size: 33 + 32 + 4 + 8 + 2 + 1 + cid_len + 33 + 64 = 177 + cid_len bytes (typical ~220 B).
+
+### Sparse Merkle Tree spec
+
+- **Depth:** 256. Leaves at depth 256 are keyed by full 32-byte `intent_id`.
+- **Hash:** SHA-256. Inner node = `SHA256(left_child || right_child)`.
+- **Empty leaf:** `EMPTY_LEAF = SHA256("tacit-amm-empty-leaf-v1")`.
+- **Empty subtree at depth `d`:** `EMPTY_NODES[d]` precomputed by aggregating up
+  from `EMPTY_LEAF`. Materialized once at process start.
+- **Storage:** sparse — only non-empty leaves stored in a `Map<intent_id_hex, intent_msg_hash>`. Empty subtrees use the precomputed table.
+- **Inclusion proof:** 256 sibling hashes ordered from depth 0 (top) to depth 255 (leaf-adjacent). ~8 KB per proof; transportable over the worker websocket.
+
+### Indexer determinism rules
+
+For `T_AMM_ATTEST` (extends §11):
+
+- Decode envelope. Reject on structural error.
+- Verify `worker_sig` under `worker_pubkey` against the canonical
+  hash `SHA256("tacit-amm-attest-v1" || preceding_fields)`.
+- Reject if `claimed_height > envelope_height` (worker cannot claim a
+  future state).
+- Index the attestation by `(pool_id, worker_pubkey, height)`. If an
+  entry with the **same** key but **different** root already exists,
+  flag the worker as an equivocator and reject the incoming envelope.
+  Same root at same key is accepted idempotently.
+- Multi-worker support: different `worker_pubkey` values can attest
+  to the same pool + height with different roots; that's normal
+  multi-worker operation, not equivocation.
+- Different-pool attestations from the same worker at the same
+  height are independent — no equivocation check across pools.
+
+### No-single-point-of-failure properties
+
+The preconf layer adds operational dependency on the worker for
+*soft-confirm UX*, but **no protocol-soundness dependency**:
+
+| Property | Without preconf | With preconf |
+|---|---|---|
+| Settlement requires worker honesty | No | No (worker can be ignored) |
+| Settlement requires IPFS availability | No | No (chain-side T_SWAP_BATCH doesn't read IPFS) |
+| Trader funds at risk if worker malicious | No | No (sig binding to envelope_hash + intent_sig holds) |
+| Soft-confirm requires worker honesty | N/A | Yes, but equivocation detectable at depth-1 |
+| Multi-worker fallback supported | N/A | Yes — trader registers with ≥ 2 workers |
+| Indexer single point of failure | No (anyone runs one) | No (anyone runs one) |
+
+The worker is operationally important for low-latency UX but is
+functionally fungible at the soundness layer.
+
+### Trader-side soft-confirm verification
+
+Given a worker-supplied bundle `{intent_id, intent_msg_hash,
+merkle_proof, root, worker_pubkey, worker_sig, height, timestamp,
+ipfs_cid}`, the trader's dapp verifies:
+
+1. Worker is in the trader's trusted-worker set (locally configured).
+2. Worker is not in the indexer's equivocation-flag set.
+3. `timestamp` is fresh (default TTL: 300 s).
+4. `worker_sig` is valid BIP-340 under `worker_pubkey` over the
+   canonical attestation message.
+5. `merkle_proof` reconstructs `root` from `(intent_id, intent_msg_hash)`.
+
+If all pass: status `soft_confirmed`. Dapp surfaces "soft confirmed
+at root R, anchored at block H+1 (~10 min)." If any fails: status
+`stale` / `forged` / `equivocator` / `untrusted_worker`.
+
+Reference impl: `tests/amm-attest.mjs`. Parity suite: `tests/amm-attest.test.mjs` (32 tests).
+
+## Protocol fee mechanism (founder-set, immutable)
+
+V1 pools support an **optional, founder-set, immutable** protocol-fee skim. At `POOL_INIT`, the pool founder MAY pin two additional fields:
+
+- `protocol_fee_address` (33-byte compressed pubkey) — recipient of protocol fee accrual
+- `protocol_fee_bps` (u16, 0..1000) — fraction of LP-fee growth skimmed to the recipient, in basis points of the fee growth itself (max 10% of LP fees)
+
+A pool with `protocol_fee_address = 33 × 0x00` has no protocol fee; the indexer treats this as the default no-op path and the pool behaves as a pure V2-style LP-fee model. A non-zero address requires `protocol_fee_bps > 0` (and vice-versa) — the envelope decoder rejects mismatched configurations to prevent dead-weight states where an address is pinned but earns nothing or where a non-zero rate is configured but unclaimable.
+
+The pool founder picks the recipient address. It can be:
+
+- The founder's own wallet (asset issuer captures fees on their own pool)
+- The TAC treasury (or any aligned address) — supports value-capture stories without governance complexity
+- A multisig (committee captures fees, e.g., a foundation)
+- A burn address (fees are removed from circulation, deflationary)
+
+Once pinned at `POOL_INIT`, the address and rate are **immutable for the pool's lifetime**. There is no governance opcode in V1 that can mutate these fields. This is a deliberate constraint: V1 pools have founder-time fee decisions, period. Future versions MAY introduce governance-controlled fee adjustment for V2+ pools, but V1 pools are exempt from those mechanics by construction.
+
+### Accrual model: Uniswap V2 lazy `mintFee`
+
+Tacit AMM uses the same accrual model Uniswap V2 uses for its `feeTo` mechanism: protocol fee accrues *lazily* as new LP shares, computed at LP events (LP_ADD, LP_REMOVE) and at `T_PROTOCOL_FEE_CLAIM`. `T_SWAP_BATCH` itself does **not** crystallize the fee — the fee accrues virtually between fee events, captured implicitly in the growth of `k = R_A · R_B`.
+
+State the indexer maintains per pool:
+
+```
+protocol_fee_address    : 33-byte compressed pubkey, all-zeros = disabled
+protocol_fee_bps        : u16, 0..1000
+protocol_fee_accrued    : u128 — LP-share counter owed to the recipient (virtual claim)
+k_last                  : u256 — R_A · R_B snapshot at the last fee-crystallization event
+```
+
+**Crystallization formula** (matches Uniswap V2 `mintFee`, integerized for BigInt arithmetic):
+
+```
+if k_now > k_last:
+    rootK_pre  = isqrt(k_last)
+    rootK_now  = isqrt(k_now)
+    numerator   = S · bps · (rootK_now − rootK_pre)
+    denominator = (10000 − bps) · rootK_now + bps · rootK_pre
+    new_shares  = floor(numerator / denominator)
+    pool.protocol_fee_accrued += new_shares
+    pool.lp_total_shares      += new_shares      # dilutes existing LPs
+    pool.k_last                = k_now            # new baseline
+```
+
+**Properties:**
+- Protocol's value share ≈ `(bps / 10000) · (sqrt(k_now) − sqrt(k_last)) / sqrt(k_now)` — i.e., `bps` basis-points of the LP-fee growth in value terms.
+- Existing LPs are diluted by exactly that fraction; the pool's total share value is conserved (sum of share values = pool value).
+- `T_SWAP_BATCH` does not trigger crystallization — fees accrue virtually until the next LP event or claim.
+
+**LP-side awareness:** because crystallization mutates `lp_total_shares` (which appears in the share-mint formula `floor(min(δA · S / R_A, δB · S / R_B))`), LPs joining pools with protocol fees MUST query the indexer's current `k_last` and `protocol_fee_accrued` and pre-compute the crystallized `S` themselves before constructing their `T_LP_ADD` envelope. Pools without protocol fees are unaffected (their `S` doesn't drift between LP events). Indexers SHOULD expose `(R_A, R_B, S, k_last, protocol_fee_accrued, protocol_fee_address, protocol_fee_bps)` as part of pool state queries.
+
+### Claiming: `T_PROTOCOL_FEE_CLAIM` (opcode `0x31`)
+
+The recipient address claims accrued fees by broadcasting a `T_PROTOCOL_FEE_CLAIM` envelope:
+
+```
+opcode(1) = 0x31
+pool_id(32)
+claimer_pubkey_x_only(32)
+claim_amount_LE(8)            # u64; must equal pool.protocol_fee_accrued post-crystallization
+claim_C_secp(33)              # Pedersen commitment of claim_amount
+claim_blinding(32)            # r_secp (revealed; opening is public)
+claim_sig(64)                 # BIP-340 over claim_msg
+```
+
+Fixed envelope size: **202 bytes**. No Groth16. The validator:
+
+1. Confirms `claimer_pubkey_x_only` matches the x-only of `pool.protocol_fee_address`.
+2. Crystallizes the protocol fee (V2-lazy `mintFee`).
+3. Confirms `claim_amount == pool.protocol_fee_accrued` post-crystallization.
+4. Verifies `claim_sig` (BIP-340) and the public commitment opening `claim_C_secp == claim_amount · H + claim_blinding · G`.
+5. Emits an `lp_asset_id` UTXO at `vout[0]` payable to a P2TR/P2WPKH script under `claimer_pubkey_x_only`.
+6. Resets `pool.protocol_fee_accrued = 0`.
+
+After claiming, the recipient holds `lp_asset_id` UTXOs that can be redeemed via `T_LP_REMOVE` (or held to compound — they accrue fees like any other LP position from that point on).
+
+### Forward-compatibility implications
+
+V1's protocol-fee mechanism is **forward-compatible by omission**:
+- Pools with `protocol_fee_address = 33 × 0x00` have no fee mechanism active and behave identically to a pure V2-style LP pool. These pools can never have a protocol fee added retroactively.
+- Pools with a non-zero address have founder-set parameters that V2+ ceremonies will not override (the address and rate are pinned at POOL_INIT in the on-chain envelope).
+- Future ceremonies MAY introduce alternative fee mechanisms (governance-controlled rates, dynamic fees, fee-on-swap vs. fee-on-growth). Those mechanisms apply only to pools that opt into them via their respective POOL_INIT variants.
+
+The reserved opcode space (§"Opcode space reservation") includes slots for governance and treasury operations; the v1 mechanism is intentionally minimal and does not depend on those for correctness.
+
+Reference impl: `tests/amm-protocol-fee.mjs` (math, crystallization, claim message construction); `tests/amm-validator.mjs` (`validateProtocolFeeClaim`). Parity suite: `tests/amm-protocol-fee.test.mjs` (31 tests covering math, codec, and adversarial paths).
+
+## Forward compatibility (V1 → V2 evolution path)
+
+V1 of the AMM is intentionally a V2-style full-range constant-product model. The protocol is **forward-compatible**: future versions ship as additive ceremonies that coexist with V1, never replace or mutate it. This subsection documents what's locked, what's extensible, and what to expect when V2 lands.
+
+### What's immutable post-V1-ceremony
+
+Once a V1 pool is created via `POOL_INIT`:
+
+- The pool's `vk_cid` is fixed. Its proofs verify under the V1 verifying key forever.
+- The pool's `fee_bps` is fixed.
+- The pool operates with **full-range** liquidity semantics. Every LP earns proportional fees on every trade; no tick concept.
+- LP shares are fungible: same `lp_asset_id` per pool.
+- The pool's `(asset_A, asset_B)` pair and canonical ordering are fixed.
+- The three V1 opcodes (`T_LP_ADD`, `T_LP_REMOVE`, `T_SWAP_BATCH`) interact only with V1 pools using V1 wire formats.
+
+**V1 pools never auto-upgrade.** A V1 LP can hold their `lp_asset_id` UTXO indefinitely; the V1 pool will continue accepting V1-shape swap batches and crediting V1-shape LP withdrawals as long as anyone runs a V1 indexer. No protocol-level deprecation; no forced migration.
+
+This matters for ceremony participants: contributors to the V1 Phase 2 ceremony are committing to one specific circuit. The verifying key derived from that ceremony serves V1 pools forever. Future versions are separate ceremonies that don't affect V1's contributions.
+
+### Versioning hooks built into the protocol
+
+Every domain tag in the AMM is explicitly versioned:
+
+```
+"tacit-amm-pool-v1"           → pool_id derivation
+"tacit-amm-lp-v1"             → lp_asset_id derivation
+"tacit-amm-bjj-H-v1"          → NUMS generator H_BJJ
+"tacit-amm-bjj-G-v1"          → NUMS generator G_BJJ
+"tacit-amm-xcurve-v1"         → sigma cross-curve challenge
+"tacit-amm-intent-v1"         → intent_msg domain
+"tacit-amm-attest-v1"         → T_AMM_ATTEST signature domain
+"tacit-amm-launcher-gate-v1"  → launcher gate signature
+"tacit-amm-min-liq-blind-v1"  → MINIMUM_LIQUIDITY blinding
+"tacit-amm-qset-v1"           → arbiter qualifying-set hash
+"tacit-amm-receipt-secp-v1"   → receipt blinding (secp side)
+"tacit-amm-receipt-bjj-v1"    → receipt blinding (BJJ side)
+```
+
+A V2 deployment uses `-v2` variants of the relevant tags, producing entirely different SHA-256 outputs. So:
+
+- `pool_id_v2 = SHA256("tacit-amm-pool-v2" || asset_A || asset_B)` is distinct from `pool_id_v1` for the same pair. Both pools coexist on chain with different `pool_id` values.
+- `lp_asset_id_v2 = SHA256("tacit-amm-lp-range-v2" || pool_id_v2)` is distinct from `lp_asset_id_v1`. LP shares from V1 and V2 pools cannot be confused.
+- New cryptographic primitives in V2 (e.g., new NUMS generators if the curve changes) get their own `-v2` derivations.
+
+### Opcode space reservation
+
+The AMM uses opcodes `0x2D`–`0x30` in V1. The remaining opcode space is open for forward extensions. Suggested allocations for V2+ (not normative, not yet implemented):
+
+```
+V1 (current, ceremony-locked):
+  0x2D  T_LP_ADD               full-range LP deposit
+  0x2E  T_LP_REMOVE             full-range LP withdrawal
+  0x2F  T_SWAP_BATCH            batched uniform-price settlement (V1 circuit)
+  0x30  T_AMM_ATTEST            preconfirmation worker attestation
+  0x31  T_PROTOCOL_FEE_CLAIM    mint accrued protocol fee to founder-pinned recipient
+
+V2 (hypothetical concentrated-liquidity extension):
+  0x32  T_LP_ADD_RANGE          deposit liquidity within [lower_tick, upper_tick]
+  0x33  T_LP_REMOVE_RANGE       burn a range LP position
+  0x34  T_LP_REPOSITION         atomic burn+remint of a range position at new ticks
+  0x35  T_LP_MIGRATE_V1_TO_V2   atomic burn of V1 share + mint of V2 full-range position
+  0x36  T_SWAP_BATCH_RANGE      batched settlement against tick-walking liquidity
+                                (different circuit, fresh ceremony)
+```
+
+The V1 indexer happily ignores unknown opcodes (`0x32+`); upgrading to V2 means the indexer learns to parse and validate those opcodes against the V2 circuit's vk. V1 pools and V1 opcodes are unaffected.
+
+### Migration paths for V1 → V2 LPs
+
+When V2 ships, a V1 LP has three options:
+
+1. **Stay put.** V1 pool keeps operating with V1 semantics. The LP earns V1-style fees on V1 swap batches. No action needed.
+
+2. **Manual migration (two transactions).** LP issues `T_LP_REMOVE` on the V1 pool (recovers `(R_A, R_B)`-proportional assets), then `T_LP_ADD_RANGE` on the V2 pool with desired range. Costs two Bitcoin tx fees and momentary slippage exposure.
+
+3. **Atomic migration (one envelope).** A V2 opcode `T_LP_MIGRATE_V1_TO_V2` burns a V1 share UTXO and mints an equivalent V2 full-range position UTXO in one transaction. No slippage exposure. Requires the V2 ceremony to include a migration circuit.
+
+After migrating to V2, the LP can use `T_LP_REPOSITION` freely (a V2 opcode, no new ceremony per use) to change their range. Atomic burn-and-remint within the V2 circuit.
+
+### How indexers handle multi-version coexistence
+
+Indexers maintain version-tagged state:
+
+```
+pools: Map<pool_id, PoolState>
+  // pool_id distinguishes V1 vs V2 via its domain tag
+asset_id_origins: Map<asset_id, OriginInfo>
+  // three-origin resolution extends to four+: CETCH, T_PETCH, V1-LP, V2-LP, ...
+verifying_keys: Map<vk_cid, GrothVK>
+  // V1 and V2 vk's pinned at their respective pool inits
+```
+
+The §5.5 validator dispatch grows new branches for V2 opcodes. Existing V1 branches remain byte-identical; V1's `validateLpAdd` / `validateLpRemove` / `validateSwapBatch` never change. Any indexer running V1 code can keep doing so; V2-aware indexers add new branches without touching V1's.
+
+### Preconfirmation layer is forward-compatible
+
+`T_AMM_ATTEST` (opcode `0x30`) is **version-agnostic** — it just commits a Merkle root over an open intent set. The SMT structure (depth 256, SHA-256, sparse storage) and signature domain (`tacit-amm-attest-v1`) work for any AMM version that maintains an intent pool, including V2's range-aware swap batches.
+
+A worker serving both V1 and V2 pools can use the same attestation infrastructure for both. The opcode's wire format doesn't need to change between versions. Soft-confirm UX for traders is identical regardless of whether their target pool is V1 or V2.
+
+If a future version introduces a different intent shape entirely (e.g., V3 with hooks), a new attestation opcode `T_AMM_ATTEST_V3` could be added — but the existing `T_AMM_ATTEST` continues to serve V1 and V2 unchanged.
+
+### Net statement
+
+The V1 ceremony commits to a specific R1CS and produces a specific verifying key. That commitment is permanent and serves V1 pools forever. The protocol is designed so future capabilities (concentrated liquidity, weighted multi-asset pools, custom hooks, alternative curves) ship as additive opcodes and ceremonies, coexisting with V1 rather than replacing it.
+
+LPs and ceremony participants can be confident that signing up for V1 doesn't pre-commit them to any future direction — V1 just keeps working with V1 semantics, and they can voluntarily migrate to future versions when they want those features.
+
 ## Worker / relay threat model
 
 The worker is a **message relay**, not a custody intermediary or
@@ -2947,6 +3279,19 @@ pending · 🔴 design open.
     `build.sh` so any inadvertent edit during ongoing product work fails
     the build with a clear pointer to update pins + plan a new ceremony.
     Catches ceremony-invalidating drift at build time.
+- ✅ **Preconfirmation layer (T_AMM_ATTEST, soft-confirm UX).** Worker
+  maintains a sparse Merkle tree of the open-intent set; signs attestations
+  every ~30 s; periodically broadcasts `T_AMM_ATTEST` envelopes on chain so
+  the attestation chain anchors to Bitcoin (equivocation detectable at
+  depth-1). Trader's dapp verifies Merkle proof + worker_sig + freshness ⇒
+  "soft confirmed" status within ~30 s of intent post. Settlement still
+  happens via T_SWAP_BATCH at the block clock (~10 min); if the preconf
+  layer is offline or compromised, the hard-confirm path is unaffected.
+  Multi-worker fallback; no single point of failure for soundness. See
+  `tests/amm-attest.mjs` and `tests/amm-attest.test.mjs` (32 tests covering
+  SMT correctness, envelope codec, worker_sig verification, equivocation
+  detection, multi-worker independence, soft-confirm verification with
+  stale / forged / untrusted / equivocator status discrimination).
 - ✅ **End-to-end harness (closes the circuit ⇄ indexer ⇄ chain-state loop).**
   Mock Bitcoin chain + asset etching + LP/Trader/Settler actors + production-
   shape indexer + (optional) real circom witness calculation. Exercises six

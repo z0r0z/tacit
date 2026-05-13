@@ -17,7 +17,7 @@ import {
   pedersenCommit, pointToBytes,
 } from './bulletproofs.mjs';
 
-import { decodeLpAdd, decodeLpRemove, decodeSwapBatch } from './amm-envelope.mjs';
+import { decodeLpAdd, decodeLpRemove, decodeSwapBatch, decodeProtocolFeeClaim } from './amm-envelope.mjs';
 import { derivePoolId, deriveLpAssetId, canonicalAssetPair } from './amm-asset.mjs';
 import { verifyXCurve } from './amm-sigma-xcurve.mjs';
 import { lpAddKernelVerify, lpRemoveKernelVerify } from './amm-kernel.mjs';
@@ -29,6 +29,11 @@ import { computeEnvelopeHash, deriveIntentId, buildIntentMsg, verifyIntent } fro
 import { verifyMinLiqOutput } from './amm-min-liq.mjs';
 import { extractLauncherPubkey } from './amm-jcs.mjs';
 import { signSchnorr, verifySchnorr } from './composition.mjs';
+import {
+  isZeroAddress as isProtocolFeeAddressZero,
+  crystallizeProtocolFee, computeProtocolShares,
+  buildProtocolFeeClaimMsgWith,
+} from './amm-protocol-fee.mjs';
 
 function bytesEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -153,6 +158,11 @@ export function validateLpAdd({
       reserve_B: env.deltaB,
       lp_total_shares: initShares.total_shares,
       inclusion_arbiter_pubkeys: env.arbiterPubkeys || [],
+      // Protocol fee (founder-set, immutable). All-zeros address = disabled.
+      protocol_fee_address: env.protocolFeeAddress || new Uint8Array(33),
+      protocol_fee_bps: env.protocolFeeBps || 0,
+      protocol_fee_accrued: 0n,
+      k_last: env.deltaA * env.deltaB,
     };
     return {
       valid: true,
@@ -168,11 +178,18 @@ export function validateLpAdd({
   if (!pool) return { valid: false, reason: 'pool not registered' };
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
 
+  // Crystallize protocol fee before applying the add. No-op if pool has no
+  // protocol fee, or if k has not grown since the last fee event. Dilutes
+  // existing LPs proportionally; new LP joins against the crystallized S.
+  const xPool = crystallizeProtocolFee(pool);
+
   // At-the-ratio check: deltaA / deltaB ≈ reserve_A / reserve_B.
   // share_amount = floor(min(deltaA · S / reserve_A, deltaB · S / reserve_B))
+  // S here is the CRYSTALLIZED total — the LP must compute their envelope
+  // against the same post-crystallization S.
   let expectedShares;
   try {
-    expectedShares = lpAddShares(env.deltaA, env.deltaB, pool.reserve_A, pool.reserve_B, pool.lp_total_shares);
+    expectedShares = lpAddShares(env.deltaA, env.deltaB, xPool.reserve_A, xPool.reserve_B, xPool.lp_total_shares);
   } catch (e) { return { valid: false, reason: `lpAddShares: ${e.message}` }; }
   if (expectedShares !== env.shareAmount) {
     return { valid: false, reason: `shareAmount: expected ${expectedShares}, got ${env.shareAmount}` };
@@ -184,17 +201,20 @@ export function validateLpAdd({
   if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
     return { valid: false, reason: 'share output sigma cross-curve binding failed' };
   }
-  if (groth16Verify && !groth16Verify({ proof: env.proof, pool, kind: 'LP_ADD' })) {
+  if (groth16Verify && !groth16Verify({ proof: env.proof, pool: xPool, kind: 'LP_ADD' })) {
     return { valid: false, reason: 'Groth16 proof failed' };
   }
 
+  const newReserveA = xPool.reserve_A + env.deltaA;
+  const newReserveB = xPool.reserve_B + env.deltaB;
   return {
     valid: true,
     newPoolState: {
-      ...pool,
-      reserve_A: pool.reserve_A + env.deltaA,
-      reserve_B: pool.reserve_B + env.deltaB,
-      lp_total_shares: pool.lp_total_shares + env.shareAmount,
+      ...xPool,
+      reserve_A: newReserveA,
+      reserve_B: newReserveB,
+      lp_total_shares: xPool.lp_total_shares + env.shareAmount,
+      k_last: newReserveA * newReserveB,
     },
     receipts: [{ kind: 'lp_share', amount: env.shareAmount, commitment: env.shareCSecp }],
   };
@@ -239,9 +259,15 @@ export function validateLpRemove({
   const poolId = derivePoolId(env.assetA, env.assetB);
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
 
-  // Expected deltas: proportional withdrawal.
+  // Crystallize protocol fee before applying the remove. Same V2-lazy
+  // pattern as LP_ADD — diluting existing LPs by accrued fee before they
+  // withdraw, so the burning LP gets only their non-fee proportion of
+  // pool value.
+  const xPool = crystallizeProtocolFee(pool);
+
+  // Expected deltas: proportional withdrawal against the crystallized state.
   let expected;
-  try { expected = lpRemoveOutputs(env.shareAmount, pool.reserve_A, pool.reserve_B, pool.lp_total_shares); }
+  try { expected = lpRemoveOutputs(env.shareAmount, xPool.reserve_A, xPool.reserve_B, xPool.lp_total_shares); }
   catch (e) { return { valid: false, reason: `lpRemoveOutputs: ${e.message}` }; }
   if (expected.delta_a !== env.deltaA) {
     return { valid: false, reason: `deltaA: expected ${expected.delta_a}, got ${env.deltaA}` };
@@ -271,17 +297,20 @@ export function validateLpRemove({
     return { valid: false, reason: 'asset-B receipt sigma binding failed' };
   }
 
-  if (groth16Verify && !groth16Verify({ proof: env.proof, pool, kind: 'LP_REMOVE' })) {
+  if (groth16Verify && !groth16Verify({ proof: env.proof, pool: xPool, kind: 'LP_REMOVE' })) {
     return { valid: false, reason: 'Groth16 proof failed' };
   }
 
+  const newReserveA = xPool.reserve_A - env.deltaA;
+  const newReserveB = xPool.reserve_B - env.deltaB;
   return {
     valid: true,
     newPoolState: {
-      ...pool,
-      reserve_A: pool.reserve_A - env.deltaA,
-      reserve_B: pool.reserve_B - env.deltaB,
-      lp_total_shares: pool.lp_total_shares - env.shareAmount,
+      ...xPool,
+      reserve_A: newReserveA,
+      reserve_B: newReserveB,
+      lp_total_shares: xPool.lp_total_shares - env.shareAmount,
+      k_last: newReserveA * newReserveB,
     },
     receipts: [
       { kind: 'lp_withdraw_A', amount: env.deltaA, commitment: env.recvACSecp },
@@ -534,5 +563,90 @@ function checkAggregatePedersen({ env, inputCommitmentsByIntent, assetXIsA, delt
   const rNetMod = modN(rNet);
   const rG = rNetMod === 0n ? ZERO : G.multiply(rNetMod);
   return sum.equals(rG);
+}
+
+// =========================================================================
+// T_PROTOCOL_FEE_CLAIM validator
+// =========================================================================
+//
+// Authenticated mint of accrued LP-share protocol-fee balance to a UTXO at
+// the pool's pinned protocol_fee_address. No Groth16. Steps:
+//   1. Decode envelope. Reject on structural error.
+//   2. Verify pool_id matches a registered pool with non-zero protocol fee.
+//   3. Verify claimer_pubkey_x_only matches x-only of pool.protocol_fee_address.
+//   4. Verify BIP-340 claim_sig over claim_msg (see amm-protocol-fee.mjs).
+//   5. Crystallize protocol fee on pool (V2-lazy mintFee).
+//   6. Verify claim_amount == pool.protocol_fee_accrued post-crystallization.
+//   7. Verify claim_C_secp == amount·H + blinding·G (public opening).
+//   8. Emit lp_asset_id UTXO at vout[0] for protocol_fee_address.
+//   9. Reset pool.protocol_fee_accrued = 0; k_last is already updated by step 5.
+export function validateProtocolFeeClaim({ payload, pool }) {
+  let env;
+  try { env = decodeProtocolFeeClaim(payload); }
+  catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
+
+  if (!pool) return { valid: false, reason: 'pool not registered' };
+  if (!bytesEqual(pool.pool_id, env.poolId)) return { valid: false, reason: 'pool_id mismatch' };
+  if (!pool.protocol_fee_address || isProtocolFeeAddressZero(pool.protocol_fee_address)) {
+    return { valid: false, reason: 'pool has no protocol fee configured' };
+  }
+  if (!pool.protocol_fee_bps || pool.protocol_fee_bps === 0) {
+    return { valid: false, reason: 'pool has zero protocol_fee_bps' };
+  }
+
+  // claimer_pubkey_x_only must equal x-only of pool.protocol_fee_address (33-byte
+  // compressed: first byte is parity, last 32 are x-only).
+  const expectedXOnly = pool.protocol_fee_address.subarray(1);
+  if (!bytesEqual(env.claimerPubkeyXOnly, expectedXOnly)) {
+    return { valid: false, reason: 'claimer_pubkey_x_only != pool.protocol_fee_address[x_only]' };
+  }
+
+  // Crystallize protocol fee so claim_amount can be matched against the
+  // post-crystallization accrued counter.
+  const xPool = crystallizeProtocolFee(pool);
+  const accrued = xPool.protocol_fee_accrued || 0n;
+  if (env.claimAmount !== accrued) {
+    return { valid: false, reason: `claim_amount mismatch: expected ${accrued}, got ${env.claimAmount}` };
+  }
+  if (env.claimAmount === 0n) return { valid: false, reason: 'no protocol fee accrued' };
+
+  // BIP-340 sig under claimer_pubkey_x_only over claim_msg.
+  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, {
+    poolId: env.poolId,
+    claimAmount: env.claimAmount,
+    claimCSecp: env.claimCSecp,
+    claimBlinding: env.claimBlinding,
+  });
+  if (!verifySchnorr(env.claimSig, claimMsg, env.claimerPubkeyXOnly)) {
+    return { valid: false, reason: 'claim_sig verification failed' };
+  }
+
+  // Public opening: claim_C_secp must equal claim_amount·H + claim_blinding·G.
+  const r = BigInt('0x' + bytesToHex(env.claimBlinding));
+  if (r >= SECP_N) return { valid: false, reason: 'claim_blinding >= group order' };
+  const expectedC = H.multiply(env.claimAmount).add(r === 0n ? ZERO : G.multiply(r));
+  const actualC = pointFromCompressed(env.claimCSecp);
+  if (!expectedC.equals(actualC)) {
+    return { valid: false, reason: 'claim_C_secp does not open to (claim_amount, claim_blinding)' };
+  }
+
+  return {
+    valid: true,
+    newPoolState: {
+      ...xPool,
+      protocol_fee_accrued: 0n,
+      // k_last stays as crystallizeProtocolFee set it (current R_A · R_B).
+    },
+    receipts: [
+      {
+        kind: 'protocol_fee_claim',
+        amount: env.claimAmount,
+        commitment: env.claimCSecp,
+        asset_id: pool.lp_asset_id,
+        recipient_pubkey_x_only: env.claimerPubkeyXOnly,
+        vout: 0,
+      },
+    ],
+  };
 }
 

@@ -14,14 +14,24 @@
 
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 
-export const OPCODE_T_LP_ADD     = 0x2d;
-export const OPCODE_T_LP_REMOVE  = 0x2e;
-export const OPCODE_T_SWAP_BATCH = 0x2f;
+export const OPCODE_T_LP_ADD              = 0x2d;
+export const OPCODE_T_LP_REMOVE           = 0x2e;
+export const OPCODE_T_SWAP_BATCH          = 0x2f;
+export const OPCODE_T_AMM_ATTEST          = 0x30;
+export const OPCODE_T_PROTOCOL_FEE_CLAIM  = 0x31;
 export const LP_ADD_VARIANT_STANDARD  = 0;
 export const LP_ADD_VARIANT_POOL_INIT = 1;
 export const FEE_BPS_MAX = 1000;
+export const PROTOCOL_FEE_BPS_MAX = 1000; // capped at 10% of pool LP-fee growth
+export const PROTOCOL_FEE_ADDRESS_ZERO = new Uint8Array(33); // all-zeros = no protocol fee
 export const N_INTENTS_MAX = 16;
 export const N_INTENTS_MIN = 1;
+
+function isZeroAddress(addr) {
+  if (!(addr instanceof Uint8Array) || addr.length !== 33) return false;
+  for (let i = 0; i < 33; i++) if (addr[i] !== 0) return false;
+  return true;
+}
 
 // ---- byte helpers ----
 function asBytes(x, len, name) {
@@ -134,6 +144,22 @@ export function encodeLpAdd(args) {
     if (lsigs.length > 2) throw new Error('launcherSigs count 0..2');
     parts.push(new Uint8Array([lsigs.length]));
     for (const sig of lsigs) parts.push(asBytes(sig, 64, 'launcherSig'));
+    // Protocol-fee placeholder (founder-set, immutable). all-zeros address = no fee.
+    const protoAddr = args.protocolFeeAddress || PROTOCOL_FEE_ADDRESS_ZERO;
+    parts.push(asBytes(protoAddr, 33, 'protocolFeeAddress'));
+    const protoBps = args.protocolFeeBps || 0;
+    if (typeof protoBps !== 'number' || protoBps < 0 || protoBps > PROTOCOL_FEE_BPS_MAX) {
+      throw new Error(`protocolFeeBps must be 0..${PROTOCOL_FEE_BPS_MAX}`);
+    }
+    // If bps > 0, the address MUST be non-zero (otherwise fee is unclaimable forever).
+    if (protoBps > 0 && isZeroAddress(protoAddr)) {
+      throw new Error('protocolFeeBps > 0 requires non-zero protocolFeeAddress');
+    }
+    // If address is non-zero, bps MUST be > 0 (otherwise the address is dead weight).
+    if (!isZeroAddress(protoAddr) && protoBps === 0) {
+      throw new Error('non-zero protocolFeeAddress requires protocolFeeBps > 0');
+    }
+    parts.push(u16LE(protoBps));
   }
 
   // Tail: proof_len_LE(2) || proof
@@ -188,11 +214,26 @@ export function decodeLpAdd(payload) {
       launcherSigs.push(payload.slice(off, off + 64));
       off += 64;
     }
+    if (off + 33 > payload.length) throw new Error('truncated: missing protocol_fee_address');
+    const protocolFeeAddress = payload.slice(off, off + 33); off += 33;
+    if (off + 2 > payload.length) throw new Error('truncated: missing protocol_fee_bps');
+    const protocolFeeBps = readU16LE(payload, off); off += 2;
+    if (protocolFeeBps > PROTOCOL_FEE_BPS_MAX) {
+      throw new Error(`protocol_fee_bps out of range: ${protocolFeeBps}`);
+    }
+    if (protocolFeeBps > 0 && isZeroAddress(protocolFeeAddress)) {
+      throw new Error('protocol_fee_bps > 0 with zero address');
+    }
+    if (!isZeroAddress(protocolFeeAddress) && protocolFeeBps === 0) {
+      throw new Error('non-zero protocol_fee_address with zero bps');
+    }
     result.feeBps = feeBps;
     result.vkCid = new TextDecoder('utf-8').decode(vkBytes);
     result.ceremonyCid = new TextDecoder('utf-8').decode(cerBytes);
     result.arbiterPubkeys = arbiterPubkeys;
     result.launcherSigs = launcherSigs;
+    result.protocolFeeAddress = protocolFeeAddress;
+    result.protocolFeeBps = protocolFeeBps;
   }
 
   if (off + 2 > payload.length) throw new Error('truncated: missing proof_len');
@@ -460,3 +501,56 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
 // calculations).
 export const ENVELOPE_PER_INTENT_BYTES  = PER_INTENT_BYTES;
 export const ENVELOPE_PER_RECEIPT_BYTES = PER_RECEIPT_BYTES;
+
+// =========================================================================
+// T_PROTOCOL_FEE_CLAIM (0x31)
+// =========================================================================
+//
+// Authenticated mint of accrued LP-share protocol-fee balance to a UTXO at the
+// pool's pinned protocol_fee_address. No Groth16 — the claim amount is public
+// (it equals pool.protocol_fee_accrued at decode time), and the lp_share
+// commitment uses a public opening (amount, blinding) since lp_share is
+// fungible and the address is already public.
+//
+// Wire format (fixed 202 bytes):
+//   opcode(1)                  = 0x31
+//   pool_id(32)                # SHA256("tacit-amm-pool-v1" || asset_A || asset_B)
+//   claimer_pubkey_x_only(32)  # x-only of pool.protocol_fee_address
+//   claim_amount_LE(8)         # u64, > 0; must == pool.protocol_fee_accrued
+//   claim_C_secp(33)           # Pedersen commitment of claim_amount with chosen blinding
+//   claim_blinding(32)         # r_secp (revealed)
+//   claim_sig(64)              # BIP-340 over claim_msg below
+
+const PROTOCOL_FEE_CLAIM_FIXED_BYTES = 1 + 32 + 32 + 8 + 33 + 32 + 64; // 202
+
+export function encodeProtocolFeeClaim(args) {
+  const parts = [
+    new Uint8Array([OPCODE_T_PROTOCOL_FEE_CLAIM]),
+    asBytes(args.poolId, 32, 'poolId'),
+    asBytes(args.claimerPubkeyXOnly, 32, 'claimerPubkeyXOnly'),
+    u64LE(args.claimAmount),
+    asBytes(args.claimCSecp, 33, 'claimCSecp'),
+    asBytes(args.claimBlinding, 32, 'claimBlinding'),
+    asBytes(args.claimSig, 64, 'claimSig'),
+  ];
+  return concatBytes(...parts);
+}
+
+export function decodeProtocolFeeClaim(payload) {
+  if (!(payload instanceof Uint8Array)) throw new Error('payload must be Uint8Array');
+  assertOpcode(payload, OPCODE_T_PROTOCOL_FEE_CLAIM, 'T_PROTOCOL_FEE_CLAIM');
+  if (payload.length !== PROTOCOL_FEE_CLAIM_FIXED_BYTES) {
+    throw new Error(`T_PROTOCOL_FEE_CLAIM: expected ${PROTOCOL_FEE_CLAIM_FIXED_BYTES} bytes, got ${payload.length}`);
+  }
+  let off = 1;
+  const poolId               = payload.slice(off, off + 32); off += 32;
+  const claimerPubkeyXOnly   = payload.slice(off, off + 32); off += 32;
+  const claimAmount          = readU64LE(payload, off);     off += 8;
+  const claimCSecp           = payload.slice(off, off + 33); off += 33;
+  const claimBlinding        = payload.slice(off, off + 32); off += 32;
+  const claimSig             = payload.slice(off, off + 64); off += 64;
+  if (claimAmount === 0n) throw new Error('claim_amount must be > 0');
+  return { poolId, claimerPubkeyXOnly, claimAmount, claimCSecp, claimBlinding, claimSig };
+}
+
+export const ENVELOPE_PROTOCOL_FEE_CLAIM_BYTES = PROTOCOL_FEE_CLAIM_FIXED_BYTES;

@@ -132,7 +132,7 @@ Other domain-separated v1 tags appear where they're used and are not part of thi
 
 - **BIP-340 Schnorr signature-message tags:** `tacit-kernel-v1` (§5.2, §5.4, §5.7), `tacit-mint-v1` (§5.3), `tacit-disclosure-v1` (§5.6), `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` (§5.7.6), `tacit-bid-{intent-v1,claim-v1,cancel-v1}` (§5.7.7), `tacit-preauth-sale-{v1,cancel-v1}` (§5.7.8), `tacit-pool-init-v1` (§5.10.1), `tacit-deposit-v1` (§5.10), `tacit-drop-v1` (§5.12), `tacit-drop-reclaim-v1` (§5.12.1).
 - **SHA256 domains (not Schnorr messages):** `tacit-withdraw-bind-v1` is the SHA256 domain for the `T_WITHDRAW` `bind_hash` (§5.11).
-- **HMAC keystream domains:** `tacit-axintent-blinding-v1` for the per-intent `r` encryption ciphertext (§5.7.6).
+- **HMAC keystream domains:** `tacit-axintent-blinding-v1` for the per-intent `r` encryption ciphertext stored in the worker fulfilment record (§5.7.6); `tacit-axintent-onchain-amount-v1` and `tacit-axintent-onchain-blinding-v1` for the on-chain encrypted `(amount, r)` carried in the optional `OP_RETURN(40)` at the reveal tx (§5.7.6 *Recovery model*).
 - **Generator derivations:** `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1).
 - **Bulletproof Fiat-Shamir transcript:** `tacit-bp-v1` (§3.3).
 - **Off-chain coordination tags** (defined by their worker endpoints in §8): `tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1,claim-v1,claim-delete-v1}` — the airdrop leaf/node/claim-v1 formats are reused by §5.13's on-chain canonical claim msg; the other off-chain tags live entirely outside the on-chain protocol.
@@ -593,19 +593,34 @@ validateOutpoint(txid, vout):
 
 Recursion is memoized via a `(txid, vout) → bool` map. In production-mode optimization, all rangeproofs are deferred into a batched bulletproof verify (one multi-exp); falls back to per-proof verify if batch fails.
 
-**AMM opcode branches** (added by §§5.14–5.16). The §5.5 dispatch grows three branches, each described in full above:
+**Unknown-opcode forward-compatibility rule (soft-fork semantics).** New envelope opcodes can be added to the protocol via future ceremonies and SPEC revisions (e.g., AMM V2 concentrated-liquidity opcodes proposed at `0x31+`; see AMM.md §"Forward compatibility"). To preserve clean upgrade mechanics, **an indexer that encounters an envelope opcode it does not recognize MUST treat the envelope as a no-op at the asset and pool-state level**:
+
+- The envelope does NOT create any tacit asset UTXO.
+- The envelope does NOT credit or debit any pool reserve, mixer-pool leaf, LP-share supply, or other indexer-tracked state.
+- The Bitcoin transaction carrying the envelope remains structurally valid (Bitcoin consensus does not care about envelope content); only the protocol-layer effect is skipped.
+- The indexer SHOULD log the unknown opcode for monitoring, but MUST NOT halt indexing or revert state.
+- Wallets querying the indexer see no balance/state change from the unknown envelope.
+
+This is the **soft-fork semantic** that lets future opcodes ship without breaking deployed indexers. A V1-aware indexer continues to operate correctly when V2 opcodes appear on chain — it ignores them. A V2-aware indexer additionally interprets the V2 opcodes and tracks the V2 state. Both converge on the same V1 state for V1 envelopes.
+
+**Constraint:** opcodes already defined in this spec MUST NOT be redefined or reused with different semantics. Future ceremonies add new opcodes at new code points; they do not overload existing ones.
+
+**AMM opcode branches** (added by §§5.14–5.18). The §5.5 dispatch grows five branches, each described in full above:
 
 ```
 if envelope.opcode == T_LP_ADD (0x2D):
     # See §5.14. Public (delta_A, delta_B, share_amount); per-asset Mimblewimble-
     # style kernel sigs; Groth16 proof asserts at-the-ratio + share formula. For
-    # variant=1 (POOL_INIT), register pool metadata + verify launcher gate;
-    # otherwise mint LP-share UTXO at the declared share vout under lp_asset_id.
+    # variant=1 (POOL_INIT), register pool metadata + verify launcher gate +
+    # pin protocol_fee_address/protocol_fee_bps; otherwise crystallize protocol
+    # fee (V2-lazy mintFee) then mint LP-share UTXO at the declared share vout
+    # under lp_asset_id.
 
 if envelope.opcode == T_LP_REMOVE (0x2E):
     # See §5.15. Public share_amount; kernel sig on consumed LP-share UTXO
     # under (Σ C_in_LP − share_amount·H).x_only(); Groth16 asserts proportional
-    # withdrawal. Mints two receipt UTXOs (one of asset A, one of asset B).
+    # withdrawal. Crystallize protocol fee before applying. Mints two receipt
+    # UTXOs (one of asset A, one of asset B).
 
 if envelope.opcode == T_SWAP_BATCH (0x2F):
     # See §5.16. Confidential per-trader amounts; settler-bundled. Sigma
@@ -619,9 +634,22 @@ if envelope.opcode == T_SWAP_BATCH (0x2F):
     verify chain-side aggregate Pedersen check per asset
     verify direction consistency + constant-product invariant on declared deltas
     advance pool reserves; credit each receipt UTXO at vout[1+i]
+    # NOTE: protocol fee is NOT crystallized here (V2-lazy: only at LP events + claim)
+
+if envelope.opcode == T_AMM_ATTEST (0x30):
+    # See §5.17. Preconfirmation worker attestation. No Pedersen / no Groth16.
+    # Verify worker_sig; per-(pool_id, worker_pubkey, height) equivocation check.
+    # Pool reserves are unchanged.
+
+if envelope.opcode == T_PROTOCOL_FEE_CLAIM (0x31):
+    # See §5.18. Authenticated mint of accrued protocol fee. No Groth16.
+    # Verify claimer_pubkey matches pool.protocol_fee_address; crystallize protocol
+    # fee; verify claim_amount == pool.protocol_fee_accrued; verify claim_sig
+    # (BIP-340) and public commitment opening; emit lp_asset_id UTXO at vout[0];
+    # reset pool.protocol_fee_accrued = 0.
 ```
 
-The existing CETCH / CXFER / T_MINT / T_BURN / T_AXFER / T_PETCH / T_PMINT / T_DEPOSIT / T_WITHDRAW / T_DROP / T_DCLAIM logic is unchanged. AMM envelopes (opcodes `0x2D`–`0x2F`) do not recurse through the ancestry walk for asset-id resolution beyond the §4.1 three-origin rule; LP-share UTXO produced by `T_LP_ADD` and the locked MINIMUM_LIQUIDITY output are authorized by the canonical POOL_INIT existence (path 3 of §4.1), not by recursive parent walking.
+The existing CETCH / CXFER / T_MINT / T_BURN / T_AXFER / T_PETCH / T_PMINT / T_DEPOSIT / T_WITHDRAW / T_DROP / T_DCLAIM logic is unchanged. AMM envelopes (opcodes `0x2D`–`0x31`) do not recurse through the ancestry walk for asset-id resolution beyond the §4.1 three-origin rule; LP-share UTXO produced by `T_LP_ADD` and `T_PROTOCOL_FEE_CLAIM`, plus the locked MINIMUM_LIQUIDITY output, are authorized by the canonical POOL_INIT existence (path 3 of §4.1), not by recursive parent walking.
 
 ### 5.6 Range disclosure (`balance ≥ K`)
 
@@ -920,11 +948,35 @@ What atomic intents *don't* protect against:
 
 Atomic intents publish the listed UTXO's amount in cleartext — the taker needs to know what they're buying. The recipient blinding `r` is **not** published; it's encrypted to the claimant at fulfilment time (see above). The maker's *other* UTXOs of the same asset are unaffected — observers learn the amount of the listed UTXO from the cleartext `amount` field, but not its `r`, so the on-chain commitment remains computationally unrecoverable to anyone except the named claimant. Range-disclosed listings (§5.6 + listings layer) cover the symmetric case (no atomicity, but no listed amount either); the two primitives coexist for different use cases.
 
-##### Recovery model exception
+##### Recovery model (on-chain OP_RETURN, seed-only recoverable)
 
-Because `r` is random rather than ECDH-derived, an atomic-intent recipient UTXO is **not recoverable from chain + privkey alone** in the sense of §6 paths 2–5. The taker's wallet records the opening locally on take (path 1), so recovery works from local cache as long as the wallet hasn't been wiped. If the wallet is wiped, the taker can re-fetch the encrypted fulfilment from the worker and decrypt — provided it's still within the worker's 24-hour fulfilment TTL. Beyond the TTL, the UTXO becomes a "ghost" entry: the BTC sats are spendable by privkey, but the asset amount is unrecoverable without the maker re-providing the encrypted blinding off-band.
+The maker's fulfilment-time partial reveal **MAY include a 0-sat `OP_RETURN(40)`** at a vout position past the maker-bound vouts (e.g., `vout[N+number_of_maker_BTC_outputs]`; the reference dApp uses `vout[2]` for the N=1 atomic-intent layout). The 40-byte payload carries `(amount, r)` encrypted to the taker via the same symmetric ECDH path used for the worker fulfilment ciphertext, with separate domain tags so one ciphertext can't decrypt another or replay against a different output index:
 
-This is the only recovery-model exception in tacit and is unique to the atomic-intent coordination layer; targeted §5.7.3 settlements use ECDH-derived blindings and recover normally via §6 path 2.
+```
+ks_amount   = HMAC-SHA256(SHA256(ECDH(maker_priv, taker_pub)),
+                          "tacit-axintent-onchain-amount-v1"
+                          || intent_id(16) || asset_id(32) || vout_idx_LE(4)).first8
+ks_blinding = HMAC-SHA256(SHA256(ECDH(maker_priv, taker_pub)),
+                          "tacit-axintent-onchain-blinding-v1"
+                          || intent_id(16) || asset_id(32) || vout_idx_LE(4))
+
+payload_40   = (amount_LE(8) XOR ks_amount) || (r_bytes(32) XOR ks_blinding)
+script_42    = OP_RETURN(0x6a) || OP_PUSHBYTES_40(0x28) || payload_40
+```
+
+The maker's `SIGHASH_SINGLE|ANYONECANPAY` sigs bind only vin[i] ↔ vout[i], so the OP_RETURN at any vout past the maker's signed range is outside their sig binding; the taker's `SIGHASH_ALL` sig at broadcast commits to it. A taker who mutates the OP_RETURN destroys their own recovery (they can't decrypt a ciphertext they themselves chose), so the only rational behavior is to broadcast the maker-provided bytes verbatim.
+
+**With OP_RETURN present:** the recipient UTXO is **recoverable from chain + privkey alone** — same property as §6 paths 2–5. A wallet restoring from seed years later scans the chain, finds the reveal tx involving its address, extracts `maker_pubkey` from `vin[1].witness[1]` and `commit_txid` from `vin[0].prevout`, re-derives `intent_id = SHA256(commit_txid_BE || maker_pubkey)[:16]`, computes the ECDH-derived keystreams, decrypts the OP_RETURN, and verifies the on-chain Pedersen commitment opens to `(amount, r)`. No worker, no local cache, no off-band involvement.
+
+**Without OP_RETURN (legacy fulfilment):** the recipient UTXO remains in the original recovery model — local opening cache (path 1) or worker re-fetch within the 24-hour fulfilment TTL. Beyond the TTL, the UTXO is a "ghost" entry: BTC sats spendable by privkey, asset amount unrecoverable without maker re-providing the encrypted blinding off-band.
+
+**Wire format is unchanged.** The OP_RETURN is purely additive at the Bitcoin tx layer; the T_AXFER envelope at `vin[0].witness[1]` is identical to a §5.7.3 targeted settlement. Existing intents on chain (no OP_RETURN) keep working via the legacy fallbacks; new intents using OP_RETURN gain seed-only recovery. Indexer behavior is unchanged — the T_AXFER decoder only reads the envelope and ignores extra vouts.
+
+**Chain-pattern indistinguishability trade-off.** An atomic-intent reveal that includes the OP_RETURN is observably different from a §5.7.3 targeted reveal that doesn't. The reference dApp accepts this small marginal distinguishability (atomic intents are already distinguishable via `amount_ct = zeros` in the envelope; the OP_RETURN adds one more signal). A future hardening could add a matching OP_RETURN to targeted reveals (with the same shape, different keystream tag) to restore full uniformity.
+
+Reference impl: `dapp/tacit.js` (`deriveAxintentOnchainKeystreams`, `encodeAxintentOnchainPayload`, `decodeAxintentOnchainPayload`, `encodeAxintentOnchainOpReturn`, `tryExtractAxintentOnchainOpReturn`); mirror in `tests/composition.mjs`. Parity + adversarial coverage: `tests/dapp-parity.test.mjs` §5d (12 tests), `tests/axintent-onchain-recovery.test.mjs` (16 e2e tests).
+
+Targeted §5.7.3 settlements remain unchanged — they use ECDH-derived blindings and recover normally via §6 path 2 without needing the OP_RETURN.
 
 **Maker-side recovery.** A maker who reimports their privkey on a fresh device after losing local state recovers the listed asset UTXO via §6 paths normally — its `r` was set at the asset's originating CXFER / CETCH / T_AXFER, not at intent-publish time, so it is unaffected by the loss of the per-intent random `r`. The unspent commit P2TR's BTC sats are reclaimable via script-path spend using the privkey plus the leaf-script and control-block bytes the worker holds in the intent record (or any cached copy of the intent payload). What is irretrievably lost is the per-intent random `r` itself: any in-flight claim becomes un-fulfillable, the claim lock expires, and the maker must publish a fresh intent with a new `r` to relist. No asset value is destroyed — only the listing.
 
@@ -1797,7 +1849,11 @@ arbiter_count(1)                    # u8, 0..16
 arbiter_pubkeys(33 * arbiter_count) # compressed secp256k1
 launcher_sig_count(1)               # u8, 0..2
 launcher_sigs(64 * launcher_sig_count)  # BIP-340 each
+protocol_fee_address(33)            # compressed secp256k1; all-zeros = disabled
+protocol_fee_bps_LE(2)              # u16, 0..1000 (= 0..10% of LP-fee growth)
 ```
+
+`protocol_fee_address` and `protocol_fee_bps` are **founder-set and immutable** for the pool's lifetime (founder picks at POOL_INIT). Pools created with `protocol_fee_address = 33 × 0x00` have no protocol fee ever, and `protocol_fee_bps` must equal 0; the decoder rejects mismatched (non-zero address with zero bps, or zero address with non-zero bps). When enabled, the indexer accrues protocol fee per `AMM.md` §"Protocol fee mechanism" using a Uniswap-V2-lazy `mintFee` model crystallized at every LP event and at `T_PROTOCOL_FEE_CLAIM`.
 
 POOL_INIT additionally requires the reveal tx to include the locked MINIMUM_LIQUIDITY output at `vout[1]` per AMM.md §"MINIMUM_LIQUIDITY burn-output construction".
 
@@ -1961,6 +2017,136 @@ The `vout[0]` OP_RETURN binding rule is what makes trader `SIGHASH_ALL` signatur
 The deterministic clearing-solve algorithm (§AMM.md §4 of "Implementation specification") is verified implicitly: the Groth16 proof binds per-trader amounts to per-trader Pedersen commitments and to `P_clear = X/(Y+Δb_net)` (or its B-dom equivalent), and the aggregate Pedersen check binds the batch totals to the declared deltas.
 
 Reference impl: `tests/amm-validator.mjs` (`validateSwapBatch`).
+
+### 5.17 T_AMM_ATTEST (`0x30`) — preconfirmation worker attestation
+
+A lightweight envelope that anchors a worker's open-intent set to Bitcoin once per block. Enables soft-confirm UX (~30 s) for traders without changing settlement guarantees — settlement still happens via T_SWAP_BATCH at the block clock. See AMM.md §"Preconfirmation layer" for the architectural rationale.
+
+**Wire format:**
+
+```
+opcode(1)             = 0x30
+pool_id(32)
+root(32)              # Merkle root of the worker's open-intent SMT (depth 256, SHA-256)
+height_LE(4)          # u32, Bitcoin block height the root is "as of"
+timestamp_LE(8)       # u64, worker's wall-clock unix seconds at sign
+intent_count_LE(2)    # u16, number of non-empty leaves in the attested tree
+ipfs_cid_len(1)       # u8, 1..64
+ipfs_cid(ipfs_cid_len)  # UTF-8 IPFS CID for the JCS-canonical pinned leaf set
+worker_pubkey(33)     # compressed secp256k1
+worker_sig(64)        # BIP-340 over SHA256("tacit-amm-attest-v1" || preceding_fields)
+```
+
+Wire size: 177 + cid_len bytes (typical ~220 B). No Groth16, no Pedersen, no sigma — the lightest opcode in the protocol.
+
+**SMT spec (referenced by `root`):**
+- Depth 256. Leaves keyed by full 32-byte `intent_id`.
+- Leaf value = `SHA256(intent_msg)` (= `intent_id`'s preimage hash on the protocol side — same as §5.16 `intent_id` derivation).
+- Inner node = `SHA256(left || right)`.
+- `EMPTY_LEAF = SHA256("tacit-amm-empty-leaf-v1")`. Empty subtrees precomputed bottom-up.
+- Sparse storage: only non-empty leaves materialized.
+- Inclusion proof: 256 sibling hashes ordered from depth 0 (top) to 255 (leaf-adjacent).
+
+**IPFS-pinned content** at `ipfs_cid` is a JCS-canonical (RFC 8785) JSON blob:
+
+```json
+{
+  "tacit_amm_attest": {
+    "pool_id": "<hex>",
+    "root": "<hex>",
+    "height": 850123,
+    "timestamp": 1700000000,
+    "leaves": [
+      { "intent_id": "<hex>", "intent_msg_hash": "<hex>" },
+      ...sorted by intent_id ascending...
+    ]
+  }
+}
+```
+
+JCS canonicalization ensures the CID is deterministic from the leaf set — any third party can re-pin the bytes and arrive at the same CID.
+
+**Validator algorithm** (extends §5.5):
+
+```
+if envelope.opcode == T_AMM_ATTEST (0x30):
+    decode payload; reject on structural error
+    verify worker_sig under worker_pubkey over SHA256("tacit-amm-attest-v1" || preceding_fields)
+    reject if claimed_height > envelope_height (no future-state claims)
+    let key = (pool_id, worker_pubkey, claimed_height)
+    let existing = indexer.attestationChain.get(key)
+    if existing && existing.root != decoded.root:
+        EQUIVOCATION DETECTED
+        indexer.equivocationFlags.add(worker_pubkey)
+        reject envelope
+    if existing && existing.root == decoded.root:
+        idempotent duplicate — accept silently
+    else:
+        indexer.attestationChain.set(key, decoded)
+        accept
+    return true
+```
+
+Multi-worker support is structural: different `worker_pubkey` values at the same `(pool_id, claimed_height)` with different roots are NOT equivocation — they're independent workers' views. Equivocation is per-worker.
+
+**§11.2 ordering rule:** Within a block, T_AMM_ATTEST envelopes apply in `(tx_index, vin[0] outpoint)` order. Equivocation check is order-sensitive: the first canonically-ordered attestation per `(pool_id, worker_pubkey, height)` is canonical; any subsequent with a different root flags the worker.
+
+**Settlement does NOT depend on T_AMM_ATTEST.** A pool can operate indefinitely without any T_AMM_ATTEST envelopes ever being broadcast — traders just don't get the soft-confirm UX. The hard-confirm path via T_SWAP_BATCH (§5.16) is independent.
+
+Reference impl: `tests/amm-attest.mjs` (`OpenIntentSMT`, `validateAmmAttest`, `verifySoftConfirm`). Parity suite: `tests/amm-attest.test.mjs` (32 tests).
+
+### 5.18 T_PROTOCOL_FEE_CLAIM (`0x31`) — mint accrued protocol fee to recipient UTXO
+
+Authenticated mint of the pool's accrued protocol-fee balance as an `lp_asset_id` UTXO to the founder-pinned `protocol_fee_address`. The opcode has no Groth16 proof: the claim amount is public (it equals the pool's `protocol_fee_accrued` counter at decode time) and the LP-share commitment uses a public opening (amount, blinding) since LP shares are fungible and the recipient is already public.
+
+**Wire format (fixed 202 bytes):**
+
+```
+opcode(1)                  = 0x31
+pool_id(32)                # SHA256("tacit-amm-pool-v1" || asset_A || asset_B)
+claimer_pubkey_x_only(32)  # x-only of pool.protocol_fee_address
+claim_amount_LE(8)         # u64, > 0 — must equal pool.protocol_fee_accrued (post-crystallization)
+claim_C_secp(33)           # Pedersen commitment of claim_amount with chosen blinding
+claim_blinding(32)         # r_secp (revealed; opening is public for fungible LP shares)
+claim_sig(64)              # BIP-340 over claim_msg
+```
+
+**`claim_msg`:**
+
+```
+claim_msg = SHA256(
+    "tacit-amm-protocol-fee-claim-v1"
+    || pool_id(32)
+    || claim_amount_LE(8)
+    || claim_C_secp(33)
+    || claim_blinding(32)
+)
+```
+
+**Validator algorithm** (extends §5.5):
+
+1. Decode payload. Reject on structural error or wrong total length (≠ 202).
+2. Reject `claim_amount == 0`.
+3. Recompute `pool_id` from `(asset_A, asset_B)` of the pool registered in the indexer; reject if the envelope's `pool_id` doesn't match a known pool.
+4. Reject if `pool.protocol_fee_address` is all-zeros (no protocol fee configured) or `pool.protocol_fee_bps == 0`.
+5. Reject if `claimer_pubkey_x_only` doesn't equal the x-only of `pool.protocol_fee_address`.
+6. **Crystallize protocol fee** on pool state: `pool ← crystallizeProtocolFee(pool)`. This applies the Uniswap-V2-lazy `mintFee` formula over `(k_now − k_last)` and updates `pool.protocol_fee_accrued`, `pool.lp_total_shares`, and `pool.k_last`.
+7. Reject if `claim_amount != pool.protocol_fee_accrued` (post-crystallization).
+8. Verify `claim_sig` is a valid BIP-340 signature under `claimer_pubkey_x_only` over `claim_msg`.
+9. Verify `claim_C_secp` opens to `(claim_amount, claim_blinding)` — i.e., `claim_C_secp == claim_amount·H_secp + claim_blinding·G_secp`.
+10. Reject if `claim_blinding ≥ secp256k1 group order`.
+11. Emit an `lp_asset_id` UTXO at `vout[0]` payable to a P2WPKH/P2TR script under `claimer_pubkey_x_only`, carrying commitment `claim_C_secp` with amount `claim_amount` and blinding `claim_blinding`.
+12. Set `pool.protocol_fee_accrued = 0`. `pool.k_last` is already updated by step 6.
+
+**Properties:**
+- **No replay:** every successful claim resets `protocol_fee_accrued` to 0; a stale envelope with the same `claim_amount` will be rejected at step 7 (the new `protocol_fee_accrued` is now lower or zero).
+- **No Groth16:** the claim is authenticated purely by `claim_sig` + commitment opening. The verifier needs no per-pool circuit artifact.
+- **No envelope-resize:** the wire format is fixed-length (202 bytes) — every claim envelope is byte-identical in size, removing any ambiguity in length parsing.
+- **Forward-compatible recipient script:** validator implementations MAY accept any standard P2WPKH/P2TR/P2WSH script under `claimer_pubkey_x_only`; for v1, the canonical script is `OP_1 <claimer_pubkey_x_only>` (P2TR key-path).
+
+**Forward compatibility:** the founder picks `protocol_fee_address` at POOL_INIT and it is immutable. Future ceremonies MAY add a governance opcode that mutates pool fee parameters; v1 pools are not eligible for that path and retain their founder-set address.
+
+Reference impl: `tests/amm-validator.mjs` (`validateProtocolFeeClaim`). Parity suite: `tests/amm-protocol-fee.test.mjs` (31 tests).
 
 ## 6. Recovery semantics
 

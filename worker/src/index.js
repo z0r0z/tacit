@@ -613,7 +613,11 @@ function _utcYyyymmdd(tsSeconds) {
 // asset page, one write per trade hint. No expirationTtl — once an asset
 // has any trades, the ring is "always interesting"; if the asset goes
 // idle, the ring is small (≤cap entries × ~100 bytes) and harmless.
-const TRADES_RING_CAP = 50;
+// Cap raised 50 → 200 to give the asset-page price chart enough history
+// for week+ horizons on actively-traded assets without growing the per-
+// asset KV write past a few KB. Each entry is ~100 bytes; 200 × 100 ≈
+// 20 KB per asset, well under KV's 25 MB-per-key limit.
+const TRADES_RING_CAP = 200;
 function tradesRingKey(network, aid) {
   return network === 'signet' ? `trades-ring:${aid}` : `trades-ring:${network}:${aid}`;
 }
@@ -2867,7 +2871,7 @@ async function loadMintsForAsset(env, network, assetIdHex) {
 // latency on networks with many assets. Now everything fan-outs in one
 // Promise.all per asset.
 async function hydrateAssetSummary(env, network, v, includeMints) {
-  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade] = await Promise.all([
+  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade, ring] = await Promise.all([
     env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
     includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
     loadBurnsForAsset(env, network, v.asset_id),
@@ -2881,6 +2885,11 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
     // the existing parallel fan-out so it adds zero round-trip latency.
     env.REGISTRY_KV.get(transferCountKey(network, v.asset_id)),
     env.REGISTRY_KV.get(lastTradeKey(network, v.asset_id), 'json'),
+    // Recent-trades ring — used here to compute a compact price summary
+    // (24h Δ% + price_summary[10]) that the bulk /assets response surfaces
+    // for tile-side sparklines + delta. The full ring stays available
+    // through /assets/:id for the deep chart.
+    env.REGISTRY_KV.get(tradesRingKey(network, v.asset_id), 'json'),
   ]);
   if (att) v.attestation = att;
   if (includeMints) v.mints = mints;
@@ -2893,6 +2902,58 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   v.preauth_sale_count = ps.keys.length;
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
   if (lastTrade) v.last_trade = lastTrade;
+  // Compact trade summary for tile-side rendering. Keep it small — every
+  // asset in the list response carries this, so we trim to 10 (ts, unit
+  // price) pairs + a single price_24h_change_pct number rather than
+  // shipping the full 200-entry ring. Clients that need the full ring
+  // hit /assets/:id instead.
+  if (Array.isArray(ring) && ring.length > 0 && Number.isInteger(v.decimals)) {
+    const dec = v.decimals;
+    // Unit price = price_sats × 10^dec / amount, but we ship it as a
+    // pre-divided Number so tile-side sparklines don't need to redo the
+    // BigInt math for every asset. Precision = 1e-8 sat/whole to match
+    // the dapp's unitPriceSats (recent PRECISION bump).
+    const _unit = (priceSats, amountStr) => {
+      const p = Number(priceSats);
+      if (!Number.isFinite(p) || p <= 0) return null;
+      let a; try { a = BigInt(amountStr || '0'); } catch { return null; }
+      if (a <= 0n) return null;
+      const num = BigInt(Math.floor(p)) * (10n ** BigInt(dec)) * 100000000n;
+      return Number(num / a) / 1e8;
+    };
+    const pts = ring.slice(0, 10).map(t => {
+      const u = _unit(t.price_sats, t.amount);
+      const ts = Number(t.ts) || 0;
+      return (u != null && ts > 0) ? { ts, u } : null;
+    }).filter(Boolean);
+    if (pts.length > 0) v.price_summary = pts;
+    // 24h Δ% — compare latest (pts[0]) to the price as of 24h ago. Walk
+    // back through the full ring to find the closest pre-24h-ago trade.
+    if (pts.length > 0) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const cutoff = nowSec - 86400;
+      const latestU = pts[0].u;
+      let refU = null;
+      for (const t of ring) {
+        const ts = Number(t.ts) || 0;
+        if (ts >= cutoff) continue;
+        refU = _unit(t.price_sats, t.amount);
+        if (refU != null && refU > 0) break;
+      }
+      // Fall back to the oldest trade we DO have if none predate 24h —
+      // gives a "since first known trade" delta rather than null.
+      if (refU == null) {
+        for (let i = ring.length - 1; i >= 0; i--) {
+          const t = ring[i];
+          const u = _unit(t.price_sats, t.amount);
+          if (u != null && u > 0) { refU = u; break; }
+        }
+      }
+      if (refU != null && refU > 0 && latestU != null) {
+        v.price_24h_change_pct = ((latestU - refU) / refU) * 100;
+      }
+    }
+  }
 }
 
 async function handleAssetsList(env, network, cors, opts = {}) {
@@ -3407,36 +3468,50 @@ async function handleAssetHint(req, env, network, cors, ctx) {
             amount: body.amount,
             ts: Math.floor(Date.now() / 1000),
           };
+          // last_trade is last-write-wins; overwriting on a replay is harmless
+          // (same data) and lets a stale display refresh.
           await env.REGISTRY_KV.put(lastTradeKey(network, dx.asset_id), JSON.stringify(lastTrade));
-          // Daily volume bucket. Add this trade's sats to today's bucket so
-          // the asset endpoint can sum (today + yesterday) for a rolling 24h
-          // figure. Bucket expires in 7 days — long after it's left the
-          // window — to auto-collect without a sweeper.
-          const dayKey = tradeDayKey(network, dx.asset_id, _utcYyyymmdd(lastTrade.ts));
-          try {
-            const prevDay = await env.REGISTRY_KV.get(dayKey);
-            const prevSats = prevDay ? (Number(prevDay) || 0) : 0;
-            await env.REGISTRY_KV.put(dayKey, String(prevSats + body.price_sats), { expirationTtl: 7 * 86400 });
-          } catch { /* KV blip — bucket missing this trade is acceptable, last_trade still landed */ }
-          // Recent-trades ring buffer. Append (newest-first) and trim to
-          // TRADES_RING_CAP. Best-effort; failure here doesn't void the
-          // last_trade write above.
-          try {
-            const ringKey = tradesRingKey(network, dx.asset_id);
-            const prevRingJson = await env.REGISTRY_KV.get(ringKey);
-            let ring = [];
-            if (prevRingJson) {
-              try { const j = JSON.parse(prevRingJson); if (Array.isArray(j)) ring = j; } catch {}
-            }
-            // Dedup: if a hint replay arrives for the same txid, don't
-            // double-append. The worker accepts the same hint twice when
-            // its 90k-second counter expires; we still want one row per tx.
-            if (!ring.some(r => r && r.txid === lastTrade.txid)) {
-              ring.unshift(lastTrade);
-              if (ring.length > TRADES_RING_CAP) ring.length = TRADES_RING_CAP;
-              await env.REGISTRY_KV.put(ringKey, JSON.stringify(ring));
-            }
-          } catch { /* ring is best-effort */ }
+          // CRITICAL: the daily volume bucket and ring buffer are aggregations
+          // — replaying a trade hint must NOT double-count or re-append. Gate
+          // on bumpTransferCount's idempotency signal (`counted === true`
+          // means this txid wasn't seen in the past 30 days). Without this
+          // gate, anyone within the per-IP daily hint quota could re-POST
+          // the same valid trade hint to inflate the asset's 24h volume.
+          // ring buffer also has a txid-dedup as defense-in-depth, but it
+          // only protects within the cap-50 window — old replays after
+          // eviction would have slipped through.
+          if (counted) {
+            // Daily volume bucket. Add this trade's sats to today's bucket so
+            // the asset endpoint can sum (today + yesterday) for a rolling 24h
+            // figure. Bucket expires in 7 days — long after it's left the
+            // window — to auto-collect without a sweeper.
+            const dayKey = tradeDayKey(network, dx.asset_id, _utcYyyymmdd(lastTrade.ts));
+            try {
+              const prevDay = await env.REGISTRY_KV.get(dayKey);
+              const prevSats = prevDay ? (Number(prevDay) || 0) : 0;
+              await env.REGISTRY_KV.put(dayKey, String(prevSats + body.price_sats), { expirationTtl: 7 * 86400 });
+            } catch { /* KV blip — bucket missing this trade is acceptable, last_trade still landed */ }
+            // Recent-trades ring buffer. Append (newest-first) and trim to
+            // TRADES_RING_CAP. Best-effort; failure here doesn't void the
+            // last_trade write above.
+            try {
+              const ringKey = tradesRingKey(network, dx.asset_id);
+              const prevRingJson = await env.REGISTRY_KV.get(ringKey);
+              let ring = [];
+              if (prevRingJson) {
+                try { const j = JSON.parse(prevRingJson); if (Array.isArray(j)) ring = j; } catch {}
+              }
+              // Belt-and-suspender txid dedup inside the cap-window. The
+              // outer `counted` gate handles the 30-day replay; this
+              // catches the edge where the ring evicted the entry but the
+              // seen-set still has it (or vice versa).
+              if (!ring.some(r => r && r.txid === lastTrade.txid)) {
+                ring.unshift(lastTrade);
+                if (ring.length > TRADES_RING_CAP) ring.length = TRADES_RING_CAP;
+                await env.REGISTRY_KV.put(ringKey, JSON.stringify(ring));
+              }
+            } catch { /* ring is best-effort */ }
+          }
         }
       } catch { /* BigInt parse failed — ignore, transfer counter bump still landed */ }
     }

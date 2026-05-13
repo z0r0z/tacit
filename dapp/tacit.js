@@ -1637,57 +1637,218 @@ function _apiRelease() {
     _apiInflight--;
   }
 }
-// Per-session provider preference. When the primary (NET.api) starts
-// throwing — CORS-headerless 5xx, transient outage, regional block — we
-// flip this for the rest of the session so we don't burn a round-trip
-// against the broken provider on every request. Reset on network switch
-// (page reload), which is correct: the user's IP-vs-cloudfront mapping
-// changes per session and a previously-bad provider may recover.
-let _preferredApiBase = null;
+// Custom Esplora URL — power users running their own node (Start9, Umbrel,
+// Citadel, a VPS) drop a URL into the wallet card's "Advanced: chain indexer"
+// panel; it slots in front of the public rotation. Per-network, since a
+// self-hosted node typically only serves one chain.
+const CUSTOM_API_KEY = 'tacit-custom-api-v1';
+function _readCustomApiMap() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_API_KEY);
+    if (!raw) return {};
+    const m = JSON.parse(raw);
+    return (m && typeof m === 'object') ? m : {};
+  } catch { return {}; }
+}
+function getCustomApiBase(netName) {
+  const key = netName || (NET && NET.name);
+  if (!key) return null;
+  const v = _readCustomApiMap()[key];
+  if (typeof v !== 'string' || !v) return null;
+  return v.replace(/\/+$/, '');
+}
+function setCustomApiBase(netName, urlOrNull) {
+  const m = _readCustomApiMap();
+  if (urlOrNull) m[netName] = String(urlOrNull).trim().replace(/\/+$/, '');
+  else delete m[netName];
+  localStorage.setItem(CUSTOM_API_KEY, JSON.stringify(m));
+  // Wipe health state — a config change deserves a clean slate on the
+  // affected bases (the cooldown was about the old config).
+  _apiHealth.clear();
+}
+
+// Candidate Esplora mirrors beyond the two known-good ones. CORS support on
+// public mirrors is inconsistent — some return Access-Control-Allow-Origin
+// only on certain paths, some not at all — so we probe each candidate ONCE
+// per session against /blocks/tip/height and only include responders in the
+// rotation. The probe runs in the background; until it completes we run on
+// just the verified bases (mempool.space + blockstream.info + custom).
+//
+// Easy to extend: drop a URL into the list and the runtime auto-prunes if
+// CORS fails. No code change needed when a new mirror appears.
+const _CANDIDATE_BASES = {
+  mainnet: [
+    'https://mempool.bisq.services/api',
+    'https://mempool.emzy.de/api',
+    'https://mempool.bitaroo.net/api',
+    'https://mempool.fra.mempool.space/api',
+    'https://mempool.tk7.mempool.space/api',
+    'https://mempool.va1.mempool.space/api',
+  ],
+  signet: [
+    // Public signet mirrors are rare beyond mempool.space + blockstream.info;
+    // add here as we discover them.
+  ],
+};
+// Probe results: base URL → true (verified working) | false (CORS/error/non-
+// Esplora response). Per-session, cached in sessionStorage so a network flip
+// or page reload re-probes (mirrors come and go). null = not probed yet.
+const _candidateProbeKey = (net) => `tacit-candidate-probe-${net}-v1`;
+function _loadCandidateProbe(net) {
+  try {
+    const raw = sessionStorage.getItem(_candidateProbeKey(net));
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+function _saveCandidateProbe(net, map) {
+  try { sessionStorage.setItem(_candidateProbeKey(net), JSON.stringify(map)); } catch {}
+}
+async function _probeCandidate(base) {
+  // 2.5s ceiling per candidate so a hung mirror can't slow startup. The probe
+  // itself is one cheap GET; we accept any 2xx with an integer body. We don't
+  // count this round-trip against the per-IP burst quota on production
+  // providers because candidates are by definition different hosts.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2500);
+  try {
+    const r = await fetch(base + '/blocks/tip/height', { signal: ctrl.signal });
+    if (!r.ok) return false;
+    const t = (await r.text()).trim();
+    const h = parseInt(t, 10);
+    return Number.isFinite(h) && h > 0;
+  } catch { return false; }
+  finally { clearTimeout(timer); }
+}
+let _probeStarted = false;
+async function _runCandidateProbe() {
+  if (_probeStarted) return;
+  _probeStarted = true;
+  const net = NET?.name;
+  if (!net) return;
+  const cand = _CANDIDATE_BASES[net] || [];
+  if (!cand.length) return;
+  const cache = _loadCandidateProbe(net);
+  // Skip candidates we already have a verdict on this session.
+  const toProbe = cand.filter(b => cache[b] === undefined);
+  if (!toProbe.length) return;
+  // Probe in parallel — each candidate is a different host, so concurrency
+  // doesn't pile load on any one of them.
+  const results = await Promise.all(toProbe.map(b => _probeCandidate(b)));
+  let added = 0;
+  toProbe.forEach((b, i) => { cache[b] = !!results[i]; if (results[i]) added++; });
+  _saveCandidateProbe(net, cache);
+  if (added > 0) {
+    // A blip-stalled wallet bar may benefit from the newly-available bases
+    // immediately. Cheap; only fires on probe completion.
+    try { _cancelWalletRetry?.(); refreshWallet?.(); } catch {}
+  }
+}
+
+// Ordered rotation list for the current network. Custom URL (if any) goes
+// first so users with their own node get unlimited reads; the two known-good
+// public bases follow; any probe-verified community mirrors come after them.
+// Both mempool.space and blockstream.info speak the Esplora schema so the
+// rotation is response-shape compatible for every endpoint the dapp uses
+// (/tx, /address, /utxo, /txs/chain, /outspend).
+function _apiBases() {
+  const out = [];
+  const custom = getCustomApiBase();
+  if (custom) out.push(custom);
+  if (NET.api) out.push(NET.api);
+  if (NET.api2 && NET.api2 !== NET.api) out.push(NET.api2);
+  // Probed community mirrors (only the ones whose probe succeeded).
+  const net = NET?.name;
+  if (net) {
+    const cache = _loadCandidateProbe(net);
+    for (const b of (_CANDIDATE_BASES[net] || [])) {
+      if (cache[b] === true) out.push(b);
+    }
+  }
+  return [...new Set(out)];
+}
+
+// Per-base health: cooldownUntil = ms-timestamp; a base is "cooling" while
+// now < cooldownUntil. Cooling bases are deprioritized but still tried as a
+// last resort if every base is cooling — better to send a request that might
+// succeed than to throw immediately on a stale cooldown.
+const _apiHealth = new Map();
+function _markUnhealthy(base, ms, label) {
+  _apiHealth.set(base, { cooldownUntil: Date.now() + ms, lastErr: label });
+}
+function _isCooling(base) {
+  const h = _apiHealth.get(base);
+  return !!(h && h.cooldownUntil > Date.now());
+}
+function _coolingMsLeft(base) {
+  const h = _apiHealth.get(base);
+  return h ? Math.max(0, h.cooldownUntil - Date.now()) : 0;
+}
+
 async function api(path, opts = {}) {
   await _apiAcquire();
   try {
-    // Try the session's preferred base first (defaults to NET.api). Both
-    // mempool.space and blockstream.info expose the same Esplora schema,
-    // so the fallback is response-shape compatible for every endpoint the
-    // dapp uses (/tx, /address, /utxo, /txs/chain, /outspend).
-    const primary = _preferredApiBase || NET.api;
-    const secondary = NET.api2 && primary !== NET.api2 ? NET.api2 : null;
+    const bases = _apiBases();
+    if (!bases.length) throw new Error('no chain API configured');
 
-    let r = null;
-    let primaryErr = null;
-    try {
-      r = await fetch(primary + path, opts);
-    } catch (e) {
-      // fetch() threw — network error, CORS rejection (mempool.space
-      // sometimes serves error pages without Access-Control-Allow-Origin
-      // headers, which the browser surfaces as a CORS block even though
-      // the actual failure was upstream), DNS, certificate, etc. All
-      // recoverable via the fallback.
-      primaryErr = e;
-    }
-    // 5xx is also fallback-worthy. 4xx is intentionally NOT — it's a real
-    // client-side signal (e.g. /utxo's 400 for >500 UTXOs).
-    const needsFallback = primaryErr || (r && r.status >= 500);
-    if (needsFallback && secondary) {
+    // Healthy bases first in priority order; cooling bases last, sorted by
+    // shortest time-remaining so the one closest to recovery gets the
+    // last-resort attempt.
+    const healthy = bases.filter(b => !_isCooling(b));
+    const cooling = bases.filter(_isCooling)
+      .sort((a, b) => _coolingMsLeft(a) - _coolingMsLeft(b));
+    const order = healthy.length ? [...healthy, ...cooling] : cooling;
+
+    let lastErr = null;
+    let lastRes = null;
+    for (const base of order) {
+      let r;
       try {
-        const r2 = await fetch(secondary + path, opts);
-        if (r2.ok || r2.status < 500) {
-          // Latch the working provider for the rest of the session.
-          _preferredApiBase = secondary;
-          r = r2;
-          primaryErr = null;
-        }
-      } catch (_e2) {
-        // Both providers down — fall through to throw the original error.
+        r = await fetch(base + path, opts);
+      } catch (e) {
+        // Network / CORS / DNS — provider unreachable. mempool.space sometimes
+        // serves error pages without Access-Control-Allow-Origin headers,
+        // which the browser surfaces as a CORS block even though the actual
+        // failure was upstream — all recoverable by rotating to the next base.
+        _markUnhealthy(base, 60_000, 'network');
+        lastErr = e;
+        continue;
       }
+      if (r.status === 429) {
+        // Per-IP rate limit. Respect Retry-After if the provider sends it
+        // (Blockstream does on the "monthly cap exceeded" path); else 30s
+        // is a reasonable default that lets a short burst window pass.
+        const ra = parseInt(r.headers.get('retry-after') || '', 10);
+        const cool = Number.isFinite(ra) && ra > 0
+          ? Math.min(ra * 1000, 300_000)
+          : 30_000;
+        _markUnhealthy(base, cool, 'rate-limited');
+        lastRes = r;
+        continue;
+      }
+      if (r.status >= 500) {
+        _markUnhealthy(base, 15_000, String(r.status));
+        lastRes = r;
+        continue;
+      }
+      // 2xx or non-429 4xx — return. 4xx is a real client-side signal
+      // (e.g. /utxo's 400 for >500 UTXOs) and must NOT trigger rotation:
+      // every provider will return the same 4xx for the same query, and
+      // burning round-trips on guaranteed failures just slows the dapp.
+      if (r.ok) _apiHealth.delete(base);
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
+      }
+      return r;
     }
-    if (primaryErr) throw primaryErr;
-    if (!r.ok) {
-      const t = await r.text();
-      throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
+    // Every base exhausted. Normalize the error message so the wallet bar
+    // shows a short, actionable pill instead of the provider's multi-
+    // paragraph pricing-notice JSON.
+    if (lastRes && lastRes.status === 429) {
+      throw new Error('rate limited — all providers throttled');
     }
-    return r;
+    if (lastRes) throw new Error(`API ${lastRes.status} (all providers)`);
+    throw lastErr || new Error('all chain APIs unreachable');
   } finally {
     // Release at headers-received rather than after body-read: response body
     // is buffered locally, so the indexer's per-IP burst counter has already
@@ -2292,6 +2453,75 @@ function deriveAxintentBlindingKeystream(myPriv, theirPubBytes, intentIdBytes, a
   const shared = secp.getSharedSecret(myPriv, theirPubBytes);
   const seed = sha256(shared.slice(1));
   return hmac(sha256, seed, concatBytes(AXINTENT_BLINDING_DOMAIN, intentIdBytes, assetIdBytes));
+}
+
+// On-chain encrypted recipient amount + blinding for §5.7.6 atomic intents.
+// At fulfilment time the maker MAY include a 0-sat OP_RETURN(40 bytes) at
+// the reveal tx so the taker can recover both the amount and `r` from
+// chain + privkey alone — closing the recovery-model exception that
+// previously required either local cache or a worker fetch within the 24h
+// fulfilment TTL.
+//
+// 40-byte payload layout: amount_ct(8 LE) || blinding_ct(32)
+// Both fields XOR'd against domain-separated HMAC keystreams over the same
+// ECDH shared secret used by AXINTENT_BLINDING_DOMAIN. Keystreams bind
+// (intent_id, asset_id, vout_idx) so one ciphertext can't decrypt another
+// or be replayed at a different output index.
+const AXINTENT_ONCHAIN_AMOUNT_DOMAIN   = new TextEncoder().encode('tacit-axintent-onchain-amount-v1');
+const AXINTENT_ONCHAIN_BLINDING_DOMAIN = new TextEncoder().encode('tacit-axintent-onchain-blinding-v1');
+const AXINTENT_ONCHAIN_PAYLOAD_BYTES   = 40;
+
+function deriveAxintentOnchainKeystreams(myPriv, theirPubBytes, intentIdBytes, assetIdBytes, voutIdx) {
+  bytesToPoint(theirPubBytes);
+  const shared = secp.getSharedSecret(myPriv, theirPubBytes);
+  const seed = sha256(shared.slice(1));
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, voutIdx >>> 0, true);
+  const amountKs = hmac(sha256, seed, concatBytes(
+    AXINTENT_ONCHAIN_AMOUNT_DOMAIN, intentIdBytes, assetIdBytes, voutLE,
+  )).slice(0, 8);
+  const blindingKs = hmac(sha256, seed, concatBytes(
+    AXINTENT_ONCHAIN_BLINDING_DOMAIN, intentIdBytes, assetIdBytes, voutLE,
+  ));
+  return { amountKs, blindingKs };
+}
+
+function encodeAxintentOnchainPayload(amountBigint, blindingBytes32, ks) {
+  if (!(blindingBytes32 instanceof Uint8Array) || blindingBytes32.length !== 32) {
+    throw new Error('blinding must be 32 bytes');
+  }
+  const amountCt = encryptAmount(amountBigint, ks.amountKs);
+  const blindingCt = xor32(blindingBytes32, ks.blindingKs);
+  return concatBytes(amountCt, blindingCt);
+}
+
+function decodeAxintentOnchainPayload(ciphertext40, ks) {
+  if (!(ciphertext40 instanceof Uint8Array) || ciphertext40.length !== AXINTENT_ONCHAIN_PAYLOAD_BYTES) {
+    throw new Error(`axintent on-chain ciphertext must be ${AXINTENT_ONCHAIN_PAYLOAD_BYTES} bytes`);
+  }
+  const amount = decryptAmount(ciphertext40.slice(0, 8), ks.amountKs);
+  const blindingBytes = xor32(ciphertext40.slice(8, 40), ks.blindingKs);
+  return { amount, blindingBytes };
+}
+
+// OP_RETURN scriptPubKey for the 40-byte axintent on-chain payload.
+// Format: OP_RETURN(0x6a) || OP_PUSHBYTES_40(0x28) || <40 bytes>
+function encodeAxintentOnchainOpReturn(ciphertext40) {
+  if (!(ciphertext40 instanceof Uint8Array) || ciphertext40.length !== AXINTENT_ONCHAIN_PAYLOAD_BYTES) {
+    throw new Error(`axintent on-chain ciphertext must be ${AXINTENT_ONCHAIN_PAYLOAD_BYTES} bytes`);
+  }
+  return concatBytes(new Uint8Array([0x6a, AXINTENT_ONCHAIN_PAYLOAD_BYTES]), ciphertext40);
+}
+
+// Recognize a tx vout that may carry the axintent on-chain payload.
+// Returns the 40-byte ciphertext or null. Caller still needs to attempt
+// ECDH decrypt + Pedersen verification to confirm a match.
+function tryExtractAxintentOnchainOpReturn(scriptBytes) {
+  if (!(scriptBytes instanceof Uint8Array)) return null;
+  if (scriptBytes.length !== 2 + AXINTENT_ONCHAIN_PAYLOAD_BYTES) return null;
+  if (scriptBytes[0] !== 0x6a) return null;
+  if (scriptBytes[1] !== AXINTENT_ONCHAIN_PAYLOAD_BYTES) return null;
+  return scriptBytes.slice(2);
 }
 
 // ============================================================================
@@ -6984,14 +7214,31 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
 // Broadcast handlers explicitly invalidate so the next scan picks up the
 // new state immediately. force=true bypasses the cache (Refresh button).
 let _holdingsCache = null;
-// Sticky "this wallet has ever had assets" flag, scoped to the page session.
-// Stamped to true the first time scanHoldings returns a non-empty result and
-// stays true for the rest of the session. Used by renderHoldings to
-// distinguish "transient zero-UTXO scan" (likely indexer hiccup, surface a
-// retry banner) from "wallet is genuinely fresh" (surface the friendly
-// funding/etch hint). Cleared on lock since the user might be flipping to
-// a different wallet identity for which the assertion doesn't hold.
+// Sticky "this wallet has ever had assets" flag — persisted to localStorage
+// keyed by (network, owner_pubkey) so it survives page reload. Without
+// persistence, a heavy treasury wallet on first page load (whose first scan
+// can transiently return zero UTXOs because of an indexer hiccup on the
+// paginated /txs/chain walk) would show the alarming "No tacit assets yet"
+// fresh-wallet copy instead of the calmer "scan came back empty — retry"
+// banner. Stamped to true the first time scanHoldings returns a non-empty
+// result. Cleared on lock since the user might flip to a different wallet
+// identity for which the assertion doesn't hold.
 let _holdingsEverSeenAssets = false;
+function _holdingsSeenKey() {
+  if (!wallet.pub) return null;
+  let pubHex; try { pubHex = bytesToHex(wallet.pub); } catch { return null; }
+  return `tacit-holdings-seen-v1:${NET.name}:${pubHex}`;
+}
+function _loadHoldingsSeenFlag() {
+  const k = _holdingsSeenKey();
+  if (!k) return false;
+  try { return localStorage.getItem(k) === '1'; } catch { return false; }
+}
+function _saveHoldingsSeenFlag() {
+  const k = _holdingsSeenKey();
+  if (!k) return;
+  try { localStorage.setItem(k, '1'); } catch {}
+}
 const HOLDINGS_CACHE_TTL_MS = 30 * 1000;
 // Cross-TTL "nothing changed" cache. Keyed by the wallet's UTXO-set signature
 // at last successful scan. When Refresh fires (or the 30s TTL expires) and the
@@ -7616,6 +7863,43 @@ async function _scanHoldingsImpl() {
             } catch {}
           }
         }
+        // §5.7.6 atomic-intent on-chain recovery: when the maker fulfilled
+        // with an OP_RETURN(40) carrying (amount, blinding) encrypted to the
+        // taker via ECDH, the receipt is recoverable from chain + privkey
+        // alone — no local cache, no worker fetch. The envelope's amount_ct
+        // is zeros for atomic intents so the earlier ECDH path always misses;
+        // this branch picks up where that one left off.
+        if (!recovered && senderPubHex && env.opcode === T_AXFER) {
+          let opReturnCt = null;
+          for (const out of tx.vout) {
+            try {
+              const spk = hexToBytes(out.scriptpubkey || '');
+              const ct40 = tryExtractAxintentOnchainOpReturn(spk);
+              if (ct40) { opReturnCt = ct40; break; }
+            } catch {}
+          }
+          if (opReturnCt) {
+            try {
+              const senderPub = hexToBytes(senderPubHex);
+              // intent_id = SHA256(commit_txid_BE || maker_pubkey)[:16] per §5.7.6.
+              // commit_txid is vin[0].prevout.txid (the maker's commit P2TR).
+              const commitTxidBE = reverseBytes(hexToBytes(tx.vin[0].txid));
+              const intentIdBytes = sha256(concatBytes(commitTxidBE, senderPub)).slice(0, 16);
+              const assetIdBytes = hexToBytes(assetIdHex);
+              const ks = deriveAxintentOnchainKeystreams(wallet.priv, senderPub, intentIdBytes, assetIdBytes, u.vout);
+              const { amount: candidate, blindingBytes } = decodeAxintentOnchainPayload(opReturnCt, ks);
+              if (candidate >= 0n && candidate < (1n << 64n)) {
+                const rBig = bytes32ToBigint(blindingBytes) % SECP_N;
+                if (rBig > 0n) {
+                  if (pedersenCommit(candidate, rBig).equals(bytesToPoint(onChainCommitment))) {
+                    recovered = { amount: candidate, blinding: rBig };
+                    recoveryPath = 'axintent-onchain';
+                  }
+                }
+              }
+            } catch {}
+          }
+        }
         if (recovered) {
           // Persist for future scans (cheap)
           recordOpening(u.txid, u.vout, assetIdHex, recovered.amount, recovered.blinding);
@@ -7728,6 +8012,9 @@ function _reconcileOtcSettlements(holdings) {
 const inputVbytes = 68;
 const p2wpkhOutVbytes = 31;
 const p2trOutVbytes = 43;
+// 0-sat OP_RETURN carrying the 40-byte axintent on-chain payload:
+// 8B amount + 1B script-len varint + 42B script (0x6a 0x28 <40B>) = 51 vbytes.
+const opReturnAxintentOnchainVbytes = 51;
 function estCommitVb(numInputs) { return 11 + numInputs * inputVbytes + p2trOutVbytes + p2wpkhOutVbytes; }
 const feeFor = (vb, rate) => Math.max(500, Math.ceil(vb * rate));
 
@@ -10516,7 +10803,24 @@ function verifyAxferOffer(offer) {
     throw new Error('partial_reveal missing or malformed');
   }
   if (pr.inputs.length !== 2) throw new Error(`partial_reveal must have exactly 2 inputs (got ${pr.inputs.length})`);
-  if (pr.outputs.length !== 2) throw new Error(`partial_reveal must have exactly 2 outputs (got ${pr.outputs.length})`);
+  // 2 outputs = legacy / targeted §5.7.3 (recipient tacit + maker BTC payment).
+  // 3 outputs = §5.7.6 atomic intent with on-chain encrypted (amount, r)
+  // OP_RETURN at vout[2] for seed-only recovery. Other shapes are rejected.
+  if (pr.outputs.length !== 2 && pr.outputs.length !== 3) {
+    throw new Error(`partial_reveal must have 2 or 3 outputs (got ${pr.outputs.length})`);
+  }
+  if (pr.outputs.length === 3) {
+    const vout2 = pr.outputs[2];
+    if (vout2.value !== 0) {
+      throw new Error(`partial_reveal.outputs[2].value must be 0 (OP_RETURN); got ${vout2.value}`);
+    }
+    let vout2Script;
+    try { vout2Script = hexToBytes(vout2.script_hex || ''); }
+    catch { throw new Error('partial_reveal.outputs[2].script_hex invalid'); }
+    if (!tryExtractAxintentOnchainOpReturn(vout2Script)) {
+      throw new Error('partial_reveal.outputs[2] is not a valid axintent on-chain OP_RETURN(40)');
+    }
+  }
 
   const vin0 = pr.inputs[0];
   if (vin0.txid !== offer.commit_txid || vin0.vout !== 0) {
@@ -10667,7 +10971,15 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
   if (sp?.spent) throw new Error('maker commit output already spent — offer is stale or already settled');
 
   const feeRate = await getFeeRate();
-  const estVb = 200 + inputVbytes + p2wpkhOutVbytes;
+  // Add axintent on-chain OP_RETURN vbytes when the maker included one
+  // (new dapp emits it at fulfilment to close the §5.7.6 recovery exception;
+  // legacy fulfilments omit it, in which case the estimate is unchanged).
+  const partialHasOnchainOpReturn = (offer.partial_reveal?.outputs || []).some(o => {
+    try { return !!tryExtractAxintentOnchainOpReturn(hexToBytes(o.script_hex || '')); }
+    catch { return false; }
+  });
+  const opReturnVbExtra = partialHasOnchainOpReturn ? opReturnAxintentOnchainVbytes : 0;
+  const estVb = 200 + inputVbytes + p2wpkhOutVbytes + opReturnVbExtra;
   const fee = feeFor(estVb, feeRate);
   // Tx-level balance: outputs_total + fee = inputs_total
   // Known inputs from the offer: commit_value + asset_utxo.value
@@ -11238,6 +11550,24 @@ async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim }) {
   const p2trSpk = hexToBytes(intent.p2tr_spk_hex);
   const recipientP2wpkh = concatBytes(new Uint8Array([0x00, 0x14]), hash160(takerPub));
   const makerP2wpkh = p2wpkhScript(wallet.pub);
+
+  // On-chain encrypted (amount, blinding) for the taker. Embedded as a
+  // 0-sat OP_RETURN at vout[2] so the taker can recover the receipt from
+  // chain + privkey alone — closes the §5.7.6 recovery-model exception.
+  // The maker's SIGHASH_SINGLE_ACP sigs on vin[0]/vin[1] bind only to
+  // vout[0]/vout[1] respectively; vout[2] is outside their binding and
+  // becomes bound by the taker's SIGHASH_ALL sig at broadcast time. A
+  // taker who mutates the OP_RETURN destroys their own recovery — they
+  // can't decrypt the ciphertext they themselves chose, so the only
+  // rational behavior is to broadcast the maker-provided bytes as-is.
+  const intentIdBytes = hexToBytes(intentIdHex);
+  const assetIdBytesF = hexToBytes(assetIdHex);
+  const onchainKs = deriveAxintentOnchainKeystreams(wallet.priv, takerPub, intentIdBytes, assetIdBytesF, 0);
+  const amtBig = BigInt(intent.amount);
+  const rBytes = hexToBytes(rHex);
+  const onchainCipher = encodeAxintentOnchainPayload(amtBig, rBytes, onchainKs);
+  const onchainOpReturnScript = encodeAxintentOnchainOpReturn(onchainCipher);
+
   const partialTx = {
     version: 2, locktime: 0,
     inputs: [
@@ -11247,6 +11577,7 @@ async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim }) {
     outputs: [
       { value: DUST, script: recipientP2wpkh },
       { value: intent.price_sats, script: makerP2wpkh },
+      { value: 0, script: onchainOpReturnScript },
     ],
   };
   const prevouts = [
@@ -11271,12 +11602,11 @@ async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim }) {
   const fMsg = _axintentFulfilMsg(hexToBytes(assetIdHex), hexToBytes(intentIdHex), takerPub, partialJson);
   const fSig = signSchnorr(fMsg, wallet.priv);
 
-  // Encrypt `r` to the claimant via ECDH. Worker stores the ciphertext
-  // opaquely; only the claimant (with the matching priv) can decrypt.
-  const intentIdBytes = hexToBytes(intentIdHex);
-  const assetIdBytesF = hexToBytes(assetIdHex);
+  // Worker ciphertext path: kept for old takers that don't read the OP_RETURN.
+  // Symmetric with the on-chain encryption above (both derived from the same
+  // ECDH shared secret), so new takers may use either. Eventually deprecable.
   const keystream = deriveAxintentBlindingKeystream(wallet.priv, takerPub, intentIdBytes, assetIdBytesF);
-  const encRecipBlinding = xor32(hexToBytes(rHex), keystream);
+  const encRecipBlinding = xor32(rBytes, keystream);
 
   const resp = await fetch(withNet(ATOMIC_INTENT_FULFILMENT_URL(assetIdHex, intentIdHex)), {
     method: 'POST',
@@ -17894,15 +18224,45 @@ function renderWalletCard(patch = {}) {
   renderPasskeyPanel();
 }
 
+// Backoff schedule for auto-retry of the wallet bar refresh after a chain-API
+// failure. Short on the first retry so a one-shot blip recovers fast without
+// the user noticing; widens out so a sustained outage stops thrashing.
+const _WALLET_RETRY_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 60_000];
+let _walletRetryAttempt = 0;
+let _walletRetryTimer = null;
+function _scheduleWalletRetry() {
+  if (_walletRetryTimer) return;
+  const idx = Math.min(_walletRetryAttempt, _WALLET_RETRY_BACKOFF_MS.length - 1);
+  const ms = _WALLET_RETRY_BACKOFF_MS[idx];
+  _walletRetryAttempt++;
+  _walletRetryTimer = setTimeout(() => {
+    _walletRetryTimer = null;
+    refreshWallet();
+  }, ms);
+}
+function _cancelWalletRetry() {
+  if (_walletRetryTimer) { clearTimeout(_walletRetryTimer); _walletRetryTimer = null; }
+  _walletRetryAttempt = 0;
+}
+
 async function refreshWallet() {
   $('#w-address').textContent = wallet.address();
   $('#w-pubkey').textContent = wallet.pubHex();
   $('#explorer-link').href = `${NET.explorer}/address/${wallet.address()}`;
-  setStatus('#wallet-status', 'syncing', true);
-  // Render with conservative defaults immediately so badges and connect/faucet
-  // visibility update the instant a refresh starts; the network result below
-  // re-renders with the actual balance.
-  renderWalletCard({ balance: null, faucetReady: false });
+  // First-load only: render with conservative defaults so badges + connect/
+  // faucet visibility evaluate against a known state. On subsequent refreshes
+  // we KEEP the last-known balance/faucet-ready state visible — a transient
+  // 429 should not wipe the balance card to "—" and pop the faucet button
+  // back open for half a second. The success branch overwrites with fresh
+  // values; the catch branch leaves the prior render intact.
+  const isFirstLoad = _walletCardState.balance == null;
+  if (isFirstLoad) {
+    setStatus('#wallet-status', 'syncing', true);
+    renderWalletCard({ balance: null, faucetReady: false });
+  } else {
+    // Mid-session refresh: pill animates but the card doesn't blank.
+    setStatus('#wallet-status', 'refreshing', true);
+  }
   try {
     const [utxos, height, rate, faucetReady] = await Promise.all([
       getUtxos(wallet.address()),
@@ -17915,12 +18275,94 @@ async function refreshWallet() {
     setIfChanged('#w-height', height);
     setStatus('#wallet-status', `synced · ${rate} sat/vB`);
     renderWalletCard({ balance, faucetReady });
+    _cancelWalletRetry();
   } catch (e) {
-    setStatus('#wallet-status', 'offline: ' + e.message);
+    const msg = String(e?.message || e);
+    const isRateLimited = /rate limited|429/i.test(msg);
+    // Soften the pill: a transient blip with a working last-known state
+    // shouldn't look like "everything is broken". When we already have a
+    // good balance shown, surface a discreet "stale" indicator and silently
+    // auto-retry; only show the loud "offline: …" pill on first-load
+    // failures (where there's no good state to fall back to).
+    if (isFirstLoad) {
+      setStatus('#wallet-status', isRateLimited ? 'rate limited · retrying' : 'offline: ' + msg);
+    } else {
+      setStatus('#wallet-status', isRateLimited ? 'stale · rate limited' : 'stale · retrying');
+    }
+    _scheduleWalletRetry();
   }
 }
+// Wire up the "Advanced: chain indexer" panel — input + Test/Save + Clear.
+// Test hits /blocks/tip/height on the candidate URL and expects an integer
+// body. Saving without testing is intentionally not offered: a broken URL
+// would silently sit at the head of the rotation, costing one round-trip
+// per call before the cooldown kicks in. The validate-before-save loop is
+// short enough to be worth the friction.
+function setupCustomApiPanel() {
+  const input = document.getElementById('custom-api-url');
+  const testBtn = document.getElementById('btn-custom-api-test');
+  const clearBtn = document.getElementById('btn-custom-api-clear');
+  const status = document.getElementById('custom-api-status');
+  if (!input || !testBtn || !clearBtn || !status) return;
+
+  const refresh = () => {
+    const cur = getCustomApiBase();
+    input.value = cur || '';
+    status.textContent = cur
+      ? `Active for ${NET.name}: ${cur}`
+      : `Using defaults: mempool.space → blockstream.info (rotating fallback)`;
+  };
+  refresh();
+
+  testBtn.onclick = async () => {
+    const raw = input.value.trim().replace(/\/+$/, '');
+    if (!raw) { status.textContent = 'Enter an Esplora URL first.'; return; }
+    let url;
+    try { url = new URL(raw); } catch {
+      status.textContent = '✗ Not a valid URL.';
+      return;
+    }
+    if (url.protocol !== 'https:' && url.hostname !== 'localhost' && !url.hostname.endsWith('.local')) {
+      status.textContent = '✗ Use https:// (or localhost / *.local for self-hosted).';
+      return;
+    }
+    testBtn.disabled = true;
+    const origLabel = testBtn.textContent;
+    testBtn.textContent = 'testing…';
+    status.textContent = 'Probing /blocks/tip/height …';
+    try {
+      const r = await fetch(raw + '/blocks/tip/height');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const t = (await r.text()).trim();
+      const h = parseInt(t, 10);
+      if (!Number.isFinite(h) || h <= 0) throw new Error('response is not a block height');
+      setCustomApiBase(NET.name, raw);
+      status.textContent = `✓ Saved — tip at block ${h}. Active for ${NET.name}.`;
+      toast('Custom indexer saved', 'success', 2000);
+      refreshWallet();
+    } catch (e) {
+      status.textContent = `✗ Test failed: ${e?.message || e}. Not saved.`;
+    } finally {
+      testBtn.disabled = false;
+      testBtn.textContent = origLabel;
+    }
+  };
+
+  clearBtn.onclick = () => {
+    if (!getCustomApiBase()) {
+      status.textContent = 'Nothing to clear — already using defaults.';
+      return;
+    }
+    setCustomApiBase(NET.name, null);
+    refresh();
+    toast(`Custom indexer cleared for ${NET.name}`, 'success', 2000);
+    refreshWallet();
+  };
+}
+
 function setupWalletButtons() {
   $('#btn-refresh').onclick = refreshWallet;
+  setupCustomApiPanel();
   // Soft lock: zero the priv from JS module memory without reloading. The
   // previous handler called location.reload() — correct for security but
   // hostile to UX (loses scroll position, open dialogs, in-flight requests).
@@ -19118,19 +19560,29 @@ function unitPriceSats(priceSats, amountBaseUnits, decimals) {
   let amt;
   try { amt = BigInt(amountBaseUnits); } catch { return null; }
   if (amt <= 0n) return null;
-  const PRECISION = 4n;                 // sub-sat precision for fractional unit prices
+  // PRECISION=8 (was 4) so micro-priced tokens — e.g. 1 sat per 100k whole
+  // tokens at 8 decimals → 0.00001 sats/whole — don't truncate to 0 in
+  // floor / price-ladder displays. Realistic floors stay representable.
+  const PRECISION = 8n;
   const num = BigInt(Math.floor(p)) * (10n ** BigInt(decimals)) * (10n ** PRECISION);
-  const fixed = num / amt;              // sats * 10^4 per whole token, truncated
-  return Number(fixed) / 10_000;
+  const fixed = num / amt;              // sats * 10^8 per whole token, truncated
+  return Number(fixed) / 1e8;
 }
 // Display helper for a unit price computed by unitPriceSats. Strips trailing
-// zeros, keeps thousands separators for whole-sat values, falls back to a
-// short fractional form for sub-1-sat prices.
+// zeros, keeps thousands separators for whole-sat values, falls through to
+// 8-digit fractional for sub-1-sat prices, and finally to scientific
+// notation for sub-pico-sat prices so the display never collapses to "0".
 function fmtUnitPriceSats(sats) {
   if (sats == null) return '';
   if (sats >= 1) return sats.toLocaleString('en-US', { maximumFractionDigits: 4 });
-  // Sub-1-sat prices: render up to 4 decimals without trailing zeros.
-  return sats.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  if (sats > 0) {
+    // Sub-1-sat: render up to 8 decimals without trailing zeros. 0.001
+    // renders as "0.001"; 0.00000123 renders as "0.00000123" instead of
+    // rounding to 0 like the prior 4-digit cap did.
+    const s = sats.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+    return s || sats.toExponential(2);
+  }
+  return '0';
 }
 // Relative time string for a unix timestamp ("3m", "5h", "2d"). Returns ''
 // when ts is missing/zero so callers can drop the line entirely.
@@ -26670,8 +27122,33 @@ async function renderHoldings() {
       // /address/X/utxo returned 0 entries despite the wallet holding
       // value). A treasury wallet seeing "no assets yet" between refreshes
       // is alarming; that empty state should only show when the wallet
-      // has *never* had assets in this browser session.
-      const hadAssetsBefore = _holdingsEverSeenAssets;
+      // has *never* had assets here.
+      //
+      // Three independent signals, any one of which means "show the retry
+      // banner, not the fresh-wallet copy":
+      //   1. Session-scoped sticky: scanHoldings already returned non-empty
+      //      in this page session.
+      //   2. Persisted sticky: a prior page-session for this (network, pubkey)
+      //      saw non-empty results. Survives reload — closes the gap on
+      //      heavy-wallet first-page-load.
+      //   3. On-chain activity: chain_stats.tx_count is non-trivial. A
+      //      heavy address with thousands of txs but zero unspent is much
+      //      more likely a paginated /txs/chain walk hiccup than a fresh
+      //      wallet. One small API call (fires only on the empty branch).
+      const sessionHadAssets = _holdingsEverSeenAssets;
+      const persistedHadAssets = _loadHoldingsSeenFlag();
+      let chainHasActivity = false;
+      if (!sessionHadAssets && !persistedHadAssets) {
+        try {
+          const info = await apiJson(`/address/${wallet.address()}`);
+          const txCount = (info?.chain_stats?.tx_count || 0) + (info?.mempool_stats?.tx_count || 0);
+          // Threshold of 4 keeps the false-positive rate near zero — a fresh
+          // wallet with a single faucet drip has 1-2 txs; treasuries that
+          // would alarm the user have hundreds-to-thousands.
+          chainHasActivity = txCount >= 4;
+        } catch { /* indexer down — fall through to "actually empty" copy */ }
+      }
+      const hadAssetsBefore = sessionHadAssets || persistedHadAssets || chainHasActivity;
       if (hadAssetsBefore) {
         list.innerHTML = `
           <div class="empty" style="padding:24px;text-align:center;">
@@ -26700,9 +27177,13 @@ async function renderHoldings() {
       setTabBadge('holdings', 0);
       return;
     }
-    // Stamp the "ever seen assets" flag so a subsequent zero-result scan
-    // can distinguish hiccup from genuine empty.
+    // Stamp the "ever seen assets" flag (session + persisted) so a
+    // subsequent zero-result scan can distinguish hiccup from genuine
+    // empty. Persistence is keyed by (network, owner_pubkey) so a
+    // fresh page load on the same wallet identity inherits the flag,
+    // closing the heavy-wallet-first-load false-empty gap.
     _holdingsEverSeenAssets = true;
+    _saveHoldingsSeenFlag();
     list.innerHTML = '';
     const ownerPubHex = bytesToHex(wallet.pub);
     // Render helpers — used by the initial skeleton AND by the per-asset
@@ -31301,12 +31782,21 @@ function renderMarketBrowse(rows) {
     if (l.kind === 'opening')      g.openings++;
     else if (l.kind === 'range')   g.ranges++;
     else if (l.kind === 'intent')  g.intents++;
-    g.total = g.openings + g.ranges + g.intents;
+    else if (l.kind === 'preauth') g.preauths = (g.preauths || 0) + 1;
+    g.total = g.openings + g.ranges + g.intents + (g.preauths || 0);
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-    const amt = l.kind === 'range' ? l.threshold : l.amount;
-    const u = unitPriceSats(Number(l.price_sats || 0), BigInt(amt || 0), dec);
+    // Preauth listings live in a different shape (asset_opening.amount +
+    // min_price_sats) than opening/intent (amount + price_sats) or range
+    // (threshold + price_sats). Walking the same union means we have to
+    // map per-kind — previously the browse grid silently skipped preauth
+    // from both the floor calc (price_sats is undefined → 0) and the tile
+    // total. Markets with only preauth listings showed "0 offers · no floor".
+    const amt = l.kind === 'range' ? l.threshold
+              : l.kind === 'preauth' ? (l.asset_opening?.amount)
+              : l.amount;
+    const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+    const u = unitPriceSats(ps, BigInt(amt || 0), dec);
     if (u != null && (g.floorUnit == null || u < g.floorUnit)) g.floorUnit = u;
-    const ps = Number(l.price_sats || 0);
     if (ps > 0 && (g.floorSats == null || ps < g.floorSats)) g.floorSats = ps;
   }
   const tiles = Array.from(groups.values()).sort((x, y) =>
@@ -31345,7 +31835,8 @@ function renderMarketBrowse(rows) {
         ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
         : verifiedBadgeHTML(a);
     const kindBits = [];
-    if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic intents (trustless)">⚡ ${g.intents}</span>`);
+    if (g.preauths) kindBits.push(`<span style="color:#0a8f43;font-weight:bold;" title="instant listings (trustless, seller offline)">⚡ ${g.preauths} instant</span>`);
+    if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic offers (trustless, claim-and-take)">⚡ ${g.intents} atomic</span>`);
     if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
     if (g.ranges) kindBits.push(`<span title="range listings (trust-required OTC)">${g.ranges} range</span>`);
     const floorLine = g.floorUnit != null
@@ -31353,6 +31844,21 @@ function renderMarketBrowse(rows) {
       : (g.floorSats != null
           ? `<strong style="color:#0a8f43;">from ${g.floorSats.toLocaleString()} sats</strong>`
           : '');
+    // 24h Δ% chip — worker stamps `price_24h_change_pct` on the asset
+    // summary when the trades ring has data points spanning the window.
+    // Green for positive, red for negative, hidden when no data. Tooltip
+    // explains the reference (vs trade as of 24h ago, or first known
+    // trade for very young markets).
+    const delta = Number.isFinite(a.price_24h_change_pct) ? Number(a.price_24h_change_pct) : null;
+    const deltaChip = delta == null ? '' : (() => {
+      const sign = delta >= 0 ? '+' : '';
+      const color = delta >= 0 ? '#0a7d3a' : '#b8341d';
+      return `<span style="display:inline-block;font-size:10px;padding:1px 5px;background:${color};color:#fff;border-radius:2px;margin-left:6px;" title="24h price change vs trade as of 24h ago (or first known trade if the ring doesn't span 24h yet)">${sign}${delta.toFixed(2)}%</span>`;
+    })();
+    // Sparkline — compact unit-price line over the last 10 trades the
+    // worker shipped on this tile. Renders inline below the offer count,
+    // single SVG element so it can be laid out flush with the floor row.
+    const sparkSvg = _renderTileSparklineSVG(a.price_summary);
     const tile = document.createElement('div');
     tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);cursor:pointer;display:flex;flex-direction:column;gap:6px;';
     tile.dataset.assetTile = safeAid;
@@ -31364,7 +31870,7 @@ function renderMarketBrowse(rows) {
           : assetImageFallback(safeAid, a.ticker, 36)}
         <div style="min-width:0;flex:1;">
           <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">
-            <strong style="font-size:15px;">${escapeHtml(a.ticker || '?')}</strong>${collisionBadge}
+            <strong style="font-size:15px;">${escapeHtml(a.ticker || '?')}</strong>${collisionBadge}${deltaChip}
           </div>
           <div style="font-size:10px;color:${assetIdColorForAsset(a)};font-family:var(--mono);">${escapeHtml(shorten(safeAid, 10))}</div>
         </div>
@@ -31372,6 +31878,7 @@ function renderMarketBrowse(rows) {
       <div style="font-size:14px;"><strong>${g.total}</strong> <span class="muted" style="font-size:11px;">offer${g.total === 1 ? '' : 's'}</span></div>
       ${kindBits.length ? `<div style="font-size:11px;display:flex;gap:10px;flex-wrap:wrap;">${kindBits.join('<span class="muted">·</span>')}</div>` : ''}
       ${floorLine ? `<div style="font-size:12px;">${floorLine}</div>` : ''}
+      ${sparkSvg}
     `;
     frag.appendChild(tile);
   }
@@ -31503,14 +32010,132 @@ function renderMarketAssetStatsHTML(asset) {
   return `
     <div data-market-asset-stats data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
       <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
+        <div><span class="muted">last trade</span> <strong data-market-stat-last>—</strong></div>
+        <div><span class="muted">24h Δ</span> <strong data-market-stat-delta>—</strong></div>
+        <div><span class="muted">24h high</span> <strong data-market-stat-high>—</strong></div>
+        <div><span class="muted">24h low</span> <strong data-market-stat-low>—</strong></div>
         <div><span class="muted">24h volume</span> <strong data-market-stat-vol24>—</strong></div>
         <div><span class="muted">total trades</span> <strong data-market-stat-xfers>—</strong></div>
-        <div><span class="muted">last trade</span> <strong data-market-stat-last>—</strong></div>
+        <div data-market-stat-spread-wrap style="display:none;"><span class="muted">spread</span> <strong data-market-stat-spread>—</strong></div>
       </div>
+      <div data-market-price-chart style="margin-top:10px;font-size:11px;display:none;"></div>
+      <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;"></div>
       <div data-market-recent-trades style="margin-top:10px;font-size:11px;">
         <div class="muted" style="font-size:11px;"><span class="live-dots">loading recent trades</span></div>
       </div>
     </div>`;
+}
+
+// Compact sparkline for browse-grid tiles. Takes the worker-stamped
+// price_summary array (up to 10 pre-computed {ts, u} tuples per asset),
+// renders a 200×28 SVG line + last-vs-first reference dots. Empty string
+// when insufficient data — caller appends unconditionally.
+function _renderTileSparklineSVG(summary) {
+  if (!Array.isArray(summary) || summary.length < 2) return '';
+  // Summary is newest-first; sort for left-to-right time progression.
+  const pts = summary.filter(p => Number.isFinite(p?.u) && Number.isFinite(p?.ts) && p.ts > 0)
+                     .slice()
+                     .sort((a, b) => a.ts - b.ts);
+  if (pts.length < 2) return '';
+  let minU = Infinity, maxU = -Infinity;
+  for (const p of pts) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
+  if (minU === maxU) { minU = Math.max(0, minU * 0.95); maxU = maxU * 1.05 || 1; }
+  const ts0 = pts[0].ts, tsN = pts[pts.length - 1].ts;
+  const tsSpan = Math.max(1, tsN - ts0);
+  const W = 200, H = 28;
+  const PT = 2, PB = 2;
+  const plotH = H - PT - PB;
+  const xOf = ts => (ts - ts0) / tsSpan * W;
+  const yOf = u => PT + (1 - (u - minU) / (maxU - minU)) * plotH;
+  const trendUp = pts[pts.length - 1].u >= pts[0].u;
+  const color = trendUp ? '#0a8f43' : '#b8341d';
+  const poly = pts.map(p => `${xOf(p.ts).toFixed(1)},${yOf(p.u).toFixed(1)}`).join(' ');
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:28px;display:block;margin-top:2px;" aria-label="recent price trend"><polyline points="${poly}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+}
+
+// SVG price chart over the recent-trades ring. Pure dapp-side: takes the
+// `trades` array the worker returns on /assets/:id, computes unit prices,
+// renders a line + dots with hover tooltips. No deps. The chart upgrades
+// to a "more data than we render" view once the worker's ring grows past
+// the 50-trade cap (future), but today caps at whatever the worker sent.
+function renderMarketPriceChartSVG(trades, ticker, decimals) {
+  // Need at least 2 points to draw a line. 1-trade markets fall back to
+  // the recent-trades table — no chart.
+  if (!Array.isArray(trades) || trades.length < 2) return '';
+  // Sort oldest → newest for left-to-right time progression. Worker stores
+  // newest-first; we sliced to .slice(0, 10) in the table, but the chart
+  // uses the FULL ring for max data density.
+  const points = trades.map(t => {
+    const price = Number(t.price_sats) || 0;
+    const amtBig = (() => { try { return BigInt(t.amount || '0'); } catch { return 0n; } })();
+    const u = amtBig > 0n ? unitPriceSats(price, amtBig, decimals) : null;
+    const ts = Number(t.ts) || 0;
+    return (u != null && ts > 0) ? { u, ts, txid: String(t.txid || ''), price } : null;
+  }).filter(Boolean).sort((a, b) => a.ts - b.ts);
+  if (points.length < 2) return '';
+  // Range computation. Use unit prices for Y; min and max bound the chart
+  // with a 5% headroom so dots don't sit on the edges. Fall back to a
+  // 0..max range when min == max (flat price line — uncommon).
+  const ts0 = points[0].ts;
+  const tsN = points[points.length - 1].ts;
+  const tsSpan = Math.max(1, tsN - ts0);
+  let minU = Infinity, maxU = -Infinity;
+  for (const p of points) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
+  if (minU === maxU) { minU = Math.max(0, minU * 0.95); maxU = maxU * 1.05 || 1; }
+  const pad = (maxU - minU) * 0.08;
+  const yLo = Math.max(0, minU - pad);
+  const yHi = maxU + pad;
+  const ySpan = Math.max(yHi - yLo, 1e-12);
+  // viewBox-relative coords. Logical 600×140 canvas; CSS sizes the SVG to
+  // 100% width so it reflows on mobile without layout math.
+  const W = 600, H = 140;
+  const PL = 8, PR = 8, PT = 8, PB = 18;  // padding for axis label area
+  const plotW = W - PL - PR;
+  const plotH = H - PT - PB;
+  const xOf = ts => PL + ((ts - ts0) / tsSpan) * plotW;
+  const yOf = u  => PT + (1 - (u - yLo) / ySpan) * plotH;
+  const polyline = points.map(p => `${xOf(p.ts).toFixed(2)},${yOf(p.u).toFixed(2)}`).join(' ');
+  // Area under the line (faint fill) reads as a price-history shape even
+  // when the line itself is thin on a busy chart.
+  const areaPath =
+    `M ${xOf(points[0].ts).toFixed(2)} ${(PT + plotH).toFixed(2)} ` +
+    `L ${points.map(p => `${xOf(p.ts).toFixed(2)} ${yOf(p.u).toFixed(2)}`).join(' L ')} ` +
+    `L ${xOf(points[points.length - 1].ts).toFixed(2)} ${(PT + plotH).toFixed(2)} Z`;
+  // Per-point dots with title tooltips (native SVG title — no JS hover wiring
+  // needed). Each tooltip carries unit price + age + total sats so the user
+  // can read the trade history without leaving the chart.
+  const _ageStr = (ts) => {
+    const sec = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
+  };
+  const dots = points.map(p => {
+    const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}`;
+    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="2.5" fill="#0a8f43"><title>${escapeHtml(tip)}</title></circle>`;
+  }).join('');
+  // Y-axis min / max labels at the corners; X-axis oldest/newest age labels
+  // at the bottom corners. Lightweight — full axis ticks would dominate
+  // the chart at this size.
+  const minLbl = fmtUnitPriceSats(yLo);
+  const maxLbl = fmtUnitPriceSats(yHi);
+  const oldLbl = _ageStr(ts0);
+  const newLbl = _ageStr(tsN);
+  return `
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+      <strong>Price history</strong>
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}</span>
+    </div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:140px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
+      <path d="${areaPath}" fill="#0a8f43" fill-opacity="0.08" stroke="none"/>
+      <polyline points="${polyline}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round"/>
+      ${dots}
+      <text x="${PL}" y="${PT - 1}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(maxLbl)}</text>
+      <text x="${PL}" y="${(PT + plotH + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(minLbl)}</text>
+      <text x="${PL}" y="${H - 4}" font-size="9" fill="var(--ink-mid)">${escapeHtml(oldLbl)}</text>
+      <text x="${W - PR}" y="${H - 4}" font-size="9" fill="var(--ink-mid)" text-anchor="end">${escapeHtml(newLbl)}</text>
+    </svg>`;
 }
 
 async function populateMarketAssetStats(scope, asset) {
@@ -31552,11 +32177,73 @@ async function populateMarketAssetStats(scope, asset) {
   setText('[data-market-stat-xfers]', xfers > 0 ? xfers.toLocaleString() : '—');
   setText('[data-market-stat-last]', lastStr, true);
 
-  // Recent-trades table. Each entry: { txid, price_sats, amount, ts }.
-  // Newest first (worker stores in that order). Cap display at 10 rows so
-  // the section stays compact; full ring buffer (up to 50) is available
-  // for callers that fetch the asset endpoint directly.
+  // Recent-trades ring (newest-first). Powers chart, 24h delta + high/low.
   const trades = Array.isArray(j.trades) ? j.trades : [];
+
+  // 24h derived metrics: Δ%, high, low. Each trade's unit price computed
+  // once; cached in tradePoints so chart + stats share the math.
+  const _nowSec = Math.floor(Date.now() / 1000);
+  const _24hAgo = _nowSec - 86400;
+  const tradePoints = trades.map(t => {
+    const price = Number(t.price_sats) || 0;
+    const ts = Number(t.ts) || 0;
+    let amtBig = 0n; try { amtBig = BigInt(t.amount || '0'); } catch {}
+    if (amtBig <= 0n || price <= 0 || ts <= 0) return null;
+    const u = unitPriceSats(price, amtBig, decimals);
+    return u != null ? { u, ts, price } : null;
+  }).filter(Boolean);
+  // trades is newest-first → tradePoints inherits that. Index 0 is latest.
+  const latestUnit = tradePoints.length ? tradePoints[0].u : null;
+  const last24h = tradePoints.filter(p => p.ts >= _24hAgo);
+  let delta24Pct = null, high24 = null, low24 = null;
+  if (last24h.length >= 1) {
+    high24 = last24h[0].u; low24 = last24h[0].u;
+    for (const p of last24h) { if (p.u > high24) high24 = p.u; if (p.u < low24) low24 = p.u; }
+  }
+  if (last24h.length >= 1 && latestUnit != null) {
+    // Reference price for Δ%: the LAST trade that landed before the 24h
+    // window opened (so Δ% reads as "vs 24h ago" rather than "vs the
+    // oldest in-window trade"). Falls back to the oldest in-window trade
+    // when the ring doesn't extend past 24h.
+    const ref = tradePoints.find(p => p.ts < _24hAgo) || last24h[last24h.length - 1];
+    if (ref && ref.u > 0) delta24Pct = ((latestUnit - ref.u) / ref.u) * 100;
+  }
+  const deltaHtml = (delta24Pct == null)
+    ? '—'
+    : (() => {
+        const sign = delta24Pct >= 0 ? '+' : '';
+        const color = delta24Pct >= 0 ? '#0a7d3a' : '#b8341d';
+        return `<span style="color:${color};">${sign}${delta24Pct.toFixed(2)}%</span>`;
+      })();
+  setText('[data-market-stat-delta]', deltaHtml, true);
+  setText('[data-market-stat-high]', high24 != null ? `${fmtUnitPriceSats(high24)} sats/${escapeHtml(ticker)}` : '—', true);
+  setText('[data-market-stat-low]',  low24  != null ? `${fmtUnitPriceSats(low24)} sats/${escapeHtml(ticker)}`  : '—', true);
+
+  // Bid-ask spread. Cheapest ask = floor from _marketCache.listings for
+  // this asset. Highest bid = top of the bid intents (fetched once and
+  // shared with populateMarketBidsLadder via a per-asset cache so we
+  // don't double-RTT).
+  _populateBidAskSpread(section, aid, decimals, ticker).catch(() => {});
+
+  // Depth chart: stacked area of cumulative bid vs ask volume. Reads asks
+  // from _marketCache.listings (already loaded) and bids from the same
+  // _bidsForSpreadCache that populateBidAskSpread fills, so it triggers
+  // exactly one bid-intents fetch shared across spread + depth + ladder.
+  _populateDepthChart(section, aid, decimals, ticker).catch(() => {});
+  // Price chart: rendered above the trade table when we have ≥2 trades.
+  // Uses the FULL ring (up to 50) for max chart density; the table below
+  // stays capped at 10 rows so the section doesn't get unwieldy.
+  const chartEl = section.querySelector('[data-market-price-chart]');
+  if (chartEl) {
+    const chartHtml = renderMarketPriceChartSVG(trades, ticker, decimals);
+    if (chartHtml) {
+      chartEl.innerHTML = chartHtml;
+      chartEl.style.display = '';
+    } else {
+      chartEl.innerHTML = '';
+      chartEl.style.display = 'none';
+    }
+  }
   const recentEl = section.querySelector('[data-market-recent-trades]');
   if (!recentEl) return;
   if (!trades.length) {
@@ -31612,6 +32299,162 @@ function renderMarketBidsLadderHTML(asset) {
     </div>`;
 }
 
+// Per-asset bid-intent cache so populateMarketBidsLadder + the new
+// spread/depth helpers share one round-trip. TTL aligns with the rest of
+// the market cache (30s). Returns a promise so concurrent calls dedupe.
+const _BIDS_FETCH_TTL_MS = 30 * 1000;
+const _bidsCache = new Map();  // aid → { ts, promise }
+function _fetchBidIntentsCached(aid) {
+  const cached = _bidsCache.get(aid);
+  if (cached && (Date.now() - cached.ts) < _BIDS_FETCH_TTL_MS) return cached.promise;
+  const promise = browseBidIntents(aid).then(raw => {
+    return Array.isArray(raw?.intents) ? raw.intents : [];
+  }).catch(() => []);
+  _bidsCache.set(aid, { ts: Date.now(), promise });
+  return promise;
+}
+function _invalidateBidsCache(aid) {
+  if (aid) _bidsCache.delete(aid); else _bidsCache.clear();
+}
+
+// Bid-ask spread row populator. Cheapest ask comes from the in-memory
+// listings cache (already loaded for this asset). Highest bid comes from
+// the shared bid-intent cache. Hidden when either side is missing.
+async function _populateBidAskSpread(section, aid, decimals, ticker) {
+  const wrap = section.querySelector('[data-market-stat-spread-wrap]');
+  const out = section.querySelector('[data-market-stat-spread]');
+  if (!wrap || !out) return;
+  let cheapestAsk = null;
+  const listings = (_marketCache?.listings || []).filter(l =>
+    l._asset?.asset_id === aid && !l.expired,
+  );
+  for (const l of listings) {
+    const amt = l.kind === 'range' ? l.threshold
+              : l.kind === 'preauth' ? (l.asset_opening?.amount)
+              : l.amount;
+    const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+    const u = unitPriceSats(ps, BigInt(amt || 0), decimals);
+    if (u != null && (cheapestAsk == null || u < cheapestAsk)) cheapestAsk = u;
+  }
+  const intents = await _fetchBidIntentsCached(aid);
+  const nowSec = Math.floor(Date.now() / 1000);
+  let highestBid = null;
+  for (const b of intents) {
+    if (b.axintent_id) continue;
+    if (Number(b.expiry || 0) <= nowSec) continue;
+    const amt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
+    if (amt <= 0n) continue;
+    const u = unitPriceSats(Number(b.price_sats || 0), amt, decimals);
+    if (u != null && (highestBid == null || u > highestBid)) highestBid = u;
+  }
+  if (cheapestAsk == null || highestBid == null) {
+    wrap.style.display = 'none';
+    return;
+  }
+  const absSpread = cheapestAsk - highestBid;
+  const midpoint = (cheapestAsk + highestBid) / 2;
+  const pctSpread = midpoint > 0 ? (absSpread / midpoint) * 100 : null;
+  const isCrossed = absSpread < 0;
+  const color = isCrossed ? '#b8341d' : (pctSpread != null && pctSpread < 1 ? '#0a7d3a' : 'var(--ink)');
+  const txt = isCrossed
+    ? `<span style="color:${color};" title="Crossed book — best bid exceeds best ask. Stale data or a pricing mistake.">crossed ${fmtUnitPriceSats(Math.abs(absSpread))}</span>`
+    : `<span style="color:${color};">${fmtUnitPriceSats(absSpread)} sats${pctSpread != null ? ` · ${pctSpread.toFixed(2)}%` : ''}</span>`;
+  out.innerHTML = txt;
+  wrap.style.display = '';
+}
+
+// Cumulative depth chart. Step-line areas on either side of the spread.
+async function _populateDepthChart(section, aid, decimals, ticker) {
+  const out = section.querySelector('[data-market-depth-chart]');
+  if (!out) return;
+  const _toWholeNumber = (amtBig) => {
+    if (decimals === 0) return Number(amtBig);
+    const div = 10n ** BigInt(decimals);
+    const whole = amtBig / div;
+    const frac = amtBig - whole * div;
+    return Number(whole) + Number(frac) / Number(div);
+  };
+  const asks = [];
+  for (const l of (_marketCache?.listings || [])) {
+    if (l._asset?.asset_id !== aid || l.expired) continue;
+    const amtRaw = l.kind === 'range' ? l.threshold
+                 : l.kind === 'preauth' ? (l.asset_opening?.amount)
+                 : l.amount;
+    const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+    let amtBig = 0n; try { amtBig = BigInt(amtRaw || 0); } catch {}
+    if (amtBig <= 0n || ps <= 0) continue;
+    const u = unitPriceSats(ps, amtBig, decimals);
+    if (u != null) asks.push({ u, size: _toWholeNumber(amtBig) });
+  }
+  const intents = await _fetchBidIntentsCached(aid);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const bids = [];
+  for (const b of intents) {
+    if (b.axintent_id) continue;
+    if (Number(b.expiry || 0) <= nowSec) continue;
+    let amtBig = 0n; try { amtBig = BigInt(b.amount || '0'); } catch {}
+    if (amtBig <= 0n) continue;
+    const u = unitPriceSats(Number(b.price_sats || 0), amtBig, decimals);
+    if (u != null) bids.push({ u, size: _toWholeNumber(amtBig) });
+  }
+  if (!asks.length || !bids.length) { out.style.display = 'none'; return; }
+  asks.sort((a, b) => a.u - b.u);
+  bids.sort((a, b) => b.u - a.u);
+  const askCum = []; let cumA = 0;
+  for (const a of asks) { cumA += a.size; askCum.push({ u: a.u, cum: cumA }); }
+  const bidCum = []; let cumB = 0;
+  for (const b of bids) { cumB += b.size; bidCum.push({ u: b.u, cum: cumB }); }
+  const bestBid = bidCum[0].u;
+  const bestAsk = askCum[0].u;
+  const lowestBid = bidCum[bidCum.length - 1].u;
+  const highestAsk = askCum[askCum.length - 1].u;
+  const xLo = Math.min(lowestBid, bestAsk);
+  const xHi = Math.max(highestAsk, bestBid);
+  if (xHi <= xLo) { out.style.display = 'none'; return; }
+  const yMax = Math.max(cumA, cumB);
+  if (yMax <= 0) { out.style.display = 'none'; return; }
+  const W = 600, H = 140;
+  const PL = 8, PR = 8, PT = 8, PB = 18;
+  const plotW = W - PL - PR;
+  const plotH = H - PT - PB;
+  const xOf = u => PL + ((u - xLo) / (xHi - xLo)) * plotW;
+  const yOf = c => PT + (1 - c / yMax) * plotH;
+  const stepPath = (pts, dir) => {
+    if (!pts.length) return '';
+    const start = dir === 1 ? bestAsk : bestBid;
+    let path = `M ${xOf(start).toFixed(2)} ${(PT + plotH).toFixed(2)}`;
+    let prevY = (PT + plotH);
+    for (const p of pts) {
+      const x = xOf(p.u).toFixed(2);
+      const y = yOf(p.cum).toFixed(2);
+      path += ` L ${x} ${prevY}`;
+      path += ` L ${x} ${y}`;
+      prevY = parseFloat(y);
+    }
+    const edgeX = dir === 1 ? xOf(xHi).toFixed(2) : xOf(xLo).toFixed(2);
+    path += ` L ${edgeX} ${prevY}`;
+    path += ` L ${edgeX} ${(PT + plotH).toFixed(2)} Z`;
+    return path;
+  };
+  const askPath = stepPath(askCum, 1);
+  const bidPath = stepPath(bidCum, -1);
+  const midX = xOf((bestBid + bestAsk) / 2);
+  out.innerHTML = `
+    <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+      <strong>Depth</strong>
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best ${escapeHtml(fmtUnitPriceSats(bestBid))} / ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}</span>
+    </div>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:140px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
+      <path d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1"/>
+      <path d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1"/>
+      <line x1="${midX.toFixed(2)}" y1="${PT}" x2="${midX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2,3"/>
+      <text x="${PL}" y="${H - 4}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
+      <text x="${W - PR}" y="${H - 4}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
+      <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</text>
+    </svg>`;
+  out.style.display = '';
+}
+
 async function populateMarketBidsLadder(scope, asset) {
   const section = scope.querySelector('[data-market-bids-section]');
   if (!section) return;
@@ -31620,15 +32463,13 @@ async function populateMarketBidsLadder(scope, asset) {
   const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
   const list = section.querySelector('[data-market-bids-list]');
   const countEl = section.querySelector('[data-market-bids-count]');
-  let raw;
-  try { raw = await browseBidIntents(aid); }
-  catch (e) {
-    list.innerHTML = `<div class="muted" style="font-size:10px;">load failed: ${escapeHtml(e?.message || String(e))}</div>`;
-    if (countEl) countEl.textContent = '?';
-    _wireMarketBidPlace(section, asset);
-    return;
-  }
-  const intents = Array.isArray(raw?.intents) ? raw.intents : [];
+  // Share the 30s-TTL bid-intent cache with the spread + depth helpers
+  // on the same asset page so we don't issue three identical fetches per
+  // asset render. _fetchBidIntentsCached returns [] on error (no need
+  // for try/catch); we surface a load-failed-style empty state only when
+  // the worker is unreachable, which a separate WORKER_BASE check covers
+  // upstream.
+  const intents = await _fetchBidIntentsCached(aid);
   if (countEl) countEl.textContent = String(intents.length);
   if (!intents.length) {
     list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} — be the first to post one.</div>`;
@@ -31682,6 +32523,7 @@ async function populateMarketBidsLadder(scope, asset) {
       try {
         await fulfilBidIntent({ bid });
         toast('Bid fulfilled — atomic intent published, awaiting bidder Take', 'success');
+        _invalidateBidsCache(aid);
         populateMarketBidsLadder(scope, asset);
       } catch (e) {
         btn.disabled = false; btn.textContent = 'Fulfil';
@@ -31697,6 +32539,7 @@ async function populateMarketBidsLadder(scope, asset) {
       try {
         await cancelBidIntent(aid, btn.dataset.bidId);
         toast('Bid cancelled', 'success');
+        _invalidateBidsCache(aid);
         populateMarketBidsLadder(scope, asset);
       } catch (e) {
         btn.disabled = false; btn.textContent = 'Cancel';
@@ -31849,6 +32692,7 @@ function _wireMarketBidPlace(section, asset) {
         status.textContent = 'bid posted ✓';
         toast(`Bid posted on ${ticker}`, 'success');
         formHost.style.display = 'none'; formHost.dataset.open = ''; formHost.innerHTML = '';
+        _invalidateBidsCache(aid);
         populateMarketBidsLadder(section.parentElement, asset);
       } catch (e) {
         submitBtn.disabled = false;
@@ -34628,6 +35472,11 @@ async function init() {
   setupFaqModal();
   setupCommandPalette();
   setupWalletButtons();
+  // Fire the candidate-mirror CORS probe in the background. Doesn't block
+  // init — the rotation works fine with just the two known-good bases while
+  // the probe runs. If any candidate verifies, _runCandidateProbe triggers
+  // a wallet refresh so a stalled bar picks up the new bases immediately.
+  _runCandidateProbe().catch(() => {});
   setupExtWalletButtons();
   setupPasskeyButtons();
   setupUnisatEvents();
@@ -34958,6 +35807,13 @@ export {
   // Buyer/seller flow exports.
   publishPreauthSale, cancelPreauthSale, takePreauthSale, fetchPreauthSale,
   deriveAxintentBlindingKeystream, xor32,
+  // §5.7.6 on-chain encrypted (amount, blinding) helpers. Exported for parity
+  // tests against the test-side mirror, and for any reference implementation
+  // wanting to interop with dapp-produced OP_RETURN payloads.
+  deriveAxintentOnchainKeystreams,
+  encodeAxintentOnchainPayload, decodeAxintentOnchainPayload,
+  encodeAxintentOnchainOpReturn, tryExtractAxintentOnchainOpReturn,
+  AXINTENT_ONCHAIN_PAYLOAD_BYTES,
   // Drop-announcement signing messages — exported so tests can verify cross-impl parity with the worker.
   dropAnnounceMsgBytes, dropAnnounceCancelMsgBytes, airdropClaimDeleteMsgBytes,
   // Issuer-side signed-DELETE helper. Exported so the auto-fulfil daemon can
