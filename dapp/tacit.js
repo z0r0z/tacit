@@ -33140,7 +33140,17 @@ function renderMarketBrowse(rows) {
   // when the prune resolutions arrive in a burst after first load.
   let grid = document.getElementById('market-browse-grid');
   if (!grid) {
-    list.innerHTML = `<div id="market-browse-grid" class="recent-grid"></div>`;
+    // Differentiator strip — single line, muted, explains what makes
+    // tacit's marketplace different from typical DEXes. Visible on
+    // first land so traders know what they're trading for.
+    const _browseValueStrip = `<div style="margin-bottom:14px;padding:10px 14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);font-size:11px;color:var(--ink-mid);display:flex;align-items:center;gap:14px;flex-wrap:wrap;line-height:1.5;">
+      <span title="Token amounts are Pedersen-committed on chain. Only you and your counterparty know what was transferred — neither the worker, nor anyone watching the chain, can see the value. Math-hidden, not policy-hidden.">🔒 <strong>Confidential</strong> amounts on every trade</span>
+      <span class="muted">·</span>
+      <span title="Tokens ARE Bitcoin UTXOs. No bridges, no wrapped representations, no L2 trust assumption. Settlement is a single Bitcoin transaction; first confirmation is final.">⚡ <strong>Bitcoin-native</strong> settlement (no bridges)</span>
+      <span class="muted">·</span>
+      <span title="The tacit protocol takes no fees on trades. You pay only the underlying Bitcoin tx fee for each fill (~1,000 sats). No 0.3% LP fee, no taker fee, no protocol cut.">💸 <strong>0% protocol fees</strong></span>
+    </div>`;
+    list.innerHTML = _browseValueStrip + `<div id="market-browse-grid" class="recent-grid"></div>`;
     grid = document.getElementById('market-browse-grid');
   } else {
     grid.innerHTML = '';
@@ -33333,6 +33343,14 @@ function renderMarketAssetHeader(assetId, rows) {
       <a href="#" data-act="market-back-browse" title="Back to all assets" style="text-decoration:none;color:var(--ink-mid);padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg);border-radius:2px;cursor:pointer;">← Markets</a>
       <span class="muted">/</span>
       <strong style="color:var(--ink);">${escapeHtml(a.ticker || '?')}</strong>
+      <span style="flex:1;"></span>
+      <span class="muted" style="font-size:10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span title="Token amounts are Pedersen-committed on chain. Only you and your counterparty know what was transferred — neither the worker, nor anyone watching the chain, can see the value. Math-hidden, not policy-hidden.">🔒 confidential</span>
+        <span class="muted">·</span>
+        <span title="Tokens ARE Bitcoin UTXOs. No bridges, no wrapped representations, no L2 trust assumption. Settlement is a single Bitcoin transaction; first confirmation is final.">⚡ Bitcoin-native</span>
+        <span class="muted">·</span>
+        <span title="The tacit protocol takes no fees on trades. You pay only the underlying Bitcoin tx fee for each fill (~1,000 sats). No 0.3% LP fee, no taker fee, no protocol cut.">0% protocol fees</span>
+      </span>
     </div>`;
   // userHoldsAsset is consumed below to decide whether to render the
   // ask-form host element. The "+ List for sale" button itself now
