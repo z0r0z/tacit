@@ -14791,6 +14791,39 @@ function normalizeImageUri(uri) {
 // to sit alongside the site's cream/ink theme without screaming.
 // Same shape API as the previous inline `<div>` so each call-site swaps in
 // a one-liner without touching its flex/sizing context.
+// Async-resolve every [data-asset-logo-slot] element within `scope` and
+// swap its placeholder for the real image. Each slot carries the
+// original ipfs://CID in data-uri; resolveImageUri walks the metadata
+// blob (when it's a JSON content-addressed pin) to find the inner
+// `image` field and returns the gateway URL of the actual bytes.
+// Cache-warm slots get an inline cache read for a synchronous first
+// paint; cold slots stay on assetImageFallback until the network
+// returns. Failures leave the fallback in place — never a broken-image
+// icon. Caller passes a CSS string for the final <img> so each surface
+// can pick its own sizing/border.
+function _resolveAssetLogosIn(scope, imgStyle) {
+  if (!scope) return;
+  scope.querySelectorAll('[data-asset-logo-slot]').forEach(slot => {
+    const uri = slot.dataset.uri;
+    if (!uri) return;
+    const apply = (resolved) => {
+      if (!resolved || !slot.parentNode) return;
+      const img = document.createElement('img');
+      img.loading = 'lazy';
+      img.decoding = 'async';
+      img.src = resolved;
+      img.alt = '';
+      img.style.cssText = imgStyle;
+      img.onerror = () => { /* keep fallback */ };
+      slot.replaceWith(img);
+    };
+    // Synchronous cache hit: do the swap in this tick to avoid the
+    // fallback flashing for one frame on cached entries.
+    const cached = (typeof _resolvedImageCache !== 'undefined') ? _resolvedImageCache.get(uri) : null;
+    if (cached) { apply(cached); return; }
+    resolveImageUri(uri).then(apply).catch(() => { /* keep fallback */ });
+  });
+}
 function assetImageFallback(assetIdHex, ticker, sizePx = 40) {
   const hex = typeof assetIdHex === 'string' ? assetIdHex : '';
   const hue = hex.length >= 6 ? (parseInt(hex.slice(0, 6), 16) % 360) : 280;
@@ -32884,7 +32917,13 @@ function renderMarketBrowse(rows) {
   for (const g of tiles) {
     const a = g.asset;
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
-    const imgUrl = normalizeImageUri(a.image_uri || a.imageUri);
+    // Render with a fallback initial; _resolveAssetLogosIn (called after
+    // append) walks the metadata blob and swaps in the real image. Without
+    // this, image_uris that point to IPFS JSON metadata (not the image
+    // directly — the canonical etcher pattern) render as broken images.
+    const imageUriRaw = a.image_uri || a.imageUri;
+    const cachedResolved = imageUriRaw && typeof _resolvedImageCache !== 'undefined'
+      ? _resolvedImageCache.get(imageUriRaw) : null;
     // Trust badge: green ✓ verified when the asset is the unique or
     // earliest etcher of its ticker AND not a known external copycat;
     // red ⚠ COPY/DUP otherwise. Replaces the orange "earliest" tag in
@@ -32933,11 +32972,15 @@ function renderMarketBrowse(rows) {
     tile.style.cssText = 'border:1px solid var(--ink);padding:12px;background:var(--bg-warm);cursor:pointer;display:flex;flex-direction:column;gap:6px;';
     tile.dataset.assetTile = safeAid;
     tile.title = `View ${escapeHtml(a.ticker || '?')} listings`;
+    const _logoStyle = 'width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;';
+    const logoHtml = cachedResolved
+      ? `<img loading="lazy" decoding="async" src="${escapeHtml(cachedResolved)}" alt="" style="${_logoStyle}">`
+      : (imageUriRaw
+          ? `<span data-asset-logo-slot data-uri="${escapeHtml(imageUriRaw)}" style="display:inline-block;flex-shrink:0;">${assetImageFallback(safeAid, a.ticker, 36)}</span>`
+          : assetImageFallback(safeAid, a.ticker, 36));
     tile.innerHTML = `
       <div style="display:flex;align-items:center;gap:10px;">
-        ${imgUrl
-          ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
-          : assetImageFallback(safeAid, a.ticker, 36)}
+        ${logoHtml}
         <div style="min-width:0;flex:1;">
           <div style="display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;">
             <strong style="font-size:15px;">${escapeHtml(a.ticker || '?')}</strong>${collisionBadge}${deltaChip}
@@ -32953,6 +32996,10 @@ function renderMarketBrowse(rows) {
     frag.appendChild(tile);
   }
   grid.appendChild(frag);
+  // Async-resolve any IPFS-metadata-blob image_uris into actual images.
+  // The placeholder fallback stays visible until each resolve lands, so
+  // the tiles never flash an empty/broken image.
+  _resolveAssetLogosIn(grid, 'width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;');
   grid.querySelectorAll('[data-asset-tile]').forEach(el => {
     el.onclick = () => {
       const aid = el.dataset.assetTile;
@@ -33051,11 +33098,21 @@ function renderMarketAssetHeader(assetId, rows) {
   const askFormHostHtml = userHoldsAsset
     ? `<div data-market-ask-form data-aid="${escapeHtml(safeAid)}" style="display:none;margin-bottom:14px;"></div>`
     : '';
+  // Async-resolve the asset logo via the metadata blob (most etcher
+  // image_uris point to IPFS JSON metadata, not the image directly).
+  // bindMarketAssetHeader runs _resolveAssetLogosIn after this HTML mounts.
+  const _hdrImgUriRaw = a.image_uri || a.imageUri;
+  const _hdrCached = _hdrImgUriRaw && typeof _resolvedImageCache !== 'undefined'
+    ? _resolvedImageCache.get(_hdrImgUriRaw) : null;
+  const _hdrLogoStyle = 'width:44px;height:44px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;';
+  const _hdrLogoHtml = _hdrCached
+    ? `<img loading="lazy" decoding="async" src="${escapeHtml(_hdrCached)}" alt="" style="${_hdrLogoStyle}">`
+    : (_hdrImgUriRaw
+        ? `<span data-asset-logo-slot data-uri="${escapeHtml(_hdrImgUriRaw)}" style="display:inline-block;flex-shrink:0;">${assetImageFallback(safeAid, a.ticker, 44)}</span>`
+        : assetImageFallback(safeAid, a.ticker, 44));
   return breadcrumb + `
     <div data-market-asset-header style="border:1px solid var(--ink);padding:12px;background:var(--bg-warm);margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
-      ${imgUrl
-        ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="" style="width:44px;height:44px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
-        : assetImageFallback(safeAid, a.ticker, 44)}
+      ${_hdrLogoHtml}
       <div style="min-width:0;flex:1;">
         <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
           <strong style="font-size:18px;">${escapeHtml(_displayName || a.ticker || '?')}</strong>
@@ -35055,6 +35112,11 @@ function bindMarketAssetHeader(scope) {
   scope.querySelectorAll('[data-act="market-back-browse"]').forEach(el => {
     el.onclick = (ev) => { ev.preventDefault(); goToMarketBrowse(); };
   });
+  // Resolve any IPFS-metadata image_uris embedded in the header into
+  // real images. Without this, etcher-pinned JSON blobs render as
+  // broken images (the URI points at the metadata, not the image
+  // inside). Style mirrors the placeholder size in the header HTML.
+  _resolveAssetLogosIn(scope, 'width:44px;height:44px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;');
   const copyEl = scope.querySelector('[data-market-asset-header] span[data-act="copy-aid"]');
   if (copyEl) copyEl.onclick = async () => {
     try { await navigator.clipboard.writeText(copyEl.dataset.aid); toast('Asset ID copied', 'success'); }
