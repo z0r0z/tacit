@@ -19005,7 +19005,12 @@ function _ensureImgCacheHydrated() {
     const raw = localStorage.getItem(IMG_PERSIST_KEY);
     if (!raw) return;
     const parsed = JSON.parse(raw);
-    if (!parsed || parsed.v !== 1 || !parsed.entries) return;
+    // v=1 cache entries pre-date the tacit_attest extraction in
+    // resolveImageUri; their `extra` blocks have only name/description/
+    // external_url, so reading them back would silently lose the supply
+    // attestation that IPFS metadata carries. v=2 forces a one-time
+    // re-fetch on first load after this update.
+    if (!parsed || parsed.v !== 2 || !parsed.entries) return;
     _imgCachePersisted = parsed.entries;
     for (const [uri, entry] of Object.entries(_imgCachePersisted)) {
       _resolvedImageCache.set(uri, entry.resolved);
@@ -19023,7 +19028,7 @@ function _writeImgCacheNow() {
     const drop = keys.length - IMG_PERSIST_MAX;
     for (let i = 0; i < drop; i++) delete _imgCachePersisted[keys[i]];
   }
-  try { localStorage.setItem(IMG_PERSIST_KEY, JSON.stringify({ v: 1, entries: _imgCachePersisted })); }
+  try { localStorage.setItem(IMG_PERSIST_KEY, JSON.stringify({ v: 2, entries: _imgCachePersisted })); }
   catch { /* quota exceeded → skip; in-memory still works */ }
 }
 function _scheduleImgCacheFlush() {
