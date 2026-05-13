@@ -32429,10 +32429,13 @@ function applyMarketFilters() {
   const modeChip = _marketSimpleMode
     ? `<button data-act="market-simple-toggle" type="button" title="Simple mode hides atomic intents and OTC offers. Click to show all offers — including ⚡ atomic (3-step trustless flow) and ⚠ OTC (counterparty trust required)." style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` (+${hiddenByMode} hidden)` : ''}</button>`
     : `<button data-act="market-simple-toggle" type="button" title="Show only one-click trustless instant listings (what the swap tile routes through). Hides atomic intents and OTC offers." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
-  const _listChip = userHoldsAsset
+  // Computed inline (the asset header function has its own copy with the
+  // same name; scopes don't share — this one is local to applyMarketFilters).
+  const _userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId));
+  const _listChip = _userHoldsAsset
     ? `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(_marketView.assetId)}" title="You hold this asset — list one of your UTXOs for sale via an instant listing (signed once at listing time, buyer completes settlement)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink);color:var(--ink);cursor:pointer;">+ List</button>`
     : '';
-  const _askFormSlot = userHoldsAsset
+  const _askFormSlot = _userHoldsAsset
     ? `<div data-market-ask-form data-aid="${escapeHtml(_marketView.assetId)}" style="display:none;margin-bottom:10px;"></div>`
     : '';
   const asksHeaderHtml = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
