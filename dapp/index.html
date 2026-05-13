@@ -62,7 +62,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=4517106d">
+<link rel="modulepreload" href="./tacit.js?cb=8946f5d1">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -74,6 +74,8 @@
   --ink-mid: #555;
   --ink-faint: #999;
   --orange: #f7931a;
+  --market-usd: var(--orange);
+  --market-sats: var(--ink);
   --green: #2e7d32;
   --red: #c62828;
   --purple: #6a1b9a;
@@ -287,26 +289,59 @@ select:not(.net-select):focus { outline: 2px solid var(--orange); outline-offset
 }
 .market-chips-row {
   display: flex; flex-wrap: wrap;
-  gap: 6px; align-items: center;
+  gap: 8px; align-items: center;
 }
-.market-chip-wrap { position: relative; }
+.market-chip-wrap {
+  position: relative;
+  display: inline-flex;
+}
 .market-chip,
 .market-chips-row select.market-chip {
   font-size: 11px;
-  padding: 6px 26px 6px 10px;
-  height: auto;
-  background: var(--bg);
+  padding: 0 38px 0 14px;
+  min-height: 34px;
+  background-color: var(--bg-warm);
   color: var(--ink);
   border: 1px solid var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
   cursor: pointer;
   width: auto;
   min-width: 0;
-  letter-spacing: 0.02em;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  transition: background 0.08s, color 0.08s, box-shadow 0.08s, transform 0.08s;
+}
+#market-filter-kind {
+  min-width: 210px;
+}
+#market-sort {
+  min-width: 170px;
 }
 .market-chips-row select.market-chip {
-  /* Override the default 28px right-padding chevron positions so the
-     chevron centers inside the chip's tighter right-padding (26px). */
-  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+  /* Override the default select chevron positions so the arrow sits centered
+     inside the tighter Market toolbar controls. */
+  background-position: calc(100% - 22px) 50%, calc(100% - 17px) 50%;
+}
+.market-chips-row select.market-chip option {
+  background: var(--bg);
+  color: var(--ink);
+  font-weight: 400;
+}
+.market-chip:hover:not(:disabled),
+.market-chips-row select.market-chip:hover:not(:disabled),
+.market-chip:focus,
+.market-chips-row select.market-chip:focus {
+  background-color: var(--ink);
+  color: var(--bg);
+  outline: none;
+  box-shadow: 2px 2px 0 var(--orange);
+}
+.market-chip:active,
+.market-chips-row select.market-chip:active,
+.market-icon-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--ink);
 }
 button.market-chip {
   display: inline-flex; align-items: center; gap: 6px;
@@ -326,15 +361,23 @@ button.market-chip .chip-caret {
   opacity: 0.7;
 }
 .market-icon-btn {
-  font-size: 12px;
-  padding: 6px 10px;
+  width: 36px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 13px;
+  padding: 0;
   border: 1px solid var(--ink);
-  background: var(--bg);
+  background: var(--orange);
   color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
   cursor: pointer;
+  font-weight: 800;
+  line-height: 1;
 }
 .market-icon-btn:hover:not(:disabled) {
   background: var(--ink); color: var(--bg);
+  box-shadow: 2px 2px 0 var(--orange);
 }
 .market-popover {
   position: absolute;
@@ -372,6 +415,943 @@ button.market-chip .chip-caret {
 }
 .market-popover .pop-actions button {
   font-size: 10px; padding: 5px 10px;
+}
+
+/* Market refresh: denser orderbook-style cards while keeping tacit's
+   newspaper UI language. These classes are presentation-only; all listing
+   verification, signing, and broadcast code remains in tacit.js. */
+.market-asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+}
+.market-asset-tile,
+.market-listing-tile {
+  border: 1px solid var(--ink);
+  background: var(--bg-warm);
+  padding: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+.market-asset-tile {
+  min-height: 230px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.market-asset-tile:hover,
+.market-listing-tile:hover {
+  box-shadow: 4px 4px 0 var(--ink);
+}
+.market-asset-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.market-asset-head strong {
+  font-size: 15px;
+}
+.market-asset-id {
+  font-size: 10px;
+  color: var(--ink-mid);
+  font-family: var(--mono);
+}
+.market-verified-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  background: #0a8f43;
+  color: #fff;
+  border: 1px solid #0a7d3a;
+  font-family: Arial, sans-serif;
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 900;
+}
+.market-instant-line {
+  display: inline-flex;
+  width: fit-content;
+  padding: 2px 8px;
+  border: 1px solid #0a8f43;
+  color: #0a7d3a;
+  background: rgba(10,143,67,0.08);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.market-instant-line.empty {
+  border-color: var(--ink-faint);
+  color: var(--ink-mid);
+  background: transparent;
+}
+.market-card-stats {
+  margin: 0;
+  display: grid;
+  gap: 0;
+}
+.market-card-stats > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 0;
+  border-top: 1px dashed var(--ink-faint);
+}
+.market-card-stats dt {
+  margin: 0;
+  font-size: 10px;
+  color: var(--ink-mid);
+}
+.market-card-stats dd {
+  margin: 0;
+  font-weight: 700;
+  text-align: right;
+}
+.market-card-foot {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px dashed var(--ink-faint);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink-mid);
+  font-size: 10px;
+}
+.market-token-table-wrap {
+  border: 1px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  background: var(--bg);
+  overflow-x: auto;
+}
+.market-token-table {
+  width: 100%;
+  min-width: 960px;
+  border-collapse: collapse;
+}
+.market-token-table th,
+.market-token-table td {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--ink);
+  text-align: left;
+  vertical-align: middle;
+}
+.market-token-table th {
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.market-token-table th:nth-child(6),
+.market-token-table td:nth-child(6) {
+  display: none;
+}
+.market-token-table tr:last-child td { border-bottom: 0; }
+.market-token-table tbody tr {
+  cursor: pointer;
+  transition: background 0.08s;
+}
+.market-token-table tbody tr:hover { background: var(--bg-warm); }
+.market-token-cell {
+  min-width: 250px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.market-token-icon {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+  object-fit: cover;
+  background: #fff;
+  flex: 0 0 auto;
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #fff;
+  font-weight: 800;
+}
+.market-token-icon img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.market-token-icon span {
+  position: relative;
+  z-index: 0;
+}
+.market-token-icon--large {
+  width: 64px;
+  height: 64px;
+}
+.market-token-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 800;
+}
+.market-token-sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-mid);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.market-table-value {
+  display: block;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.market-table-sub {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-mid);
+  font-size: 11px;
+}
+.market-usd-price {
+  color: var(--market-usd);
+  font-weight: 800;
+}
+.market-btc-price {
+  color: var(--ink);
+  font-weight: 900;
+}
+.market-sats-price {
+  color: var(--ink);
+  font-weight: 900;
+}
+.market-table-sub.market-usd-price {
+  margin-top: 5px;
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
+.market-listing-pill {
+  min-width: 34px;
+  display: inline-grid;
+  place-items: center;
+  padding: 4px 9px;
+  border: 1px solid var(--ink);
+  background: var(--bg-warm);
+  font-weight: 800;
+}
+.market-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0 2px;
+  font-size: 11px;
+  color: var(--ink-mid);
+}
+.market-pagination--top {
+  padding: 0 0 12px;
+}
+.market-pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.market-pagination select {
+  min-width: 110px;
+  min-height: 32px;
+}
+.market-pagination button {
+  min-width: 34px;
+  min-height: 32px;
+  padding: 0 10px;
+}
+.market-token-page {
+  display: block;
+}
+.market-token-main { min-width: 0; }
+.market-asset-tabbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 12px 0 14px;
+  border-bottom: 1px solid var(--ink);
+}
+.market-asset-tabs {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  margin: 0;
+}
+.market-asset-tab {
+  appearance: none;
+  min-height: 34px;
+  padding: 0 0 8px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--ink-mid);
+  box-shadow: none;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.market-asset-tab:hover:not(:disabled) {
+  background: transparent;
+  color: var(--ink);
+}
+.market-asset-tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--orange);
+}
+.market-asset-tab-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-bottom: 7px;
+}
+.market-asset-tab-actions button {
+  min-width: 132px;
+  min-height: 32px;
+  padding: 7px 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  background: var(--orange);
+  border-color: var(--orange);
+  color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.market-asset-tab-actions button:disabled,
+.market-asset-tab-actions button:disabled:hover {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: var(--orange);
+  border-color: var(--orange);
+  color: var(--ink);
+}
+.market-asset-pane { display: none; }
+.market-asset-pane.active { display: block; }
+.market-bids-panel {
+  border: 1px solid var(--ink);
+  background: var(--bg);
+  padding: 12px;
+  margin-bottom: 14px;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+.market-bids-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--ink);
+}
+.market-bids-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.market-bids-title span {
+  color: var(--ink-mid);
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.market-bids-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.market-bids-actions button {
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+}
+.market-bids-actions button:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--bg);
+}
+.market-bids-list {
+  margin-top: 12px;
+  overflow-x: auto;
+}
+.market-bids-table {
+  min-width: 860px;
+  border: 1px solid var(--ink);
+  background: var(--bg-warm);
+}
+.market-bids-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(110px, 0.9fr) minmax(150px, 1fr) minmax(120px, 0.9fr) minmax(90px, 0.7fr) minmax(100px, 0.7fr);
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ink-faint);
+}
+.market-bids-row:last-child { border-bottom: 0; }
+.market-bids-row-head {
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--ink);
+}
+.market-bids-row--mine { background: rgba(247,147,26,0.08); }
+.market-bids-row--claimed { background: rgba(10,143,67,0.06); }
+.market-bids-row--expired { opacity: 0.62; }
+.market-bid-price strong,
+.market-bid-cell strong {
+  display: block;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.market-bid-price strong { color: var(--orange); }
+.market-bid-price small,
+.market-bid-cell small {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-mid);
+  font-size: 10px;
+}
+.market-bid-price small.market-usd-price,
+.market-bid-cell small .market-usd-price {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 900;
+}
+.market-bids-panel .market-sats-price {
+  color: var(--orange);
+  font-weight: 900;
+}
+.market-bid-action {
+  display: flex;
+  justify-content: flex-end;
+}
+.market-bid-fulfil,
+.market-bid-cancel {
+  min-width: 86px;
+  min-height: 30px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.market-bid-fulfil {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.market-bid-cancel {
+  background: transparent;
+  border-color: var(--red);
+  color: var(--red);
+}
+.market-bid-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid var(--ink-faint);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.market-bid-state--pending {
+  color: var(--green);
+  border-color: var(--green);
+}
+.market-bid-state--expired,
+.market-bid-expired {
+  color: var(--red);
+}
+.market-activity-rail {
+  border-left: 1px solid var(--ink);
+  padding-left: 16px;
+}
+.market-activity-panel {
+  width: 100%;
+}
+.market-activity-panel .market-activity-rail-head {
+  margin-bottom: 10px;
+}
+.market-activity-panel .market-activity-events {
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+  mask-image: none;
+}
+.market-activity-toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--ink);
+  background: var(--bg-warm);
+}
+.market-activity-toolbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: 12px;
+}
+.market-activity-toolbar select {
+  min-width: 150px;
+}
+.market-activity-count {
+  color: var(--ink-mid);
+  font-size: 11px;
+}
+.market-activity-pager {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.market-activity-pager select {
+  min-width: 96px;
+  min-height: 30px;
+}
+.market-activity-pager button {
+  min-width: 32px;
+  min-height: 30px;
+  padding: 0 9px;
+}
+.market-activity-table-wrap {
+  border: 1px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  overflow-x: auto;
+  background: var(--bg);
+}
+.market-activity-table {
+  width: 100%;
+  min-width: 1050px;
+  border-collapse: collapse;
+}
+.market-activity-table th,
+.market-activity-table td {
+  padding: 15px 16px;
+  border-bottom: 1px solid var(--ink-faint);
+  text-align: left;
+  vertical-align: middle;
+}
+.market-activity-table th {
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.market-activity-table tr:last-child td { border-bottom: 0; }
+.market-activity-table .event-listed { color: var(--red); font-weight: 800; }
+.market-activity-table .event-sale { color: #075f24; font-weight: 800; }
+.market-activity-table .event-cancel { color: var(--red); font-weight: 700; }
+.market-activity-table .activity-track {
+  display: inline-block;
+  margin-top: 4px;
+  text-decoration: underline;
+  color: var(--ink);
+}
+.market-activity-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.market-activity-rail h3 {
+  margin: 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 28px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.market-activity-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 14px 0 6px;
+}
+.market-activity-filters button {
+  min-height: 32px;
+  padding: 0 10px;
+  background: transparent;
+}
+.market-activity-filters button.active {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.market-activity-events {
+  max-height: clamp(360px, calc(100vh - 340px), 620px);
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-width: thin;
+  mask-image: linear-gradient(to bottom, transparent 0, #000 18px, #000 calc(100% - 18px), transparent 100%);
+}
+.market-activity-event {
+  display: grid;
+  gap: 6px;
+  padding: 14px 0 14px 10px;
+  border-left: 3px solid var(--green);
+  border-bottom: 1px solid var(--ink);
+}
+.market-activity-event.sale { border-left-color: var(--orange); }
+.market-activity-event.cancel { border-left-color: var(--red); }
+.market-activity-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.market-activity-line strong { color: var(--green); }
+.market-activity-event.sale .market-activity-line strong { color: var(--orange); }
+.market-activity-event.cancel .market-activity-line strong { color: var(--red); }
+.market-activity-event small {
+  color: var(--ink-mid);
+  word-break: break-all;
+}
+.market-asset-detail {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(520px, 1.35fr);
+  gap: 22px;
+  align-items: stretch;
+  margin-bottom: 16px;
+}
+.market-asset-detail > div:last-child {
+  display: flex;
+  flex-direction: column;
+}
+.market-asset-title {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.market-asset-title h2 {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 400;
+}
+.market-asset-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(145px, 1fr));
+  border: 1px solid var(--ink);
+  box-shadow: 4px 4px 0 var(--ink);
+  background: var(--bg-warm);
+}
+.market-asset-stats > div {
+  padding: 14px 16px;
+  border-right: 1px solid var(--ink-faint);
+}
+.market-asset-stats > div:last-child { border-right: 0; }
+.market-asset-stats span {
+  display: block;
+  color: var(--ink-mid);
+  font-size: 10px;
+  margin-bottom: 5px;
+}
+.market-asset-stats strong {
+  display: block;
+  font-size: 14px;
+  white-space: nowrap;
+}
+.market-asset-stats small {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-mid);
+  font-size: 10px;
+}
+.market-asset-stats small.market-usd-price {
+  color: var(--orange);
+  font-size: 12px;
+  font-weight: 900;
+}
+.market-asset-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 18px;
+  justify-content: flex-end;
+}
+.market-asset-actions button {
+  min-width: 132px;
+  font-size: 11px;
+  padding: 8px 12px;
+  text-transform: uppercase;
+}
+.market-asset-actions button:nth-child(2) {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: var(--ink);
+  box-shadow: 2px 2px 0 var(--ink);
+}
+.market-asset-actions button:nth-child(2):disabled,
+.market-asset-actions button:nth-child(2):disabled:hover {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: var(--ink);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.market-asset-actions .primary {
+  background: var(--orange);
+  border-color: var(--orange);
+  color: var(--ink);
+}
+.market-listing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+.market-listing-tile {
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+  cursor: default;
+  min-width: 0;
+}
+.market-listing-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  min-width: 0;
+}
+.market-mode-badge {
+  display: inline-flex;
+  padding: 2px 8px;
+  border: 1px solid var(--green);
+  color: var(--green);
+  background: rgba(10,143,67,0.08);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+.market-mode-badge.intent { border-color: var(--purple); color: var(--purple); background: rgba(125,79,247,0.08); }
+.market-mode-badge.opening,
+.market-mode-badge.range { border-color: #a04030; color: #a04030; background: #fff8eb; }
+.market-listing-amount {
+  margin-top: 18px;
+  text-align: center;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+}
+.market-listing-unit {
+  margin-top: 16px;
+  text-align: center;
+  color: var(--orange);
+}
+.market-listing-unit strong {
+  font-size: 20px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.market-listing-unit small {
+  display: block;
+  margin-top: 6px;
+  color: var(--ink-mid);
+  font-size: 11px;
+}
+.market-listing-unit small.market-usd-price {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 900;
+}
+.market-listing-id {
+  margin-top: 8px;
+  color: var(--ink-mid);
+  font-size: 10px;
+  text-align: center;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+.market-listing-total {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--ink);
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+  font-size: 12px;
+  min-width: 0;
+}
+.market-listing-total span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.market-listing-total span:last-child {
+  text-align: right;
+}
+.market-listing-total .market-usd-price {
+  color: var(--ink);
+  font-weight: 900;
+}
+.market-listing-actions {
+  margin-top: 12px;
+  display: flex;
+  gap: 6px;
+}
+.market-listing-actions button {
+  flex: 1;
+}
+.market-buy-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(0,0,0,0.42);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+.market-buy-card {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--ink);
+  box-shadow: 5px 5px 0 var(--ink);
+  padding: 20px;
+}
+.market-buy-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.market-buy-head h3 {
+  margin: 6px 0 0 0;
+  font-family: var(--serif);
+  font-size: 34px;
+  font-weight: 400;
+  line-height: 1;
+}
+.market-buy-kind {
+  display: inline-flex;
+  padding: 2px 7px;
+  border: 1px solid var(--purple);
+  color: var(--purple);
+  background: transparent;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.market-buy-close {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  flex: 0 0 auto;
+}
+.market-buy-row {
+  border: 1px solid var(--ink-faint);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  background: var(--bg-warm);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+.market-buy-row.total {
+  border-color: var(--green);
+  background: rgba(10,143,67,0.08);
+}
+.market-buy-label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.market-buy-sub {
+  margin-top: 4px;
+  color: var(--ink-mid);
+  font-size: 11px;
+}
+.market-buy-value {
+  text-align: right;
+  font-weight: 700;
+  font-size: 20px;
+}
+.market-buy-value.market-usd-price {
+  color: var(--ink);
+  font-weight: 900;
+}
+.market-buy-card .market-btc-price,
+.market-buy-card .market-sats-price {
+  color: var(--orange);
+  font-weight: 900;
+}
+.market-buy-row.total .market-buy-value {
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 900;
+}
+.market-activity-panel .market-usd-price,
+.market-activity-table .market-usd-price,
+.market-activity-event .market-usd-price {
+  color: var(--ink);
+  font-weight: 900;
+}
+.market-activity-panel .market-sats-price,
+.market-activity-table .market-sats-price,
+.market-activity-event .market-sats-price,
+.market-activity-panel .market-btc-price,
+.market-activity-table .market-btc-price,
+.market-activity-event .market-btc-price {
+  color: var(--orange);
+  font-weight: 900;
+}
+.market-buy-note {
+  margin: 14px 0 16px;
+  padding: 12px 14px;
+  border-left: 4px solid var(--orange);
+  background: var(--bg-warm);
+  line-height: 1.45;
+}
+.market-buy-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+@media (max-width: 900px) {
+  .market-asset-detail { grid-template-columns: 1fr; }
+  .market-asset-stats { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .market-token-page { grid-template-columns: 1fr; }
+  .market-activity-rail { border-left: 0; padding-left: 0; border-top: 1px solid var(--ink); padding-top: 16px; }
+}
+@media (max-width: 520px) {
+  .market-asset-grid,
+  .market-listing-grid { grid-template-columns: 1fr; }
+  .market-asset-stats { grid-template-columns: 1fr; }
+  .market-asset-stats > div { border-right: 0; border-bottom: 1px solid var(--ink-faint); }
+  .market-asset-stats > div:last-child { border-bottom: 0; }
 }
 @media (max-width: 600px) {
   .market-chips-row { gap: 5px; }
@@ -1362,7 +2342,7 @@ footer > span { min-width: 0; }
   #market-filter-kind,
   #market-sort,
   #discover-sort {
-    flex: 1 1 140px;
+    flex: 1 1 180px;
   }
 }
 
@@ -3060,16 +4040,18 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <details style="margin-bottom:14px;">
         <summary style="cursor:pointer;font-size:11px;color:var(--ink-mid);padding:4px 0;">
           <span class="det-arrow" style="display:inline-block;transition:transform 0.1s;margin-right:4px;">▸</span><span style="text-transform:uppercase;letter-spacing:0.08em;">how it works</span>
-          <span style="margin-left:8px;font-style:italic;">trustless atomic vs trust-required OTC</span>
+          <span style="margin-left:8px;font-style:italic;">instant listings, bids, atomic settlement</span>
         </summary>
         <div class="muted" style="margin-top:8px;font-size:12px;line-height:1.55;">
-          Every tile trades confidential tokens for sats. Two trust models:
+          This market indexes Tacit offers from the official worker and lets buyers settle tokens for BTC without a custodian. A listed UTXO reveals only that offer's amount/opening; the seller's other holdings stay private.
           <ul style="margin:8px 0 6px 18px;padding:0;">
-            <li style="margin-bottom:4px;"><strong>⚡ Atomic</strong> — settles in one Bitcoin tx. No counterparty trust. <span style="font-size:11px;">Buy: <strong>Claim</strong> → maker <strong>Fulfil</strong>s → <strong>Take</strong>.</span></li>
-            <li><strong>OTC</strong> — settles off-chain: pay the maker's BTC address, they broadcast the asset to your pubkey. Counterparty trust required. <span style="font-size:11px;">Buy: <strong>Take</strong> → pay → wait.</span></li>
+            <li style="margin-bottom:4px;"><strong>Instant Listings</strong> are the default path: the seller signs once, can go offline, and the buyer completes BTC payment + token transfer atomically with <strong>Buy</strong>. No claim window and no seller fulfil step.</li>
+            <li style="margin-bottom:4px;"><strong>Atomic Intent</strong> is the manual trustless path: buyer <strong>Claim</strong>s, seller <strong>Fulfil</strong>s, buyer <strong>Take</strong>s. It is still atomic, but the seller must come back online during the claim window.</li>
+            <li style="margin-bottom:4px;"><strong>OTC / range listings</strong> are advanced and trust-required: the buyer pays the maker's BTC address first, then waits for the maker to transfer the asset. Use only when you accept counterparty risk.</li>
+            <li><strong>Bids</strong> are signed buy offers. They do not lock sats upfront; a token holder can fulfil a bid into an atomic settlement, then the bidder has to take it.</li>
           </ul>
-          <div style="margin-top:6px;font-size:11px;"><strong>Bids</strong> are signed price intents (no sats locked); a holder can fulfil one into an atomic settlement.</div>
-          <div style="margin-top:4px;font-size:11px;"><strong>Verify</strong> runs all crypto + liveness checks without buying. <strong>Cancel</strong> pulls your own listings.</div>
+          <div style="margin-top:6px;font-size:11px;"><strong>Prices</strong> use the current floor when offers exist; if there is no floor, the UI can fall back to the last trade for market stats. Volume comes from worker aggregates when available, otherwise the latest indexed trade is used as a minimum fallback.</div>
+          <div style="margin-top:4px;font-size:11px;"><strong>Verify</strong> checks signatures, ownership, commitments, proofs, and UTXO liveness without buying. <strong>Cancel</strong> removes your own listing from the worker; for a hard cancel of a signed offer, spend the listed asset UTXO back to yourself.</div>
         </div>
       </details>
       <div class="market-controls">
@@ -3080,41 +4062,19 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div class="market-chips-row">
           <div class="market-chip-wrap">
             <select id="market-filter-kind" class="market-chip" aria-label="Trade type filter">
-              <option value="trustless" selected title="Atomic settlement — token transfer and BTC payment close in one Bitcoin tx. No counterparty trust required. Covers both instant and atomic-offer listings.">⚡ Trustless</option>
-              <option value="preauth" title="Instant listing — seller signed once at listing, any buyer completes alone. No seller-online step required.">⚡ Instant</option>
-              <option value="intent" title="Atomic offer — buyer claims, seller fulfils, atomic settlement. Both legs settle in one Bitcoin tx or neither does.">⚡ Atomic offer</option>
-              <option value="all">All listings (incl. OTC)</option>
-              <option value="opening" title="OTC · per-UTXO opening — maker publishes a specific UTXO's amount + blinding + price. Settlement is off-chain; counterparty trust required.">OTC · per-UTXO</option>
-              <option value="range" title="OTC · hidden balance — maker proves balance ≥ K via zero-knowledge bulletproof, exact amount hidden. Settlement is off-chain; counterparty trust required.">OTC · hidden balance</option>
+              <option value="preauth" selected title="Instant listing: seller signs once, buyer can complete alone.">⚡ Instant Listings</option>
+              <option value="trustless" title="Trustless atomic settlement listings.">⚡ All Trustless</option>
+              <option value="intent" title="Manual atomic flow: claim, fulfil, take.">⚡ Atomic Only</option>
+              <option value="all">All Listings</option>
             </select>
           </div>
           <div class="market-chip-wrap">
-            <button id="market-price-chip" class="market-chip" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="market-price-popover" title="Filter by sat price range">
-              <span id="market-price-chip-label">any price</span>
-              <span class="chip-caret" aria-hidden="true">▾</span>
-            </button>
-            <div id="market-price-popover" class="market-popover" role="dialog" aria-label="Price range filter" hidden>
-              <div class="pop-row">
-                <label>Min sats
-                  <input id="market-filter-min-price" type="number" min="0" step="1" placeholder="0">
-                </label>
-                <label>Max sats
-                  <input id="market-filter-max-price" type="number" min="0" step="1" placeholder="∞">
-                </label>
-              </div>
-              <div class="pop-actions">
-                <button id="market-price-clear" type="button">clear</button>
-                <button id="market-price-done" type="button" class="primary" style="margin-left:auto;">done</button>
-              </div>
-            </div>
-          </div>
-          <div class="market-chip-wrap">
             <select id="market-sort" class="market-chip" aria-label="Sort order">
-              <option value="recency">newest first</option>
-              <option value="price-asc">price ↑</option>
-              <option value="price-desc">price ↓</option>
-              <option value="unit-asc" title="Cheapest sats per whole token, normalized across listing sizes">unit price ↑</option>
-              <option value="unit-desc" title="Most expensive sats per whole token, normalized across listing sizes">unit price ↓</option>
+              <option value="volume-desc" selected>Most Volume</option>
+              <option value="marketcap-desc">Top Market Cap</option>
+              <option value="oldest-etch">Oldest Etch</option>
+              <option value="unit-asc" title="Cheapest sats per whole token, normalized across listing sizes">Cheapest First</option>
+              <option value="recency">Newest Listing</option>
             </select>
           </div>
           <button id="btn-market-refresh" class="market-icon-btn" type="button" title="Refresh listings" aria-label="Refresh">↻</button>
@@ -3952,6 +4912,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=4517106d"></script>
+<script type="module" src="./tacit.js?cb=8946f5d1"></script>
 </body>
 </html>
