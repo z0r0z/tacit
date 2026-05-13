@@ -2145,6 +2145,22 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div id="chain-divergence-banner" style="display:none;background:#fff8eb;border:2px solid #a04030;color:#a04030;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
 
 <!--
+  OTC claim arrival banner. Visible across every tab when the maker has
+  at least one OTC listing with an unfulfilled buyer claim. Auto-shown by
+  the claim poller (_pollMakerListings); auto-hidden when the maker is
+  already on Holdings (the tile renders the claim row there, banner is
+  redundant) or when all claims clear. Clicking "Open Holdings" jumps to
+  the relevant tab + scrolls to the asset card so the maker can verify
+  payment and Deliver without searching.
+-->
+<div id="otc-claim-banner" style="display:none;background:#fff8e8;border:2px solid var(--orange);color:#a04030;padding:10px 16px;font-size:12px;margin-bottom:16px;line-height:1.5;">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:space-between;">
+    <div><strong>🎯 <span id="otc-claim-banner-count">1</span> active OTC claim<span id="otc-claim-banner-plural"></span></strong> — a buyer reserved a listing and is paying you. Verify payment then Deliver via Send Privately.</div>
+    <button id="otc-claim-banner-go" type="button" style="font-size:11px;padding:5px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;">Open Holdings →</button>
+  </div>
+</div>
+
+<!--
   zFi-community TAC airdrop banner. Mainnet-only, dismissible via × (sticky
   per browser via tacit-zfi-airdrop-banner-dismissed-v1), hidden once the
   Claim tab is active (redundant once the user is there). Click anywhere on

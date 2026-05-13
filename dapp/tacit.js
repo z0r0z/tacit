@@ -14207,8 +14207,43 @@ async function _pollMakerListings() {
     }
   }
   _lastSeenClaimStates = current;
+  // Banner reflects the current poll regardless of seed status — a maker
+  // who loads the page with a pre-existing unfulfilled claim should see
+  // the banner immediately, not wait for the next claim arrival.
+  _renderOtcClaimBanner();
   if (!_claimPollerSeeded) { _claimPollerSeeded = true; return; }  // first tick seeds, never notifies
   for (const evt of newClaims) _onMakerClaimArrival(evt);
+}
+
+// Active-claim count derived from the poller's current snapshot. Anything
+// with a non-empty taker_pubkey is an outstanding obligation the maker
+// owes a delivery on. Used to drive the cross-tab banner visibility.
+function _activeClaimCount() {
+  let n = 0;
+  for (const taker of _lastSeenClaimStates.values()) {
+    if (taker) n++;
+  }
+  return n;
+}
+
+// Shown when there's >=1 unfulfilled claim AND the maker is NOT currently
+// on the Holdings tab (where the claim tile already surfaces the same
+// info). Re-evaluated on every poll tick and on tab switch so the banner
+// stays in sync without per-tab duplication.
+function _renderOtcClaimBanner() {
+  const banner = document.getElementById('otc-claim-banner');
+  if (!banner) return;
+  const n = _activeClaimCount();
+  const onHoldings = !!document.querySelector('.tab.active[data-tab="holdings"]');
+  if (n === 0 || onHoldings) {
+    banner.style.display = 'none';
+    return;
+  }
+  const countEl = document.getElementById('otc-claim-banner-count');
+  const pluralEl = document.getElementById('otc-claim-banner-plural');
+  if (countEl) countEl.textContent = String(n);
+  if (pluralEl) pluralEl.textContent = n === 1 ? '' : 's';
+  banner.style.display = '';
 }
 function _onMakerClaimArrival({ kind, aid, listing, claim, ticker }) {
   const price = Number(listing.price_sats) || 0;
@@ -17535,8 +17570,23 @@ function setupTabs() {
       if (tab.dataset.tab === 'market') renderMarket();
       if (tab.dataset.tab === 'mixer') { renderMixer(); startMixerAutoRefresh(); }
       else stopMixerAutoRefresh();
+      // Re-evaluate the cross-tab OTC claim banner: when the user lands on
+      // Holdings, the per-asset claim row is now visible so the banner is
+      // redundant and we hide it; when they leave Holdings, restore it.
+      try { _renderOtcClaimBanner(); } catch {}
     };
   });
+  // Wire the banner's "Open Holdings" CTA once at setup. Click → simulate
+  // a Holdings tab click so the existing handler runs all its side effects
+  // (renderHoldings + renderOffers + renderActivity + auto-hide of this
+  // banner via the call above).
+  const otcGoBtn = document.getElementById('otc-claim-banner-go');
+  if (otcGoBtn) {
+    otcGoBtn.onclick = () => {
+      const holdingsTab = document.querySelector('.tab[data-tab="holdings"]');
+      if (holdingsTab) holdingsTab.click();
+    };
+  }
   // If discover is already the active tab on load (deep-link or restored
   // session), kick the polling on without waiting for a tab click.
   if (document.querySelector('.tab.active[data-tab="discover"]')) startPetchAutoRefresh();
