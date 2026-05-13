@@ -11660,7 +11660,7 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
     assetId: assetIdHex,
     txid: commitTxidHex,
   });
-  return { intent_id: intentIdHex, asset_id: assetIdHex };
+  return { intent_id: intentIdHex, asset_id: assetIdHex, commit_txid: commitTxidHex };
 }
 
 // Verbatim re-POST of a captured intent body. Used both by the happy-path
@@ -12605,6 +12605,11 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
         utxo: { txid: splitResult.revealTxid, vout: r0.vout },
         amount: wantAmt,
         blinding: r0.blinding,
+        // Carry the split tx's reveal_txid through so the caller (e.g.,
+        // sweep sell) can mark its inputs as recently-spent. Without this
+        // the next fulfilment in a sweep would re-pick UTXOs the split
+        // already consumed.
+        _splitTxid: splitResult.revealTxid,
       };
     }
   }
@@ -12639,7 +12644,12 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
   });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `claim POST returned ${resp.status}`);
-  return { offer, claim: j.claim };
+  // Surface commit_txid + (optional) split tx so multi-fill flows like
+  // Sweep Sell can mark their just-spent UTXOs via _markTxInputsSpent
+  // and avoid double-picking inputs across back-to-back bid fulfilments.
+  // splitTxid is only set when fulfilBidIntent had to auto-split a UTXO
+  // first (no exact-amount match in holdings); other callers can ignore.
+  return { offer, claim: j.claim, commit_txid: offer.commit_txid, split_txid: sellerUtxo._splitTxid || null };
 }
 
 // ============== MINT BUILDER ==============
@@ -33151,10 +33161,12 @@ function renderMarketBidsLadderHTML(asset) {
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button data-act="market-sweep-buy" data-aid="${aid}" type="button" title="Buy a target amount immediately by sweeping the asks ladder. Walks cheapest-first under your price cap; each fill is one Bitcoin tx. Trustless (preauth Instant listings only)." style="font-size:11px;padding:4px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;">⚡ Sweep buy</button>
+          <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell into the bids ladder by sweeping highest-priced bids first. Each fill publishes an atomic intent — settlement awaits each bidder's Take (typically 1-30 min). Trustless." style="font-size:11px;padding:4px 10px;background:#b8341d;border:1px solid #9b2a16;color:#fff;font-weight:600;">⚡ Sweep sell</button>
           <button data-act="market-bid-place" data-aid="${aid}" type="button" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);">+ Place a bid on ${ticker}</button>
         </div>
       </div>
       <div data-market-sweep-form style="display:none;margin-top:10px;"></div>
+      <div data-market-sweep-sell-form style="display:none;margin-top:10px;"></div>
       <div data-market-bid-form style="display:none;margin-top:10px;"></div>
       <div data-market-bids-list style="margin-top:10px;font-size:11px;">
         <div class="muted" style="font-size:11px;"><span class="live-dots">loading bids</span></div>
@@ -33435,6 +33447,7 @@ async function populateMarketBidsLadder(scope, asset) {
   });
   _wireMarketBidPlace(section, asset);
   _wireMarketSweepBuy(section, asset);
+  _wireMarketSweepSell(section, asset);
 }
 
 // Sweep buy: limit-buy a target amount by walking the asks ladder
@@ -33660,6 +33673,242 @@ function _wireMarketSweepBuy(section, asset) {
         invalidateHoldingsCache();
         cBtn.disabled = false; cBtn.textContent = 'Done';
         // Re-render after a short delay so the user sees the final state.
+        setTimeout(() => renderMarket(), 1500);
+      };
+    };
+  };
+}
+
+// Sweep sell: limit-sell a target amount by walking the bids ladder
+// highest-price-first above a user-set price floor. Each fill calls
+// fulfilBidIntent, which:
+//   1) Auto-splits the seller's asset UTXO to match the bid amount (1 tx
+//      via CXFER) IF no exact-amount UTXO exists in holdings, then
+//   2) Publishes an atomic intent (commit tx + worker POST) targeting
+//      the bidder, then
+//   3) POSTs the bid claim linking the bid to the new axintent.
+// SETTLEMENT IS GATED on the bidder coming back online to click Take.
+// This is fundamentally asymmetric with sweep-buy (preauth take is one
+// fully-settling Bitcoin tx). UX explicitly calls this out so the
+// seller knows what they're triggering: N commit txs broadcast, sats
+// locked at P2TR commit outputs until each bidder Takes or the intent
+// expires (then funds recoverable). Sequential broadcast with 1.5s
+// settle delay between fills; commit + split tx inputs marked
+// recently-spent so the next fill sees a clean UTXO list.
+function _wireMarketSweepSell(section, asset) {
+  const aid = section.dataset.aid;
+  const ticker = asset.ticker || '?';
+  const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  const btn = section.querySelector('[data-act="market-sweep-sell"]');
+  const formHost = section.querySelector('[data-market-sweep-sell-form]');
+  if (!btn || !formHost) return;
+  // Hide the button entirely if the wallet doesn't hold the asset — a
+  // user with zero balance has nothing to sweep-sell with.
+  const userHolds = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(aid) && _holdingsCache.holdings.get(aid).balance > 0n);
+  if (!userHolds) { btn.style.display = 'none'; return; }
+  btn.onclick = () => {
+    if (formHost.dataset.open === '1') {
+      formHost.dataset.open = ''; formHost.style.display = 'none'; formHost.innerHTML = '';
+      return;
+    }
+    formHost.dataset.open = '1'; formHost.style.display = 'block';
+    const _btcUsd = _cachedBtcUsd();
+    // Reference prices: floor (best ask) and last trade. The natural
+    // reference for a sell price floor is "what's the market actually
+    // paying right now" — most useful is last_trade. Best bid would
+    // also help; readable from the same _bidCachePeek as sweep-buy.
+    const _lastTrade = asset.last_trade && Number.isInteger(asset.last_trade.price_sats) && Number(asset.last_trade.price_sats) > 0 ? asset.last_trade : null;
+    let _lastUnit = null;
+    if (_lastTrade) { try { _lastUnit = unitPriceSats(Number(_lastTrade.price_sats), BigInt(_lastTrade.amount), decimals); } catch {} }
+    // Best (highest) bid for reference. Same outlier-aware logic as
+    // sweep-buy's Beat-best-bid: skip bids > 2× last_trade so a
+    // stale spam print doesn't anchor the seller's expectations.
+    let _bestBidUnit = null;
+    try {
+      const cached = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+      if (Array.isArray(cached) && cached.length > 0) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const cap = (_lastUnit && _lastUnit > 0) ? _lastUnit * 2 : Infinity;
+        let best = 0;
+        for (const b of cached) {
+          if (Number(b.expiry || 0) <= nowSec) continue;
+          if (b.axintent_id) continue;
+          const u = unitPriceSats(Number(b.price_sats || 0), BigInt(b.amount || 0), decimals);
+          if (u != null && u > 0 && u <= cap && u > best) best = u;
+        }
+        if (best > 0) _bestBidUnit = best;
+      }
+    } catch {}
+    const _refBits = [];
+    if (_lastUnit != null) {
+      const us = _btcUsd ? fmtSatsAsUsd(_lastUnit, _btcUsd) : null;
+      _refBits.push(`last <strong>${escapeHtml(fmtUnitPriceSats(_lastUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+    }
+    if (_bestBidUnit != null) {
+      const us = _btcUsd ? fmtSatsAsUsd(_bestBidUnit, _btcUsd) : null;
+      _refBits.push(`best bid <strong>${escapeHtml(fmtUnitPriceSats(_bestBidUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}`);
+    }
+    const _refLine = _refBits.length
+      ? `<div class="muted" style="font-size:10px;margin-bottom:6px;">reference · ${_refBits.join(' · ')}</div>`
+      : '';
+    const _holdingsBal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+    const _balStr = fmtAssetAmount(_holdingsBal, decimals);
+    formHost.innerHTML = `
+      <div style="border:1px dashed var(--ink-faint);padding:10px;background:var(--bg-warm);">
+        <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">⚡ Sweep sell ${escapeHtml(ticker)} into bids</div>
+        <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:6px;">Walks the bids ladder highest-price-first above your price floor. Each fill publishes an atomic intent — <strong>settlement happens when each bidder Takes</strong> (typically 1-30 min, but can be longer if the bidder is offline). Your committed sats fees are recoverable on intent expiry if no Take lands.</div>
+        ${_refLine}
+        <div class="muted" style="font-size:10px;margin-bottom:6px;">You hold <strong>${escapeHtml(_balStr)} ${escapeHtml(ticker)}</strong></div>
+        <div class="flex" style="gap:6px;flex-wrap:wrap;">
+          <label style="font-size:10px;flex:1;min-width:120px;">Target amount (${escapeHtml(ticker)})
+            <input data-sweepsell-field="amount" type="text" inputmode="decimal" placeholder="100" style="width:100%;font-family:var(--mono);">
+          </label>
+          <label style="font-size:10px;flex:1;min-width:120px;">Min price per ${escapeHtml(ticker)} (sats)
+            <input data-sweepsell-field="floor" type="text" inputmode="decimal" placeholder="${_lastUnit != null ? Math.floor(_lastUnit) : '500'}" style="width:100%;font-family:var(--mono);">
+          </label>
+        </div>
+        <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">
+          <button data-sweepsell-action="preview" class="primary" type="button" style="font-size:11px;">Preview sweep</button>
+          <button data-sweepsell-action="close" type="button" style="font-size:11px;">Close</button>
+        </div>
+        <div data-sweepsell-plan style="margin-top:10px;font-size:11px;"></div>
+        <div data-sweepsell-status class="muted" style="font-size:10px;margin-top:6px;"></div>
+      </div>`;
+    const amountEl = formHost.querySelector('[data-sweepsell-field="amount"]');
+    const floorEl  = formHost.querySelector('[data-sweepsell-field="floor"]');
+    const planEl   = formHost.querySelector('[data-sweepsell-plan]');
+    const statusEl = formHost.querySelector('[data-sweepsell-status]');
+    formHost.querySelector('[data-sweepsell-action="close"]').onclick = () => {
+      formHost.dataset.open = ''; formHost.style.display = 'none'; formHost.innerHTML = '';
+    };
+    formHost.querySelector('[data-sweepsell-action="preview"]').onclick = async () => {
+      planEl.innerHTML = '';
+      statusEl.textContent = '';
+      const aRaw = (amountEl.value || '').trim();
+      const pRaw = (floorEl.value || '').trim();
+      if (!aRaw || !pRaw) { statusEl.textContent = 'enter amount + price floor'; return; }
+      let targetAmtBig;
+      try { targetAmtBig = parseAssetAmount(aRaw, decimals); }
+      catch { statusEl.textContent = 'amount invalid'; return; }
+      if (targetAmtBig <= 0n) { statusEl.textContent = 'amount must be > 0'; return; }
+      if (targetAmtBig > _holdingsBal) {
+        statusEl.textContent = `you only hold ${_balStr} ${ticker}`;
+        return;
+      }
+      const floorUnit = Number(pRaw);
+      if (!Number.isFinite(floorUnit) || floorUnit <= 0) { statusEl.textContent = 'floor must be > 0 sats/token'; return; }
+      // Fetch the live bids ladder (cached 30s) so the preview reflects
+      // current state, not stale browse-tab state. Filter: not own bid,
+      // not already claimed, not expired, unit price >= floor.
+      const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
+      const nowSec = Math.floor(Date.now() / 1000);
+      let bids;
+      try { bids = await _fetchBidIntentsCached(aid); }
+      catch { statusEl.textContent = 'failed to fetch bids — check connection'; return; }
+      if (!Array.isArray(bids) || bids.length === 0) {
+        planEl.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} yet. Use "+ List for sale" to create a preauth listing instead.</div>`;
+        return;
+      }
+      const candidates = bids
+        .filter(b => b.buyer_pubkey !== myPub)
+        .filter(b => Number(b.expiry || 0) > nowSec)
+        .filter(b => !b.axintent_id)
+        .map(b => {
+          const amt = BigInt(b.amount || 0);
+          const ps  = Number(b.price_sats || 0);
+          const u   = unitPriceSats(ps, amt, decimals);
+          return { b, amt, ps, u };
+        })
+        .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floorUnit && c.amt > 0n)
+        .sort((x, y) => y.u - x.u);  // HIGHEST price first
+      if (!candidates.length) {
+        planEl.innerHTML = `<div class="muted" style="font-size:11px;">No open bids ≥ ${floorUnit.toLocaleString()} sats/${escapeHtml(ticker)}. Lower the floor or use "+ Place a bid" to wait for one.</div>`;
+        return;
+      }
+      // Strict-fit accumulation. Bid amounts vary so we can't always
+      // hit target exactly; we accept ≤ target and report leftover.
+      const plan = [];
+      let acc = 0n;
+      for (const c of candidates) {
+        if (acc >= targetAmtBig) break;
+        if (acc + c.amt > targetAmtBig) continue;
+        plan.push(c);
+        acc += c.amt;
+      }
+      // Best-effort fallback: if every candidate would overshoot, take
+      // the single highest-priced one anyway so the user gets *something*
+      // (matches sweep-buy's behavior).
+      if (!plan.length && candidates.length > 0) {
+        plan.push(candidates[0]);
+        acc = candidates[0].amt;
+      }
+      const totalSats = plan.reduce((s, c) => s + c.ps, 0);
+      const usdTotal = _btcUsd ? fmtSatsAsUsd(totalSats, _btcUsd) : null;
+      // Per-fill cost: each is a commit tx (~250 vB) — order-of-magnitude
+      // fee estimate. Plus 1 extra split tx per fill if no exact-amount
+      // UTXO matches. Conservative: assume one split per fill.
+      const feeEstPerTx = 800;
+      const feeEstTotal = plan.length * feeEstPerTx * 2;
+      const usdFees = _btcUsd ? fmtSatsAsUsd(feeEstTotal, _btcUsd) : null;
+      const residualAmt = targetAmtBig - acc;
+      const fillsHtml = plan.map((c, i) => `<div style="display:flex;gap:8px;font-size:10px;padding:2px 0;font-family:var(--mono);">
+          <span style="opacity:0.6;">${i + 1}.</span>
+          <span style="flex:1;">${escapeHtml(fmtAssetAmount(c.amt, decimals))} @ ${escapeHtml(fmtUnitPriceSats(c.u))} sats/${escapeHtml(ticker)} = ${c.ps.toLocaleString()} sats</span>
+        </div>`).join('');
+      const residualHtml = residualAmt > 0n
+        ? `<div class="muted" style="font-size:10px;margin-top:6px;">Leftover: ${escapeHtml(fmtAssetAmount(residualAmt, decimals))} ${escapeHtml(ticker)} — no bids at this floor cover it. Use + List for sale to seed an ask.</div>`
+        : '';
+      planEl.innerHTML = `
+        <div style="border-top:1px solid var(--ink-faint);padding-top:8px;">
+          <div style="font-size:11px;margin-bottom:4px;"><strong>Plan: ${plan.length} fulfilment${plan.length === 1 ? '' : 's'} · ${escapeHtml(fmtAssetAmount(acc, decimals))} ${escapeHtml(ticker)} · ${totalSats.toLocaleString()} sats${usdTotal ? ` · ${escapeHtml(usdTotal)}` : ''}</strong></div>
+          ${fillsHtml}
+          <div class="muted" style="font-size:10px;margin-top:6px;">Bitcoin fees: ~${feeEstTotal.toLocaleString()} sats across ${plan.length}–${plan.length * 2} tx${plan.length === 1 ? '' : 's'}${usdFees ? ` (~${escapeHtml(usdFees)})` : ''} · includes possible UTXO auto-split per fill</div>
+          <div class="muted" style="font-size:10px;margin-top:4px;color:#b8651d;">⚠ Settlement awaits each bidder's Take. Typical: 1–30 min. If a bidder never Takes, the intent expires (~24h) and your commit becomes recoverable.</div>
+          ${residualHtml}
+          <div class="flex" style="gap:6px;margin-top:10px;flex-wrap:wrap;">
+            <button data-sweepsell-action="confirm" class="primary" type="button" style="font-size:11px;background:#b8341d;border-color:#9b2a16;">Confirm &amp; broadcast ${plan.length} fulfilment${plan.length === 1 ? '' : 's'}</button>
+            <button data-sweepsell-action="cancel-plan" type="button" style="font-size:11px;">Cancel</button>
+          </div>
+          <div data-sweepsell-progress style="margin-top:8px;font-size:10px;font-family:var(--mono);"></div>
+        </div>`;
+      planEl.querySelector('[data-sweepsell-action="cancel-plan"]').onclick = () => { planEl.innerHTML = ''; };
+      planEl.querySelector('[data-sweepsell-action="confirm"]').onclick = async (ev) => {
+        const cBtn = ev.currentTarget;
+        cBtn.disabled = true; cBtn.textContent = 'fulfilling…';
+        const progEl = planEl.querySelector('[data-sweepsell-progress]');
+        const fills = [];
+        const fails = [];
+        for (let i = 0; i < plan.length; i++) {
+          const c = plan[i];
+          progEl.innerHTML = `${fills.length}/${plan.length} filled · sending fulfilment ${i + 1}…`;
+          try {
+            const r = await fulfilBidIntent({ bid: c.b });
+            fills.push({ bidId: c.b.bid_id, commit: r?.commit_txid, amt: c.amt, ps: c.ps });
+            // Mark the commit tx inputs (and any auto-split tx inputs)
+            // as recently spent so the NEXT fill's UTXO selection
+            // doesn't double-pick. Same mechanism as sweep-buy.
+            const _mark = async (txid) => {
+              if (!txid) return;
+              try { const tx = await getTx(txid); _markTxInputsSpent(tx); }
+              catch { /* indexer lag — TTL'd entries help us either way */ }
+            };
+            await Promise.all([_mark(r?.commit_txid), _mark(r?.split_txid)]);
+            if (i < plan.length - 1) {
+              await new Promise(res => setTimeout(res, 1500));
+            }
+          } catch (e) {
+            fails.push({ bidId: c.b.bid_id, err: e?.message || String(e) });
+            break;
+          }
+        }
+        const fillsTotal = fills.reduce((s, f) => s + f.ps, 0);
+        const fillsAmt = fills.reduce((s, f) => s + f.amt, 0n);
+        progEl.innerHTML = `<div style="margin-top:4px;"><strong>${fills.length}/${plan.length} fulfilled</strong> · selling ${escapeHtml(fmtAssetAmount(fillsAmt, decimals))} ${escapeHtml(ticker)} for ${fillsTotal.toLocaleString()} sats <span class="muted">(pending bidder Takes)</span></div>` +
+          (fails.length ? `<div class="error" style="font-size:10px;margin-top:4px;">stopped at fulfilment ${fills.length + 1}: ${escapeHtml(fails[0].err)}</div>` : '');
+        invalidateMarketCache();
+        invalidateHoldingsCache();
+        _invalidateBidsCache(aid);
+        cBtn.disabled = false; cBtn.textContent = 'Done';
         setTimeout(() => renderMarket(), 1500);
       };
     };
