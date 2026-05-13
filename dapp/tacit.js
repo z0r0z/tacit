@@ -32984,9 +32984,17 @@ function renderMarketAssetStatsHTML(asset) {
         <div><span class="muted">24h high</span> <strong data-market-stat-high>—</strong></div>
         <div><span class="muted">24h low</span> <strong data-market-stat-low>—</strong></div>
         <div><span class="muted">24h volume</span> <strong data-market-stat-vol24>—</strong></div>
-        <div><span class="muted">total trades</span> <strong data-market-stat-xfers>—</strong></div>
+        <div><span class="muted">transfers</span> <strong data-market-stat-xfers title="On-chain confidential transfers tracked by the indexer (includes sends, drops, OTC settles — not just market trades). For market trades only, see the recent-trades list below.">—</strong></div>
         <div data-market-stat-spread-wrap style="display:none;"><span class="muted">spread</span> <strong data-market-stat-spread>—</strong></div>
       </div>
+      <div data-market-supplycap-row style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--ink-faint);display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
+        <div><span class="muted">market cap</span> <strong data-market-stat-mcap title="Total supply × current mark price. Computed only when the etcher has attested the total supply (revealed supply + blinding so observers can verify pedersen_commit(supply, blinding) == on-chain commitment). Without an attestation, supply is cryptographically hidden and market cap can't be derived.">—</strong></div>
+        <div><span class="muted">total supply</span> <strong data-market-stat-supply title="Total amount issued at etch, revealed via the etcher's attestation. When hidden, the etcher hasn't published (supply, blinding); the commitment is on chain but its value is confidential.">—</strong></div>
+        <div data-market-stat-supplymin-wrap><span class="muted">disclosed ≥</span> <strong data-market-stat-supplymin title="Sum of amounts across all published per-UTXO openings — a public lower bound on circulating supply that any observer can reproduce.">—</strong></div>
+        <div data-market-stat-liq-asks><span class="muted">asks liquidity</span> <strong data-market-stat-asksval>—</strong></div>
+        <div data-market-stat-liq-bids><span class="muted">bids liquidity</span> <strong data-market-stat-bidsval>—</strong></div>
+      </div>
+      <div data-market-attest-cta style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;"></div>
       <div data-market-price-chart style="margin-top:10px;font-size:11px;display:none;"></div>
       <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;"></div>
       <div data-market-recent-trades style="margin-top:10px;font-size:11px;">
@@ -33192,6 +33200,110 @@ async function populateMarketAssetStats(scope, asset) {
     volSats > 0 ? `${volSats.toLocaleString()} sats${_usdSuffix(volSats)}` : '—',
     true);
   setText('[data-market-stat-xfers]', xfers > 0 ? xfers.toLocaleString() : '—');
+  // Market cap + supply state — surface honestly given confidential
+  // tokens: attestation is the only path to a verifiable total supply.
+  // Without it, supply is cryptographically committed but publicly
+  // hidden, and market cap can't be derived.
+  const att = j.attestation;
+  const markUnit = j.mark_price && Number.isFinite(j.mark_price.unit) && j.mark_price.unit > 0
+    ? Number(j.mark_price.unit) : null;
+  let supplyHtml = '<span class="muted" style="font-weight:normal;">hidden · etcher hasn\'t attested</span>';
+  let mcapHtml = '<span class="muted" style="font-weight:normal;">—</span>';
+  if (att && typeof att.supply === 'string') {
+    let supplyBig = 0n; try { supplyBig = BigInt(att.supply); } catch {}
+    if (supplyBig > 0n) {
+      supplyHtml = `${escapeHtml(fmtAssetAmount(supplyBig, decimals))} ${escapeHtml(ticker)}`;
+      if (markUnit != null) {
+        const wholeSupply = Number(supplyBig) / Math.pow(10, decimals);
+        const mcapSats = Math.round(wholeSupply * markUnit);
+        const mcapUsd = btcUsd ? fmtSatsAsUsd(mcapSats, btcUsd) : null;
+        mcapHtml = `${mcapSats.toLocaleString()} sats${mcapUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(mcapUsd)}</span>` : ''}`;
+      } else {
+        mcapHtml = '<span class="muted" style="font-weight:normal;">need mark price</span>';
+      }
+    }
+  }
+  setText('[data-market-stat-mcap]', mcapHtml, true);
+  setText('[data-market-stat-supply]', supplyHtml, true);
+  // Disclosed-supply lower bound — sum of opening amounts. Hide the row
+  // when no openings have been published (would just read "—" alongside).
+  const supplyMinWrap = section.querySelector('[data-market-stat-supplymin-wrap]');
+  if (j.disclosed_supply_min) {
+    let minBig = 0n; try { minBig = BigInt(j.disclosed_supply_min); } catch {}
+    if (minBig > 0n) {
+      setText('[data-market-stat-supplymin]',
+        `${escapeHtml(fmtAssetAmount(minBig, decimals))} ${escapeHtml(ticker)}`, true);
+      if (supplyMinWrap) supplyMinWrap.style.display = '';
+    } else if (supplyMinWrap) {
+      supplyMinWrap.style.display = 'none';
+    }
+  } else if (supplyMinWrap) {
+    supplyMinWrap.style.display = 'none';
+  }
+  // Liquidity totals — sums across live cache. Asks total = sum of
+  // listed prices (preauth uses min_price_sats, others use price_sats);
+  // bids total = sum of bid_intent.price_sats. Both are decorative
+  // snapshots of "money on the book right now" — useful for users to
+  // gauge depth before placing an order.
+  let asksTotalSats = 0;
+  let asksCount = 0;
+  try {
+    const cache = _marketCache?.listings || [];
+    const nowSec = Math.floor(Date.now() / 1000);
+    for (const l of cache) {
+      if (l._asset?.asset_id !== aid) continue;
+      if (l.expired || (l.expiry && l.expiry <= nowSec)) continue;
+      const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+      if (ps > 0) { asksTotalSats += ps; asksCount++; }
+    }
+  } catch {}
+  const asksUsd = btcUsd ? fmtSatsAsUsd(asksTotalSats, btcUsd) : null;
+  setText('[data-market-stat-asksval]',
+    asksCount > 0
+      ? `${asksTotalSats.toLocaleString()} sats${asksUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(asksUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${asksCount} ask${asksCount === 1 ? '' : 's'}</span>`
+      : '—',
+    true);
+  // Bids: wait for the cache (populateMarketBidsLadder fills it in
+  // parallel). If still loading, leave "—" and the next stats refresh
+  // will fill it. _fetchBidIntentsCached returns the resolved promise
+  // when cached, so this is one round-trip max.
+  let bidsTotalSats = 0;
+  let bidsCount = 0;
+  try {
+    const bids = await _fetchBidIntentsCached(aid);
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (Array.isArray(bids)) {
+      for (const b of bids) {
+        if (Number(b.expiry || 0) <= nowSec) continue;
+        if (b.axintent_id) continue;  // already claimed
+        const ps = Number(b.price_sats || 0);
+        if (ps > 0) { bidsTotalSats += ps; bidsCount++; }
+      }
+    }
+  } catch {}
+  const bidsUsd = btcUsd ? fmtSatsAsUsd(bidsTotalSats, btcUsd) : null;
+  setText('[data-market-stat-bidsval]',
+    bidsCount > 0
+      ? `${bidsTotalSats.toLocaleString()} sats${bidsUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(bidsUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${bidsCount} bid${bidsCount === 1 ? '' : 's'}</span>`
+      : '—',
+    true);
+  // Etcher CTA: when no attestation exists, surface the path to reveal
+  // supply. Different copy for the etcher (actionable) vs everyone else
+  // (informational about what's hidden).
+  const ctaEl = section.querySelector('[data-market-attest-cta]');
+  if (ctaEl && !att) {
+    let amEtcher = false;
+    try { amEtcher = !!_holdingsCache?.holdings?.get(aid)?.isEtcher; } catch {}
+    if (amEtcher) {
+      ctaEl.innerHTML = `<strong>You're the etcher of ${escapeHtml(ticker)}.</strong> Total supply is committed on chain (your CETCH envelope locked <code>(supply, blinding)</code>) but publicly hidden. Click <strong>Reveal initial supply</strong> on your ${escapeHtml(ticker)} card in Holdings to publish the opening so anyone can verify and so market cap becomes computable.`;
+      ctaEl.style.display = '';
+    } else {
+      ctaEl.innerHTML = `<span class="muted">Total supply is confidential — the etcher hasn't published the attestation. The on-chain commitment is real (verified by every node), but its value is hidden. <strong>Disclosed ≥</strong> below is a public lower bound from per-UTXO openings.</span>`;
+      ctaEl.style.display = '';
+    }
+  } else if (ctaEl) {
+    ctaEl.style.display = 'none';
+  }
   // last trade — append the USD value of the total settlement, not the
   // unit price (a $X.XX/token figure would mislead given tacit's decimal
   // ranges; the total sats is what changed hands).

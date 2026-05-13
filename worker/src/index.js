@@ -3831,6 +3831,26 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   v.burns = await loadBurnsForAsset(env, network, assetIdHex);
   const op = await env.REGISTRY_KV.list({ prefix: openingPrefix(network, assetIdHex), limit: 1000 });
   v.opening_count = op.keys.length;
+  // Disclosed-supply lower bound: sum of amounts across all published
+  // openings. Each opening publishes (txid, vout, amount, blinding) for
+  // one UTXO and is verified against the on-chain Pedersen commitment,
+  // so each amount is cryptographically committed to a real on-chain
+  // UTXO. Summing across distinct outpoints can't double-count, which
+  // makes this a strict lower bound on circulating supply that any
+  // observer can reproduce. Useful headline metric when the etcher
+  // hasn't published the total-supply attestation. Only computed on the
+  // single-asset endpoint (avoid N×17 fan-out on bulk /assets).
+  if (op.keys.length > 0) {
+    const openingRecords = await Promise.all(
+      op.keys.slice(0, 1000).map(k => env.REGISTRY_KV.get(k.name, 'json'))
+    );
+    let sum = 0n;
+    for (const r of openingRecords) {
+      if (!r || typeof r.amount !== 'string') continue;
+      try { sum += BigInt(r.amount); } catch {}
+    }
+    if (sum > 0n) v.disclosed_supply_min = sum.toString();
+  }
   const dc = await env.REGISTRY_KV.list({ prefix: disclosurePrefix(network, assetIdHex), limit: 1000 });
   v.disclosure_count = dc.keys.length;
   const ls = await env.REGISTRY_KV.list({ prefix: listingPrefix(network, assetIdHex), limit: 1000 });
