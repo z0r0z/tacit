@@ -11758,7 +11758,7 @@ async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
   return j;
 }
 
-async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim }) {
+async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim, autoMode = false }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (intent.maker_pubkey !== bytesToHex(wallet.pub)) throw new Error('not your intent');
@@ -11806,6 +11806,17 @@ async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim }) {
         `If you believe this is wrong (e.g. you re-imported wallet state), cancel this intent and re-publish.`,
       );
     }
+  } else if (autoMode) {
+    // Daemon path: refuse to sign without the local cross-check. A
+    // compromised worker can't otherwise be detected, and the daemon
+    // can't prompt the user to confirm "trust the worker's claimed
+    // terms?" the way a manual click can. The intent stays unfulfilled;
+    // the user can fulfil it manually (which downgrades this to a
+    // warning) or cancel and republish to seed a fresh archive body.
+    throw new Error(
+      `auto-fulfil refused: no archived body for intent ${intentIdHex.slice(0, 8)}…. ` +
+      `Worker substitution can't be ruled out without it. Click Fulfil manually to proceed with a warning, or cancel and republish.`,
+    );
   } else {
     console.warn(`[axintent] no archived body for ${intentIdHex.slice(0, 8)}… — fulfilling without cross-check (intent may have been published before the body-archive feature was added).`);
   }
@@ -11997,6 +12008,15 @@ async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
   forgetAxintentSecret(intentIdHex);
   forgetAxintentPending(intentIdHex);
   invalidateDiscoverRegistryCache();
+  // Tell the auto-fulfil daemon to skip this intent forever (90-day TTL
+  // is effectively forever for a cancelled intent). Closes the cancel
+  // race: user clicks Cancel while a poll cycle is in flight; without
+  // this, the daemon could fulfil a claim on an intent that the user
+  // just chose to revoke. Stamping the dedupe set immediately prevents
+  // that, even if the market cache hasn't refreshed yet.
+  if (typeof _autoFulfilRecentlyDone !== 'undefined') {
+    _autoFulfilRecentlyDone.add(intentIdHex);
+  }
   return j;
 }
 
@@ -31960,7 +31980,11 @@ async function _autoFulfilPollOnce() {
         const jj = await r.json().catch(() => ({}));
         const fresh = (jj.intents || []).find(x => x.intent_id === iid);
         if (!fresh || !fresh.claim || fresh.fulfilment_pending) continue;
-        await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent: fresh, claim: fresh.claim });
+        // autoMode: true hard-blocks the missing-archive-body path so a
+        // compromised worker can't trick the daemon into signing against
+        // substituted terms. Manual fulfilment still degrades to a
+        // warning so a user with cleared localStorage can knowingly proceed.
+        await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent: fresh, claim: fresh.claim, autoMode: true });
         _autoFulfilStatus.lastFulfilAt = Date.now();
         _autoFulfilRecentlyDone.add(iid);
         // Self-clear from the dedupe set after the claim TTL window has
@@ -32303,59 +32327,90 @@ function applyMarketFilters() {
   // and OTC opening/range (counterparty trust); per-row badges still show the
   // mode for each individual offer.
   const asksHeaderHtml = `<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:8px;"><strong>Asks · ${rows.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· sellers offering tokens for sats · ${$('#market-sort')?.value === 'recency' ? 'newest first' : 'cheapest first'} (sort dropdown)</span></div>`;
-  // Quick-buy CTA: surfaces the cheapest trustless ask (preauth first since
-  // it's one-click "Buy"; atomic intent second since it's the same trust
-  // profile but takes 3 steps) so a user with no trading muscle memory has
-  // an obvious primary action above the orderbook. Skipped when the cheapest
-  // trustless option belongs to the user (can't buy your own listing) or
-  // when no trustless option exists at all (OTC-only markets).
-  const _quickBuyCtaHtml = (() => {
-    const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
-    const preauthAsks = rows.filter(l => l.kind === 'preauth' && l.seller_pubkey !== myPub);
-    const intentAsks  = rows.filter(l => l.kind === 'intent'  && l.maker_pubkey  !== myPub && !l.claim);
-    const _unitOf = (l) => {
-      const a = l._asset || {};
-      const d = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-      const amt = l.kind === 'preauth' ? (l.asset_opening?.amount) : l.amount;
-      const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
-      return unitPriceSats(ps, BigInt(amt || 0), d);
-    };
-    const sortByUnit = (arr) => arr
-      .map(l => ({ l, u: _unitOf(l) }))
-      .filter(x => Number.isFinite(x.u) && x.u > 0)
-      .sort((x, y) => x.u - y.u);
-    const bestPreauth = sortByUnit(preauthAsks)[0];
-    const bestIntent  = sortByUnit(intentAsks)[0];
-    const pick = bestPreauth || bestIntent;
-    if (!pick) return '';
-    const l = pick.l;
-    const a = l._asset || {};
-    const d = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-    const amt = l.kind === 'preauth' ? (l.asset_opening?.amount) : l.amount;
-    const ps  = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
-    const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
-    const ticker = a.ticker || '?';
-    const amtStr = fmtAssetAmount(BigInt(amt || '0'), d);
+  // Market-trade widget: the simplest "type amount + click" buy/sell path.
+  // Replaces the older single-ask Quick Buy banner with a two-row widget
+  // (buy / sell-if-you-hold) that walks the trustless orderbook with a
+  // 20% default slippage tolerance. Power users can still hit Sweep buy
+  // / Sweep sell below for explicit price caps and residual-to-bid
+  // semantics; this widget is for "I want N TAC at market, just do it".
+  //
+  // Buy side: walks preauth asks cheapest-first under last_trade × 1.2
+  //           (or floor × 1.2 when no last trade). One Bitcoin tx per fill.
+  // Sell side: walks bids highest-first above last_trade × 0.8 (or
+  //            floor × 0.8). Each fill publishes an atomic intent —
+  //            settlement awaits the bidder's Take (auto-fulfil daemon
+  //            closes that loop when enabled).
+  //
+  // The HTML is rendered inline; _wireMarketTradeWidget binds inputs
+  // and button handlers after paint.
+  const _marketWidgetHtml = (() => {
+    const myPubHex = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
     const _btcUsd = _cachedBtcUsd();
-    const _usdStr = _btcUsd ? fmtSatsAsUsd(ps, _btcUsd) : null;
-    const _usdTail = _usdStr ? ` · <span style="opacity:0.85;">${escapeHtml(_usdStr)}</span>` : '';
-    const _kindLabel = l.kind === 'preauth' ? 'instant' : 'atomic';
-    const _kindTip   = l.kind === 'preauth'
-      ? 'Cheapest preauth (instant) ask — one Bitcoin tx, no claim window, no fulfilment step. Trustless.'
-      : 'Cheapest atomic intent — 3-step claim/fulfil/take flow, no counterparty trust required.';
-    const _btnAct = l.kind === 'preauth' ? 'quick-buy-preauth' : 'quick-buy-intent';
-    const _ridAttr = l.kind === 'preauth' ? `data-sid="${escapeHtml(l.sale_id || '')}"` : `data-iid="${escapeHtml(l.intent_id || '')}"`;
-    return `<button data-act="${_btnAct}" data-aid="${escapeHtml(safeAid)}" ${_ridAttr} data-price="${ps}" data-ticker="${escapeHtml(ticker)}" data-amount="${escapeHtml(String(amt || '0'))}" data-dec="${d}" data-expiry="${Number(l.expiry || 0)}" title="${escapeHtml(_kindTip)}" style="display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:10px 14px;margin-bottom:10px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-size:13px;cursor:pointer;font-weight:600;"><span>Buy ${escapeHtml(amtStr)} ${escapeHtml(ticker)} for ${ps.toLocaleString()} sats${_usdTail}</span><span style="opacity:0.9;font-size:10px;background:rgba(255,255,255,0.18);padding:2px 6px;border-radius:2px;letter-spacing:0.04em;">⚡ ${_kindLabel}</span></button>`;
+    const a = (rows.find(l => l._asset?.asset_id === _marketView.assetId)?._asset)
+           || (_marketCache?.listings.find(l => l._asset?.asset_id === _marketView.assetId)?._asset)
+           || (_marketCache?.assets?.find(x => x.asset_id === _marketView.assetId))
+           || { ticker: '?', decimals: 0 };
+    const ticker = a.ticker || '?';
+    const decimals = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
+    // Reference price for market-order slippage caps. Last trade is the
+    // canonical mark; floor falls back when no trade has happened yet.
+    const lt = a.last_trade;
+    let refUnit = null;
+    if (lt && Number.isInteger(lt.price_sats) && lt.price_sats > 0) {
+      const amt = (() => { try { return BigInt(lt.amount); } catch { return 0n; } })();
+      if (amt > 0n) {
+        const u = unitPriceSats(lt.price_sats, amt, decimals);
+        if (Number.isFinite(u) && u > 0) refUnit = u;
+      }
+    }
+    if (refUnit == null) {
+      const fEntry = _marketFloorByAsset()?.get(_marketView.assetId);
+      if (fEntry && Number.isFinite(fEntry.unit) && fEntry.unit > 0) refUnit = fEntry.unit;
+    }
+    // Available preauth liquidity on the buy side.
+    const preauthAsks = rows.filter(l => l.kind === 'preauth' && l.seller_pubkey !== myPubHex);
+    const haveBuyLiquidity = preauthAsks.length > 0;
+    const userHolds = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId) && _holdingsCache.holdings.get(_marketView.assetId).balance > 0n);
+    if (!haveBuyLiquidity && !userHolds) return '';
+    const refLine = refUnit != null
+      ? `<div class="muted" style="font-size:10px;margin-bottom:8px;">market reference · <strong>${escapeHtml(fmtUnitPriceSats(refUnit))}</strong> sats/${escapeHtml(ticker)}${_btcUsd ? ` (${escapeHtml(fmtSatsAsUsd(refUnit, _btcUsd))}/${escapeHtml(ticker)})` : ''} · 20% slippage cap</div>`
+      : `<div class="muted" style="font-size:10px;margin-bottom:8px;">market reference · no recent trade — defaults to best-ask × 1.2 / best-bid × 0.8</div>`;
+    const buyRow = haveBuyLiquidity
+      ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;margin-bottom:6px;">
+          <strong style="font-size:13px;flex:0 0 auto;">Buy</strong>
+          <input data-mt-side="buy" data-mt-field="amount" type="text" inputmode="decimal" placeholder="amount" style="flex:0 1 100px;font-family:var(--mono);background:rgba(255,255,255,0.95);color:#0a4d23;border:1px solid #0a4d23;padding:4px 6px;font-size:12px;">
+          <span style="flex:0 0 auto;font-size:11px;opacity:0.9;">${escapeHtml(ticker)}</span>
+          <span data-mt-side="buy" data-mt-readout style="flex:1 1 200px;font-size:11px;opacity:0.95;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">enter an amount</span>
+          <button data-mt-side="buy" data-mt-action="execute" type="button" disabled style="flex:0 0 auto;font-size:12px;padding:6px 14px;background:#fff;color:#0a4d23;border:1px solid #0a4d23;font-weight:700;cursor:pointer;opacity:0.5;">Buy now</button>
+        </div>`
+      : '';
+    const sellRow = userHolds
+      ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 10px;background:#b8341d;color:#fff;border:1px solid #9b2a16;">
+          <strong style="font-size:13px;flex:0 0 auto;">Sell</strong>
+          <input data-mt-side="sell" data-mt-field="amount" type="text" inputmode="decimal" placeholder="amount" style="flex:0 1 100px;font-family:var(--mono);background:rgba(255,255,255,0.95);color:#7a2410;border:1px solid #7a2410;padding:4px 6px;font-size:12px;">
+          <span style="flex:0 0 auto;font-size:11px;opacity:0.9;">${escapeHtml(ticker)}</span>
+          <span data-mt-side="sell" data-mt-readout style="flex:1 1 200px;font-size:11px;opacity:0.95;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">enter an amount</span>
+          <button data-mt-side="sell" data-mt-action="execute" type="button" disabled style="flex:0 0 auto;font-size:12px;padding:6px 14px;background:#fff;color:#7a2410;border:1px solid #7a2410;font-weight:700;cursor:pointer;opacity:0.5;">Sell now</button>
+        </div>`
+      : '';
+    return `<div data-market-trade-widget data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg-warm);padding:10px 12px;">
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:6px;"><strong>Market</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· type amount, click — auto-walks the book with 20% slippage</span></div>
+      ${refLine}
+      ${buyRow}
+      ${sellRow}
+    </div>`;
   })();
   list.innerHTML =
     assetHeaderHtml +
     statsHtml +
     bidsLadderHtml +
-    _quickBuyCtaHtml +
+    _marketWidgetHtml +
     asksHeaderHtml +
     noAtomicHint +
     `<div id="market-grid" style="display:flex;flex-direction:column;gap:0;border:1px solid var(--ink);background:var(--bg);"></div>`;
   bindMarketAssetHeader(list);
+  _wireMarketTradeWidget(list);
   populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
   populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
   const grid = $('#market-grid');
@@ -33630,6 +33685,306 @@ function _wireAutoFulfilToggle(section) {
 // inputs and one would fail). Stops on first error; reports partial
 // progress. Residual (couldn't fill enough at the cap price) → optional
 // bid intent posted at the cap.
+// Market-trade widget wireup. Two side-by-side input rows ("Buy N TAC" /
+// "Sell N TAC") with live-update readouts that show what would fill at the
+// current orderbook state + 20% slippage cap. Clicking the side's Execute
+// button fires a confirm() dialog with the resolved plan and broadcasts.
+// Re-uses the existing takePreauthSale (buy) and fulfilBidIntent (sell)
+// flows with the same _markTxInputsSpent indexer-lag guard as the
+// dedicated sweep forms — for the user it's just "type, click, done."
+function _wireMarketTradeWidget(scope) {
+  const widget = scope.querySelector('[data-market-trade-widget]');
+  if (!widget) return;
+  const aid = widget.dataset.aid;
+  const ticker = widget.dataset.ticker || '?';
+  const decimals = parseInt(widget.dataset.dec || '0', 10) || 0;
+  const refUnitRaw = widget.dataset.refUnit;
+  const refUnit = refUnitRaw ? Number(refUnitRaw) : null;
+  const btcUsd = _cachedBtcUsd();
+  const SLIPPAGE_BUY = 1.2;   // walk asks up to last_trade × 1.2
+  const SLIPPAGE_SELL = 0.8;  // walk bids down to last_trade × 0.8
+  const myPubHex = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
+  // Plan computation per side. Returns { plan, accumulated, totalSats,
+  // refCap, residual } or null if no fillable asks / bids.
+  const _computeBuyPlan = (targetAmtBig) => {
+    if (!Number.isFinite(refUnit) || refUnit <= 0) {
+      // No last-trade reference: fall back to walking ALL preauths
+      // (cheapest first, no cap). This is "market at any price" which is
+      // typically what users want on a brand-new market.
+      const cap = Infinity;
+      return _planBuy(targetAmtBig, cap);
+    }
+    return _planBuy(targetAmtBig, refUnit * SLIPPAGE_BUY);
+  };
+  const _planBuy = (targetAmtBig, capUnit) => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const candidates = (_marketCache?.listings || [])
+      .filter(l => l.kind === 'preauth' && l._asset?.asset_id === aid)
+      .filter(l => l.seller_pubkey !== myPubHex)
+      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired)
+      .map(l => {
+        const amt = BigInt(l.asset_opening?.amount || 0);
+        const ps  = Number(l.min_price_sats || 0);
+        const u   = unitPriceSats(ps, amt, decimals);
+        return { l, amt, ps, u };
+      })
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= capUnit && c.amt > 0n)
+      .sort((x, y) => x.u - y.u);
+    if (!candidates.length) return null;
+    const plan = [];
+    let acc = 0n;
+    for (const c of candidates) {
+      if (acc >= targetAmtBig) break;
+      if (acc + c.amt > targetAmtBig) continue;
+      plan.push(c); acc += c.amt;
+    }
+    if (!plan.length) { plan.push(candidates[0]); acc = candidates[0].amt; }
+    const totalSats = plan.reduce((s, c) => s + c.ps, 0);
+    return { plan, accumulated: acc, totalSats, refCap: capUnit, residual: targetAmtBig - acc };
+  };
+  const _planSell = async (targetAmtBig) => {
+    let bids;
+    try { bids = await _fetchBidIntentsCached(aid); }
+    catch { return null; }
+    if (!Array.isArray(bids) || bids.length === 0) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const floorUnit = (Number.isFinite(refUnit) && refUnit > 0)
+      ? refUnit * SLIPPAGE_SELL
+      : 0;
+    const candidates = bids
+      .filter(b => b.buyer_pubkey !== myPubHex)
+      .filter(b => Number(b.expiry || 0) > nowSec)
+      .filter(b => !b.axintent_id)
+      .map(b => {
+        const amt = BigInt(b.amount || 0);
+        const ps  = Number(b.price_sats || 0);
+        const u   = unitPriceSats(ps, amt, decimals);
+        return { b, amt, ps, u };
+      })
+      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floorUnit && c.amt > 0n)
+      .sort((x, y) => y.u - x.u);
+    if (!candidates.length) return null;
+    const plan = [];
+    let acc = 0n;
+    for (const c of candidates) {
+      if (acc >= targetAmtBig) break;
+      if (acc + c.amt > targetAmtBig) continue;
+      plan.push(c); acc += c.amt;
+    }
+    if (!plan.length) { plan.push(candidates[0]); acc = candidates[0].amt; }
+    const totalSats = plan.reduce((s, c) => s + c.ps, 0);
+    return { plan, accumulated: acc, totalSats, refFloor: floorUnit, residual: targetAmtBig - acc };
+  };
+  // Live readout updater. Runs on every keystroke; resolves the plan and
+  // updates the side's text + button label + enabled state.
+  const updateBuyReadout = () => {
+    const inputEl = widget.querySelector('[data-mt-side="buy"][data-mt-field="amount"]');
+    const readEl  = widget.querySelector('[data-mt-side="buy"][data-mt-readout]');
+    const btnEl   = widget.querySelector('[data-mt-side="buy"][data-mt-action="execute"]');
+    if (!inputEl || !readEl || !btnEl) return;
+    const raw = (inputEl.value || '').trim();
+    if (!raw) {
+      readEl.textContent = 'enter an amount';
+      btnEl.disabled = true; btnEl.style.opacity = '0.5';
+      btnEl.textContent = 'Buy now';
+      return;
+    }
+    let amt;
+    try { amt = parseAssetAmount(raw, decimals); }
+    catch { readEl.textContent = '✗ invalid amount'; btnEl.disabled = true; btnEl.style.opacity = '0.5'; return; }
+    if (amt <= 0n) { readEl.textContent = '✗ amount must be > 0'; btnEl.disabled = true; btnEl.style.opacity = '0.5'; return; }
+    const result = _computeBuyPlan(amt);
+    if (!result) {
+      readEl.textContent = `no asks at market — try sweep buy with a custom cap`;
+      btnEl.disabled = true; btnEl.style.opacity = '0.5';
+      return;
+    }
+    const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+    const usdTail = usd ? ` · ${usd}` : '';
+    const lowest = result.plan[0].u, highest = result.plan[result.plan.length - 1].u;
+    const rangeStr = result.plan.length === 1
+      ? `${fmtUnitPriceSats(lowest)} sats/${ticker}`
+      : `${fmtUnitPriceSats(lowest)}–${fmtUnitPriceSats(highest)} sats/${ticker}`;
+    const accStr = fmtAssetAmount(result.accumulated, decimals);
+    const residStr = result.residual > 0n
+      ? ` · ${fmtAssetAmount(result.residual, decimals)} ${ticker} unavailable at slippage cap`
+      : '';
+    readEl.textContent = `≈ ${result.totalSats.toLocaleString()} sats${usdTail} · ${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr}${residStr}`;
+    btnEl.disabled = false; btnEl.style.opacity = '1';
+    btnEl.textContent = `Buy ${accStr} ${ticker}`;
+    btnEl.dataset.mtPlanAmount = String(amt);
+    btnEl.dataset.mtPlanFills = String(result.plan.length);
+    btnEl.dataset.mtPlanTotal = String(result.totalSats);
+  };
+  // Sell readout is async (needs bid intents from worker — same 30s
+  // cache the bids ladder uses; effectively free after first paint).
+  // Debounced via a token so a fast typist doesn't pile up promises.
+  let sellReadoutToken = 0;
+  const updateSellReadout = async () => {
+    const myToken = ++sellReadoutToken;
+    const inputEl = widget.querySelector('[data-mt-side="sell"][data-mt-field="amount"]');
+    const readEl  = widget.querySelector('[data-mt-side="sell"][data-mt-readout]');
+    const btnEl   = widget.querySelector('[data-mt-side="sell"][data-mt-action="execute"]');
+    if (!inputEl || !readEl || !btnEl) return;
+    const raw = (inputEl.value || '').trim();
+    if (!raw) {
+      readEl.textContent = 'enter an amount';
+      btnEl.disabled = true; btnEl.style.opacity = '0.5';
+      btnEl.textContent = 'Sell now';
+      return;
+    }
+    let amt;
+    try { amt = parseAssetAmount(raw, decimals); }
+    catch { readEl.textContent = '✗ invalid amount'; btnEl.disabled = true; btnEl.style.opacity = '0.5'; return; }
+    if (amt <= 0n) { readEl.textContent = '✗ amount must be > 0'; btnEl.disabled = true; btnEl.style.opacity = '0.5'; return; }
+    const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+    if (amt > bal) {
+      readEl.textContent = `✗ you only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`;
+      btnEl.disabled = true; btnEl.style.opacity = '0.5';
+      return;
+    }
+    readEl.textContent = 'computing…';
+    const result = await _planSell(amt);
+    if (sellReadoutToken !== myToken) return;  // stale; user typed more
+    if (!result) {
+      readEl.textContent = `no bids at market — try sweep sell with a custom floor`;
+      btnEl.disabled = true; btnEl.style.opacity = '0.5';
+      return;
+    }
+    const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+    const usdTail = usd ? ` · ${usd}` : '';
+    const highest = result.plan[0].u, lowest = result.plan[result.plan.length - 1].u;
+    const rangeStr = result.plan.length === 1
+      ? `${fmtUnitPriceSats(highest)} sats/${ticker}`
+      : `${fmtUnitPriceSats(lowest)}–${fmtUnitPriceSats(highest)} sats/${ticker}`;
+    const accStr = fmtAssetAmount(result.accumulated, decimals);
+    const residStr = result.residual > 0n
+      ? ` · ${fmtAssetAmount(result.residual, decimals)} ${ticker} unfilled at slippage floor`
+      : '';
+    readEl.textContent = `≈ ${result.totalSats.toLocaleString()} sats${usdTail} · ${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr}${residStr}`;
+    btnEl.disabled = false; btnEl.style.opacity = '1';
+    btnEl.textContent = `Sell ${accStr} ${ticker}`;
+    btnEl.dataset.mtPlanAmount = String(amt);
+    btnEl.dataset.mtPlanFills = String(result.plan.length);
+    btnEl.dataset.mtPlanTotal = String(result.totalSats);
+  };
+  // Bind input events
+  const buyInput  = widget.querySelector('[data-mt-side="buy"][data-mt-field="amount"]');
+  const sellInput = widget.querySelector('[data-mt-side="sell"][data-mt-field="amount"]');
+  if (buyInput)  buyInput.addEventListener('input', updateBuyReadout);
+  if (sellInput) sellInput.addEventListener('input', updateSellReadout);
+  // Bind execute buttons. Both re-compute the plan fresh at click time
+  // (the readout could be stale if the market refreshed mid-typing) and
+  // gate on a confirm() with the resolved plan in plain language.
+  const buyBtn  = widget.querySelector('[data-mt-side="buy"][data-mt-action="execute"]');
+  const sellBtn = widget.querySelector('[data-mt-side="sell"][data-mt-action="execute"]');
+  if (buyBtn) buyBtn.onclick = async () => {
+    const raw = (buyInput?.value || '').trim();
+    if (!raw) return;
+    let amt;
+    try { amt = parseAssetAmount(raw, decimals); } catch { return; }
+    if (amt <= 0n) return;
+    const result = _computeBuyPlan(amt);
+    if (!result) { toast('No asks available at market', 'error'); return; }
+    const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+    const accStr = fmtAssetAmount(result.accumulated, decimals);
+    if (!confirm(
+      `Buy ${accStr} ${ticker} at market?\n\n` +
+      `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${result.totalSats.toLocaleString()} sats${usd ? ` (~${usd})` : ''}\n` +
+      `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n\n` +
+      `Each fill is one Bitcoin tx. Total fees ~${(result.plan.length * 800).toLocaleString()} sats. Broadcasts sequentially; stops on first failure.`
+    )) return;
+    buyBtn.disabled = true;
+    const origLabel = buyBtn.textContent;
+    buyBtn.textContent = 'broadcasting…';
+    let filled = 0;
+    let lastErr = null;
+    for (let i = 0; i < result.plan.length; i++) {
+      const c = result.plan[i];
+      buyBtn.textContent = `${filled}/${result.plan.length} filled…`;
+      try {
+        const r = await takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l });
+        filled++;
+        const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
+        await Promise.all([_mark(r?.commit_txid), _mark(r?.reveal_txid)]);
+        if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
+      } catch (e) {
+        lastErr = e?.message || String(e);
+        break;
+      }
+    }
+    invalidateMarketCache();
+    invalidateHoldingsCache();
+    if (lastErr && filled === 0) {
+      toast(`Buy failed: ${lastErr}`, 'error');
+    } else if (lastErr) {
+      toast(`Buy partial: ${filled}/${result.plan.length} filled · ${lastErr}`, 'error', 8000);
+    } else {
+      toast(`Bought ${accStr} ${ticker} ✓`, 'success', 5000);
+    }
+    buyBtn.disabled = false;
+    buyBtn.textContent = origLabel;
+    setTimeout(() => renderMarket(), 1500);
+  };
+  if (sellBtn) sellBtn.onclick = async () => {
+    const raw = (sellInput?.value || '').trim();
+    if (!raw) return;
+    let amt;
+    try { amt = parseAssetAmount(raw, decimals); } catch { return; }
+    if (amt <= 0n) return;
+    const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+    if (amt > bal) { toast(`You only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`, 'error'); return; }
+    const result = await _planSell(amt);
+    if (!result) { toast('No bids available at market', 'error'); return; }
+    const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+    const accStr = fmtAssetAmount(result.accumulated, decimals);
+    if (!confirm(
+      `Sell ${accStr} ${ticker} at market?\n\n` +
+      `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} · ${result.totalSats.toLocaleString()} sats${usd ? ` (~${usd})` : ''}\n` +
+      `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}\n\n` +
+      `Each fulfilment publishes an atomic intent. Settlement awaits each bidder's Take (~1–30 min). ` +
+      `${_isAutoFulfilEnabled() ? 'Auto-fulfil is ON.' : 'Enable Auto-fulfil first to keep this tab signing claims automatically.'}`
+    )) return;
+    sellBtn.disabled = true;
+    const origLabel = sellBtn.textContent;
+    sellBtn.textContent = 'fulfilling…';
+    let filled = 0;
+    let lastErr = null;
+    for (let i = 0; i < result.plan.length; i++) {
+      const c = result.plan[i];
+      sellBtn.textContent = `${filled}/${result.plan.length} filled…`;
+      try {
+        const r = await fulfilBidIntent({ bid: c.b });
+        filled++;
+        const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
+        await Promise.all([_mark(r?.commit_txid), _mark(r?.split_txid)]);
+        if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
+      } catch (e) {
+        lastErr = e?.message || String(e);
+        break;
+      }
+    }
+    invalidateMarketCache();
+    invalidateHoldingsCache();
+    _invalidateBidsCache(aid);
+    if (lastErr && filled === 0) {
+      toast(`Sell failed: ${lastErr}`, 'error');
+    } else if (lastErr) {
+      toast(`Sell partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}`, 'error', 8000);
+    } else {
+      toast(`Selling ${accStr} ${ticker} ✓ (pending bidder Takes)`, 'success', 5000);
+    }
+    sellBtn.disabled = false;
+    sellBtn.textContent = origLabel;
+    setTimeout(() => renderMarket(), 1500);
+  };
+  // Trigger an initial readout pass in case the form repopulated with
+  // stale values from a re-render (e.g., the input had focus during the
+  // grid-prune debounce). No-op when inputs are empty.
+  updateBuyReadout();
+  updateSellReadout().catch(() => {});
+}
+
 function _wireMarketSweepBuy(section, asset) {
   const aid = section.dataset.aid;
   const ticker = asset.ticker || '?';
@@ -37582,6 +37937,10 @@ export {
   // drive publish → claim → fulfil → take headlessly without the browser UI.
   publishAxferIntent, claimAxferIntent, fulfilAxferIntent,
   fetchAxferFulfilment, takeAxferIntent, cancelAxferIntent,
+  // Direct retry hooks for resume-after-partial-failure (e.g. publish broadcast
+  // OK but worker POST timed out). The harness uses these to retry the POST
+  // without rebroadcasting.
+  postAxferIntentBody, resumePendingAxintents,
   deriveAxintentBlindingKeystream, xor32,
   // §5.7.6 on-chain encrypted (amount, blinding) helpers. Exported for parity
   // tests against the test-side mirror, and for any reference implementation
