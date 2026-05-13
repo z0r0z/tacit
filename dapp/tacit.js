@@ -1975,6 +1975,35 @@ function _cachedBtcUsd() {
 // before market tiles paint. Safe to call multiple times; getBtcUsdPrice
 // dedupes via _btcUsdInFlight + TTL.
 function _prewarmBtcUsd() { try { getBtcUsdPrice().catch(() => {}); } catch {} }
+// Per-token USD formatter: shows sub-penny prices honestly with enough
+// precision to be informative. Tacit assets often trade at sub-cent
+// unit prices (TAC at ~360 sats/TAC ≈ $0.0003/TAC at $80K BTC) so the
+// generic fmtSatsAsUsd's "<$0.01" floor erases the actual signal. This
+// helper keeps 3 significant figures for tiny amounts and falls back
+// to fmtSatsAsUsd's formatting at $0.01+.
+function fmtUnitUsd(unitSats, btcUsd) {
+  if (!Number.isFinite(unitSats) || unitSats <= 0) return null;
+  if (!Number.isFinite(btcUsd) || btcUsd <= 0) return null;
+  const usd = unitSats * btcUsd / 100_000_000;
+  if (usd >= 100) return '$' + usd.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  if (usd >= 1)   return '$' + usd.toFixed(2);
+  if (usd >= 0.01) return '$' + usd.toFixed(4);
+  if (usd > 0) {
+    // toPrecision(3) gives 3 sig figs in either fixed or exponential
+    // form. We coerce out of exponential for readability — sub-$0.01
+    // numbers in tacit's range fit in 6–8 decimals.
+    const s = usd.toPrecision(3);
+    if (s.includes('e')) {
+      // Very small (≤ $1e-7). Render with leading zeros explicitly.
+      const num = Number(s);
+      // Find the first non-zero digit and show 3 sig figs from there.
+      const fixed = num.toFixed(20).replace(/0+$/, '');
+      return '$' + (fixed.length > 14 ? fixed.slice(0, 14) : fixed);
+    }
+    return '$' + s;
+  }
+  return null;
+}
 // Format sats as USD using the cached BTC price. Returns null when the
 // price isn't available — caller should render sats-only in that case.
 function fmtSatsAsUsd(sats, btcUsd) {
@@ -32810,7 +32839,7 @@ function renderMarketBrowse(rows) {
         ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
         : verifiedBadgeHTML(a);
     const kindBits = [];
-    if (g.preauths) kindBits.push(`<span style="color:#0a8f43;font-weight:bold;" title="instant listings (trustless, seller offline)">⚡ ${preauths} instant</span>`);
+    if (g.preauths) kindBits.push(`<span style="color:#0a8f43;font-weight:bold;" title="instant listings (trustless, seller offline)">⚡ ${g.preauths} instant</span>`);
     if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic offers (trustless, claim-and-take)">⚡ ${g.intents} atomic</span>`);
     if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
     if (g.ranges) kindBits.push(`<span title="range listings (trust-required OTC)">${g.ranges} range</span>`);
