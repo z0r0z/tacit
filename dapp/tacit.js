@@ -18475,6 +18475,7 @@ function setupTabs() {
       if (tab.dataset.tab === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
       else stopPetchAutoRefresh();
       if (tab.dataset.tab === 'market') renderMarket();
+      else { _stopMarketAutoRefresh(); _resetMarketLiveSnapshot(); }
       if (tab.dataset.tab === 'mixer') { renderMixer(); startMixerAutoRefresh(); }
       else stopMixerAutoRefresh();
       // Re-evaluate the cross-tab OTC claim banner: when the user lands on
@@ -30050,10 +30051,21 @@ async function renderRecentEtches() {
         toggleEl.style.display = 'none';
       }
     }
+    // Filter out copycats + ticker-duplicates before sort/slice so the
+    // wallet lander's recent/active highlights never feature spoofed
+    // tickers. We keep the FULL allAssets for the stats line above (total
+    // etched, mintable, public-mint counts include duplicates — those
+    // numbers are network-level signals, not curation). Only the tile
+    // grid below is filtered. Originals (first-etched of a colliding
+    // ticker) survive because markTickerCollisions stamps them with
+    // `_tickerCollision === 'original'`, not `'duplicate'`.
+    const _curatedAssets = allAssets.filter(a =>
+      !a._copycatInfo && a._tickerCollision !== 'duplicate'
+    );
     // Default "recent" sort merges both registries by etched_at desc — without
     // the explicit sort, the array order ([...cetch, ...petch]) would push all
     // petches behind all CETCHes regardless of when they were actually deployed.
-    let sorted = [...allAssets].sort((x, y) =>
+    let sorted = [..._curatedAssets].sort((x, y) =>
       (Number(y.etched_at) || 0) - (Number(x.etched_at) || 0));
     if (_landerSort === 'active') {
       // Composite "activity" signal — for CETCH: transfers + offers + mints +
@@ -30069,7 +30081,7 @@ async function renderRecentEtches() {
              + (Array.isArray(a.mints) ? a.mints.length : 0)
              + (Array.isArray(a.burns) ? a.burns.length : 0);
       };
-      sorted = [...allAssets].sort((x, y) => {
+      sorted = [..._curatedAssets].sort((x, y) => {
         const ya = score(y), xa = score(x);
         if (ya !== xa) return ya - xa;
         // Tiebreaker: newer first so two zero-activity assets surface in
@@ -31816,6 +31828,57 @@ function _isDustAsk(askUnit, markUnit, totalSats) {
   if (!Number.isFinite(totalSats) || totalSats <= 0) return false;
   return (askUnit < markUnit * 0.2) && (totalSats < 1000);
 }
+// Live-reactivity snapshot: maps listing key → last seen unit price. When
+// the orderbook re-renders, _annotateLiveDiff() compares each tile's
+// current unit price to the snapshot and tags new/changed tiles with
+// data-market-anim so CSS keyframes flash them. Cleared on tab leave so
+// stale entries don't fire on re-entry.
+const _marketLiveSnapshot = new Map();
+function _resetMarketLiveSnapshot() { _marketLiveSnapshot.clear(); }
+// Tag a tile based on diff from previous render. `key` is the stable
+// per-listing identifier (marketListingKey). `unit` is the current
+// sats/ticker. Returns the anim kind so the caller can stamp the
+// attribute before insertion (avoids a second pass).
+function _diffMarketLive(key, unit) {
+  if (!key) return null;
+  const prev = _marketLiveSnapshot.get(key);
+  _marketLiveSnapshot.set(key, unit);
+  if (prev == null) return 'new';
+  if (!Number.isFinite(prev) || !Number.isFinite(unit)) return null;
+  if (unit < prev) return 'down';
+  if (unit > prev) return 'up';
+  return null;
+}
+// One-shot animation cleanup: removes data-market-anim after the keyframe
+// finishes so subsequent unchanged renders don't re-trigger the effect.
+function _bindMarketLiveCleanup(el) {
+  if (!el || el._liveCleanupBound) return;
+  el._liveCleanupBound = true;
+  el.addEventListener('animationend', () => {
+    el.removeAttribute('data-market-anim');
+  }, { once: false });
+}
+// Auto-refresh: re-fetch market data every 15s while the Markets tab is
+// visible. Hooks into existing fetchMarketDataDeduped so a manual swap
+// completing within the window doesn't trigger a duplicate request.
+let _marketAutoRefreshTimer = null;
+const MARKET_AUTO_REFRESH_MS = 15000;
+function _startMarketAutoRefresh() {
+  if (_marketAutoRefreshTimer) return;
+  _marketAutoRefreshTimer = setInterval(async () => {
+    if (typeof document !== 'undefined' && document.hidden) return;
+    const tab = (typeof window !== 'undefined' && window.location?.hash || '');
+    if (!tab.includes('tab=market')) return;
+    try {
+      await fetchMarketDataDeduped();
+      if (_marketView === 'browse') applyMarketFilters();
+      else if (_marketView && typeof _marketView === 'object') applyMarketFilters();
+    } catch {}
+  }, MARKET_AUTO_REFRESH_MS);
+}
+function _stopMarketAutoRefresh() {
+  if (_marketAutoRefreshTimer) { clearInterval(_marketAutoRefreshTimer); _marketAutoRefreshTimer = null; }
+}
 function _marketFloorByAsset() {
   if (!_marketCache?.listings) return null;
   // Key on the listings array reference, not the _marketCache object — the
@@ -32406,6 +32469,10 @@ async function renderMarket() {
     if (status) status.textContent = '';
     return;
   }
+  // Kick the auto-refresh polling loop on first market entry. Idempotent
+  // — re-entries no-op since the timer is already running. The loop
+  // self-pauses when the tab is hidden or the user navigates away.
+  _startMarketAutoRefresh();
   // Cross-tab deep-link: a Discover card's "view offers" badge sets
   // pendingMarketFilter to a full asset_id. Drop straight into asset mode for
   // that asset rather than the browse index — the user already picked.
@@ -32665,7 +32732,7 @@ function applyMarketFilters() {
         : `<button data-act="market-mine-asks-toggle" type="button" title="Filter to your asks only (${minedAsksCount} active)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Mine</button>`)
     : '';
   const asksHeaderHtml = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><strong>Asks · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel}</span></div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong>Asks · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel}</span></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}</div>
     </div>${_askFormSlot}`;
   // Swap tile: the primary trading action surface, modeled on Uniswap /
@@ -32944,6 +33011,13 @@ function applyMarketFilters() {
         <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSatsRaw, ''))}</span>
       </div>
       ${actionRow}`;
+    // Live-reactivity: compare this tile's current unit price against the
+    // last seen value for the same listing key. Tag the tile so CSS
+    // animates new entries (fade-in) and price changes (green/red flash).
+    const _liveUnit = unitPriceSats(Number(priceSatsRaw || 0), amount, dec);
+    const _animKind = _diffMarketLive(tile.dataset.listingKey, _liveUnit);
+    if (_animKind) tile.setAttribute('data-market-anim', _animKind);
+    _bindMarketLiveCleanup(tile);
     frag.appendChild(tile);
   }
   grid.appendChild(frag);
@@ -35372,6 +35446,19 @@ async function populateMarketBidsLadder(scope, asset) {
       </div>
       ${rowsHtml}
     </div>`;
+  // Live-reactivity for bids: same diff annotation as asks but applied
+  // post-render since these rows use innerHTML template strings rather
+  // than DOM construction. Key namespace `bid:${bid_id}` keeps it
+  // separate from ask listing keys in the shared snapshot map.
+  list.querySelectorAll('[data-bid-row]').forEach(row => {
+    const bidId = row.dataset.bidId;
+    if (!bidId) return;
+    const b = ladder.find(x => x.bid_id === bidId);
+    if (!b) return;
+    const kind = _diffMarketLive(`bid:${bidId}`, b._unit);
+    if (kind) row.setAttribute('data-market-anim', kind);
+    _bindMarketLiveCleanup(row);
+  });
   list.querySelectorAll('[data-act="market-mine-bids-toggle"]').forEach(btn => {
     btn.onclick = () => {
       _marketMineOnlyBids = !_marketMineOnlyBids;
