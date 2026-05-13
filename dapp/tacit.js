@@ -26530,13 +26530,25 @@ async function renderHoldings() {
           // Distinguish T_PMINT failures (no rangeproof — failure is cap
           // overflow, asset_id forgery, or wrong amount) from CETCH/CXFER
           // rangeproof failures so the warning copy matches the actual issue.
-          // Generic "invalid rangeproofs" was technically incorrect for petch-
-          // rooted UTXOs, which carry public (amount, blinding) and never have
-          // a rangeproof to fail.
+          // Petch-rooted UTXOs carry public (amount, blinding) and never have
+          // a rangeproof to fail, so a different failure mode applies.
+          //
+          // Common-case copy: "couldn't verify" rather than "inflation attempt
+          // detected." A genuine inflation attempt is rare — most failures
+          // here are transient (indexer rate-limited a parent /tx fetch
+          // during a deep ancestry walk; the parent's null result cascades
+          // forward as "validation failed" for every descendant). A loud
+          // security-alert framing led users to think their tokens were
+          // being stolen when ↻ Rescan would have cleared it.
           const reason = isPetchRooted
-            ? 'failed cap-credit or §5.9 validation (envelope decoded but not creditable — e.g. cap-overflow or wrong amount)'
-            : 'have invalid rangeproofs';
-          return `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee;border-left-color:var(--red);"><strong>⚠ Inflation attempt detected:</strong> ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} ${reason}. These are not counted in your balance.</div>`;
+            ? `failed cap-credit or §5.9 validation (envelope decoded but not creditable — e.g. cap-overflow or wrong amount)`
+            : `couldn't verify rangeproofs — often transient (indexer fetch failure during a deep ancestry walk). Click Retry below; if it persists across multiple scans, the UTXO may be genuinely malformed`;
+          return `<div class="warn" style="margin-top:10px;font-size:11px;background:#fee8d6;border-left-color:var(--orange);">
+            <strong>⚠ ${h.inflated.length} UTXO${h.inflated.length>1?'s':''} unverified:</strong> ${reason}. Not counted in your balance until verification succeeds.
+            <div style="margin-top:6px;">
+              <button data-act="retry-inflated" data-aid="${h.assetIdHex}" type="button" style="font-size:10px;padding:3px 10px;">↻ Retry verification</button>
+            </div>
+          </div>`;
         })() : ''}
         <div data-region="my-listings"></div>
         ${primaryButtons ? `<div class="actions">${primaryButtons}</div>` : ''}
@@ -26609,6 +26621,28 @@ async function renderHoldings() {
         } else if (b.dataset.act === 'copy-pub') {
           try { await navigator.clipboard.writeText(wallet.pubHex()); toast('Pubkey copied', 'success'); }
           catch { toast('Could not copy — select the text manually', 'error'); }
+        } else if (b.dataset.act === 'retry-inflated') {
+          // User-driven retry for UTXOs that fell into h.inflated last scan.
+          // Common cause: an indexer /tx fetch returned null mid-walk and
+          // cascaded forward, mis-classifying healthy descendants. A fresh
+          // scanHoldings(force=true) re-walks every previously-failed UTXO
+          // with fresh fetches — the persistent validatedTrue cache short-
+          // circuits the already-good ancestors, so only the suspect ones
+          // re-fetch. With the global api() semaphore in place, the retry
+          // doesn't burst against rate limits.
+          b.disabled = true;
+          const orig = b.textContent;
+          b.textContent = 'retrying…';
+          try {
+            invalidateHoldingsCache();
+            await scanHoldings(true);
+            renderHoldings();
+            toast('Re-scan complete. If the warning persists across retries, the UTXO is likely genuinely malformed.', '');
+          } catch (e) {
+            b.disabled = false;
+            b.textContent = orig;
+            toast('Retry failed: ' + (e?.message || String(e)), 'error');
+          }
         } else if (b.dataset.act === 'copy-taker-pub') {
           // OTC delivery helper: copy the taker's pubkey verbatim from the
           // claim row so the maker can paste it into Send Privately (or
