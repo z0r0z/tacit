@@ -30072,13 +30072,25 @@ async function renderRecentEtches() {
       // burns. For petch: transfers + pmint_count (every public mint counts as
       // one activity event). Without the petch branch, fair launches would
       // always sort to zero and disappear from the active view.
+      // Activity score: settled trades (preauth_sale_count + atomic_intent_count)
+      // weigh 5× vs other events because settled sales are the cleanest
+      // "real market activity" signal — listings can be posted speculatively,
+      // transfers happen as part of any tx, but a completed sale is someone
+      // actually trading on this asset. Mints (cumulative or array length)
+      // weigh 2× as the next strongest signal: each represents real demand
+      // for new supply. Other events stay at 1×.
       const score = (a) => {
         if (a.kind === 'petch') {
-          return (Number(a.transfer_count || 0)) + (Number(a.pmint_count || 0));
+          // Petch has no orderbook; trades-equivalent is each new public mint.
+          return (Number(a.transfer_count || 0))
+               + 2 * (Number(a.pmint_count || 0) + Number(a.pending_pmint_count || 0));
         }
+        const trades = Number(a.preauth_sale_count || 0) + Number(a.atomic_intent_count || 0);
+        const mintsCount = Array.isArray(a.mints) ? a.mints.length : 0;
         return (Number(a.transfer_count || 0))
-             + (Number(a.listing_count || 0)) + (Number(a.range_listing_count || 0)) + (Number(a.atomic_intent_count || 0)) + (Number(a.preauth_sale_count || 0))
-             + (Array.isArray(a.mints) ? a.mints.length : 0)
+             + (Number(a.listing_count || 0)) + (Number(a.range_listing_count || 0))
+             + 5 * trades
+             + 2 * mintsCount
              + (Array.isArray(a.burns) ? a.burns.length : 0);
       };
       sorted = [..._curatedAssets].sort((x, y) => {
@@ -30182,11 +30194,33 @@ async function renderRecentEtches() {
       // logos. CSS targeting .recent-tile > img sizes the real image; the
       // fallback <div> sets its own size inline to match.
       const _fallback = a.asset_id ? assetImageFallback(a.asset_id, ticker, 36) : '';
+      // Activity signal pills: 24h price change and trade/mint counts.
+      // Three slots, each only rendered when its source field is present
+      // and non-zero, so quiet assets stay clean.
+      const _pctRaw = Number(a.price_change_primary_pct);
+      const _pctWin = a.price_change_primary_window || '';
+      const _hasPct = Number.isFinite(_pctRaw) && _pctWin;
+      const _pctSign = _hasPct ? (_pctRaw > 0 ? '+' : '') : '';
+      const _pctColor = _hasPct ? (_pctRaw > 0 ? 'var(--green, #0a8f43)' : _pctRaw < 0 ? 'var(--red, #b8341d)' : 'var(--ink-mid)') : '';
+      const _pctPill = _hasPct
+        ? ` <span title="${escapeHtml(_pctWin)} mark price change vs prior window" style="display:inline-block;padding:0 4px;border:1px solid ${_pctColor};color:${_pctColor};font-size:9px;font-weight:600;letter-spacing:0.04em;">${escapeHtml(_pctSign + _pctRaw.toFixed(1))}% ${escapeHtml(_pctWin)}</span>`
+        : '';
+      const _trades = isPetch
+        ? (Number(a.pmint_count) || 0) + (Number(a.pending_pmint_count) || 0)
+        : (Number(a.preauth_sale_count) || 0) + (Number(a.atomic_intent_count) || 0);
+      const _tradesPill = _trades > 0
+        ? ` <span title="${isPetch ? 'public mints (T_PETCH)' : 'completed + open trades on the orderbook'}" style="display:inline-block;padding:0 4px;background:var(--ink);color:var(--bg);font-size:9px;letter-spacing:0.04em;">${_trades} ${isPetch ? 'mint' : 'trade'}${_trades === 1 ? '' : 's'}</span>`
+        : '';
+      const _mintsN = isPetch ? 0 : (Array.isArray(a.mints) ? a.mints.length : 0);
+      const _mintsPill = _mintsN > 0
+        ? ` <span title="post-etch mint events on this CETCH asset" style="display:inline-block;padding:0 4px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);font-size:9px;letter-spacing:0.04em;">${_mintsN} mint${_mintsN === 1 ? '' : 's'}</span>`
+        : '';
       tile.innerHTML = `
         ${imgUrl ? `<img loading="lazy" decoding="async" src="${escapeHtml(imgUrl)}" alt="">` : _fallback}
         <div class="recent-tile-body">
           <div class="recent-tile-ticker">${escapeHtml(displayName)}${displayName !== ticker ? ` <span style="font-family:var(--mono);font-size:9px;font-style:normal;color:var(--orange);letter-spacing:0.06em;text-transform:uppercase;">${escapeHtml(ticker)}</span>` : ''}${petchPill}${collisionPill}</div>
           <div class="recent-tile-meta">${ageStr}${verifyMark}${petchMark}${pending}${dupMark}</div>
+          ${(_pctPill || _tradesPill || _mintsPill) ? `<div class="recent-tile-stats" style="margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;">${_pctPill}${_tradesPill}${_mintsPill}</div>` : ''}
         </div>`;
     };
     // Build placeholder tiles synchronously and attach to the DOM in a single
