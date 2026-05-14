@@ -1937,52 +1937,90 @@ async function getBtcUsdPrice() {
     if (persisted) _btcUsdMemCache = persisted;
   }
   _btcUsdInFlight = (async () => {
-    // Source 1: mempool.space. Their /api/v1/prices is mainnet-only; on
-    // signet NET.api points at /signet/api which doesn't have it, so we
-    // hardcode the mainnet URL — BTC price doesn't depend on the tacit
-    // network setting. Fire-and-forget on failure (next source).
+    // Try each oracle in series, but cap each individual fetch at 3s
+    // via AbortController so a slow / hung source doesn't block the
+    // chain. Without the timeout, mempool.space being slow (CDN
+    // hiccup, rate-limit) would stall the entire BTC/USD load for
+    // ~30s before fetch's default network error. With timeouts, the
+    // chain moves to the next source in 3s flat, so worst-case time
+    // to USD = 4 sources × 3s = 12s, typical = first source resolves
+    // sub-second.
+    const _withTimeout = (signal_setter, url, opts) => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 3000);
+      const merged = Object.assign({}, opts || {}, { signal: ctrl.signal });
+      return fetch(url, merged).finally(() => clearTimeout(timer));
+    };
+    const _commit = (usd) => {
+      _btcUsdMemCache = { price: usd, fetchedAt: Date.now() };
+      _saveBtcUsdToStorage(usd);
+      return usd;
+    };
+    // Source 1: mempool.space. Their /api/v1/prices is mainnet-only;
+    // we hardcode the mainnet URL — BTC price doesn't depend on the
+    // tacit network setting (signet NET.api points at /signet/api
+    // which doesn't expose prices).
     try {
-      const r = await fetch('https://mempool.space/api/v1/prices');
+      const r = await _withTimeout(null, 'https://mempool.space/api/v1/prices');
       if (r.ok) {
         const j = await r.json();
         const usd = Number(j?.USD || 0);
-        if (Number.isFinite(usd) && usd > 0) {
-          _btcUsdMemCache = { price: usd, fetchedAt: Date.now() };
-          _saveBtcUsdToStorage(usd);
-          return usd;
-        }
+        if (Number.isFinite(usd) && usd > 0) return _commit(usd);
       }
     } catch {}
     // Source 2: Coinbase public spot.
     try {
-      const r = await fetch('https://api.coinbase.com/v2/prices/BTC-USD/spot');
+      const r = await _withTimeout(null, 'https://api.coinbase.com/v2/prices/BTC-USD/spot');
       if (r.ok) {
         const j = await r.json();
         const usd = Number(j?.data?.amount || 0);
-        if (Number.isFinite(usd) && usd > 0) {
-          _btcUsdMemCache = { price: usd, fetchedAt: Date.now() };
-          _saveBtcUsdToStorage(usd);
-          return usd;
-        }
+        if (Number.isFinite(usd) && usd > 0) return _commit(usd);
       }
     } catch {}
-    // Source 3: Kraken public ticker. Added because users on networks
-    // that geo-block / rate-limit both mempool.space and Coinbase were
-    // landing on a permanent "loading USD…" / "—" state with no
-    // fallback. Kraken's ticker endpoint is open CORS and rarely
-    // rate-limits anonymous reads.
+    // Source 3: Kraken public ticker. Shape:
+    // { result: { XXBTZUSD: { c: ["<price>", "<volume>"] } } }
     try {
-      const r = await fetch('https://api.kraken.com/0/public/Ticker?pair=XBTUSD');
+      const r = await _withTimeout(null, 'https://api.kraken.com/0/public/Ticker?pair=XBTUSD');
       if (r.ok) {
         const j = await r.json();
-        // Kraken returns { result: { XXBTZUSD: { c: ["<price>", "<volume>"] } } }
         const result = j?.result || {};
         const pairKey = Object.keys(result)[0];
         const lastPrice = pairKey ? Number(result[pairKey]?.c?.[0] || 0) : 0;
-        if (Number.isFinite(lastPrice) && lastPrice > 0) {
-          _btcUsdMemCache = { price: lastPrice, fetchedAt: Date.now() };
-          _saveBtcUsdToStorage(lastPrice);
-          return lastPrice;
+        if (Number.isFinite(lastPrice) && lastPrice > 0) return _commit(lastPrice);
+      }
+    } catch {}
+    // Source 4: CoinGecko simple/price. Free tier is generous on the
+    // anonymous read path. Shape: { bitcoin: { usd: <number> } }.
+    try {
+      const r = await _withTimeout(null, 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+      if (r.ok) {
+        const j = await r.json();
+        const usd = Number(j?.bitcoin?.usd || 0);
+        if (Number.isFinite(usd) && usd > 0) return _commit(usd);
+      }
+    } catch {}
+    // Source 5: Chainlink BTC/USD aggregator on Ethereum mainnet via
+    // Cloudflare's public eth-gateway. Truly independent of CEX
+    // pricing — the value is the median of Chainlink's node-operator
+    // submissions, settled on chain. Useful as a tie-breaker if all
+    // four CEX sources are throttled at once. Aggregator contract:
+    // 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c · latestAnswer()
+    // selector 0x50d25bcd · returns int256 with 8 decimals.
+    try {
+      const r = await _withTimeout(null, 'https://cloudflare-eth.com', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'eth_call',
+          params: [{ to: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', data: '0x50d25bcd' }, 'latest'],
+        }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        const hex = j && j.result;
+        if (typeof hex === 'string' && /^0x[0-9a-fA-F]{64}$/.test(hex)) {
+          const usd = Number(BigInt(hex)) / 1e8;
+          if (Number.isFinite(usd) && usd > 0) return _commit(usd);
         }
       }
     } catch {}
@@ -2376,14 +2414,36 @@ function _writeOutspendCacheNow() {
   // ordered LRU without explicit timestamps.
   const items = [..._outspendSpentCache.entries()];
   const start = Math.max(0, items.length - OUTSPEND_PERSIST_MAX);
+  // Compact each entry to ONLY the fields downstream consumers read:
+  //   sp.spent              — every consumer's primary read
+  //   sp.txid               — the spender txid (used to compare two
+  //                           outspends, e.g. assetSpent === commitSpent)
+  //   sp.status.confirmed   — the persistence gate (we only persist
+  //                           confirmed spends; saving this lets a
+  //                           future reload trust the cached entry
+  //                           without re-fetching to verify confirms)
+  // The full mempool.space response also carries a `vin` array per
+  // entry which can be many KB for fan-out transactions. Stripping
+  // it cuts the serialized blob by ~10× and gets the dapp out of the
+  // 5-10 MB localStorage quota that some browsers enforce. The in-
+  // memory cache stays full-shape — only the persistence form is
+  // compacted, so consumers that already hold a reference don't break.
   const entries = {};
-  for (let i = start; i < items.length; i++) entries[items[i][0]] = items[i][1];
+  for (let i = start; i < items.length; i++) {
+    const [k, v] = items[i];
+    if (!v || !v.spent) continue;
+    entries[k] = {
+      spent: true,
+      txid: v.txid || undefined,
+      status: v.status && v.status.confirmed === true ? { confirmed: true } : undefined,
+    };
+  }
   try { localStorage.setItem(_outspendCacheStorageKey(), JSON.stringify({ v: 1, entries })); }
   catch (e) {
-    // Quota exceeded → in-memory cache still works this session, but next
-    // reload starts cold (re-fetches every outspend). One-time warn so the
-    // failure mode is debuggable. Toggle via the dirty flag so subsequent
-    // writes within the session don't spam the console.
+    // Still over quota even after compaction → some other tacit
+    // localStorage key (asset registry, validated-set, activity log)
+    // has grown disproportionately. In-memory cache still works
+    // this session, but next reload starts cold. One-time warn.
     if (!_writeOutspendCacheNow._warned) {
       _writeOutspendCacheNow._warned = true;
       console.warn('[tacit] outspend cache flush failed; persistence disabled this session:', e?.message || e);
