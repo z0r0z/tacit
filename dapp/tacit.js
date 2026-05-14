@@ -29611,6 +29611,7 @@ async function renderHoldings() {
                   <input type="number" min="1" max="30" data-field="days" value="7">
                 </div>
               </div>
+              <div data-price-quickfill style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;font-size:10px;"></div>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
                   <label>Split into chunks (1–7) <span class="muted" style="font-weight:normal;font-size:10px;" title="Buyers can take any subset of chunks individually instead of having to buy the whole UTXO. Each chunk becomes its own listing at the same unit price.">↗ partial-fill</span></label>
@@ -33375,7 +33376,33 @@ function applyMarketFilters() {
     || l.owner_pubkey === myPubHexForMarket
   );
   const rowsFull = rows;
-  const rowsSimple = rowsFull.filter(l => l.kind === 'preauth');
+  // Simple Mode filters: (1) preauth-only (one-tx trustless), AND
+  // (2) drop dust asks priced below 0.2× mark price. The dust filter
+  // matches the swap tile's auto-router threshold (61fae58) so the
+  // visual ladder leads with real prices instead of being topped by
+  // 0.5-sat fat-finger listings. Power users flip to "All offers"
+  // to see everything (including dust) for transparency.
+  // Dust threshold uses the asset's worker-provided mark_price (the
+  // outlier-guarded sats/token from /assets:id). When no mark is
+  // available yet (cold cache, brand-new asset), the dust filter
+  // skips — better to show everything than to over-filter a market
+  // with no reference price.
+  const _markUnitForDust = Number(_assetForBids?.mark_price?.unit);
+  const _dustFloor = (Number.isFinite(_markUnitForDust) && _markUnitForDust > 0)
+    ? _markUnitForDust * 0.2
+    : 0;
+  const _isDustListing = (l) => {
+    if (_dustFloor <= 0) return false;
+    if (l.kind !== 'preauth') return false; // only filter preauths here
+    const amt = (() => { try { return BigInt(l.asset_opening?.amount || 0); } catch { return 0n; } })();
+    const ps = Number(l.min_price_sats || 0);
+    if (amt <= 0n || ps <= 0) return false;
+    const dec = Number.isInteger(_assetForBids?.decimals) ? _assetForBids.decimals : 0;
+    const u = unitPriceSats(ps, amt, dec);
+    return Number.isFinite(u) && u > 0 && u < _dustFloor;
+  };
+  const rowsSimpleAll = rowsFull.filter(l => l.kind === 'preauth');
+  const rowsSimple = rowsSimpleAll.filter(l => !_isDustListing(l));
   let rowsForGrid = _marketSimpleMode ? rowsSimple : rowsFull;
   const minedAsksCount = rowsFull.filter(isMyAsk).length;
   if (_marketMineOnlyAsks) rowsForGrid = rowsForGrid.filter(isMyAsk);
@@ -33414,8 +33441,8 @@ function applyMarketFilters() {
   // mislabel an actually-cheapest-first ladder as "newest first".
   const sortLabel = 'cheapest first';
   const modeChip = _marketSimpleMode
-    ? `<button data-act="market-simple-toggle" type="button" title="Simple mode hides atomic intents and OTC offers. Click to show all offers — including ⚡ atomic (3-step trustless flow) and ⚠ OTC (counterparty trust required)." style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` (+${hiddenByMode} hidden)` : ''}</button>`
-    : `<button data-act="market-simple-toggle" type="button" title="Show only one-click trustless instant listings (what the swap tile routes through). Hides atomic intents and OTC offers." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
+    ? `<button data-act="market-simple-toggle" type="button" title="Simple mode hides atomic intents, OTC offers, and dust asks (priced below 20% of mark — usually fat-finger or stale test listings). Click to opt into full transparency: all kinds + dust included." style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` (+${hiddenByMode} hidden)` : ''}</button>`
+    : `<button data-act="market-simple-toggle" type="button" title="Currently showing every listing including atomic intents, OTC offers, and dust asks priced far below mark. Click to switch to Simple (one-click instant listings at fair-market prices only)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
   // Computed inline (the asset header function has its own copy with the
   // same name; scopes don't share — this one is local to applyMarketFilters).
   const _userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId));
