@@ -37953,15 +37953,25 @@ function marketActivityRowsHtml(asset, events) {
     const rel = relativeAge(ev.ts || 0);
     const labelClass = ev.event === 'sale' ? 'event-sale' : ev.event === 'cancel' ? 'event-cancel' : 'event-listed';
     const id = ev.id || ev.txid || '';
+    // data-market-activity-txid / -ts are stable per-row keys the
+    // deferred address-loader uses to find this row after render. ts
+    // gates the lookup: trades younger than TRADE_ADDR_LOOKUP_MIN_AGE
+    // skip it (chain API hasn't indexed them yet). addrs-pending marks
+    // rows still waiting on getTx() so we don't re-fetch them every
+    // re-render. Cells 6 & 7 are the from / to address cells.
+    const txidLower = String(ev.txid || '').toLowerCase();
+    const isHexTxid = /^[0-9a-f]{64}$/.test(txidLower);
+    const tsNum = Number(ev.ts || 0);
+    const needsAddrs = isHexTxid && (!ev.from || !ev.to);
     return `
-      <tr data-market-activity-row data-market-activity-event="${escapeHtml(ev.event || 'listing')}">
+      <tr data-market-activity-row data-market-activity-event="${escapeHtml(ev.event || 'listing')}"${isHexTxid ? ` data-market-activity-txid="${escapeHtml(txidLower)}"` : ''}${tsNum ? ` data-market-activity-ts="${tsNum}"` : ''}${needsAddrs ? ' data-market-activity-addrs-pending="1"' : ''}>
         <td>${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(id, 6))}</a>` : escapeHtml(shorten(id, 6))}</td>
         <td><span class="${labelClass}">${escapeHtml(ev.label || 'Listed')}</span></td>
         <td><strong class="market-sats-price">${escapeHtml(unitText)}/${escapeHtml(ticker)}</strong>${unitUsd ? `<br><span class="market-table-sub market-usd-price">${escapeHtml(unitUsd)}</span>` : ''}</td>
         <td><strong>${escapeHtml(marketActivityAmountText(ev.amount, dec))}</strong></td>
         <td><strong class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSats))}</strong>${totalUsd ? `<br><span class="market-table-sub market-usd-price">${escapeHtml(totalUsd)}</span>` : ''}</td>
-        <td>${ev.from ? escapeHtml(shorten(ev.from, 6)) : '&mdash;'}</td>
-        <td>${ev.to ? escapeHtml(shorten(ev.to, 6)) : '&mdash;'}</td>
+        <td data-market-activity-from>${ev.from ? escapeHtml(shorten(ev.from, 6)) : '&mdash;'}</td>
+        <td data-market-activity-to>${ev.to ? escapeHtml(shorten(ev.to, 6)) : '&mdash;'}</td>
         <td>${escapeHtml(rel || 'now')}${href ? `<br><a class="activity-track" href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">Track</a>` : ''}</td>
       </tr>`;
   }).join('');
@@ -37987,22 +37997,17 @@ async function populateMarketActivityPanel(scope, asset, rows) {
     console.warn('asset stats load failed', err);
   }
   const officialTrades = Array.isArray(assetStats?.trades) ? assetStats.trades : [];
-  const _nowSec = Math.floor(Date.now() / 1000);
-  // Trades younger than ~10 min often haven't propagated to the chain
-  // API yet (commit broadcast → indexer pickup → mempool.space sync),
-  // so a /tx/<txid> lookup 404s and the activity row falls back to
-  // empty addresses anyway. Skip the request entirely on recent ones
-  // — keeps the network tab quiet and saves API budget. Older trades
-  // that genuinely 404 (RBF dropped, reorged) get caught by getTx's
-  // negative cache so we don't retry them every refresh either.
-  const TRADE_ADDR_LOOKUP_MIN_AGE_SECS = 10 * 60;
-  const tradeEvents = await Promise.all(officialTrades.slice(0, MARKET_ACTIVITY_MAX_ROWS).map(async (t) => {
-    const ageSecs = Math.max(0, _nowSec - Number(t?.ts || 0));
-    const txAddresses = ageSecs < TRADE_ADDR_LOOKUP_MIN_AGE_SECS
-      ? { seller_address: '', buyer_address: '' }
-      : await marketTradeAddressesFromTx(t?.txid);
-    return marketActivityEventFromTrade(asset, t, txAddresses);
-  }));
+  // Render rows immediately with empty seller/buyer addresses. The
+  // address lookups (one /tx/<txid> per old trade) used to block this
+  // function on `await Promise.all(...)` — 20 parallel mempool.space
+  // requests every time the activity panel rendered, competing with
+  // critical-path resources. Now: paint the rows first; attach a
+  // per-row IntersectionObserver; resolve addresses lazily as each row
+  // scrolls into view. Rows that never enter the viewport never
+  // trigger their lookup at all.
+  const tradeEvents = officialTrades
+    .slice(0, MARKET_ACTIVITY_MAX_ROWS)
+    .map(t => marketActivityEventFromTrade(asset, t, { seller_address: '', buyer_address: '' }));
   const events = mergeMarketActivityEvents(
     marketActivityEventsFromListings(asset, rows),
     tradeEvents,
@@ -38011,6 +38016,60 @@ async function populateMarketActivityPanel(scope, asset, rows) {
     .slice(0, MARKET_ACTIVITY_MAX_ROWS);
   body.innerHTML = marketActivityRowsHtml(asset, events) || '<tr><td colspan="8" class="empty">No activity</td></tr>';
   bindMarketActivityTable(panel);
+  _attachActivityAddressLazyLoader(body, asset);
+}
+
+// Per-row IntersectionObserver that resolves seller/buyer addresses
+// only when the row scrolls into view. Trades younger than ~10 min
+// haven't propagated to the chain API yet (commit broadcast →
+// indexer pickup → mempool.space sync), so a /tx/<txid> lookup 404s
+// and the activity row falls back to empty addresses anyway — skip
+// those entirely. Older trades that genuinely 404 (RBF dropped,
+// reorged) get caught by getTx's negative cache so we don't retry
+// them every refresh either.
+const TRADE_ADDR_LOOKUP_MIN_AGE_SECS = 10 * 60;
+function _attachActivityAddressLazyLoader(body, asset) {
+  if (!body) return;
+  const pending = body.querySelectorAll('[data-market-activity-row][data-market-activity-addrs-pending="1"][data-market-activity-txid]');
+  if (!pending.length) return;
+  const nowSec = Math.floor(Date.now() / 1000);
+  const dec = Number.isInteger(asset?.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  const resolveRow = async (row) => {
+    if (row.dataset.marketActivityAddrsPending !== '1') return;
+    const txid = row.dataset.marketActivityTxid || '';
+    const ts = Number(row.dataset.marketActivityTs || 0);
+    const ageSecs = Math.max(0, nowSec - ts);
+    if (ageSecs < TRADE_ADDR_LOOKUP_MIN_AGE_SECS) {
+      // Too recent — leave empty; chain indexer won't have it yet.
+      row.dataset.marketActivityAddrsPending = '';
+      return;
+    }
+    // Mark pre-flight so a re-render during the await doesn't double-fetch.
+    row.dataset.marketActivityAddrsPending = '0';
+    try {
+      const addrs = await marketTradeAddressesFromTx(txid);
+      const seller = String(addrs?.seller_address || '').trim();
+      const buyer  = String(addrs?.buyer_address  || '').trim();
+      const fromCell = row.querySelector('[data-market-activity-from]');
+      const toCell   = row.querySelector('[data-market-activity-to]');
+      if (fromCell && seller) fromCell.textContent = shorten(seller, 6);
+      if (toCell && buyer)    toCell.textContent   = shorten(buyer, 6);
+    } catch { /* getTx blip — leave em-dashes; retry on next render */ }
+  };
+  if (typeof IntersectionObserver === 'undefined') {
+    // Fallback: resolve all rows now (best-effort, parallel).
+    pending.forEach(row => { resolveRow(row).catch(() => {}); });
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const row = entry.target;
+      io.unobserve(row);
+      resolveRow(row).catch(() => {});
+    }
+  }, { rootMargin: '100px 0px' });
+  pending.forEach(row => io.observe(row));
 }
 
 function marketActivityPanelHtml(asset, rows) {
@@ -38984,42 +39043,49 @@ async function populateMarketAssetStats(scope, asset) {
   const chartEl = section.querySelector('[data-market-price-chart]');
   if (chartEl) {
     const _markForChart = Number(j?.mark_price?.unit ?? asset?.mark_price?.unit);
-    const chartHtml = renderMarketPriceChartSVG(trades, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null);
-    if (chartHtml) {
-      // Path-level morph: capture the OLD line + area `d` attrs
-      // before the innerHTML swap, write the new chart, then WAAPI-
-      // animate the new path's `d` from old → new value. Browsers
-      // that support attribute interpolation for `d` (Chromium-based)
-      // get the smooth slide; others fall back to instant swap (the
-      // existing behavior, no regression). Mark/area paths use the
-      // same dataset markers added in renderMarketPriceChartSVG.
-      const _oldLineD = chartEl.querySelector('[data-chart-line]')?.getAttribute('d') || null;
-      const _oldAreaD = chartEl.querySelector('[data-chart-area]')?.getAttribute('d') || null;
-      chartEl.innerHTML = chartHtml;
-      chartEl.style.display = '';
-      _wireMarketPriceChartCursor(chartEl);
-      const _newLine = chartEl.querySelector('[data-chart-line]');
-      const _newArea = chartEl.querySelector('[data-chart-area]');
-      if (_oldLineD && _newLine && typeof _newLine.animate === 'function') {
-        try {
-          _newLine.animate(
-            [{ d: `path('${_oldLineD}')` }, { d: `path('${_newLine.getAttribute('d')}')` }],
-            { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
-          );
-        } catch { /* unsupported `d` interpolation — silent fallback */ }
+    // Defer the price-chart paint until the container is in (or near)
+    // the viewport on FIRST render. Re-renders after that short-circuit
+    // to immediate paint so live updates (auto-refresh) don't get
+    // queued behind another intersection. Saves the SVG-build cost on
+    // every asset switch when the chart is below the fold.
+    _lazyPaintWhenVisible(chartEl, () => {
+      const chartHtml = renderMarketPriceChartSVG(trades, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null);
+      if (chartHtml) {
+        // Path-level morph: capture the OLD line + area `d` attrs
+        // before the innerHTML swap, write the new chart, then WAAPI-
+        // animate the new path's `d` from old → new value. Browsers
+        // that support attribute interpolation for `d` (Chromium-based)
+        // get the smooth slide; others fall back to instant swap (the
+        // existing behavior, no regression). Mark/area paths use the
+        // same dataset markers added in renderMarketPriceChartSVG.
+        const _oldLineD = chartEl.querySelector('[data-chart-line]')?.getAttribute('d') || null;
+        const _oldAreaD = chartEl.querySelector('[data-chart-area]')?.getAttribute('d') || null;
+        chartEl.innerHTML = chartHtml;
+        chartEl.style.display = '';
+        _wireMarketPriceChartCursor(chartEl);
+        const _newLine = chartEl.querySelector('[data-chart-line]');
+        const _newArea = chartEl.querySelector('[data-chart-area]');
+        if (_oldLineD && _newLine && typeof _newLine.animate === 'function') {
+          try {
+            _newLine.animate(
+              [{ d: `path('${_oldLineD}')` }, { d: `path('${_newLine.getAttribute('d')}')` }],
+              { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
+            );
+          } catch { /* unsupported `d` interpolation — silent fallback */ }
+        }
+        if (_oldAreaD && _newArea && typeof _newArea.animate === 'function') {
+          try {
+            _newArea.animate(
+              [{ d: `path('${_oldAreaD}')` }, { d: `path('${_newArea.getAttribute('d')}')` }],
+              { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
+            );
+          } catch { /* same */ }
+        }
+      } else {
+        chartEl.innerHTML = '';
+        chartEl.style.display = 'none';
       }
-      if (_oldAreaD && _newArea && typeof _newArea.animate === 'function') {
-        try {
-          _newArea.animate(
-            [{ d: `path('${_oldAreaD}')` }, { d: `path('${_newArea.getAttribute('d')}')` }],
-            { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
-          );
-        } catch { /* same */ }
-      }
-    } else {
-      chartEl.innerHTML = '';
-      chartEl.style.display = 'none';
-    }
+    });
   }
   const recentEl = section.querySelector('[data-market-recent-trades]');
   if (!recentEl) return;
@@ -39326,10 +39392,99 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   wrap.style.display = '';
 }
 
+// IntersectionObserver-based paint deferral. Runs `paintFn()` immediately
+// if `el` is already in (or near) viewport, otherwise observes and paints
+// on first intersection. Subsequent calls (e.g. auto-refresh re-renders)
+// short-circuit to immediate paint via the `lazyPainted` data flag — the
+// gate is only about deferring the FIRST paint when the section's below
+// the fold. Saves CPU on every chart re-render before the user scrolls
+// to it, and saves a bid-intents fetch on the depth chart specifically
+// (it kicks its own network call inside the paint).
+//
+// rootMargin '200px' starts the paint slightly before the element is
+// actually visible, so scrolling reaches a painted chart rather than a
+// blank placeholder. Disconnects after first paint.
+function _lazyPaintWhenVisible(el, paintFn) {
+  if (!el || typeof paintFn !== 'function') return;
+  const _run = () => {
+    el.dataset.lazyPainted = '1';
+    try { paintFn(); } catch (e) { console.warn('[chart] lazy paint failed', e?.message); }
+  };
+  // '1' = already painted at least once → re-paint immediately so live
+  //       updates (auto-refresh) don't defer.
+  // '0' = observer attached but not yet fired → don't attach a second
+  //       one; the existing observer will fire and re-call paintFn via
+  //       _run. We also stash the latest paintFn under `_pendingPaint`
+  //       so the observer uses the freshest data.
+  if (el.dataset.lazyPainted === '1') { _run(); return; }
+  if (el.dataset.lazyPainted === '0') { el._pendingPaint = paintFn; return; }
+  if (typeof IntersectionObserver === 'undefined' || typeof window === 'undefined') {
+    _run();
+    return;
+  }
+  try {
+    const rect = el.getBoundingClientRect();
+    const vh = window.innerHeight || 800;
+    if (rect.bottom > -200 && rect.top < vh + 200) {
+      _run();
+      return;
+    }
+  } catch { _run(); return; }
+  el.dataset.lazyPainted = '0';
+  el._pendingPaint = paintFn;
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        io.disconnect();
+        const fn = el._pendingPaint || paintFn;
+        delete el._pendingPaint;
+        el.dataset.lazyPainted = '1';
+        try { fn(); } catch (e) { console.warn('[chart] lazy paint failed', e?.message); }
+        return;
+      }
+    }
+  }, { rootMargin: '200px 0px' });
+  io.observe(el);
+}
+
 // Cumulative depth chart. Step-line areas on either side of the spread.
 async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const out = section.querySelector('[data-market-depth-chart]');
   if (!out) return;
+  // Defer the bid-intents fetch + SVG render until the chart is in (or
+  // near) the viewport. On a long trading page with the depth chart
+  // below the fold, this saves one extra round-trip per asset switch.
+  // State on out.dataset.lazyPainted:
+  //   '1' = painted ≥ once → run full body immediately (auto-refresh).
+  //   '0' = observer attached but not yet fired → bail; the existing
+  //         observer will call us back when the chart scrolls in.
+  //   ''  = pristine → check viewport; if offscreen, attach observer.
+  if (out.dataset.lazyPainted === '0') return;
+  if (out.dataset.lazyPainted !== '1') {
+    try {
+      const rect = out.getBoundingClientRect();
+      const vh = typeof window !== 'undefined' && window.innerHeight ? window.innerHeight : 800;
+      const inViewport = rect.bottom > -200 && rect.top < vh + 200;
+      if (!inViewport && typeof IntersectionObserver !== 'undefined') {
+        out.dataset.lazyPainted = '0';
+        const io = new IntersectionObserver((entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) {
+              io.disconnect();
+              // Mark painted BEFORE recursing so the recursive call
+              // runs the full body instead of re-entering this branch.
+              out.dataset.lazyPainted = '1';
+              _populateDepthChart(section, aid, decimals, ticker, markUnit).catch(() => {});
+              return;
+            }
+          }
+        }, { rootMargin: '200px 0px' });
+        io.observe(out);
+        return;
+      }
+    } catch { /* fall through to immediate paint */ }
+    out.dataset.lazyPainted = '1';
+  }
   const _toWholeNumber = (amtBig) => {
     if (decimals === 0) return Number(amtBig);
     const div = 10n ** BigInt(decimals);
