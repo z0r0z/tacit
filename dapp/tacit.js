@@ -32873,6 +32873,25 @@ function _startMarketAutoRefresh() {
     } catch {}
   }, MARKET_AUTO_REFRESH_MS);
 }
+// Brief green/red flash on a cell when its underlying numeric value
+// changed direction. CEX trick — the eye locks onto "TAC just ticked
+// up" without needing to read the new number. Stores the previous
+// numeric value in data-prev-num so the next tick can compute
+// direction. Reuses the existing market-flash-up / market-flash-down
+// keyframes (which match [data-market-anim="up"] etc. on any element,
+// not just tiles), so no new CSS needed. Removing + adding the
+// attribute with a forced reflow between guarantees the animation
+// restarts even if the previous one is still running.
+function _flashCellOnChange(el, nextNumeric) {
+  if (!el || !Number.isFinite(nextNumeric)) return;
+  const prev = Number(el.dataset.prevNum || 0);
+  el.dataset.prevNum = String(nextNumeric);
+  if (!Number.isFinite(prev) || prev === 0 || prev === nextNumeric) return;
+  const dir = nextNumeric > prev ? 'up' : 'down';
+  el.removeAttribute('data-market-anim');
+  void el.offsetHeight;
+  el.setAttribute('data-market-anim', dir);
+}
 // Surgical cell update: walks the visible #market-list and rewrites
 // numeric cell text against the fresh _marketCache without touching
 // the DOM structure. Idempotent; safe to call on any tick. Returns
@@ -32906,7 +32925,10 @@ function _updateMarketCellsInPlace() {
         const priceCell = tds[1].querySelector('.market-table-value');
         if (priceCell) {
           const next = `${fmtMarketUnitSats(refUnit)}/${a.ticker || 'token'}`;
-          if (priceCell.textContent !== next) priceCell.textContent = next;
+          if (priceCell.textContent !== next) {
+            priceCell.textContent = next;
+            _flashCellOnChange(priceCell, refUnit);
+          }
         }
         const priceUsdCell = tds[1].querySelector('.market-table-sub');
         if (priceUsdCell) {
@@ -32921,7 +32943,10 @@ function _updateMarketCellsInPlace() {
         const v24Cell = tds[3].querySelector('.market-table-value');
         if (v24Cell) {
           const next = v24 > 0 ? fmtMarketUsdWholeFromSats(v24, '—') : '—';
-          if (v24Cell.textContent !== next) v24Cell.textContent = next;
+          if (v24Cell.textContent !== next) {
+            v24Cell.textContent = next;
+            _flashCellOnChange(v24Cell, v24);
+          }
         }
         const v24SubCell = tds[3].querySelector('.market-table-sub');
         if (v24SubCell) {
@@ -32934,7 +32959,10 @@ function _updateMarketCellsInPlace() {
       const walletsCell = tds[5]?.querySelector('.market-table-value');
       if (walletsCell) {
         const next = hc > 0 ? hc.toLocaleString('en-US') : (a._marketAssetStatsLoadedAt ? '0' : '…');
-        if (walletsCell.textContent !== next) walletsCell.textContent = next;
+        if (walletsCell.textContent !== next) {
+          walletsCell.textContent = next;
+          _flashCellOnChange(walletsCell, hc);
+        }
       }
     }
   }
