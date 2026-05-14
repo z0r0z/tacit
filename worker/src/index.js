@@ -8383,6 +8383,37 @@ function bidPartialClaimPrefix(network, aid, bidIdHex) {
     : `bidpclaim:${network}:${aid}:${bidIdHex}:`;
 }
 
+// CAS overshoot resolution for variable-fill bids. KV `put` is not
+// linearizable, so two concurrent POSTs against the same bid can both
+// pass the pre-write `fill_amount <= remaining_amount` bound check and
+// both write claim records. After each write the handler re-lists the
+// bid's partial-claims and runs this resolver: filter to active claims,
+// sort by axintent_id ascending, greedily accept while sum ≤ amount,
+// evict the rest. The sort is the deterministic tiebreaker — both
+// racers compute the same survivors + evicted sets without coordinating,
+// so the loser converges on a 409 even if its own POST handler hasn't
+// seen the winner's claim record yet (the next list() will).
+//
+// Exported for tests/worker-bid-claim-race.test.mjs which exercises
+// the resolution rule directly with synthesized claim records, without
+// the rest of the KV / signature / atomic-intent setup the full handler
+// requires. The signet e2e harness covers the integrated path.
+function _resolveBidPartialOvershoot(records, intentAmtBI, nowSec) {
+  const active = records.filter(p => p && (p.expires_at || 0) > nowSec);
+  const sorted = active.slice().sort((a, b) =>
+    a.axintent_id < b.axintent_id ? -1 : a.axintent_id > b.axintent_id ? 1 : 0
+  );
+  let kept = 0n;
+  const survivors = [];
+  const evicted = [];
+  for (const p of sorted) {
+    const f = BigInt(p.fill_amount || '0');
+    if (kept + f <= intentAmtBI) { kept += f; survivors.push(p); }
+    else evicted.push(p);
+  }
+  return { kept, survivors, evicted };
+}
+
 // Canonical bid-intent + bid-claim messages. SPEC §5.7.7 (variable-amount
 // bid intents) extends the byte format to bind `min_fill_amount` (publish)
 // and `fill_amount` (claim) so a single signed bid can be partial-filled
@@ -8799,30 +8830,55 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   };
 
   if (isVariableFill) {
-    // Variable-fill bid: one claim record per linked atomic-intent. Update
-    // the bid's remaining_amount inline. Re-credit on abandonment is the
-    // cron's job (PR3). State transitions:
-    //   bid.state = 'OPEN' (or unset) → 'PARTIALLY_RESERVED' on first claim
-    //   bid.remaining_amount decrements by fill_amount
-    //   bid.state → 'CLOSED' when remaining_amount < min_fill_amount
+    // Variable-fill bid: one claim record per linked atomic-intent.
+    //
+    // The pre-write bound check at line 8786 above is best-effort: two
+    // concurrent POSTs can both read the same `remaining_amount` and
+    // both pass, over-committing the bid by their combined fill_amount.
+    // KV `put` is not a linearizable CAS; we can't strictly prevent the
+    // race. What we CAN do is detect overshoot post-write and resolve
+    // it deterministically — write our claim, re-list ALL active
+    // claims under the bid's prefix, and if the sum exceeds the bid's
+    // total amount, evict the lexicographically-largest axintent_id(s)
+    // until the budget fits. Both racers run the same resolution rule
+    // and converge on the same winner without coordinating.
+    //
+    // The bid's `remaining_amount` then becomes a projection of the
+    // active partial-claims set rather than a free-running counter,
+    // so any subsequent reader sees the truth even if the racers'
+    // intent writes interleaved arbitrarily.
+    //
+    // PR3's re-credit cron handles the longer tail (claims abandoned
+    // mid-fulfilment); this only fixes the in-flight POST race.
     const minFillBI = BigInt(intent.min_fill_amount);
-    const remainingBI = BigInt(intent.remaining_amount || intent.amount || '0');
-    const newRemainingBI = remainingBI - fillBI;
-    intent.remaining_amount = newRemainingBI.toString();
-    intent.linked_axintents = Array.isArray(intent.linked_axintents) ? intent.linked_axintents : [];
-    if (!intent.linked_axintents.includes(axintentIdHex)) intent.linked_axintents.push(axintentIdHex);
-    if (newRemainingBI < minFillBI) {
-      intent.state = 'CLOSED';
-      // remaining > 0 but < min_fill is dust on the bid side — won't
-      // attract any more sellers. Surface state=CLOSED so the bidder UI
-      // can stop showing the bid as live.
-    } else if (!intent.state || intent.state === 'OPEN') {
-      intent.state = 'PARTIALLY_RESERVED';
+    await env.REGISTRY_KV.put(
+      bidPartialClaimKey(network, assetIdHex, bidIdHex, axintentIdHex),
+      JSON.stringify(claim),
+      { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 },
+    );
+    const listed = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, bidIdHex), limit: 1000 });
+    const recs = await Promise.all(listed.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+    const { kept, survivors, evicted } = _resolveBidPartialOvershoot(recs, intentAmtBI, now);
+    if (evicted.length > 0) {
+      await Promise.all(evicted.map(p =>
+        env.REGISTRY_KV.delete(bidPartialClaimKey(network, assetIdHex, bidIdHex, p.axintent_id))
+      ));
     }
-    await Promise.all([
-      env.REGISTRY_KV.put(bidPartialClaimKey(network, assetIdHex, bidIdHex, axintentIdHex), JSON.stringify(claim), { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 }),
-      env.REGISTRY_KV.put(bidIntentKey(network, assetIdHex, bidIdHex), JSON.stringify(intent)),
-    ]);
+    const ourEvicted = evicted.some(p => p.axintent_id === axintentIdHex);
+    intent.remaining_amount = (intentAmtBI - kept).toString();
+    intent.linked_axintents = survivors.map(p => p.axintent_id);
+    if (BigInt(intent.remaining_amount) < minFillBI) {
+      intent.state = 'CLOSED';
+    } else if (!intent.state || intent.state === 'OPEN') {
+      intent.state = survivors.length > 0 ? 'PARTIALLY_RESERVED' : 'OPEN';
+    }
+    await env.REGISTRY_KV.put(bidIntentKey(network, assetIdHex, bidIdHex), JSON.stringify(intent));
+    if (ourEvicted) {
+      return jsonResponse({
+        error: 'bid remaining insufficient (lost race to concurrent fill; retry with smaller fill_amount or another bid)',
+        remaining_amount: intent.remaining_amount,
+      }, 409, cors);
+    }
     return jsonResponse({ ok: true, claim, intent }, 200, cors);
   }
 
@@ -9530,6 +9586,12 @@ export {
   preauthSellerSpendSighash, derToCompactSig, verifyEcdsaDerSig,
   dropAnnounceMsg, dropAnnounceCancelMsg, airdropClaimDeleteMsg,
   bidIntentMsg, bidClaimMsg, bidCancelMsg,
+  // Deterministic CAS overshoot resolver for variable-fill bid POSTs.
+  // Exported so tests can pin the resolution rule (sort by axintent_id
+  // ascending → greedy keep until sum ≤ bid.amount → evict the rest)
+  // without setting up the full handler's KV / signature path. The
+  // signet e2e harness covers the integrated flow.
+  _resolveBidPartialOvershoot,
   verifySchnorr, compressedPointFromHex,
   // Wire-format decoders + opcode constants exported so tests/worker-decoder
   // can pin down the exact return shape. The atomic-intent regression where
