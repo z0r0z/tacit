@@ -28491,11 +28491,24 @@ async function _claimRefreshDiscover() {
             const t = Number(x.submitted_at);
             return Number.isFinite(t) && t > mx ? t : mx;
           }, 0);
+          // Paid-leaves set: any claim whose worker record has paid_at or
+          // payout_txid stamped. Lets the discover list hide eligible rows
+          // whose payout has already settled even when the local submission
+          // ledger is missing (claimed from another device / cleared storage)
+          // or never advanced to verified (wallet locked, so the holdings
+          // scan in _pollClaimSubmissionsStatus couldn't run).
+          const paidLeaves = new Set(
+            claimsList
+              .filter(x => x.paid_at || x.payout_txid)
+              .map(x => Number(x.leaf_index))
+              .filter(Number.isInteger),
+          );
           _claimQueueHealthByRoot.set(d.merkle_root, {
             depth: unpaid.length,
             sortedLeaves,
             oldestSubmitted,
             newestSubmitted,
+            paidLeaves,
             fetchedAt: Date.now(),
           });
           _renderClaimDiscoverList();
@@ -38691,7 +38704,7 @@ function renderMarketAssetHeader(assetId, rows) {
           <div><span>Price</span><strong class="market-sats-price" data-market-header="price-sats">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
           <div><span>24h Volume</span><strong data-market-header="vol24-usd">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small data-market-header="vol24-btc">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Market Cap</span><strong data-market-header="mcap-usd">${escapeHtml(mcapUsd)}</strong><small data-market-header="mcap-btc">${escapeHtml(mcapBtc)}</small></div>
-          <div><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
+          <div title="All live listings for this asset across every kind (instant + atomic intent + range + opening). The depth chart, asks-liquidity row, and Open Orders pane each filter this set differently — depth excludes outliers vs mark, asks-liquidity excludes recently-expired, Open Orders paginates and hides past page 1 — so their counts can be slightly lower than this header figure."><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
           ${(() => {
             // Wallets — distinct on-chain recipients indexed by the worker.
             // "Wallets" not "holders" because the indexer can't dedupe
@@ -39469,12 +39482,19 @@ async function populateMarketAssetStats(scope, asset) {
     for (const p of sample) { if (p.u > high24) high24 = p.u; if (p.u < low24) low24 = p.u; }
   }
   if (last24h.length >= 1 && latestUnit != null) {
-    // Reference price for Δ%: the LAST trade that landed before the 24h
-    // window opened (so Δ% reads as "vs 24h ago"). When the ring doesn't
-    // extend past 24h, we don't compute a "24h" delta — the all-time
-    // delta below covers that case with the correct label, so showing a
-    // 24h figure derived from a shorter window would be a false promise.
-    const ref = tradePoints.find(p => p.ts < _24hAgo);
+    // Reference price for Δ%: the LAST in-band trade that landed before
+    // the 24h window opened. The 0.2×/5× mark band is the same outlier
+    // guard the chart, high/low, and mark price use. Without this filter
+    // a single dust-print (e.g., a 0.18-sat trade that sneaked past the
+    // worker's older indexing) anchors the delta and produces +1683%
+    // on a market that actually moved 335 → 330 sats over the window —
+    // exactly the TAC bug surfaced in screenshot review. Falls back to
+    // the unfiltered tradePoints when no in-band reference exists, so
+    // markets with fewer than a handful of trades still get a delta.
+    const refPool = _deltaMarkUnit != null
+      ? tradePoints.filter(p => p.u >= _deltaMarkUnit * 0.2 && p.u <= _deltaMarkUnit * 5)
+      : tradePoints;
+    const ref = (refPool.find(p => p.ts < _24hAgo)) || tradePoints.find(p => p.ts < _24hAgo);
     if (ref && ref.u > 0) delta24Pct = ((latestUnit - ref.u) / ref.u) * 100;
   }
   // Locate the wrapper so we can hide the whole slot (label + value)
@@ -40268,7 +40288,38 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
     return;
   }
   const sorted = trades.slice().sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
-  const recent = sorted.slice(0, 8);
+  // Collapse runs of consecutive trades that display identically — same
+  // unit price, same amount, same relative-age bucket. TAC's tape was
+  // showing six "1h ago · 335 sats/TAC × 100" entries in a row (one big
+  // taker sweeping seven 100-TAC chunks from one seller, each settling
+  // as a distinct txid). Each fill is a real on-chain event, but to a
+  // trader the visual repetition reads as either a UI bug or stale data
+  // duplication. Group them with a "(×N)" suffix and a tooltip that
+  // lists the individual txids so forensics still works. Distinct
+  // groups still render as separate pills.
+  const recent = (() => {
+    const out = [];
+    for (const t of sorted) {
+      if (out.length >= 8) break;
+      const price = Number(t.price_sats) || 0;
+      let amtBig = 0n; try { amtBig = BigInt(t.amount || '0'); } catch {}
+      if (amtBig <= 0n || price <= 0) continue;
+      const u = unitPriceSats(price, amtBig, decimals);
+      if (u == null) continue;
+      const ts = Number(t.ts) || 0;
+      const dispPrice = fmtMarketUnitSats(u);
+      const dispAmt = fmtAssetAmount(amtBig, decimals);
+      const dispAge = relativeAge(ts) || 'now';
+      const last = out[out.length - 1];
+      if (last && last._dispPrice === dispPrice && last._dispAmt === dispAmt && last._dispAge === dispAge) {
+        last._groupCount = (last._groupCount || 1) + 1;
+        last._groupTxids.push(t.txid || '');
+        continue;
+      }
+      out.push({ ...t, _dispPrice: dispPrice, _dispAmt: dispAmt, _dispAge: dispAge, _groupCount: 1, _groupTxids: [t.txid || ''] });
+    }
+    return out;
+  })();
   const markValid = Number.isFinite(markUnit) && markUnit > 0;
   const outLo = markValid ? markUnit * 0.2 : 0;
   const outHi = markValid ? markUnit * 5 : Infinity;
@@ -40330,11 +40381,18 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
     const amtStr = fmtAssetAmount(amtBig, decimals);
     const animAttr = isNew ? ' data-market-anim="new"' : '';
     const borderColor = isOutlier ? '#c97a1a' : 'var(--ink-faint)';
-    return `<span${animAttr} style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid ${borderColor};background:var(--bg-warm);font-size:10px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;"${isOutlier ? ' title="Outlier vs mark (priced &lt;0.2× or &gt;5× the worker\'s outlier-guarded mark price). Probably a dust take or fat-finger fill."' : ''}>
+    const _gc = Number(t._groupCount || 1);
+    const _gcSuffix = _gc > 1
+      ? ` <span class="muted" style="color:var(--ink-mid);font-weight:600;" title="${escapeHtml(_gc)} consecutive fills at this price/size/time bucket. Txids: ${escapeHtml((t._groupTxids || []).map(x => x.slice(0, 8)).join(', '))}">×${_gc}</span>`
+      : '';
+    const _tipBase = isOutlier
+      ? 'Outlier vs mark (priced &lt;0.2× or &gt;5× the worker\'s outlier-guarded mark price). Probably a dust take or fat-finger fill.'
+      : '';
+    return `<span${animAttr} style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid ${borderColor};background:var(--bg-warm);font-size:10px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;"${_tipBase ? ` title="${_tipBase}"` : ''}>
       <span class="muted" data-age-ts="${ts}" data-age-fmt="ago">${escapeHtml(age)} ago</span>
       ${tickGlyph}
       <strong style="color:${priceColor};">${escapeHtml(fmtMarketUnitSats(u))}/${escapeHtml(ticker)}</strong>
-      <span class="muted">× ${escapeHtml(amtStr)}</span>
+      <span class="muted">× ${escapeHtml(amtStr)}</span>${_gcSuffix}
     </span>`;
   }).filter(Boolean).join('');
   if (!itemsHtml) {
