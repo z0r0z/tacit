@@ -35227,6 +35227,22 @@ function findMarketAssetById(assetId) {
 function showMarketListPreviewModal(assetId) {
   const a = findMarketAssetById(assetId) || { asset_id: assetId, ticker: 'token', decimals: 0 };
   const ticker = a.ticker || 'token';
+  // Market context: current mark price + active-asks summary so the
+  // user has a reference point for what to charge. Computed best-
+  // effort from _marketCache; falls through to "—" when cache is
+  // cold or asset has no listings yet.
+  const _markUnit = Number(a?.mark_price?.unit);
+  const _markValid = Number.isFinite(_markUnit) && _markUnit > 0;
+  const _markBtcUsd = _cachedBtcUsd();
+  const _markUsdStr = _markValid && Number.isFinite(_markBtcUsd) && _markBtcUsd > 0
+    ? fmtSatsAsUsd(_markUnit, _markBtcUsd)
+    : null;
+  const _activeAsksCount = (_marketCache?.listings || []).filter(l =>
+    l._asset?.asset_id === assetId && !l.expired
+  ).length;
+  // Wallet/balance state — same logic the modal had before.
+  const _locked = !wallet.priv;
+  const _holdsAsset = !_locked && !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(assetId));
   const overlay = document.createElement('div');
   overlay.className = 'market-buy-overlay';
   overlay.innerHTML = `
@@ -35250,42 +35266,60 @@ function showMarketListPreviewModal(assetId) {
       </div>
       <div class="market-buy-row">
         <div>
-          <div class="market-buy-label">Asset UTXO</div>
-          <div class="market-buy-sub">Exact lot to sell</div>
+          <div class="market-buy-label">Lot to sell</div>
+          <div class="market-buy-sub">UTXO picker</div>
         </div>
         <div>
-          <div class="market-buy-value">${wallet.priv ? 'No ' + escapeHtml(ticker) + ' in this wallet' : 'Wallet locked'}</div>
-          <div class="market-buy-sub">${wallet.priv ? `This wallet doesn't hold ${escapeHtml(ticker)}. Acquire some, or switch wallets.` : `Unlock to check if you hold ${escapeHtml(ticker)}`}</div>
-        </div>
-      </div>
-      <div class="market-buy-row">
-        <div>
-          <div class="market-buy-label">Token amount</div>
-          <div class="market-buy-sub">Whole selected UTXO</div>
-        </div>
-        <div>
-          <div class="market-buy-value">Auto-filled</div>
-          <div class="market-buy-sub">One listing = one asset UTXO</div>
+          <div class="market-buy-value">${_locked ? 'Wallet locked' : (_holdsAsset ? 'Pick one of your lots' : `No ${escapeHtml(ticker)} in this wallet`)}</div>
+          <div class="market-buy-sub">${_locked
+            ? `Unlock to see your ${escapeHtml(ticker)} balance + pickable lots.`
+            : (_holdsAsset
+                ? `You can also split a single big lot into K smaller chunks via "List in chunks" — each chunk becomes its own listing, lets buyers take 1..K at once.`
+                : `Acquire some ${escapeHtml(ticker)} or switch to a wallet that holds it.`)}</div>
         </div>
       </div>
       <div class="market-buy-row">
         <div>
-          <div class="market-buy-label">Total price in sats</div>
-          <div class="market-buy-sub">Seller receives</div>
+          <div class="market-buy-label">Price per ${escapeHtml(ticker)}</div>
+          <div class="market-buy-sub">Editable</div>
         </div>
         <div>
-          <div class="market-buy-value">Editable</div>
-          <div class="market-buy-sub">Buyer pays this amount atomically</div>
+          <div class="market-buy-value">${_markValid ? `${escapeHtml(fmtUnitPriceSats(_markUnit))} sats` : '—'}</div>
+          <div class="market-buy-sub">${_markValid
+            ? `Current mark price${_markUsdStr ? ` · ${escapeHtml(_markUsdStr)}` : ''}. Pre-fills as a starting point; you can match, undercut, or charge above. Buyer pays total atomically (no escrow).`
+            : `No mark price yet (first to list sets the price). Buyer pays your total atomically — no claim window, single Bitcoin tx.`}</div>
+        </div>
+      </div>
+      <div class="market-buy-row">
+        <div>
+          <div class="market-buy-label">Listing expiry</div>
+          <div class="market-buy-sub">When the offer dies</div>
+        </div>
+        <div>
+          <div class="market-buy-value">1h / 24h / 7d / 30d</div>
+          <div class="market-buy-sub">Soft cancel anytime to pull the listing. Hard cancel (self-spend the lot) makes the signed sale tx unbroadcastable on Bitcoin.</div>
+        </div>
+      </div>
+      <div class="market-buy-row">
+        <div>
+          <div class="market-buy-label">Orderbook context</div>
+          <div class="market-buy-sub">What you're competing with</div>
+        </div>
+        <div>
+          <div class="market-buy-value">${_activeAsksCount.toLocaleString('en-US')} active offer${_activeAsksCount === 1 ? '' : 's'}</div>
+          <div class="market-buy-sub">${_activeAsksCount > 0
+            ? `Your listing will appear in the asks ladder ranked by price. Cheaper than mark fills faster; above mark waits for premium buyers.`
+            : `No active offers — you'll be the first. The price you set defines the floor until someone undercuts.`}</div>
         </div>
       </div>
       <div class="market-buy-note">
-        Preview only: the real listing panel appears when the connected wallet holds this asset. Publishing an Instant Listing signs a sale authorization for the selected UTXO; buyers can then complete payment and transfer atomically.
+        <strong>Instant Listing (preauth · SPEC §5.7.8):</strong> you sign a sale authorization once at publish time. Any buyer can complete the trade alone — single Bitcoin tx, no claim window, no fulfilment step from you. Trustless settlement: tokens move only if you're paid in the same transaction.
       </div>
       <div class="market-buy-actions">
         <button type="button" data-market-list-preview-close>Close</button>
-        ${wallet.priv
-          ? `<button type="button" class="primary" data-market-list-preview-goto-holdings title="Acquire ${escapeHtml(ticker)} or switch wallets from the Holdings tab">Manage wallet ↗</button>`
-          : `<button type="button" class="primary" data-market-list-preview-unlock title="Unlock your wallet to check if you hold ${escapeHtml(ticker)}. If you do, the real listing panel will replace this preview.">Unlock wallet</button>`}
+        ${_locked
+          ? `<button type="button" class="primary" data-market-list-preview-unlock title="Unlock your wallet to check if you hold ${escapeHtml(ticker)}. If you do, the real listing panel will replace this preview.">Unlock wallet</button>`
+          : `<button type="button" class="primary" data-market-list-preview-goto-holdings title="Acquire ${escapeHtml(ticker)} or switch wallets from the Holdings tab">Manage wallet ↗</button>`}
       </div>
     </div>`;
   const close = () => {
