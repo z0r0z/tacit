@@ -36694,6 +36694,18 @@ function fmtMarketUnitSats(sats) {
   const n = Number(sats);
   if (!Number.isFinite(n) || n <= 0) return '0 sats';
   if (n >= 1) return `${Math.round(n).toLocaleString('en-US')} sats`;
+  // Sub-1-sat unit prices need precision deeper than 4 decimals or
+  // ultra-cheap tokens display as "0 sats" — the live SAT market
+  // (whose true unit price is ~0.0000043 sats/SAT) was rendering as
+  // "0 sats/SAT" because 4-decimal rounding collapsed it. Now we
+  // show up to 8 significant decimals with trailing zeros trimmed,
+  // so $0.0000043 sats reads as "0.00000430 sats" rather than "0".
+  // Falls back to scientific notation when the value is smaller than
+  // what 8 decimals can represent (extreme rare).
+  if (n < 0.0001) {
+    const fixed = n.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
+    return fixed === '0' ? `${n.toExponential(2)} sats` : `${fixed} sats`;
+  }
   return `${n.toLocaleString('en-US', { maximumFractionDigits: 4 })} sats`;
 }
 function marketAssetImageHtml(asset, sizePx = 44, cls = 'market-token-icon') {
@@ -37524,8 +37536,12 @@ function renderMarketBrowseTable(rows) {
     const refUnit = (Number.isFinite(markUnit) && markUnit > 0)
       ? markUnit
       : marketGroupReferenceUnit(g);
-    const floor = refUnit != null ? `${fmtMarketUnitSats(refUnit)}/${ticker}` : 'no price';
-    const floorUsd = refUnit != null ? `${fmtMarketUsdUnitFromSats(refUnit, 'no USD quote')} per token` : 'no USD price';
+    const floor = refUnit != null ? `${fmtMarketUnitSats(refUnit)}/${ticker}` : 'no trades yet';
+    // Sub-row only renders when there's a real price to convert; when
+    // refUnit is null the main row's "no trades yet" already conveys
+    // the empty state — repeating "no USD price" / "no price" below
+    // it just stacked two equivalent fallbacks.
+    const floorUsd = refUnit != null ? `${fmtMarketUsdUnitFromSats(refUnit, 'no USD quote')} per token` : '';
     // Recompute market cap against the chosen header price (not the
     // floor-derived g.marketCapSats which would still reflect dust).
     const rowMarketCap = marketCapSats(a, refUnit);
