@@ -38193,6 +38193,19 @@ async function populateMarketBidsLadder(scope, asset) {
   const mineFilterRow = mineBidsChip
     ? `<div class="market-bids-filter-row">${mineBidsChip}</div>`
     : '';
+  // Snapshot existing bid rows + viewport positions BEFORE the rewrite
+  // so we can preserve DOM identity for unchanged bid_ids (avoiding
+  // the "rows blink" flicker), FLIP-slide rows whose price changed
+  // their ladder slot, and fade out rows that vanished. Mirrors the
+  // asks-side pattern in applyMarketFilters' tile-build loop.
+  const _oldRows = new Map();
+  const _oldRowPositions = new Map();
+  list.querySelectorAll('[data-bid-row]').forEach(r => {
+    const id = r.dataset.bidId;
+    if (!id) return;
+    _oldRows.set(id, r);
+    try { _oldRowPositions.set(id, r.getBoundingClientRect()); } catch {}
+  });
   list.innerHTML = `
     ${mineFilterRow}
     <div class="market-bids-table" role="table" aria-label="${escapeHtml(ticker)} bids">
@@ -38206,6 +38219,88 @@ async function populateMarketBidsLadder(scope, asset) {
       </div>
       ${rowsHtml}
     </div>`;
+  // For each freshly-templated row that matches an old bid_id, swap
+  // it for the preserved old row (transferring the new attrs + inner
+  // content onto the old outer node so identity stays stable). Track
+  // which rows we reused so the FLIP step below can compute deltas.
+  const _flipRows = [];
+  list.querySelectorAll('[data-bid-row]').forEach(newRow => {
+    const id = newRow.dataset.bidId;
+    if (!id) return;
+    const oldRow = _oldRows.get(id);
+    if (!oldRow) return;
+    _oldRows.delete(id);
+    // Copy new className + every attribute (data-fill-aid, data-fill-
+    // unit, role, etc.) so the reused row reflects fresh state. Keep
+    // the old row's identity so any attached listener / animation /
+    // hover state survives.
+    oldRow.className = newRow.className;
+    for (const name of newRow.getAttributeNames()) {
+      if (name === 'class') continue;
+      oldRow.setAttribute(name, newRow.getAttribute(name));
+    }
+    oldRow.innerHTML = newRow.innerHTML;
+    newRow.parentNode.replaceChild(oldRow, newRow);
+    _flipRows.push({ id, row: oldRow });
+  });
+  // FLIP slide for rows that moved between renders. Uses translateY
+  // only since the bids table is a vertical ladder; X movement is
+  // negligible (cells stay column-aligned).
+  if (_flipRows.length > 0) {
+    const deltas = [];
+    for (const { id, row } of _flipRows) {
+      const oldRect = _oldRowPositions.get(id);
+      if (!oldRect) continue;
+      const newRect = row.getBoundingClientRect();
+      const dy = oldRect.top - newRect.top;
+      if (Math.abs(dy) < 0.5) continue;
+      deltas.push({ row, dy });
+    }
+    if (deltas.length > 0) {
+      for (const { row, dy } of deltas) {
+        row.style.transition = 'none';
+        row.style.transform = `translateY(${dy.toFixed(1)}px)`;
+      }
+      void list.offsetHeight;
+      requestAnimationFrame(() => {
+        for (const { row } of deltas) {
+          row.style.transition = 'transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1)';
+          row.style.transform = '';
+        }
+      });
+    }
+  }
+  // Vanish animation for bid rows that disappeared (bid claimed,
+  // cancelled, or expired). Pin orphan to its captured viewport rect
+  // and fade + slight shrink, mirroring the ask-tile vanish path.
+  if (_oldRows.size > 0 && document.body) {
+    for (const [id, orphan] of _oldRows) {
+      const oldRect = _oldRowPositions.get(id);
+      if (!oldRect) { try { orphan.remove(); } catch {} continue; }
+      orphan.style.position = 'fixed';
+      orphan.style.left = `${oldRect.left}px`;
+      orphan.style.top = `${oldRect.top}px`;
+      orphan.style.width = `${oldRect.width}px`;
+      orphan.style.height = `${oldRect.height}px`;
+      orphan.style.margin = '0';
+      orphan.style.zIndex = '5';
+      orphan.style.pointerEvents = 'none';
+      orphan.style.transition = 'none';
+      orphan.style.transform = 'scale(1)';
+      orphan.style.opacity = '1';
+      document.body.appendChild(orphan);
+      void orphan.offsetHeight;
+      requestAnimationFrame(() => {
+        orphan.style.transition = 'opacity 220ms ease-out, transform 220ms ease-out';
+        orphan.style.opacity = '0';
+        orphan.style.transform = 'scale(0.96)';
+      });
+      let cleaned = false;
+      const cleanup = () => { if (cleaned) return; cleaned = true; try { orphan.remove(); } catch {} };
+      orphan.addEventListener('transitionend', cleanup, { once: true });
+      setTimeout(cleanup, 400);
+    }
+  }
   // Live-reactivity for bids: same diff annotation as asks but applied
   // post-render since these rows use innerHTML template strings rather
   // than DOM construction. Key namespace `bid:${bid_id}` keeps it
@@ -38218,8 +38313,13 @@ async function populateMarketBidsLadder(scope, asset) {
     const kind = _diffMarketLive(`bid:${bidId}`, b._unit);
     if (kind) row.setAttribute('data-market-anim', kind);
     // Click-to-fill: only on rows that opted in by stamping data-fill-aid
-    // (skipped on your own bids + already-claimed/expired ones).
-    if (row.dataset.fillAid) {
+    // (skipped on your own bids + already-claimed/expired ones). Guard
+    // against double-binding since reused rows from the new row-FLIP
+    // path carry over their previous click listener. The handler
+    // reads from row.dataset dynamically, so a single binding stays
+    // accurate even as the row's attributes refresh across re-renders.
+    if (row.dataset.fillAid && !row.dataset.bidRowClickBound) {
+      row.dataset.bidRowClickBound = '1';
       row.addEventListener('click', (ev) => {
         if (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary')) return;
         const _u = parseFloat(row.dataset.fillUnit || '');
