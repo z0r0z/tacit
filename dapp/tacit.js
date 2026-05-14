@@ -27050,6 +27050,7 @@ async function _renderClaimTreasuryFundPanel() {
       merkleRoot: _claimSnapshot.merkle_root,
       leafIndex: _claimEligibleRow.index,
       ticker: tickerForTerminal,
+      assetId: _claimSnapshot.asset_id,
     });
     $('#btn-claim-treasury-copy')?.addEventListener('click', () => {
       navigator.clipboard?.writeText(treasury)
@@ -27276,6 +27277,7 @@ async function _renderClaimTreasuryFundPanel() {
         merkleRoot: _claimSnapshot.merkle_root,
         leafIndex: _claimEligibleRow.index,
         ticker: _claimSnapshot.asset_ticker || '',
+        assetId: _claimSnapshot.asset_id,
       });
     } catch (e) {
       if (status) status.innerHTML = `<span style="color:var(--red);">✗ Submit failed: ${escapeHtml(e.message || String(e))}</span>`;
@@ -27454,6 +27456,7 @@ async function _renderClaimTreasuryFundPanel() {
         merkleRoot: _claimSnapshot.merkle_root,
         leafIndex: _claimEligibleRow.index,
         ticker: _claimSnapshot.asset_ticker || '',
+        assetId: _claimSnapshot.asset_id,
       });
     } catch (e) {
       if (status) status.innerHTML = `<span style="color:var(--red);">✗ Tip failed: ${escapeHtml(e.message || String(e))}</span>`;
@@ -27498,7 +27501,7 @@ function _stopClaimReactivePoller() {
   }
   _claimReactivePollerKey = null;
 }
-async function _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, ticker, startedAt }) {
+async function _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, ticker, assetId, startedAt }) {
   _stopClaimReactivePoller();
   const startMs = startedAt || Date.now();
   const TIMEOUT_MS = 60 * 60 * 1000;
@@ -27554,7 +27557,22 @@ async function _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, t
     } catch { /* localStorage flake; tick again next time */ }
 
     if (claim?.verified_at) {
-      status.innerHTML = `<span style="color:var(--green);">✓ <strong>Fulfilled!</strong> Your ${escapeHtml(tName)} arrived in your tacit wallet — check the Coins panel above.</span>`;
+      // "Buy more" CTA on the fulfilled state. Recipients of an
+      // airdrop / drop claim are the highest-intent buyers we have —
+      // they just received free tokens, they understand the asset,
+      // they may want to add to their position before price moves.
+      // Linking straight into the market view for this asset (which
+      // lands them on the buy-default swap tile) is one tap to the
+      // "ape in more" path. Requires `assetId` from the snapshot; if
+      // missing for any reason, gracefully omit the chip.
+      const _buyCta = (typeof assetId === 'string' && /^[0-9a-f]{64}$/.test(assetId))
+        ? `<div style="margin-top:8px;"><a href="#tab=market&aid=${escapeHtml(assetId)}" data-act="claim-fulfilled-buy" data-aid="${escapeHtml(assetId)}" style="display:inline-flex;align-items:center;gap:6px;padding:6px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-weight:700;text-decoration:none;font-size:11px;letter-spacing:0.04em;box-shadow:2px 2px 0 var(--ink);">Buy more ${escapeHtml(tName)} →</a></div>`
+        : '';
+      status.innerHTML = `<span style="color:var(--green);">✓ <strong>Fulfilled!</strong> Your ${escapeHtml(tName)} arrived in your tacit wallet — check the Coins panel above.</span>${_buyCta}`;
+      // Route the CTA through location.hash so the deeplink consumer
+      // fires (matching every other in-page market navigation).
+      const _btn = status.querySelector('[data-act="claim-fulfilled-buy"]');
+      if (_btn) _btn.onclick = (ev) => { ev.preventDefault(); location.hash = `#tab=market&aid=${assetId}`; };
       _stopClaimReactivePoller();
       return;
     }
@@ -29789,7 +29807,7 @@ async function renderHoldings() {
         // Jump straight to this asset's Market view (live listings, bids,
         // trades). Discoverable affordance from Holdings without the user
         // having to find the Markets tab in the strip and re-filter.
-        !h.unknownAsset && WORKER_BASE ? `<button data-act="open-market-asset" data-aid="${h.assetIdHex}" title="Open live listings, bids, and trades for this asset.">Market →</button>` : '',
+        !h.unknownAsset && WORKER_BASE ? `<button data-act="open-market-asset" data-aid="${h.assetIdHex}" title="Open the live ${escapeHtml(h.ticker || 'asset')} orderbook — buy more, watch the chart, or flip the swap tile to sell.">Buy more ${escapeHtml(h.ticker || 'on market')} →</button>` : '',
       ].filter(Boolean).join('');
       const discloseButtons = [
         h.isEtcher && WORKER_BASE ? `<button data-act="reveal-supply" data-aid="${h.assetIdHex}">Reveal initial supply</button>` : '',
