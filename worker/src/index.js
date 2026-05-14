@@ -683,20 +683,35 @@ async function handleBackfillHolders(env, network, cors, opts = {}) {
     try { tx = await apiJson(env, `/tx/${txid}`, {}, network); }
     catch { fetchErrors++; continue; }
     // Decode the envelope at vin[0] to determine which vouts are the
-    // tacit asset outputs (dec.outputs.length aligns with vout[0..N-1]).
+    // tacit asset outputs. For T_CXFER and T_AXFER the mapping is
+    // identity (output i → vout[i], outputs contiguous from vout[0]).
+    // For T_AXFER_VAR (§5.7.9) the layout is INTERLEAVED — tacit at
+    // {vout[0], vout[2]}, BTC payment at vout[1], OP_RETURN(80) at
+    // vout[3]; we need to skip vout[1] when bumping holder counts.
     const wit = tx?.vin?.[0]?.witness;
     if (!wit || wit.length < 3) continue;
     let envBytes;
     try { envBytes = hexToBytes(wit[1]); } catch { continue; }
     const decoded = decodeEnvelopeScript(envBytes);
     if (!decoded) continue;
-    let dec;
-    if (decoded.opcode === T_AXFER) dec = decodeAxferPayload(decoded.payload);
-    else if (decoded.opcode === T_CXFER) dec = decodeCXferPayload(decoded.payload);
-    else continue;
+    let dec, voutForOutput;
+    if (decoded.opcode === T_AXFER) {
+      dec = decodeAxferPayload(decoded.payload);
+      voutForOutput = (i) => i;
+    } else if (decoded.opcode === T_CXFER) {
+      dec = decodeCXferPayload(decoded.payload);
+      voutForOutput = (i) => i;
+    } else if (decoded.opcode === T_AXFER_VAR) {
+      dec = decodeAxferVarPayload(decoded.payload);
+      voutForOutput = (i) => i === 0 ? 0 : 2;  // interleaved layout
+    } else {
+      continue;
+    }
     if (!dec || dec.asset_id !== aid) continue;
-    for (let i = 0; i < dec.outputs.length && i < (tx.vout?.length || 0); i++) {
-      const spk = tx.vout[i]?.scriptpubkey;
+    for (let i = 0; i < dec.outputs.length; i++) {
+      const v = voutForOutput(i);
+      if (v >= (tx.vout?.length || 0)) continue;
+      const spk = tx.vout[v]?.scriptpubkey;
       if (typeof spk === 'string' && spk.length > 0) {
         try {
           const was = await bumpHolderCount(env, network, aid, spk.toLowerCase());

@@ -34781,7 +34781,15 @@ async function _autoFulfilPollOnce() {
         // compromised worker can't trick the daemon into signing against
         // substituted terms. Manual fulfilment still degrades to a
         // warning so a user with cleared localStorage can knowingly proceed.
-        await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent: fresh, claim: fresh.claim, autoMode: true });
+        // Dispatch on min_take_amount so variable-amount intents (§5.7.6.1)
+        // route through fulfilAxferVarIntent — without this branch, every
+        // variable-amount claim would sit unfulfilled because the legacy
+        // helper would fail at the (missing) commit_txid cross-check.
+        if (fresh.min_take_amount) {
+          await fulfilAxferVarIntent({ assetIdHex: aid, intentIdHex: iid, intent: fresh, claim: fresh.claim, autoMode: true });
+        } else {
+          await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent: fresh, claim: fresh.claim, autoMode: true });
+        }
         _autoFulfilStatus.lastFulfilAt = Date.now();
         _autoFulfilRecentlyDone.add(iid);
         // Self-clear from the dedupe set after the claim TTL window has
@@ -40762,14 +40770,22 @@ function _wireSwapTile(scope) {
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
       if (dir === 'buy') {
         const overshootStr = result.overshoot > 0n
-          ? `\n\nWhole-UTXO atomicity → you'll receive +${fmtAssetAmount(result.overshoot, decimals)} ${ticker} overshoot vs your ${fmtAssetAmount(result.target, decimals)} ${ticker} target.`
+          ? `\n\nLast lot overshoots your ${fmtAssetAmount(result.target, decimals)} ${ticker} target by +${fmtAssetAmount(result.overshoot, decimals)} ${ticker}.`
           : '';
+        // Plan may mix preauth (instant single-tx) + intent kinds (claim →
+        // wait fulfilment → take/finalize, ~5-10s if maker auto-fulfil is
+        // on). Surface the asynchrony only when intent kinds are in the
+        // mix so single-tx swaps don't carry needless caveats.
+        const hasIntent = result.plan.some(c => c.kind === 'intent' || c.kind === 'intent-var');
+        const asyncNote = hasIntent
+          ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
+          : `Each fill settles in one Bitcoin tx.`;
         if (!confirm(
           `Swap ${result.totalSats.toLocaleString()} sats → ≥ ${accStr} ${ticker}?\n\n` +
-          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} via instant listings.\n` +
+          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
           `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
           (usd ? `≈ ${usd}\n` : '') +
-          `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast.` +
+          `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${asyncNote}` +
           overshootStr
         )) return;
       } else {
@@ -40847,12 +40863,18 @@ function _wireSwapTile(scope) {
       if (!result) { toast('No route available', 'error'); return; }
       const accStr = fmtAssetAmount(result.totalAmt, decimals);
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+      // Plan may mix preauth (instant single-tx) + intent kinds (claim →
+      // wait fulfilment → take/finalize, ~5-10s if maker auto-fulfil is on).
+      const _hasIntent = result.plan.some(c => c.kind === 'intent' || c.kind === 'intent-var');
+      const _asyncNote = _hasIntent
+        ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
+        : `Each fill settles in one Bitcoin tx.`;
       if (!confirm(
         `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?\n\n` +
-        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} via instant listings.\n` +
+        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
         `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
         (usd ? `≈ ${usd}\n` : '') +
-        `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast.`
+        `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${_asyncNote}`
       )) return;
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       const origLabel = actionBtn.textContent;
