@@ -34035,7 +34035,7 @@ function applyMarketFilters() {
         <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` per token` : ''}</small>
       </div>
       <div class="market-listing-id">#${escapeHtml(shorten(displayId, 8))}${l._isGroup ? ` · group ${escapeHtml(shorten(l._groupId || '', 4))}` : ''}</div>
-      <div class="muted" style="margin-top:8px;font-size:10px;">${escapeHtml(recencyLine)}</div>
+      <div class="muted" style="margin-top:8px;font-size:10px;">${recencyLine}</div>
       <div style="margin-top:8px;font-size:10px;" class="muted">${l.kind === 'preauth' ? 'seller' : 'maker'}: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || l.seller_payout_address || '', 6))}</span></div>
       ${statusRow}
       <div class="market-listing-total">
