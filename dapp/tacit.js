@@ -35212,8 +35212,17 @@ function bindMarketActivityTable(scope) {
 
 function marketAssetListCtaHtml(asset) {
   const safeAid = /^[0-9a-f]{64}$/.test(asset?.asset_id || '') ? asset.asset_id : '';
-  const userHoldsAsset = !!(safeAid && _holdingsCache?.holdings && _holdingsCache.holdings.get(safeAid));
-  return `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" data-preview-only="${userHoldsAsset ? '0' : '1'}" title="${userHoldsAsset ? 'You hold this asset - list one of your UTXOs for sale via an Instant listing.' : 'Preview the listing panel. Connect a wallet holding this asset to publish.'}">List Assets</button>`;
+  // Sellable = the holdings entry exists AND has at least one verified
+  // UTXO (entry.utxos[]). Without the .utxos check, a wallet whose
+  // recent buys haven't passed validation (sitting in h.unverified /
+  // h.inflated / h.ghosts) would mark the button as data-preview-only="0",
+  // route the user to Holdings, and the polling for list-preauth would
+  // silently time out — because canMarket in renderHoldings requires
+  // h.utxos.length > 0 to render the button at all. Aligning the
+  // checks so we don't promise a fast path that doesn't exist.
+  const _entry = safeAid && _holdingsCache?.holdings ? _holdingsCache.holdings.get(safeAid) : null;
+  const userHoldsAsset = !!(_entry && Array.isArray(_entry.utxos) && _entry.utxos.length > 0);
+  return `<button class="primary" data-act="market-ask-place" data-aid="${escapeHtml(safeAid)}" data-preview-only="${userHoldsAsset ? '0' : '1'}" title="${userHoldsAsset ? 'You hold this asset - list one of your UTXOs for sale via an Instant listing.' : 'Preview the listing panel. Connect a wallet holding this asset (with at least one verified UTXO) to publish.'}">List Assets</button>`;
 }
 
 function findMarketAssetById(assetId) {
@@ -35340,26 +35349,29 @@ function showMarketListPreviewModal(assetId) {
     e.preventDefault();
     const btn = e.currentTarget;
     if (!(btn instanceof HTMLButtonElement)) return;
-    btn.disabled = true;
-    btn.textContent = 'unlocking…';
+    // CLOSE THE PREVIEW MODAL FIRST so the wallet's passphrase / passkey
+    // prompt (which is its own .pass-modal at z-index 1010) doesn't
+    // render behind our preview (.market-buy-overlay at z-index 9998).
+    // Same fix as the Import Key flow in 6b3289f: stack-cleanly hand off
+    // to ensurePrivkey, then re-open or jump-to-holdings on success.
+    close();
     try {
       await ensurePrivkey();
-      // Refresh holdings so the preview-vs-real-form decision sees the
-      // user's actual UTXOs. If we hold the asset, jump to the real list
-      // panel via the holdings tab path; otherwise leave the modal with
-      // updated copy ("No TAC in this wallet").
       try { await scanHoldings({ silent: true }); } catch {}
-      close();
       const userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(assetId));
       if (userHoldsAsset) {
         const holdingsTab = $('.tab[data-tab="holdings"]');
         if (holdingsTab) holdingsTab.click();
       } else {
+        // Unlocked but wallet doesn't hold the asset — re-open the
+        // preview so user sees the updated "No TICKER in this wallet"
+        // copy + Manage wallet ↗ CTA.
         showMarketListPreviewModal(assetId);
       }
     } catch (err) {
-      btn.disabled = false;
-      btn.textContent = 'Unlock wallet';
+      // Preview is already closed; report the failure via toast so the
+      // user gets feedback. Unlock-cancelled is benign (user dismissed
+      // the passphrase modal) — silent.
       if (!isUnlockCancelled(err)) toast('Unlock failed: ' + (err?.message || String(err)), 'error');
     }
   });
@@ -39179,13 +39191,17 @@ function bindMarketAssetHeader(scope) {
         }
         if (attempt < MAX_ATTEMPTS) setTimeout(() => triggerList(attempt + 1), 100);
         else {
-          // Holdings tab never rendered the list button for this asset
-          // — could be a stale _holdingsCache flag, a slow scan, or a
-          // wallet that has since been swapped. Fall back to the
-          // preview modal (now wired with Unlock + Manage Wallet CTAs)
-          // so the user has a path forward.
+          // Holdings tab never rendered the list button for this asset.
+          // Most common cause: recent buy hasn't passed validation yet
+          // (UTXO sitting in h.unverified / h.inflated until a re-scan
+          // catches up). Other causes: wallet swapped between click
+          // and render, or canMarket gating tripped on h.unknownAsset.
+          // Surface a clear toast + fall back to the preview modal so
+          // the user gets a path forward instead of an empty Holdings
+          // page.
           btn.textContent = origLabel;
           btn.disabled = false;
+          try { toast(`No sellable lots for this asset yet · check Holdings or rescan and retry`, '', 8000); } catch {}
           showMarketListPreviewModal(aid);
         }
       };
