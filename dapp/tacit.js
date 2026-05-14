@@ -36793,6 +36793,24 @@ function marketAssetImageHtml(asset, sizePx = 44, cls = 'market-token-icon') {
   const bg = `hsl(${hue}, 38%, 48%)`;
   const initial = String(ticker || '?').slice(0, 2).toUpperCase();
   const fontSize = Math.max(10, Math.round(sizePx * 0.42));
+  // If we've already resolved this image_uri to a concrete URL once
+  // (cached in the module-level _resolvedImageCache), emit a real <img>
+  // with the cached src directly. Browser repaints from its HTTP-memory
+  // cache → no async hydration delay, no placeholder-then-image flash
+  // on every re-render. Previously every render re-emitted the colored-
+  // initial placeholder and waited for hydrateMarketImages to async-
+  // append an <img>, which made the whole table look like it was
+  // flashing on every stats-enrichment / liveness-prune redraw.
+  // Fallback to the placeholder (with data-market-img-uri) only on the
+  // first-ever paint of an asset, when the cache hasn't been populated.
+  const resolvedCached = imageUri && typeof _resolvedImageCache !== 'undefined'
+    ? _resolvedImageCache.get(imageUri) : null;
+  if (resolvedCached) {
+    // Keep the placeholder span as the parent (preserves layout/border/
+    // bg-fallback if the <img> 404s) but inline the resolved <img> as
+    // a child so paint is synchronous.
+    return `<span class="${escapeHtml(cls)}" data-market-img-uri="${escapeHtml(imageUri)}" data-market-img-loaded="1" style="width:${sizePx}px;height:${sizePx}px;background:${bg};font-size:${fontSize}px;" aria-hidden="true"><span>${escapeHtml(initial)}</span><img loading="lazy" decoding="async" alt="" src="${escapeHtml(resolvedCached)}"></span>`;
+  }
   const data = imageUri ? ` data-market-img-uri="${escapeHtml(imageUri)}"` : '';
   return `<span class="${escapeHtml(cls)}"${data} style="width:${sizePx}px;height:${sizePx}px;background:${bg};font-size:${fontSize}px;" aria-hidden="true"><span>${escapeHtml(initial)}</span></span>`;
 }
@@ -37801,7 +37819,24 @@ function renderMarketBrowseTable(rows) {
           <span class="market-table-value">${Number(a.holder_count || 0) > 0 ? Number(a.holder_count).toLocaleString('en-US') : (a._marketAssetStatsLoadedAt ? '0' : '…')}</span>
         </td>
         <td>
-          <span class="market-table-sub">${g.preauths.toLocaleString('en-US')} instant &middot; ${transfers.toLocaleString('en-US')} txs</span>
+          <span class="market-table-sub">${(() => {
+            // Surface every live-listing bucket, not just preauths. Hiding
+            // OTC / atomic-intent counts is what makes PUP-style rows
+            // ($8.5M mcap from a single range listing) read as phantom —
+            // the price column shows a number but the cell beside it
+            // says "0 instant · 0 txs", with no hint that the price
+            // came from a real (OTC) ask. Compact form: only non-zero
+            // listing buckets render. Falls back to "0 live" + the
+            // transfer count when nothing is currently listed.
+            const _bits = [];
+            if (Number(g.preauths || 0) > 0) _bits.push(`${Number(g.preauths).toLocaleString('en-US')} instant`);
+            if (Number(g.intents || 0) > 0) _bits.push(`${Number(g.intents).toLocaleString('en-US')} atomic`);
+            const _otc = Number(g.ranges || 0) + Number(g.openings || 0);
+            if (_otc > 0) _bits.push(`${_otc.toLocaleString('en-US')} OTC`);
+            if (_bits.length === 0) _bits.push('0 live');
+            _bits.push(`${transfers.toLocaleString('en-US')} txs`);
+            return _bits.join(' &middot; ');
+          })()}</span>
         </td>
       </tr>`;
   }
