@@ -12120,20 +12120,30 @@ async function cancelAxferIntent({ assetIdHex, intentIdHex }) {
 // signed authorization is enough for the buyer to build and broadcast the
 // settlement alone.
 
-async function publishPreauthSale({ utxoTxid, utxoVout, minPriceSats, expiry, sellerPayoutScript = null, onProgress = null }) {
+async function publishPreauthSale({ utxoTxid, utxoVout, minPriceSats, expiry, sellerPayoutScript = null, onProgress = null, nonceBytesOverride = null, preResolvedTarget = null, preResolvedAssetIdHex = null }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!Number.isInteger(minPriceSats) || minPriceSats < DUST) throw new Error(`min_price_sats must be integer ≥ ${DUST}`);
   const now = Math.floor(Date.now() / 1000);
   if (!Number.isInteger(expiry) || expiry <= now) throw new Error('expiry must be future unix-seconds');
 
-  const holdings = await scanHoldings();
-  let target = null, assetIdHex = null;
-  for (const [aid, h] of holdings) {
-    const u = h.utxos.find(x => x.utxo.txid === utxoTxid && x.utxo.vout === utxoVout);
-    if (u) { target = { ...u, decimals: h.decimals, ticker: h.ticker }; assetIdHex = aid; break; }
+  // preResolvedTarget lets callers list a UTXO the holdings scanner hasn't
+  // picked up yet — chunked publishing reads the chunk openings straight off
+  // the CXFER reveal we just broadcast (mempool is enough for the worker,
+  // but the in-page scanner can lag a beat behind a fresh broadcast).
+  let target, assetIdHex;
+  if (preResolvedTarget && preResolvedAssetIdHex) {
+    target = preResolvedTarget;
+    assetIdHex = preResolvedAssetIdHex;
+  } else {
+    const holdings = await scanHoldings();
+    target = null; assetIdHex = null;
+    for (const [aid, h] of holdings) {
+      const u = h.utxos.find(x => x.utxo.txid === utxoTxid && x.utxo.vout === utxoVout);
+      if (u) { target = { ...u, decimals: h.decimals, ticker: h.ticker }; assetIdHex = aid; break; }
+    }
+    if (!target) throw new Error(`UTXO ${utxoTxid}:${utxoVout} not found in holdings`);
   }
-  if (!target) throw new Error(`UTXO ${utxoTxid}:${utxoVout} not found in holdings`);
 
   // Payout script default = P2WPKH(wallet.pub). Caller may override to
   // direct proceeds to another address; worker enforces P2WPKH/P2TR only.
@@ -12148,7 +12158,14 @@ async function publishPreauthSale({ utxoTxid, utxoVout, minPriceSats, expiry, se
   const sellerPubBytes = wallet.pub;
   const assetIdBytes = hexToBytes(assetIdHex);
   const blindingBytes = bigintToBytes32(BigInt(target.blinding));
-  const nonceBytes = crypto.getRandomValues(new Uint8Array(16));
+  // Chunked publishing passes nonceBytesOverride so all K chunks of a group
+  // share `nonce.slice(0,8)` — the market UI uses that prefix as a group_id
+  // to render N chunks as one row. The worker treats nonce opaquely (only
+  // the sale_id derivation cares), so no schema change is required and the
+  // remaining 8 bytes stay random for per-chunk uniqueness.
+  const nonceBytes = (nonceBytesOverride instanceof Uint8Array && nonceBytesOverride.length === 16)
+    ? nonceBytesOverride
+    : crypto.getRandomValues(new Uint8Array(16));
   const saleIdHex = _preauthSaleIdHex(utxoTxid, utxoVout, sellerPubBytes, nonceBytes);
   const saleIdBytes = hexToBytes(saleIdHex);
 
@@ -12215,6 +12232,126 @@ async function publishPreauthSale({ utxoTxid, utxoVout, minPriceSats, expiry, se
     txid: utxoTxid,
   });
   return { asset_id: assetIdHex, sale_id: saleIdHex, sale: j.sale };
+}
+
+// Chunked preauth publishing — partial-fill UX without a protocol change.
+// One source UTXO of amount S is fanned via a single CXFER into K equal child
+// UTXOs of amount ⌊S/K⌋ each (leftover, if any, carries to the change output
+// and is NOT listed). Each of the K children is then published as an
+// independent preauth sale at a uniform per-chunk price. All K listings share
+// the first 8 bytes of their nonce (the "group seed") so the market UI can
+// render them as one row when it wants to. Buyers take any subset of chunks
+// at the existing per-listing Buy flow — no take-side change required.
+//
+// K ≤ 7 because buildAndBroadcastCXferMulti caps recipients at 7 (m=8
+// aggregated rangeproof) and we need every listed chunk to come from explicit
+// recipients of identical amount; the implicit change output's amount differs
+// when S % K ≠ 0 so we exclude it from the listed set.
+//
+// Returns { revealTxid, group_id, chunk_amount, sale_ids[], partialFailure }.
+// partialFailure is non-null if some chunks listed but others failed (worker
+// rate-limit, propagation race) — the caller surfaces the count so the user
+// can retry the rest from the dropdown.
+async function publishPreauthSaleChunks({ sourceUtxoTxid, sourceUtxoVout, chunks, minPriceSatsPerChunk, expiry, onProgress = null }) {
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!Number.isInteger(chunks) || chunks < 2 || chunks > 7) throw new Error('chunks must be an integer in [2, 7]');
+  if (!Number.isInteger(minPriceSatsPerChunk) || minPriceSatsPerChunk < DUST) throw new Error(`min_price_sats per chunk must be integer ≥ ${DUST}`);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isInteger(expiry) || expiry <= now) throw new Error('expiry must be future unix-seconds');
+  const _progress = (stage, extra) => { try { onProgress && onProgress(stage, extra); } catch {} };
+
+  // Locate the source UTXO + its opening in current holdings.
+  const holdings = await scanHoldings();
+  let source = null, assetIdHex = null, decimals = 0, ticker = '';
+  for (const [aid, h] of holdings) {
+    const u = h.utxos.find(x => x.utxo.txid === sourceUtxoTxid && x.utxo.vout === sourceUtxoVout);
+    if (u) { source = u; assetIdHex = aid; decimals = h.decimals; ticker = h.ticker; break; }
+  }
+  if (!source) throw new Error(`source UTXO ${sourceUtxoTxid}:${sourceUtxoVout} not found in holdings`);
+
+  const K = chunks;
+  const chunkAmount = source.amount / BigInt(K);
+  if (chunkAmount <= 0n) throw new Error('chunk amount underflows — pick fewer chunks or a larger source UTXO');
+  const leftover = source.amount - chunkAmount * BigInt(K);
+  // Leftover lands on the change output (K+1th vout in the CXFER) and is NOT
+  // listed — we want the K listed chunks to be exactly equal so the market UI
+  // can render them as a uniform group.
+
+  // Fan CXFER: K equal recipients to ownPub, allowDuplicateRecipients=true
+  // since every chunk targets the seller's own pubkey. forceUtxos pins the
+  // source so the picker doesn't pull from larger UTXOs.
+  _progress('fan-start', { K, chunkAmount, leftover });
+  const ownPubHex = bytesToHex(wallet.pub);
+  const splitResult = await buildAndBroadcastCXferMulti({
+    assetIdHex,
+    recipients: Array.from({ length: K }, () => ({ pubHex: ownPubHex, amount: chunkAmount })),
+    forceUtxos: [source],
+    allowDuplicateRecipients: true,
+    onProgress: (stage) => _progress(`fan-${stage}`),
+  });
+  _progress('fan-done', { revealTxid: splitResult.revealTxid });
+
+  // Group seed (8 bytes) — shared across all K chunk listings. Lets the
+  // market UI group these into one row by `nonce.slice(0, 8)`.
+  const groupSeed = crypto.getRandomValues(new Uint8Array(8));
+  const groupIdHex = bytesToHex(groupSeed);
+
+  const saleIds = [];
+  let firstError = null;
+  for (let i = 0; i < K; i++) {
+    const r = splitResult.recipients[i];
+    // nonce = groupSeed || sha256(groupSeed || i)[0..8] — per-chunk uniqueness
+    // is deterministic so a retry produces the same sale_id (matches the
+    // worker's outpoint-index dedupe).
+    const iBytes = new Uint8Array([i & 0xff, (i >> 8) & 0xff, 0, 0, 0, 0, 0, 0]);
+    const suffix = sha256(new Uint8Array([...groupSeed, ...iBytes])).slice(0, 8);
+    const nonceBytes = new Uint8Array(16);
+    nonceBytes.set(groupSeed, 0);
+    nonceBytes.set(suffix, 8);
+
+    const preResolvedTarget = {
+      utxo: { txid: splitResult.revealTxid, vout: r.vout, value: DUST },
+      amount: r.amount,
+      blinding: r.blinding,
+      ticker,
+      decimals,
+    };
+    try {
+      _progress('publish-chunk', { i, K });
+      const pub = await publishPreauthSale({
+        utxoTxid: splitResult.revealTxid,
+        utxoVout: r.vout,
+        minPriceSats: minPriceSatsPerChunk,
+        expiry,
+        nonceBytesOverride: nonceBytes,
+        preResolvedTarget,
+        preResolvedAssetIdHex: assetIdHex,
+      });
+      saleIds.push(pub.sale_id);
+    } catch (e) {
+      firstError = e;
+      // Bail on first failure — partial groups are recoverable (the
+      // remaining chunk UTXOs are sitting in holdings; the user can publish
+      // them manually from the standard list-preauth form) but surfacing
+      // the failure immediately is more honest than silently dropping
+      // chunks behind the user.
+      break;
+    }
+  }
+  _progress('done', { saleIds });
+  return {
+    revealTxid: splitResult.revealTxid,
+    group_id: groupIdHex,
+    asset_id: assetIdHex,
+    chunk_amount: chunkAmount,
+    chunks_requested: K,
+    chunks_published: saleIds.length,
+    sale_ids: saleIds,
+    leftover_amount: leftover,
+    partialFailure: firstError && saleIds.length > 0 ? firstError.message : null,
+    error: firstError && saleIds.length === 0 ? firstError.message : null,
+  };
 }
 
 async function cancelPreauthSale({ assetIdHex, saleIdHex }) {
@@ -25945,38 +26082,45 @@ function _treasuryAddressForRoot(rootHex) {
   catch { return null; }
 }
 
-// Per-recipient fair share of a 7-recipient CXFER fee, in sats. The issuer's
-// fulfilment batches m=7 recipients per CXFER. Each batch costs roughly
-// (commit_fee + reveal_fee + 8 × DUST + 1000 headroom). Divide by 7 to get
-// what each claimant should chip in to cover their seat in the batch. Async
-// because the fee rate fetch is async. Falls back to ~5,000 sats if the
-// fee-rate API is unreachable so the panel still surfaces a reasonable
-// suggestion.
+// Per-recipient fair share of a CXFER batch fee, in sats. The issuer's
+// fulfilment batches up to m=7 recipients per CXFER, but in practice often
+// broadcasts at m=4-6 to keep claims flowing. Reveal vbytes scale weakly
+// with m (m=4 ≈ 592vb vs m=7 ≈ 732vb), so a 4-person batch costs ~80% of
+// a 7-person batch while only collecting 4/7 of the tips if priced at the
+// m=7 share — leaving treasury short ~6k sats per under-full batch. To
+// keep the daemon solvent across realistic fill rates, price the tip
+// against the m=4 batch cost and divide by 4 (break-even at worst case).
+// Surplus from fuller batches accrues to cover the end-of-drop sweep CXFER
+// and absorb fee-rate drift. Async because the fee rate fetch is async.
+// Falls back to ~5,000 sats if the fee-rate API is unreachable so the
+// panel still surfaces a reasonable suggestion.
 //
 // Floor: both the Node daemon and dapp auto-fulfil reject claims whose
 // funding_txid pays less than AUTOFULFIL_MIN_FUNDING_SATS (default 3000).
-// At low fee rates (signet at 2 sat/vB), the divided-by-7 share drops below
-// that floor (~430 sats) — recipients who tipped at the share rate would be
-// silently skipped by the fulfiller. Clamp the suggested tip to the floor
-// so the recipient's UI never recommends a tip the fulfiller would reject.
+// At low fee rates (signet at 2 sat/vB), the calculated share drops below
+// that floor — recipients who tipped at the share rate would be silently
+// skipped by the fulfiller. Clamp the suggested tip to the floor so the
+// recipient's UI never recommends a tip the fulfiller would reject.
 async function _recipientShareSatsForNextBatch() {
   let feeRate;
   try { feeRate = await getFeeRate(); } catch { return Math.max(5000, AUTOFULFIL_MIN_FUNDING_SATS); }
-  // Worst-realistic batch shape: 7 recipients, 1 asset input (single big asset
-  // UTXO at the treasury — common when issuer just funded the treasury via
-  // one CXFER), sats-change output back to treasury. numAssetIn=1 maximises
-  // the dust-value cost because zero recyling happens (vs numAssetIn=2 which
-  // saves 1 dust by recycling an asset input back into a recipient output).
-  const revealFee = feeFor(estCXferRevealVb({ m: 7, numAssetIn: 1, hasSatsChange: true }), feeRate);
+  // Conservative batch shape: m=4 recipients (sub-full batch — issuer
+  // broadcasts before reaching m=7 to keep claims flowing), 1 asset input
+  // (single big asset UTXO at the treasury — common when issuer just
+  // funded the treasury via one CXFER), sats-change output back to
+  // treasury. numAssetIn=1 maximises the dust-value cost because zero
+  // recycling happens.
+  const revealFee = feeFor(estCXferRevealVb({ m: 4, numAssetIn: 1, hasSatsChange: true }), feeRate);
   const commitFee = feeFor(estCommitVb(2), feeRate);
-  // DUST accounting (audit M6 follow-up): each batch creates 7 recipient dust
-  // outputs + 1 change dust output, consumes numAssetIn dust outputs. Net new
-  // dust locked = (8 - numAssetIn) × DUST. The previous calculation hardcoded
-  // 8 × DUST which over-counted by 546-1092 sats. Using numAssetIn=1 as the
-  // conservative case gives 7 × DUST = 3822 sats — tracks reality within ~5%.
-  const netDustLocked = 7 * DUST;
-  const perBatch = commitFee + revealFee + netDustLocked + 1000;  // +1000 buffer for fee-rate variance
-  return Math.max(AUTOFULFIL_MIN_FUNDING_SATS, Math.ceil(perBatch / 7));
+  // DUST accounting: each batch creates m recipient dust outputs + 1
+  // sats-change dust output, consumes numAssetIn dust outputs. Net new
+  // dust locked at m=4, numAssetIn=1 = 4 × DUST = 2184 sats.
+  const netDustLocked = 4 * DUST;
+  // +3000 sat buffer per batch (~750 per tip at div=4) absorbs ~3 sat/vB
+  // of fee-rate drift between tip-time and broadcast and amortises the
+  // end-of-drop sweep CXFER across the drop's claims.
+  const perBatch = commitFee + revealFee + netDustLocked + 3000;
+  return Math.max(AUTOFULFIL_MIN_FUNDING_SATS, Math.ceil(perBatch / 4));
 }
 
 // Build a shareable claim deep link. Always includes the bare CID (without
@@ -29318,17 +29462,26 @@ async function renderHoldings() {
           ).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>Pick UTXO to sell ▾ (smallest first; whole UTXO sold atomically)</label>
+              <label>Pick UTXO to sell ▾ (smallest first)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
-                  <label>Min price (sats)</label>
+                  <label>Min price (sats) <span class="muted" style="font-weight:normal;font-size:10px;" data-price-label-suffix></span></label>
                   <input type="text" inputmode="numeric" data-field="price" value="50000">
                 </div>
                 <div>
                   <label>Expires in (days, 1–30)</label>
                   <input type="number" min="1" max="30" data-field="days" value="7">
+                </div>
+              </div>
+              <div class="form-row two" style="margin-top:8px;">
+                <div>
+                  <label>Split into chunks (1–7) <span class="muted" style="font-weight:normal;font-size:10px;" title="Buyers can take any subset of chunks individually instead of having to buy the whole UTXO. Each chunk becomes its own listing at the same unit price.">↗ partial-fill</span></label>
+                  <input type="number" min="1" max="7" data-field="chunks" value="1">
+                </div>
+                <div style="display:flex;align-items:flex-end;">
+                  <div class="muted" data-chunk-preview style="font-size:10px;line-height:1.4;padding-bottom:8px;"></div>
                 </div>
               </div>
               <div class="muted" style="margin-top:10px;font-size:11px;line-height:1.5;">
