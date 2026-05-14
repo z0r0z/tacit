@@ -4059,12 +4059,22 @@ const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / �
 // transaction reinterprets under this flag. The maker must explicitly tick
 // "Variable fills" to publish under 0x37.
 //
-// Test override: setting `globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE = false`
-// before module load forces the flag off (useful if a regression surfaces
-// and we want to disable the builder without redeploying the page).
-const ENABLE_T_AXFER_VARIABLE = (
-  typeof globalThis !== 'undefined' && globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE === false
-) ? false : true;
+// Kill switches (either disables the builder; both honored):
+//   1. globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE = false (set before
+//      module load) — useful for tests + integration harnesses.
+//   2. localStorage 'tacit-disable-tav' = '1' — emergency runtime
+//      switch a user (or operator from devtools) can flip without
+//      redeploying the dapp. Survives reload because it's
+//      localStorage. Set via Application → Storage → Local Storage
+//      in devtools, or `localStorage.setItem('tacit-disable-tav','1')`
+//      in console + reload.
+const ENABLE_T_AXFER_VARIABLE = (() => {
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE === false) return false;
+    if (typeof localStorage !== 'undefined' && localStorage.getItem('tacit-disable-tav') === '1') return false;
+  } catch {}
+  return true;
+})();
 const MAX_SCRIPT_PUSH = 520;
 const OP_FALSE = 0x00, OP_PUSHDATA1 = 0x4c, OP_PUSHDATA2 = 0x4d;
 const OP_IF = 0x63, OP_ENDIF = 0x68, OP_CHECKSIG = 0xac;
@@ -30953,7 +30963,10 @@ async function renderHoldings() {
               <!-- Variable-fills toggle (SPEC §5.7.6.1 / T_AXFER_VAR). When
                    checked, the lot becomes partial-fillable: buyers pick how
                    much to take, like a DEX. When unchecked, whole-UTXO take
-                   only (legacy §5.7.6 / T_AXFER). -->
+                   only (legacy §5.7.6 / T_AXFER). Default ON — variable
+                   fills is the modern atomic-intent default. Operator can
+                   flip the localStorage kill switch (tacit-disable-tav=1)
+                   if they need to roll back without redeploying. -->
               <div style="margin-top:10px;padding:8px 10px;background:var(--bg-warm);border:1px solid var(--ink-faint);border-radius:2px;">
                 <label style="display:flex;align-items:center;gap:8px;margin:0;cursor:pointer;font-size:11px;font-weight:500;">
                   <input type="checkbox" data-field="variable" checked style="margin:0;">
