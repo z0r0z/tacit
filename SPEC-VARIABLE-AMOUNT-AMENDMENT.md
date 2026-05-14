@@ -1,19 +1,15 @@
-# SPEC §5.7 Amendment Draft — Variable-Amount Atomic Intents
+# SPEC §5.7 Amendment — Variable-Amount Atomic Intents
 
-> **Status:** Draft for review. Not yet merged into `SPEC.md`. Doc-only.
+> Adds continuous-amount partial-fill semantics to tacit's atomic-
+> intent flow via a new opcode `T_AXFER_VAR` (`0x37`). Reuses the
+> existing CXFER N=2 cryptography (Pedersen + bulletproofs + kernel
+> sig) already in production.
 >
-> **Author intent:** add continuous-amount partial-fill semantics to
-> tacit's atomic-intent flow (`T_AXFER` + §5.7.6) without breaking any
-> existing UTXO, listing, or indexer. Achieved via a new opcode
-> `T_AXFER_VAR` (`0x37`), reusing the existing CXFER N=2 cryptography
-> already in production daily.
->
-> **What this amendment does NOT change:** the existing `T_AXFER`
-> opcode (`0x26`), its N=1 semantics, the §5.7.3 targeted-recipient
-> flow, the §5.7.6 atomic-intent flow at whole-UTXO fill, or any
-> previously confirmed transaction. Every existing asset, including
-> `f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b`,
-> validates identically before and after this amendment lands.
+> **Scope of unchanged behavior.** This amendment does not change:
+> the existing `T_AXFER` opcode (`0x26`), its N=1 semantics, the
+> §5.7.3 targeted-recipient flow, the §5.7.6 atomic-intent flow at
+> whole-UTXO fill, or any previously confirmed transaction. Every
+> existing asset validates identically before and after.
 
 ---
 
@@ -48,7 +44,6 @@ signature. The same primitives apply here; the new opcode rebrands
 the N=2 envelope shape for use with the atomic-intent flow's
 fulfilment partial reveal.
 
----
 
 ## §5.7.9 T_AXFER_VAR (`0x37`) — variable-amount atomic settlement
 
@@ -210,27 +205,76 @@ construction, no new domain tag.
 
 Extends §5.7.6 atomic intents with maker-online continuous partial
 fills. The on-chain envelope is `T_AXFER_VAR` (§5.7.9). The
-off-chain coordination layer adds three fields, one message-version
-bump, and one validator step.
+off-chain coordination layer differs from §5.7.6 in three load-
+bearing ways:
 
-### Intent record additions
+1. **Commit phase is deferred to fulfilment** (see *Commit-phase
+   timing* below). A variable-amount intent record is an
+   authenticated off-chain offer; it does not anchor an on-chain
+   commit tx at publish time.
+2. **Claim carries `requested_amount`** (see *Claim message bump*).
+3. **Fulfilment exchanges an unbroadcast commit + a partial
+   reveal**; the worker performs the sequential broadcast (see
+   *Worker state machine and broadcast policy*).
+
+### Intent record
 
 ```
 intent {
-  ...existing fields from §5.7.6 unchanged, including:
-  amount             u64 — the listed UTXO's amount in base units (cleartext).
-                          Semantics unchanged from §5.7.6. Serves as the
-                          IMPLICIT max_take_amount for variable fills —
-                          a taker can request any amount up to but not
+  intent_id          16 bytes = SHA256("tacit-axintent-id-v1"
+                                       || maker_pubkey(33)
+                                       || asset_utxo_txid_BE(32)
+                                       || asset_utxo_vout_LE(4))[0..16]
+                                — deterministic from intent terms;
+                                derivable both at publish (worker handle)
+                                and from chain data at recovery
+                                (vin[1] reveals the asset_utxo outpoint).
+  network            "mainnet" | "signet" | "regtest"
+  opcode             0x37  (declares T_AXFER_VAR settlement; legacy whole-UTXO
+                            intents use 0x26 per §5.7.6 and the existing record
+                            shape)
+  asset_id           32 bytes
+  asset_utxo         { txid, vout, value }  — the maker's listed tacit UTXO
+  amount             u64 — listed UTXO's amount in base units (cleartext).
+                          Serves as the IMPLICIT max_take_amount for variable
+                          fills — a taker can request any amount up to but not
                           exceeding `amount`.
-  // New optional field:
   min_take_amount    u64 — OPTIONAL.
-                          Absence  ⇒ whole-UTXO fill (legacy §5.7.6 semantics).
-                          Presence ⇒ taker MAY request any
-                          requested_amount ∈ [min_take_amount, amount].
-                          Settlement uses T_AXFER_VAR (0x37).
+                          Absence  ⇒ whole-UTXO fill (legacy §5.7.6 semantics);
+                                     intent uses opcode 0x26 and the record
+                                     shape from §5.7.6 (which includes
+                                     publish-time commit_txid / envelope_script).
+                          Presence ⇒ variable fill; opcode 0x37; commit
+                                     deferred per *Commit-phase timing*.
+  price_sats         u64 — total price for the full listed `amount`. Per-base-
+                          unit pricing scales linearly per *Bounded recipient
+                          amount*.
+  expiry             u64 — unix-seconds. Worker drops claims after this.
+  maker_pubkey       33 bytes (compressed)
+  maker_address      string — bech32 BTC payment address for vout[1]
+  intent_sig         64 bytes — BIP-340 over intent_msg (see below)
 }
 ```
+
+`intent_msg` binds every field a taker quotes against:
+
+```
+intent_msg = SHA256("tacit-axintent-publish-v1"
+                   || asset_id || intent_id
+                   || asset_utxo_txid_BE(32) || asset_utxo_vout_LE(4)
+                                              || asset_utxo_value_LE(8)
+                   || amount_LE(8) || price_sats_LE(8)
+                   || min_take_amount_LE(8)  // 0x00…00 if absent
+                   || expiry_LE(8)
+                   || maker_pubkey(33) || H(maker_address)(32)
+                   || network_tag(1))
+```
+
+Workers MUST verify `intent_sig` under `maker_pubkey` before
+accepting the publish. Without the on-chain commit tx as an
+anchoring artefact, `intent_sig` is the only binding the worker
+holds; a taker downloading the intent record validates the signature
+client-side before quoting against it.
 
 The maximum take is **always** the listed UTXO's amount; there is no
 separate `max_take_amount` field. A maker who wants to expose only
@@ -238,25 +282,76 @@ part of a UTXO for variable fills MUST pre-split via a self-CXFER
 first (carving the listed amount out of a larger UTXO), then publish
 the intent against the smaller UTXO. This keeps the conservation
 invariant trivially consistent — `requested + change == listed` is
-the same equation CXFER already enforces, with no dual-field
-bookkeeping.
+the same equation CXFER already enforces.
 
 Validation rules at intent-publish time:
 
 1. If `min_take_amount` absent ⇒ intent is whole-UTXO (legacy §5.7.6).
    On-chain settlement uses `T_AXFER` (`0x26`). Claim format is
-   `claim_msg_v2`.
+   `claim_msg_v2`. Commit tx is broadcast at publish per §5.7.6.
 2. If `min_take_amount` present:
    - `1 ≤ min_take_amount ≤ amount` (must be at least 1 base unit;
      must not exceed the listed UTXO's amount).
-   - On-chain settlement uses `T_AXFER_VAR` (`0x37`). Claim format is
-     `claim_msg_v3` (carries `requested_amount`).
+   - On-chain settlement uses `T_AXFER_VAR` (`0x37`). Claim format
+     is `claim_msg_v3` (carries `requested_amount`).
+   - **No commit tx is broadcast at publish.** See *Commit-phase
+     timing*.
 
 Wire-format observation: an intent record with `min_take_amount ==
-amount` is **semantically equivalent** to a legacy whole-UTXO intent
-and SHOULD use `T_AXFER` (`0x26`) on chain rather than `T_AXFER_VAR`.
+amount` is semantically equivalent to a legacy whole-UTXO intent and
+SHOULD use `T_AXFER` (`0x26`) on chain rather than `T_AXFER_VAR`.
 Implementations MAY refuse to publish variable-amount intents where
 `min_take_amount == amount` (degenerate case).
+
+### Commit-phase timing
+
+`T_AXFER` commits the envelope script bytes via a P2TR script-tree
+at intent publish time, because the recipient commitment,
+ciphertext, kernel sig, and rangeproof are fully determined by the
+listed `amount` and the recipient pubkey — both known at publish.
+
+`T_AXFER_VAR` payloads commit to `C_recip` and `C_change`, which
+depend on `requested_amount`. The aggregated bulletproof and the
+kernel sig (signing under `(r_recip + r_change − r_listed) · G`'s
+x-only form) likewise depend on the take split. None of these are
+knowable at intent publish — `requested_amount` is taker-chosen at
+claim time.
+
+Therefore: **a variable-amount intent's commit tx is constructed
+and broadcast at fulfilment, not at publish.** The publish record
+is an authenticated off-chain offer; the on-chain commit is created
+only after a taker's claim fixes `requested_amount`.
+
+Three invariants survive the timing shift:
+
+1. The taproot-committed envelope bytes remain the canonical
+   settlement object. Validators and indexers read one self-
+   contained envelope from the script-path reveal — no cross-output
+   reconstruction, no aux-OP_RETURN soundness extension.
+2. The P2TR commit still commits to the exact settlement bytes; it
+   just does so after those bytes become well-defined.
+3. The maker's BTC-payment binding via `vin[1]` SIGHASH_SINGLE_ACP
+   on `vout[1]` is unchanged.
+
+The maker holds the unbroadcast commit tx until the taker signs the
+completed reveal (see *Worker state machine and broadcast policy*),
+so an abandoned claim costs the maker no on-chain fee.
+
+A maker chooses between paths based on which trade-offs fit their
+posting style. Both paths are first-class and remain available;
+omitting `min_take_amount` selects whole-UTXO, supplying it selects
+variable-amount:
+
+| Property                              | Whole-UTXO path (§5.7.6, `0x26`) | Variable-amount path (§5.7.6.1, `0x37`) |
+|---------------------------------------|----------------------------------|------------------------------------------|
+| On-chain advertising of the intent    | Yes (commit_tx visible)          | No (worker record only)                  |
+| Maker sunk cost at publish            | ~1700 sats (commit fee + DUST)   | Zero                                     |
+| Discoverability via chain alone       | Yes                              | Worker-mediated                          |
+| Maker can back out before take        | Only by reclaiming commit P2TR   | Trivially (just don't fulfil)            |
+| Settlement tx ancestry                | Reveal references confirmed commit | Reveal references mempool commit       |
+| Atomicity                             | Preserved                        | Preserved                                |
+| Settlement latency at fulfilment      | One new tx                       | Adds one block of ancestry depth         |
+| Continuous partial fills              | No (whole-UTXO only)             | Yes (any `requested ∈ [min, amount]`)    |
 
 ### Claim message bump
 
@@ -290,75 +385,246 @@ fulfilment_msg = SHA256("tacit-axintent-fulfilment-v2"
                        || SHA256(partial_reveal_json))
 ```
 
-Domain version bumped to `v2` because the partial_reveal payload now
-carries an N=2 `T_AXFER_VAR` envelope, not the legacy N=1 `T_AXFER`
-envelope. A maker fulfilling a variable-amount claim binds the
-delivered amount explicitly into the fulfilment signature so a worker
-or taker cannot silently substitute a different amount.
+The `v2` domain bumps from §5.7.6's `v1` for two reasons: the
+partial_reveal payload carries an N=2 `T_AXFER_VAR` envelope
+(not the legacy N=1 `T_AXFER` envelope), and `requested_amount` is
+explicitly bound into the signature so a worker or taker cannot
+silently substitute a different amount even if `partial_reveal_json`
+parsing diverges between implementations.
 
-Partial-reveal construction at fulfilment time:
+Fulfilment is a four-leg exchange (maker → worker → taker → worker)
+followed by sequential broadcast. The legs:
 
-1. Maker reads the claim: `(taker_pubkey, requested_amount)`.
-2. Maker derives recipient blinding `r_recip` from the per-intent
-   secret `r` (held privately since publish) and the
-   `enc_recipient_blinding` ECDH derivation per §5.7.6.
-   `r_recip := r XOR HMAC-SHA256(SHA256(ECDH(maker_priv, taker_pub)),
-   "tacit-axintent-blinding-v1" || intent_id || asset_id)`.
-   **Unchanged from §5.7.6.**
-3. Maker derives self-change blinding `r_change` from the per-intent
-   secret `r` and the change anchor:
-   `r_change := HMAC-SHA256(maker_priv,
-   "tacit-axintent-change-v1" || intent_id || asset_id)`.
-   **New for §5.7.6.1.** Domain tag `tacit-axintent-change-v1` is
-   added to the canonical domain list (§3, "BIP-340 Schnorr
-   signature-message tags").
-4. Maker constructs the vout layout — **must match the wire-format
-   block in §5.7.9** so the maker's SIGHASH_SINGLE binding at step 6
-   targets the right output:
-   - `vout[0]`: DUST P2WPKH(taker_pub) — the recipient's tacit UTXO.
-   - `vout[1]`: `floor(requested_amount × price_total / amount)` sats
-     to `maker_address` — the maker's BTC payment. Scales linearly
-     with the take fraction. `price_total` is the listed price for
-     the full listed `amount`; `amount` is the listed UTXO's amount
-     (i.e. the implicit max take).
-   - `vout[2]`: DUST P2WPKH(maker_pub) — the maker's change tacit UTXO.
-   - `vout[3]`: `OP_RETURN(0x6a) || OP_PUSHBYTES_80(0x50) ||
-     payload_80` — the 80-byte dual-recovery payload constructed per
-     §5.7.6.1 *On-chain recovery*. MANDATORY.
-   - `vout[4+]`: taker BTC change (added by taker at completion).
-5. Maker computes:
+#### 1. Maker prepares (after reading the claim's `requested_amount`)
+
+The maker derives blindings, builds the envelope, and constructs
+**both** the commit tx (unbroadcast) and the partial reveal tx
+(maker-signed but missing taker funding):
+
+1. **Blindings.**
+   - Recipient: `r_recip := r XOR HMAC-SHA256(SHA256(ECDH(maker_priv,
+     taker_pub)), "tacit-axintent-blinding-v1" || intent_id ||
+     asset_id)` (the per-intent secret `r` is held privately since
+     publish — unchanged from §5.7.6).
+   - Maker change: `r_change := HMAC-SHA256(maker_priv,
+     "tacit-axintent-change-v1" || intent_id || asset_id)`. Self-
+     derivable from seed + intent_id at any future time (load-
+     bearing for §5.7.6.1 *On-chain recovery*).
+2. **Output commitments.**
    - `C_recip  = requested_amount · H + r_recip · G`
    - `C_change = (amount − requested_amount) · H + r_change · G`
-     where `amount` is the listed UTXO's amount (cleartext field in
-     the intent record; conservation closure trivially holds since
-     `requested + (amount − requested) = amount`).
-   - `excess = r_recip + r_change − r_listed`
-   - aggregated bulletproof over `{C_recip, C_change}`
-   - `kernel_msg` per §5.7.9 (binds asset_id, asset input outpoints,
-     `output_commitments = C_recip || C_change`, burned=0)
+     Conservation closure: `requested + (amount − requested) =
+     amount` is trivially consistent with the listed-UTXO amount.
+3. **Aggregated bulletproof** over `{C_recip, C_change}` per §5.7.9.
+4. **Kernel.**
+   - `excess = r_recip + r_change − r_listed (mod n)`
+   - `kernel_msg = computeKernelMsg(asset_id, [asset_utxo], [C_recip,
+     C_change], burned=0)` per §5.4.3.
    - `kernel_sig = SignSchnorr(kernel_msg, excess)` under
-     `(excess · G)`'s x-only form
-6. Maker signs `SIGHASH_SINGLE | ANYONECANPAY` on `vin[1]` (their
-   single asset input) committing to **`vout[1]` — the BTC payment**.
-   SIGHASH_SINGLE's same-index rule means `vin[1]`'s signature binds
-   `vout[1]`; a taker cannot increase or redirect the BTC payment
-   without invalidating the maker's signature. The maker's change at
-   `vout[2]` is bound by the kernel signature over `output_commitments`
-   (not by the maker's vin-side sig), and is additionally protected
-   from value-substitution because tampering with `C_change` breaks
-   the kernel sig. The OP_RETURN at `vout[3]` is unbound by the
-   maker's sig at `vin[1]` (SIGHASH_SINGLE only binds vout[1]), but
-   any taker tampering with the OP_RETURN payload would break the
-   maker's seed-only recovery — caught at next chain scan by the
-   maker. A more paranoid alternative is for the maker to sign a
-   second SIGHASH_ALL message over the full partial-reveal in the
-   off-chain `fulfilment_msg_v2`, which is already done.
+     `(excess · G)`'s x-only form.
+5. **Envelope.** Encode the `T_AXFER_VAR` payload (opcode 0x37,
+   asset_id, asset_input_count=1, kernel_sig, both output records,
+   rangeproof) per §5.7.9 *Wire format*. Wrap in the standard
+   envelope script under maker's `xonly` internal key.
+6. **Commit tx (unbroadcast).** Single-output tx paying
+   `DUST + estimated_reveal_fee` to the P2TR address derived from
+   the envelope script's leaf hash.
+7. **vout layout** — must match the §5.7.9 wire-format block:
+   - `vout[0]`: DUST P2WPKH(taker_pub) — recipient tacit UTXO.
+   - `vout[1]`: `floor(requested_amount × price_sats / amount)` sats
+     to `maker_address` — the maker's BTC payment, scaling linearly
+     with the take fraction.
+   - `vout[2]`: DUST P2WPKH(maker_pub) — maker's change tacit UTXO.
+   - `vout[3]`: `OP_RETURN(0x6a) || OP_PUSHBYTES_80(0x50) ||
+     payload_80` — MANDATORY 80-byte dual-recovery payload per
+     *On-chain recovery*.
+   - `vout[4+]`: taker BTC change (added by taker at completion).
+8. **Maker signs the partial reveal.**
+   - `vin[0]` (commit P2TR script-path): SIGHASH_SINGLE_ACP, binds
+     `vout[0]` (recipient tacit).
+   - `vin[1]` (asset UTXO P2WPKH): SIGHASH_SINGLE_ACP, binds
+     `vout[1]` (BTC payment to maker_address). A taker cannot
+     increase or redirect the BTC payment without invalidating
+     this signature.
 
-The partial_reveal_json carries the envelope-bearing taproot script-
-path witness for `vin[0]` (envelope), the maker's SIGHASH_SINGLE_ACP
-signature on `vin[1]` (asset input), and the kernel sig + bulletproof
-embedded in the envelope payload. The taker completes by adding their
-BTC funding inputs (`vin[2..]`) and a SIGHASH_ALL signature; broadcasts.
+The maker's change at `vout[2]` is bound by the kernel sig over
+`output_commitments` (not by any vin-side sig); tampering with
+`C_change` breaks the kernel sig. The OP_RETURN at `vout[3]` is
+unbound by the maker's vin[1] sig but is bound by the maker's
+SIGHASH_ALL signature over the full partial reveal carried in
+`fulfilment_msg_v2`.
+
+#### 2. Maker POSTs the fulfilment to the worker
+
+```
+POST /atomic-intents/{asset_id}/{intent_id}/fulfilment
+
+{
+  taker_pubkey,
+  requested_amount,
+  commit_tx_hex,                // unbroadcast
+  envelope_script_hex,
+  control_block_hex,
+  p2tr_spk_hex,                  // derived; redundant but easier for worker
+  partial_reveal,                // JSON: inputs[0..1], outputs[0..3], witnesses
+  enc_recipient_blinding,        // for legacy takers without OP_RETURN path
+  fulfilment_sig                 // BIP-340 over fulfilment_msg
+}
+```
+
+The worker validates (see *Worker state machine and broadcast
+policy*) and transitions the claim to `COMMIT_READY`. **No on-chain
+activity has occurred.**
+
+#### 3. Taker downloads, verifies, completes the reveal
+
+The taker fetches the fulfilment, then independently verifies:
+
+- `commit_tx_hex` pays exactly one output to the P2TR address
+  derived from `envelope_script_hex` + `control_block_hex` (so the
+  maker cannot substitute a different envelope at broadcast).
+- The partial reveal's `vin[0]` references `commit_tx_hex`'s
+  `txid:0`.
+- Maker's SIGHASH_SINGLE_ACP signatures on `vin[0]` and `vin[1]`
+  verify.
+- Bulletproof + kernel sig verify against the envelope.
+- `requested_amount` matches the taker's claim; `C_recip` opens
+  correctly under `(requested_amount, r_recip)`.
+- `vout[1]` value equals `floor(requested_amount × price_sats /
+  amount)`.
+- `vout[3]` is the mandatory `OP_RETURN(80)` recovery payload.
+- `fulfilment_sig` verifies under `maker_pubkey`.
+
+The taker then appends BTC funding inputs (`vin[2..]`) and any BTC
+change output (`vout[4+]`), signs SIGHASH_ALL, and submits the
+completed reveal back to the worker.
+
+#### 4. Worker performs sequential broadcast
+
+Once the completed reveal arrives, the worker broadcasts:
+
+1. `commit_tx`. Polls for mempool visibility (≤ ~30s on healthy
+   nodes).
+2. The completed reveal tx. Spends the unconfirmed commit output
+   (CPFP-style); miners package them by ancestor feerate.
+
+The worker rejects the fulfilment at step 2 above if the
+**ancestor package feerate** falls below the relay floor plus
+safety margin:
+
+```
+effective_feerate(commit + reveal)
+  = (fee(commit) + fee(reveal)) / (vbytes(commit) + vbytes(reveal))
+  ≥ relay_floor + safety_margin
+```
+
+The reference implementation samples `mempool.space`'s
+`/v1/fees/recommended` at fulfilment time and pads by 10%.
+
+Implementations MAY use BIP-431 package relay (TRUC v3) where
+supported to broadcast `(commit, reveal)` atomically; sequential
+broadcast remains the mandatory fallback.
+
+### Worker state machine and broadcast policy
+
+Each variable-amount intent transitions through:
+
+```
+OPEN
+  ↓ taker claim arrives, requested_amount in [min_take, amount]
+CLAIMED(taker, requested_amount, ttl)
+  ↓ maker POSTs fulfilment (commit_tx + partial_reveal); worker validates
+COMMIT_READY
+  ↓ taker downloads, completes the reveal, submits to worker
+REVEAL_READY
+  ↓ worker broadcasts commit_tx
+COMMIT_BROADCAST
+  ↓ commit_tx visible in mempool
+REVEAL_BROADCAST
+  ↓ reveal confirmed on chain
+SETTLED
+```
+
+While `CLAIMED` or any later state, the worker MUST NOT offer the
+same `intent_id` to another taker. After `SETTLED`, the asset_utxo
+is spent and the intent record is closed.
+
+Time-outs:
+
+| Transition                            | TTL     | On expiry                                  |
+|--------------------------------------|---------|---------------------------------------------|
+| CLAIMED → COMMIT_READY               | ~5 min  | Revert to OPEN. No on-chain activity yet.   |
+| COMMIT_READY → REVEAL_READY          | ~5 min  | Revert to OPEN. No on-chain activity yet.   |
+| REVEAL_READY → COMMIT_BROADCAST      | seconds | Worker-internal, near-instant.              |
+| COMMIT_BROADCAST → REVEAL_BROADCAST  | ~30s    | Worker logs; commit becomes maker-only UTXO. |
+
+Worker validation at `COMMIT_READY`:
+
+- `intent_sig` was verified at publish; `fulfilment_sig` verifies
+  now under `maker_pubkey`.
+- `commit_tx_hex` is a well-formed Bitcoin tx with exactly one
+  output paying to the P2TR address derived from
+  `envelope_script_hex` + `control_block_hex`.
+- Partial reveal's `vin[0]` references the commit's `txid:0`.
+- Partial reveal's `vin[1]` references `intent.asset_utxo`.
+- The reveal's `vout` layout matches §5.7.9 exactly (count, scripts,
+  values for `vout[1]`).
+- Envelope payload's kernel sig, bulletproof, and commitments
+  re-verify under `tacit-bp-v1` + `tacit-kernel-v1`.
+- Ancestor package feerate clears the relay floor.
+
+A failed validation at `COMMIT_READY` rejects the POST with a
+specific error; the maker re-fulfils. The claim remains valid.
+
+### Anti-griefing properties
+
+A′ broadcast ordering eliminates the worst griefing vector and
+bounds the rest:
+
+1. **Taker claims, refuses to complete.** No commit tx is broadcast.
+   Maker loses no fee. Claim TTL reverts to `OPEN`.
+2. **Maker submits a malformed `commit_tx_hex`.** Worker rejects at
+   `COMMIT_READY` validation. No on-chain activity.
+3. **Maker submits a commit_tx referring to a phantom outpoint.**
+   The taker verifies `commit_tx_hex` bytes hash to the claimed
+   `txid` and that the P2TR address derives from `envelope_script`.
+   A maker who lies about either is caught client-side before the
+   taker signs.
+4. **Taker completes the reveal, then RBFs a funding input** between
+   worker broadcast of commit and reveal. Identical to `T_AXFER`'s
+   exposure today; mitigated by the maker's SIGHASH_SINGLE_ACP
+   binding on `vin[1]` to `vout[1]` — the maker's BTC payment cannot
+   be redirected, only delayed.
+
+### Garbage collection
+
+If the reveal fails to broadcast after the commit has been broadcast
+(network partition, miner policy reject, taker fund double-spend),
+the maker is left with a maker-only-spendable P2TR UTXO. This is
+identical to `T_AXFER`'s unfulfilled-intent path: the maker spends
+the UTXO via the script-path with the maker's recovery leaf per
+§5.7.6 *recovery*.
+
+Workers SHOULD log the transition `COMMIT_BROADCAST → ABANDONED`
+with the commit outpoint so the maker's UI can surface a "reclaim"
+action on the orphaned commit UTXO.
+
+### Claim-term binding
+
+The revealed envelope commits to every term a maker must not be able
+to substitute:
+
+| Term                       | Bound via                                                       |
+|----------------------------|-----------------------------------------------------------------|
+| `requested_amount`         | `C_recip` opening + `fulfilment_msg_v2` domain bind             |
+| `r_recip` (recipient blnd) | `C_recip` opening                                               |
+| `r_change` (maker blnd)    | `C_change` opening                                              |
+| `asset_input` outpoint     | `kernel_msg` + vin[1] SIGHASH_SINGLE_ACP                        |
+| BTC payment amount         | `vout[1]` value, bound by vin[1] SIGHASH_SINGLE_ACP             |
+| Maker payment output index | `vout[1]` per §5.7.9 wire format                                |
+| Recipient pubkey           | `vout[0]` P2WPKH script bytes                                   |
+| Protocol version/domain    | `tacit-bp-v1`, `tacit-kernel-v1`, opcode `0x37`                 |
+| Expiry / validity          | Intent record's `expiry` field; worker-enforced                 |
 
 ### Bounded recipient amount
 
@@ -505,8 +771,9 @@ they already learn from the underlying Pedersen commitments.
 1. Maker reimports `maker_priv` on a fresh device.
 2. Scans chain for txs where `vin[1].witness[1]` decodes as a
    `T_AXFER_VAR` envelope signed by `maker_pub`.
-3. For each such tx: re-derives `intent_id = SHA256(commit_txid_BE
-   || maker_pubkey)[:16]` from the commit input.
+3. For each such tx: re-derives `intent_id = SHA256("tacit-axintent-
+   id-v1" || maker_pubkey || asset_utxo_txid_BE || asset_utxo_vout_LE
+   )[:16]` from `vin[1]`'s outpoint (the consumed asset UTXO).
 4. Re-derives `ks_maker_amt`, `ks_maker_blnd` per above.
 5. Extracts `OP_RETURN(80)`; decrypts the second 40 bytes.
 6. Verifies `pedersen_commit(change_amount, r_change) == C_change`
@@ -653,6 +920,8 @@ The implementation PR landing this amendment MUST include:
 
 Add to §3 *Domain labels*:
 
+- `tacit-axintent-id-v1` — content-addressed `intent_id` derivation
+  for variable-amount intents (§5.7.6.1 *Intent record*).
 - `tacit-axintent-change-v1` — HMAC keystream domain for the maker's
   self-change blinding scalar at fulfilment time (off-chain).
 - `tacit-axintent-onchain-maker-amount-v1` — HMAC keystream domain
@@ -664,6 +933,8 @@ Add to §3 *Domain labels*:
 
 Add to §3 *BIP-340 Schnorr signature-message tags*:
 
+- `tacit-axintent-publish-v1` — maker-signed intent record domain
+  for variable-amount publishes (§5.7.6.1 *Intent record*).
 - `tacit-axintent-claim-v3` — variable-amount claim message (§5.7.6.1).
 - `tacit-axintent-fulfilment-v2` — variable-amount fulfilment message
   (§5.7.6.1).
@@ -694,77 +965,28 @@ Out of scope, left for future amendments:
 
 ---
 
-## Open questions for review
+## Integration checklist for landing in `SPEC.md`
 
-1. **`min_take_amount` floor.** Still open. The spec leaves
-   `min_take_amount` maker-set with `≥ 1 base unit` as the only
-   hard floor. The reference dApp SHOULD warn when
-   `floor(price_total × min_take_amount / amount) < DUST`
-   (the resulting BTC payment would itself be sub-dust). No
-   protocol-level minimum is mandated; cosmetic / UX concern only.
+The following are normative changes downstream of this amendment.
 
----
-
-## Sign-off checklist for landing
-
-Before this amendment merges into `SPEC.md`:
-
-- [x] Initial author draft (this file).
-- [x] Peer-agent review (round 1) — opcode collision identified,
-  maker-change-recovery bug identified, comparison table flagged,
-  privacy / fulfilment-v2 decisions logged.
-- [x] Opcode moved to `0x37` (post V2-AMM reservation `0x32`–`0x36`).
-- [x] Maker-change recovery via `OP_RETURN(80)` dual-payload spec'd
-  (replaces the broken "self-derive change amount" claim).
-- [x] Comparison table corrected against §5.4 / §5.7 actual N values.
-- [x] `requested_amount` plaintext decision documented in body
-  (*Privacy considerations*).
-- [x] `fulfilment_msg_v2` defense-in-depth justified in body.
-- [x] Second-round peer-agent review — vout layout self-contradiction
-  identified, amount/max_take_amount ambiguity identified,
-  asset_input_count under-specification flagged, OP_RETURN absent
-  from fulfilment step, vbyte wording.
-- [x] Round 2 fix: fulfilment step 4 vout layout aligned with
-  wire-format block (BTC at `vout[1]`, change at `vout[2]`,
-  OP_RETURN(80) at `vout[3]`, taker change at `vout[4+]`).
-- [x] Round 2 fix: step 6 SIGHASH_SINGLE binding now targets `vout[1]`
-  (the BTC payment) consistent with `vin[1]`'s same-index rule.
-- [x] Round 2 fix: dropped `max_take_amount` field entirely — the
-  listed `amount` is the implicit max. Conservation formula
-  `C_change = (amount − requested) · H + r_change · G` is now
-  trivially consistent with `requested + change = amount`.
-- [x] Round 2 fix: tightened `asset_input_count` from `1..7` to
-  exactly `1`, with rationale block "Why exactly one asset input".
-- [x] Round 2 fix: step 4 now explicitly includes the mandatory
-  OP_RETURN(80) construction at `vout[3]`.
-- [x] Round 2 fix: vbyte cost wording corrected — original 21-vbyte
-  delta figure was wrong (assumed SegWit discount). Round-2-reviewer
-  re-checked: OP_RETURN is non-witness data, full-weight. Actual
-  delta is ~40 vbytes (~400 sats at 10 sat/vB). Final number now
-  in body.
-- [x] **Round-2 peer-agent sign-off received.** Reviewer's verdict:
-  "Spec is production-ready. The core design (reuse CXFER m=2
-  crypto, interleaved-vout layout with opcode disambiguation,
-  dual-OP_RETURN(80) for bilateral seed-only recovery, single-input
-  simplification) is sound. Backwards compat is rigorous. Test plan
-  is comprehensive. Land it." Remaining checklist items are
-  operational (implementation, crypto review, canary, tacitscan
-  parity) — none block the spec landing.
+- [ ] Add opcode `0x37` (`T_AXFER_VAR`) to the §1 preamble opcode
+  list.
+- [ ] Add the new domain tags listed under *Domain tag additions*
+  to the §3 canonical domain list.
+- [ ] Add `tacit-axintent-claim-v3`, `tacit-axintent-fulfilment-v2`,
+  and `tacit-axintent-publish-v1` (the maker-signed intent record
+  domain) to §3 BIP-340 signature-message tags.
+- [ ] Confirm the new domain tags do not collide with the live §3
+  list before merging.
+- [ ] Update §4.1 *unknown envelopes* if validator behavior changes
+  (this amendment does not change it — unknown opcodes remain
+  ignored).
 - [ ] Independent crypto review of §5.7.9 kernel-sig + bulletproof
-  reuse for m=2 envelope shape, plus dual-`OP_RETURN(80)` recovery
-  payload encoding.
-- [ ] Confirm `tacit-axintent-change-v1`, `tacit-axintent-onchain-
-  maker-amount-v1`, `tacit-axintent-onchain-maker-blinding-v1`,
-  `claim-v3`, `fulfilment-v2` domain tags collision-free against
-  the live §3 list.
-- [ ] Update the `SPEC.md` preamble line listing opcodes.
-- [ ] Update §3 domain labels.
-- [ ] Update §3 BIP-340 signature-message tags.
-- [ ] Update §4.1 *unknown envelopes* if any path changes.
-- [ ] Indexer / worker / dApp implementation PR opened (separate).
-- [ ] Crypto-replay canary extension landed (separate PR).
-- [ ] tacitscan acknowledgment of parser parity timeline.
+  reuse for `m=2` envelope shape, plus the dual-`OP_RETURN(80)`
+  recovery payload encoding.
 
----
+Implementation milestones (tracked separately from the SPEC merge):
 
-*End of amendment draft.*
+- [ ] Indexer / worker / dApp implementation.
+- [ ] Crypto-replay canary extension for `T_AXFER_VAR` envelopes.
+- [ ] tacitscan parser parity confirmation.
