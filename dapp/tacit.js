@@ -36852,17 +36852,21 @@ async function populateMarketAssetStats(scope, asset) {
   // Top-line stats.
   const volSats = Number(j.volume_24h_sats || 0);
   const xfers = Number(j.transfer_count || 0);
-  // BTC/USD spot for sats→USD suffixes on volume + last trade. Best-
-  // effort; falls back to sats-only if oracle is unavailable. Non-blocking
-  // is unnecessary here because getBtcUsdPrice returns instantly when
-  // the cache is warm (which it usually is — the wallet card primed it).
-  // Initialized up here (not at its original spot a few dozen lines
-  // below) because the last_trade resolver inside this function reads
-  // btcUsd to suffix the unit-price line — TDZ-throwing if the let is
-  // still below the read site. Moving the declaration first keeps both
-  // call-sites happy.
+  // BTC/USD spot for sats→USD suffixes on volume + last trade.
+  // Routes through refreshMarketBtcUsd (not the bare getBtcUsdPrice)
+  // so a successful fetch also lands in the global _marketBtcUsd
+  // that the rich-stats cells + asset-header price card read via the
+  // fmtMarketUsd* helpers. Previously this called getBtcUsdPrice
+  // directly — it warmed the oracle's memCache but never set the
+  // market-side global, so the asset header sat at "loading USD…"
+  // forever even after the oracle had resolved. refreshMarketBtcUsd
+  // is idempotent + cache-aware so a redundant call is cheap.
+  // Best-effort; falls back to sats-only if oracle is unavailable.
   let btcUsd = null;
-  try { btcUsd = await getBtcUsdPrice(); } catch {}
+  try {
+    await refreshMarketBtcUsd();
+    btcUsd = Number.isFinite(_marketBtcUsd) && _marketBtcUsd > 0 ? _marketBtcUsd : null;
+  } catch {}
   // last_trade: prefer the worker's pinned record, but fall back to the
   // newest entry in the trades ring if the pinned record is missing /
   // malformed / lacks a usable amount. We were seeing "1,800,000 sats ·
