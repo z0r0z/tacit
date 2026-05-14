@@ -21589,7 +21589,7 @@ async function _fundTreasuryWithSats(d) {
   const address = prompt(
     `Send bootstrap sats to which treasury address?\n\n` +
     `Paste the treasury's bech32 address (starts ${NET.name === 'mainnet' ? 'bc1' : 'tb1'}…). ` +
-    `Generate one via Drops §1 — copy the address line.`,
+    `Generate one on the Drops tab → "Make a fresh treasury wallet" — copy the address line.`,
   );
   if (address == null) return;
   const addr = address.trim();
@@ -23782,7 +23782,7 @@ function setupDropsForm() {
             `Wallet balance: ${fmtAssetAmountPlain(balance, decimals)} ${ticker}\n` +
             `Drop remaining: ${fmtAssetAmountPlain(remaining, decimals)} ${ticker}\n\n` +
             `Auto-fulfil from your main wallet would drain the entire supply via batches signed under the main key. ` +
-            `Switch active wallet to a treasury (Drops §1 → Generate treasury → ↪ Switch active wallet) first.\n\n` +
+            `Switch active wallet to a treasury (Drops → "Make a fresh treasury wallet" → Generate treasury → ↪ Switch active wallet) first.\n\n` +
             `If this really IS your treasury and the balance is intentional, click OK to override and enable anyway.`,
           )) {
             e.target.checked = false; return;
@@ -23968,7 +23968,7 @@ function setupDropsForm() {
         const saved = loadSavedDrops().find(d => d.merkle_root_hex === merkleRootRaw);
         if (saved) {
           if (!Array.isArray(saved.rows) || saved.rows.length === 0) {
-            throw new Error('saved drop record for this root has no rows[] — cannot verify uniform per-claim. Rebuild the snapshot in §1–§5 above.');
+            throw new Error('saved drop record for this root has no rows[] — cannot verify uniform per-claim. Rebuild the snapshot from the wizard steps above.');
           }
           const mismatched = [];
           for (const r of saved.rows) {
@@ -23984,7 +23984,7 @@ function setupDropsForm() {
               `T_DCLAIM mints exactly per-claim and the on-chain validator hashes the leaf with per-claim, ` +
               `so recipients whose snapshot rows differ would all fail merkle verification on-chain. ` +
               `Sample mismatches: ${sample}. ` +
-              `Either set per-claim to match every row, or rebuild §1–§5 with a uniform amount, or use the worker-mediated fulfilment above instead of T_DROP.`,
+              `Either set per-claim to match every row, or rebuild the snapshot from the wizard steps above with a uniform amount, or use the worker-mediated fulfilment above instead of T_DROP.`,
             );
           }
         } else {
@@ -27913,6 +27913,10 @@ async function renderHoldings() {
         h.balance > 0n && !h.unknownAsset ? `<button class="primary" data-act="send" data-aid="${h.assetIdHex}">Send privately</button>` : '',
         !h.unknownAsset ? `<button data-act="show-receive" data-aid="${h.assetIdHex}">Receive</button>` : '',
         isMintAuthority ? `<button data-act="mint" data-aid="${h.assetIdHex}">Mint more</button>` : '',
+        // Jump straight to this asset's Market view (live listings, bids,
+        // trades). Discoverable affordance from Holdings without the user
+        // having to find the Markets tab in the strip and re-filter.
+        !h.unknownAsset && WORKER_BASE ? `<button data-act="open-market-asset" data-aid="${h.assetIdHex}" title="Open live listings, bids, and trades for this asset.">Market →</button>` : '',
       ].filter(Boolean).join('');
       const discloseButtons = [
         h.isEtcher && WORKER_BASE ? `<button data-act="reveal-supply" data-aid="${h.assetIdHex}">Reveal initial supply</button>` : '',
@@ -28092,6 +28096,13 @@ async function renderHoldings() {
           $('#x-asset').value = b.dataset.aid;
           $('.tab[data-tab="transfer"]').click();
           refreshAssetSelect().then(() => $('#x-asset').value = b.dataset.aid);
+        } else if (b.dataset.act === 'open-market-asset') {
+          // Switch to the Markets tab AND focus the asset-detail view for
+          // this asset. goToMarketAsset writes the #market=<aid> hash so the
+          // back-button restores state; the tab click activates the panel.
+          const aid = b.dataset.aid;
+          $('.tab[data-tab="market"]').click();
+          try { goToMarketAsset(aid); } catch {}
         } else if (b.dataset.act === 'show-receive') {
           const aid = b.dataset.aid;
           const panel = list.querySelector(`[data-receive-panel="${aid}"]`);
@@ -29494,7 +29505,14 @@ async function renderHoldings() {
                           : m.source === 'median' ? 'recent-trade median'
                           : 'lowest open ask (floor)';
           const _ageTail = (m.source === 'last' && m.ts) ? `, ${relativeAge(m.ts)} ago` : '';
-          slot.innerHTML = `<span class="unit" style="color:#0a7d3a;" title="Estimated at ${_srcLabel} (${fmtUnitPriceSats(m.unit)} sats/${escapeHtml(h.ticker)}${_ageTail}). Decorative — actual sale at this price isn't guaranteed.">~${rounded.toLocaleString()} sats${usdTail}</span>`;
+          slot.innerHTML = `<span class="unit" data-act="open-market-asset" data-aid="${h.assetIdHex}" style="color:#0a7d3a;cursor:pointer;text-decoration:underline dotted;" title="Estimated at ${_srcLabel} (${fmtUnitPriceSats(m.unit)} sats/${escapeHtml(h.ticker)}${_ageTail}). Click to open this asset's market view.">~${rounded.toLocaleString()} sats${usdTail}</span>`;
+          // Wire the freshly-injected pill — wireBtn was run on first render
+          // before this enrichment fired, so the span has no handler yet.
+          const pill = slot.querySelector('[data-act="open-market-asset"]');
+          if (pill) pill.onclick = () => {
+            $('.tab[data-tab="market"]').click();
+            try { goToMarketAsset(h.assetIdHex); } catch {}
+          };
           // P&L pill: weighted-avg entry price (from recorded
           // transfer-in activity with extra.price_sats) vs current mark.
           // Skipped when there are no buy-side activity entries for the
@@ -32999,6 +33017,12 @@ function applyMarketFilters() {
             ${btcLogoHtml}<span data-swap-token="from">sats</span>
           </div>
         </div>
+        <!-- Quick-fill chip row: pre-fills the active input with common
+             amounts so users don't have to type. Populated by the wireup
+             based on direction (buy = % of sat balance / USD presets;
+             sell = % of asset holding) and pay-unit. Hidden when neither
+             reference is available so we don't render a useless row. -->
+        <div data-swap-quickfill style="display:none;margin-top:8px;gap:6px;flex-wrap:wrap;align-items:center;font-size:10px;"></div>
       </div>
       <!-- FLIP button — Uniswap-style circular swap toggle that sits in
            the gap between pay and receive. SVG arrows (down + up) read as
@@ -36251,6 +36275,67 @@ function _wireSwapTile(scope) {
     // newly-mounted slot gets the real image. Idempotent — no-op on
     // pills that already hold an <img>.
     _resolveAssetLogosIn(widget, 'width:24px;height:24px;border-radius:50%;border:1px solid var(--ink-faint);background:#fff;object-fit:cover;flex-shrink:0;');
+    if (typeof renderQuickFill === 'function') renderQuickFill();
+  };
+  // Quick-fill chip row: renders direction- and pay-unit-aware preset
+  // amounts that fill the active "from" input on click. Cuts the
+  // mental math + keystrokes for a normie placing a market-style
+  // order. Re-renders on direction / pay-unit flips via applyDirection.
+  const quickFillEl = widget.querySelector('[data-swap-quickfill]');
+  const renderQuickFill = () => {
+    if (!quickFillEl) return;
+    const dir = getDirection();
+    const payUnit = getPayUnit();
+    let chips = [];
+    if (dir === 'buy') {
+      if (payUnit === 'usd' && Number.isFinite(btcUsd) && btcUsd > 0) {
+        chips = [
+          { label: '$10',  value: '10' },
+          { label: '$50',  value: '50' },
+          { label: '$200', value: '200' },
+        ];
+      } else {
+        // Sat presets sized to typical first-trade amounts on tacit.
+        // _walletCardState may not be hot at first paint, so fixed
+        // amounts beat a fragile "% of balance" path here.
+        chips = [
+          { label: '1k sats',   value: '1000' },
+          { label: '10k sats',  value: '10000' },
+          { label: '100k sats', value: '100000' },
+        ];
+      }
+    } else {
+      // Sell direction: % of current holding. Skips the row entirely
+      // if balance is unknown (locked wallet, holdings cache cold)
+      // since percentages of unknown don't help.
+      const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+      if (bal > 0n) {
+        const fmtPct = (pct) => fmtAssetAmount((bal * BigInt(pct)) / 100n, decimals);
+        chips = [
+          { label: '25%', value: fmtPct(25) },
+          { label: '50%', value: fmtPct(50) },
+          { label: 'Max', value: fmtAssetAmount(bal, decimals) },
+        ];
+      }
+    }
+    if (!chips.length) {
+      quickFillEl.style.display = 'none';
+      quickFillEl.innerHTML = '';
+      return;
+    }
+    quickFillEl.style.display = 'flex';
+    quickFillEl.innerHTML = chips.map(c =>
+      `<button type="button" data-quickfill data-value="${escapeHtml(c.value)}" style="padding:3px 8px;font-size:10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;font-family:var(--mono);">${escapeHtml(c.label)}</button>`
+    ).join('');
+    quickFillEl.querySelectorAll('[data-quickfill]').forEach(btn => {
+      btn.onclick = () => {
+        widget.dataset.activeSide = 'from';
+        fromInput.value = btn.dataset.value || '';
+        toInput.value = '';
+        update();
+        fromInput.focus();
+      };
+    });
   };
   // Wallet-lock-aware action label: prefix SWAP with 🔒 when the priv
   // isn't loaded yet. Clicking still works — the underlying
@@ -36515,8 +36600,12 @@ function _wireSwapTile(scope) {
       }
     }
   };
-  // Initial paint + wiring.
+  // Initial paint + wiring. renderQuickFill called explicitly because
+  // applyDirection's typeof-guarded call ran before the function was
+  // defined on the very first paint; subsequent flips fire it via
+  // applyDirection's normal path.
   applyDirection();
+  renderQuickFill();
   update();
   // Typing in either input flags it as the active side. Top → exact-in;
   // bottom → exact-out. update() reads the active side and routes through
@@ -39307,6 +39396,13 @@ function setupUnisatEvents() {
 
 function setupHoldingsButtons() {
   $('#btn-rescan').onclick = renderHoldings;
+  // Jump from Holdings to the Markets tab in browse mode. Discoverability win:
+  // users land in Holdings after onboarding and need an obvious path to live
+  // listings/bids without having to scan the tab strip up top.
+  $('#btn-holdings-markets')?.addEventListener('click', () => {
+    const tab = $('.tab[data-tab="market"]');
+    if (tab) tab.click();
+  });
   // Inline share-link import — replaces a single-shot prompt() with a textarea
   // that's easier to paste long URLs into and surfaces parse errors in-form.
   $('#btn-import-share').onclick = (e) => {
