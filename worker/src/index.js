@@ -2871,7 +2871,16 @@ async function loadMintsForAsset(env, network, assetIdHex) {
 // latency on networks with many assets. Now everything fan-outs in one
 // Promise.all per asset.
 async function hydrateAssetSummary(env, network, v, includeMints) {
-  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade, ring] = await Promise.all([
+  // Pre-compute today + yesterday's daily-bucket keys so the
+  // volume_24h_sats fan-out joins the same parallel Promise.all. The
+  // dapp used to per-asset-enrich this from /assets/:id; folding it
+  // into the bulk response kills the visible "…" lag on every market
+  // load. Same bucket-sum logic as handleAssetGet — slightly over-
+  // counts (up to 48h worst case) but the bound is documented.
+  const _nowSec = Math.floor(Date.now() / 1000);
+  const _todayKey = tradeDayKey(network, v.asset_id, _utcYyyymmdd(_nowSec));
+  const _yestKey  = tradeDayKey(network, v.asset_id, _utcYyyymmdd(_nowSec - 86400));
+  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade, ring, todaySats, yestSats] = await Promise.all([
     env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
     includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
     loadBurnsForAsset(env, network, v.asset_id),
@@ -2890,6 +2899,11 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
     // for tile-side sparklines + delta. The full ring stays available
     // through /assets/:id for the deep chart.
     env.REGISTRY_KV.get(tradesRingKey(network, v.asset_id), 'json'),
+    // Daily bucket sums for rolling 24h volume. Two extra KV.gets per
+    // asset; KV reads parallelize within Promise.all and don't count
+    // toward the subrequest budget, so the only cost is per-key billing.
+    env.REGISTRY_KV.get(_todayKey),
+    env.REGISTRY_KV.get(_yestKey),
   ]);
   if (att) v.attestation = att;
   if (includeMints) v.mints = mints;
@@ -2902,6 +2916,11 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   v.preauth_sale_count = ps.keys.length;
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
   if (lastTrade) v.last_trade = lastTrade;
+  // Rolling 24h volume — bucket sum of today + yesterday's UTC daily
+  // totals (same logic as handleAssetGet line ~3915). Moved into the
+  // bulk response so dapp tiles populate volume on first paint instead
+  // of waiting for per-asset enrichment.
+  v.volume_24h_sats = (Number(todaySats) || 0) + (Number(yestSats) || 0);
   // Canonical mark price for valuation. Computed server-side so every API
   // client (dapp Holdings, third-party portfolio tools, future SDKs) sees
   // the same reference number. Priority matches how equities and crypto
@@ -3891,12 +3910,12 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   v.atomic_intent_count = ai.keys.length;
   const ps = await env.REGISTRY_KV.list({ prefix: preauthSalePrefix(network, assetIdHex), limit: 1000 });
   v.preauth_sale_count = ps.keys.length;
-  // transfer_count + last_trade are also in the /assets list response via
-  // hydrateAssetSummary; mirror them here so single-asset clients get the
-  // same discovery metrics. The single-asset endpoint additionally returns
-  // volume_24h_sats (rolling) and trades (recent ring buffer) — kept off
-  // the list response to stay within the per-invocation subrequest budget
-  // on big asset directories.
+  // transfer_count + last_trade + volume_24h_sats are also in the
+  // /assets list response via hydrateAssetSummary; mirror them here
+  // so single-asset clients get the same discovery metrics. The
+  // single-asset endpoint additionally returns trades (recent ring
+  // buffer) — kept off the list response since the per-asset blob
+  // can be large enough to matter when fanned across 50+ tokens.
   const xfer = await env.REGISTRY_KV.get(transferCountKey(network, assetIdHex));
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
   const lastTrade = await env.REGISTRY_KV.get(lastTradeKey(network, assetIdHex), 'json');
