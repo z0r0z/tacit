@@ -1926,17 +1926,43 @@ function _saveBtcUsdToStorage(price) {
 let _btcUsdInFlight = null;
 async function getBtcUsdPrice() {
   const now = Date.now();
-  if (_btcUsdMemCache.price != null && (now - _btcUsdMemCache.fetchedAt) < BTC_USD_TTL_MS) {
-    return _btcUsdMemCache.price;
-  }
-  if (_btcUsdInFlight) return _btcUsdInFlight;
-  // Warm from localStorage so the FIRST render of Holdings on a cold tab
-  // gets a USD figure within microseconds. The fresh fetch still kicks
-  // off and overwrites on success.
+  // Warm from localStorage on cold mem cache so the freshness + SWR
+  // checks below see any persisted value from a prior session.
   if (_btcUsdMemCache.price == null) {
     const persisted = _loadBtcUsdFromStorage();
     if (persisted) _btcUsdMemCache = persisted;
   }
+  // Fresh cache: return immediately, no network call.
+  if (_btcUsdMemCache.price != null && (now - _btcUsdMemCache.fetchedAt) < BTC_USD_TTL_MS) {
+    return _btcUsdMemCache.price;
+  }
+  // Stale-while-revalidate: localStorage has a price but it's older
+  // than the TTL. Kick a background refresh AND return the stale value
+  // immediately so callers (header USD strings, market tile suffixes)
+  // don't block on the network. The stale value is usually within a
+  // few % of fresh — perfectly fine for display until the refresh
+  // resolves and overwrites _btcUsdMemCache. Without this, every
+  // cold-tab navigation re-awaits a full BTC/USD round-trip even when
+  // a perfectly serviceable price is sitting in localStorage.
+  if (_btcUsdMemCache.price != null && _btcUsdMemCache.price > 0) {
+    if (!_btcUsdInFlight) _btcUsdInFlight = (async () => {
+      try {
+        const r = await fetch('https://mempool.space/api/v1/prices', { signal: AbortSignal.timeout ? AbortSignal.timeout(3000) : undefined });
+        if (r.ok) {
+          const j = await r.json();
+          const usd = Number(j?.USD || 0);
+          if (Number.isFinite(usd) && usd > 0) {
+            _btcUsdMemCache = { price: usd, fetchedAt: Date.now() };
+            _saveBtcUsdToStorage(usd);
+            return usd;
+          }
+        }
+      } catch {}
+      return _btcUsdMemCache.price;
+    })().finally(() => { _btcUsdInFlight = null; });
+    return _btcUsdMemCache.price;
+  }
+  if (_btcUsdInFlight) return _btcUsdInFlight;
   _btcUsdInFlight = (async () => {
     // Try each oracle in series, but cap each individual fetch at 3s
     // via AbortController so a slow / hung source doesn't block the
@@ -35629,13 +35655,34 @@ function applyMarketFilters() {
   const marketTabActionHtml = marketAssetListCtaHtml(_assetForBids);
   const bidsLadderHtml = renderMarketBidsLadderHTML(_assetForBids);
   const allAssetRows = (_marketCache?.listings || []).filter(l => (l._asset?.asset_id || l.asset_id || '') === _marketView.assetId);
-  const activityPanelHtml = marketActivityPanelHtml(_assetForBids, allAssetRows);
   if (!rows.length) {
+    // Defensive guard: if we've already rendered this asset's detail
+    // with content (signature non-empty) and we're about to wipe it
+    // into the "No active asks" pane, hold the previous DOM instead.
+    // The empty-rows transition can be triggered by the background
+    // liveness prune (mempool.space false-positive on getOutspend),
+    // a worker SWR gap, or an indexer hiccup — all transient. Wiping
+    // the user's view + losing the swap tile state is worse than
+    // showing slightly-stale tiles for one auto-refresh cycle; the
+    // next tick with real data will refresh naturally. Only applies
+    // to RE-RENDERS where we previously had asks; the first paint of
+    // a genuinely empty market still falls through to the empty
+    // pane below.
+    const prevSig = String(_renderedAssetSignature.sig || '');
+    const prevListingsSig = prevSig.split('||')[0] || '';
+    const prevHadAsks = !!prevListingsSig
+      && _renderedAssetSignature.aid === _marketView.assetId
+      && document.querySelector('#market-list [data-listing-key]');
+    if (prevHadAsks) {
+      console.warn('[market] skip empty asset re-render — prior state had listings, treating as transient cache miss');
+      return;
+    }
     // No asks but bids might still exist — render the ladder + place-bid CTA
     // so makers without active listings can still see / capture buy-side
     // demand. Empty asks copy clarifies the ask side specifically. We
     // still mount the rich stats strip so supply/attestation/charts are
     // visible even on assets with no live asks.
+    const activityPanelHtml = marketActivityPanelHtml(_assetForBids, allAssetRows);
     const _yourOrdersHtmlNoAsks = renderYourOpenOrdersHTML(_marketView.assetId, _assetForBids, (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '');
     const listedPaneHtml = `${_yourOrdersHtmlNoAsks}${bidsLadderHtml}<div class="empty">No active asks. Bids above; post one if you want to buy.</div>`;
     const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
@@ -35651,6 +35698,7 @@ function applyMarketFilters() {
     populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
     return;
   }
+  const activityPanelHtml = marketActivityPanelHtml(_assetForBids, allAssetRows);
   // Simple mode (default ON) filters the asks ladder to one-tx trustless
   // preauth listings only — matching what the swap tile actually buys
   // through. Atomic intents and OTC openings/ranges stay invisible until
@@ -36551,7 +36599,17 @@ async function refreshMarketBtcUsd() {
 }
 function marketSatsToUsd(sats) {
   const n = Number(sats || 0);
-  return _marketBtcUsd > 0 && Number.isFinite(n) ? (n / 100_000_000) * _marketBtcUsd : null;
+  if (!Number.isFinite(n)) return null;
+  // Prefer the market-scoped global (set by refreshMarketBtcUsd after the
+  // live fetch resolves), but fall back to the global oracle's cached
+  // value so USD strings render IMMEDIATELY on warm browsers — the
+  // localStorage cache (populated by any previous page load) is
+  // microseconds away even before refreshMarketBtcUsd's await completes.
+  // Without this fallback the header hangs at "loading USD…" for the
+  // full duration of the BTC/USD network round-trip on every cold tab
+  // load even when localStorage already has a fresh-enough price.
+  const btcUsd = _marketBtcUsd > 0 ? _marketBtcUsd : (typeof _cachedBtcUsd === 'function' ? _cachedBtcUsd() : 0);
+  return btcUsd > 0 ? (n / 100_000_000) * btcUsd : null;
 }
 // Returns true when the BTC/USD oracle hasn't loaded yet (or is between
 // retries). Used so UI labels can show "loading…" instead of "n/a" /
