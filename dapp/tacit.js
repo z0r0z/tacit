@@ -38211,9 +38211,9 @@ function renderMarketAssetHeader(assetId, rows) {
       </div>
       <div>
         <div class="market-asset-stats">
-          <div><span>Price</span><strong class="market-sats-price">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
-          <div><span>24h Volume</span><strong>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
-          <div><span>Market Cap</span><strong>${escapeHtml(mcapUsd)}</strong><small>${escapeHtml(mcapBtc)}</small></div>
+          <div><span>Price</span><strong class="market-sats-price" data-market-header="price-sats">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
+          <div><span>24h Volume</span><strong data-market-header="vol24-usd">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small data-market-header="vol24-btc">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
+          <div><span>Market Cap</span><strong data-market-header="mcap-usd">${escapeHtml(mcapUsd)}</strong><small data-market-header="mcap-btc">${escapeHtml(mcapBtc)}</small></div>
           <div><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
           ${(() => {
             // Wallets — distinct on-chain recipients indexed by the worker.
@@ -38808,6 +38808,36 @@ async function populateMarketAssetStats(scope, asset) {
   }
   setText('[data-market-stat-mcap]', mcapHtml, true);
   setText('[data-market-stat-supply]', supplyHtml, true);
+  // Header card re-sync. The asset header (market-asset-stats grid) is
+  // built synchronously by applyMarketFilters BEFORE this populator's
+  // await resolves, so 24h Volume + Market Cap + Price USD often paint
+  // as "—" / "n/a" / "loading USD…" on first load even when the
+  // worker has the data. After fetching fresh stats here we push the
+  // resolved values up into the header cells inline so the user gets
+  // the populated card without waiting for the 5s auto-refresh tick.
+  {
+    const headerCard = scope.querySelector('.market-asset-stats');
+    if (headerCard) {
+      const setHeader = (key, text) => {
+        const el = headerCard.querySelector(`[data-market-header="${key}"]`);
+        if (el && text != null && String(text).length > 0) el.textContent = text;
+      };
+      if (volSats > 0) {
+        setHeader('vol24-usd', fmtMarketUsdWholeFromSats(volSats, '—'));
+        setHeader('vol24-btc', fmtMarketBtc(volSats));
+      }
+      if (resolvedSupplyBig != null && markUnit != null) {
+        const _wholeSupplyHdr = Number(resolvedSupplyBig) / Math.pow(10, decimals);
+        const _mcapSatsHdr = Math.round(_wholeSupplyHdr * markUnit);
+        setHeader('mcap-usd', fmtMarketUsdWholeFromSats(_mcapSatsHdr));
+        setHeader('mcap-btc', fmtMarketBtc(_mcapSatsHdr));
+      }
+      if (markUnit != null && btcUsd != null) {
+        const _priceUsdHdr = fmtMarketUsdUnitFromSats(markUnit, '');
+        if (_priceUsdHdr) setHeader('price-usd', _priceUsdHdr);
+      }
+    }
+  }
   // Disclosed-supply lower bound — sum of opening amounts. Hide the row
   // when no openings have been published (would just read "—" alongside).
   const supplyMinWrap = section.querySelector('[data-market-stat-supplymin-wrap]');
@@ -39555,8 +39585,33 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   }
   const headerBestBid = inBandBestBid != null ? inBandBestBid : bestBid;
   const headerBestAsk = inBandBestAsk != null ? inBandBestAsk : bestAsk;
-  const xLoRaw = Math.min(lowestBid, bestAsk, bestBid);
-  const xHiRaw = Math.max(highestAsk, bestBid, bestAsk);
+  const xLoRawUnclamped = Math.min(lowestBid, bestAsk, bestBid);
+  const xHiRawUnclamped = Math.max(highestAsk, bestBid, bestAsk);
+  // Domain clamp: when mark price is available, restrict the visible
+  // X axis to [mark × 0.1, mark × 10] so dust + outlier orders don't
+  // drag the window out to multi-decade extremes that bury the actual
+  // trading band. A live TAC orderbook with mark 221 sats/TAC + a
+  // single 0.19-sat dust ask + a 60,000-sat fat-finger bid otherwise
+  // shows a window spanning 5 decades, squashing 99% of depth into a
+  // narrow strip. The fill curves still draw against the unfiltered
+  // bidCum / askCum (lines below) so the dust tails are preserved as
+  // continuous fill — they just leave the visible viewport. Falls
+  // back to unclamped extremes when mark is unknown or every order is
+  // outside the [0.1×, 10×] band.
+  const _markValid = Number.isFinite(markUnit) && markUnit > 0;
+  const _bandXLo = _markValid ? markUnit * 0.1 : 0;
+  const _bandXHi = _markValid ? markUnit * 10 : Infinity;
+  const xLoClamped = _markValid ? Math.max(xLoRawUnclamped, _bandXLo) : xLoRawUnclamped;
+  const xHiClamped = _markValid ? Math.min(xHiRawUnclamped, _bandXHi) : xHiRawUnclamped;
+  // Make sure the clamped window still encloses the bid/ask cross —
+  // even when one side is heavily out-of-band, the cross itself is
+  // the focal point. If the clamp would hide both best-bid and best-
+  // ask, fall back to unclamped (rare).
+  const _clampViable = xHiClamped > xLoClamped
+    && bestAsk >= xLoClamped && bestAsk <= xHiClamped
+    && bestBid >= xLoClamped && bestBid <= xHiClamped;
+  const xLoRaw = _clampViable ? xLoClamped : xLoRawUnclamped;
+  const xHiRaw = _clampViable ? xHiClamped : xHiRawUnclamped;
   if (xHiRaw <= xLoRaw) { out.style.display = 'none'; return; }
   const yMax = Math.max(cumA, cumB);
   if (yMax <= 0) { out.style.display = 'none'; return; }
