@@ -496,18 +496,14 @@ button.market-chip .chip-caret {
   .market-live-dot { animation: none !important; }
   [data-recent-activity] { animation: none !important; }
 }
-/* Recent-activity indicator on market cards/rows: a slow border-glow
-   pulse for any asset whose most-recent trade is within the activity
-   window (RECENT_ACTIVITY_WINDOW_MS in tacit.js). Subtle on purpose —
-   does not steal attention from the per-tile animations above. */
-@keyframes market-recent-activity-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(10,143,67,0); }
-  40%  { box-shadow: 0 0 0 3px rgba(10,143,67,0.22); }
-  100% { box-shadow: 0 0 0 0 rgba(10,143,67,0); }
-}
+/* Recent-activity indicator on market cards/rows. The original was an
+   infinite pulsing border-glow which read as "every active token is
+   flashing forever," jarring on a market with many active tokens.
+   Replaced with a single subtle static highlight + the "⚡ active"
+   badge so the signal survives but doesn't compete for attention. */
 .market-asset-tile[data-recent-activity],
 tr[data-recent-activity] {
-  animation: market-recent-activity-pulse 2400ms ease-out infinite;
+  box-shadow: inset 3px 0 0 0 rgba(10,143,67,0.45);
 }
 .market-asset-tile[data-recent-activity] .market-asset-id::after,
 tr[data-recent-activity] .market-token-sub::after {
