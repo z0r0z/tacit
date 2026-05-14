@@ -34766,9 +34766,21 @@ function _updateMarketCellsInPlace() {
       // has the logo + ticker name which don't churn per-tick.
       const tds = tr.children;
       if (tds.length < 7) continue;
-      // Price uses mark_price.unit (matches what renderMarketBrowseTable does).
+      // Price uses the same refUnit calculation as the full renderer
+      // (renderMarketBrowseTable). Before the alignment, this path
+      // used mark_price.unit raw with no trade-backing guard, so a
+      // PUP-style asset (mark set from a stale source but zero
+      // transfers + zero trustless listings) would have its price
+      // cell briefly flipped to the raw mark value on every auto-
+      // refresh tick, then reverted by the next full render — the
+      // "momentary flash of pricing" the user reported. We don't
+      // have the listing-group `g` here (it's reconstructed per
+      // full render), so we conservatively skip the in-place price
+      // update when the guard would reject the mark: the full
+      // renderer's g.floorUnit-derived price stays put.
+      const _hasTradeBacking = !!a?.last_trade || Number(a?.transfer_count || 0) > 0;
       const markUnit = Number(a?.mark_price?.unit);
-      const refUnit = (Number.isFinite(markUnit) && markUnit > 0) ? markUnit : null;
+      const refUnit = (Number.isFinite(markUnit) && markUnit > 0 && _hasTradeBacking) ? markUnit : null;
       if (refUnit != null) {
         const priceCell = tds[1].querySelector('.market-table-value');
         if (priceCell) {
