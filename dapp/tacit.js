@@ -4059,22 +4059,15 @@ const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / �
 // transaction reinterprets under this flag. The maker must explicitly tick
 // "Variable fills" to publish under 0x37.
 //
-// Kill switches (either disables the builder; both honored):
-//   1. globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE = false (set before
-//      module load) — useful for tests + integration harnesses.
-//   2. localStorage 'tacit-disable-tav' = '1' — emergency runtime
-//      switch a user (or operator from devtools) can flip without
-//      redeploying the dapp. Survives reload because it's
-//      localStorage. Set via Application → Storage → Local Storage
-//      in devtools, or `localStorage.setItem('tacit-disable-tav','1')`
-//      in console + reload.
-const ENABLE_T_AXFER_VARIABLE = (() => {
-  try {
-    if (typeof globalThis !== 'undefined' && globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE === false) return false;
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('tacit-disable-tav') === '1') return false;
-  } catch {}
-  return true;
-})();
+// Test override: setting `globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE = false`
+// before module load forces the flag off. Used by integration tests that
+// want to exercise the disabled state. The real operator-level disable
+// for production is worker-side (reject /atomic-intents/.../fulfilment
+// + claims with requested_amount); flipping client state would require
+// every user to take action, which isn't a kill switch.
+const ENABLE_T_AXFER_VARIABLE = (
+  typeof globalThis !== 'undefined' && globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE === false
+) ? false : true;
 const MAX_SCRIPT_PUSH = 520;
 const OP_FALSE = 0x00, OP_PUSHDATA1 = 0x4c, OP_PUSHDATA2 = 0x4d;
 const OP_IF = 0x63, OP_ENDIF = 0x68, OP_CHECKSIG = 0xac;
