@@ -35797,8 +35797,8 @@ function applyMarketFilters() {
            the gap between pay and receive. SVG arrows (down + up) read as
            "swap these two sides" rather than the bare "↕" glyph that
            rendered as text-style and looked unfinished. -->
-      <div style="display:flex;justify-content:center;margin:-14px 0;position:relative;z-index:2;pointer-events:none;">
-        <button data-swap-flip type="button" title="Flip direction (buy ↔ sell)" aria-label="Flip swap direction" style="pointer-events:auto;background:var(--bg);border:2px solid var(--ink);width:36px;height:36px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:2px 2px 0 var(--ink);transition:transform 120ms ease-out;">
+      <div style="display:flex;justify-content:center;margin:-18px 0;position:relative;z-index:2;pointer-events:none;">
+        <button data-swap-flip type="button" title="Flip direction (buy ↔ sell)" aria-label="Flip swap direction" style="pointer-events:auto;background:var(--bg);border:2px solid var(--ink);width:44px;height:44px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:2px 2px 0 var(--ink);transition:transform 120ms ease-out;">
           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 1 L4 11 M1.5 8.5 L4 11 L6.5 8.5"></path>
             <path d="M10 13 L10 3 M7.5 5.5 L10 3 L12.5 5.5"></path>
