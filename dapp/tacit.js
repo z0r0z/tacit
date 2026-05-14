@@ -37573,6 +37573,26 @@ function renderMarketBrowseTable(rows) {
         <td>
           <span class="market-table-value ${refUnit != null ? 'market-sats-price' : ''}">${escapeHtml(floor)}</span>
           <span class="market-table-sub market-usd-price">${escapeHtml(floorUsd)}</span>
+          ${(() => {
+            // 24h Δ% badge. Worker stamps `price_24h_change_pct` on
+            // the asset stats endpoint, merged into `a` by the
+            // per-row enrichment pass (scheduleMarketAssetStatsEnrich
+            // ment). Renders only when the figure is finite AND a
+            // price exists — for "no trades yet" assets the delta
+            // line would just compound the empty state. Green when
+            // positive, red when negative, muted dot when flat.
+            // Compact two-decimal format keeps the cell tight; this
+            // is the gallery's at-a-glance momentum read.
+            const _delta24 = Number(a.price_24h_change_pct);
+            if (refUnit == null || !Number.isFinite(_delta24)) return '';
+            if (_delta24 === 0) {
+              return `<span class="market-table-sub" style="color:var(--ink-mid);font-size:10px;">· 0.00% 24h</span>`;
+            }
+            const _sign = _delta24 > 0 ? '+' : '';
+            const _color = _delta24 > 0 ? '#0a7d3a' : '#b8341d';
+            const _glyph = _delta24 > 0 ? '▲' : '▼';
+            return `<span class="market-table-sub" style="color:${_color};font-size:10px;font-weight:600;">${_glyph} ${_sign}${_delta24.toFixed(2)}% 24h</span>`;
+          })()}
         </td>
         <td>
           <span class="market-table-value">${escapeHtml(mcapUsd)}</span>
