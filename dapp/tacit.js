@@ -35052,6 +35052,15 @@ let _marketCache = null;
 let _marketView = 'browse';
 let _marketBrowsePage = 1;
 let _marketListingPage = 1;
+// Per-asset previous-render reference unit. Drives the green/red price-
+// flash on the gallery table — when the next render's refUnit differs by
+// more than _PRICE_FLASH_THRESHOLD_PCT we attach .price-flash-up /
+// .price-flash-down to the price cell. Map (not WeakMap) because the
+// keys are asset_id strings; capped lazily at first store by dropping
+// any oldest entry if the map grows past _PRICE_FLASH_CACHE_CAP.
+const _marketLastRefUnit = new Map();
+const _PRICE_FLASH_THRESHOLD_PCT = 0.1;   // ignore sub-0.1% jitter so dust trades don't strobe
+const _PRICE_FLASH_CACHE_CAP = 500;
 const MARKET_BROWSE_PAGE_SIZE = 20;
 const MARKET_LISTING_PAGE_SIZE = 12;
 const MARKET_ACTIVITY_PAGE_SIZE = 25;
@@ -36770,18 +36779,16 @@ function fmtMarketUnitSats(sats) {
   const n = Number(sats);
   if (!Number.isFinite(n) || n <= 0) return '0 sats';
   if (n >= 1) return `${Math.round(n).toLocaleString('en-US')} sats`;
-  // Sub-1-sat unit prices need precision deeper than 4 decimals or
-  // ultra-cheap tokens display as "0 sats" — the live SAT market
-  // (whose true unit price is ~0.0000043 sats/SAT) was rendering as
-  // "0 sats/SAT" because 4-decimal rounding collapsed it. Now we
-  // show up to 8 significant decimals with trailing zeros trimmed,
-  // so $0.0000043 sats reads as "0.00000430 sats" rather than "0".
-  // Falls back to scientific notation when the value is smaller than
-  // what 8 decimals can represent (extreme rare).
-  if (n < 0.0001) {
-    const fixed = n.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
-    return fixed === '0' ? `${n.toExponential(2)} sats` : `${fixed} sats`;
-  }
+  // Sub-1-sat unit prices. Two bands:
+  //   • 0.001 ≤ n < 1 — keep readable decimal ("0.6 sats", "0.0042 sats"),
+  //     up to 4 fractional digits.
+  //   • n < 0.001     — switch to scientific notation. SAT's true unit
+  //     price (~4.28e-6 sats) was previously rendering as "0.00000428
+  //     sats" which is hard to scan and easy to misread the zero count.
+  //     "4.28e-6 sats" is more compact and unambiguous; tooltip on the
+  //     cell still shows the USD-per-token line so users have a sanity
+  //     check for the magnitude.
+  if (n < 0.001) return `${n.toExponential(2)} sats`;
   return `${n.toLocaleString('en-US', { maximumFractionDigits: 4 })} sats`;
 }
 function marketAssetImageHtml(asset, sizePx = 44, cls = 'market-token-icon') {
@@ -37168,6 +37175,14 @@ function marketGroupHasRealActivity(group) {
 function marketGroupHasTradeBacking(group) {
   const a = group?.asset || {};
   return !!a.last_trade || Number(a.transfer_count || 0) > 0;
+}
+// Trustless liveness — preauths (instant) or atomic intents. Used as
+// the threshold for treating an OTC-only floor as "implied mcap": if a
+// row has no trade backing AND no trustless live listings, any market
+// cap shown was computed against a single OTC ask. We dim it so users
+// don't read it as cross-asset-comparable like TAC's $5.6M.
+function marketGroupHasTrustlessLiveness(group) {
+  return Number(group?.preauths || 0) > 0 || Number(group?.intents || 0) > 0;
 }
 function marketModeLabel(l) {
   if (l.kind === 'preauth') return 'Instant listing';
@@ -37677,6 +37692,19 @@ function renderMarketBrowseTable(rows) {
       seg(`page ${_marketBrowsePage}/${totalPages}`),
     ].join(sep);
   }
+  // Drop the Recent Volume column entirely when no row on the current
+  // page has a ring buffer that overflows 24h (i.e., every g.volumeSats
+  // === g.volume24hSats or is null). On the network's current scale
+  // every active market fits inside 24h, so the column shows nothing
+  // but "—" / blank — hiding it reclaims about 12% of table width for
+  // the columns that actually carry data. The dedupe semantics from
+  // the prior change remain in place for the rare row where volumes
+  // diverge.
+  const _showRecentVolumeColumn = pageGroups.some(pg =>
+    pg.volumeSats != null
+    && pg.volume24hSats != null
+    && Number(pg.volumeSats) !== Number(pg.volume24hSats));
+  const _columnCount = _showRecentVolumeColumn ? 7 : 6;
   // Inject a single subheader row between the priced rows and the
   // untraded-etch rows on the current page. The sort already pushes
   // untraded rows to the bottom; the divider tells the user "below this
@@ -37695,7 +37723,7 @@ function renderMarketBrowseTable(rows) {
       const _remaining = pageGroups.length - _firstUntradedIdx;
       _divider = `
         <tr class="market-untraded-divider" aria-hidden="true">
-          <td colspan="7" style="padding:8px 12px;background:var(--ink-faint-bg,#f5f3ee);border-top:1px solid var(--ink-faint,#dcd7c8);border-bottom:1px solid var(--ink-faint,#dcd7c8);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-mid,#6b6657);font-weight:600;">
+          <td colspan="${_columnCount}" style="padding:8px 12px;background:var(--ink-faint-bg,#f5f3ee);border-top:1px solid var(--ink-faint,#dcd7c8);border-bottom:1px solid var(--ink-faint,#dcd7c8);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-mid,#6b6657);font-weight:600;">
             Untraded etches
             <span style="font-weight:normal;text-transform:none;letter-spacing:0;color:var(--ink-faint,#a39e90);margin-left:8px;">${_remaining} token${_remaining === 1 ? '' : 's'} registered but no trades yet</span>
           </td>
@@ -37725,6 +37753,28 @@ function renderMarketBrowseTable(rows) {
     const refUnit = (Number.isFinite(markUnit) && markUnit > 0 && marketGroupHasTradeBacking(g))
       ? markUnit
       : marketGroupReferenceUnit(g);
+    // Directional price flash. Compare against the cached refUnit from
+    // the previous render keyed by asset_id. >0.1% delta → green (up)
+    // or red (down) pulse on the price cell for ~900ms; sub-threshold
+    // changes are suppressed so 1-sat dust trades don't strobe the
+    // gallery on every poll. First-ever paint never flashes (cache
+    // miss). Map size capped at _PRICE_FLASH_CACHE_CAP via clear+reset
+    // when full — simpler than a real LRU and fine since the cache is
+    // best-effort UX, not state.
+    let _priceFlashCls = '';
+    if (refUnit != null && safeAid) {
+      const _prev = _marketLastRefUnit.get(safeAid);
+      if (_prev != null && _prev > 0) {
+        const _delta = ((refUnit - _prev) / _prev) * 100;
+        if (Math.abs(_delta) >= _PRICE_FLASH_THRESHOLD_PCT) {
+          _priceFlashCls = _delta > 0 ? 'price-flash-up' : 'price-flash-down';
+        }
+      }
+      if (_marketLastRefUnit.size >= _PRICE_FLASH_CACHE_CAP && !_marketLastRefUnit.has(safeAid)) {
+        _marketLastRefUnit.clear();
+      }
+      _marketLastRefUnit.set(safeAid, refUnit);
+    }
     const floor = refUnit != null ? `${fmtMarketUnitSats(refUnit)}/${ticker}` : 'no trades yet';
     // Sub-row only renders when there's a real price to convert; when
     // refUnit is null the main row's "no trades yet" already conveys
@@ -37756,9 +37806,23 @@ function renderMarketBrowseTable(rows) {
       && Number(g.volumeSats) === Number(g.volume24hSats);
     const volumeUsd = g.volumeSats != null ? fmtMarketUsdWholeFromSats(g.volumeSats, '—') : (statsLoaded ? '—' : loadingPlaceholder);
     const volumeBtc = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : (statsLoaded ? '—' : loadingPlaceholder);
-    const recentVolumeCell = volumesMatch
-      ? `<td title="Same as 24h — worker doesn’t yet keep a lifetime aggregator, and every recent trade fits inside the 24h window."><span class="market-table-sub" style="color:var(--ink-faint);">—</span></td>`
-      : `<td><span class="market-table-value">${escapeHtml(volumeUsd)}</span><span class="market-table-sub">${escapeHtml(volumeBtc)}</span></td>`;
+    // Recent Volume cell is only emitted when the column is shown at
+    // all (see _showRecentVolumeColumn at the outer scope). When the
+    // page-level check decided to hide it, every row contributes an
+    // empty string — the column is gone from both <thead> and <tbody>.
+    const recentVolumeCell = !_showRecentVolumeColumn
+      ? ''
+      : (volumesMatch
+        ? `<td title="Same as 24h — worker doesn’t yet keep a lifetime aggregator, and every recent trade fits inside the 24h window."><span class="market-table-sub" style="color:var(--ink-faint);">—</span></td>`
+        : `<td><span class="market-table-value">${escapeHtml(volumeUsd)}</span><span class="market-table-sub">${escapeHtml(volumeBtc)}</span></td>`);
+    // Implied-mcap flag: no trade backing AND no trustless live listings
+    // means the mcap was computed against a single OTC ask (PUP-style
+    // rows). Dim + italicize + tooltip so the user reads "this $8.5M
+    // is the seller's wishful price, not the market's verdict" rather
+    // than letting it sit next to TAC's $5.6M as if they were peers.
+    const _mcapImplied = rowMarketCap != null
+      && !marketGroupHasTradeBacking(g)
+      && !marketGroupHasTrustlessLiveness(g);
     const transfers = Number(a.transfer_count || 0);
     return `
       <tr data-market-asset-row="${escapeHtml(safeAid)}"${_assetHasRecentActivity(a) ? ' data-recent-activity="1"' : ''}>
@@ -37771,7 +37835,7 @@ function renderMarketBrowseTable(rows) {
             </div>
           </div>
         </td>
-        <td>
+        <td class="${_priceFlashCls}">
           <span class="market-table-value ${refUnit != null ? 'market-sats-price' : ''}">${escapeHtml(floor)}</span>
           <span class="market-table-sub market-usd-price">${escapeHtml(floorUsd)}</span>
           ${(() => {
@@ -37800,15 +37864,31 @@ function renderMarketBrowseTable(rows) {
             // every untouched sat price), so skip it. A blank space
             // already conveys "nothing happened."
             if (_pct === 0) return '';
+            // Thin-volume guard: when the worker's shipped trade buffer
+            // (price_summary, capped at 10 entries) has fewer than 3
+            // points, a single outlier trade swings the windowed Δ%
+            // wildly — yesterday's TAC chip read +282%, today it reads
+            // -21%, both technically correct but neither reflects a
+            // settled market. Dim those chips and tag "(thin)" so users
+            // don't trade on the number; chips with ≥3 ring entries
+            // render at full strength.
+            const _ringSize = Array.isArray(a.price_summary) ? a.price_summary.length : 0;
+            const _thin = _ringSize < 3;
             const _sign = _pct > 0 ? '+' : '';
-            const _color = _pct > 0 ? '#0a7d3a' : '#b8341d';
+            const _color = _thin ? 'var(--ink-mid)' : (_pct > 0 ? '#0a7d3a' : '#b8341d');
             const _glyph = _pct > 0 ? '▲' : '▼';
-            return `<span class="market-table-sub" style="color:${_color};font-size:10px;font-weight:600;">${_glyph} ${_sign}${_pct.toFixed(2)}% ${escapeHtml(_winLbl)}</span>`;
+            const _tipBase = `Auto-windowed price change (${escapeHtml(_winLbl)})`;
+            const _tip = _thin
+              ? `${_tipBase} · thin volume (${_ringSize} ${_ringSize === 1 ? 'trade' : 'trades'} in ring) — single trades can move this number ±20%`
+              : _tipBase;
+            const _opacity = _thin ? 'opacity:0.7;' : '';
+            const _suffix = _thin ? ' (thin)' : '';
+            return `<span class="market-table-sub" title="${_tip}" style="color:${_color};font-size:10px;font-weight:600;${_opacity}">${_glyph} ${_sign}${_pct.toFixed(2)}% ${escapeHtml(_winLbl)}${_suffix}</span>`;
           })()}
         </td>
-        <td>
-          <span class="market-table-value">${escapeHtml(mcapUsd)}</span>
-          <span class="market-table-sub">${escapeHtml(mcapBtc)}</span>
+        <td${_mcapImplied ? ' title="Implied — derived from a single OTC ask, not from settled trades. Compare with caution."' : ''}>
+          <span class="market-table-value" ${_mcapImplied ? 'style="font-style:italic;color:var(--ink-mid);"' : ''}>${_mcapImplied ? '≈ ' : ''}${escapeHtml(mcapUsd)}</span>
+          <span class="market-table-sub" ${_mcapImplied ? 'style="color:var(--ink-faint);"' : ''}>${escapeHtml(mcapBtc)}</span>
         </td>
         <td>
           <span class="market-table-value">${escapeHtml(volume24hUsd)}</span>
@@ -37852,7 +37932,7 @@ function renderMarketBrowseTable(rows) {
             <th>Price</th>
             <th>Market Cap</th>
             <th>24h Volume</th>
-            <th title="Sum of the worker's recent-trades ring buffer (most-recent N trades per asset). Worker doesn't yet keep a lifetime aggregator — once it does, this column will switch to the true cumulative value automatically.">Recent Volume</th>
+            ${_showRecentVolumeColumn ? `<th title="Sum of the worker's recent-trades ring buffer (most-recent N trades per asset). Worker doesn't yet keep a lifetime aggregator — once it does, this column will switch to the true cumulative value automatically.">Recent Volume</th>` : ''}
             <th title="Distinct wallets that have ever received this asset on chain (scriptpubkey-hash level — a wallet, not a user). Coarse popularity signal indexed by the worker.">Wallets</th>
             <th title="Live trustless listings on the orderbook (left) and lifetime on-chain transfers of this asset (right).">Activity</th>
           </tr>

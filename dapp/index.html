@@ -2351,6 +2351,26 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
   .value-flash { animation: none; }
 }
 
+/* Directional price-change flashes for the gallery price column. Green
+   when the asset's reference unit ticked up between renders, red when it
+   ticked down. Same 700ms fade as value-flash; lives alongside it so the
+   table can use orange for "value changed in either direction" cells and
+   green/red for cells where direction matters. Added by render code in
+   renderMarketBrowseTable; auto-removed on animationend. */
+@keyframes price-flash-up {
+  0%   { background: rgba(46, 125, 50, 0.45); }
+  100% { background: transparent; }
+}
+@keyframes price-flash-down {
+  0%   { background: rgba(198, 40, 40, 0.45); }
+  100% { background: transparent; }
+}
+.price-flash-up   { animation: price-flash-up   0.9s ease-out; border-radius: 2px; }
+.price-flash-down { animation: price-flash-down 0.9s ease-out; border-radius: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .price-flash-up, .price-flash-down { animation: none; }
+}
+
 /* Animated trailing dots for any "loading…" / "scanning…" / "indexing…"
    status text. Reads as "still alive" instead of frozen. Apply by adding
    the .live-dots class to a span/div whose textContent is the prefix word
