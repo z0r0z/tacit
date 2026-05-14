@@ -193,6 +193,7 @@ const ATOMIC_INTENTS_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/
 const ATOMIC_INTENT_DELETE_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}` : '';
 const ATOMIC_INTENT_CLAIM_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/claim` : '';
 const ATOMIC_INTENT_FULFILMENT_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/fulfilment` : '';
+const ATOMIC_INTENT_FINALIZE_URL = (assetIdHex, intentIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/atomic-intents/${intentIdHex}/finalize` : '';
 // Preauth sales (buyer-completable T_AXFER — SPEC §5.7.8). Seller signs once,
 // buyer completes settlement alone via ECDH-derived recipient blinding.
 const PREAUTH_SALES_URL = (assetIdHex) => WORKER_BASE ? `${WORKER_BASE}/assets/${assetIdHex}/preauth-sales` : '';
@@ -13063,6 +13064,190 @@ async function fetchAxferFulfilment({ assetIdHex, intentIdHex }) {
   if (!WORKER_BASE) throw new Error('worker disabled');
   const resp = await fetch(withNet(ATOMIC_INTENT_FULFILMENT_URL(assetIdHex, intentIdHex)));
   if (resp.status === 404) return null;
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+  return j;
+}
+
+// Taker-side completion for variable-amount intents. Per SPEC §5.7.6.1
+// *Fulfilment message and partial reveal* step 3 (taker leg), this:
+//
+//   1. Pulls the maker-shipped fulfilment record from the worker (already-
+//      loaded copy can be passed via `fulfilment` to skip the fetch).
+//   2. Cryptographically verifies fulfilment_sig_v2 under the maker_pubkey,
+//      binding requested_amount + the partial_reveal bytes.
+//   3. Structurally verifies the partial_reveal shape: exactly 2 inputs
+//      (commit + asset_utxo), exactly 4 outputs (taker tacit DUST at
+//      vout[0], scaled BTC payment at vout[1], maker change DUST at vout[2],
+//      OP_RETURN(80) at vout[3]).
+//   4. Confirms vout[0] is P2WPKH(taker_pubkey) — defends against a
+//      compromised worker swapping in a partial that redirects the tacit.
+//   5. Confirms vout[1] value matches floor(requested × price / amount).
+//   6. Appends taker BTC funding inputs covering the scaled price + reveal
+//      fee balance; appends optional BTC change at vout[4+].
+//   7. SIGHASH_ALL signs taker inputs.
+//   8. POSTs the serialized completed reveal_tx_hex to /finalize. The
+//      worker broadcasts commit_tx_hex first, polls for visibility, then
+//      broadcasts the completed reveal sequentially.
+//
+// Unlike the legacy takeAxferOffer, the taker does NOT broadcast directly —
+// the worker performs the sequential commit-then-reveal so the commit only
+// hits chain after the taker has signed (anti-griefing per §5.7.6.1
+// *Anti-griefing properties*).
+async function finalizeAxferVarTake({ assetIdHex, intentIdHex, intent, fulfilment = null, onProgress = null }) {
+  if (!ENABLE_T_AXFER_VARIABLE) {
+    throw new Error('Variable-amount intents are disabled in this build. Set ENABLE_T_AXFER_VARIABLE=true to enable.');
+  }
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!intent || !intent.min_take_amount) throw new Error('intent is not variable-amount (no min_take_amount)');
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+
+  // Step 1: load the fulfilment record if caller didn't pre-fetch.
+  _progress('verify-start');
+  if (!fulfilment) {
+    fulfilment = await fetchAxferFulfilment({ assetIdHex, intentIdHex });
+    if (!fulfilment) throw new Error('no fulfilment record at worker — maker has not posted commit + partial reveal yet');
+  }
+  const fRecord = fulfilment.fulfilment || fulfilment;  // GET returns { ok, fulfilment }, POST returns fulfilment directly
+  if (!fRecord || !fRecord.partial_reveal) throw new Error('fulfilment record missing partial_reveal');
+  if (fRecord.taker_pubkey !== bytesToHex(wallet.pub)) throw new Error('fulfilment is for a different taker_pubkey');
+  if (!fRecord.requested_amount) throw new Error('fulfilment is missing requested_amount (v1-shape record on a variable-amount intent?)');
+
+  // Step 2: verify fulfilment_sig under maker_pubkey.
+  const partialJson = JSON.stringify(fRecord.partial_reveal);
+  const fMsg = _axintentFulfilMsgVar(
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    wallet.pub,
+    String(fRecord.requested_amount),
+    partialJson,
+  );
+  const fSigHex = String(fRecord.fulfilment_sig || '').toLowerCase();
+  if (!/^[0-9a-f]{128}$/.test(fSigHex)) {
+    throw new Error('fulfilment_sig missing or malformed; refusing to sign the reveal under a worker-mutable payload');
+  }
+  const makerXonly = hexToBytes(intent.maker_pubkey).slice(1);
+  if (!verifySchnorr(hexToBytes(fSigHex), fMsg, makerXonly)) {
+    throw new Error('fulfilment_sig does not verify under maker_pubkey + fulfilment_msg_v2; refusing to broadcast (worker or maker tampered with the partial reveal)');
+  }
+
+  // Step 3: structural shape checks.
+  const pr = fRecord.partial_reveal;
+  if (!Array.isArray(pr.inputs) || pr.inputs.length !== 2) {
+    throw new Error(`partial_reveal must have exactly 2 inputs (commit + asset_utxo); got ${pr.inputs?.length}`);
+  }
+  if (!Array.isArray(pr.outputs) || pr.outputs.length !== 4) {
+    throw new Error(`partial_reveal must have exactly 4 outputs (taker tacit / BTC / maker change / OP_RETURN); got ${pr.outputs?.length}`);
+  }
+
+  // Step 4: vout[0] must be P2WPKH(taker_pubkey).
+  const expectedTakerSpkHex = '0014' + bytesToHex(hash160(wallet.pub));
+  if (String(pr.outputs[0].script_hex).toLowerCase() !== expectedTakerSpkHex) {
+    throw new Error('vout[0] scriptpubkey does not pay this wallet — refusing to sign');
+  }
+  if (Number(pr.outputs[0].value) !== DUST) {
+    throw new Error(`vout[0] expected DUST (${DUST}), got ${pr.outputs[0].value}`);
+  }
+
+  // Step 5: vout[1] value must equal scaled BTC payment.
+  const amountBI    = BigInt(intent.amount);
+  const requestedBI = BigInt(fRecord.requested_amount);
+  const priceSatsBI = BigInt(intent.price_sats);
+  const expectedScaled = Number((requestedBI * priceSatsBI) / amountBI);
+  if (Number(pr.outputs[1].value) !== expectedScaled) {
+    throw new Error(`vout[1] BTC payment ${pr.outputs[1].value} != expected scaled price ${expectedScaled}`);
+  }
+
+  // Step 6: vout[3] must be OP_RETURN(80). Structural — no decryption.
+  const op80Script = hexToBytes(pr.outputs[3].script_hex || '');
+  if (!tryExtractAxferVarOnchainOpReturn(op80Script)) {
+    throw new Error('vout[3] is not the mandatory OP_RETURN(80) dual-recovery payload');
+  }
+
+  // Step 7: append taker BTC funding + change.
+  // Maker pre-funded the reveal fee via commit_value. Tx balance:
+  //   total_in  = commit_value + asset_utxo.value + sum(taker_inputs)
+  //   total_out = DUST(taker tacit) + scaled (BTC payment) + DUST(maker change) + 0(OP_RETURN) + taker_change
+  //   fee       = total_in − total_out
+  // The taker covers the scaled BTC payment + their own change; the maker's
+  // commit_value already supplies the reveal fee. So:
+  //   sum(taker_inputs) − taker_change = scaled
+  _progress('sign-start');
+  const feeRate = await getFeeRate();
+  // Reveal vbyte: maker's 2 inputs + 4 outputs + taker's funding inputs +
+  // optional change. Lower bound estimate; we recompute after picking.
+  const baseVb = 140 + 380 + inputVbytes + 4 * 31;
+  const minTakerInputVb = inputVbytes; // taker adds at least one P2WPKH
+  const initialEstFee = feeFor(baseVb + minTakerInputVb + 31, feeRate);
+
+  // Taker contributes scaled + (revealFee already covered by maker). Their
+  // own change is anything left over.
+  const commitValue = (() => {
+    // The fulfilment's commit_tx_hex is opaque to us, but the partial reveal
+    // declares vin[0] of value commitValue implicitly. We can't trust a
+    // worker-shipped commit_value field for fee math; reconstruct from the
+    // tx fee invariant. For now, request enough funding to cover scaled +
+    // an extra revealFee headroom; net excess returns as taker change.
+    return DUST + initialEstFee;
+  })();
+  const knownInValue  = commitValue + Number(intent.asset_utxo.value);
+  const knownOutValue = pr.outputs.reduce((s, o) => s + Number(o.value), 0);
+  const fundingGap = knownOutValue + initialEstFee - knownInValue;
+  if (fundingGap < 0) {
+    throw new Error('partial reveal is over-funded by maker; refusing to take (suspicious shape)');
+  }
+
+  const allUtxos = await getUtxos(wallet.address());
+  const usable = (allUtxos || []).filter(u => Number(u.value) > DUST).sort((a, b) => Number(b.value) - Number(a.value));
+  const picked = []; let total = 0;
+  for (const u of usable) {
+    picked.push(u); total += Number(u.value);
+    if (total >= fundingGap + DUST) break;
+  }
+  if (total < fundingGap) {
+    throw new Error(`insufficient sats: need ${fundingGap}, have ${total}. Send sats to ${wallet.address()} or consolidate UTXOs.`);
+  }
+  const takerChange = total - fundingGap;
+
+  // Step 8: assemble the completed reveal tx.
+  const revealTx = {
+    version: pr.version,
+    locktime: pr.locktime,
+    inputs: pr.inputs.map(i => ({
+      txid: i.txid, vout: i.vout, sequence: i.sequence,
+      witness: i.witness.map(w => hexToBytes(w)),
+    })),
+    outputs: pr.outputs.map(o => ({
+      value: Number(o.value), script: hexToBytes(o.script_hex),
+    })),
+  };
+  for (const u of picked) {
+    revealTx.inputs.push({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] });
+  }
+  if (takerChange >= DUST) {
+    revealTx.outputs.push({ value: takerChange, script: p2wpkhScript(wallet.pub) });
+  }
+  // Sign taker funding inputs SIGHASH_ALL. Inputs 0 + 1 already have
+  // maker-signed SIGHASH_SINGLE_ACP witnesses from the partial reveal.
+  for (let i = 0; i < picked.length; i++) {
+    const idx = 2 + i;
+    revealTx.inputs[idx].witness = signP2wpkhInput(revealTx, idx, Number(picked[i].value));
+  }
+  const revealHex = bytesToHex(serializeTx(revealTx));
+
+  // Step 9: POST to /finalize. Worker handles sequential commit-then-reveal
+  // broadcast; we don't broadcast ourselves. Returns the broadcast txids on
+  // success.
+  _progress('finalize-start');
+  const resp = await fetch(withNet(ATOMIC_INTENT_FINALIZE_URL(assetIdHex, intentIdHex)), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      taker_pubkey: bytesToHex(wallet.pub),
+      reveal_tx_hex: revealHex,
+    }),
+  });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
   return j;
@@ -45297,6 +45482,8 @@ export {
   // parity test can pin byte-for-byte parity of fulfilment_msg_v2 against
   // the worker's atomicIntentFulfilmentMsgVar.
   fulfilAxferVarIntent, _axintentFulfilMsgVar,
+  // §5.7.6.1 variable-amount intent taker-side completion.
+  finalizeAxferVarTake,
   // Direct retry hooks for resume-after-partial-failure (e.g. publish broadcast
   // OK but worker POST timed out). The harness uses these to retry the POST
   // without rebroadcasting.
