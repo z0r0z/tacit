@@ -20396,6 +20396,39 @@ function relativeAge(unixTs) {
   if (min < 1440) return `${Math.floor(min / 60)}h`;
   return `${Math.floor(min / 1440)}d`;
 }
+// Live age ticker. Walks every element tagged with `data-age-ts="<unix>"`
+// every 30s and rewrites its visible text via the format hint in
+// `data-age-fmt` (default "ago" → "X ago", "in" → "in X", "raw" → just
+// the relative string). Lets the orderbook + recent-trades feel
+// continuously alive without full re-renders. Idempotent: starts once
+// per tab, no-op on subsequent calls.
+let _ageTickerStarted = false;
+function _startLiveAgeTicker() {
+  if (_ageTickerStarted) return;
+  _ageTickerStarted = true;
+  const tick = () => {
+    if (typeof document === 'undefined' || document.hidden) return;
+    const els = document.querySelectorAll('[data-age-ts]');
+    for (const el of els) {
+      const ts = Number(el.getAttribute('data-age-ts') || 0);
+      if (!ts) continue;
+      const rel = relativeAge(ts);
+      if (!rel) continue;
+      const fmt = el.getAttribute('data-age-fmt') || 'ago';
+      const next = fmt === 'in' ? `in ${rel}` : fmt === 'raw' ? rel : `${rel} ago`;
+      if (el.textContent !== next) el.textContent = next;
+    }
+  };
+  // 30s interval — fast enough that "5m" → "6m" feels snappy without
+  // burning cycles. tick() is cheap (DOM read + textContent write
+  // per matched element).
+  setInterval(tick, 30 * 1000);
+  // Also tick once when the tab regains focus so a backgrounded tab
+  // that wakes after an hour catches up immediately.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });
+  }
+}
 
 // Render a single UTXO-picker option label. Used by the atomic pickers
 // (publish-intent / list-atomic) so two UTXOs with identical token amounts
@@ -32575,23 +32608,86 @@ function _startMarketAutoRefresh() {
     const tab = (typeof window !== 'undefined' && window.location?.hash || '');
     if (!tab.includes('tab=market')) return;
     try {
-      // Snapshot what the listings looked like BEFORE the refresh so we
-      // can skip the heavy applyMarketFilters() re-render when nothing
-      // material changed. The full re-render destroys charts + swap tile
-      // state on every tick, which the user reports as flicker — only
-      // pay that cost when listings actually changed.
-      // Refresh the in-memory cache so the next user-initiated render
-      // (filter toggle, manual refresh, tab re-entry) serves fresh
-      // data. We deliberately DON'T re-render here on either view —
-      // the user reports that the every-15s grid rebuild reads as
-      // jarring "all tiles flashing" even when only a few listings
-      // changed. Auto-refresh is now silent / data-only; per-tile
-      // animations that DO want to fire (price up/down on the asks
-      // ladder, e.g.) need a partial-DOM update path that doesn't
-      // exist yet. Tracked separately.
+      // Refresh the in-memory cache, then surgically update DOM cell
+      // values without full re-render. Full applyMarketFilters() on
+      // every tick was visually jarring ("all gallery tiles flashing")
+      // and re-rendering also destroyed the chart + swap tile state.
+      // Partial updates: walk visible rows/tiles by stable key
+      // (data-market-asset-row, data-listing-key) and rewrite price /
+      // volume / mcap cell textContent against the fresh cache. New
+      // listings appearing or old ones disappearing wait for the next
+      // user-triggered render — that's an explicit trade-off (slight
+      // structural staleness vs zero flicker on every tick).
       await fetchMarketDataDeduped();
+      try { _updateMarketCellsInPlace(); } catch (e) { console.warn('[market] cell-update failed', e?.message); }
     } catch {}
   }, MARKET_AUTO_REFRESH_MS);
+}
+// Surgical cell update: walks the visible #market-list and rewrites
+// numeric cell text against the fresh _marketCache without touching
+// the DOM structure. Idempotent; safe to call on any tick. Returns
+// silently if no rows are present (e.g., asset detail view rendered
+// but list isn't a table).
+function _updateMarketCellsInPlace() {
+  if (!_marketCache) return;
+  const list = document.getElementById('market-list');
+  if (!list) return;
+  // Browse table rows: keyed by data-market-asset-row=<aid>.
+  const rows = list.querySelectorAll('tr[data-market-asset-row]');
+  if (rows.length > 0) {
+    const assetById = new Map();
+    for (const a of (_marketCache.assets || [])) {
+      if (a?.asset_id) assetById.set(String(a.asset_id).toLowerCase(), a);
+    }
+    for (const tr of rows) {
+      const aid = String(tr.getAttribute('data-market-asset-row') || '').toLowerCase();
+      const a = assetById.get(aid);
+      if (!a) continue;
+      // Cell 1 = Token (ticker + id), Cell 2 = Price, Cell 3 = Mcap,
+      // Cell 4 = 24h Vol, Cell 5 = Recent Vol, Cell 6 = Wallets,
+      // Cell 7 = Listings. Update the numeric ones only — Token cell
+      // has the logo + ticker name which don't churn per-tick.
+      const tds = tr.children;
+      if (tds.length < 7) continue;
+      // Price uses mark_price.unit (matches what renderMarketBrowseTable does).
+      const markUnit = Number(a?.mark_price?.unit);
+      const refUnit = (Number.isFinite(markUnit) && markUnit > 0) ? markUnit : null;
+      if (refUnit != null) {
+        const priceCell = tds[1].querySelector('.market-table-value');
+        if (priceCell) {
+          const next = `${fmtMarketUnitSats(refUnit)}/${a.ticker || 'token'}`;
+          if (priceCell.textContent !== next) priceCell.textContent = next;
+        }
+        const priceUsdCell = tds[1].querySelector('.market-table-sub');
+        if (priceUsdCell) {
+          const usd = fmtMarketUsdUnitFromSats(refUnit, 'no USD quote');
+          const next = `${usd} per token`;
+          if (priceUsdCell.textContent !== next) priceUsdCell.textContent = next;
+        }
+      }
+      // 24h volume
+      const v24 = a.volume_24h_sats;
+      if (Number.isFinite(v24)) {
+        const v24Cell = tds[3].querySelector('.market-table-value');
+        if (v24Cell) {
+          const next = v24 > 0 ? fmtMarketUsdWholeFromSats(v24, '—') : '—';
+          if (v24Cell.textContent !== next) v24Cell.textContent = next;
+        }
+        const v24SubCell = tds[3].querySelector('.market-table-sub');
+        if (v24SubCell) {
+          const next = v24 > 0 ? fmtMarketBtc(v24) : '—';
+          if (v24SubCell.textContent !== next) v24SubCell.textContent = next;
+        }
+      }
+      // Wallets
+      const hc = Number(a.holder_count || 0);
+      const walletsCell = tds[5]?.querySelector('.market-table-value');
+      if (walletsCell) {
+        const next = hc > 0 ? hc.toLocaleString('en-US') : (a._marketAssetStatsLoadedAt ? '0' : '…');
+        if (walletsCell.textContent !== next) walletsCell.textContent = next;
+      }
+    }
+  }
 }
 // Cheap signature of the listings array so we can skip no-op re-renders.
 // Listings ids + their unit prices are sufficient — any add/remove or
@@ -33210,6 +33306,7 @@ async function renderMarket() {
   // — re-entries no-op since the timer is already running. The loop
   // self-pauses when the tab is hidden or the user navigates away.
   _startMarketAutoRefresh();
+  _startLiveAgeTicker();
   // Cross-tab deep-link: a Discover card's "view offers" badge sets
   // pendingMarketFilter to a full asset_id. Drop straight into asset mode for
   // that asset rather than the browse index — the user already picked.
@@ -33897,9 +33994,13 @@ function applyMarketFilters() {
     const unitStr = unit != null
       ? `${l.kind === 'range' ? '&le; ' : ''}${fmtMarketUnitSats(unit)}/${escapeHtml(a.ticker || 'token')}`
       : '';
-    const listedRel = relativeAge(l.listed_at || l.created_at);
-    const recencyLine = listedRel
-      ? `listed ${escapeHtml(listedRel)} ago - expires ${expIso}`
+    const listedTs = Number(l.listed_at || l.created_at || 0);
+    const listedRel = relativeAge(listedTs);
+    // data-age-ts on the relative-time span so _startLiveAgeTicker can
+    // tick "5m ago" → "6m ago" without a re-render. Falls back to the
+    // raw expIso text when listed_at is missing.
+    const recencyLine = listedRel && listedTs > 0
+      ? `listed <span data-age-ts="${listedTs}" data-age-fmt="ago">${escapeHtml(listedRel)} ago</span> - expires ${expIso}`
       : `expires ${expIso}`;
     const displayId = marketListingDisplayId(l);
     // Ticker, asset_id, network, and ticker-collision state are already shown

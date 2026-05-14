@@ -1,0 +1,52 @@
+name: TAC asset canary
+
+# Runs the live-mainnet canary for the TAC asset
+# (f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b)
+# on every PR + every push to main + every day at 06:00 UTC.
+#
+# The canary fails the build if any pinned invariant for this asset
+# drifts. Specifically:
+#   - asset_id derivation (sha256-based) changes
+#   - worker registry returns different canonical fields
+#   - the etch tx vanishes from mainnet at its pinned block height
+#   - any worker market endpoint changes shape in a way that would
+#     break in-flight orders for this asset
+#
+# Soft-skips (treated as inconclusive, not failure) when the worker
+# or mempool.space is unreachable after retries — so a Cloudflare
+# blip doesn't block legitimate PRs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Daily heartbeat so silent worker / chain regressions don't sit
+    # unnoticed between commits.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  canary:
+    name: Run TAC mainnet canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: tests/package-lock.json
+
+      - name: Install test deps
+        working-directory: tests
+        run: npm install --no-audit --no-fund --prefer-offline
+
+      - name: Run canary
+        working-directory: tests
+        run: npm run test:canary
