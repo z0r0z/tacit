@@ -1798,6 +1798,23 @@ function _coolingMsLeft(base) {
 }
 
 async function api(path, opts = {}) {
+  // Defensive normalization: mempool.space's /tx/:txid endpoint only
+  // accepts a bare 64-hex txid. A caller somewhere is constructing
+  // /tx/<txid>:<vout> (probably treating an outpoint string as a txid),
+  // which 404s every chain provider and cascade-fails any code path
+  // that depends on it. Strip a `:N` suffix from the txid segment so
+  // the request still resolves; warn once so the buggy call-site can
+  // be traced from logs without breaking the user's session.
+  if (typeof path === 'string') {
+    const m = path.match(/^(\/tx\/)([0-9a-f]{64}):(\d+)(.*)$/i);
+    if (m) {
+      if (!api._txColonWarned) {
+        api._txColonWarned = true;
+        try { console.warn('[tacit] api(): /tx/HEX:N normalized to /tx/HEX — caller passed an outpoint where a txid was expected. Original path:', path); } catch {}
+      }
+      path = `${m[1]}${m[2]}${m[4]}`;
+    }
+  }
   await _apiAcquire();
   try {
     const bases = _apiBases();
