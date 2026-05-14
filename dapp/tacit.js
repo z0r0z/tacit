@@ -32754,11 +32754,17 @@ function _snapshotMyListings(myPubHex) {
   }
   return out;
 }
-// Auto-refresh: re-fetch market data every 15s while the Markets tab is
-// visible. Hooks into existing fetchMarketDataDeduped so a manual swap
-// completing within the window doesn't trigger a duplicate request.
+// Auto-refresh: re-fetch market data every few seconds while the
+// Markets tab is visible. Hooks into existing fetchMarketDataDeduped
+// so a manual swap completing within the window doesn't trigger a
+// duplicate request. 5s tightens this from the old 15s so the asks/
+// bids ladders + depth chart feel "live CEX" rather than "polled
+// every quarter-minute." Cloudflare worker responses are SWR-cached
+// (FRESH 1min), so most ticks at this cadence hit cache and stay
+// cheap; the only real cost is bandwidth on the bids fetch the
+// asset-detail path adds per tick.
 let _marketAutoRefreshTimer = null;
-const MARKET_AUTO_REFRESH_MS = 15000;
+const MARKET_AUTO_REFRESH_MS = 5000;
 function _startMarketAutoRefresh() {
   if (_marketAutoRefreshTimer) return;
   _marketAutoRefreshTimer = setInterval(async () => {
@@ -32797,6 +32803,18 @@ function _startMarketAutoRefresh() {
         }
         const freshSig = _assetSignatureFull(aid);
         if (_renderedAssetSignature.aid === aid && _renderedAssetSignature.sig && freshSig !== _renderedAssetSignature.sig) {
+          // A structural orderbook change (fill / new listing / cancel)
+          // usually means there's also a new trade in the per-asset
+          // trades ring. Bust the stats cache so the price chart and
+          // 24h-volume strip refetch fresh data on the upcoming
+          // re-render — otherwise the chart sits on stale trades for
+          // up to the 60s stats TTL and looks dead while the ladders
+          // update around it.
+          try {
+            if (_marketAssetStatsCache?.delete && typeof marketAssetStatsKey === 'function') {
+              _marketAssetStatsCache.delete(marketAssetStatsKey(aid));
+            }
+          } catch {}
           try { applyMarketFilters(); } catch (e) { console.warn('[market] asset re-render failed', e?.message); }
         }
       }
@@ -36158,12 +36176,14 @@ function renderMarketAssetStatsHTML(asset) {
       </div>
       <div data-market-attest-cta style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;"></div>
       <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
+      <div data-market-trades-tape style="margin-top:8px;display:none;"></div>
       <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;"></div>
-      <!-- Recent-trades mini-list intentionally removed: redundant with
-           the Activity tab below, which shows the same events plus
-           listings + cancellations, paginated and filterable. The chart
-           above visualizes the same data spatially; the table form
-           lives in Activity. -->
+      <!-- The standalone Recent-trades table from earlier was removed in
+           favor of (a) the spatial price chart above, (b) the trades
+           tape (one-line live tape of the last few fills, scrolls
+           horizontally — classic CEX "ticker"), and (c) the paginated
+           Activity tab below which still shows listings + cancellations
+           alongside fills. -->
     </div>`;
 }
 
@@ -36821,6 +36841,11 @@ async function populateMarketAssetStats(scope, asset) {
   // markUnit (from j.mark_price) anchors the chart's center line and
   // drives the log-scale switch when the orderbook spans many decades.
   _populateDepthChart(section, aid, decimals, ticker, _deltaMarkUnit).catch(() => {});
+  // Trades tape: one-line live tape of the last few fills, classic CEX
+  // ticker. Reads from `trades` (the same worker-supplied ring the
+  // chart uses), so it picks up fresh fills every time the asset stats
+  // cache busts.
+  try { _populateTradesTape(section, trades, ticker, decimals, _deltaMarkUnit); } catch (e) { console.warn('[market] trades tape failed', e?.message); }
   // Price chart: rendered above the trade table when we have ≥2 trades.
   // Uses the FULL ring (up to 50) for max chart density; the table below
   // stays capped at 10 rows so the section doesn't get unwieldy.
@@ -37288,6 +37313,67 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     askCum, bidCum, centerU,
     aid, decimals, ticker,
   });
+}
+
+// Recent-trades tape: a one-line CEX-style ticker showing the last few
+// fills as horizontal pills (time · price · size). Sits between the
+// price chart and the depth chart on the asset-detail view. Each fill
+// is colored against the mark band — in-band trades in green, outliers
+// in muted orange — so the tape's color reading mirrors the chart's.
+// Auto-scrolls horizontally on overflow; new entries flash in via the
+// shared market-fade-in keyframe (data-market-anim="new").
+const _tradesTapeSnapshot = new Map();
+function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
+  const tape = section.querySelector('[data-market-trades-tape]');
+  if (!tape) return;
+  if (!Array.isArray(trades) || trades.length === 0) {
+    tape.style.display = 'none';
+    tape.innerHTML = '';
+    return;
+  }
+  const sorted = trades.slice().sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0));
+  const recent = sorted.slice(0, 8);
+  const markValid = Number.isFinite(markUnit) && markUnit > 0;
+  const outLo = markValid ? markUnit * 0.2 : 0;
+  const outHi = markValid ? markUnit * 5 : Infinity;
+  const aid = section.dataset.aid || section.getAttribute('data-aid') || '';
+  const prevIds = _tradesTapeSnapshot.get(aid) || new Set();
+  const nextIds = new Set();
+  const itemsHtml = recent.map(t => {
+    const price = Number(t.price_sats) || 0;
+    let amtBig; try { amtBig = BigInt(t.amount || '0'); } catch { amtBig = 0n; }
+    if (amtBig <= 0n || price <= 0) return '';
+    const u = unitPriceSats(price, amtBig, decimals);
+    if (u == null) return '';
+    const ts = Number(t.ts) || 0;
+    const id = `${t.txid || ''}:${ts}`;
+    nextIds.add(id);
+    const isNew = !prevIds.has(id) && prevIds.size > 0;
+    const isOutlier = markValid && (u < outLo || u > outHi);
+    const color = isOutlier ? '#a04030' : '#0a7d3a';
+    const age = relativeAge(ts) || 'now';
+    const amtStr = fmtAssetAmount(amtBig, decimals);
+    const animAttr = isNew ? ' data-market-anim="new"' : '';
+    return `<span${animAttr} style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg-warm);font-size:10px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;">
+      <span class="muted" data-age-ts="${ts}" data-age-fmt="ago">${escapeHtml(age)} ago</span>
+      <strong style="color:${color};">${escapeHtml(fmtMarketUnitSats(u))}/${escapeHtml(ticker)}</strong>
+      <span class="muted">× ${escapeHtml(amtStr)}</span>
+    </span>`;
+  }).filter(Boolean).join('');
+  if (!itemsHtml) {
+    tape.style.display = 'none';
+    tape.innerHTML = '';
+    return;
+  }
+  tape.style.display = 'block';
+  tape.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;font-size:10px;">
+      <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;flex:0 0 auto;">Tape</span>
+      <div style="display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;flex:1;min-width:0;scrollbar-width:thin;">
+        ${itemsHtml}
+      </div>
+    </div>`;
+  _tradesTapeSnapshot.set(aid, nextIds);
 }
 
 // Hover crosshair, tooltip ("at price P, fillable Q tokens, ~R BTC"), and
