@@ -36671,6 +36671,18 @@ function fmtMarketUsdUnitFromSats(sats, empty = 'n/a') {
     return `$${fixed !== '0' ? fixed : n.toPrecision(3)}`;
   }
   if (n >= 1000) return fmtMarketUsdValue(n, empty);
+  // Sub-dollar prices (≥ $0.01 and < $1) need more than 2 decimals
+  // or the rounding misleads back-of-envelope math. Concrete case
+  // from the live market: a token at 20 sats × $81,435/BTC ≈
+  // $0.01629 per token rounds to "$0.02", and a trader multiplying
+  // by a 21M supply gets $420K expected market cap — but the actual
+  // market cap reads $342K (computed from the un-rounded price).
+  // Showing 4 decimals (trimmed trailing zeros) makes `price ×
+  // supply ≈ market cap` reconcile to within rounding tolerance.
+  if (n < 1) {
+    const fixed = n.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+    return `$${fixed}`;
+  }
   return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 function fmtMarketBtc(sats) {
@@ -40651,25 +40663,37 @@ async function populateMarketBidsLadder(scope, asset) {
       const bid = ladder.find(x => x.bid_id === btn.dataset.bidId);
       if (!bid) return;
       // Variable-fill (§5.7.7) chunk picker. Seller chooses any size in
-      // [min_fill, remaining]; default = full remaining.
+      // [min_fill, remaining]; modal preview shows the exact scaled BTC
+      // payment they'll receive for the chunk. Replaces the bare
+      // window.prompt previously used here. fullAmountBig stays the
+      // bid's original `amount` so the scaled-price math matches the
+      // worker's `floor(chunk × price / amount)` rule exactly.
       let chunkAmount = null;
       const _isVar = !!(bid.min_fill_amount && bid.min_fill_amount !== '0');
       if (_isVar) {
         const remBig = BigInt(bid.remaining_amount || bid.amount || 0);
         const minBig = BigInt(bid.min_fill_amount);
+        const fullBig = BigInt(bid.amount || 0);
         const _decimals = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
         const _ticker = asset?.ticker || '';
-        const promptMsg =
-          `Fulfil partial chunk of this bid?\n\n` +
-          `Available: ${fmtAssetAmountPlain(minBig, _decimals)}–${fmtAssetAmountPlain(remBig, _decimals)} ${_ticker}\n` +
-          `BTC paid to you: floor(chunk × ${bid.price_sats.toLocaleString()} / ${bid.amount}) sats\n\n` +
-          `How much ${_ticker} will you deliver?  (Default = full remaining)`;
-        const raw = (typeof prompt === 'function') ? prompt(promptMsg, fmtAssetAmountPlain(remBig, _decimals)) : null;
-        if (raw == null || !raw.trim()) { btn.disabled = false; btn.textContent = 'Fulfil'; return; }
-        try { chunkAmount = parseAssetAmount(raw.trim(), _decimals); }
-        catch (e) { toast('Chunk: ' + (e?.message || String(e)), 'error'); btn.disabled = false; btn.textContent = 'Fulfil'; return; }
-        if (chunkAmount < minBig) { toast(`Chunk below min (${fmtAssetAmountPlain(minBig, _decimals)} ${_ticker}).`, 'error'); btn.disabled = false; btn.textContent = 'Fulfil'; return; }
-        if (chunkAmount > remBig) { toast(`Chunk above remaining (${fmtAssetAmountPlain(remBig, _decimals)} ${_ticker}).`, 'error'); btn.disabled = false; btn.textContent = 'Fulfil'; return; }
+        try {
+          chunkAmount = await marketPartialFillPrompt({
+            direction: 'sell', ticker: _ticker, decimals: _decimals,
+            minBig,
+            // Picker ceiling = remaining (what's actually left to
+            // deliver on this bid). Scaled-price denominator stays
+            // at the bid's original full amount so the math matches
+            // the worker's floor(chunk × price / bid.amount) rule.
+            maxBig: remBig,
+            fullAmountBig: fullBig,
+            fullPriceSats: Number(bid.price_sats || 0),
+          });
+        } catch { chunkAmount = null; }
+        if (chunkAmount == null) { btn.disabled = false; btn.textContent = 'Fulfil'; return; }
+        if (chunkAmount < minBig || chunkAmount > remBig) {
+          toast(`Chunk out of range. Min ${fmtAssetAmountPlain(minBig, _decimals)} ${_ticker}, max ${fmtAssetAmountPlain(remBig, _decimals)} ${_ticker}.`, 'error');
+          btn.disabled = false; btn.textContent = 'Fulfil'; return;
+        }
       }
       btn.disabled = true; btn.textContent = 'fulfilling...';
       try {
@@ -43473,28 +43497,23 @@ async function marketClaimIntentHandler(btn) {
   // Variable-amount branch (§5.7.6.1 / T_AXFER_VAR). The listing carries a
   // non-empty min_take_amount; the taker picks any requested_amount in
   // [min_take_amount, amount] and pays a proportionally scaled BTC amount.
+  // The modal picker gives live scaled-price preview + percentage chips
+  // + inline validation, replacing the bare window.prompt this used.
   if (minTakeStr && /^\d+$/.test(minTakeStr)) {
     const amountBI = BigInt(amt);
     const minTakeBI = BigInt(minTakeStr);
-    const promptMsg =
-      `${ticker} variable fill\n\n` +
-      `Available: up to ${fmtAssetAmount(amountBI, dec)} ${ticker}\n` +
-      `Floor:     ${fmtAssetAmount(minTakeBI, dec)} ${ticker} (smallest fill)\n` +
-      `Full price: ${price.toLocaleString()} sats for the full lot\n\n` +
-      `How much ${ticker} do you want to take?  (display units, e.g. ${fmtAssetAmount(amountBI / 2n, dec)} for half)`;
-    const takeInput = (typeof prompt === 'function')
-      ? prompt(promptMsg, fmtAssetAmount(amountBI, dec))
-      : null;
-    if (takeInput == null || !takeInput.trim()) { restore(); return; }
     let requestedBase;
-    try { requestedBase = parseAssetAmount(takeInput.trim(), dec); }
-    catch (e) { toast('Amount: ' + e.message, 'error'); restore(); return; }
-    if (requestedBase < minTakeBI) {
-      toast(`Take below floor (${fmtAssetAmount(minTakeBI, dec)} ${ticker}). Raise your amount.`, 'error');
-      restore(); return;
-    }
-    if (requestedBase > amountBI) {
-      toast(`Take exceeds available (${fmtAssetAmount(amountBI, dec)} ${ticker}). Lower your amount.`, 'error');
+    try {
+      requestedBase = await marketPartialFillPrompt({
+        direction: 'buy', ticker, decimals: dec,
+        minBig: minTakeBI, fullAmountBig: amountBI, fullPriceSats: price,
+      });
+    } catch { requestedBase = null; }
+    if (requestedBase == null) { restore(); return; }
+    // The modal already validated min/max/DUST before resolving, but
+    // re-assert here so any external caller can't bypass the gate.
+    if (requestedBase < minTakeBI || requestedBase > amountBI) {
+      toast(`Amount out of range. Min ${fmtAssetAmount(minTakeBI, dec)} ${ticker}, max ${fmtAssetAmount(amountBI, dec)} ${ticker}.`, 'error');
       restore(); return;
     }
     const scaledSats = Number((requestedBase * BigInt(price)) / amountBI);
@@ -44041,6 +44060,149 @@ async function marketTakePreauthHandler(btn) {
     }
     restore();
   }
+}
+
+// Partial-fill amount picker for variable atomic intents (buy side,
+// §5.7.6.1 / T_AXFER_VAR) and variable-fill bids (sell side, §5.7.7).
+// Replaces the bare window.prompt that both entry points previously
+// used — the prompt had no live preview of the scaled BTC payment,
+// no percentage chips, no on-the-fly validation. This modal gives
+// the trader a real DEX-like picker with live recomputation.
+//
+// Resolves to a BigInt amount in base units on confirm, or null on
+// cancel. Floor + ceiling + DUST validation is inline; the confirm
+// button stays disabled until the input is in-range and the scaled
+// payment clears DUST.
+//
+// direction:
+//   'buy'  → variable atomic intent take ("You pay X sats")
+//   'sell' → variable-fill bid deliver ("You receive X sats")
+async function marketPartialFillPrompt({ direction, ticker, decimals, minBig, maxBig, fullAmountBig, fullPriceSats }) {
+  await refreshMarketBtcUsd().catch(() => {});
+  // maxBig is the input-picker ceiling (what's actually available);
+  // fullAmountBig is the scaling-math denominator (the maker's full-
+  // lot reference). They differ for variable bids: a 1000-TAC bid
+  // that's been partial-filled has remaining=400, but the scaled
+  // price still walks against the original 1000 amount. If maxBig
+  // isn't supplied, it defaults to fullAmountBig (variable-intent
+  // case where the maker's full lot is also the picker ceiling).
+  if (maxBig == null) maxBig = fullAmountBig;
+  return new Promise(resolve => {
+    const overlay = document.createElement('div');
+    overlay.className = 'market-buy-overlay';
+    const isBuy = direction === 'buy';
+    const titleVerb = isBuy ? 'Buy' : 'Fulfil';
+    const payVerb = isBuy ? 'You pay' : 'You receive';
+    const payNote = isBuy
+      ? 'BTC payment scales linearly with the take fraction.'
+      : 'BTC payment scales linearly with the chunk you deliver.';
+    let chosen = maxBig;
+    const render = () => {
+      const safe = chosen < minBig ? minBig : (chosen > maxBig ? maxBig : chosen);
+      chosen = safe;
+      const scaledSats = Number((chosen * BigInt(fullPriceSats)) / fullAmountBig);
+      const scaledUsd = fmtMarketUsdValue(marketSatsToUsd(scaledSats), '');
+      const unitSats = unitPriceSats(scaledSats, chosen, decimals);
+      const unitStr = unitSats != null ? `${fmtUnitPriceSats(unitSats)} sats/${escapeHtml(ticker)}` : '—';
+      const unitUsd = unitSats != null ? fmtMarketUsdUnitFromSats(unitSats, '') : '';
+      const pct = fullAmountBig > 0n ? ((Number(chosen) / Number(fullAmountBig)) * 100) : 0;
+      const tooSmall = scaledSats < DUST;
+      const belowFloor = chosen < minBig;
+      const aboveMax = chosen > maxBig;
+      const invalid = tooSmall || belowFloor || aboveMax;
+      const warn = belowFloor ? `Below floor (${escapeHtml(fmtAssetAmount(minBig, decimals))} ${escapeHtml(ticker)})`
+                : aboveMax ? `Above max (${escapeHtml(fmtAssetAmount(maxBig, decimals))} ${escapeHtml(ticker)})`
+                : tooSmall ? `Scaled BTC ${scaledSats} sats below dust (${DUST}). Raise amount.`
+                : '';
+      overlay.innerHTML = `
+        <div class="market-buy-card" role="dialog" aria-modal="true" aria-label="Partial fill picker">
+          <div class="market-buy-head">
+            <div>
+              <span class="market-buy-kind">${escapeHtml(titleVerb)}</span>
+              <h3>${escapeHtml(fmtAssetAmount(chosen, decimals))} ${escapeHtml(ticker)}</h3>
+            </div>
+            <button class="market-buy-close" type="button" data-pf-cancel aria-label="Close">x</button>
+          </div>
+          <div class="market-buy-row">
+            <div>
+              <div class="market-buy-label">Amount</div>
+              <div class="market-buy-sub">range ${escapeHtml(fmtAssetAmount(minBig, decimals))} – ${escapeHtml(fmtAssetAmount(maxBig, decimals))} ${escapeHtml(ticker)}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+              <input type="text" inputmode="decimal" data-pf-input value="${escapeHtml(fmtAssetAmount(chosen, decimals))}" style="width:140px;text-align:right;font-family:var(--mono);font-size:14px;font-weight:600;padding:6px 8px;border:1px solid ${invalid ? '#b8341d' : 'var(--ink)'};background:var(--bg);">
+              <button type="button" data-pf-pct="25" style="font-size:10px;padding:4px 6px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">25%</button>
+              <button type="button" data-pf-pct="50" style="font-size:10px;padding:4px 6px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">50%</button>
+              <button type="button" data-pf-pct="100" style="font-size:10px;padding:4px 6px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">Max</button>
+            </div>
+          </div>
+          <div class="market-buy-row">
+            <div>
+              <div class="market-buy-label">${escapeHtml(payVerb)}</div>
+              <div class="market-buy-sub">${pct.toFixed(1)}% of the full lot</div>
+            </div>
+            <div>
+              <div class="market-buy-value market-usd-price">${escapeHtml(scaledUsd || '—')}</div>
+              <div class="market-buy-sub"><span class="market-btc-price">${escapeHtml(fmtMarketBtc(scaledSats))}</span> &middot; <span class="market-sats-price">${scaledSats.toLocaleString('en-US')} sats</span></div>
+            </div>
+          </div>
+          <div class="market-buy-row">
+            <div>
+              <div class="market-buy-label">Unit price</div>
+              <div class="market-buy-sub">${escapeHtml(payNote)}</div>
+            </div>
+            <div>
+              <div class="market-buy-value market-usd-price">${escapeHtml(unitUsd || '—')}</div>
+              <div class="market-buy-sub"><span class="market-sats-price">${unitStr}</span></div>
+            </div>
+          </div>
+          ${warn ? `<div style="margin:8px 0;padding:6px 10px;border:1px solid #b8341d;background:rgba(184,52,29,0.06);color:#b8341d;font-size:11px;">⚠ ${escapeHtml(warn)}</div>` : ''}
+          <div class="market-buy-actions">
+            <button type="button" data-pf-cancel>Cancel</button>
+            <button type="button" class="primary" data-pf-confirm ${invalid ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>${escapeHtml(isBuy ? 'Buy' : 'Fulfil')} ${escapeHtml(fmtAssetAmount(chosen, decimals))} ${escapeHtml(ticker)}</button>
+          </div>
+        </div>`;
+      bind();
+    };
+    const done = (val) => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(val);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(null); } };
+    const bind = () => {
+      overlay.querySelectorAll('[data-pf-cancel]').forEach(b => b.onclick = () => done(null));
+      const conf = overlay.querySelector('[data-pf-confirm]');
+      if (conf && !conf.disabled) conf.onclick = () => done(chosen);
+      const input = overlay.querySelector('[data-pf-input]');
+      if (input) {
+        input.oninput = () => {
+          const raw = (input.value || '').trim();
+          if (!raw) return;
+          try { chosen = parseAssetAmount(raw, decimals); }
+          catch { return; }
+          // Re-render but preserve focus + caret in the input we just typed in.
+          const caret = input.selectionStart;
+          render();
+          const next = overlay.querySelector('[data-pf-input]');
+          if (next) { next.focus(); try { next.setSelectionRange(caret, caret); } catch {} }
+        };
+        input.focus();
+        try { input.setSelectionRange(input.value.length, input.value.length); } catch {}
+      }
+      overlay.querySelectorAll('[data-pf-pct]').forEach(b => b.onclick = () => {
+        const pct = parseInt(b.dataset.pfPct, 10);
+        if (!Number.isFinite(pct) || pct <= 0) return;
+        chosen = (maxBig * BigInt(pct)) / 100n;
+        if (chosen < minBig) chosen = minBig;
+        if (chosen > maxBig) chosen = maxBig;
+        render();
+      });
+    };
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) done(null); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(overlay);
+    render();
+  });
 }
 
 // Group-buy modal — same visual frame as marketConfirmPreauthTake but with a
