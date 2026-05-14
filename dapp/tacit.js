@@ -31636,30 +31636,49 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       // unreachable from the in-app UI: /market filters offer_count=0
       // assets out of the browse list, and Discover had no click path —
       // the only way to bid was hand-typing #tab=market&aid=<aid>.
+      // Prefer the worker's outlier-guarded mark price so the Discover
+      // card reads as a fair-market reference, not the dust floor (a
+      // 0.18-sat anomaly was misrepresenting TAC at $0.0001). Falls
+      // through to the live floor / verify._priceFloorPpu only when no
+      // mark is available. Label tracks which signal we're showing
+      // ("mark" vs "best ask") so the user knows what they're reading.
       let unit = null;
       let unitTicker = ticker;
-      if (offerCount > 0) {
+      let unitSource = null;
+      const markRaw = Number(a?.mark_price?.unit);
+      if (Number.isFinite(markRaw) && markRaw > 0) {
+        unit = markRaw;
+        unitSource = 'mark';
+      }
+      if (unit == null && offerCount > 0) {
         const liveFloor = _marketFloorByAsset()?.get(a.asset_id);
-        if (liveFloor) { unit = liveFloor.unit; unitTicker = liveFloor.ticker || ticker; }
+        if (liveFloor) { unit = liveFloor.unit; unitTicker = liveFloor.ticker || ticker; unitSource = 'best ask'; }
         else if (verify._priceFloorPpu && verify._priceFloorPpu > 0) {
-          // _priceFloorPpu is sats per smallest unit; convert to per display unit.
           unit = verify._priceFloorPpu * Math.pow(10, decimals);
+          unitSource = 'best ask';
         }
       }
       const priceStr = (unit != null && Number.isFinite(unit) && unit > 0)
         ? (unit >= 1 ? unit.toFixed(unit >= 100 ? 0 : 2) : unit.toFixed(6).replace(/0+$/, '').replace(/\.$/, ''))
         : null;
+      // USD per token (best-effort against the warm BTC/USD cache).
+      // Skipped when the oracle isn't loaded yet so the line doesn't
+      // flicker between "no quote" and a real price.
+      const _btcUsd = _cachedBtcUsd();
+      const usdStr = (priceStr && Number.isFinite(_btcUsd) && _btcUsd > 0)
+        ? fmtSatsAsUsd(unit, _btcUsd)
+        : null;
       const priceFragment = priceStr
-        ? `<strong>${escapeHtml(priceStr)} sats/${escapeHtml(unitTicker)}</strong> floor · `
+        ? `<strong>${escapeHtml(priceStr)} sats/${escapeHtml(unitTicker)}</strong>${usdStr ? ` <span class="muted" style="font-weight:normal;">(${escapeHtml(usdStr)})</span>` : ''}${unitSource ? ` <span class="muted" style="font-size:9px;text-transform:uppercase;letter-spacing:0.06em;">${escapeHtml(unitSource)}</span>` : ''} · `
         : '';
       const linkLabel = offerCount > 0
         ? `Open market · ${offerCount} offer${offerCount === 1 ? '' : 's'} →`
         : 'Open market · be the first to bid →';
       // Promoted to chip-style button so the discover→market path is a
       // clear CTA rather than an inline anchor lost in the text. Whole
-      // chip is clickable; the floor + USD price still render to the
-      // left as supporting context.
-      return `<div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11px;" title="Floor reflects only listings the indexer can see; confidential holders not actively listing are invisible by design.">
+      // chip is clickable; the price + USD render to the left as
+      // supporting context.
+      return `<div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11px;" title="${unitSource === 'mark' ? 'Mark price: outlier-guarded fair-market reference. Ignores obvious dust and fat-finger prints in the orderbook.' : 'Best ask: cheapest current open listing. Confidential holders not actively listing are invisible by design — there may be tighter prices off-orderbook.'}">
         ${priceFragment ? `<span style="color:var(--ink-mid);">💱 ${priceFragment}</span>` : ''}
         <a href="#tab=market&aid=${escapeHtml(safeAssetId)}" data-act="discover-view-offers" data-aid="${escapeHtml(safeAssetId)}" style="display:inline-flex;align-items:center;gap:6px;padding:5px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-weight:700;text-decoration:none;font-size:11px;letter-spacing:0.04em;box-shadow:2px 2px 0 var(--ink);">${linkLabel}</a>
       </div>`;
