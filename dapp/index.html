@@ -3248,20 +3248,39 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
      the wallet panel for a frame before swapping to market. The same
      activation logic lives in tacit.js (_consumeTabUrlHash) but runs
      after wallet refresh + many setup steps; this inline script runs
-     synchronously during HTML parse, eliminating the visible flash. -->
+     synchronously during HTML parse, eliminating the visible flash.
+
+     Two-stage swap:
+       1. INSTANT (during HTML parse): inject a <style> rule that hides
+          the wallet panel and shows the target panel. Browser applies
+          new CSS as soon as the rule lands, so the wallet panel never
+          gets a frame of visible-then-hidden flicker.
+       2. POST-DOM (DOMContentLoaded): also flip the .active CLASS so
+          downstream JS that reads `.tab.active` / `.tab-panel.active`
+          sees the deep-linked tab consistently. Without step 2, init
+          code would still think wallet is the active tab. -->
 <script>
 (function preActivateTabFromHash() {
   try {
     var m = (window.location.hash || '').match(/[#&]tab=([a-z]+)/i);
     var target = m && m[1] && m[1].toLowerCase();
     if (!target || target === 'wallet') return;
-    // Stash a flag so the module script knows the wallet tab was pre-
-    // deactivated and shouldn't auto-render the wallet card.
     window._tacitDeeplinkTab = target;
-    // CSS-only swap of .active on tab + panel. The actual data load
-    // still happens when _consumeTabUrlHash runs at end-of-init; this
-    // just makes the loading skeleton be on the target tab from the
-    // first paint.
+    // Stage 1: instant CSS override. Append a <style> tag that hides
+    // the default-active wallet panel and shows the target panel BEFORE
+    // the HTML parser reaches the <div class="tab-panel active"
+    // id="tab-wallet"> further down the body. !important beats the
+    // baseline `.tab-panel.active { display: block }` rule.
+    var styleEl = document.createElement('style');
+    styleEl.id = '_tacit-preactivate-style';
+    styleEl.textContent =
+      '#tab-wallet{display:none!important;animation:none!important}' +
+      '#tab-' + target + '{display:block!important}';
+    document.head.appendChild(styleEl);
+    // Stage 2: flip the .active class once the DOM is parsed so
+    // subsequent JS reading `.tab.active` / `.tab-panel.active`
+    // sees the deep-linked tab as active. Stage 1 already drives the
+    // visual; this is purely state consistency.
     document.addEventListener('DOMContentLoaded', function () {
       var prevTab = document.querySelector('.tab.active');
       var prevPanel = document.querySelector('.tab-panel.active');
@@ -3272,6 +3291,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       if (prevPanel) prevPanel.classList.remove('active');
       nextTab.classList.add('active');
       nextPanel.classList.add('active');
+      // Stage-1 override style can come down now — .active class is
+      // the source of truth from here on. Without removing it, future
+      // tab clicks would still be visually clamped by the !important
+      // override.
+      var pre = document.getElementById('_tacit-preactivate-style');
+      if (pre && pre.parentNode) pre.parentNode.removeChild(pre);
     });
   } catch (e) { /* never break boot on a hash parse */ }
 })();
