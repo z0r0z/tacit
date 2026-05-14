@@ -12325,6 +12325,167 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
   return { intent_id: intentIdHex, asset_id: assetIdHex, commit_txid: commitTxidHex };
 }
 
+// ============== T_AXFER_VAR (§5.7.6.1 variable-amount intents) ==============
+// Maker-side publish for variable-amount intents. Unlike publishAxferIntent
+// (whole-UTXO), this does NOT broadcast a commit tx at publish time — the
+// commit phase is deferred to fulfilment, after a taker's claim fixes
+// requested_amount. See SPEC §5.7.6.1 *Commit-phase timing*. The maker's
+// per-intent secret `r` is still generated and saved locally; it's the
+// blinding scalar reused at fulfilment to derive r_recip via ECDH.
+//
+// All variable-amount maker-side functions throw if ENABLE_T_AXFER_VARIABLE
+// is false. Production has the flag off; these are unreachable until the
+// rollout completes. Worker PR1-3 + SPEC amendment + on-chain validator
+// branch are all in place, but no T_AXFER_VAR envelope exists on mainnet.
+
+// Deterministic intent_id derivation — byte-parity with the worker's
+// atomicIntentIdHexVar. Any drift between dapp + worker here would surface
+// as a worker-side rejection at publish time, so we lock the bytes.
+function _axintentIdVar(makerPubHex, assetUtxoTxidHex, assetUtxoVout) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, assetUtxoVout >>> 0, true);
+  const h = sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-id-v1'),
+    hexToBytes(makerPubHex),
+    reverseBytes(hexToBytes(assetUtxoTxidHex)),
+    voutLE,
+  ));
+  return bytesToHex(h.slice(0, 16));
+}
+
+// Publish-time BIP-340 message — byte-parity with worker's
+// atomicIntentPublishMsgVar. Same domain tag, same field order, same LE
+// encoding. The maker signs this with their priv at publish; the worker
+// re-derives + verifies under maker_pubkey. Drift = 403 at publish.
+function _axintentPublishMsgVar({
+  assetIdHex, intentIdHex, makerPubHex, makerAddress,
+  amountStr, priceSats, minTakeStr, expiry,
+  assetUtxoTxidHex, assetUtxoVout, assetUtxoValue, network,
+}) {
+  const amountLE   = new Uint8Array(8); new DataView(amountLE.buffer).setBigUint64(0, BigInt(amountStr), true);
+  const priceLE    = new Uint8Array(8); new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const minTakeLE  = new Uint8Array(8); new DataView(minTakeLE.buffer).setBigUint64(0, BigInt(minTakeStr || '0'), true);
+  const expiryLE   = new Uint8Array(8); new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  const utxoVoutLE = new Uint8Array(4); new DataView(utxoVoutLE.buffer).setUint32(0, assetUtxoVout >>> 0, true);
+  const utxoValLE  = new Uint8Array(8); new DataView(utxoValLE.buffer).setBigUint64(0, BigInt(assetUtxoValue), true);
+  const addrHash   = sha256(new TextEncoder().encode(String(makerAddress)));
+  const netTag     = new Uint8Array([network === 'mainnet' ? 1 : 0]);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-publish-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    reverseBytes(hexToBytes(assetUtxoTxidHex)),
+    utxoVoutLE,
+    utxoValLE,
+    amountLE,
+    priceLE,
+    minTakeLE,
+    expiryLE,
+    hexToBytes(makerPubHex),
+    addrHash,
+    netTag,
+  ));
+}
+
+async function publishAxferVarIntent({ utxoTxid, utxoVout, priceSats, expiry, minTakeAmount, onProgress = null }) {
+  if (!ENABLE_T_AXFER_VARIABLE) {
+    throw new Error('Variable-amount intents are disabled in this build. Set ENABLE_T_AXFER_VARIABLE=true to enable.');
+  }
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!Number.isInteger(priceSats) || priceSats < DUST) throw new Error(`price_sats must be ≥ ${DUST}`);
+  if (!Number.isInteger(expiry) || expiry <= Math.floor(Date.now() / 1000)) throw new Error('expiry must be future unix-seconds');
+  if (typeof minTakeAmount !== 'string' || !/^\d+$/.test(minTakeAmount)) {
+    throw new Error('minTakeAmount must be a decimal base-unit string');
+  }
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+
+  // Locate the asset_utxo + asset_id from local holdings — same shape as
+  // publishAxferIntent. No chain broadcast happens here, so the maker's
+  // local view is authoritative.
+  const holdings = await scanHoldings();
+  let target = null, assetIdHex = null;
+  for (const [aid, h] of holdings) {
+    const u = h.utxos.find(x => x.utxo.txid === utxoTxid && x.utxo.vout === utxoVout);
+    if (u) { target = { ...u, decimals: h.decimals, ticker: h.ticker }; assetIdHex = aid; break; }
+  }
+  if (!target) throw new Error(`UTXO ${utxoTxid}:${utxoVout} not found in holdings`);
+
+  const amt = target.amount;                  // BigInt
+  const minTakeBI = BigInt(minTakeAmount);
+  if (minTakeBI < 1n)        throw new Error('min_take_amount must be ≥ 1 base unit');
+  if (minTakeBI > amt)       throw new Error('min_take_amount must not exceed the listed amount');
+  if (minTakeBI === amt)     throw new Error('min_take_amount == amount is the degenerate (whole-UTXO) case — use publishAxferIntent instead');
+  // Sub-dust guard at fulfilment: the smallest legal take would yield
+  // floor(min_take × price / amount) sats. Refuse to publish if that's
+  // below dust, since no claim against this intent would ever settle.
+  const minScaledSats = Number((minTakeBI * BigInt(priceSats)) / amt);
+  if (minScaledSats < DUST) {
+    throw new Error(`min_take_amount ${minTakeAmount} yields sub-dust BTC payment at the floor (${minScaledSats} < ${DUST}); raise min_take_amount or price_sats`);
+  }
+
+  // Per-intent blinding `r` — same role as the legacy path: the canonical
+  // recipient blinding from which r_recip is ECDH-derived at fulfilment.
+  // Stored locally; never shipped to the worker.
+  const r = randomScalar();
+  const rBytes = bigintToBytes32(r);
+  const rHex = bytesToHex(rBytes);
+
+  const makerPubHex = bytesToHex(wallet.pub);
+  const intentIdHex = _axintentIdVar(makerPubHex, utxoTxid, utxoVout);
+
+  // Pre-flight uniqueness check: if a variable-amount intent already exists
+  // for this (maker, asset_utxo) under the deterministic id, the worker will
+  // reject the POST. We could pre-check here, but the worker already does it
+  // and surfaces a clear error — keep the dapp side minimal.
+  _progress('build-start');
+
+  const intentMsg = _axintentPublishMsgVar({
+    assetIdHex, intentIdHex, makerPubHex, makerAddress: wallet.address(),
+    amountStr: amt.toString(), priceSats, minTakeStr: minTakeAmount, expiry,
+    assetUtxoTxidHex: utxoTxid, assetUtxoVout: utxoVout, assetUtxoValue: target.utxo.value,
+    network: NET.name,
+  });
+  const intentSig = signSchnorr(intentMsg, wallet.priv);
+
+  // Save the per-intent secret BEFORE the POST so a network failure mid-POST
+  // doesn't lose it. Worker may still successfully store the intent on retry,
+  // and we need `r` to fulfil any incoming claim.
+  saveAxintentSecret(intentIdHex, rHex);
+
+  const body = {
+    intent_id: intentIdHex,
+    maker_pubkey: makerPubHex,
+    maker_address: wallet.address(),
+    amount: amt.toString(),
+    min_take_amount: minTakeAmount,
+    price_sats: priceSats,
+    expiry,
+    asset_utxo: { txid: utxoTxid, vout: utxoVout, value: target.utxo.value },
+    ticker: target.ticker || '',
+    decimals: target.decimals || 0,
+    intent_sig: bytesToHex(intentSig),
+  };
+
+  _progress('publish-start');
+  const resp = await fetch(withNet(ATOMIC_INTENTS_URL(assetIdHex)), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+
+  invalidateDiscoverRegistryCache();
+  return {
+    intent_id: intentIdHex,
+    asset_id: assetIdHex,
+    min_take_amount: minTakeAmount,
+    amount: amt.toString(),
+    flavor: 'variable',
+  };
+}
+
 // Verbatim re-POST of a captured intent body. Used both by the happy-path
 // publishAxferIntent flow and by the post-load resumption logic for
 // pending entries (commit tx broadcast OK but worker POST never landed).
@@ -44785,6 +44946,12 @@ export {
   // drive publish → claim → fulfil → take headlessly without the browser UI.
   publishAxferIntent, claimAxferIntent, fulfilAxferIntent,
   fetchAxferFulfilment, takeAxferIntent, cancelAxferIntent,
+  // §5.7.6.1 variable-amount intent maker-side publish. Exported so the
+  // worker-axintent-var parity test can pin byte-for-byte parity of the
+  // intent_id derivation + publish_msg construction against the worker's
+  // atomicIntentIdHexVar + atomicIntentPublishMsgVar. Drift here = a 403 at
+  // every variable-amount publish, so the parity test is load-bearing.
+  publishAxferVarIntent, _axintentIdVar, _axintentPublishMsgVar,
   // Direct retry hooks for resume-after-partial-failure (e.g. publish broadcast
   // OK but worker POST timed out). The harness uses these to retry the POST
   // without rebroadcasting.
