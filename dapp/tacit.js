@@ -12813,6 +12813,252 @@ async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim, autoM
   return j;
 }
 
+// Dapp parity helper for fulfilment_msg_v2 — byte-equivalent with the
+// worker's atomicIntentFulfilmentMsgVar. The maker signs this; the worker
+// re-derives and verifies under maker_pubkey. Drift = 403 at fulfilment.
+function _axintentFulfilMsgVar(assetIdBytes, intentIdBytes, takerPubBytes, requestedAmountStr, partialRevealJson) {
+  const phash = sha256(new TextEncoder().encode(partialRevealJson));
+  const reqLE = new Uint8Array(8); new DataView(reqLE.buffer).setBigUint64(0, BigInt(requestedAmountStr), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-fulfilment-v2'),
+    assetIdBytes, intentIdBytes, takerPubBytes,
+    reqLE,
+    phash,
+  ));
+}
+
+// Maker-side fulfilment for variable-amount intents. Per SPEC §5.7.6.1
+// *Fulfilment message and partial reveal*, this:
+//
+//   1. derives r_recip (ECDH) + r_change (HMAC) blindings,
+//   2. computes (C_recip, C_change) commitments + aggregated bulletproof
+//      + kernel sig under excess = r_recip + r_change − r_listed,
+//   3. encodes a T_AXFER_VAR (0x37) envelope payload,
+//   4. wraps it in a P2TR taproot script-tree leaf and builds the commit_tx
+//      (UNBROADCAST — held until /finalize),
+//   5. builds the partial_reveal tx with vin[0]=commit:0, vin[1]=asset_utxo,
+//      vout[0]=taker tacit, vout[1]=BTC payment, vout[2]=maker change tacit,
+//      vout[3]=OP_RETURN(80) dual recovery,
+//   6. signs vin[0]+vin[1] SIGHASH_SINGLE_ACP,
+//   7. POSTs commit_tx_hex (unbroadcast) + partial_reveal + envelope script
+//      bytes + fulfilment_sig_v2 to /atomic-intents/.../fulfilment, leaving
+//      the worker in COMMIT_READY state until the taker completes the
+//      reveal and POSTs /finalize.
+async function fulfilAxferVarIntent({ assetIdHex, intentIdHex, intent, claim, autoMode = false }) {
+  if (!ENABLE_T_AXFER_VARIABLE) {
+    throw new Error('Variable-amount intents are disabled in this build. Set ENABLE_T_AXFER_VARIABLE=true to enable.');
+  }
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!intent || !intent.min_take_amount) throw new Error('intent is not variable-amount (no min_take_amount)');
+  if (intent.maker_pubkey !== bytesToHex(wallet.pub)) throw new Error('not your intent');
+  if (!claim || !claim.requested_amount) throw new Error('no active claim with requested_amount to fulfil');
+
+  const takerPubHex = String(claim.taker_pubkey).toLowerCase();
+  const takerPub = hexToBytes(takerPubHex);
+
+  // Recover the per-intent secret `r` (the parent commitment's blinding
+  // scalar — saved locally at publishAxferVarIntent). Without it we can't
+  // ECDH-derive r_recip or compute excess.
+  const rHex = loadAxintentSecret(intentIdHex);
+  if (!rHex) {
+    throw new Error('local intent secret missing — cannot fulfil. Per-intent blinding scalar was generated on this device at publish time and is required to derive the recipient/change blindings.');
+  }
+  const rBytes = hexToBytes(rHex);
+  const rListed = bytes32ToBigint(rBytes);   // parent C_listed's blinding
+
+  const intentIdBytes = hexToBytes(intentIdHex);
+  const assetIdBytes = hexToBytes(assetIdHex);
+
+  // ---- Amounts and scaled BTC payment ----
+  const amountBI    = BigInt(intent.amount);
+  const requestedBI = BigInt(claim.requested_amount);
+  const changeBI    = amountBI - requestedBI;
+  if (changeBI < 0n) throw new Error('requested_amount exceeds intent.amount (claim should have been rejected at worker)');
+  const priceSatsBI = BigInt(intent.price_sats);
+  const scaledPriceSats = Number((requestedBI * priceSatsBI) / amountBI);
+  if (scaledPriceSats < DUST) throw new Error(`scaled BTC payment ${scaledPriceSats} < DUST; refuse to fulfil`);
+
+  // ---- Blindings ----
+  // r_recip: same ECDH-keystream derivation the legacy path uses — fixed
+  // by §5.7.6 and unchanged here. The taker can recompute it independently.
+  const blindingKs = deriveAxintentBlindingKeystream(wallet.priv, takerPub, intentIdBytes, assetIdBytes);
+  const rRecipBytes = xor32(rBytes, blindingKs);
+  const rRecip = bytes32ToBigint(rRecipBytes) % SECP_N;
+  if (rRecip === 0n) throw new Error('derived r_recip is zero — impossibly bad ECDH; bail');
+  // r_change: maker-only HMAC, no ECDH (the maker is the only party that
+  // ever needs it; the taker doesn't decrypt the maker change opening).
+  const rChange = deriveAxintentMakerChangeBlinding(wallet.priv, intentIdBytes, assetIdBytes);
+  const rChangeBytes = bigintToBytes32(rChange);
+
+  // ---- Commitments ----
+  const cRecip       = pedersenCommit(requestedBI, rRecip);
+  const cChange      = pedersenCommit(changeBI, rChange);
+  const cRecipBytes  = pointToBytes(cRecip);
+  const cChangeBytes = pointToBytes(cChange);
+
+  // ---- Aggregated bulletproof over (requested, change) with (r_recip, r_change) ----
+  const { proof: rangeproof } = bpRangeAggProve([requestedBI, changeBI], [rRecip, rChange]);
+
+  // ---- Kernel sig: excess = r_recip + r_change − r_listed (mod n) ----
+  // Closes C_recip + C_change − C_listed = excess · G. Validator re-checks
+  // this equation at chain time; tampering with any output commitment
+  // invalidates it.
+  const excess = modN(rRecip + rChange - rListed);
+  if (excess === 0n) {
+    // Pathological case: r_recip + r_change happened to equal r_listed
+    // exactly. BIP-340 can't sign under a 0 pubkey-tweak; refuse and
+    // surface clearly. Vanishingly unlikely (probability ~ 1/SECP_N).
+    throw new Error('excess scalar is zero — re-fulfil after a fresh r_change derivation cycle');
+  }
+  const inputOutpoints   = [{ txid: intent.asset_utxo.txid, vout: intent.asset_utxo.vout }];
+  const outputCommitments = [cRecipBytes, cChangeBytes];
+  const kernelMsg = computeKernelMsg(assetIdBytes, inputOutpoints, outputCommitments);
+  const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(excess));
+
+  // ---- Encrypted amount ciphertexts per output ----
+  // recipient: keystream from ECDH(maker, taker) at vout-index 0
+  // maker change: keystream from maker-only HMAC (no ECDH)
+  const takerKs = deriveAxintentOnchainKeystreams(wallet.priv, takerPub, intentIdBytes, assetIdBytes, 0);
+  const makerKs = deriveAxintentMakerOnchainKeystreams(wallet.priv, intentIdBytes, assetIdBytes);
+  const recipAmtCt  = encryptAmount(requestedBI, takerKs.amountKs);
+  const changeAmtCt = encryptAmount(changeBI, makerKs.amountKs);
+
+  // ---- Encode T_AXFER_VAR (0x37) envelope payload ----
+  const payload = encodeAxferVarPayload({
+    assetId: assetIdBytes,
+    kernelSig,
+    outputs: [
+      { commitment: cRecipBytes,  encryptedAmount: recipAmtCt  },
+      { commitment: cChangeBytes, encryptedAmount: changeAmtCt },
+    ],
+    rangeproof,
+  });
+
+  // ---- Wrap in envelope script + P2TR script-tree leaf ----
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  // ---- Build the unbroadcast commit_tx ----
+  // Fee accounting: the commit output's value pre-funds the reveal-tx fee
+  // (maker pays the reveal fee; taker only pays fees on their own BTC
+  // funding inputs). Reveal vbyte estimate is higher than legacy because:
+  // 4 vouts (taker tacit + maker BTC + maker change + OP_RETURN) instead
+  // of 3, plus a longer envelope script (m=2 bulletproof vs m=1).
+  const feeRate = await getFeeRate();
+  // Reveal vbyte: ~140 base + 2 inputs (one taproot script-path ~380 vB
+  // for envelope+control_block, one P2WPKH ~68 vB) + 4 vouts (~31 vB each)
+  // + taker funding (estimated 1 P2WPKH input ~68 vB).
+  const revealVbEst = 140 + 380 + inputVbytes + 4 * 31 + inputVbytes;
+  const revealFee = feeFor(revealVbEst, feeRate);
+  const commitValue = DUST + revealFee;
+
+  const allUtxos = await getUtxos(wallet.address());
+  const exclude = new Set([`${intent.asset_utxo.txid}:${intent.asset_utxo.vout}`]);
+  const sats = allUtxos.filter(u => !exclude.has(`${u.txid}:${u.vout}`)).filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const pickedSats = []; let totalSats = 0; let commitFee = 500;
+  for (const u of sats) {
+    pickedSats.push(u); totalSats += u.value;
+    commitFee = feeFor(estCommitVb(pickedSats.length), feeRate);
+    if (totalSats >= commitValue + commitFee + DUST) break;
+  }
+  if (totalSats < commitValue + commitFee) {
+    throw new Error(`insufficient sats for commit tx (need ~${commitValue + commitFee}, have ${totalSats})`);
+  }
+  const commitChange = totalSats - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: p2trSpk }];
+  if (commitChange >= DUST) commitOutputs.push({ value: commitChange, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: pickedSats.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, pickedSats[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  // ---- OP_RETURN(80) dual-recovery payload at vout[3] ----
+  const onchainPayload80 = encodeAxferVarOnchainPayload({
+    requestedAmount: requestedBI,
+    recipientBlindingBytes32: rRecipBytes,
+    takerKs,
+    changeAmount: changeBI,
+    makerChangeBlindingBytes32: rChangeBytes,
+    makerKs,
+  });
+  const onchainOpReturnScript = encodeAxferVarOnchainOpReturn(onchainPayload80);
+
+  // ---- Build partial_reveal tx (maker-signed, taker completes vin[2+], vout[4+]) ----
+  const recipientP2wpkh = concatBytes(new Uint8Array([0x00, 0x14]), hash160(takerPub));
+  const makerP2wpkh = p2wpkhScript(wallet.pub);
+
+  const partialTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: intent.asset_utxo.txid, vout: intent.asset_utxo.vout, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: [
+      { value: DUST,            script: recipientP2wpkh    },   // vout[0] taker tacit (DUST)
+      { value: scaledPriceSats, script: makerP2wpkh        },   // vout[1] BTC payment to maker (bound by vin[1] SIGHASH_SINGLE)
+      { value: DUST,            script: makerP2wpkh        },   // vout[2] maker change tacit (DUST)
+      { value: 0,               script: onchainOpReturnScript }, // vout[3] mandatory OP_RETURN(80)
+    ],
+  };
+  const prevouts = [
+    { value: commitValue, script: p2trSpk },
+    { value: intent.asset_utxo.value, script: makerP2wpkh },
+  ];
+  partialTx.inputs[0].witness = signTaprootScriptPathInputWithSighash(partialTx, prevouts, envelopeScript, cb, SIGHASH_SINGLE_ACP);
+  partialTx.inputs[1].witness = signP2wpkhInputWithSighash(partialTx, 1, intent.asset_utxo.value, SIGHASH_SINGLE_ACP);
+
+  // ---- Serialize for fulfilment POST ----
+  const partial = {
+    version: partialTx.version,
+    locktime: partialTx.locktime,
+    inputs: partialTx.inputs.map(i => ({
+      txid: i.txid, vout: i.vout, sequence: i.sequence,
+      witness: i.witness.map(w => bytesToHex(w)),
+    })),
+    outputs: partialTx.outputs.map(o => ({
+      value: o.value, script_hex: bytesToHex(o.script),
+    })),
+  };
+  const partialJson = JSON.stringify(partial);
+  const fMsg = _axintentFulfilMsgVar(assetIdBytes, intentIdBytes, takerPub, claim.requested_amount, partialJson);
+  const fSig = signSchnorr(fMsg, wallet.priv);
+
+  // Worker-ciphertext path (legacy parity): encrypt r_recip (not `r`) to the
+  // taker so a future taker client that doesn't read the OP_RETURN can still
+  // open the recipient commitment. Symmetric with the legacy fulfilment
+  // body's enc_recipient_blinding field.
+  const encRecipBlinding = xor32(rBytes, blindingKs);
+
+  const resp = await fetch(withNet(ATOMIC_INTENT_FULFILMENT_URL(assetIdHex, intentIdHex)), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      taker_pubkey: takerPubHex,
+      partial_reveal: partial,
+      fulfilment_sig: bytesToHex(fSig),
+      enc_recipient_blinding: bytesToHex(encRecipBlinding),
+      // PR2-shipped variable-amount fulfilment additions:
+      commit_tx_hex: commitHex,
+      envelope_script_hex: bytesToHex(envelopeScript),
+      control_block_hex: bytesToHex(cb),
+      p2tr_spk_hex: bytesToHex(p2trSpk),
+    }),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+  return j;
+}
+
 async function fetchAxferFulfilment({ assetIdHex, intentIdHex }) {
   if (!WORKER_BASE) throw new Error('worker disabled');
   const resp = await fetch(withNet(ATOMIC_INTENT_FULFILMENT_URL(assetIdHex, intentIdHex)));
@@ -45047,6 +45293,10 @@ export {
   // dapp/worker parity test (claim_msg_v3 byte-equivalence with the worker's
   // atomicIntentClaimMsgVar).
   claimAxferVarIntent, _axintentClaimMsgVar,
+  // §5.7.6.1 variable-amount intent maker-side fulfilment. Exported so the
+  // parity test can pin byte-for-byte parity of fulfilment_msg_v2 against
+  // the worker's atomicIntentFulfilmentMsgVar.
+  fulfilAxferVarIntent, _axintentFulfilMsgVar,
   // Direct retry hooks for resume-after-partial-failure (e.g. publish broadcast
   // OK but worker POST timed out). The harness uses these to retry the POST
   // without rebroadcasting.

@@ -26,6 +26,7 @@ import {
   atomicIntentIdHexVar,
   atomicIntentPublishMsgVar,
   atomicIntentClaimMsgVar,
+  atomicIntentFulfilmentMsgVar,
 } from '../worker/src/index.js';
 import { bytesToHex } from '@noble/hashes/utils';
 
@@ -140,6 +141,42 @@ eqClaimMsg('claim_msg_v3 parity for high vout',                { takerUtxoVout: 
 eqClaimMsg('claim_msg_v3 parity for small requested_amount',   { requestedAmount: '1' });
 eqClaimMsg('claim_msg_v3 parity for large requested_amount',   { requestedAmount: '18446744073709551000' });
 eqClaimMsg('claim_msg_v3 parity for different taker_pubkey',   { takerPubBytes: hexToBytes('02' + 'ee'.repeat(32)) });
+
+// --- _axintentFulfilMsgVar parity ---
+
+function fulfilFixture(overrides = {}) {
+  return {
+    assetIdBytes:    hexToBytes('f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'),
+    intentIdBytes:   hexToBytes('11'.repeat(16)),
+    takerPubBytes:   hexToBytes('03' + 'bb'.repeat(32)),
+    requestedAmount: '50000000',
+    partialJson:     '{"version":2,"inputs":[],"outputs":[]}',
+    ...overrides,
+  };
+}
+
+function eqFulfilMsg(label, overrides) {
+  test(label, () => {
+    const f = fulfilFixture(overrides);
+    const dappBytes = dapp._axintentFulfilMsgVar(
+      f.assetIdBytes, f.intentIdBytes, f.takerPubBytes,
+      f.requestedAmount, f.partialJson,
+    );
+    const workerBytes = atomicIntentFulfilmentMsgVar(
+      bytesToHex(f.assetIdBytes),
+      bytesToHex(f.intentIdBytes),
+      bytesToHex(f.takerPubBytes),
+      f.requestedAmount, f.partialJson,
+    );
+    if (dappBytes.length !== 32 || workerBytes.length !== 32) return false;
+    return bytesToHex(dappBytes) === bytesToHex(workerBytes);
+  });
+}
+
+eqFulfilMsg('fulfilment_msg_v2 parity for baseline fixture',          {});
+eqFulfilMsg('fulfilment_msg_v2 parity for different requested_amount',{ requestedAmount: '12345' });
+eqFulfilMsg('fulfilment_msg_v2 parity for different partial JSON',    { partialJson: '{"version":2,"inputs":[{"txid":"aa","vout":0}],"outputs":[]}' });
+eqFulfilMsg('fulfilment_msg_v2 parity for u64-max requested_amount',  { requestedAmount: '18446744073709551000' });
 
 console.log(`\n=== ${pass} passed · ${fail} failed ===`);
 if (fail > 0) process.exit(1);
