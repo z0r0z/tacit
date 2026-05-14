@@ -33961,8 +33961,17 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       const priceFragment = priceStr
         ? `<strong>${escapeHtml(priceStr)} sats/${escapeHtml(unitTicker)}</strong>${usdStr ? ` <span class="muted" style="font-weight:normal;">(${escapeHtml(usdStr)})</span>` : ''}${unitSource ? ` <span class="muted" style="font-size:9px;text-transform:uppercase;letter-spacing:0.06em;">${escapeHtml(unitSource)}</span>` : ''} · `
         : '';
+      // CTA verb: lead with "Buy" when there's actual sell-side
+      // liquidity (offers to take), otherwise fall back to "Open
+      // market" which surfaces the bid-place path. Buy-first framing
+      // matches the discovery → ape-in flow: a user browsing
+      // confidential tokens is more often looking to acquire than to
+      // sell, and a recently-airdropped holder navigating in will
+      // either want to add to their position or scout the chart
+      // before selling — either way a buy-leading CTA is the right
+      // landing nudge.
       const linkLabel = offerCount > 0
-        ? `Open market · ${offerCount} offer${offerCount === 1 ? '' : 's'} →`
+        ? `Buy ${escapeHtml(unitTicker)} · ${offerCount} offer${offerCount === 1 ? '' : 's'} →`
         : 'Open market · be the first to bid →';
       // Promoted to chip-style button so the discover→market path is a
       // clear CTA rather than an inline anchor lost in the text. Whole
