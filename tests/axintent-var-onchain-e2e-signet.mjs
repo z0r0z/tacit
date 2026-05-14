@@ -333,9 +333,10 @@ for (let i = 0; i < Math.min(revealTx.vout.length, 6); i++) {
   info(`  vout[${i}] value=${v.value} spk=${v.scriptpubkey.slice(0, 16)}…(${v.scriptpubkey.length / 2}B)`);
 }
 // vout[3] MUST be OP_RETURN(80) per §5.7.6.1 *On-chain recovery*.
+// Standard relay encoding: 6a (OP_RETURN) || 4c (OP_PUSHDATA1) || 50 (=80) || <80 bytes>.
 const op80 = revealTx.vout[3];
-if (!op80 || !op80.scriptpubkey.startsWith('6a50')) {
-  fail(`vout[3] is not OP_RETURN(80) (got prefix ${op80?.scriptpubkey.slice(0, 4)}); SPEC §5.7.6.1 violated`);
+if (!op80 || !op80.scriptpubkey.startsWith('6a4c50')) {
+  fail(`vout[3] is not OP_RETURN(80) (got prefix ${op80?.scriptpubkey.slice(0, 6)}); SPEC §5.7.6.1 violated`);
 }
 ok(`vout[3] = OP_RETURN(80) dual-recovery payload`);
 

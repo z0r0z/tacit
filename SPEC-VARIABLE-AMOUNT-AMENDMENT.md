@@ -435,9 +435,12 @@ The maker derives blindings, builds the envelope, and constructs
      to `maker_address` — the maker's BTC payment, scaling linearly
      with the take fraction.
    - `vout[2]`: DUST P2WPKH(maker_pub) — maker's change tacit UTXO.
-   - `vout[3]`: `OP_RETURN(0x6a) || OP_PUSHBYTES_80(0x50) ||
-     payload_80` — MANDATORY 80-byte dual-recovery payload per
-     *On-chain recovery*.
+   - `vout[3]`: `OP_RETURN(0x6a) || OP_PUSHDATA1(0x4c) || 0x50 ||
+     payload_80` — MANDATORY 83-byte scriptPubKey carrying the
+     dual-recovery payload per *On-chain recovery*. OP_PUSHDATA1 is
+     required because Bitcoin's standard relay policy only defines
+     OP_PUSHBYTES_N for N≤75; emitting `0x50` alone (OP_RESERVED) is
+     non-standard and rejected at mempool relay.
    - `vout[4+]`: taker BTC change (added by taker at completion).
 8. **Maker signs the partial reveal.**
    - `vin[0]` (commit P2TR script-path): SIGHASH_SINGLE_ACP, binds
@@ -711,7 +714,7 @@ to the taker, one keystream-encrypted to the maker under their own
 privkey.** Wire encoding (matches §5.7.6's `script_42` convention):
 
 ```
-script_82 = OP_RETURN(0x6a) || OP_PUSHBYTES_80(0x50) || payload_80
+script_83 = OP_RETURN(0x6a) || OP_PUSHDATA1(0x4c) || 0x50 || payload_80
 payload_80 layout:
   bytes[ 0..40]   taker_payload  (recipient recovery — same encoding as §5.7.6)
   bytes[40..80]   maker_payload  (maker change recovery — new for §5.7.6.1)

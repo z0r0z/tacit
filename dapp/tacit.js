@@ -3009,13 +3009,20 @@ function encodeAxferVarOnchainPayload({
 }
 
 // scriptPubKey for the 80-byte recovery payload.
-// Wire format: OP_RETURN(0x6a) || OP_PUSHBYTES_80(0x50) || <80 bytes>
-// Total 82 bytes scriptPubKey (within Bitcoin Core's default nMaxDatacarrierBytes=83).
+// Wire format: OP_RETURN(0x6a) || OP_PUSHDATA1(0x4c) || 0x50 (length=80) || <80 bytes>
+// Total 83 bytes scriptPubKey (within Bitcoin Core's default
+// nMaxDatacarrierBytes=83). Standard relay policy REQUIRES OP_PUSHDATA1 for
+// pushes > 75 bytes: OP_PUSHBYTES_N only exists for N=1..75 (opcodes
+// 0x01..0x4b). 0x50 alone is OP_RESERVED, NOT a push opcode — emitting
+// `6a 50 <80 bytes>` parses as OP_RETURN followed by OP_RESERVED and bitcoind's
+// IsStandard() rejects with "scriptpubkey" (code -26). Surfaced on signet
+// e2e harness in commit before this fix; rangeproof + kernel sig are
+// unaffected, but the reveal couldn't relay.
 function encodeAxferVarOnchainOpReturn(payload80) {
   if (!(payload80 instanceof Uint8Array) || payload80.length !== AXFER_VAR_OPRETURN_PAYLOAD_BYTES) {
     throw new Error(`axfer_var on-chain payload must be ${AXFER_VAR_OPRETURN_PAYLOAD_BYTES} bytes`);
   }
-  return concatBytes(new Uint8Array([0x6a, AXFER_VAR_OPRETURN_PAYLOAD_BYTES]), payload80);
+  return concatBytes(new Uint8Array([0x6a, 0x4c, AXFER_VAR_OPRETURN_PAYLOAD_BYTES]), payload80);
 }
 
 // Recognize a tx vout that may carry the axfer_var 80-byte recovery payload.
@@ -3023,10 +3030,11 @@ function encodeAxferVarOnchainOpReturn(payload80) {
 // Pedersen verification to confirm a match.
 function tryExtractAxferVarOnchainOpReturn(scriptBytes) {
   if (!(scriptBytes instanceof Uint8Array)) return null;
-  if (scriptBytes.length !== 2 + AXFER_VAR_OPRETURN_PAYLOAD_BYTES) return null;
+  if (scriptBytes.length !== 3 + AXFER_VAR_OPRETURN_PAYLOAD_BYTES) return null;
   if (scriptBytes[0] !== 0x6a) return null;
-  if (scriptBytes[1] !== AXFER_VAR_OPRETURN_PAYLOAD_BYTES) return null;
-  return scriptBytes.slice(2);
+  if (scriptBytes[1] !== 0x4c) return null;   // OP_PUSHDATA1
+  if (scriptBytes[2] !== AXFER_VAR_OPRETURN_PAYLOAD_BYTES) return null;
+  return scriptBytes.slice(3);
 }
 
 // Split the 80-byte recovery payload into its taker and maker halves.
@@ -45490,6 +45498,12 @@ export {
   fulfilAxferVarIntent, _axintentFulfilMsgVar,
   // §5.7.6.1 variable-amount intent taker-side completion.
   finalizeAxferVarTake,
+  // OP_RETURN(80) encoder + decoder for the dual-recovery payload at vout[3].
+  // Exported so the t-axfer-var-decoder test can pin the wire format
+  // (must use OP_PUSHDATA1 not OP_RESERVED) to defend against the
+  // signet-rejection class of bug.
+  encodeAxferVarOnchainOpReturn, tryExtractAxferVarOnchainOpReturn,
+  AXFER_VAR_OPRETURN_PAYLOAD_BYTES,
   // Direct retry hooks for resume-after-partial-failure (e.g. publish broadcast
   // OK but worker POST timed out). The harness uses these to retry the POST
   // without rebroadcasting.

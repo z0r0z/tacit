@@ -270,5 +270,89 @@ test('encoder rejects rangeproof > 65535 bytes', () => {
   } catch { return true; }
 });
 
+// =========== OP_RETURN(80) recovery-payload wire format (regression for the
+// "OP_PUSHBYTES_80 doesn't exist" signet-relay bug) ===========
+//
+// Bitcoin's standard relay policy ONLY recognises OP_PUSHBYTES_N for N=1..75
+// (opcodes 0x01..0x4b). For pushes > 75 bytes you MUST use OP_PUSHDATA1 +
+// length byte. The original encoder emitted `6a 50 <80 bytes>` thinking
+// `0x50` was a push opcode — it's actually OP_RESERVED, which makes the
+// scriptpubkey non-standard. bitcoind rejected the reveal with code -26
+// ("scriptpubkey"). Caught on the first signet harness run.
+//
+// These tests pin the wire format so the bug can't slip back.
+
+import { JSDOM } from 'jsdom';
+const _dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost/' });
+globalThis.window = _dom.window;
+globalThis.document = _dom.window.document;
+globalThis.localStorage = _dom.window.localStorage;
+globalThis.location = _dom.window.location;
+globalThis.navigator = _dom.window.navigator;
+globalThis.__TACIT_NO_INIT__ = true;
+const _dapp = await import('../dapp/tacit.js');
+const { encodeAxferVarOnchainOpReturn, tryExtractAxferVarOnchainOpReturn, AXFER_VAR_OPRETURN_PAYLOAD_BYTES } = _dapp;
+import { bytesToHex as _bth } from '@noble/hashes/utils';
+
+console.log('\n=== OP_RETURN(80) wire format (signet-relay regression) ===\n');
+
+test('encoded OP_RETURN(80) scriptpubkey is exactly 83 bytes', () => {
+  const payload = new Uint8Array(AXFER_VAR_OPRETURN_PAYLOAD_BYTES).fill(0xAB);
+  const spk = encodeAxferVarOnchainOpReturn(payload);
+  return spk.length === 83;
+});
+
+test('encoded OP_RETURN(80) starts with 6a 4c 50 (OP_RETURN / OP_PUSHDATA1 / length=80)', () => {
+  const payload = new Uint8Array(AXFER_VAR_OPRETURN_PAYLOAD_BYTES).fill(0xCD);
+  const spk = encodeAxferVarOnchainOpReturn(payload);
+  return spk[0] === 0x6a && spk[1] === 0x4c && spk[2] === 0x50;
+});
+
+test('encoded OP_RETURN(80) does NOT use 0x50 as a standalone opcode (the original bug)', () => {
+  // The buggy encoding was `6a 50 <80 bytes>` which parses as OP_RETURN ||
+  // OP_RESERVED || <data>. Standard relay rejects this. Confirm the second
+  // byte is OP_PUSHDATA1, never the raw length.
+  const payload = new Uint8Array(AXFER_VAR_OPRETURN_PAYLOAD_BYTES).fill(0xEF);
+  const spk = encodeAxferVarOnchainOpReturn(payload);
+  return spk[1] !== 0x50;
+});
+
+test('encoded OP_RETURN(80) round-trips through tryExtractAxferVarOnchainOpReturn', () => {
+  const payload = new Uint8Array(AXFER_VAR_OPRETURN_PAYLOAD_BYTES);
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * 37) & 0xff;
+  const spk = encodeAxferVarOnchainOpReturn(payload);
+  const recovered = tryExtractAxferVarOnchainOpReturn(spk);
+  if (!recovered || recovered.length !== AXFER_VAR_OPRETURN_PAYLOAD_BYTES) return false;
+  return _bth(recovered) === _bth(payload);
+});
+
+test('tryExtractAxferVarOnchainOpReturn rejects the buggy 82-byte legacy form', () => {
+  // What the buggy encoder used to emit: 6a 50 <80 bytes>. Standard relay
+  // wouldn't accept it, but a malformed implementation might still produce it
+  // — the decoder must NOT silently accept it.
+  const buggy = new Uint8Array(82);
+  buggy[0] = 0x6a; buggy[1] = 0x50;
+  for (let i = 2; i < 82; i++) buggy[i] = 0xAA;
+  return tryExtractAxferVarOnchainOpReturn(buggy) === null;
+});
+
+test('tryExtractAxferVarOnchainOpReturn rejects wrong OP_PUSHDATA1 length', () => {
+  const wrongLen = new Uint8Array(83);
+  wrongLen[0] = 0x6a; wrongLen[1] = 0x4c; wrongLen[2] = 0x4f;  // length=79, not 80
+  for (let i = 3; i < 83; i++) wrongLen[i] = 0xBB;
+  return tryExtractAxferVarOnchainOpReturn(wrongLen) === null;
+});
+
+test('tryExtractAxferVarOnchainOpReturn rejects non-OP_RETURN prefix', () => {
+  const notOpReturn = new Uint8Array(83);
+  notOpReturn[0] = 0x76; notOpReturn[1] = 0x4c; notOpReturn[2] = 0x50;  // 0x76 = OP_DUP
+  return tryExtractAxferVarOnchainOpReturn(notOpReturn) === null;
+});
+
+test('encodeAxferVarOnchainOpReturn rejects wrong-length payload', () => {
+  try { encodeAxferVarOnchainOpReturn(new Uint8Array(79)); return false; }
+  catch { return true; }
+});
+
 console.log(`\n=== ${pass} passed · ${fail} failed ===`);
 if (fail > 0) process.exit(1);
