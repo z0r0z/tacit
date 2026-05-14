@@ -431,6 +431,13 @@ async function verifyClaim(claim) {
   // existing sats balance for free, depleting the pool that other
   // recipients funded for their own claims.
   //
+  // Claims may carry multiple tips: `funding_txids` (array, cumulative)
+  // takes precedence over `funding_txid` (singular, legacy). Recipients
+  // who re-tip to raise their priority compound their funding here —
+  // the gate is sum(verified tip sats) ≥ MIN_FUNDING_SATS, not each
+  // individual tip. Returned `fundingSats` feeds the queue priority
+  // sort upstream.
+  //
   // Exception: when FREE_CLAIMS_TREASURY_THRESHOLD > 0 AND the treasury
   // currently holds more than that threshold, unfunded claims are accepted —
   // the issuer is voluntarily covering the recipient's tip from their
@@ -438,8 +445,17 @@ async function verifyClaim(claim) {
   // once balance drops below the threshold, strict require_funding kicks
   // back in automatically. This gives "first N free, then tip" UX with
   // a single config knob.
-  let fundingTxid = String(claim.funding_txid || '').toLowerCase().replace(/^0x/, '');
-  if (!fundingTxid) {
+  const rawTxids = Array.isArray(claim.funding_txids) && claim.funding_txids.length > 0
+    ? claim.funding_txids
+    : (claim.funding_txid ? [claim.funding_txid] : []);
+  const fundingTxids = [];
+  for (const raw of rawTxids) {
+    const h = String(raw || '').toLowerCase().replace(/^0x/, '');
+    if (!h) continue;
+    if (!/^[0-9a-f]{64}$/.test(h)) return { ok: false, reason: `malformed funding_txid ${h}` };
+    if (!fundingTxids.includes(h)) fundingTxids.push(h);
+  }
+  if (fundingTxids.length === 0) {
     if (REQUIRE_FUNDING) {
       if (FREE_CLAIMS_TREASURY_THRESHOLD > 0) {
         // Check live treasury balance against the issuer-set threshold.
@@ -451,7 +467,7 @@ async function verifyClaim(claim) {
             log('info', 'accepting unfunded claim (issuer-subsidised)', {
               leaf_index: leafIdx, treasury_sats: sats, threshold: FREE_CLAIMS_TREASURY_THRESHOLD,
             });
-            return { ok: true, leafIndex: leafIdx, tacitPubHex, amount: row.amount, fundingTxid: null };
+            return { ok: true, leafIndex: leafIdx, tacitPubHex, amount: row.amount, fundingTxids: [], fundingSats: 0 };
           }
           return { ok: false, reason: `no funding_txid; treasury below subsidy threshold (${sats} < ${FREE_CLAIMS_TREASURY_THRESHOLD} sats) — recipient must tip` };
         } catch (e) {
@@ -461,16 +477,35 @@ async function verifyClaim(claim) {
       }
       return { ok: false, reason: 'no funding_txid (require_funding=true) — recipient must tip the treasury and re-submit with the tip txid' };
     }
-  } else {
-    if (!/^[0-9a-f]{64}$/.test(fundingTxid)) return { ok: false, reason: 'malformed funding_txid' };
-    const consumedBy = state.consumed_funding[fundingTxid];
-    if (consumedBy != null && consumedBy !== leafIdx) {
-      return { ok: false, reason: `funding_txid already consumed by leaf_index ${consumedBy}` };
-    }
-    const fv = await _verifyFundingTx(fundingTxid);
-    if (!fv.ok) return { ok: false, reason: `funding_txid invalid: ${fv.err}` };
+    return { ok: true, leafIndex: leafIdx, tacitPubHex, amount: row.amount, fundingTxids: [], fundingSats: 0 };
   }
-  return { ok: true, leafIndex: leafIdx, tacitPubHex, amount: row.amount, fundingTxid: fundingTxid || null };
+  // Verify every tip independently. A single malformed/short/unconfirmed
+  // tip rejects the whole claim — partial credit could be gamed by
+  // attaching one good tip plus garbage and counting the good one.
+  // Recipient remedy is to re-POST with only the tips that actually
+  // paid (the worker accepts that).
+  let totalFundingSats = 0;
+  const verifiedTxids = [];
+  for (const t of fundingTxids) {
+    const consumedBy = state.consumed_funding[t];
+    if (consumedBy != null && consumedBy !== leafIdx) {
+      return { ok: false, reason: `funding_txid ${t} already consumed by leaf_index ${consumedBy}` };
+    }
+    const fv = await _verifyFundingTx(t);
+    if (!fv.ok) return { ok: false, reason: `funding_txid ${t} invalid: ${fv.err}` };
+    totalFundingSats += (fv.sats || 0);
+    verifiedTxids.push(t);
+  }
+  // Cumulative gate: sum of all tips must clear MIN_FUNDING_SATS. The
+  // per-tip _verifyFundingTx already enforces each tip individually
+  // pays ≥ MIN_FUNDING_SATS to the treasury — so this gate is currently
+  // redundant for single-tip claims, but kept explicit because if we
+  // ever lower per-tip floor (e.g. to allow multiple small top-up tips
+  // to compose into one valid claim), this is where the policy lives.
+  if (totalFundingSats < MIN_FUNDING_SATS) {
+    return { ok: false, reason: `cumulative funding ${totalFundingSats} sats < required ${MIN_FUNDING_SATS}` };
+  }
+  return { ok: true, leafIndex: leafIdx, tacitPubHex, amount: row.amount, fundingTxids: verifiedTxids, fundingSats: totalFundingSats };
 }
 
 // ---- Treasury readiness check ----
@@ -487,14 +522,26 @@ async function treasuryReady() {
 async function broadcastOnce(batchesRemaining) {
   const queue = await pullQueue();
   if (queue.length === 0) { log('info', 'queue empty'); return 0; }
-  // Filter to fulfilable + verify each.
-  const verified = [];
+  // Verify every pulled claim before slicing to the 7-recipient cap.
+  // The previous shape stopped at the first 7 OK claims, which made the
+  // queue effectively FIFO. With cumulative-tip priority, we need to
+  // evaluate everything to know which 7 paid the most for their seats.
+  // pullQueue is already bounded (32 pages × AIRDROP_LIST_PAGE), so this
+  // is fine.
+  const verifiedAll = [];
   for (const c of queue) {
-    if (verified.length >= 7) break;
     const v = await verifyClaim(c);
-    if (v.ok) verified.push(v);
+    if (v.ok) verifiedAll.push(v);
     else log('warn', 'claim rejected', { leaf_index: c.leaf_index, reason: v.reason });
   }
+  // Priority sort: bigger cumulative tip first; FIFO (lower leaf_index
+  // first) within ties so a recipient who tipped early isn't endlessly
+  // skipped by a same-amount latecomer. Slice to the K=7 CXFER cap.
+  verifiedAll.sort((a, b) => {
+    if (b.fundingSats !== a.fundingSats) return b.fundingSats - a.fundingSats;
+    return a.leafIndex - b.leafIndex;
+  });
+  const verified = verifiedAll.slice(0, 7);
   if (verified.length < MIN_QUEUE_TO_BROADCAST) {
     log('info', 'queue below broadcast threshold', { verified: verified.length, threshold: MIN_QUEUE_TO_BROADCAST });
     return 0;
@@ -563,18 +610,24 @@ async function broadcastOnce(batchesRemaining) {
   // re-broadcast; the operator reconciles via Cross-check + manual edit.
   const pendingNow = Math.floor(Date.now() / 1000);
   for (const v of verified) {
+    const fundingTxids = Array.isArray(v.fundingTxids) ? v.fundingTxids : [];
     state.fulfilled_leaves[v.leafIndex] = {
       tacit_pubkey: v.tacitPubHex,
       amount: v.amount.toString(),
       txid: null,
       fulfilled_at: pendingNow,
-      funding_txid: v.fundingTxid || null,
+      // Persist the full tip list so post-fulfilment auditing can show
+      // every tip that backed this seat. `funding_txid` mirrors the
+      // first entry for legacy readers (older operator dashboards).
+      funding_txids: fundingTxids,
+      funding_txid: fundingTxids[0] || null,
+      funding_sats: v.fundingSats || 0,
       pending: true,
     };
-    // Lock in the funding_txid → leaf binding pre-broadcast so a concurrent
-    // racing claim citing the same tip is rejected even if our broadcast
-    // crashes mid-flight.
-    if (v.fundingTxid) state.consumed_funding[v.fundingTxid] = v.leafIndex;
+    // Lock in EVERY tip's funding_txid → leaf binding pre-broadcast so
+    // a concurrent racing claim citing any of these tips is rejected
+    // even if our broadcast crashes mid-flight.
+    for (const t of fundingTxids) state.consumed_funding[t] = v.leafIndex;
   }
   saveState();
 

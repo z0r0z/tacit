@@ -7892,16 +7892,34 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
   const tacitPubHex = String(body.tacit_pubkey ?? '').toLowerCase();
   let ethSigHex = String(body.eth_sig ?? '').toLowerCase();
   if (ethSigHex.startsWith('0x')) ethSigHex = ethSigHex.slice(2);
-  // Optional funding_txid: the tip tx that paid the issuer's treasury for
-  // this claim's seat in a fulfilment batch. Daemon-side enforcement (the
-  // fulfiller refuses to broadcast claims lacking a verified funding_txid)
-  // is what closes the free-rider attack; the worker's role here is to
-  // (a) format-validate and (b) prevent two claims from citing the same
-  // funding_txid — that's the race-condition mitigation.
-  let fundingTxidHex = String(body.funding_txid ?? '').toLowerCase();
-  if (fundingTxidHex.startsWith('0x')) fundingTxidHex = fundingTxidHex.slice(2);
-  if (fundingTxidHex && !/^[0-9a-f]{64}$/.test(fundingTxidHex)) {
-    return jsonResponse({ error: 'funding_txid must be 64 hex chars when present' }, 400, cors);
+  // Tips bound to this leaf. Body may carry either `funding_txid`
+  // (singular, legacy) or `funding_txids` (array, cumulative); multiple
+  // tips from the same recipient compound. The fulfiller sums their sats
+  // for the funding gate and orders the queue by cumulative tip amount,
+  // so re-tipping after the first POST raises this seat's priority
+  // rather than orphaning prior tips (which the recipient already paid
+  // for in good faith). Daemon-side enforcement (the fulfiller refuses
+  // to broadcast claims whose tips don't verify) closes the free-rider
+  // attack; the worker's role here is to (a) format-validate, (b)
+  // prevent two distinct leaves from citing the same tip (per-tx
+  // nullifier), and (c) MERGE tips into the existing record on re-POST
+  // rather than overwriting.
+  const incomingTxids = [];
+  const _pushTxid = (raw) => {
+    let h = String(raw ?? '').toLowerCase();
+    if (h.startsWith('0x')) h = h.slice(2);
+    if (!h) return true;
+    if (!/^[0-9a-f]{64}$/.test(h)) return false;
+    if (!incomingTxids.includes(h)) incomingTxids.push(h);
+    return true;
+  };
+  if (Array.isArray(body.funding_txids)) {
+    for (const t of body.funding_txids) {
+      if (!_pushTxid(t)) return jsonResponse({ error: 'each funding_txids entry must be 64 hex chars' }, 400, cors);
+    }
+  }
+  if (body.funding_txid != null) {
+    if (!_pushTxid(body.funding_txid)) return jsonResponse({ error: 'funding_txid must be 64 hex chars when present' }, 400, cors);
   }
 
   // Format-validate before charging the rate limit so malformed bodies don't
@@ -7919,16 +7937,38 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
   const rl = await _airdropRateLimit(req, env, tacitPubHex, rootHex);
   if (!rl.ok) return jsonResponse({ error: `airdrop limit reached: ${rl.reason}` }, 429, cors);
 
-  // Funding-txid nullifier. If the submission cites a funding_txid, refuse
-  // when that txid was already used by another claim against this root.
-  // Distinct roots can share a funding_txid (no cross-drop interference) —
-  // legitimate only in the unusual case where the same tip tx fronts two
-  // different drops, but harmless either way.
-  if (fundingTxidHex) {
-    const existing = await env.REGISTRY_KV.get(airdropFundingKey(network, rootHex, fundingTxidHex));
+  // Read the prior claim record so we MERGE new tips into the existing
+  // list instead of overwriting. Without this, a re-POST with a fresh
+  // tip drops the earlier tips and the recipient loses their cumulative
+  // funding credit. KV is eventually consistent but the same recipient
+  // re-POSTing sequentially after each tip broadcast is well within the
+  // read-your-writes window in practice.
+  const claimKey = airdropClaimKey(network, rootHex, leafIndex);
+  const prior = await env.REGISTRY_KV.get(claimKey, 'json');
+  const priorTxids = [];
+  if (Array.isArray(prior?.funding_txids)) {
+    for (const t of prior.funding_txids) {
+      const h = String(t || '').toLowerCase();
+      if (/^[0-9a-f]{64}$/.test(h) && !priorTxids.includes(h)) priorTxids.push(h);
+    }
+  } else if (typeof prior?.funding_txid === 'string') {
+    const h = prior.funding_txid.toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(h)) priorTxids.push(h);
+  }
+  const mergedTxids = priorTxids.slice();
+  for (const t of incomingTxids) if (!mergedTxids.includes(t)) mergedTxids.push(t);
+
+  // Per-tx nullifier: each tip can back at most one leaf within this
+  // root. Distinct roots can share a funding_txid (no cross-drop
+  // interference). Only check tips NEW relative to the prior record —
+  // previously-bound tips on this same leaf already passed this gate
+  // when first POSTed.
+  for (const t of incomingTxids) {
+    if (priorTxids.includes(t)) continue;
+    const existing = await env.REGISTRY_KV.get(airdropFundingKey(network, rootHex, t));
     if (existing && existing !== String(leafIndex)) {
       return jsonResponse({
-        error: `funding_txid already used by claim for leaf_index ${existing}; tip again with a fresh tx and retry`,
+        error: `funding_txid ${t} already used by claim for leaf_index ${existing}; tip again with a fresh tx and retry`,
       }, 409, cors);
     }
   }
@@ -7941,7 +7981,14 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
     eth_sig: '0x' + ethSigHex,
     submitted_at: Math.floor(Date.now() / 1000),
   };
-  if (fundingTxidHex) record.funding_txid = fundingTxidHex;
+  if (mergedTxids.length > 0) {
+    record.funding_txids = mergedTxids;
+    // Back-compat mirror for legacy fulfiller builds / clients that
+    // only read the singular field. First-bound tip is exposed here;
+    // the fulfiller treats funding_txids[] as authoritative when
+    // present.
+    record.funding_txid = mergedTxids[0];
+  }
   // 90-day TTL bounds stale records and self-heals after a mass-delete
   // attack: legitimate recipients re-POST on their next visit and the
   // attacker has to keep wiping under the existing rate-limit ceiling.
@@ -7949,16 +7996,19 @@ async function handleAirdropClaimPost(rootHex, req, env, network, cors) {
   // active long enough to exceed this TTL has already been fulfilled and
   // the dropbox is just a leak.
   await env.REGISTRY_KV.put(
-    airdropClaimKey(network, rootHex, leafIndex),
+    claimKey,
     JSON.stringify(record),
     { expirationTtl: AIRDROP_CLAIM_TTL_SECONDS },
   );
-  if (fundingTxidHex) {
-    // Marker outlives the claim record by 30 days so an attacker can't wait
-    // for a TTL'd record to expire, then race the original funding_txid
-    // back into a different claim. Same TTL anchors both flows once expired.
+  // Per-tip nullifier markers — outlive the claim record by 30 days so
+  // an attacker can't wait for a TTL'd record to expire then re-bind
+  // the same tip to a different claim. Same TTL anchors both flows
+  // once expired. Only write for NEW tips to avoid burning KV writes on
+  // already-bound ones.
+  for (const t of incomingTxids) {
+    if (priorTxids.includes(t)) continue;
     await env.REGISTRY_KV.put(
-      airdropFundingKey(network, rootHex, fundingTxidHex),
+      airdropFundingKey(network, rootHex, t),
       String(leafIndex),
       { expirationTtl: AIRDROP_CLAIM_TTL_SECONDS + 30 * 24 * 3600 },
     );
