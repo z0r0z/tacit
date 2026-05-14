@@ -37132,6 +37132,25 @@ function marketGroupVolumeRankSats(group) {
   const n = Number(group?.volumeSats ?? group?.volume24hSats ?? 0);
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
+// Does this group have *real* market activity, vs. a registry entry whose
+// mark_price is left over from since-cancelled state? Used as a sort tier
+// (push untraded etches to the bottom) and as a guard on mark_price use
+// (a 500-sat mark with 0 transfers and 0 live listings was producing
+// $8M+ phantom market caps for PUP-style rows in the gallery).
+function marketGroupHasRealActivity(group) {
+  const a = group?.asset || {};
+  if (a.last_trade) return true;
+  if (Number(a.transfer_count || 0) > 0) return true;
+  if (Number(group?.total || 0) > 0) return true;
+  return false;
+}
+// Stricter: the asset must have at least one trade-or-transfer backing
+// the mark, not just an OTC ask. mark_price is the worker's median-of-
+// recent-trades figure — using it without trade backing is meaningless.
+function marketGroupHasTradeBacking(group) {
+  const a = group?.asset || {};
+  return !!a.last_trade || Number(a.transfer_count || 0) > 0;
+}
 function marketModeLabel(l) {
   if (l.kind === 'preauth') return 'Instant listing';
   if (l.kind === 'intent') return l.min_take_amount ? 'Variable intent' : 'Atomic intent';
@@ -37323,6 +37342,16 @@ function sortMarketGroups(groups, sort) {
   return [...groups].sort((a, b) => {
     const tacFirst = compareMarketTacFirst(a, b);
     if (tacFirst) return tacFirst;
+    // Untraded-etches tier: rows with zero trades / transfers / listings
+    // carry no informative price, volume, or mcap. They sink to the
+    // bottom regardless of sort mode so the active markets dominate
+    // page 1. Suppressed for the explicit "oldest-etch" sort, which is
+    // an intentional registry-browse view and should stay strictly
+    // chronological.
+    if (sort !== 'oldest-etch') {
+      const tier = (marketGroupHasRealActivity(a) ? 0 : 1) - (marketGroupHasRealActivity(b) ? 0 : 1);
+      if (tier) return tier;
+    }
     if (sort === 'oldest-etch') {
       return marketEtchSortValue(a.asset) - marketEtchSortValue(b.asset)
           || String(a.asset.ticker || '').localeCompare(String(b.asset.ticker || ''));
@@ -37474,7 +37503,13 @@ function renderMarketBrowse(rows) {
     // for cross-asset comparison than raw min-ask which can be dust.
     // Fall back to best-ask only when the worker hasn't computed a mark
     // (asset has no trade history yet).
-    const _tileMarkUnit = (a.mark_price && Number.isFinite(a.mark_price.unit) && a.mark_price.unit > 0)
+    //
+    // Same phantom guard as the table view: ignore mark_price when the
+    // asset has no trade-or-transfer backing. Otherwise a stale mark
+    // (median of since-cancelled listings, or a worker bug) drives the
+    // tile to display a confident "mark 500 sats" for an asset that
+    // hasn't actually traded.
+    const _tileMarkUnit = (a.mark_price && Number.isFinite(a.mark_price.unit) && a.mark_price.unit > 0 && marketGroupHasTradeBacking(g))
       ? Number(a.mark_price.unit) : null;
     let floorLine = '';
     if (_tileMarkUnit != null) {
@@ -37624,7 +37659,33 @@ function renderMarketBrowseTable(rows) {
       seg(`page ${_marketBrowsePage}/${totalPages}`),
     ].join(sep);
   }
-  const body = pageGroups.map(g => {
+  // Inject a single subheader row between the priced rows and the
+  // untraded-etch rows on the current page. The sort already pushes
+  // untraded rows to the bottom; the divider tells the user "below this
+  // line is registry-only, not active markets," so the visual transition
+  // from $5M-volume TAC to a long tail of n/a / 0 BTC rows reads as
+  // intentional rather than as broken data. We only insert it when
+  // both groups exist on the same page — pages that are all-priced or
+  // all-untraded don't need a divider.
+  let _untradedDividerInjected = false;
+  const _firstUntradedIdx = pageGroups.findIndex(pg => !marketGroupHasRealActivity(pg));
+  const _showUntradedDivider = _firstUntradedIdx > 0;
+  const body = pageGroups.map((g, _idx) => {
+    let _divider = '';
+    if (_showUntradedDivider && !_untradedDividerInjected && _idx === _firstUntradedIdx) {
+      _untradedDividerInjected = true;
+      const _remaining = pageGroups.length - _firstUntradedIdx;
+      _divider = `
+        <tr class="market-untraded-divider" aria-hidden="true">
+          <td colspan="7" style="padding:8px 12px;background:var(--ink-faint-bg,#f5f3ee);border-top:1px solid var(--ink-faint,#dcd7c8);border-bottom:1px solid var(--ink-faint,#dcd7c8);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-mid,#6b6657);font-weight:600;">
+            Untraded etches
+            <span style="font-weight:normal;text-transform:none;letter-spacing:0;color:var(--ink-faint,#a39e90);margin-left:8px;">${_remaining} token${_remaining === 1 ? '' : 's'} registered but no trades yet</span>
+          </td>
+        </tr>`;
+    }
+    return _divider + _renderMarketBrowseRow(g);
+  }).join('');
+  function _renderMarketBrowseRow(g) {
     const a = g.asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
     const ticker = a.ticker || '?';
@@ -37636,8 +37697,14 @@ function renderMarketBrowseTable(rows) {
     // of where the asset actually trades, and the row's market cap is
     // then computed against that bogus price. Falls back to floor / last
     // trade when no mark is available.
+    //
+    // Phantom guard: mark_price is the worker's median-of-recent-trades.
+    // If the asset has zero trade backing (no last_trade, transfer_count=0),
+    // any mark we see is stale — it was driving $8M+ phantom mcaps on
+    // PUP-style rows where nothing was actually trading. Require real
+    // trade backing before letting mark_price set the row's reference.
     const markUnit = Number(a.mark_price?.unit);
-    const refUnit = (Number.isFinite(markUnit) && markUnit > 0)
+    const refUnit = (Number.isFinite(markUnit) && markUnit > 0 && marketGroupHasTradeBacking(g))
       ? markUnit
       : marketGroupReferenceUnit(g);
     const floor = refUnit != null ? `${fmtMarketUnitSats(refUnit)}/${ticker}` : 'no trades yet';
@@ -37660,8 +37727,20 @@ function renderMarketBrowseTable(rows) {
     const loadingPlaceholder = '…';
     const volume24hUsd = g.volume24hSats != null ? fmtMarketUsdWholeFromSats(g.volume24hSats, '—') : (statsLoaded ? '—' : loadingPlaceholder);
     const volume24hBtc = g.volume24hSats != null ? fmtMarketBtc(g.volume24hSats) : (statsLoaded ? '—' : loadingPlaceholder);
+    // Recent Volume = sum of the worker's recent-trades ring buffer. When
+    // the ring buffer fits entirely inside 24h (true for every young
+    // market on the network right now), the two columns carry the same
+    // number and the duplicate makes the table look wider than it is.
+    // Collapse to a dimmed dash with a tooltip when they match; show
+    // distinct values only when the ring buffer reaches past 24h.
+    const volumesMatch = g.volumeSats != null
+      && g.volume24hSats != null
+      && Number(g.volumeSats) === Number(g.volume24hSats);
     const volumeUsd = g.volumeSats != null ? fmtMarketUsdWholeFromSats(g.volumeSats, '—') : (statsLoaded ? '—' : loadingPlaceholder);
     const volumeBtc = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : (statsLoaded ? '—' : loadingPlaceholder);
+    const recentVolumeCell = volumesMatch
+      ? `<td title="Same as 24h — worker doesn’t yet keep a lifetime aggregator, and every recent trade fits inside the 24h window."><span class="market-table-sub" style="color:var(--ink-faint);">—</span></td>`
+      : `<td><span class="market-table-value">${escapeHtml(volumeUsd)}</span><span class="market-table-sub">${escapeHtml(volumeBtc)}</span></td>`;
     const transfers = Number(a.transfer_count || 0);
     return `
       <tr data-market-asset-row="${escapeHtml(safeAid)}"${_assetHasRecentActivity(a) ? ' data-recent-activity="1"' : ''}>
@@ -37698,9 +37777,11 @@ function renderMarketBrowseTable(rows) {
               : '24h';
             const _winLbl = _win === 'all' ? 'since 1st' : _win;
             if (refUnit == null || _pct == null) return '';
-            if (_pct === 0) {
-              return `<span class="market-table-sub" style="color:var(--ink-mid);font-size:10px;">· 0.00% ${escapeHtml(_winLbl)}</span>`;
-            }
+            // _pct === 0 ⇒ no movement in the window. The chip just adds
+            // visual noise on inert rows ("· 0.00% 4h" stacked under
+            // every untouched sat price), so skip it. A blank space
+            // already conveys "nothing happened."
+            if (_pct === 0) return '';
             const _sign = _pct > 0 ? '+' : '';
             const _color = _pct > 0 ? '#0a7d3a' : '#b8341d';
             const _glyph = _pct > 0 ? '▲' : '▼';
@@ -37715,10 +37796,7 @@ function renderMarketBrowseTable(rows) {
           <span class="market-table-value">${escapeHtml(volume24hUsd)}</span>
           <span class="market-table-sub">${escapeHtml(volume24hBtc)}</span>
         </td>
-        <td>
-          <span class="market-table-value">${escapeHtml(volumeUsd)}</span>
-          <span class="market-table-sub">${escapeHtml(volumeBtc)}</span>
-        </td>
+        ${recentVolumeCell}
         <td>
           <span class="market-table-value">${Number(a.holder_count || 0) > 0 ? Number(a.holder_count).toLocaleString('en-US') : (a._marketAssetStatsLoadedAt ? '0' : '…')}</span>
         </td>
@@ -37726,7 +37804,7 @@ function renderMarketBrowseTable(rows) {
           <span class="market-table-sub">${g.preauths.toLocaleString('en-US')} instant &middot; ${transfers.toLocaleString('en-US')} txs</span>
         </td>
       </tr>`;
-  }).join('');
+  }
   const pagerHtml = marketBrowsePagerHtml(totalGroups, _marketBrowsePage, totalPages, showingStart, showingEnd)
     .replace('class="market-pagination"', 'class="market-pagination market-pagination--top"');
   list.innerHTML = `
@@ -37741,7 +37819,7 @@ function renderMarketBrowseTable(rows) {
             <th>24h Volume</th>
             <th title="Sum of the worker's recent-trades ring buffer (most-recent N trades per asset). Worker doesn't yet keep a lifetime aggregator — once it does, this column will switch to the true cumulative value automatically.">Recent Volume</th>
             <th title="Distinct wallets that have ever received this asset on chain (scriptpubkey-hash level — a wallet, not a user). Coarse popularity signal indexed by the worker.">Wallets</th>
-            <th>Listings</th>
+            <th title="Live trustless listings on the orderbook (left) and lifetime on-chain transfers of this asset (right).">Activity</th>
           </tr>
         </thead>
         <tbody>${body}</tbody>
