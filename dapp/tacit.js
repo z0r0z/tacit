@@ -36686,8 +36686,8 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);cursor:crosshair;">
       ${gridlines}
       ${markLine}
-      ${areaPath ? `<path d="${areaPath}" fill="#0a8f43" fill-opacity="0.10" stroke="none"/>` : ''}
-      ${linePath ? `<path d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+      ${areaPath ? `<path data-chart-area d="${areaPath}" fill="#0a8f43" fill-opacity="0.10" stroke="none"/>` : ''}
+      ${linePath ? `<path data-chart-line d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
       ${dots}
       <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
       <text x="${PL - 4}" y="${yOf(yMid).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(midLbl)}</text>
@@ -37150,9 +37150,36 @@ async function populateMarketAssetStats(scope, asset) {
     const _markForChart = Number(j?.mark_price?.unit ?? asset?.mark_price?.unit);
     const chartHtml = renderMarketPriceChartSVG(trades, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null);
     if (chartHtml) {
+      // Path-level morph: capture the OLD line + area `d` attrs
+      // before the innerHTML swap, write the new chart, then WAAPI-
+      // animate the new path's `d` from old → new value. Browsers
+      // that support attribute interpolation for `d` (Chromium-based)
+      // get the smooth slide; others fall back to instant swap (the
+      // existing behavior, no regression). Mark/area paths use the
+      // same dataset markers added in renderMarketPriceChartSVG.
+      const _oldLineD = chartEl.querySelector('[data-chart-line]')?.getAttribute('d') || null;
+      const _oldAreaD = chartEl.querySelector('[data-chart-area]')?.getAttribute('d') || null;
       chartEl.innerHTML = chartHtml;
       chartEl.style.display = '';
       _wireMarketPriceChartCursor(chartEl);
+      const _newLine = chartEl.querySelector('[data-chart-line]');
+      const _newArea = chartEl.querySelector('[data-chart-area]');
+      if (_oldLineD && _newLine && typeof _newLine.animate === 'function') {
+        try {
+          _newLine.animate(
+            [{ d: `path('${_oldLineD}')` }, { d: `path('${_newLine.getAttribute('d')}')` }],
+            { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
+          );
+        } catch { /* unsupported `d` interpolation — silent fallback */ }
+      }
+      if (_oldAreaD && _newArea && typeof _newArea.animate === 'function') {
+        try {
+          _newArea.animate(
+            [{ d: `path('${_oldAreaD}')` }, { d: `path('${_newArea.getAttribute('d')}')` }],
+            { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
+          );
+        } catch { /* same */ }
+      }
     } else {
       chartEl.innerHTML = '';
       chartEl.style.display = 'none';
@@ -37584,14 +37611,18 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     : '';
   const bestBidX = xOf(bestBid);
   const bestAskX = xOf(bestAsk);
+  // Capture old bid + ask path `d` attributes before the swap so the
+  // post-write WAAPI animation can morph them into place.
+  const _oldDepthBidD = out.querySelector('[data-depth-bid]')?.getAttribute('d') || null;
+  const _oldDepthAskD = out.querySelector('[data-depth-ask]')?.getAttribute('d') || null;
   out.innerHTML = `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
       <strong>Depth</strong>${_logBadge}${_crossedBadge}
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best bid ${escapeHtml(fmtUnitPriceSats(bestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
-      <path d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1" pointer-events="none"/>
-      <path d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1" pointer-events="none"/>
+      <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1" pointer-events="none"/>
+      <path data-depth-ask d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1" pointer-events="none"/>
       <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="0.6" stroke-opacity="0.55" stroke-dasharray="1,2" pointer-events="none"/>
       <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#b8341d" stroke-width="0.6" stroke-opacity="0.55" stroke-dasharray="1,2" pointer-events="none"/>
       ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-mid)" stroke-width="1" stroke-dasharray="3,3" pointer-events="none"/>` : ''}
@@ -37610,6 +37641,31 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
       </g>
     </svg>`;
   out.style.display = '';
+  // Path-level morph for the depth chart's bid + ask areas. Same
+  // pattern as the price chart line — interpolates between captured
+  // old and freshly-rendered d values when the browser supports `d`
+  // attribute animation. The area paths share the same step-function
+  // shape across renders (only the cumulative heights / x positions
+  // shift as new listings come / go), so the interpolation reads as
+  // the curves "growing" or "shrinking" rather than swapping.
+  const _newDepthBid = out.querySelector('[data-depth-bid]');
+  const _newDepthAsk = out.querySelector('[data-depth-ask]');
+  if (_oldDepthBidD && _newDepthBid && typeof _newDepthBid.animate === 'function') {
+    try {
+      _newDepthBid.animate(
+        [{ d: `path('${_oldDepthBidD}')` }, { d: `path('${_newDepthBid.getAttribute('d')}')` }],
+        { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
+      );
+    } catch {}
+  }
+  if (_oldDepthAskD && _newDepthAsk && typeof _newDepthAsk.animate === 'function') {
+    try {
+      _newDepthAsk.animate(
+        [{ d: `path('${_oldDepthAskD}')` }, { d: `path('${_newDepthAsk.getAttribute('d')}')` }],
+        { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
+      );
+    } catch {}
+  }
   _wireDepthChartInteractivity(out, {
     xLo, xHi, isLog, plotW, plotH, PL, PT,
     askCum, bidCum, centerU,
