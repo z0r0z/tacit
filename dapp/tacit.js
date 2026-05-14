@@ -39363,14 +39363,23 @@ function bindMarketAssetHeader(scope) {
 // is whether scanHoldings actually surfaces sellable utxos.
 async function _openMarketListingFlow(aid) {
   if (!/^[0-9a-f]{64}$/.test(String(aid || '').toLowerCase())) return;
-  const _hasSellable = () => {
-    const t = _holdingsCache?.holdings?.get(aid);
+  const _sellableIn = (holdingsMap) => {
+    const t = holdingsMap?.get(aid);
     return !!(t && Array.isArray(t.utxos) && t.utxos.length > 0);
   };
-  if (!_hasSellable()) {
-    try { await scanHoldings(true); } catch {}
+  // Use scanHoldings's return value directly rather than re-reading
+  // _holdingsCache afterwards. scanHoldings has a stale-write guard
+  // (tacit.js:7715) that drops the cache assignment if another scan
+  // was kicked off in the meantime — without this, the post-unlock
+  // path could see a stale-null cache and fall through to the preview
+  // modal even though the fresh scan succeeded. That race manifested
+  // as the user needing to click "List Assets" twice to land on the
+  // inline form.
+  let holdingsMap = _holdingsCache?.holdings || null;
+  if (!_sellableIn(holdingsMap)) {
+    try { holdingsMap = await scanHoldings(true); } catch {}
   }
-  if (!_hasSellable()) {
+  if (!_sellableIn(holdingsMap)) {
     showMarketListPreviewModal(aid);
     return;
   }
