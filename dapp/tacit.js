@@ -29706,6 +29706,81 @@ async function renderHoldings() {
           });
           updateChunkPreview();
 
+          // Price quick-fill chips — mirrors the market asset-detail form.
+          // Computes per-chunk price from the current UTXO + chunks count
+          // × the chip's target unit. Re-renders on UTXO/chunks change so
+          // the math stays accurate when the per-chunk amount shifts.
+          const renderQuickfillChips = () => {
+            const wrap = formHost.querySelector('[data-price-quickfill]');
+            if (!wrap) return;
+            const utxoIdxQ = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
+            const uQ = sortedUtxos[utxoIdxQ];
+            const KQ = parseInt(formHost.querySelector('[data-field="chunks"]').value, 10) || 1;
+            if (!uQ || !Number.isInteger(KQ) || KQ < 1) { wrap.innerHTML = ''; return; }
+            const chunkAmt = uQ.amount / BigInt(KQ);
+            if (chunkAmt <= 0n) { wrap.innerHTML = ''; return; }
+            const wholePerChunk = Number(chunkAmt) / Math.pow(10, target.decimals || 0);
+            const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
+            const nowSec = Math.floor(Date.now() / 1000);
+            const liveAsks = (_marketCache?.listings || []).filter(l =>
+              l.kind === 'preauth' && l._asset?.asset_id === aid && !l.expired &&
+              Number(l.expiry || 0) > nowSec && (l.seller_pubkey || '') !== myPub,
+            );
+            let bestAskUnit = null;
+            for (const l of liveAsks) {
+              const amt = BigInt(l.asset_opening?.amount || '0');
+              const u = unitPriceSats(Number(l.min_price_sats || 0), amt, target.decimals);
+              if (u != null && (bestAskUnit == null || u < bestAskUnit)) bestAskUnit = u;
+            }
+            const bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+            let bestBidUnit = null;
+            for (const b of (bidsPeek || [])) {
+              if (b.axintent_id) continue;
+              if (Number(b.expiry || 0) <= nowSec) continue;
+              const amt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
+              if (amt <= 0n) continue;
+              const u = unitPriceSats(Number(b.price_sats || 0), amt, target.decimals);
+              if (u != null && (bestBidUnit == null || u > bestBidUnit)) bestBidUnit = u;
+            }
+            const chips = [];
+            if (bestBidUnit != null) {
+              const sats = Math.max(DUST, Math.ceil(wholePerChunk * bestBidUnit));
+              chips.push(`<button type="button" data-quick-price="${sats}" title="Match the highest live bid (${fmtUnitPriceSats(bestBidUnit)} sats/${escapeHtml(target.ticker)})." style="padding:3px 8px;border:1px solid var(--ink-faint);background:transparent;cursor:pointer;font-size:10px;">Match best bid · ${fmtUnitPriceSats(bestBidUnit)}/${escapeHtml(target.ticker)}</button>`);
+            }
+            if (bestAskUnit != null) {
+              const undercutUnit = bestAskUnit * 0.99;
+              const undercutSats = Math.max(DUST, Math.ceil(wholePerChunk * undercutUnit));
+              const matchSats = Math.max(DUST, Math.ceil(wholePerChunk * bestAskUnit));
+              chips.push(`<button type="button" data-quick-price="${undercutSats}" title="Undercut the cheapest current ask by 1% (${fmtUnitPriceSats(undercutUnit)} sats/${escapeHtml(target.ticker)})." style="padding:3px 8px;border:1px solid var(--ink-faint);background:transparent;cursor:pointer;font-size:10px;">Undercut best ask -1% · ${fmtUnitPriceSats(undercutUnit)}/${escapeHtml(target.ticker)}</button>`);
+              chips.push(`<button type="button" data-quick-price="${matchSats}" title="Match the cheapest current ask (${fmtUnitPriceSats(bestAskUnit)} sats/${escapeHtml(target.ticker)})." style="padding:3px 8px;border:1px solid var(--ink-faint);background:transparent;cursor:pointer;font-size:10px;">Match best ask · ${fmtUnitPriceSats(bestAskUnit)}/${escapeHtml(target.ticker)}</button>`);
+            }
+            wrap.innerHTML = chips.join('');
+            wrap.querySelectorAll('button[data-quick-price]').forEach(btn => {
+              btn.onclick = () => {
+                const v = btn.dataset.quickPrice;
+                const priceEl = formHost.querySelector('[data-field="price"]');
+                if (priceEl && v) {
+                  priceEl.value = v;
+                  priceEl.dispatchEvent(new Event('input', { bubbles: true }));
+                }
+              };
+            });
+          };
+          ['utxo', 'chunks'].forEach(f => {
+            const el = formHost.querySelector(`[data-field="${f}"]`);
+            if (el) el.addEventListener('input', renderQuickfillChips);
+            if (el && f === 'utxo') el.addEventListener('change', renderQuickfillChips);
+          });
+          renderQuickfillChips();
+          // Kick a market cache warm if needed so the chips have data
+          // for assets that haven't been visited on Market yet.
+          if (!_marketCache && typeof fetchMarketData === 'function') {
+            fetchMarketData().then(d => { _marketCache = d; renderQuickfillChips(); }).catch(() => {});
+          }
+          if (typeof _fetchBidIntentsCached === 'function') {
+            _fetchBidIntentsCached(aid).then(() => { try { renderQuickfillChips(); } catch {} }).catch(() => {});
+          }
+
           formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
             errEl.textContent = '';
             const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
@@ -35629,7 +35704,8 @@ function renderMarketAssetStatsHTML(asset) {
     if (cached?.data && Array.isArray(cached.data.trades) && cached.data.trades.length) {
       const dec = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
       const ticker = asset.ticker || '?';
-      const svg = renderMarketPriceChartSVG(cached.data.trades, ticker, dec);
+      const _mark = Number(asset?.mark_price?.unit ?? cached.data.mark_price?.unit);
+      const svg = renderMarketPriceChartSVG(cached.data.trades, ticker, dec, Number.isFinite(_mark) && _mark > 0 ? _mark : null);
       if (svg) {
         prePaintedChartHtml = svg;
         prePaintedChartStyle = 'margin-top:10px;font-size:11px;';
@@ -35699,7 +35775,7 @@ function _renderTileSparklineSVG(summary) {
 // renders a line + dots with hover tooltips. No deps. The chart upgrades
 // to a "more data than we render" view once the worker's ring grows past
 // the 50-trade cap (future), but today caps at whatever the worker sent.
-function renderMarketPriceChartSVG(trades, ticker, decimals) {
+function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // Need at least 2 points to draw a line. 1-trade markets fall back to
   // the recent-trades table — no chart.
   if (!Array.isArray(trades) || trades.length < 2) return '';
@@ -35714,6 +35790,21 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
     return (u != null && ts > 0) ? { u, ts, txid: String(t.txid || ''), price } : null;
   }).filter(Boolean).sort((a, b) => a.ts - b.ts);
   if (points.length < 2) return '';
+  // Tag each point as in-band or outlier using the same 0.2×/5× mark
+  // thresholds the worker's mark-price selector uses. We DON'T filter
+  // outliers out — every chain-settled fill belongs on the chart for
+  // honest price discovery. We just style them differently so the eye
+  // can focus on the in-band trend while still seeing anomalies (dust
+  // takes, fat-finger fills) as distinct marks. Mark line below
+  // anchors the visual reading.
+  const markValid = Number.isFinite(markUnit) && markUnit > 0;
+  const _outlierLo = markValid ? markUnit * 0.2 : 0;
+  const _outlierHi = markValid ? markUnit * 5 : Infinity;
+  let outlierCount = 0;
+  for (const p of points) {
+    p.isOutlier = markValid && (p.u < _outlierLo || p.u > _outlierHi);
+    if (p.isOutlier) outlierCount++;
+  }
   // Range computation. Small-cap / volatile tacit tokens regularly post
   // trades that span 4+ orders of magnitude (e.g., a dust OTC at 0.05
   // sats/TAC alongside a 25,000 sats/TAC fat-finger print). A linear
@@ -35805,10 +35896,36 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
     return `${Math.floor(sec / 86400)}d ago`;
   };
   const dotR = points.length > 80 ? 1.5 : (points.length > 40 ? 2 : 2.5);
+  // In-band dots in the trend color (green); outlier dots dimmed +
+  // hollow so the eye registers them as data without confusing them
+  // for the main trend. Tooltip on each carries the same precise info
+  // regardless of style — the visual is just a focus hint.
   const dots = points.map(p => {
-    const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}`;
+    const outlierTag = p.isOutlier ? ' · outlier vs mark' : '';
+    const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}${outlierTag}`;
+    if (p.isOutlier) {
+      // Hollow circle, dimmed, with orange stroke so users can pick
+      // out anomalies without being misled into thinking they're the
+      // typical price band.
+      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${(dotR + 0.5).toFixed(1)}" fill="none" stroke="#c97a1a" stroke-width="1.2" opacity="0.75"><title>${escapeHtml(tip)}</title></circle>`;
+    }
     return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="#0a8f43"><title>${escapeHtml(tip)}</title></circle>`;
   }).join('');
+  // Horizontal mark-price line so the eye has an anchor for "this is
+  // the fair-market reference." Only rendered when the worker
+  // supplied a mark and it falls inside the plot's y-range; on log
+  // scale with wild outliers it sometimes lands outside, in which
+  // case we omit rather than clip mid-plot.
+  let markLine = '';
+  if (markValid) {
+    const yMark = yOf(markUnit);
+    if (yMark >= PT && yMark <= PT + plotH) {
+      const markLbl = `mark ${fmtUnitPriceSats(markUnit)} sats/${ticker}`;
+      markLine =
+        `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="0.8" stroke-dasharray="4,3" opacity="0.55"/>` +
+        `<text x="${(PL + plotW - 4).toFixed(0)}" y="${(yMark - 3).toFixed(2)}" font-size="9" fill="#0a8f43" font-family="var(--mono, monospace)" text-anchor="end" opacity="0.85">${escapeHtml(markLbl)}</text>`;
+    }
+  }
   // Horizontal gridlines at the Y min / mid / max — gives the eye a
   // reference without committing to full axis ticks. Dashed light strokes
   // so they don't compete with the price line.
@@ -35833,10 +35950,11 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   return `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
       <strong>Price history</strong>${_logBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}</span>
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}${outlierCount > 0 ? ` · <span style="color:#c97a1a;" title="Trades priced &lt;0.2x or &gt;5x of mark price — typically fat-finger fills or dust takes. Shown as hollow orange dots so the eye can spot anomalies without confusing them for the typical price band.">${outlierCount} outlier${outlierCount === 1 ? '' : 's'} ringed</span>` : ''}</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);cursor:crosshair;">
       ${gridlines}
+      ${markLine}
       ${areaPath ? `<path d="${areaPath}" fill="#0a8f43" fill-opacity="0.10" stroke="none"/>` : ''}
       ${linePath ? `<path d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
       ${dots}
@@ -36272,7 +36390,8 @@ async function populateMarketAssetStats(scope, asset) {
   // stays capped at 10 rows so the section doesn't get unwieldy.
   const chartEl = section.querySelector('[data-market-price-chart]');
   if (chartEl) {
-    const chartHtml = renderMarketPriceChartSVG(trades, ticker, decimals);
+    const _markForChart = Number(j?.mark_price?.unit ?? asset?.mark_price?.unit);
+    const chartHtml = renderMarketPriceChartSVG(trades, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null);
     if (chartHtml) {
       chartEl.innerHTML = chartHtml;
       chartEl.style.display = '';
