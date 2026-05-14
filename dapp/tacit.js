@@ -38338,21 +38338,34 @@ function _wireSwapTile(scope) {
     const payUnit = getPayUnit();
     let chips = [];
     if (dir === 'buy') {
+      const satBal = Number(_walletCardState?.balance || 0);
+      // ~2k sats fee reserve so Max doesn't strand the wallet with
+      // less than a typical commit+reveal fee. Conservative; the swap
+      // path will refine.
+      const maxSpendable = satBal > 2000 ? satBal - 2000 : 0;
       if (payUnit === 'usd' && Number.isFinite(btcUsd) && btcUsd > 0) {
         chips = [
           { label: '$10',  value: '10' },
           { label: '$50',  value: '50' },
           { label: '$200', value: '200' },
         ];
+        if (maxSpendable > 0) {
+          const maxUsd = (maxSpendable / 100_000_000) * btcUsd;
+          if (maxUsd >= 1) chips.push({ label: `Max ${maxUsd >= 100 ? `$${maxUsd.toFixed(0)}` : `$${maxUsd.toFixed(2)}`}`, value: maxUsd >= 1 ? maxUsd.toFixed(2) : maxUsd.toFixed(4) });
+        }
       } else {
         // Sat presets sized to typical first-trade amounts on tacit.
-        // _walletCardState may not be hot at first paint, so fixed
-        // amounts beat a fragile "% of balance" path here.
+        // Max chip appended when wallet balance is known so the user
+        // can one-tap "spend everything I can afford" — Magic Eden /
+        // Uniswap default.
         chips = [
           { label: '1k sats',   value: '1000' },
           { label: '10k sats',  value: '10000' },
           { label: '100k sats', value: '100000' },
         ];
+        if (maxSpendable >= 1000) {
+          chips.push({ label: `Max ${maxSpendable.toLocaleString()} sats`, value: String(maxSpendable) });
+        }
       }
     } else {
       // Sell direction: % of current holding. Skips the row entirely
@@ -38545,24 +38558,20 @@ function _wireSwapTile(scope) {
         infoEl.textContent = '';
         return;
       }
-      // Sat-balance pre-check: budget + estimated fees must fit within
-      // wallet's known sat balance. Reading from _walletCardState avoids
-      // an extra getUtxos call on every keystroke; refreshWallet() keeps
-      // it warm and the freshness banner makes any staleness visible.
+      // Compute the route quote BEFORE checking balance so an underfunded
+      // wallet still sees "you'd receive ~X TAC" instead of a blank
+      // receive field. This is the CEX behavior — Binance/Coinbase
+      // happily quote a $50,000 trade even if your account holds $20,
+      // they just disable the Buy button. The pre-check before route
+      // computation used to short-circuit to blank, which lost the
+      // "explore-the-market" utility of just typing in a number.
       const satBal = Number(_walletCardState?.balance || 0);
-      if (satBal > 0 && sats > satBal) {
-        toInput.value = '';
-        fromMeta.textContent = `wallet: ${satBal.toLocaleString()} sats`;
-        toMeta.textContent = '';
-        infoEl.textContent = `insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`;
-        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-        actionBtn.textContent = 'insufficient balance';
-        return;
-      }
       const result = planBuy(sats);
       if (myToken !== updateToken) return;
       if (!result) {
         toInput.value = '';
+        toMeta.textContent = '';
+        fromMeta.textContent = satBal > 0 ? `wallet: ${satBal.toLocaleString()} sats` : '';
         infoEl.textContent = `no instant asks within ${slipSel.value}% slippage · raise slippage, or use Sweep buy below for a custom cap`;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'no route';
@@ -38572,8 +38581,11 @@ function _wireSwapTile(scope) {
       toInput.value = accStr;
       const fromUsd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
       const feeEst = result.plan.length * 800;
-      const reserveOk = satBal === 0 || (result.totalSats + feeEst) <= satBal;
-      const fromTail = reserveOk ? '' : ' · ⚠ low sat reserve for fees';
+      const insufficientBudget = satBal > 0 && sats > satBal;
+      const insufficientForFees = !insufficientBudget && satBal > 0 && (result.totalSats + feeEst) > satBal;
+      const fromTail = insufficientBudget
+        ? ` · ⚠ wallet holds ${satBal.toLocaleString()}`
+        : (insufficientForFees ? ' · ⚠ low sat reserve for fees' : '');
       fromMeta.textContent = fromUsd
         ? `spending ${result.totalSats.toLocaleString()} sats · ${fromUsd}${fromTail}`
         : `spending ${result.totalSats.toLocaleString()} sats${fromTail}`;
@@ -38590,9 +38602,20 @@ function _wireSwapTile(scope) {
       const residHint = result.residualSats > 100
         ? ` · ${result.residualSats.toLocaleString()} sats unspent (asks ran out at cap)`
         : '';
-      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${residHint}`;
-      actionBtn.disabled = false; actionBtn.style.opacity = '1';
-      actionBtn.textContent = swapLabel(`SWAP → ${accStr} ${ticker}`);
+      const insufficientHint = insufficientBudget
+        ? ` · ⚠ insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`
+        : '';
+      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${residHint}${insufficientHint}`;
+      if (insufficientBudget) {
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'insufficient balance';
+      } else if (insufficientForFees) {
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'top up sats for fees';
+      } else {
+        actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        actionBtn.textContent = swapLabel(`SWAP → ${accStr} ${ticker}`);
+      }
     } else {
       // SELL direction: raw is ticker amount.
       let amt;
@@ -38601,20 +38624,16 @@ function _wireSwapTile(scope) {
       if (amt <= 0n) { toInput.value = ''; actionBtn.textContent = 'amount must be > 0'; actionBtn.disabled = true; actionBtn.style.opacity = '0.5'; infoEl.textContent = ''; return; }
       const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
       const balStr = fmtAssetAmount(bal, decimals);
-      if (amt > bal) {
-        toInput.value = '';
-        fromMeta.textContent = `balance: ${balStr} ${ticker}`;
-        actionBtn.textContent = `only hold ${balStr} ${ticker}`;
-        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-        infoEl.textContent = '';
-        return;
-      }
-      fromMeta.textContent = `balance: ${balStr} ${ticker}`;
+      const insufficientTokens = amt > bal;
+      fromMeta.textContent = insufficientTokens
+        ? `balance: ${balStr} ${ticker} · ⚠ only hold ${balStr}`
+        : `balance: ${balStr} ${ticker}`;
       infoEl.textContent = 'finding route…';
       const result = await planSell(amt);
       if (myToken !== updateToken) return;
       if (!result) {
         toInput.value = '';
+        toMeta.textContent = '';
         infoEl.textContent = `no bids within ${slipSel.value}% slippage · raise slippage, or use Sweep sell below for a custom floor`;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'no route';
@@ -38640,8 +38659,14 @@ function _wireSwapTile(scope) {
         ? ` · ${fmtAssetAmount(result.residualAmt, decimals)} ${ticker} unfilled at floor`
         : '';
       const autoHint = _isAutoFulfilEnabled() ? '' : ' · ⚠ enable Auto-fulfil to auto-sign claims';
-      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${reserveHint}${residHint}${autoHint}`;
-      if (!reserveOk) {
+      const insufficientTokensHint = insufficientTokens
+        ? ` · ⚠ insufficient ${ticker} — wallet holds ${balStr}, you'd need ${fmtAssetAmount(amt, decimals)}`
+        : '';
+      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${reserveHint}${residHint}${autoHint}${insufficientTokensHint}`;
+      if (insufficientTokens) {
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = `only hold ${balStr} ${ticker}`;
+      } else if (!reserveOk) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'top up sats for fees';
       } else {
