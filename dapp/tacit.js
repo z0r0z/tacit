@@ -39134,9 +39134,19 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   for (const b of intents) {
     if (b.axintent_id) continue;
     if (Number(b.expiry || 0) <= nowSec) continue;
-    let amtBig = 0n; try { amtBig = BigInt(b.amount || '0'); } catch {}
+    // Variable-fill (§5.7.7): depth is the TRADEABLE remaining, not the
+    // bid's full posted amount. A whole-bid that's been claimed already
+    // shows axintent_id and is filtered above; a variable-fill bid stays
+    // visible with the residual remaining. Without this fix, a partially-
+    // filled bid would inflate depth-chart liquidity.
+    const _isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    const amtRaw = _isVar ? (b.remaining_amount || b.amount || '0') : (b.amount || '0');
+    let amtBig = 0n; try { amtBig = BigInt(amtRaw); } catch {}
     if (amtBig <= 0n) continue;
-    const u = unitPriceSats(Number(b.price_sats || 0), amtBig, decimals);
+    if (_isVar && amtBig < BigInt(b.min_fill_amount || '0')) continue;  // closed: below min
+    // Unit price uses the bid's ORIGINAL amount + price (the rate the
+    // bidder signed for); only the depth (size) reflects remaining.
+    const u = unitPriceSats(Number(b.price_sats || 0), BigInt(b.amount || '0'), decimals);
     if (u != null) bids.push({ u, size: _toWholeNumber(amtBig) });
   }
   if (!asks.length || !bids.length) { out.style.display = 'none'; return; }
@@ -40343,6 +40353,12 @@ function _wireSwapTile(scope) {
   // SELL plan: walk bid intents highest-first; include each bid whose
   // amount fits within the remaining target. Unit-price floor = ref ×
   // (1 - slippage). Returns null if no fillable bid above floor.
+  // SELL plan: walk bid intents highest-first, fitting fills until
+  // accumulated amount ≥ target. Whole-bids are take-whole-or-skip;
+  // variable-fill bids (§5.7.7) can take any chunk in [min_fill,
+  // remaining], so the LAST fill against a variable bid can scale
+  // exactly to the remaining gap — no overshoot when a variable bid
+  // is the tail.
   const planSell = async (targetTacBig) => {
     if (targetTacBig <= 0n) return null;
     let bids;
@@ -40351,24 +40367,43 @@ function _wireSwapTile(scope) {
     if (!Array.isArray(bids) || bids.length === 0) return null;
     const nowSec = Math.floor(Date.now() / 1000);
     const floor = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 - getSlipRatio()) : 0;
-    const candidates = bids
-      .filter(b => b.buyer_pubkey !== myPubHex)
-      .filter(b => Number(b.expiry || 0) > nowSec)
-      .filter(b => !b.axintent_id)
-      .map(b => {
-        const amt = BigInt(b.amount || 0);
-        const ps  = Number(b.price_sats || 0);
-        const u   = unitPriceSats(ps, amt, decimals);
-        return { b, amt, ps, u };
-      })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floor && c.u <= outlierCeilUnit && c.amt > 0n && c.ps > 0)
-      .sort((x, y) => y.u - x.u);
+    const candidates = [];
+    for (const b of bids) {
+      if (b.buyer_pubkey === myPubHex) continue;
+      if (Number(b.expiry || 0) <= nowSec) continue;
+      if (b.axintent_id) continue;
+      const fullAmt = BigInt(b.amount || 0);
+      const fullPs  = Number(b.price_sats || 0);
+      const u       = unitPriceSats(fullPs, fullAmt, decimals);
+      if (!Number.isFinite(u) || u <= 0 || u < floor || u > outlierCeilUnit || fullAmt <= 0n || fullPs <= 0) continue;
+      const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+      if (isVar) {
+        const minBig = BigInt(b.min_fill_amount);
+        const remBig = BigInt(b.remaining_amount || b.amount || '0');
+        if (remBig < minBig) continue;  // closed
+        candidates.push({ kind: 'bid-var', b, fullAmt, fullPs, u, minFill: minBig, remaining: remBig });
+      } else {
+        candidates.push({ kind: 'bid', b, amt: fullAmt, ps: fullPs, u });
+      }
+    }
+    candidates.sort((x, y) => y.u - x.u);
     if (!candidates.length) return null;
     const plan = []; let totalAmt = 0n; let totalSats = 0;
     for (const c of candidates) {
       if (totalAmt >= targetTacBig) break;
-      if (totalAmt + c.amt > targetTacBig) continue;
-      plan.push(c); totalAmt += c.amt; totalSats += c.ps;
+      if (c.kind === 'bid-var') {
+        const gap = targetTacBig - totalAmt;
+        let chunk = gap > c.remaining ? c.remaining : gap;
+        if (chunk < c.minFill) chunk = c.minFill;  // overshoot if gap < min_fill
+        if (chunk > c.remaining) continue;
+        const scaledSats = Number((chunk * BigInt(c.fullPs)) / c.fullAmt);
+        if (scaledSats < DUST) continue;
+        plan.push({ kind: 'bid-var', b: c.b, amt: chunk, ps: scaledSats, u: c.u });
+        totalAmt += chunk; totalSats += scaledSats;
+      } else {
+        if (totalAmt + c.amt > targetTacBig) continue;
+        plan.push(c); totalAmt += c.amt; totalSats += c.ps;
+      }
     }
     if (!plan.length) return null;
     return { plan, totalAmt, totalSats, residualAmt: targetTacBig - totalAmt, targetAmt: targetTacBig, floor };
@@ -41118,7 +41153,7 @@ function _wireSwapTile(scope) {
         try {
           const r = dir === 'buy'
             ? await _swapTakeAsk(c)
-            : await fulfilBidIntent({ bid: c.b });
+            : await fulfilBidIntent({ bid: c.b, fillAmount: c.kind === 'bid-var' ? c.amt : null });
           filled++;
           progressItems[i].status = 'done';
           progressItems[i].txid = r?.reveal_txid || r?.commit_txid || null;
@@ -41352,7 +41387,7 @@ function _wireSwapTile(scope) {
         progressItems[i].status = 'broadcasting';
         _renderSwapProgress(progressEl, progressItems);
         try {
-          const r = await fulfilBidIntent({ bid: c.b });
+          const r = await fulfilBidIntent({ bid: c.b, fillAmount: c.kind === 'bid-var' ? c.amt : null });
           filled++;
           progressItems[i].status = 'done';
           // Sell-side: commit_txid is what just broadcast. The settle tx
@@ -41812,7 +41847,7 @@ function _wireMarketSweepSell(section, asset) {
           const c = plan[i];
           progEl.innerHTML = `${fills.length}/${plan.length} filled · sending fulfilment ${i + 1}…`;
           try {
-            const r = await fulfilBidIntent({ bid: c.b });
+            const r = await fulfilBidIntent({ bid: c.b, fillAmount: c.kind === 'bid-var' ? c.amt : null });
             fills.push({ bidId: c.b.bid_id, commit: r?.commit_txid, amt: c.amt, ps: c.ps });
             // Mark the commit tx inputs (and any auto-split tx inputs)
             // as recently spent so the NEXT fill's UTXO selection
