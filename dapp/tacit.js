@@ -40501,15 +40501,44 @@ function _wireSwapTile(scope) {
       const satBal = Number(_walletCardState?.balance || 0);
       const result = planBuy(sats);
       if (myToken !== updateToken) return;
+      // No asks under the slippage cap → fall back to bid-on-residual:
+      // estimate tokens at the user's slippage cap and frame the action
+      // as "Place bid" rather than "no route". A bid at the user's cap
+      // sits in the orderbook (§5.7.7) until a maker fulfils — same
+      // atomic settlement as taking, just async. This is the DEX-feel
+      // closure: any sats budget produces a tradeable order.
       if (!result) {
+        const _capUnit = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 + getSlipRatio()) : null;
+        if (_capUnit != null && _capUnit > 0 && sats >= DUST) {
+          const _bidAmt = BigInt(Math.floor(sats * Math.pow(10, decimals) / _capUnit));
+          if (_bidAmt > 0n) {
+            toInput.value = fmtAssetAmount(_bidAmt, decimals);
+            const _bidUsd = btcUsd ? fmtSatsAsUsd(sats, btcUsd) : null;
+            fromMeta.textContent = _bidUsd
+              ? `bid · ${sats.toLocaleString()} sats · ${_bidUsd}${satBal > 0 && sats > satBal ? ` · ⚠ wallet holds ${satBal.toLocaleString()}` : ''}`
+              : `bid · ${sats.toLocaleString()} sats${satBal > 0 && sats > satBal ? ` · ⚠ wallet holds ${satBal.toLocaleString()}` : ''}`;
+            toMeta.textContent = `at ${fmtUnitPriceSats(_capUnit)} sats/${ticker} (your slippage cap)`;
+            infoEl.innerHTML = `no asks at this price right now &mdash; <strong>will post as a bid</strong>. Any maker can fulfil it; settles atomically on Bitcoin. Bids expire after 24h.`;
+            actionBtn.disabled = false; actionBtn.style.opacity = '1';
+            actionBtn.textContent = 'place bid';
+            actionBtn.dataset.action = 'bid-only';
+            actionBtn.dataset.bidAmt = _bidAmt.toString();
+            actionBtn.dataset.bidSats = String(sats);
+            actionBtn.dataset.bidUnitCap = String(_capUnit);
+            return;
+          }
+        }
+        // Fall-through: no refUnit (asset never traded) → genuinely no route.
         toInput.value = '';
         toMeta.textContent = '';
         fromMeta.textContent = satBal > 0 ? `wallet: ${satBal.toLocaleString()} sats` : '';
-        infoEl.textContent = `no instant asks within ${slipSel.value}% slippage · raise slippage, or use Sweep buy below for a custom cap`;
+        infoEl.textContent = `no mark price yet for this asset · check Discover for trading history`;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'no route';
+        delete actionBtn.dataset.action;
         return;
       }
+      delete actionBtn.dataset.action;
       const accStr = fmtAssetAmount(result.totalAmt, decimals);
       toInput.value = accStr;
       const fromUsd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
@@ -40862,6 +40891,40 @@ function _wireSwapTile(scope) {
         ? Math.floor(parseFloat(raw.replace(/[$, ]/g, '')) * 100_000_000 / btcUsd)
         : parseInt(raw.replace(/[, ]/g, ''), 10);
       if (!Number.isFinite(sats) || sats <= 0) return;
+      // No-route → place-bid path: when update() determined there were no
+      // asks under the slippage cap, the button text became "place bid"
+      // and the dataset carries the precomputed bid params. Honor that here
+      // by short-circuiting straight to publishBidIntent.
+      if (actionBtn.dataset.action === 'bid-only') {
+        const bidAmt = BigInt(actionBtn.dataset.bidAmt || '0');
+        const bidSats = parseInt(actionBtn.dataset.bidSats || '0', 10);
+        const capUnit = Number(actionBtn.dataset.bidUnitCap || '0');
+        if (bidAmt <= 0n || !Number.isFinite(bidSats) || bidSats < DUST) {
+          toast('Bid params invalid; refresh and retry', 'error'); return;
+        }
+        if (!confirm(
+          `Post bid: buy ${fmtAssetAmount(bidAmt, decimals)} ${ticker} for ${bidSats.toLocaleString()} sats?\n\n` +
+          `Unit price ${fmtUnitPriceSats(capUnit)} sats/${ticker} (your slippage cap). ` +
+          `Any maker can fulfil; settles atomically on Bitcoin. Sats are NOT escrowed — they must be available in your wallet when a maker fulfils. Bid expires in 24h.`,
+        )) return;
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        const _origLabel = actionBtn.textContent;
+        actionBtn.textContent = 'posting…';
+        try {
+          await publishBidIntent({ assetIdHex: aid, amount: bidAmt, priceSats: bidSats, expiry: Math.floor(Date.now() / 1000) + 24 * 3600 });
+          toast(`Bid posted ✓ · ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ${fmtUnitPriceSats(capUnit)} sats/${ticker}`, 'success', 6000);
+          invalidateMarketCache();
+          _invalidateBidsCache(aid);
+          setTimeout(() => renderMarket(), 1500);
+        } catch (e) {
+          if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was posted.', '');
+          else toast(`Bid post failed: ${e.message}`, 'error');
+        } finally {
+          actionBtn.disabled = false; actionBtn.style.opacity = '1';
+          actionBtn.textContent = _origLabel;
+        }
+        return;
+      }
       const result = planBuy(sats);
       if (!result) { toast('No route available', 'error'); return; }
       const accStr = fmtAssetAmount(result.totalAmt, decimals);
@@ -40872,12 +40935,24 @@ function _wireSwapTile(scope) {
       const _asyncNote = _hasIntent
         ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
         : `Each fill settles in one Bitcoin tx.`;
+      // Residual-bid preview: tell the user up-front when their budget
+      // won't fully fill from asks and the unspent portion will sit as
+      // a passive bid.
+      const _residualSats = Math.max(0, sats - result.totalSats);
+      let _residualNote = '';
+      if (_residualSats >= DUST && Number.isFinite(result.cap) && result.cap > 0) {
+        const _resAmt = BigInt(Math.floor(_residualSats * Math.pow(10, decimals) / result.cap));
+        if (_resAmt > 0n) {
+          _residualNote = `\n\n+ bid posted for the unspent ${_residualSats.toLocaleString()} sats (${fmtAssetAmount(_resAmt, decimals)} ${ticker} at ${fmtUnitPriceSats(result.cap)} sats/${ticker} — your slippage cap). Any maker can fulfil; settles atomically; expires in 24h.`;
+        }
+      }
       if (!confirm(
         `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?\n\n` +
         `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
         `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
         (usd ? `≈ ${usd}\n` : '') +
-        `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${_asyncNote}`
+        `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${_asyncNote}` +
+        _residualNote
       )) return;
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       const origLabel = actionBtn.textContent;
@@ -40917,9 +40992,43 @@ function _wireSwapTile(scope) {
       }
       invalidateMarketCache();
       invalidateHoldingsCache();
+
+      // Residual-bid placement: if budget remains AND all attempted fills
+      // succeeded (no lastErr), post a bid for the unspent sats at the
+      // user's slippage cap. Closes the seamless-DEX loop: any amount
+      // produces a tradeable order — fills immediately if asks cover,
+      // sits as a bid otherwise. Skipped if filled === 0 (the no-asks
+      // path is handled earlier as a bid-only action). Also skipped on
+      // a take failure so we don't strand a passive bid against unknown
+      // state.
+      let bidPosted = null;
+      if (!lastErr && filled > 0 && result.residualSats >= DUST && Number.isFinite(result.cap) && result.cap > 0) {
+        const _residualSats = Number(result.residualSats);
+        const _bidAmt = BigInt(Math.floor(_residualSats * Math.pow(10, decimals) / result.cap));
+        if (_bidAmt > 0n) {
+          try {
+            await publishBidIntent({
+              assetIdHex: aid, amount: _bidAmt, priceSats: _residualSats,
+              expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
+            });
+            bidPosted = { amount: _bidAmt, sats: _residualSats, cap: result.cap };
+            _invalidateBidsCache(aid);
+          } catch (e) {
+            // Bid post failure shouldn't undo the successful fills. Surface
+            // as a soft warning; the fills already settled.
+            if (!isUnlockCancelled(e)) {
+              console.warn('[swap] residual bid post failed:', e.message);
+            }
+          }
+        }
+      }
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}`, 'error', 8000);
-      else toast(`Swapped → ${accStr} ${ticker} ✓`, 'success', 5000);
+      else if (bidPosted) {
+        toast(`Swapped → ${accStr} ${ticker} ✓ · bid posted for ${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} more @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker}`, 'success', 8000);
+      } else {
+        toast(`Swapped → ${accStr} ${ticker} ✓`, 'success', 5000);
+      }
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);
@@ -44528,9 +44637,15 @@ function _loadDiscoverPrefs() {
   } catch { return null; }
 }
 function _marketDefaultPrefs(scope) {
+  // Default kind is 'all' since the unification PR removed the kind-filter
+  // dropdown. Pre-existing saved prefs with kind: 'preauth' would have
+  // filtered out atomic intents + variable-amount listings + OTC, surfacing
+  // as "No active asks" on assets whose orderbook is intent-heavy (e.g. TAC).
+  // The normalizer below clamps any saved 'preauth' / 'trustless' / 'intent'
+  // values back to 'all' so stale preferences self-heal on next page load.
   return scope === 'asset'
-    ? { kind: 'preauth', min: '', max: '', sort: 'unit-asc' }
-    : { kind: 'preauth', min: '', max: '', sort: 'volume-desc' };
+    ? { kind: 'all', min: '', max: '', sort: 'unit-asc' }
+    : { kind: 'all', min: '', max: '', sort: 'volume-desc' };
 }
 function _validSelectValue(sel, value) {
   const el = $(sel);
