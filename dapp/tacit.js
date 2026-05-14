@@ -20406,10 +20406,13 @@ function relativeAge(unixTs) {
 function utxoPickerOptionLabel(u, target, tag = null) {
   const ageStr = u.utxo.status?.confirmed
     ? (relativeAge(u.utxo.status.block_time) ? ` · ${relativeAge(u.utxo.status.block_time)} old` : '')
-    : ' · mempool';
-  const base = `${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} · UTXO ${shorten(u.utxo.txid, 8)}:${u.utxo.vout}${ageStr}`;
+    : ' · pending';
+  // "Lot" framing instead of "UTXO" so non-crypto-native sellers read it
+  // as "one sellable parcel of my balance". The full Bitcoin outpoint is
+  // available via the <option> title attribute / hover for debugging.
+  const base = `${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} · lot #${shorten(u.utxo.txid, 4)}${ageStr}`;
   if (!tag) return base;
-  // Soft tags warn but don't block — the maker can still pick the UTXO if
+  // Soft tags warn but don't block — the maker can still pick the lot if
   // they accept the implication (e.g. their own range listing might break
   // on fulfilment if this listing fills).
   if (tag.severity === 'soft') return `${base} · ⚠ ${tag.label}`;
@@ -29169,11 +29172,11 @@ async function renderHoldings() {
           ).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>Pick UTXO to sell ▾ (smallest first; entire UTXO is sold)</label>
+              <label>Pick lot to sell ▾ (smallest first; whole lot trades atomically as a single offer)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
               <details style="margin-top:6px;">
-                <summary class="muted" style="cursor:pointer;font-size:11px;">Need a smaller UTXO? Split first ▾</summary>
+                <summary class="muted" style="cursor:pointer;font-size:11px;">Need a smaller lot? Split first ▾</summary>
                 <div style="margin-top:8px;padding:8px;border:1px dashed var(--ink-faint);background:var(--bg);">
                   <div class="muted" style="font-size:11px;line-height:1.5;">
                     Atomic intents sell the entire UTXO — to list less than the chosen UTXO holds, broadcast a self-CXFER first that splits it into <strong>${escapeHtml(target.ticker)} you-want-to-list</strong> + <strong>change</strong>. After it confirms (~10 min), the new smaller UTXO appears in the dropdown above.
@@ -29399,7 +29402,7 @@ async function renderHoldings() {
           ).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>Pick UTXO to sell ▾ (smallest first; whole UTXO is sold atomically — v1 doesn't support partial fills)</label>
+              <label>Pick lot to sell ▾ (smallest first; whole lot in this listing — for partial-fill support use Instant listing with chunks)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
               <div class="form-row two" style="margin-top:8px;">
@@ -29565,7 +29568,7 @@ async function renderHoldings() {
           ).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>Pick UTXO to sell ▾ (smallest first)</label>
+              <label>Pick lot to sell ▾ (smallest first)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
               <div class="form-row two" style="margin-top:8px;">
@@ -32471,21 +32474,16 @@ function _startMarketAutoRefresh() {
       // material changed. The full re-render destroys charts + swap tile
       // state on every tick, which the user reports as flicker — only
       // pay that cost when listings actually changed.
-      const beforeSig = _marketListingsSignature();
+      // Refresh the in-memory cache so the next user-initiated render
+      // (filter toggle, manual refresh, tab re-entry) serves fresh
+      // data. We deliberately DON'T re-render here on either view —
+      // the user reports that the every-15s grid rebuild reads as
+      // jarring "all tiles flashing" even when only a few listings
+      // changed. Auto-refresh is now silent / data-only; per-tile
+      // animations that DO want to fire (price up/down on the asks
+      // ladder, e.g.) need a partial-DOM update path that doesn't
+      // exist yet. Tracked separately.
       await fetchMarketDataDeduped();
-      const afterSig = _marketListingsSignature();
-      if (beforeSig === afterSig) return;
-      if (_marketView === 'browse') {
-        // Browse has no fragile elements (no chart, no swap tile state),
-        // so a full re-render is safe and lets per-tile animations fire.
-        applyMarketFilters();
-      }
-      // Asset-view: skip the full re-render. The asks grid still receives
-      // updated data via the next user-triggered render (filter toggle,
-      // simple-mode flip, manual refresh). For now we accept that the
-      // grid lags slightly between user actions in exchange for stable
-      // charts and a non-jittery swap tile. A proper fix is a partial
-      // re-render of just #market-grid + bids ladder; tracked separately.
     } catch {}
   }, MARKET_AUTO_REFRESH_MS);
 }
@@ -33330,6 +33328,12 @@ function applyMarketFilters() {
   let rowsForGrid = _marketSimpleMode ? rowsSimple : rowsFull;
   const minedAsksCount = rowsFull.filter(isMyAsk).length;
   if (_marketMineOnlyAsks) rowsForGrid = rowsForGrid.filter(isMyAsk);
+  // Collapse chunked-preauth groups (publishPreauthSaleChunks) into one tile
+  // per group. Single-chunk groups pass through unchanged so non-chunked
+  // listings render exactly as before. Applied after mine-only filter so a
+  // seller viewing only their listings sees the same group structure
+  // buyers do.
+  rowsForGrid = groupChunkedPreauthListings(rowsForGrid);
   const hiddenByMode = rowsFull.length - rowsSimple.length;
   // Asset-detail header above already shows the per-kind breakdown
   // (⚡ atomic · opening · range) and floor — no separate banner needed here.
@@ -33617,13 +33621,31 @@ function applyMarketFilters() {
     } else if (l.kind === 'preauth') {
       // Buyer-completable T_AXFER (SPEC §5.7.8). Seller can be offline; any
       // buyer with sufficient sats can complete settlement in one click.
+      // A "group" tile is rendered when chunked-publishing produced multiple
+      // identical-price listings sharing a nonce-prefix group seed; the
+      // head's sale_id is the first (oldest) chunk, so Buy/Cancel target it
+      // naturally and the next refresh promotes the next chunk to head.
       const isSeller = (l.seller_pubkey || '') === myPubHex;
       const sid = l.sale_id || '';
+      const groupSize = l._isGroup ? l._groupSize : 1;
+      const groupTitle = l._isGroup
+        ? ` (${groupSize} chunks available · each tile takes one chunk)`
+        : '';
       if (isSeller) {
-        secondaryAction = `<button data-act="market-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Pull this instant listing from the worker. Buyers won't be able to take it after cancellation lands. Note: the seller's pre-signed asset spend can't be invalidated off-chain; for a true cancel, also spend the listed UTXO yourself." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button>`;
-        statusLine = `<span title="Your instant listing is live. Any buyer can complete the purchase atomically; no fulfilment step required from you.">⏳ your instant listing · awaiting buyer</span>`;
+        secondaryAction = `<button data-act="market-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Pull this instant listing from the worker. Buyers won't be able to take it after cancellation lands. Note: the seller's pre-signed asset spend can't be invalidated off-chain; for a true cancel, also spend the listed UTXO yourself.${l._isGroup ? ' This cancels ONE chunk of the group; the remaining chunks stay live.' : ''}" style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel${l._isGroup ? ' chunk' : ''}</button>`;
+        if (l._isGroup) {
+          // Group-aware "Cancel all" — fires K worker DELETEs sequentially.
+          // Stamps the chunk sale_ids comma-joined so the handler can iterate
+          // without re-deriving the group; no chain action, fast.
+          const chunkSids = (l._groupChunks || []).map(c => c.sale_id).filter(Boolean).join(',');
+          primaryAction = `<button data-act="market-cancel-preauth-group" data-aid="${escapeHtml(safeAid)}" data-sids="${escapeHtml(chunkSids)}" data-ticker="${escapeHtml(a.ticker || '?')}" title="Cancel all ${groupSize} chunks in this group at once. Each chunk is removed from the worker; on-chain UTXOs stay in your wallet (use Cancel listing → 'self-spend' on each chunk in Holdings if you want to invalidate them permanently)." style="flex:1;font-size:11px;background:transparent;color:var(--ink);border:1px solid var(--ink);">Cancel all (${groupSize})</button>`;
+        }
+        statusLine = l._isGroup
+          ? `<span title="Your chunked listing group is live. Any subset of chunks can be taken individually by buyers.">⏳ your group of ${groupSize} chunks · awaiting buyers</span>`
+          : `<span title="Your instant listing is live. Any buyer can complete the purchase atomically; no fulfilment step required from you.">⏳ your instant listing · awaiting buyer</span>`;
       } else {
-        primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy instantly: builds a commit + atomic settlement tx that pays the seller's signed payout script and delivers the asset to your wallet in one Bitcoin tx. No claim window, no fulfilment step." style="flex:1;font-size:11px;">Buy</button>`;
+        const buyLabel = l._isGroup ? `Buy 1 of ${groupSize}` : 'Buy';
+        primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy instantly: builds a commit + atomic settlement tx that pays the seller's signed payout script and delivers the asset to your wallet in one Bitcoin tx. No claim window, no fulfilment step.${groupTitle}" style="flex:1;font-size:11px;">${escapeHtml(buyLabel)}</button>`;
       }
     } else {
       // Opening / range OTC listings. Intent (28846) and preauth (28874)
@@ -33675,14 +33697,28 @@ function applyMarketFilters() {
     const _tileTopHtml = (_isAssetDetail && _marketSimpleMode)
       ? ''
       : `<div class="market-listing-top">${_isAssetDetail ? '' : `<span>${escapeHtml(a.ticker || '')}</span>`}${kindTrustBadge}</div>`;
+    // Chunked-preauth group: append "× N" badge on the amount line and a
+    // compact "N chunks left" line, plus surface the cumulative group total
+    // (chunk_amount × N) in the total row so buyers see both per-chunk and
+    // group-level liquidity at a glance.
+    const _groupBadge = l._isGroup
+      ? ` <span class="unit" style="background:var(--bg-warm);border:1px solid var(--ink);padding:1px 5px;font-size:10px;font-weight:600;border-radius:2px;" title="${l._groupSize} identical-price chunks · take any subset individually">× ${l._groupSize}</span>`
+      : '';
+    const _groupTotalLine = (l._isGroup && unit != null)
+      ? (() => {
+          const totalAmt = BigInt(amount || '0') * BigInt(l._groupSize);
+          const totalSats = priceSatsRaw * l._groupSize;
+          return `<div class="muted" style="margin-top:4px;font-size:10px;" title="Sum across all ${l._groupSize} chunks in this group">group total: ${escapeHtml(fmtAssetAmount(totalAmt, dec))} ${escapeHtml(a.ticker || 'token')} · ${totalSats.toLocaleString('en-US')} sats</div>`;
+        })()
+      : '';
     tile.innerHTML = `
       ${_tileTopHtml}
-      <div class="market-listing-amount">${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}</div>
+      <div class="market-listing-amount">${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}${_groupBadge}</div>
       <div class="market-listing-unit">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
         <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` per token` : ''}</small>
       </div>
-      <div class="market-listing-id">#${escapeHtml(shorten(displayId, 8))}</div>
+      <div class="market-listing-id">#${escapeHtml(shorten(displayId, 8))}${l._isGroup ? ` · group ${escapeHtml(shorten(l._groupId || '', 4))}` : ''}</div>
       <div class="muted" style="margin-top:8px;font-size:10px;">${escapeHtml(recencyLine)}</div>
       <div style="margin-top:8px;font-size:10px;" class="muted">${l.kind === 'preauth' ? 'seller' : 'maker'}: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || l.seller_payout_address || '', 6))}</span></div>
       ${statusRow}
@@ -33690,6 +33726,7 @@ function applyMarketFilters() {
         <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSatsRaw))}</span>
         <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSatsRaw, ''))}</span>
       </div>
+      ${_groupTotalLine}
       ${actionRow}`;
     // Live-reactivity: compare this tile's current unit price against the
     // last seen value for the same listing key. Tag the tile so CSS
@@ -33745,6 +33782,9 @@ function applyMarketFilters() {
   });
   grid.querySelectorAll('button[data-act="market-cancel-preauth"]').forEach(btn => {
     btn.onclick = async () => marketCancelPreauthHandler(btn);
+  });
+  grid.querySelectorAll('button[data-act="market-cancel-preauth-group"]').forEach(btn => {
+    btn.onclick = async () => marketCancelPreauthGroupHandler(btn);
   });
   // Quick-buy CTA above the grid uses the same take-preauth / claim-intent
   // handlers as the per-row buttons. Wire on the list scope (not grid)
@@ -34178,6 +34218,73 @@ function marketListingDisplayId(l) {
   if (l.kind === 'intent') return l.intent_id || '';
   if (l.kind === 'range') return (l.utxos && l.utxos[0]?.txid) || l.owner_pubkey || '';
   return l.txid || '';
+}
+
+// Chunked-preauth group rendering. Preauth listings published via
+// publishPreauthSaleChunks share the first 8 bytes of their nonce as a
+// "group seed"; together with (seller, asset, chunk_amount, price, expiry)
+// that uniquely identifies one chunked-publish batch. Collapse same-group
+// listings into one synthesised head so the orderbook shows "N chunks
+// available at X sats/TAC" instead of N visually-identical rows.
+//
+// Returns a new array in the same order as the input. For groups with size 1
+// the listing passes through unchanged. For groups with size ≥ 2 only the
+// first chunk is emitted, with _isGroup/_groupSize/_groupChunks metadata
+// attached for the tile renderer. Buy/Cancel actions on a group tile use
+// the head chunk's sale_id; after a successful take, the next refresh
+// promotes the next chunk to head naturally.
+function groupChunkedPreauthListings(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const groups = new Map();
+  for (const l of rows) {
+    if (l.kind !== 'preauth') continue;
+    const nonceHex = String(l.nonce || '');
+    if (nonceHex.length !== 32) continue;
+    const seed = nonceHex.slice(0, 16);  // 8 bytes
+    const aid = l._asset?.asset_id || l.asset_id || '';
+    const amt = (l.asset_opening?.amount ?? '') + '';
+    // Five additional discriminators on top of the seed make accidental
+    // grouping of two unrelated listings (whose random nonces happen to
+    // collide in the first 8 bytes) astronomically unlikely. The seed alone
+    // collides at ~1 in 2^64; combined with seller+asset+amount+price+expiry
+    // the probability of an accidental group is effectively zero.
+    const key = `${seed}|${l.seller_pubkey || ''}|${aid}|${amt}|${l.min_price_sats || 0}|${l.expiry || 0}`;
+    let g = groups.get(key);
+    if (!g) { g = []; groups.set(key, g); }
+    g.push(l);
+  }
+  // Walk the input in order, emitting only the first member of each
+  // multi-member group (with metadata) and passing through everything else.
+  const seenGroupKeys = new Set();
+  const keyOf = (l) => {
+    const nonceHex = String(l.nonce || '');
+    if (l.kind !== 'preauth' || nonceHex.length !== 32) return null;
+    const seed = nonceHex.slice(0, 16);
+    const aid = l._asset?.asset_id || l.asset_id || '';
+    const amt = (l.asset_opening?.amount ?? '') + '';
+    return `${seed}|${l.seller_pubkey || ''}|${aid}|${amt}|${l.min_price_sats || 0}|${l.expiry || 0}`;
+  };
+  const out = [];
+  for (const l of rows) {
+    const k = keyOf(l);
+    if (!k) { out.push(l); continue; }
+    const g = groups.get(k);
+    if (!g || g.length === 1) { out.push(l); continue; }
+    if (seenGroupKeys.has(k)) continue;  // dropped — already emitted via the head
+    seenGroupKeys.add(k);
+    // Spread first, attach metadata. Sort group by created_at ascending so
+    // the "head" is the oldest chunk (most likely to be taken first by
+    // FIFO buyers / Buy-to-cap, and most stable across refreshes).
+    const chunks = g.slice().sort((a, b) => (a.created_at || 0) - (b.created_at || 0));
+    out.push({
+      ...chunks[0],
+      _isGroup: true,
+      _groupSize: chunks.length,
+      _groupChunks: chunks,
+      _groupId: k.slice(0, 16),
+    });
+  }
+  return out;
 }
 function marketAssetHasMarketSurface(asset) {
   if (!asset) return false;
@@ -35245,6 +35352,30 @@ function renderMarketAssetHeader(assetId, rows) {
           <div><span>24h Volume</span><strong>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Market Cap</span><strong>${escapeHtml(mcapUsd)}</strong><small>${escapeHtml(mcapBtc)}</small></div>
           <div><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
+          ${(() => {
+            // "You own" stat tile — surfaces the user's own balance for this
+            // asset right next to Price/Volume so a trader can size positions
+            // without leaving the page. Only renders when balance > 0; the
+            // grid auto-reflows for the fifth tile. USD valuation uses the
+            // header's mark price so it's consistent with the displayed
+            // Price column even when 24h trades vary.
+            const _h = _holdingsCache?.holdings?.get(safeAid);
+            if (!_h || _h.balance <= 0n) return '';
+            const _dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+            const _balStr = fmtAssetAmount(_h.balance, _dec);
+            let _valStr = '';
+            if (headerUnit != null && headerUnit > 0) {
+              const _div = 10n ** BigInt(_dec);
+              const _whole = _h.balance / _div;
+              const _frac = _h.balance - _whole * _div;
+              const _wholeNum = Number(_whole) + (_dec > 0 ? Number(_frac) / Number(_div) : 0);
+              const _valSats = Math.round(_wholeNum * headerUnit);
+              if (Number.isFinite(_valSats) && _valSats > 0) {
+                _valStr = fmtMarketUsdFromSats(_valSats, '');
+              }
+            }
+            return `<div><span>You own</span><strong>${escapeHtml(_balStr)} ${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(_valStr || '—')}</small></div>`;
+          })()}
         </div>
         <!-- Bottom back button dropped — the breadcrumb at top is the
              single back affordance. Two back links flanking a tall stats
@@ -38183,7 +38314,7 @@ function _renderMarketAskForm(formHost, aid) {
     <div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;">
       <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">⚡ List ${escapeHtml(target.ticker || 'token')} for sale (preauth)</div>
       <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:8px;">Sign once at listing time. Any buyer completes settlement alone via ECDH-derived recipient blinding — no fulfilment step from you. Discloses the listed UTXO's (amount, blinding).</div>
-      <label style="font-size:10px;">Pick UTXO to sell ▾ (smallest first)</label>
+      <label style="font-size:10px;">Pick lot to sell ▾ (smallest first)</label>
       <select data-field="utxo">${utxoOpts}</select>
       <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
       <div class="form-row two" style="margin-top:8px;">
@@ -38932,6 +39063,53 @@ async function marketCancelPreauthHandler(btn) {
     else toast('Cancel failed: ' + e.message, 'error');
     restore();
   }
+}
+
+// Bulk cancel for a chunked-preauth group: walks the sids comma-list and
+// fires K worker DELETEs sequentially. Stops on the first failure and
+// reports how many of K succeeded so the user knows what to retry.
+// No chain action — on-chain UTXOs stay in holdings and can be self-spent
+// individually if the user wants to invalidate the pre-signed authorizations.
+async function marketCancelPreauthGroupHandler(btn) {
+  if (btn.disabled) return;
+  const aid = btn.dataset.aid;
+  const sidsRaw = btn.dataset.sids || '';
+  const ticker = btn.dataset.ticker || '?';
+  const sids = sidsRaw.split(',').map(s => s.trim()).filter(Boolean);
+  if (sids.length === 0) { toast('No chunks to cancel', 'error'); return; }
+  if (!confirm(
+    `Cancel all ${sids.length} chunks in this group?\n\n` +
+    `Worker removes all ${sids.length} ${ticker} listings; buyers won't see them after the next market refresh.\n\n` +
+    `Note: the K pre-signed asset spends remain valid on the K on-chain UTXOs until you spend them yourself. ` +
+    `For a hard cancel, after this completes, self-CXFER each chunk UTXO from Holdings.`,
+  )) return;
+  const origText = btn.textContent;
+  btn.disabled = true;
+  let done = 0;
+  let firstErr = null;
+  for (const sid of sids) {
+    btn.textContent = `cancelling ${done + 1}/${sids.length}…`;
+    try {
+      await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
+      done++;
+    } catch (e) {
+      if (isUnlockCancelled(e)) { firstErr = new Error('Unlock cancelled'); break; }
+      firstErr = e;
+      break;
+    }
+  }
+  if (firstErr && done === 0) {
+    toast(`Cancel group failed: ${firstErr.message}`, 'error');
+    btn.disabled = false; btn.textContent = origText;
+    return;
+  }
+  if (firstErr) {
+    toast(`Cancelled ${done}/${sids.length} chunks · ${firstErr.message}`, 'error', 10000);
+  } else {
+    toast(`Cancelled ${done} chunks ✓`, 'success');
+  }
+  invalidateMarketCache();
+  setTimeout(() => renderMarket(), 500);
 }
 
 async function marketTakeHandler(btn) {
