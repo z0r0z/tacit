@@ -7715,6 +7715,7 @@ async function scanHoldings(force = false) {
           if (myGen === _holdingsLatestGen) {
             _holdingsCache = { fetchedAt: Date.now(), holdings: h };
           }
+          try { _pendingClearPostScan(); } catch {}
           return h;
         } finally { clearTimeout(timeoutId); }
       })();
@@ -32597,6 +32598,162 @@ function _bindMarketLiveCleanup(el) {
     el.removeAttribute('data-market-anim');
   }, { once: false });
 }
+// Pending settlements — in-flight trades whose Bitcoin tx is broadcast
+// but not yet indexed + validated. Magic-Eden-style "you bought it"
+// optimistic surface: a strip at the top of the Holdings and Market
+// tabs that lists what's settling, while balances in h.utxos stay
+// authoritative (and unchanged) until validation lands. Critically
+// the pending amounts are display-only — Send Privately and other
+// spend paths read from h.utxos, so an optimistic credit can never
+// be re-spent before it's real. Cleared after the next scanHoldings
+// completes (its result either reflects the new UTXO or the spent
+// one, so the pending tag is no longer needed) and on a defensive
+// 15-min wall-clock timeout.
+const _pendingSettlements = new Map();
+const PENDING_SETTLEMENT_TTL_MS = 15 * 60 * 1000;
+const PENDING_SETTLEMENT_POST_SCAN_GRACE_MS = 90 * 1000;
+// Recent user-initiated cancellations: a listing key that disappears
+// from the orderbook during an auto-refresh diff is normally a "sold"
+// signal (worker DELETEs settled sales) — but if the user just clicked
+// Cancel locally we don't want to fire a "your listing sold" toast at
+// them. 60s TTL covers worker round-trip + auto-refresh granularity.
+const _recentLocalListingCancels = new Map();
+const RECENT_LOCAL_CANCEL_TTL_MS = 60 * 1000;
+// Snapshot of my listing keys from the prior auto-refresh tick, for
+// disappearance diffing. Rebuilt every tick after fetchMarketDataDeduped.
+let _myListingsSnapshot = null;
+
+function _pendingAddSettlement({ tradeId, kind, aid, ticker, decimals, amountBase, satsTotal }) {
+  if (!aid || (kind !== 'buy' && kind !== 'sell')) return;
+  const id = tradeId || `${kind}-${aid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  _pendingSettlements.set(id, {
+    kind,
+    aid,
+    ticker: ticker || '?',
+    decimals: Number.isInteger(decimals) ? decimals : 0,
+    amountBase: typeof amountBase === 'bigint' ? amountBase : (() => { try { return BigInt(amountBase || 0); } catch { return 0n; } })(),
+    satsTotal: Number(satsTotal || 0),
+    ts: Date.now(),
+  });
+  _renderPendingSettlementsStrip();
+}
+function _pendingClearStale() {
+  const now = Date.now();
+  let changed = false;
+  for (const [k, v] of _pendingSettlements) {
+    if (now - v.ts > PENDING_SETTLEMENT_TTL_MS) { _pendingSettlements.delete(k); changed = true; }
+  }
+  for (const [k, ts] of _recentLocalListingCancels) {
+    if (now - ts > RECENT_LOCAL_CANCEL_TTL_MS) _recentLocalListingCancels.delete(k);
+  }
+  if (changed) _renderPendingSettlementsStrip();
+}
+// Called after scanHoldings completes successfully. Any pending older
+// than the grace window has had time to land in h.utxos / h.unverified
+// (or in the seller's case, drop off the holdings list), so the actual
+// renderHoldings output is now the authoritative surface and the
+// pending row is stale clutter.
+function _pendingClearPostScan() {
+  const now = Date.now();
+  let changed = false;
+  for (const [k, v] of _pendingSettlements) {
+    if (now - v.ts > PENDING_SETTLEMENT_POST_SCAN_GRACE_MS) {
+      _pendingSettlements.delete(k);
+      changed = true;
+    }
+  }
+  if (changed) _renderPendingSettlementsStrip();
+}
+function _renderPendingSettlementsStrip() {
+  _pendingClearStale();
+  const hosts = document.querySelectorAll('[data-pending-settlements-strip]');
+  if (!hosts.length) return;
+  const entries = [..._pendingSettlements.values()];
+  if (entries.length === 0) {
+    hosts.forEach(h => { h.style.display = 'none'; h.innerHTML = ''; });
+    return;
+  }
+  // Aggregate by (kind, aid) so multiple chunks of the same trade
+  // collapse to one row. The strip is a status surface, not a ledger;
+  // per-tx granularity would just add visual noise.
+  const grouped = new Map();
+  for (const e of entries) {
+    const key = `${e.kind}|${e.aid}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.amountBase += e.amountBase;
+      existing.satsTotal += e.satsTotal;
+      existing.count += 1;
+    } else {
+      grouped.set(key, {
+        kind: e.kind, aid: e.aid, ticker: e.ticker, decimals: e.decimals,
+        amountBase: e.amountBase, satsTotal: e.satsTotal, count: 1,
+      });
+    }
+  }
+  const itemsHtml = [...grouped.values()].map(g => {
+    const sign = g.kind === 'buy' ? '+' : '−';
+    const verb = g.kind === 'buy' ? 'buying' : 'selling';
+    const amtStr = fmtAssetAmount(g.amountBase, g.decimals);
+    const satsLine = g.satsTotal > 0 ? ` · ${g.satsTotal.toLocaleString('en-US')} sats` : '';
+    return `<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg-warm);font-size:11px;font-family:var(--mono, monospace);">
+      <strong style="color:${g.kind === 'buy' ? '#0a7d3a' : '#a04030'};">${sign}${escapeHtml(amtStr)} ${escapeHtml(g.ticker)}</strong>
+      <span class="muted" style="font-size:10px;font-family:inherit;">${verb}${g.count > 1 ? ` · ${g.count} txs` : ''}${satsLine}</span>
+    </span>`;
+  }).join(' ');
+  const html = `
+    <div style="margin-bottom:14px;padding:8px 12px;border:1px dashed var(--ink-faint);background:var(--bg);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;">
+        <span class="market-live-dot" title="Trades broadcast and awaiting Bitcoin confirmation"></span>
+        <strong>Settling</strong>
+      </span>
+      ${itemsHtml}
+      <span class="muted" style="font-size:10px;margin-left:auto;">~10 min on Bitcoin · balances refresh on the next scan</span>
+    </div>`;
+  hosts.forEach(h => { h.style.display = 'block'; h.innerHTML = html; });
+}
+function _markLocalListingCancel(listingKey) {
+  if (listingKey) _recentLocalListingCancels.set(listingKey, Date.now());
+}
+// Stable per-listing key used by both the market auto-refresh snapshot
+// and the local-cancel suppression set. Mirrors marketListingKey() but
+// hardened against missing fields so it can't throw inside the diff loop.
+function _myListingKey(l) {
+  if (!l) return '';
+  if (l.kind === 'preauth') return `preauth:${l.sale_id || ''}`;
+  if (l.kind === 'intent') return `intent:${l.intent_id || ''}`;
+  if (l.kind === 'range') return `range:${l._asset?.asset_id || l.asset_id || ''}:${l.maker_pubkey || ''}`;
+  return `opening:${l.txid || ''}:${l.vout | 0}`;
+}
+function _snapshotMyListings(myPubHex) {
+  const out = new Map();
+  if (!myPubHex || !_marketCache?.listings) return out;
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (const l of _marketCache.listings) {
+    const sellerPub = l.seller_pubkey || l.owner_pubkey || l.maker_pubkey || '';
+    if (sellerPub !== myPubHex) continue;
+    if (l.expired) continue;
+    if (Number(l.expiry || 0) > 0 && Number(l.expiry || 0) <= nowSec) continue;
+    const key = _myListingKey(l);
+    if (!key) continue;
+    out.set(key, {
+      aid: l._asset?.asset_id || l.asset_id || '',
+      ticker: l._asset?.ticker || '?',
+      decimals: Number.isInteger(l._asset?.decimals) ? l._asset.decimals : 0,
+      kind: l.kind,
+      expiry: Number(l.expiry || 0),
+      priceSats: Number(l.min_price_sats || l.price_sats || 0),
+      amount: (() => {
+        try {
+          if (l.kind === 'preauth') return BigInt(l.asset_opening?.amount || '0');
+          if (l.kind === 'range') return BigInt(l.threshold || '0');
+          return BigInt(l.amount || '0');
+        } catch { return 0n; }
+      })(),
+    });
+  }
+  return out;
+}
 // Auto-refresh: re-fetch market data every 15s while the Markets tab is
 // visible. Hooks into existing fetchMarketDataDeduped so a manual swap
 // completing within the window doesn't trigger a duplicate request.
@@ -32619,8 +32776,36 @@ function _startMarketAutoRefresh() {
       // listings appearing or old ones disappearing wait for the next
       // user-triggered render — that's an explicit trade-off (slight
       // structural staleness vs zero flicker on every tick).
+      const myPubHex = wallet?.pub ? bytesToHex(wallet.pub) : '';
+      const beforeMine = myPubHex ? (_myListingsSnapshot || _snapshotMyListings(myPubHex)) : null;
       await fetchMarketDataDeduped();
       try { _updateMarketCellsInPlace(); } catch (e) { console.warn('[market] cell-update failed', e?.message); }
+      // Seller-side fill notification: any of my listings that vanished
+      // between snapshots, and weren't naturally expired or just locally
+      // cancelled, are by elimination filled. Toast + add a pending-sell
+      // row so the seller sees "you sold X TAC" immediately instead of
+      // waiting for the next holdings scan to drop the UTXO.
+      if (myPubHex && beforeMine) {
+        const afterMine = _snapshotMyListings(myPubHex);
+        const nowSec = Math.floor(Date.now() / 1000);
+        for (const [key, snap] of beforeMine) {
+          if (afterMine.has(key)) continue;
+          if (snap.expiry > 0 && snap.expiry <= nowSec) continue;
+          if (_recentLocalListingCancels.has(key)) continue;
+          const amtStr = fmtAssetAmount(snap.amount, snap.decimals);
+          try {
+            toast(`Your ${snap.ticker} listing sold ✓ · ${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin`, 'success', 10000);
+          } catch {}
+          _pendingAddSettlement({
+            tradeId: `sell-${key}-${Date.now()}`,
+            kind: 'sell', aid: snap.aid, ticker: snap.ticker,
+            decimals: snap.decimals, amountBase: snap.amount, satsTotal: snap.priceSats,
+          });
+        }
+        _myListingsSnapshot = afterMine;
+      } else if (myPubHex) {
+        _myListingsSnapshot = _snapshotMyListings(myPubHex);
+      }
     } catch {}
   }, MARKET_AUTO_REFRESH_MS);
 }
@@ -39871,6 +40056,13 @@ async function marketTakeIntentHandler(btn) {
     setProgressStrip('market-take-progress', 3);
     setTimeout(() => { if (takeStrip) takeStrip.style.display = 'none'; setProgressStrip('market-take-progress', -1); }, 1200);
     toast(`Filled · ${fmtAssetAmount(BigInt(intent.amount), intent.decimals || 0)} ${intent.ticker} bought · settles in ~10 min (check Holdings)`, 'success', 10000);
+    _pendingAddSettlement({
+      tradeId: `buy-intent-${iid}`,
+      kind: 'buy', aid, ticker: intent.ticker || '?',
+      decimals: intent.decimals || 0,
+      amountBase: BigInt(intent.amount || '0'),
+      satsTotal: Number(intent.price_sats || 0),
+    });
     btn.textContent = 'filled';
     setTimeout(() => renderMarket(), 2000);
     renderHoldings();
@@ -39916,7 +40108,8 @@ async function marketCancelIntentHandler(btn) {
     if (!confirm('Asset UTXO already spent - the intent has settled or been cancelled elsewhere. Remove the marketplace record?')) return;
     btn.disabled = true; btn.textContent = 'cleaning up...';
     try {
-      await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid });
+      _markLocalListingCancel(`intent:${iid}`);
+    await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid });
       toast('Marketplace record removed OK', 'success');
       setTimeout(() => renderMarket(), 500);
     } catch (e) {
@@ -39987,6 +40180,7 @@ async function marketCancelIntentHandler(btn) {
   if (!confirm(`Cancel this open order? Removed from the marketplace immediately. ${_forfeitNote}`)) return;
   btn.disabled = true; btn.textContent = 'cancelling...';
   try {
+    _markLocalListingCancel(`intent:${iid}`);
     await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid });
     toast('Intent cancelled OK', 'success');
     setTimeout(() => renderMarket(), 500);
@@ -40222,6 +40416,13 @@ async function marketTakePreauthHandler(btn) {
     // ("you bought $35 of TAC") even though settlement is Bitcoin-native.
     const _filledUsd = fmtMarketUsdFromSats(price, '');
     toast(`Filled · ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${ticker} bought${_filledUsd ? ` (${_filledUsd})` : ''} · settles in ~10 min (check Holdings)`, 'success', 10000);
+    _pendingAddSettlement({
+      tradeId: `buy-preauth-${sid}`,
+      kind: 'buy', aid, ticker,
+      decimals: dec,
+      amountBase: BigInt(amount || '0'),
+      satsTotal: price,
+    });
     invalidateMarketCache();
     setTimeout(() => { renderActivity(); renderMarket(); }, 800);
     // Leave button disabled on success; renderMarket replaces the tile.
@@ -40437,6 +40638,15 @@ async function marketTakePreauthGroupHandler(btn) {
   } else {
     toast(`Filled · ${k} chunks bought (${_amtStr} ${ticker}${_filledUsd ? ` · ${_filledUsd}` : ''}) · settles in ~10 min (check Holdings)`, 'success', 10000);
   }
+  if (filled > 0) {
+    _pendingAddSettlement({
+      tradeId: `buy-group-${aid}-${Date.now()}`,
+      kind: 'buy', aid, ticker,
+      decimals: dec,
+      amountBase: BigInt(amount || '0') * BigInt(filled),
+      satsTotal: price * filled,
+    });
+  }
   invalidateMarketCache();
   setTimeout(() => { renderActivity(); renderMarket(); }, 800);
 }
@@ -40518,6 +40728,11 @@ async function marketCancelPreauthHandler(btn) {
     `For a hard cancel, after this completes, do a Send Privately of the listed UTXO to yourself.`,
   )) { restore(); return; }
   btn.textContent = 'cancelling...';
+  // Mark this listing as a local cancel BEFORE the worker write so the
+  // next auto-refresh diff doesn't fire a "your listing sold" toast
+  // when it sees the entry vanish — that toast is meant for filled
+  // sales, not user-initiated removals.
+  _markLocalListingCancel(`preauth:${sid}`);
   try {
     await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
     // Post-soft-cancel nudge: surfaces the hard-cancel follow-up so a
@@ -40598,6 +40813,10 @@ async function marketCancelPreauthGroupHandler(btn) {
   )) return;
   const origText = btn.textContent;
   btn.disabled = true;
+  // Pre-mark every chunk as a local cancel so the auto-refresh diff
+  // doesn't false-positive any of them as a sale once the worker
+  // DELETEs propagate through the SWR cache.
+  for (const sid of sids) _markLocalListingCancel(`preauth:${sid}`);
   let done = 0;
   let firstErr = null;
   for (const sid of sids) {
