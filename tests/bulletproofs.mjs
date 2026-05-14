@@ -148,16 +148,32 @@ function _bpGens() {
   return { Gvec: _BP_GVEC, Hvec: _BP_HVEC, Q: _BP_Q };
 }
 
+// Fiat-Shamir transcript. MUST match the dapp's byte-exact protocol —
+// dapp/tacit.js:3134 uses length-prefixed (4-byte LE u32) labels and
+// data so the on-chain rangeproofs verify against the same transcript
+// reconstruction. Prior to this alignment, tests' transcript appended
+// unprefixed labels and data and could not verify dapp-generated
+// on-chain proofs; the divergence was surfaced by the TAC mainnet
+// canary's cryptographic-replay step.
 function bpTranscript() {
   const parts = [];
+  const _u32 = n => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; };
+  const _push = (labelBytes, dataBytes) => {
+    parts.push(_u32(labelBytes.length));
+    parts.push(labelBytes);
+    parts.push(_u32(dataBytes.length));
+    parts.push(dataBytes);
+  };
   return {
     append(label, bytes) {
-      parts.push(new TextEncoder().encode(label));
-      parts.push(bytes);
+      _push(new TextEncoder().encode(label), bytes);
     },
     challenge(label) {
-      parts.push(new TextEncoder().encode(label));
+      const labelBytes = new TextEncoder().encode(label);
+      parts.push(_u32(labelBytes.length));
+      parts.push(labelBytes);
       const h = sha256(concatBytes(...parts));
+      parts.push(_u32(h.length));
       parts.push(h);
       let c = modN(bytes32ToBigint(h));
       if (c === 0n) {
@@ -276,7 +292,7 @@ function bpRangeAggProve(values, blindings, n_bits = N_BITS) {
   let S = G.multiply(rho).add(msm(s_L, Gvec)).add(msm(s_R, Hvec));
 
   const transcript = bpTranscript();
-  transcript.append('domain', new TextEncoder().encode('tacit-bp-v2'));
+  transcript.append('domain', new TextEncoder().encode('tacit-bp-v1'));
   transcript.append('n', new Uint8Array([n_bits & 0xff]));
   transcript.append('m', new Uint8Array([m & 0xff]));
   for (const V of V_pts) transcript.append('V', pointToBytes(V));
@@ -389,7 +405,7 @@ function bpRangeAggBatchVerify(items, n_bits = N_BITS) {
     const b_final = bytes32ToBigint(proofBytes.slice(off, off + 32)); off += 32;
 
     const transcript = bpTranscript();
-    transcript.append('domain', new TextEncoder().encode('tacit-bp-v2'));
+    transcript.append('domain', new TextEncoder().encode('tacit-bp-v1'));
     transcript.append('n', new Uint8Array([n_bits & 0xff]));
     transcript.append('m', new Uint8Array([m & 0xff]));
     for (const V of V_pts) transcript.append('V', pointToBytes(V));

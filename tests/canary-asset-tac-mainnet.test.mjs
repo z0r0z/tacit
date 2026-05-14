@@ -45,6 +45,8 @@
 
 import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils';
+import { decodeEnvelopeScript } from './indexer.mjs';
+import { bytesToPoint, bpRangeAggVerify } from './bulletproofs.mjs';
 
 // ============================================================
 // Pinned fixtures — captured from the live mainnet asset at the
@@ -63,6 +65,40 @@ const ASSET = Object.freeze({
   image_uri:       'ipfs://bafkreig7m5j66zlaewjvo6bipk723udgdhnyl7ve5k2suofuvhi2mmb3ai',
   etched_at_height: 948242,
 });
+
+// Monotonic counter lower bounds. Pinned at canary creation; the worker
+// MUST never report a value below these (asset state can grow, never
+// shrink). A worker migration that drops historical data, a KV wipe,
+// or any indexer bug that orphans confirmed transactions would fail
+// this check. Update only when you've verified the worker correctly
+// reflects a higher value; updating downward is forbidden and would
+// indicate either tampering or a regression.
+const MONOTONIC_FLOORS = Object.freeze({
+  transfer_count:   933,    // distinct confirmed transfers indexed for this asset
+  holder_count:     1251,   // unique-recipient-scripthash count
+  disclosure_count: 3,      // attested supply disclosures
+  opening_count:    26,     // published UTXO openings
+});
+
+// Specific historical trades that MUST continue to appear in the
+// worker's /assets/{aid}.trades feed AND remain block-confirmed on
+// mainnet. Catches: worker trade-ring-buffer drops, indexer rescans
+// that orphan confirmed trades, KV migrations that lose history,
+// hypothetical chain reorgs (Bitcoin doesn't reorg blocks this old
+// in practice; this leg is belt-and-suspenders).
+//
+// Pinning policy: only trades that are demonstrably already
+// block-confirmed at canary creation. Fresh/mempool-only trades are
+// not pinned here because their post-broadcast pre-confirmation state
+// would create false-positive failures. Each entry below was verified
+// confirmed on mainnet via mempool.space at the time of pin.
+const PINNED_TRADES = Object.freeze([
+  Object.freeze({ txid: '1a9c4fec86b651287daeda409a5f9fdceb9fa2062ef429eb62d9867496b394dc', price_sats: 34500,  amount: '17288766395',  ts: 1778693707 }),
+  Object.freeze({ txid: '2a461126dedcac5d10dacab67bd88ce3773bf86f7ff2e0a116f783f70cf7961c', price_sats: 50000,  amount: '21963141745',  ts: 1778693203 }),
+  Object.freeze({ txid: 'e0758d2aada7f4a447d99ee163d89c8d866439f24d7f5aaf06bd7a72cca65468', price_sats: 34400,  amount: '10000000000',  ts: 1778692929 }),
+  Object.freeze({ txid: '021692ee229e2ec0a7cb42a5df0a31638350f3111d22e76d2bef3b43f1970ae4', price_sats: 150000, amount: '40000000000',  ts: 1778692730 }),
+  Object.freeze({ txid: 'f317a73d6d2b3e78ca275082af5cd902633edd95341dd45596b51d0a0d445831', price_sats: 60000,  amount: '16282047462',  ts: 1778690719 }),
+]);
 
 const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
 const CHAIN_API = 'https://mempool.space/api';
@@ -106,6 +142,34 @@ function assetIdFor(etchTxidHex, etchVout) {
   const voutLE = new Uint8Array(4);
   new DataView(voutLE.buffer).setUint32(0, etchVout >>> 0, true);
   return sha256(new Uint8Array([...txidBE, ...voutLE]));
+}
+
+// Minimal T_AXFER (0x26) payload decoder, structurally identical to
+// worker/src/index.js decodeAxferPayload. Inlined to keep the canary
+// independent of worker internals — if the wire shape changes upstream,
+// this canary fails LOUDLY rather than silently following the new shape.
+const T_AXFER_OPCODE = 0x26;
+function decodeAxferPayload(payload) {
+  if (!payload || payload.length < 1 + 32 + 1 + 64 + 1) return null;
+  if (payload[0] !== T_AXFER_OPCODE) return null;
+  let p = 1;
+  const asset_id = payload.slice(p, p + 32); p += 32;
+  const asset_input_count = payload[p]; p += 1;
+  if (asset_input_count < 1) return null;
+  const kernel_sig = payload.slice(p, p + 64); p += 64;
+  const N = payload[p]; p += 1;
+  if (![1, 2, 4, 8].includes(N)) return null;
+  if (p + N * (33 + 8) + 2 > payload.length) return null;
+  const outputs = [];
+  for (let i = 0; i < N; i++) {
+    const commitment = payload.slice(p, p + 33); p += 33;
+    const amount_ct = payload.slice(p, p + 8); p += 8;
+    outputs.push({ commitment, amount_ct });
+  }
+  const rp_len = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rp_len !== payload.length) return null;
+  const rangeproof = payload.slice(p, p + rp_len);
+  return { asset_id, asset_input_count, kernel_sig, N, outputs, rangeproof };
 }
 
 console.log(`\n=== mainnet canary: ${ASSET.ticker} (${ASSET.asset_id.slice(0, 12)}…) ===\n`);
@@ -278,6 +342,199 @@ await test('bid-intents endpoint returns records with every dapp-required field'
     return true;
   } catch (e) {
     console.log(`     unreachable: ${e.message}`);
+    return 'skip';
+  }
+});
+
+// ------------------------------------------------------------
+// 5. MONOTONIC COUNTER FLOORS (network-dependent)
+//
+// Asset state can only grow. A worker that reports a value below the
+// pinned floor for any of these counters has either lost data
+// (KV wipe, failed migration, indexer regression) or been tampered
+// with. The floor is updated only when verified higher in a separate
+// audited change to this file.
+// ------------------------------------------------------------
+await test('monotonic counters meet pinned floors (transfers, holders, disclosures, openings)', async () => {
+  if (!workerData) return 'skip';
+  const drifts = [];
+  for (const [k, floor] of Object.entries(MONOTONIC_FLOORS)) {
+    const v = Number(workerData[k]);
+    if (!Number.isInteger(v)) { drifts.push(`${k}: missing or non-integer (got ${workerData[k]})`); continue; }
+    if (v < floor) drifts.push(`${k}: ${v} < pinned floor ${floor} — asset state regressed`);
+  }
+  if (drifts.length) {
+    drifts.forEach(d => console.log(`     ${d}`));
+    return false;
+  }
+  return true;
+});
+
+// ------------------------------------------------------------
+// 6. HISTORICAL TRADE PRESERVATION (network-dependent)
+//
+// Each pinned trade MUST still appear in the worker's trade history
+// for this asset, AND its Bitcoin tx MUST still be confirmed on
+// mainnet. Catches: worker trade-ring-buffer drops, indexer rescans
+// that orphan confirmed trades, KV migrations that lose history.
+// ------------------------------------------------------------
+await test('pinned historical trades still appear in worker trade history', async () => {
+  if (!workerData) return 'skip';
+  if (!Array.isArray(workerData.trades)) {
+    console.log(`     workerData.trades: not an array`);
+    return false;
+  }
+  const tradeByTxid = new Map(workerData.trades.map(t => [t.txid, t]));
+  const drifts = [];
+  for (const pinned of PINNED_TRADES) {
+    const live = tradeByTxid.get(pinned.txid);
+    if (!live) { drifts.push(`trade ${pinned.txid.slice(0, 12)}… missing from worker trade history`); continue; }
+    if (Number(live.price_sats) !== pinned.price_sats) drifts.push(`trade ${pinned.txid.slice(0, 12)}… price_sats drift: ${live.price_sats} vs ${pinned.price_sats}`);
+    if (String(live.amount) !== pinned.amount) drifts.push(`trade ${pinned.txid.slice(0, 12)}… amount drift: ${live.amount} vs ${pinned.amount}`);
+    if (Number(live.ts) !== pinned.ts) drifts.push(`trade ${pinned.txid.slice(0, 12)}… ts drift: ${live.ts} vs ${pinned.ts}`);
+  }
+  if (drifts.length) {
+    drifts.forEach(d => console.log(`     ${d}`));
+    return false;
+  }
+  console.log(`     verified ${PINNED_TRADES.length} pinned trades present + fields unchanged`);
+  return true;
+});
+
+await test('pinned historical trade txs still confirmed on mainnet', async () => {
+  try {
+    const fails = [];
+    for (const pinned of PINNED_TRADES) {
+      const r = await fetchWithRetry(`${CHAIN_API}/tx/${pinned.txid}`);
+      const tx = await r.json();
+      if (!tx.status?.confirmed) {
+        fails.push(`tx ${pinned.txid.slice(0, 12)}… is not confirmed (worker shows it as a trade)`);
+        continue;
+      }
+    }
+    if (fails.length) {
+      fails.forEach(f => console.log(`     ${f}`));
+      return false;
+    }
+    console.log(`     verified ${PINNED_TRADES.length} pinned trade txs still confirmed on chain`);
+    return true;
+  } catch (e) {
+    console.log(`     unreachable: ${e.message}`);
+    return 'skip';
+  }
+});
+
+// ------------------------------------------------------------
+// 7. CRYPTOGRAPHIC REPLAY (network-dependent)
+//
+// For each pinned trade tx, fetch its full witness from mainnet,
+// decode the envelope script, decode the T_AXFER payload, and
+// re-verify the aggregated bulletproof rangeproof against the
+// SPEC-normative crypto stack (`tacit-bp-v1` transcript domain,
+// canonical G/H/Q generators from `tacit-bp-{G,H,Q}-v1`).
+//
+// What this DOES verify:
+//   - The envelope script in vin[0].witness lives at the canonical
+//     index (witness[witness.length - 2], or [-3] with annex).
+//   - The envelope script decodes via the canonical envelope
+//     decoder (magic bytes "TACIT", version byte 0x01).
+//   - The decoded opcode is recognized as T_AXFER (0x26).
+//   - The T_AXFER payload decodes structurally: asset_id (32B),
+//     asset_input_count (≥ 1), kernel_sig (64B), output count
+//     N ∈ {1, 2, 4, 8}, output commitments (33B each + 8B amount
+//     ct), and rangeproof bytes match the declared rp_len exactly.
+//   - The asset_id in every replayed payload matches TAC's pinned
+//     asset_id (no asset-id collision, no SPEC drift in asset_id
+//     placement within the payload).
+//   - Every output commitment parses as a valid compressed
+//     secp256k1 curve point.
+//   - The aggregated bulletproof rangeproof re-verifies under the
+//     SPEC §3 generators and `tacit-bp-v1` Fiat-Shamir transcript.
+//     A failure here means a historical TAC transfer is no longer
+//     cryptographically valid under current code — load-bearing
+//     protection against any validator regression that perturbs
+//     bulletproof verification.
+//
+// What this does NOT yet verify (deferred to a follow-up canary):
+//   - The kernel signature against (Σ C_out − Σ C_in).x_only —
+//     requires walking back to parent UTXOs for input commitments.
+//     Ancestry walk is ~10× heavier; warrants its own canary file.
+//
+// HISTORICAL NOTE: prior to commit landing the v1/v2 BP transcript
+// alignment, `tests/bulletproofs.mjs` used `tacit-bp-v2` while the
+// dapp + SPEC.md §3 normatively pinned `tacit-bp-v1`. The drift was
+// surfaced when this canary's cryptographic-replay test failed
+// against live mainnet proofs. Alignment landed in the same PR as
+// this canary's rangeproof step; the full test suite (BP + composition
+// + adversarial + vectors + mixer + indexer) was re-run under v1 and
+// produced zero regressions.
+// ------------------------------------------------------------
+await test('pinned trades: structural decode + asset_id match + rangeproof re-verifies (T_AXFER 0x26)', async () => {
+  try {
+    let totalOutputs = 0;
+    for (const pinned of PINNED_TRADES) {
+      const r = await fetchWithRetry(`${CHAIN_API}/tx/${pinned.txid}`);
+      const tx = await r.json();
+      const witness = tx.vin?.[0]?.witness;
+      if (!Array.isArray(witness) || witness.length < 3) {
+        console.log(`     ${pinned.txid.slice(0, 12)}…: vin[0].witness missing or too short`);
+        return false;
+      }
+      // For a taproot script-path spend, the script lives at witness[witness.length - 2]
+      // and the control block at witness[witness.length - 1]. With an annex (rare,
+      // starts with 0x50), there's an extra trailing element. We tolerate both.
+      const hasAnnex = witness[witness.length - 1].startsWith('50');
+      const scriptHex = hasAnnex ? witness[witness.length - 3] : witness[witness.length - 2];
+      if (!scriptHex || typeof scriptHex !== 'string') {
+        console.log(`     ${pinned.txid.slice(0, 12)}…: envelope script missing from witness`);
+        return false;
+      }
+      const env = decodeEnvelopeScript(hexToBytes(scriptHex));
+      if (!env) {
+        console.log(`     ${pinned.txid.slice(0, 12)}…: envelope script failed to decode via canonical decoder`);
+        return false;
+      }
+      if (env.opcode !== T_AXFER_OPCODE) {
+        console.log(`     ${pinned.txid.slice(0, 12)}…: opcode is 0x${env.opcode.toString(16).padStart(2, '0')}, expected 0x26 (T_AXFER) — trade settlement assumed`);
+        return false;
+      }
+      const pay = decodeAxferPayload(env.payload);
+      if (!pay) {
+        console.log(`     ${pinned.txid.slice(0, 12)}…: T_AXFER payload failed to decode`);
+        return false;
+      }
+      if (bytesToHex(pay.asset_id) !== ASSET.asset_id) {
+        console.log(`     ${pinned.txid.slice(0, 12)}…: asset_id in payload (${bytesToHex(pay.asset_id).slice(0, 12)}…) doesn't match TAC`);
+        return false;
+      }
+      // Every commitment must parse as a curve point. Fails if a SPEC
+      // change accidentally changes commitment encoding from
+      // compressed-secp256k1 to something else.
+      let V_pts;
+      try {
+        V_pts = pay.outputs.map(o => bytesToPoint(o.commitment));
+      } catch (e) {
+        console.log(`     ${pinned.txid.slice(0, 12)}…: commitment bytes failed to parse as curve points: ${e.message}`);
+        return false;
+      }
+      // Aggregated bulletproof rangeproof must verify under the
+      // SPEC §3 generators + `tacit-bp-v1` Fiat-Shamir transcript.
+      // This catches any regression in BP generators, transcript
+      // domain, n_bits parameter, or aggregation rules that would
+      // retroactively invalidate this confirmed mainnet trade.
+      const ok = bpRangeAggVerify(V_pts, pay.rangeproof);
+      if (!ok) {
+        console.log(`     ${pinned.txid.slice(0, 12)}…: bulletproof rangeproof FAILED to verify under current crypto stack`);
+        console.log(`     >>> A historical TAC transfer is no longer cryptographically valid. <<<`);
+        console.log(`     >>> Investigate the BP generators / transcript domain immediately. <<<`);
+        return false;
+      }
+      totalOutputs += pay.N;
+    }
+    console.log(`     verified ${PINNED_TRADES.length} pinned trades · ${totalOutputs} output commitments · all rangeproofs re-verify under tacit-bp-v1`);
+    return true;
+  } catch (e) {
+    console.log(`     unreachable / decode error: ${e.message}`);
     return 'skip';
   }
 });

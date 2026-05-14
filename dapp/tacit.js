@@ -2877,6 +2877,121 @@ function tryExtractAxintentOnchainOpReturn(scriptBytes) {
 }
 
 // ============================================================================
+// §5.7.6.1 Variable-amount atomic settlement (T_AXFER_VAR / opcode 0x37)
+// crypto helpers. See SPEC-VARIABLE-AMOUNT-AMENDMENT.md for the normative
+// definitions; this block is the dapp's matching encoder + key derivations.
+//
+// New domain tags (added to §3 by the amendment):
+//   - tacit-axintent-change-v1            (off-chain maker-change blinding)
+//   - tacit-axintent-onchain-maker-amount-v1   (on-chain maker recovery amount keystream)
+//   - tacit-axintent-onchain-maker-blinding-v1 (on-chain maker recovery blinding keystream)
+//
+// All three are derived from maker_priv alone (no ECDH) because the maker
+// is decrypting their own data — the only secret needed is the maker's
+// private key.
+// ============================================================================
+
+const AXINTENT_CHANGE_DOMAIN              = new TextEncoder().encode('tacit-axintent-change-v1');
+const AXINTENT_ONCHAIN_MAKER_AMOUNT_DOM   = new TextEncoder().encode('tacit-axintent-onchain-maker-amount-v1');
+const AXINTENT_ONCHAIN_MAKER_BLINDING_DOM = new TextEncoder().encode('tacit-axintent-onchain-maker-blinding-v1');
+const AXFER_VAR_OPRETURN_PAYLOAD_BYTES    = 80;  // 40B taker + 40B maker
+
+// Maker's self-change blinding scalar for a variable-amount fulfilment.
+// Derived from maker_priv alone — no ECDH needed since the maker recovers
+// their own change. Binds (intent_id, asset_id) so multiple intents from
+// the same maker against the same asset produce distinct change blindings.
+//
+// Returns a bigint in [1, SECP_N).
+function deriveAxintentMakerChangeBlinding(makerPriv, intentIdBytes, assetIdBytes) {
+  const out = hmac(sha256, makerPriv, concatBytes(AXINTENT_CHANGE_DOMAIN, intentIdBytes, assetIdBytes));
+  return bytes32ToBigint(out) % SECP_N;
+}
+
+// Per-maker keystreams for the on-chain OP_RETURN(80) recovery payload.
+// Used by both encoder (at fulfilment) and decoder (at maker recovery).
+function deriveAxintentMakerOnchainKeystreams(makerPriv, intentIdBytes, assetIdBytes) {
+  const amountKs = hmac(sha256, makerPriv, concatBytes(
+    AXINTENT_ONCHAIN_MAKER_AMOUNT_DOM, intentIdBytes, assetIdBytes,
+  )).slice(0, 8);
+  const blindingKs = hmac(sha256, makerPriv, concatBytes(
+    AXINTENT_ONCHAIN_MAKER_BLINDING_DOM, intentIdBytes, assetIdBytes,
+  ));
+  return { amountKs, blindingKs };
+}
+
+// Build the 80-byte dual-recovery payload. The two halves are independently
+// encrypted: bytes[0..40] decrypt to the recipient's (amount, blinding) using
+// the taker's ECDH-derived keystream (§5.7.6 model, reused verbatim); bytes
+// [40..80] decrypt to the maker's change (amount, blinding) using the maker's
+// self-keystream above. External observers can't decrypt either half without
+// the corresponding privkey.
+//
+// makerKs: { amountKs, blindingKs } from deriveAxintentMakerOnchainKeystreams.
+// takerKs: { amountKs, blindingKs } from deriveAxintentOnchainKeystreams
+//          (which uses ECDH(maker_priv, taker_pub) under
+//          AXINTENT_ONCHAIN_AMOUNT_DOMAIN / AXINTENT_ONCHAIN_BLINDING_DOMAIN).
+function encodeAxferVarOnchainPayload({
+  requestedAmount, recipientBlindingBytes32, takerKs,
+  changeAmount, makerChangeBlindingBytes32, makerKs,
+}) {
+  if (!(recipientBlindingBytes32 instanceof Uint8Array) || recipientBlindingBytes32.length !== 32) {
+    throw new Error('recipient blinding must be 32 bytes');
+  }
+  if (!(makerChangeBlindingBytes32 instanceof Uint8Array) || makerChangeBlindingBytes32.length !== 32) {
+    throw new Error('maker change blinding must be 32 bytes');
+  }
+  const takerAmtCt   = encryptAmount(requestedAmount, takerKs.amountKs);
+  const takerBlndCt  = xor32(recipientBlindingBytes32, takerKs.blindingKs);
+  const makerAmtCt   = encryptAmount(changeAmount, makerKs.amountKs);
+  const makerBlndCt  = xor32(makerChangeBlindingBytes32, makerKs.blindingKs);
+  return concatBytes(takerAmtCt, takerBlndCt, makerAmtCt, makerBlndCt);
+}
+
+// scriptPubKey for the 80-byte recovery payload.
+// Wire format: OP_RETURN(0x6a) || OP_PUSHBYTES_80(0x50) || <80 bytes>
+// Total 82 bytes scriptPubKey (within Bitcoin Core's default nMaxDatacarrierBytes=83).
+function encodeAxferVarOnchainOpReturn(payload80) {
+  if (!(payload80 instanceof Uint8Array) || payload80.length !== AXFER_VAR_OPRETURN_PAYLOAD_BYTES) {
+    throw new Error(`axfer_var on-chain payload must be ${AXFER_VAR_OPRETURN_PAYLOAD_BYTES} bytes`);
+  }
+  return concatBytes(new Uint8Array([0x6a, AXFER_VAR_OPRETURN_PAYLOAD_BYTES]), payload80);
+}
+
+// Recognize a tx vout that may carry the axfer_var 80-byte recovery payload.
+// Returns the 80-byte ciphertext or null. Caller still attempts decryption +
+// Pedersen verification to confirm a match.
+function tryExtractAxferVarOnchainOpReturn(scriptBytes) {
+  if (!(scriptBytes instanceof Uint8Array)) return null;
+  if (scriptBytes.length !== 2 + AXFER_VAR_OPRETURN_PAYLOAD_BYTES) return null;
+  if (scriptBytes[0] !== 0x6a) return null;
+  if (scriptBytes[1] !== AXFER_VAR_OPRETURN_PAYLOAD_BYTES) return null;
+  return scriptBytes.slice(2);
+}
+
+// Split the 80-byte recovery payload into its taker and maker halves.
+// Pure-byte helper — does not decrypt. Callers split, derive the relevant
+// keystream, and call decodeAxintentOnchainPayload (for taker, 40B) or
+// the maker-side decoder below.
+function splitAxferVarOnchainPayload(payload80) {
+  if (!(payload80 instanceof Uint8Array) || payload80.length !== AXFER_VAR_OPRETURN_PAYLOAD_BYTES) {
+    throw new Error(`payload must be ${AXFER_VAR_OPRETURN_PAYLOAD_BYTES} bytes`);
+  }
+  return { takerHalf: payload80.slice(0, 40), makerHalf: payload80.slice(40, 80) };
+}
+
+// Decode the maker-side 40-byte half of the recovery payload using the
+// maker's self-derived keystream. Mirror of decodeAxintentOnchainPayload
+// for the taker half. Returns { amount: bigint, blindingBytes: Uint8Array(32) }.
+function decodeAxferVarMakerOnchainPayload(makerHalf40, makerKs) {
+  if (!(makerHalf40 instanceof Uint8Array) || makerHalf40.length !== 40) {
+    throw new Error('maker half must be 40 bytes');
+  }
+  const amount = decryptAmount(makerHalf40.slice(0, 8), makerKs.amountKs);
+  const blindingBytes = xor32(makerHalf40.slice(8, 40), makerKs.blindingKs);
+  return { amount, blindingBytes };
+}
+
+// ============================================================================
 // MIXER POOL DERIVATIONS (SPEC §3.5, §3.6, §5.10, §5.11)
 // ============================================================================
 //
@@ -3828,6 +3943,19 @@ const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_DROP     = 0x2B; // public-claim pool over existing supply (SPEC §5.12)
 const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor (SPEC §5.13)
+const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / §5.7.6.1 — amended).
+                          // N=2 partial reveal (recipient + maker change), single asset input,
+                          // interleaved BTC-payment vout. Read-only as of this commit: validator
+                          // recognizes the envelope on-chain but the builder is gated on
+                          // ENABLE_T_AXFER_VARIABLE (default off) until the rollout phases complete.
+                          // 0x32–0x36 are reserved for V2-AMM range-LP opcodes per AMM.md.
+// Feature flag for variable-amount atomic settlement (SPEC §5.7.6.1). Default off so
+// this dapp does NOT BUILD T_AXFER_VAR envelopes yet; it CAN VALIDATE them on read
+// (defensive forward-compat: if a future dapp or third party produces one on chain,
+// this dapp parses + validates rather than treating the envelope as unknown).
+// Flip to true only after worker + dapp UI + signet e2e all land and the
+// coordinated rollout has cleared shadow week.
+const ENABLE_T_AXFER_VARIABLE = false;
 const MAX_SCRIPT_PUSH = 520;
 const OP_FALSE = 0x00, OP_PUSHDATA1 = 0x4c, OP_PUSHDATA2 = 0x4d;
 const OP_IF = 0x63, OP_ENDIF = 0x68, OP_CHECKSIG = 0xac;
@@ -4041,6 +4169,36 @@ function encodeAxferPayload({ assetId, assetInputCount, kernelSig, outputs, rang
   return concatBytes(...parts);
 }
 
+// SPEC §5.7.9 variable-amount atomic settlement payload encoder.
+// Twin of encodeAxferPayload but with two SPEC-mandated tightenings:
+//   - assetInputCount must be exactly 1 (single-UTXO partial fill).
+//   - outputs.length must be exactly 2 (recipient + maker change).
+// The on-chain layout (interleaved tacit outputs around the BTC payment +
+// mandatory OP_RETURN(80)) is enforced at the tx-construction layer, not
+// in the payload bytes themselves; this encoder only emits the envelope-
+// payload portion that sits in vin[0].witness[1].
+function encodeAxferVarPayload({ assetId, kernelSig, outputs, rangeproof }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (!kernelSig || kernelSig.length !== 64) throw new Error('kernel_sig must be 64 bytes');
+  if (outputs.length !== 2) throw new Error('T_AXFER_VAR outputs MUST be exactly 2 (recipient + maker change)');
+  if (rangeproof.length > 0xffff) throw new Error('rangeproof too large');
+  const parts = [
+    new Uint8Array([T_AXFER_VAR]),
+    assetId,
+    new Uint8Array([1]),  // asset_input_count: exactly 1 per SPEC §5.7.9
+    kernelSig,
+    new Uint8Array([2]),  // N: exactly 2 per SPEC §5.7.9
+  ];
+  for (const o of outputs) {
+    if (o.commitment.length !== 33) throw new Error('commitment 33 bytes');
+    if (!o.encryptedAmount || o.encryptedAmount.length !== 8) throw new Error('encrypted_amount must be 8 bytes');
+    parts.push(o.commitment, o.encryptedAmount);
+  }
+  const rpLen = new Uint8Array(2); new DataView(rpLen.buffer).setUint16(0, rangeproof.length, true);
+  parts.push(rpLen, rangeproof);
+  return concatBytes(...parts);
+}
+
 function decodeAxferPayload(payload) {
   if (!payload) return null;
   if (payload.length < 1 + 32 + 1 + 64 + 1 + (33 + 8) + 2) return null;
@@ -4064,6 +4222,61 @@ function decodeAxferPayload(payload) {
   if (p + rpLen !== payload.length) return null;
   const rangeproof = payload.slice(p, p + rpLen);
   return { kind: 'axfer', assetId, assetInputCount, kernelSig, outputs, rangeproof };
+}
+
+// Variable-amount atomic settlement payload (SPEC §5.7.9 / §5.7.6.1).
+// Structurally a near-twin of T_AXFER but with:
+//   - asset_input_count constrained to EXACTLY 1 (single-UTXO partial fill).
+//   - N constrained to EXACTLY 2 (recipient + maker change).
+//   - On-chain layout: tacit outputs are NOT contiguous — recipient at vout[0],
+//     maker BTC payment at vout[1] (non-tacit), maker change at vout[2],
+//     mandatory OP_RETURN(80) at vout[3]. See SPEC §5.7.9 wire format.
+// The payload format itself doesn't carry the BTC payment / OP_RETURN — those
+// live as ordinary Bitcoin tx outputs and are bound by SIGHASH_SINGLE on the
+// maker's vin[1] sig + the validator's vout-index rules below.
+function decodeAxferVarPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_AXFER_VAR) return null;
+  // Minimum size: opcode(1) + asset_id(32) + asset_input_count(1) +
+  // kernel_sig(64) + N(1) + 2 * (commitment(33) + amount_ct(8)) + rp_len(2) =
+  // 183 bytes before the rangeproof.
+  if (payload.length < 1 + 32 + 1 + 64 + 1 + 2 * (33 + 8) + 2) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount !== 1) return null;  // T_AXFER_VAR mandates exactly 1
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const n = payload[p]; p += 1;
+  if (n !== 2) return null;  // T_AXFER_VAR mandates exactly N=2
+  const outputs = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 + 8 > payload.length) return null;
+    const commitment = payload.slice(p, p + 33); p += 33;
+    const encryptedAmount = payload.slice(p, p + 8); p += 8;
+    outputs.push({ commitment, encryptedAmount });
+  }
+  if (p + 2 > payload.length) return null;
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  const rangeproof = payload.slice(p, p + rpLen);
+  return { kind: 'axfer_var', assetId, assetInputCount, kernelSig, outputs, rangeproof };
+}
+
+// Map a T_AXFER_VAR child-tx vout to its corresponding INDEX in the payload's
+// outputs[] array. Returns null when the vout is NOT a tacit UTXO of this asset
+// (i.e. vout 1 — the maker's BTC payment — or vout >= 3 which are OP_RETURN
+// recovery + taker BTC change). This is the load-bearing rule for the
+// interleaved-output layout: every consumer of validateOutpoint and
+// getParentEnvelopeData against a T_AXFER_VAR parent goes through this mapping.
+//   vout 0 → outputs[0] (recipient tacit)
+//   vout 1 → null       (maker BTC payment, non-tacit)
+//   vout 2 → outputs[1] (maker change tacit)
+//   vout 3 → null       (mandatory OP_RETURN(80), non-tacit)
+//   vout ≥ 4 → null     (taker BTC change, non-tacit)
+function axferVarOutputIndexForVout(vout) {
+  if (vout === 0) return 0;
+  if (vout === 2) return 1;
+  return null;
 }
 
 // ---- Kernel message: binds the sig to (asset_id, input outpoints, output commitments) ----
@@ -6652,6 +6865,13 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
             enqueue(tx.vin[i].txid, tx.vin[i].vout);
           }
         }
+      } else if (env.opcode === T_AXFER_VAR) {
+        // T_AXFER_VAR mandates exactly one asset input at vin[1]; the
+        // decoder returns null otherwise so the enqueue is safe.
+        const dec = decodeAxferVarPayload(env.payload);
+        if (dec && tx.vin.length >= 2) {
+          enqueue(tx.vin[1].txid, tx.vin[1].vout);
+        }
       } else if (env.opcode === T_MINT) {
         const dec = decodeCMintPayload(env.payload);
         if (dec) enqueue(bytesToHex(dec.etchTxid), 0);
@@ -6995,6 +7215,88 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     const kernelOkV2 = verifySchnorr(dec.kernelSig, msgV2, ExBytesV2);
     markAll(N, kernelOkV2);
     return kernelOkV2;
+  }
+
+  if (env.opcode === T_AXFER_VAR) {
+    // SPEC §5.7.9 / §5.7.6.1 — variable-amount atomic settlement.
+    // Same closure as T_AXFER (kernel sig over (Σ C_out − Σ C_in) + rangeproof
+    // over output commitments) but with two structural tightenings vs the
+    // parent opcode:
+    //   (a) exactly N=2 outputs (recipient_tacit + maker_change_tacit).
+    //   (b) exactly asset_input_count=1 (single asset input at vin[1]).
+    // And one layout difference vs T_AXFER:
+    //   (c) tacit outputs are at vout[0] and vout[2] of the Bitcoin tx, NOT
+    //       contiguous — vout[1] is the maker's BTC payment (bound by
+    //       vin[1]'s SIGHASH_SINGLE) and vout[3] is the mandatory
+    //       OP_RETURN(80) recovery payload. validateOutpoint queries against
+    //       vout 1 or vout ≥ 3 MUST return false (those aren't tacit UTXOs).
+    const dec = decodeAxferVarPayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    // Map the consumer's requested vout to the payload's outputs[] index, or
+    // reject if the vout is non-tacit per the interleaved-layout rule.
+    const outIdx = axferVarOutputIndexForVout(vout);
+    if (outIdx === null) { validatedSet.set(key, false); return false; }
+    const N = dec.outputs.length;  // == 2 by decoder constraint
+    // Helper: mark BOTH tacit vouts (0 and 2) with the same verdict in a
+    // single call. Mirrors T_AXFER's markAll(N, …) but indexed by Bitcoin
+    // vout instead of payload outputs[] position.
+    const markBothTacitVouts = (verdict, reason = null) => {
+      const k0 = `${txidHex}:0`; const k2 = `${txidHex}:2`;
+      validatedSet.set(k0, verdict); validatedSet.set(k2, verdict);
+      if (validatedReasons && reason) {
+        validatedReasons.set(k0, reason); validatedReasons.set(k2, reason);
+      }
+    };
+    // asset_input_count is constrained to exactly 1 by the decoder, but
+    // assert anyway as defense-in-depth.
+    if (dec.assetInputCount !== 1) { markBothTacitVouts(false); return false; }
+    if (tx.vin.length < 2) { markBothTacitVouts(false); return false; }
+    // Parent must already be validated by Pass 1's BFS topology.
+    const inp = tx.vin[1];
+    const parentKey = `${inp.txid}:${inp.vout}`;
+    const parentValid = validatedSet.get(parentKey) === true;
+    if (!parentValid) {
+      const parentReason = validatedReasons?.get(parentKey);
+      markBothTacitVouts(false, parentReason === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID);
+      return false;
+    }
+    // Rangeproof over the 2 output commitments. m=2 aggregation; same BP
+    // construction as CXFER/T_AXFER.
+    let Cpts;
+    try { Cpts = dec.outputs.map(o => bytesToPoint(o.commitment)); }
+    catch { markBothTacitVouts(false); return false; }
+    if (rpBatch) {
+      rpBatch.push({ commitments: Cpts, proof: dec.rangeproof });
+    } else if (!bpRangeAggVerify(Cpts, dec.rangeproof)) {
+      markBothTacitVouts(false); return false;
+    }
+    const ourAssetIdHex = bytesToHex(dec.assetId);
+    // Resolve the parent's input commitment for kernel-sig math.
+    const parent = await fetchTx(inp.txid);
+    if (!parent) { markBothTacitVouts(false, _REASON_FETCH_FAILED); return false; }
+    const pwit = parent.vin?.[0]?.witness;
+    if (!pwit || pwit.length < 3) { markBothTacitVouts(false); return false; }
+    let parentEnv;
+    try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
+    if (!parentEnv) { markBothTacitVouts(false); return false; }
+    const pd = getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
+    if (!pd) { markBothTacitVouts(false); return false; }
+    if (pd.assetIdHex !== ourAssetIdHex) { markBothTacitVouts(false); return false; }
+    // Kernel sig closure: excess·G = Σ C_out − C_in (single input).
+    let EPrime;
+    try {
+      EPrime = secp.ProjectivePoint.ZERO;
+      for (const o of dec.outputs) EPrime = EPrime.add(bytesToPoint(o.commitment));
+      EPrime = EPrime.add(bytesToPoint(pd.commitment).negate());
+    } catch { markBothTacitVouts(false); return false; }
+    if (EPrime.equals(secp.ProjectivePoint.ZERO)) { markBothTacitVouts(false); return false; }
+    const ExBytes = EPrime.toRawBytes(true).slice(1);
+    const inputOutpoints = [{ txid: inp.txid, vout: inp.vout }];
+    const outputCommitments = dec.outputs.map(o => o.commitment);
+    const msg = computeKernelMsg(dec.assetId, inputOutpoints, outputCommitments, 0n);
+    const kernelOk = verifySchnorr(dec.kernelSig, msg, ExBytes);
+    markBothTacitVouts(kernelOk);
+    return kernelOk;
   }
 
   if (env.opcode === T_PETCH) {
@@ -7607,6 +7909,19 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     if (!d || vout >= d.outputs.length) return null;
     return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
   }
+  if (parentEnv.opcode === T_AXFER_VAR) {
+    // SPEC §5.7.9 — variable-amount atomic settlement. The tx vout layout is
+    // INTERLEAVED: vout[0]=recipient tacit, vout[1]=BTC payment, vout[2]=
+    // maker change tacit, vout[3]=OP_RETURN(80), vout[4+]=taker BTC change.
+    // Only vouts {0, 2} are tacit UTXOs of this asset; any other vout is
+    // non-tacit and must return null so downstream consumers don't mistake
+    // the BTC payment / OP_RETURN / taker change as a spendable tacit lot.
+    const d = decodeAxferVarPayload(parentEnv.payload);
+    if (!d) return null;
+    const outIdx = axferVarOutputIndexForVout(vout);
+    if (outIdx === null) return null;
+    return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[outIdx].commitment };
+  }
   if (parentEnv.opcode === T_BURN) {
     const d = decodeCBurnPayload(parentEnv.payload);
     if (!d || vout >= d.outputs.length) return null;
@@ -8047,6 +8362,20 @@ async function _scanHoldingsImpl() {
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       if (u.vout >= dec.outputs.length) continue;
       onChainCommitment = dec.outputs[u.vout].commitment;
+    } else if (env.opcode === T_AXFER_VAR) {
+      // SPEC §5.7.9: interleaved-vout layout. Only vout {0, 2} are tacit;
+      // vout 1 is the maker's BTC payment, vout 3 is OP_RETURN(80) recovery,
+      // vout 4+ is taker BTC change. Skip non-tacit vouts so the holdings
+      // scanner doesn't misidentify the BTC payment / OP_RETURN as a
+      // spendable tacit UTXO.
+      const dec = decodeAxferVarPayload(env.payload);
+      if (!dec) continue;
+      const outIdx = axferVarOutputIndexForVout(u.vout);
+      if (outIdx === null) continue;
+      assetIdHex = bytesToHex(dec.assetId);
+      const meta = getAssetMeta(assetIdHex);
+      if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
+      onChainCommitment = dec.outputs[outIdx].commitment;
     } else if (env.opcode === T_WITHDRAW) {
       // SPEC §5.11: T_WITHDRAW outputs sit at vout 0. The asset is identified
       // by dec.assetId; the on-chain commitment is dec.recipientCommitment.
@@ -37649,7 +37978,6 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const lowestBid = bidCum[bidCum.length - 1].u;
   const highestAsk = askCum[askCum.length - 1].u;
   const isCrossed = bestBid > bestAsk;
-  // In-band best bid / best ask — same 0.2×/5× mark band the bid/ask
   // spread row already uses. Header text + dashed marker lines both
   // read these so they match the spread row + reflect prices a trader
   // would actually fill at. The chart's filled depth curves still
