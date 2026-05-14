@@ -2489,13 +2489,37 @@ function _appendTxCacheIndex(id) {
 // network request instead of each firing their own. Crucial during cold-cache
 // loads where Discover + Holdings + Market hit shared ancestry simultaneously.
 const _txInFlight = new Map();
+// In-memory cache layered in front of localStorage. scanHoldings' ancestry
+// walk hits getTx many times per UTXO (often the same ancestor across
+// multiple UTXOs), and the localStorage path forces a synchronous
+// JSON.parse on every cache hit. Mem-caching confirmed txs elides the
+// parse for repeated lookups within a session. Only confirmed txs land
+// here (matching localStorage's policy) — unconfirmed state can flip.
+// FIFO eviction at the cap; localStorage stays authoritative across
+// reloads.
+const _TX_MEM_CACHE_MAX = 500;
+const _txMemCache = new Map();
+function _txMemCachePut(id, tx) {
+  if (_txMemCache.has(id)) _txMemCache.delete(id);
+  _txMemCache.set(id, tx);
+  if (_txMemCache.size > _TX_MEM_CACHE_MAX) {
+    const oldest = _txMemCache.keys().next().value;
+    if (oldest !== undefined) _txMemCache.delete(oldest);
+  }
+}
 const getTx = async (rawId) => {
   if (typeof rawId !== 'string') return null;
   const id = rawId.toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(id)) return null;
+  const mem = _txMemCache.get(id);
+  if (mem) return mem;
   try {
     const cached = localStorage.getItem(_txCacheKey(id));
-    if (cached) return JSON.parse(cached);
+    if (cached) {
+      const tx = JSON.parse(cached);
+      _txMemCachePut(id, tx);
+      return tx;
+    }
   } catch { /* corrupted entry — fall through to network and overwrite */ }
   const inflight = _txInFlight.get(id);
   if (inflight) return inflight;
@@ -2504,6 +2528,7 @@ const getTx = async (rawId) => {
     try { tx = await apiJson(`/tx/${id}`); } catch { return null; }
     if (!tx) return null;
     if (tx.status && tx.status.confirmed === true) {
+      _txMemCachePut(id, tx);
       try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); _appendTxCacheIndex(id); }
       catch { /* quota exceeded → silently skip; cache is best-effort */ }
     }
@@ -33507,11 +33532,20 @@ function _scheduleMarketPruneRender() {
   }, 250);
 }
 
+// Concurrency cap on the liveness prune. The prune is a background
+// freshness check, not a user-blocking request, so it must not crowd
+// out foreground work. The global API semaphore is 12; we cap prune to
+// 3 so a 200-listing prune leaves 9 slots for holdings scans, getTx
+// ancestry walks, swap quotes, and other tabs' fetches. Without this
+// cap, opening Market on a wallet mid-holdings-scan would stall the
+// scan until every listing was probed.
+const MARKET_PRUNE_CONCURRENCY = 3;
 function startMarketLivenessPrune() {
   if (!_marketCache) return;
   const grid = $('#market-list');
   if (!grid) return;
   // Snapshot at dispatch — _marketCache.listings may mutate as checks resolve.
+  const queue = [];
   for (const l of _marketCache.listings.slice()) {
     let txid, vout;
     if (l.kind === 'opening') { txid = l.txid; vout = l.vout | 0; }
@@ -33519,32 +33553,47 @@ function startMarketLivenessPrune() {
     else if (l.kind === 'preauth') { txid = l.asset_outpoint?.txid; vout = l.asset_outpoint?.vout | 0; }
     else continue;
     if (!txid) continue;
-    getOutspend(txid, vout).then((sp) => {
-      if (!sp || !sp.spent) return;
-      if (_marketCache) {
-        _marketCache.listings = _marketCache.listings.filter(x => x !== l);
-      }
-      // In browse mode the aggregate counts/floor would silently drift; just
-      // re-apply filters (no fetch) to redraw the affected asset tile.
-      // Debounced — without this, N stale listings produce N sequential
-      // re-renders within a second, each replaying the grid's fade-in
-      // animation and flashing the screen. Batching to ~250ms collapses
-      // the burst into one update.
-      if (_marketView === 'browse') {
-        _scheduleMarketPruneRender();
-        return;
-      }
-      const key = l.kind === 'opening' ? `opening:${l.txid}:${l.vout | 0}`
-                : l.kind === 'preauth' ? `preauth:${l.sale_id}`
-                : `intent:${l.intent_id}`;
-      const tile = grid.querySelector(`[data-listing-key="${CSS.escape(key)}"]`);
-      if (!tile) return;
-      tile.remove();
-      if (!grid.querySelector('[data-listing-key]')) {
-        grid.innerHTML = '<div class="empty">No live listings.</div>';
-      }
-    }).catch(() => {});
+    queue.push({ l, txid, vout });
   }
+  let active = 0;
+  let i = 0;
+  const onSpent = (l) => {
+    if (_marketCache) {
+      _marketCache.listings = _marketCache.listings.filter(x => x !== l);
+    }
+    // In browse mode the aggregate counts/floor would silently drift; just
+    // re-apply filters (no fetch) to redraw the affected asset tile.
+    // Debounced — without this, N stale listings produce N sequential
+    // re-renders within a second, each replaying the grid's fade-in
+    // animation and flashing the screen. Batching to ~250ms collapses
+    // the burst into one update.
+    if (_marketView === 'browse') {
+      _scheduleMarketPruneRender();
+      return;
+    }
+    const key = l.kind === 'opening' ? `opening:${l.txid}:${l.vout | 0}`
+              : l.kind === 'preauth' ? `preauth:${l.sale_id}`
+              : `intent:${l.intent_id}`;
+    const tile = grid.querySelector(`[data-listing-key="${CSS.escape(key)}"]`);
+    if (!tile) return;
+    tile.remove();
+    if (!grid.querySelector('[data-listing-key]')) {
+      grid.innerHTML = '<div class="empty">No live listings.</div>';
+    }
+  };
+  const drain = () => {
+    while (active < MARKET_PRUNE_CONCURRENCY && i < queue.length) {
+      const { l, txid, vout } = queue[i++];
+      active++;
+      getOutspend(txid, vout).then((sp) => {
+        if (sp && sp.spent) onSpent(l);
+      }).catch(() => {}).finally(() => {
+        active--;
+        drain();
+      });
+    }
+  };
+  drain();
 }
 
 // TTL on the worker round-trip so tab-clicks (Market → Discover → Market)
