@@ -35671,23 +35671,33 @@ function applyMarketFilters() {
           </div>
         </div>
       </div>
-      <!-- Route summary + slippage on one balanced row above the action. -->
+      <!-- Route summary + price limit on one balanced row above the action.
+           Labelled Limit because in an orderbook (no AMM curve) the picker
+           is really a price-tolerance cap, not a slippage-along-a-curve.
+           The select keeps its data-swap-slippage attr for code continuity;
+           only the user-facing label + tooltip changed. The inline readout
+           element below is filled by the wireup with the resolved absolute
+           cap so the trader sees the actual effect of their choice. -->
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
         <div data-swap-info class="muted" style="font-size:10px;flex:1 1 auto;min-width:0;line-height:1.5;overflow-wrap:anywhere;"></div>
         <label style="font-size:10px;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:170px;">
-          <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;">Slippage</span>
-          <select data-swap-slippage title="Click to change max acceptable price drift before the swap refuses to route" style="box-sizing:border-box;min-width:78px;height:28px;font-family:var(--mono);font-size:11px;line-height:1.2;padding:4px 22px 4px 8px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);-webkit-appearance:none;-moz-appearance:none;appearance:none;cursor:pointer;">
-            <option value="0.5">0.5%</option>
-            <option value="1">1%</option>
-            <option value="2">2%</option>
-            <option value="3">3%</option>
-            <option value="5">5%</option>
-            <option value="10">10%</option>
-            <option value="20" selected>20%</option>
-            <option value="50">50%</option>
+          <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;" title="Max premium over the mark price you'll pay (buying) / discount you'll accept (selling). Caps which open orders the swap matches, and sets the price of any bid your residual budget leaves open. In an orderbook this is your limit price, not curve slippage.">Limit</span>
+          <select data-swap-slippage title="Cap on how far above mark price the swap will reach. Asks above the cap are skipped; residual unfilled budget posts as a bid AT the cap." style="box-sizing:border-box;min-width:78px;height:28px;font-family:var(--mono);font-size:11px;line-height:1.2;padding:4px 22px 4px 8px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);-webkit-appearance:none;-moz-appearance:none;appearance:none;cursor:pointer;">
+            <option value="0.5">±0.5%</option>
+            <option value="1">±1%</option>
+            <option value="2">±2%</option>
+            <option value="3">±3%</option>
+            <option value="5">±5%</option>
+            <option value="10">±10%</option>
+            <option value="20" selected>±20%</option>
+            <option value="50">±50%</option>
           </select>
         </label>
       </div>
+      <!-- Absolute-cap readout. Visible only when refUnit is known
+           (the asset has a mark price). Otherwise the percent value
+           is the only honest signal. -->
+      <div data-swap-limit-readout class="muted" style="font-size:10px;line-height:1.4;margin:-6px 0 10px;text-align:right;display:none;"></div>
       <!-- Primary action -->
       <button data-swap-action type="button" disabled style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
       <div data-swap-progress style="display:none;margin-top:10px;font-size:11px;"></div>
@@ -40641,7 +40651,29 @@ function _wireSwapTile(scope) {
   // Single update path — runs on every keystroke + direction change +
   // slippage change. Async because sell plans await the bids cache.
   let updateToken = 0;
+  // Paint the resolved absolute cap next to the limit picker (e.g.
+  // "≤ 120 sats/TAC" on a 20% buy with mark 100). Hidden when refUnit is
+  // unknown — percent value alone is the only honest signal there.
+  const _paintLimitReadout = () => {
+    const readout = widget.querySelector('[data-swap-limit-readout]');
+    if (!readout) return;
+    if (!(Number.isFinite(refUnit) && refUnit > 0)) {
+      readout.style.display = 'none';
+      readout.textContent = '';
+      return;
+    }
+    const slip = getSlipRatio();
+    const dir = getDirection();
+    const cap = dir === 'buy' ? refUnit * (1 + slip) : refUnit * (1 - slip);
+    const verb = dir === 'buy' ? '≤' : '≥';
+    const sideHint = dir === 'buy' ? 'won\'t pay more than' : 'won\'t accept less than';
+    readout.style.display = 'block';
+    readout.textContent = `${sideHint} ${verb} ${fmtUnitPriceSats(cap)} sats/${ticker}`;
+  };
+  _paintLimitReadout();
+
   const update = async () => {
+    _paintLimitReadout();
     const myToken = ++updateToken;
     const dir = getDirection();
     const activeSide = getActiveSide();
@@ -40675,7 +40707,7 @@ function _wireSwapTile(scope) {
         if (myToken !== updateToken) return;
         if (!result) {
           fromInput.value = '';
-          infoEl.textContent = `no asks within ${slipSel.value}% slippage · raise slippage or reduce amount`;
+          infoEl.textContent = `no asks within ±${slipSel.value}% of mark · widen limit or reduce amount`;
           actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
           actionBtn.textContent = 'no route';
           return;
@@ -40726,7 +40758,7 @@ function _wireSwapTile(scope) {
       if (myToken !== updateToken) return;
       if (!result) {
         fromInput.value = '';
-        infoEl.textContent = `no bids within ${slipSel.value}% slippage · raise slippage or reduce target sats`;
+        infoEl.textContent = `no bids within ±${slipSel.value}% of mark · widen limit or reduce target sats`;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'no route';
         return;
@@ -40921,7 +40953,7 @@ function _wireSwapTile(scope) {
       if (!result) {
         toInput.value = '';
         toMeta.textContent = '';
-        infoEl.textContent = `no bids within ${slipSel.value}% slippage · raise slippage, or use Sweep sell below for a custom floor`;
+        infoEl.textContent = `no bids within ±${slipSel.value}% of mark · widen limit, or use Sweep sell below for a custom floor`;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'no route';
         return;
@@ -41253,7 +41285,7 @@ function _wireSwapTile(scope) {
       if (_residualSats >= DUST && Number.isFinite(result.cap) && result.cap > 0) {
         const _resAmt = BigInt(Math.floor(_residualSats * Math.pow(10, decimals) / result.cap));
         if (_resAmt > 0n) {
-          _residualNote = `\n\n+ ${fmtAssetAmount(_resAmt, decimals)} ${ticker} more stays open @ ${fmtUnitPriceSats(result.cap)} sats/${ticker} (your slippage cap) — fills when a seller matches. Keep ${_residualSats.toLocaleString()} sats around for the settlement; auto-expires in 24h.`;
+          _residualNote = `\n\n+ ${fmtAssetAmount(_resAmt, decimals)} ${ticker} more stays open @ ${fmtUnitPriceSats(result.cap)} sats/${ticker} (your limit price) — fills when a seller matches. Keep ${_residualSats.toLocaleString()} sats around for the settlement; auto-expires in 24h.`;
         }
       }
       if (!confirm(
