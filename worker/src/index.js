@@ -6398,6 +6398,122 @@ function atomicIntentCancelMsg(assetIdHex, intentIdHex) {
   ));
 }
 
+// ======== T_AXFER_VAR (§5.7.6.1 + §5.7.9) — variable-amount atomic intents ========
+// Pure-function message helpers + intent_id derivation for the variable-amount
+// flow. Land before any handler changes so PR2/PR3 can call into a stable
+// surface. None of these are wired into the route table yet — the legacy
+// whole-UTXO path (atomicIntentMsg / atomicIntentClaimMsg / fulfilment-v1)
+// continues to handle every live atomic-intent.
+
+// Deterministic intent_id for variable-amount intents. Unlike the legacy v1
+// derivation (which depends on commit_txid and so requires the commit tx to
+// exist), this is computed from (maker_pubkey, asset_utxo_outpoint) and is
+// therefore derivable both at publish time (no commit tx yet) and from chain
+// data alone at seed-only recovery (vin[1] reveals the asset_utxo outpoint).
+function atomicIntentIdHexVar(makerPubHex, assetUtxoTxidHex, assetUtxoVout) {
+  const voutLE = new Uint8Array(4);
+  new DataView(voutLE.buffer).setUint32(0, assetUtxoVout >>> 0, true);
+  const h = sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-id-v1'),
+    hexToBytes(makerPubHex),
+    reverseBytes(hexToBytes(assetUtxoTxidHex)),
+    voutLE,
+  ));
+  return bytesToHex(h.slice(0, 16));
+}
+
+// Publish-time BIP-340 message for variable-amount intents. Binds every
+// field a taker quotes against. No commit_txid (it doesn't exist yet); the
+// maker's signature over this message is the only binding the worker holds
+// until fulfilment.
+function atomicIntentPublishMsgVar({
+  assetIdHex, intentIdHex, makerPubHex, makerAddress,
+  amountStr, priceSats, minTakeStr, expiry,
+  assetUtxoTxidHex, assetUtxoVout, assetUtxoValue, network,
+}) {
+  const amountLE   = new Uint8Array(8); new DataView(amountLE.buffer).setBigUint64(0, BigInt(amountStr), true);
+  const priceLE    = new Uint8Array(8); new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const minTakeLE  = new Uint8Array(8); new DataView(minTakeLE.buffer).setBigUint64(0, BigInt(minTakeStr || '0'), true);
+  const expiryLE   = new Uint8Array(8); new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+  const utxoVoutLE = new Uint8Array(4); new DataView(utxoVoutLE.buffer).setUint32(0, assetUtxoVout >>> 0, true);
+  const utxoValLE  = new Uint8Array(8); new DataView(utxoValLE.buffer).setBigUint64(0, BigInt(assetUtxoValue), true);
+  const addrHash   = sha256(new TextEncoder().encode(String(makerAddress)));
+  const netTag     = new Uint8Array([network === 'mainnet' ? 1 : 0]);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-publish-v1'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    reverseBytes(hexToBytes(assetUtxoTxidHex)),
+    utxoVoutLE,
+    utxoValLE,
+    amountLE,
+    priceLE,
+    minTakeLE,
+    expiryLE,
+    hexToBytes(makerPubHex),
+    addrHash,
+    netTag,
+  ));
+}
+
+// Variable-amount claim message. Adds `requested_amount` to v2's binding so
+// a maker cannot honour a different amount than the taker requested.
+function atomicIntentClaimMsgVar(assetIdHex, intentIdHex, takerPubHex, takerUtxoTxidHex, takerUtxoVout, requestedAmountStr) {
+  const txidBE = reverseBytes(hexToBytes(takerUtxoTxidHex));
+  const voutLE = new Uint8Array(4); new DataView(voutLE.buffer).setUint32(0, takerUtxoVout >>> 0, true);
+  const reqLE  = new Uint8Array(8); new DataView(reqLE.buffer).setBigUint64(0, BigInt(requestedAmountStr), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-claim-v3'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    hexToBytes(takerPubHex),
+    txidBE,
+    voutLE,
+    reqLE,
+  ));
+}
+
+// Variable-amount fulfilment message. Adds `requested_amount` to v1's
+// binding so the maker's signature commits to the delivered amount even if
+// partial_reveal_json parsing diverges between implementations.
+function atomicIntentFulfilmentMsgVar(assetIdHex, intentIdHex, takerPubHex, requestedAmountStr, partialRevealJson) {
+  const phash = sha256(new TextEncoder().encode(partialRevealJson));
+  const reqLE = new Uint8Array(8); new DataView(reqLE.buffer).setBigUint64(0, BigInt(requestedAmountStr), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-fulfilment-v2'),
+    hexToBytes(assetIdHex),
+    hexToBytes(intentIdHex),
+    hexToBytes(takerPubHex),
+    reqLE,
+    phash,
+  ));
+}
+
+// Verifies the maker's intent_sig over the publish-time message under
+// `maker_pubkey`. Returns boolean. Caller is responsible for x-only
+// extraction (the dapp passes 33-byte compressed pubkey; we slice for the
+// x-only form noble expects). Rejects malformed inputs cleanly.
+function verifyAtomicIntentPublishSig({
+  assetIdHex, intentIdHex, makerPubHex, makerAddress,
+  amountStr, priceSats, minTakeStr, expiry,
+  assetUtxoTxidHex, assetUtxoVout, assetUtxoValue, network,
+  sigHex,
+}) {
+  try {
+    if (!/^[0-9a-f]{128}$/.test(String(sigHex || '').toLowerCase())) return false;
+    if (!/^[0-9a-f]{66}$/.test(String(makerPubHex || '').toLowerCase())) return false;
+    const msg = atomicIntentPublishMsgVar({
+      assetIdHex, intentIdHex, makerPubHex, makerAddress,
+      amountStr, priceSats, minTakeStr, expiry,
+      assetUtxoTxidHex, assetUtxoVout, assetUtxoValue, network,
+    });
+    const xonly = hexToBytes(makerPubHex).slice(1);
+    return verifySchnorr(hexToBytes(String(sigHex).toLowerCase()), msg, xonly);
+  } catch {
+    return false;
+  }
+}
+
 // ============== PREAUTH SALES (SPEC §5.7.8) ==============
 // Buyer-completable T_AXFER: seller signs once at listing time, buyer
 // completes settlement alone via ECDH-derived r_out (§5.7.3-style recovery).
@@ -8675,6 +8791,13 @@ async function scanForEtches(env, network) {
 export {
   openingMsg, disclosureMsg, listingMsg, cancelMsg, claimMsg,
   atomicIntentMsg, atomicIntentClaimMsg, atomicIntentFulfilmentMsg, atomicIntentCancelMsg,
+  // T_AXFER_VAR (§5.7.6.1) — variable-amount atomic-intent message helpers.
+  // Exported so tests/worker-axintent-var can pin byte-for-byte determinism
+  // of intent_id derivation, message-byte equality with the dapp side, and
+  // signature-verification round-trip before the handler PRs wire them in.
+  atomicIntentIdHexVar,
+  atomicIntentPublishMsgVar, atomicIntentClaimMsgVar, atomicIntentFulfilmentMsgVar,
+  verifyAtomicIntentPublishSig,
   // Preauth-sale helpers (SPEC §5.7.8). Exported so the dapp/worker parity
   // tests can pin message-byte equality + cross-check the BIP-143 sighash
   // reconstruction; drift here silently breaks the seller-spend signature
