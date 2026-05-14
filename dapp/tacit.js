@@ -33157,8 +33157,42 @@ async function renderMarket() {
   }
 }
 
+// Populate the search input's <datalist> with every known asset so the
+// user can pick a token that doesn't have offers yet and land on its
+// market page to post the first bid / listing. Browser handles the
+// dropdown UI natively (suggestions appear on focus / typing). Cheap:
+// re-runs on every applyMarketFilters but the underlying registry
+// doesn't change frequently so the DOM diff is trivial.
+function _populateMarketAssetPicker() {
+  const dl = document.getElementById('market-asset-picker-list');
+  if (!dl) return;
+  const seen = new Set();
+  const entries = [];
+  const push = (a) => {
+    const aid = String(a?.asset_id || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(aid) || seen.has(aid)) return;
+    seen.add(aid);
+    const ticker = String(a?.ticker || '?').replace(/[<>"&]/g, '');
+    // <option value> is what the input field sees on selection. Using the
+    // ticker so a click fills the search box with the ticker; the
+    // existing applyMarketFilters then matches on ticker → drops the
+    // user onto that asset's market view. <option label> is the
+    // secondary hint shown alongside in some browsers.
+    entries.push({ value: ticker, label: `${ticker} · ${aid.slice(0, 8)}…` });
+  };
+  for (const a of (_marketCache?.assets || [])) push(a);
+  // Sort: TAC first (anchor), then alphabetical by ticker.
+  entries.sort((a, b) => {
+    if (a.value.toUpperCase() === 'TAC') return -1;
+    if (b.value.toUpperCase() === 'TAC') return 1;
+    return a.value.localeCompare(b.value);
+  });
+  const html = entries.map(e => `<option value="${e.value.replace(/"/g, '&quot;')}" label="${e.label.replace(/"/g, '&quot;')}"></option>`).join('');
+  if (dl.innerHTML !== html) dl.innerHTML = html;
+}
 function applyMarketFilters() {
   if (!_marketCache) return;
+  _populateMarketAssetPicker();
   const list = $('#market-list');
   const status = $('#market-status');
   const filterText = ($('#market-filter-asset')?.value || '').trim().toLowerCase();
@@ -38922,8 +38956,8 @@ async function marketConfirmPreauthTake({ ticker, amount, dec, price }) {
         </div>
         <div class="market-buy-row">
           <div>
-            <div class="market-buy-label">Bitcoin network fee</div>
-            <div class="market-buy-sub">Commit + reveal txs</div>
+            <div class="market-buy-label">Network fee</div>
+            <div class="market-buy-sub">paid by you · settles on Bitcoin</div>
           </div>
           <div>
             <div class="market-buy-value market-usd-price">${escapeHtml(feeUsdLow)} - ${escapeHtml(feeUsdHigh)}</div>
@@ -38941,11 +38975,11 @@ async function marketConfirmPreauthTake({ ticker, amount, dec, price }) {
           </div>
         </div>
         <div class="market-buy-note">
-          On confirm: a commit tx and a settlement reveal tx will be broadcast. Both legs settle atomically: you receive the asset only if you pay the seller; the seller receives BTC only if you receive the asset. No claim window, no fulfilment step.
+          Trustless atomic settlement on Bitcoin: you receive the tokens only if the seller is paid, and vice-versa. One click; no claim window, no counterparty trust. Filling typically completes within ~10 minutes.
         </div>
         <div class="market-buy-actions">
           <button type="button" data-market-buy-cancel>Cancel</button>
-          <button type="button" class="primary" data-market-buy-confirm>Buy instant listing</button>
+          <button type="button" class="primary" data-market-buy-confirm>Confirm buy</button>
         </div>
       </div>`;
     const onKey = (e) => {
@@ -38989,26 +39023,32 @@ async function marketTakePreauthHandler(btn) {
   const origText = btn.textContent;
   const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
   if (!await marketConfirmPreauthTake({ ticker, amount, dec, price })) { restore(); return; }
-  if (!await ensureBurnerBackedUp('Buy instant listing (broadcasts commit + reveal txs and creates a new tacit UTXO in your wallet)')) {
+  if (!await ensureBurnerBackedUp('Buy tokens at the listed price · trustless atomic settlement on Bitcoin')) {
     toast('Back up the in-page privkey first, then retry.', 'error'); restore(); return;
   }
   const need = await estimateSatsForOp('cxfer');
-  if (!(await ensureSatsFunded(need + price, 'Taking instant listing'))) {
+  if (!(await ensureSatsFunded(need + price, 'Buying tokens'))) {
     toast('Funding cancelled.', 'error'); restore(); return;
   }
-  btn.textContent = 'buying...';
+  btn.textContent = 'submitting…';
   try {
     const r = await takePreauthSale({
       assetIdHex: aid,
       saleIdHex: sid,
       onProgress: (stage) => {
-        // Stages: fetch-start -> commit-start -> wait-visible -> broadcast-start
-        if (stage === 'commit-start')   btn.textContent = 'broadcasting commit...';
-        else if (stage === 'wait-visible') btn.textContent = 'waiting for indexer...';
-        else if (stage === 'broadcast-start') btn.textContent = 'broadcasting reveal...';
+        // Trader-facing progress labels. Underneath there are two Bitcoin
+        // txs (commit + reveal) but the user doesn't need to learn that
+        // model to read the status — submitted → confirming → settling →
+        // filled, like any exchange.
+        if (stage === 'commit-start')   btn.textContent = 'submitting on Bitcoin (1/2)…';
+        else if (stage === 'wait-visible') btn.textContent = 'confirming submission…';
+        else if (stage === 'broadcast-start') btn.textContent = 'settling on Bitcoin (2/2)…';
       },
     });
-    toast(`Instant buy complete OK - reveal ${shorten(r.reveal_txid, 6)}; asset will appear in Holdings after confirmation`, 'success', 10000);
+    // USD on the success line keeps the receipt feeling like a CEX fill
+    // ("you bought $35 of TAC") even though settlement is Bitcoin-native.
+    const _filledUsd = fmtMarketUsdFromSats(price, '');
+    toast(`Filled · ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${ticker} bought${_filledUsd ? ` (${_filledUsd})` : ''} · settles in ~10 min (check Holdings)`, 'success', 10000);
     invalidateMarketCache();
     setTimeout(() => { renderActivity(); renderMarket(); }, 800);
     // Leave button disabled on success; renderMarket replaces the tile.
