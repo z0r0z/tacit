@@ -14790,8 +14790,8 @@ function setStatus(elOrSel, text, pending = false) {
 const PROGRESS_STRIP_HTML = `
   <div class="progress-strip" style="display:none;margin-top:10px;" aria-live="polite">
     <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
-    <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
-    <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+    <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Submit</span></div>
+    <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Confirm</span></div>
     <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Pending</span></div>
   </div>
 `;
@@ -20714,20 +20714,26 @@ function setupTransferForm() {
       $('#transfer-preview').style.display = 'block';
       $('#transfer-preview').innerHTML = `
         <div class="tx-preview" style="margin-top:14px;">
-          <h4>2 Bitcoin transactions</h4>
-          <div class="row"><span class="idx">[1]</span><span class="label">commit tx</span> creates the on-chain envelope (locked until the reveal)</div>
-          <div class="row"><span class="idx">[2]</span><span class="label">reveal tx</span> spends the envelope + your asset UTXO; the witness carries a ~1 KB privacy proof</div>
-          <h4 style="margin-top:14px;">Reveal tx outputs</h4>
-          <div class="row"><span class="idx">[0]</span><span class="label">recipient</span> ${fmtSats(DUST)} sats → ${escapeHtml(shorten(recipientAddr, 14))} <span class="muted">(commitment to their amount)</span></div>
-          <div class="row"><span class="idx">[1]</span><span class="label">you (change)</span> ${fmtSats(DUST)} sats <span class="muted">(commitment to your remaining balance)</span></div>
-          <h4 style="margin-top:14px;">What stays private</h4>
-          <div class="row">recipient amount: ${fmtAssetAmount(amount, meta.decimals)} ${escapeHtml(meta.ticker)}</div>
-          <div class="row">your change: ${fmtAssetAmount(h.balance - amount, meta.decimals)} ${escapeHtml(meta.ticker)}</div>
-          <div class="row" style="color:var(--ink-mid);font-style:italic;">observers see only 33-byte commitments + a single 754-byte privacy proof — neither amount is visible</div>
-          <h4 style="margin-top:14px;">After broadcast</h4>
-          <div class="row" style="color:var(--ink-mid);">a share-link is generated — the recipient can recover their balance from chain alone, but the link lets them import immediately without rescanning</div>
-          <h4 style="margin-top:14px;">Estimated fees</h4>
-          <div>commit ~${commitFeeEst} sats · reveal ~${revealFeeEst} sats · total ~${totalFeeEst} sats @ ${rate} sat/vB</div>
+          <h4>What's about to happen</h4>
+          <div class="row"><span class="label">Sending</span> ${fmtAssetAmount(amount, meta.decimals)} ${escapeHtml(meta.ticker)} to ${escapeHtml(shorten(recipientAddr, 14))}</div>
+          <div class="row"><span class="label">Your change</span> ${fmtAssetAmount(h.balance - amount, meta.decimals)} ${escapeHtml(meta.ticker)} stays in your wallet</div>
+          <div class="row"><span class="label">Network fee</span> ~${totalFeeEst} sats <span class="muted">(2 Bitcoin txs: submit + settlement, @ ${rate} sat/vB)</span></div>
+          <div class="row" style="color:var(--ink-mid);font-style:italic;margin-top:8px;">Confidential transfer — observers see valid math but neither amount. Recipient discovers their balance automatically on next scan; the share-link below lets them import instantly.</div>
+          <details style="margin-top:12px;">
+            <summary class="muted" style="cursor:pointer;font-size:11px;">Technical details</summary>
+            <div style="margin-top:8px;font-size:11px;line-height:1.5;">
+              <h4>Two Bitcoin transactions</h4>
+              <div class="row"><span class="idx">[1]</span><span class="label">submit tx</span> creates the on-chain envelope (P2TR commit)</div>
+              <div class="row"><span class="idx">[2]</span><span class="label">settlement tx</span> spends the envelope + your asset lot; the witness carries a ~1 KB privacy proof</div>
+              <h4 style="margin-top:10px;">Settlement tx outputs</h4>
+              <div class="row"><span class="idx">[0]</span><span class="label">recipient</span> ${fmtSats(DUST)} sats → ${escapeHtml(shorten(recipientAddr, 14))}</div>
+              <div class="row"><span class="idx">[1]</span><span class="label">your change</span> ${fmtSats(DUST)} sats</div>
+              <h4 style="margin-top:10px;">Privacy footprint</h4>
+              <div class="row">Observers see only 33-byte commitments + a single 754-byte privacy proof — neither amount is visible.</div>
+              <h4 style="margin-top:10px;">Estimated fees breakdown</h4>
+              <div>submit ~${commitFeeEst} sats · settlement ~${revealFeeEst} sats · total ~${totalFeeEst} sats @ ${rate} sat/vB</div>
+            </div>
+          </details>
         </div>`;
       $('#btn-transfer-broadcast').disabled = false;
     } catch (e) {
@@ -20789,7 +20795,9 @@ function setupTransferForm() {
       // the actual balance source of truth is still the chain scan.
       applyOptimisticDebit(job.assetIdHex, BigInt(r.sendAmount));
       saveRecentRecipient(job.recipientPubHex);
-      toast(`CXFER: commit=${shorten(r.commitTxid, 6)} · reveal=${shorten(r.revealTxid, 6)}`, 'success');
+      // Trader-facing receipt: state what shipped, not the underlying
+      // two-tx mechanics. Tx hashes remain available in the Activity tab.
+      toast(`Sent ✓ · ${fmtAssetAmount(BigInt(r.sendAmount), job.decimals || 0)} ${job.ticker || ''} · settles in ~10 min`, 'success', 8000);
       markOnboarded();
       const link = encodeShareLink({
         txid: r.revealTxid, vout: 0, // recipient is at vout 0 in reveal tx
@@ -28100,6 +28108,28 @@ async function renderHoldings() {
     _saveHoldingsSeenFlag();
     list.innerHTML = '';
     const ownerPubHex = bytesToHex(wallet.pub);
+    // Cross-asset Open Orders dashboard — every preauth listing this wallet
+    // has live on the market, across ALL assets, in one consolidated row.
+    // Reads from _marketCache.listings (already global) so no extra fetch.
+    // If the cache isn't warm yet (Holdings-first user), kick a background
+    // fetch and let the next renderHoldings pick it up.
+    try {
+      if (WORKER_BASE && typeof renderHoldingsOpenOrdersHTML === 'function') {
+        const ordersHtml = renderHoldingsOpenOrdersHTML(ownerPubHex);
+        if (ordersHtml) {
+          const wrap = document.createElement('div');
+          wrap.innerHTML = ordersHtml;
+          const ordersNode = wrap.firstElementChild;
+          if (ordersNode) {
+            list.appendChild(ordersNode);
+            wireHoldingsOpenOrdersActions(ordersNode);
+          }
+        } else if (!_marketCache && typeof fetchMarketData === 'function') {
+          // Cold cache — warm it so the next paint can render the panel.
+          fetchMarketData().then(d => { _marketCache = d; }).catch(() => {});
+        }
+      }
+    } catch (e) { console.warn('[holdings] open-orders panel failed:', e); }
     // Render helpers — used by the initial skeleton AND by the per-asset
     // enrichment that updates [data-region] markers in place once each card's
     // 4 fetches resolve. Pure functions of arguments so call-sites stay
@@ -29430,7 +29460,7 @@ async function renderHoldings() {
                    the actual stages: Build → Commit → Confirm → Publish. -->
               <div class="progress-strip" data-publish-progress style="display:none;margin-top:10px;" aria-live="polite">
                 <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
-                <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
+                <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Submit</span></div>
                 <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Confirm</span></div>
                 <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Publish</span></div>
               </div>
@@ -33752,6 +33782,24 @@ function applyMarketFilters() {
     const _animKind = _diffMarketLive(tile.dataset.listingKey, _liveUnit);
     if (_animKind) tile.setAttribute('data-market-anim', _animKind);
     _bindMarketLiveCleanup(tile);
+    // Click-to-fill: stamp the tile root with enough state for the
+    // orderbook click handler to prime the swap tile + auto-set the
+    // slippage cap to the clicked row's unit price. Skipped on the
+    // user's own listings. For preauth groups, fill amount = full
+    // group total so the swap tile pre-fills the whole-group buy.
+    if (l.kind === 'preauth' && (l.seller_pubkey || '') !== myPubHex) {
+      const _fillAmt = l._isGroup
+        ? (BigInt(amount || '0') * BigInt(l._groupSize || 1)).toString()
+        : (amount || '0');
+      tile.dataset.fillAid = safeAid;
+      tile.dataset.fillAmount = _fillAmt;
+      tile.dataset.fillDec = String(dec);
+      tile.dataset.fillTicker = a.ticker || '';
+      tile.dataset.fillDirection = 'buy';
+      if (unit != null) tile.dataset.fillUnit = String(unit);
+      tile.style.cursor = 'pointer';
+      tile.title = 'Click outside the Buy button to size this in the swap tile at this price cap.';
+    }
     frag.appendChild(tile);
   }
   grid.appendChild(frag);
@@ -33808,6 +33856,26 @@ function applyMarketFilters() {
   });
   grid.querySelectorAll('button[data-act="market-take-preauth-group"]').forEach(btn => {
     btn.onclick = async () => marketTakePreauthGroupHandler(btn);
+  });
+  // Click-to-fill on ask tile bodies. Mirrors the CEX orderbook pattern
+  // where clicking a row populates the order form below. We populate the
+  // swap tile in the matching direction with the row's amount; the user
+  // can review and adjust slippage before firing. Internal buttons
+  // (Buy / Cancel / etc.) take precedence — closest('button') check
+  // skips the handler when the click came from one.
+  grid.querySelectorAll('.market-listing-tile[data-fill-aid]').forEach(tile => {
+    tile.onclick = (ev) => {
+      if (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary')) return;
+      const _u = parseFloat(tile.dataset.fillUnit || '');
+      primeSwapTileFromOrderbook({
+        aid: tile.dataset.fillAid,
+        direction: tile.dataset.fillDirection || 'buy',
+        amountBaseStr: tile.dataset.fillAmount || '0',
+        decimals: parseInt(tile.dataset.fillDec || '0', 10) || 0,
+        ticker: tile.dataset.fillTicker || '',
+        targetUnit: Number.isFinite(_u) && _u > 0 ? _u : null,
+      });
+    };
   });
   // Quick-buy CTA above the grid uses the same take-preauth / claim-intent
   // handlers as the per-row buttons. Wire on the list scope (not grid)
@@ -36585,6 +36653,186 @@ function refreshYourOpenOrdersPanel(scope, aid) {
   });
 }
 
+// Pre-populate the asset-detail swap tile from an orderbook click. Flips
+// the direction toggle if needed, types the row's amount into the right
+// field (`from` for sell, `to` for buy — exact-out semantics for buys
+// matches what most CEX users expect when clicking an ask), scrolls into
+// view, and focuses the input. Bails silently if the swap tile is on a
+// different asset (only paints when the click was inside the active
+// asset's orderbook anyway, so the mismatch path is defensive).
+function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, ticker, targetUnit = null }) {
+  const widget = document.querySelector('[data-swap-tile]');
+  if (!widget) return;
+  if (aid && widget.dataset.aid && widget.dataset.aid !== aid) return;
+  const currentDir = widget.dataset.direction || 'buy';
+  if (direction && direction !== currentDir) {
+    const flipBtn = widget.querySelector('[data-swap-flip]');
+    if (flipBtn) flipBtn.click();
+  }
+  // Slippage auto-set. Refunit comes off the tile's data-ref-unit (the
+  // mark/floor price the swap tile was rendered with). For a buy at
+  // target unit U, the swap's price cap = refUnit * (1 + slip), so we
+  // need slip >= (U/refUnit - 1). For a sell, floor = refUnit * (1 -
+  // slip), so we need slip >= (1 - U/refUnit). Pick the smallest discrete
+  // option in the <select> that satisfies the requirement. Bumps wider
+  // when the clicked price is far from reference (you clicked a deep
+  // wick); narrows when the clicked price is near reference.
+  const refUnit = parseFloat(widget.dataset.refUnit || '');
+  if (Number.isFinite(refUnit) && refUnit > 0 && Number.isFinite(targetUnit) && targetUnit > 0) {
+    const isBuy = (direction || currentDir) === 'buy';
+    const needRatio = isBuy
+      ? Math.max(0, (targetUnit / refUnit) - 1)
+      : Math.max(0, 1 - (targetUnit / refUnit));
+    const needPct = needRatio * 100;
+    const slipSel = widget.querySelector('[data-swap-slippage]');
+    if (slipSel) {
+      const opts = Array.from(slipSel.options)
+        .map(o => ({ el: o, v: parseFloat(o.value) }))
+        .filter(o => Number.isFinite(o.v))
+        .sort((a, b) => a.v - b.v);
+      // Smallest option >= needPct. Falls back to the largest option if
+      // the clicked price is further from reference than any discrete
+      // choice covers — the swap-tile's existing "no route" hint will
+      // then prompt the user to manually widen.
+      const pick = opts.find(o => o.v >= needPct) || opts[opts.length - 1];
+      if (pick && slipSel.value !== pick.el.value) {
+        slipSel.value = pick.el.value;
+        slipSel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    }
+  }
+  // Convert base-units bigint string to display units. fmtAssetAmount
+  // produces a string the swap input can re-parse via its own parser.
+  let displayStr = '';
+  try {
+    const b = BigInt(amountBaseStr || '0');
+    displayStr = fmtAssetAmount(b, decimals || 0).replace(/,/g, '');
+  } catch { displayStr = '0'; }
+  // For buy direction, type into the "to" (receive) input so the swap
+  // computes the cost. For sell, type into "from" (the asset side).
+  // Both inputs accept the asset's display unit string after a flip.
+  const fromInput = widget.querySelector('input[data-swap-input="from"]');
+  const toInput = widget.querySelector('input[data-swap-input="to"]');
+  const targetInput = direction === 'sell' ? fromInput : toInput;
+  if (targetInput) {
+    targetInput.focus();
+    targetInput.value = displayStr;
+    targetInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const slipNow = widget.querySelector('[data-swap-slippage]')?.value;
+  const slipNote = slipNow ? ` · slip ${slipNow}%` : '';
+  toast(`Sized ${displayStr} ${ticker || ''} in swap tile${slipNote} · review then ${direction === 'sell' ? 'sell' : 'buy'}`, '', 4000);
+}
+
+// Cross-asset Open Orders dashboard for the Holdings tab. Walks every
+// preauth listing in _marketCache.listings authored by this wallet,
+// groups chunked listings into single rows, and renders a CEX-style
+// "Open Orders" table. Returns '' when the user has no listings (or
+// the market cache isn't warm yet) so the panel vanishes cleanly.
+//
+// Bids are intentionally per-asset and stay on the asset-detail page —
+// the worker doesn't expose a "my bids across all assets" endpoint, and
+// fan-fetching per asset would balloon Holdings tab load time. Asks
+// suffice for the most common case: a seller managing inventory.
+function renderHoldingsOpenOrdersHTML(myPubHex) {
+  if (!myPubHex || !_marketCache?.listings) return '';
+  const nowSec = Math.floor(Date.now() / 1000);
+  const myAsks = _marketCache.listings.filter(l =>
+    l.kind === 'preauth' &&
+    l.seller_pubkey === myPubHex &&
+    !l.expired &&
+    Number(l.expiry || 0) > nowSec,
+  );
+  if (myAsks.length === 0) return '';
+  // Sort by asset then by created_at so rows from the same asset cluster.
+  myAsks.sort((a, b) => {
+    const aa = a._asset?.asset_id || '';
+    const bb = b._asset?.asset_id || '';
+    if (aa !== bb) return aa.localeCompare(bb);
+    return (b.created_at || 0) - (a.created_at || 0);
+  });
+  // Run the same chunked-group collapse the orderbook uses so a fan of
+  // 7 chunks renders as one row with "× 7" + a Cancel-all action.
+  const grouped = groupChunkedPreauthListings(myAsks);
+  const rowsHtml = grouped.map(l => {
+    const aid = l._asset?.asset_id || l.asset_id || '';
+    const ticker = l._asset?.ticker || l.ticker || '?';
+    const dec = Number.isInteger(l._asset?.decimals) ? l._asset.decimals
+              : Number.isInteger(l.decimals) ? l.decimals : 0;
+    const amtBase = BigInt(l.asset_opening?.amount || '0');
+    const chunks = l._isGroup ? l._groupSize : 1;
+    const totalAmt = amtBase * BigInt(chunks);
+    const perChunkPrice = Number(l.min_price_sats || 0);
+    const totalSats = perChunkPrice * chunks;
+    const u = unitPriceSats(perChunkPrice, amtBase, dec);
+    const unitStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}` : `${perChunkPrice.toLocaleString()} sats`;
+    const usdTotal = fmtMarketUsdFromSats(totalSats, '');
+    const usdTail = usdTotal ? ` <small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
+    const ageStr = relativeAge(l.created_at || l.listed_at) ? `${relativeAge(l.created_at || l.listed_at)} ago` : '';
+    const cancelBtn = l._isGroup
+      ? `<button data-act="holdings-orders-cancel-ask-group" data-aid="${escapeHtml(aid)}" data-sids="${escapeHtml((l._groupChunks || []).map(c => c.sale_id).filter(Boolean).join(','))}" data-ticker="${escapeHtml(ticker)}" title="Cancel all ${chunks} chunks in this group" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel all</button>`
+      : `<button data-act="holdings-orders-cancel-ask" data-aid="${escapeHtml(aid)}" data-sid="${escapeHtml(l.sale_id || '')}" data-price="${perChunkPrice}" data-ticker="${escapeHtml(ticker)}" data-amount="${escapeHtml(l.asset_opening?.amount || '0')}" data-dec="${dec}" title="Cancel this listing" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button>`;
+    return `<tr>
+      <td><a href="#" data-act="holdings-orders-open-market" data-aid="${escapeHtml(aid)}" style="font-weight:600;color:var(--ink);text-decoration:underline dotted;" title="Open ${escapeHtml(ticker)} market">${escapeHtml(ticker)}</a></td>
+      <td><span class="market-bid-state market-bid-state--mine" style="background:#fee;border:1px solid #b8341d;color:#b8341d;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Sell</span></td>
+      <td><strong>${escapeHtml(fmtAssetAmount(totalAmt, dec))}</strong>${l._isGroup ? ` <span class="muted" style="font-size:10px;">× ${chunks}</span>` : ''}</td>
+      <td>${unitStr}</td>
+      <td><strong>${totalSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
+      <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
+      <td>${cancelBtn}</td>
+    </tr>`;
+  }).join('');
+  // Summary chip — count + total sats across all open asks, so the user
+  // gets a portfolio-wide "I have N orders open worth ~$X sats" glance.
+  const totalSatsAll = grouped.reduce((s, l) => s + Number(l.min_price_sats || 0) * (l._isGroup ? l._groupSize : 1), 0);
+  const totalUsdAll = fmtMarketUsdFromSats(totalSatsAll, '');
+  const summary = `${grouped.length} open order${grouped.length === 1 ? '' : 's'} · ${totalSatsAll.toLocaleString('en-US')} sats${totalUsdAll ? ` · ${totalUsdAll}` : ''}`;
+  return `
+    <div data-holdings-open-orders style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg-warm);padding:10px 12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">Your open orders <span class="muted" style="font-weight:normal;font-size:10px;text-transform:none;letter-spacing:0;">· ${escapeHtml(summary)} · across all assets</span></strong>
+        <span class="muted" style="font-size:10px;">Bids are per-asset — open a market to manage them</span>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead>
+          <tr style="color:var(--ink-mid);text-align:left;text-transform:uppercase;letter-spacing:0.06em;font-size:9px;">
+            <th style="padding:4px 6px;font-weight:600;">Asset</th>
+            <th style="padding:4px 6px;font-weight:600;">Side</th>
+            <th style="padding:4px 6px;font-weight:600;">Amount</th>
+            <th style="padding:4px 6px;font-weight:600;">Price</th>
+            <th style="padding:4px 6px;font-weight:600;">Total</th>
+            <th style="padding:4px 6px;font-weight:600;">Age</th>
+            <th style="padding:4px 6px;font-weight:600;">Action</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`;
+}
+
+// Wire the cross-asset open-orders panel's actions. Cancel buttons reuse
+// the existing market handlers; the "Asset" cell jumps to that asset's
+// Market page via goToMarketAsset + the Market tab.
+function wireHoldingsOpenOrdersActions(node) {
+  if (!node) return;
+  node.querySelectorAll('button[data-act="holdings-orders-cancel-ask"]').forEach(btn => {
+    btn.onclick = async () => marketCancelPreauthHandler(btn);
+  });
+  node.querySelectorAll('button[data-act="holdings-orders-cancel-ask-group"]').forEach(btn => {
+    btn.onclick = async () => marketCancelPreauthGroupHandler(btn);
+  });
+  node.querySelectorAll('a[data-act="holdings-orders-open-market"]').forEach(a => {
+    a.onclick = (ev) => {
+      ev.preventDefault();
+      const aid = a.dataset.aid;
+      const tabBtn = document.querySelector('.tab[data-tab="market"]');
+      if (tabBtn) tabBtn.click();
+      try { goToMarketAsset(aid); } catch {}
+    };
+  });
+}
+
 async function populateMarketBidsLadder(scope, asset) {
   const section = scope.querySelector('[data-market-bids-section]');
   if (!section) return;
@@ -36688,8 +36936,17 @@ async function populateMarketBidsLadder(scope, asset) {
       state ? `market-bids-row--${state}` : '',
       b._isMine ? 'market-bids-row--mine' : '',
     ].filter(Boolean).join(' ');
+    // Click-to-fill metadata on the row root so the bind pass can prime
+    // the swap tile in SELL mode at this row's amount + auto-set the
+    // slippage cap. Suppressed on the user's own bids and on already-
+    // claimed bids (`axintent_id` set or expired).
+    const _fillable = !b._isMine && !claimed && !(b._expiresIn === 0);
+    const _fillUnitAttr = (_fillable && b._unit != null) ? ` data-fill-unit="${b._unit}"` : '';
+    const _fillAttrs = _fillable
+      ? ` data-fill-aid="${escapeHtml(aid)}" data-fill-amount="${escapeHtml(String(b.amount || '0'))}" data-fill-dec="${decimals}" data-fill-ticker="${escapeHtml(ticker)}" data-fill-direction="sell"${_fillUnitAttr} style="cursor:pointer;" title="Click outside Fulfil to size this in the swap tile at this price floor."`
+      : '';
     return `
-      <div data-bid-row data-bid-id="${escapeHtml(bidId)}" class="${rowClass}">
+      <div data-bid-row data-bid-id="${escapeHtml(bidId)}" class="${rowClass}"${_fillAttrs}>
         <div class="market-bid-price">
           <strong class="market-sats-price">${escapeHtml(unitVal)} sats/${escapeHtml(ticker)}</strong>
           <small class="market-usd-price">${unitUsd ? `${escapeHtml(unitUsd)} per token` : 'no USD quote'}</small>
@@ -36745,6 +37002,22 @@ async function populateMarketBidsLadder(scope, asset) {
     if (!b) return;
     const kind = _diffMarketLive(`bid:${bidId}`, b._unit);
     if (kind) row.setAttribute('data-market-anim', kind);
+    // Click-to-fill: only on rows that opted in by stamping data-fill-aid
+    // (skipped on your own bids + already-claimed/expired ones).
+    if (row.dataset.fillAid) {
+      row.addEventListener('click', (ev) => {
+        if (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary')) return;
+        const _u = parseFloat(row.dataset.fillUnit || '');
+        primeSwapTileFromOrderbook({
+          aid: row.dataset.fillAid,
+          direction: row.dataset.fillDirection || 'sell',
+          amountBaseStr: row.dataset.fillAmount || '0',
+          decimals: parseInt(row.dataset.fillDec || '0', 10) || 0,
+          ticker: row.dataset.fillTicker || '',
+          targetUnit: Number.isFinite(_u) && _u > 0 ? _u : null,
+        });
+      });
+    }
     _bindMarketLiveCleanup(row);
   });
   list.querySelectorAll('[data-act="market-mine-bids-toggle"]').forEach(btn => {

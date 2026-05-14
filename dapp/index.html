@@ -3607,8 +3607,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            broadcast commit, broadcast reveal, index locally. -->
       <div id="etch-progress" class="progress-strip" style="display:none;" aria-live="polite">
         <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
-        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
-        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Submit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Confirm</span></div>
         <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Index</span></div>
       </div>
       <div id="etch-error" class="error"></div>
@@ -3692,8 +3692,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            commit broadcast, reveal broadcast, post-broadcast register. -->
       <div id="petch-progress" class="progress-strip" style="display:none;" aria-live="polite">
         <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
-        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
-        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Submit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Confirm</span></div>
         <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Register</span></div>
       </div>
       <div id="petch-error" class="error"></div>
@@ -3737,13 +3737,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div id="x-amount-warn" class="muted" style="margin-top:4px;font-size:11px;color:var(--orange);display:none;"></div>
 
         <details id="x-utxo-picker-details" style="margin-top:10px;">
-          <summary class="muted" style="cursor:pointer;font-size:11px;">Choose specific UTXO to spend (advanced)</summary>
+          <summary class="muted" style="cursor:pointer;font-size:11px;">Choose a specific lot to spend (advanced)</summary>
           <div style="margin-top:8px;">
-            <label style="font-size:11px;font-weight:normal;letter-spacing:0;text-transform:none;">Use this UTXO instead of greedy-largest:</label>
+            <label style="font-size:11px;font-weight:normal;letter-spacing:0;text-transform:none;">Use this lot instead of the default picker:</label>
             <select id="x-utxo-pick" style="margin-top:4px;font-family:var(--mono);font-size:11px;">
-              <option value="">auto · greedy-largest (default)</option>
+              <option value="">auto · largest lot first (default)</option>
             </select>
-            <div class="muted" style="margin-top:4px;font-size:11px;">When set, the amount field is locked to the chosen UTXO's exact value (you spend the whole UTXO, change goes back to you). Useful for cancelling a stale listing's UTXO without sending your full balance.</div>
+            <div class="muted" style="margin-top:4px;font-size:11px;">When set, the amount field is locked to the chosen lot's exact value (whole lot is spent, change returns to you). Useful for cancelling a stale listing's lot without touching your full balance.</div>
           </div>
         </details>
 
@@ -3758,8 +3758,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
              Build → Commit → Reveal → Sent. -->
         <div id="transfer-progress" class="progress-strip" style="display:none;" aria-live="polite">
           <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
-          <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
-          <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+          <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Submit</span></div>
+          <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Confirm</span></div>
           <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Sent</span></div>
         </div>
         <div id="transfer-error" class="error"></div>
@@ -4026,8 +4026,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            internally so the same Build → Commit → Reveal → Sent labels apply. -->
       <div id="drop-fulfil-progress" class="progress-strip" style="display:none;" aria-live="polite">
         <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
-        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
-        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Submit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Confirm</span></div>
         <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Sent</span></div>
       </div>
       <div id="drop-fulfil-err" class="error" style="margin-top:8px;"></div>
@@ -4386,8 +4386,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            parallel render doesn't blow it away. -->
       <div id="pmint-progress" class="progress-strip" style="display:none;" aria-live="polite">
         <div class="progress-step" data-step="0"><span class="progress-num">1</span><span class="progress-label">Build</span></div>
-        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Commit</span></div>
-        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Reveal</span></div>
+        <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Submit</span></div>
+        <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Confirm</span></div>
         <div class="progress-step" data-step="3"><span class="progress-num">4</span><span class="progress-label">Pending</span></div>
       </div>
       <div id="petch-discover-list">
