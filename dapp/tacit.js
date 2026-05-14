@@ -28861,10 +28861,10 @@ async function renderHoldings() {
               <label>Amount to sell (display units, e.g. 1.5)</label>
               <input type="text" inputmode="decimal" data-field="amount" placeholder="amount">
               <div class="muted" style="margin-top:4px;font-size:11px;">
-                Holdings: ${fmtAssetAmount(totalBal, target.decimals)} ${escapeHtml(target.ticker)} across ${sortedUtxos.length} UTXO${sortedUtxos.length === 1 ? '' : 's'}
-                (largest single: ${fmtAssetAmount(largestUtxo, target.decimals)} ${escapeHtml(target.ticker)}).
-                If the amount you enter doesn't match any single UTXO exactly, the dapp auto-splits via a self-CXFER first
-                (one extra Bitcoin tx), then lists the resulting amount-exact UTXO.
+                Balance: ${fmtAssetAmount(totalBal, target.decimals)} ${escapeHtml(target.ticker)} across ${sortedUtxos.length} lot${sortedUtxos.length === 1 ? '' : 's'}
+                (largest: ${fmtAssetAmount(largestUtxo, target.decimals)} ${escapeHtml(target.ticker)}).
+                If the amount you enter doesn't match a single lot exactly, the dapp auto-splits one for you
+                (one extra Bitcoin tx), then lists the exact-size lot.
               </div>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
@@ -29179,11 +29179,11 @@ async function renderHoldings() {
                 <summary class="muted" style="cursor:pointer;font-size:11px;">Need a smaller lot? Split first ▾</summary>
                 <div style="margin-top:8px;padding:8px;border:1px dashed var(--ink-faint);background:var(--bg);">
                   <div class="muted" style="font-size:11px;line-height:1.5;">
-                    Atomic intents sell the entire UTXO — to list less than the chosen UTXO holds, broadcast a self-CXFER first that splits it into <strong>${escapeHtml(target.ticker)} you-want-to-list</strong> + <strong>change</strong>. After it confirms (~10 min), the new smaller UTXO appears in the dropdown above.
+                    Atomic offers sell the whole lot — to list less than the chosen lot holds, split it first into <strong>the amount you want to list</strong> + <strong>change</strong>. One Bitcoin tx; after it confirms (~10 min) the smaller lot appears in the dropdown above.
                   </div>
                   <div class="form-row two" style="margin-top:8px;">
                     <div>
-                      <label>New UTXO size (display units)</label>
+                      <label>New lot size (display units)</label>
                       <input type="text" inputmode="decimal" data-field="split-amount" placeholder="e.g. 100">
                     </div>
                     <div style="display:flex;align-items:flex-end;">
@@ -29262,17 +29262,17 @@ async function renderHoldings() {
             catch (e) { splitErr.textContent = e.message; return; }
             if (splitAmount <= 0n) { splitErr.textContent = 'split size must be > 0'; return; }
             if (splitAmount >= u.amount) {
-              splitErr.textContent = `split size (${fmtAssetAmount(splitAmount, target.decimals)}) must be < the chosen UTXO's amount (${fmtAssetAmount(u.amount, target.decimals)}) — otherwise no smaller UTXO is produced`;
+              splitErr.textContent = `split size (${fmtAssetAmount(splitAmount, target.decimals)}) must be < the chosen lot's amount (${fmtAssetAmount(u.amount, target.decimals)}) — otherwise no smaller lot is produced`;
               return;
             }
             if (!confirm(
-              `Split this UTXO?\n\n` +
-              `Source UTXO: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} (${shorten(u.utxo.txid, 8)}:${u.utxo.vout})\n\n` +
-              `New UTXO #1: ${fmtAssetAmount(splitAmount, target.decimals)} ${target.ticker} (use this for the atomic intent)\n` +
-              `New UTXO #2: ${fmtAssetAmount(u.amount - splitAmount, target.decimals)} ${target.ticker} (change, stays in your wallet)\n\n` +
-              `Cost: one CXFER (commit + reveal Bitcoin fees, ~10 min for confirmation).`,
+              `Split this lot?\n\n` +
+              `Source lot: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} (#${shorten(u.utxo.txid, 4)})\n\n` +
+              `New lot A: ${fmtAssetAmount(splitAmount, target.decimals)} ${target.ticker} (use this to list)\n` +
+              `New lot B: ${fmtAssetAmount(u.amount - splitAmount, target.decimals)} ${target.ticker} (change, stays in your wallet)\n\n` +
+              `Cost: one Bitcoin tx, ~10 min for confirmation.`,
             )) return;
-            if (!await ensureBurnerBackedUp('Split UTXO (self-CXFER consuming the selected UTXO)')) return;
+            if (!await ensureBurnerBackedUp('Split lot · creates two new lots from the selected one')) return;
             const need = await estimateSatsForOp('cxfer');
             if (!(await ensureSatsFunded(need, 'Splitting UTXO'))) return;
             const splitBtn = formHost.querySelector('[data-form-act="split"]');
@@ -33666,7 +33666,14 @@ function applyMarketFilters() {
         ? ` (${groupSize} chunks available · each tile takes one chunk)`
         : '';
       if (isSeller) {
-        secondaryAction = `<button data-act="market-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Pull this instant listing from the worker. Buyers won't be able to take it after cancellation lands. Note: the seller's pre-signed asset spend can't be invalidated off-chain; for a true cancel, also spend the listed UTXO yourself.${l._isGroup ? ' This cancels ONE chunk of the group; the remaining chunks stay live.' : ''}" style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel${l._isGroup ? ' chunk' : ''}</button>`;
+        // Soft + hard cancel paired on owned tiles. Soft = pull worker
+        // record only (signed authorization bytes still floating).
+        // Hard = self-CXFER the listed UTXO so consensus moots the
+        // signed spend permanently. Hard is the safer default for any
+        // listing the seller is sure about.
+        secondaryAction =
+          `<button data-act="market-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Soft cancel: pulls the listing from the worker. The seller's pre-signed asset spend remains valid; a buyer who copied the bytes earlier could still settle.${l._isGroup ? ' This cancels ONE chunk of the group; the remaining chunks stay live.' : ''}" style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Soft cancel${l._isGroup ? ' chunk' : ''}</button>`
+          + `<button data-act="market-hard-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Hard cancel: self-spends the listed UTXO on Bitcoin. Consensus rejects any future broadcast of the pre-signed sale tx (the input is gone). Costs one Bitcoin tx fee. The most cryptographically definitive cancel.${l._isGroup ? ' This hard-cancels ONE chunk of the group; the remaining chunks stay live.' : ''}" style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink);border:1px solid var(--ink);font-weight:600;">Hard cancel${l._isGroup ? ' chunk' : ''}</button>`;
         if (l._isGroup) {
           // Group-aware "Cancel all" — fires K worker DELETEs sequentially.
           // Stamps the chunk sale_ids comma-joined so the handler can iterate
@@ -33678,8 +33685,16 @@ function applyMarketFilters() {
           ? `<span title="Your chunked listing group is live. Any subset of chunks can be taken individually by buyers.">⏳ your group of ${groupSize} chunks · awaiting buyers</span>`
           : `<span title="Your instant listing is live. Any buyer can complete the purchase atomically; no fulfilment step required from you.">⏳ your instant listing · awaiting buyer</span>`;
       } else {
-        const buyLabel = l._isGroup ? `Buy 1 of ${groupSize}` : 'Buy';
-        primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy instantly: builds a commit + atomic settlement tx that pays the seller's signed payout script and delivers the asset to your wallet in one Bitcoin tx. No claim window, no fulfilment step.${groupTitle}" style="flex:1;font-size:11px;">${escapeHtml(buyLabel)}</button>`;
+        if (l._isGroup) {
+          // Group buy: clicking opens a quantity picker (1..N) and fires
+          // K sequential takes. Each chunk is still a standalone preauth-
+          // sale settlement so security is unchanged — we just sequence
+          // K of them in one flow so the buyer doesn't click N times.
+          const chunkSids = (l._groupChunks || []).map(c => c.sale_id).filter(Boolean).join(',');
+          primaryAction = `<button data-act="market-take-preauth-group" data-aid="${escapeHtml(safeAid)}" data-sids="${escapeHtml(chunkSids)}" data-group-size="${groupSize}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy any number of chunks from this group. Each chunk settles atomically on Bitcoin in its own transaction.${groupTitle}" style="flex:1;font-size:11px;">Buy 1–${groupSize}</button>`;
+        } else {
+          primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy instantly: trustless atomic settlement on Bitcoin. No claim window, no fulfilment step." style="flex:1;font-size:11px;">Buy</button>`;
+        }
       }
     } else {
       // Opening / range OTC listings. Intent (28846) and preauth (28874)
@@ -33817,8 +33832,14 @@ function applyMarketFilters() {
   grid.querySelectorAll('button[data-act="market-cancel-preauth"]').forEach(btn => {
     btn.onclick = async () => marketCancelPreauthHandler(btn);
   });
+  grid.querySelectorAll('button[data-act="market-hard-cancel-preauth"]').forEach(btn => {
+    btn.onclick = async () => marketHardCancelPreauthHandler(btn);
+  });
   grid.querySelectorAll('button[data-act="market-cancel-preauth-group"]').forEach(btn => {
     btn.onclick = async () => marketCancelPreauthGroupHandler(btn);
+  });
+  grid.querySelectorAll('button[data-act="market-take-preauth-group"]').forEach(btn => {
+    btn.onclick = async () => marketTakePreauthGroupHandler(btn);
   });
   // Quick-buy CTA above the grid uses the same take-preauth / claim-intent
   // handlers as the per-row buttons. Wire on the list scope (not grid)
@@ -35392,7 +35413,9 @@ function renderMarketAssetHeader(assetId, rows) {
             // without leaving the page. Only renders when balance > 0; the
             // grid auto-reflows for the fifth tile. USD valuation uses the
             // header's mark price so it's consistent with the displayed
-            // Price column even when 24h trades vary.
+            // Price column even when 24h trades vary. The whole tile is
+            // wired as a Sell CTA (data-act="market-jump-to-sell") — click
+            // it to scroll to the swap tile + flip to sell mode.
             const _h = _holdingsCache?.holdings?.get(safeAid);
             if (!_h || _h.balance <= 0n) return '';
             const _dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
@@ -35408,7 +35431,7 @@ function renderMarketAssetHeader(assetId, rows) {
                 _valStr = fmtMarketUsdFromSats(_valSats, '');
               }
             }
-            return `<div><span>You own</span><strong>${escapeHtml(_balStr)} ${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(_valStr || '—')}</small></div>`;
+            return `<div data-act="market-jump-to-sell" data-aid="${escapeHtml(safeAid)}" title="Click to scroll to the swap tile in Sell mode and size from your balance" style="cursor:pointer;"><span>You own <span style="color:var(--ink-mid);font-size:9px;">↗ sell</span></span><strong>${escapeHtml(_balStr)} ${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(_valStr || '—')}</small></div>`;
           })()}
         </div>
         <!-- Bottom back button dropped — the breadcrumb at top is the
@@ -37370,8 +37393,8 @@ function _wireSwapTile(scope) {
       if (dir === 'sell') _invalidateBidsCache(aid);
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'} · ${lastErr}`, 'error', 8000);
-      else if (dir === 'buy') toast(`Swapped → ${accStr} ${ticker} ✓`, 'success', 5000);
-      else toast(`Selling ${accStr} ${ticker} ✓ (pending bidder Takes)`, 'success', 5000);
+      else if (dir === 'buy') toast(`Filled · ${accStr} ${ticker} bought · settles in ~10 min (check Holdings)`, 'success', 8000);
+      else toast(`Filled · ${accStr} ${ticker} sold · buyers will settle on Bitcoin in ~10 min`, 'success', 8000);
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);
@@ -37544,7 +37567,7 @@ function _wireMarketSweepBuy(section, asset) {
     formHost.innerHTML = `
       <div style="border:1px dashed var(--ink-faint);padding:10px;background:var(--bg-warm);">
         <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">⚡ Sweep buy ${escapeHtml(ticker)} (instant listings only)</div>
-        <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:6px;">Walks the asks ladder cheapest-first under your price cap. Each fill is one Bitcoin tx, broadcast sequentially. Trustless — instant listings only. Stops on first failure; partial fills are reported.</div>
+        <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:6px;">Walks the orderbook cheapest-first under your price cap. Each fill settles on Bitcoin in ~10 min. Trustless atomic settlement (instant listings only). Stops on first failure; partial fills are reported.</div>
         ${_refLine}
         <div class="flex" style="gap:6px;flex-wrap:wrap;">
           <label style="font-size:10px;flex:1;min-width:120px;">Target amount (${escapeHtml(ticker)})
@@ -38268,6 +38291,30 @@ function bindMarketAssetHeader(scope) {
     try { await navigator.clipboard.writeText(copyEl.dataset.aid); toast('Asset ID copied', 'success'); }
     catch { /* clipboard blocked */ }
   };
+  // "You own" tile → jump to swap tile in sell mode. Flips the direction
+  // toggle if the tile is currently in buy mode, scrolls into view, and
+  // focuses the from input so the user can immediately type the size to
+  // sell. Avoids the trader having to scroll-find the swap tile + flip it
+  // manually after spotting their balance.
+  scope.querySelectorAll('[data-act="market-jump-to-sell"]').forEach(el => {
+    el.onclick = (ev) => {
+      ev.preventDefault();
+      const widget = document.querySelector('[data-swap-tile]');
+      if (!widget) return;
+      const currentDir = widget.dataset.direction || 'buy';
+      if (currentDir !== 'sell') {
+        const flipBtn = widget.querySelector('[data-swap-flip]');
+        if (flipBtn) flipBtn.click();
+      }
+      widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Slight delay so the scroll animation doesn't fight focus; the
+      // flip handler also re-renders the inputs so we wait for it.
+      setTimeout(() => {
+        const fromInput = widget.querySelector('input[data-swap-input="from"]');
+        if (fromInput) fromInput.focus();
+      }, 300);
+    };
+  });
   // "List Assets" opens the existing Holdings instant-list form for wallets
   // that hold this asset, or shows a read-only preview when no sellable UTXO
   // is available in the current wallet.
@@ -38645,14 +38692,13 @@ async function marketFulfilIntentHandler(btn) {
   const claim = intent.claim;
   if (!claim) { toast('No active claim to fulfil', 'error'); return; }
   if (!confirm(
-    `Fulfil claim from taker ${shorten(claim.taker_pubkey, 8)}?\n\n` +
-    `The dapp builds a partial Bitcoin tx targeted at the taker's pubkey, locked so they can only broadcast if they pay you. ` +
-    `Posts it to the worker. The taker then broadcasts in one atomic Bitcoin tx and you receive ${intent.price_sats.toLocaleString()} sats.`,
+    `Fulfil order from buyer ${shorten(claim.taker_pubkey, 8)}?\n\n` +
+    `Settles atomically on Bitcoin: the buyer pays ${intent.price_sats.toLocaleString()} sats only if you deliver the tokens, in one transaction. You sign now; the buyer broadcasts to finalize.`,
   )) return;
-  btn.disabled = true; btn.textContent = 'fulfilling...';
+  btn.disabled = true; btn.textContent = 'fulfilling…';
   try {
     await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent, claim });
-    toast('Fulfilment posted OK - taker can now broadcast', 'success', 6000);
+    toast('Order accepted ✓ — waiting for the buyer to settle on Bitcoin', 'success', 6000);
     setTimeout(() => renderMarket(), 1000);
   } catch (e) {
     if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
@@ -39065,6 +39111,55 @@ async function marketTakePreauthHandler(btn) {
   }
 }
 
+// Hard cancel = self-CXFER of the listed UTXO. Bitcoin consensus then
+// moots the seller's pre-signed sale authorization (the input is spent;
+// any attempt to broadcast the original take tx fails as double-spend).
+// One-click so a normie doesn't have to manually trace "go to Holdings
+// → find this lot → Send to myself."
+//
+// Safety properties:
+//  · Hard fail if wallet.pub != sale.seller_pubkey (not your listing).
+//  · Hard fail if listing's asset_outpoint isn't in current holdings
+//    (already taken or self-spent — nothing to do on chain; caller
+//    falls back to soft cancel only).
+//  · forceUtxos targets exactly the listed UTXO so the cancel doesn't
+//    consume unrelated lots.
+//  · Soft cancel runs AFTER on-chain self-spend succeeds; if the
+//    self-spend fails the worker record is preserved for a retry.
+async function hardCancelPreauthSale({ assetIdHex, sale }) {
+  await ensurePrivkey();
+  if (!sale || !sale.asset_outpoint) throw new Error('sale.asset_outpoint missing — refresh and retry');
+  const sellerPubHex = String(sale.seller_pubkey || '').toLowerCase();
+  const myPubHex = bytesToHex(wallet.pub).toLowerCase();
+  if (sellerPubHex !== myPubHex) throw new Error("this listing isn't yours to hard-cancel");
+  const aoTxid = String(sale.asset_outpoint.txid || '').toLowerCase();
+  const aoVout = Number(sale.asset_outpoint.vout);
+  if (!/^[0-9a-f]{64}$/.test(aoTxid) || !Number.isInteger(aoVout)) {
+    throw new Error('sale.asset_outpoint malformed');
+  }
+  const holdings = await scanHoldings();
+  const h = holdings.get(assetIdHex);
+  if (!h) throw new Error(`no holdings for asset ${assetIdHex}`);
+  const listed = (h.utxos || []).find(u =>
+    String(u?.utxo?.txid || '').toLowerCase() === aoTxid && Number(u?.utxo?.vout) === aoVout
+  );
+  if (!listed) {
+    throw new Error('listed UTXO no longer in your wallet — likely already taken or hard-cancelled');
+  }
+  const r = await buildAndBroadcastCXferMulti({
+    assetIdHex,
+    recipients: [{ pubHex: myPubHex, amount: listed.amount }],
+    forceUtxos: [{ txid: aoTxid, vout: aoVout, amount: listed.amount, blinding: listed.blinding }],
+  });
+  // Best-effort soft cancel after the on-chain action succeeded. If
+  // this fails the listed UTXO is already gone, so the listing is
+  // dead at protocol level; the worker entry will TTL on its own.
+  try { await cancelPreauthSale({ assetIdHex, saleIdHex: sale.sale_id }); } catch {}
+  invalidateMarketCache();
+  invalidateHoldingsCache();
+  return r;
+}
+
 // Cancel a preauth-sale (seller side). Pulls the worker record so buyers
 // can't see the listing. NOTE: the seller's pre-signed asset spend can't be
 // invalidated off-chain - a determined buyer with the saved record could
@@ -39095,12 +39190,60 @@ async function marketCancelPreauthHandler(btn) {
   btn.textContent = 'cancelling...';
   try {
     await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
-    toast('Instant listing cancelled OK', 'success');
+    // Post-soft-cancel nudge: surfaces the hard-cancel follow-up so a
+    // user who soft-cancelled because of second thoughts (rather than
+    // because the listing already settled) doesn't leave the signed
+    // bytes in the wild. Toast is dismissible / fades on next nav.
+    toast('Soft cancel done · worker record removed. Hard cancel (self-spend the UTXO) is the only crypto-strong invalidation.', 'success', 12000);
     invalidateMarketCache();
     setTimeout(() => renderMarket(), 500);
   } catch (e) {
     if (isUnlockCancelled(e)) toast('Unlock cancelled - nothing was broadcast.', '');
     else toast('Cancel failed: ' + e.message, 'error');
+    restore();
+  }
+}
+
+// Hard-cancel UI handler: confirms the on-chain cost, fetches the live
+// sale record (so we have asset_outpoint + seller_pubkey), then calls
+// hardCancelPreauthSale. Surfaces a clear toast on success including
+// the on-chain txid for verification.
+async function marketHardCancelPreauthHandler(btn) {
+  if (btn.disabled) return;
+  const aid = btn.dataset.aid;
+  const sid = btn.dataset.sid;
+  const price = Number(btn.dataset.price || 0);
+  const ticker = btn.dataset.ticker || '?';
+  const amount = btn.dataset.amount || '0';
+  const dec = parseInt(btn.dataset.dec || '0', 10) || 0;
+  const detail = (amount !== '0' && price > 0)
+    ? `\nListing: ${fmtAssetAmount(BigInt(amount), dec)} ${ticker} for ${price.toLocaleString()} sats\n`
+    : '';
+  btn.disabled = true;
+  const origText = btn.textContent;
+  const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
+  if (!confirm(
+    `Hard cancel — self-spend the listed UTXO?${detail}\n` +
+    `Broadcasts a Bitcoin tx that consumes the listed UTXO back into your wallet at a fresh outpoint. After confirmation:\n` +
+    `  · the pre-signed sale authorization becomes unspendable (input gone)\n` +
+    `  · the worker listing is removed\n` +
+    `  · costs one Bitcoin tx fee (~800 sats typical)\n\n` +
+    `Use this when you want cryptographic certainty the listing can't be settled by anyone who saved the bytes.`,
+  )) { restore(); return; }
+  btn.textContent = 'hard cancelling…';
+  try {
+    // Refetch the live sale record so we have the full asset_outpoint —
+    // the tile's data-* attrs carry display values only, not the full
+    // payload the hard-cancel function needs.
+    const sale = await fetchPreauthSale({ assetIdHex: aid, saleIdHex: sid });
+    if (!sale) throw new Error('sale record missing — refresh listings');
+    const r = await hardCancelPreauthSale({ assetIdHex: aid, sale });
+    const txid = r?.revealTxid || r?.commit_txid || '';
+    toast(`Hard cancelled · listed UTXO spent at ${shorten(txid, 10)} · listing removed`, 'success', 9000);
+    setTimeout(() => renderMarket(), 500);
+  } catch (e) {
+    if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+    else toast('Hard cancel failed: ' + e.message, 'error', 10000);
     restore();
   }
 }
