@@ -1314,11 +1314,17 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-listing-actions {
   margin-top: 12px;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 .market-listing-actions button {
-  flex: 1;
+  flex: 1 1 88px;
+  min-width: 0;
+  white-space: nowrap;
 }
+/* On narrow tiles (≤220px), two side-by-side action buttons (e.g.
+   Soft cancel + Hard cancel) would crowd. flex-wrap above lets the
+   second button drop to its own row instead of clipping. */
 .market-buy-overlay {
   position: fixed;
   inset: 0;
@@ -4280,14 +4286,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       </details>
       <div class="market-controls">
         <div class="market-search-wrap">
-          <input id="market-filter-asset" type="text" placeholder="Search or pick a token to make a market…" aria-label="Search market" list="market-asset-picker-list" autocomplete="off">
+          <input id="market-filter-asset" type="text" placeholder="Search any token to make a market…" aria-label="Search market" autocomplete="off">
           <span class="market-search-icon" aria-hidden="true">⌕</span>
-          <!-- Native-autocomplete data source. Populated dynamically by
-               renderMarket() from the full registry (assets + petch-assets),
-               not just assets with active offers — lets users pick any
-               token to land on its market page and post the first bid /
-               listing, even if no one's traded it yet. -->
-          <datalist id="market-asset-picker-list"></datalist>
         </div>
         <div class="market-chips-row">
           <div class="market-chip-wrap">

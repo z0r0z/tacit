@@ -33157,42 +33157,8 @@ async function renderMarket() {
   }
 }
 
-// Populate the search input's <datalist> with every known asset so the
-// user can pick a token that doesn't have offers yet and land on its
-// market page to post the first bid / listing. Browser handles the
-// dropdown UI natively (suggestions appear on focus / typing). Cheap:
-// re-runs on every applyMarketFilters but the underlying registry
-// doesn't change frequently so the DOM diff is trivial.
-function _populateMarketAssetPicker() {
-  const dl = document.getElementById('market-asset-picker-list');
-  if (!dl) return;
-  const seen = new Set();
-  const entries = [];
-  const push = (a) => {
-    const aid = String(a?.asset_id || '').toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(aid) || seen.has(aid)) return;
-    seen.add(aid);
-    const ticker = String(a?.ticker || '?').replace(/[<>"&]/g, '');
-    // <option value> is what the input field sees on selection. Using the
-    // ticker so a click fills the search box with the ticker; the
-    // existing applyMarketFilters then matches on ticker → drops the
-    // user onto that asset's market view. <option label> is the
-    // secondary hint shown alongside in some browsers.
-    entries.push({ value: ticker, label: `${ticker} · ${aid.slice(0, 8)}…` });
-  };
-  for (const a of (_marketCache?.assets || [])) push(a);
-  // Sort: TAC first (anchor), then alphabetical by ticker.
-  entries.sort((a, b) => {
-    if (a.value.toUpperCase() === 'TAC') return -1;
-    if (b.value.toUpperCase() === 'TAC') return 1;
-    return a.value.localeCompare(b.value);
-  });
-  const html = entries.map(e => `<option value="${e.value.replace(/"/g, '&quot;')}" label="${e.label.replace(/"/g, '&quot;')}"></option>`).join('');
-  if (dl.innerHTML !== html) dl.innerHTML = html;
-}
 function applyMarketFilters() {
   if (!_marketCache) return;
-  _populateMarketAssetPicker();
   const list = $('#market-list');
   const status = $('#market-status');
   const filterText = ($('#market-filter-asset')?.value || '').trim().toLowerCase();
@@ -39109,6 +39075,209 @@ async function marketTakePreauthHandler(btn) {
     }
     restore();
   }
+}
+
+// Group-buy modal — same visual frame as marketConfirmPreauthTake but with a
+// quantity stepper (1..groupSize) and live recomputation of subtotal +
+// estimated network fee + estimated total. Resolves to the chosen K (1..N)
+// on confirm, or 0 on cancel.
+async function marketConfirmGroupBuy({ ticker, amount, dec, chunkPriceSats, groupSize }) {
+  await refreshMarketBtcUsd().catch(() => {});
+  const amountBase = (() => { try { return BigInt(amount || '0'); } catch { return 0n; } })();
+  const unit = (() => { try { return unitPriceSats(chunkPriceSats, amountBase, dec); } catch { return null; } })();
+  // Conservative per-tx fee band — matches the single-buy modal's static
+  // estimate. Each chunk take is its own commit + reveal, so K chunks
+  // multiply both the asset price and the fee.
+  const feeLow = 3000;
+  const feeHigh = 5000;
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'market-buy-overlay';
+    let qty = 1;
+    const finish = (k) => {
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(k);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); finish(0); }
+    };
+    const renderBody = () => {
+      const k = Math.max(1, Math.min(groupSize, qty | 0));
+      qty = k;
+      const totalAmt = amountBase * BigInt(k);
+      const priceLow = chunkPriceSats * k + feeLow * k;
+      const priceHigh = chunkPriceSats * k + feeHigh * k;
+      const subtotalSats = chunkPriceSats * k;
+      const totalUsdLow = fmtMarketUsdFromSats(priceLow, 'n/a');
+      const totalUsdHigh = fmtMarketUsdFromSats(priceHigh, 'n/a');
+      const subtotalUsd = fmtMarketUsdFromSats(subtotalSats, 'n/a');
+      const unitUsd = unit != null ? fmtMarketUsdUnitFromSats(unit, 'n/a') : 'n/a';
+      const unitStr = unit != null ? `${fmtMarketUnitSats(unit)}/${ticker}` : `n/a/${ticker}`;
+      overlay.innerHTML = `
+        <div class="market-buy-card" role="dialog" aria-modal="true" aria-label="Buy chunked group">
+          <div class="market-buy-head">
+            <div>
+              <span class="market-buy-kind">Buy</span>
+              <h3>${escapeHtml(fmtAssetAmount(totalAmt, dec))} ${escapeHtml(ticker)}</h3>
+            </div>
+            <button class="market-buy-close" type="button" data-market-buy-cancel aria-label="Close">x</button>
+          </div>
+          <div class="market-buy-row">
+            <div>
+              <div class="market-buy-label">Quantity</div>
+              <div class="market-buy-sub">${k} of ${groupSize} available chunk${groupSize === 1 ? '' : 's'} · ${escapeHtml(fmtAssetAmount(amountBase, dec))} ${escapeHtml(ticker)} each</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;">
+              <button type="button" data-qty-dec aria-label="Decrease quantity" style="width:32px;height:32px;border:1px solid var(--ink);background:var(--bg);font-size:18px;font-weight:600;cursor:pointer;line-height:1;">−</button>
+              <input type="number" data-qty-input min="1" max="${groupSize}" value="${k}" style="width:60px;text-align:center;font-family:var(--mono);font-size:16px;font-weight:600;padding:6px 4px;border:1px solid var(--ink);background:var(--bg);">
+              <button type="button" data-qty-inc aria-label="Increase quantity" style="width:32px;height:32px;border:1px solid var(--ink);background:var(--bg);font-size:18px;font-weight:600;cursor:pointer;line-height:1;">+</button>
+              <button type="button" data-qty-max title="Buy all available chunks" style="font-size:10px;padding:4px 8px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">MAX</button>
+            </div>
+          </div>
+          <div class="market-buy-row">
+            <div>
+              <div class="market-buy-label">Seller receives</div>
+              <div class="market-buy-sub">${k} × ${chunkPriceSats.toLocaleString('en-US')} sats per chunk</div>
+            </div>
+            <div>
+              <div class="market-buy-value market-usd-price">${escapeHtml(subtotalUsd)}</div>
+              <div class="market-buy-sub"><span class="market-btc-price">${escapeHtml(fmtMarketBtc(subtotalSats))}</span> · <span class="market-sats-price">${subtotalSats.toLocaleString('en-US')} sats</span></div>
+            </div>
+          </div>
+          <div class="market-buy-row">
+            <div>
+              <div class="market-buy-label">Price per token</div>
+              <div class="market-buy-sub">Unit price</div>
+            </div>
+            <div>
+              <div class="market-buy-value market-usd-price">${escapeHtml(unitUsd)}</div>
+              <div class="market-buy-sub"><span class="market-sats-price">${escapeHtml(unitStr)}</span></div>
+            </div>
+          </div>
+          <div class="market-buy-row">
+            <div>
+              <div class="market-buy-label">Network fee</div>
+              <div class="market-buy-sub">${k} settlement tx${k === 1 ? '' : 's'} on Bitcoin · paid by you</div>
+            </div>
+            <div>
+              <div class="market-buy-value market-usd-price">${escapeHtml(fmtMarketUsdFromSats(feeLow * k, 'n/a'))} - ${escapeHtml(fmtMarketUsdFromSats(feeHigh * k, 'n/a'))}</div>
+              <div class="market-buy-sub"><span class="market-sats-price">~${(feeLow * k).toLocaleString()} - ${(feeHigh * k).toLocaleString()} sats</span></div>
+            </div>
+          </div>
+          <div class="market-buy-row total">
+            <div>
+              <div class="market-buy-label">Estimated total</div>
+              <div class="market-buy-sub">Asset price + network fees</div>
+            </div>
+            <div>
+              <div class="market-buy-value market-usd-price">${escapeHtml(totalUsdLow)} - ${escapeHtml(totalUsdHigh)}</div>
+              <div class="market-buy-sub"><span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceLow))}</span> - <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceHigh))}</span></div>
+            </div>
+          </div>
+          <div class="market-buy-note">
+            Trustless atomic settlement on Bitcoin: each chunk is its own atomic transaction. ${k > 1 ? `${k} settlements fire sequentially after you confirm; the buy stops on any failure and reports how many filled.` : ''} Filling typically completes within ~10 minutes per chunk.
+          </div>
+          <div class="market-buy-actions">
+            <button type="button" data-market-buy-cancel>Cancel</button>
+            <button type="button" class="primary" data-market-buy-confirm>Confirm buy${k > 1 ? ` (${k} chunks)` : ''}</button>
+          </div>
+        </div>`;
+      // Re-wire on every render. Fresh DOM each pass — idempotent.
+      overlay.querySelectorAll('[data-market-buy-cancel]').forEach(b => {
+        b.addEventListener('click', () => finish(0), { once: true });
+      });
+      overlay.querySelector('[data-market-buy-confirm]')?.addEventListener('click', () => finish(qty), { once: true });
+      overlay.querySelector('[data-qty-dec]')?.addEventListener('click', () => { qty = Math.max(1, qty - 1); renderBody(); });
+      overlay.querySelector('[data-qty-inc]')?.addEventListener('click', () => { qty = Math.min(groupSize, qty + 1); renderBody(); });
+      overlay.querySelector('[data-qty-max]')?.addEventListener('click', () => { qty = groupSize; renderBody(); });
+      const qInp = overlay.querySelector('[data-qty-input]');
+      if (qInp) {
+        qInp.addEventListener('input', () => {
+          const v = parseInt(qInp.value, 10);
+          if (Number.isInteger(v) && v >= 1 && v <= groupSize) { qty = v; }
+        });
+        qInp.addEventListener('blur', () => { renderBody(); });
+        qInp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); renderBody(); } });
+      }
+    };
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) finish(0);
+    });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(overlay);
+    renderBody();
+    overlay.querySelector('[data-market-buy-confirm]')?.focus();
+  });
+}
+
+// Sequential K-chunk buy. Loops takePreauthSale on the first K sale_ids of
+// a chunked group. Each chunk settles atomically as its own Bitcoin tx; if
+// one fails the rest are skipped and the partial-fill is reported. The
+// buyer's sats UTXOs change between calls (each commit consumes one); the
+// existing waitForTxVisible inside takePreauthSale gives the chain API a
+// beat to reindex before the next commit's UTXO pick.
+async function marketTakePreauthGroupHandler(btn) {
+  if (btn.disabled) return;
+  const aid = btn.dataset.aid;
+  const sidsRaw = btn.dataset.sids || '';
+  const sids = sidsRaw.split(',').map(s => s.trim()).filter(Boolean);
+  const groupSize = parseInt(btn.dataset.groupSize || sids.length, 10) || sids.length;
+  const price = Number(btn.dataset.price || 0);
+  const ticker = btn.dataset.ticker || '?';
+  const amount = btn.dataset.amount || '0';
+  const dec = parseInt(btn.dataset.dec || '0', 10) || 0;
+  const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
+  if (expiry > 0 && expiry <= Math.floor(Date.now() / 1000)) {
+    toast('This listing group has expired — refresh the Market tab.', 'error');
+    return;
+  }
+  if (sids.length === 0) { toast('No chunks available', 'error'); return; }
+  const origText = btn.textContent;
+  btn.disabled = true;
+  const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
+  const k = await marketConfirmGroupBuy({ ticker, amount, dec, chunkPriceSats: price, groupSize: sids.length });
+  if (!k || k < 1) { restore(); return; }
+  if (!await ensureBurnerBackedUp(`Buy ${k} chunk${k === 1 ? '' : 's'} from this group · ${k} trustless atomic settlement${k === 1 ? '' : 's'} on Bitcoin`)) {
+    toast('Back up the in-page privkey first, then retry.', 'error'); restore(); return;
+  }
+  // Funding gate — sum the per-chunk price + a per-chunk fee budget. The
+  // estimator over-asks slightly so the K-th broadcast doesn't strand on
+  // "insufficient sats" mid-loop.
+  const perChunkFeeBudget = await estimateSatsForOp('cxfer');
+  const totalNeed = (perChunkFeeBudget + price) * k;
+  if (!(await ensureSatsFunded(totalNeed, `Buying ${k} chunk${k === 1 ? '' : 's'}`))) {
+    toast('Funding cancelled.', 'error'); restore(); return;
+  }
+  let filled = 0;
+  let lastErr = null;
+  for (let i = 0; i < k; i++) {
+    const sid = sids[i];
+    btn.textContent = `filling ${i + 1}/${k}…`;
+    try {
+      await takePreauthSale({
+        assetIdHex: aid,
+        saleIdHex: sid,
+      });
+      filled++;
+    } catch (e) {
+      lastErr = e;
+      break;
+    }
+  }
+  const _amtStr = fmtAssetAmount(BigInt(amount || '0') * BigInt(filled), dec);
+  const _filledUsd = fmtMarketUsdFromSats(price * filled, '');
+  if (lastErr && filled === 0) {
+    if (isUnlockCancelled(lastErr)) toast('Unlock cancelled — nothing was bought.', '');
+    else toast('Buy failed: ' + lastErr.message, 'error', 12000);
+    restore();
+  } else if (lastErr) {
+    toast(`Partial fill · ${filled}/${k} chunks bought (${_amtStr} ${ticker}${_filledUsd ? ` · ${_filledUsd}` : ''}) · ${lastErr.message}`, 'error', 12000);
+  } else {
+    toast(`Filled · ${k} chunks bought (${_amtStr} ${ticker}${_filledUsd ? ` · ${_filledUsd}` : ''}) · settles in ~10 min (check Holdings)`, 'success', 10000);
+  }
+  invalidateMarketCache();
+  setTimeout(() => { renderActivity(); renderMarket(); }, 800);
 }
 
 // Hard cancel = self-CXFER of the listed UTXO. Bitcoin consensus then
