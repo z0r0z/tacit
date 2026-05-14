@@ -28998,16 +28998,16 @@ async function renderHoldings() {
           const includeSelfSpend = _u
             ? confirm(
                 `Cancel this listing?\n\n` +
-                `[OK]     Remove from marketplace AND self-send the listed UTXO so it's permanently invalidated. Pays Bitcoin fees for one CXFER.\n\n` +
-                `[Cancel] Don't change anything. Use the inline "Cancel" again and pick the marketplace-only path if you'd prefer that.`,
+                `[OK]     Hard-cancel: remove from marketplace AND self-spend the listed lot so the offer can never be filled. One Bitcoin tx fee.\n\n` +
+                `[Cancel] Don't change anything. Use the inline "Cancel" again and pick the soft-cancel path if you'd prefer that.`,
               )
-            : (confirm(`Cancel this listing? The signed offer will be removed from the marketplace immediately.`) ? false : null);
+            : (confirm(`Cancel this listing? The offer will be removed from the marketplace immediately.`) ? false : null);
           if (includeSelfSpend === null) return;
           b.disabled = true; b.textContent = 'cancelling…';
           let cxferBroadcast = false;
           try {
             if (includeSelfSpend && _u) {
-              if (!await ensureBurnerBackedUp('Cancel listing (signs a self-CXFER spending the listed UTXO)')) {
+              if (!await ensureBurnerBackedUp('Hard-cancel listing · self-spend the listed lot so the signed offer can never be filled')) {
                 b.disabled = false; b.textContent = 'Cancel';
                 return;
               }
@@ -32367,7 +32367,7 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
       btn.textContent = 'fulfilling…';
       try {
         await fulfilBidIntent({ bid });
-        toast('Bid fulfilled ✓ — atomic intent published, awaiting bidder take', 'success');
+        toast('Bid fulfilled ✓ — waiting for the buyer to settle on Bitcoin', 'success');
         openDiscoverBidPanel(card, assetIdHex, ticker, decimals);
       } catch (e) {
         btn.disabled = false;
@@ -36552,7 +36552,7 @@ async function populateMarketBidsLadder(scope, asset) {
       btn.disabled = true; btn.textContent = 'fulfilling...';
       try {
         await fulfilBidIntent({ bid });
-        toast('Bid fulfilled — atomic intent published, awaiting bidder Take', 'success');
+        toast('Bid fulfilled ✓ — waiting for the buyer to settle on Bitcoin', 'success');
         _invalidateBidsCache(aid);
         populateMarketBidsLadder(scope, asset);
       } catch (e) {
@@ -38677,13 +38677,13 @@ async function marketTakeIntentHandler(btn) {
     const intent = fres.intent;
     if (!intent) throw new Error('intent missing from fulfilment response');
     if (!confirm(
-      `Take this atomic intent?\n\n` +
+      `Confirm buy?\n\n` +
       `Buying:  ${fmtAssetAmount(BigInt(intent.amount), intent.decimals || 0)} ${intent.ticker}\n` +
       `Price:   ${(intent.price_sats | 0).toLocaleString()} sats\n` +
-      `Maker receives at:  ${intent.maker_address}\n\n` +
-      `On confirm: the dapp appends your BTC funding to the maker's partial tx, signs the whole thing (locking in the maker's payment so it can't be redirected), and broadcasts. Atomic, single Bitcoin tx — you don't send a separate payment, your funding inputs are spent into the maker's payout output in one settlement tx.`,
+      `Seller is paid at:  ${intent.maker_address}\n\n` +
+      `Trustless atomic settlement on Bitcoin: you receive the tokens only if the seller is paid in the same transaction. One click, no claim window. Filling typically completes within ~10 minutes.`,
     )) { btn.disabled = false; btn.textContent = 'Take'; return; }
-    btn.textContent = 'broadcasting...';
+    btn.textContent = 'submitting…';
     const takeStrip = $('#market-take-progress');
     if (takeStrip) takeStrip.style.display = 'flex';
     setProgressStrip('market-take-progress', 0);
@@ -38697,8 +38697,8 @@ async function marketTakeIntentHandler(btn) {
     });
     setProgressStrip('market-take-progress', 3);
     setTimeout(() => { if (takeStrip) takeStrip.style.display = 'none'; setProgressStrip('market-take-progress', -1); }, 1200);
-    toast(`Atomic take broadcast OK tx=${shorten(r.txid, 8)}`, 'success', 8000);
-    btn.textContent = 'broadcast OK';
+    toast(`Filled · ${fmtAssetAmount(BigInt(intent.amount), intent.decimals || 0)} ${intent.ticker} bought · settles in ~10 min (check Holdings)`, 'success', 10000);
+    btn.textContent = 'filled';
     setTimeout(() => renderMarket(), 2000);
     renderHoldings();
   } catch (e) {
@@ -38809,9 +38809,9 @@ async function marketCancelIntentHandler(btn) {
   // locked in the P2TR script-path can no longer be reconstructed for spend.
   const _forfeitSats = Number(intent?.commit_value || 0);
   const _forfeitNote = _forfeitSats > 0
-    ? `The committed sats (~${_forfeitSats.toLocaleString()}) locked in the P2TR are effectively forfeit - cancelling discards the recipient blinding needed to spend that output.`
-    : `The commit-tx output stays locked in the P2TR; cancelling discards the recipient blinding needed to spend it, so any committed value is effectively forfeit.`;
-  if (!confirm(`Cancel this atomic intent? The intent is removed from the marketplace immediately. ${_forfeitNote}`)) return;
+    ? `~${_forfeitSats.toLocaleString()} sats locked in the original commit are not recoverable after cancel.`
+    : `A small amount of sats locked in the original commit is not recoverable after cancel.`;
+  if (!confirm(`Cancel this open order? Removed from the marketplace immediately. ${_forfeitNote}`)) return;
   btn.disabled = true; btn.textContent = 'cancelling...';
   try {
     await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid });
