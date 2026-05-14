@@ -39989,30 +39989,80 @@ function _wireSwapTile(scope) {
   // can't actually cover the inflated commitment.
   const dustFloorUnit  = (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * 0.2 : 0;
   const outlierCeilUnit = (Number.isFinite(refUnit) && refUnit > 0) ? refUnit * 5 : Infinity;
-  // BUY plan: walk preauth asks cheapest-first; include each ask whose
-  // total price fits within the remaining sats budget. Unit-price cap =
+  // BUY plan: walk ALL ask kinds cheapest-first — preauth (Instant
+  // listings, single-tx settle) + whole-UTXO atomic intents (claim →
+  // wait for fulfil → take) + variable-amount intents (claim → wait
+  // for fulfil → finalize). All three are asks from a trader's view;
+  // execution differs but routing is uniform. Unit-price cap =
   // ref × (1 + slippage). Returns null if no fillable ask under cap.
+  //
+  // For variable-amount intents, the candidate's `amt` is computed
+  // dynamically below: if the listed full lot fits in budget we take
+  // it whole; if not, we scale the take down to whatever fits. This
+  // turns one variable-amount listing into a flexible-size fill,
+  // which is what makes the DEX-style routing actually work — without
+  // it, a 1000-token variable intent at 20 sats/token would be skipped
+  // any time the budget was below 20000 sats, even though it'd happily
+  // sell 500 tokens for 10000 sats.
   const planBuy = (satsBudget) => {
     if (!Number.isFinite(satsBudget) || satsBudget <= 0) return null;
     const cap = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 + getSlipRatio()) : Infinity;
     const nowSec = Math.floor(Date.now() / 1000);
-    const candidates = (_marketCache?.listings || [])
-      .filter(l => l.kind === 'preauth' && l._asset?.asset_id === aid)
-      .filter(l => l.seller_pubkey !== myPubHex)
-      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired)
-      .map(l => {
+    const asks = (_marketCache?.listings || [])
+      .filter(l => l._asset?.asset_id === aid)
+      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired);
+    const candidates = [];
+    for (const l of asks) {
+      if (l.kind === 'preauth') {
+        if (l.seller_pubkey === myPubHex) continue;
         const amt = BigInt(l.asset_opening?.amount || 0);
         const ps  = Number(l.min_price_sats || 0);
         const u   = unitPriceSats(ps, amt, decimals);
-        return { l, amt, ps, u };
-      })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= cap && c.u >= dustFloorUnit && c.amt > 0n && c.ps > 0)
-      .sort((x, y) => x.u - y.u);
+        if (!Number.isFinite(u) || u <= 0 || u > cap || u < dustFloorUnit || amt <= 0n || ps <= 0) continue;
+        candidates.push({ kind: 'preauth', l, amt, ps, u });
+      } else if (l.kind === 'intent') {
+        if (l.maker_pubkey === myPubHex) continue;
+        if (l.claim) continue;                       // someone else already has the 5-min lock
+        if (l.fulfilment_pending) continue;          // mid-settle
+        const fullAmt = BigInt(l.amount || 0);
+        const fullPs  = Number(l.price_sats || 0);
+        const u       = unitPriceSats(fullPs, fullAmt, decimals);
+        if (!Number.isFinite(u) || u <= 0 || u > cap || u < dustFloorUnit || fullAmt <= 0n || fullPs <= 0) continue;
+        if (l.min_take_amount) {
+          // Variable-amount: defer amt/ps to plan-loop based on budget remaining.
+          candidates.push({
+            kind: 'intent-var', l,
+            fullAmt, fullPs, u,
+            minTake: BigInt(l.min_take_amount || '0'),
+          });
+        } else {
+          // Whole-UTXO: take whole or not at all.
+          candidates.push({ kind: 'intent', l, amt: fullAmt, ps: fullPs, u });
+        }
+      }
+    }
+    candidates.sort((x, y) => x.u - y.u);
     if (!candidates.length) return null;
     const plan = []; let totalSats = 0; let totalAmt = 0n;
     for (const c of candidates) {
-      if (totalSats + c.ps > satsBudget) continue;
-      plan.push(c); totalSats += c.ps; totalAmt += c.amt;
+      const remaining = satsBudget - totalSats;
+      if (remaining <= 0) break;
+      if (c.kind === 'intent-var') {
+        // Variable-amount: scale the take to remaining budget.
+        // requestedAmt = floor((remaining × fullAmt) / fullPs) but capped at
+        // fullAmt (can't exceed listed) and clamped to min_take_amount.
+        let requestedAmt = (BigInt(remaining) * c.fullAmt) / BigInt(c.fullPs);
+        if (requestedAmt > c.fullAmt) requestedAmt = c.fullAmt;
+        if (requestedAmt < c.minTake) continue;  // budget too small for this listing's floor
+        const scaledSats = Number((requestedAmt * BigInt(c.fullPs)) / c.fullAmt);
+        if (scaledSats < DUST || scaledSats > remaining) continue;
+        plan.push({ kind: 'intent-var', l: c.l, amt: requestedAmt, ps: scaledSats, u: c.u });
+        totalSats += scaledSats; totalAmt += requestedAmt;
+      } else {
+        // preauth + whole-UTXO atomic: take whole or skip.
+        if (totalSats + c.ps > satsBudget) continue;
+        plan.push(c); totalSats += c.ps; totalAmt += c.amt;
+      }
     }
     if (!plan.length) return null;
     return { plan, totalAmt, totalSats, residualSats: satsBudget - totalSats, satsBudget, cap };
@@ -40054,27 +40104,64 @@ function _wireSwapTile(scope) {
   // first under slippage cap, accumulate until cumulative ≥ target.
   // Whole-UTXO atomicity → last ask may overshoot; result is honestly
   // framed as "≥ requested for at most Y sats."
+  // BUY exact-out: user names a target token amount; walk ALL ask kinds
+  // cheapest-first, fitting fills until accumulated amount ≥ target.
+  // Variable-amount intents can scale their take to the exact remaining
+  // gap (so the plan often lands ZERO overshoot vs the chunk-based preauth
+  // path, where the last fill always overshoots). Whole-UTXO intents +
+  // preauth chunks are take-whole-or-skip, so the last such fill may
+  // overshoot by ≤ one lot.
   const planBuyExactOut = (targetTacBig) => {
     if (targetTacBig <= 0n) return null;
     const cap = Number.isFinite(refUnit) && refUnit > 0 ? refUnit * (1 + getSlipRatio()) : Infinity;
     const nowSec = Math.floor(Date.now() / 1000);
-    const candidates = (_marketCache?.listings || [])
-      .filter(l => l.kind === 'preauth' && l._asset?.asset_id === aid)
-      .filter(l => l.seller_pubkey !== myPubHex)
-      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired)
-      .map(l => {
+    const asks = (_marketCache?.listings || [])
+      .filter(l => l._asset?.asset_id === aid)
+      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired);
+    const candidates = [];
+    for (const l of asks) {
+      if (l.kind === 'preauth') {
+        if (l.seller_pubkey === myPubHex) continue;
         const amt = BigInt(l.asset_opening?.amount || 0);
         const ps  = Number(l.min_price_sats || 0);
         const u   = unitPriceSats(ps, amt, decimals);
-        return { l, amt, ps, u };
-      })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u <= cap && c.u >= dustFloorUnit && c.amt > 0n && c.ps > 0)
-      .sort((x, y) => x.u - y.u);
+        if (!Number.isFinite(u) || u <= 0 || u > cap || u < dustFloorUnit || amt <= 0n || ps <= 0) continue;
+        candidates.push({ kind: 'preauth', l, amt, ps, u });
+      } else if (l.kind === 'intent') {
+        if (l.maker_pubkey === myPubHex) continue;
+        if (l.claim || l.fulfilment_pending) continue;
+        const fullAmt = BigInt(l.amount || 0);
+        const fullPs  = Number(l.price_sats || 0);
+        const u       = unitPriceSats(fullPs, fullAmt, decimals);
+        if (!Number.isFinite(u) || u <= 0 || u > cap || u < dustFloorUnit || fullAmt <= 0n || fullPs <= 0) continue;
+        if (l.min_take_amount) {
+          candidates.push({
+            kind: 'intent-var', l, fullAmt, fullPs, u,
+            minTake: BigInt(l.min_take_amount || '0'),
+          });
+        } else {
+          candidates.push({ kind: 'intent', l, amt: fullAmt, ps: fullPs, u });
+        }
+      }
+    }
+    candidates.sort((x, y) => x.u - y.u);
     if (!candidates.length) return null;
     const plan = []; let totalSats = 0; let totalAmt = 0n;
     for (const c of candidates) {
       if (totalAmt >= targetTacBig) break;
-      plan.push(c); totalSats += c.ps; totalAmt += c.amt;
+      if (c.kind === 'intent-var') {
+        const gap = targetTacBig - totalAmt;
+        // Take exactly the gap if we can; cap at fullAmt; clamp to min_take.
+        let requestedAmt = gap > c.fullAmt ? c.fullAmt : gap;
+        if (requestedAmt < c.minTake) requestedAmt = c.minTake;  // overshoot if gap < min_take
+        if (requestedAmt > c.fullAmt) continue;                  // gap < minTake AND minTake > fullAmt is impossible, but defend
+        const scaledSats = Number((requestedAmt * BigInt(c.fullPs)) / c.fullAmt);
+        if (scaledSats < DUST) continue;
+        plan.push({ kind: 'intent-var', l: c.l, amt: requestedAmt, ps: scaledSats, u: c.u });
+        totalSats += scaledSats; totalAmt += requestedAmt;
+      } else {
+        plan.push(c); totalSats += c.ps; totalAmt += c.amt;
+      }
     }
     if (!plan.length) return null;
     return { plan, totalAmt, totalSats, target: targetTacBig, overshoot: totalAmt > targetTacBig ? totalAmt - targetTacBig : 0n, shortfall: totalAmt < targetTacBig ? targetTacBig - totalAmt : 0n, cap, exactOut: true };
@@ -40593,6 +40680,63 @@ function _wireSwapTile(scope) {
   // Execute: re-compute plan at click time (cache may have shifted while
   // user typed) → confirm() → sequential broadcast with the same
   // _markTxInputsSpent indexer-lag guard as Sweep forms.
+  // Unified ask-take executor. Dispatches on the candidate's kind so the
+  // swap-tile execution loop can stay kind-agnostic — same function call
+  // per fill regardless of whether the underlying ask is a preauth chunk
+  // (single-tx settle), a whole-UTXO atomic intent (claim → wait for
+  // maker fulfil → broadcast reveal), or a variable-amount intent
+  // (claim → wait → finalize via worker sequential broadcast).
+  //
+  // For intent kinds, this function blocks until the maker fulfils OR a
+  // 5-minute timeout expires (claim TTL). If the maker has auto-fulfil
+  // enabled, the wait is typically a few seconds. If they're offline,
+  // the claim expires naturally on the worker and the call throws.
+  //
+  // Throws on any failure; caller's loop handles partial-fill semantics.
+  const _swapTakeAsk = async (c) => {
+    if (c.kind === 'preauth') {
+      return takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l });
+    }
+    if (c.kind !== 'intent' && c.kind !== 'intent-var') {
+      throw new Error(`unknown ask kind: ${c.kind}`);
+    }
+    // Claim
+    if (c.kind === 'intent-var') {
+      await claimAxferVarIntent({
+        assetIdHex: aid, intentIdHex: c.l.intent_id,
+        intent: c.l,
+        requestedAmount: (typeof c.amt === 'bigint' ? c.amt : BigInt(c.amt || 0)).toString(),
+      });
+    } else {
+      await claimAxferIntent({
+        assetIdHex: aid, intentIdHex: c.l.intent_id,
+        priceSats: c.ps,
+      });
+    }
+    // Wait for maker fulfilment. Poll every 3s up to 5 min (claim TTL).
+    let fulfilmentResp = null;
+    const _start = Date.now();
+    while (Date.now() - _start < 300_000) {
+      await new Promise(r => setTimeout(r, 3000));
+      try {
+        const fr = await fetchAxferFulfilment({ assetIdHex: aid, intentIdHex: c.l.intent_id });
+        if (fr?.fulfilment || fr?.partial_reveal) { fulfilmentResp = fr; break; }
+      } catch { /* indexer blip, retry */ }
+    }
+    if (!fulfilmentResp) {
+      throw new Error('maker did not fulfil within 5 min — claim expired (their auto-fulfil may be off or they\'re offline)');
+    }
+    if (c.kind === 'intent-var') {
+      return finalizeAxferVarTake({
+        assetIdHex: aid, intentIdHex: c.l.intent_id, intent: c.l, fulfilment: fulfilmentResp,
+      });
+    }
+    return takeAxferIntent({
+      intent: c.l,
+      fulfilment: fulfilmentResp.fulfilment || fulfilmentResp,
+    });
+  };
+
   actionBtn.onclick = async () => {
     const dir = getDirection();
     const activeSide = getActiveSide();
@@ -40663,7 +40807,7 @@ function _wireSwapTile(scope) {
         _renderSwapProgress(progressEl, progressItems);
         try {
           const r = dir === 'buy'
-            ? await takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l })
+            ? await _swapTakeAsk(c)
             : await fulfilBidIntent({ bid: c.b });
           filled++;
           progressItems[i].status = 'done';
@@ -40730,7 +40874,7 @@ function _wireSwapTile(scope) {
         progressItems[i].status = 'broadcasting';
         _renderSwapProgress(progressEl, progressItems);
         try {
-          const r = await takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l });
+          const r = await _swapTakeAsk(c);
           filled++;
           progressItems[i].status = 'done';
           progressItems[i].txid = r?.reveal_txid || r?.commit_txid || null;
