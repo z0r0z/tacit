@@ -34087,31 +34087,69 @@ function applyMarketFilters() {
 // sort applies inside asset mode.
 let _marketBtcUsd = 0;
 let _marketBtcUsdFetchedAt = 0;
+let _marketBtcUsdRetryTimer = null;
+let _marketBtcUsdRetryCount = 0;
+// Self-healing BTC/USD fetch. Symptom we're fixing: on first paint
+// applyMarketFilters runs before refreshMarketBtcUsd's await resolves,
+// so the user sees "no USD quote" / "—" / "n/a" until a manual reload.
+// If the fetch silently fails too (CORS, rate-limit, oracle down) the
+// USD strings stay broken indefinitely.
+//
+// Fix: after each fetch attempt, ALWAYS re-render the market view if
+// the user is still on it (whether the fetch succeeded or not — a
+// re-render with the cached/warm value is still better than the
+// pre-await render). If the oracle is still 0 after the attempt,
+// schedule an exponential-backoff retry up to 4 times (8s → 16s →
+// 32s → 64s) so a transient blip self-heals without user intervention.
 async function refreshMarketBtcUsd() {
   if (_marketBtcUsd > 0 && (Date.now() - _marketBtcUsdFetchedAt) < 5 * 60 * 1000) return;
-  // Adopt whatever the global oracle has already cached (mempool +
-  // coinbase fallback chain via getBtcUsdPrice, plus localStorage
-  // warm-start). This avoids a "no USD quote" gap when mempool's
-  // /api/v1/prices is CORS-blocked / rate-limited but Coinbase or a
-  // previous session's persisted price is available.
+  // Adopt whatever the global oracle has already cached.
   const warmCached = _cachedBtcUsd();
   if (Number.isFinite(warmCached) && warmCached > 0) {
     _marketBtcUsd = warmCached;
     _marketBtcUsdFetchedAt = Date.now();
   }
-  // Then kick the live fetch through the multi-source oracle so we
-  // upgrade to a fresher price as soon as one resolves.
+  // Kick the live fetch through the multi-source oracle.
   try {
     const live = await getBtcUsdPrice();
     if (Number.isFinite(live) && live > 0) {
       _marketBtcUsd = live;
       _marketBtcUsdFetchedAt = Date.now();
+      _marketBtcUsdRetryCount = 0; // success — reset retry budget
     }
   } catch { /* fiat is decorative; never block market rendering */ }
+  // Self-heal: if we still don't have a price, schedule a retry.
+  // Bounded retries so we don't pound a dead oracle forever; total
+  // retry budget is ~2 minutes (8+16+32+64s). After that the user
+  // sees "no USD quote" but the rest of the market UI is fine.
+  if (_marketBtcUsd <= 0 && _marketBtcUsdRetryCount < 4) {
+    const delay = 8000 * Math.pow(2, _marketBtcUsdRetryCount);
+    _marketBtcUsdRetryCount++;
+    if (_marketBtcUsdRetryTimer) clearTimeout(_marketBtcUsdRetryTimer);
+    _marketBtcUsdRetryTimer = setTimeout(async () => {
+      _marketBtcUsdRetryTimer = null;
+      await refreshMarketBtcUsd().catch(() => {});
+      // Re-render if user is still on the market tab so newly-arrived
+      // USD values render without requiring a manual reload.
+      const onMarket = typeof window !== 'undefined' && (window.location?.hash || '').includes('tab=market');
+      if (_marketBtcUsd > 0 && onMarket && _marketCache) {
+        try { applyMarketFilters(); } catch {}
+      }
+    }, delay);
+  }
 }
 function marketSatsToUsd(sats) {
   const n = Number(sats || 0);
   return _marketBtcUsd > 0 && Number.isFinite(n) ? (n / 100_000_000) * _marketBtcUsd : null;
+}
+// Returns true when the BTC/USD oracle hasn't loaded yet (or is between
+// retries). Used so UI labels can show "loading…" instead of "n/a" /
+// "no USD quote" / "—" during the brief window where the auto-retry
+// is still working through its backoff. After retries exhaust, this
+// returns true persistently — that's fine; the rest of the market UI
+// (sats, BTC, listings, wallets, supply) is fully usable without USD.
+function _marketOracleLoading() {
+  return !(Number.isFinite(_marketBtcUsd) && _marketBtcUsd > 0);
 }
 function fmtMarketUsdValue(usd, empty = 'n/a') {
   const n = Number(usd);
@@ -35628,7 +35666,7 @@ function renderMarketAssetHeader(assetId, rows) {
       </div>
       <div>
         <div class="market-asset-stats">
-          <div><span>Price</span><strong class="market-sats-price">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(priceUsd || 'no USD quote')}</small></div>
+          <div><span>Price</span><strong class="market-sats-price">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
           <div><span>24h Volume</span><strong>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small>${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Market Cap</span><strong>${escapeHtml(mcapUsd)}</strong><small>${escapeHtml(mcapBtc)}</small></div>
           <div><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
