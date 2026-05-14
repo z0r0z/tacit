@@ -32506,14 +32506,17 @@ function _startMarketAutoRefresh() {
       // pay that cost when listings actually changed.
       // Refresh the in-memory cache so the next user-initiated render
       // (filter toggle, manual refresh, tab re-entry) serves fresh
-      // data. We deliberately DON'T re-render here on either view —
+      // data. We deliberately DON'T re-render here on either view -
       // the user reports that the every-15s grid rebuild reads as
       // jarring "all tiles flashing" even when only a few listings
       // changed. Auto-refresh is now silent / data-only; per-tile
       // animations that DO want to fire (price up/down on the asks
       // ladder, e.g.) need a partial-DOM update path that doesn't
-      // exist yet. Tracked separately.
-      await fetchMarketDataDeduped();
+      // exist yet. Force the worker round-trip so the orange refresh
+      // and polling path agree on the latest book instead of reusing
+      // a stale TTL cache.
+      await fetchMarketDataDeduped({ force: true });
+      startMarketLivenessPrune();
     } catch {}
   }, MARKET_AUTO_REFRESH_MS);
 }
@@ -32741,6 +32744,7 @@ function _saveMarketMine(key, on) {
 }
 let _marketMineOnlyAsks = _loadMarketMine(_MARKET_MINE_ASKS_KEY);
 let _marketMineOnlyBids = _loadMarketMine(_MARKET_MINE_BIDS_KEY);
+let _marketChartsOpen = false;
 // Mirror Market navigation into the URL hash so a tile click produces a
 // shareable deep-link (#tab=market&aid=<aid>) and browser navigation can
 // restore the asset view without a fresh search.
@@ -33100,29 +33104,32 @@ let _marketFetchedAt = 0;
 // (success or failure) so the next caller after the TTL window kicks
 // a fresh one.
 let _marketFetchInFlight = null;
-async function fetchMarketDataDeduped() {
-  if (_marketCache && (Date.now() - _marketFetchedAt) < MARKET_FETCH_TTL_MS) {
+let _marketFetchSeq = 0;
+async function fetchMarketDataDeduped(opts = {}) {
+  const force = !!opts.force;
+  if (!force && _marketCache && (Date.now() - _marketFetchedAt) < MARKET_FETCH_TTL_MS) {
     return _marketCache;
   }
-  if (_marketFetchInFlight) return _marketFetchInFlight;
-  _marketFetchInFlight = fetchMarketData()
+  if (_marketFetchInFlight && !force) return _marketFetchInFlight;
+  const seq = ++_marketFetchSeq;
+  const promise = fetchMarketData()
     .then(data => {
-      if (data) {
+      if (data && seq === _marketFetchSeq) {
         _marketCache = data;
         _marketFetchedAt = Date.now();
       }
-      _marketFetchInFlight = null;
       return data;
     })
-    .catch(e => {
-      _marketFetchInFlight = null;
-      throw e;
+    .finally(() => {
+      if (_marketFetchInFlight === promise) _marketFetchInFlight = null;
     });
+  _marketFetchInFlight = promise;
   return _marketFetchInFlight;
 }
 function invalidateMarketCache() { _marketFetchedAt = 0; }
 
-async function renderMarket() {
+async function renderMarket(opts = {}) {
+  const force = !!opts.force;
   const list = $('#market-list');
   const status = $('#market-status');
   if (!REGISTRY_URL) {
@@ -33162,7 +33169,7 @@ async function renderMarket() {
   // and just re-apply filters against what we already have. The liveness
   // prune already runs in the background; tiles whose UTXOs spent during
   // the cache window are gone from _marketCache.listings.
-  if (_marketCache && (Date.now() - _marketFetchedAt) < MARKET_FETCH_TTL_MS) {
+  if (!force && _marketCache && (Date.now() - _marketFetchedAt) < MARKET_FETCH_TTL_MS) {
     applyMarketFilters();
     return;
   }
@@ -33173,7 +33180,7 @@ async function renderMarket() {
     // init, we await the same promise instead of issuing a duplicate
     // round-trip. _marketCache + _marketFetchedAt get populated inside
     // fetchMarketDataDeduped on success.
-    await fetchMarketDataDeduped();
+    await fetchMarketDataDeduped({ force });
     refreshMarketBtcUsd().then(() => applyMarketFilters()).catch(() => {});
     applyMarketFilters();
     setTabBadge('market', _marketCache?.listings?.length || 0);
@@ -33193,13 +33200,6 @@ function applyMarketFilters() {
   const status = $('#market-status');
   const filterText = ($('#market-filter-asset')?.value || '').trim().toLowerCase();
   const filterKind = $('#market-filter-kind')?.value || 'all';
-  // Strict whole-number parse: parseInt('12.5') would have truncated to 12 —
-  // not what the user typed. type=number/step=1 filters most input but not
-  // every browser, so we belt-and-suspender. NaN sentinels skip the filter.
-  const _minRaw = ($('#market-filter-min-price')?.value || '').trim();
-  const _maxRaw = ($('#market-filter-max-price')?.value || '').trim();
-  const minPrice = /^\d+$/.test(_minRaw) ? Number(_minRaw) : NaN;
-  const maxPrice = /^\d+$/.test(_maxRaw) ? Number(_maxRaw) : NaN;
   // Browse and asset-detail pages share these DOM controls, but each page has
   // independent saved preferences: token index sorts by market metrics, while
   // an asset's asks default to an orderbook-like price ladder.
@@ -33221,9 +33221,6 @@ function applyMarketFilters() {
   } else if (filterKind !== 'all') {
     rows = rows.filter(l => l.kind === filterKind);
   }
-  const _priceOf = l => l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
-  if (Number.isInteger(minPrice)) rows = rows.filter(l => _priceOf(l) >= minPrice);
-  if (Number.isInteger(maxPrice)) rows = rows.filter(l => _priceOf(l) <= maxPrice);
   // Drop expired listings. Worker flags them with `l.expired === true` but
   // continues to surface them on the /listings endpoint for a short grace
   // window (so makers can verify expiry / clean up). The Holdings tab's "Your
@@ -33235,22 +33232,6 @@ function applyMarketFilters() {
   // each OTC listing already warns at the point of action, and the trade-
   // type chip itself reads "⚡ atomic only" so the top-level reminder was
   // just chrome.)
-  // Reflect the current price-range filter on the popover-trigger chip
-  // so the chip's label tells the user at a glance whether a price filter
-  // is active without opening the popover.
-  const _priceChipLabel = $('#market-price-chip-label');
-  if (_priceChipLabel) {
-    if (Number.isInteger(minPrice) && Number.isInteger(maxPrice)) {
-      _priceChipLabel.textContent = `${minPrice.toLocaleString()}–${maxPrice.toLocaleString()} sats`;
-    } else if (Number.isInteger(minPrice)) {
-      _priceChipLabel.textContent = `≥ ${minPrice.toLocaleString()} sats`;
-    } else if (Number.isInteger(maxPrice)) {
-      _priceChipLabel.textContent = `≤ ${maxPrice.toLocaleString()} sats`;
-    } else {
-      _priceChipLabel.textContent = 'any price';
-    }
-  }
-
   // Mode dispatch. Browse renders one tile per asset (the index page); asset
   // mode falls through to the existing per-listing grid below, scoped to the
   // selected asset_id. The text-search input is hidden in asset mode (see
@@ -33335,6 +33316,7 @@ function applyMarketFilters() {
     hydrateMarketImages(list);
     bindMarketAssetHeader(list);
     bindMarketAssetTabs(list);
+    bindMarketChartsToggle(list);
     // Wire cursor on any pre-painted chart from the cached stats so the
     // hover-tooltip path works immediately, before the live fetch lands.
     _wireMarketPriceChartCursor(list.querySelector('[data-market-price-chart]'));
@@ -33571,6 +33553,7 @@ function applyMarketFilters() {
   hydrateMarketImages(list);
   bindMarketAssetHeader(list);
   bindMarketAssetTabs(list);
+  bindMarketChartsToggle(list);
   _wireSwapTile(list);
   _wireMarketPriceChartCursor(list.querySelector('[data-market-price-chart]'));
   populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
@@ -33919,14 +33902,8 @@ function applyMarketFilters() {
   });
 }
 
-// Browse-mode render: one tile per asset, sourced from the same filtered rows
-// applyMarketFilters computed (so kind/price filters narrow the visible set
-// the same way they would in asset mode). Aggregates per-asset count + floor
-// + kind breakdown. Click handler flips _marketView to asset mode.
-//
-// Sort: total listing count desc, then floor unit-price asc (cheapest first
-// within ties), then ticker. No user-facing sort dropdown — the per-listing
-// sort applies inside asset mode.
+// Fiat helpers are display-only. Market logic stays sats-native; failures to
+// fetch BTC/USD must never block rendering, signing, or settlement.
 let _marketBtcUsd = 0;
 let _marketBtcUsdFetchedAt = 0;
 async function refreshMarketBtcUsd() {
@@ -34025,11 +34002,6 @@ function hydrateMarketImages(scope = document) {
       if (slot?.dataset) delete slot.dataset.marketImgLoaded;
     });
   });
-}
-function marketTokenName(asset) {
-  const name = String(asset?.name || asset?.metadata?.name || '').trim();
-  const ticker = String(asset?.ticker || '?').trim();
-  return name && name.toUpperCase() !== ticker.toUpperCase() ? name : ticker;
 }
 function marketListingTimestamp(l) {
   return Number(l?.listed_at || l?.created_at || l?.ts || 0);
@@ -34292,12 +34264,6 @@ function marketEtchSortValue(asset) {
   const h = Number(asset?.etched_at_height || 0);
   if (h > 0) return h;
   return Number.MAX_SAFE_INTEGER;
-}
-function marketEtchAge(asset) {
-  const age = relativeAge(Number(asset?.etched_at || 0));
-  if (age) return `etched ${age} ago`;
-  const h = Number(asset?.etched_at_height || 0);
-  return h > 0 ? `block ${h.toLocaleString('en-US')}` : 'etch unknown';
 }
 function marketTacPriority(group) {
   const a = group?.asset || {};
@@ -34564,194 +34530,6 @@ function _formatMarketStatus(rows, opts = {}) {
   return `Showing ${showing} of ${total} - ${breakdown}`;
 }
 
-function renderMarketBrowse(rows) {
-  const list = $('#market-list');
-  const status = $('#market-status');
-  if (status) status.textContent = _formatMarketStatus(rows, { scope: 'browse' });
-  if (!rows.length) {
-    // Differentiate "filter excluded everything" from "the network has
-    // nothing listed." Both render an empty grid, but the actionable
-    // guidance is different — clear-filters vs go-be-the-first.
-    const allCount = (_marketCache?.listings || []).length;
-    const filters = {
-      kind:     $('#market-filter-kind')?.value || 'trustless',
-      ticker:   ($('#market-filter-asset')?.value || '').trim(),
-      minPrice: ($('#market-filter-min-price')?.value || '').trim(),
-      maxPrice: ($('#market-filter-max-price')?.value || '').trim(),
-    };
-    const hasNarrowing = (filters.kind && filters.kind !== 'all') || filters.ticker || filters.minPrice || filters.maxPrice;
-    if (allCount > 0 && hasNarrowing) {
-      list.innerHTML = `
-        <div class="empty" style="padding:24px;text-align:center;">
-          <div style="font-weight:bold;margin-bottom:6px;">No listings match these filters.</div>
-          <div class="muted" style="font-size:11px;line-height:1.6;margin-bottom:10px;">${allCount} listing${allCount === 1 ? '' : 's'} live on ${escapeHtml(NET.name)} — try widening your filter.</div>
-          <button type="button" id="market-clear-filters" style="font-size:11px;padding:5px 12px;">Clear filters</button>
-        </div>`;
-      const clr = document.getElementById('market-clear-filters');
-      if (clr) clr.onclick = () => {
-        const k = $('#market-filter-kind'); if (k) k.value = 'trustless';
-        const a = $('#market-filter-asset'); if (a) a.value = '';
-        const mn = $('#market-filter-min-price'); if (mn) mn.value = '';
-        const mx = $('#market-filter-max-price'); if (mx) mx.value = '';
-        _saveMarketPrefs();
-        applyMarketFilters();
-      };
-    } else {
-      // Genuinely empty market — no listings on the network. Encourage
-      // the user to seed it (assumes they hold something to list) and
-      // point them at Discover for asset/issuer browsing in the meantime.
-      list.innerHTML = `
-        <div class="empty" style="padding:24px;text-align:center;">
-          <div style="font-weight:bold;margin-bottom:6px;">No live listings on ${escapeHtml(NET.name)} yet.</div>
-          <div class="muted" style="font-size:11px;line-height:1.6;">Hold a tacit asset? Open <strong>Holdings</strong> → click <strong>List for sale</strong> to seed the order book.<br>Want to browse the asset registry? Try the <strong>Discover</strong> tab.</div>
-        </div>`;
-    }
-    return;
-  }
-  const sort = $('#market-sort')?.value || 'volume-desc';
-  const tiles = sortMarketGroups(marketGroupRows(rows), sort);
-
-  // Trust-mode breakdown is already in the section status line ("X listings
-  // · ⚡ N · M OTC"); a banner row above the grid would just repeat it.
-  //
-  // Preserve the grid element across re-renders so the CSS row-fade-in
-  // animation only plays once on initial paint. Without this, every
-  // applyMarketFilters call (filter change, liveness prune, refresh)
-  // recreates the grid div and replays the fade — visible as flashing
-  // when the prune resolutions arrive in a burst after first load.
-  let grid = document.getElementById('market-browse-grid');
-  if (!grid) {
-    list.innerHTML = `<div id="market-browse-grid" class="market-asset-grid"></div>`;
-    grid = document.getElementById('market-browse-grid');
-  } else {
-    grid.className = 'market-asset-grid';
-    grid.innerHTML = '';
-  }
-  const frag = document.createDocumentFragment();
-  for (const g of tiles) {
-    const a = g.asset;
-    const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
-    // Render with a fallback initial; _resolveAssetLogosIn (called after
-    // append) walks the metadata blob and swaps in the real image. Without
-    // this, image_uris that point to IPFS JSON metadata (not the image
-    // directly — the canonical etcher pattern) render as broken images.
-    const imageUriRaw = a.image_uri || a.imageUri;
-    const cachedResolved = imageUriRaw && typeof _resolvedImageCache !== 'undefined'
-      ? _resolvedImageCache.get(imageUriRaw) : null;
-    // Trust badge: green ✓ verified when the asset is the unique or
-    // earliest etcher of its ticker AND not a known external copycat;
-    // red ⚠ COPY/DUP otherwise. Replaces the orange "earliest" tag in
-    // the canonical case (less alarming, more affirming).
-    const collisionBadge = a._copycatInfo
-      ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy — verify the asset_id before trading.">⚠ COPY</span>`
-      : a._tickerCollision === 'duplicate'
-        ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers aren't unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">⚠ DUP</span>`
-        : verifiedBadgeHTML(a);
-    const kindBits = [];
-    if (g.preauths) kindBits.push(`<span style="color:#0a8f43;font-weight:bold;" title="instant listings (trustless, seller offline)">⚡ ${g.preauths} instant</span>`);
-    if (g.intents) kindBits.push(`<span style="color:#7d4ff7;font-weight:bold;" title="atomic offers (trustless, claim-and-take)">⚡ ${g.intents} atomic</span>`);
-    if (g.openings) kindBits.push(`<span title="opening listings (trust-required OTC)">${g.openings} opening</span>`);
-    if (g.ranges) kindBits.push(`<span title="range listings (trust-required OTC)">${g.ranges} range</span>`);
-    // Prefer mark price for the browse tile's at-a-glance number — it's
-    // the outlier-guarded "real trading band" figure, more representative
-    // for cross-asset comparison than raw min-ask which can be dust.
-    // Fall back to best-ask only when the worker hasn't computed a mark
-    // (asset has no trade history yet).
-    const _tileMarkUnit = (a.mark_price && Number.isFinite(a.mark_price.unit) && a.mark_price.unit > 0)
-      ? Number(a.mark_price.unit) : null;
-    let floorLine = '';
-    if (_tileMarkUnit != null) {
-      floorLine = `<strong style="color:#0a8f43;">mark ${fmtUnitPriceSats(_tileMarkUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}`;
-    } else if (g.floorUnit != null) {
-      const isDust = _isDustAsk(g.floorUnit, _tileMarkUnit, g.floorSats);
-      floorLine = `<strong style="color:#0a8f43;">best ask ${fmtUnitPriceSats(g.floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}${isDust ? ' <span class="muted" style="font-size:9px;color:var(--red,#b8341d);" title="Best ask is far below the typical trading range and total order size is small — likely a dust listing not meant to reflect real liquidity.">⚠ dust</span>' : ''}`;
-    } else if (g.floorSats != null) {
-      floorLine = `<strong style="color:#0a8f43;">from ${g.floorSats.toLocaleString()} sats</strong>`;
-    }
-    // Price-change chip — worker computes deltas for 1h/4h/24h/7d/all and
-    // picks the tightest meaningful window in price_change_primary_*. For
-    // mature markets that's 24h; for assets trading <24h, the worker
-    // auto-falls-back to 4h/1h/all so the tile always shows a sensible
-    // delta when there's data. Falls back to the legacy 24h-only field
-    // for clients hitting an older worker build.
-    const primaryPct = Number.isFinite(a.price_change_primary_pct)
-      ? Number(a.price_change_primary_pct)
-      : (Number.isFinite(a.price_24h_change_pct) ? Number(a.price_24h_change_pct) : null);
-    const primaryWindow = typeof a.price_change_primary_window === 'string'
-      ? a.price_change_primary_window
-      : '24h';
-    const _windowLbl = primaryWindow === 'all' ? '·' : primaryWindow;
-    const deltaChip = primaryPct == null ? '' : (() => {
-      const sign = primaryPct >= 0 ? '+' : '';
-      const color = primaryPct >= 0 ? '#0a7d3a' : '#b8341d';
-      const tip = primaryWindow === 'all'
-        ? 'Change since first indexed trade — market is younger than 1h or trades are sparse.'
-        : `${primaryWindow} price change · vs trade as of ${primaryWindow} ago`;
-      return `<span style="display:inline-block;font-size:10px;padding:1px 5px;background:${color};color:#fff;border-radius:2px;margin-left:6px;" title="${escapeHtml(tip)}">${escapeHtml(_windowLbl)} ${sign}${primaryPct.toFixed(2)}%</span>`;
-    })();
-    // Sparkline — compact unit-price line over the last 10 trades the
-    // worker shipped on this tile. Renders inline below the offer count,
-    // single SVG element so it can be laid out flush with the floor row.
-    const sparkSvg = _renderTileSparklineSVG(a.price_summary);
-    const tile = document.createElement('div');
-    tile.className = 'market-asset-tile';
-    tile.dataset.assetTile = safeAid;
-    tile.title = `View ${escapeHtml(a.ticker || '?')} listings`;
-    // Subtle "⚡ active" pulse if the asset has a trade within the
-    // recent-activity window. Drives the .market-asset-tile[data-recent-
-    // activity] CSS animation + the ::after badge appended to the id row.
-    if (_assetHasRecentActivity(a)) tile.dataset.recentActivity = '1';
-    const _logoStyle = 'width:36px;height:36px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;';
-    const logoHtml = cachedResolved
-      ? `<img loading="lazy" decoding="async" src="${escapeHtml(cachedResolved)}" alt="" style="${_logoStyle}">`
-      : (imageUriRaw
-          ? `<span data-asset-logo-slot data-uri="${escapeHtml(imageUriRaw)}" style="display:inline-block;flex-shrink:0;">${assetImageFallback(safeAid, a.ticker, 36)}</span>`
-          : assetImageFallback(safeAid, a.ticker, 36));
-    const verifiedBadge = a._copycatInfo
-      ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="This ticker matches a known ${escapeHtml(a._copycatInfo.chain || 'Ethereum')} project. This token on tacit is likely a copy - verify the asset_id before trading.">COPY</span>`
-      : a._tickerCollision === 'duplicate'
-        ? `<span style="display:inline-block;padding:1px 5px;background:var(--red);color:#fff;font-size:9px;border-radius:2px;margin-left:5px;cursor:help;" title="Tickers are not unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">DUP</span>`
-        : verifiedBadgeHTML(a);
-    const instantLine = g.preauths
-      ? `<div class="market-instant-line">${g.preauths.toLocaleString('en-US')} instant</div>`
-      : `<div class="market-instant-line empty">0 instant</div>`;
-    const refUnit = marketGroupReferenceUnit(g);
-    const floorValue = refUnit != null ? fmtMarketUnitSats(refUnit) : 'none';
-    const volumeValue = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : '—';
-    const mcapValue = g.marketCapSats != null ? fmtMarketUsdWholeFromSats(g.marketCapSats) : 'n/a';
-    tile.innerHTML = `
-      <div class="market-asset-head">
-        ${logoHtml}
-        <div style="min-width:0;flex:1;">
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-            <strong>${escapeHtml(a.ticker || '?')}</strong>${verifiedBadge}
-          </div>
-          <div class="market-asset-id" style="color:${assetIdColorForAsset(a)};">${escapeHtml(shorten(safeAid, 8))}</div>
-        </div>
-      </div>
-      ${instantLine}
-      <dl class="market-card-stats">
-        <div><dt>Offers</dt><dd>${g.total.toLocaleString('en-US')}</dd></div>
-        <div><dt>Price</dt><dd>${escapeHtml(floorValue)}</dd></div>
-        <div><dt>Volume</dt><dd>${escapeHtml(volumeValue)}</dd></div>
-        <div><dt>Market cap</dt><dd class="market-usd-price">${escapeHtml(mcapValue)}</dd></div>
-      </dl>
-      <div class="market-card-foot">
-        <span>${escapeHtml(marketEtchAge(a))}</span>
-        ${g.intents ? `<span>${g.intents.toLocaleString('en-US')} atomic</span>` : ''}
-      </div>
-    `;
-    frag.appendChild(tile);
-  }
-  grid.appendChild(frag);
-  hydrateMarketImages(grid);
-  grid.querySelectorAll('[data-asset-tile]').forEach(el => {
-    el.onclick = () => {
-      const aid = el.dataset.assetTile;
-      if (/^[0-9a-f]{64}$/.test(aid || '')) goToMarketAsset(aid);
-    };
-  });
-}
 
 function renderMarketBrowseTable(rows) {
   const list = $('#market-list');
@@ -34759,10 +34537,7 @@ function renderMarketBrowseTable(rows) {
   const sort = $('#market-sort')?.value || 'volume-desc';
   const filterText = ($('#market-filter-asset')?.value || '').trim().toLowerCase();
   const filterKind = $('#market-filter-kind')?.value || 'all';
-  const minRaw = ($('#market-filter-min-price')?.value || '').trim();
-  const maxRaw = ($('#market-filter-max-price')?.value || '').trim();
-  const hasPriceFilter = /^\d+$/.test(minRaw) || /^\d+$/.test(maxRaw);
-  const includeAllAssets = !hasPriceFilter && (filterKind === 'all' || !!filterText);
+  const includeAllAssets = filterKind === 'all' || !!filterText;
   const marketAssets = includeAllAssets && Array.isArray(_marketCache?.assets) ? _marketCache.assets.filter(a => {
     if (!a?.asset_id) return false;
     if (!filterText) return true;
@@ -34800,15 +34575,10 @@ function renderMarketBrowseTable(rows) {
     const verifiedBadge = a.verified
       ? `<span class="market-verified-check" title="Platform-verified Tacit asset">&#10003;</span>`
       : '';
-    // Prefer the worker's outlier-guarded mark price over the raw floor:
-    // dust 0.71-sat asks otherwise drag the table price down to 1/1000th
-    // of where the asset actually trades, and the row's market cap is
-    // then computed against that bogus price. Falls back to floor / last
-    // trade when no mark is available.
-    const markUnit = Number(a.mark_price?.unit);
-    const refUnit = (Number.isFinite(markUnit) && markUnit > 0)
-      ? markUnit
-      : marketGroupReferenceUnit(g);
+    // Display the current ask floor. Last trade / mark price are useful for
+    // charts, but the market table should show the cheapest live price a buyer
+    // can actually take right now.
+    const refUnit = marketGroupReferenceUnit(g);
     const floor = refUnit != null ? `${fmtMarketUnitSats(refUnit)}/${ticker}` : 'no price';
     const floorUsd = refUnit != null ? `${fmtMarketUsdUnitFromSats(refUnit, 'no USD quote')} per token` : 'no USD price';
     // Recompute market cap against the chosen header price (not the
@@ -35134,47 +34904,9 @@ function showMarketListPreviewModal(assetId) {
   overlay.querySelector('[data-market-list-preview-close]')?.focus();
 }
 
-function marketActivityLegacyPanelHtml(asset, rows) {
-  const a = asset || {};
-  const ticker = a.ticker || '?';
-  const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
-  const events = [...(rows || [])]
-    .sort((x, y) => marketListingTimestamp(y) - marketListingTimestamp(x))
-    .slice(0, 25);
-  const eventHtml = events.map(l => {
-    const amount = marketListingAmount(l);
-    const priceSats = marketListingPriceSats(l);
-    const unit = marketListingUnitPrice(l, a);
-    const rel = relativeAge(marketListingTimestamp(l));
-    const maker = l.maker_address || l.seller_payout_address || l.owner_address || '';
-    const id = marketListingDisplayId(l);
-    return `
-      <article class="market-activity-event listing">
-        <div class="market-activity-line"><strong>Listing</strong><span>${escapeHtml(rel ? `${rel} ago` : 'now')}</span></div>
-        <div>${escapeHtml(unit != null ? fmtMarketUnitSats(unit) : `${priceSats.toLocaleString('en-US')} sats`)}/${escapeHtml(ticker)} x ${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}</div>
-        <span><span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSats))}</span> <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSats, ''))}</span></span>
-        <small>${escapeHtml(shorten(id, 8))}${maker ? ` &middot; ${escapeHtml(shorten(maker, 10))}` : ''}</small>
-      </article>`;
-  }).join('');
-  return `
-    <section class="market-activity-panel">
-      <div class="market-activity-rail-head">
-        <h3>Activity</h3>
-      </div>
-      <div class="market-activity-filters">
-        <button class="active" type="button">All</button>
-        <button type="button">Sale</button>
-        <button type="button">Listing</button>
-        <button type="button">Cancel</button>
-      </div>
-      <div class="market-activity-events">${eventHtml || '<div class="empty">No activity</div>'}</div>
-    </section>`;
-}
-
-// Asset-detail header strip — sits at the top of the per-listing grid in
-// asset mode. "← All assets" returns to browse. The asset_id chip is
-// click-to-copy, mirroring the per-tile behavior. `rows` is the already-
-// filtered+scoped row set for the asset; we use it to derive a live floor.
+// Fetch one asset's worker aggregate used for detail stats, activity, and
+// async browse-table refreshes. Cached per network to avoid hammering the
+// worker while liveness and image hydration are still settling.
 async function fetchMarketAssetStats(assetIdHex) {
   const aid = String(assetIdHex || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(aid) || !ASSET_DETAIL_URL(aid)) return null;
@@ -35399,17 +35131,10 @@ function renderMarketAssetHeader(assetId, rows) {
   const allGroup = marketGroupRows(allRows, [a])[0] || fallbackGroup;
   const priceGroup = marketGroupRows(visibleRows, [a])[0] || fallbackGroup;
   priceGroup.referenceUnit = marketGroupReferenceUnit(priceGroup);
-  // Prefer the worker's outlier-guarded mark price for the header card.
-  // The raw floor can be dragged to absurd lows by dust 0.7114-sat asks
-  // even when the real trading band is hundreds of sats — using mark
-  // price keeps the header consistent with what the rich strip below
-  // shows for market cap, and matches what users see in the activity
-  // feed. Falls back to referenceUnit (floor / last trade) when no
-  // mark price is available yet.
-  const markUnit = Number(a.mark_price?.unit);
-  const headerUnit = (Number.isFinite(markUnit) && markUnit > 0)
-    ? markUnit
-    : priceGroup.referenceUnit;
+  // Display the current ask floor. Last trade / mark price stay available in
+  // the chart and activity surfaces, but the header price should match the
+  // cheapest live listing visible in the asks grid.
+  const headerUnit = priceGroup.referenceUnit;
   const headerMarketCapSats = marketCapSats(priceGroup.asset || a, headerUnit);
   scheduleMarketSupplyEnrichment([priceGroup]);
   const total = Number(allGroup.total || 0);
@@ -35540,7 +35265,7 @@ function renderMarketAssetStatsHTML(asset) {
   // overwrite once the live fetch returns; the cached SVG is visually
   // stable in the meantime.
   let prePaintedChartHtml = '';
-  let prePaintedChartStyle = 'margin-top:10px;font-size:11px;display:none;';
+  let prePaintedChartStyle = 'display:none;';
   try {
     const cached = _marketAssetStatsCache?.get?.(marketAssetStatsKey(aid));
     if (cached?.data && Array.isArray(cached.data.trades) && cached.data.trades.length) {
@@ -35549,39 +35274,61 @@ function renderMarketAssetStatsHTML(asset) {
       const svg = renderMarketPriceChartSVG(cached.data.trades, ticker, dec);
       if (svg) {
         prePaintedChartHtml = svg;
-        prePaintedChartStyle = 'margin-top:10px;font-size:11px;';
+        prePaintedChartStyle = '';
       }
     }
   } catch { /* pre-paint is best-effort */ }
   return `
-    <div data-market-asset-stats data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
-      <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
-        <div><span class="muted">last trade</span> <strong data-market-stat-last>—</strong></div>
-        <div><span class="muted">24h Δ</span> <strong data-market-stat-delta>—</strong></div>
-        <div data-market-stat-delta7d-wrap style="display:none;"><span class="muted">7d Δ</span> <strong data-market-stat-delta7d>—</strong></div>
-        <div data-market-stat-deltaall-wrap style="display:none;"><span class="muted" data-market-stat-deltaall-label>all-time Δ</span> <strong data-market-stat-deltaall>—</strong></div>
-        <div><span class="muted">24h high</span> <strong data-market-stat-high>—</strong></div>
-        <div><span class="muted">24h low</span> <strong data-market-stat-low>—</strong></div>
-        <div><span class="muted">24h volume</span> <strong data-market-stat-vol24>—</strong></div>
-        <div><span class="muted">transfers</span> <strong data-market-stat-xfers title="On-chain confidential transfers tracked by the indexer (includes sends, drops, OTC settles — not just market trades). For market trades only, see the recent-trades list below.">—</strong></div>
-        <div data-market-stat-spread-wrap style="display:none;"><span class="muted">spread</span> <strong data-market-stat-spread>—</strong></div>
+    <div data-market-asset-stats data-aid="${aid}" class="market-rich-stats">
+      <div class="market-rich-stats-grid">
+        <div class="market-stat-card market-stat-card--wide"><span class="market-stat-label">Last trade</span> <strong data-market-stat-last>&mdash;</strong></div>
+        <div class="market-stat-card"><span class="market-stat-label">24h change</span> <strong data-market-stat-delta>&mdash;</strong></div>
+        <div class="market-stat-card" data-market-stat-delta7d-wrap style="display:none;"><span class="market-stat-label">7d change</span> <strong data-market-stat-delta7d>&mdash;</strong></div>
+        <div class="market-stat-card" data-market-stat-deltaall-wrap style="display:none;"><span class="market-stat-label" data-market-stat-deltaall-label>All-time change</span> <strong data-market-stat-deltaall>&mdash;</strong></div>
+        <div class="market-stat-card"><span class="market-stat-label">24h high</span> <strong data-market-stat-high>&mdash;</strong></div>
+        <div class="market-stat-card"><span class="market-stat-label">24h low</span> <strong data-market-stat-low>&mdash;</strong></div>
+        <div class="market-stat-card"><span class="market-stat-label">24h volume</span> <strong data-market-stat-vol24>&mdash;</strong></div>
+        <div class="market-stat-card"><span class="market-stat-label">Transfers</span> <strong data-market-stat-xfers title="On-chain confidential transfers tracked by the indexer (includes sends, drops, OTC settles — not just market trades). For market trades only, see the recent-trades list below.">&mdash;</strong></div>
+        <div class="market-stat-card" data-market-stat-spread-wrap style="display:none;"><span class="market-stat-label">Spread</span> <strong data-market-stat-spread>&mdash;</strong></div>
       </div>
-      <div data-market-supplycap-row style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--ink-faint);display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
-        <div><span class="muted">market cap</span> <strong data-market-stat-mcap title="Total supply × current mark price. Computed only when the etcher has attested the total supply (revealed supply + blinding so observers can verify pedersen_commit(supply, blinding) == on-chain commitment). Without an attestation, supply is cryptographically hidden and market cap can't be derived.">—</strong></div>
-        <div><span class="muted">total supply</span> <strong data-market-stat-supply title="Total amount issued at etch, revealed via the etcher's attestation. When hidden, the etcher hasn't published (supply, blinding); the commitment is on chain but its value is confidential.">—</strong></div>
-        <div data-market-stat-supplymin-wrap><span class="muted">disclosed ≥</span> <strong data-market-stat-supplymin title="Sum of amounts across all published per-UTXO openings — a public lower bound on circulating supply that any observer can reproduce.">—</strong></div>
-        <div data-market-stat-liq-asks><span class="muted">asks liquidity</span> <strong data-market-stat-asksval>—</strong></div>
-        <div data-market-stat-liq-bids><span class="muted">bids liquidity</span> <strong data-market-stat-bidsval>—</strong></div>
+      <div data-market-supplycap-row class="market-rich-stats-grid market-rich-stats-grid--secondary">
+        <div class="market-stat-card"><span class="market-stat-label">Market cap</span> <strong data-market-stat-mcap title="Total supply × current mark price. Computed only when the etcher has attested the total supply (revealed supply + blinding so observers can verify pedersen_commit(supply, blinding) == on-chain commitment). Without an attestation, supply is cryptographically hidden and market cap can't be derived.">&mdash;</strong></div>
+        <div class="market-stat-card market-stat-card--wide"><span class="market-stat-label">Total supply</span> <strong data-market-stat-supply title="Total amount issued at etch, revealed via the etcher's attestation. When hidden, the etcher hasn't published (supply, blinding); the commitment is on chain but its value is confidential.">&mdash;</strong></div>
+        <div class="market-stat-card" data-market-stat-supplymin-wrap><span class="market-stat-label">Disclosed at least</span> <strong data-market-stat-supplymin title="Sum of amounts across all published per-UTXO openings — a public lower bound on circulating supply that any observer can reproduce.">&mdash;</strong></div>
+        <div class="market-stat-card" data-market-stat-liq-asks><span class="market-stat-label">Asks liquidity</span> <strong data-market-stat-asksval>&mdash;</strong></div>
+        <div class="market-stat-card" data-market-stat-liq-bids><span class="market-stat-label">Bids liquidity</span> <strong data-market-stat-bidsval>&mdash;</strong></div>
       </div>
-      <div data-market-attest-cta style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;"></div>
-      <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
-      <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;"></div>
+      <div data-market-attest-cta class="market-attest-cta" style="display:none;"></div>
+      <div class="market-chart-toggle-row"><button type="button" data-market-toggle-charts>SHOW CHARTS</button></div>
+      <div data-market-charts-wrap style="display:none;">
+        <div data-market-price-chart class="market-chart-card" style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
+        <div data-market-depth-chart class="market-chart-card" style="display:none;"></div>
+      </div>
       <!-- Recent-trades mini-list intentionally removed: redundant with
            the Activity tab below, which shows the same events plus
            listings + cancellations, paginated and filterable. The chart
            above visualizes the same data spatially; the table form
            lives in Activity. -->
     </div>`;
+}
+
+function bindMarketChartsToggle(scope) {
+  const root = scope?.querySelector?.('[data-market-asset-stats]');
+  if (!root) return;
+  const btn = root.querySelector('[data-market-toggle-charts]');
+  const wrap = root.querySelector('[data-market-charts-wrap]');
+  if (!btn || !wrap) return;
+  const apply = () => {
+    wrap.style.display = _marketChartsOpen ? '' : 'none';
+    btn.textContent = _marketChartsOpen ? 'HIDE CHARTS' : 'SHOW CHARTS';
+    btn.setAttribute('aria-expanded', _marketChartsOpen ? 'true' : 'false');
+    if (_marketChartsOpen) _wireMarketPriceChartCursor(root.querySelector('[data-market-price-chart]'));
+  };
+  btn.onclick = () => {
+    _marketChartsOpen = !_marketChartsOpen;
+    apply();
+  };
+  apply();
 }
 
 // Compact sparkline for browse-grid tiles. Takes the worker-stamped
@@ -35675,38 +35422,18 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   // rather than index-evenly, so a market with a burst of trades followed
   // by quiet shows the burst as a dense cluster (true to chain timing)
   // rather than a smeared line.
-  const W = 600, H = 160;
-  const PL = 36, PR = 8, PT = 12, PB = 22;   // wider PL so Y labels don't crowd the line
+  const W = 680, H = 220;
+  const PL = 58, PR = 18, PT = 18, PB = 32;  // generous axes keep labels off the line
   const plotW = W - PL - PR;
   const plotH = H - PT - PB;
   const xOf = ts => PL + ((ts - ts0) / tsSpan) * plotW;
   // yOf is defined above conditionally (linear vs log scale).
-  // Smooth the line via Catmull-Rom-to-Bézier — looks natural for sparse
-  // trade data (avoids the jagged sawtooth a polyline gives over uneven
-  // timestamps). Degenerates to straight segments when there are <3 points.
-  const _smoothPath = (pts) => {
-    if (pts.length < 2) return '';
-    if (pts.length === 2) {
-      return `M ${xOf(pts[0].ts).toFixed(2)} ${yOf(pts[0].u).toFixed(2)} L ${xOf(pts[1].ts).toFixed(2)} ${yOf(pts[1].u).toFixed(2)}`;
-    }
-    let d = `M ${xOf(pts[0].ts).toFixed(2)} ${yOf(pts[0].u).toFixed(2)}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] || pts[i];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2] || p2;
-      // Catmull-Rom tangents → Bézier control points. Tension=0.5 gives a
-      // natural-looking ease; higher values curl more, lower goes linear.
-      const t = 0.5;
-      const c1x = xOf(p1.ts) + (xOf(p2.ts) - xOf(p0.ts)) / 6 * t;
-      const c1y = yOf(p1.u) + (yOf(p2.u) - yOf(p0.u)) / 6 * t;
-      const c2x = xOf(p2.ts) - (xOf(p3.ts) - xOf(p1.ts)) / 6 * t;
-      const c2y = yOf(p2.u) - (yOf(p3.u) - yOf(p1.u)) / 6 * t;
-      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${xOf(p2.ts).toFixed(2)} ${yOf(p2.u).toFixed(2)}`;
-    }
-    return d;
-  };
-  const linePath = _smoothPath(points);
+  // Keep the price path point-to-point. A smoothed Bézier curve looks nicer,
+  // but it can visually invent prices between sparse trades; market charts
+  // should preserve the exact sequence of observed fills.
+  const linePath = points.map((p, i) =>
+    `${i === 0 ? 'M' : 'L'} ${xOf(p.ts).toFixed(2)} ${yOf(p.u).toFixed(2)}`
+  ).join(' ');
   const areaPath = linePath
     ? `${linePath} L ${xOf(tsN).toFixed(2)} ${(PT + plotH).toFixed(2)} L ${xOf(ts0).toFixed(2)} ${(PT + plotH).toFixed(2)} Z`
     : '';
@@ -35724,7 +35451,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   const dotR = points.length > 80 ? 1.5 : (points.length > 40 ? 2 : 2.5);
   const dots = points.map(p => {
     const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}`;
-    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="#0a8f43"><title>${escapeHtml(tip)}</title></circle>`;
+    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="var(--chart-bg, var(--bg))" stroke="var(--chart-line, #0a8f43)" stroke-width="1.25"><title>${escapeHtml(tip)}</title></circle>`;
   }).join('');
   // Horizontal gridlines at the Y min / mid / max — gives the eye a
   // reference without committing to full axis ticks. Dashed light strokes
@@ -35733,46 +35460,62 @@ function renderMarketPriceChartSVG(trades, ticker, decimals) {
   // the chart is √(lo·hi) under log), arithmetic mean on linear scale.
   const yMid = isLog ? Math.sqrt(yLo * yHi) : (yLo + yHi) / 2;
   const gridlines = [yLo, yMid, yHi].map(u =>
-    `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yOf(u).toFixed(2)}" y2="${yOf(u).toFixed(2)}" stroke="var(--ink-faint)" stroke-width="0.5" stroke-dasharray="2,3"/>`
+    `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yOf(u).toFixed(2)}" y2="${yOf(u).toFixed(2)}" stroke="var(--chart-grid, var(--ink-faint))" stroke-width="0.6"/>`
   ).join('');
+  const timeGridlines = [0.25, 0.5, 0.75].map(t => {
+    const x = (PL + t * plotW).toFixed(2);
+    return `<line x1="${x}" x2="${x}" y1="${PT}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--chart-grid, var(--ink-faint))" stroke-width="0.45" stroke-dasharray="2,5" opacity="0.55"/>`;
+  }).join('');
   const minLbl = fmtUnitPriceSats(yLo);
   const midLbl = fmtUnitPriceSats(yMid);
   const maxLbl = fmtUnitPriceSats(yHi);
   const oldLbl = _ageStr(ts0);
   const newLbl = _ageStr(tsN);
   const _logBadge = isLog
-    ? `<span title="Auto-switched to log scale because max/min &gt; 50. The visual slope reflects ratio change, not absolute. Linear scale would squash 99% of trades into a thin strip." style="font-size:9px;padding:1px 5px;background:var(--ink-faint);color:var(--ink);border-radius:2px;letter-spacing:0.05em;cursor:help;">log</span>`
+    ? `<span class="market-chart-badge market-chart-badge--log" title="Auto-switched to log scale because max/min &gt; 50. The visual slope reflects ratio change, not absolute. Linear scale would squash 99% of trades into a thin strip.">log</span>`
     : '';
   // Serialize points data for the cursor handler. JSON in a data attr is
   // smaller than reading back from each <circle>'s <title> text.
   const cursorData = points.map(p => ({ ts: p.ts, u: p.u, x: xOf(p.ts), y: yOf(p.u), price: p.price, txid: p.txid }));
   const cursorDataAttr = escapeHtml(JSON.stringify(cursorData));
+  const chartUid = `price-${String(ticker || 'asset').replace(/[^a-z0-9_-]/gi, '').slice(0, 16) || 'asset'}-${points.length}-${tsN}`;
   return `
-    <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-      <strong>Price history</strong>${_logBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}</span>
+    <div class="market-chart-head">
+      <div class="market-chart-title"><strong>Price history</strong>${_logBadge}</div>
+      <div class="market-chart-meta">${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} - ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}</div>
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);cursor:crosshair;">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" class="market-chart-svg" style="cursor:crosshair;">
+      <defs>
+        <linearGradient id="${chartUid}-area" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--chart-line, #0a8f43)" stop-opacity="0.28"/>
+          <stop offset="62%" stop-color="var(--chart-line, #0a8f43)" stop-opacity="0.12"/>
+          <stop offset="100%" stop-color="var(--chart-line, #0a8f43)" stop-opacity="0.01"/>
+        </linearGradient>
+      </defs>
+      <rect x="${PL}" y="${PT}" width="${plotW}" height="${plotH}" fill="var(--chart-bg, var(--bg))" stroke="var(--chart-axis, var(--ink-faint))" stroke-width="0.8"/>
+      ${timeGridlines}
       ${gridlines}
-      ${areaPath ? `<path d="${areaPath}" fill="#0a8f43" fill-opacity="0.10" stroke="none"/>` : ''}
-      ${linePath ? `<path d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+      ${areaPath ? `<path d="${areaPath}" fill="url(#${chartUid}-area)" stroke="none"/>` : ''}
+      ${linePath ? `<path d="${linePath}" fill="none" stroke="var(--chart-line, #0a8f43)" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
       ${dots}
-      <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
-      <text x="${PL - 4}" y="${yOf(yMid).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(midLbl)}</text>
-      <text x="${PL - 4}" y="${yOf(yLo).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
-      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)">${escapeHtml(oldLbl)}</text>
-      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" text-anchor="end">${escapeHtml(newLbl)}</text>
+      <line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${(PT + plotH).toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--chart-axis, var(--ink))" stroke-width="0.8"/>
+      <line x1="${PL}" x2="${PL}" y1="${PT}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--chart-axis, var(--ink))" stroke-width="0.8"/>
+      <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--chart-muted, var(--ink-mid))" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
+      <text x="${PL - 4}" y="${yOf(yMid).toFixed(2)}" font-size="9" fill="var(--chart-muted, var(--ink-mid))" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(midLbl)}</text>
+      <text x="${PL - 4}" y="${yOf(yLo).toFixed(2)}" font-size="9" fill="var(--chart-muted, var(--ink-mid))" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
+      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--chart-muted, var(--ink-mid))">${escapeHtml(oldLbl)}</text>
+      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--chart-muted, var(--ink-mid))" text-anchor="end">${escapeHtml(newLbl)}</text>
       <!-- Cursor overlay: invisible rect captures mousemove across the
            full plot area. The crosshair group below is positioned by
            _wireMarketPriceChartCursor on mousemove; hidden until first
            hover so the chart reads as static at rest. -->
       <rect data-chart-overlay x="${PL}" y="${PT}" width="${plotW}" height="${plotH}" fill="transparent" pointer-events="all"></rect>
       <g data-chart-crosshair style="display:none;pointer-events:none;">
-        <line data-chart-vline x1="0" x2="0" y1="${PT}" y2="${PT + plotH}" stroke="var(--ink)" stroke-width="0.7" stroke-dasharray="3,2" opacity="0.55"></line>
-        <circle data-chart-active-dot cx="0" cy="0" r="3.5" fill="#0a8f43" stroke="#fff" stroke-width="1.2"></circle>
+        <line data-chart-vline x1="0" x2="0" y1="${PT}" y2="${PT + plotH}" stroke="var(--chart-line, var(--ink))" stroke-width="0.7" stroke-dasharray="3,2" opacity="0.62"></line>
+        <circle data-chart-active-dot cx="0" cy="0" r="3.5" fill="var(--chart-line, #0a8f43)" stroke="var(--chart-tooltip-text, #fff)" stroke-width="1.2"></circle>
         <g data-chart-tooltip transform="translate(0,0)">
-          <rect data-chart-tooltip-bg x="0" y="0" width="0" height="0" fill="var(--ink)" rx="2" ry="2"></rect>
-          <text data-chart-tooltip-text font-size="10" font-family="var(--mono, monospace)" fill="var(--bg)" x="0" y="0" dominant-baseline="hanging"></text>
+          <rect data-chart-tooltip-bg x="0" y="0" width="0" height="0" fill="var(--chart-tooltip-bg, var(--ink))" stroke="var(--chart-tooltip-stroke, transparent)" rx="2" ry="2"></rect>
+          <text data-chart-tooltip-text font-size="10" font-family="var(--mono, monospace)" fill="var(--chart-tooltip-text, var(--bg))" x="0" y="0" dominant-baseline="hanging"></text>
         </g>
       </g>
     </svg>`;
@@ -35871,6 +35614,10 @@ async function populateMarketAssetStats(scope, asset) {
     if (recentEl) recentEl.innerHTML = `<div class="muted" style="font-size:10px;">stats unavailable: ${escapeHtml(e?.message || String(e))}</div>`;
     return;
   }
+  // BTC/USD spot for sats->USD suffixes on volume + last trade. Best-
+  // effort; falls back to sats-only if oracle is unavailable.
+  let btcUsd = null;
+  try { btcUsd = await getBtcUsdPrice(); } catch {}
   // Top-line stats.
   const volSats = Number(j.volume_24h_sats || 0);
   const xfers = Number(j.transfer_count || 0);
@@ -35892,12 +35639,6 @@ async function populateMarketAssetStats(scope, asset) {
     if (!el) return;
     if (isHtml) el.innerHTML = text; else el.textContent = text;
   };
-  // BTC/USD spot for sats→USD suffixes on volume + last trade. Best-
-  // effort; falls back to sats-only if oracle is unavailable. Non-blocking
-  // is unnecessary here because getBtcUsdPrice returns instantly when
-  // the cache is warm (which it usually is — the wallet card primed it).
-  let btcUsd = null;
-  try { btcUsd = await getBtcUsdPrice(); } catch {}
   const _usdSuffix = (sats) => {
     const usd = fmtSatsAsUsd(sats, btcUsd);
     return usd ? ` <span class="muted" style="font-weight:normal;">· ${escapeHtml(usd)}</span>` : '';
@@ -36518,8 +36259,8 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   // orders 4+ decades from the trading band, and a linear axis squashes
   // 99% of depth into a thin strip. Log makes both edges legible.
   const isLog = (xLoRaw > 0) && (xHiRaw / xLoRaw > 50);
-  const W = 600, H = 140;
-  const PL = 8, PR = 8, PT = 8, PB = 18;
+  const W = 680, H = 190;
+  const PL = 20, PR = 20, PT = 18, PB = 30;
   const plotW = W - PL - PR;
   const plotH = H - PT - PB;
   let xOf;
@@ -36576,23 +36317,46 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   }
   const centerX = centerU != null ? xOf(centerU) : null;
   const _logBadge = isLog
-    ? `<span title="Auto-switched to log scale because the orderbook spans &gt;50× from low to high. Mark price line stays anchored to the real trading band." style="font-size:9px;padding:1px 5px;background:var(--ink-faint);color:var(--ink);border-radius:2px;letter-spacing:0.05em;cursor:help;">log</span>`
+    ? `<span class="market-chart-badge market-chart-badge--log" title="Auto-switched to log scale because the orderbook spans &gt;50× from low to high. Mark price line stays anchored to the real trading band.">log</span>`
     : '';
   const _crossedBadge = isCrossed
-    ? `<span title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades." style="font-size:9px;padding:1px 5px;background:var(--red, #b8341d);color:#fff;border-radius:2px;letter-spacing:0.05em;cursor:help;">crossed</span>`
+    ? `<span class="market-chart-badge market-chart-badge--crossed" title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades.">crossed</span>`
     : '';
+  const depthUid = `depth-${String(ticker || 'asset').replace(/[^a-z0-9_-]/gi, '').slice(0, 16) || 'asset'}-${bids.length}-${asks.length}`;
+  const depthGrid = [0.25, 0.5, 0.75].map(t => {
+    const y = (PT + t * plotH).toFixed(2);
+    return `<line x1="${PL}" x2="${(PL + plotW).toFixed(2)}" y1="${y}" y2="${y}" stroke="var(--chart-grid, var(--ink-faint))" stroke-width="0.45" stroke-dasharray="2,5" opacity="0.55"/>`;
+  }).join('');
+  const yMaxLabel = `${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${ticker}`;
+  const yMaxLabelW = Math.max(64, Math.min(220, yMaxLabel.length * 5.7 + 12));
   out.innerHTML = `
-    <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-      <strong>Depth</strong>${_logBadge}${_crossedBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best bid ${escapeHtml(fmtUnitPriceSats(bestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''}</span>
+    <div class="market-chart-head">
+      <div class="market-chart-title"><strong>Depth</strong>${_logBadge}${_crossedBadge}</div>
+      <div class="market-chart-meta">${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best bid ${escapeHtml(fmtUnitPriceSats(bestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''}</div>
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
-      <path d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1"/>
-      <path d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1"/>
-      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-mid)" stroke-width="1" stroke-dasharray="3,3"/>` : ''}
-      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
-      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
-      <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</text>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="market-chart-svg">
+      <defs>
+        <linearGradient id="${depthUid}-bid" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--chart-bid, #0a8f43)" stop-opacity="0.30"/>
+          <stop offset="100%" stop-color="var(--chart-bid, #0a8f43)" stop-opacity="0.08"/>
+        </linearGradient>
+        <linearGradient id="${depthUid}-ask" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--chart-ask, #b8341d)" stop-opacity="0.30"/>
+          <stop offset="100%" stop-color="var(--chart-ask, #b8341d)" stop-opacity="0.08"/>
+        </linearGradient>
+      </defs>
+      <rect x="${PL}" y="${PT}" width="${plotW}" height="${plotH}" fill="var(--chart-bg, var(--bg))" stroke="var(--chart-axis, var(--ink-faint))" stroke-width="0.8"/>
+      ${depthGrid}
+      <path d="${bidPath}" fill="url(#${depthUid}-bid)" stroke="var(--chart-bid, #0a8f43)" stroke-width="1.8" stroke-linejoin="round"/>
+      <path d="${askPath}" fill="url(#${depthUid}-ask)" stroke="var(--chart-ask, #b8341d)" stroke-width="1.8" stroke-linejoin="round"/>
+      <line x1="${PL}" x2="${(PL + plotW).toFixed(2)}" y1="${(PT + plotH).toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--chart-axis, var(--ink))" stroke-width="0.8"/>
+      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--chart-muted, var(--ink-mid))" stroke-width="1.2" stroke-dasharray="4,4"/>` : ''}
+      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--chart-muted, var(--ink-mid))" font-family="var(--mono, monospace)">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
+      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--chart-muted, var(--ink-mid))" font-family="var(--mono, monospace)" text-anchor="end">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
+      <g>
+        <rect x="${PL + 5}" y="${PT + 5}" width="${yMaxLabelW.toFixed(0)}" height="16" fill="var(--chart-tooltip-bg, var(--bg))" opacity="0.88"/>
+        <text x="${PL + 10}" y="${(PT + 16).toFixed(0)}" font-size="9" fill="var(--chart-muted, var(--ink-mid))" font-family="var(--mono, monospace)">${escapeHtml(yMaxLabel)}</text>
+      </g>
     </svg>`;
   out.style.display = '';
 }
@@ -41281,8 +41045,8 @@ function _loadDiscoverPrefs() {
 }
 function _marketDefaultPrefs(scope) {
   return scope === 'asset'
-    ? { kind: 'preauth', min: '', max: '', sort: 'unit-asc' }
-    : { kind: 'preauth', min: '', max: '', sort: 'volume-desc' };
+    ? { kind: 'preauth', sort: 'unit-asc' }
+    : { kind: 'preauth', sort: 'volume-desc' };
 }
 function _validSelectValue(sel, value) {
   const el = $(sel);
@@ -41302,15 +41066,11 @@ function _normaliseMarketPrefs(o) {
     out.browse = {
       ...out.browse,
       kind: _validSelectValue('#market-filter-kind', o.kind) && o.kind !== 'all' ? o.kind : out.browse.kind,
-      min: typeof o.min === 'string' ? o.min : '',
-      max: typeof o.max === 'string' ? o.max : '',
       sort: _validSelectValue('#market-sort', o.sort) && o.sort !== 'unit-asc' ? o.sort : out.browse.sort,
     };
     out.asset = {
       ...out.asset,
       kind: _validSelectValue('#market-filter-kind', o.kind) && o.kind !== 'all' ? o.kind : out.asset.kind,
-      min: typeof o.min === 'string' ? o.min : '',
-      max: typeof o.max === 'string' ? o.max : '',
       sort: _validSelectValue('#market-sort', o.sort) ? o.sort : out.asset.sort,
     };
     return out;
@@ -41321,8 +41081,6 @@ function _normaliseMarketPrefs(o) {
     out[scope] = {
       ...out[scope],
       kind: _validSelectValue('#market-filter-kind', src.kind) ? src.kind : out[scope].kind,
-      min: typeof src.min === 'string' ? src.min : '',
-      max: typeof src.max === 'string' ? src.max : '',
       sort: _validSelectValue('#market-sort', src.sort) ? src.sort : out[scope].sort,
     };
   }
@@ -41345,12 +41103,8 @@ function _marketPrefsForScope(scope) {
 function _applyMarketPrefsToControls(scope = marketViewScope()) {
   const prefs = _marketPrefsForScope(scope);
   const k = $('#market-filter-kind');
-  const mn = $('#market-filter-min-price');
-  const mx = $('#market-filter-max-price');
   const s = $('#market-sort');
   if (k && _validSelectValue('#market-filter-kind', prefs.kind)) k.value = prefs.kind;
-  if (mn) mn.value = prefs.min || '';
-  if (mx) mx.value = prefs.max || '';
   if (s && _validSelectValue('#market-sort', prefs.sort)) s.value = prefs.sort;
 }
 function _saveMarketPrefs(scope = marketViewScope()) {
@@ -41358,8 +41112,6 @@ function _saveMarketPrefs(scope = marketViewScope()) {
     const prefs = _loadMarketPrefs();
     prefs[scope] = {
       kind: $('#market-filter-kind')?.value || _marketDefaultPrefs(scope).kind,
-      min:  $('#market-filter-min-price')?.value || '',
-      max:  $('#market-filter-max-price')?.value || '',
       sort: scope === 'asset' ? 'unit-asc' : ($('#market-sort')?.value || _marketDefaultPrefs(scope).sort),
     };
     prefs.version = 4;
@@ -41539,7 +41291,7 @@ function setupMarketButtons() {
   const refreshBtn = $('#btn-market-refresh');
   if (refreshBtn) {
     if (!REGISTRY_URL) { refreshBtn.disabled = true; refreshBtn.title = 'market disabled (no Worker)'; }
-    refreshBtn.onclick = () => { invalidateMarketCache(); renderMarket(); };
+    refreshBtn.onclick = () => { invalidateMarketCache(); renderMarket({ force: true }); };
   }
   // Filters: re-apply against the cached batch on every change. Text input
   // is debounced; the others are fast enough to fire on `change`.
@@ -41551,56 +41303,10 @@ function setupMarketButtons() {
       t = setTimeout(() => { _marketBrowsePage = 1; _marketListingPage = 1; applyMarketFilters(); }, 80);
     });
   }
-  ['#market-filter-kind', '#market-filter-min-price', '#market-filter-max-price', '#market-sort'].forEach(sel => {
+  ['#market-filter-kind', '#market-sort'].forEach(sel => {
     const el = $(sel);
     if (el) el.addEventListener('change', () => { _marketBrowsePage = 1; _marketListingPage = 1; _saveMarketPrefs(); applyMarketFilters(); });
   });
-  // Price popover: chip toggles a small panel containing the min/max
-  // inputs. Clicking outside (or the explicit "done" button) closes it;
-  // the inputs themselves still fire `change` via the listener above so
-  // re-applying filters happens immediately on edit, not just on close.
-  const priceChip = $('#market-price-chip');
-  const pricePop = $('#market-price-popover');
-  const priceClear = $('#market-price-clear');
-  const priceDone = $('#market-price-done');
-  if (priceChip && pricePop) {
-    const closePop = () => {
-      pricePop.hidden = true;
-      priceChip.setAttribute('aria-expanded', 'false');
-      document.removeEventListener('click', _onDocClickPricePop, true);
-      document.removeEventListener('keydown', _onKeyPricePop, true);
-    };
-    const _onDocClickPricePop = (e) => {
-      if (pricePop.hidden) return;
-      if (pricePop.contains(e.target) || priceChip.contains(e.target)) return;
-      closePop();
-    };
-    const _onKeyPricePop = (e) => { if (e.key === 'Escape') closePop(); };
-    priceChip.addEventListener('click', () => {
-      const open = pricePop.hidden;
-      pricePop.hidden = !open;
-      priceChip.setAttribute('aria-expanded', open ? 'true' : 'false');
-      if (open) {
-        document.addEventListener('click', _onDocClickPricePop, true);
-        document.addEventListener('keydown', _onKeyPricePop, true);
-        $('#market-filter-min-price')?.focus();
-      } else {
-        document.removeEventListener('click', _onDocClickPricePop, true);
-        document.removeEventListener('keydown', _onKeyPricePop, true);
-      }
-    });
-    if (priceDone) priceDone.addEventListener('click', closePop);
-    if (priceClear) priceClear.addEventListener('click', () => {
-      const mn = $('#market-filter-min-price');
-      const mx = $('#market-filter-max-price');
-      if (mn) mn.value = '';
-      if (mx) mx.value = '';
-      _marketBrowsePage = 1;
-      _marketListingPage = 1;
-      _saveMarketPrefs();
-      applyMarketFilters();
-    });
-  }
   // Restore only the browse-index preferences at startup. Asset-detail
   // preferences are applied when the user enters a token page.
   _applyMarketPrefsToControls('browse');
