@@ -41049,6 +41049,67 @@ function _wireSwapTile(scope) {
   // Execute: re-compute plan at click time (cache may have shifted while
   // user typed) → confirm() → sequential broadcast with the same
   // _markTxInputsSpent indexer-lag guard as Sweep forms.
+  // Residual-list helper: given a token amount the seller still wants to
+  // dispose of AT a given floor unit price, post a variable-amount
+  // listing (§5.7.6.1) for it. Mirrors the buyer's residual-bid path
+  // (which posts variable-fill bids); closes the orderbook loop on both
+  // sides — a swap-sell that doesn't fully match against bids now leaves
+  // an open ask any buyer can partial-fill.
+  //
+  // Auto-splits a UTXO via self-CXFER when no exact-match exists, so the
+  // caller doesn't need to consolidate. Returns { ok: bool, info } —
+  // bid-side path uses publishBidIntent which can't fail for capital
+  // reasons; the ask-side path can fail if no asset UTXO covers the
+  // residual, in which case we soft-fail and surface a hint.
+  const _postResidualAskListing = async ({ residualBase, floorUnit, expirySec }) => {
+    if (!(Number.isFinite(floorUnit) && floorUnit > 0)) return { ok: false, reason: 'no mark price' };
+    if (residualBase <= 0n) return { ok: false, reason: 'no residual' };
+    // priceSats = floor(residual_whole_units × floorUnit).
+    //           = floor(residualBase × floorUnit / 10^decimals)
+    const _priceSats = Math.floor(Number(residualBase) * floorUnit / Math.pow(10, decimals));
+    if (!Number.isInteger(_priceSats) || _priceSats < DUST) return { ok: false, reason: `scaled price ${_priceSats} < DUST` };
+    // Locate an asset UTXO of exactly residualBase. Auto-split if needed
+    // via self-CXFER (same pattern fulfilBidIntent uses for sellers
+    // without exact-amount holdings).
+    const holdings = await scanHoldings();
+    const h = holdings.get(aid);
+    if (!h || h.balance < residualBase) return { ok: false, reason: 'insufficient holdings' };
+    let listUtxo = h.utxos.find(u => u.amount === residualBase);
+    if (!listUtxo) {
+      // Pick the smallest covering UTXO for the split.
+      const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
+      const cover = sorted.find(u => u.amount >= residualBase);
+      if (!cover) return { ok: false, reason: 'no single UTXO covers residual; consolidate first' };
+      const splitResult = await buildAndBroadcastCXferMulti({
+        assetIdHex: aid,
+        recipients: [{ pubHex: bytesToHex(wallet.pub), amount: residualBase }],
+        forceUtxos: [cover],
+      });
+      const r0 = splitResult.recipients[0];
+      await waitForTxVisible(splitResult.revealTxid);
+      listUtxo = {
+        utxo: { txid: splitResult.revealTxid, vout: r0.vout },
+        amount: residualBase,
+        blinding: r0.blinding,
+      };
+    }
+    // min_take: max(10% of amount, smallest-DUST-clearing chunk). Same
+    // formula as the buy-side residual bid.
+    let _minTake = residualBase / 10n;
+    const _dustFloor = (BigInt(DUST) * residualBase + BigInt(_priceSats) - 1n) / BigInt(_priceSats);
+    if (_dustFloor > _minTake) _minTake = _dustFloor;
+    if (_minTake >= residualBase) _minTake = 0n;  // would be whole-UTXO; skip variable
+    if (_minTake === 0n) return { ok: false, reason: 'residual too small for partial-fill listing' };
+    const r = await publishAxferVarIntent({
+      utxoTxid: listUtxo.utxo.txid,
+      utxoVout: listUtxo.utxo.vout,
+      priceSats: _priceSats,
+      expiry: expirySec,
+      minTakeAmount: _minTake.toString(),
+    });
+    return { ok: true, intent_id: r.intent_id, amount: residualBase, priceSats: _priceSats, minTake: _minTake };
+  };
+
   // Unified ask-take executor. Dispatches on the candidate's kind so the
   // swap-tile execution loop can stay kind-agnostic — same function call
   // per fill regardless of whether the underlying ask is a preauth chunk
@@ -41392,7 +41453,43 @@ function _wireSwapTile(scope) {
       const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
       if (amt > bal) { toast(`You only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`, 'error'); return; }
       const result = await planSell(amt);
-      if (!result) { toast('No route available', 'error'); return; }
+      // No-bids path: post a listing for the full amount at the user's
+      // floor unit price (mirrors the buy-side no-route → place-bid path).
+      // The swap-sell becomes a maker-side listing that any partial-fill
+      // buyer can drain over time.
+      if (!result) {
+        if (!(Number.isFinite(refUnit) && refUnit > 0)) {
+          toast('No route + no mark price · this asset has never traded', 'error');
+          return;
+        }
+        const _floor = refUnit * (1 - getSlipRatio());
+        if (!confirm(
+          `Sell ${fmtAssetAmount(amt, decimals)} ${ticker} as an open listing?\n\n` +
+          `No bids match your floor right now. Listing at ${fmtUnitPriceSats(_floor)} sats/${ticker} (your limit). ` +
+          `Any buyer can take any chunk in [min, ${fmtAssetAmount(amt, decimals)}] ${ticker} — atomic Bitcoin settlement, partial fills supported. Auto-expires in 24h.`
+        )) return;
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        const _origLabel = actionBtn.textContent;
+        actionBtn.textContent = 'listing…';
+        try {
+          const r = await _postResidualAskListing({
+            residualBase: amt, floorUnit: _floor,
+            expirySec: Math.floor(Date.now() / 1000) + 24 * 3600,
+          });
+          if (!r.ok) throw new Error(r.reason || 'listing failed');
+          toast(`Open sell · ${fmtAssetAmount(r.amount, decimals)} ${ticker} @ ${fmtUnitPriceSats(_floor)} sats/${ticker} — fills when buyers take`, 'success', 8000);
+          invalidateMarketCache();
+          invalidateHoldingsCache();
+          setTimeout(() => renderMarket(), 1500);
+        } catch (e) {
+          if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was posted.', '');
+          else toast(`Listing failed: ${e.message}`, 'error');
+        } finally {
+          actionBtn.disabled = false; actionBtn.style.opacity = '1';
+          actionBtn.textContent = _origLabel;
+        }
+        return;
+      }
       const accStr = fmtAssetAmount(result.totalAmt, decimals);
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
       if (!confirm(
@@ -41441,9 +41538,31 @@ function _wireSwapTile(scope) {
       invalidateMarketCache();
       invalidateHoldingsCache();
       _invalidateBidsCache(aid);
+      // Residual-listing: after bids fill, if any target tokens remain
+      // unsold AND no fill failed, post an open variable-amount listing
+      // at the user's limit floor. Symmetric to the buy-side residual-bid
+      // path; closes the orderbook loop so a sell at any size produces a
+      // tradeable position even with thin bid depth.
+      let listingPosted = null;
+      if (!lastErr && filled > 0 && result.residualAmt > 0n && Number.isFinite(refUnit) && refUnit > 0) {
+        const _floor = refUnit * (1 - getSlipRatio());
+        try {
+          const r = await _postResidualAskListing({
+            residualBase: result.residualAmt, floorUnit: _floor,
+            expirySec: Math.floor(Date.now() / 1000) + 24 * 3600,
+          });
+          if (r.ok) listingPosted = r;
+        } catch (e) {
+          if (!isUnlockCancelled(e)) console.warn('[swap] residual listing failed:', e.message);
+        }
+      }
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}`, 'error', 8000);
-      else toast(`Selling ${accStr} ${ticker} ✓ (pending bidder Takes)`, 'success', 5000);
+      else if (listingPosted) {
+        toast(`Selling ${accStr} ${ticker} ✓ · ${fmtAssetAmount(listingPosted.amount, decimals)} ${ticker} more open at ${fmtUnitPriceSats(refUnit * (1 - getSlipRatio()))} sats/${ticker} (fills when buyers take)`, 'success', 9000);
+      } else {
+        toast(`Selling ${accStr} ${ticker} ✓ (pending bidder Takes)`, 'success', 5000);
+      }
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);
