@@ -38376,13 +38376,16 @@ async function populateMarketAssetStats(scope, asset) {
   } else if (ctaEl) {
     ctaEl.style.display = 'none';
   }
-  // last trade — append the USD value of the total settlement, not the
-  // unit price (a $X.XX/token figure would mislead given tacit's decimal
-  // ranges; the total sats is what changed hands).
+  // last trade — append the USD value of the total settlement. The
+  // unit-price string `lastStr` already shows the per-token USD inline
+  // (e.g. "329 sats/TAC ($0.2684)"); appending the TOTAL fill's USD
+  // unlabeled creates two ambiguous dollar figures side-by-side. Label
+  // the total explicitly as "trade size" so traders can tell the two
+  // apart at a glance.
   let lastWithUsd = lastStr;
   if (last && Number.isInteger(last.price_sats) && last.price_sats > 0) {
     const usd = fmtSatsAsUsd(last.price_sats, btcUsd);
-    if (usd) lastWithUsd = `${lastStr}<span class="muted" style="font-weight:normal;"> · ${escapeHtml(usd)}</span>`;
+    if (usd) lastWithUsd = `${lastStr}<span class="muted" style="font-weight:normal;" title="USD value of the entire last settlement (price_sats × BTC/USD), not per-token. Per-token USD is shown next to the sats/${escapeHtml(ticker)} figure above."> · trade size ${escapeHtml(usd)}</span>`;
   }
   setText('[data-market-stat-last]', lastWithUsd, true);
 
@@ -38862,8 +38865,8 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   const isCrossed = absSpread < 0;
   const color = isCrossed ? '#b8341d' : (pctSpread != null && pctSpread < 1 ? '#0a7d3a' : 'var(--ink)');
   const txt = isCrossed
-    ? `<span style="color:${color};" title="Best in-band bid exceeds best in-band ask. Real arbitrage opportunity (dust outliers ignored).">crossed ${fmtUnitPriceSats(Math.abs(absSpread))}</span>`
-    : `<span style="color:${color};">${fmtUnitPriceSats(absSpread)} sats${pctSpread != null ? ` · ${pctSpread.toFixed(2)}%` : ''}</span>`;
+    ? `<span style="color:${color};" title="Best in-band bid exceeds best in-band ask by ${fmtUnitPriceSats(Math.abs(absSpread))} sats/${escapeHtml(ticker)} — a real arbitrage opportunity (dust outliers ignored).">crossed ${fmtUnitPriceSats(Math.abs(absSpread))} sats/${escapeHtml(ticker)}</span>`
+    : `<span style="color:${color};">${fmtUnitPriceSats(absSpread)} sats/${escapeHtml(ticker)}${pctSpread != null ? ` · ${pctSpread.toFixed(2)}%` : ''}</span>`;
   out.innerHTML = txt;
   wrap.style.display = '';
 }
