@@ -23921,18 +23921,28 @@ async function _autoFulfilTick(drop) {
   // mid-campaign can't credit a tip twice. The worker also enforces this
   // server-side, but a server with KV churn (or a fresh worker URL) plus a
   // tab that lost its in-memory cache would otherwise re-credit on restart.
+  // Each fulfilled leaf may have consumed multiple tips (cumulative
+  // tipping), so we walk both the array and the legacy singular field.
   const consumedFunding = new Map();  // txid → leaf_index already credited
   for (const f of (fresh.fulfilled || [])) {
-    if (typeof f?.funding_txid === 'string' && /^[0-9a-f]{64}$/.test(f.funding_txid)) {
-      consumedFunding.set(f.funding_txid, f.leaf_index);
+    const fulfilledTxids = Array.isArray(f?.funding_txids)
+      ? f.funding_txids
+      : (f?.funding_txid ? [f.funding_txid] : []);
+    for (const raw of fulfilledTxids) {
+      const t = String(raw || '').toLowerCase().replace(/^0x/, '');
+      if (/^[0-9a-f]{64}$/.test(t)) consumedFunding.set(t, f.leaf_index);
     }
   }
   const treasuryAddr = wallet.address();
 
-  // Verify each pending claim. Pick up to 7 valid + funded.
-  const verified = [];
+  // Verify every pending claim, then sort by cumulative tip sats DESC
+  // and slice to the K=7 CXFER cap. Verifying first then sorting (rather
+  // than stopping at first-7-OK) is what makes cumulative-tip priority
+  // meaningful — otherwise the queue is effectively FIFO and a recipient
+  // who stacked tips for priority gets no benefit. Pending is already
+  // bounded by the worker's claim-list pagination.
+  const verifiedAll = [];
   for (const c of pending) {
-    if (verified.length >= 7) break;
     const leafIdx = Number(c.leaf_index);
     if (!Number.isInteger(leafIdx) || leafIdx < 0 || leafIdx >= rows.length) {
       _autoFulfilLog(dropId, 'warn', `leaf ${leafIdx}: out of range`); continue;
@@ -23977,37 +23987,67 @@ async function _autoFulfilTick(drop) {
       _autoFulfilLog(dropId, 'warn', `leaf ${leafIdx}: eth_sig does not recover (EOA recovery + ERC-1271 fallback both failed — if claimant uses a smart wallet, connect an eth provider for the fallback)`);
       continue;
     }
-    const fundingTxid = String(c.funding_txid || '').toLowerCase().replace(/^0x/, '');
-    if (!/^[0-9a-f]{64}$/.test(fundingTxid)) {
+    // Tips bound to this leaf. funding_txids (array, cumulative) takes
+    // precedence over funding_txid (singular, legacy). Recipients who
+    // re-tip to raise priority compound here — every tip is verified
+    // and counted toward the cumulative sats total.
+    const rawTxids = Array.isArray(c.funding_txids) && c.funding_txids.length > 0
+      ? c.funding_txids
+      : (c.funding_txid ? [c.funding_txid] : []);
+    const claimTxids = [];
+    for (const raw of rawTxids) {
+      const t = String(raw || '').toLowerCase().replace(/^0x/, '');
+      if (!/^[0-9a-f]{64}$/.test(t)) {
+        _autoFulfilLog(dropId, 'warn', `leaf ${leafIdx}: malformed funding_txid ${t}`);
+        claimTxids.length = 0; break;
+      }
+      if (!claimTxids.includes(t)) claimTxids.push(t);
+    }
+    if (claimTxids.length === 0) {
       _autoFulfilLog(dropId, 'warn', `leaf ${leafIdx}: no funding_txid (skipping until recipient tips)`);
       continue;
     }
-    // Anti-replay: refuse if another leaf already consumed this funding tx.
-    // (Worker enforces this on POST too, but KV.put is non-CAS — a race
-    // could let two POSTs through; the local check is belt-and-suspenders.)
-    const consumedBy = consumedFunding.get(fundingTxid);
-    if (consumedBy != null && consumedBy !== leafIdx) {
-      _autoFulfilLog(dropId, 'warn', `leaf ${leafIdx}: funding_txid ${fundingTxid.slice(0, 12)}… already consumed by leaf ${consumedBy}`);
+    // Anti-replay: refuse if any one of this leaf's tips was already
+    // consumed by a different leaf. (Worker enforces this on POST too,
+    // but KV.put is non-CAS — a race could let two POSTs through; the
+    // local check is belt-and-suspenders.)
+    let collidedTxid = null;
+    for (const t of claimTxids) {
+      const consumedBy = consumedFunding.get(t);
+      if (consumedBy != null && consumedBy !== leafIdx) { collidedTxid = t; break; }
+    }
+    if (collidedTxid) {
+      _autoFulfilLog(dropId, 'warn', `leaf ${leafIdx}: funding_txid ${collidedTxid.slice(0, 12)}… already consumed by leaf ${consumedFunding.get(collidedTxid)}`);
       continue;
     }
-    // ON-CHAIN check: tx must be confirmed and have paid the treasury at
-    // least AUTOFULFIL_MIN_FUNDING_SATS. Without this, an eligible recipient
-    // could submit a claim citing any 64-hex string as funding_txid and ride
-    // the issuer's treasury sats for free (free-rider attack — they still
-    // need a valid eth_sig, so the blast radius is bounded by the count of
-    // eth_addresses the attacker controls in the snapshot, but it's the
-    // difference between recipients paying their share vs. treasury
-    // subsidising everyone who fakes a hex string).
-    const fv = await _verifyAutoFulfilFundingTx(fundingTxid, treasuryAddr, AUTOFULFIL_MIN_FUNDING_SATS);
-    if (!fv.ok) {
-      _autoFulfilLog(dropId, 'warn', `leaf ${leafIdx}: funding_txid invalid: ${fv.err}`);
+    // ON-CHAIN check per tip: confirmed and paid the treasury at least
+    // AUTOFULFIL_MIN_FUNDING_SATS. A single bad tip rejects the whole
+    // claim — partial credit could be gamed by stacking one good tip
+    // plus garbage. Sum verified sats for the priority sort below.
+    let cumulativeSats = 0;
+    let badTip = null;
+    for (const t of claimTxids) {
+      const fv = await _verifyAutoFulfilFundingTx(t, treasuryAddr, AUTOFULFIL_MIN_FUNDING_SATS);
+      if (!fv.ok) { badTip = { t, err: fv.err }; break; }
+      cumulativeSats += (fv.sats || 0);
+    }
+    if (badTip) {
+      _autoFulfilLog(dropId, 'warn', `leaf ${leafIdx}: funding_txid ${badTip.t.slice(0, 12)}… invalid: ${badTip.err}`);
       continue;
     }
-    // Reserve the funding_txid against this leaf so a second pending claim
-    // in this same tick citing the same tip can't also consume it.
-    consumedFunding.set(fundingTxid, leafIdx);
-    verified.push({ leafIndex: leafIdx, tacitPubHex, ethAddrHex: row.ethAddrHex, amount: row.amount, fundingTxid });
+    // Reserve every tip against this leaf so a second pending claim in
+    // this same tick citing any of them can't also consume them.
+    for (const t of claimTxids) consumedFunding.set(t, leafIdx);
+    verifiedAll.push({ leafIndex: leafIdx, tacitPubHex, ethAddrHex: row.ethAddrHex, amount: row.amount, fundingTxids: claimTxids, fundingSats: cumulativeSats });
   }
+  // Priority sort: bigger cumulative tip first; FIFO (lower leaf_index
+  // first) within ties so an early tipper isn't endlessly skipped by a
+  // same-amount latecomer. Slice to the K=7 CXFER cap.
+  verifiedAll.sort((a, b) => {
+    if (b.fundingSats !== a.fundingSats) return b.fundingSats - a.fundingSats;
+    return a.leafIndex - b.leafIndex;
+  });
+  const verified = verifiedAll.slice(0, 7);
   if (verified.length === 0) { _autoFulfilLog(dropId, 'info', `${pending.length} pending · 0 fulfilable (await funded claims)`); return; }
 
   // Treasury checks: TAC balance + sats vs estimated batch cost.
@@ -24054,6 +24094,7 @@ async function _autoFulfilTick(drop) {
     if (idx < 0) { releaseDropLease(dropId); _autoFulfilLog(dropId, 'error', 'drop record vanished mid-flight'); return; }
     dropsNow[idx].fulfilled = dropsNow[idx].fulfilled || [];
     for (const v of verified) {
+      const vTxids = Array.isArray(v.fundingTxids) ? v.fundingTxids : [];
       dropsNow[idx].fulfilled.push({
         leaf_index: v.leafIndex,
         tacit_pubkey: v.tacitPubHex,
@@ -24062,7 +24103,13 @@ async function _autoFulfilTick(drop) {
         txid: null,
         fulfilled_at: phaseOneNow,
         sig_verified: true,
-        funding_txid: v.fundingTxid,
+        // Persist the full tip list (every tip the recipient bound to
+        // this leaf, summed for priority). `funding_txid` mirrors the
+        // first entry so older readers — issuer dashboards, cross-check
+        // — keep working until they're migrated.
+        funding_txids: vTxids,
+        funding_txid: vTxids[0] || null,
+        funding_sats: v.fundingSats || 0,
         pending: true,
       });
     }
@@ -25820,7 +25867,39 @@ let _claimSnapshot = null;     // { schema, network, asset_id, asset_ticker, ass
 let _claimEthAddr = null;      // lowercase 40-hex (no 0x); from MetaMask
 let _claimEligibleRow = null;  // matched row from snapshot, or null
 let _claimSigned = null;       // { msg, sigHex } once user signs
-let _claimFundingTxid = null;  // 64-hex tip-tx id, set when the recipient tips the issuer's treasury; included in claim POST to bind tip→claim and prevent another recipient from front-running our tip
+// Tips this recipient has bound to their claim. Each entry is a 64-hex
+// txid for a tip sent to the issuer's treasury. Multiple tips compound:
+// every claim POST sends the full array as `funding_txids`, the worker
+// merges with the prior record (never overwrites), and the fulfiller
+// sums their sats for the funding gate plus orders the queue by
+// cumulative tip amount. Without cumulative binding, a recipient who
+// tipped twice would lose credit for their earlier tip (orphaned in the
+// treasury) and lose priority — re-tipping is now a supported way to
+// jump the queue, not a wasted-sats mistake.
+let _claimFundingTxids = [];
+function _claimAddFundingTxid(txid) {
+  let h = String(txid || '').toLowerCase().replace(/^0x/, '');
+  if (!/^[0-9a-f]{64}$/.test(h)) return false;
+  if (_claimFundingTxids.includes(h)) return false;
+  _claimFundingTxids.push(h);
+  return true;
+}
+// Read the tip array from a claim record. Accepts both shapes — older
+// records (or worker responses from a legacy build) carry only
+// `funding_txid` (singular); newer ones carry `funding_txids` (array).
+function _claimTxidsFromRecord(rec) {
+  if (!rec) return [];
+  if (Array.isArray(rec.funding_txids)) {
+    return rec.funding_txids
+      .map(t => String(t || '').toLowerCase().replace(/^0x/, ''))
+      .filter(t => /^[0-9a-f]{64}$/.test(t));
+  }
+  if (typeof rec.funding_txid === 'string') {
+    const t = rec.funding_txid.toLowerCase().replace(/^0x/, '');
+    if (/^[0-9a-f]{64}$/.test(t)) return [t];
+  }
+  return [];
+}
 // Claim tab has two mutually-exclusive views: 'discover' (default — browse the
 // list of announced drops + side paths like on-chain self-claim and manual
 // entry) and 'wizard' (entered by clicking Claim → on a card; focuses on a
@@ -26709,7 +26788,8 @@ function _renderClaimResult() {
   //   • Submitted without a tip (free claim) → fulfilment is best-effort;
   //     tipping below is still useful as a guarantee
   const _existingSub = _loadClaimSubs()[`${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`];
-  const _hasTip = !!_existingSub?.funding_txid;
+  const _existingTxids = _claimTxidsFromRecord(_existingSub);
+  const _hasTip = _existingTxids.length > 0;
   const _hasSubmitted = !!_existingSub?.submitted_at;
   const headerBlock = (_hasSubmitted && _hasTip)
     ? `<div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
@@ -26773,12 +26853,14 @@ function _renderClaimResult() {
           tacit_pubkey: _claimSigned.tacitPubHex,
           eth_sig: _claimSigned.sigHex,
         };
-        // If the user already tipped, bind the prior funding_txid to this
-        // submission so the daemon will accept this claim into a batch.
-        // Submitting without a funding_txid is allowed (the worker accepts
-        // it) but the daemon won't fulfil unfunded claims — the recipient
-        // would need to come back and tip later via the treasury fund panel.
-        if (_claimFundingTxid) body.funding_txid = _claimFundingTxid;
+        // Bind every tip the recipient has broadcast for this leaf to the
+        // claim. The worker merges with prior tips (never overwrites), so
+        // the recipient's cumulative funding is preserved across
+        // re-submissions and counts toward fulfilment priority. Submitting
+        // without any tip is allowed (worker accepts) but the daemon won't
+        // fulfil unfunded claims unless the issuer's subsidy threshold is
+        // active.
+        if (_claimFundingTxids.length > 0) body.funding_txids = _claimFundingTxids.slice();
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -26786,13 +26868,15 @@ function _renderClaimResult() {
         });
         if (resp.status === 409) {
           const j = await resp.json().catch(() => ({}));
-          if (status) status.innerHTML = `<span style="color:var(--red);">✗ Worker rejected (409): ${escapeHtml(j.error || 'funding_txid duplicate')}. Tip again with a fresh tx via the treasury fund panel below.</span>`;
-          _claimFundingTxid = null;
+          if (status) status.innerHTML = `<span style="color:var(--red);">✗ Worker rejected (409): ${escapeHtml(j.error || 'funding_txid duplicate')}. One of your tips was already claimed by a different leaf — tip again with a fresh tx via the treasury fund panel below.</span>`;
           return;
         }
         if (!resp.ok) throw new Error(`worker returned ${resp.status}: ${(await resp.text().catch(() => '')).slice(0, 200)}`);
         const j = await resp.json();
-        const fundedNote = _claimFundingTxid ? ` · bound to tip tx ${shorten(_claimFundingTxid, 12)}` : ' · no tip attached yet (daemon will skip until funded)';
+        const tipCountForNote = _claimFundingTxids.length;
+        const fundedNote = tipCountForNote > 0
+          ? ` · ${tipCountForNote} tip${tipCountForNote === 1 ? '' : 's'} bound (cumulative)`
+          : ' · no tip attached yet (daemon will skip until funded)';
         if (status) status.innerHTML = `<span style="color:var(--green);">✓ Submitted to issuer queue at ${new Date((j.claim?.submitted_at || Math.floor(Date.now() / 1000)) * 1000).toLocaleString()}${escapeHtml(fundedNote)}</span>`;
         toast('Claim submitted to issuer queue', 'success');
         // Persist locally so the "Your submitted claims" panel can surface
@@ -26806,7 +26890,7 @@ function _renderClaimResult() {
           decimals: Number.isInteger(_claimSnapshot.asset_decimals) ? _claimSnapshot.asset_decimals : 0,
           amount: _claimEligibleRow.amount,
           tacit_pub: _claimSigned.tacitPubHex,
-          funding_txid: _claimFundingTxid || undefined,
+          funding_txids: _claimFundingTxids.slice(),
         });
         _renderClaimSubmissions();
       } catch (e) {
@@ -26863,19 +26947,33 @@ async function _renderClaimTreasuryFundPanel() {
     `;
     return;
   }
-  if (existing?.dequeued_at || existing?.funding_txid) {
-    const tipTxShort = existing.funding_txid ? shorten(existing.funding_txid, 14) : null;
+  const existingTxids = _claimTxidsFromRecord(existing);
+  if (existing?.dequeued_at || existingTxids.length > 0) {
+    // Build a list of tip-tx links so the recipient can verify every
+    // tip they've bound (and the issuer's daemon will count each one
+    // toward fulfilment priority). The first tip drives the live
+    // tracker below; subsequent tips compound priority but don't
+    // change the poller flow.
+    const tipsList = existingTxids.length > 0
+      ? `<div class="muted" style="font-family:var(--mono);font-size:11px;margin-top:4px;line-height:1.6;">
+           ${existingTxids.map((t) => `tip tx <a href="${escapeHtml(NET.explorer)}/tx/${escapeHtml(t)}" target="_blank" rel="noopener noreferrer" title="Verify on a block explorer">${escapeHtml(shorten(t, 14))} ↗</a>`).join('<br>')}
+         </div>`
+      : '';
+    const tipCount = existingTxids.length;
+    const tipHeader = tipCount > 0
+      ? `<strong>✓ Tip + claim submitted</strong> · ${tipCount} tip${tipCount === 1 ? '' : 's'} bound (cumulative)`
+      : `<strong>✓ Claim submitted</strong>`;
     out.innerHTML = `
       <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
-        <strong>✓ Tip + claim submitted.</strong> Nothing else to do — your tacit wallet will auto-credit when the issuer's batch broadcasts. The daemon batches every ~10 min; typical wait is 10–30 min from tip confirmation.
-        ${tipTxShort ? `<div class="muted" style="font-family:var(--mono);font-size:11px;margin-top:4px;">tip tx <a href="${escapeHtml(NET.explorer)}/tx/${escapeHtml(existing.funding_txid)}" target="_blank" rel="noopener noreferrer" title="Verify your tip on a block explorer">${escapeHtml(tipTxShort)} ↗</a></div>` : ''}
+        ${tipHeader}. Nothing else required — your tacit wallet will auto-credit when the issuer's batch broadcasts. The daemon batches every ~10 min; typical wait is 10–30 min from tip confirmation.
+        ${tipsList}
         <div id="claim-treasury-fund-status" class="muted" style="font-size:11px;margin-top:8px;"></div>
         <details style="margin-top:10px;">
-          <summary class="muted" style="cursor:pointer;font-size:11px;">Pending past ~1h? Diagnostics + re-tip option</summary>
+          <summary class="muted" style="cursor:pointer;font-size:11px;">Want to jump the queue? Add another tip (raises priority)</summary>
           <div style="padding:8px;margin-top:6px;background:var(--bg);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;">
-            Before re-tipping, sanity-check: (1) verify your tip's funding tx is confirmed and paid the treasury (look it up on mempool.space); (2) confirm the live tracker above still shows "queued for next batch," not "dequeued"; (3) wait at least 60 min from tip confirmation — the daemon can pause briefly when the treasury dips below its subsidy threshold or when a batch slot is waiting to fill. Re-tip only after all three; it costs another batch share. <strong>Your prior tip stays in the treasury (won't refund) — it becomes surplus that funds free claims for the next recipients in this drop, so it's not wasted.</strong>
+            The issuer's daemon orders the fulfilment queue by cumulative tip amount — recipients who tip more get served first. Adding another tip <strong>stacks on top of your existing tips</strong> (the worker merges them into your claim; you keep priority credit for every tip you've sent). This costs another batch share in sats. Worth doing only if your seat is competing with other tipped claims and you want to outbid for the next slot.
             <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;">
-              <button id="btn-claim-treasury-retip" type="button">Re-tip with fresh tx</button>
+              <button id="btn-claim-treasury-retip" type="button">Add another tip</button>
               <button id="btn-claim-treasury-copy" type="button">Copy treasury</button>
               <button id="btn-claim-treasury-refresh" type="button" title="Re-fetch state">↻ Refresh</button>
             </div>
@@ -26883,10 +26981,11 @@ async function _renderClaimTreasuryFundPanel() {
         </details>
       </div>
     `;
-    // Wire the live tracker so the user sees current stage without having to
-    // re-tip. resolveImageUri etc. handled by the poller itself.
+    // Live tracker watches the first-bound tip's confirmation state.
+    // Additional tips don't change the tracker output — they just
+    // raise priority on the fulfiller's queue sort.
     _startClaimReactivePoller({
-      fundingTxid: existing.funding_txid || null,
+      fundingTxid: existingTxids[0] || null,
       merkleRoot: _claimSnapshot.merkle_root,
       leafIndex: _claimEligibleRow.index,
       ticker: tickerForTerminal,
@@ -26897,30 +26996,30 @@ async function _renderClaimTreasuryFundPanel() {
         .catch(() => prompt('Copy treasury address:', treasury));
     });
     $('#btn-claim-treasury-refresh')?.addEventListener('click', () => _renderClaimTreasuryFundPanel().catch(() => {}));
-    // Re-tip recovery path. Confirm() with the actual prior-tip txid so the
-    // user can't autopilot through. On confirm, wipe the local funding_txid
-    // (NOT the rest of the record) and re-render — the normal panel then
-    // shows the tip button and the user can broadcast a fresh tx. The
-    // worker accepts the new funding_txid (overwriting the claim record);
-    // the OLD funding nullifier becomes orphaned but its TTL expires.
+    // Add-another-tip path. Confirm() to prevent autopilot since the
+    // user is about to pay another batch share. Unlike the legacy
+    // "re-tip" flow, the prior tips remain bound — the recipient
+    // doesn't lose credit for them. We seed _claimFundingTxids from
+    // the persisted record so the upcoming tip stacks rather than
+    // replaces, then drop the dequeued_at flag (if any) so the panel
+    // re-renders into the normal tip-button view.
     $('#btn-claim-treasury-retip')?.addEventListener('click', () => {
-      const msg = existing.funding_txid
-        ? `Re-tip will cost another batch share. Your prior tip\n\n${existing.funding_txid}\n\nstays in the treasury and won't refund. Continue only if 30+ min have passed with no fulfilment.`
-        : `Re-tip will cost another batch share. Continue only if your prior claim is stuck.`;
+      const tipCountInner = existingTxids.length;
+      const msg = tipCountInner > 0
+        ? `Adding another tip will cost another batch share in sats. Your existing ${tipCountInner} tip${tipCountInner === 1 ? '' : 's'} stay bound and keep counting toward your priority — this stacks on top. Continue?`
+        : `Adding a tip will cost another batch share. Continue?`;
       if (!confirm(msg)) return;
+      // Seed in-memory tip list from the persisted record so the
+      // upcoming POST after the next tip includes the full cumulative
+      // set, not just the new one.
+      _claimFundingTxids = existingTxids.slice();
       const all = _loadClaimSubs();
       const k = `${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`;
       if (all[k]) {
-        delete all[k].funding_txid;
         delete all[k].dequeued_at;
         try { localStorage.setItem(_claimSubsKey(), JSON.stringify(all)); } catch {}
       }
-      _claimFundingTxid = null;
       _stopClaimReactivePoller();
-      // Refresh the OUTER container so the state-aware header reflects the
-      // wiped funding_txid (header switches from "✓ Submitted with tip" back
-      // to "✓ Submitted · no tip yet" since `_hasTip` is now false).
-      // _renderClaimResult internally re-renders the treasury fund panel.
       _renderClaimResult();
     });
     return;
@@ -27142,8 +27241,14 @@ async function _renderClaimTreasuryFundPanel() {
         _renderClaimResult();
         return;
       }
-      if (existingSub?.funding_txid) {
-        if (status) status.innerHTML = `<span style="color:var(--orange);">You already tipped (tx <code>${escapeHtml(shorten(existingSub.funding_txid, 14))}</code>) and the claim is bound. To force a fresh tip while the prior one is in flight, use the "Force-resubmit" disclosure on the panel — a bare click here is suppressed to avoid wasted sats.</span>`;
+      const existingSubTxids = _claimTxidsFromRecord(existingSub);
+      if (existingSubTxids.length > 0) {
+        // Already tipped at least once. With cumulative tipping, the
+        // "primary" tip path is for first-time tippers; additional tips
+        // for priority go through the explicit "Add another tip"
+        // disclosure on the panel above. Redirect rather than silently
+        // re-tip to keep that intent explicit.
+        if (status) status.innerHTML = `<span style="color:var(--orange);">You've already bound ${existingSubTxids.length} tip${existingSubTxids.length === 1 ? '' : 's'} to this claim. To stack another tip for higher batch priority, open the "Add another tip" disclosure on the panel — that path makes the priority boost explicit so you don't accidentally re-tip.</span>`;
         _renderClaimResult();
         return;
       }
@@ -27217,16 +27322,21 @@ async function _renderClaimTreasuryFundPanel() {
       // (Outer try keeps the existing structure that POSTs the claim with
       // funding_txid below; this just removes the inner `await sendSats`
       // since we already have fundingTxid above.)
-      // Anti-steal: stash the funding_txid so the upcoming claim POST binds
-      // this tip to THIS leaf+tacit-pubkey via the worker's per-root
-      // funding nullifier. Without this, anyone reading the mempool could
-      // race a claim citing our unconfirmed tip.
-      _claimFundingTxid = fundingTxid;
-      if (status) status.innerHTML = `<span style="color:var(--green);">✓ Tipped ${shareSats.toLocaleString()} sats · tx <code>${escapeHtml(shorten(fundingTxid, 14))}</code> · binding to your claim…</span>`;
-      toast('Treasury tip sent', 'success');
-      // Immediately POST (or re-POST) the claim with funding_txid attached.
-      // The worker rejects (409) if another recipient already claimed this
-      // funding_txid — in that case the user can tip again with a fresh tx.
+      // Anti-steal: append this tip to the in-memory cumulative list so
+      // the upcoming claim POST binds it to THIS leaf+tacit-pubkey via
+      // the worker's per-root funding nullifier. Without this, anyone
+      // reading the mempool could race a claim citing our unconfirmed
+      // tip. The full array is sent every POST so the worker can
+      // merge with any prior tips already on file (and we don't lose
+      // tips from a previous session if the user re-opens the dapp).
+      _claimAddFundingTxid(fundingTxid);
+      const tipCountAfter = _claimFundingTxids.length;
+      if (status) status.innerHTML = `<span style="color:var(--green);">✓ Tipped ${shareSats.toLocaleString()} sats · tx <code>${escapeHtml(shorten(fundingTxid, 14))}</code> · ${tipCountAfter > 1 ? `stacking on top of ${tipCountAfter - 1} prior tip${tipCountAfter - 1 === 1 ? '' : 's'} · ` : ''}binding to your claim…</span>`;
+      toast(tipCountAfter > 1 ? 'Tip stacked' : 'Treasury tip sent', 'success');
+      // Immediately POST the claim with the full cumulative tip list.
+      // The worker merges with the existing record (if any) so prior
+      // tips remain bound. A 409 means ONE of the tips collides with a
+      // different leaf — the user can pop the bad tip out and retry.
       if (WORKER_BASE) {
         try {
           const r = await fetch(`${WORKER_BASE}/airdrops/${_claimSnapshot.merkle_root}/claims?network=${encodeURIComponent(_claimSnapshot.network)}`, {
@@ -27236,13 +27346,12 @@ async function _renderClaimTreasuryFundPanel() {
               leaf_index: _claimEligibleRow.index,
               tacit_pubkey: _claimSigned.tacitPubHex,
               eth_sig: _claimSigned.sigHex,
-              funding_txid: fundingTxid,
+              funding_txids: _claimFundingTxids.slice(),
             }),
           });
           if (r.status === 409) {
             const j = await r.json().catch(() => ({}));
-            if (status) status.innerHTML = `<span style="color:var(--red);">✗ Tip landed but the worker rejected the binding: ${escapeHtml(j.error || 'funding_txid already claimed')}. Tip again with a fresh tx to retry.</span>`;
-            _claimFundingTxid = null;
+            if (status) status.innerHTML = `<span style="color:var(--red);">✗ Tip landed but one of your bound tips was already claimed by a different leaf: ${escapeHtml(j.error || 'funding_txid collision')}. Refresh and try again — the rest of your tips remain valid.</span>`;
             return;
           }
           if (!r.ok) throw new Error(`worker returned ${r.status}: ${(await r.text().catch(() => '')).slice(0, 200)}`);
@@ -27255,11 +27364,14 @@ async function _renderClaimTreasuryFundPanel() {
             decimals: Number.isInteger(_claimSnapshot.asset_decimals) ? _claimSnapshot.asset_decimals : 0,
             amount: _claimEligibleRow.amount,
             tacit_pub: _claimSigned.tacitPubHex,
-            funding_txid: fundingTxid,
+            funding_txids: _claimFundingTxids.slice(),
           });
           _renderClaimSubmissions();
-          if (status) status.innerHTML = `<span style="color:var(--green);">✓ Tipped + claim bound to txid <code>${escapeHtml(shorten(fundingTxid, 14))}</code>. The issuer's daemon will fulfil this seat in the next batch.</span>`;
-          toast('Claim funded and bound', 'success');
+          const tipCountFinal = _claimFundingTxids.length;
+          if (status) status.innerHTML = tipCountFinal > 1
+            ? `<span style="color:var(--green);">✓ Tip stacked + claim bound (${tipCountFinal} tips cumulative · latest <code>${escapeHtml(shorten(fundingTxid, 14))}</code>). Higher priority for this seat in the next batch.</span>`
+            : `<span style="color:var(--green);">✓ Tipped + claim bound to txid <code>${escapeHtml(shorten(fundingTxid, 14))}</code>. The issuer's daemon will fulfil this seat in the next batch.</span>`;
+          toast(tipCountFinal > 1 ? 'Tip stacked on claim' : 'Claim funded and bound', 'success');
           // Re-render the OUTER container so both the state-aware header
           // ("✓ Submitted with tip" instead of stale "✓ Signed / tip below")
           // AND the inner fund panel (now in the "tipped + tracking" view —
@@ -27269,7 +27381,7 @@ async function _renderClaimTreasuryFundPanel() {
           // treasury" — confusing and could lead to a wasted re-tip click.
           _renderClaimResult();
         } catch (e) {
-          if (status) status.innerHTML = `<span style="color:var(--orange);">Tip landed but binding-submit failed: ${escapeHtml(e.message)}. Manually re-submit via "Submit to issuer queue" — the dapp will include funding_txid automatically.</span>`;
+          if (status) status.innerHTML = `<span style="color:var(--orange);">Tip landed but binding-submit failed: ${escapeHtml(e.message)}. Manually re-submit via "Submit to issuer queue" — the dapp will include all bound tips automatically.</span>`;
         }
       }
       // Kick off live status tracking — replaces the silent post-submit gap
@@ -27840,10 +27952,20 @@ function _saveClaimSubs(obj) {
 function _recordClaimSubmission(rec) {
   const all = _loadClaimSubs();
   const key = `${rec.merkle_root}:${rec.leaf_index}`;
-  // funding_txid is read by the submission panel to decide whether to show
-  // the "tip required" pill — without it stored, every record looks unfunded
-  // even after the tip lands. Normalize to null for free claims so the
-  // schema is uniform and downstream falsiness checks are unambiguous.
+  // Merge tip lists: combine any tips already on the persisted record
+  // with the ones the caller is committing now. Without this, a
+  // re-submission from a fresh in-memory state would clobber prior
+  // tips and the "tip required" pill would mis-fire even after the
+  // tips landed at the worker. Dedup case-insensitively; preserve
+  // insertion order so the first-bound tip stays at index 0 (the
+  // poller and back-compat readers use the first entry).
+  const prior = all[key];
+  const priorTxids = _claimTxidsFromRecord(prior);
+  const newTxids = Array.isArray(rec.funding_txids)
+    ? rec.funding_txids.map(t => String(t || '').toLowerCase().replace(/^0x/, '')).filter(t => /^[0-9a-f]{64}$/.test(t))
+    : (rec.funding_txid ? [String(rec.funding_txid).toLowerCase().replace(/^0x/, '')].filter(t => /^[0-9a-f]{64}$/.test(t)) : []);
+  const merged = priorTxids.slice();
+  for (const t of newTxids) if (!merged.includes(t)) merged.push(t);
   all[key] = {
     merkle_root: rec.merkle_root,
     leaf_index: rec.leaf_index,
@@ -27852,10 +27974,14 @@ function _recordClaimSubmission(rec) {
     decimals: rec.decimals,
     amount: String(rec.amount),
     tacit_pub: rec.tacit_pub,
-    funding_txid: rec.funding_txid || null,
+    // Cumulative tip list — see _claimFundingTxids for context.
+    funding_txids: merged,
+    // Back-compat mirror for code paths (and legacy reads from older
+    // localStorage entries) that only look at the singular field.
+    funding_txid: merged[0] || null,
     network: NET.name,
     submitted_at: Math.floor(Date.now() / 1000),
-    fulfilled_at: null,
+    fulfilled_at: prior?.fulfilled_at || null,
   };
   _saveClaimSubs(all);
 }
@@ -28042,9 +28168,10 @@ function _renderClaimSubmissions() {
     // tolerated the missing tip — either way the "needs tip" call-to-action
     // is moot at that point).
     const isDequeued = !!(r.verified_at || r.dequeued_at);
-    const unfunded = !isDequeued && !r.funding_txid;
-    const fundedPill = r.funding_txid
-      ? `<span style="display:inline-block;background:var(--bg-warm);color:var(--green);border:1px solid var(--green);padding:0 6px;border-radius:8px;font-size:9px;margin-left:6px;">tipped</span>`
+    const rowTxids = _claimTxidsFromRecord(r);
+    const unfunded = !isDequeued && rowTxids.length === 0;
+    const fundedPill = rowTxids.length > 0
+      ? `<span title="${escapeHtml(rowTxids.length === 1 ? 'one tip bound' : rowTxids.length + ' tips bound (cumulative priority)')}" style="display:inline-block;background:var(--bg-warm);color:var(--green);border:1px solid var(--green);padding:0 6px;border-radius:8px;font-size:9px;margin-left:6px;">${rowTxids.length === 1 ? 'tipped' : `tipped ×${rowTxids.length}`}</span>`
       : '';
     const unfundedPill = unfunded
       ? `<span style="display:inline-block;background:#fee;color:var(--red);border:1px solid var(--red);padding:0 6px;border-radius:8px;font-size:9px;margin-left:6px;">tip required</span>`
@@ -28732,7 +28859,7 @@ async function _enterClaimWizard(rootHex, cidStr) {
   _claimWizActiveStep = null;
   _claimSigned = null;
   _claimEligibleRow = null;
-  _claimFundingTxid = null;
+  _claimFundingTxids = [];
   _claimWizLoadError = null;
   _setClaimView('wizard');
   // Populate the manual-entry inputs so the existing loader can run unchanged
@@ -28979,7 +29106,7 @@ function setupClaimTab() {
       _claimIdentityAck = false;
       _claimWizActiveStep = null;
       _claimSigned = null;
-      _claimFundingTxid = null;
+      _claimFundingTxids = [];
       _claimWizLoadError = null;
       _setClaimView('wizard');
     } catch (e) {
@@ -29022,7 +29149,7 @@ function setupClaimTab() {
       _claimIdentityAck = false;
       _claimWizActiveStep = null;
       _claimSigned = null;
-      _claimFundingTxid = null;
+      _claimFundingTxids = [];
       _claimWizLoadError = null;
       _setClaimView('wizard');
     } catch (e) {
@@ -46081,6 +46208,10 @@ export {
   _bidIntentMsg as bidIntentMsg,
   _bidClaimMsg as bidClaimMsg,
   _bidCancelMsg as bidCancelMsg,
+  // Bid-intent flow functions — exported for the signet e2e harness so
+  // it can drive publish / fulfil from headless Node without spinning up
+  // the browser UI.
+  publishBidIntent, fulfilBidIntent, cancelBidIntent, browseBidIntents,
   // Preauth-sale canonical messages + sale_id derivation (SPEC §5.7.8).
   // Exported for dapp↔worker contract tests so the exact bytes signed by
   // the dapp can be re-hashed against the worker's helper and compared.

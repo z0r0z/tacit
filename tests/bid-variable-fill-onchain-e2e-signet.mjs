@@ -78,6 +78,10 @@ function setWallet(sk, pub) {
   dapp.wallet.priv = sk;
   dapp.wallet.pub = pub;
   dapp.invalidateHoldingsCache();
+  // Pre-mark backup ack so ensureBurnerBackedUp doesn't pop a modal
+  // during auto-split. Headless harness; the prompt would auto-cancel
+  // since globalThis.confirm returns false.
+  try { globalThis.localStorage.setItem('tacit-backup-ack-v1:' + bytesToHex(pub), '1'); } catch {}
 }
 
 setWallet(SELLER_SK, SELLER_PUB);
@@ -201,12 +205,28 @@ async function refetchBid() {
 bidRecord = await refetchBid();
 info(`bid state: ${bidRecord.state || 'OPEN'}, remaining: ${bidRecord.remaining_amount || bidRecord.amount}`);
 
+const AXINTENT_SECRETS_KEY = 'tacit-axintent-secrets-v1:signet';
+const AXINTENT_PENDING_KEY = 'tacit-axintent-pending-v1:signet';
+
 if (state.fill1?.broadcast) {
   info(`(resuming) first fulfilment already submitted`);
+  // Restore the per-intent secrets so the seller can fulfil the atomic-
+  // intent on this run. jsdom localStorage is in-memory and doesn't
+  // survive restarts; we captured the blob in state at publish time.
+  if (state.fill1.secrets_blob) globalThis.localStorage.setItem(AXINTENT_SECRETS_KEY, state.fill1.secrets_blob);
+  if (state.fill1.pending_blob) globalThis.localStorage.setItem(AXINTENT_PENDING_KEY, state.fill1.pending_blob);
 } else {
   try {
     const r = await dapp.fulfilBidIntent({ bid: bidRecord, fillAmount: CHUNK_AMOUNT });
-    state.fill1 = { broadcast: true, axintent_id: r.offer.intent_id, commit_txid: r.commit_txid };
+    state.fill1 = {
+      broadcast: true,
+      axintent_id: r.offer.intent_id,
+      commit_txid: r.commit_txid,
+      // Capture the localStorage blobs RIGHT after publish so a re-run can
+      // restore them — without this the seller's `r` is lost on restart.
+      secrets_blob: globalThis.localStorage.getItem(AXINTENT_SECRETS_KEY) || '',
+      pending_blob: globalThis.localStorage.getItem(AXINTENT_PENDING_KEY) || '',
+    };
     saveState(state);
     ok(`atomic-intent created: ${r.offer.intent_id.slice(0,16)}…  commit=${r.commit_txid.slice(0,16)}…`);
   } catch (e) {
@@ -221,17 +241,48 @@ if (state.fill1?.take_txid) {
   info(`(resuming) take already broadcast: ${state.fill1.take_txid}`);
 } else {
   try {
-    // Claim
-    const c = await dapp.claimAxferIntent({
-      assetIdHex: targetAssetId,
-      intentIdHex: state.fill1.axintent_id,
-      priceSats: 6000,
-    });
-    ok(`claim accepted by worker`);
-    await sleep(2000);
-    // Take
+    // Claim (bidder)
+    setWallet(BIDDER_SK, BIDDER_PUB);
+    if (!state.fill1.claimed_at) {
+      await dapp.claimAxferIntent({
+        assetIdHex: targetAssetId,
+        intentIdHex: state.fill1.axintent_id,
+        priceSats: 6000,
+      });
+      state.fill1.claimed_at = Math.floor(Date.now() / 1000);
+      saveState(state);
+      ok(`claim accepted by worker`);
+    } else {
+      info(`(resuming) claim already placed`);
+    }
+
+    // Seller fulfils the atomic-intent (creates a partial-reveal targeted
+    // at the bidder's pubkey + signs SIGHASH_SINGLE_ACP). In legacy
+    // §5.7.6, this is where the maker actively responds to a claim. Pull
+    // fresh intent + claim state so fulfilAxferIntent has everything.
+    if (!state.fill1.fulfilled_at) {
+      setWallet(SELLER_SK, SELLER_PUB);
+      const listResp = await fetch(`${WORKER}/assets/${targetAssetId}/atomic-intents?network=signet`).then(r => r.json());
+      const axIntent = (listResp.intents || []).find(i => i.intent_id === state.fill1.axintent_id);
+      if (!axIntent) fail('atomic-intent missing from worker list');
+      const axClaim = axIntent.claim;
+      if (!axClaim) fail('atomic-intent has no active claim');
+      await dapp.fulfilAxferIntent({
+        assetIdHex: targetAssetId,
+        intentIdHex: state.fill1.axintent_id,
+        intent: axIntent, claim: axClaim,
+      });
+      state.fill1.fulfilled_at = Math.floor(Date.now() / 1000);
+      saveState(state);
+      ok(`seller fulfilment posted to worker`);
+    } else {
+      info(`(resuming) seller fulfilment already posted`);
+    }
+
+    // Take (bidder broadcasts the reveal)
+    setWallet(BIDDER_SK, BIDDER_PUB);
     const fres = await dapp.fetchAxferFulfilment({ assetIdHex: targetAssetId, intentIdHex: state.fill1.axintent_id });
-    if (!fres) fail('seller hasn\'t fulfilled yet — manual fulfilment needed');
+    if (!fres) fail('worker has no fulfilment record after seller posted');
     const r = await dapp.takeAxferIntent({
       intent: fres.intent,
       fulfilment: fres.fulfilment,
