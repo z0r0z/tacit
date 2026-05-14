@@ -6678,10 +6678,266 @@ function verifyEcdsaDerSig(derSigBytes, msgHash32, pubkeyBytes33) {
   try { return secp.verify(compact, msgHash32, pubkeyBytes33, { lowS: true }); } catch { return false; }
 }
 
+// ======== Variable-amount handler helpers (PR2/3 of §5.7.6.1 rollout) ========
+// Each `_var` helper is dispatched from the matching legacy handler when the
+// intent / body carries `min_take_amount`. The legacy whole-UTXO path is
+// otherwise untouched: an intent without `min_take_amount` flows through the
+// pre-existing code unchanged. State machine:
+//   POST  /atomic-intents               → OPEN          (intent created)
+//   POST  /atomic-intents/.../claim     → CLAIMED       (taker reservation)
+//   POST  /atomic-intents/.../fulfilment→ COMMIT_READY  (maker shipped commit+reveal bytes)
+// PR3 will add /finalize → REVEAL_READY → broadcast → SETTLED.
+
+async function _handleAtomicIntentPostVar(assetIdHex, body, env, network, cors) {
+  const intentIdHex   = String(body.intent_id ?? '').toLowerCase();
+  const makerPubHex   = String(body.maker_pubkey ?? '').toLowerCase();
+  const makerAddress  = String(body.maker_address ?? '');
+  const amountStr     = String(body.amount ?? '');
+  const minTakeStr    = String(body.min_take_amount ?? '');
+  const priceSatsRaw  = body.price_sats;
+  const expiryRaw     = body.expiry;
+  const assetUtxoTxid = String(body.asset_utxo?.txid ?? '').toLowerCase();
+  const assetUtxoVout = body.asset_utxo?.vout;
+  const assetUtxoValue= body.asset_utxo?.value;
+  const ticker        = String(body.ticker ?? '');
+  const decimals      = body.decimals;
+  const sigHex        = String(body.intent_sig ?? '').toLowerCase();
+
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex))             return jsonResponse({ error: 'intent_id must be 32 hex chars (16 bytes)' }, 400, cors);
+  if (!/^0[23][0-9a-f]{64}$/.test(makerPubHex))        return jsonResponse({ error: 'maker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^\d+$/.test(amountStr))                        return jsonResponse({ error: 'amount must be base-10 integer string' }, 400, cors);
+  if (!/^\d+$/.test(minTakeStr))                       return jsonResponse({ error: 'min_take_amount must be base-10 integer string' }, 400, cors);
+  if (!Number.isInteger(priceSatsRaw) || priceSatsRaw < PRICE_MIN) return jsonResponse({ error: `price_sats must be integer ≥ ${PRICE_MIN}` }, 400, cors);
+  if (!Number.isInteger(expiryRaw))                    return jsonResponse({ error: 'expiry must be integer unix-seconds' }, 400, cors);
+  const now = Math.floor(Date.now() / 1000);
+  if (expiryRaw <= now)                                return jsonResponse({ error: 'expiry must be in the future' }, 400, cors);
+  if (expiryRaw > now + EXPIRY_MAX_DAYS * 86400)       return jsonResponse({ error: `expiry must be within ${EXPIRY_MAX_DAYS} days` }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(assetUtxoTxid))           return jsonResponse({ error: 'asset_utxo.txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(assetUtxoVout) || assetUtxoVout < 0) return jsonResponse({ error: 'asset_utxo.vout must be non-negative integer' }, 400, cors);
+  if (!Number.isInteger(assetUtxoValue) || assetUtxoValue < DUST) return jsonResponse({ error: 'asset_utxo.value invalid' }, 400, cors);
+  if (!makerAddress || makerAddress.length > ADDR_MAX_LEN) return jsonResponse({ error: `maker_address required, ≤ ${ADDR_MAX_LEN} chars` }, 400, cors);
+  const decoded = decodeBitcoinAddress(makerAddress);
+  if (!decoded || decoded.hrp !== HRP_BY_NETWORK[network]) {
+    return jsonResponse({ error: `maker_address must be a ${HRP_BY_NETWORK[network]}… bech32 address` }, 400, cors);
+  }
+  if (!/^[0-9a-f]{128}$/.test(sigHex))                 return jsonResponse({ error: 'intent_sig must be 128 hex chars' }, 400, cors);
+
+  // Bound check: 1 ≤ min_take ≤ amount. min_take == amount is the degenerate
+  // case (semantically equivalent to a whole-UTXO intent on opcode 0x26);
+  // refuse so the maker uses the legacy path instead of paying T_AXFER_VAR's
+  // ~40-vbyte OP_RETURN(80) overhead for no gain.
+  const amountBI  = BigInt(amountStr);
+  const minTakeBI = BigInt(minTakeStr);
+  if (minTakeBI < 1n)         return jsonResponse({ error: 'min_take_amount must be ≥ 1 base unit' }, 400, cors);
+  if (minTakeBI > amountBI)   return jsonResponse({ error: 'min_take_amount must not exceed amount' }, 400, cors);
+  if (minTakeBI === amountBI) return jsonResponse({ error: 'min_take_amount == amount is a whole-UTXO intent; use the legacy path (omit min_take_amount)' }, 400, cors);
+
+  // Verify the deterministic intent_id derivation. For variable-amount intents
+  // the id depends on (maker_pubkey, asset_utxo_outpoint) — derivable from
+  // chain at recovery time. See SPEC §5.7.6.1 "Commit-phase timing".
+  const expectedIntentId = atomicIntentIdHexVar(makerPubHex, assetUtxoTxid, assetUtxoVout);
+  if (intentIdHex !== expectedIntentId) {
+    return jsonResponse({ error: 'intent_id does not derive from sha256("tacit-axintent-id-v1" || maker_pubkey || asset_utxo)[:16]' }, 400, cors);
+  }
+
+  // Verify the maker controls the asset UTXO (P2WPKH of maker_pubkey).
+  let assetTx;
+  try { assetTx = await fetchFreshTxJson(env, assetUtxoTxid, network); }
+  catch (e) { return jsonResponse({ error: 'asset_utxo tx not found after retries: ' + e.message }, 400, cors); }
+  const out = assetTx?.vout?.[assetUtxoVout];
+  if (!out?.scriptpubkey) return jsonResponse({ error: 'asset_utxo missing scriptpubkey' }, 400, cors);
+  const spk = hexToBytes(out.scriptpubkey);
+  if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) return jsonResponse({ error: 'asset_utxo not P2WPKH' }, 400, cors);
+  if (bytesToHex(spk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(makerPubHex)))) {
+    return jsonResponse({ error: 'maker_pubkey does not control the asset UTXO' }, 403, cors);
+  }
+  // Asset-id binding: the parent envelope of asset_utxo must declare assetIdHex.
+  let resolved;
+  try { resolved = await commitmentForUtxo(env, assetUtxoTxid, assetUtxoVout, network); }
+  catch (e) { return jsonResponse({ error: 'commitment lookup failed: ' + e.message }, 400, cors); }
+  if (resolved.asset_id !== assetIdHex) {
+    return jsonResponse({ error: 'asset_utxo is for a different asset' }, 400, cors);
+  }
+  // Sanity: the cleartext `amount` field must match the parent's amount.
+  // For T_AXFER_VAR the maker can't lie about the listed amount (the kernel
+  // sig at fulfilment closes against C_listed = amount·H + r_listed·G), but
+  // catching the mismatch at publish saves takers a wasted claim.
+  if (resolved.amount != null && String(resolved.amount) !== amountStr) {
+    return jsonResponse({ error: `amount mismatch (declared ${amountStr}, parent envelope says ${resolved.amount})` }, 400, cors);
+  }
+
+  if (!verifyAtomicIntentPublishSig({
+    assetIdHex, intentIdHex, makerPubHex, makerAddress,
+    amountStr, priceSats: priceSatsRaw, minTakeStr, expiry: expiryRaw,
+    assetUtxoTxidHex: assetUtxoTxid, assetUtxoVout, assetUtxoValue, network,
+    sigHex,
+  })) {
+    return jsonResponse({ error: 'invalid intent signature (variable-amount publish)' }, 403, cors);
+  }
+
+  const intent = {
+    asset_id: assetIdHex,
+    intent_id: intentIdHex,
+    maker_pubkey: makerPubHex,
+    maker_address: makerAddress,
+    amount: amountStr,
+    price_sats: priceSatsRaw,
+    min_take_amount: minTakeStr,   // presence discriminates variable-amount from legacy
+    expiry: expiryRaw,
+    asset_utxo: { txid: assetUtxoTxid, vout: assetUtxoVout, value: assetUtxoValue },
+    ticker: ticker || '',
+    decimals: Number.isInteger(decimals) ? decimals : 0,
+    intent_sig: sigHex,
+    state: 'OPEN',
+    created_at: now,
+    network,
+    // NOTE: NO commit_txid / envelope_script_hex / control_block_hex /
+    // p2tr_spk_hex / commit_value. Per §5.7.6.1 *Commit-phase timing*, those
+    // fields are populated at fulfilment time, not publish.
+  };
+  await env.REGISTRY_KV.put(atomicIntentKey(network, assetIdHex, intentIdHex), JSON.stringify(intent));
+  return jsonResponse({ ok: true, intent }, 200, cors);
+}
+
+async function _handleAtomicIntentClaimVar(assetIdHex, intentIdHex, intent, body, env, network, cors) {
+  // intent is the loaded variable-amount intent record (caller has already
+  // verified it exists, isn't expired, and that no conflicting claim is live).
+  const takerPubHex     = String(body.taker_pubkey ?? '').toLowerCase();
+  const sigHex          = String(body.sig ?? '').toLowerCase();
+  const takerUtxoTxid   = String(body.taker_utxo?.txid ?? '').toLowerCase();
+  const takerUtxoVout   = body.taker_utxo?.vout;
+  const requestedAmountStr = String(body.requested_amount ?? '');
+
+  if (!/^0[23][0-9a-f]{64}$/.test(takerPubHex)) return jsonResponse({ error: 'taker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex))          return jsonResponse({ error: 'sig must be 128 hex chars' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(takerUtxoTxid))    return jsonResponse({ error: 'taker_utxo.txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(takerUtxoVout) || takerUtxoVout < 0 || takerUtxoVout > 0xffff) {
+    return jsonResponse({ error: 'taker_utxo.vout must be non-negative integer' }, 400, cors);
+  }
+  if (!/^\d+$/.test(requestedAmountStr)) return jsonResponse({ error: 'requested_amount must be base-10 integer string' }, 400, cors);
+
+  // Bound check: min_take ≤ requested ≤ amount.
+  const amountBI    = BigInt(intent.amount);
+  const minTakeBI   = BigInt(intent.min_take_amount || '0');
+  const requestedBI = BigInt(requestedAmountStr);
+  if (requestedBI < minTakeBI) return jsonResponse({ error: `requested_amount ${requestedAmountStr} below min_take_amount ${intent.min_take_amount}` }, 400, cors);
+  if (requestedBI > amountBI)  return jsonResponse({ error: `requested_amount ${requestedAmountStr} exceeds listed amount ${intent.amount}` }, 400, cors);
+
+  // Same taker-utxo on-chain proof-of-funds check as legacy claim. Price gate
+  // is *scaled* — taker only needs to cover floor(requested × price / amount)
+  // not the whole listed price.
+  let takerTx;
+  try { takerTx = await fetchFreshTxJson(env, takerUtxoTxid, network); }
+  catch (e) { return jsonResponse({ error: 'taker_utxo tx not found after retries: ' + e.message }, 400, cors); }
+  const takerOut = takerTx?.vout?.[takerUtxoVout];
+  if (!takerOut?.scriptpubkey) return jsonResponse({ error: 'taker_utxo missing scriptpubkey' }, 400, cors);
+  const spk = hexToBytes(takerOut.scriptpubkey);
+  if (spk.length !== 22 || spk[0] !== 0x00 || spk[1] !== 0x14) return jsonResponse({ error: 'taker_utxo not P2WPKH' }, 400, cors);
+  if (bytesToHex(spk.slice(2, 22)) !== bytesToHex(hash160(hexToBytes(takerPubHex)))) {
+    return jsonResponse({ error: 'taker_pubkey does not control taker_utxo' }, 403, cors);
+  }
+  // Scaled-price gate. Uses BigInt for the multiply to avoid precision loss on
+  // u64 amounts, then converts the final divided sat figure to Number for the
+  // ≥ check (BTC values fit comfortably in Number until ~21 PHsat).
+  const priceSatsBI = BigInt(intent.price_sats);
+  const requiredSatsBI = (requestedBI * priceSatsBI) / amountBI; // floor
+  const requiredSats   = Number(requiredSatsBI);
+  if (requiredSats < DUST) {
+    return jsonResponse({ error: `requested_amount yields sub-dust BTC payment (${requiredSats} < ${DUST}); raise requested_amount` }, 400, cors);
+  }
+  const utxoValue = Number(takerOut.value);
+  if (!Number.isInteger(utxoValue) || utxoValue < requiredSats) {
+    return jsonResponse({ error: `taker_utxo value (${utxoValue}) is below scaled price (${requiredSats}) for requested_amount ${requestedAmountStr}` }, 400, cors);
+  }
+
+  const msg = atomicIntentClaimMsgVar(assetIdHex, intentIdHex, takerPubHex, takerUtxoTxid, takerUtxoVout, requestedAmountStr);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(takerPubHex).slice(1))) {
+    return jsonResponse({ error: 'invalid taker signature (claim_msg_v3)' }, 403, cors);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const claim = {
+    intent_id: intentIdHex,
+    taker_pubkey: takerPubHex,
+    taker_utxo: { txid: takerUtxoTxid, vout: takerUtxoVout, value: utxoValue },
+    requested_amount: requestedAmountStr,  // new for variable-amount
+    sig: sigHex,
+    state: 'CLAIMED',
+    claimed_at: now,
+    expires_at: now + CLAIM_TTL_SECONDS,
+  };
+  await env.REGISTRY_KV.put(
+    atomicClaimKey(network, assetIdHex, intentIdHex),
+    JSON.stringify(claim),
+    { expirationTtl: CLAIM_TTL_SECONDS + 60 },
+  );
+  return jsonResponse({ ok: true, claim, intent }, 200, cors);
+}
+
+async function _handleAtomicIntentFulfilVar(assetIdHex, intentIdHex, intent, claim, body, env, network, cors) {
+  // intent is the loaded variable-amount intent; claim is a live CLAIMED record
+  // (caller verified claim.taker_pubkey matches body.taker_pubkey already).
+  const takerPubHex   = String(body.taker_pubkey ?? '').toLowerCase();
+  const partialReveal = body.partial_reveal;
+  const sigHex        = String(body.fulfilment_sig ?? '').toLowerCase();
+  const encRecipBlindingHex  = String(body.enc_recipient_blinding ?? '').toLowerCase();
+  // PR2 stores the broadcast-related fields opaquely. PR3 will decode the
+  // envelope, derive the P2TR address, verify it matches the commit tx's
+  // vout[0] script, and validate vout[1] == floor(requested × price / amount).
+  const commitTxHex          = String(body.commit_tx_hex ?? '').toLowerCase();
+  const envelopeScriptHex    = String(body.envelope_script_hex ?? '').toLowerCase();
+  const controlBlockHex      = String(body.control_block_hex ?? '').toLowerCase();
+  const p2trSpkHex           = String(body.p2tr_spk_hex ?? '').toLowerCase();
+
+  if (typeof partialReveal !== 'object' || partialReveal === null) return jsonResponse({ error: 'partial_reveal must be a JSON object' }, 400, cors);
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return jsonResponse({ error: 'fulfilment_sig must be 128 hex chars' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(encRecipBlindingHex)) return jsonResponse({ error: 'enc_recipient_blinding must be 64 hex chars (32-byte ciphertext)' }, 400, cors);
+  if (!/^[0-9a-f]+$/.test(commitTxHex)        || commitTxHex.length > 32768)        return jsonResponse({ error: 'commit_tx_hex must be hex, ≤ 16 KB raw' }, 400, cors);
+  if (!/^[0-9a-f]+$/.test(envelopeScriptHex)  || envelopeScriptHex.length > 4096 || envelopeScriptHex.length < 80) {
+    return jsonResponse({ error: 'envelope_script_hex required (40–2048 byte hex string)' }, 400, cors);
+  }
+  if (!/^[0-9a-f]{66}$/.test(controlBlockHex)) return jsonResponse({ error: 'control_block_hex must be 33-byte hex (parity_byte + 32-byte internal key)' }, 400, cors);
+  if (!/^5120[0-9a-f]{64}$/.test(p2trSpkHex)) return jsonResponse({ error: 'p2tr_spk_hex must be a P2TR scriptPubKey: 34 bytes (51 20 + 32-byte tweaked output key)' }, 400, cors);
+
+  const requestedAmountStr = String(claim.requested_amount ?? '');
+  if (!/^\d+$/.test(requestedAmountStr)) {
+    return jsonResponse({ error: 'claim is missing requested_amount; cannot fulfil under v2 path' }, 400, cors);
+  }
+  // Maker fulfilment sig under v2 domain — binds requested_amount explicitly.
+  const partialRevealJson = JSON.stringify(partialReveal);
+  const msg = atomicIntentFulfilmentMsgVar(assetIdHex, intentIdHex, takerPubHex, requestedAmountStr, partialRevealJson);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(intent.maker_pubkey).slice(1))) {
+    return jsonResponse({ error: 'invalid fulfilment signature (fulfilment_msg_v2)' }, 403, cors);
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const fulfilment = {
+    intent_id: intentIdHex,
+    taker_pubkey: takerPubHex,
+    partial_reveal: partialReveal,
+    fulfilment_sig: sigHex,
+    enc_recipient_blinding: encRecipBlindingHex,
+    requested_amount: requestedAmountStr,
+    commit_tx_hex: commitTxHex,
+    envelope_script_hex: envelopeScriptHex,
+    control_block_hex: controlBlockHex,
+    p2tr_spk_hex: p2trSpkHex,
+    state: 'COMMIT_READY',           // PR3 advances to REVEAL_READY → COMMIT_BROADCAST → REVEAL_BROADCAST
+    fulfilled_at: now,
+  };
+  await env.REGISTRY_KV.put(atomicFulfilmentKey(network, assetIdHex, intentIdHex), JSON.stringify(fulfilment));
+  return jsonResponse({ ok: true, fulfilment }, 200, cors);
+}
+
 async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   let body;
   try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  // Dispatch variable-amount publishes (§5.7.6.1) to the dedicated handler.
+  // Presence of `min_take_amount` is the discriminator — legacy whole-UTXO
+  // publishes omit it and fall through to the existing path unchanged.
+  if (body && body.min_take_amount !== undefined && body.min_take_amount !== null && String(body.min_take_amount) !== '') {
+    return _handleAtomicIntentPostVar(assetIdHex, body, env, network, cors);
+  }
 
   const intentIdHex = String(body.intent_id ?? '').toLowerCase();
   const makerPubHex = String(body.maker_pubkey ?? '').toLowerCase();
@@ -6932,6 +7188,17 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
       claim: { expires_at: existing.expires_at },
     }, 409, cors);
   }
+
+  // Dispatch variable-amount claims (§5.7.6.1) to the dedicated handler. The
+  // intent's `min_take_amount` field is the discriminator — legacy intents
+  // omit it and fall through to the existing path. A taker who tries to
+  // submit a `requested_amount` against a legacy intent is rejected here
+  // (claim_msg_v3 won't verify against a v2 sig), surfacing as a "invalid
+  // signature" 403 rather than a silent semantic mismatch.
+  if (intent.min_take_amount !== undefined && intent.min_take_amount !== null && String(intent.min_take_amount) !== '') {
+    return _handleAtomicIntentClaimVar(assetIdHex, intentIdHex, intent, body, env, network, cors);
+  }
+
   // Verify the committed UTXO: exists on chain, P2WPKH-controlled by the
   // claimant, and value ≥ intent.price_sats. Same defensive pattern as
   // handleAtomicIntentPost uses for the maker's asset_utxo. We do not lock
@@ -7010,6 +7277,15 @@ async function handleAtomicIntentFulfil(assetIdHex, intentIdHex, req, env, netwo
   const now = Math.floor(Date.now() / 1000);
   if (!claim || claim.expires_at <= now) return jsonResponse({ error: 'no active claim' }, 404, cors);
   if (claim.taker_pubkey !== takerPubHex) return jsonResponse({ error: 'taker_pubkey does not match claim' }, 403, cors);
+
+  // Dispatch variable-amount fulfilments (§5.7.6.1) to the dedicated handler.
+  // The intent's `min_take_amount` is the discriminator — a v1 fulfilment POST
+  // against a variable-amount intent would silently store a v1-shaped record
+  // and later confuse the broadcast path, so we branch here before parsing
+  // any of the legacy-only fields.
+  if (intent.min_take_amount !== undefined && intent.min_take_amount !== null && String(intent.min_take_amount) !== '') {
+    return _handleAtomicIntentFulfilVar(assetIdHex, intentIdHex, intent, claim, body, env, network, cors);
+  }
 
   // Verify the maker (== owner of intent) signed the fulfilment.
   const partialRevealJson = JSON.stringify(partialReveal);
