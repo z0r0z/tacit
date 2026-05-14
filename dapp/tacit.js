@@ -35309,7 +35309,7 @@ function applyMarketFilters() {
   const _sweepBuyChip = `<button data-act="market-sweep-buy" data-aid="${escapeHtml(_marketView.assetId)}" type="button" title="Buy a target amount by sweeping the asks ladder with a custom price cap. Trustless instant listings only; each fill is one Bitcoin tx." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Sweep buy</button>`;
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong>Asks · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel}</span></div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong>Open orders · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use Swap above for routed fills</span></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_sweepBuyChip}</div>
     </div>${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
@@ -36726,7 +36726,7 @@ function renderMarketBrowse(rows) {
     // guidance is different — clear-filters vs go-be-the-first.
     const allCount = (_marketCache?.listings || []).length;
     const filters = {
-      kind:     $('#market-filter-kind')?.value || 'trustless',
+      kind:     $('#market-filter-kind')?.value || 'all',  // dropdown removed; "all" is the new default (unified orderbook).
       ticker:   ($('#market-filter-asset')?.value || '').trim(),
       minPrice: ($('#market-filter-min-price')?.value || '').trim(),
       maxPrice: ($('#market-filter-max-price')?.value || '').trim(),

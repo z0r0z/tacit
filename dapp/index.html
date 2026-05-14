@@ -62,7 +62,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=b654989b">
+<link rel="modulepreload" href="./tacit.js?cb=a2d7dbf6">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -4269,14 +4269,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <span class="market-search-icon" aria-hidden="true">⌕</span>
         </div>
         <div class="market-chips-row">
-          <div class="market-chip-wrap">
-            <select id="market-filter-kind" class="market-chip" aria-label="Trade type filter">
-              <option value="preauth" selected title="Instant listing: seller signs once, buyer can complete alone.">⚡ Instant Listings</option>
-              <option value="trustless" title="Trustless atomic settlement listings.">⚡ All Trustless</option>
-              <option value="intent" title="Manual atomic flow: claim, fulfil, take.">⚡ Atomic Only</option>
-              <option value="all">All Listings</option>
-            </select>
-          </div>
+          <!-- Per-kind filter dropdown removed: the swap tile + ask ladder
+               now route across ALL ask kinds uniformly (preauth + whole-UTXO
+               atomic + variable-amount), so a "filter by kind" choice
+               contradicts the unified-orderbook abstraction. JS reads of
+               #market-filter-kind fall through to "all" automatically when
+               the element is gone. -->
           <div class="market-chip-wrap">
             <select id="market-sort" class="market-chip" aria-label="Sort order">
               <option value="volume-desc" selected>Most Volume</option>
@@ -5121,6 +5119,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=b654989b"></script>
+<script type="module" src="./tacit.js?cb=a2d7dbf6"></script>
 </body>
 </html>
