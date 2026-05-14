@@ -29596,11 +29596,35 @@ async function renderHoldings() {
         _holdingsLastRenderOk = true;
         return;
       }
-      // Genuinely fresh wallet — show the funding/etch guidance.
+      // Genuinely fresh wallet — lead with the market path (the most
+      // common normie "ape in" route), keep funding + etch + import
+      // as the secondary affordances. Discoverable buy-first nudge
+      // matches the Discover-tile CTA change in 61b833c — both surfaces
+      // now point a brand-new user toward acquiring tokens via the
+      // orderbook rather than minting their own first.
       const fundingHint = NET.name === 'signet'
-        ? `Hit the <strong>faucet</strong> for some signet sats, then go to <strong>Etch</strong> to mint your first token`
-        : `Fund your wallet (connect Xverse / UniSat / Leather, or send sats to your address from any Bitcoin wallet) and head to <strong>Etch</strong> to mint your first token`;
-      list.innerHTML = `<div class="empty">No tacit assets on ${escapeHtml(NET.name)} yet. ${fundingHint} — or use <strong>Import share-link</strong> above if someone sent you one.</div>`;
+        ? `or hit the <strong>faucet</strong> for some signet sats and <strong>Etch</strong> to mint your own`
+        : `or fund your wallet (Xverse / UniSat / Leather, or any Bitcoin wallet) and <strong>Etch</strong> to mint your own`;
+      list.innerHTML = `<div class="empty">
+        <div style="font-weight:700;margin-bottom:8px;">No tacit assets on ${escapeHtml(NET.name)} yet.</div>
+        <div style="margin-bottom:14px;">Browse the live orderbook to <strong>buy your first token</strong> — same Bitcoin tx atomicity, confidential balance from the start.</div>
+        <div style="margin-bottom:14px;">
+          <a href="#tab=market" data-act="empty-goto-market" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-weight:700;text-decoration:none;font-size:13px;letter-spacing:0.04em;box-shadow:2px 2px 0 var(--ink);">
+            Browse markets &rarr;
+          </a>
+        </div>
+        <div class="muted" style="font-size:11px;">
+          ${fundingHint} &mdash; or use <strong>Import share-link</strong> above if someone sent you one.
+        </div>
+      </div>`;
+      // Wire the inline Browse CTA. href already points at #tab=market,
+      // but routing through location.hash makes the tab swap respect
+      // the existing _consumeTabUrlHash deeplink consumer (which is what
+      // setupTabs uses for keyboard/middle-click navigation too).
+      const emptyMarketBtn = list.querySelector('[data-act="empty-goto-market"]');
+      if (emptyMarketBtn) {
+        emptyMarketBtn.onclick = (ev) => { ev.preventDefault(); location.hash = '#tab=market'; };
+      }
       setStatus('#holdings-status', '');
       setTabBadge('holdings', 0);
       _holdingsLastRenderOk = true;
