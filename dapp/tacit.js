@@ -38547,10 +38547,15 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     const outlierTag = p.isOutlier ? ' · outlier vs mark' : '';
     const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}${outlierTag}`;
     if (p.isOutlier) {
-      // Hollow circle, dimmed, with orange stroke so users can pick
-      // out anomalies without being misled into thinking they're the
-      // typical price band.
-      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${(dotR + 0.5).toFixed(1)}" fill="none" stroke="#c97a1a" stroke-width="1.2" opacity="0.75"><title>${escapeHtml(tip)}</title></circle>`;
+      // Hollow ring with WHITE fill so the marker reads as distinct
+      // from the green trace line and the gridlines even on dense
+      // 200-trade charts. Solid orange stroke + larger radius makes
+      // anomalies visually pop without overwhelming the in-band
+      // signal. Previously these were faint half-opacity hairlines
+      // that blended into the trace and made the "13 outliers ringed"
+      // header text harder to verify against the chart.
+      const oR = (dotR + 1.5).toFixed(1);
+      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${oR}" fill="#faf9f5" stroke="#c97a1a" stroke-width="1.8" opacity="1"><title>${escapeHtml(tip)}</title></circle>`;
     }
     return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="#0a8f43"><title>${escapeHtml(tip)}</title></circle>`;
   }).join('');
@@ -38564,9 +38569,17 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     const yMark = yOf(markUnit);
     if (yMark >= PT && yMark <= PT + plotH) {
       const markLbl = `mark ${fmtUnitPriceSats(markUnit)} sats/${ticker}`;
+      // Bolder dash, full-opacity stroke, label sits inside a small
+      // cream-colored pill so it stays readable when the line passes
+      // through the dense trade-trace zone. Previously the line was
+      // 0.8-stroke at 55% opacity — invisible on the dense charts.
+      const lblW = Math.max(72, markLbl.length * 5.4);
+      const lblX = (PL + plotW - 4 - lblW).toFixed(2);
+      const lblY = (yMark - 12).toFixed(2);
       markLine =
-        `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="0.8" stroke-dasharray="4,3" opacity="0.55"/>` +
-        `<text x="${(PL + plotW - 4).toFixed(0)}" y="${(yMark - 3).toFixed(2)}" font-size="9" fill="#0a8f43" font-family="var(--mono, monospace)" text-anchor="end" opacity="0.85">${escapeHtml(markLbl)}</text>`;
+        `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="1.3" stroke-dasharray="5,3" opacity="0.85"/>` +
+        `<rect x="${lblX}" y="${lblY}" width="${lblW.toFixed(0)}" height="11" rx="2" fill="#faf9f5" stroke="#0a8f43" stroke-width="0.8" opacity="0.95"/>` +
+        `<text x="${(PL + plotW - 6).toFixed(0)}" y="${(yMark - 3.5).toFixed(2)}" font-size="9" fill="#0a8f43" font-family="var(--mono, monospace)" text-anchor="end" font-weight="600">${escapeHtml(markLbl)}</text>`;
     }
   }
   // Horizontal gridlines at the Y min / mid / max — gives the eye a
@@ -39756,11 +39769,12 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
+      ${isCrossed ? `<rect x="${Math.min(bestBidX, bestAskX).toFixed(2)}" y="${PT}" width="${Math.abs(bestBidX - bestAskX).toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.18" pointer-events="none"><title>Crossed zone: best bid (${escapeHtml(fmtUnitPriceSats(bestBid))}) is higher than best ask (${escapeHtml(fmtUnitPriceSats(bestAsk))}). Typically dust outliers; a real-liquidity cross would drain immediately.</title></rect>` : ''}
       <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1" pointer-events="none"/>
       <path data-depth-ask d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1" pointer-events="none"/>
-      <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="0.6" stroke-opacity="0.55" stroke-dasharray="1,2" pointer-events="none"/>
-      <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#b8341d" stroke-width="0.6" stroke-opacity="0.55" stroke-dasharray="1,2" pointer-events="none"/>
-      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-mid)" stroke-width="1" stroke-dasharray="3,3" pointer-events="none"/>` : ''}
+      <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="1" stroke-opacity="0.8" stroke-dasharray="2,2" pointer-events="none"/>
+      <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#b8341d" stroke-width="1" stroke-opacity="0.8" stroke-dasharray="2,2" pointer-events="none"/>
+      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink)" stroke-width="1.4" stroke-dasharray="5,3" stroke-opacity="0.85" pointer-events="none"/><rect x="${(centerX - 36).toFixed(2)}" y="${PT}" width="72" height="11" rx="2" fill="#faf9f5" stroke="var(--ink)" stroke-width="0.8" opacity="0.95" pointer-events="none"/><text x="${centerX.toFixed(2)}" y="${(PT + 8).toFixed(2)}" font-size="9" fill="var(--ink)" font-family="var(--mono, monospace)" text-anchor="middle" font-weight="600" pointer-events="none">mark ${escapeHtml(fmtUnitPriceSats(centerU))}</text>` : ''}
       <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
       <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
       <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none">${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</text>
@@ -39829,27 +39843,59 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
   const markValid = Number.isFinite(markUnit) && markUnit > 0;
   const outLo = markValid ? markUnit * 0.2 : 0;
   const outHi = markValid ? markUnit * 5 : Infinity;
+  // Per-entry unit price ring so each tape entry can compare itself
+  // against the next-older trade for a tick-direction (↑ / ↓ / ·)
+  // indicator. recent[0] is the newest; recent[i].prevU = recent[i+1]'s u.
+  const recentUnits = recent.map(t => {
+    const price = Number(t.price_sats) || 0;
+    let amtBig; try { amtBig = BigInt(t.amount || '0'); } catch { amtBig = 0n; }
+    if (amtBig <= 0n || price <= 0) return null;
+    return unitPriceSats(price, amtBig, decimals);
+  });
   const aid = section.dataset.aid || section.getAttribute('data-aid') || '';
   const prevIds = _tradesTapeSnapshot.get(aid) || new Set();
   const nextIds = new Set();
-  const itemsHtml = recent.map(t => {
+  const itemsHtml = recent.map((t, i) => {
     const price = Number(t.price_sats) || 0;
     let amtBig; try { amtBig = BigInt(t.amount || '0'); } catch { amtBig = 0n; }
     if (amtBig <= 0n || price <= 0) return '';
-    const u = unitPriceSats(price, amtBig, decimals);
+    const u = recentUnits[i];
     if (u == null) return '';
     const ts = Number(t.ts) || 0;
     const id = `${t.txid || ''}:${ts}`;
     nextIds.add(id);
     const isNew = !prevIds.has(id) && prevIds.size > 0;
     const isOutlier = markValid && (u < outLo || u > outHi);
-    const color = isOutlier ? '#a04030' : '#0a7d3a';
+    // Tick direction vs the next-older trade in this view. Same CEX
+    // convention as the price-history chart's per-row arrows: green ↑
+    // when this fill came in above the prior, red ↓ when below, muted
+    // dot on flat / unknown. The price color tracks tick direction
+    // (overriding the outlier hint) so the eye reads momentum at a
+    // glance. Outlier prints get an orange ring on the row border
+    // instead so anomaly status stays surfaced.
+    const prevU = recentUnits[i + 1];
+    let tickGlyph = '<span style="color:var(--ink-mid);font-size:11px;" title="No prior trade to compare.">·</span>';
+    let priceColor = isOutlier ? '#a04030' : 'var(--ink)';
+    if (u != null && prevU != null && prevU > 0) {
+      if (u > prevU) {
+        tickGlyph = `<span style="color:#0a7d3a;font-size:12px;font-weight:700;" title="Up from ${fmtUnitPriceSats(prevU)} sats/${ticker}">↑</span>`;
+        if (!isOutlier) priceColor = '#0a7d3a';
+      } else if (u < prevU) {
+        tickGlyph = `<span style="color:#b8341d;font-size:12px;font-weight:700;" title="Down from ${fmtUnitPriceSats(prevU)} sats/${ticker}">↓</span>`;
+        if (!isOutlier) priceColor = '#b8341d';
+      } else {
+        tickGlyph = '<span style="color:var(--ink-mid);font-size:11px;" title="Flat from prior fill">·</span>';
+        if (!isOutlier) priceColor = 'var(--ink)';
+      }
+    }
     const age = relativeAge(ts) || 'now';
     const amtStr = fmtAssetAmount(amtBig, decimals);
     const animAttr = isNew ? ' data-market-anim="new"' : '';
-    return `<span${animAttr} style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg-warm);font-size:10px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;">
+    const borderColor = isOutlier ? '#c97a1a' : 'var(--ink-faint)';
+    return `<span${animAttr} style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid ${borderColor};background:var(--bg-warm);font-size:10px;font-family:var(--mono, monospace);white-space:nowrap;flex:0 0 auto;"${isOutlier ? ' title="Outlier vs mark (priced &lt;0.2× or &gt;5× the worker\'s outlier-guarded mark price). Probably a dust take or fat-finger fill."' : ''}>
       <span class="muted" data-age-ts="${ts}" data-age-fmt="ago">${escapeHtml(age)} ago</span>
-      <strong style="color:${color};">${escapeHtml(fmtMarketUnitSats(u))}/${escapeHtml(ticker)}</strong>
+      ${tickGlyph}
+      <strong style="color:${priceColor};">${escapeHtml(fmtMarketUnitSats(u))}/${escapeHtml(ticker)}</strong>
       <span class="muted">× ${escapeHtml(amtStr)}</span>
     </span>`;
   }).filter(Boolean).join('');
