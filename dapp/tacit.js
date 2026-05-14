@@ -33532,10 +33532,20 @@ function applyMarketFilters() {
         ? `<button data-act="market-mine-asks-toggle" type="button" title="Showing only your asks (${minedAsksCount}). Click to show all asks." style="font-size:10px;padding:3px 10px;background:var(--ink);border:1px solid var(--ink);color:#fff;cursor:pointer;">Mine - ${minedAsksCount}</button>`
         : `<button data-act="market-mine-asks-toggle" type="button" title="Filter to your asks only (${minedAsksCount} active)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Mine</button>`)
     : '';
-  const asksHeaderHtml = `<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+  // Sweep Buy lives in the asks header (where it semantically belongs —
+  // it walks the asks ladder). Previously it was rendered inside the
+  // bids panel alongside Sweep Sell, which was confusing because
+  // Sweep Buy doesn't touch bids at all. Wrapper carries data-aid so
+  // _wireMarketSweepBuy can find the button + form slot in this scope
+  // without depending on the bids ladder's existence.
+  const _sweepBuyChip = `<button data-act="market-sweep-buy" data-aid="${escapeHtml(_marketView.assetId)}" type="button" title="Buy a target amount by sweeping the asks ladder with a custom price cap. Trustless instant listings only; each fill is one Bitcoin tx." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Sweep buy</button>`;
+  const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong>Asks · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel}</span></div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}</div>
-    </div>${_askFormSlot}`;
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_sweepBuyChip}</div>
+    </div>${_askFormSlot}
+    <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
+  </div>`;
   // Swap tile: the primary trading action surface, modeled on Uniswap /
   // Jupiter-style "from / to" swap UIs. Top input is editable (what you
   // pay); bottom is a live estimate (what you receive). Click-to-flip
@@ -36522,12 +36532,10 @@ function renderMarketBidsLadderHTML(asset) {
         <div class="market-bids-actions">
           <button data-act="auto-fulfil-toggle" type="button" title="Automatically fulfils claimed atomic intents while this tab is open.">Auto-fulfil: OFF</button>
           <button data-act="market-bids-toggle" type="button" aria-expanded="false">Show bids</button>
-          <button data-act="market-sweep-buy" data-aid="${aid}" type="button" title="Buy a target amount immediately by sweeping the asks ladder. Walks cheapest-first under your price cap; each fill is one Bitcoin tx. Trustless instant listings only.">Sweep Buy</button>
-          <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell into the bids ladder by sweeping highest-priced bids first. Each fill publishes an atomic intent; settlement awaits each bidder's Take.">Sweep Sell</button>
+          <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell into the bids ladder by sweeping highest-priced bids first. Each fill publishes an atomic intent; settlement awaits each bidder's Take.">Sweep sell</button>
           <button data-act="market-bid-place" data-aid="${aid}" type="button">+ Place a bid on ${ticker}</button>
         </div>
       </div>
-      <div data-market-sweep-form style="display:none;margin-top:10px;"></div>
       <div data-market-sweep-sell-form style="display:none;margin-top:10px;"></div>
       <div data-market-bid-form style="display:none;margin-top:10px;"></div>
       <div data-market-bids-list hidden class="market-bids-list">
@@ -37126,6 +37134,13 @@ function wireHoldingsOpenOrdersActions(node) {
 async function populateMarketBidsLadder(scope, asset) {
   const section = scope.querySelector('[data-market-bids-section]');
   if (!section) return;
+  // Sweep Buy moved out of the bids panel (it walks the asks ladder,
+  // not bids — was confusingly co-located before). Now lives in the
+  // asks header chips row; we still wire its handler from this
+  // function for parity with Sweep Sell / Bid Place lifecycle. Fall
+  // back to the bids section as scope if the asks header doesn't
+  // exist (asset detail with zero asks renders the bids panel only).
+  const sweepBuySection = scope.querySelector('[data-market-sweep-buy-section]') || section;
   const aid = section.dataset.aid;
   const ticker = asset.ticker || '?';
   const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
@@ -37152,7 +37167,7 @@ async function populateMarketBidsLadder(scope, asset) {
     // a global daemon toggle. Without this, all four would be inert on
     // assets that 4xx'd on /bids.
     _wireMarketBidPlace(section, asset);
-    _wireMarketSweepBuy(section, asset);
+    _wireMarketSweepBuy(sweepBuySection, asset);
     _wireMarketSweepSell(section, asset);
     _wireAutoFulfilToggle(section);
     try { refreshYourOpenOrdersPanel(scope, aid); } catch {}
@@ -37165,7 +37180,7 @@ async function populateMarketBidsLadder(scope, asset) {
     // Same fix: an asset with no bids should still have working
     // Sweep Buy / Sweep Sell / Auto-fulfil controls.
     _wireMarketBidPlace(section, asset);
-    _wireMarketSweepBuy(section, asset);
+    _wireMarketSweepBuy(sweepBuySection, asset);
     _wireMarketSweepSell(section, asset);
     _wireAutoFulfilToggle(section);
     try { refreshYourOpenOrdersPanel(scope, aid); } catch {}
@@ -37381,7 +37396,7 @@ async function populateMarketBidsLadder(scope, asset) {
     };
   });
   _wireMarketBidPlace(section, asset);
-  _wireMarketSweepBuy(section, asset);
+  _wireMarketSweepBuy(sweepBuySection, asset);
   _wireMarketSweepSell(section, asset);
   _wireAutoFulfilToggle(section);
   // Bid cache is now warm — refresh the "Your open orders" panel above
