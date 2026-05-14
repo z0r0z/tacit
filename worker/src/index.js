@@ -114,6 +114,7 @@ const T_CXFER    = 0x23;
 const T_MINT     = 0x24;
 const T_BURN     = 0x25;
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
+const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.6.1 / §5.7.9)
 const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
 const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
 const T_DROP     = 0x2B; // public-claim pool over existing supply (SPEC §5.12)
@@ -2489,6 +2490,34 @@ function decodeAxferPayload(payload) {
   const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
   if (p + rpLen !== payload.length) return null;
   return { asset_id: bytesToHex(assetId), asset_input_count: assetInputCount, outputs };
+}
+
+// T_AXFER_VAR structural decoder (SPEC §5.7.9). Mirrors decodeAxferPayload
+// but with two SPEC-mandated tightenings: asset_input_count MUST be exactly
+// 1, and N MUST be exactly 2. Anything else under opcode 0x37 is invalid and
+// returns null. The dapp ships a byte-identical decoder; tests/t-axfer-var-
+// decoder.test.mjs pins the wire format.
+function decodeAxferVarPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_AXFER_VAR) return null;
+  if (payload.length < 1 + 32 + 1 + 64 + 1 + 2 * (33 + 8) + 2) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount !== 1) return null;  // T_AXFER_VAR: exactly 1 asset input
+  p += 64; // kernel_sig
+  const N = payload[p]; p += 1;
+  if (N !== 2) return null;                  // T_AXFER_VAR: exactly N=2 (recipient + maker change)
+  if (p + N * (33 + 8) + 2 > payload.length) return null;
+  const outputs = [];
+  for (let i = 0; i < N; i++) {
+    const commitment = payload.slice(p, p + 33); p += 33;
+    p += 8; // amount_ct
+    outputs.push({ commitment: bytesToHex(commitment) });
+  }
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  return { asset_id: bytesToHex(assetId), asset_input_count: assetInputCount, n: N, outputs };
 }
 
 // T_PETCH structural decoder (SPEC §5.8). Permissionless-mint deployment
@@ -6873,6 +6902,146 @@ async function _handleAtomicIntentClaimVar(assetIdHex, intentIdHex, intent, body
   return jsonResponse({ ok: true, claim, intent }, 200, cors);
 }
 
+// PR3: taker-completed reveal submission + sequential broadcast. The maker
+// shipped commit_tx_hex (unbroadcast) + partial_reveal at /fulfilment; the
+// taker downloaded both, added funding inputs + SIGHASH_ALL signature, and
+// now submits the completed reveal here. The worker broadcasts the commit
+// tx first, polls for mempool visibility, then broadcasts the completed
+// reveal as a CPFP-style ancestor pair. The two broadcasts together settle
+// the atomic OTC variable-amount take per SPEC §5.7.6.1.
+async function _handleAtomicIntentFinalizeVar(assetIdHex, intentIdHex, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex))    return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
+  if (!/^[0-9a-f]{32}$/.test(intentIdHex))   return jsonResponse({ error: 'invalid intent_id' }, 400, cors);
+
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+
+  const takerPubHex   = String(body.taker_pubkey ?? '').toLowerCase();
+  const revealTxHex   = String(body.reveal_tx_hex ?? '').toLowerCase();
+
+  if (!/^0[23][0-9a-f]{64}$/.test(takerPubHex)) return jsonResponse({ error: 'taker_pubkey must be 33-byte compressed hex' }, 400, cors);
+  if (!/^[0-9a-f]+$/.test(revealTxHex)        || revealTxHex.length < 200 || revealTxHex.length > 65536) {
+    return jsonResponse({ error: 'reveal_tx_hex must be hex (≥ 100 bytes raw, ≤ 32 KB raw)' }, 400, cors);
+  }
+
+  // Load the intent + claim + fulfilment triple. Variable-amount intents must
+  // be in COMMIT_READY (maker shipped the unbroadcast commit + partial reveal
+  // at /fulfilment) before /finalize can advance them.
+  const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
+  if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
+  if (!(intent.min_take_amount && String(intent.min_take_amount) !== '')) {
+    return jsonResponse({ error: '/finalize is only for variable-amount intents; legacy intents broadcast taker-side' }, 400, cors);
+  }
+  const claim = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
+  const now = Math.floor(Date.now() / 1000);
+  if (!claim || claim.expires_at <= now) return jsonResponse({ error: 'no active claim' }, 404, cors);
+  if (claim.taker_pubkey !== takerPubHex) return jsonResponse({ error: 'taker_pubkey does not match claim' }, 403, cors);
+
+  const fulfilment = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, intentIdHex), 'json');
+  if (!fulfilment) return jsonResponse({ error: 'no fulfilment record; maker must POST /fulfilment first' }, 404, cors);
+  if (fulfilment.taker_pubkey !== takerPubHex) return jsonResponse({ error: 'fulfilment taker_pubkey does not match claim' }, 403, cors);
+  // State machine guard: only COMMIT_READY may transition forward. Idempotent
+  // re-POSTs against an already-broadcast fulfilment return the existing state
+  // so the taker UI can surface the in-flight broadcast rather than re-trying.
+  if (fulfilment.state === 'REVEAL_BROADCAST' || fulfilment.state === 'SETTLED') {
+    return jsonResponse({ ok: true, fulfilment, note: 'already finalized; broadcast in flight or confirmed' }, 200, cors);
+  }
+  if (fulfilment.state !== 'COMMIT_READY') {
+    return jsonResponse({ error: `fulfilment state ${fulfilment.state || 'unknown'} cannot transition to REVEAL_READY` }, 409, cors);
+  }
+  if (!fulfilment.commit_tx_hex) {
+    return jsonResponse({ error: 'fulfilment record is missing commit_tx_hex; cannot finalize' }, 400, cors);
+  }
+
+  // Persist the taker-completed reveal + advance state to REVEAL_READY before
+  // attempting any broadcast. If broadcast fails midway, the fulfilment record
+  // still reflects what was submitted, and the maker UI / cron can drive a
+  // retry rather than the taker having to re-sign.
+  const fulfilmentAdvanced = {
+    ...fulfilment,
+    reveal_tx_hex: revealTxHex,
+    state: 'REVEAL_READY',
+    reveal_submitted_at: now,
+  };
+  await env.REGISTRY_KV.put(
+    atomicFulfilmentKey(network, assetIdHex, intentIdHex),
+    JSON.stringify(fulfilmentAdvanced),
+  );
+
+  // Step 1: broadcast commit. mempool.space returns the canonical txid on the
+  // 200 response body — we capture it for the visibility poll.
+  let commitTxid;
+  try { commitTxid = (await apiText(env, '/tx', { method: 'POST', body: fulfilment.commit_tx_hex }, network)).trim(); }
+  catch (e) {
+    // Leave the fulfilment at REVEAL_READY so the maker can re-fulfil if the
+    // commit was malformed; the next /fulfilment POST will overwrite it.
+    return jsonResponse({ error: `commit_tx broadcast failed: ${e.message}` }, 502, cors);
+  }
+  if (!/^[0-9a-f]{64}$/.test(commitTxid)) {
+    return jsonResponse({ error: `commit_tx broadcast returned unexpected txid: ${commitTxid}` }, 502, cors);
+  }
+
+  // Step 2: brief mempool-visibility poll. mempool.space's /tx/{txid} index
+  // typically catches up in 1–10s after broadcast. We poll up to ~15s total
+  // wall clock (3 attempts × 5s) so the reveal's CPFP parent is referenceable
+  // by the time we broadcast it. Skipping the wait works on most healthy
+  // nodes but is brittle on slow indexers, so we do the cheap thing.
+  let commitVisible = false;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await apiJson(env, `/tx/${commitTxid}`, {}, network);
+      if (r && r.txid === commitTxid) { commitVisible = true; break; }
+    } catch { /* indexer lag, retry */ }
+    if (i < 2) await new Promise(resolve => setTimeout(resolve, 5000));
+  }
+  if (!commitVisible) {
+    // Soft-fail: the commit broadcast accepted, the indexer just hasn't caught
+    // up. We still attempt the reveal — bitcoind's mempool will accept the
+    // reveal as long as the commit is somewhere in the mempool, even if the
+    // /tx/{txid} HTTP index hasn't refreshed. This matches existing dapp
+    // broadcast behavior for chunked preauth + axintent settlements.
+  }
+
+  // Step 3: broadcast the taker-completed reveal.
+  let revealTxid;
+  try { revealTxid = (await apiText(env, '/tx', { method: 'POST', body: revealTxHex }, network)).trim(); }
+  catch (e) {
+    // Reveal failed but commit succeeded. Mark fulfilment as ABANDONED and
+    // surface the commit outpoint so the maker can later reclaim it via
+    // script-path spend per §5.7.6 *recovery*.
+    await env.REGISTRY_KV.put(
+      atomicFulfilmentKey(network, assetIdHex, intentIdHex),
+      JSON.stringify({ ...fulfilmentAdvanced, state: 'ABANDONED', commit_txid: commitTxid, abandoned_at: now, error: String(e.message).slice(0, 200) }),
+    );
+    return jsonResponse({
+      error: `commit broadcast OK (${commitTxid}) but reveal broadcast failed: ${e.message}. Maker can reclaim the commit P2TR UTXO via maker-only script-path spend.`,
+      commit_txid: commitTxid,
+    }, 502, cors);
+  }
+  if (!/^[0-9a-f]{64}$/.test(revealTxid)) {
+    return jsonResponse({ error: `reveal_tx broadcast returned unexpected txid: ${revealTxid}` }, 502, cors);
+  }
+
+  const settled = {
+    ...fulfilmentAdvanced,
+    state: 'REVEAL_BROADCAST',
+    commit_txid: commitTxid,
+    reveal_txid: revealTxid,
+    broadcast_at: now,
+  };
+  await env.REGISTRY_KV.put(atomicFulfilmentKey(network, assetIdHex, intentIdHex), JSON.stringify(settled));
+  return jsonResponse({
+    ok: true,
+    fulfilment: settled,
+    commit_txid: commitTxid,
+    reveal_txid: revealTxid,
+    explorer: {
+      commit: `https://mempool.space/${network === 'mainnet' ? '' : 'signet/'}tx/${commitTxid}`,
+      reveal: `https://mempool.space/${network === 'mainnet' ? '' : 'signet/'}tx/${revealTxid}`,
+    },
+  }, 200, cors);
+}
+
 async function _handleAtomicIntentFulfilVar(assetIdHex, intentIdHex, intent, claim, body, env, network, cors) {
   // intent is the loaded variable-amount intent; claim is a live CLAIMED record
   // (caller verified claim.taker_pubkey matches body.taker_pubkey already).
@@ -9089,13 +9258,13 @@ export {
   // `asset_input_count` was silent in JS — this surface lets a test fail loudly
   // if any decoder's return-shape contract drifts.
   decodeEnvelopeScript,
-  decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeAxferPayload, decodeCBurnPayload,
+  decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeAxferPayload, decodeAxferVarPayload, decodeCBurnPayload,
   decodeCPetchPayload, decodeCPmintPayload,
   decodeTDepositPayload, decodeTWithdrawPayload,
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
   encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
   dropIdFromRevealTxid,
-  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
+  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_AXFER_VAR, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
   // Mixer kernel-sig verifier — exported so tests/mixer-conservation can
   // drive it directly against a stubbed apiJson/fetch and confirm the
   // Conservation invariant (SPEC §5.11.4 #1) is enforced. Without dedicated
@@ -10057,6 +10226,8 @@ export default {
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
     if (mai4 && req.method === 'POST')                         return handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors);
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
+    const mai5 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/finalize$/);
+    if (mai5 && req.method === 'POST')                         return _handleAtomicIntentFinalizeVar(mai5[1], mai5[2], req, env, network, cors);
 
     // Preauth sales (buyer-completable T_AXFER — SPEC §5.7.8). Seller signs once,
     // buyer completes settlement alone via ECDH-derived recipient blinding.
