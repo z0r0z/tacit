@@ -25,6 +25,7 @@ const dapp = await import('../dapp/tacit.js');
 import {
   atomicIntentIdHexVar,
   atomicIntentPublishMsgVar,
+  atomicIntentClaimMsgVar,
 } from '../worker/src/index.js';
 import { bytesToHex } from '@noble/hashes/utils';
 
@@ -98,6 +99,47 @@ eqMsg('publish_msg parity for short bech32 address',              { makerAddress
 eqMsg('publish_msg parity for long bech32 address (signet)',      { network: 'signet', makerAddress: 'tb1pq6tk5wuwc70k2vme48l9qegfvvkn3z2t6trhdtgafcrudpwk7gvqg6n40k' });
 eqMsg('publish_msg parity for max-future expiry',                 { expiry: 2_500_000_000 });
 eqMsg('publish_msg parity for utxo_value at DUST',                { assetUtxoValue: 546 });
+
+// --- _axintentClaimMsgVar parity ---
+
+import { hexToBytes } from '@noble/hashes/utils';
+
+function claimFixture(overrides = {}) {
+  return {
+    assetIdBytes:     hexToBytes('f0bbe868af10c6c67652a99709bf32048d1aa7194efe3e9a1ef1bde43f94762b'),
+    intentIdBytes:    hexToBytes('11'.repeat(16)),
+    takerPubBytes:    hexToBytes('03' + 'bb'.repeat(32)),
+    takerUtxoTxidHex: '22'.repeat(32),
+    takerUtxoVout:    0,
+    requestedAmount:  '50000000',
+    ...overrides,
+  };
+}
+
+function eqClaimMsg(label, overrides) {
+  test(label, () => {
+    const f = claimFixture(overrides);
+    const dappBytes = dapp._axintentClaimMsgVar(
+      f.assetIdBytes, f.intentIdBytes, f.takerPubBytes,
+      f.takerUtxoTxidHex, f.takerUtxoVout, f.requestedAmount,
+    );
+    const workerBytes = atomicIntentClaimMsgVar(
+      bytesToHex(f.assetIdBytes),
+      bytesToHex(f.intentIdBytes),
+      bytesToHex(f.takerPubBytes),
+      f.takerUtxoTxidHex, f.takerUtxoVout, f.requestedAmount,
+    );
+    if (dappBytes.length !== 32 || workerBytes.length !== 32) return false;
+    return bytesToHex(dappBytes) === bytesToHex(workerBytes);
+  });
+}
+
+eqClaimMsg('claim_msg_v3 parity for baseline fixture',         {});
+eqClaimMsg('claim_msg_v3 parity for non-zero vout',            { takerUtxoVout: 7 });
+eqClaimMsg('claim_msg_v3 parity for high vout',                { takerUtxoVout: 65535 });
+eqClaimMsg('claim_msg_v3 parity for small requested_amount',   { requestedAmount: '1' });
+eqClaimMsg('claim_msg_v3 parity for large requested_amount',   { requestedAmount: '18446744073709551000' });
+eqClaimMsg('claim_msg_v3 parity for different taker_pubkey',   { takerPubBytes: hexToBytes('02' + 'ee'.repeat(32)) });
 
 console.log(`\n=== ${pass} passed · ${fail} failed ===`);
 if (fail > 0) process.exit(1);

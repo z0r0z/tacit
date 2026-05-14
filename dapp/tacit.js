@@ -12581,6 +12581,97 @@ async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
   return j;
 }
 
+// Dapp parity helper for the worker's atomicIntentClaimMsgVar. Same domain
+// (`tacit-axintent-claim-v3`), same field order. The taker signs this with
+// their priv at claim; the worker re-derives + verifies under taker_pubkey.
+function _axintentClaimMsgVar(assetIdBytes, intentIdBytes, takerPubBytes, takerUtxoTxidHex, takerUtxoVout, requestedAmountStr) {
+  const txidBE = reverseBytes(hexToBytes(takerUtxoTxidHex));
+  const voutLE = new Uint8Array(4); new DataView(voutLE.buffer).setUint32(0, takerUtxoVout >>> 0, true);
+  const reqLE  = new Uint8Array(8); new DataView(reqLE.buffer).setBigUint64(0, BigInt(requestedAmountStr), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-axintent-claim-v3'),
+    assetIdBytes, intentIdBytes, takerPubBytes,
+    txidBE, voutLE, reqLE,
+  ));
+}
+
+// Taker-side claim for variable-amount intents. Caller has already fetched
+// the intent record from the worker and knows intent.amount + price_sats +
+// min_take_amount. The taker picks `requestedAmount` in [min_take, amount];
+// this function computes the scaled BTC payment, finds a single P2WPKH UTXO
+// large enough, signs claim_msg_v3, POSTs to /atomic-intents/.../claim. The
+// worker re-verifies the sig + scaled-price gate + bound check; a sig that
+// would also verify under claim_msg_v2 cannot (different domain string).
+async function claimAxferVarIntent({ assetIdHex, intentIdHex, intent, requestedAmount }) {
+  if (!ENABLE_T_AXFER_VARIABLE) {
+    throw new Error('Variable-amount intents are disabled in this build. Set ENABLE_T_AXFER_VARIABLE=true to enable.');
+  }
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!intent || !intent.amount || !intent.price_sats || !intent.min_take_amount) {
+    throw new Error('intent record must include amount, price_sats, min_take_amount');
+  }
+  if (typeof requestedAmount !== 'string' || !/^\d+$/.test(requestedAmount)) {
+    throw new Error('requestedAmount must be a decimal base-unit string');
+  }
+  // Bound check (client-side; worker re-verifies). Surfacing here lets the
+  // taker get a clear local error instead of a 400 from the worker.
+  const amountBI    = BigInt(intent.amount);
+  const minTakeBI   = BigInt(intent.min_take_amount);
+  const requestedBI = BigInt(requestedAmount);
+  if (requestedBI < minTakeBI) throw new Error(`requested_amount ${requestedAmount} below min_take_amount ${intent.min_take_amount}`);
+  if (requestedBI > amountBI)  throw new Error(`requested_amount ${requestedAmount} exceeds listed amount ${intent.amount}`);
+
+  // Scaled BTC payment. floor() rounding matches §5.7.6.1 *Bounded recipient
+  // amount* and the worker's gate.
+  const priceSatsBI = BigInt(intent.price_sats);
+  const requiredSats = Number((requestedBI * priceSatsBI) / amountBI);
+  if (requiredSats < DUST) {
+    throw new Error(`requested_amount yields sub-dust BTC payment (${requiredSats} < ${DUST}); raise requested_amount`);
+  }
+
+  // Pick a single confirmed P2WPKH sat UTXO ≥ requiredSats.
+  let utxos;
+  try { utxos = await getUtxos(wallet.address()); }
+  catch (e) { throw new Error('could not load wallet UTXOs: ' + (e.message || e)); }
+  const candidate = (utxos || []).filter(u => u.status?.confirmed !== false)
+    .sort((a, b) => Number(a.value) - Number(b.value))
+    .find(u => Number(u.value) >= requiredSats);
+  if (!candidate) {
+    const total = (utxos || []).reduce((s, u) => s + Number(u.value || 0), 0);
+    throw new Error(
+      `no single confirmed UTXO at this address has ≥ ${requiredSats} sats ` +
+      `(scaled price for requested_amount ${requestedAmount}; total balance: ${total}). ` +
+      `Consolidate UTXOs or send sats to ${wallet.address()} first.`,
+    );
+  }
+  const utxoTxid = String(candidate.txid).toLowerCase();
+  const utxoVout = Number(candidate.vout) >>> 0;
+  const cMsg = _axintentClaimMsgVar(
+    hexToBytes(assetIdHex), hexToBytes(intentIdHex), wallet.pub,
+    utxoTxid, utxoVout, requestedAmount,
+  );
+  const sig = signSchnorr(cMsg, wallet.priv);
+  const resp = await fetch(withNet(ATOMIC_INTENT_CLAIM_URL(assetIdHex, intentIdHex)), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      taker_pubkey: bytesToHex(wallet.pub),
+      taker_utxo: { txid: utxoTxid, vout: utxoVout },
+      requested_amount: requestedAmount,
+      sig: bytesToHex(sig),
+    }),
+  });
+  const j = await resp.json().catch(() => ({}));
+  if (resp.status === 409) {
+    const remain = j.claim?.expires_at ? Math.max(0, j.claim.expires_at - Math.floor(Date.now()/1000)) : null;
+    const extra = remain != null ? ` (held ~${Math.ceil(remain/60)} more min)` : '';
+    throw new Error('intent already claimed by another taker' + extra);
+  }
+  if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+  return j;
+}
+
 async function fulfilAxferIntent({ assetIdHex, intentIdHex, intent, claim, autoMode = false }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
@@ -44952,6 +45043,10 @@ export {
   // atomicIntentIdHexVar + atomicIntentPublishMsgVar. Drift here = a 403 at
   // every variable-amount publish, so the parity test is load-bearing.
   publishAxferVarIntent, _axintentIdVar, _axintentPublishMsgVar,
+  // §5.7.6.1 variable-amount intent taker-side claim. Exported for the
+  // dapp/worker parity test (claim_msg_v3 byte-equivalence with the worker's
+  // atomicIntentClaimMsgVar).
+  claimAxferVarIntent, _axintentClaimMsgVar,
   // Direct retry hooks for resume-after-partial-failure (e.g. publish broadcast
   // OK but worker POST timed out). The harness uses these to retry the POST
   // without rebroadcasting.
