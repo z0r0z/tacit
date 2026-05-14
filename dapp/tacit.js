@@ -2544,10 +2544,27 @@ function _txMemCachePut(id, tx) {
     if (oldest !== undefined) _txMemCache.delete(oldest);
   }
 }
+// Negative cache: txids that returned 404 from the chain API. Keeps
+// the next ~hour of calls from re-firing the same dead lookup, which
+// would (a) spam the network tab with red 404 entries and (b) waste
+// the API budget on guaranteed misses. Eviction is age-based, not
+// size-based, because the typical reason for a 404 is "tx hasn't
+// propagated yet" — we want a relatively short TTL so a tx that
+// later DOES land becomes fetchable again. 60 min is conservative.
+const _txNotFoundCache = new Map();
+const _TX_NOT_FOUND_TTL_MS = 60 * 60 * 1000;
+function _txMarkNotFound(id) { _txNotFoundCache.set(id, Date.now()); }
+function _txIsRecentlyNotFound(id) {
+  const at = _txNotFoundCache.get(id);
+  if (!at) return false;
+  if (Date.now() - at > _TX_NOT_FOUND_TTL_MS) { _txNotFoundCache.delete(id); return false; }
+  return true;
+}
 const getTx = async (rawId) => {
   if (typeof rawId !== 'string') return null;
   const id = rawId.toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(id)) return null;
+  if (_txIsRecentlyNotFound(id)) return null;
   const mem = _txMemCache.get(id);
   if (mem) return mem;
   try {
@@ -2562,7 +2579,16 @@ const getTx = async (rawId) => {
   if (inflight) return inflight;
   const p = (async () => {
     let tx = null;
-    try { tx = await apiJson(`/tx/${id}`); } catch { return null; }
+    try { tx = await apiJson(`/tx/${id}`); }
+    catch (e) {
+      // Stamp the negative cache only on a clean 404 (the indexer
+      // explicitly said "no such tx"). 429s / 5xx / network errors
+      // can be retried later — they don't imply the tx is gone, just
+      // that the request failed. apiJson throws "API 404: ..." on
+      // 4xx (see api() body), so check the prefix.
+      if (/^API 404/.test(e?.message || '')) _txMarkNotFound(id);
+      return null;
+    }
     if (!tx) return null;
     if (tx.status && tx.status.confirmed === true) {
       _txMemCachePut(id, tx);
@@ -36241,8 +36267,20 @@ async function populateMarketActivityPanel(scope, asset, rows) {
     console.warn('asset stats load failed', err);
   }
   const officialTrades = Array.isArray(assetStats?.trades) ? assetStats.trades : [];
+  const _nowSec = Math.floor(Date.now() / 1000);
+  // Trades younger than ~10 min often haven't propagated to the chain
+  // API yet (commit broadcast → indexer pickup → mempool.space sync),
+  // so a /tx/<txid> lookup 404s and the activity row falls back to
+  // empty addresses anyway. Skip the request entirely on recent ones
+  // — keeps the network tab quiet and saves API budget. Older trades
+  // that genuinely 404 (RBF dropped, reorged) get caught by getTx's
+  // negative cache so we don't retry them every refresh either.
+  const TRADE_ADDR_LOOKUP_MIN_AGE_SECS = 10 * 60;
   const tradeEvents = await Promise.all(officialTrades.slice(0, MARKET_ACTIVITY_MAX_ROWS).map(async (t) => {
-    const txAddresses = await marketTradeAddressesFromTx(t?.txid);
+    const ageSecs = Math.max(0, _nowSec - Number(t?.ts || 0));
+    const txAddresses = ageSecs < TRADE_ADDR_LOOKUP_MIN_AGE_SECS
+      ? { seller_address: '', buyer_address: '' }
+      : await marketTradeAddressesFromTx(t?.txid);
     return marketActivityEventFromTrade(asset, t, txAddresses);
   }));
   const events = mergeMarketActivityEvents(
