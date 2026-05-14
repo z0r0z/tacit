@@ -33166,7 +33166,27 @@ async function renderMarket() {
     applyMarketFilters();
     return;
   }
-  list.innerHTML = '<div class="muted" style="padding:14px;text-align:center;font-style:italic;"><span class="live-dots">loading</span></div>';
+  // Skeleton placeholder: 8 ghost rows mimicking the token-table layout
+  // (logo + ticker + price + mcap + listings) so the user perceives
+  // the page as actively loading rather than blank. Each row uses the
+  // shared .skeleton-row class which already animates via @keyframes
+  // skeleton-shimmer. Total markup is ~1 KB and gets replaced by the
+  // real table the moment fetchMarketDataDeduped resolves.
+  list.innerHTML = `
+    <div data-market-skeleton style="border:1px solid var(--ink);background:var(--bg);">
+      ${Array.from({ length: 8 }, () => `
+        <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--ink-faint);">
+          <div class="skeleton-row" style="width:44px;height:44px;flex:0 0 44px;"></div>
+          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
+            <div class="skeleton-row medium"></div>
+            <div class="skeleton-row short"></div>
+          </div>
+          <div class="skeleton-row" style="flex:0 0 80px;"></div>
+          <div class="skeleton-row" style="flex:0 0 80px;"></div>
+          <div class="skeleton-row" style="flex:0 0 60px;"></div>
+        </div>
+      `).join('')}
+    </div>`;
   setStatus(status, 'loading', true);
   try {
     // Deduped fetch: if a deep-link pre-fetch is already in flight from
@@ -33543,8 +33563,12 @@ function applyMarketFilters() {
         <label style="font-size:10px;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:170px;">
           <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;">Slippage</span>
           <select data-swap-slippage title="Click to change max acceptable price drift before the swap refuses to route" style="box-sizing:border-box;min-width:78px;height:28px;font-family:var(--mono);font-size:11px;line-height:1.2;padding:4px 22px 4px 8px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);-webkit-appearance:none;-moz-appearance:none;appearance:none;cursor:pointer;">
+            <option value="0.5">0.5%</option>
             <option value="1">1%</option>
+            <option value="2">2%</option>
+            <option value="3">3%</option>
             <option value="5">5%</option>
+            <option value="10">10%</option>
             <option value="20" selected>20%</option>
             <option value="50">50%</option>
           </select>
@@ -36206,7 +36230,17 @@ async function populateMarketAssetStats(scope, asset) {
     return;
   }
   const visible = trades.slice(0, 10);
-  const rowsHtml = visible.map(t => {
+  // Tick-by-tick direction. Trades are newest-first, so each row's
+  // "prior" is the NEXT element in the list (one trade earlier in time).
+  // ↑ green when this fill came in above the previous fill's unit price,
+  // ↓ red when below, · grey on flat / unknown. Standard CEX-uptick
+  // visualization — traders read momentum at a glance without computing.
+  const tradeUnits = visible.map(t => {
+    const amtBig = (() => { try { return BigInt(t.amount || '0'); } catch { return 0n; } })();
+    if (amtBig <= 0n) return null;
+    return unitPriceSats(Number(t.price_sats) || 0, amtBig, decimals);
+  });
+  const rowsHtml = visible.map((t, i) => {
     const price = Number(t.price_sats) || 0;
     const amtBig = (() => { try { return BigInt(t.amount || '0'); } catch { return 0n; } })();
     const amtStr = amtBig > 0n ? fmtAssetAmount(amtBig, decimals) : '?';
@@ -36214,6 +36248,17 @@ async function populateMarketAssetStats(scope, asset) {
     if (amtBig > 0n) {
       const u = unitPriceSats(price, amtBig, decimals);
       if (u != null) unitStr = `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}`;
+    }
+    // Direction tag relative to the PREVIOUS fill (one trade older in
+    // chrono order = i+1 in the newest-first list). Last row has no
+    // older comparable trade so it renders the flat dot.
+    const thisU = tradeUnits[i];
+    const prevU = tradeUnits[i + 1];
+    let dirHtml = '<span style="color:var(--ink-mid);font-size:10px;" title="No prior trade to compare.">·</span>';
+    if (thisU != null && prevU != null && prevU > 0) {
+      if (thisU > prevU) dirHtml = `<span style="color:#0a7d3a;font-size:11px;font-weight:600;" title="Up from ${fmtUnitPriceSats(prevU)} sats/${escapeHtml(ticker)}">↑</span>`;
+      else if (thisU < prevU) dirHtml = `<span style="color:#b8341d;font-size:11px;font-weight:600;" title="Down from ${fmtUnitPriceSats(prevU)} sats/${escapeHtml(ticker)}">↓</span>`;
+      else dirHtml = `<span style="color:var(--ink-mid);font-size:10px;" title="Flat from prior fill">·</span>`;
     }
     const ts = Number(t.ts || 0);
     const ageSecs = Math.max(0, Math.floor(Date.now() / 1000) - ts);
@@ -36224,6 +36269,7 @@ async function populateMarketAssetStats(scope, asset) {
       : `<span class="muted" style="font-size:10px;">${escapeHtml(txidShort)}</span>`;
     return `
       <div style="display:flex;align-items:center;gap:10px;padding:4px 0;border-top:1px solid var(--ink-faint);font-size:11px;flex-wrap:wrap;">
+        <div style="flex:0 0 14px;text-align:center;">${dirHtml}</div>
         <div style="flex:0 0 auto;font-family:var(--mono);"><strong>${escapeHtml(unitStr)}</strong></div>
         <div style="flex:1 1 100px;min-width:0;color:var(--ink-mid);overflow-wrap:anywhere;">${escapeHtml(amtStr)} ${escapeHtml(ticker)} · ${price.toLocaleString()} sats</div>
         <div style="flex:0 0 auto;" class="muted">${escapeHtml(ageStr)} ago</div>
@@ -36906,7 +36952,27 @@ async function populateMarketBidsLadder(scope, asset) {
   // USD pricing on every row when the oracle cache is hot. Decorative;
   // a missing price falls through to sats-only without breaking layout.
   const _bidBtcUsd = _cachedBtcUsd();
-  const rowsHtml = ladder.map(b => {
+  // Cumulative-depth bars: walk the sorted ladder top-down (highest bid
+  // first), tally cumulative TAC across rows, and stamp each row with a
+  // left-anchored translucent green bar whose width = cumulative / total.
+  // Classic CEX orderbook depth visualization — at a glance, the bar
+  // length tells you "this is where the liquidity is". Excludes claimed
+  // / expired rows from the total so the bar reflects fillable depth.
+  let bidTotalDepth = 0;
+  const _fillableAmts = ladder.map(b => {
+    if (b.axintent_id) return 0;
+    if (b._expiresIn <= 0) return 0;
+    const amt = Number(b.amount || 0);
+    return Number.isFinite(amt) && amt > 0 ? amt : 0;
+  });
+  for (const a of _fillableAmts) bidTotalDepth += a;
+  let bidCumSoFar = 0;
+  const bidCumPct = _fillableAmts.map(a => {
+    bidCumSoFar += a;
+    return bidTotalDepth > 0 ? Math.min(100, (bidCumSoFar / bidTotalDepth) * 100) : 0;
+  });
+  const _bidFillableCount = _fillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
+  const rowsHtml = ladder.map((b, _bidIdx) => {
     const amtStr = fmtAssetAmount(BigInt(b.amount || 0), decimals);
     const sats = Number(b.price_sats || 0);
     const unitVal = b._unit != null ? fmtUnitPriceSats(b._unit) : 'n/a';
@@ -36942,9 +37008,19 @@ async function populateMarketBidsLadder(scope, asset) {
     // claimed bids (`axintent_id` set or expired).
     const _fillable = !b._isMine && !claimed && !(b._expiresIn === 0);
     const _fillUnitAttr = (_fillable && b._unit != null) ? ` data-fill-unit="${b._unit}"` : '';
-    const _fillAttrs = _fillable
-      ? ` data-fill-aid="${escapeHtml(aid)}" data-fill-amount="${escapeHtml(String(b.amount || '0'))}" data-fill-dec="${decimals}" data-fill-ticker="${escapeHtml(ticker)}" data-fill-direction="sell"${_fillUnitAttr} style="cursor:pointer;" title="Click outside Fulfil to size this in the swap tile at this price floor."`
+    // Cumulative-depth bar style: left-anchored translucent green covering
+    // [0%, cumPct]. Bars only render when there's meaningful depth to
+    // visualize (≥ 2 fillable rows); single-row ladders look weird with
+    // a 100% bar so we skip them.
+    const _cumPct = bidCumPct[_bidIdx];
+    const _depthStyle = (bidTotalDepth > 0 && _bidFillableCount >= 2 && _fillableAmts[_bidIdx] > 0)
+      ? `background:linear-gradient(to right, rgba(10, 143, 67, 0.16) ${_cumPct.toFixed(1)}%, transparent ${_cumPct.toFixed(1)}%);`
       : '';
+    const _baseCursor = _fillable ? 'cursor:pointer;' : '';
+    const _styleAttr = (_depthStyle || _baseCursor) ? ` style="${_depthStyle}${_baseCursor}"` : '';
+    const _fillAttrs = _fillable
+      ? ` data-fill-aid="${escapeHtml(aid)}" data-fill-amount="${escapeHtml(String(b.amount || '0'))}" data-fill-dec="${decimals}" data-fill-ticker="${escapeHtml(ticker)}" data-fill-direction="sell"${_fillUnitAttr}${_styleAttr} title="Click outside Fulfil to size this in the swap tile at this price floor."`
+      : _styleAttr;
     return `
       <div data-bid-row data-bid-id="${escapeHtml(bidId)}" class="${rowClass}"${_fillAttrs}>
         <div class="market-bid-price">
