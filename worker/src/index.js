@@ -3761,18 +3761,23 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   // and any block scanned before the cron started running is permanently
   // missed since mainnet has zero backfill window. The xferseen dedupe in
   // bumpTransferCount makes this idempotent against the cron.
-  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER) {
-    const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload : decodeCXferPayload;
+  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR) {
+    const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload
+                  : decoded.opcode === T_AXFER_VAR ? decodeAxferVarPayload
+                  : decodeCXferPayload;
     const dx = decoder(decoded.payload);
     if (!dx) return jsonResponse({ error: 'invalid transfer payload' }, 400, cors);
     const counted = await bumpTransferCount(env, network, dx.asset_id, txidHex);
-    // Optional last-traded record. Only AXFER (atomic-OTC settlement) has a
-    // well-defined trade price the dapp can vouch for at broadcast time.
-    // Validate format strictly so a malformed body can't poison the field;
-    // the worker doesn't independently verify the price (intent record may
-    // already be GC'd), so we trust well-formed input. Last-write wins.
+    // Optional last-traded record. AXFER (whole-UTXO atomic OTC, §5.7) and
+    // AXFER_VAR (variable-amount, §5.7.6.1) both have a well-defined trade
+    // price the dapp can vouch for at broadcast time. For AXFER_VAR the
+    // dapp hints the SCALED price (floor(requested × full_price / amount))
+    // and the actual settled (requested) amount, so last_trade reflects the
+    // unit price of the partial fill — not the full-lot list price. Without
+    // this, every variable-amount trade would stamp the maker's listed
+    // total and the mark_price would jitter on each partial settle.
     let lastTrade = null;
-    if (decoded.opcode === T_AXFER
+    if ((decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR)
         && Number.isInteger(body.price_sats) && body.price_sats > 0
         && typeof body.amount === 'string' && /^[0-9]+$/.test(body.amount)) {
       try {

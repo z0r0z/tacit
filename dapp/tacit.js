@@ -13272,6 +13272,25 @@ async function finalizeAxferVarTake({ assetIdHex, intentIdHex, intent, fulfilmen
   });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
+
+  // Trade-record hint. Post the SCALED price + ACTUAL settled amount (not
+  // the listed total) so the worker's last_trade + mark_price + 24h volume
+  // + price chart reflect the unit price of the partial fill correctly. The
+  // worker's /assets/hint endpoint accepts T_AXFER_VAR opcode (PR landing
+  // alongside this; see worker/src/index.js trade-hint branch). For
+  // whole-UTXO atomic intents this hint mirrors takeAxferOffer's
+  // postHint call exactly — same shape, T_AXFER_VAR just stamps under
+  // listing_kind: 'atomic-var' so future analytics can differentiate.
+  if (j?.reveal_txid) {
+    const _scaledSats = Number((requestedBI * priceSatsBI) / amountBI);
+    postHint(j.reveal_txid, 0, {
+      price_sats: _scaledSats,
+      amount: requestedBI.toString(),
+      seller_address: intent.maker_address || '',
+      buyer_address: wallet.address(),
+      listing_kind: 'atomic-var',
+    });
+  }
   return j;
 }
 
