@@ -5651,6 +5651,70 @@ function getOpening(txidHex, vout) {
     blinding: BigInt('0x' + e.blinding),
   };
 }
+// Encrypt-to-self key derivation for the buyer-opening cache. ECDH(priv,
+// pub) when priv*G = pub gives priv²·G — a value only the wallet holder
+// can derive. SHA256 of the x-coord becomes a 32-byte AES-GCM key.
+async function _ecdhSelfAesKey() {
+  if (!wallet.priv || !wallet.pub) throw new Error('wallet locked');
+  const shared = secp.getSharedSecret(wallet.priv, wallet.pub);
+  const x = shared.slice(1, 33);
+  const keyBytes = sha256(x);
+  return crypto.subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+// Publish a buyer-opening blob to the worker so a subsequent scan on a
+// fresh browser (or after a localStorage flush failure) can recover the
+// (amount, blinding) without trial-derivation. Best-effort: a failure
+// here doesn't void the buy — the local recordOpening already happened.
+async function publishBuyerOpening(txidHex, vout, amountBig, blindingBig) {
+  if (!WORKER_BASE) return false;
+  if (!/^[0-9a-f]{64}$/.test(String(txidHex || ''))) return false;
+  try {
+    const aesKey = await _ecdhSelfAesKey();
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const plaintext = concatBytes(bigintToBytes32(amountBig), bigintToBytes32(blindingBig));
+    const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, plaintext);
+    const blob = concatBytes(iv, new Uint8Array(ctBuf));
+    const r = await fetch(`${WORKER_BASE}/utxos/${txidHex}/${vout}/buyer-opening?network=${encodeURIComponent(NET.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        declared_pubkey: bytesToHex(wallet.pub),
+        ciphertext: bytesToHex(blob),
+      }),
+    });
+    return r.ok;
+  } catch { return false; }
+}
+// Recover a buyer-opening from the worker cache. Returns null on miss,
+// wrong-recipient, or AES-GCM auth-tag rejection (which catches both
+// tampering and a stale ciphertext that doesn't decrypt with the
+// current wallet's priv). Caller is responsible for re-verifying the
+// recovered (amount, blinding) against the on-chain commitment before
+// trusting it.
+async function fetchBuyerOpening(txidHex, vout) {
+  if (!WORKER_BASE) return null;
+  if (!/^[0-9a-f]{64}$/.test(String(txidHex || ''))) return null;
+  if (!wallet.priv || !wallet.pub) return null;
+  try {
+    const r = await fetch(`${WORKER_BASE}/utxos/${txidHex}/${vout}/buyer-opening?network=${encodeURIComponent(NET.name)}`);
+    if (!r.ok) return null;
+    const v = await r.json();
+    if (!v || typeof v.ciphertext !== 'string' || typeof v.declared_pubkey !== 'string') return null;
+    if (v.declared_pubkey.toLowerCase() !== bytesToHex(wallet.pub).toLowerCase()) return null;
+    const blob = hexToBytes(v.ciphertext);
+    if (blob.length < 12 + 16 + 64) return null; // iv + tag + (amount+blinding)
+    const iv = blob.slice(0, 12);
+    const ct = blob.slice(12);
+    const aesKey = await _ecdhSelfAesKey();
+    const ptBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ct);
+    const pt = new Uint8Array(ptBuf);
+    if (pt.length !== 64) return null;
+    return {
+      amount: bytes32ToBigint(pt.slice(0, 32)),
+      blinding: bytes32ToBigint(pt.slice(32, 64)),
+    };
+  } catch { return null; }
+}
 
 // ============== ACTIVITY LOG ==============
 // Local, network-scoped log of broadcasts the wallet has signed (etch /
@@ -8273,6 +8337,32 @@ async function _scanHoldingsImpl() {
         }
       }
     }
+
+    // Worker-cache fallback: a preauth-take buyer publishes their
+    // (amount, blinding) opening to the worker encrypted to themselves
+    // at take time. If the local recordOpening was lost (localStorage
+    // quota failure, browser crash mid-flush) AND trial-derivation
+    // didn't catch it above, this is the safety net. AES-GCM auth-tag
+    // catches any tampering/wrong-recipient ciphertext, and we
+    // re-verify the Pedersen commitment opens to the recovered values
+    // before trusting them. Best-effort: failure just falls through to
+    // h.ghosts (same as before).
+    try {
+      const rec = await fetchBuyerOpening(u.txid, u.vout);
+      if (rec && rec.amount >= 0n && rec.amount < (1n << BigInt(N_BITS))) {
+        if (pedersenCommit(rec.amount, rec.blinding).equals(bytesToPoint(onChainCommitment))) {
+          recordOpening(u.txid, u.vout, assetIdHex, rec.amount, rec.blinding);
+          h.balance += rec.amount;
+          h.utxos.push({
+            utxo: u, amount: rec.amount, blinding: rec.blinding,
+            commitment: onChainCommitment,
+            senderPubHex: null,
+            blockTime: u.status?.block_time || null,
+          });
+          continue;
+        }
+      }
+    } catch { /* worker fallback is best-effort */ }
 
     h.ghosts.push({ utxo: u, commitment: onChainCommitment });
   }
@@ -12679,6 +12769,12 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   // Record the recipient opening locally so the next holdings refresh sees
   // the new UTXO without waiting for ECDH-recovery scan.
   recordOpening(revealTxidHex, 0, assetIdHex, amount, recipBlinding);
+  // Belt-and-suspender: also publish the opening to the worker,
+  // encrypted to this wallet via ECDH(priv, pub)→AES-GCM. Recovery
+  // path for the case where the localStorage flush fails (quota,
+  // browser crash mid-write, etc.). Fire-and-forget — failure here
+  // doesn't void the buy. See fetchBuyerOpening in scanHoldings.
+  publishBuyerOpening(revealTxidHex, 0, amount, recipBlinding).catch(() => {});
   recordActivity({
     kind: 'transfer-in',
     ticker: sale.ticker || '',

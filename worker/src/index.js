@@ -630,6 +630,27 @@ async function bumpHolderCount(env, network, aid, scriptHashHex) {
   await env.REGISTRY_KV.put(seenKey, '1');
   return true;
 }
+// Buyer-opening cache: opt-in storage of a UTXO's (amount, blinding)
+// opening, encrypted by the recipient to themselves via ECDH(priv, pub).
+// The worker stores the ciphertext + the publisher's declared pubkey;
+// only a wallet holding the matching priv can decrypt. Recovery path
+// for preauth-take buyers whose localStorage opening write failed
+// (quota, browser crash mid-flush) — without this, the UTXO lands as
+// h.ghosts on the next scan and the user sees a "failed validation"
+// banner until they manually retry.
+//
+// Threat model: no auth on POST since the ciphertext is encrypted to
+// the recipient's pubkey already. A spoofer publishing garbage just
+// wastes one KV slot per UTXO; the legitimate buyer's POST overwrites
+// (last-write-wins) within the take-broadcast window. If we lose the
+// race, recovery just fails (same as today) — never silently mis-
+// recovers a wrong opening because the AES-GCM auth tag check would
+// reject the ciphertext.
+function buyerOpeningKey(network, txidHex, vout) {
+  return network === 'signet'
+    ? `buyer-opening:${txidHex}:${vout}`
+    : `buyer-opening:${network}:${txidHex}:${vout}`;
+}
 // Last-traded price record per (network, asset_id). Set by the AXFER hint
 // path when the dapp passes price + amount alongside the settlement txid;
 // surfaced on /assets and /assets/:id so cards can display "last sold at X
@@ -5458,6 +5479,56 @@ async function handleUtxoOpeningPost(txidHex, voutStr, req, env, network, cors) 
   return jsonResponse({ ok: true, opening }, 200, cors);
 }
 
+// POST /utxos/:txid/:vout/buyer-opening — publish a self-encrypted
+// opening blob the buyer can later decrypt to recover (amount,
+// blinding). No auth: the ciphertext is bound to a declared pubkey;
+// only a wallet holding the matching priv produces a valid AES-GCM
+// open. Worst-case attacker overwrites with garbage → legitimate
+// buyer fails decrypt → falls through to other recovery paths
+// (same as today). 90-day TTL auto-collects stale entries.
+async function handleBuyerOpeningPost(txidHex, voutStr, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
+  const vout = parseInt(voutStr, 10);
+  if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) {
+    return jsonResponse({ error: 'invalid vout' }, 400, cors);
+  }
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const declaredPub = String(body.declared_pubkey || '').toLowerCase();
+  const ciphertext = String(body.ciphertext || '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(declaredPub)) {
+    return jsonResponse({ error: 'declared_pubkey must be 33-byte compressed hex' }, 400, cors);
+  }
+  // Bound ciphertext size to defend against KV-quota grinding. 12 (IV)
+  // + 64 (plaintext: amount+blinding) + 16 (GCM tag) = 92 bytes raw =
+  // 184 hex; cap at 512 hex for forward headroom on future schema.
+  if (!/^[0-9a-f]+$/.test(ciphertext) || ciphertext.length === 0 || ciphertext.length > 512) {
+    return jsonResponse({ error: 'ciphertext must be 1..256 bytes of hex' }, 400, cors);
+  }
+  const record = {
+    declared_pubkey: declaredPub,
+    ciphertext,
+    stored_at: Math.floor(Date.now() / 1000),
+  };
+  await env.REGISTRY_KV.put(
+    buyerOpeningKey(network, txidHex, vout),
+    JSON.stringify(record),
+    { expirationTtl: 90 * 24 * 3600 },
+  );
+  return jsonResponse({ ok: true, stored_at: record.stored_at }, 200, cors);
+}
+
+async function handleBuyerOpeningGet(txidHex, voutStr, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
+  const vout = parseInt(voutStr, 10);
+  if (!Number.isInteger(vout) || vout < 0 || vout > 0xffff) {
+    return jsonResponse({ error: 'invalid vout' }, 400, cors);
+  }
+  const v = await env.REGISTRY_KV.get(buyerOpeningKey(network, txidHex, vout), 'json');
+  if (!v) return jsonResponse({ error: 'no buyer-opening published for this UTXO' }, 404, cors);
+  return jsonResponse(v, 200, cors);
+}
+
 async function handleUtxoOpeningGet(txidHex, voutStr, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(txidHex)) return jsonResponse({ error: 'invalid txid' }, 400, cors);
   const vout = parseInt(voutStr, 10);
@@ -9485,6 +9556,9 @@ export default {
     const mu = url.pathname.match(/^\/utxos\/([0-9a-f]{64})\/(\d+)\/opening$/);
     if (mu && req.method === 'POST')                           return handleUtxoOpeningPost(mu[1], mu[2], req, env, network, cors);
     if (mu && req.method === 'GET')                            return handleUtxoOpeningGet(mu[1], mu[2], env, network, cors);
+    const mub = url.pathname.match(/^\/utxos\/([0-9a-f]{64})\/(\d+)\/buyer-opening$/);
+    if (mub && req.method === 'POST')                          return handleBuyerOpeningPost(mub[1], mub[2], req, env, network, cors);
+    if (mub && req.method === 'GET')                           return handleBuyerOpeningGet(mub[1], mub[2], env, network, cors);
     const md = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/disclosures$/);
     if (md && req.method === 'POST')                           return handleDisclosurePost(md[1], req, env, network, cors);
     if (md && req.method === 'GET')                            return handleDisclosureList(md[1], env, network, cors);
