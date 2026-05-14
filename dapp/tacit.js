@@ -41516,7 +41516,24 @@ function _wireSwapTile(scope) {
         ? ` · ⚠ insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`
         : '';
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
-      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${residHint}${insufficientHint}`;
+      // Fill-kind breakdown: preauth fills settle in one Bitcoin tx
+      // (instant); 'intent' / 'intent-var' fills are 3-step
+      // (claim → maker fulfilment → buyer finalize) and wait on the
+      // maker's auto-fulfil daemon, so a mixed sweep can have very
+      // different per-fill latency. Confirm modal already differentiates;
+      // the live quote should too so the trader sees what they're
+      // committing to before clicking. Only render when the mix is
+      // genuinely mixed or includes intents — pure preauth sweeps
+      // stay clean.
+      const _instantFills = result.plan.filter(c => c.kind === 'preauth').length;
+      const _intentFills  = result.plan.filter(c => c.kind === 'intent' || c.kind === 'intent-var').length;
+      let _kindStr = '';
+      if (_intentFills > 0) {
+        _kindStr = _instantFills > 0
+          ? ` · ${_instantFills} instant + ${_intentFills} ${_intentFills === 1 ? 'awaits maker' : 'await maker'}`
+          : ` · ${_intentFills} ${_intentFills === 1 ? 'awaits maker' : 'await maker'} (~5–10s if auto-fulfil on)`;
+      }
+      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'}${_kindStr} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${residHint}${insufficientHint}`;
       if (insufficientBudget) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'insufficient balance';
@@ -41574,7 +41591,21 @@ function _wireSwapTile(scope) {
         ? ` · ⚠ insufficient ${ticker} — wallet holds ${balStr}, you'd need ${fmtAssetAmount(amt, decimals)}`
         : '';
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
-      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${reserveHint}${residHint}${autoHint}${insufficientTokensHint}`;
+      // Bid-kind breakdown: whole-bid (bid.kind === 'bid') fills sell
+      // the entire bid amount; variable-fill bids (bid-var, §5.7.7) let
+      // the seller deliver any chunk in [min_fill, remaining] at the
+      // scaled price. Mixed sweeps benefit from explicit signaling so
+      // the seller sees they're leveraging variable bids (state-of-art
+      // partial-fill) vs whole-bid take.
+      const _wholeBids = result.plan.filter(c => c.kind === 'bid').length;
+      const _varBids   = result.plan.filter(c => c.kind === 'bid-var').length;
+      let _bidKindStr = '';
+      if (_varBids > 0) {
+        _bidKindStr = _wholeBids > 0
+          ? ` · ${_wholeBids} whole + ${_varBids} partial`
+          : ` · ${_varBids} partial-fill`;
+      }
+      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'}${_bidKindStr} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${reserveHint}${residHint}${autoHint}${insufficientTokensHint}`;
       if (insufficientTokens) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = `only hold ${balStr} ${ticker}`;
