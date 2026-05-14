@@ -32781,17 +32781,21 @@ function _startMarketAutoRefresh() {
       await fetchMarketDataDeduped();
       try { _updateMarketCellsInPlace(); } catch (e) { console.warn('[market] cell-update failed', e?.message); }
       // Asset-detail reactivity: if the user is on a per-asset page AND
-      // that asset's listings changed structurally since the last
-      // render, re-apply filters so the asks/bids ladders + depth chart
-      // reflect new entries, fills, and cancels from other traders.
-      // Signature-gated so unrelated ticks don't burn a re-render. The
-      // price chart and swap tile are inside the asset header which
-      // applyMarketFilters preserves (it writes only to #market-list's
-      // body; the per-asset header above is rebuilt only on view
-      // transitions).
+      // either the asks or bids changed structurally since the last
+      // render, re-apply filters so the orderbook reflects new entries,
+      // fills, and cancels from other traders. The asks data already
+      // came in via fetchMarketDataDeduped; bids live in a separate
+      // worker endpoint with its own cache so we invalidate + await a
+      // fresh fetch here, then compare the combined asks+bids signature
+      // against what was last rendered. Signature-gated so unrelated
+      // ticks don't burn a re-render.
       if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
         const aid = _marketView.assetId;
-        const freshSig = _assetListingsSignature(aid);
+        if (typeof _invalidateBidsCache === 'function') _invalidateBidsCache(aid);
+        if (typeof _fetchBidIntentsCached === 'function') {
+          try { await _fetchBidIntentsCached(aid); } catch {}
+        }
+        const freshSig = _assetSignatureFull(aid);
         if (_renderedAssetSignature.aid === aid && _renderedAssetSignature.sig && freshSig !== _renderedAssetSignature.sig) {
           try { applyMarketFilters(); } catch (e) { console.warn('[market] asset re-render failed', e?.message); }
         }
@@ -32921,6 +32925,27 @@ function _assetListingsSignature(aid) {
     parts.push(`${id}:${l.kind || ''}:${l.min_price_sats || l.price_sats || 0}:${l.expired ? 1 : 0}:${l.expiry || 0}`);
   }
   return parts.join('|');
+}
+// Bids signature reads from the synchronous _bidCachePeek so it can
+// run inline. Returns '' when the cache is cold (no fetch resolved
+// for this asset yet) — populateMarketBidsLadder updates the rendered
+// signature once its fetch lands, so the cold state only persists
+// briefly and the auto-refresh comparison stays accurate.
+function _bidIntentsSignature(aid) {
+  if (!aid) return '';
+  const bids = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+  if (!Array.isArray(bids)) return '';
+  const parts = [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (const b of bids) {
+    if (b.axintent_id) continue;
+    if (Number(b.expiry || 0) > 0 && Number(b.expiry || 0) <= nowSec) continue;
+    parts.push(`${b.bid_id || ''}:${b.price_sats || 0}:${b.amount || '0'}:${b.expiry || 0}`);
+  }
+  return parts.join('|');
+}
+function _assetSignatureFull(aid) {
+  return `${_assetListingsSignature(aid)}||${_bidIntentsSignature(aid)}`;
 }
 // Track the last-rendered signature per view so the auto-refresh tick
 // can decide whether the visible asset-detail ladder is stale relative
@@ -34384,10 +34409,14 @@ function applyMarketFilters() {
   });
   // Capture the per-asset signature just rendered so the next auto-
   // refresh tick can compare and avoid re-rendering when nothing
-  // structurally changed. Cleared (aid='') in browse mode so a switch
-  // back to asset detail forces a fresh capture.
+  // structurally changed. Bids may still be loading (populateMarket-
+  // BidsLadder runs async); the bids portion of the signature will
+  // be '' until that fetch lands. We re-capture the signature inside
+  // populateMarketBidsLadder once bids are loaded so the comparison
+  // stays accurate from there on. Cleared (aid='') in browse mode so
+  // a switch back to asset detail forces a fresh capture.
   if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
-    _renderedAssetSignature = { aid: _marketView.assetId, sig: _assetListingsSignature(_marketView.assetId) };
+    _renderedAssetSignature = { aid: _marketView.assetId, sig: _assetSignatureFull(_marketView.assetId) };
   } else {
     _renderedAssetSignature = { aid: '', sig: '' };
   }
@@ -37614,6 +37643,9 @@ async function populateMarketBidsLadder(scope, asset) {
   catch (e) {
     list.innerHTML = `<div class="muted" style="font-size:10px;">load failed: ${escapeHtml(e?.message || String(e))}</div>`;
     if (countEl) countEl.textContent = '?';
+    // Bids load failed — keep the signature as-is so the next auto-
+    // refresh tick will try again. (Recapturing here would lock us
+    // into a stale signature that never matches a successful fetch.)
     // Wire all panel-header buttons even on failure — Sweep Buy works
     // against the asks ladder (independent of bids), and Auto-fulfil is
     // a global daemon toggle. Without this, all four would be inert on
@@ -37627,6 +37659,14 @@ async function populateMarketBidsLadder(scope, asset) {
   }
   if (countEl) countEl.textContent = String(intentsAll.length);
   if (toggleBtn && list) toggleBtn.textContent = list.hidden ? `Show bids${intentsAll.length ? ` (${intentsAll.length})` : ''}` : 'Hide bids';
+  // Bids fetch succeeded: re-capture the rendered signature so the
+  // next auto-refresh tick's comparison reflects bids-loaded state.
+  // Without this the first tick after a render would always see a
+  // signature mismatch (the initial capture had bids='' because the
+  // fetch was still in flight) and burn a false-positive re-render.
+  if (_marketView?.assetId === aid && typeof _assetSignatureFull === 'function') {
+    _renderedAssetSignature = { aid, sig: _assetSignatureFull(aid) };
+  }
   if (!intentsAll.length) {
     list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} &mdash; be the first to post one.</div>`;
     // Same fix: an asset with no bids should still have working
