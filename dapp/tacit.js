@@ -39687,13 +39687,23 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const _bandXHi = _markValid ? markUnit * 10 : Infinity;
   const xLoClamped = _markValid ? Math.max(xLoRawUnclamped, _bandXLo) : xLoRawUnclamped;
   const xHiClamped = _markValid ? Math.min(xHiRawUnclamped, _bandXHi) : xHiRawUnclamped;
-  // Make sure the clamped window still encloses the bid/ask cross —
-  // even when one side is heavily out-of-band, the cross itself is
-  // the focal point. If the clamp would hide both best-bid and best-
-  // ask, fall back to unclamped (rare).
+  // Make sure the clamped window still encloses the IN-BAND best bid
+  // and best ask — using the raw bestBid / bestAsk here would self-
+  // defeat: those are often outliers themselves (a 0.19-sat dust ask,
+  // a 14M-sat fat-finger bid). The viability check would always fail
+  // and force the unclamped fallback every render, which is exactly
+  // the bug that left the live TAC depth chart spanning 0.09→14M
+  // when the active band is 80–560 sats. headerBestBid / headerBest
+  // Ask are the same in-band values displayed in the chart's header
+  // ("best bid X · best ask Y"), so the visible window always wraps
+  // the cross point a real trader cares about. Falls back to the raw
+  // cross when no in-band orders survived the 0.2×–5× mark filter
+  // — the chart has no honest band to clamp to in that case anyway.
+  const _vbBid = inBandBestBid != null ? inBandBestBid : bestBid;
+  const _vbAsk = inBandBestAsk != null ? inBandBestAsk : bestAsk;
   const _clampViable = xHiClamped > xLoClamped
-    && bestAsk >= xLoClamped && bestAsk <= xHiClamped
-    && bestBid >= xLoClamped && bestBid <= xHiClamped;
+    && _vbAsk >= xLoClamped && _vbAsk <= xHiClamped
+    && _vbBid >= xLoClamped && _vbBid <= xHiClamped;
   const xLoRaw = _clampViable ? xLoClamped : xLoRawUnclamped;
   const xHiRaw = _clampViable ? xHiClamped : xHiRawUnclamped;
   if (xHiRaw <= xLoRaw) { out.style.display = 'none'; return; }
