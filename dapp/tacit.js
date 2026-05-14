@@ -37649,6 +37649,25 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const lowestBid = bidCum[bidCum.length - 1].u;
   const highestAsk = askCum[askCum.length - 1].u;
   const isCrossed = bestBid > bestAsk;
+  // In-band best bid / best ask — same 0.2×/5× mark band the bid/ask
+  // spread row already uses. Header text + dashed marker lines both
+  // read these so they match the spread row + reflect prices a trader
+  // would actually fill at. The chart's filled depth curves still
+  // draw against the unfiltered bidCum / askCum so dust tails stay
+  // visible. Falls back to raw extremes if markUnit is unknown or
+  // no orders fall in-band.
+  const _bandLo = (Number.isFinite(markUnit) && markUnit > 0) ? markUnit * 0.2 : 0;
+  const _bandHi = (Number.isFinite(markUnit) && markUnit > 0) ? markUnit * 5 : Infinity;
+  let inBandBestBid = null;
+  for (const b of bidCum) {
+    if (b.u >= _bandLo && b.u <= _bandHi && (inBandBestBid == null || b.u > inBandBestBid)) inBandBestBid = b.u;
+  }
+  let inBandBestAsk = null;
+  for (const a of askCum) {
+    if (a.u >= _bandLo && a.u <= _bandHi && (inBandBestAsk == null || a.u < inBandBestAsk)) inBandBestAsk = a.u;
+  }
+  const headerBestBid = inBandBestBid != null ? inBandBestBid : bestBid;
+  const headerBestAsk = inBandBestAsk != null ? inBandBestAsk : bestAsk;
   const xLoRaw = Math.min(lowestBid, bestAsk, bestBid);
   const xHiRaw = Math.max(highestAsk, bestBid, bestAsk);
   if (xHiRaw <= xLoRaw) { out.style.display = 'none'; return; }
@@ -37722,8 +37741,11 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const _crossedBadge = isCrossed
     ? `<span title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades." style="font-size:9px;padding:1px 5px;background:var(--red, #b8341d);color:#fff;border-radius:2px;letter-spacing:0.05em;cursor:help;">crossed</span>`
     : '';
-  const bestBidX = xOf(bestBid);
-  const bestAskX = xOf(bestAsk);
+  const bestBidX = xOf(headerBestBid);
+  const bestAskX = xOf(headerBestAsk);
+  const _inBandTitle = (inBandBestBid != null || inBandBestAsk != null)
+    ? `In-band (0.2×–5× mark) — dust outliers excluded. Raw best bid ${fmtUnitPriceSats(bestBid)}, raw best ask ${fmtUnitPriceSats(bestAsk)} sats/${ticker}.`
+    : '';
   // Capture old bid + ask path `d` attributes before the swap so the
   // post-write WAAPI animation can morph them into place.
   const _oldDepthBidD = out.querySelector('[data-depth-bid]')?.getAttribute('d') || null;
@@ -37731,7 +37753,7 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   out.innerHTML = `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
       <strong>Depth</strong>${_logBadge}${_crossedBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best bid ${escapeHtml(fmtUnitPriceSats(bestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
       <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1" pointer-events="none"/>
