@@ -32108,9 +32108,34 @@ function renderActivity() {
           stateHtml = ' · <span style="color:#b14444;">⚠ bidder didn\'t Take — your commit is recoverable</span>';
         }
       }
+      // Per-row P&L delta on swap-buy: compare this row's effective
+      // unit cost (totalSats / wholeQty) vs the asset's current mark
+      // price. Shows the trader "what's this fill worth right now"
+      // without leaving the Activity tab. Skipped when market cache
+      // is cold (no mark to compare against) or cost basis ≤ 0.
+      // Sell-side rows skip — sell P&L is a different framing ("did
+      // I sell above current mark?") and the existing Holdings card
+      // P&L pill already covers it from the wallet-level view.
+      let pnlBadge = '';
+      if (e.kind === 'swap-buy' && totalSats > 0) {
+        try {
+          const wholeQty = Number(BigInt(e.amount || '0')) / Math.pow(10, e.decimals || 0);
+          const costUnit = wholeQty > 0 ? totalSats / wholeQty : 0;
+          const asset = _marketCache?.assets?.find(a => a.asset_id === e.assetId);
+          const markUnit = Number(asset?.mark_price?.unit);
+          if (costUnit > 0 && Number.isFinite(markUnit) && markUnit > 0) {
+            const pct = ((markUnit - costUnit) / costUnit) * 100;
+            const sign = pct > 0 ? '+' : '';
+            const color = pct > 0 ? '#0a7d3a' : pct < 0 ? '#b8341d' : 'var(--ink-mid)';
+            const glyph = pct > 0 ? '▲' : pct < 0 ? '▼' : '·';
+            const tip = `Since you bought: your cost ${fmtUnitPriceSats(costUnit)} sats/${e.ticker || 'token'} vs current mark ${fmtUnitPriceSats(markUnit)} sats/${e.ticker || 'token'}.`;
+            pnlBadge = ` · <span style="color:${color};font-weight:600;" title="${escapeHtml(tip)}">${glyph} ${sign}${pct.toFixed(1)}% since</span>`;
+          }
+        } catch {}
+      }
       extraLine = `
         <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">
-          ${verbPaid} ${totalSats.toLocaleString()} sats${unitPriceStr}${stateHtml}
+          ${verbPaid} ${totalSats.toLocaleString()} sats${unitPriceStr}${pnlBadge}${stateHtml}
         </div>`;
     }
     return `
@@ -36722,7 +36747,9 @@ function marketAssetImageHtml(asset, sizePx = 44, cls = 'market-token-icon') {
 }
 function hydrateMarketImages(scope = document) {
   const root = scope && scope.querySelectorAll ? scope : document;
-  root.querySelectorAll('[data-market-img-uri]').forEach(slot => {
+  const slots = root.querySelectorAll('[data-market-img-uri]');
+  if (!slots.length) return;
+  const _resolve = (slot) => {
     const uri = slot.getAttribute('data-market-img-uri') || '';
     if (!uri || slot.dataset.marketImgLoaded === '1') return;
     slot.dataset.marketImgLoaded = '1';
@@ -36737,6 +36764,32 @@ function hydrateMarketImages(scope = document) {
     }).catch(() => {
       if (slot?.dataset) delete slot.dataset.marketImgLoaded;
     });
+  };
+  // IntersectionObserver gates the IPFS resolution per-slot: an image
+  // only kicks its fetch when the slot enters (or comes within 300px
+  // of) the viewport. Saves the round-trip on every below-fold tile in
+  // the gallery's 92-token initial render — previously 92 parallel
+  // IPFS gateway hits competed with critical-path resources on first
+  // paint even when only the first ~12 tiles were visible. Disconnect
+  // per-slot after first resolution so observed slots don't keep
+  // ticking the IO callback.
+  if (typeof IntersectionObserver === 'undefined' || typeof window === 'undefined') {
+    slots.forEach(_resolve);
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        io.unobserve(entry.target);
+        _resolve(entry.target);
+      }
+    }
+  }, { rootMargin: '300px 0px' });
+  slots.forEach(slot => {
+    if (slot.dataset.marketImgLoaded === '1') return;
+    // Best-effort: if the slot is already in viewport at observe time,
+    // IO fires synchronously on the next tick. No special-case needed.
+    io.observe(slot);
   });
 }
 function marketTokenName(asset) {
