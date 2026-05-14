@@ -32970,6 +32970,12 @@ function _assetSignatureFull(aid) {
 // can decide whether the visible asset-detail ladder is stale relative
 // to the fresh _marketCache.
 let _renderedAssetSignature = { aid: '', sig: '' };
+// Set by applyMarketFilters before its innerHTML rewrite when re-
+// rendering an asset-detail view; consumed inside the tile-build loop
+// so unchanged listings can keep the same outer DOM node across the
+// rewrite. Cleared at end-of-loop so it can't leak into unrelated
+// renders.
+let _pendingTileReuse = null;
 function _stopMarketAutoRefresh() {
   if (_marketAutoRefreshTimer) { clearInterval(_marketAutoRefreshTimer); _marketAutoRefreshTimer = null; }
 }
@@ -34118,6 +34124,24 @@ function applyMarketFilters() {
         node.parentNode.removeChild(node);
       }
     }
+    // Tile-node preservation: snapshot the asks grid's existing tile
+    // DOM by listing key so the build loop below can reuse the same
+    // nodes for unchanged listings. Without this every re-render
+    // recreates all tiles from scratch — a visible "destroy +
+    // recreate" pass even for tiles whose data didn't change. Reusing
+    // nodes keeps DOM identity stable so the browser treats it as a
+    // content update on existing elements rather than a layout
+    // rebuild. _diffMarketLive's data-market-anim flags still fire
+    // correctly on price changes; only the outer node identity is
+    // preserved.
+    const _existingGrid = list.querySelector('#market-grid');
+    if (_existingGrid) {
+      _pendingTileReuse = new Map();
+      for (const t of _existingGrid.children) {
+        const k = t.dataset.listingKey;
+        if (k) _pendingTileReuse.set(k, t);
+      }
+    }
   }
   list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
   if (_onAssetDetailReRender) {
@@ -34173,11 +34197,27 @@ function applyMarketFilters() {
     const expIso = new Date((l.expiry || 0) * 1000).toISOString().slice(0, 10);
     const amount = marketListingAmount(l);
     const priceSatsRaw = marketListingPriceSats(l);
-    const tile = document.createElement('div');
+    const _listingKey = marketListingKey(l, a);
+    // Reuse the same outer DOM node for unchanged listings (see
+    // _pendingTileReuse setup in applyMarketFilters' preservation
+    // block). Falls back to a fresh element when the key is new or
+    // when we're on the initial render. Clearing stale data-market-
+    // anim ensures _diffMarketLive's new flag below can fire cleanly
+    // — without the clear, a tile that had data-market-anim="up" on
+    // the previous render would still have it stuck on if its price
+    // didn't change this tick.
+    let tile;
+    if (_pendingTileReuse?.has(_listingKey)) {
+      tile = _pendingTileReuse.get(_listingKey);
+      _pendingTileReuse.delete(_listingKey);
+      tile.removeAttribute('data-market-anim');
+    } else {
+      tile = document.createElement('div');
+    }
     tile.className = 'market-listing-tile';
     // Stable per-listing key so the background liveness prune can target
     // this tile by selector when its UTXO turns out to be spent on-chain.
-    tile.dataset.listingKey = marketListingKey(l, a);
+    tile.dataset.listingKey = _listingKey;
     // Depth visualization lives in the dedicated depth chart above the
     // ladder. A per-tile cumulative-depth gradient was tried here but the
     // wrap-grid layout breaks the visual continuity that makes depth bars
@@ -34380,6 +34420,9 @@ function applyMarketFilters() {
     frag.appendChild(tile);
   }
   grid.appendChild(frag);
+  // Drop any reuse-map entries that didn't get consumed this render
+  // (listings that vanished). Their detached DOM nodes are garbage.
+  _pendingTileReuse = null;
   list.querySelectorAll('[data-market-listing-page]').forEach(btn => {
     btn.onclick = () => {
       if (btn.dataset.marketListingPage === 'prev') _marketListingPage = Math.max(1, _marketListingPage - 1);
