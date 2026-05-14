@@ -44128,11 +44128,11 @@ async function marketPartialFillPrompt({ direction, ticker, decimals, minBig, ma
               <div class="market-buy-label">Amount</div>
               <div class="market-buy-sub">range ${escapeHtml(fmtAssetAmount(minBig, decimals))} – ${escapeHtml(fmtAssetAmount(maxBig, decimals))} ${escapeHtml(ticker)}</div>
             </div>
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-              <input type="text" inputmode="decimal" data-pf-input value="${escapeHtml(fmtAssetAmount(chosen, decimals))}" style="width:140px;text-align:right;font-family:var(--mono);font-size:14px;font-weight:600;padding:6px 8px;border:1px solid ${invalid ? '#b8341d' : 'var(--ink)'};background:var(--bg);">
-              <button type="button" data-pf-pct="25" style="font-size:10px;padding:4px 6px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">25%</button>
-              <button type="button" data-pf-pct="50" style="font-size:10px;padding:4px 6px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">50%</button>
-              <button type="button" data-pf-pct="100" style="font-size:10px;padding:4px 6px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">Max</button>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;max-width:100%;">
+              <input type="text" inputmode="decimal" data-pf-input value="${escapeHtml(fmtAssetAmount(chosen, decimals))}" style="flex:1 1 110px;min-width:0;max-width:160px;text-align:right;font-family:var(--mono);font-size:14px;font-weight:600;padding:6px 8px;border:1px solid ${invalid ? '#b8341d' : 'var(--ink)'};background:var(--bg);">
+              <button type="button" data-pf-pct="25" style="flex:0 0 auto;font-size:10px;padding:4px 8px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">25%</button>
+              <button type="button" data-pf-pct="50" style="flex:0 0 auto;font-size:10px;padding:4px 8px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">50%</button>
+              <button type="button" data-pf-pct="100" style="flex:0 0 auto;font-size:10px;padding:4px 8px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">Max</button>
             </div>
           </div>
           <div class="market-buy-row">
