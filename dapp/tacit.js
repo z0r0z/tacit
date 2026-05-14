@@ -36832,6 +36832,17 @@ async function populateMarketAssetStats(scope, asset) {
   // Top-line stats.
   const volSats = Number(j.volume_24h_sats || 0);
   const xfers = Number(j.transfer_count || 0);
+  // BTC/USD spot for sats→USD suffixes on volume + last trade. Best-
+  // effort; falls back to sats-only if oracle is unavailable. Non-blocking
+  // is unnecessary here because getBtcUsdPrice returns instantly when
+  // the cache is warm (which it usually is — the wallet card primed it).
+  // Initialized up here (not at its original spot a few dozen lines
+  // below) because the last_trade resolver inside this function reads
+  // btcUsd to suffix the unit-price line — TDZ-throwing if the let is
+  // still below the read site. Moving the declaration first keeps both
+  // call-sites happy.
+  let btcUsd = null;
+  try { btcUsd = await getBtcUsdPrice(); } catch {}
   // last_trade: prefer the worker's pinned record, but fall back to the
   // newest entry in the trades ring if the pinned record is missing /
   // malformed / lacks a usable amount. We were seeing "1,800,000 sats ·
@@ -36878,12 +36889,7 @@ async function populateMarketAssetStats(scope, asset) {
     if (!el) return;
     if (isHtml) el.innerHTML = text; else el.textContent = text;
   };
-  // BTC/USD spot for sats→USD suffixes on volume + last trade. Best-
-  // effort; falls back to sats-only if oracle is unavailable. Non-blocking
-  // is unnecessary here because getBtcUsdPrice returns instantly when
-  // the cache is warm (which it usually is — the wallet card primed it).
-  let btcUsd = null;
-  try { btcUsd = await getBtcUsdPrice(); } catch {}
+  // btcUsd was hoisted above the last_trade resolver; reuse it here.
   const _usdSuffix = (sats) => {
     const usd = fmtSatsAsUsd(sats, btcUsd);
     return usd ? ` <span class="muted" style="font-weight:normal;">· ${escapeHtml(usd)}</span>` : '';
