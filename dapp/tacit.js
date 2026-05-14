@@ -2309,7 +2309,14 @@ function renderChainDivergenceBanner() {
 const _outspendSpentCache = new Map();
 const _outspendInFlight = new Map();
 const OUTSPEND_PERSIST_KEY = 'tacit-outspend-v1';
-const OUTSPEND_PERSIST_MAX = 5000;
+// Reduced 5000 → 2000 because the persisted blob was the named culprit
+// in localStorage-quota-exceeded warnings on long-running wallets. 2000
+// entries × ~80 bytes ≈ 160 KB which leaves comfortable headroom for the
+// other localStorage residents (openings cache, validated-set cache,
+// asset registry, activity log, drop records). Hot entries stay in the
+// in-memory _outspendSpentCache regardless of the persist cap — this
+// only controls how many survive across reloads.
+const OUTSPEND_PERSIST_MAX = 2000;
 function _outspendCacheStorageKey() { return `${OUTSPEND_PERSIST_KEY}:${NET.name}`; }
 let _outspendCacheHydrated = false;
 let _outspendCacheDirty = false;
@@ -7982,8 +7989,22 @@ async function _scanHoldingsImpl() {
       // surface them as "retry to refetch" instead of "inflation attempt".
       // Everything else (genuine protocol failure: bad rangeproof / sig /
       // conservation / asset_id mismatch) stays in `inflated`.
+      //
+      // Recently-broadcast/mined UTXOs also route to `unverified`: the
+      // indexer can be partial-state mid-population (witness data not
+      // fully indexed, parent-tx 404, mempool→confirmed lag), which the
+      // validator may classify as _REASON_INVALID when it's actually
+      // transient. Heuristic: tx confirmed within the last 30 min (or
+      // unconfirmed entirely) is "still settling, give it another scan"
+      // rather than "malformed envelope." Drops false-positive panic on
+      // the "I just bought 8000 TAC" case while keeping the alarming
+      // banner for UTXOs that fail validation after the indexer's had
+      // time to fully populate.
       const reason = validatedReasons?.get(`${u.txid}:${u.vout}`);
-      if (reason === _REASON_FETCH_FAILED) {
+      const txBlockTime = Number(u.status?.block_time || 0);
+      const txAgeSec = (txBlockTime > 0) ? Math.max(0, Math.floor(Date.now() / 1000) - txBlockTime) : 0;
+      const isFreshlySettled = !u.status?.confirmed || (txBlockTime > 0 && txAgeSec < 30 * 60);
+      if (reason === _REASON_FETCH_FAILED || isFreshlySettled) {
         h.unverified.push({ utxo: u, commitment: onChainCommitment });
       } else {
         h.inflated.push({ utxo: u, commitment: onChainCommitment });
@@ -21252,7 +21273,7 @@ async function _publishDropAnnouncement(d) {
         `The announcement's signer pubkey IS what recipients see as the "treasury" to tip. ` +
         `If you publish from your main wallet (signer = main), every recipient tips your main wallet, ` +
         `NOT the treasury. The treasury then has no incoming sats to fund batches and you absorb every fee.\n\n` +
-        `Fix: Drops §1 → ↪ Switch active wallet to this treasury → then click Publish.\n\n` +
+        `Fix: scroll up to the treasury key panel → ↪ Switch active wallet to this treasury → then click Publish.\n\n` +
         `If you're SURE this wallet is the treasury and the large balance is intentional, click OK to override.`,
       )) return;
     }
@@ -21482,7 +21503,7 @@ async function _fundTreasuryWithTAC(d) {
       `To fix:\n\n` +
       `  1. Wallet tab → Import key → paste your MAIN wallet's privkey (the one holding the TAC supply)\n` +
       `  2. Come back to Drops → click Fund: TAC again\n` +
-      `  3. After funding, Drops §1 → Switch active wallet back to the treasury\n\n` +
+      `  3. After funding, scroll up to the treasury key panel → Switch active wallet back to the treasury\n\n` +
       `If you haven't exported your main wallet's privkey, the TAC supply isn't accessible from this device anymore.`,
     );
     return;
@@ -21499,7 +21520,7 @@ async function _fundTreasuryWithTAC(d) {
     `This drop's total payout: ${fmtAssetAmountPlain(totalNeeded, decimals)} ${ticker}.\n` +
     `Suggested transfer (incl. 5% headroom): ${fmtAssetAmountPlain(suggested, decimals)} ${ticker}.\n\n` +
     `Paste the treasury's 33-byte compressed pubkey hex (66 chars, starts 02 or 03).\n` +
-    `(Generate via Drops §1 if you haven't — copy the pubkey line, not the address.)`,
+    `(Generate one on the Drops tab → "Make a fresh treasury wallet" if you haven't — copy the pubkey line, not the address.)`,
   );
   if (treasury == null) return;
   const dest = treasury.trim().toLowerCase().replace(/^0x/, '');
