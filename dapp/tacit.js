@@ -33831,29 +33831,7 @@ function applyMarketFilters() {
   // Build all tiles into a DocumentFragment first; one reflow at the end
   // instead of N reflows during the loop. Material on busy markets.
   const frag = document.createDocumentFragment();
-  // Ask-side cumulative depth bars. pageRows is already sorted cheapest-
-  // first per the asset-detail sort; that's exactly the orderbook reading
-  // direction (cheapest at top). Walk it, tally TAC into cumDepth, then
-  // stamp each tile with a left-anchored gradient sized to its
-  // contribution. Mirrors the bid-ladder treatment but on tile bgs.
-  const _askAmts = pageRows.map(l => {
-    if (l.kind !== 'preauth' || l.expired) return 0;
-    const amtBase = BigInt(l.asset_opening?.amount || '0');
-    const chunks = l._isGroup ? BigInt(l._groupSize || 1) : 1n;
-    const total = amtBase * chunks;
-    return Number(total);
-  });
-  let _askTotalDepth = 0;
-  for (const a of _askAmts) _askTotalDepth += (Number.isFinite(a) && a > 0 ? a : 0);
-  let _askCumSoFar = 0;
-  const _askCumPct = _askAmts.map(a => {
-    if (Number.isFinite(a) && a > 0) _askCumSoFar += a;
-    return _askTotalDepth > 0 ? Math.min(100, (_askCumSoFar / _askTotalDepth) * 100) : 0;
-  });
-  const _askFillableCount = _askAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
-  let _askTileIdx = -1;
   for (const l of pageRows) {
-    _askTileIdx++;
     const a = l._asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
@@ -33865,16 +33843,11 @@ function applyMarketFilters() {
     // Stable per-listing key so the background liveness prune can target
     // this tile by selector when its UTXO turns out to be spent on-chain.
     tile.dataset.listingKey = marketListingKey(l, a);
-    // Cumulative-depth bar — layered on top of the tile's CSS background-
-    // color via background-image (so var(--bg-warm) still shows under).
-    // Only on ask tiles when there are ≥ 2 fillable rows on this page;
-    // single-tile depth visualizations look weird at 100%. Subtle accent
-    // color (rgba green 14%) — visible enough to scan, quiet enough not
-    // to compete with the tile's own typography.
-    if (_askFillableCount >= 2 && _askTotalDepth > 0 && _askAmts[_askTileIdx] > 0) {
-      const _p = _askCumPct[_askTileIdx].toFixed(1);
-      tile.style.backgroundImage = `linear-gradient(to right, rgba(10, 143, 67, 0.14) ${_p}%, transparent ${_p}%)`;
-    }
+    // Depth visualization lives in the dedicated depth chart above the
+    // ladder. A per-tile cumulative-depth gradient was tried here but the
+    // wrap-grid layout breaks the visual continuity that makes depth bars
+    // legible in row-stacked ladders — each tile just looked like it had
+    // a different amount of progress shading.
     // Composite kind+trust badge. Both atomic-intent and preauth-sale are
     // trustless; the distinction is whether the seller must come back online
     // (atomic intent requires fulfilment after a buyer claims; instant does not).
