@@ -40515,12 +40515,12 @@ function _wireSwapTile(scope) {
             toInput.value = fmtAssetAmount(_bidAmt, decimals);
             const _bidUsd = btcUsd ? fmtSatsAsUsd(sats, btcUsd) : null;
             fromMeta.textContent = _bidUsd
-              ? `bid · ${sats.toLocaleString()} sats · ${_bidUsd}${satBal > 0 && sats > satBal ? ` · ⚠ wallet holds ${satBal.toLocaleString()}` : ''}`
-              : `bid · ${sats.toLocaleString()} sats${satBal > 0 && sats > satBal ? ` · ⚠ wallet holds ${satBal.toLocaleString()}` : ''}`;
-            toMeta.textContent = `at ${fmtUnitPriceSats(_capUnit)} sats/${ticker} (your slippage cap)`;
-            infoEl.innerHTML = `no asks at this price right now &mdash; <strong>will post as a bid</strong>. Any maker can fulfil it; settles atomically on Bitcoin. Bids expire after 24h.`;
+              ? `${sats.toLocaleString()} sats · ${_bidUsd} · open until matched${satBal > 0 && sats > satBal ? ` · ⚠ wallet holds ${satBal.toLocaleString()}` : ''}`
+              : `${sats.toLocaleString()} sats · open until matched${satBal > 0 && sats > satBal ? ` · ⚠ wallet holds ${satBal.toLocaleString()}` : ''}`;
+            toMeta.textContent = `at ${fmtUnitPriceSats(_capUnit)} sats/${ticker} · cancel anytime`;
+            infoEl.innerHTML = `no instant match at your price &mdash; <strong>your swap stays open</strong> until a seller takes it. On-chain Bitcoin settlement; cancel anytime; auto-expires in 24h.`;
             actionBtn.disabled = false; actionBtn.style.opacity = '1';
-            actionBtn.textContent = 'place bid';
+            actionBtn.textContent = 'swap';
             actionBtn.dataset.action = 'bid-only';
             actionBtn.dataset.bidAmt = _bidAmt.toString();
             actionBtn.dataset.bidSats = String(sats);
@@ -40903,16 +40903,18 @@ function _wireSwapTile(scope) {
           toast('Bid params invalid; refresh and retry', 'error'); return;
         }
         if (!confirm(
-          `Post bid: buy ${fmtAssetAmount(bidAmt, decimals)} ${ticker} for ${bidSats.toLocaleString()} sats?\n\n` +
-          `Unit price ${fmtUnitPriceSats(capUnit)} sats/${ticker} (your slippage cap). ` +
-          `Any maker can fulfil; settles atomically on Bitcoin. Sats are NOT escrowed — they must be available in your wallet when a maker fulfils. Bid expires in 24h.`,
+          `Swap ${bidSats.toLocaleString()} sats → ${fmtAssetAmount(bidAmt, decimals)} ${ticker}?\n\n` +
+          `Unit price ${fmtUnitPriceSats(capUnit)} sats/${ticker}.\n\n` +
+          `No instant match — your swap stays open until a seller takes it. ` +
+          `Keep ${bidSats.toLocaleString()} sats in your wallet so the fill can settle when matched. ` +
+          `On-chain atomic settlement (Bitcoin tx, no custodian). Cancel anytime; auto-expires in 24h.`,
         )) return;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         const _origLabel = actionBtn.textContent;
-        actionBtn.textContent = 'posting…';
+        actionBtn.textContent = 'opening…';
         try {
           await publishBidIntent({ assetIdHex: aid, amount: bidAmt, priceSats: bidSats, expiry: Math.floor(Date.now() / 1000) + 24 * 3600 });
-          toast(`Bid posted ✓ · ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ${fmtUnitPriceSats(capUnit)} sats/${ticker}`, 'success', 6000);
+          toast(`Swap open · ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ${fmtUnitPriceSats(capUnit)} sats/${ticker} — fills when a seller takes`, 'success', 7000);
           invalidateMarketCache();
           _invalidateBidsCache(aid);
           setTimeout(() => renderMarket(), 1500);
@@ -40936,14 +40938,14 @@ function _wireSwapTile(scope) {
         ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
         : `Each fill settles in one Bitcoin tx.`;
       // Residual-bid preview: tell the user up-front when their budget
-      // won't fully fill from asks and the unspent portion will sit as
-      // a passive bid.
+      // won't fully fill from asks and the unspent portion stays open
+      // as a passive swap order matching when a seller appears.
       const _residualSats = Math.max(0, sats - result.totalSats);
       let _residualNote = '';
       if (_residualSats >= DUST && Number.isFinite(result.cap) && result.cap > 0) {
         const _resAmt = BigInt(Math.floor(_residualSats * Math.pow(10, decimals) / result.cap));
         if (_resAmt > 0n) {
-          _residualNote = `\n\n+ bid posted for the unspent ${_residualSats.toLocaleString()} sats (${fmtAssetAmount(_resAmt, decimals)} ${ticker} at ${fmtUnitPriceSats(result.cap)} sats/${ticker} — your slippage cap). Any maker can fulfil; settles atomically; expires in 24h.`;
+          _residualNote = `\n\n+ ${fmtAssetAmount(_resAmt, decimals)} ${ticker} more stays open @ ${fmtUnitPriceSats(result.cap)} sats/${ticker} (your slippage cap) — fills when a seller matches. Keep ${_residualSats.toLocaleString()} sats around for the settlement; auto-expires in 24h.`;
         }
       }
       if (!confirm(
@@ -41025,7 +41027,7 @@ function _wireSwapTile(scope) {
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}`, 'error', 8000);
       else if (bidPosted) {
-        toast(`Swapped → ${accStr} ${ticker} ✓ · bid posted for ${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} more @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker}`, 'success', 8000);
+        toast(`Swapped → ${accStr} ${ticker} ✓ · ${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker} (fills when a seller matches)`, 'success', 9000);
       } else {
         toast(`Swapped → ${accStr} ${ticker} ✓`, 'success', 5000);
       }
