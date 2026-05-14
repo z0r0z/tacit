@@ -35323,9 +35323,14 @@ function showMarketListPreviewModal(assetId) {
   const _activeAsksCount = (_marketCache?.listings || []).filter(l =>
     l._asset?.asset_id === assetId && !l.expired
   ).length;
-  // Wallet/balance state — same logic the modal had before.
+  // Wallet/balance state. Mirrors the button-render check at
+  // marketAssetListCtaHtml: a holdings entry without verified utxos[] isn't
+  // sellable (UTXOs are sitting in h.unverified / h.inflated / h.ghosts
+  // until validation catches up). The weaker "entry exists" check used to
+  // print "Pick one of your lots" when there were no lots to pick.
   const _locked = !wallet.priv;
-  const _holdsAsset = !_locked && !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(assetId));
+  const _entry = !_locked && _holdingsCache?.holdings ? _holdingsCache.holdings.get(assetId) : null;
+  const _holdsAsset = !!(_entry && Array.isArray(_entry.utxos) && _entry.utxos.length > 0);
   const overlay = document.createElement('div');
   overlay.className = 'market-buy-overlay';
   overlay.innerHTML = `
@@ -35431,17 +35436,7 @@ function showMarketListPreviewModal(assetId) {
     close();
     try {
       await ensurePrivkey();
-      try { await scanHoldings({ silent: true }); } catch {}
-      const userHoldsAsset = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(assetId));
-      if (userHoldsAsset) {
-        const holdingsTab = $('.tab[data-tab="holdings"]');
-        if (holdingsTab) holdingsTab.click();
-      } else {
-        // Unlocked but wallet doesn't hold the asset — re-open the
-        // preview so user sees the updated "No TICKER in this wallet"
-        // copy + Manage wallet ↗ CTA.
-        showMarketListPreviewModal(assetId);
-      }
+      await _openMarketListingFlow(assetId);
     } catch (err) {
       // Preview is already closed; report the failure via toast so the
       // user gets feedback. Unlock-cancelled is benign (user dismissed
@@ -39341,52 +39336,66 @@ function bindMarketAssetHeader(scope) {
   // that hold this asset, or shows a read-only preview when no sellable UTXO
   // is available in the current wallet.
   scope.querySelectorAll('[data-act="market-ask-place"]').forEach(btn => {
-    btn.onclick = (ev) => {
+    btn.onclick = async (ev) => {
       ev.preventDefault();
       const aid = btn.dataset.aid;
-      if (btn.dataset.previewOnly === '1') {
-        showMarketListPreviewModal(aid);
-        return;
-      }
-      // Visible feedback: button was inert-looking because the navigate +
-      // poll-for-list-button flow could take 1-2s on a cold Holdings
-      // render, during which the user saw no change. Tap a toast and
-      // briefly mark the button as "opening…" so the click reads.
+      if (!aid) return;
+      if (!wallet || !wallet.priv) { showMarketListPreviewModal(aid); return; }
       const origLabel = btn.textContent;
       btn.textContent = 'opening…';
       btn.disabled = true;
-      try { toast('Opening listing form…', '', 1500); } catch {}
-      const holdingsTab = $('.tab[data-tab="holdings"]');
-      if (holdingsTab) holdingsTab.click();
-      const MAX_ATTEMPTS = 50; // 50 * 100ms = 5s — generous on cold renders
-      const triggerList = (attempt = 0) => {
-        const target = document.querySelector(`button[data-act="list-preauth"][data-aid="${CSS.escape(aid)}"]`);
-        if (target) {
-          target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          target.click();
-          btn.textContent = origLabel;
-          btn.disabled = false;
-          return;
-        }
-        if (attempt < MAX_ATTEMPTS) setTimeout(() => triggerList(attempt + 1), 100);
-        else {
-          // Holdings tab never rendered the list button for this asset.
-          // Most common cause: recent buy hasn't passed validation yet
-          // (UTXO sitting in h.unverified / h.inflated until a re-scan
-          // catches up). Other causes: wallet swapped between click
-          // and render, or canMarket gating tripped on h.unknownAsset.
-          // Surface a clear toast + fall back to the preview modal so
-          // the user gets a path forward instead of an empty Holdings
-          // page.
-          btn.textContent = origLabel;
-          btn.disabled = false;
-          try { toast(`No sellable lots for this asset yet · check Holdings or rescan and retry`, '', 8000); } catch {}
-          showMarketListPreviewModal(aid);
-        }
-      };
-      setTimeout(triggerList, 50);
+      try { await _openMarketListingFlow(aid); }
+      catch (e) { toast('Open listing form failed: ' + (e?.message || String(e)), 'error'); }
+      finally { btn.textContent = origLabel; btn.disabled = false; }
     };
   });
+}
+
+// Unified "the user wants to list this asset" entry point. Handles both
+// the in-market click and the post-unlock-from-preview-modal continuation
+// so the two paths can't drift. Force-refreshes the holdings cache before
+// deciding what to show — that was the root cause of (a) the preview modal
+// claiming "No TICKER in this wallet" when the cache hadn't been warmed
+// since the last rescan, and (b) the navigate-to-Holdings-and-poll path
+// silently timing out when the list-preauth button never rendered for a
+// freshly-acquired asset. Now the only thing that gates the inline form
+// is whether scanHoldings actually surfaces sellable utxos.
+async function _openMarketListingFlow(aid) {
+  if (!/^[0-9a-f]{64}$/.test(String(aid || '').toLowerCase())) return;
+  const _hasSellable = () => {
+    const t = _holdingsCache?.holdings?.get(aid);
+    return !!(t && Array.isArray(t.utxos) && t.utxos.length > 0);
+  };
+  if (!_hasSellable()) {
+    try { await scanHoldings(true); } catch {}
+  }
+  if (!_hasSellable()) {
+    showMarketListPreviewModal(aid);
+    return;
+  }
+  const onAsset = (typeof _marketView === 'object' && _marketView?.mode === 'asset' && _marketView?.assetId === aid);
+  if (!onAsset) {
+    goToMarketAsset(aid);
+    await new Promise(r => setTimeout(r, 80));
+  }
+  let slot = document.querySelector(`[data-market-ask-form][data-aid="${CSS.escape(aid)}"]`);
+  if (!slot) {
+    // Slot only renders when _userHoldsAsset was true at the last paint.
+    // On the cache-just-refreshed path we may have raced ahead of the next
+    // renderMarket — create the slot in the asks header so the form has a
+    // mount point either way.
+    const host = document.querySelector(`[data-market-sweep-buy-section][data-aid="${CSS.escape(aid)}"]`);
+    if (host) {
+      slot = document.createElement('div');
+      slot.setAttribute('data-market-ask-form', '');
+      slot.setAttribute('data-aid', aid);
+      slot.style.marginBottom = '10px';
+      host.appendChild(slot);
+    }
+  }
+  if (!slot) { showMarketListPreviewModal(aid); return; }
+  _renderMarketAskForm(slot, aid);
+  slot.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
 // Mount an in-page Place Ask form (instant listing) into a host
