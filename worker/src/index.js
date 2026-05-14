@@ -8367,32 +8367,43 @@ function bidClaimKey(network, aid, bidIdHex) {
     : `bidclaim:${network}:${aid}:${bidIdHex}`;
 }
 
-function bidIntentMsg(assetIdHex, bidIdHex, buyerPubHex, amountStr, priceSats, expiry, nonceHex) {
-  const amountLE = new Uint8Array(8);
-  new DataView(amountLE.buffer).setBigUint64(0, BigInt(amountStr), true);
-  const priceLE = new Uint8Array(8);
-  new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
-  const expiryLE = new Uint8Array(8);
-  new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+// Canonical bid-intent + bid-claim messages. SPEC §5.7.7 (variable-amount
+// bid intents) extends the byte format to bind `min_fill_amount` (publish)
+// and `fill_amount` (claim) so a single signed bid can be partial-filled
+// by multiple sellers. Whole-bid usage sets `min_fill = 0` (or absent)
+// and `fill_amount = amount`; the bytes are deterministic in both cases.
+//
+// Domain strings drop the `-v1` suffix per the canonical-form framing
+// (Tacit launched this week; the SPEC describes the canonical form, not
+// a versioned migration path). The dapp's _bidIntentMsg / _bidClaimMsg
+// match these bytes exactly; a parity test pins the equivalence.
+function bidIntentMsg(assetIdHex, bidIdHex, buyerPubHex, amountStr, priceSats, minFillStr, expiry, nonceHex) {
+  const amountLE  = new Uint8Array(8); new DataView(amountLE.buffer).setBigUint64(0, BigInt(amountStr), true);
+  const priceLE   = new Uint8Array(8); new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const minFillLE = new Uint8Array(8); new DataView(minFillLE.buffer).setBigUint64(0, BigInt(minFillStr || '0'), true);
+  const expiryLE  = new Uint8Array(8); new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
   return sha256(concatBytes(
-    new TextEncoder().encode('tacit-bid-intent-v1'),
+    new TextEncoder().encode('tacit-bid-intent'),
     hexToBytes(assetIdHex),
     hexToBytes(bidIdHex),
     hexToBytes(buyerPubHex),
     amountLE,
     priceLE,
+    minFillLE,
     expiryLE,
     hexToBytes(nonceHex),
   ));
 }
 
-function bidClaimMsg(assetIdHex, bidIdHex, sellerPubHex, axintentIdHex) {
+function bidClaimMsg(assetIdHex, bidIdHex, sellerPubHex, axintentIdHex, fillAmountStr) {
+  const fillLE = new Uint8Array(8); new DataView(fillLE.buffer).setBigUint64(0, BigInt(fillAmountStr || '0'), true);
   return sha256(concatBytes(
-    new TextEncoder().encode('tacit-bid-claim-v1'),
+    new TextEncoder().encode('tacit-bid-claim'),
     hexToBytes(assetIdHex),
     hexToBytes(bidIdHex),
     hexToBytes(sellerPubHex),
     hexToBytes(axintentIdHex),
+    fillLE,
   ));
 }
 
@@ -8417,6 +8428,11 @@ async function handleBidIntentPost(assetIdHex, req, env, network, cors) {
   const expiryRaw = body.expiry;
   const nonceHex = String(body.nonce ?? '').toLowerCase();
   const sigHex = String(body.intent_sig ?? '').toLowerCase();
+  // Variable-fill opt-in: SPEC §5.7.7. Presence + non-zero means partial
+  // fulfilment is allowed; absent or "0" means whole-bid only. The bytes
+  // sign over min_fill_amount in both cases (0 for whole-bid), so the
+  // canonical form is deterministic.
+  const minFillStr = String(body.min_fill_amount ?? '0');
 
   // Format-validate before charging the rate limit so malformed bodies don't
   // burn slots that legitimate retries might need (mirrors handleAirdropClaimPost).
@@ -8424,6 +8440,16 @@ async function handleBidIntentPost(assetIdHex, req, env, network, cors) {
   if (!/^0[23][0-9a-f]{64}$/.test(buyerPubHex))       return jsonResponse({ error: 'buyer_pubkey must be 33-byte compressed hex' }, 400, cors);
   if (!/^\d+$/.test(amountStr))                       return jsonResponse({ error: 'amount must be base-10 integer string' }, 400, cors);
   if (BigInt(amountStr) <= 0n || BigInt(amountStr) >= (1n << 64n)) return jsonResponse({ error: 'amount out of u64' }, 400, cors);
+  if (!/^\d+$/.test(minFillStr))                      return jsonResponse({ error: 'min_fill_amount must be base-10 integer string' }, 400, cors);
+  const minFillBI = BigInt(minFillStr);
+  if (minFillBI < 0n || minFillBI >= (1n << 64n))     return jsonResponse({ error: 'min_fill_amount out of u64' }, 400, cors);
+  if (minFillBI > 0n && minFillBI > BigInt(amountStr))return jsonResponse({ error: 'min_fill_amount must not exceed amount' }, 400, cors);
+  if (minFillBI > 0n && minFillBI === BigInt(amountStr)) {
+    // Degenerate: variable bid with min_fill == amount collapses to whole-bid.
+    // Reject so the bidder uses the simpler path; matches the §5.7.6.1
+    // pattern for variable-amount intents.
+    return jsonResponse({ error: 'min_fill_amount == amount is the degenerate (whole-bid) case; omit min_fill_amount instead' }, 400, cors);
+  }
   if (!Number.isInteger(priceSatsRaw) || priceSatsRaw < PRICE_MIN) return jsonResponse({ error: `price_sats must be integer ≥ ${PRICE_MIN}` }, 400, cors);
   if (!Number.isInteger(expiryRaw))                   return jsonResponse({ error: 'expiry must be integer unix-seconds' }, 400, cors);
   const now = Math.floor(Date.now() / 1000);
@@ -8453,8 +8479,16 @@ async function handleBidIntentPost(assetIdHex, req, env, network, cors) {
     return jsonResponse({ error: 'bid_id does not derive from sha256(asset_id || buyer_pubkey || nonce).slice(0, 16)' }, 400, cors);
   }
 
-  // Verify intent_sig under buyer_pubkey.
-  const msg = bidIntentMsg(assetIdHex, bidIdHex, buyerPubHex, amountStr, priceSatsRaw, expiryRaw, nonceHex);
+  // Verify intent_sig under buyer_pubkey. Sub-dust scaled-payment guard
+  // when variable fills are enabled: floor(min_fill × price / amount)
+  // must be ≥ DUST so the smallest legal fill can settle.
+  if (minFillBI > 0n) {
+    const minScaledSats = Number((minFillBI * BigInt(priceSatsRaw)) / BigInt(amountStr));
+    if (minScaledSats < DUST) {
+      return jsonResponse({ error: `min_fill_amount yields sub-dust scaled payment (${minScaledSats} < ${DUST}); raise min_fill_amount or price_sats` }, 400, cors);
+    }
+  }
+  const msg = bidIntentMsg(assetIdHex, bidIdHex, buyerPubHex, amountStr, priceSatsRaw, minFillStr, expiryRaw, nonceHex);
   if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(buyerPubHex).slice(1))) {
     return jsonResponse({ error: 'invalid intent signature' }, 403, cors);
   }
@@ -8477,6 +8511,14 @@ async function handleBidIntentPost(assetIdHex, req, env, network, cors) {
     created_at: now,
     network,
   };
+  // Variable-fill record fields (§5.7.7). `min_fill_amount` is stored as a
+  // signal to readers + sellers that partial fulfilment is allowed;
+  // `remaining_amount` is the worker-maintained ledger the atomic-CAS
+  // (PR2) will decrement on each linked atomic-intent settlement.
+  if (minFillBI > 0n) {
+    intent.min_fill_amount = minFillStr;
+    intent.remaining_amount = amountStr;  // starts at full amount; decrements as fills settle
+  }
   await env.REGISTRY_KV.put(bidIntentKey(network, assetIdHex, bidIdHex), JSON.stringify(intent));
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
@@ -8537,14 +8579,38 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   const sellerPubHex = String(body.seller_pubkey ?? '').toLowerCase();
   const axintentIdHex = String(body.axintent_id ?? '').toLowerCase();
   const sigHex = String(body.sig ?? '').toLowerCase();
+  // fill_amount is required canonically (SPEC §5.7.7). For whole-bid claims,
+  // sellers pass the bid's full `amount`. For variable-fill claims, sellers
+  // pass their chosen chunk in [min_fill_amount, remaining_amount]. The
+  // claim message bytes bind fill_amount, so a worker / relay can't mutate
+  // the chunk size without invalidating the seller's signature.
+  const fillAmountStr = String(body.fill_amount ?? '');
   if (!/^0[23][0-9a-f]{64}$/.test(sellerPubHex)) return jsonResponse({ error: 'seller_pubkey must be 33-byte compressed hex' }, 400, cors);
   if (!/^[0-9a-f]{32}$/.test(axintentIdHex))     return jsonResponse({ error: 'axintent_id must be 32 hex chars' }, 400, cors);
   if (!/^[0-9a-f]{128}$/.test(sigHex))           return jsonResponse({ error: 'sig must be 128 hex chars' }, 400, cors);
+  if (!/^\d+$/.test(fillAmountStr))              return jsonResponse({ error: 'fill_amount must be base-10 integer string' }, 400, cors);
+  const fillBI = BigInt(fillAmountStr);
+  if (fillBI <= 0n || fillBI >= (1n << 64n))     return jsonResponse({ error: 'fill_amount out of u64' }, 400, cors);
 
   const intent = await env.REGISTRY_KV.get(bidIntentKey(network, assetIdHex, bidIdHex), 'json');
   if (!intent) return jsonResponse({ error: 'no such bid' }, 404, cors);
   const now = Math.floor(Date.now() / 1000);
   if ((intent.expiry || 0) <= now) return jsonResponse({ error: 'bid expired' }, 410, cors);
+
+  // Bound-check fill_amount against the bid's allowed range. Whole-bid:
+  // must equal amount exactly. Variable-fill: must be in [min_fill_amount,
+  // remaining_amount]. PR2 will add the atomic-CAS decrement of
+  // remaining_amount; for this PR1 cut we accept whole-bid claims only.
+  const intentAmtBI = BigInt(intent.amount || '0');
+  if (intent.min_fill_amount && intent.min_fill_amount !== '0') {
+    // Variable-fill bid. PR2 wires the partial-fill state machine; until
+    // then, reject partial-fill claims so the canonical bytes are accepted
+    // but only whole-fill behavior runs in production.
+    return jsonResponse({ error: 'variable-fill bid claims are not yet enabled (PR2 lands the state machine); for now use whole-bid fulfilment by omitting min_fill_amount on the bid' }, 501, cors);
+  }
+  if (fillBI !== intentAmtBI) {
+    return jsonResponse({ error: `fill_amount must equal bid.amount (${intent.amount}) for whole-bid claims` }, 400, cors);
+  }
 
   // Reject if already claimed by a different seller within TTL window.
   const existing = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, bidIdHex), 'json');
@@ -8552,7 +8618,7 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
     return jsonResponse({ error: 'bid already claimed', claim: { expires_at: existing.expires_at } }, 409, cors);
   }
 
-  const msg = bidClaimMsg(assetIdHex, bidIdHex, sellerPubHex, axintentIdHex);
+  const msg = bidClaimMsg(assetIdHex, bidIdHex, sellerPubHex, axintentIdHex, fillAmountStr);
   if (!verifySchnorr(hexToBytes(sigHex), msg, hexToBytes(sellerPubHex).slice(1))) {
     return jsonResponse({ error: 'invalid claim signature' }, 403, cors);
   }
@@ -8589,6 +8655,7 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
     asset_id: assetIdHex,
     seller_pubkey: sellerPubHex,
     axintent_id: axintentIdHex,
+    fill_amount: fillAmountStr,  // canonical field (SPEC §5.7.7)
     sig: sigHex,
     claimed_at: now,
     expires_at: now + BID_CLAIM_TTL_SECONDS,

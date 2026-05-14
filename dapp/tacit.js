@@ -14020,21 +14020,35 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
 //
 // See SPEC §5.7.7 for the full design including trust analysis.
 
-function _bidIntentMsg(assetIdBytes, bidIdBytes, buyerPubBytes, amount, priceSats, expiry, nonceBytes) {
-  const amountLE = new Uint8Array(8); new DataView(amountLE.buffer).setBigUint64(0, BigInt(amount), true);
-  const priceLE = new Uint8Array(8);  new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
-  const expiryLE = new Uint8Array(8); new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
+// Canonical bid-intent + bid-claim messages. The bytes now include
+// `min_fill_amount` (publish) and `fill_amount` (claim) so a single signed
+// bid can be partial-filled by multiple sellers (SPEC §5.7.7
+// variable-amount bid intents). Whole-bid fills set `min_fill = 0` (or
+// `min_fill = amount`) and `fill_amount = amount`; the bytes are
+// deterministic in both cases.
+//
+// Domain strings drop the `-v1` suffix per the canonical-form framing
+// (Tacit launched this week; the SPEC describes the canonical form,
+// not a versioned migration path). Worker + dapp must update in lockstep
+// — they do; both updates land in this PR.
+function _bidIntentMsg(assetIdBytes, bidIdBytes, buyerPubBytes, amount, priceSats, minFillAmount, expiry, nonceBytes) {
+  const amountLE  = new Uint8Array(8); new DataView(amountLE.buffer).setBigUint64(0, BigInt(amount), true);
+  const priceLE   = new Uint8Array(8); new DataView(priceLE.buffer).setBigUint64(0, BigInt(priceSats), true);
+  const minFillLE = new Uint8Array(8); new DataView(minFillLE.buffer).setBigUint64(0, BigInt(minFillAmount || 0), true);
+  const expiryLE  = new Uint8Array(8); new DataView(expiryLE.buffer).setBigUint64(0, BigInt(expiry), true);
   return sha256(concatBytes(
-    new TextEncoder().encode('tacit-bid-intent-v1'),
+    new TextEncoder().encode('tacit-bid-intent'),
     assetIdBytes, bidIdBytes, buyerPubBytes,
-    amountLE, priceLE, expiryLE,
+    amountLE, priceLE, minFillLE, expiryLE,
     nonceBytes,
   ));
 }
-function _bidClaimMsg(assetIdBytes, bidIdBytes, sellerPubBytes, axintentIdBytes) {
+function _bidClaimMsg(assetIdBytes, bidIdBytes, sellerPubBytes, axintentIdBytes, fillAmount) {
+  const fillLE = new Uint8Array(8); new DataView(fillLE.buffer).setBigUint64(0, BigInt(fillAmount || 0), true);
   return sha256(concatBytes(
-    new TextEncoder().encode('tacit-bid-claim-v1'),
+    new TextEncoder().encode('tacit-bid-claim'),
     assetIdBytes, bidIdBytes, sellerPubBytes, axintentIdBytes,
+    fillLE,
   ));
 }
 function _bidCancelMsg(assetIdBytes, bidIdBytes) {
@@ -14046,9 +14060,11 @@ function _bidCancelMsg(assetIdBytes, bidIdBytes) {
 
 // Publish a signed bid intent. assetIdHex is the asset to buy; amount is in
 // base units; priceSats is the total sats the bidder offers for `amount`
-// units; expiry is unix-seconds (≤ 30 days from now). Returns the worker's
-// stored intent record.
-async function publishBidIntent({ assetIdHex, amount, priceSats, expiry }) {
+// units; expiry is unix-seconds (≤ 30 days from now). Optional minFillAmount
+// opts the bid into variable-fill (§5.7.7): when present, sellers can
+// fulfil any chunk in [minFillAmount, remaining_amount]; absent or zero
+// keeps the whole-bid behavior. Returns the worker's stored bid record.
+async function publishBidIntent({ assetIdHex, amount, priceSats, expiry, minFillAmount = 0 }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled — bids require worker');
   if (!/^[0-9a-f]{64}$/.test(String(assetIdHex || ''))) throw new Error('invalid asset_id');
@@ -14058,6 +14074,20 @@ async function publishBidIntent({ assetIdHex, amount, priceSats, expiry }) {
   const now = Math.floor(Date.now() / 1000);
   if (!Number.isInteger(expiry) || expiry <= now) throw new Error('expiry must be in the future');
   if (expiry > now + 30 * 86400) throw new Error('expiry must be within 30 days');
+  // Bound check the variable-fill floor: must be in [1, amount). The
+  // degenerate case minFill == amount collapses to whole-bid; we pass 0
+  // in that case for byte-identical hashing with the whole-bid path.
+  let minFillBI = 0n;
+  if (minFillAmount) {
+    minFillBI = BigInt(minFillAmount);
+    if (minFillBI < 1n) throw new Error('minFillAmount must be ≥ 1 base unit when set');
+    if (minFillBI > amt) throw new Error('minFillAmount must not exceed amount');
+    if (minFillBI === amt) minFillBI = 0n;  // degenerate → whole-bid
+    if (minFillBI > 0n) {
+      const minScaledSats = Number((minFillBI * BigInt(priceSats)) / amt);
+      if (minScaledSats < DUST) throw new Error(`minFillAmount yields sub-dust scaled payment (${minScaledSats} < ${DUST}); raise minFillAmount or priceSats`);
+    }
+  }
 
   const buyerPubBytes = wallet.pub;
   const assetIdBytes = hexToBytes(assetIdHex);
@@ -14065,7 +14095,7 @@ async function publishBidIntent({ assetIdHex, amount, priceSats, expiry }) {
   // the same asset; bid_id derives from sha256(asset || pub || nonce)[:16].
   const nonceBytes = crypto.getRandomValues(new Uint8Array(32));
   const bidIdBytes = sha256(concatBytes(assetIdBytes, buyerPubBytes, nonceBytes)).slice(0, 16);
-  const msg = _bidIntentMsg(assetIdBytes, bidIdBytes, buyerPubBytes, amt, priceSats, expiry, nonceBytes);
+  const msg = _bidIntentMsg(assetIdBytes, bidIdBytes, buyerPubBytes, amt, priceSats, minFillBI, expiry, nonceBytes);
   const sig = signSchnorr(msg, wallet.priv);
   const body = {
     bid_id: bytesToHex(bidIdBytes),
@@ -14077,6 +14107,10 @@ async function publishBidIntent({ assetIdHex, amount, priceSats, expiry }) {
     nonce: bytesToHex(nonceBytes),
     intent_sig: bytesToHex(sig),
   };
+  // Variable-fill opt-in: present only when caller supplied a non-degenerate
+  // minFillAmount. Worker dispatches partial-fill semantics on this field's
+  // presence (mirrors §5.7.6.1's min_take_amount discriminator).
+  if (minFillBI > 0n) body.min_fill_amount = minFillBI.toString();
   const url = `${WORKER_BASE}/assets/${assetIdHex}/bid-intents?network=${encodeURIComponent(NET.name)}`;
   const resp = await fetch(url, {
     method: 'POST',
@@ -14193,7 +14227,12 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
   const assetIdBytes = hexToBytes(bid.asset_id);
   const bidIdBytes = hexToBytes(bid.bid_id);
   const axIdBytes = hexToBytes(offer.intent_id);
-  const claimMsg = _bidClaimMsg(assetIdBytes, bidIdBytes, wallet.pub, axIdBytes);
+  // fill_amount = bid.amount for whole-bid fulfilment. Variable-fill bids
+  // (§5.7.7) accept fill_amount ∈ [min_fill_amount, remaining]; the
+  // variable-fill maker-side flow (fulfilBidIntentVar, PR4) passes the
+  // chunk-sized amount. Whole-bid path passes the bid's full amount.
+  const fillAmount = BigInt(bid.amount);
+  const claimMsg = _bidClaimMsg(assetIdBytes, bidIdBytes, wallet.pub, axIdBytes, fillAmount);
   const claimSig = signSchnorr(claimMsg, wallet.priv);
   const url = `${WORKER_BASE}/assets/${bid.asset_id}/bid-intents/${bid.bid_id}/claim?network=${encodeURIComponent(NET.name)}`;
   const resp = await fetch(url, {
@@ -14202,6 +14241,7 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
     body: JSON.stringify({
       seller_pubkey: bytesToHex(wallet.pub),
       axintent_id: offer.intent_id,
+      fill_amount: fillAmount.toString(),  // canonical claim shape; worker requires it
       sig: bytesToHex(claimSig),
     }),
   });

@@ -299,7 +299,7 @@ await test('dropAnnounceCancelMsgBytes (dapp) matches dropAnnounceCancelMsg (wor
 // disagree on field order, endianness, or the domain tag, every signed bid
 // would be rejected with "invalid signature" and there'd be no way to bisect
 // the cause from logs alone. These three parity tests pin the bytes.
-await test('bidIntentMsg (dapp) matches bidIntentMsg (worker)', async () => {
+await test('bidIntentMsg (dapp) matches bidIntentMsg (worker) — whole-bid (min_fill=0)', async () => {
   const worker = await import('../worker/src/index.js');
   const aid = hexToBytes('a'.repeat(64));
   const bid = hexToBytes('b'.repeat(32));
@@ -307,24 +307,58 @@ await test('bidIntentMsg (dapp) matches bidIntentMsg (worker)', async () => {
   const nonce = hexToBytes('d'.repeat(64));
   const amount = 12345n;
   const priceSats = 50000;
+  const minFill = 0n;  // whole-bid
   const expiry = 1700000000;
-  const dappOut = bytesToHex(dapp.bidIntentMsg(aid, bid, buyerPub, amount, priceSats, expiry, nonce));
+  const dappOut = bytesToHex(dapp.bidIntentMsg(aid, bid, buyerPub, amount, priceSats, minFill, expiry, nonce));
   const wkrOut = bytesToHex(worker.bidIntentMsg(
     bytesToHex(aid), bytesToHex(bid), bytesToHex(buyerPub),
-    amount.toString(), priceSats, expiry, bytesToHex(nonce),
+    amount.toString(), priceSats, minFill.toString(), expiry, bytesToHex(nonce),
   ));
   return dappOut === wkrOut;
 });
 
-await test('bidClaimMsg (dapp) matches bidClaimMsg (worker)', async () => {
+await test('bidIntentMsg (dapp) matches bidIntentMsg (worker) — variable-fill (min_fill > 0)', async () => {
+  const worker = await import('../worker/src/index.js');
+  const aid = hexToBytes('a'.repeat(64));
+  const bid = hexToBytes('b'.repeat(32));
+  const buyerPub = hexToBytes('02' + 'c'.repeat(64));
+  const nonce = hexToBytes('d'.repeat(64));
+  const amount = 12345n;
+  const priceSats = 50000;
+  const minFill = 1000n;
+  const expiry = 1700000000;
+  const dappOut = bytesToHex(dapp.bidIntentMsg(aid, bid, buyerPub, amount, priceSats, minFill, expiry, nonce));
+  const wkrOut = bytesToHex(worker.bidIntentMsg(
+    bytesToHex(aid), bytesToHex(bid), bytesToHex(buyerPub),
+    amount.toString(), priceSats, minFill.toString(), expiry, bytesToHex(nonce),
+  ));
+  return dappOut === wkrOut;
+});
+
+await test('bidClaimMsg (dapp) matches bidClaimMsg (worker) — whole-bid', async () => {
   const worker = await import('../worker/src/index.js');
   const aid = hexToBytes('a'.repeat(64));
   const bid = hexToBytes('b'.repeat(32));
   const sellerPub = hexToBytes('02' + 'e'.repeat(64));
   const axId = hexToBytes('f'.repeat(32));
-  const dappOut = bytesToHex(dapp.bidClaimMsg(aid, bid, sellerPub, axId));
+  const fillAmount = 12345n;
+  const dappOut = bytesToHex(dapp.bidClaimMsg(aid, bid, sellerPub, axId, fillAmount));
   const wkrOut = bytesToHex(worker.bidClaimMsg(
-    bytesToHex(aid), bytesToHex(bid), bytesToHex(sellerPub), bytesToHex(axId),
+    bytesToHex(aid), bytesToHex(bid), bytesToHex(sellerPub), bytesToHex(axId), fillAmount.toString(),
+  ));
+  return dappOut === wkrOut;
+});
+
+await test('bidClaimMsg (dapp) matches bidClaimMsg (worker) — partial-fill', async () => {
+  const worker = await import('../worker/src/index.js');
+  const aid = hexToBytes('a'.repeat(64));
+  const bid = hexToBytes('b'.repeat(32));
+  const sellerPub = hexToBytes('02' + 'e'.repeat(64));
+  const axId = hexToBytes('f'.repeat(32));
+  const fillAmount = 4321n;  // chunk in [min_fill, remaining]
+  const dappOut = bytesToHex(dapp.bidClaimMsg(aid, bid, sellerPub, axId, fillAmount));
+  const wkrOut = bytesToHex(worker.bidClaimMsg(
+    bytesToHex(aid), bytesToHex(bid), bytesToHex(sellerPub), bytesToHex(axId), fillAmount.toString(),
   ));
   return dappOut === wkrOut;
 });
