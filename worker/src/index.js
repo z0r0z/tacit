@@ -646,6 +646,77 @@ async function bumpHolderCount(env, network, aid, scriptHashHex) {
 // race, recovery just fails (same as today) — never silently mis-
 // recovers a wrong opening because the AES-GCM auth tag check would
 // reject the ciphertext.
+// One-shot backfill for an asset's holder_count. The live cron only
+// bumps the counter from its current scan height forward, so an asset
+// etched before the holder index existed shows a small count even
+// when its true holder set is in the hundreds. This handler walks the
+// already-indexed `xferseen:*` keys (30-day TTL) plus the mint
+// records, fetches each tx, and bumps holderCount for every
+// previously-unseen recipient scriptpubkey. Doesn't touch
+// last_scanned, so the live cron keeps catching new blocks in
+// parallel.
+//
+// Chunked: each call processes up to ?limit= keys (default 30, cap
+// 100). Caller paginates via the returned next_cursor until
+// done=true. Per-call subrequest budget: ~limit × 2 (tx fetch + KV
+// gets/puts), comfortably under the 1000 Workers cap.
+async function handleBackfillHolders(env, network, cors, opts = {}) {
+  if (!checkDebugAuth(opts.req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+  const aid = String(opts.aid || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required (64 hex)' }, 400, cors);
+  const limit = Math.min(100, Math.max(1, parseInt(opts.limit || '30', 10) || 30));
+  const cursor = opts.cursor || undefined;
+  // Source 1: xferseen for T_CXFER/T_AXFER recipient discovery. These keys
+  // have the form xferseen:[network:]<aid>:<txid> so the prefix scopes to
+  // this asset's transfers only.
+  const prefix = network === 'signet' ? `xferseen:${aid}:` : `xferseen:${network}:${aid}:`;
+  const listOpts = { prefix, limit };
+  if (cursor) listOpts.cursor = cursor;
+  const list = await env.REGISTRY_KV.list(listOpts);
+  let processed = 0, bumped = 0, fetchErrors = 0;
+  for (const k of list.keys) {
+    const parts = k.name.split(':');
+    const txid = parts[parts.length - 1];
+    if (!/^[0-9a-f]{64}$/.test(txid)) continue;
+    let tx;
+    try { tx = await apiJson(env, `/tx/${txid}`, {}, network); }
+    catch { fetchErrors++; continue; }
+    // Decode the envelope at vin[0] to determine which vouts are the
+    // tacit asset outputs (dec.outputs.length aligns with vout[0..N-1]).
+    const wit = tx?.vin?.[0]?.witness;
+    if (!wit || wit.length < 3) continue;
+    let envBytes;
+    try { envBytes = hexToBytes(wit[1]); } catch { continue; }
+    const decoded = decodeEnvelopeScript(envBytes);
+    if (!decoded) continue;
+    let dec;
+    if (decoded.opcode === T_AXFER) dec = decodeAxferPayload(decoded.payload);
+    else if (decoded.opcode === T_CXFER) dec = decodeCXferPayload(decoded.payload);
+    else continue;
+    if (!dec || dec.asset_id !== aid) continue;
+    for (let i = 0; i < dec.outputs.length && i < (tx.vout?.length || 0); i++) {
+      const spk = tx.vout[i]?.scriptpubkey;
+      if (typeof spk === 'string' && spk.length > 0) {
+        try {
+          const was = await bumpHolderCount(env, network, aid, spk.toLowerCase());
+          if (was) bumped++;
+        } catch {}
+      }
+    }
+    processed++;
+  }
+  return jsonResponse({
+    ok: true,
+    asset_id: aid,
+    network,
+    processed_this_call: processed,
+    newly_bumped: bumped,
+    fetch_errors: fetchErrors,
+    next_cursor: list.list_complete ? null : (list.cursor || null),
+    done: !!list.list_complete,
+  }, 200, cors);
+}
+
 function buyerOpeningKey(network, txidHex, vout) {
   return network === 'signet'
     ? `buyer-opening:${txidHex}:${vout}`
@@ -9660,6 +9731,19 @@ export default {
         const from = parseInt(fromStr, 10);
         return jsonResponse(await rewindLastScanned(env, from, network), 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 400, cors); }
+    }
+    // POST /admin/backfill-holders?aid=...&network=...[&cursor=&limit=]
+    // Walks the worker's already-indexed transfer records for one asset
+    // and bumps holderCount for each previously-unseen recipient. Pure
+    // additive — doesn't touch the live cron's last_scanned, so new
+    // blocks keep indexing in parallel.
+    if (url.pathname === '/admin/backfill-holders' && req.method === 'POST') {
+      try {
+        const aid = url.searchParams.get('aid') || '';
+        const cursor = url.searchParams.get('cursor') || '';
+        const limit = url.searchParams.get('limit') || '';
+        return await handleBackfillHolders(env, network, cors, { req, aid, cursor, limit });
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
     // Bulk one-shot version of the cron's per-tick orphan healer. Useful right
     // after deploying the fix to clear an existing backlog without waiting
