@@ -62,7 +62,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=07a06e35">
+<link rel="modulepreload" href="./tacit.js?cb=37c0e685">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -804,6 +804,28 @@ tr[data-recent-activity] .market-token-sub::after {
 }
 .market-asset-pane { display: none; }
 .market-asset-pane.active { display: block; }
+/* Horizontal trades tape scroll container. Right-edge mask fade
+   signals scrollability — the tape overflows on narrow viewports
+   and a flat-cut edge gives no hint that more entries live offscreen.
+   The mask gracefully degrades on browsers without mask-image
+   support (older WebKit) — just a hard edge there, no functional
+   regression. JS adds .at-end when the user has scrolled all the
+   way to the right, removing the misleading fade. */
+.market-tape-scroll {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1 1 auto;
+  min-width: 0;
+  scrollbar-width: thin;
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%);
+          mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 24px), transparent 100%);
+}
+.market-tape-scroll.at-end {
+  -webkit-mask-image: none;
+          mask-image: none;
+}
 .market-bids-panel {
   border: 1px solid var(--ink);
   background: var(--bg);
@@ -5161,6 +5183,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=07a06e35"></script>
+<script type="module" src="./tacit.js?cb=37c0e685"></script>
 </body>
 </html>

@@ -39938,10 +39938,24 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
   tape.innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;font-size:10px;">
       <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;flex:0 0 auto;">Tape</span>
-      <div style="display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;flex:1;min-width:0;scrollbar-width:thin;">
+      <div class="market-tape-scroll" data-market-tape-scroll>
         ${itemsHtml}
       </div>
     </div>`;
+  // Toggle .at-end on the scroll container so the right-edge mask fade
+  // disappears once the user has scrolled to the last entry. Without
+  // this the fade would mislead at scroll-end ("more content →" when
+  // there isn't). 4px slack for scroll quantization.
+  const scrollEl = tape.querySelector('[data-market-tape-scroll]');
+  if (scrollEl) {
+    const _updateAtEnd = () => {
+      const atEnd = scrollEl.scrollLeft + scrollEl.clientWidth >= scrollEl.scrollWidth - 4;
+      const overflowing = scrollEl.scrollWidth > scrollEl.clientWidth + 1;
+      scrollEl.classList.toggle('at-end', atEnd || !overflowing);
+    };
+    scrollEl.addEventListener('scroll', _updateAtEnd, { passive: true });
+    _updateAtEnd();
+  }
   _tradesTapeSnapshot.set(aid, nextIds);
 }
 
