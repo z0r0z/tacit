@@ -37793,8 +37793,22 @@ function renderMarketBrowseTable(rows) {
     // at table render time with concurrency MARKET_ASSET_STATS_CONCURRENCY.
     const statsLoaded = !!a._marketAssetStatsLoadedAt;
     const loadingPlaceholder = '…';
-    const volume24hUsd = g.volume24hSats != null ? fmtMarketUsdWholeFromSats(g.volume24hSats, '—') : (statsLoaded ? '—' : loadingPlaceholder);
-    const volume24hBtc = g.volume24hSats != null ? fmtMarketBtc(g.volume24hSats) : (statsLoaded ? '—' : loadingPlaceholder);
+    // Zero-volume disambiguation: when the worker reports 24h volume as
+    // exactly 0 (vs. "field absent" → null), both the USD and BTC sub-
+    // lines need to read the same way or the cell flickers between
+    // them. fmtMarketUsdWholeFromSats falls back to '—' when ≤ 0, but
+    // fmtMarketBtc returns "0 BTC" — so the full renderer was showing
+    // "— / 0 BTC" while the in-place tick updater (which uses a `> 0 ?`
+    // guard) showed "— / —", producing a "0 BTC flashes in and out"
+    // bug on every applyMarketFilters → tick cycle. Force both lines
+    // to "—" for non-positive volume so the two render paths agree.
+    const _v24Positive = Number.isFinite(Number(g.volume24hSats)) && Number(g.volume24hSats) > 0;
+    const volume24hUsd = g.volume24hSats == null
+      ? (statsLoaded ? '—' : loadingPlaceholder)
+      : (_v24Positive ? fmtMarketUsdWholeFromSats(g.volume24hSats, '—') : '—');
+    const volume24hBtc = g.volume24hSats == null
+      ? (statsLoaded ? '—' : loadingPlaceholder)
+      : (_v24Positive ? fmtMarketBtc(g.volume24hSats) : '—');
     // Recent Volume = sum of the worker's recent-trades ring buffer. When
     // the ring buffer fits entirely inside 24h (true for every young
     // market on the network right now), the two columns carry the same
@@ -37804,8 +37818,17 @@ function renderMarketBrowseTable(rows) {
     const volumesMatch = g.volumeSats != null
       && g.volume24hSats != null
       && Number(g.volumeSats) === Number(g.volume24hSats);
-    const volumeUsd = g.volumeSats != null ? fmtMarketUsdWholeFromSats(g.volumeSats, '—') : (statsLoaded ? '—' : loadingPlaceholder);
-    const volumeBtc = g.volumeSats != null ? fmtMarketBtc(g.volumeSats) : (statsLoaded ? '—' : loadingPlaceholder);
+    // Same zero-disambiguation as above for the lifetime/recent volume
+    // column. Without this, the hidden column would still inject "0
+    // BTC" into the DOM tree during the brief window before the column
+    // gets dropped, and the in-place updater would patch it to "—".
+    const _vPositive = Number.isFinite(Number(g.volumeSats)) && Number(g.volumeSats) > 0;
+    const volumeUsd = g.volumeSats == null
+      ? (statsLoaded ? '—' : loadingPlaceholder)
+      : (_vPositive ? fmtMarketUsdWholeFromSats(g.volumeSats, '—') : '—');
+    const volumeBtc = g.volumeSats == null
+      ? (statsLoaded ? '—' : loadingPlaceholder)
+      : (_vPositive ? fmtMarketBtc(g.volumeSats) : '—');
     // Recent Volume cell is only emitted when the column is shown at
     // all (see _showRecentVolumeColumn at the outer scope). When the
     // page-level check decided to hide it, every row contributes an
