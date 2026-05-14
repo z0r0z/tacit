@@ -598,6 +598,38 @@ async function bumpTransferCount(env, network, aid, txidHex) {
   await env.REGISTRY_KV.put(seenKey, '1', { expirationTtl: 30 * 24 * 3600 });
   return true;
 }
+// Per-asset distinct-holder counter. We index recipient scriptpubkey
+// hashes (the P2WPKH hash160) as a proxy for distinct wallets that
+// have ever received this asset — the pubkey itself isn't on-chain at
+// receive time, only the hash, so the hash is the strongest signal the
+// indexer can derive without recipients spending their UTXOs. Same
+// idempotency pattern as bumpTransferCount: a per-(asset, scripthash)
+// "seen" marker gates the counter bump so a re-scan / hint replay
+// doesn't double-count. No TTL on the seen marker — (asset, recipient)
+// is a permanent pair; counting drift after expiry would underflow.
+//
+// "All-time recipients" semantics — not "current holders." A wallet
+// that received and spent its full balance still counts. Frame in UI
+// as "wallets" not "users" since same-user-multi-wallet inflates the
+// number; this is a popularity signal, not a head count.
+function holderCountKey(network, aid) {
+  return network === 'signet' ? `holdercnt:${aid}` : `holdercnt:${network}:${aid}`;
+}
+function holderSeenKey(network, aid, scriptHashHex) {
+  return network === 'signet'
+    ? `holderseen:${aid}:${scriptHashHex}`
+    : `holderseen:${network}:${aid}:${scriptHashHex}`;
+}
+async function bumpHolderCount(env, network, aid, scriptHashHex) {
+  if (!/^[0-9a-f]+$/.test(String(scriptHashHex || ''))) return false;
+  const seenKey = holderSeenKey(network, aid, scriptHashHex);
+  if (await env.REGISTRY_KV.get(seenKey)) return false;
+  const cntKey = holderCountKey(network, aid);
+  const cur = parseInt((await env.REGISTRY_KV.get(cntKey)) || '0', 10);
+  await env.REGISTRY_KV.put(cntKey, String(cur + 1));
+  await env.REGISTRY_KV.put(seenKey, '1');
+  return true;
+}
 // Last-traded price record per (network, asset_id). Set by the AXFER hint
 // path when the dapp passes price + amount alongside the settlement txid;
 // surfaced on /assets and /assets/:id so cards can display "last sold at X
@@ -2901,7 +2933,8 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   const _nowSec = Math.floor(Date.now() / 1000);
   const _todayKey = tradeDayKey(network, v.asset_id, _utcYyyymmdd(_nowSec));
   const _yestKey  = tradeDayKey(network, v.asset_id, _utcYyyymmdd(_nowSec - 86400));
-  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade, ring, todaySats, yestSats] = await Promise.all([
+  const _holderKey = holderCountKey(network, v.asset_id);
+  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade, ring, todaySats, yestSats, holderCnt] = await Promise.all([
     env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
     includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
     loadBurnsForAsset(env, network, v.asset_id),
@@ -2925,6 +2958,11 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
     // toward the subrequest budget, so the only cost is per-key billing.
     env.REGISTRY_KV.get(_todayKey),
     env.REGISTRY_KV.get(_yestKey),
+    // Per-asset holder counter — distinct recipient scriptpubkey hashes
+    // bumped by the cron's CETCH/T_MINT/T_PMINT/T_CXFER/T_AXFER paths.
+    // "All-time wallets that received this asset" — a popularity signal,
+    // not a current-holder head count.
+    env.REGISTRY_KV.get(_holderKey),
   ]);
   if (att) v.attestation = att;
   if (includeMints) v.mints = mints;
@@ -2942,6 +2980,12 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   // bulk response so dapp tiles populate volume on first paint instead
   // of waiting for per-asset enrichment.
   v.volume_24h_sats = (Number(todaySats) || 0) + (Number(yestSats) || 0);
+  // Distinct-recipient counter (all-time, not current). Counts unique
+  // scriptpubkey hashes that have ever received this asset via T_CETCH,
+  // T_MINT, T_PMINT, T_CXFER, or T_AXFER. Older asset entries indexed
+  // before this counter existed return 0 — they'll backfill as new
+  // transfers land. Frame as "wallets" not "users" in UI.
+  v.holder_count = parseInt(holderCnt || '0', 10) || 0;
   // Canonical mark price for valuation. Computed server-side so every API
   // client (dapp Holdings, third-party portfolio tools, future SDKs) sees
   // the same reference number. Priority matches how equities and crypto
@@ -3953,6 +3997,10 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
     env.REGISTRY_KV.get(yestKey),
   ]);
   v.volume_24h_sats = (Number(todaySats) || 0) + (Number(yestSats) || 0);
+  // Distinct-recipient counter, same field as the bulk response. Mirror
+  // here so single-asset clients get the same popularity signal.
+  const holderCntRaw = await env.REGISTRY_KV.get(holderCountKey(network, assetIdHex));
+  v.holder_count = parseInt(holderCntRaw || '0', 10) || 0;
   // Recent trades. JSON array of up to TRADES_RING_CAP entries, newest
   // first. Empty array (rather than omission) so consumers can render
   // "no recent trades" without an undefined-vs-empty distinction.
@@ -7971,6 +8019,12 @@ async function scanForEtches(env, network) {
           network,
         };
         await env.REGISTRY_KV.put(assetKey(network, aid), JSON.stringify(meta));
+        // First holder = the etcher at vout[0]. Bump the holder counter so
+        // freshly-etched assets show "1 wallet" not "0 wallets".
+        const etchSpk = tx.vout?.[0]?.scriptpubkey;
+        if (typeof etchSpk === 'string' && etchSpk.length > 0) {
+          try { await bumpHolderCount(env, network, aid, etchSpk.toLowerCase()); } catch {}
+        }
         found++;
       } else if (decoded.opcode === T_MINT) {
         const cm = decodeCMintPayload(decoded.payload);
@@ -7986,6 +8040,11 @@ async function scanForEtches(env, network) {
           network,
         };
         await env.REGISTRY_KV.put(mintKeyFor(network, cm.asset_id, tx.txid), JSON.stringify(mintMeta));
+        // Mint recipient at vout[0] is a new holder for this asset.
+        const mintSpk = tx.vout?.[0]?.scriptpubkey;
+        if (typeof mintSpk === 'string' && mintSpk.length > 0) {
+          try { await bumpHolderCount(env, network, cm.asset_id, mintSpk.toLowerCase()); } catch {}
+        }
         found++;
       } else if (decoded.opcode === T_BURN) {
         const cb = decodeCBurnPayload(decoded.payload);
@@ -8011,6 +8070,18 @@ async function scanForEtches(env, network) {
         const dx = decoder(decoded.payload);
         if (!dx) continue;
         await bumpTransferCount(env, network, dx.asset_id, tx.txid);
+        // Per-asset holder counter: each output's recipient scriptpubkey is
+        // a candidate new wallet. Walk the tx outputs that correspond to
+        // tacit asset commitments (dx.outputs.length aligns with
+        // tx.vout[0..N-1] by SPEC layout for both opcodes) and bump the
+        // counter for each previously-unseen recipient. holderSeen dedup
+        // makes this idempotent across cron re-scans.
+        for (let i = 0; i < dx.outputs.length && i < (tx.vout?.length || 0); i++) {
+          const spk = tx.vout[i]?.scriptpubkey;
+          if (typeof spk === 'string' && spk.length > 0) {
+            try { await bumpHolderCount(env, network, dx.asset_id, spk.toLowerCase()); } catch {}
+          }
+        }
         // Don't increment `found` — that counter is for new etches/mints/
         // burns specifically (used in the cron's status return). Transfers
         // happen on every active asset; counting them as "found" would be
@@ -8135,6 +8206,13 @@ async function scanForEtches(env, network) {
         mintMeta.tx_index = txIndex;
         const pmk = pmintKeyFor(network, expectedAid, h, txIndex, tx.txid);
         await env.REGISTRY_KV.put(pmk, JSON.stringify(mintMeta));
+        // Pmint recipient at vout[0] is a new wallet holding this asset.
+        // For fair-launch tokens, each mint is a different wallet (the
+        // public minter) so this is the primary holder-discovery path.
+        const pmintSpk = tx.vout?.[0]?.scriptpubkey;
+        if (typeof pmintSpk === 'string' && pmintSpk.length > 0) {
+          try { await bumpHolderCount(env, network, expectedAid, pmintSpk.toLowerCase()); } catch {}
+        }
         // Stage this asset for dirty-marking. Deferred to end-of-scan so a
         // dense block with 300 pmints for one asset writes the marker once
         // (≤1 KV.put) instead of 300 times. The end-of-scan loop converts

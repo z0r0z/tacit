@@ -12292,6 +12292,13 @@ async function publishPreauthSaleChunks({ sourceUtxoTxid, sourceUtxoVout, chunks
   });
   _progress('fan-done', { revealTxid: splitResult.revealTxid });
 
+  // Wait for the reveal to be visible to the upstream chain API before
+  // POSTing chunk listings — the worker's commitmentForUtxo lookup uses the
+  // same indexer and would 404 if we beat propagation. Matches the existing
+  // auto-split-then-list pattern used by list-sale / mixer deposit / T_DROP.
+  _progress('wait-visible', { revealTxid: splitResult.revealTxid });
+  await waitForTxVisible(splitResult.revealTxid);
+
   // Group seed (8 bytes) — shared across all K chunk listings. Lets the
   // market UI group these into one row by `nonce.slice(0, 8)`.
   const groupSeed = crypto.getRandomValues(new Uint8Array(8));
@@ -29524,6 +29531,51 @@ async function renderHoldings() {
             formHost.style.display = 'none';
             formHost.innerHTML = '';
           };
+          // Live chunk preview + per-chunk price-label suffix. Recomputes when
+          // the user changes UTXO, chunks, or price. Shows what the chunked
+          // publish will produce (K listings of X each, leftover Y) so the
+          // maker doesn't have to do the math.
+          const updateChunkPreview = () => {
+            const utxoIdx2 = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
+            const u2 = sortedUtxos[utxoIdx2];
+            const K2 = parseInt(formHost.querySelector('[data-field="chunks"]').value, 10) || 1;
+            const priceRaw2 = parseInt(formHost.querySelector('[data-field="price"]').value, 10);
+            const previewEl = formHost.querySelector('[data-chunk-preview]');
+            const priceSuffixEl = formHost.querySelector('[data-price-label-suffix]');
+            if (!previewEl || !u2) return;
+            if (!Number.isInteger(K2) || K2 < 1 || K2 > 7) {
+              previewEl.innerHTML = '<span style="color:var(--red);">chunks must be 1–7</span>';
+              if (priceSuffixEl) priceSuffixEl.textContent = '';
+              return;
+            }
+            if (K2 === 1) {
+              previewEl.innerHTML = 'whole UTXO sold atomically';
+              if (priceSuffixEl) priceSuffixEl.textContent = '';
+              return;
+            }
+            const chunkAmt = u2.amount / BigInt(K2);
+            const leftover = u2.amount - chunkAmt * BigInt(K2);
+            if (chunkAmt <= 0n) {
+              previewEl.innerHTML = '<span style="color:var(--red);">chunk size underflows — pick fewer chunks</span>';
+              return;
+            }
+            const unitPrice = Number.isFinite(priceRaw2) && priceRaw2 > 0 && chunkAmt > 0n
+              ? unitPriceSats(priceRaw2, chunkAmt, target.decimals)
+              : null;
+            const unitStr = unitPrice ? ` <span class="muted" style="font-size:10px;">(${fmtUnitPriceSats(unitPrice)} sats/${escapeHtml(target.ticker)})</span>` : '';
+            const leftoverStr = leftover > 0n
+              ? `<br>leftover ${escapeHtml(fmtAssetAmount(leftover, target.decimals))} ${escapeHtml(target.ticker)} stays in your wallet`
+              : '';
+            previewEl.innerHTML = `${K2} listings × ${escapeHtml(fmtAssetAmount(chunkAmt, target.decimals))} ${escapeHtml(target.ticker)}${unitStr}${leftoverStr}`;
+            if (priceSuffixEl) priceSuffixEl.textContent = '· per chunk';
+          };
+          ['utxo', 'chunks', 'price'].forEach(f => {
+            const el = formHost.querySelector(`[data-field="${f}"]`);
+            if (el) el.addEventListener('input', updateChunkPreview);
+            if (el && f === 'utxo') el.addEventListener('change', updateChunkPreview);
+          });
+          updateChunkPreview();
+
           formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
             errEl.textContent = '';
             const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
@@ -29546,52 +29598,116 @@ async function renderHoldings() {
             if (!Number.isInteger(minPriceSats) || minPriceSats < DUST) { errEl.textContent = `min price must be integer ≥ ${DUST}`; return; }
             const days = parseInt(formHost.querySelector('[data-field="days"]').value.trim(), 10);
             if (!Number.isInteger(days) || days < 1 || days > 30) { errEl.textContent = 'days must be 1–30'; return; }
+            const chunksRaw = parseInt(formHost.querySelector('[data-field="chunks"]').value, 10);
+            if (!Number.isInteger(chunksRaw) || chunksRaw < 1 || chunksRaw > 7) { errEl.textContent = 'chunks must be 1–7'; return; }
             const expiry = Math.floor(Date.now() / 1000) + days * 86400;
-            if (!confirm(
-              `Publish Instant listing on the Market?\n\n` +
-              `Selling: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} (whole UTXO)\n` +
-              `Min price: ${minPriceSats.toLocaleString()} sats\n` +
-              `Expires: ${days} day${days>1?'s':''}\n\n` +
-              `Discloses the listed UTXO's amount + blinding so any buyer can complete the sale without you online. Other holdings stay confidential.`,
-            )) return;
-            if (!await ensureBurnerBackedUp('Publish Instant listing (signs a sale authorization; no on-chain broadcast)')) {
+
+            if (chunksRaw === 1) {
+              // Single-listing path (unchanged from before chunked publishing).
+              if (!confirm(
+                `Publish Instant listing on the Market?\n\n` +
+                `Selling: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} (whole UTXO)\n` +
+                `Min price: ${minPriceSats.toLocaleString()} sats\n` +
+                `Expires: ${days} day${days>1?'s':''}\n\n` +
+                `Discloses the listed UTXO's amount + blinding so any buyer can complete the sale without you online. Other holdings stay confidential.`,
+              )) return;
+            } else {
+              // Chunked path. Show the preview math in the confirm so the
+              // user knows exactly what's going to happen (fan CXFER + K
+              // listings + possible leftover).
+              const chunkAmt = u.amount / BigInt(chunksRaw);
+              const leftover = u.amount - chunkAmt * BigInt(chunksRaw);
+              if (chunkAmt <= 0n) { errEl.textContent = 'chunk amount underflows — pick fewer chunks'; return; }
+              const leftoverLine = leftover > 0n
+                ? `Leftover: ${fmtAssetAmount(leftover, target.decimals)} ${target.ticker} (stays in your wallet, not listed)\n`
+                : '';
+              if (!confirm(
+                `Publish ${chunksRaw} Instant listings on the Market?\n\n` +
+                `Splitting: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} → ${chunksRaw} chunks of ${fmtAssetAmount(chunkAmt, target.decimals)} ${target.ticker} each\n` +
+                `Min price per chunk: ${minPriceSats.toLocaleString()} sats\n` +
+                `Expires: ${days} day${days>1?'s':''}\n` +
+                leftoverLine +
+                `\n` +
+                `Buyers can take any subset of chunks individually. Each chunk's (amount, blinding) opening is disclosed at publish time.\n\n` +
+                `Steps: 1) one CXFER fans your UTXO into ${chunksRaw} equal pieces (costs ~commit + reveal Bitcoin fees); 2) ${chunksRaw} listings published to the marketplace.`,
+              )) return;
+            }
+            if (!await ensureBurnerBackedUp(chunksRaw === 1
+              ? 'Publish Instant listing (signs a sale authorization; no on-chain broadcast)'
+              : `Publish ${chunksRaw} chunked Instant listings (one CXFER + ${chunksRaw} signed authorizations)`,
+            )) {
               errEl.textContent = 'Back up the in-page privkey first, then retry.'; return;
             }
             const submitBtn = ev.target;
-            submitBtn.disabled = true; submitBtn.textContent = 'publishing…';
+            submitBtn.disabled = true; submitBtn.textContent = chunksRaw === 1 ? 'publishing…' : 'splitting + publishing…';
             const pubStrip = formHost.querySelector('[data-publish-progress]');
             if (pubStrip) pubStrip.style.display = 'flex';
             setProgressStrip(pubStrip, 0);
             await new Promise(r => setTimeout(r, 50));
             try {
-              const r = await publishPreauthSale({
-                utxoTxid: u.utxo.txid,
-                utxoVout: u.utxo.vout,
-                minPriceSats,
-                expiry,
-                onProgress: (stage) => {
-                  if (stage === 'publish-start') setProgressStrip(pubStrip, 1);
-                },
-              });
-              setProgressStrip(pubStrip, 2);
-              toast(`Instant listing ${shorten(r.sale_id, 6)} published ✓`, 'success', 8000);
-              formHost.innerHTML = `
-                <div style="padding:10px 12px;border:1px solid var(--ink);border-left:4px solid #0a8f43;background:var(--bg-warm);font-size:11px;">
-                  <strong>✓ Instant listing published</strong>
-                  <div class="muted" style="margin-top:4px;">Sale ID ${escapeHtml(shorten(r.sale_id, 8))} is live. Any buyer can complete the purchase atomically; you can close this window and go offline.</div>
-                  <div class="flex" style="margin-top:8px;gap:6px;">
-                    <button data-form-act="dismiss">Dismiss</button>
-                  </div>
-                </div>`;
+              if (chunksRaw === 1) {
+                const r = await publishPreauthSale({
+                  utxoTxid: u.utxo.txid,
+                  utxoVout: u.utxo.vout,
+                  minPriceSats,
+                  expiry,
+                  onProgress: (stage) => {
+                    if (stage === 'publish-start') setProgressStrip(pubStrip, 1);
+                  },
+                });
+                setProgressStrip(pubStrip, 2);
+                toast(`Instant listing ${shorten(r.sale_id, 6)} published ✓`, 'success', 8000);
+                formHost.innerHTML = `
+                  <div style="padding:10px 12px;border:1px solid var(--ink);border-left:4px solid #0a8f43;background:var(--bg-warm);font-size:11px;">
+                    <strong>✓ Instant listing published</strong>
+                    <div class="muted" style="margin-top:4px;">Sale ID ${escapeHtml(shorten(r.sale_id, 8))} is live. Any buyer can complete the purchase atomically; you can close this window and go offline.</div>
+                    <div class="flex" style="margin-top:8px;gap:6px;">
+                      <button data-form-act="dismiss">Dismiss</button>
+                    </div>
+                  </div>`;
+              } else {
+                const need = await estimateSatsForOp('cxfer');
+                if (!(await ensureSatsFunded(need, 'Fan CXFER before chunked listing'))) throw new Error('cancelled');
+                const r = await publishPreauthSaleChunks({
+                  sourceUtxoTxid: u.utxo.txid,
+                  sourceUtxoVout: u.utxo.vout,
+                  chunks: chunksRaw,
+                  minPriceSatsPerChunk: minPriceSats,
+                  expiry,
+                  onProgress: (stage) => {
+                    if (stage === 'fan-start') setProgressStrip(pubStrip, 0);
+                    else if (stage === 'fan-done') setProgressStrip(pubStrip, 1);
+                    else if (stage === 'publish-chunk') setProgressStrip(pubStrip, 1);
+                  },
+                });
+                setProgressStrip(pubStrip, 2);
+                if (r.error) throw new Error(r.error);
+                const successLine = r.partialFailure
+                  ? `<strong>⚠ Partial publish:</strong> ${r.chunks_published} of ${r.chunks_requested} chunks listed. Remaining chunk UTXOs are in your holdings — retry from the dropdown above.<br><span class="muted" style="font-size:10px;">${escapeHtml(r.partialFailure)}</span>`
+                  : `<strong>✓ ${r.chunks_published} chunks published</strong>`;
+                toast(r.partialFailure
+                  ? `Chunked listing: ${r.chunks_published}/${r.chunks_requested} published`
+                  : `${r.chunks_published} chunked listings published ✓`,
+                  r.partialFailure ? 'error' : 'success', 8000);
+                formHost.innerHTML = `
+                  <div style="padding:10px 12px;border:1px solid var(--ink);border-left:4px solid ${r.partialFailure ? 'var(--red)' : '#0a8f43'};background:var(--bg-warm);font-size:11px;">
+                    ${successLine}
+                    <div class="muted" style="margin-top:4px;">Group <code>${escapeHtml(shorten(r.group_id, 6))}</code> · buyers take any subset at the same unit price; each chunk is an independent atomic settlement.</div>
+                    <div class="flex" style="margin-top:8px;gap:6px;">
+                      <button data-form-act="dismiss">Dismiss</button>
+                    </div>
+                  </div>`;
+              }
               formHost.querySelector('[data-form-act="dismiss"]').onclick = () => {
                 formHost.style.display = 'none';
                 formHost.innerHTML = '';
               };
               renderActivity();
+              renderHoldings();
             } catch (e) {
               errEl.textContent = isUnlockCancelled(e)
                 ? 'Unlock cancelled — nothing was published.'
-                : 'Instant listing failed: ' + e.message;
+                : (e.message === 'cancelled' ? 'cancelled' : 'Instant listing failed: ' + e.message);
               submitBtn.disabled = false; submitBtn.textContent = 'List for sale';
             }
           };
@@ -31899,14 +32015,21 @@ function renderDiscoverCard(card, a, verify, imgUrl, extras) {
       </div>`;
     })()}
     ${(() => {
-      // Transfer-count signal — coarse "is anyone moving this?" indicator,
-      // not a legitimacy proof (self-spam is cheap). Cron-maintained counter;
-      // absence of any transfers is meaningful, presence is movement only.
-      // Rendered only when > 0 so static drops/airdrops that never moved
-      // don't get a misleading "0 transfers" line.
+      // Transfer-count + holder-count signals — coarse "is anyone moving
+      // this?" + "how many distinct wallets received it?" indicators.
+      // Holder count is the worker's all-time distinct-recipient
+      // scriptpubkey hash counter; "wallets" not "users" because we
+      // can't dedupe same-user-multi-wallet (would defeat the
+      // confidentiality model). Rendered as a single row only when at
+      // least one signal is non-zero, so static drops without movement
+      // don't get a misleading "0" line.
       const xferCount = Number(a.transfer_count || 0);
-      if (xferCount <= 0) return '';
-      return `<div class="muted" style="margin-top:6px;font-size:11px;" title="Counted from CXFER + AXFER envelopes seen by this worker since it began scanning — coarse popularity signal, not a legitimacy proof.">🔄 ${xferCount} indexed transfer${xferCount === 1 ? '' : 's'}</div>`;
+      const holderCount = Number(a.holder_count || 0);
+      const bits = [];
+      if (xferCount > 0) bits.push(`🔄 ${xferCount} transfer${xferCount === 1 ? '' : 's'}`);
+      if (holderCount > 0) bits.push(`👛 ${holderCount} wallet${holderCount === 1 ? '' : 's'}`);
+      if (!bits.length) return '';
+      return `<div class="muted" style="margin-top:6px;font-size:11px;" title="Indexed by the worker since it began scanning. Holder count = distinct scriptpubkey hashes that have received this asset on chain (a wallet, not a user — same person with multiple wallets counts once per wallet). Coarse popularity signal, not legitimacy proof.">${bits.join(' &middot; ')}</div>`;
     })()}
     ${(() => {
       // Etcher reputation row — surfaces "this issuer has K other assets in
@@ -33742,6 +33865,7 @@ function marketApplyAssetStats(asset, stats) {
     'atomic_intent_count',
     'preauth_sale_count',
     'transfer_count',
+    'holder_count',
     'attestation',
     'supply',
     'total_supply',
@@ -34407,6 +34531,9 @@ function renderMarketBrowseTable(rows) {
           <span class="market-table-sub">${escapeHtml(volumeBtc)}</span>
         </td>
         <td>
+          <span class="market-table-value">${Number(a.holder_count || 0) > 0 ? Number(a.holder_count).toLocaleString('en-US') : (a._marketAssetStatsLoadedAt ? '0' : '…')}</span>
+        </td>
+        <td>
           <span class="market-table-sub">${g.preauths.toLocaleString('en-US')} instant &middot; ${transfers.toLocaleString('en-US')} txs</span>
         </td>
       </tr>`;
@@ -34424,6 +34551,7 @@ function renderMarketBrowseTable(rows) {
             <th>Market Cap</th>
             <th>24h Volume</th>
             <th title="Sum of the worker's recent-trades ring buffer (most-recent N trades per asset). Worker doesn't yet keep a lifetime aggregator — once it does, this column will switch to the true cumulative value automatically.">Recent Volume</th>
+            <th title="Distinct wallets that have ever received this asset on chain (scriptpubkey-hash level — a wallet, not a user). Coarse popularity signal indexed by the worker.">Wallets</th>
             <th>Listings</th>
           </tr>
         </thead>
@@ -37959,17 +38087,26 @@ function _renderMarketAskForm(formHost, aid) {
     <div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;">
       <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">⚡ List ${escapeHtml(target.ticker || 'token')} for sale (preauth)</div>
       <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:8px;">Sign once at listing time. Any buyer completes settlement alone via ECDH-derived recipient blinding — no fulfilment step from you. Discloses the listed UTXO's (amount, blinding).</div>
-      <label style="font-size:10px;">Pick UTXO to sell ▾ (smallest first; whole UTXO sold atomically)</label>
+      <label style="font-size:10px;">Pick UTXO to sell ▾ (smallest first)</label>
       <select data-field="utxo">${utxoOpts}</select>
       <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
       <div class="form-row two" style="margin-top:8px;">
         <div>
-          <label style="font-size:10px;">Min price (sats)</label>
+          <label style="font-size:10px;">Min price (sats) <span class="muted" style="font-weight:normal;font-size:10px;" data-price-label-suffix></span></label>
           <input type="text" inputmode="numeric" data-field="price" value="50000">
         </div>
         <div>
           <label style="font-size:10px;">Expires in (days, 1–30)</label>
           <input type="number" min="1" max="30" data-field="days" value="7">
+        </div>
+      </div>
+      <div class="form-row two" style="margin-top:8px;">
+        <div>
+          <label style="font-size:10px;">Split into chunks (1–7) <span class="muted" style="font-weight:normal;font-size:10px;" title="Buyers can take any subset of chunks individually instead of the whole UTXO. Each chunk becomes its own listing at the same unit price.">↗ partial-fill</span></label>
+          <input type="number" min="1" max="7" data-field="chunks" value="1">
+        </div>
+        <div style="display:flex;align-items:flex-end;">
+          <div class="muted" data-chunk-preview style="font-size:10px;line-height:1.4;padding-bottom:8px;"></div>
         </div>
       </div>
       <div class="form-buttons" style="margin-top:10px;">
@@ -38005,6 +38142,48 @@ function _renderMarketAskForm(formHost, aid) {
     formHost.dataset.open = '';
     formHost.innerHTML = '';
   };
+  // Live chunk preview — same math as the Holdings list-preauth form.
+  const updateChunkPreview = () => {
+    const utxoIdx2 = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
+    const u2 = sortedUtxos[utxoIdx2];
+    const K2 = parseInt(formHost.querySelector('[data-field="chunks"]').value, 10) || 1;
+    const priceRaw2 = parseInt(formHost.querySelector('[data-field="price"]').value, 10);
+    const previewEl = formHost.querySelector('[data-chunk-preview]');
+    const priceSuffixEl = formHost.querySelector('[data-price-label-suffix]');
+    if (!previewEl || !u2) return;
+    if (!Number.isInteger(K2) || K2 < 1 || K2 > 7) {
+      previewEl.innerHTML = '<span style="color:var(--red);">chunks must be 1–7</span>';
+      if (priceSuffixEl) priceSuffixEl.textContent = '';
+      return;
+    }
+    if (K2 === 1) {
+      previewEl.innerHTML = 'whole UTXO sold atomically';
+      if (priceSuffixEl) priceSuffixEl.textContent = '';
+      return;
+    }
+    const chunkAmt = u2.amount / BigInt(K2);
+    const leftover = u2.amount - chunkAmt * BigInt(K2);
+    if (chunkAmt <= 0n) {
+      previewEl.innerHTML = '<span style="color:var(--red);">chunk size underflows — pick fewer chunks</span>';
+      return;
+    }
+    const unitPrice = Number.isFinite(priceRaw2) && priceRaw2 > 0 && chunkAmt > 0n
+      ? unitPriceSats(priceRaw2, chunkAmt, target.decimals)
+      : null;
+    const unitStr = unitPrice ? ` <span class="muted" style="font-size:10px;">(${fmtUnitPriceSats(unitPrice)} sats/${escapeHtml(target.ticker)})</span>` : '';
+    const leftoverStr = leftover > 0n
+      ? `<br>leftover ${escapeHtml(fmtAssetAmount(leftover, target.decimals))} ${escapeHtml(target.ticker)} stays in your wallet`
+      : '';
+    previewEl.innerHTML = `${K2} listings × ${escapeHtml(fmtAssetAmount(chunkAmt, target.decimals))} ${escapeHtml(target.ticker)}${unitStr}${leftoverStr}`;
+    if (priceSuffixEl) priceSuffixEl.textContent = '· per chunk';
+  };
+  ['utxo', 'chunks', 'price'].forEach(f => {
+    const el = formHost.querySelector(`[data-field="${f}"]`);
+    if (el) el.addEventListener('input', updateChunkPreview);
+    if (el && f === 'utxo') el.addEventListener('change', updateChunkPreview);
+  });
+  updateChunkPreview();
+
   formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
     errEl.textContent = '';
     const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
@@ -38030,36 +38209,84 @@ function _renderMarketAskForm(formHost, aid) {
       errEl.textContent = 'days must be 1–30';
       return;
     }
+    const chunksRaw = parseInt(formHost.querySelector('[data-field="chunks"]').value, 10);
+    if (!Number.isInteger(chunksRaw) || chunksRaw < 1 || chunksRaw > 7) { errEl.textContent = 'chunks must be 1–7'; return; }
     const expiry = Math.floor(Date.now() / 1000) + days * 86400;
-    if (!confirm(
-      `Publish Instant listing on the Market?\n\n` +
-      `Selling: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} (whole UTXO)\n` +
-      `Min price: ${minPriceSats.toLocaleString()} sats\n` +
-      `Expires: ${days} day${days>1?'s':''}\n\n` +
-      `Discloses the listed UTXO's amount + blinding so any buyer can complete the sale without you online. Other holdings stay confidential.`,
-    )) return;
-    if (!await ensureBurnerBackedUp('Publish Instant listing (signs a sale authorization; no on-chain broadcast)')) {
+    if (chunksRaw === 1) {
+      if (!confirm(
+        `Publish Instant listing on the Market?\n\n` +
+        `Selling: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} (whole UTXO)\n` +
+        `Min price: ${minPriceSats.toLocaleString()} sats\n` +
+        `Expires: ${days} day${days>1?'s':''}\n\n` +
+        `Discloses the listed UTXO's amount + blinding so any buyer can complete the sale without you online. Other holdings stay confidential.`,
+      )) return;
+    } else {
+      const chunkAmt = u.amount / BigInt(chunksRaw);
+      const leftover = u.amount - chunkAmt * BigInt(chunksRaw);
+      if (chunkAmt <= 0n) { errEl.textContent = 'chunk amount underflows — pick fewer chunks'; return; }
+      const leftoverLine = leftover > 0n
+        ? `Leftover: ${fmtAssetAmount(leftover, target.decimals)} ${target.ticker} (stays in your wallet, not listed)\n`
+        : '';
+      if (!confirm(
+        `Publish ${chunksRaw} Instant listings on the Market?\n\n` +
+        `Splitting: ${fmtAssetAmount(u.amount, target.decimals)} ${target.ticker} → ${chunksRaw} chunks of ${fmtAssetAmount(chunkAmt, target.decimals)} ${target.ticker} each\n` +
+        `Min price per chunk: ${minPriceSats.toLocaleString()} sats\n` +
+        `Expires: ${days} day${days>1?'s':''}\n` +
+        leftoverLine +
+        `\n` +
+        `Buyers can take any subset of chunks individually. Each chunk's (amount, blinding) opening is disclosed at publish time.\n\n` +
+        `Steps: 1) one CXFER fans your UTXO into ${chunksRaw} equal pieces (costs ~commit + reveal Bitcoin fees); 2) ${chunksRaw} listings published to the marketplace.`,
+      )) return;
+    }
+    if (!await ensureBurnerBackedUp(chunksRaw === 1
+      ? 'Publish Instant listing (signs a sale authorization; no on-chain broadcast)'
+      : `Publish ${chunksRaw} chunked Instant listings (one CXFER + ${chunksRaw} signed authorizations)`,
+    )) {
       errEl.textContent = 'Back up the in-page privkey first, then retry.';
       return;
     }
     const submitBtn = ev.target;
-    submitBtn.disabled = true; submitBtn.textContent = 'publishing…';
+    submitBtn.disabled = true; submitBtn.textContent = chunksRaw === 1 ? 'publishing…' : 'splitting + publishing…';
     const pubStrip = formHost.querySelector('[data-publish-progress]');
     if (pubStrip) pubStrip.style.display = 'flex';
     setProgressStrip(pubStrip, 0);
     await new Promise(r => setTimeout(r, 50));
     try {
-      const r = await publishPreauthSale({
-        utxoTxid: u.utxo.txid,
-        utxoVout: u.utxo.vout,
-        minPriceSats,
-        expiry,
-        onProgress: (stage) => {
-          if (stage === 'publish-start') setProgressStrip(pubStrip, 1);
-        },
-      });
-      setProgressStrip(pubStrip, 2);
-      toast(`Instant listing ${shorten(r.sale_id, 6)} published ✓`, 'success', 8000);
+      if (chunksRaw === 1) {
+        const r = await publishPreauthSale({
+          utxoTxid: u.utxo.txid,
+          utxoVout: u.utxo.vout,
+          minPriceSats,
+          expiry,
+          onProgress: (stage) => {
+            if (stage === 'publish-start') setProgressStrip(pubStrip, 1);
+          },
+        });
+        setProgressStrip(pubStrip, 2);
+        toast(`Instant listing ${shorten(r.sale_id, 6)} published ✓`, 'success', 8000);
+      } else {
+        const need = await estimateSatsForOp('cxfer');
+        if (!(await ensureSatsFunded(need, 'Fan CXFER before chunked listing'))) throw new Error('cancelled');
+        const r = await publishPreauthSaleChunks({
+          sourceUtxoTxid: u.utxo.txid,
+          sourceUtxoVout: u.utxo.vout,
+          chunks: chunksRaw,
+          minPriceSatsPerChunk: minPriceSats,
+          expiry,
+          onProgress: (stage) => {
+            if (stage === 'fan-start') setProgressStrip(pubStrip, 0);
+            else if (stage === 'fan-done') setProgressStrip(pubStrip, 1);
+            else if (stage === 'publish-chunk') setProgressStrip(pubStrip, 1);
+          },
+        });
+        setProgressStrip(pubStrip, 2);
+        if (r.error) throw new Error(r.error);
+        if (r.partialFailure) {
+          toast(`Chunked listing: ${r.chunks_published}/${r.chunks_requested} published — retry the rest from Holdings`, 'error', 10000);
+        } else {
+          toast(`${r.chunks_published} chunked listings published ✓`, 'success', 8000);
+        }
+      }
       formHost.style.display = 'none';
       formHost.dataset.open = '';
       formHost.innerHTML = '';
@@ -38069,6 +38296,7 @@ function _renderMarketAskForm(formHost, aid) {
     } catch (e) {
       submitBtn.disabled = false; submitBtn.textContent = 'List for sale';
       if (isUnlockCancelled(e)) errEl.textContent = 'Cancelled — nothing was published.';
+      else if (e?.message === 'cancelled') errEl.textContent = 'cancelled';
       else errEl.textContent = e?.message || String(e);
     }
   };
@@ -41292,7 +41520,7 @@ export {
   // POST to /preauth-sales to fail with "seller_asset_spend_sig invalid".
   sighashV0WithType,
   // Buyer/seller flow exports.
-  publishPreauthSale, cancelPreauthSale, takePreauthSale, fetchPreauthSale,
+  publishPreauthSale, publishPreauthSaleChunks, cancelPreauthSale, takePreauthSale, fetchPreauthSale,
   // §5.7.6 atomic-intent flow exports — used by the signet e2e harness to
   // drive publish → claim → fulfil → take headlessly without the browser UI.
   publishAxferIntent, claimAxferIntent, fulfilAxferIntent,
