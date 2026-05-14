@@ -34467,14 +34467,60 @@ function _snapshotMyListings(myPubHex) {
 // (FRESH 1min), so most ticks at this cadence hit cache and stay
 // cheap; the only real cost is bandwidth on the bids fetch the
 // asset-detail path adds per tick.
+//
+// Backoff on errors: a degraded worker (transient 5xx, mempool.space
+// rate-limit, network blip) used to keep getting hit every 5s, which
+// amplifies the problem and burns the user's connection. Track
+// consecutive failures and exponentially back off — 5s → 10s → 20s
+// → 40s → 60s cap — resetting to 5s on the next successful tick.
+// Pair with a visible "data Xs old" badge so the user knows when
+// the feed is degraded vs healthy.
 let _marketAutoRefreshTimer = null;
+let _marketTickFailStreak = 0;
+let _marketLastSuccessTs = 0;
 const MARKET_AUTO_REFRESH_MS = 5000;
+const MARKET_AUTO_REFRESH_MAX_MS = 60_000;
+const MARKET_STALE_THRESHOLD_MS = 15_000;
+function _computeMarketTickDelay() {
+  if (_marketTickFailStreak === 0) return MARKET_AUTO_REFRESH_MS;
+  const factor = Math.pow(2, Math.min(_marketTickFailStreak, 4));
+  return Math.min(MARKET_AUTO_REFRESH_MS * factor, MARKET_AUTO_REFRESH_MAX_MS);
+}
+function _updateMarketStaleBadge() {
+  const el = (typeof document !== 'undefined') ? document.getElementById('market-status') : null;
+  if (!el) return;
+  // Don't surface staleness when the user isn't actively looking at
+  // the tab — visiting another tab and coming back shouldn't flash a
+  // red badge while the first tick re-warms the cache.
+  if (typeof document !== 'undefined' && document.hidden) { el.textContent = ''; return; }
+  if (_marketLastSuccessTs === 0) { el.textContent = ''; return; }
+  const ageMs = Date.now() - _marketLastSuccessTs;
+  if (ageMs < MARKET_STALE_THRESHOLD_MS) {
+    el.textContent = '';
+    el.style.color = '';
+    return;
+  }
+  const ageSec = Math.floor(ageMs / 1000);
+  const label = ageSec < 60 ? `${ageSec}s` : `${Math.floor(ageSec / 60)}m`;
+  el.textContent = `⚠ data ${label} old · retrying`;
+  el.style.color = 'var(--orange)';
+}
 function _startMarketAutoRefresh() {
   if (_marketAutoRefreshTimer) return;
-  _marketAutoRefreshTimer = setInterval(async () => {
-    if (typeof document !== 'undefined' && document.hidden) return;
+  const tick = async () => {
+    _marketAutoRefreshTimer = null;
+    let success = true;
+    // Tab not visible / not on market tab: skip work but don't count as
+    // a failure (no fetch attempted, nothing to back off from).
+    if (typeof document !== 'undefined' && document.hidden) {
+      _marketAutoRefreshTimer = setTimeout(tick, _computeMarketTickDelay());
+      return;
+    }
     const tab = (typeof window !== 'undefined' && window.location?.hash || '');
-    if (!tab.includes('tab=market')) return;
+    if (!tab.includes('tab=market')) {
+      _marketAutoRefreshTimer = setTimeout(tick, _computeMarketTickDelay());
+      return;
+    }
     try {
       // Refresh the in-memory cache, then surgically update DOM cell
       // values without full re-render. Full applyMarketFilters() on
@@ -34549,8 +34595,19 @@ function _startMarketAutoRefresh() {
       } else if (myPubHex) {
         _myListingsSnapshot = _snapshotMyListings(myPubHex);
       }
-    } catch {}
-  }, MARKET_AUTO_REFRESH_MS);
+    } catch (e) {
+      success = false;
+    }
+    if (success) {
+      _marketTickFailStreak = 0;
+      _marketLastSuccessTs = Date.now();
+    } else {
+      _marketTickFailStreak++;
+    }
+    try { _updateMarketStaleBadge(); } catch {}
+    _marketAutoRefreshTimer = setTimeout(tick, _computeMarketTickDelay());
+  };
+  _marketAutoRefreshTimer = setTimeout(tick, MARKET_AUTO_REFRESH_MS);
 }
 // Brief green/red flash on a cell when its underlying numeric value
 // changed direction. CEX trick — the eye locks onto "TAC just ticked
@@ -34718,7 +34775,13 @@ let _pendingTileReuse = null;
 // slide.
 let _pendingTilePositions = null;
 function _stopMarketAutoRefresh() {
-  if (_marketAutoRefreshTimer) { clearInterval(_marketAutoRefreshTimer); _marketAutoRefreshTimer = null; }
+  if (_marketAutoRefreshTimer) {
+    clearTimeout(_marketAutoRefreshTimer);
+    _marketAutoRefreshTimer = null;
+  }
+  // Reset backoff state so a fresh start after stop (e.g., tab toggle)
+  // begins from 5s rather than inheriting a stale fail streak.
+  _marketTickFailStreak = 0;
 }
 function _marketFloorByAsset() {
   if (!_marketCache?.listings) return null;
