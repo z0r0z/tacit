@@ -1966,7 +1966,27 @@ async function getBtcUsdPrice() {
         }
       }
     } catch {}
-    // Both live sources failed. Return whatever localStorage had, even
+    // Source 3: Kraken public ticker. Added because users on networks
+    // that geo-block / rate-limit both mempool.space and Coinbase were
+    // landing on a permanent "loading USD…" / "—" state with no
+    // fallback. Kraken's ticker endpoint is open CORS and rarely
+    // rate-limits anonymous reads.
+    try {
+      const r = await fetch('https://api.kraken.com/0/public/Ticker?pair=XBTUSD');
+      if (r.ok) {
+        const j = await r.json();
+        // Kraken returns { result: { XXBTZUSD: { c: ["<price>", "<volume>"] } } }
+        const result = j?.result || {};
+        const pairKey = Object.keys(result)[0];
+        const lastPrice = pairKey ? Number(result[pairKey]?.c?.[0] || 0) : 0;
+        if (Number.isFinite(lastPrice) && lastPrice > 0) {
+          _btcUsdMemCache = { price: lastPrice, fetchedAt: Date.now() };
+          _saveBtcUsdToStorage(lastPrice);
+          return lastPrice;
+        }
+      }
+    } catch {}
+    // All live sources failed. Return whatever localStorage had, even
     // if stale — better than null for UI continuity.
     return _btcUsdMemCache.price;
   })().finally(() => { _btcUsdInFlight = null; });
