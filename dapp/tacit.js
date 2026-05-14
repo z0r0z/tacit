@@ -36334,10 +36334,22 @@ async function populateMarketAssetStats(scope, asset) {
     ? Number(j.mark_price.unit) : null;
   const latestUnit = _deltaMarkUnit != null ? _deltaMarkUnit : latestUnitRaw;
   const last24h = tradePoints.filter(p => p.ts >= _24hAgo);
+  // 24h high/low now respect the same 0.2×/5× mark-relative outlier
+  // guard the chart + mark price use. Without this filter a single
+  // dust take (0.45 sats/TAC) or fat-finger fill (25k sats/TAC)
+  // dominates the displayed band, contradicting the mark price the
+  // user sees right next to it. The outlier-included extremes are
+  // still visible on the chart (as ringed orange dots) for honest
+  // forensics; this stat is the "what did TAC typically trade for"
+  // line, where the typical band is what users want.
   let delta24Pct = null, high24 = null, low24 = null;
   if (last24h.length >= 1) {
-    high24 = last24h[0].u; low24 = last24h[0].u;
-    for (const p of last24h) { if (p.u > high24) high24 = p.u; if (p.u < low24) low24 = p.u; }
+    const inBand = _deltaMarkUnit != null
+      ? last24h.filter(p => p.u >= _deltaMarkUnit * 0.2 && p.u <= _deltaMarkUnit * 5)
+      : last24h;
+    const sample = inBand.length > 0 ? inBand : last24h; // fall back rather than blank
+    high24 = sample[0].u; low24 = sample[0].u;
+    for (const p of sample) { if (p.u > high24) high24 = p.u; if (p.u < low24) low24 = p.u; }
   }
   if (last24h.length >= 1 && latestUnit != null) {
     // Reference price for Δ%: the LAST trade that landed before the 24h
@@ -36414,7 +36426,7 @@ async function populateMarketAssetStats(scope, asset) {
   // this asset. Highest bid = top of the bid intents (fetched once and
   // shared with populateMarketBidsLadder via a per-asset cache so we
   // don't double-RTT).
-  _populateBidAskSpread(section, aid, decimals, ticker).catch(() => {});
+  _populateBidAskSpread(section, aid, decimals, ticker, _deltaMarkUnit).catch(() => {});
 
   // Depth chart: stacked area of cumulative bid vs ask volume. Reads asks
   // from _marketCache.listings (already loaded) and bids from the same
@@ -36681,10 +36693,22 @@ function _bidCachePeek(aid) {
 // Bid-ask spread row populator. Cheapest ask comes from the in-memory
 // listings cache (already loaded for this asset). Highest bid comes from
 // the shared bid-intent cache. Hidden when either side is missing.
-async function _populateBidAskSpread(section, aid, decimals, ticker) {
+//
+// Uses the worker's mark price as a center anchor and a 0.2×/5× band
+// (same threshold as the chart's outlier-styling + Simple Mode's dust
+// filter) to ignore dust asks and outlier bids when picking best-ask
+// and best-bid. Without this filter the spread reads "crossed 5,000"
+// whenever a single 0.5-sat dust ask sits below a stale fat-finger
+// 5,000-sat bid — alarming but technically meaningless for any real
+// trader. Outliers stay visible in the asks ladder / chart for
+// transparency; the spread stat reflects the actual tradable band.
+async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = null) {
   const wrap = section.querySelector('[data-market-stat-spread-wrap]');
   const out = section.querySelector('[data-market-stat-spread]');
   if (!wrap || !out) return;
+  const markValid = Number.isFinite(markUnit) && markUnit > 0;
+  const lo = markValid ? markUnit * 0.2 : 0;
+  const hi = markValid ? markUnit * 5 : Infinity;
   let cheapestAsk = null;
   const listings = (_marketCache?.listings || []).filter(l =>
     l._asset?.asset_id === aid && !l.expired,
@@ -36695,7 +36719,9 @@ async function _populateBidAskSpread(section, aid, decimals, ticker) {
               : l.amount;
     const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
     const u = unitPriceSats(ps, BigInt(amt || 0), decimals);
-    if (u != null && (cheapestAsk == null || u < cheapestAsk)) cheapestAsk = u;
+    if (u == null) continue;
+    if (markValid && (u < lo || u > hi)) continue; // skip dust + outliers
+    if (cheapestAsk == null || u < cheapestAsk) cheapestAsk = u;
   }
   const intents = await _fetchBidIntentsCached(aid);
   const nowSec = Math.floor(Date.now() / 1000);
@@ -36706,7 +36732,9 @@ async function _populateBidAskSpread(section, aid, decimals, ticker) {
     const amt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
     if (amt <= 0n) continue;
     const u = unitPriceSats(Number(b.price_sats || 0), amt, decimals);
-    if (u != null && (highestBid == null || u > highestBid)) highestBid = u;
+    if (u == null) continue;
+    if (markValid && (u < lo || u > hi)) continue;
+    if (highestBid == null || u > highestBid) highestBid = u;
   }
   if (cheapestAsk == null || highestBid == null) {
     wrap.style.display = 'none';
@@ -36718,7 +36746,7 @@ async function _populateBidAskSpread(section, aid, decimals, ticker) {
   const isCrossed = absSpread < 0;
   const color = isCrossed ? '#b8341d' : (pctSpread != null && pctSpread < 1 ? '#0a7d3a' : 'var(--ink)');
   const txt = isCrossed
-    ? `<span style="color:${color};" title="Crossed book — best bid exceeds best ask. Stale data or a pricing mistake.">crossed ${fmtUnitPriceSats(Math.abs(absSpread))}</span>`
+    ? `<span style="color:${color};" title="Best in-band bid exceeds best in-band ask. Real arbitrage opportunity (dust outliers ignored).">crossed ${fmtUnitPriceSats(Math.abs(absSpread))}</span>`
     : `<span style="color:${color};">${fmtUnitPriceSats(absSpread)} sats${pctSpread != null ? ` · ${pctSpread.toFixed(2)}%` : ''}</span>`;
   out.innerHTML = txt;
   wrap.style.display = '';
