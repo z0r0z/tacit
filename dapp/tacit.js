@@ -39024,13 +39024,13 @@ function renderMarketBidsLadderHTML(asset) {
       <div class="market-bids-head">
         <div class="market-bids-title">
           <strong>Bids &middot; <span data-market-bids-count>&mdash;</span></strong>
-          <span>signed buy offers, no sats locked until filled</span>
+          <span>signed buy offers · wallet-held sats (CoW-style) · partial-fillable per §5.7.7</span>
         </div>
         <div class="market-bids-actions">
-          <button data-act="auto-fulfil-toggle" type="button" title="Automatically fulfils claimed atomic intents while this tab is open.">Auto-fulfil: OFF</button>
-          <button data-act="market-bids-toggle" type="button" aria-expanded="false">Show bids</button>
-          <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Sell into the bids ladder by sweeping highest-priced bids first. Each fill publishes an atomic intent; settlement awaits each bidder's Take.">Sweep sell</button>
-          <button data-act="market-bid-place" data-aid="${aid}" type="button">+ Place a bid on ${ticker}</button>
+          <button data-act="auto-fulfil-toggle" type="button" title="Automatically signs claim responses for atomic intents (asks AND bid fulfilments) while this tab is open. Required for sell-side swaps to settle without you babysitting.">Auto-fulfil: OFF</button>
+          <button data-act="market-bids-toggle" type="button" aria-expanded="false" title="Show the full bid ladder. Each bid card now surfaces remaining_amount and min_fill_amount so partial-fill bids stay legible.">Show bids</button>
+          <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Advanced: sell-route control surface. Pick a floor price + amount; each fill publishes an atomic intent. For most cases the Swap tile above is simpler — this exposes the per-bid plan so you can audit before signing.">Sweep sell (advanced)</button>
+          <button data-act="market-bid-place" data-aid="${aid}" type="button" title="Advanced: standalone bid form with explicit price chips (best-bid / floor / mark / last) + custom expiry + min-fill. The Swap tile above auto-falls-back to a variable-fill bid when no asks match your limit — use this when you want full control over the bid params.">+ Place a bid on ${ticker}</button>
         </div>
       </div>
       <div data-market-sweep-sell-form style="display:none;margin-top:10px;"></div>
@@ -42106,10 +42106,22 @@ function _wireMarketSweepSell(section, asset) {
         .filter(b => Number(b.expiry || 0) > nowSec)
         .filter(b => !b.axintent_id)
         .map(b => {
-          const amt = BigInt(b.amount || 0);
-          const ps  = Number(b.price_sats || 0);
-          const u   = unitPriceSats(ps, amt, decimals);
-          return { b, amt, ps, u };
+          // Variable-fill bids (§5.7.7) carry remaining_amount that decays
+          // as sellers partial-fill them. The sweep plan must walk the
+          // CURRENT fillable depth (`remaining_amount`), not the bid's
+          // signed total — otherwise a half-claimed bid shows up at 2×
+          // its real size and the plan preview lies. The scaled sats for
+          // the fillable chunk is floor(remaining × price / amount).
+          const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+          const fullAmt = BigInt(b.amount || 0);
+          const amt = isVar ? BigInt(b.remaining_amount || b.amount || 0) : fullAmt;
+          const fullPs = Number(b.price_sats || 0);
+          const ps = isVar && fullAmt > 0n
+            ? Number((BigInt(fullPs) * amt) / fullAmt)
+            : fullPs;
+          const u = unitPriceSats(ps, amt, decimals);
+          const minFill = isVar ? BigInt(b.min_fill_amount) : amt;
+          return { b, amt, ps, u, isVar, minFill, fullAmt, fullPs, kind: isVar ? 'bid-var' : 'bid' };
         })
         .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floorUnit && c.amt > 0n)
         .sort((x, y) => y.u - x.u);  // HIGHEST price first
@@ -42117,15 +42129,28 @@ function _wireMarketSweepSell(section, asset) {
         planEl.innerHTML = `<div class="muted" style="font-size:11px;">No open bids ≥ ${floorUnit.toLocaleString()} sats/${escapeHtml(ticker)}. Lower the floor or use "+ Place a bid" to wait for one.</div>`;
         return;
       }
-      // Strict-fit accumulation. Bid amounts vary so we can't always
-      // hit target exactly; we accept ≤ target and report leftover.
+      // Strict-fit accumulation. Whole-bid candidates are atomic — either
+      // we fit the full amt or we skip. Variable-fill candidates can
+      // partial-fill to land exactly on the residual gap, so when one
+      // would overshoot we chunk it (provided the chunk ≥ min_fill).
       const plan = [];
       let acc = 0n;
       for (const c of candidates) {
         if (acc >= targetAmtBig) break;
-        if (acc + c.amt > targetAmtBig) continue;
-        plan.push(c);
-        acc += c.amt;
+        const gap = targetAmtBig - acc;
+        if (c.amt <= gap) {
+          plan.push(c);
+          acc += c.amt;
+          continue;
+        }
+        if (c.isVar && gap >= c.minFill) {
+          const scaledPs = Number((BigInt(c.fullPs) * gap) / c.fullAmt);
+          if (scaledPs >= DUST) {
+            plan.push({ ...c, amt: gap, ps: scaledPs });
+            acc += gap;
+            break;
+          }
+        }
       }
       // Best-effort fallback: if every candidate would overshoot, take
       // the single highest-priced one anyway so the user gets *something*
@@ -42451,7 +42476,25 @@ function _wireMarketBidPlace(section, asset) {
         const expiry = Math.floor(Date.now() / 1000) + hours * 3600;
         submitBtn.disabled = true;
         status.textContent = 'signing and posting...';
-        await publishBidIntent({ assetIdHex: aid, amount, priceSats: priceSatsInt, expiry });
+        // Variable-fill by default (§5.7.7). Bids placed through this
+        // form match the swap-tile residual-bid behavior: any seller can
+        // partial-fill any chunk in [min_fill, remaining_amount], so a
+        // single bid attracts multi-seller liquidity instead of waiting
+        // on one whole-fill match. Floor formula mirrors the swap tile:
+        //   min_fill = max(10% of amount, smallest DUST-clearing chunk).
+        // Falls back to whole-fill (min_fill omitted) when the bid is
+        // too small to support a meaningful partial.
+        let _minFill = amount / 10n;
+        const _dustFloor = (BigInt(DUST) * amount + BigInt(priceSatsInt) - 1n) / BigInt(priceSatsInt);
+        if (_dustFloor > _minFill) _minFill = _dustFloor;
+        if (_minFill >= amount) _minFill = 0n;
+        await publishBidIntent({
+          assetIdHex: aid,
+          amount,
+          priceSats: priceSatsInt,
+          expiry,
+          ...(_minFill > 0n ? { minFillAmount: _minFill.toString() } : {}),
+        });
         status.textContent = 'bid posted OK';
         toast(`Bid posted on ${ticker}`, 'success');
         formHost.style.display = 'none'; formHost.dataset.open = ''; formHost.innerHTML = '';
