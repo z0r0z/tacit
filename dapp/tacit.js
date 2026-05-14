@@ -4016,7 +4016,13 @@ const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC ยง5.7.9 / ย
 // this dapp parses + validates rather than treating the envelope as unknown).
 // Flip to true only after worker + dapp UI + signet e2e all land and the
 // coordinated rollout has cleared shadow week.
-const ENABLE_T_AXFER_VARIABLE = false;
+//
+// Test-only escape hatch: the signet e2e harness sets
+// `globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE = true` BEFORE importing this
+// module so it can exercise the builder end-to-end. The flag remains false
+// for any production page load (browsers don't have that global set), so
+// production behavior is byte-identical to a hard-coded false.
+const ENABLE_T_AXFER_VARIABLE = (typeof globalThis !== 'undefined' && globalThis.__TACIT_ENABLE_T_AXFER_VARIABLE === true);
 const MAX_SCRIPT_PUSH = 520;
 const OP_FALSE = 0x00, OP_PUSHDATA1 = 0x4c, OP_PUSHDATA2 = 0x4d;
 const OP_IF = 0x63, OP_ENDIF = 0x68, OP_CHECKSIG = 0xac;
@@ -12452,7 +12458,7 @@ async function publishAxferVarIntent({ utxoTxid, utxoVout, priceSats, expiry, mi
   // Save the per-intent secret BEFORE the POST so a network failure mid-POST
   // doesn't lose it. Worker may still successfully store the intent on retry,
   // and we need `r` to fulfil any incoming claim.
-  saveAxintentSecret(intentIdHex, rHex);
+  recordAxintentSecret(intentIdHex, rHex);
 
   const body = {
     intent_id: intentIdHex,
