@@ -26614,10 +26614,22 @@ async function _claimRefreshDiscover() {
             const t = Number(x.submitted_at);
             return Number.isFinite(t) ? Math.min(mn, t) : mn;
           }, nowSec);
+          // Newest-submitted lets the badge tell "daemon stopped working"
+          // (oldest old AND newest old too) from "daemon's chewing through
+          // a backlog" (oldest old, newest fresh — single stuck record
+          // shouldn't alarm). The worker's /claims endpoint returns ALL
+          // submitted claims with no settled/paid filter, so a single
+          // orphaned-or-already-paid entry drags `oldestSubmitted` back
+          // without representing real recipient pain.
+          const newestSubmitted = claimsList.reduce((mx, x) => {
+            const t = Number(x.submitted_at);
+            return Number.isFinite(t) && t > mx ? t : mx;
+          }, 0);
           _claimQueueHealthByRoot.set(d.merkle_root, {
             depth: claimsList.length,
             sortedLeaves,
             oldestSubmitted,
+            newestSubmitted,
             fetchedAt: Date.now(),
           });
           _renderClaimDiscoverList();
@@ -26864,15 +26876,31 @@ function _renderClaimDiscoverList() {
     // populated by the per-drop /claims probe at the bottom of
     // _claimRefreshDiscover. Skipped when the cache is empty (no data yet)
     // or stale (>10 min — discover refresh has paused).
+    // Backlog badge — fires only when the queue genuinely looks stuck:
+    //  - depth > 0 AND oldest > 6h (raised from 2h — 2h false-positives on
+    //    drops where one orphan record sits in the queue while everything
+    //    fresh is being processed),
+    //  - AND newest > 30min (no fresh submissions either — if the daemon
+    //    is actively chewing on new arrivals, one stale entry shouldn't
+    //    alarm the user).
+    // Worker doesn't expose a settled/paid flag on /claims, so we can't
+    // truly distinguish "queue is stuck" from "queue contains old already-
+    // paid records". This dual gate dampens the most common false
+    // positive (an orphan claim from before the drop's effective launch).
     let backlogBadge = '';
     const _qh = _claimQueueHealthByRoot.get(d.merkle_root);
     if (_qh && _qh.depth > 0 && (Date.now() - _qh.fetchedAt) < 10 * 60 * 1000) {
-      const _oldestAgeSec = Math.max(0, Math.floor(Date.now() / 1000) - _qh.oldestSubmitted);
-      if (_oldestAgeSec > 2 * 3600) {
+      const _nowSec = Math.floor(Date.now() / 1000);
+      const _oldestAgeSec = Math.max(0, _nowSec - _qh.oldestSubmitted);
+      const _newestAgeSec = _qh.newestSubmitted > 0
+        ? Math.max(0, _nowSec - _qh.newestSubmitted)
+        : _oldestAgeSec;
+      const _bothStale = _oldestAgeSec > 6 * 3600 && _newestAgeSec > 30 * 60;
+      if (_bothStale) {
         const _ageStr = _oldestAgeSec >= 3600
           ? `${Math.floor(_oldestAgeSec / 3600)}h`
           : `${Math.floor(_oldestAgeSec / 60)}m`;
-        backlogBadge = `<span class="status-pill" style="background:#fff8ec;color:var(--orange);border-color:var(--orange);font-size:9px;" title="The fulfiller daemon hasn't broadcast a batch in a while — your claim may queue for longer than the typical 10–30 min. Check with the issuer if you've already tipped and it persists past 1h.">⏳ backlogged · oldest ${_ageStr}</span>`;
+        backlogBadge = `<span class="status-pill" style="background:#fff8ec;color:var(--orange);border-color:var(--orange);font-size:9px;" title="The fulfiller daemon doesn't appear to have processed claims recently. Your claim may queue longer than the typical 10–30 min. Check with the issuer if persisted past 1h after you tip. (Note: the worker doesn't expose paid vs unpaid status, so this badge can fire on orphaned old records too — treat as a hint, not a verdict.)">⏳ daemon stalled · oldest ${_ageStr}</span>`;
       }
     }
     let amountLine = '';
