@@ -769,8 +769,10 @@ they already learn from the underlying Pedersen commitments.
 **Maker recovery flow** (from seed alone, no local state):
 
 1. Maker reimports `maker_priv` on a fresh device.
-2. Scans chain for txs where `vin[1].witness[1]` decodes as a
-   `T_AXFER_VAR` envelope signed by `maker_pub`.
+2. Scans chain for txs where `vin[1].witness[1] == maker_pub`
+   (the maker's P2WPKH pubkey on the asset input) **and**
+   `vin[0].witness[1]` decodes as a `T_AXFER_VAR` envelope (opcode
+   `0x37`) under the commit P2TR script-path leaf.
 3. For each such tx: re-derives `intent_id = SHA256("tacit-axintent-
    id-v1" || maker_pubkey || asset_utxo_txid_BE || asset_utxo_vout_LE
    )[:16]` from `vin[1]`'s outpoint (the consumed asset UTXO).
