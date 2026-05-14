@@ -6146,7 +6146,12 @@ function _computeAssetPnl(assetIdHex, decimals, markUnit) {
   let totalCostSats = 0;
   for (const e of activity) {
     if (e.assetId !== assetIdHex) continue;
-    if (e.kind !== 'transfer-in') continue;
+    // `swap-buy` is the canonical kind for orderbook acquisitions
+    // (cost-basis stamped in extra.price_sats). `transfer-in` is
+    // grandfathered for entries written before the swap-buy split — old
+    // localStorage rows that still carry an extra.source from a take
+    // path should continue to count toward the basis.
+    if (e.kind !== 'swap-buy' && e.kind !== 'transfer-in') continue;
     const ps = Number(e.extra?.price_sats);
     if (!Number.isFinite(ps) || ps <= 0) continue;
     let amt = 0n;
@@ -11993,13 +11998,12 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
   // recipBlinding) opens the on-chain commitment.
   recordOpening(finalTxid, 0, offer.asset_id, BigInt(offer.amount), recipBlinding);
   recordActivity({
-    kind: 'transfer-in',
+    kind: 'swap-buy',
     ticker: offer.ticker || '',
     amount: BigInt(offer.amount),
     decimals: Number.isInteger(offer.decimals) ? offer.decimals : 0,
     assetId: offer.asset_id,
     txid: finalTxid,
-    // Cost basis for P&L: sats spent on this atomic-intent settlement.
     extra: { price_sats: Number(offer.price_sats) || 0, source: 'atomic-take' },
   });
 
@@ -13290,6 +13294,15 @@ async function finalizeAxferVarTake({ assetIdHex, intentIdHex, intent, fulfilmen
       buyer_address: wallet.address(),
       listing_kind: 'atomic-var',
     });
+    recordActivity({
+      kind: 'swap-buy',
+      ticker: intent.ticker || (getAssetMeta(assetIdHex)?.ticker || ''),
+      amount: requestedBI,
+      decimals: Number.isInteger(intent.decimals) ? intent.decimals : (getAssetMeta(assetIdHex)?.decimals || 0),
+      assetId: assetIdHex,
+      txid: j.reveal_txid,
+      extra: { price_sats: _scaledSats, source: 'axintent-var-take' },
+    });
   }
   return j;
 }
@@ -13978,15 +13991,12 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   // doesn't void the buy. See fetchBuyerOpening in scanHoldings.
   publishBuyerOpening(revealTxidHex, 0, amount, recipBlinding).catch(() => {});
   recordActivity({
-    kind: 'transfer-in',
+    kind: 'swap-buy',
     ticker: sale.ticker || '',
     amount,
     decimals: Number.isInteger(sale.decimals) ? sale.decimals : 0,
     assetId: assetIdHex,
     txid: revealTxidHex,
-    // Cost basis for P&L tracking — sats spent on this acquisition.
-    // Holdings card's computeAssetPnl reads this to derive weighted-avg
-    // entry price across all trade acquisitions for the asset.
     extra: { price_sats: Number(sale.min_price_sats) || 0, source: 'preauth-take' },
   });
   // Worker stamps last-traded price + bumps transfer count. Best-effort.
@@ -14272,6 +14282,18 @@ async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
   });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `claim POST returned ${resp.status}`);
+  {
+    const m = getAssetMeta(bid.asset_id) || {};
+    recordActivity({
+      kind: 'swap-sell',
+      ticker: bid.ticker || m.ticker || '',
+      amount: fillAmtBI,
+      decimals: Number.isInteger(bid.decimals) ? bid.decimals : (m.decimals || 0),
+      assetId: bid.asset_id,
+      txid: offer.commit_txid,
+      extra: { price_sats: scaledPriceSats, source: 'bid-fulfil', state: 'pending-take' },
+    });
+  }
   // Surface commit_txid + (optional) split tx so multi-fill flows like
   // Sweep Sell can mark their just-spent UTXOs via _markTxInputsSpent
   // and avoid double-picking inputs across back-to-back bid fulfilments.
@@ -31820,6 +31842,11 @@ const ACTIVITY_VERBS = {
   'transfer-out': 'Sent',
   'transfer-in':  'Received',
   'list-atomic':  'Listed',
+  // Orderbook swap fills — distinct from generic transfer-in/out so a
+  // trader's "what did I trade?" view doesn't get conflated with
+  // gifts/share-link inflows or direct sends.
+  'swap-buy':     'Bought',
+  'swap-sell':    'Sold',
   // Public-mint (T_PETCH-rooted) flow — distinct from CETCH 'etch'/'mint' so
   // the activity log preserves the trust-model distinction (zero deployer
   // allocation; cap-credit at depth ≥ 3) instead of collapsing both into
@@ -31933,6 +31960,31 @@ function renderActivity() {
           Pay ${price.toLocaleString()} sats to ${addrHtml}${expiresAt ? ` · <span data-expires-at="${expiresAt}">${escapeHtml(countdownText)}</span>` : ''}
         </div>
         ${paidLine}`;
+    }
+    // Swap rows surface unit price + total sats inline — Ethereum-trader
+    // expectation: every fill in your activity table should answer "what
+    // did I pay/receive per token, and how much in total" at a glance.
+    // swap-sell carries state='pending-take' until the buyer's settle tx
+    // hits; the badge keeps the row honest about asynchronous Bitcoin
+    // settlement rather than implying the funds have arrived.
+    if ((e.kind === 'swap-buy' || e.kind === 'swap-sell') && e.extra) {
+      const totalSats = Number(e.extra.price_sats) || 0;
+      let unitPriceStr = '';
+      try {
+        const wholeQty = Number(BigInt(e.amount || '0')) / Math.pow(10, e.decimals || 0);
+        if (Number.isFinite(wholeQty) && wholeQty > 0 && totalSats > 0) {
+          const unit = totalSats / wholeQty;
+          unitPriceStr = ` @ ${unit < 1 ? unit.toFixed(4).replace(/\.?0+$/, '') : unit.toLocaleString(undefined, { maximumFractionDigits: 2 })} sats/${escapeHtml(e.ticker || '')}`;
+        }
+      } catch {}
+      const verbPaid = e.kind === 'swap-buy' ? 'paid' : 'receiving';
+      const pendingHtml = e.kind === 'swap-sell' && e.extra.state === 'pending-take'
+        ? ' · <span style="color:#b8651d;">pending bidder Take</span>'
+        : '';
+      extraLine = `
+        <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">
+          ${verbPaid} ${totalSats.toLocaleString()} sats${unitPriceStr}${pendingHtml}
+        </div>`;
     }
     return `
       <div class="activity-row">
@@ -35699,7 +35751,8 @@ function applyMarketFilters() {
            is the only honest signal. -->
       <div data-swap-limit-readout class="muted" style="font-size:10px;line-height:1.4;margin:-6px 0 10px;text-align:right;display:none;"></div>
       <!-- Primary action -->
-      <button data-swap-action type="button" disabled style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
+      <button data-swap-action type="button" disabled title="Atomic Bitcoin settlement · no public mempool to front-run, no MEV bots, no privileged sequencer. Each fill is one Bitcoin tx, atomic at the moment of trade." style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
+      <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="No public mempool ordering games. Bitcoin's PoW + atomic settlement means no sequencer can reorder your fill or sandwich you.">🔒 atomic Bitcoin settlement · no MEV</div>
       <div data-swap-progress style="display:none;margin-top:10px;font-size:11px;"></div>
     </div>`;
   })();
@@ -40671,6 +40724,26 @@ function _wireSwapTile(scope) {
     readout.textContent = `${sideHint} ${verb} ${fmtUnitPriceSats(cap)} sats/${ticker}`;
   };
   _paintLimitReadout();
+  // Price-impact % vs the asset's reference unit price. Ethereum traders
+  // read fills in "% vs mid" rather than in absolute sats/token, so the
+  // swap-tile and confirm dialogs surface this alongside the existing
+  // range. Sign convention: positive = costlier for the user (buy above
+  // mark / sell below mark). Empty string when refUnit is unknown — no
+  // honest impact figure exists without a mark price.
+  const _computeImpactStr = (totalSats, totalAmtBI, direction) => {
+    if (!(Number.isFinite(refUnit) && refUnit > 0)) return '';
+    if (!(totalAmtBI > 0n) || !(totalSats > 0)) return '';
+    const avgU = (totalSats * Math.pow(10, decimals)) / Number(totalAmtBI);
+    if (!Number.isFinite(avgU) || avgU <= 0) return '';
+    const pct = direction === 'buy'
+      ? ((avgU - refUnit) / refUnit) * 100
+      : ((refUnit - avgU) / refUnit) * 100;
+    if (!Number.isFinite(pct)) return '';
+    const abs = Math.abs(pct);
+    if (abs < 0.01) return ' · ≈0% vs mark';
+    const sign = pct > 0 ? '+' : '−';
+    return ` · ${sign}${abs.toFixed(abs < 1 ? 2 : 1)}% vs mark`;
+  };
 
   const update = async () => {
     _paintLimitReadout();
@@ -40734,7 +40807,8 @@ function _wireSwapTile(scope) {
           ? `${fmtUnitPriceSats(cheapU)} sats/${ticker}`
           : `${fmtUnitPriceSats(cheapU)}–${fmtUnitPriceSats(dearU)} sats/${ticker}`;
         const feeEst = result.plan.length * 800;
-        infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats · exact-out (≥ requested)`;
+        const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
+        infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr} · exact-out (≥ requested)`;
         if (insufficient) {
           actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
           actionBtn.textContent = 'insufficient balance';
@@ -40780,7 +40854,8 @@ function _wireSwapTile(scope) {
         : `${fmtUnitPriceSats(lowU)}–${fmtUnitPriceSats(highU)} sats/${ticker}`;
       const feeEst = result.plan.length * 800 * 2;
       const autoHint = _isAutoFulfilEnabled() ? '' : ' · ⚠ enable Auto-fulfil';
-      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats · exact-out (≥ requested)${autoHint}`;
+      const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
+      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr} · exact-out (≥ requested)${autoHint}`;
       if (insufficient) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = `need ${accStr} ${ticker}, only ${fmtAssetAmount(bal, decimals)} held`;
@@ -40924,7 +40999,8 @@ function _wireSwapTile(scope) {
       const insufficientHint = insufficientBudget
         ? ` · ⚠ insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`
         : '';
-      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${residHint}${insufficientHint}`;
+      const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
+      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${residHint}${insufficientHint}`;
       if (insufficientBudget) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'insufficient balance';
@@ -40981,7 +41057,8 @@ function _wireSwapTile(scope) {
       const insufficientTokensHint = insufficientTokens
         ? ` · ⚠ insufficient ${ticker} — wallet holds ${balStr}, you'd need ${fmtAssetAmount(amt, decimals)}`
         : '';
-      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${reserveHint}${residHint}${autoHint}${insufficientTokensHint}`;
+      const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
+      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${reserveHint}${residHint}${autoHint}${insufficientTokensHint}`;
       if (insufficientTokens) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = `only hold ${balStr} ${ticker}`;
@@ -41202,10 +41279,11 @@ function _wireSwapTile(scope) {
         const asyncNote = hasIntent
           ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
           : `Each fill settles in one Bitcoin tx.`;
+        const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
         if (!confirm(
           `Swap ${result.totalSats.toLocaleString()} sats → ≥ ${accStr} ${ticker}?\n\n` +
           `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
-          `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
+          `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}${impactStr}\n` +
           (usd ? `≈ ${usd}\n` : '') +
           `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${asyncNote}` +
           overshootStr
@@ -41216,10 +41294,11 @@ function _wireSwapTile(scope) {
         const overshootStr = result.overshootSats > 0
           ? `\n\nLast bid overshoots your ${result.targetSats.toLocaleString()} sats target by +${result.overshootSats.toLocaleString()} sats.`
           : '';
+        const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
         if (!confirm(
           `Swap ${accStr} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats?\n\n` +
           `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} via atomic intents.\n` +
-          `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}\n` +
+          `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}${impactStr}\n` +
           (usd ? `≈ ${usd}\n` : '') +
           `Settlement awaits each bidder's Take (~1–30 min). ` +
           `${_isAutoFulfilEnabled() ? 'Auto-fulfil is ON.' : 'Enable Auto-fulfil first to keep this tab signing claims.'}` +
@@ -41349,10 +41428,11 @@ function _wireSwapTile(scope) {
           _residualNote = `\n\n+ ${fmtAssetAmount(_resAmt, decimals)} ${ticker} more stays open @ ${fmtUnitPriceSats(result.cap)} sats/${ticker} (your limit price) — fills when a seller matches. Keep ${_residualSats.toLocaleString()} sats around for the settlement; auto-expires in 24h.`;
         }
       }
+      const _impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
       if (!confirm(
         `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?\n\n` +
         `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
-        `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}\n` +
+        `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}${_impactStr}\n` +
         (usd ? `≈ ${usd}\n` : '') +
         `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${_asyncNote}` +
         _residualNote
@@ -41492,10 +41572,11 @@ function _wireSwapTile(scope) {
       }
       const accStr = fmtAssetAmount(result.totalAmt, decimals);
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
+      const _impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
       if (!confirm(
         `Swap ${accStr} ${ticker} → ${result.totalSats.toLocaleString()} sats?\n\n` +
         `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} via atomic intents.\n` +
-        `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}\n` +
+        `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}${_impactStr}\n` +
         (usd ? `≈ ${usd}\n` : '') +
         `Settlement awaits each bidder's Take (~1–30 min). ` +
         `${_isAutoFulfilEnabled() ? 'Auto-fulfil is ON.' : 'Enable Auto-fulfil first to keep this tab signing claims.'}`

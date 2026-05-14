@@ -62,7 +62,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=c2d556fb">
+<link rel="modulepreload" href="./tacit.js?cb=63144793">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -2624,6 +2624,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 .activity-transfer-out { color: var(--ink); }
 .activity-burn         { color: var(--red); }
 .activity-list-atomic  { color: var(--purple); }
+.activity-swap-buy     { color: var(--green); font-weight: 600; }
+.activity-swap-sell    { color: var(--red);   font-weight: 600; }
 .activity-amount {
   font-family: var(--mono);
   font-size: 12px;
@@ -5119,6 +5121,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=c2d556fb"></script>
+<script type="module" src="./tacit.js?cb=63144793"></script>
 </body>
 </html>
