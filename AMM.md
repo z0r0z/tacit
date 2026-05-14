@@ -14,15 +14,144 @@
 > peer at the time of writing.
 
 This document is the architecture summary for the AMM extension
-to the tacit protocol. It adds three new opcodes (`T_LP_ADD`
-`0x2D`, `T_LP_REMOVE` `0x2E`, `T_SWAP_BATCH` `0x2F`), a
-deterministic `lp_asset_id` derivation rule, AMM-specific
-receipt-recovery derivations, and an envelope-hash `OP_RETURN`
-binding rule for batched settlement — all built on the same
-indexer-validated virtual-pool pattern as tacit's mixer
-(SPEC §5.10–§5.11). The normative spec lands in
-[`SPEC.md` §5.14–§5.16 and §11](./SPEC.md) once this design
-solidifies.
+to the tacit protocol. It contributes five normative opcodes
+already in `SPEC.md` (§§5.14–5.18) — three core trading opcodes
+(`T_LP_ADD` `0x2D`, `T_LP_REMOVE` `0x2E`, `T_SWAP_BATCH` `0x2F`
+batched-uniform-price MEV-resistant mode) plus two auxiliary
+infrastructure opcodes (`T_INTENT_ATTEST` `0x30` for preconfirmation
+soft-confirms, `T_PROTOCOL_FEE_CLAIM` `0x31` for accrued
+protocol-fee withdrawal) — and **reserves slot `0x32` for
+`T_SWAP_VAR`** (per-trade variable-amount mode reusing
+`T_AXFER_VAR` cryptography), specified in the draft amendment
+[`SPEC-VARIABLE-AMOUNT-AMENDMENT.md`'s sibling
+`SPEC-SWAP-VAR-AMENDMENT.md`](./SPEC-SWAP-VAR-AMENDMENT.md) and
+not yet merged into `SPEC.md`. The set adds a deterministic
+`lp_asset_id` derivation rule, AMM-specific receipt-recovery
+derivations, and an envelope-hash `OP_RETURN` binding rule for
+batched settlement — all built on the same indexer-validated
+virtual-pool pattern as tacit's mixer (SPEC §5.10–§5.11). The
+five live opcodes are normative in `SPEC.md`; `T_SWAP_VAR`'s slot
+is reserved here and becomes normative once the amendment lands.
+
+**Last harmonized:** 2026-05-15 (P0 + P1 fixes + variable-amount
+integration — pseudocode signature, arithmetic-width normativity,
+orderbook DEX + wrapper integration, solve-algorithm proof
+sketches, first-LP misprice mitigation cascade, arbiter-
+confidentiality trade-off, tip-output layout reconciliation,
+**`T_SWAP_VAR` `0x32` reserved as the variable-amount per-trade
+AMM mode reusing `T_AXFER_VAR` cryptography — opt-in alongside
+the existing batched-uniform `T_SWAP_BATCH`**). See
+[`AMENDMENTS.md`](./AMENDMENTS.md) for the surrounding amendment
+dependency graph.
+
+**Dapp implementation status (as of 2026-05-15):** This document
+specifies the AMM but the reference dapp (`dapp/tacit.js`) does NOT
+yet implement the trader surface — `grep T_SWAP_BATCH|T_LP_ADD|
+T_LP_REMOVE|amm_intent` returns zero matches. The dapp's swap tile
+routes through the orderbook DEX (variable-fill asks/bids) only; an
+AMM `kind: 'amm'` candidate path in `planBuy` / `planBuyExactOut` is
+the next implementation step once the V1 ceremony completes. Until
+then, this spec describes a not-yet-shipped trader experience and
+indexer behaviour. The pool-state validator + crypto have been
+prototyped against the test harness, but no on-chain `T_SWAP_BATCH`
+has ever been broadcast by a tacit dapp.
+
+### Relationship to the orderbook DEX
+
+Tacit also ships a continuous-amount orderbook DEX via
+[`SPEC.md` §5.7.6.1 + §5.7.9](./SPEC.md) (`T_AXFER_VAR` `0x37` —
+landed via [the variable-amount T_AXFER amendment](./SPEC-VARIABLE-AMOUNT-AMENDMENT.md),
+now merged into SPEC.md), and the variable-fill bid layer drafted
+in [`SPEC-BID-VARIABLE-AMOUNT-AMENDMENT.md`](./SPEC-BID-VARIABLE-AMOUNT-AMENDMENT.md),
+which together provide a pure-form Bitcoin orderbook with maker-quoted
+prices and taker-driven partial fills. **The AMM is not the only path
+to liquidity.** The reference dapp's swap tile today routes
+exclusively through orderbook asks (fill-then-bid; commit `7f68faa`);
+once the AMM trader surface lands (see "Dapp implementation status"
+above), the routing will compose the two — orderbook first for
+range-tolerant flow, then AMM for residual exact-amount flow, falling
+through the second only when the user opts into AMM-specific
+semantics.
+
+Practical implications for readers:
+
+- **The "Without AMM" diagram below** (peer-to-peer atomic-intent
+  flow) describes what is now a fully-featured orderbook DEX, not a
+  primitive fallback. The orderbook handles continuous maker quotes
+  and arbitrary-amount taker fills; AMM handles deep-liquidity
+  passive market-making.
+- **Settler economics** assume orderbook competition. A settler that
+  bundles an AMM batch knows traders had the option to route through
+  asks; AMM tips have to be competitive with orderbook taker fees,
+  not with a "no alternative" baseline.
+- **Arbitrage flow.** With both surfaces live, arbitrageurs trade
+  between them — orderbook asks priced above AMM spot get filled by
+  AMM-side flow and vice versa. This is the price-coherence mechanism
+  in V1; the AMM does not need a separate oracle for the orderbook to
+  track its prices.
+- **Two AMM trader paths (both V1).** The AMM offers two settlement
+  modes that traders/dapps choose between per intent. They have
+  different privacy and amount-range trade-offs:
+  1. **`T_SWAP_BATCH` (`0x2F`) — batched uniform clearing,
+     fixed-amount.** Per-intent commitment to one cleartext
+     `amount_in_swap` plus `min_out` slippage floor (§"1. Envelope
+     byte layouts"). All intents in the batch settle at one
+     deterministically-solved `P_clear` (§"4. Deterministic
+     clearing-solve algorithm"). **Trader amounts are hidden** from
+     chain observers via the batched Groth16 proof — only aggregate
+     deltas `(Δa_net, Δb_net)` are public, the same amount-
+     confidentiality story as the mixer. Cost: fixed-amount only,
+     no range semantics; whole-UTXO consumption requires pre-split
+     via CXFER if the trader's UTXO is larger than the intent
+     amount.
+  2. **`T_SWAP_VAR` (`0x32`) — per-trade against curve, variable
+     amount.** Single-fill opcode reusing CXFER N=2 cryptography
+     (Pedersen + bulletproof + kernel sig, same primitives as
+     `T_AXFER_VAR` `0x37` from the variable-amount amendment). The
+     trader posts an `[Y, X]` range; the fill amount `Δ ∈ [Y, X]` is
+     bounded by the user's range and the pool's per-fill output at
+     the spot curve `Δ_out = R_B · γ · Δ / (R_A · γ_den + γ · Δ)`.
+     No clearing solve, no batch, no Groth16 — just a per-fill
+     curve evaluation against virtual reserves. **Trader amounts are
+     public** (the chosen `Δ` is in cleartext on chain), but the
+     trader gets variable-amount semantics: typed budgets, residual
+     fills, partial-balance trades all compose naturally.
+
+  `T_SWAP_VAR` is the natural primary path for the dapp's swap
+  tile — it composes with the fill-then-bid orderbook routing
+  (orderbook ask first, then AMM `T_SWAP_VAR` for the residual at
+  whatever depth is available, then variable-fill bid for any
+  remaining). `T_SWAP_BATCH` is the opt-in MEV-resistant mode for
+  privacy-sensitive flow (large trades that want amount
+  confidentiality from chain observers and willing to batch with
+  others). The dapp UX should default to `T_SWAP_VAR` and surface
+  `T_SWAP_BATCH` as "private mode" with the trade-off explained
+  (longer settlement latency, fixed-amount commitment, hidden
+  trade size).
+
+  Wire format and circuit details for `T_SWAP_VAR` will land as a
+  follow-up amendment (`SPEC-SWAP-VAR-AMENDMENT.md`); this section
+  reserves opcode `0x32` and the design slot. The remaining V2
+  range-LP opcode suggestions (LP_ADD_RANGE, LP_REMOVE_RANGE, etc.)
+  shift to `0x33`–`0x36` in the "Opcode space reservation" table
+  (the 5th V2-range opcode `T_SWAP_BATCH_RANGE` moves to TBD since
+  `0x37`–`0x42` are claimed by `T_AXFER_VAR`, `T_WRAPPER_ATTEST`,
+  and the cUSD CDP amendment).
+- **Cross-amendment dependency.** AMM pool initialization (POOL_INIT,
+  §"POOL_INIT") of [wrapper-tagged assets](./SPEC-WRAPPER-AMENDMENT.md)
+  (`tacit_wrapper` CETCH metadata field) is permissionless — the AMM
+  treats wrapped and unwrapped assets identically by `asset_id`. The
+  wrapper convention's coverage check is the dapp's responsibility,
+  not the AMM indexer's; pool soundness depends only on the
+  invariant on `R_A`, `R_B`, and `S`, not on whether `asset_A` is
+  itself backed by something off-protocol.
+
+The protocol-oracle + canonical-cUSD work
+([`SPEC-CUSD-CDP-AMENDMENT.md`](./SPEC-CUSD-CDP-AMENDMENT.md))
+extends this by sourcing prices from AMM TWAPs of canonical pools.
+That dependency runs in the other direction (oracle depends on AMM),
+so AMM V1 operates standalone; the oracle ships only after AMM has
+TVL.
 
 ## In plain English
 
@@ -74,9 +203,12 @@ ratio and receive **confidential LP-share asset UTXOs**; LPs who
 want anonymous positions deposit those LP-shares into the existing
 mixer and withdraw to a fresh address.
 
-The on-chain footprint is three new envelope opcodes — `T_LP_ADD`
-(`0x2D`), `T_LP_REMOVE` (`0x2E`), and `T_SWAP_BATCH` (`0x2F`) —
-riding on regular Bitcoin commit + reveal taproot transactions.
+The on-chain footprint is six envelope opcodes — four core trading
+(`T_LP_ADD` `0x2D`, `T_LP_REMOVE` `0x2E`, `T_SWAP_BATCH` `0x2F`
+batched-uniform mode, `T_SWAP_VAR` `0x32` per-trade variable-amount
+mode) plus two auxiliary (`T_INTENT_ATTEST` `0x30` preconf, and
+`T_PROTOCOL_FEE_CLAIM` `0x31` fee withdrawal) — riding on regular
+Bitcoin commit + reveal taproot transactions.
 Bitcoin nodes don't interpret the envelopes; indexers reconstruct
 pool state from chain alone and enforce the protocol's rules
 client-side. Pool creation reuses the mixer's `POOL_INIT` pattern
@@ -194,9 +326,11 @@ mixer. Per-pool `vk_cid` content addressing, Phase 2 ceremony
 coordination, and browser-side Groth16 proof generation /
 verification were already designed for the mixer (§5.10–§5.11).
 Asset-level identity (`asset_id` = sha256 of an etch tx) was
-already there. The AMM adds three envelope opcodes and a new
-batch-clearing Groth16 circuit; everything else recombines existing
-machinery.
+already there. The AMM adds six envelope opcodes — three core
+trading + two auxiliary infrastructure + one per-trade variable-
+amount mode reusing CXFER N=2 crypto — and a new batch-clearing
+Groth16 circuit for the batched mode; everything else recombines
+existing machinery.
 
 ### Cryptographic flow (batched swap)
 
@@ -280,7 +414,11 @@ at-the-ratio, not at-a-price).
 
 A pool is uniquely identified by an unordered pair `(asset_A,
 asset_B)`. Convention: `asset_A` is the lexicographically smaller of
-the two `asset_id` byte strings. The canonical `pool_id =
+the two `asset_id` byte strings, with **strict byte inequality**
+required — `POOL_INIT` MUST reject `asset_A == asset_B` (a same-
+asset pool is degenerate: swap directions collapse, the curve has
+no meaning, and kernel sigs lose disambiguation between A-side and
+B-side balance closures). The canonical `pool_id =
 SHA256("tacit-amm-pool-v1" || asset_A || asset_B)`. Pool init pins
 the Groth16 verifying key and fee basis points; the LP-share
 asset's `lp_asset_id` is **deterministically derived** as
@@ -425,7 +563,22 @@ Indexers SHOULD treat any pre-AMM blob as "no launcher gate"
 regardless of canonicalization status — the AMM rule applies
 only to new etches that opt in.
 
-## The three opcodes
+## The six opcodes
+
+Three core trading opcodes (`T_LP_ADD` `0x2D`, `T_LP_REMOVE` `0x2E`,
+`T_SWAP_BATCH` `0x2F`) plus one auxiliary preconfirmation opcode
+(`T_INTENT_ATTEST` `0x30`) plus one protocol-fee-withdrawal opcode
+(`T_PROTOCOL_FEE_CLAIM` `0x31`) — fully specified in this document.
+Plus the per-trade variable-amount AMM swap opcode `T_SWAP_VAR`
+(`0x32`), specified in
+[`SPEC-SWAP-VAR-AMENDMENT.md`](./SPEC-SWAP-VAR-AMENDMENT.md), which
+reuses CXFER N=2 cryptography from `T_AXFER_VAR` (`0x37`) and
+shares the pool-state model defined here.
+
+The sections below cover the three core trading opcodes in detail;
+the auxiliary opcodes are specified separately under
+"## Preconfirmation layer" and "## Protocol fee mechanism" later in
+this document, and `T_SWAP_VAR` lives in its own amendment file.
 
 Wire formats are normative in `SPEC.md §5.14–§5.16`. Summary:
 
@@ -1380,8 +1533,13 @@ fully normative (indexers reject deviations):
 | `vin[N+1..]` | Optional settler BTC funding inputs (used to pay tx fee + dust). |
 | `vout[0]` | `OP_RETURN(envelope_hash)`, 0 sat, 32-byte data. |
 | `vout[1+i]` | Trader receipt outputs at matching indices; each is a dust-value (e.g., 546 sat) output to the trader's pre-declared receive script. |
-| `vout[N+1]` | Aggregated settler tip — a tacit UTXO of `tip_asset`, dust-value at Bitcoin layer with the tip Pedersen commitment in the envelope payload. |
-| `vout[N+2..]` | Optional settler BTC change. |
+| `vout[N+1]` | Aggregated asset-A tip — a tacit UTXO holding the sum of all per-intent `tip_amount` values where `tip_asset == A`, dust-value at Bitcoin layer with the aggregate tip Pedersen commitment in the envelope payload. |
+| `vout[N+2]` | Aggregated asset-B tip — symmetric. Present iff either aggregate is nonzero; if exactly one asset's aggregate is zero the corresponding output is omitted (and its envelope-recorded `tip_X_amount_LE == 0`). Both omitted only when every intent in the batch set `tip_amount = 0`. |
+| `vout[N+2..]` or `vout[N+3..]` | Optional settler BTC change (index depends on how many tip outputs are present). |
+
+See §"1. Envelope byte layouts" for the authoritative per-asset
+tip mechanic — tips are per-trader-chosen-asset, aggregated per-asset
+at settlement, producing zero, one, or two `tip_*_amount` outputs.
 
 **UTXO-race during batch construction.** Between batch construction
 and Bitcoin broadcast, a trader could spend one of their referenced
@@ -1666,7 +1824,8 @@ naming explicitly.
 
 ## Soundness chain (per opcode)
 
-For each of the three AMM opcodes, the protocol binds an on-chain
+For each of the three core AMM opcodes (`T_LP_ADD`, `T_LP_REMOVE`,
+`T_SWAP_BATCH`), the protocol binds an on-chain
 secp256k1 Pedersen commitment to a hidden u64 amount through a chain
 of primitives. This subsection traces every link in that chain,
 naming exactly which check closes which attack vector. Every
@@ -1689,7 +1848,13 @@ public share_amount                                      (in envelope payload + 
        ↓ verified against
 indexer share-formula check (lpAddShares / lpInitShares) (out-of-circuit, deterministic)
        ↓ derived from
-pool reserves R_A, R_B, S_pre                            (indexer-tracked virtual quantities)
+pool reserves R_A, R_B, S_pre                            (indexer-tracked virtual quantities;
+                                                          R_A and R_B feed the Groth16 public
+                                                          signals vector, S_pre is checked
+                                                          out-of-circuit by the indexer and is
+                                                          NOT in the 123-signal public vector
+                                                          — see optimization note in §"Groth16
+                                                          public-input vector")
 ```
 
 Asset-side balance (one chain per asset X ∈ {A, B}):
@@ -1804,6 +1969,77 @@ SHA256(envelope_payload)                                 (envelope_hash binding 
        ↓ so any envelope substitution post-sign
 invalidates the trader's Bitcoin sig
 ```
+
+### T_SWAP_VAR
+
+Specified by [`SPEC-SWAP-VAR-AMENDMENT.md`](./SPEC-SWAP-VAR-AMENDMENT.md);
+the soundness chain summary, mirroring T_SWAP_BATCH's structure:
+
+```
+trader's intent_sig (BIP-340 over intent_msg) binds
+  (pool_id, direction, delta_in, delta_out, min_out, tip,
+   asset_input_outpoint, receipt_scriptPubKey, C_receipt_secp,
+   C_change_or_sentinel)
+       ↓ committing the trader to a specific Δ + receipt + change
+kernel_sig (BIP-340 under excess · G_secp) verifies under
+  (C_change_or_sentinel − C_in_secp + delta_in_total · H_secp).x_only
+       ↓ closing the asset-A side balance (CXFER-style)
+m=2 bulletproof verifies (C_change_or_sentinel, C_receipt_secp)
+  are in [0, 2^64) (overflow guard; C_receipt opens to delta_out
+  by trader-side construction — incentive-aligned, no in-protocol
+  proof needed)
+       ↓ which the indexer cross-checks against
+curve recompute: delta_out_expected = ⌊R_B · γ · Δ / (R_A · γ_den + γ · Δ)⌋
++ freshness gate (R_A_pre, R_B_pre) == running pool state immediately
+  before this tx_index
+       ↓ which the OP_RETURN(envelope_hash) at vout[0] binds to the tx
+SHA256(envelope_payload) == OP_RETURN data
+       ↓ so any envelope substitution post-sign invalidates the trader's
+intent_sig + kernel_sig
+```
+
+Closes free-rider attacks (no kernel sig without trader privkey),
+front-running of an in-flight intent (intent_sig binds the asset_
+input_outpoint — a settler can't substitute a different trader's
+UTXO), and curve fraud (the indexer recomputes delta_out from the
+public reserves, fee_bps, and Δ and requires exact equality).
+
+### T_INTENT_ATTEST (preconfirmation soft-confirm)
+
+```
+worker_sig (BIP-340 under tacit-intent-attest-v1 domain) binds
+  (pool_id, intent_pool_hash, observed_height)
+       ↓ where intent_pool_hash = SHA256(canonical-sorted intent_ids)
+indexer cross-checks the hash against the worker's published intent
+list at observed_height (rejection if the worker equivocates: two
+attestations from the same worker at the same observed_height with
+different intent_pool_hashes → evidence of double-signing)
+       ↓ which gives clients soft-confirm UX before depth-3 finality
+without granting the worker any state-mutation power (T_INTENT_ATTEST
+emits no pool delta — it is a non-mutating commitment).
+```
+
+Closes false-confirmation attacks: a worker who signs and then
+reorgs out a corresponding T_SWAP_BATCH leaves an on-chain
+intent_pool_hash that cannot be reconciled with the canonical pool
+history, giving clients evidence to slash / blacklist the worker
+(off-protocol, via the dapp's worker selection logic).
+
+### T_PROTOCOL_FEE_CLAIM
+
+```
+recipient_sig (BIP-340 under recipient_pubkey) binds
+  (pool_id, claim_height, k_growth_witness)
+       ↓ authorising the claim to the founder-pinned recipient
+indexer recomputes k_growth since last fee event, derives mintable
+LP-share amount via Uniswap V2 lazy mintFee formula, mints the
+resulting LP-share UTXO at the recipient's pre-declared address.
+       ↓ which the OP_RETURN(envelope_hash) at vout[0] binds to the tx
+```
+
+Closes mis-claim: only the founder-pinned recipient_pubkey can
+sign the claim sig; protocol_fee_bps and recipient_pubkey are
+pinned at POOL_INIT and immutable thereafter.
 
 ### Where each attack vector is closed
 
@@ -2009,6 +2245,29 @@ soft caution, it is a complete privacy collapse for that intent.
 mixer (§5.11.4): anonymity-set size for LP withdraws, Bitcoin-level
 fee linkage on the broadcast tx (use a fresh wallet or a relayer),
 and network/timing correlation (Tor + delay).
+
+**MEV-resistance vs amount-confidentiality trade-off.** Pools may
+opt in to a mandatory-inclusion arbiter (see §"5. Qualifying-intent
+fixed-point algorithm") to obtain MEV resistance against settler
+censorship. **This trade-off is normative and unavoidable: traders
+who want their intents force-included by an arbiter MUST send
+cleartext amounts to that arbiter (encrypted to the arbiter's
+pubkey at intent-post time) so the arbiter can run the deterministic
+qualifying-set fixed-point.** The arbiter therefore learns
+per-trader amounts for every intent in its pool. Two consequences:
+
+- The arbiter is a confidentiality-trusted party for amounts in
+  arbiter-pinned pools, even though it is NOT trusted for batch
+  validity (the Groth16 proof binds that independently). Arbiter
+  compromise leaks historical amounts; it does not allow theft.
+- Default (no-arbiter) pools retain full amount confidentiality from
+  every observer including settlers (settlers only learn amounts of
+  intents they include in their own batch). Arbiter-pinned pools
+  trade some confidentiality for MEV protection.
+
+The dapp MUST surface this trade-off at pool-creation time and at
+intent-post time for arbiter-pinned pools, so traders make the
+choice explicitly rather than discovering it after the fact.
 
 ## What's novel here
 
@@ -2376,14 +2635,23 @@ is normative.
 
 Inputs: `X, Y, R_A, R_B, fee_bps` (all u64 base units, `0 ≤ fee_bps ≤ 1000`).
 
+Arithmetic widths in the pseudocode below are normative. Where an
+expression is annotated `(u128)` or `(u256)`, conforming
+implementations MUST evaluate the entire expression at least that
+width — narrower widths can silently overflow on the highest-reserve
+pools and cause two indexers to disagree on the canonical clear.
+Final results in `(Δa_net, Δb_net, R_A', R_B')` are u64.
+
 ```
 SOLVE_CLEARING(X, Y, R_A, R_B, fee_bps):
     require fee_bps <= 1000
     γ_num = 10000 - fee_bps                 # u16
     γ_den = 10000                           # u16
 
-    if X == 0 and Y == 0:
-        return SPOT_CLEARING(0, 0, R_A * 2^64 / R_B)       # zero batch; reject per "Degenerate-empty"
+    # Note: (X, Y) = (0, 0) is rejected upstream as a degenerate-empty
+    # batch (N = 0 is forbidden — see §"Uniform clearing" bullet
+    # "Degenerate-empty batch"), so SOLVE_CLEARING is never entered
+    # with both inputs zero. No branch needed here.
 
     # Identify direction by comparing X * R_B vs Y * R_A (in u128).
     # X * R_B > Y * R_A  ⇒ X dominates spot-rate ⇒ A→B-dominant batch
@@ -2399,6 +2667,21 @@ SOLVE_A_TO_B_DOMINANT(X, Y, R_A, R_B, γ_num, γ_den):
     # Binary search on Δa_net ∈ [1, X]. Each candidate Δa_net implies a
     # Δb_net (curve) and a P_clear (X / (Y + Δb_net)) which then implies
     # a Δa_net' (X − ⌊Y·X/(Y+Δb_net)⌋). Fixed point: Δa_net' == Δa_net.
+    #
+    # Termination: the search range has width ≤ X ≤ 2^64, so 64
+    # halvings exhaust it; the `for iter in 0..64` bound is sufficient.
+    # In practice `lo > hi` triggers before iteration 64 fires.
+    #
+    # Monotonicity: as `mid` increases, `Δb_net(mid)` is non-decreasing
+    # (more A in → more B out under the curve), so
+    # `Δa_net_implied(mid) = X − ⌊Y·X/(Y+Δb_net(mid))⌋` is non-decreasing.
+    # The fixed-point equation may have no integer solution because of
+    # floor rounding, but monotonicity guarantees the search converges
+    # to a tight bracket: a largest `best` where the curve still gives
+    # `Δa_net_implied(best) ≥ best` (the "too-small" side) and a
+    # smallest `best+1` where `Δa_net_implied(best+1) < best+1`
+    # (the "too-big" side). See the post-loop return for which side is
+    # canonical.
 
     lo = 1
     hi = X
@@ -2413,7 +2696,11 @@ SOLVE_A_TO_B_DOMINANT(X, Y, R_A, R_B, γ_num, γ_den):
         den_db = (u256) R_A * γ_den + (u256) γ_num * mid
         Δb_net = (u64)(num_db / den_db)     # floor
 
-        # P_clear = X / (Y + Δb_net); compute floor(Y · X / (Y + Δb_net))
+        # P_clear = X / (Y + Δb_net); compute floor(Y · X / (Y + Δb_net)).
+        # Underflow safety: yx/denom = Y·X/(Y+Δb_net) ≤ Y·X/Y = X since
+        # Δb_net ≥ 0 (so denom ≥ Y > 0 in the non-degenerate branch).
+        # Therefore X − (yx/denom) ≥ 0 and the u64 subtraction below is
+        # well-defined.
         denom = (u128)(Y + Δb_net)
         if denom == 0:                      # only when Y=0 and Δb_net=0; pool empty edge
             Δa_net_implied = X
@@ -2429,10 +2716,20 @@ SOLVE_A_TO_B_DOMINANT(X, Y, R_A, R_B, γ_num, γ_den):
             best = mid
             lo = mid + 1                    # candidate too small
 
-    # No exact fixed point in 64 iterations (rare; happens only at
-    # extreme integer-rounding boundaries). Return the largest mid that
-    # was "too small" (best). The settler MUST declare exactly this
-    # (Δa_net, Δb_net) in the envelope; any deviation is rejected.
+    # No exact integer fixed point exists — common case under floor
+    # rounding, NOT rare. By the monotonicity argument above, after the
+    # loop terminates `best` is the largest mid with
+    # `Δa_net_implied(best) ≥ best`, and `best+1` (or `X` if the loop
+    # never recorded a too-small mid) is the smallest mid with
+    # `Δa_net_implied(best+1) < best+1`. The canonical choice is
+    # `best`, NOT `best+1`: conservation requires
+    # `Δa_net_declared ≤ Δa_net_implied(Δa_net_declared)` so that the
+    # pool actually has enough B to pay out at the declared price.
+    # Picking `best+1` would let the settler claim more Δa_net than the
+    # curve produces at that mid — a soundness violation. Picking
+    # `best` underfills by at most one base unit, accepted as
+    # rounding dust that accumulates to LPs (the standard "rounding
+    # in pool's favor" convention).
     Δb_net_best = ⌊R_B · γ_num · best / (R_A · γ_den + γ_num · best)⌋
     return (best, Δb_net_best, X, Y + Δb_net_best)
 
@@ -2707,12 +3004,17 @@ T_BURN / T_AXFER / T_PETCH / T_PMINT / T_DEPOSIT / T_WITHDRAW /
 T_DROP / T_DCLAIM is unchanged.
 
 **§5.14, §5.15, §5.16 — three new opcode wire-format sections.**
-Copy the wire formats from "The three opcodes" above, expanded
+Copy the wire formats from "The six opcodes" above, expanded
 with byte layouts to the same level of detail as SPEC §5.1
 (CETCH) and SPEC §5.10 (T_DEPOSIT). The hot spots: T_LP_ADD's
 two-kernel-sig structure, T_SWAP_BATCH's per-intent input layout
 + OP_RETURN binding rule + sigma-proof slots, T_LP_REMOVE's
-proportional-withdrawal share-burn.
+proportional-withdrawal share-burn. The auxiliary opcodes
+`T_INTENT_ATTEST` (`0x30`, §5.16.1 preconf) and
+`T_PROTOCOL_FEE_CLAIM` (`0x31`, §5.16.2 fee withdrawal) merge
+under the same §5.16 AMM block. `T_SWAP_VAR` (`0x32`) merges as
+§5.16.3 from
+[`SPEC-SWAP-VAR-AMENDMENT.md`](./SPEC-SWAP-VAR-AMENDMENT.md).
 
 **§6 (Recovery semantics) — add three paths.** Receipt-recovery
 HMAC seeds anchored on `recipient_anchor_outpoint`; same posture
@@ -2727,46 +3029,80 @@ qualifying-intent fixed-point computation, T_SWAP_BATCH tx
 layout, reorg handling for arbiter pools. Same role as the
 existing §11 for the mixer.
 
-## Preconfirmation layer (T_AMM_ATTEST)
+## Preconfirmation layer (T_INTENT_ATTEST) — tacit channel
 
-The protocol layer (T_SWAP_BATCH, T_LP_ADD, T_LP_REMOVE) settles at
-the Bitcoin block clock (~10 min). For perceived-UX latency the
-worker maintains a **sparse Merkle tree (SMT) of the open intent
-set** and signs attestations of the current root. Traders receive a
-membership proof for their intent within ~30 s of submission, well
-before chain confirmation. Once per Bitcoin block, the worker (or
-any participant) broadcasts a `T_AMM_ATTEST` envelope on chain so
-the attestation chain is anchored to Bitcoin — equivocation is
-detectable at depth-1.
+The protocol layer (T_SWAP_BATCH, T_SWAP_VAR, T_LP_ADD, T_LP_REMOVE)
+settles at the Bitcoin block clock (~10 min). For perceived-UX
+latency the preconf layer runs as a **tacit channel** — an
+off-chain commitment scheme where the worker maintains a signed
+snapshot of the open intent pool, and traders verify their intents
+are included by reconstructing the snapshot hash locally.
+
+The construction is **trustless** in the sense that:
+
+- A misbehaving worker (omits intents, equivocates) can be
+  cryptographically detected — its signed snapshots are evidence on
+  chain.
+- Traders have an **unconditional unilateral exit**: at any time,
+  any trader can self-broadcast their intent directly on chain
+  (T_SWAP_VAR self-broadcast path, or T_SWAP_BATCH via any settler),
+  bypassing the channel entirely. The worker has no power to lock
+  funds, censor unilaterally, or steal — its only role is to
+  accelerate UX.
+- Settlement soundness does NOT depend on worker honesty. The
+  preconf layer's only output is the soft-confirm UX bit; if it
+  fails, traders fall back to ~10 min Bitcoin finality with no loss
+  of safety.
+
+The design is intentionally simpler than an SMT-based commitment:
+no sparse Merkle tree, no 8 KB membership proofs, no depth-256
+storage tables. The commitment is a **single linear hash** over the
+canonical-ordered intent-id list at the attested height — same
+32-byte on-chain footprint, dramatically simpler implementation.
+Trade-off: membership "proofs" are the worker's published snapshot
+itself (a list of intent_ids over RPC), not a logarithmic Merkle
+path. For tacit's expected pool sizes (hundreds of intents in
+flight) this is the right point on the Pareto curve — fetching the
+full snapshot is one HTTP roundtrip and a SHA-256 over the
+published bytes. Future amendments can swap in a vector commitment
+(KZG/FRI) for large-N regimes without changing the on-chain wire.
 
 ### Two layers, independent
 
 ```
-SOFT CONFIRM (worker layer, ~30 s):
-    trader → worker websocket
+SOFT CONFIRM (channel layer, ~30 s):
+    trader → worker (any P2P channel; the worker is fungible)
               ↓
-    worker SMT.insert(intent_id, SHA256(intent_msg))
+    worker adds intent_id to its open pool
               ↓
-    worker periodically signs (pool_id, root, height, timestamp, count, cid)
+    worker periodically publishes
+        (sorted_intent_ids[], pool_id, height, timestamp, worker_sig)
+    AND broadcasts T_INTENT_ATTEST envelope on chain with
+        intent_pool_hash = SHA256(canonical-sorted intent_ids)
               ↓
-    trader receives {merkle_proof, root, worker_sig, ipfs_cid}
-              ↓
-    trader verifies proof locally → "soft confirmed"
+    trader fetches sorted_intent_ids[], verifies their intent_id is
+    present, verifies SHA256(list) matches the on-chain hash,
+    verifies worker_sig → "soft confirmed"
 
 HARD CONFIRM (settlement layer, ~10 min):
-    trader ↔ settler RTT-1/RTT-2 (independent of preconf layer)
+    trader ↔ settler RTT (independent of preconf layer)
               ↓
-    T_SWAP_BATCH envelope on chain
+    T_SWAP_BATCH or T_SWAP_VAR envelope on chain
               ↓
     indexer credits receipt at depth-3
 
-L1 ANCHOR (worker → chain, per block):
-    worker (or any party) broadcasts T_AMM_ATTEST
+UNILATERAL EXIT (always available):
+    trader broadcasts T_SWAP_VAR self-broadcast directly on chain
               ↓
-    indexer records (pool_id, worker_pubkey, height) → root
+    no worker, no channel — standard Bitcoin finality applies
+
+L1 ANCHOR (worker → chain, per block):
+    worker (or any party) broadcasts T_INTENT_ATTEST envelope
+              ↓
+    indexer records (pool_id, worker_pubkey, height) → intent_pool_hash
               ↓
     equivocation detection: two valid attestations from same
-    (worker, pool, height) with different roots ⇒ worker flagged
+    (worker, pool, height) with different hashes ⇒ worker flagged
 ```
 
 The two layers compose: the preconf layer gives modern-dApp
@@ -2775,51 +3111,70 @@ responsiveness; the hard-confirm layer gives Bitcoin-L1 settlement.
 layer still works trustlessly** — traders just don't get the soft
 confirm. Settlement does not depend on worker honesty for soundness.
 
-### T_AMM_ATTEST (opcode `0x30`) wire format
+### T_INTENT_ATTEST (opcode `0x30`) wire format
 
 ```
 opcode(1)             = 0x30
 pool_id(32)
-root(32)              Merkle root of the worker's open-intent SMT
-height_LE(4)          u32 — Bitcoin block height the root is "as of"
+intent_pool_hash(32)  SHA256(canonical-sorted concatenation of intent_ids in
+                              the worker's open pool at observed_height — see below)
+observed_height_LE(4) u32 — Bitcoin block height the snapshot is "as of"
 timestamp_LE(8)       u64 — worker's wall-clock unix seconds at sign
-intent_count_LE(2)    u16 — number of intents in the attested tree
-ipfs_cid_len(1)       u8, 1..64
-ipfs_cid(ipfs_cid_len) UTF-8 IPFS CID for the pinned leaf set
+intent_count_LE(2)    u16 — number of intents committed in this snapshot
+snapshot_uri_len(1)   u8, 0..255 (0 = no URI; worker reachable only via direct P2P)
+snapshot_uri(snapshot_uri_len) UTF-8 — HTTP(S) endpoint or IPFS CID prefix where
+                                       the full sorted_intent_ids[] can be fetched.
+                                       Informational only; the indexer never fetches
+                                       it (not consensus-bound).
 worker_pubkey(33)     compressed secp256k1
-worker_sig(64)        BIP-340 over SHA256("tacit-amm-attest-v1" || all preceding fields)
+worker_sig(64)        BIP-340 over SHA256("tacit-intent-attest-v1" || all preceding fields)
 ```
 
-Wire size: 33 + 32 + 4 + 8 + 2 + 1 + cid_len + 33 + 64 = 177 + cid_len bytes (typical ~220 B).
+Wire size: 1 + 32 + 32 + 4 + 8 + 2 + 1 + uri_len + 33 + 64 = 177 + uri_len bytes (typical ~210 B with HTTP URL).
 
-### Sparse Merkle Tree spec
+### Intent-pool hash construction (normative)
 
-- **Depth:** 256. Leaves at depth 256 are keyed by full 32-byte `intent_id`.
-- **Hash:** SHA-256. Inner node = `SHA256(left_child || right_child)`.
-- **Empty leaf:** `EMPTY_LEAF = SHA256("tacit-amm-empty-leaf-v1")`.
-- **Empty subtree at depth `d`:** `EMPTY_NODES[d]` precomputed by aggregating up
-  from `EMPTY_LEAF`. Materialized once at process start.
-- **Storage:** sparse — only non-empty leaves stored in a `Map<intent_id_hex, intent_msg_hash>`. Empty subtrees use the precomputed table.
-- **Inclusion proof:** 256 sibling hashes ordered from depth 0 (top) to depth 255 (leaf-adjacent). ~8 KB per proof; transportable over the worker websocket.
+```
+sorted_intent_ids = sort_lex_ascending([intent_id for each open intent in worker's pool])
+intent_pool_hash  = SHA256(intent_id_0 || intent_id_1 || ... || intent_id_{N-1})
+```
+
+Where each `intent_id` is 32 bytes (canonical SHA-256 of the
+intent_msg). The sort is byte-lexicographic ascending, producing a
+canonical ordering independent of insertion order or worker-internal
+data structures. Two workers with identical pools produce identical
+hashes.
+
+`intent_count` in the wire format MUST equal `N`. If a verifier
+fetches the worker's published snapshot and the list length differs
+from `intent_count`, the attestation is considered forged.
+
+Empty pool: `intent_count = 0`, `intent_pool_hash = SHA256("")` (the
+empty-string hash). A worker attesting to an empty pool is a valid
+no-op — useful for proving liveness when no intents are flowing.
 
 ### Indexer determinism rules
 
-For `T_AMM_ATTEST` (extends §11):
+For `T_INTENT_ATTEST` (extends §11):
 
 - Decode envelope. Reject on structural error.
 - Verify `worker_sig` under `worker_pubkey` against the canonical
-  hash `SHA256("tacit-amm-attest-v1" || preceding_fields)`.
-- Reject if `claimed_height > envelope_height` (worker cannot claim a
-  future state).
-- Index the attestation by `(pool_id, worker_pubkey, height)`. If an
-  entry with the **same** key but **different** root already exists,
-  flag the worker as an equivocator and reject the incoming envelope.
-  Same root at same key is accepted idempotently.
+  hash `SHA256("tacit-intent-attest-v1" || preceding_fields)`.
+- Reject if `observed_height > envelope_height` (worker cannot
+  claim a future state).
+- Index the attestation by `(pool_id, worker_pubkey, observed_height)`.
+  If an entry with the **same** key but **different**
+  `intent_pool_hash` already exists, flag the worker as an
+  equivocator and reject the incoming envelope. Same hash at same
+  key is accepted idempotently.
 - Multi-worker support: different `worker_pubkey` values can attest
-  to the same pool + height with different roots; that's normal
+  to the same pool + height with different hashes; that's normal
   multi-worker operation, not equivocation.
 - Different-pool attestations from the same worker at the same
   height are independent — no equivocation check across pools.
+- The indexer does NOT fetch `snapshot_uri`. The URI is informational
+  metadata for off-chain trader verification; not consensus-bound,
+  not validated.
 
 ### No-single-point-of-failure properties
 
@@ -2829,33 +3184,79 @@ The preconf layer adds operational dependency on the worker for
 | Property | Without preconf | With preconf |
 |---|---|---|
 | Settlement requires worker honesty | No | No (worker can be ignored) |
-| Settlement requires IPFS availability | No | No (chain-side T_SWAP_BATCH doesn't read IPFS) |
+| Settlement requires snapshot fetchability | No | No (chain-side settlement doesn't fetch off-chain data) |
 | Trader funds at risk if worker malicious | No | No (sig binding to envelope_hash + intent_sig holds) |
 | Soft-confirm requires worker honesty | N/A | Yes, but equivocation detectable at depth-1 |
 | Multi-worker fallback supported | N/A | Yes — trader registers with ≥ 2 workers |
+| Unilateral exit available | N/A | Yes — trader self-broadcasts T_SWAP_VAR |
 | Indexer single point of failure | No (anyone runs one) | No (anyone runs one) |
 
 The worker is operationally important for low-latency UX but is
-functionally fungible at the soundness layer.
+functionally fungible at the soundness layer. **The channel is
+trustless in the cryptographic sense: any worker misbehavior is
+either detectable (equivocation evidence on chain) or
+circumventable (unilateral exit via self-broadcast).**
 
 ### Trader-side soft-confirm verification
 
-Given a worker-supplied bundle `{intent_id, intent_msg_hash,
-merkle_proof, root, worker_pubkey, worker_sig, height, timestamp,
-ipfs_cid}`, the trader's dapp verifies:
+Given a worker-supplied bundle `{my_intent_id, sorted_intent_ids[],
+pool_id, observed_height, timestamp, worker_pubkey, worker_sig}`
+and the corresponding on-chain `T_INTENT_ATTEST` envelope (the
+trader's dapp watches the chain for it), the trader verifies:
 
 1. Worker is in the trader's trusted-worker set (locally configured).
 2. Worker is not in the indexer's equivocation-flag set.
 3. `timestamp` is fresh (default TTL: 300 s).
 4. `worker_sig` is valid BIP-340 under `worker_pubkey` over the
    canonical attestation message.
-5. `merkle_proof` reconstructs `root` from `(intent_id, intent_msg_hash)`.
+5. The on-chain `intent_pool_hash` equals
+   `SHA256(sorted_intent_ids[0] || … || sorted_intent_ids[N-1])`
+   computed locally over the worker-provided list. `N` matches
+   `intent_count` in the envelope.
+6. `my_intent_id` is present in `sorted_intent_ids[]` (binary search
+   over the lex-sorted list).
 
 If all pass: status `soft_confirmed`. Dapp surfaces "soft confirmed
-at root R, anchored at block H+1 (~10 min)." If any fails: status
-`stale` / `forged` / `equivocator` / `untrusted_worker`.
+at hash H, anchored at block H+1 (~10 min)." If any fails: status
+`stale` / `forged` / `equivocator` / `untrusted_worker` /
+`intent_missing`.
 
-Reference impl: `tests/amm-attest.mjs`. Parity suite: `tests/amm-attest.test.mjs` (32 tests).
+Compared to the SMT-based v0 design, step 5 trades an O(log N)
+Merkle path (~8 KB) for an O(N) full-list rehash (32 bytes × N
+over the wire). For N = 500, that's 16 KB of intent_ids —
+comparable to the SMT proof — and the verification is one SHA-256
+sweep. For large pools (N > 10 K), a future amendment can swap in a
+vector commitment (KZG/FRI) without changing the on-chain wire
+format; the chain just records `intent_pool_hash` regardless of its
+preimage structure.
+
+### Worker as channel operator (informative)
+
+Framing the preconf layer as a payment-channel analogue: the
+worker is the channel operator, the open intent pool is the channel
+state, and each `T_INTENT_ATTEST` is a periodic anchor of the state to
+L1. The analogy:
+
+| Payment channel | Tacit channel |
+|---|---|
+| 2-party state | N-party state (N traders contributing intents) |
+| Latest signed state | Latest signed `intent_pool_hash` |
+| Cooperative close | T_SWAP_BATCH / T_SWAP_VAR settles intent on chain |
+| Unilateral close (dispute) | Self-broadcast T_SWAP_VAR; worker has no veto |
+| Watchtower (anti-old-state) | Equivocation detector (anyone runs an indexer) |
+| Fee for operator | Settler tip (paid in-band per fill) |
+
+The simplification vs traditional channels: no funding transaction,
+no commitment-tx exchange, no penalty-tx mechanism. The worker
+can't steal because it never holds funds — it only sequences
+intents. Traders' UTXOs stay on chain throughout; the channel state
+is just *which intents the worker has acknowledged*, not where the
+value lives. This is what makes the preconf layer fit Bitcoin
+natively: no covenants needed, no script-side state machine, no
+exit-game challenge protocol. Just a hash commitment and a
+signature, anchored to chain at the worker's chosen cadence.
+
+Reference impl: `tests/amm-attest.mjs`. Parity suite: `tests/amm-attest.test.mjs` (32 tests, pending update to drop SMT proofs and add full-list verification — implementation work item, not consensus).
 
 ## Protocol fee mechanism (founder-set, immutable)
 
@@ -2958,7 +3359,7 @@ Once a V1 pool is created via `POOL_INIT`:
 - The pool operates with **full-range** liquidity semantics. Every LP earns proportional fees on every trade; no tick concept.
 - LP shares are fungible: same `lp_asset_id` per pool.
 - The pool's `(asset_A, asset_B)` pair and canonical ordering are fixed.
-- The three V1 opcodes (`T_LP_ADD`, `T_LP_REMOVE`, `T_SWAP_BATCH`) interact only with V1 pools using V1 wire formats.
+- The three ceremony-locked V1 opcodes (`T_LP_ADD`, `T_LP_REMOVE`, `T_SWAP_BATCH`) interact only with V1 pools using V1 wire formats. The non-ceremony V1 opcodes (`T_INTENT_ATTEST`, `T_PROTOCOL_FEE_CLAIM`, `T_SWAP_VAR`) are version-agnostic at the wire-format level — they work against V1 pools but their semantics also apply to V2 / future versions without re-spec.
 
 **V1 pools never auto-upgrade.** A V1 LP can hold their `lp_asset_id` UTXO indefinitely; the V1 pool will continue accepting V1-shape swap batches and crediting V1-shape LP withdrawals as long as anyone runs a V1 indexer. No protocol-level deprecation; no forced migration.
 
@@ -2974,8 +3375,13 @@ Every domain tag in the AMM is explicitly versioned:
 "tacit-amm-bjj-H-v1"          → NUMS generator H_BJJ
 "tacit-amm-bjj-G-v1"          → NUMS generator G_BJJ
 "tacit-amm-xcurve-v1"         → sigma cross-curve challenge
-"tacit-amm-intent-v1"         → intent_msg domain
-"tacit-amm-attest-v1"         → T_AMM_ATTEST signature domain
+"tacit-amm-intent-v1"         → intent_msg domain (T_SWAP_BATCH)
+"tacit-amm-swap-var-v1"       → T_SWAP_VAR intent_msg domain (per-trade variable-amount mode; kernel sig reuses `tacit-kernel-v1` from CXFER)
+"tacit-amm-swap-var-receipt-v1" → T_SWAP_VAR receipt-blinding HMAC keystream (r_receipt derivation)
+"tacit-amm-swap-var-recv-v1"  → T_SWAP_VAR receipt-address derivation (fresh P2WPKH per intent)
+"tacit-amm-swap-var-change-v1" → T_SWAP_VAR change-blinding HMAC keystream (fresh r_change derivation + on-chain recovery)
+"tacit-amm-swap-var-tip-v1"   → T_SWAP_VAR settler-tip blinding HMAC keystream
+"tacit-intent-attest-v1"         → T_INTENT_ATTEST signature domain
 "tacit-amm-launcher-gate-v1"  → launcher gate signature
 "tacit-amm-min-liq-blind-v1"  → MINIMUM_LIQUIDITY blinding
 "tacit-amm-qset-v1"           → arbiter qualifying-set hash
@@ -2991,26 +3397,38 @@ A V2 deployment uses `-v2` variants of the relevant tags, producing entirely dif
 
 ### Opcode space reservation
 
-The AMM uses opcodes `0x2D`–`0x30` in V1. The remaining opcode space is open for forward extensions. Suggested allocations for V2+ (not normative, not yet implemented):
+The AMM occupies opcodes `0x2D`–`0x32` in V1 (`0x2D`–`0x31` live in `SPEC.md` §§5.14–5.18; `0x32` reserved here for `T_SWAP_VAR`, draft amendment pending merge). The remaining opcode space is open for forward extensions. Suggested allocations for V2+ (not normative, not yet implemented):
 
 ```
-V1 (current, ceremony-locked):
-  0x2D  T_LP_ADD               full-range LP deposit
-  0x2E  T_LP_REMOVE             full-range LP withdrawal
-  0x2F  T_SWAP_BATCH            batched uniform-price settlement (V1 circuit)
-  0x30  T_AMM_ATTEST            preconfirmation worker attestation
+V1 ceremony-locked (Groth16 circuits frozen at the V1 ceremony):
+  0x2D  T_LP_ADD                full-range LP deposit (uses lp_add circuit)
+  0x2E  T_LP_REMOVE             full-range LP withdrawal (uses lp_remove circuit)
+  0x2F  T_SWAP_BATCH            batched uniform-price settlement (uses swap_batch circuit;
+                                fixed-amount, MEV-resistant via batch-auction privacy)
+
+V1 non-ceremony (no Groth16; safe to add post-ceremony without re-running it):
+  0x30  T_INTENT_ATTEST            preconfirmation worker attestation (BIP-340 sig only)
   0x31  T_PROTOCOL_FEE_CLAIM    mint accrued protocol fee to founder-pinned recipient
+                                (Pedersen opening + BIP-340 sig)
+  0x32  T_SWAP_VAR              per-trade against-curve fill, variable-amount [Y,X] range
+                                (reuses CXFER N=2 crypto from T_AXFER_VAR; no batch proof;
+                                public amounts; specified in SPEC-SWAP-VAR-AMENDMENT.md)
 
 V2 (hypothetical concentrated-liquidity extension):
-  0x32  T_LP_ADD_RANGE          deposit liquidity within [lower_tick, upper_tick]
-  0x33  T_LP_REMOVE_RANGE       burn a range LP position
-  0x34  T_LP_REPOSITION         atomic burn+remint of a range position at new ticks
-  0x35  T_LP_MIGRATE_V1_TO_V2   atomic burn of V1 share + mint of V2 full-range position
-  0x36  T_SWAP_BATCH_RANGE      batched settlement against tick-walking liquidity
-                                (different circuit, fresh ceremony)
+  0x33  T_LP_ADD_RANGE          deposit liquidity within [lower_tick, upper_tick]
+  0x34  T_LP_REMOVE_RANGE       burn a range LP position
+  0x35  T_LP_REPOSITION         atomic burn+remint of a range position at new ticks
+  0x36  T_LP_MIGRATE_V1_TO_V2   atomic burn of V1 share + mint of V2 full-range position
+  TBD   T_SWAP_BATCH_RANGE      batched settlement against tick-walking liquidity
+                                (different circuit, fresh ceremony; slot TBD post-V2)
+
+Note: 0x37–0x42 are claimed by other amendments (T_AXFER_VAR 0x37,
+T_WRAPPER_ATTEST 0x38, oracle + cBTC + cUSD 0x39–0x42 per the
+cUSD CDP amendment), so V2-AMM range work past 0x36 must claim
+fresh slots at the time of that amendment.
 ```
 
-The V1 indexer happily ignores unknown opcodes (`0x32+`); upgrading to V2 means the indexer learns to parse and validate those opcodes against the V2 circuit's vk. V1 pools and V1 opcodes are unaffected.
+A pre-`T_SWAP_VAR` indexer happily ignores unknown opcodes (`0x32+`); upgrading to support `T_SWAP_VAR` adds the per-trade variable-amount validator branch, and upgrading to support V2 range-LP means the indexer learns to parse and validate `0x33+` against the V2 circuit's vk. V1 pools and the live V1 opcodes (`0x2D`–`0x31`) are unaffected; `T_SWAP_VAR` (`0x32`) is a draft amendment additive to the live V1 set.
 
 ### Migration paths for V1 → V2 LPs
 
@@ -3041,11 +3459,11 @@ The §5.5 validator dispatch grows new branches for V2 opcodes. Existing V1 bran
 
 ### Preconfirmation layer is forward-compatible
 
-`T_AMM_ATTEST` (opcode `0x30`) is **version-agnostic** — it just commits a Merkle root over an open intent set. The SMT structure (depth 256, SHA-256, sparse storage) and signature domain (`tacit-amm-attest-v1`) work for any AMM version that maintains an intent pool, including V2's range-aware swap batches.
+`T_INTENT_ATTEST` (opcode `0x30`) is **version-agnostic** — it just commits a SHA-256 hash over an open intent set. The linear-hash commitment (sort intent_ids lex-ascending, hash the concatenation) and signature domain (`tacit-intent-attest-v1`) work for any AMM version that maintains an intent pool, including V2's range-aware swap batches. A future amendment can swap in a vector commitment (KZG/FRI) for large-pool regimes without changing the on-chain wire format.
 
 A worker serving both V1 and V2 pools can use the same attestation infrastructure for both. The opcode's wire format doesn't need to change between versions. Soft-confirm UX for traders is identical regardless of whether their target pool is V1 or V2.
 
-If a future version introduces a different intent shape entirely (e.g., V3 with hooks), a new attestation opcode `T_AMM_ATTEST_V3` could be added — but the existing `T_AMM_ATTEST` continues to serve V1 and V2 unchanged.
+If a future version introduces a different intent shape entirely (e.g., V3 with hooks), a new attestation opcode `T_INTENT_ATTEST_V3` could be added — but the existing `T_INTENT_ATTEST` continues to serve V1 and V2 unchanged.
 
 ### Net statement
 
@@ -3235,8 +3653,13 @@ pending · 🔴 design open.
 - ✅ **SPEC.md normative additions.** §3.9 BabyJubJub primitives +
   pinned NUMS vectors. §3.10 sigma cross-curve binding protocol.
   §4.1 LP-share third asset-id origin path. §5.5 validator
-  algorithm extension (three new opcode branches). §5.14 / §5.15 /
-  §5.16 wire formats for T_LP_ADD / T_LP_REMOVE / T_SWAP_BATCH.
+  algorithm extension (five new opcode branches: T_LP_ADD,
+  T_LP_REMOVE, T_SWAP_BATCH, T_INTENT_ATTEST, T_PROTOCOL_FEE_CLAIM;
+  plus the T_SWAP_VAR branch from
+  [`SPEC-SWAP-VAR-AMENDMENT.md`](./SPEC-SWAP-VAR-AMENDMENT.md)).
+  §5.14 / §5.15 / §5.16 wire formats for T_LP_ADD / T_LP_REMOVE /
+  T_SWAP_BATCH (T_INTENT_ATTEST + T_PROTOCOL_FEE_CLAIM nested under
+  §5.16; T_SWAP_VAR merges as §5.16.3).
   §6 receipt recovery path 10 (AMM receipts). §11.1 AMM
   determinism rules.
 - ✅ **Groth16 circuits — pre-ceremony hardened.** Compiled, constraint-
@@ -3279,19 +3702,25 @@ pending · 🔴 design open.
     `build.sh` so any inadvertent edit during ongoing product work fails
     the build with a clear pointer to update pins + plan a new ceremony.
     Catches ceremony-invalidating drift at build time.
-- ✅ **Preconfirmation layer (T_AMM_ATTEST, soft-confirm UX).** Worker
-  maintains a sparse Merkle tree of the open-intent set; signs attestations
-  every ~30 s; periodically broadcasts `T_AMM_ATTEST` envelopes on chain so
-  the attestation chain anchors to Bitcoin (equivocation detectable at
-  depth-1). Trader's dapp verifies Merkle proof + worker_sig + freshness ⇒
-  "soft confirmed" status within ~30 s of intent post. Settlement still
-  happens via T_SWAP_BATCH at the block clock (~10 min); if the preconf
-  layer is offline or compromised, the hard-confirm path is unaffected.
-  Multi-worker fallback; no single point of failure for soundness. See
+- ✅ **Preconfirmation layer (T_INTENT_ATTEST, tacit channel for soft-confirm UX).**
+  Worker maintains the open-intent set off-chain, publishes the sorted
+  list periodically, and broadcasts `T_INTENT_ATTEST` envelopes on chain
+  carrying `intent_pool_hash = SHA256(canonical-sorted intent_ids)`
+  (~every ~30 s). Trader's dapp fetches the published list, verifies
+  the hash matches on-chain, verifies their intent_id is in the list,
+  verifies worker_sig + freshness ⇒ "soft confirmed" status within ~30 s
+  of intent post. Settlement still happens via T_SWAP_BATCH / T_SWAP_VAR
+  at the block clock (~10 min); if the preconf layer is offline or
+  compromised, traders fall back to self-broadcast (T_SWAP_VAR) or
+  ~10 min Bitcoin finality. Multi-worker fallback; unconditional
+  unilateral exit; no single point of failure for soundness. See
   `tests/amm-attest.mjs` and `tests/amm-attest.test.mjs` (32 tests covering
-  SMT correctness, envelope codec, worker_sig verification, equivocation
-  detection, multi-worker independence, soft-confirm verification with
-  stale / forged / untrusted / equivocator status discrimination).
+  intent_pool_hash construction, envelope codec, worker_sig verification,
+  equivocation detection, multi-worker independence, soft-confirm
+  verification with stale / forged / untrusted / equivocator status
+  discrimination; tests require update to swap SMT proof verification
+  for full-list rehash verification — implementation work, not
+  consensus-relevant).
 - ✅ **End-to-end harness (closes the circuit ⇄ indexer ⇄ chain-state loop).**
   Mock Bitcoin chain + asset etching + LP/Trader/Settler actors + production-
   shape indexer + (optional) real circom witness calculation. Exercises six
@@ -3379,8 +3808,36 @@ pending · 🔴 design open.
   per opening") is resolved by construction — no in-circuit secp
   EC arithmetic anywhere.
 - **First-LP price-setting.** Whoever runs `POOL_INIT` sets the
-  initial price. Standard problem; standard fix (founder seeds at
-  fair market price; arbitrage corrects misprice quickly).
+  initial price (ratio `Δa_init / Δb_init`). `MINIMUM_LIQUIDITY`
+  defends against the share-dilution / donation-inflation attack
+  (Uniswap V2's classic problem), but it does NOT defend against the
+  misprice attack: a malicious first depositor can seed at any ratio
+  and a naive second depositor at that ratio gets imprice-extracted
+  by arbitrageurs before any further LP correction.
+  Mitigations, in order of strength:
+  - **Dapp-side warnings (mandatory).** Reference dapp implementations
+    MUST surface "low-TVL pool — initial price may be mispriced; check
+    spot vs orderbook/oracle before swapping or adding liquidity" on
+    any pool below a TVL threshold the dapp picks (suggested:
+    USD-denominated, configurable per-network — e.g., `< $10k` on
+    mainnet, `< 0.01 BTC` if no fiat oracle). The threshold lives in
+    dapp config, not protocol state; lifting it post-launch doesn't
+    require a ceremony.
+  - **Orderbook cross-check (V1 mechanism).** Since the orderbook DEX
+    runs alongside the AMM (see "Relationship to the orderbook DEX"
+    above), a mispriced AMM pool is corrected by any arbitrageur
+    routing orderbook fills against it. The misprice window is
+    bounded by the time-to-first-arbitrage, not by LP behaviour.
+  - **Oracle cross-check (V2+ when oracle ships).** The canonical
+    cUSD work (`SPEC-CUSD-CDP-AMENDMENT.md`) introduces a
+    protocol-level oracle that the dapp can consult to flag any pool
+    deviating from oracle price by more than a configured threshold.
+    Not in V1's critical path.
+  - **Not adding a min-TVL gate at POOL_INIT.** Considered and
+    rejected: gating POOL_INIT on TVL doesn't compose with permissionless
+    pool creation and would block legitimate new-asset bootstrapping.
+    The defence belongs in the trader surface (the dapp), not in the
+    indexer rules.
 - **LP anonymity scales with mixer activity.** A pool whose
   `lp_asset_id` mixer pool sees few deposits gives weak anonymity
   for redemption. Same UX warning as the mixer.

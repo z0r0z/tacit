@@ -1,6 +1,6 @@
 # tacit protocol specification
 
-> **Status:** v1. Wire format is envelope version `0x01`, opcodes `0x21, 0x23–0x2C` (0x22 reserved/unused; 0x26 = `T_AXFER`, atomic OTC settlement; §5.7. 0x27 / 0x28 = `T_PETCH` / `T_PMINT`, permissionless public-mint mode; §5.8–§5.9. 0x29 / 0x2A = `T_DEPOSIT` / `T_WITHDRAW`, shielded mixer pool; §5.10–§5.11 — Groth16 verifier in production, Phase 2 trusted setup finalized 2026-05-11 with 2,227 contributions + Bitcoin-block beacon, see §10. 0x2B / 0x2C = `T_DROP` / `T_DCLAIM`, public-claim pool over existing supply with optional Merkle-eligibility gating; §5.12–§5.13). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2). This spec is the authoritative reference for indexer implementations and audit review.
+> **Status:** v1. Wire format is envelope version `0x01`, opcodes `0x21, 0x23–0x31, 0x37, 0x38` (0x22 reserved/unused; 0x26 = `T_AXFER`, atomic OTC settlement; §5.7. 0x27 / 0x28 = `T_PETCH` / `T_PMINT`, permissionless public-mint mode; §5.8–§5.9. 0x29 / 0x2A = `T_DEPOSIT` / `T_WITHDRAW`, shielded mixer pool; §5.10–§5.11 — Groth16 verifier in production, Phase 2 trusted setup finalized 2026-05-11 with 2,227 contributions + Bitcoin-block beacon, see §10. 0x2B / 0x2C = `T_DROP` / `T_DCLAIM`, public-claim pool over existing supply with optional Merkle-eligibility gating; §5.12–§5.13. 0x2D / 0x2E / 0x2F / 0x31 = `T_LP_ADD` / `T_LP_REMOVE` / `T_SWAP_BATCH` / `T_PROTOCOL_FEE_CLAIM`, confidential block-batched AMM; §5.14–§5.16, §5.18 — Phase 2 trusted setup pending. 0x30 = `T_INTENT_ATTEST`, scope-generic preconfirmation channel attestation; §5.17 — no Groth16 / no ceremony, used by both AMM and orderbook surfaces (see `SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md` for orderbook scope schemas). 0x37 = `T_AXFER_VAR`, variable-amount atomic settlement reusing CXFER N=2 cryptography for continuous partial fills; §5.7.6.1 + §5.7.9. 0x38 = `T_WRAPPER_ATTEST`, optional on-chain wrapper-issuer attestation per the §4.2 wrapper convention; §5.19). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2). This spec is the authoritative reference for indexer implementations and audit review.
 
 ## 1. Overview
 
@@ -130,9 +130,9 @@ Tagged by a v1 domain string + per-output `(anchor || vout_LE)`. Domain tags **f
 
 Other domain-separated v1 tags appear where they're used and are not part of this table:
 
-- **BIP-340 Schnorr signature-message tags:** `tacit-kernel-v1` (§5.2, §5.4, §5.7), `tacit-mint-v1` (§5.3), `tacit-disclosure-v1` (§5.6), `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` (§5.7.6), `tacit-bid-{intent-v1,claim-v1,cancel-v1}` (§5.7.7), `tacit-preauth-sale-{v1,cancel-v1}` (§5.7.8), `tacit-pool-init-v1` (§5.10.1), `tacit-deposit-v1` (§5.10), `tacit-drop-v1` (§5.12), `tacit-drop-reclaim-v1` (§5.12.1), `tacit-wrapper-attest-v1` (§4.2.4, §5.19).
-- **SHA256 domains (not Schnorr messages):** `tacit-withdraw-bind-v1` is the SHA256 domain for the `T_WITHDRAW` `bind_hash` (§5.11).
-- **HMAC keystream domains:** `tacit-axintent-blinding-v1` for the per-intent `r` encryption ciphertext stored in the worker fulfilment record (§5.7.6); `tacit-axintent-onchain-amount-v1` and `tacit-axintent-onchain-blinding-v1` for the on-chain encrypted `(amount, r)` carried in the optional `OP_RETURN(40)` at the reveal tx (§5.7.6 *Recovery model*).
+- **BIP-340 Schnorr signature-message tags:** `tacit-kernel-v1` (§5.2, §5.4, §5.7), `tacit-mint-v1` (§5.3), `tacit-disclosure-v1` (§5.6), `tacit-axintent-{v1,claim-v2,fulfilment-v1,cancel-v1}` (§5.7.6), `tacit-axintent-{publish-v1,claim-v3,fulfilment-v2}` (§5.7.6.1 variable-amount intents), `tacit-bid-{intent-v1,claim-v1,cancel-v1}` (§5.7.7), `tacit-preauth-sale-{v1,cancel-v1}` (§5.7.8), `tacit-pool-init-v1` (§5.10.1), `tacit-deposit-v1` (§5.10), `tacit-drop-v1` (§5.12), `tacit-drop-reclaim-v1` (§5.12.1), `tacit-amm-{lp-add-v1,lp-remove-v1,intent-v1,launcher-gate-v1,protocol-fee-claim-v1,qset-v1}` (§5.14–§5.16, §5.18; AMM.md is the architectural reference), `tacit-intent-attest-v1` (§5.17; scope-generic preconfirmation channel attestation — used by both AMM and orderbook surfaces, see `SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md` for orderbook scope schemas), `tacit-wrapper-attest-v1` (§4.2.4, §5.19).
+- **SHA256 domains (not Schnorr messages):** `tacit-withdraw-bind-v1` is the SHA256 domain for the `T_WITHDRAW` `bind_hash` (§5.11); `tacit-axintent-id-v1` is the SHA256 domain for the content-addressed `intent_id` derivation for variable-amount intents (§5.7.6.1 *Intent record*).
+- **HMAC keystream domains:** `tacit-axintent-blinding-v1` for the per-intent `r` encryption ciphertext stored in the worker fulfilment record (§5.7.6); `tacit-axintent-onchain-amount-v1` and `tacit-axintent-onchain-blinding-v1` for the on-chain encrypted `(amount, r)` carried in the optional `OP_RETURN(40)` at the reveal tx (§5.7.6 *Recovery model*); `tacit-axintent-change-v1` for the maker's self-change blinding scalar at variable-amount fulfilment (§5.7.6.1); `tacit-axintent-onchain-maker-amount-v1` and `tacit-axintent-onchain-maker-blinding-v1` for the maker's half of the mandatory `OP_RETURN(80)` recovery payload (§5.7.6.1 *On-chain recovery*).
 - **Generator derivations:** `tacit-generator-H-v1` and `tacit-bp-{G,H,Q}-v1` (§3.1).
 - **Bulletproof Fiat-Shamir transcript:** `tacit-bp-v1` (§3.3).
 - **Off-chain coordination tags** (defined by their worker endpoints in §8): `tacit-opening-v1`, `tacit-listing-{v1,cancel-v1,claim-v1}`, `tacit-listing-range-{v1,cancel-v1,claim-v1}`, `tacit-airdrop-{leaf-v1,node-v1,claim-v1,claim-delete-v1}` — the airdrop leaf/node/claim-v1 formats are reused by §5.13's on-chain canonical claim msg; the other off-chain tags live entirely outside the on-chain protocol.
@@ -477,7 +477,7 @@ attestation_msg = SHA256(
     || network_tag(1)                 // 0x00=mainnet, 0x01=signet, 0x02=regtest
     || asset_id(32)
     || issuer_pubkey(33)
-    || reserves_balance_LE(8)         // claimed reserves at as_of_height
+    || reserves_LE(8)                 // u64 claimed reserves at as_of_height
     || supply_LE(8)                   // claimed supply at as_of_height
     || as_of_height_LE(4)             // bitcoin block height of attestation
     || timestamp_LE(8)                // unix seconds
@@ -825,7 +825,7 @@ validateOutpoint(txid, vout):
 
 Recursion is memoized via a `(txid, vout) → bool` map. In production-mode optimization, all rangeproofs are deferred into a batched bulletproof verify (one multi-exp); falls back to per-proof verify if batch fails.
 
-**Unknown-opcode forward-compatibility rule (soft-fork semantics).** New envelope opcodes can be added to the protocol via future ceremonies and SPEC revisions (e.g., AMM V2 concentrated-liquidity opcodes proposed at `0x31+`; see AMM.md §"Forward compatibility"). To preserve clean upgrade mechanics, **an indexer that encounters an envelope opcode it does not recognize MUST treat the envelope as a no-op at the asset and pool-state level**:
+**Unknown-opcode forward-compatibility rule (soft-fork semantics).** New envelope opcodes can be added to the protocol via future ceremonies and SPEC revisions (e.g., the draft `T_SWAP_VAR` (`0x32`) per-trade variable-amount AMM mode reserved in AMM.md, or AMM V2 concentrated-liquidity opcodes proposed at `0x33+`; see AMM.md §"Forward compatibility"). To preserve clean upgrade mechanics, **an indexer that encounters an envelope opcode it does not recognize MUST treat the envelope as a no-op at the asset and pool-state level**:
 
 - The envelope does NOT create any tacit asset UTXO.
 - The envelope does NOT credit or debit any pool reserve, mixer-pool leaf, LP-share supply, or other indexer-tracked state.
@@ -868,10 +868,11 @@ if envelope.opcode == T_SWAP_BATCH (0x2F):
     advance pool reserves; credit each receipt UTXO at vout[1+i]
     # NOTE: protocol fee is NOT crystallized here (V2-lazy: only at LP events + claim)
 
-if envelope.opcode == T_AMM_ATTEST (0x30):
-    # See §5.17. Preconfirmation worker attestation. No Pedersen / no Groth16.
-    # Verify worker_sig; per-(pool_id, worker_pubkey, height) equivocation check.
-    # Pool reserves are unchanged.
+if envelope.opcode == T_INTENT_ATTEST (0x30):
+    # See §5.17. Scope-generic preconfirmation channel attestation.
+    # No Pedersen / no Groth16. Verify worker_sig; per-(scope_id,
+    # worker_pubkey, observed_height) equivocation check.
+    # No state mutation: pool reserves and orderbook records are unchanged.
 
 if envelope.opcode == T_PROTOCOL_FEE_CLAIM (0x31):
     # See §5.18. Authenticated mint of accrued protocol fee. No Groth16.
@@ -879,6 +880,20 @@ if envelope.opcode == T_PROTOCOL_FEE_CLAIM (0x31):
     # fee; verify claim_amount == pool.protocol_fee_accrued; verify claim_sig
     # (BIP-340) and public commitment opening; emit lp_asset_id UTXO at vout[0];
     # reset pool.protocol_fee_accrued = 0.
+
+if envelope.opcode == T_AXFER_VAR (0x37):
+    # See §5.7.9. Variable-amount atomic settlement; reuses CXFER N=2 cryptography.
+    # Require N == 2 (recipient + maker_change); require asset_input_count == 1.
+    # Require vout[3] is the mandatory OP_RETURN(80) dual-recovery payload
+    # (or split form: OP_RETURN(40) at vout[3] + OP_RETURN(40) at vout[4]).
+    # Verify aggregated bulletproof over m=2 commitments; verify kernel_sig
+    # (BIP-340) under (C_recip + C_change − C_listed).x_only() over the
+    # kernel_msg shape from §5.4 (same domain "tacit-kernel-v1" as CXFER/T_AXFER;
+    # the kernel msg includes asset_input_count=1 and N=2, distinguishing it
+    # from T_AXFER kernel sigs even though the bytes overlap).
+    # Tacit outputs live at {0, 2}; vout[1] is BTC payment (non-tacit);
+    # vout[3..] are recovery OP_RETURNs (non-tacit). aux inputs at vin[2..]
+    # do not enter the kernel msg.
 
 if envelope.opcode == T_WRAPPER_ATTEST (0x38):
     # See §5.19. Optional on-chain wrapper attestation. No Pedersen / no Groth16.
@@ -890,7 +905,7 @@ if envelope.opcode == T_WRAPPER_ATTEST (0x38):
     # Emits no tacit UTXO; modifies no asset state; only updates wrapper-attestation log.
 ```
 
-The existing CETCH / CXFER / T_MINT / T_BURN / T_AXFER / T_PETCH / T_PMINT / T_DEPOSIT / T_WITHDRAW / T_DROP / T_DCLAIM logic is unchanged. AMM envelopes (opcodes `0x2D`–`0x31`) do not recurse through the ancestry walk for asset-id resolution beyond the §4.1 three-origin rule; LP-share UTXO produced by `T_LP_ADD` and `T_PROTOCOL_FEE_CLAIM`, plus the locked MINIMUM_LIQUIDITY output, are authorized by the canonical POOL_INIT existence (path 3 of §4.1), not by recursive parent walking. T_WRAPPER_ATTEST (`0x38`) is similarly non-recursive — it produces no UTXO and only appends to the indexer's wrapper-attestation log.
+The existing CETCH / CXFER / T_MINT / T_BURN / T_AXFER / T_PETCH / T_PMINT / T_DEPOSIT / T_WITHDRAW / T_DROP / T_DCLAIM logic is unchanged. AMM envelopes (opcodes `0x2D`–`0x31`) do not recurse through the ancestry walk for asset-id resolution beyond the §4.1 three-origin rule; LP-share UTXO produced by `T_LP_ADD` and `T_PROTOCOL_FEE_CLAIM`, plus the locked MINIMUM_LIQUIDITY output, are authorized by the canonical POOL_INIT existence (path 3 of §4.1), not by recursive parent walking. `T_AXFER_VAR` (`0x37`) extends the §5.5 ancestry walk identically to `T_AXFER` — the produced tacit UTXOs at `vout[0]` and `vout[2]` are validateOutpoint() ⇒ true for the asset_id named in the envelope. T_WRAPPER_ATTEST (`0x38`) is non-recursive — it produces no UTXO and only appends to the indexer's wrapper-attestation log.
 
 ### 5.6 Range disclosure (`balance ≥ K`)
 
@@ -1236,9 +1251,267 @@ The worker validates ownership at every step (P2WPKH hash160 match for the asset
 
 This primitive is implementation-defined in v1: the wire format above is the canonical reference for any implementation that wants to interoperate with the reference dApp's marketplace. Indexer-level validity is unaffected — atomic intents live entirely outside the on-chain protocol.
 
+#### 5.7.6.1 Variable-amount atomic intents (coordination layer)
+
+Extends §5.7.6 with **maker-online continuous partial fills**. A maker posts one intent advertising "up to `amount` tacit at total price `price_sats`, with minimum take `min_take_amount`"; a taker claims with `requested_amount ∈ [min_take_amount, amount]`; settlement is a single Bitcoin tx that delivers exactly `requested_amount` to the taker and returns `(amount − requested_amount)` to the maker as change.
+
+The on-chain envelope is `T_AXFER_VAR` (§5.7.9). The off-chain coordination layer differs from §5.7.6 in three load-bearing ways:
+
+1. **Commit phase deferred to fulfilment** — a variable-amount intent's commit tx is constructed and broadcast at fulfilment, not at publish, because `C_recip` and `C_change` depend on the taker's chosen `requested_amount`.
+2. **Claim carries `requested_amount`** — taker fixes the fill amount when claiming, not just the intent_id.
+3. **Fulfilment exchanges an unbroadcast commit + a partial reveal**; the worker performs sequential broadcast.
+
+##### Intent record
+
+```
+intent {
+  intent_id          16 bytes = SHA256("tacit-axintent-id-v1"
+                                       || maker_pubkey(33)
+                                       || asset_utxo_txid_BE(32)
+                                       || asset_utxo_vout_LE(4))[0..16]
+                              — deterministic from intent terms; derivable both
+                              at publish (worker handle) and from chain data at
+                              recovery (vin[1] reveals the asset_utxo outpoint).
+  network            "mainnet" | "signet" | "regtest"
+  opcode             0x37  (declares T_AXFER_VAR settlement; legacy whole-UTXO
+                            intents use 0x26 per §5.7.6 and that record shape.)
+  asset_id           32 bytes
+  asset_utxo         { txid, vout, value }  — maker's listed tacit UTXO
+  amount             u64 — listed UTXO's amount in base units (cleartext).
+                          Serves as the IMPLICIT max_take_amount — a taker
+                          can request any amount up to but not exceeding `amount`.
+  min_take_amount    u64 — OPTIONAL.
+                          Absence  ⇒ whole-UTXO fill (legacy §5.7.6 semantics);
+                                     intent uses opcode 0x26 and §5.7.6's record shape.
+                          Presence ⇒ variable fill; opcode 0x37; commit deferred.
+  price_sats         u64 — total price for the full listed `amount`. Per-base-
+                          unit pricing scales linearly (see *Bounded recipient
+                          amount* below).
+  expiry             u64 — unix-seconds. Worker drops claims after this.
+  maker_pubkey       33 bytes (compressed)
+  maker_address      string — bech32 BTC payment address for vout[1]
+  intent_sig         64 bytes — BIP-340 over intent_msg (below)
+}
+```
+
+`intent_msg` binds every field a taker quotes against:
+
+```
+intent_msg = SHA256("tacit-axintent-publish-v1"
+                   || asset_id || intent_id
+                   || asset_utxo_txid_BE(32) || asset_utxo_vout_LE(4)
+                                              || asset_utxo_value_LE(8)
+                   || amount_LE(8) || price_sats_LE(8)
+                   || min_take_amount_LE(8)  // 0x00…00 if absent
+                   || expiry_LE(8)
+                   || maker_pubkey(33) || H(maker_address)(32)
+                   || network_tag(1))
+```
+
+Workers MUST verify `intent_sig` under `maker_pubkey` before accepting the publish. Without an on-chain commit tx as an anchoring artefact, `intent_sig` is the only binding the worker holds; a taker downloading the intent record validates the signature client-side before quoting against it.
+
+The maximum take is **always** the listed UTXO's amount; there is no separate `max_take_amount` field. A maker who wants to expose only part of a UTXO MUST pre-split via a self-CXFER first, then publish the intent against the smaller UTXO.
+
+Publish-time rules:
+
+1. If `min_take_amount` absent ⇒ legacy whole-UTXO (§5.7.6, opcode `0x26`, `claim_msg_v2`, commit broadcast at publish).
+2. If `min_take_amount` present:
+   - `1 ≤ min_take_amount ≤ amount`.
+   - On-chain settlement uses `T_AXFER_VAR` (`0x37`); claim format is `claim_msg_v3`.
+   - **No commit tx is broadcast at publish.**
+
+An intent record with `min_take_amount == amount` is semantically equivalent to a whole-UTXO intent and SHOULD use `T_AXFER` (`0x26`); implementations MAY refuse to publish degenerate variable-amount intents.
+
+##### Commit-phase timing
+
+`T_AXFER` commits the envelope script bytes via a P2TR script-tree **at intent publish time** because the recipient commitment, ciphertext, kernel sig, and rangeproof are fully determined by the listed `amount` and recipient pubkey — both known at publish.
+
+`T_AXFER_VAR` payloads commit to `C_recip` and `C_change`, which depend on `requested_amount`. The aggregated bulletproof and kernel sig (signing under `(r_recip + r_change − r_listed) · G`'s x-only form) likewise depend on the take split. None of these are knowable at intent publish — `requested_amount` is taker-chosen.
+
+Therefore: **a variable-amount intent's commit tx is constructed and broadcast at fulfilment, not at publish.** The publish record is an authenticated off-chain offer; the on-chain commit is created only after a taker's claim fixes `requested_amount`.
+
+Invariants preserved across the timing shift:
+
+1. The taproot-committed envelope bytes remain the canonical settlement object. Validators read one self-contained envelope from the script-path reveal — no cross-output reconstruction.
+2. The P2TR commit still commits to the exact settlement bytes; it just does so after those bytes become well-defined.
+3. The maker's BTC-payment binding via `vin[1]` SIGHASH_SINGLE_ACP on `vout[1]` is unchanged.
+
+The maker holds the unbroadcast commit tx until the taker signs the completed reveal; an abandoned claim costs the maker zero on-chain fee.
+
+| Property                              | Whole-UTXO path (§5.7.6, `0x26`) | Variable-amount path (§5.7.6.1, `0x37`) |
+|---------------------------------------|----------------------------------|------------------------------------------|
+| On-chain advertising of the intent    | Yes (commit_tx visible)          | No (worker record only)                  |
+| Maker sunk cost at publish            | ~1700 sats                       | Zero                                     |
+| Maker can back out before take        | Only via reclaim-leaf            | Trivially (just don't fulfil)            |
+| Settlement tx ancestry                | Reveal references confirmed commit | Reveal references mempool commit       |
+| Atomicity                             | Preserved                        | Preserved                                |
+| Continuous partial fills              | No (whole-UTXO only)             | Yes (any `requested ∈ [min, amount]`)    |
+
+##### Claim message bump
+
+```
+// LEGACY whole-UTXO claim (unchanged):
+claim_msg_v2 = SHA256("tacit-axintent-claim-v2"
+                     || asset_id || intent_id || taker_pubkey
+                     || taker_utxo_txid_BE(32) || taker_utxo_vout_LE(4))
+
+// NEW variable-amount claim:
+claim_msg_v3 = SHA256("tacit-axintent-claim-v3"
+                     || asset_id || intent_id || taker_pubkey
+                     || taker_utxo_txid_BE(32) || taker_utxo_vout_LE(4)
+                     || requested_amount_LE(8))
+```
+
+`requested_amount` MUST satisfy `min_take ≤ requested ≤ amount`; the worker rejects out-of-range claims. The `v3` domain prevents `v2` sigs from being misused as `v3` (and vice versa). Legacy intents accept only `claim_msg_v2`; variable-amount intents accept only `claim_msg_v3`.
+
+##### Fulfilment message and partial reveal
+
+```
+fulfilment_msg_v2 = SHA256("tacit-axintent-fulfilment-v2"
+                          || asset_id || intent_id || taker_pubkey
+                          || requested_amount_LE(8)
+                          || SHA256(partial_reveal_json))
+```
+
+The `v2` domain bumps from §5.7.6's `v1` because: (a) the partial_reveal carries an N=2 `T_AXFER_VAR` envelope (not §5.7.6's N=1 `T_AXFER`), and (b) `requested_amount` is explicitly bound in the signature domain — defense-in-depth against `partial_reveal_json` parsing divergence between implementations.
+
+Fulfilment is a four-leg exchange (maker → worker → taker → worker) followed by sequential broadcast:
+
+**1. Maker prepares (after reading the claim's `requested_amount`).**
+
+The maker derives blindings, builds the envelope, and constructs both the commit tx (unbroadcast) and the partial reveal tx (maker-signed but missing taker funding):
+
+- **Blindings.**
+  - Recipient: `r_recip := r XOR HMAC-SHA256(SHA256(ECDH(maker_priv, taker_pub)), "tacit-axintent-blinding-v1" || intent_id || asset_id)` (per-intent secret `r` held privately since publish — unchanged from §5.7.6).
+  - Maker change: `r_change := HMAC-SHA256(maker_priv, "tacit-axintent-change-v1" || intent_id || asset_id)`. Self-derivable from seed + intent_id (load-bearing for on-chain recovery below).
+- **Output commitments.**
+  - `C_recip  = requested_amount · H + r_recip · G`
+  - `C_change = (amount − requested_amount) · H + r_change · G`
+- **Aggregated bulletproof** over `{C_recip, C_change}` per §5.7.9.
+- **Kernel.** `excess = r_recip + r_change − r_listed (mod n)`; `kernel_msg = computeKernelMsg(asset_id, [asset_utxo], [C_recip, C_change], burned=0)` per §5.4.3; `kernel_sig = SignSchnorr(kernel_msg, excess)` under `(excess · G).x_only()`.
+- **Envelope.** Encode the `T_AXFER_VAR` payload per §5.7.9. Wrap in the standard envelope script under maker's x-only internal key.
+- **Commit tx (unbroadcast).** Single-output tx paying `DUST + estimated_reveal_fee` to the P2TR address derived from the envelope script's leaf hash.
+- **Vout layout.** Must match §5.7.9 wire format:
+  - `vout[0]`: DUST P2WPKH(taker_pub) — recipient tacit UTXO.
+  - `vout[1]`: `floor(requested_amount × price_sats / amount)` sats to `maker_address` — BTC payment, scaling linearly with the take fraction.
+  - `vout[2]`: DUST P2WPKH(maker_pub) — maker's change tacit UTXO.
+  - `vout[3]`: `OP_RETURN(0x6a) || OP_PUSHDATA1(0x4c) || 0x50 || payload_80` — MANDATORY 83-byte scriptPubKey carrying the dual-recovery payload (see *On-chain recovery* below).
+  - `vout[4+]`: taker BTC change (added by taker at completion).
+- **Maker signs the partial reveal.** `vin[0]` (commit P2TR script-path) signed SIGHASH_SINGLE_ACP bind­ing `vout[0]`; `vin[1]` (asset UTXO P2WPKH) signed SIGHASH_SINGLE_ACP binding `vout[1]` (BTC payment). A taker cannot redirect or inflate the BTC payment without invalidating this signature.
+
+**2. Maker POSTs the fulfilment to the worker.**
+
+```
+POST /atomic-intents/{asset_id}/{intent_id}/fulfilment
+{
+  taker_pubkey, requested_amount,
+  commit_tx_hex,              // unbroadcast
+  envelope_script_hex, control_block_hex, p2tr_spk_hex,
+  partial_reveal,             // JSON: inputs[0..1], outputs[0..3], witnesses
+  enc_recipient_blinding,     // for legacy takers without OP_RETURN path
+  fulfilment_sig              // BIP-340 over fulfilment_msg_v2
+}
+```
+
+The worker validates and transitions the claim to `COMMIT_READY`. **No on-chain activity has occurred yet.**
+
+**3. Taker downloads, verifies, completes the reveal.** Taker checks: `commit_tx_hex` derives to the claimed P2TR address; partial reveal's `vin[0]` references `commit_tx_hex:0`; both SIGHASH_SINGLE_ACP signatures verify; bulletproof + kernel sig verify; `requested_amount` matches the claim; `vout[1]` value equals `floor(requested_amount × price_sats / amount)`; `vout[3]` is the mandatory `OP_RETURN(80)` recovery payload; `fulfilment_sig` verifies under `maker_pubkey`. On pass, taker appends BTC funding inputs and change vout, signs SIGHASH_ALL, returns to worker.
+
+**4. Worker performs sequential broadcast.** Worker broadcasts `commit_tx`, polls for mempool visibility, then broadcasts the completed reveal (CPFP-package by ancestor feerate). BIP-431 package relay (TRUC v3) MAY be used where supported.
+
+##### Worker state machine
+
+```
+OPEN
+  ↓ taker claim, requested_amount ∈ [min_take, amount]
+CLAIMED(taker, requested_amount, ttl)
+  ↓ maker POSTs fulfilment; worker validates
+COMMIT_READY
+  ↓ taker completes the reveal, submits to worker
+REVEAL_READY
+  ↓ worker broadcasts commit_tx
+COMMIT_BROADCAST
+  ↓ commit_tx visible in mempool
+REVEAL_BROADCAST
+  ↓ reveal confirmed
+SETTLED
+```
+
+While `CLAIMED` or later, the worker MUST NOT offer the same `intent_id` to another taker.
+
+| Transition                            | TTL     | On expiry                                  |
+|--------------------------------------|---------|---------------------------------------------|
+| CLAIMED → COMMIT_READY               | ~5 min  | Revert to OPEN. No on-chain activity yet.   |
+| COMMIT_READY → REVEAL_READY          | ~5 min  | Revert to OPEN. No on-chain activity yet.   |
+| REVEAL_READY → COMMIT_BROADCAST      | seconds | Worker-internal.                            |
+| COMMIT_BROADCAST → REVEAL_BROADCAST  | ~30s    | Worker logs; commit becomes maker-only UTXO; maker reclaims via leaf-path. |
+
+##### Bounded recipient amount
+
+`requested_amount ∈ [min_take_amount, amount]`. BTC payment scales linearly:
+
+```
+payment_sats = floor(requested_amount × price_sats / amount)
+```
+
+Rounding is floor (taker pays at most one sat less than proportional; the maker accepts this rounding loss). The reference dApp warns when `floor(price_sats × min_take_amount / amount) < DUST` — sub-dust payments are unspendable.
+
+##### On-chain recovery (dual-party, seed-only)
+
+§5.7.6 settled recipient-side recovery via a 40-byte `OP_RETURN` carrying the encrypted `(amount, r)` opening so the taker can re-derive their opening from `(taker_priv, chain)` alone. `T_AXFER_VAR` introduces a maker-side recovery problem: `requested_amount` is taker-chosen and lives only in the taker-encrypted OP_RETURN, the worker's claim record (24-hour TTL), and the maker's local cache. If the maker loses local state and the worker has GC'd the claim, the maker cannot reconstruct the change amount without brute-forcing the commitment — intractable for u64.
+
+**Resolution: `T_AXFER_VAR` settlements MUST carry an 80-byte recovery payload split into two 40-byte halves — one ECDH-encrypted to the taker, one keystream-encrypted to the maker under their own privkey.**
+
+```
+script_83 = OP_RETURN(0x6a) || OP_PUSHDATA1(0x4c) || 0x50 || payload_80
+payload_80 layout:
+  bytes[ 0..40]   taker_payload  (recipient recovery — same encoding as §5.7.6)
+  bytes[40..80]   maker_payload  (maker change recovery)
+```
+
+The OP_RETURN output is **mandatory** for every `T_AXFER_VAR` settlement. A reveal without an 80-byte recovery output at `vout[3]` is invalid; validators MUST reject. An equivalent split into two separate `OP_RETURN(0x6a) || OP_PUSHBYTES_40(0x28) || payload_40` outputs at `vout[3]` and `vout[4]` is also valid; the canonical form is the single `OP_RETURN(80)`. Indexers MUST accept both; payload ordering (taker first, maker second) is fixed in both.
+
+**Taker payload** (unchanged from §5.7.6):
+
+```
+ks_taker_amt   = HMAC-SHA256(SHA256(ECDH(maker_priv, taker_pub)),
+                            "tacit-axintent-onchain-amount-v1" || intent_id || asset_id)
+ks_taker_blnd  = HMAC-SHA256(SHA256(ECDH(maker_priv, taker_pub)),
+                            "tacit-axintent-onchain-blinding-v1" || intent_id || asset_id)
+taker_payload  = (requested_amount_LE  XOR ks_taker_amt[0..8])    (8 bytes)
+              || (r_recipient_LE32     XOR ks_taker_blnd[0..32])  (32 bytes)
+```
+
+**Maker payload** (new):
+
+```
+ks_maker_amt   = HMAC-SHA256(maker_priv,
+                            "tacit-axintent-onchain-maker-amount-v1" || intent_id || asset_id)
+ks_maker_blnd  = HMAC-SHA256(maker_priv,
+                            "tacit-axintent-onchain-maker-blinding-v1" || intent_id || asset_id)
+maker_payload  = ((amount − requested_amount)_LE  XOR ks_maker_amt[0..8])   (8 bytes)
+              || (r_change_LE32                   XOR ks_maker_blnd[0..32]) (32 bytes)
+```
+
+The maker's keystream is derived from `maker_priv` alone — no ECDH needed since the maker is decrypting their own data. The keystream binds `intent_id` and `asset_id` so payloads cannot be replayed across settlements.
+
+**External-observer privacy:** both payloads are keystream-encrypted, so a passive chain observer learns neither `requested_amount` nor the change amount from the OP_RETURN alone.
+
+**Maker recovery flow** (from seed alone, no local state):
+
+1. Reimport `maker_priv`.
+2. Scan chain for txs where `vin[1].witness[1] == maker_pub` AND `vin[0].witness[1]` decodes as a `T_AXFER_VAR` envelope (opcode `0x37`) under the commit P2TR script-path leaf.
+3. Re-derive `intent_id` from `vin[1]`'s outpoint via `SHA256("tacit-axintent-id-v1" || maker_pubkey || asset_utxo_txid_BE || asset_utxo_vout_LE)[:16]`.
+4. Re-derive `ks_maker_amt`, `ks_maker_blnd`.
+5. Extract `OP_RETURN(80)`; decrypt the second 40 bytes.
+6. Verify `pedersen_commit(change_amount, r_change) == C_change` against `vout[2]`'s tacit commitment.
+7. If verified, record the change UTXO as spendable.
+
+**On-chain cost.** The 80-byte recovery output is 91 vbytes (8 B value + 1 B scriptPubKey-length prefix + 82 B scriptPubKey). OP_RETURN is non-witness data — no SegWit discount. §5.7.6's single-party 40-byte recovery output is 51 vbytes; delta is ~40 vbytes (~400 sats at 10 sat/vB). The maker bears this cost as part of the settlement tx fee.
+
 #### 5.7.7 Bid intents (off-chain buyer-side coordination)
 
-§5.7.6 covers the seller-initiated flow: a holder publishes an intent to sell N units at price P, any taker claims. §5.7.7 mirrors that for the **buyer-initiated** direction: a would-be holder publishes an intent to BUY N units at price P, any seller claims by spinning up a §5.7.6 atomic intent **specifically targeted at the bidder's pubkey**, which the bidder then takes through the existing §5.7.3 flow. **Settlement reuses the existing T_AXFER opcode** — no new wire format, no validator change.
+§5.7.6 covers the seller-initiated flow: a holder publishes an intent to sell N units at price P, any taker claims. §5.7.7 mirrors that for the **buyer-initiated** direction: a would-be holder publishes an intent to BUY N units at price P, any seller claims by spinning up a §5.7.6 (or §5.7.6.1 variable-fill) atomic intent **specifically targeted at the bidder's pubkey**, which the bidder then takes through the existing §5.7.3 flow. **Settlement uses the corresponding settlement opcode** — `T_AXFER` (`0x26`) for whole-only bids, `T_AXFER_VAR` (`0x37`, §5.7.9) for variable-fill bids. The §5.7.7 bid layer itself adds no new wire format and no new validator rule; it's a pure off-chain coordination shape over the existing on-chain settlement opcodes.
 
 **Why bid intents are off-chain in v1.** A naïve "buyer commits sats with a script-path P2TR" design doesn't work in current Bitcoin script: the T_AXFER envelope's kernel signature binds the seller's asset input outpoints, but those outpoints are unknown at bid-publish time, so the buyer can't precompute the envelope and can't commit it into their P2TR's tap-tree. Bitcoin script lacks the introspection covenants (no `OP_CHECKVOUTPUTSPK`, no `OP_CTV`) that would let the buyer's lock be conditionally unlocked by a tx-structure check. v1 bids therefore live entirely in the worker layer, with the trust model of any off-chain order book: the bidder is trusted to follow through on their take. Anti-spam mitigations (sig-required POSTs, per-IP rate limits, bid-expiry caps) sit in the worker.
 
@@ -1520,6 +1793,110 @@ Worker validation on take is not strictly required (Bitcoin consensus enforces t
 
 This primitive is implementation-defined in v1: the wire format above is the canonical reference for any implementation that wants to interoperate with the reference dApp's marketplace. Indexer-level validity is unaffected — preauth sales live entirely outside the on-chain protocol; all settlement is normal `T_AXFER` and validates identically to a §5.7.3 targeted offer.
 
+#### 5.7.9 T_AXFER_VAR (`0x37`) — variable-amount atomic settlement
+
+On-chain settlement opcode for §5.7.6.1 variable-amount atomic intents. Reuses CXFER N=2 cryptography (Pedersen + aggregated bulletproof + kernel sig) with the asset-input count tightened to exactly 1 and the vout layout interleaved so the maker's `vin[1]` SIGHASH_SINGLE_ACP signature binds the BTC payment at `vout[1]`.
+
+**Wire format:**
+
+```
+opcode(1)              = 0x37
+asset_id(32)
+asset_input_count(1)   = 0x01 EXACTLY (tightened from T_AXFER's 1..255; see *Why exactly one asset input*)
+N(1)                   = 0x02 (recipient_commit, maker_change_commit)
+  for i in 0..N-1:
+    commitment(33)     # compressed Pedersen point (NOT BIP-340 x-only)
+    amount_ct(8)       # u64 HMAC keystream-encrypted ciphertext
+rp_len(2 LE)
+rangeproof(rp_len)     # aggregated bulletproof over m=2 commitments (CXFER §3.3.4 with m=2)
+kernel_sig(64)         # BIP-340 over kernel_msg, signing key = (excess · G).x_only()
+```
+
+**Bitcoin transaction layout (normative — indexers reject deviations):**
+
+```
+vin[0]              = commit P2TR (envelope-bearing taproot script-path spend)
+vin[1]              = maker's single tacit asset input (signed SIGHASH_SINGLE_ACP)
+vin[2..]            = taker's BTC funding inputs (signed SIGHASH_ALL by taker at completion)
+
+vout[0]             = recipient tacit       (DUST P2WPKH(taker_pubkey))
+vout[1]             = maker BTC payment     (sats to maker_address;
+                                             bound by vin[1] SIGHASH_SINGLE_ACP same-index rule;
+                                             value = floor(requested_amount × price_sats / amount))
+vout[2]             = maker change tacit    (DUST P2WPKH(maker_pubkey))
+vout[3]             = OP_RETURN(80) dual-recovery payload (MANDATORY per §5.7.6.1 *On-chain recovery*;
+                                             two-output split with OP_RETURN(40)+OP_RETURN(40)
+                                             at vout[3] and vout[4] is also accepted)
+vout[3+N_OP..]      = taker BTC change (added by taker at completion; unbound by maker's sig)
+```
+
+Validators MUST locate tacit outputs at indices `{0, 2}`. Any output at index `1` is the BTC payment and is NOT a tacit UTXO. This interleaved layout is the load-bearing difference vs `T_AXFER`, where tacit outputs are contiguous from `vout[0]`. A `T_AXFER_VAR` envelope under opcode `0x37` declares this layout unambiguously.
+
+**Validator algorithm:**
+
+```
+if envelope.opcode == T_AXFER_VAR:
+    require envelope.asset_id is well-formed (32 bytes)
+    require N == 2                                   // recipient + maker_change
+    require asset_input_count == 1                   // exact; see *Why exactly one asset input*
+    require tx.vin.length >= 2                       // commit input + asset input minimum
+    let asset_input = tx.vin[1]
+    let aux_inputs  = tx.vin[2..]                    // taker's BTC funding; ungoverned
+
+    require asset_input is a validateOutpoint() ⇒ true asset UTXO of envelope.asset_id
+
+    // Recovery output is MANDATORY (§5.7.6.1 *On-chain recovery*):
+    require vout[3] is either:
+       (a) an OP_RETURN(0x6a) || OP_PUSHDATA1(0x4c) || 0x50 || 80-byte payload, OR
+       (b) the first half of a split form: OP_RETURN(0x6a) || OP_PUSHBYTES_40(0x28) || 40-byte taker payload,
+           with vout[4] carrying the matching 40-byte maker payload in the same form.
+    // Failure here invalidates the settlement — both parties' seed-only recovery depends on this output.
+
+    require aggregated bulletproof verifies over the N=2 output commitments
+    require kernel_msg = SHA256(
+        "tacit-kernel-v1"
+        || asset_id(32)
+        || asset_input_count_LE(1)                   // = 0x01
+        || asset_input_outpoint (txid_BE(32) || vout_LE(4))
+        || output_commitments_concat(2 × 33B)        // C_recip || C_change
+        || burned_amount_LE(8) = 0
+    )
+    require kernel_sig verifies under (C_recip + C_change − C_listed).x_only()
+
+    // Same domain tag ("tacit-kernel-v1") and same kernel-msg shape as CXFER §5.4 and T_AXFER §5.7.1.
+    // The opcode byte is a presentation choice (what aux inputs are allowed; what vout layout
+    // applies; whether the recovery OP_RETURN is mandatory) — not a cryptographic invariant.
+    // A signature for one opcode does NOT verify under another because asset_input_count and
+    // output count differ in the kernel msg.
+
+    // Vouts beyond N-1 (i.e., index ≥ 2) are not tacit UTXOs except for vout[2]'s maker change.
+    // The BTC payment at vout[1] and recovery OP_RETURNs at vout[3..] are non-tacit.
+```
+
+**Why exactly one asset input.** `T_AXFER_VAR` tightens `asset_input_count = 1` because:
+
+1. **Variable-amount fills are inherently single-UTXO operations.** The maker is partially filling one listed UTXO; consuming multiple UTXOs in one settlement doesn't fit the intent shape (the intent record pins one `asset_outpoint`).
+2. **SIGHASH_SINGLE binding only makes sense at one index.** The maker's BTC-payment binding works because `vin[1] ↔ vout[1]` under SIGHASH_SINGLE's same-index rule. With multiple asset inputs, `vin[2]`'s SIGHASH_SINGLE would bind `vout[2]` — the maker's tacit change output — adding spec surface area for no behavioral gain.
+3. **Multi-input fulfilment is achievable via pre-consolidation.** A maker holding multiple small UTXOs that they want to use for a single variable-amount listing can self-CXFER them into one UTXO first, then publish the intent against the consolidated UTXO.
+
+**Soundness.** The N=2 partial reveal inherits CXFER's soundness invariants verbatim (§5.4.4): the kernel signature binds `(asset_id, asset_inputs, output_commitments, burned=0)`; the aggregated bulletproof bounds each output to `[0, 2⁶⁴)`; balance equation `C_recip + C_change − Σ C_in = excess · G` is the same closure CXFER uses. Tampering with any output commitment breaks the kernel sig; tampering with any rangeproof element breaks bulletproof verification. Aux inputs at `vin[2..]` are Bitcoin-only and do not enter the kernel msg — they cannot affect the asset-side balance equation.
+
+**Comparison with existing opcodes:**
+
+|                              | CXFER (`0x23`)            | T_AXFER (`0x26`)                                     | T_AXFER_VAR (`0x37`)  |
+|------------------------------|---------------------------|------------------------------------------------------|-----------------------|
+| Outputs per envelope         | N ∈ {1, 2, 4, 8}          | N ∈ {1, 2, 4, 8}; N=1 in §5.7.6 intents             | N = 2 (fixed)         |
+| asset_input_count            | 1..255                    | 1..255                                               | = 1 exactly (tightened) |
+| Aux non-tacit inputs         | no                        | yes                                                  | yes                   |
+| Tacit-output vout indices    | [0..N-1] contiguous       | [0..N-1] contiguous                                  | {0, 2} (BTC at vout[1]) |
+| Recovery OP_RETURN           | not used                  | OPTIONAL 40-byte (§5.7.6 *Recovery*)                 | MANDATORY 80-byte     |
+| Maker pre-signs?             | n/a                       | yes (whole-UTXO at intent-publish)                   | no — signs at fulfil  |
+| Change output                | yes (self)                | no                                                   | yes (maker)           |
+| Fill semantics               | bilateral                 | whole-UTXO                                           | continuous partial    |
+
+The `T_AXFER_VAR` opcode is not strictly needed for cryptographic reasons — `T_AXFER`'s wire format already permits `N ∈ {1, 2, 4, 8}`, so an N=2 envelope under opcode `0x26` would parse. The new opcode is justified by **layout semantics**: it places the BTC payment at `vout[1]` (between the recipient tacit at `vout[0]` and the maker change at `vout[2]`) so that the maker's `SIGHASH_SINGLE_ACP` on `vin[1]` binds the BTC payment under SIGHASH_SINGLE's same-index rule. With contiguous tacit outputs the BTC payment couldn't be bound by the maker's asset-side signature, and a malicious taker could redirect the payment. The opcode also makes the 80-byte recovery OP_RETURN mandatory (vs optional 40-byte under `T_AXFER`), closing the seed-only-recovery exception for both parties.
+
+`T_AXFER_VAR` reuses every cryptographic primitive already shipped for CXFER and T_AXFER: no new bulletproof variant, no new kernel-sig construction, no new domain tag for the kernel sig itself.
 
 ### 5.8 T_PETCH (`0x27`) — permissionless-mint deployment record
 
@@ -2259,68 +2636,63 @@ The deterministic clearing-solve algorithm (§AMM.md §4 of "Implementation spec
 
 Reference impl: `tests/amm-validator.mjs` (`validateSwapBatch`).
 
-### 5.17 T_AMM_ATTEST (`0x30`) — preconfirmation worker attestation
+### 5.17 T_INTENT_ATTEST (`0x30`) — preconfirmation channel attestation (scope-generic)
 
-A lightweight envelope that anchors a worker's open-intent set to Bitcoin once per block. Enables soft-confirm UX (~30 s) for traders without changing settlement guarantees — settlement still happens via T_SWAP_BATCH at the block clock. See AMM.md §"Preconfirmation layer" for the architectural rationale.
+A **scope-generic** lightweight envelope that anchors a worker's open-intent set to Bitcoin at the worker's chosen cadence. Serves both AMM intents (T_SWAP_BATCH / T_SWAP_VAR, see AMM.md §"Preconfirmation layer") and orderbook intents (T_AXFER_VAR + variable-fill bids, see `SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md`). Enables soft-confirm UX (~30 s) for traders across surfaces without changing settlement guarantees — settlement still happens at the block clock via the surface-specific settlement opcode (T_SWAP_BATCH / T_SWAP_VAR / T_AXFER_VAR).
 
 **Wire format:**
 
 ```
 opcode(1)             = 0x30
-pool_id(32)
-root(32)              # Merkle root of the worker's open-intent SMT (depth 256, SHA-256)
-height_LE(4)          # u32, Bitcoin block height the root is "as of"
+scope_id(32)          # 32-byte canonical identifier of the attested intent set.
+                       # Recommended schemas (informative, indexer-opaque):
+                       #   - AMM pool:        scope_id = pool_id (per AMM.md §"Pool state")
+                       #   - Orderbook pair:  SHA256("tacit-orderbook-pair-v1"
+                       #                              || asset_id_min || asset_id_max)
+                       #   - Orderbook global: SHA256("tacit-orderbook-global-v1" || worker_pubkey)
+                       # The indexer treats scope_id as opaque (only used as the
+                       # equivocation-detection key).
+intent_pool_hash(32)  # SHA256(canonical-sorted intent_ids in this scope at observed_height)
+observed_height_LE(4) # u32, Bitcoin block height the snapshot is "as of"
 timestamp_LE(8)       # u64, worker's wall-clock unix seconds at sign
-intent_count_LE(2)    # u16, number of non-empty leaves in the attested tree
-ipfs_cid_len(1)       # u8, 1..64
-ipfs_cid(ipfs_cid_len)  # UTF-8 IPFS CID for the JCS-canonical pinned leaf set
+intent_count_LE(2)    # u16, number of intents committed in this snapshot
+snapshot_uri_len(1)   # u8, 0..255 (0 = no URI; worker reachable only via direct P2P)
+snapshot_uri(snapshot_uri_len) # UTF-8 — HTTP(S) endpoint or IPFS CID prefix where
+                       # the full sorted_intent_ids[] can be fetched. Informational
+                       # only; the indexer never fetches it (not consensus-bound).
 worker_pubkey(33)     # compressed secp256k1
-worker_sig(64)        # BIP-340 over SHA256("tacit-amm-attest-v1" || preceding_fields)
+worker_sig(64)        # BIP-340 over SHA256("tacit-intent-attest-v1" || preceding_fields)
 ```
 
-Wire size: 177 + cid_len bytes (typical ~220 B). No Groth16, no Pedersen, no sigma — the lightest opcode in the protocol.
+Wire size: 1 + 32 + 32 + 4 + 8 + 2 + 1 + uri_len + 33 + 64 = 177 + uri_len bytes (typical ~210 B with HTTP URL). No Groth16, no Pedersen, no sigma — the lightest opcode in the protocol.
 
-**SMT spec (referenced by `root`):**
-- Depth 256. Leaves keyed by full 32-byte `intent_id`.
-- Leaf value = `SHA256(intent_msg)` (= `intent_id`'s preimage hash on the protocol side — same as §5.16 `intent_id` derivation).
-- Inner node = `SHA256(left || right)`.
-- `EMPTY_LEAF = SHA256("tacit-amm-empty-leaf-v1")`. Empty subtrees precomputed bottom-up.
-- Sparse storage: only non-empty leaves materialized.
-- Inclusion proof: 256 sibling hashes ordered from depth 0 (top) to 255 (leaf-adjacent).
+**Intent-pool hash construction (normative):**
 
-**IPFS-pinned content** at `ipfs_cid` is a JCS-canonical (RFC 8785) JSON blob:
-
-```json
-{
-  "tacit_amm_attest": {
-    "pool_id": "<hex>",
-    "root": "<hex>",
-    "height": 850123,
-    "timestamp": 1700000000,
-    "leaves": [
-      { "intent_id": "<hex>", "intent_msg_hash": "<hex>" },
-      ...sorted by intent_id ascending...
-    ]
-  }
-}
+```
+sorted_intent_ids = sort_lex_ascending([intent_id for each open intent in scope])
+intent_pool_hash  = SHA256(intent_id_0 || intent_id_1 || ... || intent_id_{N-1})
 ```
 
-JCS canonicalization ensures the CID is deterministic from the leaf set — any third party can re-pin the bytes and arrive at the same CID.
+Each `intent_id` is 32 bytes (canonical SHA-256 of its intent_msg per the surface-specific intent shape — §5.16 for AMM intents, §5.7.6.1 / §5.7.7 for orderbook intents). The sort is byte-lexicographic ascending; two workers committing to identical pools produce identical hashes.
+
+`intent_count` MUST equal `N`. Empty pool: `intent_count = 0`, `intent_pool_hash = SHA256("")` (the empty-string hash) — a valid no-op proving liveness with no intents in flight.
+
+Membership "proofs" are the worker's published intent list itself (fetched off-chain over `snapshot_uri` or any P2P channel, rehashed locally, compared to the chain commitment); no Merkle paths, no sparse trees. For tacit's expected pool sizes the full-list rehash is one HTTP round trip and one SHA-256 sweep — comparable to a logarithmic Merkle proof in wire size and simpler in every other respect. Future amendments can swap in a vector commitment (KZG/FRI) for large-N regimes without changing the on-chain wire format (`intent_pool_hash` stays 32 bytes regardless of preimage structure).
 
 **Validator algorithm** (extends §5.5):
 
 ```
-if envelope.opcode == T_AMM_ATTEST (0x30):
+if envelope.opcode == T_INTENT_ATTEST (0x30):
     decode payload; reject on structural error
-    verify worker_sig under worker_pubkey over SHA256("tacit-amm-attest-v1" || preceding_fields)
-    reject if claimed_height > envelope_height (no future-state claims)
-    let key = (pool_id, worker_pubkey, claimed_height)
+    verify worker_sig under worker_pubkey over SHA256("tacit-intent-attest-v1" || preceding_fields)
+    reject if observed_height > envelope_height (no future-state claims)
+    let key = (scope_id, worker_pubkey, observed_height)
     let existing = indexer.attestationChain.get(key)
-    if existing && existing.root != decoded.root:
+    if existing && existing.intent_pool_hash != decoded.intent_pool_hash:
         EQUIVOCATION DETECTED
         indexer.equivocationFlags.add(worker_pubkey)
         reject envelope
-    if existing && existing.root == decoded.root:
+    if existing && existing.intent_pool_hash == decoded.intent_pool_hash:
         idempotent duplicate — accept silently
     else:
         indexer.attestationChain.set(key, decoded)
@@ -2328,11 +2700,19 @@ if envelope.opcode == T_AMM_ATTEST (0x30):
     return true
 ```
 
-Multi-worker support is structural: different `worker_pubkey` values at the same `(pool_id, claimed_height)` with different roots are NOT equivocation — they're independent workers' views. Equivocation is per-worker.
+The indexer does NOT fetch `snapshot_uri`. The URI is informational metadata for off-chain trader verification; not consensus-bound, not validated.
 
-**§11.2 ordering rule:** Within a block, T_AMM_ATTEST envelopes apply in `(tx_index, vin[0] outpoint)` order. Equivocation check is order-sensitive: the first canonically-ordered attestation per `(pool_id, worker_pubkey, height)` is canonical; any subsequent with a different root flags the worker.
+Multi-worker support is structural: different `worker_pubkey` values at the same `(scope_id, observed_height)` with different hashes are NOT equivocation — they're independent workers' views. Equivocation is per-worker.
 
-**Settlement does NOT depend on T_AMM_ATTEST.** A pool can operate indefinitely without any T_AMM_ATTEST envelopes ever being broadcast — traders just don't get the soft-confirm UX. The hard-confirm path via T_SWAP_BATCH (§5.16) is independent.
+Different-scope attestations from the same worker at the same height are independent — no equivocation check across scopes (a worker covering multiple AMM pools and multiple orderbook scopes attests to each independently).
+
+**§11.2 ordering rule:** Within a block, T_INTENT_ATTEST envelopes apply in `(tx_index, vin[0] outpoint)` order. Equivocation check is order-sensitive: the first canonically-ordered attestation per `(scope_id, worker_pubkey, observed_height)` is canonical; any subsequent with a different hash flags the worker.
+
+**Trader-side soft-confirm verification:** given a worker-supplied bundle `{my_intent_id, sorted_intent_ids[], scope_id, observed_height, timestamp, worker_pubkey, worker_sig}` and the corresponding on-chain T_INTENT_ATTEST envelope, the trader (1) checks the worker is trusted + not flagged for equivocation, (2) checks `timestamp` freshness (default TTL 300 s), (3) verifies `worker_sig` as BIP-340 over the canonical pre-image, (4) recomputes `intent_pool_hash` locally over the published list and compares to the on-chain envelope, (5) binary-searches the sorted list for their `my_intent_id`. All pass ⇒ `soft_confirmed`; any fail ⇒ `stale` / `forged` / `equivocator` / `untrusted_worker` / `intent_missing`.
+
+**Settlement does NOT depend on T_INTENT_ATTEST.** Any surface (AMM pool, orderbook scope) can operate indefinitely without any T_INTENT_ATTEST envelopes ever being broadcast — traders just don't get the soft-confirm UX. The hard-confirm paths (T_SWAP_BATCH §5.16, T_SWAP_VAR per `SPEC-SWAP-VAR-AMENDMENT.md`, T_AXFER_VAR §5.7.9) are all independent.
+
+**Channel framing (informative):** the preconf layer is a *tacit channel* — a multi-party off-chain commitment where the worker is the channel operator, the open intent pool is the channel state, and each T_INTENT_ATTEST envelope is a periodic anchor of the state to L1. The worker cannot steal (never holds funds; intents are commitments, not value transfers), cannot censor unilaterally (traders have unconditional unilateral exit via self-broadcast — T_SWAP_VAR self-broadcast for AMM, direct T_AXFER_VAR fulfilment against any maker UTXO for orderbook), and cannot equivocate without leaving on-chain evidence. No funding tx, no commitment-tx exchange, no penalty-tx mechanism, no challenge protocol, no covenants — just a hash commitment and a signature, fitting Bitcoin natively. See AMM.md §"Worker as channel operator (informative)" for the analogy table with payment channels.
 
 Reference impl: `tests/amm-attest.mjs` (`OpenIntentSMT`, `validateAmmAttest`, `verifySoftConfirm`). Parity suite: `tests/amm-attest.test.mjs` (32 tests).
 
@@ -2393,25 +2773,23 @@ Reference impl: `tests/amm-validator.mjs` (`validateProtocolFeeClaim`). Parity s
 
 > **Status:** OPTIONAL. Issuers MAY publish wrapper attestations off-chain (IPFS, website, tacit worker) per §4.2.4 without ever using this opcode. The opcode exists for issuers who want their attestation timestamped onto Bitcoin chain itself, providing a stronger liveness signal at the cost of ~2 Bitcoin txs per attestation (commit + reveal).
 
-**Wire format (envelope payload, fixed 158 bytes):**
+**Wire format (envelope payload, fixed 159 bytes):**
 
 ```
-T_WRAPPER_ATTEST(2)
-   envelope_version  0x01
-   opcode            0x38
-   network_tag       1 byte  (0x00=mainnet, 0x01=signet, 0x02=regtest)
-   asset_id          32 bytes
-   issuer_pubkey     33 bytes (compressed)
-   reserves_LE       8 bytes (u64; reserves balance at as_of_height)
-   supply_LE         8 bytes (u64; circulating supply at as_of_height)
-   as_of_height_LE   4 bytes (u32; Bitcoin block height)
-   timestamp_LE      8 bytes (u64; unix seconds)
-   attestation_sig   64 bytes (BIP-340 over attestation_msg per §4.2.4)
+opcode(1)             = 0x38
+network_tag(1)        # 0x00=mainnet, 0x01=signet, 0x02=regtest
+asset_id(32)
+issuer_pubkey(33)     # compressed secp256k1
+reserves_LE(8)        # u64; reserves balance at as_of_height
+supply_LE(8)          # u64; circulating supply at as_of_height
+as_of_height_LE(4)    # u32; Bitcoin block height
+timestamp_LE(8)       # u64; unix seconds
+attestation_sig(64)   # BIP-340 over attestation_msg per §4.2.4
 ```
 
-No Pedersen commitments, no range proofs, no asset-input chain. Purely a signed-data envelope.
+Total: `1 + 1 + 32 + 33 + 8 + 8 + 4 + 8 + 64 = 159` bytes fixed. No Pedersen commitments, no range proofs, no asset-input chain — purely a signed-data envelope. The wire-carried `network_tag` MUST match the indexer's local network identifier; this is a belt-and-suspenders defense against the theoretical case where asset_ids collide across networks.
 
-**On-chain embedding.** 158 bytes exceeds Bitcoin's standard `OP_RETURN` policy limit (80 bytes). T_WRAPPER_ATTEST therefore uses the **standard tacit commit-reveal pattern** identical to T_AXFER / mixer envelopes:
+**On-chain embedding.** 159 bytes exceeds Bitcoin's standard `OP_RETURN` policy limit (80 bytes). T_WRAPPER_ATTEST therefore uses the **standard tacit commit-reveal pattern** identical to T_AXFER / mixer envelopes:
 
 - **Commit tx**: a Bitcoin transaction with one P2TR output. The P2TR's tap-tree is a single leaf whose script is the envelope-bearing tacit script (`OP_FALSE OP_IF "TACIT" 0x01 <payload> OP_ENDIF`). The internal key is NUMS so only the script-path is spendable.
 - **Reveal tx**: a Bitcoin transaction whose `vin[0]` spends the commit's P2TR output via script-path, revealing the envelope as the script-path witness. The reveal tx has no required tacit vouts (the attestation produces no asset UTXO). Optional vouts MAY carry BTC change at the issuer's discretion.

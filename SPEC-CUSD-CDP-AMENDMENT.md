@@ -373,7 +373,8 @@ active-set member at this epoch (the indexer's per-epoch attester
 roster is the source of truth).
 
 **Embedding pattern**: commit-reveal (same as T_WRAPPER_ATTEST per
-wrapper amendment §5.20). Envelope sits in `vin[0].witness[1]` as
+wrapper amendment §5.19 — drafted as §5.20, collapsed to §5.19 at
+SPEC merge time). Envelope sits in `vin[0].witness[1]` as
 a Taproot script-path leaf. ~2 Bitcoin txs per attestation; ~600
 vbytes for typical t=15 attestation.
 
@@ -1531,13 +1532,20 @@ Add to §3 *BIP-340 Schnorr signature-message tags*:
 - `tacit-oracle-pair-v1` — `asset_pair` hash derivation
 - `tacit-oracle-bond-v1` — `bond_addr` leaf script distinguisher
 
-Add to §3 *Asset-id origin paths*:
+Add to §4.1 *asset-id origin paths*:
 
 - **Origin path 4**: Canonical protocol assets.
   `canonical_cbtc_asset_id = SHA256("tacit-canonical-cbtc-v1" || network_tag(1))`
   `canonical_cusd_asset_id = SHA256("tacit-canonical-cusd-v1" || network_tag(1))`
+  These coexist with paths 1–3 (CETCH, T_PETCH, POOL_INIT-LP); the
+  preimage shape (24 bytes) is length-distinct from all three so
+  cross-origin collisions reduce to SHA256 preimage resistance under
+  disjoint domain tags. Update SPEC.md §4.1's "Three-origin
+  resolution" to "Four-origin resolution".
 
-Add to §3 *Address / script derivations*:
+Add to *Address / script derivations* (inline at the relevant §6
+locations rather than a separate §3 subsection — SPEC.md has no
+dedicated address-derivation table):
 
 - **`bond_addr(attester_pubkey)`** — P2TR address holding an oracle
   attester's bonded LP-share UTXO:
@@ -2066,8 +2074,10 @@ Same shape as the wrapper amendment:
 - [ ] Confirm canonical asset_id derivations (path 4) do not
   collide with any extant asset_id on any network.
 - [ ] Update the `SPEC.md` preamble opcode list.
-- [ ] Update §3 (domain tags + asset-id origin paths).
-- [ ] Update §4 (insert §4.X for canonical-asset origin path 4).
+- [ ] Update §3 (BIP-340 message tag list with the 12 new tags
+  enumerated above; SHA256 domain tag list with `tacit-oracle-bond-v1`).
+- [ ] Update §4.1 (extend "Three-origin resolution" → "Four-origin
+  resolution" with the canonical-asset path).
 - [ ] Update §6 to add §6.1–§6.8.
 - [ ] **AMM.md downstream edits (at merge time):** update
   "Three-origin asset_id resolution" to "Four-origin" with the

@@ -1,5 +1,12 @@
 # SPEC §5.7 Amendment — Variable-Amount Atomic Intents
 
+> **STATUS: ✅ MERGED into SPEC.md on 2026-05-15.** §5.7.6.1
+> (coordination layer) and §5.7.9 (T_AXFER_VAR wire format) are now
+> part of the SPEC.md normative text, with the seven supporting
+> domain tags added to §3 and the validator dispatch branch added
+> to §5.5. This amendment file is preserved as a historical record
+> of the drafting process.
+
 > Adds continuous-amount partial-fill semantics to tacit's atomic-
 > intent flow via a new opcode `T_AXFER_VAR` (`0x37`). Reuses the
 > existing CXFER N=2 cryptography (Pedersen + bulletproofs + kernel
@@ -947,9 +954,13 @@ Add to §3 *BIP-340 Schnorr signature-message tags*:
 Add to §3 *opcodes table*:
 
 - `0x37` `T_AXFER_VAR` — variable-amount atomic settlement (§5.7.9).
-  First-free opcode after the V2-AMM reservation range (`0x32`–`0x36`,
-  reserved by AMM.md for range-LP opcodes); does not collide with
-  `T_AMM_ATTEST` (`0x30`) or `T_PROTOCOL_FEE_CLAIM` (`0x31`).
+  First-free opcode after the V1-AMM range (`0x2D`–`0x32`, including
+  `T_SWAP_VAR` `0x32` specified by
+  [`SPEC-SWAP-VAR-AMENDMENT.md`](./SPEC-SWAP-VAR-AMENDMENT.md) —
+  per-trade variable-amount AMM fills reusing this amendment's
+  CXFER N=2 cryptography) plus the V2-AMM range-LP reservation
+  (`0x33`–`0x36`); does not collide with `T_INTENT_ATTEST` (`0x30`) or
+  `T_PROTOCOL_FEE_CLAIM` (`0x31`).
 
 ---
 

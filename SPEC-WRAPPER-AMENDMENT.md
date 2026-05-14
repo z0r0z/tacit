@@ -672,8 +672,9 @@ Add to §3 *opcodes table*:
 
 - `0x38` `T_WRAPPER_ATTEST` — optional on-chain attestation
   envelope (§5.20). Sits immediately after `T_AXFER_VAR (0x37)`;
-  does not collide with V2-AMM reserved range `0x32`–`0x36` or
-  any existing AMM opcode.
+  does not collide with V1-AMM opcodes (`0x2D`–`0x32`, which now
+  includes `T_SWAP_VAR` at `0x32` per the swap-var amendment) or
+  the V2-AMM range-LP reservation (`0x33`–`0x36`).
 
 ---
 
