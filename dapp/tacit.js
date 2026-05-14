@@ -35626,14 +35626,14 @@ function applyMarketFilters() {
         }
       } else if (claim && claim.taker_pubkey === myPubHex) {
         if (fulfilled) {
-          primaryAction = `<button data-act="market-take-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-expiry="${Number(l.expiry || 0)}" title="Taker step 3 of 3: broadcast the single Bitcoin tx that combines the maker's partial reveal with your BTC payment. Atomic — both legs settle or both fail." style="flex:1;font-size:11px;">Take</button>`;
+          primaryAction = `<button data-act="market-take-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-min-take="${escapeHtml(l.min_take_amount || '')}" data-expiry="${Number(l.expiry || 0)}" title="${l.min_take_amount ? 'Finalize variable-amount take: worker broadcasts commit + reveal sequentially.' : 'Taker step 3 of 3: broadcast the single Bitcoin tx that combines the makers partial reveal with your BTC payment. Atomic — both legs settle or both fail.'}" style="flex:1;font-size:11px;">${l.min_take_amount ? 'Finalize' : 'Take'}</button>`;
         } else {
           statusLine = `<span title="Your claim is locked in. Waiting for the maker to fulfil - Take unlocks the moment they do.">awaiting maker fulfilment</span>`;
         }
       } else if (claim) {
         statusLine = `<span title="Another taker has the 5-minute lock on this intent. If they don't broadcast in time the lock expires and this tile becomes claimable again.">claimed by <span class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(claim.taker_pubkey, 6))}</span></span>`;
       } else {
-        primaryAction = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Taker step 1 of 3: reserve this atomic intent for 5 minutes. You commit a sat UTXO ≥ price as proof of funds; the maker then fulfils, then you Take to settle." style="flex:1;font-size:11px;">Claim</button>`;
+        primaryAction = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-min-take="${escapeHtml(l.min_take_amount || '')}" data-expiry="${Number(l.expiry || 0)}" title="${l.min_take_amount ? 'Variable-amount listing — pick how much to take (DEX-like partial fill). Settles in one Bitcoin tx, atomic.' : 'Taker step 1 of 3: reserve this atomic intent for 5 minutes. You commit a sat UTXO ≥ price as proof of funds; the maker then fulfils, then you Take to settle.'}" style="flex:1;font-size:11px;">${l.min_take_amount ? 'Buy…' : 'Claim'}</button>`;
       }
     } else if (l.kind === 'preauth') {
       // Buyer-completable T_AXFER (SPEC §5.7.8). Seller can be offline; any
@@ -42017,6 +42017,7 @@ async function marketClaimIntentHandler(btn) {
   const ticker = btn.dataset.ticker;
   const amt = btn.dataset.amount;
   const dec = parseInt(btn.dataset.dec, 10);
+  const minTakeStr = btn.dataset.minTake || '';
   const expiry = parseInt(btn.dataset.expiry || '0', 10) || 0;
   // Pre-check expiry BEFORE confirm so the user doesn't waste a wallet-
   // unlock prompt only for the worker to reject as expired. The button's
@@ -42028,14 +42029,74 @@ async function marketClaimIntentHandler(btn) {
     return;
   }
   // Disable BEFORE confirm so a fast double-click can't queue two confirms
-  // and fire two signed claim POSTs at the worker. confirm() blocks the
-  // event loop synchronously, but the second click is dispatched once the
-  // first confirm returns and `await claimAxferIntent` releases the loop —
-  // by that point the original btn.disabled assignment had already run too
-  // late to matter.
+  // and fire two signed claim POSTs at the worker.
   btn.disabled = true;
   const origText = btn.textContent;
   const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
+
+  // Variable-amount branch (§5.7.6.1 / T_AXFER_VAR). The listing carries a
+  // non-empty min_take_amount; the taker picks any requested_amount in
+  // [min_take_amount, amount] and pays a proportionally scaled BTC amount.
+  if (minTakeStr && /^\d+$/.test(minTakeStr)) {
+    const amountBI = BigInt(amt);
+    const minTakeBI = BigInt(minTakeStr);
+    const promptMsg =
+      `${ticker} variable fill\n\n` +
+      `Available: up to ${fmtAssetAmount(amountBI, dec)} ${ticker}\n` +
+      `Floor:     ${fmtAssetAmount(minTakeBI, dec)} ${ticker} (smallest fill)\n` +
+      `Full price: ${price.toLocaleString()} sats for the full lot\n\n` +
+      `How much ${ticker} do you want to take?  (display units, e.g. ${fmtAssetAmount(amountBI / 2n, dec)} for half)`;
+    const takeInput = (typeof prompt === 'function')
+      ? prompt(promptMsg, fmtAssetAmount(amountBI, dec))
+      : null;
+    if (takeInput == null || !takeInput.trim()) { restore(); return; }
+    let requestedBase;
+    try { requestedBase = parseAssetAmount(takeInput.trim(), dec); }
+    catch (e) { toast('Amount: ' + e.message, 'error'); restore(); return; }
+    if (requestedBase < minTakeBI) {
+      toast(`Take below floor (${fmtAssetAmount(minTakeBI, dec)} ${ticker}). Raise your amount.`, 'error');
+      restore(); return;
+    }
+    if (requestedBase > amountBI) {
+      toast(`Take exceeds available (${fmtAssetAmount(amountBI, dec)} ${ticker}). Lower your amount.`, 'error');
+      restore(); return;
+    }
+    const scaledSats = Number((requestedBase * BigInt(price)) / amountBI);
+    if (scaledSats < DUST) {
+      toast(`At this amount the BTC payment is ${scaledSats} sats — below dust. Increase your take.`, 'error');
+      restore(); return;
+    }
+    if (!confirm(
+      `Buy ${fmtAssetAmount(requestedBase, dec)} ${ticker}?\n\n` +
+      `Pay:     ${scaledSats.toLocaleString()} sats  (scaled: ${(Number(requestedBase) / Number(amountBI) * 100).toFixed(1)}% of the full lot price)\n` +
+      `Receive: ${fmtAssetAmount(requestedBase, dec)} ${ticker} at your wallet address\n\n` +
+      `Atomic settlement: a single Bitcoin tx delivers tokens to you and sats to the seller, only when both legs settle. The seller's change (${fmtAssetAmount(amountBI - requestedBase, dec)} ${ticker}) returns to them on the same tx — closes the partial-fill loop, no trust.`,
+    )) { restore(); return; }
+    btn.textContent = 'claiming…';
+    try {
+      // claimAxferVarIntent needs the full intent record. Pull from the
+      // worker — the marketplace already fetched it for render, but the
+      // claim flow doesn't have a cheap handle on it here, so refetch.
+      const r = await fetch(withNet(ATOMIC_INTENTS_URL(aid)));
+      const j = await r.json().catch(() => ({}));
+      const intent = (j.intents || []).find(x => x.intent_id === iid);
+      if (!intent) { toast('Intent not found at worker — refresh Market', 'error'); restore(); return; }
+      await claimAxferVarIntent({
+        assetIdHex: aid, intentIdHex: iid, intent,
+        requestedAmount: requestedBase.toString(),
+      });
+      toast(`Claimed ${fmtAssetAmount(requestedBase, dec)} ${ticker} ✓ — seller will fulfil shortly`, 'success', 6000);
+      invalidateMarketCache();
+      setTimeout(() => renderMarket(), 1000);
+    } catch (e) {
+      if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+      else toast('Claim failed: ' + e.message, 'error');
+      restore();
+    }
+    return;
+  }
+
+  // Legacy whole-UTXO branch (§5.7.6 / T_AXFER).
   if (!confirm(
     `Claim atomic intent?\n\n` +
     `Buying:  ${fmtAssetAmount(BigInt(amt), dec)} ${ticker}\n` +
@@ -42065,14 +42126,31 @@ async function marketFulfilIntentHandler(btn) {
   if (!intent) { toast('Intent not found', 'error'); return; }
   const claim = intent.claim;
   if (!claim) { toast('No active claim to fulfil', 'error'); return; }
-  if (!confirm(
-    `Fulfil order from buyer ${shorten(claim.taker_pubkey, 8)}?\n\n` +
-    `Settles atomically on Bitcoin: the buyer pays ${intent.price_sats.toLocaleString()} sats only if you deliver the tokens, in one transaction. You sign now; the buyer broadcasts to finalize.`,
-  )) return;
+  // Variable-amount fulfilment (§5.7.6.1) — claim carries requested_amount.
+  const isVariable = !!intent.min_take_amount;
+  const requestedBase = isVariable && claim.requested_amount ? BigInt(claim.requested_amount) : null;
+  const dec = intent.decimals || 0;
+  const ticker = intent.ticker || '';
+  const confirmMsg = isVariable && requestedBase != null
+    ? `Fulfil partial-fill order from buyer ${shorten(claim.taker_pubkey, 8)}?\n\n` +
+      `Deliver: ${fmtAssetAmount(requestedBase, dec)} ${ticker} (taker requested)\n` +
+      `Keep change: ${fmtAssetAmount(BigInt(intent.amount) - requestedBase, dec)} ${ticker} (returns to you on the same tx)\n` +
+      `BTC payment to you: ${Math.floor(Number(requestedBase) * intent.price_sats / Number(intent.amount)).toLocaleString()} sats\n\n` +
+      `On confirm: an unbroadcast commit tx + maker-signed partial reveal are shipped to the worker. The worker holds both until the taker signs the BTC funding leg, then broadcasts commit + reveal sequentially. If the taker doesn't complete, no commit hits chain — you pay zero fees.`
+    : `Fulfil order from buyer ${shorten(claim.taker_pubkey, 8)}?\n\n` +
+      `Settles atomically on Bitcoin: the buyer pays ${intent.price_sats.toLocaleString()} sats only if you deliver the tokens, in one transaction. You sign now; the buyer broadcasts to finalize.`;
+  if (!confirm(confirmMsg)) return;
   btn.disabled = true; btn.textContent = 'fulfilling…';
   try {
-    await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent, claim });
-    toast('Order accepted ✓ — waiting for the buyer to settle on Bitcoin', 'success', 6000);
+    if (isVariable) {
+      await fulfilAxferVarIntent({ assetIdHex: aid, intentIdHex: iid, intent, claim });
+    } else {
+      await fulfilAxferIntent({ assetIdHex: aid, intentIdHex: iid, intent, claim });
+    }
+    toast(isVariable
+      ? `Fulfilment posted ✓ — worker will broadcast commit + reveal once the taker signs`
+      : 'Order accepted ✓ — waiting for the buyer to settle on Bitcoin',
+      'success', 6000);
     setTimeout(() => renderMarket(), 1000);
   } catch (e) {
     if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
@@ -42096,34 +42174,62 @@ async function marketTakeIntentHandler(btn) {
     if (!fres) { toast('Fulfilment not yet posted', 'error'); btn.disabled = false; btn.textContent = 'Take'; return; }
     const intent = fres.intent;
     if (!intent) throw new Error('intent missing from fulfilment response');
-    if (!confirm(
-      `Confirm buy?\n\n` +
-      `Buying:  ${fmtAssetAmount(BigInt(intent.amount), intent.decimals || 0)} ${intent.ticker}\n` +
-      `Price:   ${(intent.price_sats | 0).toLocaleString()} sats\n` +
-      `Seller is paid at:  ${intent.maker_address}\n\n` +
-      `Trustless atomic settlement on Bitcoin: you receive the tokens only if the seller is paid in the same transaction. One click, no claim window. Filling typically completes within ~10 minutes.`,
-    )) { btn.disabled = false; btn.textContent = 'Take'; return; }
+    // Variable-amount path: claim carried requested_amount; the fulfilment
+    // record carries it back so we know the actual deliverable + scaled
+    // BTC payment. Branches into finalizeAxferVarTake which POSTs the
+    // taker-completed reveal to the worker's /finalize endpoint instead
+    // of broadcasting directly (worker handles sequential commit-reveal).
+    const isVariable = !!intent.min_take_amount;
+    const fr = fres.fulfilment || fres;
+    const requestedBase = isVariable && fr.requested_amount ? BigInt(fr.requested_amount) : null;
+    const dec = intent.decimals || 0;
+    const scaledSats = isVariable && requestedBase != null
+      ? Math.floor(Number(requestedBase) * Number(intent.price_sats) / Number(intent.amount))
+      : Number(intent.price_sats || 0);
+    const confirmMsg = isVariable && requestedBase != null
+      ? `Finalize partial fill?\n\n` +
+        `Receive: ${fmtAssetAmount(requestedBase, dec)} ${intent.ticker} at your wallet\n` +
+        `Pay:     ${scaledSats.toLocaleString()} sats to ${intent.maker_address}\n\n` +
+        `On confirm: you sign your BTC funding inputs and the worker broadcasts the commit + reveal as a mempool ancestor pair. Atomic — both legs settle or neither does. Filling typically completes within ~10 minutes.`
+      : `Confirm buy?\n\n` +
+        `Buying:  ${fmtAssetAmount(BigInt(intent.amount), dec)} ${intent.ticker}\n` +
+        `Price:   ${(intent.price_sats | 0).toLocaleString()} sats\n` +
+        `Seller is paid at:  ${intent.maker_address}\n\n` +
+        `Trustless atomic settlement on Bitcoin: you receive the tokens only if the seller is paid in the same transaction. One click, no claim window. Filling typically completes within ~10 minutes.`;
+    if (!confirm(confirmMsg)) { btn.disabled = false; btn.textContent = isVariable ? 'Finalize' : 'Take'; return; }
     btn.textContent = 'submitting…';
     const takeStrip = $('#market-take-progress');
     if (takeStrip) takeStrip.style.display = 'flex';
     setProgressStrip('market-take-progress', 0);
-    const r = await takeAxferIntent({
-      intent, fulfilment: fres.fulfilment,
-      onProgress: (stage) => {
-        if (stage === 'verify-start') setProgressStrip('market-take-progress', 0);
-        else if (stage === 'sign-start') setProgressStrip('market-take-progress', 1);
-        else if (stage === 'broadcast-start') setProgressStrip('market-take-progress', 2);
-      },
-    });
+    const r = isVariable
+      ? await finalizeAxferVarTake({
+          assetIdHex: aid, intentIdHex: iid, intent, fulfilment: fres,
+          onProgress: (stage) => {
+            if (stage === 'verify-start') setProgressStrip('market-take-progress', 0);
+            else if (stage === 'sign-start') setProgressStrip('market-take-progress', 1);
+            else if (stage === 'finalize-start') setProgressStrip('market-take-progress', 2);
+          },
+        })
+      : await takeAxferIntent({
+          intent, fulfilment: fres.fulfilment,
+          onProgress: (stage) => {
+            if (stage === 'verify-start') setProgressStrip('market-take-progress', 0);
+            else if (stage === 'sign-start') setProgressStrip('market-take-progress', 1);
+            else if (stage === 'broadcast-start') setProgressStrip('market-take-progress', 2);
+          },
+        });
     setProgressStrip('market-take-progress', 3);
     setTimeout(() => { if (takeStrip) takeStrip.style.display = 'none'; setProgressStrip('market-take-progress', -1); }, 1200);
-    toast(`Filled · ${fmtAssetAmount(BigInt(intent.amount), intent.decimals || 0)} ${intent.ticker} bought · settles in ~10 min (check Holdings)`, 'success', 10000);
+    toast(isVariable && requestedBase != null
+      ? `Filled · ${fmtAssetAmount(requestedBase, dec)} ${intent.ticker} bought for ${scaledSats.toLocaleString()} sats · settles in ~10 min (check Holdings)`
+      : `Filled · ${fmtAssetAmount(BigInt(intent.amount), dec)} ${intent.ticker} bought · settles in ~10 min (check Holdings)`,
+      'success', 10000);
     _pendingAddSettlement({
       tradeId: `buy-intent-${iid}`,
       kind: 'buy', aid, ticker: intent.ticker || '?',
-      decimals: intent.decimals || 0,
-      amountBase: BigInt(intent.amount || '0'),
-      satsTotal: Number(intent.price_sats || 0),
+      decimals: dec,
+      amountBase: isVariable && requestedBase != null ? requestedBase : BigInt(intent.amount || '0'),
+      satsTotal: scaledSats,
     });
     btn.textContent = 'filled';
     setTimeout(() => renderMarket(), 2000);
