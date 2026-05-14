@@ -2145,11 +2145,15 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 #petch-discover-list > .asset-card,
 #recent-etches-list .recent-tile,
 #offers-list .offer-row,
-#market-list > div:not(.empty):not(.error):not(.muted),
 #claim-discover-list > div:not(.empty):not(.error):not(.muted),
 #activity-list .activity-row {
   animation: row-fade-in 0.18s ease-out backwards;
 }
+/* #market-list was previously in this selector but the staggered
+   25ms-per-child cascade across 100+ listing tiles read as a "whole
+   gallery flashing" jarring effect on every market tab load. The
+   market view has too many children and re-renders too often for
+   the polish to land — dropping it from the row-fade-in cascade. */
 #holdings-list > .asset-card:nth-child(1),
 #discover-list > .asset-card,
 #petch-discover-list > .asset-card:nth-child(1),

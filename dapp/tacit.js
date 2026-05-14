@@ -33298,7 +33298,8 @@ function applyMarketFilters() {
     // demand. Empty asks copy clarifies the ask side specifically. We
     // still mount the rich stats strip so supply/attestation/charts are
     // visible even on assets with no live asks.
-    const listedPaneHtml = `${bidsLadderHtml}<div class="empty">No active asks. Bids above; post one if you want to buy.</div>`;
+    const _yourOrdersHtmlNoAsks = renderYourOpenOrdersHTML(_marketView.assetId, _assetForBids, (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '');
+    const listedPaneHtml = `${_yourOrdersHtmlNoAsks}${bidsLadderHtml}<div class="empty">No active asks. Bids above; post one if you want to buy.</div>`;
     const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
     list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
     hydrateMarketImages(list);
@@ -33527,7 +33528,8 @@ function applyMarketFilters() {
   const simpleEmptyHint = _marketSimpleMode && rowsForGrid.length === 0 && rowsFull.length > 0
     ? `<div class="empty" style="padding:14px;text-align:center;font-size:11px;border:1px dashed var(--ink-faint);"><strong>No instant listings.</strong> <span class="muted">${rowsFull.length} offer${rowsFull.length === 1 ? '' : 's'} available - switch to <em>All offers</em> above to see atomic intents and OTC listings.</span></div>`
     : '';
-  const listedPaneHtml = `${_swapTileHtml}${bidsLadderHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="market-listing-grid" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}`;
+  const _yourOrdersHtml = renderYourOpenOrdersHTML(_marketView.assetId, _assetForBids, myPubHexForMarket);
+  const listedPaneHtml = `${_yourOrdersHtml}${_swapTileHtml}${bidsLadderHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="market-listing-grid" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -33812,6 +33814,37 @@ function applyMarketFilters() {
   // because the CTA is rendered as a sibling above #market-grid.
   list.querySelectorAll('button[data-act="quick-buy-preauth"]').forEach(btn => {
     btn.onclick = async () => marketTakePreauthHandler(btn);
+  });
+  // Wires for the "Your open orders" consolidated panel. Lives on `list`
+  // (not `grid`) because the panel sits above the swap tile, outside the
+  // asks-grid scope. Cancel actions delegate to the same handlers the
+  // asks-grid / bid-ladder cancel buttons use — just routed from the new
+  // panel's data-act names so the existing handlers don't need to know
+  // about it.
+  list.querySelectorAll('button[data-act="your-orders-cancel-ask"]').forEach(btn => {
+    btn.onclick = async () => marketCancelPreauthHandler(btn);
+  });
+  list.querySelectorAll('button[data-act="your-orders-cancel-ask-group"]').forEach(btn => {
+    btn.onclick = async () => marketCancelPreauthGroupHandler(btn);
+  });
+  list.querySelectorAll('button[data-act="your-orders-cancel-bid"]').forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      if (!confirm('Cancel this bid? Removed from the marketplace immediately.')) return;
+      const aid = btn.dataset.aid;
+      const bidId = btn.dataset.bidId;
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = 'cancelling…';
+      try {
+        await cancelBidIntent(aid, bidId);
+        toast('Bid cancelled ✓', 'success');
+        _invalidateBidsCache(aid);
+        setTimeout(() => renderMarket(), 500);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = orig;
+        if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was removed.', '');
+        else toast('Cancel failed: ' + (e?.message || String(e)), 'error');
+      }
+    };
   });
   list.querySelectorAll('button[data-act="quick-buy-intent"]').forEach(btn => {
     btn.onclick = async () => marketClaimIntentHandler(btn);
@@ -35374,6 +35407,16 @@ function renderMarketAssetHeader(assetId, rows) {
           <div><span>Market Cap</span><strong>${escapeHtml(mcapUsd)}</strong><small>${escapeHtml(mcapBtc)}</small></div>
           <div><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
           ${(() => {
+            // Wallets — distinct on-chain recipients indexed by the worker.
+            // "Wallets" not "holders" because the indexer can't dedupe
+            // same-user-multi-wallet (the confidentiality design hides
+            // who controls which pubkey). Coarse popularity signal.
+            const hc = Number(a.holder_count || 0);
+            const enriched = !!a._marketAssetStatsLoadedAt;
+            const display = hc > 0 ? hc.toLocaleString('en-US') : (enriched ? '0' : '…');
+            return `<div title="Distinct wallets (scriptpubkey hashes) that have ever received this asset on chain. Same user with multiple wallets counts once per wallet."><span>Wallets</span><strong>${display}</strong></div>`;
+          })()}
+          ${(() => {
             // "You own" stat tile — surfaces the user's own balance for this
             // asset right next to Price/Volume so a trader can size positions
             // without leaving the page. Only renders when balance > 0; the
@@ -36151,6 +36194,125 @@ function renderMarketBidsLadderHTML(asset) {
     </div>`;
 }
 
+// "Your open orders" — consolidated panel showing every active order the
+// active wallet has for this asset (asks + bids), with one-click cancel.
+// Mirrors the CEX-style "Open Orders" tab that lives in the same view as
+// the orderbook. Asks render synchronously from the in-memory listings
+// cache (always warm by the time we paint). Bids render from the bid-
+// intent cache: warm → synchronous rows; cold → a placeholder + an async
+// populator that swaps in the rows once browseBidIntents resolves.
+//
+// Empty state: returns '' so the section vanishes entirely when there
+// are no orders — keeps the orderbook clean for buyers who never list.
+function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
+  if (!myPubHex || !aid) return '';
+  const ticker = asset?.ticker || '?';
+  const decimals = Number.isInteger(asset?.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  const nowSec = Math.floor(Date.now() / 1000);
+  // Asks: my preauth listings for this asset. Group chunked listings so
+  // the panel shows "100 TAC × 7 chunks" as one row + a Cancel all
+  // affordance, matching how the orderbook itself renders them.
+  const askRows = (_marketCache?.listings || []).filter(l =>
+    l.kind === 'preauth' &&
+    l._asset?.asset_id === aid &&
+    l.seller_pubkey === myPubHex &&
+    !l.expired &&
+    Number(l.expiry || 0) > nowSec,
+  );
+  const askGrouped = groupChunkedPreauthListings(askRows);
+  // Bids: synchronous peek. _bidCachePeek returns null when no fetch has
+  // resolved yet — in that case we render a placeholder and trigger a
+  // populator (see populateYourOpenOrders below).
+  const bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+  const myBidsKnown = bidsPeek != null;
+  const myBids = (bidsPeek || []).filter(b =>
+    !b.axintent_id &&  // claimed bids are off the open list — they're in flight
+    Number(b.expiry || 0) > nowSec &&
+    b.buyer_pubkey === myPubHex,
+  );
+  // Bail entirely when there's nothing to show AND we KNOW bids are
+  // empty. If the bid cache is still cold and there are no asks, hide
+  // the panel and let the next render pick it up once bids resolve —
+  // avoids a flash of "no orders" before any data lands.
+  if (askGrouped.length === 0 && myBidsKnown && myBids.length === 0) return '';
+  if (askGrouped.length === 0 && !myBidsKnown) {
+    // Try a fetch in the background so the next render has data.
+    if (typeof _fetchBidIntentsCached === 'function') {
+      try { _fetchBidIntentsCached(aid); } catch {}
+    }
+    return '';
+  }
+
+  const askRowsHtml = askGrouped.map(l => {
+    const amtBase = BigInt(l.asset_opening?.amount || '0');
+    const chunks = l._isGroup ? l._groupSize : 1;
+    const totalAmt = amtBase * BigInt(chunks);
+    const perChunkPrice = Number(l.min_price_sats || 0);
+    const totalSats = perChunkPrice * chunks;
+    const u = unitPriceSats(perChunkPrice, amtBase, decimals);
+    const unitStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}` : `${perChunkPrice.toLocaleString()} sats`;
+    const usdTotal = fmtMarketUsdFromSats(totalSats, '');
+    const usdTail = usdTotal ? ` <small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
+    const ageStr = relativeAge(l.created_at || l.listed_at) ? `${relativeAge(l.created_at || l.listed_at)} ago` : '';
+    const cancelBtn = l._isGroup
+      ? `<button data-act="your-orders-cancel-ask-group" data-aid="${escapeHtml(aid)}" data-sids="${escapeHtml((l._groupChunks || []).map(c => c.sale_id).filter(Boolean).join(','))}" data-ticker="${escapeHtml(ticker)}" title="Cancel all ${chunks} chunks in this group" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel all</button>`
+      : `<button data-act="your-orders-cancel-ask" data-aid="${escapeHtml(aid)}" data-sid="${escapeHtml(l.sale_id || '')}" data-price="${perChunkPrice}" data-ticker="${escapeHtml(ticker)}" data-amount="${escapeHtml(l.asset_opening?.amount || '0')}" data-dec="${decimals}" title="Cancel this listing — removes from the marketplace" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button>`;
+    return `<tr>
+      <td><span class="market-bid-state market-bid-state--mine" style="background:#fee;border:1px solid #b8341d;color:#b8341d;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Sell</span></td>
+      <td><strong>${escapeHtml(fmtAssetAmount(totalAmt, decimals))}</strong> ${escapeHtml(ticker)}${l._isGroup ? ` <span class="muted" style="font-size:10px;">× ${chunks} chunk${chunks === 1 ? '' : 's'}</span>` : ''}</td>
+      <td>${unitStr}</td>
+      <td><strong>${totalSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
+      <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
+      <td>${cancelBtn}</td>
+    </tr>`;
+  }).join('');
+
+  const bidRowsHtml = myBids.map(b => {
+    const amt = BigInt(b.amount || '0');
+    const sats = Number(b.price_sats || 0);
+    const u = unitPriceSats(sats, amt, decimals);
+    const unitStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}` : `${sats.toLocaleString()} sats`;
+    const usdTotal = fmtMarketUsdFromSats(sats, '');
+    const usdTail = usdTotal ? ` <small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
+    const expiresIn = Math.max(0, Number(b.expiry || 0) - nowSec);
+    const ageStr = expiresIn > 0
+      ? `expires in ${Math.floor(expiresIn / 3600)}h${Math.floor((expiresIn % 3600) / 60)}m`
+      : 'expired';
+    return `<tr>
+      <td><span class="market-bid-state market-bid-state--mine" style="background:#e8f5ec;border:1px solid #0a8f43;color:#0a8f43;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Buy</span></td>
+      <td><strong>${escapeHtml(fmtAssetAmount(amt, decimals))}</strong> ${escapeHtml(ticker)}</td>
+      <td>${unitStr}</td>
+      <td><strong>${sats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
+      <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
+      <td><button data-act="your-orders-cancel-bid" data-aid="${escapeHtml(aid)}" data-bid-id="${escapeHtml(b.bid_id || '')}" title="Cancel this bid — removes from the marketplace" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Cancel</button></td>
+    </tr>`;
+  }).join('');
+
+  const totalCount = askGrouped.length + myBids.length;
+  const bidsPlaceholder = !myBidsKnown
+    ? `<tr><td colspan="6" class="muted" style="font-size:10px;text-align:center;padding:8px;"><span class="live-dots">checking your bids</span></td></tr>`
+    : '';
+  return `
+    <div data-your-orders data-aid="${escapeHtml(aid)}" data-pub="${escapeHtml(myPubHex)}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg-warm);padding:10px 12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+        <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">Your open orders <span class="muted" style="font-weight:normal;font-size:10px;text-transform:none;letter-spacing:0;">· ${totalCount} active${!myBidsKnown ? ' (checking bids…)' : ''}</span></strong>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;">
+        <thead>
+          <tr style="color:var(--ink-mid);text-align:left;text-transform:uppercase;letter-spacing:0.06em;font-size:9px;">
+            <th style="padding:4px 6px;font-weight:600;">Side</th>
+            <th style="padding:4px 6px;font-weight:600;">Amount</th>
+            <th style="padding:4px 6px;font-weight:600;">Price</th>
+            <th style="padding:4px 6px;font-weight:600;">Total</th>
+            <th style="padding:4px 6px;font-weight:600;">Age</th>
+            <th style="padding:4px 6px;font-weight:600;">Action</th>
+          </tr>
+        </thead>
+        <tbody>${askRowsHtml}${bidRowsHtml}${bidsPlaceholder}</tbody>
+      </table>
+    </div>`;
+}
+
 // Per-asset bid-intent cache so populateMarketBidsLadder + the new
 // spread/depth helpers share one round-trip. TTL aligns with the rest of
 // the market cache (30s). Returns a promise so concurrent calls dedupe.
@@ -36367,6 +36529,62 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   out.style.display = '';
 }
 
+// Re-render the "Your open orders" panel in place after the bid-intent
+// cache warms. Looks up the existing [data-your-orders] div, recomputes
+// the HTML synchronously (now that _bidCachePeek will return live data),
+// and swaps. No-op when the panel never rendered (user has no orders) or
+// when the asset's changed underneath us.
+function refreshYourOpenOrdersPanel(scope, aid) {
+  if (!scope || !aid) return;
+  const panel = scope.querySelector(`[data-your-orders][data-aid="${aid}"]`);
+  if (!panel) return;
+  const myPubHex = panel.dataset.pub || ((wallet && wallet.pub) ? bytesToHex(wallet.pub) : '');
+  const assetForBids = (_marketCache?.listings?.find(l => l._asset?.asset_id === aid)?._asset)
+    || (_marketCache?.assets?.find(x => x.asset_id === aid))
+    || { asset_id: aid, ticker: '?', decimals: 0 };
+  const fresh = renderYourOpenOrdersHTML(aid, assetForBids, myPubHex);
+  if (!fresh) {
+    // Now empty (no orders) — drop the panel so the orderbook flows clean.
+    panel.remove();
+    return;
+  }
+  // Replace just this panel; preserves the surrounding swap tile + ladders.
+  const tmp = document.createElement('div');
+  tmp.innerHTML = fresh.trim();
+  const next = tmp.firstElementChild;
+  if (!next) return;
+  panel.replaceWith(next);
+  // Re-wire cancel buttons on the new node. The asset-detail wire block
+  // attaches handlers on `list` (the market list container) at first
+  // paint, but our newly-inserted DOM is detached from that loop; bind
+  // directly here so cancel works without a full renderMarket.
+  next.querySelectorAll('button[data-act="your-orders-cancel-ask"]').forEach(btn => {
+    btn.onclick = async () => marketCancelPreauthHandler(btn);
+  });
+  next.querySelectorAll('button[data-act="your-orders-cancel-ask-group"]').forEach(btn => {
+    btn.onclick = async () => marketCancelPreauthGroupHandler(btn);
+  });
+  next.querySelectorAll('button[data-act="your-orders-cancel-bid"]').forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      if (!confirm('Cancel this bid? Removed from the marketplace immediately.')) return;
+      const aidc = btn.dataset.aid;
+      const bidId = btn.dataset.bidId;
+      btn.disabled = true; const orig = btn.textContent; btn.textContent = 'cancelling…';
+      try {
+        await cancelBidIntent(aidc, bidId);
+        toast('Bid cancelled ✓', 'success');
+        _invalidateBidsCache(aidc);
+        setTimeout(() => renderMarket(), 500);
+      } catch (e) {
+        btn.disabled = false; btn.textContent = orig;
+        if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was removed.', '');
+        else toast('Cancel failed: ' + (e?.message || String(e)), 'error');
+      }
+    };
+  });
+}
+
 async function populateMarketBidsLadder(scope, asset) {
   const section = scope.querySelector('[data-market-bids-section]');
   if (!section) return;
@@ -36399,6 +36617,7 @@ async function populateMarketBidsLadder(scope, asset) {
     _wireMarketSweepBuy(section, asset);
     _wireMarketSweepSell(section, asset);
     _wireAutoFulfilToggle(section);
+    try { refreshYourOpenOrdersPanel(scope, aid); } catch {}
     return;
   }
   if (countEl) countEl.textContent = String(intentsAll.length);
@@ -36411,6 +36630,7 @@ async function populateMarketBidsLadder(scope, asset) {
     _wireMarketSweepBuy(section, asset);
     _wireMarketSweepSell(section, asset);
     _wireAutoFulfilToggle(section);
+    try { refreshYourOpenOrdersPanel(scope, aid); } catch {}
     return;
   }
   // Best bid (highest unit price) at the top of the ladder. Mirror of the
@@ -36571,6 +36791,9 @@ async function populateMarketBidsLadder(scope, asset) {
   _wireMarketSweepBuy(section, asset);
   _wireMarketSweepSell(section, asset);
   _wireAutoFulfilToggle(section);
+  // Bid cache is now warm — refresh the "Your open orders" panel above
+  // so the buy-side rows that depended on this fetch can render.
+  try { refreshYourOpenOrdersPanel(scope, aid); } catch {}
 }
 
 // Toggle wireup. Single click = enable/disable. Paints the current state
