@@ -34073,36 +34073,67 @@ function applyMarketFilters() {
   // attested, and how to re-verify it. Populated async by
   // populateMarketAssetStats from the single-asset worker endpoint.
   const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
-  // CEX-style smooth chart updates: detach the live chart DOM nodes
-  // before innerHTML rewrites the asset-detail view, then re-attach
-  // them over the new placeholders. innerHTML wipes its subtree's DOM,
-  // which would have destroyed the price chart, depth chart, and
-  // trades tape on every re-render and given the user a visible
-  // "destroyed → recreated" flicker even when the data hadn't actually
-  // changed. By keeping the same DOM nodes alive, subsequent
-  // populate* calls just update their inner SVG/markup in place — the
-  // container never blinks. The detach happens only on asset-detail
-  // re-renders where the previous render's DOM is still present
-  // (skipped on first paint or after a view switch, where there are
-  // no nodes to preserve).
-  const _preservedCharts = {};
+  // CEX-style smooth re-render: detach high-value DOM nodes before
+  // innerHTML rewrites the asset-detail view, then re-attach them
+  // over the new placeholders. innerHTML wipes its subtree's DOM,
+  // which would otherwise destroy:
+  //
+  //   · the price + depth charts + trades tape (visible flicker;
+  //     populate* could only refill them, not preserve continuity)
+  //   · the swap tile (user-typed amount, slippage selection, and
+  //     focus would be lost on every 5s auto-refresh tick — the
+  //     killer UX regression once tile refresh got snappy)
+  //   · the bids section (populateMarketBidsLadder re-fetches
+  //     anyway, but preserving the container avoids the "ladder
+  //     disappears for an instant" flash and lets the live age
+  //     ticker keep ticking on existing rows)
+  //
+  // Active input focus + selection caret are captured before the
+  // rewrite and restored after, so a user typing in the swap tile's
+  // amount field doesn't lose their cursor position across a tick.
+  const _preservedNodes = {};
   const _onAssetDetailReRender = (typeof _marketView === 'object' && _marketView?.mode === 'asset' && _marketView?.assetId);
+  let _focusRestore = null;
   if (_onAssetDetailReRender) {
-    for (const sel of ['data-market-price-chart', 'data-market-trades-tape', 'data-market-depth-chart']) {
+    const ae = document.activeElement;
+    if (ae && list.contains(ae) && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.tagName === 'SELECT')) {
+      try {
+        _focusRestore = {
+          node: ae,
+          selStart: typeof ae.selectionStart === 'number' ? ae.selectionStart : null,
+          selEnd: typeof ae.selectionEnd === 'number' ? ae.selectionEnd : null,
+        };
+      } catch {}
+    }
+    for (const sel of [
+      'data-market-price-chart',
+      'data-market-trades-tape',
+      'data-market-depth-chart',
+      'data-swap-tile',
+      'data-market-bids-section',
+    ]) {
       const node = list.querySelector(`[${sel}]`);
       if (node && node.parentNode) {
-        _preservedCharts[sel] = node;
+        _preservedNodes[sel] = node;
         node.parentNode.removeChild(node);
       }
     }
   }
   list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
   if (_onAssetDetailReRender) {
-    for (const [sel, node] of Object.entries(_preservedCharts)) {
+    for (const [sel, node] of Object.entries(_preservedNodes)) {
       const placeholder = list.querySelector(`[${sel}]`);
       if (placeholder && placeholder.parentNode) {
         placeholder.parentNode.replaceChild(node, placeholder);
       }
+    }
+    if (_focusRestore?.node?.isConnected) {
+      try {
+        _focusRestore.node.focus();
+        if (_focusRestore.selStart != null && _focusRestore.selEnd != null && typeof _focusRestore.node.setSelectionRange === 'function') {
+          _focusRestore.node.setSelectionRange(_focusRestore.selStart, _focusRestore.selEnd);
+        }
+      } catch {}
     }
   }
   hydrateMarketImages(list);
@@ -38136,6 +38167,16 @@ function _renderSwapProgress(host, items) {
 function _wireSwapTile(scope) {
   const widget = scope.querySelector('[data-swap-tile]');
   if (!widget) return;
+  // Guard against double-wiring. The swap tile is now preserved across
+  // applyMarketFilters re-renders so its user-typed input + caret +
+  // event listeners survive each auto-refresh tick. Re-running this
+  // function would stack duplicate input/click handlers on the same
+  // elements — every keystroke would fire N update() calls after N
+  // ticks, blowing up CPU and producing race-condition flicker. A
+  // simple dataset flag ensures wiring happens exactly once per
+  // widget instance.
+  if (widget.dataset.swapWired === '1') return;
+  widget.dataset.swapWired = '1';
   const aid = widget.dataset.aid;
   const ticker = widget.dataset.ticker || '?';
   const decimals = parseInt(widget.dataset.dec || '0', 10) || 0;
