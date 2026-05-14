@@ -25,6 +25,32 @@
 //      / `.tab-panel.active` sees the deep-linked tab as the
 //      source of truth. Then remove the stage-1 override style so
 //      future tab clicks aren't visually clamped by !important.
+// Filter the "Cannot redefine property: ethereum" noise that fires when
+// two wallet browser extensions (MetaMask + Phantom, Phantom + Coinbase
+// Wallet, etc.) both try to define window.ethereum and the second one
+// fails because the first set it as non-configurable. The throw happens
+// inside the extension's inpage.js — not our code, not something we can
+// fix at the source. tacit doesn't read window.ethereum so the failure
+// is functionally harmless, but the red Uncaught TypeError row in
+// devtools makes users think the dapp is broken. Suppress just this
+// specific filename pattern so we don't accidentally swallow real
+// errors from other scripts. Registered up here (top of preboot,
+// before preActivateTabFromHash even runs) so it's installed before
+// most extensions inject their inpage.js — extensions vary on inject
+// timing, this is best-effort.
+(function silenceExtensionEthereumCollision() {
+  try {
+    window.addEventListener('error', function (e) {
+      if (!e || typeof e.filename !== 'string') return;
+      if (!/inpage\.js(\?|$|:)/.test(e.filename)) return;
+      var msg = (e.error && e.error.message) || e.message || '';
+      if (!/Cannot redefine property: ethereum/.test(msg)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, true);
+  } catch (_) { /* never break boot */ }
+})();
+
 (function preActivateTabFromHash() {
   try {
     var m = (window.location.hash || '').match(/[#&]tab=([a-z]+)/i);

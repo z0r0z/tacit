@@ -36039,9 +36039,23 @@ function renderMarketBrowseTable(rows) {
     const instant = universe.filter(l => l.kind === 'preauth').length;
     const atomic = universe.filter(l => l.kind === 'intent').length;
     const otc = universe.filter(l => l.kind === 'opening' || l.kind === 'range').length;
-    status.textContent = `${groups.length} tokens - ${rows.length} live listing${rows.length === 1 ? '' : 's'} - ${instant} instant - ${atomic} atomic - ${otc} OTC`;
+    // Each segment wraps as a unit (white-space:nowrap), separators
+    // use a bullet that itself can wrap so on a narrow column the
+    // line breaks BETWEEN segments instead of mid-segment ("358 in" \n
+    // "stant" was the old behavior on iPhone-width). Inline-flex on
+    // the wrapper lets the segments flow like text but keeps the
+    // page chip clearly grouped at the end.
+    const sep = '<span aria-hidden="true" style="color:var(--ink-faint);margin:0 6px;">·</span>';
+    const seg = (label) => `<span style="white-space:nowrap;display:inline-block;">${label}</span>`;
+    status.innerHTML = [
+      seg(`${groups.length} tokens`),
+      seg(`${rows.length} live listing${rows.length === 1 ? '' : 's'}`),
+      seg(`${instant} instant`),
+      seg(`${atomic} atomic`),
+      seg(`${otc} OTC`),
+      seg(`page ${_marketBrowsePage}/${totalPages}`),
+    ].join(sep);
   }
-  if (status) status.textContent += ` - page ${_marketBrowsePage}/${totalPages}`;
   const body = pageGroups.map(g => {
     const a = g.asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
