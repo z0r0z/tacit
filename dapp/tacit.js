@@ -14161,19 +14161,45 @@ async function cancelBidIntent(assetIdHex, bidIdHex) {
 // The seller picks (or auto-splits) a UTXO matching the bid's amount, posts
 // the atomic intent via publishAxferIntent (which broadcasts the commit tx
 // and registers it on the worker), then signs + POSTs the bid claim.
-async function fulfilBidIntent({ bid, sellerUtxo }) {
+async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!bid || !bid.bid_id || !bid.asset_id) throw new Error('invalid bid');
+  // Variable-fill (§5.7.7): if the bid carries `min_fill_amount` and the
+  // caller passed `fillAmount`, sell exactly that chunk at scaled price.
+  // Otherwise: whole-fill (existing behavior) — sell bid.amount at
+  // bid.price_sats.
+  //
+  // Auto-detection: if bid is variable-fill AND fillAmount is null, default
+  // to bid.remaining_amount (take the full remaining open chunk). Maker UI
+  // can override by passing an explicit chunk.
+  const isVariableBid = !!(bid.min_fill_amount && bid.min_fill_amount !== '0');
+  let fillAmtBI;
+  if (isVariableBid) {
+    const remainingBI = BigInt(bid.remaining_amount || bid.amount || '0');
+    const minFillBI = BigInt(bid.min_fill_amount);
+    fillAmtBI = fillAmount != null ? BigInt(fillAmount) : remainingBI;
+    if (fillAmtBI < minFillBI) throw new Error(`fillAmount ${fillAmtBI} below bid.min_fill_amount ${bid.min_fill_amount}`);
+    if (fillAmtBI > remainingBI) throw new Error(`fillAmount ${fillAmtBI} exceeds bid.remaining_amount ${bid.remaining_amount || bid.amount}`);
+  } else {
+    fillAmtBI = BigInt(bid.amount);
+    if (fillAmount != null && BigInt(fillAmount) !== fillAmtBI) {
+      throw new Error('whole-bid fulfilment: fillAmount must equal bid.amount (or omit)');
+    }
+  }
+  // Scaled BTC payment for THIS partial fulfilment. Floor matches the
+  // canonical wire-format rounding (SPEC §5.7.7 + §5.7.6.1).
+  const scaledPriceSats = Number((fillAmtBI * BigInt(bid.price_sats)) / BigInt(bid.amount));
+  if (scaledPriceSats < DUST) throw new Error(`scaled BTC payment ${scaledPriceSats} < DUST; raise fillAmount or skip this bid`);
   // Auto-pick a UTXO of the right amount if the caller didn't pass one. If no
-  // single UTXO matches the bid amount exactly, auto-split via self-CXFER —
+  // single UTXO matches `fillAmtBI` exactly, auto-split via self-CXFER —
   // mirrors the listing flow so sellers don't have to consolidate manually
   // before fulfilling.
   if (!sellerUtxo) {
     const holdings = await scanHoldings();
     const h = holdings.get(bid.asset_id);
     if (!h || h.utxos.length === 0) throw new Error('you hold none of this asset');
-    const wantAmt = BigInt(bid.amount);
+    const wantAmt = fillAmtBI;
     if (h.balance < wantAmt) throw new Error(`insufficient balance: hold ${h.balance}, bid wants ${wantAmt}`);
     const exact = h.utxos.find(u => u.amount === wantAmt);
     if (exact) {
@@ -14211,28 +14237,27 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
     }
   }
   if (!sellerUtxo.utxo) throw new Error('invalid seller UTXO shape');
-  if (BigInt(sellerUtxo.amount) !== BigInt(bid.amount)) {
-    throw new Error('seller UTXO amount must equal bid amount');
+  if (BigInt(sellerUtxo.amount) !== fillAmtBI) {
+    throw new Error(`seller UTXO amount must equal fill amount (have ${sellerUtxo.amount}, want ${fillAmtBI})`);
   }
   // Build + broadcast the atomic intent (commit tx + worker post).
   // publishAxferIntent registers via /atomic-intents and returns the
-  // worker's intent_id, which we link from the bid claim.
+  // worker's intent_id, which we link from the bid claim. For
+  // variable-fill, the atomic-intent's price_sats is the SCALED amount
+  // for this chunk, not bid.price_sats (which is the full-bid total).
   const offer = await publishAxferIntent({
     utxoTxid: sellerUtxo.utxo.txid,
     utxoVout: sellerUtxo.utxo.vout,
-    priceSats: Number(bid.price_sats),
+    priceSats: scaledPriceSats,
     expiry: bid.expiry,  // align axintent expiry with bid expiry
   });
   // Sign + POST the bid claim.
   const assetIdBytes = hexToBytes(bid.asset_id);
   const bidIdBytes = hexToBytes(bid.bid_id);
   const axIdBytes = hexToBytes(offer.intent_id);
-  // fill_amount = bid.amount for whole-bid fulfilment. Variable-fill bids
-  // (§5.7.7) accept fill_amount ∈ [min_fill_amount, remaining]; the
-  // variable-fill maker-side flow (fulfilBidIntentVar, PR4) passes the
-  // chunk-sized amount. Whole-bid path passes the bid's full amount.
-  const fillAmount = BigInt(bid.amount);
-  const claimMsg = _bidClaimMsg(assetIdBytes, bidIdBytes, wallet.pub, axIdBytes, fillAmount);
+  // fill_amount carried into the canonical claim message. For variable-fill
+  // bids the chunk size; for whole-bid it equals bid.amount.
+  const claimMsg = _bidClaimMsg(assetIdBytes, bidIdBytes, wallet.pub, axIdBytes, fillAmtBI);
   const claimSig = signSchnorr(claimMsg, wallet.priv);
   const url = `${WORKER_BASE}/assets/${bid.asset_id}/bid-intents/${bid.bid_id}/claim?network=${encodeURIComponent(NET.name)}`;
   const resp = await fetch(url, {
@@ -14241,7 +14266,7 @@ async function fulfilBidIntent({ bid, sellerUtxo }) {
     body: JSON.stringify({
       seller_pubkey: bytesToHex(wallet.pub),
       axintent_id: offer.intent_id,
-      fill_amount: fillAmount.toString(),  // canonical claim shape; worker requires it
+      fill_amount: fillAmtBI.toString(),  // canonical claim shape; worker requires it
       sig: bytesToHex(claimSig),
     }),
   });
@@ -40953,7 +40978,18 @@ function _wireSwapTile(scope) {
         const _origLabel = actionBtn.textContent;
         actionBtn.textContent = 'opening…';
         try {
-          await publishBidIntent({ assetIdHex: aid, amount: bidAmt, priceSats: bidSats, expiry: Math.floor(Date.now() / 1000) + 24 * 3600 });
+          // Variable-fill default (§5.7.7): make the no-route open swap
+          // partial-fillable too. Same floor formula as the residual-bid
+          // path so even a tiny budget gets a multi-seller-matchable order.
+          let _bidMinFill = bidAmt / 10n;
+          const _bidDustFloor = (BigInt(DUST) * bidAmt + BigInt(bidSats) - 1n) / BigInt(bidSats);
+          if (_bidDustFloor > _bidMinFill) _bidMinFill = _bidDustFloor;
+          if (_bidMinFill >= bidAmt) _bidMinFill = 0n;
+          await publishBidIntent({
+            assetIdHex: aid, amount: bidAmt, priceSats: bidSats,
+            expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
+            minFillAmount: _bidMinFill,
+          });
           toast(`Swap open · ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ${fmtUnitPriceSats(capUnit)} sats/${ticker} — fills when a seller takes`, 'success', 7000);
           invalidateMarketCache();
           _invalidateBidsCache(aid);
@@ -41048,12 +41084,23 @@ function _wireSwapTile(scope) {
         const _residualSats = Number(result.residualSats);
         const _bidAmt = BigInt(Math.floor(_residualSats * Math.pow(10, decimals) / result.cap));
         if (_bidAmt > 0n) {
+          // Variable-fill default (§5.7.7): the residual bid is partial-
+          // fillable so multiple sellers can each contribute a chunk in
+          // one block. Min-fill floor = max(10% of amount, smallest unit
+          // count whose scaled payment ≥ DUST). If that floor would
+          // exceed bid.amount (rare — tiny residuals), fall back to whole-
+          // fill by passing 0.
+          let _minFill = _bidAmt / 10n;
+          const _dustFloor = (BigInt(DUST) * _bidAmt + BigInt(_residualSats) - 1n) / BigInt(_residualSats);
+          if (_dustFloor > _minFill) _minFill = _dustFloor;
+          if (_minFill >= _bidAmt) _minFill = 0n;  // whole-fill fallback
           try {
             await publishBidIntent({
               assetIdHex: aid, amount: _bidAmt, priceSats: _residualSats,
               expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
+              minFillAmount: _minFill,
             });
-            bidPosted = { amount: _bidAmt, sats: _residualSats, cap: result.cap };
+            bidPosted = { amount: _bidAmt, sats: _residualSats, cap: result.cap, minFill: _minFill };
             _invalidateBidsCache(aid);
           } catch (e) {
             // Bid post failure shouldn't undo the successful fills. Surface
