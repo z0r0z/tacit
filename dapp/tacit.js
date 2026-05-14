@@ -37574,24 +37574,33 @@ function renderMarketBrowseTable(rows) {
           <span class="market-table-value ${refUnit != null ? 'market-sats-price' : ''}">${escapeHtml(floor)}</span>
           <span class="market-table-sub market-usd-price">${escapeHtml(floorUsd)}</span>
           ${(() => {
-            // 24h Δ% badge. Worker stamps `price_24h_change_pct` on
-            // the asset stats endpoint, merged into `a` by the
-            // per-row enrichment pass (scheduleMarketAssetStatsEnrich
-            // ment). Renders only when the figure is finite AND a
-            // price exists — for "no trades yet" assets the delta
-            // line would just compound the empty state. Green when
-            // positive, red when negative, muted dot when flat.
-            // Compact two-decimal format keeps the cell tight; this
-            // is the gallery's at-a-glance momentum read.
-            const _delta24 = Number(a.price_24h_change_pct);
-            if (refUnit == null || !Number.isFinite(_delta24)) return '';
-            if (_delta24 === 0) {
-              return `<span class="market-table-sub" style="color:var(--ink-mid);font-size:10px;">· 0.00% 24h</span>`;
+            // Δ% badge using the same windowed primary delta as the
+            // tile-grid view (price_change_primary_pct + _window).
+            // Worker auto-windows: 24h for mature markets, 4h / 1h
+            // for assets trading <24h, "since first trade" for the
+            // youngest markets where even an hour-window is too
+            // sparse. The platform launched this week so many rows
+            // are <24h old — the primary window keeps the chip
+            // meaningful on those. Falls back to the legacy
+            // price_24h_change_pct field if the worker hasn't been
+            // upgraded. Hides entirely for "no trades yet" rows;
+            // adding a third line there would just compound the
+            // empty state.
+            const _pct = Number.isFinite(a.price_change_primary_pct)
+              ? Number(a.price_change_primary_pct)
+              : (Number.isFinite(a.price_24h_change_pct) ? Number(a.price_24h_change_pct) : null);
+            const _win = typeof a.price_change_primary_window === 'string' && a.price_change_primary_window
+              ? a.price_change_primary_window
+              : '24h';
+            const _winLbl = _win === 'all' ? 'since 1st' : _win;
+            if (refUnit == null || _pct == null) return '';
+            if (_pct === 0) {
+              return `<span class="market-table-sub" style="color:var(--ink-mid);font-size:10px;">· 0.00% ${escapeHtml(_winLbl)}</span>`;
             }
-            const _sign = _delta24 > 0 ? '+' : '';
-            const _color = _delta24 > 0 ? '#0a7d3a' : '#b8341d';
-            const _glyph = _delta24 > 0 ? '▲' : '▼';
-            return `<span class="market-table-sub" style="color:${_color};font-size:10px;font-weight:600;">${_glyph} ${_sign}${_delta24.toFixed(2)}% 24h</span>`;
+            const _sign = _pct > 0 ? '+' : '';
+            const _color = _pct > 0 ? '#0a7d3a' : '#b8341d';
+            const _glyph = _pct > 0 ? '▲' : '▼';
+            return `<span class="market-table-sub" style="color:${_color};font-size:10px;font-weight:600;">${_glyph} ${_sign}${_pct.toFixed(2)}% ${escapeHtml(_winLbl)}</span>`;
           })()}
         </td>
         <td>
@@ -42878,6 +42887,16 @@ function _wireMarketBidPlace(section, asset) {
             <input data-bid-field="expiry-hours" type="number" min="1" max="720" step="1" value="24" style="width:100%;font-family:var(--mono);">
           </label>
         </div>
+        <!-- Variable-fill toggle (§5.7.7). Default ON: matches the swap-
+             tile residual-bid path; multiple sellers can each contribute
+             a chunk in [min_fill, remaining_amount] so the bid attracts
+             multi-seller liquidity instead of waiting on one whole-fill
+             match. Off → whole-bid only, for power users who want a
+             single-seller fill (e.g. betting on one big lot). -->
+        <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:10px;cursor:pointer;font-weight:500;">
+          <input type="checkbox" data-bid-field="variable" checked style="margin:0;">
+          <span>Partial-fillable <span class="muted" style="font-weight:400;">(sellers can deliver chunks ≥ 10% of bid — DEX-like)</span></span>
+        </label>
         <div data-bid-readout style="font-size:11px;margin-top:6px;min-height:14px;" class="muted"></div>
         <div class="flex" style="gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;">
           <button data-bid-action="submit" class="primary" type="button" style="font-size:11px;">Sign &amp; post bid</button>
@@ -42924,7 +42943,26 @@ function _wireMarketBidPlace(section, asset) {
       const usdTail = usdPerTok && usdTotal
         ? ` · <span class="muted" style="font-weight:normal;">${escapeHtml(usdPerTok)}/${escapeHtml(ticker)} · total ${escapeHtml(usdTotal)}</span>`
         : '';
-      readout.innerHTML = `= <strong>${escapeHtml(fmtUnitPriceSats(u))}</strong> sats/${escapeHtml(ticker)}${usdTail}${warn}`;
+      // Variable-fill readout: tell the bidder the smallest chunk a
+      // seller can deliver. Computed off the live amount/price + the
+      // checkbox state — when partial-fill is off the readout omits
+      // this line entirely (bid is whole-fill). Matches the submit-
+      // handler's floor formula exactly so what the user sees is what
+      // gets signed.
+      const _variableToggle = !!formHost.querySelector('[data-bid-field="variable"]')?.checked;
+      let _fillTail = '';
+      if (_variableToggle) {
+        let _mf = amt / 10n;
+        const _df = (BigInt(DUST) * amt + BigInt(p) - 1n) / BigInt(p);
+        if (_df > _mf) _mf = _df;
+        if (_mf >= amt) _mf = 0n;
+        _fillTail = _mf > 0n
+          ? ` · <span class="muted" style="font-weight:normal;">min chunk ${escapeHtml(fmtAssetAmount(_mf, decimals))} ${escapeHtml(ticker)}</span>`
+          : ` · <span class="muted" style="font-weight:normal;">whole-fill only (bid too small to partial)</span>`;
+      } else {
+        _fillTail = ` · <span class="muted" style="font-weight:normal;">whole-fill only</span>`;
+      }
+      readout.innerHTML = `= <strong>${escapeHtml(fmtUnitPriceSats(u))}</strong> sats/${escapeHtml(ticker)}${usdTail}${_fillTail}${warn}`;
       readout.style.color = warn ? 'var(--red, #b8341d)' : '';
     };
     amountEl?.addEventListener('input', recomputeReadout);
@@ -42976,18 +43014,22 @@ function _wireMarketBidPlace(section, asset) {
         const expiry = Math.floor(Date.now() / 1000) + hours * 3600;
         submitBtn.disabled = true;
         status.textContent = 'signing and posting...';
-        // Variable-fill by default (§5.7.7). Bids placed through this
-        // form match the swap-tile residual-bid behavior: any seller can
-        // partial-fill any chunk in [min_fill, remaining_amount], so a
-        // single bid attracts multi-seller liquidity instead of waiting
-        // on one whole-fill match. Floor formula mirrors the swap tile:
+        // Variable-fill (§5.7.7). When the toggle is ON (default), any
+        // seller can partial-fill any chunk in [min_fill, remaining_amount];
+        // single bid attracts multi-seller liquidity. When OFF, the bid
+        // is whole-fill only — useful for power users who specifically
+        // want a single-seller fill. Floor formula:
         //   min_fill = max(10% of amount, smallest DUST-clearing chunk).
-        // Falls back to whole-fill (min_fill omitted) when the bid is
-        // too small to support a meaningful partial.
-        let _minFill = amount / 10n;
-        const _dustFloor = (BigInt(DUST) * amount + BigInt(priceSatsInt) - 1n) / BigInt(priceSatsInt);
-        if (_dustFloor > _minFill) _minFill = _dustFloor;
-        if (_minFill >= amount) _minFill = 0n;
+        // Falls back to whole-fill if the bid is too small to support a
+        // meaningful partial (10% would underflow DUST).
+        const _variableToggle = !!formHost.querySelector('[data-bid-field="variable"]')?.checked;
+        let _minFill = 0n;
+        if (_variableToggle) {
+          _minFill = amount / 10n;
+          const _dustFloor = (BigInt(DUST) * amount + BigInt(priceSatsInt) - 1n) / BigInt(priceSatsInt);
+          if (_dustFloor > _minFill) _minFill = _dustFloor;
+          if (_minFill >= amount) _minFill = 0n;
+        }
         await publishBidIntent({
           assetIdHex: aid,
           amount,
