@@ -32797,9 +32797,13 @@ function _startMarketAutoRefresh() {
       // ticks don't burn a re-render.
       if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
         const aid = _marketView.assetId;
-        if (typeof _invalidateBidsCache === 'function') _invalidateBidsCache(aid);
         if (typeof _fetchBidIntentsCached === 'function') {
-          try { await _fetchBidIntentsCached(aid); } catch {}
+          // Force a refresh so this tick sees up-to-date bids, but route
+          // through the cache so a concurrent in-flight fetch (e.g., from
+          // a place-bid form or sweep-buy hover) is shared instead of
+          // duplicated. The post-resolve `value` slot keeps the
+          // synchronous _bidCachePeek live for the signature compare.
+          try { await _fetchBidIntentsCached(aid, { force: true }); } catch {}
         }
         const freshSig = _assetSignatureFull(aid);
         if (_renderedAssetSignature.aid === aid && _renderedAssetSignature.sig && freshSig !== _renderedAssetSignature.sig) {
@@ -33140,6 +33144,12 @@ const MARKET_ASSET_STATS_TTL_MS = 60 * 1000;
 const MARKET_ASSET_STATS_CONCURRENCY = 12;
 const _marketAssetStatsCache = new Map();
 const _marketAssetStatsInFlight = new Set();
+// key → Promise. Coalesces concurrent /assets/<aid> fetches so the
+// asset-detail tick, the browse-mode enrichment queue, and any
+// user-triggered re-render share one network round-trip per aid. The
+// existing Set above gates queue admission in browse mode; this Map
+// gates the actual fetch call inside fetchMarketAssetStats.
+const _marketAssetStatsFetchPromises = new Map();
 const _marketAssetStatsQueue = [];
 const _marketTradeAddressCache = new Map();
 let _marketAssetStatsRefreshTimer = 0;
@@ -35810,12 +35820,19 @@ async function fetchMarketAssetStats(assetIdHex, opts) {
   const cached = _marketAssetStatsCache.get(key);
   const force = !!(opts && opts.force);
   if (!force && cached && Date.now() - Number(cached.updatedAt || 0) <= MARKET_ASSET_STATS_TTL_MS) return cached.data;
-  const resp = await fetch(withNet(ASSET_DETAIL_URL(aid)));
-  if (resp.status === 404) return null;
-  const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
-  _marketAssetStatsCache.set(key, { data, updatedAt: Date.now() });
-  return data;
+  const inflight = _marketAssetStatsFetchPromises.get(key);
+  if (inflight) return inflight;
+  const promise = (async () => {
+    const resp = await fetch(withNet(ASSET_DETAIL_URL(aid)));
+    if (resp.status === 404) return null;
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+    _marketAssetStatsCache.set(key, { data, updatedAt: Date.now() });
+    return data;
+  })();
+  _marketAssetStatsFetchPromises.set(key, promise);
+  try { return await promise; }
+  finally { _marketAssetStatsFetchPromises.delete(key); }
 }
 
 async function marketTradeAddressesFromTx(txid) {
@@ -36537,12 +36554,21 @@ async function populateMarketAssetStats(scope, asset) {
   const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
   let j;
   try {
-    const r = await fetch(withNet(`${WORKER_BASE}/assets/${aid}`));
-    if (!r.ok) throw new Error(`worker returned ${r.status}`);
-    j = await r.json();
+    // Route through fetchMarketAssetStats so concurrent callers (the
+    // browse-mode enrichment queue, a rapid asset→asset navigation,
+    // the 5s auto-refresh tick) share one /assets/<aid> round-trip
+    // and the resolved data populates _marketAssetStatsCache for the
+    // pre-paint chart on subsequent renders. `force: true` skips the
+    // 60s TTL because asset-detail wants live numbers, not stale.
+    j = await fetchMarketAssetStats(aid, { force: true });
   } catch (e) {
     const recentEl = section.querySelector('[data-market-recent-trades]');
     if (recentEl) recentEl.innerHTML = `<div class="muted" style="font-size:10px;">stats unavailable: ${escapeHtml(e?.message || String(e))}</div>`;
+    return;
+  }
+  if (!j) {
+    const recentEl = section.querySelector('[data-market-recent-trades]');
+    if (recentEl) recentEl.innerHTML = `<div class="muted" style="font-size:10px;">stats unavailable</div>`;
     return;
   }
   // Top-line stats.
@@ -37100,9 +37126,15 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
 // form's "Beat best bid" chip) can read without re-awaiting.
 const _BIDS_FETCH_TTL_MS = 30 * 1000;
 const _bidsCache = new Map();  // aid → { ts, promise, value? }
-function _fetchBidIntentsCached(aid) {
+function _fetchBidIntentsCached(aid, opts) {
+  const force = !!(opts && opts.force);
   const cached = _bidsCache.get(aid);
-  if (cached && (Date.now() - cached.ts) < _BIDS_FETCH_TTL_MS) return cached.promise;
+  if (!force && cached && (Date.now() - cached.ts) < _BIDS_FETCH_TTL_MS) return cached.promise;
+  // In-flight dedup: a cached entry without `value` means a fetch is
+  // still mid-air. Share that promise even when `force` is set, so two
+  // racing auto-refresh ticks (or a tick + a user-triggered call)
+  // collapse to a single network round-trip instead of two.
+  if (cached && !('value' in cached)) return cached.promise;
   const promise = browseBidIntents(aid).then(raw => {
     const arr = Array.isArray(raw?.intents) ? raw.intents : [];
     const entry = _bidsCache.get(aid);
