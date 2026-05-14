@@ -32780,6 +32780,22 @@ function _startMarketAutoRefresh() {
       const beforeMine = myPubHex ? (_myListingsSnapshot || _snapshotMyListings(myPubHex)) : null;
       await fetchMarketDataDeduped();
       try { _updateMarketCellsInPlace(); } catch (e) { console.warn('[market] cell-update failed', e?.message); }
+      // Asset-detail reactivity: if the user is on a per-asset page AND
+      // that asset's listings changed structurally since the last
+      // render, re-apply filters so the asks/bids ladders + depth chart
+      // reflect new entries, fills, and cancels from other traders.
+      // Signature-gated so unrelated ticks don't burn a re-render. The
+      // price chart and swap tile are inside the asset header which
+      // applyMarketFilters preserves (it writes only to #market-list's
+      // body; the per-asset header above is rebuilt only on view
+      // transitions).
+      if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
+        const aid = _marketView.assetId;
+        const freshSig = _assetListingsSignature(aid);
+        if (_renderedAssetSignature.aid === aid && _renderedAssetSignature.sig && freshSig !== _renderedAssetSignature.sig) {
+          try { applyMarketFilters(); } catch (e) { console.warn('[market] asset re-render failed', e?.message); }
+        }
+      }
       // Seller-side fill notification: any of my listings that vanished
       // between snapshots, and weren't naturally expired or just locally
       // cancelled, are by elimination filled. Toast + add a pending-sell
@@ -32889,6 +32905,27 @@ function _marketListingsSignature() {
   }
   return parts.join('|');
 }
+// Per-asset signature — narrower than the global one so the asset-
+// detail auto-refresh re-renders only when THIS asset's ladder
+// structurally changes (someone else filled/cancelled/listed), not on
+// every unrelated tick. Captures sale_id, kind, price, and expiry so
+// the diff covers state transitions the orderbook visualizes.
+function _assetListingsSignature(aid) {
+  const ls = _marketCache?.listings;
+  if (!Array.isArray(ls) || !aid) return '';
+  const parts = [];
+  for (const l of ls) {
+    const lid = String(l._asset?.asset_id || l.asset_id || '');
+    if (lid !== aid) continue;
+    const id = l.sale_id || l.intent_id || l.listing_id || `${l.txid || ''}:${l.vout | 0}`;
+    parts.push(`${id}:${l.kind || ''}:${l.min_price_sats || l.price_sats || 0}:${l.expired ? 1 : 0}:${l.expiry || 0}`);
+  }
+  return parts.join('|');
+}
+// Track the last-rendered signature per view so the auto-refresh tick
+// can decide whether the visible asset-detail ladder is stale relative
+// to the fresh _marketCache.
+let _renderedAssetSignature = { aid: '', sig: '' };
 function _stopMarketAutoRefresh() {
   if (_marketAutoRefreshTimer) { clearInterval(_marketAutoRefreshTimer); _marketAutoRefreshTimer = null; }
 }
@@ -34345,6 +34382,15 @@ function applyMarketFilters() {
   list.querySelectorAll('button[data-act="quick-buy-intent"]').forEach(btn => {
     btn.onclick = async () => marketClaimIntentHandler(btn);
   });
+  // Capture the per-asset signature just rendered so the next auto-
+  // refresh tick can compare and avoid re-rendering when nothing
+  // structurally changed. Cleared (aid='') in browse mode so a switch
+  // back to asset detail forces a fresh capture.
+  if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
+    _renderedAssetSignature = { aid: _marketView.assetId, sig: _assetListingsSignature(_marketView.assetId) };
+  } else {
+    _renderedAssetSignature = { aid: '', sig: '' };
+  }
 }
 
 // Browse-mode render: one tile per asset, sourced from the same filtered rows
