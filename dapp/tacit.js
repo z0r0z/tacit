@@ -36999,20 +36999,125 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const _crossedBadge = isCrossed
     ? `<span title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades." style="font-size:9px;padding:1px 5px;background:var(--red, #b8341d);color:#fff;border-radius:2px;letter-spacing:0.05em;cursor:help;">crossed</span>`
     : '';
+  const bestBidX = xOf(bestBid);
+  const bestAskX = xOf(bestAsk);
   out.innerHTML = `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
       <strong>Depth</strong>${_logBadge}${_crossedBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best bid ${escapeHtml(fmtUnitPriceSats(bestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''}</span>
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · best bid ${escapeHtml(fmtUnitPriceSats(bestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(bestAsk))} sats/${escapeHtml(ticker)}${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
-      <path d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1"/>
-      <path d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1"/>
-      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-mid)" stroke-width="1" stroke-dasharray="3,3"/>` : ''}
-      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
-      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
-      <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)">${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</text>
+      <path d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1" pointer-events="none"/>
+      <path d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1" pointer-events="none"/>
+      <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="0.6" stroke-opacity="0.55" stroke-dasharray="1,2" pointer-events="none"/>
+      <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#b8341d" stroke-width="0.6" stroke-opacity="0.55" stroke-dasharray="1,2" pointer-events="none"/>
+      ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink-mid)" stroke-width="1" stroke-dasharray="3,3" pointer-events="none"/>` : ''}
+      <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
+      <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
+      <text x="${PL}" y="${(PT + 9).toFixed(0)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none">${yMax.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${escapeHtml(ticker)}</text>
+      <rect data-depth-overlay x="${PL}" y="${PT}" width="${plotW}" height="${plotH}" fill="transparent" style="cursor:crosshair;"/>
+      <g data-depth-cursor style="display:none;" pointer-events="none">
+        <line data-cursor-line x1="0" y1="${PT}" x2="0" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink)" stroke-width="0.8" stroke-dasharray="2,2"/>
+        <g data-cursor-tip transform="translate(0,0)">
+          <rect x="0" y="0" width="148" height="46" fill="var(--bg, #fff)" stroke="var(--ink)" stroke-width="1"/>
+          <text data-tip-l1 x="6" y="14" font-size="10" font-family="var(--mono, monospace)" fill="var(--ink)"></text>
+          <text data-tip-l2 x="6" y="27" font-size="10" font-family="var(--mono, monospace)" fill="var(--ink)"></text>
+          <text data-tip-l3 x="6" y="40" font-size="10" font-family="var(--mono, monospace)" fill="var(--ink-mid)"></text>
+        </g>
+      </g>
     </svg>`;
   out.style.display = '';
+  _wireDepthChartInteractivity(out, {
+    xLo, xHi, isLog, plotW, plotH, PL, PT,
+    askCum, bidCum, centerU,
+    aid, decimals, ticker,
+  });
+}
+
+// Hover crosshair, tooltip ("at price P, fillable Q tokens, ~R BTC"), and
+// click-to-prime-swap-tile on the depth chart. Standard CEX gesture: mouse
+// across the chart to see "how deep is the book at this price"; click a
+// point to set up an order at that price.
+function _wireDepthChartInteractivity(out, ctx) {
+  const svg = out.querySelector('svg');
+  if (!svg) return;
+  const overlay = svg.querySelector('[data-depth-overlay]');
+  const cursor = svg.querySelector('[data-depth-cursor]');
+  if (!overlay || !cursor) return;
+  const lineEl = cursor.querySelector('[data-cursor-line]');
+  const tipEl = cursor.querySelector('[data-cursor-tip]');
+  const l1 = cursor.querySelector('[data-tip-l1]');
+  const l2 = cursor.querySelector('[data-tip-l2]');
+  const l3 = cursor.querySelector('[data-tip-l3]');
+  const { xLo, xHi, isLog, plotW, plotH, PL, PT, askCum, bidCum, centerU, aid, decimals, ticker } = ctx;
+  const logLo = isLog ? Math.log10(xLo) : 0;
+  const logHi = isLog ? Math.log10(xHi) : 0;
+  const _xToPrice = (x) => {
+    const t = Math.max(0, Math.min(1, (x - PL) / plotW));
+    if (isLog) return Math.pow(10, logLo + t * (logHi - logLo));
+    return xLo + t * (xHi - xLo);
+  };
+  const _askCumAt = (p) => {
+    let acc = 0;
+    for (const a of askCum) { if (a.u <= p) acc = a.cum; else break; }
+    return acc;
+  };
+  const _bidCumAt = (p) => {
+    let acc = 0;
+    for (const b of bidCum) { if (b.u >= p) acc = b.cum; else break; }
+    return acc;
+  };
+  const _svgX = (e) => {
+    const rect = svg.getBoundingClientRect();
+    if (rect.width <= 0) return PL;
+    const scaleX = svg.viewBox.baseVal.width / rect.width;
+    return (e.clientX - rect.left) * scaleX;
+  };
+  const _sideAt = (price, xCoord) => {
+    if (Number.isFinite(centerU) && centerU > 0) return price >= centerU ? 'ask' : 'bid';
+    return xCoord > (PL + plotW / 2) ? 'ask' : 'bid';
+  };
+  const _moveTip = (xCoord) => {
+    const tipW = 148;
+    let tipX = xCoord + 8;
+    if (tipX + tipW > PL + plotW) tipX = xCoord - tipW - 8;
+    if (tipX < PL) tipX = PL + 4;
+    tipEl.setAttribute('transform', `translate(${tipX.toFixed(1)}, ${PT + 4})`);
+  };
+  overlay.addEventListener('mousemove', (e) => {
+    const x = _svgX(e);
+    const xClamped = Math.max(PL, Math.min(PL + plotW, x));
+    const price = _xToPrice(xClamped);
+    const side = _sideAt(price, xClamped);
+    const depth = side === 'ask' ? _askCumAt(price) : _bidCumAt(price);
+    const sats = Math.round(depth * price);
+    cursor.style.display = '';
+    lineEl.setAttribute('x1', xClamped.toFixed(2));
+    lineEl.setAttribute('x2', xClamped.toFixed(2));
+    _moveTip(xClamped);
+    l1.textContent = `${fmtUnitPriceSats(price)} sats/${ticker}`;
+    l2.textContent = `${side === 'ask' ? 'buy' : 'sell'} ${depth.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${ticker}`;
+    l3.textContent = depth > 0 ? `~ ${fmtMarketBtc(sats)} · ${sats.toLocaleString('en-US')} sats` : 'no liquidity at this price';
+  });
+  overlay.addEventListener('mouseleave', () => { cursor.style.display = 'none'; });
+  overlay.addEventListener('click', (e) => {
+    const x = _svgX(e);
+    const xClamped = Math.max(PL, Math.min(PL + plotW, x));
+    const price = _xToPrice(xClamped);
+    const side = _sideAt(price, xClamped);
+    const depth = side === 'ask' ? _askCumAt(price) : _bidCumAt(price);
+    if (!(depth > 0)) { toast('No liquidity at that price yet.', ''); return; }
+    const amountBase = BigInt(Math.max(0, Math.floor(depth * Math.pow(10, decimals))));
+    if (amountBase <= 0n) return;
+    primeSwapTileFromOrderbook({
+      aid,
+      direction: side === 'ask' ? 'buy' : 'sell',
+      amountBaseStr: amountBase.toString(),
+      decimals,
+      ticker,
+      targetUnit: price,
+    });
+  });
 }
 
 // Re-render the "Your open orders" panel in place after the bid-intent
