@@ -36815,18 +36815,46 @@ async function populateMarketAssetStats(scope, asset) {
   // Top-line stats.
   const volSats = Number(j.volume_24h_sats || 0);
   const xfers = Number(j.transfer_count || 0);
-  const last = j.last_trade && Number.isInteger(j.last_trade.price_sats) && Number(j.last_trade.price_sats) > 0 ? j.last_trade : null;
+  // last_trade: prefer the worker's pinned record, but fall back to the
+  // newest entry in the trades ring if the pinned record is missing /
+  // malformed / lacks a usable amount. We were seeing "1,800,000 sats ·
+  // $1,446" displayed for trades whose unit price was actually 257
+  // sats/TAC — happens when last_trade.amount is absent or zero
+  // (older records, replay edge cases), which trips the BigInt-throws
+  // path and outputs total sats instead of the per-unit price the
+  // CEX-style label promises.
+  const _ringNewest = Array.isArray(j.trades) && j.trades.length > 0
+    ? j.trades.slice().sort((a, b) => Number(b?.ts || 0) - Number(a?.ts || 0))[0]
+    : null;
+  const _resolveLastTrade = () => {
+    const cand = j.last_trade && Number.isInteger(j.last_trade.price_sats) && Number(j.last_trade.price_sats) > 0 ? j.last_trade : null;
+    if (cand) {
+      let amt = 0n;
+      try { amt = BigInt(cand.amount); } catch { amt = 0n; }
+      if (amt > 0n) {
+        const u = unitPriceSats(Number(cand.price_sats), amt, decimals);
+        if (Number.isFinite(u) && u > 0) return { u, ts: Number(cand.ts || 0), price_sats: Number(cand.price_sats) };
+      }
+    }
+    if (_ringNewest && Number.isInteger(_ringNewest.price_sats) && Number(_ringNewest.price_sats) > 0) {
+      let amt = 0n;
+      try { amt = BigInt(_ringNewest.amount); } catch { amt = 0n; }
+      if (amt > 0n) {
+        const u = unitPriceSats(Number(_ringNewest.price_sats), amt, decimals);
+        if (Number.isFinite(u) && u > 0) return { u, ts: Number(_ringNewest.ts || 0), price_sats: Number(_ringNewest.price_sats) };
+      }
+    }
+    return null;
+  };
+  const last = _resolveLastTrade();
   let lastStr = '—';
   if (last) {
-    try {
-      const u = unitPriceSats(Number(last.price_sats), BigInt(last.amount), decimals);
-      const ageSecs = Math.max(0, Math.floor(Date.now() / 1000) - Number(last.ts || 0));
-      const ageStr = ageSecs < 60 ? `${ageSecs}s` : ageSecs < 3600 ? `${Math.floor(ageSecs / 60)}m` : ageSecs < 86400 ? `${Math.floor(ageSecs / 3600)}h` : `${Math.floor(ageSecs / 86400)}d`;
-      const _lastBtcUsd = btcUsd;
-      const uUsd = (u != null && _lastBtcUsd) ? fmtUnitUsd(u, _lastBtcUsd) : null;
-      const uUsdTail = uUsd ? ` (${uUsd})` : '';
-      lastStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}${uUsdTail} · ${ageStr} ago` : `${Number(last.price_sats).toLocaleString()} sats · ${ageStr} ago`;
-    } catch { lastStr = `${Number(last.price_sats).toLocaleString()} sats`; }
+    const ageSecs = Math.max(0, Math.floor(Date.now() / 1000) - last.ts);
+    const ageStr = ageSecs < 60 ? `${ageSecs}s` : ageSecs < 3600 ? `${Math.floor(ageSecs / 60)}m` : ageSecs < 86400 ? `${Math.floor(ageSecs / 3600)}h` : `${Math.floor(ageSecs / 86400)}d`;
+    const _lastBtcUsd = btcUsd;
+    const uUsd = (last.u != null && _lastBtcUsd) ? fmtUnitUsd(last.u, _lastBtcUsd) : null;
+    const uUsdTail = uUsd ? ` (${uUsd})` : '';
+    lastStr = `${fmtUnitPriceSats(last.u)} sats/${escapeHtml(ticker)}${uUsdTail} · ${ageStr} ago`;
   }
   const setText = (sel, text, isHtml = false) => {
     const el = section.querySelector(sel);
@@ -38778,10 +38806,15 @@ function _wireSwapTile(scope) {
     let chips = [];
     if (dir === 'buy') {
       const satBal = Number(_walletCardState?.balance || 0);
-      // ~2k sats fee reserve so Max doesn't strand the wallet with
-      // less than a typical commit+reveal fee. Conservative; the swap
-      // path will refine.
-      const maxSpendable = satBal > 2000 ? satBal - 2000 : 0;
+      // Each filled ask is its own commit+reveal pair, ~800 sats in
+      // miner fees. Reserve ~5000 sats so Max can comfortably cover
+      // up to ~6 fills without the "low sat reserve for fees" warning
+      // firing once planBuy lays out the route. The previous 2000-sat
+      // reserve covered only ~2 fills, so multi-ask swaps stamped
+      // from Max disabled the SWAP button until the user manually
+      // trimmed the amount. 5k errs on the side of "Max just works"
+      // for the common range of trades.
+      const maxSpendable = satBal > 5000 ? satBal - 5000 : 0;
       if (payUnit === 'usd' && Number.isFinite(btcUsd) && btcUsd > 0) {
         chips = [
           { label: '$10',  value: '10' },
@@ -39038,8 +39071,36 @@ function _wireSwapTile(scope) {
       const rangeStr = result.plan.length === 1
         ? `${fmtUnitPriceSats(cheapU)} sats/${ticker}`
         : `${fmtUnitPriceSats(cheapU)}–${fmtUnitPriceSats(dearU)} sats/${ticker}`;
+      // "Unspent" residual: budget that couldn't be deployed because no
+      // remaining ask fit BOTH the slippage cap AND the leftover budget.
+      // Old copy ("asks ran out at cap") conflated two different caps —
+      // the slippage cap (refUnit × (1+slip)) and the budget itself.
+      // The actual reason is almost always that the next ask cost more
+      // than the leftover; spell that out so the user knows whether to
+      // raise budget or slippage.
+      const _nextAskHint = (() => {
+        // Show "next ask N sats — N sats short" when known.
+        const last = result.plan[result.plan.length - 1];
+        if (!last) return '';
+        // Scan beyond the plan to find the cheapest unfilled ask above
+        // the last-included one. Read-only; mirrors planBuy's candidate
+        // shape. Best-effort — silent if anything looks off.
+        try {
+          const nowSec = Math.floor(Date.now() / 1000);
+          const more = (_marketCache?.listings || [])
+            .filter(l => l.kind === 'preauth' && l._asset?.asset_id === aid)
+            .filter(l => Number(l.expiry || 0) > nowSec && !l.expired)
+            .map(l => ({ ps: Number(l.min_price_sats || 0), amt: BigInt(l.asset_opening?.amount || 0) }))
+            .filter(c => c.ps > 0 && c.amt > 0n)
+            .map(c => c.ps)
+            .sort((a, b) => a - b);
+          const next = more.find(p => p > last.ps);
+          if (next && next > result.residualSats) return ` · next ask ${next.toLocaleString('en-US')} sats (${(next - result.residualSats).toLocaleString('en-US')} short)`;
+        } catch {}
+        return '';
+      })();
       const residHint = result.residualSats > 100
-        ? ` · ${result.residualSats.toLocaleString()} sats unspent (asks ran out at cap)`
+        ? ` · ${result.residualSats.toLocaleString()} sats unspent${_nextAskHint || ' (budget below next ask)'}`
         : '';
       const insufficientHint = insufficientBudget
         ? ` · ⚠ insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`
