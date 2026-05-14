@@ -32803,18 +32803,15 @@ function _startMarketAutoRefresh() {
         }
         const freshSig = _assetSignatureFull(aid);
         if (_renderedAssetSignature.aid === aid && _renderedAssetSignature.sig && freshSig !== _renderedAssetSignature.sig) {
-          // A structural orderbook change (fill / new listing / cancel)
-          // usually means there's also a new trade in the per-asset
-          // trades ring. Bust the stats cache so the price chart and
-          // 24h-volume strip refetch fresh data on the upcoming
-          // re-render — otherwise the chart sits on stale trades for
-          // up to the 60s stats TTL and looks dead while the ladders
-          // update around it.
-          try {
-            if (_marketAssetStatsCache?.delete && typeof marketAssetStatsKey === 'function') {
-              _marketAssetStatsCache.delete(marketAssetStatsKey(aid));
-            }
-          } catch {}
+          // Do NOT bust the stats cache here. applyMarketFilters'
+          // pre-paint reads from it to show the prior chart immediately
+          // while the live fetch is in flight; busting it would force
+          // the chart to flash blank → filled on every orderbook
+          // change. populateMarketAssetStats always fetches fresh from
+          // /assets/<aid> regardless of cache, so the chart still picks
+          // up new trades — it just transitions from old SVG to new
+          // SVG within the same preserved DOM node (see _preserveChart
+          // -NodesAcross... in applyMarketFilters).
           try { applyMarketFilters(); } catch (e) { console.warn('[market] asset re-render failed', e?.message); }
         }
       }
@@ -34066,7 +34063,38 @@ function applyMarketFilters() {
   // attested, and how to re-verify it. Populated async by
   // populateMarketAssetStats from the single-asset worker endpoint.
   const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
+  // CEX-style smooth chart updates: detach the live chart DOM nodes
+  // before innerHTML rewrites the asset-detail view, then re-attach
+  // them over the new placeholders. innerHTML wipes its subtree's DOM,
+  // which would have destroyed the price chart, depth chart, and
+  // trades tape on every re-render and given the user a visible
+  // "destroyed → recreated" flicker even when the data hadn't actually
+  // changed. By keeping the same DOM nodes alive, subsequent
+  // populate* calls just update their inner SVG/markup in place — the
+  // container never blinks. The detach happens only on asset-detail
+  // re-renders where the previous render's DOM is still present
+  // (skipped on first paint or after a view switch, where there are
+  // no nodes to preserve).
+  const _preservedCharts = {};
+  const _onAssetDetailReRender = (typeof _marketView === 'object' && _marketView?.mode === 'asset' && _marketView?.assetId);
+  if (_onAssetDetailReRender) {
+    for (const sel of ['data-market-price-chart', 'data-market-trades-tape', 'data-market-depth-chart']) {
+      const node = list.querySelector(`[${sel}]`);
+      if (node && node.parentNode) {
+        _preservedCharts[sel] = node;
+        node.parentNode.removeChild(node);
+      }
+    }
+  }
   list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+  if (_onAssetDetailReRender) {
+    for (const [sel, node] of Object.entries(_preservedCharts)) {
+      const placeholder = list.querySelector(`[${sel}]`);
+      if (placeholder && placeholder.parentNode) {
+        placeholder.parentNode.replaceChild(node, placeholder);
+      }
+    }
+  }
   hydrateMarketImages(list);
   bindMarketAssetHeader(list);
   bindMarketAssetTabs(list);
@@ -35775,12 +35803,13 @@ function marketActivityLegacyPanelHtml(asset, rows) {
 // asset mode. "← All assets" returns to browse. The asset_id chip is
 // click-to-copy, mirroring the per-tile behavior. `rows` is the already-
 // filtered+scoped row set for the asset; we use it to derive a live floor.
-async function fetchMarketAssetStats(assetIdHex) {
+async function fetchMarketAssetStats(assetIdHex, opts) {
   const aid = String(assetIdHex || '').toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(aid) || !ASSET_DETAIL_URL(aid)) return null;
   const key = marketAssetStatsKey(aid);
   const cached = _marketAssetStatsCache.get(key);
-  if (cached && Date.now() - Number(cached.updatedAt || 0) <= MARKET_ASSET_STATS_TTL_MS) return cached.data;
+  const force = !!(opts && opts.force);
+  if (!force && cached && Date.now() - Number(cached.updatedAt || 0) <= MARKET_ASSET_STATS_TTL_MS) return cached.data;
   const resp = await fetch(withNet(ASSET_DETAIL_URL(aid)));
   if (resp.status === 404) return null;
   const data = await resp.json().catch(() => ({}));
