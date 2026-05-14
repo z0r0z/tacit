@@ -121,6 +121,7 @@ const T_DROP     = 0x2B; // public-claim pool over existing supply (SPEC §5.12)
 const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor (SPEC §5.13)
 const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
+const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §5.19)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -362,6 +363,48 @@ function petchDirtyKey(network, aid) {
 }
 function petchDirtyPrefix(network) {
   return network === 'signet' ? 'petch_dirty:' : `petch_dirty:${network}:`;
+}
+
+// SPEC §4.2 / §5.19 — wrapper convention indexer state.
+//
+// Per-attestation dedup key: keyed by (asset_id, issuer_pubkey, as_of_height)
+// so first-confirmed wins; subsequent envelopes with the same tuple either
+// silently-accept (idempotent byte-identical content) or flag the issuer as
+// an equivocator (different content for same tuple).
+function wrapperAttestKey(network, aid, issuerPubHex, asOfHeight) {
+  const h = String(asOfHeight || 0).padStart(10, '0');
+  return network === 'signet'
+    ? `wattest:${aid}:${issuerPubHex}:${h}`
+    : `wattest:${network}:${aid}:${issuerPubHex}:${h}`;
+}
+function wrapperAttestPrefix(network, aid) {
+  return network === 'signet' ? `wattest:${aid}:` : `wattest:${network}:${aid}:`;
+}
+// Per-issuer equivocation flag. Set when two valid attestations under the same
+// (asset_id, issuer_pubkey, as_of_height) tuple have different reserves/supply
+// /timestamp. Dapp/indexer surface this in routing scores.
+function wrapperEquivKey(network, issuerPubHex) {
+  return network === 'signet'
+    ? `wequiv:${issuerPubHex}`
+    : `wequiv:${network}:${issuerPubHex}`;
+}
+// Per-(chain, asset) variant list. Wrapper-tagged CETCHes are aggregated under
+// this key for /wrappers/{chain}/{asset} routing queries. Stored as JSON array
+// of asset_ids; updated lazily when a CETCH's metadata blob is parsed and
+// `tacit_wrapper` is detected.
+function wrapperVariantsKey(network, chain, asset) {
+  // Both chain and asset are user-provided strings; sanitize aggressively to
+  // keep KV keys ASCII + bounded length. Hex-encode if anything weird shows up.
+  const safe = (s) => /^[a-zA-Z0-9._:-]{1,64}$/.test(String(s)) ? String(s) : bytesToHex(sha256(new TextEncoder().encode(String(s)))).slice(0, 32);
+  return network === 'signet'
+    ? `wvariants:${safe(chain)}:${safe(asset)}`
+    : `wvariants:${network}:${safe(chain)}:${safe(asset)}`;
+}
+// Per-asset cached wrapper metadata (the parsed `tacit_wrapper` block from the
+// IPFS-pinned CETCH metadata JSON). Cached so /wrappers/{asset_id} doesn't
+// re-fetch IPFS on every request. Refreshed lazily.
+function wrapperMetaKey(network, aid) {
+  return network === 'signet' ? `wmeta:${aid}` : `wmeta:${network}:${aid}`;
 }
 // Per-asset debounce marker for hint-triggered snapshot refreshes. When a
 // burst of pmints lands for the same asset (e.g. FAIR-launch hour with many
@@ -804,6 +847,116 @@ async function apiJson(env, path, opts = {}, network = 'signet') {
 // fast. Backoff schedule is ~7s total wall clock (well under the Worker's
 // 30s soft cap). Confirmed broadcasts of older txs (asset UTXO, parent
 // envelopes) don't need this and keep using apiJson directly.
+// SPEC §4.2.1 — wrapper-tagged CETCHes pin a JCS-canonical JSON metadata blob
+// to IPFS, referenced by the CETCH's `image_uri` field. We fetch it lazily on
+// /wrappers/* queries (rather than at scan time) to amortize cost; results are
+// cached in KV under wrapperMetaKey() with a TTL so subsequent reads hit cache.
+//
+// Gateway list ordered by reliability + cost. The worker is already a Pinata
+// pin-customer so Pinata's gateway is the canonical fetch path; the public
+// fallbacks cover gateway outages without changing wrapper-discovery liveness.
+const WRAPPER_IPFS_GATEWAYS = [
+  'https://gateway.pinata.cloud/ipfs',
+  'https://ipfs.io/ipfs',
+  'https://dweb.link/ipfs',
+];
+
+// Strict IPFS CID extractor. Accepts `ipfs://<cid>` (with optional trailing
+// `/path`); rejects HTTPS URLs (not IPFS-pinned, so cannot be content-addressed
+// against `image_uri` for wrapper-convention purposes).
+function extractIpfsCid(imageUri) {
+  if (typeof imageUri !== 'string') return null;
+  const m = imageUri.match(/^ipfs:\/\/([A-Za-z0-9]{46,62})(?:\/.*)?$/);
+  return m ? m[1] : null;
+}
+
+async function fetchIpfsJson(cid, { timeoutMs = 5000 } = {}) {
+  for (const gateway of WRAPPER_IPFS_GATEWAYS) {
+    const url = `${gateway}/${cid}`;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let resp;
+      try {
+        resp = await fetch(url, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!resp.ok) continue;
+      const body = await resp.text();
+      // Size sanity cap — wrapper metadata blobs are typically < 4 KB.
+      if (body.length > 32 * 1024) continue;
+      try {
+        return { cid, gateway, body, json: JSON.parse(body) };
+      } catch {
+        continue;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+// SPEC §4.2.1/§4.2.2 — validate the optional `tacit_wrapper` top-level field.
+// Returns a normalized struct on success, or `null` if absent / malformed /
+// unknown-version (forward-compat: treat unknown versions as non-wrapper).
+function parseTacitWrapper(metadata) {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const tw = metadata.tacit_wrapper;
+  if (!tw || typeof tw !== 'object') return null;
+  if (tw.version !== 1) return null;                       // unknown version → not-a-wrapper
+  const u = tw.underlying;
+  if (!u || typeof u !== 'object'
+      || typeof u.chain !== 'string'
+      || typeof u.asset !== 'string'
+      || typeof u.unit !== 'string') return null;
+  const peg = tw.peg;
+  if (!peg || typeof peg !== 'object'
+      || !Number.isInteger(peg.numerator) || peg.numerator <= 0
+      || !Number.isInteger(peg.denominator) || peg.denominator <= 0
+      || (peg.kind !== 'fixed' && peg.kind !== 'oracle_priced')) return null;
+  const custody = tw.custody;
+  if (!custody || typeof custody !== 'object'
+      || !['multisig', 'user_dlc', 'burn', 'user_custody'].includes(custody.kind)) return null;
+  // reserve_address is required for everything except "burn" (burns have no
+  // recoverable reserves to track).
+  if (custody.kind !== 'burn' && typeof custody.reserve_address !== 'string') return null;
+  const att = tw.attestation;
+  if (!att || typeof att !== 'object'
+      || typeof att.issuer_pubkey !== 'string'
+      || !/^0[23][0-9a-fA-F]{64}$/.test(att.issuer_pubkey)
+      || !Number.isInteger(att.schedule_blocks) || att.schedule_blocks < 0) return null;
+  const redemption = tw.redemption || {};
+  if (typeof redemption !== 'object') return null;
+  // fee_bps optional but if present must be 0..10000.
+  const feeBps = redemption.fee_bps;
+  if (feeBps !== undefined
+      && (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 10000)) return null;
+  return {
+    version: 1,
+    underlying: { chain: u.chain, asset: u.asset, unit: u.unit },
+    peg: { numerator: peg.numerator, denominator: peg.denominator, kind: peg.kind },
+    custody: {
+      kind: custody.kind,
+      reserve_address: custody.reserve_address || null,
+      threshold_k: Number.isInteger(custody.threshold_k) ? custody.threshold_k : null,
+      threshold_n: Number.isInteger(custody.threshold_n) ? custody.threshold_n : null,
+      escape: custody.escape || null,
+    },
+    redemption: {
+      fee_bps: Number.isInteger(feeBps) ? feeBps : null,
+      min_request_units: Number.isInteger(redemption.min_request_units)
+        ? redemption.min_request_units : null,
+      endpoint: typeof redemption.endpoint === 'string' ? redemption.endpoint : null,
+    },
+    attestation: {
+      issuer_pubkey: att.issuer_pubkey.toLowerCase(),
+      schedule_blocks: att.schedule_blocks,
+    },
+  };
+}
+
 async function fetchFreshTxJson(env, txid, network, maxAttempts = 4) {
   const base = networkApi(env, network);
   let lastErr;
@@ -3027,6 +3180,77 @@ function decodeCBurnPayload(payload) {
   };
 }
 
+// SPEC §4.2 — wrapper-registry helpers. Lazy-populating: parsing the IPFS-
+// pinned metadata blob happens on first /wrappers/{asset_id} access (or via
+// the /wrappers/hint POST endpoint), with the result cached under wmeta:* for
+// quick subsequent reads. The wvariants:<chain>:<asset> index aggregates
+// asset_ids that wrap the same (underlying.chain, underlying.asset) tuple.
+
+const WRAPPER_META_TTL_SECONDS = 6 * 60 * 60; // 6 hours; refreshes covered by /wrappers/hint
+
+async function loadWrapperMeta(env, network, assetIdHex, opts = {}) {
+  if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return null;
+  if (!opts.refresh) {
+    const cached = await env.REGISTRY_KV.get(wrapperMetaKey(network, assetIdHex), 'json');
+    if (cached) return cached;
+  }
+  const asset = await env.REGISTRY_KV.get(assetKey(network, assetIdHex), 'json');
+  if (!asset || !asset.image_uri) return null;
+  const cid = extractIpfsCid(asset.image_uri);
+  if (!cid) return null;                                  // non-IPFS image_uri → never a wrapper
+  const fetched = await fetchIpfsJson(cid);
+  if (!fetched) return null;
+  const tw = parseTacitWrapper(fetched.json);
+  if (!tw) return null;                                   // missing/malformed/unknown-version
+  const record = {
+    asset_id: assetIdHex,
+    ticker: asset.ticker || null,
+    metadata_cid: cid,
+    metadata_gateway: fetched.gateway,
+    tacit_wrapper: tw,
+    cached_at: Math.floor(Date.now() / 1000),
+    network,
+  };
+  await env.REGISTRY_KV.put(
+    wrapperMetaKey(network, assetIdHex),
+    JSON.stringify(record),
+    { expirationTtl: WRAPPER_META_TTL_SECONDS },
+  );
+  await recordWrapperVariant(env, network, tw.underlying.chain, tw.underlying.asset, assetIdHex);
+  return record;
+}
+
+async function recordWrapperVariant(env, network, chain, asset, assetIdHex) {
+  const k = wrapperVariantsKey(network, chain, asset);
+  const existing = await env.REGISTRY_KV.get(k, 'json');
+  const list = Array.isArray(existing?.variants) ? existing.variants : [];
+  if (list.includes(assetIdHex)) return;
+  list.push(assetIdHex);
+  list.sort();
+  await env.REGISTRY_KV.put(k, JSON.stringify({
+    chain, asset, variants: list, updated_at: Math.floor(Date.now() / 1000), network,
+  }));
+}
+
+async function loadWrapperVariants(env, network, chain, asset) {
+  const k = wrapperVariantsKey(network, chain, asset);
+  const rec = await env.REGISTRY_KV.get(k, 'json');
+  return Array.isArray(rec?.variants) ? rec.variants : [];
+}
+
+async function loadLatestWrapperAttestation(env, network, assetIdHex, issuerPubHex) {
+  const prefix = wrapperAttestPrefix(network, assetIdHex);
+  const list = await env.REGISTRY_KV.list({ prefix, limit: 100 });
+  if (list.keys.length === 0) return null;
+  // KV keys end with a zero-padded as_of_height; descending sort yields newest first.
+  const filtered = issuerPubHex
+    ? list.keys.filter(k => k.name.includes(`:${issuerPubHex}:`))
+    : list.keys;
+  if (filtered.length === 0) return null;
+  filtered.sort((a, b) => b.name.localeCompare(a.name));
+  return env.REGISTRY_KV.get(filtered[0].name, 'json');
+}
+
 async function loadBurnsForAsset(env, network, assetIdHex) {
   // Burns are public: no attestation logic, just sum the cleartext amounts.
   const list = await env.REGISTRY_KV.list({ prefix: burnPrefix(network, assetIdHex), limit: 1000 });
@@ -3036,6 +3260,84 @@ async function loadBurnsForAsset(env, network, assetIdHex) {
   const burns = fetched.filter(v => v);
   burns.sort((a, b) => (a.burned_at || 0) - (b.burned_at || 0));
   return burns;
+}
+
+// T_WRAPPER_ATTEST structural decoder (SPEC §5.19). Fixed 159-byte payload.
+// Wire: opcode(1)=0x38 || network_tag(1) || asset_id(32) || issuer_pubkey(33)
+//    || reserves_LE(8) || supply_LE(8) || as_of_height_LE(4) || timestamp_LE(8)
+//    || attestation_sig(64)
+function decodeWrapperAttestPayload(payload) {
+  if (!payload) return null;
+  if (payload.length !== 1 + 1 + 32 + 33 + 8 + 8 + 4 + 8 + 64) return null;
+  if (payload[0] !== T_WRAPPER_ATTEST) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 0x02) return null;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const issuerPubkey = payload.slice(p, p + 33); p += 33;
+  if (issuerPubkey[0] !== 0x02 && issuerPubkey[0] !== 0x03) return null;
+  const reservesView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const reserves = (BigInt(reservesView.getUint32(4, true)) << 32n)
+    | BigInt(reservesView.getUint32(0, true));
+  p += 8;
+  const supplyView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const supply = (BigInt(supplyView.getUint32(4, true)) << 32n)
+    | BigInt(supplyView.getUint32(0, true));
+  p += 8;
+  const heightView = new DataView(payload.buffer, payload.byteOffset + p, 4);
+  const asOfHeight = heightView.getUint32(0, true);
+  p += 4;
+  const tsView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const timestamp = (BigInt(tsView.getUint32(4, true)) << 32n)
+    | BigInt(tsView.getUint32(0, true));
+  p += 8;
+  const attestationSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+  return {
+    network_tag: networkTag,
+    asset_id: bytesToHex(assetId),
+    issuer_pubkey: bytesToHex(issuerPubkey),
+    reserves: reserves.toString(),
+    supply: supply.toString(),
+    as_of_height: asOfHeight,
+    timestamp: timestamp.toString(),
+    attestation_sig: bytesToHex(attestationSig),
+  };
+}
+
+// SPEC §4.2.4 attestation_msg: BIP-340 message bytes signed by issuer_pubkey.
+function wrapperAttestationMsg(networkTag, assetIdHex, issuerPubkeyHex, reservesStr, supplyStr, asOfHeight, timestampStr) {
+  const buf = new Uint8Array(1 + 32 + 33 + 8 + 8 + 4 + 8);
+  let p = 0;
+  buf[p] = networkTag & 0xff; p += 1;
+  buf.set(hexToBytes(assetIdHex), p); p += 32;
+  buf.set(hexToBytes(issuerPubkeyHex), p); p += 33;
+  const view = new DataView(buf.buffer);
+  const reserves = BigInt(reservesStr);
+  view.setUint32(p, Number(reserves & 0xffffffffn), true);
+  view.setUint32(p + 4, Number((reserves >> 32n) & 0xffffffffn), true);
+  p += 8;
+  const supply = BigInt(supplyStr);
+  view.setUint32(p, Number(supply & 0xffffffffn), true);
+  view.setUint32(p + 4, Number((supply >> 32n) & 0xffffffffn), true);
+  p += 8;
+  view.setUint32(p, asOfHeight >>> 0, true);
+  p += 4;
+  const ts = BigInt(timestampStr);
+  view.setUint32(p, Number(ts & 0xffffffffn), true);
+  view.setUint32(p + 4, Number((ts >> 32n) & 0xffffffffn), true);
+  p += 8;
+  const tag = new TextEncoder().encode('tacit-wrapper-attest-v1');
+  return sha256(concatBytes(tag, buf));
+}
+
+// Network identifier byte for cross-network replay defense (SPEC §4.2.4).
+// Mirrors the indexer's "network" string (signet/mainnet) used elsewhere.
+function networkTagFor(network) {
+  if (network === 'mainnet') return 0x00;
+  if (network === 'signet') return 0x01;
+  if (network === 'regtest') return 0x02;
+  return null;
 }
 
 async function loadMintsForAsset(env, network, assetIdHex) {
@@ -9589,6 +9891,69 @@ async function scanForEtches(env, network) {
         // per dirty drop_id (mirrors the petch dirty-set pattern).
         if (typeof _dirtyDropIds === 'object' && _dirtyDropIds) _dirtyDropIds.add(dropId);
         found++;
+      } else if (decoded.opcode === T_WRAPPER_ATTEST) {
+        // SPEC §5.19 — optional on-chain wrapper attestation. Three-case dedup
+        // against (asset_id, issuer_pubkey, as_of_height): first-confirmed
+        // wins; byte-identical duplicate is silent-accept; different
+        // (reserves, supply, timestamp) flags the issuer as an equivocator.
+        const wa = decodeWrapperAttestPayload(decoded.payload);
+        if (!wa) continue;
+        // §5.19 validator step 1: network_tag matches local network identifier.
+        const expectedNetTag = networkTagFor(network);
+        if (expectedNetTag === null || wa.network_tag !== expectedNetTag) continue;
+        // §5.19 validator step 2 (post-confirmation): as_of_height ≤ confirmation_height.
+        if (wa.as_of_height > h) continue;
+        // §5.19 validator step 3: recompute attestation_msg per §4.2.4 and
+        // verify BIP-340 sig under issuer_pubkey's x-only form.
+        const msg = wrapperAttestationMsg(
+          wa.network_tag, wa.asset_id, wa.issuer_pubkey,
+          wa.reserves, wa.supply, wa.as_of_height, wa.timestamp,
+        );
+        const issuerXOnly = hexToBytes(wa.issuer_pubkey).slice(1);
+        if (!verifySchnorr(hexToBytes(wa.attestation_sig), msg, issuerXOnly)) continue;
+        // §5.19 three-case dedup. Tuple key includes network in the prefix.
+        const wak = wrapperAttestKey(network, wa.asset_id, wa.issuer_pubkey, wa.as_of_height);
+        const existing = await env.REGISTRY_KV.get(wak, 'json');
+        const record = {
+          asset_id: wa.asset_id,
+          issuer_pubkey: wa.issuer_pubkey,
+          network_tag: wa.network_tag,
+          reserves: wa.reserves,
+          supply: wa.supply,
+          as_of_height: wa.as_of_height,
+          timestamp: wa.timestamp,
+          attestation_sig: wa.attestation_sig,
+          attest_txid: tx.txid,
+          tx_index: txIndex,
+          confirmed_at_height: h,
+          confirmed_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          network,
+        };
+        if (!existing) {
+          // First-confirmed case — record canonical entry.
+          await env.REGISTRY_KV.put(wak, JSON.stringify(record));
+          found++;
+        } else if (
+          existing.reserves === wa.reserves
+          && existing.supply === wa.supply
+          && existing.timestamp === wa.timestamp
+        ) {
+          // Idempotent duplicate — accept silently, no state change.
+        } else {
+          // Equivocation — flag the issuer in the wrapper-equivocators set.
+          await env.REGISTRY_KV.put(wrapperEquivKey(network, wa.issuer_pubkey), JSON.stringify({
+            issuer_pubkey: wa.issuer_pubkey,
+            first_seen_attest_txid: existing.attest_txid,
+            equivocating_attest_txid: tx.txid,
+            asset_id: wa.asset_id,
+            as_of_height: wa.as_of_height,
+            first_seen_at_height: existing.confirmed_at_height,
+            flagged_at_height: h,
+            network,
+          }));
+          // Per SPEC §5.19: canonical entry remains the first-confirmed; the
+          // equivocator's subsequent envelope is rejected at the state layer.
+        }
       }
     }
     lastContiguous = h;
@@ -9687,6 +10052,15 @@ export {
   // A regression here would silently let buggy snapshots through the pin
   // gate and surface only when recipients fail to claim.
   _airdropLeafHash, _buildAirdropMerkleRoot,
+  // Wrapper convention (SPEC §4.2 / §5.19) — exported for parity tests against
+  // the dapp side + standalone unit tests on the decoder, attestation_msg
+  // construction, and metadata-blob parsing.
+  T_WRAPPER_ATTEST,
+  decodeWrapperAttestPayload,
+  wrapperAttestationMsg,
+  parseTacitWrapper,
+  extractIpfsCid,
+  networkTagFor,
 };
 
 // ============== ROUTER ==============
@@ -11076,6 +11450,111 @@ export default {
           ...stats,
         }, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+
+    // SPEC §4.2.5 — wrapper registry queries. Lazy populated: a wrapper-tagged
+    // CETCH's `tacit_wrapper` metadata is parsed + cached on the first
+    // /wrappers/{asset_id} access (or via POST /wrappers/hint). The
+    // /wrappers/{chain}/{asset} list endpoint reads the precomputed variant
+    // index; clients warming a fresh registry should issue per-asset reads
+    // for any candidate CETCHes before listing.
+    const mwid = url.pathname.match(/^\/wrappers\/([0-9a-f]{64})$/i);
+    if (mwid && req.method === 'GET') {
+      const aid = mwid[1].toLowerCase();
+      const refresh = url.searchParams.get('refresh') === '1';
+      const meta = await loadWrapperMeta(env, network, aid, { refresh });
+      if (!meta) {
+        return jsonResponse({
+          error: 'asset is not a wrapper, or metadata not fetchable from IPFS',
+          asset_id: aid, network,
+        }, 404, cors);
+      }
+      const latestAtt = await loadLatestWrapperAttestation(env, network, aid, meta.tacit_wrapper.attestation.issuer_pubkey);
+      const equiv = await env.REGISTRY_KV.get(wrapperEquivKey(network, meta.tacit_wrapper.attestation.issuer_pubkey), 'json');
+      return jsonResponse({
+        ...meta,
+        latest_attestation: latestAtt || null,
+        equivocator: equiv ? true : false,
+        equivocation: equiv || null,
+        // Coverage computation deferred to a future amendment — would require
+        // querying reserve_balance(reserve_address) from chain (mempool.space
+        // UTXO API for bitcoin-native underlyings; per-protocol parser for
+        // runes/ordinals). Returned null in V1.
+        coverage: null,
+      }, 200, cors);
+    }
+    // GET /wrappers/{chain}/{asset}  — list variants
+    const mwla = url.pathname.match(/^\/wrappers\/([A-Za-z0-9._:-]{1,64})\/([A-Za-z0-9._:-]{1,128})$/);
+    if (mwla && req.method === 'GET') {
+      const chain = mwla[1];
+      const asset = mwla[2];
+      const variantIds = await loadWrapperVariants(env, network, chain, asset);
+      const variants = [];
+      for (const aid of variantIds) {
+        const meta = await env.REGISTRY_KV.get(wrapperMetaKey(network, aid), 'json');
+        if (!meta) continue;
+        const latestAtt = await loadLatestWrapperAttestation(env, network, aid, meta.tacit_wrapper.attestation.issuer_pubkey);
+        const equiv = await env.REGISTRY_KV.get(wrapperEquivKey(network, meta.tacit_wrapper.attestation.issuer_pubkey), 'json');
+        variants.push({
+          asset_id: aid,
+          ticker: meta.ticker,
+          issuer_pubkey: meta.tacit_wrapper.attestation.issuer_pubkey,
+          custody: { kind: meta.tacit_wrapper.custody.kind, reserve_address: meta.tacit_wrapper.custody.reserve_address },
+          peg: meta.tacit_wrapper.peg,
+          redemption: meta.tacit_wrapper.redemption,
+          attestation_schedule_blocks: meta.tacit_wrapper.attestation.schedule_blocks,
+          latest_attestation_height: latestAtt?.as_of_height || null,
+          latest_attestation_timestamp: latestAtt?.timestamp || null,
+          equivocator: equiv ? true : false,
+          coverage: null,
+        });
+      }
+      return jsonResponse({
+        chain, asset, count: variants.length, variants, network,
+      }, 200, cors);
+    }
+    // POST /wrappers/hint { asset_id } — manual trigger to fetch + parse the
+    // wrapper metadata for a specific CETCH. Useful for first-time
+    // registration of a new wrapper variant or after IPFS gateway recovery.
+    // Idempotent: re-hinting the same asset re-fetches + re-validates.
+    if (url.pathname === '/wrappers/hint' && req.method === 'POST') {
+      let body;
+      try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+      const aid = String(body?.asset_id || '').toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'asset_id must be 64-char hex' }, 400, cors);
+      // Same per-IP daily cap as /assets/hint and /drops-hint.
+      const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+      const day = new Date().toISOString().slice(0, 10);
+      const hintKey = `hint:${day}:${ip}`;
+      const hintLimit = safeInt(env.HINT_LIMIT, 200, { min: 0 });
+      const hintPrior = safeInt(await env.REGISTRY_KV.get(hintKey), 0, { min: 0 });
+      if (hintPrior >= hintLimit) return jsonResponse({ error: 'daily hint limit reached' }, 429, cors);
+      const meta = await loadWrapperMeta(env, network, aid, { refresh: true });
+      if (!meta) {
+        return jsonResponse({
+          asset_id: aid, network,
+          wrapper: false,
+          reason: 'asset has no IPFS image_uri, fetch failed, or metadata blob has no valid tacit_wrapper field',
+        }, 200, cors);
+      }
+      ctx.waitUntil(env.REGISTRY_KV.put(hintKey, String(hintPrior + 1), { expirationTtl: 24 * 60 * 60 }));
+      return jsonResponse({
+        asset_id: aid, network,
+        wrapper: true,
+        underlying: meta.tacit_wrapper.underlying,
+        cached: true,
+      }, 200, cors);
+    }
+    // GET /wrappers/equivocators — list issuers flagged for equivocating
+    // T_WRAPPER_ATTEST envelopes (different (reserves, supply, timestamp) at
+    // the same (asset_id, issuer_pubkey, as_of_height) tuple). Dapps surface
+    // this in routing scores.
+    if (url.pathname === '/wrappers/equivocators' && req.method === 'GET') {
+      const prefix = network === 'signet' ? 'wequiv:' : `wequiv:${network}:`;
+      const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
+      const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+      const equivocators = fetched.filter(v => v && (v.network || 'signet') === network);
+      return jsonResponse({ network, count: equivocators.length, equivocators }, 200, cors);
     }
 
     return jsonResponse({ error: 'not found' }, 404, cors);
