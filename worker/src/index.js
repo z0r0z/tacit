@@ -7003,18 +7003,45 @@ async function _handleAtomicIntentFinalizeVar(assetIdHex, intentIdHex, req, env,
   }
 
   // Step 3: broadcast the taker-completed reveal.
+  //
+  // Retry loop: mempool.space's /tx/{txid} HTTP index can return 200 OK for
+  // the commit BEFORE the underlying bitcoind that serves /tx POST has the
+  // commit in its mempool yet. When that happens, bitcoind rejects the reveal
+  // with `bad-txns-inputs-missingorspent` (code -25) because it can't see
+  // commit:0 yet. The fix is to retry the reveal a few times with backoff —
+  // each retry gives bitcoind another chance to receive the commit via gossip.
+  // Surfaced on the §5.7.6.1 signet e2e harness's second run (the first run
+  // had an OP_RETURN(80) bug; once that was fixed, this timing race remained).
   let revealTxid;
-  try { revealTxid = (await apiText(env, '/tx', { method: 'POST', body: revealTxHex }, network)).trim(); }
-  catch (e) {
-    // Reveal failed but commit succeeded. Mark fulfilment as ABANDONED and
-    // surface the commit outpoint so the maker can later reclaim it via
-    // script-path spend per §5.7.6 *recovery*.
+  let revealErr = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      revealTxid = (await apiText(env, '/tx', { method: 'POST', body: revealTxHex }, network)).trim();
+      revealErr = null;
+      break;
+    } catch (e) {
+      revealErr = e;
+      // Retry ONLY on the missing-or-spent class — any other error (bad
+      // signature, oversize, non-final, etc.) won't be helped by waiting and
+      // we should fail fast so the dapp sees the real problem.
+      if (!/missingorspent|missing or spent/i.test(String(e.message))) break;
+      if (attempt < 3) {
+        // Exponential-ish backoff: 4s, 8s, 16s — caps at ~28s total before
+        // the worker's 30s CPU budget runs out.
+        await new Promise(resolve => setTimeout(resolve, [4000, 8000, 16000][attempt]));
+      }
+    }
+  }
+  if (revealErr) {
+    // Reveal failed for real (not a transient indexer race). Commit is on
+    // chain but the reveal won't settle. Mark fulfilment ABANDONED so the
+    // maker UI can offer the script-path reclaim per §5.7.6 *recovery*.
     await env.REGISTRY_KV.put(
       atomicFulfilmentKey(network, assetIdHex, intentIdHex),
-      JSON.stringify({ ...fulfilmentAdvanced, state: 'ABANDONED', commit_txid: commitTxid, abandoned_at: now, error: String(e.message).slice(0, 200) }),
+      JSON.stringify({ ...fulfilmentAdvanced, state: 'ABANDONED', commit_txid: commitTxid, abandoned_at: now, error: String(revealErr.message).slice(0, 200) }),
     );
     return jsonResponse({
-      error: `commit broadcast OK (${commitTxid}) but reveal broadcast failed: ${e.message}. Maker can reclaim the commit P2TR UTXO via maker-only script-path spend.`,
+      error: `commit broadcast OK (${commitTxid}) but reveal broadcast failed after retries: ${revealErr.message}. Maker can reclaim the commit P2TR UTXO via maker-only script-path spend.`,
       commit_txid: commitTxid,
     }, 502, cors);
   }
