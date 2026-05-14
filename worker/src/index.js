@@ -8366,6 +8366,22 @@ function bidClaimKey(network, aid, bidIdHex) {
     ? `bidclaim:${aid}:${bidIdHex}`
     : `bidclaim:${network}:${aid}:${bidIdHex}`;
 }
+// Variable-fill bid (§5.7.7) needs many claim records per bid — one per
+// partial fulfilment. Keyed by axintent_id so each linked atomic-intent
+// owns its own claim record; the bid's `remaining_amount` is the
+// authoritative ledger (decremented as fills settle, re-credited by the
+// abandonment cron in PR3). list({prefix}) over bidPartialClaimPrefix
+// gives an O(K) traversal of all live partial-fill claims for a bid.
+function bidPartialClaimKey(network, aid, bidIdHex, axintentIdHex) {
+  return network === 'signet'
+    ? `bidpclaim:${aid}:${bidIdHex}:${axintentIdHex}`
+    : `bidpclaim:${network}:${aid}:${bidIdHex}:${axintentIdHex}`;
+}
+function bidPartialClaimPrefix(network, aid, bidIdHex) {
+  return network === 'signet'
+    ? `bidpclaim:${aid}:${bidIdHex}:`
+    : `bidpclaim:${network}:${aid}:${bidIdHex}:`;
+}
 
 // Canonical bid-intent + bid-claim messages. SPEC §5.7.7 (variable-amount
 // bid intents) extends the byte format to bind `min_fill_amount` (publish)
@@ -8531,10 +8547,20 @@ async function handleBidIntentList(assetIdHex, env, network, cors) {
   const now = Math.floor(Date.now() / 1000);
   // Drop expired bids at read time. KV record left for lazy GC.
   const active = intents.filter(v => (v.expiry || 0) > now);
-  // Decorate with claim status if a seller has claimed.
+  // Decorate with claim status. Variable-fill bids may have many linked
+  // partial-fill claims; whole-bid uses the single legacy claim key.
   await Promise.all(active.map(async v => {
-    const claim = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, v.bid_id), 'json');
-    if (claim && claim.expires_at > now) v.claim = claim;
+    const isVar = !!(v.min_fill_amount && v.min_fill_amount !== '0');
+    if (isVar) {
+      const partials = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, v.bid_id), limit: 200 });
+      if (partials.keys.length) {
+        const claims = await Promise.all(partials.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+        v.partial_claims = claims.filter(c => c && c.expires_at > now);
+      }
+    } else {
+      const claim = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, v.bid_id), 'json');
+      if (claim && claim.expires_at > now) v.claim = claim;
+    }
   }));
   active.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   return jsonResponse({ asset_id: assetIdHex, count: active.length, intents: active }, 200, cors);
@@ -8546,8 +8572,17 @@ async function handleBidIntentGet(assetIdHex, bidIdHex, env, network, cors) {
   const intent = await env.REGISTRY_KV.get(bidIntentKey(network, assetIdHex, bidIdHex), 'json');
   if (!intent) return jsonResponse({ error: 'no such bid' }, 404, cors);
   const now = Math.floor(Date.now() / 1000);
-  const claim = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, bidIdHex), 'json');
-  if (claim && claim.expires_at > now) intent.claim = claim;
+  const isVar = !!(intent.min_fill_amount && intent.min_fill_amount !== '0');
+  if (isVar) {
+    const partials = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, bidIdHex), limit: 200 });
+    if (partials.keys.length) {
+      const claims = await Promise.all(partials.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+      intent.partial_claims = claims.filter(c => c && c.expires_at > now);
+    }
+  } else {
+    const claim = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, bidIdHex), 'json');
+    if (claim && claim.expires_at > now) intent.claim = claim;
+  }
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
 
@@ -8566,6 +8601,14 @@ async function handleBidIntentDelete(assetIdHex, bidIdHex, req, env, network, co
   }
   await env.REGISTRY_KV.delete(bidIntentKey(network, assetIdHex, bidIdHex));
   await env.REGISTRY_KV.delete(bidClaimKey(network, assetIdHex, bidIdHex));
+  // Variable-fill bids may have many linked partial claims; delete them all.
+  // Any in-flight linked atomic-intents still exist independently — the
+  // seller can self-spend their asset_utxo back to invalidate. Same hard-
+  // cancel pattern as §5.7.6.1 *Garbage collection*.
+  try {
+    const partials = await env.REGISTRY_KV.list({ prefix: bidPartialClaimPrefix(network, assetIdHex, bidIdHex), limit: 1000 });
+    await Promise.all(partials.keys.map(k => env.REGISTRY_KV.delete(k.name)));
+  } catch { /* best-effort GC; cron will eventually sweep */ }
   return jsonResponse({ ok: true }, 200, cors);
 }
 
@@ -8597,25 +8640,40 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   const now = Math.floor(Date.now() / 1000);
   if ((intent.expiry || 0) <= now) return jsonResponse({ error: 'bid expired' }, 410, cors);
 
-  // Bound-check fill_amount against the bid's allowed range. Whole-bid:
-  // must equal amount exactly. Variable-fill: must be in [min_fill_amount,
-  // remaining_amount]. PR2 will add the atomic-CAS decrement of
-  // remaining_amount; for this PR1 cut we accept whole-bid claims only.
+  // Bound-check fill_amount against the bid's allowed range.
+  //   Whole-bid (no min_fill_amount on the record): fill_amount must
+  //     equal amount exactly; existing TTL'd single-claim record applies.
+  //   Variable-fill (min_fill_amount > 0): fill_amount must be in
+  //     [min_fill_amount, remaining_amount]; multiple linked claims may
+  //     exist concurrently (keyed by axintent_id under bidPartialClaimKey).
   const intentAmtBI = BigInt(intent.amount || '0');
-  if (intent.min_fill_amount && intent.min_fill_amount !== '0') {
-    // Variable-fill bid. PR2 wires the partial-fill state machine; until
-    // then, reject partial-fill claims so the canonical bytes are accepted
-    // but only whole-fill behavior runs in production.
-    return jsonResponse({ error: 'variable-fill bid claims are not yet enabled (PR2 lands the state machine); for now use whole-bid fulfilment by omitting min_fill_amount on the bid' }, 501, cors);
-  }
-  if (fillBI !== intentAmtBI) {
-    return jsonResponse({ error: `fill_amount must equal bid.amount (${intent.amount}) for whole-bid claims` }, 400, cors);
-  }
+  const isVariableFill = !!(intent.min_fill_amount && intent.min_fill_amount !== '0');
 
-  // Reject if already claimed by a different seller within TTL window.
-  const existing = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, bidIdHex), 'json');
-  if (existing && existing.expires_at > now && existing.seller_pubkey !== sellerPubHex) {
-    return jsonResponse({ error: 'bid already claimed', claim: { expires_at: existing.expires_at } }, 409, cors);
+  if (isVariableFill) {
+    const minFillBI = BigInt(intent.min_fill_amount);
+    const remainingBI = BigInt(intent.remaining_amount || intent.amount || '0');
+    if (fillBI < minFillBI) {
+      return jsonResponse({ error: `fill_amount ${fillAmountStr} below bid.min_fill_amount ${intent.min_fill_amount}` }, 400, cors);
+    }
+    if (fillBI > remainingBI) {
+      return jsonResponse({ error: `fill_amount ${fillAmountStr} exceeds bid.remaining_amount ${intent.remaining_amount || intent.amount}` }, 409, cors);
+    }
+    // Reject duplicate claims for the same linked axintent. A seller who
+    // re-POSTs the same claim hits this; we surface idempotently rather
+    // than rejecting outright so the dapp can re-fetch state cleanly.
+    const existingPartial = await env.REGISTRY_KV.get(bidPartialClaimKey(network, assetIdHex, bidIdHex, axintentIdHex), 'json');
+    if (existingPartial && existingPartial.expires_at > now) {
+      return jsonResponse({ ok: true, claim: existingPartial, idempotent: true }, 200, cors);
+    }
+  } else {
+    if (fillBI !== intentAmtBI) {
+      return jsonResponse({ error: `fill_amount must equal bid.amount (${intent.amount}) for whole-bid claims` }, 400, cors);
+    }
+    // Reject if already claimed by a different seller within TTL window.
+    const existing = await env.REGISTRY_KV.get(bidClaimKey(network, assetIdHex, bidIdHex), 'json');
+    if (existing && existing.expires_at > now && existing.seller_pubkey !== sellerPubHex) {
+      return jsonResponse({ error: 'bid already claimed', claim: { expires_at: existing.expires_at } }, 409, cors);
+    }
   }
 
   const msg = bidClaimMsg(assetIdHex, bidIdHex, sellerPubHex, axintentIdHex, fillAmountStr);
@@ -8661,6 +8719,35 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
     expires_at: now + BID_CLAIM_TTL_SECONDS,
     network,
   };
+
+  if (isVariableFill) {
+    // Variable-fill bid: one claim record per linked atomic-intent. Update
+    // the bid's remaining_amount inline. Re-credit on abandonment is the
+    // cron's job (PR3). State transitions:
+    //   bid.state = 'OPEN' (or unset) → 'PARTIALLY_RESERVED' on first claim
+    //   bid.remaining_amount decrements by fill_amount
+    //   bid.state → 'CLOSED' when remaining_amount < min_fill_amount
+    const minFillBI = BigInt(intent.min_fill_amount);
+    const remainingBI = BigInt(intent.remaining_amount || intent.amount || '0');
+    const newRemainingBI = remainingBI - fillBI;
+    intent.remaining_amount = newRemainingBI.toString();
+    intent.linked_axintents = Array.isArray(intent.linked_axintents) ? intent.linked_axintents : [];
+    if (!intent.linked_axintents.includes(axintentIdHex)) intent.linked_axintents.push(axintentIdHex);
+    if (newRemainingBI < minFillBI) {
+      intent.state = 'CLOSED';
+      // remaining > 0 but < min_fill is dust on the bid side — won't
+      // attract any more sellers. Surface state=CLOSED so the bidder UI
+      // can stop showing the bid as live.
+    } else if (!intent.state || intent.state === 'OPEN') {
+      intent.state = 'PARTIALLY_RESERVED';
+    }
+    await Promise.all([
+      env.REGISTRY_KV.put(bidPartialClaimKey(network, assetIdHex, bidIdHex, axintentIdHex), JSON.stringify(claim), { expirationTtl: BID_CLAIM_TTL_SECONDS + 60 }),
+      env.REGISTRY_KV.put(bidIntentKey(network, assetIdHex, bidIdHex), JSON.stringify(intent)),
+    ]);
+    return jsonResponse({ ok: true, claim, intent }, 200, cors);
+  }
+
   await env.REGISTRY_KV.put(bidClaimKey(network, assetIdHex, bidIdHex), JSON.stringify(claim));
   return jsonResponse({ ok: true, claim, intent }, 200, cors);
 }
