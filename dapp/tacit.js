@@ -28941,7 +28941,8 @@ async function renderHoldings() {
               </div>
               <div class="muted" style="margin-top:10px;font-size:11px;">
                 Pay to: <span class="mono-box inline" style="font-size:10px;">${escapeHtml(wallet.address())}</span><br>
-                ⚠ Your exact listed amount becomes <strong>public</strong> once listed.
+                ⚠ Your exact listed amount becomes <strong>public</strong> once listed.<br>
+                ⚠ <strong>OFF-CHAIN settlement.</strong> A taker reserves the listing for 5 min and pays sats to the address above; you must then broadcast a CXFER for the exact listed amount. Buyer cannot pay you trustlessly on Bitcoin — they take on counterparty risk. For trustless atomic settlement, use <em>Instant listing</em> instead.
               </div>
               <div class="form-buttons">
                 <button class="primary" data-form-act="publish">Publish listing</button>
@@ -42316,7 +42317,7 @@ function setupNetworkSelect() {
   if (!sel) return;
   sel.value = NET.name;
   const dh = $('#discover-header-title');
-  if (dh) dh.textContent = `assets · confidential supply on ${NET.name}`;
+  if (dh) dh.textContent = `assets · ${NET.name}`;
   // Mainnet banner: real BTC at stake, but show only until the user has
   // acknowledged ("× Acknowledge and hide" button). Once dismissed,
   // MAINNET_OK_KEY persists the ack and the banner stays hidden for that
