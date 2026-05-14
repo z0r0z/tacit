@@ -26853,6 +26853,25 @@ function _consumeTabUrlHash() {
     // Already on Market — drive the asset-detail view directly so a
     // hash-only change re-routes without requiring a tab re-click.
     if (typeof goToMarketAsset === 'function') goToMarketAsset(parsed.aid);
+  } else if (parsed.tab === 'market') {
+    // Tab is already .active because preboot.js pre-activated it from
+    // the #tab=market deep-link during head parse — BEFORE this script
+    // loaded. The onclick handler never fired, so renderMarket() never
+    // ran and the page sits blank. Fire it now. (The aid-bearing case
+    // above already covers #tab=market&aid=X via goToMarketAsset; this
+    // branch handles the aid-less variant.)
+    if (typeof renderMarket === 'function') { try { renderMarket(); } catch (e) { console.warn('[init] renderMarket failed:', e?.message || e); } }
+  } else if (parsed.tab === 'discover') {
+    // Same preboot-pre-activates-too-early problem for Discover.
+    if (typeof renderDiscover === 'function') { try { renderDiscover(); } catch {} }
+    if (typeof startPetchAutoRefresh === 'function') { try { startPetchAutoRefresh(); } catch {} }
+  } else if (parsed.tab === 'holdings') {
+    if (typeof renderHoldings === 'function') { try { renderHoldings(); } catch {} }
+    if (typeof renderOffers === 'function') { try { renderOffers(); } catch {} }
+    if (typeof renderActivity === 'function') { try { renderActivity(); } catch {} }
+  } else if (parsed.tab === 'mixer') {
+    if (typeof renderMixer === 'function') { try { renderMixer(); } catch {} }
+    if (typeof startMixerAutoRefresh === 'function') { try { startMixerAutoRefresh(); } catch {} }
   } else if (parsed.aid && parsed.tab === 'discover') {
     // Already on Discover but aid changed — re-resolve focus against the
     // already-mounted lists so a hash-only change scrolls/highlights too.
