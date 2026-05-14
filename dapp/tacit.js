@@ -35747,9 +35747,17 @@ function applyMarketFilters() {
           return `<div class="muted" style="margin-top:4px;font-size:10px;" title="Sum across all ${l._groupSize} chunks in this group">group total: ${escapeHtml(fmtAssetAmount(totalAmt, dec))} ${escapeHtml(a.ticker || 'token')} · ${totalSats.toLocaleString('en-US')} sats</div>`;
         })()
       : '';
+    // Variable-amount intents render the available range ("from M · up to N")
+    // so a taker sees the partial-fill window at a glance, mirroring DEX UX
+    // where pool depth + min-tick are visible on every card. Whole-UTXO
+    // intents keep the bare amount.
+    const _isVariableIntent = l.kind === 'intent' && !!l.min_take_amount;
+    const _amountLine = _isVariableIntent
+      ? `<span style="font-size:10px;color:var(--ink-mid);font-weight:400;letter-spacing:0.04em;text-transform:uppercase;">from</span> ${escapeHtml(fmtAssetAmount(BigInt(l.min_take_amount || '0'), dec))} <span style="font-size:11px;color:var(--ink-mid);">·</span> <span style="font-size:11px;color:var(--ink-mid);">up to ${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}</span>`
+      : `${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}`;
     tile.innerHTML = `
       ${_tileTopHtml}
-      <div class="market-listing-amount">${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}${_groupBadge}</div>
+      <div class="market-listing-amount">${_amountLine}${_groupBadge}</div>
       <div class="market-listing-unit">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
         <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` per token` : ''}</small>
@@ -36434,14 +36442,14 @@ function marketGroupVolumeRankSats(group) {
 }
 function marketModeLabel(l) {
   if (l.kind === 'preauth') return 'Instant listing';
-  if (l.kind === 'intent') return 'Atomic intent';
+  if (l.kind === 'intent') return l.min_take_amount ? 'Variable intent' : 'Atomic intent';
   if (l.kind === 'range') return 'Range listing';
   if (l.kind === 'opening') return 'Opening listing';
   return 'Listing';
 }
 function marketModeClass(l) {
   return l.kind === 'preauth' ? 'preauth'
-       : l.kind === 'intent' ? 'intent'
+       : l.kind === 'intent' ? (l.min_take_amount ? 'intent intent-variable' : 'intent')
        : l.kind === 'range' ? 'range'
        : l.kind === 'opening' ? 'opening'
        : 'indexed';
