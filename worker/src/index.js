@@ -503,6 +503,27 @@ function airdropClaimDeleteMsg(network, rootHex, leafIndex, issuerPubHex, timest
     tsLE,
   ));
 }
+// Canonical message the issuer signs to mark a claim as paid. Same shape
+// as the delete-msg but with the payout_txid bound in so the sig can't
+// be replayed against a different payout. Recipients reading /claims
+// can then filter `paid: true` entries out of the backlog metric — the
+// alarming "daemon stalled" badge was firing on already-settled claims
+// the worker couldn't distinguish from pending ones. Domain string is
+// v1 so future changes (e.g. adding a "rejected" reason) can land
+// without breaking existing daemons.
+function airdropClaimPaidMsg(network, rootHex, leafIndex, issuerPubHex, payoutTxidHex, timestamp) {
+  const leafLE = new Uint8Array(8); new DataView(leafLE.buffer).setBigUint64(0, BigInt(leafIndex), true);
+  const tsLE = new Uint8Array(8); new DataView(tsLE.buffer).setBigUint64(0, BigInt(timestamp), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-airdrop-claim-paid-v1'),
+    new Uint8Array([_networkByte(network)]),
+    hexToBytes(rootHex),
+    leafLE,
+    hexToBytes(issuerPubHex),
+    hexToBytes(payoutTxidHex),
+    tsLE,
+  ));
+}
 // Range-disclosed listings: one per (maker, asset). Different KV namespace
 // from per-UTXO listings so GET prefix-lists don't collide.
 function rangeListingKey(network, aid, ownerPubHex) {
@@ -7245,6 +7266,75 @@ async function handleAirdropClaimDelete(rootHex, leafIndexStr, req, env, network
   return jsonResponse({ ok: true }, 200, cors);
 }
 
+// POST /airdrops/:root/claims/:leaf_index/paid — issuer marks a claim as
+// fulfilled, stamping paid_at + payout_txid on the existing record so
+// recipient dashboards can distinguish settled claims from genuinely
+// queued ones. Auth mirrors the DELETE handler: BIP-340 sig from the
+// announcement issuer over (network, root, leaf_index, issuer_pubkey,
+// payout_txid, timestamp). The daemon broadcasting CXFER fulfilments
+// calls this for each leaf in the batch — same key it uses to sign
+// the kernel sig, so no new key material to manage.
+//
+// Failure modes return 4xx and DON'T mutate the claim, so a retry from
+// a transient blip is safe. The handler is idempotent: re-marking a
+// claim paid (with the same or newer payout_txid) just updates the
+// stamp.
+async function handleAirdropClaimPaid(rootHex, leafIndexStr, req, env, network, cors) {
+  if (!/^[0-9a-f]{64}$/.test(rootHex)) return jsonResponse({ error: 'invalid merkle root' }, 400, cors);
+  const leafIndex = safeInt(leafIndexStr, -1, { min: 0, max: AIRDROP_LEAF_INDEX_MAX });
+  if (leafIndex < 0) return jsonResponse({ error: 'invalid leaf_index' }, 400, cors);
+
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'invalid JSON body' }, 400, cors); }
+  const sigHex = String(body.paid_sig ?? '').toLowerCase();
+  const payoutTxidHex = String(body.payout_txid ?? '').toLowerCase();
+  const tsRaw = body.timestamp;
+  const timestamp = Number.isInteger(tsRaw) ? tsRaw : Number(tsRaw);
+  if (!/^[0-9a-f]{128}$/.test(sigHex)) return jsonResponse({ error: 'paid_sig must be 128 hex chars (BIP-340)' }, 400, cors);
+  if (!/^[0-9a-f]{64}$/.test(payoutTxidHex)) return jsonResponse({ error: 'payout_txid must be 64 hex chars' }, 400, cors);
+  if (!Number.isInteger(timestamp) || timestamp <= 0) return jsonResponse({ error: 'timestamp required (unix seconds, integer)' }, 400, cors);
+
+  // ±5 min freshness — same window as the DELETE handler. Prevents an
+  // attacker who recovers a sig later from re-marking a deleted-then-
+  // resubmitted claim.
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - timestamp) > 300) {
+    return jsonResponse({ error: 'timestamp not fresh (must be within ±5 min of server time)' }, 403, cors);
+  }
+
+  // Authoritative issuer_pubkey from the announcement record; the request
+  // can't pretend to be a different issuer.
+  const stored = await env.REGISTRY_KV.get(dropAnnounceKey(network, rootHex), 'json');
+  if (!stored) return jsonResponse({
+    error: 'no announcement for this root — cannot authorize paid stamp. Re-publish the announcement (POST /drops) with the original issuer_pubkey, then retry.',
+  }, 404, cors);
+  const issuerPubHex = String(stored.issuer_pubkey || '').toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(issuerPubHex)) return jsonResponse({ error: 'stored issuer_pubkey malformed' }, 500, cors);
+
+  const issuerXOnly = hexToBytes(issuerPubHex).slice(1);
+  const msg = airdropClaimPaidMsg(network, rootHex, leafIndex, issuerPubHex, payoutTxidHex, timestamp);
+  if (!verifySchnorr(hexToBytes(sigHex), msg, issuerXOnly)) {
+    return jsonResponse({ error: 'invalid paid_sig (must be BIP-340 signed by the announcement issuer)' }, 403, cors);
+  }
+
+  // Load existing claim, stamp paid_at + payout_txid, write back.
+  // Missing claim → 404 (can't mark a non-existent claim paid). Same
+  // TTL preserved so the claim still self-expires at the same time
+  // as a non-paid record — a stamped record doesn't get to live
+  // forever.
+  const claimKey = airdropClaimKey(network, rootHex, leafIndex);
+  const existing = await env.REGISTRY_KV.get(claimKey, 'json');
+  if (!existing) return jsonResponse({ error: 'no claim found for this leaf_index' }, 404, cors);
+  existing.paid_at = timestamp;
+  existing.payout_txid = payoutTxidHex;
+  await env.REGISTRY_KV.put(
+    claimKey,
+    JSON.stringify(existing),
+    { expirationTtl: AIRDROP_CLAIM_TTL_SECONDS },
+  );
+  return jsonResponse({ ok: true, claim: existing }, 200, cors);
+}
+
 // ============== AIRDROP ANNOUNCEMENTS (discovery layer) ==============
 // Recipients shouldn't have to copy/paste a merkle root + IPFS CID from a
 // Discord message. Issuers post a signed announcement here; the dapp's Claim
@@ -9389,6 +9479,8 @@ export default {
     }
     const mac2 = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims\/(\d+)$/);
     if (mac2 && req.method === 'DELETE')                       return handleAirdropClaimDelete(mac2[1], mac2[2], req, env, network, cors);
+    const mac3 = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims\/(\d+)\/paid$/);
+    if (mac3 && req.method === 'POST')                         return handleAirdropClaimPaid(mac3[1], mac3[2], req, env, network, cors);
 
     // Drop announcements (discovery layer for airdrops).
     if (url.pathname === '/drops') {

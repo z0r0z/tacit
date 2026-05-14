@@ -14322,6 +14322,54 @@ function airdropClaimDeleteMsgBytes(network, rootHex, leafIndex, issuerPubHex, t
   ));
 }
 
+// Canonical message for POST /airdrops/:root/claims/:leaf_index/paid.
+// Must match worker's `airdropClaimPaidMsg` byte-for-byte. Domain v1.
+function airdropClaimPaidMsgBytes(network, rootHex, leafIndex, issuerPubHex, payoutTxidHex, timestamp) {
+  if (network !== 'signet' && network !== 'mainnet') throw new Error(`airdropClaimPaidMsgBytes: invalid network "${network}"`);
+  if (!/^[0-9a-f]{64}$/i.test(String(rootHex || ''))) throw new Error('airdropClaimPaidMsgBytes: merkle_root must be 64-char hex');
+  if (!/^0[23][0-9a-f]{64}$/i.test(String(issuerPubHex || ''))) throw new Error('airdropClaimPaidMsgBytes: issuer_pubkey must be 33-byte compressed hex');
+  if (!/^[0-9a-f]{64}$/i.test(String(payoutTxidHex || ''))) throw new Error('airdropClaimPaidMsgBytes: payout_txid must be 64-char hex');
+  if (!Number.isInteger(leafIndex) || leafIndex < 0) throw new Error('airdropClaimPaidMsgBytes: leaf_index must be a non-negative integer');
+  if (!Number.isInteger(timestamp) || timestamp <= 0) throw new Error('airdropClaimPaidMsgBytes: timestamp must be a positive unix-seconds integer');
+  const leafLE = new Uint8Array(8); new DataView(leafLE.buffer).setBigUint64(0, BigInt(leafIndex), true);
+  const tsLE = new Uint8Array(8); new DataView(tsLE.buffer).setBigUint64(0, BigInt(timestamp), true);
+  return sha256(concatBytes(
+    new TextEncoder().encode('tacit-airdrop-claim-paid-v1'),
+    new Uint8Array([_dropNetworkByte(network)]),
+    hexToBytes(rootHex.toLowerCase()),
+    leafLE,
+    hexToBytes(issuerPubHex.toLowerCase()),
+    hexToBytes(payoutTxidHex.toLowerCase()),
+    tsLE,
+  ));
+}
+
+// Issuer-side helper: sign + POST a "paid" stamp for a single claim, so
+// recipient dashboards can filter settled records out of the backlog
+// metric. Belt-and-braces with signedAirdropClaimDelete — the DELETE
+// removes the record entirely; if that fails (network blip), the paid
+// stamp survives until the TTL expires, and recipients still see the
+// fulfilment proof. Idempotent on the worker side; safe to retry.
+async function signedAirdropClaimPaid(rootHex, leafIndex, network, payoutTxidHex) {
+  if (!WORKER_BASE) throw new Error('signedAirdropClaimPaid: WORKER_BASE not configured');
+  await ensurePrivkey();
+  const issuerPubHex = bytesToHex(wallet.pub);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const msg = airdropClaimPaidMsgBytes(network, rootHex, leafIndex, issuerPubHex, payoutTxidHex, timestamp);
+  const sig = signSchnorr(msg, wallet.priv);
+  const url = `${WORKER_BASE}/airdrops/${rootHex}/claims/${leafIndex}/paid?network=${encodeURIComponent(network)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paid_sig: bytesToHex(sig), payout_txid: payoutTxidHex.toLowerCase(), timestamp }),
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '');
+    throw new Error(`worker returned ${r.status}: ${txt.slice(0, 200)}`);
+  }
+  return r.json();
+}
+
 // Issuer-side helper: sign + DELETE a single claim from the worker queue.
 // Used by the dapp's Fulfil-batch flows AND by the auto-fulfil daemon (which
 // imports this same module). Requires `wallet.priv` to be the privkey
@@ -22537,7 +22585,16 @@ async function _autoFulfilTick(drop) {
   // announcement's issuer_pubkey) — so the active wallet must be the
   // treasury wallet at this point, which the publish-after-switch guard
   // already enforces upstream.
+  //
+  // Two writes per fulfilled leaf: paid-mark first, then DELETE. The
+  // paid-mark stamps `paid_at` + `payout_txid` on the existing record so
+  // recipient dashboards can filter settled claims out of the backlog
+  // metric even if the DELETE fails (network blip). DELETE then removes
+  // the record entirely on the happy path. Both are best-effort; the
+  // chain has already settled and is the source of truth.
   for (const v of verified) {
+    signedAirdropClaimPaid(fresh.merkle_root_hex, v.leafIndex, fresh.network || NET.name, result.revealTxid)
+      .catch(() => {});
     signedAirdropClaimDelete(fresh.merkle_root_hex, v.leafIndex, fresh.network || NET.name)
       .catch(() => {});
   }
@@ -26631,23 +26688,28 @@ async function _claimRefreshDiscover() {
             .filter(Number.isInteger)
             .sort((a, b) => a - b);
           const nowSec = Math.floor(Date.now() / 1000);
-          const oldestSubmitted = claimsList.reduce((mn, x) => {
+          // Filter out paid claims before computing backlog metrics —
+          // the worker now stamps `paid_at` + `payout_txid` on settled
+          // claims so the recipient-side dashboard can distinguish them
+          // from genuinely-queued records. Pre-paid-field worker
+          // responses (older deploys) won't have the flag; those
+          // records still drag the metric, mitigated by the oldest+
+          // newest dual-gate downstream.
+          const unpaid = claimsList.filter(x => !x.paid_at && !x.payout_txid);
+          const oldestSubmitted = unpaid.reduce((mn, x) => {
             const t = Number(x.submitted_at);
             return Number.isFinite(t) ? Math.min(mn, t) : mn;
           }, nowSec);
           // Newest-submitted lets the badge tell "daemon stopped working"
           // (oldest old AND newest old too) from "daemon's chewing through
           // a backlog" (oldest old, newest fresh — single stuck record
-          // shouldn't alarm). The worker's /claims endpoint returns ALL
-          // submitted claims with no settled/paid filter, so a single
-          // orphaned-or-already-paid entry drags `oldestSubmitted` back
-          // without representing real recipient pain.
-          const newestSubmitted = claimsList.reduce((mx, x) => {
+          // shouldn't alarm).
+          const newestSubmitted = unpaid.reduce((mx, x) => {
             const t = Number(x.submitted_at);
             return Number.isFinite(t) && t > mx ? t : mx;
           }, 0);
           _claimQueueHealthByRoot.set(d.merkle_root, {
-            depth: claimsList.length,
+            depth: unpaid.length,
             sortedLeaves,
             oldestSubmitted,
             newestSubmitted,
