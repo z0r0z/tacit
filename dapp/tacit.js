@@ -32976,6 +32976,15 @@ let _renderedAssetSignature = { aid: '', sig: '' };
 // rewrite. Cleared at end-of-loop so it can't leak into unrelated
 // renders.
 let _pendingTileReuse = null;
+// Per-tile bounding rects captured at the same time as _pendingTile-
+// Reuse. After the build loop appends tiles in their new sort order,
+// we read each tile's new rect and apply a counter-translate so the
+// tile visually starts at its OLD position, then animate to its new
+// one — standard FLIP technique. Without this a price change that
+// reshuffles the ladder makes tiles teleport between their old and
+// new slots, which looks like a hard cut rather than a CEX-style
+// slide.
+let _pendingTilePositions = null;
 function _stopMarketAutoRefresh() {
   if (_marketAutoRefreshTimer) { clearInterval(_marketAutoRefreshTimer); _marketAutoRefreshTimer = null; }
 }
@@ -34137,9 +34146,16 @@ function applyMarketFilters() {
     const _existingGrid = list.querySelector('#market-grid');
     if (_existingGrid) {
       _pendingTileReuse = new Map();
+      _pendingTilePositions = new Map();
       for (const t of _existingGrid.children) {
         const k = t.dataset.listingKey;
-        if (k) _pendingTileReuse.set(k, t);
+        if (!k) continue;
+        _pendingTileReuse.set(k, t);
+        // getBoundingClientRect forces layout but is O(n) cheap for
+        // typical ladder sizes (≤ 100 tiles per page). Captured here
+        // so the FLIP step after grid.appendChild can compute the
+        // delta against each tile's post-rewrite position.
+        try { _pendingTilePositions.set(k, t.getBoundingClientRect()); } catch {}
       }
     }
   }
@@ -34420,9 +34436,47 @@ function applyMarketFilters() {
     frag.appendChild(tile);
   }
   grid.appendChild(frag);
+  // FLIP slide for reused tiles whose grid slot moved between old and
+  // new renders (price moved → re-sorted into a different position).
+  // Standard pattern: counter-translate each moved tile back to its
+  // captured old position, then on the next frame trigger a transition
+  // back to translate(0,0) so the browser interpolates between the
+  // two. Untouched tiles (dx === dy === 0) skip the animation entirely.
+  if (_pendingTilePositions && _pendingTilePositions.size > 0) {
+    const tiles = Array.from(grid.children);
+    const deltas = [];
+    for (const tile of tiles) {
+      const k = tile.dataset.listingKey;
+      const oldRect = k ? _pendingTilePositions.get(k) : null;
+      if (!oldRect) continue;
+      const newRect = tile.getBoundingClientRect();
+      const dx = oldRect.left - newRect.left;
+      const dy = oldRect.top - newRect.top;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+      deltas.push({ tile, dx, dy });
+    }
+    if (deltas.length > 0) {
+      for (const { tile, dx, dy } of deltas) {
+        tile.style.transition = 'none';
+        tile.style.transform = `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`;
+      }
+      // Force a reflow read so the browser commits the pre-state,
+      // then schedule the play frame. Without the void-read the
+      // subsequent style mutation can be batched with the previous,
+      // skipping the transition entirely.
+      void grid.offsetHeight;
+      requestAnimationFrame(() => {
+        for (const { tile } of deltas) {
+          tile.style.transition = 'transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1)';
+          tile.style.transform = '';
+        }
+      });
+    }
+  }
   // Drop any reuse-map entries that didn't get consumed this render
   // (listings that vanished). Their detached DOM nodes are garbage.
   _pendingTileReuse = null;
+  _pendingTilePositions = null;
   list.querySelectorAll('[data-market-listing-page]').forEach(btn => {
     btn.onclick = () => {
       if (btn.dataset.marketListingPage === 'prev') _marketListingPage = Math.max(1, _marketListingPage - 1);
