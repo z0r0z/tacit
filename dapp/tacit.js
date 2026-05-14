@@ -35396,7 +35396,21 @@ function startMarketLivenessPrune() {
       const { l, txid, vout } = queue[i++];
       active++;
       getOutspend(txid, vout).then((sp) => {
-        if (sp && sp.spent) onSpent(l);
+        // Require CONFIRMED spend before removing the listing from the
+        // local cache. Unconfirmed spends include legitimate buyer
+        // takes that are still in mempool (good to remove eventually
+        // once they confirm) AND mempool.space false-positives /
+        // indexer flickers (bad to remove — wipes real-live listings).
+        // The pessimistic stance — only confirmed spends remove —
+        // means a freshly-taken listing stays visible for the ~10min
+        // until block confirmation, but the worker has the
+        // authoritative claim state and will stop serving the listing
+        // on the next fetch anyway. Better one stale row briefly
+        // than wiping live tiles on every indexer hiccup, which was
+        // the root cause of the "click Activity tab then back, asks
+        // vanished" regression masked by the defensive guard in
+        // applyMarketFilters.
+        if (sp && sp.spent && sp.status && sp.status.confirmed === true) onSpent(l);
       }).catch(() => {}).finally(() => {
         active--;
         drain();
