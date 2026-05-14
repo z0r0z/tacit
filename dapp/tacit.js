@@ -34522,8 +34522,44 @@ function applyMarketFilters() {
       });
     }
   }
-  // Drop any reuse-map entries that didn't get consumed this render
-  // (listings that vanished). Their detached DOM nodes are garbage.
+  // Vanish animation: any reuse-map entry not consumed this render is
+  // a listing that disappeared (filled, cancelled, or expired). Until
+  // now those tiles just orphaned silently and the grid reflowed
+  // around them in one frame — instant and unattributable. CEX
+  // ladders fade + shrink the gone row so the trader's eye can lock
+  // onto "that one just got taken." Pin the orphan absolutely over
+  // its last known position (relative to viewport) so the rest of the
+  // grid doesn't shift again, then transition opacity + scale and
+  // remove on transitionend (with a setTimeout fallback in case the
+  // event never fires — e.g. parent removed mid-animation).
+  if (_pendingTileReuse && _pendingTileReuse.size > 0 && _pendingTilePositions && document.body) {
+    for (const [key, orphan] of _pendingTileReuse) {
+      const oldRect = _pendingTilePositions.get(key);
+      if (!oldRect) { try { orphan.remove(); } catch {} continue; }
+      orphan.style.position = 'fixed';
+      orphan.style.left = `${oldRect.left}px`;
+      orphan.style.top = `${oldRect.top}px`;
+      orphan.style.width = `${oldRect.width}px`;
+      orphan.style.height = `${oldRect.height}px`;
+      orphan.style.margin = '0';
+      orphan.style.zIndex = '5';
+      orphan.style.pointerEvents = 'none';
+      orphan.style.transition = 'none';
+      orphan.style.transform = 'scale(1)';
+      orphan.style.opacity = '1';
+      document.body.appendChild(orphan);
+      void orphan.offsetHeight;
+      requestAnimationFrame(() => {
+        orphan.style.transition = 'opacity 220ms ease-out, transform 220ms ease-out';
+        orphan.style.opacity = '0';
+        orphan.style.transform = 'scale(0.92)';
+      });
+      let cleaned = false;
+      const cleanup = () => { if (cleaned) return; cleaned = true; try { orphan.remove(); } catch {} };
+      orphan.addEventListener('transitionend', cleanup, { once: true });
+      setTimeout(cleanup, 400);
+    }
+  }
   _pendingTileReuse = null;
   _pendingTilePositions = null;
   list.querySelectorAll('[data-market-listing-page]').forEach(btn => {
