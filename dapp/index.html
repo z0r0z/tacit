@@ -62,7 +62,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=a8a36048">
+<link rel="modulepreload" href="./tacit.js?cb=bc6537fe">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -361,23 +361,36 @@ button.market-chip .chip-caret {
   opacity: 0.7;
 }
 .market-icon-btn {
-  width: 36px;
-  height: 34px;
+  width: 32px;
+  height: 30px;
   display: inline-grid;
   place-items: center;
-  font-size: 13px;
+  font-size: 14px;
   padding: 0;
-  border: 1px solid var(--ink);
-  background: var(--orange);
-  color: var(--ink);
-  box-shadow: 2px 2px 0 var(--ink);
+  border: 1px solid var(--ink-faint);
+  background: var(--bg);
+  color: var(--ink-mid);
+  box-shadow: none;
   cursor: pointer;
-  font-weight: 800;
+  font-weight: 600;
   line-height: 1;
+  transition: color 0.1s ease-out, border-color 0.1s ease-out, transform 0.4s ease-out;
 }
 .market-icon-btn:hover:not(:disabled) {
-  background: var(--ink); color: var(--bg);
-  box-shadow: 2px 2px 0 var(--orange);
+  color: var(--orange);
+  border-color: var(--ink);
+  background: var(--bg);
+  box-shadow: none;
+}
+.market-icon-btn:active {
+  transform: rotate(180deg);
+}
+/* Coarse-pointer override would otherwise pump this to 40px min-height
+   via the global button rule (line 2593), reinstating the visual
+   weight we're removing. Keep the refresh affordance discreet on
+   touch too — the surrounding chips already meet tap target sizing. */
+@media (pointer: coarse) {
+  .market-icon-btn { min-height: 30px; }
 }
 .market-popover {
   position: absolute;
@@ -1150,9 +1163,24 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-asset-detail {
   display: grid;
   grid-template-columns: minmax(280px, 1fr) minmax(520px, 1.35fr);
-  gap: 22px;
+  gap: 14px;
   align-items: stretch;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
+}
+/* "LIVE" status dot — gentle pulse so the orderbook reads as
+   actively updating rather than a static snapshot. 1.4s cadence
+   matches the eye's flicker-fusion threshold without distracting. */
+@keyframes market-live-pulse {
+  0%   { opacity: 1;   transform: scale(1); }
+  50%  { opacity: 0.4; transform: scale(0.85); }
+  100% { opacity: 1;   transform: scale(1); }
+}
+.market-live-dot {
+  animation: market-live-pulse 1.4s ease-in-out infinite;
+  box-shadow: 0 0 0 0 rgba(10, 143, 67, 0.3);
+}
+@media (prefers-reduced-motion: reduce) {
+  .market-live-dot { animation: none; }
 }
 .market-asset-detail > div:last-child {
   display: flex;
@@ -5183,6 +5211,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=a8a36048"></script>
+<script type="module" src="./tacit.js?cb=bc6537fe"></script>
 </body>
 </html>

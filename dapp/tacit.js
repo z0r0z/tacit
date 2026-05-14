@@ -34524,17 +34524,21 @@ function _updateMarketStaleBadge() {
   // Don't surface staleness when the user isn't actively looking at
   // the tab — visiting another tab and coming back shouldn't flash a
   // red badge while the first tick re-warms the cache.
-  if (typeof document !== 'undefined' && document.hidden) { el.textContent = ''; return; }
-  if (_marketLastSuccessTs === 0) { el.textContent = ''; return; }
+  if (typeof document !== 'undefined' && document.hidden) { el.innerHTML = ''; return; }
+  if (_marketLastSuccessTs === 0) { el.innerHTML = ''; return; }
   const ageMs = Date.now() - _marketLastSuccessTs;
   if (ageMs < MARKET_STALE_THRESHOLD_MS) {
-    el.textContent = '';
+    // Fresh data: surface a quiet "LIVE" indicator with a pulse dot
+    // so traders can see at a glance that the orderbook is auto-
+    // updating, not a stale snapshot. The dot uses a CSS animation
+    // (defined in index.html) for the gentle live-pulse effect.
+    el.innerHTML = '<span style="display:inline-flex;align-items:center;gap:5px;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--ink-mid);"><span class="market-live-dot" style="width:6px;height:6px;border-radius:50%;background:#0a8f43;display:inline-block;"></span>LIVE</span>';
     el.style.color = '';
     return;
   }
   const ageSec = Math.floor(ageMs / 1000);
   const label = ageSec < 60 ? `${ageSec}s` : `${Math.floor(ageSec / 60)}m`;
-  el.textContent = `⚠ data ${label} old · retrying`;
+  el.innerHTML = `⚠ data ${escapeHtml(label)} old · retrying`;
   el.style.color = 'var(--orange)';
 }
 function _startMarketAutoRefresh() {
@@ -38247,10 +38251,16 @@ function renderMarketAssetHeader(assetId, rows) {
   // bindMarketAssetHeader so power users can pop back without
   // mouse-targeting. We drop the redundant "TAC offers" text after the
   // arrow since the <h2>TAC</h2> below is the primary title.
+  // Compact back affordance with the Esc shortcut hint embedded inline
+  // so the row reads as one element rather than two competing chips.
+  // Previously the chip + uppercase "OR PRESS [Esc]" hint sat side-by-
+  // side with a 10px gap, fragmenting the visual weight of the back
+  // action. Now: single chip, Esc shortcut sits inside its tooltip
+  // (already wired) + as a faint sibling label on the same line.
   const breadcrumb = `
-    <div style="font-size:12px;margin-bottom:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-      <a href="#" data-act="market-back-browse" title="Back to all markets (Esc)" style="display:inline-flex;align-items:center;gap:5px;padding:4px 10px;text-decoration:none;border:1px solid var(--ink);background:var(--bg-warm);color:var(--ink);font-weight:600;cursor:pointer;">&larr; All markets</a>
-      <span class="muted" style="font-size:10px;letter-spacing:0.06em;text-transform:uppercase;">or press <kbd style="padding:1px 5px;border:1px solid var(--ink-faint);background:var(--bg);font-family:var(--mono);font-size:9px;">Esc</kbd></span>
+    <div style="font-size:11px;margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+      <a href="#" data-act="market-back-browse" title="Back to all markets (Esc)" style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;text-decoration:none;border:1px solid var(--ink-faint);background:var(--bg);color:var(--ink);font-weight:500;cursor:pointer;font-size:11px;transition:border-color 0.1s, color 0.1s;" onmouseover="this.style.borderColor='var(--ink)'" onmouseout="this.style.borderColor='var(--ink-faint)'">&larr; All markets</a>
+      <span class="muted" style="font-size:10px;letter-spacing:0.02em;">press <kbd style="padding:0 4px;border:1px solid var(--ink-faint);font-family:var(--mono);font-size:9px;color:var(--ink-mid);">Esc</kbd> to go back</span>
     </div>`;
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
@@ -39907,15 +39917,24 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
     let tickGlyph = '<span style="color:var(--ink-mid);font-size:11px;" title="No prior trade to compare.">·</span>';
     let priceColor = isOutlier ? '#a04030' : 'var(--ink)';
     if (u != null && prevU != null && prevU > 0) {
-      if (u > prevU) {
+      // Compare DISPLAYED (rounded) values so the tick arrow always
+      // agrees with what the user sees on the row. Comparing raw `u`
+      // floats let two trades that both display as "335 sats/TAC"
+      // disagree on direction (e.g. 335.4 vs 335.1 raw → ↓ arrow with
+      // visually-identical price labels) — confusing for traders who
+      // can't see the sub-rounding move. If displayed values match,
+      // it's flat by definition.
+      const thisDisp = fmtMarketUnitSats(u);
+      const prevDisp = fmtMarketUnitSats(prevU);
+      if (thisDisp === prevDisp) {
+        tickGlyph = '<span style="color:var(--ink-mid);font-size:11px;" title="Flat from prior fill">·</span>';
+        if (!isOutlier) priceColor = 'var(--ink)';
+      } else if (u > prevU) {
         tickGlyph = `<span style="color:#0a7d3a;font-size:12px;font-weight:700;" title="Up from ${fmtUnitPriceSats(prevU)} sats/${ticker}">↑</span>`;
         if (!isOutlier) priceColor = '#0a7d3a';
       } else if (u < prevU) {
         tickGlyph = `<span style="color:#b8341d;font-size:12px;font-weight:700;" title="Down from ${fmtUnitPriceSats(prevU)} sats/${ticker}">↓</span>`;
         if (!isOutlier) priceColor = '#b8341d';
-      } else {
-        tickGlyph = '<span style="color:var(--ink-mid);font-size:11px;" title="Flat from prior fill">·</span>';
-        if (!isOutlier) priceColor = 'var(--ink)';
       }
     }
     const age = relativeAge(ts) || 'now';
@@ -41516,24 +41535,7 @@ function _wireSwapTile(scope) {
         ? ` · ⚠ insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`
         : '';
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
-      // Fill-kind breakdown: preauth fills settle in one Bitcoin tx
-      // (instant); 'intent' / 'intent-var' fills are 3-step
-      // (claim → maker fulfilment → buyer finalize) and wait on the
-      // maker's auto-fulfil daemon, so a mixed sweep can have very
-      // different per-fill latency. Confirm modal already differentiates;
-      // the live quote should too so the trader sees what they're
-      // committing to before clicking. Only render when the mix is
-      // genuinely mixed or includes intents — pure preauth sweeps
-      // stay clean.
-      const _instantFills = result.plan.filter(c => c.kind === 'preauth').length;
-      const _intentFills  = result.plan.filter(c => c.kind === 'intent' || c.kind === 'intent-var').length;
-      let _kindStr = '';
-      if (_intentFills > 0) {
-        _kindStr = _instantFills > 0
-          ? ` · ${_instantFills} instant + ${_intentFills} ${_intentFills === 1 ? 'awaits maker' : 'await maker'}`
-          : ` · ${_intentFills} ${_intentFills === 1 ? 'awaits maker' : 'await maker'} (~5–10s if auto-fulfil on)`;
-      }
-      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'}${_kindStr} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${residHint}${insufficientHint}`;
+      infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${residHint}${insufficientHint}`;
       if (insufficientBudget) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'insufficient balance';
@@ -41591,21 +41593,7 @@ function _wireSwapTile(scope) {
         ? ` · ⚠ insufficient ${ticker} — wallet holds ${balStr}, you'd need ${fmtAssetAmount(amt, decimals)}`
         : '';
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
-      // Bid-kind breakdown: whole-bid (bid.kind === 'bid') fills sell
-      // the entire bid amount; variable-fill bids (bid-var, §5.7.7) let
-      // the seller deliver any chunk in [min_fill, remaining] at the
-      // scaled price. Mixed sweeps benefit from explicit signaling so
-      // the seller sees they're leveraging variable bids (state-of-art
-      // partial-fill) vs whole-bid take.
-      const _wholeBids = result.plan.filter(c => c.kind === 'bid').length;
-      const _varBids   = result.plan.filter(c => c.kind === 'bid-var').length;
-      let _bidKindStr = '';
-      if (_varBids > 0) {
-        _bidKindStr = _wholeBids > 0
-          ? ` · ${_wholeBids} whole + ${_varBids} partial`
-          : ` · ${_varBids} partial-fill`;
-      }
-      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'}${_bidKindStr} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${reserveHint}${residHint}${autoHint}${insufficientTokensHint}`;
+      infoEl.textContent = `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${reserveHint}${residHint}${autoHint}${insufficientTokensHint}`;
       if (insufficientTokens) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = `only hold ${balStr} ${ticker}`;
