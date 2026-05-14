@@ -33622,7 +33622,29 @@ function applyMarketFilters() {
   // Build all tiles into a DocumentFragment first; one reflow at the end
   // instead of N reflows during the loop. Material on busy markets.
   const frag = document.createDocumentFragment();
+  // Ask-side cumulative depth bars. pageRows is already sorted cheapest-
+  // first per the asset-detail sort; that's exactly the orderbook reading
+  // direction (cheapest at top). Walk it, tally TAC into cumDepth, then
+  // stamp each tile with a left-anchored gradient sized to its
+  // contribution. Mirrors the bid-ladder treatment but on tile bgs.
+  const _askAmts = pageRows.map(l => {
+    if (l.kind !== 'preauth' || l.expired) return 0;
+    const amtBase = BigInt(l.asset_opening?.amount || '0');
+    const chunks = l._isGroup ? BigInt(l._groupSize || 1) : 1n;
+    const total = amtBase * chunks;
+    return Number(total);
+  });
+  let _askTotalDepth = 0;
+  for (const a of _askAmts) _askTotalDepth += (Number.isFinite(a) && a > 0 ? a : 0);
+  let _askCumSoFar = 0;
+  const _askCumPct = _askAmts.map(a => {
+    if (Number.isFinite(a) && a > 0) _askCumSoFar += a;
+    return _askTotalDepth > 0 ? Math.min(100, (_askCumSoFar / _askTotalDepth) * 100) : 0;
+  });
+  const _askFillableCount = _askAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
+  let _askTileIdx = -1;
   for (const l of pageRows) {
+    _askTileIdx++;
     const a = l._asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
@@ -33634,6 +33656,16 @@ function applyMarketFilters() {
     // Stable per-listing key so the background liveness prune can target
     // this tile by selector when its UTXO turns out to be spent on-chain.
     tile.dataset.listingKey = marketListingKey(l, a);
+    // Cumulative-depth bar — layered on top of the tile's CSS background-
+    // color via background-image (so var(--bg-warm) still shows under).
+    // Only on ask tiles when there are ≥ 2 fillable rows on this page;
+    // single-tile depth visualizations look weird at 100%. Subtle accent
+    // color (rgba green 14%) — visible enough to scan, quiet enough not
+    // to compete with the tile's own typography.
+    if (_askFillableCount >= 2 && _askTotalDepth > 0 && _askAmts[_askTileIdx] > 0) {
+      const _p = _askCumPct[_askTileIdx].toFixed(1);
+      tile.style.backgroundImage = `linear-gradient(to right, rgba(10, 143, 67, 0.14) ${_p}%, transparent ${_p}%)`;
+    }
     // Composite kind+trust badge. Both atomic-intent and preauth-sale are
     // trustless; the distinction is whether the seller must come back online
     // (atomic intent requires fulfilment after a buyer claims; instant does not).
@@ -38946,6 +38978,7 @@ function _renderMarketAskForm(formHost, aid) {
           <input type="number" min="1" max="30" data-field="days" value="7">
         </div>
       </div>
+      <div data-price-quickfill style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;font-size:10px;"></div>
       <div class="form-row two" style="margin-top:8px;">
         <div>
           <label style="font-size:10px;">Split into chunks (1–7) <span class="muted" style="font-weight:normal;font-size:10px;" title="Buyers can take any subset of chunks individually instead of the whole UTXO. Each chunk becomes its own listing at the same unit price.">↗ partial-fill</span></label>
@@ -39029,6 +39062,87 @@ function _renderMarketAskForm(formHost, aid) {
     if (el && f === 'utxo') el.addEventListener('change', updateChunkPreview);
   });
   updateChunkPreview();
+
+  // Price quick-fill chips — read the live orderbook and fill the price
+  // input at strategic levels relative to current best ask / best bid.
+  // Computes per-chunk price from the chip's target unit price × the
+  // current chunk-amount derived from the UTXO selector + chunks count.
+  // Re-renders whenever UTXO or chunks change so the chip math stays
+  // accurate (a different lot or different chunk count = different
+  // per-chunk amount, so the same "match best ask" chip resolves to a
+  // different sats figure).
+  const renderQuickfillChips = () => {
+    const wrap = formHost.querySelector('[data-price-quickfill]');
+    if (!wrap) return;
+    const utxoIdx3 = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
+    const u3 = sortedUtxos[utxoIdx3];
+    const K3 = parseInt(formHost.querySelector('[data-field="chunks"]').value, 10) || 1;
+    if (!u3 || !Number.isInteger(K3) || K3 < 1) { wrap.innerHTML = ''; return; }
+    const chunkAmt = u3.amount / BigInt(K3);
+    if (chunkAmt <= 0n) { wrap.innerHTML = ''; return; }
+    const wholePerChunk = Number(chunkAmt) / Math.pow(10, target.decimals || 0);
+    // Best ask: cheapest live preauth ask for this asset that's not ours.
+    const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '';
+    const nowSec = Math.floor(Date.now() / 1000);
+    const liveAsks = (_marketCache?.listings || []).filter(l =>
+      l.kind === 'preauth' && l._asset?.asset_id === aid && !l.expired &&
+      Number(l.expiry || 0) > nowSec && (l.seller_pubkey || '') !== myPub,
+    );
+    let bestAskUnit = null;
+    for (const l of liveAsks) {
+      const amt = BigInt(l.asset_opening?.amount || '0');
+      const u = unitPriceSats(Number(l.min_price_sats || 0), amt, target.decimals);
+      if (u != null && (bestAskUnit == null || u < bestAskUnit)) bestAskUnit = u;
+    }
+    // Best bid: highest live bid from anyone (your own bids included is
+    // fine here; matching your own bid is a no-op self-cross).
+    const bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+    let bestBidUnit = null;
+    for (const b of (bidsPeek || [])) {
+      if (b.axintent_id) continue;
+      if (Number(b.expiry || 0) <= nowSec) continue;
+      const amt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
+      if (amt <= 0n) continue;
+      const u = unitPriceSats(Number(b.price_sats || 0), amt, target.decimals);
+      if (u != null && (bestBidUnit == null || u > bestBidUnit)) bestBidUnit = u;
+    }
+    const chips = [];
+    if (bestBidUnit != null) {
+      const sats = Math.max(DUST, Math.ceil(wholePerChunk * bestBidUnit));
+      chips.push(`<button type="button" data-quick-price="${sats}" title="Set price to match the highest live bid (${fmtUnitPriceSats(bestBidUnit)} sats/${escapeHtml(target.ticker)}) — your listing fills against the existing buyer immediately if they take." style="padding:3px 8px;border:1px solid var(--ink-faint);background:transparent;cursor:pointer;font-size:10px;">Match best bid · ${fmtUnitPriceSats(bestBidUnit)}/${escapeHtml(target.ticker)}</button>`);
+    }
+    if (bestAskUnit != null) {
+      const undercutUnit = bestAskUnit * 0.99;
+      const undercutSats = Math.max(DUST, Math.ceil(wholePerChunk * undercutUnit));
+      const matchSats = Math.max(DUST, Math.ceil(wholePerChunk * bestAskUnit));
+      chips.push(`<button type="button" data-quick-price="${undercutSats}" title="Undercut the current cheapest ask by 1% (${fmtUnitPriceSats(undercutUnit)} sats/${escapeHtml(target.ticker)}) so yours is the new best ask." style="padding:3px 8px;border:1px solid var(--ink-faint);background:transparent;cursor:pointer;font-size:10px;">Undercut best ask -1% · ${fmtUnitPriceSats(undercutUnit)}/${escapeHtml(target.ticker)}</button>`);
+      chips.push(`<button type="button" data-quick-price="${matchSats}" title="Match the current cheapest ask (${fmtUnitPriceSats(bestAskUnit)} sats/${escapeHtml(target.ticker)}) — you join the front of the ask ladder." style="padding:3px 8px;border:1px solid var(--ink-faint);background:transparent;cursor:pointer;font-size:10px;">Match best ask · ${fmtUnitPriceSats(bestAskUnit)}/${escapeHtml(target.ticker)}</button>`);
+    }
+    wrap.innerHTML = chips.join('');
+    wrap.querySelectorAll('button[data-quick-price]').forEach(btn => {
+      btn.onclick = () => {
+        const v = btn.dataset.quickPrice;
+        const priceEl = formHost.querySelector('[data-field="price"]');
+        if (priceEl && v) {
+          priceEl.value = v;
+          priceEl.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+      };
+    });
+  };
+  // Re-render chips when UTXO selection or chunk count changes, since
+  // both affect the per-chunk amount the chips multiply by.
+  ['utxo', 'chunks'].forEach(f => {
+    const el = formHost.querySelector(`[data-field="${f}"]`);
+    if (el) el.addEventListener('input', renderQuickfillChips);
+    if (el && f === 'utxo') el.addEventListener('change', renderQuickfillChips);
+  });
+  renderQuickfillChips();
+  // Bid cache may be cold on first render. Kick a fetch and re-render
+  // chips when it resolves so "Match best bid" appears once data lands.
+  if (typeof _fetchBidIntentsCached === 'function') {
+    _fetchBidIntentsCached(aid).then(() => { try { renderQuickfillChips(); } catch {} }).catch(() => {});
+  }
 
   formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
     errEl.textContent = '';
