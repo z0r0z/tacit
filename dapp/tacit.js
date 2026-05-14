@@ -14291,7 +14291,17 @@ async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
       decimals: Number.isInteger(bid.decimals) ? bid.decimals : (m.decimals || 0),
       assetId: bid.asset_id,
       txid: offer.commit_txid,
-      extra: { price_sats: scaledPriceSats, source: 'bid-fulfil', state: 'pending-take' },
+      extra: {
+        price_sats: scaledPriceSats,
+        source: 'bid-fulfil',
+        state: 'pending-take',
+        // intent_id is the worker handle the reconciler uses to poll
+        // /fulfilment and clear the pending-take badge once the bidder
+        // settles their reveal. Without this stamp the row would stay
+        // "pending bidder Take" forever even after settlement.
+        intent_id: offer.intent_id,
+        bid_id: bid.bid_id,
+      },
     });
   }
   // Surface commit_txid + (optional) split tx so multi-fill flows like
@@ -31870,12 +31880,81 @@ function relTime(ts) {
   if (d < 7 * 86400_000) return `${Math.floor(d / 86400_000)}d ago`;
   try { return new Date(ts).toLocaleDateString(); } catch { return ''; }
 }
+// Background reconciler for swap-sell rows in `pending-take` state.
+//
+// A seller's bid-fulfilment row is logged the moment they broadcast their
+// commit tx, before the bidder has Taken — so it starts with
+// extra.state = 'pending-take'. Without a sync pass, the badge would
+// stick forever even after the buyer's reveal settled and the seller's
+// sats arrived. This polls the worker's fulfilment record per pending
+// row and clears (or marks abandoned) when terminal.
+//
+// Throttled to once per 30s so a tab left open doesn't hammer the
+// worker with renderActivity-driven repaints. Fire-and-forget — if the
+// worker is slow or offline the row just stays pending; next pass
+// retries.
+let _swapSellReconcileTs = 0;
+async function _reconcileSwapSellPending() {
+  const now = Date.now();
+  if (now - _swapSellReconcileTs < 30_000) return;
+  _swapSellReconcileTs = now;
+
+  let arr;
+  try { arr = JSON.parse(localStorage.getItem(activityKey()) || '[]'); }
+  catch { return; }
+  if (!Array.isArray(arr) || !arr.length) return;
+
+  const pending = [];
+  for (let i = 0; i < arr.length; i++) {
+    const e = arr[i];
+    if (e.kind !== 'swap-sell') continue;
+    if (e.extra?.state !== 'pending-take') continue;
+    if (!e.extra?.intent_id || !e.assetId) continue;
+    pending.push({ idx: i, intentId: String(e.extra.intent_id), assetId: String(e.assetId) });
+  }
+  if (!pending.length) return;
+
+  let mutated = false;
+  await Promise.all(pending.map(async ({ idx, intentId, assetId }) => {
+    try {
+      const fr = await fetchAxferFulfilment({ assetIdHex: assetId, intentIdHex: intentId });
+      // GET returns either { ok, fulfilment } or null (404). Worker may
+      // also return state on the outer record for some shapes; tolerate both.
+      const rec = fr?.fulfilment || fr;
+      const state = rec?.state;
+      if (!state) return;
+      if (state === 'REVEAL_BROADCAST' || state === 'SETTLED') {
+        const settledTxid = rec.reveal_txid || rec.settle_txid || null;
+        arr[idx].extra.state = 'settled';
+        if (settledTxid && /^[0-9a-f]{64}$/.test(String(settledTxid))) {
+          arr[idx].extra.settled_txid = String(settledTxid);
+        }
+        mutated = true;
+      } else if (state === 'ABANDONED') {
+        arr[idx].extra.state = 'abandoned';
+        mutated = true;
+      }
+    } catch { /* worker blip; retry next pass */ }
+  }));
+
+  if (mutated) {
+    try { localStorage.setItem(activityKey(), JSON.stringify(arr)); } catch {}
+    // Repaint so the user sees the cleared badge without manual reload.
+    try { renderActivity(); } catch {}
+  }
+}
+
 function renderActivity() {
   const list = $('#activity-list');
   const status = $('#activity-status');
   const clearBtn = $('#btn-activity-clear');
   if (!list) return;
   const entries = loadActivity();
+  // Fire-and-forget reconcile of any swap-sell rows in pending-take.
+  // Throttled internally; safe to call on every renderActivity.
+  if (entries.some(e => e.kind === 'swap-sell' && e.extra?.state === 'pending-take')) {
+    _reconcileSwapSellPending().catch(() => {});
+  }
   // Pending preauth-take recovery records render BEFORE the activity log
   // (and BEFORE the empty-state copy) so the user can act on stranded
   // commit sats even when their activity log is otherwise empty (e.g. they
@@ -31977,13 +32056,29 @@ function renderActivity() {
           unitPriceStr = ` @ ${unit < 1 ? unit.toFixed(4).replace(/\.?0+$/, '') : unit.toLocaleString(undefined, { maximumFractionDigits: 2 })} sats/${escapeHtml(e.ticker || '')}`;
         }
       } catch {}
+      // swap-sell rows carry an explicit state field: pending-take (initial,
+      // before bidder Takes), settled (terminal, bidder's reveal landed),
+      // or abandoned (bidder never claimed; seller's commit recoverable).
+      // The reconciler at _reconcileSwapSellPending advances pending-take →
+      // settled / abandoned by polling the worker's fulfilment record.
       const verbPaid = e.kind === 'swap-buy' ? 'paid' : 'receiving';
-      const pendingHtml = e.kind === 'swap-sell' && e.extra.state === 'pending-take'
-        ? ' · <span style="color:#b8651d;">pending bidder Take</span>'
-        : '';
+      let stateHtml = '';
+      if (e.kind === 'swap-sell') {
+        if (e.extra.state === 'pending-take') {
+          stateHtml = ' · <span style="color:#b8651d;">pending bidder Take</span>';
+        } else if (e.extra.state === 'settled') {
+          const sTx = String(e.extra.settled_txid || '');
+          const settledLink = /^[0-9a-f]{64}$/.test(sTx)
+            ? ` (<a href="${NET.explorer}/tx/${escapeHtml(sTx)}" target="_blank" rel="noopener noreferrer" style="color:#0a7d3a;">settle ${escapeHtml(shorten(sTx, 6))} ↗</a>)`
+            : '';
+          stateHtml = ` · <span style="color:#0a7d3a;">✓ settled${settledLink}</span>`;
+        } else if (e.extra.state === 'abandoned') {
+          stateHtml = ' · <span style="color:#b14444;">⚠ bidder didn\'t Take — your commit is recoverable</span>';
+        }
+      }
       extraLine = `
         <div class="muted" style="font-size:11px;margin-top:4px;line-height:1.5;">
-          ${verbPaid} ${totalSats.toLocaleString()} sats${unitPriceStr}${pendingHtml}
+          ${verbPaid} ${totalSats.toLocaleString()} sats${unitPriceStr}${stateHtml}
         </div>`;
     }
     return `
