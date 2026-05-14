@@ -8614,6 +8614,84 @@ async function handleBidIntentDelete(assetIdHex, bidIdHex, req, env, network, co
 
 const BID_CLAIM_TTL_SECONDS = 30 * 60;
 
+// Sweep abandoned variable-fill bid partial-claim records and refund their
+// fill_amount back to the parent bid's remaining_amount. Without this, a
+// seller who posts a claim then walks away (never has a buyer take their
+// linked atomic-intent, or has the atomic-intent expire unsettled) would
+// permanently lock fill_amount worth of the bid's remaining capacity —
+// effectively a drain attack on the bidder's open order.
+//
+// Detection: each bidpclaim record points at a linked axintent_id. The
+// linked atomic-intent's fulfilment record (atomicFulfilmentKey) carries
+// the on-chain state. Three outcomes:
+//   - REVEAL_BROADCAST / SETTLED → chunk settled, leave the bid record
+//     decremented (correct accounting).
+//   - ABANDONED → refund + delete the bidpclaim.
+//   - missing / no fulfilment record / atomic-intent expired without ever
+//     reaching COMMIT_READY → refund + delete.
+//
+// Bounded sweep: at most BID_PARTIAL_CLAIM_SWEEP_LIMIT keys per network
+// per tick so a large backlog doesn't blow the cron's 30s CPU budget.
+// Self-paces: the auto-TTL on bidpclaim records catches anything we
+// miss, just without the bid-side remaining refund.
+const BID_PARTIAL_CLAIM_SWEEP_LIMIT = 200;
+async function sweepBidPartialClaims(env, network) {
+  // Prefix on signet is `bidpclaim:` (network-implicit); on mainnet it's
+  // `bidpclaim:mainnet:`. Use the explicit prefix builder so we don't
+  // accidentally cross-list networks.
+  const prefix = network === 'signet' ? 'bidpclaim:' : `bidpclaim:${network}:`;
+  let cursor = null, processed = 0, refunded = 0, deleted = 0;
+  while (processed < BID_PARTIAL_CLAIM_SWEEP_LIMIT) {
+    const opts = { prefix, limit: 100 };
+    if (cursor) opts.cursor = cursor;
+    const list = await env.REGISTRY_KV.list(opts);
+    for (const k of list.keys) {
+      if (processed >= BID_PARTIAL_CLAIM_SWEEP_LIMIT) break;
+      processed++;
+      const claim = await env.REGISTRY_KV.get(k.name, 'json');
+      if (!claim || !claim.bid_id || !claim.asset_id || !claim.axintent_id || !claim.fill_amount) continue;
+      const aid = claim.asset_id;
+      const fulfil = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, aid, claim.axintent_id), 'json');
+      // Settled? Done — keep the bidpclaim record for the buyer's read
+      // path; it'll auto-TTL out. (We don't strictly need it after settle
+      // but cleaning it up is opportunistic.)
+      const settledStates = new Set(['REVEAL_BROADCAST', 'SETTLED']);
+      const abandonedStates = new Set(['ABANDONED']);
+      const isSettled = !!(fulfil && settledStates.has(fulfil.state));
+      if (isSettled) continue;
+      // Abandoned or never-fulfilled? Refund + delete.
+      const atomicIntent = await env.REGISTRY_KV.get(atomicIntentKey(network, aid, claim.axintent_id), 'json');
+      const now = Math.floor(Date.now() / 1000);
+      const atomicExpired = !atomicIntent || (Number(atomicIntent.expiry) || 0) <= now;
+      const isAbandoned = !!(fulfil && abandonedStates.has(fulfil.state));
+      if (!isAbandoned && !atomicExpired) continue;  // still in-flight, leave alone
+      // Re-credit the parent bid.
+      const bid = await env.REGISTRY_KV.get(bidIntentKey(network, aid, claim.bid_id), 'json');
+      if (bid && (Number(bid.expiry) || 0) > now && bid.min_fill_amount) {
+        try {
+          const oldRemaining = BigInt(bid.remaining_amount || bid.amount || '0');
+          const fillBI = BigInt(claim.fill_amount);
+          let newRemaining = oldRemaining + fillBI;
+          const fullAmt = BigInt(bid.amount || '0');
+          if (newRemaining > fullAmt) newRemaining = fullAmt;  // defensive
+          bid.remaining_amount = newRemaining.toString();
+          // If the bid had been CLOSED for being below min_fill, re-open it.
+          if (bid.state === 'CLOSED' && newRemaining >= BigInt(bid.min_fill_amount)) {
+            bid.state = 'PARTIALLY_RESERVED';
+          }
+          await env.REGISTRY_KV.put(bidIntentKey(network, aid, claim.bid_id), JSON.stringify(bid));
+          refunded++;
+        } catch { /* skip on parse errors */ }
+      }
+      await env.REGISTRY_KV.delete(k.name).catch(() => {});
+      deleted++;
+    }
+    if (list.list_complete || !list.cursor) break;
+    cursor = list.cursor;
+  }
+  return { processed, refunded, deleted };
+}
+
 async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cors) {
   if (!/^[0-9a-f]{64}$/.test(assetIdHex)) return jsonResponse({ error: 'invalid asset_id' }, 400, cors);
   if (!/^[0-9a-f]{32}$/.test(bidIdHex))   return jsonResponse({ error: 'invalid bid_id' }, 400, cors);
@@ -10896,6 +10974,12 @@ export default {
     ctx.waitUntil((async () => {
       await Promise.allSettled(
         NETWORKS.map(net => scanForEtches(env, net).catch(() => {})),
+      );
+      // Sweep abandoned variable-fill bid partial-claims and refund their
+      // fill_amount back to the parent bid (§5.7.7 *Re-credit on
+      // abandonment*). Bounded per network to keep cron CPU under budget.
+      await Promise.allSettled(
+        NETWORKS.map(net => sweepBidPartialClaims(env, net).catch(() => {})),
       );
       // Heal a small batch of height-0 orphan T_PMINTs each tick. Bounded
       // to 15 ops/network/tick so the cron isolate stays under the 128 MiB
