@@ -28549,7 +28549,7 @@ function _renderClaimDiscoverList() {
       if (sub) {
         subState = sub.verified_at ? 'verified'
                  : sub.dequeued_at ? 'dequeued'
-                 : sub.funding_txid ? 'tipped'
+                 : _claimTxidsFromRecord(sub).length > 0 ? 'tipped'
                  : 'submitted';
       }
     }
@@ -33963,26 +33963,46 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
   }
   const myPub = (wallet && wallet.pub) ? bytesToHex(wallet.pub) : null;
   const rowsHtml = intents.map((b) => {
-    const amtStr = fmtAssetAmountPlain(BigInt(b.amount || 0), decimals);
+    // Variable-fill awareness (§5.7.7): for bids with min_fill_amount, the
+    // tradeable size is `remaining_amount` (worker-maintained ledger),
+    // and any seller can fulfil a chunk in [min_fill, remaining]. Display
+    // and the Fulfil click both adapt.
+    const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    const amtBig = BigInt(b.amount || 0);
+    const remBig = isVar ? BigInt(b.remaining_amount || b.amount || 0) : amtBig;
+    const minBig = isVar ? BigInt(b.min_fill_amount) : amtBig;
+    const amtStr = fmtAssetAmountPlain(remBig, decimals);
     const ppuTotal = Number(b.price_sats || 0);
     const amtBase = Number(b.amount || 0);
     const ppu = (amtBase > 0) ? (ppuTotal / (amtBase / Math.pow(10, decimals))) : 0;
     const expiresIn = Math.max(0, Number(b.expiry || 0) - Math.floor(Date.now() / 1000));
     const expiryLbl = expiresIn > 0 ? `${Math.floor(expiresIn / 3600)}h ${Math.floor((expiresIn % 3600) / 60)}m` : 'expired';
-    const claimed = !!b.axintent_id;
+    // Variable-fill bids stay matchable while remaining_amount ≥ min_fill_amount,
+    // even if a prior chunk was claimed. Whole-bid stays binary (claimed / open).
+    const fullyClaimed = isVar
+      ? (remBig < minBig)
+      : !!b.axintent_id;
     const isMine = myPub && b.buyer_pubkey === myPub;
+    const fulfilTitle = isVar
+      ? `Variable-fill bid: any chunk in ${fmtAssetAmountPlain(minBig, decimals)}–${fmtAssetAmountPlain(remBig, decimals)} ${ticker} settles atomically. Click to pick a chunk.`
+      : `Spin up an atomic intent targeted at this bidder, signed by your asset UTXO. Settles in one Bitcoin tx.`;
     let actionsHtml;
-    if (claimed) {
+    if (fullyClaimed && !isVar) {
       actionsHtml = `<span class="muted" style="font-size:10px;">claimed via atomic intent ${escapeHtml(shorten(b.axintent_id, 6))}</span>`;
+    } else if (fullyClaimed && isVar) {
+      actionsHtml = `<span class="muted" style="font-size:10px;">closed · ${fmtAssetAmountPlain(remBig, decimals)} remaining below min</span>`;
     } else if (isMine) {
       actionsHtml = `<button data-bid-action="cancel-mine" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;">Cancel</button>`;
     } else {
-      actionsHtml = `<button data-bid-action="fulfil" data-bid-id="${escapeHtml(b.bid_id)}" class="primary" type="button" style="font-size:10px;" title="Spin up a §5.7.6 atomic intent targeted at this bidder, signed by your asset UTXO. Claiming the bid links the two so the bidder can take.">Fulfil</button>`;
+      actionsHtml = `<button data-bid-action="fulfil" data-bid-id="${escapeHtml(b.bid_id)}" class="primary" type="button" style="font-size:10px;" title="${escapeHtml(fulfilTitle)}">${isVar ? 'Fulfil chunk…' : 'Fulfil'}</button>`;
     }
+    const varHint = isVar
+      ? ` <span class="muted" style="font-size:10px;">· partial OK ≥ ${fmtAssetAmountPlain(minBig, decimals)} ${escapeHtml(ticker)}</span>`
+      : '';
     return `
       <div style="border:1px solid var(--ink-mid);padding:6px;margin-bottom:4px;font-size:11px;">
         <div class="flex" style="justify-content:space-between;align-items:baseline;gap:8px;flex-wrap:wrap;">
-          <div><span class="lbl">amt</span> ${escapeHtml(amtStr)} ${escapeHtml(ticker)} · <span class="lbl">total</span> ${ppuTotal.toLocaleString()} sats · <span class="lbl">ppu</span> ${ppu.toFixed(2)} sats</div>
+          <div><span class="lbl">${isVar ? 'remaining' : 'amt'}</span> ${escapeHtml(amtStr)} ${escapeHtml(ticker)} · <span class="lbl">total</span> ${ppuTotal.toLocaleString()} sats · <span class="lbl">ppu</span> ${ppu.toFixed(2)} sats${varHint}</div>
           <div>${actionsHtml}</div>
         </div>
         <div class="muted" style="font-size:10px;margin-top:2px;">bidder ${escapeHtml(shorten(b.buyer_pubkey, 6))} · expires ${escapeHtml(expiryLbl)}${isMine ? ' · <em>your bid</em>' : ''}</div>
@@ -34019,15 +34039,37 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
     btn.onclick = async () => {
       const bid = intents.find(x => x.bid_id === btn.dataset.bidId);
       if (!bid) return;
+      // Variable-fill (§5.7.7): seller picks a chunk in [min_fill, remaining].
+      // Whole-bid: fills bid.amount in one shot (existing behavior).
+      let chunkAmount = null;
+      const isVar = !!(bid.min_fill_amount && bid.min_fill_amount !== '0');
+      if (isVar) {
+        const remBig = BigInt(bid.remaining_amount || bid.amount || 0);
+        const minBig = BigInt(bid.min_fill_amount);
+        const promptMsg =
+          `Fulfil partial chunk of this bid?\n\n` +
+          `Available: ${fmtAssetAmountPlain(minBig, decimals)}–${fmtAssetAmountPlain(remBig, decimals)} ${ticker}\n` +
+          `BTC paid to you: floor(chunk × ${bid.price_sats.toLocaleString()} / ${bid.amount}) sats\n\n` +
+          `How much ${ticker} will you deliver?  (Default = full remaining)`;
+        const raw = (typeof prompt === 'function')
+          ? prompt(promptMsg, fmtAssetAmountPlain(remBig, decimals))
+          : null;
+        if (raw == null || !raw.trim()) return;
+        try { chunkAmount = parseAssetAmount(raw.trim(), decimals); }
+        catch (e) { toast('Chunk: ' + (e?.message || String(e)), 'error'); return; }
+        if (chunkAmount < minBig) { toast(`Chunk below min (${fmtAssetAmountPlain(minBig, decimals)}). Raise it.`, 'error'); return; }
+        if (chunkAmount > remBig) { toast(`Chunk above remaining (${fmtAssetAmountPlain(remBig, decimals)}). Lower it.`, 'error'); return; }
+      }
       btn.disabled = true;
       btn.textContent = 'fulfilling…';
       try {
-        await fulfilBidIntent({ bid });
-        toast('Bid fulfilled ✓ — waiting for the buyer to settle on Bitcoin', 'success');
+        await fulfilBidIntent({ bid, fillAmount: chunkAmount });
+        const chunkLbl = chunkAmount != null ? ` (${fmtAssetAmountPlain(chunkAmount, decimals)} ${ticker})` : '';
+        toast(`Bid fulfilled ✓${chunkLbl} — waiting for the buyer to settle on Bitcoin`, 'success');
         openDiscoverBidPanel(card, assetIdHex, ticker, decimals);
       } catch (e) {
         btn.disabled = false;
-        btn.textContent = 'Fulfil';
+        btn.textContent = isVar ? 'Fulfil chunk…' : 'Fulfil';
         if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
         else toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
       }
@@ -39762,7 +39804,11 @@ async function populateMarketBidsLadder(scope, asset) {
   });
   const _bidFillableCount = _fillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
   const rowsHtml = ladder.map((b, _bidIdx) => {
-    const amtStr = fmtAssetAmount(BigInt(b.amount || 0), decimals);
+    // Variable-fill (§5.7.7) display: show the remaining (tradable now)
+    // amount, with a subtle min-fill hint. Whole-bid bids unchanged.
+    const _bidIsVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    const _amtBigForRow = _bidIsVar ? BigInt(b.remaining_amount || b.amount || 0) : BigInt(b.amount || 0);
+    const amtStr = fmtAssetAmount(_amtBigForRow, decimals);
     const sats = Number(b.price_sats || 0);
     const unitVal = b._unit != null ? fmtUnitPriceSats(b._unit) : 'n/a';
     const unitUsd = b._unit != null ? fmtMarketUsdUnitFromSats(b._unit, '') : '';
@@ -39818,7 +39864,7 @@ async function populateMarketBidsLadder(scope, asset) {
         </div>
         <div class="market-bid-cell">
           <strong>${escapeHtml(amtStr)}</strong>
-          <small>${escapeHtml(ticker)}</small>
+          <small>${_bidIsVar ? `${escapeHtml(ticker)} · min ${escapeHtml(fmtAssetAmount(BigInt(b.min_fill_amount), decimals))}` : escapeHtml(ticker)}</small>
         </div>
         <div class="market-bid-cell">
           <strong>${escapeHtml(fmtMarketBtc(sats))}</strong>
@@ -39996,10 +40042,34 @@ async function populateMarketBidsLadder(scope, asset) {
     btn.onclick = async () => {
       const bid = ladder.find(x => x.bid_id === btn.dataset.bidId);
       if (!bid) return;
+      // Variable-fill (§5.7.7) chunk picker. Seller chooses any size in
+      // [min_fill, remaining]; default = full remaining.
+      let chunkAmount = null;
+      const _isVar = !!(bid.min_fill_amount && bid.min_fill_amount !== '0');
+      if (_isVar) {
+        const remBig = BigInt(bid.remaining_amount || bid.amount || 0);
+        const minBig = BigInt(bid.min_fill_amount);
+        const _decimals = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
+        const _ticker = asset?.ticker || '';
+        const promptMsg =
+          `Fulfil partial chunk of this bid?\n\n` +
+          `Available: ${fmtAssetAmountPlain(minBig, _decimals)}–${fmtAssetAmountPlain(remBig, _decimals)} ${_ticker}\n` +
+          `BTC paid to you: floor(chunk × ${bid.price_sats.toLocaleString()} / ${bid.amount}) sats\n\n` +
+          `How much ${_ticker} will you deliver?  (Default = full remaining)`;
+        const raw = (typeof prompt === 'function') ? prompt(promptMsg, fmtAssetAmountPlain(remBig, _decimals)) : null;
+        if (raw == null || !raw.trim()) { btn.disabled = false; btn.textContent = 'Fulfil'; return; }
+        try { chunkAmount = parseAssetAmount(raw.trim(), _decimals); }
+        catch (e) { toast('Chunk: ' + (e?.message || String(e)), 'error'); btn.disabled = false; btn.textContent = 'Fulfil'; return; }
+        if (chunkAmount < minBig) { toast(`Chunk below min (${fmtAssetAmountPlain(minBig, _decimals)} ${_ticker}).`, 'error'); btn.disabled = false; btn.textContent = 'Fulfil'; return; }
+        if (chunkAmount > remBig) { toast(`Chunk above remaining (${fmtAssetAmountPlain(remBig, _decimals)} ${_ticker}).`, 'error'); btn.disabled = false; btn.textContent = 'Fulfil'; return; }
+      }
       btn.disabled = true; btn.textContent = 'fulfilling...';
       try {
-        await fulfilBidIntent({ bid });
-        toast('Bid fulfilled ✓ — waiting for the buyer to settle on Bitcoin', 'success');
+        await fulfilBidIntent({ bid, fillAmount: chunkAmount });
+        const _decimals = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
+        const _ticker = asset?.ticker || '';
+        const chunkLbl = chunkAmount != null ? ` (${fmtAssetAmountPlain(chunkAmount, _decimals)} ${_ticker})` : '';
+        toast(`Bid fulfilled ✓${chunkLbl} — waiting for the buyer to settle on Bitcoin`, 'success');
         _invalidateBidsCache(aid);
         populateMarketBidsLadder(scope, asset);
       } catch (e) {
