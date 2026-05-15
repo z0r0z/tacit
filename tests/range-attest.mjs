@@ -125,9 +125,17 @@ export function encodeRangeAttest(args) {
   else if (args.holderPrivkey) holderPubkey = secp.ProjectivePoint.fromPrivateKey(args.holderPrivkey).toRawBytes(true);
   else throw new Error('holderPubkey or holderPrivkey required');
 
+  // asset_id binding (audit H2): holder signs the asset_id their
+  // commitments live under, so consumers don't have to do a separate
+  // resolver lookup to ensure the attestation isn't being replayed
+  // across asset contexts. All commitment_outpoints MUST resolve to
+  // UTXOs of this asset (enforced by validator).
+  const assetId = asBytes(args.assetId, 32, 'assetId');
+
   const parts = [
     new Uint8Array([OPCODE_T_RANGE_ATTEST]),
     sid,
+    assetId,
     u32LE(expiryHeight),
     new Uint8Array([outpoints.length]),
   ];
@@ -151,12 +159,13 @@ export function encodeRangeAttest(args) {
 
 export function decodeRangeAttest(payload) {
   if (!(payload instanceof Uint8Array)) throw new Error('payload must be Uint8Array');
-  if (payload.length < 1 + 32 + 4 + 1 + 0 + 2 + 33 + 64) throw new Error('truncated');
+  if (payload.length < 1 + 32 + 32 + 4 + 1 + 0 + 2 + 33 + 64) throw new Error('truncated');
   let off = 0;
   if (payload[off++] !== OPCODE_T_RANGE_ATTEST) {
     throw new Error(`expected opcode 0x${OPCODE_T_RANGE_ATTEST.toString(16)}`);
   }
   const scopeId = payload.slice(off, off + 32); off += 32;
+  const assetId = payload.slice(off, off + 32); off += 32;
   const expiryHeight = readU32LE(payload, off); off += 4;
   const count = payload[off++];
   if (count < 1 || count > 16) throw new Error(`commitment_count out of range: ${count}`);
@@ -176,7 +185,7 @@ export function decodeRangeAttest(payload) {
   if (off !== payload.length) throw new Error('trailing bytes after sig');
 
   return {
-    scopeId, expiryHeight, commitmentOutpoints,
+    scopeId, assetId, expiryHeight, commitmentOutpoints,
     attestationBytes, holderPubkey, holderSig,
   };
 }
@@ -190,6 +199,7 @@ export function verifyRangeAttestSig(decoded) {
   const parts = [
     new Uint8Array([OPCODE_T_RANGE_ATTEST]),
     asBytes(decoded.scopeId, 32, 'scopeId'),
+    asBytes(decoded.assetId, 32, 'assetId'),
     u32LE(decoded.expiryHeight),
     new Uint8Array([decoded.commitmentOutpoints.length]),
   ];
@@ -238,7 +248,12 @@ export function validateRangeAttest({ payload, envelopeHeight, commitmentResolve
     return { valid: false, reason: 'commitmentResolver required' };
   }
 
-  // Resolve outpoints to commitments.
+  // Resolve outpoints to commitments. Every resolved UTXO MUST be of the
+  // asset_id the holder signed into the envelope — defeats cross-asset
+  // replay where an attestation about (e.g.) low-value-token X is reused
+  // as if it were about high-value-token Y. Resolver returns
+  // { commitment, assetId, ... } per outpoint.
+  const expectedAssetId = env.assetId;
   const resolved = [];
   for (let i = 0; i < env.commitmentOutpoints.length; i++) {
     const op = env.commitmentOutpoints[i];
@@ -247,6 +262,22 @@ export function validateRangeAttest({ payload, envelopeHeight, commitmentResolve
     catch (e) { return { valid: false, reason: `commitmentResolver threw on outpoint[${i}]: ${e.message}` }; }
     if (!r || !r.commitment) {
       return { valid: false, reason: `outpoint[${i}] not a confirmed UTXO: ${op.txid}:${op.vout}` };
+    }
+    // Asset-id binding: resolved outpoint MUST be of envelope's asset_id.
+    // Also enforces same-asset rule for multi-commitment aggregates (all
+    // resolved outpoints must share the asset_id the holder signed).
+    if (!r.assetId || !(r.assetId instanceof Uint8Array) || r.assetId.length !== 32) {
+      return { valid: false, reason: `commitmentResolver did not return 32-byte assetId for outpoint[${i}]` };
+    }
+    let match = true;
+    for (let j = 0; j < 32; j++) {
+      if (r.assetId[j] !== expectedAssetId[j]) { match = false; break; }
+    }
+    if (!match) {
+      return {
+        valid: false,
+        reason: `outpoint[${i}] asset_id mismatch (resolver returned different asset than holder signed)`,
+      };
     }
     resolved.push(r);
   }

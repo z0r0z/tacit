@@ -40,6 +40,8 @@ const holderSk = new Uint8Array(32); for (let i = 0; i < 32; i++) holderSk[i] = 
 const holderPk = secp.ProjectivePoint.fromPrivateKey(holderSk).toRawBytes(true);
 
 const SCOPE_ID = new Uint8Array(32).fill(0x42);
+const ASSET_ID = new Uint8Array(32).fill(0xaa);
+const OTHER_ASSET_ID = new Uint8Array(32).fill(0xbb);
 
 // A single UTXO with hidden amount 5000.
 const valueA = 5000n;
@@ -59,7 +61,7 @@ console.log('Encode/decode round-trip');
 {
   test('encode → decode preserves all fields', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID,
+      scopeId: SCOPE_ID, assetId: ASSET_ID,
       expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
@@ -78,7 +80,7 @@ console.log('Encode/decode round-trip');
 
   test('opcode byte is 0x44', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 1, commitmentOutpoints: [outpointA],
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 1, commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE, holderPrivkey: holderSk,
     });
     return enc[0] === OPCODE_T_RANGE_ATTEST && OPCODE_T_RANGE_ATTEST === 0x44;
@@ -87,7 +89,7 @@ console.log('Encode/decode round-trip');
   test('encode rejects empty commitment list', () => {
     try {
       encodeRangeAttest({
-        scopeId: SCOPE_ID, expiryHeight: 1, commitmentOutpoints: [],
+        scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 1, commitmentOutpoints: [],
         attestationBytes: attestationGE, holderPrivkey: holderSk,
       });
       return false;
@@ -97,7 +99,7 @@ console.log('Encode/decode round-trip');
   test('encode rejects > 16 commitments', () => {
     try {
       encodeRangeAttest({
-        scopeId: SCOPE_ID, expiryHeight: 1,
+        scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 1,
         commitmentOutpoints: new Array(17).fill(outpointA),
         attestationBytes: attestationGE, holderPrivkey: holderSk,
       });
@@ -107,7 +109,7 @@ console.log('Encode/decode round-trip');
 
   test('decode rejects wrong opcode', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 1, commitmentOutpoints: [outpointA],
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 1, commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE, holderPrivkey: holderSk,
     });
     const corrupted = new Uint8Array(enc); corrupted[0] = 0x99;
@@ -119,7 +121,7 @@ console.log('Encode/decode round-trip');
 
   test('decode rejects trailing bytes', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 1, commitmentOutpoints: [outpointA],
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 1, commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE, holderPrivkey: holderSk,
     });
     const extra = concatBytes(enc, new Uint8Array([0xff]));
@@ -137,7 +139,7 @@ console.log('\nholder_sig verification');
 {
   test('honest envelope ⇒ sig verifies', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
@@ -148,7 +150,7 @@ console.log('\nholder_sig verification');
 
   test('tampered scope_id ⇒ sig fails', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
@@ -160,7 +162,7 @@ console.log('\nholder_sig verification');
 
   test('tampered expiry_height ⇒ sig fails', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
@@ -173,7 +175,7 @@ console.log('\nholder_sig verification');
   test('different signer (wrong privkey) ⇒ sig fails', () => {
     const otherSk = new Uint8Array(32); for (let i = 0; i < 32; i++) otherSk[i] = (i * 7 + 13) & 0xff;
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPubkey: holderPk,                       // claims `holderPk`
@@ -198,12 +200,12 @@ console.log('\nValidator (full envelope check)');
   }
 
   const resolver = makeResolver(new Map([
-    [`${outpointA.txid}:${outpointA.vout}`, { commitment: commitmentA }],
+    [`${outpointA.txid}:${outpointA.vout}`, { commitment: commitmentA, assetId: ASSET_ID }],
   ]));
 
   test('valid attestation with resolved commitment ⇒ accepted', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
@@ -220,7 +222,7 @@ console.log('\nValidator (full envelope check)');
 
   test('expired attestation ⇒ rejected', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 500_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 500_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
@@ -234,7 +236,7 @@ console.log('\nValidator (full envelope check)');
   test('unresolvable outpoint ⇒ rejected', () => {
     const wrongOp = { txid: 'cc'.repeat(32), vout: 7 };
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [wrongOp],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
@@ -252,13 +254,13 @@ console.log('\nValidator (full envelope check)');
     const otherBlinding = randomScalar();
     const otherCommitment = pointToBytes(pedersenCommit(otherValue, otherBlinding));
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
     });
     const wrongResolver = makeResolver(new Map([
-      [`${outpointA.txid}:${outpointA.vout}`, { commitment: otherCommitment }],
+      [`${outpointA.txid}:${outpointA.vout}`, { commitment: otherCommitment, assetId: ASSET_ID }],
     ]));
     const result = validateRangeAttest({
       payload: enc, envelopeHeight: 800_000, commitmentResolver: wrongResolver,
@@ -268,7 +270,7 @@ console.log('\nValidator (full envelope check)');
 
   test('forged holder_sig ⇒ rejected', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
@@ -283,7 +285,7 @@ console.log('\nValidator (full envelope check)');
 
   test('missing commitmentResolver ⇒ rejected', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE,
       holderPrivkey: holderSk,
@@ -321,12 +323,12 @@ console.log('\nMulti-UTXO aggregate attestation');
   const resolver = (op) => {
     const idx = utxos.findIndex(u => u.txid === op.txid && u.vout === op.vout);
     if (idx === -1) return null;
-    return { commitment: commitments[idx] };
+    return { commitment: commitments[idx], assetId: ASSET_ID };
   };
 
   test('3-UTXO aggregate (sum=6000) ≥ 5000 ⇒ accepted', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: utxos.map(u => ({ txid: u.txid, vout: u.vout })),
       attestationBytes: attestation,
       holderPrivkey: holderSk,
@@ -340,7 +342,7 @@ console.log('\nMulti-UTXO aggregate attestation');
 
   test('aggregate with one missing outpoint ⇒ rejected', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: utxos.map(u => ({ txid: u.txid, vout: u.vout })),
       attestationBytes: attestation,
       holderPrivkey: holderSk,
@@ -366,13 +368,13 @@ console.log('\nPRED_IN_RANGE via T_RANGE_ATTEST opcode');
     { type: 'in_range', X: 1000n, Y: 10000n },
   );
   const resolver = (op) => {
-    if (op.txid === outpointA.txid && op.vout === outpointA.vout) return { commitment: commitmentA };
+    if (op.txid === outpointA.txid && op.vout === outpointA.vout) return { commitment: commitmentA, assetId: ASSET_ID };
     return null;
   };
 
   test('5000 ∈ [1000, 10000] via opcode ⇒ accepted', () => {
     const enc = encodeRangeAttest({
-      scopeId: SCOPE_ID, expiryHeight: 900_000,
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
       commitmentOutpoints: [outpointA],
       attestationBytes: attestationInRange,
       holderPrivkey: holderSk,
@@ -384,6 +386,96 @@ console.log('\nPRED_IN_RANGE via T_RANGE_ATTEST opcode');
       && result.predicate.type === 'in_range'
       && result.predicate.X === 1000n
       && result.predicate.Y === 10000n;
+  });
+}
+
+// =========================================================================
+// Asset-id binding (audit H2 fix)
+// =========================================================================
+console.log('\nAsset-id binding (cross-asset replay defense)');
+{
+  const resolverDifferentAsset = (op) => {
+    if (op.txid === outpointA.txid && op.vout === outpointA.vout) {
+      // Resolver reports the UTXO is of a DIFFERENT asset than the holder
+      // signed. This is the cross-asset replay scenario.
+      return { commitment: commitmentA, assetId: OTHER_ASSET_ID };
+    }
+    return null;
+  };
+  const resolverMatching = (op) => {
+    if (op.txid === outpointA.txid && op.vout === outpointA.vout) {
+      return { commitment: commitmentA, assetId: ASSET_ID };
+    }
+    return null;
+  };
+
+  test('asset_id match (resolver returns signed asset_id) ⇒ accepted', () => {
+    const enc = encodeRangeAttest({
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
+      commitmentOutpoints: [outpointA],
+      attestationBytes: attestationGE,
+      holderPrivkey: holderSk,
+    });
+    const result = validateRangeAttest({
+      payload: enc, envelopeHeight: 800_000, commitmentResolver: resolverMatching,
+    });
+    return result.valid === true;
+  });
+
+  test('asset_id mismatch (resolver returns different asset) ⇒ rejected', () => {
+    const enc = encodeRangeAttest({
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
+      commitmentOutpoints: [outpointA],
+      attestationBytes: attestationGE,
+      holderPrivkey: holderSk,
+    });
+    const result = validateRangeAttest({
+      payload: enc, envelopeHeight: 800_000, commitmentResolver: resolverDifferentAsset,
+    });
+    return !result.valid && /asset_id mismatch/.test(result.reason);
+  });
+
+  test('resolver omits assetId ⇒ rejected gracefully', () => {
+    const enc = encodeRangeAttest({
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
+      commitmentOutpoints: [outpointA],
+      attestationBytes: attestationGE,
+      holderPrivkey: holderSk,
+    });
+    const resolverNoAsset = (op) => {
+      if (op.txid === outpointA.txid && op.vout === outpointA.vout) return { commitment: commitmentA };
+      return null;
+    };
+    const result = validateRangeAttest({
+      payload: enc, envelopeHeight: 800_000, commitmentResolver: resolverNoAsset,
+    });
+    return !result.valid && /32-byte assetId/.test(result.reason);
+  });
+
+  test('multi-commitment mixed-asset aggregate ⇒ rejected (same-asset rule)', () => {
+    const utxoX = { value: 1000n, blinding: randomScalar(), txid: 'a1'.repeat(32), vout: 0 };
+    const utxoY = { value: 2000n, blinding: randomScalar(), txid: 'a2'.repeat(32), vout: 1 };
+    const cX = pointToBytes(pedersenCommit(utxoX.value, utxoX.blinding));
+    const cY = pointToBytes(pedersenCommit(utxoY.value, utxoY.blinding));
+    const sumValue = utxoX.value + utxoY.value;
+    const sumBlinding = modN(utxoX.blinding + utxoY.blinding);
+    const att = proveRange({ value: sumValue, blinding: sumBlinding }, { type: 'ge', X: 2500n });
+    const enc = encodeRangeAttest({
+      scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 900_000,
+      commitmentOutpoints: [{ txid: utxoX.txid, vout: utxoX.vout }, { txid: utxoY.txid, vout: utxoY.vout }],
+      attestationBytes: att,
+      holderPrivkey: holderSk,
+    });
+    // resolver: one UTXO is of ASSET_ID, the other is of OTHER_ASSET_ID
+    const mixedResolver = (op) => {
+      if (op.txid === utxoX.txid && op.vout === utxoX.vout) return { commitment: cX, assetId: ASSET_ID };
+      if (op.txid === utxoY.txid && op.vout === utxoY.vout) return { commitment: cY, assetId: OTHER_ASSET_ID };
+      return null;
+    };
+    const result = validateRangeAttest({
+      payload: enc, envelopeHeight: 800_000, commitmentResolver: mixedResolver,
+    });
+    return !result.valid && /asset_id mismatch/.test(result.reason);
   });
 }
 

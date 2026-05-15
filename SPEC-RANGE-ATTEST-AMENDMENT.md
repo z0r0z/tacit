@@ -45,6 +45,12 @@ scope_id(32)               opaque scope discriminator — binds the
                             attestation to a use context (e.g., pool_id,
                             CDP claim_id, or SHA256(domain || context));
                             indexer treats as bytes only
+asset_id(32)               asset_id the holder's commitments are
+                            denominated in. ALL referenced UTXOs MUST
+                            resolve to this asset_id at indexer time.
+                            Defeats cross-asset replay where an attestation
+                            about (e.g.) low-value-token X is reused as if
+                            it were about high-value-token Y.
 expiry_height_LE(4)        u32 — attestation expires after this height
 commitment_count(1)        u8, 1..16 UTXO commitments being attested
 commitment_outpoints(36 * count)  [txid_BE(32) || vout_LE(4)] each;
