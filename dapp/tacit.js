@@ -8873,6 +8873,77 @@ function _pendingChunkedListingsForAsset(aid) {
   return _loadPendingChunkedListings()
     .filter(r => r.network === NET.name && r.aid === aid && Number(r.expiry || 0) > Math.floor(Date.now() / 1000));
 }
+// Session-scoped flag set so we don't loop auto-resume on the same record
+// every renderHoldings tick. Records get a single auto-attempt per session;
+// if it still fails, the user has the visible "↻ Resume publishing" banner
+// to click manually.
+const _autoResumedThisSession = new Set();
+async function _autoResumePendingChunkedListings() {
+  if (typeof wallet === 'undefined' || !wallet.priv) return;  // locked → skip silently
+  const _now = Math.floor(Date.now() / 1000);
+  const all = _loadPendingChunkedListings().filter(r =>
+    r.network === NET.name
+    && Number(r.expiry || 0) > _now
+    && Array.isArray(r.pending_vouts)
+    && r.pending_vouts.length > 0
+    && !_autoResumedThisSession.has(r.revealTxid),
+  );
+  if (all.length === 0) return;
+  for (const rec of all) {
+    _autoResumedThisSession.add(rec.revealTxid);
+    let groupSeed = null;
+    try { groupSeed = hexToBytes(rec.group_id); } catch {}
+    if (!groupSeed || groupSeed.length !== 8) continue;
+    const stillPending = [];
+    let publishedNow = 0;
+    let lastErr = null;
+    for (const vout of rec.pending_vouts) {
+      const i = vout;
+      const iBytes = new Uint8Array([i & 0xff, (i >> 8) & 0xff, 0, 0, 0, 0, 0, 0]);
+      const suffix = sha256(new Uint8Array([...groupSeed, ...iBytes])).slice(0, 8);
+      const nonceBytes = new Uint8Array(16);
+      nonceBytes.set(groupSeed, 0);
+      nonceBytes.set(suffix, 8);
+      try {
+        await publishPreauthSale({
+          utxoTxid: rec.revealTxid,
+          utxoVout: vout,
+          minPriceSats: Number(rec.min_price_sats || 0),
+          expiry: Number(rec.expiry || 0),
+          nonceBytesOverride: nonceBytes,
+        });
+        publishedNow++;
+      } catch (e) {
+        lastErr = e?.message || String(e);
+        stillPending.push(vout);
+      }
+    }
+    if (stillPending.length === 0) {
+      _clearPendingChunkedListing(NET.name, rec.revealTxid);
+      const tickerStr = rec.ticker ? ` ${rec.ticker}` : '';
+      toast(`↻ Auto-published ${publishedNow} pending${tickerStr} chunk${publishedNow === 1 ? '' : 's'} from your last attempt.`, 'success', 6000);
+      invalidateMarketCache();
+    } else if (publishedNow > 0) {
+      _savePendingChunkedListing({
+        ...rec,
+        chunks_published: rec.chunks_published + publishedNow,
+        pending_vouts: stillPending,
+        last_error: lastErr || rec.last_error,
+        last_attempt_ts: _now,
+      });
+      const tickerStr = rec.ticker ? ` ${rec.ticker}` : '';
+      toast(`↻ Auto-published ${publishedNow}${tickerStr} chunk${publishedNow === 1 ? '' : 's'}; ${stillPending.length} still pending — see Holdings card.`, 'warn', 6000);
+    } else {
+      // Update last_error/timestamp on the record without changing counts.
+      _savePendingChunkedListing({
+        ...rec,
+        last_error: lastErr || rec.last_error,
+        last_attempt_ts: _now,
+      });
+      // Silent — user sees the existing banner on the holdings card.
+    }
+  }
+}
 // Persisted last-rendered holdings summary. Lets renderHoldings paint cached
 // asset cards INSTANTLY on tab entry while a fresh scan runs in the
 // background — eliminates the skeleton-then-list flash for returning users.
@@ -33826,6 +33897,14 @@ async function renderHoldings() {
     const _hasPending = arr.some(h => h.pending && h.pending.length > 0);
     if (_hasPending) startHoldingsAutoRefresh();
     else stopHoldingsAutoRefresh();
+    // Auto-resume pending chunked-listing recoveries in the background.
+    // The user already authorized the original publish (signed nonces);
+    // the resume is mechanically identical — just re-POST the same signed
+    // listings. Silent retry means a user who hit a transient worker
+    // throttle doesn't have to find + click the recovery banner; they
+    // just see the listings appear on next render. Throttled to one
+    // attempt per recovery record per session via _autoResumedThisSession.
+    _autoResumePendingChunkedListings();
   } catch (e) {
     const msg = String(e?.message || e);
     const isTimeout = /exceeded \d+s/.test(msg);
@@ -38230,6 +38309,18 @@ function applyMarketFilters() {
   let rowsForGrid = _marketSimpleMode ? rowsSimple : rowsFull;
   const minedAsksCount = rowsFull.filter(isMyAsk).length;
   if (_marketMineOnlyAsks) rowsForGrid = rowsForGrid.filter(isMyAsk);
+  // Auto-prune near-expiry listings (≤60s left) from the buyer-facing
+  // ladder. They're racy to fill and already excluded from best-ask /
+  // BEST PRICE analytics. Hiding them lets the orderbook "resolve
+  // itself" — stale listings drop out naturally before expiry hits
+  // rather than sitting visible with "expires in 0m" labels enticing
+  // a normie to click and lose the race. Makers still see their own
+  // about-to-expire listings via the Mine toggle path above (which
+  // bypasses this filter) and the Holdings → Your open orders panel.
+  if (!_marketMineOnlyAsks) {
+    const _expirySafeguard = Math.floor(Date.now() / 1000) + 60;
+    rowsForGrid = rowsForGrid.filter(l => Number(l.expiry || 0) > _expirySafeguard);
+  }
   // Collapse chunked-preauth groups (publishPreauthSaleChunks) into one tile
   // per group. Single-chunk groups pass through unchanged so non-chunked
   // listings render exactly as before. Applied after mine-only filter so a
