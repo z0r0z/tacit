@@ -15622,6 +15622,204 @@ async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
   return { offer, claim: j.claim, commit_txid: offer.commit_txid, split_txid: sellerUtxo._splitTxid || null };
 }
 
+// Batched bid-fulfilment: amortize the seller's CXFER auto-split across N
+// bids in ONE multi-recipient CXFER instead of N independent CXFERs. Pure
+// flow-level win — uses the existing T_CXFER multi-output format already
+// shipped + indexed by the worker, so there's no SPEC change, no new
+// opcode, no schema migration.
+//
+// What's actually saved:
+//   - Per-fill auto-split is currently ~400 vB (CXFER commit + reveal,
+//     1 asset input → 1 split output + change).
+//   - Batched: 1 CXFER (~500-700 vB) producing N matching child UTXOs.
+//   - For N=5 sells where every fill needs a split, seller's auto-split
+//     bill drops from ~2,000 vB → ~600 vB (≈70% off the SPLIT portion).
+//   - The atomic-intent commit per bid remains sequential (Phase 2 work).
+//
+// Settlement-side wins still belong to the bidder — each bidder broadcasts
+// their own reveal whenever they Take. The seller's bill is just commits
+// + splits; this PR cuts splits.
+//
+// Falls back to per-bid fulfilBidIntent in all non-batchable cases:
+//   - bids.length === 1 (no batching gain).
+//   - Mixed asset_ids (CXFER can't span assets).
+//   - No single seller UTXO covers Σ fillAmounts (multi-input split would
+//     need its own kernel work; deferred).
+//   - bids.length > 7 (T_CXFER caps outputs at m=8 = 7 recipients + 1
+//     change). Caller's batching layer would just chunk into rounds of 7.
+async function fulfilBidIntentBatch({ bids, onProgress = null }) {
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!Array.isArray(bids) || bids.length === 0) throw new Error('bids required');
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+
+  // N=1 fast path: zero behavior change.
+  if (bids.length === 1) {
+    const r = await fulfilBidIntent({ bid: bids[0].bid, fillAmount: bids[0].fillAmount });
+    return { fills: [{ bid_id: bids[0].bid.bid_id, result: r }], split_txid: r.split_txid || null };
+  }
+
+  // Compute each bid's effective fill amount (variable-fill scaling) and
+  // validate up front so the CXFER doesn't broadcast on a malformed input.
+  const N = bids.length;
+  const expanded = [];
+  for (let i = 0; i < N; i++) {
+    const { bid, fillAmount } = bids[i];
+    if (!bid || !bid.bid_id || !bid.asset_id) throw new Error(`bids[${i}] invalid`);
+    const isVar = !!(bid.min_fill_amount && bid.min_fill_amount !== '0');
+    let fillAmtBI;
+    if (isVar) {
+      const remainingBI = BigInt(bid.remaining_amount || bid.amount || '0');
+      const minFillBI = BigInt(bid.min_fill_amount);
+      fillAmtBI = fillAmount != null ? BigInt(fillAmount) : remainingBI;
+      if (fillAmtBI < minFillBI) throw new Error(`bids[${i}] fillAmount below min_fill_amount`);
+      if (fillAmtBI > remainingBI) throw new Error(`bids[${i}] fillAmount exceeds remaining_amount`);
+    } else {
+      fillAmtBI = BigInt(bid.amount);
+      if (fillAmount != null && BigInt(fillAmount) !== fillAmtBI) {
+        throw new Error(`bids[${i}] whole-bid: fillAmount must equal bid.amount`);
+      }
+    }
+    expanded.push({ bid, fillAmount, fillAmtBI });
+  }
+
+  // CXFER spans one asset_id. Mixed-asset batches fall back to per-bid.
+  const assetIdHex = expanded[0].bid.asset_id;
+  if (!expanded.every(e => e.bid.asset_id === assetIdHex)) {
+    return await _fulfilBidIntentBatchFallback(expanded, _progress);
+  }
+
+  // Holdings + UTXO selection. The batched split needs ONE seller UTXO
+  // covering Σ fillAmounts (multi-input batched splits are doable but
+  // require kernel-sum work and a recovery-record schema bump; deferred).
+  const holdings = await scanHoldings();
+  const h = holdings.get(assetIdHex);
+  if (!h || h.utxos.length === 0) {
+    throw new Error('you hold none of this asset');
+  }
+  const totalNeeded = expanded.reduce((s, e) => s + e.fillAmtBI, 0n);
+  if (h.balance < totalNeeded) {
+    throw new Error(`insufficient balance: hold ${h.balance}, batch wants ${totalNeeded}`);
+  }
+  // Prefer exact-match per bid when possible — if every bid already has an
+  // exact UTXO match, no split is needed and there's no gain from batching.
+  // Fall back to per-bid in that case so we don't pay a useless CXFER fee.
+  const utxoPool = [...h.utxos];
+  let everyBidHasExact = true;
+  const claimedKeys = new Set();
+  for (const e of expanded) {
+    const idx = utxoPool.findIndex(u => u.amount === e.fillAmtBI && !claimedKeys.has(`${u.utxo.txid}:${u.utxo.vout}`));
+    if (idx < 0) { everyBidHasExact = false; break; }
+    claimedKeys.add(`${utxoPool[idx].utxo.txid}:${utxoPool[idx].utxo.vout}`);
+  }
+  if (everyBidHasExact) {
+    return await _fulfilBidIntentBatchFallback(expanded, _progress);
+  }
+
+  // Pick a single seller UTXO covering the batch total. If none covers
+  // it, fall back to per-bid (existing loop handles multi-input splits).
+  const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
+  const cover = sorted.find(u => u.amount >= totalNeeded);
+  if (!cover) {
+    return await _fulfilBidIntentBatchFallback(expanded, _progress);
+  }
+
+  // T_CXFER caps recipients at K=7 (m=8 with 1 change output). Beyond
+  // that the caller must chunk; for now we just fall back to per-bid.
+  if (N > 7) {
+    return await _fulfilBidIntentBatchFallback(expanded, _progress);
+  }
+
+  // Wallet backup + sat funding confirmation — same gates the per-bid
+  // path uses (line ~15531).
+  if (!await ensureBurnerBackedUp(`Auto-split UTXO before fulfilling ${N} bids in one CXFER`)) {
+    throw new Error('cancelled');
+  }
+  const need = await estimateSatsForOp('cxfer');
+  if (!(await ensureSatsFunded(need, `Batched auto-split before fulfilling ${N} bids`))) {
+    throw new Error('cancelled');
+  }
+
+  // ONE batched CXFER: split `cover` into N child UTXOs, all to seller's
+  // own pubkey, each sized to one bid's fill amount. allowDuplicateRecipients
+  // is required because every recipient is the seller's same pubkey.
+  _progress('batched-split-start');
+  const myPubHex = bytesToHex(wallet.pub);
+  const splitResult = await buildAndBroadcastCXferMulti({
+    assetIdHex,
+    recipients: expanded.map(e => ({ pubHex: myPubHex, amount: e.fillAmtBI })),
+    forceUtxos: [cover],
+    allowDuplicateRecipients: true,
+  });
+  await waitForTxVisible(splitResult.revealTxid);
+
+  // Now call fulfilBidIntent for each bid with the matching child UTXO
+  // pre-set so it skips its internal split path. Sequential — each bid's
+  // commit tx is independent. Phase 2 would batch these commits into one
+  // tx with N P2TR outputs; that needs a worker storage change to permit
+  // N atomic intents at the same commit_txid (different vouts), so it's
+  // deferred to a follow-up.
+  const fills = [];
+  let lastErr = null;
+  for (let i = 0; i < N; i++) {
+    const r0 = splitResult.recipients[i];
+    const sellerUtxo = {
+      utxo: { txid: splitResult.revealTxid, vout: r0.vout },
+      amount: expanded[i].fillAmtBI,
+      blinding: r0.blinding,
+      _splitTxid: splitResult.revealTxid,
+    };
+    try {
+      _progress(`bid-commit-${i + 1}-of-${N}`);
+      const r = await fulfilBidIntent({
+        bid: expanded[i].bid,
+        sellerUtxo,
+        fillAmount: expanded[i].fillAmount,
+      });
+      fills.push({ bid_id: expanded[i].bid.bid_id, result: r });
+      // Brief settle delay between commits so mempool propagation has
+      // time before the next UTXO lookup. Matches the per-fill loop's
+      // 1.5s delay.
+      if (i < N - 1) await new Promise(res => setTimeout(res, 1500));
+    } catch (e) {
+      lastErr = e?.message || String(e);
+      fills.push({ bid_id: expanded[i].bid.bid_id, error: lastErr });
+      break;
+    }
+  }
+
+  return {
+    split_txid: splitResult.revealTxid,
+    fills,
+    error: lastErr,
+  };
+}
+
+// Internal helper for fulfilBidIntentBatch: drops back to a sequential
+// per-bid loop (using the existing single-fulfilBidIntent path) when the
+// batch can't share a single CXFER split. Centralizes the fallback so
+// every guard in the batch entrypoint returns the same shape.
+async function _fulfilBidIntentBatchFallback(expanded, _progress) {
+  const fills = [];
+  let lastErr = null;
+  for (let i = 0; i < expanded.length; i++) {
+    try {
+      _progress(`bid-commit-${i + 1}-of-${expanded.length}-unbatched`);
+      const r = await fulfilBidIntent({
+        bid: expanded[i].bid,
+        fillAmount: expanded[i].fillAmount,
+      });
+      fills.push({ bid_id: expanded[i].bid.bid_id, result: r });
+      if (i < expanded.length - 1) await new Promise(res => setTimeout(res, 1500));
+    } catch (e) {
+      lastErr = e?.message || String(e);
+      fills.push({ bid_id: expanded[i].bid.bid_id, error: lastErr });
+      break;
+    }
+  }
+  return { split_txid: null, fills, error: lastErr };
+}
+
 // ============== MINT BUILDER ==============
 // Issuer creates an additional supply commitment for an existing mintable asset_id.
 // Structure mirrors CETCH (commit + reveal Taproot script-path), but the envelope
@@ -46794,6 +46992,78 @@ function _wireSwapTile(scope) {
           _renderSwapProgress(progressEl, progressItems);
         }
       }
+      // Batched bid-fulfilment fast path (sell side). When the sell route is
+      // two or more bids of the same asset, share ONE CXFER auto-split
+      // across all N fills instead of N independent CXFER splits. Saves
+      // ~30-50% on the seller's on-chain cost when splits are needed
+      // (typical case — seller's UTXOs rarely match bid amounts exactly).
+      // The atomic-intent commits stay sequential (one per bid); Phase 2
+      // would batch those too but needs worker storage permitting N
+      // intents at one commit_txid with different vouts.
+      //
+      // Falls back silently to the per-fill loop in all non-batchable
+      // cases (single bid, mixed asset_ids, no single UTXO covers the
+      // batch total, >7 bids). fulfilBidIntentBatch handles all the
+      // fallback logic internally and returns a uniform fills[] shape.
+      const _allBid = dir === 'sell'
+        && result.plan.length >= 2
+        && result.plan.every(c => c.kind === 'bid' || c.kind === 'bid-var');
+      if (_allBid) {
+        for (let i = 0; i < result.plan.length; i++) progressItems[i].status = 'broadcasting';
+        actionBtn.textContent = `batching ${result.plan.length} fulfilments…`;
+        _renderSwapProgress(progressEl, progressItems);
+        try {
+          const batch = await fulfilBidIntentBatch({
+            bids: result.plan.map(c => ({
+              bid: c.b,
+              fillAmount: c.kind === 'bid-var' ? c.amt : null,
+            })),
+          });
+          // Map per-bid results back to progress rows. Each fill has either
+          // a `result` (success — commit_txid in r.commit_txid) or an
+          // `error` (per-bid throw). Stamp txids + statuses accordingly.
+          const fills = Array.isArray(batch.fills) ? batch.fills : [];
+          let _splitSuffix = batch.split_txid ? ` · split via ${batch.split_txid.slice(0, 8)}…` : '';
+          for (let i = 0; i < result.plan.length; i++) {
+            const f = fills[i];
+            const c = result.plan[i];
+            if (f && f.result) {
+              progressItems[i].status = 'done';
+              progressItems[i].txid = f.result.commit_txid || null;
+              filled++;
+              if (typeof c.amt === 'bigint') applyOptimisticDebit(aid, c.amt);
+            } else if (f && f.error) {
+              progressItems[i].status = 'failed';
+              progressItems[i].err = f.error;
+              lastErr = f.error;
+            } else {
+              // Bid wasn't reached (batch broke early). Keep as queued so
+              // the toast reflects partial state.
+              progressItems[i].status = 'queued';
+            }
+          }
+          _renderSwapProgress(progressEl, progressItems);
+          // Mark consumed UTXOs across both the CXFER split + each commit.
+          const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
+          await _mark(batch.split_txid);
+          await Promise.all(fills.filter(f => f?.result?.commit_txid).map(f => _mark(f.result.commit_txid)));
+          // Best-effort fee echo across all the batched commits + the
+          // batched split. Each commit pays its own fee; the split fee
+          // amortizes across the batch.
+          try {
+            if (batch.split_txid) _totalFeesSats += await _collectSwapFee({ commit_txid: batch.split_txid });
+            for (const f of fills) {
+              if (f?.result?.commit_txid) _totalFeesSats += await _collectSwapFee({ commit_txid: f.result.commit_txid });
+            }
+          } catch {}
+        } catch (e) {
+          lastErr = e?.message || String(e);
+          progressItems[0].status = 'failed';
+          progressItems[0].err = lastErr;
+          for (let i = 1; i < result.plan.length; i++) progressItems[i].status = 'queued';
+          _renderSwapProgress(progressEl, progressItems);
+        }
+      }
       // Per-fill loop. Runs in two cases:
       //   1. Mixed-kind routes (preauth + intent) — batching unavailable.
       //   2. Sell-side fulfilments (each is an independent intent claim).
@@ -52598,7 +52868,7 @@ export {
   // Bid-intent flow functions — exported for the signet e2e harness so
   // it can drive publish / fulfil from headless Node without spinning up
   // the browser UI.
-  publishBidIntent, fulfilBidIntent, cancelBidIntent, browseBidIntents,
+  publishBidIntent, fulfilBidIntent, fulfilBidIntentBatch, cancelBidIntent, browseBidIntents,
   // Preauth-sale canonical messages + sale_id derivation (SPEC §5.7.8).
   // Exported for dapp↔worker contract tests so the exact bytes signed by
   // the dapp can be re-hashed against the worker's helper and compared.
