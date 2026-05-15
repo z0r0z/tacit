@@ -9,7 +9,7 @@ import {
   P_FR, A_BJJ, D_BJJ, ORDER_BJJ, N_BJJ, COFACTOR_BJJ,
   mod, modPow, modInv, modSqrt,
   onCurve, isIdentity, eq, addPoint, mulScalar,
-  packPoint, unpackPoint, pedersenBJJ,
+  packPoint, unpackPoint, pedersenBJJ, inSubgroup,
   H_BJJ, G_BJJ, H_BJJ_meta, G_BJJ_meta, deriveBJJGenerator,
 } from './amm-bjj.mjs';
 
@@ -126,6 +126,24 @@ test('unpack rejects out-of-field v', () => {
   let v = P_FR;
   for (let i = 0; i < 32; i++) { buf[i] = Number(v & 0xffn); v >>= 8n; }
   return unpackPoint(buf) === null;
+});
+
+// Subgroup-membership tests. BJJ has cofactor 8: small-order points
+// (orders 2, 4, 8) and 2·n_BJJ-order points are ON the curve but NOT in
+// the prime subgroup. Pedersen binding requires subgroup membership.
+test('inSubgroup(identity) is true', () => inSubgroup([0n, 1n]));
+test('inSubgroup(H_BJJ) is true (NUMS generator)', () => inSubgroup(H_BJJ()));
+test('inSubgroup(G_BJJ) is true (NUMS generator)', () => inSubgroup(G_BJJ()));
+test('inSubgroup(a·H_BJJ) is true for arbitrary a', () => {
+  return inSubgroup(mulScalar(H_BJJ(), 0xfeedfacecafebabe1234567890abcdefn));
+});
+test('inSubgroup((0,-1)) is false (order-2 point)', () => {
+  const order2 = [0n, mod(-1n)];
+  return !inSubgroup(order2);
+});
+test('unpackPoint rejects packed order-2 point (small-order)', () => {
+  const order2 = [0n, mod(-1n)];
+  return unpackPoint(packPoint(order2)) === null;
 });
 
 console.log('\nBJJ Pedersen commitment');

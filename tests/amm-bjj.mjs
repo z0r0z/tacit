@@ -137,6 +137,18 @@ export function packPoint(P) {
   if (P[0] > PM1D2) buf[31] |= 0x80;
   return buf;
 }
+// True iff P lies in the prime-order subgroup. BabyJubJub has cofactor 8;
+// small-order points (orders 2, 4, 8) and points of order 2·n_BJJ / 4·n_BJJ
+// are ON the curve but NOT in the prime-order subgroup. Pedersen binding
+// relies on the discrete-log assumption in the prime-order subgroup;
+// cofactor-coset points break this and let an adversary open the "same"
+// commitment to two different scalar combinations. We check by verifying
+// `n_BJJ · P == identity` (one scalar mult, ~1 ms in pure JS).
+export function inSubgroup(P) {
+  if (isIdentity(P)) return true;
+  return isIdentity(mulScalar(P, N_BJJ));
+}
+
 export function unpackPoint(buf) {
   if (buf.length !== 32) throw new Error('bad length');
   const work = new Uint8Array(buf);
@@ -154,7 +166,13 @@ export function unpackPoint(buf) {
   let u = modSqrt(u2);
   if (u === null) return null;
   if ((u > PM1D2) !== sign) u = mod(-u);
-  return [u, v];
+  const P = [u, v];
+  // Reject small-order / non-prime-subgroup points. The Pedersen commitment
+  // binding (and the sigma cross-curve binding built on top of it) relies on
+  // the discrete-log assumption in the prime-order subgroup; cofactor-coset
+  // points break this. Cost: one scalar mult.
+  if (!inSubgroup(P)) return null;
+  return P;
 }
 
 // ---- NUMS generator derivation (AMM.md §"BabyJubJub NUMS try-and-increment") ----

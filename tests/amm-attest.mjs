@@ -1,12 +1,21 @@
-// Preconfirmation layer for tacit AMM — T_AMM_ATTEST (opcode 0x30).
+// Preconfirmation layer for tacit — T_INTENT_ATTEST (opcode 0x30,
+// SPEC.md §5.17). Scope-generic: AMM pools, orderbook pairs, and any
+// future intent surface share this opcode via a 32-byte `scope_id`
+// discriminator the indexer treats as opaque.
 //
-// The protocol layer (T_SWAP_BATCH, T_LP_ADD, T_LP_REMOVE) settles at the
-// Bitcoin block clock (~10 min). For perceived-UX latency, the worker
-// maintains a sparse Merkle tree of the **open intent set** and attests to
-// its root on a per-block cadence. Traders receive a Merkle membership proof
-// for their intent within ~30 sec of submission; the worker periodically
-// broadcasts a `T_AMM_ATTEST` envelope on chain so the attestation chain is
-// anchored to Bitcoin (equivocation detectable at depth-1).
+// The protocol layer (T_SWAP_BATCH, T_LP_ADD, T_LP_REMOVE for AMM;
+// T_AXFER_VAR for orderbook) settles at the Bitcoin block clock
+// (~10 min). For perceived-UX latency, the worker maintains a sparse
+// Merkle tree of the **open intent set** per scope and attests to its
+// root on a per-block cadence. Traders receive a Merkle membership
+// proof for their intent within ~30 sec of submission; the worker
+// periodically broadcasts a `T_INTENT_ATTEST` envelope on chain so the
+// attestation chain is anchored to Bitcoin (equivocation detectable
+// at depth-1).
+//
+// For AMM scope, scope_id == pool_id. For orderbook scope, scope_id =
+// SHA256("tacit-orderbook-pair-v1" || asset_id_min || asset_id_max)
+// (see SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md).
 //
 // Two layers, fully independent:
 //
@@ -24,22 +33,29 @@
 // degrade the network; traders register intents with ≥ 2 workers and
 // settlers monitor all attestation chains.
 //
-// Wire format (T_AMM_ATTEST, opcode 0x30):
+// Wire format (T_INTENT_ATTEST, opcode 0x30):
 //   opcode(1)             = 0x30
-//   pool_id(32)
-//   root(32)              — Merkle root of the worker's open-intent set
-//   height_LE(4)          — u32, Bitcoin block height the root is "as of"
+//   scope_id(32)          — opaque scope discriminator (AMM: pool_id;
+//                           orderbook: SHA256(pair domain || asset_min ||
+//                           asset_max); other surfaces define their own)
+//   intent_pool_hash(32)  — SHA256(sorted_intent_id_0 || ... || sorted_intent_id_{N-1})
+//                           — linear hash over the worker's open-intent set
+//                           sorted lex-ascending. NOT an SMT root.
+//   observed_height_LE(4) — u32, Bitcoin block height the snapshot is "as of"
 //   timestamp_LE(8)       — u64, worker's wall-clock unix seconds at sign
-//   intent_count_LE(2)    — u16, number of intents in the attested tree
-//   ipfs_cid_len(1)       — u8, 1..64
-//   ipfs_cid(ipfs_cid_len) — UTF-8 IPFS CID for the pinned leaf set
+//   intent_count_LE(2)    — u16, number of intents committed in this snapshot
+//   snapshot_uri_len(1)   — u8, 0..255 (0 = no URI; informational only,
+//                           never fetched by indexer / not consensus-bound)
+//   snapshot_uri(snapshot_uri_len) — UTF-8 HTTP(S) endpoint or IPFS CID prefix
 //   worker_pubkey(33)     — compressed secp256k1
-//   worker_sig(64)        — BIP-340 over SHA256("tacit-amm-attest-v1"
+//   worker_sig(64)        — BIP-340 over SHA256("tacit-intent-attest-v1"
 //                                                || all preceding fields)
 //
-// Indexer ordering rule: per (pool_id, worker_pubkey, height), at most one
-// canonical T_AMM_ATTEST. Two valid attestations with same (worker, pool,
-// height) but different roots = equivocation, worker is flagged compromised.
+// Indexer ordering rule: per (scope_id, worker_pubkey, height), at most one
+// canonical T_INTENT_ATTEST. Two valid attestations with same
+// (worker, scope, height) but different roots = equivocation; worker is
+// flagged compromised. Equivocation is detected per-scope, so a worker
+// can attest to many scopes (AMM pools + orderbook pairs) independently.
 
 import * as secp from '@noble/secp256k1';
 import { sha256 } from '@noble/hashes/sha256';
@@ -48,10 +64,48 @@ import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 import { signSchnorr, verifySchnorr } from './composition.mjs';
 import { canonicalize } from './amm-jcs.mjs';
 
-export const OPCODE_T_AMM_ATTEST = 0x30;
+export const OPCODE_T_INTENT_ATTEST = 0x30;
+// Legacy alias retained for any callers still importing the old name;
+// new code SHOULD use OPCODE_T_INTENT_ATTEST.
+export const OPCODE_T_AMM_ATTEST = OPCODE_T_INTENT_ATTEST;
 export const SMT_DEPTH = 256;                                // intent_id is 32 bytes = 256 bits; leaves are full-key keyed
-export const ATTEST_DOMAIN = new TextEncoder().encode('tacit-amm-attest-v1');
+export const ATTEST_DOMAIN = new TextEncoder().encode('tacit-intent-attest-v1');
 export const EMPTY_LEAF = sha256(new TextEncoder().encode('tacit-amm-empty-leaf-v1'));
+
+// ---- Canonical on-chain intent_pool_hash (AMM.md §"Intent-pool hash") ----
+//
+// The on-chain T_INTENT_ATTEST envelope commits to a LINEAR SHA256 over the
+// worker's sorted open-intent set:
+//
+//   intent_pool_hash = SHA256(sorted_iid_0 || sorted_iid_1 || ... || sorted_iid_{N-1})
+//
+// where each `sorted_iid_i` is a 32-byte intent_id sorted lex-ascending. This
+// is byte-identical across implementations and is what the indexer hashes
+// when verifying inclusion. Empty pool: `intent_pool_hash = SHA256("")` per
+// spec — useful for liveness attestations with no open intents.
+//
+// (The OpenIntentSMT class below is a separate in-memory data structure for
+// off-chain efficient membership-proof generation; its root is NOT what
+// goes in the on-chain envelope.)
+export function computeIntentPoolHash(intentIds) {
+  if (!Array.isArray(intentIds)) throw new Error('intentIds must be Array');
+  // Sort lex-ascending in 32-byte form.
+  const sorted = intentIds
+    .map(id => id instanceof Uint8Array ? id : hexToBytes(id))
+    .map(id => { if (id.length !== 32) throw new Error('intent_id must be 32 bytes'); return id; })
+    .sort((a, b) => {
+      for (let i = 0; i < 32; i++) { if (a[i] !== b[i]) return a[i] - b[i]; }
+      return 0;
+    });
+  // Reject duplicates (same defense-in-depth as validator's strict-ascending).
+  for (let i = 1; i < sorted.length; i++) {
+    let cmp = 0;
+    for (let j = 0; j < 32; j++) { if (sorted[i][j] !== sorted[i-1][j]) { cmp = sorted[i][j] - sorted[i-1][j]; break; } }
+    if (cmp === 0) throw new Error(`duplicate intent_id at index ${i}`);
+  }
+  if (sorted.length === 0) return sha256(new Uint8Array(0));
+  return sha256(concatBytes(...sorted));
+}
 
 // =========================================================================
 // Sparse Merkle Tree (SMT)
@@ -242,28 +296,47 @@ function asBytes(x, len, name) {
 }
 
 // Build the canonical pre-sig payload bytes (everything BEFORE worker_sig).
-export function buildAttestPreSig({ poolId, root, height, timestamp, intentCount, ipfsCid, workerPubkey }) {
-  const pid = asBytes(poolId, 32, 'poolId');
-  const r   = asBytes(root, 32, 'root');
+export function buildAttestPreSig({
+  scopeId, poolId,
+  intentPoolHash, root,            // `root` accepted as legacy alias
+  height, timestamp, intentCount,
+  snapshotUri, ipfsCid,            // `ipfsCid` accepted as legacy alias
+  workerPubkey,
+}) {
+  const scope = scopeId ?? poolId;
+  if (scope == null) throw new Error('scopeId (or poolId alias) is required');
+  const sid = asBytes(scope, 32, 'scopeId');
+  const iph = asBytes(intentPoolHash ?? root, 32, 'intentPoolHash');
   const wpk = asBytes(workerPubkey, 33, 'workerPubkey');
-  const cidBytes = new TextEncoder().encode(ipfsCid);
-  if (cidBytes.length < 1 || cidBytes.length > 64) throw new Error('ipfsCid length 1..64 bytes');
+  // snapshot_uri is informational; spec range is 0..255 bytes UTF-8.
+  const uri = snapshotUri ?? ipfsCid ?? '';
+  const uriBytes = new TextEncoder().encode(uri);
+  if (uriBytes.length > 255) throw new Error('snapshot_uri length must be 0..255 bytes');
   return concatBytes(
-    new Uint8Array([OPCODE_T_AMM_ATTEST]),
-    pid, r,
+    new Uint8Array([OPCODE_T_INTENT_ATTEST]),
+    sid, iph,
     u32LE(height),
     u64LE(timestamp),
     u16LE(intentCount),
-    new Uint8Array([cidBytes.length]), cidBytes,
+    new Uint8Array([uriBytes.length]), uriBytes,
     wpk,
   );
 }
 
 // Worker-side: sign the attestation under workerPrivkey.
-export function signAttestation({ poolId, root, height, timestamp, intentCount, ipfsCid, workerPrivkey }) {
+export function signAttestation({
+  scopeId, poolId, intentPoolHash, root,
+  height, timestamp, intentCount,
+  snapshotUri, ipfsCid,
+  workerPrivkey,
+}) {
   const wpk = secp.ProjectivePoint.fromPrivateKey(workerPrivkey).toRawBytes(true);
   const preSig = buildAttestPreSig({
-    poolId, root, height, timestamp, intentCount, ipfsCid, workerPubkey: wpk,
+    scopeId: scopeId ?? poolId,
+    intentPoolHash: intentPoolHash ?? root,
+    height, timestamp, intentCount,
+    snapshotUri: snapshotUri ?? ipfsCid,
+    workerPubkey: wpk,
   });
   const msgHash = sha256(concatBytes(ATTEST_DOMAIN, preSig));
   return signSchnorr(msgHash, workerPrivkey);
@@ -287,20 +360,28 @@ export function decodeAttest(payload) {
   if (!(payload instanceof Uint8Array)) throw new Error('payload must be Uint8Array');
   if (payload.length < 1 + 32 + 32 + 4 + 8 + 2 + 1 + 33 + 64) throw new Error('truncated');
   let off = 0;
-  if (payload[off++] !== OPCODE_T_AMM_ATTEST) throw new Error(`expected opcode 0x${OPCODE_T_AMM_ATTEST.toString(16)}`);
-  const poolId = payload.slice(off, off + 32); off += 32;
-  const root = payload.slice(off, off + 32); off += 32;
+  if (payload[off++] !== OPCODE_T_INTENT_ATTEST) throw new Error(`expected opcode 0x${OPCODE_T_INTENT_ATTEST.toString(16)}`);
+  const scopeId = payload.slice(off, off + 32); off += 32;
+  const intentPoolHash = payload.slice(off, off + 32); off += 32;
   const height = readU32LE(payload, off); off += 4;
   const timestamp = readU64LE(payload, off); off += 8;
   const intentCount = readU16LE(payload, off); off += 2;
-  const cidLen = payload[off++];
-  if (cidLen < 1 || cidLen > 64) throw new Error('ipfs_cid_len out of range');
-  if (off + cidLen + 33 + 64 > payload.length) throw new Error('truncated: cid/pubkey/sig');
-  const ipfsCid = new TextDecoder('utf-8').decode(payload.slice(off, off + cidLen)); off += cidLen;
+  const uriLen = payload[off++];
+  // snapshot_uri_len: 0..255 per spec; 0 = no URI (informational field only).
+  if (off + uriLen + 33 + 64 > payload.length) throw new Error('truncated: snapshot_uri/pubkey/sig');
+  const snapshotUri = new TextDecoder('utf-8').decode(payload.slice(off, off + uriLen)); off += uriLen;
   const workerPubkey = payload.slice(off, off + 33); off += 33;
   const workerSig = payload.slice(off, off + 64); off += 64;
   if (off !== payload.length) throw new Error('trailing bytes after payload');
-  return { poolId, root, height, timestamp, intentCount, ipfsCid, workerPubkey, workerSig };
+  // Return canonical names + legacy aliases (`root`, `ipfsCid`, `poolId`)
+  // for backward-compatible field access.
+  return {
+    scopeId, poolId: scopeId,
+    intentPoolHash, root: intentPoolHash,
+    height, timestamp, intentCount,
+    snapshotUri, ipfsCid: snapshotUri,
+    workerPubkey, workerSig,
+  };
 }
 
 // Verify a decoded attestation's worker_sig.
@@ -315,10 +396,12 @@ export function verifyAttestSig(decoded) {
 // =========================================================================
 //
 // Worker pins a JCS-canonical JSON blob containing the open-intent leaves.
-// Anyone can re-pin (content-addressed). The on-chain T_AMM_ATTEST commits
-// the root and the CID, so the worker can't equivocate on the bytes.
+// Anyone can re-pin (content-addressed). The on-chain T_INTENT_ATTEST commits
+// the intent_pool_hash and the snapshot_uri so the worker can't equivocate.
 
-export function buildPinningBlob({ poolId, root, height, timestamp, intentMap }) {
+export function buildPinningBlob({ scopeId, poolId, intentPoolHash, root, height, timestamp, intentMap }) {
+  const scope = scopeId ?? poolId;
+  const iph = intentPoolHash ?? root;
   // intentMap: Map<intent_id_hex, intent_msg_hash_hex> or { intent_id_hex: hash_hex }
   const entries = intentMap instanceof Map
     ? [...intentMap.entries()]
@@ -326,9 +409,9 @@ export function buildPinningBlob({ poolId, root, height, timestamp, intentMap })
   // Sort by intent_id_hex ascending for canonical ordering.
   entries.sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
   return canonicalize({
-    tacit_amm_attest: {
-      pool_id: typeof poolId === 'string' ? poolId : bytesToHex(poolId),
-      root: typeof root === 'string' ? root : bytesToHex(root),
+    tacit_intent_attest: {
+      scope_id: typeof scope === 'string' ? scope : bytesToHex(scope),
+      intent_pool_hash: typeof iph === 'string' ? iph : bytesToHex(iph),
       height,
       timestamp: typeof timestamp === 'bigint' ? Number(timestamp) : timestamp,
       leaves: entries.map(([id, hash]) => ({
@@ -351,7 +434,7 @@ export function buildPinningBlob({ poolId, root, height, timestamp, intentMap })
 //   1. Wire format well-formed (decodeAttest succeeded)
 //   2. worker_sig verifies (verifyAttestSig)
 //   3. envelope_height >= decoded.height (worker can't claim future state)
-//   4. If an existing attestation exists at the same (poolId, workerPubkey, height)
+//   4. If an existing attestation exists at the same (scopeId, workerPubkey, height)
 //      with a DIFFERENT root → equivocation flag the worker, reject this envelope
 //   5. Otherwise: accept; record canonical attestation
 
@@ -368,7 +451,7 @@ export function validateAmmAttest({
     return { valid: false, reason: `claimed height ${env.height} > envelope height ${envelopeHeight}` };
   }
 
-  const key = `${bytesToHex(env.poolId)}:${bytesToHex(env.workerPubkey)}:${env.height}`;
+  const key = `${bytesToHex(env.scopeId)}:${bytesToHex(env.workerPubkey)}:${env.height}`;
   const existing = indexerState.attestationChain.get(key);
   if (existing) {
     // Same (worker, pool, height) seen before. Check root match.
@@ -414,7 +497,10 @@ export function newIndexerAttestState() {
 
 export function verifySoftConfirm({
   intentId, intentMsgHash, merkleProof,
-  poolId, root, height, timestamp, intentCount, ipfsCid,
+  scopeId, poolId,                                         // poolId accepted as alias
+  intentPoolHash, root,                                    // root accepted as alias
+  height, timestamp, intentCount,
+  snapshotUri, ipfsCid,                                    // ipfsCid accepted as alias
   workerPubkey, workerSig,
   trustedWorkers,                                         // Set<workerPubkey_hex>
   equivocators,                                            // Set<workerPubkey_hex>
@@ -422,6 +508,9 @@ export function verifySoftConfirm({
   nowSeconds = Math.floor(Date.now() / 1000),
 }) {
   const wpkHex = bytesToHex(workerPubkey instanceof Uint8Array ? workerPubkey : hexToBytes(workerPubkey));
+  const scope = scopeId ?? poolId;
+  const iph = intentPoolHash ?? root;
+  const uri = snapshotUri ?? ipfsCid ?? '';
 
   if (equivocators && equivocators.has(wpkHex)) {
     return { ok: false, status: 'equivocator', reason: 'worker is flagged for equivocation' };
@@ -438,10 +527,10 @@ export function verifySoftConfirm({
 
   // Worker signature.
   const decoded = {
-    poolId: poolId instanceof Uint8Array ? poolId : hexToBytes(poolId),
-    root: root instanceof Uint8Array ? root : hexToBytes(root),
+    scopeId: scope instanceof Uint8Array ? scope : hexToBytes(scope),
+    intentPoolHash: iph instanceof Uint8Array ? iph : hexToBytes(iph),
     height, timestamp: ts, intentCount,
-    ipfsCid,
+    snapshotUri: uri,
     workerPubkey: workerPubkey instanceof Uint8Array ? workerPubkey : hexToBytes(workerPubkey),
     workerSig: workerSig instanceof Uint8Array ? workerSig : hexToBytes(workerSig),
   };
@@ -449,9 +538,17 @@ export function verifySoftConfirm({
     return { ok: false, status: 'forged', reason: 'worker signature does not verify' };
   }
 
-  // Merkle proof.
-  if (!verifySMTProof({ intentId, intentMsgHash, proof: merkleProof, root: decoded.root })) {
-    return { ok: false, status: 'forged', reason: 'Merkle proof does not reconstruct root' };
+  // Merkle proof — verified against the SMT root the worker supplied
+  // off-chain (as part of the soft-confirm bundle), NOT against the on-chain
+  // intent_pool_hash. The on-chain commitment is a flat SHA256 over sorted
+  // intent_ids (see computeIntentPoolHash); the SMT is an off-chain helper
+  // for efficient membership proofs and its root is a separate quantity.
+  if (merkleProof !== undefined && merkleProof !== null) {
+    const smtRoot = merkleProof.smtRoot ?? decoded.intentPoolHash;
+    const proofPath = Array.isArray(merkleProof) ? merkleProof : merkleProof.path;
+    if (!verifySMTProof({ intentId, intentMsgHash, proof: proofPath, root: smtRoot })) {
+      return { ok: false, status: 'forged', reason: 'Merkle proof does not reconstruct root' };
+    }
   }
 
   return { ok: true, status: 'soft_confirmed' };

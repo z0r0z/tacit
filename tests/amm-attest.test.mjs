@@ -197,26 +197,35 @@ test('mutated height ⇒ sig fails', () => {
   return !verifyAttestSig(dec);
 });
 
-test('rejects too-long ipfs_cid', () => {
+test('rejects snapshot_uri > 255 bytes', () => {
   try {
     encodeAttest({
       poolId: samplePoolId, root: sampleRoot,
       height: 1, timestamp: 1n, intentCount: 0,
-      ipfsCid: 'x'.repeat(65), workerPrivkey: workerSk,
+      snapshotUri: 'x'.repeat(256), workerPrivkey: workerSk,
     });
     return false;
-  } catch (e) { return /ipfsCid length/.test(e.message); }
+  } catch (e) { return /snapshot_uri length/.test(e.message); }
 });
 
-test('rejects empty ipfs_cid', () => {
-  try {
-    encodeAttest({
-      poolId: samplePoolId, root: sampleRoot,
-      height: 1, timestamp: 1n, intentCount: 0,
-      ipfsCid: '', workerPrivkey: workerSk,
-    });
-    return false;
-  } catch (e) { return /ipfsCid length/.test(e.message); }
+test('accepts empty snapshot_uri (spec: 0..255)', () => {
+  const enc = encodeAttest({
+    poolId: samplePoolId, root: sampleRoot,
+    height: 1, timestamp: 1n, intentCount: 0,
+    snapshotUri: '', workerPrivkey: workerSk,
+  });
+  const dec = decodeAttest(enc);
+  return dec.snapshotUri === '' && verifyAttestSig(dec);
+});
+
+test('accepts snapshot_uri up to 255 bytes', () => {
+  const enc = encodeAttest({
+    poolId: samplePoolId, root: sampleRoot,
+    height: 1, timestamp: 1n, intentCount: 0,
+    snapshotUri: 'x'.repeat(255), workerPrivkey: workerSk,
+  });
+  const dec = decodeAttest(enc);
+  return dec.snapshotUri.length === 255 && verifyAttestSig(dec);
 });
 
 test('decode rejects truncated payload', () => {

@@ -55,7 +55,7 @@ for (const a of [0n, 1n, 12345n, (1n << 32n), (1n << 63n), (1n << 64n) - 1n]) {
   samples.push({ a, r_secp, r_BJJ, ...out });
   test(`prove+verify a=${a}`, () => verifyXCurve(out.proof, out.C_secp_bytes, out.C_BJJ_bytes));
 }
-test('proof is exactly 157 bytes', () => samples.every(s => s.proof.length === 157));
+test('proof is exactly 169 bytes (128-bit FS upgrade)', () => samples.every(s => s.proof.length === 169));
 test('C_secp is 33 bytes (compressed)', () => samples.every(s => s.C_secp_bytes.length === 33));
 test('C_BJJ is 32 bytes (packed)', () => samples.every(s => s.C_BJJ_bytes.length === 32));
 
@@ -191,7 +191,7 @@ test('challenge() depends on every input', () => {
   const e0 = challenge(cs, cb, as_, ab);
   cs[10] ^= 0x01;
   const e1 = challenge(cs, cb, as_, ab);
-  return e0 !== e1 && e0 < (1n << 80n) && e1 < (1n << 80n);
+  return e0 !== e1 && e0 < (1n << 128n) && e1 < (1n << 128n);
 });
 
 console.log('\nBenchmark (pure-JS BigInt; production uses circomlib WASM)');
