@@ -555,7 +555,7 @@ Replay protection — three distinct cases:
 
 A reference implementation of one specific wrapper (cBTC backed by
 native sats, federated multisig custody) is documented separately
-in `CBTC-ISSUER-DESIGN.md`. That document is **not part of this
+in `../design/CBTC-ISSUER-DESIGN.md`. That document is **not part of this
 spec**; it describes one *example* application of the convention.
 The TAC team MAY operate the instance described there, but doing so
 is not required by the protocol and does not grant TAC any special
@@ -752,7 +752,7 @@ Before this amendment merges into `SPEC.md`:
   `attestation.domain` field; T_WRAPPER_ATTEST validator-timing
   ambiguity; attestation-dedup cases not enumerated.
 - [x] Round 1 fix: removed `§5.21 Reference cBTC instance`; the
-  reference implementation lives in `CBTC-ISSUER-DESIGN.md`
+  reference implementation lives in `../design/CBTC-ISSUER-DESIGN.md`
   (separate doc), keeping SPEC.md purely about the convention.
 - [x] Round 1 fix: added `network_tag(1)` byte to
   `attestation_msg` and to the `T_WRAPPER_ATTEST` envelope.
@@ -815,7 +815,7 @@ Before this amendment merges into `SPEC.md`:
 - [ ] Indexer + dapp + worker implementation PR opened (separate).
 - [ ] Wrapper-registry integration tests landed.
 - [ ] cBTC reference issuer operational design doc landed
-  (separate file: `CBTC-ISSUER-DESIGN.md`).
+  (separate file: `../design/CBTC-ISSUER-DESIGN.md`).
 - [ ] First reference cBTC variant CETCHed on signet for testing.
 - [ ] Migration plan for AMM cBTC pools post-ceremony.
 
