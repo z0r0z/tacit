@@ -1545,8 +1545,19 @@ race fully via covenant-restricted trader inputs.
 indexer to roll back to the last common ancestor and replay
 forward.
 
+**Initial-LP lock.** Pool state additionally tracks `init_height`
+(the confirmation height of `POOL_INIT`). Variant-0 `T_LP_ADD` is
+rejected by the indexer whenever
+`current_height < init_height + AMM_INITIAL_LP_LOCK_BLOCKS`
+(`AMM_INITIAL_LP_LOCK_BLOCKS = 6`, ~1 hour). Swaps and protocol-fee
+claims are unaffected — only LP joins are gated. Arbitrage CAN
+correct any misprice in the seed ratio during the lock window; the
+founder bears the arbitrage cost of their initial seed if the ratio
+was off. See "First-LP price-setting" under "Open / honest caveats"
+for the rationale.
+
 **Reorg handling for arbiter pools.** The `qualifying_set_hash` +
-`arbiter_sig` in a `T_SWAP_BATCH` are cryptographic commitments
+`arbiter_sigs` in a `T_SWAP_BATCH` are cryptographic commitments
 over `(pool_id, expected_height, list_hash)`. The signature is
 **height-bound but reorg-stable**: it doesn't matter whether the
 batch eventually confirms at `expected_height` or at a shifted
@@ -2425,13 +2436,26 @@ vk_cid_len(1)              # u8, 1..64
 vk_cid(vk_cid_len)         # IPFS CID, UTF-8
 ceremony_cid_len(1)        # u8, 1..64
 ceremony_cid(ceremony_cid_len)  # IPFS CID, UTF-8
-arbiter_count(1)           # u8, 0..16
+arbiter_count(1)           # u8, 0..16 — number of pinned arbiter pubkeys (n)
+arbiter_threshold_m(1)     # u8, 0 if arbiter_count==0 else 1..arbiter_count
 arbiter_pubkeys(33 * arbiter_count)  # compressed secp256k1
 launcher_sig_count(1)      # u8, 0..2 — number of launcher-gate sigs
 launcher_sigs(64 * launcher_sig_count)  # BIP-340 each, ordered by
                                         # asset_A's pubkey first
 protocol_fee_address(33)   # compressed secp256k1; all-zeros = disabled
 protocol_fee_bps_LE(2)     # u16, 0..1000 (= 0..10% of LP-fee growth)
+pool_meta_uri_len(1)       # u8, 0..255 (0 = no URI)
+pool_meta_uri(pool_meta_uri_len)  # UTF-8 — informational dapp metadata pointer
+                                   # (description, logo, IPFS CID, website).
+                                   # NEVER consensus-bound; indexer never
+                                   # dereferences. Pure dapp UX.
+pool_capability_flags(1)   # u8 bitmap of opt-in pool behaviors.
+                            # bit 0 (0x01) — LP_ADD requires T_RANGE_ATTEST
+                            #                under scope=pool_id (gated mode)
+                            # bits 1-7   — reserved for future amendments
+                            # The closest tacit can get to Uniswap V4 hooks:
+                            # protocol-defined feature flags, NOT pluggable
+                            # executable code.
 ```
 `protocol_fee_address` and `protocol_fee_bps` are founder-set and
 immutable. All-zeros address with bps=0 disables the protocol fee
@@ -2487,13 +2511,19 @@ r_tip_B_LE(32)             # opening for tip_B_C_secp
 # arbiter block (present iff pool has inclusion_arbiter_pubkeys):
 expected_height_LE(4)
 qualifying_set_hash(32)
-arbiter_sig(64)
-# per-intent block, repeated n_intents times in intent_id ascending order:
+arbiter_m(1)               # u8, MUST equal pool.inclusion_arbiter_threshold_m
+arbiter_signer_indices(arbiter_m)        # u8[m], ascending distinct,
+                                          # indices into pool.inclusion_arbiter_pubkeys
+arbiter_sigs(64 * arbiter_m)             # BIP-340 sigs, one per signer_index,
+                                          # all over qualifying_set_hash
+# per-intent block, repeated n_intents times in STRICTLY ascending
+# intent_id byte-order (duplicates rejected — Bitcoin's UTXO model already
+# prevents same-outpoint reuse, but the indexer rejects defensively):
 direction(1)               # 0 = A→B (input asset A), 1 = B→A
 trader_pubkey(33)
 C_in_secp(33)
 C_in_BJJ(32)
-in_xcurve_sigma(157)
+in_xcurve_sigma(169)
 min_out_LE(8)
 tip_amount_LE(8)
 expiry_height_LE(4)
@@ -2501,15 +2531,20 @@ intent_sig(64)
 # per-receipt block, repeated n_intents times in same intent_id order:
 C_out_secp(33)
 C_out_BJJ(32)
-out_xcurve_sigma(157)
+out_xcurve_sigma(169)
 # tail:
 proof_len_LE(2)
 proof(proof_len)
+settler_meta_uri_len(1)    # u8, 0..255 (0 = no URI)
+settler_meta_uri(settler_meta_uri_len)  # UTF-8 — informational settler
+                                         # metadata pointer (version, identity,
+                                         # analytics URL). NEVER consensus-
+                                         # bound; indexer does not dereference.
 ```
 
-Per-intent block is `1+33+33+32+157+8+8+4+64 = 340` bytes; per-receipt
-block is `33+32+157 = 222` bytes. For N=16, the per-trader portion
-is `(340+222)*16 = 8992` bytes; plus global prefix of ~270 bytes,
+Per-intent block is `1+33+33+32+169+8+8+4+64 = 352` bytes; per-receipt
+block is `33+32+169 = 234` bytes. For N=16, the per-trader portion
+is `(352+234)*16 = 9376` bytes; plus global prefix of ~270 bytes,
 optional arbiter block (~100 bytes), and proof (~256 bytes) ⇒
 ~9.5 KB envelope. Standard tx allows up to ~100 KB, so N up to ~150
 fits at the tx layer — the N≤16 cap is purely a UX-latency choice.
@@ -3825,24 +3860,33 @@ pending · 🔴 design open.
 - **First-LP price-setting.** Whoever runs `POOL_INIT` sets the
   initial price (ratio `Δa_init / Δb_init`). `MINIMUM_LIQUIDITY`
   defends against the share-dilution / donation-inflation attack
-  (Uniswap V2's classic problem), but it does NOT defend against the
-  misprice attack: a malicious first depositor can seed at any ratio
-  and a naive second depositor at that ratio gets imprice-extracted
-  by arbitrageurs before any further LP correction.
+  (Uniswap V2's classic problem); a structural lock window plus
+  the existing layered defenses handle the misprice attack
+  (malicious first depositor seeding at an off-market ratio, hoping
+  a naive second LP joins before arbitrage corrects).
   Mitigations, in order of strength:
+  - **Initial-LP lock window (protocol-enforced).** For the first
+    `AMM_INITIAL_LP_LOCK_BLOCKS = 6` confirmations after a pool's
+    `POOL_INIT` (~1 hour at 10-min Bitcoin block times), the
+    indexer rejects every variant-0 `T_LP_ADD` envelope against
+    that pool. Swaps are unaffected — so arbitrageurs CAN trade
+    against the initial seed and correct any misprice, but no
+    naive LP can be added to a mispriced pool. The founder's
+    initial seed bears the arbitrage cost if their ratio was off;
+    that's the desired property (malicious founders lose money,
+    naive LPs do not).
   - **Dapp-side warnings (mandatory).** Reference dapp implementations
     MUST surface "low-TVL pool — initial price may be mispriced; check
     spot vs orderbook/oracle before swapping or adding liquidity" on
-    any pool below a TVL threshold the dapp picks (suggested:
-    USD-denominated, configurable per-network — e.g., `< $10k` on
-    mainnet, `< 0.01 BTC` if no fiat oracle). The threshold lives in
-    dapp config, not protocol state; lifting it post-launch doesn't
-    require a ceremony.
+    any pool below a TVL threshold the dapp picks. The dapp MUST
+    additionally surface the pool's `init_height` and the post-lock
+    spot trajectory so users can see "this pool's spot moved by X%
+    between init and now" before adding.
   - **Orderbook cross-check (V1 mechanism).** Since the orderbook DEX
-    runs alongside the AMM (see "Relationship to the orderbook DEX"
-    above), a mispriced AMM pool is corrected by any arbitrageur
-    routing orderbook fills against it. The misprice window is
-    bounded by the time-to-first-arbitrage, not by LP behaviour.
+    runs alongside the AMM, a mispriced AMM pool is corrected by any
+    arbitrageur routing orderbook fills against it. With the
+    protocol-enforced LP lock window, arbitrageurs have a guaranteed
+    first window to correct price before naive LPs can be exposed.
   - **Oracle cross-check (V2+ when oracle ships).** The canonical
     cUSD work (`SPEC-CUSD-CDP-AMENDMENT.md`) introduces a
     protocol-level oracle that the dapp can consult to flag any pool
@@ -3851,8 +3895,8 @@ pending · 🔴 design open.
   - **Not adding a min-TVL gate at POOL_INIT.** Considered and
     rejected: gating POOL_INIT on TVL doesn't compose with permissionless
     pool creation and would block legitimate new-asset bootstrapping.
-    The defence belongs in the trader surface (the dapp), not in the
-    indexer rules.
+    The defence belongs in the lock window + trader surface (dapp),
+    not in absolute TVL thresholds at init.
 - **LP anonymity scales with mixer activity.** A pool whose
   `lp_asset_id` mixer pool sees few deposits gives weak anonymity
   for redemption. Same UX warning as the mixer.
