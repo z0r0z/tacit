@@ -360,6 +360,10 @@ export function buildAndSubmitPoolInit({
   const { p2wpkh: minLiqP2wpkh } = deriveMinLiqNumsRecipient(poolId);
 
   // POOL_INIT envelope payload.
+  // Set POOL_CAP_SOLO_INTENT_ALLOWED (0x01) so the e2e harness's N=1 swap
+  // scenarios exercise the swap path. Default V1 pools reject N=1 for
+  // amount confidentiality (audit MEDIUM-4); the harness intentionally opts
+  // in here to keep scenario coverage broad.
   const payload = encodeLpAdd({
     variant: 1, assetA, assetB, deltaA, deltaB, shareAmount: founder_shares,
     shareCSecp: pointToBytes(C_share_secp),
@@ -368,6 +372,7 @@ export function buildAndSubmitPoolInit({
     kernelSigA: kSigA, kernelSigB: kSigB,
     feeBps, vkCid, ceremonyCid,
     arbiterPubkeys: [], launcherSigs: [],
+    poolCapabilityFlags: 0x02,                             // POOL_CAP_SOLO_INTENT_ALLOWED
     proof: new Uint8Array(256),                            // Groth16 stub
   });
 

@@ -92,6 +92,54 @@ function defaultRng(len) {
   return out;
 }
 
+// Build a deterministic RNG from a per-statement seed key + the public
+// statement (commitments). Used by `proveXCurveDeterministic` to produce
+// reproducible (α, β_secp, β_BJJ) without leaking the witness through
+// RNG side-channels.
+//
+// Construction: counter-mode HMAC-SHA256 — for output i, emit
+//   block_i = HMAC-SHA256(seedKey, "tacit-amm-xcurve-prng-v1" || statement || u32_BE(i))
+// concatenated until `len` bytes are produced. Equivalent to RFC 6979
+// in spirit (deterministic, witness-derivable nonce) but tailored to
+// the cross-curve sigma's (α, β_secp, β_BJJ) sampling pattern.
+//
+// `seedKey` SHOULD be a high-entropy secret derived from the trader's
+// long-term key, NOT the witness scalars themselves. Common pattern:
+//   seedKey = HMAC-SHA256(trader_priv, "tacit-amm-xcurve-seed-v1")
+// (Audit LOW-4: closes the "RNG bug exposes discrete logs" tail risk for
+// production indexers / signers that need deterministic nonces.)
+function makeDeterministicRng(seedKey, statement) {
+  if (!(seedKey instanceof Uint8Array) || seedKey.length < 16) {
+    throw new Error('makeDeterministicRng: seedKey must be a Uint8Array of ≥ 16 bytes');
+  }
+  if (!(statement instanceof Uint8Array)) {
+    throw new Error('makeDeterministicRng: statement must be a Uint8Array');
+  }
+  const TAG = new TextEncoder().encode('tacit-amm-xcurve-prng-v1');
+  let counter = 0;
+  return function detRng(len) {
+    const out = new Uint8Array(len);
+    let filled = 0;
+    while (filled < len) {
+      const ctr = new Uint8Array(4);
+      new DataView(ctr.buffer).setUint32(0, counter++, false); // big-endian
+      const msg = concatBytes(TAG, statement, ctr);
+      const block = hmacSha256(seedKey, msg);
+      const take = Math.min(32, len - filled);
+      out.set(block.subarray(0, take), filled);
+      filled += take;
+    }
+    return out;
+  };
+}
+
+// HMAC-SHA256 via @noble/hashes (already imported indirectly via sha256;
+// add explicit import).
+import { hmac } from '@noble/hashes/hmac';
+function hmacSha256(key, msg) {
+  return hmac(sha256, key, msg);
+}
+
 // Compute the Fiat-Shamir challenge e < 2^128 from the public transcript.
 //   e = bytes_be_to_int( SHA256(domain || C_secp || C_BJJ || A_secp || A_BJJ) )[-16:]
 // We take the LOW 16 bytes of the digest (i.e., `digest mod 2^128` when the
@@ -113,6 +161,9 @@ export function challenge(C_secp_bytes, C_BJJ_bytes, A_secp_bytes, A_BJJ_bytes) 
 //
 // Returns:
 //   { proof: Uint8Array(169), C_secp_bytes, C_BJJ_bytes }
+//
+// Production callers SHOULD use `proveXCurveDeterministic` (below) instead
+// of relying on the default crypto.getRandomValues — see audit LOW-4.
 export function proveXCurve({ a, r_secp, r_BJJ, C_secp = null, C_BJJ = null, rng = defaultRng }) {
   if (typeof a !== 'bigint' || a < 0n || a >= (1n << 64n)) {
     throw new Error('amount must satisfy 0 ≤ a < 2^64');
@@ -230,4 +281,56 @@ function bytesToHex(b) {
     out += HEX[b[i] >> 4] + HEX[b[i] & 0xf];
   }
   return out;
+}
+
+// ===========================================================================
+// Audit LOW-4: deterministic-nonce production prover wrapper
+// ===========================================================================
+//
+// Wraps `proveXCurve` with a deterministic (witness + statement)-derived
+// nonce source so production signers don't depend on the platform RNG. An
+// RNG bug (insufficient entropy, replay across re-derived processes, etc.)
+// in a randomized sigma can leak the witness scalars; with deterministic
+// nonces an adversary who controls timing/process state still can't extract
+// the witness because (α, β_secp, β_BJJ) are an HMAC of secrets they don't
+// know.
+//
+// Inputs:
+//   a, r_secp, r_BJJ  — witness scalars (same as proveXCurve)
+//   seedKey           — Uint8Array(≥16). MUST be a high-entropy secret
+//                       derived from long-term key material, NOT the
+//                       witness scalars themselves. A typical derivation
+//                       is HMAC-SHA256(trader_priv, "tacit-amm-xcurve-seed-v1").
+//                       Reusing the same (seedKey, statement) across distinct
+//                       (a, r) inputs is SAFE because the statement (which
+//                       includes the commitments) changes when (a, r) change.
+//   C_secp, C_BJJ     — optional precomputed commitments (saves recomputation)
+//
+// Returns: same shape as proveXCurve.
+export function proveXCurveDeterministic({ a, r_secp, r_BJJ, seedKey, C_secp = null, C_BJJ = null }) {
+  if (typeof a !== 'bigint' || a < 0n || a >= (1n << 64n)) {
+    throw new Error('amount must satisfy 0 ≤ a < 2^64');
+  }
+  const r_s = modSecp(r_secp);
+  const r_b = modN_BJJ(r_BJJ);
+  const Cs = C_secp || pedersenCommit(a, r_s);
+  const Cb = C_BJJ  || pedersenBJJ(a, r_b);
+  const Cs_bytes = pointToBytes(Cs);
+  const Cb_bytes = packPoint(Cb);
+  // Statement = the public preimage that goes into the FS challenge plus the
+  // witness commitment to bind nonces to this exact proving event. The
+  // deterministic RNG is reset per call via the statement, so different
+  // invocations with different witnesses get different nonce streams even
+  // under a fixed seedKey.
+  const statement = concatBytes(
+    Cs_bytes, Cb_bytes,
+    // Bind witness scalars into the nonce derivation so two calls with the
+    // same (a, r_secp, r_BJJ) produce identical nonces (deterministic), and
+    // two calls with different witnesses produce independent streams.
+    bigintToBytesBE(a, 8),
+    bigintToBytesBE(r_s, 32),
+    bigintToBytesBE(r_b, 32),
+  );
+  const rng = makeDeterministicRng(seedKey, statement);
+  return proveXCurve({ a, r_secp: r_s, r_BJJ: r_b, C_secp: Cs, C_BJJ: Cb, rng });
 }

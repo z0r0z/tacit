@@ -1570,6 +1570,20 @@ founder bears the arbitrage cost of their initial seed if the ratio
 was off. See "First-LP price-setting" under "Open / honest caveats"
 for the rationale.
 
+**Minimum batch size for amount confidentiality (normative).** A
+`T_SWAP_BATCH` envelope publishes `(Δa_net, Δb_net)` on chain. With
+`n_intents = 1` those public deltas equal the single trader's exact
+swap amount, defeating the protocol's amount-confidentiality
+property. The indexer therefore REJECTS `T_SWAP_BATCH` envelopes
+with `n_intents < AMM_MIN_BATCH_SIZE` (`AMM_MIN_BATCH_SIZE = 2`)
+UNLESS the pool's `capability_flags` bit 1 (`POOL_CAP_SOLO_INTENT_ALLOWED`,
+`0x02`) is set at `POOL_INIT` time. Pools that opt in trade amount
+confidentiality for liveness in low-volume regimes; default V1 pools
+preserve confidentiality. The opt-in is immutable after `POOL_INIT`
+and visible in pool state — traders can inspect a pool's flags
+before routing intents. See "Solo-intent confidentiality" under
+"Open / honest caveats" for the rationale.
+
 **Reorg handling for arbiter pools.** The `qualifying_set_hash` +
 `arbiter_sigs` in a `T_SWAP_BATCH` are cryptographic commitments
 over `(pool_id, expected_height, list_hash)`. The signature is
@@ -2485,7 +2499,12 @@ pool_meta_uri(pool_meta_uri_len)  # UTF-8 — informational dapp metadata pointe
 pool_capability_flags(1)   # u8 bitmap of opt-in pool behaviors.
                             # bit 0 (0x01) — LP_ADD requires T_RANGE_ATTEST
                             #                under scope=pool_id (gated mode)
-                            # bits 1-7   — reserved for future amendments
+                            # bit 1 (0x02) — POOL_CAP_SOLO_INTENT_ALLOWED:
+                            #                permits N=1 SWAP_BATCH. Default
+                            #                (bit clear) rejects N=1 to
+                            #                preserve amount confidentiality
+                            #                (see AMM_MIN_BATCH_SIZE below).
+                            # bits 2-7   — reserved for future amendments.
                             # The closest tacit can get to Uniswap V4 hooks:
                             # protocol-defined feature flags, NOT pluggable
                             # executable code.
@@ -3881,8 +3900,16 @@ pending · 🔴 design open.
   constraint + envelope_hash binding prevent it) and cannot burn
   trader UTXOs (envelope_hash binding prevents it), but does
   learn the batch composition and per-trader amounts of intents
-  it claims. Trust-conscious traders can route intents only to
-  self-run settlers.
+  it claims. **Confidentiality is from chain observers, not from
+  the settler the trader selected.** Trust-conscious traders MUST
+  route intents only to settlers they trust — including self-run
+  settlers when possible. The reference dapp's default UX
+  co-locates worker + settler; **operators running both see every
+  cleartext trader amount routed to their endpoint**. Multi-settler
+  discovery + dapp UX for picking alternative settlers is a V2
+  deliverable; until then, traders preferring stronger privacy
+  SHOULD self-host or route to a settler operated by a different
+  party from their worker.
 - **Interactive trader signing.** v1 requires the trader's dapp
   to be online during the worker→dapp PSBT-forwarding window in
   the block they want to settle (typically a few seconds). Closing
@@ -3928,9 +3955,17 @@ pending · 🔴 design open.
     that pool. Swaps are unaffected — so arbitrageurs CAN trade
     against the initial seed and correct any misprice, but no
     naive LP can be added to a mispriced pool. The founder's
-    initial seed bears the arbitrage cost if their ratio was off;
-    that's the desired property (malicious founders lose money,
-    naive LPs do not).
+    initial seed bears the arbitrage cost if their ratio was off
+    AND someone other than the founder runs the arb.
+    **Honest framing**: the lock-window mechanism protects naive
+    external LPs (they cannot join during the correction window),
+    not the pool from its own founder. A founder who mis-prices
+    on purpose can also be the arbitrageur, capturing the
+    correction value themselves. This is permissible — they bore
+    the seed cost; profiting from correcting it harms no one
+    external because no external LP can join during the window.
+    Naive-LP protection is the protocol guarantee; founder
+    economic discipline is not.
   - **Dapp-side warnings (mandatory).** Reference dapp implementations
     MUST surface "low-TVL pool — initial price may be mispriced; check
     spot vs orderbook/oracle before swapping or adding liquidity" on
@@ -3956,10 +3991,64 @@ pending · 🔴 design open.
 - **LP anonymity scales with mixer activity.** A pool whose
   `lp_asset_id` mixer pool sees few deposits gives weak anonymity
   for redemption. Same UX warning as the mixer.
-- **Solo-intent batches expose the trader.** A batch with
-  `n_intents = 1` has its full amounts publicly inferable from
-  the batch deltas. The dapp warns when an intent is likely to
-  settle solo.
+- **Solo-intent confidentiality (now indexer-enforced).** A
+  `T_SWAP_BATCH` with `n_intents = 1` publishes deltas that equal
+  the single trader's swap amount, so amount confidentiality is
+  reduced to the trader's choice of `min_out` and `tip_amount`.
+  In V1 this is **enforced normatively at the indexer**:
+  `AMM_MIN_BATCH_SIZE = 2` rejects `n_intents = 1` batches for
+  default pools (`capability_flags & POOL_CAP_SOLO_INTENT_ALLOWED
+  == 0`). Pools that prefer liveness in low-volume regimes opt in
+  at `POOL_INIT` time; the opt-in is immutable and visible in
+  pool state so traders can avoid solo-intent-permitted pools if
+  confidentiality is their priority. n_intents ≥ 3 is required
+  for full protocol-level amount privacy; n_intents = 2 still
+  allows the two traders to deduce each other's amounts from
+  their own knowledge of their own intent.
+- **Settler curation MEV (named limitation).** The
+  one-batch-per-pool-per-block determinism means the winning settler
+  fully excludes competitors for that block. A settler-LP can
+  deliberately exclude price-moving intents from a block, eat the
+  foregone tip revenue, and recoup it as LP gain on the subsequent
+  rebalance. Tip economics bound this only when curation profit
+  < tip revenue — NOT when the curator is also a dominant LP.
+
+  **The V1 protocol-level fix is mandatory-inclusion arbiter pools.**
+  Arbiter mode (POOL_INIT with `arbiter_pubkeys` non-empty, threshold
+  `m`) cryptographically pins a canonical qualifying intent set per
+  block: every intent_id the arbiters jointly attest to MUST appear
+  in the settled batch, or the batch is rejected at the indexer.
+  This removes settler curation discretion at the protocol layer;
+  see `tests/amm-validator.mjs verifyArbiterSig` and the
+  `qualifyingSetResolver` interface for the enforcement path. Pools
+  meaningfully exposed to curation MEV (high TVL, high LP/settler
+  overlap, time-sensitive flows) SHOULD opt into arbiter mode.
+
+  **Recommended V1 defaults for new pools (dapp UX):**
+  - **Default to arbiter mode** for pools where curation MEV is
+    plausible — pools above a TVL threshold the dapp picks, or pools
+    the founder marks as "production." The reference dapp SHOULD
+    propose `arbiter_pubkeys = [worker_pubkey]` with `m = 1` as the
+    starting configuration; founders can replace with a community
+    multi-signer set or a self-curated federation.
+  - **Default to no-arbiter** for genuinely experimental/test pools
+    where the founder accepts curation MEV as a known cost.
+  - **Dapp warning when LP UTXO and settler pubkey coincide** —
+    reference dapps SHOULD surface a warning whenever a trader is
+    routing to a settler whose pubkey controls a meaningful LP
+    position in the same pool. This is purely informational and
+    doesn't block the trade, but lets curation-sensitive traders
+    re-route to a non-conflicted settler.
+
+  **Why no-arbiter pools can't be fully curation-resistant in V1.**
+  Removing single-batch-per-pool-per-block exclusivity would require
+  either (a) deterministic ordering across competing batches with
+  reserve recomputation between them (the second settler's proof
+  would be against pre-block reserves, not post-first-batch — proof
+  invalid), or (b) a slashing mechanism with on-chain curation
+  proof (a substantial new primitive). Both are V2 design space.
+  Arbiter mode reaches the same goal — mandatory inclusion — within
+  V1's existing single-batch determinism.
 - **Settler races waste proof work.** When multiple settlers race
   to include the next batch, only one wins. Off-chain coordination
   reduces this; in steady state it's a manageable cost.

@@ -60,6 +60,12 @@ const EXPECTED_DOMAIN_TAGS = [
   'tacit-amm-qset-v1',
   'tacit-amm-receipt-secp-v1',
   'tacit-amm-receipt-bjj-v1',
+  // Deterministic-nonce derivation tags for proveXCurveDeterministic
+  // (audit LOW-4). Internal-only — never appear in on-chain bytes, so
+  // they don't need normative SPEC documentation, but we whitelist them
+  // here so the impl-to-spec drift scan doesn't flag them as orphans.
+  'tacit-amm-xcurve-prng-v1',
+  'tacit-amm-xcurve-seed-v1',
 ];
 
 // ----- Pinned: protocol constants (AMM.md) -----

@@ -305,6 +305,10 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
     fee_bps: 30, reserve_A: 1_000_000n, reserve_B: 2_000_000n,
     lp_total_shares: 1_414_213n,
     inclusion_arbiter_pubkeys: [],
+    // Solo-intent test: opt this pool into POOL_CAP_SOLO_INTENT_ALLOWED so
+    // the N=1 smoke tests below exercise the swap path. Default V1 pools
+    // reject N=1 batches for amount confidentiality (audit MEDIUM-4).
+    capability_flags: 0x02, // POOL_CAP_SOLO_INTENT_ALLOWED
   };
 
   // Single A→B intent: amount_in = 1000n, full input goes in (no tip for simplicity in this test).
@@ -443,6 +447,19 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
       groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
     });
     return !r2.valid && /expired/.test(r2.reason);
+  });
+  // Audit MEDIUM-4: N=1 batch on a default pool (no solo-intent flag) ⇒ rejected.
+  test('N=1 batch rejected when pool does NOT have POOL_CAP_SOLO_INTENT_ALLOWED', () => {
+    const defaultPool = { ...pool, capability_flags: 0 };
+    const r2 = validateSwapBatch({
+      payload, pool: defaultPool, opReturnData: opReturn,
+      inputCommitmentsByIntent: [[C_in_secp]],
+      intentInputUtxos: [inputUtxos],
+      receiveScripts: [recvSpk],
+      currentHeight: 800000,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    });
+    return !r2.valid && /MIN_BATCH_SIZE|POOL_CAP_SOLO_INTENT_ALLOWED/.test(r2.reason);
   });
 }
 

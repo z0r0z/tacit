@@ -96,6 +96,32 @@ function resolveGroth16Verify(arg, fnName) {
 // Six blocks ≈ 1 hour at Bitcoin's average block time.
 export const AMM_INITIAL_LP_LOCK_BLOCKS = 6;
 
+// Confidentiality-protection: AMM swap batches expose (Δa_net, Δb_net) on
+// chain. With N=1 (a solo intent), those public deltas equal the trader's
+// exact swap amount — amount confidentiality collapses. By default the
+// indexer REJECTS N=1 batches: settlers must wait to accumulate ≥ 2 intents
+// per pool per block. Pools that prefer liveness over confidentiality can
+// opt in by setting POOL_CAP_SOLO_INTENT_ALLOWED in their capability flags
+// at POOL_INIT time.
+//
+// Audit MEDIUM-4 (pro-trader / pro-confidentiality default).
+export const AMM_MIN_BATCH_SIZE = 2;
+
+// Pool capability-flags bitmap (u8). Default 0 = standard V1 pool with
+// confidentiality-preserving defaults. Adding flags is additive; flag bits
+// are immutable after POOL_INIT.
+//
+// Bit 0 (0x01) is reserved by AMM.md §"POOL_INIT" for the LP_ADD
+// T_RANGE_ATTEST gating mode (gated pools require an attestation under
+// scope=pool_id for LP_ADD). The validator side of that gate is not yet
+// shipped; the bit is reserved here so the two flag spaces don't collide.
+export const POOL_CAP_REQUIRES_LP_RANGE_ATTEST = 0x01;
+export const POOL_CAP_SOLO_INTENT_ALLOWED      = 0x02;
+// Reserved for future flags (0x04, 0x08, ..., 0x80). Adding a new flag bit
+// is a soft fork (old indexers see unknown flag and SHOULD reject pools
+// that set it, lest they apply default-confidentiality rules to a pool
+// the founder opted out of).
+
 // Result shape:
 //   { valid: true,  newPoolState, receipts: [...] }
 //   { valid: false, reason: string }
@@ -455,6 +481,20 @@ export function validateSwapBatch({
     return { valid: false, reason: 'fee_bps_at_settle != pool.fee_bps' };
   }
 
+  // MIN_BATCH_SIZE confidentiality default (audit MEDIUM-4). A batch of
+  // size 1 reveals the trader's full swap amount via the public
+  // (Δa_net, Δb_net) deltas. Reject N=1 unless the pool explicitly opted
+  // in to solo-intent batches via POOL_CAP_SOLO_INTENT_ALLOWED.
+  const poolFlags = pool.capability_flags ?? 0;
+  const soloAllowed = (poolFlags & POOL_CAP_SOLO_INTENT_ALLOWED) !== 0;
+  if (!soloAllowed && env.intents.length < AMM_MIN_BATCH_SIZE) {
+    return {
+      valid: false,
+      reason: `batch size ${env.intents.length} < AMM_MIN_BATCH_SIZE ${AMM_MIN_BATCH_SIZE}; ` +
+              `pool must set POOL_CAP_SOLO_INTENT_ALLOWED (0x02) to permit solo intents`,
+    };
+  }
+
   // Arbiter block enforcement (m-of-n threshold + mandatory inclusion).
   //   1. arbiter block present + expectedHeight matches currentHeight
   //   2. m matches pool's pinned threshold; signerIndices ascending distinct
@@ -539,7 +579,12 @@ export function validateSwapBatch({
         cInSecp: it.cInSecp, cInBjj: it.cInBjj, xcurveSigma: it.inXcurveSigma,
         receiveScriptPubKey: receiveScripts[i],
         minOut: it.minOut, tipAmount: it.tipAmount,
-        tipAsset: it.direction, // tip on input side per AMM.md "Tip mechanics"
+        // Tip-asset substitution: AMM.md §"Tip mechanics" §3 makes tip_asset
+        // structurally equal to direction (tip on input side). buildIntentMsg
+        // asserts this invariant (audit LOW-3); we pass direction as the
+        // single source of truth. Any divergent value would fail sig-verify
+        // below regardless.
+        tipAsset: it.direction,
         expiryHeight: it.expiryHeight, traderPubkey: it.traderPubkey,
       });
     } catch (e) { return { valid: false, reason: `intent[${i}] msg build: ${e.message}` }; }

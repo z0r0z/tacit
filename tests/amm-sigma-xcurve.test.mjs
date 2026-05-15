@@ -21,7 +21,7 @@ import { concatBytes } from '@noble/hashes/utils';
 import * as secp from '@noble/secp256k1';
 
 import {
-  proveXCurve, verifyXCurve, challenge,
+  proveXCurve, proveXCurveDeterministic, verifyXCurve, challenge,
 } from './amm-sigma-xcurve.mjs';
 import {
   G as G_SECP, H as H_SECP, SECP_N,
@@ -192,6 +192,52 @@ test('different (r_secp, r_BJJ) ⇒ different commitments', () => {
   // C_secp and C_BJJ are different because blindings are different.
   return !x1.C_secp_bytes.every((b, i) => b === x2.C_secp_bytes[i])
       && !x1.C_BJJ_bytes.every((b, i) => b === x2.C_BJJ_bytes[i]);
+});
+
+console.log('\nDeterministic nonce wrapper (audit LOW-4)');
+test('proveXCurveDeterministic produces verifying proof', () => {
+  const seedKey = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) seedKey[i] = i + 1;
+  const out = proveXCurveDeterministic({
+    a: 12345n, r_secp: 7n, r_BJJ: 11n, seedKey,
+  });
+  return verifyXCurve(out.proof, out.C_secp_bytes, out.C_BJJ_bytes);
+});
+test('same (seedKey, witness) ⇒ byte-identical proof', () => {
+  const seedKey = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) seedKey[i] = i + 1;
+  const a = 42n, r_secp = 3n, r_BJJ = 5n;
+  const p1 = proveXCurveDeterministic({ a, r_secp, r_BJJ, seedKey });
+  const p2 = proveXCurveDeterministic({ a, r_secp, r_BJJ, seedKey });
+  return p1.proof.length === p2.proof.length
+      && p1.proof.every((b, i) => b === p2.proof[i]);
+});
+test('different seedKey ⇒ different proof bytes (independence)', () => {
+  const seed1 = new Uint8Array(32).fill(0x11);
+  const seed2 = new Uint8Array(32).fill(0x22);
+  const a = 42n, r_secp = 3n, r_BJJ = 5n;
+  const p1 = proveXCurveDeterministic({ a, r_secp, r_BJJ, seedKey: seed1 });
+  const p2 = proveXCurveDeterministic({ a, r_secp, r_BJJ, seedKey: seed2 });
+  // Same commitments (same a, r), different proofs (different nonces).
+  const sameC = p1.C_secp_bytes.every((b, i) => b === p2.C_secp_bytes[i])
+             && p1.C_BJJ_bytes.every((b, i) => b === p2.C_BJJ_bytes[i]);
+  const diffProof = !p1.proof.every((b, i) => b === p2.proof[i]);
+  return sameC && diffProof;
+});
+test('different witness under same seedKey ⇒ different proof bytes', () => {
+  const seedKey = new Uint8Array(32).fill(0xab);
+  const p1 = proveXCurveDeterministic({ a: 1n, r_secp: 3n, r_BJJ: 5n, seedKey });
+  const p2 = proveXCurveDeterministic({ a: 2n, r_secp: 3n, r_BJJ: 5n, seedKey });
+  return !p1.proof.every((b, i) => b === p2.proof[i]);
+});
+test('rejects short seedKey (<16 bytes)', () => {
+  try {
+    proveXCurveDeterministic({
+      a: 1n, r_secp: 1n, r_BJJ: 1n,
+      seedKey: new Uint8Array(8),
+    });
+    return false;
+  } catch (e) { return /seedKey/.test(e.message); }
 });
 
 console.log('\nChallenge derivation — domain separation');

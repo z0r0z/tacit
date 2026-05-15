@@ -59,8 +59,14 @@ test('changing pool_id changes intent_msg', () => {
 });
 test('changing direction changes intent_msg', () => {
   const m1 = buildIntentMsg(intentArgs);
-  const m2 = buildIntentMsg({ ...intentArgs, direction: 1 });
+  // Direction flip MUST also flip tipAsset (audit LOW-3: AMM.md §"Tip mechanics" §3
+  // requires tip_asset == direction structurally).
+  const m2 = buildIntentMsg({ ...intentArgs, direction: 1, tipAsset: 1 });
   return bytesToHex(m1) !== bytesToHex(m2);
+});
+test('buildIntentMsg rejects tipAsset != direction (audit LOW-3)', () => {
+  try { buildIntentMsg({ ...intentArgs, direction: 0, tipAsset: 1 }); return false; }
+  catch (e) { return /tip_asset|Tip mechanics/i.test(e.message); }
 });
 test('changing min_out changes intent_msg', () => {
   const m1 = buildIntentMsg(intentArgs);
