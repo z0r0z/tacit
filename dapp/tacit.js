@@ -31464,6 +31464,29 @@ async function renderHoldings() {
     // Fire-and-forget — failure (quota / serialization) just means the
     // next reload falls back to the skeleton, no functional impact.
     _saveHoldingsSnapshot(arr);
+    // Scroll-stability snapshot: same anchor-relative pattern the market
+    // page uses (commit 8bc116c). When the holdings auto-refresh tick
+    // fires (every 30s while pending mints exist) and a card's status
+    // banner toggles or its content shrinks, the page would otherwise
+    // shift under a scrolling user. We capture the viewport position
+    // of the first existing card BEFORE the rewrite; after the new
+    // cards are appended, restore scroll so the anchor stays at the
+    // same screen Y.
+    let _holdingsScrollAnchor = null;
+    try {
+      const _existingFirstCard = list.querySelector('.asset-card');
+      if (_existingFirstCard) {
+        const _rect = _existingFirstCard.getBoundingClientRect();
+        const _aid = _existingFirstCard.dataset.aid || null;
+        _holdingsScrollAnchor = {
+          aid: _aid,
+          viewportTop: _rect.top,
+          scrollY: window.scrollY,
+        };
+      } else {
+        _holdingsScrollAnchor = { aid: null, viewportTop: 0, scrollY: window.scrollY };
+      }
+    } catch {}
     list.innerHTML = '';
     const ownerPubHex = bytesToHex(wallet.pub);
     // Cross-asset Open Orders dashboard — every preauth listing this wallet
@@ -31790,6 +31813,31 @@ async function renderHoldings() {
       cardNodes.push(card);
     }
     list.appendChild(frag);
+    // Scroll-anchor restore (paired with the snapshot above). Try to
+    // re-find the card whose aid matched the pre-render anchor; if
+    // found, scrollBy by the delta between its new viewport Y and the
+    // captured old viewport Y. If the anchor card disappeared (asset
+    // burned to zero, network switch repopulated different aids),
+    // fall back to absolute scrollY restore. rAF defers to next paint
+    // so the new layout is settled before we measure.
+    if (_holdingsScrollAnchor) {
+      requestAnimationFrame(() => {
+        try {
+          if (_holdingsScrollAnchor.aid) {
+            const _newCard = list.querySelector(`.asset-card[data-aid="${CSS.escape(_holdingsScrollAnchor.aid)}"]`);
+            if (_newCard) {
+              const _newTop = _newCard.getBoundingClientRect().top;
+              const _delta = _newTop - _holdingsScrollAnchor.viewportTop;
+              if (Math.abs(_delta) > 0.5) window.scrollBy(0, _delta);
+              return;
+            }
+          }
+          if (Math.abs(window.scrollY - _holdingsScrollAnchor.scrollY) > 0.5) {
+            window.scrollTo(0, _holdingsScrollAnchor.scrollY);
+          }
+        } catch {}
+      });
+    }
     // Asset-id short / full toggle.
     wireAssetIdToggles(list);
     // Click ticker id-tag to copy the asset_id without expanding.
@@ -43796,11 +43844,28 @@ function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, t
   const toInput = widget.querySelector('input[data-swap-input="to"]');
   const targetInput = direction === 'sell' ? fromInput : toInput;
   if (targetInput) {
-    targetInput.focus();
+    targetInput.focus({ preventScroll: true });
     targetInput.value = displayStr;
     targetInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
-  widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Only scroll the swap into view when it's substantially OFF-SCREEN.
+  // If the user is scrolled to the chart / depth and clicks a depth bar
+  // to prime the swap, auto-scrolling to the swap yanks them upward —
+  // jarring and the cause of "I was at the charts and got moved up"
+  // complaints. The toast below already announces the priming; users
+  // who want to confirm can scroll up themselves. Only fire scroll
+  // when the swap is more than half a viewport away from the top or
+  // bottom edge — i.e., truly out of sight, not just partially below
+  // the fold.
+  try {
+    const _rect = widget.getBoundingClientRect();
+    const _vh = window.innerHeight || 800;
+    const _fullyAbove = _rect.bottom < 0;
+    const _fullyBelow = _rect.top > _vh;
+    if (_fullyAbove || _fullyBelow) {
+      widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  } catch {}
   const slipNow = widget.querySelector('[data-swap-slippage]')?.value;
   const slipNote = slipNow ? ` · slip ${slipNow}%` : '';
   toast(`Sized ${displayStr} ${ticker || ''} in swap tile${slipNote} · review then ${direction === 'sell' ? 'sell' : 'buy'}`, '', 4000);
