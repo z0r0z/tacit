@@ -42476,10 +42476,41 @@ function _wireSwapTile(scope) {
             expiry: Math.floor(Date.now() / 1000) + 24 * 3600,
             minFillAmount: _bidMinFill,
           });
-          toast(`Swap open · ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ${fmtUnitPriceSats(capUnit)} sats/${ticker} — fills when a seller takes`, 'success', 7000);
+          // Explicit "bid is live in the orderbook" feedback. The earlier
+          // toast read "Swap open · ... — fills when a seller takes" which
+          // didn't make it obvious that the order was actually placed and
+          // sitting in the book (per the swap mental-model gap analysis:
+          // when the Swap tile falls back to a bid, the user gets no
+          // visible confirmation that anything is now in the orderbook).
+          // Now the toast names the action ("Bid placed"), the size + cap
+          // (matches the trader's mental model of "ideal price for size"),
+          // and tells the user where to find it (Your Open Orders panel
+          // that's about to render below).
+          toast(
+            `Bid placed · ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ≤ ${fmtUnitPriceSats(capUnit)} sats/${ticker} — visible in Your Open Orders below. Cancel anytime; auto-expires in 24h.`,
+            'success',
+            9000,
+          );
           invalidateMarketCache();
           _invalidateBidsCache(aid);
-          setTimeout(() => renderMarket(), 1500);
+          setTimeout(() => {
+            try {
+              renderMarket();
+              // After the post-bid re-render lands, scroll the new bid
+              // into view and flash the Your Open Orders panel so the
+              // user visually anchors on it without scrolling around to
+              // confirm. requestAnimationFrame waits for the DOM swap.
+              requestAnimationFrame(() => {
+                const panel = document.querySelector(`[data-your-orders][data-aid="${aid}"]`);
+                if (panel && typeof panel.scrollIntoView === 'function') {
+                  panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  panel.classList.remove('value-flash');
+                  void panel.offsetWidth;
+                  panel.classList.add('value-flash');
+                }
+              });
+            } catch {}
+          }, 1500);
         } catch (e) {
           if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was posted.', '');
           else toast(`Bid post failed: ${e.message}`, 'error');
