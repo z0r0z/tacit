@@ -10676,6 +10676,14 @@ export {
   // without setting up the full handler's KV / signature path. The
   // signet e2e harness covers the integrated flow.
   _resolveBidPartialOvershoot,
+  // Volume-bucket primitives. Exported so tests/worker-batched-axfer-
+  // index.test.mjs can pin (a) bumpTransferCount idempotency under hint
+  // replays, (b) daily-bucket sum semantics for batched preauth-take
+  // reveals where one revealTxid carries Σ price_sats across N seller
+  // fills. Drift in any of these names breaks the cron's volume
+  // accounting silently.
+  bumpTransferCount, tradeDayKey, tradeLifetimeKey, tradesRingKey,
+  _utcYyyymmdd, TRADES_RING_CAP,
   verifySchnorr, compressedPointFromHex,
   // Wire-format decoders + opcode constants exported so tests/worker-decoder
   // can pin down the exact return shape. The atomic-intent regression where
