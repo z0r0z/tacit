@@ -37048,16 +37048,28 @@ function fmtMarketBtc(sats) {
 function fmtMarketUnitSats(sats) {
   const n = Number(sats);
   if (!Number.isFinite(n) || n <= 0) return '0 sats';
-  if (n >= 1) return `${Math.round(n).toLocaleString('en-US')} sats`;
-  // Sub-1-sat unit prices. Two bands:
+  // Bands chosen so price × quantity reconciles to displayed totals:
+  //   • n ≥ 1000  — round to whole sats (precision below 0.1% irrelevant
+  //     at that magnitude, integer is cleanest).
+  //   • 1 ≤ n < 1000 — show up to 2 fractional digits. Without this,
+  //     a unit like 54.6 sats/TAC rounded to "55" and a 10-TAC trade
+  //     displayed as "55 sats × 10 = 550" but the actual total was
+  //     546 sats — Activity table reconciliation broke for users
+  //     trying to verify the math.
   //   • 0.001 ≤ n < 1 — keep readable decimal ("0.6 sats", "0.0042 sats"),
   //     up to 4 fractional digits.
-  //   • n < 0.001     — switch to scientific notation. SAT's true unit
-  //     price (~4.28e-6 sats) was previously rendering as "0.00000428
-  //     sats" which is hard to scan and easy to misread the zero count.
-  //     "4.28e-6 sats" is more compact and unambiguous; tooltip on the
-  //     cell still shows the USD-per-token line so users have a sanity
-  //     check for the magnitude.
+  //   • n < 0.001     — scientific notation. SAT's ~4.28e-6 sats was
+  //     previously rendering as "0.00000428 sats" which is hard to scan
+  //     and easy to misread the zero count. "4.28e-6 sats" is compact
+  //     and unambiguous.
+  if (n >= 1000) return `${Math.round(n).toLocaleString('en-US')} sats`;
+  if (n >= 1) {
+    // Trim trailing zeros so "250.00 sats" becomes "250 sats" but
+    // "54.60 sats" reads as "54.6 sats" — keeps the column tidy when
+    // the price happens to round to a whole number anyway.
+    const fixed = n.toFixed(2).replace(/\.?0+$/, '');
+    return `${Number(fixed).toLocaleString('en-US', { maximumFractionDigits: 2 })} sats`;
+  }
   if (n < 0.001) return `${n.toExponential(2)} sats`;
   return `${n.toLocaleString('en-US', { maximumFractionDigits: 4 })} sats`;
 }
@@ -38871,14 +38883,14 @@ function marketActivityPanelHtml(asset, rows) {
         <table class="market-activity-table">
           <thead>
             <tr>
-              <th>Inscription</th>
+              <th title="Bitcoin transaction associated with this event. For Sold rows this is the settlement tx itself; for Listed rows this is the lot's underlying UTXO parent tx (which is typically older than the listing's publication time in the Time column).">Tx</th>
               <th>Event</th>
-              <th>Price</th>
+              <th title="Unit price (sats per whole token). For sub-1000-sat unit prices the display shows 2 decimals so price × quantity reconciles to the Total Value column.">Price</th>
               <th>Quantity</th>
               <th>Total Value</th>
               <th>From</th>
               <th>To</th>
-              <th>Time</th>
+              <th title="Time refers to when the EVENT was recorded: when a Listed row was published to the worker (off-chain), or when a Sold row's settlement tx confirmed on Bitcoin. The linked Tx may have a different timestamp — for Listed rows that's the lot's UTXO creation time, which predates the listing.">Time</th>
             </tr>
           </thead>
           <tbody data-market-activity-body>${eventHtml || '<tr><td colspan="8" class="empty">No activity</td></tr>'}</tbody>
