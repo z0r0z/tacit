@@ -6614,6 +6614,12 @@ let _openingsCache = null;
 // side doesn't reset the other side's already-shown contribution.
 let _lastDiscoverCetchCount = 0;
 let _lastDiscoverPetchCount = 0;
+// Memoized HTML from the last petch tile render. Compared byte-for-byte
+// against the next render's computed tiles string to skip the innerHTML
+// rewrite when nothing has changed since the prior 30s auto-poll —
+// rewriting destroys event handlers, nukes click-state on the Mint
+// buttons, and resets tile-flash animations for no visual gain.
+let _lastPetchTilesHtml = null;
 function _bumpDiscoverBadge() {
   if (typeof setTabBadge !== 'function') return;
   setTabBadge('discover', _lastDiscoverCetchCount + _lastDiscoverPetchCount);
@@ -9036,6 +9042,31 @@ const HOLDINGS_CACHE_TTL_MS = 30 * 1000;
 // invalidateHoldingsCache (broadcast handlers, network switch, etc.).
 let _lastFullScan = null; // { utxoSig, hasUnresolved, holdings }
 function invalidateHoldingsCache() { _holdingsCache = null; _lastFullScan = null; invalidateUtxoCache(); }
+
+// Test-only seam: short-circuit scanHoldings by writing a synthetic
+// holdings cache directly. Callers (fulfilBidIntent, buildAndBroadcast
+// CXferMulti, the swap-tile sell loop) read scanHoldings → which
+// returns the cache when its fetchedAt is fresh. Used by
+// tests/bid-fulfil-batch-e2e.test.mjs to exercise the sell-side
+// batched flow end-to-end without re-implementing the full
+// confidential UTXO recovery loop under jsdom. Production has no
+// caller — this is purely a test seam. The cache shape matches what
+// scanHoldings emits: { fetchedAt, holdings: Map<aid, {decimals,
+// ticker, balance: BigInt, utxos: [{utxo:{txid,vout,value}, amount:
+// BigInt, blinding: BigInt-or-hex}]}> }.
+function _testInjectHoldingsCache(c) { _holdingsCache = c; }
+
+// Test-only seam: replace scanHoldings's body with a caller-provided
+// function. Unlike _testInjectHoldingsCache (which writes a static
+// snapshot), the override is callable so the test can return
+// DIFFERENT holdings per phase — typically "pre-split" holdings on the
+// first call (covering UTXO present) and "post-split" holdings on
+// subsequent calls (split child UTXOs visible). Used to e2e-test the
+// batched bid-fulfilment flow whose orchestrator calls scanHoldings
+// in two phases (split planning + per-bid publishAxferIntent lookup).
+// Pass null to clear. Production has no caller.
+let _scanHoldingsOverride = null;
+function _testSetScanHoldingsOverride(fn) { _scanHoldingsOverride = fn; }
 // Session-persistent validated-outpoint cache, per network. Holds ONLY
 // confirmed-true entries — outpoints whose ancestry has been fully validated
 // (rangeproof verified, kernel sig OK, asset_id chain-consistent end to end).
@@ -9062,6 +9093,13 @@ let _holdingsInFlight = null;
 // from before the timeout completes a few seconds later → stale balances.
 let _holdingsLatestGen = 0;
 async function scanHoldings(force = false) {
+  // Test-only override (see _testSetScanHoldingsOverride). Bypasses every
+  // chain walk + cache — the override IS the result. Returns a Map matching
+  // what scanHoldings normally emits.
+  if (_scanHoldingsOverride) {
+    const r = _scanHoldingsOverride();
+    return r instanceof Promise ? await r : r;
+  }
   if (!force && _holdingsCache && (Date.now() - _holdingsCache.fetchedAt) < HOLDINGS_CACHE_TTL_MS) {
     return _holdingsCache.holdings;
   }
@@ -35182,10 +35220,21 @@ function _renderPreauthRecoveryBannerHtml() {
     const amtBig = p.amount ? BigInt(p.amount) : 0n;
     const amtStr = amtBig > 0n ? fmtAssetAmount(amtBig, p.decimals || 0) : '';
     const explorer = `${NET.explorer}/tx/${escapeHtml(p.commitTxidHex)}`;
+    // Batched records (from takePreauthSaleBatch) carry a `batch[]`
+    // array with per-sale entries. Surface that the stranded commit
+    // covered N sales — the user otherwise sees just the aggregate
+    // amount + anchor ticker and might think it was a single-take
+    // failure. The Recover button itself works unchanged (script-path
+    // spend doesn't care WHAT envelope it reveals); only the display
+    // copy differs.
+    const batchEntries = Array.isArray(p.batch) ? p.batch : null;
+    const batchTag = (batchEntries && batchEntries.length > 1)
+      ? ` <span class="muted" style="font-size:9.5px;padding:1px 5px;border:1px solid var(--ink-faint);background:var(--bg);">batch · ${batchEntries.length} sales</span>`
+      : '';
     return `
-      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--ink-faint);font-size:11px;flex-wrap:wrap;">
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--ink-faint);font-size:11px;flex-wrap:wrap;" data-recovery-row="${escapeHtml(p.commitTxidHex)}">
         <div style="flex:1 1 180px;min-width:0;">
-          <div><strong>${sats.toLocaleString()} sats</strong> locked${amtStr ? ` · attempted ${escapeHtml(amtStr)} ${ticker}` : ''} · ${escapeHtml(ageStr)}</div>
+          <div><strong>${sats.toLocaleString()} sats</strong> locked${amtStr ? ` · attempted ${escapeHtml(amtStr)} ${ticker}` : ''}${batchTag} · ${escapeHtml(ageStr)}</div>
           <div class="muted" style="font-size:10px;margin-top:2px;">commit <a href="${explorer}" target="_blank" rel="noopener noreferrer">${escapeHtml(shorten(p.commitTxidHex, 8))} ↗</a></div>
         </div>
         <button data-act="preauth-recover" data-commit-txid="${escapeHtml(p.commitTxidHex)}" type="button" style="font-size:11px;padding:5px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;">Recover</button>
@@ -35933,7 +35982,7 @@ async function _processDiscoverCardVerify(card, a) {
     const extras = effectiveImageUri ? getMetadataExtras(effectiveImageUri) : null;
     card.dataset.verifyState = verify.ok ? 'verified' : 'failed';
     renderDiscoverCard(card, a, verify, imgUrl, extras);
-    applyDiscoverFilter();
+    _scheduleApplyDiscoverFilter();
     // Stats: cache hits and chain walks both move "pending" → "ok or fail",
     // but cached count is reported separately so the user can see how much
     // of the load was free.
@@ -35954,7 +36003,7 @@ async function _processDiscoverCardVerify(card, a) {
     // updates the card itself when complete.
     if (verify.ok) {
       enrichDiscoverAttestation(verify)
-        .then(() => { renderDiscoverCard(card, a, verify, imgUrl, extras); applyDiscoverFilter(); })
+        .then(() => { renderDiscoverCard(card, a, verify, imgUrl, extras); _scheduleApplyDiscoverFilter(); })
         .catch(() => {});
       enrichDiscoverMints(a, verify)
         .then(() => { verify._mintsEnriched = true; renderDiscoverCard(card, a, verify, imgUrl, extras); })
@@ -36063,7 +36112,7 @@ async function _processBatchedDiscoverCardVerify(items) {
       const extras = effectiveImageUri ? getMetadataExtras(effectiveImageUri) : null;
       card.dataset.verifyState = verify.ok ? 'verified' : 'failed';
       renderDiscoverCard(card, asset, verify, imgUrl, extras);
-      applyDiscoverFilter();
+      _scheduleApplyDiscoverFilter();
       if (verify.ok) {
         _setDiscoverVerifyStats({
           verified: _discoverVerifyStats.verified + (cacheHits.has(asset.asset_id) ? 0 : 1),
@@ -36078,7 +36127,7 @@ async function _processBatchedDiscoverCardVerify(items) {
       }
       if (verify.ok) {
         enrichDiscoverAttestation(verify)
-          .then(() => { renderDiscoverCard(card, asset, verify, imgUrl, extras); applyDiscoverFilter(); })
+          .then(() => { renderDiscoverCard(card, asset, verify, imgUrl, extras); _scheduleApplyDiscoverFilter(); })
           .catch(() => {});
         enrichDiscoverMints(asset, verify)
           .then(() => { verify._mintsEnriched = true; renderDiscoverCard(card, asset, verify, imgUrl, extras); })
@@ -36089,9 +36138,10 @@ async function _processBatchedDiscoverCardVerify(items) {
         enrichDiscoverPriceFloor(asset, verify)
           .then(() => renderDiscoverCard(card, asset, verify, imgUrl, extras))
           .catch(() => {});
-        enrichDiscoverBidCount(asset, verify)
-          .then(() => renderDiscoverCard(card, asset, verify, imgUrl, extras))
-          .catch(() => {});
+        // enrichDiscoverBidCount removed: its outputs (verify._bidCount,
+        // verify._bidIntents) had no renderer after the bid-panel moved
+        // to the Market tab. The Market view fetches its own bid data
+        // via _bidCachePeek; Discover doesn't read either field.
       }
     }));
   } finally {
@@ -36440,28 +36490,6 @@ async function enrichDiscoverPriceFloor(a, verify) {
     verify._priceFloorPpu = null;
   } finally {
     verify._priceFloorEnriched = true;
-  }
-}
-
-// Stage 6 — bid-intent count. Cheap GET against /bid-intents that returns
-// an active count + the full list (which we cache for the bid panel toggle).
-// Worker GC's expired bids at read time, so the count we display reflects
-// only live, claimable bids.
-async function enrichDiscoverBidCount(a, verify) {
-  if (!verify || !verify.ok) return;
-  if (!WORKER_BASE) return;
-  if (verify._bidCountEnriched) return;
-  try {
-    const url = `${WORKER_BASE}/assets/${a.asset_id}/bid-intents?network=${encodeURIComponent(NET.name)}`;
-    const resp = await fetch(url);
-    if (!resp.ok) { verify._bidCount = 0; return; }
-    const j = await resp.json();
-    verify._bidCount = Number(j.count || 0);
-    verify._bidIntents = Array.isArray(j.intents) ? j.intents : [];
-  } catch {
-    verify._bidCount = 0;
-  } finally {
-    verify._bidCountEnriched = true;
   }
 }
 
@@ -50724,7 +50752,7 @@ async function renderPetchDiscover() {
             <span>${limitDispEsc} per mint</span>
             ${NET.name === 'mainnet' ? `<span>·</span><a href="https://www.tacitscan.io/assets/${escapeHtml(safeAid)}" target="_blank" rel="noopener noreferrer" style="color:var(--ink-mid);text-decoration:underline;" title="View this asset on tacitscan (independent block explorer)">tacitscan ↗</a>` : ''}
           </div>
-          <div style="margin-top:8px;height:3px;background:var(--ink-faint);overflow:hidden;">
+          <div style="margin-top:8px;height:6px;background:var(--ink-faint);overflow:hidden;" title="Cap progress: ${escapeHtml(pct.toFixed(pct >= 10 ? 0 : 1))}% minted">
             <div data-petch-progress-bar style="height:100%;background:${capFull ? '#a04030' : 'var(--ink)'};width:${pct}%;transition:width 0.2s;"></div>
           </div>
           <div data-petch-pending style="margin-top:6px;font-size:10px;color:var(--ink-mid);${effectivePending > 0 ? '' : 'display:none;'}">
@@ -50733,7 +50761,21 @@ async function renderPetchDiscover() {
           ${isSoftDisable ? `<div style="margin-top:6px;font-size:10px;"><a href="#" data-act="petch-mint-again" data-aid="${escapeHtml(safeAid)}" style="color:var(--ink-mid);text-decoration:underline;" title="Anyone (incl. you) can mint until the global cap fills — this just re-enables the button on this device.">Mint another?</a></div>` : ''}
         </div>`;
     }).join('');
-    list.innerHTML = tiles;
+    // Skip the innerHTML rewrite when the computed tiles match the prior
+    // render byte-for-byte. The 30s auto-poll fires regardless of whether
+    // the worker's cap counters moved, and on a quiet block (no fresh
+    // mints, no tip change, no local optimistic update) the produced
+    // tiles are identical to what's already painted. Rewriting in that
+    // case just churns the DOM, nukes Mint-button click state, and resets
+    // tile-flash animations for no visible difference. The post-rewrite
+    // wiring below (mint handlers, flash, focus) still runs on every
+    // poll — those are idempotent and harmless to re-run, plus the flash
+    // logic compares activity totals so it naturally no-ops when nothing
+    // changed.
+    if (_lastPetchTilesHtml !== tiles || !_hasExistingTiles) {
+      _lastPetchTilesHtml = tiles;
+      list.innerHTML = tiles;
+    }
     // Apply purple mint-flash to tiles whose activity total (credited +
     // pending) exceeds the last-flashed baseline for that aid. Sum is what
     // makes the flash feel responsive on Bitcoin's slow block cadence —
@@ -51450,6 +51492,23 @@ function applyDiscoverSort() {
 // Apply the Discover filter (search input + active pill) to the currently
 // rendered cards. Substring-matches against card.dataset.filterKey for the
 // query, and reads card.dataset.{mintable,attested,etchedAt} for the pill.
+// Coalesced filter scheduler — multiple in-flight enrichment callbacks
+// (verify, attestation, mints, burns) each used to call applyDiscoverFilter()
+// directly, so a batched verify of N cards walked the (CETCH + petch) DOM
+// 4×N times. Scheduling through rAF flushes a burst into a single walk
+// without changing user-perceived latency (still pre-paint). Direct
+// applyDiscoverFilter() calls from user events (typing, pill click, sort)
+// stay direct so they feel instant.
+let _applyDiscoverFilterScheduled = false;
+function _scheduleApplyDiscoverFilter() {
+  if (_applyDiscoverFilterScheduled) return;
+  _applyDiscoverFilterScheduled = true;
+  requestAnimationFrame(() => {
+    _applyDiscoverFilterScheduled = false;
+    try { applyDiscoverFilter(); } catch {}
+  });
+}
+
 function applyDiscoverFilter() {
   const input = $('#discover-filter');
   const list = $('#discover-list');
@@ -51702,7 +51761,9 @@ function setupDiscoverButtons() {
     });
   }
   // Filter wiring. Debounced so a rapid stream of keystrokes doesn't spam
-  // querySelectorAll on a large list. 80ms keeps it feeling immediate.
+  // querySelectorAll on a large list. 200ms still feels instant for typing
+  // but lets applyDiscoverFilter coalesce more keystrokes before walking
+  // every CETCH + petch card.
   // applyDiscoverFilter already cross-filters both petch + cetch tiles off
   // #discover-filter; the petch-section input below is a second surface
   // (kept in sync) so users don't have to scroll to the CETCH section to
@@ -51716,7 +51777,7 @@ function setupDiscoverButtons() {
         petchFilterInput.value = filterInput.value;
       }
       clearTimeout(t);
-      t = setTimeout(applyDiscoverFilter, 80);
+      t = setTimeout(applyDiscoverFilter, 200);
     });
   }
   if (petchFilterInput && filterInput) {
@@ -51724,7 +51785,7 @@ function setupDiscoverButtons() {
     petchFilterInput.addEventListener('input', () => {
       filterInput.value = petchFilterInput.value;
       clearTimeout(pt);
-      pt = setTimeout(applyDiscoverFilter, 80);
+      pt = setTimeout(applyDiscoverFilter, 200);
     });
   }
   // Petch refresh — parallel to btn-discover-refresh on the CETCH side.
@@ -52942,6 +53003,8 @@ export {
   // it can drive publish / fulfil from headless Node without spinning up
   // the browser UI.
   publishBidIntent, fulfilBidIntent, fulfilBidIntentBatch, cancelBidIntent, browseBidIntents,
+  // Test-only seams (see definitions for rationale). Not used by production.
+  _testInjectHoldingsCache, _testSetScanHoldingsOverride,
   // Preauth-sale canonical messages + sale_id derivation (SPEC §5.7.8).
   // Exported for dapp↔worker contract tests so the exact bytes signed by
   // the dapp can be re-hashed against the worker's helper and compared.
@@ -52956,6 +53019,11 @@ export {
   sighashV0WithType,
   // Buyer/seller flow exports.
   publishPreauthSale, publishPreauthSaleChunks, cancelPreauthSale, takePreauthSale, takePreauthSaleBatch, fetchPreauthSale,
+  // Recovery surface for the stranded-commit banner. Exported so
+  // tests/preauth-recovery-banner.test.mjs can synthesize a batched
+  // record + assert the banner renders the per-record batch tag.
+  recordPreauthTakePending, forgetPreauthTakePending,
+  listPreauthTakePendings, _renderPreauthRecoveryBannerHtml,
   // §5.7.6 atomic-intent flow exports — used by the signet e2e harness to
   // drive publish → claim → fulfil → take headlessly without the browser UI.
   publishAxferIntent, claimAxferIntent, fulfilAxferIntent,
