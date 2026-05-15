@@ -2746,45 +2746,100 @@ async function broadcastWithRetry(hex, attempts = 4, baseDelayMs = 1000) {
 // it has seen before. First scan still pays the network cost; subsequent scans
 // are dominated by local crypto only (rangeproof batch verify is sub-linear).
 //
-// Cache scope: per-network, per-txid (so signet and mainnet don't pollute each
-// other). Mempool txs are intentionally NOT cached — they can RBF or drop out,
-// so we always re-fetch them. Quota-exceeded errors on setItem are swallowed:
-// the scan still works, just falls back to per-tx network fetches.
+// Storage layer: IndexedDB (primary) with localStorage as legacy fallback for
+// entries written by the pre-IDB build. IndexedDB escapes the 5-10 MB
+// localStorage quota that capped the cache at 2000 entries; quota under IDB
+// is browser-managed and effectively unbounded for normal wallet usage
+// (typical: ~10 KB per tx, so 50k entries ≈ 500 MB which is well within IDB
+// budgets). Async writes also keep the main thread responsive during burst
+// caching from a cold ancestry scan, where the prior sync localStorage path
+// could stall the UI for 50-200ms on a hot batch.
+//
+// Cache scope: per-network, per-txid (signet and mainnet are different IDB
+// object stores). Mempool txs are intentionally NOT cached — they can RBF
+// or drop out, so we always re-fetch them. Per-tx failures (IDB busy,
+// transaction abort) fall through to per-tx network fetches gracefully.
 const TX_CACHE_PREFIX = 'tacit-tx-v1';
 const TX_CACHE_INDEX_PREFIX = 'tacit-tx-v1-idx';
-const TX_CACHE_MAX = 2000;          // hard cap on confirmed tx entries per network
-const TX_CACHE_EVICT_BATCH = 200;   // drop this many oldest entries when cap is hit
 function _txCacheKey(id) { return `${TX_CACHE_PREFIX}:${NET.name}:${id}`; }
 function _txCacheIdxKey() { return `${TX_CACHE_INDEX_PREFIX}:${NET.name}`; }
-// Read the FIFO index of cached txids for the current network. Returns []
-// on parse errors so a corrupt index doesn't brick gets/sets.
-function _loadTxCacheIndex() {
-  try {
-    const raw = localStorage.getItem(_txCacheIdxKey());
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch { return []; }
+
+// IndexedDB module. Single database "tacit-cache" with one object store per
+// network ("tx-signet", "tx-mainnet"). Keys are bare txids (no network prefix
+// since the store is already network-scoped). Values are the raw tx objects
+// as returned by Esplora. We don't index any fields — lookups are by key only.
+const _IDB_DB_NAME = 'tacit-cache';
+const _IDB_DB_VERSION = 1;
+let _idbHandle = null;
+let _idbOpenPromise = null;
+function _txIdbStoreName() { return `tx-${NET.name}`; }
+function _idbOpen() {
+  if (_idbHandle) return Promise.resolve(_idbHandle);
+  if (_idbOpenPromise) return _idbOpenPromise;
+  if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+  _idbOpenPromise = new Promise((resolve) => {
+    let req;
+    try { req = indexedDB.open(_IDB_DB_NAME, _IDB_DB_VERSION); }
+    catch { resolve(null); return; }
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      // Create both networks' stores up-front so a later network flip
+      // doesn't trigger an upgrade transaction (which would block).
+      if (!db.objectStoreNames.contains('tx-signet'))  db.createObjectStore('tx-signet');
+      if (!db.objectStoreNames.contains('tx-mainnet')) db.createObjectStore('tx-mainnet');
+    };
+    req.onsuccess = () => { _idbHandle = req.result; resolve(_idbHandle); };
+    req.onerror = () => { resolve(null); };
+    req.onblocked = () => { resolve(null); };
+  }).finally(() => { _idbOpenPromise = null; });
+  return _idbOpenPromise;
 }
-// Append to the index; evict oldest entries (and their cached txs) when the
-// cap is exceeded. Best-effort: any localStorage failure is swallowed because
-// the cache is purely an optimisation.
-function _appendTxCacheIndex(id) {
+async function _txIdbGet(id) {
+  const db = await _idbOpen();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(_txIdbStoreName(), 'readonly');
+      const store = tx.objectStore(_txIdbStoreName());
+      const req = store.get(id);
+      req.onsuccess = () => resolve(req.result || null);
+      req.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+}
+function _txIdbPut(id, value) {
+  // Fire-and-forget write; we don't await this on the read path. Errors
+  // are silenced — the in-memory cache still has the value for the rest of
+  // the session, only the next-session-on-this-device benefit is missed.
+  (async () => {
+    const db = await _idbOpen();
+    if (!db) return;
+    try {
+      const tx = db.transaction(_txIdbStoreName(), 'readwrite');
+      const store = tx.objectStore(_txIdbStoreName());
+      store.put(value, id);
+    } catch { /* IDB busy / version change / quota — best-effort */ }
+  })();
+}
+// One-time migration: existing localStorage entries are read on IDB miss
+// and copied across, then deleted from localStorage to free quota. The
+// scan happens per-txid only when getTx asks for that exact id, so the
+// migration cost is amortised over the wallet's natural usage.
+async function _txLegacyGet(id) {
   try {
-    let idx = _loadTxCacheIndex();
-    // Skip duplicates so a re-fetched tx doesn't push the index past its cap
-    // without an actual new entry.
-    if (idx.includes(id)) return;
-    idx.push(id);
-    if (idx.length > TX_CACHE_MAX) {
-      const dropCount = Math.min(idx.length - TX_CACHE_MAX + TX_CACHE_EVICT_BATCH, idx.length);
-      const drop = idx.splice(0, dropCount);
-      for (const oldId of drop) {
-        try { localStorage.removeItem(_txCacheKey(oldId)); } catch {}
-      }
+    const raw = localStorage.getItem(_txCacheKey(id));
+    if (!raw) return null;
+    const tx = JSON.parse(raw);
+    if (tx && typeof tx === 'object') {
+      _txIdbPut(id, tx);
+      // Remove from localStorage to reclaim space gradually. The legacy
+      // index pointer is left in place — it harms nothing and a future
+      // bulk-clean can drop it once we're confident IDB is fully populated.
+      try { localStorage.removeItem(_txCacheKey(id)); } catch {}
+      return tx;
     }
-    localStorage.setItem(_txCacheIdxKey(), JSON.stringify(idx));
   } catch {}
+  return null;
 }
 // In-flight dedup: concurrent callers asking for the same txid share a single
 // network request instead of each firing their own. Crucial during cold-cache
@@ -2878,10 +2933,10 @@ async function _flushTxBatch() {
     const ok = result && !result.error && result.txid;
     if (ok) {
       // Persist confirmed-tx and resolve all waiters with the same object.
+      // IDB write is fire-and-forget; resolvers don't wait on disk-flush.
       if (result.status && result.status.confirmed === true) {
         _txMemCachePut(txid, result);
-        try { localStorage.setItem(_txCacheKey(txid), JSON.stringify(result)); _appendTxCacheIndex(txid); }
-        catch { /* quota — fine */ }
+        _txIdbPut(txid, result);
       }
       for (const resolve of entry.resolvers) resolve(result);
     } else {
@@ -2911,8 +2966,7 @@ async function _getTxSingle(id) {
     if (!tx) return null;
     if (tx.status && tx.status.confirmed === true) {
       _txMemCachePut(id, tx);
-      try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); _appendTxCacheIndex(id); }
-      catch { /* quota exceeded → silently skip; cache is best-effort */ }
+      _txIdbPut(id, tx);
     }
     return tx;
   })().finally(() => { _txInFlight.delete(id); });
@@ -2927,14 +2981,25 @@ const getTx = async (rawId) => {
   if (_txIsRecentlyNotFound(id)) return null;
   const mem = _txMemCache.get(id);
   if (mem) return mem;
+  // L2: IndexedDB. Async but typically resolves in <5ms on cache hit
+  // (browser IDB has internal RAM caching for warm stores).
   try {
-    const cached = localStorage.getItem(_txCacheKey(id));
-    if (cached) {
-      const tx = JSON.parse(cached);
-      _txMemCachePut(id, tx);
-      return tx;
+    const idbTx = await _txIdbGet(id);
+    if (idbTx) {
+      _txMemCachePut(id, idbTx);
+      return idbTx;
     }
-  } catch { /* corrupted entry — fall through to network and overwrite */ }
+  } catch { /* IDB busy — fall through */ }
+  // L2b: legacy localStorage migration. Reads pre-IDB entries and
+  // copies them into IDB while serving the request; localStorage entries
+  // are deleted on copy so the legacy quota drains over normal usage.
+  try {
+    const legacy = await _txLegacyGet(id);
+    if (legacy) {
+      _txMemCachePut(id, legacy);
+      return legacy;
+    }
+  } catch { /* corrupted — fall through */ }
   // If a single-tx fetch is already in flight for this id, await it
   // rather than enqueuing a redundant batch slot. Covers callers that
   // ran before the batch layer was added and still call _getTxSingle
@@ -29565,7 +29630,24 @@ function _claimProvenance(d, meta) {
   return 'fixed_supply';
 }
 
+// Debounce flag for the discover-list render. When the Claim tab opens, the
+// list render fires from several async settlements in quick succession
+// (snapshot fetch landing per-drop, queue-health probe completing, eth-addr
+// changes, asset-metadata hydration) — each `innerHTML = …` does a full DOM
+// replace, producing the visible flash the user sees on initial paint.
+// Coalescing into one render per animation frame collapses the burst into a
+// single paint cycle while still keeping the perceived latency at 1 frame
+// (~16ms) — invisible to the user but enough to absorb a stack of synchronous
+// callers in the same tick.
+let _claimDiscoverRenderPending = false;
 function _renderClaimDiscoverList() {
+  if (_claimDiscoverRenderPending) return;
+  _claimDiscoverRenderPending = true;
+  const flush = () => { _claimDiscoverRenderPending = false; _renderClaimDiscoverListNow(); };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(flush);
+  else setTimeout(flush, 0);
+}
+function _renderClaimDiscoverListNow() {
   const list = $('#claim-discover-list');
   if (!list) return;
   if (!_claimDiscoverDrops.length) {
