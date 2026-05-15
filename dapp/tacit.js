@@ -2386,7 +2386,8 @@ async function _getUtxosViaTxHistory(a, onProgress) {
 
   let lastSeen = '';
   let truncatedByIndexer = false;
-  // Total scanned tx counter (server-walk + per-page combined) for progress.
+  // Total scanned tx counter for progress. Aggregated across page iterations
+  // so multi-minute walks show a monotone counter on the Holdings status pill.
   let scannedTotal = 0;
   const emitProgress = () => {
     if (typeof onProgress !== 'function') return;
@@ -2397,53 +2398,19 @@ async function _getUtxosViaTxHistory(a, onProgress) {
     } catch {}
   };
 
-  // Fast path: server-side multi-page walk via the worker's chain-walk
-  // endpoint. Each call accumulates up to 10 Esplora pages (~250 txs) inside
-  // one worker invocation with TLS-reused upstream connections, collapsing
-  // 10 browser→CF round-trips into 1. 2–3× faster on cold heavy-wallet scans.
-  // On 404 (rolling-deploy window) or any error, mark the worker bad once and
-  // fall through to the per-page loop below — same correctness, slower wall.
-  if (WORKER_BASE && !_workerKnownBad) {
-    while (true) {
-      const params = new URLSearchParams();
-      if (NET?.name) params.set('network', NET.name);
-      if (lastSeen) params.set('since', lastSeen);
-      let resp = null;
-      try { resp = await fetch(`${WORKER_BASE}/chain/address/${a}/walk?${params}`); }
-      catch {}
-      if (!resp) break;
-      if (resp.status === 404) { _markWorkerKnownBad(); break; }
-      if (!resp.ok) break;
-      let data = null;
-      try { data = await resp.json(); } catch {}
-      if (!data || !Array.isArray(data.txs)) break;
-      for (const tx of data.txs) ingestTx(tx);
-      scannedTotal += data.txs.length;
-      emitProgress();
-      if (data.complete) {
-        // Walk reached the address's earliest tx server-side. Skip the
-        // per-page fallback entirely.
-        void sniffP;
-        const outEarly = [];
-        for (const v of received.values()) if (!spent.has(`${v.txid}:${v.vout}`)) outEarly.push(v);
-        return outEarly;
-      }
-      if (typeof data.next_cursor !== 'string' || !data.next_cursor) break;
-      // partial_error in the response means upstream rotation exhausted
-      // server-side; bail out of the fast path so the per-page loop can
-      // pick up from `lastSeen` with the dapp's broader rotation.
-      if (data.partial_error) { lastSeen = data.next_cursor; break; }
-      lastSeen = data.next_cursor;
-    }
-  }
-
-  // Per-page fallback: walks /address/<a>/txs/chain page-by-page if the
-  // server-side walk endpoint isn't available, returned partial, or 404'd.
-  // Loop terminates when a page is empty or shorter than 25 (Esplora's
-  // signal that we've reached the address's earliest tx). HARD_CAP_PAGES is
-  // defense-in-depth against a misbehaving indexer that never returns a
-  // terminating page; 4000 pages * 25 txs = 100k txs is far beyond any
-  // realistic wallet.
+  // Chain history paginated by last_seen_txid, 25 newest-first per page. Loop
+  // terminates when a page is empty or shorter than 25 (Esplora's signal that
+  // we've reached the address's earliest tx). HARD_CAP_PAGES is defense-in-
+  // depth against a misbehaving indexer that never returns a terminating
+  // page; 4000 pages * 25 txs = 100k txs is far beyond any realistic wallet.
+  //
+  // We deliberately do NOT use a worker-side multi-page batch here — every CF
+  // colo shares one IP across all users hitting the same upstream, so
+  // mempool.space rate-limits CF much harder than it does an individual user's
+  // home IP. Empirically, sequential pages from the worker stall to ~9s/page
+  // after the first; sequential pages from the browser through the per-page
+  // proxy are ~300ms each (each separate browser→worker round-trip avoids the
+  // worker→upstream rate-limit burst). Browser-side wins for chain walks.
   //
   // Per-page rotation: api() rotates across providers on 429/5xx but throws
   // immediately on 4xx (deterministic per-query response). For the chain-walk
@@ -36812,7 +36779,15 @@ function mergeMarketPetchAssets(assets, petchAssets) {
     if (!/^[0-9a-f]{64}$/.test(aid)) continue;
     const existing = byId.get(aid);
     if (!existing) {
-      byId.set(aid, p);
+      // PETCH-only entry: visible in the petch registry but not in the
+      // regular /market response. The worker's GET /assets/<aid> reads
+      // from REGISTRY_KV under assetKey — which is missing until the
+      // petch is etched on chain. Tag the entry so the stats enrichment
+      // queue can skip these and avoid the console-spam 404s that
+      // currently fire one-per-asset on every market page load. The
+      // tag clears naturally on the next /market refresh once the
+      // petch lands an etch tx and the regular registry picks it up.
+      byId.set(aid, { ...p, _petchOnly: true });
       continue;
     }
     byId.set(aid, {
@@ -38869,6 +38844,16 @@ function scheduleMarketAssetStatsEnrichment(groups) {
   for (const g of groups) {
     const aid = String(g?.asset?.asset_id || '').toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(aid)) continue;
+    // PETCH-only entries (visible in /petch-assets but not yet etched on
+    // chain) aren't in REGISTRY_KV under assetKey, so GET /assets/<aid>
+    // would 404. Skip them so the console doesn't fill with 404 noise on
+    // every market gallery render. Mark as "loaded" so the UI stops
+    // showing the loading placeholder — these assets simply don't have
+    // trade/holder stats until they're etched.
+    if (g?.asset?._petchOnly) {
+      marketMarkAssetStatsLoaded(aid);
+      continue;
+    }
     const loadedAt = Number(g?.asset?._marketAssetStatsLoadedAt || 0);
     if (loadedAt && now - loadedAt <= MARKET_ASSET_STATS_TTL_MS) continue;
     const key = marketAssetStatsKey(aid);
