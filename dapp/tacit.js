@@ -45700,9 +45700,37 @@ function _wireSwapTile(scope) {
       const result = await planSell(amt);
       if (myToken !== updateToken) return;
       if (!result) {
+        // Mirror the buy-side "place a bid" smart fallback. When no
+        // bids match the floor, the click-action ALREADY posts the
+        // sale as an open listing (line ~46458). The button state
+        // during typing should reflect that — enable it with "swap
+        // stays open" framing instead of greying out as "no route".
+        // A normie typing in the sell input gets a clear path
+        // (your swap will land as a listing) rather than a dead end.
+        if (Number.isFinite(refUnit) && refUnit > 0) {
+          const _floor = refUnit * (1 - getSlipRatio());
+          // Estimated sats at the floor price for the visual.
+          let _est = 0;
+          try {
+            const _whole = Number(amt) / Math.pow(10, decimals);
+            _est = Math.floor(_whole * _floor);
+          } catch {}
+          toInput.value = _est ? _est.toLocaleString() : '';
+          const _usd = btcUsd && _est ? fmtSatsAsUsd(_est, btcUsd) : null;
+          toMeta.textContent = _usd
+            ? `≈ ${_usd} · at floor ${fmtUnitPriceSats(_floor)} sats/${ticker} · auto-expires 24h`
+            : `at floor ${fmtUnitPriceSats(_floor)} sats/${ticker} · auto-expires 24h`;
+          infoEl.innerHTML = `no instant match at your floor — <strong>your swap stays open</strong> as a listing until any buyer takes. Atomic Bitcoin settlement; cancel anytime.`;
+          actionBtn.disabled = false; actionBtn.style.opacity = '1';
+          actionBtn.textContent = swapLabel(_est ? `SELL → ≥ ${_est.toLocaleString()} sats` : 'LIST FOR SALE');
+          delete actionBtn.dataset.swapNeedsFunds;
+          return;
+        }
+        // Genuinely no route — asset has never traded, no mark price
+        // to anchor a listing floor against.
         toInput.value = '';
         toMeta.textContent = '';
-        infoEl.textContent = `no bids within ±${slipSel.value}% of mark · widen limit, or use Sweep sell below for a custom floor`;
+        infoEl.textContent = 'no bids and no mark price · this asset has never traded — be the first';
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'no route';
         return;
