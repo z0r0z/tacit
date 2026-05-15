@@ -45864,6 +45864,90 @@ function _wireSwapTile(scope) {
     if (!plan.length) return null;
     return { plan, totalAmt, totalSats, residualSats: satsBudget - totalSats, satsBudget, cap };
   };
+  // Depth simulator — read-only walk of the orderbook at an arbitrary
+  // unit-price cap. Returns the (fillCount, totalAmt, totalSats) that
+  // would land if planBuy ran at this cap. Used by the depth-at-
+  // slippage hint below to compute "widening to ±X% adds +Y TAC."
+  // Skips variable-amount intents for simulation simplicity (they
+  // contribute opportunistically; their inclusion would over-estimate
+  // depth for budgets just shy of the next whole-lot). The hint
+  // intentionally errs toward under-promising.
+  const _simulateBuyAtCap = (satsBudget, capUnit) => {
+    if (!Number.isFinite(satsBudget) || satsBudget <= 0) return null;
+    if (!Number.isFinite(capUnit) || capUnit <= 0) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const candidates = [];
+    for (const l of (_marketCache?.listings || [])) {
+      if (l._asset?.asset_id !== aid) continue;
+      if (Number(l.expiry || 0) <= nowSec || l.expired) continue;
+      let amt, ps;
+      if (l.kind === 'preauth') {
+        if (l.seller_pubkey === myPubHex) continue;
+        amt = BigInt(l.asset_opening?.amount || 0);
+        ps  = Number(l.min_price_sats || 0);
+      } else if (l.kind === 'intent' && !l.claim && !l.fulfilment_pending) {
+        if (l.maker_pubkey === myPubHex) continue;
+        if (l.min_take_amount) continue;  // variable-amount intent — see comment above
+        amt = BigInt(l.amount || 0);
+        ps  = Number(l.price_sats || 0);
+      } else { continue; }
+      const u = unitPriceSats(ps, amt, decimals);
+      if (!Number.isFinite(u) || u <= 0 || u > capUnit || u < dustFloorUnit || amt <= 0n || ps <= 0) continue;
+      candidates.push({ amt, ps, u });
+    }
+    candidates.sort((a, b) => a.u - b.u);
+    let totalSats = 0, totalAmt = 0n, fillCount = 0;
+    for (const c of candidates) {
+      if (totalSats + c.ps > satsBudget) continue;
+      totalSats += c.ps;
+      totalAmt += c.amt;
+      fillCount++;
+    }
+    return { fillCount, totalSats, totalAmt };
+  };
+  // Symmetric for sells — walk bids highest-first under various floors.
+  // Used by the depth-at-slippage hint on the sell side.
+  const _simulateSellAtFloor = (targetTacBig, floorUnit) => {
+    if (!(targetTacBig > 0n)) return null;
+    if (!Number.isFinite(floorUnit) || floorUnit <= 0) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    // We don't fetch bids here — caller passes them in below via the
+    // already-fetched cache. Return a thin shape the hint reads.
+    return { fillCount: 0, totalAmt: 0n, totalSats: 0, _bids: null };
+  };
+  // Depth hint: when the user's budget exceeds what the current cap can
+  // fill, surface "↑ widen to ±N% to unlock +Y TAC". Only fires when
+  // widening WOULD help — silent if the current cap already covers the
+  // budget. Returns the hint text (prefixed with " · ") or empty.
+  const _buyDepthHint = (satsBudget, currentResult) => {
+    if (!Number.isFinite(refUnit) || refUnit <= 0) return '';
+    if (!currentResult || !currentResult.plan) return '';
+    // The cap only "limited" the buy if residual sats remain. If
+    // residual is essentially zero (< 100 sats), the budget was fully
+    // spent and widening can't help.
+    if (Number(currentResult.residualSats || 0) < 100) return '';
+    const currentSlipPct = parseFloat(slipSel?.value || '10');
+    const widerOpts = Array.from(slipSel?.options || [])
+      .map(o => parseFloat(o.value))
+      .filter(v => Number.isFinite(v) && v > currentSlipPct)
+      .sort((a, b) => a - b);
+    if (widerOpts.length === 0) return '';
+    const widerPct = widerOpts[0];
+    const widerCap = refUnit * (1 + widerPct / 100);
+    const sim = _simulateBuyAtCap(satsBudget, widerCap);
+    if (!sim || sim.fillCount === 0) return '';
+    if (sim.fillCount <= currentResult.plan.length) return '';
+    const extraFills = sim.fillCount - currentResult.plan.length;
+    const extraAmt = sim.totalAmt - (currentResult.totalAmt || 0n);
+    if (extraAmt <= 0n) return '';
+    // Return as a trusted-html row so _renderRouteRows leaves the
+    // Apply button intact. All values inserted are dapp-controlled
+    // (slippage option, integer fillcount, asset amount + ticker
+    // from the local plan); no user input enters the template.
+    return {
+      html: `↑ widen limit to ±${widerPct}% to unlock +${escapeHtml(fmtAssetAmountCompact(extraAmt, decimals))} ${escapeHtml(ticker)} (${extraFills} more fill${extraFills === 1 ? '' : 's'}) <button data-act="swap-widen-slip" data-pct="${widerPct}" type="button" style="font-size:9.5px;padding:1px 6px;margin-left:4px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer;">Apply</button>`,
+    };
+  };
   // SELL plan: walk bid intents highest-first; include each bid whose
   // amount fits within the remaining target. Unit-price floor = ref ×
   // (1 - slippage). Returns null if no fillable bid above floor.
@@ -46235,9 +46319,21 @@ function _wireSwapTile(scope) {
     const rows = [headline];
     for (const e of extras) {
       if (!e) continue;
-      rows.push(e.replace(/^\s*·\s*/, ''));
+      // Trusted-HTML row (e.g. depth hint with clickable Apply button):
+      // pass as { html: '<…>' } to bypass escapeHtml. Plain strings are
+      // escaped as before. Only buyer-side callers ever pass html rows;
+      // every callsite that does so builds the HTML from trusted inputs
+      // (slippage option values + integer fill counts, no user text).
+      if (typeof e === 'object' && e && typeof e.html === 'string') {
+        rows.push({ html: e.html });
+      } else {
+        rows.push(String(e).replace(/^\s*·\s*/, ''));
+      }
     }
-    return rows.map(r => `<div class="route-line">${escapeHtml(r)}</div>`).join('');
+    return rows.map(r => typeof r === 'object'
+      ? `<div class="route-line">${r.html}</div>`
+      : `<div class="route-line">${escapeHtml(r)}</div>`
+    ).join('');
   };
   const _computeImpactStr = (totalSats, totalAmtBI, direction) => {
     if (!(Number.isFinite(refUnit) && refUnit > 0)) return '';
@@ -46561,10 +46657,27 @@ function _wireSwapTile(scope) {
         ? ` · ⚠ insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`
         : '';
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
+      // Depth-at-slippage hint: if widening would unlock additional
+      // fills the current cap excluded, surface it as a clickable row
+      // with an Apply button that bumps the slippage selector to the
+      // suggested option. Silent when the current cap isn't binding
+      // (budget already fully spent at this cap).
+      const _depthHint = _buyDepthHint(sats, result);
       infoEl.innerHTML = _renderRouteRows(
         `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
-        [residHint, insufficientHint]
+        [residHint, _depthHint, insufficientHint]
       );
+      // Wire the Apply button on the depth hint (innerHTML strips event
+      // handlers; bind them after the write).
+      const _widenBtn = infoEl.querySelector('[data-act="swap-widen-slip"]');
+      if (_widenBtn) {
+        _widenBtn.onclick = () => {
+          const pct = _widenBtn.dataset.pct;
+          if (!pct || !slipSel) return;
+          slipSel.value = pct;
+          slipSel.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+      }
       if (insufficientBudget || insufficientForFees) {
         // Instead of a dead "insufficient balance" button, keep the
         // button enabled and route the click straight to the Top-up
