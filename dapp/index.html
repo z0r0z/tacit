@@ -361,25 +361,31 @@ button.market-chip .chip-caret {
   opacity: 0.7;
 }
 .market-icon-btn {
-  width: 32px;
-  height: 30px;
+  /* Smaller, borderless icon-only refresh. Previously a 32×30 button
+     with a 1px border + bg, which read as a competing primary action
+     next to the chip row. Now: 22×22, no border, no bg, just the
+     glyph. Hover lifts color to orange + bumps weight slightly so it
+     remains discoverable without dominating. The trader's primary
+     refresh path is the auto-refresh tick anyway; this is a manual
+     escape hatch, not a frequently-clicked action. */
+  width: 22px;
+  height: 22px;
   display: inline-grid;
   place-items: center;
   font-size: 14px;
   padding: 0;
-  border: 1px solid var(--ink-faint);
-  background: var(--bg);
-  color: var(--ink-mid);
+  border: 0;
+  background: transparent;
+  color: var(--ink-faint);
   box-shadow: none;
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 1;
-  transition: color 0.1s ease-out, border-color 0.1s ease-out, transform 0.4s ease-out;
+  transition: color 0.1s ease-out, transform 0.4s ease-out;
 }
 .market-icon-btn:hover:not(:disabled) {
   color: var(--orange);
-  border-color: var(--ink);
-  background: var(--bg);
+  background: transparent;
   box-shadow: none;
 }
 .market-icon-btn:active {

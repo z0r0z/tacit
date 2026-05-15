@@ -38245,7 +38245,7 @@ function renderMarketBrowseTable(rows) {
             <th>Price</th>
             <th>Market Cap</th>
             <th>24h Volume</th>
-            ${_showRecentVolumeColumn ? `<th title="Sum of the worker's recent-trades ring buffer (most-recent N trades per asset). Worker doesn't yet keep a lifetime aggregator — once it does, this column will switch to the true cumulative value automatically.">Recent Volume</th>` : ''}
+            ${_showRecentVolumeColumn ? `<th title="Sum across the worker's recent-trades ring buffer (up to 200 most-recent trades per asset). Can exceed 24h Volume when the ring extends past 24h — that's the difference: 24h is a strict UTC bucket sum, this column is a rolling approximation of lifetime volume bounded by ring depth. Worker doesn't yet keep a true cumulative counter; once it does, this column will switch automatically.">Indexed Volume</th>` : ''}
             <th title="Distinct wallets that have ever received this asset on chain (scriptpubkey-hash level — a wallet, not a user). Coarse popularity signal indexed by the worker.">Wallets</th>
             <th title="Live trustless listings on the orderbook (left) and lifetime on-chain transfers of this asset (right).">Activity</th>
           </tr>
@@ -44374,13 +44374,22 @@ function updateMarketControlsVisibility() {
   const wrap = txt?.closest('.market-search-wrap') || $('.market-search-wrap');
   const sort = $('#market-sort');
   const sortWrap = sort?.closest('.market-chip-wrap') || sort;
+  // Refresh button hidden on asset-detail because the auto-refresh
+  // tick already keeps numbers live there; the manual button was
+  // adding visual weight at the top of an asset page where the
+  // header should be the dominant element (logo + ticker + stats),
+  // not a row of gallery-level controls that don't apply to a
+  // specific asset view.
+  const refresh = document.getElementById('btn-market-refresh');
   if (_marketView === 'browse') {
     if (wrap) wrap.style.display = '';
     if (txt) txt.style.display = '';
     if (sortWrap) sortWrap.style.display = '';
+    if (refresh) refresh.style.display = '';
   } else {
     if (wrap) wrap.style.display = 'none';
     if (sortWrap) sortWrap.style.display = 'none';
+    if (refresh) refresh.style.display = 'none';
     if (txt) {
       txt.style.display = '';
       if (txt.value) txt.value = '';
