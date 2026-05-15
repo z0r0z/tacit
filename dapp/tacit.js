@@ -2384,13 +2384,68 @@ async function _getUtxosViaTxHistory(a, onProgress) {
     if (Array.isArray(mempoolTxs)) for (const tx of mempoolTxs) ingestTx(tx);
   } catch { /* mempool best-effort */ }
 
-  // Chain history paginated by last_seen_txid, 25 newest-first per page. Loop
-  // terminates when a page is empty or shorter than 25 (Esplora's signal that
-  // we've reached the address's earliest tx). HARD_CAP_PAGES is defense-in-
-  // depth against a misbehaving indexer that never returns a terminating
-  // page; 4000 pages * 25 txs = 100k txs is far beyond any realistic wallet.
+  let lastSeen = '';
+  let truncatedByIndexer = false;
+  // Total scanned tx counter (server-walk + per-page combined) for progress.
+  let scannedTotal = 0;
+  const emitProgress = () => {
+    if (typeof onProgress !== 'function') return;
+    try {
+      onProgress(totalTxCount && scannedTotal < totalTxCount
+        ? `walking history · ${scannedTotal} / ~${totalTxCount} tx`
+        : `walking history · ${scannedTotal}+ tx`);
+    } catch {}
+  };
+
+  // Fast path: server-side multi-page walk via the worker's chain-walk
+  // endpoint. Each call accumulates up to 10 Esplora pages (~250 txs) inside
+  // one worker invocation with TLS-reused upstream connections, collapsing
+  // 10 browser→CF round-trips into 1. 2–3× faster on cold heavy-wallet scans.
+  // On 404 (rolling-deploy window) or any error, mark the worker bad once and
+  // fall through to the per-page loop below — same correctness, slower wall.
+  if (WORKER_BASE && !_workerKnownBad) {
+    while (true) {
+      const params = new URLSearchParams();
+      if (NET?.name) params.set('network', NET.name);
+      if (lastSeen) params.set('since', lastSeen);
+      let resp = null;
+      try { resp = await fetch(`${WORKER_BASE}/chain/address/${a}/walk?${params}`); }
+      catch {}
+      if (!resp) break;
+      if (resp.status === 404) { _markWorkerKnownBad(); break; }
+      if (!resp.ok) break;
+      let data = null;
+      try { data = await resp.json(); } catch {}
+      if (!data || !Array.isArray(data.txs)) break;
+      for (const tx of data.txs) ingestTx(tx);
+      scannedTotal += data.txs.length;
+      emitProgress();
+      if (data.complete) {
+        // Walk reached the address's earliest tx server-side. Skip the
+        // per-page fallback entirely.
+        void sniffP;
+        const outEarly = [];
+        for (const v of received.values()) if (!spent.has(`${v.txid}:${v.vout}`)) outEarly.push(v);
+        return outEarly;
+      }
+      if (typeof data.next_cursor !== 'string' || !data.next_cursor) break;
+      // partial_error in the response means upstream rotation exhausted
+      // server-side; bail out of the fast path so the per-page loop can
+      // pick up from `lastSeen` with the dapp's broader rotation.
+      if (data.partial_error) { lastSeen = data.next_cursor; break; }
+      lastSeen = data.next_cursor;
+    }
+  }
+
+  // Per-page fallback: walks /address/<a>/txs/chain page-by-page if the
+  // server-side walk endpoint isn't available, returned partial, or 404'd.
+  // Loop terminates when a page is empty or shorter than 25 (Esplora's
+  // signal that we've reached the address's earliest tx). HARD_CAP_PAGES is
+  // defense-in-depth against a misbehaving indexer that never returns a
+  // terminating page; 4000 pages * 25 txs = 100k txs is far beyond any
+  // realistic wallet.
   //
-  // Per-page fallback: api() rotates across providers on 429/5xx but throws
+  // Per-page rotation: api() rotates across providers on 429/5xx but throws
   // immediately on 4xx (deterministic per-query response). For the chain-walk
   // route specifically, that assumption is wrong — mempool.space and
   // blockstream.info have *different* history-depth limits, so the same page
@@ -2398,8 +2453,6 @@ async function _getUtxosViaTxHistory(a, onProgress) {
   // rotation here: when api() throws, raw-fetch the same path from any other
   // configured base before treating the page as terminal.
   const HARD_CAP_PAGES = 4000;
-  let lastSeen = '';
-  let truncatedByIndexer = false;
   for (let page = 0; page < HARD_CAP_PAGES; page++) {
     const path = lastSeen
       ? `/address/${a}/txs/chain/${lastSeen}`
@@ -2444,17 +2497,10 @@ async function _getUtxosViaTxHistory(a, onProgress) {
     }
     if (!Array.isArray(batch) || batch.length === 0) break;
     for (const tx of batch) ingestTx(tx);
-    // Heavy-wallet progress hint. Page count is reliable; the percentage uses
-    // the background-sniffed total when available. Caller wires this to the
-    // Holdings status pill so a multi-minute scan shows movement.
-    if (typeof onProgress === 'function') {
-      const scanned = (page + 1) * 25;
-      try {
-        onProgress(totalTxCount && scanned < totalTxCount
-          ? `walking history · ${scanned} / ~${totalTxCount} tx`
-          : `walking history · ${scanned}+ tx`);
-      } catch {}
-    }
+    scannedTotal += batch.length;
+    // Heavy-wallet progress hint. Counter survives the server-side fast path
+    // → per-page fallback handoff so the user sees a monotone tx count.
+    emitProgress();
     if (batch.length < 25) break;
     const tail = batch[batch.length - 1];
     if (!tail || !tail.txid) break;
@@ -29205,7 +29251,21 @@ function _parseTabHash() {
     : null;
   return { tab, aid, section };
 }
+// Idempotency guard for deep-link consumption. The market/discover hash is
+// fired BEFORE awaiting refreshWallet so the market view doesn't sit blank
+// waiting on the wallet's mempool round-trip. After refreshWallet resolves
+// the late `_consumeTabUrlHash()` would re-fire renderMarket — harmless
+// (TTL fast-path) but a wasted re-render. Skipping when the hash hasn't
+// changed since the early call keeps the cycle clean.
+let _tabHashLastConsumed = null;
 function _consumeTabUrlHash() {
+  // Normalize for comparison so a hash that gets rewritten in-place by
+  // _writeMarketHash (e.g., uppercase aid → lowercase) doesn't defeat
+  // the guard. The aid in _parseTabHash is already lowercased on parse;
+  // matching on lowercase covers the common write-back case.
+  const _curHash = (location.hash || '').toLowerCase();
+  if (_tabHashLastConsumed === _curHash) return;
+  _tabHashLastConsumed = _curHash;
   const parsed = _parseTabHash();
   if (!parsed) return;
   // Stash the asset focus into the right state slot for the target tab.
@@ -29281,7 +29341,13 @@ function _consumeTabUrlHash() {
 window.addEventListener('hashchange', () => {
   const h = location.hash || '';
   if (h.startsWith('#claim=')) _consumeClaimUrlHash();
-  else if (h.startsWith('#tab=')) _consumeTabUrlHash();
+  else if (h.startsWith('#tab=')) {
+    // Reset the idempotency guard so back/forward and in-app hash mutations
+    // always re-route through _consumeTabUrlHash. The guard only exists to
+    // dedupe the cold-load early-call vs. the late-call within init.
+    _tabHashLastConsumed = null;
+    _consumeTabUrlHash();
+  }
 });
 // Reflect tab state into the URL after every tab click. Guarded against
 // clobbering an unconsumed share-link / claim hash during init — those
@@ -49979,6 +50045,24 @@ async function init() {
   // Fire-and-forget: renderRecentEtches has its own try/catch and writes to a
   // disjoint DOM region, so no rejection bubbles into init.
   renderRecentEtches();
+  // Tab-deeplink fast path: when the URL targets a non-wallet tab (Market,
+  // Discover, Holdings, Mixer, etc.), fire its consumer BEFORE awaiting
+  // refreshWallet. The wallet's mempool round-trip can take 5-30s on cold
+  // load and there's no reason to gate the destination tab on it — the
+  // renderers degrade gracefully when `wallet.pub` is null (decorative
+  // "your bid / your listing" highlighting just no-ops until the wallet
+  // catches up; the market data + chart + ladder render unconditionally).
+  //
+  // Without this, deep-loading `tacit.finance/#tab=market&aid=...` shows
+  // a frozen page until refreshWallet resolves; clicking the Market tab
+  // during that window works fine, which is what makes the hang feel
+  // asymmetric (the user can navigate manually but the URL bar can't).
+  // _consumeTabUrlHash is idempotent (via _tabHashLastConsumed) so the
+  // late call after the wallet await becomes a no-op when the hash
+  // hasn't changed.
+  if ((location.hash || '').startsWith('#tab=')) {
+    try { _consumeTabUrlHash(); } catch (e) { console.warn('[init] early tab deeplink failed:', e?.message || e); }
+  }
   await refreshWallet();
   renderExtWalletPanel();
   // Surface any one-time net-flip explainer queued by the network selector.
