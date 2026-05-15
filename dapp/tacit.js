@@ -37837,7 +37837,7 @@ function renderMarketBrowse(rows) {
       floorLine = `<strong style="color:#0a8f43;">mark ${fmtUnitPriceSats(_tileMarkUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}`;
     } else if (g.floorUnit != null) {
       const isDust = _isDustAsk(g.floorUnit, _tileMarkUnit, g.floorSats);
-      floorLine = `<strong style="color:#0a8f43;">best ask ${fmtUnitPriceSats(g.floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}${isDust ? ' <span class="muted" style="font-size:9px;color:var(--red,#b8341d);" title="Best ask is far below the typical trading range and total order size is small — likely a dust listing not meant to reflect real liquidity.">⚠ dust</span>' : ''}`;
+      floorLine = `<strong style="color:#0a8f43;">best ask ${fmtUnitPriceSats(g.floorUnit)} sats</strong>/${escapeHtml(a.ticker || 'token')}${isDust ? ' <span class="muted" style="font-size:9px;color:#c97a1a;" title="Best ask is far below the typical trading range and total order size is small — likely a dust listing not meant to reflect real liquidity.">⚠ dust</span>' : ''}`;
     } else if (g.floorSats != null) {
       floorLine = `<strong style="color:#0a8f43;">from ${g.floorSats.toLocaleString()} sats</strong>`;
     }
@@ -40321,7 +40321,14 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   const midpoint = (cheapestAsk + highestBid) / 2;
   const pctSpread = midpoint > 0 ? (absSpread / midpoint) * 100 : null;
   const isCrossed = absSpread < 0;
-  const color = isCrossed ? '#b8341d' : (pctSpread != null && pctSpread < 1 ? '#0a7d3a' : 'var(--ink)');
+  // Amber for "crossed" (structural anomaly: bid > ask) rather than
+  // red — red on this row reads as price-down even though the spread
+  // value has nothing to do with directional movement. Trader
+  // convention: red = price down, green = price up; orderbook anomalies
+  // should use a third color so they don't visually collide with the
+  // Δ% chip immediately above. Same amber used on the depth chart's
+  // ARB ZONE label so both surface the same anomaly with the same hue.
+  const color = isCrossed ? '#c97a1a' : (pctSpread != null && pctSpread < 1 ? '#0a7d3a' : 'var(--ink)');
   const txt = isCrossed
     ? `<span style="color:${color};" title="Best in-band bid exceeds best in-band ask by ${fmtUnitPriceSats(Math.abs(absSpread))} sats/${escapeHtml(ticker)} — a real arbitrage opportunity (dust outliers ignored).">crossed ${fmtUnitPriceSats(Math.abs(absSpread))} sats/${escapeHtml(ticker)}</span>`
     : `<span style="color:${color};">${fmtUnitPriceSats(absSpread)} sats/${escapeHtml(ticker)}${pctSpread != null ? ` · ${pctSpread.toFixed(2)}%` : ''}</span>`;
@@ -40598,7 +40605,7 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     ? `<span title="Auto-switched to log scale because the orderbook spans &gt;50× from low to high. Mark price line stays anchored to the real trading band." style="font-size:9px;padding:1px 5px;background:var(--ink-faint);color:var(--ink);border-radius:2px;letter-spacing:0.05em;cursor:help;">log</span>`
     : '';
   const _crossedBadge = isCrossed
-    ? `<span title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades." style="font-size:9px;padding:1px 5px;background:var(--red, #b8341d);color:#fff;border-radius:2px;letter-spacing:0.05em;cursor:help;">crossed</span>`
+    ? `<span title="Best bid &gt; best ask — typically caused by stale or dust orders. The visible book is unbalanced; mark price line shows where TAC actually trades." style="font-size:9px;padding:1px 5px;background:#c97a1a;color:#fff;border-radius:2px;letter-spacing:0.05em;cursor:help;">crossed</span>`
     : '';
   const bestBidX = xOf(headerBestBid);
   const bestAskX = xOf(headerBestAsk);
@@ -43707,7 +43714,7 @@ function _wireMarketBidPlace(section, asset) {
     }
     if (_floorUnit != null) {
       const us = _usdPerToken(_floorUnit);
-      const dustTag = _floorIsDust ? ' <span style="color:var(--red);">(dust)</span>' : '';
+      const dustTag = _floorIsDust ? ' <span style="color:#c97a1a;">(dust)</span>' : '';
       _refBits.push(`best ask <strong>${escapeHtml(fmtUnitPriceSats(_floorUnit))}</strong> sats/${escapeHtml(ticker)}${us ? ` (${escapeHtml(us)}/${escapeHtml(ticker)})` : ''}${dustTag}`);
     }
     if (_lastUnit != null) {
