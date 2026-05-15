@@ -44402,6 +44402,23 @@ function _wireSwapTile(scope) {
   };
   const getDirection = () => widget.dataset.direction || 'buy';
   const getPayUnit = () => widget.dataset.payUnit || 'sats';
+  // Default pay unit: USD when BTC/USD oracle is warm AND the user has no
+  // saved preference. Most first-time buyers think in dollars; surfacing
+  // "$10 / $50 / $200" chips on the buy side gives them an immediate
+  // mental scaffold without having to convert sats themselves. The
+  // localStorage preference lets sat-natives flip to sats once and stay
+  // there across sessions/assets.
+  const _SWAP_PAY_UNIT_PREF_KEY = 'tacit-swap-pay-unit-v1';
+  if (!widget.dataset.payUnit) {
+    let _pref = null;
+    try { _pref = localStorage.getItem(_SWAP_PAY_UNIT_PREF_KEY); } catch {}
+    if (_pref === 'usd' || _pref === 'sats') {
+      widget.dataset.payUnit = _pref;
+    } else if (Number.isFinite(btcUsd) && btcUsd > 0 && getDirection() === 'buy') {
+      widget.dataset.payUnit = 'usd';
+    }
+    // Else: leave undefined; getPayUnit() falls through to 'sats'.
+  }
   // Active side tracks which input the user is driving. 'from' = exact-in
   // (default — type what you pay, see what you get). 'to' = exact-out
   // (type what you want to receive, see what it costs). Whole-UTXO
@@ -45245,7 +45262,19 @@ function _wireSwapTile(scope) {
   if (slipSel) slipSel.addEventListener('change', update);
   if (flipBtn) flipBtn.onclick = () => {
     widget.dataset.direction = getDirection() === 'buy' ? 'sell' : 'buy';
-    widget.dataset.payUnit = 'sats';
+    // Selling: pay unit is the asset (ticker), not sats/USD — there's no
+    // dual-denomination toggle, so payUnit lives in the buy-side only.
+    // Reset to a sensible default when flipping back to buy: respect the
+    // saved preference; else default USD when btcUsd is warm.
+    if (widget.dataset.direction === 'buy') {
+      let _pref = null;
+      try { _pref = localStorage.getItem(_SWAP_PAY_UNIT_PREF_KEY); } catch {}
+      widget.dataset.payUnit = (_pref === 'usd' || _pref === 'sats')
+        ? _pref
+        : (Number.isFinite(btcUsd) && btcUsd > 0 ? 'usd' : 'sats');
+    } else {
+      widget.dataset.payUnit = 'sats';
+    }
     widget.dataset.activeSide = 'from';
     fromInput.value = '';
     toInput.value = '';
@@ -45273,6 +45302,10 @@ function _wireSwapTile(scope) {
       }
     }
     widget.dataset.payUnit = next;
+    // Persist the user's chosen unit so it sticks across asset switches +
+    // page reloads. Crypto-natives flipping to sats once stay in sats
+    // forever; USD-thinking first-timers stay in USD.
+    try { localStorage.setItem(_SWAP_PAY_UNIT_PREF_KEY, next); } catch {}
     applyDirection();
     update();
   };
@@ -45461,15 +45494,18 @@ function _wireSwapTile(scope) {
           ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
           : `Each fill settles in one Bitcoin tx.`;
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
+        // Same tightened style as the exact-in path. Exact-out uses
+        // "≥ X" since whole-UTXO atomicity may overshoot the requested
+        // target; overshootStr already explains the diff if any.
+        const maxU = result.plan[result.plan.length - 1].u;
         if (!await tacitConfirm({
-          title: `Swap ${result.totalSats.toLocaleString()} sats → ≥ ${accStr} ${ticker}?`,
+          title: `Buy ≥ ${accStr} ${ticker} for ${result.totalSats.toLocaleString()} sats${usd ? ` (≈ ${usd})` : ''}?`,
           body:
-            `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
-            `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}${impactStr}\n` +
-            (usd ? `≈ ${usd}\n` : '') +
-            `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${asyncNote}` +
+            `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · cap ≤ ${fmtUnitPriceSats(maxU)} sats/${ticker} · fees ~${(result.plan.length * 800).toLocaleString()} sats\n` +
+            asyncNote +
+            (impactStr ? `\n\n${impactStr.replace(/^ · /, '').trim()}` : '') +
             overshootStr,
-          confirmLabel: 'Swap',
+          confirmLabel: 'Buy',
         })) return;
       } else {
         const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
@@ -45713,15 +45749,20 @@ function _wireSwapTile(scope) {
         }
       }
       const _impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
+      // Tighter buy confirm: lead with the human-readable trade in the
+      // title (≈USD shown there so it lands at first glance), keep the
+      // body to one essentials line + the async note + any conditional
+      // edge-case paragraphs (residual / impact). Less wall-of-text,
+      // same information density for the user who reads carefully.
+      const _maxUnit = result.plan[result.plan.length - 1].u;
       if (!await tacitConfirm({
-        title: `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?`,
+        title: `Buy ~${accStr} ${ticker} for ${result.totalSats.toLocaleString()} sats${usd ? ` (≈ ${usd})` : ''}?`,
         body:
-          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
-          `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}${_impactStr}\n` +
-          (usd ? `≈ ${usd}\n` : '') +
-          `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${_asyncNote}` +
+          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · cap ≤ ${fmtUnitPriceSats(_maxUnit)} sats/${ticker} · fees ~${(result.plan.length * 800).toLocaleString()} sats\n` +
+          _asyncNote +
+          (_impactStr ? `\n\n${_impactStr.replace(/^ · /, '').trim()}` : '') +
           _residualNote,
-        confirmLabel: 'Swap',
+        confirmLabel: 'Buy',
       })) return;
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       const origLabel = actionBtn.textContent;
