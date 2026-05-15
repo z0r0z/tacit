@@ -1232,6 +1232,19 @@ tr[data-recent-activity] .market-token-sub::after {
   border-right: 1px solid var(--ink-faint);
 }
 .market-asset-stats > div:last-child { border-right: 0; }
+/* Δ-strip footer cell — spans the entire stats grid as a thin row at
+   the bottom of the card. Lets the 1h/4h/24h price-change chips sit
+   on one inline line instead of wrapping inside the narrow Price
+   tile, and equalizes top-row tile heights. */
+.market-asset-stats > div.market-asset-stats-delta {
+  grid-column: 1 / -1;
+  padding: 9px 16px;
+  border-top: 1px solid var(--ink-faint);
+  border-right: 0;
+}
+.market-asset-stats-delta .market-delta-strip {
+  margin-top: 0;
+}
 .market-asset-stats span {
   display: block;
   color: var(--ink-mid);

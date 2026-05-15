@@ -42480,7 +42480,7 @@ function renderMarketAssetHeader(assetId, rows) {
       </div>
       <div>
         <div class="market-asset-stats">
-          <div><span>Price</span><strong class="market-sats-price ${_priceFlashClassFor(safeAid, headerUnit)}" data-market-header="price-sats">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small>${_renderDeltaStrip(a)}</div>
+          <div><span>Price</span><strong class="market-sats-price ${_priceFlashClassFor(safeAid, headerUnit)}" data-market-header="price-sats">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
           <div><span>24h Volume</span><strong data-market-header="vol24-usd">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small data-market-header="vol24-btc">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Market Cap</span><strong data-market-header="mcap-usd">${escapeHtml(mcapUsd)}</strong><small data-market-header="mcap-btc">${escapeHtml(mcapBtc)}</small></div>
           <div title="All live listings for this asset across every kind (instant + atomic intent + range + opening). The depth chart, asks-liquidity row, and Open Orders pane each filter this set differently — depth excludes outliers vs mark, asks-liquidity excludes recently-expired, Open Orders paginates and hides past page 1 — so their counts can be slightly lower than this header figure."><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
@@ -42519,6 +42519,16 @@ function renderMarketAssetHeader(assetId, rows) {
               }
             }
             return `<div data-act="market-jump-to-sell" data-aid="${escapeHtml(safeAid)}" title="Click to scroll to the swap tile in Sell mode and size from your balance" style="cursor:pointer;"><span>You own <span style="color:var(--ink-mid);font-size:9px;">↗ sell</span></span><strong>${escapeHtml(_balStr)} ${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price">${escapeHtml(_valStr || '—')}</small></div>`;
+          })()}
+          ${(() => {
+            // Multi-window price-change footer — was previously crammed
+            // inside the Price tile (≈145px wide), forcing 3 chips to
+            // wrap onto 2 lines and making Price tower over its
+            // neighbors. Moved out to a full-width footer row that
+            // spans the bottom of the stats card so all three windows
+            // sit on one elegant line and the top-row tiles align.
+            const _stripHtml = _renderDeltaStrip(a);
+            return _stripHtml ? `<div class="market-asset-stats-delta">${_stripHtml}</div>` : '';
           })()}
         </div>
         <!-- Bottom back button dropped — the breadcrumb at top is the
