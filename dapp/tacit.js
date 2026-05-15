@@ -15297,16 +15297,27 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
       txid: revealTxidHex,
       extra: { price_sats: Number(e.sale.min_price_sats) || 0, source: 'preauth-take-batch' },
     });
-    try {
-      postHint(revealTxidHex, 0, {
-        price_sats: Number(e.sale.min_price_sats) || 0,
-        amount: String(e.amount),
-        seller_address: e.sale.seller_payout_address || '',
-        buyer_address: wallet.address(),
-        listing_kind: 'instant',
-      });
-    } catch {}
   }
+  // ONE aggregated worker hint per batched reveal. The worker dedupes
+  // hints by (asset_id, txid) via bumpTransferCount — only the first
+  // hint for a given revealTxid lands in the daily volume bucket + ring
+  // buffer. If we naively posted N hints (one per fill with per-fill
+  // price), the worker would record just ONE fill's price as the trade
+  // value and undercount the asset's 24h volume by ~(N-1)/N. The
+  // aggregate hint sums every fill's price + amount so the worker
+  // sees the true settled total. Activity rows above stay per-fill
+  // because they're a local UI concern, not a chain accounting one.
+  try {
+    const _aggPriceSats = expanded.reduce((s, e) => s + (Number(e.sale.min_price_sats) || 0), 0);
+    const _aggAmount = expanded.reduce((s, e) => s + e.amount, 0n);
+    postHint(revealTxidHex, 0, {
+      price_sats: _aggPriceSats,
+      amount: String(_aggAmount),
+      // No single seller_address makes sense for an N-seller batch; omit.
+      buyer_address: wallet.address(),
+      listing_kind: 'instant-batch',
+    });
+  } catch {}
 
   return {
     commit_txid: commitTxidHex,
