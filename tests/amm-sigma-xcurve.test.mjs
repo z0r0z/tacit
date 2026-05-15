@@ -134,7 +134,7 @@ test('z_a = 2^320 - 1 boundary ⇒ rejected by equation', () => {
 // produces an out-of-range value (z_r_secp ≥ n_secp), which the explicit
 // range check at amm-sigma-xcurve.mjs:192 must reject before the equation
 // check. (Pre-fix offsets [93,125) straddled z_a and z_r_secp and exercised
-// the wrong path; see audit #2 LOW-2.)
+// the wrong path.)
 test('z_r_secp ≥ n_secp ⇒ reject (explicit range check)', () => {
   const bad = new Uint8Array(s.proof);
   let x = SECP_N;
@@ -194,7 +194,7 @@ test('different (r_secp, r_BJJ) ⇒ different commitments', () => {
       && !x1.C_BJJ_bytes.every((b, i) => b === x2.C_BJJ_bytes[i]);
 });
 
-console.log('\nDeterministic nonce wrapper (audit LOW-4)');
+console.log('\nDeterministic nonce wrapper');
 test('proveXCurveDeterministic produces verifying proof', () => {
   const seedKey = new Uint8Array(32);
   for (let i = 0; i < 32; i++) seedKey[i] = i + 1;
@@ -275,6 +275,51 @@ console.log('\nBenchmark (pure-JS BigInt; production uses circomlib WASM)');
   console.log(`  verify  avg: ${((verifyEnd - verifyStart) / N).toFixed(1)} ms over ${N} runs`);
   console.log(`  verified ${okCount}/${N}`);
   test('benchmark all verify', () => okCount === N);
+}
+
+console.log('\nProduction gate (default-RNG refusal under NODE_ENV=production)');
+{
+  // Default platform-RNG prover refuses to run under NODE_ENV=production
+  // (mirrors SKIP_GROTH16_VERIFY_UNSAFE pattern in the validator). Explicit
+  // `rng` argument bypasses the gate. proveXCurveDeterministic always works.
+  const origNodeEnv = process.env.NODE_ENV;
+  try {
+    process.env.NODE_ENV = 'production';
+    let threw = false;
+    try {
+      proveXCurve({ a: 1000n, r_secp: 1n, r_BJJ: 1n });
+    } catch (e) {
+      threw = /refused in production/.test(e.message);
+    }
+    test('proveXCurve with default RNG ⇒ refused in production', () => threw);
+
+    // Explicit rng bypasses the gate (auditable RNG sources opt in).
+    const explicitRng = (len) => {
+      const out = new Uint8Array(len);
+      crypto.getRandomValues(out);
+      return out;
+    };
+    let bypassOk = false;
+    try {
+      const res = proveXCurve({ a: 1000n, r_secp: 1n, r_BJJ: 1n, rng: explicitRng });
+      bypassOk = res.proof instanceof Uint8Array && res.proof.length === 169;
+    } catch { bypassOk = false; }
+    test('proveXCurve with explicit rng ⇒ bypasses production gate', () => bypassOk);
+
+    // proveXCurveDeterministic is the recommended production path; unaffected.
+    const detSeed = new Uint8Array(32); for (let i = 0; i < 32; i++) detSeed[i] = i + 1;
+    let detOk = false;
+    try {
+      const res = proveXCurveDeterministic({
+        a: 1000n, r_secp: 1n, r_BJJ: 1n, seedKey: detSeed,
+      });
+      detOk = res.proof instanceof Uint8Array && res.proof.length === 169;
+    } catch { detOk = false; }
+    test('proveXCurveDeterministic ⇒ works in production', () => detOk);
+  } finally {
+    if (origNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = origNodeEnv;
+  }
 }
 
 console.log(`\n${pass}/${pass + fail} passed`);

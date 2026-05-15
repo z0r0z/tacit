@@ -35,7 +35,7 @@ const EXPECTED_OPCODES = {
   T_SWAP_BATCH:          0x2f,
   T_INTENT_ATTEST:       0x30,
   T_PROTOCOL_FEE_CLAIM:  0x31,
-  T_SWAP_VAR:            0x32,  // reserved
+  T_SWAP_VAR:            0x32,  // implemented (SPEC.md §5.16.3)
 };
 
 // ----- Pinned: every domain-tag string the protocol uses, byte-by-byte. -----
@@ -60,8 +60,17 @@ const EXPECTED_DOMAIN_TAGS = [
   'tacit-amm-qset-v1',
   'tacit-amm-receipt-secp-v1',
   'tacit-amm-receipt-bjj-v1',
+  // T_SWAP_VAR (opcode 0x32) — per-trade variable-amount swap (SPEC.md §5.16.3).
+  // Five tags total: intent_msg, receipt blinding, receipt pubkey, change blinding,
+  // settler tip blinding. The kernel-sig tag is the shared "tacit-kernel-v1" from
+  // composition.mjs (whitelisted as a SPEC-level shared tag, not AMM-specific).
+  'tacit-amm-swap-var-v1',
+  'tacit-amm-swap-var-receipt-v1',
+  'tacit-amm-swap-var-recv-v1',
+  'tacit-amm-swap-var-change-v1',
+  'tacit-amm-swap-var-tip-v1',
   // Deterministic-nonce derivation tags for proveXCurveDeterministic
-  // (audit LOW-4). Internal-only — never appear in on-chain bytes, so
+  // Internal-only — never appear in on-chain bytes, so
   // they don't need normative SPEC documentation, but we whitelist them
   // here so the impl-to-spec drift scan doesn't flag them as orphans.
   'tacit-amm-xcurve-prng-v1',
@@ -86,8 +95,8 @@ const EXPECTED_CONSTS = {
   // Recomputed from AMM.md §"T_LP_ADD" / §"T_LP_REMOVE" wire-format tables.
   // LP_ADD:    1+1+32+32+8+8+8+33+32+169+64+64+2 = 454
   // LP_REMOVE: 1+32+32+8+8+8+33+32+169+33+32+169+64+2 = 623
-  // These pin the AMM.md spec ↔ impl agreement; HIGH-1 fix prevents a
-  // recurrence of the stale-157-byte-table drift.
+  // These pin the SPEC.md / AMM.md spec ↔ impl agreement and prevent
+  // any recurrence of the stale-157-byte-table drift.
   LP_ADD_FIXED_PREFIX:           454,
   LP_REMOVE_FIXED_PREFIX:        623,
 };
@@ -146,6 +155,18 @@ console.log('Opcode bytes (spec-literal pinning)');
   // legacy alias still maps to the spec opcode value
   test(`OPCODE_T_AMM_ATTEST alias == 0x30 (back-compat)`,
        () => OPCODE_T_AMM_ATTEST === EXPECTED_OPCODES.T_INTENT_ATTEST);
+
+  // T_SWAP_VAR (0x32) — per-trade variable-amount swap (SPEC.md §5.16.3).
+  const { OPCODE_T_SWAP_VAR } = await import('./swap-var.mjs');
+  test(`T_SWAP_VAR == 0x32`, () => OPCODE_T_SWAP_VAR === EXPECTED_OPCODES.T_SWAP_VAR);
+
+  // amm-validator.mjs re-exports the T_SWAP_VAR surface so integrators
+  // have a single canonical entry point for every AMM-opcode validator.
+  const ammv = await import('./amm-validator.mjs');
+  test(`amm-validator re-exports validateSwapVar`,
+       () => typeof ammv.validateSwapVar === 'function');
+  test(`amm-validator re-exports OPCODE_T_SWAP_VAR == 0x32`,
+       () => ammv.OPCODE_T_SWAP_VAR === EXPECTED_OPCODES.T_SWAP_VAR);
 }
 
 // =========================================================================
@@ -188,7 +209,7 @@ console.log('\nWire-format byte counts (spec-literal pinning)');
   test(`PER_RECEIPT_BYTES == 234`,    () => ENVELOPE_PER_RECEIPT_BYTES === EXPECTED_CONSTS.PER_RECEIPT_BYTES);
 
   // LP envelope fixed-prefix totals derived from arithmetic; pinned so the
-  // HIGH-1 stale-157 drift can't recur silently. We compute these from the
+  // Stale-157 drift can't recur silently. We compute these from the
   // module-level constants and assert against the canonical AMM.md values.
   const LP_ADD_FIXED_PREFIX_COMPUTED =
     1 /*opcode*/ + 1 /*variant*/ + 32 /*assetA*/ + 32 /*assetB*/ +
@@ -221,16 +242,32 @@ console.log('\nWire-format byte counts (spec-literal pinning)');
   if (offending.length > 0) {
     console.log(`  (offending 157 lines: ${offending.slice(0, 5).join(' | ').slice(0, 200)})`);
   }
-  test(`no stale 157-byte references in AMM.md (HIGH-1 regression guard)`,
+  test(`no stale 157-byte references in AMM.md (regression guard)`,
        () => offending.length === 0);
 
-  // Expiry boundary semantics (audit LOW-5): spec must say strict less-than.
+  // Expiry boundary semantics: spec must say strict less-than.
   // The reference impl at tests/amm-validator.mjs uses
   // `if (it.expiryHeight < currentHeight)`. Spec MUST say so explicitly.
   // (Match is tolerant of intervening markdown backticks.)
   const expirySpecHits = (spec.match(/expiry_height < currentHeight[^\n]{0,8}\(strict less-than\)/g) || []).length;
-  test(`AMM.md pins strict-less-than expiry comparison (audit LOW-5)`,
+  test(`AMM.md pins strict-less-than expiry comparison`,
        () => expirySpecHits >= 1);
+
+  // vk_cid canonical format pinning: derived CIDs MUST be
+  // CIDv1 raw codec + sha2-256 multihash + multibase-base32 lowercase
+  // no-padding. Reference: tests/amm-validator.mjs deriveVkCid().
+  // Canonical CIDs for SHA-256 hashes always begin with "bafkrei" under this
+  // format. The constant prefix is a structural property of the encoding,
+  // not the hash content; if a future implementer changes any of the four
+  // structural bytes (0x01, 0x55, 0x12, 0x20) the prefix will shift and
+  // this test catches the drift.
+  const { deriveVkCid } = await import('./amm-validator.mjs');
+  const refVkBytes = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+  const refCid = deriveVkCid(refVkBytes);
+  test(`canonical vk_cid CIDv1-raw-sha256 format begins "bafkrei"`,
+       () => refCid.startsWith('bafkrei'));
+  test(`canonical vk_cid is 59 chars (CIDv1 raw sha2-256 base32)`,
+       () => refCid.length === 59);
 }
 
 // =========================================================================
@@ -416,6 +453,8 @@ console.log('\nDomain tag whitelist');
     'amm-clearing.mjs', 'amm-envelope.mjs', 'amm-intent.mjs',
     'amm-kernel.mjs', 'amm-min-liq.mjs', 'amm-protocol-fee.mjs',
     'amm-receipt.mjs', 'amm-sigma-xcurve.mjs', 'amm-validator.mjs',
+    // T_SWAP_VAR (0x32) — per-trade variable-amount swap (SPEC.md §5.16.3):
+    'swap-var.mjs',
     // Scope-generic primitives (not AMM-specific but consumed by AMM and
     // future amendments):
     'range-proof.mjs', 'range-attest.mjs',
@@ -445,6 +484,10 @@ console.log('\nDomain tag whitelist');
     'tacit-orderbook-pair-v1',          // orderbook scope_id derivation
     'tacit-orderbook-global-v1',        // per-worker orderbook attestation scope
     'tacit-range-attest-v1',            // T_RANGE_ATTEST sig domain
+    // T_SWAP_VAR reuses CXFER's kernel-sig domain (SPEC.md §3 shared tag,
+    // not AMM-specific). composition.mjs is the canonical owner; swap-var.mjs
+    // is one of many consumers.
+    'tacit-kernel-v1',
   ]);
   for (const d of foundDomains) {
     test(`impl-used domain "${d}" is whitelisted in spec`, () => ALLOWED.has(d));

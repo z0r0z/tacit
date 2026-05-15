@@ -1,4 +1,4 @@
-// MIN_BATCH_SIZE confidentiality default (audit MEDIUM-4).
+// MIN_BATCH_SIZE confidentiality default.
 //
 // Verifies the normative indexer rule: validateSwapBatch REJECTS N=1 batches
 // for default pools, and ACCEPTS them only when the pool has the

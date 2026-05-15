@@ -33,12 +33,41 @@ import {
 import { computeEnvelopeHash, deriveIntentId, buildIntentMsg, verifyIntent } from './amm-intent.mjs';
 import { verifyMinLiqOutput } from './amm-min-liq.mjs';
 import { extractLauncherPubkey } from './amm-jcs.mjs';
+import { P_FR } from './amm-bjj.mjs';
 import { signSchnorr, verifySchnorr } from './composition.mjs';
 import {
   isZeroAddress as isProtocolFeeAddressZero,
   crystallizeProtocolFee, computeProtocolShares,
   buildProtocolFeeClaimMsgWith,
 } from './amm-protocol-fee.mjs';
+
+// T_SWAP_VAR (opcode 0x32) — per-trade variable-amount swap mode. Reuses
+// CXFER N=2 cryptography (Pedersen + bulletproof + kernel sig) rather than
+// the batched Groth16 path of T_SWAP_BATCH. No ceremony coupling: ships
+// alongside the AMM v1 surface without depending on the Phase 2 setup. See
+// SPEC.md §5.16.3 (or spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md until
+// merged) for the wire format and validator obligations.
+//
+// Re-exported here so integrators have a single canonical import path for
+// every AMM-opcode validator. The implementation lives in swap-var.mjs to
+// keep amm-validator.mjs's existing scope (LP + batched swap + protocol
+// fee) focused.
+export {
+  validateSwapVar,
+  decodeSwapVar,
+  encodeSwapVar,
+  computeSwapVarEnvelopeHash,
+  curveDeltaOut,
+  buildTickFan,
+  buildSwapVarIntentMsg,
+  buildSwapVarKernelMsg,
+  deriveSwapVarReceiptScalar,
+  deriveSwapVarReceiptPubkey,
+  deriveSwapVarChangeScalar,
+  deriveSwapVarTipScalar,
+  OPCODE_T_SWAP_VAR,
+  NO_CHANGE_SENTINEL,
+} from './swap-var.mjs';
 
 function bytesEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -54,11 +83,11 @@ function pointFromCompressed(bytes) {
 // and unit tests that do not exercise the SNARK path. Production indexers
 // MUST pass a real verifier. Leaving `groth16Verify` undefined throws.
 //
-// Defense-in-depth (audit MEDIUM-7): when NODE_ENV === 'production', this
-// sentinel is REFUSED — production indexers must provide a real verifier
-// or the validator hard-fails. In non-prod environments a one-time stderr
-// warning is emitted so a developer can't accidentally let SKIP slip into
-// a deployed build.
+// Defense-in-depth: when NODE_ENV === 'production', this sentinel is
+// REFUSED — production indexers must provide a real verifier or the
+// validator hard-fails. In non-prod environments a one-time stderr
+// warning is emitted so a developer can't accidentally let SKIP slip
+// into a deployed build.
 export const SKIP_GROTH16_VERIFY_UNSAFE = Symbol('tacit-amm-skip-groth16-verify-unsafe');
 
 let _skipWarned = false;
@@ -89,6 +118,219 @@ function resolveGroth16Verify(arg, fnName) {
   );
 }
 
+// =========================================================================
+// vk_cid integrity self-check
+// =========================================================================
+//
+// Closes the "misconfigured IPFS gateway returns malicious vk bytes" hazard:
+// an indexer that fetches the pool's pinned verifying-key bytes from any
+// content-addressable store MUST recompute the CID from those bytes and
+// verify it matches `pool.vk_cid` before passing the vk to snarkjs.
+//
+// V1 canonical format for `vk_cid` is **CIDv1 with raw codec + sha2-256
+// multihash, multibase-base32 lowercase no-padding** (i.e., starts with
+// "bafkrei..."). This matches IPFS's standard for content-addressed
+// non-IPLD content (the most common form for static binary artifacts
+// pinned by content-hash).
+//
+// Construction (canonical, byte-for-byte reproducible by every indexer):
+//   multihash  = 0x12 (sha2-256 code) || 0x20 (length=32) || sha256(vk_bytes)
+//   cid_bytes  = 0x01 (CIDv1) || 0x55 (raw codec) || multihash
+//   cid_string = "b" || base32_lowercase_no_padding(cid_bytes)
+//
+// Total cid_bytes: 36 bytes; cid_string: 59 chars (1 prefix + 58 base32).
+
+const _B32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
+function base32EncodeLowercase(bytes) {
+  let out = '';
+  let buf = 0, bits = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    buf = (buf << 8) | bytes[i];
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += _B32_ALPHABET[(buf >> bits) & 0x1f];
+    }
+  }
+  if (bits > 0) {
+    out += _B32_ALPHABET[(buf << (5 - bits)) & 0x1f];
+  }
+  return out;
+}
+
+// Returns the canonical V1 vk_cid string for the given vk bytes. Exported so
+// that ceremony coordinators + indexers + the dapp all derive identical
+// CIDs from identical vk bytes — no implementation drift on this layer.
+export function deriveVkCid(vkBytes) {
+  if (!(vkBytes instanceof Uint8Array)) {
+    throw new Error('deriveVkCid: vkBytes must be Uint8Array');
+  }
+  const digest = sha256(vkBytes);          // 32 bytes
+  const cidBytes = new Uint8Array(36);
+  cidBytes[0] = 0x01;                       // CIDv1
+  cidBytes[1] = 0x55;                       // raw codec (no IPLD interpretation)
+  cidBytes[2] = 0x12;                       // multihash code: sha2-256
+  cidBytes[3] = 0x20;                       // multihash digest length: 32
+  cidBytes.set(digest, 4);
+  return 'b' + base32EncodeLowercase(cidBytes);
+}
+
+// Returns true iff the SHA-256 of `vkBytes` matches the content-hash encoded
+// inside `vkCidString` (V1 canonical CIDv1 raw sha2-256 multibase-base32).
+//
+// V1 indexers MUST call this before passing vk bytes to snarkjs:
+//
+//   const vkBytes = await ipfsGateway.fetchByCid(pool.vk_cid);
+//   if (!verifyVkCidBinding(vkBytes, pool.vk_cid)) {
+//     throw new Error('vk_cid integrity check failed — refusing to verify proofs');
+//   }
+//   // ... only now is it safe to construct the verifier under these vk bytes
+//
+// Returns false on any malformation rather than throwing, so caller can
+// fail-closed without try/catch boilerplate.
+export function verifyVkCidBinding(vkBytes, vkCidString) {
+  if (!(vkBytes instanceof Uint8Array)) return false;
+  if (typeof vkCidString !== 'string') return false;
+  let expected;
+  try { expected = deriveVkCid(vkBytes); }
+  catch { return false; }
+  return expected === vkCidString;
+}
+
+// =========================================================================
+// Canonical Groth16 publicSignals serialization
+// =========================================================================
+//
+// The validator passes the decoded envelope object `env` and the pool state
+// to an injected `groth16Verify` callback; the callback is then responsible
+// for serializing those into the flat 123-element BN254-Fr-decimal-string
+// array that `snarkjs.groth16.verify` consumes. Two independent indexers
+// MUST produce byte-identical publicSignals arrays from the same `(env,
+// pool)` inputs, otherwise their proof verifications diverge silently.
+//
+// This helper is the canonical serialization. AMM.md §6 ("Groth16 public-
+// input vector") is the spec-side authority; this function is its byte-
+// for-byte reference impl. Dapp provers, worker indexers, and third-party
+// re-implementations MUST agree with this output exactly.
+//
+// Layout (123 signals total, N_MAX = 16):
+//   [0]       pool_id_fr = SHA256(pool.pool_id) mod p_Fr        (32-byte hash reduced into Fr)
+//   [1]       R_A_pre
+//   [2]       R_B_pre
+//   [3]       delta_A_net_sign       (0 positive / 1 negative)
+//   [4]       delta_A_net_magnitude  (u64)
+//   [5]       delta_B_net_sign
+//   [6]       delta_B_net_magnitude  (u64)
+//   [7]       tip_A_amount
+//   [8]       tip_B_amount
+//   [9]       fee_bps                (0..1000)
+//   [10]      n_intents              (0..16)
+//   [11+5i+0..3]  direction_i, C_in_BJJ_u_i, C_in_BJJ_v_i, min_out_i, tip_amount_i  (i ∈ [0,16))
+//   [11+80+2i+0..1] C_out_BJJ_u_i, C_out_BJJ_v_i  (i ∈ [0,16))
+//
+// Padded intents (i ≥ n_intents) use direction=0, C_in_BJJ=(0,1), min_out=0,
+// tip_amount=0. Padded receipts use C_out_BJJ=(0,1).
+export const PUBLIC_SIGNALS_SWAP_BATCH_LENGTH = 123;
+const _N_MAX = 16;
+const _BJJ_IDENTITY_U = '0';
+const _BJJ_IDENTITY_V = '1';
+
+function _fr(x) {
+  // Coerce u64/u32/u16/u8 BigInt or number to decimal string.
+  if (typeof x === 'bigint') return x.toString();
+  if (typeof x === 'number') return BigInt(x).toString();
+  if (typeof x === 'string') return x;
+  throw new Error(`_fr: unsupported type ${typeof x}`);
+}
+function _bytesToFr(bytes) {
+  // Read 32-byte buffer as a big-endian integer, reduce mod p_Fr.
+  if (!(bytes instanceof Uint8Array) || bytes.length !== 32) {
+    throw new Error('_bytesToFr requires a 32-byte Uint8Array');
+  }
+  let n = 0n;
+  for (let i = 0; i < 32; i++) n = (n << 8n) | BigInt(bytes[i]);
+  return (n % P_FR).toString();
+}
+
+export function derivePoolIdFr(poolId) {
+  return _bytesToFr(sha256(poolId));
+}
+
+export function buildPublicSignalsSwapBatch(env, pool) {
+  if (!pool || !(pool.pool_id instanceof Uint8Array) || pool.pool_id.length !== 32) {
+    throw new Error('buildPublicSignalsSwapBatch: pool.pool_id must be a 32-byte Uint8Array');
+  }
+  if (!env || !Array.isArray(env.intents) || !Array.isArray(env.receipts)) {
+    throw new Error('buildPublicSignalsSwapBatch: env.intents and env.receipts must be arrays');
+  }
+  if (env.intents.length > _N_MAX) {
+    throw new Error(`buildPublicSignalsSwapBatch: env.intents.length ${env.intents.length} > N_MAX ${_N_MAX}`);
+  }
+
+  const n = env.intents.length;
+  const sigs = new Array(PUBLIC_SIGNALS_SWAP_BATCH_LENGTH);
+
+  // Globals (11)
+  sigs[0]  = derivePoolIdFr(pool.pool_id);
+  sigs[1]  = _fr(env.R_A_pre ?? pool.reserve_A);
+  sigs[2]  = _fr(env.R_B_pre ?? pool.reserve_B);
+  const dA = env.deltaANetSigned ?? 0n;
+  const dB = env.deltaBNetSigned ?? 0n;
+  sigs[3]  = _fr(dA < 0n ? 1n : 0n);
+  sigs[4]  = _fr(dA < 0n ? -dA : dA);
+  sigs[5]  = _fr(dB < 0n ? 1n : 0n);
+  sigs[6]  = _fr(dB < 0n ? -dB : dB);
+  sigs[7]  = _fr(env.tipAAmount ?? 0n);
+  sigs[8]  = _fr(env.tipBAmount ?? 0n);
+  sigs[9]  = _fr(env.feeBpsAtSettle ?? pool.fee_bps);
+  sigs[10] = _fr(BigInt(n));
+
+  // Per-intent (5 × 16)
+  for (let i = 0; i < _N_MAX; i++) {
+    const off = 11 + 5 * i;
+    if (i < n) {
+      const it = env.intents[i];
+      sigs[off + 0] = _fr(BigInt(it.direction));
+      // C_in_BJJ is packed as 32 bytes; decode the (u, v) coordinates.
+      // For publicSignals, we need u and v as Fr-string decimal each.
+      // The codec stores cInBjj as packed bytes; the caller may have already
+      // unpacked them. Accept both forms: if env supplies cInBjjU/cInBjjV
+      // pre-parsed, use them; else require unpacking by the caller.
+      if (it.cInBjjU === undefined || it.cInBjjV === undefined) {
+        throw new Error(`intent[${i}] must provide cInBjjU and cInBjjV (unpack via amm-bjj.unpackPoint first)`);
+      }
+      sigs[off + 1] = _fr(it.cInBjjU);
+      sigs[off + 2] = _fr(it.cInBjjV);
+      sigs[off + 3] = _fr(it.minOut);
+      sigs[off + 4] = _fr(it.tipAmount);
+    } else {
+      sigs[off + 0] = '0';
+      sigs[off + 1] = _BJJ_IDENTITY_U;
+      sigs[off + 2] = _BJJ_IDENTITY_V;
+      sigs[off + 3] = '0';
+      sigs[off + 4] = '0';
+    }
+  }
+
+  // Per-receipt (2 × 16)
+  for (let i = 0; i < _N_MAX; i++) {
+    const off = 11 + 5 * _N_MAX + 2 * i;
+    if (i < n) {
+      const r = env.receipts[i];
+      if (r.cOutBjjU === undefined || r.cOutBjjV === undefined) {
+        throw new Error(`receipt[${i}] must provide cOutBjjU and cOutBjjV (unpack via amm-bjj.unpackPoint first)`);
+      }
+      sigs[off + 0] = _fr(r.cOutBjjU);
+      sigs[off + 1] = _fr(r.cOutBjjV);
+    } else {
+      sigs[off + 0] = _BJJ_IDENTITY_U;
+      sigs[off + 1] = _BJJ_IDENTITY_V;
+    }
+  }
+
+  return sigs;
+}
+
 // Minimum blocks between POOL_INIT confirmation and the first variant-0
 // LP_ADD. During this window only swaps are accepted, so arbitrageurs can
 // correct any misprice before naive LPs are exposed. The founder bears
@@ -104,7 +346,7 @@ export const AMM_INITIAL_LP_LOCK_BLOCKS = 6;
 // opt in by setting POOL_CAP_SOLO_INTENT_ALLOWED in their capability flags
 // at POOL_INIT time.
 //
-// Audit MEDIUM-4 (pro-trader / pro-confidentiality default).
+// Solo-intent privacy default (pro-trader / pro-confidentiality).
 export const AMM_MIN_BATCH_SIZE = 2;
 
 // Pool capability-flags bitmap (u8). Default 0 = standard V1 pool with
@@ -154,6 +396,7 @@ export function validateLpAdd({
   metadataA = null, metadataB = null,
   groth16Verify,
   currentHeight,
+  vkBytes,                        // optional Uint8Array — if provided, integrity-checked against pool.vk_cid
 }) {
   const verify = resolveGroth16Verify(groth16Verify, 'validateLpAdd');
   if (typeof currentHeight !== 'number' || currentHeight < 0) {
@@ -298,6 +541,14 @@ export function validateLpAdd({
   try {
     expectedShares = lpAddShares(env.deltaA, env.deltaB, xPool.reserve_A, xPool.reserve_B, xPool.lp_total_shares);
   } catch (e) { return { valid: false, reason: `lpAddShares: ${e.message}` }; }
+  // Zero-share guard. LP_ADD that rounds to zero shares is a
+  // fee-burning no-op (LP pays Bitcoin fees, receives no shares); reject at
+  // validator level so the wasted-fees UX failure becomes a clear envelope
+  // rejection instead of a silent zero-credit. Encoder also rejects (defense
+  // in depth at the wire layer).
+  if (expectedShares === 0n) {
+    return { valid: false, reason: 'shareAmount rounds to zero — deposit too small for current pool ratio' };
+  }
   if (expectedShares !== env.shareAmount) {
     return { valid: false, reason: `shareAmount: expected ${expectedShares}, got ${env.shareAmount}` };
   }
@@ -308,7 +559,13 @@ export function validateLpAdd({
   if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
     return { valid: false, reason: 'share output sigma cross-curve binding failed' };
   }
-  if (verify && !verify({ proof: env.proof, pool: xPool, kind: 'LP_ADD' })) {
+  // vk_cid integrity self-check
+  if (vkBytes !== undefined && xPool.vk_cid !== undefined) {
+    if (!verifyVkCidBinding(vkBytes, xPool.vk_cid)) {
+      return { valid: false, reason: 'vk_cid integrity check failed: deriveVkCid(vkBytes) != pool.vk_cid' };
+    }
+  }
+  if (verify && !verify({ proof: env.proof, pool: xPool, kind: 'LP_ADD', vkBytes })) {
     return { valid: false, reason: 'Groth16 proof failed' };
   }
 
@@ -358,6 +615,7 @@ export function validateLpRemove({
   payload, pool,
   lpInputCommitments, lpInputs,
   groth16Verify,
+  vkBytes,                        // optional Uint8Array — if provided, integrity-checked against pool.vk_cid
 }) {
   const verify = resolveGroth16Verify(groth16Verify, 'validateLpRemove');
   let env;
@@ -405,7 +663,13 @@ export function validateLpRemove({
     return { valid: false, reason: 'asset-B receipt sigma binding failed' };
   }
 
-  if (verify && !verify({ proof: env.proof, pool: xPool, kind: 'LP_REMOVE' })) {
+  // vk_cid integrity self-check
+  if (vkBytes !== undefined && xPool.vk_cid !== undefined) {
+    if (!verifyVkCidBinding(vkBytes, xPool.vk_cid)) {
+      return { valid: false, reason: 'vk_cid integrity check failed: deriveVkCid(vkBytes) != pool.vk_cid' };
+    }
+  }
+  if (verify && !verify({ proof: env.proof, pool: xPool, kind: 'LP_REMOVE', vkBytes })) {
     return { valid: false, reason: 'Groth16 proof failed' };
   }
 
@@ -458,6 +722,7 @@ export function validateSwapBatch({
   currentHeight,
   groth16Verify,
   qualifyingSetResolver = null,
+  vkBytes,                        // optional Uint8Array — if provided, integrity-checked against pool.vk_cid
 }) {
   if (!pool) return { valid: false, reason: 'pool not registered' };
   const verify = resolveGroth16Verify(groth16Verify, 'validateSwapBatch');
@@ -481,7 +746,7 @@ export function validateSwapBatch({
     return { valid: false, reason: 'fee_bps_at_settle != pool.fee_bps' };
   }
 
-  // MIN_BATCH_SIZE confidentiality default (audit MEDIUM-4). A batch of
+  // MIN_BATCH_SIZE confidentiality default. A batch of
   // size 1 reveals the trader's full swap amount via the public
   // (Δa_net, Δb_net) deltas. Reject N=1 unless the pool explicitly opted
   // in to solo-intent batches via POOL_CAP_SOLO_INTENT_ALLOWED.
@@ -581,7 +846,7 @@ export function validateSwapBatch({
         minOut: it.minOut, tipAmount: it.tipAmount,
         // Tip-asset substitution: AMM.md §"Tip mechanics" §3 makes tip_asset
         // structurally equal to direction (tip on input side). buildIntentMsg
-        // asserts this invariant (audit LOW-3); we pass direction as the
+        // asserts this invariant; we pass direction as the
         // single source of truth. Any divergent value would fail sig-verify
         // below regardless.
         tipAsset: it.direction,
@@ -741,8 +1006,67 @@ export function validateSwapBatch({
     return { valid: false, reason: 'constant-product invariant violated (post < pre)' };
   }
 
+  // With-fee CFMM curve floor identity (pins settler pricing).
+  //
+  // The constant-product check above only enforces non-decrease (no-fee curve
+  // upper bound on |Δb|). On its own it admits any (|Δa|, |Δb|) along the
+  // 1-parameter family between the with-fee and no-fee curves — leaving the
+  // settler up to `fee_bps` of pricing freedom (cf. settler-trader collusion
+  // redirecting fee revenue from LPs).
+  //
+  // The deterministic solve pins |Δb| = floor(R_B · γ_num · |Δa| /
+  // (R_A · γ_den + γ_num · |Δa|)). Per-trader floor dust can only push the
+  // actual declared |Δb| DOWNWARD from this curve (toward the pool's favor),
+  // never upward. The tight check is therefore an upper bound:
+  //
+  //   A-dom (dA > 0, dB < 0):
+  //     |Δb| · (R_A · γ_den + γ_num · |Δa|)  ≤  R_B · γ_num · |Δa|
+  //
+  //   B-dom (dA < 0, dB > 0):
+  //     |Δa| · (R_B · γ_den + γ_num · |Δb|)  ≤  R_A · γ_num · |Δb|
+  //
+  //   Spot (dA = dB = 0): reserves unchanged (handled above).
+  //
+  // All inputs are public: pool reserves, declared deltas, fee_bps. No private
+  // witness needed. Closes the "narrow settler pricing freedom" gap so the
+  // spec's "no settler freedom in pricing, only in subset selection" claim
+  // (AMM.md §"Uniform clearing") becomes operationally true.
+  if (dA !== 0n || dB !== 0n) {
+    const gNum = 10000n - BigInt(pool.fee_bps);
+    const gDen = 10000n;
+    if (dA > 0n) {                                       // A-dom
+      const absA = dA;
+      const absB = -dB;
+      const lhs = absB * (pool.reserve_A * gDen + gNum * absA);
+      const rhs = pool.reserve_B * gNum * absA;
+      if (lhs > rhs) {
+        return { valid: false, reason: 'CFMM curve floor identity violated (A-dom): |Δb| exceeds with-fee curve' };
+      }
+    } else {                                             // B-dom (dA < 0, dB > 0)
+      const absA = -dA;
+      const absB = dB;
+      const lhs = absA * (pool.reserve_B * gDen + gNum * absB);
+      const rhs = pool.reserve_A * gNum * absB;
+      if (lhs > rhs) {
+        return { valid: false, reason: 'CFMM curve floor identity violated (B-dom): |Δa| exceeds with-fee curve' };
+      }
+    }
+  }
+
+  // vk_cid integrity self-check. If the caller supplied the
+  // resolved vk bytes alongside the pool's pinned CID, recompute the CID
+  // from those bytes and reject on mismatch. Closes the "malicious IPFS
+  // gateway returns wrong vk" hazard before snarkjs ever sees the bytes.
+  // Production indexers MUST pass `vkBytes`; pre-ceremony tests using
+  // SKIP_GROTH16_VERIFY_UNSAFE pass undefined and skip this check.
+  if (vkBytes !== undefined && pool.vk_cid !== undefined) {
+    if (!verifyVkCidBinding(vkBytes, pool.vk_cid)) {
+      return { valid: false, reason: 'vk_cid integrity check failed: deriveVkCid(vkBytes) != pool.vk_cid' };
+    }
+  }
+
   // Groth16 batch proof (delegated)
-  if (verify && !verify({ proof: env.proof, pool, kind: 'SWAP_BATCH', publicSignals: env })) {
+  if (verify && !verify({ proof: env.proof, pool, kind: 'SWAP_BATCH', publicSignals: env, vkBytes })) {
     return { valid: false, reason: 'Groth16 batch proof failed' };
   }
 

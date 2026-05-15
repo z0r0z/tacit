@@ -1,11 +1,22 @@
 # SPEC AMM Amendment — Per-trade Variable-Amount AMM Swaps (`T_SWAP_VAR`)
 
-> Status: 🔍 Round-1 review complete; ready for round-2 peer review
-> (round-1 self-review caught + fixed: cross-asset kernel-sig closure
+> **Status: ✅ MERGED into SPEC.md as §5.20 (2026-05-16).** The
+> normative wire format + validator algorithm now live in SPEC.md
+> §5.20 — that's the authoritative reference for indexer
+> implementations. This amendment file is preserved as the
+> **extended-narrative draft** (settlement flow, dapp UX, open
+> round-2 questions, design rationale); the section number used
+> below (§5.16.3) reflects the original draft target and predates
+> the back-reference-stable §5.20 merge slot. Round-2 review topics
+> tracked under "Open questions for round-2 review" remain open and
+> non-blocking — they are refinement opportunities, not consensus
+> blockers.
+>
+> Round-1 self-review caught + fixed: cross-asset kernel-sig closure
 > bug, identity-point sentinel encoding, freshness gate against
 > running state vs. block-1 snapshot, MINIMUM_LIQUIDITY unit
 > mismatch, relayed receipt-binding flow, parity-overstatement of
-> T_AXFER_VAR reuse — see `AMENDMENTS.md` changelog for details).
+> T_AXFER_VAR reuse — see `AMENDMENTS.md` changelog for details.
 > Depends on: AMM.md (defines pool state, fee mechanics, MINIMUM_LIQUIDITY),
 > `SPEC-VARIABLE-AMOUNT-AMENDMENT.md` (defines the CXFER N=2 cryptography
 > and HMAC-keystream receipt-blinding convention this amendment reuses).
@@ -1146,12 +1157,40 @@ Out of scope, left for future amendments:
 
 ## Integration checklist for landing in `SPEC.md`
 
-- [ ] §5.16 AMM block extended with §5.16.3 `T_SWAP_VAR`.
-- [ ] §3 opcode table adds `0x32 T_SWAP_VAR`.
-- [ ] §3 BIP-340 domain-tag table adds the four new tags above.
-- [ ] §5.5 validator dispatch extended with `T_SWAP_VAR` branch.
-- [ ] AMM.md "Two AMM trader paths" section reference updated from
-      "reserved" to "specified in §5.16.3".
+Status: ✅ merged into SPEC.md as §5.20 on 2026-05-16 (back-reference
+stable — preserves §5.19 T_WRAPPER_ATTEST numbering rather than
+renumbering). See `AMENDMENTS.md` changelog entry for that date.
+
+- [x] **SPEC.md §5.20** — wire format + 14-step validator algorithm
+      + back-pointer to this draft's extended-narrative sections
+      (settlement flow, dapp UX, round-2 open questions). Appended
+      as §5.20 rather than §5.16.3 to preserve back-references to
+      §5.19; the in-order opcode listing (`0x21, 0x23–0x32, 0x37,
+      0x38`) at SPEC.md line 3 places `T_SWAP_VAR` in the correct
+      slot.
+- [x] **SPEC.md §3 (line 3)** — opcode summary extends to `0x23–0x32`
+      and explicitly names `T_SWAP_VAR` with its "ships alongside
+      V1 as the primary swap path; no ceremony coupling" framing.
+- [x] **SPEC.md §3.5 BIP-340 + HMAC domain-tag table** — adds
+      `tacit-amm-swap-var-v1` (BIP-340) and the four HMAC keystream
+      tags (`-receipt-v1`, `-recv-v1`, `-change-v1`, `-tip-v1`).
+      The kernel-msg domain reuses the existing shared `tacit-kernel-v1`
+      tag and is referenced as such (§5.20).
+- [x] **SPEC.md §5.5 validator dispatch** — extended with the
+      `T_SWAP_VAR (0x32)` branch detailing all 14 obligations.
+- [x] **AMM.md "Two AMM trader paths"** — reference updated from
+      "draft amendment pending merge" to "normative in SPEC.md §5.20";
+      status section moved from ⏸ to ✅.
+- [x] **Reference validator + tests** — `validateSwapVar()` (40
+      tests) re-exported from `tests/amm-validator.mjs` as the
+      single canonical entry point for all AMM-opcode validators.
+- [x] **Spec-conformance pinning** — `tests/amm-spec-conformance.test.mjs`
+      pins `OPCODE_T_SWAP_VAR == 0x32`, the 5 new domain tags, and
+      the `tacit-kernel-v1` cross-surface reuse.
+
+Remaining work (out of scope for this amendment's merge — separate
+streams):
+
 - [ ] Reference dapp `tacit.js` implements:
       - `kind: 'amm-var'` candidate path in `planBuy` and
         `planBuyExactOut`.
@@ -1161,9 +1200,9 @@ Out of scope, left for future amendments:
       - "Trade size is public" UX callout.
       - One-click mixer post-composition.
 - [ ] Reference worker:
-      - `T_SWAP_VAR` indexer-validator dispatch branch.
-      - Intent-pool relay for `T_SWAP_VAR` intents (similar to the
-        existing bid-intent relay).
+      - `T_SWAP_VAR` intent-pool relay (similar to the existing
+        bid-intent relay; the validator dispatch is already wired
+        via `tests/amm-validator.mjs`).
 - [ ] Cross-impl test vectors: 5 canonical envelopes shared
       between dapp and worker (kernel-msg + intent-msg byte parity).
 - [ ] Signet rehearsal: items (1)–(16) from the test plan, all

@@ -11,7 +11,7 @@
     "test:canary": "node canary-asset-tac-mainnet.test.mjs",
     "test:bp-dapp-parity": "node bp-dapp-parity.test.mjs",
     "test:t-axfer-var": "node t-axfer-var-decoder.test.mjs",
-    "test:amm": "node amm-bjj.test.mjs && node amm-sigma-xcurve.test.mjs && node amm-clearing.test.mjs && node amm-asset.test.mjs && node amm-receipt.test.mjs && node amm-kernel.test.mjs && node amm-min-liq.test.mjs && node amm-intent.test.mjs && node amm-jcs.test.mjs && node amm-envelope.test.mjs && node amm-validator.test.mjs && node amm-protocol-fee.test.mjs && node amm-attest.test.mjs && node amm-e2e.test.mjs",
+    "test:amm": "node amm-bjj.test.mjs && node amm-sigma-xcurve.test.mjs && node amm-clearing.test.mjs && node amm-asset.test.mjs && node amm-receipt.test.mjs && node amm-kernel.test.mjs && node amm-min-liq.test.mjs && node amm-intent.test.mjs && node amm-jcs.test.mjs && node amm-envelope.test.mjs && node amm-validator.test.mjs && node amm-protocol-fee.test.mjs && node amm-attest.test.mjs && node amm-e2e.test.mjs && node amm-groth16-ceremony-integration.test.mjs && node amm-strategy-sims.test.mjs && node amm-lifecycle-router-sims.test.mjs && node amm-router.test.mjs && node amm-launch.test.mjs",
     "test:amm-protocol-fee": "node amm-protocol-fee.test.mjs",
     "test:amm-e2e": "node amm-e2e.test.mjs",
     "test:amm-attest": "node amm-attest.test.mjs",

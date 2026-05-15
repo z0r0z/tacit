@@ -137,6 +137,22 @@ test('encode/decode round-trip', () => {
 });
 test('opcode byte is 0x2E', () => encodeLpRemove(lpRemoveArgs)[0] === OPCODE_T_LP_REMOVE);
 
+// Trailing-byte rejection (defense-in-depth — silent acceptance
+// of extra bytes after a valid payload would be a decoder ambiguity hazard).
+test('LP_REMOVE rejects trailing bytes', () => {
+  const enc = encodeLpRemove(lpRemoveArgs);
+  const padded = new Uint8Array(enc.length + 4);
+  padded.set(enc, 0);  // tail bytes are 0x00 from Uint8Array init
+  try { decodeLpRemove(padded); return false; }
+  catch (e) { return /trailing bytes/.test(e.message); }
+});
+test('LP_REMOVE rejects truncated payload', () => {
+  const enc = encodeLpRemove(lpRemoveArgs);
+  const trunc = enc.slice(0, enc.length - 10);
+  try { decodeLpRemove(trunc); return false; }
+  catch (e) { return /truncated|trailing/.test(e.message); }
+});
+
 console.log('\nT_SWAP_BATCH round-trip');
 const baseSwapArgs = {
   assetA: ASSET_A, assetB: ASSET_B,
@@ -227,6 +243,15 @@ test('encode/decode round-trip (with arbiter, m=3 of 5)', () => {
     && dec.arbiterBlock.signerIndices[1] === 2
     && dec.arbiterBlock.signerIndices[2] === 4
     && bytesEqual(dec.arbiterBlock.sigs, sigs);
+});
+
+// Trailing-byte rejection for T_SWAP_BATCH.
+test('T_SWAP_BATCH rejects trailing bytes', () => {
+  const enc = encodeSwapBatch(baseSwapArgs);
+  const padded = new Uint8Array(enc.length + 4);
+  padded.set(enc, 0);
+  try { decodeSwapBatch(padded); return false; }
+  catch (e) { return /trailing bytes/.test(e.message); }
 });
 
 test('encode rejects descending signerIndices', () => {

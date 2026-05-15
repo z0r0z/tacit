@@ -153,6 +153,88 @@ export function deriveMinLiqNumsRecipient(poolId, maxCounter = 256) {
 //   onChainP2wpkh  — the 20-byte HASH160 from the P2WPKH output script
 //
 // Returns true iff all three derivations match the on-chain values.
+// Newton's-method integer square root (BigInt). Mirrors amm-clearing.mjs's
+// `isqrt` so this module stays self-contained without a circular import.
+function isqrt(n) {
+  if (n < 0n) throw new Error('isqrt of negative');
+  if (n < 2n) return n;
+  let x = n, y = (x + 1n) >> 1n;
+  while (y < x) { x = y; y = (x + n / x) >> 1n; }
+  return x;
+}
+
+// Informational severity thresholds for the lock-fraction assessment. Dapps
+// may override with their own UX-driven thresholds; these are reasonable
+// defaults that match the spec's first-LP misprice + thin-pool caveats.
+export const MIN_LIQ_LOCK_BPS_WARN = 100n;   //  1% of initial shares locked → surface
+export const MIN_LIQ_LOCK_BPS_HIGH = 1000n;  // 10% locked → strong warning, thin pool
+
+/**
+ * Assess the MINIMUM_LIQUIDITY lock as a fraction of total initial LP shares.
+ *
+ * Called by dapps at POOL_INIT to surface UX warnings for thin pools where
+ * the 1000-unit protocol lock is a significant fraction of the founder's
+ * stake. This is **dapp-side only** — the protocol does not reject pools
+ * based on this assessment (it does reject when total_shares ≤ MIN_LIQ,
+ * since the founder would receive zero or negative shares). The helper is
+ * informational, intended to drive a confirmation dialog or red-flag UI.
+ *
+ * Inputs: founder's initial seed amounts at POOL_INIT (Δa_init, Δb_init),
+ * as u64-range positive BigInts.
+ *
+ * Returns:
+ *   {
+ *     total_shares:   isqrt(Δa · Δb),                  // total LP shares minted at init
+ *     locked_shares:  MINIMUM_LIQUIDITY,               // = 1000 (always)
+ *     founder_shares: total_shares − MINIMUM_LIQUIDITY,
+ *     locked_bps:     floor(10000 · locked / total),   // basis points; 100 = 1%
+ *     severity:       'ok' | 'warn' | 'high' | 'reject',
+ *   }
+ *
+ * Severity:
+ *   'reject' — total_shares ≤ MINIMUM_LIQUIDITY. POOL_INIT will fail in the
+ *              validator (lpInitShares throws "initial liquidity below
+ *              MINIMUM_LIQUIDITY"); founder must increase Δa·Δb. Dapp should
+ *              block submission, not just warn.
+ *   'high'   — locked_bps ≥ MIN_LIQ_LOCK_BPS_HIGH (≥ 10% of initial shares
+ *              locked). Pool is thin enough that the 1000-unit lock visibly
+ *              affects founder economics. Dapp SHOULD surface a strong
+ *              warning with an "I understand" confirmation.
+ *   'warn'   — locked_bps ≥ MIN_LIQ_LOCK_BPS_WARN (≥ 1%). Small pool;
+ *              dapp SHOULD surface a soft inline notice.
+ *   'ok'     — locked_bps < 1%. Typical mainnet-scale pool; no UX prompt
+ *              beyond the standard POOL_INIT confirmation.
+ */
+export function assessMinLiqLockFraction(deltaA, deltaB) {
+  const da = BigInt(deltaA), db = BigInt(deltaB);
+  if (da <= 0n || db <= 0n) {
+    throw new Error('deltaA and deltaB must be positive');
+  }
+  const total = isqrt(da * db);
+  if (total <= MINIMUM_LIQUIDITY) {
+    return {
+      total_shares: total,
+      locked_shares: MINIMUM_LIQUIDITY,
+      founder_shares: 0n,
+      locked_bps: 10000n,
+      severity: 'reject',
+    };
+  }
+  const founder = total - MINIMUM_LIQUIDITY;
+  const lockedBps = (10000n * MINIMUM_LIQUIDITY) / total;
+  let severity;
+  if (lockedBps >= MIN_LIQ_LOCK_BPS_HIGH)      severity = 'high';
+  else if (lockedBps >= MIN_LIQ_LOCK_BPS_WARN) severity = 'warn';
+  else                                          severity = 'ok';
+  return {
+    total_shares: total,
+    locked_shares: MINIMUM_LIQUIDITY,
+    founder_shares: founder,
+    locked_bps: lockedBps,
+    severity,
+  };
+}
+
 export function verifyMinLiqOutput({ poolId, onChainCommit, onChainAmtCt, onChainP2wpkh }) {
   const expectedC = deriveMinLiqCommitment(poolId);
   const expectedCBytes = pointToBytes(expectedC);

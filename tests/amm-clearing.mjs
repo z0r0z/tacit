@@ -202,6 +202,11 @@ export function lpRemoveOutputs(share_amount, R_A, R_B, S) {
 }
 
 // Deterministic integer square root (Newton's method on BigInt).
+// Returns ⌊√n⌋ — floor on non-perfect squares, never ceiling. Used by
+// POOL_INIT (Uniswap V2 initial-share formula = isqrt(Δa·Δb)); MUST agree
+// byte-for-byte across all conforming implementations. Reference vectors:
+// isqrt(0)=0, isqrt(1)=1, isqrt(2)=1, isqrt(3)=1, isqrt(4)=2, isqrt(8)=2,
+// isqrt(2_000_000_000_000n)=1_414_213 (= floor(√(1M·2M))).
 export function isqrt(n) {
   if (n < 0n) throw new Error('isqrt of negative');
   if (n < 2n) return n;

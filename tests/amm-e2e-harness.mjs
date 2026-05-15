@@ -362,7 +362,7 @@ export function buildAndSubmitPoolInit({
   // POOL_INIT envelope payload.
   // Set POOL_CAP_SOLO_INTENT_ALLOWED (0x01) so the e2e harness's N=1 swap
   // scenarios exercise the swap path. Default V1 pools reject N=1 for
-  // amount confidentiality (audit MEDIUM-4); the harness intentionally opts
+  // amount confidentiality; the harness intentionally opts
   // in here to keep scenario coverage broad.
   const payload = encodeLpAdd({
     variant: 1, assetA, assetB, deltaA, deltaB, shareAmount: founder_shares,

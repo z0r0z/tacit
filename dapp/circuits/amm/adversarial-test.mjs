@@ -428,5 +428,50 @@ await assertReject('fee_bps = 1023 (max 10-bit but over spec cap) ⇒ rejected',
   return inp;
 })(), 'amm_swap_batch');
 
+// Per-intent tip-amount boundary walks. Public input
+// `tip_amount[i]` is Num2Bits(64)-constrained via the tip aggregation +
+// PedersenBJJ open of (amount_in_swap + tip) in-circuit. Both u64 boundaries
+// should reject.
+
+await assertReject('per-intent tip_amount = 2^64 (one over u64) ⇒ rejected', (() => {
+  const inp = buildSwapInput(baseTraders);
+  // Public tip and witness must match; both at the boundary.
+  inp.tip_amount[0] = (1n << 64n).toString();
+  inp.tip_amount_witness[0] = (1n << 64n).toString();
+  // Update tip_A_amount aggregate to keep aggregate-tip sum consistent
+  // (otherwise the failure could be aggregate-sum mismatch rather than
+  // per-intent Num2Bits(64) — we want the range check to be what rejects).
+  const oldTipA = BigInt(inp.tip_A_amount);
+  inp.tip_A_amount = (oldTipA + (1n << 64n)).toString();
+  return inp;
+})(), 'amm_swap_batch');
+
+await assertReject('per-intent tip_amount = 2^64 + 1 (boundary +1) ⇒ rejected', (() => {
+  const inp = buildSwapInput(baseTraders);
+  const boundary_plus_1 = ((1n << 64n) + 1n).toString();
+  inp.tip_amount[0] = boundary_plus_1;
+  inp.tip_amount_witness[0] = boundary_plus_1;
+  const oldTipA = BigInt(inp.tip_A_amount);
+  inp.tip_A_amount = (oldTipA + (1n << 64n) + 1n).toString();
+  return inp;
+})(), 'amm_swap_batch');
+
+await assertReject('per-intent tip_amount_witness ≠ public tip_amount ⇒ rejected', (() => {
+  // Public tip_amount stays at 0 (its committed-to value); witness deviates.
+  // Circuit constraint `tip_amount_witness === tip_amount` should reject.
+  const inp = buildSwapInput(baseTraders);
+  inp.tip_amount_witness[0] = '1';  // public tip_amount[0] is still '0'
+  return inp;
+})(), 'amm_swap_batch');
+
+await assertReject('aggregate tip_A_amount = 2^64 (overflow) ⇒ rejected', (() => {
+  // Global Num2Bits(64) on tip_A_amount should reject the aggregate exactly
+  // at the u64 boundary. We don't need per-intent tips to sum here — the
+  // aggregate field is range-checked independently.
+  const inp = buildSwapInput(baseTraders);
+  inp.tip_A_amount = (1n << 64n).toString();
+  return inp;
+})(), 'amm_swap_batch');
+
 console.log(`\n${pass}/${pass + fail} adversarial cases properly rejected`);
 if (fail > 0) process.exit(1);

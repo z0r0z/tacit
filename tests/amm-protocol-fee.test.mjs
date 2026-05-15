@@ -465,5 +465,50 @@ test('claim_sig binds to claim_blinding (mutated blinding bytes ⇒ rejected)', 
   return !res.valid;
 });
 
+// Over-mint and double-claim adversarial coverage.
+
+test('over-mint: claim_amount > pool.protocol_fee_accrued ⇒ rejected', () => {
+  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const xPool = crystallizeProtocolFee(pool);
+  const inflated = xPool.protocol_fee_accrued + 1n;
+  const blinding = new Uint8Array(32); blinding[31] = 0x09;
+  const r = BigInt('0x' + bytesToHex(blinding));
+  const claimCSecp = H.multiply(inflated).add(G.multiply(r)).toRawBytes(true);
+  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, {
+    poolId, claimAmount: inflated, claimCSecp, claimBlinding: blinding,
+  });
+  const claimSig = signSchnorr(claimMsg, priv);
+  const payload = encodeProtocolFeeClaim({
+    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount: inflated, claimCSecp,
+    claimBlinding: blinding, claimSig,
+  });
+  const res = validateProtocolFeeClaim({ payload, pool });
+  return !res.valid && /claim_amount/.test(res.reason);
+});
+
+test('double-claim: replay against post-drain pool ⇒ second rejected', () => {
+  const { pool, priv, pubXOnly, poolId } = buildPoolWithAccrual();
+  const xPool = crystallizeProtocolFee(pool);
+  const claimAmount = xPool.protocol_fee_accrued;
+  const blinding = new Uint8Array(32); blinding[31] = 0x11;
+  const r = BigInt('0x' + bytesToHex(blinding));
+  const claimCSecp = H.multiply(claimAmount).add(G.multiply(r)).toRawBytes(true);
+  const claimMsg = buildProtocolFeeClaimMsgWith(sha256, {
+    poolId, claimAmount, claimCSecp, claimBlinding: blinding,
+  });
+  const claimSig = signSchnorr(claimMsg, priv);
+  const payload = encodeProtocolFeeClaim({
+    poolId, claimerPubkeyXOnly: pubXOnly, claimAmount, claimCSecp,
+    claimBlinding: blinding, claimSig,
+  });
+  const first = validateProtocolFeeClaim({ payload, pool });
+  if (!first.valid) return false;
+  // Apply the drain (validator returns newPoolState with protocol_fee_accrued = 0).
+  const drainedPool = first.newPoolState;
+  // Second claim on the post-drain pool ⇒ no accrued left ⇒ rejected.
+  const second = validateProtocolFeeClaim({ payload, pool: drainedPool });
+  return !second.valid;
+});
+
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

@@ -11,6 +11,8 @@ import {
   MINIMUM_LIQUIDITY,
   deriveMinLiqBlinding, deriveMinLiqCommitment, deriveMinLiqAmountCt,
   decryptMinLiqAmount, deriveMinLiqNumsRecipient, verifyMinLiqOutput,
+  assessMinLiqLockFraction,
+  MIN_LIQ_LOCK_BPS_WARN, MIN_LIQ_LOCK_BPS_HIGH,
 } from './amm-min-liq.mjs';
 import { SECP_N, pedersenCommit, pointToBytes } from './bulletproofs.mjs';
 
@@ -126,6 +128,56 @@ test('cross-pool commitment ⇒ reject', () => {
     onChainAmtCt: deriveMinLiqAmountCt(POOL_A),
     onChainP2wpkh: numsA.p2wpkh,
   });
+});
+
+console.log('\nassessMinLiqLockFraction (dapp UX helper)');
+test('typical large pool (1M × 2M) ⇒ ok', () => {
+  const a = assessMinLiqLockFraction(1_000_000n, 2_000_000n);
+  return a.severity === 'ok'
+    && a.total_shares === 1_414_213n
+    && a.locked_shares === MINIMUM_LIQUIDITY
+    && a.founder_shares === 1_414_213n - MINIMUM_LIQUIDITY
+    && a.locked_bps < MIN_LIQ_LOCK_BPS_WARN;
+});
+test('small pool just below 1% threshold ⇒ ok', () => {
+  // total = isqrt(da · db); locked_bps = floor(10000·1000/total).
+  // For locked_bps < 100 we need total > 100_000.
+  // 100_000^2 = 1e10; pick da=db=100_001 ⇒ total = 100_001.
+  const a = assessMinLiqLockFraction(100_001n, 100_001n);
+  return a.severity === 'ok' && a.locked_bps < MIN_LIQ_LOCK_BPS_WARN;
+});
+test('small pool ≥ 1% locked ⇒ warn', () => {
+  // total ≈ 50_000 ⇒ locked_bps ≈ 200 (2%).
+  const a = assessMinLiqLockFraction(50_000n, 50_000n);
+  return a.severity === 'warn'
+    && a.locked_bps >= MIN_LIQ_LOCK_BPS_WARN
+    && a.locked_bps < MIN_LIQ_LOCK_BPS_HIGH;
+});
+test('thin pool ≥ 10% locked ⇒ high', () => {
+  // total ≈ 5_000 ⇒ locked_bps ≈ 2000 (20%).
+  const a = assessMinLiqLockFraction(5_000n, 5_000n);
+  return a.severity === 'high' && a.locked_bps >= MIN_LIQ_LOCK_BPS_HIGH;
+});
+test('pool too small (total ≤ MIN_LIQ) ⇒ reject', () => {
+  // total = isqrt(1000·1000) = 1000 == MINIMUM_LIQUIDITY ⇒ reject.
+  const a = assessMinLiqLockFraction(1000n, 1000n);
+  return a.severity === 'reject'
+    && a.founder_shares === 0n
+    && a.locked_bps === 10000n;
+});
+test('asymmetric thin pool (low-decimal asset) ⇒ high', () => {
+  // 0-decimal asset paired with 8-decimal cBTC analog.
+  // 50_000 of asset A × 100 base units of B ⇒ total = isqrt(5_000_000) = 2236.
+  // locked_bps ≈ floor(10000·1000/2236) = 4472 (44.7%).
+  const a = assessMinLiqLockFraction(50_000n, 100n);
+  return a.severity === 'high' && a.locked_bps >= MIN_LIQ_LOCK_BPS_HIGH;
+});
+test('rejects zero or negative inputs', () => {
+  let threw = 0;
+  try { assessMinLiqLockFraction(0n, 1n); } catch { threw++; }
+  try { assessMinLiqLockFraction(1n, 0n); } catch { threw++; }
+  try { assessMinLiqLockFraction(-1n, 1n); } catch { threw++; }
+  return threw === 3;
 });
 
 console.log(`\n${pass}/${pass + fail} passed`);

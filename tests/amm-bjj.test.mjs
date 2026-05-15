@@ -167,8 +167,8 @@ test('pedersenBJJ different amounts give different commits', () => {
   return !eq(C1, C2);
 });
 
-// Audit LOW-2: strict variant rejects blinding≡0 (loses hiding).
-console.log('\nBJJ Pedersen strict-blinding rejection (audit LOW-2)');
+// Strict variant rejects blinding ≡ 0 (loses hiding property).
+console.log('\nBJJ Pedersen strict-blinding rejection');
 test('pedersenBJJStrict rejects blinding = 0n', () => {
   try { pedersenBJJStrict(100n, 0n); return false; }
   catch (e) { return /destroys hiding/.test(e.message); }

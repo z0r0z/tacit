@@ -73,8 +73,8 @@ export function buildIntentMsg({
   const pid = asBytes(poolId, 32, 'poolId');
   if (direction !== 0 && direction !== 1) throw new Error('direction must be 0 or 1');
   if (tipAsset !== 0 && tipAsset !== 1) throw new Error('tipAsset must be 0 or 1');
-  // Audit LOW-3: AMM.md §"Tip mechanics" §3 normatively requires tip_asset
-  // to equal direction (tip is paid on the input side). The validator
+  // AMM.md §"Tip mechanics" §3 normatively requires tip_asset to equal
+  // direction (tip is paid on the input side). The validator
   // hardcodes this when reconstructing intent_msg for sig verification, so a
   // trader who signs with a divergent tip_asset cannot have their intent
   // verified. We make the constraint explicit here to surface a clear error

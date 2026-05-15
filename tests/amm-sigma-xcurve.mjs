@@ -106,8 +106,8 @@ function defaultRng(len) {
 // `seedKey` SHOULD be a high-entropy secret derived from the trader's
 // long-term key, NOT the witness scalars themselves. Common pattern:
 //   seedKey = HMAC-SHA256(trader_priv, "tacit-amm-xcurve-seed-v1")
-// (Audit LOW-4: closes the "RNG bug exposes discrete logs" tail risk for
-// production indexers / signers that need deterministic nonces.)
+// Closes the "RNG bug exposes discrete logs" tail risk for production
+// indexers / signers that need deterministic nonces.
 function makeDeterministicRng(seedKey, statement) {
   if (!(seedKey instanceof Uint8Array) || seedKey.length < 16) {
     throw new Error('makeDeterministicRng: seedKey must be a Uint8Array of ≥ 16 bytes');
@@ -162,9 +162,31 @@ export function challenge(C_secp_bytes, C_BJJ_bytes, A_secp_bytes, A_BJJ_bytes) 
 // Returns:
 //   { proof: Uint8Array(169), C_secp_bytes, C_BJJ_bytes }
 //
-// Production callers SHOULD use `proveXCurveDeterministic` (below) instead
-// of relying on the default crypto.getRandomValues — see audit LOW-4.
+// Production callers MUST use `proveXCurveDeterministic` (below) instead of
+// the default platform-RNG path. The default path is gated by NODE_ENV: it
+// throws when `NODE_ENV === 'production'` AND no explicit `rng` was passed,
+// mirroring the SKIP_GROTH16_VERIFY_UNSAFE production refusal pattern in
+// the validator. Callers who explicitly pass an `rng` (e.g., a deterministic
+// test stream) bypass this gate. See the RNG-leak rationale above.
+let _proveXCurveRngWarned = false;
 export function proveXCurve({ a, r_secp, r_BJJ, C_secp = null, C_BJJ = null, rng = defaultRng }) {
+  if (rng === defaultRng) {
+    if (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'production') {
+      throw new Error(
+        'proveXCurve: default (platform-RNG) prover refused in production ' +
+        '(NODE_ENV=production). Use proveXCurveDeterministic, or pass an ' +
+        'explicit `rng` if the caller has audited its source.',
+      );
+    }
+    if (!_proveXCurveRngWarned && typeof process !== 'undefined' && process.stderr) {
+      _proveXCurveRngWarned = true;
+      process.stderr.write(
+        '[tacit-amm] WARNING: proveXCurve called with default platform RNG. ' +
+        'Production code MUST use proveXCurveDeterministic. ' +
+        'Refused if NODE_ENV=production.\n',
+      );
+    }
+  }
   if (typeof a !== 'bigint' || a < 0n || a >= (1n << 64n)) {
     throw new Error('amount must satisfy 0 ≤ a < 2^64');
   }
@@ -284,7 +306,7 @@ function bytesToHex(b) {
 }
 
 // ===========================================================================
-// Audit LOW-4: deterministic-nonce production prover wrapper
+// Deterministic-nonce production prover wrapper
 // ===========================================================================
 //
 // Wraps `proveXCurve` with a deterministic (witness + statement)-derived
