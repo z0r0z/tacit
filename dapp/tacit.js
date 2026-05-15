@@ -23847,11 +23847,16 @@ function unitPriceSats(priceSats, amountBaseUnits, decimals) {
 // (ring length < 3) dim to .thin so users don't trade on noisy deltas.
 function _renderDeltaChip(pct, windowLbl, thin) {
   if (pct == null || !Number.isFinite(pct)) return '';
-  const sign = pct > 0 ? '+' : '';
   const cls = pct > 0 ? 'pos' : pct < 0 ? 'neg' : 'neu';
-  const arrow = pct > 0 ? '▲' : pct < 0 ? '▼' : '·';
+  // Plain colored numbers — green for up, red for down, muted for flat.
+  // True minus sign (U+2212) instead of hyphen-minus so the negative form
+  // visually balances the plus glyph at the same width. Direction is
+  // carried by color + sign; the old ▲/▼ arrows were redundant noise.
+  const valStr = pct === 0
+    ? '0.00%'
+    : (pct > 0 ? `+${pct.toFixed(2)}%` : `−${Math.abs(pct).toFixed(2)}%`);
   const thinCls = thin ? ' thin' : '';
-  return `<span class="delta-chip ${cls}${thinCls}" title="${escapeHtml(windowLbl)} price change · outlier-guarded reference">${arrow} ${sign}${pct.toFixed(2)}%<span class="delta-win">${escapeHtml(windowLbl)}</span></span>`;
+  return `<span class="delta-chip ${cls}${thinCls}" title="${escapeHtml(windowLbl)} price change · outlier-guarded reference">${valStr}<span class="delta-win">${escapeHtml(windowLbl)}</span></span>`;
 }
 function _renderDeltaStrip(asset, opts) {
   const windows = (opts && Array.isArray(opts.windows)) ? opts.windows : ['1h', '4h', '24h'];
