@@ -15662,6 +15662,11 @@ async function fulfilBidIntentBatch({ bids, onProgress = null }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!Array.isArray(bids) || bids.length === 0) throw new Error('bids required');
+  // DoS guard matching takePreauthSaleBatch. A real sweep-sell tops out
+  // well below this; very large N would fall back to per-bid anyway
+  // (T_CXFER caps recipients at 7), so anything past 100 is a bug or
+  // an attempt to wedge the wallet.
+  if (bids.length > 100) throw new Error('batch too large (max 100)');
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
 
   // N=1 fast path: zero behavior change.
