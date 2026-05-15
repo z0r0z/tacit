@@ -38234,7 +38234,7 @@ function applyMarketFilters() {
       const _bandHi = (Number.isFinite(_markRaw) && _markRaw > 0) ? _markRaw * 5 : Infinity;
       const cleaned = summary.filter(p => Number.isFinite(p?.u) && Number.isFinite(p?.ts) && p.ts > 0);
       if (cleaned.length === 0) return '';
-      const sparkSvg = _renderTileSparklineSVG(summary);
+      const sparkSvg = _renderTileSparklineSVG(summary, _markRaw);
       const sortedNewestFirst = cleaned.slice().sort((x, y) => y.ts - x.ts);
       const latest = sortedNewestFirst[0];
       // 24h reference: oldest IN-BAND point within the last 24h window.
@@ -40194,7 +40194,12 @@ function renderMarketBrowse(rows) {
     // Sparkline — compact unit-price line over the last 10 trades the
     // worker shipped on this tile. Renders inline below the offer count,
     // single SVG element so it can be laid out flush with the floor row.
-    const sparkSvg = _renderTileSparklineSVG(a.price_summary);
+    // Mark price passed so the sparkline drops dust outliers from its
+    // y-axis range — without this, a fresh market with one anomalous
+    // 18-sat dust trade rendered a wildly skewed line for every gallery
+    // tile, falsely signalling chaotic trading. Same 0.2×/5× band the
+    // chart + spread analytics use.
+    const sparkSvg = _renderTileSparklineSVG(a.price_summary, Number(a?.mark_price?.unit));
     const tile = document.createElement('div');
     tile.className = 'market-asset-tile';
     tile.dataset.assetTile = safeAid;
@@ -41483,12 +41488,29 @@ function renderMarketAssetStatsHTML(asset) {
 // price_summary array (up to 10 pre-computed {ts, u} tuples per asset),
 // renders a 200×28 SVG line + last-vs-first reference dots. Empty string
 // when insufficient data — caller appends unconditionally.
-function _renderTileSparklineSVG(summary) {
+//
+// Optional markUnit: when supplied (asset's mark_price.unit), points
+// outside the 0.2×/5× outlier band are dropped before plotting. Same
+// band used by the price chart, depth analytics, and swap-tile strip.
+// Without this, a single dust trade (e.g. 18 sats when mark is 209)
+// at the start of the ring made every browse-tile sparkline look like
+// the market crashed +1000% — alarming and wrong. The sparkline still
+// uses the full visible width; the y-axis just doesn't get squashed
+// by extreme outliers.
+function _renderTileSparklineSVG(summary, markUnit) {
   if (!Array.isArray(summary) || summary.length < 2) return '';
   // Summary is newest-first; sort for left-to-right time progression.
-  const pts = summary.filter(p => Number.isFinite(p?.u) && Number.isFinite(p?.ts) && p.ts > 0)
-                     .slice()
-                     .sort((a, b) => a.ts - b.ts);
+  let pts = summary.filter(p => Number.isFinite(p?.u) && Number.isFinite(p?.ts) && p.ts > 0)
+                   .slice()
+                   .sort((a, b) => a.ts - b.ts);
+  if (Number.isFinite(markUnit) && markUnit > 0) {
+    const lo = markUnit * 0.2;
+    const hi = markUnit * 5;
+    const filtered = pts.filter(p => p.u >= lo && p.u <= hi);
+    // Only drop to filtered set when at least 2 in-band points exist;
+    // a single-survivor would produce a degenerate sparkline.
+    if (filtered.length >= 2) pts = filtered;
+  }
   if (pts.length < 2) return '';
   let minU = Infinity, maxU = -Infinity;
   for (const p of pts) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
