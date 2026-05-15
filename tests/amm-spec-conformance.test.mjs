@@ -182,11 +182,19 @@ console.log('\nProtocol constants (spec-literal pinning)');
   const { AMM_INITIAL_LP_LOCK_BLOCKS } = await import('./amm-validator.mjs');
   const { FEE_BPS_MAX, PROTOCOL_FEE_BPS_MAX, N_INTENTS_MAX } =
     await import('./amm-envelope.mjs');
+  const { MINIMUM_LIQUIDITY } = await import('./amm-min-liq.mjs');
   test(`AMM_INITIAL_LP_LOCK_BLOCKS == 6`, () =>
     AMM_INITIAL_LP_LOCK_BLOCKS === EXPECTED_CONSTS.AMM_INITIAL_LP_LOCK_BLOCKS);
   test(`FEE_BPS_MAX == 1000`,             () => FEE_BPS_MAX === EXPECTED_CONSTS.FEE_BPS_MAX);
   test(`PROTOCOL_FEE_BPS_MAX == 1000`,    () => PROTOCOL_FEE_BPS_MAX === EXPECTED_CONSTS.PROTOCOL_FEE_BPS_MAX);
   test(`N_MAX == 16`,                     () => N_INTENTS_MAX === EXPECTED_CONSTS.N_MAX);
+  test(`MINIMUM_LIQUIDITY == 1000n`,      () => MINIMUM_LIQUIDITY === EXPECTED_CONSTS.MINIMUM_LIQUIDITY);
+  // AMM_OP_CONFIRMATION_DEPTH, AMM_RTT_TIMEOUT_MS, AMM_RESIGN_ATTEMPTS,
+  // AMM_MANDATORY_INCLUSION_DEPTH are spec-only constants (AMM.md normative
+  // values that don't have a single exported impl symbol — they're
+  // referenced in worker/settler/dapp behavior, not validator-enforced).
+  // We pin them in the spec but don't have a single impl module to import.
+  // If a future impl module exports these, add assertions here.
 }
 
 // =========================================================================
