@@ -38005,6 +38005,22 @@ function applyMarketFilters() {
   // seller viewing only their listings sees the same group structure
   // buyers do.
   rowsForGrid = groupChunkedPreauthListings(rowsForGrid);
+  // True depth aggregation for rows-mode: collapse same-bucket preauth
+  // listings into a single virtual entry per price level. Mirrors a CEX
+  // orderbook (X TAC available at this price · N makers behind it) rather
+  // than treating each maker's UTXO as a separate ladder rung. Only
+  // applied to PREAUTH (single-tx instant fill) — atomic intents, OTC
+  // openings, range listings stay as individual rows since their
+  // settlement mechanics aren't homogeneous. Skipped in cards mode +
+  // when only one listing per bucket would result (no collapse gain).
+  if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketLadderView === 'rows') {
+    const a = (rows.find(l => l._asset?.asset_id === _marketView.assetId)?._asset)
+           || (_marketCache?.listings.find(l => l._asset?.asset_id === _marketView.assetId)?._asset)
+           || (_marketCache?.assets?.find(x => x.asset_id === _marketView.assetId));
+    const _markUnit = Number(a?.mark_price?.unit);
+    const _decI = Number.isInteger(a?.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
+    rowsForGrid = _aggregatePreauthRowsForLadder(rowsForGrid, _markUnit, _decI);
+  }
   const hiddenByMode = rowsFull.length - rowsSimple.length;
   // Asset-detail header above already shows the per-kind breakdown
   // (⚡ atomic · opening · range) and floor — no separate banner needed here.
@@ -38613,8 +38629,14 @@ function applyMarketFilters() {
     // is the worst-case (most-expensive-per-token) price — labeled "≤" since
     // the maker may deliver more for the same total.
     const unit = unitPriceSats(priceSatsRaw, BigInt(amount || 0), dec);
-    const unitStr = unit != null
-      ? `${l.kind === 'range' ? '&le; ' : ''}${fmtMarketUnitSats(unit)}/${escapeHtml(a.ticker || 'token')}`
+    // Aggregated levels show the bucket's max unit as the "you'll pay
+    // up to" price (worst-case sweep cap), prefixed with ≤ so the
+    // semantic matches range-listing convention. The spread line
+    // below reveals the actual min–max range underneath.
+    const _displayUnit = (l._isLevel && Number.isFinite(l._levelMaxUnit)) ? l._levelMaxUnit : unit;
+    const _prefix = (l.kind === 'range' || l._isLevel) ? '&le; ' : '';
+    const unitStr = _displayUnit != null
+      ? `${_prefix}${fmtMarketUnitSats(_displayUnit)}/${escapeHtml(a.ticker || 'token')}`
       : '';
     const listedTs = Number(l.listed_at || l.created_at || 0);
     const listedRel = relativeAge(listedTs);
@@ -38725,21 +38747,43 @@ function applyMarketFilters() {
     // The full-card HTML (preserved below) stays for power users who toggle
     // to "Cards view" — verification, group metadata, fill-progress bar
     // all need the vertical real estate to read.
-    const _rowMetaTitle = `Listing id: ${displayId}${_fullSeller ? `\n${l.kind === 'preauth' ? 'Seller' : 'Maker'}: ${_fullSeller}` : ''}${l._isGroup ? `\nGroup: ${l._groupId || ''} · ${l._groupSize} chunks` : ''}${recencyLine ? `\n${recencyLine.replace(/<[^>]+>/g, '')}` : ''}`;
+    //
+    // Aggregated levels (_isLevel) flip the row to "X TAC across N
+    // makers" semantics: the strong line shows the bucket center; the
+    // unit subtitle reveals the actual min–max spread so a buyer knows
+    // they're getting "≤ {max} sats/TAC" worst-case; the count badge
+    // surfaces how many underlying listings stack at this level. Action
+    // is replaced by a Sweep buy CTA preloaded with the level's total
+    // amount and the bucket's max unit price as the cap — one click
+    // empties the level.
+    const _isLevel = !!l._isLevel;
+    const _levelBadge = _isLevel
+      ? ` <span style="display:inline-block;margin-left:6px;padding:1px 7px;background:var(--ink);color:var(--bg);font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="${l._levelCount} maker listings aggregated at this price bucket. Click Sweep buy to fill against all of them in one route.">×${l._levelCount}</span>`
+      : '';
+    const _levelSpread = _isLevel
+      ? `<small class="muted" style="display:block;margin-top:1px;font-size:9px;">spread ${fmtUnitPriceSats(l._levelMinUnit)}–${fmtUnitPriceSats(l._levelMaxUnit)}</small>`
+      : '';
+    const _rowMetaTitle = _isLevel
+      ? `${l._levelCount} preauth listings aggregated in this price bucket.\nMin unit: ${fmtUnitPriceSats(l._levelMinUnit)} sats/${a.ticker || 'token'}\nMax unit: ${fmtUnitPriceSats(l._levelMaxUnit)} sats/${a.ticker || 'token'}\nTotal: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} for ${priceSatsRaw.toLocaleString('en-US')} sats.`
+      : `Listing id: ${displayId}${_fullSeller ? `\n${l.kind === 'preauth' ? 'Seller' : 'Maker'}: ${_fullSeller}` : ''}${l._isGroup ? `\nGroup: ${l._groupId || ''} · ${l._groupSize} chunks` : ''}${recencyLine ? `\n${recencyLine.replace(/<[^>]+>/g, '')}` : ''}`;
+    const _rowActionRow = _isLevel
+      ? `<div class="market-listing-actions"><button data-act="market-sweep-buy-level" data-aid="${escapeHtml(safeAid)}" data-target-amt="${escapeHtml(amount || '0')}" data-cap-unit="${l._levelMaxUnit}" data-dec="${dec}" data-ticker="${escapeHtml(a.ticker || '?')}" type="button" class="primary" title="Sweep buy ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} across all ${l._levelCount} preauth listings in this bucket. Each fill is one Bitcoin tx; the cap is the bucket's max unit price.">⚡ Sweep level</button></div>`
+      : actionRow;
     const rowsModeHtml = `
       <div class="market-listing-unit" title="${escapeHtml(_rowMetaTitle)}">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
         <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` /token` : ''}</small>
-        <small class="muted" style="display:block;margin-top:2px;font-size:9px;line-height:1.3;">${recencyLine}</small>
+        ${_levelSpread}
+        <small class="muted" style="display:block;margin-top:2px;font-size:9px;line-height:1.3;">${_isLevel ? '' : recencyLine}</small>
       </div>
       <div class="market-listing-amount" style="font-size:12px;font-weight:600;text-align:left;line-height:1.3;">
-        ${_amountLine}${_groupBadge}${_bestPriceBadge}
+        ${_amountLine}${_groupBadge}${_bestPriceBadge}${_levelBadge}
       </div>
       <div class="market-listing-total">
         <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSatsRaw))}</span>
         <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSatsRaw, ''))}</span>
       </div>
-      ${actionRow}`;
+      ${_rowActionRow}`;
     const cardsModeHtml = `
       ${_tileTopHtml}
       <div class="market-listing-amount">${_amountLine}${_groupBadge}${_bestPriceBadge}</div>
@@ -38918,6 +38962,52 @@ function applyMarketFilters() {
   });
   grid.querySelectorAll('button[data-act="market-take-preauth-group"]').forEach(btn => {
     btn.onclick = async () => marketTakePreauthGroupHandler(btn);
+  });
+  // Sweep-level: each aggregated depth-row's primary CTA. Opens the
+  // existing Sweep buy form preloaded with the level's total amount and
+  // bucket cap so the user only sees a one-tap confirm. Falls back
+  // gracefully if the sweep section isn't present (defensive).
+  grid.querySelectorAll('button[data-act="market-sweep-buy-level"]').forEach(btn => {
+    btn.onclick = () => {
+      const sweepSection = list.querySelector('[data-market-sweep-buy-section]');
+      const sweepBtn = sweepSection?.querySelector('[data-act="market-sweep-buy"]');
+      if (!sweepBtn) return;
+      // Toggle the form open if it's not already.
+      const formHost = sweepSection.querySelector('[data-market-sweep-form]');
+      if (formHost && formHost.dataset.open !== '1') sweepBtn.click();
+      // Prefill amount + cap from the level's data attrs. Coerce the
+      // base-unit amount back to whole-token display since the form
+      // expects user-readable decimal input. Cap is rounded UP one
+      // sat above the bucket's max so the sweep walker doesn't skip
+      // the topmost listing due to float comparison.
+      try {
+        const dec = parseInt(btn.dataset.dec || '0', 10) || 0;
+        const targetBase = BigInt(btn.dataset.targetAmt || '0');
+        const whole = (() => {
+          if (dec === 0) return targetBase.toString();
+          const div = 10n ** BigInt(dec);
+          const w = targetBase / div;
+          const f = targetBase - w * div;
+          if (f === 0n) return w.toString();
+          return `${w}.${f.toString().padStart(dec, '0').replace(/0+$/, '')}`;
+        })();
+        const capUnit = Number(btn.dataset.capUnit || '0');
+        const capForCap = Number.isFinite(capUnit) && capUnit > 0 ? Math.ceil(capUnit + 0.5) : '';
+        // Defer to next frame so the form's DOM has hydrated after the
+        // sweepBtn.click() above (which renders into formHost.innerHTML).
+        requestAnimationFrame(() => {
+          const amountEl = formHost.querySelector('[data-sweep-field="amount"]');
+          const capEl = formHost.querySelector('[data-sweep-field="cap"]');
+          if (amountEl) { amountEl.value = whole; amountEl.dispatchEvent(new Event('input', { bubbles: true })); }
+          if (capEl && capForCap) { capEl.value = String(capForCap); capEl.dispatchEvent(new Event('input', { bubbles: true })); }
+          // Scroll the form into view so the user sees the prefilled
+          // values + Preview button immediately.
+          try { formHost.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+        });
+      } catch (e) {
+        console.warn('sweep-level prefill failed:', e?.message || e);
+      }
+    };
   });
   // Click-to-fill on ask tile bodies. Mirrors the CEX orderbook pattern
   // where clicking a row populates the order form below. We populate the
@@ -39606,6 +39696,96 @@ function marketListingDisplayId(l) {
 // attached for the tile renderer. Buy/Cancel actions on a group tile use
 // the head chunk's sale_id; after a successful take, the next refresh
 // promotes the next chunk to head naturally.
+// Depth-by-price aggregation for the rows-mode orderbook. Collapses
+// preauth listings whose unit price falls in the same bucket into a
+// single virtual row. Bucket size scales with mark price (0.5%
+// granularity, min 0.01 sat) so the resolution stays meaningful
+// across asset price ranges — a $50,000-BTC asset's bucket is 250 sats
+// while a 1-sat token's bucket is 0.01 sat.
+//
+// Synthetic rows:
+//   - _isLevel: true       → tile renderer swaps to depth-level layout
+//   - _levelCount: N       → "behind N makers" badge
+//   - _levelListings: [..] → underlying preauths, for sweep-buy target
+//   - _levelMaxUnit, _levelMinUnit → bucket's actual price spread
+//   - asset_opening.amount → BigInt-stringified total amount in bucket
+//   - min_price_sats       → total sats across the bucket
+//
+// Singletons (one listing per bucket) pass through unchanged — no UX
+// gain from wrapping a single listing as a "level" with count=1.
+// Chunked preauth groups (_isGroup, already aggregated by chunk
+// grouping) also pass through; the chunk grouper handles their fan-out
+// separately. Non-preauth kinds (intent, opening, range) pass through
+// because their settlement mechanics differ and they aren't comparable
+// in a depth ladder.
+function _aggregatePreauthRowsForLadder(rows, markUnit, decimals) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+  const bucketSize = Number.isFinite(markUnit) && markUnit > 0
+    ? Math.max(0.01, markUnit * 0.005)
+    : 1;
+  const buckets = new Map();
+  const passthrough = [];
+  for (const l of rows) {
+    if (l.kind !== 'preauth' || l._isGroup) { passthrough.push(l); continue; }
+    const amtBig = (() => { try { return BigInt(l.asset_opening?.amount || '0'); } catch { return 0n; } })();
+    if (amtBig <= 0n) { passthrough.push(l); continue; }
+    const ps = Number(l.min_price_sats || 0);
+    if (ps <= 0) { passthrough.push(l); continue; }
+    const unit = unitPriceSats(ps, amtBig, decimals);
+    if (unit == null) { passthrough.push(l); continue; }
+    const bucketKey = Math.round(unit / bucketSize);
+    let agg = buckets.get(bucketKey);
+    if (!agg) {
+      agg = {
+        bucketUnit: bucketKey * bucketSize,
+        totalAmt: 0n,
+        totalSats: 0,
+        listings: [],
+        minExpiry: Infinity,
+        minUnit: Infinity,
+        maxUnit: 0,
+      };
+      buckets.set(bucketKey, agg);
+    }
+    agg.totalAmt += amtBig;
+    agg.totalSats += ps;
+    agg.listings.push(l);
+    if (l.expiry && l.expiry < agg.minExpiry) agg.minExpiry = l.expiry;
+    if (unit < agg.minUnit) agg.minUnit = unit;
+    if (unit > agg.maxUnit) agg.maxUnit = unit;
+  }
+  const virtualRows = [];
+  for (const agg of buckets.values()) {
+    if (agg.listings.length === 1) {
+      virtualRows.push(agg.listings[0]);
+      continue;
+    }
+    const proto = agg.listings[0];
+    virtualRows.push({
+      ...proto,
+      _isLevel: true,
+      _levelCount: agg.listings.length,
+      _levelListings: agg.listings,
+      _levelMinUnit: agg.minUnit,
+      _levelMaxUnit: agg.maxUnit,
+      asset_opening: { ...(proto.asset_opening || {}), amount: agg.totalAmt.toString() },
+      min_price_sats: agg.totalSats,
+      expiry: agg.minExpiry === Infinity ? proto.expiry : agg.minExpiry,
+    });
+  }
+  const all = [...virtualRows, ...passthrough];
+  all.sort((a, b) => {
+    const dA = Number.isInteger(a._asset?.decimals) ? a._asset.decimals : 0;
+    const dB = Number.isInteger(b._asset?.decimals) ? b._asset.decimals : 0;
+    const amA = (() => { try { return BigInt(marketListingAmount(a) || '0'); } catch { return 1n; } })();
+    const amB = (() => { try { return BigInt(marketListingAmount(b) || '0'); } catch { return 1n; } })();
+    const uA = unitPriceSats(marketListingPriceSats(a), amA, dA) ?? Infinity;
+    const uB = unitPriceSats(marketListingPriceSats(b), amB, dB) ?? Infinity;
+    return uA - uB;
+  });
+  return all;
+}
+
 function groupChunkedPreauthListings(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return rows;
   const groups = new Map();
