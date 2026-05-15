@@ -37380,21 +37380,32 @@ function marketVolumeSats(asset) {
     'volume_sats',
     'market_volume_sats',
   ]);
-  if (explicit != null) return explicit;
-  // Worker doesn't emit a lifetime sale-volume aggregator (only the rolling
-  // volume_24h_sats bucket). As a fallback, sum the recent-trades ring
-  // buffer — it's bounded at TRADES_RING_CAP entries so this approximates
-  // "last N trades" rather than true lifetime, but it makes the Total
-  // Volume column meaningful instead of permanently '—' until/unless we
-  // add a worker-side lifetime counter.
+  // Compute the ring-buffer sum as a fallback / floor regardless of
+  // whether an explicit counter is present. Bounded at TRADES_RING_CAP
+  // entries so it approximates "last N trades" rather than true
+  // lifetime, but it's still a meaningful number when the worker's
+  // canonical counter hasn't caught up yet — see the catch-up logic
+  // below.
   const trades = Array.isArray(asset?.trades) ? asset.trades : null;
-  if (!trades || !trades.length) return null;
-  let sum = 0;
-  for (const t of trades) {
-    const n = Number(t?.price_sats);
-    if (Number.isFinite(n) && n > 0) sum += n;
+  let ringSum = 0;
+  if (trades && trades.length) {
+    for (const t of trades) {
+      const n = Number(t?.price_sats);
+      if (Number.isFinite(n) && n > 0) ringSum += n;
+    }
   }
-  return sum > 0 ? sum : null;
+  // Worker just gained a lifetime counter (tradeLifetimeKey), which
+  // bumps on every settled trade post-deploy. Older assets that
+  // traded before the counter existed have `sale_volume_sats` near
+  // zero or below the ring sum — a regression on the displayed
+  // Indexed Volume the moment the worker started shipping the field.
+  // Treat the explicit counter as a FLOOR (authoritative lower bound)
+  // rather than the only source: take max(explicit, ring) so the
+  // displayed value never goes backwards as the counter accumulates.
+  // Once the counter catches up to / exceeds the ring sum on its
+  // own, this max() resolves to the explicit value automatically.
+  if (explicit != null) return ringSum > 0 ? Math.max(explicit, ringSum) : explicit;
+  return ringSum > 0 ? ringSum : null;
 }
 function marketVolume24hSats(asset) {
   for (const k of ['volume_24h_sats', 'volume24h_sats', 'volume_sats_24h', 'day_volume_sats']) {
