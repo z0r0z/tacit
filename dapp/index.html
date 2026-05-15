@@ -5392,21 +5392,24 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <details class="protocol-section" id="proto-ops" open>
         <summary class="protocol-h3">Operations</summary>
-      <p style="margin-top:8px;">v1 envelope version is <code>0x01</code>; opcodes <code>0x21</code>–<code>0x2C</code>. Every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal.</p>
+      <p style="margin-top:8px;">v1 envelope version is <code>0x01</code>; live opcodes span <code>0x21</code>–<code>0x38</code> (reserved range <code>0x21</code>–<code>0x4F</code> for future extensions). Every op is a 2-tx commit/reveal pair carrying the envelope inside <code>tx.vin[0].witness[1]</code> of the reveal.</p>
       <div class="script-decode" style="margin:10px 0;">
         <span class="hex">0x21</span><span class="op">CETCH</span><span class="desc">issue new asset; hidden initial supply, optionally mintable</span>
         <span class="hex">0x23</span><span class="op">CXFER</span><span class="desc">confidential transfer; split into 1, 2, 4, or 8 outputs</span>
         <span class="hex">0x24</span><span class="op">T_MINT</span><span class="desc">issuer-signed additional supply on a mintable CETCH</span>
         <span class="hex">0x25</span><span class="op">T_BURN</span><span class="desc">any holder destroys supply; public burned_amount</span>
-        <span class="hex">0x26</span><span class="op">T_AXFER</span><span class="desc">CXFER variant with aux BTC inputs — single-tx atomic OTC</span>
+        <span class="hex">0x26</span><span class="op">T_AXFER</span><span class="desc">CXFER variant with aux BTC inputs — single-tx atomic OTC + preauth sales + batched multi-fill takes (§5.7.8.1)</span>
         <span class="hex">0x27</span><span class="op">T_PETCH</span><span class="desc">permissionless-mint deployment: cap + per-mint amount + height window; deployer gets zero tokens</span>
         <span class="hex">0x28</span><span class="op">T_PMINT</span><span class="desc">anyone mints exactly <code>mint_limit</code>; reveals (amount, blinding) so the cap is auditable from chain</span>
         <span class="hex">0x29</span><span class="op">T_DEPOSIT</span><span class="desc">lock a fixed-denomination UTXO into a shielded pool (Poseidon leaf)</span>
         <span class="hex">0x2A</span><span class="op">T_WITHDRAW</span><span class="desc">Groth16-gated mint from a pool; recipient unlinkable to any specific deposit</span>
         <span class="hex">0x2B</span><span class="op">T_DROP</span><span class="desc">lock existing supply into a public claim pool with optional Merkle eligibility gate</span>
         <span class="hex">0x2C</span><span class="op">T_DCLAIM</span><span class="desc">permissionless claim from a drop; reveals (per_claim, blinding) for audit</span>
+        <span class="hex">0x37</span><span class="op">T_AXFER_VAR</span><span class="desc">variable-amount atomic settlement — one signed offer up to X, any taker fills any chunk in [min, X] (§5.7.6.1 / §5.7.9)</span>
+        <span class="hex">0x38</span><span class="op">T_WRAPPER_ATTEST</span><span class="desc">wrapper convention attestation — issuer binds a tacit asset to an external collateral claim with coverage check (§5.19)</span>
       </div>
-      <p style="margin-top:8px;">Wire-format examples below cover the core four (CETCH / CXFER / T_MINT / T_BURN). The remaining opcodes follow the same envelope shape with their own payload layouts and validator rules — see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">SPEC.md</a> §5.7–§5.13 for the byte-exact specifications.</p>
+      <p style="margin-top:8px;">Wire-format examples below cover the core four (CETCH / CXFER / T_MINT / T_BURN). The remaining opcodes follow the same envelope shape with their own payload layouts and validator rules — see <a href="https://github.com/z0r0z/tacit/blob/main/SPEC.md" target="_blank" rel="noopener noreferrer">SPEC.md</a> §5.7–§5.19 for the byte-exact specifications.</p>
+      <p style="margin-top:8px;">Marketplace primitives live in §5.7 and route through <code>T_AXFER</code> / <code>T_AXFER_VAR</code> settlement — no separate opcodes needed: <strong>atomic intents</strong> (§5.7.6 — seller publishes one signed offer, any taker claims it within 5 min and settles in one atomic Bitcoin tx); <strong>preauth sales</strong> (§5.7.8 — seller pre-signs everything, then goes offline; any buyer settles whenever); <strong>batched preauth-take</strong> (§5.7.8.1 — buyer sweeps N preauths in ONE reveal tx, ~70% Bitcoin-fee reduction vs N separate settlements; pure flow-level optimization leveraging position-independent <code>SIGHASH_SINGLE_ACP</code>); <strong>variable-amount intents</strong> (§5.7.6.1 — partial-fillable seller offers); and <strong>bid intents</strong> (§5.7.7 — partial-fillable buyer offers, off-chain coordination, on-chain settlement via <code>T_AXFER</code>/<code>T_AXFER_VAR</code>). All marketplace flows share the same kernel-sig + rangeproof crypto as base CXFER; the difference is the coordination layer, not the on-chain primitive.</p>
       </details>
 
       <details class="protocol-section" id="proto-cryptography" open>
@@ -5763,11 +5766,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <div class="faq-q">What else can I do besides send / receive?</div>
       <div class="faq-a">
-        <strong>Trade</strong> on the built-in orderbook — atomic-intent OTC (<code>T_AXFER</code> §5.7.6), variable-amount intents (<code>T_AXFER_VAR</code> §5.7.6.1), and variable-fill bids (§5.7.7). Every fill is one Bitcoin tx, signed by both parties, settled atomically.
+        <strong>Trade</strong> on the built-in orderbook — five marketplace flows, all settling via <code>T_AXFER</code> / <code>T_AXFER_VAR</code>: <em>preauth sales</em> (§5.7.8 — seller pre-signs once, buyer settles whenever; the "Instant listing" you see most often), <em>batched preauth-take</em> (§5.7.8.1 — N preauths settle in ONE reveal tx, ~70% Bitcoin-fee reduction), <em>atomic intents</em> (§5.7.6 — claim &amp; take), <em>variable-amount intents</em> (§5.7.6.1 — partial-fillable seller offers), and <em>variable-fill bids</em> (§5.7.7 — partial-fillable buyer offers). Every fill is one Bitcoin tx, signed by both parties, settled atomically.
         <strong>Drops</strong> (<code>T_DROP</code> / <code>T_DCLAIM</code>) — lock existing supply into a public claim pool, optionally Merkle-gated.
-        <strong>Mixer</strong> (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>) — break the on-chain link between deposit and withdraw via Groth16.
+        <strong>Mixer</strong> (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>) — break the on-chain link between deposit and withdraw via Groth16. Canonical v1 ceremony beacon-finalized 2026-05-11 with 2,227 contributors.
         <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>) — permissionless cap-gated minting.
-        <em>Shipping next:</em> confidential block-batched AMM (SPEC §5.14–§5.18, Phase 2 trusted setup in progress) and the wrapper convention (SPEC §4.2, merged) for assets like cBTC backed 1:1 by sats with on-chain reserve verification.
+        <strong>Wrapper convention</strong> (<code>T_WRAPPER_ATTEST</code> §4.2 + §5.19) — issuers bind a tacit asset to an external collateral claim (e.g. cBTC = sats reserves) with on-chain coverage verification.
+        <em>Shipping next:</em> confidential block-batched AMM (SPEC §5.14–§5.18, Phase 2 trusted setup in progress) for AMM-curve liquidity alongside the orderbook.
       </div>
 
       <div class="faq-q">Is there MEV / front-running?</div>
