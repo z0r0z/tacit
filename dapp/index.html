@@ -3202,15 +3202,29 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
    a tacitConfirm-style info modal. Visible affordance for the explanation,
    distinct from hover-only title tooltips that don't work on mobile. */
 .slip-help {
-  width: 14px; height: 14px;
-  padding: 0; margin-left: 4px;
+  /* iOS Safari applies a default -webkit-appearance: button that
+     clobbers border-radius:50% and adds a subtle gradient — the
+     "?" comes out as a misshapen rounded square instead of a clean
+     circle. appearance:none resets that. Also bumped to 16×16 so
+     the tap target is closer to Apple HIG without dominating
+     the inline label. box-sizing:border-box keeps the rendered
+     size predictable. */
+  -webkit-appearance: none;
+  appearance: none;
+  box-sizing: border-box;
+  width: 16px; height: 16px;
+  padding: 0; margin-left: 5px;
   border: 1px solid var(--ink-faint); border-radius: 50%;
   background: var(--bg); color: var(--ink-mid);
-  font-size: 9px; font-weight: 700; line-height: 1;
+  font-size: 10px; font-weight: 700; line-height: 14px;
+  font-family: inherit;
   cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+  vertical-align: middle;
 }
 .slip-help:hover { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.slip-help:active { transform: scale(0.95); }
 
 /* Time-frame chips above the price chart: 1H / 4H / 1D / 1W / ALL. Active
    chip gets the orange underline accent that matches the rest of the
