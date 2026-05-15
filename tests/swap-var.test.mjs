@@ -399,7 +399,7 @@ function makeRealEnv({ deltaIn = 5000n, mutate = null, fee_bps = 30, R_A_pre = 5
   return envObj;
 }
 
-function runValidate(env, { currentHeight = 100, R_A_pre, R_B_pre, fee_bps = 30 } = {}) {
+function runValidate(env, { currentHeight = 100, R_A_pre, R_B_pre, fee_bps = 30, inputCommitment } = {}) {
   const pool = {
     pool_id: POOL_ID, asset_A: ASSET_A, asset_B: ASSET_B,
     reserve_A: R_A_pre !== undefined ? R_A_pre : 50_000_000n,
@@ -408,6 +408,9 @@ function runValidate(env, { currentHeight = 100, R_A_pre, R_B_pre, fee_bps = 30 
   };
   const payload = encodeSwapVar(env);
   const opReturnData = computeSwapVarEnvelopeHash(payload);
+  // Test harness: trader's envelope-claimed cInSecp IS the on-chain truth
+  // by construction. Production callers extract the actual on-chain commit.
+  // Adversarial tests can override via the `inputCommitment` opt.
   return validateSwapVar({
     payload, pool, opReturnData,
     assetInputOutpointTxid: INPUT_TXID,
@@ -415,6 +418,7 @@ function runValidate(env, { currentHeight = 100, R_A_pre, R_B_pre, fee_bps = 30 
     currentHeight,
     receiveScriptPubKey: RECEIVE_SCRIPT,
     bulletproofVerify: (V_pts, proofBytes) => bpRangeAggVerify(V_pts, proofBytes, 64),
+    inputCommitment: inputCommitment !== undefined ? inputCommitment : env.cInSecp,
   });
 }
 
@@ -460,6 +464,7 @@ test('item 5: 3 successive A→B fills walk reserves + k monotonically increases
       currentHeight: 100,
       receiveScriptPubKey: RECEIVE_SCRIPT,
       bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
+      inputCommitment: env.cInSecp,
     });
     if (!r.valid) return `fill ${i} rejected: ${r.reason}`;
     pool.reserve_A = r.newPoolState.reserve_A;
@@ -603,6 +608,59 @@ test('inflation: validator rejects r_receipt >= n_secp', () => {
   return r.valid === false && r.reason.includes('r_receipt');
 });
 
+// Input-side inflation defense (analogous to receipt-side fix, both on
+// the cross-asset boundary). If the trader's published env.cInSecp does
+// NOT match the on-chain Pedersen commit at the cited outpoint, the
+// kernel-sig closure still verifies (it only binds the algebraic
+// relationship a_in_claimed = a_change_claimed + delta_in_total). The
+// trader could claim a_in_claimed > a_real and inflate asset A via the
+// resulting change UTXO.
+
+test('input inflation: env.cInSecp != on-chain commit ⇒ rejected', () => {
+  const e = makeRealEnv();
+  // Caller supplies a different on-chain commit. Validator must reject
+  // BEFORE doing any kernel-sig work — the on-chain truth is the
+  // authoritative input value, env.cInSecp is just the trader's claim.
+  const wrongInputCommit = pedersenCommit(99_999n, 12345n);
+  const r = runValidate(e, { inputCommitment: pointToBytes(wrongInputCommit) });
+  return r.valid === false && r.reason.includes('on-chain input UTXO commit');
+});
+
+test('input inflation: missing inputCommitment param ⇒ throws', () => {
+  // Catches the "forgot to wire up the on-chain commit" footgun.
+  const e = makeRealEnv();
+  const payload = encodeSwapVar(e);
+  const pool = { pool_id: POOL_ID, asset_A: ASSET_A, asset_B: ASSET_B, reserve_A: 50_000_000n, reserve_B: 525_000n, fee_bps: 30 };
+  try {
+    validateSwapVar({
+      payload, pool, opReturnData: computeSwapVarEnvelopeHash(payload),
+      assetInputOutpointTxid: INPUT_TXID,
+      assetInputOutpointVout: INPUT_VOUT,
+      currentHeight: 100,
+      receiveScriptPubKey: RECEIVE_SCRIPT,
+      bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
+      // inputCommitment omitted
+    });
+    return false;
+  } catch (err) {
+    return /inputCommitment is required/.test(err.message);
+  }
+});
+
+test('input inflation: inputCommitment as ProjectivePoint also works', () => {
+  const e = makeRealEnv();
+  // Caller passes ProjectivePoint instead of bytes — validator handles both.
+  const onChainPoint = secp.ProjectivePoint.fromHex(bytesToHex(e.cInSecp));
+  const r = runValidate(e, { inputCommitment: onChainPoint });
+  return r.valid === true;
+});
+
+test('input inflation: malformed inputCommitment ⇒ rejected', () => {
+  const e = makeRealEnv();
+  const r = runValidate(e, { inputCommitment: new Uint8Array(32) }); // wrong length
+  return r.valid === false && r.reason.includes('33-byte compressed');
+});
+
 // ============================================================
 // Section 6: Sigs + envelope-hash binding
 // ============================================================
@@ -642,6 +700,7 @@ test('OP_RETURN data mismatch rejected', () => {
     currentHeight: 100,
     receiveScriptPubKey: RECEIVE_SCRIPT,
     bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
+    inputCommitment: e.cInSecp,
   });
   return r.valid === false && r.reason.includes('OP_RETURN');
 });
@@ -663,6 +722,7 @@ test('pool_id mismatch rejected', () => {
     currentHeight: 100,
     receiveScriptPubKey: RECEIVE_SCRIPT,
     bulletproofVerify: (V, p) => bpRangeAggVerify(V, p, 64),
+    inputCommitment: e.cInSecp,
   });
   return r.valid === false && r.reason.includes('pool_id mismatch');
 });

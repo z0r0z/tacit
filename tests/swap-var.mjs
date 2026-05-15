@@ -501,6 +501,17 @@ export function validateSwapVar({
   currentHeight,
   receiveScriptPubKey,
   bulletproofVerify,
+  inputCommitment,                // REQUIRED: 33-byte compressed or ProjectivePoint
+                                  // — the on-chain Pedersen commit of the trader's
+                                  // input UTXO at (assetInputOutpointTxid, Vout).
+                                  // Validator checks env.cInSecp matches this.
+                                  // Closes the input-side inflation gap (analogous
+                                  // to the 2026-05-15 receipt-side fix): without
+                                  // this check the kernel-sig closure only binds
+                                  // env.cInSecp's H-coefficient relative to
+                                  // env.cChange, not to the actual on-chain UTXO
+                                  // value — so a trader can claim a fake input
+                                  // commit and inflate asset A via env.cChange.
 }) {
   if (!pool) return { valid: false, reason: 'pool not registered' };
   if (typeof bulletproofVerify !== 'function') {
@@ -523,6 +534,39 @@ export function validateSwapVar({
   // pool_id consistency.
   if (!bytesEqual(env.poolId, pool.pool_id)) {
     return { valid: false, reason: 'pool_id mismatch' };
+  }
+
+  // Input-side inflation defense: verify env.cInSecp matches the on-chain
+  // Pedersen commit at the cited outpoint. The kernel-sig closure alone
+  // binds env.cInSecp's H-coef relative to env.cChange's H-coef
+  // (a_in_claimed = a_change_claimed + delta_in_total). It does NOT bind
+  // a_in_claimed to the actual on-chain UTXO value. Without this check, a
+  // trader can claim a_in_claimed > a_real, mint env.cChange to commit to
+  // (a_real + Δ), and inflate asset A by Δ when they spend the change UTXO.
+  // Same pattern as the 2026-05-15 receipt-side fix (AMENDMENTS.md changelog).
+  if (inputCommitment === undefined) {
+    throw new Error(
+      'validateSwapVar: inputCommitment is required — pass the on-chain ' +
+      'Pedersen commit at (assetInputOutpointTxid, assetInputOutpointVout) ' +
+      'so the validator can verify env.cInSecp matches.',
+    );
+  }
+  let inputCommitmentBytes;
+  if (inputCommitment instanceof Uint8Array) {
+    if (inputCommitment.length !== 33) {
+      return { valid: false, reason: 'inputCommitment must be 33-byte compressed point' };
+    }
+    inputCommitmentBytes = inputCommitment;
+  } else if (typeof inputCommitment.toRawBytes === 'function') {
+    inputCommitmentBytes = inputCommitment.toRawBytes(true);
+  } else {
+    return { valid: false, reason: 'inputCommitment must be ProjectivePoint or Uint8Array(33)' };
+  }
+  if (!bytesEqual(env.cInSecp, inputCommitmentBytes)) {
+    return {
+      valid: false,
+      reason: 'env.cInSecp does not match on-chain input UTXO commit at outpoint',
+    };
   }
 
   // Direction in {0,1} — already enforced by decoder; defensive.

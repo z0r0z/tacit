@@ -638,6 +638,42 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
     });
     return !r2.valid && /MIN_BATCH_SIZE|POOL_CAP_SOLO_INTENT_ALLOWED/.test(r2.reason);
   });
+
+  // Tip-opening adversarial tests (AMM.md §"Tip mechanics", normative).
+  // Without the explicit opening check the chain identity forces tip_X_C_secp's
+  // H-coefficient via the aggregate Pedersen sum, BUT only if Groth16 binds
+  // per-trader tips correctly. As defense-in-depth against Groth16 brokenness,
+  // the validator enforces pedersenCommit(tip_X_amount, r_tip_X) == tip_X_C_secp.
+  test('forged r_tip_A (wrong blinding) ⇒ rejected', () => {
+    // Envelope still passes a tip_A_C_secp committed to (0, r_tip_A), but
+    // publishes a different r_tip_A_LE in the rTipA field. The opening
+    // check should reject.
+    const wrongRTip = bigintToBytes32(modN(r_tip_A + 1n));
+    const mutatedPayload = encodeSwapBatch({ ...args, rTipA: wrongRTip });
+    const r2 = validateSwapBatch({
+      payload: mutatedPayload, pool, opReturnData: computeEnvelopeHash(mutatedPayload),
+      inputCommitmentsByIntent: [[C_in_secp]],
+      intentInputUtxos: [inputUtxos],
+      receiveScripts: [recvSpk],
+      currentHeight: 800000,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    });
+    return !r2.valid && /tip_A_C_secp does not open/.test(r2.reason);
+  });
+  test('forged tip amount (wrong public field) ⇒ rejected', () => {
+    // tip_A_C_secp commits to 0, but envelope claims tipAAmount = 100.
+    // Opening check: pedersenCommit(100, r_tip_A) ≠ tip_A_C_secp.
+    const mutatedPayload = encodeSwapBatch({ ...args, tipAAmount: 100n });
+    const r2 = validateSwapBatch({
+      payload: mutatedPayload, pool, opReturnData: computeEnvelopeHash(mutatedPayload),
+      inputCommitmentsByIntent: [[C_in_secp]],
+      intentInputUtxos: [inputUtxos],
+      receiveScripts: [recvSpk],
+      currentHeight: 800000,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    });
+    return !r2.valid && /tip_A_C_secp does not open/.test(r2.reason);
+  });
 }
 
 console.log('\nT_SWAP_BATCH validator — CFMM curve floor identity');

@@ -1068,6 +1068,36 @@ export function validateSwapBatch({
     }
   }
 
+  // Tip-output opening check (AMM.md §"Tip mechanics" — normative).
+  // Verify pedersenCommit(tip_X_amount, r_tip_X) == tip_X_C_secp for each
+  // tip output. The chain identity below would force tip_X_C_secp's
+  // H-coefficient via the Pedersen sum balance, so this is redundant *if*
+  // Groth16 is sound. As defense-in-depth against Groth16 brokenness, the
+  // explicit opening check binds tip_X_C_secp to the public (amount, r)
+  // pair directly and makes the tip output publicly auditable without
+  // needing to redo the aggregate-Pedersen algebra.
+  function verifyTipOpening(amount, rBytes, cSecpBytes, side) {
+    // Spec allows zero-tip outputs to be omitted from the tx but still
+    // appear in the envelope as (0, 0, NUMS_zero_commit) — we only check
+    // openings when amount > 0 OR r > 0 OR cSecp ≠ zero point.
+    const rScalar = BigInt('0x' + bytesToHex(rBytes));
+    if (rScalar >= SECP_N) return `r_tip_${side} >= n_secp`;
+    let cActual;
+    try { cActual = pointFromCompressed(cSecpBytes); }
+    catch (e) { return `tip_${side}_C_secp decode: ${e.message}`; }
+    const cExpected = pedersenCommit(amount, modN(rScalar));
+    if (!cExpected.equals(cActual)) {
+      return `tip_${side}_C_secp does not open to (tip_${side}_amount=${amount}, r_tip_${side})`;
+    }
+    return null;
+  }
+  {
+    const errA = verifyTipOpening(env.tipAAmount, env.rTipA, env.tipACSecp, 'A');
+    if (errA) return { valid: false, reason: errA };
+    const errB = verifyTipOpening(env.tipBAmount, env.rTipB, env.tipBCSecp, 'B');
+    if (errB) return { valid: false, reason: errB };
+  }
+
   // Re-run deterministic clearing solve and check declared deltas match.
   let X = 0n, Y = 0n;
   // Re-derive per-trader amount_in from BJJ commitments is impossible without
