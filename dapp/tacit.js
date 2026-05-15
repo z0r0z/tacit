@@ -23322,6 +23322,18 @@ function relativeAge(unixTs) {
   if (min < 1440) return `${Math.floor(min / 60)}h`;
   return `${Math.floor(min / 1440)}d`;
 }
+// Symmetric helper for FUTURE timestamps (expiry, mint-window-end). Same
+// "X m/h/d" formatting but measures (target - now) instead of (now - past).
+// relativeAge clamped future deltas to 0, so feeding it an expiry stamped
+// the rendered string "0m" on every listing — looked like every offer
+// was about to die. Use this for expiry rendering instead.
+function relativeUntil(unixTs) {
+  if (!Number.isFinite(unixTs) || unixTs <= 0) return '';
+  const min = Math.max(0, Math.floor((unixTs - Date.now() / 1000) / 60));
+  if (min < 60) return `${min}m`;
+  if (min < 1440) return `${Math.floor(min / 60)}h`;
+  return `${Math.floor(min / 1440)}d`;
+}
 // Live age ticker. Walks every element tagged with `data-age-ts="<unix>"`
 // every 30s and rewrites its visible text via the format hint in
 // `data-age-fmt` (default "ago" → "X ago", "in" → "in X", "raw" → just
@@ -38209,19 +38221,32 @@ function applyMarketFilters() {
     const _swapStripHtml = (() => {
       const summary = Array.isArray(a.price_summary) ? a.price_summary : [];
       if (summary.length < 1) return '';
+      // Outlier guard. The mini-strip previously pulled the 24h Δ
+      // reference from raw trades, so a single dust print (e.g. 18 sats
+      // when mark is 209) at the edge of the 24h window made the strip
+      // read "+1164%" while the rich stats below showed "-23.65%". Same
+      // 0.2×/5× mark band the chart + spread row use; filters out fat-
+      // finger / dust trades for the reference walk while leaving the
+      // sparkline visualization itself untouched (the chart wants to
+      // SHOW the outliers, just not anchor analytics on them).
+      const _markRaw = Number(a?.mark_price?.unit);
+      const _bandLo = (Number.isFinite(_markRaw) && _markRaw > 0) ? _markRaw * 0.2 : 0;
+      const _bandHi = (Number.isFinite(_markRaw) && _markRaw > 0) ? _markRaw * 5 : Infinity;
       const cleaned = summary.filter(p => Number.isFinite(p?.u) && Number.isFinite(p?.ts) && p.ts > 0);
       if (cleaned.length === 0) return '';
       const sparkSvg = _renderTileSparklineSVG(summary);
       const sortedNewestFirst = cleaned.slice().sort((x, y) => y.ts - x.ts);
       const latest = sortedNewestFirst[0];
-      // 24h reference: oldest point within the last 24h window. If the
-      // ring is shorter than 24h, the earliest point in the ring acts as
-      // the reference (a partial-window % is more honest than a "no data"
-      // placeholder for new markets).
+      // 24h reference: oldest IN-BAND point within the last 24h window.
+      // Falls back to the earliest in-band point in the full ring if the
+      // ring is shorter than 24h. Outlier filter prevents pollution.
       const nowSec = Math.floor(Date.now() / 1000);
       const cutoff = nowSec - 24 * 3600;
-      const within24h = sortedNewestFirst.filter(p => p.ts >= cutoff);
-      const refPoint = within24h.length > 0 ? within24h[within24h.length - 1] : sortedNewestFirst[sortedNewestFirst.length - 1];
+      const inBand = sortedNewestFirst.filter(p => p.u >= _bandLo && p.u <= _bandHi);
+      const within24hInBand = inBand.filter(p => p.ts >= cutoff);
+      const refPoint = within24hInBand.length > 0
+        ? within24hInBand[within24hInBand.length - 1]
+        : (inBand.length > 0 ? inBand[inBand.length - 1] : null);
       let delta24Pct = null;
       if (refPoint && refPoint !== latest && refPoint.u > 0) {
         delta24Pct = ((latest.u - refPoint.u) / refPoint.u) * 100;
@@ -38231,7 +38256,7 @@ function applyMarketFilters() {
       if (Number.isFinite(delta24Pct)) {
         const cls = delta24Pct >= 0 ? 'up' : 'down';
         const sign = delta24Pct >= 0 ? '+' : '';
-        deltaHtml = `<span class="strip-delta ${cls}" title="Change over the last 24h (or full ring if shorter)">${sign}${delta24Pct.toFixed(2)}%</span>`;
+        deltaHtml = `<span class="strip-delta ${cls}" title="Change over the last 24h (in-band reference; dust outliers ignored).">${sign}${delta24Pct.toFixed(2)}%</span>`;
       }
       return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}</div>`;
     })();
@@ -38387,6 +38412,11 @@ function applyMarketFilters() {
       'data-market-depth-chart',
       'data-swap-tile',
       'data-market-bids-section',
+      // Sweep-buy / Advanced-buy form: if the user opened the form
+      // and typed an amount + cap, an auto-refresh tick at 5s used
+      // to wipe it. Preserving the section keeps the form open AND
+      // the user's typed values intact across reactivity ticks.
+      'data-market-sweep-buy-section',
     ]) {
       const node = list.querySelector(`[${sel}]`);
       if (node && node.parentNode) {
@@ -38663,7 +38693,7 @@ function applyMarketFilters() {
     // recency cue; data-age-ts keeps the live tick going.
     const expSec = Number(l.expiry || 0);
     const nowSec = Math.floor(Date.now() / 1000);
-    const expRel = expSec > nowSec ? relativeAge(expSec) : null;
+    const expRel = expSec > nowSec ? relativeUntil(expSec) : null;
     const recencyLine = expRel
       ? `<span title="Expires ${escapeHtml(expIso)}">expires in ${escapeHtml(expRel)}</span>${listedRel && listedTs > 0 ? ` · listed <span data-age-ts="${listedTs}" data-age-fmt="ago">${escapeHtml(listedRel)} ago</span>` : ''}`
       : (listedRel && listedTs > 0
@@ -38794,6 +38824,7 @@ function applyMarketFilters() {
       </div>
       <div class="market-listing-amount" style="font-size:12px;font-weight:600;text-align:left;line-height:1.3;">
         ${_amountLine}${_groupBadge}${_bestPriceBadge}${_levelBadge}
+        ${_fillProgressBar}
       </div>
       <div class="market-listing-total">
         <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSatsRaw))}</span>
