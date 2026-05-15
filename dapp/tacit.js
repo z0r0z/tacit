@@ -16168,14 +16168,307 @@ function applyOptimisticDebit(assetIdHex, delta) {
   // re-render of the card. Idempotent: if a previous debit already left a
   // pill, update its text instead of stacking.
   let pill = card.querySelector('[data-optimistic-pending]');
-  const fmtDelta = fmtAssetAmount(delta, dec);
+  // Multi-fill swaps accumulate. Track running total in a data attr so
+  // the pill reads "pending −X" with X = sum of all deltas applied since
+  // the last renderHoldings reconciliation, not just the latest fill.
+  const prevDebitAttr = card.dataset.optimisticDebit || '0';
+  let prevDebit;
+  try { prevDebit = BigInt(prevDebitAttr); }
+  catch { prevDebit = 0n; }
+  const totalDebit = prevDebit + delta;
+  card.dataset.optimisticDebit = totalDebit.toString();
+  const fmtTotal = fmtAssetAmount(totalDebit, dec);
   if (!pill) {
     pill = document.createElement('span');
     pill.setAttribute('data-optimistic-pending', '1');
     pill.className = 'pending-pill';
     balanceEl.appendChild(pill);
   }
-  pill.textContent = `pending −${fmtDelta}`;
+  pill.textContent = `pending −${fmtTotal}`;
+}
+
+// ============== PRICE ALERTS ==============
+// User sets a sats/token threshold + direction (above/below). A background
+// poll (every ~60s when tab visible) compares current mark prices against
+// active alerts and fires a one-shot notification when a threshold is
+// crossed. The alert auto-removes once fired so the user isn't pestered.
+// Storage is localStorage-backed (cleared on browser data wipe). Per-asset
+// max of 3 active alerts to keep the list manageable.
+const PRICE_ALERTS_KEY = 'tacit-price-alerts-v1';
+const PRICE_ALERTS_POLL_MS = 60_000;
+const PRICE_ALERTS_MAX_PER_ASSET = 3;
+let _priceAlerts = (() => {
+  try {
+    const raw = localStorage.getItem(PRICE_ALERTS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter(a => a && a.aid && Number.isFinite(a.threshold_unit) && (a.direction === 'above' || a.direction === 'below')) : [];
+  } catch { return []; }
+})();
+let _priceAlertsTimer = null;
+let _priceAlertsContextAid = null;  // which asset the modal was opened for
+function _priceAlertsPersist() {
+  try { localStorage.setItem(PRICE_ALERTS_KEY, JSON.stringify(_priceAlerts)); } catch {}
+}
+function _priceAlertsAdd(entry) {
+  if (!entry || !entry.aid || !Number.isFinite(entry.threshold_unit)) return false;
+  const existingForAsset = _priceAlerts.filter(a => a.aid === entry.aid).length;
+  if (existingForAsset >= PRICE_ALERTS_MAX_PER_ASSET) return false;
+  _priceAlerts.push({ ...entry, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, created_at: Date.now() });
+  _priceAlertsPersist();
+  return true;
+}
+function _priceAlertsRemove(id) {
+  const before = _priceAlerts.length;
+  _priceAlerts = _priceAlerts.filter(a => a.id !== id);
+  if (_priceAlerts.length !== before) _priceAlertsPersist();
+}
+async function _priceAlertsPollOnce() {
+  if (typeof document !== 'undefined' && document.hidden) return;
+  if (_priceAlerts.length === 0) return;
+  // Group by asset so we fetch each price once per cycle, not once per alert.
+  const byAid = new Map();
+  for (const a of _priceAlerts) {
+    if (!byAid.has(a.aid)) byAid.set(a.aid, []);
+    byAid.get(a.aid).push(a);
+  }
+  const _fmt = (u, ticker) => `${fmtUnitPriceSats(u)} sats/${ticker}`;
+  for (const [aid, alerts] of byAid) {
+    if (!WORKER_BASE) continue;
+    let markUnit = null;
+    let ticker = alerts[0]?.ticker || aid.slice(0, 6);
+    try {
+      // The worker exposes mark price via the per-asset stats endpoint.
+      // We piggy-back on the existing apiJson helper rather than rolling
+      // a custom fetch path so the gateway routing + caching are reused.
+      const j = await apiJson(`/assets/${aid}`);
+      const u = Number(j?.mark_price?.unit);
+      if (Number.isFinite(u) && u > 0) markUnit = u;
+      if (j?.ticker) ticker = j.ticker;
+    } catch {}
+    if (markUnit == null) continue;
+    // Each alert fires once and is then removed from the active list.
+    // Crossing semantics: 'above' fires when mark ≥ threshold; 'below'
+    // when mark ≤ threshold. No hysteresis — alerts are one-shot.
+    const toRemove = [];
+    for (const a of alerts) {
+      const triggered = (a.direction === 'above' && markUnit >= a.threshold_unit) ||
+                        (a.direction === 'below' && markUnit <= a.threshold_unit);
+      if (!triggered) continue;
+      toRemove.push(a.id);
+      const arrow = a.direction === 'above' ? '↑' : '↓';
+      toast(`🔔 ${ticker} ${arrow} · crossed ${_fmt(a.threshold_unit, ticker)} (now ${_fmt(markUnit, ticker)})`, 'success', 12000);
+    }
+    for (const id of toRemove) _priceAlertsRemove(id);
+  }
+}
+function _startPriceAlertsLoop() {
+  if (_priceAlertsTimer) return;
+  _priceAlertsPollOnce();
+  _priceAlertsTimer = setInterval(_priceAlertsPollOnce, PRICE_ALERTS_POLL_MS);
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) _priceAlertsPollOnce(); });
+  }
+}
+function _renderPriceAlertsActiveList() {
+  const host = document.getElementById('pa-active-list');
+  if (!host) return;
+  const aid = _priceAlertsContextAid;
+  const forThisAsset = aid ? _priceAlerts.filter(a => a.aid === aid) : _priceAlerts.slice();
+  if (forThisAsset.length === 0) {
+    host.innerHTML = `<div class="muted" style="font-size:10px;text-align:center;padding:8px 0;">No active alerts${aid ? ' for this asset' : ''}.</div>`;
+    return;
+  }
+  host.innerHTML = `<div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">Active alerts</div>` +
+    forThisAsset.map(a => {
+      const arrow = a.direction === 'above' ? '↑' : '↓';
+      return `<div style="display:flex;align-items:center;justify-content:space-between;padding:4px 0;border-bottom:1px dashed var(--ink-faint);font-size:11px;">
+        <span>${escapeHtml(a.ticker || a.aid.slice(0, 6))} ${arrow} ${escapeHtml(fmtUnitPriceSats(a.threshold_unit))} sats/${escapeHtml(a.ticker || '?')}</span>
+        <button data-pa-remove="${escapeHtml(a.id)}" type="button" style="font-size:10px;padding:2px 6px;border:1px solid var(--ink-faint);background:var(--bg);cursor:pointer;">remove</button>
+      </div>`;
+    }).join('');
+  host.querySelectorAll('[data-pa-remove]').forEach(btn => {
+    btn.onclick = () => { _priceAlertsRemove(btn.getAttribute('data-pa-remove')); _renderPriceAlertsActiveList(); };
+  });
+}
+function openPriceAlertModal({ aid, ticker, currentMarkUnit } = {}) {
+  const modal = document.getElementById('price-alerts-modal');
+  if (!modal) return;
+  _priceAlertsContextAid = aid || null;
+  const ctxEl = document.getElementById('pa-context');
+  const inputEl = document.getElementById('pa-threshold');
+  const hintEl = document.getElementById('pa-hint');
+  const aboveBtn = document.getElementById('pa-dir-above');
+  const belowBtn = document.getElementById('pa-dir-below');
+  const saveBtn = document.getElementById('pa-save');
+  const cancelBtn = document.getElementById('pa-cancel');
+  const clearAllBtn = document.getElementById('pa-clear-all');
+  let dir = 'above';
+  const setDir = (d) => {
+    dir = d;
+    aboveBtn.setAttribute('data-active', d === 'above' ? '1' : '0');
+    belowBtn.setAttribute('data-active', d === 'below' ? '1' : '0');
+    aboveBtn.style.background = d === 'above' ? 'var(--ink)' : '';
+    aboveBtn.style.color      = d === 'above' ? 'var(--bg)'  : '';
+    belowBtn.style.background = d === 'below' ? 'var(--ink)' : '';
+    belowBtn.style.color      = d === 'below' ? 'var(--bg)'  : '';
+  };
+  setDir('above');
+  if (ctxEl) {
+    if (aid && ticker) {
+      const markStr = Number.isFinite(currentMarkUnit) && currentMarkUnit > 0
+        ? ` Current mark: <strong>${escapeHtml(fmtUnitPriceSats(currentMarkUnit))} sats/${escapeHtml(ticker)}</strong>.`
+        : '';
+      ctxEl.innerHTML = `Get notified when <strong>${escapeHtml(ticker)}</strong> price crosses your threshold.${markStr} One-shot: fires once and removes itself. Up to ${PRICE_ALERTS_MAX_PER_ASSET} per asset.`;
+    } else {
+      ctxEl.textContent = 'Manage your active alerts.';
+    }
+  }
+  inputEl.value = '';
+  hintEl.textContent = '';
+  if (cancelBtn) cancelBtn.onclick = () => { modal.style.display = 'none'; };
+  if (clearAllBtn) clearAllBtn.onclick = async () => {
+    const target = _priceAlertsContextAid ? _priceAlerts.filter(a => a.aid === _priceAlertsContextAid) : _priceAlerts;
+    if (target.length === 0) return;
+    const scope = _priceAlertsContextAid ? `for this asset` : `across all assets`;
+    const ok = await tacitConfirm({
+      title: 'Clear all alerts?',
+      body: `Remove all ${target.length} active price alert${target.length === 1 ? '' : 's'} ${scope}? Cannot be undone.`,
+      confirmLabel: 'Clear all',
+      kind: 'danger',
+    });
+    if (!ok) return;
+    if (_priceAlertsContextAid) {
+      _priceAlerts = _priceAlerts.filter(a => a.aid !== _priceAlertsContextAid);
+    } else {
+      _priceAlerts = [];
+    }
+    _priceAlertsPersist();
+    _renderPriceAlertsActiveList();
+  };
+  modal.onclick = (e) => { if (e.target === modal) modal.style.display = 'none'; };
+  aboveBtn.onclick = () => setDir('above');
+  belowBtn.onclick = () => setDir('below');
+  saveBtn.onclick = () => {
+    if (!aid || !ticker) { hintEl.textContent = 'open from an asset detail page to set an alert'; hintEl.className = 'pass-hint error'; return; }
+    const v = Number((inputEl.value || '').replace(/[, ]/g, ''));
+    if (!Number.isFinite(v) || v <= 0) { hintEl.textContent = 'enter a positive sats/token threshold'; hintEl.className = 'pass-hint error'; return; }
+    const ok = _priceAlertsAdd({ aid, ticker, threshold_unit: v, direction: dir });
+    if (!ok) { hintEl.textContent = `max ${PRICE_ALERTS_MAX_PER_ASSET} alerts per asset — remove one first`; hintEl.className = 'pass-hint error'; return; }
+    hintEl.textContent = `alert set: ${dir} ${fmtUnitPriceSats(v)} sats/${ticker}`;
+    hintEl.className = 'pass-hint ok';
+    inputEl.value = '';
+    _renderPriceAlertsActiveList();
+  };
+  _renderPriceAlertsActiveList();
+  modal.style.display = 'grid';
+  setTimeout(() => inputEl.focus(), 50);
+}
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _startPriceAlertsLoop);
+  else _startPriceAlertsLoop();
+}
+
+// Persistence for the "repeat last swap" chip. Captures the user-visible
+// inputs the moment a swap fires so a one-tap re-invocation can restore
+// them. Scoped per (aid, dir, payUnit) so a different asset / direction /
+// unit gets its own most-recent rather than seeing an irrelevant chip.
+// 24h TTL to keep the chip from going stale across days.
+const LAST_SWAP_KEY = 'tacit-last-swap-v1';
+const LAST_SWAP_TTL_MS = 24 * 3600 * 1000;
+function _saveLastSwap(entry) {
+  if (!entry || !entry.aid || !entry.dir || !entry.fromValue) return;
+  try {
+    const raw = localStorage.getItem(LAST_SWAP_KEY);
+    let map = {};
+    if (raw) { try { map = JSON.parse(raw) || {}; } catch {} }
+    const key = `${entry.aid}|${entry.dir}|${entry.payUnit || ''}`;
+    map[key] = { ...entry, at: Date.now() };
+    // Trim stale entries on every save so the localStorage payload stays small.
+    const cutoff = Date.now() - LAST_SWAP_TTL_MS;
+    for (const k of Object.keys(map)) {
+      if (!map[k] || (map[k].at || 0) < cutoff) delete map[k];
+    }
+    localStorage.setItem(LAST_SWAP_KEY, JSON.stringify(map));
+  } catch {}
+}
+function _loadLastSwap(aid, dir, payUnit) {
+  try {
+    const raw = localStorage.getItem(LAST_SWAP_KEY);
+    if (!raw) return null;
+    const map = JSON.parse(raw) || {};
+    const key = `${aid}|${dir}|${payUnit || ''}`;
+    const entry = map[key];
+    if (!entry || (Date.now() - (entry.at || 0) > LAST_SWAP_TTL_MS)) return null;
+    return entry;
+  } catch { return null; }
+}
+
+// Sums the on-chain fees (sats) actually paid for a swap-fill broadcast.
+// Reads each tx's `fee` field via getTx (mempool.space-shaped response).
+// Returns 0 silently when the tx isn't fetchable yet or the indexer omits
+// the field — the fee echo is a nicety, not a correctness path.
+async function _collectSwapFee(r) {
+  if (!r || typeof r !== 'object') return 0;
+  let fee = 0;
+  const txids = [r.commit_txid, r.reveal_txid, r.split_txid].filter(t => typeof t === 'string' && /^[0-9a-f]{64}$/i.test(t));
+  for (const id of txids) {
+    try {
+      const tx = await getTx(id);
+      if (tx && typeof tx.fee === 'number' && tx.fee >= 0) fee += tx.fee;
+    } catch {}
+  }
+  return fee;
+}
+
+// Symmetric to applyOptimisticDebit: bumps the displayed balance on a
+// Holdings asset card immediately after a successful swap-buy fill (or
+// any other path where the user receives tacit asset units). Stacks
+// across multi-fill swaps — successive credits accumulate against the
+// already-bumped baseAmount instead of overwriting. The next
+// renderHoldings() reconciles against chain truth.
+function applyOptimisticCredit(assetIdHex, delta) {
+  const cards = document.querySelectorAll('#holdings-list > .asset-card');
+  let card = null;
+  for (const c of cards) {
+    if (c.dataset.aid === assetIdHex) { card = c; break; }
+  }
+  if (!card) return;
+  const balanceEl = card.querySelector('.balance');
+  if (!balanceEl) return;
+  const baseAttr = card.dataset.baseAmount;
+  const decAttr = card.dataset.decimals;
+  if (!baseAttr || decAttr === undefined) return;
+  let prev;
+  try { prev = BigInt(baseAttr); }
+  catch { return; }
+  const dec = parseInt(decAttr, 10);
+  if (!Number.isInteger(dec)) return;
+  const next = prev + delta;
+  card.dataset.baseAmount = next.toString();
+  const firstTextNode = balanceEl.firstChild;
+  if (firstTextNode && firstTextNode.nodeType === Node.TEXT_NODE) {
+    firstTextNode.textContent = fmtAssetAmount(next, dec);
+  }
+  // Track cumulative pending delta in a data attribute so multi-fill
+  // swaps display the running total ("pending +1.5 BTC" after three
+  // fills, not just the last fill's amount). Stored as a base-unit
+  // integer string to avoid float drift across N fills.
+  let pill = card.querySelector('[data-optimistic-pending-credit]');
+  const prevCreditAttr = card.dataset.optimisticCredit || '0';
+  let prevCredit;
+  try { prevCredit = BigInt(prevCreditAttr); }
+  catch { prevCredit = 0n; }
+  const totalCredit = prevCredit + delta;
+  card.dataset.optimisticCredit = totalCredit.toString();
+  const fmtTotal = fmtAssetAmount(totalCredit, dec);
+  if (!pill) {
+    pill = document.createElement('span');
+    pill.setAttribute('data-optimistic-pending-credit', '1');
+    pill.className = 'pending-pill';
+    balanceEl.appendChild(pill);
+  }
+  pill.textContent = `pending +${fmtTotal}`;
 }
 
 // Drive a progress strip's per-step state. `stripIdOrEl` is the strip
@@ -16573,6 +16866,293 @@ function toast(msg, kind = '', ms = 4000, title = '') {
   }
   $('#toast-container').appendChild(el);
   setTimeout(() => el.remove(), ms);
+  // Capture into the persistent notification log so users who looked away
+  // can catch up via the bell icon. Skip the empty/clear toast that some
+  // callers fire to clear status — those are non-events from the user's
+  // perspective.
+  if (msg && typeof msg === 'string') _notifLogPush({ msg, kind, title, at: Date.now() });
+}
+
+// ============== WORKER HEALTH ==============
+// Background ping of WORKER_BASE so users can tell whether the orderbook
+// relay is reachable. The pill in the header reflects the state visually:
+// green=fresh, amber=stale (no response in ~30s), red=down (~60s+), off=disabled.
+// Pings pause when the tab is backgrounded — no point waking laptops to
+// ping a worker the user can't see. Returns to active on visibilitychange.
+const WORKER_HEALTH_PING_MS  = 20_000;
+const WORKER_HEALTH_STALE_MS = 30_000;
+const WORKER_HEALTH_DOWN_MS  = 60_000;
+let _workerLastOkAt = 0;
+let _workerHealthTimer = null;
+let _workerHealthInflight = false;
+async function _pingWorkerHealth() {
+  if (_workerHealthInflight) return;
+  if (typeof document !== 'undefined' && document.hidden) {
+    _evaluateWorkerHealthState();
+    return;
+  }
+  if (!WORKER_BASE) { _setWorkerHealthState('off'); return; }
+  _workerHealthInflight = true;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => { try { ctrl.abort(); } catch {} }, 5000);
+    // /assets is the cheapest live endpoint we know exists. Any 2xx/3xx/4xx
+    // response (including a 404) proves the worker is reachable; only
+    // network errors / aborts count as "down". HEAD would be cheaper but
+    // not all workers route HEAD identically.
+    let resp;
+    try { resp = await fetch(`${WORKER_BASE}/assets?limit=1`, { signal: ctrl.signal, cache: 'no-store' }); }
+    finally { clearTimeout(t); }
+    if (resp) { _workerLastOkAt = Date.now(); }
+  } catch { /* network / abort — fall through to state evaluation */ }
+  finally { _workerHealthInflight = false; }
+  _evaluateWorkerHealthState();
+}
+function _evaluateWorkerHealthState() {
+  if (!WORKER_BASE) { _setWorkerHealthState('off'); return; }
+  const gap = Date.now() - _workerLastOkAt;
+  if (_workerLastOkAt === 0)            _setWorkerHealthState('loading');
+  else if (gap > WORKER_HEALTH_DOWN_MS)  _setWorkerHealthState('down');
+  else if (gap > WORKER_HEALTH_STALE_MS) _setWorkerHealthState('stale');
+  else                                   _setWorkerHealthState('ok');
+}
+function _setWorkerHealthState(state) {
+  const el = (typeof document !== 'undefined') ? document.getElementById('worker-health') : null;
+  if (!el) return;
+  el.setAttribute('data-state', state);
+  const labels = {
+    ok:      'Worker online · orderbook + indexer responsive',
+    stale:   'Worker slow · no response in 30s+ (orderbook may lag)',
+    down:    'Worker offline · using on-chain only (swaps still work; market data stale)',
+    off:     'Worker disabled in config · on-chain only',
+    loading: 'Worker status · checking…',
+  };
+  el.setAttribute('title', labels[state] || 'Worker status');
+}
+function _startWorkerHealthLoop() {
+  if (_workerHealthTimer) return;
+  _pingWorkerHealth();
+  _workerHealthTimer = setInterval(_pingWorkerHealth, WORKER_HEALTH_PING_MS);
+  // Resume immediately on tab focus rather than waiting for the next tick —
+  // a backgrounded laptop returning to focus should re-evaluate health now.
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) _pingWorkerHealth(); });
+  }
+}
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _startWorkerHealthLoop);
+  else _startWorkerHealthLoop();
+}
+
+// ============== NOTIFICATION LOG ==============
+// Ring buffer of recent toasts, persisted to localStorage so a reload
+// preserves history. The bell icon in the header opens a dropdown showing
+// the log; unread count is the chip on the bell. Cleared after 24h /
+// 30 entries (whichever bound hits first).
+const NOTIF_LOG_KEY = 'tacit-notif-log-v1';
+const NOTIF_LOG_MAX = 30;
+const NOTIF_LOG_TTL_MS = 24 * 3600 * 1000;
+const NOTIF_LAST_SEEN_KEY = 'tacit-notif-last-seen-v1';
+let _notifLog = (() => {
+  try {
+    const raw = localStorage.getItem(NOTIF_LOG_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const cutoff = Date.now() - NOTIF_LOG_TTL_MS;
+    return parsed.filter(e => e && typeof e.at === 'number' && e.at >= cutoff).slice(-NOTIF_LOG_MAX);
+  } catch { return []; }
+})();
+let _notifLastSeen = (() => {
+  try { return Number(localStorage.getItem(NOTIF_LAST_SEEN_KEY)) || 0; }
+  catch { return 0; }
+})();
+function _notifLogPersist() {
+  try { localStorage.setItem(NOTIF_LOG_KEY, JSON.stringify(_notifLog)); }
+  catch { /* quota; fine to drop */ }
+}
+function _notifLogPush(entry) {
+  // Defensive: toast() may fire during module-init if something errors at
+  // top-level before _notifLog's `let` initializer runs. Guard against TDZ
+  // by detecting the un-initialized case and silently dropping — losing a
+  // module-load notification is better than crashing the dapp.
+  try { if (typeof _notifLog === 'undefined' || !Array.isArray(_notifLog)) return; }
+  catch { return; }
+  _notifLog.push(entry);
+  // Trim by TTL first, then by count.
+  const cutoff = Date.now() - NOTIF_LOG_TTL_MS;
+  _notifLog = _notifLog.filter(e => e.at >= cutoff);
+  if (_notifLog.length > NOTIF_LOG_MAX) _notifLog = _notifLog.slice(-NOTIF_LOG_MAX);
+  _notifLogPersist();
+  _updateNotifBadge();
+}
+function _updateNotifBadge() {
+  const btn = document.getElementById('btn-notif');
+  if (!btn) return;
+  const unread = _notifLog.reduce((n, e) => n + (e.at > _notifLastSeen ? 1 : 0), 0);
+  if (unread > 0) btn.setAttribute('data-count', String(Math.min(unread, 99)));
+  else btn.setAttribute('data-count', '0');
+}
+function _renderNotifLog() {
+  const list = document.getElementById('notif-log-list');
+  if (!list) return;
+  if (_notifLog.length === 0) {
+    list.innerHTML = '<div class="notif-empty">No notifications yet. Confirmations and warnings from your actions will land here.</div>';
+    return;
+  }
+  // Newest first.
+  const rows = _notifLog.slice().reverse().map(e => {
+    const kindClass = e.kind ? `kind-${e.kind}` : '';
+    const dt = new Date(e.at);
+    const hh = String(dt.getHours()).padStart(2, '0');
+    const mm = String(dt.getMinutes()).padStart(2, '0');
+    const ageMs = Date.now() - e.at;
+    const ageStr = ageMs < 60000 ? 'now' :
+                   ageMs < 3600000 ? `${Math.floor(ageMs / 60000)}m ago` :
+                   `${hh}:${mm}`;
+    return `<div class="notif-row ${kindClass}">
+      <div class="notif-time">${escapeHtml(ageStr)}</div>
+      <div class="notif-msg">${escapeHtml(e.msg)}</div>
+    </div>`;
+  });
+  list.innerHTML = rows.join('');
+}
+function _openNotifLog() {
+  const modal = document.getElementById('notif-log-modal');
+  if (!modal) return;
+  _renderNotifLog();
+  modal.style.display = 'grid';
+  _notifLastSeen = Date.now();
+  try { localStorage.setItem(NOTIF_LAST_SEEN_KEY, String(_notifLastSeen)); } catch {}
+  _updateNotifBadge();
+}
+function _closeNotifLog() {
+  const modal = document.getElementById('notif-log-modal');
+  if (modal) modal.style.display = 'none';
+}
+// Wire bell + modal on DOM ready. Idempotent so hot-reload doesn't stack handlers.
+function _wireNotifLog() {
+  const bell = document.getElementById('btn-notif');
+  const closeBtn = document.getElementById('notif-log-close');
+  const clearBtn = document.getElementById('notif-log-clear');
+  const modal = document.getElementById('notif-log-modal');
+  if (bell && !bell.dataset.wired) {
+    bell.dataset.wired = '1';
+    bell.onclick = _openNotifLog;
+  }
+  if (closeBtn && !closeBtn.dataset.wired) {
+    closeBtn.dataset.wired = '1';
+    closeBtn.onclick = _closeNotifLog;
+  }
+  if (clearBtn && !clearBtn.dataset.wired) {
+    clearBtn.dataset.wired = '1';
+    clearBtn.onclick = () => {
+      _notifLog = [];
+      _notifLogPersist();
+      _renderNotifLog();
+      _updateNotifBadge();
+    };
+  }
+  if (modal && !modal.dataset.wired) {
+    modal.dataset.wired = '1';
+    modal.onclick = (e) => { if (e.target === modal) _closeNotifLog(); };
+  }
+  _updateNotifBadge();
+}
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _wireNotifLog);
+  else _wireNotifLog();
+}
+
+// ============== TACIT CONFIRM MODAL ==============
+// Drop-in async replacement for window.confirm(): returns Promise<boolean>.
+// Renders into #tacit-confirm-modal with the dapp's typography, supports
+// inline secondary actions (e.g., "Enable Auto-fulfil now") that re-render
+// the body, and accepts kind='danger' for destructive ops. Falls back to
+// native confirm() if the modal isn't in the DOM (e.g., a smoke-test page).
+function tacitConfirm({ title = 'Confirm', body = '', confirmLabel = 'Confirm', cancelLabel = 'Cancel', kind = '', actions = [], hideCancel = false } = {}) {
+  return new Promise((resolve) => {
+    const modal = document.getElementById('tacit-confirm-modal');
+    if (!modal) {
+      // Fallback: native confirm preserves the API contract on early-boot or
+      // smoke-test pages that don't ship the modal markup.
+      resolve(window.confirm((title ? title + '\n\n' : '') + body));
+      return;
+    }
+    const titleEl  = modal.querySelector('#tcm-title');
+    const bodyEl   = modal.querySelector('#tcm-body');
+    const extraEl  = modal.querySelector('#tcm-actions-extra');
+    const cancelBtn  = modal.querySelector('#tcm-cancel');
+    const confirmBtn = modal.querySelector('#tcm-confirm');
+    titleEl.textContent = title;
+    const _renderBody = (text) => {
+      bodyEl.innerHTML = '';
+      const paragraphs = String(text || '').split('\n\n');
+      for (const para of paragraphs) {
+        const p = document.createElement('p');
+        p.style.margin = '0 0 10px 0';
+        p.innerHTML = para.split('\n').map(line => escapeHtml(line)).join('<br>');
+        bodyEl.appendChild(p);
+      }
+    };
+    _renderBody(body);
+    extraEl.innerHTML = '';
+    for (const action of (actions || [])) {
+      if (action.hidden) continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = action.label;
+      btn.style.cssText = 'font-size:11px;margin-right:6px;';
+      btn.onclick = async (e) => {
+        e.preventDefault();
+        btn.disabled = true;
+        try {
+          const result = await action.onClick();
+          // If the handler returns a new body string, re-render. Lets an
+          // action like "Enable Auto-fulfil now" rewrite the dialog text
+          // from "Auto-fulfil is OFF" → "Auto-fulfil is ON" in place.
+          if (typeof result === 'string') _renderBody(result);
+          if (action.removeOnClick !== false) btn.remove();
+        } catch (err) {
+          btn.disabled = false;
+          console.warn('[tacitConfirm] inline action failed:', err?.message || err);
+        }
+      };
+      extraEl.appendChild(btn);
+    }
+    cancelBtn.textContent = cancelLabel;
+    cancelBtn.style.display = hideCancel ? 'none' : '';
+    confirmBtn.textContent = confirmLabel;
+    if (kind === 'danger') {
+      confirmBtn.style.background = 'var(--red, #b8341d)';
+      confirmBtn.style.borderColor = 'var(--red, #b8341d)';
+      confirmBtn.style.color = '#fff';
+    } else {
+      confirmBtn.style.background = '';
+      confirmBtn.style.borderColor = '';
+      confirmBtn.style.color = '';
+    }
+    const cleanup = (result) => {
+      modal.style.display = 'none';
+      document.removeEventListener('keydown', onKey);
+      cancelBtn.onclick = null;
+      confirmBtn.onclick = null;
+      modal.onclick = null;
+      resolve(result);
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); cleanup(false); }
+      else if (e.key === 'Enter' && document.activeElement?.tagName !== 'BUTTON') {
+        e.preventDefault(); cleanup(true);
+      }
+    };
+    cancelBtn.onclick  = () => cleanup(false);
+    confirmBtn.onclick = () => cleanup(true);
+    modal.onclick = (e) => { if (e.target === modal) cleanup(false); };
+    document.addEventListener('keydown', onKey);
+    modal.style.display = 'grid';
+    requestAnimationFrame(() => confirmBtn.focus());
+  });
 }
 
 // Cross-tab deep-link target. Set when a Wallet-tab tile is clicked; consumed
@@ -36220,12 +36800,47 @@ function applyMarketFilters() {
       <path fill="#fff" d="M21.8 14.6c.3-2-1.2-3-3.3-3.7l.7-2.8-1.7-.4-.7 2.7c-.5-.1-.9-.2-1.4-.3l.7-2.7-1.7-.4-.7 2.8c-.4-.1-.7-.2-1.1-.3l-2.3-.6-.4 1.8s1.2.3 1.2.3c.7.2.8.6.8.9l-.8 3.2c0 .1.1.1.2.2l-.2-.1-1.1 4.5c-.1.2-.3.5-.7.4 0 .1-1.2-.3-1.2-.3l-.8 1.9 2.2.5c.4.1.8.2 1.2.3l-.7 2.8 1.7.4.7-2.8c.5.1.9.2 1.3.3l-.7 2.8 1.7.4.7-2.8c2.9.5 5.1.3 6-2.3.7-2.1-.1-3.2-1.5-4 1.1-.2 1.9-1 2.1-2.4Zm-3.7 5.3c-.5 2-3.9 1-5 .6l.9-3.7c1.1.3 4.6.8 4.1 3Zm.5-5.4c-.5 1.8-3.4.9-4.3.6l.8-3.4c.9.2 3.9.7 3.5 2.8Z"/>
     </svg>`;
     const slippagePct = 20;
+    // Mini-chart strip: compact sparkline + last unit price + 24h delta,
+    // sitting just under the pair header. Gives the swap tile immediate
+    // price context without forcing the user to scroll to the full chart
+    // below. Hidden when there's no price_summary so we don't render an
+    // empty box on fresh assets that haven't traded yet.
+    const _swapStripHtml = (() => {
+      const summary = Array.isArray(a.price_summary) ? a.price_summary : [];
+      if (summary.length < 1) return '';
+      const cleaned = summary.filter(p => Number.isFinite(p?.u) && Number.isFinite(p?.ts) && p.ts > 0);
+      if (cleaned.length === 0) return '';
+      const sparkSvg = _renderTileSparklineSVG(summary);
+      const sortedNewestFirst = cleaned.slice().sort((x, y) => y.ts - x.ts);
+      const latest = sortedNewestFirst[0];
+      // 24h reference: oldest point within the last 24h window. If the
+      // ring is shorter than 24h, the earliest point in the ring acts as
+      // the reference (a partial-window % is more honest than a "no data"
+      // placeholder for new markets).
+      const nowSec = Math.floor(Date.now() / 1000);
+      const cutoff = nowSec - 24 * 3600;
+      const within24h = sortedNewestFirst.filter(p => p.ts >= cutoff);
+      const refPoint = within24h.length > 0 ? within24h[within24h.length - 1] : sortedNewestFirst[sortedNewestFirst.length - 1];
+      let delta24Pct = null;
+      if (refPoint && refPoint !== latest && refPoint.u > 0) {
+        delta24Pct = ((latest.u - refPoint.u) / refPoint.u) * 100;
+      }
+      const lastHtml = `<span class="strip-last" title="Latest unit price from the recent-trades ring">${fmtUnitPriceSats(latest.u)} sats/${escapeHtml(ticker)}</span>`;
+      let deltaHtml = '';
+      if (Number.isFinite(delta24Pct)) {
+        const cls = delta24Pct >= 0 ? 'up' : 'down';
+        const sign = delta24Pct >= 0 ? '+' : '';
+        deltaHtml = `<span class="strip-delta ${cls}" title="Change over the last 24h (or full ring if shorter)">${sign}${delta24Pct.toFixed(2)}%</span>`;
+      }
+      return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}</div>`;
+    })();
     return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg);padding:16px;">
       <!-- Header: pair name with logos. Slippage moved to footer row
            so it doesn't compete with the inputs for horizontal space. -->
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;font-size:13px;font-weight:bold;">
         ${btcLogoHtml} <span>sats / ${escapeHtml(ticker)}</span> ${assetLogoHtml}
       </div>
+      ${_swapStripHtml}
       <!-- TOP side: editable input. data-side="from" tracks which
            token is on top regardless of direction (the wireup swaps
            the labels + logos in place on flip). -->
@@ -36282,7 +36897,7 @@ function applyMarketFilters() {
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
         <div data-swap-info class="muted" style="font-size:10px;flex:1 1 auto;min-width:0;line-height:1.5;overflow-wrap:anywhere;"></div>
         <label style="font-size:10px;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:170px;">
-          <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;" title="Max premium over the mark price you'll pay (buying) / discount you'll accept (selling). Caps which open orders the swap matches, and sets the price of any bid your residual budget leaves open. In an orderbook this is your limit price, not curve slippage.">Limit</span>
+          <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;display:inline-flex;align-items:center;" title="Max premium over the mark price you'll pay (buying) / discount you'll accept (selling). Caps which open orders the swap matches, and sets the price of any bid your residual budget leaves open. In an orderbook this is your limit price, not curve slippage.">Limit<button data-swap-slippage-help class="slip-help" type="button" aria-label="What does Limit mean?" title="What does this control?">?</button></span>
           <select data-swap-slippage title="Cap on how far above mark price the swap will reach. Asks above the cap are skipped; residual unfilled budget posts as a bid AT the cap." style="box-sizing:border-box;min-width:78px;height:28px;font-family:var(--mono);font-size:11px;line-height:1.2;padding:4px 22px 4px 8px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);-webkit-appearance:none;-moz-appearance:none;appearance:none;cursor:pointer;">
             <option value="0.5">±0.5%</option>
             <option value="1">±1%</option>
@@ -39091,19 +39706,28 @@ function renderMarketAssetStatsHTML(asset) {
   // stable in the meantime.
   let prePaintedChartHtml = '';
   let prePaintedChartStyle = 'margin-top:10px;font-size:11px;display:none;';
+  const currentTf = _loadChartTimeFrame();
   try {
     const cached = _marketAssetStatsCache?.get?.(marketAssetStatsKey(aid));
     if (cached?.data && Array.isArray(cached.data.trades) && cached.data.trades.length) {
       const dec = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
       const ticker = asset.ticker || '?';
       const _mark = Number(asset?.mark_price?.unit ?? cached.data.mark_price?.unit);
-      const svg = renderMarketPriceChartSVG(cached.data.trades, ticker, dec, Number.isFinite(_mark) && _mark > 0 ? _mark : null);
+      const tradesForTf = _filterTradesByTimeFrame(cached.data.trades, currentTf);
+      const svg = renderMarketPriceChartSVG(tradesForTf, ticker, dec, Number.isFinite(_mark) && _mark > 0 ? _mark : null);
       if (svg) {
         prePaintedChartHtml = svg;
         prePaintedChartStyle = 'margin-top:10px;font-size:11px;';
       }
     }
   } catch { /* pre-paint is best-effort */ }
+  // Time-frame chips row. Persists user selection in localStorage so the
+  // pick survives reloads + asset switches. Chip click is wired in
+  // populateMarketAssetStats after paint.
+  const _tfChips = ['1H', '4H', '1D', '1W', 'ALL'].map(label =>
+    `<button class="chart-tf-chip" data-chart-tf="${label}" data-active="${label === currentTf ? '1' : '0'}" type="button">${label}</button>`
+  ).join('');
+  const _tfRowHtml = `<div class="chart-tf-row" data-chart-tf-row>${_tfChips}</div>`;
   return `
     <div data-market-asset-stats data-aid="${aid}" style="border:1px solid var(--ink);background:var(--bg);padding:10px 12px;margin-bottom:14px;">
       <div style="display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
@@ -39125,6 +39749,14 @@ function renderMarketAssetStatsHTML(asset) {
         <div data-market-stat-liq-bids><span class="muted">bids liquidity</span> <strong data-market-stat-bidsval>—</strong></div>
       </div>
       <div data-market-attest-cta style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;"></div>
+      <!-- Set-alert affordance: opens the price-alerts modal pre-loaded with
+           this asset's aid + ticker. Live mark price is read from
+           data-market-stat-last at click time so the dialog can echo
+           "current mark: X sats/TOK" for context. -->
+      <div style="margin-top:8px;display:flex;justify-content:flex-end;">
+        <button data-act="open-price-alert" data-aid="${aid}" data-ticker="${escapeHtml(asset.ticker || '?')}" type="button" title="Get notified when this asset's price crosses a threshold" style="font-size:10px;padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg);color:var(--ink-mid);cursor:pointer;font-family:var(--mono);">🔔 Set price alert</button>
+      </div>
+      <div data-chart-tf-wrap style="margin-top:10px;${prePaintedChartHtml ? '' : 'display:none;'}">${_tfRowHtml}</div>
       <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>
       <div data-market-trades-tape style="margin-top:8px;display:none;"></div>
       <div data-market-depth-chart style="margin-top:10px;font-size:11px;display:none;"></div>
@@ -39169,6 +39801,56 @@ function _renderTileSparklineSVG(summary) {
 // renders a line + dots with hover tooltips. No deps. The chart upgrades
 // to a "more data than we render" view once the worker's ring grows past
 // the 50-trade cap (future), but today caps at whatever the worker sent.
+// Time-frame chip selection: '1H' | '4H' | '1D' | '1W' | 'ALL'. Persisted
+// across reloads + asset switches; default '1D' for the canonical "what's
+// happened today" reading that traders coming from CEXes expect.
+const CHART_TF_KEY = 'tacit-chart-tf-v1';
+function _loadChartTimeFrame() {
+  try {
+    const v = localStorage.getItem(CHART_TF_KEY);
+    return ['1H','4H','1D','1W','ALL'].includes(v) ? v : '1D';
+  } catch { return '1D'; }
+}
+function _saveChartTimeFrame(v) {
+  try { localStorage.setItem(CHART_TF_KEY, v); } catch {}
+}
+// Global event-delegation wireup for time-frame chips. Lets a click work
+// even before _populateMarketAssetStats has run (~100-500ms race window
+// where chips were in the DOM but handlers weren't attached). The handler
+// saves the user's TF pick immediately + asks the section to repaint if
+// it has stashed a paint function; otherwise the next populate picks up
+// the new TF from localStorage.
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest?.('[data-chart-tf]');
+    if (!btn) return;
+    const next = btn.getAttribute('data-chart-tf');
+    if (!next || !['1H','4H','1D','1W','ALL'].includes(next)) return;
+    _saveChartTimeFrame(next);
+    const row = btn.closest('[data-chart-tf-row]');
+    if (row) {
+      row.querySelectorAll('[data-chart-tf]').forEach(b =>
+        b.setAttribute('data-active', b.getAttribute('data-chart-tf') === next ? '1' : '0'));
+    }
+    const section = btn.closest('[data-market-asset-stats]');
+    if (section && typeof section.__repaintChart === 'function') {
+      try { section.__repaintChart(); } catch {}
+    }
+  });
+}
+
+function _filterTradesByTimeFrame(trades, tf) {
+  if (!Array.isArray(trades) || trades.length === 0) return trades || [];
+  if (tf === 'ALL') return trades;
+  const windowSec = { '1H': 3600, '4H': 4 * 3600, '1D': 24 * 3600, '1W': 7 * 24 * 3600 }[tf] || 24 * 3600;
+  const cutoff = Math.floor(Date.now() / 1000) - windowSec;
+  const filtered = trades.filter(t => Number(t.ts || 0) >= cutoff);
+  // Fallback: if the window is empty (cold asset that hasn't traded recently)
+  // still show the full ring so the chart isn't blank. The chips remain so
+  // the user can pick a longer window manually.
+  return filtered.length >= 2 ? filtered : trades;
+}
+
 function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // Need at least 2 points to draw a line. 1-trade markets fall back to
   // the recent-trades table — no chart.
@@ -39957,55 +40639,67 @@ async function populateMarketAssetStats(scope, asset) {
   // cache busts.
   try { _populateTradesTape(section, trades, ticker, decimals, _deltaMarkUnit); } catch (e) { console.warn('[market] trades tape failed', e?.message); }
   // Price chart: rendered above the trade table when we have ≥2 trades.
-  // Uses the FULL ring (up to 50) for max chart density; the table below
-  // stays capped at 10 rows so the section doesn't get unwieldy.
+  // Time-frame chips filter the trades ring before paint; localStorage
+  // remembers the user's pick across asset switches and reloads.
   const chartEl = section.querySelector('[data-market-price-chart]');
+  const tfWrap = section.querySelector('[data-chart-tf-wrap]');
   if (chartEl) {
     const _markForChart = Number(j?.mark_price?.unit ?? asset?.mark_price?.unit);
+    // Repaint factory captures the current trades + mark so chip clicks
+    // and the initial render share the same paint logic. Side-effects
+    // on chartEl (innerHTML, display) are reused identically.
+    const _paintChart = () => {
+      const tf = _loadChartTimeFrame();
+      const tradesForTf = _filterTradesByTimeFrame(trades, tf);
+      const chartHtml = renderMarketPriceChartSVG(tradesForTf, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null);
+      if (chartHtml) {
+        const _oldLineD = chartEl.querySelector('[data-chart-line]')?.getAttribute('d') || null;
+        const _oldAreaD = chartEl.querySelector('[data-chart-area]')?.getAttribute('d') || null;
+        chartEl.innerHTML = chartHtml;
+        chartEl.style.display = '';
+        if (tfWrap) tfWrap.style.display = '';
+        _wireMarketPriceChartCursor(chartEl);
+        const _newLine = chartEl.querySelector('[data-chart-line]');
+        const _newArea = chartEl.querySelector('[data-chart-area]');
+        if (_oldLineD && _newLine && typeof _newLine.animate === 'function') {
+          try { _newLine.animate([{ d: `path('${_oldLineD}')` }, { d: `path('${_newLine.getAttribute('d')}')` }], { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' }); } catch {}
+        }
+        if (_oldAreaD && _newArea && typeof _newArea.animate === 'function') {
+          try { _newArea.animate([{ d: `path('${_oldAreaD}')` }, { d: `path('${_newArea.getAttribute('d')}')` }], { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' }); } catch {}
+        }
+      } else {
+        chartEl.innerHTML = '';
+        chartEl.style.display = 'none';
+        if (tfWrap) tfWrap.style.display = 'none';
+      }
+    };
+    // Stash the paint function on the section so the global event-delegation
+    // handler (defined near _filterTradesByTimeFrame) can repaint the chart
+    // when a chip is clicked — independent of when populate finishes.
+    // This eliminates the race where chips were unclickable in the
+    // ~100-500ms window between renderMarketAssetStatsHTML and populate.
+    if (section && (section.tagName || section.querySelector)) {
+      const _statsRoot = section.matches?.('[data-market-asset-stats]') ? section : section.querySelector?.('[data-market-asset-stats]');
+      if (_statsRoot) _statsRoot.__repaintChart = _paintChart;
+    }
     // Defer the price-chart paint until the container is in (or near)
     // the viewport on FIRST render. Re-renders after that short-circuit
     // to immediate paint so live updates (auto-refresh) don't get
     // queued behind another intersection. Saves the SVG-build cost on
     // every asset switch when the chart is below the fold.
-    _lazyPaintWhenVisible(chartEl, () => {
-      const chartHtml = renderMarketPriceChartSVG(trades, ticker, decimals, Number.isFinite(_markForChart) && _markForChart > 0 ? _markForChart : null);
-      if (chartHtml) {
-        // Path-level morph: capture the OLD line + area `d` attrs
-        // before the innerHTML swap, write the new chart, then WAAPI-
-        // animate the new path's `d` from old → new value. Browsers
-        // that support attribute interpolation for `d` (Chromium-based)
-        // get the smooth slide; others fall back to instant swap (the
-        // existing behavior, no regression). Mark/area paths use the
-        // same dataset markers added in renderMarketPriceChartSVG.
-        const _oldLineD = chartEl.querySelector('[data-chart-line]')?.getAttribute('d') || null;
-        const _oldAreaD = chartEl.querySelector('[data-chart-area]')?.getAttribute('d') || null;
-        chartEl.innerHTML = chartHtml;
-        chartEl.style.display = '';
-        _wireMarketPriceChartCursor(chartEl);
-        const _newLine = chartEl.querySelector('[data-chart-line]');
-        const _newArea = chartEl.querySelector('[data-chart-area]');
-        if (_oldLineD && _newLine && typeof _newLine.animate === 'function') {
-          try {
-            _newLine.animate(
-              [{ d: `path('${_oldLineD}')` }, { d: `path('${_newLine.getAttribute('d')}')` }],
-              { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
-            );
-          } catch { /* unsupported `d` interpolation — silent fallback */ }
-        }
-        if (_oldAreaD && _newArea && typeof _newArea.animate === 'function') {
-          try {
-            _newArea.animate(
-              [{ d: `path('${_oldAreaD}')` }, { d: `path('${_newArea.getAttribute('d')}')` }],
-              { duration: 280, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)', fill: 'forwards' },
-            );
-          } catch { /* same */ }
-        }
-      } else {
-        chartEl.innerHTML = '';
-        chartEl.style.display = 'none';
-      }
-    });
+    _lazyPaintWhenVisible(chartEl, () => { _paintChart(); });
   }
+  // Wire the "Set price alert" button — opens the modal scoped to this asset.
+  // Pulls the current mark from the just-rendered stats cell so the dialog
+  // can show the live anchor.
+  section.querySelectorAll('[data-act="open-price-alert"]').forEach(btn => {
+    btn.onclick = () => {
+      const btnAid = btn.getAttribute('data-aid');
+      const btnTicker = btn.getAttribute('data-ticker') || '?';
+      const _mark = Number(j?.mark_price?.unit ?? asset?.mark_price?.unit);
+      openPriceAlertModal({ aid: btnAid, ticker: btnTicker, currentMarkUnit: Number.isFinite(_mark) && _mark > 0 ? _mark : null });
+    };
+  });
   const recentEl = section.querySelector('[data-market-recent-trades]');
   if (!recentEl) return;
   if (!trades.length) {
@@ -41678,6 +42372,22 @@ function _renderSwapProgressStep(item) {
       <span class="muted" style="font-family:var(--mono);font-size:10px;">broadcasting…</span>
     </div>`;
   }
+  // 'awaiting-fulfil': claim has been broadcast; we're polling the worker
+  // for the maker's fulfilment. Shows a countdown so the user knows
+  // something is in flight (vs the previous behaviour where the row stayed
+  // on 'broadcasting' silently for up to 5 minutes if the maker was slow).
+  if (item.status === 'awaiting-fulfil') {
+    const remainMs = Math.max(0, (item.deadlineAt || 0) - Date.now());
+    const m = Math.floor(remainMs / 60_000);
+    const s = Math.floor((remainMs % 60_000) / 1000);
+    const remain = remainMs > 0 ? `${m}:${String(s).padStart(2, '0')} left` : 'expiring…';
+    const tooltip = 'Your claim is broadcast on Bitcoin. The seller\'s auto-fulfiller needs to sign the settlement — usually 5–10s if their tab is open and auto-fulfil is on, up to 5 min otherwise before the claim expires.';
+    return `<div title="${escapeHtml(tooltip)}" style="display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--ink);cursor:help;">
+      <span class="live-dots" style="display:inline-block;width:12px;color:#b8651d;">○</span>
+      <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(label)}</span>
+      <span class="muted" style="font-family:var(--mono);font-size:10px;color:#b8651d;">awaiting maker · ${remain}</span>
+    </div>`;
+  }
   if (item.status === 'failed') {
     return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;color:var(--red,#b8341d);">
       <span style="font-weight:700;">✗</span>
@@ -41691,10 +42401,36 @@ function _renderSwapProgressStep(item) {
     <span class="muted" style="font-size:10px;">queued</span>
   </div>`;
 }
-function _renderSwapProgress(host, items) {
+function _renderSwapProgress(host, items, opts = {}) {
   if (!host) return;
   host.style.display = items.length ? 'block' : 'none';
-  host.innerHTML = items.map(_renderSwapProgressStep).join('');
+  // Cancel state can be attached to the host element by the swap loop once
+  // at setup, so the many _renderSwapProgress() calls scattered through
+  // the loop don't each need to pass opts. Explicit opts win when given.
+  const persistent = host.__swapCancelState || null;
+  const cancellable = opts.cancellable !== undefined ? opts.cancellable : !!persistent;
+  const cancelled   = opts.cancelled   !== undefined ? opts.cancelled   : !!(persistent && persistent.cancelled);
+  const onCancel    = typeof opts.onCancel === 'function' ? opts.onCancel : (persistent ? persistent.onCancel : null);
+  // Header row with a "Stop after this fill" button — visible only while
+  // at least one fill is still queued (or in flight). Lets the user bail
+  // out of a multi-fill swap if prices move adversely between fills,
+  // without aborting the in-flight fill (its tx is already in mempool).
+  const hasRemaining = items.some(it =>
+    it.status === 'queued' || it.status === 'broadcasting' || it.status === 'awaiting-fulfil');
+  const showCancel = !!cancellable && hasRemaining;
+  const cancelHtml = showCancel
+    ? `<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">
+         <button data-swap-cancel-remaining class="swap-cancel-remaining" type="button"${cancelled ? ' disabled' : ''}
+           title="Stops the loop after the in-flight fill completes. Already-broadcast txs can't be recalled.">
+           ${cancelled ? 'will stop after this fill…' : 'Stop after this fill'}
+         </button>
+       </div>`
+    : '';
+  host.innerHTML = cancelHtml + items.map(_renderSwapProgressStep).join('');
+  if (showCancel && !cancelled && typeof onCancel === 'function') {
+    const btn = host.querySelector('[data-swap-cancel-remaining]');
+    if (btn) btn.onclick = (e) => { e.preventDefault(); onCancel(); };
+  }
 }
 function _wireSwapTile(scope) {
   const widget = scope.querySelector('[data-swap-tile]');
@@ -41724,9 +42460,31 @@ function _wireSwapTile(scope) {
   const toPill    = widget.querySelector('[data-swap-pill="to"]');
   const flipBtn   = widget.querySelector('[data-swap-flip]');
   const slipSel   = widget.querySelector('[data-swap-slippage]');
+  const slipHelp  = widget.querySelector('[data-swap-slippage-help]');
   const infoEl    = widget.querySelector('[data-swap-info]');
   const actionBtn = widget.querySelector('[data-swap-action]');
   if (!fromInput || !toInput || !actionBtn) return;
+  // Slippage-explainer popover: tacit's "Limit" semantics differ from
+  // Uniswap-style "slippage tolerance" enough that users without context
+  // commonly misconfigure (e.g., cranking to 50% expecting curve-slippage
+  // protection). Click the ? to read the actual semantics in a dialog
+  // instead of a tooltip — discoverable on mobile, no hover required.
+  if (slipHelp) {
+    slipHelp.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      tacitConfirm({
+        title: 'Limit · price tolerance cap',
+        body:
+          'tacit doesn\'t have curve-slippage (no AMM curve to slip along). The Limit picker controls two distinct things:\n\n' +
+          '1. WHICH orders this swap matches. Asks priced above the cap (when buying) or bids priced below the cap (when selling) are skipped — the swap walks cheapest-first across the book until either the budget is spent or no acceptable order remains.\n\n' +
+          '2. The price of any RESIDUAL bid/ask your unfilled budget posts. If your budget isn\'t fully consumed by matching orders, the leftover stays open at the cap price until a counterparty matches it (or 24h expiry, whichever comes first).\n\n' +
+          'Lower cap = stricter matching, more residual left as a passive bid. Higher cap = more aggressive, fills cheap-to-expensive across more of the book.\n\n' +
+          'On Bitcoin L1 with atomic settlement, there\'s no front-running and no curve to slip along — the cap is purely your limit price, not a tolerance against execution drift.',
+        confirmLabel: 'Got it',
+        hideCancel: true,
+      });
+    };
+  }
   // Snapshot the pill innerHTML once at wireup. The HTML carries the
   // inline SVG (BTC) or <img> (asset logo); the flip handler swaps the
   // two pills' contents in place so direction toggles without a full
@@ -42103,6 +42861,14 @@ function _wireSwapTile(scope) {
         ];
       }
     }
+    // Prepend a "repeat last" chip when the user has recently swapped this
+    // same (asset, direction, pay-unit) — restores their exact input value
+    // for one-tap re-invocation. Distinct ↻ glyph + class so it reads as
+    // a different action from the percentage chips.
+    const _last = _loadLastSwap(aid, dir, payUnit);
+    if (_last && _last.fromValue) {
+      chips.unshift({ label: `↻ ${_last.label || _last.fromValue}`, value: _last.fromValue, repeat: true });
+    }
     if (!chips.length) {
       quickFillEl.style.display = 'none';
       quickFillEl.innerHTML = '';
@@ -42110,7 +42876,9 @@ function _wireSwapTile(scope) {
     }
     quickFillEl.style.display = 'flex';
     quickFillEl.innerHTML = chips.map(c =>
-      `<button type="button" data-quickfill data-value="${escapeHtml(c.value)}" style="padding:3px 8px;font-size:10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;font-family:var(--mono);">${escapeHtml(c.label)}</button>`
+      c.repeat
+        ? `<button type="button" data-quickfill class="swap-repeat-chip" data-value="${escapeHtml(c.value)}" title="Repeat your last ${dir} on ${escapeHtml(ticker)}">${escapeHtml(c.label)}</button>`
+        : `<button type="button" data-quickfill data-value="${escapeHtml(c.value)}" style="padding:3px 8px;font-size:10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;font-family:var(--mono);">${escapeHtml(c.label)}</button>`
     ).join('');
     quickFillEl.querySelectorAll('[data-quickfill]').forEach(btn => {
       btn.onclick = () => {
@@ -42671,7 +43439,7 @@ function _wireSwapTile(scope) {
   // the claim expires naturally on the worker and the call throws.
   //
   // Throws on any failure; caller's loop handles partial-fill semantics.
-  const _swapTakeAsk = async (c) => {
+  const _swapTakeAsk = async (c, cb = {}) => {
     if (c.kind === 'preauth') {
       return takePreauthSale({ assetIdHex: aid, saleIdHex: c.l.sale_id, sale: c.l });
     }
@@ -42691,11 +43459,19 @@ function _wireSwapTile(scope) {
         priceSats: c.ps,
       });
     }
-    // Wait for maker fulfilment. Poll every 3s up to 5 min (claim TTL).
-    let fulfilmentResp = null;
+    // Claim is broadcast; the maker now needs to fulfil. Surface this
+    // transition explicitly so the progress row stops reading
+    // "broadcasting…" (which is no longer true — broadcast is done; we're
+    // now waiting on the maker's auto-fulfiller).
     const _start = Date.now();
-    while (Date.now() - _start < 300_000) {
+    const _deadline = _start + 300_000;
+    try { cb.onClaimed?.({ deadlineAt: _deadline }); } catch {}
+    // Wait for maker fulfilment. Poll every 3s up to 5 min (claim TTL).
+    // Tick the callback on each iteration so the UI can show a countdown.
+    let fulfilmentResp = null;
+    while (Date.now() < _deadline) {
       await new Promise(r => setTimeout(r, 3000));
+      try { cb.onPollTick?.({ elapsedMs: Date.now() - _start, deadlineAt: _deadline }); } catch {}
       try {
         const fr = await fetchAxferFulfilment({ assetIdHex: aid, intentIdHex: c.l.intent_id });
         if (fr?.fulfilment || fr?.partial_reveal) { fulfilmentResp = fr; break; }
@@ -42751,14 +43527,16 @@ function _wireSwapTile(scope) {
           ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
           : `Each fill settles in one Bitcoin tx.`;
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
-        if (!confirm(
-          `Swap ${result.totalSats.toLocaleString()} sats → ≥ ${accStr} ${ticker}?\n\n` +
-          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
-          `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}${impactStr}\n` +
-          (usd ? `≈ ${usd}\n` : '') +
-          `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${asyncNote}` +
-          overshootStr
-        )) return;
+        if (!await tacitConfirm({
+          title: `Swap ${result.totalSats.toLocaleString()} sats → ≥ ${accStr} ${ticker}?`,
+          body:
+            `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
+            `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}${impactStr}\n` +
+            (usd ? `≈ ${usd}\n` : '') +
+            `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${asyncNote}` +
+            overshootStr,
+          confirmLabel: 'Swap',
+        })) return;
       } else {
         const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
         if (result.totalAmt > bal) { toast(`You only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`, 'error'); return; }
@@ -42766,15 +43544,32 @@ function _wireSwapTile(scope) {
           ? `\n\nLast bid overshoots your ${result.targetSats.toLocaleString()} sats target by +${result.overshootSats.toLocaleString()} sats.`
           : '';
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
-        if (!confirm(
-          `Swap ${accStr} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats?\n\n` +
+        const _afNoteOn  = `Auto-fulfil is ON — claims sign automatically while this tab stays open.`;
+        const _afNoteOff = `Enable Auto-fulfil first to keep this tab signing claims (or click "Enable now" below).`;
+        const _bodyFor = (afOn) =>
           `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} via atomic intents.\n` +
           `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}${impactStr}\n` +
           (usd ? `≈ ${usd}\n` : '') +
-          `Settlement awaits each bidder's Take (~1–30 min). ` +
-          `${_isAutoFulfilEnabled() ? 'Auto-fulfil is ON.' : 'Enable Auto-fulfil first to keep this tab signing claims.'}` +
-          overshootStr
-        )) return;
+          `Settlement awaits each bidder's Take (~1–30 min). ${afOn ? _afNoteOn : _afNoteOff}` +
+          overshootStr;
+        if (!await tacitConfirm({
+          title: `Swap ${accStr} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats?`,
+          body: _bodyFor(_isAutoFulfilEnabled()),
+          confirmLabel: 'Swap',
+          actions: _isAutoFulfilEnabled() ? [] : [{
+            label: 'Enable Auto-fulfil now',
+            onClick: () => {
+            try { startAutoFulfilDaemon(); } catch {}
+            // Wallet might be locked — the daemon starts but silently
+            // skips polls until unlock. Surface that so the user knows
+            // their "Enabled" state isn't fully active yet.
+            if (!wallet?.priv) {
+              return _bodyFor(true) + '\n\n⚠ Wallet is locked — auto-fulfil is queued but won\'t sign claims until you unlock the wallet. Unlock to activate.';
+            }
+            return _bodyFor(true);
+          },
+          }],
+        })) return;
       }
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       const origLabel = actionBtn.textContent;
@@ -42786,25 +43581,64 @@ function _wireSwapTile(scope) {
         label: `${idx + 1}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} → ${c.ps.toLocaleString()} sats @ ${fmtUnitPriceSats(c.u)} sats/${ticker}`,
         status: 'queued', txid: null,
       }));
+      // Cancel-after-this-fill state: attached to the progressEl so all the
+      // _renderSwapProgress() calls in this loop pick it up automatically.
+      // Only meaningful when there are 2+ fills (single-fill swaps already
+      // resolve atomically).
+      const _cancelState = { cancelled: false };
+      _cancelState.onCancel = () => {
+        _cancelState.cancelled = true;
+        _renderSwapProgress(progressEl, progressItems);
+      };
+      progressEl.__swapCancelState = result.plan.length > 1 ? _cancelState : null;
       _renderSwapProgress(progressEl, progressItems);
       let filled = 0, lastErr = null;
+      let _totalFeesSats = 0;
+      let _stoppedEarly = false;
       for (let i = 0; i < result.plan.length; i++) {
+        // Cancel-after-this-fill check. Already-broadcast in-flight fills
+        // can't be recalled, but the loop bails before broadcasting the
+        // next one. Surfaces as "stopped at N/M" in the completion toast.
+        if (_cancelState.cancelled) { _stoppedEarly = true; break; }
         const c = result.plan[i];
         actionBtn.textContent = `${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'}…`;
         progressItems[i].status = 'broadcasting';
         _renderSwapProgress(progressEl, progressItems);
+        // Tick handle re-renders the progress row each ~1s while we're in
+        // 'awaiting-fulfil' so the countdown decrements visibly. Cleared
+        // whichever way the fill resolves (done / failed / next step).
+        let _tickHandle = null;
         try {
           const r = dir === 'buy'
-            ? await _swapTakeAsk(c)
+            ? await _swapTakeAsk(c, {
+                onClaimed: ({ deadlineAt }) => {
+                  progressItems[i].status = 'awaiting-fulfil';
+                  progressItems[i].deadlineAt = deadlineAt;
+                  _renderSwapProgress(progressEl, progressItems);
+                  if (_tickHandle) clearInterval(_tickHandle);
+                  _tickHandle = setInterval(() => _renderSwapProgress(progressEl, progressItems), 1000);
+                },
+              })
             : await fulfilBidIntent({ bid: c.b, fillAmount: c.kind === 'bid-var' ? c.amt : null });
+          if (_tickHandle) { clearInterval(_tickHandle); _tickHandle = null; }
           filled++;
           progressItems[i].status = 'done';
           progressItems[i].txid = r?.reveal_txid || r?.commit_txid || null;
           _renderSwapProgress(progressEl, progressItems);
+          // Optimistic balance update: bridges the ~10s gap between the
+          // fill resolving here and renderHoldings() pulling fresh chain
+          // truth. Direction-specific — buy credits the asset; sell debits.
+          if (dir === 'buy' && typeof c.amt === 'bigint') applyOptimisticCredit(aid, c.amt);
+          else if (dir === 'sell' && typeof c.amt === 'bigint') applyOptimisticDebit(aid, c.amt);
           const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
           await Promise.all([_mark(r?.commit_txid), _mark(r?.reveal_txid || r?.split_txid)]);
+          // Fee echo: sum the actual Bitcoin fees this fill paid. Async
+          // best-effort; if the indexer hasn't indexed the tx yet, we
+          // simply skip and the toast omits the fee suffix.
+          try { _totalFeesSats += await _collectSwapFee(r); } catch {}
           if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
         } catch (e) {
+          if (_tickHandle) { clearInterval(_tickHandle); _tickHandle = null; }
           lastErr = e?.message || String(e);
           progressItems[i].status = 'failed';
           progressItems[i].err = lastErr;
@@ -42815,10 +43649,22 @@ function _wireSwapTile(scope) {
       invalidateMarketCache();
       invalidateHoldingsCache();
       if (dir === 'sell') _invalidateBidsCache(aid);
+      // Clear cancel state so a subsequent swap on the same widget starts
+      // fresh (otherwise the stale `cancelled: true` would suppress the
+      // next swap's cancel button).
+      if (progressEl) progressEl.__swapCancelState = null;
+      const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
+      const _stoppedSuffix = _stoppedEarly ? ` · stopped after ${filled}/${result.plan.length} (you clicked stop)` : '';
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
-      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'} · ${lastErr}`, 'error', 8000);
-      else if (dir === 'buy') toast(`Filled · ${accStr} ${ticker} bought · settles in ~10 min (check Holdings)`, 'success', 8000);
-      else toast(`Filled · ${accStr} ${ticker} sold · buyers will settle on Bitcoin in ~10 min`, 'success', 8000);
+      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'} · ${lastErr}${_feeSuffix}`, 'error', 8000);
+      else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'}${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
+      else if (dir === 'buy') toast(`Filled · ${accStr} ${ticker} bought${_feeSuffix} · settles in ~10 min (check Holdings)`, 'success', 8000);
+      else toast(`Filled · ${accStr} ${ticker} sold${_feeSuffix} · buyers will settle on Bitcoin in ~10 min`, 'success', 8000);
+      // Remember this exact-out swap for the "↻ Repeat" quickfill chip.
+      // Exact-out is reached via the "to" input; rawTo is the value the
+      // user typed. payUnit captures the current pay-unit so a USD-typed
+      // buy doesn't accidentally restore as sats next time.
+      if (filled > 0) _saveLastSwap({ aid, dir, payUnit: getPayUnit(), fromValue: rawTo, label: `${rawTo} ${dir === 'buy' ? ticker : 'sats'}` });
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);
@@ -42842,13 +43688,15 @@ function _wireSwapTile(scope) {
         if (bidAmt <= 0n || !Number.isFinite(bidSats) || bidSats < DUST) {
           toast('Bid params invalid; refresh and retry', 'error'); return;
         }
-        if (!confirm(
-          `Swap ${bidSats.toLocaleString()} sats → ${fmtAssetAmount(bidAmt, decimals)} ${ticker}?\n\n` +
-          `Unit price ${fmtUnitPriceSats(capUnit)} sats/${ticker}.\n\n` +
-          `No instant match — your swap stays open until a seller takes it. ` +
-          `Keep ${bidSats.toLocaleString()} sats in your wallet so the fill can settle when matched. ` +
-          `On-chain atomic settlement (Bitcoin tx, no custodian). Cancel anytime; auto-expires in 24h.`,
-        )) return;
+        if (!await tacitConfirm({
+          title: `Swap ${bidSats.toLocaleString()} sats → ${fmtAssetAmount(bidAmt, decimals)} ${ticker}?`,
+          body:
+            `Unit price ${fmtUnitPriceSats(capUnit)} sats/${ticker}.\n\n` +
+            `No instant match — your swap stays open until a seller takes it. ` +
+            `Keep ${bidSats.toLocaleString()} sats in your wallet so the fill can settle when matched. ` +
+            `On-chain atomic settlement (Bitcoin tx, no custodian). Cancel anytime; auto-expires in 24h.`,
+          confirmLabel: 'Place bid',
+        })) return;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         const _origLabel = actionBtn.textContent;
         actionBtn.textContent = 'opening…';
@@ -42876,7 +43724,7 @@ function _wireSwapTile(scope) {
           // and tells the user where to find it (Your Open Orders panel
           // that's about to render below).
           toast(
-            `Bid placed · ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ≤ ${fmtUnitPriceSats(capUnit)} sats/${ticker} — visible in Your Open Orders below. Cancel anytime; auto-expires in 24h.`,
+            `Bid placed · ${fmtAssetAmount(bidAmt, decimals)} ${ticker} @ ≤ ${fmtUnitPriceSats(capUnit)} sats/${ticker} · now live in the orderbook — any seller can match. See Your Open Orders below. Cancel anytime; auto-expires in 24h.`,
             'success',
             9000,
           );
@@ -42931,14 +43779,16 @@ function _wireSwapTile(scope) {
         }
       }
       const _impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
-      if (!confirm(
-        `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?\n\n` +
-        `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
-        `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}${_impactStr}\n` +
-        (usd ? `≈ ${usd}\n` : '') +
-        `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${_asyncNote}` +
-        _residualNote
-      )) return;
+      if (!await tacitConfirm({
+        title: `Swap ${result.totalSats.toLocaleString()} sats → ${accStr} ${ticker}?`,
+        body:
+          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} cheapest-first across the orderbook.\n` +
+          `Price range: ${fmtUnitPriceSats(result.plan[0].u)}–${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)} sats/${ticker}${_impactStr}\n` +
+          (usd ? `≈ ${usd}\n` : '') +
+          `Fees ~${(result.plan.length * 800).toLocaleString()} sats · sequential broadcast. ${_asyncNote}` +
+          _residualNote,
+        confirmLabel: 'Swap',
+      })) return;
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       const origLabel = actionBtn.textContent;
       // Build per-fill progress items so the user sees which fill is
@@ -42951,23 +43801,46 @@ function _wireSwapTile(scope) {
         status: 'queued',
         txid: null,
       }));
+      const _cancelState = { cancelled: false };
+      _cancelState.onCancel = () => {
+        _cancelState.cancelled = true;
+        _renderSwapProgress(progressEl, progressItems);
+      };
+      progressEl.__swapCancelState = result.plan.length > 1 ? _cancelState : null;
       _renderSwapProgress(progressEl, progressItems);
       let filled = 0, lastErr = null;
+      let _totalFeesSats = 0;
+      let _stoppedEarly = false;
       for (let i = 0; i < result.plan.length; i++) {
+        if (_cancelState.cancelled) { _stoppedEarly = true; break; }
         const c = result.plan[i];
         actionBtn.textContent = `${filled}/${result.plan.length} filled…`;
         progressItems[i].status = 'broadcasting';
         _renderSwapProgress(progressEl, progressItems);
+        let _tickHandle = null;
         try {
-          const r = await _swapTakeAsk(c);
+          const r = await _swapTakeAsk(c, {
+            onClaimed: ({ deadlineAt }) => {
+              progressItems[i].status = 'awaiting-fulfil';
+              progressItems[i].deadlineAt = deadlineAt;
+              _renderSwapProgress(progressEl, progressItems);
+              if (_tickHandle) clearInterval(_tickHandle);
+              _tickHandle = setInterval(() => _renderSwapProgress(progressEl, progressItems), 1000);
+            },
+          });
+          if (_tickHandle) { clearInterval(_tickHandle); _tickHandle = null; }
           filled++;
           progressItems[i].status = 'done';
           progressItems[i].txid = r?.reveal_txid || r?.commit_txid || null;
           _renderSwapProgress(progressEl, progressItems);
+          // Exact-in is buy-only here (sell path lives below); credit on fill.
+          if (typeof c.amt === 'bigint') applyOptimisticCredit(aid, c.amt);
           const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
           await Promise.all([_mark(r?.commit_txid), _mark(r?.reveal_txid)]);
+          try { _totalFeesSats += await _collectSwapFee(r); } catch {}
           if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
         } catch (e) {
+          if (_tickHandle) { clearInterval(_tickHandle); _tickHandle = null; }
           lastErr = e?.message || String(e);
           progressItems[i].status = 'failed';
           progressItems[i].err = lastErr;
@@ -43018,13 +43891,20 @@ function _wireSwapTile(scope) {
           }
         }
       }
+      if (progressEl) progressEl.__swapCancelState = null;
+      const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
-      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}`, 'error', 8000);
+      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}${_feeSuffix}`, 'error', 8000);
+      else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} filled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (bidPosted) {
-        toast(`Swapped → ${accStr} ${ticker} ✓ · settling on Bitcoin (~10 min) · +${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker} (fills when a seller matches)`, 'success', 9000);
+        toast(`Swapped → ${accStr} ${ticker} ✓${_feeSuffix} · settling on Bitcoin (~10 min) · +${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker} (fills when a seller matches)`, 'success', 9000);
       } else {
-        toast(`Swapped → ${accStr} ${ticker} ✓ · settling on Bitcoin (~10 min for first confirmation)`, 'success', 6000);
+        toast(`Swapped → ${accStr} ${ticker} ✓${_feeSuffix} · settling on Bitcoin (~10 min for first confirmation)`, 'success', 6000);
       }
+      // Remember this exact-in buy for the "↻ Repeat" quickfill chip.
+      // raw is the literal value the user typed in the "from" input;
+      // payUnit captures whether it was sats or USD.
+      if (filled > 0) _saveLastSwap({ aid, dir: 'buy', payUnit: getPayUnit(), fromValue: raw, label: getPayUnit() === 'usd' ? `$${raw}` : `${raw} sats` });
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);
@@ -43045,11 +43925,13 @@ function _wireSwapTile(scope) {
           return;
         }
         const _floor = refUnit * (1 - getSlipRatio());
-        if (!confirm(
-          `Sell ${fmtAssetAmount(amt, decimals)} ${ticker} as an open listing?\n\n` +
-          `No bids match your floor right now. Listing at ${fmtUnitPriceSats(_floor)} sats/${ticker} (your limit). ` +
-          `Any buyer can take any chunk in [min, ${fmtAssetAmount(amt, decimals)}] ${ticker} — atomic Bitcoin settlement, partial fills supported. Auto-expires in 24h.`
-        )) return;
+        if (!await tacitConfirm({
+          title: `Sell ${fmtAssetAmount(amt, decimals)} ${ticker} as an open listing?`,
+          body:
+            `No bids match your floor right now. Listing at ${fmtUnitPriceSats(_floor)} sats/${ticker} (your limit). ` +
+            `Any buyer can take any chunk in [min, ${fmtAssetAmount(amt, decimals)}] ${ticker} — atomic Bitcoin settlement, partial fills supported. Auto-expires in 24h.`,
+          confirmLabel: 'List for sale',
+        })) return;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         const _origLabel = actionBtn.textContent;
         actionBtn.textContent = 'listing…';
@@ -43075,14 +43957,31 @@ function _wireSwapTile(scope) {
       const accStr = fmtAssetAmount(result.totalAmt, decimals);
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
       const _impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
-      if (!confirm(
-        `Swap ${accStr} ${ticker} → ${result.totalSats.toLocaleString()} sats?\n\n` +
+      const _afNoteOn  = `Auto-fulfil is ON — claims sign automatically while this tab stays open.`;
+      const _afNoteOff = `Enable Auto-fulfil first to keep this tab signing claims (or click "Enable now" below).`;
+      const _bodyFor = (afOn) =>
         `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} via atomic intents.\n` +
         `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}${_impactStr}\n` +
         (usd ? `≈ ${usd}\n` : '') +
-        `Settlement awaits each bidder's Take (~1–30 min). ` +
-        `${_isAutoFulfilEnabled() ? 'Auto-fulfil is ON.' : 'Enable Auto-fulfil first to keep this tab signing claims.'}`
-      )) return;
+        `Settlement awaits each bidder's Take (~1–30 min). ${afOn ? _afNoteOn : _afNoteOff}`;
+      if (!await tacitConfirm({
+        title: `Swap ${accStr} ${ticker} → ${result.totalSats.toLocaleString()} sats?`,
+        body: _bodyFor(_isAutoFulfilEnabled()),
+        confirmLabel: 'Swap',
+        actions: _isAutoFulfilEnabled() ? [] : [{
+          label: 'Enable Auto-fulfil now',
+          onClick: () => {
+            try { startAutoFulfilDaemon(); } catch {}
+            // Wallet might be locked — the daemon starts but silently
+            // skips polls until unlock. Surface that so the user knows
+            // their "Enabled" state isn't fully active yet.
+            if (!wallet?.priv) {
+              return _bodyFor(true) + '\n\n⚠ Wallet is locked — auto-fulfil is queued but won\'t sign claims until you unlock the wallet. Unlock to activate.';
+            }
+            return _bodyFor(true);
+          },
+        }],
+      })) return;
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
       const origLabel = actionBtn.textContent;
       const progressEl = widget.querySelector('[data-swap-progress]');
@@ -43091,9 +43990,18 @@ function _wireSwapTile(scope) {
         status: 'queued',
         txid: null,
       }));
+      const _cancelState = { cancelled: false };
+      _cancelState.onCancel = () => {
+        _cancelState.cancelled = true;
+        _renderSwapProgress(progressEl, progressItems);
+      };
+      progressEl.__swapCancelState = result.plan.length > 1 ? _cancelState : null;
       _renderSwapProgress(progressEl, progressItems);
       let filled = 0, lastErr = null;
+      let _totalFeesSats = 0;
+      let _stoppedEarly = false;
       for (let i = 0; i < result.plan.length; i++) {
+        if (_cancelState.cancelled) { _stoppedEarly = true; break; }
         const c = result.plan[i];
         actionBtn.textContent = `${filled}/${result.plan.length} fulfilled…`;
         progressItems[i].status = 'broadcasting';
@@ -43107,8 +44015,13 @@ function _wireSwapTile(scope) {
           // from here), so we surface the commit as the visible artifact.
           progressItems[i].txid = r?.commit_txid || null;
           _renderSwapProgress(progressEl, progressItems);
+          // Optimistic debit: the asset is committed at fulfilment time
+          // (even though the bidder hasn't Taken yet). Decrementing here
+          // makes the Holdings card reflect what the user just signed away.
+          if (typeof c.amt === 'bigint') applyOptimisticDebit(aid, c.amt);
           const _mark = async (txid) => { if (!txid) return; try { const tx = await getTx(txid); _markTxInputsSpent(tx); } catch {} };
           await Promise.all([_mark(r?.commit_txid), _mark(r?.split_txid)]);
+          try { _totalFeesSats += await _collectSwapFee(r); } catch {}
           if (i < result.plan.length - 1) await new Promise(res => setTimeout(res, 1500));
         } catch (e) {
           lastErr = e?.message || String(e);
@@ -43139,13 +44052,18 @@ function _wireSwapTile(scope) {
           if (!isUnlockCancelled(e)) console.warn('[swap] residual listing failed:', e.message);
         }
       }
+      if (progressEl) progressEl.__swapCancelState = null;
+      const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
-      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}`, 'error', 8000);
+      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}${_feeSuffix}`, 'error', 8000);
+      else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} fulfilled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (listingPosted) {
-        toast(`Selling ${accStr} ${ticker} ✓ · ${fmtAssetAmount(listingPosted.amount, decimals)} ${ticker} more open at ${fmtUnitPriceSats(refUnit * (1 - getSlipRatio()))} sats/${ticker} (fills when buyers take)`, 'success', 9000);
+        toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} · ${fmtAssetAmount(listingPosted.amount, decimals)} ${ticker} more open at ${fmtUnitPriceSats(refUnit * (1 - getSlipRatio()))} sats/${ticker} (fills when buyers take)`, 'success', 9000);
       } else {
-        toast(`Selling ${accStr} ${ticker} ✓ (pending bidder Takes)`, 'success', 5000);
+        toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} (pending bidder Takes)`, 'success', 5000);
       }
+      // Remember this sell for the "↻ Repeat" chip — raw is the asset amount the user typed.
+      if (filled > 0) _saveLastSwap({ aid, dir: 'sell', payUnit: '', fromValue: raw, label: `${raw} ${ticker}` });
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);

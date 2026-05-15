@@ -3009,6 +3009,125 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 @media (max-width: 700px) {
   .btn-cmd { min-width: 46px; font-size: 12px; }
 }
+/* Worker health pill: colored dot in the header that reflects the worker's
+   reachability. Pings every ~20s. cursor:help so the title attr reads as
+   an explanation tooltip; the dot is decorative (state lives in data-state). */
+.worker-health {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 28px;
+  font-size: 12px; line-height: 1;
+  color: var(--ink-mid); cursor: help;
+  flex-shrink: 0;
+  user-select: none;
+}
+.worker-health[data-state="ok"]      { color: #0a8f43; }
+.worker-health[data-state="stale"]   { color: #b8651d; }
+.worker-health[data-state="down"]    { color: #b8341d; }
+.worker-health[data-state="off"]     { color: var(--ink-faint); }
+.worker-health[data-state="loading"] { color: var(--ink-faint); animation: worker-pulse 1.4s ease-in-out infinite; }
+@keyframes worker-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+
+/* Slippage help bubble: small ? button beside the "Limit" label that opens
+   a tacitConfirm-style info modal. Visible affordance for the explanation,
+   distinct from hover-only title tooltips that don't work on mobile. */
+.slip-help {
+  width: 14px; height: 14px;
+  padding: 0; margin-left: 4px;
+  border: 1px solid var(--ink-faint); border-radius: 50%;
+  background: var(--bg); color: var(--ink-mid);
+  font-size: 9px; font-weight: 700; line-height: 1;
+  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.slip-help:hover { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+/* Time-frame chips above the price chart: 1H / 4H / 1D / 1W / ALL. Active
+   chip gets the orange underline accent that matches the rest of the
+   accent treatment. Persisted via localStorage so the user's pick survives
+   reloads + asset switches. */
+.chart-tf-row {
+  display: flex; gap: 4px; margin-bottom: 6px; font-size: 10px;
+  font-family: var(--mono); letter-spacing: 0.06em; text-transform: uppercase;
+}
+.chart-tf-chip {
+  padding: 3px 8px; border: 1px solid var(--ink-faint); background: var(--bg);
+  color: var(--ink-mid); cursor: pointer;
+  transition: background 0.08s, color 0.08s, border-color 0.08s;
+}
+.chart-tf-chip:hover { color: var(--ink); border-color: var(--ink); }
+.chart-tf-chip[data-active="1"] {
+  background: var(--ink); color: var(--bg); border-color: var(--ink);
+}
+
+/* Mini-chart strip in the swap tile: compact sparkline + last price + 24h Δ.
+   Sits just under the "sats / TICKER" header. Hidden when there's no
+   price_summary (silent — better than rendering an empty box). */
+.swap-tile-strip {
+  display: flex; align-items: center; gap: 10px;
+  margin: -4px 0 10px;
+  padding: 6px 8px;
+  border: 1px dashed var(--ink-faint);
+  background: var(--bg-warm);
+  font-size: 10px;
+}
+.swap-tile-strip .strip-spark { flex: 1 1 auto; min-width: 0; }
+.swap-tile-strip .strip-last  { font-family: var(--mono); font-weight: 700; color: var(--ink); white-space: nowrap; }
+.swap-tile-strip .strip-delta { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+.swap-tile-strip .strip-delta.up   { color: #0a8f43; }
+.swap-tile-strip .strip-delta.down { color: #b8341d; }
+
+/* "Repeat last swap" chip in the quickfill row. Distinct from the % chips
+   so it reads as a different action. */
+.swap-repeat-chip {
+  padding: 3px 8px; border: 1px solid var(--ink-faint); background: var(--bg);
+  color: var(--ink-mid); cursor: pointer; font-size: 10px;
+  font-family: var(--mono); white-space: nowrap;
+}
+.swap-repeat-chip:hover { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+/* Stop-after-this-fill button on the swap progress strip. Subtle so it
+   doesn't grab attention until the user is mid-multi-fill and wants out. */
+.swap-cancel-remaining {
+  font-size: 10px; padding: 2px 8px;
+  border: 1px solid var(--ink-faint); background: var(--bg);
+  cursor: pointer; color: var(--ink-mid);
+  font-family: var(--mono);
+}
+.swap-cancel-remaining:hover { background: var(--bg-warm); color: var(--ink); border-color: var(--ink); }
+.swap-cancel-remaining:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Notification bell: a tiny count chip overlays the upper-right when there
+   are unread entries. Driven by the data-count attr (set by updateNotifBadge).
+   Hidden when count is 0 / unset. */
+.btn-notif { position: relative; font-size: 15px; }
+.btn-notif[data-count]:not([data-count="0"])::after {
+  content: attr(data-count);
+  position: absolute;
+  top: -4px; right: -4px;
+  min-width: 14px; height: 14px;
+  padding: 0 3px;
+  background: var(--orange); color: var(--bg);
+  font-size: 9px; font-weight: 700;
+  border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  line-height: 1; box-sizing: border-box;
+}
+
+/* Notification log rows: timestamp + message stacked, kind-colored left rule
+   matches the toast palette so users visually associate the entry with its
+   original toast color. */
+.notif-row {
+  display: grid; grid-template-columns: auto 1fr; gap: 8px;
+  padding: 8px 10px; border-bottom: 1px dashed var(--ink-faint);
+  font-size: 11px;
+}
+.notif-row:last-child { border-bottom: none; }
+.notif-row.kind-success { border-left: 3px solid var(--green, #0a8f43); }
+.notif-row.kind-error   { border-left: 3px solid var(--red, #b8341d); }
+.notif-row.kind-warn    { border-left: 3px solid #b8651d; }
+.notif-row .notif-time  { font-family: var(--mono); font-size: 10px; color: var(--ink-mid); white-space: nowrap; }
+.notif-row .notif-msg   { color: var(--ink); line-height: 1.4; }
+.notif-empty { padding: 24px 12px; text-align: center; color: var(--ink-mid); font-size: 11px; }
 
 /* FAQ modal — same backdrop pattern as welcome/pass modals, with a
    scrollable Q&A body. Higher z-index so it sits above the welcome
@@ -3394,6 +3513,16 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            reachable entry on mobile, where there's no keyboard for those.
            setupCommandPalette() wires the click. -->
       <button id="btn-cmd" class="btn-help btn-cmd" type="button" aria-label="Open command palette" title="Open command palette (⌘K)">⌘K</button>
+      <!-- Worker health pill: pings WORKER_BASE every ~20s and colors a dot
+           green / amber / red so users can tell at a glance whether the
+           orderbook relay is live. Tooltip explains the state. Pure visual
+           indicator — swaps still work in degraded mode (atomic settlement
+           is on-chain), the pill just sets expectations. -->
+      <span id="worker-health" class="worker-health" data-state="loading" title="Worker status — checking…" role="status" aria-live="polite">●</span>
+      <!-- Bell: opens the notification log (notif-log-modal). The count chip,
+           anchored as a pseudo-element via .btn-notif[data-count], shows how
+           many unread entries are in the log since the user last opened it. -->
+      <button id="btn-notif" class="btn-help btn-notif" type="button" aria-label="Notifications" title="Recent notifications">🔔</button>
       <button id="btn-faq" class="btn-help" type="button" aria-label="Help / FAQ" title="Frequently asked questions">?</button>
       <select class="net-select" id="net-select" aria-label="Network">
         <option value="mainnet">mainnet</option>
@@ -5009,6 +5138,66 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 </footer>
 
 <div id="toast-container"></div>
+
+<!-- tacit-confirm modal: drop-in replacement for native confirm() so swap/order
+     dialogs match the dapp's typography, support inline secondary actions (e.g.,
+     "Enable Auto-fulfil now"), and don't block the UI thread on mobile. Driven
+     by tacitConfirm({ title, body, confirmLabel, cancelLabel, kind, actions }).
+     Reuses .pass-modal styling so it composes with the existing modal stack. -->
+<div id="tacit-confirm-modal" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="tcm-title" style="display:none;">
+  <div class="pass-card" style="max-width: 500px;">
+    <div id="tcm-title" class="pass-title">Confirm</div>
+    <div id="tcm-body" class="pass-reason" style="margin-bottom: 12px; max-height: 60vh; overflow-y: auto;"></div>
+    <div id="tcm-actions-extra" style="margin-bottom: 12px;"></div>
+    <div class="pass-actions">
+      <button id="tcm-cancel" type="button">Cancel</button>
+      <button id="tcm-confirm" type="button">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Notification log: persistent record of recent toasts. Bell icon in the header
+     opens a dropdown with the last 30 entries (24h retention, localStorage-
+     backed). Captures dismissed toasts so users who looked away can catch up. -->
+<div id="notif-log-modal" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="notif-log-title" style="display:none;">
+  <div class="pass-card" style="max-width: 520px;">
+    <div id="notif-log-title" class="pass-title">Notifications</div>
+    <div class="pass-reason" style="margin-bottom: 8px;">Recent activity from this session — auto-clears after 24h. Live actions still show as toasts.</div>
+    <div id="notif-log-list" style="max-height: 60vh; overflow-y: auto; border-top: 1px solid var(--ink-faint); border-bottom: 1px solid var(--ink-faint); padding: 6px 0; margin-bottom: 12px;"></div>
+    <div class="pass-actions">
+      <button id="notif-log-clear" type="button" style="margin-right:auto;">Clear all</button>
+      <button id="notif-log-close" type="button">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Price alerts modal: user sets a sats/token threshold + direction (above/below);
+     a background poll fires a notification when the mark price crosses it. One-
+     shot — alert auto-removes once fired. Active alerts visible in the list. -->
+<div id="price-alerts-modal" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="pa-title" style="display:none;">
+  <div class="pass-card" style="max-width: 520px;">
+    <div id="pa-title" class="pass-title">Price alert</div>
+    <div id="pa-context" class="pass-reason" style="margin-bottom: 12px;"></div>
+    <div class="pass-field">
+      <label for="pa-threshold">Threshold (sats / token)</label>
+      <input id="pa-threshold" type="text" inputmode="decimal" placeholder="0">
+      <div id="pa-hint" class="pass-hint"></div>
+    </div>
+    <div class="pass-field">
+      <label>Trigger when price goes</label>
+      <div style="display:flex;gap:6px;">
+        <button id="pa-dir-above" type="button" data-active="1" style="flex:1;">above ↑</button>
+        <button id="pa-dir-below" type="button" style="flex:1;">below ↓</button>
+      </div>
+    </div>
+    <div id="pa-active-list" style="margin: 12px 0; max-height: 30vh; overflow-y: auto;"></div>
+    <div class="pass-actions">
+      <button id="pa-clear-all" type="button" style="margin-right:auto;">Clear all</button>
+      <button id="pa-cancel" type="button">Cancel</button>
+      <button id="pa-save" type="button">Set alert</button>
+    </div>
+  </div>
+</div>
 
 <div id="welcome-modal" class="welcome-modal" role="dialog" aria-modal="true" aria-labelledby="welcome-title" style="display:none;">
   <div class="welcome-card">
