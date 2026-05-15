@@ -42308,10 +42308,23 @@ function _wireSwapTile(scope) {
         ? BigInt(Math.floor(result.residualSats * Math.pow(10, decimals) / _residCap))
         : 0n;
       const _residWillBid = _residBidAmt > 0n;
+      // Three cases for the residual surface:
+      //   1. residual ≥ DUST AND would buy ≥ 1 base unit at cap → publish
+      //      as a partial-fill bid, surface the auto-bid plan.
+      //   2. residual < DUST → can't form a valid Bitcoin output, so the
+      //      sats can't go anywhere. Tell the user explicitly that they
+      //      stay in wallet because of the dust threshold, rather than
+      //      the vaguer "next ask N sats short" hint that doesn't
+      //      explain WHY the dapp isn't auto-bidding the leftover.
+      //   3. residual ≥ DUST but no cap (impossible in practice with a
+      //      mark-priced market) → fall through to the next-ask hint.
+      const _residBelowDust = result.residualSats > 0 && result.residualSats < DUST;
       const residHint = result.residualSats > 100
         ? (_residWillBid
             ? ` · +${fmtAssetAmount(_residBidAmt, decimals)} ${ticker} more stays open @ ${fmtUnitPriceSats(_residCap)} sats/${ticker} (${result.residualSats.toLocaleString()} sats as a partial-fill bid)`
-            : ` · ${result.residualSats.toLocaleString()} sats unspent${_nextAskHint || ' (budget below next ask)'}`)
+            : _residBelowDust
+              ? ` · ${result.residualSats.toLocaleString()} sats stay in wallet (below ${DUST}-sat dust floor for an auto-bid)${_nextAskHint || ''}`
+              : ` · ${result.residualSats.toLocaleString()} sats unspent${_nextAskHint || ' (budget below next ask)'}`)
         : '';
       const insufficientHint = insufficientBudget
         ? ` · ⚠ insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`
