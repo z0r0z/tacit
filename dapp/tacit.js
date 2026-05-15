@@ -8830,6 +8830,49 @@ function _saveHoldingsSeenFlag() {
   if (!k) return;
   try { localStorage.setItem(k, '1'); } catch {}
 }
+// Pending chunked-listing recovery. When the user runs the "list N chunks
+// at once" flow, the dapp first broadcasts a fan-out CXFER (costs ~commit
+// + reveal fees, on-chain) then publishes K listings to the worker
+// (off-chain). If the publish step fails partway, the fan-out tx already
+// confirmed — user paid fees but only some listings exist. Their unspent
+// chunk UTXOs sit in holdings, recoverable by listing each individually
+// from the per-card dropdown. But "click each of 5 chunks individually"
+// is a poor recovery UX; users in this state report "always fails to sell
+// and keeps deducting fees" because they re-run the same form, fan out
+// AGAIN, and stack chunks on chunks.
+//
+// This persists a recovery record so renderHoldings can surface a single
+// "↻ Resume" banner that batch-republishes the un-published chunks
+// WITHOUT re-fanning. Keyed by (network, asset_id, revealTxid) so
+// multiple concurrent groups can coexist.
+const _PENDING_CHUNKED_KEY = 'tacit-pending-chunked-listings-v1';
+function _loadPendingChunkedListings() {
+  try {
+    const raw = localStorage.getItem(_PENDING_CHUNKED_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function _savePendingChunkedListing(rec) {
+  try {
+    const arr = _loadPendingChunkedListings()
+      .filter(r => !(r.network === rec.network && r.revealTxid === rec.revealTxid));
+    arr.push(rec);
+    localStorage.setItem(_PENDING_CHUNKED_KEY, JSON.stringify(arr));
+  } catch {}
+}
+function _clearPendingChunkedListing(network, revealTxid) {
+  try {
+    const arr = _loadPendingChunkedListings()
+      .filter(r => !(r.network === network && r.revealTxid === revealTxid));
+    localStorage.setItem(_PENDING_CHUNKED_KEY, JSON.stringify(arr));
+  } catch {}
+}
+function _pendingChunkedListingsForAsset(aid) {
+  return _loadPendingChunkedListings()
+    .filter(r => r.network === NET.name && r.aid === aid && Number(r.expiry || 0) > Math.floor(Date.now() / 1000));
+}
 // Persisted last-rendered holdings summary. Lets renderHoldings paint cached
 // asset cards INSTANTLY on tab entry while a fresh scan runs in the
 // background — eliminates the skeleton-then-list flash for returning users.
@@ -31743,6 +31786,29 @@ async function renderHoldings() {
           <strong>⏳ ${h.unverified.length} UTXO${h.unverified.length>1?'s':''} couldn't be verified this scan</strong> — the indexer didn't return one or more ancestor transactions (rate-limit / lag / network blip). Not an inflation issue. Retry usually clears it.
           <div style="margin-top:6px;"><button data-act="retry-inflated" data-aid="${h.assetIdHex}" type="button" style="font-size:10px;padding:3px 10px;">↻ Retry verification</button></div>
         </div>` : ''}
+        ${(() => {
+          // Pending chunked-listings recovery banner. Fires when a prior
+          // "list as N chunks" attempt partially failed — the user's
+          // fan-out CXFER already paid fees, and the un-published chunks
+          // are sitting in this asset's UTXOs. One-click resume so the
+          // user doesn't re-fan and double-spend fees.
+          const pending = _pendingChunkedListingsForAsset(h.assetIdHex);
+          if (pending.length === 0) return '';
+          return pending.map(rec => {
+            const remaining = (rec.pending_vouts || []).length;
+            if (remaining === 0) return '';
+            const minPriceStr = Number(rec.min_price_sats || 0).toLocaleString('en-US');
+            const expIso = new Date((rec.expiry || 0) * 1000).toISOString().slice(0, 10);
+            return `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed #a06800;background:#fff8eb;color:#6c4500;">
+              <strong>↻ ${remaining} chunk${remaining === 1 ? '' : 's'} ready to publish</strong> — last attempt left ${rec.chunks_published}/${rec.chunks_requested} listed. Fan-out tx already confirmed (no extra Bitcoin fees on resume). Min price ${escapeHtml(minPriceStr)} sats per chunk, expires ${escapeHtml(expIso)}.
+              ${rec.last_error ? `<div class="muted" style="font-size:10px;margin-top:4px;">last error: ${escapeHtml(rec.last_error)}</div>` : ''}
+              <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
+                <button data-act="resume-chunked-listings" data-aid="${escapeHtml(h.assetIdHex)}" data-reveal-txid="${escapeHtml(rec.revealTxid)}" type="button" class="primary" style="font-size:10px;padding:4px 10px;">↻ Resume publishing</button>
+                <button data-act="abandon-chunked-listings" data-aid="${escapeHtml(h.assetIdHex)}" data-reveal-txid="${escapeHtml(rec.revealTxid)}" type="button" style="font-size:10px;padding:4px 10px;background:transparent;color:var(--ink-mid);" title="Discard this recovery record. Chunk UTXOs stay in your wallet; you can list them individually or merge later.">Discard record</button>
+              </div>
+            </div>`;
+          }).join('');
+        })()}
         ${h.inflated && h.inflated.length ? (() => {
           // h.inflated reserved for GENUINE protocol failures (rangeproof
           // verify failed, kernel sig invalid, conservation violation, etc.).
@@ -31902,6 +31968,83 @@ async function renderHoldings() {
             b.textContent = orig;
             toast('Retry failed: ' + (e?.message || String(e)), 'error');
           }
+        } else if (b.dataset.act === 'resume-chunked-listings') {
+          // Resume publishing un-published chunks from a prior partial-failure.
+          // Walks the saved record's pending_vouts, calls publishPreauthSale
+          // for each. No re-fanning — the chunk UTXOs already exist on chain.
+          // Removes the record after a clean success; leaves it (with updated
+          // counts) on partial-success so the user can retry again.
+          const aidR = b.dataset.aid;
+          const revealTxid = b.dataset.revealTxid;
+          const rec = _loadPendingChunkedListings()
+            .find(r => r.network === NET.name && r.aid === aidR && r.revealTxid === revealTxid);
+          if (!rec) { toast('Recovery record missing — refresh and try again.', 'error'); return; }
+          b.disabled = true;
+          const origLbl = b.textContent;
+          b.textContent = 'resuming…';
+          const groupSeed = (() => {
+            try { return hexToBytes(rec.group_id); } catch { return null; }
+          })();
+          if (!groupSeed || groupSeed.length !== 8) {
+            b.disabled = false; b.textContent = origLbl;
+            toast('Recovery record corrupt (group_id) — discard and re-list from scratch.', 'error');
+            return;
+          }
+          // Re-derive deterministic per-chunk nonce (matches publishPreauthSaleChunks).
+          let chunkAmt = 0n;
+          try { chunkAmt = BigInt(rec.chunk_amount || '0'); } catch {}
+          const publishedNow = [];
+          const stillPending = [];
+          let lastErr = null;
+          for (const vout of (rec.pending_vouts || [])) {
+            const i = vout;
+            const iBytes = new Uint8Array([i & 0xff, (i >> 8) & 0xff, 0, 0, 0, 0, 0, 0]);
+            const suffix = sha256(new Uint8Array([...groupSeed, ...iBytes])).slice(0, 8);
+            const nonceBytes = new Uint8Array(16);
+            nonceBytes.set(groupSeed, 0);
+            nonceBytes.set(suffix, 8);
+            try {
+              await publishPreauthSale({
+                utxoTxid: revealTxid,
+                utxoVout: vout,
+                minPriceSats: Number(rec.min_price_sats || 0),
+                expiry: Number(rec.expiry || 0),
+                nonceBytesOverride: nonceBytes,
+              });
+              publishedNow.push(vout);
+            } catch (e) {
+              lastErr = e?.message || String(e);
+              stillPending.push(vout);
+            }
+          }
+          if (stillPending.length === 0) {
+            _clearPendingChunkedListing(NET.name, revealTxid);
+            toast(`Published ${publishedNow.length} chunk${publishedNow.length === 1 ? '' : 's'} — your listing is complete.`, 'success', 6000);
+          } else {
+            _savePendingChunkedListing({
+              ...rec,
+              chunks_published: rec.chunks_published + publishedNow.length,
+              pending_vouts: stillPending,
+              last_error: lastErr || rec.last_error,
+              last_attempt_ts: Math.floor(Date.now() / 1000),
+            });
+            toast(`Resumed ${publishedNow.length} chunk${publishedNow.length === 1 ? '' : 's'}; ${stillPending.length} still pending — try again or check worker status.`, 'warn', 8000);
+          }
+          invalidateMarketCache();
+          invalidateHoldingsCache();
+          renderHoldings();
+        } else if (b.dataset.act === 'abandon-chunked-listings') {
+          const aidA = b.dataset.aid;
+          const revealTxid = b.dataset.revealTxid;
+          const ok = await tacitConfirm({
+            title: 'Discard recovery record?',
+            body: 'The chunk UTXOs stay safely in your wallet — only the recovery shortcut is removed. You can still list each chunk individually from the per-UTXO dropdown, merge them later via a CXFER, or hold.',
+            confirmLabel: 'Discard',
+          });
+          if (!ok) return;
+          _clearPendingChunkedListing(NET.name, revealTxid);
+          renderHoldings();
+          toast('Recovery record discarded.', '');
         } else if (b.dataset.act === 'copy-taker-pub') {
           // OTC delivery helper: copy the taker's pubkey verbatim from the
           // claim row so the maker can paste it into Send Privately (or
@@ -33418,8 +33561,36 @@ async function renderHoldings() {
                 });
                 setProgressStrip(pubStrip, 2);
                 if (r.error) throw new Error(r.error);
+                // Save a recovery record on partial-publish failure. The
+                // fan-out CXFER has already confirmed (fees paid); the
+                // un-published chunk UTXOs are sitting in holdings. With
+                // this record, renderHoldings can surface a "↻ Resume"
+                // banner that batch-republishes the remaining chunks
+                // WITHOUT re-fanning — prevents the "list fails, retry,
+                // fan out again, fees deducted" loop.
+                if (r.partialFailure && r.chunks_published < r.chunks_requested) {
+                  _savePendingChunkedListing({
+                    network: NET.name,
+                    aid: target.assetIdHex,
+                    ticker: target.ticker,
+                    decimals: target.decimals,
+                    revealTxid: r.revealTxid,
+                    group_id: r.group_id,
+                    chunk_amount: r.chunk_amount?.toString?.() || String(r.chunk_amount || ''),
+                    chunks_published: r.chunks_published,
+                    chunks_requested: r.chunks_requested,
+                    pending_vouts: Array.from(
+                      { length: r.chunks_requested - r.chunks_published },
+                      (_, i) => r.chunks_published + i,
+                    ),
+                    min_price_sats: minPriceSats,
+                    expiry,
+                    last_error: r.partialFailure,
+                    last_attempt_ts: Math.floor(Date.now() / 1000),
+                  });
+                }
                 const successLine = r.partialFailure
-                  ? `<strong>⚠ Partial publish:</strong> ${r.chunks_published} of ${r.chunks_requested} chunks listed. Remaining chunk UTXOs are in your holdings — retry from the dropdown above.<br><span class="muted" style="font-size:10px;">${escapeHtml(r.partialFailure)}</span>`
+                  ? `<strong>⚠ Partial publish:</strong> ${r.chunks_published} of ${r.chunks_requested} chunks listed. ${r.chunks_requested - r.chunks_published} chunk${(r.chunks_requested - r.chunks_published) === 1 ? '' : 's'} await retry — saved a recovery record to your Holdings card so you can resume with one click (no extra Bitcoin fees).<br><span class="muted" style="font-size:10px;">${escapeHtml(r.partialFailure)}</span>`
                   : `<strong>✓ ${r.chunks_published} chunks published</strong>`;
                 toast(r.partialFailure
                   ? `Chunked listing: ${r.chunks_published}/${r.chunks_requested} published`
