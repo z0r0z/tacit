@@ -1166,14 +1166,18 @@ preserving burn-grief immunity for fully-async UX. v1 accepts the
 online-window cost as the price of working on today's Bitcoin.
 
 **Trader binding to clearing price.** The trader's `intent_sig`
-commits `min_out`. Because `P_clear` is itself fully determined by
-the deterministic clearing solve over the included subset, the
-settler has no pricing freedom to abuse — only subset-selection
-freedom (further constrained by mandatory-inclusion for pools
-that pin an arbiter). The in-circuit `amount_out_i ≥ min_out_i`
-check is the trader's per-intent veto: any subset whose solve
-produces a `P_clear` that fails the trader's `min_out` drops the
-intent and re-solves. No delegated clearing-price-signing needed.
+commits `min_out`. The indexer enforces the deterministic clearing
+price through the Groth16 batch proof (uniform per-trader fill
+constraint) + chain-side aggregate Pedersen identity + per-trader
+`min_out` check — see §"Uniform clearing" for the full layered
+mechanism. With a tight `min_out` set by the dapp the settler has
+effectively no pricing freedom: the realized fill is pinned to a
+single point. With a loose `min_out` the settler retains discretion
+in a bounded range above `min_out` and below the no-fee curve.
+Either way the in-circuit `amount_out_i ≥ min_out_i` check is the
+trader's per-intent veto; subset selection is further constrained
+by mandatory-inclusion for pools that pin an arbiter. No delegated
+clearing-price-signing needed.
 
 ## Uniform clearing
 
@@ -1460,11 +1464,34 @@ B→A trader receives `amount_out_i = ⌊amount_in_i · P_clear⌋` (in
 A). All floor-rounding favors the pool; truncated dust accrues as
 fee-revenue to LPs (bounded above by `N` base units per batch).
 
-The result `(Δa_net, Δb_net, P_clear)` is **the** answer the
-indexer expects. Envelopes whose declared deltas differ from the
-indexer's re-derived solve at the post-prior-batch reserves — by
-even one base unit — are rejected. There is no settler freedom in
-pricing, only in subset selection.
+The result `(Δa_net, Δb_net, P_clear)` is **the** canonical answer
+of the deterministic solve. The indexer enforces it through three
+layered constraints, none of which is "re-run the solve" (the
+indexer can't — `X` and `Y` are private):
+
+  1. The Groth16 batch proof commits the public `(Δa_net, Δb_net)`
+     to the curve at a uniform per-trader fill price (a
+     division-with-remainder constraint forces `amount_out_i =
+     floor(amount_in_swap_i · P_clear)` for every active intent).
+  2. The chain-side aggregate Pedersen identity per asset binds
+     the public deltas to the actual sum of committed in/out
+     amounts: `Σ C_in − Σ C_out − tip·H − Δ·H == R_net · G`. A
+     settler who declared the wrong delta would have to find a
+     blinding-sum the kernel sig also commits to — equivalent to
+     forging a Schnorr signature.
+  3. Per-trader `min_out` is checked against the realized fill.
+
+Together (1) + (2) + (3) bound settler freedom to a narrow range
+between the with-fee and no-fee curves above each trader's
+`min_out`. The reference dapp sets tight `min_out` (recommended:
+within the spread on the deterministic solve) which collapses the
+range to a single point and recovers the "no settler pricing
+freedom" property. A trader who submits an intent with loose
+`min_out` accepts the corresponding settler discretion as the
+cost of relaxed slippage tolerance — value cannot be extracted
+from LPs (constant-product invariant) and the trader's economics
+are still bounded by their own `min_out`, but the fill may not
+match the strict deterministic solve.
 
 Fee `γ` applies only to the **net-inflowing side**: the offsetting
 portion of intents that cancel within a batch pays no fee; only
