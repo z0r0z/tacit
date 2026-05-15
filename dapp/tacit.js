@@ -36630,9 +36630,30 @@ function applyMarketFilters() {
     const _amountLine = _isVariableIntent
       ? `<span style="font-size:10px;color:var(--ink-mid);font-weight:400;letter-spacing:0.04em;text-transform:uppercase;">from</span> ${escapeHtml(fmtAssetAmount(BigInt(l.min_take_amount || '0'), dec))} <span style="font-size:11px;color:var(--ink-mid);">·</span> <span style="font-size:11px;color:var(--ink-mid);">up to ${escapeHtml(fmtAssetAmount(_remAmtBig, dec))}${_partiallyFilled ? ` <small class="muted" style="font-size:9px;" title="${escapeHtml(fmtAssetAmount(_remAmtBig, dec))} ${escapeHtml(a.ticker || 'token')} of ${escapeHtml(fmtAssetAmount(_origAmtBig, dec))} ${escapeHtml(a.ticker || 'token')} originally listed remain tradable. Fills landing across blocks decrement this.">(of ${escapeHtml(fmtAssetAmount(_origAmtBig, dec))} listed)</small>` : ''}</span>`
       : `${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(_origAmtBig, dec))}`;
+    // Fill-progress bar for partially-filled variable-amount listings.
+    // Visualizes (filled / original) so a taker scanning the ladder can
+    // see at a glance which tiles have been drained vs. which are
+    // fresh. Thin 3px bar; filled portion in green (matches the +Δ
+    // chip color so the eye reads it as "already trading"); empty
+    // portion in faint background. Only renders when actually
+    // partially filled — fresh listings show no bar, keeping the
+    // tile uncluttered. BigInt math to keep precision on large
+    // 9.9M-TAC listings; Number conversion is safe because the
+    // ratio is always in [0, 1].
+    let _fillProgressBar = '';
+    if (_partiallyFilled && _origAmtBig > 0n) {
+      const _filledBig = _origAmtBig - _remAmtBig;
+      // Round to whole percent for the inline-style width string. Number
+      // conversion of (filledBig * 10000n / origAmtBig) is fine because
+      // the dividend is bounded by 10000n.
+      const _pctBp = Number((_filledBig * 10000n) / _origAmtBig);
+      const _pctStr = (_pctBp / 100).toFixed(_pctBp >= 100 ? 0 : 1);
+      _fillProgressBar = `<div class="market-listing-fill-bar" style="margin-top:6px;height:3px;background:var(--ink-faint, #dcd7c8);position:relative;overflow:hidden;" title="${escapeHtml(_pctStr)}% of the original ${escapeHtml(fmtAssetAmount(_origAmtBig, dec))} ${escapeHtml(a.ticker || 'token')} listing has already filled. The remaining ${escapeHtml(fmtAssetAmount(_remAmtBig, dec))} ${escapeHtml(a.ticker || 'token')} is still tradable."><div style="width:${_pctBp / 100}%;height:100%;background:#0a8f43;"></div></div>`;
+    }
     tile.innerHTML = `
       ${_tileTopHtml}
       <div class="market-listing-amount">${_amountLine}${_groupBadge}</div>
+      ${_fillProgressBar}
       <div class="market-listing-unit">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
         <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` per token` : ''}</small>
