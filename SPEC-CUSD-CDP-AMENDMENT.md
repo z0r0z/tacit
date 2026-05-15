@@ -1391,15 +1391,29 @@ For wrappers using per-user DLC custody, metadata specifies:
 ```jsonc
 "custody": {
   "kind": "user_dlc",
-  "oracle_aggregate_pubkey": "02ab...",      // current epoch's attester aggregate
-  "epoch_blocks": 1008,                       // epoch length
-  "csv_escape_blocks": 26280                  // user-side CSV unlock timeout
+  // reserve_address is OMITTED per §4.2.2 — backing is per-CDP, not at one address.
+  "oracle_aggregate_pubkey": "02ab...",      // ADVISORY: current epoch's attester aggregate.
+                                              // Stale-allowed; see note below.
+  "epoch_blocks": 1008,                       // epoch length (authoritative)
+  "csv_escape_blocks": 26280                  // user-side CSV unlock timeout (authoritative)
 }
 ```
 
-`oracle_aggregate_pubkey` updates at each epoch boundary; indexers
-look it up from current `T_ORACLE_GRADUATE` / DKG records rather
-than from static metadata.
+**`oracle_aggregate_pubkey` is advisory and may be stale.** It records
+the attester aggregate at metadata-pinning time but rotates every
+`epoch_blocks` Bitcoin blocks. Indexers MUST resolve the *current*
+aggregate from the latest `T_ORACLE_GRADUATE` (epoch 0 → 1
+transition) and subsequent epoch-boundary DKG records, NOT from the
+static metadata field. The metadata value is preserved for archival
+verification and for pre-amendment-aware UIs that want to display
+the genesis-epoch aggregate. Wallets and indexers MUST NOT use the
+metadata value to sign or verify current-epoch operations.
+
+This is the only field in the wrapper convention that may legitimately
+become stale relative to chain state. All other `tacit_wrapper`
+fields are immutable per asset_id (since metadata is content-
+addressed; rotating any other field requires a new CETCH and a new
+asset_id — for canonical assets, a future amendment).
 
 ### 6.4.3 Canonical assets bypass CETCH
 
@@ -1409,9 +1423,26 @@ about them from this spec amendment. The wrapper-convention
 metadata is **synthesized** by the indexer from spec constants +
 current epoch's oracle state.
 
+Canonical assets enter the wrapper registry via the **protocol-derived
+registration path** documented in SPEC.md §4.2.5 (item 2). Indexers
+post-amendment MUST include canonical cBTC and canonical cUSD in
+every `GET /wrappers/{chain}/{asset}` response for `(bitcoin, native)`
+and `(usd, oracle)` respectively, returning them as first-class
+variants alongside any CETCH-issued ones. Routing, coverage, and
+attestation queries treat synthesized variants identically to
+CETCH-derived ones.
+
 A query for `GET /wrappers/{canonical_cbtc_asset_id}` returns the
 canonical metadata as if it had been etched, but without an
 underlying CETCH tx.
+
+**Synthesized metadata is never stale.** Unlike CETCH-pinned
+metadata (immutable per asset_id), synthesized metadata is rebuilt
+on demand from current spec constants + current epoch state at
+query time. The `oracle_aggregate_pubkey` flagged as advisory-only
+in §6.4.2 is therefore always the current value when read from a
+canonical asset's synthesized blob — the staleness caveat applies
+to CETCH-pinned user_dlc variants, not to canonical assets.
 
 **Metadata-CID divergence from wrapper convention.** The wrapper
 convention (§4.2.1) describes wrapper metadata as IPFS-pinned and
@@ -1466,6 +1497,17 @@ Any AMM `POOL_INIT` (`T_LP_ADD(variant=1)`) whose `asset_A` or
 `protocol_fee_bps = 0`. Indexers MUST reject canonical-pool inits
 that violate this constraint.
 
+This is the **amendment-scoped exception** anticipated by SPEC.md
+§4.2.3 ("No protocol-level rejection — Exception"). The wrapper
+convention's default is advisory; the CDP amendment overrides that
+default for AMM-pool inits touching canonical assets specifically.
+The override does NOT extend to other transaction kinds against
+canonical assets (transfers, swaps, T_CDP_OPEN/CLOSE, etc.) — those
+remain governed by their respective validator rules. The override
+also does NOT extend to non-canonical wrapper variants — federated
+variants (`cBTC.tac/cUSD.federation`, etc.) remain free to choose
+their own protocol-fee parameters.
+
 **Rationale.** The CDP machinery (§6.3.5) already collects two
 streams of protocol revenue from canonical-asset users:
 - a 5% stability fee on every cUSD liquidation, paid in sats to
@@ -1475,10 +1517,7 @@ streams of protocol revenue from canonical-asset users:
 
 Stacking the AMM protocol-fee skim on top would double-charge
 liquidity providers in canonical-pair pools, dampening the
-LP-incentive that backstops the oracle bond. Federated wrapper
-variants (`cBTC.tac/cUSD`, etc.) remain free to set whatever AMM
-protocol-fee parameters their issuer chooses — the constraint
-applies **only to pools touching canonical assets**.
+LP-incentive that backstops the oracle bond.
 
 ### 6.4.5 Open-issuer marketplace coexistence
 
