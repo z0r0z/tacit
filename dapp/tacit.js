@@ -27000,7 +27000,16 @@ async function _renderClaimTreasuryFundPanel() {
     ? _loadClaimSubs()[`${_claimSnapshot.merkle_root}:${_claimEligibleRow.index}`]
     : null;
   const tickerForTerminal = _claimSnapshot.asset_ticker || '?';
-  if (existing?.verified_at) {
+  // Worker-paid signal mirrors the discover-list filter: if the queue-health
+  // cache reports this leaf has paid_at / payout_txid stamped, the drop is
+  // settled even when this device has no local submission record (cross-
+  // device claim, cleared storage, wallet-locked verifier). Surface the
+  // terminal state instead of letting the user re-sign / re-tip.
+  const _qhTerminal = _claimEligibleRow
+    ? _claimQueueHealthByRoot.get(_claimSnapshot.merkle_root)
+    : null;
+  const workerPaidTerminal = !!(_qhTerminal && _qhTerminal.paidLeaves && _qhTerminal.paidLeaves.has(_claimEligibleRow?.index));
+  if (existing?.verified_at || workerPaidTerminal) {
     out.innerHTML = `
       <div class="warn" style="border-left-color:var(--green);background:var(--bg-warm);">
         <strong>✓ Already claimed.</strong> Your ${escapeHtml(tickerForTerminal)} is in your tacit wallet — open the <a href="#tab=holdings" id="claim-already-holdings-link">Holdings tab</a>.
@@ -28160,6 +28169,7 @@ async function _pollClaimSubmissionsStatus() {
   };
   for (const [root, claims] of byRoot) {
     let queued = null;
+    let paidByLeaf = null;
     try {
       const url = `${WORKER_BASE}/airdrops/${root}/claims?network=${encodeURIComponent(NET.name)}`;
       const r = await fetch(url);
@@ -28167,6 +28177,17 @@ async function _pollClaimSubmissionsStatus() {
         const j = await r.json();
         const claimsList = Array.isArray(j.claims) ? j.claims : [];
         queued = new Set(claimsList.map(x => Number(x.leaf_index)));
+        // Map of leaf_index → worker record so the per-claim loop below can
+        // check `paid_at` / `payout_txid` and promote the local submission
+        // to verified without needing a holdings scan (which silently no-ops
+        // when the wallet is locked under lazy-unlock).
+        paidByLeaf = new Map();
+        for (const x of claimsList) {
+          if (x.paid_at || x.payout_txid) {
+            const li = Number(x.leaf_index);
+            if (Number.isInteger(li)) paidByLeaf.set(li, x);
+          }
+        }
         // Populate queue-health cache. The daemon processes leaves in
         // ascending order (KV list iteration matches the padded suffix on
         // the claim key), so the position-from-front of the user's leaf
@@ -28184,12 +28205,23 @@ async function _pollClaimSubmissionsStatus() {
           depth: claimsList.length,
           sortedLeaves,
           oldestSubmitted,
+          paidLeaves: new Set(paidByLeaf.keys()),
           fetchedAt: Date.now(),
         });
       }
     } catch { /* network blip — try again next tick */ }
     for (const c of claims) {
-      if (queued && !queued.has(Number(c.leaf_index))) {
+      const leafNum = Number(c.leaf_index);
+      // Worker-paid signal: the fulfiller's POST /claims/.../paid stamped
+      // paid_at + payout_txid. Strong, signed-by-issuer fulfilment proof —
+      // promote to verified immediately so the discover list and wizard's
+      // terminal-state branch update on the next render, even if the wallet
+      // is locked and the holdings scan below can't run.
+      if (paidByLeaf && paidByLeaf.has(leafNum)) {
+        _markClaimVerified(c.merkle_root, c.leaf_index);
+        continue;
+      }
+      if (queued && !queued.has(leafNum)) {
         _markClaimDequeued(c.merkle_root, c.leaf_index);
       }
       // Independent on-chain check (runs regardless of queue state — even
@@ -28645,9 +28677,25 @@ function _renderClaimDiscoverList() {
                  : 'submitted';
       }
     }
-    return { d, snap, eligibleRow, snapshotState, subState };
+    // Worker-paid signal: the queue-health probe records every leaf the
+    // worker has stamped with paid_at / payout_txid. If the user's eligible
+    // leaf is in that set, the drop has already been settled to them —
+    // independent of whether this device has a local submission record.
+    // Covers cross-device claims, cleared localStorage, and the wallet-
+    // locked case where _pollClaimSubmissionsStatus' holdings scan can't
+    // promote the local sub to verified. Treated as a stronger signal than
+    // any local subState below.
+    let workerPaid = false;
+    if (eligibleRow) {
+      const qh = _claimQueueHealthByRoot.get(d.merkle_root);
+      if (qh && qh.paidLeaves && qh.paidLeaves.has(eligibleRow.index)) {
+        workerPaid = true;
+      }
+    }
+    return { d, snap, eligibleRow, snapshotState, subState, workerPaid };
   }).filter(r => {
     if (!r.eligibleRow) return true;
+    if (r.workerPaid) { hiddenClaimedCount++; return false; }
     if (r.subState === 'verified') { hiddenClaimedCount++; return false; }
     return true;
   });
