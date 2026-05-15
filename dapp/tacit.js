@@ -2433,7 +2433,24 @@ async function _getUtxosViaTxHistory(a) {
 // chain_stats.tx_count) and reuse the cached UTXO list when tx_count is
 // unchanged. Small wallets stay on the direct /utxo path with no sniff
 // overhead. Cleared by invalidateHoldingsCache so broadcasts force a refetch.
-const _heavyAddresses = new Set();
+// Persisted across reloads so a heavy wallet doesn't fire a /utxo 400 every
+// page load just to re-discover it's heavy. localStorage keyed per-network
+// since a wallet's heaviness is network-specific (signet test wallet may be
+// huge on signet, fresh on mainnet).
+const _HEAVY_ADDR_KEY = () => `tacit-heavy-addrs-v1:${NET.name}`;
+function _loadHeavyAddressesFromStorage() {
+  try {
+    const raw = localStorage.getItem(_HEAVY_ADDR_KEY());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter(s => typeof s === 'string') : [];
+  } catch { return []; }
+}
+function _saveHeavyAddressesToStorage() {
+  try { localStorage.setItem(_HEAVY_ADDR_KEY(), JSON.stringify([..._heavyAddresses])); }
+  catch { /* quota — fine; in-memory still works for this session */ }
+}
+const _heavyAddresses = new Set(_loadHeavyAddressesFromStorage());
 const _utxoCacheByTxCount = new Map(); // addr -> { txCount, utxos }
 // Session-scoped "this UTXO was just spent by a tx we broadcast" tracker.
 // Solves the indexer-lag race during back-to-back broadcasts (sweep buy,
@@ -2472,7 +2489,15 @@ function _isRecentlySpent(txid, vout) {
   }
   return true;
 }
-function invalidateUtxoCache() { _utxoCacheByTxCount.clear(); _heavyAddresses.clear(); }
+function invalidateUtxoCache() {
+  _utxoCacheByTxCount.clear();
+  // DON'T clear _heavyAddresses: a single broadcast won't take a 1500-UTXO
+  // wallet down to <500. Clearing forces the next refresh to fire a /utxo
+  // call which 400s, just to re-discover the address is heavy. Once flagged,
+  // an address stays heavy across this session AND across reloads (the set
+  // is hydrated from localStorage). The chain-walk fallback is the canonical
+  // path for these wallets anyway.
+}
 async function _populateUtxoCache(a, utxos) {
   // Background sniff: fetch chain_stats.tx_count and stash alongside the just-
   // fetched utxos so the next getUtxos call can short-circuit. Fire-and-forget;
@@ -2533,6 +2558,7 @@ async function getUtxos(a) {
     );
     if (isHeavyAddrError) {
       _heavyAddresses.add(a);
+      _saveHeavyAddressesToStorage();
       const utxos = await _getUtxosViaTxHistory(a);
       _populateUtxoCache(a, utxos);
       return _filterRecent(utxos);
@@ -21888,6 +21914,101 @@ function _persistImgCacheEntry(imageUri, resolved, extra) {
   _imgCachePersisted[imageUri] = { resolved, extra: extra || null, ts: Date.now() };
   _scheduleImgCacheFlush();
 }
+
+// Bulk asset-metadata pre-warm. Called right after fetchMarketData() so the
+// per-tile IntersectionObserver-gated resolveImageUri() calls find cached
+// data instead of issuing N individual round-trips through the worker IPFS
+// proxy. Pulls every asset's image_uri CID, fires one POST /ipfs/batch
+// (32-CID cap; chunked above that), parses the returned metadata JSON,
+// and populates _resolvedImageCache + _metadataExtraCache + persisted layer
+// so subsequent renders are pure cache hits.
+//
+// Best-effort: a batch endpoint miss (worker not deployed, CID returns
+// non-JSON, etc.) falls through silently — the per-tile resolveImageUri
+// path handles those CIDs individually with its own gateway logic.
+async function _bulkPrefetchAssetMetadata(assets) {
+  if (!Array.isArray(assets) || assets.length === 0) return;
+  if (!WORKER_BASE || _workerKnownBad) return;
+  // Extract (originalImageUri, cid) pairs for assets whose CID we can
+  // recover. Skip ones already cached so we don't waste batch slots.
+  _ensureImgCacheHydrated();
+  const cidToUri = new Map();
+  for (const a of assets) {
+    const imageUri = a?.image_uri;
+    if (!imageUri || typeof imageUri !== 'string') continue;
+    if (_resolvedImageCache.has(imageUri)) continue;
+    // Match the same CID-extraction rules resolveImageUri's outer
+    // normalizeImageUri uses: ipfs://<CID>, bare Qm…/baf…, or
+    // /ipfs/<CID> path within an https URL.
+    let cid = null;
+    const m = imageUri.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
+    if (m) cid = m[1];
+    else if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(imageUri)) cid = imageUri;
+    else if (/^baf[a-z0-9]{50,80}$/i.test(imageUri)) cid = imageUri;
+    else {
+      const m2 = imageUri.match(/\/ipfs\/([A-Za-z0-9]+)/);
+      if (m2) cid = m2[1];
+    }
+    if (cid && !cidToUri.has(cid)) cidToUri.set(cid, imageUri);
+  }
+  if (cidToUri.size === 0) return;
+  // Chunk into batches of 32 (matches worker cap).
+  const cids = [...cidToUri.keys()];
+  for (let i = 0; i < cids.length; i += 32) {
+    const chunk = cids.slice(i, i + 32);
+    try {
+      const r = await fetch(`${WORKER_BASE}/ipfs/batch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cids: chunk }),
+      });
+      if (r.status === 404) { _markWorkerKnownBad(); return; }
+      if (!r.ok) continue;
+      const j = await r.json();
+      const blobs = j?.blobs || {};
+      for (const [cid, data] of Object.entries(blobs)) {
+        if (!data || data.error) continue;
+        const imageUri = cidToUri.get(cid);
+        if (!imageUri) continue;
+        // Mirror resolveImageUri's extraction: pull the inner image CID
+        // from the metadata's `image` field (if present) + extract the
+        // name/description/external_url/tacit_attest extras.
+        let resolved = null;
+        let extra = null;
+        if (data && typeof data === 'object') {
+          if (typeof data.image === 'string') {
+            const innerRaw = data.image.trim();
+            let innerCid = null;
+            const mm = innerRaw.match(/^ipfs:\/\/([A-Za-z0-9]+)/);
+            if (mm) innerCid = mm[1];
+            else if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(innerRaw)) innerCid = innerRaw;
+            else if (/^baf[a-z0-9]{50,80}$/i.test(innerRaw)) innerCid = innerRaw;
+            if (innerCid) resolved = `${IPFS_GATEWAY}${innerCid}`;
+          }
+          const rawExternal = typeof data.external_url === 'string' ? data.external_url.trim() : '';
+          const safeExternal = /^https:\/\//i.test(rawExternal) ? rawExternal : null;
+          const rawName = typeof data.name === 'string' ? data.name.trim().replace(/[\x00-\x1f\x7f]/g, '').slice(0, 64) : '';
+          extra = {
+            name: rawName || null,
+            description: typeof data.description === 'string' ? data.description : null,
+            external_url: safeExternal,
+          };
+          if (data.tacit_attest
+              && /^\d+$/.test(String(data.tacit_attest.supply || ''))
+              && /^[0-9a-f]{64}$/.test(String(data.tacit_attest.blinding || ''))) {
+            extra.tacit_attest = {
+              supply: String(data.tacit_attest.supply),
+              blinding: String(data.tacit_attest.blinding),
+            };
+          }
+        }
+        _resolvedImageCache.set(imageUri, resolved);
+        if (extra) _metadataExtraCache.set(imageUri, extra);
+        _persistImgCacheEntry(imageUri, resolved, extra);
+      }
+    } catch { /* network blip — per-tile path handles fallback */ }
+  }
+}
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden' && _imgCacheFlushTimer) {
@@ -37074,6 +37195,13 @@ async function renderMarket() {
     // round-trip. _marketCache + _marketFetchedAt get populated inside
     // fetchMarketDataDeduped on success.
     await fetchMarketDataDeduped();
+    // Pre-warm asset metadata cache in one batch round-trip so individual
+    // tile renders that follow are pure cache hits. Fire-and-forget; the
+    // per-tile IntersectionObserver path remains as the fallback for any
+    // CID the batch missed (worker outage, non-JSON content, etc.).
+    if (_marketCache && Array.isArray(_marketCache.assets)) {
+      _bulkPrefetchAssetMetadata(_marketCache.assets).catch(() => {});
+    }
     refreshMarketBtcUsd().then(() => applyMarketFilters()).catch(() => {});
     applyMarketFilters();
     setTabBadge('market', _marketCache?.listings?.length || 0);

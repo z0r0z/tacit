@@ -2549,6 +2549,88 @@ async function handleIpfsProxy(req, env, cors) {
   return new Response(winner.r.body, { status: winner.r.status, headers: respHeaders });
 }
 
+// Bulk asset-metadata batch fetcher. Body: { "cids": [...] }, response:
+// { "blobs": { "<cid>": <parsed-json> | { error } } }. Each CID is raced
+// across the same 5 gateways used by /ipfs/<cid> with the same per-CID
+// edge cache. Cap = 32 CIDs per call to bound worker CPU + fan-out.
+async function handleIpfsBatch(req, env, cors) {
+  let body;
+  try { body = await req.json(); }
+  catch { return new Response(JSON.stringify({ error: 'expected JSON body' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } }); }
+  const cids = Array.isArray(body?.cids) ? body.cids : null;
+  if (!cids) return new Response(JSON.stringify({ error: 'missing or non-array `cids`' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } });
+  if (cids.length === 0) return new Response(JSON.stringify({ blobs: {} }), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
+  if (cids.length > 32) return new Response(JSON.stringify({ error: 'batch capped at 32 CIDs per request' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } });
+  const out = {};
+  // Validate CID format and skip duplicates.
+  const valid = [];
+  const seen = new Set();
+  for (const cid of cids) {
+    if (typeof cid !== 'string') { out[String(cid)] = { error: 'malformed CID' }; continue; }
+    const okV0 = /^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(cid);
+    const okV1 = /^baf[a-z2-7]{50,80}$/i.test(cid);
+    if (!okV0 && !okV1) { out[cid] = { error: 'invalid CID format' }; continue; }
+    if (seen.has(cid)) continue;
+    seen.add(cid);
+    valid.push(cid);
+  }
+  // Per-CID gateway race. Each fetch uses the same parallel-race + abort
+  // pattern as handleIpfsProxy, with 12s per-gateway timeout. Results are
+  // parsed as JSON (asset metadata is always JSON for tacit-side use);
+  // CIDs whose body is image bytes or non-JSON come back as
+  // { error: 'not json' } and callers fall through to /ipfs/<cid>.
+  const fetches = valid.map(async (cid) => {
+    const result = await _raceIpfsGatewaysForJson(cid);
+    out[cid] = result;
+  });
+  await Promise.all(fetches);
+  const headers = new Headers(cors);
+  headers.set('Content-Type', 'application/json');
+  // Batch responses safe to cache 5min — individual /ipfs/<cid> entries
+  // are content-addressed (immutable) but the batch's exact set is rare to
+  // repeat verbatim, so a short max-age is the right tradeoff.
+  headers.set('Cache-Control', 'public, max-age=300');
+  return new Response(JSON.stringify({ blobs: out }), { status: 200, headers });
+}
+
+// Internal helper: race 5 IPFS gateways for one CID, return parsed JSON or
+// an error object. Aborts losers when winner returns. 24h cf.cacheTtl on
+// the gateway hit so popular metadata gets served from CF edge on next call.
+const _IPFS_GATEWAYS_BATCH = [
+  'https://content.wrappr.wtf/ipfs/',
+  'https://ipfs.io/ipfs/',
+  'https://w3s.link/ipfs/',
+  'https://dweb.link/ipfs/',
+  'https://gateway.pinata.cloud/ipfs/',
+];
+async function _raceIpfsGatewaysForJson(cid) {
+  const controllers = _IPFS_GATEWAYS_BATCH.map(() => new AbortController());
+  const PER_GATEWAY_TIMEOUT_MS = 12_000;
+  const timers = controllers.map((c) => setTimeout(() => c.abort(), PER_GATEWAY_TIMEOUT_MS));
+  const attempts = _IPFS_GATEWAYS_BATCH.map(async (gw, i) => {
+    const r = await fetch(`${gw}${cid}`, {
+      signal: controllers[i].signal,
+      cf: { cacheTtl: 86400, cacheEverything: true },
+    });
+    if (!r.ok) throw new Error(`${gw}: HTTP ${r.status}`);
+    const ct = r.headers.get('Content-Type') || '';
+    if (/text\/html|application\/xhtml/i.test(ct)) throw new Error(`${gw}: HTML response`);
+    const text = await r.text();
+    // Asset metadata is small (≤8KB typical). Anything larger is almost
+    // certainly not metadata — bail rather than parsing megabytes.
+    if (text.length > 16 * 1024) throw new Error(`${gw}: body too large for metadata batch`);
+    let parsed;
+    try { parsed = JSON.parse(text); }
+    catch { throw new Error(`${gw}: not json`); }
+    return parsed;
+  });
+  let winner;
+  try { winner = await Promise.any(attempts); }
+  catch { return { error: 'all gateways failed or non-json' }; }
+  finally { for (const t of timers) clearTimeout(t); for (const c of controllers) c.abort(); }
+  return winner;
+}
+
 // Batch tx fetcher. Accepts up to 64 txids in one POST and returns a map
 // keyed by txid → tx object (Esplora shape) or { error: "..." } on per-txid
 // failure. Each upstream fetch goes through the same _buildUpstreamInit
@@ -10771,6 +10853,19 @@ export default {
     // content-addressed so cache invalidation is free.
     if (url.pathname.startsWith('/ipfs/') && req.method === 'GET') {
       return handleIpfsProxy(req, env, cors);
+    }
+    // Bulk asset-metadata fetch. The dapp uses this right after the market
+    // index returns: collects every asset's image_uri CID, fires one batch
+    // request, and pre-warms _resolvedImageCache + _metadataExtraCache before
+    // tiles begin rendering. N→1 round-trip collapse on top of the per-CID
+    // edge cache benefits the /ipfs/<cid> path already provides.
+    //
+    // Returns ONLY parsed JSON metadata. CIDs whose body isn't JSON (raw
+    // image bytes etc.) come back with { error: "not json" } — caller falls
+    // through to lazy /ipfs/<cid> for those. Cap = 32 CIDs per request to
+    // bound worker CPU + fan-out.
+    if (url.pathname === '/ipfs/batch' && req.method === 'POST') {
+      return handleIpfsBatch(req, env, cors);
     }
 
     // /pools — list initialized mixer pools (SPEC §5.10.1). Returns each
