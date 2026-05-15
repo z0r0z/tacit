@@ -3767,6 +3767,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-lock" title="Lock the in-browser tacit signing key. You'll be prompted for the passphrase on the next action.">Lock</button>
         <button id="btn-drip" class="primary">Demo drip</button>
         <button id="btn-ext-fund" class="primary" style="display:none;">Top up tacit</button>
+        <button id="btn-buy-btc" class="primary" style="display:none;">Buy / receive BTC</button>
         <button id="btn-ext-connect-xverse" class="primary">Connect Xverse / Leather</button>
         <button id="btn-ext-connect-unisat" class="primary">Connect UniSat</button>
         <button id="btn-passkey-add" class="primary" style="display:none;">Use a passkey</button>
@@ -5523,6 +5524,54 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div style="margin-top:10px;text-align:center;font-size:10px;">
         <a href="#" id="passkey-swap-mode" style="color:var(--ink-mid);text-decoration:underline dotted;">I already have a passkey — restore it</a>
       </div>
+    </div>
+  </div>
+</div>
+
+<!--
+  Top-up / receive modal. Two paths, no API keys required:
+    1. Card on-ramp — opens Onramper's public widget URL in a new tab with
+       the user's tacit address prefilled. Onramper aggregates MoonPay /
+       Transak / Banxa / Ramp under one flow; user picks region + provider
+       inside the widget. No partnership / key required for the public URL.
+    2. Pay from any Bitcoin wallet — renders bitcoin:<addr>?amount=<sats>
+       as a tappable URI (mobile wallets handle the scheme directly) plus
+       a copy-to-clipboard fallback for desktop. Works with Xverse,
+       UniSat, Leather, Strike, Phoenix, Wallet of Satoshi, any CEX
+       withdrawal — anything that sends BTC.
+-->
+<div id="topup-modal" class="welcome-modal" role="dialog" aria-modal="true" aria-labelledby="topup-title" style="display:none;">
+  <div class="welcome-card">
+    <div class="welcome-title" id="topup-title">top up <span class="accent">tacit</span></div>
+    <div class="welcome-lede">
+      Send BTC to your tacit address — <strong id="topup-addr-preview" class="mono-box inline" style="font-size:11px;"></strong>. Use either path; both deposit to the same address.
+    </div>
+    <div class="welcome-options">
+      <button id="topup-onramper" class="welcome-option welcome-option--primary" type="button">
+        <span class="welcome-option-title">buy with card / Apple Pay / SEPA</span>
+        <span class="welcome-option-meta">opens Onramper in a new tab — public widget that aggregates MoonPay / Transak / Banxa / Ramp. Your tacit address is prefilled. KYC + fees set by the chosen provider (~3–7% typical).</span>
+      </button>
+      <div class="welcome-divider">or already hold BTC?</div>
+      <button id="topup-uri" class="welcome-option" type="button">
+        <span class="welcome-option-title">pay from any Bitcoin wallet</span>
+        <span class="welcome-option-meta">tap to open in your default wallet (mobile), or copy the payment URI into Xverse / UniSat / Leather / Strike / Phoenix / Wallet of Satoshi / any CEX withdrawal.</span>
+      </button>
+      <div id="topup-uri-box" style="display:none;margin-top:10px;padding:12px;border:1px dashed var(--ink-faint);background:var(--bg-warm);">
+        <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">Payment URI</div>
+        <div class="mono-box" id="topup-uri-text" style="font-size:10px;word-break:break-all;"></div>
+        <div style="display:flex;gap:6px;margin-top:8px;">
+          <button id="topup-uri-copy" style="flex:1;font-size:10px;padding:4px 8px;">Copy URI</button>
+          <a id="topup-uri-open" href="#" style="flex:1;font-size:10px;padding:4px 8px;text-align:center;text-decoration:none;border:1px solid var(--ink);color:var(--ink);">Open in wallet</a>
+        </div>
+        <div class="muted" style="font-size:10px;margin-top:8px;line-height:1.5;">URI includes an optional amount field — leave it blank below for "pay any amount":</div>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+          <input type="number" id="topup-uri-sats" placeholder="amount (sats)" min="1" step="1" style="flex:1;font-size:10px;padding:4px 8px;">
+          <button id="topup-uri-apply" style="font-size:10px;padding:4px 8px;">Apply</button>
+        </div>
+      </div>
+    </div>
+    <div class="welcome-footer" style="display:flex;justify-content:flex-end;margin-top:14px;">
+      <button id="topup-cancel" type="button" style="font-size:11px;padding:6px 14px;">Close</button>
     </div>
   </div>
 </div>

@@ -21582,6 +21582,13 @@ function renderWalletCard(patch = {}) {
   if (dripBtn) dripBtn.style.display = (onSignet && userLow && FAUCET_URL && faucetReady) ? '' : 'none';
   if (manualFaucetBtn) manualFaucetBtn.style.display = (onSignet && userLow) ? '' : 'none';
   if (fundBtn) fundBtn.style.display = hasExt ? '' : 'none';
+  // Buy/receive BTC: card on-ramp + bitcoin: URI for any wallet. Mainnet
+  // only — signet has the faucet flow upstairs. Shown whenever a wallet
+  // identity exists, regardless of current balance, so users always have
+  // a discoverable funding path without needing to first run their
+  // balance dry.
+  const buyBtn = $('#btn-buy-btc');
+  if (buyBtn) buyBtn.style.display = (!onSignet && wallet.pub) ? '' : 'none';
   if (xBtn) xBtn.style.display = hasExt ? 'none' : '';
   if (uBtn) uBtn.style.display = hasExt ? 'none' : '';
   // Passkey upgrade affordance: parallel to the ext-connect buttons. Shown
@@ -21830,9 +21837,94 @@ function setupCustomApiPanel() {
   };
 }
 
+// Top-up modal: card on-ramp via Onramper + bitcoin:<addr> URI for any
+// existing wallet. Both are no-key, no-partnership paths — Onramper's
+// public widget accepts the destination address in the URL, and the URI
+// scheme is universal across BTC wallets / CEX withdrawals.
+//
+// Visibility (driven from renderWalletCard): mainnet only by default —
+// signet already has the faucet flow + free test sats. The URI path is
+// useful on signet too, but a user landing here on signet looking to
+// "buy BTC" probably just hasn't switched networks yet, so we keep the
+// signet copy focused on the faucet.
+function setupTopupModal() {
+  const btn = document.getElementById('btn-buy-btc');
+  const modal = document.getElementById('topup-modal');
+  const onramperBtn = document.getElementById('topup-onramper');
+  const uriBtn = document.getElementById('topup-uri');
+  const uriBox = document.getElementById('topup-uri-box');
+  const uriText = document.getElementById('topup-uri-text');
+  const uriCopy = document.getElementById('topup-uri-copy');
+  const uriOpen = document.getElementById('topup-uri-open');
+  const uriSats = document.getElementById('topup-uri-sats');
+  const uriApply = document.getElementById('topup-uri-apply');
+  const cancelBtn = document.getElementById('topup-cancel');
+  const addrPreview = document.getElementById('topup-addr-preview');
+  if (!btn || !modal || !onramperBtn || !uriBtn || !cancelBtn) return;
+
+  const buildUri = (sats) => {
+    let addr; try { addr = wallet.address(); } catch { return null; }
+    if (!addr) return null;
+    // BIP-21 amount is denominated in BTC, not sats. Skip the param when
+    // sats is empty/zero so wallets prompt for "any amount" rather than
+    // pre-filling 0.0 (which some clients silently reject).
+    const n = Math.max(0, Number(sats) | 0);
+    if (!n) return `bitcoin:${addr}`;
+    const btc = (n / 100_000_000).toFixed(8).replace(/\.?0+$/, '');
+    return `bitcoin:${addr}?amount=${btc}`;
+  };
+  const refreshUri = () => {
+    const uri = buildUri(uriSats.value);
+    if (!uri || !uriText || !uriOpen) return;
+    uriText.textContent = uri;
+    uriOpen.href = uri;
+  };
+  const close = () => { modal.style.display = 'none'; };
+
+  btn.onclick = () => {
+    let addr; try { addr = wallet.address(); } catch { addr = ''; }
+    if (!addr) { toast('Wallet not ready yet — try again in a moment.', 'error'); return; }
+    if (addrPreview) addrPreview.textContent = shorten(addr, 14);
+    if (uriBox) uriBox.style.display = 'none';
+    if (uriSats) uriSats.value = '';
+    refreshUri();
+    modal.style.display = 'grid';
+  };
+  cancelBtn.onclick = close;
+
+  onramperBtn.onclick = () => {
+    let addr; try { addr = wallet.address(); } catch { return; }
+    if (!addr) return;
+    // Onramper public widget URL. Accepts the destination address via
+    // `wallets=BTC:<addr>` and locks the supported crypto to BTC via the
+    // same param's currency prefix. No API key needed for the public
+    // widget; provider fees + routing are handled inside the iframe.
+    const url = `https://buy.onramper.com?wallets=BTC:${encodeURIComponent(addr)}&supportSwap=false`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  uriBtn.onclick = () => {
+    if (!uriBox) return;
+    uriBox.style.display = uriBox.style.display === 'none' ? '' : 'none';
+    refreshUri();
+  };
+  if (uriApply) uriApply.onclick = refreshUri;
+  if (uriSats) uriSats.onkeydown = (e) => { if (e.key === 'Enter') refreshUri(); };
+  if (uriCopy) uriCopy.onclick = async () => {
+    const uri = buildUri(uriSats.value);
+    if (!uri) return;
+    try { await navigator.clipboard.writeText(uri); toast('Payment URI copied', 'success'); }
+    catch { toast('Copy failed — select the URI text manually.', 'error'); }
+  };
+  // Click-outside-card dismiss. Use the modal-overlay click, not the
+  // welcome-card click, so taps inside the card don't accidentally close.
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+}
+
 function setupWalletButtons() {
   $('#btn-refresh').onclick = refreshWallet;
   setupCustomApiPanel();
+  setupTopupModal();
   // Soft lock: zero the priv from JS module memory without reloading. The
   // previous handler called location.reload() — correct for security but
   // hostile to UX (loses scroll position, open dialogs, in-flight requests).
