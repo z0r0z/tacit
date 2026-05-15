@@ -39754,7 +39754,7 @@ function renderMarketAssetStatsHTML(asset) {
            data-market-stat-last at click time so the dialog can echo
            "current mark: X sats/TOK" for context. -->
       <div style="margin-top:8px;display:flex;justify-content:flex-end;">
-        <button data-act="open-price-alert" data-aid="${aid}" data-ticker="${escapeHtml(asset.ticker || '?')}" type="button" title="Get notified when this asset's price crosses a threshold" style="font-size:10px;padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg);color:var(--ink-mid);cursor:pointer;font-family:var(--mono);">🔔 Set price alert</button>
+        <button data-act="open-price-alert" data-aid="${aid}" data-ticker="${escapeHtml(asset.ticker || '?')}" type="button" title="Get notified when this asset's price crosses a threshold" class="price-alert-btn">🔔 Set price alert</button>
       </div>
       <div data-chart-tf-wrap style="margin-top:10px;${prePaintedChartHtml ? '' : 'display:none;'}">${_tfRowHtml}</div>
       <div data-market-price-chart style="${prePaintedChartStyle}">${prePaintedChartHtml}</div>

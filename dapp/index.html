@@ -3010,16 +3010,17 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   .btn-cmd { min-width: 46px; font-size: 12px; }
 }
 /* Worker health pill: small colored dot that reflects the worker's
-   reachability. Pings every ~20s. Sits in the header to the LEFT of the
-   network select, so the two read as a "backend status" cluster distinct
-   from the action buttons (⌘K, bell, ?) on the left side of the row.
-   The wider left margin creates that visual grouping. cursor:help so
+   reachability. Pings every ~20s. Anchored on the FAR LEFT of the
+   .net-row — the action buttons (⌘K, bell, ?) cluster to its right
+   alongside the network select. The extra margin-right pushes a small
+   visual gap between this passive indicator and the active button group
+   so the eye reads them as different kinds of elements. cursor:help so
    the title attr reads as an explanation tooltip; the dot is decorative
    (state lives in data-state). */
 .worker-health {
   display: inline-flex; align-items: center; justify-content: center;
   width: 14px; height: 28px;
-  margin-left: 6px; margin-right: -2px;
+  margin-right: 6px;
   font-size: 11px; line-height: 1;
   color: var(--ink-mid); cursor: help;
   flex-shrink: 0;
@@ -3080,6 +3081,23 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 .swap-tile-strip .strip-delta { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
 .swap-tile-strip .strip-delta.up   { color: #0a8f43; }
 .swap-tile-strip .strip-delta.down { color: #b8341d; }
+
+/* "Set price alert" trigger button on the market asset stats strip. Subtle
+   hover that lifts the background + ink tone so the button reads as
+   interactive without dominating the strip. Same color tokens as the rest
+   of the dapp's ghost-button vocabulary. */
+.price-alert-btn {
+  font-size: 10px; padding: 3px 8px;
+  border: 1px solid var(--ink-faint); background: var(--bg);
+  color: var(--ink-mid); cursor: pointer; font-family: var(--mono);
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+.price-alert-btn:hover {
+  background: var(--bg-warm);
+  color: var(--ink);
+  border-color: var(--ink-mid);
+}
+.price-alert-btn:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
 
 /* "Repeat last swap" chip in the quickfill row. Distinct from the % chips
    so it reads as a different action. */
@@ -3517,8 +3535,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            keyboard shortcut (⌘K / Ctrl+K / `/`); the button is the only
            reachable entry on mobile, where there's no keyboard for those.
            setupCommandPalette() wires the click. -->
+      <!-- Worker health pill: pings WORKER_BASE every ~20s and colors a dot
+           green / amber / red so users can tell at a glance whether the
+           orderbook relay is live. Tooltip explains the state. Anchored
+           on the far left so the action-button cluster (⌘K, bell, ?) reads
+           as one tight group on the right, with the network select. -->
+      <span id="worker-health" class="worker-health" data-state="loading" title="Worker status — checking…" role="status" aria-live="polite">●</span>
       <!-- Action cluster: keyboard-equivalent + click-equivalent user actions.
-           Grouped with normal .net-row gap so they read as a unit. -->
+           Grouped tight with the normal .net-row gap so they read as a unit. -->
       <button id="btn-cmd" class="btn-help btn-cmd" type="button" aria-label="Open command palette" title="Open command palette (⌘K)">⌘K</button>
       <!-- Bell: opens the notification log (notif-log-modal). Inline SVG so
            the glyph stays monochrome and matches the boxed ⌘K / ? buttons
@@ -3533,15 +3557,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         </svg>
       </button>
       <button id="btn-faq" class="btn-help" type="button" aria-label="Help / FAQ" title="Frequently asked questions">?</button>
-      <!-- Status cluster: worker health + network. Separated from the action
-           cluster by a wider margin so the eye reads them as a different
-           kind of element (passive indicators vs. clickable controls). -->
-      <!-- Worker health pill: pings WORKER_BASE every ~20s and colors a dot
-           green / amber / red so users can tell at a glance whether the
-           orderbook relay is live. Tooltip explains the state. Pure visual
-           indicator — swaps still work in degraded mode (atomic settlement
-           is on-chain), the pill just sets expectations. -->
-      <span id="worker-health" class="worker-health" data-state="loading" title="Worker status — checking…" role="status" aria-live="polite">●</span>
       <select class="net-select" id="net-select" aria-label="Network">
         <option value="mainnet">mainnet</option>
         <option value="signet">signet</option>
@@ -5347,7 +5362,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="faq-body">
       <div class="faq-q">What is tacit?</div>
       <div class="faq-a">
-        Confidential token creation, sends, mints, and burns on Bitcoin. Supply can be public or hidden at issuance — your choice. No federation, no off-chain proofs, no third-party trust; your privkey plus the chain are enough to use it and to recover your full balance years later.
+        Confidential tokens on Bitcoin. Issue, send, mint, burn — with amounts hidden by Pedersen commitments and rangeproofs, settled in regular Bitcoin transactions. No federation, no off-chain proofs, no third-party trust. Your privkey plus the chain reconstruct your full balance, even years later on a fresh device.
       </div>
 
       <div class="faq-q">Why not just use Runes / Liquid / RGB?</div>
@@ -5357,7 +5372,16 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <div class="faq-q">What else can I do besides send / receive?</div>
       <div class="faq-a">
-        Three production extensions, each with its own dapp tab. <strong>Drops</strong> (<code>T_DROP</code> → <code>T_DCLAIM</code>, SPEC §5.12–§5.13) — lock existing supply into a public claim pool, optionally ETH-Merkle-gated; recipients self-claim first-come-first-served until the cap drains. <strong>Mixer</strong> (<code>T_DEPOSIT</code> → <code>T_WITHDRAW</code>, SPEC §5.10–§5.11) — deposit a fixed-denomination UTXO into a shielded pool and withdraw to a fresh pubkey via Groth16 proof; breaks the on-chain deposit→withdraw link. <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>, SPEC §5.8–§5.9) — deploy a permissionless mint under a public cap; anyone broadcasts mint tx until the cap fills, supply auditable from chain alone.
+        <strong>Trade</strong> on the built-in orderbook — atomic-intent OTC (<code>T_AXFER</code> §5.7.6), variable-amount intents (<code>T_AXFER_VAR</code> §5.7.6.1), and variable-fill bids (§5.7.7). Every fill is one Bitcoin tx, signed by both parties, settled atomically.
+        <strong>Drops</strong> (<code>T_DROP</code> / <code>T_DCLAIM</code>) — lock existing supply into a public claim pool, optionally Merkle-gated.
+        <strong>Mixer</strong> (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>) — break the on-chain link between deposit and withdraw via Groth16.
+        <strong>Fair-launch mints</strong> (<code>T_PETCH</code> / <code>T_PMINT</code>) — permissionless cap-gated minting.
+        <em>Shipping next:</em> confidential block-batched AMM (SPEC §5.14–§5.18, Phase 2 trusted setup in progress) and the wrapper convention (SPEC §4.2, merged) for assets like cBTC backed 1:1 by sats with on-chain reserve verification.
+      </div>
+
+      <div class="faq-q">Is there MEV / front-running?</div>
+      <div class="faq-a">
+        Not by construction. Every orderbook fill is a single atomic Bitcoin tx — once the maker and taker both sign, only the holder can broadcast, and the trade either settles fully or doesn't. There's no public mempool ordering game, no privileged sequencer, no sandwich window. When the AMM ships, it batches all swap intents per block at one uniform clearing price so sandwich attacks have nothing to sandwich.
       </div>
 
       <div class="faq-q">How do I see my tacit balances?</div>
@@ -5368,7 +5392,6 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="faq-q">Am I locked into your platform?</div>
       <div class="faq-a">
         No. The protocol spec is open (MIT); any indexer reaches the same verdict from chain alone, and the dApp itself can be pinned to IPFS by anyone. Asset metadata pins to IPFS by content hash — the CID on-chain references the content itself, not anyone's server, so any IPFS gateway works. Both <code>WORKER_BASE</code> and <code>IPFS_GATEWAY</code> are configurable constants in <code>tacit.js</code>; setting the worker URL to <code>''</code> disables it entirely and the protocol keeps working.
-        Ordinals takes the opposite tradeoff: content lives directly on-chain (no off-chain piece, but heavy and pricey per-inscription). Runes carries no image or metadata convention at all — wallets usually fetch "what does this rune look like" from a centralized marketplace API.
       </div>
 
       <div class="faq-q">Can I recover from just my privkey?</div>
@@ -5378,17 +5401,22 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <div class="faq-q">Is amount privacy actually enough?</div>
       <div class="faq-a">
-        For most fungible-token use cases — yes. Tacit hides what's load-bearing: how much is moving. Address-graph and asset-id privacy live at the Bitcoin-substrate layer — same scope every Bitcoin-substrate protocol gives you. BIP-352 Silent Payments and Asset Surjection Proofs are on the roadmap, compatible with tacit's wallet model.
+        For most fungible-token use cases — yes. Tacit hides what's load-bearing: how much is moving. Address-graph and asset-id privacy live at the Bitcoin-substrate layer — same scope every Bitcoin protocol gives you. BIP-352 Silent Payments and Asset Surjection Proofs are on the roadmap, compatible with tacit's wallet model.
       </div>
 
       <div class="faq-q">How do I trust the announced supply when amounts are hidden?</div>
       <div class="faq-a">
-        The dApp publishes supply attestation by default. At etch time the <code>(supply, blinding)</code> opening is pinned to IPFS as part of the asset's metadata; anyone fetches the blob and verifies <code>pedersenCommit(supply, blinding) == on-chain commitment</code> from chain alone — no worker trust, no issuer trust beyond the one-time honest publish. Issuers can opt out for a centralized-stablecoin-style "trust me" model. Discover surfaces a ✓ verified badge for attested assets.
+        The dApp publishes a supply attestation by default. At etch time the <code>(supply, blinding)</code> opening is pinned to IPFS as part of the asset's metadata; anyone fetches the blob and verifies <code>pedersenCommit(supply, blinding) == on-chain commitment</code> from chain alone — no worker trust, no issuer trust beyond the one-time honest publish. Issuers can opt out for a centralized-stablecoin-style "trust me" model. Discover surfaces a ✓ verified badge for attested assets.
+      </div>
+
+      <div class="faq-q">Can I trade BTC here?</div>
+      <div class="faq-a">
+        Via a wrapped version. The wrapper convention (SPEC §4.2) lets any issuer publish a tacit-native token backed 1:1 by sats in publicly verifiable reserves, tagged with a <code>tacit_wrapper</code> metadata field. The dApp routes BTC trades through wrapper variants and surfaces coverage + attestation freshness so users can pick on trust profile. Reference cBTC issuer (federated multisig) launches alongside the AMM; future variants under the same convention will include a CDP-style trustless cBTC backed by per-user DLCs (SPEC §6 amendment, draft).
       </div>
 
       <div class="faq-q">What's the cost per transfer?</div>
       <div class="faq-a">
-        ~10 KB witness per CXFER (m=2 aggregation), about 2,500–3,000 vBytes after the SegWit discount. At 10 sat/vB on mainnet that's ~25–30k sats per transfer; at low-fee periods correspondingly less. Roughly 10× the size of a Runes runestone — Runes publishes amounts in cleartext, tacit hides them via Pedersen commitments + bulletproofs. That's where the size goes.
+        ~10 KB witness per CXFER (m=2 aggregation), about 2,500–3,000 vBytes after the SegWit discount. At 10 sat/vB on mainnet that's ~25–30k sats per transfer; at low-fee periods correspondingly less. Roughly 10× the size of a Runes runestone — Runes publishes amounts in cleartext, tacit hides them via Pedersen commitments + bulletproofs. That's where the bytes go.
       </div>
 
       <div class="faq-q">Is the worker trust-bearing? What if I don't trust it?</div>
@@ -5398,7 +5426,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <div class="faq-q">License / source?</div>
       <div class="faq-a">
-        MIT. The repo is the canonical source. The protocol spec is the authoritative reference; any indexer in any language reaches the same verdict from chain alone.
+        MIT. The repo is the canonical source. SPEC.md is the authoritative reference; any indexer in any language reaches the same verdict from chain alone.
       </div>
     </div>
     <div class="faq-foot">
