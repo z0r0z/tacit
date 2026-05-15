@@ -5411,7 +5411,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <div class="faq-q">Can I trade BTC here?</div>
       <div class="faq-a">
-        Via a wrapped version. The wrapper convention (SPEC §4.2) lets any issuer publish a tacit-native token backed 1:1 by sats in publicly verifiable reserves, tagged with a <code>tacit_wrapper</code> metadata field. The dApp routes BTC trades through wrapper variants and surfaces coverage + attestation freshness so users can pick on trust profile. Reference cBTC issuer (federated multisig) launches alongside the AMM; future variants under the same convention will include a CDP-style trustless cBTC backed by per-user DLCs (SPEC §6 amendment, draft).
+        Yes — directly, today. Every orderbook trade pays in real Bitcoin satoshis: maker signs, taker signs, asset ↔ sats settles atomically in one Bitcoin tx. No wrap needed.
+        Wrapped BTC (cBTC) is only relevant when you need a <em>tacit-side token</em> denomination — for the AMM (pools are tacit-asset ↔ tacit-asset by design), for amount-confidential BTC balances, or as CDP collateral. The wrapper convention (SPEC §4.2, merged) defines the standard; the first cBTC variant launches alongside the AMM. Straight BTC ↔ asset trading on the orderbook uses real sats today.
       </div>
 
       <div class="faq-q">What's the cost per transfer?</div>
