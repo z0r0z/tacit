@@ -1792,6 +1792,21 @@ function _apiBases() {
   const out = [];
   const custom = getCustomApiBase();
   if (custom) out.push(custom);
+  // PRIMARY ROUTE: the dapp's own worker, mounted at /chain/*, which proxies
+  // read-only Esplora calls to mempool.space/blockstream.info upstream. Going
+  // through the worker gives us three things the direct route can't:
+  //   1) One CORS-clean origin (the worker), so browser console stays quiet
+  //      regardless of how upstream behaves on errors.
+  //   2) Cloudflare's per-colo rate-limit headroom (massive) instead of the
+  //      single-IP burst caps that trigger 429s when many tabs/users hit the
+  //      same provider concurrently.
+  //   3) Edge cache on immutable paths (confirmed tx body, confirmed outspend)
+  //      so a popular tx is fetched once across all readers.
+  // Network-scoped via ?network= query param the worker honors. Falls back
+  // to direct providers below if the worker is unhealthy or unconfigured.
+  if (WORKER_BASE && NET?.name) {
+    out.push(`${WORKER_BASE}/chain`);
+  }
   if (NET.api) out.push(NET.api);
   if (NET.api2 && NET.api2 !== NET.api) out.push(NET.api2);
   // Probed community mirrors (only the ones whose probe succeeded).
@@ -1896,7 +1911,14 @@ async function api(path, opts = {}) {
       const _releaseOnce = () => { if (!_slotReleased) { _slotReleased = true; _releaseBaseSlot(base); } };
       try {
         try {
-          r = await fetch(base + path, opts);
+          // Worker-proxy base needs the network as a query param. Concat
+          // appropriately so a path that already has its own query string
+          // is still well-formed.
+          let fetchUrl = base + path;
+          if (WORKER_BASE && base === `${WORKER_BASE}/chain` && NET?.name) {
+            fetchUrl += (path.includes('?') ? '&' : '?') + `network=${encodeURIComponent(NET.name)}`;
+          }
+          r = await fetch(fetchUrl, opts);
         } catch (e) {
           // Network / CORS / DNS — provider unreachable. mempool.space sometimes
           // serves error pages without Access-Control-Allow-Origin headers,
@@ -2302,7 +2324,15 @@ async function _getUtxosViaTxHistory(a) {
       const bases = (typeof _apiBases === 'function') ? _apiBases() : [];
       for (const base of bases) {
         try {
-          const r = await fetch(base + path);
+          let fetchUrl = base + path;
+          // Match api()'s worker-proxy URL composition so the chain-walk
+          // fallback works against the worker proxy too. Without this, the
+          // raw-fetch retry would hit the worker without a ?network= and
+          // get a 400 ("network missing") even though the proxy is healthy.
+          if (WORKER_BASE && base === `${WORKER_BASE}/chain` && NET?.name) {
+            fetchUrl += (path.includes('?') ? '&' : '?') + `network=${encodeURIComponent(NET.name)}`;
+          }
+          const r = await fetch(fetchUrl);
           if (!r.ok) continue;
           batch = await r.json();
           break;

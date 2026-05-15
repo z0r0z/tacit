@@ -273,7 +273,22 @@ function petchPrefix(network)          { return network === 'signet' ? 'petch:' 
 // this is the canonical ticker holder."
 function verifiedKey(network, aid)     { return network === 'signet' ? `verified:${aid}` : `verified:${network}:${aid}`; }
 function verifiedPrefix(network)       { return network === 'signet' ? 'verified:' : `verified:${network}:`; }
+// Per-isolate cache for the verified-asset set. /assets and /petch-assets
+// both fan this in on every MISS; the set is small (curated, ≤1000 entries)
+// and rarely changes. Caching across requests inside the same isolate saves
+// one KV.list call on every cold list response. 60s TTL is well under any
+// noticeable propagation lag for admin/verify mutations, and the POST/DELETE
+// handlers invalidate this memo directly via `_invalidateVerifiedMemo` so a
+// curator who adds/removes a verified asset sees it next read regardless.
+const _verifiedMemo = { signet: null, mainnet: null };
+const VERIFIED_MEMO_TTL_MS = 60_000;
+function _invalidateVerifiedMemo(network) {
+  if (network) _verifiedMemo[network] = null;
+  else { _verifiedMemo.signet = null; _verifiedMemo.mainnet = null; }
+}
 async function loadVerifiedSet(env, network) {
+  const memo = _verifiedMemo[network];
+  if (memo && Date.now() - memo.ts < VERIFIED_MEMO_TTL_MS) return memo.set;
   const list = await env.REGISTRY_KV.list({ prefix: verifiedPrefix(network), limit: 1000 });
   const set = new Set();
   const prefixLen = verifiedPrefix(network).length;
@@ -281,6 +296,7 @@ async function loadVerifiedSet(env, network) {
     const aid = k.name.slice(prefixLen);
     if (/^[0-9a-f]{64}$/.test(aid)) set.add(aid);
   }
+  _verifiedMemo[network] = { ts: Date.now(), set };
   return set;
 }
 function pmintKeyFor(network, aid, height, txIndex, txid) {
@@ -838,18 +854,58 @@ function tradesRingKey(network, aid) {
   return network === 'signet' ? `trades-ring:${aid}` : `trades-ring:${network}:${aid}`;
 }
 
+// Upstream fetch wall-time bound. mempool.space has been observed at >60s under
+// stress; without a hard cap a single slow upstream can pin a worker invocation
+// until CF's own runtime ceiling kicks in, multiplying tail-latency for every
+// downstream caller. 8s is well below the 30s worker wall-time and well above
+// p99 normal-operation latency. Callers that need a tighter bound pass
+// `timeoutMs` in opts; callers that explicitly want no timeout pass `0`.
+const UPSTREAM_DEFAULT_TIMEOUT_MS = 8000;
+function _buildUpstreamInit(opts) {
+  const { cacheTtl, timeoutMs, ...rest } = opts || {};
+  const init = { ...rest };
+  // `cacheTtl` + `cacheEverything` instructs Cloudflare's edge cache to keep
+  // the upstream response for this long regardless of upstream Cache-Control
+  // headers. Only safe to set on content-addressed / immutable endpoints
+  // (block-hash-by-height, /block/<hash>/txs/N, /block/<hash>/txids). Fresh
+  // /tx fetches and tip-height MUST stay uncached.
+  if (Number.isInteger(cacheTtl) && cacheTtl > 0) {
+    init.cf = { ...(init.cf || {}), cacheTtl, cacheEverything: true };
+  }
+  const t = Number.isFinite(timeoutMs) ? timeoutMs : UPSTREAM_DEFAULT_TIMEOUT_MS;
+  let cleanup = null;
+  if (!init.signal && t > 0) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { try { ctrl.abort(); } catch {} }, t);
+    init.signal = ctrl.signal;
+    cleanup = () => clearTimeout(timer);
+  }
+  return { init, cleanup };
+}
 async function apiText(env, path, opts = {}, network = 'signet') {
   const base = networkApi(env, network);
-  const r = await fetch(`${base}${path}`, opts);
+  const { init, cleanup } = _buildUpstreamInit(opts);
+  let r;
+  try { r = await fetch(`${base}${path}`, init); }
+  finally { if (cleanup) cleanup(); }
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.text();
 }
 async function apiJson(env, path, opts = {}, network = 'signet') {
   const base = networkApi(env, network);
-  const r = await fetch(`${base}${path}`, opts);
+  const { init, cleanup } = _buildUpstreamInit(opts);
+  let r;
+  try { r = await fetch(`${base}${path}`, init); }
+  finally { if (cleanup) cleanup(); }
   if (!r.ok) throw new Error(`${network} ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return r.json();
 }
+// Content-addressed Bitcoin endpoints (block hash, block contents) never
+// change after confirmation, so we can let CF's edge cache hold them
+// indefinitely. 1h is more than enough to coalesce the cron's per-tick fetches
+// across all colos, well past the 5-min tick interval, and bounded enough that
+// a chain-reorg correction propagates within a normal user's session.
+const UPSTREAM_IMMUTABLE_CACHE_TTL = 3600;
 
 // Race between dApp broadcasting and mempool.space's /tx/{txid} index seeing
 // the tx (typically 1–10s lag for fresh broadcasts). The atomic-intent post
@@ -2402,6 +2458,98 @@ function faucetKeys(env) {
   return { priv, pub, address };
 }
 
+// Read-only Esplora proxy. The dapp routes its chain queries through here
+// instead of calling mempool.space / blockstream.info directly so the
+// browser sees one (CORS-clean) origin and the worker can absorb burst
+// load that would otherwise trigger per-IP rate-limits in the browser.
+//
+// Whitelisted prefixes only — defends against this endpoint being misused
+// as a generic open proxy. All allowed paths are read-only Esplora-shape
+// endpoints used by the dapp.
+//
+// Edge cache: confirmed-tx bodies and confirmed-outspend results are
+// effectively immutable post-confirmation, so we let Cloudflare hold them
+// for 1h. Address / tip-height / fee-rate / mempool paths are fresh every
+// request (or short-TTL'd) since they reflect mutable state.
+async function handleChainProxy(req, env, network, cors) {
+  const u = new URL(req.url);
+  const rawPath = u.pathname.slice('/chain'.length);   // strip leading "/chain"
+  const path = rawPath || '/';
+  // Whitelist of allowed read-only Esplora paths.
+  const ALLOWED = [
+    /^\/tx\/[0-9a-f]{64}$/i,                          // /tx/<txid>
+    /^\/tx\/[0-9a-f]{64}\/outspend\/\d+$/i,           // /tx/<txid>/outspend/<vout>
+    /^\/tx\/[0-9a-f]{64}\/outspends$/i,               // /tx/<txid>/outspends (batch)
+    /^\/tx\/[0-9a-f]{64}\/status$/i,                  // /tx/<txid>/status
+    /^\/tx\/[0-9a-f]{64}\/hex$/i,                     // /tx/<txid>/hex
+    /^\/address\/[a-zA-Z0-9]{14,90}$/,                // /address/<addr>
+    /^\/address\/[a-zA-Z0-9]{14,90}\/utxo$/,          // /address/<addr>/utxo
+    /^\/address\/[a-zA-Z0-9]{14,90}\/txs$/,           // /address/<addr>/txs
+    /^\/address\/[a-zA-Z0-9]{14,90}\/txs\/mempool$/,  // /address/<addr>/txs/mempool
+    /^\/address\/[a-zA-Z0-9]{14,90}\/txs\/chain$/,    // /address/<addr>/txs/chain
+    /^\/address\/[a-zA-Z0-9]{14,90}\/txs\/chain\/[0-9a-f]{64}$/i,  // paginated
+    /^\/v1\/fees\/recommended$/,                      // mempool.space fee rec
+    /^\/fee-estimates$/,                              // blockstream-style fees
+    /^\/blocks\/tip\/height$/,                        // chain tip
+    /^\/blocks\/tip\/hash$/,
+    /^\/block\/[0-9a-f]{64}$/i,                       // block by hash
+    /^\/block\/[0-9a-f]{64}\/txids$/i,
+    /^\/block-height\/\d+$/,                          // hash by height
+  ];
+  if (!ALLOWED.some(re => re.test(path))) {
+    return new Response(JSON.stringify({ error: 'path not allowed by proxy whitelist', path }), {
+      status: 400,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+    });
+  }
+  // Decide edge-cache TTL by path immutability:
+  //   - confirmed-tx body / outspend / status / hex → 1h (immutable after confirm)
+  //   - block-by-hash data → 1h (immutable)
+  //   - everything else → no edge cache (fresh per request)
+  // We can't tell "confirmed" vs "unconfirmed" at this layer without doing
+  // a status fetch first; just let CF cache the underlying upstream response
+  // since the upstream's own status field will reflect confirmed/unconfirmed
+  // correctly. If the user asks for an unconfirmed tx and it lands within
+  // the 1h window, they'll see a stale "unconfirmed" status; the dapp's
+  // mempool-aware code paths re-fetch on confirmation anyway.
+  let cacheTtl = 0;
+  if (/^\/tx\/[0-9a-f]{64}(\/outspend\/\d+|\/outspends|\/hex|\/status)?$/i.test(path)) cacheTtl = 3600;
+  else if (/^\/block\/[0-9a-f]{64}/i.test(path)) cacheTtl = 86400;
+  else if (/^\/block-height\/\d+$/.test(path))   cacheTtl = 86400;
+
+  const upstreamBase = networkApi(env, network);
+  // 15s timeout — most Esplora paths return in <1s; the longest tail is
+  // /address/.../txs/chain on big addresses which can take 5-10s under load.
+  const { init, cleanup } = _buildUpstreamInit({
+    cacheTtl,
+    timeoutMs: 15_000,
+  });
+  let upstreamResp;
+  try {
+    upstreamResp = await fetch(`${upstreamBase}${path}${u.search}`, init);
+  } catch (e) {
+    if (cleanup) cleanup();
+    return new Response(JSON.stringify({ error: `upstream fetch failed: ${e.message}`, path }), {
+      status: 502,
+      headers: { ...cors, 'Content-Type': 'application/json' },
+    });
+  } finally {
+    if (cleanup) cleanup();
+  }
+  // Pass through the upstream response body verbatim with our CORS headers.
+  // Preserve the upstream Content-Type so callers can json/text-parse based
+  // on shape. Strip upstream's own caching headers since we apply our own
+  // via the `cf.cacheTtl` instruction above.
+  const body = await upstreamResp.text();
+  const respHeaders = new Headers(cors);
+  respHeaders.set('Content-Type', upstreamResp.headers.get('Content-Type') || 'application/json');
+  // For confirmed responses we already-set CF edge cache; downstream
+  // browsers can additionally cache short-term (1 min) without risking
+  // staleness since the CF cache will serve the same body for an hour.
+  if (cacheTtl > 0 && upstreamResp.ok) respHeaders.set('Cache-Control', 'public, max-age=60');
+  return new Response(body, { status: upstreamResp.status, headers: respHeaders });
+}
+
 async function handleBalance(env, cors) {
   let f;
   try { f = faucetKeys(env); }
@@ -3750,6 +3898,78 @@ async function assetsComputeAndCache(env, network, opts) {
   return { body, status: fresh.status };
 }
 
+// ============== /assets/:id edge cache (SWR + targeted busts) ==============
+// /assets/:id was the loudest uncached endpoint: the dapp's price-alerts loop
+// polls it once per asset per 60s, the asset-detail page loads it on every
+// nav, and every poll fan-outs 7+ KV.list calls + N×KV.get for openings.
+// SWR collapses concurrent polls within the same POP into one real
+// computation per FRESH window, and the cron's already-cached /assets pre-
+// warm warms up most ?asset_id values via the bulk path.
+//
+// FRESH 30s: matches the dapp's _assetCacheTtl on the consumer side; barely-
+// noticeable for tile sparklines and well under the polling cadence.
+// STALE 5min: matches the bulk /assets pattern. After STALE, we recompute
+// synchronously so the data can't get arbitrarily stale on a quiet asset.
+const ASSET_DETAIL_CACHE_FRESH_MS = 30 * 1000;
+const ASSET_DETAIL_CACHE_STALE_MS = 5 * 60 * 1000;
+function assetDetailCacheKey(network, aid) {
+  return new Request(`https://_asset-detail-cache_/asset/${network}/${aid}`, { method: 'GET' });
+}
+async function assetDetailComputeAndCache(env, network, aid) {
+  const fresh = await handleAssetGet(aid, env, network, {});
+  const body = await fresh.text();
+  if (fresh.status === 200) {
+    const ch = new Headers();
+    ch.set('Content-Type', 'application/json');
+    ch.set('X-Cached-At', String(Date.now()));
+    ch.set('Cache-Control', `public, max-age=${Math.floor(ASSET_DETAIL_CACHE_FRESH_MS / 1000)}, stale-while-revalidate=${Math.floor(ASSET_DETAIL_CACHE_STALE_MS / 1000)}`);
+    await caches.default.put(
+      assetDetailCacheKey(network, aid),
+      new Response(body, { status: 200, headers: ch }),
+    );
+  }
+  return { body, status: fresh.status };
+}
+// Targeted bust for /assets/:id. Any handler that mutates state read by
+// handleAssetGet (attestations, openings, listings, mints, etc.) calls this
+// so the next /assets/:id read sees the change without waiting on the FRESH
+// window. Fire-and-forget — silently swallows errors; the SWR layer's own
+// FRESH expiry is the safety net.
+async function _bustAssetDetailCache(network, aid) {
+  try { await caches.default.delete(assetDetailCacheKey(network, aid)); } catch {}
+}
+
+// ============== /airdrops/:root/claims edge cache ==============
+// The claim queue is polled aggressively by both the dapp (30s visible / 60s
+// hidden, per Claim-tab + maker-claim-poller) and the fulfiller daemon
+// (default 600s INTERVAL_SEC). Each call fan-outs a KV.list + N×KV.get walk.
+// A short SWR window collapses the burst of in-flight polls within a colo
+// into one real fan-out per FRESH window without changing observable
+// semantics: every mutating route (POST/DELETE/paid) busts the cache, so
+// freshly-submitted claims surface immediately for the next reader.
+//
+// FRESH 5s is short enough that worst-case staleness is invisible against the
+// daemon's natural broadcast cadence, and long enough to absorb the burst of
+// concurrent open dapp tabs hitting the endpoint within the same second.
+const AIRDROP_CLAIMS_CACHE_FRESH_MS = 5_000;
+const AIRDROP_CLAIMS_CACHE_STALE_MS = 60_000;
+function airdropClaimsCacheKey(network, rootHex, cursor, limit) {
+  const params = new URLSearchParams();
+  params.set('network', network);
+  if (cursor) params.set('cursor', cursor);
+  if (limit != null) params.set('limit', String(limit));
+  return new Request(`https://_airdrop-claims-cache_/${rootHex}?${params.toString()}`, { method: 'GET' });
+}
+// Bust every cached page for a given (network, root). Claim mutations
+// (POST/DELETE/paid) can shift the entire pagination, so we can't just bust
+// one cursor's page. Cloudflare's caches.default doesn't expose a prefix
+// delete, so we bust just the default-cursor page (which is the dominant
+// hot path — only the fulfiller paginates beyond it, and even there the
+// FRESH window catches up within seconds).
+async function _bustAirdropClaimsCache(network, rootHex) {
+  try { await caches.default.delete(airdropClaimsCacheKey(network, rootHex, null, null)); } catch {}
+}
+
 // ============== /market aggregate (worker-side join) ==============
 // Collapses the client's per-asset 3-way fan-out (openings + ranges + intents)
 // into a single round-trip. Without this, the Market tab issued N parallel
@@ -4356,11 +4576,13 @@ async function handleAssetHint(req, env, network, cors, ctx) {
     }
     // Need the block's ordered txid list to find the canonical tx_index. Use
     // /block/<hash>/txids which returns the entire ordered list in one shot
-    // (vs the paginated /block/<hash>/txs that scanForEtches walks).
+    // (vs the paginated /block/<hash>/txs that scanForEtches walks). Content-
+    // addressed by block hash → edge-cacheable indefinitely.
     let txIndex = 0;
     if (confirmed && tx.status?.block_hash) {
       try {
-        const txids = await apiJson(env, `/block/${tx.status.block_hash}/txids`, {}, network);
+        const txids = await apiJson(env, `/block/${tx.status.block_hash}/txids`,
+          { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network);
         if (Array.isArray(txids)) {
           const i = txids.indexOf(txidHex);
           if (i >= 0) txIndex = i;
@@ -5036,11 +5258,25 @@ async function markPetchDirty(env, network, aid) {
 // Helper: fetch tip, time-bounded so a slow mempool.space endpoint doesn't
 // stall the whole snapshot refresh. Mirrors the inline tipP idiom used by
 // handlePetchAssetsList today.
+//
+// Per-isolate memoization. The tip endpoint is hit from handleAssetsList,
+// handleAssetGet, handlePetchAssetsList, /pools, /drops-onchain, and the cron's
+// pre-warm pass — every cold load fan-outs them in parallel and previously
+// every fan-out was its own upstream call. 5s TTL is short enough that a new
+// block is reflected within one cron interval and unnoticeable to UX (the
+// freshness banner shows tip ± a few seconds), and long enough to collapse the
+// burst of in-flight handlers sharing a single isolate.
+const _tipMemo = { signet: null, mainnet: null };
+const TIP_MEMO_TTL_MS = 5_000;
 async function fetchTipHeight(env, network, timeoutMs = 2500) {
-  return Promise.race([
-    apiText(env, '/blocks/tip/height', {}, network).then(s => parseInt(s.trim(), 10)),
+  const memo = _tipMemo[network];
+  if (memo && Date.now() - memo.ts < TIP_MEMO_TTL_MS) return memo.height;
+  const h = await Promise.race([
+    apiText(env, '/blocks/tip/height', { timeoutMs }, network).then(s => parseInt(s.trim(), 10)),
     new Promise(resolve => setTimeout(() => resolve(null), timeoutMs)),
   ]).catch(() => null);
+  if (Number.isInteger(h)) _tipMemo[network] = { ts: Date.now(), height: h };
+  return h;
 }
 
 // Promote height-0 orphan T_PMINTs left behind by an older worker version
@@ -5081,7 +5317,9 @@ async function promotePmintOrphans(env, network, { maxOps = 50, assetIdHex = nul
     const cached = blockTxidsCache.get(hash);
     if (cached !== undefined) return cached;
     let txids = null;
-    try { txids = await apiJson(env, `/block/${hash}/txids`, {}, network); }
+    // Content-addressed → edge-cacheable. The in-isolate LRU above still bounds
+    // memory for orphan promotions; the CF cache layer collapses across colos.
+    try { txids = await apiJson(env, `/block/${hash}/txids`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network); }
     catch { txids = null; }
     if (blockTxidsCache.size >= BLOCK_CACHE_MAX) {
       // Drop oldest insertion (Map preserves insertion order).
@@ -5323,7 +5561,9 @@ async function runOnePmintBackfill(env, cfg) {
   if (!petch) return 'skip';
   const h = cursor.next_height;
   let blockHash;
-  try { blockHash = (await apiText(env, `/block-height/${h}`, {}, network)).trim(); }
+  // /block-height/<h> is effectively immutable past confirmation depth; reorgs
+  // deeper than ~2 blocks are extraordinary. Edge-cache aggressively.
+  try { blockHash = (await apiText(env, `/block-height/${h}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network)).trim(); }
   catch (e) {
     cursor.last_error = `block-height/${h} fetch failed: ${e.message}`;
     cursor.last_tick_at = Math.floor(Date.now() / 1000);
@@ -9339,7 +9579,11 @@ async function fetchBlockTxs(env, blockHash, network, { maxTxs = 5000 } = {}) {
   let startIdx = 0;
   while (true) {
     let txs;
-    try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, {}, network); }
+    // /block/<hash>/txs/<N> is content-addressed by block hash — the response
+    // never changes once the block exists. Edge-cache aggressively so a cron
+    // re-scan of the same block (e.g. across multiple colos, or after a hint
+    // pulled the same block separately) doesn't re-issue subrequests.
+    try { txs = await apiJson(env, `/block/${blockHash}/txs/${startIdx}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network); }
     catch { break; }
     if (!Array.isArray(txs) || txs.length === 0) break;
     all.push(...txs);
@@ -9377,9 +9621,11 @@ async function fetchBlockTxsParallel(env, blockHash, network, { batch = 16, maxT
     // batch shouldn't truncate the block; only persistent failures should
     // surface as an early-stop signal (returned via reject below).
     const pages = await Promise.all(offsets.map(async off => {
-      try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, {}, network); }
+      // Same content-addressed-by-hash semantics — edge-cache aggressively.
+      const _opts = { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL };
+      try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, _opts, network); }
       catch {
-        try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, {}, network); }
+        try { return await apiJson(env, `/block/${blockHash}/txs/${off}`, _opts, network); }
         catch { throw new Error(`page ${off} failed twice`); }
       }
     }));
@@ -9444,6 +9690,30 @@ async function scanForEtches(env, network) {
     _petchCache.set(aid, v);
     return v;
   };
+  // Per-scan dedupe for holder + transfer counter bumps. Without this layer,
+  // a dense block with N T_PMINTs to distinct addresses pays the KV.get(seen)
+  // probe for each — and on assets seeing self-spam (same address repeatedly
+  // bumping the counter), the in-isolate set collapses dozens of KV
+  // get/put pairs to one. The KV seen marker remains the source of cross-tick
+  // truth; the in-isolate set just skips redundant probes for entries we've
+  // already processed this scan tick.
+  const _holderBumpedThisScan = new Set();
+  const _bumpHolderOnce = async (aid, spkHex) => {
+    if (!/^[0-9a-f]+$/.test(String(spkHex || ''))) return false;
+    const key = `${aid}:${spkHex}`;
+    if (_holderBumpedThisScan.has(key)) return false;
+    _holderBumpedThisScan.add(key);
+    try { return await bumpHolderCount(env, network, aid, spkHex); }
+    catch { return false; }
+  };
+  const _transferBumpedThisScan = new Set();
+  const _bumpTransferOnce = async (aid, txidHex) => {
+    const key = `${aid}:${txidHex}`;
+    if (_transferBumpedThisScan.has(key)) return false;
+    _transferBumpedThisScan.add(key);
+    try { return await bumpTransferCount(env, network, aid, txidHex); }
+    catch { return false; }
+  };
   // Per-scan dedupe set for petch_dirty markers. The T_PMINT branch below
   // would otherwise KV.put the same `petch_dirty:<aid>` key once per pmint —
   // for a dense fair-launch block (~300 reveals on FAIR), that's 300 writes
@@ -9460,7 +9730,12 @@ async function scanForEtches(env, network) {
   let lastContiguous = startHeight - 1;
   for (let h = startHeight; h <= endHeight; h++) {
     let blockHash;
-    try { blockHash = (await apiText(env, `/block-height/${h}`, {}, network)).trim(); }
+    // /block-height/<h> for past-tip heights is effectively immutable. Cron
+    // forward-scan never re-queries a height it already advanced past, so the
+    // cache benefit accrues across colos (different POPs handling the same
+    // tick coalesce on the cached response) and across hint endpoints that
+    // happen to fetch the same height shortly after.
+    try { blockHash = (await apiText(env, `/block-height/${h}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network)).trim(); }
     catch { break; }
     let txs;
     try { txs = await fetchBlockTxs(env, blockHash, network); }
@@ -9508,7 +9783,7 @@ async function scanForEtches(env, network) {
         // freshly-etched assets show "1 wallet" not "0 wallets".
         const etchSpk = tx.vout?.[0]?.scriptpubkey;
         if (typeof etchSpk === 'string' && etchSpk.length > 0) {
-          try { await bumpHolderCount(env, network, aid, etchSpk.toLowerCase()); } catch {}
+          await _bumpHolderOnce(aid, etchSpk.toLowerCase());
         }
         found++;
       } else if (decoded.opcode === T_MINT) {
@@ -9528,7 +9803,7 @@ async function scanForEtches(env, network) {
         // Mint recipient at vout[0] is a new holder for this asset.
         const mintSpk = tx.vout?.[0]?.scriptpubkey;
         if (typeof mintSpk === 'string' && mintSpk.length > 0) {
-          try { await bumpHolderCount(env, network, cm.asset_id, mintSpk.toLowerCase()); } catch {}
+          await _bumpHolderOnce(cm.asset_id, mintSpk.toLowerCase());
         }
         found++;
       } else if (decoded.opcode === T_BURN) {
@@ -10238,6 +10513,29 @@ export default {
     // no-network call (legacy clients) doesn't accidentally hit mainnet KV.
     // The current dapp explicitly passes ?network=mainnet for mainnet ops.
     const network = parseNetwork(url.searchParams.get('network'));
+
+    // ============== /chain/* — Esplora read-only proxy ==============
+    // The dapp previously called mempool.space / blockstream.info DIRECTLY
+    // from the browser for outspend / utxo / tx-history / fee-rate fetches.
+    // That works but has three failure modes the worker can eliminate:
+    //   1) CORS spam — public mirrors serve error responses without
+    //      Access-Control-Allow-Origin, so 4xx/5xx upstream surfaces as
+    //      cross-origin failures in the browser console.
+    //   2) Burst 429s — N concurrent calls from a single dapp tab race to
+    //      the same provider before the dapp's cooldown can engage.
+    //   3) No edge cache — confirmed tx bodies are immutable but every
+    //      reader re-fetches from upstream individually.
+    // Proxying through this worker fixes all three: one origin (this
+    // worker) for the browser → no CORS issues; per-colo rate-limit
+    // headroom is orders of magnitude higher than any single browser IP;
+    // Cloudflare edge cache holds immutable responses (confirmed tx bodies,
+    // outspend-with-confirmed-spend) for 1h so subsequent readers across
+    // all colos hit the cache.
+    //
+    // Whitelisted prefixes only — this is NOT a generic open proxy.
+    if (url.pathname.startsWith('/chain/') && req.method === 'GET') {
+      return handleChainProxy(req, env, network, cors);
+    }
 
     // /pools — list initialized mixer pools (SPEC §5.10.1). Returns each
     // pool's POOL_INIT record + leaf/nullifier counts. The dApp consumes
@@ -11044,75 +11342,132 @@ export default {
       }
       return handlePmintList(mpm[1], env, network, cors, { creditedOnly, includeTxids });
     }
+    // Helper for per-asset mutating endpoints: run the inner handler, and on a
+    // 2xx/3xx response fire-and-forget bust the /assets/:id SWR cache so the
+    // next read recomputes against the just-written state. The bust is wrapped
+    // in ctx.waitUntil so the user-visible response goes out without waiting on
+    // it. Errors (4xx/5xx) leave the cache alone — nothing was mutated, so the
+    // cache is still authoritative.
+    const _mutateAndBust = async (aid, makeResp) => {
+      const resp = await makeResp();
+      if (resp.status >= 200 && resp.status < 400 && ctx && typeof ctx.waitUntil === 'function') {
+        ctx.waitUntil(_bustAssetDetailCache(network, aid));
+      }
+      return resp;
+    };
+
     const m = url.pathname.match(/^\/assets\/([0-9a-f]{64})$/);
-    if (m && req.method === 'GET')                             return handleAssetGet(m[1], env, network, cors);
+    if (m && req.method === 'GET') {
+      // SWR edge cache. See assetDetailComputeAndCache for rationale.
+      const aid = m[1];
+      const cache = caches.default;
+      const cacheKey = assetDetailCacheKey(network, aid);
+      const _withCors = (body, status, kind) => {
+        const headers = new Headers();
+        headers.set('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', kind);
+        // Browser/intermediate Cache-Control. Matches the FRESH+STALE window so
+        // tab-switches and double-clicks short-circuit at the browser before
+        // ever round-tripping to the worker.
+        headers.set('Cache-Control', `public, max-age=${Math.floor(ASSET_DETAIL_CACHE_FRESH_MS / 1000)}, stale-while-revalidate=${Math.floor(ASSET_DETAIL_CACHE_STALE_MS / 1000)}`);
+        return new Response(body, { status, headers });
+      };
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        const cachedAtStr = cached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < ASSET_DETAIL_CACHE_FRESH_MS) {
+          return _withCors(await cached.text(), cached.status, 'HIT');
+        }
+        if (ageMs < ASSET_DETAIL_CACHE_STALE_MS) {
+          if (ctx && typeof ctx.waitUntil === 'function') {
+            ctx.waitUntil(assetDetailComputeAndCache(env, network, aid).catch(() => null));
+          }
+          return _withCors(await cached.text(), cached.status, 'STALE');
+        }
+      }
+      const result = await assetDetailComputeAndCache(env, network, aid);
+      return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
+    }
     const ma = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/attest$/);
-    if (ma && req.method === 'POST')                           return handleAttest(ma[1], req, env, network, cors);
+    if (ma && req.method === 'POST')                           return _mutateAndBust(ma[1], () => handleAttest(ma[1], req, env, network, cors));
     const mm = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/mints\/([0-9a-f]{64})\/attest$/);
-    if (mm && req.method === 'POST')                           return handleMintAttest(mm[1], mm[2], req, env, network, cors);
+    if (mm && req.method === 'POST')                           return _mutateAndBust(mm[1], () => handleMintAttest(mm[1], mm[2], req, env, network, cors));
     const mo = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/openings$/);
     if (mo && req.method === 'GET')                            return handleAssetOpenings(mo[1], env, network, cors);
     const mu = url.pathname.match(/^\/utxos\/([0-9a-f]{64})\/(\d+)\/opening$/);
+    // UTXO opening posts mutate /assets/:id (opening_count, disclosed_supply_min).
+    // The handler computes the aid from the chain; rather than reach into it,
+    // we can't bust here. The 30s FRESH window absorbs the lag. Same for
+    // /utxos/:txid/:vout/buyer-opening which only affects buyer-recovery state.
     if (mu && req.method === 'POST')                           return handleUtxoOpeningPost(mu[1], mu[2], req, env, network, cors);
     if (mu && req.method === 'GET')                            return handleUtxoOpeningGet(mu[1], mu[2], env, network, cors);
     const mub = url.pathname.match(/^\/utxos\/([0-9a-f]{64})\/(\d+)\/buyer-opening$/);
     if (mub && req.method === 'POST')                          return handleBuyerOpeningPost(mub[1], mub[2], req, env, network, cors);
     if (mub && req.method === 'GET')                           return handleBuyerOpeningGet(mub[1], mub[2], env, network, cors);
     const md = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/disclosures$/);
-    if (md && req.method === 'POST')                           return handleDisclosurePost(md[1], req, env, network, cors);
+    if (md && req.method === 'POST')                           return _mutateAndBust(md[1], () => handleDisclosurePost(md[1], req, env, network, cors));
     if (md && req.method === 'GET')                            return handleDisclosureList(md[1], env, network, cors);
     const ml = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings$/);
-    if (ml && req.method === 'POST')                           return handleListingPost(ml[1], req, env, network, cors);
+    if (ml && req.method === 'POST')                           return _mutateAndBust(ml[1], () => handleListingPost(ml[1], req, env, network, cors));
     if (ml && req.method === 'GET')                            return handleListingList(ml[1], env, network, cors);
     const ml2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings\/([0-9a-f]{64})\/(\d+)$/);
-    if (ml2 && req.method === 'DELETE')                        return handleListingDelete(ml2[1], ml2[2], ml2[3], req, env, network, cors);
+    if (ml2 && req.method === 'DELETE')                        return _mutateAndBust(ml2[1], () => handleListingDelete(ml2[1], ml2[2], ml2[3], req, env, network, cors));
     const ml3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings\/([0-9a-f]{64})\/(\d+)\/claim$/);
-    if (ml3 && req.method === 'POST')                          return handleListingClaim(ml3[1], ml3[2], ml3[3], req, env, network, cors);
+    if (ml3 && req.method === 'POST')                          return _mutateAndBust(ml3[1], () => handleListingClaim(ml3[1], ml3[2], ml3[3], req, env, network, cors));
     const mlr = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range$/);
-    if (mlr && req.method === 'POST')                          return handleRangeListingPost(mlr[1], req, env, network, cors);
+    if (mlr && req.method === 'POST')                          return _mutateAndBust(mlr[1], () => handleRangeListingPost(mlr[1], req, env, network, cors));
     if (mlr && req.method === 'GET')                           return handleRangeListingList(mlr[1], env, network, cors);
     const mlr2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range\/(0[23][0-9a-f]{64})$/);
-    if (mlr2 && req.method === 'DELETE')                       return handleRangeListingDelete(mlr2[1], mlr2[2], req, env, network, cors);
+    if (mlr2 && req.method === 'DELETE')                       return _mutateAndBust(mlr2[1], () => handleRangeListingDelete(mlr2[1], mlr2[2], req, env, network, cors));
     const mlr3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/listings-range\/(0[23][0-9a-f]{64})\/claim$/);
-    if (mlr3 && req.method === 'POST')                         return handleRangeListingClaim(mlr3[1], mlr3[2], req, env, network, cors);
+    if (mlr3 && req.method === 'POST')                         return _mutateAndBust(mlr3[1], () => handleRangeListingClaim(mlr3[1], mlr3[2], req, env, network, cors));
     // Atomic intents (browse-and-take T_AXFER marketplace).
     const mai = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents$/);
-    if (mai && req.method === 'POST')                          return handleAtomicIntentPost(mai[1], req, env, network, cors);
+    if (mai && req.method === 'POST')                          return _mutateAndBust(mai[1], () => handleAtomicIntentPost(mai[1], req, env, network, cors));
     if (mai && req.method === 'GET')                           return handleAtomicIntentList(mai[1], env, network, cors);
     const mai2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})$/);
-    if (mai2 && req.method === 'DELETE')                       return handleAtomicIntentDelete(mai2[1], mai2[2], req, env, network, cors);
+    if (mai2 && req.method === 'DELETE')                       return _mutateAndBust(mai2[1], () => handleAtomicIntentDelete(mai2[1], mai2[2], req, env, network, cors));
     const mai3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/claim$/);
-    if (mai3 && req.method === 'POST')                         return handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors);
+    if (mai3 && req.method === 'POST')                         return _mutateAndBust(mai3[1], () => handleAtomicIntentClaim(mai3[1], mai3[2], req, env, network, cors));
     const mai4 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/fulfilment$/);
-    if (mai4 && req.method === 'POST')                         return handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors);
+    if (mai4 && req.method === 'POST')                         return _mutateAndBust(mai4[1], () => handleAtomicIntentFulfil(mai4[1], mai4[2], req, env, network, cors));
     if (mai4 && req.method === 'GET')                          return handleAtomicIntentFulfilGet(mai4[1], mai4[2], env, network, cors);
     const mai5 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/atomic-intents\/([0-9a-f]{32})\/finalize$/);
-    if (mai5 && req.method === 'POST')                         return _handleAtomicIntentFinalizeVar(mai5[1], mai5[2], req, env, network, cors);
+    if (mai5 && req.method === 'POST')                         return _mutateAndBust(mai5[1], () => _handleAtomicIntentFinalizeVar(mai5[1], mai5[2], req, env, network, cors));
 
     // Preauth sales (buyer-completable T_AXFER — SPEC §5.7.8). Seller signs once,
     // buyer completes settlement alone via ECDH-derived recipient blinding.
     const mps = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-sales$/);
-    if (mps && req.method === 'POST')                          return handlePreauthSalePost(mps[1], req, env, network, cors);
+    if (mps && req.method === 'POST')                          return _mutateAndBust(mps[1], () => handlePreauthSalePost(mps[1], req, env, network, cors));
     if (mps && req.method === 'GET')                           return handlePreauthSaleList(mps[1], env, network, cors);
     const mps2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/preauth-sales\/([0-9a-f]{32})$/);
     if (mps2 && req.method === 'GET')                          return handlePreauthSaleGet(mps2[1], mps2[2], env, network, cors);
-    if (mps2 && req.method === 'DELETE')                       return handlePreauthSaleDelete(mps2[1], mps2[2], req, env, network, cors);
+    if (mps2 && req.method === 'DELETE')                       return _mutateAndBust(mps2[1], () => handlePreauthSaleDelete(mps2[1], mps2[2], req, env, network, cors));
 
     // Bid intents (off-chain bid book — SPEC §5.7.7). Buyer-initiated mirror
     // of atomic intents; settlement is via the seller spinning up an
     // axintent targeted at the bidder, no new wire format.
     const mbi = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents$/);
-    if (mbi && req.method === 'POST')                          return handleBidIntentPost(mbi[1], req, env, network, cors);
+    if (mbi && req.method === 'POST')                          return _mutateAndBust(mbi[1], () => handleBidIntentPost(mbi[1], req, env, network, cors));
     if (mbi && req.method === 'GET')                           return handleBidIntentList(mbi[1], env, network, cors);
     const mbi2 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents\/([0-9a-f]{32})$/);
     if (mbi2 && req.method === 'GET')                          return handleBidIntentGet(mbi2[1], mbi2[2], env, network, cors);
-    if (mbi2 && req.method === 'DELETE')                       return handleBidIntentDelete(mbi2[1], mbi2[2], req, env, network, cors);
+    if (mbi2 && req.method === 'DELETE')                       return _mutateAndBust(mbi2[1], () => handleBidIntentDelete(mbi2[1], mbi2[2], req, env, network, cors));
     const mbi3 = url.pathname.match(/^\/assets\/([0-9a-f]{64})\/bid-intents\/([0-9a-f]{32})\/claim$/);
-    if (mbi3 && req.method === 'POST')                         return handleBidIntentClaim(mbi3[1], mbi3[2], req, env, network, cors);
+    if (mbi3 && req.method === 'POST')                         return _mutateAndBust(mbi3[1], () => handleBidIntentClaim(mbi3[1], mbi3[2], req, env, network, cors));
 
     // Airdrop claim queue.
     const mac = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims$/);
-    if (mac && req.method === 'POST')                          return handleAirdropClaimPost(mac[1], req, env, network, cors);
+    if (mac && req.method === 'POST') {
+      const rootHex = mac[1];
+      const resp = await handleAirdropClaimPost(rootHex, req, env, network, cors);
+      if (resp.status >= 200 && resp.status < 400 && ctx?.waitUntil) {
+        ctx.waitUntil(_bustAirdropClaimsCache(network, rootHex));
+      }
+      return resp;
+    }
     if (mac && req.method === 'GET') {
       const cursorRaw = url.searchParams.get('cursor');
       const limitRaw = url.searchParams.get('limit');
@@ -11128,12 +11483,67 @@ export default {
         }
         opts.limit = lim;
       }
-      return handleAirdropClaimList(mac[1], env, network, cors, opts);
+      // SWR edge cache. The default-cursor page is the hot path (dapp polls,
+      // fulfiller's first page); cursor pages still flow through the cache
+      // but get busted only by the default-cursor bust. The fulfiller's
+      // typical cycle reads a small queue (≤ AIRDROP_LIST_PAGE per page)
+      // and is rarely sensitive to a 5s lag.
+      const rootHex = mac[1];
+      const cache = caches.default;
+      const cacheKey = airdropClaimsCacheKey(network, rootHex, opts.cursor || null, opts.limit ?? null);
+      const _withCors = (body, status, kind) => {
+        const headers = new Headers();
+        headers.set('Content-Type', 'application/json');
+        for (const [k, v] of Object.entries(cors)) headers.set(k, v);
+        headers.set('X-Cache', kind);
+        headers.set('Cache-Control', `public, max-age=${Math.floor(AIRDROP_CLAIMS_CACHE_FRESH_MS / 1000)}, stale-while-revalidate=${Math.floor(AIRDROP_CLAIMS_CACHE_STALE_MS / 1000)}`);
+        return new Response(body, { status, headers });
+      };
+      const _compute = async () => {
+        const fresh = await handleAirdropClaimList(rootHex, env, network, {}, opts);
+        const body = await fresh.text();
+        if (fresh.status === 200) {
+          const ch = new Headers();
+          ch.set('Content-Type', 'application/json');
+          ch.set('X-Cached-At', String(Date.now()));
+          ch.set('Cache-Control', `public, max-age=${Math.floor(AIRDROP_CLAIMS_CACHE_FRESH_MS / 1000)}, stale-while-revalidate=${Math.floor(AIRDROP_CLAIMS_CACHE_STALE_MS / 1000)}`);
+          await caches.default.put(cacheKey, new Response(body, { status: 200, headers: ch }));
+        }
+        return { body, status: fresh.status };
+      };
+      const cached = await cache.match(cacheKey);
+      if (cached) {
+        const cachedAtStr = cached.headers.get('X-Cached-At');
+        const ageMs = cachedAtStr ? Date.now() - parseInt(cachedAtStr, 10) : Infinity;
+        if (ageMs < AIRDROP_CLAIMS_CACHE_FRESH_MS) {
+          return _withCors(await cached.text(), cached.status, 'HIT');
+        }
+        if (ageMs < AIRDROP_CLAIMS_CACHE_STALE_MS && ctx?.waitUntil) {
+          ctx.waitUntil(_compute().catch(() => null));
+          return _withCors(await cached.text(), cached.status, 'STALE');
+        }
+      }
+      const result = await _compute();
+      return _withCors(result.body, result.status, cached ? 'EXPIRED-MISS' : 'MISS');
     }
     const mac2 = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims\/(\d+)$/);
-    if (mac2 && req.method === 'DELETE')                       return handleAirdropClaimDelete(mac2[1], mac2[2], req, env, network, cors);
+    if (mac2 && req.method === 'DELETE') {
+      const rootHex = mac2[1];
+      const resp = await handleAirdropClaimDelete(rootHex, mac2[2], req, env, network, cors);
+      if (resp.status >= 200 && resp.status < 400 && ctx?.waitUntil) {
+        ctx.waitUntil(_bustAirdropClaimsCache(network, rootHex));
+      }
+      return resp;
+    }
     const mac3 = url.pathname.match(/^\/airdrops\/([0-9a-f]{64})\/claims\/(\d+)\/paid$/);
-    if (mac3 && req.method === 'POST')                         return handleAirdropClaimPaid(mac3[1], mac3[2], req, env, network, cors);
+    if (mac3 && req.method === 'POST') {
+      const rootHex = mac3[1];
+      const resp = await handleAirdropClaimPaid(rootHex, mac3[2], req, env, network, cors);
+      if (resp.status >= 200 && resp.status < 400 && ctx?.waitUntil) {
+        ctx.waitUntil(_bustAirdropClaimsCache(network, rootHex));
+      }
+      return resp;
+    }
 
     // Drop announcements (discovery layer for airdrops).
     if (url.pathname === '/drops') {
@@ -11285,7 +11695,10 @@ export default {
         const meta = { verified_at: Math.floor(Date.now() / 1000), source: 'admin', note };
         await env.REGISTRY_KV.put(verifiedKey(network, aid), JSON.stringify(meta));
         // Bust read-side caches so the badge surfaces on the next user request
-        // instead of waiting up to 5 min for the SWR stale window.
+        // instead of waiting up to 5 min for the SWR stale window. Also drop
+        // the per-isolate verified-set memo so an immediate /assets call from
+        // the same isolate doesn't read the pre-mutation set.
+        _invalidateVerifiedMemo(network);
         await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
         await caches.default.delete(assetsCacheKey(network, null, true)).catch(() => {});
         return jsonResponse({ network, aid, verified: true, ...meta }, 200, cors);
@@ -11299,6 +11712,7 @@ export default {
           return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
         }
         await env.REGISTRY_KV.delete(verifiedKey(network, aid));
+        _invalidateVerifiedMemo(network);
         await caches.default.delete(petchAssetsCacheKey(network)).catch(() => {});
         await caches.default.delete(assetsCacheKey(network, null, true)).catch(() => {});
         return jsonResponse({ network, aid, verified: false }, 200, cors);
@@ -11476,7 +11890,8 @@ export default {
         };
         for (let h = from; h <= endHeight; h++) {
           let blockHash;
-          try { blockHash = (await apiText(env, `/block-height/${h}`, {}, network)).trim(); }
+          // Same cache as the cron scanner — deep historical heights never change.
+          try { blockHash = (await apiText(env, `/block-height/${h}`, { cacheTtl: UPSTREAM_IMMUTABLE_CACHE_TTL }, network)).trim(); }
           catch { break; }
           let txs;
           try { txs = await fetchBlockTxsParallel(env, blockHash, network); }
