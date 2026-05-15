@@ -794,9 +794,15 @@ Per intent:
 - The intent carries a **sigma cross-curve binding proof** —
   Camenisch-Stadler-style proof of knowledge of `(a, r_secp, r_BJJ)`
   such that the same `a` underlies both `C_in_secp` and `C_in_BJJ`,
-  with `a < 2^64` (range-bounded by the standard 64-bit
-  bulletproof on `C_in_secp` that tacit already requires for asset
-  amounts). The protocol:
+  with `a < 2^64`. **The `a < 2^64` bound is enforced in-circuit by
+  the Groth16 batch proof's `Num2Bits(64)` inside `PedersenBJJ`**
+  (and propagated to `C_in_secp` via this sigma's same-`a` binding) —
+  AMM swap envelopes do **not** carry a separate per-intent
+  bulletproof on `C_in_secp`, and the validator does not verify one
+  at intent ingestion. A malicious prover can produce a verifying
+  sigma for `a ≥ 2^64`, but no valid batch Groth16 proof can include
+  such an intent (the `Num2Bits(64)` constraint fails), so the
+  intent never settles. The protocol:
 
   ```
   prover picks    α        uniform in [0, 2^320 − 2^192)  (integer mask)
@@ -828,9 +834,9 @@ Per intent:
   modular reductions satisfy two different congruences post-hoc —
   a CRT problem at > 2^128 work given `e < 2^128`.
 
-  **Parameter rationale.** Given `a < 2^64` (range-bounded by the
-  standard 64-bit bulletproof on `C_in_secp` that tacit already
-  requires) and `e < 2^128`, the product `e·a < 2^192`. To preserve
+  **Parameter rationale.** Given `a < 2^64` (enforced by the
+  Groth16 batch circuit's `Num2Bits(64)`, as described above) and
+  `e < 2^128`, the product `e·a < 2^192`. To preserve
   ≥ 128-bit statistical zero-knowledge on `a`, the prover
   rejection-samples `α` uniformly in `[0, 2^320 − 2^192)`, giving
   `z_a = α + e·a < 2^320` deterministically (40 bytes BE). The mask

@@ -2,12 +2,19 @@
 //
 // Asserts:
 //   • Honest prover ⇒ verifier accepts (round-trip)
-//   • Wire format is 157 bytes
+//   • Wire format is 169 bytes (33+32+40+32+32 = post 128-bit FS upgrade)
 //   • Any single-byte mutation in the proof OR commitments ⇒ rejected
 //   • Range checks: out-of-range z_a / z_r_secp / z_r_BJJ ⇒ rejected
 //   • Cross-pairing attack: swapping C_secp for a different commitment ⇒ rejected
 //   • Mismatched commitments (same a, different blinding pairs) ⇒ rejected
 //   • Out-of-range amount (a ≥ 2^64) at prove time ⇒ throws
+//
+// Wire-format offsets (post-upgrade, XCURVE_PROOF_LEN = 169):
+//   A_secp:   bytes [0,   33)
+//   A_BJJ:    bytes [33,  65)
+//   z_a:      bytes [65, 105)   — 40 bytes (was 28 pre-upgrade)
+//   z_r_secp: bytes [105, 137)  — 32 bytes
+//   z_r_BJJ:  bytes [137, 169)  — 32 bytes
 
 import { sha256 } from '@noble/hashes/sha256';
 import { concatBytes } from '@noble/hashes/utils';
@@ -113,27 +120,32 @@ test('null inputs ⇒ reject', () => {
 });
 
 console.log('\nRange checks on responses');
-// Note on z_a: the 28-byte BE encoding intrinsically bounds z_a < 2^224, so the
-// verifier's explicit `z_a < 2^224` check is unreachable in practice — but it
-// guards against future encoding changes that might widen the slot. The test
-// below corrupts z_a to the boundary value (2^224 - 1) and confirms the verify
-// equation rejects it (probabilistic soundness, not the range check).
-test('z_a = 2^224 - 1 boundary ⇒ rejected by equation', () => {
+// z_a occupies bytes [65, 105) — 40 bytes BE — and is bounded by the
+// encoding to < 2^320. The verifier's explicit `z_a < 2^320` check is
+// unreachable via wire mutation alone (any 40-byte BE encoding is < 2^320),
+// but a corrupted z_a still fails the verify equation. We exercise the
+// boundary value to confirm equation-level rejection (not the range check).
+test('z_a = 2^320 - 1 boundary ⇒ rejected by equation', () => {
   const bad = new Uint8Array(s.proof);
-  for (let i = 65; i < 93; i++) bad[i] = 0xff;
+  for (let i = 65; i < 105; i++) bad[i] = 0xff;   // span all 40 bytes
   return !verifyXCurve(bad, s.C_secp_bytes, s.C_BJJ_bytes);
 });
-test('z_r_secp ≥ n_secp ⇒ reject', () => {
+// z_r_secp occupies bytes [105, 137) — 32 bytes BE. Writing SECP_N exactly
+// produces an out-of-range value (z_r_secp ≥ n_secp), which the explicit
+// range check at amm-sigma-xcurve.mjs:192 must reject before the equation
+// check. (Pre-fix offsets [93,125) straddled z_a and z_r_secp and exercised
+// the wrong path; see audit #2 LOW-2.)
+test('z_r_secp ≥ n_secp ⇒ reject (explicit range check)', () => {
   const bad = new Uint8Array(s.proof);
-  // Write SECP_N exactly into bytes 93..125; this is out of [0, n_secp).
   let x = SECP_N;
-  for (let i = 124; i >= 93; i--) { bad[i] = Number(x & 0xffn); x >>= 8n; }
+  for (let i = 136; i >= 105; i--) { bad[i] = Number(x & 0xffn); x >>= 8n; }
   return !verifyXCurve(bad, s.C_secp_bytes, s.C_BJJ_bytes);
 });
-test('z_r_BJJ ≥ n_BJJ ⇒ reject', () => {
+// z_r_BJJ occupies bytes [137, 169) — 32 bytes BE. Same pattern with N_BJJ.
+test('z_r_BJJ ≥ n_BJJ ⇒ reject (explicit range check)', () => {
   const bad = new Uint8Array(s.proof);
   let x = N_BJJ;
-  for (let i = 156; i >= 125; i--) { bad[i] = Number(x & 0xffn); x >>= 8n; }
+  for (let i = 168; i >= 137; i--) { bad[i] = Number(x & 0xffn); x >>= 8n; }
   return !verifyXCurve(bad, s.C_secp_bytes, s.C_BJJ_bytes);
 });
 

@@ -34,9 +34,12 @@ out-of-circuit indexer responsibility.
 Not a soundness break — a cheating prover also can't satisfy it — but
 legitimate large-volume batches couldn't be proved. Completeness gap.
 
-**Fix:** Bumped to `LessThan(70)` with explicit `Num2Bits(70)` range proofs on
-both `rem[i]` and `divisor[i]` before the comparison. Adversarial test
-"rem ≥ divisor (forge a high quotient) ⇒ rejected" continues to pass.
+**Fix:** Bumped to `LessThan(69)` with explicit `Num2Bits(69)` range proofs on
+both `rem[i]` and `divisor[i]` before the comparison. The exact width was
+tightened from the initial 70-bit fix to the true worst-case 69-bit bound
+(see `amm_swap_batch.circom:339-343` comment, which derives the bound
+algebraically). Adversarial test "rem ≥ divisor (forge a high quotient) ⇒
+rejected" continues to pass.
 
 ### 2. HIGH — `rem[i]` not explicitly range-checked ✅ FIXED
 
@@ -46,8 +49,8 @@ both `rem[i]` and `divisor[i]` before the comparison. Adversarial test
 `LessThan`'s internal `Num2Bits`. Fragile pattern that could fail to constrain
 under field-wraparound at scale.
 
-**Fix:** Added `Num2Bits(70)` on `rem[i]` explicitly, alongside the divisor
-range proof (same fix as #1).
+**Fix:** Added `Num2Bits(69)` on `rem[i]` explicitly, alongside the divisor
+range proof (same fix as #1, tightened to the algebraic worst-case width).
 
 ### 3. MEDIUM — `n_intents` not constrained in-circuit (DEFERRED, out-of-circuit responsibility)
 
@@ -83,7 +86,7 @@ chain state separately. Saves one Fr in the public-signals vector and
 tightens the layout to 11 globals (was 12) for a total of
 **123 public signals** — pinned in `drift-guard.test.mjs`.
 
-### 5. MEDIUM — Unused `pool_id_squared` signal (DEFERRED, defensive pattern)
+### 5. MEDIUM — Unused `pool_id_squared` signal ✅ REMOVED
 
 **Files:** `amm_lp_add.circom`, `amm_lp_remove.circom`, `amm_swap_batch.circom`
 
@@ -92,11 +95,12 @@ tightens the layout to 11 globals (was 12) for a total of
 preserves all declared public signals without this trick, so the squaring
 is unnecessary in current toolchain versions.
 
-**Resolution:** Retained as belt-and-suspenders. The pattern is also used in
-the production mixer's `withdraw.circom` (line 102 of `dapp/circuits/withdraw.circom`)
-and removing it would diverge from established protocol practice for ~3
-constraints' savings across three circuits. Worth keeping for parity with
-the mixer's hardening discipline.
+**Resolution:** Removed from all three circuits. The squaring constraint
+is redundant under circom 2.1.6+ / snarkjs ≥ 0.7.x — the declared public
+signals are preserved without it. See `amm_lp_add.circom:48-54` for the
+rationale comment retained as a marker. The mixer's `withdraw.circom`
+still uses the defensive pattern for historical-discipline reasons; that
+divergence is intentional and documented at the call site.
 
 ### 6. LOW — `fee_bps` cap loose ✅ FIXED
 
