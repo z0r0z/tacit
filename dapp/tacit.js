@@ -27350,7 +27350,14 @@ async function _claimSign() {
   if (!verified) {
     throw new Error('signature self-verify failed — wallet returned a malformed signature, or the connected address is a smart wallet on a chain whose ERC-1271 contract this wallet can\'t resolve');
   }
-  _claimSigned = { msg, sigHex: sig.toLowerCase(), tacitPubHex };
+  // Capture the network the user signed under. If they switch tacit network
+  // before tipping (mainnet ↔ signet), the tip POST still targets the
+  // snapshot's network (correct), but the user's CURRENT wallet.pub is now
+  // for the other network — so the airdrop lands at the tacitPubHex captured
+  // here, on the snapshot's network, but is invisible in their wallet view
+  // until they switch back. The tip handler reads this field to warn before
+  // broadcasting.
+  _claimSigned = { msg, sigHex: sig.toLowerCase(), tacitPubHex, network: NET.name };
   return _claimSigned;
 }
 
@@ -27894,6 +27901,17 @@ async function _renderClaimTreasuryFundPanel() {
       if (status) status.innerHTML = `<span style="color:var(--orange);">Complete step 4 (sign with wallet) first — your tip must be bound to a signed claim, or another recipient could claim the slot you funded.</span>`;
       return;
     }
+    // Network-changed-since-sign guard. If the user signed on (say) mainnet
+    // and then flipped the network selector to signet before tipping, the
+    // tip POST is fine (uses _claimSnapshot.network), but the user's CURRENT
+    // wallet.pub is now for a different network than _claimSigned.tacitPubHex
+    // — meaning the airdrop will land at the SIGNED pubkey on the SNAPSHOT's
+    // network and be invisible from the user's current wallet view. Warn
+    // before broadcasting; the user can switch back and resume.
+    if (_claimSigned.network && _claimSigned.network !== NET.name) {
+      if (status) status.innerHTML = `<span style="color:var(--red);">⚠ Network changed since you signed. You signed on <strong>${escapeHtml(_claimSigned.network)}</strong>; tacit is now on <strong>${escapeHtml(NET.name)}</strong>. If you tip now, the airdrop will land at the pubkey you signed with — visible only after you switch back to ${escapeHtml(_claimSigned.network)}. Switch back now to keep things consistent, or re-sign step 3 under the new network.</span>`;
+      return;
+    }
     // In-handler double-submit short-circuit. The render-time guard above
     // hides this button for already-submitted claims, but a stale DOM
     // reference (button rendered before the local record landed) could
@@ -28260,7 +28278,17 @@ async function _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, t
     if (Date.now() - startMs >= TIMEOUT_MS) {
       const el = document.getElementById('claim-treasury-fund-status');
       if (el) {
-        el.innerHTML = header + `<span class="muted" style="font-size:10px;display:block;margin-top:4px;">Live updates paused after 1h. Refresh the page to keep watching, or check the submitted-claims panel below.</span>`;
+        el.innerHTML = header + `<span style="font-size:10px;display:block;margin-top:4px;color:#b8651d;">
+          ⏸ Live updates paused after 1h. Your claim is still in the issuer's queue —
+          <button data-act="claim-poller-resume" type="button" style="font-size:10px;padding:2px 6px;border:1px solid currentColor;background:transparent;color:#b8651d;cursor:pointer;font-family:var(--mono);margin-left:4px;">↻ Resume tracking</button>
+          or check the submitted-claims panel below.
+        </span>`;
+        const resumeBtn = el.querySelector('[data-act="claim-poller-resume"]');
+        if (resumeBtn) {
+          resumeBtn.onclick = () => {
+            _startClaimReactivePoller({ fundingTxid, merkleRoot, leafIndex, ticker, assetId, startedAt: Date.now() });
+          };
+        }
       }
       _stopClaimReactivePoller();
       return;
@@ -29986,6 +30014,12 @@ function setupClaimTab() {
         if (errEl) errEl.textContent = e.message;
         console.error(e);
       }
+      // Re-render the wizard so any state mutations inside _claimSign (e.g.,
+      // self-healed _claimEligibleRow after a wallet account swap) reflect in
+      // the visible step. Without this, a partial pre-throw mutation could
+      // leave the eligibility summary stale relative to what's about to be
+      // signed on the retry.
+      try { _renderClaimWizSteps?.(); } catch {}
     } finally {
       btn.classList.remove('live-dots');
       btn.disabled = false; btn.textContent = orig;
