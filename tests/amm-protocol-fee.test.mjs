@@ -200,7 +200,7 @@ const POOL_INIT_ARGS = {
   variant: 1,
   assetA: fill(32, 0xaa), assetB: fill(32, 0xbb),
   deltaA: 1_000_000n, deltaB: 2_000_000n, shareAmount: 1_414_213n,
-  shareCSecp: C33, shareCBJJ: fill(32, 0x20), shareXcurveSigma: fill(157, 0xc3),
+  shareCSecp: C33, shareCBJJ: fill(32, 0x20), shareXcurveSigma: fill(169, 0xc3),
   kernelSigA: SIG64, kernelSigB: SIG64,
   proof: fill(256, 0xee),
   feeBps: 30,
@@ -256,8 +256,11 @@ test('decoder rejects out-of-range bps in raw bytes', () => {
   // Instead, test a direct manipulation: build a malformed payload that has bps=1100.
   const goodEnc = encodeLpAdd({ ...POOL_INIT_ARGS, protocolFeeAddress: fill(33, 0x03), protocolFeeBps: 500 });
   // Find position of bps_LE: it's just before proof_len_LE(2) + proof.
+  // Layout from end: proof(*) | proof_len(2) | pool_capability_flags(1) |
+  //                  pool_meta_uri_len(1)=0  | pool_meta_uri(0) |
+  //                  protocol_fee_bps(2)     | protocol_fee_address(33) | ...
   const proofLen = POOL_INIT_ARGS.proof.length;
-  const bpsOff = goodEnc.length - proofLen - 2 - 2;
+  const bpsOff = goodEnc.length - proofLen - 2 - 1 - 1 - 2;
   const buf = new Uint8Array(goodEnc);
   buf[bpsOff] = 0x4c; buf[bpsOff + 1] = 0x04; // 0x044c = 1100
   try { decodeLpAdd(buf); return false; }

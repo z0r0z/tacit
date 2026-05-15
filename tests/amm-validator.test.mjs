@@ -21,7 +21,7 @@ import { N_BJJ, pedersenBJJ, packPoint } from './amm-bjj.mjs';
 import { lpAddKernelSign, lpRemoveKernelSign } from './amm-kernel.mjs';
 import { buildIntentMsg, signIntent, deriveIntentId, computeEnvelopeHash } from './amm-intent.mjs';
 import { solveClearing, lpInitShares } from './amm-clearing.mjs';
-import { validateLpAdd, validateLpRemove, validateSwapBatch } from './amm-validator.mjs';
+import { validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE } from './amm-validator.mjs';
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -129,6 +129,8 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
     inputCommitmentsB: args._ctx.inputCommitmentsB,
     inputsA: args._ctx.inputsA,
     inputsB: args._ctx.inputsB,
+    groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    currentHeight: 1000,
   });
   test('POOL_INIT validates', () => r.valid === true);
   test('POOL_INIT initial reserve_A == deltaA', () => r.valid && r.newPoolState.reserve_A === 1_000_000n);
@@ -142,10 +144,12 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
   console.log('\nT_LP_ADD validator — POOL_INIT adversarial');
   test('POOL_INIT against existing pool ⇒ rejected', () => {
     const r2 = validateLpAdd({
-      payload, pool: { pool_id: POOL_ID, reserve_A: 1n, reserve_B: 1n, lp_total_shares: 1n, fee_bps: 30 },
+      payload, pool: { pool_id: POOL_ID, reserve_A: 1n, reserve_B: 1n, lp_total_shares: 1n, fee_bps: 30, init_height: 0 },
       inputCommitmentsA: args._ctx.inputCommitmentsA,
       inputCommitmentsB: args._ctx.inputCommitmentsB,
       inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
     });
     return !r2.valid && /already exists/.test(r2.reason);
   });
@@ -156,6 +160,8 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
       payload: p2, pool: null,
       inputCommitmentsA: args._ctx.inputCommitmentsA, inputCommitmentsB: args._ctx.inputCommitmentsB,
       inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
     });
     return !r2.valid && /lexicographically/.test(r2.reason);
   });
@@ -167,6 +173,8 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
       payload: p2, pool: null,
       inputCommitmentsA: args._ctx.inputCommitmentsA, inputCommitmentsB: args._ctx.inputCommitmentsB,
       inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
     });
     return !r2.valid && /kernel/.test(r2.reason);
   });
@@ -181,6 +189,8 @@ console.log('\nT_LP_ADD validator — standard variant 0 against an active pool'
     inputCommitmentsA: init._ctx.inputCommitmentsA,
     inputCommitmentsB: init._ctx.inputCommitmentsB,
     inputsA: init._ctx.inputsA, inputsB: init._ctx.inputsB,
+    groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    currentHeight: 1000,
   });
   if (!initRes.valid) throw new Error(`POOL_INIT precondition failed: ${initRes.reason}`);
   const pool = initRes.newPoolState;
@@ -226,9 +236,22 @@ console.log('\nT_LP_ADD validator — standard variant 0 against an active pool'
     payload, pool,
     inputCommitmentsA: [C_inA], inputCommitmentsB: [C_inB],
     inputsA, inputsB,
+    groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    currentHeight: pool.init_height + 10,  // past the initial-LP lock
   });
 
   test('valid LP_ADD validates', () => r.valid === true);
+
+  test('LP_ADD inside initial-LP lock window ⇒ rejected', () => {
+    const r2 = validateLpAdd({
+      payload, pool,
+      inputCommitmentsA: [C_inA], inputCommitmentsB: [C_inB],
+      inputsA, inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: pool.init_height + 2,  // within the 6-block lock
+    });
+    return !r2.valid && /initial-LP lock/.test(r2.reason);
+  });
   test('post-add reserve_A = 1.0005M', () => r.valid && r.newPoolState.reserve_A === 1_000_500n);
   test('post-add reserve_B = 2.001M', () => r.valid && r.newPoolState.reserve_B === 2_001_000n);
   test('lp_total_shares grew by expShares', () => r.valid && r.newPoolState.lp_total_shares === pool.lp_total_shares + expShares);
@@ -265,6 +288,8 @@ console.log('\nT_LP_ADD validator — standard variant 0 against an active pool'
       payload: encodeLpAdd(badArgs), pool,
       inputCommitmentsA: [C_inA], inputCommitmentsB: [C_inB],
       inputsA, inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: pool.init_height + 10,
     });
     return !r2.valid && /shareAmount/.test(r2.reason);
   });
@@ -376,6 +401,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
     intentInputUtxos: [inputUtxos],
     receiveScripts: [recvSpk],
     currentHeight: 800000,
+    groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
   });
   test('honest swap batch validates', () => {
     if (!r.valid) console.log(`     reason: ${r.reason}`);
@@ -392,6 +418,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
       intentInputUtxos: [inputUtxos],
       receiveScripts: [recvSpk],
       currentHeight: 800000,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
     });
     return !r2.valid && /OP_RETURN/.test(r2.reason);
   });
@@ -402,17 +429,18 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
       intentInputUtxos: [inputUtxos],
       receiveScripts: [recvSpk],
       currentHeight: 800000,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
     });
     return !r2.valid && /OP_RETURN/.test(r2.reason);
   });
   test('expired intent ⇒ rejected', () => {
-    // Run validator at a height past the intent's expiry.
     const r2 = validateSwapBatch({
       payload, pool, opReturnData: opReturn,
       inputCommitmentsByIntent: [[C_in_secp]],
       intentInputUtxos: [inputUtxos],
       receiveScripts: [recvSpk],
       currentHeight: 1_000_000,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
     });
     return !r2.valid && /expired/.test(r2.reason);
   });

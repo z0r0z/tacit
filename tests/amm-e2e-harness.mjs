@@ -64,7 +64,7 @@ import {
   encodeLpAdd, encodeLpRemove, encodeSwapBatch,
 } from './amm-envelope.mjs';
 import {
-  validateLpAdd, validateLpRemove, validateSwapBatch,
+  validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE,
 } from './amm-validator.mjs';
 import {
   solveClearing, amountOutForTrader, lpInitShares, lpAddShares, lpRemoveOutputs,
@@ -419,6 +419,8 @@ export function buildAndSubmitPoolInit({
     inputCommitmentsA: [inputA.commitment], inputCommitmentsB: [inputB.commitment],
     inputsA: [{ txid: inputA.txid, vout: inputA.vout }],
     inputsB: [{ txid: inputB.txid, vout: inputB.vout }],
+    groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    currentHeight: chain.height,
   });
   if (!result.valid) throw new Error(`POOL_INIT rejected: ${result.reason}`);
   indexer.registerPool(result.newPoolState);
@@ -495,13 +497,17 @@ export function buildAndSubmitLpAdd({
     txid, envelope: payload,
   };
   chain.broadcast(tx);
-  chain.confirm(3);
+  // Advance past AMM_INITIAL_LP_LOCK_BLOCKS so the variant-0 LP_ADD is
+  // allowed against the freshly initialized pool.
+  chain.confirm(8);
 
   const result = validateLpAdd({
     payload, pool,
     inputCommitmentsA: [inputA.commitment], inputCommitmentsB: [inputB.commitment],
     inputsA: [{ txid: inputA.txid, vout: inputA.vout }],
     inputsB: [{ txid: inputB.txid, vout: inputB.vout }],
+    groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+    currentHeight: chain.height,
   });
   if (!result.valid) throw new Error(`LP_ADD rejected: ${result.reason}`);
   indexer.updatePool(result.newPoolState);
@@ -580,6 +586,7 @@ export function buildAndSubmitLpRemove({
     payload, pool,
     lpInputCommitments: [lpShareUtxo.commitment],
     lpInputs: [{ txid: lpShareUtxo.txid, vout: lpShareUtxo.vout }],
+    groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
   });
   if (!result.valid) throw new Error(`LP_REMOVE rejected: ${result.reason}`);
   indexer.updatePool(result.newPoolState);
@@ -828,6 +835,7 @@ export function settlerBuildAndSubmit({ chain, indexer, settler, pool, intents }
     intentInputUtxos: filled.map(it => [{ txid: it.inputUtxo.txid, vout: it.inputUtxo.vout }]),
     receiveScripts: filled.map(it => it.receiveScriptPubKey),
     currentHeight: chain.height,
+    groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
   });
   if (!result.valid) throw new Error(`SWAP_BATCH rejected: ${result.reason}`);
   indexer.updatePool(result.newPoolState);

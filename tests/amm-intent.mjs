@@ -12,7 +12,7 @@
 //   input_utxos[]      -- length-prefixed: count u8, then [txid_BE(32) || vout_LE(4)] each
 //   C_in_secp          -- 33 B (compressed) — aggregate of input UTXO commitments
 //   C_in_BJJ           -- 32 B (compressed BabyJubJub point) — aux Pedersen commit
-//   xcurve_sigma_proof -- 157 B (sigma proof binding C_in_secp and C_in_BJJ)
+//   xcurve_sigma_proof -- 169 B (sigma proof binding C_in_secp and C_in_BJJ)
 //   receive_scriptPubKey -- length-prefixed: count u16_LE, then bytes
 //   min_out            -- 8 B (u64 LE)
 //   tip_amount         -- 8 B (u64 LE)
@@ -26,6 +26,7 @@ import { sha256 } from '@noble/hashes/sha256';
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
 
 import { signSchnorr, verifySchnorr } from './composition.mjs';
+import { XCURVE_PROOF_LEN } from './amm-sigma-xcurve.mjs';
 
 const DOMAIN_INTENT = new TextEncoder().encode('tacit-amm-intent-v1');
 const DOMAIN_INTENT_CANCEL = new TextEncoder().encode('tacit-amm-intent-cancel-v1');
@@ -63,7 +64,7 @@ function outpointBytes(op) {
 //
 // Required fields:
 //   poolId(32), direction (0|1), inputUtxos [{txid,vout}], cInSecp(33), cInBjj(32),
-//   xcurveSigma(157), receiveScriptPubKey(Uint8Array, ≤ 65535 bytes), minOut(bigint),
+//   xcurveSigma(169), receiveScriptPubKey(Uint8Array, ≤ 65535 bytes), minOut(bigint),
 //   tipAmount(bigint), tipAsset(0|1), expiryHeight(u32), traderPubkey(33).
 export function buildIntentMsg({
   poolId, direction, inputUtxos, cInSecp, cInBjj, xcurveSigma,
@@ -77,7 +78,7 @@ export function buildIntentMsg({
   }
   const cs = asBytes(cInSecp, 33, 'cInSecp');
   const cb = asBytes(cInBjj, 32, 'cInBjj');
-  const xs = asBytes(xcurveSigma, 157, 'xcurveSigma');
+  const xs = asBytes(xcurveSigma, XCURVE_PROOF_LEN, 'xcurveSigma');
   const tpk = asBytes(traderPubkey, 33, 'traderPubkey');
   if (!(receiveScriptPubKey instanceof Uint8Array)) throw new Error('receiveScriptPubKey must be Uint8Array');
   if (receiveScriptPubKey.length > 0xffff) throw new Error('receiveScriptPubKey too large (> 65535 bytes)');
@@ -156,8 +157,10 @@ export function buildCanonicalListBytes(intentIds) {
                             for (let i = 0; i < 32; i++) if (a[i] !== b[i]) return a[i] - b[i];
                             return 0;
                           });
-  if (sorted.length > 0xffff) throw new Error('canonical list too large (> 65535 intents)');
-  const parts = [u16LE(sorted.length)];
+  if (sorted.length > 0xff) throw new Error('canonical list too large (> 255 intents)');
+  // u8 count prefix per AMM.md §"On-chain commitment to the canonical list"
+  // — matches the validator's computeQualifyingSetHash. N_MAX=16 fits in u8.
+  const parts = [new Uint8Array([sorted.length])];
   for (const id of sorted) parts.push(id);
   return concatBytes(...parts);
 }

@@ -25,7 +25,7 @@ function test(label, fn) {
 const POOL_ID = new Uint8Array(32).fill(0x77);
 const C_IN_SECP = new Uint8Array(33); C_IN_SECP[0] = 0x02; C_IN_SECP.set(new Uint8Array(32).fill(0xa1), 1);
 const C_IN_BJJ = new Uint8Array(32).fill(0xb2);
-const X_SIGMA = new Uint8Array(157).fill(0xc3);
+const X_SIGMA = new Uint8Array(169).fill(0xc3);
 const RECV_SPK = new Uint8Array([0x00, 0x14, ...new Uint8Array(20).fill(0xd4)]); // OP_0 14 <20-byte hash>
 const TRADER_SK = new Uint8Array(32);
 for (let i = 0; i < 32; i++) TRADER_SK[i] = i + 1;
@@ -151,10 +151,12 @@ console.log('\nqualifying_set_hash');
 const id1 = new Uint8Array(32).fill(0x10);
 const id2 = new Uint8Array(32).fill(0x20);
 const id3 = new Uint8Array(32).fill(0x30);
-test('canonical list is sorted ascending', () => {
+test('canonical list is sorted ascending (u8 count per spec)', () => {
   const bytes = buildCanonicalListBytes([id3, id1, id2]);
-  // bytes: u16 count(2) || id1(32) || id2(32) || id3(32)
-  return bytes[0] === 3 && bytes[1] === 0 && bytes[2] === 0x10 && bytes[34] === 0x20 && bytes[66] === 0x30;
+  // bytes: u8 count(1) || id1(32) || id2(32) || id3(32)  — N_MAX=16 fits in u8
+  return bytes.length === 1 + 3 * 32
+    && bytes[0] === 3
+    && bytes[1] === 0x10 && bytes[33] === 0x20 && bytes[65] === 0x30;
 });
 test('qualifying_set_hash deterministic', () => {
   const h1 = computeQualifyingSetHash({ poolId: POOL_ID, height: 800_000, intentIds: [id1, id2] });

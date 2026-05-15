@@ -13,6 +13,7 @@
 // This module deals strictly with the inner <payload> bytes.
 
 import { hexToBytes, bytesToHex, concatBytes } from '@noble/hashes/utils';
+import { XCURVE_PROOF_LEN } from './amm-sigma-xcurve.mjs';
 
 export const OPCODE_T_LP_ADD              = 0x2d;
 export const OPCODE_T_LP_REMOVE           = 0x2e;
@@ -120,7 +121,7 @@ export function encodeLpAdd(args) {
     u64LE(args.shareAmount),
     asBytes(args.shareCSecp, 33, 'shareCSecp'),
     asBytes(args.shareCBJJ, 32, 'shareCBJJ'),
-    asBytes(args.shareXcurveSigma, 157, 'shareXcurveSigma'),
+    asBytes(args.shareXcurveSigma, XCURVE_PROOF_LEN, 'shareXcurveSigma'),
     asBytes(args.kernelSigA, 64, 'kernelSigA'),
     asBytes(args.kernelSigB, 64, 'kernelSigB'),
   ];
@@ -138,7 +139,14 @@ export function encodeLpAdd(args) {
     parts.push(new Uint8Array([cerBytes.length]), cerBytes);
     const arb = args.arbiterPubkeys || [];
     if (arb.length > 16) throw new Error('arbiterPubkeys count 0..16');
-    parts.push(new Uint8Array([arb.length]));
+    const arbM = args.arbiterThresholdM ?? (arb.length > 0 ? 1 : 0);
+    if (arb.length === 0 && arbM !== 0) {
+      throw new Error('arbiterThresholdM must be 0 when no arbiter pubkeys pinned');
+    }
+    if (arb.length > 0 && (arbM < 1 || arbM > arb.length)) {
+      throw new Error(`arbiterThresholdM must be 1..${arb.length}`);
+    }
+    parts.push(new Uint8Array([arb.length, arbM]));
     for (const pk of arb) parts.push(asBytes(pk, 33, 'arbiterPubkey'));
     const lsigs = args.launcherSigs || [];
     if (lsigs.length > 2) throw new Error('launcherSigs count 0..2');
@@ -160,6 +168,21 @@ export function encodeLpAdd(args) {
       throw new Error('non-zero protocolFeeAddress requires protocolFeeBps > 0');
     }
     parts.push(u16LE(protoBps));
+    // Optional pool_meta_uri — informational dapp metadata pointer
+    // (description, logo, IPFS CID, website). Never consensus-bound;
+    // indexer does not dereference. Length 0..255.
+    const metaUri = args.poolMetaUri ?? '';
+    const metaBytes = new TextEncoder().encode(metaUri);
+    if (metaBytes.length > 255) throw new Error('poolMetaUri length must be 0..255 bytes');
+    parts.push(new Uint8Array([metaBytes.length]), metaBytes);
+    // Pool capability flags — u8 bitmap declaring opt-in behaviors.
+    //   bit 0 (0x01) — LP_ADD requires T_RANGE_ATTEST under this pool's scope
+    //   bits 1-7 — reserved for future amendments
+    // Default 0 = standard V1 pool. Closest analog to Uniswap V4 hooks
+    // (protocol-defined feature flags, NOT pluggable executable code).
+    const capFlags = args.poolCapabilityFlags ?? 0;
+    if (capFlags < 0 || capFlags > 0xff) throw new Error('poolCapabilityFlags must be u8');
+    parts.push(new Uint8Array([capFlags]));
   }
 
   // Tail: proof_len_LE(2) || proof
@@ -184,7 +207,7 @@ export function decodeLpAdd(payload) {
   const shareAmount = readU64LE(payload, off); off += 8;
   const shareCSecp = payload.slice(off, off + 33); off += 33;
   const shareCBJJ = payload.slice(off, off + 32); off += 32;
-  const shareXcurveSigma = payload.slice(off, off + 157); off += 157;
+  const shareXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
   const kernelSigA = payload.slice(off, off + 64); off += 64;
   const kernelSigB = payload.slice(off, off + 64); off += 64;
 
@@ -202,6 +225,13 @@ export function decodeLpAdd(payload) {
     const cerBytes = payload.slice(off, off + cerLen); off += cerLen;
     const arbCount = payload[off++];
     if (arbCount > 16) throw new Error('arbiter_count out of range');
+    const arbThresholdM = payload[off++];
+    if (arbCount === 0 && arbThresholdM !== 0) {
+      throw new Error('arbiter_threshold_m must be 0 when arbiter_count = 0');
+    }
+    if (arbCount > 0 && (arbThresholdM < 1 || arbThresholdM > arbCount)) {
+      throw new Error(`arbiter_threshold_m out of range: ${arbThresholdM} (count ${arbCount})`);
+    }
     const arbiterPubkeys = [];
     for (let i = 0; i < arbCount; i++) {
       arbiterPubkeys.push(payload.slice(off, off + 33));
@@ -230,10 +260,24 @@ export function decodeLpAdd(payload) {
     result.feeBps = feeBps;
     result.vkCid = new TextDecoder('utf-8').decode(vkBytes);
     result.ceremonyCid = new TextDecoder('utf-8').decode(cerBytes);
+    // Optional pool_meta_uri — cosmetic dapp pointer. 0..255 byte UTF-8.
+    if (off + 1 > payload.length) throw new Error('truncated: missing pool_meta_uri_len');
+    const metaLen = payload[off++];
+    if (off + metaLen > payload.length) throw new Error('truncated: missing pool_meta_uri bytes');
+    const poolMetaUri = metaLen === 0 ? '' : new TextDecoder('utf-8').decode(payload.slice(off, off + metaLen));
+    off += metaLen;
+
+    // Pool capability flags — u8 bitmap.
+    if (off + 1 > payload.length) throw new Error('truncated: missing pool_capability_flags');
+    const poolCapabilityFlags = payload[off++];
+
     result.arbiterPubkeys = arbiterPubkeys;
+    result.arbiterThresholdM = arbThresholdM;
     result.launcherSigs = launcherSigs;
     result.protocolFeeAddress = protocolFeeAddress;
     result.protocolFeeBps = protocolFeeBps;
+    result.poolMetaUri = poolMetaUri;
+    result.poolCapabilityFlags = poolCapabilityFlags;
   }
 
   if (off + 2 > payload.length) throw new Error('truncated: missing proof_len');
@@ -260,10 +304,10 @@ export function encodeLpRemove(args) {
     u64LE(args.deltaB),
     asBytes(args.recvACSecp, 33, 'recvACSecp'),
     asBytes(args.recvACBJJ, 32, 'recvACBJJ'),
-    asBytes(args.recvAXcurveSigma, 157, 'recvAXcurveSigma'),
+    asBytes(args.recvAXcurveSigma, XCURVE_PROOF_LEN, 'recvAXcurveSigma'),
     asBytes(args.recvBCSecp, 33, 'recvBCSecp'),
     asBytes(args.recvBCBJJ, 32, 'recvBCBJJ'),
-    asBytes(args.recvBXcurveSigma, 157, 'recvBXcurveSigma'),
+    asBytes(args.recvBXcurveSigma, XCURVE_PROOF_LEN, 'recvBXcurveSigma'),
     asBytes(args.kernelSigLP, 64, 'kernelSigLP'),
   ];
   const proof = args.proof;
@@ -284,10 +328,10 @@ export function decodeLpRemove(payload) {
   const deltaB = readU64LE(payload, off); off += 8;
   const recvACSecp = payload.slice(off, off + 33); off += 33;
   const recvACBJJ = payload.slice(off, off + 32); off += 32;
-  const recvAXcurveSigma = payload.slice(off, off + 157); off += 157;
+  const recvAXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
   const recvBCSecp = payload.slice(off, off + 33); off += 33;
   const recvBCBJJ = payload.slice(off, off + 32); off += 32;
-  const recvBXcurveSigma = payload.slice(off, off + 157); off += 157;
+  const recvBXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
   const kernelSigLP = payload.slice(off, off + 64); off += 64;
   if (off + 2 > payload.length) throw new Error('truncated: missing proof_len');
   const proofLen = readU16LE(payload, off); off += 2;
@@ -317,8 +361,8 @@ export function decodeLpRemove(payload) {
 //   C_out_secp(33) || C_out_BJJ(32) || out_xcurve_sigma(157)
 // = 222 bytes per receipt
 
-const PER_INTENT_BYTES  = 340;
-const PER_RECEIPT_BYTES = 222;
+const PER_INTENT_BYTES  = 1 + 33 + 33 + 32 + XCURVE_PROOF_LEN + 8 + 8 + 4 + 64; // 352 at v1
+const PER_RECEIPT_BYTES = 33 + 32 + XCURVE_PROOF_LEN;                            // 234 at v1
 
 // args:
 //   assetA, assetB           : 32 B each
@@ -330,7 +374,9 @@ const PER_RECEIPT_BYTES = 222;
 //   tipAAmount, tipBAmount   : bigint
 //   tipACSecp, tipBCSecp     : 33 B each
 //   rTipA, rTipB             : 32 B each
-//   arbiterBlock             : null | { expectedHeight, qualifyingSetHash(32), arbiterSig(64) }
+//   arbiterBlock             : null | { expectedHeight, qualifyingSetHash(32),
+//                                        m(u8 1..16), signerIndices: u8[m] ascending distinct,
+//                                        sigs: Uint8Array(64 * m) concatenated BIP-340 }
 //   intents                  : array of {
 //                                direction, traderPubkey, cInSecp, cInBjj,
 //                                inXcurveSigma, minOut, tipAmount,
@@ -375,7 +421,27 @@ export function encodeSwapBatch(args) {
     const a = args.arbiterBlock;
     parts.push(u32LE(a.expectedHeight));
     parts.push(asBytes(a.qualifyingSetHash, 32, 'qualifyingSetHash'));
-    parts.push(asBytes(a.arbiterSig, 64, 'arbiterSig'));
+    const m = a.m;
+    if (typeof m !== 'number' || m < 1 || m > 16) {
+      throw new Error('arbiterBlock.m must be 1..16');
+    }
+    if (!Array.isArray(a.signerIndices) || a.signerIndices.length !== m) {
+      throw new Error(`arbiterBlock.signerIndices must have length ${m}`);
+    }
+    for (let i = 0; i < m; i++) {
+      const idx = a.signerIndices[i];
+      if (typeof idx !== 'number' || idx < 0 || idx > 15) {
+        throw new Error(`arbiterBlock.signerIndices[${i}] must be 0..15`);
+      }
+      if (i > 0 && idx <= a.signerIndices[i - 1]) {
+        throw new Error(`arbiterBlock.signerIndices must be ascending distinct`);
+      }
+    }
+    if (!(a.sigs instanceof Uint8Array) || a.sigs.length !== 64 * m) {
+      throw new Error(`arbiterBlock.sigs must be Uint8Array of length ${64 * m}`);
+    }
+    parts.push(new Uint8Array([m, ...a.signerIndices]));
+    parts.push(a.sigs);
   }
 
   // Per-intent blocks
@@ -387,21 +453,28 @@ export function encodeSwapBatch(args) {
     parts.push(asBytes(it.traderPubkey, 33, `intent[${i}].traderPubkey`));
     parts.push(asBytes(it.cInSecp, 33, `intent[${i}].cInSecp`));
     parts.push(asBytes(it.cInBjj, 32, `intent[${i}].cInBjj`));
-    parts.push(asBytes(it.inXcurveSigma, 157, `intent[${i}].inXcurveSigma`));
+    parts.push(asBytes(it.inXcurveSigma, XCURVE_PROOF_LEN, `intent[${i}].inXcurveSigma`));
     parts.push(u64LE(it.minOut));
     parts.push(u64LE(it.tipAmount));
     parts.push(u32LE(it.expiryHeight));
     parts.push(asBytes(it.intentSig, 64, `intent[${i}].intentSig`));
 
-    // Canonical ordering: per-intent blocks MUST appear in intent_id ascending byte-order.
+    // Canonical ordering: per-intent blocks MUST appear in STRICTLY
+    // ascending intent_id byte-order (equal == duplicate, rejected).
     // We don't have intent_id here directly (it's SHA256(intent_msg)) but callers should
     // pre-sort. Validate that any pre-sorted hint is respected:
     if (it._intentId) {
       const cur = asBytes(it._intentId, 32, `intent[${i}]._intentId`);
       if (prevIntentId !== null) {
+        let cmp = 0;
         for (let j = 0; j < 32; j++) {
-          if (cur[j] < prevIntentId[j]) throw new Error(`intents not in intent_id ascending order at i=${i}`);
-          if (cur[j] > prevIntentId[j]) break;
+          if (cur[j] < prevIntentId[j]) { cmp = -1; break; }
+          if (cur[j] > prevIntentId[j]) { cmp = 1; break; }
+        }
+        if (cmp <= 0) {
+          throw new Error(cmp === 0
+            ? `duplicate intent_id at i=${i}`
+            : `intents not in intent_id ascending order at i=${i}`);
         }
       }
       prevIntentId = cur;
@@ -413,13 +486,21 @@ export function encodeSwapBatch(args) {
     const r = args.receipts[i];
     parts.push(asBytes(r.cOutSecp, 33, `receipt[${i}].cOutSecp`));
     parts.push(asBytes(r.cOutBjj, 32, `receipt[${i}].cOutBjj`));
-    parts.push(asBytes(r.outXcurveSigma, 157, `receipt[${i}].outXcurveSigma`));
+    parts.push(asBytes(r.outXcurveSigma, XCURVE_PROOF_LEN, `receipt[${i}].outXcurveSigma`));
   }
 
   const proof = args.proof;
   if (!(proof instanceof Uint8Array)) throw new Error('proof must be Uint8Array');
   if (proof.length > 0xffff) throw new Error('proof too large');
   parts.push(u16LE(proof.length), proof);
+
+  // Optional settler_meta_uri — informational pointer the settler tags
+  // their batch with (settler version, identity, analytics URL). Never
+  // consensus-bound; indexer does not dereference. 0..255 byte UTF-8.
+  const settlerUri = args.settlerMetaUri ?? '';
+  const settlerBytes = new TextEncoder().encode(settlerUri);
+  if (settlerBytes.length > 255) throw new Error('settlerMetaUri length must be 0..255 bytes');
+  parts.push(new Uint8Array([settlerBytes.length]), settlerBytes);
 
   return concatBytes(...parts);
 }
@@ -451,8 +532,20 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
   if (hasArbiter) {
     const expectedHeight = readU32LE(payload, off); off += 4;
     const qualifyingSetHash = payload.slice(off, off + 32); off += 32;
-    const arbiterSig = payload.slice(off, off + 64); off += 64;
-    arbiterBlock = { expectedHeight, qualifyingSetHash, arbiterSig };
+    const m = payload[off++];
+    if (m < 1 || m > 16) throw new Error(`arbiter m out of range: ${m}`);
+    if (off + m + 64 * m > payload.length) throw new Error('truncated: arbiter signerIndices/sigs');
+    const signerIndices = [];
+    for (let i = 0; i < m; i++) {
+      const idx = payload[off++];
+      if (idx > 15) throw new Error(`arbiter signerIndices[${i}] out of range: ${idx}`);
+      if (i > 0 && idx <= signerIndices[i - 1]) {
+        throw new Error('arbiter signerIndices must be ascending distinct');
+      }
+      signerIndices.push(idx);
+    }
+    const sigs = payload.slice(off, off + 64 * m); off += 64 * m;
+    arbiterBlock = { expectedHeight, qualifyingSetHash, m, signerIndices, sigs };
   }
 
   const intents = [];
@@ -462,7 +555,7 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
     const traderPubkey = payload.slice(off, off + 33); off += 33;
     const cInSecp = payload.slice(off, off + 33); off += 33;
     const cInBjj = payload.slice(off, off + 32); off += 32;
-    const inXcurveSigma = payload.slice(off, off + 157); off += 157;
+    const inXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
     const minOut = readU64LE(payload, off); off += 8;
     const tipAmount = readU64LE(payload, off); off += 8;
     const expiryHeight = readU32LE(payload, off); off += 4;
@@ -474,7 +567,7 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
   for (let i = 0; i < nIntents; i++) {
     const cOutSecp = payload.slice(off, off + 33); off += 33;
     const cOutBjj = payload.slice(off, off + 32); off += 32;
-    const outXcurveSigma = payload.slice(off, off + 157); off += 157;
+    const outXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN); off += XCURVE_PROOF_LEN;
     receipts.push({ cOutSecp, cOutBjj, outXcurveSigma });
   }
 
@@ -483,6 +576,15 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
   if (off + proofLen > payload.length) throw new Error('truncated: missing proof bytes');
   const proof = payload.slice(off, off + proofLen);
   off += proofLen;
+
+  // Optional settler_meta_uri (0..255 byte UTF-8). Informational only.
+  if (off + 1 > payload.length) throw new Error('truncated: missing settler_meta_uri_len');
+  const settlerLen = payload[off++];
+  if (off + settlerLen > payload.length) throw new Error('truncated: missing settler_meta_uri bytes');
+  const settlerMetaUri = settlerLen === 0
+    ? '' : new TextDecoder('utf-8').decode(payload.slice(off, off + settlerLen));
+  off += settlerLen;
+
   if (off !== payload.length) throw new Error('trailing bytes after payload');
 
   return {
@@ -494,6 +596,7 @@ export function decodeSwapBatch(payload, { hasArbiter = false } = {}) {
     arbiterBlock,
     intents, receipts,
     proof,
+    settlerMetaUri,
   };
 }
 

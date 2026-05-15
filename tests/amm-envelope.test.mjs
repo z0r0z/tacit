@@ -32,7 +32,7 @@ const ASSET_A = fill(32, 0xaa);
 const ASSET_B = fill(32, 0xbb);
 const C33 = fill(33, 0x02); C33[1] = 0x10;
 const C32 = fill(32, 0x20);
-const SIGMA157 = fill(157, 0xc3);
+const SIGMA = fill(169, 0xc3);
 const SIG64 = fill(64, 0xd4);
 const PROOF = fill(256, 0xee);
 
@@ -40,7 +40,7 @@ const lpAddArgs = {
   variant: 0,
   assetA: ASSET_A, assetB: ASSET_B,
   deltaA: 1_000_000n, deltaB: 2_000_000n, shareAmount: 1_414_213n,
-  shareCSecp: C33, shareCBJJ: C32, shareXcurveSigma: SIGMA157,
+  shareCSecp: C33, shareCBJJ: C32, shareXcurveSigma: SIGMA,
   kernelSigA: SIG64, kernelSigB: SIG64,
   proof: PROOF,
 };
@@ -121,8 +121,8 @@ console.log('\nT_LP_REMOVE round-trip');
 const lpRemoveArgs = {
   assetA: ASSET_A, assetB: ASSET_B,
   shareAmount: 100_000n, deltaA: 50_000n, deltaB: 100_000n,
-  recvACSecp: C33, recvACBJJ: C32, recvAXcurveSigma: SIGMA157,
-  recvBCSecp: C33, recvBCBJJ: C32, recvBXcurveSigma: SIGMA157,
+  recvACSecp: C33, recvACBJJ: C32, recvAXcurveSigma: SIGMA,
+  recvBCSecp: C33, recvBCBJJ: C32, recvBXcurveSigma: SIGMA,
   kernelSigLP: SIG64,
   proof: PROOF,
 };
@@ -154,20 +154,20 @@ const baseSwapArgs = {
       direction: 0,
       traderPubkey: fill(33, 0x02),
       cInSecp: fill(33, 0x02), cInBjj: fill(32, 0x55),
-      inXcurveSigma: SIGMA157,
+      inXcurveSigma: SIGMA,
       minOut: 900n, tipAmount: 25n, expiryHeight: 800000, intentSig: SIG64,
     },
     {
       direction: 1,
       traderPubkey: fill(33, 0x03),
       cInSecp: fill(33, 0x03), cInBjj: fill(32, 0x66),
-      inXcurveSigma: SIGMA157,
+      inXcurveSigma: SIGMA,
       minOut: 1900n, tipAmount: 25n, expiryHeight: 800001, intentSig: SIG64,
     },
   ],
   receipts: [
-    { cOutSecp: fill(33, 0x02), cOutBjj: fill(32, 0x77), outXcurveSigma: SIGMA157 },
-    { cOutSecp: fill(33, 0x03), cOutBjj: fill(32, 0x88), outXcurveSigma: SIGMA157 },
+    { cOutSecp: fill(33, 0x02), cOutBjj: fill(32, 0x77), outXcurveSigma: SIGMA },
+    { cOutSecp: fill(33, 0x03), cOutBjj: fill(32, 0x88), outXcurveSigma: SIGMA },
   ],
   proof: PROOF,
 };
@@ -189,13 +189,13 @@ test('encode/decode round-trip (no arbiter)', () => {
     && dec.arbiterBlock === null;
 });
 
-test('encode/decode round-trip (with arbiter)', () => {
+test('encode/decode round-trip (with arbiter, m=1)', () => {
   const args = {
     ...baseSwapArgs,
     arbiterBlock: {
       expectedHeight: 800000,
       qualifyingSetHash: fill(32, 0x99),
-      arbiterSig: SIG64,
+      m: 1, signerIndices: [0], sigs: SIG64,
     },
   };
   const enc = encodeSwapBatch(args);
@@ -203,7 +203,43 @@ test('encode/decode round-trip (with arbiter)', () => {
   return dec.arbiterBlock !== null
     && dec.arbiterBlock.expectedHeight === 800000
     && bytesEqual(dec.arbiterBlock.qualifyingSetHash, fill(32, 0x99))
-    && bytesEqual(dec.arbiterBlock.arbiterSig, SIG64);
+    && dec.arbiterBlock.m === 1
+    && dec.arbiterBlock.signerIndices[0] === 0
+    && bytesEqual(dec.arbiterBlock.sigs, SIG64);
+});
+
+test('encode/decode round-trip (with arbiter, m=3 of 5)', () => {
+  const sigs = new Uint8Array(64 * 3);
+  for (let i = 0; i < 3; i++) sigs.set(fill(64, 0xa0 + i), 64 * i);
+  const args = {
+    ...baseSwapArgs,
+    arbiterBlock: {
+      expectedHeight: 800001,
+      qualifyingSetHash: fill(32, 0x55),
+      m: 3, signerIndices: [0, 2, 4], sigs,
+    },
+  };
+  const enc = encodeSwapBatch(args);
+  const dec = decodeSwapBatch(enc, { hasArbiter: true });
+  return dec.arbiterBlock !== null
+    && dec.arbiterBlock.m === 3
+    && dec.arbiterBlock.signerIndices[0] === 0
+    && dec.arbiterBlock.signerIndices[1] === 2
+    && dec.arbiterBlock.signerIndices[2] === 4
+    && bytesEqual(dec.arbiterBlock.sigs, sigs);
+});
+
+test('encode rejects descending signerIndices', () => {
+  try {
+    encodeSwapBatch({
+      ...baseSwapArgs,
+      arbiterBlock: {
+        expectedHeight: 800000, qualifyingSetHash: fill(32, 0x99),
+        m: 2, signerIndices: [3, 1], sigs: new Uint8Array(128),
+      },
+    });
+    return false;
+  } catch (e) { return /ascending distinct/.test(e.message); }
 });
 
 test('decoder with wrong hasArbiter flag corrupts intent parse', () => {
@@ -266,9 +302,9 @@ test('accepts intent_id ascending order with hints', () => {
 });
 
 console.log('\nSize sanity');
-test('per-intent block is 340 bytes', () => ENVELOPE_PER_INTENT_BYTES === 340);
-test('per-receipt block is 222 bytes', () => ENVELOPE_PER_RECEIPT_BYTES === 222);
-test('N=16 swap envelope fits in ~9.5 KB (sanity matches AMM.md table)', () => {
+test('per-intent block is 352 bytes (post 128-bit sigma)', () => ENVELOPE_PER_INTENT_BYTES === 352);
+test('per-receipt block is 234 bytes (post 128-bit sigma)', () => ENVELOPE_PER_RECEIPT_BYTES === 234);
+test('N=16 swap envelope fits in ~10 KB (sanity matches AMM.md table)', () => {
   const intents16 = [];
   const receipts16 = [];
   for (let i = 0; i < 16; i++) {
@@ -277,8 +313,8 @@ test('N=16 swap envelope fits in ~9.5 KB (sanity matches AMM.md table)', () => {
   }
   const args = { ...baseSwapArgs, nIntents: 16, intents: intents16, receipts: receipts16 };
   const enc = encodeSwapBatch(args);
-  // Global prefix ~270 B + 16 * (340 + 222) = 9192 B + proof 256 B = ~9.7 KB
-  return enc.length > 9000 && enc.length < 10500;
+  // Global prefix ~270 B + 16 * (352 + 234) = 9376 B + proof 256 B = ~9.9 KB
+  return enc.length > 9300 && enc.length < 10800;
 });
 
 console.log(`\n${pass}/${pass + fail} passed`);

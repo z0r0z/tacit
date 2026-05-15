@@ -4,9 +4,14 @@
 // callers must pre-extract the on-chain context (vout[0] OP_RETURN data,
 // input Pedersen commitments, vin/vout layout).
 //
-// The Groth16 proof verification is delegated to an injected verifier so this
-// module stays usable before circuits compile. In production the verifier is
-// snarkjs.groth16.verify(vk, publicSignals, proof) under the pool's vk_cid.
+// The Groth16 proof verification is delegated to an injected verifier. In
+// production the verifier is snarkjs.groth16.verify(vk, publicSignals, proof)
+// under the pool's vk_cid; pass it as `groth16Verify`. Callers MUST either
+// pass a real verifier function or the explicit SKIP_GROTH16_VERIFY_UNSAFE
+// sentinel — leaving it undefined throws. The sentinel exists only for
+// pre-ceremony reference-harness use (no Phase 2 zkey yet) and unit tests;
+// any production caller passing it is misconfigured and its envelopes
+// should be treated as unverified.
 
 import * as secp from '@noble/secp256k1';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils';
@@ -44,6 +49,28 @@ function pointFromCompressed(bytes) {
   return secp.ProjectivePoint.fromHex(bytesToHex(bytes));
 }
 
+// Sentinel a caller passes when they intentionally want to skip Groth16
+// verification — only legitimate use is the pre-ceremony reference harness
+// and unit tests that do not exercise the SNARK path. Production indexers
+// MUST pass a real verifier. Leaving `groth16Verify` undefined throws.
+export const SKIP_GROTH16_VERIFY_UNSAFE = Symbol('tacit-amm-skip-groth16-verify-unsafe');
+
+function resolveGroth16Verify(arg, fnName) {
+  if (arg === SKIP_GROTH16_VERIFY_UNSAFE) return null;
+  if (typeof arg === 'function') return arg;
+  throw new Error(
+    `${fnName}: groth16Verify is required (pass a verifier function or ` +
+    `SKIP_GROTH16_VERIFY_UNSAFE for pre-ceremony reference use)`,
+  );
+}
+
+// Minimum blocks between POOL_INIT confirmation and the first variant-0
+// LP_ADD. During this window only swaps are accepted, so arbitrageurs can
+// correct any misprice before naive LPs are exposed. The founder bears
+// the arbitrage cost of their own initial seed if the ratio was mispriced.
+// Six blocks ≈ 1 hour at Bitcoin's average block time.
+export const AMM_INITIAL_LP_LOCK_BLOCKS = 6;
+
 // Result shape:
 //   { valid: true,  newPoolState, receipts: [...] }
 //   { valid: false, reason: string }
@@ -63,16 +90,24 @@ function pointFromCompressed(bytes) {
 //   inputsA, inputsB : array of { txid, vout } — the same UTXOs as outpoints
 //   metadataA, metadataB : per-asset metadata blob bytes (Uint8Array) or null,
 //                          for launcher-gate verification on POOL_INIT
-//   groth16Verify    : injected function (vk, publicSignals, proof) -> bool
-//                        (stub returns true when not provided — callers MUST
-//                         wire a real verifier for production)
+//   groth16Verify    : REQUIRED — function ({proof, publicSignals, pool, kind}) -> bool
+//                        Pass SKIP_GROTH16_VERIFY_UNSAFE for the pre-ceremony
+//                        reference-harness / unit-test path. Undefined throws.
+//   currentHeight    : REQUIRED — block height envelope confirms at. Used to
+//                        set pool.init_height on POOL_INIT and to enforce
+//                        AMM_INITIAL_LP_LOCK_BLOCKS on variant-0 LP_ADD.
 export function validateLpAdd({
   payload, pool,
   inputCommitmentsA, inputCommitmentsB,
   inputsA, inputsB,
   metadataA = null, metadataB = null,
-  groth16Verify = null,
+  groth16Verify,
+  currentHeight,
 }) {
+  const verify = resolveGroth16Verify(groth16Verify, 'validateLpAdd');
+  if (typeof currentHeight !== 'number' || currentHeight < 0) {
+    throw new Error('validateLpAdd: currentHeight (u32) is required');
+  }
   let env;
   try { env = decodeLpAdd(payload); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
@@ -141,7 +176,7 @@ export function validateLpAdd({
     if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
       return { valid: false, reason: 'share output sigma cross-curve binding failed' };
     }
-    if (groth16Verify && !groth16Verify({ proof: env.proof, pool: { vk_cid: env.vkCid }, kind: 'LP_ADD_INIT' })) {
+    if (verify && !verify({ proof: env.proof, pool: { vk_cid: env.vkCid }, kind: 'LP_ADD_INIT' })) {
       return { valid: false, reason: 'Groth16 proof failed (POOL_INIT)' };
     }
 
@@ -158,11 +193,18 @@ export function validateLpAdd({
       reserve_B: env.deltaB,
       lp_total_shares: initShares.total_shares,
       inclusion_arbiter_pubkeys: env.arbiterPubkeys || [],
+      inclusion_arbiter_threshold_m: env.arbiterThresholdM ?? 0,
       // Protocol fee (founder-set, immutable). All-zeros address = disabled.
       protocol_fee_address: env.protocolFeeAddress || new Uint8Array(33),
       protocol_fee_bps: env.protocolFeeBps || 0,
       protocol_fee_accrued: 0n,
       k_last: env.deltaA * env.deltaB,
+      // First-LP misprice mitigation: lock external LP_ADD until
+      // current_height ≥ init_height + AMM_INITIAL_LP_LOCK_BLOCKS so
+      // arbitrageurs have time to correct any misprice in the seed ratio.
+      init_height: currentHeight,
+      // Pool capability flags (u8 bitmap). 0 = standard V1 pool.
+      capability_flags: env.poolCapabilityFlags ?? 0,
     };
     return {
       valid: true,
@@ -177,6 +219,20 @@ export function validateLpAdd({
   // Standard LP_ADD (variant 0) — require existing pool.
   if (!pool) return { valid: false, reason: 'pool not registered' };
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
+
+  // First-LP misprice mitigation: variant-0 LP_ADD is locked for the first
+  // AMM_INITIAL_LP_LOCK_BLOCKS confirmations after POOL_INIT. During this
+  // window only swaps are accepted; arbitrage corrects any malicious seed
+  // ratio before naive LPs can be exposed.
+  if (typeof pool.init_height === 'number') {
+    const unlockHeight = pool.init_height + AMM_INITIAL_LP_LOCK_BLOCKS;
+    if (currentHeight < unlockHeight) {
+      return {
+        valid: false,
+        reason: `pool in initial-LP lock window: currentHeight ${currentHeight} < unlockHeight ${unlockHeight} (init ${pool.init_height} + lock ${AMM_INITIAL_LP_LOCK_BLOCKS})`,
+      };
+    }
+  }
 
   // Crystallize protocol fee before applying the add. No-op if pool has no
   // protocol fee, or if k has not grown since the last fee event. Dilutes
@@ -201,7 +257,7 @@ export function validateLpAdd({
   if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
     return { valid: false, reason: 'share output sigma cross-curve binding failed' };
   }
-  if (groth16Verify && !groth16Verify({ proof: env.proof, pool: xPool, kind: 'LP_ADD' })) {
+  if (verify && !verify({ proof: env.proof, pool: xPool, kind: 'LP_ADD' })) {
     return { valid: false, reason: 'Groth16 proof failed' };
   }
 
@@ -250,8 +306,9 @@ function verifyKernel(env, inputCommitmentsA, inputCommitmentsB, inputsA, inputs
 export function validateLpRemove({
   payload, pool,
   lpInputCommitments, lpInputs,
-  groth16Verify = null,
+  groth16Verify,
 }) {
+  const verify = resolveGroth16Verify(groth16Verify, 'validateLpRemove');
   let env;
   try { env = decodeLpRemove(payload); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
@@ -297,7 +354,7 @@ export function validateLpRemove({
     return { valid: false, reason: 'asset-B receipt sigma binding failed' };
   }
 
-  if (groth16Verify && !groth16Verify({ proof: env.proof, pool: xPool, kind: 'LP_REMOVE' })) {
+  if (verify && !verify({ proof: env.proof, pool: xPool, kind: 'LP_REMOVE' })) {
     return { valid: false, reason: 'Groth16 proof failed' };
   }
 
@@ -336,14 +393,23 @@ export function validateLpRemove({
 //   receiveScripts           : array, parallel to intents — each entry is the
 //                              trader's receive_scriptPubKey (Uint8Array)
 //   currentHeight            : block height (for arbiter expected_height check)
-//   groth16Verify            : injected proof verifier
+//   groth16Verify            : REQUIRED — function or SKIP_GROTH16_VERIFY_UNSAFE
+//   qualifyingSetResolver    : OPTIONAL — for arbiter-pinned pools, function
+//                              (qualifyingSetHash) -> { intentIds: Array<Uint8Array(32)> }
+//                              that fetches the canonical list bytes
+//                              (content-addressed) and returns the intent_id
+//                              set the arbiter signed. If omitted for an
+//                              arbiter-pinned pool, mandatory-inclusion
+//                              fails closed.
 export function validateSwapBatch({
   payload, pool, opReturnData,
   inputCommitmentsByIntent, intentInputUtxos, receiveScripts,
   currentHeight,
-  groth16Verify = null,
+  groth16Verify,
+  qualifyingSetResolver = null,
 }) {
   if (!pool) return { valid: false, reason: 'pool not registered' };
+  const verify = resolveGroth16Verify(groth16Verify, 'validateSwapBatch');
   const hasArbiter = (pool.inclusion_arbiter_pubkeys || []).length > 0;
 
   let env;
@@ -364,15 +430,70 @@ export function validateSwapBatch({
     return { valid: false, reason: 'fee_bps_at_settle != pool.fee_bps' };
   }
 
-  // Arbiter block (if pool requires)
+  // Arbiter block enforcement (m-of-n threshold + mandatory inclusion).
+  //   1. arbiter block present + expectedHeight matches currentHeight
+  //   2. m matches pool's pinned threshold; signerIndices ascending distinct
+  //   3. all m BIP-340 sigs verify against pinned pubkeys[signer_index]
+  //   4. canonical list bytes (via qualifyingSetResolver) hash to
+  //      env.arbiterBlock.qualifyingSetHash
+  //   5. every intent_id in the canonical list appears in env.intents
+  //
+  // If qualifyingSetResolver is null and the pool has an arbiter, the
+  // validator fails closed — there's no safe way to accept a swap from
+  // an arbiter-pinned pool without verifying the inclusion rule.
   if (hasArbiter) {
     if (!env.arbiterBlock) return { valid: false, reason: 'arbiter block required by pool' };
-    // Arbiter sig verification done elsewhere (caller supplies signed list and
-    // we'd verify against pool.inclusion_arbiter_pubkeys). For reference impl
-    // we just check the field is present.
-    // TODO(production): full mandatory-inclusion check requires fetching the
-    // canonical list bytes (content-addressed by qualifying_set_hash) and
-    // verifying every listed intent_id appears in env.intents.
+
+    if (env.arbiterBlock.expectedHeight !== currentHeight) {
+      return {
+        valid: false,
+        reason: `arbiter expectedHeight ${env.arbiterBlock.expectedHeight} != currentHeight ${currentHeight}`,
+      };
+    }
+
+    const m = pool.inclusion_arbiter_threshold_m;
+    if (env.arbiterBlock.m !== m) {
+      return {
+        valid: false,
+        reason: `arbiter m mismatch: envelope ${env.arbiterBlock.m} vs pool ${m}`,
+      };
+    }
+    if (!verifyArbiterSig(
+      env.arbiterBlock.qualifyingSetHash,
+      env.arbiterBlock.signerIndices,
+      env.arbiterBlock.sigs,
+      pool.inclusion_arbiter_pubkeys,
+      m,
+    )) {
+      return { valid: false, reason: 'arbiter sigs did not verify against pinned pubkey set' };
+    }
+
+    if (typeof qualifyingSetResolver !== 'function') {
+      return {
+        valid: false,
+        reason: 'arbiter-pinned pool requires qualifyingSetResolver to fetch canonical intent list',
+      };
+    }
+
+    let qset;
+    try { qset = qualifyingSetResolver(env.arbiterBlock.qualifyingSetHash); }
+    catch (e) { return { valid: false, reason: `qualifyingSetResolver threw: ${e.message}` }; }
+    if (!qset || !Array.isArray(qset.intentIds)) {
+      return { valid: false, reason: 'qualifyingSetResolver returned no intentIds' };
+    }
+
+    // Verify the resolved list bytes hash to qualifying_set_hash.
+    const recomputed = computeQualifyingSetHash({
+      poolId,
+      height: env.arbiterBlock.expectedHeight,
+      intentIds: qset.intentIds,
+    });
+    if (!bytesEqual(recomputed, env.arbiterBlock.qualifyingSetHash)) {
+      return { valid: false, reason: 'resolved canonical list does not hash to qualifying_set_hash' };
+    }
+
+    // Cache for membership check after intent_id derivation below.
+    env._qsetIntentIds = qset.intentIds;
   } else {
     if (env.arbiterBlock) return { valid: false, reason: 'arbiter block present but pool has none pinned' };
   }
@@ -400,9 +521,20 @@ export function validateSwapBatch({
 
     const iid = deriveIntentId(intentMsg);
     if (prevIid) {
+      // STRICTLY ascending: equal id == duplicate (defense-in-depth even
+      // though Bitcoin's UTXO model already prevents same-outpoint reuse).
+      let cmp = 0;
       for (let j = 0; j < 32; j++) {
-        if (iid[j] < prevIid[j]) return { valid: false, reason: `intents not in intent_id ascending order at i=${i}` };
-        if (iid[j] > prevIid[j]) break;
+        if (iid[j] < prevIid[j]) { cmp = -1; break; }
+        if (iid[j] > prevIid[j]) { cmp = 1; break; }
+      }
+      if (cmp <= 0) {
+        return {
+          valid: false,
+          reason: cmp === 0
+            ? `duplicate intent_id at i=${i}`
+            : `intents not in intent_id ascending order at i=${i}`,
+        };
       }
     }
     prevIid = iid;
@@ -419,6 +551,22 @@ export function validateSwapBatch({
     // Expiry not lapsed.
     if (it.expiryHeight < currentHeight) {
       return { valid: false, reason: `intent[${i}] expired (height ${it.expiryHeight} < ${currentHeight})` };
+    }
+  }
+
+  // Mandatory-inclusion check for arbiter-pinned pools: every intent_id in
+  // the canonical qualifying list MUST appear in this envelope.
+  if (hasArbiter && env._qsetIntentIds) {
+    const envIdsHex = new Set(intentIds.map(b => bytesToHex(b)));
+    for (let i = 0; i < env._qsetIntentIds.length; i++) {
+      const need = env._qsetIntentIds[i];
+      const needHex = bytesToHex(need instanceof Uint8Array ? need : hexToBytes(need));
+      if (!envIdsHex.has(needHex)) {
+        return {
+          valid: false,
+          reason: `mandatory-inclusion: qualifying intent_id ${needHex.slice(0, 16)}… missing from batch`,
+        };
+      }
     }
   }
 
@@ -504,7 +652,7 @@ export function validateSwapBatch({
   }
 
   // Groth16 batch proof (delegated)
-  if (groth16Verify && !groth16Verify({ proof: env.proof, pool, kind: 'SWAP_BATCH', publicSignals: env })) {
+  if (verify && !verify({ proof: env.proof, pool, kind: 'SWAP_BATCH', publicSignals: env })) {
     return { valid: false, reason: 'Groth16 batch proof failed' };
   }
 
@@ -523,6 +671,72 @@ export function validateSwapBatch({
     })),
     intentIds,
   };
+}
+
+// =========================================================================
+// Arbiter helpers — mandatory-inclusion enforcement
+// =========================================================================
+
+const QSET_DOMAIN = new TextEncoder().encode('tacit-amm-qset-v1');
+
+// Compute qualifying_set_hash from canonical components.
+// canonical_list_bytes is u8-length-prefixed concat of 32-byte intent_ids
+// in ascending byte order. N_MAX=16 fits in u8 (spec normative).
+export function computeQualifyingSetHash({ poolId, height, intentIds }) {
+  if (!(poolId instanceof Uint8Array) || poolId.length !== 32) {
+    throw new Error('poolId must be 32 bytes');
+  }
+  if (typeof height !== 'number' || height < 0 || height > 0xffffffff) {
+    throw new Error('height must be u32');
+  }
+  if (!Array.isArray(intentIds) || intentIds.length > 0xff) {
+    throw new Error('intentIds must be Array of length 0..255');
+  }
+  for (let i = 1; i < intentIds.length; i++) {
+    const a = intentIds[i - 1], b = intentIds[i];
+    let cmp = 0;
+    for (let j = 0; j < 32 && cmp === 0; j++) {
+      if (a[j] < b[j]) cmp = -1;
+      else if (a[j] > b[j]) cmp = 1;
+    }
+    if (cmp >= 0) throw new Error(`intentIds must be ascending and distinct (index ${i})`);
+  }
+  const heightLE = new Uint8Array(4);
+  new DataView(heightLE.buffer).setUint32(0, height >>> 0, true);
+  const parts = [QSET_DOMAIN, poolId, heightLE, new Uint8Array([intentIds.length])];
+  for (const id of intentIds) {
+    if (!(id instanceof Uint8Array) || id.length !== 32) throw new Error('intent_id must be 32 bytes');
+    parts.push(id);
+  }
+  return sha256(concatBytes(...parts));
+}
+
+// Verify m-of-n arbiter signature against pool's pinned pubkey set.
+// `signerIndices` is an array of m ascending distinct indices into
+// `pinnedPubkeys`; `sigs` is a concat of m × 64-byte BIP-340 sigs over
+// `qualifyingSetHash`. Each sig must verify under pubkey at its declared
+// index. m=1 is the simplest case; m=2..n is the BFT-shape threshold.
+// MuSig2 quorums can also use n=1, m=1 with an off-chain-aggregated key.
+export function verifyArbiterSig(qualifyingSetHash, signerIndices, sigs, pinnedPubkeys, m) {
+  if (!Array.isArray(pinnedPubkeys) || pinnedPubkeys.length === 0) return false;
+  if (typeof m !== 'number' || m < 1 || m > pinnedPubkeys.length) return false;
+  if (!(qualifyingSetHash instanceof Uint8Array) || qualifyingSetHash.length !== 32) return false;
+  if (!Array.isArray(signerIndices) || signerIndices.length !== m) return false;
+  if (!(sigs instanceof Uint8Array) || sigs.length !== 64 * m) return false;
+
+  for (let i = 0; i < m; i++) {
+    const idx = signerIndices[i];
+    if (typeof idx !== 'number' || idx < 0 || idx >= pinnedPubkeys.length) return false;
+    if (i > 0 && idx <= signerIndices[i - 1]) return false;
+  }
+
+  for (let i = 0; i < m; i++) {
+    const pk = pinnedPubkeys[signerIndices[i]];
+    const sig = sigs.subarray(64 * i, 64 * (i + 1));
+    const xOnly = pk.subarray(1);
+    if (!verifySchnorr(sig, qualifyingSetHash, xOnly)) return false;
+  }
+  return true;
 }
 
 function checkAggregatePedersen({ env, inputCommitmentsByIntent, assetXIsA, deltaXSigned, tipXCSecp, rNetX }) {
