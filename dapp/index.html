@@ -1254,6 +1254,95 @@ tr[data-recent-activity] .market-token-sub::after {
   font-size: 12px;
   font-weight: 900;
 }
+.market-delta-strip {
+  display: flex;
+  gap: 4px;
+  margin-top: 7px;
+  flex-wrap: wrap;
+}
+.portfolio-total-bar {
+  border: 1px solid var(--ink);
+  background: var(--bg-warm);
+  box-shadow: 4px 4px 0 var(--ink);
+  padding: 14px 18px;
+  margin-bottom: 14px;
+}
+.portfolio-total-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.portfolio-total-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-mid);
+  font-weight: 600;
+}
+.portfolio-total-values {
+  text-align: right;
+}
+.portfolio-total-usd {
+  font-family: var(--mono);
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--orange);
+  line-height: 1.2;
+}
+.portfolio-total-sats {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-mid);
+  margin-top: 2px;
+}
+.portfolio-total-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.portfolio-total-meta .market-delta-strip {
+  margin-top: 0;
+}
+@media (max-width: 480px) {
+  .portfolio-total-usd { font-size: 18px; }
+}
+.delta-chip {
+  padding: 1px 5px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  white-space: nowrap;
+  border: 1px solid var(--ink);
+}
+.delta-chip.pos { background: #0a7d3a; }
+.delta-chip.neg { background: #b8341d; }
+.delta-chip.neu { background: #888; color: #fff; }
+.delta-chip .delta-win { opacity: 0.75; margin-left: 2px; font-weight: 500; }
+.delta-chip.thin { opacity: 0.55; }
+/* Subtle flash when a tracked numeric updates — green for ↑, red for ↓.
+   Used by [data-tick-flash] on tile/header price values. */
+@keyframes tick-flash-up {
+  0% { background-color: rgba(10, 125, 58, 0.28); }
+  100% { background-color: transparent; }
+}
+@keyframes tick-flash-down {
+  0% { background-color: rgba(184, 52, 29, 0.28); }
+  100% { background-color: transparent; }
+}
+.tick-flash-up { animation: tick-flash-up 900ms ease-out; }
+.tick-flash-down { animation: tick-flash-down 900ms ease-out; }
+/* Route-summary rows. Replaces a single dense " · "-joined line with one
+   row per fact (headline / residual / funding-warning) so the user can
+   scan them. Spacing is just enough to separate without wasting vertical
+   real estate inside the swap tile. */
+[data-swap-info] .route-line { line-height: 1.5; padding: 1px 0; }
+[data-swap-info] .route-line + .route-line { margin-top: 1px; padding-top: 3px; border-top: 1px dashed var(--ink-faint); }
 .market-asset-actions {
   display: flex;
   flex-direction: column;
@@ -2368,6 +2457,31 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 .skeleton-row.medium { width: 70%; }
 .skeleton.compact { padding: 10px; gap: 6px; }
 .skeleton.compact .skeleton-row { height: 10px; }
+/* Tile-shaped skeleton matching the .market-asset-tile production layout.
+   Used as a first-paint placeholder on the Market tab so users see a
+   ghosted grid instead of an empty page while the worker /market query
+   resolves. The shape rhymes with the real tile so the swap-in is barely
+   perceptible. */
+.market-tile-skeleton {
+  border: 1px solid var(--ink-faint);
+  background: var(--bg-alt);
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 10px;
+  min-height: 140px;
+}
+.market-tile-skeleton .tile-skeleton-head {
+  display: flex; align-items: center; gap: 10px;
+}
+.market-tile-skeleton .tile-skeleton-avatar {
+  width: 36px; height: 36px;
+  background: linear-gradient(90deg, var(--bg-alt) 0%, var(--bg) 40%, var(--bg-alt) 80%);
+  background-size: 200px 100%;
+  background-repeat: no-repeat;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+  border: 1px solid var(--ink-faint);
+}
+.market-tile-skeleton .skeleton-row { margin: 0; }
 
 /* Stagger-fade applied to data-row children of the major list containers
    when they paint. Total runtime is bounded (~250ms for ≤8 rows; any extra
@@ -3244,29 +3358,27 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
    a tacitConfirm-style info modal. Visible affordance for the explanation,
    distinct from hover-only title tooltips that don't work on mobile. */
 .slip-help {
-  /* iOS Safari applies a default -webkit-appearance: button that
-     clobbers border-radius:50% and adds a subtle gradient — the
-     "?" comes out as a misshapen rounded square instead of a clean
-     circle. appearance:none resets that. Also bumped to 16×16 so
-     the tap target is closer to Apple HIG without dominating
-     the inline label. box-sizing:border-box keeps the rendered
-     size predictable. */
+  /* Borderless info glyph using a Unicode circled-i (set via button
+     content, not CSS — see _wireSwapTile). Previously rendered as a
+     "?" in a CSS border-radius:50% box, which iOS Safari kept
+     mis-rendering as a wobbly rounded square no matter how aggressively
+     we reset -webkit-appearance. Switching to a self-enclosing glyph
+     dodges the button-shape mismatch entirely. */
   -webkit-appearance: none;
   appearance: none;
-  box-sizing: border-box;
-  width: 16px; height: 16px;
-  padding: 0; margin-left: 5px;
-  border: 1px solid var(--ink-faint); border-radius: 50%;
-  background: var(--bg); color: var(--ink-mid);
-  font-size: 10px; font-weight: 700; line-height: 14px;
-  font-family: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0; margin-left: 4px;
+  color: var(--ink-mid);
+  font-size: 14px;
+  line-height: 1;
   cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
+  font-family: inherit;
   vertical-align: middle;
+  display: inline-flex; align-items: center; justify-content: center;
 }
-.slip-help:hover { background: var(--ink); color: var(--bg); border-color: var(--ink); }
-.slip-help:active { transform: scale(0.95); }
+.slip-help:hover { color: var(--ink); }
+.slip-help:active { opacity: 0.6; }
 
 /* Time-frame chips above the price chart: 1H / 4H / 1D / 1W / ALL. Active
    chip gets the orange underline accent that matches the rest of the
@@ -4803,7 +4915,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <div class="progress-step" data-step="1"><span class="progress-num">2</span><span class="progress-label">Sign</span></div>
         <div class="progress-step" data-step="2"><span class="progress-num">3</span><span class="progress-label">Settle</span></div>
       </div>
-      <div id="market-list"><div class="muted" style="padding:14px;text-align:center;font-style:italic;"><span class="live-dots">loading</span></div></div>
+      <div id="market-list"><div class="market-asset-grid" aria-busy="true">
+        <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
+        <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
+        <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
+        <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
+        <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
+        <div class="market-tile-skeleton"><div class="tile-skeleton-head"><div class="tile-skeleton-avatar"></div><div style="flex:1;display:flex;flex-direction:column;gap:6px;"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div></div></div><div class="skeleton-row"></div><div class="skeleton-row short"></div></div>
+      </div></div>
     </div>
   </div>
 </div>
