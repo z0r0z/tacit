@@ -2908,11 +2908,30 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   background: rgba(10, 10, 10, 0.55);
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   padding: 24px;
+  /* Subtle backdrop fade-in so the modal feels intentional, not jarring.
+     Fires each time display flips from none → grid (animation re-triggers
+     when the element re-enters the rendering tree). The card has its
+     own scale-in below; together they read as one quick "lift" gesture. */
+  animation: pass-modal-fade 0.16s ease-out;
 }
 .pass-card {
   width: 100%; max-width: 480px;
   background: var(--bg); border: 1px solid var(--ink);
   padding: 24px 24px 20px;
+  animation: pass-card-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: center center;
+}
+@keyframes pass-modal-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes pass-card-in {
+  from { opacity: 0; transform: scale(0.96) translateY(4px); }
+  to   { opacity: 1; transform: scale(1.00) translateY(0); }
+}
+/* Respect reduced-motion preference — skip the entrance animation entirely. */
+@media (prefers-reduced-motion: reduce) {
+  .pass-modal, .pass-card, .faq-modal, .faq-card { animation: none; }
 }
 .pass-title {
   font-family: 'Instrument Serif', serif;
@@ -3161,11 +3180,14 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   background: rgba(10, 10, 10, 0.55);
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   padding: 24px;
+  animation: pass-modal-fade 0.16s ease-out;
 }
 .faq-card {
   width: 100%; max-width: 640px;
   max-height: calc(100vh - 80px);
   display: flex; flex-direction: column;
+  animation: pass-card-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-origin: center center;
   background: var(--bg); border: 1px solid var(--ink);
 }
 .faq-head {
