@@ -35271,6 +35271,12 @@ function marketViewScope() {
 }
 function goToMarketBrowse() {
   _marketView = 'browse';
+  // Reset asset-detail sub-tab so the next asset opened starts on
+  // Listed (the trader-default) regardless of where the previous
+  // asset visit left off. Auto-refresh-tick persistence stays
+  // intact within a single asset visit; this only fires on
+  // navigation back to gallery.
+  _marketAssetActiveTab = 'listed';
   _writeMarketHash(null);
   _applyMarketPrefsToControls('browse');
   renderMarket();
@@ -38308,17 +38314,27 @@ function renderMarketBrowseTable(rows) {
   }
 }
 
+// Module-level memory of which asset-detail sub-tab the user has open
+// (Listed vs Activity). The asset panel re-renders on every auto-refresh
+// tick when a structural signature change lands — without persistence,
+// users actively reading the Activity table get bumped back to Listed
+// every 5–10 s, which felt like the page was actively fighting them.
+// Persists across asset switches too (a user who prefers Activity
+// likely wants it on every asset). Reset to "listed" on browse-mode
+// re-entry so a fresh gallery navigation starts in the expected tab.
+let _marketAssetActiveTab = 'listed';
 function marketAssetTabsHtml(listedHtml, activityHtml, actionHtml = '') {
+  const isActivity = _marketAssetActiveTab === 'activity';
   return `
     <div class="market-asset-tabbar">
       <div class="market-asset-tabs" role="tablist" aria-label="Asset market sections">
-        <button class="market-asset-tab active" data-market-asset-tab="listed" role="tab" aria-selected="true" type="button">Listed</button>
-        <button class="market-asset-tab" data-market-asset-tab="activity" role="tab" aria-selected="false" type="button">Activity</button>
+        <button class="market-asset-tab${!isActivity ? ' active' : ''}" data-market-asset-tab="listed" role="tab" aria-selected="${!isActivity}" type="button">Listed</button>
+        <button class="market-asset-tab${isActivity ? ' active' : ''}" data-market-asset-tab="activity" role="tab" aria-selected="${isActivity}" type="button">Activity</button>
       </div>
       <div class="market-asset-tab-actions">${actionHtml || ''}</div>
     </div>
-    <div class="market-asset-pane active" data-market-asset-pane="listed" role="tabpanel">${listedHtml}</div>
-    <div class="market-asset-pane" data-market-asset-pane="activity" role="tabpanel">${activityHtml}</div>`;
+    <div class="market-asset-pane${!isActivity ? ' active' : ''}" data-market-asset-pane="listed" role="tabpanel">${listedHtml}</div>
+    <div class="market-asset-pane${isActivity ? ' active' : ''}" data-market-asset-pane="activity" role="tabpanel">${activityHtml}</div>`;
 }
 
 function bindMarketAssetTabs(scope) {
@@ -38326,6 +38342,8 @@ function bindMarketAssetTabs(scope) {
   if (!tabs.length) return;
   const panes = Array.from(scope.querySelectorAll('[data-market-asset-pane]'));
   const activate = (name) => {
+    // Persist user choice so the next auto-refresh re-render stays put.
+    if (name === 'listed' || name === 'activity') _marketAssetActiveTab = name;
     tabs.forEach(tab => {
       const on = tab.dataset.marketAssetTab === name;
       tab.classList.toggle('active', on);
