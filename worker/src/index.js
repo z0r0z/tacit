@@ -2607,6 +2607,50 @@ async function handleChainTxBatch(req, env, network, cors) {
   return new Response(JSON.stringify({ txs: out }), { status: 200, headers });
 }
 
+// Batch outspend fetcher. Outpoints come in as "txid:vout" strings; we
+// fan out per-outpoint requests to /tx/<txid>/outspend/<vout>. Same 64-cap
+// + parallel pattern as handleChainTxBatch. Edge-cached for an hour on
+// confirmed-spend entries (immutable: once a UTXO is spent, it stays so).
+//
+// Body shape: { "outpoints": ["<txid:vout>", ...] }
+// Response:   { "outspends": { "<txid:vout>": { spent, txid?, vin?, status? } | { error } } }
+async function handleChainOutspendsBatch(req, env, network, cors) {
+  let body;
+  try { body = await req.json(); }
+  catch { return new Response(JSON.stringify({ error: 'expected JSON body' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } }); }
+  const ops = Array.isArray(body?.outpoints) ? body.outpoints : null;
+  if (!ops) return new Response(JSON.stringify({ error: 'missing or non-array `outpoints`' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } });
+  if (ops.length === 0) return new Response(JSON.stringify({ outspends: {} }), { status: 200, headers: { ...cors, 'Content-Type': 'application/json' } });
+  if (ops.length > 64) return new Response(JSON.stringify({ error: 'batch capped at 64 outpoints per request' }), { status: 400, headers: { ...cors, 'Content-Type': 'application/json' } });
+  const out = {};
+  const valid = [];
+  for (const s of ops) {
+    const m = typeof s === 'string' && s.match(/^([0-9a-f]{64}):(\d+)$/i);
+    if (m) valid.push({ key: s.toLowerCase(), txid: m[1].toLowerCase(), vout: m[2] });
+    else if (typeof s === 'string') out[s] = { error: 'malformed outpoint (expected txid:vout)' };
+  }
+  const upstreamBase = networkApi(env, network);
+  const fetches = valid.map(async ({ key, txid, vout }) => {
+    const { init, cleanup } = _buildUpstreamInit({ cacheTtl: 3600, timeoutMs: 10_000 });
+    try {
+      const r = await fetch(`${upstreamBase}/tx/${txid}/outspend/${vout}`, init);
+      if (r.status === 404) { out[key] = { error: 'not found' }; return; }
+      if (!r.ok) { out[key] = { error: `upstream ${r.status}` }; return; }
+      const j = await r.json();
+      out[key] = j;
+    } catch (e) {
+      out[key] = { error: e?.message || 'fetch failed' };
+    } finally {
+      if (cleanup) cleanup();
+    }
+  });
+  await Promise.all(fetches);
+  const headers = new Headers(cors);
+  headers.set('Content-Type', 'application/json');
+  headers.set('Cache-Control', 'public, max-age=60');
+  return new Response(JSON.stringify({ outspends: out }), { status: 200, headers });
+}
+
 async function handleChainProxy(req, env, network, cors) {
   const u = new URL(req.url);
   const rawPath = u.pathname.slice('/chain'.length);   // strip leading "/chain"
@@ -10682,6 +10726,13 @@ export default {
     // for typical wallets.
     if (url.pathname === '/chain/txs/batch' && req.method === 'POST') {
       return handleChainTxBatch(req, env, network, cors);
+    }
+    // Batch outspend fetcher. Market views check N listings for "is the
+    // backing UTXO still unspent?"; with N=20 listings each /tx/<id>/outspend/<v>
+    // is its own round-trip. Batching them collapses N → 1 round-trip.
+    // Body: { "outpoints": ["txid:vout", ...] }
+    if (url.pathname === '/chain/outspends/batch' && req.method === 'POST') {
+      return handleChainOutspendsBatch(req, env, network, cors);
     }
     // IPFS content proxy. Races multiple public gateways server-side and
     // returns the first valid response. The dapp's IPFS fetches (asset

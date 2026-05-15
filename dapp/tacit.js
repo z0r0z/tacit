@@ -2657,6 +2657,82 @@ if (typeof document !== 'undefined') {
 const _outspendUnspentCache = new Map();
 const OUTSPEND_UNSPENT_TTL_MS = 15_000;
 
+// Batch coalescing for outspend queries. Market renders fire 10-30
+// concurrent outspend checks (one per visible listing); without coalescing
+// each was its own round-trip through api(). The batch endpoint collapses
+// them into a single POST when the worker is available; fallback path
+// preserves the original per-outpoint behavior for worker-disabled dapps.
+const OUTSPEND_BATCH_WINDOW_MS = 8;
+const OUTSPEND_BATCH_MAX_SIZE = 64;
+let _outspendBatchQueue = new Map(); // key → { resolvers: [(res|null) => void] }
+let _outspendBatchTimer = null;
+function _scheduleOutspendBatchFlush() {
+  if (_outspendBatchTimer != null) return;
+  if (_outspendBatchQueue.size >= OUTSPEND_BATCH_MAX_SIZE) {
+    queueMicrotask(_flushOutspendBatch);
+    return;
+  }
+  _outspendBatchTimer = setTimeout(_flushOutspendBatch, OUTSPEND_BATCH_WINDOW_MS);
+}
+function _cacheOutspendResult(key, res) {
+  if (!res) return;
+  if (res.spent) {
+    _outspendSpentCache.set(key, res);
+    if (res.status && res.status.confirmed === true) _scheduleOutspendCacheFlush();
+  } else if (res.spent === false) {
+    _outspendUnspentCache.set(key, { value: res, at: Date.now() });
+    if (_outspendUnspentCache.size > 2000) {
+      let dropped = 0;
+      for (const k of _outspendUnspentCache.keys()) {
+        if (dropped++ >= 500) break;
+        _outspendUnspentCache.delete(k);
+      }
+    }
+  }
+}
+async function _flushOutspendBatch() {
+  if (_outspendBatchTimer != null) { clearTimeout(_outspendBatchTimer); _outspendBatchTimer = null; }
+  if (_outspendBatchQueue.size === 0) return;
+  const batch = _outspendBatchQueue;
+  _outspendBatchQueue = new Map();
+  const outpoints = Array.from(batch.keys());
+  let osMap = null;
+  if (WORKER_BASE && outpoints.length > 0) {
+    try {
+      const url = `${WORKER_BASE}/chain/outspends/batch?network=${encodeURIComponent(NET.name)}`;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ outpoints }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.outspends && typeof j.outspends === 'object') osMap = j.outspends;
+      }
+    } catch { /* batch endpoint unavailable — fall through */ }
+  }
+  for (const [key, entry] of batch) {
+    const result = osMap ? osMap[key] : null;
+    if (result && !result.error) {
+      _cacheOutspendResult(key, result);
+      _outspendInFlight.delete(key);
+      for (const resolve of entry.resolvers) resolve(result);
+    } else {
+      const m = key.match(/^([0-9a-f]{64}):(\d+)$/i);
+      if (!m) { _outspendInFlight.delete(key); for (const r of entry.resolvers) r(null); continue; }
+      const fallback = _getOutspendSingle(m[1], parseInt(m[2], 10));
+      fallback.finally(() => _outspendInFlight.delete(key));
+      for (const resolve of entry.resolvers) fallback.then(resolve, () => resolve(null));
+    }
+  }
+}
+function _getOutspendSingle(txid, vout) {
+  const key = `${txid}:${vout}`;
+  return apiJson(`/tx/${txid}/outspend/${vout}`)
+    .then((res) => { _cacheOutspendResult(key, res); return res; })
+    .catch(() => null);
+}
+
 const getOutspend = (txid, vout) => {
   _ensureOutspendCacheHydrated();
   const key = `${txid}:${vout}`;
@@ -2668,31 +2744,23 @@ const getOutspend = (txid, vout) => {
   }
   const existing = _outspendInFlight.get(key);
   if (existing) return existing;
-  const p = apiJson(`/tx/${txid}/outspend/${vout}`)
-    .then((res) => {
-      if (res && res.spent) {
-        _outspendSpentCache.set(key, res);
-        // Only persist confirmed spends — an unconfirmed spend can RBF or drop
-        // and revert to unspent, which would leave a stale "spent" entry.
-        if (res.status && res.status.confirmed === true) _scheduleOutspendCacheFlush();
-      } else if (res && res.spent === false) {
-        // Cache the "unspent" answer briefly so a render that checks the
-        // same outpoint multiple times in quick succession doesn't issue
-        // duplicate round-trips. Trim when over a soft cap to bound memory.
-        _outspendUnspentCache.set(key, { value: res, at: Date.now() });
-        if (_outspendUnspentCache.size > 2000) {
-          // Drop the oldest 500 entries — keeps the cache bounded under
-          // adversarial market scrolls without serializing trim logic.
-          let dropped = 0;
-          for (const k of _outspendUnspentCache.keys()) {
-            if (dropped++ >= 500) break;
-            _outspendUnspentCache.delete(k);
-          }
-        }
-      }
-      return res;
-    })
-    .finally(() => { _outspendInFlight.delete(key); });
+  // No worker → original per-outpoint behavior via api() rotation.
+  if (!WORKER_BASE) {
+    const p = _getOutspendSingle(txid, vout).finally(() => { _outspendInFlight.delete(key); });
+    _outspendInFlight.set(key, p);
+    return p;
+  }
+  // Coalesce into the batch queue and dedupe concurrent callers for the
+  // same outpoint via _outspendInFlight.
+  const p = new Promise((resolve) => {
+    let entry = _outspendBatchQueue.get(key);
+    if (!entry) {
+      entry = { resolvers: [] };
+      _outspendBatchQueue.set(key, entry);
+    }
+    entry.resolvers.push(resolve);
+    _scheduleOutspendBatchFlush();
+  });
   _outspendInFlight.set(key, p);
   return p;
 };
@@ -29771,7 +29839,14 @@ function _renderClaimDiscoverListNow() {
         ? `<div class="muted" style="font-size:11px;margin-bottom:10px;font-style:italic;">Connect an Ethereum wallet above to check eligibility against ${rendered.length} announced drop${rendered.length === 1 ? '' : 's'}.</div>`
         : '');
 
-  list.innerHTML = summaryRow + rendered.map(({ d, snap, eligibleRow, snapshotState, subState }) => {
+  // Skip the DOM write when the to-be-rendered HTML matches what's already on
+  // screen. Without this guard, snapshot/queue-health/eth-addr settlements
+  // would each re-write innerHTML even when none of the displayed fields
+  // changed, replaying the per-card row-fade-in animation (the user-visible
+  // flash). Cached on the list element so it survives across calls without
+  // a module-level Map. Stringified body composed below; cache check happens
+  // after the full string is built.
+  const _newHtml = summaryRow + rendered.map(({ d, snap, eligibleRow, snapshotState, subState }) => {
     const meta = getAssetMeta(d.asset_id);
     // Prefer the snapshot's own ticker/decimals over the local meta when the
     // snapshot has loaded. The signed claim message binds to the snapshot's
@@ -29941,6 +30016,14 @@ function _renderClaimDiscoverListNow() {
       </div>
     `;
   }).join('');
+  if (list._cdcLastHtml !== _newHtml) {
+    list.innerHTML = _newHtml;
+    list._cdcLastHtml = _newHtml;
+  } else {
+    // No DOM change — skip both the innerHTML write and the post-render
+    // wiring loop below (handlers are still bound on the existing children).
+    return;
+  }
 
   // Async avatar hydration: each card was rendered with a colored-letter
   // fallback. For every asset_id that has an imageUri (local or in the
