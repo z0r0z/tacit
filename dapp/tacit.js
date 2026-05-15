@@ -38721,6 +38721,28 @@ async function renderMarket() {
     if (typeof fetchMarketAssetStats === 'function') {
       fetchMarketAssetStats(_marketView.assetId, { force: false }).catch(() => {});
     }
+    // Background holdings warm-up. The asset-header "You own" tile and
+    // the swap-tile sell-side balance hint both read _holdingsCache
+    // synchronously — without an auto-trigger on this path, a user who
+    // lands on an asset page (deep-link, browse-grid click, recent-
+    // activity link) without first visiting Holdings sees a 0 balance
+    // and an "only hold 0" warning for tokens they actually own.
+    //
+    // Smart: only fire when no cache exists yet. We DON'T re-fire on
+    // every asset-page navigation just because the 30s TTL elapsed —
+    // heavy wallets (paginated /txs/chain walks, 30-60s scans) would
+    // hammer the indexer and stall the UI. Once a scan lands the cache
+    // sticks until the user explicitly ↻ Rescans, broadcasts a tx,
+    // switches networks, or invalidateHoldingsCache() fires.
+    //
+    // On completion, applyMarketFilters() re-renders the asset detail
+    // so the "checking…" placeholders below swap to live balances
+    // without the user having to click anything.
+    if (!_holdingsCache && !_holdingsInFlight && typeof scanHoldings === 'function') {
+      scanHoldings()
+        .then(() => { try { applyMarketFilters(); } catch {} })
+        .catch(() => { /* network may be flaky; manual Rescan recovers */ });
+    }
   } else {
     _writeMarketHash(null);
   }
@@ -42504,7 +42526,18 @@ function renderMarketAssetHeader(assetId, rows) {
             // wired as a Sell CTA (data-act="market-jump-to-sell") — click
             // it to scroll to the swap tile + flip to sell mode.
             const _h = _holdingsCache?.holdings?.get(safeAid);
-            if (!_h || _h.balance <= 0n) return '';
+            if (!_h || _h.balance <= 0n) {
+              // Cache hasn't landed yet — render a "checking…" placeholder
+              // so the user knows their balance is being looked up rather
+              // than assuming they hold nothing. The asset-mode hook in
+              // renderMarket() fires scanHoldings + applyMarketFilters,
+              // which will replace this tile with either the real "You
+              // own" tile (balance > 0) or hide it (balance == 0).
+              if (_holdingsCache == null) {
+                return `<div title="Checking your wallet for this asset… the tile will update with your balance (or hide if you hold none) when the scan completes."><span>You own</span><strong style="color:var(--ink-mid);font-weight:500;font-size:12px;">checking…</strong><small class="muted" style="font-size:9px;">scanning wallet</small></div>`;
+              }
+              return '';
+            }
             const _dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
             const _balStr = fmtAssetAmount(_h.balance, _dec);
             let _valStr = '';
@@ -46535,12 +46568,21 @@ function _wireSwapTile(scope) {
       try { amt = parseAssetAmount(raw, decimals); }
       catch { toInput.value = ''; actionBtn.textContent = 'invalid amount'; actionBtn.disabled = true; actionBtn.style.opacity = '0.5'; infoEl.textContent = ''; return; }
       if (amt <= 0n) { toInput.value = ''; actionBtn.textContent = 'amount must be > 0'; actionBtn.disabled = true; actionBtn.style.opacity = '0.5'; infoEl.textContent = ''; return; }
-      const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
+      // Holdings cache might not be warm yet — renderMarket fires a
+      // background scan on asset-page entry, but if it hasn't resolved
+      // we don't know the user's true balance. Treat "no cache" as
+      // "checking…" rather than "0", so the user gets a loading
+      // indicator instead of a misleading insufficient-balance warning
+      // for tokens they actually hold.
+      const _balCacheReady = _holdingsCache != null;
+      const bal = _balCacheReady ? (_holdingsCache.holdings?.get(aid)?.balance || 0n) : 0n;
       const balStr = fmtAssetAmount(bal, decimals);
-      const insufficientTokens = amt > bal;
-      fromMeta.textContent = insufficientTokens
-        ? `balance: ${balStr} ${ticker} · ⚠ only hold ${balStr}`
-        : `balance: ${balStr} ${ticker}`;
+      const insufficientTokens = _balCacheReady && amt > bal;
+      fromMeta.textContent = !_balCacheReady
+        ? `balance: checking your wallet…`
+        : (insufficientTokens
+            ? `balance: ${balStr} ${ticker} · ⚠ only hold ${balStr}`
+            : `balance: ${balStr} ${ticker}`);
       infoEl.textContent = 'finding route…';
       const result = await planSell(amt);
       if (myToken !== updateToken) return;
@@ -46622,7 +46664,15 @@ function _wireSwapTile(scope) {
         `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
         [reserveHint, residHint, autoHint, insufficientTokensHint]
       );
-      if (insufficientTokens) {
+      if (!_balCacheReady) {
+        // Holdings scan still in flight (kicked off by renderMarket's
+        // asset-mode hook). Don't claim "only hold 0" — we don't yet
+        // know the user's real balance. Once the cache lands the
+        // applyMarketFilters re-render re-paints the swap tile with
+        // the real button state.
+        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
+        actionBtn.textContent = 'checking your balance…';
+      } else if (insufficientTokens) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = `only hold ${balStr} ${ticker}`;
       } else if (!reserveOk) {
