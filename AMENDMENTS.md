@@ -22,20 +22,29 @@
 
 ## Amendments at a glance
 
+All amendment files live under [`spec/amendments/`](./spec/amendments/).
+All design docs live under [`spec/design/`](./spec/design/).
+
 | Amendment | Status | Opcodes / features added | Implementation | File |
 |---|---|---|---|---|
-| Variable-amount T_AXFER | ✅ Merged | `T_AXFER_VAR` (`0x37`); §5.7.6.1 coordination layer; OP_RETURN(80) dual-party recovery | dapp + worker shipped; signet-validated; SPEC.md §5.7.6.1 + §5.7.9 ✅ | [`SPEC-VARIABLE-AMOUNT-AMENDMENT.md`](./SPEC-VARIABLE-AMOUNT-AMENDMENT.md) |
-| Variable-fill bid intents | 🚀 Deployed | §5.7.7 partial-fill bid coordination layer (no new opcode — settles via existing `T_AXFER_VAR` `0x37`); `min_fill_amount` on bid record; multi-seller fan-out per signed bid | dapp + worker shipped; signet-validated; SPEC.md §5.7.7 merge pending | [`SPEC-BID-VARIABLE-AMOUNT-AMENDMENT.md`](./SPEC-BID-VARIABLE-AMOUNT-AMENDMENT.md) |
-| Orderbook preconfirmation channel | 📝 Draft (round-1) | Orderbook scope schemas + usage conventions for the existing scope-generic `T_INTENT_ATTEST` (`0x30`) opcode — **no new opcode, no new domain tag, no new crypto**. Just `scope_id` derivation rules for orderbook intents (per-pair, per-worker-global) on top of SPEC.md §5.17 | Not started; ships independent of AMM ceremony (T_INTENT_ATTEST has no Groth16, no Pedersen, no ceremony — orderbook already in production) | [`SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md`](./SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md) |
-| Tacit wrapper convention | ✅ Merged | CETCH metadata `tacit_wrapper` field; `T_WRAPPER_ATTEST` (`0x38`); coverage check + open-issuer marketplace | SPEC.md §4.2 + §5.19 ✅; indexer + dapp work pending | [`SPEC-WRAPPER-AMENDMENT.md`](./SPEC-WRAPPER-AMENDMENT.md) |
-| Per-trade variable-amount AMM swap | 🛠️ **Reference impl shipped — landing for V1** | `T_SWAP_VAR` (`0x32`); per-fill against-curve settlement reusing CXFER N=2 crypto from `T_AXFER_VAR`; tick-fan coordination layer for settler-chosen Δ; opt-in alongside `T_SWAP_BATCH`. **NO new Groth16 circuit, NO new ceremony** — uses existing AMM pool state pinned at POOL_INIT | Reference impl at `tests/swap-var.mjs` (~600 lines, 40 tests passing); spec at `spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md`; depends only on V1 AMM POOL_INIT (no Groth16 ceremony coupling — different opcode path) | [`spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md`](./spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md) |
-| Protocol oracle + canonical cBTC + canonical cUSD | 📝 Draft (round-4 fixes + AMM harmonization landed) | 10 new opcodes (`0x39`–`0x42`); FROST threshold oracle; per-user DLC CDPs; MakerDAO-on-Bitcoin | Not started | [`SPEC-CUSD-CDP-AMENDMENT.md`](./SPEC-CUSD-CDP-AMENDMENT.md) |
+| Variable-amount T_AXFER | ✅ Merged | `T_AXFER_VAR` (`0x37`); §5.7.6.1 coordination layer; OP_RETURN(80) dual-party recovery | dapp + worker shipped; signet-validated; SPEC.md §5.7.6.1 + §5.7.9 ✅ | [`spec/amendments/SPEC-VARIABLE-AMOUNT-AMENDMENT.md`](./spec/amendments/SPEC-VARIABLE-AMOUNT-AMENDMENT.md) |
+| Variable-fill bid intents | ✅ Merged | §5.7.7 partial-fill bid coordination layer (no new opcode — settles via existing `T_AXFER_VAR` `0x37`); `min_fill_amount` on bid record; multi-seller fan-out per signed bid | dapp + worker shipped; signet-validated; SPEC.md §5.7.7 covers both whole-bid (`T_AXFER` `0x26`) and variable-fill (`T_AXFER_VAR` `0x37`) settlement paths | [`spec/amendments/SPEC-BID-VARIABLE-AMOUNT-AMENDMENT.md`](./spec/amendments/SPEC-BID-VARIABLE-AMOUNT-AMENDMENT.md) |
+| Tacit wrapper convention | ✅ Merged | CETCH metadata `tacit_wrapper` field; `T_WRAPPER_ATTEST` (`0x38`); coverage check + open-issuer marketplace | SPEC.md §4.2 + §5.19 ✅; indexer + dapp work pending | [`spec/amendments/SPEC-WRAPPER-AMENDMENT.md`](./spec/amendments/SPEC-WRAPPER-AMENDMENT.md) |
+| Per-trade variable-amount AMM swap | ✅ Merged | `T_SWAP_VAR` (`0x32`); per-fill against-curve settlement reusing CXFER N=2 crypto from `T_AXFER_VAR`; tick-fan coordination layer for settler-chosen Δ; opt-in alongside `T_SWAP_BATCH`. No new Groth16 circuit, no new ceremony — uses existing AMM pool state pinned at POOL_INIT. | Reference impl at `tests/swap-var.mjs` (40 tests); re-exported from `tests/amm-validator.mjs`; SPEC.md §5.20 ✅; spec-conformance pins 5 new domain tags + `OPCODE_T_SWAP_VAR == 0x32`. Extended-narrative draft preserved at the amendment file. | [`spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md`](./spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md) |
+| Orderbook preconfirmation channel | 📝 Draft (round-1) | Orderbook scope schemas + usage conventions for the existing scope-generic `T_INTENT_ATTEST` (`0x30`) opcode — no new opcode, no new domain tag, no new crypto. Just `scope_id` derivation rules for orderbook intents (per-pair, per-worker-global) on top of SPEC.md §5.17. | Not started; ships independent of AMM ceremony | [`spec/amendments/SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md`](./spec/amendments/SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md) |
+| Atomic cross-surface settlement (`T_TRADE_BATCH`) | 📝 Draft (round-1) | Opcode `0x43`; settles N AMM intents + K orderbook bilateral pairs atomically in one Bitcoin tx; no new cryptographic primitive, no new circuit, no new ceremony. Reuses existing AMM Groth16 vk + CXFER N=2 stack. | Reference impl deferred until cross-surface demand justifies engineering work; ships as V1.x amendment post-V1 ceremony (soft-fork-additive under the §5.5 unknown-opcode rule). | [`spec/amendments/SPEC-TRADE-BATCH-AMENDMENT.md`](./spec/amendments/SPEC-TRADE-BATCH-AMENDMENT.md) |
+| Cross-worker mesh attestation | 📝 Draft (phase 0) | Multi-worker BFT consensus on `T_INTENT_ATTEST` to remove the single-worker SPOF for soft-confirms. No new opcode or crypto; mesh is a coordination protocol over the existing attestation envelope. | Not started; V1.x track | [`spec/amendments/SPEC-TACIT-MESH-AMENDMENT.md`](./spec/amendments/SPEC-TACIT-MESH-AMENDMENT.md) |
+| Tacit range-proof primitive (§3) | ✅ Reference impl shipped; SPEC.md merge pending | Bulletproof-derived range-proof primitive (`tests/range-proof.mjs`, 39 tests). Slated for SPEC.md §3 as a normative primitive when consumers land. | Lives in the amendment file until SPEC.md merge; no opcode coupling. | [`spec/amendments/SPEC-RANGE-PROOF-PRIMITIVE.md`](./spec/amendments/SPEC-RANGE-PROOF-PRIMITIVE.md) |
+| Range-attestation opcode | ✅ Reference impl shipped; SPEC.md §5.21 merge pending | `T_RANGE_ATTEST` (`0x44`); persistent on-chain range-attestation envelope binding a holder pubkey to a `commitment ≥ K` claim. Power-user feature (KYC tier proofs, reputation, governance weight). | Reference impl at `tests/range-attest.mjs` (19 tests); ships as V1.x amendment post-V1 ceremony. | [`spec/amendments/SPEC-RANGE-ATTEST-AMENDMENT.md`](./spec/amendments/SPEC-RANGE-ATTEST-AMENDMENT.md) |
+| Batched preauth-take | 🚀 Deployed | No new opcode. Formalizes a property of existing `T_AXFER` (`0x26`) under §5.7.8: BIP-143 `SIGHASH_SINGLE_ACP` preimages are position-independent for matching payout content, so N preauth sales by N distinct sellers settle in one (commit, reveal) pair using `asset_input_count = N` (already permitted by the wire format). ~70% fee reduction for multi-fill buys. | Shipped at `dc7a48e` + `79763f5`; `tests/preauth-take.test.mjs` 34/34 (16 single-take + 18 batched). No worker redeploy required. | [`spec/amendments/SPEC-PREAUTH-BATCH-AMENDMENT.md`](./spec/amendments/SPEC-PREAUTH-BATCH-AMENDMENT.md) |
+| Protocol oracle + canonical cBTC + canonical cUSD | 📝 Draft (round-4) | 10 new opcodes (`0x39`–`0x42`); FROST threshold oracle; per-user DLC CDPs; MakerDAO-on-Bitcoin. Sources prices from AMM pool TWAPs. | Not started; depends on AMM V1 having TVL + indexer TWAP-observation support (indexer-derived metric, no V1 spec change) | [`spec/amendments/SPEC-CUSD-CDP-AMENDMENT.md`](./spec/amendments/SPEC-CUSD-CDP-AMENDMENT.md) |
 
 ### Supporting docs (not amendments, informative only)
 
 | Document | Status | Purpose | File |
 |---|---|---|---|
-| cBTC reference issuer operational design | 📝 Round-1 fixes landed | One concrete application of the wrapper convention — TAC-operated federated 3-of-5 multisig cBTC variant | [`CBTC-ISSUER-DESIGN.md`](./CBTC-ISSUER-DESIGN.md) |
+| cBTC reference issuer operational design | 📝 Round-1 fixes landed | One concrete application of the wrapper convention — TAC-operated federated 3-of-5 multisig cBTC variant | [`spec/design/CBTC-ISSUER-DESIGN.md`](./spec/design/CBTC-ISSUER-DESIGN.md) |
+| Channel UX design | 📝 Draft | UX design for the trader-side preconfirmation channel and dapp soft-confirm rendering | [`spec/design/CHANNEL-UX-DESIGN.md`](./spec/design/CHANNEL-UX-DESIGN.md) |
 
 ---
 
@@ -342,8 +351,10 @@ explained.
 ### Key additions
 
 - **Opcode `0x32`** `T_SWAP_VAR` — per-trade variable-amount AMM swap
-- **§5.16.3** wire format + indexer-validation algorithm + tip
-  mechanics + receipt-blinding scheme
+- **SPEC.md §5.20** wire format + indexer-validation algorithm +
+  tip mechanics + receipt-blinding scheme. (Appended as §5.20 to
+  preserve back-reference stability with §5.19 T_WRAPPER_ATTEST;
+  in opcode order this sits between §5.18 (`0x31`) and §5.19 (`0x38`).)
 - **1 new BIP-340 domain tag + 4 new HMAC keystream domains**
   (BIP-340: `tacit-amm-swap-var-v1` for intent_msg; HMAC:
   `tacit-amm-swap-var-receipt-v1`, `tacit-amm-swap-var-recv-v1`,
@@ -364,21 +375,41 @@ explained.
   bulletproof + kernel-sig construction that this amendment
   reuses verbatim, and the HMAC-keystream receipt-blinding
   convention adapted here for swap receipts.
-- **AMM V1 ceremony** — `T_SWAP_VAR` settles against pools
-  initialised via `POOL_INIT`; the V1 AMM ceremony must complete
-  before `T_SWAP_VAR` can be used in production.
+- **NO dependency on the AMM V1 Groth16 ceremony.** `T_SWAP_VAR`
+  settles against pools initialised via `POOL_INIT`, but its
+  validator path uses no Groth16 proof — only Pedersen + bulletproof
+  + kernel sig (all CXFER primitives, already in production).
+  This is what makes `T_SWAP_VAR` shippable alongside V1 without
+  waiting for the `amm_swap_batch.circom` Phase 2 setup; pools
+  initialised pre-ceremony accept `T_SWAP_VAR` envelopes
+  immediately. `T_SWAP_BATCH` against the same pools comes online
+  once the ceremony completes.
 
 ### Merge criteria
 
-- [ ] Peer review (2 rounds)
+- [x] Peer review round-1 (round-2 open questions tracked in amendment
+      file, non-blocking for ship)
+- [x] **Merged into SPEC.md (2026-05-16)** — appended as §5.20 with
+      wire format + validator algorithm; back-pointer notes that in
+      opcode order this sits between §5.18 (T_PROTOCOL_FEE_CLAIM,
+      0x31) and §5.19 (T_WRAPPER_ATTEST, 0x38). Section numbering
+      preserves back-reference stability rather than renumbering §5.19.
+- [x] Validator integration — `validateSwapVar()` re-exported from
+      `tests/amm-validator.mjs` as the single canonical entry point
+      for all AMM-opcode validators (T_LP_ADD, T_LP_REMOVE,
+      T_SWAP_BATCH, T_PROTOCOL_FEE_CLAIM, T_SWAP_VAR).
+- [x] Spec-conformance pinning — `tests/amm-spec-conformance.test.mjs`
+      pins `OPCODE_T_SWAP_VAR == 0x32`, the 5 new domain tags
+      (`tacit-amm-swap-var-{v1,receipt-v1,recv-v1,change-v1,tip-v1}`),
+      and the `tacit-kernel-v1` cross-surface tag the kernel msg
+      reuses.
 - [ ] Reference dapp implementation (swap-tile routing through
-      `kind: 'amm-var'`)
-- [ ] Reference worker/indexer implementation (T_SWAP_VAR
-      validator dispatch + intent-pool relay)
+      `kind: 'amm-var'`) — dapp work, separate from this amendment
+- [ ] Reference worker/indexer dispatch + intent-pool relay — worker
+      work, separate from this amendment
 - [ ] Signet e2e validation (16 test items in amendment file)
 - [ ] Cross-impl parity tests (kernel-msg + intent-msg byte parity
       dapp ↔ worker)
-- [ ] Merge into SPEC.md as §5.16.3
 - [ ] Crypto review post-merge (no new primitives but new domain
       tags need binding review)
 
@@ -634,6 +665,74 @@ threshold schemes, new domain tags binding novel inputs):
 ---
 
 ## Recent activity (changelog)
+
+- **2026-05-16** — **AMM v1 spec finalization and hardening pass.**
+  Six normative additions to AMM.md / SPEC.md:
+  1. **With-fee CFMM curve floor identity** added to `validateSwapBatch`.
+     The prior constant-product non-decreasing check (`R_A·R_B (post)
+     ≥ R_A·R_B (pre)`) enforced only the no-fee curve, admitting a
+     ~`fee_bps`-wide settler/trader collusion gap (settler declares
+     `|Δb|` along the 1-parameter family between with-fee and no-fee
+     curves; LPs lose fee revenue). The new check is the
+     public-quantities-only inequality `|Δb| · (R_A · γ_den + γ_num ·
+     |Δa|) ≤ R_B · γ_num · |Δa|` (A-dom; symmetric for B-dom); per-
+     trader floor dust accumulates downward, so the one-sided upper
+     bound is tight. Codified in SPEC.md §5.16 step 13 + AMM.md
+     §"Uniform clearing" constraint (4). The §"Uniform clearing"
+     "no settler freedom in pricing" property is now operationally
+     true at the indexer layer, not just a target.
+  2. **`T_SWAP_VAR` (`0x32`) merged into SPEC.md as §5.20.** Wire
+     format, 14-step validator algorithm, BIP-340 + HMAC domain-tag
+     table. `validateSwapVar()` re-exported from
+     `tests/amm-validator.mjs` as the single canonical entry point
+     for all five AMM-opcode validators. Spec-conformance pins
+     `OPCODE_T_SWAP_VAR == 0x32`, the 5 new domain tags
+     (`tacit-amm-swap-var-{v1,receipt-v1,recv-v1,change-v1,tip-v1}`),
+     and the `tacit-kernel-v1` cross-surface reuse.
+  3. **`vk_cid` integrity self-check** (SPEC.md §5.16 step 8). Before
+     passing vk bytes to the Groth16 verifier, the indexer MUST
+     recompute the canonical CIDv1-raw-sha256 from the resolved vk
+     bytes and verify it matches `pool.vk_cid` byte-for-byte. Closes
+     the "misconfigured IPFS gateway returns malicious vk bytes"
+     hazard. Reference impl: `deriveVkCid()` / `verifyVkCidBinding()`
+     exported from `tests/amm-validator.mjs`.
+  4. **Canonical Groth16 `publicSignals` serialization** exported as
+     `buildPublicSignalsSwapBatch(env, pool)`. Produces the canonical
+     123-element BN254-Fr-decimal-string array per AMM.md §6; pinned
+     by 10 layout tests. Two independent indexers now produce byte-
+     identical publicSignals arrays from the same `(env, pool)`.
+  5. **Sigma-prover production gate.** `proveXCurve` (the platform-
+     RNG randomized prover) hard-refuses under `NODE_ENV=production`
+     unless an explicit `rng` argument is passed. Mirrors the
+     `SKIP_GROTH16_VERIFY_UNSAFE` production-refusal pattern.
+     `proveXCurveDeterministic` (the HMAC-derived nonce path) is the
+     recommended production prover.
+  6. **`assessMinLiqLockFraction()` UX helper** in `tests/amm-min-liq.mjs`.
+     Returns `{ok, warn, high, reject}` severity + locked-bps +
+     total-shares given `(Δa_init, Δb_init)`. Dapps SHOULD surface
+     warnings at `POOL_INIT` for thin pools where the 1000-unit
+     protocol lock is a significant fraction of the founder's stake.
+
+  Additional clarifications:
+  - AMM reorg-depth baselines table added to AMM.md §"Reorg safety"
+    listing which pool-state fields are pinned at depth-3 vs
+    surfaced as pending at depth < 3.
+  - Disjoint-batches-same-block edge case documented in AMM.md
+    §"Open caveats" (narrow race; operational mitigation only;
+    V2 protocol-level fix sketched).
+  - SPEC.md §3.10 sigma cross-curve binding aligned to the
+    169-byte / 128-bit Fiat-Shamir form used by the impl (the
+    earlier 157-byte / 80-bit draft language is superseded).
+  - SPEC.md §5.14 POOL_INIT wire format aligned to the impl —
+    explicit `arbiter_threshold_m`, `pool_meta_uri`, and
+    `pool_capability_flags` fields documented in encoder order.
+  - SPEC.md §5.16 arbiter block aligned to the impl m-of-n
+    threshold quorum format (`arbiter_m + signer_indices + sigs`).
+  - LP-share `share_amount == 0` rejected by validator (defense
+    in depth at the wire layer).
+  - Trailing-byte rejection covered for all AMM opcodes.
+
+  All AMM tests + spec-conformance pins green.
 
 - **2026-05-15** — **Channel-opcode consolidation: T_AMM_ATTEST
   → T_INTENT_ATTEST (scope-generic).** Renamed the preconfirmation
@@ -893,10 +992,12 @@ threshold schemes, new domain tags binding novel inputs):
   blinding, tip blinding); kernel-msg construction reuses
   CXFER's `tacit-kernel-v1` tag verbatim. No new cryptographic
   primitives (reuses CXFER N=2 from `T_AXFER_VAR` verbatim, no
-  new ceremony). Sign-off checklist + integration checklist for
-  SPEC.md landing as §5.16.3. Dependency graph + recommended
-  landing order updated to fold T_SWAP_VAR into AMM ceremony
-  step 3.
+  new ceremony). **Merged into SPEC.md (2026-05-16)** as §5.20
+  (back-reference stable — preserves §5.19 T_WRAPPER_ATTEST
+  numbering rather than renumbering). Dependency graph +
+  recommended landing order updated to fold T_SWAP_VAR into AMM
+  ceremony step 3 — though strictly T_SWAP_VAR ships
+  independently because it carries no Groth16.
 
   **Round-1 self-review fix (same day):** initial draft had a
   cross-asset bug in the kernel-sig closure — wrote

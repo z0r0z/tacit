@@ -104,6 +104,7 @@ function makeSellerSig() {
 // responses for UTXO/fee/tx-visibility queries. Anything else → 404.
 const broadcasts = [];
 const buyerUtxos = []; // populated per-scenario
+const hintPosts = []; // captured POST bodies to /assets/hint — see worker dedup logic
 
 function setBuyerUtxos(utxos) { buyerUtxos.length = 0; buyerUtxos.push(...utxos); }
 
@@ -147,8 +148,15 @@ globalThis.fetch = async (url, opts = {}) => {
   }
   // tip-height watchdog calls (best-effort, ignore)
   if (u.includes('/blocks/tip/height')) return text('0');
-  // hint endpoint (best-effort)
-  if (u.includes('/assets/hint')) return json({ ok: true });
+  // hint endpoint (best-effort) — capture every POST body so tests can
+  // assert the worker volume-bucket invariant (1 aggregated hint per
+  // batched reveal_txid, full Σ price_sats + Σ amount).
+  if (u.includes('/assets/hint')) {
+    if (method === 'POST') {
+      try { hintPosts.push(JSON.parse(opts.body || '{}')); } catch {}
+    }
+    return json({ ok: true });
+  }
   // Anything else: 404
   return json({ error: 'mock fetch: no handler for ' + u }, 404);
 };
@@ -676,6 +684,39 @@ await test('reveal conservation: inputs - outputs == fee (positive)', () => {
 
 await test('fills array length matches input sale count', () =>
   Array.isArray(result4.fills) && result4.fills.length === 2);
+
+// Worker volume-bucket invariant (Phase 1.5 regression test).
+//
+// The worker dedupes hints by (asset_id, txid) via bumpTransferCount —
+// only the first hint per revealTxid lands in the daily volume bucket +
+// ring buffer. If the batched take naively posted N per-fill hints
+// (each carrying ONE fill's price_sats), the worker would record just
+// ONE fill's price as the trade value and undercount 24h volume by
+// ~(N-1)/N. Fix: emit ONE aggregated hint with Σ price_sats and Σ amount.
+//
+// We assert here that for the 2-seller batch above:
+//   (a) exactly one POST landed at /assets/hint
+//   (b) its price_sats equals MIN_PRICE_SATS_1 + MIN_PRICE_SATS_2
+//   (c) its amount equals (TOKEN_AMOUNT + TOKEN2_AMOUNT) as a string
+// The IIFE inside postHint fires its first fetch on the next tick, so
+// flush the microtask + macrotask queues before reading the capture.
+await new Promise(r => setTimeout(r, 50));
+await test('batched reveal posts exactly ONE hint (worker dedupes by txid)', () => {
+  const forBatch = hintPosts.filter(h => h.reveal_txid === result4.reveal_txid);
+  return forBatch.length === 1;
+});
+await test('aggregated hint price_sats == Σ min_price_sats across all fills', () => {
+  const h = hintPosts.find(x => x.reveal_txid === result4.reveal_txid);
+  return h && h.price_sats === (MIN_PRICE_SATS + MIN_PRICE_SATS_2);
+});
+await test('aggregated hint amount == Σ asset amount across all fills', () => {
+  const h = hintPosts.find(x => x.reveal_txid === result4.reveal_txid);
+  return h && h.amount === String(TOKEN_AMOUNT + TOKEN2_AMOUNT);
+});
+await test('aggregated hint listing_kind == "instant-batch" (distinguishable from single-take)', () => {
+  const h = hintPosts.find(x => x.reveal_txid === result4.reveal_txid);
+  return h && h.listing_kind === 'instant-batch';
+});
 
 await test('N=1 fast path delegates to single-take (no behavior change)', async () => {
   broadcasts.length = 0;
