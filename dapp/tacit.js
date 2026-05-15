@@ -39318,7 +39318,18 @@ function applyMarketFilters() {
       <circle cx="16" cy="16" r="16" fill="#f7931a"/>
       <path fill="#fff" d="M21.8 14.6c.3-2-1.2-3-3.3-3.7l.7-2.8-1.7-.4-.7 2.7c-.5-.1-.9-.2-1.4-.3l.7-2.7-1.7-.4-.7 2.8c-.4-.1-.7-.2-1.1-.3l-2.3-.6-.4 1.8s1.2.3 1.2.3c.7.2.8.6.8.9l-.8 3.2c0 .1.1.1.2.2l-.2-.1-1.1 4.5c-.1.2-.3.5-.7.4 0 .1-1.2-.3-1.2-.3l-.8 1.9 2.2.5c.4.1.8.2 1.2.3l-.7 2.8 1.7.4.7-2.8c.5.1.9.2 1.3.3l-.7 2.8 1.7.4.7-2.8c2.9.5 5.1.3 6-2.3.7-2.1-.1-3.2-1.5-4 1.1-.2 1.9-1 2.1-2.4Zm-3.7 5.3c-.5 2-3.9 1-5 .6l.9-3.7c1.1.3 4.6.8 4.1 3Zm.5-5.4c-.5 1.8-3.4.9-4.3.6l.8-3.4c.9.2 3.9.7 3.5 2.8Z"/>
     </svg>`;
-    const slippagePct = 20;
+    // Default limit cap. Was ±20% (set when tacit's orderbooks were
+    // launch-thin and the cap was a permissive backstop). Today's depth
+    // on live assets shows the cheapest fills sit between -70% and
+    // +10% of mark — even deep routes don't push asks above +10%, so
+    // ±10% catches every realistic fill while the auto-tune (see
+    // primeSwapTileFromOrderbook) bumps higher when a user explicitly
+    // clicks a tile above the cap. The real cost of ±20% wasn't the
+    // filter (mostly redundant with outlier guards) but the residual
+    // pricing: any unfilled budget auto-posted as a bid AT the cap,
+    // so ±20% silently created "I'd pay 20% above mark" residual
+    // bids. ±10% sets residuals at a more sensible passive-maker price.
+    const slippagePct = 10;
     // Mini-chart strip: compact sparkline + last unit price + 24h delta,
     // sitting just under the pair header. Gives the swap tile immediate
     // price context without forcing the user to scroll to the full chart
@@ -39449,8 +39460,8 @@ function applyMarketFilters() {
             <option value="2">±2%</option>
             <option value="3">±3%</option>
             <option value="5">±5%</option>
-            <option value="10">±10%</option>
-            <option value="20" selected>±20%</option>
+            <option value="10" selected>±10%</option>
+            <option value="20">±20%</option>
             <option value="50">±50%</option>
           </select>
         </label>
@@ -45760,7 +45771,7 @@ function _wireSwapTile(scope) {
   // overshoot since you can't partial-take a single ask/bid.
   const getActiveSide = () => widget.dataset.activeSide || 'from';
   const getSlipRatio = () => {
-    const pct = parseFloat(slipSel?.value || '20');
+    const pct = parseFloat(slipSel?.value || '10');
     return Number.isFinite(pct) ? pct / 100 : 0.20;
   };
   // Dust floor / outlier ceiling for swap-tile auto-routing. Asks below
