@@ -39255,24 +39255,29 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // supplied a mark and it falls inside the plot's y-range; on log
   // scale with wild outliers it sometimes lands outside, in which
   // case we omit rather than clip mid-plot.
-  let markLine = '';
+  // Mark line + label split into two so the line can render BEHIND the
+  // chart trace (correct z-order — the trace is the data, the mark is
+  // a reference) and the label can render ON TOP of everything (so
+  // the value stays readable when dots/trace cross near it). Previously
+  // both were in the same render slot before the area/line/dots, which
+  // meant a dot or trace stroke landing on the label's y-coordinate
+  // would partially occlude the text. White text-halo (paint-order
+  // stroke fill, 3px white stroke) means the label reads over any
+  // background — trace, dots, gridlines, area-fill — without the
+  // visual weight of a filled rect billboard.
+  let markLineStroke = '';
+  let markLineLabel = '';
   if (markValid) {
     const yMark = yOf(markUnit);
     if (yMark >= PT && yMark <= PT + plotH) {
       const markLbl = `mark ${fmtUnitPriceSats(markUnit)} sats/${ticker}`;
-      // Bolder dash, full-opacity stroke, label sits inside a small
-      // cream-colored pill so it stays readable when the line passes
-      // through the dense trade-trace zone. Previously the line was
-      // 0.8-stroke at 55% opacity — invisible on the dense charts.
-      const lblW = Math.max(72, markLbl.length * 5.4);
-      const lblX = (PL + plotW - 4 - lblW).toFixed(2);
-      const lblY = (yMark - 12).toFixed(2);
-      markLine =
-        `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="1.3" stroke-dasharray="5,3" opacity="0.85"/>` +
-        `<rect x="${lblX}" y="${lblY}" width="${lblW.toFixed(0)}" height="11" rx="2" fill="#faf9f5" stroke="#0a8f43" stroke-width="0.8" opacity="0.95"/>` +
-        `<text x="${(PL + plotW - 6).toFixed(0)}" y="${(yMark - 3.5).toFixed(2)}" font-size="9" fill="#0a8f43" font-family="var(--mono, monospace)" text-anchor="end" font-weight="600">${escapeHtml(markLbl)}</text>`;
+      markLineStroke = `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="1.2" stroke-dasharray="5,3" opacity="0.7"/>`;
+      markLineLabel = `<text x="${(PL + plotW - 4).toFixed(0)}" y="${(yMark - 3.5).toFixed(2)}" font-size="9" fill="#0a8f43" stroke="#faf9f5" stroke-width="3" paint-order="stroke fill" font-family="var(--mono, monospace)" text-anchor="end" font-weight="600">${escapeHtml(markLbl)}</text>`;
     }
   }
+  // Back-compat alias for any caller that still expects the combined
+  // markLine variable in scope (none currently, but defensive).
+  const markLine = markLineStroke;
   // Horizontal gridlines at the Y min / mid / max — gives the eye a
   // reference without committing to full axis ticks. Dashed light strokes
   // so they don't compete with the price line.
@@ -39301,10 +39306,11 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);cursor:crosshair;">
       ${gridlines}
-      ${markLine}
+      ${markLineStroke}
       ${areaPath ? `<path data-chart-area d="${areaPath}" fill="#0a8f43" fill-opacity="0.10" stroke="none"/>` : ''}
       ${linePath ? `<path data-chart-line d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
       ${dots}
+      ${markLineLabel}
       <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
       <text x="${PL - 4}" y="${yOf(yMid).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(midLbl)}</text>
       <text x="${PL - 4}" y="${yOf(yLo).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
