@@ -29426,7 +29426,13 @@ function _renderClaimDiscoverList() {
     let amountLine = '';
     let actionLine = '';
     if (snapshotState === 'fetching') {
-      amountLine = `<div class="muted" style="font-size:11px;">checking eligibility…</div>`;
+      // Skeleton shimmer reads as "actively working" vs a dead static text;
+      // useful when an IPFS gateway is slow and the eligibility check takes
+      // several seconds. Inline-block keeps it co-located with the label.
+      amountLine = `<div class="muted" style="font-size:11px;display:flex;align-items:center;gap:8px;">
+        <span>checking eligibility</span>
+        <span class="skeleton-row" style="width:80px;height:10px;display:inline-block;"></span>
+      </div>`;
       actionLine = `<button disabled style="font-size:11px;">…</button>`;
     } else if (snapshotState === 'error') {
       amountLine = `<div class="error" style="font-size:11px;">snapshot fetch failed: ${escapeHtml(snap.error)}</div>`;
@@ -29961,7 +29967,12 @@ function setupClaimTab() {
     const btn = $('#btn-claim-sign');
     const errEl = $('#claim-sign-err');
     if (errEl) errEl.textContent = '';
-    btn.disabled = true; const orig = btn.textContent; btn.textContent = 'awaiting MetaMask…';
+    btn.disabled = true; const orig = btn.textContent;
+    // live-dots adds an animated trailing-dots pulse after the text via CSS
+    // ::after — reads as "actively waiting on an external thing" vs a frozen
+    // button. Strip the literal "…" suffix; the CSS draws three pulsing dots.
+    btn.textContent = 'awaiting wallet';
+    btn.classList.add('live-dots');
     try {
       await _claimSign();
       _renderClaimResult();
@@ -29976,6 +29987,7 @@ function setupClaimTab() {
         console.error(e);
       }
     } finally {
+      btn.classList.remove('live-dots');
       btn.disabled = false; btn.textContent = orig;
     }
   });

@@ -2034,6 +2034,16 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
    right; mobile (< 600px) = stack title block on top, buttons full-width below.
    Without this, the buttons cluster + push the title into ~200px on iPhone-SE
    widths, which truncates the ticker and forces the pills to wrap awkwardly. */
+.claim-discover-card {
+  transition: background 0.12s ease-out, border-color 0.12s ease-out,
+              box-shadow 0.12s ease-out, transform 0.12s ease-out;
+}
+.claim-discover-card:hover {
+  background: var(--bg-warm);
+  border-color: var(--ink-mid);
+  box-shadow: 2px 2px 0 var(--ink-faint);
+  transform: translateY(-1px);
+}
 .claim-discover-card .cdc-row {
   display: flex; gap: 8px; align-items: flex-start;
   justify-content: space-between; flex-wrap: wrap;
@@ -2095,9 +2105,30 @@ details.protocol-section > summary.protocol-h3:hover { color: var(--orange); }
 }
 .claim-wiz-step[data-state="active"] .claim-wiz-step-num {
   background: var(--ink); color: var(--bg);
+  /* Subtle pulsing halo draws the eye to whichever step is currently
+     waiting on the user's input — useful in the wizard where 3 of 4 steps
+     are summary cards and the active step might otherwise blend in. */
+  animation: claim-step-pulse 2.2s ease-in-out infinite;
 }
 .claim-wiz-step[data-state="done"] .claim-wiz-step-num {
   background: var(--green); color: #fff; border-color: var(--green);
+}
+@keyframes claim-step-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(10, 143, 67, 0); }
+  50%      { box-shadow: 0 0 0 4px rgba(10, 143, 67, 0.20); }
+}
+/* Step body slides in softly when its step becomes active. Skipped for
+   prefers-reduced-motion via the modal-entrance media-query block. */
+.claim-wiz-step[data-state="active"] .claim-wiz-step-body {
+  animation: claim-step-body-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes claim-step-body-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .claim-wiz-step[data-state="active"] .claim-wiz-step-num,
+  .claim-wiz-step[data-state="active"] .claim-wiz-step-body { animation: none; }
 }
 .claim-wiz-step-title { flex: 1; min-width: 0; }
 .claim-wiz-step-edit {
