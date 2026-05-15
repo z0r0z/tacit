@@ -36227,6 +36227,53 @@ function goToMarketBrowse() {
   _applyMarketPrefsToControls('browse');
   renderMarket();
 }
+// Hover-prefetch: when the user hovers a market browse row or an "open
+// market" button for >120ms (filters out mouse-flyby), kick the worker's
+// /assets/<aid> fetch in the background. By the time the user clicks,
+// the worker's SWR cache + the dapp's _marketAssetStatsCache are warm
+// and the asset-detail page paints instantly. ~120ms is the perception
+// threshold for "deliberate hover" vs incidental cursor movement.
+//
+// Single global listener via event delegation — no per-tile wiring needed,
+// works across re-renders without re-binding. Idempotent: a re-hover on
+// the same aid within the cache TTL is a cheap cache hit.
+const HOVER_PREFETCH_DELAY_MS = 120;
+let _hoverPrefetchTimer = null;
+let _hoverPrefetchAid = null;
+if (typeof document !== 'undefined') {
+  document.addEventListener('mouseover', (e) => {
+    const target = e.target;
+    if (!target || !target.closest) return;
+    // Two element shapes that signal "this user is about to open an asset detail":
+    //   - row in the market browse table (data-market-asset-row="<aid>")
+    //   - any clickable element whose action opens that asset page
+    //     (data-act="open-market-asset" data-aid="<aid>")
+    let el = target.closest('[data-market-asset-row]');
+    let aid = el ? el.getAttribute('data-market-asset-row') : null;
+    if (!aid) {
+      el = target.closest('[data-act="open-market-asset"][data-aid]');
+      aid = el ? el.getAttribute('data-aid') : null;
+    }
+    if (!aid || !/^[0-9a-f]{64}$/.test(aid.toLowerCase())) return;
+    aid = aid.toLowerCase();
+    if (_hoverPrefetchAid === aid) return; // already armed for this aid
+    if (_hoverPrefetchTimer) clearTimeout(_hoverPrefetchTimer);
+    _hoverPrefetchAid = aid;
+    _hoverPrefetchTimer = setTimeout(() => {
+      if (typeof fetchMarketAssetStats === 'function' && WORKER_BASE) {
+        try { fetchMarketAssetStats(aid, { force: false }).catch(() => {}); } catch {}
+      }
+      _hoverPrefetchTimer = null;
+      _hoverPrefetchAid = null;
+    }, HOVER_PREFETCH_DELAY_MS);
+  });
+  document.addEventListener('mouseout', () => {
+    // Cancel pending prefetch if the user moves the cursor off before
+    // the threshold fires — avoids burning a round-trip on flyby motion.
+    if (_hoverPrefetchTimer) { clearTimeout(_hoverPrefetchTimer); _hoverPrefetchTimer = null; _hoverPrefetchAid = null; }
+  });
+}
+
 function goToMarketAsset(assetIdHex) {
   // Reject malformed asset_ids defensively — every regular caller validates,
   // but this guards against a future caller forgetting to. Falls back to the
