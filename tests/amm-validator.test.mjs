@@ -21,7 +21,8 @@ import { N_BJJ, pedersenBJJ, packPoint } from './amm-bjj.mjs';
 import { lpAddKernelSign, lpRemoveKernelSign } from './amm-kernel.mjs';
 import { buildIntentMsg, signIntent, deriveIntentId, computeEnvelopeHash } from './amm-intent.mjs';
 import { solveClearing, lpInitShares } from './amm-clearing.mjs';
-import { validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, computeQualifyingSetHash, deriveVkCid, verifyVkCidBinding, buildPublicSignalsSwapBatch, derivePoolIdFr, PUBLIC_SIGNALS_SWAP_BATCH_LENGTH } from './amm-validator.mjs';
+import { validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE, computeQualifyingSetHash, deriveVkCid, verifyVkCidBinding, buildPublicSignalsSwapBatch, derivePoolIdFr, PUBLIC_SIGNALS_SWAP_BATCH_LENGTH } from './amm-validator.mjs';
+import { deriveMinLiqCommitment, deriveMinLiqAmountCt, deriveMinLiqNumsRecipient } from './amm-min-liq.mjs';
 
 let pass = 0, fail = 0;
 function test(label, fn) {
@@ -50,6 +51,17 @@ const [assetA, assetB] = ASSET_A[0] < ASSET_B[0]
     })());
 const POOL_ID = derivePoolId(assetA, assetB);
 const LP_ASSET_ID = deriveLpAssetId(POOL_ID);
+
+// Canonical MINIMUM_LIQUIDITY locked-output bytes for POOL_ID. Mirrors what an
+// honest POOL_INIT broadcaster puts at vout[k_min_liq] (AMM.md §"MINIMUM_LIQUIDITY
+// burn-output construction"). The indexer recomputes the same bytes from
+// pool_id alone and rejects POOL_INIT if vout[k_min_liq] does not match.
+function buildCanonicalMinLiqOutput(poolId = POOL_ID) {
+  const commitBytes = pointToBytes(deriveMinLiqCommitment(poolId));
+  const amtCt = deriveMinLiqAmountCt(poolId);
+  const { p2wpkh } = deriveMinLiqNumsRecipient(poolId);
+  return { commitBytes, amtCt, p2wpkh };
+}
 
 // ---- Build a valid POOL_INIT ----
 function buildPoolInitArgs(deltaA, deltaB) {
@@ -123,6 +135,7 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
 {
   const args = buildPoolInitArgs(1_000_000n, 2_000_000n);
   const payload = encodeLpAdd(args);
+  const goodMinLiq = buildCanonicalMinLiqOutput();
   const r = validateLpAdd({
     payload, pool: null,
     inputCommitmentsA: args._ctx.inputCommitmentsA,
@@ -131,6 +144,7 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
     inputsB: args._ctx.inputsB,
     groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
     currentHeight: 1000,
+    minLiqOutput: goodMinLiq,
   });
   test('POOL_INIT validates', () => r.valid === true);
   test('POOL_INIT initial reserve_A == deltaA', () => r.valid && r.newPoolState.reserve_A === 1_000_000n);
@@ -150,6 +164,7 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
       inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
       groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
       currentHeight: 1000,
+      minLiqOutput: goodMinLiq,
     });
     return !r2.valid && /already exists/.test(r2.reason);
   });
@@ -162,6 +177,7 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
       inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
       groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
       currentHeight: 1000,
+      minLiqOutput: goodMinLiq,
     });
     return !r2.valid && /lexicographically/.test(r2.reason);
   });
@@ -175,8 +191,88 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
       inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
       groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
       currentHeight: 1000,
+      minLiqOutput: goodMinLiq,
     });
     return !r2.valid && /kernel/.test(r2.reason);
+  });
+
+  // MIN_LIQ lock adversarial tests — the founder-drain defense.
+  // Without these checks the founder could send vout[k_min_liq] to a key
+  // they control, then withdraw 100% of pool value through LP_REMOVE.
+  test('POOL_INIT with wrong MIN_LIQ commitment ⇒ rejected', () => {
+    const bad = { ...goodMinLiq, commitBytes: new Uint8Array(33) };
+    bad.commitBytes[0] = 0x02; // make it parse-able but wrong
+    const r2 = validateLpAdd({
+      payload, pool: null,
+      inputCommitmentsA: args._ctx.inputCommitmentsA,
+      inputCommitmentsB: args._ctx.inputCommitmentsB,
+      inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
+      minLiqOutput: bad,
+    });
+    return !r2.valid && /MINIMUM_LIQUIDITY/.test(r2.reason);
+  });
+  test('POOL_INIT with attacker-controlled P2WPKH ⇒ rejected', () => {
+    // Founder tries to retain the 1000 "locked" shares by sending them to
+    // a P2WPKH they own (HASH160 of their own pubkey) instead of the
+    // protocol's NUMS recipient.
+    const attackerP2wpkh = new Uint8Array(20);
+    attackerP2wpkh.fill(0x42);
+    const bad = { ...goodMinLiq, p2wpkh: attackerP2wpkh };
+    const r2 = validateLpAdd({
+      payload, pool: null,
+      inputCommitmentsA: args._ctx.inputCommitmentsA,
+      inputCommitmentsB: args._ctx.inputCommitmentsB,
+      inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
+      minLiqOutput: bad,
+    });
+    return !r2.valid && /MINIMUM_LIQUIDITY/.test(r2.reason);
+  });
+  test('POOL_INIT with tampered amount ciphertext ⇒ rejected', () => {
+    const tamperedAmtCt = new Uint8Array(goodMinLiq.amtCt);
+    tamperedAmtCt[0] ^= 0xff;
+    const bad = { ...goodMinLiq, amtCt: tamperedAmtCt };
+    const r2 = validateLpAdd({
+      payload, pool: null,
+      inputCommitmentsA: args._ctx.inputCommitmentsA,
+      inputCommitmentsB: args._ctx.inputCommitmentsB,
+      inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
+      minLiqOutput: bad,
+    });
+    return !r2.valid && /MINIMUM_LIQUIDITY/.test(r2.reason);
+  });
+  test('POOL_INIT with missing minLiqOutput ⇒ throws', () => {
+    try {
+      validateLpAdd({
+        payload, pool: null,
+        inputCommitmentsA: args._ctx.inputCommitmentsA,
+        inputCommitmentsB: args._ctx.inputCommitmentsB,
+        inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+        groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+        currentHeight: 1000,
+        // minLiqOutput omitted
+      });
+      return false; // should have thrown
+    } catch (e) {
+      return /minLiqOutput is required/.test(e.message);
+    }
+  });
+  test('POOL_INIT with SKIP_MIN_LIQ_VERIFY_UNSAFE ⇒ validates (dev only)', () => {
+    const r2 = validateLpAdd({
+      payload, pool: null,
+      inputCommitmentsA: args._ctx.inputCommitmentsA,
+      inputCommitmentsB: args._ctx.inputCommitmentsB,
+      inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
+      minLiqOutput: SKIP_MIN_LIQ_VERIFY_UNSAFE,
+    });
+    return r2.valid === true;
   });
 }
 
@@ -191,6 +287,7 @@ console.log('\nT_LP_ADD validator — standard variant 0 against an active pool'
     inputsA: init._ctx.inputsA, inputsB: init._ctx.inputsB,
     groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
     currentHeight: 1000,
+    minLiqOutput: buildCanonicalMinLiqOutput(),
   });
   if (!initRes.valid) throw new Error(`POOL_INIT precondition failed: ${initRes.reason}`);
   const pool = initRes.newPoolState;

@@ -64,7 +64,7 @@ import {
   encodeLpAdd, encodeLpRemove, encodeSwapBatch,
 } from './amm-envelope.mjs';
 import {
-  validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE,
+  validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE,
 } from './amm-validator.mjs';
 import {
   solveClearing, amountOutForTrader, lpInitShares, lpAddShares, lpRemoveOutputs,
@@ -426,6 +426,11 @@ export function buildAndSubmitPoolInit({
     inputsB: [{ txid: inputB.txid, vout: inputB.vout }],
     groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
     currentHeight: chain.height,
+    minLiqOutput: {
+      commitBytes: pointToBytes(minLiqCommit),
+      amtCt: minLiqAmountCt,
+      p2wpkh: minLiqP2wpkh,
+    },
   });
   if (!result.valid) throw new Error(`POOL_INIT rejected: ${result.reason}`);
   indexer.registerPool(result.newPoolState);

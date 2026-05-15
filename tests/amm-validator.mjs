@@ -83,12 +83,20 @@ function pointFromCompressed(bytes) {
 // and unit tests that do not exercise the SNARK path. Production indexers
 // MUST pass a real verifier. Leaving `groth16Verify` undefined throws.
 //
-// Defense-in-depth: when NODE_ENV === 'production', this sentinel is
-// REFUSED — production indexers must provide a real verifier or the
-// validator hard-fails. In non-prod environments a one-time stderr
-// warning is emitted so a developer can't accidentally let SKIP slip
-// into a deployed build.
+// Defense-in-depth: refused when EITHER NODE_ENV=production OR ops sets
+// TACIT_FORCE_PROD_GUARDS=1 (the latter lets ops lock down a deploy that
+// can't reliably set NODE_ENV — e.g., Cloudflare Workers without
+// secret-binding for env discriminators). Tests with NODE_ENV unset are
+// allowed (warn once).
 export const SKIP_GROTH16_VERIFY_UNSAFE = Symbol('tacit-amm-skip-groth16-verify-unsafe');
+
+function _isProductionEnv() {
+  if (typeof process === 'undefined' || !process.env) return false;
+  if (process.env.NODE_ENV === 'production') return true;
+  // Explicit ops opt-in for prod posture regardless of NODE_ENV.
+  if (process.env.TACIT_FORCE_PROD_GUARDS === '1') return true;
+  return false;
+}
 
 let _skipWarned = false;
 function resolveGroth16Verify(arg, fnName) {
@@ -96,17 +104,19 @@ function resolveGroth16Verify(arg, fnName) {
     // Hard refusal in production — the SKIP path defeats settler-binding
     // soundness (the constant-product check alone admits any settler-
     // favored split that satisfies the curve + Pedersen identity).
-    if (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'production') {
+    if (_isProductionEnv()) {
       throw new Error(
         `${fnName}: SKIP_GROTH16_VERIFY_UNSAFE refused in production ` +
-        `(NODE_ENV=production). Pass a real Groth16 verifier function.`,
+        `(NODE_ENV=production or TACIT_FORCE_PROD_GUARDS=1). Pass a real ` +
+        `Groth16 verifier function.`,
       );
     }
     if (!_skipWarned && typeof process !== 'undefined' && process.stderr) {
       _skipWarned = true;
       process.stderr.write(
         '[tacit-amm] WARNING: SKIP_GROTH16_VERIFY_UNSAFE in use — ' +
-        'soundness disabled, dev/test only. Refused if NODE_ENV=production.\n',
+        'soundness disabled, dev/test only. Refused if NODE_ENV=production ' +
+        'or TACIT_FORCE_PROD_GUARDS=1.\n',
       );
     }
     return null;
@@ -115,6 +125,62 @@ function resolveGroth16Verify(arg, fnName) {
   throw new Error(
     `${fnName}: groth16Verify is required (pass a verifier function or ` +
     `SKIP_GROTH16_VERIFY_UNSAFE for pre-ceremony reference use)`,
+  );
+}
+
+// In production, callers MUST pass `vkBytes` so the validator can
+// re-derive the CID from the bytes and reject mismatches before snarkjs
+// sees them. Tests using SKIP_GROTH16_VERIFY_UNSAFE skip this (no
+// `verify` callback ⇒ no vk needed). Returns silently in dev to keep
+// the existing test harness running.
+function requireVkBytes(vkBytes, fnName) {
+  if (vkBytes !== undefined) return;
+  if (_isProductionEnv()) {
+    throw new Error(
+      `${fnName}: vkBytes is required in production ` +
+      `(NODE_ENV=production or TACIT_FORCE_PROD_GUARDS=1). Pass the ` +
+      `IPFS-resolved verification-key bytes so the validator can ` +
+      `recompute the CID and reject malicious gateway responses.`,
+    );
+  }
+}
+
+// Sentinel a caller passes to skip the on-chain MINIMUM_LIQUIDITY
+// locked-output verification on POOL_INIT. Only legitimate use is unit
+// tests that don't model the locked vout bytes; production indexers MUST
+// pass the real on-chain locked-output data. Same prod-refusal gate as
+// the Groth16 SKIP sentinel.
+export const SKIP_MIN_LIQ_VERIFY_UNSAFE = Symbol('tacit-amm-skip-min-liq-verify-unsafe');
+
+let _skipMinLiqWarned = false;
+function resolveMinLiqOutput(arg, fnName) {
+  if (arg === SKIP_MIN_LIQ_VERIFY_UNSAFE) {
+    if (_isProductionEnv()) {
+      throw new Error(
+        `${fnName}: SKIP_MIN_LIQ_VERIFY_UNSAFE refused in production ` +
+        `(NODE_ENV=production or TACIT_FORCE_PROD_GUARDS=1). Pass the ` +
+        `on-chain locked-output bytes {commitBytes, amtCt, p2wpkh}.`,
+      );
+    }
+    if (!_skipMinLiqWarned && typeof process !== 'undefined' && process.stderr) {
+      _skipMinLiqWarned = true;
+      process.stderr.write(
+        '[tacit-amm] WARNING: SKIP_MIN_LIQ_VERIFY_UNSAFE in use — ' +
+        'POOL_INIT MIN_LIQ lock not verified, dev/test only.\n',
+      );
+    }
+    return null;
+  }
+  if (arg && typeof arg === 'object'
+      && arg.commitBytes instanceof Uint8Array
+      && arg.amtCt instanceof Uint8Array
+      && arg.p2wpkh instanceof Uint8Array) {
+    return arg;
+  }
+  throw new Error(
+    `${fnName}: minLiqOutput is required for POOL_INIT — pass ` +
+    `{commitBytes(33), amtCt(8), p2wpkh(20)} from the on-chain ` +
+    `vout[k_min_liq], or SKIP_MIN_LIQ_VERIFY_UNSAFE for dev/test.`,
   );
 }
 
@@ -235,11 +301,32 @@ const _N_MAX = 16;
 const _BJJ_IDENTITY_U = '0';
 const _BJJ_IDENTITY_V = '1';
 
+function _frReduce(v) {
+  // Canonical Fr representative in [0, P_FR). Handles negative BigInts
+  // (JS BigInt % returns negative for negative dividends).
+  const r = v % P_FR;
+  return (r < 0n ? r + P_FR : r).toString();
+}
 function _fr(x) {
-  // Coerce u64/u32/u16/u8 BigInt or number to decimal string.
-  if (typeof x === 'bigint') return x.toString();
-  if (typeof x === 'number') return BigInt(x).toString();
-  if (typeof x === 'string') return x;
+  // Coerce u64/u32/u16/u8 BigInt or number to decimal string, reduced mod
+  // P_FR for canonical encoding. snarkjs reduces implicitly on the verify
+  // side, so two indexers passing the same Fr-equivalent value with
+  // different byte representations (e.g., `n` and `n + P_FR`) verify the
+  // same proof but produce different publicSignals arrays — any
+  // transcript-pinning indexer that hashes publicSignals diverges.
+  // Reducing on the build side makes the encoding 1:1.
+  if (typeof x === 'bigint') return _frReduce(x);
+  if (typeof x === 'number') {
+    if (!Number.isInteger(x)) throw new Error(`_fr: non-integer number ${x}`);
+    return _frReduce(BigInt(x));
+  }
+  if (typeof x === 'string') {
+    // Validate format and canonicalize. Reject anything that isn't a
+    // (possibly negative) decimal integer string — snarkjs would silently
+    // accept hex/scientific/whitespace but with surprising semantics.
+    if (!/^-?[0-9]+$/.test(x)) throw new Error(`_fr: non-decimal string "${x}"`);
+    return _frReduce(BigInt(x));
+  }
   throw new Error(`_fr: unsupported type ${typeof x}`);
 }
 function _bytesToFr(bytes) {
@@ -397,6 +484,10 @@ export function validateLpAdd({
   groth16Verify,
   currentHeight,
   vkBytes,                        // optional Uint8Array — if provided, integrity-checked against pool.vk_cid
+  minLiqOutput,                   // {commitBytes(33), amtCt(8), p2wpkh(20)} from on-chain vout[k_min_liq];
+                                  // REQUIRED for POOL_INIT (variant=1). Pass SKIP_MIN_LIQ_VERIFY_UNSAFE
+                                  // for pre-integration test harnesses that don't model the locked vout.
+                                  // Ignored on variant=0.
 }) {
   const verify = resolveGroth16Verify(groth16Verify, 'validateLpAdd');
   if (typeof currentHeight !== 'number' || currentHeight < 0) {
@@ -472,6 +563,31 @@ export function validateLpAdd({
     }
     if (verify && !verify({ proof: env.proof, pool: { vk_cid: env.vkCid }, kind: 'LP_ADD_INIT' })) {
       return { valid: false, reason: 'Groth16 proof failed (POOL_INIT)' };
+    }
+
+    // MINIMUM_LIQUIDITY locked-output check (AMM.md §"MINIMUM_LIQUIDITY
+    // burn-output construction"). Without this, a founder can bypass the
+    // first-LP-drain defense by sending vout[k_min_liq] to themselves
+    // instead of the NUMS-derived recipient — they'd then control 100%
+    // of shares including the "locked" 1000 and could withdraw all
+    // liquidity. The verifier recomputes (C_min_liq, amt_ct, NUMS_P2WPKH)
+    // from pool_id alone and checks byte-equality with the on-chain
+    // vout[k_min_liq] bytes the caller wires up.
+    const resolvedMinLiq = resolveMinLiqOutput(minLiqOutput, 'validateLpAdd');
+    if (resolvedMinLiq !== null) {
+      const ok = verifyMinLiqOutput({
+        poolId,
+        onChainCommit: resolvedMinLiq.commitBytes,
+        onChainAmtCt: resolvedMinLiq.amtCt,
+        onChainP2wpkh: resolvedMinLiq.p2wpkh,
+      });
+      if (!ok) {
+        return {
+          valid: false,
+          reason: 'MINIMUM_LIQUIDITY locked-output verification failed: ' +
+                  'vout[k_min_liq] does not match deterministic NUMS-derived (commit, amt_ct, P2WPKH)',
+        };
+      }
     }
 
     // Construct new pool state.
@@ -559,7 +675,11 @@ export function validateLpAdd({
   if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
     return { valid: false, reason: 'share output sigma cross-curve binding failed' };
   }
-  // vk_cid integrity self-check
+  // vk_cid integrity self-check. Required in production — caller must
+  // pass the resolved vk bytes so the validator can re-derive the CID
+  // and refuse mismatched bytes BEFORE handing them to snarkjs. Closes
+  // the "malicious IPFS gateway returns wrong vk" hazard.
+  if (verify !== null) requireVkBytes(vkBytes, 'validateLpAdd');
   if (vkBytes !== undefined && xPool.vk_cid !== undefined) {
     if (!verifyVkCidBinding(vkBytes, xPool.vk_cid)) {
       return { valid: false, reason: 'vk_cid integrity check failed: deriveVkCid(vkBytes) != pool.vk_cid' };
@@ -663,7 +783,8 @@ export function validateLpRemove({
     return { valid: false, reason: 'asset-B receipt sigma binding failed' };
   }
 
-  // vk_cid integrity self-check
+  // vk_cid integrity self-check (required in production).
+  if (verify !== null) requireVkBytes(vkBytes, 'validateLpRemove');
   if (vkBytes !== undefined && xPool.vk_cid !== undefined) {
     if (!verifyVkCidBinding(vkBytes, xPool.vk_cid)) {
       return { valid: false, reason: 'vk_cid integrity check failed: deriveVkCid(vkBytes) != pool.vk_cid' };
@@ -731,6 +852,20 @@ export function validateSwapBatch({
   let env;
   try { env = decodeSwapBatch(payload, { hasArbiter }); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
+
+  // Belt-and-braces: decoder builds intents/receipts arrays of length
+  // env.nIntents by construction (amm-envelope.mjs:551-572), so this check
+  // is currently safe-by-construction. We assert it explicitly so a future
+  // decoder regression that decoupled them would fail loudly here rather
+  // than silently propagate into the public-signals vector (where padded
+  // slots would still verify under Groth16 but the indexer's view of the
+  // batch's size could disagree with the prover's).
+  if (env.nIntents !== env.intents.length) {
+    return { valid: false, reason: `n_intents ${env.nIntents} != intents.length ${env.intents.length}` };
+  }
+  if (env.nIntents !== env.receipts.length) {
+    return { valid: false, reason: `n_intents ${env.nIntents} != receipts.length ${env.receipts.length}` };
+  }
 
   // OP_RETURN binding: vout[0] data MUST equal SHA256(envelope_payload).
   if (!opReturnData) return { valid: false, reason: 'missing vout[0] OP_RETURN' };
@@ -1059,6 +1194,7 @@ export function validateSwapBatch({
   // gateway returns wrong vk" hazard before snarkjs ever sees the bytes.
   // Production indexers MUST pass `vkBytes`; pre-ceremony tests using
   // SKIP_GROTH16_VERIFY_UNSAFE pass undefined and skip this check.
+  if (verify !== null) requireVkBytes(vkBytes, 'validateSwapBatch');
   if (vkBytes !== undefined && pool.vk_cid !== undefined) {
     if (!verifyVkCidBinding(vkBytes, pool.vk_cid)) {
       return { valid: false, reason: 'vk_cid integrity check failed: deriveVkCid(vkBytes) != pool.vk_cid' };

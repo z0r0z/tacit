@@ -27,11 +27,20 @@ import { N_BJJ, pedersenBJJ, packPoint } from './amm-bjj.mjs';
 import { encodeLpAdd } from './amm-envelope.mjs';
 import { lpAddKernelSign } from './amm-kernel.mjs';
 import { proveXCurve } from './amm-sigma-xcurve.mjs';
-import { validateLpAdd, SKIP_GROTH16_VERIFY_UNSAFE } from './amm-validator.mjs';
+import { validateLpAdd, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE } from './amm-validator.mjs';
+import { deriveMinLiqCommitment, deriveMinLiqAmountCt, deriveMinLiqNumsRecipient } from './amm-min-liq.mjs';
 import {
   deriveAssetIdFromReveal, derivePoolId, deriveLpAssetId,
 } from './amm-asset.mjs';
 import { lpInitShares } from './amm-clearing.mjs';
+
+function minLiqOutputFor(poolId) {
+  return {
+    commitBytes: pointToBytes(deriveMinLiqCommitment(poolId)),
+    amtCt: deriveMinLiqAmountCt(poolId),
+    p2wpkh: deriveMinLiqNumsRecipient(poolId).p2wpkh,
+  };
+}
 
 function bjjRand() {
   while (true) {
@@ -231,6 +240,7 @@ describe('cross-pool replay attack tests', () => {
       inputsA: initB.inputsA, inputsB: initB.inputsB,
       groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
       currentHeight: 1000,
+      minLiqOutput: minLiqOutputFor(poolB.pool_id),
     });
     assert.strictEqual(rB.valid, true, `pool B POOL_INIT failed: ${rB.reason}`);
 
@@ -243,6 +253,7 @@ describe('cross-pool replay attack tests', () => {
       inputsA: initA.inputsA, inputsB: initA.inputsB,
       groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
       currentHeight: 1000,
+      minLiqOutput: minLiqOutputFor(poolA.pool_id),
     });
     assert.strictEqual(rA.valid, true, `pool A POOL_INIT failed: ${rA.reason}`);
 
