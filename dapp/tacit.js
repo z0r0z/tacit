@@ -30965,12 +30965,10 @@ async function _claimRefreshDiscover() {
     }
   }
   // Queue-health probe per drop. Populates the shared _claimQueueHealthByRoot
-  // cache so the discover-list render can surface a "backlogged · oldest Xh"
-  // badge when a drop's queue is clearly stale (daemon paused, treasury short,
-  // etc.) — gives a recipient *about to claim* an honest expectation before
-  // they tip. Skipped when the cache already has fresh (<90s) data from
-  // another path (the live-tracker poller writes to the same cache for the
-  // user's own active claims).
+  // cache used by the claim wizard's queue-position chip and the
+  // already-paid leaf filter. Skipped when the cache already has fresh
+  // (<90s) data from another path (the live-tracker poller writes to the
+  // same cache for the user's own active claims).
   if (WORKER_BASE) {
     for (const d of _claimDiscoverDrops) {
       if (!/^[0-9a-f]{64}$/.test(d.merkle_root || '')) continue;
@@ -31303,41 +31301,6 @@ function _renderClaimDiscoverListNow() {
       : provenance === 'self_announced'
         ? `<span class="status-pill" style="background:var(--bg-warm);color:var(--orange);border-color:var(--orange);font-size:9px;">⚠ self-announced</span>`
         : '';
-    // Queue-health badge. Shows when the drop's oldest queued claim is > 2h
-    // old — strong signal the fulfiller daemon is paused/stuck (typical batch
-    // cycle is ~10 min, so 2h+ without dequeues means something's off
-    // operator-side). Gives recipients ABOUT to tip an honest expectation
-    // before they commit sats. Data comes from _claimQueueHealthByRoot,
-    // populated by the per-drop /claims probe at the bottom of
-    // _claimRefreshDiscover. Skipped when the cache is empty (no data yet)
-    // or stale (>10 min — discover refresh has paused).
-    // Backlog badge — fires only when the queue genuinely looks stuck:
-    //  - depth > 0 AND oldest > 6h (raised from 2h — 2h false-positives on
-    //    drops where one orphan record sits in the queue while everything
-    //    fresh is being processed),
-    //  - AND newest > 30min (no fresh submissions either — if the daemon
-    //    is actively chewing on new arrivals, one stale entry shouldn't
-    //    alarm the user).
-    // Worker doesn't expose a settled/paid flag on /claims, so we can't
-    // truly distinguish "queue is stuck" from "queue contains old already-
-    // paid records". This dual gate dampens the most common false
-    // positive (an orphan claim from before the drop's effective launch).
-    let backlogBadge = '';
-    const _qh = _claimQueueHealthByRoot.get(d.merkle_root);
-    if (_qh && _qh.depth > 0 && (Date.now() - _qh.fetchedAt) < 10 * 60 * 1000) {
-      const _nowSec = Math.floor(Date.now() / 1000);
-      const _oldestAgeSec = Math.max(0, _nowSec - _qh.oldestSubmitted);
-      const _newestAgeSec = _qh.newestSubmitted > 0
-        ? Math.max(0, _nowSec - _qh.newestSubmitted)
-        : _oldestAgeSec;
-      const _bothStale = _oldestAgeSec > 6 * 3600 && _newestAgeSec > 30 * 60;
-      if (_bothStale) {
-        const _ageStr = _oldestAgeSec >= 3600
-          ? `${Math.floor(_oldestAgeSec / 3600)}h`
-          : `${Math.floor(_oldestAgeSec / 60)}m`;
-        backlogBadge = `<span class="status-pill" style="background:#fff8ec;color:var(--orange);border-color:var(--orange);font-size:9px;" title="The fulfiller daemon doesn't appear to have processed claims recently. Your claim may queue longer than the typical 10–30 min. Check with the issuer if persisted past 1h after you tip. (Note: the worker doesn't expose paid vs unpaid status, so this badge can fire on orphaned old records too — treat as a hint, not a verdict.)">⏳ daemon stalled · oldest ${_ageStr}</span>`;
-      }
-    }
     let amountLine = '';
     let actionLine = '';
     if (snapshotState === 'fetching') {
@@ -31409,7 +31372,6 @@ function _renderClaimDiscoverListNow() {
                 <strong>${escapeHtml(ticker)}</strong>
                 ${newPill}
                 ${provBadge}
-                ${backlogBadge}
               </div>
               ${aidChip ? `<div class="cdc-aidrow" style="margin-top:2px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">${aidChip}${aidExplorer}</div>` : ''}
               <div class="muted" style="font-size:11px;margin-top:2px;word-break:break-all;">root <code>${escapeHtml(shorten(d.merkle_root, 10))}</code> · <span style="${expColor}">${escapeHtml(exp.text)}</span></div>
@@ -47058,55 +47020,82 @@ function _wireSwapTile(scope) {
       let filled = 0, lastErr = null;
       let _totalFeesSats = 0;
       let _stoppedEarly = false;
-      // Batched preauth-take fast path. When the buy-side route is two or
-      // more preauths (no intent / intent-var in the mix), settle them in
-      // ONE (commit, reveal) pair instead of N. Saves ~70% on Bitcoin
-      // fees by amortizing the envelope + script-path overhead. Falls
-      // through to the per-fill loop on any failure so single-take's
-      // robustness is preserved. Mixed routes (preauth + intent) still
-      // use the loop — intents have a separate claim/wait/finalize flow
-      // that can't share a settlement tx.
-      const _allPreauth = dir === 'buy'
-        && result.plan.length >= 2
-        && result.plan.every(c => c.kind === 'preauth');
-      if (_allPreauth) {
-        // Mark every queued row as broadcasting so the UI reflects "in
-        // flight" while the single reveal is built and signed.
-        for (let i = 0; i < result.plan.length; i++) progressItems[i].status = 'broadcasting';
-        actionBtn.textContent = `batching ${result.plan.length} fills…`;
+      // Batched preauth-take fast path. When the buy-side route has TWO
+      // OR MORE preauth fills (anywhere in the plan, not just all-of-it),
+      // settle the preauth subset in ONE (commit, reveal) pair instead
+      // of N. Saves ~70% on Bitcoin fees for the batched subset. The
+      // remaining non-preauth fills (atomic intents, variable-amount
+      // intents) settle sequentially via the per-fill loop below —
+      // their claim → wait → finalize protocol can't share a settlement
+      // tx with the preauth reveal.
+      //
+      // Mixed-kind route example (plan = [preauth, intent, preauth]):
+      //   - Batch path: takes both preauths in one reveal.
+      //   - Per-fill loop: runs only the intent at idx=1.
+      // Total broadcasts: 1 commit + 1 batched reveal + 1 intent commit
+      // = 3 instead of 4 (per-fill would be 2 commits + 2 reveals).
+      const _preauthIndices = dir === 'buy'
+        ? result.plan.reduce((acc, c, i) => {
+            if (c.kind === 'preauth') acc.push(i);
+            return acc;
+          }, [])
+        : [];
+      const _batchPreauths = _preauthIndices.length >= 2;
+      // Set of plan indices handled by ANY batch path (buy-side preauth
+      // subset OR sell-side all-bid). The per-fill loop below uses this
+      // to skip rows the batch path already resolved (otherwise it would
+      // re-broadcast them as single-fills). The sell-side `_allBid`
+      // block adds its indices to the set as it processes each row.
+      const _batchedSet = new Set(_batchPreauths ? _preauthIndices : []);
+      if (_batchPreauths) {
+        const _allBatched = _preauthIndices.length === result.plan.length;
+        // Mark only the preauth rows as broadcasting; non-preauth rows
+        // stay 'queued' until the per-fill loop reaches them.
+        for (const idx of _preauthIndices) progressItems[idx].status = 'broadcasting';
+        actionBtn.textContent = _allBatched
+          ? `batching ${_preauthIndices.length} fills…`
+          : `batching ${_preauthIndices.length} of ${result.plan.length} fills…`;
         _renderSwapProgress(progressEl, progressItems);
         try {
           const batch = await takePreauthSaleBatch({
             assetIdHex: aid,
-            sales: result.plan.map(c => ({ saleIdHex: c.l.sale_id, sale: c.l })),
+            sales: _preauthIndices.map(i => ({
+              saleIdHex: result.plan[i].l.sale_id,
+              sale: result.plan[i].l,
+            })),
           });
-          // All-or-nothing success: stamp every progress row as done +
-          // tagged with the reveal txid, apply optimistic credits, and
-          // count fills toward the toast. The single reveal txid is the
-          // common artifact for every fill in the batch.
-          for (let i = 0; i < result.plan.length; i++) {
-            progressItems[i].status = 'done';
-            progressItems[i].txid = batch.reveal_txid || batch.commit_txid || null;
-            const c = result.plan[i];
+          // All preauth fills resolved together — stamp each preauth
+          // row as done with the shared reveal txid, apply optimistic
+          // credits, and count toward `filled`. Non-preauth rows stay
+          // queued for the loop below to process.
+          for (const idx of _preauthIndices) {
+            progressItems[idx].status = 'done';
+            progressItems[idx].txid = batch.reveal_txid || batch.commit_txid || null;
+            const c = result.plan[idx];
             if (typeof c.amt === 'bigint') applyOptimisticCredit(aid, c.amt);
           }
-          filled = result.plan.length;
+          filled = _preauthIndices.length;
           _renderSwapProgress(progressEl, progressItems);
-          // Mark all reveal inputs spent so any back-to-back swap on
-          // the same widget doesn't double-pick the consumed UTXOs.
+          // Mark reveal inputs spent so the per-fill loop's next fill
+          // doesn't accidentally re-pick a buyer-funding UTXO that
+          // the batched reveal just consumed.
           try {
             const tx = await getTx(batch.reveal_txid);
             _markTxInputsSpent(tx);
           } catch {}
           try { _totalFeesSats += await _collectSwapFee({ commit_txid: batch.commit_txid, reveal_txid: batch.reveal_txid }); } catch {}
         } catch (e) {
-          // Batch failed. Mark the FIRST row as failed (the rest stay
-          // queued — none broadcast since the batch is atomic) and let
-          // the toast carry the error.
+          // Batch failed. Mark the first preauth row as failed; the rest
+          // of the preauth indices stay queued. The per-fill loop's
+          // `if (lastErr) break;` guard prevents it from running after
+          // a batch failure — so a single batch throw aborts the whole
+          // swap (same all-or-nothing semantics as before).
           lastErr = e?.message || String(e);
-          progressItems[0].status = 'failed';
-          progressItems[0].err = lastErr;
-          for (let i = 1; i < result.plan.length; i++) progressItems[i].status = 'queued';
+          progressItems[_preauthIndices[0]].status = 'failed';
+          progressItems[_preauthIndices[0]].err = lastErr;
+          for (let k = 1; k < _preauthIndices.length; k++) {
+            progressItems[_preauthIndices[k]].status = 'queued';
+          }
           _renderSwapProgress(progressEl, progressItems);
         }
       }
@@ -47149,10 +47138,12 @@ function _wireSwapTile(scope) {
               progressItems[i].status = 'done';
               progressItems[i].txid = f.result.commit_txid || null;
               filled++;
+              _batchedSet.add(i);
               if (typeof c.amt === 'bigint') applyOptimisticDebit(aid, c.amt);
             } else if (f && f.error) {
               progressItems[i].status = 'failed';
               progressItems[i].err = f.error;
+              _batchedSet.add(i);  // failure is also "batch handled it" — don't retry
               lastErr = f.error;
             } else {
               // Bid wasn't reached (batch broke early). Keep as queued so
@@ -47182,14 +47173,19 @@ function _wireSwapTile(scope) {
           _renderSwapProgress(progressEl, progressItems);
         }
       }
-      // Per-fill loop. Runs in two cases:
-      //   1. Mixed-kind routes (preauth + intent) — batching unavailable.
-      //   2. Sell-side fulfilments (each is an independent intent claim).
-      // When the batch path above ran successfully, `filled === plan.length`
-      // and this loop is a no-op. When the batch path threw, `lastErr` is
-      // set and the `break` on the first iteration short-circuits the loop
-      // so we don't try to single-take after a batch failure.
-      for (let i = filled; i < result.plan.length; i++) {
+      // Per-fill loop. Runs in three cases:
+      //   1. All-preauth route (already batched above) — every iteration
+      //      skips via `_batchedSet`, so the loop is a no-op.
+      //   2. Mixed-kind route — batched the preauth subset above; this
+      //      loop now processes ONLY the non-preauth fills (intents,
+      //      intent-vars) in their original plan order.
+      //   3. Sell-side or mixed-with-no-batchable-preauths — `_batchedSet`
+      //      stays empty for those entries, every iteration runs.
+      // When the batch path threw, `lastErr` is set and the first
+      // non-batched iteration short-circuits — so a batch failure
+      // aborts the whole swap (no per-fill fallback after commit).
+      for (let i = 0; i < result.plan.length; i++) {
+        if (_batchedSet.has(i)) continue;
         if (lastErr) break;
         // Cancel-after-this-fill check. Already-broadcast in-flight fills
         // can't be recalled, but the loop bails before broadcasting the
