@@ -38318,6 +38318,14 @@ function applyMarketFilters() {
       <!-- Primary action -->
       <button data-swap-action type="button" disabled title="Each fill settles in one Bitcoin transaction. No public mempool ordering, no MEV bots, no privileged sequencer — Bitcoin's PoW + atomic settlement means no one can reorder your fill or sandwich you." style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
       <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="Each fill settles in one Bitcoin transaction. No public mempool ordering games, no MEV bots, no privileged sequencer that can reorder or sandwich your trade.">Settles in one Bitcoin tx · no front-running</div>
+      <!-- Auto-fulfil status hint: visible only in sell direction since
+           sells depend on this tab signing claim responses from buyers.
+           Updated dynamically by the wireup's applyDirection() based on
+           the daemon's current state. Surfaces the critical "you must
+           keep this tab open with auto-fulfil ON" signal up front so
+           users don't post sells that silently stall waiting for a
+           claim they never sign. -->
+      <div data-swap-autofulfil-hint style="display:none;margin-top:8px;padding:6px 10px;font-size:10px;line-height:1.4;border:1px dashed var(--ink-faint);background:var(--bg-warm);"></div>
       <div data-swap-progress style="display:none;margin-top:10px;font-size:11px;"></div>
     </div>`;
   })();
@@ -44720,6 +44728,41 @@ function _wireSwapTile(scope) {
     // pills that already hold an <img>.
     _resolveAssetLogosIn(widget, 'width:24px;height:24px;border-radius:50%;border:1px solid var(--ink-faint);background:#fff;object-fit:cover;flex-shrink:0;');
     if (typeof renderQuickFill === 'function') renderQuickFill();
+    // Auto-fulfil hint — visible only in sell mode. Sells route via
+    // atomic intents, which require this tab to sign each buyer's
+    // claim response before the buyer can settle on chain. Without
+    // auto-fulfil ON the user has to manually sign each claim (the
+    // notif log surfaces them) — easy to miss and a frequent
+    // "why isn't my sell completing?" support thread. Surfacing
+    // state up-front prevents the confusion.
+    const afHint = widget.querySelector('[data-swap-autofulfil-hint]');
+    if (afHint) {
+      if (isBuy) {
+        afHint.style.display = 'none';
+        afHint.innerHTML = '';
+      } else {
+        const afOn = typeof _isAutoFulfilEnabled === 'function' && _isAutoFulfilEnabled();
+        afHint.style.display = '';
+        if (afOn) {
+          afHint.style.borderColor = '#0a7d3a';
+          afHint.style.background = '#eafbf0';
+          afHint.innerHTML = `<span style="color:#0a7d3a;font-weight:600;">● Auto-fulfil ON</span> <span class="muted">— this tab will sign buyer claims automatically as long as it stays open.</span>`;
+        } else {
+          afHint.style.borderColor = '#a06800';
+          afHint.style.background = '#fff8eb';
+          afHint.innerHTML = `<span style="color:#a06800;font-weight:600;">⚠ Auto-fulfil OFF</span> <span class="muted">— sells stall until you sign each buyer's claim manually. </span><a href="#" data-swap-af-enable style="color:#a06800;text-decoration:underline dotted;font-weight:600;">Enable</a>`;
+          const enableLink = afHint.querySelector('[data-swap-af-enable]');
+          if (enableLink) enableLink.onclick = (ev) => {
+            ev.preventDefault();
+            try {
+              if (typeof startAutoFulfilDaemon === 'function') startAutoFulfilDaemon();
+              applyDirection();  // refresh the hint
+              toast('Auto-fulfil enabled · sells will settle automatically while this tab stays open.', 'success');
+            } catch (e) { toast('Could not enable auto-fulfil: ' + (e?.message || e), 'error'); }
+          };
+        }
+      }
+    }
   };
   // Quick-fill chip row: renders direction- and pay-unit-aware preset
   // amounts that fill the active "from" input on click. Cuts the
@@ -45632,18 +45675,18 @@ function _wireSwapTile(scope) {
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'} · ${lastErr}${_feeSuffix}`, 'error', 8000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'}${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (dir === 'buy') toast(`Bought ${accStr} ${ticker}${_feeSuffix} · view in Holdings (~10 min to settle)`, 'success', 8000);
-      else toast(`Filled · ${accStr} ${ticker} sold${_feeSuffix} · buyers will settle on Bitcoin in ~10 min`, 'success', 8000);
-      // Post-success inline CTA: append a "View in Holdings →" button to
-      // the progress UI on a full buy success. The progress steps remain
-      // visible (with txids) so the user has receipts; the new button
-      // gives them a clear next step instead of having to spot the
-      // toast that disappears in 8 seconds. Survives the 1.5s
-      // renderMarket() re-render because [data-swap-tile] is in the
-      // preserved-nodes list.
-      if (dir === 'buy' && filled === result.plan.length && !lastErr && !_stoppedEarly && progressEl) {
+      else toast(`Selling ${accStr} ${ticker}${_feeSuffix} · pending bidder Takes (~1–30 min)`, 'success', 8000);
+      // Post-success inline CTA: append a "View / Track in Holdings →"
+      // button to the progress UI on full success (both directions).
+      // Buy users want to verify their tokens arrived; sell users want
+      // to track the in-flight fulfilment state since each bidder's
+      // Take is async. Survives the 1.5s renderMarket() re-render
+      // because [data-swap-tile] is in the preserved-nodes list.
+      if (filled === result.plan.length && !lastErr && !_stoppedEarly && progressEl) {
         const cta = document.createElement('div');
         cta.style.cssText = 'margin-top:10px;text-align:center;';
-        cta.innerHTML = `<a href="#" data-swap-view-holdings style="display:inline-block;padding:8px 18px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;text-decoration:none;box-shadow:2px 2px 0 var(--ink);">View in Holdings →</a>`;
+        const _ctaLabel = dir === 'buy' ? 'View in Holdings →' : 'Track in Holdings →';
+        cta.innerHTML = `<a href="#" data-swap-view-holdings style="display:inline-block;padding:8px 18px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;text-decoration:none;box-shadow:2px 2px 0 var(--ink);">${_ctaLabel}</a>`;
         // Idempotent: if a previous success already added one, replace
         // rather than stack a second copy.
         const prev = progressEl.parentNode?.querySelector('[data-swap-view-holdings]')?.closest('div');
@@ -46077,9 +46120,28 @@ function _wireSwapTile(scope) {
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}${_feeSuffix}`, 'error', 8000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} fulfilled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (listingPosted) {
-        toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} · ${fmtAssetAmount(listingPosted.amount, decimals)} ${ticker} more open at ${fmtUnitPriceSats(refUnit * (1 - getSlipRatio()))} sats/${ticker} (fills when buyers take)`, 'success', 9000);
+        toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} · ${fmtAssetAmount(listingPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(refUnit * (1 - getSlipRatio()))} sats/${ticker}`, 'success', 9000);
       } else {
-        toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} (pending bidder Takes)`, 'success', 5000);
+        toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} · pending bidder Takes`, 'success', 5000);
+      }
+      // Post-success "View in Holdings →" CTA for the exact-in sell
+      // path. Mirrors the buy-side CTA from c2d0855. Surfaces an
+      // unmistakable next step so users can verify their balance
+      // changed (sell intents take 1–30 min to fulfil; the holdings
+      // tab is where pending state is visible).
+      if (filled === result.plan.length && !lastErr && !_stoppedEarly && progressEl) {
+        const cta = document.createElement('div');
+        cta.style.cssText = 'margin-top:10px;text-align:center;';
+        cta.innerHTML = `<a href="#" data-swap-view-holdings style="display:inline-block;padding:8px 18px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;text-decoration:none;box-shadow:2px 2px 0 var(--ink);">Track in Holdings →</a>`;
+        const prev = progressEl.parentNode?.querySelector('[data-swap-view-holdings]')?.closest('div');
+        if (prev && prev !== cta) prev.remove();
+        progressEl.parentNode?.insertBefore(cta, progressEl.nextSibling);
+        cta.querySelector('[data-swap-view-holdings]').onclick = (e) => {
+          e.preventDefault();
+          const tab = document.querySelector('.tab[data-tab="holdings"]');
+          if (tab) tab.click();
+          cta.remove();
+        };
       }
       // Remember this sell for the "↻ Repeat" chip — raw is the asset amount the user typed.
       if (filled > 0) _saveLastSwap({ aid, dir: 'sell', payUnit: '', fromValue: raw, label: `${raw} ${ticker}` });
