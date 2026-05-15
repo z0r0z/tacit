@@ -1749,7 +1749,23 @@ function getCustomApiBase(netName) {
   if (!key) return null;
   const v = _readCustomApiMap()[key];
   if (typeof v !== 'string' || !v) return null;
-  return v.replace(/\/+$/, '');
+  const cleaned = v.replace(/\/+$/, '');
+  // Self-heal: a custom API set to the worker root (without `/chain`) returns
+  // {"error":"not found"} for every Esplora path and breaks the rescan flow.
+  // The worker proxy is already wired in via `_apiBases()`, so a custom entry
+  // pointing at the same host is redundant at best. Clear it so the rotation
+  // returns to mempool.space / blockstream.info fallback. Test-button path
+  // would have rejected this entry; finding it set means it was migrated in
+  // or stamped out-of-band.
+  if (WORKER_BASE && (cleaned === WORKER_BASE || cleaned === `${WORKER_BASE}/chain`)) {
+    try {
+      const m = _readCustomApiMap();
+      delete m[key];
+      localStorage.setItem(CUSTOM_API_KEY, JSON.stringify(m));
+    } catch {}
+    return null;
+  }
+  return cleaned;
 }
 function setCustomApiBase(netName, urlOrNull) {
   const m = _readCustomApiMap();
@@ -2008,15 +2024,23 @@ async function api(path, opts = {}) {
         if (r.ok) _apiHealth.delete(base);
         if (!r.ok) {
           const t = await r.text();
-          // 404 from the WORKER /chain proxy most likely means the worker
-          // hasn't been deployed yet with the chain-proxy endpoints (rolling
-          // deploy window). Demote the worker base for 10 minutes and
-          // continue rotation to direct providers — keeps the dapp working
-          // during the deploy gap rather than 404'ing every chain query.
-          if (r.status === 404 && WORKER_BASE && base === `${WORKER_BASE}/chain`) {
+          // 404 from ANY worker-hosted base — proxy not deployed yet, or the
+          // URL got mis-shaped so the request landed on the worker's catch-all
+          // route (the body `{"error":"not found"}` is the signature). Demote
+          // the worker base for 10 minutes and continue rotation to direct
+          // providers — keeps the dapp working during the deploy gap rather
+          // than 404'ing every chain query. Matching on base-prefix (not exact
+          // equality with `/chain`) recovers from configurations where a
+          // custom API base accidentally points at the worker root, or from
+          // any future code path that builds a worker URL outside `/chain/*`.
+          if (
+            r.status === 404
+            && WORKER_BASE
+            && (base.startsWith(WORKER_BASE) || t === '{"error":"not found"}')
+          ) {
             _markUnhealthy(base, 10 * 60_000, 'not-deployed');
             _markWorkerKnownBad();
-            lastErr = new Error(`worker /chain not deployed`);
+            lastErr = new Error(`worker base 404 (${base}) — rotating to direct providers`);
             lastRes = r;
             continue;
           }
@@ -2315,9 +2339,19 @@ function fmtSatsAsUsd(sats, btcUsd) {
 // final UTXO set is `received \ spent`. Slower (N/25 round-trips) than the
 // indexer's pre-built view, but unbounded — the only client-visible
 // difference is latency, not correctness.
-async function _getUtxosViaTxHistory(a) {
+async function _getUtxosViaTxHistory(a, onProgress) {
   const spent = new Set();      // "txid:vout" of outputs paying `a` later spent
   const received = new Map();   // "txid:vout" -> { txid, vout, value, status }
+  // Estimated total tx_count so the progress callback can report N / total.
+  // Best-effort: sniff /address/<a> in the background so the first page can
+  // start fetching immediately. If the sniff returns before the walk ends,
+  // the page counter swaps from "page N" to "N% (N tx / total)".
+  let totalTxCount = null;
+  const sniffP = apiJson(`/address/${a}`)
+    .then(info => {
+      totalTxCount = (info?.chain_stats?.tx_count || 0) + (info?.mempool_stats?.tx_count || 0);
+    })
+    .catch(() => {});
 
   const ingestTx = (tx) => {
     if (!tx || typeof tx !== 'object') return;
@@ -2410,11 +2444,26 @@ async function _getUtxosViaTxHistory(a) {
     }
     if (!Array.isArray(batch) || batch.length === 0) break;
     for (const tx of batch) ingestTx(tx);
+    // Heavy-wallet progress hint. Page count is reliable; the percentage uses
+    // the background-sniffed total when available. Caller wires this to the
+    // Holdings status pill so a multi-minute scan shows movement.
+    if (typeof onProgress === 'function') {
+      const scanned = (page + 1) * 25;
+      try {
+        onProgress(totalTxCount && scanned < totalTxCount
+          ? `walking history · ${scanned} / ~${totalTxCount} tx`
+          : `walking history · ${scanned}+ tx`);
+      } catch {}
+    }
     if (batch.length < 25) break;
     const tail = batch[batch.length - 1];
     if (!tail || !tail.txid) break;
     lastSeen = tail.txid;
   }
+  // Sniff's only side-effect is `totalTxCount` for the progress hint, which
+  // we no longer need after the walk ends. Fire-and-forget — awaiting would
+  // stall the return on a slow /address/<a> response.
+  void sniffP;
 
   const out = [];
   for (const v of received.values()) {
@@ -2509,7 +2558,7 @@ async function _populateUtxoCache(a, utxos) {
   } catch {}
 }
 
-async function getUtxos(a) {
+async function getUtxos(a, onProgress) {
   // Indexer-lag guard: filter out any UTXOs we *know* are spent in mempool
   // (recorded by _markTxInputsSpent right after each broadcast we issued)
   // but which the indexer's /utxo response may still include during the
@@ -2529,7 +2578,7 @@ async function getUtxos(a) {
         if (cached.txCount === txCount) return _filterRecent(cached.utxos);
       } catch { /* sniff failed; fall through to history walk */ }
     }
-    const utxos = await _getUtxosViaTxHistory(a);
+    const utxos = await _getUtxosViaTxHistory(a, onProgress);
     _populateUtxoCache(a, utxos); // background; don't await
     return _filterRecent(utxos);
   }
@@ -2559,7 +2608,7 @@ async function getUtxos(a) {
     if (isHeavyAddrError) {
       _heavyAddresses.add(a);
       _saveHeavyAddressesToStorage();
-      const utxos = await _getUtxosViaTxHistory(a);
+      const utxos = await _getUtxosViaTxHistory(a, onProgress);
       _populateUtxoCache(a, utxos);
       return _filterRecent(utxos);
     }
@@ -8751,7 +8800,12 @@ async function scanHoldings(force = false) {
       // underlying _scanHoldingsImpl keeps going on timeout; the generation
       // guard below ensures only the freshest scan's result populates
       // _holdingsCache (a stale orphan from before a retry doesn't overwrite).
-      const SCAN_TIMEOUT_MS = 90_000;
+      // Heavy wallets (persisted in `_heavyAddresses` after the first /utxo
+      // 400) walk paginated /txs/chain — 1000s of txs takes 30–60s for the
+      // page walk alone, before ancestry walks even start. 180s keeps these
+      // out of timeout-loop hell on cold scans.
+      const _isHeavy = _heavyAddresses.has(wallet.address());
+      const SCAN_TIMEOUT_MS = _isHeavy ? 180_000 : 90_000;
       let timeoutId;
       const timeoutP = new Promise((_, reject) => {
         timeoutId = setTimeout(() => reject(new Error(
@@ -8788,7 +8842,12 @@ async function _scanHoldingsImpl() {
   // recoverable on chain; this is a discoverability bug, not a loss-of-funds
   // bug. refreshPoolsIfStale is throttled (60s cache) so the cost is bounded.
   try { await refreshPoolsIfStale(); } catch {}
-  const utxos = await getUtxos(wallet.address());
+  // Heavy-wallet chain walks (1000+ txs paginated 25/page) take 30–60s before
+  // ancestry walks even start. Stream a per-page hint to the Holdings status
+  // pill so the user sees movement instead of a frozen "scanning" spinner.
+  const utxos = await getUtxos(wallet.address(), (msg) => {
+    try { setStatus('#holdings-status', msg, true); } catch {}
+  });
   // Surface a partial-scan flag (set by _getUtxosViaTxHistory when every
   // configured indexer refused a deep page of address history). The
   // holdings shown reflect only the UTXOs we WERE able to enumerate;
@@ -8851,13 +8910,18 @@ async function _scanHoldingsImpl() {
   // sits as h.inflated with the misleading "invalid rangeproofs" warning.
   const pmintStatusOut = new Map();
   // Chunked-parallel ancestor walk. Sequential here serialised N independent
-  // /tx fetches on cold-cache scans (the slowest path). Concurrency=8 fans
-  // network out without bursting hard against mempool.space rate limits.
+  // /tx fetches on cold-cache scans (the slowest path). The batch tx endpoint
+  // (_flushTxBatch) coalesces concurrent getTx callers in 8ms windows; higher
+  // SCAN_CONCURRENCY just makes those windows fuller, not more numerous, so
+  // we stay well under the worker's per-base cap.
   // Safe under concurrency: validatedSet is JS-single-threaded so first-write-
   // wins memoization is preserved, getTx already dedups in-flight requests
   // (_txInFlight), and rpBatch duplicate proofs from racing walks are harmless
   // to bpRangeAggBatchVerify (random linear combination handles dups).
-  const SCAN_CONCURRENCY = 8;
+  // Heavy wallets benefit more from a wider chunk because their ancestry
+  // walks share more cached intermediates (treasury wallets often have a
+  // small handful of root CETCH/CXFER subtrees that all UTXOs share).
+  const SCAN_CONCURRENCY = _heavyAddresses.has(wallet.address()) ? 16 : 12;
   // Progress hint on the Holdings status pill so a long scan (slow indexer,
   // deep ancestry) shows visible progress instead of an indefinite "scanning"
   // spinner. setStatus is a no-op if the element isn't present (e.g. when
@@ -41278,6 +41342,15 @@ async function populateMarketAssetStats(scope, asset) {
   // gauge depth before placing an order.
   let asksTotalSats = 0;
   let asksCount = 0;
+  let asksInBandCount = 0;
+  // In-band threshold matches the spread-stat + depth-chart convention:
+  // a listing's unit price within [mark × 0.2, mark × 5] is "realistic"
+  // takable liquidity; anything outside is dust / fat-finger / OTC noise.
+  // We surface the in-band count alongside the total so users reading
+  // "57 asks" don't misjudge depth when most of them are out-of-band dust.
+  const _markUnitForBand = (j.mark_price && Number.isFinite(j.mark_price.unit) && j.mark_price.unit > 0) ? Number(j.mark_price.unit) : null;
+  const _bandLoForAsks = _markUnitForBand != null ? _markUnitForBand * 0.2 : 0;
+  const _bandHiForAsks = _markUnitForBand != null ? _markUnitForBand * 5 : Infinity;
   try {
     const cache = _marketCache?.listings || [];
     const nowSec = Math.floor(Date.now() / 1000);
@@ -41285,13 +41358,24 @@ async function populateMarketAssetStats(scope, asset) {
       if (l._asset?.asset_id !== aid) continue;
       if (l.expired || (l.expiry && l.expiry <= nowSec)) continue;
       const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
-      if (ps > 0) { asksTotalSats += ps; asksCount++; }
+      if (ps > 0) {
+        asksTotalSats += ps; asksCount++;
+        if (_markUnitForBand != null) {
+          try {
+            const _u = marketListingUnitPrice(l, l._asset || {});
+            if (Number.isFinite(_u) && _u >= _bandLoForAsks && _u <= _bandHiForAsks) asksInBandCount++;
+          } catch {}
+        }
+      }
     }
   } catch {}
   const asksUsd = btcUsd ? fmtSatsAsUsd(asksTotalSats, btcUsd) : null;
+  const asksInBandHtml = (_markUnitForBand != null && asksInBandCount > 0 && asksInBandCount < asksCount)
+    ? ` <span class="muted" style="font-weight:normal;" title="Asks whose unit price falls in the realistic band (mark × 0.2 to mark × 5). Out-of-band asks are typically dust / OTC postings and won't appear in normal swap routing.">(${asksInBandCount} in-band)</span>`
+    : '';
   setText('[data-market-stat-asksval]',
     asksCount > 0
-      ? `${asksTotalSats.toLocaleString()} sats${asksUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(asksUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${asksCount} ask${asksCount === 1 ? '' : 's'}</span>`
+      ? `${asksTotalSats.toLocaleString()} sats${asksUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(asksUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${asksCount} ask${asksCount === 1 ? '' : 's'}${asksInBandHtml}</span>`
       : '—',
     true);
   // Bids: wait for the cache (populateMarketBidsLadder fills it in
@@ -41300,6 +41384,7 @@ async function populateMarketAssetStats(scope, asset) {
   // when cached, so this is one round-trip max.
   let bidsTotalSats = 0;
   let bidsCount = 0;
+  let bidsInBandCount = 0;
   try {
     const bids = await _fetchBidIntentsCached(aid);
     const nowSec = Math.floor(Date.now() / 1000);
@@ -41308,7 +41393,15 @@ async function populateMarketAssetStats(scope, asset) {
         if (Number(b.expiry || 0) <= nowSec) continue;
         if (b.axintent_id) continue;  // already claimed
         const ps = Number(b.price_sats || 0);
-        if (ps > 0) { bidsTotalSats += ps; bidsCount++; }
+        if (ps > 0) {
+          bidsTotalSats += ps; bidsCount++;
+          if (_markUnitForBand != null) {
+            try {
+              const _u = unitPriceSats(ps, BigInt(b.amount || 0), decimals);
+              if (Number.isFinite(_u) && _u >= _bandLoForAsks && _u <= _bandHiForAsks) bidsInBandCount++;
+            } catch {}
+          }
+        }
       }
     }
   } catch {}
@@ -41328,9 +41421,12 @@ async function populateMarketAssetStats(scope, asset) {
       imbalanceHtml = ` <span style="margin-left:4px;padding:1px 5px;border:1px solid #0a7d3a;color:#0a7d3a;font-size:9px;font-weight:600;border-radius:2px;letter-spacing:0.05em;" title="Bids side has ${inv.toFixed(1)}× more cumulative sats value than asks. Heavy demand pressure relative to supply — typical of a market with buyers stacking liquidity faster than sellers.">imbalance ${inv.toFixed(1)}× bids</span>`;
     }
   }
+  const bidsInBandHtml = (_markUnitForBand != null && bidsInBandCount > 0 && bidsInBandCount < bidsCount)
+    ? ` <span class="muted" style="font-weight:normal;" title="Bids whose unit price falls in the realistic band (mark × 0.2 to mark × 5). Out-of-band bids are typically lowballs that won't auto-fulfil from normal seller routing.">(${bidsInBandCount} in-band)</span>`
+    : '';
   setText('[data-market-stat-bidsval]',
     bidsCount > 0
-      ? `${bidsTotalSats.toLocaleString()} sats${bidsUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(bidsUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${bidsCount} bid${bidsCount === 1 ? '' : 's'}</span>${imbalanceHtml}`
+      ? `${bidsTotalSats.toLocaleString()} sats${bidsUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(bidsUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${bidsCount} bid${bidsCount === 1 ? '' : 's'}${bidsInBandHtml}</span>${imbalanceHtml}`
       : '—',
     true);
   // Etcher CTA: shown only when NO supply source resolved (neither
@@ -42951,6 +43047,25 @@ async function populateMarketBidsLadder(scope, asset) {
     const _bidIsVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
     const _amtBigForRow = _bidIsVar ? BigInt(b.remaining_amount || b.amount || 0) : BigInt(b.amount || 0);
     const amtStr = fmtAssetAmount(_amtBigForRow, decimals);
+    // Partial-fill indicator for variable bids: when remaining < original
+    // amount, surface "N% filled" so traders can distinguish a fresh
+    // 10k-TAC bid from a 50k-TAC bid that's already 80% consumed. Whole-
+    // bid bids skip this — they're binary (claimed or open) and the
+    // existing state label already encodes that.
+    let _fillPctLbl = '';
+    if (_bidIsVar) {
+      try {
+        const _origBig = BigInt(b.amount || 0);
+        const _remBig = BigInt(b.remaining_amount || b.amount || 0);
+        if (_origBig > 0n && _remBig < _origBig && _remBig >= 0n) {
+          const _pctBp = Number((_origBig - _remBig) * 10000n / _origBig);
+          const _pct = _pctBp / 100;
+          if (_pct >= 1) {
+            _fillPctLbl = ` · <span style="color:#0a7d3a;font-weight:600;" title="${(100 - _pct).toFixed(1)}% of the original ${fmtAssetAmount(_origBig, decimals)} ${escapeHtml(ticker)} bid is still tradable. ${_pct.toFixed(0)}% has been consumed by prior fills.">${_pct.toFixed(0)}% filled</span>`;
+          }
+        }
+      } catch {}
+    }
     const sats = Number(b.price_sats || 0);
     const unitVal = b._unit != null ? fmtUnitPriceSats(b._unit) : 'n/a';
     const unitUsd = b._unit != null ? fmtMarketUsdUnitFromSats(b._unit, '') : '';
@@ -43006,7 +43121,7 @@ async function populateMarketBidsLadder(scope, asset) {
         </div>
         <div class="market-bid-cell">
           <strong>${escapeHtml(amtStr)}</strong>
-          <small>${_bidIsVar ? `${escapeHtml(ticker)} · min ${escapeHtml(fmtAssetAmount(BigInt(b.min_fill_amount), decimals))}` : escapeHtml(ticker)}</small>
+          <small>${_bidIsVar ? `${escapeHtml(ticker)} · min ${escapeHtml(fmtAssetAmount(BigInt(b.min_fill_amount), decimals))}${_fillPctLbl}` : escapeHtml(ticker)}</small>
         </div>
         <div class="market-bid-cell">
           <strong>${escapeHtml(fmtMarketBtc(sats))}</strong>
