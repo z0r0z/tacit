@@ -38097,10 +38097,18 @@ function applyMarketFilters() {
   // per-tile Buy buttons. Without this it sat as a small text chip among
   // the filter toggles, easy to miss, even though it's the right path
   // for any buyer who wants more than the cheapest single tile delivers.
-  const _sweepBuyChip = `<button data-act="market-sweep-buy" data-aid="${escapeHtml(_marketView.assetId)}" type="button" title="Buy a target amount by sweeping the asks ladder with a custom price cap. Trustless instant listings only; each fill is one Bitcoin tx." class="primary" style="font-size:11px;padding:6px 14px;font-weight:600;letter-spacing:0.02em;">⚡ Sweep buy</button>`;
+  // Advanced buy = the Swap tile's twin with explicit manual controls
+  // (price cap + residual-as-bid checkbox). The Swap tile above handles
+  // the quick "spend N sats, accept slippage" path; this chip is the
+  // path for users who know exactly the cap they want to set and how
+  // to handle leftover when asks run out under that cap.
+  const _sweepBuyChip = `<button data-act="market-sweep-buy" data-aid="${escapeHtml(_marketView.assetId)}" type="button" title="Advanced buy — same routed multi-listing fill as the Swap tile above, but with manual price-cap and residual-as-bid controls. Use this when you want to set a hard ceiling per token + decide whether leftover sats post as a bid after asks run out." class="primary" style="font-size:11px;padding:6px 14px;font-weight:600;letter-spacing:0.02em;">⚡ Advanced buy</button>`;
   // Layout toggle: rows (default) ↔ cards. Persists between sessions so
   // power users sticking with cards aren't forced back to rows every load.
-  const _ladderToggleChip = `<button data-act="market-ladder-toggle" type="button" title="Toggle between compact rows (CEX-style depth scan) and full-detail cards (maker pubkey, listing id, group metadata visible)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">${_marketLadderView === 'rows' ? 'Cards view' : 'Rows view'}</button>`;
+  // Labels describe what you GET on click (the inverse of the current
+  // mode), with semantic naming — "Depth view" reads as the orderbook
+  // primary, "Individual listings" reads as per-maker detail.
+  const _ladderToggleChip = `<button data-act="market-ladder-toggle" type="button" title="Toggle between depth view (aggregated price levels, CEX-style scan) and individual listings (per-maker tiles with full metadata: maker pubkey, listing id, group info)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">${_marketLadderView === 'rows' ? 'Individual listings' : 'Depth view'}</button>`;
   // Count reconcile: rowsForGrid is the post-filter count (Simple mode +
   // Mine toggle applied). rowsFull is pre-filter. The header card shows
   // the worker's listing_count which is the true total. All three can
@@ -38758,7 +38766,7 @@ function applyMarketFilters() {
     // empties the level.
     const _isLevel = !!l._isLevel;
     const _levelBadge = _isLevel
-      ? ` <span style="display:inline-block;margin-left:6px;padding:1px 7px;background:var(--ink);color:var(--bg);font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="${l._levelCount} maker listings aggregated at this price bucket. Click Sweep buy to fill against all of them in one route.">×${l._levelCount}</span>`
+      ? ` <span style="display:inline-block;margin-left:6px;padding:1px 7px;background:var(--ink);color:var(--bg);font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="${l._levelCount} maker listings aggregated at this price bucket. Click Buy level to fill against all of them in one routed sweep.">×${l._levelCount}</span>`
       : '';
     const _levelSpread = _isLevel
       ? `<small class="muted" style="display:block;margin-top:1px;font-size:9px;">spread ${fmtUnitPriceSats(l._levelMinUnit)}–${fmtUnitPriceSats(l._levelMaxUnit)}</small>`
@@ -38767,7 +38775,7 @@ function applyMarketFilters() {
       ? `${l._levelCount} preauth listings aggregated in this price bucket.\nMin unit: ${fmtUnitPriceSats(l._levelMinUnit)} sats/${a.ticker || 'token'}\nMax unit: ${fmtUnitPriceSats(l._levelMaxUnit)} sats/${a.ticker || 'token'}\nTotal: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} for ${priceSatsRaw.toLocaleString('en-US')} sats.`
       : `Listing id: ${displayId}${_fullSeller ? `\n${l.kind === 'preauth' ? 'Seller' : 'Maker'}: ${_fullSeller}` : ''}${l._isGroup ? `\nGroup: ${l._groupId || ''} · ${l._groupSize} chunks` : ''}${recencyLine ? `\n${recencyLine.replace(/<[^>]+>/g, '')}` : ''}`;
     const _rowActionRow = _isLevel
-      ? `<div class="market-listing-actions"><button data-act="market-sweep-buy-level" data-aid="${escapeHtml(safeAid)}" data-target-amt="${escapeHtml(amount || '0')}" data-cap-unit="${l._levelMaxUnit}" data-dec="${dec}" data-ticker="${escapeHtml(a.ticker || '?')}" type="button" class="primary" title="Sweep buy ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} across all ${l._levelCount} preauth listings in this bucket. Each fill is one Bitcoin tx; the cap is the bucket's max unit price.">⚡ Sweep level</button></div>`
+      ? `<div class="market-listing-actions"><button data-act="market-sweep-buy-level" data-aid="${escapeHtml(safeAid)}" data-target-amt="${escapeHtml(amount || '0')}" data-cap-unit="${l._levelMaxUnit}" data-dec="${dec}" data-ticker="${escapeHtml(a.ticker || '?')}" type="button" class="primary" title="Buy this depth level: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} routed across all ${l._levelCount} preauth listings in this bucket. Each fill is one Bitcoin tx; the cap is the bucket's max unit price. Opens the Advanced buy form preloaded so you can review before confirming.">Buy level</button></div>`
       : actionRow;
     const rowsModeHtml = `
       <div class="market-listing-unit" title="${escapeHtml(_rowMetaTitle)}">
@@ -46003,8 +46011,8 @@ function _wireMarketSweepBuy(section, asset) {
       : '';
     formHost.innerHTML = `
       <div style="border:1px dashed var(--ink-faint);padding:10px;background:var(--bg-warm);">
-        <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">⚡ Sweep buy ${escapeHtml(ticker)} (instant listings only)</div>
-        <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:6px;">Walks the orderbook cheapest-first under your price cap. Each fill settles on Bitcoin in ~10 min. Trustless atomic settlement (instant listings only). Stops on first failure; partial fills are reported.</div>
+        <div style="font-size:11px;font-weight:bold;margin-bottom:4px;">⚡ Advanced buy · ${escapeHtml(ticker)}</div>
+        <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:6px;">Same routed multi-listing fill as the Swap tile above, with manual price-cap + residual-as-bid controls. Walks the orderbook cheapest-first under your cap. Each fill settles on Bitcoin in ~10 min via trustless atomic settlement (instant listings only). Stops on first failure; partial fills are reported.</div>
         ${_refLine}
         <div class="flex" style="gap:6px;flex-wrap:wrap;">
           <label style="font-size:10px;flex:1;min-width:120px;">Target amount (${escapeHtml(ticker)})
