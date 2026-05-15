@@ -802,6 +802,18 @@ function tradeDayKey(network, aid, yyyymmdd) {
     ? `trade-day:${aid}:${yyyymmdd}`
     : `trade-day:${network}:${aid}:${yyyymmdd}`;
 }
+// Lifetime (cumulative) volume counter — bumped every time the daily
+// bucket is bumped, so /assets/:id can return a true "since-first-trade"
+// total without summing every historical day-bucket on each read.
+// No TTL: this is the authoritative lifetime number, intentionally
+// never auto-expired. Dapp surfaces it as `sale_volume_sats` (already
+// in marketVolumeSats's trusted-candidates list), so it'll replace the
+// ring-buffer approximation automatically once the worker emits it.
+function tradeLifetimeKey(network, aid) {
+  return network === 'signet'
+    ? `trade-lifetime:${aid}`
+    : `trade-lifetime:${network}:${aid}`;
+}
 function _utcYyyymmdd(tsSeconds) {
   const d = new Date(Math.floor(tsSeconds) * 1000);
   const y = d.getUTCFullYear();
@@ -3372,7 +3384,8 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   const _todayKey = tradeDayKey(network, v.asset_id, _utcYyyymmdd(_nowSec));
   const _yestKey  = tradeDayKey(network, v.asset_id, _utcYyyymmdd(_nowSec - 86400));
   const _holderKey = holderCountKey(network, v.asset_id);
-  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade, ring, todaySats, yestSats, holderCnt] = await Promise.all([
+  const _lifeKey = tradeLifetimeKey(network, v.asset_id);
+  const [att, mints, burns, op, dc, ls, lr, ai, ps, xfer, lastTrade, ring, todaySats, yestSats, holderCnt, lifeSats] = await Promise.all([
     env.REGISTRY_KV.get(attestKey(network, v.asset_id), 'json'),
     includeMints ? loadMintsForAsset(env, network, v.asset_id) : Promise.resolve(null),
     loadBurnsForAsset(env, network, v.asset_id),
@@ -3401,6 +3414,10 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
     // "All-time wallets that received this asset" — a popularity signal,
     // not a current-holder head count.
     env.REGISTRY_KV.get(_holderKey),
+    // Lifetime cumulative volume — bumped on every trade settle (no TTL).
+    // Replaces the dapp's ring-buffer approximation with the authoritative
+    // since-first-trade number. Cheap: one extra KV.get parallelized.
+    env.REGISTRY_KV.get(_lifeKey),
   ]);
   if (att) v.attestation = att;
   if (includeMints) v.mints = mints;
@@ -3418,6 +3435,15 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   // bulk response so dapp tiles populate volume on first paint instead
   // of waiting for per-asset enrichment.
   v.volume_24h_sats = (Number(todaySats) || 0) + (Number(yestSats) || 0);
+  // Lifetime cumulative sales volume — authoritative since-first-trade
+  // figure, replaces the dapp's ring-buffer approximation (which was
+  // bounded to 200 trades). Surfaced under sale_volume_sats because
+  // that's already in marketVolumeSats's trusted-candidates list in
+  // dapp/tacit.js, so the dapp picks it up without any client-side
+  // change. Older assets that traded before the counter existed
+  // backfill naturally as new trades land.
+  const _lifeNum = Number(lifeSats);
+  if (Number.isFinite(_lifeNum) && _lifeNum > 0) v.sale_volume_sats = _lifeNum;
   // Distinct-recipient counter (all-time, not current). Counts unique
   // scriptpubkey hashes that have ever received this asset via T_CETCH,
   // T_MINT, T_PMINT, T_CXFER, or T_AXFER. Older asset entries indexed
@@ -4159,6 +4185,19 @@ async function handleAssetHint(req, env, network, cors, ctx) {
               const prevSats = prevDay ? (Number(prevDay) || 0) : 0;
               await env.REGISTRY_KV.put(dayKey, String(prevSats + body.price_sats), { expirationTtl: 7 * 86400 });
             } catch { /* KV blip — bucket missing this trade is acceptable, last_trade still landed */ }
+            // Lifetime cumulative counter — same +price_sats bump, no TTL.
+            // Read-side surfaces this as the asset's true lifetime sales
+            // volume (vs. the bounded recent-trades-ring approximation
+            // the dapp was falling back to before). Failure here is also
+            // acceptable — the daily bucket already landed for the 24h
+            // figure, and a single missed lifetime increment recovers
+            // naturally on the next trade.
+            try {
+              const lifeKey = tradeLifetimeKey(network, dx.asset_id);
+              const prevLife = await env.REGISTRY_KV.get(lifeKey);
+              const prevLifeSats = prevLife ? (Number(prevLife) || 0) : 0;
+              await env.REGISTRY_KV.put(lifeKey, String(prevLifeSats + body.price_sats));
+            } catch { /* same: KV blip, recover on next trade */ }
             // Recent-trades ring buffer. Append (newest-first) and trim to
             // TRADES_RING_CAP. Best-effort; failure here doesn't void the
             // last_trade write above.
@@ -4465,11 +4504,18 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   const nowSec = Math.floor(Date.now() / 1000);
   const todayKey = tradeDayKey(network, assetIdHex, _utcYyyymmdd(nowSec));
   const yestKey  = tradeDayKey(network, assetIdHex, _utcYyyymmdd(nowSec - 86400));
-  const [todaySats, yestSats] = await Promise.all([
+  const lifeKey  = tradeLifetimeKey(network, assetIdHex);
+  const [todaySats, yestSats, lifeSats] = await Promise.all([
     env.REGISTRY_KV.get(todayKey),
     env.REGISTRY_KV.get(yestKey),
+    env.REGISTRY_KV.get(lifeKey),
   ]);
   v.volume_24h_sats = (Number(todaySats) || 0) + (Number(yestSats) || 0);
+  // Lifetime cumulative sales volume — same field name as the bulk
+  // response (sale_volume_sats) so the dapp's marketVolumeSats helper
+  // picks it up uniformly across both endpoints.
+  const _lifeNumAsset = Number(lifeSats);
+  if (Number.isFinite(_lifeNumAsset) && _lifeNumAsset > 0) v.sale_volume_sats = _lifeNumAsset;
   // Distinct-recipient counter, same field as the bulk response. Mirror
   // here so single-asset clients get the same popularity signal.
   const holderCntRaw = await env.REGISTRY_KV.get(holderCountKey(network, assetIdHex));

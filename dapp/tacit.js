@@ -37945,6 +37945,19 @@ function renderMarketBrowseTable(rows) {
     const instant = universe.filter(l => l.kind === 'preauth').length;
     const atomic = universe.filter(l => l.kind === 'intent').length;
     const otc = universe.filter(l => l.kind === 'opening' || l.kind === 'range').length;
+    // Protocol-wide 24h volume — sum across every group's
+    // volume_24h_sats. The worker keeps per-asset rolling 24h buckets
+    // (today + yesterday UTC); aggregating client-side is cheap and
+    // gives anyone landing on the Market tab an ecosystem-activity
+    // signal up-front. Skips when the oracle hasn't resolved BTC/USD
+    // so we don't render half-priced. Hidden when 0 to avoid a
+    // misleading "$0 24h vol" on quiet networks.
+    let _agg24hSats = 0;
+    for (const g of groups) {
+      const v = Number(g?.volume24hSats || 0);
+      if (Number.isFinite(v) && v > 0) _agg24hSats += v;
+    }
+    const _agg24hUsd = _agg24hSats > 0 ? fmtMarketUsdWholeFromSats(_agg24hSats, '') : '';
     // Each segment wraps as a unit (white-space:nowrap), separators
     // use a bullet that itself can wrap so on a narrow column the
     // line breaks BETWEEN segments instead of mid-segment ("358 in" \n
@@ -37953,14 +37966,20 @@ function renderMarketBrowseTable(rows) {
     // page chip clearly grouped at the end.
     const sep = '<span aria-hidden="true" style="color:var(--ink-faint);margin:0 6px;">·</span>';
     const seg = (label) => `<span style="white-space:nowrap;display:inline-block;">${label}</span>`;
-    status.innerHTML = [
+    const _segments = [
       seg(`${groups.length} tokens`),
       seg(`${rows.length} live listing${rows.length === 1 ? '' : 's'}`),
+    ];
+    if (_agg24hUsd) {
+      _segments.push(seg(`<strong title="Sum of every visible asset's worker-tracked 24h volume (today+yesterday UTC bucket totals). Ecosystem-wide trading activity across all markets in the last 24 hours.">${escapeHtml(_agg24hUsd)} 24h vol</strong>`));
+    }
+    _segments.push(
       seg(`${instant} instant`),
       seg(`${atomic} atomic`),
       seg(`${otc} OTC`),
       seg(`page ${_marketBrowsePage}/${totalPages}`),
-    ].join(sep);
+    );
+    status.innerHTML = _segments.join(sep);
   }
   // Drop the Recent Volume column entirely when no row on the current
   // page has a ring buffer that overflows 24h (i.e., every g.volumeSats
