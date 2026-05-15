@@ -2194,10 +2194,22 @@ async function _getUtxosViaTxHistory(a) {
     let batch = null;
     try { batch = await apiJson(path); }
     catch (primaryErr) {
-      // Try every other configured base directly. apiJson already exhausted
-      // its rotation list for 429/5xx; for 4xx it short-circuited. Either
-      // way, walking _apiBases() here lets a tx-history-tolerant secondary
-      // serve the page when the primary refused.
+      // 400 on the chain-walk usually means the cursor txid is stale or the
+      // address has no further history past the last page. mempool.space
+      // returns 400 here instead of an empty array; every other provider
+      // does the same (Esplora pagination behaves identically). Retrying
+      // through other bases is wasted work AND each retry hits an error
+      // response that the browser surfaces as a noisy CORS console error
+      // (mempool.space doesn't include Access-Control-Allow-Origin headers
+      // on 400 bodies, so the cross-origin failure dominates the console
+      // even though the underlying issue is the 400). Treat as terminal.
+      const is400 = /^API 400/.test(primaryErr?.message || '');
+      if (is400) break;
+      // Non-400 (timeout, 5xx, true network/DNS failure) — these CAN succeed
+      // on a different base. Walk the remaining configured bases. We use the
+      // raw `fetch` here intentionally; apiJson already cooled-off the primary
+      // base, but the chain-walk is sensitive enough to depth-limit divergence
+      // between providers that a single retry is worth the network cost.
       const bases = (typeof _apiBases === 'function') ? _apiBases() : [];
       for (const base of bases) {
         try {
