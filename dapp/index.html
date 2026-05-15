@@ -2987,6 +2987,18 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   line-height: 0.9; letter-spacing: -0.02em;
   margin-bottom: 14px;
 }
+/* Phone widths: 40px serif italic "welcome to tacit" overflows the
+   narrowest viewport (~360px) and forces an awkward two-line wrap.
+   Step down to 30px at <=480px; same visual character, fits cleanly
+   without losing the editorial titling that defines the brand. */
+@media (max-width: 480px) {
+  .welcome-title { font-size: 30px; }
+  .welcome-card { padding: 22px 18px 18px; }
+  .welcome-lede { font-size: 11px; }
+  .welcome-option { padding: 10px 12px; }
+  .welcome-option-title { font-size: 12px; }
+  .welcome-option-meta { font-size: 11px; }
+}
 .welcome-title .accent { color: var(--orange); }
 .welcome-lede {
   font-size: 12px; line-height: 1.55;
