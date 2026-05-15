@@ -39715,20 +39715,28 @@ async function populateMarketAssetStats(scope, asset) {
     ? Number(j.mark_price.unit) : null;
   const latestUnit = _deltaMarkUnit != null ? _deltaMarkUnit : latestUnitRaw;
   const last24h = tradePoints.filter(p => p.ts >= _24hAgo);
-  // 24h high/low now respect the same 0.2×/5× mark-relative outlier
-  // guard the chart + mark price use. Without this filter a single
-  // dust take (0.45 sats/TAC) or fat-finger fill (25k sats/TAC)
-  // dominates the displayed band, contradicting the mark price the
-  // user sees right next to it. The outlier-included extremes are
-  // still visible on the chart (as ringed orange dots) for honest
-  // forensics; this stat is the "what did TAC typically trade for"
-  // line, where the typical band is what users want.
+  // 24h high/low now respect a TIGHTER mark-relative band than the
+  // mark/Δ guards: 0.5×–2× instead of 0.2×–5×. The mark + delta math
+  // need the wider band so a borderline trade (just outside the
+  // strict band) still anchors them; the high/low stat is a "where
+  // did TAC actually trade today" summary that suffers when a
+  // single 10-TAC dust take at 0.22× mark sneaks in as the headline
+  // "24h low." With the tighter band, that print is excluded from
+  // the summary but still visible on the chart (ringed orange) for
+  // honest forensics. Falls back to the wider band if the tighter
+  // sample is empty (very thin markets); falls back to the
+  // unfiltered last24h after that. Three-tier graceful degradation.
   let delta24Pct = null, high24 = null, low24 = null;
   if (last24h.length >= 1) {
-    const inBand = _deltaMarkUnit != null
+    const tightSample = _deltaMarkUnit != null
+      ? last24h.filter(p => p.u >= _deltaMarkUnit * 0.5 && p.u <= _deltaMarkUnit * 2)
+      : last24h;
+    const wideSample = _deltaMarkUnit != null
       ? last24h.filter(p => p.u >= _deltaMarkUnit * 0.2 && p.u <= _deltaMarkUnit * 5)
       : last24h;
-    const sample = inBand.length > 0 ? inBand : last24h; // fall back rather than blank
+    const sample = tightSample.length > 0 ? tightSample
+                  : wideSample.length > 0 ? wideSample
+                  : last24h;
     high24 = sample[0].u; low24 = sample[0].u;
     for (const p of sample) { if (p.u > high24) high24 = p.u; if (p.u < low24) low24 = p.u; }
   }
@@ -40498,7 +40506,27 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${bids.length} bid${bids.length === 1 ? '' : 's'} · ${asks.length} ask${asks.length === 1 ? '' : 's'} · <span${_inBandTitle ? ` title="${escapeHtml(_inBandTitle)}" style="cursor:help;border-bottom:1px dotted var(--ink-faint);"` : ''}>best bid ${escapeHtml(fmtUnitPriceSats(headerBestBid))} · best ask ${escapeHtml(fmtUnitPriceSats(headerBestAsk))} sats/${escapeHtml(ticker)}</span>${centerU != null ? ` · mark ${escapeHtml(fmtUnitPriceSats(centerU))}` : ''} · hover to inspect, click to prime swap</span>
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
-      ${isCrossed ? `<rect x="${Math.min(bestBidX, bestAskX).toFixed(2)}" y="${PT}" width="${Math.abs(bestBidX - bestAskX).toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.18" pointer-events="none"><title>Crossed zone: best bid (${escapeHtml(fmtUnitPriceSats(bestBid))}) is higher than best ask (${escapeHtml(fmtUnitPriceSats(bestAsk))}). Typically dust outliers; a real-liquidity cross would drain immediately.</title></rect>` : ''}
+      ${isCrossed ? (() => {
+        // Crossed zone: best bid > best ask, so the band between them
+        // is a real arbitrage opportunity (someone could buy at the
+        // best ask and immediately sell at the best bid). Visible
+        // yellow rect + an explicit "ARB ZONE" label in the centre so
+        // users who don't know what "crossed" means in finance still
+        // read it as "something is unusual here." pointer-events:none
+        // on the rect so the overlay crosshair (data-depth-overlay
+        // above) keeps capturing hover for the price tooltip — the
+        // label is purely visual signal. Min-width gate keeps the
+        // label from rendering on tiny zones where it'd be illegible.
+        const _zoneXLo = Math.min(bestBidX, bestAskX);
+        const _zoneXHi = Math.max(bestBidX, bestAskX);
+        const _zoneW = _zoneXHi - _zoneXLo;
+        const _zoneCx = (_zoneXLo + _zoneXHi) / 2;
+        const _zoneCy = PT + plotH / 2;
+        const _showLabel = _zoneW >= 70;
+        const _spreadPct = (bestAsk > 0) ? ((bestBid - bestAsk) / bestAsk) * 100 : null;
+        const _zoneTip = `Arbitrage zone: best bid (${fmtUnitPriceSats(bestBid)}) is higher than best ask (${fmtUnitPriceSats(bestAsk)}) sats/${ticker}${_spreadPct != null ? ` — a +${_spreadPct.toFixed(0)}% gap` : ''}. A real-liquidity cross would drain immediately as arbitrageurs buy the ask and sell to the bid; persistent crosses usually mean one side is stale or fat-finger.`;
+        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.18" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="10" font-family="var(--mono, monospace)" fill="#a06800" text-anchor="middle" font-weight="700" letter-spacing="0.1em" pointer-events="none" opacity="0.75">ARB ZONE</text>` : ''}`;
+      })() : ''}
       <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1" pointer-events="none"/>
       <path data-depth-ask d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1" pointer-events="none"/>
       <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="1" stroke-opacity="0.8" stroke-dasharray="2,2" pointer-events="none"/>
