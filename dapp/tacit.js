@@ -20111,8 +20111,21 @@ function setupTabs() {
       }
       if (tab.dataset.tab === 'discover') { renderDiscover(); startPetchAutoRefresh(); }
       else stopPetchAutoRefresh();
-      if (tab.dataset.tab === 'market') renderMarket();
-      else { _stopMarketAutoRefresh(); _resetMarketLiveSnapshot(); }
+      if (tab.dataset.tab === 'market') {
+        // If the user is clicking the Market tab while already viewing
+        // a specific asset's detail page (and there's no deep-link
+        // navigation queued), treat the click as "back to gallery" —
+        // same effect as clicking "← All markets" or pressing Esc.
+        // pendingMarketFilter is set only during _consumeTabUrlHash
+        // deep-link consumption, so checking it null distinguishes a
+        // user-initiated re-click from a programmatic activation.
+        const _wasOnAssetView = typeof _marketView === 'object' && _marketView && _marketView.mode === 'asset';
+        if (_wasOnAssetView && !pendingMarketFilter && typeof goToMarketBrowse === 'function') {
+          goToMarketBrowse();
+        } else {
+          renderMarket();
+        }
+      } else { _stopMarketAutoRefresh(); _resetMarketLiveSnapshot(); }
       if (tab.dataset.tab === 'mixer') { renderMixer(); startMixerAutoRefresh(); }
       else stopMixerAutoRefresh();
       // Re-evaluate the cross-tab OTC claim banner: when the user lands on
@@ -38899,21 +38912,16 @@ function renderMarketAssetHeader(assetId, rows) {
     : a._tickerCollision === 'duplicate'
       ? `<span style="display:inline-block;padding:2px 7px;background:var(--red);color:#fff;font-size:10px;border-radius:2px;margin-left:6px;cursor:help;font-weight:600;" title="Tickers are not unique on tacit. Another asset claimed this ticker first; verify the asset_id before trading.">DUP</span>`
       : verifiedBadgeHTML(a, { size: 'lg' });
-  // Breadcrumb anchor is a clear back affordance — styled as a chip so
-  // it reads as clickable. "Esc" keyboard shortcut is also bound in
-  // bindMarketAssetHeader so power users can pop back without
-  // mouse-targeting. We drop the redundant "TAC offers" text after the
-  // arrow since the <h2>TAC</h2> below is the primary title.
-  // Compact back affordance with the Esc shortcut hint embedded inline
-  // so the row reads as one element rather than two competing chips.
-  // Previously the chip + uppercase "OR PRESS [Esc]" hint sat side-by-
-  // side with a 10px gap, fragmenting the visual weight of the back
-  // action. Now: single chip, Esc shortcut sits inside its tooltip
-  // (already wired) + as a faint sibling label on the same line.
+  // Back affordance is now a small inline text-link rather than a
+  // chip + sibling hint. Previously it occupied its own block-level row
+  // (chip + "press Esc to go back" tag) at the top of the panel — that
+  // visual weight competed with the asset's logo + ticker header
+  // immediately below. Now: muted text link, hover-darkens, Esc
+  // shortcut lives in the title tooltip only. Asset header below
+  // becomes the dominant element where it belongs.
   const breadcrumb = `
-    <div style="font-size:11px;margin-bottom:10px;display:flex;align-items:center;gap:8px;">
-      <a href="#" data-act="market-back-browse" title="Back to all markets (Esc)" style="display:inline-flex;align-items:center;gap:5px;padding:3px 9px;text-decoration:none;border:1px solid var(--ink-faint);background:var(--bg);color:var(--ink);font-weight:500;cursor:pointer;font-size:11px;transition:border-color 0.1s, color 0.1s;" onmouseover="this.style.borderColor='var(--ink)'" onmouseout="this.style.borderColor='var(--ink-faint)'">&larr; All markets</a>
-      <span class="muted" style="font-size:10px;letter-spacing:0.02em;">press <kbd style="padding:0 4px;border:1px solid var(--ink-faint);font-family:var(--mono);font-size:9px;color:var(--ink-mid);">Esc</kbd> to go back</span>
+    <div style="font-size:11px;margin-bottom:8px;">
+      <a href="#" data-act="market-back-browse" title="Back to all markets (press Esc)" style="text-decoration:none;color:var(--ink-mid);font-size:11px;display:inline-flex;align-items:center;gap:4px;" onmouseover="this.style.color='var(--ink)'" onmouseout="this.style.color='var(--ink-mid)'">&larr; All markets</a>
     </div>`;
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
