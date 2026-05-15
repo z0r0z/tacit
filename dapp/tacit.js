@@ -38250,7 +38250,6 @@ function showMarketListPreviewModal(assetId) {
     <div class="market-buy-card" role="dialog" aria-modal="true" aria-label="List asset preview">
       <div class="market-buy-head">
         <div>
-          <span class="market-buy-kind">List assets</span>
           <h3>List ${escapeHtml(ticker)}</h3>
         </div>
         <button class="market-buy-close" type="button" data-market-list-preview-close aria-label="Close">x</button>
@@ -38285,7 +38284,7 @@ function showMarketListPreviewModal(assetId) {
           <div class="market-buy-sub">Editable</div>
         </div>
         <div>
-          <div class="market-buy-value">${_markValid ? `${escapeHtml(fmtUnitPriceSats(_markUnit))} sats` : '—'}</div>
+          <div class="market-buy-value">${_markValid ? `${escapeHtml(fmtUnitPriceSats(Math.max(1, Math.round(_markUnit))))} sats` : '—'}</div>
           <div class="market-buy-sub">${_markValid
             ? `Current mark price${_markUsdStr ? ` · ${escapeHtml(_markUsdStr)}` : ''}. Pre-fills as a starting point; you can match, undercut, or charge above. Buyer pays total atomically (no escrow).`
             : `No mark price yet (first to list sets the price). Buyer pays your total atomically — no claim window, single Bitcoin tx.`}</div>
@@ -38313,8 +38312,8 @@ function showMarketListPreviewModal(assetId) {
             : `No active offers — you'll be the first. The price you set defines the floor until someone undercuts.`}</div>
         </div>
       </div>
-      <div class="market-buy-note">
-        <strong>Instant Listing (preauth · SPEC §5.7.8):</strong> you sign a sale authorization once at publish time. Any buyer can complete the trade alone — single Bitcoin tx, no claim window, no fulfilment step from you. Trustless settlement: tokens move only if you're paid in the same transaction.
+      <div class="market-buy-note" title="Instant Listing · preauth (SPEC §5.7.8) — you sign a sale authorization once at publish time. Buyer completes the trade alone in a single Bitcoin tx.">
+        <strong>Instant listing:</strong> you sign once now. Any buyer can complete the trade alone — settles in one Bitcoin tx, no claim window, no follow-up step from you. Tokens move only if you're paid in the same transaction.
       </div>
       <div class="market-buy-actions">
         <button type="button" data-market-list-preview-close>Close</button>
@@ -42075,8 +42074,23 @@ function _wireSwapTile(scope) {
         } catch {}
         return '';
       })();
+      // Residual-bid preview: when the user's budget didn't fully fill
+      // from asks, the dapp publishes the leftover sats as a partial-
+      // fillable bid at the slippage cap (see the residual-bid branch
+      // around line ~42938). Previously this only appeared in the post-
+      // click confirm dialog — the swap-tile readout said "X sats
+      // unspent" with no hint that those sats would actually be put to
+      // work as an open bid. Now the readout itself surfaces the bid
+      // path so the user understands the full plan before clicking.
+      const _residCap = Number.isFinite(result.cap) && result.cap > 0 ? result.cap : null;
+      const _residBidAmt = (_residCap != null && result.residualSats >= DUST)
+        ? BigInt(Math.floor(result.residualSats * Math.pow(10, decimals) / _residCap))
+        : 0n;
+      const _residWillBid = _residBidAmt > 0n;
       const residHint = result.residualSats > 100
-        ? ` · ${result.residualSats.toLocaleString()} sats unspent${_nextAskHint || ' (budget below next ask)'}`
+        ? (_residWillBid
+            ? ` · +${fmtAssetAmount(_residBidAmt, decimals)} ${ticker} more stays open @ ${fmtUnitPriceSats(_residCap)} sats/${ticker} (${result.residualSats.toLocaleString()} sats as a partial-fill bid)`
+            : ` · ${result.residualSats.toLocaleString()} sats unspent${_nextAskHint || ' (budget below next ask)'}`)
         : '';
       const insufficientHint = insufficientBudget
         ? ` · ⚠ insufficient sats — wallet holds ${satBal.toLocaleString()}, you'd need ${sats.toLocaleString()}`
@@ -42132,8 +42146,22 @@ function _wireSwapTile(scope) {
       const satBal = Number(_walletCardState?.balance || 0);
       const reserveOk = satBal === 0 || feeEst <= satBal;
       const reserveHint = reserveOk ? '' : ` · ⚠ wallet has ${satBal.toLocaleString()} sats but fees need ~${feeEst.toLocaleString()}`;
+      // Residual-ask preview: the sell-side counterpart of the buy-side
+      // residual-bid path. After filling against bids, the dapp auto-
+      // posts the leftover tokens as an open listing at the slippage
+      // floor (see _postResidualAskListing at line ~42758) so the swap
+      // "completes" even when bids are thin. Surfacing this inline
+      // matches the trader mental model: "2.48M TAC swap → 7K sells
+      // now to existing bids, 2.47M more stays open as an ask for
+      // buyers to take." Without it the "unfilled at floor" copy reads
+      // as "we couldn't sell that part" when really the dapp is going
+      // to do it for you.
+      const _residFloor = (Number.isFinite(refUnit) && refUnit > 0)
+        ? refUnit * (1 - getSlipRatio()) : null;
       const residHint = result.residualAmt > 0n
-        ? ` · ${fmtAssetAmount(result.residualAmt, decimals)} ${ticker} unfilled at floor`
+        ? (_residFloor != null
+            ? ` · +${fmtAssetAmount(result.residualAmt, decimals)} ${ticker} stays open @ ${fmtUnitPriceSats(_residFloor)} sats/${ticker} (fills when buyers take)`
+            : ` · ${fmtAssetAmount(result.residualAmt, decimals)} ${ticker} unfilled at floor`)
         : '';
       const autoHint = _isAutoFulfilEnabled() ? '' : ' · ⚠ enable Auto-fulfil to auto-sign claims';
       const insufficientTokensHint = insufficientTokens
@@ -43355,27 +43383,40 @@ function _wireMarketBidPlace(section, asset) {
     // prices we have; rendered as a single row above the inputs so the
     // user doesn't have to do mental sats math for a normal bid.
     const _chipBits = [];
+    // Each chip now carries the price it will fill into the inputs as
+    // an inline annotation ("Match mark · 264 sats/TAC"), so the user
+    // doesn't have to bounce between the reference line above and the
+    // chip below to know what each one does. Without the annotation,
+    // "Beat best real bid" is a verb with no number — the user clicks
+    // to find out what it does, which is exactly the friction this
+    // enhancement closes.
+    const _chipPrice = (u) => `<span class="muted" style="font-weight:normal;">&middot; ${escapeHtml(fmtUnitPriceSats(u))}</span>`;
     // Match mark price chip leads when available — it's the outlier-
     // guarded fair-market reference. Without this, on a dust-floored
     // market like TAC the "Match best ask" chip would fill 1 sat/TAC,
     // which is useless.
     if (_markUnit != null && _markUnit > 0) {
-      _chipBits.push(`<button data-bid-quick="mark" data-unit="${_markUnit}" type="button" title="Match the outlier-guarded mark price — what the asset actually trades at, ignoring obvious dust and fat-finger prints." style="font-size:10px;padding:3px 8px;">Match mark price</button>`);
+      _chipBits.push(`<button data-bid-quick="mark" data-unit="${_markUnit}" type="button" title="Match the outlier-guarded mark price — what the asset actually trades at, ignoring obvious dust and fat-finger prints." style="font-size:10px;padding:3px 8px;">Match mark ${_chipPrice(_markUnit)}</button>`);
     }
     // Match best ask: only show when the floor is NOT dust. On a
     // dust-floored market this chip is misleading (would post a 1-sat
     // bid). Users who genuinely want to chase dust can type the price
     // manually.
     if (_floorUnit != null && _floorUnit > 0 && !_floorIsDust) {
-      _chipBits.push(`<button data-bid-quick="floor" data-unit="${_floorUnit}" type="button" title="Match the cheapest current ask — your bid is one fill away from clearing." style="font-size:10px;padding:3px 8px;">Match best ask</button>`);
+      _chipBits.push(`<button data-bid-quick="floor" data-unit="${_floorUnit}" type="button" title="Match the cheapest current ask — your bid is one fill away from clearing." style="font-size:10px;padding:3px 8px;">Match best ask ${_chipPrice(_floorUnit)}</button>`);
     }
-    if (_lastUnit != null && _lastUnit > 0)  _chipBits.push(`<button data-bid-quick="last"  data-unit="${_lastUnit}"  type="button" title="Match the most recent atomic settlement price." style="font-size:10px;padding:3px 8px;">Match last trade</button>`);
+    if (_lastUnit != null && _lastUnit > 0)  _chipBits.push(`<button data-bid-quick="last"  data-unit="${_lastUnit}"  type="button" title="Match the most recent atomic settlement price." style="font-size:10px;padding:3px 8px;">Match last ${_chipPrice(_lastUnit)}</button>`);
     if (_bestBidUnit != null && _bestBidUnit > 0) {
+      // Show the target price (best-bid +1%) inline so the user sees
+      // what they're actually beating before clicking. _bestBidClamped
+      // still carries the "real" qualifier in the label when the raw
+      // top of the ladder was an outlier excluded from this anchor.
+      const _bbTarget = _bestBidUnit * 1.01;
       const _bbTip = _bestBidClamped
-        ? `Beat the highest non-outlier bid by 1%. The actual top of the ladder is an outlier (>2× last trade) and was excluded so this chip doesn't post a wildly overpriced bid.`
-        : `Beat the current best bid by 1% — front of the queue without overpaying.`;
+        ? `Beat the highest non-outlier bid (${fmtUnitPriceSats(_bestBidUnit)} sats/${ticker}) by 1% → ${fmtUnitPriceSats(_bbTarget)} sats/${ticker}. The actual top of the ladder is an outlier (>2× last trade) and was excluded so this chip doesn't post a wildly overpriced bid.`
+        : `Beat the current best bid (${fmtUnitPriceSats(_bestBidUnit)} sats/${ticker}) by 1% → ${fmtUnitPriceSats(_bbTarget)} sats/${ticker} — front of the queue without overpaying.`;
       const _bbLabel = _bestBidClamped ? 'Beat best real bid' : 'Beat best bid';
-      _chipBits.push(`<button data-bid-quick="overbid" data-unit="${_bestBidUnit}" type="button" title="${escapeHtml(_bbTip)}" style="font-size:10px;padding:3px 8px;">${_bbLabel}</button>`);
+      _chipBits.push(`<button data-bid-quick="overbid" data-unit="${_bestBidUnit}" type="button" title="${escapeHtml(_bbTip)}" style="font-size:10px;padding:3px 8px;">${_bbLabel} ${_chipPrice(_bbTarget)}</button>`);
     }
     const _chipsRow = _chipBits.length
       ? `<div class="flex" style="gap:6px;flex-wrap:wrap;margin-bottom:6px;align-items:center;"><span class="muted" style="font-size:10px;">quick fill</span>${_chipBits.join('')}</div>`
@@ -43732,8 +43773,8 @@ function _renderMarketAskForm(formHost, aid) {
   ).join('');
   formHost.innerHTML = `
     <div class="inline-form" style="border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:12px;">
-      <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">⚡ List ${escapeHtml(target.ticker || 'token')} for sale (preauth)</div>
-      <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:8px;">Sign once at listing time. Any buyer completes settlement alone via ECDH-derived recipient blinding — no fulfilment step from you. Discloses the listed UTXO's (amount, blinding).</div>
+      <div style="font-size:11px;font-weight:bold;margin-bottom:6px;" title="Instant listing · preauth (SPEC §5.7.8). Sale is authorized in a single signature now; buyer completes settlement alone via ECDH-derived recipient blinding. The lot's (amount, blinding factor) are revealed on listing so buyers can verify the offer.">⚡ List ${escapeHtml(target.ticker || 'token')} for sale</div>
+      <div class="muted" style="font-size:10px;line-height:1.5;margin-bottom:8px;">Sign once now. Any buyer completes the trade alone in one Bitcoin tx — no follow-up step from you. The lot's amount is disclosed on listing so buyers can verify what they're buying.</div>
       <label style="font-size:10px;">Pick lot to sell ▾ (smallest first)</label>
       <select data-field="utxo">${utxoOpts}</select>
       <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
