@@ -1788,6 +1788,28 @@ function _apiBases() {
 const _apiHealth = new Map();
 function _markUnhealthy(base, ms, label) {
   _apiHealth.set(base, { cooldownUntil: Date.now() + ms, lastErr: label });
+  // When a CANDIDATE mirror fails with a network/CORS-style error, persist
+  // the failure to the per-session probe cache so the base is excluded from
+  // rotation for the rest of the session, not just the 60s cooldown.
+  // Without this, a mirror that lacks CORS on endpoints not covered by the
+  // initial probe (mempool.emzy.de famously serves /blocks/tip/height with
+  // proper headers but /tx/.../outspend/N without) gets rotated to forever:
+  // 60s cooldown expires → next call retries it → fails again → another
+  // round of CORS console errors. Persisting demotes the mirror permanently
+  // once a real failure is observed at runtime.
+  if (label === 'network') {
+    try {
+      const net = NET?.name;
+      if (!net) return;
+      const candidates = _CANDIDATE_BASES[net] || [];
+      if (!candidates.includes(base)) return; // verified base, not a candidate
+      const cache = _loadCandidateProbe(net);
+      if (cache[base] !== false) {
+        cache[base] = false;
+        _saveCandidateProbe(net, cache);
+      }
+    } catch { /* sessionStorage hostile env — fall through, in-memory cooldown still applies */ }
+  }
 }
 function _isCooling(base) {
   const h = _apiHealth.get(base);
@@ -1964,15 +1986,14 @@ async function getBtcUsdPrice() {
   }
   if (_btcUsdInFlight) return _btcUsdInFlight;
   _btcUsdInFlight = (async () => {
-    // Try each oracle in series, but cap each individual fetch at 3s
-    // via AbortController so a slow / hung source doesn't block the
-    // chain. Without the timeout, mempool.space being slow (CDN
-    // hiccup, rate-limit) would stall the entire BTC/USD load for
-    // ~30s before fetch's default network error. With timeouts, the
-    // chain moves to the next source in 3s flat, so worst-case time
-    // to USD = 4 sources × 3s = 12s, typical = first source resolves
-    // sub-second.
-    const _withTimeout = (signal_setter, url, opts) => {
+    // Race all five oracles in parallel — first source that returns a valid
+    // USD wins. Sequential previously meant a slow mempool.space (CDN hiccup,
+    // rate-limit) stalled all four faster fallbacks; parallel cuts typical
+    // cold-load from ~1s to ~200-300ms (slowest healthy source). Each fetch
+    // has a 3s timeout so a hung provider can't extend the overall wait
+    // beyond 3s. Promise.any rejects only when ALL sources fail (network
+    // partition, etc.), at which point we return whatever localStorage had.
+    const _withTimeout = (url, opts) => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 3000);
       const merged = Object.assign({}, opts || {}, { signal: ctrl.signal });
@@ -1983,58 +2004,50 @@ async function getBtcUsdPrice() {
       _saveBtcUsdToStorage(usd);
       return usd;
     };
-    // Source 1: mempool.space. Their /api/v1/prices is mainnet-only;
-    // we hardcode the mainnet URL — BTC price doesn't depend on the
-    // tacit network setting (signet NET.api points at /signet/api
-    // which doesn't expose prices).
-    try {
-      const r = await _withTimeout(null, 'https://mempool.space/api/v1/prices');
-      if (r.ok) {
-        const j = await r.json();
-        const usd = Number(j?.USD || 0);
-        if (Number.isFinite(usd) && usd > 0) return _commit(usd);
-      }
-    } catch {}
-    // Source 2: Coinbase public spot.
-    try {
-      const r = await _withTimeout(null, 'https://api.coinbase.com/v2/prices/BTC-USD/spot');
-      if (r.ok) {
-        const j = await r.json();
-        const usd = Number(j?.data?.amount || 0);
-        if (Number.isFinite(usd) && usd > 0) return _commit(usd);
-      }
-    } catch {}
-    // Source 3: Kraken public ticker. Shape:
-    // { result: { XXBTZUSD: { c: ["<price>", "<volume>"] } } }
-    try {
-      const r = await _withTimeout(null, 'https://api.kraken.com/0/public/Ticker?pair=XBTUSD');
-      if (r.ok) {
-        const j = await r.json();
-        const result = j?.result || {};
-        const pairKey = Object.keys(result)[0];
-        const lastPrice = pairKey ? Number(result[pairKey]?.c?.[0] || 0) : 0;
-        if (Number.isFinite(lastPrice) && lastPrice > 0) return _commit(lastPrice);
-      }
-    } catch {}
-    // Source 4: CoinGecko simple/price. Free tier is generous on the
-    // anonymous read path. Shape: { bitcoin: { usd: <number> } }.
-    try {
-      const r = await _withTimeout(null, 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
-      if (r.ok) {
-        const j = await r.json();
-        const usd = Number(j?.bitcoin?.usd || 0);
-        if (Number.isFinite(usd) && usd > 0) return _commit(usd);
-      }
-    } catch {}
-    // Source 5: Chainlink BTC/USD aggregator on Ethereum mainnet via
-    // Cloudflare's public eth-gateway. Truly independent of CEX
-    // pricing — the value is the median of Chainlink's node-operator
-    // submissions, settled on chain. Useful as a tie-breaker if all
-    // four CEX sources are throttled at once. Aggregator contract:
-    // 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c · latestAnswer()
-    // selector 0x50d25bcd · returns int256 with 8 decimals.
-    try {
-      const r = await _withTimeout(null, 'https://cloudflare-eth.com', {
+    // Each attempt: throws on bad response so Promise.any skips it; resolves
+    // to a finite positive USD on success.
+    const _fetchMempool = async () => {
+      const r = await _withTimeout('https://mempool.space/api/v1/prices');
+      if (!r.ok) throw new Error('http ' + r.status);
+      const j = await r.json();
+      const usd = Number(j?.USD || 0);
+      if (!Number.isFinite(usd) || usd <= 0) throw new Error('bad shape');
+      return usd;
+    };
+    const _fetchCoinbase = async () => {
+      const r = await _withTimeout('https://api.coinbase.com/v2/prices/BTC-USD/spot');
+      if (!r.ok) throw new Error('http ' + r.status);
+      const j = await r.json();
+      const usd = Number(j?.data?.amount || 0);
+      if (!Number.isFinite(usd) || usd <= 0) throw new Error('bad shape');
+      return usd;
+    };
+    const _fetchKraken = async () => {
+      // Shape: { result: { XXBTZUSD: { c: ["<price>", "<volume>"] } } }
+      const r = await _withTimeout('https://api.kraken.com/0/public/Ticker?pair=XBTUSD');
+      if (!r.ok) throw new Error('http ' + r.status);
+      const j = await r.json();
+      const result = j?.result || {};
+      const pairKey = Object.keys(result)[0];
+      const lastPrice = pairKey ? Number(result[pairKey]?.c?.[0] || 0) : 0;
+      if (!Number.isFinite(lastPrice) || lastPrice <= 0) throw new Error('bad shape');
+      return lastPrice;
+    };
+    const _fetchCoinGecko = async () => {
+      const r = await _withTimeout('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+      if (!r.ok) throw new Error('http ' + r.status);
+      const j = await r.json();
+      const usd = Number(j?.bitcoin?.usd || 0);
+      if (!Number.isFinite(usd) || usd <= 0) throw new Error('bad shape');
+      return usd;
+    };
+    const _fetchChainlink = async () => {
+      // Chainlink BTC/USD aggregator on ETH mainnet via Cloudflare's public
+      // eth-gateway. Truly independent of CEX pricing — median of node-
+      // operator submissions, settled on chain. Aggregator contract:
+      // 0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c · latestAnswer() =
+      // selector 0x50d25bcd · returns int256 with 8 decimals.
+      const r = await _withTimeout('https://cloudflare-eth.com', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -2042,18 +2055,29 @@ async function getBtcUsdPrice() {
           params: [{ to: '0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c', data: '0x50d25bcd' }, 'latest'],
         }),
       });
-      if (r.ok) {
-        const j = await r.json();
-        const hex = j && j.result;
-        if (typeof hex === 'string' && /^0x[0-9a-fA-F]{64}$/.test(hex)) {
-          const usd = Number(BigInt(hex)) / 1e8;
-          if (Number.isFinite(usd) && usd > 0) return _commit(usd);
-        }
-      }
-    } catch {}
-    // All live sources failed. Return whatever localStorage had, even
-    // if stale — better than null for UI continuity.
-    return _btcUsdMemCache.price;
+      if (!r.ok) throw new Error('http ' + r.status);
+      const j = await r.json();
+      const hex = j && j.result;
+      if (typeof hex !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(hex)) throw new Error('bad shape');
+      const usd = Number(BigInt(hex)) / 1e8;
+      if (!Number.isFinite(usd) || usd <= 0) throw new Error('bad shape');
+      return usd;
+    };
+    try {
+      const usd = await Promise.any([
+        _fetchMempool(),
+        _fetchCoinbase(),
+        _fetchKraken(),
+        _fetchCoinGecko(),
+        _fetchChainlink(),
+      ]);
+      return _commit(usd);
+    } catch (e) {
+      // AggregateError means all five failed — return stale cache (better
+      // than null for UI continuity). _btcUsdMemCache.price may still be
+      // null if this is a true first-load with no persisted value.
+      return _btcUsdMemCache.price;
+    }
   })().finally(() => { _btcUsdInFlight = null; });
   return _btcUsdInFlight;
 }
@@ -2710,24 +2734,63 @@ async function getFeeRate() {
   const net = NET.name;
   if (_cachedRate.has(net) && Date.now() - (_cachedRateAt.get(net) || 0) < 60000) return _cachedRate.get(net);
   let apiOk = false;
-  // Fallback floors when the fee API is unreachable: signet has no fee market,
-  // so a low rate is fine. Mainnet must NOT silently fall back to 2-3 sat/vB —
-  // any intra-day fee spike would leave the broadcast below min-relay and the
-  // commit/reveal pair stuck. 15 sat/vB clears typical mainnet floors with
-  // headroom; if the user is in a real fee crunch they should retry once the
-  // API is reachable.
+  // Fallback floors when EVERY fee API is unreachable: signet has no fee
+  // market, so a low rate is fine. Mainnet must NOT silently fall back to
+  // 2-3 sat/vB — any intra-day fee spike would leave the broadcast below
+  // min-relay and the commit/reveal pair stuck. 15 sat/vB clears typical
+  // mainnet floors with headroom; if the user is in a real fee crunch they
+  // should retry once any provider recovers.
   let base = net === 'mainnet' ? 15 : 2;
-  try {
-    const r = await fetch(`${NET.api}/v1/fees/recommended`);
-    if (!r.ok) throw new Error();
+  const _withTimeout = (url, timeoutMs = 3000) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  };
+  // mempool.space-style: { fastestFee, halfHourFee, hourFee, ... } in sat/vB.
+  const _mempoolStyle = async (apiBase) => {
+    const r = await _withTimeout(`${apiBase}/v1/fees/recommended`);
+    if (!r.ok) throw new Error('http ' + r.status);
     const j = await r.json();
-    base = Math.max(1, j.halfHourFee || j.hourFee || base);
+    const rate = Number(j.halfHourFee || j.hourFee || j.fastestFee || 0);
+    if (!Number.isFinite(rate) || rate <= 0) throw new Error('bad shape');
+    return rate;
+  };
+  // blockstream.info-style: { "1": 25.5, "2": 20.3, ... } — sat/vB per confirm
+  // target. Confirm target "3" (~30 min) is the closest match to mempool's
+  // halfHourFee value.
+  const _blockstreamStyle = async (apiBase) => {
+    const r = await _withTimeout(`${apiBase}/fee-estimates`);
+    if (!r.ok) throw new Error('http ' + r.status);
+    const j = await r.json();
+    const rate = Number(j['3'] || j['2'] || j['6'] || 0);
+    if (!Number.isFinite(rate) || rate <= 0) throw new Error('bad shape');
+    return rate;
+  };
+  // Race all configured providers in parallel — first valid response wins.
+  // Previously single-vendor (NET.api only); a mempool.space outage forced
+  // mainnet users onto the 15 sat/vB floor for 60s of stuck broadcasts.
+  // Promise.any rejects only if every source fails.
+  const attempts = [_mempoolStyle(NET.api)];
+  // NET.api2 is the secondary chain provider (blockstream.info for both
+  // mainnet + signet). Different schema → use _blockstreamStyle.
+  if (NET.api2) attempts.push(_blockstreamStyle(NET.api2));
+  // Mainnet additionally has the mempool.space regional PoPs (.fra, .tk7,
+  // .va1) which share the parent's CORS config + are unlikely to fail when
+  // .com itself does. Mirror-quality varies on signet so we skip there.
+  if (net === 'mainnet') {
+    attempts.push(_mempoolStyle('https://mempool.fra.mempool.space/api'));
+    attempts.push(_mempoolStyle('https://mempool.tk7.mempool.space/api'));
+  }
+  try {
+    const rate = await Promise.any(attempts);
+    base = Math.max(1, Math.ceil(rate));
     apiOk = true;
   } catch {
     if (net === 'mainnet') {
       // Surface the fact that we're on a fallback rate so the user understands
-      // why their tx might be slower than current mempool conditions.
-      try { toast(`Fee API unreachable — using fallback rate ${base} sat/vB on mainnet`, ''); } catch {}
+      // why their tx might be slower than current mempool conditions. Fires
+      // only when EVERY source failed — single-provider hiccups are silent.
+      try { toast(`All fee APIs unreachable — using fallback rate ${base} sat/vB on mainnet`, ''); } catch {}
     }
   }
   // 10% safety margin on mainnet so a small intra-block fee spike between the
