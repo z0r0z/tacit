@@ -41311,9 +41311,24 @@ async function populateMarketAssetStats(scope, asset) {
     }
   } catch {}
   const bidsUsd = btcUsd ? fmtSatsAsUsd(bidsTotalSats, btcUsd) : null;
+  // Order-book imbalance badge: when ask side meaningfully dominates bid
+  // side (or vice versa), surface the ratio so traders read sentiment at
+  // a glance. 66× ask-heavy is a stronger signal than reading "$1.16M
+  // asks · $17k bids" and doing the mental division. Threshold of 3×
+  // keeps balanced books quiet; only meaningful imbalances earn the pill.
+  let imbalanceHtml = '';
+  if (asksTotalSats > 0 && bidsTotalSats > 0) {
+    const ratio = asksTotalSats / bidsTotalSats;
+    if (ratio >= 3) {
+      imbalanceHtml = ` <span style="margin-left:4px;padding:1px 5px;border:1px solid #b8341d;color:#b8341d;font-size:9px;font-weight:600;border-radius:2px;letter-spacing:0.05em;" title="Asks side has ${ratio.toFixed(1)}× more cumulative sats value than bids. Heavy supply pressure relative to demand — traders considering opening longs on this asset may want a wider safety margin.">imbalance ${ratio.toFixed(1)}× asks</span>`;
+    } else if (ratio <= 1 / 3) {
+      const inv = 1 / ratio;
+      imbalanceHtml = ` <span style="margin-left:4px;padding:1px 5px;border:1px solid #0a7d3a;color:#0a7d3a;font-size:9px;font-weight:600;border-radius:2px;letter-spacing:0.05em;" title="Bids side has ${inv.toFixed(1)}× more cumulative sats value than asks. Heavy demand pressure relative to supply — typical of a market with buyers stacking liquidity faster than sellers.">imbalance ${inv.toFixed(1)}× bids</span>`;
+    }
+  }
   setText('[data-market-stat-bidsval]',
     bidsCount > 0
-      ? `${bidsTotalSats.toLocaleString()} sats${bidsUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(bidsUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${bidsCount} bid${bidsCount === 1 ? '' : 's'}</span>`
+      ? `${bidsTotalSats.toLocaleString()} sats${bidsUsd ? `<span class="muted" style="font-weight:normal;"> · ${escapeHtml(bidsUsd)}</span>` : ''} <span class="muted" style="font-weight:normal;">· ${bidsCount} bid${bidsCount === 1 ? '' : 's'}</span>${imbalanceHtml}`
       : '—',
     true);
   // Etcher CTA: shown only when NO supply source resolved (neither
@@ -41346,6 +41361,29 @@ async function populateMarketAssetStats(scope, asset) {
   if (last && Number.isInteger(last.price_sats) && last.price_sats > 0) {
     const usd = fmtSatsAsUsd(last.price_sats, btcUsd);
     if (usd) lastWithUsd = `${lastStr}<span class="muted" style="font-weight:normal;" title="USD value of the entire last settlement (price_sats × BTC/USD), not per-token. Per-token USD is shown next to the sats/${escapeHtml(ticker)} figure above."> · trade size ${escapeHtml(usd)}</span>`;
+  }
+  // Trader-focused: when the last trade is far from the worker's outlier-
+  // guarded mark price (typically a dust take or fat-finger fill), surface
+  // the divergence as a colored Δ badge. Reading "16.55 sats/TAC" without
+  // context misses the signal that this trade was 93% below typical price.
+  // Threshold: only show when |Δ| ≥ 10% to keep the row uncluttered for
+  // normal trades; amber when off-band (matches the chart's outlier hue).
+  const _lastUnit = (last && last.price_sats > 0 && BigInt(last.amount || '0') > 0n)
+    ? unitPriceSats(Number(last.price_sats), BigInt(last.amount), decimals)
+    : null;
+  const _markForLast = j.mark_price && Number.isFinite(j.mark_price.unit) && j.mark_price.unit > 0
+    ? Number(j.mark_price.unit) : null;
+  if (_lastUnit != null && _markForLast != null && _markForLast > 0) {
+    const pct = ((_lastUnit - _markForLast) / _markForLast) * 100;
+    if (Math.abs(pct) >= 10) {
+      const sign = pct >= 0 ? '+' : '';
+      const colorPct = Math.abs(pct);
+      // Off-band (≥80% deviation) gets the amber anomaly hue; merely
+      // notable swings (10-80%) get the standard up/down red/green so
+      // they read consistently with the 24h Δ row above.
+      const color = colorPct >= 80 ? '#b8651d' : (pct >= 0 ? '#0a7d3a' : '#b8341d');
+      lastWithUsd += `<span style="margin-left:6px;padding:1px 5px;border:1px solid ${color};color:${color};font-size:9px;font-weight:600;border-radius:2px;letter-spacing:0.05em;" title="Last trade's unit price vs the worker's outlier-guarded mark price (${fmtUnitPriceSats(_markForLast)} sats/${escapeHtml(ticker)}). Large divergences typically mean the last fill was a dust take or fat-finger settlement; the mark price is the more reliable reference for valuation.">Δ ${sign}${pct.toFixed(pct >= 100 || pct <= -100 ? 0 : 1)}% vs mark</span>`;
+    }
   }
   setText('[data-market-stat-last]', lastWithUsd, true);
 
