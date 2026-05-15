@@ -37017,6 +37017,25 @@ function _saveMarketSimple(on) {
   try { localStorage.setItem(_MARKET_SIMPLE_KEY, on ? '1' : '0'); } catch {}
 }
 let _marketSimpleMode = _loadMarketSimple();
+// Ladder view mode: 'rows' (orderbook-style single-line entries, default) or
+// 'cards' (legacy 4-per-row tile grid). Rows mode gives a CEX-style depth
+// scan — price + amount + total + expiry + Buy on one line per listing —
+// so a buyer comparing 12 prices doesn't have to read 12 multi-line cards.
+// Cards mode is preserved for power users who want maker pubkey / listing
+// id / full metadata at a glance. Defaults to rows since that's the
+// primary orderbook UX for a normie buyer.
+const _MARKET_LADDER_VIEW_KEY = 'tacit-market-ladder-view-v1';
+function _loadMarketLadderView() {
+  try {
+    const v = localStorage.getItem(_MARKET_LADDER_VIEW_KEY);
+    if (v === 'cards' || v === 'rows') return v;
+  } catch {}
+  return 'rows';
+}
+function _saveMarketLadderView(v) {
+  try { localStorage.setItem(_MARKET_LADDER_VIEW_KEY, v); } catch {}
+}
+let _marketLadderView = _loadMarketLadderView();
 const _MARKET_MINE_ASKS_KEY = 'tacit-market-mine-asks-v1';
 const _MARKET_MINE_BIDS_KEY = 'tacit-market-mine-bids-v1';
 function _loadMarketMine(key) {
@@ -38057,11 +38076,33 @@ function applyMarketFilters() {
   // Sweep Buy doesn't touch bids at all. Wrapper carries data-aid so
   // _wireMarketSweepBuy can find the button + form slot in this scope
   // without depending on the bids ladder's existence.
-  const _sweepBuyChip = `<button data-act="market-sweep-buy" data-aid="${escapeHtml(_marketView.assetId)}" type="button" title="Buy a target amount by sweeping the asks ladder with a custom price cap. Trustless instant listings only; each fill is one Bitcoin tx." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">Sweep buy</button>`;
+  // Sweep buy is the canonical "buy a target amount across the ladder"
+  // action — promoted to a primary CTA so it visually competes with the
+  // per-tile Buy buttons. Without this it sat as a small text chip among
+  // the filter toggles, easy to miss, even though it's the right path
+  // for any buyer who wants more than the cheapest single tile delivers.
+  const _sweepBuyChip = `<button data-act="market-sweep-buy" data-aid="${escapeHtml(_marketView.assetId)}" type="button" title="Buy a target amount by sweeping the asks ladder with a custom price cap. Trustless instant listings only; each fill is one Bitcoin tx." class="primary" style="font-size:11px;padding:6px 14px;font-weight:600;letter-spacing:0.02em;">⚡ Sweep buy</button>`;
+  // Layout toggle: rows (default) ↔ cards. Persists between sessions so
+  // power users sticking with cards aren't forced back to rows every load.
+  const _ladderToggleChip = `<button data-act="market-ladder-toggle" type="button" title="Toggle between compact rows (CEX-style depth scan) and full-detail cards (maker pubkey, listing id, group metadata visible)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">${_marketLadderView === 'rows' ? 'Cards view' : 'Rows view'}</button>`;
+  // Count reconcile: rowsForGrid is the post-filter count (Simple mode +
+  // Mine toggle applied). rowsFull is pre-filter. The header card shows
+  // the worker's listing_count which is the true total. All three can
+  // legitimately differ; the tooltip on the count number explains which
+  // is which so a user noticing "412 of 551" doesn't think the page is
+  // showing stale data.
+  const _totalActiveListings = rowsFull.length;
+  const _filteredOut = _totalActiveListings - rowsForGrid.length;
+  const _countTitle = _filteredOut > 0
+    ? `Showing ${rowsForGrid.length} of ${_totalActiveListings} active listings. ${_filteredOut} hidden by the current filter (Simple mode / Mine toggle). Open the filter chip above to expand.`
+    : `${rowsForGrid.length} active listings across all kinds (preauth · opening · range · atomic intent). Header card may show a slightly different total — that comes from the worker's pre-aggregated count which can lag by ~1 refresh tick.`;
+  const _countSuffix = _filteredOut > 0
+    ? ` <span class="muted" style="font-weight:400;font-size:10px;">of ${_totalActiveListings}</span>`
+    : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong>Open orders · ${rowsForGrid.length}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use Swap above for routed fills</span></div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_sweepBuyChip}</div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Open orders · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use Swap above for routed fills</span></div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_ladderToggleChip}${_sweepBuyChip}</div>
     </div>${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
   </div>`;
@@ -38260,7 +38301,15 @@ function applyMarketFilters() {
     ? `<div class="empty" style="padding:14px;text-align:center;font-size:11px;border:1px dashed var(--ink-faint);"><strong>No instant listings.</strong> <span class="muted">${rowsFull.length} offer${rowsFull.length === 1 ? '' : 's'} available - switch to <em>All offers</em> above to see atomic intents and OTC listings.</span></div>`
     : '';
   const _yourOrdersHtml = renderYourOpenOrdersHTML(_marketView.assetId, _assetForBids, myPubHexForMarket);
-  const listedPaneHtml = `${_yourOrdersHtml}${_swapTileHtml}${bidsLadderHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="market-listing-grid" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}`;
+  // Swap tile hoisted to the top of the asset-detail page (above the
+  // chart + stats strip) so the primary trading action is always above
+  // the fold and isn't tab-scoped. Previously lived inside listedPaneHtml,
+  // which meant switching to the Activity tab hid the buy/sell affordance
+  // entirely; that broke the "decide from activity → buy" loop a trader
+  // wants. _wireSwapTile uses a scoped querySelector so it finds the tile
+  // at its new top-level position without code changes.
+  const _gridClass = `market-listing-grid${_marketLadderView === 'rows' ? ' market-listing-rows-mode' : ''}`;
+  const listedPaneHtml = `${_yourOrdersHtml}${bidsLadderHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -38339,7 +38388,7 @@ function applyMarketFilters() {
       }
     }
   }
-  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
+  list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${_swapTileHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
   if (_onAssetDetailReRender) {
     for (const [sel, node] of Object.entries(_preservedNodes)) {
       const placeholder = list.querySelector(`[${sel}]`);
@@ -38376,6 +38425,13 @@ function applyMarketFilters() {
     btn.onclick = () => {
       _marketMineOnlyAsks = !_marketMineOnlyAsks;
       _saveMarketMine(_MARKET_MINE_ASKS_KEY, _marketMineOnlyAsks);
+      applyMarketFilters();
+    };
+  });
+  list.querySelectorAll('[data-act="market-ladder-toggle"]').forEach(btn => {
+    btn.onclick = () => {
+      _marketLadderView = (_marketLadderView === 'rows') ? 'cards' : 'rows';
+      _saveMarketLadderView(_marketLadderView);
       applyMarketFilters();
     };
   });
@@ -38663,7 +38719,28 @@ function applyMarketFilters() {
     // full id still visible via title=.
     const _shortSeller = shorten(l.maker_address || l.seller_payout_address || '', 6);
     const _fullSeller = l.maker_address || l.seller_payout_address || '';
-    tile.innerHTML = `
+    // Rows-mode renders a CEX-style depth row: [unit price · amount · total
+    // · action]. Drops id/seller/group-total/status onto the title= hover so
+    // a buyer scanning the ladder sees one line per listing instead of 7.
+    // The full-card HTML (preserved below) stays for power users who toggle
+    // to "Cards view" — verification, group metadata, fill-progress bar
+    // all need the vertical real estate to read.
+    const _rowMetaTitle = `Listing id: ${displayId}${_fullSeller ? `\n${l.kind === 'preauth' ? 'Seller' : 'Maker'}: ${_fullSeller}` : ''}${l._isGroup ? `\nGroup: ${l._groupId || ''} · ${l._groupSize} chunks` : ''}${recencyLine ? `\n${recencyLine.replace(/<[^>]+>/g, '')}` : ''}`;
+    const rowsModeHtml = `
+      <div class="market-listing-unit" title="${escapeHtml(_rowMetaTitle)}">
+        <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
+        <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` /token` : ''}</small>
+        <small class="muted" style="display:block;margin-top:2px;font-size:9px;line-height:1.3;">${recencyLine}</small>
+      </div>
+      <div class="market-listing-amount" style="font-size:12px;font-weight:600;text-align:left;line-height:1.3;">
+        ${_amountLine}${_groupBadge}${_bestPriceBadge}
+      </div>
+      <div class="market-listing-total">
+        <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSatsRaw))}</span>
+        <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSatsRaw, ''))}</span>
+      </div>
+      ${actionRow}`;
+    const cardsModeHtml = `
       ${_tileTopHtml}
       <div class="market-listing-amount">${_amountLine}${_groupBadge}${_bestPriceBadge}</div>
       ${_fillProgressBar}
@@ -38682,6 +38759,7 @@ function applyMarketFilters() {
       </div>
       ${_groupTotalLine}
       ${actionRow}`;
+    tile.innerHTML = (_marketLadderView === 'rows') ? rowsModeHtml : cardsModeHtml;
     // Live-reactivity: compare this tile's current unit price against the
     // last seen value for the same listing key. Tag the tile so CSS
     // animates new entries (fade-in) and price changes (green/red flash).
@@ -41133,13 +41211,18 @@ function renderMarketAssetStatsHTML(asset) {
         <div><span class="muted">transfers</span> <strong data-market-stat-xfers title="On-chain confidential transfers tracked by the indexer (includes sends, drops, OTC settles — not just market trades). For market trades only, see the recent-trades list below.">—</strong></div>
         <div data-market-stat-spread-wrap style="display:none;"><span class="muted">spread</span> <strong data-market-stat-spread>—</strong></div>
       </div>
-      <div data-market-supplycap-row style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--ink-faint);display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;font-size:11px;">
-        <div><span class="muted">market cap</span> <strong data-market-stat-mcap title="Total supply × current mark price. Computed only when the etcher has attested the total supply (revealed supply + blinding so observers can verify pedersen_commit(supply, blinding) == on-chain commitment). Without an attestation, supply is cryptographically hidden and market cap can't be derived.">—</strong></div>
-        <div><span class="muted">total supply</span> <strong data-market-stat-supply title="Total amount issued at etch, revealed via the etcher's attestation. When hidden, the etcher hasn't published (supply, blinding); the commitment is on chain but its value is confidential.">—</strong></div>
-        <div data-market-stat-supplymin-wrap><span class="muted">disclosed ≥</span> <strong data-market-stat-supplymin title="Sum of amounts across all published per-UTXO openings — a public lower bound on circulating supply that any observer can reproduce.">—</strong></div>
-        <div data-market-stat-liq-asks><span class="muted">asks liquidity</span> <strong data-market-stat-asksval>—</strong></div>
-        <div data-market-stat-liq-bids><span class="muted">bids liquidity</span> <strong data-market-stat-bidsval>—</strong></div>
-      </div>
+      <details data-market-supplycap-row style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--ink-faint);font-size:11px;">
+        <summary style="cursor:pointer;color:var(--ink-mid);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:2px 0;list-style:none;">
+          <span style="display:inline-block;transition:transform 0.1s;font-size:9px;">▸</span> more stats
+        </summary>
+        <div style="margin-top:8px;display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;">
+          <div><span class="muted">market cap</span> <strong data-market-stat-mcap title="Total supply × current mark price. Computed only when the etcher has attested the total supply (revealed supply + blinding so observers can verify pedersen_commit(supply, blinding) == on-chain commitment). Without an attestation, supply is cryptographically hidden and market cap can't be derived.">—</strong></div>
+          <div><span class="muted">total supply</span> <strong data-market-stat-supply title="Total amount issued at etch, revealed via the etcher's attestation. When hidden, the etcher hasn't published (supply, blinding); the commitment is on chain but its value is confidential.">—</strong></div>
+          <div data-market-stat-supplymin-wrap><span class="muted">disclosed ≥</span> <strong data-market-stat-supplymin title="Sum of amounts across all published per-UTXO openings — a public lower bound on circulating supply that any observer can reproduce.">—</strong></div>
+          <div data-market-stat-liq-asks><span class="muted">asks liquidity</span> <strong data-market-stat-asksval>—</strong></div>
+          <div data-market-stat-liq-bids><span class="muted">bids liquidity</span> <strong data-market-stat-bidsval>—</strong></div>
+        </div>
+      </details>
       <div data-market-attest-cta style="display:none;margin-top:8px;padding:8px 10px;background:var(--bg-warm);border:1px dashed var(--ink-faint);font-size:11px;line-height:1.5;"></div>
       <!-- Set-alert affordance: opens the price-alerts modal pre-loaded with
            this asset's aid + ticker. Live mark price is read from
