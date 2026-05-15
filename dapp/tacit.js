@@ -40697,8 +40697,17 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   const ts0 = points[0].ts;
   const tsN = points[points.length - 1].ts;
   const tsSpan = Math.max(1, tsN - ts0);
+  // Y-range auto-scope: when outliers exist, compute min/max from IN-BAND
+  // points only so the chart shows the typical trade band at meaningful
+  // height instead of being collapsed against the bottom by a single
+  // fat-finger dust trade. Outliers still render (as small amber dots)
+  // but get clamped to the plot edges, so users can still spot them.
+  // Falls back to all points if there aren't enough in-band trades for a
+  // stable range.
+  const inBandPts = points.filter(p => !p.isOutlier);
+  const yScopeSource = (outlierCount > 0 && inBandPts.length >= 2) ? inBandPts : points;
   let minU = Infinity, maxU = -Infinity;
-  for (const p of points) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
+  for (const p of yScopeSource) { if (p.u < minU) minU = p.u; if (p.u > maxU) maxU = p.u; }
   if (minU === maxU) { minU = Math.max(1e-9, minU * 0.95); maxU = maxU * 1.05 || 1; }
   const isLog = (minU > 0) && (maxU / minU > 50);
   let yLo, yHi, ySpan, yOf;
@@ -40728,11 +40737,36 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // rather than index-evenly, so a market with a burst of trades followed
   // by quiet shows the burst as a dense cluster (true to chain timing)
   // rather than a smeared line.
-  const W = 600, H = 160;
-  const PL = 36, PR = 8, PT = 12, PB = 22;   // wider PL so Y labels don't crowd the line
+  const W = 600, H = 196;     // taller to accommodate volume strip below price
+  const PL = 36, PR = 8, PT = 12, PB = 22;
+  const VOL_H = 28;           // volume strip height
+  const VOL_GAP = 4;          // gap between price and volume sections
   const plotW = W - PL - PR;
-  const plotH = H - PT - PB;
+  const plotH = H - PT - PB - VOL_H - VOL_GAP;   // price plot height (above volume)
+  const volTop = PT + plotH + VOL_GAP;            // y-origin of the volume strip
   const xOf = ts => PL + ((ts - ts0) / tsSpan) * plotW;
+  // Outliers fall outside the in-band Y range when auto-scope is active —
+  // clamp their drawn position to the plot edge so they stay visible (and
+  // hoverable for the tooltip with actual price) without overflowing.
+  const yOfClamped = (u) => Math.max(PT, Math.min(PT + plotH, yOf(u)));
+  // Bucket trades for volume histogram. Bucket count scales to fit the
+  // available width — too few looks blocky, too many becomes hairlines.
+  const N_VOL_BUCKETS = Math.min(48, Math.max(8, Math.floor(points.length / 3)));
+  const bucketWidth = tsSpan / N_VOL_BUCKETS;
+  const volumeBuckets = new Array(N_VOL_BUCKETS).fill(0);
+  for (const p of points) {
+    const idx = Math.min(N_VOL_BUCKETS - 1, Math.floor((p.ts - ts0) / bucketWidth));
+    volumeBuckets[idx] += Number(p.price) || 0;
+  }
+  const maxVol = volumeBuckets.reduce((m, v) => Math.max(m, v), 0);
+  const volBars = (maxVol > 0) ? volumeBuckets.map((v, i) => {
+    if (v <= 0) return '';
+    const xStart = PL + (i * bucketWidth / tsSpan) * plotW;
+    const w = Math.max(1, (bucketWidth / tsSpan) * plotW * 0.85);
+    const h = Math.max(1, (v / maxVol) * VOL_H);
+    const y = volTop + (VOL_H - h);
+    return `<rect x="${xStart.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="#0a8f43" opacity="0.32"/>`;
+  }).join('') : '';
   // yOf is defined above conditionally (linear vs log scale).
   // Smooth the line via Catmull-Rom-to-Bézier — looks natural for sparse
   // trade data (avoids the jagged sawtooth a polyline gives over uneven
@@ -40787,11 +40821,11 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     const outlierTag = p.isOutlier ? ' · outlier vs mark' : '';
     const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}${outlierTag}`;
     if (p.isOutlier) {
-      // Subtle: small dot in a desaturated amber, low opacity. Carries the
-      // forensic information (still hoverable) without dominating the
-      // chart's visual weight. Aligned with the rest of the dapp's amber
-      // anomaly palette (#b8651d) rather than a bespoke orange.
-      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${outlierR}" fill="#b8651d" opacity="0.45"><title>${escapeHtml(tip)}</title></circle>`;
+      // Subtle: small dot in a desaturated amber, low opacity. Clamped to
+      // plot edges via yOfClamped so outliers stay visible at the boundary
+      // when auto-scope tightens the Y range around the in-band trades.
+      // Tooltip still carries the true price for forensic inspection.
+      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOfClamped(p.u).toFixed(2)}" r="${outlierR}" fill="#b8651d" opacity="0.55"><title>${escapeHtml(tip)}</title></circle>`;
     }
     if (!showInBandDots) return '';
     return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="#0a8f43" opacity="0.85"><title>${escapeHtml(tip)}</title></circle>`;
@@ -40854,7 +40888,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
       <strong>Price history</strong>${_logBadge}
       <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}${outlierCount > 0 ? ` · <span style="color:#b8651d;" title="Trades priced &lt;0.2× or &gt;5× of mark price — typically fat-finger fills or dust takes. Shown as small faded amber dots so the eye can spot anomalies without them dominating the in-band trend.">${outlierCount} outlier${outlierCount === 1 ? '' : 's'} flagged</span>` : ''}</span>
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);border-radius:4px;cursor:crosshair;">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:240px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);border-radius:4px;cursor:crosshair;">
       <defs>
         <linearGradient id="${_gradId}" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="#0a8f43" stop-opacity="0.28"/>
@@ -40868,10 +40902,21 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
       ${linePath ? `<path data-chart-line d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.95" vector-effect="non-scaling-stroke"/>` : ''}
       ${dots}
       ${markLineLabel}
+      <!-- Volume strip: per-bucket trade volume in sats below the price plot.
+           Same color as the trend line, faded so it reads as a quiet
+           secondary chart rather than competing with the price signal. -->
+      ${volBars}
+      <!-- "VOL" label tucked at the top-left of the volume strip so users
+           know what the bars represent without needing another header row. -->
+      <text x="${PL - 4}" y="${(volTop + 3).toFixed(2)}" font-size="8" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="hanging" opacity="0.8">vol</text>
       <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
       <text x="${PL - 4}" y="${yOf(yMid).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(midLbl)}</text>
       <text x="${PL - 4}" y="${yOf(yLo).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
+      <!-- X-axis labels: oldest at left, midpoint in the middle, newest at right.
+           Midpoint helps users orient when the span is long (e.g., "23h ago"
+           vs "28m ago" leaves a big middle the eye can't anchor without help). -->
       <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)">${escapeHtml(oldLbl)}</text>
+      <text x="${(PL + plotW / 2).toFixed(0)}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" text-anchor="middle">${escapeHtml(_ageStr(Math.floor((ts0 + tsN) / 2)))}</text>
       <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" text-anchor="end">${escapeHtml(newLbl)}</text>
       <!-- Cursor overlay: invisible rect captures mousemove across the
            full plot area. The crosshair group below is positioned by
