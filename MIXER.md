@@ -441,7 +441,9 @@ system to defeat proof-substitution attacks (SPEC §5.11.4).
   participant in the chain can re-derive the security claim.
 - **Anonymity-set strength scales with per-pool volume.** A pool that sees
   40 deposits a year is structurally sound but practically not private.
-  The dapp surfaces a warning; users should heed it.
+  The dapp surfaces a live anonymity-set count on the withdraw screen and
+  warns below configurable thresholds (default 5 = strong, 50 = caution;
+  SPEC §5.11.2). Users should heed it.
 - **Mixer mixes tacit assets.** Native BTC mixing requires wrapping into a
   tacit asset, and that wrapping step is a separate trust assumption.
 - **Operational privacy is user-discipline-dependent for self-mix.**

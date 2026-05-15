@@ -683,7 +683,7 @@ min_liquidity, inclusion_arbiter_pubkeys[])` and seeds initial
 reserves. Initial **total shares** = `isqrt(Δa · Δb)` (Uniswap V2
 convention); the founder receives `isqrt(Δa · Δb) −
 MINIMUM_LIQUIDITY` of those shares, and the remaining
-`MINIMUM_LIQUIDITY` (V2: 1000 base units) is locked at init via the
+`MINIMUM_LIQUIDITY` (Uniswap V2: 1000 base units) is locked at init via the
 construction below. The optional `inclusion_arbiter_pubkeys` field
 gates mandatory-inclusion enforcement (see Indexer determinism).
 First canonically-ordered confirmed init wins, subject to any
