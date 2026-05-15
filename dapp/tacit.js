@@ -32373,6 +32373,43 @@ async function renderHoldings() {
         list.appendChild(portfolioBar);
       }
     } catch (e) { console.warn('[holdings] portfolio total bar failed:', e); }
+    // Stranded-commit recovery banner. The same banner renders on the
+    // Activity tab, but a user who hits a batched-take or single-take
+    // commit failure and then navigates to Holdings to check their
+    // balance would otherwise never see it. Surface a copy here at the
+    // top of Holdings whenever any pending records exist so the user's
+    // commit-locked sats are reachable from wherever they land. The
+    // Recover / Forget buttons are wired by _wirePreauthRecoveryButtons
+    // — same handlers serve both surfaces.
+    try {
+      const _recoveryHtml = _renderPreauthRecoveryBannerHtml();
+      if (_recoveryHtml) {
+        const _recWrap = document.createElement('div');
+        _recWrap.innerHTML = _recoveryHtml;
+        const _recNode = _recWrap.firstElementChild;
+        if (_recNode) {
+          list.appendChild(_recNode);
+          _wirePreauthRecoveryButtons(_recNode);
+        }
+      }
+    } catch (e) { console.warn('[holdings] recovery banner failed:', e); }
+    // Auto-fulfil nudge — surface pending atomic-intent claims when the
+    // daemon is off, so a seller can't silently miss fillable claims.
+    // Renders right after the recovery banner (both are "action needed
+    // from you" surfaces; recovery handles a strictly worse failure
+    // mode — stranded commits — so it goes first).
+    try {
+      const _nudgeHtml = _renderAutoFulfilNudgeBannerHtml();
+      if (_nudgeHtml) {
+        const _nudgeWrap = document.createElement('div');
+        _nudgeWrap.innerHTML = _nudgeHtml;
+        const _nudgeNode = _nudgeWrap.firstElementChild;
+        if (_nudgeNode) {
+          list.appendChild(_nudgeNode);
+          _wireAutoFulfilNudgeButtons(_nudgeNode);
+        }
+      }
+    } catch (e) { console.warn('[holdings] auto-fulfil nudge failed:', e); }
     // Cross-asset Open Orders dashboard — every preauth listing this wallet
     // has live on the market, across ALL assets, in one consolidated row.
     // Reads from _marketCache.listings (already global) so no extra fetch.
@@ -35232,6 +35269,71 @@ function _renderPreauthRecoveryBannerHtml() {
       <div class="muted" style="font-size:11px;line-height:1.5;">An instant-listing purchase broadcast its commit tx but the settlement leg never landed. Click Recover to script-path-spend the commit-locked sats back to your wallet (one Bitcoin tx, costs a small fee).</div>
       ${rows}
     </div>`;
+}
+
+// Auto-fulfil nudge banner. Sell-side atomic intents settle in two
+// steps: seller publishes a commit + worker record; some bidder later
+// CLAIMS the intent; seller's auto-fulfil daemon signs the claim and
+// broadcasts the reveal. If the daemon is OFF when a claim lands, the
+// claim sits unsigned until it expires (~5 min on the worker side)
+// and the bidder has to retry. The seller wouldn't know unless they
+// happened to re-open the tab during that 5-min window.
+//
+// This banner surfaces pending claims at the top of Holdings so a
+// seller who walks away with auto-fulfil off can't silently miss a
+// fillable claim. Returns empty string when there's nothing to nudge
+// about (daemon already on, no pending claims, or wallet locked
+// pre-init).
+function _renderAutoFulfilNudgeBannerHtml() {
+  if (typeof _isAutoFulfilEnabled !== 'function' || _isAutoFulfilEnabled()) return '';
+  if (!wallet?.pub) return '';
+  if (!_marketCache?.listings) return '';
+  const myPubHex = bytesToHex(wallet.pub);
+  const pending = _marketCache.listings.filter(l =>
+    l.kind === 'intent'
+    && l.maker_pubkey === myPubHex
+    && l.claim
+    && !l.fulfilment_pending,
+  );
+  if (pending.length === 0) return '';
+  const totalSats = pending.reduce((s, l) => s + (Number(l.price_sats) || 0), 0);
+  const totalUsd = (typeof _cachedBtcUsd === 'function')
+    ? (() => { try { const u = _cachedBtcUsd(); return u ? fmtSatsAsUsd(totalSats, u) : ''; } catch { return ''; } })()
+    : '';
+  const usdTail = totalUsd ? ` · ${escapeHtml(totalUsd)}` : '';
+  const noun = pending.length === 1 ? 'claim' : 'claims';
+  const verb = pending.length === 1 ? 'is' : 'are';
+  return `
+    <div style="border:1px solid #0a7d3a;background:#e6f5ec;padding:10px 12px;margin-bottom:14px;">
+      <div style="font-size:12px;font-weight:bold;margin-bottom:4px;color:#0a7d3a;">📩 ${pending.length} pending ${noun} on your sell intent${pending.length === 1 ? '' : 's'} · ${totalSats.toLocaleString()} sats${usdTail} waiting to settle</div>
+      <div class="muted" style="font-size:11px;line-height:1.5;margin-bottom:8px;">A buyer claimed your atomic-intent sale but Auto-fulfil is OFF — the ${noun} ${verb} sitting unsigned. Enable Auto-fulfil to broadcast the settlement reveal now. Otherwise the ${noun} will expire (~5 min worker TTL) and the buyer will have to retry.</div>
+      <button data-act="autofulfil-enable-now" type="button" style="font-size:11px;padding:5px 14px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-weight:600;letter-spacing:0.04em;">⚡ Enable Auto-fulfil now</button>
+    </div>`;
+}
+
+function _wireAutoFulfilNudgeButtons(scope) {
+  scope.querySelectorAll('button[data-act="autofulfil-enable-now"]').forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = 'enabling…';
+      try {
+        await ensurePrivkey();
+        startAutoFulfilDaemon();
+        toast('Auto-fulfil enabled · pending claims will sign within seconds', 'success', 8000);
+        try { renderHoldings(); } catch {}
+      } catch (e) {
+        if (typeof isUnlockCancelled === 'function' && isUnlockCancelled(e)) {
+          toast('Unlock cancelled — Auto-fulfil not enabled', '');
+        } else {
+          toast('Failed to enable Auto-fulfil: ' + (e?.message || String(e)), 'error', 10000);
+        }
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    };
+  });
 }
 
 function _wirePreauthRecoveryButtons(scope) {
@@ -45905,28 +46007,120 @@ function _wireSwapTile(scope) {
     }
     return { fillCount, totalSats, totalAmt };
   };
-  // Symmetric for sells — walk bids highest-first under various floors.
-  // Used by the depth-at-slippage hint on the sell side.
-  const _simulateSellAtFloor = (targetTacBig, floorUnit) => {
-    if (!(targetTacBig > 0n)) return null;
+  // Symmetric depth-at-floor for sells. Walks the cached bid intents
+  // (synchronous — relies on _bidCachePeek; if the cache is cold, the
+  // hint stays silent rather than firing an async fetch on each
+  // keystroke). Counts fillable bid amount above a given floor. The
+  // outlier ceiling (5× refUnit) applies the same way planSell uses
+  // it, so fat-finger high bids that planSell skips also don't
+  // inflate the depth indicator.
+  const _depthAtFloor = (floorUnit) => {
     if (!Number.isFinite(floorUnit) || floorUnit <= 0) return null;
+    const bids = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aid) : null;
+    if (!Array.isArray(bids)) return null;
     const nowSec = Math.floor(Date.now() / 1000);
-    // We don't fetch bids here — caller passes them in below via the
-    // already-fetched cache. Return a thin shape the hint reads.
-    return { fillCount: 0, totalAmt: 0n, totalSats: 0, _bids: null };
+    let fillCount = 0;
+    let totalAmt = 0n;
+    let totalSats = 0;
+    for (const b of bids) {
+      if (b.buyer_pubkey === myPubHex) continue;
+      if (Number(b.expiry || 0) <= nowSec) continue;
+      if (b.axintent_id) continue; // already claimed
+      const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+      const fullAmt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
+      if (fullAmt <= 0n) continue;
+      const amt = isVar
+        ? (() => { try { return BigInt(b.remaining_amount || b.amount || '0'); } catch { return fullAmt; } })()
+        : fullAmt;
+      const fullPs = Number(b.price_sats || 0);
+      const ps = isVar && fullAmt > 0n
+        ? Number((BigInt(fullPs) * amt) / fullAmt)
+        : fullPs;
+      if (amt <= 0n || ps <= 0) continue;
+      const u = unitPriceSats(ps, amt, decimals);
+      if (!Number.isFinite(u) || u <= 0) continue;
+      if (u < floorUnit) continue;
+      if (u > outlierCeilUnit) continue;
+      fillCount++;
+      totalAmt += amt;
+      totalSats += ps;
+    }
+    return { fillCount, totalAmt, totalSats };
   };
-  // Depth hint: when the user's budget exceeds what the current cap can
-  // fill, surface "↑ widen to ±N% to unlock +Y TAC". Only fires when
-  // widening WOULD help — silent if the current cap already covers the
-  // budget. Returns the hint text (prefixed with " · ") or empty.
+  // Sell-side depth hint: when widening the slippage (lowering the
+  // floor) would unlock additional bid depth, surface "↓ widen to ±N%
+  // to unlock +X TAC sellable (N more bids)". Mirror of _buyDepthHint
+  // — same Apply button, same trusted-html shape.
+  const _sellDepthHint = (currentResult) => {
+    if (!Number.isFinite(refUnit) || refUnit <= 0) return '';
+    const currentSlipPct = parseFloat(slipSel?.value || '10');
+    const currentFloor = refUnit * (1 - currentSlipPct / 100);
+    const widerOpts = Array.from(slipSel?.options || [])
+      .map(o => parseFloat(o.value))
+      .filter(v => Number.isFinite(v) && v > currentSlipPct)
+      .sort((a, b) => a - b);
+    if (widerOpts.length === 0) return '';
+    const widerPct = widerOpts[0];
+    const widerFloor = refUnit * (1 - widerPct / 100);
+    const depthCurrent = _depthAtFloor(currentFloor);
+    const depthWider   = _depthAtFloor(widerFloor);
+    if (!depthCurrent || !depthWider) return '';
+    if (depthWider.fillCount <= depthCurrent.fillCount) return '';
+    const extraFills = depthWider.fillCount - depthCurrent.fillCount;
+    const extraAmt = depthWider.totalAmt - depthCurrent.totalAmt;
+    if (extraAmt <= 0n) return '';
+    const amountBinding = currentResult && currentResult.residualAmt && currentResult.residualAmt > 0n;
+    const verb = amountBinding ? 'unlock' : 'see';
+    return {
+      html: `↓ widen limit to ±${widerPct}% to ${verb} +${escapeHtml(fmtAssetAmountCompact(extraAmt, decimals))} ${escapeHtml(ticker)} sellable (${extraFills} more bid${extraFills === 1 ? '' : 's'} available) <button data-act="swap-widen-slip" data-pct="${widerPct}" type="button" style="font-size:9.5px;padding:1px 6px;margin-left:4px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer;">Apply</button>`,
+    };
+  };
+  // Orderbook depth at a cap — total ask count + token amount fillable
+  // at that price, IGNORING budget. Used by the depth hint to detect
+  // "wider cap unlocks more market depth" regardless of the user's
+  // current buy size. This is informational: if the orderbook has
+  // depth above the current cap, surfacing "widen for +X TAC at +Y%"
+  // helps users decide whether to widen — even when their current
+  // buy isn't actually budget-limited.
+  const _depthAtCap = (capUnit) => {
+    if (!Number.isFinite(capUnit) || capUnit <= 0) return null;
+    const nowSec = Math.floor(Date.now() / 1000);
+    let fillCount = 0;
+    let totalAmt = 0n;
+    let totalSats = 0;
+    for (const l of (_marketCache?.listings || [])) {
+      if (l._asset?.asset_id !== aid) continue;
+      if (Number(l.expiry || 0) <= nowSec || l.expired) continue;
+      let amt, ps;
+      if (l.kind === 'preauth') {
+        if (l.seller_pubkey === myPubHex) continue;
+        amt = BigInt(l.asset_opening?.amount || 0);
+        ps  = Number(l.min_price_sats || 0);
+      } else if (l.kind === 'intent' && !l.claim && !l.fulfilment_pending) {
+        if (l.maker_pubkey === myPubHex) continue;
+        if (l.min_take_amount) continue;
+        amt = BigInt(l.amount || 0);
+        ps  = Number(l.price_sats || 0);
+      } else { continue; }
+      const u = unitPriceSats(ps, amt, decimals);
+      if (!Number.isFinite(u) || u <= 0 || u > capUnit || u < dustFloorUnit || amt <= 0n || ps <= 0) continue;
+      fillCount++;
+      totalAmt += amt;
+      totalSats += ps;
+    }
+    return { fillCount, totalAmt, totalSats };
+  };
+  // Depth hint: surface "↑ widen to ±N% to unlock +Y TAC" whenever the
+  // next-wider slippage option would reach additional orderbook depth.
+  // Fires regardless of budget binding — even if the current buy fully
+  // filled, knowing "there's +200 TAC at ±20% if you want it" is
+  // useful market context. The verb adapts: "unlock" when the user's
+  // budget couldn't fully spend at the current cap (binding case),
+  // "see" otherwise (informational case).
   const _buyDepthHint = (satsBudget, currentResult) => {
     if (!Number.isFinite(refUnit) || refUnit <= 0) return '';
-    if (!currentResult || !currentResult.plan) return '';
-    // The cap only "limited" the buy if residual sats remain. If
-    // residual is essentially zero (< 100 sats), the budget was fully
-    // spent and widening can't help.
-    if (Number(currentResult.residualSats || 0) < 100) return '';
     const currentSlipPct = parseFloat(slipSel?.value || '10');
+    const currentCap = refUnit * (1 + currentSlipPct / 100);
     const widerOpts = Array.from(slipSel?.options || [])
       .map(o => parseFloat(o.value))
       .filter(v => Number.isFinite(v) && v > currentSlipPct)
@@ -45934,18 +46128,22 @@ function _wireSwapTile(scope) {
     if (widerOpts.length === 0) return '';
     const widerPct = widerOpts[0];
     const widerCap = refUnit * (1 + widerPct / 100);
-    const sim = _simulateBuyAtCap(satsBudget, widerCap);
-    if (!sim || sim.fillCount === 0) return '';
-    if (sim.fillCount <= currentResult.plan.length) return '';
-    const extraFills = sim.fillCount - currentResult.plan.length;
-    const extraAmt = sim.totalAmt - (currentResult.totalAmt || 0n);
+    // Independent depth at each cap — ignores budget, asks the
+    // orderbook "what's fillable at this price?".
+    const depthCurrent = _depthAtCap(currentCap);
+    const depthWider   = _depthAtCap(widerCap);
+    if (!depthCurrent || !depthWider) return '';
+    if (depthWider.fillCount <= depthCurrent.fillCount) return '';
+    const extraFills = depthWider.fillCount - depthCurrent.fillCount;
+    const extraAmt = depthWider.totalAmt - depthCurrent.totalAmt;
     if (extraAmt <= 0n) return '';
-    // Return as a trusted-html row so _renderRouteRows leaves the
-    // Apply button intact. All values inserted are dapp-controlled
-    // (slippage option, integer fillcount, asset amount + ticker
-    // from the local plan); no user input enters the template.
+    // Phrasing: "unlock" when the user's budget couldn't fully spend
+    // at current cap (their buy was clipped); "see" when their buy
+    // already filled but more depth exists above the cap.
+    const budgetBinding = currentResult && Number(currentResult.residualSats || 0) >= 100;
+    const verb = budgetBinding ? 'unlock' : 'see';
     return {
-      html: `↑ widen limit to ±${widerPct}% to unlock +${escapeHtml(fmtAssetAmountCompact(extraAmt, decimals))} ${escapeHtml(ticker)} (${extraFills} more fill${extraFills === 1 ? '' : 's'}) <button data-act="swap-widen-slip" data-pct="${widerPct}" type="button" style="font-size:9.5px;padding:1px 6px;margin-left:4px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer;">Apply</button>`,
+      html: `↑ widen limit to ±${widerPct}% to ${verb} +${escapeHtml(fmtAssetAmountCompact(extraAmt, decimals))} ${escapeHtml(ticker)} (${extraFills} more ask${extraFills === 1 ? '' : 's'} available) <button data-act="swap-widen-slip" data-pct="${widerPct}" type="button" style="font-size:9.5px;padding:1px 6px;margin-left:4px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer;">Apply</button>`,
     };
   };
   // SELL plan: walk bid intents highest-first; include each bid whose
@@ -46424,10 +46622,20 @@ function _wireSwapTile(scope) {
           : `${fmtUnitPriceSats(cheapU)}–${fmtUnitPriceSats(dearU)} sats/${ticker}`;
         const feeEst = result.plan.length * 800;
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
+        const _depthHintEO = _buyDepthHint(result.totalSats, result);
         infoEl.innerHTML = _renderRouteRows(
           `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
-          ['exact-out (≥ requested)']
+          ['exact-out (≥ requested)', _depthHintEO]
         );
+        const _widenBtnEO = infoEl.querySelector('[data-act="swap-widen-slip"]');
+        if (_widenBtnEO) {
+          _widenBtnEO.onclick = () => {
+            const pct = _widenBtnEO.dataset.pct;
+            if (!pct || !slipSel) return;
+            slipSel.value = pct;
+            slipSel.dispatchEvent(new Event('change', { bubbles: true }));
+          };
+        }
         if (insufficient) {
           // Same actionable-CTA pattern as the exact-in path: route a
           // click straight to the Top-up modal so the user doesn't have
@@ -46480,10 +46688,20 @@ function _wireSwapTile(scope) {
       const feeEst = result.plan.length * 800 * 2;
       const autoHint = _isAutoFulfilEnabled() ? '' : ' · ⚠ enable Auto-fulfil';
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
+      const _depthHintSEO = _sellDepthHint(result);
       infoEl.innerHTML = _renderRouteRows(
         `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
-        ['exact-out (≥ requested)', autoHint]
+        ['exact-out (≥ requested)', autoHint, _depthHintSEO]
       );
+      const _widenBtnSEO = infoEl.querySelector('[data-act="swap-widen-slip"]');
+      if (_widenBtnSEO) {
+        _widenBtnSEO.onclick = () => {
+          const pct = _widenBtnSEO.dataset.pct;
+          if (!pct || !slipSel) return;
+          slipSel.value = pct;
+          slipSel.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+      }
       if (insufficient) {
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = `need ${accStrCompact} ${ticker}, only ${fmtAssetAmountCompact(bal, decimals)} held`;
@@ -46793,10 +47011,20 @@ function _wireSwapTile(scope) {
         ? ` · ⚠ insufficient ${ticker} — wallet holds ${balStr}, you'd need ${fmtAssetAmount(amt, decimals)}`
         : '';
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
+      const _depthHintS = _sellDepthHint(result);
       infoEl.innerHTML = _renderRouteRows(
         `${result.plan.length} bid${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}`,
-        [reserveHint, residHint, autoHint, insufficientTokensHint]
+        [reserveHint, residHint, _depthHintS, autoHint, insufficientTokensHint]
       );
+      const _widenBtnS = infoEl.querySelector('[data-act="swap-widen-slip"]');
+      if (_widenBtnS) {
+        _widenBtnS.onclick = () => {
+          const pct = _widenBtnS.dataset.pct;
+          if (!pct || !slipSel) return;
+          slipSel.value = pct;
+          slipSel.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+      }
       if (!_balCacheReady) {
         // Holdings scan still in flight (kicked off by renderMarket's
         // asset-mode hook). Don't claim "only hold 0" — we don't yet
