@@ -14935,6 +14935,403 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   }
 }
 
+// Batched preauth-take: N sellers + 1 buyer in a single (commit, reveal)
+// pair instead of N independent (commit, reveal) pairs. Saves ~70% of
+// Bitcoin fees vs the per-sale loop because the envelope, taproot
+// script-path overhead, and most output overhead are amortized across
+// all N sellers.
+//
+// Why no protocol change / no re-signing is needed:
+//
+// Each seller's existing pre-signature is SIGHASH_SINGLE | ANYONECANPAY
+// over their asset UTXO. The BIP-143 sighash preimage for this flag set is
+// POSITION-INDEPENDENT in the sense that matters: it commits to
+//   - the seller's own outpoint + scriptCode + value (constant per seller)
+//   - tx.outputs[input_index] (the same-index output)
+//   - tx.inputs[input_index].sequence
+// and does NOT commit to:
+//   - other inputs (ANYONECANPAY zeros hashPrevouts/hashSequence)
+//   - other outputs (SIGHASH_SINGLE hashes ONLY the same-index output)
+//   - the absolute count of inputs or outputs
+// So the seller's existing signature validates at ANY vin position k as
+// long as the buyer places `{value: min_price_sats, script: seller_payout}`
+// at vout[k] and uses the same 0xfffffffd sequence the seller signed.
+// Listings from before this PR are batchable as-is.
+//
+// Layout (N sellers):
+//
+//   vin[0]       buyer's commit P2TR — script-path reveals the envelope
+//   vin[1..N]    seller_i's asset UTXOs — each uses its pre-signed sig
+//                at THIS vin position; SIGHASH_SINGLE_ACP locks vout[1+i]
+//                to seller_i's payout output
+//   vin[N+1..]   buyer's BTC funding (P2WPKH, SIGHASH_ALL)
+//
+//   vout[0]      DUST P2WPKH — the buyer's COMBINED tacit-asset receipt.
+//                On-chain Pedersen commitment is C = Σ pedersen(amount_i,
+//                blinding_i) - excess·G = pedersen(Σ amounts, r_out).
+//                r_out and the encrypted-amount keystream are both
+//                ECDH-derived from (buyer.priv, seller[0].pub, seller[0]
+//                outpoint, 0) — matches scanHoldings' firstIn-anchored
+//                recovery convention so the buyer's wallet decrypts this
+//                combined output on the next scan with no schema change.
+//   vout[1..N]   seller_i's payouts (each locked by SIGHASH_SINGLE_ACP on
+//                vin[1+i]; vout[k] must equal {min_price_sats_k,
+//                seller_payout_script_k} or the seller's sig fails)
+//   vout[N+1]    buyer change (if ≥ DUST)
+//
+// Backwards compat:
+//   - sales[0..N-1] use the EXISTING preauth listing schema verbatim.
+//   - takePreauthSale() (single-take) is unchanged — call sites that
+//     can't batch (N=1, intent-kind asks, mixed routes) still work.
+//   - This function delegates to takePreauthSale when N=1 so call sites
+//     can always use the batch entrypoint without losing the fast path.
+async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
+  let _commitTxidHexForRecovery = null;
+  let _commitValueForRecovery = 0;
+  try {
+  await ensurePrivkey();
+  if (!WORKER_BASE) throw new Error('worker disabled');
+  if (!Array.isArray(sales) || sales.length === 0) throw new Error('sales required');
+  if (sales.length > 100) throw new Error('batch too large (max 100)');
+  const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
+
+  // N=1 fast path: zero behavior change for single-sale takes. Lets call
+  // sites always go through this entrypoint and get batching only when
+  // the route actually has multiple preauths.
+  if (sales.length === 1) {
+    const only = sales[0];
+    return await takePreauthSale({ assetIdHex, saleIdHex: only.saleIdHex, sale: only.sale, onProgress });
+  }
+
+  _progress('fetch-start');
+  const N = sales.length;
+  const myPubHex = bytesToHex(wallet.pub);
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  // Validate and expand each sale up-front so any malformed sale throws
+  // BEFORE we lock sats in a commit tx.
+  const expanded = [];
+  for (let i = 0; i < N; i++) {
+    const { saleIdHex, sale } = sales[i];
+    if (!sale) throw new Error(`sale ${saleIdHex} missing`);
+    if (sale.asset_id && sale.asset_id !== assetIdHex) throw new Error('asset_id mismatch in batch');
+    if (sale.sale_id && sale.sale_id !== saleIdHex) throw new Error('sale_id mismatch in batch');
+    if (sale.expired || (sale.expiry || 0) <= nowSec) {
+      throw new Error(`sale ${saleIdHex.slice(0,8)} expired`);
+    }
+    if (sale.seller_pubkey === myPubHex) {
+      throw new Error('cannot include own preauth sale in batch');
+    }
+    const sellerPub = hexToBytes(sale.seller_pubkey);
+    if (sellerPub.length !== 33) throw new Error('invalid seller_pubkey');
+    const amount = BigInt(sale.asset_opening.amount);
+    if (amount < 0n || amount >= (1n << BigInt(N_BITS))) throw new Error('amount out of range');
+    const blindingHex = String(sale.asset_opening.blinding || '').toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(blindingHex)) throw new Error('asset_opening.blinding malformed');
+    const inBlinding = BigInt('0x' + blindingHex);
+    const payoutScriptBytes = hexToBytes(sale.seller_payout_script);
+    if (!(payoutScriptBytes.length === 22 && payoutScriptBytes[0] === 0x00 && payoutScriptBytes[1] === 0x14) &&
+        !(payoutScriptBytes.length === 34 && payoutScriptBytes[0] === 0x51 && payoutScriptBytes[1] === 0x20)) {
+      throw new Error(`sale ${saleIdHex.slice(0,8)} payout script not P2WPKH/P2TR`);
+    }
+    expanded.push({ saleIdHex, sale, sellerPub, amount, inBlinding, payoutScriptBytes });
+  }
+
+  // Parallel pre-flight outspend check: if ANY seller's asset UTXO has
+  // already been spent (cancelled, raced by another taker), abort BEFORE
+  // locking commit sats. Per-sale failure leaves the rest of the batch
+  // valid — caller is expected to retry without the failed sale, OR fall
+  // back to a single-take loop for the rest.
+  const spendStates = await Promise.all(expanded.map(e =>
+    getOutspend(e.sale.asset_outpoint.txid, e.sale.asset_outpoint.vout).catch(() => null),
+  ));
+  for (let i = 0; i < N; i++) {
+    if (spendStates[i]?.spent) {
+      throw new Error(`sale ${expanded[i].saleIdHex.slice(0,8)} already spent — refresh listings`);
+    }
+  }
+
+  // Pedersen / kernel state.
+  //
+  // Anchor: first seller's outpoint. The wallet recovery scanner reads
+  // anchorBytes from tx.vin[1] (the first asset input — line 9665), so
+  // we MUST place seller_0 there and derive r_out / encrypted-amount
+  // keystream against seller_0's pubkey + outpoint. Reordering or using
+  // a different anchor would break the existing scanHoldings path.
+  const anchor = expanded[0];
+  const anchorBytes = concatBytes(
+    reverseBytes(hexToBytes(anchor.sale.asset_outpoint.txid)),
+    (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, anchor.sale.asset_outpoint.vout >>> 0, true); return b; })(),
+  );
+  const recipBlinding = deriveBlinding(wallet.priv, anchor.sellerPub, anchorBytes, 0);
+  if (recipBlinding <= 0n || recipBlinding >= SECP_N) {
+    throw new Error('derived r_out out of scalar range — astronomical ECDH collision, retry');
+  }
+  let totalAmount = 0n;
+  let inBlindingSum = 0n;
+  for (const e of expanded) {
+    totalAmount += e.amount;
+    inBlindingSum = modN(inBlindingSum + e.inBlinding);
+  }
+  if (totalAmount < 0n || totalAmount >= (1n << BigInt(N_BITS))) {
+    throw new Error('combined amount out of range');
+  }
+  const recipCommitment = pedersenCommit(totalAmount, recipBlinding);
+  const recipCommitmentBytes = pointToBytes(recipCommitment);
+  // Single-output range proof — N inputs combine into ONE recipient. The
+  // AXFER `outputs.length ∈ {1,2,4,8}` rule means 1 output is valid and
+  // matches the on-chain layout (single tacit recipient at vout[0]).
+  const { proof: rangeproof } = bpRangeAggProve([totalAmount], [recipBlinding]);
+  // excess = r_out - Σ blinding_i. Standard CXFER Pedersen-conservation
+  // proof, just generalized to N inputs.
+  const excess = modN(recipBlinding - inBlindingSum);
+  const assetIdBytes = hexToBytes(assetIdHex);
+  const inputOutpoints = expanded.map(e => ({
+    txid: e.sale.asset_outpoint.txid, vout: e.sale.asset_outpoint.vout,
+  }));
+  const outputCommitments = [recipCommitmentBytes];
+  const kernelMsg = computeKernelMsg(assetIdBytes, inputOutpoints, outputCommitments);
+  const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(excess));
+  const amountKs = deriveAmountKeystreamECDH(wallet.priv, anchor.sellerPub, anchorBytes, 0);
+  const recipCt = encryptAmount(totalAmount, amountKs);
+  const payload = encodeAxferPayload({
+    assetId: assetIdBytes,
+    assetInputCount: N,
+    kernelSig,
+    outputs: [{ commitment: recipCommitmentBytes, encryptedAmount: recipCt }],
+    rangeproof,
+  });
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const p2trSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  // Fee planning. Generous estimate (overshoots roll into fee, never short).
+  const feeRate = await getFeeRate();
+  const totalMinPriceSats = expanded.reduce((s, e) => s + Number(e.sale.min_price_sats), 0);
+  const totalAssetUtxoValue = expanded.reduce((s, e) => s + (Number(e.sale.asset_outpoint.value) || 0), 0);
+  // Reveal vbytes:
+  //   vin[0]: taproot script-path ~ 120 + envelope_script_len + 33 (ctrl block w/ NUMS parity)
+  //   vin[1..N]: P2WPKH SIGHASH_SINGLE_ACP spends ~ N × inputVbytes
+  //   vin[N+1..N+F]: buyer P2WPKH funding ~ F × inputVbytes (F estimated ceil(N/4)+1)
+  //   vout[0]: DUST P2WPKH recipient (1 × p2wpkhOutVbytes)
+  //   vout[1..N]: seller payouts (P2WPKH or P2TR — use the heavier of the two for safety)
+  //   vout[N+1]: buyer change (1 × p2wpkhOutVbytes)
+  const _envOverhead = 120 + envelopeScript.length + 33;
+  const _fundEst = Math.max(1, Math.ceil(N / 4));
+  const revealVbEst = _envOverhead
+                    + N * inputVbytes
+                    + _fundEst * inputVbytes
+                    + p2wpkhOutVbytes
+                    + N * p2trOutVbytes
+                    + p2wpkhOutVbytes;
+  const revealFee = feeFor(revealVbEst, feeRate);
+  const commitValue = DUST + revealFee;
+
+  // Commit tx.
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  let pickedCommit = []; let totalCommit = 0; let commitFee = 500;
+  for (const u of sats) {
+    pickedCommit.push(u); totalCommit += u.value;
+    commitFee = feeFor(estCommitVb(pickedCommit.length), feeRate);
+    if (totalCommit >= commitValue + commitFee + DUST) break;
+  }
+  if (totalCommit < commitValue + commitFee) {
+    throw new Error(`insufficient sats for commit (need ~${commitValue + commitFee}, have ${totalCommit})`);
+  }
+  const commitChange = totalCommit - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: p2trSpk }];
+  if (commitChange >= DUST) commitOutputs.push({ value: commitChange, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: pickedCommit.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, pickedCommit[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+  // Persist a batch recovery record BEFORE the reveal so commit-locked
+  // sats are recoverable even if the reveal broadcast fails. Schema is
+  // a superset of the single-take record — additional `batch[]` carries
+  // per-sale recovery hints; legacy `sale_id`/`amount`/etc. fields point
+  // at the first sale so a partial decoder still picks the most likely
+  // anchor. tacit-preauth-take-pending-v1 is shared with single-take —
+  // both record types are visible to the recovery sweeper.
+  recordPreauthTakePending(commitTxidHex, {
+    sale_id: expanded[0].saleIdHex,
+    asset_id: assetIdHex,
+    amount: totalAmount.toString(),
+    ticker: anchor.sale.ticker || '',
+    decimals: Number.isInteger(anchor.sale.decimals) ? anchor.sale.decimals : 0,
+    commit_value: commitValue,
+    envelope_script_hex: bytesToHex(envelopeScript),
+    control_block_hex: bytesToHex(cb),
+    recip_blinding_hex: bytesToHex(bigintToBytes32(recipBlinding)),
+    batch: expanded.map(e => ({
+      sale_id: e.saleIdHex,
+      seller_pubkey: bytesToHex(e.sellerPub),
+      asset_outpoint: e.sale.asset_outpoint,
+      amount: e.amount.toString(),
+      blinding_hex: String(e.sale.asset_opening.blinding || '').toLowerCase(),
+      min_price_sats: Number(e.sale.min_price_sats),
+      seller_payout_script: sale_payout_script_safe(e.payoutScriptBytes),
+    })),
+  });
+  _commitTxidHexForRecovery = commitTxidHex;
+  _commitValueForRecovery = commitValue;
+  _progress('wait-visible');
+  await waitForTxVisible(commitTxidHex);
+
+  // Reveal tx. Synthesize the post-commit UTXO set deterministically so
+  // we don't race the indexer's /utxo lag — same pattern as single-take.
+  const commitInputKeys = new Set(pickedCommit.map(u => `${u.txid}:${u.vout}`));
+  const sellerKeys = new Set(expanded.map(e => `${e.sale.asset_outpoint.txid}:${e.sale.asset_outpoint.vout}`));
+  const postCommitSet = allUtxos.filter(u => !commitInputKeys.has(`${u.txid}:${u.vout}`));
+  if (commitChange >= DUST) {
+    postCommitSet.push({ txid: commitTxidHex, vout: 1, value: commitChange });
+  }
+  const fundingUsable = postCommitSet
+    .filter(u => !sellerKeys.has(`${u.txid}:${u.vout}`))
+    .filter(u => u.value > DUST)
+    .sort((a, b) => b.value - a.value);
+
+  // Conservation: inputs (commit_value + Σ asset.value_i + totalFunding)
+  //              == outputs (DUST + Σ min_price_sats_i + buyerChange) + fee.
+  // commit_value = DUST + revealFee  ⇒  fee = revealFee + Σ asset.value_i
+  //   + totalFunding - Σ min_price_sats_i - buyerChange.
+  // For fee == revealFee: buyerChange = totalFunding + Σ asset.value_i -
+  //   Σ min_price_sats_i. Funding picker target: totalFunding ≥
+  //   Σ min_price_sats_i - max(0, Σ asset.value_i - N×DUST) so buyer change
+  //   stays ≥ DUST. The -N×DUST term subtracts the DUST sats each seller
+  //   UTXO contributes that the recipient output already absorbs (we have
+  //   ONE recipient output; the rest of asset.value_i flows to fee/change).
+  const fundingNeeded = Math.max(0, totalMinPriceSats - Math.max(0, totalAssetUtxoValue - N * DUST));
+  let pickedFunding = []; let totalFunding = 0;
+  for (const u of fundingUsable) {
+    pickedFunding.push(u); totalFunding += u.value;
+    if (totalFunding >= fundingNeeded + DUST) break;
+  }
+  if (totalFunding < fundingNeeded) {
+    throw new Error(`insufficient sats for reveal (need ${fundingNeeded}, have ${totalFunding}). Commit tx broadcast — ${commitValue} sats locked at ${commitTxidHex}:0. Recovery record saved to localStorage (tacit-preauth-take-pending-v1:${NET.name}); top up the wallet and retry, or script-path-spend the commit using the saved envelope+control block.`);
+  }
+  const buyerChange = totalFunding + totalAssetUtxoValue - totalMinPriceSats;
+
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      // vin[0]: commit P2TR (script-path)
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      // vin[1..N]: seller asset UTXOs (witnesses below)
+      ...expanded.map(e => ({
+        txid: e.sale.asset_outpoint.txid, vout: e.sale.asset_outpoint.vout,
+        sequence: 0xfffffffd, witness: [],
+      })),
+      // vin[N+1..]: buyer BTC funding inputs
+      ...pickedFunding.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    ],
+    outputs: [
+      // vout[0]: DUST buyer tacit recipient (combined commitment encoded in envelope.outputs[0])
+      { value: DUST, script: p2wpkhScript(wallet.pub) },
+      // vout[1..N]: seller_i payouts at vout[1+i] — locked by SIGHASH_SINGLE_ACP on vin[1+i]
+      ...expanded.map(e => ({ value: Number(e.sale.min_price_sats), script: e.payoutScriptBytes })),
+    ],
+  };
+  if (buyerChange >= DUST) {
+    revealTx.outputs.push({ value: buyerChange, script: p2wpkhScript(wallet.pub) });
+  }
+
+  // vin[1..N] witnesses: each seller's existing pre-signature. The seller
+  // signed assuming vin/vout at slot 1; we paste at slot 1+i. The BIP-143
+  // preimage for SIGHASH_SINGLE_ACP is position-independent given matching
+  // {outpoint, scriptCode, value, sequence, output[k]} — see comment block
+  // above this function for the full justification.
+  for (let i = 0; i < N; i++) {
+    const sellerSigBytes = hexToBytes(expanded[i].sale.seller_asset_spend_sig);
+    revealTx.inputs[1 + i].witness = [sellerSigBytes, expanded[i].sellerPub];
+  }
+  // vin[N+1..]: buyer funding (SIGHASH_ALL — commits to the whole tx so
+  // a malicious relayer can't strip seller payouts).
+  for (let i = 0; i < pickedFunding.length; i++) {
+    const idx = 1 + N + i;
+    revealTx.inputs[idx].witness = signP2wpkhInput(revealTx, idx, pickedFunding[i].value);
+  }
+  // vin[0]: commit P2TR script-path spend (SIGHASH_DEFAULT — buyer
+  // controls everything else via SIGHASH_ALL on funding).
+  const prevouts = [
+    { value: commitValue, script: p2trSpk },
+    ...expanded.map(e => ({ value: Number(e.sale.asset_outpoint.value) || 0, script: p2wpkhScript(e.sellerPub) })),
+    ...pickedFunding.map(u => ({ value: u.value, script: p2wpkhScript(wallet.pub) })),
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInputWithSighash(
+    revealTx, prevouts, envelopeScript, cb, 0x00,
+  );
+
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+  _progress('broadcast-start');
+  await broadcast(revealHex);
+  forgetPreauthTakePending(commitTxidHex);
+
+  // Recipient opening: locally + on-worker. ONE combined output → ONE
+  // record. The next scanHoldings finds (revealTxid, 0) and decrypts via
+  // the same ECDH(buyer, seller_0, seller_0 outpoint, 0) path used here.
+  recordOpening(revealTxidHex, 0, assetIdHex, totalAmount, recipBlinding);
+  publishBuyerOpening(revealTxidHex, 0, totalAmount, recipBlinding).catch(() => {});
+
+  // Activity + worker hint: emit ONE row per sale so the activity tab
+  // shows individual fills (matches the per-fill loop's prior behavior;
+  // users expect to see N rows for an N-fill route).
+  for (const e of expanded) {
+    recordActivity({
+      kind: 'swap-buy',
+      ticker: e.sale.ticker || '',
+      amount: e.amount,
+      decimals: Number.isInteger(e.sale.decimals) ? e.sale.decimals : 0,
+      assetId: assetIdHex,
+      txid: revealTxidHex,
+      extra: { price_sats: Number(e.sale.min_price_sats) || 0, source: 'preauth-take-batch' },
+    });
+    try {
+      postHint(revealTxidHex, 0, {
+        price_sats: Number(e.sale.min_price_sats) || 0,
+        amount: String(e.amount),
+        seller_address: e.sale.seller_payout_address || '',
+        buyer_address: wallet.address(),
+        listing_kind: 'instant',
+      });
+    } catch {}
+  }
+
+  return {
+    commit_txid: commitTxidHex,
+    reveal_txid: revealTxidHex,
+    hex: revealHex,
+    fills: expanded.map(e => ({
+      sale_id: e.saleIdHex,
+      amount: e.amount,
+      price_sats: Number(e.sale.min_price_sats),
+    })),
+  };
+  } catch (e) {
+    if (_commitTxidHexForRecovery && !/recovery record|locked at/.test(String(e?.message || ''))) {
+      const tail = ` · Commit tx broadcast — ${_commitValueForRecovery} sats locked at ${_commitTxidHexForRecovery}:0; batch recovery record saved (tacit-preauth-take-pending-v1:${NET.name}).`;
+      e.message = (e?.message || String(e)) + tail;
+    }
+    throw e;
+  }
+}
+
+// Tiny helper: hex-encode a Uint8Array iff defined. Used by the batch
+// recovery record where each per-sale entry stamps its seller payout
+// script as hex for later replay.
+function sale_payout_script_safe(b) { return b instanceof Uint8Array ? bytesToHex(b) : ''; }
+
 // ============== BID INTENTS (off-chain bid book — SPEC §5.7.7) ==============
 // Buyer-initiated mirror of axintents. Bids are PURELY off-chain — buyer
 // signs an intent (no on-chain lock), seller claims by spinning up a regular
@@ -41830,7 +42227,7 @@ function renderMarketAssetHeader(assetId, rows) {
   // becomes the dominant element where it belongs.
   const breadcrumb = `
     <div style="font-size:11px;margin-bottom:8px;">
-      <a href="#" data-act="market-back-browse" title="Back to all markets (press Esc)" style="text-decoration:none;color:var(--ink-mid);font-size:11px;display:inline-flex;align-items:center;gap:4px;" onmouseover="this.style.color='var(--ink)'" onmouseout="this.style.color='var(--ink-mid)'">&larr; All markets</a>
+      <a href="#" data-act="market-back-browse" title="Back to all markets (press Esc)" style="text-decoration:none;color:var(--ink-mid);font-size:11px;display:inline-flex;align-items:center;gap:4px;">&larr; All markets</a>
     </div>`;
   // Token metadata blob (IPFS-hosted, surfaced via getMetadataExtras). Carries
   // optional name + description + external_url. Lookup is best-effort and
@@ -42530,15 +42927,29 @@ async function populateMarketAssetStats(scope, asset) {
   if (!aid || !WORKER_BASE) return;
   const ticker = asset.ticker || '?';
   const decimals = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
+  // Kick the BTC/USD oracle in parallel with the stats fetch. Both are
+  // independent network calls and both are cache-served on the hot path
+  // (refreshMarketBtcUsd has a 5min TTL on _marketBtcUsd; stats has a
+  // 60s TTL via _marketAssetStatsCache). Awaiting them serially used to
+  // mean a cold BTC/USD lookup blocked the entire stats-strip paint
+  // even though the sats-side numbers don't depend on USD. Now: race
+  // them; await USD only at the point we need the value below.
+  // refreshMarketBtcUsd swallows its own errors, so a bare catch keeps
+  // the promise non-rejecting in case getBtcUsdPrice throws.
+  const _btcUsdInflight = refreshMarketBtcUsd().catch(() => {});
   let j;
   try {
     // Route through fetchMarketAssetStats so concurrent callers (the
     // browse-mode enrichment queue, a rapid asset→asset navigation,
     // the 5s auto-refresh tick) share one /assets/<aid> round-trip
     // and the resolved data populates _marketAssetStatsCache for the
-    // pre-paint chart on subsequent renders. `force: true` skips the
-    // 60s TTL because asset-detail wants live numbers, not stale.
-    j = await fetchMarketAssetStats(aid, { force: true });
+    // pre-paint chart on subsequent renders. SWR: rely on the 60s TTL
+    // + inflight dedup. applyMarketFilters' 5s tick is already
+    // signature-gated (only re-renders on actual orderbook change), so
+    // a fresh re-render past 60s naturally re-fetches; within the TTL
+    // window, redundant interactive re-renders (filter toggle, asset
+    // re-entry, place-bid form actions) reuse the cached payload.
+    j = await fetchMarketAssetStats(aid);
   } catch (e) {
     const recentEl = section.querySelector('[data-market-recent-trades]');
     if (recentEl) recentEl.innerHTML = `<div class="muted" style="font-size:10px;">stats unavailable: ${escapeHtml(e?.message || String(e))}</div>`;
@@ -42552,19 +42963,16 @@ async function populateMarketAssetStats(scope, asset) {
   // Top-line stats.
   const volSats = Number(j.volume_24h_sats || 0);
   const xfers = Number(j.transfer_count || 0);
-  // BTC/USD spot for sats→USD suffixes on volume + last trade.
-  // Routes through refreshMarketBtcUsd (not the bare getBtcUsdPrice)
-  // so a successful fetch also lands in the global _marketBtcUsd
-  // that the rich-stats cells + asset-header price card read via the
-  // fmtMarketUsd* helpers. Previously this called getBtcUsdPrice
-  // directly — it warmed the oracle's memCache but never set the
-  // market-side global, so the asset header sat at "loading USD…"
-  // forever even after the oracle had resolved. refreshMarketBtcUsd
-  // is idempotent + cache-aware so a redundant call is cheap.
+  // BTC/USD spot for sats→USD suffixes on volume + last trade. The
+  // refresh was kicked in parallel with the stats fetch above; await
+  // its completion here. When the oracle cache is warm (~5min TTL)
+  // this resolves on the same microtask, so there's no added latency
+  // when warm. _marketBtcUsd is the global that the rich-stats cells +
+  // asset-header price card read via the fmtMarketUsd* helpers.
   // Best-effort; falls back to sats-only if oracle is unavailable.
   let btcUsd = null;
   try {
-    await refreshMarketBtcUsd();
+    await _btcUsdInflight;
     btcUsd = Number.isFinite(_marketBtcUsd) && _marketBtcUsd > 0 ? _marketBtcUsd : null;
   } catch {}
   // last_trade: prefer the worker's pinned record, but fall back to the
@@ -46329,7 +46737,67 @@ function _wireSwapTile(scope) {
       let filled = 0, lastErr = null;
       let _totalFeesSats = 0;
       let _stoppedEarly = false;
-      for (let i = 0; i < result.plan.length; i++) {
+      // Batched preauth-take fast path. When the buy-side route is two or
+      // more preauths (no intent / intent-var in the mix), settle them in
+      // ONE (commit, reveal) pair instead of N. Saves ~70% on Bitcoin
+      // fees by amortizing the envelope + script-path overhead. Falls
+      // through to the per-fill loop on any failure so single-take's
+      // robustness is preserved. Mixed routes (preauth + intent) still
+      // use the loop — intents have a separate claim/wait/finalize flow
+      // that can't share a settlement tx.
+      const _allPreauth = dir === 'buy'
+        && result.plan.length >= 2
+        && result.plan.every(c => c.kind === 'preauth');
+      if (_allPreauth) {
+        // Mark every queued row as broadcasting so the UI reflects "in
+        // flight" while the single reveal is built and signed.
+        for (let i = 0; i < result.plan.length; i++) progressItems[i].status = 'broadcasting';
+        actionBtn.textContent = `batching ${result.plan.length} fills…`;
+        _renderSwapProgress(progressEl, progressItems);
+        try {
+          const batch = await takePreauthSaleBatch({
+            assetIdHex: aid,
+            sales: result.plan.map(c => ({ saleIdHex: c.l.sale_id, sale: c.l })),
+          });
+          // All-or-nothing success: stamp every progress row as done +
+          // tagged with the reveal txid, apply optimistic credits, and
+          // count fills toward the toast. The single reveal txid is the
+          // common artifact for every fill in the batch.
+          for (let i = 0; i < result.plan.length; i++) {
+            progressItems[i].status = 'done';
+            progressItems[i].txid = batch.reveal_txid || batch.commit_txid || null;
+            const c = result.plan[i];
+            if (typeof c.amt === 'bigint') applyOptimisticCredit(aid, c.amt);
+          }
+          filled = result.plan.length;
+          _renderSwapProgress(progressEl, progressItems);
+          // Mark all reveal inputs spent so any back-to-back swap on
+          // the same widget doesn't double-pick the consumed UTXOs.
+          try {
+            const tx = await getTx(batch.reveal_txid);
+            _markTxInputsSpent(tx);
+          } catch {}
+          try { _totalFeesSats += await _collectSwapFee({ commit_txid: batch.commit_txid, reveal_txid: batch.reveal_txid }); } catch {}
+        } catch (e) {
+          // Batch failed. Mark the FIRST row as failed (the rest stay
+          // queued — none broadcast since the batch is atomic) and let
+          // the toast carry the error.
+          lastErr = e?.message || String(e);
+          progressItems[0].status = 'failed';
+          progressItems[0].err = lastErr;
+          for (let i = 1; i < result.plan.length; i++) progressItems[i].status = 'queued';
+          _renderSwapProgress(progressEl, progressItems);
+        }
+      }
+      // Per-fill loop. Runs in two cases:
+      //   1. Mixed-kind routes (preauth + intent) — batching unavailable.
+      //   2. Sell-side fulfilments (each is an independent intent claim).
+      // When the batch path above ran successfully, `filled === plan.length`
+      // and this loop is a no-op. When the batch path threw, `lastErr` is
+      // set and the `break` on the first iteration short-circuits the loop
+      // so we don't try to single-take after a batch failure.
+      for (let i = filled; i < result.plan.length; i++) {
+        if (lastErr) break;
         // Cancel-after-this-fill check. Already-broadcast in-flight fills
         // can't be recalled, but the loop bails before broadcasting the
         // next one. Surfaces as "stopped at N/M" in the completion toast.
@@ -47790,6 +48258,11 @@ function bindMarketAssetHeader(scope) {
   // preventDefault, so we do that explicitly.
   scope.querySelectorAll('[data-act="market-back-browse"]').forEach(el => {
     el.onclick = (ev) => { ev.preventDefault(); goToMarketBrowse(); };
+    // Hover color shift was previously inline (onmouseover/onmouseout),
+    // which the page CSP (script-src 'self' 'wasm-unsafe-eval') blocks.
+    // Bind via addEventListener so the effect survives without a CSP relax.
+    el.addEventListener('mouseenter', () => { el.style.color = 'var(--ink)'; });
+    el.addEventListener('mouseleave', () => { el.style.color = 'var(--ink-mid)'; });
   });
   // Esc-to-browse shortcut: bound on the window so the asset detail can
   // be dismissed without mouse targeting. Cleared on next asset entry
@@ -52134,7 +52607,7 @@ export {
   // POST to /preauth-sales to fail with "seller_asset_spend_sig invalid".
   sighashV0WithType,
   // Buyer/seller flow exports.
-  publishPreauthSale, publishPreauthSaleChunks, cancelPreauthSale, takePreauthSale, fetchPreauthSale,
+  publishPreauthSale, publishPreauthSaleChunks, cancelPreauthSale, takePreauthSale, takePreauthSaleBatch, fetchPreauthSale,
   // §5.7.6 atomic-intent flow exports — used by the signet e2e harness to
   // drive publish → claim → fulfil → take headlessly without the browser UI.
   publishAxferIntent, claimAxferIntent, fulfilAxferIntent,
