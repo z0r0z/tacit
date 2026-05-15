@@ -5544,5 +5544,27 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 </div>
 
 <script type="module" src="./tacit.js?cb=531409bc"></script>
+
+<!--
+  Service worker registration. Cached layers:
+    - tacit.js bundle, vendor, prf-wallet, preboot (cache-first + SWR revalidate)
+    - Worker /ipfs/<cid> responses (cache-first; content-addressed = immutable)
+    - Worker /chain/tx/<txid> responses (cache-first; confirmed tx is immutable)
+  Everything else passes through to the network. The SW is OPT-IN per browser
+  (no quota cost if not supported), and any error during registration is
+  swallowed — a failed SW load doesn't break the dapp. Registered AFTER
+  page paint (load event) so the install/activate work doesn't compete
+  with the first-render network fetches.
+-->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js', { scope: './' })
+        .catch(err => { /* SW registration failed — dapp works without it */
+          if (window.console) console.warn('[tacit] SW registration failed:', err?.message || err);
+        });
+    });
+  }
+</script>
 </body>
 </html>
