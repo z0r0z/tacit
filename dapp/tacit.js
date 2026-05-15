@@ -40635,17 +40635,29 @@ function _filterTradesByTimeFrame(trades, tf) {
   if (tf === 'ALL') return trades;
   const windowSec = { '1H': 3600, '4H': 4 * 3600, '1D': 24 * 3600, '1W': 7 * 24 * 3600 }[tf] || 24 * 3600;
   const cutoff = Math.floor(Date.now() / 1000) - windowSec;
-  const filtered = trades.filter(t => Number(t.ts || 0) >= cutoff);
-  // Fallback: if the window is empty (cold asset that hasn't traded recently)
-  // still show the full ring so the chart isn't blank. The chips remain so
-  // the user can pick a longer window manually.
-  return filtered.length >= 2 ? filtered : trades;
+  // Return the filtered set AS-IS — even when it's empty / has one trade.
+  // The chart renderer's empty-state branch displays a "no trades in <tf>"
+  // placeholder so users see their chip selection actually take effect
+  // rather than silently falling back to the full ring (which looked
+  // identical to ALL and made the chips feel broken).
+  return trades.filter(t => Number(t.ts || 0) >= cutoff);
 }
 
 function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
-  // Need at least 2 points to draw a line. 1-trade markets fall back to
-  // the recent-trades table — no chart.
-  if (!Array.isArray(trades) || trades.length < 2) return '';
+  // Empty / single-point state — render a placeholder card instead of an
+  // empty chart. Users picking a tight time-frame (1H, 4H) on a quiet asset
+  // would otherwise see an unchanged chart and assume the chips are broken.
+  if (!Array.isArray(trades) || trades.length < 2) {
+    const msg = trades && trades.length === 1 ? 'Only 1 trade in this window' : 'No trades in this window';
+    return `
+      <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;">
+        <strong>Price history</strong>
+        <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;"> · ${trades?.length || 0} trades</span>
+      </div>
+      <div style="height:160px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--ink-faint);background:var(--bg-warm, #faf9f5);color:var(--ink-mid);font-size:11px;letter-spacing:0.02em;">
+        ${escapeHtml(msg)} — pick a longer time-frame above
+      </div>`;
+  }
   // Sort oldest → newest for left-to-right time progression. Worker stores
   // newest-first; we sliced to .slice(0, 10) in the table, but the chart
   // uses the FULL ring for max data density.
@@ -40762,26 +40774,27 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
     return `${Math.floor(sec / 86400)}d ago`;
   };
+  // Modern contemporary look: hide individual in-band dots when the dataset
+  // is dense (line + area carry the trend; per-fill dots only clutter).
+  // Outliers stay visible regardless — they ARE the anomalies users want
+  // to spot — but rendered as small soft dots instead of bold orange rings.
+  // On sparse datasets (≤30 trades) we keep the dots so each fill is
+  // individually inspectable; the tooltip on hover still works for all.
+  const showInBandDots = points.length <= 30;
   const dotR = points.length > 80 ? 1.5 : (points.length > 40 ? 2 : 2.5);
-  // In-band dots in the trend color (green); outlier dots dimmed +
-  // hollow so the eye registers them as data without confusing them
-  // for the main trend. Tooltip on each carries the same precise info
-  // regardless of style — the visual is just a focus hint.
+  const outlierR = Math.max(1.5, dotR - 0.5);
   const dots = points.map(p => {
     const outlierTag = p.isOutlier ? ' · outlier vs mark' : '';
     const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}${outlierTag}`;
     if (p.isOutlier) {
-      // Hollow ring with WHITE fill so the marker reads as distinct
-      // from the green trace line and the gridlines even on dense
-      // 200-trade charts. Solid orange stroke + larger radius makes
-      // anomalies visually pop without overwhelming the in-band
-      // signal. Previously these were faint half-opacity hairlines
-      // that blended into the trace and made the "13 outliers ringed"
-      // header text harder to verify against the chart.
-      const oR = (dotR + 1.5).toFixed(1);
-      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${oR}" fill="#faf9f5" stroke="#c97a1a" stroke-width="1.8" opacity="1"><title>${escapeHtml(tip)}</title></circle>`;
+      // Subtle: small dot in a desaturated amber, low opacity. Carries the
+      // forensic information (still hoverable) without dominating the
+      // chart's visual weight. Aligned with the rest of the dapp's amber
+      // anomaly palette (#b8651d) rather than a bespoke orange.
+      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${outlierR}" fill="#b8651d" opacity="0.45"><title>${escapeHtml(tip)}</title></circle>`;
     }
-    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="#0a8f43"><title>${escapeHtml(tip)}</title></circle>`;
+    if (!showInBandDots) return '';
+    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="#0a8f43" opacity="0.85"><title>${escapeHtml(tip)}</title></circle>`;
   }).join('');
   // Horizontal mark-price line so the eye has an anchor for "this is
   // the fair-market reference." Only rendered when the worker
@@ -40804,7 +40817,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     const yMark = yOf(markUnit);
     if (yMark >= PT && yMark <= PT + plotH) {
       const markLbl = `mark ${fmtUnitPriceSats(markUnit)} sats/${ticker}`;
-      markLineStroke = `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="1.2" stroke-dasharray="5,3" opacity="0.7"/>`;
+      markLineStroke = `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>`;
       markLineLabel = `<text x="${(PL + plotW - 4).toFixed(0)}" y="${(yMark - 3.5).toFixed(2)}" font-size="9" fill="#0a8f43" stroke="#faf9f5" stroke-width="3" paint-order="stroke fill" font-family="var(--mono, monospace)" text-anchor="end" font-weight="600">${escapeHtml(markLbl)}</text>`;
     }
   }
@@ -40832,16 +40845,27 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // smaller than reading back from each <circle>'s <title> text.
   const cursorData = points.map(p => ({ ts: p.ts, u: p.u, x: xOf(p.ts), y: yOf(p.u), price: p.price, txid: p.txid }));
   const cursorDataAttr = escapeHtml(JSON.stringify(cursorData));
+  // Unique gradient id per render so multiple chart instances on a page
+  // (rare but possible during re-render diff) don't share + clobber each
+  // other's defs. Random-ish but deterministic within a render.
+  const _gradId = `cg-${(ts0 ^ tsN ^ points.length).toString(36)}`;
   return `
     <div style="font-size:10px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:4px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
       <strong>Price history</strong>${_logBadge}
-      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}${outlierCount > 0 ? ` · <span style="color:#c97a1a;" title="Trades priced &lt;0.2x or &gt;5x of mark price — typically fat-finger fills or dust takes. Shown as hollow orange dots so the eye can spot anomalies without confusing them for the typical price band.">${outlierCount} outlier${outlierCount === 1 ? '' : 's'} ringed</span>` : ''}</span>
+      <span class="muted" style="text-transform:none;letter-spacing:0;font-size:10px;">· ${points.length} trades · ${escapeHtml(fmtUnitPriceSats(yLo))} – ${escapeHtml(fmtUnitPriceSats(yHi))} sats/${escapeHtml(ticker)}${outlierCount > 0 ? ` · <span style="color:#b8651d;" title="Trades priced &lt;0.2× or &gt;5× of mark price — typically fat-finger fills or dust takes. Shown as small faded amber dots so the eye can spot anomalies without them dominating the in-band trend.">${outlierCount} outlier${outlierCount === 1 ? '' : 's'} flagged</span>` : ''}</span>
     </div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);cursor:crosshair;">
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" data-chart-svg data-cursor-points="${cursorDataAttr}" data-plot-pl="${PL}" data-plot-pr="${PR}" data-plot-pt="${PT}" data-plot-pb="${PB}" data-plot-w="${W}" data-plot-h="${H}" data-ticker="${escapeHtml(ticker)}" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);border-radius:4px;cursor:crosshair;">
+      <defs>
+        <linearGradient id="${_gradId}" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#0a8f43" stop-opacity="0.28"/>
+          <stop offset="60%" stop-color="#0a8f43" stop-opacity="0.10"/>
+          <stop offset="100%" stop-color="#0a8f43" stop-opacity="0.00"/>
+        </linearGradient>
+      </defs>
       ${gridlines}
       ${markLineStroke}
-      ${areaPath ? `<path data-chart-area d="${areaPath}" fill="#0a8f43" fill-opacity="0.10" stroke="none"/>` : ''}
-      ${linePath ? `<path data-chart-line d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+      ${areaPath ? `<path data-chart-area d="${areaPath}" fill="url(#${_gradId})" stroke="none"/>` : ''}
+      ${linePath ? `<path data-chart-line d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.95" vector-effect="non-scaling-stroke"/>` : ''}
       ${dots}
       ${markLineLabel}
       <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
