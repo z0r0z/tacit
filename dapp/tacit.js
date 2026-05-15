@@ -2041,11 +2041,24 @@ async function getBtcUsdPrice() {
     // has a 3s timeout so a hung provider can't extend the overall wait
     // beyond 3s. Promise.any rejects only when ALL sources fail (network
     // partition, etc.), at which point we return whatever localStorage had.
+    // Race all five oracles in parallel — first valid response wins. After
+    // a winner resolves, abort the losing fetches so their 429s / errors
+    // don't end up in the console (every public oracle rate-limits eventually
+    // and the browser logs every failed fetch regardless of whether we use
+    // the result). AbortController per attempt + a shared "winner found"
+    // signal aborts everyone-else the instant Promise.any resolves.
+    const sharedAbort = new AbortController();
     const _withTimeout = (url, opts) => {
       const ctrl = new AbortController();
+      // Chain: shared cancel ALSO aborts this individual controller.
+      const onShared = () => ctrl.abort();
+      sharedAbort.signal.addEventListener('abort', onShared, { once: true });
       const timer = setTimeout(() => ctrl.abort(), 3000);
       const merged = Object.assign({}, opts || {}, { signal: ctrl.signal });
-      return fetch(url, merged).finally(() => clearTimeout(timer));
+      return fetch(url, merged).finally(() => {
+        clearTimeout(timer);
+        sharedAbort.signal.removeEventListener('abort', onShared);
+      });
     };
     const _commit = (usd) => {
       _btcUsdMemCache = { price: usd, fetchedAt: Date.now() };
@@ -2119,6 +2132,10 @@ async function getBtcUsdPrice() {
         _fetchCoinGecko(),
         _fetchChainlink(),
       ]);
+      // Cancel losers so their downstream responses don't surface as console
+      // noise (a slow CoinGecko 429 arriving after Coinbase succeeded is
+      // useless to us but still gets logged by the browser).
+      sharedAbort.abort();
       return _commit(usd);
     } catch (e) {
       // AggregateError means all five failed — return stale cache (better
@@ -2820,10 +2837,20 @@ async function getFeeRate() {
   // mainnet floors with headroom; if the user is in a real fee crunch they
   // should retry once any provider recovers.
   let base = net === 'mainnet' ? 15 : 2;
+  // Shared abort: once Promise.any picks a winner, abort everyone else so
+  // their pending requests don't surface as 400/429 console errors (which
+  // they often do — blockstream's /fee-estimates returns 400 under throttle,
+  // and the slow side of any race tends to be the rate-limited one).
+  const sharedAbort = new AbortController();
   const _withTimeout = (url, timeoutMs = 3000) => {
     const ctrl = new AbortController();
+    const onShared = () => ctrl.abort();
+    sharedAbort.signal.addEventListener('abort', onShared, { once: true });
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+    return fetch(url, { signal: ctrl.signal }).finally(() => {
+      clearTimeout(timer);
+      sharedAbort.signal.removeEventListener('abort', onShared);
+    });
   };
   // mempool.space-style: { fastestFee, halfHourFee, hourFee, ... } in sat/vB.
   const _mempoolStyle = async (apiBase) => {
@@ -2864,6 +2891,10 @@ async function getFeeRate() {
     const rate = await Promise.any(attempts);
     base = Math.max(1, Math.ceil(rate));
     apiOk = true;
+    // Cancel losing fee-rate fetches so their responses (often blockstream
+    // 400/429 under load) don't surface as console errors after we already
+    // have the answer from a faster source.
+    sharedAbort.abort();
   } catch {
     if (net === 'mainnet') {
       // Surface the fact that we're on a fallback rate so the user understands
@@ -36572,6 +36603,16 @@ async function renderMarket() {
   //      see the URL reflect that state for shareability.
   if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
     _writeMarketHash(_marketView.assetId);
+    // Cold-load latency cut: when the deep-link is for a specific asset,
+    // fire its /assets/<aid> stats fetch IN PARALLEL with the marketplace
+    // index fetch below. fetchMarketAssetStats dedupes via its inflight
+    // promise, so the populateMarketAssetStats call later in this render
+    // (which awaits the same promise) gets a warm result instead of
+    // initiating a second round-trip. Sequential before: market → stats =
+    // 2× round-trip-time. Parallel after: max(market, stats) = 1× rtt.
+    if (typeof fetchMarketAssetStats === 'function') {
+      fetchMarketAssetStats(_marketView.assetId, { force: false }).catch(() => {});
+    }
   } else {
     _writeMarketHash(null);
   }
