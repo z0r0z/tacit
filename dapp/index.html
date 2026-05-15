@@ -4914,7 +4914,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <span style="margin-left:8px;font-style:italic;">non-custodial, Bitcoin-native, 0% protocol fee</span>
         </summary>
         <div class="muted" style="margin-top:8px;font-size:12px;line-height:1.55;">
-          <strong>Plain version.</strong> Pick an asset. Type how much you want to buy or sell. Click Swap. Each trade settles in one Bitcoin transaction — at the moment you click, atomically. No order-reordering window, no sequencer, no MEV bot can front-run you. There's no protocol fee — you just pay Bitcoin miner fees (~$0.01-$0.03 per swap on a multi-fill route, less on a single fill). Your wallet holds your tokens the whole time; nobody else custodies them. The amount you hold is encrypted on-chain (confidential); only the prices of trades you participated in are revealed.
+          <strong>Plain version.</strong> Pick an asset. Type how much you want to buy or sell. Click Swap. Each trade settles atomically in one on-chain settlement tx — at the moment you click, the asset and the sats change hands together or not at all. No order-reordering window, no sequencer, no MEV bot can front-run you. There's no protocol fee — you just pay Bitcoin miner fees (~$0.01-$0.03 per swap at today's low Bitcoin feerates; scales linearly with network feerate during congestion). Your wallet holds your tokens the whole time; nobody else custodies them. Your overall holdings stay encrypted on-chain (Pedersen commitments — observers see opaque points, not balances); the individual trades you participate in publish their amount + price to the worker index so the orderbook can show live depth.
           <div style="margin-top:8px;"><strong>What's on the orderbook.</strong> Two sides — buyers (bids) and sellers (asks) — like any exchange. Three kinds of offers, all routed automatically when you Swap:
             <ul style="margin:4px 0 0 18px;padding:0;">
               <li><strong>⚡ Instant listings</strong> (most common ask). Seller pre-signed everything before going offline. You click Buy, your tx settles, seller gets paid — all in one Bitcoin tx. They don't need to be online.</li>
@@ -5776,7 +5776,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <div class="faq-q">Is there MEV / front-running?</div>
       <div class="faq-a">
-        Not by construction. Every orderbook fill is a single atomic Bitcoin tx — once the maker and taker both sign, only the holder can broadcast, and the trade either settles fully or doesn't. There's no public mempool ordering game, no privileged sequencer, no sandwich window. When the AMM ships, it batches all swap intents per block at one uniform clearing price so sandwich attacks have nothing to sandwich.
+        Not by construction. Every orderbook fill commits asset + sats atomically in one settlement tx — once the maker and taker both sign, only the holder of the signed bundle can broadcast, and the trade either settles fully or doesn't. There's no public mempool ordering game, no privileged sequencer, no sandwich window. Atomic-intent claims have a 5-min first-come window where another buyer could claim before you (not MEV — just race condition), but the rest of the orderbook (preauth sales + batched takes) is sealed-bid by signature. When the AMM ships, it batches all swap intents per block at one uniform clearing price so sandwich attacks have nothing to sandwich.
       </div>
 
       <div class="faq-q">How do I see my tacit balances?</div>
@@ -5791,12 +5791,12 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
       <div class="faq-q">Can I recover from just my privkey?</div>
       <div class="faq-a">
-        Yes — for every on-chain envelope. The dApp scans chain data, walks ancestry back to each CETCH / MINT, and decrypts amounts via ECDH. No share-link, no sync server, no counterparty cooperation; privkey + chain alone reconstruct the wallet, even years later on a fresh device. (Atomic intents — the OTC marketplace coordination layer — have their own recovery flow documented in SPEC §5.7.6.)
+        Yes — for every on-chain envelope. The dApp scans chain data, walks ancestry back to each CETCH / MINT, and decrypts amounts via ECDH. No share-link, no sync server, no counterparty cooperation; privkey + chain alone reconstruct the wallet, even years later on a fresh device. <em>Marketplace failure modes</em> have explicit recovery flows too: a preauth-take whose commit broadcast but reveal failed leaves a stranded P2TR output that the original wallet can script-path-spend back to itself (Holdings + Activity tabs surface a Recover button automatically; recovery record stored in browser localStorage as a hint, but the chain + privkey are sufficient to spend the commit either way). Atomic-intent claims have their own recovery flow in SPEC §5.7.6.
       </div>
 
       <div class="faq-q">Is amount privacy actually enough?</div>
       <div class="faq-a">
-        For most fungible-token use cases — yes. Tacit hides what's load-bearing: how much is moving. Address-graph and asset-id privacy live at the Bitcoin-substrate layer — same scope every Bitcoin protocol gives you. BIP-352 Silent Payments and Asset Surjection Proofs are on the roadmap, compatible with tacit's wallet model.
+        For most fungible-token use cases — yes. Tacit hides what's load-bearing: <em>how much</em> is moving. For users who also need <em>address-graph</em> privacy (so observers can't link your wallet to your trading history), the built-in shielded mixer pool (<code>T_DEPOSIT</code> / <code>T_WITHDRAW</code>, SPEC §5.10–§5.11) cuts the link via Groth16 zk-SNARK withdrawals: deposit a fixed-denomination UTXO, later withdraw under a proof of unspent-leaf membership, recipient unlinkable to any specific deposit. So tacit covers both amount-hiding (by default) and unlinkability (opt-in via mixer) — a stricter privacy posture than Liquid CT, approaching shielded Zcash for assets that route through the pool. Asset-id remains public on chain regardless; BIP-352 Silent Payments and Asset Surjection Proofs are on the roadmap for further coverage.
       </div>
 
       <div class="faq-q">How do I trust the announced supply when amounts are hidden?</div>
@@ -5810,9 +5810,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         Wrapped BTC (cBTC) is only relevant when you need a <em>tacit-side token</em> denomination — for the AMM (pools are tacit-asset ↔ tacit-asset by design), for amount-confidential BTC balances, or as CDP collateral. The wrapper convention (SPEC §4.2, merged) defines the standard; the first cBTC variant launches alongside the AMM. Straight BTC ↔ asset trading on the orderbook uses real sats today.
       </div>
 
-      <div class="faq-q">What's the cost per transfer?</div>
+      <div class="faq-q">What's the cost per transfer / swap?</div>
       <div class="faq-a">
-        ~10 KB witness per CXFER (m=2 aggregation), about 2,500–3,000 vBytes after the SegWit discount. At 10 sat/vB on mainnet that's ~25–30k sats per transfer; at low-fee periods correspondingly less. Roughly 10× the size of a Runes runestone — Runes publishes amounts in cleartext, tacit hides them via Pedersen commitments + bulletproofs. That's where the bytes go.
+        Two different operations, different costs.
+        <strong>Plain send</strong> (within-wallet <code>CXFER</code>): ~10 KB witness with m=2 aggregation, ~2,500–3,000 vBytes after the SegWit discount. At typical low feerates (~1 sat/vB) that's ~2,500–3,000 sats (~$0.02); during Bitcoin congestion (10 sat/vB) it's ~$0.20. Roughly 10× a Runes runestone — Runes publishes amounts in cleartext, tacit hides them via Pedersen commitments + bulletproofs; that's where the bytes go.
+        <strong>Marketplace swap</strong> (one preauth-take settling on Bitcoin): commit + reveal pair ~950 vBytes single-fill, ~1,400 vBytes for a 5-fill batched route. At 1 sat/vB that's $0.008 single, $0.011 for a 5-fill batch — the batching saves ~70% vs N independent settlements (SPEC §5.7.8.1).
       </div>
 
       <div class="faq-q">Is the worker trust-bearing? What if I don't trust it?</div>
