@@ -21895,11 +21895,21 @@ function setupTopupModal() {
   onramperBtn.onclick = () => {
     let addr; try { addr = wallet.address(); } catch { return; }
     if (!addr) return;
-    // Onramper public widget URL. Accepts the destination address via
-    // `wallets=BTC:<addr>` and locks the supported crypto to BTC via the
-    // same param's currency prefix. No API key needed for the public
-    // widget; provider fees + routing are handled inside the iframe.
-    const url = `https://buy.onramper.com?wallets=BTC:${encodeURIComponent(addr)}&supportSwap=false`;
+    // Onramper public widget URL. Their widget reads the destination
+    // address from two different param shapes depending on version, so
+    // we pass BOTH for maximum compatibility:
+    //   - `wallets=BTC:<addr>` (the documented "preset wallets" form)
+    //   - `walletAddress=<addr>` (the single-currency convenience param)
+    // `onlyCryptos=btc` + `defaultCrypto=btc` locks the picker to BTC so
+    // a user can't accidentally buy ETH/USDC/etc. — the field is greyed
+    // out in their UI. No API key needed for the public widget; provider
+    // fees + routing are handled inside the iframe.
+    const params = new URLSearchParams({
+      defaultCrypto: 'btc',
+      onlyCryptos: 'btc',
+      walletAddress: addr,
+    });
+    const url = `https://buy.onramper.com?${params.toString()}&wallets=BTC:${encodeURIComponent(addr)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
   };
 
