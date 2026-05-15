@@ -36605,10 +36605,31 @@ function applyMarketFilters() {
     // so a taker sees the partial-fill window at a glance, mirroring DEX UX
     // where pool depth + min-tick are visible on every card. Whole-UTXO
     // intents keep the bare amount.
+    //
+    // Partial-fill progress: the worker tracks `remaining_amount` on
+    // variable-amount intents (decrements as fills settle, see
+    // worker/src/index.js:8968+). Tile now surfaces the remaining size
+    // rather than the original — matches the bid-panel behavior at
+    // line 41103 and keeps the orderbook "honest" so a taker doesn't
+    // try to buy a 100-TAC slice from a tile that actually only has
+    // 30 TAC left. When remaining < original, also show "X of N
+    // left" so the partial-fill history is visible.
     const _isVariableIntent = l.kind === 'intent' && !!l.min_take_amount;
+    const _origAmtBig = (() => { try { return BigInt(amount || '0'); } catch { return 0n; } })();
+    const _remAmtBig = (() => {
+      if (!_isVariableIntent) return _origAmtBig;
+      try {
+        if (l.remaining_amount != null) {
+          const r = BigInt(l.remaining_amount);
+          if (r > 0n && r <= _origAmtBig) return r;
+        }
+      } catch {}
+      return _origAmtBig;
+    })();
+    const _partiallyFilled = _isVariableIntent && _remAmtBig > 0n && _remAmtBig < _origAmtBig;
     const _amountLine = _isVariableIntent
-      ? `<span style="font-size:10px;color:var(--ink-mid);font-weight:400;letter-spacing:0.04em;text-transform:uppercase;">from</span> ${escapeHtml(fmtAssetAmount(BigInt(l.min_take_amount || '0'), dec))} <span style="font-size:11px;color:var(--ink-mid);">·</span> <span style="font-size:11px;color:var(--ink-mid);">up to ${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}</span>`
-      : `${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(BigInt(amount || '0'), dec))}`;
+      ? `<span style="font-size:10px;color:var(--ink-mid);font-weight:400;letter-spacing:0.04em;text-transform:uppercase;">from</span> ${escapeHtml(fmtAssetAmount(BigInt(l.min_take_amount || '0'), dec))} <span style="font-size:11px;color:var(--ink-mid);">·</span> <span style="font-size:11px;color:var(--ink-mid);">up to ${escapeHtml(fmtAssetAmount(_remAmtBig, dec))}${_partiallyFilled ? ` <small class="muted" style="font-size:9px;" title="${escapeHtml(fmtAssetAmount(_remAmtBig, dec))} ${escapeHtml(a.ticker || 'token')} of ${escapeHtml(fmtAssetAmount(_origAmtBig, dec))} ${escapeHtml(a.ticker || 'token')} originally listed remain tradable. Fills landing across blocks decrement this.">(of ${escapeHtml(fmtAssetAmount(_origAmtBig, dec))} listed)</small>` : ''}</span>`
+      : `${l.kind === 'range' ? '&ge; ' : ''}${escapeHtml(fmtAssetAmount(_origAmtBig, dec))}`;
     tile.innerHTML = `
       ${_tileTopHtml}
       <div class="market-listing-amount">${_amountLine}${_groupBadge}</div>
