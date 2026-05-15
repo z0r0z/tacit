@@ -717,6 +717,10 @@ await test('aggregated hint listing_kind == "instant-batch" (distinguishable fro
   const h = hintPosts.find(x => x.reveal_txid === result4.reveal_txid);
   return h && h.listing_kind === 'instant-batch';
 });
+await test('aggregated hint carries fill_count == 2 (per-fill granularity preserved in metadata)', () => {
+  const h = hintPosts.find(x => x.reveal_txid === result4.reveal_txid);
+  return h && h.fill_count === 2;
+});
 
 await test('N=1 fast path delegates to single-take (no behavior change)', async () => {
   broadcasts.length = 0;
@@ -908,6 +912,10 @@ await test('N=5: aggregated hint amount == String(Σ asset amounts)', () => {
   const expected = String(sellers5.reduce((s, x) => s + x.amount, 0n));
   return h && h.amount === expected;
 });
+await test('N=5: aggregated hint carries fill_count == 5', () => {
+  const h = hintPosts.find(x => x.reveal_txid === result5.reveal_txid);
+  return h && h.fill_count === 5;
+});
 
 // --- Scenario 5b: N=8 batch (powers-of-2 boundary; near typical limit) ---
 console.log('\n§ Scenario 5b: batched preauth-take at scale (N=8 boundary):');
@@ -973,6 +981,10 @@ await test('N=8: aggregated hint amount == String(Σ all 8 asset amounts)', () =
   const h = hintPosts.find(x => x.reveal_txid === result8.reveal_txid);
   const expected = String(sellers8.reduce((s, x) => s + x.amount, 0n));
   return h && h.amount === expected;
+});
+await test('N=8: aggregated hint carries fill_count == 8', () => {
+  const h = hintPosts.find(x => x.reveal_txid === result8.reveal_txid);
+  return h && h.fill_count === 8;
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);

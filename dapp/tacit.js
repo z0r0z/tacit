@@ -15354,6 +15354,12 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
       // No single seller_address makes sense for an N-seller batch; omit.
       buyer_address: wallet.address(),
       listing_kind: 'instant-batch',
+      // fill_count: how many fills the batched reveal settled. Worker
+      // stores this on last_trade + ring buffer entries so the chart +
+      // tape can render the "5-fill batch" annotation. Defaulted to 1
+      // server-side if absent, so older worker builds tolerate this
+      // field without rejecting the hint.
+      fill_count: expanded.length,
     });
   } catch {}
 
@@ -35286,6 +35292,14 @@ function postHint(revealTxid, revealVout = 0, opts = {}) {
     for (const k of ['seller_address', 'buyer_address', 'listing_kind']) {
       if (typeof opts[k] === 'string' && opts[k].trim()) tradeBody[k] = opts[k].trim();
     }
+    // fill_count: how many fills the trade aggregated. Older worker
+    // builds treat this as missing → defaults to 1 server-side; newer
+    // builds store it on last_trade + ring buffer for the chart/tape
+    // multi-fill annotation. Capped at 255 (matches AXFER asset_input_
+    // count byte range).
+    if (Number.isInteger(opts.fill_count) && opts.fill_count >= 1 && opts.fill_count <= 255) {
+      tradeBody.fill_count = opts.fill_count;
+    }
   }
   const delays = [0, 3000, 8000, 20000, 60000]; // ~90s total before giving up
   (async () => {
@@ -44690,6 +44704,16 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
     const _gcSuffix = _gc > 1
       ? ` <span class="muted" style="color:var(--ink-mid);font-weight:600;" title="${escapeHtml(_gc)} consecutive fills at this price/size/time bucket. Txids: ${escapeHtml((t._groupTxids || []).map(x => x.slice(0, 8)).join(', '))}">×${_gc}</span>`
       : '';
+    // fill_count badge: separate from the visual-collapse ×N suffix. A
+    // single tape entry with fill_count > 1 came from a buy-side batched
+    // preauth-take that aggregated N seller fills into one settlement tx
+    // (SPEC §5.7.8 amendment). The price + amount on this entry are
+    // Σ-aggregated across those N fills; the badge tells the trader
+    // "this print is one batched buy of N preauths, not a single fill."
+    const _fc = Number(t.fill_count || 1);
+    const _fcSuffix = _fc > 1
+      ? ` <span style="font-size:9px;padding:0 4px;background:#0a8f43;color:#fff;font-weight:700;letter-spacing:0.03em;" title="Batched buy: ${_fc} preauth fills settled in one Bitcoin tx. The displayed price + amount are aggregates across those fills.">batch ${_fc}</span>`
+      : '';
     const _tipBase = isOutlier
       ? 'Outlier vs mark (priced &lt;0.2× or &gt;5× the worker\'s outlier-guarded mark price). Probably a dust take or fat-finger fill.'
       : '';
@@ -44697,7 +44721,7 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
       <span class="muted" data-age-ts="${ts}" data-age-fmt="ago">${escapeHtml(age)} ago</span>
       ${tickGlyph}
       <strong style="color:${priceColor};">${escapeHtml(fmtMarketUnitSats(u))}/${escapeHtml(ticker)}</strong>
-      <span class="muted">× ${escapeHtml(amtStr)}</span>${_gcSuffix}
+      <span class="muted">× ${escapeHtml(amtStr)}</span>${_gcSuffix}${_fcSuffix}
     </span>`;
   }).filter(Boolean).join('');
   if (!itemsHtml) {

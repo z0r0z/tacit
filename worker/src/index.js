@@ -4675,11 +4675,26 @@ async function handleAssetHint(req, env, network, cors, ctx) {
       try {
         const amt = BigInt(body.amount);
         if (amt > 0n && amt < (1n << 64n)) {
+          // fill_count: how many fills the batched reveal settled. Defaults
+          // to 1 (a single-take or a CXFER from an older dapp). >1 means
+          // this trade's price_sats + amount aggregate across N fills
+          // settled in one Bitcoin tx (buy-side batched preauth-take,
+          // SPEC §5.7.8 amendment). The chart + tape can render the
+          // multi-fill annotation off this metadata; volume + mark price
+          // calculations are unaffected (they consume the aggregated
+          // price_sats / amount the same way regardless of fill_count).
+          // Capped at 255 — matches T_AXFER's asset_input_count byte; a
+          // larger value would be a malformed hint anyway.
+          const _fcRaw = Number(body.fill_count);
+          const fillCount = (Number.isInteger(_fcRaw) && _fcRaw >= 1 && _fcRaw <= 255)
+            ? _fcRaw
+            : 1;
           lastTrade = {
             txid: txidHex,
             price_sats: body.price_sats,
             amount: body.amount,
             ts: Math.floor(Date.now() / 1000),
+            fill_count: fillCount,
           };
           // last_trade is last-write-wins; overwriting on a replay is harmless
           // (same data) and lets a stale display refresh.

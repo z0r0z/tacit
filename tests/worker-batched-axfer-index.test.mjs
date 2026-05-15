@@ -202,9 +202,26 @@ const REVEAL_TXID = '33'.repeat(32);
 // Mini-handler matching the cron's `if (counted) { daily += price_sats }`
 // pattern around worker/src/index.js line 4696. Mirrors the production
 // logic byte-for-byte so a regression in either side surfaces here.
-async function applyBatchedHint(env, network, aid, txidHex, price_sats) {
+// fill_count flows into the lastTrade + ring buffer entry (defaults to 1
+// if absent, capped at 255); volume + lifetime totals are unaffected
+// since they consume price_sats directly.
+async function applyBatchedHint(env, network, aid, txidHex, price_sats, fill_count) {
   const counted = await bumpTransferCount(env, network, aid, txidHex);
   if (!counted) return { counted, daily_delta: 0 };
+  const _fcRaw = Number(fill_count);
+  const fillCount = (Number.isInteger(_fcRaw) && _fcRaw >= 1 && _fcRaw <= 255)
+    ? _fcRaw
+    : 1;
+  const lastTrade = {
+    txid: txidHex,
+    price_sats,
+    amount: '1',
+    ts: NOW,
+    fill_count: fillCount,
+  };
+  // Stub the last_trade write so the ring-buffer assertion below can
+  // read it back.
+  await env.REGISTRY_KV.put(`lasttrade-test:${aid}:${txidHex}`, JSON.stringify(lastTrade));
   const dayKey = tradeDayKey(network, aid, _utcYyyymmdd(NOW));
   const prevDay = await env.REGISTRY_KV.get(dayKey);
   const prevSats = prevDay ? (Number(prevDay) || 0) : 0;
@@ -214,39 +231,82 @@ async function applyBatchedHint(env, network, aid, txidHex, price_sats) {
   const prevLife = await env.REGISTRY_KV.get(lifeKey);
   const prevLifeSats = prevLife ? (Number(prevLife) || 0) : 0;
   await env.REGISTRY_KV.put(lifeKey, String(prevLifeSats + price_sats));
-  return { counted, daily_delta: price_sats };
+  return { counted, daily_delta: price_sats, lastTrade };
 }
 
 await test('first batched hint adds Σ price_sats to today bucket', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
-  const r = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 5000 + 3000 + 7000); // Σ = 15,000
+  const r = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 5000 + 3000 + 7000, 3); // Σ = 15,000
   const stored = await env.REGISTRY_KV.get(tradeDayKey(NETWORK, ASSET, TODAY));
   return r.counted === true && Number(stored) === 15_000;
 });
 
 await test('duplicate hint replay does NOT double-count', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
-  await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000);
-  const dup = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000);
+  await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000, 3);
+  const dup = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000, 3);
   const stored = await env.REGISTRY_KV.get(tradeDayKey(NETWORK, ASSET, TODAY));
   return dup.counted === false && dup.daily_delta === 0 && Number(stored) === 15_000;
 });
 
 await test('two batched reveals (different txids) sum to combined day-bucket', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
-  await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000);
-  await applyBatchedHint(env, NETWORK, ASSET, '44'.repeat(32), 22_500);
+  await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000, 3);
+  await applyBatchedHint(env, NETWORK, ASSET, '44'.repeat(32), 22_500, 5);
   const stored = await env.REGISTRY_KV.get(tradeDayKey(NETWORK, ASSET, TODAY));
   return Number(stored) === 37_500;
 });
 
 await test('lifetime cumulative volume tracks Σ across batched reveals', async () => {
   const env = { REGISTRY_KV: makeKvStub() };
-  await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000);
-  await applyBatchedHint(env, NETWORK, ASSET, '44'.repeat(32), 22_500);
-  await applyBatchedHint(env, NETWORK, ASSET, '55'.repeat(32), 8_000);
+  await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000, 3);
+  await applyBatchedHint(env, NETWORK, ASSET, '44'.repeat(32), 22_500, 5);
+  await applyBatchedHint(env, NETWORK, ASSET, '55'.repeat(32), 8_000, 1);
   const lifetime = await env.REGISTRY_KV.get(tradeLifetimeKey(NETWORK, ASSET));
   return Number(lifetime) === 45_500;
+});
+
+// ============================================================================
+// 4b. fill_count: lastTrade record propagation
+//
+// Pins that the hint handler stores fill_count on the last_trade /
+// ring-buffer entries unchanged, defaulting to 1 for legacy callers
+// (older dapp builds or non-batched flows) and capping at 255 to
+// reject malformed bodies.
+// ============================================================================
+console.log('\n§ fill_count metadata propagation:');
+
+await test('batched hint stores fill_count == N on lastTrade record', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const r = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 15_000, 5);
+  return r.lastTrade && r.lastTrade.fill_count === 5;
+});
+await test('single-take hint stores fill_count == 1', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const r = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 1_000, 1);
+  return r.lastTrade && r.lastTrade.fill_count === 1;
+});
+await test('missing fill_count defaults to 1 (backwards compat with older dapp builds)', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const r = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 1_000, undefined);
+  return r.lastTrade && r.lastTrade.fill_count === 1;
+});
+await test('fill_count > 255 is clamped to 1 (rejected as malformed)', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const r = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 1_000, 999);
+  return r.lastTrade && r.lastTrade.fill_count === 1;
+});
+await test('fill_count < 1 (zero or negative) is clamped to 1', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const r1 = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 1_000, 0);
+  const r2 = await applyBatchedHint(env, NETWORK, ASSET, '66'.repeat(32), 1_000, -3);
+  return r1.lastTrade && r1.lastTrade.fill_count === 1
+      && r2.lastTrade && r2.lastTrade.fill_count === 1;
+});
+await test('fill_count = 255 (max) is accepted as-is', async () => {
+  const env = { REGISTRY_KV: makeKvStub() };
+  const r = await applyBatchedHint(env, NETWORK, ASSET, REVEAL_TXID, 1_000, 255);
+  return r.lastTrade && r.lastTrade.fill_count === 255;
 });
 
 // ============================================================================
