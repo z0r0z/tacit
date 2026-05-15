@@ -38383,10 +38383,32 @@ function applyMarketFilters() {
   populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
   const grid = $('#market-grid');
   const myPubHex = bytesToHex(wallet.pub);
+  // Locate the cheapest preauth in the currently-paginated page so we can
+  // pin a "Best price" pill on it. Asset-mode default sort is unit-asc so
+  // this is usually the first tile, but we walk explicitly to skip
+  // openings/ranges/intents — those settle differently and aren't on the
+  // same "buy now" ladder. Only tagged on page 1 of the asks ladder
+  // (where the cheapest-overall lives); deeper pages don't get a pill
+  // because they're not the actual best price.
+  let bestPreauthIdx = -1;
+  if (askStartIndex === 0) {
+    let bestUnit = Infinity;
+    for (let i = 0; i < pageRows.length; i++) {
+      const lr = pageRows[i];
+      if (lr.kind !== 'preauth') continue;
+      const amtBig = (() => { try { return BigInt(marketListingAmount(lr) || '0'); } catch { return 0n; } })();
+      if (amtBig <= 0n) continue;
+      const decI = Number.isInteger(lr._asset?.decimals) ? lr._asset.decimals : 0;
+      const u = unitPriceSats(marketListingPriceSats(lr), amtBig, decI);
+      if (u == null || !(u < bestUnit)) continue;
+      bestUnit = u; bestPreauthIdx = i;
+    }
+  }
   // Build all tiles into a DocumentFragment first; one reflow at the end
   // instead of N reflows during the loop. Material on busy markets.
   const frag = document.createDocumentFragment();
-  for (const l of pageRows) {
+  for (let _tileIdx = 0; _tileIdx < pageRows.length; _tileIdx++) {
+    const l = pageRows[_tileIdx];
     const a = l._asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
@@ -38540,12 +38562,19 @@ function applyMarketFilters() {
       : '';
     const listedTs = Number(l.listed_at || l.created_at || 0);
     const listedRel = relativeAge(listedTs);
-    // data-age-ts on the relative-time span so _startLiveAgeTicker can
-    // tick "5m ago" → "6m ago" without a re-render. Falls back to the
-    // raw expIso text when listed_at is missing.
-    const recencyLine = listedRel && listedTs > 0
-      ? `listed <span data-age-ts="${listedTs}" data-age-fmt="ago">${escapeHtml(listedRel)} ago</span> - expires ${expIso}`
-      : `expires ${expIso}`;
+    // "Expires in Xd" relative is what a buyer scanning the ladder
+    // actually cares about — "expires 2026-05-22" forces a calendar
+    // calculation. Keep absolute date in the title= hover for power
+    // users who want it. listed-X-ago stays after the bullet as a
+    // recency cue; data-age-ts keeps the live tick going.
+    const expSec = Number(l.expiry || 0);
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expRel = expSec > nowSec ? relativeAge(expSec) : null;
+    const recencyLine = expRel
+      ? `<span title="Expires ${escapeHtml(expIso)}">expires in ${escapeHtml(expRel)}</span>${listedRel && listedTs > 0 ? ` · listed <span data-age-ts="${listedTs}" data-age-fmt="ago">${escapeHtml(listedRel)} ago</span>` : ''}`
+      : (listedRel && listedTs > 0
+        ? `listed <span data-age-ts="${listedTs}" data-age-fmt="ago">${escapeHtml(listedRel)} ago</span> · expires ${expIso}`
+        : `expires ${expIso}`);
     const displayId = marketListingDisplayId(l);
     // Ticker, asset_id, network, and ticker-collision state are already shown
     // in the asset-detail header above; we don't repeat them on each tile.
@@ -38620,17 +38649,32 @@ function applyMarketFilters() {
       const _pctStr = (_pctBp / 100).toFixed(_pctBp >= 100 ? 0 : 1);
       _fillProgressBar = `<div class="market-listing-fill-bar" style="margin-top:6px;height:3px;background:var(--ink-faint, #dcd7c8);position:relative;overflow:hidden;" title="${escapeHtml(_pctStr)}% of the original ${escapeHtml(fmtAssetAmount(_origAmtBig, dec))} ${escapeHtml(a.ticker || 'token')} listing has already filled. The remaining ${escapeHtml(fmtAssetAmount(_remAmtBig, dec))} ${escapeHtml(a.ticker || 'token')} is still tradable."><div style="width:${_pctBp / 100}%;height:100%;background:#0a8f43;"></div></div>`;
     }
+    // "Best price" pill on the cheapest preauth tile of page 1.
+    // Visual scan-cue so a buyer can spot the canonical fill target
+    // without comparing 12 prices. Pill is only meaningful for preauth
+    // (the single-tx instant-fill kind) — atomic intents and OTC
+    // openings/ranges don't share the ladder semantically.
+    const _bestPriceBadge = (_tileIdx === bestPreauthIdx && l.kind === 'preauth')
+      ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="Cheapest preauth (single-tx instant fill) on this page.">BEST PRICE</span>`
+      : '';
+    // Token-id row + seller row: demoted to 9px / very muted. They're
+    // useful for power users verifying a listing or recognizing a
+    // repeat maker, but on a buyer's scan they're noise. Address +
+    // full id still visible via title=.
+    const _shortSeller = shorten(l.maker_address || l.seller_payout_address || '', 6);
+    const _fullSeller = l.maker_address || l.seller_payout_address || '';
     tile.innerHTML = `
       ${_tileTopHtml}
-      <div class="market-listing-amount">${_amountLine}${_groupBadge}</div>
+      <div class="market-listing-amount">${_amountLine}${_groupBadge}${_bestPriceBadge}</div>
       ${_fillProgressBar}
       <div class="market-listing-unit">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
         <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` per token` : ''}</small>
       </div>
-      <div class="market-listing-id">#${escapeHtml(shorten(displayId, 8))}${l._isGroup ? ` · group ${escapeHtml(shorten(l._groupId || '', 4))}` : ''}</div>
       <div class="muted" style="margin-top:8px;font-size:10px;">${recencyLine}</div>
-      <div style="margin-top:8px;font-size:10px;" class="muted">${l.kind === 'preauth' ? 'seller' : 'maker'}: <span class="mono-box inline">${escapeHtml(shorten(l.maker_address || l.seller_payout_address || '', 6))}</span></div>
+      <div class="muted" style="margin-top:4px;font-size:9px;opacity:0.65;line-height:1.4;" title="Listing id: ${escapeHtml(displayId)}${_fullSeller ? `\n${l.kind === 'preauth' ? 'Seller' : 'Maker'}: ${escapeHtml(_fullSeller)}` : ''}">
+        <span style="font-family:ui-monospace,monospace;">#${escapeHtml(shorten(displayId, 8))}${l._isGroup ? ` · g ${escapeHtml(shorten(l._groupId || '', 4))}` : ''}</span>${_fullSeller ? ` <span style="margin-left:6px;">${l.kind === 'preauth' ? 'seller' : 'maker'} ${escapeHtml(_shortSeller)}</span>` : ''}
+      </div>
       ${statusRow}
       <div class="market-listing-total">
         <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSatsRaw))}</span>
@@ -42537,14 +42581,20 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   const lo = markValid ? markUnit * 0.2 : 0;
   const hi = markValid ? markUnit * 5 : Infinity;
   let cheapestAsk = null;
+  // Restrict ask-side to `preauth` listings: opening (OTC) and range
+  // listings settle off-chain or via different mechanics and aren't
+  // directly crossable with a bid intent in a single tx. Mixing them
+  // into best-ask used to surface a "crossed 322 sats" spread artifact
+  // whenever a stale OTC opening priced near top-of-book sat alongside
+  // a trustless preauth — visually alarming but never a real arb.
+  // Bids already come from intents only (the variable-fill bid type),
+  // which IS the matching crossable counterpart of preauth.
   const listings = (_marketCache?.listings || []).filter(l =>
-    l._asset?.asset_id === aid && !l.expired,
+    l._asset?.asset_id === aid && !l.expired && l.kind === 'preauth',
   );
   for (const l of listings) {
-    const amt = l.kind === 'range' ? l.threshold
-              : l.kind === 'preauth' ? (l.asset_opening?.amount)
-              : l.amount;
-    const ps = l.kind === 'preauth' ? Number(l.min_price_sats || 0) : Number(l.price_sats || 0);
+    const amt = l.asset_opening?.amount;
+    const ps = Number(l.min_price_sats || 0);
     const u = unitPriceSats(ps, BigInt(amt || 0), decimals);
     if (u == null) continue;
     if (markValid && (u < lo || u > hi)) continue; // skip dust + outliers
@@ -42686,7 +42736,15 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     const frac = amtBig - whole * div;
     return Number(whole) + Number(frac) / Number(div);
   };
+  // Two ask collections:
+  //   `asksAll` — every kind (preauth / opening / range), used for the
+  //   filled-area depth curve so OTC/range supply is visible.
+  //   `asksXable` — preauth only, used for best-ask + crossed-check.
+  // Without this split, an OTC opening priced near top-of-book appeared
+  // as "best ask" and produced spurious crossed-book labels (a real
+  // taker can't single-tx fill an opening against an intent bid).
   const asks = [];
+  const asksXable = [];
   for (const l of (_marketCache?.listings || [])) {
     if (l._asset?.asset_id !== aid || l.expired) continue;
     const amtRaw = l.kind === 'range' ? l.threshold
@@ -42696,7 +42754,10 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     let amtBig = 0n; try { amtBig = BigInt(amtRaw || 0); } catch {}
     if (amtBig <= 0n || ps <= 0) continue;
     const u = unitPriceSats(ps, amtBig, decimals);
-    if (u != null) asks.push({ u, size: _toWholeNumber(amtBig) });
+    if (u == null) continue;
+    const row = { u, size: _toWholeNumber(amtBig) };
+    asks.push(row);
+    if (l.kind === 'preauth') asksXable.push(row);
   }
   const intents = await _fetchBidIntentsCached(aid);
   const nowSec = Math.floor(Date.now() / 1000);
@@ -42721,13 +42782,18 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   }
   if (!asks.length || !bids.length) { out.style.display = 'none'; return; }
   asks.sort((a, b) => a.u - b.u);
+  asksXable.sort((a, b) => a.u - b.u);
   bids.sort((a, b) => b.u - a.u);
   const askCum = []; let cumA = 0;
   for (const a of asks) { cumA += a.size; askCum.push({ u: a.u, cum: cumA }); }
   const bidCum = []; let cumB = 0;
   for (const b of bids) { cumB += b.size; bidCum.push({ u: b.u, cum: cumB }); }
+  // bestBid still walks the full bidCum (intents are the only bid kind so
+  // they're already xable-only). bestAsk uses asksXable so OTC openings
+  // priced near top-of-book don't masquerade as crossable depth — the
+  // depth curve still draws the OTC/range supply as decorative tail.
   const bestBid = bidCum[0].u;
-  const bestAsk = askCum[0].u;
+  const bestAsk = (asksXable.length ? asksXable[0].u : askCum[0].u);
   const lowestBid = bidCum[bidCum.length - 1].u;
   const highestAsk = askCum[askCum.length - 1].u;
   const isCrossed = bestBid > bestAsk;
@@ -42744,7 +42810,8 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     if (b.u >= _bandLo && b.u <= _bandHi && (inBandBestBid == null || b.u > inBandBestBid)) inBandBestBid = b.u;
   }
   let inBandBestAsk = null;
-  for (const a of askCum) {
+  // Walk asksXable (preauth-only) — same rationale as bestAsk above.
+  for (const a of asksXable) {
     if (a.u >= _bandLo && a.u <= _bandHi && (inBandBestAsk == null || a.u < inBandBestAsk)) inBandBestAsk = a.u;
   }
   const headerBestBid = inBandBestBid != null ? inBandBestBid : bestBid;
@@ -42893,8 +42960,8 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
         const _zoneTip = `Arbitrage zone: best bid (${fmtUnitPriceSats(bestBid)}) is higher than best ask (${fmtUnitPriceSats(bestAsk)}) sats/${ticker}${_spreadPct != null ? ` — a +${_spreadPct.toFixed(0)}% gap` : ''}. A real-liquidity cross would drain immediately as arbitrageurs buy the ask and sell to the bid; persistent crosses usually mean one side is stale or fat-finger.`;
         return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.18" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="10" font-family="var(--mono, monospace)" fill="#a06800" text-anchor="middle" font-weight="700" letter-spacing="0.1em" pointer-events="none" opacity="0.75">ARB ZONE</text>` : ''}`;
       })() : ''}
-      <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.20" stroke="#0a8f43" stroke-width="1" pointer-events="none"/>
-      <path data-depth-ask d="${askPath}" fill="#b8341d" fill-opacity="0.20" stroke="#b8341d" stroke-width="1" pointer-events="none"/>
+      <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.32" stroke="#0a8f43" stroke-width="1.6" pointer-events="none"/>
+      <path data-depth-ask d="${askPath}" fill="#b8341d" fill-opacity="0.32" stroke="#b8341d" stroke-width="1.6" pointer-events="none"/>
       <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="1" stroke-opacity="0.8" stroke-dasharray="2,2" pointer-events="none"/>
       <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#b8341d" stroke-width="1" stroke-opacity="0.8" stroke-dasharray="2,2" pointer-events="none"/>
       ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink)" stroke-width="1.4" stroke-dasharray="5,3" stroke-opacity="0.85" pointer-events="none"/><rect x="${(centerX - 36).toFixed(2)}" y="${PT}" width="72" height="11" rx="2" fill="#faf9f5" stroke="var(--ink)" stroke-width="0.8" opacity="0.95" pointer-events="none"/><text x="${centerX.toFixed(2)}" y="${(PT + 8).toFixed(2)}" font-size="9" fill="var(--ink)" font-family="var(--mono, monospace)" text-anchor="middle" font-weight="600" pointer-events="none">mark ${escapeHtml(fmtUnitPriceSats(centerU))}</text>` : ''}
