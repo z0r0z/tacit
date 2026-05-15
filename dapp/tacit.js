@@ -38394,6 +38394,37 @@ function applyMarketFilters() {
   // amount field doesn't lose their cursor position across a tick.
   const _preservedNodes = {};
   const _onAssetDetailReRender = (typeof _marketView === 'object' && _marketView?.mode === 'asset' && _marketView?.assetId);
+  // Scroll-stability snapshot: capture both the absolute scrollY AND the
+  // viewport-relative position of a stable anchor (the asset header card)
+  // BEFORE innerHTML rewrites. After the rewrite, restore scroll so the
+  // same anchor sits at the same screen position. Without this, ticks
+  // that add/remove a listing row above the user's current scroll Y
+  // yank the page up or down by row-height — feels like a "jump" when
+  // the user is mid-read or mid-scroll. With anchor-relative restore,
+  // even if rows came/went above the fold, the user's visible content
+  // stays put.
+  let _scrollAnchor = null;
+  if (_onAssetDetailReRender) {
+    try {
+      const _ay = window.scrollY;
+      // Anchor on the asks header (stable position relative to scroll-
+      // dependent content like the asks grid). Falls back to scrollY-only
+      // restoration if no anchor is found (first render edge case).
+      const _anchorEl = list.querySelector('[data-market-sweep-buy-section]')
+                     || list.querySelector('[data-market-asset-stats]')
+                     || list.querySelector('.market-token-main');
+      if (_anchorEl) {
+        const _rect = _anchorEl.getBoundingClientRect();
+        _scrollAnchor = {
+          y: _ay,
+          anchorSelectors: ['[data-market-sweep-buy-section]', '[data-market-asset-stats]', '.market-token-main'],
+          anchorViewportTop: _rect.top,
+        };
+      } else {
+        _scrollAnchor = { y: _ay, anchorSelectors: null, anchorViewportTop: 0 };
+      }
+    } catch {}
+  }
   let _focusRestore = null;
   if (_onAssetDetailReRender) {
     const ae = document.activeElement;
@@ -38465,6 +38496,45 @@ function applyMarketFilters() {
           _focusRestore.node.setSelectionRange(_focusRestore.selStart, _focusRestore.selEnd);
         }
       } catch {}
+    }
+    // Scroll anchor restoration. If content above the user's scroll Y
+    // changed height (new listings arrived, a row aggregated, an
+    // expiry-near tile dropped out), the page would visually "jump" by
+    // the delta. Restore so the anchor element (asks header or stats
+    // strip) sits at the same viewport Y as before, which means the
+    // user's visible content doesn't move. Defer to next frame so the
+    // browser has laid out the new content first.
+    if (_scrollAnchor) {
+      const _doRestore = () => {
+        try {
+          if (_scrollAnchor.anchorSelectors) {
+            let anchorEl = null;
+            for (const sel of _scrollAnchor.anchorSelectors) {
+              anchorEl = list.querySelector(sel);
+              if (anchorEl) break;
+            }
+            if (anchorEl) {
+              const _newTop = anchorEl.getBoundingClientRect().top;
+              const _delta = _newTop - _scrollAnchor.anchorViewportTop;
+              if (Math.abs(_delta) > 0.5) {
+                window.scrollBy(0, _delta);
+              }
+              return;
+            }
+          }
+          // Fallback: just restore the absolute scrollY if anchor
+          // lookup failed for any reason. Better than letting the
+          // page jump to 0 on a re-render.
+          if (Math.abs(window.scrollY - _scrollAnchor.y) > 0.5) {
+            window.scrollTo(0, _scrollAnchor.y);
+          }
+        } catch {}
+      };
+      // rAF so the new content has finished layout. requestAnimationFrame
+      // is preferred over setTimeout(0) because it batches with the next
+      // paint — eliminates a one-frame visible scroll-flicker that would
+      // otherwise be visible between the innerHTML swap and our restore.
+      requestAnimationFrame(_doRestore);
     }
   }
   hydrateMarketImages(list);
