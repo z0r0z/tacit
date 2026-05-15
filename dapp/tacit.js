@@ -40529,6 +40529,8 @@ function renderMarketAssetStatsHTML(asset) {
         <div><span class="muted">24h high</span> <strong data-market-stat-high>—</strong></div>
         <div><span class="muted">24h low</span> <strong data-market-stat-low>—</strong></div>
         <div><span class="muted">24h volume</span> <strong data-market-stat-vol24>—</strong></div>
+        <div data-market-stat-vwap24-wrap style="display:none;"><span class="muted" title="Volume-weighted average price over the last 24h: Σ(unit_price × fill_sats) / Σ(fill_sats). The price weighted by trade size — execution benchmark that resists single-fill skew (a big fill near the median moves VWAP more than a dust fill at an extreme).">24h VWAP</span> <strong data-market-stat-vwap24>—</strong></div>
+        <div data-market-stat-twap1h-wrap style="display:none;"><span class="muted" title="Time-weighted average price over the last hour. Each fill's unit price is weighted by the duration it was the most recent print. Useful as a short-term execution benchmark: a fill above TWAP is paying premium, below is below-market.">1h TWAP</span> <strong data-market-stat-twap1h>—</strong></div>
         <div><span class="muted">transfers</span> <strong data-market-stat-xfers title="On-chain confidential transfers tracked by the indexer (includes sends, drops, OTC settles — not just market trades). For market trades only, see the recent-trades list below.">—</strong></div>
         <div data-market-stat-spread-wrap style="display:none;"><span class="muted">spread</span> <strong data-market-stat-spread>—</strong></div>
       </div>
@@ -41473,6 +41475,64 @@ async function populateMarketAssetStats(scope, asset) {
   }
   setText('[data-market-stat-high]', high24 != null ? `${fmtUnitPriceSats(high24)} sats/${escapeHtml(ticker)}` : '—', true);
   setText('[data-market-stat-low]',  low24  != null ? `${fmtUnitPriceSats(low24)} sats/${escapeHtml(ticker)}`  : '—', true);
+
+  // VWAP-24h and TWAP-1h — both computed from the same tradePoints array
+  // already built above. Both shown only when there's enough data for the
+  // window to be meaningful (≥2 trades); otherwise the slot stays hidden
+  // rather than displaying a misleading single-fill "average".
+  //
+  // VWAP = Σ(unit × fill_sats) / Σ(fill_sats) over 24h. Volume-weighting
+  // resists single-fill skew so a fat-finger fill doesn't drag the
+  // average to the extreme.
+  //
+  // TWAP = Σ(unit × time_held) / Σ(time_held) over 1h. Each fill's price
+  // is weighted by how long it was the "current" print (gap to next fill,
+  // or to "now" for the most recent). Useful as a short execution
+  // benchmark: above TWAP = paying premium, below = below-market.
+  let vwap24 = null;
+  {
+    let num = 0, den = 0;
+    for (const p of tradePoints) {
+      if (p.ts >= _24hAgo && p.price > 0 && p.u > 0) {
+        num += p.u * p.price;
+        den += p.price;
+      }
+    }
+    if (den > 0) vwap24 = num / den;
+  }
+  const _vwap24Wrap = section.querySelector('[data-market-stat-vwap24-wrap]');
+  if (vwap24 != null && _vwap24Wrap) {
+    _vwap24Wrap.style.display = '';
+    setText('[data-market-stat-vwap24]', `${fmtUnitPriceSats(vwap24)} sats/${escapeHtml(ticker)}`, true);
+  } else if (_vwap24Wrap) {
+    _vwap24Wrap.style.display = 'none';
+  }
+  let twap1h = null;
+  {
+    const _1hAgo = _nowSec - 3600;
+    // tradePoints is newest-first; flip to oldest-first within the 1h window.
+    const inWin = tradePoints.filter(p => p.ts >= _1hAgo).slice().sort((a, b) => a.ts - b.ts);
+    if (inWin.length === 1) {
+      twap1h = inWin[0].u;
+    } else if (inWin.length >= 2) {
+      let weighted = 0, total = 0;
+      for (let i = 0; i < inWin.length; i++) {
+        const start = inWin[i].ts;
+        const end = i < inWin.length - 1 ? inWin[i + 1].ts : _nowSec;
+        const dur = Math.max(1, end - start);
+        weighted += inWin[i].u * dur;
+        total += dur;
+      }
+      if (total > 0) twap1h = weighted / total;
+    }
+  }
+  const _twap1hWrap = section.querySelector('[data-market-stat-twap1h-wrap]');
+  if (twap1h != null && _twap1hWrap) {
+    _twap1hWrap.style.display = '';
+    setText('[data-market-stat-twap1h]', `${fmtUnitPriceSats(twap1h)} sats/${escapeHtml(ticker)}`, true);
+  } else if (_twap1hWrap) {
+    _twap1hWrap.style.display = 'none';
+  }
 
   // 7d Δ% — worker-computed when the ring spans the window. Hide the slot
   // entirely when the field is absent (young market, ring shorter than 7d)
