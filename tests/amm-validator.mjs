@@ -53,10 +53,35 @@ function pointFromCompressed(bytes) {
 // verification — only legitimate use is the pre-ceremony reference harness
 // and unit tests that do not exercise the SNARK path. Production indexers
 // MUST pass a real verifier. Leaving `groth16Verify` undefined throws.
+//
+// Defense-in-depth (audit MEDIUM-7): when NODE_ENV === 'production', this
+// sentinel is REFUSED — production indexers must provide a real verifier
+// or the validator hard-fails. In non-prod environments a one-time stderr
+// warning is emitted so a developer can't accidentally let SKIP slip into
+// a deployed build.
 export const SKIP_GROTH16_VERIFY_UNSAFE = Symbol('tacit-amm-skip-groth16-verify-unsafe');
 
+let _skipWarned = false;
 function resolveGroth16Verify(arg, fnName) {
-  if (arg === SKIP_GROTH16_VERIFY_UNSAFE) return null;
+  if (arg === SKIP_GROTH16_VERIFY_UNSAFE) {
+    // Hard refusal in production — the SKIP path defeats settler-binding
+    // soundness (the constant-product check alone admits any settler-
+    // favored split that satisfies the curve + Pedersen identity).
+    if (typeof process !== 'undefined' && process.env && process.env.NODE_ENV === 'production') {
+      throw new Error(
+        `${fnName}: SKIP_GROTH16_VERIFY_UNSAFE refused in production ` +
+        `(NODE_ENV=production). Pass a real Groth16 verifier function.`,
+      );
+    }
+    if (!_skipWarned && typeof process !== 'undefined' && process.stderr) {
+      _skipWarned = true;
+      process.stderr.write(
+        '[tacit-amm] WARNING: SKIP_GROTH16_VERIFY_UNSAFE in use — ' +
+        'soundness disabled, dev/test only. Refused if NODE_ENV=production.\n',
+      );
+    }
+    return null;
+  }
   if (typeof arg === 'function') return arg;
   throw new Error(
     `${fnName}: groth16Verify is required (pass a verifier function or ` +
@@ -547,6 +572,26 @@ export function validateSwapBatch({
     // Per-intent sigma cross-curve binding.
     if (!verifyXCurve(it.inXcurveSigma, it.cInSecp, it.cInBjj)) {
       return { valid: false, reason: `intent[${i}] sigma cross-curve failed` };
+    }
+    // Defense-in-depth: the trader's intent_sig binds `it.cInSecp` (their
+    // claim about what their input UTXOs sum to). Verify that claim matches
+    // the actual on-chain inputs the caller wired up for this intent slot.
+    // The asset-level aggregate Pedersen check (below) catches mismatches
+    // implicitly, but the failure mode there is global ("asset-A aggregate
+    // Pedersen check failed") and doesn't pinpoint which intent diverged.
+    // Checking per-intent here turns that into a precise diagnostic and
+    // makes a forged-cInSecp intent_sig fail at the right slot.
+    const intentInputs = inputCommitmentsByIntent[i];
+    if (!Array.isArray(intentInputs) || intentInputs.length === 0) {
+      return { valid: false, reason: `intent[${i}]: inputCommitmentsByIntent[${i}] missing` };
+    }
+    let inputSum = ZERO;
+    for (const cp of intentInputs) inputSum = inputSum.add(cp);
+    let claimedCInSecp;
+    try { claimedCInSecp = pointFromCompressed(it.cInSecp); }
+    catch (e) { return { valid: false, reason: `intent[${i}]: cInSecp decode: ${e.message}` }; }
+    if (!inputSum.equals(claimedCInSecp)) {
+      return { valid: false, reason: `intent[${i}]: Σ inputCommitmentsByIntent[${i}] != intent.cInSecp` };
     }
     // Expiry not lapsed.
     if (it.expiryHeight < currentHeight) {

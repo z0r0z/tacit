@@ -76,6 +76,14 @@ const EXPECTED_CONSTS = {
   XCURVE_PROOF_LEN:              169,
   PER_INTENT_BYTES:              352,
   PER_RECEIPT_BYTES:             234,
+  // LP envelope fixed-prefix totals (bytes-before-proof).
+  // Recomputed from AMM.md §"T_LP_ADD" / §"T_LP_REMOVE" wire-format tables.
+  // LP_ADD:    1+1+32+32+8+8+8+33+32+169+64+64+2 = 454
+  // LP_REMOVE: 1+32+32+8+8+8+33+32+169+33+32+169+64+2 = 623
+  // These pin the AMM.md spec ↔ impl agreement; HIGH-1 fix prevents a
+  // recurrence of the stale-157-byte-table drift.
+  LP_ADD_FIXED_PREFIX:           454,
+  LP_REMOVE_FIXED_PREFIX:        623,
 };
 
 // ----- Pinned: canonical preimages → expected SHA256 outputs -----
@@ -172,6 +180,51 @@ console.log('\nWire-format byte counts (spec-literal pinning)');
   test(`XCURVE_PROOF_LEN == 169`,     () => XCURVE_PROOF_LEN === EXPECTED_CONSTS.XCURVE_PROOF_LEN);
   test(`PER_INTENT_BYTES == 352`,     () => ENVELOPE_PER_INTENT_BYTES === EXPECTED_CONSTS.PER_INTENT_BYTES);
   test(`PER_RECEIPT_BYTES == 234`,    () => ENVELOPE_PER_RECEIPT_BYTES === EXPECTED_CONSTS.PER_RECEIPT_BYTES);
+
+  // LP envelope fixed-prefix totals derived from arithmetic; pinned so the
+  // HIGH-1 stale-157 drift can't recur silently. We compute these from the
+  // module-level constants and assert against the canonical AMM.md values.
+  const LP_ADD_FIXED_PREFIX_COMPUTED =
+    1 /*opcode*/ + 1 /*variant*/ + 32 /*assetA*/ + 32 /*assetB*/ +
+    8 /*deltaA*/ + 8 /*deltaB*/ + 8 /*shareAmount*/ +
+    33 /*shareCSecp*/ + 32 /*shareCBJJ*/ + XCURVE_PROOF_LEN /*xcurve*/ +
+    64 /*kernelSigA*/ + 64 /*kernelSigB*/ + 2 /*proof_len_LE*/;
+  const LP_REMOVE_FIXED_PREFIX_COMPUTED =
+    1 /*opcode*/ + 32 /*assetA*/ + 32 /*assetB*/ +
+    8 /*shareAmount*/ + 8 /*deltaA*/ + 8 /*deltaB*/ +
+    33 /*recvACsecp*/ + 32 /*recvACBJJ*/ + XCURVE_PROOF_LEN /*recvAxcurve*/ +
+    33 /*recvBCsecp*/ + 32 /*recvBCBJJ*/ + XCURVE_PROOF_LEN /*recvBxcurve*/ +
+    64 /*kernelSigLP*/ + 2 /*proof_len_LE*/;
+  test(`LP_ADD fixed prefix == 454`,
+       () => LP_ADD_FIXED_PREFIX_COMPUTED === EXPECTED_CONSTS.LP_ADD_FIXED_PREFIX);
+  test(`LP_REMOVE fixed prefix == 623`,
+       () => LP_REMOVE_FIXED_PREFIX_COMPUTED === EXPECTED_CONSTS.LP_REMOVE_FIXED_PREFIX);
+
+  // AMM.md spec-text scan: no stale "157" sigma-len mentions outside the
+  // explicit supersede note. Catches future regressions that put the wrong
+  // length back into a wire-format table.
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname, resolve } = await import('node:path');
+  const __dirname2 = dirname(fileURLToPath(import.meta.url));
+  const spec = readFileSync(resolve(__dirname2, '../AMM.md'), 'utf8');
+  // Find every line containing "157". Allow ONLY the §3.10 supersede sentence.
+  const offending = spec.split('\n').filter(
+    (ln) => /\b157\b/.test(ln) && !/superseded by this section|prior 157-byte/i.test(ln),
+  );
+  if (offending.length > 0) {
+    console.log(`  (offending 157 lines: ${offending.slice(0, 5).join(' | ').slice(0, 200)})`);
+  }
+  test(`no stale 157-byte references in AMM.md (HIGH-1 regression guard)`,
+       () => offending.length === 0);
+
+  // Expiry boundary semantics (audit LOW-5): spec must say strict less-than.
+  // The reference impl at tests/amm-validator.mjs uses
+  // `if (it.expiryHeight < currentHeight)`. Spec MUST say so explicitly.
+  // (Match is tolerant of intervening markdown backticks.)
+  const expirySpecHits = (spec.match(/expiry_height < currentHeight[^\n]{0,8}\(strict less-than\)/g) || []).length;
+  test(`AMM.md pins strict-less-than expiry comparison (audit LOW-5)`,
+       () => expirySpecHits >= 1);
 }
 
 // =========================================================================

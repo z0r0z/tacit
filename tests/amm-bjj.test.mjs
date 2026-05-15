@@ -9,7 +9,7 @@ import {
   P_FR, A_BJJ, D_BJJ, ORDER_BJJ, N_BJJ, COFACTOR_BJJ,
   mod, modPow, modInv, modSqrt,
   onCurve, isIdentity, eq, addPoint, mulScalar,
-  packPoint, unpackPoint, pedersenBJJ, inSubgroup,
+  packPoint, unpackPoint, pedersenBJJ, pedersenBJJStrict, inSubgroup,
   H_BJJ, G_BJJ, H_BJJ_meta, G_BJJ_meta, deriveBJJGenerator,
 } from './amm-bjj.mjs';
 
@@ -166,6 +166,27 @@ test('pedersenBJJ different amounts give different commits', () => {
   const C2 = pedersenBJJ(101n, 5n);
   return !eq(C1, C2);
 });
+
+// Audit LOW-2: strict variant rejects blinding≡0 (loses hiding).
+console.log('\nBJJ Pedersen strict-blinding rejection (audit LOW-2)');
+test('pedersenBJJStrict rejects blinding = 0n', () => {
+  try { pedersenBJJStrict(100n, 0n); return false; }
+  catch (e) { return /destroys hiding/.test(e.message); }
+});
+test('pedersenBJJStrict rejects blinding = N_BJJ (≡ 0 mod N_BJJ)', () => {
+  try { pedersenBJJStrict(100n, N_BJJ); return false; }
+  catch (e) { return /destroys hiding/.test(e.message); }
+});
+test('pedersenBJJStrict rejects blinding = 2·N_BJJ (≡ 0 mod N_BJJ)', () => {
+  try { pedersenBJJStrict(100n, 2n * N_BJJ); return false; }
+  catch (e) { return /destroys hiding/.test(e.message); }
+});
+test('pedersenBJJStrict accepts blinding = 1', () => {
+  const C = pedersenBJJStrict(100n, 1n);
+  return eq(C, pedersenBJJ(100n, 1n));
+});
+test('pedersenBJJ (non-strict) still accepts (0, 0) for padded slots', () =>
+  isIdentity(pedersenBJJ(0n, 0n)));
 
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

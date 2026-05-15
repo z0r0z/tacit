@@ -250,12 +250,31 @@ export function H_BJJ_meta() { H_BJJ(); return _Hmeta; }
 export function G_BJJ_meta() { G_BJJ(); return _Gmeta; }
 
 // Pedersen commitment on BabyJubJub: C = a*H_BJJ + r*G_BJJ.
+//
+// NOTE on blinding=0: the (0,0) input is intentionally allowed; padded-slot
+// commitments in amm_swap_batch.circom use it to produce the identity point
+// (0, 1). For any NON-padded value carrying real hiding requirements, use
+// `pedersenBJJStrict` instead — it rejects blinding ≡ 0 mod N_BJJ. Audit
+// LOW-2.
 export function pedersenBJJ(amount, blinding) {
   const a = mod(BigInt(amount), N_BJJ);
   const r = mod(BigInt(blinding), N_BJJ);
   const aH = a === 0n ? [0n, 1n] : mulScalar(H_BJJ(), a);
   const rG = r === 0n ? [0n, 1n] : mulScalar(G_BJJ(), r);
   return addPoint(aH, rG);
+}
+
+// Strict variant: rejects blinding ≡ 0 mod N_BJJ (which would commit to
+// `a · H_BJJ` only, losing the hiding property). Non-padding callers — i.e.,
+// anyone producing a commitment to a real amount they want hidden — MUST
+// use this variant. Padded-slot callers (amount=0, blinding=0 → identity)
+// continue to use `pedersenBJJ`.
+export function pedersenBJJStrict(amount, blinding) {
+  const r = mod(BigInt(blinding), N_BJJ);
+  if (r === 0n) {
+    throw new Error('pedersenBJJStrict: blinding ≡ 0 mod N_BJJ destroys hiding');
+  }
+  return pedersenBJJ(amount, blinding);
 }
 
 // Debug helpers

@@ -98,7 +98,7 @@ function assertOpcode(buf, expected, name) {
 //   shareAmount           : bigint > 0
 //   shareCSecp            : 33 bytes
 //   shareCBJJ             : 32 bytes
-//   shareXcurveSigma      : 157 bytes
+//   shareXcurveSigma      : 169 bytes (XCURVE_PROOF_LEN; see amm-sigma-xcurve.mjs)
 //   kernelSigA, kernelSigB: 64 bytes each
 //   proof                 : Uint8Array (Groth16 proof bytes)
 //
@@ -353,13 +353,13 @@ export function decodeLpRemove(payload) {
 
 // Per-intent block:
 //   direction(1) || trader_pubkey(33) || C_in_secp(33) || C_in_BJJ(32)
-//   || in_xcurve_sigma(157) || min_out_LE(8) || tip_amount_LE(8)
+//   || in_xcurve_sigma(169) || min_out_LE(8) || tip_amount_LE(8)
 //   || expiry_height_LE(4) || intent_sig(64)
-// = 1 + 33 + 33 + 32 + 157 + 8 + 8 + 4 + 64 = 340 bytes per intent
+// = 1 + 33 + 33 + 32 + 169 + 8 + 8 + 4 + 64 = 352 bytes per intent
 //
 // Per-receipt block:
-//   C_out_secp(33) || C_out_BJJ(32) || out_xcurve_sigma(157)
-// = 222 bytes per receipt
+//   C_out_secp(33) || C_out_BJJ(32) || out_xcurve_sigma(169)
+// = 234 bytes per receipt
 
 const PER_INTENT_BYTES  = 1 + 33 + 33 + 32 + XCURVE_PROOF_LEN + 8 + 8 + 4 + 64; // 352 at v1
 const PER_RECEIPT_BYTES = 33 + 32 + XCURVE_PROOF_LEN;                            // 234 at v1

@@ -872,6 +872,14 @@ expiry_height              -- 4 B (u32 LE)
 trader_pubkey              -- 33 B (compressed)
 ```
 
+**Expiry semantics (normative, audit LOW-5):** an intent is expired
+when `expiry_height < currentHeight` (strict less-than). At
+`currentHeight == expiry_height` the intent is still valid; at
+`currentHeight == expiry_height + 1` it is expired. Equivalently:
+`expiry_height` is the **last block at which the intent may settle**.
+Indexers MUST use this strict comparison so they agree at the
+boundary block.
+
 The full sigma-proof bytes (not a hash of them) are carried inline:
 the proof is small enough (169 B) that committing the hash would
 buy nothing and would force a separate fetch path.
@@ -2437,15 +2445,15 @@ delta_B_LE(8)              # u64, > 0 — public amount of asset B added
 share_amount_LE(8)         # u64, > 0 — public LP shares minted
 share_C_secp(33)           # compressed Pedersen on secp256k1
 share_C_BJJ(32)            # compressed BabyJubJub Pedersen
-share_xcurve_sigma(157)    # cross-curve binding (§hybrid commitments)
+share_xcurve_sigma(169)    # cross-curve binding (§hybrid commitments — 169 B post 128-bit FS upgrade)
 kernel_sig_A(64)           # BIP-340 over kernel_msg_A
 kernel_sig_B(64)           # BIP-340 over kernel_msg_B
 proof_len_LE(2)            # u16
 proof(proof_len)           # Groth16 batch proof
 ```
 
-Fixed-size prefix is `1+1+32+32+8+8+8+33+32+157+64+64+2 = 442` bytes
-plus the proof bytes (~256 B Groth16 ⇒ ~700 B total).
+Fixed-size prefix is `1+1+32+32+8+8+8+33+32+169+64+64+2 = 454` bytes
+plus the proof bytes (~256 B Groth16 ⇒ ~710 B total).
 
 **T_LP_ADD (`0x2D`), POOL_INIT variant (variant=1):**
 Standard layout above, plus appended at the end (before proof):
@@ -2497,15 +2505,15 @@ delta_A_LE(8)              # u64, public — receipt amount of asset A
 delta_B_LE(8)              # u64, public — receipt amount of asset B
 recv_A_C_secp(33)
 recv_A_C_BJJ(32)
-recv_A_xcurve_sigma(157)
+recv_A_xcurve_sigma(169)
 recv_B_C_secp(33)
 recv_B_C_BJJ(32)
-recv_B_xcurve_sigma(157)
+recv_B_xcurve_sigma(169)
 kernel_sig_LP(64)          # BIP-340 over kernel_msg_LP
 proof_len_LE(2)
 proof(proof_len)
 ```
-Fixed prefix: `1+32+32+8+8+8+33+32+157+33+32+157+64+2 = 599` bytes
+Fixed prefix: `1+32+32+8+8+8+33+32+169+33+32+169+64+2 = 623` bytes
 plus proof. `vout[0]` is the asset-A receipt, `vout[1]` is the
 asset-B receipt.
 
@@ -3003,15 +3011,21 @@ once they're computed by the reference implementation.
 
 **§3 (Cryptographic primitives) — add §3.10, sigma cross-curve
 binding.** Specify the Camenisch-Stadler protocol parameters
-(challenge `e < 2^80`, mask `α < 2^224 − 2^144` rejection-sampled,
-response `z_a < 2^224` encoded in 28 bytes BE), the canonical
-proof bytes layout (169 bytes: `A_secp(33) || A_BJJ(32) ||
-z_a(28) || z_r_secp(32) || z_r_BJJ(32)`), the Fiat-Shamir
+(challenge `e < 2^128`, mask `α < 2^320 − 2^192` rejection-sampled,
+response `z_a < 2^320` encoded in 40 bytes BE), the canonical
+proof bytes layout (**169 bytes**: `A_secp(33) || A_BJJ(32) ||
+z_a(40) || z_r_secp(32) || z_r_BJJ(32)`), the Fiat-Shamir
 challenge derivation (`e = SHA256(domain || C_secp || C_BJJ ||
-A_secp || A_BJJ)` then take the low 80 bits as the challenge —
-i.e., the last 10 bytes of the digest interpreted big-endian),
+A_secp || A_BJJ)` then take the low 128 bits as the challenge —
+i.e., the last 16 bytes of the digest interpreted big-endian),
 and the verifier procedure including explicit range checks
-`z_a < 2^224`, `z_r_secp < n_secp`, `z_r_BJJ < n_BJJ`.
+`z_a < 2^320`, `z_r_secp < n_secp`, `z_r_BJJ < n_BJJ`.
+
+The 169-byte wire layout and 128-bit Fiat-Shamir parameters are
+authoritative; any prior 157-byte / 80-bit-FS draft language is
+**superseded by this section** and the §"Hybrid commitments
+(secp256k1 + BabyJubJub)" section. The `domain` bytestring is
+exactly `"tacit-amm-xcurve-v1"` (19 bytes ASCII).
 
 **§4 (Asset identity) — extend with LP origin path.** Add a third
 canonical asset-id origin: `lp_asset_id = SHA256("tacit-amm-lp-v1"
@@ -3390,10 +3404,27 @@ claimer_pubkey_x_only(32)
 claim_amount_LE(8)            # u64; must equal pool.protocol_fee_accrued post-crystallization
 claim_C_secp(33)              # Pedersen commitment of claim_amount
 claim_blinding(32)            # r_secp (revealed; opening is public)
-claim_sig(64)                 # BIP-340 over claim_msg
+claim_sig(64)                 # BIP-340 over claim_msg (see below)
 ```
 
-Fixed envelope size: **202 bytes**. No Groth16. The validator:
+Fixed envelope size: **202 bytes**. No Groth16.
+
+The `claim_msg` is the canonical SHA-256 hash of a domain-tagged
+preimage:
+
+```
+claim_msg = SHA256(
+    "tacit-amm-protocol-fee-claim-v1"       (31 bytes ASCII; no trailing NUL)
+    || pool_id(32)
+    || claim_amount_LE(8)
+    || claim_C_secp(33)
+    || claim_blinding(32)
+)
+```
+
+(reference impl: `tests/amm-protocol-fee.mjs` `buildProtocolFeeClaimMsgWith`.)
+
+The validator:
 
 1. Confirms `claimer_pubkey_x_only` matches the x-only of `pool.protocol_fee_address`.
 2. Crystallizes the protocol fee (V2-lazy `mintFee`).

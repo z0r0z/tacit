@@ -37495,27 +37495,98 @@ async function renderMarket() {
     applyMarketFilters();
     return;
   }
-  // Skeleton placeholder: 8 ghost rows mimicking the token-table layout
-  // (logo + ticker + price + mcap + listings) so the user perceives
-  // the page as actively loading rather than blank. Each row uses the
-  // shared .skeleton-row class which already animates via @keyframes
-  // skeleton-shimmer. Total markup is ~1 KB and gets replaced by the
-  // real table the moment fetchMarketDataDeduped resolves.
-  list.innerHTML = `
-    <div data-market-skeleton style="border:1px solid var(--ink);background:var(--bg);">
-      ${Array.from({ length: 8 }, () => `
-        <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--ink-faint);">
-          <div class="skeleton-row" style="width:44px;height:44px;flex:0 0 44px;"></div>
-          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
-            <div class="skeleton-row medium"></div>
-            <div class="skeleton-row short"></div>
+  // Deep-link asset placeholder: when the user lands directly on
+  // tacit.finance/#tab=market&aid=<X>, the /market round-trip can take up
+  // to 22s on a cache miss (worker recomputes ~76 assets × 4 listing-type
+  // KV reads). The generic 8-row table skeleton makes the user think
+  // we're rendering BROWSE, not their asset — they wait the full 22s
+  // before they realize anything's loading at all. Asset-specific
+  // placeholder: show the ticker (from per-asset stats cache if warm),
+  // a skeleton ladder, and a "loading orderbook" caption so the user
+  // immediately sees we're loading the asset they asked for. /market
+  // still loads in the background to populate the actual listings —
+  // applyMarketFilters re-renders the page atomically when it resolves.
+  const _isAssetDeepLink = _marketView && typeof _marketView === 'object'
+    && _marketView.mode === 'asset' && _marketView.assetId;
+  if (_isAssetDeepLink) {
+    const aid = _marketView.assetId;
+    const cachedStats = _marketAssetStatsCache.get(marketAssetStatsKey(aid))?.data || null;
+    const cachedAssetIdx = _marketCache?.assets?.find(x => x.asset_id === aid) || null;
+    const seedAsset = cachedStats || cachedAssetIdx || { asset_id: aid, ticker: '?', decimals: 0 };
+    const tickerText = escapeHtml(seedAsset.ticker || '?');
+    const aidShort = escapeHtml(aid.slice(0, 8));
+    list.innerHTML = `
+      <div class="market-token-page">
+        <div class="market-token-main">
+          <div style="font-size:11px;margin-bottom:8px;">
+            <a href="#" data-act="market-back-browse" style="text-decoration:none;color:var(--ink-mid);font-size:11px;">&larr; All markets</a>
           </div>
-          <div class="skeleton-row" style="flex:0 0 80px;"></div>
-          <div class="skeleton-row" style="flex:0 0 80px;"></div>
-          <div class="skeleton-row" style="flex:0 0 60px;"></div>
+          <div style="display:flex;align-items:center;gap:14px;padding:14px 0;border-bottom:1px solid var(--ink-faint);">
+            <div class="skeleton-row" style="width:48px;height:48px;flex:0 0 48px;"></div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:18px;font-weight:700;">${tickerText} <span class="muted" style="font-size:11px;">${aidShort}…</span></div>
+              <div class="muted" style="font-size:11px;margin-top:4px;">loading orderbook…</div>
+            </div>
+          </div>
+          <div data-market-skeleton style="margin-top:16px;">
+            ${Array.from({ length: 5 }, () => `
+              <div style="display:flex;align-items:center;gap:14px;padding:10px 12px;border-bottom:1px solid var(--ink-faint);">
+                <div class="skeleton-row" style="flex:0 0 80px;"></div>
+                <div class="skeleton-row" style="flex:0 0 100px;"></div>
+                <div class="skeleton-row" style="flex:1;"></div>
+                <div class="skeleton-row" style="flex:0 0 70px;"></div>
+              </div>
+            `).join('')}
+          </div>
         </div>
-      `).join('')}
-    </div>`;
+      </div>`;
+    // Wire the Back link so the user can escape the placeholder even while
+    // /market is still in flight — without this they'd be stuck staring at
+    // the skeleton until /market resolves. delegate via document so the
+    // handler doesn't depend on bindMarketAssetHeader (not yet called).
+    const _backLink = list.querySelector('[data-act="market-back-browse"]');
+    if (_backLink) _backLink.onclick = (e) => { e.preventDefault(); goToMarketBrowse(); };
+    // Two-stage placeholder upgrade: /assets/<aid> typically returns in
+    // 200ms–2s vs /market's 0.5–22s, so once the per-asset stats land we
+    // can populate the ticker/supply/price line of the placeholder. The
+    // full applyMarketFilters render replaces the placeholder atomically
+    // when /market resolves; this just bridges the gap so the user sees
+    // their asset's identity within seconds instead of staring at "?".
+    if (typeof fetchMarketAssetStats === 'function') {
+      fetchMarketAssetStats(aid, { force: false }).then(stats => {
+        if (!stats) return;
+        // Only update if the placeholder is still showing — applyMarketFilters
+        // may have already replaced it (in which case our DOM lookup is stale).
+        const stillPlaceholder = list.querySelector('[data-market-skeleton]');
+        if (!stillPlaceholder) return;
+        const tickerNode = list.querySelector('.market-token-main > div:nth-child(2) > div:nth-child(2) > div:first-child');
+        if (tickerNode) {
+          const t = escapeHtml(stats.ticker || '?');
+          const shortAid = escapeHtml((stats.asset_id || aid).slice(0, 8));
+          tickerNode.innerHTML = `${t} <span class="muted" style="font-size:11px;">${shortAid}…</span>`;
+        }
+      }).catch(() => {});
+    }
+  } else {
+    // Browse-mode skeleton: 8 ghost rows mimicking the token-table layout
+    // (logo + ticker + price + mcap + listings) so the user perceives the
+    // page as actively loading rather than blank.
+    list.innerHTML = `
+      <div data-market-skeleton style="border:1px solid var(--ink);background:var(--bg);">
+        ${Array.from({ length: 8 }, () => `
+          <div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid var(--ink-faint);">
+            <div class="skeleton-row" style="width:44px;height:44px;flex:0 0 44px;"></div>
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;">
+              <div class="skeleton-row medium"></div>
+              <div class="skeleton-row short"></div>
+            </div>
+            <div class="skeleton-row" style="flex:0 0 80px;"></div>
+            <div class="skeleton-row" style="flex:0 0 80px;"></div>
+            <div class="skeleton-row" style="flex:0 0 60px;"></div>
+          </div>
+        `).join('')}
+      </div>`;
+  }
   setStatus(status, 'loading', true);
   try {
     // Deduped fetch: if a deep-link pre-fetch is already in flight from

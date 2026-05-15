@@ -244,4 +244,94 @@ describe('solveClearing property fuzz', () => {
     assert.strictEqual(r2.direction, 'spot');
   });
 
+  // ---- Audit INFO: u64-max boundary scenarios ----
+  // The reference impl uses BigInt throughout but the on-chain wire format
+  // and bulletproof range proofs cap amounts at 2^64 - 1. Exercise solveClearing
+  // at and near u64-max to confirm no overflow / off-by-one breaks the math.
+
+  test('boundary: R_A and R_B at near-u64-max produce sane results for small swaps', () => {
+    const U64_MAX = (1n << 64n) - 1n;
+    const R_A = U64_MAX - 100n;
+    const R_B = U64_MAX / 2n;
+    // Smallest possible swap (X=1) on a near-max pool. Must not throw and must
+    // not produce negative deltas or absurd direction.
+    const r = solveClearing(1n, 0n, R_A, R_B, 30);
+    assert.ok(['A→B', 'spot', 'empty'].includes(r.direction),
+      `unexpected direction ${r.direction}`);
+    assert.ok(r.delta_a_net >= 0n);
+    assert.ok(r.delta_b_net >= 0n);
+    // Mirror: B→A
+    const r2 = solveClearing(0n, 1n, R_A, R_B, 30);
+    assert.ok(['B→A', 'spot', 'empty'].includes(r2.direction));
+    assert.ok(r2.delta_a_net >= 0n);
+    assert.ok(r2.delta_b_net >= 0n);
+  });
+
+  test('boundary: max swap X = u64_max-clamped vs small reserves', () => {
+    // Aggregate swap volume must fit in u64. solveClearing asU64-checks all
+    // inputs and rejects > u64. Pick X just under u64_max and run.
+    const U64_MAX = (1n << 64n) - 1n;
+    const X = U64_MAX - 1n;  // ~2^64
+    const R_A = 1_000_000n;
+    const R_B = 1_000_000n;
+    const r = solveClearing(X, 0n, R_A, R_B, 30);
+    assert.strictEqual(r.direction, 'A→B');
+    // Massive X with tiny reserves: pool can't absorb much without spending all of R_B.
+    // delta_b_net must be ≤ R_B - 1 (curve preserves at least one unit of B).
+    assert.ok(r.delta_b_net <= R_B);
+    // post-reserves stay non-negative
+    const post = applyBatch(R_A, R_B, r);
+    assert.ok(post.R_B >= 0n);
+  });
+
+  test('boundary: u64-overflow inputs are rejected', () => {
+    // asU64() inside solveClearing rejects values >= 2^64.
+    const TOO_BIG = 1n << 64n;
+    let threw = false;
+    try { solveClearing(TOO_BIG, 0n, 1_000_000n, 1_000_000n, 30); }
+    catch (e) { threw = /u64/.test(e.message); }
+    assert.ok(threw, 'X = 2^64 must be rejected');
+    threw = false;
+    try { solveClearing(0n, 0n, TOO_BIG, 1_000_000n, 30); }
+    catch (e) { threw = /u64/.test(e.message); }
+    assert.ok(threw, 'R_A = 2^64 must be rejected');
+  });
+
+  test('boundary: fee_bps boundary values (0, 1, 999, 1000) all valid', () => {
+    for (const fee of [0, 1, 999, 1000]) {
+      const r = solveClearing(1000n, 0n, 1_000_000n, 1_000_000n, fee);
+      assert.strictEqual(r.direction, 'A→B', `fee=${fee} unexpected direction`);
+    }
+  });
+
+  test('boundary: fee_bps = 1001 rejected', () => {
+    let threw = false;
+    try { solveClearing(1000n, 0n, 1_000_000n, 1_000_000n, 1001); }
+    catch (e) { threw = /fee_bps/.test(e.message); }
+    assert.ok(threw);
+  });
+
+  test('boundary: Y=0 and Δb_net=0 (only-A→B swap at min) — pool gains A only', () => {
+    // Smallest possible A→B swap on a pool where delta_b_net rounds to 0.
+    // This is the "lower edge" of the binary search; the algorithm must
+    // not produce delta_b > R_B, and must not loop forever.
+    const r = solveClearing(1n, 0n, 1_000_000_000_000n, 1n, 0);
+    assert.strictEqual(r.direction, 'A→B');
+    assert.ok(r.delta_b_net <= 1n, `delta_b_net=${r.delta_b_net} > R_B=1`);
+  });
+
+  test('boundary: spot-clearing at u64-scale X·R_B == Y·R_A', () => {
+    // Construct X, Y, R_A, R_B so that X·R_B = Y·R_A exactly at large scale.
+    // R_A = 2^40, R_B = 2^32 (so price = 256:1).
+    // X·2^32 = Y·2^40 ⇒ X = Y · 256. Pick Y = 1000.
+    const R_A = 1n << 40n;
+    const R_B = 1n << 32n;
+    const Y = 1000n;
+    const X = Y * 256n;
+    const r = solveClearing(X, Y, R_A, R_B, 30);
+    assert.strictEqual(r.direction, 'spot');
+    assert.strictEqual(r.delta_a_net, 0n);
+    assert.strictEqual(r.delta_b_net, 0n);
+  });
+
 });
