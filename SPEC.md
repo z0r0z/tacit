@@ -1849,6 +1849,70 @@ Worker validation on take is not strictly required (Bitcoin consensus enforces t
 
 This primitive is implementation-defined in v1: the wire format above is the canonical reference for any implementation that wants to interoperate with the reference dApp's marketplace. Indexer-level validity is unaffected — preauth sales live entirely outside the on-chain protocol; all settlement is normal `T_AXFER` and validates identically to a §5.7.3 targeted offer.
 
+##### 5.7.8.1 Batched take (position-independent `SIGHASH_SINGLE_ACP`)
+
+A single buyer who routes across `N ≥ 2` preauth sales (each from a distinct seller) MAY settle all `N` fills in one `T_AXFER` reveal tx instead of `N` independent settlements. This is a **flow-level optimization with no protocol change** — no new opcode, no new envelope variant, no listing-schema migration, no worker validation change. Listings published before this subsection was added remain batchable as-is because the seller's `seller_asset_spend` signature has a position-independence property that's load-bearing for batching.
+
+**The load-bearing invariant.** The maker signs with `SIGHASH_SINGLE | SIGHASH_ANYONECANPAY` (`0x83`). The BIP-143 preimage for this flag set is:
+
+```
+nVersion          (4)
+hashPrevouts      = 0x00..00      ← ANYONECANPAY zeros this
+hashSequence      = 0x00..00      ← ANYONECANPAY (and SIGHASH_SINGLE) zero this
+this.outpoint     (36)            ← the signing input's asset outpoint
+this.scriptCode   (varslice)      ← P2WPKH(seller_pubkey)
+this.value        (8)             ← the signing input's UTXO value
+this.nSequence    (4)             ← 0xfffffffd by SPEC convention
+hashOutputs       = dSHA256(serialize(outputs[input_index]))
+                                  ← SIGHASH_SINGLE hashes ONLY the same-index output
+nLocktime         (4)             ← 0
+nHashType         (4)             ← 0x83
+```
+
+The only `input_index`-dependent term is `hashOutputs`, which evaluates to `dSHA256(serialize(outputs[input_index]))`. Every other field is a constant of the signing seller's UTXO + listed terms. If the buyer places the seller's payout output (`value = min_price_sats`, `script = seller_payout_script`) at `vout[k]`, then `hashOutputs` evaluates to the identical 32 bytes regardless of `k`. **The preimage is bit-identical across positions; the signature validates at any vin index.**
+
+A seller's single-slot pre-signature (signed assuming the maker's input lands at `vin[1]` and the payout at `vout[1]`) therefore validates as `vin[k].witness` for any `k ∈ [1, 255]` provided:
+
+1. `tx.inputs[k].outpoint` equals the seller's `asset_outpoint`,
+2. `tx.inputs[k].sequence == 0xfffffffd`, and
+3. `tx.outputs[k]` equals `{ value: min_price_sats, script: seller_payout_script }`.
+
+**Batched reveal layout (`N` sellers in one settlement tx):**
+
+```
+vin[0]        buyer's commit P2TR      — script-path-spends the envelope
+vin[1..N]     seller_i's asset UTXOs   — each carries its existing pre-signed
+                                          SIGHASH_SINGLE_ACP witness at THIS
+                                          position; vout[1+i] MUST be seller_i's
+                                          payout
+vin[N+1..]    buyer's P2WPKH funding   — SIGHASH_ALL on the whole tx
+
+vout[0]       buyer's combined recipient (DUST P2WPKH); Pedersen commitment in
+              the envelope payload is pedersen(Σ amount_i, r_out)
+vout[1..N]    seller_i's payouts       — bound by SIGHASH_SINGLE_ACP on vin[1+i]
+vout[N+1]     buyer change             — OPTIONAL, present iff ≥ DUST
+```
+
+**AXFER payload field constraints:**
+
+- `asset_input_count = N` (consumes the `1..255` range the wire format already permits in §5.7's T_AXFER decoder).
+- `N_outputs = 1` (a single combined recipient; per §5.4 the outputs count must be in `{1, 2, 4, 8}`).
+- `output[0].commitment = pedersen(Σ_i amount_i, r_out)` where `r_out` is derived via `deriveBlinding(buyer.priv, seller_0.pub, seller_0.outpoint, 0)` (the first seller's ECDH anchor — matches the wallet-recovery scanner's `firstIn = tx.vin[1]` convention so recovery works unchanged).
+- `output[0].encrypted_amount` encrypts `Σ_i amount_i` under the same first-seller ECDH keystream.
+- `kernel_sig` signs the standard kernel message over `(asset_id, [N input outpoints], [output[0].commitment])` with `excess = (r_out − Σ_i blinding_i) mod n`.
+- `rangeproof` is a single-output bulletproof for `Σ_i amount_i`; size matches a 1-output proof (~688 bytes for `m=1`), not N×.
+
+**Worker trade-record accounting.** The worker dedupes hints by `(asset_id, reveal_txid)` via `bumpTransferCount`. A batched reveal is ONE `txid` and therefore ONE trade event; emitting `N` per-fill hints with individual `price_sats` would record only the first fill's price and undercount 24h volume by `~(N-1)/N`. Implementations MUST emit **exactly one** hint per batched reveal with:
+
+- `price_sats = Σ_i min_price_sats_i`
+- `amount = String(Σ_i amount_i)`
+- `listing_kind = "instant-batch"` (distinguishable from single-take's `"instant"`)
+- `fill_count = N` (integer ∈ `[1, 255]`; older worker builds tolerate the field by silently coercing to 1, newer builds store it on the `last_trade` + recent-trades ring for chart/tape multi-fill annotation)
+
+**Failure semantics.** Pre-flight (parallel `getOutspend` on every seller's asset UTXO) runs BEFORE the buyer's commit broadcasts. If any seller's UTXO is already spent, the buyer aborts the batch and pays zero on-chain fees. Post-commit failures (reveal fails relay, indexer issue) are recoverable via script-path-spend of the commit P2TR using the saved envelope script + control block — same recovery primitive as single-take §5.7.8, just with a `batch[]` array in the recovery record carrying per-sale openings.
+
+**Backwards compatibility.** Single-take §5.7.8 settlements remain valid and unchanged. A batched reveal is wire-indistinguishable from a multi-input CXFER except for the `T_AXFER` opcode byte. Indexers that already handle `asset_input_count ≥ 1` (any compliant §5.7 implementation) ingest batched reveals correctly. The `fill_count` hint field is the only schema addition; missing values silently default to 1.
+
 #### 5.7.9 T_AXFER_VAR (`0x37`) — variable-amount atomic settlement
 
 On-chain settlement opcode for §5.7.6.1 variable-amount atomic intents. Reuses CXFER N=2 cryptography (Pedersen + aggregated bulletproof + kernel sig) with the asset-input count tightened to exactly 1 and the vout layout interleaved so the maker's `vin[1]` SIGHASH_SINGLE_ACP signature binds the BTC payment at `vout[1]`.

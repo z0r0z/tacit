@@ -1,5 +1,10 @@
 # SPEC §5.7.8 — Batched Preauth-Take
 
+> **Status: ✅ Merged.** Canonical text now lives in [`SPEC.md`](../../SPEC.md)
+> §5.7.8.1 *Batched take (position-independent `SIGHASH_SINGLE_ACP`)*.
+> This amendment file is retained as the historical record of the
+> design narrative + comparative tables that motivated the merge.
+>
 > Extends §5.7.8 preauth-take so a single buyer can settle N preauth
 > sales by N distinct sellers in **one** Bitcoin (commit, reveal)
 > pair instead of N independent pairs. The on-chain settlement
