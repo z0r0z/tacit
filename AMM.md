@@ -1756,6 +1756,25 @@ intent_id)`). The worker removes the intent from the open pool and
 from the qualifying set on receipt; the cancel propagates into the
 next signed list at height H+1.
 
+**Cancel-channel scope (T_INTENT_ATTEST).** The worker MAY also
+publish a parallel `T_INTENT_ATTEST` envelope committing to the
+**set of cancelled intent_ids** under a dedicated scope:
+
+```
+cancel_scope_id = SHA256("tacit-amm-intent-cancel-v1" || pool_id)
+```
+
+The envelope's `intent_pool_hash` is computed over the sorted
+cancelled-intent set (same `computeIntentPoolHash` construction as
+the open-intent channel). This gives cancels the same cryptographic
+auditability the open-intent channel already has: a trader who
+submitted a cancel can verify it landed in the worker's cancel set
+via the standard T_INTENT_ATTEST verification flow, and the worker
+cannot equivocate on what was cancelled at a given height. Publishing
+the cancel channel is optional — workers MAY operate cancel-channel-
+less with only the off-chain BIP-340 cancel signature — but workers
+that do publish gain accountability on the cancel surface.
+
 ## Trust model
 
 Soundness (= "is the pool's accounting correct?") is **trustless
