@@ -44909,10 +44909,15 @@ function _wireSwapTile(scope) {
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
         infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr} · exact-out (≥ requested)`;
         if (insufficient) {
-          actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-          actionBtn.textContent = 'insufficient balance';
+          // Same actionable-CTA pattern as the exact-in path: route a
+          // click straight to the Top-up modal so the user doesn't have
+          // to backtrack and find the wallet card.
+          actionBtn.disabled = false; actionBtn.style.opacity = '1';
+          actionBtn.dataset.swapNeedsFunds = '1';
+          actionBtn.textContent = `+ Add funds to buy ≥ ${accStr} ${ticker}`;
         } else {
           actionBtn.disabled = false; actionBtn.style.opacity = '1';
+          delete actionBtn.dataset.swapNeedsFunds;
           actionBtn.textContent = swapLabel(`SWAP ≥ ${accStr} ${ticker}`);
         }
         return;
@@ -45128,14 +45133,21 @@ function _wireSwapTile(scope) {
         : '';
       const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
       infoEl.textContent = `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · ${rangeStr} · fees ~${feeEst.toLocaleString()} sats${impactStr}${residHint}${insufficientHint}`;
-      if (insufficientBudget) {
-        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-        actionBtn.textContent = 'insufficient balance';
-      } else if (insufficientForFees) {
-        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-        actionBtn.textContent = 'top up sats for fees';
+      if (insufficientBudget || insufficientForFees) {
+        // Instead of a dead "insufficient balance" button, keep the
+        // button enabled and route the click straight to the Top-up
+        // modal. data-swap-needs-funds="1" tells the action handler
+        // to dispatch to the topup flow rather than try a sweep that
+        // would just bounce on ensureSatsFunded. Clear when the user
+        // adjusts the amount down or funds arrive.
+        actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        actionBtn.dataset.swapNeedsFunds = '1';
+        actionBtn.textContent = insufficientBudget
+          ? `+ Add funds to buy ${accStr} ${ticker}`
+          : '+ Add funds for tx fees';
       } else {
         actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        delete actionBtn.dataset.swapNeedsFunds;
         actionBtn.textContent = swapLabel(`SWAP → ${accStr} ${ticker}`);
       }
     } else {
@@ -45394,6 +45406,26 @@ function _wireSwapTile(scope) {
   };
 
   actionBtn.onclick = async () => {
+    // Funds-needed short-circuit: when the action button is in the
+    // "+ Add funds" state, the click should open the Top-up modal
+    // (Onramper / bitcoin: URI / P2P) instead of attempting a swap
+    // that ensureSatsFunded would just reject. The user gets a clear
+    // next step inside the same tile flow instead of a dead-end error.
+    if (actionBtn.dataset.swapNeedsFunds === '1') {
+      const buyBtn = document.getElementById('btn-buy-btc');
+      if (buyBtn && buyBtn.offsetParent !== null) {
+        // Wallet card has a "Buy / receive BTC" button visible —
+        // clicking it dispatches setupTopupModal's click handler
+        // with the user's tacit address prefilled. Same modal as the
+        // wallet card uses; consistent address-passing.
+        buyBtn.click();
+        return;
+      }
+      // Buy button not rendered (signet, or wallet card not yet
+      // hydrated) — fall through to the existing swap path so
+      // ensureSatsFunded inside that path still produces a usable
+      // signet faucet / ext-wallet sendBitcoin flow.
+    }
     const dir = getDirection();
     const activeSide = getActiveSide();
     // EXACT-OUT path: re-plan at click time, confirm with "≥ requested"
