@@ -120,6 +120,25 @@ const ONBOARDED_KEY = 'tacit-onboarded-v1';
 // Set BASE to '' to disable all Worker-backed features (upload + auto-faucet + discover).
 const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
 
+// Service worker registration. Moved here from an inline <script> in
+// index.html because the dapp's CSP forbids inline scripts (script-src 'self'
+// 'wasm-unsafe-eval' only). Registration runs after page load so the
+// install/activate work doesn't compete with first-render network fetches;
+// any failure is silently swallowed — the dapp works without a SW.
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  const _registerSW = () => {
+    navigator.serviceWorker.register('./sw.js', { scope: './' })
+      .catch(err => {
+        try { console.warn('[tacit] SW registration failed:', err?.message || err); } catch {}
+      });
+  };
+  if (typeof window !== 'undefined' && document.readyState === 'complete') {
+    _registerSW();
+  } else if (typeof window !== 'undefined') {
+    window.addEventListener('load', _registerSW, { once: true });
+  }
+}
+
 // ============================================================================
 // CANONICAL_CEREMONY_CID
 //
@@ -1967,6 +1986,17 @@ async function api(path, opts = {}) {
         if (r.ok) _apiHealth.delete(base);
         if (!r.ok) {
           const t = await r.text();
+          // 404 from the WORKER /chain proxy most likely means the worker
+          // hasn't been deployed yet with the chain-proxy endpoints (rolling
+          // deploy window). Demote the worker base for 10 minutes and
+          // continue rotation to direct providers — keeps the dapp working
+          // during the deploy gap rather than 404'ing every chain query.
+          if (r.status === 404 && WORKER_BASE && base === `${WORKER_BASE}/chain`) {
+            _markUnhealthy(base, 10 * 60_000, 'not-deployed');
+            lastErr = new Error(`worker /chain not deployed`);
+            lastRes = r;
+            continue;
+          }
           throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
         }
         return r;
