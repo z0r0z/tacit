@@ -39398,8 +39398,54 @@ function _wireMarketPriceChartCursor(host) {
     tooltipText.setAttribute('x', padX);
     tooltipText.setAttribute('y', padY);
   };
-  overlay.addEventListener('mousemove', move);
-  overlay.addEventListener('mouseleave', () => { cross.style.display = 'none'; });
+  // Chart host element (containing div) is where we persist last-hover
+  // state across re-renders. The SVG itself gets swapped out via
+  // innerHTML, but the parent host stays — so its dataset survives.
+  const chartHost = svg.closest('[data-market-price-chart]');
+  overlay.addEventListener('mousemove', (ev) => {
+    move(ev);
+    // Persist the hover position so a re-render (auto-refresh tick on
+    // new data) can replay the cursor after the SVG is swapped.
+    // Without this, hovering during a re-render makes the tooltip
+    // blank until the user nudges the mouse — annoying when actively
+    // reading the chart as fills land.
+    if (chartHost) {
+      chartHost.dataset.lastHoverClientX = String(ev.clientX);
+      chartHost.dataset.lastHoverClientY = String(ev.clientY);
+    }
+  });
+  overlay.addEventListener('mouseleave', () => {
+    cross.style.display = 'none';
+    // Clear stashed position on real leave so a stale value doesn't
+    // re-summon the crosshair after the next re-render when the
+    // cursor is no longer over the chart.
+    if (chartHost) {
+      delete chartHost.dataset.lastHoverClientX;
+      delete chartHost.dataset.lastHoverClientY;
+    }
+  });
+  // Replay last hover position if the chart was re-rendered while the
+  // user was hovering. Defer to next frame so the SVG layout is settled
+  // (so getScreenCTM returns the new transform). Skips silently when
+  // no prior hover was stashed (e.g., first paint, mouse never entered).
+  if (chartHost && chartHost.dataset.lastHoverClientX != null) {
+    const _replayX = Number(chartHost.dataset.lastHoverClientX);
+    const _replayY = Number(chartHost.dataset.lastHoverClientY || 0);
+    if (Number.isFinite(_replayX) && Number.isFinite(_replayY)) {
+      requestAnimationFrame(() => {
+        // Check the pointer hasn't moved away in the meantime by
+        // re-reading the bounding rect — if the replay coords are
+        // inside the overlay, fire a synthetic move at those coords.
+        const r = overlay.getBoundingClientRect();
+        if (_replayX >= r.left && _replayX <= r.right && _replayY >= r.top && _replayY <= r.bottom) {
+          move({ clientX: _replayX, clientY: _replayY });
+        } else {
+          delete chartHost.dataset.lastHoverClientX;
+          delete chartHost.dataset.lastHoverClientY;
+        }
+      });
+    }
+  }
 }
 
 async function populateMarketAssetStats(scope, asset) {
