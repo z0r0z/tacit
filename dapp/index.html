@@ -5556,6 +5556,29 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <span class="welcome-option-title">pay from any Bitcoin wallet</span>
         <span class="welcome-option-meta">tap to open in your default wallet (mobile), or copy the payment URI into Xverse / UniSat / Leather / Strike / Phoenix / Wallet of Satoshi / any CEX withdrawal.</span>
       </button>
+      <div class="welcome-divider">or skip KYC — peer-to-peer</div>
+      <button id="topup-p2p" class="welcome-option" type="button">
+        <span class="welcome-option-title">buy peer-to-peer (no KYC)</span>
+        <span class="welcome-option-meta">trade fiat for BTC directly with another person via escrowed marketplaces. Slower than card on-ramps, no identity check, BTC delivered to whatever address you paste in. Copy your tacit address first.</span>
+      </button>
+      <div id="topup-p2p-list" style="display:none;margin-top:10px;padding:12px;border:1px dashed var(--ink-faint);background:var(--bg-warm);">
+        <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:8px;">P2P marketplaces — paste your tacit address as the receive address</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <a href="https://unsafe.robosats.org/" target="_blank" rel="noopener noreferrer" style="text-decoration:none;border:1px solid var(--ink-faint);padding:8px 10px;color:var(--ink);font-size:11px;">
+            <strong>Robosats</strong> <span class="muted">· Lightning + on-chain · web · fastest for &lt; $500</span>
+          </a>
+          <a href="https://hodlhodl.com/" target="_blank" rel="noopener noreferrer" style="text-decoration:none;border:1px solid var(--ink-faint);padding:8px 10px;color:var(--ink);font-size:11px;">
+            <strong>HodlHodl</strong> <span class="muted">· on-chain multisig escrow · web · larger amounts</span>
+          </a>
+          <a href="https://peachbitcoin.com/" target="_blank" rel="noopener noreferrer" style="text-decoration:none;border:1px solid var(--ink-faint);padding:8px 10px;color:var(--ink);font-size:11px;">
+            <strong>Peach Bitcoin</strong> <span class="muted">· mobile app · EU/global · no-KYC under daily thresholds</span>
+          </a>
+          <a href="https://bisq.network/" target="_blank" rel="noopener noreferrer" style="text-decoration:none;border:1px solid var(--ink-faint);padding:8px 10px;color:var(--ink);font-size:11px;">
+            <strong>Bisq</strong> <span class="muted">· desktop app · fully decentralized · advanced</span>
+          </a>
+        </div>
+        <div class="muted" style="font-size:10px;margin-top:10px;line-height:1.5;">None of these accept a URL-prefilled destination — after you create/take an order, paste your tacit address into the platform's "receive to" field.</div>
+      </div>
       <div id="topup-uri-box" style="display:none;margin-top:10px;padding:12px;border:1px dashed var(--ink-faint);background:var(--bg-warm);">
         <div class="muted" style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">Payment URI</div>
         <div class="mono-box" id="topup-uri-text" style="font-size:10px;word-break:break-all;"></div>

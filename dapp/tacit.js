@@ -21853,6 +21853,8 @@ function setupTopupModal() {
   const onramperBtn = document.getElementById('topup-onramper');
   const uriBtn = document.getElementById('topup-uri');
   const uriBox = document.getElementById('topup-uri-box');
+  const p2pBtn = document.getElementById('topup-p2p');
+  const p2pList = document.getElementById('topup-p2p-list');
   const uriText = document.getElementById('topup-uri-text');
   const uriCopy = document.getElementById('topup-uri-copy');
   const uriOpen = document.getElementById('topup-uri-open');
@@ -21917,6 +21919,9 @@ function setupTopupModal() {
     if (!uriBox) return;
     uriBox.style.display = uriBox.style.display === 'none' ? '' : 'none';
     refreshUri();
+  };
+  if (p2pBtn && p2pList) p2pBtn.onclick = () => {
+    p2pList.style.display = p2pList.style.display === 'none' ? '' : 'none';
   };
   if (uriApply) uriApply.onclick = refreshUri;
   if (uriSats) uriSats.onkeydown = (e) => { if (e.key === 'Enter') refreshUri(); };
