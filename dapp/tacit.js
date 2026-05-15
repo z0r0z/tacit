@@ -323,22 +323,44 @@ function reconcileWalletNetwork(state) {
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 
 // IPFS gateway used to render images and dereference metadata blobs. Trailing slash required.
-// Primary IPFS gateway. When WORKER_BASE is set, this points at the worker's
-// /ipfs/* proxy, which races multiple public gateways server-side and serves
-// from Cloudflare edge cache on subsequent reads. Otherwise falls back to a
-// direct public gateway (content.wrappr.wtf). The worker proxy fixes:
-//   - single-gateway flake (a slow content.wrappr.wtf used to mean 5-15s
-//     visible delay per cold asset metadata fetch)
-//   - per-IP rate limits on hot CIDs
-//   - duplicated download across multiple tabs (edge cache absorbs)
-// Computed lazily so an early-init code path doesn't see WORKER_BASE as
-// undefined; resolved to the actual URL at first use via _ipfsGateway().
+// Session-wide flag: "the worker isn't responding correctly to its proxy
+// endpoints" (typically because it hasn't been deployed yet with the
+// chain/ipfs routes). Set on the very first 404 from /chain/* or /ipfs/*;
+// persisted in sessionStorage so a reload picks up the bad state without
+// re-paying the 404 round-trip. Auto-clears after WORKER_BAD_TTL_MS so a
+// late-deployed worker is re-discovered on the next session.
+const WORKER_BAD_SESS_KEY = 'tacit-worker-bad-v1';
+const WORKER_BAD_TTL_MS = 5 * 60_000;  // 5 min — short enough to auto-recover
+let _workerKnownBad = false;
+try {
+  const raw = (typeof sessionStorage !== 'undefined') ? sessionStorage.getItem(WORKER_BAD_SESS_KEY) : null;
+  if (raw) {
+    const at = parseInt(raw, 10);
+    if (Number.isFinite(at) && Date.now() - at < WORKER_BAD_TTL_MS) _workerKnownBad = true;
+  }
+} catch {}
+function _markWorkerKnownBad() {
+  if (_workerKnownBad) return;
+  _workerKnownBad = true;
+  try { sessionStorage.setItem(WORKER_BAD_SESS_KEY, String(Date.now())); } catch {}
+  // Recompute IPFS_GATEWAY in case it was previously pointing at the worker.
+  // Existing <img> elements with the worker URL won't auto-retry; subsequent
+  // resolveImageUri calls will use the fallback gateway. Users may see one
+  // broken-image flash before the next render swaps in the direct URL.
+  try { IPFS_GATEWAY = _ipfsGateway(); } catch {}
+}
+
+// Primary IPFS gateway. When WORKER_BASE is set AND the worker is known
+// healthy this session, this points at the worker's /ipfs/* proxy (multi-
+// gateway race + edge cache). On any sign the worker is offline / not yet
+// deployed, falls back to content.wrappr.wtf direct so images still load.
 function _ipfsGateway() {
+  if (_workerKnownBad) return 'https://content.wrappr.wtf/ipfs/';
   return (typeof WORKER_BASE === 'string' && WORKER_BASE)
     ? `${WORKER_BASE}/ipfs/`
     : 'https://content.wrappr.wtf/ipfs/';
 }
-const IPFS_GATEWAY = _ipfsGateway();
+let IPFS_GATEWAY = _ipfsGateway();
 
 // Fallback gateways used by ceremony fetches (head zkey, r1cs, ptau) when
 // the worker proxy is unreachable. Worker is the preferred primary (handles
@@ -1838,7 +1860,7 @@ function _apiBases() {
   //      so a popular tx is fetched once across all readers.
   // Network-scoped via ?network= query param the worker honors. Falls back
   // to direct providers below if the worker is unhealthy or unconfigured.
-  if (WORKER_BASE && NET?.name) {
+  if (WORKER_BASE && NET?.name && !_workerKnownBad) {
     out.push(`${WORKER_BASE}/chain`);
   }
   if (NET.api) out.push(NET.api);
@@ -1993,6 +2015,7 @@ async function api(path, opts = {}) {
           // during the deploy gap rather than 404'ing every chain query.
           if (r.status === 404 && WORKER_BASE && base === `${WORKER_BASE}/chain`) {
             _markUnhealthy(base, 10 * 60_000, 'not-deployed');
+            _markWorkerKnownBad();
             lastErr = new Error(`worker /chain not deployed`);
             lastRes = r;
             continue;
@@ -2727,7 +2750,7 @@ async function _flushOutspendBatch() {
   _outspendBatchQueue = new Map();
   const outpoints = Array.from(batch.keys());
   let osMap = null;
-  if (WORKER_BASE && outpoints.length > 0) {
+  if (WORKER_BASE && outpoints.length > 0 && !_workerKnownBad) {
     try {
       const url = `${WORKER_BASE}/chain/outspends/batch?network=${encodeURIComponent(NET.name)}`;
       const r = await fetch(url, {
@@ -2735,6 +2758,7 @@ async function _flushOutspendBatch() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ outpoints }),
       });
+      if (r.status === 404) _markWorkerKnownBad();
       if (r.ok) {
         const j = await r.json();
         if (j && j.outspends && typeof j.outspends === 'object') osMap = j.outspends;
@@ -3008,7 +3032,7 @@ async function _flushTxBatch() {
   _txBatchQueue = new Map();
   const txids = Array.from(batch.keys());
   let txMap = null;
-  if (WORKER_BASE && txids.length > 0) {
+  if (WORKER_BASE && txids.length > 0 && !_workerKnownBad) {
     try {
       const url = `${WORKER_BASE}/chain/txs/batch?network=${encodeURIComponent(NET.name)}`;
       const r = await fetch(url, {
@@ -3016,6 +3040,7 @@ async function _flushTxBatch() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ txids }),
       });
+      if (r.status === 404) _markWorkerKnownBad();
       if (r.ok) {
         const j = await r.json();
         if (j && j.txs && typeof j.txs === 'object') txMap = j.txs;
@@ -21884,7 +21909,7 @@ async function resolveImageUri(imageUri) {
   const existing = _resolvedImageInFlight.get(imageUri);
   if (existing) return existing;
   const p = (async () => {
-  const url = normalizeImageUri(imageUri);
+  let url = normalizeImageUri(imageUri);
   if (!url) {
     _resolvedImageCache.set(imageUri, null);
     // Rejected URI scheme is deterministic — persist so we don't re-validate
@@ -21897,8 +21922,28 @@ async function resolveImageUri(imageUri) {
   let fetchOk = false;
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 5000);
+  // Detect-and-fall-through: if the worker IPFS proxy 404s, mark it bad
+  // and retry against the direct gateway. The retry's response substitutes
+  // for `resp` so the existing JSON/Content-Type parsing logic below runs
+  // unchanged. Existing <img> tags with worker URLs in the DOM are stuck
+  // (browser issues those, not us), but the next render uses _ipfsGateway()
+  // which honors the bad-flag.
+  let resp;
   try {
-    const resp = await fetch(url, { signal: ac.signal });
+    resp = await fetch(url, { signal: ac.signal });
+    if (resp.status === 404 && WORKER_BASE && url.startsWith(`${WORKER_BASE}/ipfs/`)) {
+      _markWorkerKnownBad();
+      const directUrl = url.replace(`${WORKER_BASE}/ipfs/`, 'https://content.wrappr.wtf/ipfs/');
+      try { resp = await fetch(directUrl, { signal: ac.signal }); } catch {}
+      // Repoint `url` AND `resolved` at the direct URL so the default-
+      // image-bytes branch below stamps the direct gateway into the cache
+      // (otherwise resolved stays as the broken worker URL).
+      url = directUrl;
+      resolved = directUrl;
+    }
+  } catch {}
+  // Existing logic below assumes `resp` may or may not be present.
+  if (resp) try {
     if (resp.ok) {
       fetchOk = true;
       const ct = (resp.headers.get('content-type') || '').toLowerCase();
