@@ -2807,6 +2807,36 @@ details > summary { list-style: none; }
 details > summary::-webkit-details-marker { display: none; }
 details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline-block; }
 
+/* Chart + depth-chart smooth re-paint. populateMarketAssetStats and
+   _populateDepthChart replace the SVG's innerHTML on every reactivity
+   tick (when fresh /assets/<aid> stats land + when orderbook signature
+   changes). Without a transition this reads as a hard flash — CEX
+   feel was missing. A short fade-in on the SVG itself softens the
+   transition without delaying actual interactivity: cursor / hover /
+   tooltip handlers are wired on the parent container, not the SVG,
+   so re-painting the SVG doesn't lose any binding.
+   140ms is below the perceptible-jank threshold for most users while
+   still long enough to be visible as "smooth update" rather than
+   "instant slam." */
+[data-market-price-chart] svg,
+[data-market-depth-chart] svg {
+  animation: chart-fade-in 140ms ease-out;
+}
+@keyframes chart-fade-in {
+  from { opacity: 0.45; }
+  to   { opacity: 1; }
+}
+/* Same softening for the inline trades-tape replacement so the
+   moving ticker doesn't pop. */
+[data-market-trades-tape] {
+  transition: opacity 140ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-market-price-chart] svg,
+  [data-market-depth-chart] svg { animation: none; }
+  [data-market-trades-tape] { transition: none; }
+}
+
 /* Discover filter pills. Single-selection toggle group sitting under the
    text-search input — pill picks the predicate, search narrows by string,
    and the two combine with AND. "All" exists so users can clear the predicate
