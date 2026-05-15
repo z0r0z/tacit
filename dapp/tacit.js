@@ -36139,8 +36139,8 @@ function applyMarketFilters() {
            is the only honest signal. -->
       <div data-swap-limit-readout class="muted" style="font-size:10px;line-height:1.4;margin:-6px 0 10px;text-align:right;display:none;"></div>
       <!-- Primary action -->
-      <button data-swap-action type="button" disabled title="Atomic Bitcoin settlement · no public mempool to front-run, no MEV bots, no privileged sequencer. Each fill is one Bitcoin tx, atomic at the moment of trade." style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
-      <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="No public mempool ordering games. Bitcoin's PoW + atomic settlement means no sequencer can reorder your fill or sandwich you.">🔒 atomic Bitcoin settlement · no MEV</div>
+      <button data-swap-action type="button" disabled title="Each fill settles in one Bitcoin transaction. No public mempool ordering, no MEV bots, no privileged sequencer — Bitcoin's PoW + atomic settlement means no one can reorder your fill or sandwich you." style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
+      <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="Each fill settles in one Bitcoin transaction. No public mempool ordering games, no MEV bots, no privileged sequencer that can reorder or sandwich your trade.">Settles in one Bitcoin tx · no front-running</div>
       <div data-swap-progress style="display:none;margin-top:10px;font-size:11px;"></div>
     </div>`;
   })();
@@ -39755,7 +39755,7 @@ function renderMarketBidsLadderHTML(asset) {
       <div class="market-bids-head">
         <div class="market-bids-title">
           <strong>Bids &middot; <span data-market-bids-count>&mdash;</span></strong>
-          <span>signed buy offers · wallet-held sats (CoW-style) · partial-fillable per §5.7.7</span>
+          <span title="Signed buy offers. Bidder's sats stay in their own wallet until a matched seller claims (CoW / 0x-style maker model). Each bid is partial-fillable — sellers can take any chunk between min_fill and the full amount in one Bitcoin tx, per SPEC §5.7.7.">partial-fillable</span>
         </div>
         <div class="market-bids-actions">
           <button data-act="auto-fulfil-toggle" type="button" title="Automatically signs claim responses for atomic intents (asks AND bid fulfilments) while this tab is open. Required for sell-side swaps to settle without you babysitting.">Auto-fulfil: OFF</button>
@@ -41821,7 +41821,7 @@ function _wireSwapTile(scope) {
       toMeta.textContent = '';
       infoEl.textContent = '';
       actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-      actionBtn.textContent = _isLocked() ? '🔒 Wallet locked · enter amount to unlock & swap' : 'enter an amount';
+      actionBtn.textContent = 'enter an amount';
       return;
     }
     // EXACT-OUT: user typed receive side. Whole-UTXO atomicity → cumulative
