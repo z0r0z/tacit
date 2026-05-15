@@ -45514,18 +45514,21 @@ function _wireSwapTile(scope) {
           ? `\n\nLast bid overshoots your ${result.targetSats.toLocaleString()} sats target by +${result.overshootSats.toLocaleString()} sats.`
           : '';
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
-        const _afNoteOn  = `Auto-fulfil is ON — claims sign automatically while this tab stays open.`;
-        const _afNoteOff = `Enable Auto-fulfil first to keep this tab signing claims (or click "Enable now" below).`;
+        const _afNoteOn  = `Auto-fulfil ON — claims sign automatically while this tab stays open.`;
+        const _afNoteOff = `Enable Auto-fulfil to keep this tab signing claims (or click "Enable now" below).`;
+        // Sells route via atomic intents — each fulfilment depends on a
+        // buyer's Take (1–30 min wait window). Surface that timing in the
+        // one essentials line so users understand sells aren't instant.
+        const minU = result.plan[result.plan.length - 1].u;
         const _bodyFor = (afOn) =>
-          `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} via atomic intents.\n` +
-          `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}${impactStr}\n` +
-          (usd ? `≈ ${usd}\n` : '') +
-          `Settlement awaits each bidder's Take (~1–30 min). ${afOn ? _afNoteOn : _afNoteOff}` +
+          `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} · floor ≥ ${fmtUnitPriceSats(minU)} sats/${ticker}\n` +
+          `Settlement waits for each bidder's Take (~1–30 min). ${afOn ? _afNoteOn : _afNoteOff}` +
+          (impactStr ? `\n\n${impactStr.replace(/^ · /, '').trim()}` : '') +
           overshootStr;
         if (!await tacitConfirm({
-          title: `Swap ${accStr} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats?`,
+          title: `Sell ${accStr} ${ticker} for ≥ ${result.totalSats.toLocaleString()} sats${usd ? ` (≈ ${usd})` : ''}?`,
           body: _bodyFor(_isAutoFulfilEnabled()),
-          confirmLabel: 'Swap',
+          confirmLabel: 'Sell',
           actions: _isAutoFulfilEnabled() ? [] : [{
             label: 'Enable Auto-fulfil now',
             onClick: () => {
@@ -45628,8 +45631,31 @@ function _wireSwapTile(scope) {
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'} · ${lastErr}${_feeSuffix}`, 'error', 8000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'}${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
-      else if (dir === 'buy') toast(`Filled · ${accStr} ${ticker} bought${_feeSuffix} · settles in ~10 min (check Holdings)`, 'success', 8000);
+      else if (dir === 'buy') toast(`Bought ${accStr} ${ticker}${_feeSuffix} · view in Holdings (~10 min to settle)`, 'success', 8000);
       else toast(`Filled · ${accStr} ${ticker} sold${_feeSuffix} · buyers will settle on Bitcoin in ~10 min`, 'success', 8000);
+      // Post-success inline CTA: append a "View in Holdings →" button to
+      // the progress UI on a full buy success. The progress steps remain
+      // visible (with txids) so the user has receipts; the new button
+      // gives them a clear next step instead of having to spot the
+      // toast that disappears in 8 seconds. Survives the 1.5s
+      // renderMarket() re-render because [data-swap-tile] is in the
+      // preserved-nodes list.
+      if (dir === 'buy' && filled === result.plan.length && !lastErr && !_stoppedEarly && progressEl) {
+        const cta = document.createElement('div');
+        cta.style.cssText = 'margin-top:10px;text-align:center;';
+        cta.innerHTML = `<a href="#" data-swap-view-holdings style="display:inline-block;padding:8px 18px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;text-decoration:none;box-shadow:2px 2px 0 var(--ink);">View in Holdings →</a>`;
+        // Idempotent: if a previous success already added one, replace
+        // rather than stack a second copy.
+        const prev = progressEl.parentNode?.querySelector('[data-swap-view-holdings]')?.closest('div');
+        if (prev && prev !== cta) prev.remove();
+        progressEl.parentNode?.insertBefore(cta, progressEl.nextSibling);
+        cta.querySelector('[data-swap-view-holdings]').onclick = (e) => {
+          e.preventDefault();
+          const tab = document.querySelector('.tab[data-tab="holdings"]');
+          if (tab) tab.click();
+          cta.remove();
+        };
+      }
       // Remember this exact-out swap for the "↻ Repeat" quickfill chip.
       // Exact-out is reached via the "to" input; rawTo is the value the
       // user typed. payUnit captures the current pay-unit so a USD-typed
@@ -45872,9 +45898,27 @@ function _wireSwapTile(scope) {
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}${_feeSuffix}`, 'error', 8000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} filled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (bidPosted) {
-        toast(`Swapped → ${accStr} ${ticker} ✓${_feeSuffix} · settling on Bitcoin (~10 min) · +${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker} (fills when a seller matches)`, 'success', 9000);
+        toast(`Bought ${accStr} ${ticker} ✓${_feeSuffix} · +${fmtAssetAmount(bidPosted.amount, decimals)} more open as bid @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker}`, 'success', 9000);
       } else {
-        toast(`Swapped → ${accStr} ${ticker} ✓${_feeSuffix} · settling on Bitcoin (~10 min for first confirmation)`, 'success', 6000);
+        toast(`Bought ${accStr} ${ticker} ✓${_feeSuffix} · view in Holdings (~10 min to settle)`, 'success', 6000);
+      }
+      // Same post-success CTA pattern as the exact-out path. Surfaces a
+      // green "View in Holdings →" button under the progress UI on a
+      // clean full-fill buy. Skipped on partial / stopped / failed paths
+      // because their toast already calls out what's left.
+      if (filled === result.plan.length && !lastErr && !_stoppedEarly && progressEl) {
+        const cta = document.createElement('div');
+        cta.style.cssText = 'margin-top:10px;text-align:center;';
+        cta.innerHTML = `<a href="#" data-swap-view-holdings style="display:inline-block;padding:8px 18px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;text-decoration:none;box-shadow:2px 2px 0 var(--ink);">View in Holdings →</a>`;
+        const prev = progressEl.parentNode?.querySelector('[data-swap-view-holdings]')?.closest('div');
+        if (prev && prev !== cta) prev.remove();
+        progressEl.parentNode?.insertBefore(cta, progressEl.nextSibling);
+        cta.querySelector('[data-swap-view-holdings]').onclick = (e) => {
+          e.preventDefault();
+          const tab = document.querySelector('.tab[data-tab="holdings"]');
+          if (tab) tab.click();
+          cta.remove();
+        };
       }
       // Remember this exact-in buy for the "↻ Repeat" quickfill chip.
       // raw is the literal value the user typed in the "from" input;
@@ -45932,17 +45976,17 @@ function _wireSwapTile(scope) {
       const accStr = fmtAssetAmount(result.totalAmt, decimals);
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
       const _impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
-      const _afNoteOn  = `Auto-fulfil is ON — claims sign automatically while this tab stays open.`;
-      const _afNoteOff = `Enable Auto-fulfil first to keep this tab signing claims (or click "Enable now" below).`;
+      const _afNoteOn  = `Auto-fulfil ON — claims sign automatically while this tab stays open.`;
+      const _afNoteOff = `Enable Auto-fulfil to keep this tab signing claims (or click "Enable now" below).`;
+      const _minU = result.plan[result.plan.length - 1].u;
       const _bodyFor = (afOn) =>
-        `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} via atomic intents.\n` +
-        `Price range: ${fmtUnitPriceSats(result.plan[result.plan.length - 1].u)}–${fmtUnitPriceSats(result.plan[0].u)} sats/${ticker}${_impactStr}\n` +
-        (usd ? `≈ ${usd}\n` : '') +
-        `Settlement awaits each bidder's Take (~1–30 min). ${afOn ? _afNoteOn : _afNoteOff}`;
+        `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} · floor ≥ ${fmtUnitPriceSats(_minU)} sats/${ticker}\n` +
+        `Settlement waits for each bidder's Take (~1–30 min). ${afOn ? _afNoteOn : _afNoteOff}` +
+        (_impactStr ? `\n\n${_impactStr.replace(/^ · /, '').trim()}` : '');
       if (!await tacitConfirm({
-        title: `Swap ${accStr} ${ticker} → ${result.totalSats.toLocaleString()} sats?`,
+        title: `Sell ${accStr} ${ticker} for ${result.totalSats.toLocaleString()} sats${usd ? ` (≈ ${usd})` : ''}?`,
         body: _bodyFor(_isAutoFulfilEnabled()),
-        confirmLabel: 'Swap',
+        confirmLabel: 'Sell',
         actions: _isAutoFulfilEnabled() ? [] : [{
           label: 'Enable Auto-fulfil now',
           onClick: () => {
