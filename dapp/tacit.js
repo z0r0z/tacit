@@ -1633,6 +1633,30 @@ const extWallet = {
 const _API_MAX_INFLIGHT = 12;
 let _apiInflight = 0;
 const _apiQueue = [];
+
+// Per-base in-flight cap. Even with the global 12-cap above, a burst of
+// concurrent calls (e.g., market view rendering 20 listings, each firing
+// /tx/<txid>/outspend/<vout>) can all race to the same primary base before
+// any of them returns a 429 to trigger the cooldown. The result: 4-6 burst
+// 429s show up in the browser console even though the rotation logic IS
+// correct once it kicks in. Capping per-base at 6 forces the rotation to
+// spread load across bases proactively, so a burst hits at most 6 to any
+// one provider — most providers tolerate 6 concurrent comfortably. If all
+// healthy bases are saturated, we still fall through to cooling bases as a
+// last resort (better to send a request that might succeed than to throw).
+const _PER_BASE_MAX_INFLIGHT = 6;
+const _perBaseInflight = new Map();
+function _baseSlotsFree(base) {
+  return Math.max(0, _PER_BASE_MAX_INFLIGHT - (_perBaseInflight.get(base) || 0));
+}
+function _acquireBaseSlot(base) {
+  _perBaseInflight.set(base, (_perBaseInflight.get(base) || 0) + 1);
+}
+function _releaseBaseSlot(base) {
+  const n = (_perBaseInflight.get(base) || 0) - 1;
+  if (n <= 0) _perBaseInflight.delete(base);
+  else _perBaseInflight.set(base, n);
+}
 function _apiAcquire() {
   if (_apiInflight < _API_MAX_INFLIGHT) {
     _apiInflight++;
@@ -1846,53 +1870,77 @@ async function api(path, opts = {}) {
     // Healthy bases first in priority order; cooling bases last, sorted by
     // shortest time-remaining so the one closest to recovery gets the
     // last-resort attempt.
+    //
+    // Among healthy bases: prefer those with available per-base slots so a
+    // burst of concurrent calls spreads across providers rather than piling
+    // onto whichever one is at the top of the priority list. Bases at their
+    // per-base cap go to the back of the healthy queue — still tried if all
+    // others fail, but not preferred. Without this, 6+ simultaneous outspend
+    // checks all race to the same primary base before any 429/cooldown can
+    // engage; with it, they fan out automatically.
     const healthy = bases.filter(b => !_isCooling(b));
+    const healthyWithSlots = healthy.filter(b => _baseSlotsFree(b) > 0);
+    const healthySaturated  = healthy.filter(b => _baseSlotsFree(b) === 0);
     const cooling = bases.filter(_isCooling)
       .sort((a, b) => _coolingMsLeft(a) - _coolingMsLeft(b));
-    const order = healthy.length ? [...healthy, ...cooling] : cooling;
+    const order = healthyWithSlots.length
+      ? [...healthyWithSlots, ...healthySaturated, ...cooling]
+      : (healthy.length ? [...healthy, ...cooling] : cooling);
 
     let lastErr = null;
     let lastRes = null;
     for (const base of order) {
       let r;
+      let _slotReleased = false;
+      _acquireBaseSlot(base);
+      const _releaseOnce = () => { if (!_slotReleased) { _slotReleased = true; _releaseBaseSlot(base); } };
       try {
-        r = await fetch(base + path, opts);
-      } catch (e) {
-        // Network / CORS / DNS — provider unreachable. mempool.space sometimes
-        // serves error pages without Access-Control-Allow-Origin headers,
-        // which the browser surfaces as a CORS block even though the actual
-        // failure was upstream — all recoverable by rotating to the next base.
-        _markUnhealthy(base, 60_000, 'network');
-        lastErr = e;
-        continue;
+        try {
+          r = await fetch(base + path, opts);
+        } catch (e) {
+          // Network / CORS / DNS — provider unreachable. mempool.space sometimes
+          // serves error pages without Access-Control-Allow-Origin headers,
+          // which the browser surfaces as a CORS block even though the actual
+          // failure was upstream — all recoverable by rotating to the next base.
+          _markUnhealthy(base, 60_000, 'network');
+          lastErr = e;
+          continue;
+        }
+        if (r.status === 429) {
+          // Per-IP rate limit. Respect Retry-After if the provider sends it
+          // (Blockstream does on the "monthly cap exceeded" path); else 30s
+          // is a reasonable default that lets a short burst window pass.
+          const ra = parseInt(r.headers.get('retry-after') || '', 10);
+          const cool = Number.isFinite(ra) && ra > 0
+            ? Math.min(ra * 1000, 300_000)
+            : 30_000;
+          _markUnhealthy(base, cool, 'rate-limited');
+          lastRes = r;
+          continue;
+        }
+        if (r.status >= 500) {
+          _markUnhealthy(base, 15_000, String(r.status));
+          lastRes = r;
+          continue;
+        }
+        // 2xx or non-429 4xx — return. 4xx is a real client-side signal
+        // (e.g. /utxo's 400 for >500 UTXOs) and must NOT trigger rotation:
+        // every provider will return the same 4xx for the same query, and
+        // burning round-trips on guaranteed failures just slows the dapp.
+        if (r.ok) _apiHealth.delete(base);
+        if (!r.ok) {
+          const t = await r.text();
+          throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
+        }
+        return r;
+      } finally {
+        // Release at headers-received (we never await the body inside this
+        // block — caller awaits .json()/.text() outside). That means the
+        // provider's per-IP burst counter has effectively decremented from
+        // our side by the time we exit, so freeing the per-base slot here
+        // is correct.
+        _releaseOnce();
       }
-      if (r.status === 429) {
-        // Per-IP rate limit. Respect Retry-After if the provider sends it
-        // (Blockstream does on the "monthly cap exceeded" path); else 30s
-        // is a reasonable default that lets a short burst window pass.
-        const ra = parseInt(r.headers.get('retry-after') || '', 10);
-        const cool = Number.isFinite(ra) && ra > 0
-          ? Math.min(ra * 1000, 300_000)
-          : 30_000;
-        _markUnhealthy(base, cool, 'rate-limited');
-        lastRes = r;
-        continue;
-      }
-      if (r.status >= 500) {
-        _markUnhealthy(base, 15_000, String(r.status));
-        lastRes = r;
-        continue;
-      }
-      // 2xx or non-429 4xx — return. 4xx is a real client-side signal
-      // (e.g. /utxo's 400 for >500 UTXOs) and must NOT trigger rotation:
-      // every provider will return the same 4xx for the same query, and
-      // burning round-trips on guaranteed failures just slows the dapp.
-      if (r.ok) _apiHealth.delete(base);
-      if (!r.ok) {
-        const t = await r.text();
-        throw new Error(`API ${r.status}: ${t.slice(0, 240)}`);
-      }
-      return r;
     }
     // Every base exhausted. Normalize the error message so the wallet bar
     // shows a short, actionable pill instead of the provider's multi-
@@ -2535,10 +2583,27 @@ if (typeof document !== 'undefined') {
     }
   });
 }
+// Short-lived in-memory cache for UNSPENT results. Spent results live in
+// _outspendSpentCache (permanent + persisted) because a spent UTXO can't
+// un-spend. Unspent is more delicate: a UTXO is unspent right up until the
+// moment it's spent, so caching too long shows stale UI. But within a
+// single render of e.g. 20 listings, every outspend check would otherwise
+// be a round-trip — easily 20+ /tx/.../outspend/N calls in a 100ms window,
+// which slams the provider and triggers 429-bursts.
+// A 15s TTL caches the "unspent" answer just long enough to coalesce a
+// burst of renders; the answer is re-fetched on the next render after.
+const _outspendUnspentCache = new Map();
+const OUTSPEND_UNSPENT_TTL_MS = 15_000;
+
 const getOutspend = (txid, vout) => {
   _ensureOutspendCacheHydrated();
   const key = `${txid}:${vout}`;
   if (_outspendSpentCache.has(key)) return Promise.resolve(_outspendSpentCache.get(key));
+  // Negative-cache hit: we recently confirmed this UTXO is unspent.
+  const neg = _outspendUnspentCache.get(key);
+  if (neg && Date.now() - neg.at < OUTSPEND_UNSPENT_TTL_MS) {
+    return Promise.resolve(neg.value);
+  }
   const existing = _outspendInFlight.get(key);
   if (existing) return existing;
   const p = apiJson(`/tx/${txid}/outspend/${vout}`)
@@ -2548,6 +2613,20 @@ const getOutspend = (txid, vout) => {
         // Only persist confirmed spends — an unconfirmed spend can RBF or drop
         // and revert to unspent, which would leave a stale "spent" entry.
         if (res.status && res.status.confirmed === true) _scheduleOutspendCacheFlush();
+      } else if (res && res.spent === false) {
+        // Cache the "unspent" answer briefly so a render that checks the
+        // same outpoint multiple times in quick succession doesn't issue
+        // duplicate round-trips. Trim when over a soft cap to bound memory.
+        _outspendUnspentCache.set(key, { value: res, at: Date.now() });
+        if (_outspendUnspentCache.size > 2000) {
+          // Drop the oldest 500 entries — keeps the cache bounded under
+          // adversarial market scrolls without serializing trim logic.
+          let dropped = 0;
+          for (const k of _outspendUnspentCache.keys()) {
+            if (dropped++ >= 500) break;
+            _outspendUnspentCache.delete(k);
+          }
+        }
       }
       return res;
     })
