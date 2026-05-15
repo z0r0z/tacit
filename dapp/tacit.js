@@ -34627,6 +34627,35 @@ function _snapshotMyListings(myPubHex) {
   }
   return out;
 }
+// Buyer-side claim tracking: snapshot the atomic intents where I'm the
+// taker (claim.taker_pubkey === myPubHex) so the next tick can detect
+// claims that disappeared. A claim vanishing without a fulfilment is
+// either (a) the bidder cancelled (rare; user-initiated, no toast
+// needed), or (b) the claim's TTL expired because the seller never
+// auto-fulfilled — the silent-expiry case the user flagged. We can't
+// strictly distinguish without on-chain forensics, but the latter is
+// far more common, so toasting that path is the safe default.
+function _snapshotMyClaims(myPubHex) {
+  const out = new Map();
+  if (!myPubHex || !_marketCache?.listings) return out;
+  for (const l of _marketCache.listings) {
+    if (l.kind !== 'intent') continue;
+    const takerPub = l.claim?.taker_pubkey || '';
+    if (takerPub !== myPubHex) continue;
+    if (!l.intent_id) continue;
+    out.set(l.intent_id, {
+      aid: l._asset?.asset_id || l.asset_id || '',
+      ticker: l._asset?.ticker || '?',
+      decimals: Number.isInteger(l._asset?.decimals) ? l._asset.decimals : 0,
+      // Was the seller in the process of fulfilling when we snapshotted?
+      // If so a "vanished" claim means it COMPLETED (not expired) and we
+      // should not toast as expiry.
+      fulfilmentPending: !!l.fulfilment_pending,
+    });
+  }
+  return out;
+}
+let _myClaimsSnapshot = null;
 // Auto-refresh: re-fetch market data every few seconds while the
 // Markets tab is visible. Hooks into existing fetchMarketDataDeduped
 // so a manual swap completing within the window doesn't trigger a
@@ -34756,7 +34785,7 @@ function _startMarketAutoRefresh() {
           if (_recentLocalListingCancels.has(key)) continue;
           const amtStr = fmtAssetAmount(snap.amount, snap.decimals);
           try {
-            toast(`Your ${snap.ticker} listing sold ✓ · ${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin`, 'success', 10000);
+            toast(`Your ${snap.ticker} listing sold ✓ · ${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin (~10 min for first confirmation)`, 'success', 10000);
           } catch {}
           _pendingAddSettlement({
             tradeId: `sell-${key}-${Date.now()}`,
@@ -34767,6 +34796,28 @@ function _startMarketAutoRefresh() {
         _myListingsSnapshot = afterMine;
       } else if (myPubHex) {
         _myListingsSnapshot = _snapshotMyListings(myPubHex);
+      }
+      // Buyer-side claim-expiry notification. Mirror of the seller-side
+      // fill detector above: snapshot my active claims on atomic
+      // intents, diff against the next snapshot. A claim that vanished
+      // without being fulfilment_pending in the prior snapshot means
+      // the seller never fulfilled and the TTL expired. Toast the
+      // user so they know their seat in the orderbook silently dropped
+      // and they can decide whether to re-claim, raise their price,
+      // or move on. (If the prior snapshot had fulfilment_pending=true
+      // we suppress the toast — that's the success path, not expiry.)
+      if (myPubHex) {
+        const afterMyClaims = _snapshotMyClaims(myPubHex);
+        if (_myClaimsSnapshot) {
+          for (const [iid, snap] of _myClaimsSnapshot) {
+            if (afterMyClaims.has(iid)) continue;
+            if (snap.fulfilmentPending) continue;  // completed, not expired
+            try {
+              toast(`Your claim on ${escapeHtml(snap.ticker)} expired · seller didn't fulfil in time. Your sats are safe — try a different listing or enable Auto-fulfil on your own listings.`, '', 10000);
+            } catch {}
+          }
+        }
+        _myClaimsSnapshot = afterMyClaims;
       }
     } catch (e) {
       success = false;
@@ -35350,6 +35401,59 @@ let _autoFulfilTimer = null;
 let _autoFulfilPolling = false;
 const _autoFulfilStatus = { lastPollAt: 0, armed: 0, lastFulfilAt: 0, lastError: null };
 const _autoFulfilRecentlyDone = new Set();  // intent_id → skip on next polls (~10 min)
+// Cross-tab race protection. When the user has multiple Tacit tabs open
+// and all of them are running the daemon, two tabs can both detect the
+// same fresh claim on the same atomic intent and both broadcast
+// competing fulfilment txs — one wins on chain, the other fails with
+// "input already spent" or duplicates a settle that the worker rejects.
+// _autoFulfilRecentlyDone is per-tab (in-memory Set) so it doesn't
+// stop the race. Solution: a localStorage-based lease keyed by intent_id.
+// First tab to acquire signs; other tabs see the lease and skip. TTL
+// covers worst-case fulfilment latency so a crashed/closed tab doesn't
+// hold the lease forever. Released on success/fail in a finally block.
+const _AUTO_FULFIL_LEASE_PREFIX = 'tacit-axintent-lease:';
+const _AUTO_FULFIL_LEASE_TTL_MS = 2 * 60 * 1000;
+const _AUTO_FULFIL_TAB_ID = (() => {
+  try {
+    // Per-page-load random id. Two tabs naturally get different ids;
+    // a reload re-randomizes (which is fine — old leases time out).
+    return Math.random().toString(36).slice(2, 10) + '-' + Date.now().toString(36);
+  } catch { return 'no-storage'; }
+})();
+function _acquireAutoFulfilLease(intentIdHex) {
+  if (!intentIdHex) return true;
+  const key = _AUTO_FULFIL_LEASE_PREFIX + intentIdHex;
+  const now = Date.now();
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      let parsed;
+      try { parsed = JSON.parse(raw); } catch { parsed = null; }
+      if (parsed && parsed.tab && parsed.ts
+          && parsed.tab !== _AUTO_FULFIL_TAB_ID
+          && (now - Number(parsed.ts)) < _AUTO_FULFIL_LEASE_TTL_MS) {
+        return false;  // Another tab owns a fresh lease.
+      }
+    }
+    localStorage.setItem(key, JSON.stringify({ tab: _AUTO_FULFIL_TAB_ID, ts: now }));
+    return true;
+  } catch {
+    // localStorage unavailable (private mode quota, disabled, etc.) →
+    // fall back to no-lease and let the existing per-tab dedupe do its
+    // best. Worst case: same-as-before behavior.
+    return true;
+  }
+}
+function _releaseAutoFulfilLease(intentIdHex) {
+  if (!intentIdHex) return;
+  const key = _AUTO_FULFIL_LEASE_PREFIX + intentIdHex;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    let parsed; try { parsed = JSON.parse(raw); } catch { return; }
+    if (parsed && parsed.tab === _AUTO_FULFIL_TAB_ID) localStorage.removeItem(key);
+  } catch {}
+}
 function _loadAutoFulfilFlag() {
   try { return localStorage.getItem(_AUTO_FULFIL_KEY) === '1'; } catch { return false; }
 }
@@ -35407,6 +35511,16 @@ async function _autoFulfilPollOnce() {
       const aid = l._asset?.asset_id;
       const iid = l.intent_id;
       if (!aid || !iid) continue;
+      // Cross-tab lease: skip if another open tab is already signing
+      // this intent. Released in the finally below on success or fail.
+      // Add to recentlyDone with a short TTL so we don't keep re-
+      // checking this iid until the lease expires anyway.
+      if (!_acquireAutoFulfilLease(iid)) {
+        _autoFulfilRecentlyDone.add(iid);
+        setTimeout(() => _autoFulfilRecentlyDone.delete(iid), 60 * 1000);
+        continue;
+      }
+      let _leaseReleased = false;
       try {
         // Re-fetch FRESH intent+claim state; the listings snapshot may have
         // lagged the worker (another tab fulfilled, or the bidder cancelled
@@ -35414,7 +35528,10 @@ async function _autoFulfilPollOnce() {
         const r = await fetch(withNet(ATOMIC_INTENTS_URL(aid)));
         const jj = await r.json().catch(() => ({}));
         const fresh = (jj.intents || []).find(x => x.intent_id === iid);
-        if (!fresh || !fresh.claim || fresh.fulfilment_pending) continue;
+        if (!fresh || !fresh.claim || fresh.fulfilment_pending) {
+          _releaseAutoFulfilLease(iid); _leaseReleased = true;
+          continue;
+        }
         // autoMode: true hard-blocks the missing-archive-body path so a
         // compromised worker can't trick the daemon into signing against
         // substituted terms. Manual fulfilment still degrades to a
@@ -35444,6 +35561,7 @@ async function _autoFulfilPollOnce() {
         // to sign right now. Disable the daemon so we don't keep
         // prompting. User can re-enable when ready.
         if (isUnlockCancelled(e)) {
+          _releaseAutoFulfilLease(iid); _leaseReleased = true;
           stopAutoFulfilDaemon();
           toast('Auto-fulfil disabled — unlock was cancelled. Re-enable from any asset page.', '');
           return;
@@ -35451,6 +35569,10 @@ async function _autoFulfilPollOnce() {
         console.warn('auto-fulfil failed for', iid, e?.message || e);
         _autoFulfilStatus.lastError = String(e?.message || e);
         _renderAxintentAutoFulfilStatus();
+      } finally {
+        // Always release on the way out so a thrown error or early
+        // return doesn't strand the lease for the full TTL.
+        if (!_leaseReleased) _releaseAutoFulfilLease(iid);
       }
     }
   } finally {
@@ -39870,6 +39992,27 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     </tr>`;
   }).join('');
 
+  // Rank computation: where does each of my bids sit in the full bid
+  // ladder (descending by unit price)? Competition signal — a #2-of-35
+  // bid is one fill from being top; a #28-of-35 bid will sit unfilled
+  // until either prices drop or higher bids cancel. This is the
+  // closest the dapp can get to a "competition" surface without
+  // breaking the confidentiality design — we don't see other wallets'
+  // balances, but we can see what they're bidding.
+  const _allBidsSortedDesc = (bidsPeek || [])
+    .filter(b => !b.axintent_id && Number(b.expiry || 0) > nowSec)
+    .map(b => {
+      const a = BigInt(b.amount || '0');
+      const s = Number(b.price_sats || 0);
+      return { b, u: unitPriceSats(s, a, decimals) };
+    })
+    .filter(x => Number.isFinite(x.u) && x.u > 0)
+    .sort((x, y) => y.u - x.u);
+  const _bidRankByBidId = new Map();
+  _allBidsSortedDesc.forEach((entry, idx) => {
+    if (entry.b.bid_id) _bidRankByBidId.set(entry.b.bid_id, idx + 1);
+  });
+  const _bidLadderTotal = _allBidsSortedDesc.length;
   const bidRowsHtml = myBids.map(b => {
     const amt = BigInt(b.amount || '0');
     const sats = Number(b.price_sats || 0);
@@ -39881,9 +40024,17 @@ function renderYourOpenOrdersHTML(aid, asset, myPubHex) {
     const ageStr = expiresIn > 0
       ? `expires in ${Math.floor(expiresIn / 3600)}h${Math.floor((expiresIn % 3600) / 60)}m`
       : 'expired';
+    // Rank chip: tells the bidder how close to the front of the ladder
+    // their bid sits. #1 = top of book, immediately fillable from any
+    // seller's Swap-sell. Bigger rank = need to raise price or wait
+    // for higher bids to expire/cancel.
+    const _rank = b.bid_id ? _bidRankByBidId.get(b.bid_id) : null;
+    const _rankTail = (_rank != null && _bidLadderTotal > 1)
+      ? ` <span class="muted" style="font-size:9px;padding:1px 5px;border:1px solid var(--ink-faint);" title="Your bid's position in the ladder, sorted highest unit price first. #1 = next fill any seller's Swap-sell would hit. Higher ranks fill slower; cancel + re-bid higher to climb.">#${_rank} of ${_bidLadderTotal}</span>`
+      : '';
     return `<tr>
       <td><span class="market-bid-state market-bid-state--mine" style="background:#e8f5ec;border:1px solid #0a8f43;color:#0a8f43;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Buy</span></td>
-      <td><strong>${escapeHtml(fmtAssetAmount(amt, decimals))}</strong> ${escapeHtml(ticker)}</td>
+      <td><strong>${escapeHtml(fmtAssetAmount(amt, decimals))}</strong> ${escapeHtml(ticker)}${_rankTail}</td>
       <td>${unitStr}</td>
       <td><strong>${sats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
       <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
@@ -42660,9 +42811,9 @@ function _wireSwapTile(scope) {
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}`, 'error', 8000);
       else if (bidPosted) {
-        toast(`Swapped → ${accStr} ${ticker} ✓ · ${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker} (fills when a seller matches)`, 'success', 9000);
+        toast(`Swapped → ${accStr} ${ticker} ✓ · settling on Bitcoin (~10 min) · +${fmtAssetAmount(bidPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker} (fills when a seller matches)`, 'success', 9000);
       } else {
-        toast(`Swapped → ${accStr} ${ticker} ✓`, 'success', 5000);
+        toast(`Swapped → ${accStr} ${ticker} ✓ · settling on Bitcoin (~10 min for first confirmation)`, 'success', 6000);
       }
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
       actionBtn.textContent = origLabel;
