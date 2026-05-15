@@ -4151,7 +4151,12 @@ async function handleAssetsList(env, network, cors, opts = {}) {
 // Tuned around the cron's 5-min tick: fresh data only changes that often,
 // so a 5-min serve-stale window doesn't lose meaningful accuracy.
 const ASSETS_CACHE_FRESH_MS = 60 * 1000;
-const ASSETS_CACHE_STALE_MS = 5 * 60 * 1000;
+// STALE > cron interval (5min) by a comfortable margin so the SWR STALE-serve
+// path always has a cached entry to return immediately while a background
+// refresh runs. With STALE == cron, users who land in the 0–60s window after
+// each 5-min tick hit MISS → synchronous compute → 7-9s wait. 15min gives
+// the cron 3 chances to refresh before STALE expires.
+const ASSETS_CACHE_STALE_MS = 15 * 60 * 1000;
 
 // Build a normalized cache key for /assets responses. Both the live route
 // handler and the cron pre-warm hit the same key, so cron writes are visible
@@ -4272,7 +4277,10 @@ async function _bustAirdropClaimsCache(network, rootHex) {
 // array of { kind, _asset, ...listing fields } the client can hand straight
 // to applyMarketFilters without further joining.
 const MARKET_CACHE_FRESH_MS = 60 * 1000;
-const MARKET_CACHE_STALE_MS = 5 * 60 * 1000;
+// 15min STALE — see ASSETS_CACHE_STALE_MS rationale. Synchronous /market
+// recompute is the worst of the three (kicks N×3 sub-fetches), so widening
+// the STALE-serve window is highest priority here.
+const MARKET_CACHE_STALE_MS = 15 * 60 * 1000;
 function marketCacheKey(network) {
   const params = new URLSearchParams();
   params.set('network', network);
@@ -4335,7 +4343,9 @@ async function handleMarket(env, network, cors) {
 // MISS than /assets (every petch asset triggers its own loadCanonicalPmints
 // fan-out for cap-progress hydration), so SWR + pre-warm matter more here.
 const PETCH_ASSETS_CACHE_FRESH_MS = 60 * 1000;
-const PETCH_ASSETS_CACHE_STALE_MS = 5 * 60 * 1000;
+// 15min STALE — see ASSETS_CACHE_STALE_MS rationale. Cron pre-warms this
+// alongside /assets and /market every 5 min.
+const PETCH_ASSETS_CACHE_STALE_MS = 15 * 60 * 1000;
 function petchAssetsCacheKey(network) {
   const params = new URLSearchParams();
   params.set('network', network);

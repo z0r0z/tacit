@@ -8736,6 +8736,45 @@ function _scheduleHoldingsRetry() {
 function _cancelHoldingsRetry() {
   if (_holdingsRetryTimer) { clearTimeout(_holdingsRetryTimer); _holdingsRetryTimer = null; }
   _holdingsRetryAttempt = 0;
+  _holdingsTimeoutAutoAttempt = 0;
+}
+// Timeout-specific auto-retry counter. Independent from _holdingsRetryAttempt
+// (which handles rate-limit / network-flake retries) because a timeout is its
+// own failure mode with different ergonomics: the user already waited 90–180s,
+// so we want a SHORT inter-attempt delay (give them feedback fast) but a HARD
+// CAP so we don't loop forever burning indexer round-trips on a permanently-
+// stuck scan. Attempt 2 inherits the first attempt's partial tx cache (memory
+// + IDB) so it's usually meaningfully faster — 1 retry is the right balance
+// between "self-heal a transient slow indexer" and "don't make the user wait
+// 9 minutes before seeing a button they can click."
+const _HOLDINGS_TIMEOUT_AUTO_CAP = 1;
+let _holdingsTimeoutAutoAttempt = 0;
+// Inflated-UTXO auto-retry. h.inflated represents UTXOs that *genuinely
+// failed* validation (rangeproof / kernel-sig / conservation) — but the
+// underlying failure can still be transient: a stale tx body from an
+// indexer that returned partial data, or a strict-rewalk that fluked on
+// the first try. Auto-retry once before surfacing the alarming "failed
+// validation" warning so a self-healing flake doesn't show the user a
+// scary banner that disappears 10s later anyway.
+//
+// Single per-session flag (not per-UTXO): scanHoldings(true) re-walks
+// every asset, so one retry covers any inflated UTXOs across the whole
+// wallet. Reset on successful render with no inflated UTXOs.
+let _inflatedAutoRetriedThisSession = false;
+let _inflatedAutoRetryTimer = null;
+function _scheduleInflatedAutoRetry() {
+  if (_inflatedAutoRetryTimer || _inflatedAutoRetriedThisSession) return;
+  _inflatedAutoRetriedThisSession = true;
+  _inflatedAutoRetryTimer = setTimeout(() => {
+    _inflatedAutoRetryTimer = null;
+    if (!document.querySelector('.tab.active[data-tab="holdings"]')) return;
+    invalidateHoldingsCache();
+    renderHoldings();
+  }, 5000);
+}
+function _cancelInflatedAutoRetry() {
+  if (_inflatedAutoRetryTimer) { clearTimeout(_inflatedAutoRetryTimer); _inflatedAutoRetryTimer = null; }
+  _inflatedAutoRetriedThisSession = false;
 }
 function _holdingsSeenKey() {
   if (!wallet.pub) return null;
@@ -8751,6 +8790,87 @@ function _saveHoldingsSeenFlag() {
   const k = _holdingsSeenKey();
   if (!k) return;
   try { localStorage.setItem(k, '1'); } catch {}
+}
+// Persisted last-rendered holdings summary. Lets renderHoldings paint cached
+// asset cards INSTANTLY on tab entry while a fresh scan runs in the
+// background — eliminates the skeleton-then-list flash for returning users.
+// Keyed by (network, owner_pubkey) so a wallet switch / network flip loads
+// the correct snapshot. Schema-versioned (v1) so a breaking shape change
+// silently invalidates rather than corrupts.
+//
+// What we persist: just the bare minimum to render a card placeholder —
+// ticker, decimals, balance, asset_id, image hint. Per-UTXO ancestry data
+// stays in memory (would blow localStorage quota for big wallets). Hydrated
+// regions (verified count, market valuation, listings) start blank and fill
+// in as soon as the fresh scan + worker calls resolve.
+const HOLDINGS_SNAPSHOT_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+function _holdingsSnapshotKey() {
+  if (!wallet.pub) return null;
+  let pubHex; try { pubHex = bytesToHex(wallet.pub); } catch { return null; }
+  return `tacit-holdings-snap-v1:${NET.name}:${pubHex}`;
+}
+function _loadHoldingsSnapshot() {
+  const k = _holdingsSnapshotKey();
+  if (!k) return null;
+  try {
+    const raw = localStorage.getItem(k);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (!j || !Array.isArray(j.assets) || !Number.isFinite(j.fetchedAt)) return null;
+    if (Date.now() - j.fetchedAt > HOLDINGS_SNAPSHOT_TTL_MS) return null;
+    return j;
+  } catch { return null; }
+}
+function _saveHoldingsSnapshot(arr) {
+  const k = _holdingsSnapshotKey();
+  if (!k) return;
+  try {
+    // Compact serialization: only the fields the placeholder render needs.
+    // balance is a BigInt — JSON.stringify can't serialize it natively, so
+    // stringify ourselves.
+    const assets = arr.map(h => ({
+      assetIdHex: h.assetIdHex,
+      ticker: h.ticker,
+      decimals: h.decimals,
+      balance: h.balance.toString(),
+      imageUri: getAssetMeta(h.assetIdHex)?.imageUri || null,
+      utxoCount: h.utxos.length,
+      pendingCount: h.pending ? h.pending.length : 0,
+      inflatedCount: h.inflated ? h.inflated.length : 0,
+      unverifiedCount: h.unverified ? h.unverified.length : 0,
+    }));
+    localStorage.setItem(k, JSON.stringify({ fetchedAt: Date.now(), assets }));
+  } catch { /* quota or serialization — skip; snapshot is best-effort */ }
+}
+// Persisted wallet sats balance. Same instant-first-paint pattern as the
+// holdings snapshot but for the top-of-page balance pill. Keyed by network
+// + address so a wallet flip / network flip pulls the correct cached value.
+// TTL = 1h: stale-tolerant (caller is about to overwrite from a live fetch
+// within seconds) but guards against showing a years-old balance after a
+// long-dormant tab returns.
+const WALLET_BALANCE_SNAPSHOT_TTL_MS = 60 * 60 * 1000;
+function _walletBalanceSnapshotKey() {
+  let addr; try { addr = wallet.address(); } catch { return null; }
+  if (!addr) return null;
+  return `tacit-wallet-bal-v1:${NET.name}:${addr}`;
+}
+function _loadWalletBalanceSnapshot() {
+  const k = _walletBalanceSnapshotKey();
+  if (!k) return null;
+  try {
+    const raw = localStorage.getItem(k);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (!j || !Number.isFinite(j.sats) || !Number.isFinite(j.fetchedAt)) return null;
+    if (Date.now() - j.fetchedAt > WALLET_BALANCE_SNAPSHOT_TTL_MS) return null;
+    return j.sats;
+  } catch { return null; }
+}
+function _saveWalletBalanceSnapshot(sats) {
+  const k = _walletBalanceSnapshotKey();
+  if (!k) return;
+  try { localStorage.setItem(k, JSON.stringify({ fetchedAt: Date.now(), sats })); }
+  catch {}
 }
 const HOLDINGS_CACHE_TTL_MS = 30 * 1000;
 // Cross-TTL "nothing changed" cache. Keyed by the wallet's UTXO-set signature
@@ -21546,8 +21666,18 @@ async function refreshWallet() {
   // values; the catch branch leaves the prior render intact.
   const isFirstLoad = _walletCardState.balance == null;
   if (isFirstLoad) {
-    setStatus('#wallet-status', 'syncing', true);
-    renderWalletCard({ balance: null, faucetReady: false });
+    // Persisted-balance fast path: paint last-known sats from localStorage
+    // before the chain queries return. Returning users see their balance
+    // instantly instead of "—" for the 200ms–5s the indexer takes to
+    // respond. Stale-tolerant — the fresh fetch overwrites within seconds.
+    const cached = _loadWalletBalanceSnapshot();
+    if (cached != null) {
+      setStatus('#wallet-status', 'cached · refreshing', true);
+      renderWalletCard({ balance: cached, faucetReady: false });
+    } else {
+      setStatus('#wallet-status', 'syncing', true);
+      renderWalletCard({ balance: null, faucetReady: false });
+    }
   } else {
     // Mid-session refresh: pill animates but the card doesn't blank.
     setStatus('#wallet-status', 'refreshing', true);
@@ -21564,6 +21694,9 @@ async function refreshWallet() {
     setIfChanged('#w-height', height);
     setStatus('#wallet-status', `synced · ${rate} sat/vB`);
     renderWalletCard({ balance, faucetReady });
+    // Persist for next-load instant first-paint. Fire-and-forget — quota
+    // errors are non-fatal (caller falls back to "syncing" placeholder).
+    _saveWalletBalanceSnapshot(balance);
     // USD-equivalent — non-blocking. Fires the oracle fetch in the
     // background and patches the chip when it resolves; the sats figure
     // is already painted by the time this runs.
@@ -31024,8 +31157,44 @@ async function renderHoldings() {
   // a successful render (any branch — assets, fresh-empty, transient-empty),
   // reset only on tab leave / wallet change.
   const _holdingsIsFirstRender = !_holdingsLastRenderOk;
-  setStatus('#holdings-status', _holdingsIsFirstRender ? 'scanning' : 'refreshing', true);
+  // Persisted-snapshot fast path: if we've successfully rendered for this
+  // (network, owner_pubkey) within the last 24h, paint placeholder cards
+  // INSTANTLY from localStorage. The skeleton was a 1–30s blank stare for
+  // returning users; with this branch a heavy wallet sees its known assets
+  // immediately and the background scan just updates valuations / counts.
+  // Skipped if a prior render already populated DOM (subsequent refresh
+  // shouldn't flicker), or if no snapshot is stored (genuinely fresh load).
+  let _showedSnapshot = false;
   if (_holdingsIsFirstRender) {
+    const snap = _loadHoldingsSnapshot();
+    if (snap && Array.isArray(snap.assets) && snap.assets.length > 0) {
+      try {
+        list.innerHTML = snap.assets.map(s => {
+          const wholeNum = (() => {
+            try {
+              const balBig = BigInt(s.balance);
+              const baseUnit = BigInt(10) ** BigInt(Math.max(0, s.decimals | 0));
+              return Number(balBig / baseUnit);
+            } catch { return 0; }
+          })();
+          const ticker = escapeHtml(s.ticker || 'asset');
+          const aidShort = escapeHtml((s.assetIdHex || '').slice(0, 8));
+          return `<div class="asset-card" style="opacity:0.7;" data-snapshot-card>
+            <div class="asset-card-head" style="display:flex;align-items:center;gap:10px;padding:14px 16px;">
+              <div style="width:40px;height:40px;border:1px solid var(--ink);background:var(--bg-warm);flex-shrink:0;"></div>
+              <div style="flex:1;min-width:0;">
+                <div><strong>${ticker}</strong> <span class="muted" style="font-size:10px;">${aidShort}…</span></div>
+                <div class="muted" style="font-size:11px;margin-top:2px;">~${wholeNum.toLocaleString()} ${ticker} · ${s.utxoCount} UTXO${s.utxoCount === 1 ? '' : 's'}</div>
+              </div>
+            </div>
+          </div>`;
+        }).join('') + `<div class="muted" style="padding:8px 16px;font-size:10px;">cached · re-scanning in background</div>`;
+        _showedSnapshot = true;
+      } catch { /* snapshot render glitch — fall through to skeleton */ }
+    }
+  }
+  setStatus('#holdings-status', _holdingsIsFirstRender ? (_showedSnapshot ? 'refreshing' : 'scanning') : 'refreshing', true);
+  if (_holdingsIsFirstRender && !_showedSnapshot) {
     list.innerHTML = '<div class="skeleton"><div class="skeleton-row medium"></div><div class="skeleton-row short"></div><div class="skeleton-row"></div></div>';
   }
   try {
@@ -31133,6 +31302,10 @@ async function renderHoldings() {
     // closing the heavy-wallet-first-load false-empty gap.
     _holdingsEverSeenAssets = true;
     _saveHoldingsSeenFlag();
+    // Persist the rendered snapshot for next-reload instant first-paint.
+    // Fire-and-forget — failure (quota / serialization) just means the
+    // next reload falls back to the skeleton, no functional impact.
+    _saveHoldingsSnapshot(arr);
     list.innerHTML = '';
     const ownerPubHex = bytesToHex(wallet.pub);
     // Cross-asset Open Orders dashboard — every preauth listing this wallet
@@ -31390,11 +31563,24 @@ async function renderHoldings() {
           <div style="margin-top:6px;"><button data-act="retry-inflated" data-aid="${h.assetIdHex}" type="button" style="font-size:10px;padding:3px 10px;">↻ Retry verification</button></div>
         </div>` : ''}
         ${h.inflated && h.inflated.length ? (() => {
-          // h.inflated now reserved for GENUINE protocol failures (rangeproof
+          // h.inflated reserved for GENUINE protocol failures (rangeproof
           // verify failed, kernel sig invalid, conservation violation, etc.).
           // Transient fetch-failure cascades route to h.unverified above with
           // softer copy. Reaching this branch means the validator computed a
-          // negative answer with all inputs available — worth investigating.
+          // negative answer with all inputs available.
+          //
+          // BUT: a real-world cause of false-positive inflated entries is a
+          // stale tx body cached from an earlier flaky fetch, where the
+          // validator operated on partial data. Auto-retry once before
+          // alarming the user — if a fresh re-walk clears it, the warning
+          // was a transient lie. If it persists, the on-chain envelope is
+          // actually malformed and the hard warning fires post-retry.
+          if (!_inflatedAutoRetriedThisSession) {
+            _scheduleInflatedAutoRetry();
+            return `<div style="margin-top:10px;padding:8px 10px;font-size:11px;border:1px dashed var(--ink-faint);background:#fff8e8;">
+              <strong>⏳ Verifying ${h.inflated.length} UTXO${h.inflated.length>1?'s':''}…</strong> auto-retrying with a fresh ancestor walk — most apparent validation failures are stale indexer data and resolve here.
+            </div>`;
+          }
           const reason = isPetchRooted
             ? `failed cap-credit or §5.9 validation (envelope decoded but not creditable — e.g. cap-overflow or wrong amount)`
             : `failed rangeproof / kernel-sig / conservation check. If the same UTXO stays here across multiple retries, the on-chain envelope is malformed`;
@@ -31495,6 +31681,11 @@ async function renderHoldings() {
           b.disabled = true;
           const orig = b.textContent;
           b.textContent = 'retrying…';
+          // Treat user-clicked retry as a fresh attempt — clear the
+          // session auto-retry flag so a *future* inflated occurrence
+          // (different scan, different UTXO) gets its own soft-pill
+          // retry instead of jumping straight to the hard warning.
+          _cancelInflatedAutoRetry();
           try {
             invalidateHoldingsCache();
             await scanHoldings(true);
@@ -33245,6 +33436,13 @@ async function renderHoldings() {
     setTabBadge('holdings', arr.length);
     _holdingsLastRenderOk = true;
     _cancelHoldingsRetry();
+    // Inflated auto-retry reset: clear the per-session "we already retried"
+    // flag when no asset shows any inflated UTXOs. Future occurrences then
+    // get a fresh single auto-retry before alarming the user. Note: only
+    // clears when there's a clean render — if SOME asset still has inflated
+    // entries post-retry, the flag stays set so the hard warning sticks.
+    const _anyInflated = arr.some(h => h.inflated && h.inflated.length > 0);
+    if (!_anyInflated) _cancelInflatedAutoRetry();
     // Kick the holdings auto-refresh poll on/off based on whether anything
     // is awaiting cap-credit. Self-stops once all pending have credited so
     // an idle wallet doesn't burn requests.
@@ -33269,11 +33467,36 @@ async function renderHoldings() {
     // Timeout carries a verbose message with a retry hint, so we render
     // an explicit Retry button instead of a generic pill.
     if (isTimeout) {
-      list.innerHTML = `<div class="error" style="padding:14px;line-height:1.6;">⏱ ${escapeHtml(msg)} <button id="btn-holdings-retry" class="primary" style="margin-top:10px;display:block;">↻ Retry scan</button></div>`;
-      document.getElementById('btn-holdings-retry')?.addEventListener('click', () => {
+      // Auto-retry up to _HOLDINGS_TIMEOUT_AUTO_CAP times before surfacing
+      // the manual button. The retry inherits whatever partial cache state
+      // the first attempt populated (txCache + IDB), so attempt N+1 is
+      // usually meaningfully faster than attempt N. A 3s inter-attempt
+      // delay gives the user visual confirmation that something's
+      // happening and lets in-flight indexer requests settle.
+      if (_holdingsTimeoutAutoAttempt < _HOLDINGS_TIMEOUT_AUTO_CAP) {
+        _holdingsTimeoutAutoAttempt++;
+        const n = _holdingsTimeoutAutoAttempt;
+        const cap = _HOLDINGS_TIMEOUT_AUTO_CAP + 1;  // user-visible "attempt 2 of 3"
+        list.innerHTML = `<div class="error" style="padding:14px;line-height:1.6;">⏱ Scan slow — indexer may be throttling. Auto-retrying (attempt ${n + 1} of ${cap})…</div>`;
+        setStatus('#holdings-status', `auto-retry ${n + 1}/${cap}`, true);
+        // Invalidate so the retry actually re-walks rather than serving
+        // a stale cache (none should exist on first-load timeout, but
+        // defensive). 3s delay = enough for the user to register the
+        // message + for any in-flight chain queries to settle.
         invalidateHoldingsCache();
-        renderHoldings();
-      });
+        setTimeout(() => {
+          if (document.querySelector('.tab.active[data-tab="holdings"]')) {
+            renderHoldings();
+          }
+        }, 3000);
+      } else {
+        list.innerHTML = `<div class="error" style="padding:14px;line-height:1.6;">⏱ ${escapeHtml(msg)} <button id="btn-holdings-retry" class="primary" style="margin-top:10px;display:block;">↻ Retry scan</button></div>`;
+        document.getElementById('btn-holdings-retry')?.addEventListener('click', () => {
+          _holdingsTimeoutAutoAttempt = 0;  // user-initiated — reset auto cap
+          invalidateHoldingsCache();
+          renderHoldings();
+        });
+      }
     } else if (isRateLimited) {
       // Soften the first-load rate-limit message — no JSON, just the cause
       // and an auto-recovery hint. The backoff timer will retry on its own.
