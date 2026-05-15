@@ -341,7 +341,7 @@ existing machinery.
 │    input UTXO of A                 │  │  reads queued intents for this pool          │
 │    Pedersen commit C_in_secp       │  │                                              │
 │    Pedersen commit C_in_BJJ (aux)  │  │  picks subset {i₁, …, iₙ}; runs deterministic│
-│    sigma cross-curve binding (157B)│  │  clearing solve over public reserves + γ:    │
+│    sigma cross-curve binding (169B)│  │  clearing solve over public reserves + γ:    │
 │    min_out, tip, expiry            │  │    Δa_in_net = gross A-side residual         │
 │    intent_sig (BIP-340)            │  │    Δb_out_net = floor(R_B·γ·Δa_in_net /      │
 │                                    │  │                       (R_A + γ·Δa_in_net))   │
@@ -376,7 +376,7 @@ existing machinery.
 │   - per-receipt C_out_secp + C_out_ │ ┌────────────────────────────────────────────┐
 │     BJJ (one pair per trader)       │ │  INDEXER                                   │
 │   - per-receipt sigma cross-curve   │ │                                            │
-│     proofs (157 B each)             │ │  • verify each per-intent and per-receipt  │
+│     proofs (169 B each)             │ │  • verify each per-intent and per-receipt  │
 │   - public Δa_net, Δb_net           │ │    sigma cross-curve proof (out-of-circuit)│
 │   - per-asset R_net (aggregate r)   │ │                                            │
 │   - per-intent trader_pubkey +      │ │                                            │
@@ -799,62 +799,50 @@ Per intent:
   amounts). The protocol:
 
   ```
-  prover picks    α        uniform in [0, 2^224)         (integer mask)
-                  β_secp   uniform in [0, n_secp)        (mod secp256k1 order)
-                  β_BJJ    uniform in [0, n_BJJ)         (mod BabyJubJub order)
-  prover computes A_secp   = α·H_secp + β_secp·G_secp    (on secp256k1)
-                  A_BJJ    = α·H_BJJ  + β_BJJ·G_BJJ      (on BabyJubJub)
+  prover picks    α        uniform in [0, 2^320 − 2^192)  (integer mask)
+                  β_secp   uniform in [0, n_secp)         (mod secp256k1 order)
+                  β_BJJ    uniform in [0, n_BJJ)          (mod BabyJubJub order)
+  prover computes A_secp   = α·H_secp + β_secp·G_secp     (on secp256k1)
+                  A_BJJ    = α·H_BJJ  + β_BJJ·G_BJJ       (on BabyJubJub)
   challenge       e        = SHA256("tacit-amm-xcurve-v1"
                                      || C_in_secp || C_in_BJJ
-                                     || A_secp || A_BJJ) mod 2^80
-  responses       z_a      = α       + e·a               (over the integers!)
-                  z_r_secp = β_secp  + e·r_secp          (mod n_secp)
-                  z_r_BJJ  = β_BJJ   + e·r_BJJ           (mod n_BJJ)
-  proof bytes     A_secp(33) || A_BJJ(32) || z_a(28) || z_r_secp(32) || z_r_BJJ(32)
-                  = 157 bytes total
+                                     || A_secp || A_BJJ) low-16 bytes
+                                                          (e < 2^128)
+  responses       z_a      = α       + e·a                (over the integers!)
+                  z_r_secp = β_secp  + e·r_secp           (mod n_secp)
+                  z_r_BJJ  = β_BJJ   + e·r_BJJ            (mod n_BJJ)
+  proof bytes     A_secp(33) || A_BJJ(32) || z_a(40) || z_r_secp(32) || z_r_BJJ(32)
+                  = 169 bytes total
   ```
 
-  Verifier reduces `z_a` into each group's scalar field, then
-  checks `z_a·H_secp + z_r_secp·G_secp == A_secp + e·C_secp` on
-  secp256k1 AND `z_a·H_BJJ + z_r_BJJ·G_BJJ == A_BJJ + e·C_BJJ` on
-  BabyJubJub. **The same integer `z_a` is used in both equations.**
+  Verifier reduces `z_a` modulo each group's scalar field (since
+  `z_a < 2^320` may exceed `n_secp ≈ 2^256` and certainly exceeds
+  `n_BJJ ≈ 2^251`), then checks
+  `z_a·H_secp + z_r_secp·G_secp == A_secp + e·C_secp` on secp256k1
+  AND `z_a·H_BJJ + z_r_BJJ·G_BJJ == A_BJJ + e·C_BJJ` on BabyJubJub.
+  **The same integer `z_a` is sent on the wire and used in both
+  equations** — the binding comes from a shared integer response,
+  not from `z_a` fitting unreduced in either group's scalar field.
+  A cheater wanting to bind one commitment to `a_s` and the other
+  to `a_b ≠ a_s` would need to find a single integer `z_a` whose
+  modular reductions satisfy two different congruences post-hoc —
+  a CRT problem at > 2^128 work given `e < 2^128`.
 
-  **Parameter rationale.** The construction binds `a` across groups
-  of *different orders* (n_secp ≈ 2^256, n_BJJ ≈ 2^251). For the
-  cross-group equality to extract the same `a` via Forking-Lemma
-  extraction, `z_a` MUST fit as an unambiguous integer in both
-  groups, i.e., `z_a < min(n_secp, n_BJJ) ≈ 2^251`. With `e < 2^80`
-  and `a < 2^64` (range-bounded by the standard 64-bit bulletproof
-  on `C_in_secp` that tacit already requires), `e·a < 2^144`. To
-  guarantee `z_a` encodes in 28 bytes (`< 2^224`), the prover
-  rejection-samples `α` in `[0, 2^224 − 2^144)`; with that bound,
-  `z_a = α + e·a < 2^224`. The `α` mask gives **80-bit statistical
-  zero-knowledge** on `a` (margin `(2^224 − 2^144) / 2^144 ≈ 2^80`);
-  the `e < 2^80` challenge gives **80-bit soundness**. Both
-  reductions of `a` mod n_secp and mod n_BJJ are identity for
-  `a < 2^64`, so extraction recovers the same integer `a`
-  consistently in both groups. Reference implementation:
-  `tests/amm-sigma-xcurve.mjs`.
+  **Parameter rationale.** Given `a < 2^64` (range-bounded by the
+  standard 64-bit bulletproof on `C_in_secp` that tacit already
+  requires) and `e < 2^128`, the product `e·a < 2^192`. To preserve
+  ≥ 128-bit statistical zero-knowledge on `a`, the prover
+  rejection-samples `α` uniformly in `[0, 2^320 − 2^192)`, giving
+  `z_a = α + e·a < 2^320` deterministically (40 bytes BE). The mask
+  margin `(2^320 − 2^192) / 2^192 ≈ 2^128` is the statistical-ZK
+  bound. The 16-byte (128-bit) Fiat-Shamir challenge gives **128-bit
+  Camenisch-Stadler soundness** under standard random-oracle
+  assumptions. Reference implementation: `tests/amm-sigma-xcurve.mjs`.
 
-  **Why 80-bit and not 128-bit.** The soundness ceiling is structural:
-  `z_a` must fit in `min(n_secp, n_BJJ) ≈ 2^251` AND encode in the
-  fixed 28-byte slot. With `a < 2^64`, every additional bit of
-  challenge `e` consumes a bit of α's mask budget, so the achievable
-  (soundness, ZK) pair sums to ≈ 160 minus the witness bound 64,
-  i.e., ≈ 80 + 80 in the symmetric split chosen here. A 128-bit
-  soundness variant would force `α < 2^96`, collapsing ZK to 32
-  bits — unacceptable. Tightening the witness (e.g., `a < 2^16`)
-  is incompatible with tacit's u64 base units. The 80/80 split is
-  the regime where Camenisch-Stadler over BJJ + secp actually
-  works at u64 amounts; getting the bounds wrong (e.g., letting α
-  or e be too large) silently breaks soundness even though the
-  equations still type-check. **The 80-bit Fiat-Shamir soundness
-  is the protocol's lowest cryptographic strength margin** — every
-  other primitive (BIP-340, Pedersen, Groth16, bulletproofs) is at
-  ≥ 128 bits.
-
-  Cost: **~150 microseconds prover, ~300 microseconds verifier,
-  157 bytes wire.** No trusted setup. No SNARK circuit.
+  Cost: **~110 ms prover, ~95 ms verifier** in the reference pure-JS
+  implementation (BigInt arithmetic); a production WASM build using
+  circomlib's curve primitives drops both an order of magnitude.
+  **169 bytes wire.** No trusted setup. No SNARK circuit.
   ~1000× cheaper than the in-circuit secp256k1 non-native gadget
   the original draft assumed.
 
@@ -875,7 +863,7 @@ direction                  -- 1 B (0 = A→B, 1 = B→A)
 input_utxos[]              -- length-prefixed: count u8, then [txid_BE(32) || vout_LE(4)] each
 C_in_secp                  -- 33 B (compressed) — aggregate of input UTXO commitments
 C_in_BJJ                   -- 32 B (compressed BabyJubJub point) — aux Pedersen commit
-xcurve_sigma_proof         -- 157 B (sigma proof binding C_in_secp and C_in_BJJ; see above)
+xcurve_sigma_proof         -- 169 B (sigma proof binding C_in_secp and C_in_BJJ; see above)
 receive_scriptPubKey       -- length-prefixed: count u16_LE, then bytes
 min_out                    -- 8 B (u64 LE)
 tip_amount                 -- 8 B (u64 LE)
@@ -885,7 +873,7 @@ trader_pubkey              -- 33 B (compressed)
 ```
 
 The full sigma-proof bytes (not a hash of them) are carried inline:
-the proof is small enough (157 B) that committing the hash would
+the proof is small enough (169 B) that committing the hash would
 buy nothing and would force a separate fetch path.
 
 `intent_id = sha256(intent_msg)` is what the canonical-ordering
@@ -952,7 +940,7 @@ load-bearing fix preventing a malicious settler from shuffling
 which receipt secp commitment belongs to which trader) is now a
 sigma proof per receipt, generated by the settler using the
 trader-supplied `(amount_out, r_out_secp, r_out_BJJ)` from the
-opening blob. Each per-receipt sigma proof is 157 bytes,
+opening blob. Each per-receipt sigma proof is 169 bytes,
 microseconds to produce and verify. Indexers verify all per-intent
 and per-receipt sigma proofs out-of-circuit alongside the chain-
 side aggregate Pedersen check. The four-way binding chain is:
@@ -987,7 +975,7 @@ proof cost** rather than 10× larger as the original draft assumed.
 The v1 cap `N ≤ 16` was originally driven by the per-receipt
 non-native gadget cost. With native BJJ openings, the cap is
 governed by **Bitcoin tx vbyte budget + sigma-proof wire size**
-instead: each receipt adds ~157 B sigma + ~32 B BJJ commit + ~33 B
+instead: each receipt adds ~169 B sigma + ~32 B BJJ commit + ~33 B
 secp commit ≈ 230 B per receipt. N=64 stays well under standard tx
 size; N=128 fits if the envelope is segmented across PUSHDATA
 chunks. v1 retains `N ≤ 16` as a UX latency cap (settler has to
@@ -1182,7 +1170,7 @@ batch, and settles them in a single transaction.
 **Intent collection.** Traders post signed swap intents to a
 worker — direction, dual commitments to the input amount
 (`C_in_secp` from the trader's existing input UTXO plus a fresh
-BabyJubJub-Pedersen `C_in_BJJ`), a 157-byte sigma cross-curve
+BabyJubJub-Pedersen `C_in_BJJ`), a 169-byte sigma cross-curve
 binding proof, `min_out`, `tip`, `input_utxos` references,
 receive script, `expiry`, and a per-intent `intent_sig` under
 `trader_pubkey`. The full opening blob
@@ -1625,18 +1613,25 @@ height.
 pools, every `T_SWAP_BATCH` envelope MUST carry two extra fields:
 
 ```
+expected_height      -- 4 B   u32 LE, equals settle height
 qualifying_set_hash  -- 32 B  sha256("tacit-amm-qset-v1" || pool_id
                                       || height_LE(4) || canonical_list_bytes)
-arbiter_sig          -- 64 B  BIP-340 over qualifying_set_hash by one of the
-                              pool's pinned arbiter pubkeys
+m                    -- 1 B   u8, threshold (1..16), MUST equal
+                              pool.inclusion_arbiter_threshold_m
+signer_indices       -- m B   u8[m] ascending distinct indices into
+                              pool.inclusion_arbiter_pubkeys
+arbiter_sigs         -- 64m B BIP-340 sigs over qualifying_set_hash,
+                              one per signer_index, in the same order
 ```
 
 `canonical_list_bytes` is the sorted, length-prefixed concatenation of
-the qualifying `intent_id`s for that height. The hash + sig commit the
-chain to *which* list was canonical at H; the list bytes themselves
+the qualifying `intent_id`s for that height:
+`u8(count) || count × intent_id(32)`, `intent_id`s in ascending byte
+order. Count is bounded by N_MAX (=16 in v1). The hash + sigs commit
+the chain to *which* list was canonical at H; the list bytes themselves
 remain off-chain, served by the worker at
-`GET /pools/:pool_id/qualifying-intents/:height`. Indexers verify
-`arbiter_sig` against the pool's pinned `inclusion_arbiter_pubkeys`,
+`GET /pools/:pool_id/qualifying-intents/:height`. Indexers verify all
+`m` `arbiter_sigs` against `pool.inclusion_arbiter_pubkeys[signer_index]`,
 fetch the list by its hash from any available source (worker, peer
 indexer, archival pin), and reject the envelope if any listed
 `intent_id` is missing from the batch.
@@ -1670,25 +1665,44 @@ by at least one of the pinned arbiters, and reject any
 opt-in upgrade — typically wanted only by very-high-volume pools
 where curation profit could become material.
 
-**Trust shape: v1 is 1-of-n, not k-of-n.** The envelope carries
-exactly one `arbiter_sig(64)` (BIP-340) and the pool pins a list
-of up to 16 arbiter pubkeys. Any **one** of those keys can sign
-a valid qualifying list. This is **1-of-n** — a fault-tolerance
-upgrade over 1-of-1 (any single arbiter being unavailable does
-not stall the pool), but **not** a Byzantine-fault-tolerance
-upgrade (any single compromised key can curate the list). True
-threshold signing (k-of-n with k ≥ 2) would require either
-MuSig2-style aggregation or a multi-sig envelope field; both
-are out of scope for v1. The pinned list SHOULD be operationally
-independent operators (the 1-of-n property gives liveness, not
-collusion resistance), and pools that need k-of-n curation
-defense MUST wait for the threshold-arbiter variant or layer it
-off-chain (a quorum signs a delegate key that then signs the
-envelope; the delegate key is the pinned arbiter and key rotation
-is an off-chain operational concern of the quorum). Pools that
-pin a single key (n=1) are explicitly fragile — a lost or
-compromised key kills mandatory-inclusion enforcement for that
-pool — and the dapp SHOULD warn at pool-creation time if n=1.
+**Trust shape: m-of-n threshold.** The arbiter is a true m-of-n
+threshold: the pool pins `n ≤ 16` arbiter pubkeys at `POOL_INIT`
+plus a threshold `m ∈ [1, n]`. Every arbiter-pinned envelope carries
+`m` BIP-340 signatures (each from a distinct pinned key, identified
+by ascending `signer_index`), all over the same `qualifying_set_hash`.
+Indexers verify all `m` signatures against the declared signer
+pubkeys before accepting the envelope.
+
+`m = 1` is the lightest setup — any one of `n` keys can sign. Good
+for high-availability pools that want operator diversity for liveness;
+*not* a Byzantine-fault-tolerance posture (any single compromised key
+can curate). `m = 2..n` is the BFT-shape: requires a coalition to
+curate, defends against single-key compromise. Typical high-volume
+deployments pick `m ≥ ⌈n/2⌉ + 1` or `m = 2` for a small `n = 3` quorum.
+
+Pools that pin a single key (`n = m = 1`) are explicitly fragile —
+a lost or compromised key kills mandatory-inclusion enforcement for
+that pool — and the dapp SHOULD warn at pool-creation time if `n = 1`.
+
+**MuSig2 as a compact-sig usage pattern (no protocol change).** Pool
+launchers who want a k-of-n threshold quorum WITHOUT growing the
+envelope linearly in `m` can use MuSig2 (BIP-327) off-chain:
+
+1. The quorum runs MuSig2 KeyAgg over their n individual keys to
+   produce a single aggregated pubkey.
+2. The pool pins `(n=1, threshold_m=1, pubkeys=[aggregated_musig2_key])`
+   at `POOL_INIT`.
+3. To sign a `qualifying_set_hash`, the quorum runs the MuSig2 two-round
+   nonce-coordination + partial-sig protocol off-chain and produces a
+   single 64-byte BIP-340 signature under the aggregated key.
+4. On chain, the envelope's arbiter_block carries this single signature
+   under the 1-of-1 wire format. The indexer's standard BIP-340 check
+   accepts it.
+
+Trade-off: MuSig2 requires interactive nonce coordination among the
+quorum signers (off-chain); the m-of-n separate-sig path is
+non-interactive but grows wire size linearly in `m`. Both are
+supported by the same on-chain wire format.
 
 Default pools (no arbiter pinned) are the right v1 starting point
 and what the dapp creates by default. Pinning an arbiter is a
@@ -1807,20 +1821,21 @@ the worker-and-settler-collocated operator is unchanged (they
 cannot cheat trader funds, only observe per-trader amounts inside
 batches they claim).
 
-**Cryptographic strength.** The protocol's weakest cryptographic
-margin is the **80-bit Fiat-Shamir soundness** on the sigma
-cross-curve binding (see "Parameter rationale" under Hybrid
-commitments). All other primitives sit at ≥ 128 bits: BIP-340 (≈
-128), Pedersen binding under DLP (≈ 128 secp256k1), Groth16 over
-BN254 (≈ 100–110 with knowledge soundness in the AGM, standard
-for production Groth16), bulletproofs (≈ 128). The 80-bit ceiling
-on the sigma binding is structural — it arises from `n_BJJ ≈ 2^251`
-combined with the 28-byte `z_a` slot and the u64 witness bound;
-see Parameter rationale for the full derivation. Forgery against
-the 80-bit Fiat-Shamir soundness requires ≈ 2^80 SHA256
-evaluations (~10^24 operations) — out of reach for any feasible
-adversary, but the gap from the rest of the stack is worth
-naming explicitly.
+**Cryptographic strength.** All primitives sit at ≥ ~100 bits:
+BIP-340 (≈ 128), Pedersen binding under DLP (≈ 128 secp256k1, ≈ 125
+BJJ prime subgroup), Groth16 over BN254 (≈ 100–110 with knowledge
+soundness in the AGM, standard for production Groth16), bulletproofs
+(≈ 128), and the sigma cross-curve binding (128-bit Fiat-Shamir
+soundness with ≈ 128-bit statistical ZK margin, see "Parameter
+rationale" under Hybrid commitments). The shared-integer `z_a`
+design lets the sigma binding achieve symmetric 128-bit security
+without the constraint that `z_a` fit unreduced in
+`min(n_secp, n_BJJ) ≈ 2^251` — each curve's scalar multiplication
+reduces internally, and the binding survives because a cheating
+prover would need to satisfy two different congruences post-hoc on
+a single wire integer (a CRT problem at > 2^128 work). The weakest
+primitive is Groth16 knowledge-soundness at the AGM ~100–110-bit
+level; the rest sit at ≥ 128 bits.
 
 ## Soundness chain (per opcode)
 
@@ -1838,7 +1853,7 @@ actually rejects the cheat (25 cases at time of writing).
 ```
 chain UTXO C_share_secp                                  (33-byte compressed Pedersen on secp256k1)
        ↓ verified by
-sigma cross-curve binding (§3.10, 157 B)                 (out-of-circuit, indexer-verified)
+sigma cross-curve binding (§3.10, 169 B)                 (out-of-circuit, indexer-verified)
        ↓ binds to same hidden `a` as
 envelope C_share_BJJ                                     (32-byte packed BJJ point)
        ↓ opened by
@@ -1916,7 +1931,7 @@ The most intricate chain. For each trader `i` in the batch:
 ```
 trader's chain input UTXO(s) C_in_secp,i                 (33-byte compressed Pedersen, possibly aggregated)
        ↓ verified by
-sigma cross-curve binding C_in_secp ↔ C_in_BJJ           (per-intent, 157 B, out-of-circuit)
+sigma cross-curve binding C_in_secp ↔ C_in_BJJ           (per-intent, 169 B, out-of-circuit)
        ↓ binds same hidden `a_in_total` as
 envelope C_in_BJJ_i
        ↓ Groth16 in-circuit PedersenBJJ opening          (amm_swap_batch.circom openIn[i])
@@ -2059,11 +2074,11 @@ pinned at POOL_INIT and immutable thereafter.
 | LP claims wrong receipt deltas in LP_REMOVE | proportional formula check (out-of-circuit) + two Groth16 BJJ openings |
 | Pool double-init for same (A, B) pair | first-mover wins, indexer-enforced + canonical asset pair ordering |
 | Cross-pool replay of LP_ADD proof | pool_id_fr in public-input vector, squared into proof's polynomial system |
-| Forgery of sigma proof | 80-bit Fiat-Shamir soundness (≈ 2^80 SHA256 hashes for forgery) |
+| Forgery of sigma proof | 128-bit Fiat-Shamir soundness (≈ 2^128 SHA256 hashes for forgery) |
 | Forgery of Groth16 proof | Groth16 knowledge soundness under BN254 ≈ 100–110 bit AGM |
 | Forgery of intent_sig | BIP-340 Schnorr ≈ 128-bit secp256k1 |
 
-The protocol's lowest cryptographic strength margin is the 80-bit Fiat-Shamir soundness on the sigma binding (see "Cryptographic strength" above). All Bitcoin-layer signatures, Pedersen binding, Groth16 knowledge soundness, and bulletproof range proofs sit at ≥ 100 bits.
+All primitives sit at ≥ 100 bits: BIP-340, Pedersen binding (≈128 secp / ≈125 BJJ prime subgroup), bulletproofs, sigma cross-curve binding (128-bit Fiat-Shamir + ≈128-bit statistical ZK), and the weakest — Groth16 knowledge-soundness at the AGM ~100–110-bit level.
 
 ## Receipt recovery
 
@@ -2936,7 +2951,7 @@ once they're computed by the reference implementation.
 binding.** Specify the Camenisch-Stadler protocol parameters
 (challenge `e < 2^80`, mask `α < 2^224 − 2^144` rejection-sampled,
 response `z_a < 2^224` encoded in 28 bytes BE), the canonical
-proof bytes layout (157 bytes: `A_secp(33) || A_BJJ(32) ||
+proof bytes layout (169 bytes: `A_secp(33) || A_BJJ(32) ||
 z_a(28) || z_r_secp(32) || z_r_BJJ(32)`), the Fiat-Shamir
 challenge derivation (`e = SHA256(domain || C_secp || C_BJJ ||
 A_secp || A_BJJ)` then take the low 80 bits as the challenge —
@@ -3592,10 +3607,10 @@ pending · 🔴 design open.
   Canonical generator coordinates pinned and tested. See
   `tests/amm-bjj.mjs` and `tests/amm-bjj.test.mjs` (36 tests).
 - ✅ **Sigma cross-curve binding library.** Camenisch-Stadler
-  prover + verifier producing 157-byte proofs binding
-  `(C_in_secp, C_in_BJJ)` to a shared u64 witness `a`. 80-bit
-  Fiat-Shamir soundness, 80-bit statistical ZK, rejection-sampled
-  α to guarantee 28-byte `z_a` encoding. See
+  prover + verifier producing 169-byte proofs binding
+  `(C_in_secp, C_in_BJJ)` to a shared u64 witness `a`. 128-bit
+  Fiat-Shamir soundness, ≈ 128-bit statistical ZK, rejection-sampled
+  α in `[0, 2^320 − 2^192)` to guarantee 40-byte `z_a` encoding. See
   `tests/amm-sigma-xcurve.mjs` and `tests/amm-sigma-xcurve.test.mjs`
   (30 tests including mutation rejection, range-check rejection,
   cross-pairing soundness, and a microbenchmark).
@@ -3791,7 +3806,7 @@ pending · 🔴 design open.
   without prompt as long as the trader's `(min_out, tip, expiry,
   receipt scriptPubKey)` are still honored.
 - **Circuit cost is mixer-tier.** Cross-curve binding is a
-  SNARK-free sigma protocol (~157 B wire, microseconds
+  SNARK-free sigma protocol (~169 B wire, microseconds
   prove/verify). The Groth16 batch proof does native BabyJubJub
   Pedersen openings in-circuit via `EscalarMulFix` against the
   pinned NUMS bases (~5K constraints each) plus per-trader

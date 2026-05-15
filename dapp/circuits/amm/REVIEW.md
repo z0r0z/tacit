@@ -11,13 +11,14 @@ and resolved before locking the ceremony" artifact.
 |---|---|---|---|
 | CRITICAL | 0 | 0 | 0 |
 | HIGH (completeness) | 2 | 2 | 0 |
-| MEDIUM | 3 | 1 | 2 (deferred — see below) |
+| MEDIUM | 3 | 2 | 1 (deferred — see below) |
 | LOW | 2 | 2 | 0 |
 | INFORMATIONAL | 6 | n/a | n/a |
 
 **Two HIGH-severity completeness gaps fixed before ceremony.** No soundness bugs
-were found. Three MEDIUM-severity hygiene items intentionally retained for
-defense-in-depth or accepted as out-of-circuit indexer responsibility.
+were found. Of three MEDIUM-severity hygiene items, two are retained or removed
+as documented below; one (`n_intents` discrimination) is intentionally
+out-of-circuit indexer responsibility.
 
 ## Findings
 
@@ -66,22 +67,21 @@ should additionally verify `n_intents` equals the count of slots with
 non-identity `C_in_BJJ` for envelope-decode hygiene; that's an indexer-
 side normative rule, not a circuit constraint.
 
-### 4. MEDIUM — `S_pre` comment overstates its role (DEFERRED, intentional defense-in-depth)
+### 4. MEDIUM — `S_pre` comment overstated its role ✅ FIXED (signal removed)
 
 **File:** `amm_swap_batch.circom`
 
-`S_pre` is `Num2Bits(64)`-checked but otherwise inert in swap math (swaps
-don't change LP shares). Comment originally claimed it bound the proof to
-prevent cross-pool replay; replay protection actually comes from `pool_id_fr`.
+`S_pre` was `Num2Bits(64)`-checked but otherwise inert in swap math (swaps
+don't change LP shares). The original comment claimed it bound the proof
+to prevent cross-pool replay; replay protection actually comes from
+`pool_id_fr`. The signal was unused.
 
-**Resolution:** Retained as defense-in-depth — the indexer can cross-check
-that `S_pre` matches `pool.lp_total_shares` at proof-generation height,
-adding a stale-snapshot detection layer. Updated the inline comment to
-reflect that `pool_id_fr` is the actual replay-prevention binding and
-`S_pre` is an out-of-circuit indexer cross-reference. Dropping it would
-shift the public-input vector layout, which is a ceremony-affecting
-decision; keeping it costs ~64 constraints and one Fr in the public
-vector.
+**Fix:** Removed from the public-input vector entirely (see source comment
+in `amm_swap_batch.circom`). Replay protection stays load-bearing via
+`pool_id_fr`; the indexer cross-checks `pool.lp_total_shares` against
+chain state separately. Saves one Fr in the public-signals vector and
+tightens the layout to 11 globals (was 12) for a total of
+**123 public signals** — pinned in `drift-guard.test.mjs`.
 
 ### 5. MEDIUM — Unused `pool_id_squared` signal (DEFERRED, defensive pattern)
 
@@ -213,7 +213,7 @@ parity with the existing mixer.
 
 Locking these circuits via Phase 2 ceremony commits to:
 - The 4 `.circom` source files at their current state
-- The 124 public-input vector for `amm_swap_batch` (12 globals + 5×16 per-intent + 2×16 per-receipt)
+- The 123 public-signal vector for `amm_swap_batch` (11 globals + 5×16 per-intent + 2×16 per-receipt)
 - The 5 / 8 public-input vectors for `amm_lp_add` / `amm_lp_remove`
 - The pinned `H_BJJ` and `G_BJJ` decimal coordinates
 - N_MAX = 16 batch size
