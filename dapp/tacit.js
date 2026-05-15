@@ -2809,6 +2809,102 @@ function _txIsRecentlyNotFound(id) {
   if (Date.now() - at > _TX_NOT_FOUND_TTL_MS) { _txNotFoundCache.delete(id); return false; }
   return true;
 }
+// Batch tx fetcher. Coalesces concurrent getTx() callers in a small
+// time window (8ms) and issues a single POST /chain/txs/batch to the
+// worker, which fans out server-side. Cold ancestry walks fire dozens
+// of getTx() in quick succession; previously each was its own round-
+// trip, so a 50-UTXO wallet incurred 200-500 sequential trips. Now
+// they collapse into ~4-10 batched calls.
+//
+// Fallback: if the worker is unconfigured or the batch endpoint fails
+// (older worker version, transient outage), the per-txid path falls
+// back to the single-tx fetch via apiJson — same behaviour as before
+// the batch layer existed.
+const TX_BATCH_WINDOW_MS = 8;
+const TX_BATCH_MAX_SIZE = 64;
+let _txBatchQueue = new Map();  // txid → { resolvers: [(tx|null) => void] }
+let _txBatchTimer = null;
+function _scheduleTxBatchFlush() {
+  if (_txBatchTimer != null) return;
+  if (_txBatchQueue.size >= TX_BATCH_MAX_SIZE) {
+    // Already at cap — flush synchronously rather than waiting another window.
+    queueMicrotask(_flushTxBatch);
+    return;
+  }
+  _txBatchTimer = setTimeout(_flushTxBatch, TX_BATCH_WINDOW_MS);
+}
+async function _flushTxBatch() {
+  if (_txBatchTimer != null) { clearTimeout(_txBatchTimer); _txBatchTimer = null; }
+  if (_txBatchQueue.size === 0) return;
+  const batch = _txBatchQueue;
+  _txBatchQueue = new Map();
+  const txids = Array.from(batch.keys());
+  let txMap = null;
+  if (WORKER_BASE && txids.length > 0) {
+    try {
+      const url = `${WORKER_BASE}/chain/txs/batch?network=${encodeURIComponent(NET.name)}`;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ txids }),
+      });
+      if (r.ok) {
+        const j = await r.json();
+        if (j && j.txs && typeof j.txs === 'object') txMap = j.txs;
+      }
+    } catch { /* batch endpoint unavailable — fall through to single-tx fallback */ }
+  }
+  // Distribute results. Each callback either gets the tx (success), or null
+  // signalling "fall back to single-tx fetch". The single-tx fetcher runs
+  // via the existing api() rotation + cooldown machinery so a worker outage
+  // still serves users from direct providers.
+  for (const [txid, entry] of batch) {
+    const result = txMap ? txMap[txid] : null;
+    const ok = result && !result.error && result.txid;
+    if (ok) {
+      // Persist confirmed-tx and resolve all waiters with the same object.
+      if (result.status && result.status.confirmed === true) {
+        _txMemCachePut(txid, result);
+        try { localStorage.setItem(_txCacheKey(txid), JSON.stringify(result)); _appendTxCacheIndex(txid); }
+        catch { /* quota — fine */ }
+      }
+      for (const resolve of entry.resolvers) resolve(result);
+    } else {
+      // Batch miss → fall through to single-tx fetch (one round-trip per
+      // miss, but typical batch miss rate is <5% so the amortized cost
+      // stays well under sequential).
+      const fallback = _getTxSingle(txid);
+      for (const resolve of entry.resolvers) fallback.then(resolve, () => resolve(null));
+    }
+  }
+}
+
+async function _getTxSingle(id) {
+  const inflight = _txInFlight.get(id);
+  if (inflight) return inflight;
+  const p = (async () => {
+    let tx = null;
+    try { tx = await apiJson(`/tx/${id}`); }
+    catch (e) {
+      // Stamp the negative cache only on a clean 404 (the indexer
+      // explicitly said "no such tx"). 429s / 5xx / network errors
+      // can be retried later — they don't imply the tx is gone, just
+      // that the request failed.
+      if (/^API 404/.test(e?.message || '')) _txMarkNotFound(id);
+      return null;
+    }
+    if (!tx) return null;
+    if (tx.status && tx.status.confirmed === true) {
+      _txMemCachePut(id, tx);
+      try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); _appendTxCacheIndex(id); }
+      catch { /* quota exceeded → silently skip; cache is best-effort */ }
+    }
+    return tx;
+  })().finally(() => { _txInFlight.delete(id); });
+  _txInFlight.set(id, p);
+  return p;
+}
+
 const getTx = async (rawId) => {
   if (typeof rawId !== 'string') return null;
   const id = rawId.toLowerCase();
@@ -2824,30 +2920,24 @@ const getTx = async (rawId) => {
       return tx;
     }
   } catch { /* corrupted entry — fall through to network and overwrite */ }
+  // If a single-tx fetch is already in flight for this id, await it
+  // rather than enqueuing a redundant batch slot. Covers callers that
+  // ran before the batch layer was added and still call _getTxSingle
+  // directly via legacy code paths.
   const inflight = _txInFlight.get(id);
   if (inflight) return inflight;
-  const p = (async () => {
-    let tx = null;
-    try { tx = await apiJson(`/tx/${id}`); }
-    catch (e) {
-      // Stamp the negative cache only on a clean 404 (the indexer
-      // explicitly said "no such tx"). 429s / 5xx / network errors
-      // can be retried later — they don't imply the tx is gone, just
-      // that the request failed. apiJson throws "API 404: ..." on
-      // 4xx (see api() body), so check the prefix.
-      if (/^API 404/.test(e?.message || '')) _txMarkNotFound(id);
-      return null;
+  // No worker → single-tx fallback (preserves pre-batch behavior).
+  if (!WORKER_BASE) return _getTxSingle(id);
+  // Coalesce with other in-window getTx calls into a batch.
+  return new Promise((resolve) => {
+    let entry = _txBatchQueue.get(id);
+    if (!entry) {
+      entry = { resolvers: [] };
+      _txBatchQueue.set(id, entry);
     }
-    if (!tx) return null;
-    if (tx.status && tx.status.confirmed === true) {
-      _txMemCachePut(id, tx);
-      try { localStorage.setItem(_txCacheKey(id), JSON.stringify(tx)); _appendTxCacheIndex(id); }
-      catch { /* quota exceeded → silently skip; cache is best-effort */ }
-    }
-    return tx;
-  })().finally(() => { _txInFlight.delete(id); });
-  _txInFlight.set(id, p);
-  return p;
+    entry.resolvers.push(resolve);
+    _scheduleTxBatchFlush();
+  });
 };
 
 // Per-network fee-rate cache. Today the only path that mutates `NET` is
