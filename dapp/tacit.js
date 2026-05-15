@@ -1348,21 +1348,60 @@ async function _showPasskeyModal() {
   const loginBtn = document.getElementById('passkey-login');
   const cancelBtn = document.getElementById('passkey-cancel');
   const labelInput = document.getElementById('passkey-label-input');
+  const swapLink = document.getElementById('passkey-swap-mode');
   if (!modal || !registerBtn || !loginBtn || !cancelBtn || !labelInput) return;
+  // Mode selection: a brand-new user (no saved PRF entries for this origin)
+  // can only Register — Login would prompt the OS picker with nothing to
+  // pick. A returning user with cleared localStorage but a passkey still
+  // on-device wants Login to recover (PRF output is deterministic, so the
+  // same passkey rebuilds the same wallet). Showing both buttons at once
+  // confused new users who clicked Login and got a cryptic browser error.
+  //
+  // Resolve mode from the saved-entry count, then expose a small "wrong
+  // mode?" swap link so the rare recovery case still has a path.
+  let mode;
+  try {
+    const map = loadPrfMap();
+    mode = (map && Object.keys(map).length > 0) ? 'login' : 'register';
+  } catch { mode = 'register'; }
+  const applyMode = (m) => {
+    mode = m;
+    if (mode === 'login') {
+      registerBtn.style.display = 'none';
+      loginBtn.style.display = '';
+      loginBtn.classList.add('primary');
+      registerBtn.classList.remove('primary');
+      if (swapLink) swapLink.textContent = 'Create a new wallet instead';
+    } else {
+      registerBtn.style.display = '';
+      loginBtn.style.display = 'none';
+      registerBtn.classList.add('primary');
+      loginBtn.classList.remove('primary');
+      if (swapLink) swapLink.textContent = 'I already have a passkey — restore it';
+    }
+  };
+  applyMode(mode);
   let inflight = false;
   const setInflight = (v) => {
     inflight = v;
     registerBtn.disabled = v;
     loginBtn.disabled = v;
+    if (swapLink) swapLink.style.pointerEvents = v ? 'none' : '';
   };
   const close = () => {
     registerBtn.onclick = loginBtn.onclick = cancelBtn.onclick = null;
+    if (swapLink) swapLink.onclick = null;
     setInflight(false);
     modal.style.display = 'none';
   };
   const label = () => { const v = labelInput.value.trim(); return v || null; };
   return new Promise((resolve) => {
     cancelBtn.onclick = () => { if (inflight) return; close(); resolve(false); };
+    if (swapLink) swapLink.onclick = (e) => {
+      e.preventDefault();
+      if (inflight) return;
+      applyMode(mode === 'login' ? 'register' : 'login');
+    };
     registerBtn.onclick = async () => {
       if (inflight) return;
       if (!label()) { toast('Label is required.', 'error'); return; }
