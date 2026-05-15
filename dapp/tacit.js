@@ -32150,6 +32150,16 @@ async function renderHoldings() {
     const snap = _loadHoldingsSnapshot();
     if (snap && Array.isArray(snap.assets) && snap.assets.length > 0) {
       try {
+        // Hydrate the persisted image cache so the synchronous lookups
+        // below see entries that resolveImageUri stashed in prior
+        // sessions. _resolvedImageCache rehydrates from localStorage
+        // under tacit-imgcache-v1 (LRU-capped at 500), which means any
+        // logo this wallet has ever seen on this device is available
+        // for instant first-paint — no extra fetch, no network round-
+        // trip on the cached-snapshot branch. First-time-on-device
+        // assets get a deterministic initial-letter fallback instead
+        // so the snapshot card never paints an empty grey square.
+        _ensureImgCacheHydrated();
         list.innerHTML = snap.assets.map(s => {
           const wholeNum = (() => {
             try {
@@ -32160,9 +32170,13 @@ async function renderHoldings() {
           })();
           const ticker = escapeHtml(s.ticker || 'asset');
           const aidShort = escapeHtml((s.assetIdHex || '').slice(0, 8));
+          const _cachedImg = s.imageUri ? _resolvedImageCache.get(s.imageUri) : null;
+          const avatarHtml = _cachedImg
+            ? `<img loading="lazy" decoding="async" src="${escapeHtml(_cachedImg)}" alt="" style="width:40px;height:40px;border:1px solid var(--ink);object-fit:cover;background:#fff;flex-shrink:0;">`
+            : assetImageFallback(s.assetIdHex, s.ticker, 40);
           return `<div class="asset-card" style="opacity:0.7;" data-snapshot-card>
             <div class="asset-card-head" style="display:flex;align-items:center;gap:10px;padding:14px 16px;">
-              <div style="width:40px;height:40px;border:1px solid var(--ink);background:var(--bg-warm);flex-shrink:0;"></div>
+              ${avatarHtml}
               <div style="flex:1;min-width:0;">
                 <div><strong>${ticker}</strong> <span class="muted" style="font-size:10px;">${aidShort}…</span></div>
                 <div class="muted" style="font-size:11px;margin-top:2px;">~${wholeNum.toLocaleString()} ${ticker} · ${s.utxoCount} UTXO${s.utxoCount === 1 ? '' : 's'}</div>
