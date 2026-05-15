@@ -41399,10 +41399,19 @@ function renderMarketBrowse(rows) {
       // the user to seed it (assumes they hold something to list) and
       // point them at Discover for asset/issuer browsing in the meantime.
       list.innerHTML = `
-        <div class="empty" style="padding:24px;text-align:center;">
-          <div style="font-weight:bold;margin-bottom:6px;">No live listings on ${escapeHtml(NET.name)} yet.</div>
-          <div class="muted" style="font-size:11px;line-height:1.6;">Hold a tacit asset? Open <strong>Holdings</strong> → click <strong>List for sale</strong> to seed the order book.<br>Want to browse the asset registry? Try the <strong>Discover</strong> tab.</div>
+        <div class="empty" style="padding:32px 24px;text-align:center;">
+          <div style="font-size:14px;font-weight:bold;margin-bottom:8px;">No live listings on ${escapeHtml(NET.name)} yet.</div>
+          <div class="muted" style="font-size:12px;line-height:1.55;margin-bottom:16px;max-width:440px;margin-left:auto;margin-right:auto;">Be the first to seed liquidity. If you hold a tacit asset, list a chunk and the next buyer's swap pays you in sats. If you don't yet, etch one or discover others' assets first.</div>
+          <div class="flex" style="gap:8px;justify-content:center;flex-wrap:wrap;">
+            <a href="#tab=holdings" data-act="empty-market-goto-holdings" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-weight:700;text-decoration:none;font-size:12px;letter-spacing:0.04em;box-shadow:2px 2px 0 var(--ink);">Hold an asset? List it →</a>
+            <a href="#tab=discover" data-act="empty-market-goto-discover" style="display:inline-flex;align-items:center;gap:6px;padding:8px 16px;background:var(--bg);color:var(--ink);border:1px solid var(--ink);font-weight:700;text-decoration:none;font-size:12px;letter-spacing:0.04em;">Browse Discover</a>
+          </div>
         </div>`;
+      // Wire the inline tab links so they route through the tab-deeplink
+      // consumer (same path keyboard/middle-click would take).
+      list.querySelectorAll('[data-act^="empty-market-goto-"]').forEach(a => {
+        a.onclick = (ev) => { ev.preventDefault(); location.hash = a.getAttribute('href'); };
+      });
     }
     return;
   }
@@ -45117,7 +45126,28 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
     !l.expired &&
     Number(l.expiry || 0) > nowSec,
   );
-  if (myAsks.length === 0) return '';
+  // Also walk _bidsCache for the user's open bids. The cache is keyed
+  // per-asset and only contains assets the user has navigated to (or
+  // any other code path has populated), so this misses bids on assets
+  // the user hasn't visited since posting them. That's an acceptable
+  // limitation — the bids stay live on the worker regardless; the
+  // user can always find them by opening the asset's market page.
+  // What this DOES catch: residual auto-bids posted by the current
+  // session's swaps, plus anything the user has actively viewed.
+  const myBids = [];
+  if (typeof _bidsCache !== 'undefined' && _bidsCache && _bidsCache.entries) {
+    for (const [aid, entry] of _bidsCache.entries()) {
+      const bids = entry?.value;
+      if (!Array.isArray(bids)) continue;
+      for (const b of bids) {
+        if (b.buyer_pubkey !== myPubHex) continue;
+        if (Number(b.expiry || 0) <= nowSec) continue;
+        if (b.axintent_id) continue;  // already claimed, no longer cancellable
+        myBids.push({ ...b, _asset_id: aid });
+      }
+    }
+  }
+  if (myAsks.length === 0 && myBids.length === 0) return '';
   // Sort by asset then by created_at so rows from the same asset cluster.
   myAsks.sort((a, b) => {
     const aa = a._asset?.asset_id || '';
@@ -45156,16 +45186,55 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
       <td>${cancelBtn}</td>
     </tr>`;
   }).join('');
-  // Summary chip — count + total sats across all open asks, so the user
-  // gets a portfolio-wide "I have N orders open worth ~$X sats" glance.
-  const totalSatsAll = grouped.reduce((s, l) => s + Number(l.min_price_sats || 0) * (l._isGroup ? l._groupSize : 1), 0);
+  // Per-bid row builder. Mirrors the ask-row layout so both kinds slot
+  // into the same table with a "Buy" badge in the Side column. Bid
+  // cancellation routes through the asset's market page (the cancel
+  // signature requires per-asset context the panel doesn't carry);
+  // the Cancel button is a deep link to the bid section on that market.
+  const bidRowsHtml = myBids.map(b => {
+    const aid = b._asset_id;
+    const ticker = (typeof getAssetMeta === 'function') ? (getAssetMeta(aid)?.ticker || '?') : '?';
+    const dec = (typeof getAssetMeta === 'function') ? (Number(getAssetMeta(aid)?.decimals) || 0) : 0;
+    const amtBig = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
+    const priceSats = Number(b.price_sats || 0);
+    const u = unitPriceSats(priceSats, amtBig, dec);
+    const unitStr = u != null ? `${fmtUnitPriceSats(u)} sats/${escapeHtml(ticker)}` : `${priceSats.toLocaleString()} sats`;
+    const usdTotal = fmtMarketUsdFromSats(priceSats, '');
+    const usdTail = usdTotal ? ` <small class="muted" style="font-size:9px;">· ${escapeHtml(usdTotal)}</small>` : '';
+    const ageStr = relativeAge(b.created_at || b.posted_at) ? `${relativeAge(b.created_at || b.posted_at)} ago` : '';
+    const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    const remainingAmt = isVar
+      ? (() => { try { return BigInt(b.remaining_amount || b.amount || '0'); } catch { return amtBig; } })()
+      : amtBig;
+    const amtCell = isVar && remainingAmt !== amtBig
+      ? `<strong>${escapeHtml(fmtAssetAmount(remainingAmt, dec))}</strong> <small class="muted" style="font-size:9px;">of ${escapeHtml(fmtAssetAmount(amtBig, dec))} (partial)</small>`
+      : `<strong>${escapeHtml(fmtAssetAmount(amtBig, dec))}</strong>${isVar ? ` <small class="muted" style="font-size:9px;">(partial-fillable)</small>` : ''}`;
+    return `<tr>
+      <td><a href="#" data-act="holdings-orders-open-market" data-aid="${escapeHtml(aid)}" style="font-weight:600;color:var(--ink);text-decoration:underline dotted;" title="Open ${escapeHtml(ticker)} market to cancel">${escapeHtml(ticker)}</a></td>
+      <td><span style="background:#e6f5ec;border:1px solid #0a7d3a;color:#0a7d3a;font-size:9px;padding:1px 6px;font-weight:600;text-transform:uppercase;">Buy</span></td>
+      <td>${amtCell}</td>
+      <td>${unitStr}</td>
+      <td><strong>${priceSats.toLocaleString('en-US')}</strong> sats${usdTail}</td>
+      <td class="muted" style="font-size:10px;">${escapeHtml(ageStr)}</td>
+      <td><a href="#" data-act="holdings-orders-open-market" data-aid="${escapeHtml(aid)}" style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);text-decoration:none;display:inline-block;" title="Open this asset's market to cancel the bid">Manage →</a></td>
+    </tr>`;
+  }).join('');
+  // Summary chip — count + total sats across BOTH asks and bids, so the
+  // user gets a portfolio-wide "I have N orders worth ~$X" glance.
+  const totalAskSats = grouped.reduce((s, l) => s + Number(l.min_price_sats || 0) * (l._isGroup ? l._groupSize : 1), 0);
+  const totalBidSats = myBids.reduce((s, b) => s + Number(b.price_sats || 0), 0);
+  const totalSatsAll = totalAskSats + totalBidSats;
+  const totalOrders = grouped.length + myBids.length;
   const totalUsdAll = fmtMarketUsdFromSats(totalSatsAll, '');
-  const summary = `${grouped.length} open order${grouped.length === 1 ? '' : 's'} · ${totalSatsAll.toLocaleString('en-US')} sats${totalUsdAll ? ` · ${totalUsdAll}` : ''}`;
+  const summary = `${totalOrders} open order${totalOrders === 1 ? '' : 's'} · ${totalSatsAll.toLocaleString('en-US')} sats${totalUsdAll ? ` · ${totalUsdAll}` : ''}`;
+  const breakdownChip = (grouped.length > 0 && myBids.length > 0)
+    ? ` <span class="muted" style="font-size:9.5px;">(${grouped.length} sell · ${myBids.length} buy)</span>`
+    : '';
   return `
     <div data-holdings-open-orders style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg-warm);padding:10px 12px;">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-        <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">Your open orders <span class="muted" style="font-weight:normal;font-size:10px;text-transform:none;letter-spacing:0;">· ${escapeHtml(summary)} · across all assets</span></strong>
-        <span class="muted" style="font-size:10px;">Bids are per-asset — open a market to manage them</span>
+        <strong style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;">Your open orders <span class="muted" style="font-weight:normal;font-size:10px;text-transform:none;letter-spacing:0;">· ${escapeHtml(summary)}${breakdownChip}</span></strong>
+        <span class="muted" style="font-size:10px;">Tap any row to manage</span>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:11px;">
         <thead>
@@ -45179,7 +45248,7 @@ function renderHoldingsOpenOrdersHTML(myPubHex) {
             <th style="padding:4px 6px;font-weight:600;">Action</th>
           </tr>
         </thead>
-        <tbody>${rowsHtml}</tbody>
+        <tbody>${rowsHtml}${bidRowsHtml}</tbody>
       </table>
     </div>`;
 }

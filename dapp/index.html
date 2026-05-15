@@ -1367,6 +1367,21 @@ tr[data-recent-activity] .market-token-sub::after {
    real estate inside the swap tile. */
 [data-swap-info] .route-line { line-height: 1.5; padding: 1px 0; }
 [data-swap-info] .route-line + .route-line { margin-top: 1px; padding-top: 3px; border-top: 1px dashed var(--ink-faint); }
+/* Tap-target bumps for inline action buttons on touch devices. The
+   default 9-10px font + 1-2px padding produces ~20px-tall buttons
+   that are well under Apple HIG's 44pt recommendation. Coarse-pointer
+   media query so desktop stays tight. Selectors target the specific
+   small-button surfaces added in the recent UX passes (depth hint
+   Apply, depth-row ARB chip, recovery banner Forget). */
+@media (pointer: coarse) {
+  [data-swap-info] [data-act="swap-widen-slip"],
+  [data-act="market-prime-arb"],
+  [data-act="preauth-recover-forget"] {
+    font-size: 11px;
+    padding: 5px 12px;
+    min-height: 32px;
+  }
+}
 .market-asset-actions {
   display: flex;
   flex-direction: column;
