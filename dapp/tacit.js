@@ -38510,10 +38510,18 @@ function applyMarketFilters() {
   // because they're not the actual best price.
   let bestPreauthIdx = -1;
   if (askStartIndex === 0) {
+    // Same expiry guard as the spread / depth analytics: a listing
+    // expiring within 60s is racy to fill, so shouldn't get the
+    // "BEST PRICE" badge that would entice a normie to click it and
+    // race with expiry. Visually present in the ladder (still real
+    // supply), just not labeled as the canonical fill target.
+    const _bpNowSec = Math.floor(Date.now() / 1000);
+    const _bpExpiryGuard = _bpNowSec + 60;
     let bestUnit = Infinity;
     for (let i = 0; i < pageRows.length; i++) {
       const lr = pageRows[i];
       if (lr.kind !== 'preauth') continue;
+      if (Number(lr.expiry || 0) <= _bpExpiryGuard) continue;
       const amtBig = (() => { try { return BigInt(marketListingAmount(lr) || '0'); } catch { return 0n; } })();
       if (amtBig <= 0n) continue;
       const decI = Number.isInteger(lr._asset?.decimals) ? lr._asset.decimals : 0;
@@ -42891,16 +42899,23 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   const lo = markValid ? markUnit * 0.2 : 0;
   const hi = markValid ? markUnit * 5 : Infinity;
   let cheapestAsk = null;
-  // Restrict ask-side to `preauth` listings: opening (OTC) and range
-  // listings settle off-chain or via different mechanics and aren't
-  // directly crossable with a bid intent in a single tx. Mixing them
-  // into best-ask used to surface a "crossed 322 sats" spread artifact
-  // whenever a stale OTC opening priced near top-of-book sat alongside
-  // a trustless preauth — visually alarming but never a real arb.
+  // Restrict ask-side to `preauth` listings AND filter out near-expiry
+  // entries. Opening / range listings settle off-chain or via different
+  // mechanics and aren't directly crossable with a bid intent in a
+  // single tx — mixing them used to produce a "crossed 322 sats"
+  // artifact. The near-expiry filter (>= 60s left) further excludes
+  // stale listings whose race-with-expiry would make a fill unreliable;
+  // these are the "BEST PRICE 79 sats/TAC, expires in 0m" entries that
+  // skewed best-ask without being realistically takeable.
   // Bids already come from intents only (the variable-fill bid type),
   // which IS the matching crossable counterpart of preauth.
+  const _nowSec = Math.floor(Date.now() / 1000);
+  const _expiryGuard = _nowSec + 60;
   const listings = (_marketCache?.listings || []).filter(l =>
-    l._asset?.asset_id === aid && !l.expired && l.kind === 'preauth',
+    l._asset?.asset_id === aid
+    && !l.expired
+    && l.kind === 'preauth'
+    && Number(l.expiry || 0) > _expiryGuard,
   );
   for (const l of listings) {
     const amt = l.asset_opening?.amount;
@@ -43055,6 +43070,13 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   // taker can't single-tx fill an opening against an intent bid).
   const asks = [];
   const asksXable = [];
+  // 60-second expiry guard for the xable (best-ask) collection: a
+  // listing that expires within a minute is racy to take and shouldn't
+  // skew the displayed best-ask / spread / "BEST PRICE" pill. The depth
+  // curve still includes them (they're real supply until they actually
+  // expire); only the analytics labels filter them.
+  const _depthNowSec = Math.floor(Date.now() / 1000);
+  const _depthExpiryGuard = _depthNowSec + 60;
   for (const l of (_marketCache?.listings || [])) {
     if (l._asset?.asset_id !== aid || l.expired) continue;
     const amtRaw = l.kind === 'range' ? l.threshold
@@ -43067,7 +43089,9 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     if (u == null) continue;
     const row = { u, size: _toWholeNumber(amtBig) };
     asks.push(row);
-    if (l.kind === 'preauth') asksXable.push(row);
+    if (l.kind === 'preauth' && Number(l.expiry || 0) > _depthExpiryGuard) {
+      asksXable.push(row);
+    }
   }
   const intents = await _fetchBidIntentsCached(aid);
   const nowSec = Math.floor(Date.now() / 1000);
