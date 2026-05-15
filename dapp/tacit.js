@@ -24664,8 +24664,11 @@ let pendingSatsSend = null;
 
 // Cached snapshot of the most-recent sats-utxo classification. Lets the amount
 // hint and Max button render synchronously without re-scanning chain on every
-// keystroke. Populated by refreshSatsSendBalance(); cleared on tab-leave so
-// stale data doesn't drive stale Max calculations.
+// keystroke. Populated by refreshSatsSendBalance() — fires on every transfer-
+// tab entry (see the tab-switch handler), which also disables the Max button
+// while the rescan is in flight. So the cache is always overwritten before
+// Max becomes clickable again; stale-cache-driven Max calculations can't
+// happen even though we don't explicitly null the cache on tab-leave.
 let _satsSendCache = null;
 
 // Live USD readout for the Send Sats amount input. Fires on every input
