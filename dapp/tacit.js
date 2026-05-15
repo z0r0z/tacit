@@ -35957,8 +35957,28 @@ function applyMarketFilters() {
   // dropdown selection. Without this clamp, a stale "recency" pick would
   // mislabel an actually-cheapest-first ladder as "newest first".
   const sortLabel = 'cheapest first';
+  // Per-kind breakdown of what Simple mode hides — surfaced both in the
+  // chip tooltip and (when meaningful) inline as a one-liner so users
+  // don't have to hover to discover that the "+86 hidden" is broken
+  // down into atomic / OTC / dust buckets. Default-aggression audit
+  // (#5 in the orderbook-UX review) confirmed Simple = preauth-only is
+  // the right normie default — preauths are one-click trustless, atomic
+  // intents require a claim-response loop the user has to babysit —
+  // but the value-hidden signal should be explicit so power users can
+  // opt out with one click.
+  const _hiddenAtomic = rowsFull.filter(l => l.kind === 'intent').length;
+  const _hiddenOTC    = rowsFull.filter(l => l.kind === 'range' || l.kind === 'opening').length;
+  const _hiddenDust   = rowsSimpleAll.length - rowsSimple.length;
+  const _hiddenParts = [];
+  if (_hiddenAtomic > 0) _hiddenParts.push(`${_hiddenAtomic} atomic`);
+  if (_hiddenOTC > 0)    _hiddenParts.push(`${_hiddenOTC} OTC`);
+  if (_hiddenDust > 0)   _hiddenParts.push(`${_hiddenDust} dust`);
+  const _hiddenBreakdown = _hiddenParts.length ? _hiddenParts.join(' · ') : '';
+  const _simpleTooltip = _hiddenBreakdown
+    ? `Simple mode is showing instant (preauth) listings at fair-market prices. Hidden: ${_hiddenBreakdown}. Click to opt into the full ladder.`
+    : `Simple mode shows instant (preauth) listings at fair-market prices. Nothing additional to show right now. Click to view the full ladder anyway.`;
   const modeChip = _marketSimpleMode
-    ? `<button data-act="market-simple-toggle" type="button" title="Simple mode hides atomic intents, OTC offers, and dust asks (priced below 20% of mark — usually fat-finger or stale test listings). Click to opt into full transparency: all kinds + dust included." style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` (+${hiddenByMode} hidden)` : ''}</button>`
+    ? `<button data-act="market-simple-toggle" type="button" title="${escapeHtml(_simpleTooltip)}" style="font-size:10px;padding:3px 10px;background:#0a8f43;border:1px solid #0a7d3a;color:#fff;font-weight:600;cursor:pointer;">Simple${hiddenByMode > 0 ? ` &middot; ${hiddenByMode} hidden` : ''}</button>`
     : `<button data-act="market-simple-toggle" type="button" title="Currently showing every listing including atomic intents, OTC offers, and dust asks priced far below mark. Click to switch to Simple (one-click instant listings at fair-market prices only)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink);cursor:pointer;">All offers</button>`;
   // Computed inline (the asset header function has its own copy with the
   // same name; scopes don't share — this one is local to applyMarketFilters).
@@ -38010,22 +38030,28 @@ function renderMarketBrowseTable(rows) {
         </td>
         <td>
           <span class="market-table-sub">${(() => {
-            // Surface every live-listing bucket, not just preauths. Hiding
-            // OTC / atomic-intent counts is what makes PUP-style rows
-            // ($8.5M mcap from a single range listing) read as phantom —
-            // the price column shows a number but the cell beside it
-            // says "0 instant · 0 txs", with no hint that the price
-            // came from a real (OTC) ask. Compact form: only non-zero
-            // listing buckets render. Falls back to "0 live" + the
-            // transfer count when nothing is currently listed.
-            const _bits = [];
-            if (Number(g.preauths || 0) > 0) _bits.push(`${Number(g.preauths).toLocaleString('en-US')} instant`);
-            if (Number(g.intents || 0) > 0) _bits.push(`${Number(g.intents).toLocaleString('en-US')} atomic`);
-            const _otc = Number(g.ranges || 0) + Number(g.openings || 0);
-            if (_otc > 0) _bits.push(`${_otc.toLocaleString('en-US')} OTC`);
-            if (_bits.length === 0) _bits.push('0 live');
-            _bits.push(`${transfers.toLocaleString('en-US')} txs`);
-            return _bits.join(' &middot; ');
+            // Compact form for the gallery: aggregate live count + tx count.
+            // Earlier iteration showed the full 4-kind breakdown ("374
+            // instant · 133 atomic · 13 OTC · 1,127 txs") inline, which
+            // was accurate but read as a footnote dump on rows for
+            // anyone not deep in the protocol vocabulary. Now the cell
+            // shows "452 live · 1,127 txs"; the breakdown moves into a
+            // tooltip so traders who want the decomposition still get
+            // it on hover. The aggregate (instant + atomic + OTC) is
+            // the right scan-value because it answers "is there
+            // currently anyone to trade against?" in one number.
+            const _preauths = Number(g.preauths || 0);
+            const _intents  = Number(g.intents  || 0);
+            const _otc      = Number(g.ranges || 0) + Number(g.openings || 0);
+            const _live     = _preauths + _intents + _otc;
+            const _tipBits = [];
+            if (_preauths > 0) _tipBits.push(`${_preauths.toLocaleString('en-US')} instant`);
+            if (_intents  > 0) _tipBits.push(`${_intents.toLocaleString('en-US')} atomic`);
+            if (_otc      > 0) _tipBits.push(`${_otc.toLocaleString('en-US')} OTC`);
+            const _tip = _tipBits.length
+              ? `Live listings: ${_tipBits.join(' · ')}. ${transfers.toLocaleString('en-US')} lifetime on-chain transfers.`
+              : `No live listings. ${transfers.toLocaleString('en-US')} lifetime on-chain transfers.`;
+            return `<span title="${escapeHtml(_tip)}" style="cursor:help;">${_live.toLocaleString('en-US')} live &middot; ${transfers.toLocaleString('en-US')} txs</span>`;
           })()}</span>
         </td>
       </tr>`;
