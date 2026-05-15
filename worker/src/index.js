@@ -2697,37 +2697,64 @@ async function handleChainProxy(req, env, network, cors) {
   else if (/^\/block\/[0-9a-f]{64}/i.test(path)) cacheTtl = 86400;
   else if (/^\/block-height\/\d+$/.test(path))   cacheTtl = 86400;
 
-  const upstreamBase = networkApi(env, network);
-  // 15s timeout — most Esplora paths return in <1s; the longest tail is
-  // /address/.../txs/chain on big addresses which can take 5-10s under load.
-  const { init, cleanup } = _buildUpstreamInit({
-    cacheTtl,
-    timeoutMs: 15_000,
-  });
-  let upstreamResp;
-  try {
-    upstreamResp = await fetch(`${upstreamBase}${path}${u.search}`, init);
-  } catch (e) {
-    if (cleanup) cleanup();
-    return new Response(JSON.stringify({ error: `upstream fetch failed: ${e.message}`, path }), {
-      status: 502,
-      headers: { ...cors, 'Content-Type': 'application/json' },
-    });
-  } finally {
-    if (cleanup) cleanup();
+  // Upstream rotation — try mempool.space FIRST, fall through to
+  // blockstream.info on 429 / 5xx / timeout. Both speak the Esplora schema
+  // for every whitelisted path. Doing the rotation inside the worker (vs.
+  // the dapp) means the browser gets ONE response — success or final
+  // failure — instead of playing whack-a-mole with cross-origin rate limits
+  // on the client. Massive headroom too: the worker is fronted by CF, so
+  // per-worker concurrency to upstream is much higher than per-IP from
+  // browsers.
+  const upstreams = [
+    networkApi(env, network),
+    network === 'signet' ? 'https://blockstream.info/signet/api' : 'https://blockstream.info/api',
+  ];
+  // Longer timeout for chain-walk pagination — those iterate over 25 full
+  // tx bodies per page, and on a wallet with thousands of UTXOs each page
+  // can take 5-10s under load. 25s gives mempool.space comfortable runway
+  // before we rotate; 15s is plenty for everything else.
+  const isChainWalk = /\/address\/[^/]+\/txs\/chain/.test(path);
+  const timeoutMs = isChainWalk ? 25_000 : 15_000;
+  let lastErr = null;
+  let lastStatus = null;
+  for (const upstreamBase of upstreams) {
+    const { init, cleanup } = _buildUpstreamInit({ cacheTtl, timeoutMs });
+    let r = null;
+    try {
+      r = await fetch(`${upstreamBase}${path}${u.search}`, init);
+    } catch (e) {
+      lastErr = e;
+      if (cleanup) cleanup();
+      continue;  // network / timeout → try next upstream
+    } finally {
+      if (cleanup) cleanup();
+    }
+    // Retryable upstream statuses: 429 (rate-limited) + 5xx (server error)
+    // get rotated through. Non-retryable 4xx (e.g., 400 "too many UTXOs",
+    // 404 "tx not found") pass through to the caller as the upstream's
+    // final answer — every Esplora provider returns the same 4xx for the
+    // same query, so retrying just wastes round-trips.
+    if (r.status === 429 || r.status >= 500) {
+      lastStatus = r.status;
+      // Drain the body so the connection releases.
+      try { await r.text(); } catch {}
+      continue;
+    }
+    // Pass-through (2xx or non-retryable 4xx).
+    const body = await r.text();
+    const respHeaders = new Headers(cors);
+    respHeaders.set('Content-Type', r.headers.get('Content-Type') || 'application/json');
+    if (cacheTtl > 0 && r.ok) respHeaders.set('Cache-Control', 'public, max-age=60');
+    return new Response(body, { status: r.status, headers: respHeaders });
   }
-  // Pass through the upstream response body verbatim with our CORS headers.
-  // Preserve the upstream Content-Type so callers can json/text-parse based
-  // on shape. Strip upstream's own caching headers since we apply our own
-  // via the `cf.cacheTtl` instruction above.
-  const body = await upstreamResp.text();
-  const respHeaders = new Headers(cors);
-  respHeaders.set('Content-Type', upstreamResp.headers.get('Content-Type') || 'application/json');
-  // For confirmed responses we already-set CF edge cache; downstream
-  // browsers can additionally cache short-term (1 min) without risking
-  // staleness since the CF cache will serve the same body for an hour.
-  if (cacheTtl > 0 && upstreamResp.ok) respHeaders.set('Cache-Control', 'public, max-age=60');
-  return new Response(body, { status: upstreamResp.status, headers: respHeaders });
+  // Every upstream exhausted (all returned 429/5xx, or all threw).
+  const errMsg = lastErr
+    ? `all upstreams unreachable: ${lastErr.message}`
+    : `all upstreams returned ${lastStatus}`;
+  return new Response(JSON.stringify({ error: errMsg, path }), {
+    status: 502,
+    headers: { ...cors, 'Content-Type': 'application/json' },
+  });
 }
 
 async function handleBalance(env, cors) {
