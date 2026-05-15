@@ -38721,28 +38721,12 @@ async function renderMarket() {
     if (typeof fetchMarketAssetStats === 'function') {
       fetchMarketAssetStats(_marketView.assetId, { force: false }).catch(() => {});
     }
-    // Background holdings warm-up. The asset-header "You own" tile and
-    // the swap-tile sell-side balance hint both read _holdingsCache
-    // synchronously — without an auto-trigger on this path, a user who
-    // lands on an asset page (deep-link, browse-grid click, recent-
-    // activity link) without first visiting Holdings sees a 0 balance
-    // and an "only hold 0" warning for tokens they actually own.
-    //
-    // Smart: only fire when no cache exists yet. We DON'T re-fire on
-    // every asset-page navigation just because the 30s TTL elapsed —
-    // heavy wallets (paginated /txs/chain walks, 30-60s scans) would
-    // hammer the indexer and stall the UI. Once a scan lands the cache
-    // sticks until the user explicitly ↻ Rescans, broadcasts a tx,
-    // switches networks, or invalidateHoldingsCache() fires.
-    //
-    // On completion, applyMarketFilters() re-renders the asset detail
-    // so the "checking…" placeholders below swap to live balances
-    // without the user having to click anything.
-    if (!_holdingsCache && !_holdingsInFlight && typeof scanHoldings === 'function') {
-      scanHoldings()
-        .then(() => { try { applyMarketFilters(); } catch {} })
-        .catch(() => { /* network may be flaky; manual Rescan recovers */ });
-    }
+    // Holdings cache is NOT auto-warmed here. scanHoldings → ensurePrivkey
+    // would force an unlock prompt on every market render (initial load,
+    // tab switch, auto-refresh tick) for a locked wallet — wildly hostile
+    // when the user is just browsing. The cache warms on explicit sell
+    // intent instead: the flip-to-sell handler in _wireSwapTile fires
+    // scanHoldings exactly when balance becomes relevant.
   } else {
     _writeMarketHash(null);
   }
@@ -42526,18 +42510,7 @@ function renderMarketAssetHeader(assetId, rows) {
             // wired as a Sell CTA (data-act="market-jump-to-sell") — click
             // it to scroll to the swap tile + flip to sell mode.
             const _h = _holdingsCache?.holdings?.get(safeAid);
-            if (!_h || _h.balance <= 0n) {
-              // Cache hasn't landed yet — render a "checking…" placeholder
-              // so the user knows their balance is being looked up rather
-              // than assuming they hold nothing. The asset-mode hook in
-              // renderMarket() fires scanHoldings + applyMarketFilters,
-              // which will replace this tile with either the real "You
-              // own" tile (balance > 0) or hide it (balance == 0).
-              if (_holdingsCache == null) {
-                return `<div title="Checking your wallet for this asset… the tile will update with your balance (or hide if you hold none) when the scan completes."><span>You own</span><strong style="color:var(--ink-mid);font-weight:500;font-size:12px;">checking…</strong><small class="muted" style="font-size:9px;">scanning wallet</small></div>`;
-              }
-              return '';
-            }
+            if (!_h || _h.balance <= 0n) return '';
             const _dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
             const _balStr = fmtAssetAmount(_h.balance, _dec);
             let _valStr = '';
@@ -46723,6 +46696,30 @@ function _wireSwapTile(scope) {
     toInput.value = '';
     applyDirection();
     update();
+    // Sell-side intent reached — NOW is the moment to warm the holdings
+    // cache. scanHoldings ultimately calls ensurePrivkey() which can
+    // prompt for wallet unlock on a locked wallet; firing it on every
+    // market render was hostile (browse-and-look users got an unlock
+    // dialog on each tab switch). Deferring to the flip click means the
+    // unlock prompt only appears when the user has explicitly signaled
+    // they want to sell. Re-fires on every flip-to-sell when the cache
+    // is still empty, so a dismissed unlock prompt naturally retries on
+    // the next click. Once the scan resolves, applyMarketFilters
+    // re-renders the asset header (You-own tile materializes) and a
+    // synthetic input event re-runs this swap tile's update() so the
+    // sell-side balance hint + action button reflect the real number
+    // without forcing the user to retype.
+    if (widget.dataset.direction === 'sell'
+        && _holdingsCache == null
+        && !_holdingsInFlight
+        && typeof scanHoldings === 'function') {
+      scanHoldings()
+        .then(() => {
+          try { applyMarketFilters(); } catch {}
+          try { fromInput.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+        })
+        .catch(() => { /* unlock dismissed or net flake — next flip retries */ });
+    }
   };
   if (fromPill) fromPill.onclick = () => {
     if (getDirection() !== 'buy') return;
