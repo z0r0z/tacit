@@ -3522,26 +3522,56 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
     // markets where 24h Δ% would otherwise be undefined.
     if (pts.length > 0) {
       const nowSec = Math.floor(Date.now() / 1000);
-      const latestU = pts[0].u;
-      // Lazy reference-finder: for a given cutoff (seconds), return the
-      // unit price of the latest trade that landed BEFORE the cutoff.
-      // Walks newest→oldest so the first hit is the closest reference.
+      // Outlier band derived from the mark_price computed above (last
+      // trade if within 5× of ring median, else ring median). Without
+      // this filter, a single 0.18-sat dust print just before the 24h
+      // cutoff was anchoring TAC's delta and producing +1683% on a
+      // market that actually moved 335 → 330 sats over the window —
+      // the bug surfaced in screenshot review. Same 0.2×/5× threshold
+      // the dapp uses for high/low + chart outlier ringing, so the
+      // shipped delta now reflects what the user sees as the trading
+      // band. mark_price is set by the block above when ANY of:
+      // last_trade, ring median — so for any asset with trade history
+      // the band is defined.
+      const _markForBand = Number(v.mark_price?.unit);
+      const _markValid = Number.isFinite(_markForBand) && _markForBand > 0;
+      const _bandLo = _markValid ? _markForBand * 0.2 : 0;
+      const _bandHi = _markValid ? _markForBand * 5 : Infinity;
+      const _inBand = (u) => u >= _bandLo && u <= _bandHi;
+      // "Latest" side of the delta also uses the outlier-guarded mark
+      // when available, so a last-trade fat-finger doesn't read as a
+      // huge move. Falls back to the raw latest ring entry on assets
+      // too young to have a mark.
+      const latestU = _markValid ? _markForBand : pts[0].u;
+      // Reference-finder: walks newest→oldest, returns the FIRST in-band
+      // trade before the cutoff. Falls back to the first ANY-band trade
+      // when no in-band one exists (thin markets where every pre-cutoff
+      // print happened to be outside the band — rare but possible) so
+      // very young assets still get a delta rather than silently
+      // dropping the chip.
       const refForCutoff = (cutoffSec) => {
+        let fallback = null;
         for (const t of ring) {
           const ts = Number(t.ts) || 0;
           if (ts >= cutoffSec) continue;
           const u = _unit(t.price_sats, t.amount);
-          if (u != null && u > 0) return { u, ts };
+          if (u == null || u <= 0) continue;
+          if (_inBand(u)) return { u, ts };
+          if (!fallback) fallback = { u, ts };
         }
-        return null;
+        return fallback;
       };
-      // Oldest-overall fallback for the "since first indexed trade" view.
+      // Same in-band guard for the all-time anchor.
       let oldestRef = null;
+      let oldestFallback = null;
       for (let i = ring.length - 1; i >= 0; i--) {
         const u = _unit(ring[i].price_sats, ring[i].amount);
         const ts = Number(ring[i].ts) || 0;
-        if (u != null && u > 0 && ts > 0) { oldestRef = { u, ts }; break; }
+        if (u == null || u <= 0 || ts <= 0) continue;
+        if (_inBand(u)) { oldestRef = { u, ts }; break; }
+        if (!oldestFallback) oldestFallback = { u, ts };
       }
+      if (!oldestRef) oldestRef = oldestFallback;
       const _pct = (latest, ref) => (ref && ref.u > 0 && latest != null)
         ? ((latest - ref.u) / ref.u) * 100
         : null;
@@ -4521,24 +4551,43 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
       return Number(num / a) / 1e8;
     };
     const ring = trades;
-    const latestU = _u(ring[0].price_sats, ring[0].amount);
+    const _latestUraw = _u(ring[0].price_sats, ring[0].amount);
+    // Mirror the outlier-band guard from hydrateAssetSummary — same
+    // 0.2×/5× window keyed off mark_price.unit. Without this, single-
+    // asset GETs returned the unfiltered raw delta even though bulk
+    // /assets calls went through the guarded path. handleAssetGet is
+    // what the dapp's asset-detail page hits, so the unguarded delta
+    // here showed up as TAC's +1683% banner.
+    const _markForBand = Number(v.mark_price?.unit);
+    const _markValid = Number.isFinite(_markForBand) && _markForBand > 0;
+    const _bandLo = _markValid ? _markForBand * 0.2 : 0;
+    const _bandHi = _markValid ? _markForBand * 5 : Infinity;
+    const _inBand = (u) => u >= _bandLo && u <= _bandHi;
+    const latestU = _markValid ? _markForBand : _latestUraw;
     if (latestU != null && latestU > 0) {
       const nowSec = Math.floor(Date.now() / 1000);
       const refForCutoff = (cutoffSec) => {
+        let fallback = null;
         for (const t of ring) {
           const ts = Number(t.ts) || 0;
           if (ts >= cutoffSec) continue;
           const u = _u(t.price_sats, t.amount);
-          if (u != null && u > 0) return { u, ts };
+          if (u == null || u <= 0) continue;
+          if (_inBand(u)) return { u, ts };
+          if (!fallback) fallback = { u, ts };
         }
-        return null;
+        return fallback;
       };
       let oldestRef = null;
+      let oldestFallback = null;
       for (let i = ring.length - 1; i >= 0; i--) {
         const u = _u(ring[i].price_sats, ring[i].amount);
         const ts = Number(ring[i].ts) || 0;
-        if (u != null && u > 0 && ts > 0) { oldestRef = { u, ts }; break; }
+        if (u == null || u <= 0 || ts <= 0) continue;
+        if (_inBand(u)) { oldestRef = { u, ts }; break; }
+        if (!oldestFallback) oldestFallback = { u, ts };
       }
+      if (!oldestRef) oldestRef = oldestFallback;
       const _pct = (latest, ref) => (ref && ref.u > 0 && latest != null)
         ? ((latest - ref.u) / ref.u) * 100
         : null;

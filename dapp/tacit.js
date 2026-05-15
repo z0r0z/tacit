@@ -37826,6 +37826,17 @@ function renderMarketBrowseTable(rows) {
     const refUnit = (Number.isFinite(markUnit) && markUnit > 0 && marketGroupHasTradeBacking(g))
       ? markUnit
       : marketGroupReferenceUnit(g);
+    // Whole-row "implied" flag: no trade backing AND no trustless live
+    // listings means BOTH the price and the mcap descend from a single
+    // OTC ask. We already dim the mcap cell in this case; mirror the
+    // treatment onto the price cell so the row reads as visually
+    // coherent — without it the price column rendered at full strength
+    // alongside an italic-dimmed mcap, which looked like a styling bug.
+    // Same predicate the mcap cell uses below (factored here so the
+    // two stay in lockstep).
+    const _implied = refUnit != null
+      && !marketGroupHasTradeBacking(g)
+      && !marketGroupHasTrustlessLiveness(g);
     // Directional price flash. Compare against the cached refUnit from
     // the previous render keyed by asset_id. >0.1% delta → green (up)
     // or red (down) pulse on the price cell for ~900ms; sub-threshold
@@ -37916,9 +37927,12 @@ function renderMarketBrowseTable(rows) {
     // rows). Dim + italicize + tooltip so the user reads "this $8.5M
     // is the seller's wishful price, not the market's verdict" rather
     // than letting it sit next to TAC's $5.6M as if they were peers.
-    const _mcapImplied = rowMarketCap != null
-      && !marketGroupHasTradeBacking(g)
-      && !marketGroupHasTrustlessLiveness(g);
+    // Same predicate as _implied (above), gated additionally on
+    // rowMarketCap being computable. Kept as a separate flag because
+    // the mcap cell can also have rowMarketCap == null (no supply
+    // attestation) — in that case it just renders "n/a" without the
+    // implied styling.
+    const _mcapImplied = rowMarketCap != null && _implied;
     const transfers = Number(a.transfer_count || 0);
     return `
       <tr data-market-asset-row="${escapeHtml(safeAid)}"${_assetHasRecentActivity(a) ? ' data-recent-activity="1"' : ''}>
@@ -37931,9 +37945,9 @@ function renderMarketBrowseTable(rows) {
             </div>
           </div>
         </td>
-        <td class="${_priceFlashCls}">
-          <span class="market-table-value ${refUnit != null ? 'market-sats-price' : ''}">${escapeHtml(floor)}</span>
-          <span class="market-table-sub market-usd-price">${escapeHtml(floorUsd)}</span>
+        <td class="${_priceFlashCls}"${_implied ? ' title="Implied price — single OTC ask, not a settled-trade reference. Compare with caution."' : ''}>
+          <span class="market-table-value ${refUnit != null ? 'market-sats-price' : ''}" ${_implied ? 'style="font-style:italic;color:var(--ink-mid);"' : ''}>${_implied ? '≈ ' : ''}${escapeHtml(floor)}</span>
+          <span class="market-table-sub market-usd-price" ${_implied ? 'style="color:var(--ink-faint);"' : ''}>${escapeHtml(floorUsd)}</span>
           ${(() => {
             // Δ% badge using the same windowed primary delta as the
             // tile-grid view (price_change_primary_pct + _window).
