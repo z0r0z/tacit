@@ -3009,13 +3009,18 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 @media (max-width: 700px) {
   .btn-cmd { min-width: 46px; font-size: 12px; }
 }
-/* Worker health pill: colored dot in the header that reflects the worker's
-   reachability. Pings every ~20s. cursor:help so the title attr reads as
-   an explanation tooltip; the dot is decorative (state lives in data-state). */
+/* Worker health pill: small colored dot that reflects the worker's
+   reachability. Pings every ~20s. Sits in the header to the LEFT of the
+   network select, so the two read as a "backend status" cluster distinct
+   from the action buttons (⌘K, bell, ?) on the left side of the row.
+   The wider left margin creates that visual grouping. cursor:help so
+   the title attr reads as an explanation tooltip; the dot is decorative
+   (state lives in data-state). */
 .worker-health {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 28px;
-  font-size: 12px; line-height: 1;
+  width: 14px; height: 28px;
+  margin-left: 6px; margin-right: -2px;
+  font-size: 11px; line-height: 1;
   color: var(--ink-mid); cursor: help;
   flex-shrink: 0;
   user-select: none;
@@ -3512,18 +3517,31 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            keyboard shortcut (⌘K / Ctrl+K / `/`); the button is the only
            reachable entry on mobile, where there's no keyboard for those.
            setupCommandPalette() wires the click. -->
+      <!-- Action cluster: keyboard-equivalent + click-equivalent user actions.
+           Grouped with normal .net-row gap so they read as a unit. -->
       <button id="btn-cmd" class="btn-help btn-cmd" type="button" aria-label="Open command palette" title="Open command palette (⌘K)">⌘K</button>
+      <!-- Bell: opens the notification log (notif-log-modal). Inline SVG so
+           the glyph stays monochrome and matches the boxed ⌘K / ? buttons
+           instead of rendering as a colorful system emoji. The unread-count
+           chip, anchored as a pseudo-element via .btn-notif[data-count],
+           shows how many unread entries are in the log since the user
+           last opened it. -->
+      <button id="btn-notif" class="btn-help btn-notif" type="button" aria-label="Notifications" title="Recent notifications">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true">
+          <path d="M8 1.5c.4 0 .7.3.7.7v.4c1.9.3 3.3 1.9 3.3 3.9V10l1 1.5H3L4 10V6.5c0-2 1.4-3.6 3.3-3.9v-.4c0-.4.3-.7.7-.7z"/>
+          <path d="M6.7 13.4a1.5 1.5 0 0 0 2.6 0h-2.6z"/>
+        </svg>
+      </button>
+      <button id="btn-faq" class="btn-help" type="button" aria-label="Help / FAQ" title="Frequently asked questions">?</button>
+      <!-- Status cluster: worker health + network. Separated from the action
+           cluster by a wider margin so the eye reads them as a different
+           kind of element (passive indicators vs. clickable controls). -->
       <!-- Worker health pill: pings WORKER_BASE every ~20s and colors a dot
            green / amber / red so users can tell at a glance whether the
            orderbook relay is live. Tooltip explains the state. Pure visual
            indicator — swaps still work in degraded mode (atomic settlement
            is on-chain), the pill just sets expectations. -->
       <span id="worker-health" class="worker-health" data-state="loading" title="Worker status — checking…" role="status" aria-live="polite">●</span>
-      <!-- Bell: opens the notification log (notif-log-modal). The count chip,
-           anchored as a pseudo-element via .btn-notif[data-count], shows how
-           many unread entries are in the log since the user last opened it. -->
-      <button id="btn-notif" class="btn-help btn-notif" type="button" aria-label="Notifications" title="Recent notifications">🔔</button>
-      <button id="btn-faq" class="btn-help" type="button" aria-label="Help / FAQ" title="Frequently asked questions">?</button>
       <select class="net-select" id="net-select" aria-label="Network">
         <option value="mainnet">mainnet</option>
         <option value="signet">signet</option>
