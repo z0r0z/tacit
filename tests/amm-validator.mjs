@@ -78,6 +78,22 @@ function pointFromCompressed(bytes) {
   return secp.ProjectivePoint.fromHex(bytesToHex(bytes));
 }
 
+// Canonical (asset_A, asset_B) ordering check used by all three core
+// validators. AMM.md §"Pool state" requires strict byte inequality plus
+// asset_A < asset_B lexicographically. Returns a reason string on failure
+// or null on pass. Avoids letting derivePoolId throw on same-asset
+// envelopes (which would break the {valid,reason} contract).
+function checkAssetPairCanonical(assetA, assetB) {
+  let order = 0;
+  for (let i = 0; i < 32; i++) {
+    if (assetA[i] < assetB[i]) { order = -1; break; }
+    if (assetA[i] > assetB[i]) { order = 1; break; }
+  }
+  if (order === 1) return 'assetA must be lexicographically smaller than assetB';
+  if (order === 0) return 'asset_A must differ from asset_B (same-asset pool forbidden)';
+  return null;
+}
+
 // Sentinel a caller passes when they intentionally want to skip Groth16
 // verification — only legitimate use is the pre-ceremony reference harness
 // and unit tests that do not exercise the SNARK path. Production indexers
@@ -172,9 +188,9 @@ function resolveMinLiqOutput(arg, fnName) {
     return null;
   }
   if (arg && typeof arg === 'object'
-      && arg.commitBytes instanceof Uint8Array
-      && arg.amtCt instanceof Uint8Array
-      && arg.p2wpkh instanceof Uint8Array) {
+      && arg.commitBytes instanceof Uint8Array && arg.commitBytes.length === 33
+      && arg.amtCt instanceof Uint8Array && arg.amtCt.length === 8
+      && arg.p2wpkh instanceof Uint8Array && arg.p2wpkh.length === 20) {
     return arg;
   }
   throw new Error(
@@ -497,13 +513,12 @@ export function validateLpAdd({
   try { env = decodeLpAdd(payload); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
 
-  // Canonical asset ordering: assetA must be < assetB.
-  for (let i = 0; i < 32; i++) {
-    if (env.assetA[i] < env.assetB[i]) break;
-    if (env.assetA[i] > env.assetB[i]) {
-      return { valid: false, reason: 'assetA must be lexicographically smaller than assetB' };
-    }
-  }
+  // Canonical asset ordering: assetA MUST be strictly less than assetB.
+  // AMM.md §"Pool state" requires byte inequality at POOL_INIT — a same-
+  // asset pool is degenerate (swap directions collapse, the curve has no
+  // meaning, kernel sigs lose disambiguation between A/B closures).
+  const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
+  if (orderErr) return { valid: false, reason: orderErr };
 
   // Verify pool_id matches.
   const poolId = derivePoolId(env.assetA, env.assetB);
@@ -742,6 +757,8 @@ export function validateLpRemove({
   try { env = decodeLpRemove(payload); }
   catch (e) { return { valid: false, reason: `decode error: ${e.message}` }; }
   if (!pool) return { valid: false, reason: 'pool not registered' };
+  const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
+  if (orderErr) return { valid: false, reason: orderErr };
   const poolId = derivePoolId(env.assetA, env.assetB);
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
 
@@ -750,6 +767,27 @@ export function validateLpRemove({
   // withdraw, so the burning LP gets only their non-fee proportion of
   // pool value.
   const xPool = crystallizeProtocolFee(pool);
+
+  // Over-burn defense: shareAmount cannot exceed the crystallized LP
+  // supply. Without this, lpRemoveOutputs would happily compute
+  // delta_X = floor(R_X · shareAmount / S) with shareAmount > S, which
+  // can exceed R_X by floor-rounding (delta_B in the test case below
+  // ends up = R_B + 1 with shareAmount = S + 1). The subsequent
+  // newReserve_X = R_X - delta_X then goes negative under BigInt
+  // (silently — there's no u64 underflow guard). The validator would
+  // return { valid: true, newPoolState: { reserve_B: -1n } }, breaking
+  // every subsequent operation that touches this pool. The validator
+  // SHOULD return { valid: false } instead. Caller-contract argument
+  // says this is structurally impossible (Bitcoin's UTXO model bounds
+  // total lp_asset_id supply to S), but defensive rejection is cheap
+  // and closes the analogous "caller passes fake inputCommitments"
+  // inflation gap.
+  if (env.shareAmount > xPool.lp_total_shares) {
+    return {
+      valid: false,
+      reason: `shareAmount ${env.shareAmount} exceeds lp_total_shares ${xPool.lp_total_shares}`,
+    };
+  }
 
   // Expected deltas: proportional withdrawal against the crystallized state.
   let expected;
@@ -875,6 +913,8 @@ export function validateSwapBatch({
   }
 
   // pool_id consistency
+  const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
+  if (orderErr) return { valid: false, reason: orderErr };
   const poolId = derivePoolId(env.assetA, env.assetB);
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
   if (env.feeBpsAtSettle !== pool.fee_bps) {

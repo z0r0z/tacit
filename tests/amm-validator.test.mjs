@@ -181,6 +181,23 @@ console.log('T_LP_ADD validator — POOL_INIT golden path');
     });
     return !r2.valid && /lexicographically/.test(r2.reason);
   });
+  test('POOL_INIT with assetA == assetB ⇒ rejected (not silent acceptance / throw)', () => {
+    // Same-asset pool is forbidden by AMM.md §"Pool state". Earlier the
+    // validator's inline byte-comparison loop bailed on equality without
+    // rejecting, leaving derivePoolId to throw — which broke the
+    // {valid, reason} contract. This test pins the explicit rejection.
+    const sameAsset = { ...args, assetA: args.assetA, assetB: args.assetA };
+    const p2 = encodeLpAdd(sameAsset);
+    const r2 = validateLpAdd({
+      payload: p2, pool: null,
+      inputCommitmentsA: args._ctx.inputCommitmentsA, inputCommitmentsB: args._ctx.inputCommitmentsB,
+      inputsA: args._ctx.inputsA, inputsB: args._ctx.inputsB,
+      groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
+      currentHeight: 1000,
+      minLiqOutput: goodMinLiq,
+    });
+    return !r2.valid && /same-asset pool forbidden|differ from asset_B/.test(r2.reason);
+  });
   test('forged kernel sig (wrong excess) ⇒ rejected', () => {
     // Swap kernel_sig_A with kernel_sig_B (which signs different fields)
     const bad = { ...args, kernelSigA: args.kernelSigB };
@@ -1017,14 +1034,13 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
         && happy.newPoolState.lp_total_shares === pool.lp_total_shares - shareAmount;
   });
 
-  // Over-burn: shareAmount > pool.lp_total_shares ⇒ lpRemoveOutputs delta_a
-  // exceeds R_A or arithmetic produces nonsense. The validator either rejects
-  // via the deltaA/deltaB equality check OR throws inside lpRemoveOutputs;
-  // both should surface as { valid: false }.
+  // Over-burn: shareAmount > pool.lp_total_shares MUST be cleanly
+  // rejected. Earlier the validator returned { valid: true } with
+  // newReserve_B = -1n on shareAmount = S + 1 (floor-rounding in
+  // lpRemoveOutputs makes delta_B exceed R_B by exactly 1). The
+  // explicit `shareAmount > lp_total_shares` guard rejects upfront.
   test('LP_REMOVE over-burn (shareAmount > pool.lp_total_shares) ⇒ rejected', () => {
     const huge = pool.lp_total_shares + 1n;
-    // Recompute the kernel sig at the over-burn amount (otherwise the
-    // failure could be kernel-sig rather than the over-burn behavior).
     const overSig = lpRemoveKernelSign({
       poolId: POOL_ID, shareAmount: huge,
       deltaA: (pool.reserve_A * huge) / pool.lp_total_shares,
@@ -1040,15 +1056,7 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
       kernelSigLP: overSig,
     });
     const r = runValidate(overPayload);
-    // Either the proportional formula equality check OR a downstream sanity
-    // check rejects. The point is: no valid acceptance path exists.
-    if (r.valid) {
-      // Over-burn produced "valid" with negative reserves? That's a HARD bug.
-      const after = r.newPoolState;
-      return after.reserve_A < 0n || after.reserve_B < 0n
-          || after.lp_total_shares < 0n;
-    }
-    return true; // rejected — expected
+    return !r.valid && /exceeds lp_total_shares/.test(r.reason);
   });
 
   // Wrong deltaA: deviation from proportional formula ⇒ "deltaA: expected X, got Y".
