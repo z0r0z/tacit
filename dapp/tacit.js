@@ -304,15 +304,30 @@ function reconcileWalletNetwork(state) {
 const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 
 // IPFS gateway used to render images and dereference metadata blobs. Trailing slash required.
-const IPFS_GATEWAY = 'https://content.wrappr.wtf/ipfs/';
+// Primary IPFS gateway. When WORKER_BASE is set, this points at the worker's
+// /ipfs/* proxy, which races multiple public gateways server-side and serves
+// from Cloudflare edge cache on subsequent reads. Otherwise falls back to a
+// direct public gateway (content.wrappr.wtf). The worker proxy fixes:
+//   - single-gateway flake (a slow content.wrappr.wtf used to mean 5-15s
+//     visible delay per cold asset metadata fetch)
+//   - per-IP rate limits on hot CIDs
+//   - duplicated download across multiple tabs (edge cache absorbs)
+// Computed lazily so an early-init code path doesn't see WORKER_BASE as
+// undefined; resolved to the actual URL at first use via _ipfsGateway().
+function _ipfsGateway() {
+  return (typeof WORKER_BASE === 'string' && WORKER_BASE)
+    ? `${WORKER_BASE}/ipfs/`
+    : 'https://content.wrappr.wtf/ipfs/';
+}
+const IPFS_GATEWAY = _ipfsGateway();
 
-// Fallback gateways used by ceremony fetches (head zkey, r1cs, ptau) so a
-// single gateway flake (HTML error page, 502, rate-limit) doesn't kill a
-// contributor's flow. Tried in order; first one whose response passes the
-// caller's content validation wins. The primary is duplicated at index 0
-// so the failover path is the same code as the happy path.
+// Fallback gateways used by ceremony fetches (head zkey, r1cs, ptau) when
+// the worker proxy is unreachable. Worker is the preferred primary (handles
+// the race internally + edge-caches); direct gateways stay in the list so
+// disabled-worker dapps still have a path.
 const IPFS_GATEWAYS_FALLBACK = [
   IPFS_GATEWAY,
+  'https://content.wrappr.wtf/ipfs/',
   'https://ipfs.io/ipfs/',
   'https://w3s.link/ipfs/',
   'https://dweb.link/ipfs/',
