@@ -4118,6 +4118,7 @@ function decodeTWithdrawPayload(payload) {
   const bindHashBytes = payload.slice(p, p + 32); p += 32;
   const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
+  if (proofLen === 0) return null;
   if (p + proofLen !== payload.length) return null;
   // Bind-hash determinism check (SPEC §5.11). MUST match the dapp's decoder
   // exactly so worker + dapp + any third-party indexer all reject the same
@@ -4234,6 +4235,7 @@ function decodeTSlotBurnPayload(payload) {
   const bindHashBytes = payload.slice(p, p + 32); p += 32;
   const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
+  if (proofLen === 0) return null;
   if (p + proofLen !== payload.length) return null;
   // Reuse the mixer's tacit-withdraw-bind-v1 binding — same public-input tuple.
   const expectedBindHash = _computeWithdrawBindHash(
@@ -4305,6 +4307,7 @@ function decodeTSlotRotatePayload(payload) {
   const oldBindHashBytes = payload.slice(p, p + 32); p += 32;
   const oldProofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
+  if (oldProofLen === 0) return null;
   if (p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64 !== payload.length) return null;
   const oldProof = payload.slice(p, p + oldProofLen); p += oldProofLen;
   const expectedOldBind = _computeWithdrawBindHash(

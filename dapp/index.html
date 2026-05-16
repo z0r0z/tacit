@@ -5152,6 +5152,38 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
   </div>
 
+  <!-- SPEC-CBTC-ZK self-custody slot wrapper helper. Wraps sats directly
+       into a cBTC.zk-style pool — one click does the T_SLOT_MINT envelope
+       + commit-reveal Bitcoin tx that locks `denomination` sats at K_btc
+       and credits the mixer pool with a fresh leaf. The asset_id is the
+       canonical cBTC.zk wrapper's CETCH-derived asset_id; pool denomination
+       must match metadata.custody.denom_sats. Slot records are persisted
+       per-network in localStorage (treat as critical as deposit records). -->
+  <div class="section" data-mixer-pool-op="true" id="mixer-slot-wrap-section">
+    <div class="section-header"><span>wrap sats → cBTC.zk slot</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">
+        Lock sats into a self-custody slot, get a cBTC.zk note in the matching mixer pool. Trustless 1:1 wrap — no federation, no co-signer. Lost notes lock the backing sats permanently (like losing a Bitcoin key); back up your slot records.
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:2;min-width:280px;">Wrapper asset_id
+          <input id="mixer-slot-wrap-aid" type="text" placeholder="64 hex chars — the cBTC.zk CETCH-derived asset_id" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <label style="flex:1;min-width:140px;">Denomination (sats)
+          <input id="mixer-slot-wrap-denom" type="number" min="1" placeholder="100000" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <button id="btn-mixer-slot-wrap-broadcast" disabled>Wrap &amp; broadcast</button>
+      </div>
+      <div id="mixer-slot-wrap-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+      <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--ink-faint);">
+        <div class="muted" style="font-size:11px;margin-bottom:6px;">
+          <strong>Slot records on this browser.</strong> Each row is one wrapped slot: the secret material needed to redeem the backing sats. Stored in localStorage per network — back up before clearing browser data.
+        </div>
+        <div id="mixer-slot-records-list"><div class="muted" style="font-size:11px;">No slots wrapped yet on this network.</div></div>
+      </div>
+    </div>
+  </div>
+
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>withdraw</span></div>
     <div class="section-body">

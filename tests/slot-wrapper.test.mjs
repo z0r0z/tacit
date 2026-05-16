@@ -309,6 +309,50 @@ function buildSlotBurnPayload({ networkTag, assetId, denom, merkleRoot, nullifie
   ok('rejects bind_hash mismatch', decodeTSlotBurnPayload(payload) === null);
 }
 
+{
+  // T_SLOT_BURN rejection sweep (mirrors the T_SLOT_MINT sweep).
+  const { r_leaf_bytes, recipient_commit_bytes } = synthLeafFor('burn-reject-1');
+  const merkleRoot = sha256(new TextEncoder().encode('mr-reject'));
+  const nullifierHash = sha256(new TextEncoder().encode('null-reject'));
+  const bindHash = computeWithdrawBindHash(
+    ASSET_ID, DENOM, nullifierHash, recipient_commit_bytes, r_leaf_bytes,
+  );
+  const proof = new Uint8Array(256);
+  const mk = (overrides = {}) => buildSlotBurnPayload({
+    networkTag: NETWORK_TAG_SIGNET, assetId: ASSET_ID, denom: DENOM,
+    merkleRoot, nullifierHash, recipientCommit: recipient_commit_bytes,
+    rLeaf: r_leaf_bytes, bindHash, proof, ...overrides,
+  });
+
+  const wrongOp = mk(); wrongOp[0] = 0x99;
+  ok('rejects wrong opcode', decodeTSlotBurnPayload(wrongOp) === null);
+
+  ok('rejects truncated payload', decodeTSlotBurnPayload(mk().slice(0, -1)) === null);
+  ok('rejects padded payload (trailing byte after declared proof length)',
+    decodeTSlotBurnPayload(concatBytes(mk(), new Uint8Array([0x00]))) === null);
+
+  ok('rejects invalid network tag', decodeTSlotBurnPayload(mk({ networkTag: 0xFF })) === null);
+
+  // Zero denomination — bindHash needs re-derivation to isolate the denom check.
+  const zeroDenomBindHash = computeWithdrawBindHash(
+    ASSET_ID, 0n, nullifierHash, recipient_commit_bytes, r_leaf_bytes,
+  );
+  ok('rejects denomination = 0',
+    decodeTSlotBurnPayload(buildSlotBurnPayload({
+      networkTag: NETWORK_TAG_SIGNET, assetId: ASSET_ID, denom: 0n,
+      merkleRoot, nullifierHash, recipientCommit: recipient_commit_bytes,
+      rLeaf: r_leaf_bytes, bindHash: zeroDenomBindHash, proof,
+    })) === null);
+
+  // proof_length = 0 must reject (defensive consistency: encoder forbids it, spec says 1..65535)
+  ok('rejects proof_length = 0',
+    decodeTSlotBurnPayload(buildSlotBurnPayload({
+      networkTag: NETWORK_TAG_SIGNET, assetId: ASSET_ID, denom: DENOM,
+      merkleRoot, nullifierHash, recipientCommit: recipient_commit_bytes,
+      rLeaf: r_leaf_bytes, bindHash, proof: new Uint8Array(0),
+    })) === null);
+}
+
 // ---- Group 5: T_SLOT_ROTATE wire format ----
 group('T_SLOT_ROTATE decode round-trip');
 
@@ -410,6 +454,72 @@ function buildSlotRotatePayload({
     decoded?.payment_asset_id === '0'.repeat(64));
 }
 
+{
+  // T_SLOT_ROTATE rejection sweep (mirrors the T_SLOT_MINT / T_SLOT_BURN sweeps).
+  const oldLeaf = synthLeafFor('rotate-reject-old');
+  const newLeaf = synthLeafFor('rotate-reject-new');
+  const oldNullifier = sha256(new TextEncoder().encode('rotate-reject-null'));
+  const oldBindHash = computeWithdrawBindHash(
+    ASSET_ID, DENOM, oldNullifier, oldLeaf.recipient_commit_bytes, oldLeaf.r_leaf_bytes,
+  );
+  const newLeafHash = sha256(new TextEncoder().encode('rotate-reject-leaf'));
+  const paymentAssetId = new Uint8Array(32);
+  const oldOwnerPubkey = secp.ProjectivePoint.BASE.toRawBytes(true);
+  const oldOwnerSig = new Uint8Array(64);
+  const oldProof = new Uint8Array(256);
+
+  const mk = (overrides = {}) => buildSlotRotatePayload({
+    networkTag: NETWORK_TAG_SIGNET, assetId: ASSET_ID, denom: DENOM,
+    oldMerkleRoot: sha256(new TextEncoder().encode('mr-reject')),
+    oldNullifier, oldRecipientCommit: oldLeaf.recipient_commit_bytes,
+    oldRLeaf: oldLeaf.r_leaf_bytes, oldBindHash, oldProof,
+    newRecipientCommit: newLeaf.recipient_commit_bytes, newLeafHash,
+    paymentAssetId, paymentAmount: 0n, oldOwnerPubkey, oldOwnerSig,
+    ...overrides,
+  });
+
+  const wrongOp = mk(); wrongOp[0] = 0x99;
+  ok('rejects wrong opcode', decodeTSlotRotatePayload(wrongOp) === null);
+
+  ok('rejects truncated payload', decodeTSlotRotatePayload(mk().slice(0, -1)) === null);
+  ok('rejects padded payload',
+    decodeTSlotRotatePayload(concatBytes(mk(), new Uint8Array([0x00]))) === null);
+
+  ok('rejects invalid network tag', decodeTSlotRotatePayload(mk({ networkTag: 0xFF })) === null);
+
+  // Bad old_recipient_commit — replace with 33 zero bytes (invalid compressed point).
+  ok('rejects malformed old_recipient_commit',
+    decodeTSlotRotatePayload(mk({ oldRecipientCommit: new Uint8Array(33) })) === null);
+
+  // Bad new_recipient_commit. The bind_hash binds the OLD note, so flipping
+  // new_recipient_commit doesn't disturb bind_hash — the decoder must catch
+  // the malformed point on its own.
+  ok('rejects malformed new_recipient_commit',
+    decodeTSlotRotatePayload(mk({ newRecipientCommit: new Uint8Array(33) })) === null);
+
+  // Wrong old_bind_hash — indexer-determinism mirror of the burn case.
+  ok('rejects old_bind_hash mismatch',
+    decodeTSlotRotatePayload(mk({ oldBindHash: sha256(new TextEncoder().encode('wrong-old-bind')) })) === null);
+
+  // old_proof_length = 0 must reject (defensive consistency).
+  ok('rejects old_proof_length = 0',
+    decodeTSlotRotatePayload(mk({ oldProof: new Uint8Array(0) })) === null);
+
+  // Zero denomination — re-derive bindHash so the test isolates the denom check.
+  const zeroBind = computeWithdrawBindHash(
+    ASSET_ID, 0n, oldNullifier, oldLeaf.recipient_commit_bytes, oldLeaf.r_leaf_bytes,
+  );
+  ok('rejects denomination = 0',
+    decodeTSlotRotatePayload(buildSlotRotatePayload({
+      networkTag: NETWORK_TAG_SIGNET, assetId: ASSET_ID, denom: 0n,
+      oldMerkleRoot: sha256(new TextEncoder().encode('mr-zero')),
+      oldNullifier, oldRecipientCommit: oldLeaf.recipient_commit_bytes,
+      oldRLeaf: oldLeaf.r_leaf_bytes, oldBindHash: zeroBind, oldProof,
+      newRecipientCommit: newLeaf.recipient_commit_bytes, newLeafHash,
+      paymentAssetId, paymentAmount: 0n, oldOwnerPubkey, oldOwnerSig,
+    })) === null);
+}
+
 // ---- Group 6: Dapp ↔ worker parity ----
 // Critical: dapp encoders must produce bytes that worker decoders accept.
 // JSDOM shim mirrors what dapp-parity.test.mjs does.
@@ -501,6 +611,64 @@ const dapp = await import('../dapp/tacit.js');
   ok('parity (burn): r_leaf', workerDecoded?.r_leaf === bytesToHex(r_leaf_bytes));
   ok('parity (burn): bind_hash', workerDecoded?.bind_hash === bytesToHex(bindHash));
   ok('parity (burn): proof', workerDecoded?.proof === bytesToHex(proof));
+}
+
+{
+  // T_SLOT_ROTATE parity
+  const oldLeaf = synthLeafFor('parity-rotate-old');
+  const newLeaf = synthLeafFor('parity-rotate-new');
+  const oldNullifier = sha256(new TextEncoder().encode('parity-rotate-null'));
+  const oldBindHash = computeWithdrawBindHash(
+    ASSET_ID, DENOM, oldNullifier, oldLeaf.recipient_commit_bytes, oldLeaf.r_leaf_bytes,
+  );
+  const newLeafHash = sha256(new TextEncoder().encode('parity-rotate-leaf'));
+  const paymentAssetId = hexToBytes('6666666666666666666666666666666666666666666666666666666666666666');
+  const oldOwnerPubkey = secp.ProjectivePoint.BASE.multiply(123n).toRawBytes(true);
+  const oldOwnerSig = new Uint8Array(64).fill(0xef);
+  const oldProof = new Uint8Array(256).fill(0x2c);
+
+  const dappEncoded = dapp.encodeTSlotRotatePayload({
+    networkTag: NETWORK_TAG_SIGNET,
+    assetId: ASSET_ID,
+    denomination: DENOM,
+    oldMerkleRoot: sha256(new TextEncoder().encode('parity-rotate-mr')),
+    oldNullifierHash: oldNullifier,
+    oldRecipientCommitment: oldLeaf.recipient_commit_bytes,
+    oldRLeaf: oldLeaf.r_leaf_bytes,
+    oldBindHash,
+    oldProof,
+    newRecipientCommit: newLeaf.recipient_commit_bytes,
+    newLeafHash,
+    paymentAssetId,
+    paymentAmount: 33_000n,
+    oldOwnerPubkey,
+    oldOwnerSig,
+  });
+  ok('dapp T_SLOT_ROTATE starts with opcode 0x45', dappEncoded[0] === T_SLOT_ROTATE);
+
+  const workerDecoded = decodeTSlotRotatePayload(dappEncoded);
+  ok('worker decodes dapp T_SLOT_ROTATE', workerDecoded !== null);
+  ok('parity (rotate): old_nullifier',
+    workerDecoded?.old_nullifier_hash === bytesToHex(oldNullifier));
+  ok('parity (rotate): old_recipient_commit',
+    workerDecoded?.old_recipient_commitment === bytesToHex(oldLeaf.recipient_commit_bytes));
+  ok('parity (rotate): new_recipient_commit',
+    workerDecoded?.new_recipient_commitment === bytesToHex(newLeaf.recipient_commit_bytes));
+  ok('parity (rotate): new_leaf_hash',
+    workerDecoded?.new_leaf_hash === bytesToHex(newLeafHash));
+  ok('parity (rotate): old_proof', workerDecoded?.old_proof === bytesToHex(oldProof));
+  ok('parity (rotate): payment_amount', workerDecoded?.payment_amount === '33000');
+  ok('parity (rotate): old_owner_pubkey',
+    workerDecoded?.old_owner_pubkey === bytesToHex(oldOwnerPubkey));
+
+  // Sig-message binding must be byte-identical across dapp and worker for slot-rotate too.
+  const dappMsg = dapp.computeSlotRotateMsg(
+    NETWORK_TAG_SIGNET, ASSET_ID, DENOM, oldNullifier,
+    newLeaf.recipient_commit_bytes, newLeafHash, paymentAssetId, 33_000n,
+  );
+  const workerMsg = workerDecoded?._msg();
+  ok('parity (rotate): slot_rotate_msg byte-identical',
+    workerMsg && bytesToHex(dappMsg) === bytesToHex(workerMsg));
 }
 
 {

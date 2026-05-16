@@ -226,8 +226,7 @@ Bitcoin tx fails to broadcast.
 
 ```
 T_SLOT_MINT
-   envelope_version    0x01
-   opcode              0x43
+   opcode              1 byte   (0x43)
    network_tag         1 byte   (0x00=mainnet, 0x01=signet, 0x02=regtest)
    asset_id            32 bytes (wrapper asset's CETCH-derived asset_id)
    denom_sats_LE       8 bytes  (u64; MUST match metadata.custody.denom_sats)
@@ -239,7 +238,7 @@ T_SLOT_MINT
    minter_sig          64 bytes (BIP-340 over slot_mint_msg under minter_pubkey)
 ```
 
-Total payload: **245 bytes** + standard envelope wrapping.
+Total payload: **244 bytes** + standard envelope wrapping.
 
 ```
 slot_mint_msg = SHA256(
@@ -364,8 +363,7 @@ Atomic redeem envelope. A single Bitcoin transaction:
 
 ```
 T_SLOT_BURN
-   envelope_version    0x01
-   opcode              0x44
+   opcode              1 byte   (0x44)
    network_tag         1 byte
    asset_id            32 bytes
    denom_sats_LE       8 bytes
@@ -374,11 +372,13 @@ T_SLOT_BURN
    recipient_commit    33 bytes (compressed; same as the leaf's commit)
    r_leaf              32 bytes (BN254 element / secp256k1 scalar)
    bind_hash           32 bytes (per SPEC §5.11 binding formula)
+   proof_length        2 bytes  (u16 LE; length of groth16_proof, 1..65535)
    groth16_proof       VAR bytes (per SPEC §5.11.x serialization; see note)
 ```
 
 Groth16 proof serialization follows the existing mixer convention
-in SPEC §5.11.x. Total payload ≈ **460 bytes** + standard envelope
+in SPEC §5.11.x. Fixed header (opcode through proof_length) =
+**205 bytes**. Total payload ≈ **460 bytes** + standard envelope
 wrapping (exact size depends on Groth16 serialization choice;
 implementations MUST match the existing T_WITHDRAW format).
 
@@ -508,34 +508,36 @@ handoff). Supply is conserved.
 
 ```
 T_SLOT_ROTATE
-   envelope_version       0x01
-   opcode                 0x45
+   opcode                 1 byte   (0x45)
    network_tag            1 byte
    asset_id               32 bytes
    denom_sats_LE          8 bytes
-   
+
    // OLD note (consumed — analogous to T_SLOT_BURN's withdraw fields)
    old_merkle_root        32 bytes
    old_nullifier_hash     32 bytes
    old_recipient_commit   33 bytes
    old_r_leaf             32 bytes
    old_bind_hash          32 bytes
+   old_proof_length       2 bytes  (u16 LE; length of old_groth16_proof, 1..65535)
    old_groth16_proof      VAR bytes (per SPEC §5.11.x; see T_SLOT_BURN note)
-   
+
    // NEW note (created — analogous to T_SLOT_MINT's deposit fields)
    new_recipient_commit   33 bytes
    new_leaf_hash          32 bytes
-   
+
    // OPTIONAL payment leg
    payment_asset_id       32 bytes (or 0x00..00 if no payment)
    payment_amount_LE      8 bytes  (0 if no payment)
-   
+
    // BINDING signature from the old owner
    old_owner_pubkey       33 bytes (compressed)
    old_owner_sig          64 bytes (BIP-340 over slot_rotate_msg)
 ```
 
-Total payload ≈ **720 bytes** + standard envelope wrapping.
+Fixed header (everything except old_groth16_proof) =
+**407 bytes**. Total payload ≈ **720 bytes** + standard envelope
+wrapping (exact size depends on Groth16 serialization choice).
 
 Domain tag: **`tacit-slot-rotate-v1`**.
 
