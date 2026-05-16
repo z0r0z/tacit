@@ -4750,8 +4750,12 @@ const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor
 const T_SLOT_MINT          = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
-const T_SLOT_FRACTIONALIZE = 0x46; // slot → shielded shares (SPEC §5.25, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
-const T_SLOT_RECONSOLIDATE = 0x47; // shielded shares → slot (SPEC §5.26, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
+// 0x46/0x47 reserved for SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT (T_SLOT_SPLIT/T_SLOT_MERGE).
+// 0x48 reserved for T_SLOT_NOTE.
+// 0x49–0x4C reserved for SPEC-CBTC-TAC-AMENDMENT (cBTC.tac deposit/withdraw/force-close/slash-claim).
+// 0x4D–0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
+// machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
+// not shipped on mainnet).
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / §5.7.6.1 — amended).
                           // N=2 partial reveal (recipient + maker change), single asset input,
                           // interleaved BTC-payment vout. Read-only as of this commit: validator
@@ -5926,8 +5930,8 @@ function decodeTWithdrawPayload(payload) {
 
 const SLOT_MINT_DOMAIN    = new TextEncoder().encode('tacit-slot-mint-v1');
 const SLOT_ROTATE_DOMAIN  = new TextEncoder().encode('tacit-slot-rotate-v1');
-const SLOT_FRAC_DOMAIN    = new TextEncoder().encode('tacit-slot-fractionalize-v1');
-const SLOT_RECON_DOMAIN   = new TextEncoder().encode('tacit-slot-reconsolidate-v1');
+// SLOT_FRAC_DOMAIN / SLOT_RECON_DOMAIN deferred — used by SPEC-CBTC-TAC-AMENDMENT
+// envelopes (T_CBTC_TAC_DEPOSIT / T_CBTC_TAC_WITHDRAW) when bonded fractional ships.
 // Domain tag for the v2 BTC-spending-key derivation. r_btc = Poseidon₂(
 // secret, ν || "btc"), separate from r_pedersen = Poseidon₂(secret, ν). The
 // two scalars are computationally independent (inverting Poseidon is hard),
@@ -6302,227 +6306,13 @@ function decodeTSlotRotatePayload(payload) {
   };
 }
 
-// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.25.1 — T_SLOT_FRACTIONALIZE wire format.
-// Converts a live v2 slot's denom_sats into N standard tacit-asset share
-// UTXOs whose amounts sum to denom_sats. The slot's BTC stays locked (r_btc
-// never revealed); the leaf transitions to fractionalized state. Reveals
-// r_pedersen (= r_leaf in the underlying mixer Groth16 statement) safely
-// because v2 slots use an independent r_btc for BTC spend.
-function computeSlotFracMsg(networkTag, assetId, denomination, nullifierHash, recipientCommit, shareCommits) {
-  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
-  if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
-  if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
-  const denomLE = new Uint8Array(8);
-  {
-    const v = new DataView(denomLE.buffer);
-    const d = BigInt(denomination);
-    v.setUint32(0, Number(d & 0xffffffffn), true);
-    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
-  }
-  const parts = [
-    SLOT_FRAC_DOMAIN, new Uint8Array([networkTag & 0xff]),
-    assetId, denomLE, nullifierHash, recipientCommit,
-    new Uint8Array([shareCommits.length & 0xff]),
-  ];
-  for (const sc of shareCommits) {
-    if (!(sc instanceof Uint8Array) || sc.length !== 33) throw new Error('each share_commit must be 33 bytes');
-    parts.push(sc);
-  }
-  return sha256(concatBytes(...parts));
-}
-
-function encodeTSlotFractionalizePayload({
-  networkTag, assetId, denomination,
-  merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
-  shareCommits, shareKernelSig, proof,
-}) {
-  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
-  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
-  if (merkleRoot.length !== 32) throw new Error('merkle_root 32 bytes');
-  if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
-  if (recipientCommitment.length !== 33) throw new Error('recipient_commitment 33 bytes');
-  if (rLeaf.length !== 32) throw new Error('r_leaf 32 bytes');
-  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
-  if (!Array.isArray(shareCommits) || shareCommits.length < 1 || shareCommits.length > 16) {
-    throw new Error('share_commits must be an array of 1..16');
-  }
-  if (shareKernelSig.length !== 64) throw new Error('share_kernel_sig 64 bytes');
-  if (proof.length === 0 || proof.length > 0xffff) throw new Error('proof len 1..65535');
-  const d = BigInt(denomination);
-  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
-  const denomLE = new Uint8Array(8);
-  {
-    const v = new DataView(denomLE.buffer);
-    v.setUint32(0, Number(d & 0xffffffffn), true);
-    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
-  }
-  const proofLen = new Uint8Array(2);
-  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
-  const parts = [
-    new Uint8Array([T_SLOT_FRACTIONALIZE, networkTag & 0xff]),
-    assetId, denomLE,
-    merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
-    new Uint8Array([shareCommits.length & 0xff]),
-  ];
-  for (const sc of shareCommits) {
-    if (!(sc instanceof Uint8Array) || sc.length !== 33) throw new Error('each share_commit must be 33 bytes');
-    parts.push(sc);
-  }
-  parts.push(shareKernelSig, proofLen, proof);
-  return concatBytes(...parts);
-}
-
-function decodeTSlotFractionalizePayload(payload) {
-  if (!payload) return null;
-  if (payload[0] !== T_SLOT_FRACTIONALIZE) return null;
-  const FIXED_HEADER = 2 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 1;
-  if (payload.length < FIXED_HEADER) return null;
-  let p = 1;
-  const networkTag = payload[p]; p += 1;
-  if (networkTag > 2) return null;
-  const assetId = payload.slice(p, p + 32); p += 32;
-  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
-  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
-  p += 8;
-  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
-  const merkleRoot = payload.slice(p, p + 32); p += 32;
-  const nullifierHash = payload.slice(p, p + 32); p += 32;
-  const recipientCommitment = payload.slice(p, p + 33); p += 33;
-  try { bytesToPoint(recipientCommitment); } catch { return null; }
-  const rLeaf = payload.slice(p, p + 32); p += 32;
-  const bindHash = payload.slice(p, p + 32); p += 32;
-  const shareCount = payload[p]; p += 1;
-  if (shareCount < 1 || shareCount > 16) return null;
-  if (payload.length < p + shareCount * 33 + 64 + 2) return null;
-  const shareCommits = [];
-  for (let i = 0; i < shareCount; i++) {
-    const sc = payload.slice(p, p + 33); p += 33;
-    try { bytesToPoint(sc); } catch { return null; }
-    shareCommits.push(sc);
-  }
-  const shareKernelSig = payload.slice(p, p + 64); p += 64;
-  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
-  p += 2;
-  if (proofLen === 0) return null;
-  if (p + proofLen !== payload.length) return null;
-  const proof = payload.slice(p, p + proofLen);
-  const expected = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf);
-  for (let i = 0; i < 32; i++) if (expected[i] !== bindHash[i]) return null;
-  return {
-    kind: 'slot_fractionalize',
-    networkTag, assetId, denomination,
-    merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
-    shareCommits, shareKernelSig, proof,
-  };
-}
-
-// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.26.1 — T_SLOT_RECONSOLIDATE wire format.
-// Consumes M tacit-asset share UTXOs summing to denom_sats and restores a
-// fractionalized leaf to live state.
-function computeSlotReconMsg(networkTag, assetId, denomination, targetLeafHash, shareCommits, shareNullifiers) {
-  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
-  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
-  if (shareCommits.length !== shareNullifiers.length) {
-    throw new Error('share_commits + share_nullifiers count mismatch');
-  }
-  const denomLE = new Uint8Array(8);
-  {
-    const v = new DataView(denomLE.buffer);
-    const d = BigInt(denomination);
-    v.setUint32(0, Number(d & 0xffffffffn), true);
-    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
-  }
-  const parts = [
-    SLOT_RECON_DOMAIN, new Uint8Array([networkTag & 0xff]),
-    assetId, denomLE, targetLeafHash,
-    new Uint8Array([shareCommits.length & 0xff]),
-  ];
-  for (const sc of shareCommits) parts.push(sc);
-  for (const sn of shareNullifiers) parts.push(sn);
-  return sha256(concatBytes(...parts));
-}
-
-function encodeTSlotReconsolidatePayload({
-  networkTag, assetId, denomination,
-  targetLeafHash, shareCommits, shareNullifiers, shareKernelSig, proof,
-}) {
-  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
-  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
-  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
-  if (!Array.isArray(shareCommits) || shareCommits.length < 1 || shareCommits.length > 16) {
-    throw new Error('share_commits must be an array of 1..16');
-  }
-  if (!Array.isArray(shareNullifiers) || shareNullifiers.length !== shareCommits.length) {
-    throw new Error('share_nullifiers count must match share_commits');
-  }
-  if (shareKernelSig.length !== 64) throw new Error('share_kernel_sig 64 bytes');
-  if (proof.length === 0 || proof.length > 0xffff) throw new Error('proof len 1..65535');
-  const d = BigInt(denomination);
-  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
-  const denomLE = new Uint8Array(8);
-  {
-    const v = new DataView(denomLE.buffer);
-    v.setUint32(0, Number(d & 0xffffffffn), true);
-    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
-  }
-  const proofLen = new Uint8Array(2);
-  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
-  const parts = [
-    new Uint8Array([T_SLOT_RECONSOLIDATE, networkTag & 0xff]),
-    assetId, denomLE, targetLeafHash,
-    new Uint8Array([shareCommits.length & 0xff]),
-  ];
-  for (const sn of shareNullifiers) {
-    if (!(sn instanceof Uint8Array) || sn.length !== 32) throw new Error('each share_nullifier must be 32 bytes');
-    parts.push(sn);
-  }
-  for (const sc of shareCommits) {
-    if (!(sc instanceof Uint8Array) || sc.length !== 33) throw new Error('each share_commit must be 33 bytes');
-    parts.push(sc);
-  }
-  parts.push(shareKernelSig, proofLen, proof);
-  return concatBytes(...parts);
-}
-
-function decodeTSlotReconsolidatePayload(payload) {
-  if (!payload) return null;
-  if (payload[0] !== T_SLOT_RECONSOLIDATE) return null;
-  const FIXED_HEADER = 2 + 32 + 8 + 32 + 1;
-  if (payload.length < FIXED_HEADER) return null;
-  let p = 1;
-  const networkTag = payload[p]; p += 1;
-  if (networkTag > 2) return null;
-  const assetId = payload.slice(p, p + 32); p += 32;
-  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
-  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
-  p += 8;
-  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
-  const targetLeafHash = payload.slice(p, p + 32); p += 32;
-  const shareCount = payload[p]; p += 1;
-  if (shareCount < 1 || shareCount > 16) return null;
-  if (payload.length < p + shareCount * 32 + shareCount * 33 + 64 + 2) return null;
-  const shareNullifiers = [];
-  for (let i = 0; i < shareCount; i++) {
-    shareNullifiers.push(payload.slice(p, p + 32)); p += 32;
-  }
-  const shareCommits = [];
-  for (let i = 0; i < shareCount; i++) {
-    const sc = payload.slice(p, p + 33); p += 33;
-    try { bytesToPoint(sc); } catch { return null; }
-    shareCommits.push(sc);
-  }
-  const shareKernelSig = payload.slice(p, p + 64); p += 64;
-  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
-  p += 2;
-  if (proofLen === 0) return null;
-  if (p + proofLen !== payload.length) return null;
-  const proof = payload.slice(p, p + proofLen);
-  return {
-    kind: 'slot_reconsolidate',
-    networkTag, assetId, denomination,
-    targetLeafHash, shareCommits, shareNullifiers, shareKernelSig, proof,
-  };
-}
+// T_SLOT_FRACTIONALIZE / T_SLOT_RECONSOLIDATE wire format and builders deferred.
+// The unbonded fractionalize path is not shipping on mainnet; canonical fractional
+// wrapped BTC is cBTC.tac per SPEC-CBTC-TAC-AMENDMENT, with its own envelopes
+// (T_CBTC_TAC_DEPOSIT 0x49, T_CBTC_TAC_WITHDRAW 0x4A, etc.) implementing the
+// bonded flow. See SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md for the cryptographic
+// machinery (Pedersen sum identity, two-key construction, share commit semantics)
+// reused by the cBTC.tac envelopes when that implementation lands.
 
 // SPEC-CBTC-ZK §5.21 + §5.24.0 builder. The two-key derivation: r_pedersen
 // is the standard mixer Poseidon(secret, ν) used as the leaf's Pedersen
@@ -6680,98 +6470,11 @@ async function buildSlotRotateEnvelope({
   };
 }
 
-// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.25 — T_SLOT_FRACTIONALIZE builder.
-// Converts a v2 slot's denom_sats into N share UTXOs whose amounts sum to
-// denom_sats. The slot's backing BTC stays locked (r_btc never revealed).
-async function buildSlotFractionalizeEnvelope({
-  networkTag, slotRecord, merkleRoot, proof, shareAmounts,
-}) {
-  if (!slotRecord || !slotRecord.assetIdHex) throw new Error('slotRecord required');
-  if (!Array.isArray(shareAmounts) || shareAmounts.length < 1 || shareAmounts.length > 16) {
-    throw new Error('shareAmounts must be an array of 1..16 BigInts');
-  }
-  const assetId = hexToBytes(slotRecord.assetIdHex);
-  const denomination = BigInt(slotRecord.denomination);
-  let total = 0n;
-  for (const a of shareAmounts) {
-    const ai = BigInt(a);
-    if (ai <= 0n || ai >= (1n << BigInt(N_BITS))) throw new Error('share amount out of range');
-    total += ai;
-  }
-  if (total !== denomination) {
-    throw new Error(`shareAmounts must sum to denomination ${denomination}, got ${total}`);
-  }
-  const secret = hexToBytes(slotRecord.secretHex);
-  const nullifierPreimage = hexToBytes(slotRecord.nullifierPreimageHex);
-  const nullifierHash = computeNullifierHash(nullifierPreimage);
-  const rLeaf = poseidonHash(secret, nullifierPreimage);
-  const rLeafBig = bytes32ToBigint(rLeaf) % SECP_N;
-  const recipientCommitment = pedersenCommit(denomination, rLeafBig).toRawBytes(true);
-  const bindHash = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf);
-  // Fresh r_i for each share. Compute commits + accumulate Σ r_i.
-  const shareOpenings = [];
-  let rTotal = 0n;
-  for (const a of shareAmounts) {
-    const rBytes = new Uint8Array(32); crypto.getRandomValues(rBytes);
-    let rBig = bytes32ToBigint(rBytes) % SECP_N;
-    if (rBig === 0n) rBig = 1n;
-    const commit = pedersenCommit(BigInt(a), rBig).toRawBytes(true);
-    shareOpenings.push({ amount: BigInt(a), blinding: rBig, commitment: commit });
-    rTotal = modN(rTotal + rBig);
-  }
-  const shareCommits = shareOpenings.map(o => o.commitment);
-  const fracMsg = computeSlotFracMsg(networkTag, assetId, denomination, nullifierHash, recipientCommitment, shareCommits);
-  // Kernel sig under (Σ r_i) — its G-multiple equals Σ commits − denom·H by
-  // Pedersen homomorphism. Indexers verify the sig against this public point.
-  const shareKernelSig = signSchnorr(fracMsg, bigintToBytes32(rTotal));
-  const payload = encodeTSlotFractionalizePayload({
-    networkTag, assetId, denomination,
-    merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
-    shareCommits, shareKernelSig, proof,
-  });
-  return { payload, nullifierHash, shareOpenings, fracMsg, rTotalScalar: rTotal };
-}
-
-// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.26 — T_SLOT_RECONSOLIDATE builder.
-async function buildSlotReconsolidateEnvelope({
-  networkTag, assetId, denomination, targetLeafHash,
-  shareOpenings, proof,
-}) {
-  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
-  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
-  if (!Array.isArray(shareOpenings) || shareOpenings.length < 1 || shareOpenings.length > 16) {
-    throw new Error('shareOpenings must be 1..16');
-  }
-  const denomBig = BigInt(denomination);
-  let total = 0n, rTotal = 0n;
-  const shareCommits = [];
-  const shareNullifiers = [];
-  for (const o of shareOpenings) {
-    const a = BigInt(o.amount);
-    const r = BigInt(o.blinding);
-    if (a <= 0n) throw new Error('share amount must be positive');
-    total += a;
-    rTotal = modN(rTotal + r);
-    if (!(o.commitment instanceof Uint8Array) || o.commitment.length !== 33) {
-      throw new Error('share commitment must be 33 bytes');
-    }
-    shareCommits.push(o.commitment);
-    if (!(o.nullifierPreimage instanceof Uint8Array) || o.nullifierPreimage.length !== 32) {
-      throw new Error('share nullifierPreimage must be 32 bytes');
-    }
-    shareNullifiers.push(computeNullifierHash(o.nullifierPreimage));
-  }
-  if (total !== denomBig) {
-    throw new Error(`shareOpenings must sum to denomination ${denomBig}, got ${total}`);
-  }
-  const reconMsg = computeSlotReconMsg(networkTag, assetId, denomBig, targetLeafHash, shareCommits, shareNullifiers);
-  const shareKernelSig = signSchnorr(reconMsg, bigintToBytes32(rTotal));
-  const payload = encodeTSlotReconsolidatePayload({
-    networkTag, assetId, denomination: denomBig, targetLeafHash,
-    shareCommits, shareNullifiers, shareKernelSig, proof,
-  });
-  return { payload, shareNullifiers, reconMsg, rTotalScalar: rTotal };
-}
+// buildSlotFractionalizeEnvelope / buildSlotReconsolidateEnvelope deferred.
+// Standalone unbonded fractionalize doesn't ship on mainnet; the bonded path
+// (cBTC.tac per SPEC-CBTC-TAC-AMENDMENT) is implemented as T_CBTC_TAC_DEPOSIT
+// / T_CBTC_TAC_WITHDRAW envelopes, which reuse the underlying Pedersen sum
+// identity + two-key construction documented in SPEC-CBTC-ZK-AMOUNT-AMENDMENT.
 
 // Kernel message for T_DEPOSIT (SPEC §5.10). Domain-separated by 'tacit-deposit-v1'
 // to make cross-opcode replay against, say, a CXFER kernel sig structurally
@@ -12029,16 +11732,15 @@ async function buildAndBroadcastSlotBurn({
     throw new Error('slot denomination out of range');
   }
 
-  // Leaf-state precondition (forward-compatible with SPEC-CBTC-ZK-AMOUNT-AMENDMENT
-  // §5.24 — pre-§4 slot records have undefined status, treated as 'live').
-  // Once the fractional-share layer lands, this gate prevents draining the
-  // BTC of a fractionalized slot (the shares would be orphaned).
+  // Leaf-state precondition. Once cBTC.tac deposit (SPEC-CBTC-TAC-AMENDMENT)
+  // ships, this gate will also reject burning a slot that's currently bonded
+  // into a cBTC.tac position (state would be 'deposited').
   const _state = slotRecord.status || 'live';
   if (_state === 'redeemed') {
     throw new Error('this slot is already marked redeemed locally; the BTC has been spent.');
   }
-  if (_state === 'fractionalized') {
-    throw new Error('this slot is fractionalized; reconsolidate the shares first, then burn (SPEC-CBTC-ZK-AMOUNT §5.26).');
+  if (_state === 'deposited') {
+    throw new Error('this slot is deposited into cBTC.tac; withdraw via SPEC-CBTC-TAC-AMENDMENT envelopes before burning.');
   }
   // 'live' and the burn-restart states ('burn-pending', 'burn-committing') are
   // allowed — the latter two re-enter the broadcast loop after an earlier
@@ -12292,8 +11994,8 @@ async function buildAndBroadcastSlotBurn({
 
 const SLOT_NOTE_VERSION_TAG = new TextEncoder().encode('tacit-slot-note-v1');
 const SLOT_NOTE_KIND_ROTATE = 0x01;
-const SLOT_NOTE_KIND_FRACTIONALIZE = 0x02;       // reserved for Phase 5 (amount amendment)
-const SLOT_NOTE_KIND_MERGE = 0x03;               // reserved
+const SLOT_NOTE_KIND_DEPOSIT = 0x02;             // reserved for cBTC.tac deposit (SPEC-CBTC-TAC-AMENDMENT)
+const SLOT_NOTE_KIND_MERGE = 0x03;               // reserved for T_SLOT_MERGE (SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT)
 
 // Viewing privkey: HKDF-derived from wallet.priv. Deterministic per-wallet;
 // users don't manage `sk_view` explicitly. Tradeoff: compromise of wallet.priv
@@ -56842,17 +56544,12 @@ export {
   // worker↔dapp wire-format parity test and for dapp client code that builds
   // mint/burn/rotate txs.
   T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
-  T_SLOT_FRACTIONALIZE, T_SLOT_RECONSOLIDATE,
   encodeTSlotMintPayload, decodeTSlotMintPayload,
   encodeTSlotBurnPayload, decodeTSlotBurnPayload,
   encodeTSlotRotatePayload, decodeTSlotRotatePayload,
-  encodeTSlotFractionalizePayload, decodeTSlotFractionalizePayload,
-  encodeTSlotReconsolidatePayload, decodeTSlotReconsolidatePayload,
   computeSlotMintMsg, computeSlotRotateMsg,
-  computeSlotFracMsg, computeSlotReconMsg,
   deriveSlotKbtc, deriveSlotRBtc, slotXOnly, slotScriptPubKeyFromKbtc,
   buildSlotMintEnvelope, buildSlotBurnEnvelope, buildSlotRotateEnvelope,
-  buildSlotFractionalizeEnvelope, buildSlotReconsolidateEnvelope,
   // High-level dapp builders for the slot wrapper flows. Each does the full
   // commit-reveal Bitcoin tx + envelope construction + local-state update.
   // Exported so headless drivers (signet rehearsal, integration tests) can

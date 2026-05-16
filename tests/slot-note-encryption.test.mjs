@@ -1,8 +1,8 @@
 // SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.26 — slot-note encryption primitives.
 //
 // Standalone test of the ECDH + AES-GCM encrypted-note construction that
-// powers recipient detection for T_SLOT_ROTATE (and eventually
-// T_SLOT_FRACTIONALIZE / T_SLOT_MERGE / etc.). Doesn't depend on dapp/tacit.js
+// powers recipient detection for T_SLOT_ROTATE (and eventually cBTC.tac
+// deposit notes + T_SLOT_MERGE notes). Doesn't depend on dapp/tacit.js
 // — exercises the wire-format primitives directly using @noble/secp256k1 +
 // the platform's WebCrypto API.
 //

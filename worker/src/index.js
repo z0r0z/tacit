@@ -4725,6 +4725,117 @@ async function loadMintsForAsset(env, network, assetIdHex) {
   return events;
 }
 
+// Per-window price-change Δ% for an asset summary. Shared by the bulk
+// /assets hydrator and the single-asset /assets/:id handler so tile-side
+// sparkline chips and the asset-page banner agree to the byte.
+//
+// 24h jitter fix: the reference at each cutoff is a LINEAR INTERPOLATION
+// between the two in-band trades bracketing `cutoffSec` (newest trade
+// older than cutoff and oldest trade newer-than-or-equal-to cutoff). The
+// previous snap-to-nearest behaviour anchored the reference on a single
+// trade, so when that trade aged out of the window the chip could flip
+// sign with no new prints — visibly bad on young, sparse markets where
+// adjacent trades have very different unit prices.
+//
+// Outlier band: ±5× of `markUnit` (the outlier-guarded mark price). This
+// guards the reference selection against dust prints / fat-fingers (the
+// original +1683% TAC incident was a 0.18-sat print anchoring the 24h
+// ref) AND ensures the interpolated reference is itself in-band (a
+// linear combination of two in-band values is in-band).
+//
+// `unitFn(price_sats, amount_str)` converts a ring entry to a Number
+// unit price; `fallbackLatestU` is used when `markUnit` is missing so
+// pre-mark assets still get a delta. Returns an object with whichever
+// of these fields could be computed; caller merges with Object.assign:
+//   price_{1h,4h,24h,7d}_change_pct
+//   price_all_change_pct, price_first_trade_ts
+//   price_change_primary_pct, price_change_primary_window
+function _computeWindowedPriceDeltas(ring, unitFn, markUnit, fallbackLatestU, nowSec) {
+  if (!Array.isArray(ring) || ring.length === 0) return {};
+  const _mark = Number(markUnit);
+  const markValid = Number.isFinite(_mark) && _mark > 0;
+  const bandLo = markValid ? _mark * 0.2 : 0;
+  const bandHi = markValid ? _mark * 5 : Infinity;
+  const inBand = (u) => u >= bandLo && u <= bandHi;
+  const latestU = markValid ? _mark : Number(fallbackLatestU);
+  if (!(latestU > 0)) return {};
+  const refForCutoff = (cutoffSec) => {
+    // Walk newest→oldest. While we're still in the post-cutoff region,
+    // keep overwriting `after` so it ends as the OLDEST in-band trade
+    // with ts ≥ cutoff. On the first older crossing, capture `before`
+    // (first in-band trade with ts < cutoff) and stop. Out-of-band
+    // `beforeFallback` preserves snap semantics for thin assets where
+    // every pre-cutoff print is outside the band.
+    let before = null;
+    let after = null;
+    let beforeFallback = null;
+    for (const t of ring) {
+      const ts = Number(t.ts) || 0;
+      if (ts <= 0) continue;
+      const u = unitFn(t.price_sats, t.amount);
+      if (u == null || u <= 0) continue;
+      if (ts >= cutoffSec) {
+        if (inBand(u)) after = { u, ts };
+        continue;
+      }
+      if (inBand(u)) { before = { u, ts }; break; }
+      if (!beforeFallback) beforeFallback = { u, ts };
+    }
+    if (!before) before = beforeFallback;
+    if (!before) return null;
+    if (!after || after.ts <= before.ts) return before;
+    const span = after.ts - before.ts;
+    const frac = (cutoffSec - before.ts) / span;
+    const u = before.u + (after.u - before.u) * frac;
+    return (Number.isFinite(u) && u > 0) ? { u, ts: cutoffSec } : before;
+  };
+  let oldestRef = null;
+  let oldestFallback = null;
+  for (let i = ring.length - 1; i >= 0; i--) {
+    const u = unitFn(ring[i].price_sats, ring[i].amount);
+    const ts = Number(ring[i].ts) || 0;
+    if (u == null || u <= 0 || ts <= 0) continue;
+    if (inBand(u)) { oldestRef = { u, ts }; break; }
+    if (!oldestFallback) oldestFallback = { u, ts };
+  }
+  if (!oldestRef) oldestRef = oldestFallback;
+  const pct = (ref) => (ref && ref.u > 0)
+    ? ((latestU - ref.u) / ref.u) * 100
+    : null;
+  const p1h  = pct(refForCutoff(nowSec -      3600));
+  const p4h  = pct(refForCutoff(nowSec -  4 * 3600));
+  const p24h = pct(refForCutoff(nowSec -     86400));
+  const p7d  = pct(refForCutoff(nowSec - 7 * 86400));
+  const pAll = pct(oldestRef);
+  const out = {};
+  if (p1h  != null) out.price_1h_change_pct  = p1h;
+  if (p4h  != null) out.price_4h_change_pct  = p4h;
+  if (p24h != null) out.price_24h_change_pct = p24h;
+  if (p7d  != null) out.price_7d_change_pct  = p7d;
+  if (pAll != null && oldestRef && oldestRef.u !== latestU) {
+    out.price_all_change_pct = pAll;
+    out.price_first_trade_ts = oldestRef.ts;
+  }
+  // Tile/preview picks the tightest meaningful window — 24h first so the
+  // common case is stable; tighter windows kick in for markets younger
+  // than the next tier. 7d only when 24h is missing (quiet asset whose
+  // ring spans a week but had no fills in the past day). `all` is the
+  // last-resort label for assets with a ring but no data in any window.
+  const candidates = [
+    { window: '24h', pct: p24h },
+    { window: '4h',  pct: p4h },
+    { window: '1h',  pct: p1h },
+    { window: '7d',  pct: p7d },
+    { window: 'all', pct: pAll },
+  ];
+  const primary = candidates.find(c => c.pct != null);
+  if (primary) {
+    out.price_change_primary_pct = primary.pct;
+    out.price_change_primary_window = primary.window;
+  }
+  return out;
+}
+
 // Per-asset hydration for the Discover/Market list. Pre-parallelisation this
 // ran 8+ KV operations sequentially per asset (attestation, mints loop, burns
 // loop, plus 5 separate KV.list calls for counts) which dominated /assets
@@ -4900,105 +5011,13 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
       return (u != null && ts > 0) ? { ts, u } : null;
     }).filter(Boolean);
     if (pts.length > 0) v.price_summary = pts;
-    // Window-based price-change deltas. Compute multiple windows so the
-    // asset page can surface whichever ones have data, and the tile/preview
-    // can pick the BEST available (tightest meaningful window) for young
-    // markets where 24h Δ% would otherwise be undefined.
+    // Window-based price-change deltas via shared helper. See
+    // _computeWindowedPriceDeltas above for the interpolation + outlier-
+    // band rationale.
     if (pts.length > 0) {
-      const nowSec = Math.floor(Date.now() / 1000);
-      // Outlier band derived from the mark_price computed above (last
-      // trade if within 5× of ring median, else ring median). Without
-      // this filter, a single 0.18-sat dust print just before the 24h
-      // cutoff was anchoring TAC's delta and producing +1683% on a
-      // market that actually moved 335 → 330 sats over the window —
-      // the bug surfaced in screenshot review. Same 0.2×/5× threshold
-      // the dapp uses for high/low + chart outlier ringing, so the
-      // shipped delta now reflects what the user sees as the trading
-      // band. mark_price is set by the block above when ANY of:
-      // last_trade, ring median — so for any asset with trade history
-      // the band is defined.
-      const _markForBand = Number(v.mark_price?.unit);
-      const _markValid = Number.isFinite(_markForBand) && _markForBand > 0;
-      const _bandLo = _markValid ? _markForBand * 0.2 : 0;
-      const _bandHi = _markValid ? _markForBand * 5 : Infinity;
-      const _inBand = (u) => u >= _bandLo && u <= _bandHi;
-      // "Latest" side of the delta also uses the outlier-guarded mark
-      // when available, so a last-trade fat-finger doesn't read as a
-      // huge move. Falls back to the raw latest ring entry on assets
-      // too young to have a mark.
-      const latestU = _markValid ? _markForBand : pts[0].u;
-      // Reference-finder: walks newest→oldest, returns the FIRST in-band
-      // trade before the cutoff. Falls back to the first ANY-band trade
-      // when no in-band one exists (thin markets where every pre-cutoff
-      // print happened to be outside the band — rare but possible) so
-      // very young assets still get a delta rather than silently
-      // dropping the chip.
-      const refForCutoff = (cutoffSec) => {
-        let fallback = null;
-        for (const t of ring) {
-          const ts = Number(t.ts) || 0;
-          if (ts >= cutoffSec) continue;
-          const u = _unit(t.price_sats, t.amount);
-          if (u == null || u <= 0) continue;
-          if (_inBand(u)) return { u, ts };
-          if (!fallback) fallback = { u, ts };
-        }
-        return fallback;
-      };
-      // Same in-band guard for the all-time anchor.
-      let oldestRef = null;
-      let oldestFallback = null;
-      for (let i = ring.length - 1; i >= 0; i--) {
-        const u = _unit(ring[i].price_sats, ring[i].amount);
-        const ts = Number(ring[i].ts) || 0;
-        if (u == null || u <= 0 || ts <= 0) continue;
-        if (_inBand(u)) { oldestRef = { u, ts }; break; }
-        if (!oldestFallback) oldestFallback = { u, ts };
-      }
-      if (!oldestRef) oldestRef = oldestFallback;
-      const _pct = (latest, ref) => (ref && ref.u > 0 && latest != null)
-        ? ((latest - ref.u) / ref.u) * 100
-        : null;
-      // Per-window deltas. Tile/preview picks the tightest available;
-      // asset-page surfaces all that exist.
-      const r1h  = refForCutoff(nowSec -      3600);
-      const r4h  = refForCutoff(nowSec -  4 * 3600);
-      const r24h = refForCutoff(nowSec -     86400);
-      const r7d  = refForCutoff(nowSec - 7 * 86400);
-      const p1h  = _pct(latestU, r1h);
-      const p4h  = _pct(latestU, r4h);
-      const p24h = _pct(latestU, r24h);
-      const p7d  = _pct(latestU, r7d);
-      if (p1h  != null) v.price_1h_change_pct  = p1h;
-      if (p4h  != null) v.price_4h_change_pct  = p4h;
-      if (p24h != null) v.price_24h_change_pct = p24h;
-      if (p7d  != null) v.price_7d_change_pct  = p7d;
-      // "All-time within indexed ring" delta. Distinct field so the UI
-      // can label correctly ("since first known trade") rather than
-      // overloading the windowed slots.
-      const pAll = _pct(latestU, oldestRef);
-      if (pAll != null && oldestRef && oldestRef.u !== latestU) {
-        v.price_all_change_pct = pAll;
-        v.price_first_trade_ts = oldestRef.ts;
-      }
-      // Primary window — the tightest 1h/4h/24h/7d delta we have data
-      // for, plus the window label. Preference order prefers a stable
-      // 24h figure when available, falling back to tighter windows for
-      // markets younger than 24h. 7d is only chosen when 24h failed AND
-      // the market has 7d+ history (i.e., we're on a quiet asset where
-      // 24h-bucket had no trades) — rare.
-      const candidates = [
-        { window: '24h', pct: p24h },
-        { window: '4h',  pct: p4h },
-        { window: '1h',  pct: p1h },
-        { window: '7d',  pct: p7d },
-        { window: 'all', pct: pAll },
-      ];
-      const primary = candidates.find(c => c.pct != null);
-      if (primary) {
-        v.price_change_primary_pct = primary.pct;
-        v.price_change_primary_window = primary.window;
-      }
+      Object.assign(v, _computeWindowedPriceDeltas(
+        ring, _unit, v.mark_price?.unit, pts[0].u, Math.floor(Date.now() / 1000),
+      ));
     }
   }
 }
@@ -6006,12 +6025,12 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
       v.mark_price = { unit: _ringMedian, source: 'median', sample: _ringSampleCount };
     }
   }
-  // Per-window price-change deltas — same computation as
-  // hydrateAssetSummary so single-asset clients see the same Δ% the
-  // bulk /assets response carries. Previously only the bulk path
-  // computed these, leaving the asset page's headline Δ% banner +
-  // stats strip's 24h Δ row reading null and rendering "—" even when
-  // the data was clearly there in the trade ring below.
+  // Per-window price-change deltas via the shared helper — single-asset
+  // GET and bulk /assets agree to the byte, and the interpolation fix /
+  // outlier-band live in one place. Previously this block was duplicated
+  // inline (~100 LOC) and was the path the dapp's asset-detail page
+  // hits, so any drift between bulk and detail showed up as banner ≠
+  // tile Δ%.
   if (Number.isInteger(v.decimals) && trades.length > 0) {
     const _dec = v.decimals;
     const _u = (priceSats, amountStr) => {
@@ -6022,77 +6041,11 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
       const num = BigInt(Math.floor(p)) * (10n ** BigInt(_dec)) * 100000000n;
       return Number(num / a) / 1e8;
     };
-    const ring = trades;
-    const _latestUraw = _u(ring[0].price_sats, ring[0].amount);
-    // Mirror the outlier-band guard from hydrateAssetSummary — same
-    // 0.2×/5× window keyed off mark_price.unit. Without this, single-
-    // asset GETs returned the unfiltered raw delta even though bulk
-    // /assets calls went through the guarded path. handleAssetGet is
-    // what the dapp's asset-detail page hits, so the unguarded delta
-    // here showed up as TAC's +1683% banner.
-    const _markForBand = Number(v.mark_price?.unit);
-    const _markValid = Number.isFinite(_markForBand) && _markForBand > 0;
-    const _bandLo = _markValid ? _markForBand * 0.2 : 0;
-    const _bandHi = _markValid ? _markForBand * 5 : Infinity;
-    const _inBand = (u) => u >= _bandLo && u <= _bandHi;
-    const latestU = _markValid ? _markForBand : _latestUraw;
-    if (latestU != null && latestU > 0) {
-      const nowSec = Math.floor(Date.now() / 1000);
-      const refForCutoff = (cutoffSec) => {
-        let fallback = null;
-        for (const t of ring) {
-          const ts = Number(t.ts) || 0;
-          if (ts >= cutoffSec) continue;
-          const u = _u(t.price_sats, t.amount);
-          if (u == null || u <= 0) continue;
-          if (_inBand(u)) return { u, ts };
-          if (!fallback) fallback = { u, ts };
-        }
-        return fallback;
-      };
-      let oldestRef = null;
-      let oldestFallback = null;
-      for (let i = ring.length - 1; i >= 0; i--) {
-        const u = _u(ring[i].price_sats, ring[i].amount);
-        const ts = Number(ring[i].ts) || 0;
-        if (u == null || u <= 0 || ts <= 0) continue;
-        if (_inBand(u)) { oldestRef = { u, ts }; break; }
-        if (!oldestFallback) oldestFallback = { u, ts };
-      }
-      if (!oldestRef) oldestRef = oldestFallback;
-      const _pct = (latest, ref) => (ref && ref.u > 0 && latest != null)
-        ? ((latest - ref.u) / ref.u) * 100
-        : null;
-      const r1h  = refForCutoff(nowSec -      3600);
-      const r4h  = refForCutoff(nowSec -  4 * 3600);
-      const r24h = refForCutoff(nowSec -     86400);
-      const r7d  = refForCutoff(nowSec - 7 * 86400);
-      const p1h  = _pct(latestU, r1h);
-      const p4h  = _pct(latestU, r4h);
-      const p24h = _pct(latestU, r24h);
-      const p7d  = _pct(latestU, r7d);
-      if (p1h  != null) v.price_1h_change_pct  = p1h;
-      if (p4h  != null) v.price_4h_change_pct  = p4h;
-      if (p24h != null) v.price_24h_change_pct = p24h;
-      if (p7d  != null) v.price_7d_change_pct  = p7d;
-      const pAll = _pct(latestU, oldestRef);
-      if (pAll != null && oldestRef && oldestRef.u !== latestU) {
-        v.price_all_change_pct = pAll;
-        v.price_first_trade_ts = oldestRef.ts;
-      }
-      const candidates = [
-        { window: '24h', pct: p24h },
-        { window: '4h',  pct: p4h },
-        { window: '1h',  pct: p1h },
-        { window: '7d',  pct: p7d },
-        { window: 'all', pct: pAll },
-      ];
-      const primary = candidates.find(c => c.pct != null);
-      if (primary) {
-        v.price_change_primary_pct = primary.pct;
-        v.price_change_primary_window = primary.window;
-      }
-    }
+    Object.assign(v, _computeWindowedPriceDeltas(
+      trades, _u, v.mark_price?.unit,
+      _u(trades[0].price_sats, trades[0].amount),
+      Math.floor(Date.now() / 1000),
+    ));
   }
   return jsonResponse(v, 200, cors);
 }
@@ -11925,6 +11878,14 @@ export {
   bumpTransferCount, tradeDayKey, tradeLifetimeKey, tradesRingKey,
   tradeEventKey, tradeEventPrefix,
   _utcYyyymmdd, TRADES_RING_CAP, _rolling24hVolumeSats,
+  // Per-window price-change Δ% helper. Exported so tests pin (a) the
+  // linear-interpolation reference so a single trade ageing out of the
+  // 24h window can't flip the chip sign, (b) the outlier-band guard
+  // that anchored the original +1683% TAC regression, (c) the primary-
+  // window selection preferring 24h. Both the bulk /assets hydrator
+  // and the single-asset GET handler call this helper, so drift here
+  // silently breaks the chip on both surfaces.
+  _computeWindowedPriceDeltas,
   // Chain-side trade-volume derivation + write helper. Exported so
   // tests can pin (a) derivation from a synthetic reveal + commit pair,
   // (b) helper writes match the hint-path aggregates byte-for-byte.

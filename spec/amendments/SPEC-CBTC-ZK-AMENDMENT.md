@@ -920,6 +920,46 @@ Implementation PRs landing this amendment MUST include:
 
 ---
 
+## Future evolution
+
+cBTC.zk's evolution path is a three-stage roadmap, each stage shipping
+when its prerequisites are in place:
+
+**Stage 1 — Trustless whole-slot (this amendment + FUNGIBILITY):**
+ships today. cBTC.zk is the self-custody slot primitive with atomic
+mint/burn/rotate, plus SPLIT/MERGE/NOTE for denomination flexibility
+and recipient detection. Unit-granular at fixed tier denominations.
+Maximally trustless given Bitcoin's current opcode set. Opcodes
+0x43–0x48.
+
+**Stage 2 — TAC-bonded fungible (cBTC.tac, SPEC-CBTC-TAC-AMENDMENT):**
+ships when the cBTC.zk orderbook produces enough organic price
+discovery to bootstrap a TAC/cBTC.zk pool. cBTC.tac is the fungible
+amount-granular wrapped BTC asset, minted via LP-shaped deposit
+(cBTC.zk slot + 2x TAC bond), with pooled insurance against rugs.
+Trust profile is over-collateralization (MakerDAO-shape), not pure
+trustlessness — the bond is what bridges the Alice-rug gap that
+Bitcoin's lack of covenants creates. Opcodes 0x49–0x4C.
+
+**Stage 3 — Trustless fungible (future amendment, awaiting Bitcoin
+covenants):** activates when Bitcoin gains covenant primitives
+(BIP-119 CTV, OP_VAULT, OP_CAT, or similar). At that point, the
+T_SLOT_FRACTIONALIZE / T_SLOT_RECONSOLIDATE machinery from
+SPEC-CBTC-ZK-AMOUNT-AMENDMENT becomes activatable as a trustless
+fractional path that doesn't need the TAC bond layer. Reserved at
+opcodes 0x4D / 0x4E for this purpose. The cryptographic spec
+(two-key slot construction, Pedersen sum identity, share commit
+semantics, validator algorithms) is already complete — only the
+Bitcoin-side enforcement is missing.
+
+The three stages coexist when stage 3 activates: cBTC.zk for
+trust-minimization, cBTC.tac for current AMM/DeFi composability,
+trustless-fungible cBTC.zk for the future. Users self-select by
+trust-vs-yield preference. The protocol itself doesn't deprecate
+prior stages — they remain valid alongside newer options.
+
+---
+
 ## What this amendment does NOT specify
 
 Out of scope, deferred to future amendments:
