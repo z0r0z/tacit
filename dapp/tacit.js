@@ -7964,6 +7964,114 @@ async function recoverPreauthCommit(commitTxidHex) {
   return { recovery_txid: recoveryTxidHex, recovered_sats: recoverable, fee_sats: recoveryFee };
 }
 
+// Batched variant: sweep N stranded preauth-take commits into a single
+// Bitcoin tx (N script-path inputs, one P2WPKH output back to the wallet).
+// Each commit P2TR is independent — different envelope, different leaf, but
+// always signed under the same wallet xonly — so this is a straight scaling
+// of the single-commit path with per-input sighash signing. Already-spent or
+// wallet-mismatched records are filtered out (mismatched ones throw so the
+// user notices instead of silently dropping commits owned by another seed).
+// Saves the per-tx overhead + min-fee floor that recovering N commits one-
+// at-a-time would otherwise pay (3× a 1,346-sat commit at 500-sat min fee
+// is the difference between losing 1,500 sats and losing ~500).
+async function recoverPreauthCommitsBatch(commitTxidHexes) {
+  await ensurePrivkey();
+  if (!Array.isArray(commitTxidHexes) || commitTxidHexes.length === 0) {
+    throw new Error('no commits selected for batch recovery');
+  }
+  if (commitTxidHexes.length === 1) {
+    const r = await recoverPreauthCommit(commitTxidHexes[0]);
+    return { ...r, count: 1 };
+  }
+  const pendings = loadPreauthTakePendings();
+  const haveXonly = wallet.xonly();
+  const items = [];
+  const skipped = [];
+  for (const commitTxidHex of commitTxidHexes) {
+    const record = pendings[commitTxidHex];
+    if (!record) throw new Error(`no recovery record for ${commitTxidHex}`);
+    const envelopeScript = hexToBytes(record.envelope_script_hex);
+    const cb = hexToBytes(record.control_block_hex);
+    const commitValue = Number(record.commit_value) || 0;
+    if (commitValue <= 0) throw new Error(`saved commit_value invalid for ${commitTxidHex}`);
+    if (envelopeScript.length < 33 || envelopeScript[0] !== 32) {
+      throw new Error(`saved envelope_script malformed for ${commitTxidHex}`);
+    }
+    const expectedXonly = envelopeScript.slice(1, 33);
+    for (let i = 0; i < 32; i++) {
+      if (expectedXonly[i] !== haveXonly[i]) {
+        throw new Error(`this wallet did not sign commit ${commitTxidHex.slice(0,8)}… — restore the wallet that took the original sale and retry`);
+      }
+    }
+    const sp = await getOutspend(commitTxidHex, 0).catch(() => null);
+    if (sp?.spent) {
+      // GC the stale record and skip; a prior retry already swept it.
+      forgetPreauthTakePending(commitTxidHex);
+      skipped.push(commitTxidHex);
+      continue;
+    }
+    const leaf = tapLeafHash(envelopeScript);
+    const { Q_xonly } = tweakedOutputKey(TAP_NUMS, leaf);
+    const p2trSpk = p2trScript(Q_xonly);
+    items.push({ commitTxidHex, envelopeScript, cb, commitValue, p2trSpk });
+  }
+  if (items.length === 0) {
+    throw new Error('no commits left to recover — every selected record was already spent');
+  }
+  const totalValue = items.reduce((s, it) => s + it.commitValue, 0);
+  // Fee estimate: N taproot script-path inputs + one P2WPKH output. Mirrors
+  // the single-commit math, scaled per input. Each input's witness varies in
+  // size because envelopes differ across sales (different anchor ticker /
+  // amount commitments).
+  let witnessBytes = 0;
+  for (const it of items) {
+    witnessBytes += 64 + (it.envelopeScript.length + 1) + (it.cb.length + 1) + 1;
+  }
+  const baseBytes = 11 + 41 * items.length + 31;
+  const recoveryVbEst = Math.ceil((baseBytes * 4 + witnessBytes) / 4);
+  const feeRate = await getFeeRate();
+  const recoveryFee = feeFor(recoveryVbEst, feeRate);
+  const recoverable = totalValue - recoveryFee;
+  if (recoverable < DUST) {
+    throw new Error(`combined commit_value ${totalValue} too small to cover batch recovery fee at ${feeRate} sat/vB (need ≥ ${recoveryFee + DUST})`);
+  }
+  const recoveryTx = {
+    version: 2, locktime: 0,
+    inputs: items.map(it => ({ txid: it.commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] })),
+    outputs: [{ value: recoverable, script: p2wpkhScript(wallet.pub) }],
+  };
+  const prevouts = items.map(it => ({ value: it.commitValue, script: it.p2trSpk }));
+  for (let i = 0; i < items.length; i++) {
+    recoveryTx.inputs[i].witness = signTaprootScriptPathInputWithSighash(
+      recoveryTx, prevouts, items[i].envelopeScript, items[i].cb, 0x00, i,
+    );
+  }
+  const recoveryHex = bytesToHex(serializeTx(recoveryTx));
+  const recoveryTxidHex = txid(recoveryTx);
+  await broadcast(recoveryHex);
+  for (const it of items) forgetPreauthTakePending(it.commitTxidHex);
+  recordActivity({
+    kind: 'preauth-recover',
+    ticker: 'sats',
+    amount: BigInt(recoverable),
+    decimals: 0,
+    assetId: '',
+    txid: recoveryTxidHex,
+    extra: {
+      fee_sats: recoveryFee,
+      recovered_commit_count: items.length,
+      original_commit_txids: items.map(it => it.commitTxidHex),
+    },
+  });
+  return {
+    recovery_txid: recoveryTxidHex,
+    recovered_sats: recoverable,
+    fee_sats: recoveryFee,
+    count: items.length,
+    skipped_already_spent: skipped,
+  };
+}
+
 // Wait for the chain API to see a freshly-broadcast tx. The worker has its
 // own 7s retry backstop in fetchFreshTxJson, but doing the wait here lets
 // us (a) give the user explicit progress feedback, (b) wait longer than
@@ -10685,9 +10793,9 @@ function signP2wpkhInputWithSighash(tx, idx, prevValue, hashType) {
   return [sigWithType, wallet.pub];
 }
 
-function signTaprootScriptPathInputWithSighash(tx, prevouts, envelopeScript, controlBlockBytes, hashType) {
+function signTaprootScriptPathInputWithSighash(tx, prevouts, envelopeScript, controlBlockBytes, hashType, inputIdx = 0) {
   const leaf = tapLeafHash(envelopeScript);
-  const sh = tapSighash(tx, 0, prevouts, leaf, hashType);
+  const sh = tapSighash(tx, inputIdx, prevouts, leaf, hashType);
   const sigBare = signSchnorr(sh, wallet.priv);
   // BIP-341: when hashType != 0x00 (DEFAULT), the schnorr sig is suffixed with
   // a 1-byte sighash flag. DEFAULT means "treat ALL as bare 64-byte sig."
@@ -37638,10 +37746,21 @@ function _renderPreauthRecoveryBannerHtml() {
         <button data-act="preauth-recover-forget" data-commit-txid="${escapeHtml(p.commitTxidHex)}" type="button" title="Drop the local record without recovering. The commit sats remain locked on chain." style="font-size:10px;padding:5px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Forget</button>
       </div>`;
   }).join('');
+  const totalSats = pendings.reduce((s, p) => s + (Number(p.commit_value) || 0), 0);
+  // Recover-all sweeps every pending commit into ONE Bitcoin tx, which
+  // collapses the per-tx min-fee floor (500 sats × N) into a single fee.
+  // Hide the button when there's only one record — the per-row Recover does
+  // the same thing in that case, and a second button is just noise.
+  const recoverAllBtn = pendings.length >= 2
+    ? `<button data-act="preauth-recover-all" type="button" title="Sweep all ${pendings.length} stranded commits into a single Bitcoin tx — one fee instead of ${pendings.length}." style="font-size:11px;padding:5px 12px;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;font-weight:600;">Recover all (${pendings.length}) → ~${totalSats.toLocaleString()} sats</button>`
+    : '';
   return `
     <div style="border:1px solid var(--orange);background:var(--bg-warm, #fff8e8);padding:10px 12px;margin-bottom:14px;">
-      <div style="font-size:12px;font-weight:bold;margin-bottom:4px;">⚠ ${pendings.length} stranded preauth-take commit${pendings.length === 1 ? '' : 's'}</div>
-      <div class="muted" style="font-size:11px;line-height:1.5;">An instant-listing purchase broadcast its commit tx but the settlement leg never landed. Click Recover to script-path-spend the commit-locked sats back to your wallet (one Bitcoin tx, costs a small fee).</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
+        <div style="font-size:12px;font-weight:bold;flex:1 1 auto;">⚠ ${pendings.length} stranded preauth-take commit${pendings.length === 1 ? '' : 's'}</div>
+        ${recoverAllBtn}
+      </div>
+      <div class="muted" style="font-size:11px;line-height:1.5;">An instant-listing purchase broadcast its commit tx but the settlement leg never landed. Click Recover to script-path-spend the commit-locked sats back to your wallet (one Bitcoin tx, costs a small fee)${pendings.length >= 2 ? '. <strong>Recover all</strong> consolidates every stranded commit into a single tx so you pay one fee instead of ' + pendings.length + '.' : '.'}</div>
       ${rows}
     </div>`;
 }
@@ -37744,6 +37863,37 @@ function _wirePreauthRecoveryButtons(scope) {
       )) return;
       forgetPreauthTakePending(commitTxidHex);
       renderActivity();
+    };
+  });
+  scope.querySelectorAll('button[data-act="preauth-recover-all"]').forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      const pendings = listPreauthTakePendings();
+      if (pendings.length < 2) { renderActivity(); return; }
+      const totalSats = pendings.reduce((s, p) => s + (Number(p.commit_value) || 0), 0);
+      if (!confirm(
+        `Recover all ${pendings.length} stranded commits?\n\n` +
+        `Builds and broadcasts a SINGLE Bitcoin tx that sweeps ~${totalSats.toLocaleString()} sats back to your tacit address (minus one fee). The original sales are NOT settled — if you still want any of those assets, take the listing again separately.`,
+      )) return;
+      btn.disabled = true;
+      const origText = btn.textContent;
+      btn.textContent = 'recovering…';
+      try {
+        const r = await recoverPreauthCommitsBatch(pendings.map(p => p.commitTxidHex));
+        const skippedTail = r.skipped_already_spent?.length
+          ? ` (skipped ${r.skipped_already_spent.length} already-spent)`
+          : '';
+        toast(
+          `Recovered ${r.recovered_sats.toLocaleString()} sats from ${r.count} commits ✓ (fee ${r.fee_sats} sats)${skippedTail}`,
+          'success', 10000,
+        );
+        renderActivity();
+        refreshWallet();
+      } catch (e) {
+        if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
+        else toast('Batch recovery failed: ' + (e?.message || String(e)), 'error', 10000);
+        btn.disabled = false; btn.textContent = origText;
+      }
     };
   });
 }
@@ -56652,6 +56802,7 @@ export {
   // record + assert the banner renders the per-record batch tag.
   recordPreauthTakePending, forgetPreauthTakePending,
   listPreauthTakePendings, _renderPreauthRecoveryBannerHtml,
+  recoverPreauthCommit, recoverPreauthCommitsBatch,
   // §5.7.6 atomic-intent flow exports — used by the signet e2e harness to
   // drive publish → claim → fulfil → take headlessly without the browser UI.
   publishAxferIntent, claimAxferIntent, fulfilAxferIntent,
