@@ -17601,6 +17601,15 @@ async function cancelBidIntent(assetIdHex, bidIdHex) {
   });
   const j = await resp.json().catch(() => ({}));
   if (!resp.ok) throw new Error(j.error || `worker returned ${resp.status}`);
+  // Track local cancels so the buyer-side fill-detector doesn't toast
+  // "your bid filled ✓" for a bid the user just manually cancelled.
+  // 90-second TTL covers worst-case market-refresh lag.
+  try {
+    if (typeof _recentLocalBidCancels !== 'undefined' && _recentLocalBidCancels?.add) {
+      _recentLocalBidCancels.add(bidIdHex);
+      setTimeout(() => _recentLocalBidCancels.delete(bidIdHex), 90_000);
+    }
+  } catch {}
   return j;
 }
 
@@ -40234,6 +40243,46 @@ function _snapshotMyClaims(myPubHex) {
   return out;
 }
 let _myClaimsSnapshot = null;
+
+// Buyer-side bid tracking: snapshot the bid intents I've posted (across
+// every asset whose _bidsCache I've warmed). On the next tick, any of my
+// bids that vanished WITHOUT a local cancel + WITHOUT natural expiry is
+// by elimination a fill — a seller took the bid and the worker dropped
+// the record. Toast + browser Notification so a trader who's been
+// waiting on a passive limit order gets the ping even when the tab is
+// backgrounded. Mirror of _snapshotMyListings on the sell side.
+function _snapshotMyBids(myPubHex) {
+  const out = new Map();
+  if (!myPubHex || typeof _bidsCache === 'undefined' || !_bidsCache) return out;
+  const nowSec = Math.floor(Date.now() / 1000);
+  for (const [aid, entry] of _bidsCache.entries()) {
+    const bids = entry?.value;
+    if (!Array.isArray(bids)) continue;
+    for (const b of bids) {
+      if (b.buyer_pubkey !== myPubHex) continue;
+      if (Number(b.expiry || 0) <= nowSec) continue;
+      if (!b.bid_id) continue;
+      // axintent_id means a seller already claimed and we're mid-fulfilment.
+      // Don't snapshot mid-flight bids as "active" since vanish means
+      // settlement completed, not "fill arrived from nowhere".
+      if (b.axintent_id) continue;
+      const _asset = _marketCache?.assets?.find?.(a => a.asset_id === aid) || null;
+      out.set(b.bid_id, {
+        aid,
+        bidId: b.bid_id,
+        ticker: _asset?.ticker || '?',
+        decimals: Number.isInteger(_asset?.decimals) ? _asset.decimals : 0,
+        amount: (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })(),
+        priceSats: Number(b.price_sats || 0),
+        expiry: Number(b.expiry || 0),
+      });
+    }
+  }
+  return out;
+}
+let _myBidsSnapshot = null;
+const _recentLocalBidCancels = new Set();
+
 // Auto-refresh: re-fetch market data every few seconds while the
 // Markets tab is visible. Hooks into existing fetchMarketDataDeduped
 // so a manual swap completing within the window doesn't trigger a
@@ -40365,6 +40414,18 @@ function _startMarketAutoRefresh() {
           try {
             toast(`Your ${snap.ticker} listing sold ✓ · ${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin (~10 min for first confirmation)`, 'success', 10000);
           } catch {}
+          // Fire a browser Notification too so a trader with the tab
+          // backgrounded gets the fill ping. Same permission-gated
+          // pattern as the OTC-claim notification at line ~21026 —
+          // silently no-op when permission isn't granted.
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            try {
+              new Notification(`tacit · ${snap.ticker} sold`, {
+                body: `${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin`,
+                tag: `tacit-fill-${snap.aid}-${key}`,
+              });
+            } catch {}
+          }
           _pendingAddSettlement({
             tradeId: `sell-${key}-${Date.now()}`,
             kind: 'sell', aid: snap.aid, ticker: snap.ticker,
@@ -40374,6 +40435,44 @@ function _startMarketAutoRefresh() {
         _myListingsSnapshot = afterMine;
       } else if (myPubHex) {
         _myListingsSnapshot = _snapshotMyListings(myPubHex);
+      }
+      // Buyer-side BID-fill notification. Mirror of the seller-side fill
+      // detector. A bid that vanishes without being locally cancelled
+      // and without natural expiry has been filled — a seller took it
+      // and the worker dropped the record. Toast + browser Notification
+      // so a trader waiting on a passive limit order gets the ping even
+      // when the tab is backgrounded. The asset shows up in Holdings on
+      // the next chain scan; this just surfaces the fill event in real
+      // time.
+      const _beforeMyBids = myPubHex ? (_myBidsSnapshot || _snapshotMyBids(myPubHex)) : null;
+      if (myPubHex && _beforeMyBids) {
+        const afterMyBids = _snapshotMyBids(myPubHex);
+        const _nowSecBid = Math.floor(Date.now() / 1000);
+        for (const [bidId, snap] of _beforeMyBids) {
+          if (afterMyBids.has(bidId)) continue;
+          if (snap.expiry > 0 && snap.expiry <= _nowSecBid) continue;
+          if (_recentLocalBidCancels.has(bidId)) continue;
+          const amtStr = fmtAssetAmount(snap.amount, snap.decimals);
+          try {
+            toast(`Your ${snap.ticker} bid filled ✓ · received ${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin (~10 min for first confirmation)`, 'success', 10000);
+          } catch {}
+          if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+            try {
+              new Notification(`tacit · ${snap.ticker} bid filled`, {
+                body: `Received ${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin`,
+                tag: `tacit-bidfill-${snap.aid}-${bidId}`,
+              });
+            } catch {}
+          }
+          _pendingAddSettlement({
+            tradeId: `buy-bid-${bidId}-${Date.now()}`,
+            kind: 'buy', aid: snap.aid, ticker: snap.ticker,
+            decimals: snap.decimals, amountBase: snap.amount, satsTotal: snap.priceSats,
+          });
+        }
+        _myBidsSnapshot = afterMyBids;
+      } else if (myPubHex) {
+        _myBidsSnapshot = _snapshotMyBids(myPubHex);
       }
       // Buyer-side claim-expiry notification. Mirror of the seller-side
       // fill detector above: snapshot my active claims on atomic
@@ -48060,8 +48159,27 @@ async function populateMarketBidsLadder(scope, asset) {
     try { refreshYourOpenOrdersPanel(scope, aid); } catch {}
     return;
   }
-  if (countEl) countEl.textContent = String(intentsAll.length);
-  if (toggleBtn && list) toggleBtn.textContent = list.hidden ? `Show bids${intentsAll.length ? ` (${intentsAll.length})` : ''}` : 'Hide bids';
+  // Header count reflects FILLABLE bids only — matches the depth chart's
+  // bidCount and the spread-stat's highestBid pool. Without this, the
+  // header could read "Bids · 23" while the depth chart says "22 bids"
+  // because one of the 23 is a claimed / expired / closed-var bid that
+  // no seller can actually hit. Filters mirror _populateDepthChart and
+  // (post-fix) _populateBidAskSpread so all three surfaces agree.
+  const _bidsCountNowSec = Math.floor(Date.now() / 1000);
+  const _fillableBidsCount = intentsAll.reduce((n, b) => {
+    if (b.axintent_id) return n;                                   // claimed
+    if (Number(b.expiry || 0) <= _bidsCountNowSec) return n;        // expired
+    const _isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    if (_isVar) {
+      let _rem = 0n, _minFill = 0n;
+      try { _rem = BigInt(b.remaining_amount || b.amount || '0'); } catch {}
+      try { _minFill = BigInt(b.min_fill_amount || '0'); } catch {}
+      if (_rem < _minFill) return n;                                // closed var
+    }
+    return n + 1;
+  }, 0);
+  if (countEl) countEl.textContent = String(_fillableBidsCount);
+  if (toggleBtn && list) toggleBtn.textContent = list.hidden ? `Show bids${_fillableBidsCount ? ` (${_fillableBidsCount})` : ''}` : 'Hide bids';
   // Bids fetch succeeded: re-capture the rendered signature so the
   // next auto-refresh tick's comparison reflects bids-loaded state.
   // Without this the first tick after a render would always see a
@@ -49334,10 +49452,13 @@ function _wireSwapTile(scope) {
     const slip = getSlipRatio();
     const dir = getDirection();
     const cap = dir === 'buy' ? refUnit * (1 + slip) : refUnit * (1 - slip);
-    const verb = dir === 'buy' ? '≤' : '≥';
+    // "won't pay more than X" already conveys the cap semantics; the
+    // earlier `≤` glyph in front of X was decorative math jargon that
+    // half the audience parses as "less than or equal" and the other
+    // half stares at. Plain English carries the same meaning.
     const sideHint = dir === 'buy' ? 'won\'t pay more than' : 'won\'t accept less than';
     readout.style.display = 'block';
-    readout.textContent = `${sideHint} ${verb} ${fmtUnitPriceSats(cap)} sats/${ticker}`;
+    readout.textContent = `${sideHint} ${fmtUnitPriceSats(cap)} sats/${ticker}`;
   };
   _paintLimitReadout();
   // Price-impact % vs the asset's reference unit price. Ethereum traders
@@ -49721,7 +49842,17 @@ function _wireSwapTile(scope) {
       const _residBelowDust = result.residualSats > 0 && result.residualSats < DUST;
       const residHint = result.residualSats > 100
         ? (_residWillBid
-            ? ` · +${fmtAssetAmountCompact(_residBidAmt, decimals)} ${ticker} more stays open @ ${fmtUnitPriceSats(_residCap)} sats/${ticker} (${result.residualSats.toLocaleString()} sats as a partial-fill bid)`
+            // The phrase "as a partial-fill bid" is jargon — most traders
+            // don't immediately picture WHERE that bid lives after the
+            // swap. Hover-only explainer keeps the inline copy compact
+            // while answering the discoverability gap: bid sits in the
+            // Bids panel below this asset, fillable by any seller until
+            // it's manually cancelled or hit. The bid is publishable IFF
+            // residWillBid is true (worker accepts partial fills + auto-
+            // bid toggle is on), so the explainer only appears when the
+            // behavior is actually engaged. `{html}` form bypasses the
+            // default escape (this string contains a trusted tooltip).
+            ? { html: `+${escapeHtml(fmtAssetAmountCompact(_residBidAmt, decimals))} ${escapeHtml(ticker)} more stays open @ ${escapeHtml(fmtUnitPriceSats(_residCap))} sats/${escapeHtml(ticker)} (${result.residualSats.toLocaleString()} sats as a <span title="The leftover sats automatically publish as a partial-fill bid in this asset's Bids panel below. Sellers can hit it any time before you cancel it. You'll see it appear immediately after the swap settles." style="border-bottom:1px dotted var(--ink-mid);cursor:help;">partial-fill bid</span>)` }
             : _residBelowDust
               ? ` · ${result.residualSats.toLocaleString()} sats stay in wallet (below ${DUST}-sat dust floor for an auto-bid)${_nextAskHint || ''}`
               : ` · ${result.residualSats.toLocaleString()} sats unspent${_nextAskHint || ' (budget below next ask)'}`)
@@ -49935,7 +50066,25 @@ function _wireSwapTile(scope) {
     widget.dataset.activeSide = 'to';
     update();
   });
-  if (slipSel) slipSel.addEventListener('change', update);
+  // Per-asset slippage memory: traders often want tight caps on stable-
+  // priced pairs and looser ones on volatile pairs. Persist the user's
+  // last-used Limit value per asset_id in localStorage and restore on
+  // widget init. Falls back to the dropdown's default when no saved
+  // value exists or storage is unavailable.
+  if (slipSel && aid) {
+    try {
+      const _savedSlip = localStorage.getItem(`tacit-swap-slip-v1:${aid}`);
+      if (_savedSlip && [...slipSel.options].some(o => o.value === _savedSlip)) {
+        slipSel.value = _savedSlip;
+      }
+    } catch {}
+    slipSel.addEventListener('change', () => {
+      try { localStorage.setItem(`tacit-swap-slip-v1:${aid}`, slipSel.value); } catch {}
+      update();
+    });
+  } else if (slipSel) {
+    slipSel.addEventListener('change', update);
+  }
   if (flipBtn) flipBtn.onclick = () => {
     widget.dataset.direction = getDirection() === 'buy' ? 'sell' : 'buy';
     // Selling: pay unit is the asset (ticker), not sats/USD — there's no
