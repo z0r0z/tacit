@@ -511,6 +511,23 @@ function slotRegistryKey(network, aid, denom, xonlyHex) {
 function slotRegistryPrefix(network, aid, denom) {
   return network === 'signet' ? `slot:${aid}:${denom}:` : `slot:${network}:${aid}:${denom}:`;
 }
+// Network-wide slot-rotate-event log. One entry per confirmed T_SLOT_ROTATE,
+// keyed by zero-padded (height, txIndex, txid) so KV.list returns canonical
+// chain order. Value is the rotation's display payload including the
+// encrypted-note tail (when present) so recipients can scan for inbound
+// transfers without having to scan every leaf in every variant pool. SPEC-
+// CBTC-ZK-FUNGIBILITY §5.26: this is the index a recipient's dapp queries
+// via the worker's GET /slot-rotates endpoint.
+function slotRotateLogKey(network, height, txIndex, txid) {
+  const h = String(height || 0).padStart(10, '0');
+  const idx = String(txIndex || 0).padStart(6, '0');
+  return network === 'signet'
+    ? `slotrot:${h}:${idx}:${txid}`
+    : `slotrot:${network}:${h}:${idx}:${txid}`;
+}
+function slotRotateLogPrefix(network) {
+  return network === 'signet' ? 'slotrot:' : `slotrot:${network}:`;
+}
 // SPEC §3.6 — fixed merkle-tree depth L = 20, so each pool caps at
 // 2^20 = 1048576 leaves. Without enforcement here, the worker would
 // continue to index leaves past the cap; the dapp's mixerAppendLeaf
@@ -4308,7 +4325,21 @@ function decodeTSlotRotatePayload(payload) {
   const oldProofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
   if (oldProofLen === 0) return null;
-  if (p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64 !== payload.length) return null;
+  // Canonical host-payload length per the SPEC. The encoder MAY append an
+  // optional encrypted-note tail (SPEC-CBTC-ZK-FUNGIBILITY §5.26): one
+  // `has_note` byte (0x00 or 0x01) followed by 122 bytes of AES-GCM
+  // ciphertext if has_note == 1. Decoder accepts all three lengths.
+  const hostEnd = p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64;
+  let encryptedNote = null;
+  if (payload.length === hostEnd) {
+    // Pre-amendment canonical form, no note tail.
+  } else if (payload.length === hostEnd + 1 && payload[hostEnd] === 0x00) {
+    // Explicit has_note=0 trailer.
+  } else if (payload.length === hostEnd + 1 + 122 && payload[hostEnd] === 0x01) {
+    encryptedNote = payload.slice(hostEnd + 1, hostEnd + 1 + 122);
+  } else {
+    return null;
+  }
   const oldProof = payload.slice(p, p + oldProofLen); p += oldProofLen;
   const expectedOldBind = _computeWithdrawBindHash(
     assetIdBytes, denomination, oldNullifierHashBytes, oldRecipientCommitBytes, oldRLeafBytes,
@@ -4344,6 +4375,7 @@ function decodeTSlotRotatePayload(payload) {
     payment_amount: paymentAmount.toString(),
     old_owner_pubkey: bytesToHex(oldOwnerPubkeyBytes),
     old_owner_sig: bytesToHex(oldOwnerSigBytes),
+    encrypted_note: encryptedNote ? bytesToHex(encryptedNote) : null,
     _msg: () => _computeSlotRotateMsg(
       networkTag, assetIdBytes, denomination,
       oldNullifierHashBytes, newRecipientCommitBytes, newLeafHashBytes,
@@ -11397,7 +11429,30 @@ async function scanForEtches(env, network) {
           network,
           kind: 'slot_rotate_new',
           recipient_commitment: sr.new_recipient_commitment,
+          // SPEC-CBTC-ZK-FUNGIBILITY §5.26: persist the encrypted-note tail
+          // alongside the leaf so the /slot-rotates endpoint can return it
+          // to the recipient's on-load scanner.
+          encrypted_note: sr.encrypted_note || null,
         }));
+        // Network-wide slot-rotate event log for recipient-side scanning.
+        // Keyed by (network, height_pad, txindex_pad, txid) so KV.list
+        // returns chronological order. Value is a lean blob — just what
+        // the recipient needs to identify "is this slot mine?".
+        await env.REGISTRY_KV.put(
+          slotRotateLogKey(network, h, txIndex, tx.txid),
+          JSON.stringify({
+            network,
+            asset_id: sr.asset_id,
+            denomination: sr.denomination,
+            new_leaf_hash: sr.new_leaf_hash,
+            new_recipient_commitment: sr.new_recipient_commitment,
+            rotate_txid: tx.txid,
+            height: h,
+            tx_index: txIndex,
+            confirmed_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            encrypted_note: sr.encrypted_note || null,
+          }),
+        );
         await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
         const newXonlyHex = bytesToHex(slotXOnly(newKBtcPoint));
         await env.REGISTRY_KV.put(
@@ -11893,6 +11948,29 @@ export default {
     // no-network call (legacy clients) doesn't accidentally hit mainnet KV.
     // The current dapp explicitly passes ?network=mainnet for mainnet ops.
     const network = parseNetwork(url.searchParams.get('network'));
+
+    // SPEC-CBTC-ZK-FUNGIBILITY §5.26 — slot-rotate log endpoint. Returns
+    // chronologically-ordered T_SLOT_ROTATE events with their encrypted-note
+    // tails. Recipients call this on dapp load, iterate, and attempt to
+    // decrypt each note with their HKDF-derived viewing privkey. Successful
+    // decrypts identify slots addressed to this wallet.
+    if (url.pathname === '/slot-rotates' && req.method === 'GET') {
+      const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
+      try {
+        const list = await env.REGISTRY_KV.list({ prefix: slotRotateLogPrefix(network), limit });
+        const rotates = [];
+        for (const k of list.keys) {
+          const val = await env.REGISTRY_KV.get(k.name, 'json');
+          if (!val) continue;
+          if (Number(val.height || 0) < sinceHeight) continue;
+          rotates.push(val);
+        }
+        return jsonResponse({ rotates }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'slot-rotates list failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
 
     // ============== /chain/* — Esplora read-only proxy ==============
     // The dapp previously called mempool.space / blockstream.info DIRECTLY

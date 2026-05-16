@@ -482,8 +482,19 @@ function buildSlotRotatePayload({
   ok('rejects wrong opcode', decodeTSlotRotatePayload(wrongOp) === null);
 
   ok('rejects truncated payload', decodeTSlotRotatePayload(mk().slice(0, -1)) === null);
-  ok('rejects padded payload',
-    decodeTSlotRotatePayload(concatBytes(mk(), new Uint8Array([0x00]))) === null);
+  // SPEC-CBTC-ZK-FUNGIBILITY §5.26: a single 0x00 trailer is the canonical
+  // "no encrypted note" marker and MUST be accepted (forward-compat with
+  // recipient-detection support). Only invalid trailer shapes should reject.
+  ok('accepts canonical-len + has_note=0 (no note)',
+    decodeTSlotRotatePayload(concatBytes(mk(), new Uint8Array([0x00]))) !== null);
+  ok('rejects malformed trailer: has_note=1 without 122-byte note',
+    decodeTSlotRotatePayload(concatBytes(mk(), new Uint8Array([0x01]))) === null);
+  ok('rejects malformed trailer: has_note byte = 0x02 (unknown)',
+    decodeTSlotRotatePayload(concatBytes(mk(), new Uint8Array([0x02]))) === null);
+  ok('rejects 2-byte trailer of zeros (off-by-one in tail size)',
+    decodeTSlotRotatePayload(concatBytes(mk(), new Uint8Array([0x00, 0x00]))) === null);
+  ok('accepts canonical + has_note=1 + 122-byte note',
+    decodeTSlotRotatePayload(concatBytes(mk(), new Uint8Array([0x01]), new Uint8Array(122))) !== null);
 
   ok('rejects invalid network tag', decodeTSlotRotatePayload(mk({ networkTag: 0xFF })) === null);
 

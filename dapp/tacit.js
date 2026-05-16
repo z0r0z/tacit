@@ -6188,7 +6188,20 @@ function decodeTSlotRotatePayload(payload) {
   const oldProofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
   if (oldProofLen === 0) return null;
-  if (p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64 !== payload.length) return null;
+  // SPEC-CBTC-ZK-FUNGIBILITY §5.26: payload MAY carry an optional encrypted-
+  // note tail: 1-byte `has_note` (0x00 or 0x01) + 122-byte note if 0x01.
+  // Accept all three lengths; reject any other.
+  const hostEnd = p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64;
+  let encryptedNote = null;
+  if (payload.length === hostEnd) {
+    // canonical, no tail
+  } else if (payload.length === hostEnd + 1 && payload[hostEnd] === 0x00) {
+    // explicit has_note=0
+  } else if (payload.length === hostEnd + 1 + 122 && payload[hostEnd] === 0x01) {
+    encryptedNote = payload.slice(hostEnd + 1, hostEnd + 1 + 122);
+  } else {
+    return null;
+  }
   const oldProof = payload.slice(p, p + oldProofLen); p += oldProofLen;
   const expectedOldBind = computeWithdrawBindHash(assetId, denomination, oldNullifierHash, oldRecipientCommitment, oldRLeaf);
   for (let i = 0; i < 32; i++) if (expectedOldBind[i] !== oldBindHash[i]) return null;
@@ -6209,6 +6222,7 @@ function decodeTSlotRotatePayload(payload) {
     newRecipientCommit, newLeafHash,
     paymentAssetId, paymentAmount,
     oldOwnerPubkey, oldOwnerSig,
+    encryptedNote,
   };
 }
 
@@ -17445,11 +17459,11 @@ async function fulfilBidIntentBatch({ bids, onProgress = null }) {
 
   // Wallet backup + sat funding confirmation — same gates the per-bid
   // path uses (line ~15531).
-  if (!await ensureBurnerBackedUp(`Auto-split UTXO before fulfilling ${N} bids in one CXFER`)) {
+  if (!await ensureBurnerBackedUp(`Prepare ${N} lots before fulfilling bids (one CXFER from your active wallet)`)) {
     throw new Error('cancelled');
   }
   const need = await estimateSatsForOp('cxfer');
-  if (!(await ensureSatsFunded(need, `Batched auto-split before fulfilling ${N} bids`))) {
+  if (!(await ensureSatsFunded(need, `Prepare ${N} lots before fulfilling bids`))) {
     throw new Error('cancelled');
   }
 
@@ -21838,8 +21852,8 @@ function setupMixerHandlers() {
         if (!_hasExact) {
           willAutosplit = true;
           autosplitWarning = `\n\nℹ You have no UTXO of exactly ${denomDisp} ${ticker}. ` +
-            `The dapp will auto-split a larger UTXO via one extra CXFER (a self-transfer ` +
-            `down to the exact denom) before broadcasting the deposit. This adds ~one ` +
+            `The dapp will prepare one via a self-CXFER (split a larger lot OR combine smaller ` +
+            `lots into one exact-denom output) before broadcasting the deposit. This adds ~one ` +
             `extra commit+reveal pair of BTC fees and one extra confirmation prompt.`;
         }
       } catch {}
@@ -35694,9 +35708,11 @@ async function renderHoldings() {
           }
         } else if (b.dataset.act === 'list-atomic') {
           // Atomic offer = SPEC §5.7 T_AXFER. Sells a SINGLE UTXO whole (N=1).
-          // To sell a partial amount, the maker pre-splits via Send Privately
-          // first, then offers the resulting fixed-amount UTXO. Reuses the
-          // marketplace [data-list-form] slot — same toggle-close pattern as
+          // For partial amounts the trader uses the "Amount to sell" field at
+          // the top of the form, which routes through carveExactAmount to
+          // auto-prepare the exact-size lot from holdings (consolidate +/-
+          // split) before publishing. Reuses the marketplace [data-list-form]
+          // slot — same toggle-close pattern as
           // list-sale below.
           const aid = b.dataset.aid;
           const target = holdings.get(aid);
@@ -35710,8 +35726,8 @@ async function renderHoldings() {
           }
           // Sort smallest-first so the default matches the most-common case
           // "send a small portion atomically to a specific recipient". The
-          // dropdown still shows every UTXO; users wanting to send a larger
-          // one scroll down or pre-split via Send Privately.
+          // dropdown still shows every UTXO; the "Amount to sell" field at
+          // the top of the form is the recommended path — carves any amount.
           const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
           const utxoOpts = sortedUtxos.map((u, idx) =>
             `<option value="${idx}">${escapeHtml(utxoPickerOptionLabel(u, target))}</option>`,
@@ -35972,8 +35988,8 @@ async function renderHoldings() {
           }
           // Sort smallest-first so the default matches the common "test the
           // market with a small portion" case. Every UTXO appears in the
-          // dropdown; users wanting to list a larger one scroll, or split
-          // bigger UTXOs via Send Privately first.
+          // dropdown; the "Amount to sell" field at the top of the form is
+          // the recommended path — carves any amount via auto-consolidate.
           const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
           const utxoOpts = sortedUtxos.map((u, idx) =>
             `<option value="${idx}">${escapeHtml(utxoPickerOptionLabel(u, target))}</option>`,
@@ -39374,7 +39390,7 @@ function openDiscoverBidForm(card, assetIdHex, ticker, decimals) {
   host.innerHTML = `
     <div style="border:1px solid var(--ink-mid);padding:8px;background:var(--bg);">
       <div style="font-size:11px;font-weight:bold;margin-bottom:6px;">Place a bid on ${tickerSafe}</div>
-      <div class="muted" style="font-size:10px;margin-bottom:8px;">Off-chain bid book (SPEC §5.7.7). When a holder claims your bid, they spin up an atomic intent targeted at your wallet — settlement is a single Bitcoin tx, no protocol fee.</div>
+      <div class="muted" style="font-size:10px;margin-bottom:8px;">Off-chain bid book (SPEC §5.7.7). When a holder claims your bid, they spin up an atomic intent targeted at your wallet — settlement is a single Bitcoin tx, zero fee.</div>
       <div class="flex" style="gap:6px;flex-wrap:wrap;">
         <label style="font-size:10px;flex:1;min-width:120px;">Amount (${tickerSafe})
           <input data-bid-field="amount" type="text" inputmode="decimal" placeholder="0.0" style="width:100%;font-family:var(--mono);">
@@ -45228,27 +45244,77 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // Smooth the line via Catmull-Rom-to-Bézier — looks natural for sparse
   // trade data (avoids the jagged sawtooth a polyline gives over uneven
   // timestamps). Degenerates to straight segments when there are <3 points.
+  // Fritsch-Carlson monotone cubic interpolation. The earlier Catmull-Rom
+  // implementation (tension=0.5) provably OVERSHOOTS the data: on any
+  // local maximum/minimum sequence the cubic Bézier control points push
+  // the curve above (or below) the highest (lowest) actual trade — the
+  // rendered line ends up showing a price that was never traded, which
+  // on a price chart is genuinely misleading. Monotone cubic is the
+  // standard fix: it computes per-point tangents (secant-based for
+  // interior points; one-sided at endpoints) and then RESCALES tangents
+  // wherever a sign flip would create an overshoot (Fritsch-Carlson
+  // step 3). Result: the interpolated curve is guaranteed to lie within
+  // [min(p_i.y, p_{i+1}.y), max(p_i.y, p_{i+1}.y)] for every segment,
+  // i.e. it never claims a price higher or lower than the two endpoints
+  // of any segment. Properties tested in tests/dapp-chart-monotone.test.mjs.
   const _smoothPath = (pts) => {
     if (pts.length < 2) return '';
-    if (pts.length === 2) {
-      return `M ${xOf(pts[0].ts).toFixed(2)} ${yOf(pts[0].u).toFixed(2)} L ${xOf(pts[1].ts).toFixed(2)} ${yOf(pts[1].u).toFixed(2)}`;
+    const n = pts.length;
+    const sx = new Array(n); const sy = new Array(n);
+    for (let i = 0; i < n; i++) { sx[i] = xOf(pts[i].ts); sy[i] = yOf(pts[i].u); }
+    if (n === 2) {
+      return `M ${sx[0].toFixed(2)} ${sy[0].toFixed(2)} L ${sx[1].toFixed(2)} ${sy[1].toFixed(2)}`;
     }
-    let d = `M ${xOf(pts[0].ts).toFixed(2)} ${yOf(pts[0].u).toFixed(2)}`;
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[i - 1] || pts[i];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[i + 2] || p2;
-      // Catmull-Rom tangents → Bézier control points. Tension=0.5 gives a
-      // natural-looking ease; higher values curl more, lower goes linear.
-      const t = 0.5;
-      const c1x = xOf(p1.ts) + (xOf(p2.ts) - xOf(p0.ts)) / 6 * t;
-      const c1y = yOf(p1.u) + (yOf(p2.u) - yOf(p0.u)) / 6 * t;
-      const c2x = xOf(p2.ts) - (xOf(p3.ts) - xOf(p1.ts)) / 6 * t;
-      const c2y = yOf(p2.u) - (yOf(p3.u) - yOf(p1.u)) / 6 * t;
-      d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${xOf(p2.ts).toFixed(2)} ${yOf(p2.u).toFixed(2)}`;
+    // Secant slopes between adjacent points (length n-1).
+    const dx = new Array(n - 1); const dy = new Array(n - 1); const m  = new Array(n - 1);
+    for (let i = 0; i < n - 1; i++) {
+      dx[i] = sx[i + 1] - sx[i];
+      dy[i] = sy[i + 1] - sy[i];
+      m[i]  = dx[i] !== 0 ? dy[i] / dx[i] : 0;
     }
-    return d;
+    // Per-point tangents. Endpoints use one-sided secant; interior points
+    // use the weighted-harmonic mean of adjacent secants when same-sign,
+    // zero on a sign flip (which would otherwise produce an overshoot at
+    // the extremum). This is the Fritsch-Carlson construction.
+    const t = new Array(n);
+    t[0]     = m[0];
+    t[n - 1] = m[n - 2];
+    for (let i = 1; i < n - 1; i++) {
+      if (m[i - 1] * m[i] <= 0) {
+        t[i] = 0;
+      } else {
+        const w1 = 2 * dx[i] + dx[i - 1];
+        const w2 = dx[i] + 2 * dx[i - 1];
+        t[i] = (w1 + w2) / (w1 / m[i - 1] + w2 / m[i]);
+      }
+    }
+    // Final overshoot-prevention pass. For any interior segment whose
+    // adjacent secants flank a transition (|t|^2 > 9·m^2), rescale both
+    // tangents to land inside the safe region. Skipped where m[i]==0
+    // because t[i] and t[i+1] were already zeroed by the sign-flip rule.
+    for (let i = 0; i < n - 1; i++) {
+      if (m[i] === 0) { t[i] = 0; t[i + 1] = 0; continue; }
+      const a = t[i]     / m[i];
+      const b = t[i + 1] / m[i];
+      const h = a * a + b * b;
+      if (h > 9) {
+        const r = 3 / Math.sqrt(h);
+        t[i]     = r * a * m[i];
+        t[i + 1] = r * b * m[i];
+      }
+    }
+    // Bézier control points derived from the tangents: c1 = p_i + t_i·dx/3,
+    // c2 = p_{i+1} - t_{i+1}·dx/3 (standard Hermite-to-Bézier conversion).
+    const parts = [`M ${sx[0].toFixed(2)} ${sy[0].toFixed(2)}`];
+    for (let i = 0; i < n - 1; i++) {
+      const h = dx[i] / 3;
+      const c1x = sx[i]     + h;
+      const c1y = sy[i]     + t[i]     * h;
+      const c2x = sx[i + 1] - h;
+      const c2y = sy[i + 1] - t[i + 1] * h;
+      parts.push(`C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${sx[i + 1].toFixed(2)} ${sy[i + 1].toFixed(2)}`);
+    }
+    return parts.join(' ');
   };
   const linePath = _smoothPath(points);
   const areaPath = linePath
