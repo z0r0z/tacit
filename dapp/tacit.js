@@ -4752,7 +4752,11 @@ const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (S
 const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
 // 0x46/0x47 reserved for SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT (T_SLOT_SPLIT/T_SLOT_MERGE).
 // 0x48 reserved for T_SLOT_NOTE.
-// 0x49–0x4C reserved for SPEC-CBTC-TAC-AMENDMENT (cBTC.tac deposit/withdraw/force-close/slash-claim).
+// 0x49–0x4C: SPEC-CBTC-TAC-AMENDMENT (cBTC.tac LP-shaped wrapped BTC).
+const T_CBTC_TAC_DEPOSIT     = 0x49; // LP-shaped mint: cBTC.zk slot + TAC → cBTC.tac (SPEC §5.36)
+const T_CBTC_TAC_WITHDRAW    = 0x4A; // LP-shaped burn: cBTC.tac → cBTC.zk slot + TAC (SPEC §5.37)
+const T_CBTC_TAC_FORCE_CLOSE = 0x4B; // permissionless liquidation when ratio < LIQ_RATIO (SPEC §5.38)
+const T_SHARE_SLASH_CLAIM    = 0x4C; // optional pooled-insurance claim by cBTC.tac holder (SPEC §5.39.4)
 // 0x4D–0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
 // machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
 // not shipped on mainnet).
@@ -6475,6 +6479,431 @@ async function buildSlotRotateEnvelope({
 // (cBTC.tac per SPEC-CBTC-TAC-AMENDMENT) is implemented as T_CBTC_TAC_DEPOSIT
 // / T_CBTC_TAC_WITHDRAW envelopes, which reuse the underlying Pedersen sum
 // identity + two-key construction documented in SPEC-CBTC-ZK-AMOUNT-AMENDMENT.
+
+// ============== cBTC.tac WIRE PRIMITIVES (SPEC-CBTC-TAC-AMENDMENT) ==============
+// Encoders / decoders only. Builder functions (buildAndBroadcast*) + worker
+// cron handlers + insurance-pool indexer state + dapp UI are separate
+// engineering tracks (each requires its own focused session — they touch
+// real BTC tx assembly, system-state machinery, and UX surfaces).
+
+const CBTC_TAC_DEPOSIT_DOMAIN     = new TextEncoder().encode('tacit-cbtc-tac-deposit-v1');
+const CBTC_TAC_WITHDRAW_DOMAIN    = new TextEncoder().encode('tacit-cbtc-tac-withdraw-v1');
+const CBTC_TAC_FORCE_CLOSE_DOMAIN = new TextEncoder().encode('tacit-cbtc-tac-force-close-v1');
+const SHARE_SLASH_CLAIM_DOMAIN    = new TextEncoder().encode('tacit-share-slash-claim-v1');
+
+// SPEC §5.36.3 bind_hash.
+function computeCbtcTacDepositBindHash({
+  networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
+  bondSourceOutpoint, bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit,
+}) {
+  const denomLE = new Uint8Array(8);
+  { const v = new DataView(denomLE.buffer); const d = BigInt(slotDenomSats);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const bondLE = new Uint8Array(8);
+  { const v = new DataView(bondLE.buffer); const b = BigInt(bondAmountTAC);
+    v.setUint32(0, Number(b & 0xffffffffn), true); v.setUint32(4, Number((b >> 32n) & 0xffffffffn), true); }
+  const mintLE = new Uint8Array(8);
+  { const v = new DataView(mintLE.buffer); const m = BigInt(mintAmount);
+    v.setUint32(0, Number(m & 0xffffffffn), true); v.setUint32(4, Number((m >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    CBTC_TAC_DEPOSIT_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    targetLeafHash, denomLE, bondLE, bondSourceOutpoint, bondCommit,
+    depositorRecoveryPk, mintLE, mintRecipientCommit,
+  ));
+}
+
+// SPEC §5.36.1 wire format. Variable-length only at the trailing proof.
+function encodeTCbtcTacDepositPayload({
+  networkTag, targetLeafHash, slotDenomSats, bondAmountTAC, bondSourceOutpoint,
+  bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit, bindHash, proof,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (bondSourceOutpoint.length !== 36) throw new Error('bond_source_outpoint 36 bytes (32 txid + 4 vout)');
+  if (bondCommit.length !== 33) throw new Error('bond_commit 33 bytes');
+  if (depositorRecoveryPk.length !== 33) throw new Error('depositor_recovery_pk 33 bytes');
+  if (mintRecipientCommit.length !== 33) throw new Error('mint_recipient_commit 33 bytes');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  if (!(proof instanceof Uint8Array) || proof.length === 0 || proof.length > 0xffff) {
+    throw new Error('proof len 1..65535');
+  }
+  const denom = BigInt(slotDenomSats);
+  if (denom <= 0n || denom >= (1n << BigInt(N_BITS))) throw new Error('slot_denom_sats out of range');
+  const bond = BigInt(bondAmountTAC);
+  if (bond <= 0n || bond >= (1n << BigInt(N_BITS))) throw new Error('bond_amount_TAC out of range');
+  const mint = BigInt(mintAmount);
+  if (mint <= 0n || mint >= (1n << BigInt(N_BITS))) throw new Error('mint_amount out of range');
+  const denomLE = new Uint8Array(8);
+  { const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(denom & 0xffffffffn), true); v.setUint32(4, Number((denom >> 32n) & 0xffffffffn), true); }
+  const bondLE = new Uint8Array(8);
+  { const v = new DataView(bondLE.buffer);
+    v.setUint32(0, Number(bond & 0xffffffffn), true); v.setUint32(4, Number((bond >> 32n) & 0xffffffffn), true); }
+  const mintLE = new Uint8Array(8);
+  { const v = new DataView(mintLE.buffer);
+    v.setUint32(0, Number(mint & 0xffffffffn), true); v.setUint32(4, Number((mint >> 32n) & 0xffffffffn), true); }
+  const proofLen = new Uint8Array(2);
+  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
+  return concatBytes(
+    new Uint8Array([T_CBTC_TAC_DEPOSIT, networkTag & 0xff]),
+    targetLeafHash, denomLE, bondLE, bondSourceOutpoint, bondCommit,
+    depositorRecoveryPk, mintLE, mintRecipientCommit, bindHash, proofLen, proof,
+  );
+}
+
+function decodeTCbtcTacDepositPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_DEPOSIT) return null;
+  // Fixed header: opcode(1) + net(1) + leaf(32) + denomLE(8) + bondLE(8) +
+  // outpoint(36) + commit(33) + recv_pk(33) + mintLE(8) + recv_commit(33) +
+  // bind(32) + proofLen(2) = 227 bytes
+  const HEADER = 1 + 1 + 32 + 8 + 8 + 36 + 33 + 33 + 8 + 33 + 32 + 2;
+  if (payload.length < HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const slotDenomSats = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (slotDenomSats <= 0n || slotDenomSats >= (1n << BigInt(N_BITS))) return null;
+  const bondView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const bondAmountTAC = (BigInt(bondView.getUint32(4, true)) << 32n) | BigInt(bondView.getUint32(0, true));
+  p += 8;
+  if (bondAmountTAC <= 0n || bondAmountTAC >= (1n << BigInt(N_BITS))) return null;
+  const bondSourceOutpoint = payload.slice(p, p + 36); p += 36;
+  const bondCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(bondCommit); } catch { return null; }
+  const depositorRecoveryPk = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(depositorRecoveryPk); } catch { return null; }
+  const mintView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const mintAmount = (BigInt(mintView.getUint32(4, true)) << 32n) | BigInt(mintView.getUint32(0, true));
+  p += 8;
+  if (mintAmount <= 0n || mintAmount >= (1n << BigInt(N_BITS))) return null;
+  // SPEC §5.36.2: mint_amount MUST equal slot_denom_sats. Enforce at decode.
+  if (mintAmount !== slotDenomSats) return null;
+  const mintRecipientCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(mintRecipientCommit); } catch { return null; }
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  // Recompute bind_hash; reject mismatch (cross-impl indexer-determinism).
+  const expectedBind = computeCbtcTacDepositBindHash({
+    networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
+    bondSourceOutpoint, bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'cbtc_tac_deposit',
+    networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
+    bondSourceOutpoint, bondCommit, depositorRecoveryPk,
+    mintAmount, mintRecipientCommit, bindHash, proof,
+  };
+}
+
+// SPEC §5.37.3 bind_hash.
+function computeCbtcTacWithdrawBindHash({
+  networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
+  burnAmount, insuranceClaimTAC,
+}) {
+  const burnAmtLE = new Uint8Array(8);
+  { const v = new DataView(burnAmtLE.buffer); const b = BigInt(burnAmount);
+    v.setUint32(0, Number(b & 0xffffffffn), true); v.setUint32(4, Number((b >> 32n) & 0xffffffffn), true); }
+  const claimLE = new Uint8Array(8);
+  { const v = new DataView(claimLE.buffer); const c = BigInt(insuranceClaimTAC);
+    v.setUint32(0, Number(c & 0xffffffffn), true); v.setUint32(4, Number((c >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    CBTC_TAC_WITHDRAW_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    targetLeafHash, new Uint8Array([burnCount & 0xff]),
+    ...burnNullifiers, ...burnCommits, burnAmtLE, claimLE,
+  ));
+}
+
+// SPEC §5.37.1 wire format. M cBTC.tac UTXOs are burned; M ∈ [1, 16].
+function encodeTCbtcTacWithdrawPayload({
+  networkTag, targetLeafHash, burnNullifiers, burnCommits,
+  burnAmount, insuranceClaimTAC, burnBalanceProof, bindHash, proof,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (!Array.isArray(burnNullifiers) || burnNullifiers.length < 1 || burnNullifiers.length > 16) {
+    throw new Error('burn_nullifiers must be 1..16');
+  }
+  if (!Array.isArray(burnCommits) || burnCommits.length !== burnNullifiers.length) {
+    throw new Error('burn_commits count must match burn_nullifiers');
+  }
+  for (const n of burnNullifiers) if (!(n instanceof Uint8Array) || n.length !== 32) throw new Error('each burn_nullifier 32 bytes');
+  for (const c of burnCommits) if (!(c instanceof Uint8Array) || c.length !== 33) throw new Error('each burn_commit 33 bytes');
+  if (!(burnBalanceProof instanceof Uint8Array) || burnBalanceProof.length === 0 || burnBalanceProof.length > 0xffff) {
+    throw new Error('burn_balance_proof len 1..65535');
+  }
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  if (!(proof instanceof Uint8Array) || proof.length === 0 || proof.length > 0xffff) {
+    throw new Error('proof len 1..65535');
+  }
+  const burnAmt = BigInt(burnAmount);
+  if (burnAmt <= 0n || burnAmt >= (1n << BigInt(N_BITS))) throw new Error('burn_amount out of range');
+  const claim = BigInt(insuranceClaimTAC);
+  if (claim < 0n || claim >= (1n << BigInt(N_BITS))) throw new Error('insurance_claim_TAC out of range');
+  const burnAmtLE = new Uint8Array(8);
+  { const v = new DataView(burnAmtLE.buffer);
+    v.setUint32(0, Number(burnAmt & 0xffffffffn), true); v.setUint32(4, Number((burnAmt >> 32n) & 0xffffffffn), true); }
+  const claimLE = new Uint8Array(8);
+  { const v = new DataView(claimLE.buffer);
+    v.setUint32(0, Number(claim & 0xffffffffn), true); v.setUint32(4, Number((claim >> 32n) & 0xffffffffn), true); }
+  const bpLen = new Uint8Array(2);
+  new DataView(bpLen.buffer).setUint16(0, burnBalanceProof.length, true);
+  const proofLen = new Uint8Array(2);
+  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
+  return concatBytes(
+    new Uint8Array([T_CBTC_TAC_WITHDRAW, networkTag & 0xff]),
+    targetLeafHash,
+    new Uint8Array([burnNullifiers.length & 0xff]),
+    ...burnNullifiers, ...burnCommits,
+    burnAmtLE, bpLen, burnBalanceProof, claimLE,
+    bindHash, proofLen, proof,
+  );
+}
+
+function decodeTCbtcTacWithdrawPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_WITHDRAW) return null;
+  // Fixed prefix: opcode(1) + net(1) + leaf(32) + count(1) = 35
+  if (payload.length < 35) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const burnCount = payload[p]; p += 1;
+  if (burnCount < 1 || burnCount > 16) return null;
+  // After count: M*32 nullifiers + M*33 commits + 8 burnAmt + 2 bpLen + bpVar
+  //              + 8 claim + 32 bind + 2 proofLen + proofVar
+  const fixedAfterArrays = 8 + 2 + 8 + 32 + 2;
+  if (payload.length < p + burnCount * 32 + burnCount * 33 + fixedAfterArrays) return null;
+  const burnNullifiers = [];
+  for (let i = 0; i < burnCount; i++) {
+    burnNullifiers.push(payload.slice(p, p + 32));
+    p += 32;
+  }
+  const burnCommits = [];
+  for (let i = 0; i < burnCount; i++) {
+    const c = payload.slice(p, p + 33);
+    try { bytesToPoint(c); } catch { return null; }
+    burnCommits.push(c);
+    p += 33;
+  }
+  const burnAmtView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const burnAmount = (BigInt(burnAmtView.getUint32(4, true)) << 32n) | BigInt(burnAmtView.getUint32(0, true));
+  p += 8;
+  if (burnAmount <= 0n || burnAmount >= (1n << BigInt(N_BITS))) return null;
+  const bpLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (bpLen === 0) return null;
+  if (payload.length < p + bpLen + 8 + 32 + 2) return null;
+  const burnBalanceProof = payload.slice(p, p + bpLen); p += bpLen;
+  const claimView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const insuranceClaimTAC = (BigInt(claimView.getUint32(4, true)) << 32n) | BigInt(claimView.getUint32(0, true));
+  p += 8;
+  if (insuranceClaimTAC >= (1n << BigInt(N_BITS))) return null;
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expectedBind = computeCbtcTacWithdrawBindHash({
+    networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
+    burnAmount, insuranceClaimTAC,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'cbtc_tac_withdraw',
+    networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
+    burnAmount, insuranceClaimTAC, burnBalanceProof, bindHash, proof,
+  };
+}
+
+// SPEC §5.38.2 — fixed 107-byte payload, no proof (permissionless,
+// signature-free liquidation triggered by any keeper; validator computes
+// current_ratio from chain state independently).
+function computeCbtcTacForceCloseBindHash({
+  networkTag, targetLeafHash, liquidatorPayoutPk, ammSwapMinBtcOut,
+}) {
+  const minOutLE = new Uint8Array(8);
+  { const v = new DataView(minOutLE.buffer); const m = BigInt(ammSwapMinBtcOut);
+    v.setUint32(0, Number(m & 0xffffffffn), true); v.setUint32(4, Number((m >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    CBTC_TAC_FORCE_CLOSE_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    targetLeafHash, liquidatorPayoutPk, minOutLE,
+  ));
+}
+
+function encodeTCbtcTacForceClosePayload({
+  networkTag, targetLeafHash, liquidatorPayoutPk, ammSwapMinBtcOut, bindHash,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (liquidatorPayoutPk.length !== 33) throw new Error('liquidator_payout_pk 33 bytes');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  const minOut = BigInt(ammSwapMinBtcOut);
+  if (minOut < 0n || minOut >= (1n << BigInt(N_BITS))) throw new Error('amm_swap_min_BTC_out out of range');
+  const minOutLE = new Uint8Array(8);
+  { const v = new DataView(minOutLE.buffer);
+    v.setUint32(0, Number(minOut & 0xffffffffn), true); v.setUint32(4, Number((minOut >> 32n) & 0xffffffffn), true); }
+  return concatBytes(
+    new Uint8Array([T_CBTC_TAC_FORCE_CLOSE, networkTag & 0xff]),
+    targetLeafHash, liquidatorPayoutPk, minOutLE, bindHash,
+  );
+}
+
+function decodeTCbtcTacForceClosePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_FORCE_CLOSE) return null;
+  // 1 opcode + 1 net + 32 leaf + 33 liquidator_pk + 8 minOut + 32 bind = 107 bytes
+  if (payload.length !== 107) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const liquidatorPayoutPk = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(liquidatorPayoutPk); } catch { return null; }
+  const minOutView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const ammSwapMinBtcOut = (BigInt(minOutView.getUint32(4, true)) << 32n) | BigInt(minOutView.getUint32(0, true));
+  p += 8;
+  if (ammSwapMinBtcOut >= (1n << BigInt(N_BITS))) return null;
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const expectedBind = computeCbtcTacForceCloseBindHash({
+    networkTag, targetLeafHash, liquidatorPayoutPk, ammSwapMinBtcOut,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'cbtc_tac_force_close',
+    networkTag, targetLeafHash, liquidatorPayoutPk, ammSwapMinBtcOut, bindHash,
+  };
+}
+
+// SPEC §5.39.4 — standalone insurance-pool claim (separate from withdraw).
+function computeShareSlashClaimBindHash({
+  networkTag, shareCount, shareNullifiers, shareCommits,
+  shareBurnAmount, claimTAC, recipientCommit,
+}) {
+  const burnLE = new Uint8Array(8);
+  { const v = new DataView(burnLE.buffer); const b = BigInt(shareBurnAmount);
+    v.setUint32(0, Number(b & 0xffffffffn), true); v.setUint32(4, Number((b >> 32n) & 0xffffffffn), true); }
+  const claimLE = new Uint8Array(8);
+  { const v = new DataView(claimLE.buffer); const c = BigInt(claimTAC);
+    v.setUint32(0, Number(c & 0xffffffffn), true); v.setUint32(4, Number((c >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    SHARE_SLASH_CLAIM_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    new Uint8Array([shareCount & 0xff]),
+    ...shareNullifiers, ...shareCommits, burnLE, claimLE, recipientCommit,
+  ));
+}
+
+function encodeTShareSlashClaimPayload({
+  networkTag, shareNullifiers, shareCommits, shareBurnAmount,
+  shareBalanceProof, claimTAC, recipientCommit, bindHash, proof,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (!Array.isArray(shareNullifiers) || shareNullifiers.length < 1 || shareNullifiers.length > 16) {
+    throw new Error('share_nullifiers must be 1..16');
+  }
+  if (!Array.isArray(shareCommits) || shareCommits.length !== shareNullifiers.length) {
+    throw new Error('share_commits count must match share_nullifiers');
+  }
+  for (const n of shareNullifiers) if (!(n instanceof Uint8Array) || n.length !== 32) throw new Error('each share_nullifier 32 bytes');
+  for (const c of shareCommits) if (!(c instanceof Uint8Array) || c.length !== 33) throw new Error('each share_commit 33 bytes');
+  if (!(shareBalanceProof instanceof Uint8Array) || shareBalanceProof.length === 0 || shareBalanceProof.length > 0xffff) {
+    throw new Error('share_balance_proof len 1..65535');
+  }
+  if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  if (!(proof instanceof Uint8Array) || proof.length === 0 || proof.length > 0xffff) {
+    throw new Error('proof len 1..65535');
+  }
+  const burn = BigInt(shareBurnAmount);
+  if (burn <= 0n || burn >= (1n << BigInt(N_BITS))) throw new Error('share_burn_amount out of range');
+  const claim = BigInt(claimTAC);
+  if (claim <= 0n || claim >= (1n << BigInt(N_BITS))) throw new Error('claim_TAC out of range');
+  const burnLE = new Uint8Array(8);
+  { const v = new DataView(burnLE.buffer);
+    v.setUint32(0, Number(burn & 0xffffffffn), true); v.setUint32(4, Number((burn >> 32n) & 0xffffffffn), true); }
+  const claimLE = new Uint8Array(8);
+  { const v = new DataView(claimLE.buffer);
+    v.setUint32(0, Number(claim & 0xffffffffn), true); v.setUint32(4, Number((claim >> 32n) & 0xffffffffn), true); }
+  const bpLen = new Uint8Array(2);
+  new DataView(bpLen.buffer).setUint16(0, shareBalanceProof.length, true);
+  const proofLen = new Uint8Array(2);
+  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
+  return concatBytes(
+    new Uint8Array([T_SHARE_SLASH_CLAIM, networkTag & 0xff]),
+    new Uint8Array([shareNullifiers.length & 0xff]),
+    ...shareNullifiers, ...shareCommits,
+    burnLE, bpLen, shareBalanceProof, claimLE,
+    recipientCommit, bindHash, proofLen, proof,
+  );
+}
+
+function decodeTShareSlashClaimPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SHARE_SLASH_CLAIM) return null;
+  // opcode(1) + net(1) + count(1) = 3 fixed prefix
+  if (payload.length < 3) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const shareCount = payload[p]; p += 1;
+  if (shareCount < 1 || shareCount > 16) return null;
+  // After count: M*32 nulls + M*33 commits + 8 burn + 2 bpLen + bpVar
+  //              + 8 claim + 33 recipientCommit + 32 bind + 2 proofLen + proofVar
+  if (payload.length < p + shareCount * 32 + shareCount * 33 + 8 + 2 + 8 + 33 + 32 + 2) return null;
+  const shareNullifiers = [];
+  for (let i = 0; i < shareCount; i++) {
+    shareNullifiers.push(payload.slice(p, p + 32));
+    p += 32;
+  }
+  const shareCommits = [];
+  for (let i = 0; i < shareCount; i++) {
+    const c = payload.slice(p, p + 33);
+    try { bytesToPoint(c); } catch { return null; }
+    shareCommits.push(c);
+    p += 33;
+  }
+  const burnView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const shareBurnAmount = (BigInt(burnView.getUint32(4, true)) << 32n) | BigInt(burnView.getUint32(0, true));
+  p += 8;
+  if (shareBurnAmount <= 0n || shareBurnAmount >= (1n << BigInt(N_BITS))) return null;
+  const bpLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (bpLen === 0) return null;
+  if (payload.length < p + bpLen + 8 + 33 + 32 + 2) return null;
+  const shareBalanceProof = payload.slice(p, p + bpLen); p += bpLen;
+  const claimView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const claimTAC = (BigInt(claimView.getUint32(4, true)) << 32n) | BigInt(claimView.getUint32(0, true));
+  p += 8;
+  if (claimTAC <= 0n || claimTAC >= (1n << BigInt(N_BITS))) return null;
+  const recipientCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(recipientCommit); } catch { return null; }
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expectedBind = computeShareSlashClaimBindHash({
+    networkTag, shareCount, shareNullifiers, shareCommits,
+    shareBurnAmount, claimTAC, recipientCommit,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
+  return {
+    kind: 'share_slash_claim',
+    networkTag, shareCount, shareNullifiers, shareCommits,
+    shareBurnAmount, shareBalanceProof, claimTAC, recipientCommit, bindHash, proof,
+  };
+}
 
 // Kernel message for T_DEPOSIT (SPEC §5.10). Domain-separated by 'tacit-deposit-v1'
 // to make cross-opcode replay against, say, a CXFER kernel sig structurally
@@ -41850,6 +42279,12 @@ async function renderMarket() {
     const seedAsset = cachedStats || cachedAssetIdx || { asset_id: aid, ticker: '?', decimals: 0 };
     const tickerText = escapeHtml(seedAsset.ticker || '?');
     const aidShort = escapeHtml(aid.slice(0, 8));
+    // Match the post-load layout shape: header → swap tile → rich stats
+    // grid → tabs (asks ladder). Without these blocks the page looks empty
+    // during the cold-load window (up to ~22s when the worker has to
+    // recompute the index) and users worry the asset is missing. With
+    // shaped skeletons, the user immediately sees "swap form is coming
+    // here, stats are coming here, asks are coming here."
     list.innerHTML = `
       <div class="market-token-page">
         <div class="market-token-main">
@@ -41863,7 +42298,41 @@ async function renderMarket() {
               <div class="muted" style="font-size:11px;margin-top:4px;">loading orderbook…</div>
             </div>
           </div>
-          <div data-market-skeleton style="margin-top:16px;">
+          <!-- Swap tile skeleton: same border/padding/sat-row shape as the
+               real tile so the page doesn't reflow when it lands. -->
+          <div data-market-skeleton style="margin-top:14px;border:1px solid var(--ink);background:var(--bg);padding:16px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
+              <div class="skeleton-row" style="width:24px;height:24px;border-radius:50%;flex:0 0 24px;"></div>
+              <div class="skeleton-row" style="flex:0 0 110px;height:14px;"></div>
+              <div class="skeleton-row" style="width:24px;height:24px;border-radius:50%;flex:0 0 24px;"></div>
+            </div>
+            <div style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:12px;margin-bottom:6px;">
+              <div class="skeleton-row short" style="margin-bottom:8px;"></div>
+              <div style="display:flex;align-items:center;gap:10px;">
+                <div class="skeleton-row" style="flex:1;height:26px;"></div>
+                <div class="skeleton-row" style="flex:0 0 80px;height:26px;border-radius:16px;"></div>
+              </div>
+            </div>
+            <div style="border:1px solid var(--ink-faint);background:var(--bg-warm);padding:12px;">
+              <div class="skeleton-row short" style="margin-bottom:8px;"></div>
+              <div style="display:flex;align-items:center;gap:10px;">
+                <div class="skeleton-row" style="flex:1;height:26px;"></div>
+                <div class="skeleton-row" style="flex:0 0 80px;height:26px;border-radius:16px;"></div>
+              </div>
+            </div>
+            <div class="skeleton-row" style="margin-top:12px;height:32px;"></div>
+          </div>
+          <!-- Rich stats strip skeleton: 4 metric cards in a flex row. -->
+          <div data-market-skeleton style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;">
+            ${Array.from({ length: 4 }, () => `
+              <div style="flex:1 1 140px;border:1px solid var(--ink-faint);background:var(--bg);padding:10px 12px;">
+                <div class="skeleton-row short" style="margin-bottom:6px;"></div>
+                <div class="skeleton-row medium"></div>
+              </div>
+            `).join('')}
+          </div>
+          <!-- Asks ladder skeleton: 5 rows matching the real ladder. -->
+          <div data-market-skeleton style="margin-top:16px;border:1px solid var(--ink-faint);">
             ${Array.from({ length: 5 }, () => `
               <div style="display:flex;align-items:center;gap:14px;padding:10px 12px;border-bottom:1px solid var(--ink-faint);">
                 <div class="skeleton-row" style="flex:0 0 80px;"></div>
@@ -56694,9 +57163,19 @@ export {
   // worker↔dapp wire-format parity test and for dapp client code that builds
   // mint/burn/rotate txs.
   T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
+  T_CBTC_TAC_DEPOSIT, T_CBTC_TAC_WITHDRAW, T_CBTC_TAC_FORCE_CLOSE, T_SHARE_SLASH_CLAIM,
   encodeTSlotMintPayload, decodeTSlotMintPayload,
   encodeTSlotBurnPayload, decodeTSlotBurnPayload,
   encodeTSlotRotatePayload, decodeTSlotRotatePayload,
+  // cBTC.tac wire primitives (SPEC-CBTC-TAC-AMENDMENT). Builders + UI
+  // are deferred to follow-up sessions; the wire format is the contract
+  // between dapp and worker and is independent of either.
+  encodeTCbtcTacDepositPayload, decodeTCbtcTacDepositPayload,
+  encodeTCbtcTacWithdrawPayload, decodeTCbtcTacWithdrawPayload,
+  encodeTCbtcTacForceClosePayload, decodeTCbtcTacForceClosePayload,
+  encodeTShareSlashClaimPayload, decodeTShareSlashClaimPayload,
+  computeCbtcTacDepositBindHash, computeCbtcTacWithdrawBindHash,
+  computeCbtcTacForceCloseBindHash, computeShareSlashClaimBindHash,
   computeSlotMintMsg, computeSlotRotateMsg,
   deriveSlotKbtc, deriveSlotRBtc, slotXOnly, slotScriptPubKeyFromKbtc,
   buildSlotMintEnvelope, buildSlotBurnEnvelope, buildSlotRotateEnvelope,
