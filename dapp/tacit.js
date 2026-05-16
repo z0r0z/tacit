@@ -14648,31 +14648,68 @@ async function resumePendingAxintents() {
   }
 }
 
+// Pick a sats UTXO covering `requiredSats` for an atomic-intent claim. Fast
+// path: an existing confirmed UTXO ≥ required (smallest covering, leave
+// bigger ones for later). Else: self-consolidate via a sats-send-to-self of
+// exactly `requiredSats` and commit the new (unconfirmed) outpoint — the
+// worker's claim endpoint uses fetchFreshTxJson which accepts mempool txs
+// (it retries on 404 to absorb propagation lag), so a chained-mempool claim
+// works without waiting for confirmation. RBF caveat: if the taker
+// replaces their own consolidation, settlement fails and they need to
+// reclaim — acceptable since RBF'ing your own claim is unusual and only
+// degrades the taker's own UX.
+async function prepareTakerSatsUtxo({ requiredSats, label = 'atomic intent claim' }) {
+  let utxos;
+  try { utxos = await getUtxos(wallet.address()); }
+  catch (e) { throw new Error('could not load wallet UTXOs: ' + (e.message || e)); }
+  const candidate = (utxos || []).filter(u => u.status?.confirmed !== false)
+    .sort((a, b) => Number(a.value) - Number(b.value))
+    .find(u => Number(u.value) >= requiredSats);
+  if (candidate) {
+    return {
+      txid: String(candidate.txid).toLowerCase(),
+      vout: Number(candidate.vout) >>> 0,
+      value: Number(candidate.value),
+      consolidated: false,
+    };
+  }
+  const total = (utxos || []).reduce((s, u) => s + Number(u.value || 0), 0);
+  if (total < requiredSats) {
+    throw new Error(
+      `insufficient sats: total ${total} < required ${requiredSats}. ` +
+      `Top up via faucet or external wallet, then retry.`,
+    );
+  }
+  // No single covering UTXO but total is enough — consolidate. The
+  // recipient output of buildAndBroadcastSatsSend is always vout 0 and
+  // carries exactly `amountSats`.
+  const r = await buildAndBroadcastSatsSend({
+    recipientAddr: wallet.address(),
+    amountSats: requiredSats,
+  });
+  return {
+    txid: String(r.txid).toLowerCase(),
+    vout: 0,
+    value: requiredSats,
+    consolidated: true,
+  };
+}
+
 async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!Number.isInteger(priceSats) || priceSats < 1) {
     throw new Error('price_sats must be a positive integer to reserve');
   }
-  // Pre-flight: pick a single P2WPKH sat UTXO of value ≥ price_sats. Worker
-  // re-verifies on-chain so trolls can't free-claim and lock intents — and
-  // surfacing the requirement client-side gives the user a clear error
-  // instead of a worker rejection ("not enough sats in a single UTXO").
-  let utxos;
-  try { utxos = await getUtxos(wallet.address()); }
-  catch (e) { throw new Error('could not load wallet UTXOs: ' + (e.message || e)); }
-  const candidate = (utxos || []).filter(u => u.status?.confirmed !== false)
-    .sort((a, b) => Number(a.value) - Number(b.value)) // smallest UTXO that fits, leave bigger ones for later
-    .find(u => Number(u.value) >= priceSats);
-  if (!candidate) {
-    const total = (utxos || []).reduce((s, u) => s + Number(u.value || 0), 0);
-    throw new Error(
-      `no single confirmed UTXO at this address has ≥ ${priceSats} sats ` +
-      `(total balance: ${total}). To reserve, consolidate into one UTXO or send sats to ${wallet.address()}.`
-    );
-  }
-  const utxoTxid = String(candidate.txid).toLowerCase();
-  const utxoVout = Number(candidate.vout) >>> 0;
+  // Pick (or self-consolidate to produce) a P2WPKH sat UTXO of value ≥
+  // price_sats. Worker re-verifies on-chain. The helper accepts an existing
+  // confirmed UTXO when one fits, else broadcasts a sats-send-to-self for
+  // exactly price_sats and commits the new (unconfirmed) outpoint — closes
+  // the "fragmented sats" gap that previously forced takers to manually
+  // consolidate before claiming.
+  const taker = await prepareTakerSatsUtxo({ requiredSats: priceSats, label: 'atomic intent claim' });
+  const utxoTxid = taker.txid;
+  const utxoVout = taker.vout;
   const cMsg = _axintentClaimMsg(hexToBytes(assetIdHex), hexToBytes(intentIdHex), wallet.pub, utxoTxid, utxoVout);
   const sig = signSchnorr(cMsg, wallet.priv);
   const resp = await fetch(withNet(ATOMIC_INTENT_CLAIM_URL(assetIdHex, intentIdHex)), {
@@ -14743,23 +14780,13 @@ async function claimAxferVarIntent({ assetIdHex, intentIdHex, intent, requestedA
     throw new Error(`requested_amount yields sub-dust BTC payment (${requiredSats} < ${DUST}); raise requested_amount`);
   }
 
-  // Pick a single confirmed P2WPKH sat UTXO ≥ requiredSats.
-  let utxos;
-  try { utxos = await getUtxos(wallet.address()); }
-  catch (e) { throw new Error('could not load wallet UTXOs: ' + (e.message || e)); }
-  const candidate = (utxos || []).filter(u => u.status?.confirmed !== false)
-    .sort((a, b) => Number(a.value) - Number(b.value))
-    .find(u => Number(u.value) >= requiredSats);
-  if (!candidate) {
-    const total = (utxos || []).reduce((s, u) => s + Number(u.value || 0), 0);
-    throw new Error(
-      `no single confirmed UTXO at this address has ≥ ${requiredSats} sats ` +
-      `(scaled price for requested_amount ${requestedAmount}; total balance: ${total}). ` +
-      `Consolidate UTXOs or send sats to ${wallet.address()} first.`,
-    );
-  }
-  const utxoTxid = String(candidate.txid).toLowerCase();
-  const utxoVout = Number(candidate.vout) >>> 0;
+  // Pick (or self-consolidate to produce) a P2WPKH sat UTXO ≥ requiredSats.
+  // Shared helper with the legacy whole-UTXO claim path — same fragmented-
+  // sats fix: if no single confirmed UTXO covers, broadcasts a sats-send-to-
+  // self for exactly requiredSats and commits the new (unconfirmed) outpoint.
+  const taker = await prepareTakerSatsUtxo({ requiredSats, label: 'variable-amount intent claim' });
+  const utxoTxid = taker.txid;
+  const utxoVout = taker.vout;
   const cMsg = _axintentClaimMsgVar(
     hexToBytes(assetIdHex), hexToBytes(intentIdHex), wallet.pub,
     utxoTxid, utxoVout, requestedAmount,

@@ -300,22 +300,33 @@ slot intended for a different party).
 
 ### 5.26.1 Viewing-key model
 
-Each recipient generates:
-- `sk_view` — 32-byte random scalar (kept secret)
-- `V = sk_view · G` — compressed 33-byte point (published)
+Recipients derive `sk_view` deterministically from their wallet
+privkey via HKDF, so users don't manage a separate viewing key
+explicitly:
 
-Recipients optionally maintain **separate viewing keys per asset
-family** for compartmentalisation (e.g., one V for cBTC.zk pools,
-another for other slot-wrapper families). Standard practice mirrors
+```
+sk_view ← HKDF-Extract(salt = "tacit-slot-note-v1", IKM = wallet.priv)
+        ↳ HKDF-Expand(PRK, info = "view" || 0x01, L = 32)
+        ↳ reduce mod n_secp256k1 (non-zero)
+V       ← sk_view · G   (33-byte compressed)
+```
+
+Tradeoff: compromise of `wallet.priv` also compromises `sk_view`. A
+v1.x extension can introduce viewer/spender compartmentalisation
+(separate `sk_view` managed independently of the spending key); v1
+ships with the implicit derivation.
+
+Recipients MAY publish `V` on a per-asset-family basis, or use one
+viewing key across all slot wrappers. Standard practice mirrors
 Zcash sapling Incoming Viewing Keys.
 
 ### 5.26.2 Note encoding
 
 ```
-encrypted_note (96 bytes fixed):
+encrypted_note (122 bytes fixed):
    ephemeral_pubkey    33 bytes (compressed secp256k1; sender's per-note key)
-   ciphertext          63 bytes (AEAD ciphertext + tag)
-       plaintext:
+   ciphertext          89 bytes (AES-256-GCM ciphertext including 16-byte tag)
+       plaintext (73 bytes):
            note_kind   1 byte   (0x01 = slot rotate, 0x02 = split output,
                                   0x03 = merge result. Future: 0x04+ reserved.)
            secret      32 bytes
@@ -323,36 +334,46 @@ encrypted_note (96 bytes fixed):
            amount_hint 8 bytes  (u64 LE; = denom_sats of the target slot —
                                  redundant with chain data but lets the
                                  recipient verify against expected value)
-           [ + AEAD tag 16 bytes (ChaCha20Poly1305) — embedded in ciphertext]
 ```
 
-Total: **96 bytes**.
+Total: **122 bytes**.
 
 ### 5.26.3 ECDH + AEAD construction
 
 ```
 sender side:
-  e ← random 32-byte scalar
+  e ← random 32-byte scalar (mod n_secp256k1, non-zero)
   ephemeral_pubkey ← e · G  (compressed, 33 bytes)
   shared_x ← (e · V).x_only()  (32 bytes; the x-coordinate)
-  key ← SHA256("tacit-slot-note-v1" || shared_x)
-  nonce ← all zeros (one-shot; ephemeral_pubkey provides uniqueness)
-  ciphertext ← ChaCha20Poly1305_encrypt(key, nonce, plaintext, ad = "")
+  key_material ← SHA256("tacit-slot-note-v1" || shared_x)  (32 bytes)
+  iv ← all zeros (12 bytes; ephemeral_pubkey provides per-key uniqueness)
+  ciphertext ← AES-256-GCM_encrypt(key=key_material, iv, plaintext, ad="")
 
 recipient side (scan every T_SLOT_ROTATE / SPLIT / MERGE):
   shared_x ← (sk_view · ephemeral_pubkey).x_only()
-  key ← SHA256("tacit-slot-note-v1" || shared_x)
-  plaintext ← ChaCha20Poly1305_decrypt(key, nonce=zeros, ciphertext, ad = "")
+  key_material ← SHA256("tacit-slot-note-v1" || shared_x)
+  plaintext ← AES-256-GCM_decrypt(key_material, iv=zeros, ciphertext, ad="")
   on auth-tag fail: not addressed to me; skip
   on success: recipient now holds (secret, ν, expected_amount). Derive
               r_leaf, recipient_commit, K_btc; verify on-chain UTXO at
               K_btc exists with value = expected_amount.
 ```
 
-ChaCha20Poly1305 was chosen over ChaCha20 + HMAC because the AEAD's
-combined integrity tag lets the recipient distinguish "addressed to
-me" from "not addressed to me" in one decryption attempt with strong
-authenticity.
+**AES-256-GCM selection.** v1.0 spec'd ChaCha20Poly1305, but
+WebCrypto ships AES-GCM in every browser and Node release without a
+vendor-bundle dependency. ChaCha20Poly1305 has no WebCrypto entry
+and would require a vendor rebuild (`@noble/ciphers` ~30 KB minified).
+Both AEADs offer the same security properties (128-bit authenticity,
+sub-microsecond per-note decrypt on modern hardware); AES-GCM wins
+on cross-platform availability. Reference implementation tested at
+`tests/slot-note-encryption.test.mjs` (28 checks: round-trip, tamper
+resistance, recipient-mismatch null-return, determinism, u64
+amount-hint boundary values, domain separation).
+
+The 12-byte IV is all zeros. Per-note IV uniqueness is required only
+*per-key*; since each note has a fresh `key_material` derived from a
+fresh `ephemeral_pubkey`, no IV collision is possible across notes
+even with a constant IV.
 
 ### 5.26.4 Embedding rule
 
@@ -360,7 +381,7 @@ authenticity.
 attached to slot-creating envelopes (T_SLOT_ROTATE / T_SLOT_SPLIT /
 T_SLOT_MERGE / T_SLOT_MINT-with-recipient). The on-chain encoding adds
 a single byte `has_note: 0 | 1` to the host envelope. If `has_note ==
-1`, the 96-byte `encrypted_note` blob immediately follows the original
+1`, the 122-byte `encrypted_note` blob immediately follows the original
 envelope's last byte.
 
 When a single host envelope produces multiple new slots (T_SLOT_SPLIT
@@ -369,7 +390,7 @@ as:
 
 ```
 has_note_per_output    n_outputs bits, packed into ⌈n/8⌉ bytes (LSB first)
-encrypted_note[k]      96 bytes, one per output with has_note bit set
+encrypted_note[k]      122 bytes, one per output with has_note bit set
 ```
 
 The host envelope's signed message (`slot_split_msg`, etc.) does NOT
