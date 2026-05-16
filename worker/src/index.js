@@ -122,9 +122,11 @@ const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor
 const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §5.19)
-const T_SLOT_MINT   = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
-const T_SLOT_BURN   = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
-const T_SLOT_ROTATE = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_MINT          = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_FRACTIONALIZE = 0x46; // slot → shielded shares (SPEC §5.25, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
+const T_SLOT_RECONSOLIDATE = 0x47; // shielded shares → slot (SPEC §5.26, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 

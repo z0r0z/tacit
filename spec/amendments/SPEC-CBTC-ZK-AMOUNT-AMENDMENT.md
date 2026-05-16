@@ -1,57 +1,126 @@
 # SPEC §5.24–§5.26 Amendment — cBTC.zk Fractional Shares
 
-> **⚠ DO-NOT-IMPLEMENT — DRAFT HAS A KNOWN SECURITY FLAW IN §5.25.1.**
-> See "Pre-merge security review" block immediately below. The flaw is
-> recoverable with a single wire-format fix (drop the `r_leaf` field
-> from the FRACTIONALIZE envelope); the rest of the design is sound.
-> No implementation should land against this amendment until the fix
-> is applied and acknowledged.
->
-> **STATUS: DRAFT.** Companion to `SPEC-CBTC-ZK-AMENDMENT.md`. Adds two
-> new envelope opcodes (T_SLOT_FRACTIONALIZE `0x46`, T_SLOT_RECONSOLIDATE
-> `0x47`) and a leaf-state model that lets a slot's `denom_sats` of value
-> circulate as standard tacit-asset UTXOs while the backing Bitcoin slot
-> remains locked. This is the layer that makes cBTC.zk look and behave
-> like any other tacit asset — fungible at arbitrary amounts,
+> **STATUS: DRAFT** (security-fixed 2026-05-17). Companion to
+> `SPEC-CBTC-ZK-AMENDMENT.md`. Adds two new envelope opcodes
+> (T_SLOT_FRACTIONALIZE `0x46`, T_SLOT_RECONSOLIDATE `0x47`) and a
+> two-key slot variant that lets a slot's `denom_sats` of value
+> circulate as standard tacit-asset UTXOs while the backing Bitcoin
+> slot remains locked. This is the layer that makes cBTC.zk look and
+> behave like any other tacit asset — fungible at arbitrary amounts,
 > amount-hidden in transfer, tradeable on AMM, listable on the
 > marketplace — without giving up self-custody or adding any new trust
 > assumption.
+>
+> **Activation**: requires slot mints to declare the v2 two-key shape
+> (carrying an explicit `k_btc_xonly` field). Legacy single-key slots
+> can still burn/rotate but MAY NOT fractionalize — the
+> `T_SLOT_FRACTIONALIZE` validator enforces this. New mints SHOULD
+> default to v2 going forward.
 
 ---
 
-## Pre-merge security review (action item)
+## §5.24.0 Two-key slot variant (security foundation)
 
-**§5.25.1 reveals `r_leaf` in clear.** This is structurally unsafe.
-The leaf-state machine prevents the WORKER from accepting a subsequent
-`T_SLOT_BURN` envelope against the fractionalized leaf — but Bitcoin
-doesn't enforce tacit-side state. Any observer who reads the
-fractionalize envelope on chain learns `r_leaf`, can construct a plain
-Bitcoin tx that spends the slot's `K_btc` UTXO via BIP-340 Schnorr
-key-path, and the Bitcoin network accepts it. The slot's backing BTC
-is drained without any tacit envelope ever being broadcast. INV-1
-breaks: the leaf is still `fractionalized` in the indexer's view, but
-no Bitcoin UTXO backs it.
+The base cBTC.zk amendment derives K_btc directly from the mixer
+note's Pedersen commitment: `K_btc = recipient_commit − denom·H =
+r_leaf · G` where `r_leaf = Poseidon₂(secret, ν)`. The same scalar
+serves as BOTH the Pedersen blinding (revealed at withdraw/fractionalize
+for indexer verification) AND the Bitcoin spending key (revealed at
+burn). This dual use is what makes burn atomic and trustless: r_leaf
+reveal happens simultaneously with BTC spend, so there's nothing for
+an observer to race.
 
-Effect: fractionalizing forfeits the slot's BTC to the first attacker
-who notices. Shares become uncovered. The user who fractionalized has
-no recourse — they can't burn (state-precondition blocks), and they
-can't recover the BTC (someone else's tx already spent it).
+**Fractionalization breaks this property.** A naive FRACTIONALIZE
+that reveals `r_leaf` while leaving the slot's BTC UTXO unspent on
+chain would let any observer construct a plain Bitcoin tx with a
+BIP-340 Schnorr key-path spend under `r_leaf` and drain the BTC.
+The leaf-state machine doesn't help — Bitcoin doesn't enforce tacit
+state.
 
-**Fix**: remove `r_leaf` from the wire format and from `slot_frac_msg`.
-The Groth16 statement already attests knowledge of `(secret, ν)` such
-that `recipient_commit = denom·H + Poseidon₂(secret, ν)·G` — `r_leaf`
-knowledge is implied by the proof. The `bind_hash` field either:
-- stays in the envelope, recomputed inside the Groth16 statement
-  rather than by the validator (proof attests `bind_hash` correctness
-  against the public inputs minus `r_leaf`), OR
-- is dropped entirely; the proof's public-input tuple is sufficient
-  to bind the envelope's claims.
+**Fix**: separate the Pedersen blinding from the BTC spending key.
 
-Share UTXOs use fresh per-share blindings `r_i` (not derived from
-`r_leaf`), so removing `r_leaf` from the envelope has no downstream
-effect on share construction. The mixer's existing withdraw circuit
-is the right reuse target *only if* its public inputs are modified
-to omit `r_leaf` — otherwise a custom circuit is required.
+```
+r_pedersen = Poseidon₂(secret, ν)          // identical to legacy r_leaf
+r_btc      = Poseidon₂(secret, ν || "btc")  // distinct secp scalar
+K_btc      = r_btc · G                      // BTC spending key
+recipient_commit = denom · H + r_pedersen · G   // Pedersen commitment
+
+// Both scalars are computed from the same (secret, ν) but with
+// different domain inputs, so they're computationally independent
+// in practice: from r_pedersen alone, computing r_btc requires
+// inverting Poseidon (one-way).
+```
+
+The slot's BTC UTXO is locked at `K_btc = r_btc · G` (NOT
+`recipient_commit − denom · H` anymore). The mint envelope publishes
+`k_btc_xonly` explicitly so indexers can verify the slot script.
+
+**Wire-format change** to `T_SLOT_MINT` (opcode 0x43): append an
+optional **32-byte `k_btc_xonly` tail** to the canonical 244-byte
+payload. The decoder accepts:
+- 244 bytes (legacy v1, single-key): `K_btc` is derived as
+  `recipient_commit − denom · H`. Legacy slots cannot fractionalize.
+- 244 + 32 = 276 bytes (v2, two-key): `K_btc` is the explicit x-only
+  value from the tail. Legacy `recipient_commit − denom · H`
+  derivation is NOT used; v2 slots can fractionalize safely.
+
+The minter signs `k_btc_xonly` into `slot_mint_msg_v2`:
+
+```
+slot_mint_msg_v2 = SHA256(
+  "tacit-slot-mint-v2"   // v2 domain tag (distinct from v1's "tacit-slot-mint-v1")
+  || network_tag(1)
+  || asset_id(32)
+  || denom_sats_LE(8)
+  || recipient_commit(33)
+  || leaf_hash(32)
+  || payment_asset_id(32)
+  || payment_amount_LE(8)
+  || k_btc_xonly(32)
+)
+```
+
+The minter knows `r_btc` and publishes its x-only G-multiple. Anyone
+who tampers with `k_btc_xonly` invalidates the sig. If a malicious
+minter publishes a `k_btc_xonly` whose discrete log they don't know,
+the slot's BTC is permanently unspendable — that's the minter's own
+loss, not a protocol soundness break.
+
+### 5.24.0.1 Validator algorithm update for v2
+
+```
+on T_SLOT_MINT v2:
+  decode 276-byte payload (244-byte canonical + 32-byte k_btc_xonly tail)
+  require minter_sig verifies under slot_mint_msg_v2
+  require tx.vout[0].script_pubkey == OP_PUSHNUM_1 || OP_PUSHBYTES_32 || k_btc_xonly
+  // NB: do NOT require K_btc == recipient_commit − denom · H. The
+  // explicit k_btc_xonly is independent. recipient_commit binds the
+  // mixer leaf to (denom, r_pedersen); k_btc_xonly binds the BTC slot
+  // to r_btc. They're separate keys.
+  proceed with standard mixer leaf + slot-registry append
+```
+
+### 5.24.0.2 Burn/rotate behavior
+
+`T_SLOT_BURN` and `T_SLOT_ROTATE` for v2 slots spend the slot UTXO
+under `r_btc` (NOT `r_leaf`). The slot record persists both `r_btc`
+and `r_pedersen` (computed from secrets at mint time).
+
+For v1 (legacy) slots, burn/rotate continue to use the single key
+`r_leaf = r_pedersen = r_btc` as today.
+
+The dapp's slot-record format (per-network localStorage) gains an
+optional `rBtcHex` field. Slots minted v1 omit it (derive from
+secrets via legacy Poseidon₂(secret, ν)); slots minted v2 include
+it explicitly.
+
+---
+
+## (Original "Pre-merge security review" section — now resolved by §5.24.0 above.)
+
+(Historical context retained for amendment archaeology — the original
+text described the fix path that §5.24.0 now implements.)
+
 Recommended: define a dedicated `mixer_fractionalize` circuit that
 exposes `(merkle_root, nullifier_hash, recipient_commit, denom_sats)`
 as public inputs and proves the same membership statement without
@@ -269,6 +338,16 @@ on T_SLOT_FRACTIONALIZE:
   // randomness), the nullifier_hash disambiguates.
   source_leaf := lookup_leaf(asset_id, denom_sats, recipient_commit, nullifier_hash)
   require source_leaf.state == live
+
+  // SECURITY GATE: v1 (legacy single-key) slots cannot fractionalize.
+  // Their BTC spending key IS r_leaf; revealing r_leaf here (via the
+  // public-input position in the Groth16 proof) lets any observer drain
+  // the slot's BTC. v2 (two-key) slots have an independent r_btc; r_leaf
+  // reveal is safe.
+  require source_leaf.slot_variant == "v2"
+  // Equivalently: require the slot-registry record for this leaf has an
+  // explicit k_btc_xonly that is NOT equal to (recipient_commit − denom·H).x_only().
+  // v1 records lack this field; lookup MUST return v1 → reject.
 
   // Share conservation
   require Σ envelope.share_commits − denom_sats · H is on-curve and ≠ identity

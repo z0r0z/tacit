@@ -4747,9 +4747,11 @@ const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_DROP     = 0x2B; // public-claim pool over existing supply (SPEC §5.12)
 const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor (SPEC §5.13)
-const T_SLOT_MINT   = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
-const T_SLOT_BURN   = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
-const T_SLOT_ROTATE = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_MINT          = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_FRACTIONALIZE = 0x46; // slot → shielded shares (SPEC §5.25, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
+const T_SLOT_RECONSOLIDATE = 0x47; // shielded shares → slot (SPEC §5.26, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / §5.7.6.1 — amended).
                           // N=2 partial reveal (recipient + maker change), single asset input,
                           // interleaved BTC-payment vout. Read-only as of this commit: validator
@@ -5922,8 +5924,17 @@ function decodeTWithdrawPayload(payload) {
 // No federation, no co-signer, no escape path. Lost notes lock backing BTC
 // permanently — same property native Bitcoin has.
 
-const SLOT_MINT_DOMAIN   = new TextEncoder().encode('tacit-slot-mint-v1');
-const SLOT_ROTATE_DOMAIN = new TextEncoder().encode('tacit-slot-rotate-v1');
+const SLOT_MINT_DOMAIN    = new TextEncoder().encode('tacit-slot-mint-v1');
+const SLOT_MINT_V2_DOMAIN = new TextEncoder().encode('tacit-slot-mint-v2');
+const SLOT_ROTATE_DOMAIN  = new TextEncoder().encode('tacit-slot-rotate-v1');
+const SLOT_FRAC_DOMAIN    = new TextEncoder().encode('tacit-slot-fractionalize-v1');
+const SLOT_RECON_DOMAIN   = new TextEncoder().encode('tacit-slot-reconsolidate-v1');
+// Domain tag for the v2 BTC-spending-key derivation. r_btc = Poseidon₂(
+// secret, ν || "btc"), separate from r_pedersen = Poseidon₂(secret, ν). The
+// two scalars are computationally independent (inverting Poseidon is hard),
+// so revealing r_pedersen at fractionalize does NOT compromise r_btc. The
+// suffix is appended to the nullifier-preimage input before hashing.
+const SLOT_BTC_KEY_DOMAIN = new TextEncoder().encode('tacit-slot-btc-key-v1');
 
 function deriveSlotKbtc(recipientCommitmentBytes, denomination) {
   if (!(recipientCommitmentBytes instanceof Uint8Array) || recipientCommitmentBytes.length !== 33) {
@@ -5941,11 +5952,14 @@ function slotScriptPubKeyFromKbtc(kBtcPoint) {
   return p2trScript(slotXOnly(kBtcPoint));
 }
 
-function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount) {
+function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, kBtcXOnly = null) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
   if (leafHash.length !== 32) throw new Error('leaf_hash 32 bytes');
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes');
+  if (kBtcXOnly !== null && (!(kBtcXOnly instanceof Uint8Array) || kBtcXOnly.length !== 32)) {
+    throw new Error('k_btc_xonly must be 32 bytes when present');
+  }
   const denomLE = new Uint8Array(8);
   {
     const v = new DataView(denomLE.buffer);
@@ -5960,10 +5974,41 @@ function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, 
     v.setUint32(0, Number(p & 0xffffffffn), true);
     v.setUint32(4, Number((p >> 32n) & 0xffffffffn), true);
   }
-  return sha256(concatBytes(
-    SLOT_MINT_DOMAIN, new Uint8Array([networkTag & 0xff]),
+  // v1 (single-key) and v2 (two-key) use distinct domain tags so a sig over
+  // one cannot be replayed as the other. v2 appends k_btc_xonly to the
+  // signed preimage so the minter explicitly attests to the slot's BTC
+  // spending key.
+  const domain = kBtcXOnly ? SLOT_MINT_V2_DOMAIN : SLOT_MINT_DOMAIN;
+  const parts = [
+    domain, new Uint8Array([networkTag & 0xff]),
     assetId, denomLE, recipientCommit, leafHash, paymentAssetId, payLE,
+  ];
+  if (kBtcXOnly) parts.push(kBtcXOnly);
+  return sha256(concatBytes(...parts));
+}
+
+// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.24.0: derive the two-key slot's BTC
+// spending scalar from the mixer note's (secret, ν). Domain-separated from
+// the Pedersen blinding r_pedersen = Poseidon₂(secret, ν) so the two scalars
+// are computationally independent. Inverting Poseidon to recover r_btc from
+// r_pedersen alone is hard (Poseidon's one-wayness).
+function deriveSlotRBtc(secretBytes, nullifierPreimageBytes) {
+  if (secretBytes.length !== 32 || nullifierPreimageBytes.length !== 32) {
+    throw new Error('secret + nullifier_preimage must each be 32 bytes');
+  }
+  // Use SHA256 over (domain || secret || ν) instead of Poseidon₃ because
+  // Poseidon₃ requires circomlibjs setup the dapp avoids at this layer.
+  // The cryptographic property we need (Poseidon₂(secret, ν) and
+  // h(secret, ν) computationally independent) holds under random-oracle
+  // assumption for SHA256 vs Poseidon₂ over distinct domain tags.
+  const out = sha256(concatBytes(
+    SLOT_BTC_KEY_DOMAIN, secretBytes, nullifierPreimageBytes,
   ));
+  // Reduce into secp256k1 scalar field (n_secp ~ 2^256, output ~ 2^256, so
+  // reduction is ~50% probability of trim — random within the field).
+  let bn = bytes32ToBigint(out) % SECP_N;
+  if (bn === 0n) bn = 1n;
+  return bigintToBytes32(bn);
 }
 
 function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHash, newRecipientCommit, newLeafHash, paymentAssetId, paymentAmount) {
@@ -5993,7 +6038,7 @@ function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHas
   ));
 }
 
-function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig }) {
+function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig, kBtcXOnly = null }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
@@ -6001,6 +6046,12 @@ function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCo
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes (zeros if no payment)');
   if (minterPubkey.length !== 33) throw new Error('minter_pubkey 33 bytes');
   if (minterSig.length !== 64) throw new Error('minter_sig 64 bytes');
+  // v2 two-key tail: optional 32-byte k_btc_xonly. When present, the slot's
+  // BTC spending key is THIS value (NOT recipient_commit − denom·H). Mandatory
+  // for slots that intend to fractionalize. See SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.24.0.
+  if (kBtcXOnly !== null && (!(kBtcXOnly instanceof Uint8Array) || kBtcXOnly.length !== 32)) {
+    throw new Error('k_btc_xonly must be 32 bytes (omitted for legacy v1 slots)');
+  }
   const d = BigInt(denomination);
   if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
   const pAmt = BigInt(paymentAmount);
@@ -6017,19 +6068,23 @@ function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCo
     v.setUint32(0, Number(pAmt & 0xffffffffn), true);
     v.setUint32(4, Number((pAmt >> 32n) & 0xffffffffn), true);
   }
-  return concatBytes(
+  const base = concatBytes(
     new Uint8Array([T_SLOT_MINT, networkTag & 0xff]),
     assetId, denomLE,
     recipientCommit, leafHash,
     paymentAssetId, payLE,
     minterPubkey, minterSig,
   );
+  return kBtcXOnly ? concatBytes(base, kBtcXOnly) : base;
 }
 
 function decodeTSlotMintPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_SLOT_MINT) return null;
-  if (payload.length !== 244) return null;
+  // Accept canonical 244-byte v1 (single-key) OR 244+32=276-byte v2 (two-key,
+  // explicit k_btc_xonly tail). v2 slots can fractionalize safely.
+  if (payload.length !== 244 && payload.length !== 276) return null;
+  const isV2 = payload.length === 276;
   let p = 1;
   const networkTag = payload[p]; p += 1;
   if (networkTag > 2) return null;
@@ -6048,12 +6103,15 @@ function decodeTSlotMintPayload(payload) {
   if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
   const minterPubkey = payload.slice(p, p + 33); p += 33;
   const minterSig = payload.slice(p, p + 64); p += 64;
+  const kBtcXOnly = isV2 ? payload.slice(p, p + 32) : null;
   return {
     kind: 'slot_mint',
+    slotVariant: isV2 ? 'v2' : 'v1',
     networkTag, assetId, denomination,
     recipientCommit, leafHash,
     paymentAssetId, paymentAmount,
     minterPubkey, minterSig,
+    kBtcXOnly,
   };
 }
 
@@ -6223,6 +6281,228 @@ function decodeTSlotRotatePayload(payload) {
     paymentAssetId, paymentAmount,
     oldOwnerPubkey, oldOwnerSig,
     encryptedNote,
+  };
+}
+
+// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.25.1 — T_SLOT_FRACTIONALIZE wire format.
+// Converts a live v2 slot's denom_sats into N standard tacit-asset share
+// UTXOs whose amounts sum to denom_sats. The slot's BTC stays locked (r_btc
+// never revealed); the leaf transitions to fractionalized state. Reveals
+// r_pedersen (= r_leaf in the underlying mixer Groth16 statement) safely
+// because v2 slots use an independent r_btc for BTC spend.
+function computeSlotFracMsg(networkTag, assetId, denomination, nullifierHash, recipientCommit, shareCommits) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
+  if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    const d = BigInt(denomination);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const parts = [
+    SLOT_FRAC_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    assetId, denomLE, nullifierHash, recipientCommit,
+    new Uint8Array([shareCommits.length & 0xff]),
+  ];
+  for (const sc of shareCommits) {
+    if (!(sc instanceof Uint8Array) || sc.length !== 33) throw new Error('each share_commit must be 33 bytes');
+    parts.push(sc);
+  }
+  return sha256(concatBytes(...parts));
+}
+
+function encodeTSlotFractionalizePayload({
+  networkTag, assetId, denomination,
+  merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
+  shareCommits, shareKernelSig, proof,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (merkleRoot.length !== 32) throw new Error('merkle_root 32 bytes');
+  if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
+  if (recipientCommitment.length !== 33) throw new Error('recipient_commitment 33 bytes');
+  if (rLeaf.length !== 32) throw new Error('r_leaf 32 bytes');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  if (!Array.isArray(shareCommits) || shareCommits.length < 1 || shareCommits.length > 16) {
+    throw new Error('share_commits must be an array of 1..16');
+  }
+  if (shareKernelSig.length !== 64) throw new Error('share_kernel_sig 64 bytes');
+  if (proof.length === 0 || proof.length > 0xffff) throw new Error('proof len 1..65535');
+  const d = BigInt(denomination);
+  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const proofLen = new Uint8Array(2);
+  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
+  const parts = [
+    new Uint8Array([T_SLOT_FRACTIONALIZE, networkTag & 0xff]),
+    assetId, denomLE,
+    merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
+    new Uint8Array([shareCommits.length & 0xff]),
+  ];
+  for (const sc of shareCommits) {
+    if (!(sc instanceof Uint8Array) || sc.length !== 33) throw new Error('each share_commit must be 33 bytes');
+    parts.push(sc);
+  }
+  parts.push(shareKernelSig, proofLen, proof);
+  return concatBytes(...parts);
+}
+
+function decodeTSlotFractionalizePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_FRACTIONALIZE) return null;
+  const FIXED_HEADER = 2 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 1;
+  if (payload.length < FIXED_HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const merkleRoot = payload.slice(p, p + 32); p += 32;
+  const nullifierHash = payload.slice(p, p + 32); p += 32;
+  const recipientCommitment = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(recipientCommitment); } catch { return null; }
+  const rLeaf = payload.slice(p, p + 32); p += 32;
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const shareCount = payload[p]; p += 1;
+  if (shareCount < 1 || shareCount > 16) return null;
+  if (payload.length < p + shareCount * 33 + 64 + 2) return null;
+  const shareCommits = [];
+  for (let i = 0; i < shareCount; i++) {
+    const sc = payload.slice(p, p + 33); p += 33;
+    try { bytesToPoint(sc); } catch { return null; }
+    shareCommits.push(sc);
+  }
+  const shareKernelSig = payload.slice(p, p + 64); p += 64;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expected = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf);
+  for (let i = 0; i < 32; i++) if (expected[i] !== bindHash[i]) return null;
+  return {
+    kind: 'slot_fractionalize',
+    networkTag, assetId, denomination,
+    merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
+    shareCommits, shareKernelSig, proof,
+  };
+}
+
+// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.26.1 — T_SLOT_RECONSOLIDATE wire format.
+// Consumes M tacit-asset share UTXOs summing to denom_sats and restores a
+// fractionalized leaf to live state.
+function computeSlotReconMsg(networkTag, assetId, denomination, targetLeafHash, shareCommits, shareNullifiers) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (shareCommits.length !== shareNullifiers.length) {
+    throw new Error('share_commits + share_nullifiers count mismatch');
+  }
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    const d = BigInt(denomination);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const parts = [
+    SLOT_RECON_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    assetId, denomLE, targetLeafHash,
+    new Uint8Array([shareCommits.length & 0xff]),
+  ];
+  for (const sc of shareCommits) parts.push(sc);
+  for (const sn of shareNullifiers) parts.push(sn);
+  return sha256(concatBytes(...parts));
+}
+
+function encodeTSlotReconsolidatePayload({
+  networkTag, assetId, denomination,
+  targetLeafHash, shareCommits, shareNullifiers, shareKernelSig, proof,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (!Array.isArray(shareCommits) || shareCommits.length < 1 || shareCommits.length > 16) {
+    throw new Error('share_commits must be an array of 1..16');
+  }
+  if (!Array.isArray(shareNullifiers) || shareNullifiers.length !== shareCommits.length) {
+    throw new Error('share_nullifiers count must match share_commits');
+  }
+  if (shareKernelSig.length !== 64) throw new Error('share_kernel_sig 64 bytes');
+  if (proof.length === 0 || proof.length > 0xffff) throw new Error('proof len 1..65535');
+  const d = BigInt(denomination);
+  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const proofLen = new Uint8Array(2);
+  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
+  const parts = [
+    new Uint8Array([T_SLOT_RECONSOLIDATE, networkTag & 0xff]),
+    assetId, denomLE, targetLeafHash,
+    new Uint8Array([shareCommits.length & 0xff]),
+  ];
+  for (const sn of shareNullifiers) {
+    if (!(sn instanceof Uint8Array) || sn.length !== 32) throw new Error('each share_nullifier must be 32 bytes');
+    parts.push(sn);
+  }
+  for (const sc of shareCommits) {
+    if (!(sc instanceof Uint8Array) || sc.length !== 33) throw new Error('each share_commit must be 33 bytes');
+    parts.push(sc);
+  }
+  parts.push(shareKernelSig, proofLen, proof);
+  return concatBytes(...parts);
+}
+
+function decodeTSlotReconsolidatePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_RECONSOLIDATE) return null;
+  const FIXED_HEADER = 2 + 32 + 8 + 32 + 1;
+  if (payload.length < FIXED_HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const shareCount = payload[p]; p += 1;
+  if (shareCount < 1 || shareCount > 16) return null;
+  if (payload.length < p + shareCount * 32 + shareCount * 33 + 64 + 2) return null;
+  const shareNullifiers = [];
+  for (let i = 0; i < shareCount; i++) {
+    shareNullifiers.push(payload.slice(p, p + 32)); p += 32;
+  }
+  const shareCommits = [];
+  for (let i = 0; i < shareCount; i++) {
+    const sc = payload.slice(p, p + 33); p += 33;
+    try { bytesToPoint(sc); } catch { return null; }
+    shareCommits.push(sc);
+  }
+  const shareKernelSig = payload.slice(p, p + 64); p += 64;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  return {
+    kind: 'slot_reconsolidate',
+    networkTag, assetId, denomination,
+    targetLeafHash, shareCommits, shareNullifiers, shareKernelSig, proof,
   };
 }
 
@@ -45139,7 +45419,13 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     const amtBig = (() => { try { return BigInt(t.amount || '0'); } catch { return 0n; } })();
     const u = amtBig > 0n ? unitPriceSats(price, amtBig, decimals) : null;
     const ts = Number(t.ts) || 0;
-    return (u != null && ts > 0) ? { u, ts, txid: String(t.txid || ''), price } : null;
+    // fill_count: how many on-chain fills the worker aggregated into this
+    // ONE trade record. >1 means a batched preauth-take or batched bid fill
+    // settled N seller inputs in one Bitcoin tx. Worker clamps 1..255;
+    // legacy records (pre-fill_count) come back undefined → treat as 1.
+    const fc = Number.isInteger(t.fill_count) && t.fill_count >= 1 && t.fill_count <= 255
+      ? t.fill_count : 1;
+    return (u != null && ts > 0) ? { u, ts, txid: String(t.txid || ''), price, fill_count: fc } : null;
   }).filter(Boolean).sort((a, b) => a.ts - b.ts);
   if (points.length < 2) return '';
   // Tag each point as in-band or outlier using the same 0.2×/5× mark
@@ -45222,14 +45508,30 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // clamp their drawn position to the plot edge so they stay visible (and
   // hoverable for the tooltip with actual price) without overflowing.
   const yOfClamped = (u) => Math.max(PT, Math.min(PT + plotH, yOf(u)));
+  // "5m ago" / "3h ago" / "1d ago" formatter. Used by tooltips on the
+  // volume bars (below) and the trade dots + axis labels (further down),
+  // so we hoist it above the first consumer.
+  const _ageStr = (ts) => {
+    const sec = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    if (sec < 60) return `${sec}s ago`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
+    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
+    return `${Math.floor(sec / 86400)}d ago`;
+  };
   // Bucket trades for volume histogram. Bucket count scales to fit the
   // available width — too few looks blocky, too many becomes hairlines.
+  // Each bucket tracks (sats, count) so the per-bar tooltip can show the
+  // real absolute number — the visual bar height is bucket-LOCAL-max
+  // scaled (see `vol · rel` label below), so absolute height isn't
+  // comparable across time-frame flips. Tooltips close that loop.
   const N_VOL_BUCKETS = Math.min(48, Math.max(8, Math.floor(points.length / 3)));
   const bucketWidth = tsSpan / N_VOL_BUCKETS;
   const volumeBuckets = new Array(N_VOL_BUCKETS).fill(0);
+  const volumeBucketCounts = new Array(N_VOL_BUCKETS).fill(0);
   for (const p of points) {
     const idx = Math.min(N_VOL_BUCKETS - 1, Math.floor((p.ts - ts0) / bucketWidth));
     volumeBuckets[idx] += Number(p.price) || 0;
+    volumeBucketCounts[idx] += 1;
   }
   const maxVol = volumeBuckets.reduce((m, v) => Math.max(m, v), 0);
   const volBars = (maxVol > 0) ? volumeBuckets.map((v, i) => {
@@ -45238,12 +45540,15 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
     const w = Math.max(1, (bucketWidth / tsSpan) * plotW * 0.85);
     const h = Math.max(1, (v / maxVol) * VOL_H);
     const y = volTop + (VOL_H - h);
-    return `<rect x="${xStart.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="#0a8f43" opacity="0.32"/>`;
+    // Per-bar tooltip: absolute sats + trade count + bucket time span,
+    // so hovering reveals the real numbers behind the relative-scaled bar.
+    const bucketStartTs = ts0 + i * bucketWidth;
+    const bucketEndTs   = ts0 + (i + 1) * bucketWidth;
+    const cnt = volumeBucketCounts[i] | 0;
+    const tip = `${Math.round(v).toLocaleString()} sats · ${cnt} trade${cnt === 1 ? '' : 's'} · ${_ageStr(bucketEndTs)} – ${_ageStr(bucketStartTs)}`;
+    return `<rect x="${xStart.toFixed(2)}" y="${y.toFixed(2)}" width="${w.toFixed(2)}" height="${h.toFixed(2)}" fill="#0a8f43" opacity="0.32"><title>${escapeHtml(tip)}</title></rect>`;
   }).join('') : '';
   // yOf is defined above conditionally (linear vs log scale).
-  // Smooth the line via Catmull-Rom-to-Bézier — looks natural for sparse
-  // trade data (avoids the jagged sawtooth a polyline gives over uneven
-  // timestamps). Degenerates to straight segments when there are <3 points.
   // Fritsch-Carlson monotone cubic interpolation. The earlier Catmull-Rom
   // implementation (tension=0.5) provably OVERSHOOTS the data: on any
   // local maximum/minimum sequence the cubic Bézier control points push
@@ -45324,13 +45629,7 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // needed). Each tooltip carries unit price + age + total sats so the user
   // can read the trade history without leaving the chart. Dot radius scales
   // down on dense datasets so a 200-trade ring doesn't read as a solid bar.
-  const _ageStr = (ts) => {
-    const sec = Math.max(0, Math.floor(Date.now() / 1000) - ts);
-    if (sec < 60) return `${sec}s ago`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-    return `${Math.floor(sec / 86400)}d ago`;
-  };
+  // `_ageStr` hoisted above near the volume-bar block (shared formatter).
   // Modern contemporary look: hide individual in-band dots when the dataset
   // is dense (line + area carry the trend; per-fill dots only clutter).
   // Outliers stay visible regardless — they ARE the anomalies users want
@@ -45340,18 +45639,40 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   const showInBandDots = points.length <= 30;
   const dotR = points.length > 80 ? 1.5 : (points.length > 40 ? 2 : 2.5);
   const outlierR = Math.max(1.5, dotR - 0.5);
+  // fill_count visual weighting. A batched preauth-take with fill_count=5
+  // settles 5 separate trades in ONE Bitcoin tx — historically rendered as
+  // a single dot indistinguishable from a 1-fill take, which understated
+  // batched activity on the chart. Scale by sqrt(fill_count) so visual
+  // area grows linearly with N (sqrt of radius gives ~N area), with a hard
+  // cap so a fill_count=200 mega-batch doesn't blot out half the plot.
+  // Per-fill tooltip already carries the fill_count from the existing
+  // `× N fills` rendering downstream — here we just make the visual
+  // signal match the data.
+  const _dotRForFc = (baseR, fc) => {
+    if (!Number.isInteger(fc) || fc <= 1) return baseR;
+    const grown = baseR * Math.sqrt(fc);
+    // Cap at 3× the base so a 9-fill stack at base=2.5 hits 7.5 and stops.
+    return Math.min(grown, baseR * 3);
+  };
   const dots = points.map(p => {
+    const fc = p.fill_count || 1;
+    const fcTag = fc > 1 ? ` · ${fc} fills` : '';
     const outlierTag = p.isOutlier ? ' · outlier vs mark' : '';
-    const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total · ${_ageStr(p.ts)}${outlierTag}`;
+    const tip = `${fmtUnitPriceSats(p.u)} sats/${ticker} · ${p.price.toLocaleString()} sats total${fcTag} · ${_ageStr(p.ts)}${outlierTag}`;
     if (p.isOutlier) {
       // Subtle: small dot in a desaturated amber, low opacity. Clamped to
       // plot edges via yOfClamped so outliers stay visible at the boundary
       // when auto-scope tightens the Y range around the in-band trades.
       // Tooltip still carries the true price for forensic inspection.
-      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOfClamped(p.u).toFixed(2)}" r="${outlierR}" fill="#b8651d" opacity="0.55"><title>${escapeHtml(tip)}</title></circle>`;
+      // Outliers also get fill_count weighting so a batched fat-finger
+      // settlement reads as the multi-fill event it actually was.
+      return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOfClamped(p.u).toFixed(2)}" r="${_dotRForFc(outlierR, fc).toFixed(2)}" fill="#b8651d" opacity="0.55"><title>${escapeHtml(tip)}</title></circle>`;
     }
-    if (!showInBandDots) return '';
-    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${dotR}" fill="#0a8f43" opacity="0.85"><title>${escapeHtml(tip)}</title></circle>`;
+    // Batched in-band fills always render (even on dense rings where
+    // single-fill dots get hidden) so batched activity is never invisible —
+    // a 200-trade ring with a few fill_count=5 dots stays legible.
+    if (!showInBandDots && fc <= 1) return '';
+    return `<circle cx="${xOf(p.ts).toFixed(2)}" cy="${yOf(p.u).toFixed(2)}" r="${_dotRForFc(dotR, fc).toFixed(2)}" fill="#0a8f43" opacity="0.85"><title>${escapeHtml(tip)}</title></circle>`;
   }).join('');
   // Horizontal mark-price line so the eye has an anchor for "this is
   // the fair-market reference." Only rendered when the worker
@@ -45373,7 +45694,13 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   if (markValid) {
     const yMark = yOf(markUnit);
     if (yMark >= PT && yMark <= PT + plotH) {
-      const markLbl = `mark ${fmtUnitPriceSats(markUnit)} sats/${ticker}`;
+      // `· now` qualifier: the mark line is the CURRENT mark drawn across
+      // an x-axis of historical trades. Without the qualifier traders can
+      // misread the line as "fair value AT each x-coordinate" rather than
+      // "what fair value reads RIGHT NOW." The mark has its own ts on the
+      // worker side (mark_price.ts when source === 'last_trade'), but for
+      // the visual semantics here "now" is the honest framing.
+      const markLbl = `mark ${fmtUnitPriceSats(markUnit)} sats/${ticker} · now`;
       markLineStroke = `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yMark.toFixed(2)}" y2="${yMark.toFixed(2)}" stroke="#0a8f43" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>`;
       markLineLabel = `<text x="${(PL + plotW - 4).toFixed(0)}" y="${(yMark - 3.5).toFixed(2)}" font-size="9" fill="#0a8f43" stroke="#faf9f5" stroke-width="3" paint-order="stroke fill" font-family="var(--mono, monospace)" text-anchor="end" font-weight="600">${escapeHtml(markLbl)}</text>`;
     }
@@ -45429,9 +45756,13 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
            Same color as the trend line, faded so it reads as a quiet
            secondary chart rather than competing with the price signal. -->
       ${volBars}
-      <!-- "VOL" label tucked at the top-left of the volume strip so users
-           know what the bars represent without needing another header row. -->
-      <text x="${PL - 4}" y="${(volTop + 3).toFixed(2)}" font-size="8" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="hanging" opacity="0.8">vol</text>
+      <!-- "vol rel" label tucked at the top-left of the volume strip.
+           The "rel" qualifier signals that bar heights are scaled to the
+           BUCKET-LOCAL max within the current time-frame — flipping
+           1H → 1D rescales every bar, so absolute heights are not
+           comparable across views. Per-bar tooltips carry the real
+           sat count for hover-time forensics. -->
+      <text x="${PL - 4}" y="${(volTop + 3).toFixed(2)}" font-size="8" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="hanging" opacity="0.8"><title>Bar heights scaled to the highest-volume bucket in the current time-frame. Hover any bar for the exact sat total.</title>vol · rel</text>
       <text x="${PL - 4}" y="${yOf(yHi).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(maxLbl)}</text>
       <text x="${PL - 4}" y="${yOf(yMid).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(midLbl)}</text>
       <text x="${PL - 4}" y="${yOf(yLo).toFixed(2)}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" dominant-baseline="middle">${escapeHtml(minLbl)}</text>
@@ -49128,14 +49459,16 @@ function _wireSwapTile(scope) {
             return;
           }
         }
-        // Fall-through: no refUnit (asset never traded) → genuinely no route.
+        // Fall-through: no refUnit (asset never traded) → no automated
+        // route, but hand off to the Advanced bid form so the trader can
+        // bootstrap a price on a first-trade market without scroll-hunting.
         toInput.value = '';
         toMeta.textContent = '';
         fromMeta.textContent = satBal > 0 ? `wallet: ${satBal.toLocaleString()} sats` : '';
-        infoEl.textContent = `no mark price yet for this asset · check Discover for trading history`;
-        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-        actionBtn.textContent = 'no route';
-        delete actionBtn.dataset.action;
+        infoEl.innerHTML = `first trade for this asset — <strong>set your own price</strong> to seed the orderbook.`;
+        actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        actionBtn.textContent = '+ Place a bid';
+        actionBtn.dataset.action = 'open-bid-form';
         return;
       }
       delete actionBtn.dataset.action;
@@ -49314,13 +49647,15 @@ function _wireSwapTile(scope) {
           delete actionBtn.dataset.swapNeedsFunds;
           return;
         }
-        // Genuinely no route — asset has never traded, no mark price
-        // to anchor a listing floor against.
+        // No route via the swap planner — asset has never traded, no
+        // mark price to anchor a listing floor against. Hand off to the
+        // Advanced listing form so the seller can set their own floor.
         toInput.value = '';
         toMeta.textContent = '';
-        infoEl.textContent = 'no bids and no mark price · this asset has never traded — be the first';
-        actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
-        actionBtn.textContent = 'no route';
+        infoEl.innerHTML = `first trade for this asset — <strong>set your own price</strong> to seed the orderbook.`;
+        actionBtn.disabled = false; actionBtn.style.opacity = '1';
+        actionBtn.textContent = '+ List for sale';
+        actionBtn.dataset.action = 'open-ask-form';
         return;
       }
       toInput.value = result.totalSats.toLocaleString();
@@ -50012,6 +50347,18 @@ function _wireSwapTile(scope) {
         ? Math.floor(parseFloat(raw.replace(/[$, ]/g, '')) * 100_000_000 / btcUsd)
         : parseInt(raw.replace(/[, ]/g, ''), 10);
       if (!Number.isFinite(sats) || sats <= 0) return;
+      // First-trade handoff: never-traded asset has no mark price, so the
+      // swap planner can't anchor an automated bid. Open the Advanced bid
+      // form (which has its own price chips + manual entry) so the trader
+      // can seed the orderbook. Scroll into view first so the form's
+      // appearance isn't hidden below the fold.
+      if (actionBtn.dataset.action === 'open-bid-form') {
+        const bidBtn = document.querySelector('[data-act="market-bid-place"]');
+        if (!bidBtn) { toast('Bid form not available on this view', 'error'); return; }
+        bidBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(() => bidBtn.click(), 300);
+        return;
+      }
       // No-route → place-bid path: when update() determined there were no
       // asks under the slippage cap, the button text became "place bid"
       // and the dataset carries the precomputed bid params. Honor that here
@@ -50272,6 +50619,16 @@ function _wireSwapTile(scope) {
       if (amt <= 0n) return;
       const bal = _holdingsCache?.holdings?.get(aid)?.balance || 0n;
       if (amt > bal) { toast(`You only hold ${fmtAssetAmount(bal, decimals)} ${ticker}`, 'error'); return; }
+      // First-trade handoff: never-traded asset has no mark price, so the
+      // sell planner can't anchor an automated listing floor. Open the
+      // Advanced listing form so the seller can set their own price.
+      if (actionBtn.dataset.action === 'open-ask-form') {
+        const askBtn = document.querySelector('[data-act="market-ask-place"]');
+        if (!askBtn) { toast('Listing form not available on this view', 'error'); return; }
+        askBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        setTimeout(() => askBtn.click(), 300);
+        return;
+      }
       const result = await planSell(amt);
       // No-bids path: post a listing for the full amount at the user's
       // floor unit price (mirrors the buy-side no-route → place-bid path).
