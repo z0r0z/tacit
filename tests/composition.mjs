@@ -373,14 +373,24 @@ function verifySchnorr(sig64, msgHash, pubXonly32) {
 // argument; default 0n keeps the existing serialisation when burn isn't used.
 function computeKernelMsg(assetId, inputOutpoints, outputCommitments, burnedAmount = 0n) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
-  const parts = [new TextEncoder().encode('tacit-kernel-v1'), assetId, new Uint8Array([inputOutpoints.length & 0xff])];
+  // Defensive: counts are u8 on the wire across every opcode that consumes
+  // this hash (CXFER/BURN/AXFER input_count, AMM LP kernel in_count, etc.),
+  // so all current callers are bounded at the wire layer. Belt-and-braces:
+  // throw on overflow rather than silently truncating with `& 0xff`. Without
+  // this, a future caller passing >255 inputs/outputs would produce a hash
+  // whose count byte disagrees with the actual data — at best a parse-time
+  // mismatch elsewhere, at worst a subtle replay window if the same hash
+  // could be reached from two different (count, data) pairs.
+  if (inputOutpoints.length > 0xff) throw new Error('input_count must fit in u8 (<=255)');
+  if (outputCommitments.length > 0xff) throw new Error('output_count must fit in u8 (<=255)');
+  const parts = [new TextEncoder().encode('tacit-kernel-v1'), assetId, new Uint8Array([inputOutpoints.length])];
   for (const op of inputOutpoints) {
     parts.push(reverseBytes(hexToBytes(op.txid)));
     const voutLE = new Uint8Array(4);
     new DataView(voutLE.buffer).setUint32(0, op.vout >>> 0, true);
     parts.push(voutLE);
   }
-  parts.push(new Uint8Array([outputCommitments.length & 0xff]));
+  parts.push(new Uint8Array([outputCommitments.length]));
   for (const c of outputCommitments) parts.push(c);
   const burnLE = new Uint8Array(8);
   const view = new DataView(burnLE.buffer);
