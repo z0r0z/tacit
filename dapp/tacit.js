@@ -54529,6 +54529,7 @@ export {
   buildAirdropClaimMsg, verifyAirdropClaimSig, recoverEthAddrFromSig,
   wallet,
   buildAndBroadcastCXferMulti,
+  carveExactAmount,
   scanHoldings, invalidateHoldingsCache,
   getFeeRate, broadcast, broadcastWithRetry, getTx,
   estCXferRevealVb, estCommitVb, feeFor,
