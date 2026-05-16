@@ -1182,6 +1182,17 @@ slashes, change settlement atomicity, or alter the fundamental
 trust model. Hard limits are enumerated and enforced at the
 validator level.
 
+> **Activation gating.** All governance in this section is
+> non-functional until `SPEC-GOVERNANCE-AMENDMENT.md` activates.
+> Until that amendment's voting envelopes (T_GOV_PROPOSAL,
+> T_GOV_VOTE, T_GOV_VETO, T_GOV_EXECUTE) are deployed and the
+> Groth16 ceremony for vote-weight proofs is complete, every
+> parameter in this section operates at its launch default and is
+> effectively immutable. This is a feature for v1 launch: the
+> protocol activates as a Liquity-style fully-immutable wrapper
+> and gains optional bounded governance later as a clean additive
+> layer.
+
 ### 5.46.1 Why TAC holders are the right governance class
 
 TAC holders bear the protocol's economic risk: their TAC backstops
@@ -1210,6 +1221,7 @@ Adjustable within safety bands; changes apply prospectively only
 | `MAX_SINGLE_POSITION_BTC` | 10 BTC | [1 BTC, 50 BTC] |
 | `TWAP_WINDOW` | 180 blocks | [60, 1440] |
 | `MAX_FORCE_CLOSES_PER_BLOCK` | 5 | [1, 20] |
+| `VOTE_TENURE_BLOCKS` | 100 | [6, 4032] |
 
 Adjustments outside these bands require a formal SPEC amendment
 (i.e., a hard fork), not a governance vote.
@@ -1230,13 +1242,32 @@ capture risk.
 ### 5.46.4 Tier C — Treasury / distribution (14-day timelock)
 
 Decisions about accumulated reserves with no purely-mechanical
-default destination.
+default destination. Tier C proposals MUST specify:
 
-| Decision | Default behavior absent governance |
-|---|---|
-| Insurance pool residue (if unclaimed for > 6 months) | Remains in pool indefinitely |
-| Treasury deployment (ecosystem grants, dev funding, etc.) | No automatic deployment |
-| New wrapper variant onboarding | Each requires its own SPEC amendment |
+- **Exact destination**: a single deterministic recipient
+  (Pedersen commitment, address, or escrow keyed by content hash).
+  No discretionary multisig allocation; no recipient set to "TBD".
+- **Exact amount**: precise TAC quantity or precise share of
+  current pool balance, computable at vote-completion block.
+  No "up to X" approvals.
+- **One-shot only**: each proposal authorizes exactly one transfer.
+  No recurring allocations, no streaming, no continuous spends
+  without per-period re-approval.
+- **No discretionary execution windows**: the transfer must execute
+  within a bounded window after timelock expiry (e.g., 100 blocks);
+  otherwise the proposal expires and must be re-proposed.
+
+This tight scoping is deliberate: discretionary treasury spend is
+the corner where DeFi governance most reliably fails (Frax,
+MakerDAO post-RAI). Constraining each proposal to a single,
+explicit transfer removes the surface area where mission creep,
+unconscious spending, and capture dynamics emerge.
+
+| Decision | Default absent governance | Notes |
+|---|---|---|
+| Insurance pool residue (if accumulated > 12 months without claim) | Remains in pool indefinitely | Tier C can propose redirecting to specific public-good destination |
+| TAC fee accrual destination | Accrued to insurance pool by default | Tier C can propose alternate destination per the constraints above |
+| New wrapper variant onboarding | Each requires its own SPEC amendment | Not a Tier C decision; protocol-amendment-level |
 
 ### 5.46.5 Hard limits — IMMUTABLE, cannot be changed by governance
 
@@ -1269,17 +1300,49 @@ a governance vote:
 Standard TAC-weighted on-chain governance:
 
 - **Vote weight**: TAC balance at proposal-snapshot block, INCLUDING
-  TAC backing the holder's LP positions in canonical cBTC.tac/TAC
-  and cBTC.zk/TAC AMM pools. The LP-derived TAC is computed as
+  TAC backing the holder's LP positions in canonical AMM pools.
+  The LP-derived TAC is computed by summing across ALL confirmed
+  AMM pools for the (cBTC.tac, TAC) and (cBTC.zk, TAC) asset pairs
+  (regardless of fee_bps tier or capability_flags). For each such
+  pool, the holder's contribution is
   `(holder_lp_balance / pool_lp_supply) × pool_tac_reserve` at the
-  snapshot block. This means LPs vote with their full TAC economic
-  exposure, not just their unlocked balance.
-- **Proposal threshold**: 0.5% of circulating TAC to submit
-- **Quorum**: 5% of circulating TAC must participate for validity
-- **Approval threshold**: 60% of votes cast in favor
-- **Timelock**: per tier (14 days slow, 24 hours fast)
+  snapshot block. The total vote_weight = direct_TAC_balance +
+  Σ over canonical pools (LP-derived TAC). This means LPs vote with
+  their full TAC economic exposure across all pool variants.
+- **Minimum-balance tenure requirement** (anti-flash-mint defense):
+  for both direct TAC balance AND each LP balance contributing to
+  vote weight, the validator uses the MINIMUM balance held
+  continuously over the window `[snapshot_block − VOTE_TENURE_BLOCKS,
+  snapshot_block]`. Default `VOTE_TENURE_BLOCKS = 100`
+  (~17 hours at Bitcoin's 10-min block target). This blocks the
+  LP-flash-mint attack: an attacker who briefly LPs into the
+  canonical pool at snapshot-block to inflate their voting weight
+  finds their effective LP balance computed against the minimum
+  they held continuously, which was zero before the flash-mint.
+  Even without flash loans on Bitcoin today, this is the targeted
+  defense against any future tacit lending primitive that could
+  enable atomic borrow-LP-vote-unwind sequences.
+- **Snapshot block timing**: proposal-snapshot block is the block at
+  which the proposal envelope confirms. All balance reads (direct
+  TAC + LP positions + circulating-supply denominator) sample at
+  this height.
+- **Reorg-aware vote semantics**: vote envelopes bind to
+  `(proposal_id, voter_pubkey, snapshot_block_hash)`. A reorg that
+  reorganizes the snapshot block invalidates the proposal and any
+  votes against it; the proposal must be re-submitted under a new
+  snapshot. This prevents replay of votes onto a different snapshot
+  block state.
+- **Proposal threshold**: 0.5% of circulating TAC at the
+  proposal-snapshot block to submit a valid proposal.
+- **Quorum**: ≥ 5% of circulating TAC AT THE PROPOSAL-SNAPSHOT BLOCK
+  must participate. Pinning the supply denominator to snapshot time
+  prevents attackers from inflating supply between proposal and
+  vote-tally to fail quorum.
+- **Approval threshold**: 60% of votes cast in favor.
+- **Timelock**: per tier (14 days slow, 24 hours fast). Timelock
+  starts at vote completion, not proposal submission.
 - **Veto safety valve**: 67% supermajority can veto any pending
-  proposal during its timelock window (prevents 50.1% capture)
+  proposal during its timelock window (prevents 50.1% capture).
 
 **LP-aligned governance is a structural property.** LPs in the
 canonical AMM pools are the participants whose actions directly
@@ -1292,15 +1355,26 @@ the people most affected by oracle decisions. No special "LP-only
 vote class" is needed — the LP economic stake naturally amplifies
 in oracle-relevant proposals.
 
-The voting envelope format and validator logic are specified in a
-**separate governance amendment** (TBD). This amendment defines
-the SCOPE of governance over cBTC.tac parameters but doesn't
-specify the voting wire format — that's protocol-wide infrastructure
-spec'd cross-amendment.
+The voting envelope format and validator logic are specified in
+`SPEC-GOVERNANCE-AMENDMENT.md` (the protocol-wide governance
+framework). This amendment defines the SCOPE of governance over
+cBTC.tac parameters (which params, what bands, what tiers, how
+vote weight is computed); the governance amendment defines the
+voting MECHANISM (T_GOV_PROPOSAL / T_GOV_VOTE / T_GOV_VETO /
+T_GOV_EXECUTE envelopes, snapshot mechanics, tally rules, state
+machine).
 
-Until the governance amendment ships, all parameters in §5.46.2 /
-§5.46.3 / §5.46.4 operate at their defaults. The protocol works
-fully without any governance vote ever happening.
+Until the governance amendment activates (its Groth16 ceremony
+completes + worker/dapp deployments are live), all parameters in
+§5.46.2 / §5.46.3 / §5.46.4 operate at their defaults. The
+protocol works fully without any governance vote ever happening.
+
+To opt cBTC.tac into governance once the governance framework is
+live, the cBTC.tac amendment registers as a target amendment per
+SPEC-GOVERNANCE-AMENDMENT §6.1.1, with `amendment_id =
+SHA256("SPEC-CBTC-TAC-AMENDMENT-v1")`. The governable parameter
+set (§5.46.2 + §5.46.3 + §5.46.4), safety bands, and vote-weight
+rule (§5.46.6) are read directly from this amendment's spec text.
 
 ### 5.46.7 Existing-position protection (retroactivity rule)
 
