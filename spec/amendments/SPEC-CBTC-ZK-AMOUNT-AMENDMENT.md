@@ -3,8 +3,12 @@
 > **STATUS: DRAFT** (security-fixed 2026-05-17). Companion to
 > `SPEC-CBTC-ZK-AMENDMENT.md`. Defines the cryptographic machinery
 > for fractional share UTXOs — two-key slot construction
-> (§5.24.0), T_SLOT_FRACTIONALIZE (`0x46`), T_SLOT_RECONSOLIDATE
-> (`0x47`).
+> (§5.24.0), T_SLOT_FRACTIONALIZE (`0x4D`), T_SLOT_RECONSOLIDATE
+> (`0x4E`). (Opcodes renumbered 2026-05-17 to free 0x46/0x47 for
+> SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT's T_SLOT_SPLIT/T_SLOT_MERGE,
+> which ship in v1; this amendment's opcodes are reserved for the
+> covenants-era trustless fractional path or for activation under
+> the cBTC.tac bonded layer per SPEC-CBTC-TAC-AMENDMENT.)
 >
 > **Scope clarification (2026-05-17).** This amendment specifies the
 > wire format and validator algorithms for the fractional-share
@@ -255,7 +259,7 @@ T_SLOT_FRACTIONALIZE confirms.
 
 ---
 
-## §5.25 T_SLOT_FRACTIONALIZE (`0x46`)
+## §5.25 T_SLOT_FRACTIONALIZE (`0x4D`)
 
 Converts a `live` slot leaf to N standard tacit-asset cBTC.zk share
 UTXOs whose amounts sum to the slot's `denom_sats`. The backing
@@ -277,7 +281,7 @@ with zero special-case handling at consumer sites.
 
 ```
 T_SLOT_FRACTIONALIZE
-   opcode              1 byte   (0x46)
+   opcode              1 byte   (0x4D)
    network_tag         1 byte
    asset_id            32 bytes (cBTC.zk variant asset_id)
    denom_sats_LE       8 bytes  (u64; the slot's denomination)
@@ -438,7 +442,7 @@ public.
 
 ---
 
-## §5.26 T_SLOT_RECONSOLIDATE (`0x47`)
+## §5.26 T_SLOT_RECONSOLIDATE (`0x4E`)
 
 Consumes M standard tacit-asset cBTC.zk share UTXOs whose amounts
 sum to exactly `denom_sats`, and restores a previously-fractionalized
@@ -456,7 +460,7 @@ and may be burned (§5.22), rotated (§5.23), or re-fractionalized.
 
 ```
 T_SLOT_RECONSOLIDATE
-   opcode              1 byte   (0x47)
+   opcode              1 byte   (0x4E)
    network_tag         1 byte
    asset_id            32 bytes (cBTC.zk variant asset_id)
    denom_sats_LE       8 bytes  (u64; target slot's denomination)
@@ -767,8 +771,9 @@ together with the rest of the cBTC.zk opcode family — there is no
 in-flight state to migrate and no divergence between old and new
 indexers to coordinate. The two-key slot construction (§5.24.0),
 the `live` / `fractionalized` / `redeemed` state field, and opcodes
-0x46–0x47 are part of the canonical opcode semantics at first
-confirmation.
+0x4D–0x4E are reserved opcode semantics, activatable via cBTC.tac
+deposit/withdraw envelopes (SPEC-CBTC-TAC-AMENDMENT) or a future
+covenants-era trustless amendment.
 
 Dapps SHOULD refuse to construct T_SLOT_BURN or T_SLOT_ROTATE
 against leaves they know to be fractionalized, surfacing the state
@@ -780,8 +785,8 @@ to the user and offering reconsolidate as the next step.
 
 Add to §3 *opcodes table*:
 
-- `0x46` `T_SLOT_FRACTIONALIZE` — slot → standard tacit shares (§5.25)
-- `0x47` `T_SLOT_RECONSOLIDATE` — standard tacit shares → slot (§5.26)
+- `0x4D` `T_SLOT_FRACTIONALIZE` — slot → standard tacit shares (§5.25); reserved for future activation
+- `0x4E` `T_SLOT_RECONSOLIDATE` — standard tacit shares → slot (§5.26); reserved for future activation
 
 ---
 
