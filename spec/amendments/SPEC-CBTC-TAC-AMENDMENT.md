@@ -982,9 +982,9 @@ cBTC.tac.lp is a normal tacit asset. It can be:
 
 - Transferred privately via T_AXFER_VAR
 - Listed on the marketplace
-- Used as collateral in cUSD CDP (per SPEC-CUSD-CDP-AMENDMENT)
-- LP'd into other AMM pools (e.g., cBTC.tac.lp/cUSD pool — though
-  this is a niche product surface)
+- Used as collateral in cUSD.tac CDP (per SPEC-CUSD-TAC-AMENDMENT)
+- LP'd into other AMM pools (e.g., cBTC.tac.lp/cUSD.tac pool —
+  though this is a niche product surface)
 - Held in cold storage as long-term BTC exposure with passive yield
 
 The composability comes from being a standard LP token, not from any

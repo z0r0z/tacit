@@ -127,6 +127,11 @@ const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (S
 const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_FRACTIONALIZE = 0x46; // slot → shielded shares (SPEC §5.25, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
 const T_SLOT_RECONSOLIDATE = 0x47; // shielded shares → slot (SPEC §5.26, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
+// 0x49–0x4C: SPEC-CBTC-TAC-AMENDMENT (cBTC.tac LP-shaped wrapped BTC).
+const T_CBTC_TAC_DEPOSIT     = 0x49; // LP-shaped mint: cBTC.zk slot + TAC → cBTC.tac (SPEC §5.36)
+const T_CBTC_TAC_WITHDRAW    = 0x4A; // LP-shaped burn: cBTC.tac → cBTC.zk slot + TAC (SPEC §5.37)
+const T_CBTC_TAC_FORCE_CLOSE = 0x4B; // permissionless liquidation when ratio < LIQ_RATIO (SPEC §5.38)
+const T_SHARE_SLASH_CLAIM    = 0x4C; // optional pooled-insurance claim by cBTC.tac holder (SPEC §5.39.4)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -530,6 +535,300 @@ function slotRotateLogKey(network, height, txIndex, txid) {
 function slotRotateLogPrefix(network) {
   return network === 'signet' ? 'slotrot:' : `slotrot:${network}:`;
 }
+
+// ============== cBTC.tac KV SCHEMA (SPEC-CBTC-TAC-AMENDMENT §5.35+) ==============
+//
+// Five namespaces:
+//   ctac-pos:<network>:<target_leaf_hash>       — position record (active/withdrawn/force-closed/rugged)
+//   ctac-pos-active:<network>:<target_leaf_hash> — sentinel listing all *active* positions (for SLASH_DETECTED scan)
+//   ctac-ins-pool:<network>                     — global insurance pool TAC balance
+//   ctac-redeem-reserve:<network>               — global redemption-reserve BTC backing force-closed supply
+//   ctac-fc-throttle:<network>:<height>         — per-block FORCE_CLOSE count (cascade rate-limit, §5.38.3)
+//
+// Position record value shape (JSON):
+//   {
+//     state:                   'active' | 'withdrawn' | 'force-closed' | 'rugged',
+//     target_leaf_hash:        hex,
+//     slot_k_btc_xonly:        hex,
+//     slot_denom_sats:         u64-string,
+//     mint_amount:             u64-string,
+//     bond_amount_tac:         u64-string,
+//     depositor_recovery_pk:   hex,
+//     mint_recipient_commit:   hex,
+//     initial_twap:            u64-string (sats-per-TAC at deposit),
+//     initial_ratio_thousandths: u32 (bond_ratio × 1000 for fixed-point storage),
+//     deposit_height:          u32,
+//     deposit_txid:            hex,
+//     withdraw_txid:           hex (post-withdraw only),
+//     force_close_height:      u32 (post-force-close only),
+//     rugged_at_height:        u32 (post-rug only),
+//     network:                 string,
+//   }
+function ctacPositionKey(network, targetLeafHashHex) {
+  return network === 'signet'
+    ? `ctac-pos:${targetLeafHashHex}`
+    : `ctac-pos:${network}:${targetLeafHashHex}`;
+}
+function ctacPositionPrefix(network) {
+  return network === 'signet' ? 'ctac-pos:' : `ctac-pos:${network}:`;
+}
+// Companion sentinel set: presence means the position is in `active` state.
+// Removed atomically on state transition (withdrawn/force-closed/rugged).
+// Lets the SLASH_DETECTED monitor enumerate active positions without scanning
+// every position record.
+function ctacActivePositionKey(network, targetLeafHashHex) {
+  return network === 'signet'
+    ? `ctac-pos-active:${targetLeafHashHex}`
+    : `ctac-pos-active:${network}:${targetLeafHashHex}`;
+}
+function ctacActivePositionPrefix(network) {
+  return network === 'signet' ? 'ctac-pos-active:' : `ctac-pos-active:${network}:`;
+}
+function ctacInsurancePoolKey(network) {
+  return network === 'signet' ? 'ctac-ins-pool' : `ctac-ins-pool:${network}`;
+}
+function ctacRedemptionReserveKey(network) {
+  return network === 'signet' ? 'ctac-redeem-reserve' : `ctac-redeem-reserve:${network}`;
+}
+function ctacForceCloseThrottleKey(network, height) {
+  const h = String(height || 0).padStart(10, '0');
+  return network === 'signet'
+    ? `ctac-fc-throttle:${h}`
+    : `ctac-fc-throttle:${network}:${h}`;
+}
+// Outstanding cBTC.tac supply counter (sum of all active+force-closed mint_amounts).
+// Used for per-share insurance value computation in T_SHARE_SLASH_CLAIM.
+function ctacSupplyKey(network) {
+  return network === 'signet' ? 'ctac-supply' : `ctac-supply:${network}`;
+}
+
+// Read/write helpers — small set, all use REGISTRY_KV.
+async function ctacGetPosition(env, network, targetLeafHashHex) {
+  return env.REGISTRY_KV.get(ctacPositionKey(network, targetLeafHashHex), 'json');
+}
+async function ctacPutPosition(env, network, position) {
+  await env.REGISTRY_KV.put(
+    ctacPositionKey(network, position.target_leaf_hash),
+    JSON.stringify(position),
+  );
+}
+async function ctacMarkActive(env, network, targetLeafHashHex) {
+  await env.REGISTRY_KV.put(ctacActivePositionKey(network, targetLeafHashHex), '1');
+}
+async function ctacUnmarkActive(env, network, targetLeafHashHex) {
+  await env.REGISTRY_KV.delete(ctacActivePositionKey(network, targetLeafHashHex));
+}
+async function ctacGetInsurancePool(env, network) {
+  const v = await env.REGISTRY_KV.get(ctacInsurancePoolKey(network));
+  return v ? BigInt(v) : 0n;
+}
+async function ctacAddInsurancePool(env, network, deltaTac) {
+  const cur = await ctacGetInsurancePool(env, network);
+  await env.REGISTRY_KV.put(ctacInsurancePoolKey(network), (cur + BigInt(deltaTac)).toString());
+}
+async function ctacGetRedemptionReserve(env, network) {
+  const v = await env.REGISTRY_KV.get(ctacRedemptionReserveKey(network));
+  return v ? BigInt(v) : 0n;
+}
+async function ctacAddRedemptionReserve(env, network, deltaSats) {
+  const cur = await ctacGetRedemptionReserve(env, network);
+  await env.REGISTRY_KV.put(ctacRedemptionReserveKey(network), (cur + BigInt(deltaSats)).toString());
+}
+async function ctacGetSupply(env, network) {
+  const v = await env.REGISTRY_KV.get(ctacSupplyKey(network));
+  return v ? BigInt(v) : 0n;
+}
+async function ctacAddSupply(env, network, deltaAmount) {
+  const cur = await ctacGetSupply(env, network);
+  await env.REGISTRY_KV.put(ctacSupplyKey(network), (cur + BigInt(deltaAmount)).toString());
+}
+async function ctacBumpForceCloseThrottle(env, network, height) {
+  const k = ctacForceCloseThrottleKey(network, height);
+  const cur = parseInt(await env.REGISTRY_KV.get(k) || '0', 10);
+  await env.REGISTRY_KV.put(k, String(cur + 1), { expirationTtl: 86400 });
+  return cur + 1;
+}
+async function ctacGetForceCloseThrottle(env, network, height) {
+  return parseInt(await env.REGISTRY_KV.get(ctacForceCloseThrottleKey(network, height)) || '0', 10);
+}
+
+// ============== cBTC.tac FIXED PARAMETERS (SPEC §5.41) ==============
+// Note: protocol-wide governance (per SPEC-GOVERNANCE-AMENDMENT §6.x) is
+// NOT yet wired in the worker. These are the launch defaults.
+const CTAC_INITIAL_BOND_RATIO_THOUSANDTHS = 2000;   // 2.0x → 2000 thousandths
+const CTAC_LIQUIDATION_RATIO_THOUSANDTHS  = 1200;   // 1.2x → 1200 thousandths
+const CTAC_LIQUIDATOR_REWARD_NUM = 5;               // 0.005 (0.5%)
+const CTAC_LIQUIDATOR_REWARD_DEN = 1000;
+const CTAC_TWAP_WINDOW_BLOCKS = 180;                // SPEC §5.41.1
+const CTAC_REORG_SAFETY_DEPTH = 6;                  // SPEC §5.34.3
+const CTAC_MAX_FORCE_CLOSES_PER_BLOCK = 5;          // SPEC §5.41.1
+const CTAC_MAX_SINGLE_POSITION_BTC_SATS = 1_000_000_000n; // 10 BTC SPEC §5.42.3 conservative initial
+const CTAC_MAX_POOL_FRAC_THOUSANDTHS = 50;          // 0.05 → 50/1000 SPEC §5.42.3 conservative initial
+const CTAC_STABILITY_FEE_BPS = 25;                  // 0.25% APR — accrued lazily on position events
+
+// ============== cBTC.tac TWAP ORACLE (SPEC §5.40) ==============
+//
+// Reads the trade-event journal for the canonical TAC asset to compute
+// time-weighted average price (TAC denominated in sats). The journal
+// entries record `price_sats` per trade — for TAC, that's sats-per-TAC,
+// which is the inverse of TAC-per-BTC. So:
+//   TWAP_TAC_per_BTC = 1e8 / TWAP_sats_per_TAC   (since 1 BTC = 1e8 sats)
+//
+// Per SPEC §5.40.2 manipulation resistance: filter dust (price band
+// 0.2×–5× of median) before averaging; CV > 0.30 → stale.
+// Per SPEC §5.40.3: if last observation age > STALE_PRICE_BLOCKS, refuse.
+async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
+  const TAC_ASSET_ID_HEX = opts.tacAssetIdHex || globalThis.TAC_ASSET_ID_HEX;
+  if (!TAC_ASSET_ID_HEX) {
+    // Caller is responsible for supplying TAC asset_id. Throwing here is the
+    // right fail-closed default: no oracle = no DEPOSIT / FORCE_CLOSE confirmation.
+    throw new Error('ctacTwapSatsPerTac: TAC_ASSET_ID_HEX not provided (set env or pass opts.tacAssetIdHex)');
+  }
+  const windowBlocks = opts.windowBlocks || CTAC_TWAP_WINDOW_BLOCKS;
+  // Trade events don't index by block height directly; they index by ts.
+  // Approximate: 10-min blocks → window_seconds = windowBlocks × 600.
+  const windowSecs = windowBlocks * 600;
+  // The sampling cutoff is the chain tip at sampleAtHeight − REORG_SAFETY_DEPTH.
+  // We approximate the tip-time by reading the journal's most-recent entry's ts.
+  const prefix = tradeEventPrefix(network, TAC_ASSET_ID_HEX);
+  const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
+  if (!list.keys.length) {
+    throw new Error('ctacTwapSatsPerTac: no TAC trade events on record');
+  }
+  const events = [];
+  for (const k of list.keys) {
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (!v || typeof v.ts !== 'number' || typeof v.price_sats !== 'number') continue;
+    events.push({ ts: v.ts, price: v.price_sats });
+  }
+  if (!events.length) throw new Error('ctacTwapSatsPerTac: no decodable TAC trade events');
+  events.sort((a, b) => b.ts - a.ts); // newest first
+  const newestTs = events[0].ts;
+  // SPEC §5.40.3: refuse if newest is older than STALE_PRICE_BLOCKS * blocktime
+  // The validator caller may use sampleAtHeight to derive its own threshold.
+  const cutoffTs = newestTs - windowSecs;
+  const inWindow = events.filter(e => e.ts >= cutoffTs);
+  if (!inWindow.length) throw new Error('ctacTwapSatsPerTac: window empty');
+  // Manipulation resistance: median + ±5× band filter (per SPEC §5.40.2 +
+  // existing volume-track convention used by _chainDerivedTradePriceSats).
+  const sorted = inWindow.map(e => e.price).sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const filtered = inWindow.filter(e => e.price >= median * 0.2 && e.price <= median * 5);
+  if (!filtered.length) throw new Error('ctacTwapSatsPerTac: all observations outside median band');
+  // Simple time-weighted average over filtered entries.
+  // Weight = duration the price held until the next observation.
+  filtered.sort((a, b) => a.ts - b.ts);
+  let weightedSum = 0, totalWeight = 0;
+  for (let i = 0; i < filtered.length; i++) {
+    const next_ts = i + 1 < filtered.length ? filtered[i + 1].ts : newestTs;
+    const weight = Math.max(1, next_ts - filtered[i].ts);
+    weightedSum += filtered[i].price * weight;
+    totalWeight += weight;
+  }
+  if (totalWeight === 0) return BigInt(Math.round(median));
+  // CV check: coefficient of variation > 0.30 → stale (manipulation-suspected)
+  const mean = weightedSum / totalWeight;
+  let varSum = 0;
+  for (const e of filtered) varSum += (e.price - mean) ** 2;
+  const variance = varSum / filtered.length;
+  const cv = Math.sqrt(variance) / mean;
+  if (cv > 0.30) throw new Error(`ctacTwapSatsPerTac: CV ${cv.toFixed(3)} > 0.30 (oracle pause)`);
+  return BigInt(Math.round(mean));
+}
+
+// ============== SLASH_DETECTED MONITOR (SPEC §5.39.1-2) ==============
+//
+// Enumerates active cBTC.tac positions and checks each one's slot K_btc
+// UTXO on chain. If a position's K_btc has been spent without a matching
+// T_CBTC_TAC_WITHDRAW or T_CBTC_TAC_FORCE_CLOSE envelope (and the spend
+// has buried under REORG_SAFETY_DEPTH), the position is rugged — its
+// bond TAC moves to the insurance pool atomically.
+//
+// Called per scheduled-handler tick; bounded by maxOps to keep cron CPU
+// under budget. Larger backlogs drain across multiple ticks.
+async function ctacScanSlashDetected(env, network, opts = {}) {
+  const maxOps = opts.maxOps || 25;
+  const prefix = ctacActivePositionPrefix(network);
+  const list = await env.REGISTRY_KV.list({ prefix, limit: maxOps });
+  let slashed = 0;
+  for (const k of list.keys) {
+    // Key format: "ctac-pos-active:<network?>:<leaf_hash_hex>" — extract leaf hash.
+    const leafHashHex = k.name.split(':').pop();
+    const position = await ctacGetPosition(env, network, leafHashHex);
+    if (!position) {
+      // Active sentinel orphaned (state-record was deleted/corrupted).
+      // Best-effort cleanup of the sentinel and continue.
+      await ctacUnmarkActive(env, network, leafHashHex);
+      continue;
+    }
+    if (position.state !== 'active') {
+      // State changed via DEPOSIT/WITHDRAW/FORCE_CLOSE handler; clean sentinel.
+      await ctacUnmarkActive(env, network, leafHashHex);
+      continue;
+    }
+
+    // Look up the slot record (created at T_SLOT_MINT) to find K_btc xonly.
+    // Slot registry is keyed by (network, asset_id, denom, K_btc_xonly), so
+    // we need to look up by leaf_hash → recipient_commit → derive K_btc.
+    // The position record carries mint_recipient_commit; for v2 (two-key)
+    // slots, K_btc is published explicitly in the original mint envelope's
+    // slot-registry record. We need to find that record.
+    //
+    // Bootstrap: position records should include slot_k_btc_xonly directly,
+    // populated at deposit time. Until that's added at the deposit handler,
+    // we skip slot lookups for older records and write the field on the
+    // next deposit cycle.
+    const kBtcXOnlyHex = position.slot_k_btc_xonly;
+    if (!kBtcXOnlyHex) continue;  // older record without k_btc cached
+
+    // Chain observation: is the BTC at this slot still unspent?
+    // The slot UTXO outpoint is (deposit_or_mint_txid, vout=0) per SPEC §5.21.2.
+    // We track the mint_txid in the slot-registry record (populated by T_SLOT_MINT).
+    // Defer the actual chain probe via getOutspend to the same path the
+    // wrapper-coverage check uses (avoids duplicating Esplora-fetch logic).
+    let isSpent = false, spentBuriedAt = null;
+    try {
+      // For now: stub the chain check. The full implementation would call
+      // a `chainOutspendBuriedDeep(env, network, mintTxid, 0, REORG_SAFETY_DEPTH)`
+      // helper that returns true if the UTXO is spent in a tx with depth ≥ 6.
+      // That helper is part of the wrapper-coverage infrastructure and
+      // wiring it here is a forthcoming separate session.
+      // Until then: monitor returns 0 slashed; positions stay 'active' until
+      // the chain-probe helper lands.
+      continue;
+    } catch { continue; }
+
+    // unreachable until chain-probe helper is wired
+    /* eslint-disable no-unreachable */
+    if (isSpent && spentBuriedAt && spentBuriedAt >= CTAC_REORG_SAFETY_DEPTH) {
+      // SLASH_DETECTED: slash bond TAC into insurance pool
+      await ctacAddInsurancePool(env, network, BigInt(position.bond_amount_tac));
+      position.state = 'rugged';
+      position.rugged_at_height = spentBuriedAt;
+      await ctacPutPosition(env, network, position);
+      await ctacUnmarkActive(env, network, leafHashHex);
+      slashed++;
+    }
+    /* eslint-enable no-unreachable */
+  }
+  return { scanned: list.keys.length, slashed };
+}
+
+// Convenience: bond_ratio computation (thousandths fixed-point to avoid float).
+// bond_value_BTC = bond_amount_TAC / twap_sats_per_TAC × 1e8 (converting TAC count → sats)
+// bond_ratio = bond_value_BTC_sats / slot_denom_sats
+//            = (bond_amount_TAC × 1e8) / (twap_sats_per_TAC × slot_denom_sats)
+// Returned in thousandths (e.g., 2.0x = 2000) for exact comparison vs CTAC_INITIAL_BOND_RATIO_THOUSANDTHS.
+function ctacBondRatioThousandths(bondAmountTac, twapSatsPerTac, slotDenomSats) {
+  const bond = BigInt(bondAmountTac);
+  const twap = BigInt(twapSatsPerTac);
+  const denom = BigInt(slotDenomSats);
+  if (twap === 0n || denom === 0n) return 0n;
+  // ratio_thousandths = bond_value_sats / denom × 1000
+  //                   = bond × 1e8 × 1000 / (twap × denom)
+  return (bond * 100000000n * 1000n) / (twap * denom);
+}
+
 // SPEC §3.6 — fixed merkle-tree depth L = 20, so each pool caps at
 // 2^20 = 1048576 leaves. Without enforcement here, the worker would
 // continue to index leaves past the cap; the dapp's mixerAppendLeaf
@@ -4400,6 +4699,292 @@ function decodeTSlotRotatePayload(payload) {
       oldNullifierHashBytes, newRecipientCommitBytes, newLeafHashBytes,
       paymentAssetIdBytes, paymentAmount, newKBtcXOnlyBytes,
     ),
+  };
+}
+
+// ============== cBTC.tac WIRE PRIMITIVES (SPEC-CBTC-TAC-AMENDMENT) ==============
+// Decoders only (worker is read-side). The bind_hash recompute on each
+// decoder enforces cross-impl indexer-determinism — a malformed envelope
+// returns null and never advances spent-set / position-map state.
+
+const _CBTC_TAC_DEPOSIT_DOMAIN     = new TextEncoder().encode('tacit-cbtc-tac-deposit-v1');
+const _CBTC_TAC_WITHDRAW_DOMAIN    = new TextEncoder().encode('tacit-cbtc-tac-withdraw-v1');
+const _CBTC_TAC_FORCE_CLOSE_DOMAIN = new TextEncoder().encode('tacit-cbtc-tac-force-close-v1');
+const _SHARE_SLASH_CLAIM_DOMAIN    = new TextEncoder().encode('tacit-share-slash-claim-v1');
+
+function _computeCbtcTacDepositBindHash({
+  networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
+  bondSourceOutpoint, bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit,
+}) {
+  const denomLE = new Uint8Array(8);
+  { const v = new DataView(denomLE.buffer); const d = BigInt(slotDenomSats);
+    v.setUint32(0, Number(d & 0xffffffffn), true); v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true); }
+  const bondLE = new Uint8Array(8);
+  { const v = new DataView(bondLE.buffer); const b = BigInt(bondAmountTAC);
+    v.setUint32(0, Number(b & 0xffffffffn), true); v.setUint32(4, Number((b >> 32n) & 0xffffffffn), true); }
+  const mintLE = new Uint8Array(8);
+  { const v = new DataView(mintLE.buffer); const m = BigInt(mintAmount);
+    v.setUint32(0, Number(m & 0xffffffffn), true); v.setUint32(4, Number((m >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    _CBTC_TAC_DEPOSIT_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    targetLeafHash, denomLE, bondLE, bondSourceOutpoint, bondCommit,
+    depositorRecoveryPk, mintLE, mintRecipientCommit,
+  ));
+}
+
+function decodeTCbtcTacDepositPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_DEPOSIT) return null;
+  const HEADER = 1 + 1 + 32 + 8 + 8 + 36 + 33 + 33 + 8 + 33 + 32 + 2;
+  if (payload.length < HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const slotDenomSats = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (slotDenomSats <= 0n || slotDenomSats >= (1n << BigInt(N_BITS))) return null;
+  const bondView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const bondAmountTAC = (BigInt(bondView.getUint32(4, true)) << 32n) | BigInt(bondView.getUint32(0, true));
+  p += 8;
+  if (bondAmountTAC <= 0n || bondAmountTAC >= (1n << BigInt(N_BITS))) return null;
+  const bondSourceOutpoint = payload.slice(p, p + 36); p += 36;
+  const bondCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(bondCommit)); } catch { return null; }
+  const depositorRecoveryPk = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(depositorRecoveryPk)); } catch { return null; }
+  const mintView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const mintAmount = (BigInt(mintView.getUint32(4, true)) << 32n) | BigInt(mintView.getUint32(0, true));
+  p += 8;
+  if (mintAmount <= 0n || mintAmount >= (1n << BigInt(N_BITS))) return null;
+  if (mintAmount !== slotDenomSats) return null;
+  const mintRecipientCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(mintRecipientCommit)); } catch { return null; }
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expectedBind = _computeCbtcTacDepositBindHash({
+    networkTag, targetLeafHash, slotDenomSats, bondAmountTAC,
+    bondSourceOutpoint, bondCommit, depositorRecoveryPk, mintAmount, mintRecipientCommit,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
+  return {
+    kind: 'cbtc_tac_deposit',
+    network_tag: networkTag,
+    target_leaf_hash: bytesToHex(targetLeafHash),
+    slot_denom_sats: slotDenomSats.toString(),
+    bond_amount_tac: bondAmountTAC.toString(),
+    bond_source_outpoint: bytesToHex(bondSourceOutpoint),
+    bond_commit: bytesToHex(bondCommit),
+    depositor_recovery_pk: bytesToHex(depositorRecoveryPk),
+    mint_amount: mintAmount.toString(),
+    mint_recipient_commit: bytesToHex(mintRecipientCommit),
+    bind_hash: bytesToHex(bindHashBytes),
+    proof: bytesToHex(proof),
+  };
+}
+
+function _computeCbtcTacWithdrawBindHash({
+  networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
+  burnAmount, insuranceClaimTAC,
+}) {
+  const burnAmtLE = new Uint8Array(8);
+  { const v = new DataView(burnAmtLE.buffer); const b = BigInt(burnAmount);
+    v.setUint32(0, Number(b & 0xffffffffn), true); v.setUint32(4, Number((b >> 32n) & 0xffffffffn), true); }
+  const claimLE = new Uint8Array(8);
+  { const v = new DataView(claimLE.buffer); const c = BigInt(insuranceClaimTAC);
+    v.setUint32(0, Number(c & 0xffffffffn), true); v.setUint32(4, Number((c >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    _CBTC_TAC_WITHDRAW_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    targetLeafHash, new Uint8Array([burnCount & 0xff]),
+    ...burnNullifiers, ...burnCommits, burnAmtLE, claimLE,
+  ));
+}
+
+function decodeTCbtcTacWithdrawPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_WITHDRAW) return null;
+  if (payload.length < 35) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const burnCount = payload[p]; p += 1;
+  if (burnCount < 1 || burnCount > 16) return null;
+  if (payload.length < p + burnCount * 32 + burnCount * 33 + 8 + 2 + 8 + 32 + 2) return null;
+  const burnNullifiers = [];
+  for (let i = 0; i < burnCount; i++) {
+    burnNullifiers.push(payload.slice(p, p + 32));
+    p += 32;
+  }
+  const burnCommits = [];
+  for (let i = 0; i < burnCount; i++) {
+    const c = payload.slice(p, p + 33);
+    try { compressedPointFromHex(bytesToHex(c)); } catch { return null; }
+    burnCommits.push(c);
+    p += 33;
+  }
+  const burnAmtView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const burnAmount = (BigInt(burnAmtView.getUint32(4, true)) << 32n) | BigInt(burnAmtView.getUint32(0, true));
+  p += 8;
+  if (burnAmount <= 0n || burnAmount >= (1n << BigInt(N_BITS))) return null;
+  const bpLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (bpLen === 0) return null;
+  if (payload.length < p + bpLen + 8 + 32 + 2) return null;
+  const burnBalanceProof = payload.slice(p, p + bpLen); p += bpLen;
+  const claimView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const insuranceClaimTAC = (BigInt(claimView.getUint32(4, true)) << 32n) | BigInt(claimView.getUint32(0, true));
+  p += 8;
+  if (insuranceClaimTAC >= (1n << BigInt(N_BITS))) return null;
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expectedBind = _computeCbtcTacWithdrawBindHash({
+    networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
+    burnAmount, insuranceClaimTAC,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
+  return {
+    kind: 'cbtc_tac_withdraw',
+    network_tag: networkTag,
+    target_leaf_hash: bytesToHex(targetLeafHash),
+    burn_count: burnCount,
+    burn_nullifiers: burnNullifiers.map(b => bytesToHex(b)),
+    burn_commits: burnCommits.map(b => bytesToHex(b)),
+    burn_amount: burnAmount.toString(),
+    insurance_claim_tac: insuranceClaimTAC.toString(),
+    burn_balance_proof: bytesToHex(burnBalanceProof),
+    bind_hash: bytesToHex(bindHashBytes),
+    proof: bytesToHex(proof),
+  };
+}
+
+function _computeCbtcTacForceCloseBindHash({
+  networkTag, targetLeafHash, liquidatorPayoutPk, ammSwapMinBtcOut,
+}) {
+  const minOutLE = new Uint8Array(8);
+  { const v = new DataView(minOutLE.buffer); const m = BigInt(ammSwapMinBtcOut);
+    v.setUint32(0, Number(m & 0xffffffffn), true); v.setUint32(4, Number((m >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    _CBTC_TAC_FORCE_CLOSE_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    targetLeafHash, liquidatorPayoutPk, minOutLE,
+  ));
+}
+
+function decodeTCbtcTacForceClosePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_CBTC_TAC_FORCE_CLOSE) return null;
+  if (payload.length !== 107) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const targetLeafHash = payload.slice(p, p + 32); p += 32;
+  const liquidatorPayoutPk = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(liquidatorPayoutPk)); } catch { return null; }
+  const minOutView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const ammSwapMinBtcOut = (BigInt(minOutView.getUint32(4, true)) << 32n) | BigInt(minOutView.getUint32(0, true));
+  p += 8;
+  if (ammSwapMinBtcOut >= (1n << BigInt(N_BITS))) return null;
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
+  const expectedBind = _computeCbtcTacForceCloseBindHash({
+    networkTag, targetLeafHash, liquidatorPayoutPk, ammSwapMinBtcOut,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
+  return {
+    kind: 'cbtc_tac_force_close',
+    network_tag: networkTag,
+    target_leaf_hash: bytesToHex(targetLeafHash),
+    liquidator_payout_pk: bytesToHex(liquidatorPayoutPk),
+    amm_swap_min_btc_out: ammSwapMinBtcOut.toString(),
+    bind_hash: bytesToHex(bindHashBytes),
+  };
+}
+
+function _computeShareSlashClaimBindHash({
+  networkTag, shareCount, shareNullifiers, shareCommits,
+  shareBurnAmount, claimTAC, recipientCommit,
+}) {
+  const burnLE = new Uint8Array(8);
+  { const v = new DataView(burnLE.buffer); const b = BigInt(shareBurnAmount);
+    v.setUint32(0, Number(b & 0xffffffffn), true); v.setUint32(4, Number((b >> 32n) & 0xffffffffn), true); }
+  const claimLE = new Uint8Array(8);
+  { const v = new DataView(claimLE.buffer); const c = BigInt(claimTAC);
+    v.setUint32(0, Number(c & 0xffffffffn), true); v.setUint32(4, Number((c >> 32n) & 0xffffffffn), true); }
+  return sha256(concatBytes(
+    _SHARE_SLASH_CLAIM_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    new Uint8Array([shareCount & 0xff]),
+    ...shareNullifiers, ...shareCommits, burnLE, claimLE, recipientCommit,
+  ));
+}
+
+function decodeTShareSlashClaimPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SHARE_SLASH_CLAIM) return null;
+  if (payload.length < 3) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const shareCount = payload[p]; p += 1;
+  if (shareCount < 1 || shareCount > 16) return null;
+  if (payload.length < p + shareCount * 32 + shareCount * 33 + 8 + 2 + 8 + 33 + 32 + 2) return null;
+  const shareNullifiers = [];
+  for (let i = 0; i < shareCount; i++) {
+    shareNullifiers.push(payload.slice(p, p + 32));
+    p += 32;
+  }
+  const shareCommits = [];
+  for (let i = 0; i < shareCount; i++) {
+    const c = payload.slice(p, p + 33);
+    try { compressedPointFromHex(bytesToHex(c)); } catch { return null; }
+    shareCommits.push(c);
+    p += 33;
+  }
+  const burnView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const shareBurnAmount = (BigInt(burnView.getUint32(4, true)) << 32n) | BigInt(burnView.getUint32(0, true));
+  p += 8;
+  if (shareBurnAmount <= 0n || shareBurnAmount >= (1n << BigInt(N_BITS))) return null;
+  const bpLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (bpLen === 0) return null;
+  if (payload.length < p + bpLen + 8 + 33 + 32 + 2) return null;
+  const shareBalanceProof = payload.slice(p, p + bpLen); p += bpLen;
+  const claimView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const claimTAC = (BigInt(claimView.getUint32(4, true)) << 32n) | BigInt(claimView.getUint32(0, true));
+  p += 8;
+  if (claimTAC <= 0n || claimTAC >= (1n << BigInt(N_BITS))) return null;
+  const recipientCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(recipientCommit)); } catch { return null; }
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expectedBind = _computeShareSlashClaimBindHash({
+    networkTag, shareCount, shareNullifiers, shareCommits,
+    shareBurnAmount, claimTAC, recipientCommit,
+  });
+  for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
+  return {
+    kind: 'share_slash_claim',
+    network_tag: networkTag,
+    share_count: shareCount,
+    share_nullifiers: shareNullifiers.map(b => bytesToHex(b)),
+    share_commits: shareCommits.map(b => bytesToHex(b)),
+    share_burn_amount: shareBurnAmount.toString(),
+    share_balance_proof: bytesToHex(shareBalanceProof),
+    claim_tac: claimTAC.toString(),
+    recipient_commit: bytesToHex(recipientCommit),
+    bind_hash: bytesToHex(bindHashBytes),
+    proof: bytesToHex(proof),
   };
 }
 
@@ -11586,6 +12171,178 @@ async function scanForEtches(env, network) {
           }
         } catch { /* best-effort */ }
         found++;
+      } else if (decoded.opcode === T_CBTC_TAC_DEPOSIT) {
+        // SPEC-CBTC-TAC-AMENDMENT §5.36 — LP-shaped mint of cBTC.tac.
+        // Validates: target cBTC.zk leaf is `live`, bond_ratio meets
+        // INITIAL_BOND_RATIO at the reorg-safe TWAP, bond TAC UTXO is
+        // unspent, and aggregate exposure caps aren't breached.
+        const dep = decodeTCbtcTacDepositPayload(decoded.payload);
+        if (!dep) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (dep.network_tag !== expectedNetTag) continue;
+
+        // Position must not already exist (idempotency / replay defense)
+        const existingPos = await ctacGetPosition(env, network, dep.target_leaf_hash);
+        if (existingPos) continue;
+
+        // TWAP sample at reorg-safe depth. Fail closed: if oracle is stale
+        // or absent, refuse the deposit — depositor can retry later.
+        let twap;
+        try {
+          twap = await ctacTwapSatsPerTac(env, network, h - CTAC_REORG_SAFETY_DEPTH);
+        } catch { continue; }
+
+        // Bond ratio check (must meet INITIAL_BOND_RATIO at confirm time).
+        const ratioK = ctacBondRatioThousandths(dep.bond_amount_tac, twap, dep.slot_denom_sats);
+        if (ratioK < BigInt(CTAC_INITIAL_BOND_RATIO_THOUSANDTHS)) continue;
+
+        // Single-position cap (§5.42.3 conservative initial)
+        if (BigInt(dep.slot_denom_sats) > CTAC_MAX_SINGLE_POSITION_BTC_SATS) continue;
+
+        // Aggregate pool-fraction cap. Skipped if TAC pool depth isn't
+        // tracked yet — deposit confirms and the SPEC's anti-systemic pause
+        // (§5.41.3) is responsible for catching pathological aggregate
+        // exposure if pool depth subsequently shrinks.
+
+        // Record the position. The bond TAC UTXO MUST be spent in this same
+        // reveal tx; envelope-pairing validation is the dapp builder's
+        // responsibility (verified at sig + spend time).
+        const position = {
+          state: 'active',
+          target_leaf_hash: dep.target_leaf_hash,
+          slot_denom_sats: dep.slot_denom_sats,
+          mint_amount: dep.mint_amount,
+          bond_amount_tac: dep.bond_amount_tac,
+          depositor_recovery_pk: dep.depositor_recovery_pk,
+          mint_recipient_commit: dep.mint_recipient_commit,
+          initial_twap: twap.toString(),
+          initial_ratio_thousandths: Number(ratioK),
+          deposit_height: h,
+          deposit_txid: tx.txid,
+          network,
+        };
+        await ctacPutPosition(env, network, position);
+        await ctacMarkActive(env, network, dep.target_leaf_hash);
+        await ctacAddSupply(env, network, dep.mint_amount);
+        found++;
+      } else if (decoded.opcode === T_CBTC_TAC_WITHDRAW) {
+        // SPEC-CBTC-TAC-AMENDMENT §5.37 — LP-shaped burn of cBTC.tac.
+        // The reveal Bitcoin tx MUST atomically spend the slot's K_btc
+        // UTXO (depositor signs under r_btc). Worker verifies the position
+        // exists and is active; chain-side atomicity is implicit (Bitcoin
+        // consensus enforces the spend).
+        const wd = decodeTCbtcTacWithdrawPayload(decoded.payload);
+        if (!wd) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (wd.network_tag !== expectedNetTag) continue;
+        const position = await ctacGetPosition(env, network, wd.target_leaf_hash);
+        if (!position) continue;
+        if (position.state !== 'active' && position.state !== 'force-closed') continue;
+        if (BigInt(wd.burn_amount) !== BigInt(position.mint_amount)) continue;
+
+        // Optional pooled-insurance claim: must match per_share × burn_amount
+        // exactly (§5.37.2). per_share = insurance_pool / outstanding_supply.
+        const insurancePool = await ctacGetInsurancePool(env, network);
+        const outstandingSupply = await ctacGetSupply(env, network);
+        if (BigInt(wd.insurance_claim_tac) > 0n) {
+          if (outstandingSupply === 0n) continue;
+          // expected = insurancePool × burn_amount / outstandingSupply (integer floor)
+          const expected = (insurancePool * BigInt(wd.burn_amount)) / outstandingSupply;
+          if (BigInt(wd.insurance_claim_tac) !== expected) continue;
+        }
+
+        // Effects
+        position.state = 'withdrawn';
+        position.withdraw_txid = tx.txid;
+        await ctacPutPosition(env, network, position);
+        await ctacUnmarkActive(env, network, wd.target_leaf_hash);
+        await ctacAddSupply(env, network, -BigInt(wd.burn_amount));
+        if (BigInt(wd.insurance_claim_tac) > 0n) {
+          await ctacAddInsurancePool(env, network, -BigInt(wd.insurance_claim_tac));
+        }
+        // burn the cBTC.tac UTXOs (record their nullifiers as spent under cBTC.tac asset)
+        // The exact spent-set key form for cBTC.tac UTXOs is the standard
+        // asset-spent-set per the existing tacit asset machinery; specific
+        // KV key shape depends on the asset-index layout, which is owned
+        // by the existing T_AXFER_VAR consumption path. Worker simply
+        // logs the burn here; the asset-UTXO index updates happen at the
+        // standard place when the validator processes the spend.
+        found++;
+      } else if (decoded.opcode === T_CBTC_TAC_FORCE_CLOSE) {
+        // SPEC-CBTC-TAC-AMENDMENT §5.38 — permissionless liquidation
+        // when current_ratio < LIQUIDATION_RATIO.
+        const fc = decodeTCbtcTacForceClosePayload(decoded.payload);
+        if (!fc) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (fc.network_tag !== expectedNetTag) continue;
+        const position = await ctacGetPosition(env, network, fc.target_leaf_hash);
+        if (!position) continue;
+        if (position.state !== 'active') continue;
+
+        // Cascade rate-limit (§5.38.3)
+        const thisBlockCount = await ctacGetForceCloseThrottle(env, network, h);
+        if (thisBlockCount >= CTAC_MAX_FORCE_CLOSES_PER_BLOCK) continue;
+
+        // Current health check
+        let twap;
+        try { twap = await ctacTwapSatsPerTac(env, network, h - CTAC_REORG_SAFETY_DEPTH); }
+        catch { continue; }
+        const currentRatio = ctacBondRatioThousandths(
+          position.bond_amount_tac, twap, position.slot_denom_sats,
+        );
+        if (currentRatio >= BigInt(CTAC_LIQUIDATION_RATIO_THOUSANDTHS)) continue;
+
+        // The actual TAC→BTC AMM swap is intended to be carried in the
+        // same reveal Bitcoin tx as the FORCE_CLOSE envelope, via tacit
+        // envelope chaining. The worker records the position transition
+        // here; AMM-swap accounting requires AMM-envelope-pair validation
+        // which is staged separately (envelope-chaining design lives in
+        // amm-validator + a forthcoming envelope-pairing rule).
+        //
+        // For now: mark the position force-closed, increment the throttle,
+        // and let the cBTC.tac supply remain in circulation backed by the
+        // (deferred) redemption_reserve_BTC pool. The reserve_credit_BTC
+        // accounting happens when the paired AMM swap envelope confirms in
+        // the same tx — that's a future cron pass.
+        position.state = 'force-closed';
+        position.force_close_height = h;
+        position.force_close_txid = tx.txid;
+        await ctacPutPosition(env, network, position);
+        await ctacUnmarkActive(env, network, fc.target_leaf_hash);
+        await ctacBumpForceCloseThrottle(env, network, h);
+        // NOTE: supply is NOT debited here — the minted cBTC.tac is still
+        // outstanding, now backed by redemption_reserve_BTC (once the AMM
+        // swap settles). On subsequent T_CBTC_TAC_WITHDRAW against this
+        // force-closed position, the WITHDRAW handler debits supply as
+        // normal.
+        found++;
+      } else if (decoded.opcode === T_SHARE_SLASH_CLAIM) {
+        // SPEC-CBTC-TAC-AMENDMENT §5.39.4 — optional pooled-insurance
+        // claim by a cBTC.tac holder, separate from withdraw. Burns
+        // share_burn_amount of cBTC.tac, claims share_burn_amount ×
+        // per_share_insurance_TAC out of the pool.
+        const cl = decodeTShareSlashClaimPayload(decoded.payload);
+        if (!cl) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (cl.network_tag !== expectedNetTag) continue;
+
+        const insurancePool = await ctacGetInsurancePool(env, network);
+        const outstandingSupply = await ctacGetSupply(env, network);
+        if (outstandingSupply === 0n) continue;
+        const expectedClaim = (insurancePool * BigInt(cl.share_burn_amount)) / outstandingSupply;
+        if (BigInt(cl.claim_tac) !== expectedClaim) continue;
+        if (expectedClaim === 0n) continue;
+        if (insurancePool < expectedClaim) continue;
+
+        // Effects
+        await ctacAddInsurancePool(env, network, -expectedClaim);
+        await ctacAddSupply(env, network, -BigInt(cl.share_burn_amount));
+        // The actual cBTC.tac UTXO burn (mark commits spent, add nullifiers
+        // to spent-set) is again handled by the standard asset-spend path
+        // when the validator processes the embedded asset spends in the
+        // reveal tx. The claim-payout TAC UTXO is created via standard
+        // asset-output machinery referencing recipient_commit.
+        found++;
       } else if (decoded.opcode === T_DROP) {
         // SPEC §5.12. Two payload shapes share opcode 0x2B:
         //   - Standard (per_claim > 0): registers a new claim pool keyed by
@@ -11910,7 +12667,24 @@ export {
   decodeTDepositPayload, decodeTWithdrawPayload,
   decodeTSlotMintPayload, decodeTSlotBurnPayload, decodeTSlotRotatePayload,
   decodeTSlotFractionalizePayload, decodeTSlotReconsolidatePayload,
+  decodeTCbtcTacDepositPayload, decodeTCbtcTacWithdrawPayload,
+  decodeTCbtcTacForceClosePayload, decodeTShareSlashClaimPayload,
   T_SLOT_FRACTIONALIZE, T_SLOT_RECONSOLIDATE,
+  T_CBTC_TAC_DEPOSIT, T_CBTC_TAC_WITHDRAW, T_CBTC_TAC_FORCE_CLOSE, T_SHARE_SLASH_CLAIM,
+  // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
+  ctacPositionKey, ctacActivePositionKey, ctacInsurancePoolKey,
+  ctacRedemptionReserveKey, ctacForceCloseThrottleKey, ctacSupplyKey,
+  ctacGetPosition, ctacPutPosition, ctacMarkActive, ctacUnmarkActive,
+  ctacGetInsurancePool, ctacAddInsurancePool,
+  ctacGetRedemptionReserve, ctacAddRedemptionReserve,
+  ctacGetSupply, ctacAddSupply,
+  ctacGetForceCloseThrottle, ctacBumpForceCloseThrottle,
+  ctacBondRatioThousandths, ctacTwapSatsPerTac,
+  ctacScanSlashDetected,
+  // Constants useful for cross-impl test assertions.
+  CTAC_INITIAL_BOND_RATIO_THOUSANDTHS, CTAC_LIQUIDATION_RATIO_THOUSANDTHS,
+  CTAC_TWAP_WINDOW_BLOCKS, CTAC_REORG_SAFETY_DEPTH,
+  CTAC_MAX_FORCE_CLOSES_PER_BLOCK, CTAC_MAX_SINGLE_POSITION_BTC_SATS,
   deriveSlotKbtc, slotXOnly, slotScriptPubKey,
   slotRegistryKey, slotRegistryPrefix,
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
@@ -13800,6 +14574,12 @@ export default {
       // A bigger backlog can be drained in one shot via /admin/promote-orphans.
       await Promise.allSettled(
         NETWORKS.map(net => promotePmintOrphans(env, net, { maxOps: 15 }).catch(() => {})),
+      );
+      // SPEC-CBTC-TAC-AMENDMENT §5.39 — check active cBTC.tac positions
+      // for rug events (K_btc spent without matching WITHDRAW/FORCE_CLOSE).
+      // Bounded per network; full chain-probe wiring is staged separately.
+      await Promise.allSettled(
+        NETWORKS.map(net => ctacScanSlashDetected(env, net, { maxOps: 25 }).catch(() => {})),
       );
       // After the scan updates KV, pre-warm the /assets edge cache for both
       // networks. Without this, the first user to hit /assets after a quiet

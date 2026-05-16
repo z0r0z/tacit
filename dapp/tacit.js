@@ -51207,55 +51207,135 @@ function _wireSwapTile(scope) {
       // block adds its indices to the set as it processes each row.
       const _batchedSet = new Set(_batchPreauths ? _preauthIndices : []);
       if (_batchPreauths) {
-        const _allBatched = _preauthIndices.length === result.plan.length;
-        // Mark only the preauth rows as broadcasting; non-preauth rows
-        // stay 'queued' until the per-fill loop reaches them.
-        for (const idx of _preauthIndices) progressItems[idx].status = 'broadcasting';
-        actionBtn.textContent = _allBatched
-          ? `batching ${_preauthIndices.length} fills…`
-          : `batching ${_preauthIndices.length} of ${result.plan.length} fills…`;
-        _renderSwapProgress(progressEl, progressItems);
-        try {
-          const batch = await takePreauthSaleBatch({
-            assetIdHex: aid,
-            sales: _preauthIndices.map(i => ({
-              saleIdHex: result.plan[i].l.sale_id,
-              sale: result.plan[i].l,
-            })),
-          });
-          // All preauth fills resolved together — stamp each preauth
-          // row as done with the shared reveal txid, apply optimistic
-          // credits, and count toward `filled`. Non-preauth rows stay
-          // queued for the loop below to process.
-          for (const idx of _preauthIndices) {
-            progressItems[idx].status = 'done';
-            progressItems[idx].txid = batch.reveal_txid || batch.commit_txid || null;
-            const c = result.plan[idx];
-            if (typeof c.amt === 'bigint') applyOptimisticCredit(aid, c.amt);
-          }
-          filled = _preauthIndices.length;
+        // Pre-flight stale errors (sale already taken by another buyer,
+        // listing's expiry just passed) come back from takePreauthSaleBatch
+        // BEFORE any commit broadcast, so retrying is fund-safe. One
+        // automatic retry: invalidate the market cache, refetch the
+        // listings index, re-plan with the same target, and re-execute
+        // the batch path. Fresh users on a stale worker SWR window
+        // otherwise see "preauth sale has expired" / "already spent" as
+        // a dead-end error and don't know they just needed to refresh.
+        const _isStaleErr = (msg) => {
+          const s = String(msg || '');
+          // Never auto-retry after a commit broadcast: takePreauthSale[Batch]
+          // decorates post-commit failures with "Commit tx broadcast" /
+          // "locked at" / "recovery record" tails. Retrying would double-
+          // charge BTC fees and leave the prior commit stranded for
+          // manual recovery. The inner error may still contain "expired"
+          // or similar from the underlying cause, so the recovery-tail
+          // check has to gate the keyword match.
+          if (/Commit tx broadcast|locked at|recovery record/.test(s)) return false;
+          return /already spent|expired|stale|refresh listings|preauth sale not found/i.test(s);
+        };
+        let _staleRetryUsed = false;
+        let _batchSucceeded = false;
+        while (!_batchSucceeded) {
+          const _allBatched = _preauthIndices.length === result.plan.length;
+          // Mark only the preauth rows as broadcasting; non-preauth rows
+          // stay 'queued' until the per-fill loop reaches them.
+          for (const idx of _preauthIndices) progressItems[idx].status = 'broadcasting';
+          actionBtn.textContent = _allBatched
+            ? `batching ${_preauthIndices.length} fills…`
+            : `batching ${_preauthIndices.length} of ${result.plan.length} fills…`;
           _renderSwapProgress(progressEl, progressItems);
-          // Mark reveal inputs spent so the per-fill loop's next fill
-          // doesn't accidentally re-pick a buyer-funding UTXO that
-          // the batched reveal just consumed.
           try {
-            const tx = await getTx(batch.reveal_txid);
-            _markTxInputsSpent(tx);
-          } catch {}
-          try { _totalFeesSats += await _collectSwapFee({ commit_txid: batch.commit_txid, reveal_txid: batch.reveal_txid }); } catch {}
-        } catch (e) {
-          // Batch failed. Mark the first preauth row as failed; the rest
-          // of the preauth indices stay queued. The per-fill loop's
-          // `if (lastErr) break;` guard prevents it from running after
-          // a batch failure — so a single batch throw aborts the whole
-          // swap (same all-or-nothing semantics as before).
-          lastErr = e?.message || String(e);
-          progressItems[_preauthIndices[0]].status = 'failed';
-          progressItems[_preauthIndices[0]].err = lastErr;
-          for (let k = 1; k < _preauthIndices.length; k++) {
-            progressItems[_preauthIndices[k]].status = 'queued';
+            const batch = await takePreauthSaleBatch({
+              assetIdHex: aid,
+              sales: _preauthIndices.map(i => ({
+                saleIdHex: result.plan[i].l.sale_id,
+                sale: result.plan[i].l,
+              })),
+            });
+            // All preauth fills resolved together — stamp each preauth
+            // row as done with the shared reveal txid, apply optimistic
+            // credits, and count toward `filled`. Non-preauth rows stay
+            // queued for the loop below to process.
+            for (const idx of _preauthIndices) {
+              progressItems[idx].status = 'done';
+              progressItems[idx].txid = batch.reveal_txid || batch.commit_txid || null;
+              const c = result.plan[idx];
+              if (typeof c.amt === 'bigint') applyOptimisticCredit(aid, c.amt);
+            }
+            filled = _preauthIndices.length;
+            _renderSwapProgress(progressEl, progressItems);
+            // Mark reveal inputs spent so the per-fill loop's next fill
+            // doesn't accidentally re-pick a buyer-funding UTXO that
+            // the batched reveal just consumed.
+            try {
+              const tx = await getTx(batch.reveal_txid);
+              _markTxInputsSpent(tx);
+            } catch {}
+            try { _totalFeesSats += await _collectSwapFee({ commit_txid: batch.commit_txid, reveal_txid: batch.reveal_txid }); } catch {}
+            _batchSucceeded = true;
+            break;
+          } catch (e) {
+            const msg = e?.message || String(e);
+            // Stale-listing recovery: only when buying (sell-side plan
+            // doesn't share this path) and we still have a retry budget.
+            // takePreauthSaleBatch's pre-flight checks throw BEFORE
+            // commit broadcast — no fund risk to retry.
+            if (dir === 'buy' && _isStaleErr(msg) && !_staleRetryUsed) {
+              _staleRetryUsed = true;
+              actionBtn.textContent = 'a listing was just taken — refreshing & retrying…';
+              for (const idx of _preauthIndices) progressItems[idx].status = 'queued';
+              _renderSwapProgress(progressEl, progressItems);
+              try { invalidateMarketCache(); } catch {}
+              let _refreshed = false;
+              try { await fetchMarketDataDeduped(); _refreshed = true; } catch {}
+              const newResult = _refreshed ? planBuyExactOut(amt) : null;
+              if (newResult && Array.isArray(newResult.plan) && newResult.plan.length > 0) {
+                // Adopt the refreshed plan. Rebuild the per-fill bookkeeping
+                // (progressItems, _preauthIndices, _batchedSet) in place so
+                // the surrounding per-fill loop sees the new plan too.
+                result = newResult;
+                progressItems.length = 0;
+                for (let idx = 0; idx < result.plan.length; idx++) {
+                  const c = result.plan[idx];
+                  progressItems.push({
+                    label: `${idx + 1}. ${fmtAssetAmount(c.amt, decimals)} ${ticker} @ ${fmtUnitPriceSats(c.u)} sats/${ticker} — ${c.ps.toLocaleString()} sats`,
+                    status: 'queued', txid: null,
+                  });
+                }
+                _preauthIndices.length = 0;
+                for (let i = 0; i < result.plan.length; i++) {
+                  if (result.plan[i].kind === 'preauth') _preauthIndices.push(i);
+                }
+                _batchedSet.clear();
+                if (_preauthIndices.length >= 2) {
+                  for (const idx of _preauthIndices) _batchedSet.add(idx);
+                  continue;  // retry the batch with the fresh plan
+                }
+                // After refresh the plan has 0 or 1 preauth — the batch
+                // path no longer applies. Let the per-fill loop below
+                // handle the remaining fills (including the lone preauth,
+                // if any) instead of failing here.
+                _batchSucceeded = true;
+                break;
+              }
+              // Refresh ran but no plan survived. Surface a clearer
+              // failure than the raw "sale ... already spent".
+              lastErr = 'all matching listings were just taken — no liquidity left after refresh. Try again in a moment.';
+              progressItems[_preauthIndices[0]].status = 'failed';
+              progressItems[_preauthIndices[0]].err = lastErr;
+              for (let k = 1; k < _preauthIndices.length; k++) {
+                progressItems[_preauthIndices[k]].status = 'queued';
+              }
+              _renderSwapProgress(progressEl, progressItems);
+              break;
+            }
+            // Non-stale failure, or retry already used. Mark the first
+            // preauth row as failed; the rest stay queued. The per-fill
+            // loop's `if (lastErr) break;` guard prevents it from
+            // running after a batch throw (all-or-nothing semantics).
+            lastErr = msg;
+            progressItems[_preauthIndices[0]].status = 'failed';
+            progressItems[_preauthIndices[0]].err = lastErr;
+            for (let k = 1; k < _preauthIndices.length; k++) {
+              progressItems[_preauthIndices[k]].status = 'queued';
+            }
+            _renderSwapProgress(progressEl, progressItems);
+            break;
           }
-          _renderSwapProgress(progressEl, progressItems);
         }
       }
       // Batched bid-fulfilment fast path (sell side). When the sell route is

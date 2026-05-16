@@ -51,15 +51,15 @@ Users self-select.
 
 **Comparison with adjacent designs:**
 
-| Property | canonical cBTC (§6.2) | cBTC.tac (TAC-bonded) | cBTC.zk (this amendment) |
-|---|---|---|---|
-| Custody | Per-user DLC + oracle threshold | Per-user self-custody slot + TAC bond | Per-user self-custody slot, no co-signer |
-| Redemption co-signer | Oracle threshold FROST | None — depositor `r_btc` alone | None — note-holder alone |
-| Granularity | Amount-granular | Amount-granular (fungible) | Unit-granular at fixed denominations |
-| Mixer-shielded by default | No | Yes (cBTC.tac is a standard tacit asset) | Yes (every op is a mixer note) |
-| Lost-key consequence | Sats recoverable via CSV | Sats permanently locked + bond TAC eventually returns | Sats permanently locked |
-| Trust assumption at trade | Oracle threshold honest at trade | TAC over-collateralization remains margined | secp256k1 + Groth16 + indexer rules |
-| AMM-poolable | Yes (standard tacit asset) | Yes (standard tacit asset, fungible amounts) | Whole-slot only (orderbook / virtual-AMM) |
+| Property | cBTC.tac (TAC-bonded) | cBTC.zk (this amendment) |
+|---|---|---|
+| Custody | Per-user self-custody slot + TAC bond | Per-user self-custody slot, no co-signer |
+| Redemption co-signer | None — depositor `r_btc` alone | None — note-holder alone |
+| Granularity | Amount-granular (fungible) | Unit-granular at fixed denominations |
+| Mixer-shielded by default | Yes (cBTC.tac is a standard tacit asset) | Yes (every op is a mixer note) |
+| Lost-key consequence | Sats permanently locked + bond TAC eventually returns | Sats permanently locked |
+| Trust assumption at trade | TAC over-collateralization remains margined | secp256k1 + Groth16 + indexer rules |
+| AMM-poolable | Yes (standard tacit asset, fungible amounts) | Whole-slot only (orderbook / virtual-AMM) |
 
 cBTC.zk is the structurally-most-trustless point on this curve, at
 the cost of one property: **lost notes lock corresponding BTC
@@ -684,8 +684,7 @@ pool with its own anonymity set. The dapp surfaces all tiers and
 routes user mints to whichever tier matches their amount.
 
 Future amendments could promote a specific variant to canonical
-(protocol-derived asset_id, fourth origin path alongside §6.2's
-canonical cBTC) if a single instance becomes dominant.
+(protocol-derived asset_id) if a single instance becomes dominant.
 
 ---
 
@@ -783,10 +782,6 @@ Compared to cBTC.tac:
 - cBTC.zk: every op shielded by the mixer; mint-time link to LP is public
 - cBTC.tac: every op transparent on chain; full chain-graph link
 
-Compared to canonical cBTC (§6.2):
-- cBTC.zk: mixer-shielded; lost-key risk; no oracle dependency
-- §6.2 cBTC: DLC-transparent; user can CSV-rescue; oracle threshold dependency
-
 ---
 
 ## Bitcoin fee handling
@@ -833,9 +828,6 @@ shape. Specifically:
 - **Existing wrapper instances unaffected.** `cBTC.tac` and other
   federated wrappers behave identically — they use
   `kind = "multisig"`, not the new value.
-- **Existing canonical cBTC unaffected.** SPEC §6.2's canonical
-  cBTC has its own asset_id origin path; cBTC.zk is CETCH-derived.
-  Both coexist.
 - **Pre-amendment indexers** see opcodes 0x43–0x45 as unknown
   envelopes (per §4.1 forward-compat); the cBTC.zk asset becomes
   invisible to them but they remain consistent with non-cBTC.zk
@@ -993,8 +985,8 @@ Out of scope, deferred to future amendments:
 
 7. **Promotion to canonical asset_id.** If a specific cBTC.zk
    variant achieves dominant network share, a future amendment
-   could promote it to protocol-canonical (asset_id origin path
-   like §6.2's canonical cBTC).
+   could promote it to protocol-canonical (separate asset_id
+   origin path).
 
 ---
 
