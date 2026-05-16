@@ -11177,8 +11177,13 @@ async function buildAndBroadcastWithdraw({
   // leaves, our proof's bound root may have fallen out of the validator's
   // ring buffer — broadcasting then would silently burn BTC fees + leak the
   // nullifier on chain. SPEC §5.11.
-  const _poolAtProofGen = poolRegistry.get(poolKey(assetIdHex, denomBig));
-  const _leafCountAtProofGen = _poolAtProofGen?.tree?.leaves?.length || 0;
+  //
+  // Route through mixerGetPoolStats so tree state stays sourced from the
+  // canonical poolMerkleTrees map. An earlier inline implementation read
+  // .tree.leaves off poolRegistry (which only carries {vkCid, ceremonyCid,
+  // initHeight, initTxid}), silently resolving to undefined and disabling
+  // this guard entirely.
+  const _leafCountAtProofGen = mixerGetPoolStats(assetIdHex, denomBig)?.totalLeaves ?? 0;
 
   // Recipient commitment uses r_leaf = poseidon(secret, ν), exactly as the
   // circuit will assert. Encoded as compressed secp256k1 point.
@@ -11251,8 +11256,7 @@ async function buildAndBroadcastWithdraw({
   try {
     _mixerPoolCacheUntil = 0;
     await scanPools();
-    const _poolNow = poolRegistry.get(poolKey(assetIdHex, denomBig));
-    const _leafCountNow = _poolNow?.tree?.leaves?.length ?? _leafCountAtProofGen;
+    const _leafCountNow = mixerGetPoolStats(assetIdHex, denomBig)?.totalLeaves ?? _leafCountAtProofGen;
     const _growth = _leafCountNow - _leafCountAtProofGen;
     const _STALE_MARGIN = 4;
     if (_growth > POOL_RECENT_ROOTS_WINDOW - _STALE_MARGIN) {
@@ -11277,37 +11281,53 @@ async function buildAndBroadcastWithdraw({
   // The vk comes from the pool's registered vkCid (already canonical-
   // gated by mixerIsPoolCanonical above).
   _progress('proof:verify');
-  try {
+  {
     const _pool = poolRegistry.get(poolKey(assetIdHex, denomBig));
     const _vkCid = _pool ? new TextDecoder().decode(_pool.vkCid) : null;
-    if (_vkCid) {
-      const _publicInputs = [
-        bytesToHex(bigintToBytes32(mp.root)),
-        bytesToHex(nullifierHash),
-        denomBig.toString(),
-        bytesToHex(rLeafBytes),
-        bytesToHex(bindHash),
-      ];
-      const _ok = await verifyMixerProof({
+    // vkCid being null here would mean the canonical-pool gate at the top of
+    // this function let through a pool with no registered vk — impossible by
+    // construction (mixerIsPoolCanonical rejects on missing vkCid). Treat as
+    // a corruption bug, not a transient hiccup; refuse to broadcast.
+    if (!_vkCid) {
+      throw new Error(
+        `pool ${assetIdHex.slice(0, 8)}…:${denomBig} has no registered vk_cid; ` +
+        `refusing to broadcast a proof against an unknown verifier. ` +
+        `Reload to re-scan the pool registry; if the problem persists the local ` +
+        `pool state is corrupt.`,
+      );
+    }
+    const _publicInputs = [
+      bytesToHex(bigintToBytes32(mp.root)),
+      bytesToHex(nullifierHash),
+      denomBig.toString(),
+      bytesToHex(rLeafBytes),
+      bytesToHex(bindHash),
+    ];
+    // Any failure path here — IPFS unreachable, snarkjs OOM, vk parse error —
+    // must be fail-closed. The dapp is the AUTHORITATIVE Groth16 verifier per
+    // SPEC §5.11.4 three-verifier model. Broadcasting an unverified proof
+    // burns BTC fees + leaks the nullifier on chain regardless of whether
+    // the proof is actually valid; better to refuse and have the user retry
+    // once the issue clears. The deposit note remains safe in localStorage.
+    let _ok = false;
+    try {
+      _ok = await verifyMixerProof({
         vkCid: _vkCid, publicInputs: _publicInputs, proof: proofBytes,
       });
-      if (!_ok) {
-        throw new Error(
-          'local Groth16 sanity-verify failed — proof would be rejected on chain. ' +
-          'This usually means a bug in proof serialization or public-input shaping; ' +
-          'aborting before BTC fees burn on a doomed envelope.',
-        );
-      }
+    } catch (e) {
+      throw new Error(
+        `local Groth16 sanity-verify could not run: ${e?.message || e}. ` +
+        `Refusing to broadcast an unverified proof — your deposit note is safe ` +
+        `in localStorage. Retry once snarkjs/IPFS recovers.`,
+      );
     }
-    // If vkCid is null (pool registry empty / decode failed), skip the
-    // self-check rather than block — the on-chain validator will catch
-    // any real issue, and missing vkCid here means the canonical-pool
-    // gate above also would have refused us earlier.
-  } catch (e) {
-    if (e && /sanity-verify failed/.test(e.message || '')) throw e;
-    // Otherwise tolerate the self-check failure (e.g., snarkjs load
-    // hiccup) — broadcast still goes through; the validator will gate.
-    if (typeof console !== 'undefined') console.warn('[mixer] withdraw local sanity-verify skipped:', e.message || e);
+    if (!_ok) {
+      throw new Error(
+        'local Groth16 sanity-verify failed — proof would be rejected on chain. ' +
+        'This usually means a bug in proof serialization or public-input shaping; ' +
+        'aborting before BTC fees burn on a doomed envelope.',
+      );
+    }
   }
 
   // Build the T_WITHDRAW envelope payload.
@@ -22686,12 +22706,29 @@ function setupTopupModal() {
   btn.onclick = () => {
     let addr; try { addr = wallet.address(); } catch { addr = ''; }
     if (!addr) { toast('Wallet not ready yet — try again in a moment.', 'error'); return; }
-    if (addrPreview) addrPreview.textContent = shorten(addr, 14);
+    if (addrPreview) {
+      addrPreview.textContent = shorten(addr, 14);
+      // Stash the full address so the click handler (wired once below) can
+      // copy it — textContent is the visible truncation and would otherwise
+      // be useless when pasted into a wallet.
+      addrPreview.dataset.fullAddr = addr;
+      addrPreview.title = `click to copy · ${addr}`;
+    }
     if (uriBox) uriBox.style.display = 'none';
     if (uriSats) uriSats.value = '';
     refreshUri();
     modal.style.display = 'grid';
   };
+  if (addrPreview) {
+    const copyFullAddr = async () => {
+      const full = addrPreview.dataset.fullAddr || '';
+      if (!full) return;
+      try { await navigator.clipboard.writeText(full); toast('Address copied', 'success'); }
+      catch { toast('Copy failed — select the address manually.', 'error'); }
+    };
+    addrPreview.onclick = copyFullAddr;
+    addrPreview.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); copyFullAddr(); } };
+  }
   cancelBtn.onclick = close;
 
   onramperBtn.onclick = () => {
@@ -41635,7 +41672,7 @@ function renderMarketBrowseTable(rows) {
       seg(`${rows.length} live listing${rows.length === 1 ? '' : 's'}`),
     ];
     if (_agg24hUsd) {
-      _segments.push(seg(`<strong title="Sum of every visible asset's worker-tracked 24h volume (today+yesterday UTC bucket totals). Ecosystem-wide trading activity across all markets in the last 24 hours.">${escapeHtml(_agg24hUsd)} 24h vol</strong>`));
+      _segments.push(seg(`<strong title="Sum of every visible asset's strict rolling 24h trade volume. Ecosystem-wide trading activity across all markets in the last 24 hours.">${escapeHtml(_agg24hUsd)} 24h vol</strong>`));
     }
     _segments.push(
       seg(`${instant} instant`),
@@ -41645,19 +41682,19 @@ function renderMarketBrowseTable(rows) {
     );
     status.innerHTML = _segments.join(sep);
   }
-  // Drop the Recent Volume column entirely when no row on the current
-  // page has a ring buffer that overflows 24h (i.e., every g.volumeSats
-  // === g.volume24hSats or is null). On the network's current scale
-  // every active market fits inside 24h, so the column shows nothing
-  // but "—" / blank — hiding it reclaims about 12% of table width for
-  // the columns that actually carry data. The dedupe semantics from
-  // the prior change remain in place for the rare row where volumes
-  // diverge.
-  const _showRecentVolumeColumn = pageGroups.some(pg =>
+  // Drop the Total Volume column entirely when no row on the current
+  // page has a lifetime figure that differs from its 24h figure (i.e.,
+  // every g.volumeSats === g.volume24hSats or is null). On a young
+  // network where every active market still fits inside 24h, the
+  // column shows nothing but "—" / blank — hiding it reclaims about
+  // 12% of table width for the columns that actually carry data. The
+  // dedupe semantics from the prior change remain in place for the
+  // rare row where volumes diverge.
+  const _showTotalVolumeColumn = pageGroups.some(pg =>
     pg.volumeSats != null
     && pg.volume24hSats != null
     && Number(pg.volumeSats) !== Number(pg.volume24hSats));
-  const _columnCount = _showRecentVolumeColumn ? 7 : 6;
+  const _columnCount = _showTotalVolumeColumn ? 7 : 6;
   // Inject a single subheader row between the priced rows and the
   // untraded-etch rows on the current page. The sort already pushes
   // untraded rows to the bottom; the divider tells the user "below this
@@ -41752,19 +41789,21 @@ function renderMarketBrowseTable(rows) {
     const volume24hBtc = g.volume24hSats == null
       ? (statsLoaded ? '—' : loadingPlaceholder)
       : (_v24Positive ? fmtMarketBtc(g.volume24hSats) : '—');
-    // Recent Volume = sum of the worker's recent-trades ring buffer. When
-    // the ring buffer fits entirely inside 24h (true for every young
-    // market on the network right now), the two columns carry the same
-    // number and the duplicate makes the table look wider than it is.
-    // Collapse to a dimmed dash with a tooltip when they match; show
-    // distinct values only when the ring buffer reaches past 24h.
+    // Total Volume = max(worker's lifetime counter, ring-buffer sum).
+    // The lifetime counter (sale_volume_sats) tracks every settled trade
+    // since the counter was deployed; the ring (≤200 newest trades)
+    // backfills the floor for assets that traded before the counter
+    // existed. When the row's lifetime figure equals its 24h figure —
+    // common on young markets where every settled trade landed in the
+    // last day — both columns carry the same number, so we collapse
+    // the Total cell to a dash to avoid visual duplication.
     const volumesMatch = g.volumeSats != null
       && g.volume24hSats != null
       && Number(g.volumeSats) === Number(g.volume24hSats);
-    // Same zero-disambiguation as above for the lifetime/recent volume
-    // column. Without this, the hidden column would still inject "0
-    // BTC" into the DOM tree during the brief window before the column
-    // gets dropped, and the in-place updater would patch it to "—".
+    // Same zero-disambiguation as above for the lifetime volume column.
+    // Without this, the hidden column would still inject "0 BTC" into
+    // the DOM during the brief window before the column gets dropped,
+    // and the in-place updater would patch it to "—".
     const _vPositive = Number.isFinite(Number(g.volumeSats)) && Number(g.volumeSats) > 0;
     const volumeUsd = g.volumeSats == null
       ? (statsLoaded ? '—' : loadingPlaceholder)
@@ -41772,14 +41811,14 @@ function renderMarketBrowseTable(rows) {
     const volumeBtc = g.volumeSats == null
       ? (statsLoaded ? '—' : loadingPlaceholder)
       : (_vPositive ? fmtMarketBtc(g.volumeSats) : '—');
-    // Recent Volume cell is only emitted when the column is shown at
-    // all (see _showRecentVolumeColumn at the outer scope). When the
+    // Total Volume cell is only emitted when the column is shown at
+    // all (see _showTotalVolumeColumn at the outer scope). When the
     // page-level check decided to hide it, every row contributes an
     // empty string — the column is gone from both <thead> and <tbody>.
-    const recentVolumeCell = !_showRecentVolumeColumn
+    const totalVolumeCell = !_showTotalVolumeColumn
       ? ''
       : (volumesMatch
-        ? `<td title="Same as 24h — worker doesn’t yet keep a lifetime aggregator, and every recent trade fits inside the 24h window."><span class="market-table-sub" style="color:var(--ink-faint);">—</span></td>`
+        ? `<td title="Same as 24h — every settled trade for this asset landed in the last 24h."><span class="market-table-sub" style="color:var(--ink-faint);">—</span></td>`
         : `<td><span class="market-table-value">${escapeHtml(volumeUsd)}</span><span class="market-table-sub">${escapeHtml(volumeBtc)}</span></td>`);
     // Implied-mcap flag: no trade backing AND no trustless live listings
     // means the mcap was computed against a single OTC ask (PUP-style
@@ -41863,7 +41902,7 @@ function renderMarketBrowseTable(rows) {
           <span class="market-table-value">${escapeHtml(volume24hUsd)}</span>
           <span class="market-table-sub">${escapeHtml(volume24hBtc)}</span>
         </td>
-        ${recentVolumeCell}
+        ${totalVolumeCell}
         <td>
           <span class="market-table-value">${Number(a.holder_count || 0) > 0 ? Number(a.holder_count).toLocaleString('en-US') : (a._marketAssetStatsLoadedAt ? '0' : '…')}</span>
         </td>
@@ -41906,8 +41945,8 @@ function renderMarketBrowseTable(rows) {
             <th>Token</th>
             <th>Price</th>
             <th>Market Cap</th>
-            <th>24h Volume</th>
-            ${_showRecentVolumeColumn ? `<th title="Sum across the worker's recent-trades ring buffer (up to 200 most-recent trades per asset). Can exceed 24h Volume when the ring extends past 24h — that's the difference: 24h is a strict UTC bucket sum, this column is a rolling approximation of lifetime volume bounded by ring depth. Worker doesn't yet keep a true cumulative counter; once it does, this column will switch automatically.">Indexed Volume</th>` : ''}
+            <th title="Strict rolling 24h trade volume — sums every settled trade (atomic-take, preauth-take, bid claim, range fill) with a timestamp in the last 24 hours. Plain transfers and airdrops aren't trades and aren't counted; OTC settlements carry no protocol-enforced price so they can't be priced either.">24h Volume</th>
+            ${_showTotalVolumeColumn ? `<th title="Lifetime trade volume — every settled trade since the worker started indexing this asset. Built from the worker's cumulative counter with the recent-trades ring as a floor for assets that traded before the counter was deployed. Plain transfers, airdrops and OTC settlements aren't counted (no protocol-enforced price).">Total Volume</th>` : ''}
             <th title="Distinct wallets that have ever received this asset on chain (scriptpubkey-hash level — a wallet, not a user). Coarse popularity signal indexed by the worker.">Wallets</th>
             <th title="Live trustless listings on the orderbook (left) and lifetime on-chain transfers of this asset (right).">Activity</th>
           </tr>
@@ -53433,6 +53472,17 @@ export {
   mixerAppendLeaf, mixerHasRecentRoot,
   mixerIsNullifierSpent, mixerIsNullifierSpentByOther, mixerMarkNullifierSpent,
   mixerGetPoolStats,
+  // Canonical-pool gate (SPEC §5.11.3 trust-anchor enforcement) — exported so
+  // tests can confirm fail-closed refusal at deposit + withdraw without
+  // standing up the full broadcast pipeline. The dapp's CANONICAL_VK_CID and
+  // CANONICAL_CEREMONY_CID constants are the only trust anchors; pools that
+  // declare anything else are refused.
+  mixerIsPoolCanonical,
+  CANONICAL_VK_CID, CANONICAL_CEREMONY_CID,
+  // bind_hash recompute — exported so the per-field tamper-matrix test can
+  // hash the canonical preimage from outside the encoder without re-deriving
+  // it inline. SPEC §5.11 invariant 4 (Output validity).
+  computeWithdrawBindHash,
   computePoolRoot, poolEmptyLeaf,
   POOL_TREE_DEPTH, POOL_RECENT_ROOTS_WINDOW,
   // Mixer poseidon helpers — exported for tests/mixer-envelope.test.mjs to

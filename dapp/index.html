@@ -79,7 +79,7 @@
      script-src 'self' covers all three.
      `?cb=` is auto-set by build/build.mjs to a sha256 prefix of tacit.js
      so iOS Safari's stale-modulepreload cache flushes on every change. -->
-<link rel="modulepreload" href="./tacit.js?cb=531409bc">
+<link rel="modulepreload" href="./tacit.js?cb=3bd55968">
 <link rel="modulepreload" href="./vendor/tacit-deps.min.js">
 <link rel="modulepreload" href="./prf-wallet.js">
 <style>
@@ -4924,7 +4924,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           </div>
           <div style="margin-top:8px;"><strong>Residuals.</strong> If your Swap can't fully fill at your limit price, the leftover automatically becomes a partial-fillable order on the opposite side at your limit price, expires in 24h. So a swap that doesn't fully fill still leaves a tradeable position behind, no extra clicks.</div>
           <div style="margin-top:8px;"><strong>Limit (slippage cap).</strong> The dropdown sets how far above (buy) or below (sell) the market price you'll accept. Default ±10% catches every realistic fill on most markets. Widen if you want to take more depth; tighten if you want only fills very close to mark.</div>
-          <div style="margin-top:10px;font-size:11px;border-top:1px dashed var(--ink-faint);padding-top:8px;"><strong>Technical details</strong> (skip if you're just trading): <strong>Mark price</strong> uses the worker's last_trade unit when it's within 0.2×–5× of the recent-trades ring median; outside that band the median takes over with <code>source: 'median_outlier_guard'</code> so a single fat-finger or dust print can't swing the mark. <strong>24h Volume</strong> is the worker's rolling today+yesterday UTC bucket sum; <strong>24h high/low</strong> use a tighter 0.5×–2× band so single dust prints don't anchor the headline range. <strong>Verify</strong> checks signatures, commitments, range proofs, and UTXO liveness without buying. <strong>Cancel</strong> removes your listing from the worker index; for a hard cancel of a signed offer, spend the listed UTXO back to yourself. Multi-fill buys are <strong>batched</strong> — N preauth listings settle in one (commit, reveal) pair instead of N independent settlements, saving ~70% on Bitcoin fees (SPEC §5.7.8.1). <em>OTC / range</em> listings exist but are trust-required and only used when both parties accept counterparty risk.</div>
+          <div style="margin-top:10px;font-size:11px;border-top:1px dashed var(--ink-faint);padding-top:8px;"><strong>Technical details</strong> (skip if you're just trading): <strong>Mark price</strong> uses the worker's last_trade unit when it's within 0.2×–5× of the recent-trades ring median; outside that band the median takes over with <code>source: 'median_outlier_guard'</code> so a single fat-finger or dust print can't swing the mark. <strong>24h Volume</strong> is a strict rolling 24h sum over every settled trade (atomic-take, preauth-take, bid claim, range fill) in the last 24 hours; <strong>24h high/low</strong> use a tighter 0.5×–2× band so single dust prints don't anchor the headline range. <strong>Verify</strong> checks signatures, commitments, range proofs, and UTXO liveness without buying. <strong>Cancel</strong> removes your listing from the worker index; for a hard cancel of a signed offer, spend the listed UTXO back to yourself. Multi-fill buys are <strong>batched</strong> — N preauth listings settle in one (commit, reveal) pair instead of N independent settlements, saving ~70% on Bitcoin fees (SPEC §5.7.8.1). <em>OTC / range</em> listings exist but are trust-required and only used when both parties accept counterparty risk.</div>
         </div>
       </details>
       <div class="market-controls">
@@ -5870,7 +5870,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <div class="welcome-card">
     <div class="welcome-title" id="topup-title">top up <span class="accent">tacit</span></div>
     <div class="welcome-lede">
-      Send BTC to your tacit address — <strong id="topup-addr-preview" class="mono-box inline" style="font-size:11px;"></strong>. Use either path; both deposit to the same address.
+      Send BTC to your tacit address — <strong id="topup-addr-preview" class="mono-box inline" role="button" tabindex="0" title="click to copy full address" style="font-size:11px;cursor:pointer;"></strong>. Use either path; both deposit to the same address.
     </div>
     <div class="welcome-options">
       <button id="topup-onramper" class="welcome-option welcome-option--primary" type="button">
@@ -5944,7 +5944,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   </div>
 </div>
 
-<script type="module" src="./tacit.js?cb=531409bc"></script>
+<script type="module" src="./tacit.js?cb=3bd55968"></script>
 
 <!-- Service worker registration moved into tacit.js (the dapp's CSP forbids
      inline scripts; only 'self' module scripts are allowed). See sw.js for

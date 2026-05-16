@@ -610,6 +610,19 @@ function dropAnnounceKey(network, rootHex) {
 function dropAnnouncePrefix(network) {
   return network === 'signet' ? 'drop-announce:' : `drop-announce:${network}:`;
 }
+// Reverse index: spent asset-outpoint → atomic intent_id. Mirrors
+// preauthOutpointIndexKey for preauth sales. Lets the cron derive a
+// trade's price_sats from chain bytes alone: given a T_AXFER reveal
+// it spends a commit tx, the commit spends the maker's asset_utxo,
+// and this index maps that outpoint back to the intent record that
+// declared the price. Without it, the cron-side chain backfill would
+// have to KV.list every intent per asset and match by outpoint —
+// O(N) per AXFER vs the O(1) lookup here.
+function atomicIntentOutpointIndexKey(network, aid, txidHex, vout) {
+  return network === 'signet'
+    ? `axintent-by-outpoint:${aid}:${txidHex}:${vout}`
+    : `axintent-by-outpoint:${network}:${aid}:${txidHex}:${vout}`;
+}
 function atomicIntentKey(network, aid, intentIdHex) {
   return network === 'signet'
     ? `axintent:${aid}:${intentIdHex}`
@@ -836,6 +849,193 @@ function _utcYyyymmdd(tsSeconds) {
   const m = String(d.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(d.getUTCDate()).padStart(2, '0');
   return `${y}${m}${dd}`;
+}
+
+// Strict rolling-24h volume. Prefer the ring (timestamps are exact); fall
+// back to the today+yesterday UTC bucket sum only when the ring lacks the
+// resolution to cover the window. Bucket sum slides between 24h (00:00 UTC)
+// and 48h (23:59 UTC), so it's a last-resort approximation — naming the
+// field `volume_24h_sats` while serving up to 48h was misleading on quiet
+// networks where the ring already has the answer for free.
+//
+// Saturation case: ring full (length === TRADES_RING_CAP) AND every ring
+// entry is younger than the 24h cutoff — that means the asset traded >cap
+// times in 24h and the ring truncated older-but-still-in-window trades, so
+// the ring's sum is an undercount. Bucket sum is the bounded over-estimate;
+// pick it over the undercount.
+function _rolling24hVolumeSats(tradesArr, todaySats, yestSats, nowSec) {
+  if (Array.isArray(tradesArr) && tradesArr.length > 0) {
+    const cutoff = nowSec - 86400;
+    let sum = 0;
+    let oldestTs = Infinity;
+    for (const t of tradesArr) {
+      const ts = Number(t?.ts);
+      const p  = Number(t?.price_sats);
+      if (!Number.isFinite(ts) || ts <= 0) continue;
+      if (!Number.isFinite(p) || p <= 0) continue;
+      if (ts < oldestTs) oldestTs = ts;
+      if (ts >= cutoff) sum += p;
+    }
+    const saturated = tradesArr.length >= TRADES_RING_CAP && oldestTs >= cutoff;
+    if (!saturated) return sum;
+  }
+  return (Number(todaySats) || 0) + (Number(yestSats) || 0);
+}
+
+// Chain-side trade-volume derivation. The dapp's /hint POST is the
+// primary path: it ships price_sats + amount alongside the reveal_txid
+// after broadcast, so the worker stamps the trade exactly. But a tab
+// close, a network blip, or a cron-arrives-first race can leave a
+// settled trade un-hinted — undercounting lifetime volume.
+//
+// This helper runs from the cron's T_AXFER scan and derives the same
+// trade record from chain bytes alone:
+//
+//   reveal tx (carries T_AXFER envelope)
+//     └─ vin[0] = commit tx vout[0] (the P2TR script-path output)
+//          └─ vin[*] = seller's asset_utxo (1 for single-take, N for
+//             batched preauth-take or batched atomic-intent fills)
+//
+// For each spent asset_utxo we check both outpoint indices —
+// `axintent-by-outpoint` (this commit) and `presale-by-outpoint` (the
+// existing one used by preauth sales). A hit yields the listing
+// record which carries price_sats authoritatively.
+//
+// T_AXFER_VAR partial fills: the on-chain amount is hidden in a
+// rangeproof, so we additionally read the maker's fulfilment record
+// (atomicFulfilmentKey) which stamps `requested_amount` at
+// /fulfilment time. Scaled price = floor(requested × price / amount).
+// Falls through to null (no chain-derived volume) when no fulfilment
+// record exists yet — the hint path is the only source in that case.
+//
+// Returns { price_sats: number, amount: bigint, fills: [...] } or null
+// when nothing matched (e.g., a CXFER, or an AXFER with no live intent/
+// sale records). Caller gates the volume bump on bumpTransferCount's
+// `counted` flag, so a later hint POST (or a re-scan) can't double-count.
+async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetIdHex) {
+  if (!revealTx?.vin?.length) return null;
+  const vin0Txid = revealTx.vin[0]?.txid;
+  if (!/^[0-9a-f]{64}$/.test(String(vin0Txid || ''))) return null;
+  let commitTx;
+  try { commitTx = await fetchFreshTxJson(env, vin0Txid, network); }
+  catch { return null; }
+  if (!commitTx?.vin?.length) return null;
+
+  let totalPriceSats = 0;
+  let totalAmount = 0n;
+  const fills = [];
+
+  for (const cin of commitTx.vin) {
+    const ctxid = String(cin?.txid || '').toLowerCase();
+    const cvout = cin?.vout;
+    if (!/^[0-9a-f]{64}$/.test(ctxid) || !Number.isInteger(cvout)) continue;
+
+    // Preauth sale match — same logic the hint path uses, but driven
+    // off the on-chain outpoint instead of a dapp-supplied price.
+    const saleIdHex = await env.REGISTRY_KV.get(preauthOutpointIndexKey(network, assetIdHex, ctxid, cvout));
+    if (saleIdHex) {
+      const sale = await env.REGISTRY_KV.get(preauthSaleKey(network, assetIdHex, saleIdHex), 'json');
+      if (sale && Number.isInteger(Number(sale.min_price_sats)) && Number(sale.min_price_sats) > 0) {
+        const px = Number(sale.min_price_sats);
+        let amt = 0n;
+        try { amt = BigInt(sale.asset_opening?.amount || '0'); } catch {}
+        totalPriceSats += px;
+        totalAmount += amt;
+        fills.push({ kind: 'preauth', sale_id: saleIdHex, price_sats: px });
+        continue;
+      }
+    }
+
+    // Atomic intent match — both whole-fill and variable-amount publish
+    // sites now write `axintent-by-outpoint`. Variable-amount needs the
+    // fulfilment record to recover the (confidential) settled amount;
+    // when the record is absent we can't price the trade from chain
+    // bytes alone, so we leave it for the hint path.
+    const intentIdHex = await env.REGISTRY_KV.get(atomicIntentOutpointIndexKey(network, assetIdHex, ctxid, cvout));
+    if (intentIdHex) {
+      const intent = await env.REGISTRY_KV.get(atomicIntentKey(network, assetIdHex, intentIdHex), 'json');
+      if (!intent) continue;
+      const px = Number(intent.price_sats);
+      if (!Number.isFinite(px) || px <= 0) continue;
+      const isVar = !!(intent.min_take_amount && intent.min_take_amount !== '0');
+      if (!isVar) {
+        // Whole-fill: settle for the listed price + amount.
+        let amt = 0n;
+        try { amt = BigInt(intent.amount || '0'); } catch {}
+        totalPriceSats += px;
+        totalAmount += amt;
+        fills.push({ kind: 'intent', intent_id: intentIdHex, price_sats: px });
+        continue;
+      }
+      // Variable-amount: scale by maker's stamped requested_amount.
+      const fulfilment = await env.REGISTRY_KV.get(atomicFulfilmentKey(network, assetIdHex, intentIdHex), 'json');
+      if (!fulfilment || !fulfilment.requested_amount) continue;
+      let req = 0n, lst = 0n;
+      try { req = BigInt(fulfilment.requested_amount); lst = BigInt(intent.amount || '0'); } catch { continue; }
+      if (req <= 0n || lst <= 0n) continue;
+      const scaledPx = Number((req * BigInt(Math.floor(px))) / lst);
+      if (!Number.isFinite(scaledPx) || scaledPx <= 0) continue;
+      totalPriceSats += scaledPx;
+      totalAmount += req;
+      fills.push({ kind: 'intent-var', intent_id: intentIdHex, price_sats: scaledPx, amount: req.toString() });
+    }
+  }
+
+  if (totalPriceSats <= 0 || fills.length === 0) return null;
+  return { price_sats: totalPriceSats, amount: totalAmount, fills };
+}
+
+// Single source of truth for "a trade settled — bump the three KV
+// aggregates": last_trade pointer, daily bucket, lifetime cumulative,
+// and the recent-trades ring. Called from both the /hint endpoint
+// (dapp-supplied price) and the cron's chain-backfill (price derived
+// from the listing record).
+//
+// Caller MUST gate on bumpTransferCount's `counted === true`, so a
+// retry / re-scan / late hint POST can't double-count. The ring
+// keeps a defense-in-depth txid dedup for the edge case where the
+// caller skipped the gate, but the bucket + lifetime writes will
+// double-bump if you violate the contract.
+async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
+  const priceSats = Number(lastTrade?.price_sats);
+  if (!Number.isFinite(priceSats) || priceSats <= 0) return false;
+  // last_trade pointer — last-write-wins. Cheap idempotent on replay.
+  try {
+    await env.REGISTRY_KV.put(lastTradeKey(network, assetIdHex), JSON.stringify(lastTrade));
+  } catch { /* non-fatal */ }
+  // Daily bucket sum (today, UTC) — keyed by yyyymmdd of the trade's
+  // own ts so a backfilled historical reveal lands in the right slot.
+  // 7-day TTL collects the bucket without a sweeper cron.
+  const dayKey = tradeDayKey(network, assetIdHex, _utcYyyymmdd(lastTrade.ts || Math.floor(Date.now() / 1000)));
+  try {
+    const prevDay = await env.REGISTRY_KV.get(dayKey);
+    const prevSats = prevDay ? (Number(prevDay) || 0) : 0;
+    await env.REGISTRY_KV.put(dayKey, String(prevSats + priceSats), { expirationTtl: 7 * 86400 });
+  } catch { /* KV blip — bucket missing this trade is acceptable */ }
+  // Lifetime cumulative counter — no TTL. Authoritative since the
+  // counter started bumping.
+  try {
+    const lifeKey = tradeLifetimeKey(network, assetIdHex);
+    const prevLife = await env.REGISTRY_KV.get(lifeKey);
+    const prevLifeSats = prevLife ? (Number(prevLife) || 0) : 0;
+    await env.REGISTRY_KV.put(lifeKey, String(prevLifeSats + priceSats));
+  } catch { /* same: KV blip, recover on next trade */ }
+  // Recent-trades ring (newest first, capped). Belt-and-suspenders
+  // txid dedup inside the cap window for safety.
+  try {
+    const ringKey = tradesRingKey(network, assetIdHex);
+    const prevRingJson = await env.REGISTRY_KV.get(ringKey);
+    let ring = [];
+    if (prevRingJson) {
+      try { const j = JSON.parse(prevRingJson); if (Array.isArray(j)) ring = j; } catch {}
+    }
+    if (!ring.some(r => r && r.txid === lastTrade.txid)) {
+      ring.unshift(lastTrade);
+      if (ring.length > TRADES_RING_CAP) ring.length = TRADES_RING_CAP;
+      await env.REGISTRY_KV.put(ringKey, JSON.stringify(ring));
+    }
+  } catch { /* ring is best-effort */ }
+  return true;
 }
 
 // Recent-trades ring buffer per asset. Bounded at TRADES_RING_CAP entries.
@@ -3867,11 +4067,12 @@ async function hydrateAssetSummary(env, network, v, includeMints) {
   v.preauth_sale_count = ps.keys.length;
   v.transfer_count = parseInt(xfer || '0', 10) || 0;
   if (lastTrade) v.last_trade = lastTrade;
-  // Rolling 24h volume — bucket sum of today + yesterday's UTC daily
-  // totals (same logic as handleAssetGet line ~3915). Moved into the
-  // bulk response so dapp tiles populate volume on first paint instead
-  // of waiting for per-asset enrichment.
-  v.volume_24h_sats = (Number(todaySats) || 0) + (Number(yestSats) || 0);
+  // Rolling 24h volume — true strict-24h sum from the ring (each entry
+  // carries a timestamp), with the today+yesterday UTC bucket sum kept
+  // as a fallback for the rare case where the ring saturated within
+  // 24h. The ring is already loaded by the parallel Promise.all above,
+  // so this is "free" — no extra KV reads vs. the prior bucket-only path.
+  v.volume_24h_sats = _rolling24hVolumeSats(ring, todaySats, yestSats, _nowSec);
   // Lifetime cumulative sales volume — authoritative since-first-trade
   // figure, replaces the dapp's ring-buffer approximation (which was
   // bounded to 200 trades). Surfaced under sale_volume_sats because
@@ -4696,63 +4897,13 @@ async function handleAssetHint(req, env, network, cors, ctx) {
             ts: Math.floor(Date.now() / 1000),
             fill_count: fillCount,
           };
-          // last_trade is last-write-wins; overwriting on a replay is harmless
-          // (same data) and lets a stale display refresh.
-          await env.REGISTRY_KV.put(lastTradeKey(network, dx.asset_id), JSON.stringify(lastTrade));
-          // CRITICAL: the daily volume bucket and ring buffer are aggregations
-          // — replaying a trade hint must NOT double-count or re-append. Gate
-          // on bumpTransferCount's idempotency signal (`counted === true`
-          // means this txid wasn't seen in the past 30 days). Without this
-          // gate, anyone within the per-IP daily hint quota could re-POST
-          // the same valid trade hint to inflate the asset's 24h volume.
-          // ring buffer also has a txid-dedup as defense-in-depth, but it
-          // only protects within the cap-50 window — old replays after
-          // eviction would have slipped through.
-          if (counted) {
-            // Daily volume bucket. Add this trade's sats to today's bucket so
-            // the asset endpoint can sum (today + yesterday) for a rolling 24h
-            // figure. Bucket expires in 7 days — long after it's left the
-            // window — to auto-collect without a sweeper.
-            const dayKey = tradeDayKey(network, dx.asset_id, _utcYyyymmdd(lastTrade.ts));
-            try {
-              const prevDay = await env.REGISTRY_KV.get(dayKey);
-              const prevSats = prevDay ? (Number(prevDay) || 0) : 0;
-              await env.REGISTRY_KV.put(dayKey, String(prevSats + body.price_sats), { expirationTtl: 7 * 86400 });
-            } catch { /* KV blip — bucket missing this trade is acceptable, last_trade still landed */ }
-            // Lifetime cumulative counter — same +price_sats bump, no TTL.
-            // Read-side surfaces this as the asset's true lifetime sales
-            // volume (vs. the bounded recent-trades-ring approximation
-            // the dapp was falling back to before). Failure here is also
-            // acceptable — the daily bucket already landed for the 24h
-            // figure, and a single missed lifetime increment recovers
-            // naturally on the next trade.
-            try {
-              const lifeKey = tradeLifetimeKey(network, dx.asset_id);
-              const prevLife = await env.REGISTRY_KV.get(lifeKey);
-              const prevLifeSats = prevLife ? (Number(prevLife) || 0) : 0;
-              await env.REGISTRY_KV.put(lifeKey, String(prevLifeSats + body.price_sats));
-            } catch { /* same: KV blip, recover on next trade */ }
-            // Recent-trades ring buffer. Append (newest-first) and trim to
-            // TRADES_RING_CAP. Best-effort; failure here doesn't void the
-            // last_trade write above.
-            try {
-              const ringKey = tradesRingKey(network, dx.asset_id);
-              const prevRingJson = await env.REGISTRY_KV.get(ringKey);
-              let ring = [];
-              if (prevRingJson) {
-                try { const j = JSON.parse(prevRingJson); if (Array.isArray(j)) ring = j; } catch {}
-              }
-              // Belt-and-suspender txid dedup inside the cap-window. The
-              // outer `counted` gate handles the 30-day replay; this
-              // catches the edge where the ring evicted the entry but the
-              // seen-set still has it (or vice versa).
-              if (!ring.some(r => r && r.txid === lastTrade.txid)) {
-                ring.unshift(lastTrade);
-                if (ring.length > TRADES_RING_CAP) ring.length = TRADES_RING_CAP;
-                await env.REGISTRY_KV.put(ringKey, JSON.stringify(ring));
-              }
-            } catch { /* ring is best-effort */ }
-          }
+          // Gate on bumpTransferCount's idempotency signal — replays / re-
+          // scans / a late hint after the cron's chain-backfill already
+          // ran must NOT double-count. The helper handles last_trade +
+          // daily bucket + lifetime + ring writes uniformly so the hint
+          // endpoint and the cron's chain backfill produce identical
+          // aggregates.
+          if (counted) await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
         }
       } catch { /* BigInt parse failed — ignore, transfer counter bump still landed */ }
     }
@@ -5029,24 +5180,37 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   // single-asset endpoint additionally returns trades (recent ring
   // buffer) — kept off the list response since the per-asset blob
   // can be large enough to matter when fanned across 50+ tokens.
-  const xfer = await env.REGISTRY_KV.get(transferCountKey(network, assetIdHex));
-  v.transfer_count = parseInt(xfer || '0', 10) || 0;
-  const lastTrade = await env.REGISTRY_KV.get(lastTradeKey(network, assetIdHex), 'json');
-  if (lastTrade) v.last_trade = lastTrade;
-  // Rolling 24h volume = sum of today's + yesterday's UTC daily buckets.
-  // The sum slightly over-counts (it covers up to 48h worst case) but a
-  // straight 24h cutoff would require timestamped per-trade scanning; the
-  // bucket sum is one-order-cheaper and the over-count is bounded.
   const nowSec = Math.floor(Date.now() / 1000);
   const todayKey = tradeDayKey(network, assetIdHex, _utcYyyymmdd(nowSec));
   const yestKey  = tradeDayKey(network, assetIdHex, _utcYyyymmdd(nowSec - 86400));
   const lifeKey  = tradeLifetimeKey(network, assetIdHex);
-  const [todaySats, yestSats, lifeSats] = await Promise.all([
+  // Parallel batch — folds the prior sequential KV.get spine (xfer →
+  // last_trade → today → yest → life → holder → ring) into a single
+  // fan-out. KV reads don't count against the subrequest budget and
+  // run concurrently inside Promise.all, so the latency drop is real
+  // (was ~7 × p50 round-trips serialized; now ~1).
+  const [xfer, lastTrade, todaySats, yestSats, lifeSats, holderCntRaw, ringJson] = await Promise.all([
+    env.REGISTRY_KV.get(transferCountKey(network, assetIdHex)),
+    env.REGISTRY_KV.get(lastTradeKey(network, assetIdHex), 'json'),
     env.REGISTRY_KV.get(todayKey),
     env.REGISTRY_KV.get(yestKey),
     env.REGISTRY_KV.get(lifeKey),
+    env.REGISTRY_KV.get(holderCountKey(network, assetIdHex)),
+    env.REGISTRY_KV.get(tradesRingKey(network, assetIdHex)),
   ]);
-  v.volume_24h_sats = (Number(todaySats) || 0) + (Number(yestSats) || 0);
+  v.transfer_count = parseInt(xfer || '0', 10) || 0;
+  if (lastTrade) v.last_trade = lastTrade;
+  // Recent trades. JSON array of up to TRADES_RING_CAP entries, newest
+  // first. Empty array (rather than omission) so consumers can render
+  // "no recent trades" without an undefined-vs-empty distinction.
+  let trades = [];
+  if (ringJson) { try { const j = JSON.parse(ringJson); if (Array.isArray(j)) trades = j; } catch {} }
+  v.trades = trades;
+  // Rolling 24h volume — strict 24h sum from the timestamped ring with
+  // bucket-sum fallback only when the ring saturates within 24h. Same
+  // helper as hydrateAssetSummary so single-asset GETs and the bulk
+  // /assets response agree to the byte.
+  v.volume_24h_sats = _rolling24hVolumeSats(trades, todaySats, yestSats, nowSec);
   // Lifetime cumulative sales volume — same field name as the bulk
   // response (sale_volume_sats) so the dapp's marketVolumeSats helper
   // picks it up uniformly across both endpoints.
@@ -5054,15 +5218,7 @@ async function handleAssetGet(assetIdHex, env, network, cors) {
   if (Number.isFinite(_lifeNumAsset) && _lifeNumAsset > 0) v.sale_volume_sats = _lifeNumAsset;
   // Distinct-recipient counter, same field as the bulk response. Mirror
   // here so single-asset clients get the same popularity signal.
-  const holderCntRaw = await env.REGISTRY_KV.get(holderCountKey(network, assetIdHex));
   v.holder_count = parseInt(holderCntRaw || '0', 10) || 0;
-  // Recent trades. JSON array of up to TRADES_RING_CAP entries, newest
-  // first. Empty array (rather than omission) so consumers can render
-  // "no recent trades" without an undefined-vs-empty distinction.
-  const ringJson = await env.REGISTRY_KV.get(tradesRingKey(network, assetIdHex));
-  let trades = [];
-  if (ringJson) { try { const j = JSON.parse(ringJson); if (Array.isArray(j)) trades = j; } catch {} }
-  v.trades = trades;
   // mark_price — same priority as hydrateAssetSummary so single-asset and
   // list responses agree. Decimals comes from the asset record above; if a
   // legacy asset is missing decimals we skip rather than guess.
@@ -7796,6 +7952,14 @@ async function _handleAtomicIntentPostVar(assetIdHex, body, env, network, cors) 
     // fields are populated at fulfilment time, not publish.
   };
   await env.REGISTRY_KV.put(atomicIntentKey(network, assetIdHex, intentIdHex), JSON.stringify(intent));
+  // Outpoint reverse index — cron's chain backfill walks a reveal's
+  // commit-tx and resolves the spent asset_utxo back to its intent
+  // (and therefore its price_sats) via this entry. Idempotent under
+  // republish — the new value overwrites cleanly.
+  await env.REGISTRY_KV.put(
+    atomicIntentOutpointIndexKey(network, assetIdHex, assetUtxoTxid, assetUtxoVout),
+    intentIdHex,
+  );
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
 
@@ -8253,6 +8417,13 @@ async function handleAtomicIntentPost(assetIdHex, req, env, network, cors) {
     network,
   };
   await env.REGISTRY_KV.put(atomicIntentKey(network, assetIdHex, intentIdHex), JSON.stringify(intent));
+  // Outpoint reverse index — same role as in the variable-amount publish:
+  // lets the cron's chain backfill resolve a reveal's commit-tx-vin back
+  // to this intent and pick up price_sats without a hint POST.
+  await env.REGISTRY_KV.put(
+    atomicIntentOutpointIndexKey(network, assetIdHex, assetUtxoTxid, assetUtxoVout),
+    intentIdHex,
+  );
   return jsonResponse({ ok: true, intent }, 200, cors);
 }
 
@@ -8320,6 +8491,16 @@ async function handleAtomicIntentDelete(assetIdHex, intentIdHex, req, env, netwo
   await env.REGISTRY_KV.delete(atomicIntentKey(network, assetIdHex, intentIdHex));
   await env.REGISTRY_KV.delete(atomicClaimKey(network, assetIdHex, intentIdHex));
   await env.REGISTRY_KV.delete(atomicFulfilmentKey(network, assetIdHex, intentIdHex));
+  // Symmetric to the publish-side index write. Without this delete, the
+  // outpoint would keep pointing at the cancelled intent — harmless for
+  // the volume-backfill code path (the intent record itself is gone, so
+  // the lookup falls through), but cleaner KV state.
+  if (stored.asset_utxo && /^[0-9a-f]{64}$/.test(stored.asset_utxo.txid || '')
+      && Number.isInteger(stored.asset_utxo.vout)) {
+    await env.REGISTRY_KV.delete(atomicIntentOutpointIndexKey(
+      network, assetIdHex, stored.asset_utxo.txid, stored.asset_utxo.vout,
+    ));
+  }
   return jsonResponse({ ok: true }, 200, cors);
 }
 
@@ -10133,28 +10314,65 @@ async function scanForEtches(env, network) {
         };
         await env.REGISTRY_KV.put(burnKeyFor(network, cb.asset_id, tx.txid), JSON.stringify(burnMeta));
         found++;
-      } else if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER) {
-        // Confidential transfer (T_CXFER) or atomic-OTC settlement reveal
-        // (T_AXFER). Both move asset value between holders; bump a single
-        // per-asset counter so /assets can surface a "movement" stat without
-        // paying the cost of a full per-tx index. The xferseen dedupe key
-        // makes hint+cron idempotent: whichever path sees the tx first wins,
-        // the other no-ops. Mid-block-crash re-scans no longer double-count.
-        const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload : decodeCXferPayload;
+      } else if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR) {
+        // Confidential transfer (T_CXFER) or atomic settlement reveal
+        // (T_AXFER / T_AXFER_VAR). All three move asset value between
+        // holders; bump a single per-asset counter so /assets can surface
+        // a "movement" stat without paying the cost of a full per-tx
+        // index. The xferseen dedupe key makes hint+cron idempotent:
+        // whichever path sees the tx first wins, the other no-ops.
+        // Mid-block-crash re-scans no longer double-count.
+        const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload
+                      : decoded.opcode === T_AXFER_VAR ? decodeAxferVarPayload
+                      : decodeCXferPayload;
         const dx = decoder(decoded.payload);
         if (!dx) continue;
-        await bumpTransferCount(env, network, dx.asset_id, tx.txid);
+        const counted = await _bumpTransferOnce(dx.asset_id, tx.txid);
         // Per-asset holder counter: each output's recipient scriptpubkey is
         // a candidate new wallet. Walk the tx outputs that correspond to
-        // tacit asset commitments (dx.outputs.length aligns with
-        // tx.vout[0..N-1] by SPEC layout for both opcodes) and bump the
-        // counter for each previously-unseen recipient. holderSeen dedup
-        // makes this idempotent across cron re-scans.
-        for (let i = 0; i < dx.outputs.length && i < (tx.vout?.length || 0); i++) {
-          const spk = tx.vout[i]?.scriptpubkey;
+        // tacit asset commitments. For T_CXFER and T_AXFER the mapping is
+        // dx.outputs[i] -> tx.vout[i]. For T_AXFER_VAR (§5.7.9) the layout
+        // is INTERLEAVED: dx.outputs[0] -> tx.vout[0] (recipient), the
+        // BTC payment to the maker sits at tx.vout[1], and dx.outputs[1]
+        // -> tx.vout[2] (maker change). Walking i==i for AXFER_VAR would
+        // bump the holder counter against the maker's BTC payout
+        // scriptpubkey — wrong, and was the original reason the cron
+        // didn't index AXFER_VAR at all.
+        const _voutForOutput = decoded.opcode === T_AXFER_VAR
+          ? (i) => (i === 0 ? 0 : 2)
+          : (i) => i;
+        for (let i = 0; i < dx.outputs.length; i++) {
+          const v = _voutForOutput(i);
+          if (v >= (tx.vout?.length || 0)) continue;
+          const spk = tx.vout[v]?.scriptpubkey;
           if (typeof spk === 'string' && spk.length > 0) {
-            try { await bumpHolderCount(env, network, dx.asset_id, spk.toLowerCase()); } catch {}
+            await _bumpHolderOnce(dx.asset_id, spk.toLowerCase());
           }
+        }
+        // Chain-side trade-volume backfill. Runs only when this is the
+        // first sighting of the reveal_txid (the counted gate) — same
+        // contract the hint endpoint uses, so the two paths can't both
+        // bump the daily / lifetime / ring aggregates. Derivation walks
+        // the reveal's commit-tx-vin and matches each spent outpoint
+        // against axintent-by-outpoint + presale-by-outpoint. When the
+        // hint path is healthy this is dead code; when a tab close /
+        // network blip / cron-arrives-first race leaves a settled trade
+        // un-hinted, this catches it without manual intervention.
+        if (counted && (decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR)) {
+          try {
+            const derived = await _deriveAxferTradeFromChain(env, network, tx, decoded.opcode, dx.asset_id);
+            if (derived && derived.price_sats > 0) {
+              const lastTrade = {
+                txid: tx.txid,
+                price_sats: derived.price_sats,
+                amount: String(derived.amount),
+                ts: tx.status?.block_time || Math.floor(Date.now() / 1000),
+                fill_count: Math.min(255, derived.fills.length),
+                source: 'cron-chain-backfill',
+              };
+              await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
+            }
+          } catch { /* derivation is best-effort — the transfer count still landed */ }
         }
         // Don't increment `found` — that counter is for new etches/mints/
         // burns specifically (used in the cron's status return). Transfers
@@ -10698,7 +10916,14 @@ export {
   // fills. Drift in any of these names breaks the cron's volume
   // accounting silently.
   bumpTransferCount, tradeDayKey, tradeLifetimeKey, tradesRingKey,
-  _utcYyyymmdd, TRADES_RING_CAP,
+  _utcYyyymmdd, TRADES_RING_CAP, _rolling24hVolumeSats,
+  // Chain-side trade-volume derivation + write helper. Exported so
+  // tests can pin (a) derivation from a synthetic reveal + commit pair,
+  // (b) helper writes match the hint-path aggregates byte-for-byte.
+  // Drift in either silently breaks lifetime + 24h volume accuracy.
+  _deriveAxferTradeFromChain, _recordSettledTradeVolume,
+  atomicIntentOutpointIndexKey, preauthOutpointIndexKey,
+  atomicIntentKey, preauthSaleKey, atomicFulfilmentKey,
   verifySchnorr, compressedPointFromHex,
   // Wire-format decoders + opcode constants exported so tests/worker-decoder
   // can pin down the exact return shape. The atomic-intent regression where
@@ -10949,6 +11174,12 @@ export default {
           // leaf count is exact (counter); nullifier count remains a
           // lower bound past 1000 until a counter is added.
           nullifier_count_truncated: nullL.list_complete === false,
+          // SPEC §5.10.1 — v1 indexers MUST NOT verify init_sig. We surface
+          // it verbatim in the record (rec.init_sig) for off-chain
+          // attestation systems; this flag makes the worker's non-validation
+          // explicit so consumers don't misread the presence of init_sig as
+          // a soundness signal.
+          init_sig_verified: false,
         };
       }));
       for (const p of perPool) if (p) pools.push(p);
@@ -11110,7 +11341,11 @@ export default {
         const includedCount = leaves.filter(l => l.status === 'included').length;
         const pendingCount = leaves.filter(l => l.status === 'pending').length;
         const body = {
-          pool: initRec,
+          // init_sig_verified: false — SPEC §5.10.1 forbids v1 indexers from
+          // verifying init_sig (it's attestation-of-authorship only, not a
+          // soundness signal). Surface this explicitly so consumers don't
+          // misread initRec.init_sig as worker-validated.
+          pool: { ...initRec, init_sig_verified: false },
           leaves,
           nullifiers: nullPage.records,
           network,

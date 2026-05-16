@@ -28,7 +28,7 @@
 import {
   decodeAxferPayload,
   bumpTransferCount, tradeDayKey, tradeLifetimeKey, tradesRingKey,
-  _utcYyyymmdd, TRADES_RING_CAP,
+  _utcYyyymmdd, TRADES_RING_CAP, _rolling24hVolumeSats,
   T_AXFER,
 } from '../worker/src/index.js';
 
@@ -341,6 +341,86 @@ await test('decodeAxferPayload rejects N_outputs = 3 (not in {1, 2, 4, 8})', () 
 await test('decodeAxferPayload rejects opcode != T_AXFER', () => {
   const bad = concat(u8(0x99), zeroes(32), u8(1), zeroes(64), u8(1), zeroes(33), zeroes(8), u8(0, 0));
   return decodeAxferPayload(bad) === null;
+});
+
+// ============================================================================
+// 6. Strict rolling-24h volume from the timestamped ring.
+//
+// Replaces the today+yesterday UTC bucket sum (24-48h sliding window
+// depending on time-of-day). Field is called volume_24h_sats — name
+// must match the semantics. Helper falls back to bucket sum only when
+// the ring is saturated within 24h (asset traded >TRADES_RING_CAP times
+// in 24h, so the ring truncated older-but-in-window trades).
+// ============================================================================
+console.log('\n§ Strict rolling-24h volume (ring-based):');
+
+const NOW_RTV = 1_700_000_000;
+const HOUR = 3600;
+const DAY  = 86400;
+const ring = (entries) => entries.map(([ageSec, sats]) => ({ ts: NOW_RTV - ageSec, price_sats: sats }));
+
+await test('ring with all trades inside 24h returns full ring sum', () => {
+  const r = ring([[HOUR, 100], [6 * HOUR, 200], [23 * HOUR, 50]]);
+  return _rolling24hVolumeSats(r, '0', '0', NOW_RTV) === 350;
+});
+
+await test('ring with trades both inside and outside 24h returns only inside sum', () => {
+  const r = ring([[HOUR, 100], [25 * HOUR, 999], [40 * HOUR, 999]]);
+  return _rolling24hVolumeSats(r, '0', '0', NOW_RTV) === 100;
+});
+
+await test('strict cutoff: trade exactly at now-86400 counts (>= cutoff)', () => {
+  const r = ring([[DAY, 500]]);
+  return _rolling24hVolumeSats(r, '0', '0', NOW_RTV) === 500;
+});
+
+await test('strict cutoff: trade at now-86401 does NOT count (< cutoff)', () => {
+  const r = ring([[DAY + 1, 500]]);
+  return _rolling24hVolumeSats(r, '0', '0', NOW_RTV) === 0;
+});
+
+await test('empty ring falls back to today+yesterday bucket sum', () => {
+  return _rolling24hVolumeSats([], '700', '300', NOW_RTV) === 1000;
+});
+
+await test('null ring falls back to bucket sum', () => {
+  return _rolling24hVolumeSats(null, '500', '0', NOW_RTV) === 500;
+});
+
+await test('ring is saturated (full + every entry within 24h) → fall back to bucket sum', () => {
+  // Asset trading hard: cap entries all within last 24h. Ring sum would
+  // undercount because older-but-still-in-window trades got truncated.
+  const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
+    ts: NOW_RTV - (i * 300), // every 5 min
+    price_sats: 10,
+  }));
+  // Bucket fallback returns 12000 (the true approximate); ring sum is 2000.
+  return _rolling24hVolumeSats(r, '8000', '4000', NOW_RTV) === 12000;
+});
+
+await test('ring full but oldest entry > 24h ago → use ring sum (not saturated)', () => {
+  // 200 entries, oldest one is 25h ago. That means the ring fully covers
+  // the last 24h; trust the ring's strict sum.
+  const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
+    ts: NOW_RTV - (i * 500), // 200 entries × 500s = 100,000s ≈ 27.8h span
+    price_sats: 10,
+  }));
+  // Entries within 24h: those with i*500 <= 86400 → i ≤ 172 → 173 entries → 1730.
+  const expected = Array.from({ length: TRADES_RING_CAP })
+    .filter((_, i) => i * 500 <= 86400).length * 10;
+  return _rolling24hVolumeSats(r, '99999', '99999', NOW_RTV) === expected;
+});
+
+await test('malformed ring entries (missing ts / non-numeric) are skipped', () => {
+  const r = [
+    { ts: NOW_RTV - HOUR, price_sats: 100 },
+    { /* missing both */ },
+    { ts: 'bogus', price_sats: 200 },
+    { ts: NOW_RTV - HOUR, price_sats: -1 }, // negative ignored
+    { ts: NOW_RTV - HOUR, price_sats: 0 }, // zero ignored
+    { ts: NOW_RTV - 2 * HOUR, price_sats: 50 },
+  ];
+  return _rolling24hVolumeSats(r, '0', '0', NOW_RTV) === 150;
 });
 
 console.log(`\n${pass} passed, ${fail} failed.`);
