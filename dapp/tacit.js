@@ -42596,7 +42596,10 @@ function applyMarketFilters() {
     // semantic matches range-listing convention. The spread line
     // below reveals the actual min–max range underneath.
     const _displayUnit = (l._isLevel && Number.isFinite(l._levelMaxUnit)) ? l._levelMaxUnit : unit;
-    const _prefix = (l.kind === 'range' || l._isLevel) ? '&le; ' : '';
+    // `up to` prefix on bundled-level + range rows. Replaces the ≤ glyph
+    // (which read as math jargon — half the audience parses it instantly,
+    // half stares at it). Plain English; same semantic; same width-ish.
+    const _prefix = (l.kind === 'range' || l._isLevel) ? 'up to ' : '';
     const unitStr = _displayUnit != null
       ? `${_prefix}${fmtMarketUnitSats(_displayUnit)}/${escapeHtml(a.ticker || 'token')}`
       : '';
@@ -42631,7 +42634,7 @@ function applyMarketFilters() {
     // (chunk_amount × N) in the total row so buyers see both per-chunk and
     // group-level liquidity at a glance.
     const _groupBadge = l._isGroup
-      ? ` <span class="unit" style="background:var(--bg-warm);border:1px solid var(--ink);padding:1px 5px;font-size:10px;font-weight:600;border-radius:2px;" title="${l._groupSize} identical-price chunks · take any subset individually">× ${l._groupSize}</span>`
+      ? ` <span class="unit" style="background:var(--bg-warm);border:1px solid var(--ink);padding:1px 5px;font-size:10px;font-weight:600;border-radius:2px;" title="${l._groupSize} identical-price listings · pick any subset (Buy 1–${l._groupSize}) and each settles atomically in its own Bitcoin tx">${l._groupSize} listings</span>`
       : '';
     const _groupTotalLine = (l._isGroup && unit != null)
       ? (() => {
@@ -42720,7 +42723,7 @@ function applyMarketFilters() {
     // empties the level.
     const _isLevel = !!l._isLevel;
     const _levelBadge = _isLevel
-      ? ` <span style="display:inline-block;margin-left:6px;padding:1px 7px;background:var(--ink);color:var(--bg);font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="${l._levelCount} maker listings aggregated at this price bucket. Click Buy level to fill against all of them in one routed sweep.">×${l._levelCount}</span>`
+      ? ` <span style="display:inline-block;margin-left:6px;padding:1px 7px;background:var(--ink);color:var(--bg);font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="${l._levelCount} maker listings aggregated at this price bucket. Click Buy level to fill against all of them in one routed sweep.">${l._levelCount} listings</span>`
       : '';
     const _levelSpread = _isLevel
       ? `<small class="muted" style="display:block;margin-top:1px;font-size:9px;">spread ${fmtUnitPriceSats(l._levelMinUnit)}–${fmtUnitPriceSats(l._levelMaxUnit)}</small>`
