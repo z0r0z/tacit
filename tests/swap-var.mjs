@@ -231,6 +231,11 @@ export function curveDeltaOut({ direction, R_A_pre, R_B_pre, delta_in, fee_bps }
   }
   if (deltaOut >= 1n << 64n) throw new Error('delta_out overflows u64');
   if (raPost <= 0n || rbPost <= 0n) throw new Error('post-reserve non-positive');
+  // Reserve overflow check — Uniswap V2 caps at uint112, tacit spec says
+  // u64. After many swaps + LP_ADDs, post-reserves could exceed u64;
+  // future swaps' R_pre would then fail decode and the pool gets stuck.
+  if (raPost >= 1n << 64n) throw new Error('post-reserve_A overflows u64');
+  if (rbPost >= 1n << 64n) throw new Error('post-reserve_B overflows u64');
   return { deltaOut, raPost, rbPost };
 }
 

@@ -78,6 +78,20 @@ function pointFromCompressed(bytes) {
   return secp.ProjectivePoint.fromHex(bytesToHex(bytes));
 }
 
+// Reserves are u64 per AMM.md §"Pool state". Mirrors Uniswap V2's uint112
+// cap (lower because tacit assets are u64). Without this check a pool could
+// be driven past u64 by repeated LP_ADDs or a giant swap; subsequent
+// envelopes' R_pre fields (u64-encoded) would silently truncate on the
+// way into snarkjs/sigma checks, leaving the pool stuck for swap paths
+// that do a freshness gate against R_pre. Cheap u64-bound guard at every
+// reserve-mutating exit.
+const U64_MAX = (1n << 64n) - 1n;
+function checkReserveU64(R_A, R_B) {
+  if (R_A < 0n || R_A > U64_MAX) return `reserve_A ${R_A} out of u64 range`;
+  if (R_B < 0n || R_B > U64_MAX) return `reserve_B ${R_B} out of u64 range`;
+  return null;
+}
+
 // Canonical (asset_A, asset_B) ordering check used by all three core
 // validators. AMM.md §"Pool state" requires strict byte inequality plus
 // asset_A < asset_B lexicographically. Returns a reason string on failure
@@ -706,6 +720,8 @@ export function validateLpAdd({
 
   const newReserveA = xPool.reserve_A + env.deltaA;
   const newReserveB = xPool.reserve_B + env.deltaB;
+  const overflowErr = checkReserveU64(newReserveA, newReserveB);
+  if (overflowErr) return { valid: false, reason: `LP_ADD reserve overflow: ${overflowErr}` };
   return {
     valid: true,
     newPoolState: {
@@ -798,6 +814,20 @@ export function validateLpRemove({
   }
   if (expected.delta_b !== env.deltaB) {
     return { valid: false, reason: `deltaB: expected ${expected.delta_b}, got ${env.deltaB}` };
+  }
+
+  // Uniswap V2's INSUFFICIENT_LIQUIDITY_BURNED guard. In extremely
+  // imbalanced pools (e.g., R_A << S) a small shareAmount floor-rounds
+  // delta_A to 0 while delta_B > 0. The LP burns shares and gets nothing
+  // back on the zero side — a silent self-grief, and the pool ends up
+  // with skewed value-per-share for remaining LPs (they implicitly gain
+  // the donated A-side value). Reject upfront, matching Uniswap V2
+  // pair.sol's `require(amount0 > 0 && amount1 > 0)` at burn time.
+  if (env.deltaA === 0n || env.deltaB === 0n) {
+    return {
+      valid: false,
+      reason: `INSUFFICIENT_LIQUIDITY_BURNED: deltaA=${env.deltaA}, deltaB=${env.deltaB} (both must be > 0)`,
+    };
   }
 
   // Kernel sig over lp-share input(s).
@@ -1204,6 +1234,8 @@ export function validateSwapBatch({
     newReserveA = pool.reserve_A;
     newReserveB = pool.reserve_B;
   }
+  const swapOverflowErr = checkReserveU64(newReserveA, newReserveB);
+  if (swapOverflowErr) return { valid: false, reason: `SWAP_BATCH reserve overflow: ${swapOverflowErr}` };
 
   // Constant-product check: with γ scaling, R_A · R_B (post) ≥ R_A · R_B (pre).
   // The exact-output deterministic solve ensures this; verify cheaply here.
