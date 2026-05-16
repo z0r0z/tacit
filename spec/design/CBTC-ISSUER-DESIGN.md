@@ -1,22 +1,37 @@
-# cBTC Reference Issuer — Operational Design
+# cBTC Reference Issuer — Operational Design (HISTORICAL / ARCHIVED)
 
-> **Status:** Operational design doc for one specific application of
-> the tacit wrapper convention (`SPEC-WRAPPER-AMENDMENT.md`).
-> Informative — **not part of SPEC.md**. Describes how the TAC team
-> (or any aligned operator) can stand up a reference cBTC instance
-> backed by native sats under a federated multisig.
+> **STATUS: SUPERSEDED** (2026-05-17). This document describes a
+> federated 3-of-5 multisig design that was sketched as a possible
+> reference issuer for cBTC.tac. It was never implemented. The
+> protocol-shipped variants are now:
+>
+> - **`cBTC.zk`** — self-custody slot wrapper (trustless whole-slot),
+>   defined in `SPEC-CBTC-ZK-AMENDMENT.md` and its companions
+>   (AMOUNT, FUNGIBILITY).
+> - **`cBTC.tac`** — TAC-bonded fractional wrapper (fungible
+>   amount-granular), defined in `SPEC-CBTC-TAC-AMENDMENT.md`.
+>
+> Both are non-federated. The TAC team operates neither a multisig
+> reserve nor a co-signer service. Trust profiles are documented in
+> their respective amendments.
+>
+> This document is preserved for reference only. The federated
+> multisig design described below is one of many possible trust
+> models a third-party ecosystem operator could choose to deploy
+> under their own wrapper suffix (e.g., `cBTC.alice` or `cBTC.fed`).
+> The wrapper convention (`SPEC-WRAPPER-AMENDMENT.md`) is
+> permissionless — anyone may stand up their own variant — but
+> none of that is the protocol's responsibility.
+
+> **Original (now historical) status:** Operational design doc for one
+> specific application of the tacit wrapper convention
+> (`SPEC-WRAPPER-AMENDMENT.md`). Described how the TAC team (or any
+> aligned operator) could stand up a reference cBTC instance backed
+> by native sats under a federated multisig.
 >
 > **Scope.** This doc covers: multisig setup, key ceremony, auto-
 > lister + auto-taker worker design, reserve dashboard, attestation
-> cadence, failure modes, key rotation. **Out of scope:** the
-> convention itself (see SPEC amendment), AMM pool seeding (post-
-> ceremony work), competing issuer onboarding (each runs their own
-> variant under the same convention).
->
-> **Non-canonical.** This is one possible cBTC issuer. The convention
-> is permissionless — any other operator can launch their own cBTC
-> variant with different custody, fees, or geography. Users + dapp
-> routing decide which variant earns trust and liquidity.
+> cadence, failure modes, key rotation.
 
 ---
 

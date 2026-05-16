@@ -1,15 +1,27 @@
-# SPEC §5.24–§5.26 Amendment — cBTC.zk Fractional Shares
+# SPEC §5.24–§5.26 Amendment — cBTC.zk Fractional Share Machinery
 
 > **STATUS: DRAFT** (security-fixed 2026-05-17). Companion to
-> `SPEC-CBTC-ZK-AMENDMENT.md`. Adds two new envelope opcodes
-> (T_SLOT_FRACTIONALIZE `0x46`, T_SLOT_RECONSOLIDATE `0x47`) and
-> defines the two-key slot construction that lets a slot's
-> `denom_sats` of value circulate as standard tacit-asset UTXOs while
-> the backing Bitcoin slot remains locked. This is the layer that
-> makes cBTC.zk look and behave like any other tacit asset —
-> fungible at arbitrary amounts, amount-hidden in transfer, tradeable
-> on AMM, listable on the marketplace — without giving up self-custody
-> or adding any new trust assumption.
+> `SPEC-CBTC-ZK-AMENDMENT.md`. Defines the cryptographic machinery
+> for fractional share UTXOs — two-key slot construction
+> (§5.24.0), T_SLOT_FRACTIONALIZE (`0x46`), T_SLOT_RECONSOLIDATE
+> (`0x47`).
+>
+> **Scope clarification (2026-05-17).** This amendment specifies the
+> wire format and validator algorithms for the fractional-share
+> layer. It does **not** by itself ship a trustless fungible wrapped
+> BTC asset — the unbonded fractionalize path described here has
+> known fungibility weaknesses (slot operators can rug, breaking
+> per-share fungibility under privacy). The canonical activation
+> path is `SPEC-CBTC-TAC-AMENDMENT.md`, which wraps this machinery
+> in TAC over-collateralization to define `cBTC.tac`. The two-key
+> construction (§5.24.0) and the wire formats / validator algorithms
+> defined here are reused by `SPEC-CBTC-TAC-AMENDMENT.md` under
+> bonded semantics.
+>
+> The two-key construction makes the fractionalize layer cryptographically
+> safe; the bond layer (per the TAC amendment) makes it economically
+> sound for fungibility. Both are required for a shippable fractional
+> product.
 >
 > The two-key construction is the canonical slot format used by every
 > cBTC.zk mint. The base `SPEC-CBTC-ZK-AMENDMENT.md` describes the

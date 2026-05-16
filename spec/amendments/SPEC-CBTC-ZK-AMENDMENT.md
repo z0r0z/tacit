@@ -24,12 +24,10 @@
 
 The wrapper convention (§4.2 / `SPEC-WRAPPER-AMENDMENT.md`) defines
 metadata for wrapped assets but assumes a custody party holds reserves
-at a declared `reserve_address`. cBTC.tac (federated 3-of-5) and the
-cUSD-amendment's canonical cBTC (per-user DLC + oracle threshold
-co-signer) both narrow trust significantly — but neither is
-*structurally trustless*. Both designs rely on at least one
-cooperating party (federation, oracle threshold) at redemption time,
-with a CSV escape as fallback.
+at a declared `reserve_address`. Earlier sketched designs (e.g., the
+cUSD-amendment's per-user DLC + oracle threshold co-signer) narrow
+trust significantly — but rely on at least one cooperating party at
+redemption time, with a CSV escape as fallback.
 
 This amendment closes the gap. The cryptographic alignment between
 the mixer's secp256k1 Pedersen commit and Bitcoin's Schnorr key-path
@@ -40,16 +38,28 @@ no co-signer of any kind. Trust profile collapses to the same
 assumptions tacit already makes (Groth16 soundness, Pedersen binding,
 secp256k1 hardness, indexer rule enforcement).
 
+**Companion variant — cBTC.tac.** Whole-slot cBTC.zk is unit-granular
+at fixed denominations, which doesn't compose with standard AMM /
+lending / marketplace patterns expecting amount-granular fungible
+assets. The companion amendment `SPEC-CBTC-TAC-AMENDMENT.md` defines
+`cBTC.tac`, a fungible wrapped-BTC asset minted via LP-shaped deposit
+of cBTC.zk slot + TAC over-collateral. cBTC.tac is **not** trustless —
+it relies on TAC over-collateralization (MakerDAO-shape trust model) —
+but it gives DeFi-native fungibility. The two variants coexist:
+cBTC.zk for trustless whole-slot UX, cBTC.tac for fungible AMM UX.
+Users self-select.
+
 **Comparison with adjacent designs:**
 
-| Property | cBTC.tac | canonical cBTC (§6.2) | cBTC.zk (this amendment) |
+| Property | canonical cBTC (§6.2) | cBTC.tac (TAC-bonded) | cBTC.zk (this amendment) |
 |---|---|---|---|
-| Custody | 3-of-5 federation | Per-user DLC + oracle threshold | Per-user self-custody slot, no co-signer |
-| Redemption co-signer | Federation 3-of-5 | Oracle threshold FROST | None — note-holder alone |
-| Escape on co-signer failure | CSV 26280 blocks | CSV 26280 blocks | Not applicable — no co-signer |
-| Mixer-shielded by default | No | No | Yes (every op is a mixer note) |
-| Lost-key consequence | Reserves recoverable via fed | Sats recoverable via CSV | Sats permanently locked |
-| Trust assumption at trade | Federation honest at trade | Oracle threshold honest at trade | secp256k1 + Groth16 + indexer rules |
+| Custody | Per-user DLC + oracle threshold | Per-user self-custody slot + TAC bond | Per-user self-custody slot, no co-signer |
+| Redemption co-signer | Oracle threshold FROST | None — depositor `r_btc` alone | None — note-holder alone |
+| Granularity | Amount-granular | Amount-granular (fungible) | Unit-granular at fixed denominations |
+| Mixer-shielded by default | No | Yes (cBTC.tac is a standard tacit asset) | Yes (every op is a mixer note) |
+| Lost-key consequence | Sats recoverable via CSV | Sats permanently locked + bond TAC eventually returns | Sats permanently locked |
+| Trust assumption at trade | Oracle threshold honest at trade | TAC over-collateralization remains margined | secp256k1 + Groth16 + indexer rules |
+| AMM-poolable | Yes (standard tacit asset) | Yes (standard tacit asset, fungible amounts) | Whole-slot only (orderbook / virtual-AMM) |
 
 cBTC.zk is the structurally-most-trustless point on this curve, at
 the cost of one property: **lost notes lock corresponding BTC

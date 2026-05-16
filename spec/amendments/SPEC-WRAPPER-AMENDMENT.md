@@ -696,8 +696,11 @@ Out of scope, left for future amendments:
 4. **Issuer governance / federation rotation.** Multi-issuer
    federations rotating membership require additional protocol
    surface (multisig key rotation under a chain-attested
-   governance procedure). Out of scope for v1; reference cBTC.tac
-   uses static membership with CSV escape.
+   governance procedure). Out of scope for v1. (Note: the protocol-
+   shipped wrappers `cBTC.zk` and `cBTC.tac` are non-federated —
+   self-custody slot and TAC-bonded fractional respectively — so
+   this only matters for third-party ecosystem operators who choose
+   to launch federated variants.)
 5. **Liquidity mining incentives** for cBTC-pool LPs. Pure dapp
    policy; no protocol-level support needed.
 
@@ -715,10 +718,14 @@ Out of scope, left for future amendments:
 
 2. **Multi-issuer namespace collision.** Two issuers could both
    ticker their wrapper `cBTC` if no `.suffix` convention exists.
-   Reference convention uses dotted suffixes (`cBTC.tac`,
-   `cBTC.alice`) but the spec doesn't enforce this. Recommendation:
-   leave as social convention for v1; if collisions become a
-   problem, mandate `<base>.<issuer_pubkey_prefix>` form.
+   Reference convention uses dotted suffixes — the protocol-shipped
+   variants are `cBTC.zk` (self-custody slot, per
+   `SPEC-CBTC-ZK-AMENDMENT.md`) and `cBTC.tac` (TAC-bonded fractional,
+   per `SPEC-CBTC-TAC-AMENDMENT.md`). Ecosystem operators MAY launch
+   their own variants under different suffixes (`cBTC.alice`,
+   `cBTC.fed`, etc.) under their own trust models. The spec doesn't
+   enforce naming; if collisions become a problem, mandate
+   `<base>.<issuer_pubkey_prefix>` form.
 
 3. **Reserve address verification.** A misbehaving issuer could
    point `reserve_address` at a multisig they don't actually

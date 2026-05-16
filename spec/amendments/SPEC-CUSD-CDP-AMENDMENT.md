@@ -25,13 +25,18 @@
 
 The wrapper convention (§4.2 / `SPEC-WRAPPER-AMENDMENT.md`) lets
 anyone CETCH a wrapper-tagged asset and self-custody reserves. That's
-permissionless and works for 1:1 federated wrappers like
-`cBTC.tac`. But two gaps remain:
+permissionless and works for various wrapper variants (including
+third-party federated wrappers under their own suffix). But two gaps
+remain:
 
-1. **Federated cBTC requires trusting an issuer.** Even with
-   transparent reserves + atomic-at-trade settlement, the federation
-   can rugpull. The wrapper convention can't fix this without
-   covenants — but a **DLC-based per-user-collateral pattern** can.
+1. **Federated cBTC variants require trusting their issuer.** Even
+   with transparent reserves + atomic-at-trade settlement, the
+   federation can rugpull. The wrapper convention can't fix this
+   without covenants — but a **DLC-based per-user-collateral
+   pattern** can. (Note: the protocol-shipped cBTC variants are
+   non-federated: `cBTC.zk` is self-custody slot trustless;
+   `cBTC.tac` is TAC-bonded fractional. This gap concerns ecosystem-
+   operator wrappers that opt into federated custody.)
 2. **Stablecoins (oracle-priced wrappers) need a price oracle.** The
    convention reserves `peg.kind = "oracle_priced"` but doesn't
    specify the oracle. Without one, no synthetic cUSD-style asset is
@@ -96,9 +101,10 @@ To become an attester for epoch `E`, a candidate must:
    `min_oracle_bond_lp_shares` is dynamically computed as 1% of
    that pool's `lp_total_shares` at the time of T_ORACLE_JOIN.
 
-   **V1 scope: canonical-pool-only bond.** Federated cBTC variant
-   pools (e.g., `cBTC.tac/cUSD`) feed the oracle's TWAP **price
-   computation** (§6.1.3) but do NOT qualify as bond collateral.
+   **V1 scope: canonical-pool-only bond.** Non-canonical cBTC
+   variant pools (e.g., `cBTC.zk/cUSD`, `cBTC.tac/cUSD`, third-party
+   `cBTC.alice/cUSD`) feed the oracle's TWAP **price computation**
+   (§6.1.3) but do NOT qualify as bond collateral.
    This keeps V1's attester accounting simple (one lp_asset_id,
    one bond UTXO per attester). Future amendments may extend
    bond eligibility to wrapper-variant LP shares with appropriate
@@ -1515,9 +1521,10 @@ default for AMM-pool inits touching canonical assets specifically.
 The override does NOT extend to other transaction kinds against
 canonical assets (transfers, swaps, T_CDP_OPEN/CLOSE, etc.) — those
 remain governed by their respective validator rules. The override
-also does NOT extend to non-canonical wrapper variants — federated
-variants (`cBTC.tac/cUSD.federation`, etc.) remain free to choose
-their own protocol-fee parameters.
+also does NOT extend to non-canonical wrapper variants — other
+variants (`cBTC.zk/cUSD`, `cBTC.tac/cUSD`, third-party federated
+variants, etc.) remain free to choose their own protocol-fee
+parameters.
 
 **Rationale.** The CDP machinery (§6.3.5) already collects two
 streams of protocol revenue from canonical-asset users:
