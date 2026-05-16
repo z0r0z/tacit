@@ -15344,6 +15344,9 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
     assetId: assetIdHex,
     txid: commitTxidHex,
   });
+  // Smart enable auto-fulfil on first intent publish — closes the "new
+  // seller's first claim sits unsigned until they find the toggle" gap.
+  _smartEnableAutoFulfilOnce();
   return { intent_id: intentIdHex, asset_id: assetIdHex, commit_txid: commitTxidHex };
 }
 
@@ -15499,6 +15502,9 @@ async function publishAxferVarIntent({ utxoTxid, utxoVout, priceSats, expiry, mi
   if (!resp.ok) throw new Error(j.error || `HTTP ${resp.status}`);
 
   invalidateDiscoverRegistryCache();
+  // Smart enable auto-fulfil on first intent publish — same rationale
+  // as the whole-UTXO publishAxferIntent path.
+  _smartEnableAutoFulfilOnce();
   return {
     intent_id: intentIdHex,
     asset_id: assetIdHex,
@@ -41128,6 +41134,25 @@ function _releaseAutoFulfilLease(intentIdHex) {
 }
 function _loadAutoFulfilFlag() {
   try { return localStorage.getItem(_AUTO_FULFIL_KEY) === '1'; } catch { return false; }
+}
+
+// Smart enable: turn on auto-fulfil the first time a user publishes an
+// atomic intent, so their first sale doesn't sit pending until they find
+// the toggle. Idempotent and respectful of explicit opt-out — if the user
+// has ever toggled the daemon OFF (localStorage flag === '0'), we never
+// auto-flip it back on. Otherwise, on first intent publish, start the
+// daemon and surface a one-time toast with an undo affordance.
+function _smartEnableAutoFulfilOnce() {
+  if (_autoFulfilEnabled) return;
+  let existingFlag = null;
+  try { existingFlag = localStorage.getItem(_AUTO_FULFIL_KEY); } catch {}
+  // Explicit opt-out: respect it.
+  if (existingFlag === '0') return;
+  startAutoFulfilDaemon();
+  toast(
+    'Auto-fulfil enabled — your sells will auto-sign claims in the background. Toggle off in your wallet card if you want manual control.',
+    'success', 12000,
+  );
 }
 function _saveAutoFulfilFlag(on) {
   try { localStorage.setItem(_AUTO_FULFIL_KEY, on ? '1' : '0'); } catch {}
