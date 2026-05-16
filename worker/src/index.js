@@ -805,6 +805,239 @@ async function handleBackfillHolders(env, network, cors, opts = {}) {
   }, 200, cors);
 }
 
+// Pure chain-side trade-price derivation from an AXFER reveal tx.
+// Sums the seller-payout BTC outputs based on the decoded envelope:
+//   T_AXFER:     vout[outputs.length .. outputs.length + asset_input_count)
+//                  (one BTC payout per seller input — N=1 for single-take,
+//                   N>1 for batched preauth-take or multi-seller bid fill)
+//   T_AXFER_VAR: vout[1] only (interleaved layout: asset[0], BTC[1], asset[2])
+// Returns { price_sats, opcode } or null if not a recognisable AXFER.
+function _chainDerivedTradePriceSats(tx, decoded, dx) {
+  if (!tx?.vout || !dx) return null;
+  if (decoded.opcode === T_AXFER) {
+    const M = dx.outputs?.length;
+    const N = dx.asset_input_count;
+    if (!Number.isInteger(M) || !Number.isInteger(N) || M < 1 || N < 1) return null;
+    if (M + N > tx.vout.length) return null;
+    let sum = 0;
+    for (let i = M; i < M + N; i++) {
+      const v = Number(tx.vout[i]?.value);
+      if (!Number.isFinite(v) || v < 0) return null;
+      sum += v;
+    }
+    return sum > 0 ? { price_sats: sum, opcode: T_AXFER } : null;
+  }
+  if (decoded.opcode === T_AXFER_VAR) {
+    // Interleaved layout: BTC payout always at vout[1].
+    const v = Number(tx.vout[1]?.value);
+    return Number.isFinite(v) && v > 0 ? { price_sats: v, opcode: T_AXFER_VAR } : null;
+  }
+  return null;
+}
+
+// Cursor-paginated lifetime-volume audit. One call processes up to
+// `limit` xferseen entries (default 80, max 200) so a single Worker
+// invocation comfortably finishes inside the 30s wall-clock budget
+// even when mempool.space is slow. The caller walks pages via the
+// returned `cursor` and accumulates `page_derived_sats` client-side.
+//
+// Side effect: every chain-derived AXFER additionally writes a
+// `trade-event:<aid>:<txid>` journal entry (deterministic key,
+// idempotent put), bootstrapping the perm trade-event journal from the
+// 30-day-TTL xferseen window. Once the full walk is done the caller
+// hits `/admin/reconcile-trade-lifetime` to recompute the canonical
+// lifetime counter from the journal sum via a single race-free put —
+// replacing the older `/admin/seed-trade-lifetime?sats=N` flow that
+// required summing client-side and accepting whatever number the
+// caller submitted.
+async function handleAuditTradeVolume(env, network, assetIdHex, opts) {
+  const prefix = network === 'signet' ? `xferseen:${assetIdHex}:` : `xferseen:${network}:${assetIdHex}:`;
+  const limit = Math.min(200, Math.max(1, Number.isFinite(Number(opts.limit)) ? Number(opts.limit) : 80));
+  const cursorIn = opts.cursor || null;
+
+  const list = await env.REGISTRY_KV.list({
+    prefix, limit, ...(cursorIn ? { cursor: cursorIn } : {}),
+  });
+  const txids = list.keys
+    .map(k => (k.name.match(/([0-9a-f]{64})$/i) || [])[1])
+    .filter(Boolean)
+    .map(t => t.toLowerCase());
+
+  let pageDerivedSats = 0;
+  let countAxfer = 0;
+  let countAxferVar = 0;
+  let countCxfer = 0;
+  let countSkipped = 0;
+  let fetchErrors = 0;
+  const sampleTrades = [];
+  const PARALLEL = 10;
+  for (let i = 0; i < txids.length; i += PARALLEL) {
+    const batch = txids.slice(i, i + PARALLEL);
+    const results = await Promise.all(batch.map(async (txid) => {
+      let tx;
+      try { tx = await fetchFreshTxJson(env, txid, network); }
+      catch { return { fetchError: true }; }
+      const wHex = tx?.vin?.[0]?.witness?.[1];
+      if (!wHex) return { skipped: true };
+      let decoded;
+      try { decoded = decodeEnvelopeScript(hexToBytes(wHex)); } catch { return { skipped: true }; }
+      if (!decoded) return { skipped: true };
+      if (decoded.opcode === T_CXFER) return { cxfer: true };
+      if (decoded.opcode !== T_AXFER && decoded.opcode !== T_AXFER_VAR) return { skipped: true };
+      const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload : decodeAxferVarPayload;
+      const dx = decoder(decoded.payload);
+      if (!dx || dx.asset_id !== assetIdHex) return { skipped: true };
+      const derived = _chainDerivedTradePriceSats(tx, decoded, dx);
+      if (!derived) return { skipped: true };
+      return {
+        txid,
+        opcode: derived.opcode,
+        price_sats: derived.price_sats,
+        ts: tx.status?.block_time || 0,
+      };
+    }));
+    // Journal bootstrap: write a `trade-event:<aid>:<txid>` entry for
+    // every chain-derived AXFER on this page so the perm journal picks
+    // up entries that predate journal-aware code. Deterministic key →
+    // idempotent under replay; safe to write in parallel because each
+    // distinct txid maps to a distinct key. Best-effort — a failure
+    // here just defers that entry to the next audit pass or a future
+    // hint POST; the page's derived sum is still returned.
+    const journalWrites = [];
+    for (const r of results) {
+      if (r?.fetchError) { fetchErrors++; continue; }
+      if (r?.cxfer) { countCxfer++; continue; }
+      if (!r || r.skipped) { countSkipped++; continue; }
+      pageDerivedSats += r.price_sats;
+      if (r.opcode === T_AXFER) countAxfer++;
+      else if (r.opcode === T_AXFER_VAR) countAxferVar++;
+      if (sampleTrades.length < 5) sampleTrades.push(r);
+      journalWrites.push(env.REGISTRY_KV.put(
+        tradeEventKey(network, assetIdHex, r.txid),
+        JSON.stringify({ ts: r.ts || 0, price_sats: r.price_sats, source: 'audit-walker' }),
+      ).catch(() => {}));
+    }
+    if (journalWrites.length > 0) await Promise.all(journalWrites);
+  }
+
+  const lifeKey = tradeLifetimeKey(network, assetIdHex);
+  const currentLifeStr = await env.REGISTRY_KV.get(lifeKey);
+  const currentLifeSats = Number(currentLifeStr) || 0;
+  return {
+    asset_id: assetIdHex,
+    network,
+    page_count: txids.length,
+    page_derived_sats: pageDerivedSats,
+    page_derived_btc: pageDerivedSats / 1e8,
+    counts: {
+      t_axfer: countAxfer,
+      t_axfer_var: countAxferVar,
+      t_cxfer_excluded: countCxfer,
+      skipped_other: countSkipped,
+      fetch_errors: fetchErrors,
+    },
+    current_lifetime_sats: currentLifeSats,
+    sample_trades: sampleTrades,
+    next_cursor: list.list_complete ? null : (list.cursor || null),
+    done: !!list.list_complete,
+    // Hint to the caller: when `done: true`, hit `/admin/reconcile-
+    // trade-lifetime?aid=<aid>` to recompute the canonical counter from
+    // the journal (deterministic single-put, race-free).
+    next_action: list.list_complete ? 'POST /admin/reconcile-trade-lifetime' : 'continue walking via next_cursor',
+  };
+}
+
+// Seed the per-asset lifetime trade-volume counter. Idempotent under
+// max(current, target) — re-running a stale value never regresses, and
+// the cron's forward chain backfill keeps the counter accurate going
+// forward by bumping it on every new settled trade.
+async function handleSeedTradeLifetime(env, network, assetIdHex, targetSats) {
+  if (!Number.isFinite(targetSats) || targetSats < 0) {
+    return { error: 'invalid sats' };
+  }
+  const lifeKey = tradeLifetimeKey(network, assetIdHex);
+  const currentLifeStr = await env.REGISTRY_KV.get(lifeKey);
+  const currentLifeSats = Number(currentLifeStr) || 0;
+  const newLifeSats = Math.max(currentLifeSats, Math.floor(targetSats));
+  await env.REGISTRY_KV.put(lifeKey, String(newLifeSats));
+  return {
+    asset_id: assetIdHex,
+    network,
+    before_sats: currentLifeSats,
+    target_sats: Math.floor(targetSats),
+    after_sats: newLifeSats,
+    after_btc: newLifeSats / 1e8,
+  };
+}
+
+// Recompute `trade-lifetime:<network>:<aid>` from the trade-event journal
+// and publish it via a SINGLE put. The journal's deterministic keying
+// (one entry per txid) means concurrent settles for the same asset can't
+// collide here, so this is the race-free path that heals any drift the
+// hot-path RMW counter bump in `_recordSettledTradeVolume` lost under
+// burst load.
+//
+// Walks every `trade-event:<network>:<aid>:*` key (1000-per-page list,
+// then JSON-decodes each value). Cap is configurable to bound subrequest
+// budget for pathologically-active assets; current default 5000 covers
+// every asset the worker has indexed so far with headroom.
+//
+// Returns { before_sats, after_sats, journal_count, list_pages,
+// missing_or_malformed } so the admin caller can sanity-check the result
+// before treating it as authoritative.
+async function _reconcileTradeLifetimeFromJournal(env, network, assetIdHex, opts = {}) {
+  const maxEntries = Math.min(50000, Math.max(1, Number.isFinite(Number(opts.maxEntries)) ? Number(opts.maxEntries) : 5000));
+  const prefix = tradeEventPrefix(network, assetIdHex);
+  let sumSats = 0;
+  let count = 0;
+  let pages = 0;
+  let malformed = 0;
+  let cursor = null;
+  let done = false;
+  while (!done && count < maxEntries) {
+    const list = await env.REGISTRY_KV.list({
+      prefix, limit: 1000, ...(cursor ? { cursor } : {}),
+    });
+    pages++;
+    // Read every value on the page in parallel — much faster than serial
+    // gets on a journal with hundreds of entries.
+    const values = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json').catch(() => null)));
+    for (const v of values) {
+      const px = Number(v?.price_sats);
+      if (Number.isFinite(px) && px > 0) {
+        sumSats += px;
+        count++;
+      } else {
+        malformed++;
+      }
+      if (count >= maxEntries) break;
+    }
+    done = !!list.list_complete;
+    cursor = list.cursor || null;
+    if (!cursor) done = true;
+  }
+  const lifeKey = tradeLifetimeKey(network, assetIdHex);
+  const beforeStr = await env.REGISTRY_KV.get(lifeKey);
+  const beforeSats = Number(beforeStr) || 0;
+  // Single put, no read-modify-write. The journal sum IS the canonical
+  // number; we overwrite rather than max() because reconcile is meant to
+  // be authoritative — if it's lower than the optimistic counter (e.g.
+  // because a reorg orphaned a hinted trade and the journal entry was
+  // never written), the counter SHOULD come down.
+  await env.REGISTRY_KV.put(lifeKey, String(sumSats));
+  return {
+    asset_id: assetIdHex,
+    network,
+    before_sats: beforeSats,
+    after_sats: sumSats,
+    after_btc: sumSats / 1e8,
+    journal_count: count,
+    list_pages: pages,
+    missing_or_malformed: malformed,
+    truncated: count >= maxEntries,
+  };
+}
+
 function buyerOpeningKey(network, txidHex, vout) {
   return network === 'signet'
     ? `buyer-opening:${txidHex}:${vout}`
@@ -838,10 +1071,40 @@ function tradeDayKey(network, aid, yyyymmdd) {
 // never auto-expired. Dapp surfaces it as `sale_volume_sats` (already
 // in marketVolumeSats's trusted-candidates list), so it'll replace the
 // ring-buffer approximation automatically once the worker emits it.
+//
+// Note: under burst load the read-modify-write bump in
+// `_recordSettledTradeVolume` can lose a concurrent increment (KV has no
+// CAS). The journal (`tradeEventKey`) is the race-free source of truth;
+// `_reconcileTradeLifetimeFromJournal` recomputes this counter from the
+// journal sum via a single put, healing any drift the hot-path RMW lost.
 function tradeLifetimeKey(network, aid) {
   return network === 'signet'
     ? `trade-lifetime:${aid}`
     : `trade-lifetime:${network}:${aid}`;
+}
+// Per-trade event journal. Deterministic key (txid is unique), no TTL —
+// this is the perm record of every settled trade the worker has seen.
+// Two roles:
+//   1. Race-free source of truth for the lifetime counter. Concurrent
+//      writes for distinct trades hit distinct keys, so unlike the
+//      counter's RMW bump there's no lost-update window.
+//   2. Permanent replacement for the 30-day `xferseen` index when used
+//      for audit + reconcile. The audit walker writes entries on the
+//      fly as it walks `xferseen` (bootstrapping the journal for the
+//      visible 30-day window); going forward, `_recordSettledTradeVolume`
+//      keeps the journal current on every hint POST + cron backfill.
+// Value: JSON `{ ts, price_sats, fill_count?, source? }`. amount/opcode
+// intentionally elided — `sale_volume_sats` only needs the sat sum,
+// and the recent-trades ring already carries the per-trade detail.
+function tradeEventKey(network, aid, txidHex) {
+  return network === 'signet'
+    ? `trade-event:${aid}:${txidHex}`
+    : `trade-event:${network}:${aid}:${txidHex}`;
+}
+function tradeEventPrefix(network, aid) {
+  return network === 'signet'
+    ? `trade-event:${aid}:`
+    : `trade-event:${network}:${aid}:`;
 }
 function _utcYyyymmdd(tsSeconds) {
   const d = new Date(Math.floor(tsSeconds) * 1000);
@@ -999,6 +1262,25 @@ async function _deriveAxferTradeFromChain(env, network, revealTx, opcode, assetI
 async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
   const priceSats = Number(lastTrade?.price_sats);
   if (!Number.isFinite(priceSats) || priceSats <= 0) return false;
+  // Trade-event journal write — deterministic key (`trade-event:…:<txid>`),
+  // so concurrent writes for distinct trades hit distinct keys and there's
+  // no lost-update window like the RMW counter bumps below. This is the
+  // perm source of truth `_reconcileTradeLifetimeFromJournal` reads to
+  // republish `trade-lifetime:` accurately. Best-effort: a KV blip here
+  // just defers the journal entry to the next replay / cron pass — the
+  // optimistic counter bump below still surfaces the trade in the meantime.
+  try {
+    const txidHex = String(lastTrade?.txid || '').toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(txidHex)) {
+      const ev = {
+        ts: Number.isFinite(Number(lastTrade.ts)) ? Number(lastTrade.ts) : Math.floor(Date.now() / 1000),
+        price_sats: priceSats,
+      };
+      if (Number.isInteger(lastTrade.fill_count) && lastTrade.fill_count >= 1) ev.fill_count = lastTrade.fill_count;
+      if (typeof lastTrade.source === 'string') ev.source = lastTrade.source;
+      await env.REGISTRY_KV.put(tradeEventKey(network, assetIdHex, txidHex), JSON.stringify(ev));
+    }
+  } catch { /* journal write best-effort — reconcile recovers */ }
   // last_trade pointer — last-write-wins. Cheap idempotent on replay.
   try {
     await env.REGISTRY_KV.put(lastTradeKey(network, assetIdHex), JSON.stringify(lastTrade));
@@ -1035,6 +1317,13 @@ async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
       await env.REGISTRY_KV.put(ringKey, JSON.stringify(ring));
     }
   } catch { /* ring is best-effort */ }
+  // Bust the asset-detail SWR cache so the fresh sale_volume_sats /
+  // volume_24h_sats / last_trade surface on the next /assets/:id read
+  // instead of waiting up to FRESH (30s) — and worst case STALE (5min)
+  // on quiet assets where the cache hadn't been touched. `caches.default`
+  // may be undefined in Node test environments; the helper's try/catch
+  // swallows that, so we don't need a separate guard here.
+  try { await _bustAssetDetailCache(network, assetIdHex); } catch {}
   return true;
 }
 
@@ -10916,12 +11205,18 @@ export {
   // fills. Drift in any of these names breaks the cron's volume
   // accounting silently.
   bumpTransferCount, tradeDayKey, tradeLifetimeKey, tradesRingKey,
+  tradeEventKey, tradeEventPrefix,
   _utcYyyymmdd, TRADES_RING_CAP, _rolling24hVolumeSats,
   // Chain-side trade-volume derivation + write helper. Exported so
   // tests can pin (a) derivation from a synthetic reveal + commit pair,
   // (b) helper writes match the hint-path aggregates byte-for-byte.
   // Drift in either silently breaks lifetime + 24h volume accuracy.
   _deriveAxferTradeFromChain, _recordSettledTradeVolume,
+  // Journal-based reconcile — race-free authoritative recompute of the
+  // lifetime counter from the trade-event journal. Tests pin (a) sum
+  // correctness across N entries, (b) single put semantics (no RMW),
+  // (c) end-to-end recovery from a simulated burst-race undercount.
+  _reconcileTradeLifetimeFromJournal,
   atomicIntentOutpointIndexKey, preauthOutpointIndexKey,
   atomicIntentKey, preauthSaleKey, atomicFulfilmentKey,
   verifySchnorr, compressedPointFromHex,
@@ -12266,6 +12561,79 @@ export default {
           ctx.waitUntil(petchAssetsComputeAndCache(env, network).catch(() => {}));
         }
         return jsonResponse({ network, aid, deleted, max_ops: maxOps }, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // Audit a per-asset lifetime trade volume from chain bytes. Walks
+    // xferseen markers the cron has set for the asset (30-day TTL),
+    // fetches each reveal tx, derives price_sats from the AXFER output
+    // structure: vout[outputs..outputs+N) for T_AXFER (one BTC payout
+    // per seller input), vout[1] for T_AXFER_VAR (interleaved layout).
+    // The dapp's /hint endpoint and the cron's forward-backfill are
+    // both authority for new trades; this is the catch-up tool for
+    // assets whose hint POSTs failed historically or whose intent/sale
+    // records were cancelled-after-settle (the record is gone, but the
+    // chain reveal is permanent).
+    //
+    // GET /admin/audit-trade-volume?aid=X[&cursor=...&limit=N]
+    //   Cursor-paginated, read-only. Caller walks pages and accumulates
+    //   `page_derived_sats` client-side. limit defaults to 80, max 200
+    //   (sized to comfortably fit one Worker invocation's wall-clock
+    //   budget even under mempool.space tail-latency).
+    if (url.pathname === '/admin/audit-trade-volume' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid') || '';
+        if (!/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
+        const cursor = url.searchParams.get('cursor') || '';
+        const limitStr = url.searchParams.get('limit') || '';
+        const result = await handleAuditTradeVolume(env, network, aid, {
+          cursor: cursor || null,
+          limit: limitStr ? parseInt(limitStr, 10) : 80,
+        });
+        return jsonResponse(result, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // POST /admin/seed-trade-lifetime?aid=X&sats=N
+    //   Set the lifetime counter via max(current, sats). Idempotent under
+    //   repeat calls; the cron's forward backfill keeps bumping correctly
+    //   afterwards. Use after a full audit walk has summed the derived
+    //   number across all xferseen pages.
+    if (url.pathname === '/admin/seed-trade-lifetime' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid') || '';
+        if (!/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
+        const satsStr = url.searchParams.get('sats') || '';
+        const sats = Number(satsStr);
+        if (!Number.isFinite(sats) || sats < 0) return jsonResponse({ error: 'sats query param required, non-negative integer' }, 400, cors);
+        return jsonResponse(await handleSeedTradeLifetime(env, network, aid, sats), 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // POST /admin/reconcile-trade-lifetime?aid=X[&max=N]
+    //   Race-free recompute of the lifetime counter from the trade-event
+    //   journal. Lists every `trade-event:[network:]<aid>:*` entry, sums
+    //   `price_sats`, and writes the canonical figure via a single put —
+    //   so any drift the hot-path RMW counter bump in
+    //   `_recordSettledTradeVolume` lost under burst load is healed.
+    //
+    //   Use after a fresh audit walk (which bootstraps the journal for
+    //   the visible 30-day xferseen window). On subsequent runs the
+    //   journal is kept current by every hint POST + cron chain-backfill,
+    //   so re-running this is cheap and idempotent — re-publishing the
+    //   same sum each time, unless a new trade or reorg shifted the
+    //   underlying set.
+    if (url.pathname === '/admin/reconcile-trade-lifetime' && req.method === 'POST') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid') || '';
+        if (!/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
+        const maxStr = url.searchParams.get('max') || '';
+        const opts = maxStr ? { maxEntries: parseInt(maxStr, 10) } : {};
+        const result = await _reconcileTradeLifetimeFromJournal(env, network, aid, opts);
+        // Bust the asset-detail cache so the published number surfaces on
+        // the next /assets/:id read without waiting on the SWR FRESH window.
+        ctx.waitUntil(_bustAssetDetailCache(network, aid));
+        return jsonResponse(result, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
     // Curated verified-asset registry. POST adds, DELETE removes, GET lists.
