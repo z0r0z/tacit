@@ -11473,6 +11473,313 @@ async function buildAndBroadcastSlotMint({
   };
 }
 
+// Estimate the reveal-tx vbytes for a T_SLOT_BURN envelope. Variable-size
+// payload (Groth16 proof len ~256 bytes). Differs from estSlotMintRevealVb
+// in three ways:
+//   • Payload is ~205 + proofLen bytes (see SPEC §5.22.1).
+//   • Two inputs (commit P2TR carrying envelope + slot P2TR key-path), not one.
+//   • One P2WPKH output (sats payout), not one P2TR (slot creation).
+function estSlotBurnRevealVb({ proofLen = 256 } = {}) {
+  const payloadLen = 205 + proofLen;
+  const numChunks = Math.max(1, Math.ceil(payloadLen / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + payloadLen + numChunks * 3;
+  // vin[0] = script-path P2TR (envelope reveal): [sig:64, env, ctrl:33]
+  const witnessLenVin0 = 1 + 65 + 3 + envelopeLen + 34;
+  // vin[1] = key-path P2TR (slot spend under r_leaf): [sig:64] for SIGHASH_DEFAULT
+  const witnessLenVin1 = 1 + 64;
+  // Base: 2 inputs (P2TR each ~41 bytes prevout-ref) + 1 P2WPKH output (~31)
+  // tx overhead ~11. ~125 bytes baseline.
+  const baseLen = 125;
+  return Math.ceil((baseLen * 4 + 2 + witnessLenVin0 + witnessLenVin1) / 4) + 5;
+}
+
+// SPEC-CBTC-ZK §5.22 — one-click "Redeem slot → sats" (the unwrap).
+//
+// Three-step crypto pipeline (same as mixer withdraw): build merkle proof of
+// the leaf, generate Groth16 proof that we know the leaf's secrets without
+// revealing them past the public inputs, sign the Bitcoin spend of the slot
+// under r_leaf.
+//
+// Two-tx Bitcoin flow:
+//   commit: trader's sats inputs → vout[0] = P2TR(burn-envelope-script)
+//           funded with revealFee (≥ DUST). Optional change at vout[1].
+//   reveal: vin[0] = commit's vout[0] (script-path, envelope at witness[1])
+//           vin[1] = the slot UTXO (key-path under r_leaf, SIGHASH_ALL covers
+//                    both inputs + the payout output)
+//           vout[0] = sats payout to trader's wallet (slot's denomination)
+//
+// The SPEC's §5.22.2 originally described vin[0]=slot, but the worker's
+// envelope scanner only reads vin[0].witness[1] — a key-path slot spend has
+// witness=[sig] (one element, no witness[1]). The reconciled tx shape places
+// the slot at vin[1] so the commit-reveal carries the envelope at vin[0] in
+// the canonical position every other tacit op uses.
+async function buildAndBroadcastSlotBurn({
+  slotRecord,
+  ceremonyHash = null,
+  recipientAddr = null,        // optional bech32 P2WPKH payout address; null → wallet
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const circuitHash = ceremonyHash || TACIT_DEFAULT_CEREMONY_HASH;
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  if (!slotRecord || !slotRecord.assetIdHex || !slotRecord.mintTxid) {
+    throw new Error('slotRecord must include assetIdHex + mintTxid (slot UTXO is at mintTxid:0)');
+  }
+  const assetIdHex = slotRecord.assetIdHex;
+  const denomBig = BigInt(slotRecord.denomination);
+  if (denomBig <= 0n || denomBig >= (1n << BigInt(N_BITS))) {
+    throw new Error('slot denomination out of range');
+  }
+
+  // Leaf-state precondition (forward-compatible with SPEC-CBTC-ZK-AMOUNT-AMENDMENT
+  // §5.24 — pre-§4 slot records have undefined status, treated as 'live').
+  // Once the fractional-share layer lands, this gate prevents draining the
+  // BTC of a fractionalized slot (the shares would be orphaned).
+  const _state = slotRecord.status || 'live';
+  if (_state === 'redeemed') {
+    throw new Error('this slot is already marked redeemed locally; the BTC has been spent.');
+  }
+  if (_state === 'fractionalized') {
+    throw new Error('this slot is fractionalized; reconsolidate the shares first, then burn (SPEC-CBTC-ZK-AMOUNT §5.26).');
+  }
+  // 'live' and the burn-restart states ('burn-pending', 'burn-committing') are
+  // allowed — the latter two re-enter the broadcast loop after an earlier
+  // interruption.
+
+  // Pool must be registered + canonical — same gates as mixer withdraw.
+  if (!mixerIsPoolRegistered(assetIdHex, denomBig)) {
+    throw new Error(`pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) not registered locally — refresh Mixer tab first`);
+  }
+  if (!mixerIsPoolCanonical(assetIdHex, denomBig)) {
+    throw new Error(`pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) declares a non-canonical vk_cid/ceremony_cid. The dapp refuses to burn — the validator would reject the proof anyway.`);
+  }
+
+  // Pre-flight: don't broadcast if the nullifier is already in the canonical
+  // spent-set (the slot was already burned or rotated).
+  const nullifierPreimage = hexToBytes(slotRecord.nullifierPreimageHex);
+  const nullifierHash = computeNullifierHash(nullifierPreimage);
+  if (mixerIsNullifierSpent(assetIdHex, denomBig, nullifierHash)) {
+    throw new Error(`this slot was already redeemed (nullifier in spent-set). Re-broadcasting would burn fees on a doomed tx.`);
+  }
+
+  // Build merkle proof. Same path as withdraw.
+  _progress('proof:merkle');
+  const leafBytes = hexToBytes(slotRecord.leafCommitmentHex);
+  let mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
+  if (!mp) {
+    _mixerPoolCacheUntil = 0;
+    await refreshPoolsIfStale();
+    mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
+    if (!mp) throw new Error('slot leaf is not in the local pool tree — wait for indexer to catch up (depth ≥ 3 confirmations required)');
+  }
+
+  // Re-derive r_leaf + recipient_commit + bind_hash. These match the values
+  // in slotRecord by construction; recomputing serves as a defense-in-depth
+  // check that the persisted record hasn't drifted.
+  _progress('proof:r_leaf');
+  const rLeafBytes = poseidonHash(hexToBytes(slotRecord.secretHex), nullifierPreimage);
+  const rLeafBig = bytes32ToBigint(rLeafBytes) % SECP_N;
+  const recipientCommitment = pedersenCommit(denomBig, rLeafBig).toRawBytes(true);
+  const assetIdBytes = hexToBytes(assetIdHex);
+  const bindHash = computeWithdrawBindHash(assetIdBytes, denomBig, nullifierHash, recipientCommitment, rLeafBytes);
+  if (slotRecord.recipientCommitHex && bytesToHex(recipientCommitment) !== slotRecord.recipientCommitHex) {
+    throw new Error('slot record recipient_commit mismatch — stored record is corrupt or for a different slot');
+  }
+
+  // Synthesize a deposit-record-shaped object so _mixerBuildProverInput +
+  // snarkjs.groth16.fullProve work identically to mixer withdraw.
+  const proverDepositRecord = {
+    assetIdHex,
+    denomination: denomBig.toString(),
+    secretHex: slotRecord.secretHex,
+    nullifierPreimageHex: slotRecord.nullifierPreimageHex,
+    leafCommitmentHex: slotRecord.leafCommitmentHex,
+    nullifierHashHex: bytesToHex(nullifierHash),
+  };
+  const proverInput = await _mixerBuildProverInput({
+    depositRecord: proverDepositRecord,
+    merkleProof: mp,
+    recipientCommitment,
+    bindHash,
+  });
+
+  _progress('proof:fetch_zkey');
+  const { snarkjs } = await import('./vendor/tacit-mixer.min.js');
+  const zkeyBytes = await ceremonyFetchHeadZkeyBytes(circuitHash);
+  _progress('proof:fetch_wasm');
+  const wasmResp = await fetch(TACIT_WITHDRAW_WASM_PATH);
+  if (!wasmResp.ok) throw new Error(`wasm fetch failed: HTTP ${wasmResp.status}`);
+  const wasmBytes = new Uint8Array(await wasmResp.arrayBuffer());
+
+  _progress('proof:fullprove');
+  const PROOF_TIMEOUT_MS = 180_000;
+  let proof, publicSignals;
+  try {
+    const _proofPromise = snarkjs.groth16.fullProve(proverInput, wasmBytes, zkeyBytes);
+    const _timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(
+        `Groth16 proof generation timed out after ${PROOF_TIMEOUT_MS / 1000}s. Close other tabs/apps and try again, or use a desktop browser if on mobile. Slot record is in localStorage; reload is safe.`,
+      )), PROOF_TIMEOUT_MS);
+    });
+    ({ proof, publicSignals } = await Promise.race([_proofPromise, _timeoutPromise]));
+  } catch (e) {
+    const _msg = String(e?.message || e || '');
+    if (/timed out/i.test(_msg)) throw e;
+    throw new Error(`proof generation failed: ${_msg}. If this persists on a fresh tab, the slot record may be corrupt or the canonical zkey may have changed.`);
+  }
+  _progress('proof:complete', { ms: Date.now() });
+
+  // Serialize Groth16 proof in the canonical mixer format (matches T_WITHDRAW).
+  const proofBytes = _serializeGroth16Proof(proof);
+
+  // Build the burn envelope. The decoder + worker both re-derive bind_hash
+  // from canonical fields, so a record-drift bug here would fail at the
+  // worker rather than silently producing a malformed tx.
+  const merkleRootBytes = mp.root instanceof Uint8Array ? mp.root : bigintToBytes32(BigInt(mp.root));
+  const burnPayload = encodeTSlotBurnPayload({
+    networkTag,
+    assetId: assetIdBytes,
+    denomination: denomBig,
+    merkleRoot: merkleRootBytes,
+    nullifierHash,
+    recipientCommitment,
+    rLeaf: rLeafBytes,
+    bindHash,
+    proof: proofBytes,
+  });
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), burnPayload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  // Fee math. Commit funds the reveal's vin[0]; slot funds the rest of the
+  // reveal's value. Trader's net payout = denom − bitcoin_fee_total.
+  const feeRate = await getFeeRate();
+  const revealVb = estSlotBurnRevealVb({ proofLen: proofBytes.length });
+  const revealFee = feeFor(revealVb, feeRate);
+
+  // Sats UTXO selection for the commit. Need to fund (revealFee + commitFee +
+  // optional change above DUST). Asset-UTXO exclusion same as sats-send safety.
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) {
+    throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to burn. Try again or hit ↻ Refresh first.');
+  }
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  if (sats.length === 0) throw new Error('no plain-sats UTXOs available to fund the burn commit. Top up first.');
+  const commitValue = Math.max(DUST, revealFee);
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for burn fees: need ${commitValue + commitFee}, have ${total}`);
+  }
+
+  // Recipient script for vout[0] of reveal.
+  let payoutSpk;
+  if (recipientAddr) {
+    const decoded = decodeP2wpkhAddress(recipientAddr);
+    if (!decoded) throw new Error('recipientAddr is not a valid P2WPKH bech32 address');
+    if (decoded.hrp !== NET.hrp) throw new Error(`recipient is for ${decoded.hrp}, current network is ${NET.name}`);
+    payoutSpk = p2wpkhScriptFromProgram(decoded.program);
+  } else {
+    payoutSpk = p2wpkhScript(wallet.pub);
+  }
+
+  // Commit tx.
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  // Reveal tx: vin[0]=commit's P2TR (script-path with envelope), vin[1]=slot
+  // (key-path under r_leaf, SIGHASH_ALL).
+  const slotPrevoutScript = slotRecord.slotScriptPubKeyHex
+    ? hexToBytes(slotRecord.slotScriptPubKeyHex)
+    : slotScriptPubKeyFromKbtc(deriveSlotKbtc(recipientCommitment, denomBig));
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: slotRecord.mintTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: [{ value: Number(denomBig), script: payoutSpk }],
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: Number(denomBig), script: slotPrevoutScript },
+  ];
+  // Sign vin[0]: Taproot script-path with envelope reveal.
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  // Sign vin[1]: Taproot key-path under r_leaf, SIGHASH_ALL (so the spend
+  // commits to vout[0] = trader's payout, preventing third-party rewrite).
+  revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(
+    revealTx, 1, revealPrevouts, rLeafBytes, 0x01,
+  );
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  // Mark the slot record as redeemed locally. Reorg recovery: if the worker
+  // later observes the burn tx fell out of canonical chain, its status flag
+  // reverts to 'live' on the next scan tick — this client-side mark is the
+  // optimistic local view.
+  try {
+    const arr = _loadSlotRecords();
+    const idx = arr.findIndex(r => r.leafCommitmentHex === slotRecord.leafCommitmentHex);
+    if (idx >= 0) {
+      arr[idx] = { ...arr[idx], status: 'redeemed', burnTxid: revealTxidHex, redeemedAt: Date.now() };
+      try { localStorage.setItem(_slotRecordsKey(), JSON.stringify(arr)); } catch {}
+    }
+    mixerMarkNullifierSpent(assetIdHex, denomBig, nullifierHash, revealTxidHex);
+  } catch {}
+
+  try {
+    const am = getAssetMeta(assetIdHex) || {};
+    recordActivity({
+      kind: 'slot-burn',
+      ticker: am.ticker || 'cBTC.zk',
+      amount: denomBig,
+      decimals: am.decimals || 0,
+      assetId: assetIdHex,
+      txid: revealTxidHex,
+    });
+  } catch {}
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    payoutValueSats: Number(denomBig),
+    commitFee, revealFee,
+  };
+}
+
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -21606,11 +21913,116 @@ function setupMixerHandlers() {
             `\nSlot record saved locally. Back it up (Copy JSON below).`;
         }
         _renderSwrapList();
+        // Freshly-minted slots become candidates for the burn picker — refresh.
+        try { _refreshSburnOptions(); } catch {}
       } catch (e) {
         if (swrapOut) swrapOut.textContent = `✗ wrap failed: ${e?.message || e}`;
       } finally {
         swrapBtn.textContent = origLabel;
         _refreshSwrapBtn();
+      }
+    };
+  }
+
+  // ===== Slot-burn helper (SPEC-CBTC-ZK §5.22) =====
+  // "Redeem slot → sats" — burn a live slot from localStorage to recover the
+  // backing sats. Generates a Groth16 proof of leaf membership + broadcasts
+  // a commit/reveal pair that spends the slot UTXO under r_leaf SIGHASH_ALL.
+  const sburnBtn    = document.getElementById('btn-mixer-slot-burn-broadcast');
+  const sburnSelect = document.getElementById('mixer-slot-burn-record');
+  const sburnPayout = document.getElementById('mixer-slot-burn-payout');
+  const sburnOut    = document.getElementById('mixer-slot-burn-out');
+
+  const _refreshSburnOptions = () => {
+    if (!sburnSelect) return;
+    const prior = sburnSelect.value || '';
+    let liveSlots = [];
+    try { liveSlots = getSlotRecords({ status: 'live' }); } catch {}
+    sburnSelect.innerHTML = '<option value="">— pick a live slot —</option>'
+      + liveSlots.map(r => {
+          const denom = r.denomination || '?';
+          const tx = (r.mintTxid || '').slice(0, 12) + '…';
+          const aid = (r.assetIdHex || '').slice(0, 8) + '…';
+          return `<option value="${escapeHtml(r.leafCommitmentHex)}">${escapeHtml(denom)} sats · ${escapeHtml(aid)} · mint ${escapeHtml(tx)}</option>`;
+        }).join('');
+    // Restore previous selection if still present
+    if (prior && Array.from(sburnSelect.options).some(o => o.value === prior)) {
+      sburnSelect.value = prior;
+    }
+    _refreshSburnBtn();
+  };
+  const _refreshSburnBtn = () => {
+    if (!sburnBtn) return;
+    sburnBtn.disabled = !sburnSelect || !sburnSelect.value;
+  };
+  if (sburnSelect) sburnSelect.addEventListener('change', _refreshSburnBtn);
+  _refreshSburnOptions();
+
+  if (sburnBtn) {
+    sburnBtn.onclick = async () => {
+      if (sburnBtn.disabled) return;
+      const leafHex = sburnSelect.value;
+      const records = getSlotRecords();
+      const record = records.find(r => r.leafCommitmentHex === leafHex);
+      if (!record) {
+        if (sburnOut) { sburnOut.style.display = 'block'; sburnOut.textContent = '✗ slot record not found in local storage'; }
+        return;
+      }
+      const payoutAddr = (sburnPayout?.value || '').trim() || null;
+      const confirmed = await tacitConfirm({
+        title: 'Redeem slot → sats',
+        body:
+          `On broadcast, the dapp will:\n\n` +
+          `  1. Generate a Groth16 proof that you own the leaf (~5–15s).\n` +
+          `  2. Broadcast a commit/reveal pair spending the slot UTXO.\n` +
+          `  3. The slot's ${record.denomination} sats (minus Bitcoin fee) lands at\n` +
+          `     ${payoutAddr || '(this wallet)'}.\n\n` +
+          `Once redeemed, the slot record is marked spent — you cannot burn it twice. ` +
+          `The mixer pool's nullifier set records the burn, anyone observing the chain ` +
+          `can see a redemption happened but not which slot it was (Tornado-style).\n\n` +
+          `Continue?`,
+        confirmLabel: 'Redeem & broadcast',
+        cancelLabel: 'Cancel',
+      });
+      if (!confirmed) return;
+      sburnBtn.disabled = true;
+      const origLabel = sburnBtn.textContent;
+      sburnBtn.textContent = 'Redeeming…';
+      if (sburnOut) { sburnOut.style.display = 'block'; sburnOut.textContent = 'Generating Groth16 proof…'; }
+      try {
+        const result = await buildAndBroadcastSlotBurn({
+          slotRecord: record,
+          recipientAddr: payoutAddr,
+          onProgress: (stage) => {
+            if (!sburnOut) return;
+            const stages = {
+              'proof:merkle':      'Building merkle proof…',
+              'proof:r_leaf':      'Deriving r_leaf + bind_hash…',
+              'proof:fetch_zkey':  'Fetching ceremony zkey…',
+              'proof:fetch_wasm':  'Fetching circuit wasm…',
+              'proof:fullprove':   'Generating Groth16 proof (5–15s)…',
+              'proof:complete':    'Proof complete — building tx…',
+              'commit-start':      'Commit broadcasting…',
+              'reveal-start':      'Reveal broadcasting…',
+            };
+            sburnOut.textContent = stages[stage] || stage;
+          },
+        });
+        if (sburnOut) {
+          sburnOut.textContent =
+            `✓ slot redeemed\n` +
+            `  commit_txid: ${result.commitTxid}\n` +
+            `  reveal_txid: ${result.revealTxid}\n` +
+            `  payout:      ${result.payoutValueSats} sats → ${payoutAddr || 'this wallet'}\n` +
+            `\nSlot record marked spent. Refresh holdings to see the sats arrive.`;
+        }
+        _refreshSburnOptions();
+        _renderSwrapList();
+      } catch (e) {
+        if (sburnOut) sburnOut.textContent = `✗ redeem failed: ${e?.message || e}`;
+      } finally {
+        sburnBtn.textContent = origLabel;
+        _refreshSburnBtn();
       }
     };
   }
@@ -54557,6 +54969,13 @@ export {
   computeSlotMintMsg, computeSlotRotateMsg,
   deriveSlotKbtc, slotXOnly, slotScriptPubKeyFromKbtc,
   buildSlotMintEnvelope, buildSlotBurnEnvelope, buildSlotRotateEnvelope,
+  // High-level dapp builders for the slot wrapper flows. Each does the full
+  // commit-reveal Bitcoin tx + envelope construction + local-state update.
+  // Exported so headless drivers (signet rehearsal, integration tests) can
+  // exercise the same code path the UI calls.
+  buildAndBroadcastSlotMint, buildAndBroadcastSlotBurn,
+  saveSlotRecord, getSlotRecords, forgetSlotRecord,
+  estSlotMintRevealVb, estSlotBurnRevealVb,
   // BIP-341 key-path sighash + signer — used by the slot-spend reveal txs in
   // T_SLOT_BURN / T_SLOT_ROTATE (signs with r_leaf as the secret scalar, not
   // wallet.priv). Exported for the signet rehearsal harness to drive directly.

@@ -5184,6 +5184,30 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
   </div>
 
+  <!-- SPEC-CBTC-ZK §5.22 — slot-redeem helper. Burns a live slot from
+       localStorage, generating a Groth16 proof of leaf membership and
+       broadcasting a commit/reveal pair that spends the slot UTXO under
+       r_leaf (key-path Schnorr SIGHASH_ALL). Sats payout lands at the
+       chosen address (defaults to the wallet's own P2WPKH). -->
+  <div class="section" data-mixer-pool-op="true" id="mixer-slot-burn-section">
+    <div class="section-header"><span>redeem slot → sats</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">
+        Burn a live cBTC.zk slot to recover the backing sats. Generates a Groth16 proof (5–15s on desktop, longer on mobile) that you own the leaf, then spends the slot UTXO under r_leaf. Trustless single-tx unwrap.
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:2;min-width:280px;">Live slot to redeem
+          <select id="mixer-slot-burn-record"><option value="">— pick a live slot —</option></select>
+        </label>
+        <label style="flex:2;min-width:240px;">Payout address <span class="muted" style="font-size:11px;">(optional — empty = this wallet)</span>
+          <input id="mixer-slot-burn-payout" type="text" placeholder="bc1q… / tb1q… (P2WPKH bech32)" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <button id="btn-mixer-slot-burn-broadcast" disabled>Redeem &amp; broadcast</button>
+      </div>
+      <div id="mixer-slot-burn-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+    </div>
+  </div>
+
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>withdraw</span></div>
     <div class="section-body">
