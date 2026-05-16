@@ -1,6 +1,6 @@
 # SPEC Amendment — `T_RANGE_ATTEST` (`0x44`) opcode
 
-> Status: ✅ Reference impl shipped (`tests/range-attest.mjs`, 19 tests).
+> Status: ✅ Reference impl shipped (`tests/range-attest.mjs`, 23 tests).
 > SPEC.md §5.21 merge pending.
 >
 > Depends on: [`SPEC-RANGE-PROOF-PRIMITIVE.md`](./SPEC-RANGE-PROOF-PRIMITIVE.md)

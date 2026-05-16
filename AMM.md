@@ -3204,7 +3204,7 @@ SOFT CONFIRM (channel layer, ~30 s):
     worker adds intent_id to its open pool
               ↓
     worker periodically publishes
-        (sorted_intent_ids[], pool_id, height, timestamp, worker_sig)
+        (sorted_intent_ids[], scope_id, height, timestamp, worker_sig)
     AND broadcasts T_INTENT_ATTEST envelope on chain with
         intent_pool_hash = SHA256(canonical-sorted intent_ids)
               ↓
@@ -3227,10 +3227,10 @@ UNILATERAL EXIT (always available):
 L1 ANCHOR (worker → chain, per block):
     worker (or any party) broadcasts T_INTENT_ATTEST envelope
               ↓
-    indexer records (pool_id, worker_pubkey, height) → intent_pool_hash
+    indexer records (scope_id, worker_pubkey, height) → intent_pool_hash
               ↓
     equivocation detection: two valid attestations from same
-    (worker, pool, height) with different hashes ⇒ worker flagged
+    (worker, scope, height) with different hashes ⇒ worker flagged
 ```
 
 The two layers compose: the preconf layer gives modern-dApp
@@ -3241,9 +3241,15 @@ confirm. Settlement does not depend on worker honesty for soundness.
 
 ### T_INTENT_ATTEST (opcode `0x30`) wire format
 
+T_INTENT_ATTEST is **scope-generic** — the same envelope serves AMM
+pools and orderbook scopes per SPEC.md §5.17. The wire-format field
+is named `scope_id`; for AMM use, `scope_id = pool_id` per AMM.md
+§"Pool state". Orderbook scope schemas are in
+`spec/amendments/SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md`.
+
 ```
 opcode(1)             = 0x30
-pool_id(32)
+scope_id(32)          # for AMM: scope_id = pool_id
 intent_pool_hash(32)  SHA256(canonical-sorted concatenation of intent_ids in
                               the worker's open pool at observed_height — see below)
 observed_height_LE(4) u32 — Bitcoin block height the snapshot is "as of"
@@ -3290,7 +3296,7 @@ For `T_INTENT_ATTEST` (extends §11):
   hash `SHA256("tacit-intent-attest-v1" || preceding_fields)`.
 - Reject if `observed_height > envelope_height` (worker cannot
   claim a future state).
-- Index the attestation by `(pool_id, worker_pubkey, observed_height)`.
+- Index the attestation by `(scope_id, worker_pubkey, observed_height)` (`scope_id == pool_id` for AMM attestations).
   If an entry with the **same** key but **different**
   `intent_pool_hash` already exists, flag the worker as an
   equivocator and reject the incoming envelope. Same hash at same
@@ -3385,7 +3391,7 @@ natively: no covenants needed, no script-side state machine, no
 exit-game challenge protocol. Just a hash commitment and a
 signature, anchored to chain at the worker's chosen cadence.
 
-Reference impl: `tests/amm-attest.mjs`. Parity suite: `tests/amm-attest.test.mjs` (32 tests, pending update to drop SMT proofs and add full-list verification — implementation work item, not consensus).
+Reference impl: `tests/amm-attest.mjs`. Parity suite: `tests/amm-attest.test.mjs` (33 tests, pending update to drop SMT proofs and add full-list verification — implementation work item, not consensus).
 
 ## Protocol fee mechanism (founder-set, immutable)
 
@@ -3490,7 +3496,7 @@ V1's protocol-fee mechanism is **forward-compatible by omission**:
 
 The reserved opcode space (§"Opcode space reservation") includes slots for governance and treasury operations; the v1 mechanism is intentionally minimal and does not depend on those for correctness.
 
-Reference impl: `tests/amm-protocol-fee.mjs` (math, crystallization, claim message construction); `tests/amm-validator.mjs` (`validateProtocolFeeClaim`). Parity suite: `tests/amm-protocol-fee.test.mjs` (31 tests covering math, codec, and adversarial paths).
+Reference impl: `tests/amm-protocol-fee.mjs` (math, crystallization, claim message construction); `tests/amm-validator.mjs` (`validateProtocolFeeClaim`). Parity suite: `tests/amm-protocol-fee.test.mjs` (33 tests covering math, codec, and adversarial paths).
 
 ## Forward compatibility (V1 → V2 evolution path)
 
@@ -4122,14 +4128,14 @@ pending · 🔴 design open.
   packed-point encoding (circomlib `packPoint` parity), and the
   try-and-increment NUMS derivation for `H_BJJ` / `G_BJJ`.
   Canonical generator coordinates pinned and tested. See
-  `tests/amm-bjj.mjs` and `tests/amm-bjj.test.mjs` (36 tests).
+  `tests/amm-bjj.mjs` and `tests/amm-bjj.test.mjs` (47 tests).
 - ✅ **Sigma cross-curve binding library.** Camenisch-Stadler
   prover + verifier producing 169-byte proofs binding
   `(C_in_secp, C_in_BJJ)` to a shared u64 witness `a`. 128-bit
   Fiat-Shamir soundness, ≈ 128-bit statistical ZK, rejection-sampled
   α in `[0, 2^320 − 2^192)` to guarantee 40-byte `z_a` encoding. See
   `tests/amm-sigma-xcurve.mjs` and `tests/amm-sigma-xcurve.test.mjs`
-  (30 tests including mutation rejection, range-check rejection,
+  (38 tests including mutation rejection, range-check rejection,
   cross-pairing soundness, and a microbenchmark).
 - ✅ **Deterministic clearing-solve algorithm.** SOLVE_CLEARING /
   SOLVE_A_TO_B_DOMINANT / SOLVE_B_TO_A_DOMINANT / SPOT_CLEARING /
@@ -4156,13 +4162,13 @@ pending · 🔴 design open.
   amount keystream, Pedersen commitment, NUMS recipient via
   try-and-increment, aggregate verify path. See
   `tests/amm-min-liq.mjs` and `tests/amm-min-liq.test.mjs`
-  (23 tests).
+  (30 tests).
 - ✅ **Intent message + envelope_hash + qualifying_set_hash +
   cancel.** Canonical intent_msg with all 12 committed fields,
   intent_id derivation, BIP-340 sign/verify, cancel_msg,
   envelope_hash, arbiter-signed qualifying-set list. See
   `tests/amm-intent.mjs` and `tests/amm-intent.test.mjs`
-  (26 tests).
+  (27 tests).
 - ✅ **JCS canonicalization + launcher gate extraction.** RFC 8785
   canonical JSON (sorted keys, no whitespace, deterministic numbers)
   with `tacit_amm_launcher` field extraction and conservative-default
@@ -4173,7 +4179,7 @@ pending · 🔴 design open.
   optional arbiter block). Strict length checks, ordering
   enforcement, malformed-payload rejection. See
   `tests/amm-envelope.mjs` and `tests/amm-envelope.test.mjs`
-  (25 tests).
+  (30 tests).
 - ✅ **Indexer validator reference impl.** `validateLpAdd`,
   `validateLpRemove`, `validateSwapBatch` mirroring SPEC §5.5
   branches. Full pipeline: decode → kernel sigs → sigma proofs →
@@ -4181,7 +4187,7 @@ pending · 🔴 design open.
   state transition. Includes OP_RETURN envelope_hash binding,
   arbiter-block handling, intent-id ordering, expiry, and
   three-origin asset-id resolution. See `tests/amm-validator.mjs`
-  and `tests/amm-validator.test.mjs` (18 tests).
+  and `tests/amm-validator.test.mjs` (74 tests).
 - ✅ **SPEC.md normative additions.** §3.9 BabyJubJub primitives +
   pinned NUMS vectors. §3.10 sigma cross-curve binding protocol.
   §4.1 LP-share third asset-id origin path. §5.5 validator
@@ -4245,7 +4251,7 @@ pending · 🔴 design open.
   compromised, traders fall back to self-broadcast (T_SWAP_VAR) or
   ~10 min Bitcoin finality. Multi-worker fallback; unconditional
   unilateral exit; no single point of failure for soundness. See
-  `tests/amm-attest.mjs` and `tests/amm-attest.test.mjs` (32 tests covering
+  `tests/amm-attest.mjs` and `tests/amm-attest.test.mjs` (33 tests covering
   intent_pool_hash construction, envelope codec, worker_sig verification,
   equivocation detection, multi-worker independence, soft-confirm
   verification with stale / forged / untrusted / equivocator status
@@ -4274,7 +4280,7 @@ pending · 🔴 design open.
   Reference implementation, wire-format codec, kernel-msg + intent-msg
   builders, curve recompute, tick-fan construction, deterministic
   HMAC-derived blindings, and `validateSwapVar()` (the production-shape
-  indexer entry point) all complete. 40 unit tests covering the happy
+  indexer entry point) all complete. 44 unit tests covering the happy
   path, inflation-defense (load-bearing receipt-binding identity),
   kernel-sig + intent-sig tamper rejection, stale-reserves rejection,
   slippage floor, range-bound enforcement, no-change-sentinel handling,
