@@ -253,13 +253,19 @@ activates.
 
 Converts a `live` slot leaf to N standard tacit-asset cBTC.zk share
 UTXOs whose amounts sum to the slot's `denom_sats`. The backing
-Bitcoin UTXO is unchanged; the slot leaf transitions to
+Bitcoin UTXO at `K_btc` is unchanged; the slot leaf transitions to
 `fractionalized` state.
 
-This is a **tacit-side envelope only** — no Bitcoin transaction is
-required. The envelope appears in a standard tacit asset-transfer
-container (the same wire envelope used by T_AXFER_VAR) so that the
-share UTXOs materialize via the existing asset-output machinery.
+The envelope is broadcast through the standard tacit commit-reveal
+Bitcoin transaction pair. The reveal transaction creates N P2WPKH
+outputs at dust value, positionally bound to the envelope's share
+commitments (§5.25.1.1). The worker indexes each output under the
+standard tacit-asset UTXO machinery keyed by `(reveal_txid, vout)`
+with asset_id equal to the cBTC.zk variant's asset_id. From the
+moment of indexing, share UTXOs are byte-identical in shape to any
+other amount-hidden tacit-asset UTXO and participate in T_AXFER_VAR,
+AMM swaps, marketplace listings, and all other tacit-asset flows
+with zero special-case handling at consumer sites.
 
 ### 5.25.1 Wire format (envelope payload)
 
@@ -285,6 +291,41 @@ The bind_hash domain-tag is **`tacit-withdraw-bind-v1`** (reused from
 SPEC §5.11 — the cryptographic binding statement is identical to a
 mixer withdraw). The fractionalize envelope reuses the mixer's existing
 withdraw circuit and ceremony.
+
+### 5.25.1.1 Bitcoin transaction shape (share-UTXO materialization)
+
+The reveal transaction MUST satisfy:
+
+- **vin[0]**: spends the envelope-commit P2TR via script-path,
+  revealing the fractionalize envelope script in the witness. Standard
+  tacit envelope reveal convention (SPEC §5.10.2).
+- **vout[0..N-1]**: N P2WPKH outputs at value `DUST_THRESHOLD` (546
+  sats), one per share commitment. The output at position `i` carries
+  share commitment `envelope.share_commits[i]`; the positional binding
+  is normative. Each output's recipient pubkey is at the trader's
+  discretion (typically the trader's own wallet pubkey, since
+  fractionalize is self-directed — subsequent transfers via
+  T_AXFER_VAR can move shares to other recipients).
+- **vout[N..]**: optional change outputs from the trader's funding
+  inputs.
+
+The trader funds the reveal transaction (envelope-commit overhead +
+N × DUST + Bitcoin miner fee) from sats UTXOs spent in the commit
+transaction. The slot's BTC UTXO at `K_btc` is NOT spent — it remains
+locked under `r_btc` for the duration of the fractionalized state.
+
+**DUST recovery.** The `N × DUST_THRESHOLD` sats locked in share
+outputs are recovered when shares are reconsolidated (§5.26.1.1) or
+spent to other recipients via standard T_AXFER_VAR flows.
+
+**Cost envelope.** Per-fractionalize Bitcoin overhead is
+`N × DUST_THRESHOLD` sats plus the commit-reveal envelope's miner
+fees. For N = 16 (max), the DUST overhead is 8,736 sats. The
+overhead scales linearly with share count and is independent of
+`denom_sats`; large slots therefore amortize the overhead to a
+negligible fraction of slot value, while small slots may find
+the overhead non-trivial and SHOULD prefer rotating the whole slot
+(§5.23 T_SLOT_ROTATE) over fractionalizing.
 
 ### 5.25.2 Share commitment semantics
 
@@ -353,11 +394,26 @@ on T_SLOT_FRACTIONALIZE:
   require Σ envelope.share_commits − denom_sats · H is on-curve and ≠ identity
   require bulletproof_verify(envelope.share_amount_proof, share_commits)
 
+  // Bitcoin transaction shape (§5.25.1.1 — share-UTXO materialization)
+  require reveal_tx.vout.length >= share_count
+  for i in 0..share_count:
+    require reveal_tx.vout[i].script is P2WPKH (OP_0 || OP_PUSHBYTES_20 || hash160)
+    require reveal_tx.vout[i].value == DUST_THRESHOLD (546 sats)
+
   // Effects
   source_leaf.state := fractionalized
   spent-set[asset_id, denom_sats].add(nullifier_hash)
-  for each share_commit_i in envelope.share_commits:
-    append new tacit asset UTXO to (asset_id) with commitment share_commit_i
+  for i in 0..share_count:
+    // Register the share UTXO under the standard tacit-asset UTXO index.
+    // From this point the UTXO is a regular cBTC.zk[denom_sats] asset
+    // UTXO with no special-case fields — T_AXFER_VAR, AMM, marketplace
+    // all consume it via the existing tacit-asset machinery.
+    register_asset_utxo(
+      asset_id = cBTC.zk variant asset_id,
+      outpoint = (reveal_tx.txid, i),
+      pedersen_commit = envelope.share_commits[i],
+      value_sats = DUST_THRESHOLD,
+    )
   increment fractionalized_supply[asset_id] by denom_sats
 ```
 
@@ -385,9 +441,17 @@ public.
 
 ## §5.26 T_SLOT_RECONSOLIDATE (`0x47`)
 
-Consumes N standard tacit-asset cBTC.zk share UTXOs whose amounts
+Consumes M standard tacit-asset cBTC.zk share UTXOs whose amounts
 sum to exactly `denom_sats`, and restores a previously-fractionalized
-slot leaf to `live` state. The backing Bitcoin UTXO is unchanged.
+slot leaf to `live` state. The slot's backing Bitcoin UTXO at
+`K_btc` is unchanged; only the share UTXOs are spent.
+
+The envelope is broadcast through the standard tacit commit-reveal
+Bitcoin transaction pair. The reveal transaction spends the M share
+UTXOs as Bitcoin inputs and produces a single sats payout output
+that recovers their accumulated DUST value minus the miner fee
+(§5.26.1.1). After confirmation, the leaf returns to `live` state
+and may be burned (§5.22), rotated (§5.23), or re-fractionalized.
 
 ### 5.26.1 Wire format (envelope payload)
 
@@ -411,6 +475,30 @@ The Groth16 statement here is the standard tacit asset-spend circuit
 prover knows openings `(amount_i, r_i)` for each `share_commit_i`, and
 that the sum equals the public target `denom_sats`.
 
+### 5.26.1.1 Bitcoin transaction shape (share-UTXO consumption)
+
+The reveal transaction MUST satisfy:
+
+- **vin[0]**: spends the envelope-commit P2TR via script-path,
+  revealing the reconsolidate envelope script. Standard tacit
+  envelope reveal convention.
+- **vin[1..M]**: spends the M share UTXOs that are being consumed.
+  Each input is a P2WPKH spend signed by the share UTXO's owner under
+  standard tacit-asset spend discipline. The order of share UTXO
+  inputs MUST match the order of `share_commits` and
+  `share_nullifiers` in the envelope (positional binding).
+- **vout[0]**: P2WPKH(redeemer_pubkey) at value
+  `M × DUST_THRESHOLD − bitcoin_fee_at_vin0_envelope`. The redeemer
+  recovers the DUST sats locked across the consumed share UTXOs,
+  minus the miner fee for the reconsolidate reveal transaction.
+- **vout[1..]**: optional change outputs for additional sats
+  inputs the redeemer may have added.
+
+The slot's BTC UTXO at `K_btc` is NOT touched — only the share UTXOs
+are spent. After reveal-tx confirmation, the leaf returns to `live`
+state and the slot becomes eligible for T_SLOT_BURN, T_SLOT_ROTATE,
+or re-fractionalization.
+
 ### 5.26.2 Validator algorithm
 
 ```
@@ -424,27 +512,43 @@ on T_SLOT_RECONSOLIDATE:
   require target_leaf is not None
   require target_leaf.state == fractionalized
 
-  // Per-share unspent + nullifier-fresh check
+  // Per-share unspent + nullifier-fresh check.
+  // share_commits[i] is the Pedersen opening commit of the share UTXO
+  // at reveal_tx.vin[1 + i] (positional binding per §5.26.1.1). The
+  // validator looks up each input outpoint in the standard tacit-asset
+  // UTXO index and verifies (a) the UTXO exists and is unspent, (b) its
+  // recorded asset_id matches, (c) its recorded pedersen_commit equals
+  // share_commits[i].
+  require reveal_tx.vin.length == 1 + share_count
   for i in 0..share_count:
-    require share_commits[i] is a known unspent (asset_id) UTXO commitment
+    utxo := lookup_asset_utxo(reveal_tx.vin[1 + i].prevout)
+    require utxo is not None and utxo.spent == false
+    require utxo.asset_id == asset_id
+    require utxo.pedersen_commit == share_commits[i]
     require share_nullifiers[i] ∉ spent-set[asset_id]
 
   // Share conservation
   require Σ share_commits − denom_sats · H is on-curve and ≠ identity
   require bulletproof_verify(envelope.share_balance_proof, share_commits)
 
-  // Ownership
+  // Ownership (standard tacit asset-spend Groth16)
   require groth16_verify(ASSET_SPEND_VK_M, envelope.proof,
                           public_signals=[share_commits, denom_sats])
 
+  // Payout shape — recovers the DUST locked in the consumed share UTXOs.
+  require reveal_tx.vout.length >= 1
+  require reveal_tx.vout[0].script is P2WPKH (OP_0 || OP_PUSHBYTES_20 || hash160)
+  require reveal_tx.vout[0].value <= share_count × DUST_THRESHOLD
+  // (Equality minus miner fee; the validator accepts any value below the
+  // recoverable maximum since the redeemer chooses how much to keep vs.
+  // pay the miner.)
+
   // Effects
   target_leaf.state := live
-  // Remove the fractionalize-time nullifier so the leaf can transition
-  // again in the future (re-fractionalize or burn).
   spent-set[asset_id, denom_sats].remove(target_leaf.nullifier_hash)
   for i in 0..share_count:
     spent-set[asset_id].add(share_nullifiers[i])
-    mark share UTXO at commitment share_commits[i] as spent
+    mark_asset_utxo_spent(reveal_tx.vin[1 + i].prevout)
   decrement fractionalized_supply[asset_id] by denom_sats
 ```
 

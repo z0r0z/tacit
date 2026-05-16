@@ -5984,7 +5984,6 @@ function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, 
     assetId, denomLE, recipientCommit, leafHash, paymentAssetId, payLE,
     kBtcXOnly,
   ];
-  if (kBtcXOnly) parts.push(kBtcXOnly);
   return sha256(concatBytes(...parts));
 }
 
@@ -6012,12 +6011,18 @@ function deriveSlotRBtc(secretBytes, nullifierPreimageBytes) {
   return bigintToBytes32(bn);
 }
 
-function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHash, newRecipientCommit, newLeafHash, paymentAssetId, paymentAmount) {
+// §5.24.0 + §5.23: rotate_msg binds the NEW slot's k_btc_xonly so the old
+// owner attests to the new BTC spending key. Two-key: K_btc is independent
+// from recipient_commit, so we must publish + sign it explicitly.
+function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHash, newRecipientCommit, newLeafHash, paymentAssetId, paymentAmount, newKBtcXOnly) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (oldNullifierHash.length !== 32) throw new Error('old_nullifier_hash 32 bytes');
   if (newRecipientCommit.length !== 33) throw new Error('new_recipient_commit 33 bytes');
   if (newLeafHash.length !== 32) throw new Error('new_leaf_hash 32 bytes');
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes');
+  if (!(newKBtcXOnly instanceof Uint8Array) || newKBtcXOnly.length !== 32) {
+    throw new Error('new_k_btc_xonly must be 32 bytes (§5.24.0 two-key)');
+  }
   const denomLE = new Uint8Array(8);
   {
     const v = new DataView(denomLE.buffer);
@@ -6036,10 +6041,21 @@ function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHas
     SLOT_ROTATE_DOMAIN, new Uint8Array([networkTag & 0xff]),
     assetId, denomLE, oldNullifierHash,
     newRecipientCommit, newLeafHash, paymentAssetId, payLE,
+    newKBtcXOnly,
   ));
 }
 
-function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig, kBtcXOnly = null }) {
+// SPEC-CBTC-ZK §5.21 (with §5.24.0 two-key foundation folded in). Canonical
+// 276-byte payload — k_btc_xonly is mandatory. cBTC.zk hasn't shipped to
+// mainnet yet, so there's no legacy single-key variant to maintain back-
+// compat with. The original recipient_commit-derived K_btc scheme was
+// flagged fractionalize-unsafe and never made it past test fixtures.
+//
+// Reviewer-noted alternative: a `mixer_fractionalize` circuit that keeps the
+// single-key derivation but treats r_leaf as a private witness. Academically
+// cleaner crypto but requires a new trusted-setup ceremony. Deferred as a
+// future v1.x amendment.
+function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig, kBtcXOnly }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
@@ -6047,11 +6063,8 @@ function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCo
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes (zeros if no payment)');
   if (minterPubkey.length !== 33) throw new Error('minter_pubkey 33 bytes');
   if (minterSig.length !== 64) throw new Error('minter_sig 64 bytes');
-  // v2 two-key tail: optional 32-byte k_btc_xonly. When present, the slot's
-  // BTC spending key is THIS value (NOT recipient_commit − denom·H). Mandatory
-  // for slots that intend to fractionalize. See SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.24.0.
-  if (kBtcXOnly !== null && (!(kBtcXOnly instanceof Uint8Array) || kBtcXOnly.length !== 32)) {
-    throw new Error('k_btc_xonly must be 32 bytes (omitted for legacy v1 slots)');
+  if (!(kBtcXOnly instanceof Uint8Array) || kBtcXOnly.length !== 32) {
+    throw new Error('k_btc_xonly must be 32 bytes (explicit BTC spending key per §5.24.0)');
   }
   const d = BigInt(denomination);
   if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
@@ -6069,23 +6082,21 @@ function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCo
     v.setUint32(0, Number(pAmt & 0xffffffffn), true);
     v.setUint32(4, Number((pAmt >> 32n) & 0xffffffffn), true);
   }
-  const base = concatBytes(
+  return concatBytes(
     new Uint8Array([T_SLOT_MINT, networkTag & 0xff]),
     assetId, denomLE,
     recipientCommit, leafHash,
     paymentAssetId, payLE,
     minterPubkey, minterSig,
+    kBtcXOnly,
   );
-  return kBtcXOnly ? concatBytes(base, kBtcXOnly) : base;
 }
 
 function decodeTSlotMintPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_SLOT_MINT) return null;
-  // Accept canonical 244-byte v1 (single-key) OR 244+32=276-byte v2 (two-key,
-  // explicit k_btc_xonly tail). v2 slots can fractionalize safely.
-  if (payload.length !== 244 && payload.length !== 276) return null;
-  const isV2 = payload.length === 276;
+  // Canonical 276-byte payload — k_btc_xonly is mandatory.
+  if (payload.length !== 276) return null;
   let p = 1;
   const networkTag = payload[p]; p += 1;
   if (networkTag > 2) return null;
@@ -6506,6 +6517,12 @@ function decodeTSlotReconsolidatePayload(payload) {
   };
 }
 
+// SPEC-CBTC-ZK §5.21 + §5.24.0 builder. The two-key derivation: r_pedersen
+// is the standard mixer Poseidon(secret, ν) used as the leaf's Pedersen
+// blinding; r_btc is a separate scalar derived from the same (secret, ν)
+// via a distinct domain tag. K_btc = r_btc · G is the BTC spending key,
+// independent of the Pedersen commitment. This lets r_pedersen be revealed
+// safely at fractionalize time without compromising the slot's BTC.
 async function buildSlotMintEnvelope({
   networkTag, assetId, denomination,
   secret, nullifierPreimage,
@@ -6515,28 +6532,38 @@ async function buildSlotMintEnvelope({
   if (secret.length !== 32) throw new Error('secret 32 bytes');
   if (nullifierPreimage.length !== 32) throw new Error('nullifier_preimage 32 bytes');
   const leafCommitment = computePoolLeafCommitment(secret, nullifierPreimage, denomination);
-  const rLeafBytes = poseidonHash(secret, nullifierPreimage);
-  const rLeafBigint = bytes32ToBigint(rLeafBytes) % SECP_N;
-  const recipientCommit = pedersenCommit(BigInt(denomination), rLeafBigint).toRawBytes(true);
-  const kBtcPoint = deriveSlotKbtc(recipientCommit, denomination);
+  const rPedersenBytes = poseidonHash(secret, nullifierPreimage);
+  const rPedersenBig = bytes32ToBigint(rPedersenBytes) % SECP_N;
+  const recipientCommit = pedersenCommit(BigInt(denomination), rPedersenBig).toRawBytes(true);
+  // Derive the independent BTC spending key. K_btc = r_btc · G is published
+  // as an explicit envelope field; recipient_commit no longer determines it.
+  const rBtcBytes = deriveSlotRBtc(secret, nullifierPreimage);
+  const rBtcBig = bytes32ToBigint(rBtcBytes) % SECP_N;
+  const kBtcPoint = G.multiply(rBtcBig === 0n ? 1n : rBtcBig);
+  const kBtcXOnly = slotXOnly(kBtcPoint);
   const slotSpk = slotScriptPubKeyFromKbtc(kBtcPoint);
   const minterPubkey = secp.getPublicKey(minterPriv, true);
   const minterMsg = computeSlotMintMsg(
-    networkTag, assetId, denomination, recipientCommit, leafCommitment, paymentAssetId, paymentAmount,
+    networkTag, assetId, denomination, recipientCommit, leafCommitment,
+    paymentAssetId, paymentAmount, kBtcXOnly,
   );
   const minterSig = signSchnorr(minterMsg, minterPriv);
   const payload = encodeTSlotMintPayload({
     networkTag, assetId, denomination,
     recipientCommit, leafHash: leafCommitment,
     paymentAssetId, paymentAmount,
-    minterPubkey, minterSig,
+    minterPubkey, minterSig, kBtcXOnly,
   });
   return {
     payload,
     K_btc: kBtcPoint,
     slotScriptPubKey: slotSpk,
     recipientCommit,
-    rLeaf: rLeafBytes,
+    // Legacy "rLeaf" naming retained for callers (= r_pedersen); rBtc is the
+    // new field for the BTC spending key.
+    rLeaf: rPedersenBytes,
+    rPedersen: rPedersenBytes,
+    rBtc: rBtcBytes,
     slotRecord: {
       assetIdHex: bytesToHex(assetId),
       denomination: BigInt(denomination).toString(),
@@ -6544,8 +6571,10 @@ async function buildSlotMintEnvelope({
       nullifierPreimageHex: bytesToHex(nullifierPreimage),
       leafCommitmentHex: bytesToHex(leafCommitment),
       recipientCommitHex: bytesToHex(recipientCommit),
-      rLeafHex: bytesToHex(rLeafBytes),
-      kBtcXOnlyHex: bytesToHex(slotXOnly(kBtcPoint)),
+      rLeafHex: bytesToHex(rPedersenBytes),       // alias for r_pedersen
+      rPedersenHex: bytesToHex(rPedersenBytes),
+      rBtcHex: bytesToHex(rBtcBytes),
+      kBtcXOnlyHex: bytesToHex(kBtcXOnly),
       slotScriptPubKeyHex: bytesToHex(slotSpk),
       mintedAt: Date.now(),
     },
@@ -6594,15 +6623,22 @@ async function buildSlotRotateEnvelope({
   const oldRecipientCommitment = pedersenCommit(denomination, oldRLeafBigint).toRawBytes(true);
   const oldBindHash = computeWithdrawBindHash(assetId, denomination, oldNullifierHash, oldRecipientCommitment, oldRLeaf);
   const newLeafCommitment = computePoolLeafCommitment(newSecret, newNullifierPreimage, denomination);
-  const newRLeaf = poseidonHash(newSecret, newNullifierPreimage);
+  const newRLeaf = poseidonHash(newSecret, newNullifierPreimage);   // = r_pedersen for the new slot
   const newRLeafBigint = bytes32ToBigint(newRLeaf) % SECP_N;
   const newRecipientCommit = pedersenCommit(denomination, newRLeafBigint).toRawBytes(true);
-  const newKBtcPoint = deriveSlotKbtc(newRecipientCommit, denomination);
+  // §5.24.0 two-key: derive the new slot's r_btc independently from
+  // (newSecret, newNullifierPreimage). K_btc = r_btc · G is the new BTC
+  // spending key, not derived from recipient_commit.
+  const newRBtcBytes = deriveSlotRBtc(newSecret, newNullifierPreimage);
+  const newRBtcBig = bytes32ToBigint(newRBtcBytes) % SECP_N;
+  const newKBtcPoint = G.multiply(newRBtcBig === 0n ? 1n : newRBtcBig);
   const newSlotSpk = slotScriptPubKeyFromKbtc(newKBtcPoint);
   const oldOwnerPubkey = secp.getPublicKey(oldOwnerPriv, true);
+  const newKBtcXOnly = slotXOnly(newKBtcPoint);
   const rotateMsg = computeSlotRotateMsg(
     networkTag, assetId, denomination, oldNullifierHash,
     newRecipientCommit, newLeafCommitment, paymentAssetId, paymentAmount,
+    newKBtcXOnly,
   );
   const oldOwnerSig = signSchnorr(rotateMsg, oldOwnerPriv);
   const payload = encodeTSlotRotatePayload({
@@ -6626,7 +6662,9 @@ async function buildSlotRotateEnvelope({
       nullifierPreimageHex: bytesToHex(newNullifierPreimage),
       leafCommitmentHex: bytesToHex(newLeafCommitment),
       recipientCommitHex: bytesToHex(newRecipientCommit),
-      rLeafHex: bytesToHex(newRLeaf),
+      rLeafHex: bytesToHex(newRLeaf),               // = r_pedersen
+      rPedersenHex: bytesToHex(newRLeaf),
+      rBtcHex: bytesToHex(newRBtcBytes),
       kBtcXOnlyHex: bytesToHex(slotXOnly(newKBtcPoint)),
       slotScriptPubKeyHex: bytesToHex(newSlotSpk),
       mintedAt: Date.now(),
@@ -6642,9 +6680,6 @@ async function buildSlotFractionalizeEnvelope({
   networkTag, slotRecord, merkleRoot, proof, shareAmounts,
 }) {
   if (!slotRecord || !slotRecord.assetIdHex) throw new Error('slotRecord required');
-  if (slotRecord.slotVariant && slotRecord.slotVariant !== 'v2') {
-    throw new Error('fractionalize requires a v2 (two-key) slot; v1 slots cannot fractionalize safely');
-  }
   if (!Array.isArray(shareAmounts) || shareAmounts.length < 1 || shareAmounts.length > 16) {
     throw new Error('shareAmounts must be an array of 1..16 BigInts');
   }
@@ -12188,10 +12223,14 @@ async function buildAndBroadcastSlotBurn({
   ];
   // Sign vin[0]: Taproot script-path with envelope reveal.
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
-  // Sign vin[1]: Taproot key-path under r_leaf, SIGHASH_ALL (so the spend
-  // commits to vout[0] = trader's payout, preventing third-party rewrite).
+  // Sign vin[1]: Taproot key-path under r_btc (the BTC spending key —
+  // distinct from r_pedersen per §5.24.0 two-key design), SIGHASH_ALL so
+  // the spend commits to vout[0] = trader's payout.
+  const rBtcBytes = slotRecord.rBtcHex
+    ? hexToBytes(slotRecord.rBtcHex)
+    : deriveSlotRBtc(hexToBytes(slotRecord.secretHex), nullifierPreimage);
   revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(
-    revealTx, 1, revealPrevouts, rLeafBytes, 0x01,
+    revealTx, 1, revealPrevouts, rBtcBytes, 0x01,
   );
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
@@ -12569,7 +12608,13 @@ async function buildAndBroadcastSlotRotate({
     { value: Number(denomBig), script: slotPrevoutScript },
   ];
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
-  revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(revealTx, 1, revealPrevouts, oldRLeaf, 0x01);
+  // Sign vin[1] (the OLD slot spend) under r_btc — the BTC spending key
+  // per §5.24.0 two-key design. r_pedersen (oldRLeaf) is the Pedersen
+  // blinding for the mixer commitment but NOT the BTC spending key.
+  const oldRBtcBytes = slotRecord.rBtcHex
+    ? hexToBytes(slotRecord.rBtcHex)
+    : deriveSlotRBtc(hexToBytes(slotRecord.secretHex), oldNullifierPreimage);
+  revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(revealTx, 1, revealPrevouts, oldRBtcBytes, 0x01);
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
   _progress('reveal-start');
@@ -42073,11 +42118,25 @@ function applyMarketFilters() {
   const _countSuffix = _filteredOut > 0
     ? ` <span class="muted" style="font-weight:400;font-size:10px;">of ${_totalActiveListings}</span>`
     : '';
+  // Bundle row count drives whether to render the row-types explainer line.
+  // Rows are flagged after `groupChunkedPreauthListings` (line ~41833) and
+  // `_aggregatePreauthRowsForLadder` (line ~41848): `_isGroup` = N identical-
+  // price listings rolled into a `Buy 1–N` picker; `_isLevel` = N nearby-
+  // price listings rolled into a `Buy level` bucket. Skip the explainer when
+  // every row is a single-listing Buy — no ambiguity to resolve there.
+  const _bundleRowCount = rowsForGrid.reduce((n, l) => n + ((l._isLevel || l._isGroup) ? 1 : 0), 0);
+  const _rowTypesExplainerHtml = _bundleRowCount > 0
+    ? `<div style="font-size:10px;color:var(--ink-mid);background:var(--bg-warm,#faf9f5);border:1px dashed var(--ink-faint);padding:5px 9px;margin-bottom:8px;line-height:1.45;">
+        <strong style="color:var(--ink);">Each row is one fill.</strong>
+        <span style="background:var(--ink);color:var(--bg);padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy</span> = one specific listing (atomic, one Bitcoin tx).
+        <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;level</span> / <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;1–N</span> = atomically fills several listings at once (one tx per listing, cheaper to monitor than running N separate Buys).
+      </div>`
+    : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Open orders · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use Swap above for routed fills</span></div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Open orders · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use <button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_ladderToggleChip}${_sweepBuyChip}</div>
-    </div>${_askFormSlot}
+    </div>${_rowTypesExplainerHtml}${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
   </div>`;
   // Swap tile: the primary trading action surface, modeled on Uniswap /
@@ -42515,6 +42574,27 @@ function applyMarketFilters() {
       applyMarketFilters();
     };
   });
+  // "use Swap above for routed fills" jump-link. The hint was previously
+  // plain text — users seeing "BEST PRICE 79.55" would click Buy on the
+  // single best listing and miss the next four cheap ones at 175-195 that
+  // a Swap-routed fill would atomically capture. Now clickable: scrolls
+  // the Swap tile into view + focuses the buy-side input so they can
+  // start typing immediately.
+  list.querySelectorAll('[data-act="market-jump-to-swap"]').forEach(btn => {
+    btn.onclick = () => {
+      const widget = document.querySelector('[data-swap-tile]');
+      if (!widget) return;
+      try {
+        widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      } catch { widget.scrollIntoView(); }
+      // Focus the buy-side input on the next tick (after the smooth-scroll
+      // starts) so the keyboard caret lands in the right place without
+      // fighting the scroll animation. Best-effort — focus failure is
+      // harmless, the user can still click the input themselves.
+      const input = widget.querySelector('input[data-swap-input="from"]');
+      if (input) setTimeout(() => { try { input.focus({ preventScroll: true }); } catch { input.focus(); } }, 250);
+    };
+  });
   list.querySelectorAll('[data-act="market-mine-asks-toggle"]').forEach(btn => {
     btn.onclick = () => {
       _marketMineOnlyAsks = !_marketMineOnlyAsks;
@@ -42825,8 +42905,25 @@ function applyMarketFilters() {
     // without comparing 12 prices. Pill is only meaningful for preauth
     // (the single-tx instant-fill kind) — atomic intents and OTC
     // openings/ranges don't share the ladder semantically.
+    // BEST PRICE: cheapest in-band preauth on this page. When it's
+    // materially below the asset's mark price (>20%), append a "vs mark
+    // -N%" delta — the cheapest is sometimes a stale or deliberately-
+    // underpriced listing, and the user reading "BEST PRICE 79.55" against
+    // a 199.99 mark should see the gap before clicking Buy. The badge
+    // stays green (it IS the best available offer); the delta is just
+    // honest context. No delta when the cheapest is within ±20% of mark
+    // (i.e. a normal best-price scenario — no surprise to flag).
+    const _bestPriceMarkUnit = Number(a?.mark_price?.unit);
+    let _bestPriceDeltaStr = '';
+    if (Number.isFinite(_bestPriceMarkUnit) && _bestPriceMarkUnit > 0 && Number.isFinite(unit) && unit > 0) {
+      const _pct = ((unit - _bestPriceMarkUnit) / _bestPriceMarkUnit) * 100;
+      if (Math.abs(_pct) >= 20) {
+        const _sign = _pct >= 0 ? '+' : '−';
+        _bestPriceDeltaStr = ` <span style="opacity:0.85;font-weight:600;" title="Mark price for ${escapeHtml(a.ticker || 'token')} is ${fmtUnitPriceSats(_bestPriceMarkUnit)} sats. This cheapest ask is ${Math.abs(_pct).toFixed(0)}% ${_pct >= 0 ? 'above' : 'below'} mark — often a stale listing or deliberate underpricing; verify before buying.">vs mark ${_sign}${Math.abs(_pct).toFixed(0)}%</span>`;
+      }
+    }
     const _bestPriceBadge = (_tileIdx === bestPreauthIdx && l.kind === 'preauth')
-      ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="Cheapest preauth (single-tx instant fill) on this page.">BEST PRICE</span>`
+      ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="Cheapest preauth (single-tx instant fill) on this page.">BEST PRICE${_bestPriceDeltaStr}</span>`
       : '';
     // Token-id row + seller row: demoted to 9px / very muted. They're
     // useful for power users verifying a listing or recognizing a
@@ -42862,6 +42959,20 @@ function applyMarketFilters() {
     const _rowActionRow = _isLevel
       ? `<div class="market-listing-actions"><button data-act="market-sweep-buy-level" data-aid="${escapeHtml(safeAid)}" data-target-amt="${escapeHtml(amount || '0')}" data-cap-unit="${l._levelMaxUnit}" data-dec="${dec}" data-ticker="${escapeHtml(a.ticker || '?')}" type="button" class="primary" title="Buy this depth level: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} routed across all ${l._levelCount} preauth listings in this bucket. Each fill is one Bitcoin tx; the cap is the bucket's max unit price. Opens the Advanced buy form preloaded so you can review before confirming.">Buy level</button></div>`
       : actionRow;
+    // Group rows: the amount + BTC + USD numbers are PER CHUNK (one of the
+    // N identical-price listings), but the row's `Buy 1–N` picker can buy
+    // up to N at once → multiplies the cost. A user scanning sees
+    // "$210 · Buy 1–4" and might not realize buying all 4 is ~$840.
+    // Two visual disambiguations: (1) "/ chunk" suffix on per-chunk
+    // numbers, (2) prominent inline "× N = $Y total" so the all-in cost
+    // is impossible to miss.
+    const _isGroup = !!l._isGroup;
+    const _perChunkSuffix = _isGroup
+      ? `<small class="muted" style="display:block;font-size:9px;line-height:1;margin-top:1px;">/ chunk</small>`
+      : '';
+    const _groupTotalInline = _isGroup
+      ? `<div style="margin-top:3px;padding-top:3px;border-top:1px dashed var(--ink-faint);font-size:10px;font-weight:600;color:var(--ink);" title="Cost if you buy all ${l._groupSize} chunks at once via the Buy 1–${l._groupSize} picker">× ${l._groupSize} = ${escapeHtml(fmtMarketBtc(priceSatsRaw * l._groupSize))}</div>`
+      : '';
     const rowsModeHtml = `
       <div class="market-listing-unit" title="${escapeHtml(_rowMetaTitle)}">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
@@ -42870,12 +42981,13 @@ function applyMarketFilters() {
         <small class="muted" style="display:block;margin-top:2px;font-size:9px;line-height:1.3;">${_isLevel ? '' : recencyLine}</small>
       </div>
       <div class="market-listing-amount" style="font-size:12px;font-weight:600;text-align:left;line-height:1.3;">
-        ${_amountLine}${_groupBadge}${_bestPriceBadge}${_levelBadge}
+        ${_amountLine}${_groupBadge}${_bestPriceBadge}${_levelBadge}${_perChunkSuffix}
         ${_fillProgressBar}
       </div>
       <div class="market-listing-total">
         <span class="market-btc-price">${escapeHtml(fmtMarketBtc(priceSatsRaw))}</span>
         <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSatsRaw, ''))}</span>
+        ${_groupTotalInline}
       </div>
       ${_rowActionRow}`;
     const cardsModeHtml = `
@@ -47104,6 +47216,22 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   for (const b of intents) {
     if (b.axintent_id) continue;
     if (Number(b.expiry || 0) <= nowSec) continue;
+    // Closed-var filter: a variable-fill bid whose remaining_amount has
+    // dropped below min_fill_amount is effectively unfillable — no seller
+    // can construct a valid take against it. The depth chart correctly
+    // excludes these (see _populateDepthChart ~L47309); without the same
+    // filter here, the spread row reported a "highest bid" no one could
+    // actually hit, inflating ARB% above the depth chart's value (seen
+    // on TAC: spread row 264.00 vs depth chart 251.88). Unit price uses
+    // the bid's ORIGINAL amount + price (the rate the bidder signed for),
+    // matching the depth chart's unitPriceSats call exactly.
+    const _isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    if (_isVar) {
+      let _rem = 0n, _minFill = 0n;
+      try { _rem = BigInt(b.remaining_amount || b.amount || '0'); } catch {}
+      try { _minFill = BigInt(b.min_fill_amount || '0'); } catch {}
+      if (_rem < _minFill) continue;
+    }
     const amt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
     if (amt <= 0n) continue;
     const u = unitPriceSats(Number(b.price_sats || 0), amt, decimals);
@@ -47693,7 +47821,7 @@ function _populateTradesTape(section, trades, ticker, decimals, markUnit) {
   tape.style.display = 'block';
   tape.innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;font-size:10px;">
-      <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;flex:0 0 auto;">Tape</span>
+      <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;flex:0 0 auto;cursor:help;" title="Recent settled trades, newest first. The leading glyph compares each fill to the one immediately before it in time: ↑ = filled above the prior price (uptick), ↓ = filled below (downtick), · = flat or no prior fill to compare. Hover any row for the exact prior-fill price.">Tape</span>
       <div class="market-tape-scroll" data-market-tape-scroll>
         ${itemsHtml}
       </div>
@@ -48159,27 +48287,8 @@ async function populateMarketBidsLadder(scope, asset) {
     try { refreshYourOpenOrdersPanel(scope, aid); } catch {}
     return;
   }
-  // Header count reflects FILLABLE bids only — matches the depth chart's
-  // bidCount and the spread-stat's highestBid pool. Without this, the
-  // header could read "Bids · 23" while the depth chart says "22 bids"
-  // because one of the 23 is a claimed / expired / closed-var bid that
-  // no seller can actually hit. Filters mirror _populateDepthChart and
-  // (post-fix) _populateBidAskSpread so all three surfaces agree.
-  const _bidsCountNowSec = Math.floor(Date.now() / 1000);
-  const _fillableBidsCount = intentsAll.reduce((n, b) => {
-    if (b.axintent_id) return n;                                   // claimed
-    if (Number(b.expiry || 0) <= _bidsCountNowSec) return n;        // expired
-    const _isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
-    if (_isVar) {
-      let _rem = 0n, _minFill = 0n;
-      try { _rem = BigInt(b.remaining_amount || b.amount || '0'); } catch {}
-      try { _minFill = BigInt(b.min_fill_amount || '0'); } catch {}
-      if (_rem < _minFill) return n;                                // closed var
-    }
-    return n + 1;
-  }, 0);
-  if (countEl) countEl.textContent = String(_fillableBidsCount);
-  if (toggleBtn && list) toggleBtn.textContent = list.hidden ? `Show bids${_fillableBidsCount ? ` (${_fillableBidsCount})` : ''}` : 'Hide bids';
+  if (countEl) countEl.textContent = String(intentsAll.length);
+  if (toggleBtn && list) toggleBtn.textContent = list.hidden ? `Show bids${intentsAll.length ? ` (${intentsAll.length})` : ''}` : 'Hide bids';
   // Bids fetch succeeded: re-capture the rendered signature so the
   // next auto-refresh tick's comparison reflects bids-loaded state.
   // Without this the first tick after a render would always see a

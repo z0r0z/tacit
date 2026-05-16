@@ -142,10 +142,11 @@ ok('worker sees the slot\'s denomination', decMint && String(decMint.denominatio
 
 // Independently re-derive K_btc from the envelope's recipient_commit and confirm
 // it matches the slot scriptpubkey the dapp builder produced. This is the
-// canonical check the worker performs at scan time:
-//   K_btc = recipient_commit − denomination · H
+// canonical check the worker performs at scan time (§5.24.0 two-key):
+//   K_btc = r_btc · G (explicit in mint envelope's k_btc_xonly field)
 //   slot_spk == OP_1 || OP_PUSHBYTES_32 || x-only(K_btc)
-const reKbtc = dapp.deriveSlotKbtc(mintOut.recipientCommit, DENOMINATION.toString());
+const rBtcBig = BigInt('0x' + bytesToHex(mintOut.rBtc)) % dapp.SECP_N;
+const reKbtc = dapp.G.multiply(rBtcBig === 0n ? 1n : rBtcBig);
 const reSpk  = dapp.slotScriptPubKeyFromKbtc(reKbtc);
 ok('re-derived slot scriptpubkey byte-equals envelope value',
   bytesToHex(reSpk) === bytesToHex(mintOut.slotScriptPubKey));
@@ -159,12 +160,13 @@ const traderNote = {
   nullifierPreimage: traderNullPre,
   recipientCommit: mintOut.recipientCommit,
   slotScriptPubKey: mintOut.slotScriptPubKey,
-  rLeaf: mintOut.rLeaf,
-  slotRecord: mintOut.slotRecord,           // canonical persist-format for redemption
+  rLeaf: mintOut.rLeaf,         // = r_pedersen (Pedersen blinding)
+  rBtc: mintOut.rBtc,           // §5.24.0 — separate BTC spending key
+  slotRecord: mintOut.slotRecord,
 };
 
 ok('trader now holds a cBTC.zk note backed by an on-chain slot',
-  !!traderNote.rLeaf && traderNote.denomination === DENOMINATION);
+  !!traderNote.rBtc && traderNote.denomination === DENOMINATION);
 
 // ============== group 2: T_SLOT_ROTATE — trader sells the slot to LP for TAC ==============
 group('Phase 2: T_SLOT_ROTATE — trader rotates slot to LP, LP pays TAC at vout[1]');
@@ -269,7 +271,7 @@ const synthPrevouts = [
 ];
 
 const rotateSpendWit = dapp.signTaprootKeyPathInputWithKey(
-  synthOldSpendTx, 0, synthPrevouts, traderNote.rLeaf, 0x00,
+  synthOldSpendTx, 0, synthPrevouts, traderNote.rBtc, 0x00,
 );
 const rotateSpendSighash = dapp.tapSighashKeyPath(synthOldSpendTx, 0, synthPrevouts, 0x00);
 const oldKbtcXOnly = dapp.slotXOnly(reKbtc);
@@ -283,8 +285,9 @@ const newKbtcXOnly = dapp.slotXOnly(reKbtcNew);
 ok('trader\'s old-slot spend sig FAILS against new slot\'s x-only(K_btc)',
   !dapp.verifySchnorr(rotateSpendWit[0], rotateSpendSighash, newKbtcXOnly));
 
-// LP now holds a cBTC.zk note. They are the new slot owner with full spending
-// control via their r_leaf (derived from lpSecret + lpNullPre).
+// LP now holds a cBTC.zk note. §5.24.0 two-key: r_btc is the BTC spending
+// key; r_pedersen is the mixer Pedersen blinding. Both derived from (lpSecret,
+// lpNullPre) via distinct domain tags.
 const lpNote = {
   assetIdHex: bytesToHex(CBTC_ZK_ASSET_ID),
   denomination: DENOMINATION,
@@ -293,9 +296,10 @@ const lpNote = {
   recipientCommit: rotateOut.newRecipientCommit,
   slotScriptPubKey: rotateOut.newSlotScriptPubKey,
   rLeaf: rotateOut.newSlotRecord && hexToBytes(rotateOut.newSlotRecord.rLeafHex),
+  rBtc: rotateOut.newSlotRecord && hexToBytes(rotateOut.newSlotRecord.rBtcHex),
   slotRecord: rotateOut.newSlotRecord,
 };
-ok('LP now holds a cBTC.zk note backed by the new slot', !!lpNote.rLeaf && lpNote.rLeaf.length === 32);
+ok('LP now holds a cBTC.zk note backed by the new slot', !!lpNote.rBtc && lpNote.rBtc.length === 32);
 
 // ============== group 3: T_SLOT_BURN — LP redeems the new slot for sats ==============
 group('Phase 3: T_SLOT_BURN — LP burns the slot, recovers sats to a BTC address');
@@ -346,7 +350,7 @@ const synthBurnPrevouts = [
 ];
 
 const burnSpendWit = dapp.signTaprootKeyPathInputWithKey(
-  synthBurnTx, 0, synthBurnPrevouts, lpNote.rLeaf, 0x00,
+  synthBurnTx, 0, synthBurnPrevouts, lpNote.rBtc, 0x00,
 );
 const burnSpendSighash = dapp.tapSighashKeyPath(synthBurnTx, 0, synthBurnPrevouts, 0x00);
 ok('LP\'s burn-spend sig verifies under new slot\'s x-only(K_btc)',
@@ -356,7 +360,7 @@ ok('LP\'s burn-spend sig verifies under new slot\'s x-only(K_btc)',
 // spending key was actually rotated by phase 2's T_SLOT_ROTATE; if this check
 // failed, the trader could double-dip after sale).
 const fraudulentWit = dapp.signTaprootKeyPathInputWithKey(
-  synthBurnTx, 0, synthBurnPrevouts, traderNote.rLeaf, 0x00,
+  synthBurnTx, 0, synthBurnPrevouts, traderNote.rBtc, 0x00,
 );
 ok('trader\'s OLD r_leaf CANNOT fraudulently spend the new slot (rotation is final)',
   !dapp.verifySchnorr(fraudulentWit[0], burnSpendSighash, newKbtcXOnly));
@@ -473,9 +477,10 @@ ok('worker decodes one-click mint with payment_asset_id=TAC',
   decOneClickMint && decOneClickMint.payment_asset_id === bytesToHex(TAC_ASSET_ID));
 ok('worker decodes one-click mint with the declared payment_amount',
   decOneClickMint && String(decOneClickMint.payment_amount) === ONE_CLICK_PAYMENT.toString());
-ok('one-click K_btc re-derives from LP\'s recipient_commit',
+ok('one-click K_btc re-derives from LP\'s r_btc (§5.24.0 two-key)',
   (() => {
-    const k = dapp.deriveSlotKbtc(oneClickMint.recipientCommit, DENOMINATION.toString());
+    const rb = BigInt('0x' + bytesToHex(oneClickMint.rBtc)) % dapp.SECP_N;
+    const k = dapp.G.multiply(rb === 0n ? 1n : rb);
     return bytesToHex(dapp.slotScriptPubKeyFromKbtc(k)) === bytesToHex(oneClickMint.slotScriptPubKey);
   })());
 
@@ -575,7 +580,7 @@ const reversePrevouts = [
 
 // LP signs vin[0] with r_leaf, SIGHASH_ALL (so the LP commits to vout[1] = TAC paid back to them)
 const reverseLpWit = dapp.signTaprootKeyPathInputWithKey(
-  reverseTx, 0, reversePrevouts, lpNote.rLeaf, 0x01,            // SIGHASH_ALL
+  reverseTx, 0, reversePrevouts, lpNote.rBtc, 0x01,            // SIGHASH_ALL
 );
 ok('reverse trade: LP\'s slot-spend sig is 65 bytes (sig64 + 0x01)', reverseLpWit[0].length === 65);
 

@@ -178,7 +178,11 @@ ok('slot scriptpubkey is OP_1 || OP_PUSHBYTES_32 || x-only(K_btc)',
 // the *committed* identity: x-only(K_btc) lives in the envelope's slot script,
 // and re-deriving K_btc from (recipient_commit, denom) via the public formula
 // must reproduce the same bytes.
-const reKbtc = m.deriveSlotKbtc(mintOut.recipientCommit, DENOMINATION.toString());
+// Two-key derivation (§5.24.0): K_btc = r_btc · G is INDEPENDENT of
+// recipient_commit. Re-derive K_btc from r_btc directly. mintOut.rBtc was
+// added by buildSlotMintEnvelope to expose the explicit BTC spending key.
+const rBtcBig = BigInt('0x' + bytesToHex(mintOut.rBtc)) % m.SECP_N;
+const reKbtc = m.G.multiply(rBtcBig === 0n ? 1n : rBtcBig);
 const reSpk  = m.slotScriptPubKeyFromKbtc(reKbtc);
 ok('re-derived slot scriptpubkey byte-equals envelope value',
   bytesToHex(reSpk) === bytesToHex(mintOut.slotScriptPubKey));
@@ -211,13 +215,13 @@ const spendDefault = buildSlotSpendTx({
   payoutValue: Number(DENOMINATION) - 300,  // 300-sat fee placeholder
 });
 
-// `r_leaf` (the slot's secret scalar) is what the spend signs under, not wallet.priv.
-// The mint envelope returned rLeaf as the raw 32-byte Poseidon output — we
-// reduce mod n implicitly by passing it to noble's signSchnorr, which
-// reduces internally.
-const rLeafBytes = mintOut.rLeaf;
+// §5.24.0 two-key: the slot's BTC spend signs under r_btc (NOT r_pedersen/rLeaf).
+// r_pedersen is the Pedersen blinding for the mixer commitment; r_btc is the
+// independent secp scalar that's the discrete log of K_btc. Both are derived
+// from the same (secret, ν) but via distinct domain tags.
+const rBtcBytes = mintOut.rBtc;
 const witnessDefault = m.signTaprootKeyPathInputWithKey(
-  spendDefault, 0, spendDefault._prevouts, rLeafBytes, 0x00,
+  spendDefault, 0, spendDefault._prevouts, rBtcBytes, 0x00,
 );
 
 ok('witness has exactly one element under SIGHASH_DEFAULT', witnessDefault.length === 1);
@@ -250,7 +254,7 @@ const spendAll = buildSlotSpendTx({
 });
 
 const witnessAll = m.signTaprootKeyPathInputWithKey(
-  spendAll, 0, spendAll._prevouts, rLeafBytes, 0x01,
+  spendAll, 0, spendAll._prevouts, rBtcBytes, 0x01,
 );
 
 ok('witness has exactly one element under SIGHASH_ALL', witnessAll.length === 1);
@@ -356,7 +360,7 @@ const rotateSpend = buildSlotSpendTx({
   payoutValue: Number(DENOMINATION) - 300,
 });
 const rotateWitness = m.signTaprootKeyPathInputWithKey(
-  rotateSpend, 0, rotateSpend._prevouts, rLeafBytes, 0x00,
+  rotateSpend, 0, rotateSpend._prevouts, rBtcBytes, 0x00,
 );
 ok('rotate spend sig verifies under old slot x-only(K_btc)',
   m.verifySchnorr(

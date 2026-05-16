@@ -108,7 +108,16 @@ group('P2TR scriptpubkey format');
 // ---- Group 3: T_SLOT_MINT wire format ----
 group('T_SLOT_MINT decode round-trip');
 
-function buildSlotMintPayload({ networkTag, assetId, denom, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig }) {
+// SPEC-CBTC-ZK §5.21 + §5.24.0 two-key canonical 276-byte payload. The
+// kBtcXOnly field is mandatory; the slot's BTC spending key is published
+// explicitly here rather than derived from recipient_commit.
+function buildSlotMintPayload({ networkTag, assetId, denom, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig, kBtcXOnly }) {
+  if (!kBtcXOnly || kBtcXOnly.length !== 32) {
+    // For round-trip tests that don't care about kBtcXOnly's value, generate
+    // a deterministic placeholder from the leafHash. Real envelopes use a
+    // proper r_btc-derived value.
+    kBtcXOnly = leafHash.slice(0, 32);
+  }
   return concatBytes(
     new Uint8Array([T_SLOT_MINT]),
     new Uint8Array([networkTag]),
@@ -120,6 +129,7 @@ function buildSlotMintPayload({ networkTag, assetId, denom, recipientCommit, lea
     leUint64(paymentAmount),
     minterPubkey,
     minterSig,
+    kBtcXOnly,
   );
 }
 
@@ -141,7 +151,7 @@ function buildSlotMintPayload({ networkTag, assetId, denom, recipientCommit, lea
     minterPubkey,
     minterSig,
   });
-  ok('payload size is 244 bytes', payload.length === 244);
+  ok('payload size is 276 bytes (two-key canonical)', payload.length === 276);
 
   const decoded = decodeTSlotMintPayload(payload);
   ok('decode succeeds', decoded !== null);
@@ -569,8 +579,9 @@ const dapp = await import('../dapp/tacit.js');
     paymentAmount: 75_000n,
     minterPubkey,
     minterSig,
+    kBtcXOnly: leafHash,                  // placeholder; structural round-trip only
   });
-  ok('dapp encode produces 244-byte payload', dappEncoded.length === 244);
+  ok('dapp encode produces 276-byte (two-key) payload', dappEncoded.length === 276);
   ok('dapp encode starts with T_SLOT_MINT opcode', dappEncoded[0] === T_SLOT_MINT);
 
   const workerDecoded = decodeTSlotMintPayload(dappEncoded);
@@ -583,9 +594,10 @@ const dapp = await import('../dapp/tacit.js');
   ok('parity: payment_amount', workerDecoded?.payment_amount === '75000');
 
   // Sig-message binding must be byte-identical across dapp and worker.
+  // §5.24.0: slot_mint_msg includes k_btc_xonly in the signed preimage.
   const dappMsg = dapp.computeSlotMintMsg(
     NETWORK_TAG_SIGNET, ASSET_ID, DENOM, recipient_commit_bytes,
-    leafHash, paymentAssetId, 75_000n,
+    leafHash, paymentAssetId, 75_000n, leafHash,  // kBtcXOnly placeholder = leafHash (matches test fixture above)
   );
   const workerMsg = workerDecoded?._msg();
   ok('parity: slot_mint_msg byte-identical',

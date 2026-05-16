@@ -4165,7 +4165,7 @@ function decodeTWithdrawPayload(payload) {
 // Fixed-size payload: 1 + 1 + 32 + 8 + 33 + 32 + 32 + 8 + 33 + 64 = 244 bytes.
 const _SLOT_MINT_DOMAIN   = new TextEncoder().encode('tacit-slot-mint-v1');
 const _SLOT_ROTATE_DOMAIN = new TextEncoder().encode('tacit-slot-rotate-v1');
-function _computeSlotMintMsg(networkTag, assetIdBytes, denomination, recipientCommitBytes, leafHashBytes, paymentAssetIdBytes, paymentAmount) {
+function _computeSlotMintMsg(networkTag, assetIdBytes, denomination, recipientCommitBytes, leafHashBytes, paymentAssetIdBytes, paymentAmount, kBtcXOnly) {
   const denomLE = new Uint8Array(8);
   {
     const v = new DataView(denomLE.buffer);
@@ -4180,18 +4180,25 @@ function _computeSlotMintMsg(networkTag, assetIdBytes, denomination, recipientCo
     v.setUint32(0, Number(p & 0xffffffffn), true);
     v.setUint32(4, Number((p >> 32n) & 0xffffffffn), true);
   }
+  // §5.24.0 two-key: k_btc_xonly is folded into slot_mint_msg under the same
+  // tacit-slot-mint-v1 domain. The minter explicitly attests to the slot's
+  // BTC spending key alongside the other terms.
   return sha256(concatBytes(
     _SLOT_MINT_DOMAIN,
     new Uint8Array([networkTag]),
     assetIdBytes, denomLE,
     recipientCommitBytes, leafHashBytes,
     paymentAssetIdBytes, payLE,
+    kBtcXOnly,
   ));
 }
 function decodeTSlotMintPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_SLOT_MINT) return null;
-  if (payload.length !== 244) return null;
+  // Canonical 276-byte payload (§5.24.0 two-key). Legacy 244-byte
+  // single-key envelopes never made it past test fixtures and are no
+  // longer accepted.
+  if (payload.length !== 276) return null;
   let p = 1;
   const networkTag = payload[p]; p += 1;
   if (networkTag > 2) return null;
@@ -4212,6 +4219,7 @@ function decodeTSlotMintPayload(payload) {
   if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
   const minterPubkeyBytes = payload.slice(p, p + 33); p += 33;
   const minterSigBytes = payload.slice(p, p + 64); p += 64;
+  const kBtcXOnly = payload.slice(p, p + 32);
   return {
     kind: 'slot_mint',
     network_tag: networkTag,
@@ -4223,10 +4231,11 @@ function decodeTSlotMintPayload(payload) {
     payment_amount: paymentAmount.toString(),
     minter_pubkey: bytesToHex(minterPubkeyBytes),
     minter_sig: bytesToHex(minterSigBytes),
+    k_btc_xonly: bytesToHex(kBtcXOnly),
     _msg: () => _computeSlotMintMsg(
       networkTag, assetIdBytes, denomination,
       recipientCommitBytes, leafHashBytes,
-      paymentAssetIdBytes, paymentAmount,
+      paymentAssetIdBytes, paymentAmount, kBtcXOnly,
     ),
   };
 }
@@ -11403,13 +11412,14 @@ async function scanForEtches(env, network) {
           minterXOnly = minterPt.toRawBytes(true).slice(1);
         } catch { continue; }
         if (!verifySchnorr(hexToBytes(sm.minter_sig), minterMsg, minterXOnly)) continue;
-        // Verify the slot UTXO at vout[0] matches the derived K_btc.
-        const recipientCommitBytes = hexToBytes(sm.recipient_commitment);
-        let kBtcPoint;
-        try { kBtcPoint = deriveSlotKbtc(recipientCommitBytes, sm.denomination); }
-        catch { continue; }
-        if (kBtcPoint.equals(PEDERSEN_ZERO)) continue;
-        const expectedSpk = slotScriptPubKey(slotXOnly(kBtcPoint));
+        // SPEC §5.24.0 two-key validator: vout[0] MUST be the P2TR at the
+        // explicit k_btc_xonly published in the envelope (NOT derived from
+        // recipient_commit). This separation is what makes fractionalize
+        // safe — r_pedersen is the Pedersen blinding, r_btc is the BTC
+        // spending key, computationally independent.
+        const kBtcXOnly = hexToBytes(sm.k_btc_xonly);
+        if (kBtcXOnly.length !== 32) continue;
+        const expectedSpk = slotScriptPubKey(kBtcXOnly);
         const vout0Spk = tx.vout?.[0]?.scriptpubkey;
         if (typeof vout0Spk !== 'string' || vout0Spk.toLowerCase() !== bytesToHex(expectedSpk)) continue;
         const vout0Val = tx.vout?.[0]?.value;
@@ -11434,7 +11444,7 @@ async function scanForEtches(env, network) {
         };
         await env.REGISTRY_KV.put(leafKey, JSON.stringify(leafMeta));
         await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
-        const xonlyHex = bytesToHex(slotXOnly(kBtcPoint));
+        const xonlyHex = sm.k_btc_xonly;
         const slotKey = slotRegistryKey(network, sm.asset_id, sm.denomination, xonlyHex);
         await env.REGISTRY_KV.put(slotKey, JSON.stringify({
           asset_id: sm.asset_id,
@@ -13364,6 +13374,43 @@ export default {
         // the next /assets/:id read without waiting on the SWR FRESH window.
         ctx.waitUntil(_bustAssetDetailCache(network, aid));
         return jsonResponse(result, 200, cors);
+      } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
+    }
+    // GET /admin/volume-disagree?aid=X[&limit=N]
+    //   List the `volume-disagree:<aid>:<txid>` markers the cron writes
+    //   when the chain-derived AXFER price disagrees with the hint-supplied
+    //   price by >1%. Each marker records both prices + the diff %, so an
+    //   operator can spot-check whether the dapp's pricing path is
+    //   miscomputing (e.g. T_AXFER_VAR scaling drift, batched-fill
+    //   mis-attribution) without trawling logs. Markers carry a 30d TTL
+    //   on write (see `volume-disagree:` writer ~L11121), so the list
+    //   reflects roughly the last month of disagreements per asset.
+    //   Empty list = no detected disagreements (or no trades that hit the
+    //   "hint landed first, then cron derived" code path yet).
+    if (url.pathname === '/admin/volume-disagree' && req.method === 'GET') {
+      if (!checkDebugAuth(req, env)) return jsonResponse({ error: 'not found' }, 404, cors);
+      try {
+        const aid = url.searchParams.get('aid') || '';
+        if (!/^[0-9a-f]{64}$/.test(aid)) return jsonResponse({ error: 'aid required (64-hex asset_id)' }, 400, cors);
+        const limit = Math.min(500, Math.max(1, parseInt(url.searchParams.get('limit') || '100', 10) || 100));
+        const prefix = network === 'signet'
+          ? `volume-disagree:${aid}:`
+          : `volume-disagree:${network}:${aid}:`;
+        const list = await env.REGISTRY_KV.list({ prefix, limit });
+        const values = await Promise.all(
+          list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json').catch(() => null)),
+        );
+        const entries = values.filter(Boolean);
+        // Sort newest disagreement first (detected_at descending) so the
+        // operator sees the most recent dapp drift at the top.
+        entries.sort((a, b) => Number(b?.detected_at || 0) - Number(a?.detected_at || 0));
+        return jsonResponse({
+          asset_id: aid,
+          network,
+          count: entries.length,
+          done: !!list.list_complete,
+          entries,
+        }, 200, cors);
       } catch (e) { return jsonResponse({ error: e.message }, 500, cors); }
     }
     // Curated verified-asset registry. POST adds, DELETE removes, GET lists.

@@ -80,54 +80,33 @@ group('Two-key derivation: r_pedersen ≠ r_btc, both deterministic');
 
 function bytesToBigint(b) { return BigInt('0x' + bytesToHex(b)); }
 
-// ============== group 2: v1 slot mint encoder/decoder ==============
-group('v1 (single-key) T_SLOT_MINT round-trip');
+// ============== group 2: canonical (two-key) slot mint encoder/decoder ==============
+group('Canonical two-key T_SLOT_MINT round-trip');
 
 {
-  const { secret, nullifierPreimage } = synthSecrets('v1-mint');
-  const env = await dapp.buildSlotMintEnvelope({
-    networkTag: NETWORK_TAG_SIGNET,
-    assetId: ASSET_ID,
-    denomination: DENOM,
-    secret, nullifierPreimage,
-    paymentAssetId: new Uint8Array(32),
-    paymentAmount: 0n,
-    minterPriv: sha256(new TextEncoder().encode('v1-minter-priv')),
-  });
-  ok('v1 mint envelope is 244 bytes (no k_btc_xonly tail)', env.payload.length === 244);
-  const decDapp = dapp.decodeTSlotMintPayload(env.payload);
-  const decWork = worker.decodeTSlotMintPayload(env.payload);
-  ok('v1 dapp decode succeeds', !!decDapp);
-  ok('v1 dapp decode reports slotVariant=v1', decDapp && decDapp.slotVariant === 'v1');
-  ok('v1 dapp decode reports kBtcXOnly=null', decDapp && decDapp.kBtcXOnly === null);
-  ok('v1 worker decode succeeds', !!decWork);
-  // Worker still works (it doesn't yet differentiate variants, but accepts 244 bytes).
-}
-
-// ============== group 3: v2 slot mint encoder/decoder ==============
-group('v2 (two-key) T_SLOT_MINT round-trip');
-
-{
-  const { secret, nullifierPreimage } = synthSecrets('v2-mint');
+  const { secret, nullifierPreimage } = synthSecrets('canonical-mint');
   const rBtcBytes = dapp.deriveSlotRBtc(secret, nullifierPreimage);
   const kBtcPoint = secp.ProjectivePoint.BASE.multiply(bytesToBigint(rBtcBytes));
-  const kBtcXOnly = kBtcPoint.toRawBytes(true).slice(1);   // 32-byte x-only
+  const kBtcXOnly = kBtcPoint.toRawBytes(true).slice(1);
 
-  // Get a valid (leaf, recipientCommit) pair via the existing v1 builder,
-  // then re-sign over the v2 message (with kBtcXOnly appended).
-  const v1Env = await dapp.buildSlotMintEnvelope({
+  // Get a valid (leaf, recipientCommit) pair via the standard builder,
+  // then re-sign with the explicit kBtcXOnly. (The current
+  // buildSlotMintEnvelope dapp helper produces the recipient_commit field
+  // — re-using it here lets us avoid duplicating the Poseidon/Pedersen
+  // chain in the test.)
+  const tempEnv = await dapp.buildSlotMintEnvelope({
     networkTag: NETWORK_TAG_SIGNET,
     assetId: ASSET_ID,
     denomination: DENOM,
     secret, nullifierPreimage,
     paymentAssetId: new Uint8Array(32),
     paymentAmount: 0n,
-    minterPriv: sha256(new TextEncoder().encode('v2-minter-source')),
+    minterPriv: sha256(new TextEncoder().encode('canonical-source')),
   });
-  const recipientCommit = v1Env.recipientCommit;
-  const leafHash = hexToBytes(v1Env.slotRecord.leafCommitmentHex);
+  const recipientCommit = tempEnv.recipientCommit;
+  const leafHash = hexToBytes(tempEnv.slotRecord.leafCommitmentHex);
 
-  const minterPriv = sha256(new TextEncoder().encode('v2-minter-priv'));
+  const minterPriv = sha256(new TextEncoder().encode('canonical-minter-priv'));
   const minterPub = secp.getPublicKey(minterPriv, true);
   const msg = dapp.computeSlotMintMsg(
     NETWORK_TAG_SIGNET, ASSET_ID, DENOM, recipientCommit, leafHash,
@@ -140,29 +119,22 @@ group('v2 (two-key) T_SLOT_MINT round-trip');
     paymentAssetId: new Uint8Array(32), paymentAmount: 0n,
     minterPubkey: minterPub, minterSig, kBtcXOnly,
   });
-  ok('v2 mint envelope is 276 bytes (= 244 + 32 k_btc_xonly tail)', payload.length === 276);
+  ok('canonical mint envelope is exactly 276 bytes', payload.length === 276);
   const decDapp = dapp.decodeTSlotMintPayload(payload);
-  const decWork = worker.decodeTSlotMintPayload(payload);
-  ok('v2 dapp decode succeeds', !!decDapp);
-  ok('v2 dapp decode reports slotVariant=v2', decDapp && decDapp.slotVariant === 'v2');
-  ok('v2 dapp decode reports kBtcXOnly matches', decDapp && bytesToHex(decDapp.kBtcXOnly) === bytesToHex(kBtcXOnly));
-  // Worker currently rejects 276-byte mint envelopes — its decoder still
-  // pins the legacy 244-byte canonical length. Updating the worker decoder
-  // to accept v2 is a follow-up (the dapp validates v2 already; the worker
-  // indexer's view of v2 mints is a deploy-time gate).
-  ok('v2 worker decode returns null (worker still v1-only pending indexing pass)',
-    decWork === null);
+  ok('dapp decode succeeds', !!decDapp);
+  ok('decode reports kBtcXOnly', decDapp && bytesToHex(decDapp.kBtcXOnly) === bytesToHex(kBtcXOnly));
+  // The legacy 244-byte single-key shape is rejected by the canonical decoder.
+  ok('decoder rejects legacy 244-byte (single-key) payloads',
+    dapp.decodeTSlotMintPayload(payload.slice(0, 244)) === null);
 
   const verified = dapp.verifySchnorr(minterSig, msg, minterPub.slice(1));
-  ok('v2 minter_sig verifies under SLOT_MINT_V2_DOMAIN', verified);
+  ok('minter_sig verifies under tacit-slot-mint-v1 domain', verified);
 
-  // v1 vs v2 domain separation
-  const v1Msg = dapp.computeSlotMintMsg(
-    NETWORK_TAG_SIGNET, ASSET_ID, DENOM, recipientCommit, leafHash,
-    new Uint8Array(32), 0n, /* no k_btc_xonly */
-  );
-  ok('v1/v2 domain-separated: v2 sig does NOT verify under v1 msg',
-    !dapp.verifySchnorr(minterSig, v1Msg, minterPub.slice(1)));
+  // Worker decode: accepts canonical two-key envelopes.
+  const decWork = worker.decodeTSlotMintPayload(payload);
+  ok('worker decodes canonical two-key envelope', !!decWork);
+  ok('worker decode k_btc_xonly matches dapp encode',
+    decWork && decWork.k_btc_xonly === bytesToHex(kBtcXOnly));
 }
 
 // ============== group 4: T_SLOT_FRACTIONALIZE encode/decode ==============
@@ -321,7 +293,7 @@ group('buildSlot{Fractionalize,Reconsolidate}Envelope builders');
   // Build fractionalize via the high-level builder
   const merkleRoot = sha256(new TextEncoder().encode('test-merkle'));
   const proof = new Uint8Array(256); proof[2] = 0xef;
-  const slotRecord = { ...mintOut.slotRecord, slotVariant: 'v2' };  // mark as v2 for the gate
+  const slotRecord = { ...mintOut.slotRecord };
   const fracOut = await dapp.buildSlotFractionalizeEnvelope({
     networkTag: NETWORK_TAG_SIGNET,
     slotRecord, merkleRoot, proof,
@@ -349,19 +321,6 @@ group('buildSlot{Fractionalize,Reconsolidate}Envelope builders');
     threw = /must sum to/.test(String(e?.message || ''));
   }
   ok('builder rejects shareAmounts whose sum ≠ denom', threw);
-
-  // v1 gate
-  const v1Record = { ...mintOut.slotRecord, slotVariant: 'v1' };
-  let threwV1 = false;
-  try {
-    await dapp.buildSlotFractionalizeEnvelope({
-      networkTag: NETWORK_TAG_SIGNET, slotRecord: v1Record, merkleRoot, proof,
-      shareAmounts: [DENOM],
-    });
-  } catch (e) {
-    threwV1 = /v1.*cannot fractionalize/.test(String(e?.message || ''));
-  }
-  ok('builder refuses to fractionalize a v1 slot record', threwV1);
 
   // Round-trip via reconsolidate: use the share openings + add per-share
   // nullifierPreimages, build a recon envelope, verify it decodes.
