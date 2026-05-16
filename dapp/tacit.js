@@ -42554,7 +42554,11 @@ function applyMarketFilters() {
           // sale settlement so security is unchanged — we just sequence
           // K of them in one flow so the buyer doesn't click N times.
           const chunkSids = (l._groupChunks || []).map(c => c.sale_id).filter(Boolean).join(',');
-          primaryAction = `<button data-act="market-take-preauth-group" data-aid="${escapeHtml(safeAid)}" data-sids="${escapeHtml(chunkSids)}" data-group-size="${groupSize}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy any number of chunks from this group. Each chunk settles atomically on Bitcoin in its own transaction.${groupTitle}" style="flex:1;font-size:11px;">Buy 1–${groupSize}</button>`;
+          // Bundle buy → same amber `primary` class as Buy level. Visual
+          // language: black solid = single-listing fill, amber solid =
+          // multi-listing bundle fill. Eyes distinguish the commitment
+          // type without reading the verb.
+          primaryAction = `<button data-act="market-take-preauth-group" data-aid="${escapeHtml(safeAid)}" data-sids="${escapeHtml(chunkSids)}" data-group-size="${groupSize}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" type="button" class="primary" title="Buy any number of chunks from this group. Each chunk settles atomically on Bitcoin in its own transaction.${groupTitle}" style="flex:1;font-size:11px;">Buy 1–${groupSize}</button>`;
         } else {
           primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy instantly: trustless atomic settlement on Bitcoin. No claim window, no fulfilment step." style="flex:1;font-size:11px;">Buy</button>`;
         }
@@ -49617,7 +49621,22 @@ function _wireSwapTile(scope) {
         ? (result.totalSats * Math.pow(10, decimals)) / Number(result.totalAmt)
         : null;
       const avgUsd = (avgU != null && btcUsd) ? fmtUnitUsd(avgU, btcUsd) : null;
-      toMeta.textContent = avgU != null ? `avg ${fmtUnitPriceSats(avgU)} sats/${ticker}${avgUsd ? ` (${avgUsd})` : ''}` : '';
+      // Min received at the limit price: the slippage cap's concrete
+      // guarantee, expressed as the worst-case token output. Uniswap/1inch-
+      // style framing — clearer for traders than only seeing the cap unit
+      // price. Bolded so it leads the meta line above the est. amount.
+      let _minRecvHtml = '';
+      if (Number.isFinite(refUnit) && refUnit > 0) {
+        const _capUnitBuy = refUnit * (1 + getSlipRatio());
+        if (_capUnitBuy > 0) {
+          const _minAmt = BigInt(Math.floor(Number(result.totalSats) * Math.pow(10, decimals) / _capUnitBuy));
+          if (_minAmt > 0n) {
+            _minRecvHtml = `<strong style="color:var(--ink);">min ${escapeHtml(fmtAssetAmount(_minAmt, decimals))} ${escapeHtml(ticker)}</strong> at ±${escapeHtml(String(slipSel?.value || ''))}% limit · `;
+          }
+        }
+      }
+      const _avgStr = avgU != null ? `avg ${fmtUnitPriceSats(avgU)} sats/${ticker}${avgUsd ? ` (${avgUsd})` : ''}` : '';
+      toMeta.innerHTML = `${_minRecvHtml}${escapeHtml(_avgStr)}`;
       const cheapU = result.plan[0].u;
       const dearU = result.plan[result.plan.length - 1].u;
       const rangeStr = result.plan.length === 1
