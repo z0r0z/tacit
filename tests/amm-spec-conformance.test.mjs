@@ -114,13 +114,18 @@ const PINNED_HASH_VECTORS = [
     preimage: new Uint8Array(0),
     expected: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
   },
-  // pool_id for fixed asset pair (32-byte assets of 0x01..., 0x02...):
+  // pool_id for fixed asset pair (32-byte assets of 0x01..., 0x02...,
+  // fee_bps=30, capability_flags=0). pool_id preimage layout per
+  // AMM.md §"Pool state": domain(17) || A(32) || B(32) || fee_bps_LE(2) ||
+  // capability_flags(1) = 84 bytes total.
   {
-    label: 'pool_id = SHA256("tacit-amm-pool-v1" || asset_A(0x01×32) || asset_B(0x02×32))',
+    label: 'pool_id = SHA256("tacit-amm-pool-v1" || asset_A(0x01×32) || asset_B(0x02×32) || fee_bps_LE(30) || flags(0))',
     preimage: concatBytes(
       new TextEncoder().encode('tacit-amm-pool-v1'),
       new Uint8Array(32).fill(0x01),
       new Uint8Array(32).fill(0x02),
+      new Uint8Array([30, 0]),    // fee_bps_LE = 0x001e
+      new Uint8Array([0]),         // capability_flags
     ),
     expected: null,  // computed below; first run populates, subsequent runs verify
   },
@@ -304,18 +309,31 @@ console.log('\nCanonical preimage → digest vectors');
     return bytesToHex(h) === 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
   });
 
-  // pool_id for canonical (asset_A=0x01×32, asset_B=0x02×32):
+  // pool_id for canonical (asset_A=0x01×32, asset_B=0x02×32, fee=30, flags=0).
+  // Preimage = domain(17) || A(32) || B(32) || fee_bps_LE(2) || flags(1) = 84 B.
   const { derivePoolId } = await import('./amm-asset.mjs');
   const assetA = new Uint8Array(32).fill(0x01);
   const assetB = new Uint8Array(32).fill(0x02);
+  const CANON_FEE_BPS = 30;
+  const CANON_FLAGS = 0;
   // Reconstruct preimage by hand from the spec definition.
   const expectedPoolId = sha256(concatBytes(
     new TextEncoder().encode('tacit-amm-pool-v1'),
     assetA, assetB,
+    new Uint8Array([CANON_FEE_BPS & 0xff, (CANON_FEE_BPS >> 8) & 0xff]),
+    new Uint8Array([CANON_FLAGS]),
   ));
-  test(`derivePoolId(asset_A, asset_B) == SHA256("tacit-amm-pool-v1" || A || B)`, () => {
-    const got = derivePoolId(assetA, assetB);
+  test(`derivePoolId(A, B, fee_bps, flags) == SHA256("tacit-amm-pool-v1" || A || B || fee_bps_LE || flags)`, () => {
+    const got = derivePoolId(assetA, assetB, CANON_FEE_BPS, CANON_FLAGS);
     return bytesToHex(got) === bytesToHex(expectedPoolId);
+  });
+  test(`derivePoolId fee-tier discrimination: pool_id(fee=5) != pool_id(fee=30)`, () => {
+    return bytesToHex(derivePoolId(assetA, assetB, 5, 0))
+        !== bytesToHex(derivePoolId(assetA, assetB, 30, 0));
+  });
+  test(`derivePoolId flag discrimination: pool_id(flags=0) != pool_id(flags=2)`, () => {
+    return bytesToHex(derivePoolId(assetA, assetB, 30, 0))
+        !== bytesToHex(derivePoolId(assetA, assetB, 30, 2));
   });
 
   // lp_asset_id derivation

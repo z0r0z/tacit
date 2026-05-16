@@ -293,6 +293,13 @@ export function aggregateUtxos(utxoList) {
 
 export function buildAndSubmitPoolInit({
   chain, indexer, lp, assetA_info, assetB_info, deltaA, deltaB, feeBps, vkCid, ceremonyCid,
+  // POOL_CAP_SOLO_INTENT_ALLOWED (0x02) is the e2e default so single-trader
+  // scenarios can exercise the swap path. Default V1 pools reject N=1 for
+  // amount confidentiality; the harness opts in here to keep coverage broad.
+  // poolCapabilityFlags is now part of the pool_id preimage (AMM.md §"Pool
+  // state"), so it MUST be consistent across derivePoolId, kernel-sig
+  // construction, and the envelope encoder. Single source of truth here.
+  poolCapabilityFlags = 0x02,
 }) {
   // Canonical asset-pair ordering: smaller asset_id first.
   let [assetA, assetB, infoA, infoB] = [assetA_info.assetId, assetB_info.assetId, assetA_info, assetB_info];
@@ -319,7 +326,7 @@ export function buildAndSubmitPoolInit({
     throw new Error(`LP UTXO amount mismatch (input: ${inputA.amount}/${inputB.amount}, delta: ${deltaA}/${deltaB})`);
   }
 
-  const poolId = derivePoolId(assetA, assetB);
+  const poolId = derivePoolId(assetA, assetB, feeBps, poolCapabilityFlags);
   const lpAssetId = deriveLpAssetId(poolId);
 
   // LP-share: founder gets isqrt(deltaA·deltaB) - MINIMUM_LIQUIDITY.
@@ -362,8 +369,9 @@ export function buildAndSubmitPoolInit({
   // POOL_INIT envelope payload.
   // Set POOL_CAP_SOLO_INTENT_ALLOWED (0x01) so the e2e harness's N=1 swap
   // scenarios exercise the swap path. Default V1 pools reject N=1 for
-  // amount confidentiality; the harness intentionally opts
-  // in here to keep scenario coverage broad.
+  // amount confidentiality; the harness intentionally opts in via the
+  // POOL_CAP_SOLO_INTENT_ALLOWED bit by default (see function signature
+  // above) to keep scenario coverage broad.
   const payload = encodeLpAdd({
     variant: 1, assetA, assetB, deltaA, deltaB, shareAmount: founder_shares,
     shareCSecp: pointToBytes(C_share_secp),
@@ -372,7 +380,7 @@ export function buildAndSubmitPoolInit({
     kernelSigA: kSigA, kernelSigB: kSigB,
     feeBps, vkCid, ceremonyCid,
     arbiterPubkeys: [], launcherSigs: [],
-    poolCapabilityFlags: 0x02,                             // POOL_CAP_SOLO_INTENT_ALLOWED
+    poolCapabilityFlags,                                   // matches derivePoolId discriminator
     proof: new Uint8Array(256),                            // Groth16 stub
   });
 

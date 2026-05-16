@@ -61,22 +61,39 @@ emit('worker_pubkey_W2', '0x' + bytesToHex(pubkeyOf(CANONICAL.worker_privkey_W2)
 
 // ===== Pool & LP asset IDs =====
 // Canonical pair: TAC + cBTC, lex-ascending → TAC (0xaa…) < cBTC (0xbb…).
+// pool_id discriminators now include fee_bps + capability_flags per
+// AMM.md §"Pool state" (V3/V4 fee-tier parity). Canonical test vectors
+// use fee_bps=30 (standard 3 bps tier), capability_flags=0 (default).
+const CANONICAL_FEE_BPS = 30;
+const CANONICAL_CAPABILITY_FLAGS = 0;
 const assetA = fromHex(CANONICAL.asset_id_TAC);   // smaller
 const assetB = fromHex(CANONICAL.asset_id_cBTC);  // larger
-const poolId_TAC_cBTC = derivePoolId(assetA, assetB);
-emit('pool_id (TAC,cBTC) = SHA256("tacit-amm-pool-v1" || asset_min || asset_max)',
+const poolId_TAC_cBTC = derivePoolId(assetA, assetB, CANONICAL_FEE_BPS, CANONICAL_CAPABILITY_FLAGS);
+emit('pool_id (TAC,cBTC,fee=30,flags=0) = SHA256("tacit-amm-pool-v1" || asset_min || asset_max || fee_bps_LE || flags)',
      '0x' + bytesToHex(poolId_TAC_cBTC));
 
 const lpAssetId_TAC_cBTC = deriveLpAssetId(poolId_TAC_cBTC);
 emit('lp_asset_id = SHA256("tacit-amm-lp-v1" || pool_id)',
      '0x' + bytesToHex(lpAssetId_TAC_cBTC));
 
+// Cross-fee-tier vector: same pair at fee=5 bps yields a distinct pool_id
+// and lp_asset_id. Implementations MUST reproduce both vectors to confirm
+// fee_bps is in the preimage.
+const poolId_TAC_cBTC_fee5 = derivePoolId(assetA, assetB, 5, CANONICAL_CAPABILITY_FLAGS);
+emit('pool_id (TAC,cBTC,fee=5,flags=0)', '0x' + bytesToHex(poolId_TAC_cBTC_fee5));
+emit('lp_asset_id (TAC,cBTC,fee=5,flags=0)', '0x' + bytesToHex(deriveLpAssetId(poolId_TAC_cBTC_fee5)));
+
+// Cross-capability-flags vector: same pair + fee at flags=0x02 (solo-intent
+// opt-in) yields a distinct pool_id.
+const poolId_TAC_cBTC_flags2 = derivePoolId(assetA, assetB, CANONICAL_FEE_BPS, 0x02);
+emit('pool_id (TAC,cBTC,fee=30,flags=2)', '0x' + bytesToHex(poolId_TAC_cBTC_flags2));
+
 // Also for TAC + cUSD pool.
 const assetA2 = fromHex(CANONICAL.asset_id_TAC);
 const assetB2 = fromHex(CANONICAL.asset_id_cUSD);
-const poolId_TAC_cUSD = derivePoolId(assetA2, assetB2);
-emit('pool_id (TAC,cUSD)', '0x' + bytesToHex(poolId_TAC_cUSD));
-emit('lp_asset_id (TAC,cUSD)', '0x' + bytesToHex(deriveLpAssetId(poolId_TAC_cUSD)));
+const poolId_TAC_cUSD = derivePoolId(assetA2, assetB2, CANONICAL_FEE_BPS, CANONICAL_CAPABILITY_FLAGS);
+emit('pool_id (TAC,cUSD,fee=30,flags=0)', '0x' + bytesToHex(poolId_TAC_cUSD));
+emit('lp_asset_id (TAC,cUSD,fee=30,flags=0)', '0x' + bytesToHex(deriveLpAssetId(poolId_TAC_cUSD)));
 
 // ===== Intent-pool hashes =====
 emit('intent_pool_hash (empty pool) = SHA256("")',

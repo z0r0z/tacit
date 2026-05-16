@@ -428,21 +428,41 @@ at-the-ratio, not at-a-price).
 
 ### Pool state
 
-A pool is uniquely identified by an unordered pair `(asset_A,
-asset_B)`. Convention: `asset_A` is the lexicographically smaller of
-the two `asset_id` byte strings, with **strict byte inequality**
-required — `POOL_INIT` MUST reject `asset_A == asset_B` (a same-
-asset pool is degenerate: swap directions collapse, the curve has
-no meaning, and kernel sigs lose disambiguation between A-side and
-B-side balance closures). The canonical `pool_id =
-SHA256("tacit-amm-pool-v1" || asset_A || asset_B)`. Pool init pins
-the Groth16 verifying key and fee basis points; the LP-share
-asset's `lp_asset_id` is **deterministically derived** as
-`lp_asset_id = SHA256("tacit-amm-lp-v1" || pool_id)`. This is a
-new asset-identity rule: SPEC §4 derives `asset_id` from a `CETCH`
-or `T_PETCH` reveal txid (`SHA256(reveal_txid_BE || 0_LE)`), and
-the AMM adds a third valid origin — a deterministic derivation
-from a confirmed `POOL_INIT`. No `CETCH` is required for LP shares.
+A pool is uniquely identified by the tuple **`(asset_A, asset_B,
+fee_bps, capability_flags)`**. Convention: `asset_A` is the
+lexicographically smaller of the two `asset_id` byte strings, with
+**strict byte inequality** required — `POOL_INIT` MUST reject
+`asset_A == asset_B` (a same-asset pool is degenerate: swap
+directions collapse, the curve has no meaning, and kernel sigs lose
+disambiguation between A-side and B-side balance closures). The
+canonical pool_id is:
+
+```
+pool_id = SHA256(
+    "tacit-amm-pool-v1"
+ || asset_A          (32 B, lex-smaller)
+ || asset_B          (32 B, lex-larger)
+ || fee_bps_LE       (2 B,  u16, 0..1000)
+ || capability_flags (1 B,  u8 bitmap)
+)
+```
+
+Preimage is 84 bytes. Including `fee_bps` and `capability_flags` as
+discriminators gives **Uniswap V3/V4-style multi-tier parity**: a
+single asset pair can host multiple canonical pools simultaneously,
+each at a different fee tier or capability configuration. `pool_id`
+is a 32-byte SHA-256 digest regardless of preimage length.
+
+The LP-share asset's `lp_asset_id` is **deterministically derived**
+as `lp_asset_id = SHA256("tacit-amm-lp-v1" || pool_id)`. Because
+`fee_bps` and `capability_flags` enter `pool_id`, LP shares from
+the 5-bps pool over (A, B) are a **different tacit asset** from LP
+shares from the 30-bps pool over (A, B) — preventing accidental
+fungibility across tiers. This is a new asset-identity rule: SPEC
+§4 derives `asset_id` from a `CETCH` or `T_PETCH` reveal txid
+(`SHA256(reveal_txid_BE || 0_LE)`), and the AMM adds a third valid
+origin — a deterministic derivation from a confirmed `POOL_INIT`.
+No `CETCH` is required for LP shares.
 
 **Three-origin asset_id resolution (indexer rule).** When a wallet
 or recursive validator encounters an `asset_id` it doesn't yet
@@ -458,10 +478,12 @@ recognise, the indexer resolves the origin by checking, in order:
 
 The lookup is constant-time given an indexer-maintained reverse
 map keyed by `asset_id`. Domain separation between paths is
-structural — the SHA256 preimages are disjoint by construction
-("tacit-amm-lp-v1" || pool_id is 53 bytes; reveal_txid_BE || 0_LE
-is 36 bytes), so cross-origin collisions reduce to SHA256
-preimage-finding under different domains and are negligible.
+structural — the SHA256 preimages have disjoint sizes by
+construction (CETCH/T_PETCH: 36 B = `reveal_txid_BE || 0_LE`;
+LP-asset path: 47 B = `"tacit-amm-lp-v1"(15) || pool_id(32)`;
+pool_id itself: 84 B per the preimage above), so cross-origin
+collisions reduce to SHA256 preimage-finding under different
+domains and are negligible.
 Indexers treat the first canonical `T_LP_ADD(variant=1)` (=
 `POOL_INIT`) for a pair as the genesis of that pool's
 `lp_asset_id`; subsequent `T_LP_ADD(variant=0)` and `T_LP_REMOVE`
@@ -491,15 +513,32 @@ reserve is at every height by replaying confirmed envelopes.
 deposit their LP-share UTXO into the mixer's `(lp_asset_id,
 denomination)` pool and withdraw to a fresh address.
 
-### One canonical pool per pair
+### One canonical pool per (pair, fee_bps, capability_flags)
 
-Multiple competing pools for the same `(asset_A, asset_B)` would
-fragment liquidity. The indexer enforces **one canonical pool per
-pair** by the same first-mover rule as ticker disambiguation in
-CETCH (§4): the first canonically-ordered confirmed `POOL_INIT` for
-a pair becomes canonical; subsequent inits for the same pair are
-silently ignored. A given asset can participate in multiple pools
-(one per counterparty asset).
+Multiple competing pools at the **same** `(asset_A, asset_B,
+fee_bps, capability_flags)` configuration would fragment liquidity
+needlessly. The indexer enforces **one canonical pool per
+discriminator-tuple** by the same first-mover rule as ticker
+disambiguation in CETCH (§4): the first canonically-ordered
+confirmed `POOL_INIT` whose `(asset_A, asset_B, fee_bps,
+capability_flags)` hash to a given `pool_id` becomes canonical;
+subsequent inits at the same `pool_id` are silently ignored. A
+`POOL_INIT` at a *different* fee tier or capability configuration
+for the same pair yields a *different* `pool_id` and is therefore
+a separate canonical pool — not a collision.
+
+This is the V3/V4 fee-tier model: founders / LPs / arbitrageurs
+decide which tier(s) attract liquidity for a given pair, the same
+way Uniswap V3's 5/30/100 bps tiers compete on stable vs. volatile
+pairs. The indexer does not pick tiers; the market does. A given
+asset can therefore participate in many pools — across both
+counterparties and fee/capability configurations.
+
+**Indexer enumeration note.** Routers and dapps that want all
+canonical pools containing a given asset MUST iterate the indexer's
+pool registry filtered by asset membership, not by `(asset_A,
+asset_B)` pair-key — the latter no longer uniquely identifies a
+pool.
 
 ### Optional launcher gate
 
@@ -2741,7 +2780,7 @@ asset B). The sig for asset X (X ∈ {A,B}) verifies under
 kernel_msg_X = SHA256(
     "tacit-amm-lp-add-v1"
     || variant(1)
-    || pool_id(32)                          # derived: SHA256("tacit-amm-pool-v1" || asset_A || asset_B)
+    || pool_id(32)                          # derived: SHA256("tacit-amm-pool-v1" || asset_A || asset_B || fee_bps_LE || capability_flags)
     || asset_X(32)
     || delta_X_LE(8)
     || share_amount_LE(8)
@@ -3543,7 +3582,7 @@ Every domain tag in the AMM is explicitly versioned:
 
 A V2 deployment uses `-v2` variants of the relevant tags, producing entirely different SHA-256 outputs. So:
 
-- `pool_id_v2 = SHA256("tacit-amm-pool-v2" || asset_A || asset_B)` is distinct from `pool_id_v1` for the same pair. Both pools coexist on chain with different `pool_id` values.
+- `pool_id_v2 = SHA256("tacit-amm-pool-v2" || asset_A || asset_B || …v2-discriminators…)` is distinct from `pool_id_v1` for the same pair, fee tier, and capability_flags. Both pools coexist on chain with different `pool_id` values. (V1's full preimage is `domain || A || B || fee_bps_LE || capability_flags`; V2 amendments are free to extend it.)
 - `lp_asset_id_v2 = SHA256("tacit-amm-lp-range-v2" || pool_id_v2)` is distinct from `lp_asset_id_v1`. LP shares from V1 and V2 pools cannot be confused.
 - New cryptographic primitives in V2 (e.g., new NUMS generators if the curve changes) get their own `-v2` derivations.
 

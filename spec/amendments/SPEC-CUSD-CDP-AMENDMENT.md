@@ -89,7 +89,10 @@ To become an attester for epoch `E`, a candidate must:
    **canonical `cUSD/cBTC` pool** specifically (i.e., the AMM pool
    identified by `pool_id = SHA256("tacit-amm-pool-v1" ||
    min(canonical_cbtc_asset_id, canonical_cusd_asset_id) ||
-   max(canonical_cbtc_asset_id, canonical_cusd_asset_id))`).
+   max(canonical_cbtc_asset_id, canonical_cusd_asset_id) ||
+   fee_bps_LE || capability_flags)` — see SPEC §4.1 for the full
+   84-byte preimage; the canonical oracle pool pins one specific
+   `(fee_bps, capability_flags)` tier, established at launch).
    `min_oracle_bond_lp_shares` is dynamically computed as 1% of
    that pool's `lp_total_shares` at the time of T_ORACLE_JOIN.
 
@@ -149,10 +152,18 @@ function pools_for(asset_pair):
   result = []
   for asset_a in variants_a:
     for asset_b in variants_b:
-      pool_id = SHA256("tacit-amm-pool-v1" || min(asset_a, asset_b)
-                                            || max(asset_a, asset_b))
-      if amm_state.pool_exists(pool_id):
-        result.append(pool_id)
+      // Per SPEC §4.1, pool_id discriminators include fee_bps + capability_flags.
+      // Enumerate every (fee_bps, capability_flags) tuple registered for this
+      // pair — the oracle's TWAP aggregates across fee tiers (fewer tiers
+      // typically; the indexer's pool registry holds the canonical set).
+      for (fee_bps, capability_flags) in amm_state.tiers_for(asset_a, asset_b):
+        pool_id = SHA256(
+          "tacit-amm-pool-v1"
+          || min(asset_a, asset_b) || max(asset_a, asset_b)
+          || u16_le(fee_bps) || u8(capability_flags)
+        )
+        if amm_state.pool_exists(pool_id):
+          result.append(pool_id)
   return result
 
 function median_twap(asset_pair, window_blocks, end_height):

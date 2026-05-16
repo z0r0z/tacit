@@ -4,20 +4,37 @@
 //   (1) CETCH                — asset_id = SHA256(reveal_txid_BE || 0_LE)
 //   (2) T_PETCH               — asset_id = SHA256(reveal_txid_BE || 0_LE)
 //   (3) AMM POOL_INIT (LP)    — asset_id = SHA256("tacit-amm-lp-v1" || pool_id)
-//                                 where pool_id = SHA256("tacit-amm-pool-v1" || asset_A || asset_B)
-//                                 and asset_A is the lexicographically smaller asset_id.
+//                                 where pool_id = SHA256(
+//                                   "tacit-amm-pool-v1"
+//                                   || asset_A           // 32 B, lex-smaller
+//                                   || asset_B           // 32 B, lex-larger
+//                                   || fee_bps_LE        // 2 B,  u16  (0..1000)
+//                                   || capability_flags  // 1 B,  u8
+//                                 )
+//                                 → 84-byte preimage
 //
 // Domain separation between paths is structural: path (1)/(2) preimages are
-// 36 bytes (txid_BE 32 || vout_LE 4); path (3) preimages are 53 bytes
-// ("tacit-amm-lp-v1" 15 bytes || pool_id 32 bytes is wrong arithmetic) ...
-// Let me recompute: "tacit-amm-lp-v1" UTF-8 = 15 bytes; pool_id = 32 bytes;
-// total preimage = 47 bytes. Distinct from 36-byte CETCH/PETCH preimages.
+// 36 bytes (txid_BE 32 || vout_LE 4); path (3) lp_asset_id preimages are
+// 47 bytes ("tacit-amm-lp-v1" 15 B || pool_id 32 B); pool_id preimages are
+// 84 bytes. All three sizes are disjoint, so cross-origin SHA256 collisions
+// reduce to preimage-finding under distinct domain separations.
+//
+// V3/V4 parity: multiple pools can coexist for the same (asset_A, asset_B)
+// at different fee tiers OR capability_flags configurations — each
+// distinct (fee_bps, capability_flags) tuple yields a distinct pool_id and
+// thus a distinct canonical pool. "One canonical pool per (pair, fee_bps,
+// capability_flags)" replaces the earlier "one canonical pool per pair".
 
 import { sha256 } from '@noble/hashes/sha256';
 import { concatBytes, hexToBytes, bytesToHex } from '@noble/hashes/utils';
 
 const DOMAIN_POOL_ID = new TextEncoder().encode('tacit-amm-pool-v1');
 const DOMAIN_LP_ASSET = new TextEncoder().encode('tacit-amm-lp-v1');
+
+// Validation bounds. fee_bps is u16 capped at 1000 (10%) per AMM.md
+// §"SOLVE_CLEARING". capability_flags is a u8 bitmap (AMM.md §"Pool state").
+const FEE_BPS_MAX = 1000;
+const CAPABILITY_FLAGS_MAX = 255;
 
 function reverseBytes(b) { const r = new Uint8Array(b); r.reverse(); return r; }
 
@@ -44,9 +61,27 @@ export function canonicalAssetPair(idA, idB) {
   throw new Error('canonicalAssetPair: identical asset_ids');
 }
 
-export function derivePoolId(idA, idB) {
+// Derive pool_id from a canonical pair, fee tier, and capability flags.
+//   pool_id = SHA256(
+//     "tacit-amm-pool-v1" || asset_A || asset_B || fee_bps_LE || capability_flags
+//   )
+// All four discriminators are load-bearing: two POOL_INITs over the same
+// (A, B) but with different fee_bps OR capability_flags are different
+// canonical pools (V3/V4-style parity). Callers MUST supply fee_bps and
+// capabilityFlags from either the POOL_INIT envelope (variant=1) or the
+// existing pool record (variant=0 LP_ADD / LP_REMOVE / SWAP_*).
+export function derivePoolId(idA, idB, feeBps, capabilityFlags) {
   const [low, high] = canonicalAssetPair(idA, idB);
-  return sha256(concatBytes(DOMAIN_POOL_ID, low, high));
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_MAX) {
+    throw new Error(`fee_bps must be integer in [0, ${FEE_BPS_MAX}]: got ${feeBps}`);
+  }
+  if (!Number.isInteger(capabilityFlags) || capabilityFlags < 0 || capabilityFlags > CAPABILITY_FLAGS_MAX) {
+    throw new Error(`capability_flags must be u8 in [0, ${CAPABILITY_FLAGS_MAX}]: got ${capabilityFlags}`);
+  }
+  const feeBpsLE = new Uint8Array(2);
+  new DataView(feeBpsLE.buffer).setUint16(0, feeBps, true);
+  const flagsByte = new Uint8Array([capabilityFlags]);
+  return sha256(concatBytes(DOMAIN_POOL_ID, low, high, feeBpsLE, flagsByte));
 }
 
 // LP-share asset_id derived from a confirmed POOL_INIT's pool_id.
@@ -58,7 +93,7 @@ export function deriveLpAssetId(poolId) {
 
 // Three-origin resolution. Given an asset_id and a lookup oracle providing:
 //   getCetchOrPetch(asset_id)  -> { mode: 'CETCH' | 'T_PETCH', reveal_txid_hex } | null
-//   getPoolInit(asset_id)       -> { pool_id, asset_A, asset_B } | null
+//   getPoolInit(asset_id)       -> { pool_id, asset_A, asset_B, fee_bps, capability_flags } | null
 // returns { origin: 'CETCH' | 'T_PETCH' | 'LP', ... } or null on unresolved.
 //
 // Verification is byte-exact: each candidate origin must reproduce the asset_id

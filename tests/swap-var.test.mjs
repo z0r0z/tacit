@@ -42,7 +42,18 @@ function test(label, fn) {
 // ---- Pinned canonical inputs ----
 const ASSET_A = hexToBytes('aa' + '11'.repeat(31));
 const ASSET_B = hexToBytes('bb' + '22'.repeat(31));
-const POOL_ID = sha256(concatBytes(new TextEncoder().encode('tacit-amm-pool-v1'), ASSET_A, ASSET_B));
+// pool_id = SHA256("tacit-amm-pool-v1" || A || B || fee_bps_LE || capability_flags)
+// per AMM.md §"Pool state" (V3/V4 fee-tier parity). This fixture uses
+// fee_bps=30, capability_flags=0.
+const POOL_FEE_BPS = 30;
+const POOL_CAPABILITY_FLAGS = 0;
+const POOL_FEE_BPS_LE = (() => { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, POOL_FEE_BPS, true); return b; })();
+const POOL_ID = sha256(concatBytes(
+  new TextEncoder().encode('tacit-amm-pool-v1'),
+  ASSET_A, ASSET_B,
+  POOL_FEE_BPS_LE,
+  new Uint8Array([POOL_CAPABILITY_FLAGS]),
+));
 const TRADER_PRIVKEY = hexToBytes('11'.repeat(32));
 const TRADER_PUBKEY = secp.getPublicKey(TRADER_PRIVKEY, true);
 const SETTLER_PRIVKEY = hexToBytes('22'.repeat(32));

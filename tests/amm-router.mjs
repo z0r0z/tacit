@@ -21,6 +21,15 @@ import { solveClearing, amountOutForTrader } from './amm-clearing.mjs';
 
 // Canonical pair key for a (asset_A, asset_B) pool. Sort lex-smaller first so
 // any two callers compute the same key for the same unordered pair.
+//
+// NOTE on multi-fee-tier support: AMM.md §"Pool state" now allows multiple
+// canonical pools per (asset_A, asset_B), discriminated by fee_bps and
+// capability_flags inside pool_id. The router below currently assumes one
+// pool per pair and uses `pairKey` as the registry index, so it only sees
+// the single pool the caller pre-selected for that pair. Multi-tier route
+// discovery (enumerate all pools containing assetIn, pick best across fee
+// tiers) is a follow-up: switch the registry index to bytesToHex(pool_id)
+// and enumerate by asset membership rather than pairKey lookup.
 export function pairKey(assetA, assetB) {
   const a = bytesToHex(assetA);
   const b = bytesToHex(assetB);

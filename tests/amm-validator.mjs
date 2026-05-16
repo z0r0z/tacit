@@ -534,8 +534,14 @@ export function validateLpAdd({
   const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
   if (orderErr) return { valid: false, reason: orderErr };
 
-  // Verify pool_id matches.
-  const poolId = derivePoolId(env.assetA, env.assetB);
+  // Verify pool_id matches. pool_id derivation now includes fee_bps and
+  // capability_flags (V3/V4 fee-tier parity), so the discriminators are
+  // sourced differently per variant:
+  //   variant=1 (POOL_INIT): pool doesn't exist yet — read from envelope.
+  //   variant=0 (LP join):   pool record is authoritative — read from state.
+  const poolId = env.variant === 1
+    ? derivePoolId(env.assetA, env.assetB, env.feeBps, env.poolCapabilityFlags)
+    : (pool ? derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0) : null);
 
   // POOL_INIT path (variant 1): create pool. Otherwise require existing pool.
   if (env.variant === 1) {
@@ -584,7 +590,7 @@ export function validateLpAdd({
     }
 
     // Per-asset kernel sigs.
-    if (!verifyKernel(env, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, env.variant)) {
+    if (!verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, env.variant)) {
       return { valid: false, reason: 'kernel sig verification failed' };
     }
     if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
@@ -698,7 +704,7 @@ export function validateLpAdd({
     return { valid: false, reason: `shareAmount: expected ${expectedShares}, got ${env.shareAmount}` };
   }
 
-  if (!verifyKernel(env, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, env.variant)) {
+  if (!verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, env.variant)) {
     return { valid: false, reason: 'kernel sig verification failed' };
   }
   if (!verifyXCurve(env.shareXcurveSigma, env.shareCSecp, env.shareCBJJ)) {
@@ -735,10 +741,14 @@ export function validateLpAdd({
   };
 }
 
-function verifyKernel(env, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, variant) {
+// poolId is passed in by the caller (already derived against the right
+// fee_bps + capability_flags discriminators for the variant). The kernel
+// sig commits to the full pool_id, so a mismatched poolId here would
+// fail verification — defense-in-depth even if the caller miscomputes.
+function verifyKernel(env, poolId, inputCommitmentsA, inputCommitmentsB, inputsA, inputsB, variant) {
   return lpAddKernelVerify({
     variant,
-    poolId: derivePoolId(env.assetA, env.assetB),
+    poolId,
     assetX: env.assetA,
     deltaX: env.deltaA,
     shareAmount: env.shareAmount,
@@ -748,7 +758,7 @@ function verifyKernel(env, inputCommitmentsA, inputCommitmentsB, inputsA, inputs
     sig64: env.kernelSigA,
   }) && lpAddKernelVerify({
     variant,
-    poolId: derivePoolId(env.assetA, env.assetB),
+    poolId,
     assetX: env.assetB,
     deltaX: env.deltaB,
     shareAmount: env.shareAmount,
@@ -775,7 +785,7 @@ export function validateLpRemove({
   if (!pool) return { valid: false, reason: 'pool not registered' };
   const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
   if (orderErr) return { valid: false, reason: orderErr };
-  const poolId = derivePoolId(env.assetA, env.assetB);
+  const poolId = derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0);
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
 
   // Crystallize protocol fee before applying the remove. Same V2-lazy
@@ -945,7 +955,7 @@ export function validateSwapBatch({
   // pool_id consistency
   const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
   if (orderErr) return { valid: false, reason: orderErr };
-  const poolId = derivePoolId(env.assetA, env.assetB);
+  const poolId = derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0);
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
   if (env.feeBpsAtSettle !== pool.fee_bps) {
     return { valid: false, reason: 'fee_bps_at_settle != pool.fee_bps' };

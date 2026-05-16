@@ -4287,7 +4287,10 @@ function decodeTSlotBurnPayload(payload) {
 
 // SPEC-CBTC-ZK §5.23 T_SLOT_ROTATE — atomic transfer of self-custody slot.
 // Bundles a burn-side (old note) + mint-side (new leaf) + optional payment.
-function _computeSlotRotateMsg(networkTag, assetIdBytes, denomination, oldNullifierBytes, newRecipientCommitBytes, newLeafHashBytes, paymentAssetIdBytes, paymentAmount) {
+function _computeSlotRotateMsg(networkTag, assetIdBytes, denomination, oldNullifierBytes, newRecipientCommitBytes, newLeafHashBytes, paymentAssetIdBytes, paymentAmount, newKBtcXOnly) {
+  if (!(newKBtcXOnly instanceof Uint8Array) || newKBtcXOnly.length !== 32) {
+    throw new Error('new_k_btc_xonly must be 32 bytes (§5.24.0 two-key)');
+  }
   const denomLE = new Uint8Array(8);
   {
     const v = new DataView(denomLE.buffer);
@@ -4309,6 +4312,7 @@ function _computeSlotRotateMsg(networkTag, assetIdBytes, denomination, oldNullif
     oldNullifierBytes,
     newRecipientCommitBytes, newLeafHashBytes,
     paymentAssetIdBytes, payLE,
+    newKBtcXOnly,
   ));
 }
 function decodeTSlotRotatePayload(payload) {
@@ -4340,7 +4344,9 @@ function decodeTSlotRotatePayload(payload) {
   // optional encrypted-note tail (SPEC-CBTC-ZK-FUNGIBILITY §5.26): one
   // `has_note` byte (0x00 or 0x01) followed by 122 bytes of AES-GCM
   // ciphertext if has_note == 1. Decoder accepts all three lengths.
-  const hostEnd = p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64;
+  // Wire layout (§5.24.0 two-key): host payload includes a 32-byte
+  // new_k_btc_xonly field right after new_leaf_hash.
+  const hostEnd = p + oldProofLen + 33 + 32 + 32 + 32 + 8 + 33 + 64;
   let encryptedNote = null;
   if (payload.length === hostEnd) {
     // Pre-amendment canonical form, no note tail.
@@ -4360,6 +4366,7 @@ function decodeTSlotRotatePayload(payload) {
   const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
   try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
   const newLeafHashBytes = payload.slice(p, p + 32); p += 32;
+  const newKBtcXOnlyBytes = payload.slice(p, p + 32); p += 32;
   // Optional payment leg (zero-valued if no payment)
   const paymentAssetIdBytes = payload.slice(p, p + 32); p += 32;
   const payView = new DataView(payload.buffer, payload.byteOffset + p, 8);
@@ -4382,6 +4389,7 @@ function decodeTSlotRotatePayload(payload) {
     old_proof: bytesToHex(oldProof),
     new_recipient_commitment: bytesToHex(newRecipientCommitBytes),
     new_leaf_hash: bytesToHex(newLeafHashBytes),
+    new_k_btc_xonly: bytesToHex(newKBtcXOnlyBytes),
     payment_asset_id: bytesToHex(paymentAssetIdBytes),
     payment_amount: paymentAmount.toString(),
     old_owner_pubkey: bytesToHex(oldOwnerPubkeyBytes),
@@ -4390,7 +4398,7 @@ function decodeTSlotRotatePayload(payload) {
     _msg: () => _computeSlotRotateMsg(
       networkTag, assetIdBytes, denomination,
       oldNullifierHashBytes, newRecipientCommitBytes, newLeafHashBytes,
-      paymentAssetIdBytes, paymentAmount,
+      paymentAssetIdBytes, paymentAmount, newKBtcXOnlyBytes,
     ),
   };
 }
@@ -11524,13 +11532,12 @@ async function scanForEtches(env, network) {
           ownerXOnly = ownerPt.toRawBytes(true).slice(1);
         } catch { continue; }
         if (!verifySchnorr(hexToBytes(sr.old_owner_sig), rotateMsg, ownerXOnly)) continue;
-        // Verify new slot UTXO at vout[0] matches new K_btc.
-        let newKBtcPoint;
-        try {
-          newKBtcPoint = deriveSlotKbtc(hexToBytes(sr.new_recipient_commitment), sr.denomination);
-        } catch { continue; }
-        if (newKBtcPoint.equals(PEDERSEN_ZERO)) continue;
-        const expectedNewSpk = slotScriptPubKey(slotXOnly(newKBtcPoint));
+        // §5.24.0 two-key: the new slot is at K_btc = r_btc · G, with the
+        // x-only published explicitly in the envelope's new_k_btc_xonly
+        // field. The validator does NOT recompute K_btc from new_recipient_commit.
+        const newKBtcXOnly = hexToBytes(sr.new_k_btc_xonly);
+        if (newKBtcXOnly.length !== 32) continue;
+        const expectedNewSpk = slotScriptPubKey(newKBtcXOnly);
         const vout0Spk = tx.vout?.[0]?.scriptpubkey;
         if (typeof vout0Spk !== 'string' || vout0Spk.toLowerCase() !== bytesToHex(expectedNewSpk)) continue;
         const vout0Val = tx.vout?.[0]?.value;

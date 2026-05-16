@@ -369,12 +369,17 @@ group('T_SLOT_ROTATE decode round-trip');
 function buildSlotRotatePayload({
   networkTag, assetId, denom,
   oldMerkleRoot, oldNullifier, oldRecipientCommit, oldRLeaf, oldBindHash, oldProof,
-  newRecipientCommit, newLeafHash,
+  newRecipientCommit, newLeafHash, newKBtcXOnly,
   paymentAssetId, paymentAmount,
   oldOwnerPubkey, oldOwnerSig,
 }) {
   const proofLenBytes = new Uint8Array(2);
   new DataView(proofLenBytes.buffer).setUint16(0, oldProof.length, true);
+  // §5.24.0 two-key: new_k_btc_xonly is a 32-byte field between new_leaf_hash
+  // and payment_asset_id. Tests that don't supply one default to all-zeros.
+  const kBtcTail = (newKBtcXOnly instanceof Uint8Array && newKBtcXOnly.length === 32)
+    ? newKBtcXOnly
+    : new Uint8Array(32);
   return concatBytes(
     new Uint8Array([T_SLOT_ROTATE]),
     new Uint8Array([networkTag]),
@@ -389,6 +394,7 @@ function buildSlotRotatePayload({
     oldProof,
     newRecipientCommit,
     newLeafHash,
+    kBtcTail,
     paymentAssetId,
     leUint64(paymentAmount),
     oldOwnerPubkey,
@@ -662,6 +668,7 @@ const dapp = await import('../dapp/tacit.js');
     oldProof,
     newRecipientCommit: newLeaf.recipient_commit_bytes,
     newLeafHash,
+    newKBtcXOnly: sha256(new TextEncoder().encode('parity-rotate-new-kbtc')),
     paymentAssetId,
     paymentAmount: 33_000n,
     oldOwnerPubkey,
@@ -685,9 +692,11 @@ const dapp = await import('../dapp/tacit.js');
     workerDecoded?.old_owner_pubkey === bytesToHex(oldOwnerPubkey));
 
   // Sig-message binding must be byte-identical across dapp and worker for slot-rotate too.
+  const newKBtcXOnly = sha256(new TextEncoder().encode('parity-rotate-new-kbtc'));
   const dappMsg = dapp.computeSlotRotateMsg(
     NETWORK_TAG_SIGNET, ASSET_ID, DENOM, oldNullifier,
     newLeaf.recipient_commit_bytes, newLeafHash, paymentAssetId, 33_000n,
+    newKBtcXOnly,
   );
   const workerMsg = workerDecoded?._msg();
   ok('parity (rotate): slot_rotate_msg byte-identical',

@@ -49,7 +49,23 @@ const [assetA, assetB] = ASSET_A[0] < ASSET_B[0]
       }
       throw new Error('same');
     })());
-const POOL_ID = derivePoolId(assetA, assetB);
+// Canonical test pool: fee_bps=30 (standard tier). pool_id derivation now
+// includes fee_bps + capability_flags per AMM.md §"Pool state", so we keep
+// two pool_ids handy:
+//
+//   POOL_ID       — capability_flags = 0 (default V1 pool, no opt-ins).
+//                   Used by POOL_INIT, variant=0 LP_ADD, LP_REMOVE tests
+//                   where the default V1 confidentiality posture matters.
+//   POOL_ID_SOLO  — capability_flags = 0x02 (POOL_CAP_SOLO_INTENT_ALLOWED).
+//                   Used by single-intent SWAP_BATCH tests so the validator
+//                   doesn't reject N=1 batches for confidentiality. These
+//                   pools have a *different* canonical pool_id from the
+//                   default-flags pool over the same pair.
+const FEE_BPS = 30;
+const CAPABILITY_FLAGS_DEFAULT = 0;
+const CAPABILITY_FLAGS_SOLO = 0x02;
+const POOL_ID = derivePoolId(assetA, assetB, FEE_BPS, CAPABILITY_FLAGS_DEFAULT);
+const POOL_ID_SOLO = derivePoolId(assetA, assetB, FEE_BPS, CAPABILITY_FLAGS_SOLO);
 const LP_ASSET_ID = deriveLpAssetId(POOL_ID);
 
 // Canonical MINIMUM_LIQUIDITY locked-output bytes for POOL_ID. Mirrors what an
@@ -415,14 +431,16 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
   // Construct a fake pool + payload with a single intent. The aggregate
   // Pedersen check is exercised; clearing constraints are exercised.
   const pool = {
-    pool_id: POOL_ID, asset_A: assetA, asset_B: assetB,
+    pool_id: POOL_ID_SOLO, asset_A: assetA, asset_B: assetB,
     fee_bps: 30, reserve_A: 1_000_000n, reserve_B: 2_000_000n,
     lp_total_shares: 1_414_213n,
     inclusion_arbiter_pubkeys: [],
     // Solo-intent test: opt this pool into POOL_CAP_SOLO_INTENT_ALLOWED so
     // the N=1 smoke tests below exercise the swap path. Default V1 pools
-    // reject N=1 batches for amount confidentiality.
-    capability_flags: 0x02, // POOL_CAP_SOLO_INTENT_ALLOWED
+    // reject N=1 batches for amount confidentiality. capability_flags is in
+    // pool_id's preimage (AMM.md §"Pool state"), so this pool's pool_id is
+    // POOL_ID_SOLO — distinct from POOL_ID (the default-flags pool).
+    capability_flags: CAPABILITY_FLAGS_SOLO,
   };
 
   // Single A→B intent: amount_in = 1000n, full input goes in (no tip for simplicity in this test).
@@ -484,7 +502,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
   };
 
   const intentMsg = buildIntentMsg({
-    poolId: POOL_ID, direction: 0, inputUtxos,
+    poolId: POOL_ID_SOLO, direction: 0, inputUtxos,
     cInSecp: intent.cInSecp, cInBjj: intent.cInBjj, xcurveSigma: intent.inXcurveSigma,
     receiveScriptPubKey: recvSpk,
     minOut: 0n, tipAmount: 0n, tipAsset: 0,
@@ -642,9 +660,19 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
     });
     return !r2.valid && /asset-B aggregate Pedersen check failed/.test(r2.reason);
   });
-  // N=1 batch on a default pool (no solo-intent flag) ⇒ rejected.
+  // N=1 batch against a default-flags pool ⇒ rejected.
+  //
+  // With capability_flags now in pool_id's preimage (AMM.md §"Pool state"),
+  // a default-flags pool and a SOLO-flags pool over the same pair are
+  // *different* canonical pools with different pool_ids. So submitting an
+  // N=1 envelope (which was signed against the SOLO pool's pool_id) to a
+  // default-flags pool now fails with "pool_id mismatch" rather than
+  // "MIN_BATCH_SIZE" — the structurally-stronger rejection. Either reason
+  // proves the validator refuses to settle the envelope.
   test('N=1 batch rejected when pool does NOT have POOL_CAP_SOLO_INTENT_ALLOWED', () => {
-    const defaultPool = { ...pool, capability_flags: 0 };
+    // Construct an internally-consistent default-flags pool. Its pool_id
+    // is POOL_ID (not POOL_ID_SOLO) because flags=0 hashes differently.
+    const defaultPool = { ...pool, pool_id: POOL_ID, capability_flags: CAPABILITY_FLAGS_DEFAULT };
     const r2 = validateSwapBatch({
       payload, pool: defaultPool, opReturnData: opReturn,
       inputCommitmentsByIntent: [[C_in_secp]],
@@ -653,7 +681,7 @@ console.log('\nT_SWAP_BATCH validator — envelope_hash binding');
       currentHeight: 800000,
       groth16Verify: SKIP_GROTH16_VERIFY_UNSAFE,
     });
-    return !r2.valid && /MIN_BATCH_SIZE|POOL_CAP_SOLO_INTENT_ALLOWED/.test(r2.reason);
+    return !r2.valid && /pool_id mismatch|MIN_BATCH_SIZE|POOL_CAP_SOLO_INTENT_ALLOWED/.test(r2.reason);
   });
 
   // Tip-opening adversarial tests (AMM.md §"Tip mechanics", normative).
@@ -701,11 +729,11 @@ console.log('\nT_SWAP_BATCH validator — CFMM curve floor identity');
   // is still ≥ pre-product, since |Δb_no-fee-curve| > |Δb_with-fee-curve|).
   // The CFMM curve floor identity check catches it.
   const pool = {
-    pool_id: POOL_ID, asset_A: assetA, asset_B: assetB,
+    pool_id: POOL_ID_SOLO, asset_A: assetA, asset_B: assetB,
     fee_bps: 30, reserve_A: 1_000_000n, reserve_B: 2_000_000n,
     lp_total_shares: 1_414_213n,
     inclusion_arbiter_pubkeys: [],
-    capability_flags: 0x02, // POOL_CAP_SOLO_INTENT_ALLOWED
+    capability_flags: CAPABILITY_FLAGS_SOLO,
   };
 
   const sk = new Uint8Array(32); for (let i = 0; i < 32; i++) sk[i] = i + 1;
@@ -756,7 +784,7 @@ console.log('\nT_SWAP_BATCH validator — CFMM curve floor identity');
   };
 
   const intentMsg = buildIntentMsg({
-    poolId: POOL_ID, direction: 0, inputUtxos,
+    poolId: POOL_ID_SOLO, direction: 0, inputUtxos,
     cInSecp: intent.cInSecp, cInBjj: intent.cInBjj, xcurveSigma: intent.inXcurveSigma,
     receiveScriptPubKey: recvSpk,
     minOut: 0n, tipAmount: 0n, tipAsset: 0,
@@ -822,11 +850,11 @@ console.log('\nT_SWAP_BATCH validator — CFMM curve floor identity (B-dom branc
   // layout (|Δa| · (R_B · γ_den + γ_num · |Δb|) ≤ R_A · γ_num · |Δb|). A
   // copy-paste typo in this branch wouldn't be caught by the A-dom test alone.
   const pool = {
-    pool_id: POOL_ID, asset_A: assetA, asset_B: assetB,
+    pool_id: POOL_ID_SOLO, asset_A: assetA, asset_B: assetB,
     fee_bps: 30, reserve_A: 2_000_000n, reserve_B: 1_000_000n,   // (R_A, R_B) swapped vs A-dom to exercise B-dom
     lp_total_shares: 1_414_213n,
     inclusion_arbiter_pubkeys: [],
-    capability_flags: 0x02, // POOL_CAP_SOLO_INTENT_ALLOWED
+    capability_flags: CAPABILITY_FLAGS_SOLO,
   };
 
   const sk = new Uint8Array(32); for (let i = 0; i < 32; i++) sk[i] = i + 2;
@@ -888,7 +916,7 @@ console.log('\nT_SWAP_BATCH validator — CFMM curve floor identity (B-dom branc
   };
 
   const intentMsg = buildIntentMsg({
-    poolId: POOL_ID, direction: 1, inputUtxos,
+    poolId: POOL_ID_SOLO, direction: 1, inputUtxos,
     cInSecp: intent.cInSecp, cInBjj: intent.cInBjj, xcurveSigma: intent.inXcurveSigma,
     receiveScriptPubKey: recvSpk,
     minOut: 0n, tipAmount: 0n, tipAsset: 1,
@@ -1119,7 +1147,7 @@ console.log('\nT_LP_REMOVE validator — adversarial coverage');
     const otherA = deriveAssetIdFromReveal('00'.repeat(31) + '03');
     const otherB = deriveAssetIdFromReveal('00'.repeat(31) + '04');
     const [a, b] = otherA[0] < otherB[0] ? [otherA, otherB] : [otherB, otherA];
-    const wrongPool = { ...pool, pool_id: derivePoolId(a, b) };
+    const wrongPool = { ...pool, pool_id: derivePoolId(a, b, FEE_BPS, CAPABILITY_FLAGS_DEFAULT) };
     const r = runValidate(buildPayload(), { pool: wrongPool });
     return !r.valid && /pool_id mismatch/.test(r.reason);
   });
@@ -1164,12 +1192,12 @@ console.log('\nT_SWAP_BATCH validator — arbiter-pinned pool adversarial covera
     arbiterPks.push(secp.ProjectivePoint.fromPrivateKey(sk).toRawBytes(true));
   }
   const pool = {
-    pool_id: POOL_ID, asset_A: assetA, asset_B: assetB,
+    pool_id: POOL_ID_SOLO, asset_A: assetA, asset_B: assetB,
     fee_bps: 30, reserve_A: 1_000_000n, reserve_B: 2_000_000n,
     lp_total_shares: 1_414_213n,
     inclusion_arbiter_pubkeys: arbiterPks,
     inclusion_arbiter_threshold_m: 2,
-    capability_flags: 0x02, // allow N=1 for this single-intent test
+    capability_flags: CAPABILITY_FLAGS_SOLO, // allow N=1 for this single-intent test
   };
 
   // Trader + intent (mirrors the OP_RETURN-binding scaffold above).
@@ -1208,7 +1236,7 @@ console.log('\nT_SWAP_BATCH validator — arbiter-pinned pool adversarial covera
     expiryHeight: 999999, intentSig: new Uint8Array(64),
   };
   const intentMsg = buildIntentMsg({
-    poolId: POOL_ID, direction: 0, inputUtxos,
+    poolId: POOL_ID_SOLO, direction: 0, inputUtxos,
     cInSecp: intent.cInSecp, cInBjj: intent.cInBjj, xcurveSigma: intent.inXcurveSigma,
     receiveScriptPubKey: recvSpk,
     minOut: 0n, tipAmount: 0n, tipAsset: 0,
@@ -1220,7 +1248,7 @@ console.log('\nT_SWAP_BATCH validator — arbiter-pinned pool adversarial covera
   const currentHeight = 800000;
   const qualifyingIntentIds = [intentId];
   const qualifyingSetHash = computeQualifyingSetHash({
-    poolId: POOL_ID, height: currentHeight, intentIds: qualifyingIntentIds,
+    poolId: POOL_ID_SOLO, height: currentHeight, intentIds: qualifyingIntentIds,
   });
 
   // Sign the qualifying_set_hash with arbiters 0 and 2 (skip index 1 to
@@ -1368,7 +1396,7 @@ console.log('\nT_SWAP_BATCH validator — arbiter-pinned pool adversarial covera
       return 0;
     });
     const newQsetHash = computeQualifyingSetHash({
-      poolId: POOL_ID, height: currentHeight, intentIds: sorted,
+      poolId: POOL_ID_SOLO, height: currentHeight, intentIds: sorted,
     });
     // Re-sign the new qset hash.
     const newSigs = new Uint8Array(64 * 2);

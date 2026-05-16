@@ -156,9 +156,13 @@ export function previewLaunch({
   }
 
   // -- pool_id / lp_asset_id (require both asset_ids; predict if not known) --
+  // pool_id includes fee_bps + capability_flags per AMM.md §"Pool state".
+  // amm-launch creates a default-capabilities pool (flags=0); founders who
+  // want POOL_CAP_SOLO_INTENT_ALLOWED must use the lower-level path.
+  const poolCapabilityFlagsAtLaunch = 0;
   let poolId = null, lpAssetId = null;
   if (newAssetIdPredicted instanceof Uint8Array && newAssetIdPredicted.length === 32) {
-    poolId = derivePoolId(cbtcAssetId, newAssetIdPredicted);
+    poolId = derivePoolId(cbtcAssetId, newAssetIdPredicted, feeBps, poolCapabilityFlagsAtLaunch);
     lpAssetId = deriveLpAssetId(poolId);
   } else {
     warnings.push(

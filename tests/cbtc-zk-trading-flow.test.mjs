@@ -223,12 +223,14 @@ ok('trader\'s rotate-msg signature verifies (binds the rotation\'s price + new n
     return dapp.verifySchnorr(hexToBytes(decRot.old_owner_sig), msg, ownerXOnly);
   })());
 
-// The new K_btc transition: recipient_commit_new − denom·H must equal
-// new_r_leaf · G. Anyone observing the chain can re-derive this; the LP gains
-// a slot whose spending key is computable only from (lpSecret, lpNullPre).
-const reKbtcNew = dapp.deriveSlotKbtc(rotateOut.newRecipientCommit, DENOMINATION.toString());
+// The new K_btc transition (§5.24.0 two-key): K_btc is computed as r_btc · G
+// where r_btc is independently derived from (newSecret, newNullPre) via the
+// "btc" domain tag — NOT from recipient_commit. The new slot's scriptpubkey
+// uses this explicit K_btc.
+const newRBtcBig = BigInt('0x' + bytesToHex(hexToBytes(rotateOut.newSlotRecord.rBtcHex))) % dapp.SECP_N;
+const reKbtcNew = dapp.G.multiply(newRBtcBig === 0n ? 1n : newRBtcBig);
 const reSpkNew  = dapp.slotScriptPubKeyFromKbtc(reKbtcNew);
-ok('new slot K_btc re-derives correctly from envelope',
+ok('new slot K_btc re-derives correctly from envelope (§5.24.0)',
   bytesToHex(reSpkNew) === bytesToHex(rotateOut.newSlotScriptPubKey));
 ok('new slot K_btc differs from old slot K_btc (spending key actually rotated)',
   bytesToHex(reSpkNew) !== bytesToHex(traderNote.slotScriptPubKey));

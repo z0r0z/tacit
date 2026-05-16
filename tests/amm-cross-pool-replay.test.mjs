@@ -68,9 +68,12 @@ function buildTwoPools() {
   }
   const [A1, B1] = order(a1, b1);
   const [A2, B2] = order(a2, b2);
+  // Both fixtures use fee_bps=30, capability_flags=0 — the cross-pool
+  // replay defense doesn't depend on fee/flag values, only on (A, B) differing.
+  const FEE = 30, FLAGS = 0;
   return {
-    poolA: { assetA: A1, assetB: B1, pool_id: derivePoolId(A1, B1) },
-    poolB: { assetA: A2, assetB: B2, pool_id: derivePoolId(A2, B2) },
+    poolA: { assetA: A1, assetB: B1, pool_id: derivePoolId(A1, B1, FEE, FLAGS) },
+    poolB: { assetA: A2, assetB: B2, pool_id: derivePoolId(A2, B2, FEE, FLAGS) },
   };
 }
 

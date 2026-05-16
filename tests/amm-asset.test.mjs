@@ -73,28 +73,75 @@ test('rejects wrong-length asset_ids', () => {
 console.log('\npool_id derivation');
 const aidA = deriveAssetIdFromReveal(SAMPLE_TXID_HEX);
 const aidB = deriveAssetIdFromReveal('1111111111111111111111111111111111111111111111111111111111111111');
+const FEE_30 = 30, FLAGS_0 = 0;
 test('derivePoolId is canonical (order-independent)', () => {
-  return eqBytes(derivePoolId(aidA, aidB), derivePoolId(aidB, aidA));
+  return eqBytes(derivePoolId(aidA, aidB, FEE_30, FLAGS_0), derivePoolId(aidB, aidA, FEE_30, FLAGS_0));
 });
 test('different pairs give different pool_ids', () => {
   const aidC = deriveAssetIdFromReveal('2222222222222222222222222222222222222222222222222222222222222222');
-  return !eqBytes(derivePoolId(aidA, aidB), derivePoolId(aidA, aidC));
+  return !eqBytes(derivePoolId(aidA, aidB, FEE_30, FLAGS_0), derivePoolId(aidA, aidC, FEE_30, FLAGS_0));
 });
-test('pool_id has 32 bytes', () => derivePoolId(aidA, aidB).length === 32);
-test('pool_id matches SHA256(domain || low || high)', () => {
+test('different fee tiers give different pool_ids (V3/V4 parity)', () => {
+  return !eqBytes(derivePoolId(aidA, aidB, 5, FLAGS_0), derivePoolId(aidA, aidB, 30, FLAGS_0));
+});
+test('different capability_flags give different pool_ids', () => {
+  return !eqBytes(derivePoolId(aidA, aidB, FEE_30, 0x00), derivePoolId(aidA, aidB, FEE_30, 0x02));
+});
+test('fee_bps + capability_flags together discriminate', () => {
+  // Sanity: a four-corner matrix of (fee_bps, flags) all yields distinct pool_ids.
+  const ids = [
+    derivePoolId(aidA, aidB, 5,  0x00),
+    derivePoolId(aidA, aidB, 5,  0x02),
+    derivePoolId(aidA, aidB, 30, 0x00),
+    derivePoolId(aidA, aidB, 30, 0x02),
+  ];
+  for (let i = 0; i < ids.length; i++)
+    for (let j = i + 1; j < ids.length; j++)
+      if (eqBytes(ids[i], ids[j])) return false;
+  return true;
+});
+test('pool_id has 32 bytes', () => derivePoolId(aidA, aidB, FEE_30, FLAGS_0).length === 32);
+test('pool_id matches SHA256(domain || low || high || fee_bps_LE || flags)', () => {
   const [low, high] = canonicalAssetPair(aidA, aidB);
   const domain = new TextEncoder().encode('tacit-amm-pool-v1');
-  const expected = sha256(concatBytes(domain, low, high));
-  return eqBytes(derivePoolId(aidA, aidB), expected);
+  const feeBpsLE = new Uint8Array(2);
+  new DataView(feeBpsLE.buffer).setUint16(0, FEE_30, true);
+  const flagsByte = new Uint8Array([FLAGS_0]);
+  const expected = sha256(concatBytes(domain, low, high, feeBpsLE, flagsByte));
+  return eqBytes(derivePoolId(aidA, aidB, FEE_30, FLAGS_0), expected);
+});
+test('rejects fee_bps > 1000', () => {
+  try { derivePoolId(aidA, aidB, 1001, 0); return false; }
+  catch (e) { return /fee_bps/.test(e.message); }
+});
+test('rejects negative fee_bps', () => {
+  try { derivePoolId(aidA, aidB, -1, 0); return false; }
+  catch (e) { return /fee_bps/.test(e.message); }
+});
+test('rejects capability_flags > 255', () => {
+  try { derivePoolId(aidA, aidB, 30, 256); return false; }
+  catch (e) { return /capability_flags/.test(e.message); }
+});
+test('rejects non-integer fee_bps', () => {
+  try { derivePoolId(aidA, aidB, 30.5, 0); return false; }
+  catch (e) { return /fee_bps/.test(e.message); }
 });
 
 console.log('\nlp_asset_id derivation');
-const poolId = derivePoolId(aidA, aidB);
+const poolId = derivePoolId(aidA, aidB, FEE_30, FLAGS_0);
 test('deriveLpAssetId is deterministic', () => eqBytes(deriveLpAssetId(poolId), deriveLpAssetId(poolId)));
 test('different pool_ids give different lp_asset_ids', () => {
   const aidC = deriveAssetIdFromReveal('2222222222222222222222222222222222222222222222222222222222222222');
-  const poolId2 = derivePoolId(aidA, aidC);
+  const poolId2 = derivePoolId(aidA, aidC, FEE_30, FLAGS_0);
   return !eqBytes(deriveLpAssetId(poolId), deriveLpAssetId(poolId2));
+});
+test('LP shares of different fee tiers are different tacit assets', () => {
+  // Direct consequence of fee_bps being in pool_id: lp_asset_id at fee=5 bps
+  // is a different tacit asset than lp_asset_id at fee=30 bps for the same pair.
+  // V3/V4 fee-tier parity at the asset-identity layer.
+  const lpFee5  = deriveLpAssetId(derivePoolId(aidA, aidB, 5,  FLAGS_0));
+  const lpFee30 = deriveLpAssetId(derivePoolId(aidA, aidB, 30, FLAGS_0));
+  return !eqBytes(lpFee5, lpFee30);
 });
 test('lp_asset_id matches SHA256("tacit-amm-lp-v1" || pool_id)', () => {
   const domain = new TextEncoder().encode('tacit-amm-lp-v1');
@@ -127,7 +174,11 @@ test('LP origin path resolves', () => {
   const lpId = deriveLpAssetId(poolId);
   const lookups = {
     getCetchOrPetch: () => null,
-    getPoolInit: () => ({ pool_id: bytesToHex(poolId), asset_A: bytesToHex(aidA), asset_B: bytesToHex(aidB) }),
+    getPoolInit: () => ({
+      pool_id: bytesToHex(poolId),
+      asset_A: bytesToHex(aidA), asset_B: bytesToHex(aidB),
+      fee_bps: FEE_30, capability_flags: FLAGS_0,
+    }),
   };
   const r = resolveAssetIdOrigin(lpId, lookups);
   return r && r.origin === 'LP' && r.pool_id === bytesToHex(poolId);
@@ -147,7 +198,11 @@ test('forged LP (wrong pool_id) rejected', () => {
   const wrongPool = new Uint8Array(32).fill(0xaa);
   const lookups = {
     getCetchOrPetch: () => null,
-    getPoolInit: () => ({ pool_id: bytesToHex(wrongPool), asset_A: bytesToHex(aidA), asset_B: bytesToHex(aidB) }),
+    getPoolInit: () => ({
+      pool_id: bytesToHex(wrongPool),
+      asset_A: bytesToHex(aidA), asset_B: bytesToHex(aidB),
+      fee_bps: FEE_30, capability_flags: FLAGS_0,
+    }),
   };
   const r = resolveAssetIdOrigin(lpId, lookups);
   return r === null;
@@ -158,17 +213,18 @@ test('unresolved (no lookup hit) returns null', () => {
 });
 
 console.log('\nCross-origin collision resistance (statistical)');
-test('LP and CETCH preimages have different lengths', () => {
+test('CETCH, LP, and pool_id preimages have distinct lengths', () => {
   // CETCH preimage: txid_BE(32) || vout_LE(4) = 36 B
   // LP preimage:    "tacit-amm-lp-v1"(15) || pool_id(32) = 47 B
-  // ⇒ collision reduces to SHA256 preimage-finding under different domains.
-  // We can't test "no collision" in a unit test, but we can sanity-check the
-  // preimages are structurally distinguishable.
+  // pool_id preimage: "tacit-amm-pool-v1"(17) || A(32) || B(32) || fee_LE(2) || flags(1) = 84 B
+  // All three sizes are disjoint → cross-origin collisions reduce to
+  // SHA256 preimage-finding under distinct domain separations.
   const lpDomain = new TextEncoder().encode('tacit-amm-lp-v1');
-  return lpDomain.length === 15;
+  const poolDomain = new TextEncoder().encode('tacit-amm-pool-v1');
+  return lpDomain.length === 15 && poolDomain.length === 17;
 });
 test('pool_id and lp_asset_id are independent (no accidental aliasing)', () => {
-  const poolId2 = derivePoolId(aidA, aidB);
+  const poolId2 = derivePoolId(aidA, aidB, FEE_30, FLAGS_0);
   const lpId = deriveLpAssetId(poolId2);
   return !eqBytes(poolId2, lpId);
 });

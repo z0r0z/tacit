@@ -427,10 +427,22 @@ function validate_swap_batch(env: Envelope, tx: BitcoinTx, state: IndexerState)
     let per_receipt     = fields.per_receipt_blocks # array of N receipts
     let groth16_proof   = fields.proof
 
-    # Step 2: Pool exists + matches asset pair
-    let pool_id = sha256("tacit-amm-pool-v1" || asset_A || asset_B)
-    let pool = state.pools.get(pool_id)
+    # Step 2: Pool exists + matches asset pair, fee tier, and capability flags
+    # pool_id discriminators per SPEC §4.1 / AMM.md §"Pool state":
+    #   (asset_A, asset_B, fee_bps_LE, capability_flags) — V3/V4 fee-tier parity.
+    # For non-POOL_INIT envelopes the fee_bps + capability_flags come from the
+    # registered pool record (the envelope doesn't carry them — they're pinned
+    # at POOL_INIT and immutable). Recomputing pool_id from pool fields here
+    # ensures the envelope's (asset_A, asset_B) genuinely belong to the pool.
+    let pool = state.pools.get_by_pool_id(pool_id_from_envelope)
     if pool is null: return reject(UNKNOWN_POOL)
+    let recomputed_pool_id = sha256(
+      "tacit-amm-pool-v1"
+      || asset_A || asset_B
+      || u16_le(pool.fee_bps)
+      || u8(pool.capability_flags)
+    )
+    if recomputed_pool_id != pool_id_from_envelope: return reject(POOL_ID_MISMATCH)
     if pool.fee_bps != fee_bps: return reject(MALFORMED_ENVELOPE)
 
     # Step 3: Within-block ordering rule (per AMM.md §"Indexer determinism rules")

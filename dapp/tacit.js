@@ -6189,7 +6189,7 @@ function decodeTSlotBurnPayload(payload) {
 function encodeTSlotRotatePayload({
   networkTag, assetId, denomination,
   oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof,
-  newRecipientCommit, newLeafHash,
+  newRecipientCommit, newLeafHash, newKBtcXOnly,
   paymentAssetId, paymentAmount,
   oldOwnerPubkey, oldOwnerSig,
 }) {
@@ -6203,6 +6203,9 @@ function encodeTSlotRotatePayload({
   if (oldProof.length === 0 || oldProof.length > 0xffff) throw new Error('old_proof len 1..65535');
   if (newRecipientCommit.length !== 33) throw new Error('new_recipient_commit 33 bytes');
   if (newLeafHash.length !== 32) throw new Error('new_leaf_hash 32 bytes');
+  if (!(newKBtcXOnly instanceof Uint8Array) || newKBtcXOnly.length !== 32) {
+    throw new Error('new_k_btc_xonly must be 32 bytes (§5.24.0 two-key — explicit BTC spending key for new slot)');
+  }
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes (zeros if no payment)');
   if (oldOwnerPubkey.length !== 33) throw new Error('old_owner_pubkey 33 bytes');
   if (oldOwnerSig.length !== 64) throw new Error('old_owner_sig 64 bytes');
@@ -6229,7 +6232,7 @@ function encodeTSlotRotatePayload({
     assetId, denomLE,
     oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash,
     oldProofLen, oldProof,
-    newRecipientCommit, newLeafHash,
+    newRecipientCommit, newLeafHash, newKBtcXOnly,
     paymentAssetId, payLE,
     oldOwnerPubkey, oldOwnerSig,
   );
@@ -6260,7 +6263,10 @@ function decodeTSlotRotatePayload(payload) {
   // SPEC-CBTC-ZK-FUNGIBILITY §5.26: payload MAY carry an optional encrypted-
   // note tail: 1-byte `has_note` (0x00 or 0x01) + 122-byte note if 0x01.
   // Accept all three lengths; reject any other.
-  const hostEnd = p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64;
+  // Wire layout (§5.24.0 two-key): host payload now includes a 32-byte
+  // new_k_btc_xonly field right after new_leaf_hash. hostEnd factors in
+  // that extra 32.
+  const hostEnd = p + oldProofLen + 33 + 32 + 32 + 32 + 8 + 33 + 64;
   let encryptedNote = null;
   if (payload.length === hostEnd) {
     // canonical, no tail
@@ -6277,6 +6283,7 @@ function decodeTSlotRotatePayload(payload) {
   const newRecipientCommit = payload.slice(p, p + 33); p += 33;
   try { bytesToPoint(newRecipientCommit); } catch { return null; }
   const newLeafHash = payload.slice(p, p + 32); p += 32;
+  const newKBtcXOnly = payload.slice(p, p + 32); p += 32;
   const paymentAssetId = payload.slice(p, p + 32); p += 32;
   const payView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const paymentAmount = (BigInt(payView.getUint32(4, true)) << 32n) | BigInt(payView.getUint32(0, true));
@@ -6288,7 +6295,7 @@ function decodeTSlotRotatePayload(payload) {
     kind: 'slot_rotate',
     networkTag, assetId, denomination,
     oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof,
-    newRecipientCommit, newLeafHash,
+    newRecipientCommit, newLeafHash, newKBtcXOnly,
     paymentAssetId, paymentAmount,
     oldOwnerPubkey, oldOwnerSig,
     encryptedNote,
@@ -6644,7 +6651,7 @@ async function buildSlotRotateEnvelope({
   const payload = encodeTSlotRotatePayload({
     networkTag, assetId, denomination,
     oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof,
-    newRecipientCommit, newLeafHash: newLeafCommitment,
+    newRecipientCommit, newLeafHash: newLeafCommitment, newKBtcXOnly,
     paymentAssetId, paymentAmount,
     oldOwnerPubkey, oldOwnerSig,
   });
@@ -40128,7 +40135,18 @@ const RECENT_LOCAL_CANCEL_TTL_MS = 60 * 1000;
 // disappearance diffing. Rebuilt every tick after fetchMarketDataDeduped.
 let _myListingsSnapshot = null;
 
-function _pendingAddSettlement({ tradeId, kind, aid, ticker, decimals, amountBase, satsTotal }) {
+// Optional fields used by the auto-refresh tick to reconcile against the
+// worker cache and Bitcoin chain after firing:
+//   listingKey  — _myListingKey(l) for the listing this entry represents
+//                 (used to detect "listing reappeared, retract the row")
+//   bidId       — bid_id for buyer-side entries (mirror of listingKey)
+//   utxoTxid    — txid of the seller's asset UTXO (opening / preauth /
+//   utxoVout     intent listings). Used by the chain re-check pass: if
+//                 the UTXO stays unspent for ≥PENDING_RETRACT_AFTER_MS,
+//                 we know no settlement broadcast happened and we retract.
+//   verifyState — 'pending' | 'verified' | (cleared on retract). 'pending'
+//                 = haven't yet seen the UTXO go spent on chain.
+function _pendingAddSettlement({ tradeId, kind, aid, ticker, decimals, amountBase, satsTotal, listingKey, bidId, utxoTxid, utxoVout }) {
   if (!aid || (kind !== 'buy' && kind !== 'sell')) return;
   const id = tradeId || `${kind}-${aid}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
   _pendingSettlements.set(id, {
@@ -40139,8 +40157,17 @@ function _pendingAddSettlement({ tradeId, kind, aid, ticker, decimals, amountBas
     amountBase: typeof amountBase === 'bigint' ? amountBase : (() => { try { return BigInt(amountBase || 0); } catch { return 0n; } })(),
     satsTotal: Number(satsTotal || 0),
     ts: Date.now(),
+    listingKey: listingKey || null,
+    bidId: bidId || null,
+    utxoTxid: (utxoTxid && /^[0-9a-f]{64}$/i.test(utxoTxid)) ? String(utxoTxid).toLowerCase() : null,
+    utxoVout: Number.isInteger(utxoVout) ? utxoVout : (utxoVout != null ? (utxoVout | 0) : null),
+    verifyState: 'pending',
   });
   _renderPendingSettlementsStrip();
+  // Schedule a periodic chain re-check the first time we add an entry
+  // that carries a UTXO reference. Idempotent — _ensurePendingVerifyTimer
+  // no-ops if already running.
+  try { _ensurePendingVerifyTimer(); } catch {}
 }
 function _pendingClearStale() {
   const now = Date.now();
@@ -40153,6 +40180,194 @@ function _pendingClearStale() {
   }
   if (changed) _renderPendingSettlementsStrip();
 }
+// Vanish-confirmation candidates. The previous diff fired "your listing
+// sold ✓" as soon as a listing disappeared from one auto-refresh tick —
+// which mis-fires on transient worker hiccups (KV miss, partial response,
+// mempool.space rate-limit causing a flaky liveness prune). Now we hold
+// every disappearance as a *candidate* for one tick. Only when it's
+// still absent on the NEXT tick AND its underlying asset UTXO checks as
+// spent on chain do we fire. Cuts the false-positive rate to near zero
+// without delaying real fills past one extra ~5s tick.
+const _vanishCandidateListings = new Map(); // key -> { snap, firstAbsentTs }
+const _vanishCandidateBids     = new Map(); // bidId -> { snap, firstAbsentTs }
+const VANISH_CONFIRM_MIN_MS    = 4000;      // tick interval is 5s; one extra tick suffices
+const VANISH_CANDIDATE_TTL_MS  = 5 * 60 * 1000;
+// Chain re-verify cadence for entries in _pendingSettlements that carry
+// a utxoTxid. Cheap (cached, batched outspend lookups) so polling at 30s
+// is fine even with several pending rows.
+const PENDING_CHAIN_VERIFY_INTERVAL_MS = 30_000;
+// If a sell entry's UTXO is still unspent this long after firing, the
+// supposed settlement never happened — retract the row. Chosen well
+// inside the 10-min first-confirmation window so we catch glitches
+// before the user gives up waiting, but well above mempool propagation
+// time so a real broadcast has had time to be seen.
+const PENDING_RETRACT_AFTER_MS = 90_000;
+let _pendingVerifyTimer = null;
+let _pendingVerifyInflight = false;
+
+function _vanishCandidatesClearStale() {
+  const now = Date.now();
+  for (const [k, v] of _vanishCandidateListings) {
+    if (now - v.firstAbsentTs > VANISH_CANDIDATE_TTL_MS) _vanishCandidateListings.delete(k);
+  }
+  for (const [k, v] of _vanishCandidateBids) {
+    if (now - v.firstAbsentTs > VANISH_CANDIDATE_TTL_MS) _vanishCandidateBids.delete(k);
+  }
+}
+
+// Probe the seller's asset UTXO via cached/batched mempool.space. Returns
+// true if confirmed spent, false if confirmed unspent, null if we can't
+// tell (network error, unknown txid). Callers must treat null as "no
+// answer" — never as either branch — otherwise a flaky API turns into
+// either a false fire or a false retract.
+async function _utxoSpentProbe(txid, vout) {
+  if (!txid || !/^[0-9a-f]{64}$/i.test(txid)) return null;
+  if (!Number.isInteger(vout) || vout < 0) return null;
+  try {
+    const res = await getOutspend(txid, vout);
+    if (!res || typeof res.spent !== 'boolean') return null;
+    return res.spent === true;
+  } catch { return null; }
+}
+
+// Reconcile pending entries against the freshly-fetched worker cache.
+// If a sell entry's listingKey is back among my live listings, or a buy
+// entry's bidId is back among my live bids, the original "filled" signal
+// was a transient false-positive — drop the row and toast a correction
+// so the user knows funds didn't move.
+function _pendingReconcileAgainstLiveCache() {
+  if (!_pendingSettlements.size) return false;
+  const myPubHex = (typeof wallet !== 'undefined' && wallet?.pub) ? bytesToHex(wallet.pub) : '';
+  if (!myPubHex) return false;
+  const liveListings = _marketCache?.listings ? _snapshotMyListings(myPubHex) : null;
+  const liveBidIds = new Set();
+  if (typeof _bidsCache !== 'undefined' && _bidsCache) {
+    for (const [, entry] of _bidsCache.entries()) {
+      const bids = entry?.value;
+      if (!Array.isArray(bids)) continue;
+      for (const b of bids) {
+        if (b.buyer_pubkey === myPubHex && b.bid_id) liveBidIds.add(b.bid_id);
+      }
+    }
+  }
+  let retracted = 0;
+  const retractedTickers = [];
+  for (const [id, e] of _pendingSettlements) {
+    let backLive = false;
+    if (e.kind === 'sell' && e.listingKey && liveListings && liveListings.has(e.listingKey)) backLive = true;
+    else if (e.kind === 'buy' && e.bidId && liveBidIds.has(e.bidId)) backLive = true;
+    if (backLive) {
+      _pendingSettlements.delete(id);
+      retracted++;
+      retractedTickers.push(e.ticker);
+    }
+  }
+  if (retracted > 0) {
+    try {
+      const tickList = [...new Set(retractedTickers)].slice(0, 3).join(', ');
+      toast(`Heads up · earlier "${retracted > 1 ? 'sold/filled' : 'sold'}" toast for ${escapeHtml(tickList)} was a transient worker glitch. Your listing is still live — no funds moved.`, '', 10000);
+    } catch {}
+    _renderPendingSettlementsStrip();
+    return true;
+  }
+  return false;
+}
+
+// Chain-side reconciliation. For each pending entry that carries a
+// utxoTxid, probe the outspend:
+//   spent=true  → mark verifyState='verified' (real settlement broadcast)
+//   spent=false → if entry is older than PENDING_RETRACT_AFTER_MS, retract
+//                 (toast and notification were wrong; no tx consumed the
+//                 seller's lot)
+//   null        → leave alone; try again next interval
+async function _pendingReconcileAgainstChain() {
+  if (!_pendingSettlements.size) return;
+  if (_pendingVerifyInflight) return;
+  _pendingVerifyInflight = true;
+  try {
+    const entries = [..._pendingSettlements.entries()].filter(([, e]) => e.utxoTxid && Number.isInteger(e.utxoVout));
+    if (!entries.length) return;
+    const results = await Promise.all(entries.map(([, e]) => _utxoSpentProbe(e.utxoTxid, e.utxoVout)));
+    const now = Date.now();
+    let changed = false;
+    const retractedTickers = [];
+    for (let i = 0; i < entries.length; i++) {
+      const [id, e] = entries[i];
+      const spent = results[i];
+      if (spent === true) {
+        if (e.verifyState !== 'verified') {
+          _pendingSettlements.set(id, { ...e, verifyState: 'verified' });
+          changed = true;
+        }
+      } else if (spent === false) {
+        if (now - e.ts > PENDING_RETRACT_AFTER_MS) {
+          _pendingSettlements.delete(id);
+          retractedTickers.push(e.ticker);
+          changed = true;
+        }
+      }
+    }
+    if (retractedTickers.length > 0) {
+      try {
+        const tickList = [...new Set(retractedTickers)].slice(0, 3).join(', ');
+        toast(`Heads up · "${tickList}" settlement didn't actually broadcast on Bitcoin — the earlier fill toast was a worker glitch. Your asset and sats are unchanged.`, '', 10000);
+      } catch {}
+    }
+    if (changed) _renderPendingSettlementsStrip();
+  } finally {
+    _pendingVerifyInflight = false;
+  }
+}
+
+function _ensurePendingVerifyTimer() {
+  if (_pendingVerifyTimer) return;
+  const tick = async () => {
+    _pendingVerifyTimer = null;
+    if (!_pendingSettlements.size) return; // stop polling when nothing pending
+    try { await _pendingReconcileAgainstChain(); } catch (e) { console.warn('[market] pending chain reconcile failed', e?.message); }
+    if (_pendingSettlements.size) {
+      _pendingVerifyTimer = setTimeout(tick, PENDING_CHAIN_VERIFY_INTERVAL_MS);
+    }
+  };
+  // Fire one near-immediate verify so the user sees the chip flip from
+  // "verifying…" to "✓ on-chain" within a couple of seconds when the
+  // settlement really did broadcast.
+  _pendingVerifyTimer = setTimeout(tick, 2000);
+}
+
+// Manual "re-check now" entry point — wired to a link on the strip so
+// the user can force a worker+chain re-verify instead of waiting on the
+// next auto-refresh / verify tick. Fetches fresh market data, runs the
+// cache-side reconciliation, then runs the chain-side one.
+async function _pendingManualRecheck(triggerBtn) {
+  let restored = '';
+  if (triggerBtn) {
+    restored = triggerBtn.textContent;
+    triggerBtn.textContent = 'checking…';
+    triggerBtn.disabled = true;
+  }
+  try {
+    try { invalidateMarketCache(); await fetchMarketDataDeduped(); } catch {}
+    const cacheRetracted = _pendingReconcileAgainstLiveCache();
+    await _pendingReconcileAgainstChain();
+    if (!cacheRetracted && _pendingSettlements.size > 0) {
+      // No retraction and nothing flipped → either verified or still
+      // probing. Surface a low-key confirmation toast either way so the
+      // re-check feels responsive.
+      const anyVerified = [..._pendingSettlements.values()].some(e => e.verifyState === 'verified');
+      try {
+        if (anyVerified) toast('Settlement confirmed on Bitcoin · waiting for first confirmation.', 'success', 6000);
+        else toast('Still verifying — no on-chain spend yet. Try again in ~30s.', '', 6000);
+      } catch {}
+    }
+  } finally {
+    if (triggerBtn) {
+      triggerBtn.textContent = restored || 'Re-check';
+      triggerBtn.disabled = false;
+    }
+  }
+}
+
 // Called after scanHoldings completes successfully. Any pending older
 // than the grace window has had time to land in h.utxos / h.unverified
 // (or in the seller's case, drop off the holdings list), so the actual
@@ -40180,7 +40395,10 @@ function _renderPendingSettlementsStrip() {
   }
   // Aggregate by (kind, aid) so multiple chunks of the same trade
   // collapse to one row. The strip is a status surface, not a ledger;
-  // per-tx granularity would just add visual noise.
+  // per-tx granularity would just add visual noise. Per-group verify
+  // state rolls up to: 'verified' iff every sub-entry is verified;
+  // 'pending' iff at least one sub-entry is still pending; 'unbound' if
+  // no sub-entry has a checkable UTXO (e.g. range listings).
   const grouped = new Map();
   for (const e of entries) {
     const key = `${e.kind}|${e.aid}`;
@@ -40189,10 +40407,16 @@ function _renderPendingSettlementsStrip() {
       existing.amountBase += e.amountBase;
       existing.satsTotal += e.satsTotal;
       existing.count += 1;
+      if (e.verifyState === 'pending') existing.anyPending = true;
+      if (e.verifyState === 'verified') existing.anyVerified = true;
+      if (e.utxoTxid) existing.anyBound = true;
     } else {
       grouped.set(key, {
         kind: e.kind, aid: e.aid, ticker: e.ticker, decimals: e.decimals,
         amountBase: e.amountBase, satsTotal: e.satsTotal, count: 1,
+        anyPending: e.verifyState === 'pending',
+        anyVerified: e.verifyState === 'verified',
+        anyBound: !!e.utxoTxid,
       });
     }
   }
@@ -40201,9 +40425,23 @@ function _renderPendingSettlementsStrip() {
     const verb = g.kind === 'buy' ? 'buying' : 'selling';
     const amtStr = fmtAssetAmount(g.amountBase, g.decimals);
     const satsLine = g.satsTotal > 0 ? ` · ${g.satsTotal.toLocaleString('en-US')} sats` : '';
+    // Verification chip — small, monochrome, no panic colors. The
+    // explicit "✓ on-chain" cue is the antidote to the original bug:
+    // until this flips, the user knows we haven't actually seen the
+    // settlement spend in the mempool yet.
+    let verifyChip = '';
+    if (g.anyBound) {
+      const allVerified = g.anyVerified && !g.anyPending;
+      if (allVerified) {
+        verifyChip = `<span class="muted" title="Seller's asset UTXO has been spent on Bitcoin — settlement tx broadcast and confirmed by the chain." style="font-size:10px;color:#0a7d3a;">✓ on-chain</span>`;
+      } else {
+        verifyChip = `<span class="muted" title="Looking for the settlement spend on Bitcoin. Will flip to ✓ on-chain once seen, or retract automatically if no spend appears within ~90s." style="font-size:10px;">verifying…</span>`;
+      }
+    }
     return `<span style="display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border:1px solid var(--ink-faint);background:var(--bg-warm);font-size:11px;font-family:var(--mono, monospace);">
       <strong style="color:${g.kind === 'buy' ? '#0a7d3a' : '#a04030'};">${sign}${escapeHtml(amtStr)} ${escapeHtml(g.ticker)}</strong>
       <span class="muted" style="font-size:10px;font-family:inherit;">${verb}${g.count > 1 ? ` · ${g.count} txs` : ''}${satsLine}</span>
+      ${verifyChip}
     </span>`;
   }).join(' ');
   const html = `
@@ -40213,9 +40451,17 @@ function _renderPendingSettlementsStrip() {
         <strong>Settling</strong>
       </span>
       ${itemsHtml}
-      <span class="muted" style="font-size:10px;margin-left:auto;">~10 min on Bitcoin · balances refresh on the next scan</span>
+      <span style="margin-left:auto;display:inline-flex;align-items:center;gap:10px;">
+        <button type="button" data-act="pending-recheck" title="Force a fresh worker + Bitcoin chain re-verify for everything in this strip. Click if a trade looks stuck or if you suspect a false-positive." style="font-size:10px;padding:3px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);cursor:pointer;font-family:var(--mono, monospace);">Re-check</button>
+        <span class="muted" style="font-size:10px;">~10 min on Bitcoin · balances refresh on the next scan</span>
+      </span>
     </div>`;
-  hosts.forEach(h => { h.style.display = 'block'; h.innerHTML = html; });
+  hosts.forEach(h => {
+    h.style.display = 'block';
+    h.innerHTML = html;
+    const btn = h.querySelector('[data-act="pending-recheck"]');
+    if (btn) btn.onclick = () => _pendingManualRecheck(btn);
+  });
 }
 function _markLocalListingCancel(listingKey) {
   if (listingKey) _recentLocalListingCancels.set(listingKey, Date.now());
@@ -40241,6 +40487,16 @@ function _snapshotMyListings(myPubHex) {
     if (Number(l.expiry || 0) > 0 && Number(l.expiry || 0) <= nowSec) continue;
     const key = _myListingKey(l);
     if (!key) continue;
+    // Asset UTXO underlying this listing. For opening / preauth / intent
+    // we can spot-check it on chain via getOutspend before firing the
+    // "your listing sold" toast — if it's still unspent, settlement is
+    // impossible (no tx consumed the seller's asset lot) and the diff is
+    // a worker glitch. Range listings have no single bound UTXO; falls
+    // back to the 2-tick gate alone.
+    let utxoTxid = null, utxoVout = null;
+    if (l.kind === 'opening') { utxoTxid = l.txid || null; utxoVout = Number.isInteger(l.vout) ? l.vout : (l.vout != null ? (l.vout | 0) : null); }
+    else if (l.kind === 'preauth') { utxoTxid = l.asset_opening?.txid || null; utxoVout = Number.isInteger(l.asset_opening?.vout) ? l.asset_opening.vout : (l.asset_opening?.vout != null ? (l.asset_opening.vout | 0) : null); }
+    else if (l.kind === 'intent') { utxoTxid = l.asset_utxo?.txid || null; utxoVout = Number.isInteger(l.asset_utxo?.vout) ? l.asset_utxo.vout : (l.asset_utxo?.vout != null ? (l.asset_utxo.vout | 0) : null); }
     out.set(key, {
       aid: l._asset?.asset_id || l.asset_id || '',
       ticker: l._asset?.ticker || '?',
@@ -40248,6 +40504,8 @@ function _snapshotMyListings(myPubHex) {
       kind: l.kind,
       expiry: Number(l.expiry || 0),
       priceSats: Number(l.min_price_sats || l.price_sats || 0),
+      utxoTxid: (utxoTxid && /^[0-9a-f]{64}$/i.test(utxoTxid)) ? String(utxoTxid).toLowerCase() : null,
+      utxoVout,
       amount: (() => {
         try {
           if (l.kind === 'preauth') return BigInt(l.asset_opening?.amount || '0');
@@ -40410,6 +40668,10 @@ function _startMarketAutoRefresh() {
       const beforeMine = myPubHex ? (_myListingsSnapshot || _snapshotMyListings(myPubHex)) : null;
       await fetchMarketDataDeduped();
       try { _updateMarketCellsInPlace(); } catch (e) { console.warn('[market] cell-update failed', e?.message); }
+      // Cache-side reconciliation: any pending entry whose listing/bid
+      // has reappeared in the freshly-fetched cache was a false-positive
+      // fill — retract it before the new diff possibly re-flags it.
+      try { _pendingReconcileAgainstLiveCache(); } catch (e) { console.warn('[market] pending cache reconcile failed', e?.message); }
       // Asset-detail reactivity: if the user is on a per-asset page AND
       // either the asks or bids changed structurally since the last
       // render, re-apply filters so the orderbook reflects new entries,
@@ -40443,26 +40705,44 @@ function _startMarketAutoRefresh() {
           try { applyMarketFilters(); } catch (e) { console.warn('[market] asset re-render failed', e?.message); }
         }
       }
-      // Seller-side fill notification: any of my listings that vanished
-      // between snapshots, and weren't naturally expired or just locally
-      // cancelled, are by elimination filled. Toast + add a pending-sell
-      // row so the seller sees "you sold X TAC" immediately instead of
-      // waiting for the next holdings scan to drop the UTXO.
+      // Seller-side fill notification. A listing vanishing from one tick
+      // used to fire "your listing sold ✓" immediately — but the worker
+      // occasionally drops a still-live listing for one tick (transient
+      // KV miss, partial pagination, flaky mempool.space liveness prune)
+      // and the immediate toast was a false-positive. The flow now is:
+      //
+      //   tick N: listing vanished →   becomes vanish-candidate
+      //   tick N+1: still gone   AND  UTXO confirmed spent on chain  → fire
+      //   tick N+1: reappeared  → silently drop candidate
+      //   tick N+1: still gone  AND  UTXO confirmed unspent          → drop
+      //                                                                (cannot
+      //                                                                 have
+      //                                                                 settled)
+      //   tick N+1: still gone  AND  UTXO check inconclusive (null)  → fire
+      //                                                                (best
+      //                                                                 effort
+      //                                                                 — chain
+      //                                                                 re-check
+      //                                                                 will
+      //                                                                 retract
+      //                                                                 within
+      //                                                                 ~90s
+      //                                                                 if
+      //                                                                 wrong)
+      //
+      // For range listings (no single bound UTXO) we skip the chain
+      // pre-check and rely on the 2-tick gate alone.
+      _vanishCandidatesClearStale();
       if (myPubHex && beforeMine) {
         const afterMine = _snapshotMyListings(myPubHex);
         const nowSec = Math.floor(Date.now() / 1000);
-        for (const [key, snap] of beforeMine) {
-          if (afterMine.has(key)) continue;
-          if (snap.expiry > 0 && snap.expiry <= nowSec) continue;
-          if (_recentLocalListingCancels.has(key)) continue;
+        const fireListingFill = (key, snap) => {
+          if (_recentLocalListingCancels.has(key)) return;
+          if (snap.expiry > 0 && snap.expiry <= Math.floor(Date.now() / 1000)) return;
           const amtStr = fmtAssetAmount(snap.amount, snap.decimals);
           try {
             toast(`Your ${snap.ticker} listing sold ✓ · ${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin (~10 min for first confirmation)`, 'success', 10000);
           } catch {}
-          // Fire a browser Notification too so a trader with the tab
-          // backgrounded gets the fill ping. Same permission-gated
-          // pattern as the OTC-claim notification at line ~21026 —
-          // silently no-op when permission isn't granted.
           if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
             try {
               new Notification(`tacit · ${snap.ticker} sold`, {
@@ -40475,7 +40755,47 @@ function _startMarketAutoRefresh() {
             tradeId: `sell-${key}-${Date.now()}`,
             kind: 'sell', aid: snap.aid, ticker: snap.ticker,
             decimals: snap.decimals, amountBase: snap.amount, satsTotal: snap.priceSats,
+            listingKey: key,
+            utxoTxid: snap.utxoTxid, utxoVout: snap.utxoVout,
           });
+        };
+        // Step 1: confirm or drop prior-tick candidates against this tick.
+        const candidateConfirms = [];
+        for (const [key, cand] of _vanishCandidateListings) {
+          if (afterMine.has(key)) { _vanishCandidateListings.delete(key); continue; }
+          if (Date.now() - cand.firstAbsentTs < VANISH_CONFIRM_MIN_MS) continue;
+          if (_recentLocalListingCancels.has(key)) { _vanishCandidateListings.delete(key); continue; }
+          if (cand.snap.expiry > 0 && cand.snap.expiry <= nowSec) { _vanishCandidateListings.delete(key); continue; }
+          candidateConfirms.push([key, cand.snap]);
+        }
+        if (candidateConfirms.length > 0) {
+          // Chain pre-check in parallel for any UTXO-bound listings.
+          const probes = await Promise.all(candidateConfirms.map(([, snap]) => (
+            (snap.utxoTxid && Number.isInteger(snap.utxoVout))
+              ? _utxoSpentProbe(snap.utxoTxid, snap.utxoVout)
+              : Promise.resolve(undefined)  // range / unknown → no probe
+          )));
+          for (let i = 0; i < candidateConfirms.length; i++) {
+            const [key, snap] = candidateConfirms[i];
+            const probe = probes[i];
+            _vanishCandidateListings.delete(key);
+            if (probe === false) {
+              // UTXO is verifiably unspent — a settlement could not have
+              // happened. Listing vanished for some other reason
+              // (expired but not yet flushed by worker, worker dropped
+              // the record, etc.); don't toast a false fill.
+              continue;
+            }
+            fireListingFill(key, snap);
+          }
+        }
+        // Step 2: add new candidates discovered this tick.
+        for (const [key, snap] of beforeMine) {
+          if (afterMine.has(key)) continue;
+          if (snap.expiry > 0 && snap.expiry <= nowSec) continue;
+          if (_recentLocalListingCancels.has(key)) continue;
+          if (_vanishCandidateListings.has(key)) continue;
+          _vanishCandidateListings.set(key, { snap, firstAbsentTs: Date.now() });
         }
         _myListingsSnapshot = afterMine;
       } else if (myPubHex) {
@@ -40493,10 +40813,9 @@ function _startMarketAutoRefresh() {
       if (myPubHex && _beforeMyBids) {
         const afterMyBids = _snapshotMyBids(myPubHex);
         const _nowSecBid = Math.floor(Date.now() / 1000);
-        for (const [bidId, snap] of _beforeMyBids) {
-          if (afterMyBids.has(bidId)) continue;
-          if (snap.expiry > 0 && snap.expiry <= _nowSecBid) continue;
-          if (_recentLocalBidCancels.has(bidId)) continue;
+        const fireBidFill = (bidId, snap) => {
+          if (_recentLocalBidCancels.has(bidId)) return;
+          if (snap.expiry > 0 && snap.expiry <= Math.floor(Date.now() / 1000)) return;
           const amtStr = fmtAssetAmount(snap.amount, snap.decimals);
           try {
             toast(`Your ${snap.ticker} bid filled ✓ · received ${amtStr} ${snap.ticker} for ${snap.priceSats.toLocaleString('en-US')} sats · settling on Bitcoin (~10 min for first confirmation)`, 'success', 10000);
@@ -40513,7 +40832,25 @@ function _startMarketAutoRefresh() {
             tradeId: `buy-bid-${bidId}-${Date.now()}`,
             kind: 'buy', aid: snap.aid, ticker: snap.ticker,
             decimals: snap.decimals, amountBase: snap.amount, satsTotal: snap.priceSats,
+            bidId,
           });
+        };
+        // Step 1: confirm or drop prior-tick bid-vanish candidates.
+        for (const [bidId, cand] of _vanishCandidateBids) {
+          if (afterMyBids.has(bidId)) { _vanishCandidateBids.delete(bidId); continue; }
+          if (Date.now() - cand.firstAbsentTs < VANISH_CONFIRM_MIN_MS) continue;
+          if (_recentLocalBidCancels.has(bidId)) { _vanishCandidateBids.delete(bidId); continue; }
+          if (cand.snap.expiry > 0 && cand.snap.expiry <= _nowSecBid) { _vanishCandidateBids.delete(bidId); continue; }
+          fireBidFill(bidId, cand.snap);
+          _vanishCandidateBids.delete(bidId);
+        }
+        // Step 2: add new candidates discovered this tick.
+        for (const [bidId, snap] of _beforeMyBids) {
+          if (afterMyBids.has(bidId)) continue;
+          if (snap.expiry > 0 && snap.expiry <= _nowSecBid) continue;
+          if (_recentLocalBidCancels.has(bidId)) continue;
+          if (_vanishCandidateBids.has(bidId)) continue;
+          _vanishCandidateBids.set(bidId, { snap, firstAbsentTs: Date.now() });
         }
         _myBidsSnapshot = afterMyBids;
       } else if (myPubHex) {

@@ -597,7 +597,7 @@ TODO from settler decryption of trader openings.
     "name": "swap_batch_01_n2_exact_cancel",
     "description": "Two traders match exactly at spot price; pool reserves unchanged.",
     "inputs": {
-        "pool_id":  "TODO_DERIVE_SHA256(tacit-amm-pool-v1 || TAC || cBTC)",
+        "pool_id":  "TODO_DERIVE_SHA256(tacit-amm-pool-v1 || TAC || cBTC || fee_bps_LE(30) || capability_flags(0))",
         "n_intents": 2,
         "intents": [
             {
