@@ -1,9 +1,16 @@
-# cBTC Reference Issuer — Operational Design (HISTORICAL / ARCHIVED)
+# cBTC Federated Issuer — Reference Operational Design
 
-> **STATUS: SUPERSEDED** (2026-05-17). This document describes a
-> federated 3-of-5 multisig design that was sketched as a possible
-> reference issuer for cBTC.tac. It was never implemented. The
-> protocol-shipped variants are now:
+> **STATUS: OPEN ECOSYSTEM-OPERATOR REFERENCE** (2026-05-17). This
+> document specifies a federated 3-of-5 multisig design that any
+> ecosystem operator can choose to deploy as a wrapper variant
+> under their own suffix (e.g., `cBTC.alice`, `cBTC.fed`,
+> `cBTC.federation-X`). It is not a protocol-shipped variant and is
+> not maintained by the TAC team — but the wrapper convention
+> (`SPEC-WRAPPER-AMENDMENT.md`) is permissionless, so operators who
+> want to launch a federated cBTC instance have this reference to
+> work from.
+>
+> **The protocol-shipped cBTC variants are non-federated:**
 >
 > - **`cBTC.zk`** — self-custody slot wrapper (trustless whole-slot),
 >   defined in `SPEC-CBTC-ZK-AMENDMENT.md` and its companions
@@ -11,27 +18,36 @@
 > - **`cBTC.tac`** — TAC-bonded fractional wrapper (fungible
 >   amount-granular), defined in `SPEC-CBTC-TAC-AMENDMENT.md`.
 >
-> Both are non-federated. The TAC team operates neither a multisig
-> reserve nor a co-signer service. Trust profiles are documented in
-> their respective amendments.
+> Neither uses a multisig reserve or co-signer service. Both rely
+> on either cryptographic self-custody (cBTC.zk) or TAC over-
+> collateralization (cBTC.tac) instead of federation trust.
 >
-> This document is preserved for reference only. The federated
-> multisig design described below is one of many possible trust
-> models a third-party ecosystem operator could choose to deploy
-> under their own wrapper suffix (e.g., `cBTC.alice` or `cBTC.fed`).
-> The wrapper convention (`SPEC-WRAPPER-AMENDMENT.md`) is
-> permissionless — anyone may stand up their own variant — but
-> none of that is the protocol's responsibility.
-
-> **Original (now historical) status:** Operational design doc for one
-> specific application of the tacit wrapper convention
-> (`SPEC-WRAPPER-AMENDMENT.md`). Described how the TAC team (or any
-> aligned operator) could stand up a reference cBTC instance backed
-> by native sats under a federated multisig.
+> **Why this design is preserved as an open ecosystem reference:**
+> the federated approach is one valid point on the trust-vs-UX
+> curve. Some users + use cases may prefer it:
+>
+> - Operations with KYC/regulatory requirements where federation
+>   accountability is required
+> - Users who want amount-granular wrapped BTC without dependence
+>   on TAC collateral mechanics
+> - Bridge integrations to centralized exchanges that prefer
+>   federated-custody assets
+> - Regional or jurisdictional federation variants
+>
+> Third-party operators considering this path will find concrete
+> operational mechanics here: multisig setup, key ceremony, auto-
+> lister + auto-taker worker design, reserve dashboard,
+> attestation cadence, failure modes, key rotation. They are
+> free to copy, modify, or extend this design for their own
+> federated wrapper variant.
 >
 > **Scope.** This doc covers: multisig setup, key ceremony, auto-
 > lister + auto-taker worker design, reserve dashboard, attestation
-> cadence, failure modes, key rotation.
+> cadence, failure modes, key rotation. The tacit protocol itself
+> treats any federated wrapper variant exactly like any other
+> wrapper variant under the convention — no special-casing, no
+> protocol-level endorsement, no protocol-level coverage check
+> beyond what the convention specifies.
 
 ---
 
