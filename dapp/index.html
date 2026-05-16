@@ -4917,7 +4917,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <span style="margin-left:8px;font-style:italic;">non-custodial, Bitcoin-native, zero fee</span>
         </summary>
         <div class="muted" style="margin-top:8px;font-size:12px;line-height:1.55;">
-          <p style="margin:0;">Type how much to buy or sell, click Swap. Trades settle atomically in one Bitcoin transaction — asset and sats change hands together or not at all. Zero fee, just Bitcoin miner fees (~$0.01–$0.03 per swap).</p>
+          <p style="margin:0;">Type how much to buy or sell, click Swap. Trades settle atomically on Bitcoin — asset and sats change hands together or not at all. Zero fee — you pay only Bitcoin's miner fees (shown in the swap preview before you sign).</p>
           <p style="margin:8px 0 0;">No MEV. No reordering window, no sequencer, no front-running — Bitcoin's PoW handles it.</p>
           <p style="margin:8px 0 0;">If your swap doesn't fully fill at your limit price, the leftover rests as a passive order for 24h.</p>
           <p style="margin:8px 0 0;">You keep custody throughout. Balances stay private on-chain.</p>
@@ -5899,8 +5899,8 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="faq-q">What's the cost per transfer / swap?</div>
       <div class="faq-a">
         Two different operations, different costs.
-        <strong>Plain send</strong> (within-wallet <code>CXFER</code>): ~10 KB witness with m=2 aggregation, ~2,500–3,000 vBytes after the SegWit discount. At typical low feerates (~1 sat/vB) that's ~2,500–3,000 sats (~$0.02); during Bitcoin congestion (10 sat/vB) it's ~$0.20. Roughly 10× a Runes runestone — Runes publishes amounts in cleartext, tacit hides them via Pedersen commitments + bulletproofs; that's where the bytes go.
-        <strong>Marketplace swap</strong> (one preauth-take settling on Bitcoin): commit + reveal pair ~950 vBytes single-fill, ~1,400 vBytes for a 5-fill batched route. At 1 sat/vB that's $0.008 single, $0.011 for a 5-fill batch — the batching saves ~70% vs N independent settlements (SPEC §5.7.8.1).
+        <strong>Plain send</strong> (within-wallet <code>CXFER</code>): ~10 KB witness with m=2 aggregation, ~2,500–3,000 vBytes after the SegWit discount. At typical low feerates (~1 sat/vB) that's ~2,500–3,000 sats; at 10 sat/vB during Bitcoin congestion it's ~25,000–30,000 sats. Roughly 10× a Runes runestone — Runes publishes amounts in cleartext, tacit hides them via Pedersen commitments + bulletproofs; that's where the bytes go.
+        <strong>Marketplace swap</strong> (one preauth-take settling on Bitcoin): commit + reveal pair ~950 vBytes single-fill, ~1,400 vBytes for a 5-fill batched route. At 1 sat/vB that's ~950 sats single, ~1,400 sats for a 5-fill batch (≈280 sats per fill) — the batching saves ~70% vs N independent settlements (SPEC §5.7.8.1).
       </div>
 
       <div class="faq-q">Is the worker trust-bearing? What if I don't trust it?</div>
