@@ -623,21 +623,109 @@ formal SPEC amendment, not a governance vote.
 
 ## §6.11 Activation
 
-This amendment activates when:
+This amendment activates jointly with its target amendment(s) at
+launch. All four conditions must hold:
 
 1. The Groth16 circuits for `GOV_PROPOSAL_VK` and
    `GOV_VOTE_WEIGHT_VK` are generated via a trusted setup ceremony.
 2. Worker and dapp implementations of T_GOV_PROPOSAL / VOTE / VETO
    / EXECUTE are deployed and verified.
-3. At least one target amendment (e.g., SPEC-CBTC-TAC-AMENDMENT) is
-   in production with governable parameters defined.
+3. At least one target amendment is in production with governable
+   parameters defined (currently SPEC-CBTC-TAC-AMENDMENT).
+4. The ceremony output (verification keys + multi-party
+   attestations) is anchored on chain via standard tacit ceremony-
+   attestation mechanism. Indexers verify the multi-party signatures
+   and accept the keys before processing T_GOV_PROPOSAL envelopes.
 
-Until all three conditions hold, governance envelopes are refused
-by indexers. Target amendments operate at their fixed launch
-defaults indefinitely. This is the v1 launch posture: amendments
-that opt into governance are Liquity-style immutable until
-governance activates, at which point bounded adjustability
-becomes available.
+Day-1 governance: target amendments are governance-active from
+their own activation block. At that block, governable parameters
+initialize to their declared defaults in indexer-tracked state,
+and T_GOV_PROPOSAL envelopes are immediately acceptable. The first
+proposal that confirms can modify any in-band parameter via the
+normal proposal → vote → execute lifecycle.
+
+There is no "dormant phase" or separate post-launch activation
+event. The protocol ships with governance live; whether anyone
+chooses to use it is an organic engagement question.
+
+---
+
+## §6.12 Parameter state and reads
+
+Each target amendment has indexer-tracked governance state, all
+initialized at amendment activation:
+
+```
+governance_state[amendment_id] = {
+  params: { param_id → current_value },  // initialized to declared
+                                          // defaults at activation
+  params_history: [ { param_id, value, effective_block, proposal_id } ],
+}
+```
+
+Parameter reads always go through this state:
+
+```
+read_param(amendment_id, param_id):
+  return governance_state[amendment_id].params[param_id]
+```
+
+At activation block, `params` is populated from the target
+amendment's declared defaults. Subsequent T_GOV_EXECUTE envelopes
+that confirm modify specific entries and append to `params_history`
+with the effective block.
+
+### 6.12.1 Initial state
+
+For SPEC-CBTC-TAC-AMENDMENT at its activation block:
+
+```
+governance_state["SPEC-CBTC-TAC-AMENDMENT-v1"].params = {
+  INITIAL_BOND_RATIO: 2.0,
+  WARNING_RATIO: 1.5,
+  LIQUIDATION_RATIO: 1.2,
+  STABILITY_FEE_BPS: 25,
+  LIQUIDATION_PENALTY_BPS: 200,
+  AGGREGATE_RECOVERY_RATIO: 1.5,
+  LIQUIDATOR_REWARD_FRACTION: 0.005,
+  MAX_POOL_FRAC: 0.10,
+  MAX_BONDED_FRAC_OF_TAC_FDV: 0.25,
+  MAX_SINGLE_POSITION_BTC: 10_000_000_00, // sats
+  TWAP_WINDOW: 180,
+  MAX_FORCE_CLOSES_PER_BLOCK: 5,
+  VOTE_TENURE_BLOCKS: 100,
+  STALE_PRICE_BLOCKS: 1000,
+  // ... etc per §5.41 and §5.46.2 listings
+}
+```
+
+These are immediately readable by cBTC.tac validator logic from
+activation. They're also immediately modifiable via the standard
+governance proposal → vote → execute lifecycle.
+
+### 6.12.2 Read consistency under in-flight proposals
+
+A parameter read at block H returns `params[param_id]` as of block
+H. A proposal that EXECUTES at block H' > H produces a change that
+applies only to operations confirming at blocks ≥ H' (retroactivity
+prohibition per §6.6.3). Operations whose validator pass occurred at
+block < H' continue under the prior value.
+
+For cBTC.tac specifically: a position opened at block 100 records
+`position.params_snapshot` containing the values at block 100. Even
+if governance changes `INITIAL_BOND_RATIO` at block 500, the
+position at block 100 continues to operate under its snapshot
+values until natural close.
+
+### 6.12.3 Hard limits stay outside governance state
+
+Parameters listed in §5.46.5 (cBTC.tac hard limits) are NOT in
+`governance_state.params`. They're hardcoded in validator logic and
+not addressable by T_GOV_PROPOSAL. Slashing rules, conservation
+invariants, settlement atomicity, cryptographic primitives,
+retroactivity prohibition, and opcode assignments are not
+parameters — they're protocol mechanics, changeable only via
+formal SPEC amendment.
 
 ---
 

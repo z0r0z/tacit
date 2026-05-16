@@ -1182,16 +1182,26 @@ slashes, change settlement atomicity, or alter the fundamental
 trust model. Hard limits are enumerated and enforced at the
 validator level.
 
-> **Activation gating.** All governance in this section is
-> non-functional until `SPEC-GOVERNANCE-AMENDMENT.md` activates.
-> Until that amendment's voting envelopes (T_GOV_PROPOSAL,
-> T_GOV_VOTE, T_GOV_VETO, T_GOV_EXECUTE) are deployed and the
-> Groth16 ceremony for vote-weight proofs is complete, every
-> parameter in this section operates at its launch default and is
-> effectively immutable. This is a feature for v1 launch: the
-> protocol activates as a Liquity-style fully-immutable wrapper
-> and gains optional bounded governance later as a clean additive
-> layer.
+> **Day-1 governance posture.** Governance under §5.46 activates
+> at the same time as cBTC.tac itself, per the joint activation
+> conditions in `SPEC-GOVERNANCE-AMENDMENT.md` §6.11. The
+> protocol-wide governance framework and the cBTC.tac wrapper ship
+> together, with shared ceremony coordination. From launch onward,
+> TAC holders have the OPTION to submit proposals tuning parameters
+> within the safety bands of §5.46.2; they're not required to.
+>
+> The launch defaults (§5.41) are chosen to be conservatively safe
+> across a wide range of TAC volatility and BTC price conditions.
+> Most positions opened in the first months should never need
+> governance intervention — the bands are wide enough to absorb
+> normal market conditions. Governance is available for refinement
+> as real-world data accumulates, not as a launch dependency.
+>
+> Hard limits (§5.46.5) remain immutable regardless. Even on day 1,
+> governance cannot rescind slashing, change conservation
+> invariants, alter settlement atomicity, or modify cryptographic
+> primitives. Parameter adjustments stay within safety bands by
+> validator enforcement.
 
 ### 5.46.1 Why TAC holders are the right governance class
 
@@ -1364,17 +1374,23 @@ voting MECHANISM (T_GOV_PROPOSAL / T_GOV_VOTE / T_GOV_VETO /
 T_GOV_EXECUTE envelopes, snapshot mechanics, tally rules, state
 machine).
 
-Until the governance amendment activates (its Groth16 ceremony
-completes + worker/dapp deployments are live), all parameters in
-§5.46.2 / §5.46.3 / §5.46.4 operate at their defaults. The
-protocol works fully without any governance vote ever happening.
+cBTC.tac and the governance framework ship together at launch.
+Both amendments' activation conditions must be met simultaneously:
+ceremonies complete, code deployed, bootstrap thresholds satisfied
+(per cBTC.tac §5.42, governance §6.11). From launch onward, all
+parameters in §5.46.2 / §5.46.3 / §5.46.4 are at their default
+values AND eligible for governance refinement.
 
-To opt cBTC.tac into governance once the governance framework is
-live, the cBTC.tac amendment registers as a target amendment per
-SPEC-GOVERNANCE-AMENDMENT §6.1.1, with `amendment_id =
-SHA256("SPEC-CBTC-TAC-AMENDMENT-v1")`. The governable parameter
-set (§5.46.2 + §5.46.3 + §5.46.4), safety bands, and vote-weight
-rule (§5.46.6) are read directly from this amendment's spec text.
+cBTC.tac registers as a target amendment per SPEC-GOVERNANCE-AMENDMENT
+§6.1.1, with `amendment_id = SHA256("SPEC-CBTC-TAC-AMENDMENT-v1")`.
+The governable parameter set (§5.46.2 + §5.46.3 + §5.46.4), safety
+bands, and vote-weight rule (§5.46.6) are read directly from this
+amendment's spec text.
+
+The protocol works fully without any governance vote ever happening.
+Governance is opt-in usage for TAC holders, not a runtime
+dependency. If no proposal ever passes, the protocol operates
+indefinitely at launch defaults.
 
 ### 5.46.7 Existing-position protection (retroactivity rule)
 
