@@ -6635,6 +6635,102 @@ async function buildSlotRotateEnvelope({
   };
 }
 
+// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.25 — T_SLOT_FRACTIONALIZE builder.
+// Converts a v2 slot's denom_sats into N share UTXOs whose amounts sum to
+// denom_sats. The slot's backing BTC stays locked (r_btc never revealed).
+async function buildSlotFractionalizeEnvelope({
+  networkTag, slotRecord, merkleRoot, proof, shareAmounts,
+}) {
+  if (!slotRecord || !slotRecord.assetIdHex) throw new Error('slotRecord required');
+  if (slotRecord.slotVariant && slotRecord.slotVariant !== 'v2') {
+    throw new Error('fractionalize requires a v2 (two-key) slot; v1 slots cannot fractionalize safely');
+  }
+  if (!Array.isArray(shareAmounts) || shareAmounts.length < 1 || shareAmounts.length > 16) {
+    throw new Error('shareAmounts must be an array of 1..16 BigInts');
+  }
+  const assetId = hexToBytes(slotRecord.assetIdHex);
+  const denomination = BigInt(slotRecord.denomination);
+  let total = 0n;
+  for (const a of shareAmounts) {
+    const ai = BigInt(a);
+    if (ai <= 0n || ai >= (1n << BigInt(N_BITS))) throw new Error('share amount out of range');
+    total += ai;
+  }
+  if (total !== denomination) {
+    throw new Error(`shareAmounts must sum to denomination ${denomination}, got ${total}`);
+  }
+  const secret = hexToBytes(slotRecord.secretHex);
+  const nullifierPreimage = hexToBytes(slotRecord.nullifierPreimageHex);
+  const nullifierHash = computeNullifierHash(nullifierPreimage);
+  const rLeaf = poseidonHash(secret, nullifierPreimage);
+  const rLeafBig = bytes32ToBigint(rLeaf) % SECP_N;
+  const recipientCommitment = pedersenCommit(denomination, rLeafBig).toRawBytes(true);
+  const bindHash = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf);
+  // Fresh r_i for each share. Compute commits + accumulate Σ r_i.
+  const shareOpenings = [];
+  let rTotal = 0n;
+  for (const a of shareAmounts) {
+    const rBytes = new Uint8Array(32); crypto.getRandomValues(rBytes);
+    let rBig = bytes32ToBigint(rBytes) % SECP_N;
+    if (rBig === 0n) rBig = 1n;
+    const commit = pedersenCommit(BigInt(a), rBig).toRawBytes(true);
+    shareOpenings.push({ amount: BigInt(a), blinding: rBig, commitment: commit });
+    rTotal = modN(rTotal + rBig);
+  }
+  const shareCommits = shareOpenings.map(o => o.commitment);
+  const fracMsg = computeSlotFracMsg(networkTag, assetId, denomination, nullifierHash, recipientCommitment, shareCommits);
+  // Kernel sig under (Σ r_i) — its G-multiple equals Σ commits − denom·H by
+  // Pedersen homomorphism. Indexers verify the sig against this public point.
+  const shareKernelSig = signSchnorr(fracMsg, bigintToBytes32(rTotal));
+  const payload = encodeTSlotFractionalizePayload({
+    networkTag, assetId, denomination,
+    merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
+    shareCommits, shareKernelSig, proof,
+  });
+  return { payload, nullifierHash, shareOpenings, fracMsg, rTotalScalar: rTotal };
+}
+
+// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.26 — T_SLOT_RECONSOLIDATE builder.
+async function buildSlotReconsolidateEnvelope({
+  networkTag, assetId, denomination, targetLeafHash,
+  shareOpenings, proof,
+}) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
+  if (!Array.isArray(shareOpenings) || shareOpenings.length < 1 || shareOpenings.length > 16) {
+    throw new Error('shareOpenings must be 1..16');
+  }
+  const denomBig = BigInt(denomination);
+  let total = 0n, rTotal = 0n;
+  const shareCommits = [];
+  const shareNullifiers = [];
+  for (const o of shareOpenings) {
+    const a = BigInt(o.amount);
+    const r = BigInt(o.blinding);
+    if (a <= 0n) throw new Error('share amount must be positive');
+    total += a;
+    rTotal = modN(rTotal + r);
+    if (!(o.commitment instanceof Uint8Array) || o.commitment.length !== 33) {
+      throw new Error('share commitment must be 33 bytes');
+    }
+    shareCommits.push(o.commitment);
+    if (!(o.nullifierPreimage instanceof Uint8Array) || o.nullifierPreimage.length !== 32) {
+      throw new Error('share nullifierPreimage must be 32 bytes');
+    }
+    shareNullifiers.push(computeNullifierHash(o.nullifierPreimage));
+  }
+  if (total !== denomBig) {
+    throw new Error(`shareOpenings must sum to denomination ${denomBig}, got ${total}`);
+  }
+  const reconMsg = computeSlotReconMsg(networkTag, assetId, denomBig, targetLeafHash, shareCommits, shareNullifiers);
+  const shareKernelSig = signSchnorr(reconMsg, bigintToBytes32(rTotal));
+  const payload = encodeTSlotReconsolidatePayload({
+    networkTag, assetId, denomination: denomBig, targetLeafHash,
+    shareCommits, shareNullifiers, shareKernelSig, proof,
+  });
+  return { payload, shareNullifiers, reconMsg, rTotalScalar: rTotal };
+}
+
 // Kernel message for T_DEPOSIT (SPEC §5.10). Domain-separated by 'tacit-deposit-v1'
 // to make cross-opcode replay against, say, a CXFER kernel sig structurally
 // impossible.
@@ -48462,6 +48558,35 @@ function _renderSwapProgress(host, items, opts = {}) {
     if (btn) btn.onclick = (e) => { e.preventDefault(); onCancel(); };
   }
 }
+
+// Prefill helper for the first-trade swap-tile handoff. The swap tile's
+// "+ List for sale" button on a never-traded asset opens the Advanced
+// listing form (inline list-preauth or the Holdings-tab listing flow)
+// and we want the trader's typed token amount to carry over. The form
+// may render synchronously OR after a tick depending on which codepath
+// the click handler walks, so poll a few times until the input appears
+// (or 2s timeout). First match wins — clears its own poll.
+function _prefillSwapHandoffAmount(value) {
+  let attempts = 0;
+  const maxAttempts = 10;  // 10 × 200ms = 2s
+  const tick = () => {
+    attempts += 1;
+    // The listing forms (list-preauth + list-atomic + publish-intent) all
+    // use data-field="amount". Fill the first visible+empty one we find.
+    const candidates = document.querySelectorAll('[data-field="amount"]');
+    for (const inp of candidates) {
+      const visible = inp.offsetParent !== null;
+      if (visible && !inp.value) {
+        inp.value = value;
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        return;
+      }
+    }
+    if (attempts < maxAttempts) setTimeout(tick, 200);
+  };
+  setTimeout(tick, 200);
+}
+
 function _wireSwapTile(scope) {
   const widget = scope.querySelector('[data-swap-tile]');
   if (!widget) return;
@@ -50357,6 +50482,10 @@ function _wireSwapTile(scope) {
         if (!bidBtn) { toast('Bid form not available on this view', 'error'); return; }
         bidBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
         setTimeout(() => bidBtn.click(), 300);
+        // Buy direction's typed amount is a sats budget, not a token
+        // count — doesn't map cleanly to the bid form's (amount, price)
+        // fields. No prefill on this side; the trader sets both in the
+        // Advanced form fresh.
         return;
       }
       // No-route → place-bid path: when update() determined there were no
@@ -50627,6 +50756,13 @@ function _wireSwapTile(scope) {
         if (!askBtn) { toast('Listing form not available on this view', 'error'); return; }
         askBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
         setTimeout(() => askBtn.click(), 300);
+        // Sell direction's typed amount is already token-denominated and
+        // matches the listing form's amount field shape — prefill it once
+        // the form renders. The listing form may render at the inline
+        // [data-list-form] slot (list-preauth path) OR via the Holdings
+        // tab navigation (_openMarketListingFlow), so the poll handles
+        // both targets.
+        if (raw) _prefillSwapHandoffAmount(raw);
         return;
       }
       const result = await planSell(amt);
@@ -56049,12 +56185,17 @@ export {
   // worker↔dapp wire-format parity test and for dapp client code that builds
   // mint/burn/rotate txs.
   T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
+  T_SLOT_FRACTIONALIZE, T_SLOT_RECONSOLIDATE,
   encodeTSlotMintPayload, decodeTSlotMintPayload,
   encodeTSlotBurnPayload, decodeTSlotBurnPayload,
   encodeTSlotRotatePayload, decodeTSlotRotatePayload,
+  encodeTSlotFractionalizePayload, decodeTSlotFractionalizePayload,
+  encodeTSlotReconsolidatePayload, decodeTSlotReconsolidatePayload,
   computeSlotMintMsg, computeSlotRotateMsg,
-  deriveSlotKbtc, slotXOnly, slotScriptPubKeyFromKbtc,
+  computeSlotFracMsg, computeSlotReconMsg,
+  deriveSlotKbtc, deriveSlotRBtc, slotXOnly, slotScriptPubKeyFromKbtc,
   buildSlotMintEnvelope, buildSlotBurnEnvelope, buildSlotRotateEnvelope,
+  buildSlotFractionalizeEnvelope, buildSlotReconsolidateEnvelope,
   // High-level dapp builders for the slot wrapper flows. Each does the full
   // commit-reveal Bitcoin tx + envelope construction + local-state update.
   // Exported so headless drivers (signet rehearsal, integration tests) can

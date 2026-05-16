@@ -4386,6 +4386,116 @@ function decodeTSlotRotatePayload(payload) {
   };
 }
 
+// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.25 T_SLOT_FRACTIONALIZE — slot → shielded shares.
+// Variable-size payload: 204-byte fixed header + N × 33-byte share commits +
+// 64-byte share kernel sig + 2-byte proof_len + proof bytes.
+function decodeTSlotFractionalizePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_FRACTIONALIZE) return null;
+  const FIXED_HEADER = 2 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 1;
+  if (payload.length < FIXED_HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const merkleRootBytes = payload.slice(p, p + 32); p += 32;
+  const nullifierHashBytes = payload.slice(p, p + 32); p += 32;
+  const recipientCommitBytes = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(recipientCommitBytes)); } catch { return null; }
+  const rLeafBytes = payload.slice(p, p + 32); p += 32;
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
+  const shareCount = payload[p]; p += 1;
+  if (shareCount < 1 || shareCount > 16) return null;
+  if (payload.length < p + shareCount * 33 + 64 + 2) return null;
+  const shareCommitsBytes = [];
+  for (let i = 0; i < shareCount; i++) {
+    const sc = payload.slice(p, p + 33); p += 33;
+    try { compressedPointFromHex(bytesToHex(sc)); } catch { return null; }
+    shareCommitsBytes.push(sc);
+  }
+  const shareKernelSigBytes = payload.slice(p, p + 64); p += 64;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  // Re-derive bind_hash from canonical fields (reuses the mixer's
+  // tacit-withdraw-bind-v1 domain). Indexer-deterministic rejection of
+  // tampered envelopes is critical for cross-implementation consensus on
+  // the spent-nullifier ledger.
+  const expectedBindHash = _computeWithdrawBindHash(
+    assetIdBytes, denomination, nullifierHashBytes, recipientCommitBytes, rLeafBytes,
+  );
+  for (let i = 0; i < 32; i++) if (expectedBindHash[i] !== bindHashBytes[i]) return null;
+  return {
+    kind: 'slot_fractionalize',
+    network_tag: networkTag,
+    asset_id: bytesToHex(assetIdBytes),
+    denomination: denomination.toString(),
+    merkle_root: bytesToHex(merkleRootBytes),
+    nullifier_hash: bytesToHex(nullifierHashBytes),
+    recipient_commitment: bytesToHex(recipientCommitBytes),
+    r_leaf: bytesToHex(rLeafBytes),
+    bind_hash: bytesToHex(bindHashBytes),
+    share_count: shareCount,
+    share_commits: shareCommitsBytes.map(b => bytesToHex(b)),
+    share_kernel_sig: bytesToHex(shareKernelSigBytes),
+    proof: bytesToHex(proof),
+  };
+}
+
+// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.26 T_SLOT_RECONSOLIDATE — shielded shares → slot.
+function decodeTSlotReconsolidatePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_RECONSOLIDATE) return null;
+  const FIXED_HEADER = 2 + 32 + 8 + 32 + 1;
+  if (payload.length < FIXED_HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const targetLeafHashBytes = payload.slice(p, p + 32); p += 32;
+  const shareCount = payload[p]; p += 1;
+  if (shareCount < 1 || shareCount > 16) return null;
+  if (payload.length < p + shareCount * 32 + shareCount * 33 + 64 + 2) return null;
+  const shareNullifiersBytes = [];
+  for (let i = 0; i < shareCount; i++) {
+    shareNullifiersBytes.push(payload.slice(p, p + 32)); p += 32;
+  }
+  const shareCommitsBytes = [];
+  for (let i = 0; i < shareCount; i++) {
+    const sc = payload.slice(p, p + 33); p += 33;
+    try { compressedPointFromHex(bytesToHex(sc)); } catch { return null; }
+    shareCommitsBytes.push(sc);
+  }
+  const shareKernelSigBytes = payload.slice(p, p + 64); p += 64;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  return {
+    kind: 'slot_reconsolidate',
+    network_tag: networkTag,
+    asset_id: bytesToHex(assetIdBytes),
+    denomination: denomination.toString(),
+    target_leaf_hash: bytesToHex(targetLeafHashBytes),
+    share_count: shareCount,
+    share_nullifiers: shareNullifiersBytes.map(b => bytesToHex(b)),
+    share_commits: shareCommitsBytes.map(b => bytesToHex(b)),
+    share_kernel_sig: bytesToHex(shareKernelSigBytes),
+    proof: bytesToHex(proof),
+  };
+}
+
 function decodeCBurnPayload(payload) {
   if (!payload) return null;
   if (payload.length < 1 + 32 + 8 + 64 + 1) return null;
@@ -11821,6 +11931,8 @@ export {
   decodeCPetchPayload, decodeCPmintPayload,
   decodeTDepositPayload, decodeTWithdrawPayload,
   decodeTSlotMintPayload, decodeTSlotBurnPayload, decodeTSlotRotatePayload,
+  decodeTSlotFractionalizePayload, decodeTSlotReconsolidatePayload,
+  T_SLOT_FRACTIONALIZE, T_SLOT_RECONSOLIDATE,
   deriveSlotKbtc, slotXOnly, slotScriptPubKey,
   slotRegistryKey, slotRegistryPrefix,
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
