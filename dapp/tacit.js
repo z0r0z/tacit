@@ -4659,6 +4659,80 @@ function tapSighash(tx, inputIdx, prevouts, leafHash, hashType = 0x00) {
   return _taggedHash('TapSighash', concatBytes(...parts));
 }
 
+// BIP-341 KEY-PATH sighash — used by the slot-spend reveal txs in T_SLOT_BURN /
+// T_SLOT_ROTATE. Differs from tapSighash (script-path) in ext_flag=0 and the
+// omission of leaf_hash / key_version / codesep_pos at the end. The signer
+// signs with the secret scalar r_leaf as the Schnorr private key.
+function tapSighashKeyPath(tx, inputIdx, prevouts, hashType = 0x00) {
+  if (prevouts.length !== tx.inputs.length) throw new Error('prevouts length mismatch');
+  const u8 = v => new Uint8Array([v & 0xff]);
+  const u32 = v => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v >>> 0, true); return b; };
+  const u64 = v => { const b = new Uint8Array(8); new DataView(b.buffer).setBigUint64(0, BigInt(v), true); return b; };
+  const parts = [];
+  parts.push(u8(0x00)); // epoch
+  parts.push(u8(hashType));
+  parts.push(u32(tx.version));
+  parts.push(u32(tx.locktime));
+  if ((hashType & 0x80) !== 0x80) {
+    const buf = [];
+    for (const inp of tx.inputs) {
+      buf.push(reverseBytes(hexToBytes(inp.txid)));
+      buf.push(u32(inp.vout));
+    }
+    parts.push(sha256(concatBytes(...buf)));
+    const amts = []; for (const po of prevouts) amts.push(u64(po.value));
+    parts.push(sha256(concatBytes(...amts)));
+    const spks = [];
+    for (const po of prevouts) { spks.push(_compactSize(po.script.length)); spks.push(po.script); }
+    parts.push(sha256(concatBytes(...spks)));
+    const seqs = []; for (const inp of tx.inputs) seqs.push(u32(inp.sequence ?? 0xffffffff));
+    parts.push(sha256(concatBytes(...seqs)));
+  }
+  const baseHt = hashType & 0x03;
+  if (baseHt === 0x00 || baseHt === 0x01) {
+    const outs = [];
+    for (const out of tx.outputs) {
+      outs.push(u64(out.value));
+      outs.push(_compactSize(out.script.length));
+      outs.push(out.script);
+    }
+    parts.push(sha256(concatBytes(...outs)));
+  }
+  const ext_flag = 0; // KEY PATH (vs 1 for tapscript path)
+  parts.push(u8((ext_flag << 1) | 0));
+  if ((hashType & 0x80) === 0x80) {
+    const inp = tx.inputs[inputIdx]; const po = prevouts[inputIdx];
+    parts.push(reverseBytes(hexToBytes(inp.txid)));
+    parts.push(u32(inp.vout));
+    parts.push(u64(po.value));
+    parts.push(_compactSize(po.script.length));
+    parts.push(po.script);
+    parts.push(u32(inp.sequence ?? 0xffffffff));
+  } else {
+    parts.push(u32(inputIdx));
+  }
+  if (baseHt === 0x03) {
+    if (inputIdx >= tx.outputs.length) throw new Error('SIGHASH_SINGLE: no output at input index');
+    const out = tx.outputs[inputIdx];
+    parts.push(sha256(concatBytes(u64(out.value), _compactSize(out.script.length), out.script)));
+  }
+  // KEY PATH ends here — no leaf_hash, no key_version, no codesep_pos.
+  return _taggedHash('TapSighash', concatBytes(...parts));
+}
+
+// Sign a Taproot key-path input under an arbitrary private key (slot spends
+// sign with r_leaf, not wallet.priv). Witness layout is [sig] for SIGHASH_DEFAULT
+// (hashType=0x00), or [sig || hashType_byte] for non-default — per BIP-341.
+function signTaprootKeyPathInputWithKey(tx, inputIdx, prevouts, privKey32, hashType = 0x00) {
+  if (!(privKey32 instanceof Uint8Array) || privKey32.length !== 32) {
+    throw new Error('privKey32 must be 32 bytes');
+  }
+  const sh = tapSighashKeyPath(tx, inputIdx, prevouts, hashType);
+  const sigBare = signSchnorr(sh, privKey32);
+  if (hashType === 0x00) return [sigBare];
+  return [concatBytes(sigBare, new Uint8Array([hashType & 0xff]))];
+}
+
 // ============== ENVELOPE ==============
 const ENVELOPE_MAGIC = new TextEncoder().encode('TACIT');
 const ENVELOPE_VERSION = 0x01;
@@ -4673,6 +4747,9 @@ const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_DROP     = 0x2B; // public-claim pool over existing supply (SPEC §5.12)
 const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor (SPEC §5.13)
+const T_SLOT_MINT   = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_BURN   = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_ROTATE = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / §5.7.6.1 — amended).
                           // N=2 partial reveal (recipient + maker change), single asset input,
                           // interleaved BTC-payment vout. Read-only as of this commit: validator
@@ -5834,6 +5911,430 @@ function decodeTWithdrawPayload(payload) {
     kind: 'withdraw',
     assetId, denomination, merkleRoot, nullifierHash,
     recipientCommitment, rLeaf, bindHash, proof,
+  };
+}
+
+// ============== SLOT WRAPPER (T_SLOT_MINT / T_SLOT_BURN / T_SLOT_ROTATE) ==============
+// SPEC-CBTC-ZK-AMENDMENT §5.21–§5.23. Self-custody slot wrapper:
+//   K_btc = recipient_commit − denomination · H = r_leaf · G
+// Anyone who can withdraw the mixer note (knows r_leaf) can spend the slot UTXO.
+// No federation, no co-signer, no escape path. Lost notes lock backing BTC
+// permanently — same property native Bitcoin has.
+
+const SLOT_MINT_DOMAIN   = new TextEncoder().encode('tacit-slot-mint-v1');
+const SLOT_ROTATE_DOMAIN = new TextEncoder().encode('tacit-slot-rotate-v1');
+
+function deriveSlotKbtc(recipientCommitmentBytes, denomination) {
+  if (!(recipientCommitmentBytes instanceof Uint8Array) || recipientCommitmentBytes.length !== 33) {
+    throw new Error('recipient_commitment must be 33 bytes');
+  }
+  const recipientPoint = bytesToPoint(recipientCommitmentBytes);
+  const denomBig = BigInt(denomination);
+  const denomTimesH = denomBig === 0n ? ZERO : H.multiply(modN(denomBig));
+  return recipientPoint.add(denomTimesH.negate());
+}
+function slotXOnly(kBtcPoint) {
+  return kBtcPoint.toRawBytes(true).slice(1);
+}
+function slotScriptPubKeyFromKbtc(kBtcPoint) {
+  return p2trScript(slotXOnly(kBtcPoint));
+}
+
+function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
+  if (leafHash.length !== 32) throw new Error('leaf_hash 32 bytes');
+  if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    const d = BigInt(denomination);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const payLE = new Uint8Array(8);
+  {
+    const v = new DataView(payLE.buffer);
+    const p = BigInt(paymentAmount);
+    v.setUint32(0, Number(p & 0xffffffffn), true);
+    v.setUint32(4, Number((p >> 32n) & 0xffffffffn), true);
+  }
+  return sha256(concatBytes(
+    SLOT_MINT_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    assetId, denomLE, recipientCommit, leafHash, paymentAssetId, payLE,
+  ));
+}
+
+function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHash, newRecipientCommit, newLeafHash, paymentAssetId, paymentAmount) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (oldNullifierHash.length !== 32) throw new Error('old_nullifier_hash 32 bytes');
+  if (newRecipientCommit.length !== 33) throw new Error('new_recipient_commit 33 bytes');
+  if (newLeafHash.length !== 32) throw new Error('new_leaf_hash 32 bytes');
+  if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    const d = BigInt(denomination);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const payLE = new Uint8Array(8);
+  {
+    const v = new DataView(payLE.buffer);
+    const p = BigInt(paymentAmount);
+    v.setUint32(0, Number(p & 0xffffffffn), true);
+    v.setUint32(4, Number((p >> 32n) & 0xffffffffn), true);
+  }
+  return sha256(concatBytes(
+    SLOT_ROTATE_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    assetId, denomLE, oldNullifierHash,
+    newRecipientCommit, newLeafHash, paymentAssetId, payLE,
+  ));
+}
+
+function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig }) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
+  if (leafHash.length !== 32) throw new Error('leaf_hash 32 bytes');
+  if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes (zeros if no payment)');
+  if (minterPubkey.length !== 33) throw new Error('minter_pubkey 33 bytes');
+  if (minterSig.length !== 64) throw new Error('minter_sig 64 bytes');
+  const d = BigInt(denomination);
+  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
+  const pAmt = BigInt(paymentAmount);
+  if (pAmt < 0n || pAmt >= (1n << BigInt(N_BITS))) throw new Error('payment_amount out of range');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const payLE = new Uint8Array(8);
+  {
+    const v = new DataView(payLE.buffer);
+    v.setUint32(0, Number(pAmt & 0xffffffffn), true);
+    v.setUint32(4, Number((pAmt >> 32n) & 0xffffffffn), true);
+  }
+  return concatBytes(
+    new Uint8Array([T_SLOT_MINT, networkTag & 0xff]),
+    assetId, denomLE,
+    recipientCommit, leafHash,
+    paymentAssetId, payLE,
+    minterPubkey, minterSig,
+  );
+}
+
+function decodeTSlotMintPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_MINT) return null;
+  if (payload.length !== 244) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const recipientCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(recipientCommit); } catch { return null; }
+  const leafHash = payload.slice(p, p + 32); p += 32;
+  const paymentAssetId = payload.slice(p, p + 32); p += 32;
+  const payView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const paymentAmount = (BigInt(payView.getUint32(4, true)) << 32n) | BigInt(payView.getUint32(0, true));
+  p += 8;
+  if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
+  const minterPubkey = payload.slice(p, p + 33); p += 33;
+  const minterSig = payload.slice(p, p + 64); p += 64;
+  return {
+    kind: 'slot_mint',
+    networkTag, assetId, denomination,
+    recipientCommit, leafHash,
+    paymentAssetId, paymentAmount,
+    minterPubkey, minterSig,
+  };
+}
+
+function encodeTSlotBurnPayload({ networkTag, assetId, denomination, merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash, proof }) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (merkleRoot.length !== 32) throw new Error('merkle_root 32 bytes');
+  if (nullifierHash.length !== 32) throw new Error('nullifier_hash 32 bytes');
+  if (recipientCommitment.length !== 33) throw new Error('recipient_commitment 33 bytes');
+  if (rLeaf.length !== 32) throw new Error('r_leaf 32 bytes');
+  if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
+  if (proof.length === 0 || proof.length > 0xffff) throw new Error('proof len 1..65535');
+  const d = BigInt(denomination);
+  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const proofLen = new Uint8Array(2);
+  new DataView(proofLen.buffer).setUint16(0, proof.length, true);
+  return concatBytes(
+    new Uint8Array([T_SLOT_BURN, networkTag & 0xff]),
+    assetId, denomLE,
+    merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash,
+    proofLen, proof,
+  );
+}
+
+function decodeTSlotBurnPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_BURN) return null;
+  const HEADER = 1 + 1 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 2;
+  if (payload.length < HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const merkleRoot = payload.slice(p, p + 32); p += 32;
+  const nullifierHash = payload.slice(p, p + 32); p += 32;
+  const recipientCommitment = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(recipientCommitment); } catch { return null; }
+  const rLeaf = payload.slice(p, p + 32); p += 32;
+  const bindHash = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  const expected = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf);
+  for (let i = 0; i < 32; i++) if (expected[i] !== bindHash[i]) return null;
+  return {
+    kind: 'slot_burn',
+    networkTag, assetId, denomination,
+    merkleRoot, nullifierHash, recipientCommitment, rLeaf, bindHash, proof,
+  };
+}
+
+function encodeTSlotRotatePayload({
+  networkTag, assetId, denomination,
+  oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof,
+  newRecipientCommit, newLeafHash,
+  paymentAssetId, paymentAmount,
+  oldOwnerPubkey, oldOwnerSig,
+}) {
+  if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (oldMerkleRoot.length !== 32) throw new Error('old_merkle_root 32 bytes');
+  if (oldNullifierHash.length !== 32) throw new Error('old_nullifier_hash 32 bytes');
+  if (oldRecipientCommitment.length !== 33) throw new Error('old_recipient_commitment 33 bytes');
+  if (oldRLeaf.length !== 32) throw new Error('old_r_leaf 32 bytes');
+  if (oldBindHash.length !== 32) throw new Error('old_bind_hash 32 bytes');
+  if (oldProof.length === 0 || oldProof.length > 0xffff) throw new Error('old_proof len 1..65535');
+  if (newRecipientCommit.length !== 33) throw new Error('new_recipient_commit 33 bytes');
+  if (newLeafHash.length !== 32) throw new Error('new_leaf_hash 32 bytes');
+  if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes (zeros if no payment)');
+  if (oldOwnerPubkey.length !== 33) throw new Error('old_owner_pubkey 33 bytes');
+  if (oldOwnerSig.length !== 64) throw new Error('old_owner_sig 64 bytes');
+  const d = BigInt(denomination);
+  if (d <= 0n || d >= (1n << BigInt(N_BITS))) throw new Error('denomination out of range');
+  const pAmt = BigInt(paymentAmount);
+  if (pAmt < 0n || pAmt >= (1n << BigInt(N_BITS))) throw new Error('payment_amount out of range');
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const payLE = new Uint8Array(8);
+  {
+    const v = new DataView(payLE.buffer);
+    v.setUint32(0, Number(pAmt & 0xffffffffn), true);
+    v.setUint32(4, Number((pAmt >> 32n) & 0xffffffffn), true);
+  }
+  const oldProofLen = new Uint8Array(2);
+  new DataView(oldProofLen.buffer).setUint16(0, oldProof.length, true);
+  return concatBytes(
+    new Uint8Array([T_SLOT_ROTATE, networkTag & 0xff]),
+    assetId, denomLE,
+    oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash,
+    oldProofLen, oldProof,
+    newRecipientCommit, newLeafHash,
+    paymentAssetId, payLE,
+    oldOwnerPubkey, oldOwnerSig,
+  );
+}
+
+function decodeTSlotRotatePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_ROTATE) return null;
+  const HEADER = 1 + 1 + 32 + 8;
+  if (payload.length < HEADER + 32 + 32 + 33 + 32 + 32 + 2) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const oldMerkleRoot = payload.slice(p, p + 32); p += 32;
+  const oldNullifierHash = payload.slice(p, p + 32); p += 32;
+  const oldRecipientCommitment = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(oldRecipientCommitment); } catch { return null; }
+  const oldRLeaf = payload.slice(p, p + 32); p += 32;
+  const oldBindHash = payload.slice(p, p + 32); p += 32;
+  const oldProofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64 !== payload.length) return null;
+  const oldProof = payload.slice(p, p + oldProofLen); p += oldProofLen;
+  const expectedOldBind = computeWithdrawBindHash(assetId, denomination, oldNullifierHash, oldRecipientCommitment, oldRLeaf);
+  for (let i = 0; i < 32; i++) if (expectedOldBind[i] !== oldBindHash[i]) return null;
+  const newRecipientCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(newRecipientCommit); } catch { return null; }
+  const newLeafHash = payload.slice(p, p + 32); p += 32;
+  const paymentAssetId = payload.slice(p, p + 32); p += 32;
+  const payView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const paymentAmount = (BigInt(payView.getUint32(4, true)) << 32n) | BigInt(payView.getUint32(0, true));
+  p += 8;
+  if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
+  const oldOwnerPubkey = payload.slice(p, p + 33); p += 33;
+  const oldOwnerSig = payload.slice(p, p + 64); p += 64;
+  return {
+    kind: 'slot_rotate',
+    networkTag, assetId, denomination,
+    oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof,
+    newRecipientCommit, newLeafHash,
+    paymentAssetId, paymentAmount,
+    oldOwnerPubkey, oldOwnerSig,
+  };
+}
+
+async function buildSlotMintEnvelope({
+  networkTag, assetId, denomination,
+  secret, nullifierPreimage,
+  paymentAssetId, paymentAmount,
+  minterPriv,
+}) {
+  if (secret.length !== 32) throw new Error('secret 32 bytes');
+  if (nullifierPreimage.length !== 32) throw new Error('nullifier_preimage 32 bytes');
+  const leafCommitment = computePoolLeafCommitment(secret, nullifierPreimage, denomination);
+  const rLeafBytes = poseidonHash(secret, nullifierPreimage);
+  const rLeafBigint = bytes32ToBigint(rLeafBytes) % SECP_N;
+  const recipientCommit = pedersenCommit(BigInt(denomination), rLeafBigint).toRawBytes(true);
+  const kBtcPoint = deriveSlotKbtc(recipientCommit, denomination);
+  const slotSpk = slotScriptPubKeyFromKbtc(kBtcPoint);
+  const minterPubkey = secp.getPublicKey(minterPriv, true);
+  const minterMsg = computeSlotMintMsg(
+    networkTag, assetId, denomination, recipientCommit, leafCommitment, paymentAssetId, paymentAmount,
+  );
+  const minterSig = signSchnorr(minterMsg, minterPriv);
+  const payload = encodeTSlotMintPayload({
+    networkTag, assetId, denomination,
+    recipientCommit, leafHash: leafCommitment,
+    paymentAssetId, paymentAmount,
+    minterPubkey, minterSig,
+  });
+  return {
+    payload,
+    K_btc: kBtcPoint,
+    slotScriptPubKey: slotSpk,
+    recipientCommit,
+    rLeaf: rLeafBytes,
+    slotRecord: {
+      assetIdHex: bytesToHex(assetId),
+      denomination: BigInt(denomination).toString(),
+      secretHex: bytesToHex(secret),
+      nullifierPreimageHex: bytesToHex(nullifierPreimage),
+      leafCommitmentHex: bytesToHex(leafCommitment),
+      recipientCommitHex: bytesToHex(recipientCommit),
+      rLeafHex: bytesToHex(rLeafBytes),
+      kBtcXOnlyHex: bytesToHex(slotXOnly(kBtcPoint)),
+      slotScriptPubKeyHex: bytesToHex(slotSpk),
+      mintedAt: Date.now(),
+    },
+  };
+}
+
+async function buildSlotBurnEnvelope({ networkTag, slotRecord, merkleRoot, proof }) {
+  const assetId = hexToBytes(slotRecord.assetIdHex);
+  const denomination = BigInt(slotRecord.denomination);
+  const secret = hexToBytes(slotRecord.secretHex);
+  const nullifierPreimage = hexToBytes(slotRecord.nullifierPreimageHex);
+  const nullifierHash = computeNullifierHash(nullifierPreimage);
+  const rLeaf = poseidonHash(secret, nullifierPreimage);
+  const rLeafBigint = bytes32ToBigint(rLeaf) % SECP_N;
+  const recipientCommitment = pedersenCommit(denomination, rLeafBigint).toRawBytes(true);
+  const bindHash = computeWithdrawBindHash(assetId, denomination, nullifierHash, recipientCommitment, rLeaf);
+  const payload = encodeTSlotBurnPayload({
+    networkTag, assetId, denomination, merkleRoot, nullifierHash,
+    recipientCommitment, rLeaf, bindHash, proof,
+  });
+  return {
+    payload,
+    rLeaf,
+    rLeafBigint,
+    recipientCommitment,
+    nullifierHash,
+  };
+}
+
+async function buildSlotRotateEnvelope({
+  networkTag,
+  oldSlotRecord, oldMerkleRoot, oldProof,
+  newSecret, newNullifierPreimage,
+  paymentAssetId, paymentAmount,
+  oldOwnerPriv,
+}) {
+  if (newSecret.length !== 32) throw new Error('new_secret 32 bytes');
+  if (newNullifierPreimage.length !== 32) throw new Error('new_nullifier_preimage 32 bytes');
+  const assetId = hexToBytes(oldSlotRecord.assetIdHex);
+  const denomination = BigInt(oldSlotRecord.denomination);
+  const oldSecret = hexToBytes(oldSlotRecord.secretHex);
+  const oldNullifierPreimage = hexToBytes(oldSlotRecord.nullifierPreimageHex);
+  const oldNullifierHash = computeNullifierHash(oldNullifierPreimage);
+  const oldRLeaf = poseidonHash(oldSecret, oldNullifierPreimage);
+  const oldRLeafBigint = bytes32ToBigint(oldRLeaf) % SECP_N;
+  const oldRecipientCommitment = pedersenCommit(denomination, oldRLeafBigint).toRawBytes(true);
+  const oldBindHash = computeWithdrawBindHash(assetId, denomination, oldNullifierHash, oldRecipientCommitment, oldRLeaf);
+  const newLeafCommitment = computePoolLeafCommitment(newSecret, newNullifierPreimage, denomination);
+  const newRLeaf = poseidonHash(newSecret, newNullifierPreimage);
+  const newRLeafBigint = bytes32ToBigint(newRLeaf) % SECP_N;
+  const newRecipientCommit = pedersenCommit(denomination, newRLeafBigint).toRawBytes(true);
+  const newKBtcPoint = deriveSlotKbtc(newRecipientCommit, denomination);
+  const newSlotSpk = slotScriptPubKeyFromKbtc(newKBtcPoint);
+  const oldOwnerPubkey = secp.getPublicKey(oldOwnerPriv, true);
+  const rotateMsg = computeSlotRotateMsg(
+    networkTag, assetId, denomination, oldNullifierHash,
+    newRecipientCommit, newLeafCommitment, paymentAssetId, paymentAmount,
+  );
+  const oldOwnerSig = signSchnorr(rotateMsg, oldOwnerPriv);
+  const payload = encodeTSlotRotatePayload({
+    networkTag, assetId, denomination,
+    oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof,
+    newRecipientCommit, newLeafHash: newLeafCommitment,
+    paymentAssetId, paymentAmount,
+    oldOwnerPubkey, oldOwnerSig,
+  });
+  return {
+    payload,
+    oldRLeaf,
+    oldRLeafBigint,
+    newSlotKbtc: newKBtcPoint,
+    newSlotScriptPubKey: newSlotSpk,
+    newRecipientCommit,
+    newSlotRecord: {
+      assetIdHex: bytesToHex(assetId),
+      denomination: denomination.toString(),
+      secretHex: bytesToHex(newSecret),
+      nullifierPreimageHex: bytesToHex(newNullifierPreimage),
+      leafCommitmentHex: bytesToHex(newLeafCommitment),
+      recipientCommitHex: bytesToHex(newRecipientCommit),
+      rLeafHex: bytesToHex(newRLeaf),
+      kBtcXOnlyHex: bytesToHex(slotXOnly(newKBtcPoint)),
+      slotScriptPubKeyHex: bytesToHex(newSlotSpk),
+      mintedAt: Date.now(),
+      rotatedFromNullifier: bytesToHex(oldNullifierHash),
+    },
   };
 }
 
@@ -40976,31 +41477,30 @@ function marketVolumeSats(asset) {
     'volume_sats',
     'market_volume_sats',
   ]);
-  // Compute the ring-buffer sum as a fallback / floor regardless of
-  // whether an explicit counter is present. Bounded at TRADES_RING_CAP
-  // entries so it approximates "last N trades" rather than true
-  // lifetime, but it's still a meaningful number when the worker's
-  // canonical counter hasn't caught up yet — see the catch-up logic
-  // below.
+  // Prefer the worker's explicit lifetime counter. It's now backed by a
+  // race-free trade-event journal + reconcile path (audit-walker
+  // bootstraps the journal from the 30-day xferseen window; reconcile
+  // republishes the canonical sum via a single put). The cron's chain-
+  // backfill also bumps the counter via _recordSettledTradeVolume on
+  // every settled AXFER, so the counter is authoritative for any asset
+  // the worker has indexed.
+  //
+  // Fall back to the recent-trades ring sum (≤200 entries) ONLY when
+  // the explicit counter is missing — that's an asset the worker hasn't
+  // produced a snapshot for yet, where the ring is the best signal
+  // available. Note: ring is bounded so it's an "approximation of
+  // recent N trades", NOT a lifetime number, and prices in the ring
+  // come from hint POSTs that aren't chain-cross-checked — for any
+  // asset with an explicit counter, the counter is strictly more
+  // trustworthy than max(counter, ring).
+  if (explicit != null) return explicit;
   const trades = Array.isArray(asset?.trades) ? asset.trades : null;
+  if (!trades || !trades.length) return null;
   let ringSum = 0;
-  if (trades && trades.length) {
-    for (const t of trades) {
-      const n = Number(t?.price_sats);
-      if (Number.isFinite(n) && n > 0) ringSum += n;
-    }
+  for (const t of trades) {
+    const n = Number(t?.price_sats);
+    if (Number.isFinite(n) && n > 0) ringSum += n;
   }
-  // Worker just gained a lifetime counter (tradeLifetimeKey), which
-  // bumps on every settled trade post-deploy. Older assets that
-  // traded before the counter existed have `sale_volume_sats` near
-  // zero or below the ring sum — a regression on the displayed
-  // Indexed Volume the moment the worker started shipping the field.
-  // Treat the explicit counter as a FLOOR (authoritative lower bound)
-  // rather than the only source: take max(explicit, ring) so the
-  // displayed value never goes backwards as the counter accumulates.
-  // Once the counter catches up to / exceeds the ring sum on its
-  // own, this max() resolves to the explicit value automatically.
-  if (explicit != null) return ringSum > 0 ? Math.max(explicit, ringSum) : explicit;
   return ringSum > 0 ? ringSum : null;
 }
 function marketVolume24hSats(asset) {
@@ -53479,6 +53979,20 @@ export {
   T_DROP, T_DCLAIM,
   encodeTDepositPayload, decodeTDepositPayload,
   encodeTWithdrawPayload, decodeTWithdrawPayload,
+  // SPEC-CBTC-ZK slot-wrapper opcodes + crypto helpers — exported for the
+  // worker↔dapp wire-format parity test and for dapp client code that builds
+  // mint/burn/rotate txs.
+  T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
+  encodeTSlotMintPayload, decodeTSlotMintPayload,
+  encodeTSlotBurnPayload, decodeTSlotBurnPayload,
+  encodeTSlotRotatePayload, decodeTSlotRotatePayload,
+  computeSlotMintMsg, computeSlotRotateMsg,
+  deriveSlotKbtc, slotXOnly, slotScriptPubKeyFromKbtc,
+  buildSlotMintEnvelope, buildSlotBurnEnvelope, buildSlotRotateEnvelope,
+  // BIP-341 key-path sighash + signer — used by the slot-spend reveal txs in
+  // T_SLOT_BURN / T_SLOT_ROTATE (signs with r_leaf as the secret scalar, not
+  // wallet.priv). Exported for the signet rehearsal harness to drive directly.
+  tapSighashKeyPath, signTaprootKeyPathInputWithKey,
   // T_DEPOSIT kernel-sig verifier + message helper — exported so
   // tests/mixer-conservation can drive the dapp's defense-in-depth check
   // directly against a stubbed fetchTx. Pairs with the worker's

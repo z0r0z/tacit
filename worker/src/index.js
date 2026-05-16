@@ -122,6 +122,9 @@ const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor
 const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §5.19)
+const T_SLOT_MINT   = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_BURN   = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
+const T_SLOT_ROTATE = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
 const N_BITS = 64; // amount range: [0, 2^64) — bulletproof rangeproof.
 const SECP_N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
 
@@ -157,6 +160,33 @@ function pedersenCommit(amount, blinding) {
   const aH = a === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(a);
   const rG = r === 0n ? PEDERSEN_ZERO : PEDERSEN_G.multiply(r);
   return aH.add(rG);
+}
+
+// SPEC-CBTC-ZK §5.21–§5.23: derive the slot's Bitcoin spending key from the
+// mixer leaf's Pedersen commitment. Identity:
+//   K_btc = recipient_commit − denomination · H = r_leaf · G
+// Anyone who can withdraw the mixer note (knowledge of r_leaf) can spend the
+// slot UTXO. The output script is OP_1 || <32-byte x_only(K_btc)>, with K_btc
+// used directly as the BIP-340 output key (no BIP-341 taproot tweak applied —
+// the design has no script-path leaves to commit to, so the tweak adds no
+// value and only complicates the spend path).
+function deriveSlotKbtc(recipientCommitmentBytes, denomination) {
+  const recipientPoint = compressedPointFromHex(bytesToHex(recipientCommitmentBytes));
+  const denomBig = BigInt(denomination);
+  const denomTimesH = denomBig === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(modN(denomBig));
+  return recipientPoint.add(denomTimesH.negate());
+}
+function slotXOnly(kBtcPoint) {
+  // Compressed point is 33 bytes (prefix || x); x-only is the 32-byte x.
+  return kBtcPoint.toRawBytes(true).slice(1);
+}
+function slotScriptPubKey(kBtcXOnly) {
+  // BIP-341 P2TR output: OP_1 (0x51) || OP_PUSHBYTES_32 (0x20) || 32-byte key
+  const sp = new Uint8Array(34);
+  sp[0] = 0x51;
+  sp[1] = 0x20;
+  sp.set(kBtcXOnly, 2);
+  return sp;
 }
 
 // SPEC §5.9: T_PMINT envelopes carry public (amount, blinding) alongside the
@@ -469,6 +499,17 @@ function poolNullifierKey(network, aid, denom, nullifierHex) {
 }
 function poolNullifierPrefix(network, aid, denom) {
   return network === 'signet' ? `poolnull:${aid}:${denom}:` : `poolnull:${network}:${aid}:${denom}:`;
+}
+// SPEC-CBTC-ZK §5.21–§5.23: slot-registry keys. Each self-custody-slot wrapper
+// tracks (K_btc_xonly → leaf_index) so coverage checks can find the backing
+// Bitcoin UTXO from a leaf's recipient_commit. xonly is the 64-char hex string.
+function slotRegistryKey(network, aid, denom, xonlyHex) {
+  return network === 'signet'
+    ? `slot:${aid}:${denom}:${xonlyHex}`
+    : `slot:${network}:${aid}:${denom}:${xonlyHex}`;
+}
+function slotRegistryPrefix(network, aid, denom) {
+  return network === 'signet' ? `slot:${aid}:${denom}:` : `slot:${network}:${aid}:${denom}:`;
 }
 // SPEC §3.6 — fixed merkle-tree depth L = 20, so each pool caps at
 // 2^20 = 1048576 leaves. Without enforcement here, the worker would
@@ -1058,7 +1099,11 @@ function lastTradeKey(network, aid) {
 // Daily volume bucket. One key per (network, asset, UTC-day) holding the
 // summed sats traded that day. Read-side sums the last two buckets to
 // build a rolling-24h figure (cheap: at most 2 KV.gets per asset). The
-// 7-day expirationTtl auto-collects stale buckets without a sweeper cron.
+// TTL (TRADE_DAY_TTL_SECONDS) auto-collects stale buckets without a
+// sweeper cron. Set to 31d so charts can render a 30d daily-volume
+// series without falling off the end (the 7d original was sized purely
+// for the 24h read; longer retention costs ~1 KV entry per asset-day).
+const TRADE_DAY_TTL_SECONDS = 31 * 86400;
 function tradeDayKey(network, aid, yyyymmdd) {
   return network === 'signet'
     ? `trade-day:${aid}:${yyyymmdd}`
@@ -1115,17 +1160,23 @@ function _utcYyyymmdd(tsSeconds) {
 }
 
 // Strict rolling-24h volume. Prefer the ring (timestamps are exact); fall
-// back to the today+yesterday UTC bucket sum only when the ring lacks the
-// resolution to cover the window. Bucket sum slides between 24h (00:00 UTC)
-// and 48h (23:59 UTC), so it's a last-resort approximation — naming the
-// field `volume_24h_sats` while serving up to 48h was misleading on quiet
-// networks where the ring already has the answer for free.
+// back to a pro-rated today+yesterday UTC bucket sum only when the ring
+// lacks the resolution to cover the window.
 //
 // Saturation case: ring full (length === TRADES_RING_CAP) AND every ring
 // entry is younger than the 24h cutoff — that means the asset traded >cap
 // times in 24h and the ring truncated older-but-still-in-window trades, so
-// the ring's sum is an undercount. Bucket sum is the bounded over-estimate;
-// pick it over the undercount.
+// the ring's sum is an undercount.
+//
+// In the saturation fallback, naively summing today+yesterday slides
+// between 24h (00:00 UTC) and 48h (23:59 UTC) and over-reports by up to
+// 2× near end-of-day. Instead: full `today` (the partial bucket since
+// midnight covers exactly secondsIntoDay) plus the proportional slice of
+// yesterday that lies inside the 24h window. With secondsIntoDay = nowSec
+// mod 86400, the relevant slice of yesterday is (86400 - secondsIntoDay)
+// seconds long. Approximate by scaling `yestSats` by that ratio under the
+// "uniform throughout the day" assumption — same assumption baked into
+// the original bucket fallback, just made precise instead of left to slide.
 function _rolling24hVolumeSats(tradesArr, todaySats, yestSats, nowSec) {
   if (Array.isArray(tradesArr) && tradesArr.length > 0) {
     const cutoff = nowSec - 86400;
@@ -1142,7 +1193,15 @@ function _rolling24hVolumeSats(tradesArr, todaySats, yestSats, nowSec) {
     const saturated = tradesArr.length >= TRADES_RING_CAP && oldestTs >= cutoff;
     if (!saturated) return sum;
   }
-  return (Number(todaySats) || 0) + (Number(yestSats) || 0);
+  const today = Number(todaySats) || 0;
+  const yest  = Number(yestSats)  || 0;
+  if (!Number.isFinite(nowSec) || nowSec <= 0) return today + yest;
+  // secondsIntoDay ∈ [0, 86400). At midnight UTC (s=0), the 24h window is
+  // exactly yesterday → ratio = 1. At 23:59 UTC (s≈86400), the window is
+  // exactly today → ratio = 0. Linear pro-rata between.
+  const secondsIntoDay = ((nowSec % 86400) + 86400) % 86400;
+  const yesterdayRatio = (86400 - secondsIntoDay) / 86400;
+  return today + Math.floor(yest * yesterdayRatio);
 }
 
 // Chain-side trade-volume derivation. The dapp's /hint POST is the
@@ -1292,7 +1351,7 @@ async function _recordSettledTradeVolume(env, network, assetIdHex, lastTrade) {
   try {
     const prevDay = await env.REGISTRY_KV.get(dayKey);
     const prevSats = prevDay ? (Number(prevDay) || 0) : 0;
-    await env.REGISTRY_KV.put(dayKey, String(prevSats + priceSats), { expirationTtl: 7 * 86400 });
+    await env.REGISTRY_KV.put(dayKey, String(prevSats + priceSats), { expirationTtl: TRADE_DAY_TTL_SECONDS });
   } catch { /* KV blip — bucket missing this trade is acceptable */ }
   // Lifetime cumulative counter — no TTL. Authoritative since the
   // counter started bumping.
@@ -4082,6 +4141,214 @@ function decodeTWithdrawPayload(payload) {
   };
 }
 
+// SPEC-CBTC-ZK §5.21 T_SLOT_MINT — atomic mint into self-custody slot.
+// Fixed-size payload: 1 + 1 + 32 + 8 + 33 + 32 + 32 + 8 + 33 + 64 = 244 bytes.
+const _SLOT_MINT_DOMAIN   = new TextEncoder().encode('tacit-slot-mint-v1');
+const _SLOT_ROTATE_DOMAIN = new TextEncoder().encode('tacit-slot-rotate-v1');
+function _computeSlotMintMsg(networkTag, assetIdBytes, denomination, recipientCommitBytes, leafHashBytes, paymentAssetIdBytes, paymentAmount) {
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    const d = BigInt(denomination);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const payLE = new Uint8Array(8);
+  {
+    const v = new DataView(payLE.buffer);
+    const p = BigInt(paymentAmount);
+    v.setUint32(0, Number(p & 0xffffffffn), true);
+    v.setUint32(4, Number((p >> 32n) & 0xffffffffn), true);
+  }
+  return sha256(concatBytes(
+    _SLOT_MINT_DOMAIN,
+    new Uint8Array([networkTag]),
+    assetIdBytes, denomLE,
+    recipientCommitBytes, leafHashBytes,
+    paymentAssetIdBytes, payLE,
+  ));
+}
+function decodeTSlotMintPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_MINT) return null;
+  if (payload.length !== 244) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const recipientCommitBytes = payload.slice(p, p + 33); p += 33;
+  // Recipient commit MUST be a valid compressed secp256k1 point — bail early
+  // so downstream K_btc derivation can't throw.
+  try { compressedPointFromHex(bytesToHex(recipientCommitBytes)); } catch { return null; }
+  const leafHashBytes = payload.slice(p, p + 32); p += 32;
+  const paymentAssetIdBytes = payload.slice(p, p + 32); p += 32;
+  const payView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const paymentAmount = (BigInt(payView.getUint32(4, true)) << 32n) | BigInt(payView.getUint32(0, true));
+  p += 8;
+  if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
+  const minterPubkeyBytes = payload.slice(p, p + 33); p += 33;
+  const minterSigBytes = payload.slice(p, p + 64); p += 64;
+  return {
+    kind: 'slot_mint',
+    network_tag: networkTag,
+    asset_id: bytesToHex(assetIdBytes),
+    denomination: denomination.toString(),
+    recipient_commitment: bytesToHex(recipientCommitBytes),
+    leaf_hash: bytesToHex(leafHashBytes),
+    payment_asset_id: bytesToHex(paymentAssetIdBytes),
+    payment_amount: paymentAmount.toString(),
+    minter_pubkey: bytesToHex(minterPubkeyBytes),
+    minter_sig: bytesToHex(minterSigBytes),
+    _msg: () => _computeSlotMintMsg(
+      networkTag, assetIdBytes, denomination,
+      recipientCommitBytes, leafHashBytes,
+      paymentAssetIdBytes, paymentAmount,
+    ),
+  };
+}
+
+// SPEC-CBTC-ZK §5.22 T_SLOT_BURN — atomic redeem from self-custody slot.
+// Variable-size payload due to Groth16 proof (matches T_WITHDRAW's proofLen-prefixed shape).
+function decodeTSlotBurnPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_BURN) return null;
+  const HEADER = 1 + 1 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 2;
+  if (payload.length < HEADER) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  const merkleRootBytes = payload.slice(p, p + 32); p += 32;
+  const nullifierHashBytes = payload.slice(p, p + 32); p += 32;
+  const recipientCommitmentBytes = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(recipientCommitmentBytes)); } catch { return null; }
+  const rLeafBytes = payload.slice(p, p + 32); p += 32;
+  const bindHashBytes = payload.slice(p, p + 32); p += 32;
+  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (p + proofLen !== payload.length) return null;
+  // Reuse the mixer's tacit-withdraw-bind-v1 binding — same public-input tuple.
+  const expectedBindHash = _computeWithdrawBindHash(
+    assetIdBytes, denomination, nullifierHashBytes, recipientCommitmentBytes, rLeafBytes,
+  );
+  for (let i = 0; i < 32; i++) if (expectedBindHash[i] !== bindHashBytes[i]) return null;
+  const proof = bytesToHex(payload.slice(p, p + proofLen));
+  return {
+    kind: 'slot_burn',
+    network_tag: networkTag,
+    asset_id: bytesToHex(assetIdBytes),
+    denomination: denomination.toString(),
+    merkle_root: bytesToHex(merkleRootBytes),
+    nullifier_hash: bytesToHex(nullifierHashBytes),
+    recipient_commitment: bytesToHex(recipientCommitmentBytes),
+    r_leaf: bytesToHex(rLeafBytes),
+    bind_hash: bytesToHex(bindHashBytes),
+    proof,
+  };
+}
+
+// SPEC-CBTC-ZK §5.23 T_SLOT_ROTATE — atomic transfer of self-custody slot.
+// Bundles a burn-side (old note) + mint-side (new leaf) + optional payment.
+function _computeSlotRotateMsg(networkTag, assetIdBytes, denomination, oldNullifierBytes, newRecipientCommitBytes, newLeafHashBytes, paymentAssetIdBytes, paymentAmount) {
+  const denomLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomLE.buffer);
+    const d = BigInt(denomination);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const payLE = new Uint8Array(8);
+  {
+    const v = new DataView(payLE.buffer);
+    const pmt = BigInt(paymentAmount);
+    v.setUint32(0, Number(pmt & 0xffffffffn), true);
+    v.setUint32(4, Number((pmt >> 32n) & 0xffffffffn), true);
+  }
+  return sha256(concatBytes(
+    _SLOT_ROTATE_DOMAIN,
+    new Uint8Array([networkTag]),
+    assetIdBytes, denomLE,
+    oldNullifierBytes,
+    newRecipientCommitBytes, newLeafHashBytes,
+    paymentAssetIdBytes, payLE,
+  ));
+}
+function decodeTSlotRotatePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_ROTATE) return null;
+  // 1 + 1 + 32 + 8 (header) + (32+32+33+32+32+2+proofLen) (old) + (33+32) (new)
+  // + (32+8) (payment) + (33+64) (old_owner_sig) = 442 + proofLen
+  const HEADER = 1 + 1 + 32 + 8;
+  if (payload.length < HEADER + 32 + 32 + 33 + 32 + 32 + 2) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  p += 8;
+  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
+  // Old-note burn-side fields
+  const oldMerkleRootBytes = payload.slice(p, p + 32); p += 32;
+  const oldNullifierHashBytes = payload.slice(p, p + 32); p += 32;
+  const oldRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(oldRecipientCommitBytes)); } catch { return null; }
+  const oldRLeafBytes = payload.slice(p, p + 32); p += 32;
+  const oldBindHashBytes = payload.slice(p, p + 32); p += 32;
+  const oldProofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  p += 2;
+  if (p + oldProofLen + 33 + 32 + 32 + 8 + 33 + 64 !== payload.length) return null;
+  const oldProof = payload.slice(p, p + oldProofLen); p += oldProofLen;
+  const expectedOldBind = _computeWithdrawBindHash(
+    assetIdBytes, denomination, oldNullifierHashBytes, oldRecipientCommitBytes, oldRLeafBytes,
+  );
+  for (let i = 0; i < 32; i++) if (expectedOldBind[i] !== oldBindHashBytes[i]) return null;
+  // New leaf mint-side fields
+  const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
+  const newLeafHashBytes = payload.slice(p, p + 32); p += 32;
+  // Optional payment leg (zero-valued if no payment)
+  const paymentAssetIdBytes = payload.slice(p, p + 32); p += 32;
+  const payView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const paymentAmount = (BigInt(payView.getUint32(4, true)) << 32n) | BigInt(payView.getUint32(0, true));
+  p += 8;
+  if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
+  // Old-owner signature binds rotation terms
+  const oldOwnerPubkeyBytes = payload.slice(p, p + 33); p += 33;
+  const oldOwnerSigBytes = payload.slice(p, p + 64); p += 64;
+  return {
+    kind: 'slot_rotate',
+    network_tag: networkTag,
+    asset_id: bytesToHex(assetIdBytes),
+    denomination: denomination.toString(),
+    old_merkle_root: bytesToHex(oldMerkleRootBytes),
+    old_nullifier_hash: bytesToHex(oldNullifierHashBytes),
+    old_recipient_commitment: bytesToHex(oldRecipientCommitBytes),
+    old_r_leaf: bytesToHex(oldRLeafBytes),
+    old_bind_hash: bytesToHex(oldBindHashBytes),
+    old_proof: bytesToHex(oldProof),
+    new_recipient_commitment: bytesToHex(newRecipientCommitBytes),
+    new_leaf_hash: bytesToHex(newLeafHashBytes),
+    payment_asset_id: bytesToHex(paymentAssetIdBytes),
+    payment_amount: paymentAmount.toString(),
+    old_owner_pubkey: bytesToHex(oldOwnerPubkeyBytes),
+    old_owner_sig: bytesToHex(oldOwnerSigBytes),
+    _msg: () => _computeSlotRotateMsg(
+      networkTag, assetIdBytes, denomination,
+      oldNullifierHashBytes, newRecipientCommitBytes, newLeafHashBytes,
+      paymentAssetIdBytes, paymentAmount,
+    ),
+  };
+}
+
 function decodeCBurnPayload(payload) {
   if (!payload) return null;
   if (payload.length < 1 + 32 + 8 + 64 + 1) return null;
@@ -5189,10 +5456,24 @@ async function handleAssetHint(req, env, network, cors, ctx) {
           // Gate on bumpTransferCount's idempotency signal — replays / re-
           // scans / a late hint after the cron's chain-backfill already
           // ran must NOT double-count. The helper handles last_trade +
-          // daily bucket + lifetime + ring writes uniformly so the hint
-          // endpoint and the cron's chain backfill produce identical
-          // aggregates.
-          if (counted) await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
+          // daily bucket + lifetime + ring + journal + cache-bust writes
+          // uniformly so the hint endpoint and the cron's chain backfill
+          // produce identical aggregates.
+          //
+          // Defer via ctx.waitUntil: the bookkeeping does ~5 KV ops
+          // (last_trade, day bucket, lifetime, ring, trade-event journal)
+          // plus a cache-bust, which would add ~50-100ms tail latency to
+          // the hint response. The response carries `last_trade` already,
+          // and bumpTransferCount has landed synchronously above, so the
+          // dapp's UI has everything it needs. Falls back to inline await
+          // when ctx is missing (tests, sync callers).
+          if (counted) {
+            if (ctx && typeof ctx.waitUntil === 'function') {
+              ctx.waitUntil(_recordSettledTradeVolume(env, network, dx.asset_id, lastTrade).catch(() => {}));
+            } else {
+              await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
+            }
+          }
         }
       } catch { /* BigInt parse failed — ignore, transfer counter bump still landed */ }
     }
@@ -10662,6 +10943,39 @@ async function scanForEtches(env, network) {
               await _recordSettledTradeVolume(env, network, dx.asset_id, lastTrade);
             }
           } catch { /* derivation is best-effort — the transfer count still landed */ }
+        } else if (!counted && (decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR)) {
+          // Hint landed first; the journal entry already exists with the
+          // dapp-supplied price. Run chain derivation anyway to detect
+          // disagreement — a chain-derived price that diverges from the
+          // hint signals a dapp pricing bug (T_AXFER_VAR scaling drift,
+          // batched-fill mis-attribution). We don't overwrite the journal
+          // (that would race with the hint write); instead we write a
+          // separate `volume-disagree:<aid>:<txid>` marker so triage can
+          // KV.list it. >1% threshold avoids alarm on rounding noise.
+          try {
+            const derived = await _deriveAxferTradeFromChain(env, network, tx, decoded.opcode, dx.asset_id);
+            if (derived && derived.price_sats > 0) {
+              const journalKey = tradeEventKey(network, dx.asset_id, tx.txid);
+              const hinted = await env.REGISTRY_KV.get(journalKey, 'json');
+              const hintedPx = Number(hinted?.price_sats || 0);
+              if (hintedPx > 0) {
+                const diffPct = Math.abs(derived.price_sats - hintedPx) / hintedPx;
+                if (diffPct > 0.01) {
+                  const disagreeKey = network === 'signet'
+                    ? `volume-disagree:${dx.asset_id}:${tx.txid}`
+                    : `volume-disagree:${network}:${dx.asset_id}:${tx.txid}`;
+                  await env.REGISTRY_KV.put(disagreeKey, JSON.stringify({
+                    asset_id: dx.asset_id, txid: tx.txid,
+                    hint_price_sats: hintedPx,
+                    chain_price_sats: derived.price_sats,
+                    diff_pct: Math.round(diffPct * 10000) / 100,
+                    detected_at: Math.floor(Date.now() / 1000),
+                    opcode: decoded.opcode === T_AXFER ? 'AXFER' : 'AXFER_VAR',
+                  }), { expirationTtl: 30 * 86400 });
+                }
+              }
+            }
+          } catch { /* observability is best-effort */ }
         }
         // Don't increment `found` — that counter is for new etches/mints/
         // burns specifically (used in the cron's status return). Transfers
@@ -10915,6 +11229,223 @@ async function scanForEtches(env, network) {
           await env.REGISTRY_KV.put(nKey, JSON.stringify(meta));
           found++;
         }
+      } else if (decoded.opcode === T_SLOT_MINT) {
+        // SPEC-CBTC-ZK §5.21. Self-custody-slot atomic mint. Verifies:
+        //   1. Pool init exists for (asset_id, denomination)
+        //   2. The minter's BIP-340 sig covers the envelope's claimed terms
+        //   3. tx.vout[0] is the slot P2TR at K_btc = recipient_commit − denom·H
+        //      with value == denomination (in sats)
+        // If valid, appends leaf to mixer pool and records slot in slot-registry.
+        // Supply tracking falls out of leaves_count − nullifiers_consumed.
+        const sm = decodeTSlotMintPayload(decoded.payload);
+        if (!sm) continue;
+        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, sm.asset_id, sm.denomination), 'json');
+        if (!initRec) continue;
+        // Network-tag must match the scan network (defends against cross-net replay
+        // even though asset_id alone usually disambiguates).
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (sm.network_tag !== expectedNetTag) continue;
+        // Verify minter signature over the claimed terms. The minter binds the LP
+        // to (asset_id, denom, recipient_commit, leaf, payment_asset, payment_amount)
+        // — without this the LP could be silently re-targeted to a different leaf.
+        let minterMsg;
+        try { minterMsg = sm._msg(); } catch { continue; }
+        let minterXOnly;
+        try {
+          const minterPt = compressedPointFromHex(sm.minter_pubkey);
+          minterXOnly = minterPt.toRawBytes(true).slice(1);
+        } catch { continue; }
+        if (!verifySchnorr(hexToBytes(sm.minter_sig), minterMsg, minterXOnly)) continue;
+        // Verify the slot UTXO at vout[0] matches the derived K_btc.
+        const recipientCommitBytes = hexToBytes(sm.recipient_commitment);
+        let kBtcPoint;
+        try { kBtcPoint = deriveSlotKbtc(recipientCommitBytes, sm.denomination); }
+        catch { continue; }
+        if (kBtcPoint.equals(PEDERSEN_ZERO)) continue;
+        const expectedSpk = slotScriptPubKey(slotXOnly(kBtcPoint));
+        const vout0Spk = tx.vout?.[0]?.scriptpubkey;
+        if (typeof vout0Spk !== 'string' || vout0Spk.toLowerCase() !== bytesToHex(expectedSpk)) continue;
+        const vout0Val = tx.vout?.[0]?.value;
+        if (typeof vout0Val !== 'number' || BigInt(vout0Val) !== BigInt(sm.denomination)) continue;
+        // Leaf cap (same as T_DEPOSIT — pool tree depth 20).
+        const cntKey = poolLeafCountKey(network, sm.asset_id, sm.denomination);
+        const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+        if (cnt >= POOL_LEAF_CAP) continue;
+        // Append the leaf and record the slot entry.
+        const leafKey = poolLeafKeyFor(network, sm.asset_id, sm.denomination, h, txIndex, tx.txid);
+        const leafMeta = {
+          asset_id: sm.asset_id,
+          denomination: sm.denomination,
+          leaf_commitment: sm.leaf_hash,
+          deposit_txid: tx.txid,
+          tx_index: txIndex,
+          deposited_at_height: h,
+          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          network,
+          kind: 'slot_mint',
+          recipient_commitment: sm.recipient_commitment,
+        };
+        await env.REGISTRY_KV.put(leafKey, JSON.stringify(leafMeta));
+        await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        const xonlyHex = bytesToHex(slotXOnly(kBtcPoint));
+        const slotKey = slotRegistryKey(network, sm.asset_id, sm.denomination, xonlyHex);
+        await env.REGISTRY_KV.put(slotKey, JSON.stringify({
+          asset_id: sm.asset_id,
+          denomination: sm.denomination,
+          k_btc_xonly: xonlyHex,
+          recipient_commitment: sm.recipient_commitment,
+          leaf_index: cnt,
+          mint_txid: tx.txid,
+          mint_height: h,
+          status: 'live',
+          network,
+        }));
+        found++;
+      } else if (decoded.opcode === T_SLOT_BURN) {
+        // SPEC-CBTC-ZK §5.22. Self-custody-slot atomic redeem. The full
+        // soundness chain (Groth16 verify + Bitcoin Schnorr key-path verify) is
+        // dapp-authoritative per SPEC §5.11.4 three-verifier model; the worker
+        // structurally decodes, records the nullifier, and marks the slot as
+        // redeemed. Indexer determinism: bind_hash recomputation is in the
+        // decoder so a malformed envelope cannot drive the spent-set.
+        const sb = decodeTSlotBurnPayload(decoded.payload);
+        if (!sb) continue;
+        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, sb.asset_id, sb.denomination), 'json');
+        if (!initRec) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (sb.network_tag !== expectedNetTag) continue;
+        const nKey = poolNullifierKey(network, sb.asset_id, sb.denomination, sb.nullifier_hash);
+        const existing = await env.REGISTRY_KV.get(nKey);
+        if (!existing) {
+          await env.REGISTRY_KV.put(nKey, JSON.stringify({
+            asset_id: sb.asset_id,
+            denomination: sb.denomination,
+            nullifier_hash: sb.nullifier_hash,
+            withdraw_txid: tx.txid,
+            withdrawn_at_height: h,
+            withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            network,
+            kind: 'slot_burn',
+          }));
+          // Mark slot as redeemed in slot-registry (best-effort — the dapp
+          // re-derives K_btc from recipient_commit independently).
+          try {
+            const recipientCommitBytes = hexToBytes(sb.recipient_commitment);
+            const kBtcPoint = deriveSlotKbtc(recipientCommitBytes, sb.denomination);
+            if (!kBtcPoint.equals(PEDERSEN_ZERO)) {
+              const xonlyHex = bytesToHex(slotXOnly(kBtcPoint));
+              const slotKey = slotRegistryKey(network, sb.asset_id, sb.denomination, xonlyHex);
+              const slot = await env.REGISTRY_KV.get(slotKey, 'json');
+              if (slot && slot.status !== 'redeemed') {
+                slot.status = 'redeemed';
+                slot.burn_txid = tx.txid;
+                slot.burn_height = h;
+                await env.REGISTRY_KV.put(slotKey, JSON.stringify(slot));
+              }
+            }
+          } catch { /* registry update is best-effort */ }
+          found++;
+        }
+      } else if (decoded.opcode === T_SLOT_ROTATE) {
+        // SPEC-CBTC-ZK §5.23. Self-custody-slot atomic transfer. Bundles a
+        // burn-side (old note's nullifier consumed) with a mint-side (new
+        // leaf appended) plus the old owner's BIP-340 sig binding the
+        // rotation terms. Supply is conserved (one nullifier in, one leaf
+        // out — net zero on supply count).
+        const sr = decodeTSlotRotatePayload(decoded.payload);
+        if (!sr) continue;
+        const initRec = await env.REGISTRY_KV.get(poolInitKey(network, sr.asset_id, sr.denomination), 'json');
+        if (!initRec) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (sr.network_tag !== expectedNetTag) continue;
+        // Verify old-owner signature binds the rotation's downstream terms.
+        let rotateMsg;
+        try { rotateMsg = sr._msg(); } catch { continue; }
+        let ownerXOnly;
+        try {
+          const ownerPt = compressedPointFromHex(sr.old_owner_pubkey);
+          ownerXOnly = ownerPt.toRawBytes(true).slice(1);
+        } catch { continue; }
+        if (!verifySchnorr(hexToBytes(sr.old_owner_sig), rotateMsg, ownerXOnly)) continue;
+        // Verify new slot UTXO at vout[0] matches new K_btc.
+        let newKBtcPoint;
+        try {
+          newKBtcPoint = deriveSlotKbtc(hexToBytes(sr.new_recipient_commitment), sr.denomination);
+        } catch { continue; }
+        if (newKBtcPoint.equals(PEDERSEN_ZERO)) continue;
+        const expectedNewSpk = slotScriptPubKey(slotXOnly(newKBtcPoint));
+        const vout0Spk = tx.vout?.[0]?.scriptpubkey;
+        if (typeof vout0Spk !== 'string' || vout0Spk.toLowerCase() !== bytesToHex(expectedNewSpk)) continue;
+        const vout0Val = tx.vout?.[0]?.value;
+        if (typeof vout0Val !== 'number' || BigInt(vout0Val) !== BigInt(sr.denomination)) continue;
+        // Append new leaf (mint side).
+        const cntKey = poolLeafCountKey(network, sr.asset_id, sr.denomination);
+        const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+        if (cnt >= POOL_LEAF_CAP) continue;
+        const leafKey = poolLeafKeyFor(network, sr.asset_id, sr.denomination, h, txIndex, tx.txid);
+        await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+          asset_id: sr.asset_id,
+          denomination: sr.denomination,
+          leaf_commitment: sr.new_leaf_hash,
+          deposit_txid: tx.txid,
+          tx_index: txIndex,
+          deposited_at_height: h,
+          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          network,
+          kind: 'slot_rotate_new',
+          recipient_commitment: sr.new_recipient_commitment,
+        }));
+        await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        const newXonlyHex = bytesToHex(slotXOnly(newKBtcPoint));
+        await env.REGISTRY_KV.put(
+          slotRegistryKey(network, sr.asset_id, sr.denomination, newXonlyHex),
+          JSON.stringify({
+            asset_id: sr.asset_id,
+            denomination: sr.denomination,
+            k_btc_xonly: newXonlyHex,
+            recipient_commitment: sr.new_recipient_commitment,
+            leaf_index: cnt,
+            mint_txid: tx.txid,
+            mint_height: h,
+            status: 'live',
+            rotation_predecessor_nullifier: sr.old_nullifier_hash,
+            network,
+          }),
+        );
+        // Record old nullifier (burn side). Idempotent: only the first
+        // rotation per nullifier counts; reorgs are reset elsewhere.
+        const nKey = poolNullifierKey(network, sr.asset_id, sr.denomination, sr.old_nullifier_hash);
+        const existing = await env.REGISTRY_KV.get(nKey);
+        if (!existing) {
+          await env.REGISTRY_KV.put(nKey, JSON.stringify({
+            asset_id: sr.asset_id,
+            denomination: sr.denomination,
+            nullifier_hash: sr.old_nullifier_hash,
+            withdraw_txid: tx.txid,
+            withdrawn_at_height: h,
+            withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            network,
+            kind: 'slot_rotate_old',
+            rotation_successor_leaf: sr.new_leaf_hash,
+          }));
+        }
+        // Mark old slot as rotated (best-effort).
+        try {
+          const oldKBtcPoint = deriveSlotKbtc(hexToBytes(sr.old_recipient_commitment), sr.denomination);
+          if (!oldKBtcPoint.equals(PEDERSEN_ZERO)) {
+            const oldXonlyHex = bytesToHex(slotXOnly(oldKBtcPoint));
+            const oldSlotKey = slotRegistryKey(network, sr.asset_id, sr.denomination, oldXonlyHex);
+            const oldSlot = await env.REGISTRY_KV.get(oldSlotKey, 'json');
+            if (oldSlot && oldSlot.status !== 'rotated' && oldSlot.status !== 'redeemed') {
+              oldSlot.status = 'rotated';
+              oldSlot.rotated_txid = tx.txid;
+              oldSlot.rotated_height = h;
+              oldSlot.rotated_successor_xonly = newXonlyHex;
+              await env.REGISTRY_KV.put(oldSlotKey, JSON.stringify(oldSlot));
+            }
+          }
+        } catch { /* best-effort */ }
+        found++;
       } else if (decoded.opcode === T_DROP) {
         // SPEC §5.12. Two payload shapes share opcode 0x2B:
         //   - Standard (per_claim > 0): registers a new claim pool keyed by
@@ -11229,10 +11760,14 @@ export {
   decodeCEtchPayload, decodeCMintPayload, decodeCXferPayload, decodeAxferPayload, decodeAxferVarPayload, decodeCBurnPayload,
   decodeCPetchPayload, decodeCPmintPayload,
   decodeTDepositPayload, decodeTWithdrawPayload,
+  decodeTSlotMintPayload, decodeTSlotBurnPayload, decodeTSlotRotatePayload,
+  deriveSlotKbtc, slotXOnly, slotScriptPubKey,
+  slotRegistryKey, slotRegistryPrefix,
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
   encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
   dropIdFromRevealTxid,
   T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_AXFER_VAR, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
+  T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
   // Mixer kernel-sig verifier — exported so tests/mixer-conservation can
   // drive it directly against a stubbed apiJson/fetch and confirm the
   // Conservation invariant (SPEC §5.11.4 #1) is enforced. Without dedicated
