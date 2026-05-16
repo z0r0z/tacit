@@ -1,4 +1,4 @@
-# SPEC §5.34–§5.44 Amendment — cBTC.tac (Canonical Wrapped Bitcoin)
+# SPEC §5.34–§5.46 Amendment — cBTC.tac (Canonical Wrapped Bitcoin)
 
 > **STATUS: DRAFT** (2026-05-17). Defines `cBTC.tac`, tacit's
 > canonical fungible wrapped-Bitcoin asset. Users mint cBTC.tac via
@@ -37,13 +37,17 @@
 > protocol; cBTC.tac shares are economic claims backed by slashable
 > collateral. For trustless pure-BTC self-custody, use cBTC.zk.
 >
-> **No governance.** Every parameter in this amendment is either
-> fixed at launch or formulaically derived from chain-observable
-> state. There is no DAO, no voting, no proposal mechanism, no
-> emergency multisig. Mistakes can only be fixed by a formal SPEC
-> amendment (i.e., a hard fork) with deployed worker + dapp updates.
-> This is the minimum-blast-radius choice — Uniswap V2-style
-> immutability for the wrapper.
+> **Governance: scoped + bounded.** The protocol ships fully
+> operational with fixed default parameters; no governance vote is
+> required for any operation. A SUBSET of parameters can optionally
+> be tuned by TAC DAO governance within pre-defined safety bands
+> (§5.46). Adjustments outside the bands — and changes to load-
+> bearing mechanics (slashing, conservation invariants, settlement
+> atomicity, cryptographic primitives) — require a formal SPEC
+> amendment, not a vote. Hard limits are enumerated explicitly. The
+> design principle: mechanical defaults work without any governance,
+> bounded adjustability provides flexibility, hard limits prevent
+> governance-attack surface from compromising the trust model.
 
 ---
 
@@ -93,29 +97,38 @@ are separate from cBTC.tac itself.)
 
 ---
 
-## Why no governance
+## Governance principles
 
-Three reasons:
+The protocol is designed for **bounded governance**: mechanical
+defaults that work without any votes, narrowly-scoped parameter
+adjustments within safety bands when TAC holders choose to engage,
+and hard limits that prevent governance attacks on load-bearing
+mechanics. Three reasons this shape is the right choice:
 
-1. **Minimal blast radius.** A protocol with no governance has no
-   governance-attack surface. There is no proposal to game, no
-   voting to capture, no multisig to compromise. The protocol is
-   defined by its code; changes require a formal amendment with
-   community-coordinated deployment.
+1. **Minimal blast radius by default.** Without any governance
+   activity, the protocol is fully operational using fixed-at-launch
+   parameters. There is no proposal to game, no vote to capture, no
+   multisig to compromise as a precondition for normal operation.
+   Governance is opt-in, not required.
 
 2. **Honest peg semantics.** cBTC.tac is market-priced, not peg-
    defended. There is no "central bank" to intervene if the market
    price diverges from the implied backing. The market discovers
    the actual exchange rate; arbitrage with the deposit/withdraw
    path keeps it close to 1:1 with BTC under normal conditions.
+   Governance has no role in pricing.
 
-3. **Composability.** Downstream protocols (AMMs, lending, etc.) can
-   integrate cBTC.tac knowing its mechanics will never change under
-   them. No "the DAO voted to change the collateral ratio" risk.
+3. **Composability with bounded surprise.** Downstream protocols
+   can integrate cBTC.tac knowing the mechanism is bounded — even
+   under maximally-active governance, parameters can only move
+   within explicit safety bands, and load-bearing mechanics (slashing,
+   conservation, settlement) cannot be touched. Hard limits are
+   enumerated explicitly in §5.46.5.
 
-Every parameter is either fixed at launch (constants) or derived
-formulaically from chain-observable state (formulas). The full list
-is in §5.41.
+Most parameters are fixed at launch (constants in §5.41) or derived
+formulaically from chain-observable state. A subset is tunable by
+TAC DAO governance within safety bands (§5.46.2). Load-bearing
+mechanics are immutable without a formal SPEC amendment (§5.46.5).
 
 ---
 
@@ -836,21 +849,22 @@ condition clears, deposits resume automatically. Withdraws,
 force-closes, and slash claims continue regardless of pause state —
 the system always allows users to exit existing positions.
 
-### 5.41.4 Why no governance
+### 5.41.4 Governance scope
 
-Every parameter above is either:
+The protocol ships fully operational with the constants above
+fixed at their default values. **No governance vote is required
+for any operation.**
 
-- A safety constant chosen conservatively at launch (1.2, 1.5, 2.0,
-  6, 30, etc.) where the cost of having it slightly suboptimal is
-  much lower than the risk of having a governance attack on it.
-- A formula reading directly from chain state (pool depth, TAC FDV)
-  with no human-set knob.
+A subset of these parameters can OPTIONALLY be tuned by TAC DAO
+governance within pre-defined safety bands (§5.46). Adjustments
+outside the bands, or changes to load-bearing mechanics (slashing,
+conservation invariants, settlement atomicity, cryptographic
+primitives), require a formal SPEC amendment — not a vote.
 
-If a parameter turns out to be wrong, the fix is a SPEC amendment
-with new constants + deployed indexer/dapp update + coordinated
-activation. This is more expensive than a governance vote but it's
-also more honest — the protocol is what the code says, not what a
-vote could decide.
+This gives the protocol both immutability for safety-critical
+properties and tunable flexibility for risk parameters that may
+need to adapt to market conditions over years. The hard limits
+are enumerated in §5.46.5.
 
 ---
 
@@ -1005,6 +1019,321 @@ Add to §3 *opcodes table*:
 
 (`0x48` reserved by `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` for
 `T_SLOT_NOTE`.)
+
+---
+
+## §5.45 Robustness mechanics
+
+Three additions that deepen the protocol's resilience under stress.
+Each is mechanical (no governance decision required to trigger),
+chain-derived from observable state, and well-precedented in
+production DeFi.
+
+### 5.45.1 Stability fee
+
+A continuous fee on bonded TAC, accruing per block to the insurance
+pool. Funds the protocol's defensive reserve over time without
+requiring governance to distribute revenue.
+
+```
+fee_per_block(position) = position.bond_amount_TAC × STABILITY_FEE_BPS / 10000 / BLOCKS_PER_YEAR
+```
+
+Where `BLOCKS_PER_YEAR = 52596` (Bitcoin's ~10-minute block target),
+and `STABILITY_FEE_BPS = 25` (0.25% APR) by default.
+
+Accrual is computed lazily — the indexer doesn't update every
+position every block. Instead, at any event touching a position
+(top-up, withdraw, force-close), the accrued fee since
+`position.deposit_height` (or last event height) is computed and
+moved from the bond to `insurance_pool_TAC`:
+
+```
+on event touching position[L] at block H:
+  elapsed_blocks = H - position[L].last_fee_event_height
+  accrued_fee_TAC = position[L].bond_amount_TAC × STABILITY_FEE_BPS × elapsed_blocks
+                  / 10000 / BLOCKS_PER_YEAR
+  insurance_pool_TAC += accrued_fee_TAC
+  position[L].bond_amount_TAC -= accrued_fee_TAC
+  position[L].last_fee_event_height = H
+```
+
+At healthy withdraw, the operator receives `bond_amount_TAC` after
+all accrued fees have been deducted. The fee acts like a slow
+demurrage on idle bond capital.
+
+Economic effect: a 1-year-open 1 BTC position with 800,000 TAC bond
+accrues 2,000 TAC of fees (0.25% × 800,000) to the insurance pool.
+Modest enough not to deter long-duration positions, meaningful in
+aggregate as TVL scales.
+
+### 5.45.2 Liquidation penalty
+
+An additional charge taken from the bond on `T_CBTC_TAC_FORCE_CLOSE`,
+moved to the insurance pool. Discourages risky positions near the
+liquidation threshold and funds defensive reserves.
+
+```
+on T_CBTC_TAC_FORCE_CLOSE:
+  // [existing logic: rate-limit, health check, etc.]
+
+  // Take penalty BEFORE AMM swap (in TAC, direct to insurance pool)
+  penalty_TAC = position.bond_amount_TAC × LIQUIDATION_PENALTY_BPS / 10000
+  insurance_pool_TAC += penalty_TAC
+
+  // Remaining TAC swapped for BTC
+  swap_TAC_input = position.bond_amount_TAC - penalty_TAC
+  swap_BTC_output = amm_swap(TAC → cBTC.tac_canonical,
+                             amount=swap_TAC_input,
+                             min_out=envelope.amm_swap_min_BTC_out)
+
+  // [existing logic: liquidator reward, reserve credit, position close]
+```
+
+Default `LIQUIDATION_PENALTY_BPS = 200` (2% of bond).
+
+Net effect at force-close: 2% of bond goes to insurance pool, ~98%
+swapped for BTC. Of the BTC output, 0.5% is liquidator reward and
+the remainder credits redemption_reserve. The 2% penalty plus the
+LIQUIDATION_RATIO buffer (1.2x means 20% over par) means the system
+nets a 22% defensive buffer per force-close in expectation. Strong
+solvency reinforcement.
+
+### 5.45.3 Aggregate recovery mode
+
+System-level invariant that triggers tighter rules when aggregate
+collateralization degrades. Inspired by Liquity's recovery mode —
+prevents one cascading position from dragging the system below
+solvency.
+
+The aggregate collateralization ratio:
+
+```
+aggregate_ratio(H) = (total_bonded_TAC × TWAP_TAC_per_BTC(H))
+                  / total_cBTC.tac_supply
+```
+
+Trigger: `aggregate_ratio < AGGREGATE_RECOVERY_RATIO = 1.5x`
+
+Effects when triggered:
+
+1. **Effective liquidation threshold tightens** from `LIQUIDATION_RATIO`
+   (1.2x) to `AGGREGATE_RECOVERY_RATIO` (1.5x). All positions below
+   1.5x become force-closeable. This aggressively de-risks the
+   collateral pool.
+2. **`PAUSE_NEW_DEPOSITS` triggers** (§5.41.3). No new positions
+   open while the system is in recovery.
+3. **Withdrawals, force-closes, slash claims continue normally** —
+   exits are never blocked.
+
+Exit condition: `aggregate_ratio ≥ AGGREGATE_RECOVERY_RATIO`
+sustained for `RECOVERY_EXIT_BLOCKS = 100` consecutive blocks. The
+sustained-recovery requirement prevents oscillation around the
+threshold.
+
+The recovery mode is automatic from chain-observable state — no
+vote, no manual trigger. It activates and deactivates based purely
+on the aggregate_ratio crossing the threshold with the appropriate
+direction and persistence.
+
+### 5.45.4 Combined effect on per-share value
+
+The three mechanics interact additively:
+
+- **Stability fee**: insurance pool grows linearly with time × TVL
+  even in absence of any rugs. Per-share insurance creeps upward.
+- **Liquidation penalty**: insurance pool gains 2% per force-close
+  event. Stress events build defensive buffer.
+- **Recovery mode**: prevents per-share value from degrading below
+  the aggregate floor; tightens parameters under stress.
+
+Over a multi-year horizon with normal-volatility markets, this
+produces a steady upward drift in cBTC.tac's intrinsic value above
+1 BTC (insurance accrual exceeds rug losses in expectation). Under
+stress, the recovery mode prevents catastrophic value loss.
+
+### 5.45.5 Parameter additions to §5.41
+
+New constants:
+
+```
+STABILITY_FEE_BPS         = 25      (0.25% APR on bond_amount_TAC)
+LIQUIDATION_PENALTY_BPS   = 200     (2% of bond at force-close)
+AGGREGATE_RECOVERY_RATIO  = 1.5     (recovery mode trigger)
+RECOVERY_EXIT_BLOCKS      = 100     (sustained recovery before exit)
+BLOCKS_PER_YEAR           = 52596   (~Bitcoin block target)
+```
+
+All have safety bands defined in §5.46.2 if tuned by governance.
+
+---
+
+## §5.46 Scoped TAC DAO governance
+
+The protocol ships with fixed parameters that work without any
+governance. This section defines **optional** governance hooks that
+allow TAC holders to tune parameters within pre-defined safety
+bands without re-introducing the broad governance-attack surface
+we deliberately avoided.
+
+The design principle: **mechanical defaults + bounded adjustability**.
+TAC holders can refine risk parameters, but they cannot rescind
+slashes, change settlement atomicity, or alter the fundamental
+trust model. Hard limits are enumerated and enforced at the
+validator level.
+
+### 5.46.1 Why TAC holders are the right governance class
+
+TAC holders bear the protocol's economic risk: their TAC backstops
+cBTC.tac via the bond mechanism, their LP positions feed the
+oracle, their treasury funds protocol operations. Aligning the
+governance class with the risk-bearing class is the cleanest
+distribution-of-authority shape.
+
+### 5.46.2 Tier A — Slow governance (14-day timelock)
+
+These parameters affect the risk profile of new positions.
+Adjustable within safety bands; changes apply prospectively only
+(existing positions retain their fractionalize-time parameters).
+
+| Parameter | Default | Safety band |
+|---|---|---|
+| `INITIAL_BOND_RATIO` | 2.0 | [1.5, 5.0] |
+| `WARNING_RATIO` | 1.5 | [1.2, 2.5] |
+| `LIQUIDATION_RATIO` | 1.2 | [1.1, 2.0] |
+| `AGGREGATE_RECOVERY_RATIO` | 1.5 | [1.3, 2.5] |
+| `STABILITY_FEE_BPS` | 25 | [0, 200] |
+| `LIQUIDATION_PENALTY_BPS` | 200 | [0, 500] |
+| `LIQUIDATOR_REWARD_FRACTION` | 0.005 | [0.001, 0.02] |
+| `MAX_POOL_FRAC` | 0.10 | [0.05, 0.20] |
+| `MAX_BONDED_FRAC_OF_TAC_FDV` | 0.25 | [0.10, 0.30] |
+| `MAX_SINGLE_POSITION_BTC` | 10 BTC | [1 BTC, 50 BTC] |
+| `TWAP_WINDOW` | 180 blocks | [60, 1440] |
+| `MAX_FORCE_CLOSES_PER_BLOCK` | 5 | [1, 20] |
+
+Adjustments outside these bands require a formal SPEC amendment
+(i.e., a hard fork), not a governance vote.
+
+### 5.46.3 Tier B — Fast governance (24-hour timelock)
+
+Emergency-tunable parameters for responding to acute conditions.
+Shorter timelock balances safety response against governance
+capture risk.
+
+| Parameter | Default | Notes |
+|---|---|---|
+| Manual pause trigger | off | Forces `PAUSE_NEW_DEPOSITS` regardless of automatic conditions |
+| Manual pause release | n/a | Lifts a manually-set pause (automatic conditions still apply) |
+| `STALE_PRICE_BLOCKS` | 1000 | [100, 10000] |
+| Oracle fallback source | primary | Switch to a designated backup AMM if primary becomes manipulated |
+
+### 5.46.4 Tier C — Treasury / distribution (14-day timelock)
+
+Decisions about accumulated reserves with no purely-mechanical
+default destination.
+
+| Decision | Default behavior absent governance |
+|---|---|
+| Insurance pool residue (if unclaimed for > 6 months) | Remains in pool indefinitely |
+| Treasury deployment (ecosystem grants, dev funding, etc.) | No automatic deployment |
+| New wrapper variant onboarding | Each requires its own SPEC amendment |
+
+### 5.46.5 Hard limits — IMMUTABLE, cannot be changed by governance
+
+These are load-bearing for the trust model. Changing any of these
+requires a formal SPEC amendment plus coordinated deployment, NOT
+a governance vote:
+
+- **Cryptographic primitives**: Pedersen commit construction,
+  Groth16 verification keys, Poseidon₂ specification, secp256k1
+  hardness assumption.
+- **Conservation invariants**: INV-POOL, INV-MINT, INV-1 from
+  SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.28.
+- **Slashing mechanics**: rug detection rules (INV-1 break →
+  SLASH_DETECTED), bond destination (insurance pool, not
+  rerouted by governance), per-share insurance computation.
+- **Atomic settlement**: T_CBTC_TAC_WITHDRAW must atomically burn
+  cBTC.tac + spend K_btc in one Bitcoin tx. No governance can
+  decouple these.
+- **Retroactivity prohibition**: a governance change to any Tier A
+  parameter applies ONLY to new positions confirmed after the
+  timelock expires. Existing positions retain their original
+  parameters until natural close.
+- **Opcode assignments**: 0x43–0x4E reservations are fixed by SPEC.
+- **The trust model itself**: governance can't change "cBTC.tac is
+  TAC-bonded" into something else. That would be a new wrapper
+  variant under a different suffix.
+
+### 5.46.6 Voting mechanism
+
+Standard TAC-weighted on-chain governance:
+
+- **Vote weight**: TAC balance at proposal-snapshot block, INCLUDING
+  TAC backing the holder's LP positions in canonical cBTC.tac/TAC
+  and cBTC.zk/TAC AMM pools. The LP-derived TAC is computed as
+  `(holder_lp_balance / pool_lp_supply) × pool_tac_reserve` at the
+  snapshot block. This means LPs vote with their full TAC economic
+  exposure, not just their unlocked balance.
+- **Proposal threshold**: 0.5% of circulating TAC to submit
+- **Quorum**: 5% of circulating TAC must participate for validity
+- **Approval threshold**: 60% of votes cast in favor
+- **Timelock**: per tier (14 days slow, 24 hours fast)
+- **Veto safety valve**: 67% supermajority can veto any pending
+  proposal during its timelock window (prevents 50.1% capture)
+
+**LP-aligned governance is a structural property.** LPs in the
+canonical AMM pools are the participants whose actions directly
+produce the oracle's TWAP signal. They have the strongest economic
+incentive for oracle integrity (manipulating the price hurts their
+own LP returns) and the best information about market conditions
+(swap flows visible to them directly). Counting their TAC-side
+LP exposure as voting weight auto-aligns oracle stewardship with
+the people most affected by oracle decisions. No special "LP-only
+vote class" is needed — the LP economic stake naturally amplifies
+in oracle-relevant proposals.
+
+The voting envelope format and validator logic are specified in a
+**separate governance amendment** (TBD). This amendment defines
+the SCOPE of governance over cBTC.tac parameters but doesn't
+specify the voting wire format — that's protocol-wide infrastructure
+spec'd cross-amendment.
+
+Until the governance amendment ships, all parameters in §5.46.2 /
+§5.46.3 / §5.46.4 operate at their defaults. The protocol works
+fully without any governance vote ever happening.
+
+### 5.46.7 Existing-position protection (retroactivity rule)
+
+A governance change to any Tier A parameter applies prospectively
+only. Concretely:
+
+```
+on T_CBTC_TAC_DEPOSIT at block H:
+  // Resolve parameters from governance state as of block H
+  resolved_params = governance_params_at(H)
+  position[target_leaf_hash].params_snapshot = resolved_params
+  // ... rest of validator
+```
+
+All subsequent operations on the position use
+`params_snapshot`, not the current-block parameters. If governance
+later raises `INITIAL_BOND_RATIO` from 2.0 → 3.0, existing 2.0x
+positions remain valid and can withdraw normally; new positions
+must meet the 3.0x bar.
+
+This is critical for user trust: operators can rely on the rules
+under which they opened their position. Governance cannot
+retroactively make their position liquidatable.
+
+### 5.46.8 What happens if governance never activates
+
+The protocol is fully operational without any governance vote.
+Defaults are conservative and well-precedented. cBTC.tac can run
+indefinitely with zero governance participation — all parameters
+stay at their launch values, all mechanics execute as specified.
+
+Governance is an OPTIONAL adjustment layer, not a required
+operational dependency.
 
 ---
 
