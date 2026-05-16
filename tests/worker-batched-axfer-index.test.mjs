@@ -379,23 +379,54 @@ await test('strict cutoff: trade at now-86401 does NOT count (< cutoff)', () => 
   return _rolling24hVolumeSats(r, '0', '0', NOW_RTV) === 0;
 });
 
-await test('empty ring falls back to today+yesterday bucket sum', () => {
-  return _rolling24hVolumeSats([], '700', '300', NOW_RTV) === 1000;
+await test('empty ring falls back to pro-rated today + yesterday-slice', () => {
+  // NOW_RTV = 1_700_000_000. NOW_RTV % 86400 = 80000 → 80000s into today
+  // (≈22.2h). secondsRemainingFromYesterday = 6400 (≈1.78h still in window).
+  // yesterdayRatio = 6400/86400 ≈ 0.0741.
+  // Result: today(700) + floor(yest(300) × 0.0741) = 700 + 22 = 722.
+  return _rolling24hVolumeSats([], '700', '300', NOW_RTV) === 722;
 });
 
-await test('null ring falls back to bucket sum', () => {
+await test('null ring falls back to pro-rated bucket sum', () => {
+  // yest=0 collapses pro-rata to 0; result == today.
   return _rolling24hVolumeSats(null, '500', '0', NOW_RTV) === 500;
 });
 
-await test('ring is saturated (full + every entry within 24h) → fall back to bucket sum', () => {
+await test('ring is saturated (full + every entry within 24h) → pro-rated bucket fallback', () => {
   // Asset trading hard: cap entries all within last 24h. Ring sum would
   // undercount because older-but-still-in-window trades got truncated.
+  // Fallback is today + floor(yest × yesterdayRatio); for NOW_RTV the
+  // ratio is 6400/86400 → today(8000) + floor(4000 × 0.0741) = 8000 + 296 = 8296.
+  // Compare to the old naive today+yest=12000 which over-reported by ~45%
+  // late in the UTC day; new value pro-rates correctly.
   const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
     ts: NOW_RTV - (i * 300), // every 5 min
     price_sats: 10,
   }));
-  // Bucket fallback returns 12000 (the true approximate); ring sum is 2000.
-  return _rolling24hVolumeSats(r, '8000', '4000', NOW_RTV) === 12000;
+  return _rolling24hVolumeSats(r, '8000', '4000', NOW_RTV) === 8296;
+});
+
+await test('saturation fallback at UTC midnight gives yesterday full weight', () => {
+  // At s_into_day=0 → yesterdayRatio = 1.0 → today + yest is correct
+  // (today's bucket is empty so the 24h window IS yesterday).
+  const midnight = Math.floor(NOW_RTV / 86400) * 86400 + 86400; // next UTC midnight
+  const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
+    ts: midnight - (i * 300), price_sats: 10,
+  }));
+  return _rolling24hVolumeSats(r, '0', '5000', midnight) === 5000;
+});
+
+await test('saturation fallback at end-of-day gives yesterday near-zero weight', () => {
+  // At s_into_day ≈ 86399 → yesterdayRatio ≈ 0 → today + ~0
+  // (today's bucket already covers the full 24h window, yesterday adds none).
+  const midnight = Math.floor(NOW_RTV / 86400) * 86400;
+  const endOfDay = midnight + 86399;
+  const r = Array.from({ length: TRADES_RING_CAP }, (_, i) => ({
+    ts: endOfDay - (i * 300), price_sats: 10,
+  }));
+  const got = _rolling24hVolumeSats(r, '12000', '12000', endOfDay);
+  // yesterdayRatio = 1/86400 ≈ 0.0000116. 12000 × 0.0000116 = 0.139 → floor 0.
+  return got === 12000;
 });
 
 await test('ring full but oldest entry > 24h ago → use ring sum (not saturated)', () => {

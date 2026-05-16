@@ -221,6 +221,53 @@ await test('var intent with fulfilment.requested_amount → scaled price', async
       && r.fills[0].kind === 'intent-var';
 });
 
+await test('two distinct var intents in one batched reveal → independent fulfilment keys, no collision', async () => {
+  // Pins the "no atomicFulfilmentKey collision" property: each axintent has
+  // its own intent_id, so a batched reveal that spends N seller UTXOs from
+  // N distinct intents reads N distinct fulfilment records — no overwrite,
+  // no mis-pricing. This is the architectural property bid-intent partial
+  // fills rely on (each child axintent is its own intent_id; see comment
+  // at bidPartialClaimKey ~L10089).
+  _chainStub = new Map();
+  const env = { REGISTRY_KV: makeKvStub() };
+  const INTENT_A = 'a1'.repeat(16);
+  const INTENT_B = 'b2'.repeat(16);
+  // A: 1000 listed @ 80000, buyer takes 250 → scaled 20000
+  // B: 2000 listed @ 60000, buyer takes 500 → scaled 15000
+  // Total chain-derived: 35000 sats across 750 units.
+  await env.REGISTRY_KV.put(atomicIntentKey(NETWORK, ASSET, INTENT_A), {
+    asset_id: ASSET, intent_id: INTENT_A,
+    amount: '1000', price_sats: 80000, min_take_amount: '100',
+    asset_utxo: { ...SELLER1_UTXO, value: 1000 },
+  });
+  await env.REGISTRY_KV.put(atomicIntentKey(NETWORK, ASSET, INTENT_B), {
+    asset_id: ASSET, intent_id: INTENT_B,
+    amount: '2000', price_sats: 60000, min_take_amount: '100',
+    asset_utxo: { ...SELLER2_UTXO, value: 2000 },
+  });
+  await env.REGISTRY_KV.put(
+    atomicIntentOutpointIndexKey(NETWORK, ASSET, SELLER1_UTXO.txid, SELLER1_UTXO.vout),
+    INTENT_A,
+  );
+  await env.REGISTRY_KV.put(
+    atomicIntentOutpointIndexKey(NETWORK, ASSET, SELLER2_UTXO.txid, SELLER2_UTXO.vout),
+    INTENT_B,
+  );
+  await env.REGISTRY_KV.put(atomicFulfilmentKey(NETWORK, ASSET, INTENT_A), {
+    intent_id: INTENT_A, requested_amount: '250', state: 'COMMIT_READY',
+  });
+  await env.REGISTRY_KV.put(atomicFulfilmentKey(NETWORK, ASSET, INTENT_B), {
+    intent_id: INTENT_B, requested_amount: '500', state: 'COMMIT_READY',
+  });
+  const { revealTx } = makeChainPair([SELLER1_UTXO, SELLER2_UTXO]);
+  const r = await _deriveAxferTradeFromChain(env, NETWORK, revealTx, T_AXFER_VAR, ASSET);
+  return r != null
+      && r.price_sats === 35000
+      && r.amount === 750n
+      && r.fills.length === 2
+      && r.fills.every(f => f.kind === 'intent-var');
+});
+
 await test('var intent WITHOUT fulfilment record → derivation skips (returns null)', async () => {
   _chainStub = new Map();
   const env = { REGISTRY_KV: makeKvStub() };
