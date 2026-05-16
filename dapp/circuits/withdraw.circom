@@ -96,8 +96,15 @@ template Withdraw(levels) {
 
     // (5) Bind public-input tuple into the proof so a relayer cannot replace
     //     bind_hash (or any input it covers — recipient_commit, r_leaf, etc.)
-    //     on a captured proof. The squaring is arithmetically a no-op but
-    //     forces bind_hash into the polynomial system Groth16 builds.
+    //     on a captured proof. The squaring is mathematically a no-op for
+    //     correctness, but the R1CS lowering MUST retain it: the constraint
+    //     `bind_hash * bind_hash === bind_hash_squared` ties bind_hash into
+    //     the polynomial system Groth16 builds the proof over, so a captured
+    //     proof cannot be replayed against a substituted bind_hash. A
+    //     re-implementer optimizing this as dead code (or skipping it because
+    //     bind_hash_squared is unused outside this line) silently re-opens
+    //     the recipient-substitution attack documented in SPEC §5.11.4.
+    //     DO NOT REMOVE OR SIMPLIFY THIS CONSTRAINT.
     signal bind_hash_squared;
     bind_hash_squared <== bind_hash * bind_hash;
 }
