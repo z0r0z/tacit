@@ -33367,16 +33367,14 @@ async function renderHoldings() {
           // round-trip needed.
           const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
           const totalBal = sortedUtxos.reduce((s, u) => s + u.amount, 0n);
-          const largestUtxo = sortedUtxos[0]?.amount || 0n;
           formHost.innerHTML = `
             <div class="inline-form">
               <label>Amount to sell (display units, e.g. 1.5)</label>
               <input type="text" inputmode="decimal" data-field="amount" placeholder="amount">
               <div class="muted" style="margin-top:4px;font-size:11px;">
-                Balance: ${fmtAssetAmount(totalBal, target.decimals)} ${escapeHtml(target.ticker)} across ${sortedUtxos.length} lot${sortedUtxos.length === 1 ? '' : 's'}
-                (largest: ${fmtAssetAmount(largestUtxo, target.decimals)} ${escapeHtml(target.ticker)}).
-                If your amount doesn't match a single lot exactly, the dapp combines and/or splits your lots in
-                one self-CXFER (one extra Bitcoin tx fee), then lists the exact-size lot.
+                Available: ${fmtAssetAmount(totalBal, target.decimals)} ${escapeHtml(target.ticker)}.
+                The dapp prepares your exact listing amount automatically — one extra Bitcoin tx fee
+                if your existing holdings need to be combined or split first.
               </div>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
@@ -33470,20 +33468,17 @@ async function renderHoldings() {
                 }
               }
             }
-            const isConsolidate = coverUtxos && coverUtxos.length > 1;
             const submitBtn = ev.target;
-            submitBtn.disabled = true; submitBtn.textContent = exactMatch
-              ? 'listing…'
-              : (isConsolidate ? `consolidating ${coverUtxos.length} lots + listing…` : 'splitting + listing…');
+            submitBtn.disabled = true;
+            submitBtn.textContent = exactMatch ? 'listing…' : 'preparing + listing…';
             try {
               if (!exactMatch) {
                 // Single self-CXFER does both consolidate (≥1 inputs) and
                 // carve (1 list-sized output + change). result.recipients[0]
-                // is the listing UTXO (vout 0 of the reveal tx).
-                const backupLabel = isConsolidate
-                  ? `Auto-consolidate ${coverUtxos.length} lots before listing (one CXFER from your active wallet)`
-                  : 'Auto-split UTXO before listing (one extra CXFER from your active wallet)';
-                if (!await ensureBurnerBackedUp(backupLabel)) {
+                // is the listing UTXO (vout 0 of the reveal tx). The prep
+                // step is invisible to the trader — same label whether it
+                // splits one big UTXO or combines several small ones.
+                if (!await ensureBurnerBackedUp('Prepare exact listing amount (one extra Bitcoin tx from your active wallet)')) {
                   throw new Error('cancelled');
                 }
                 // Fee estimate scales with actual input count — the default
@@ -33496,8 +33491,7 @@ async function renderHoldings() {
                   const commitFee = feeFor(estCommitVb(1), feeRate);
                   return DUST + revealFee + commitFee + DUST + 1000;
                 })();
-                const fundLabel = isConsolidate ? 'Auto-consolidate before listing' : 'Auto-split before listing';
-                if (!(await ensureSatsFunded(need, fundLabel))) throw new Error('cancelled');
+                if (!(await ensureSatsFunded(need, 'Prepare listing'))) throw new Error('cancelled');
                 const splitResult = await buildAndBroadcastCXferMulti({
                   assetIdHex: aid,
                   recipients: [{ pubHex: bytesToHex(wallet.pub), amount }],
@@ -33509,9 +33503,9 @@ async function renderHoldings() {
                   amount: r0.amount,
                   blinding: r0.blinding,
                 };
-                toast(isConsolidate
-                  ? `Consolidated ${coverUtxos.length} lots → ${fmtAssetAmount(amount, target.decimals)} ${target.ticker} for listing ✓`
-                  : `Split: ${fmtAssetAmount(amount, target.decimals)} ${target.ticker} carved out for listing ✓`, 'success');
+                // No intermediate toast — the final "Listed X ✓" below
+                // carries the user-facing meaning; the prep step is an
+                // implementation detail.
               }
               await publishListing({
                 assetIdHex: aid,
