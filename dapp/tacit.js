@@ -34638,11 +34638,17 @@ async function renderHoldings() {
           ).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>Pick lot to sell ▾ (smallest first; whole lot trades atomically as a single offer)</label>
+              <label>Amount to sell (display units) <span class="muted" style="font-weight:normal;font-size:10px;">— or pick a specific lot below</span></label>
+              <input type="text" inputmode="decimal" data-field="amount" placeholder="e.g. 1.5 (leave blank to use lot picker)">
+              <div class="muted" style="margin-top:4px;font-size:10px;">
+                Available: ${fmtAssetAmount(target.balance, target.decimals)} ${escapeHtml(target.ticker)}.
+                In amount mode the dapp auto-prepares the exact lot from your holdings (one extra Bitcoin tx if needed).
+              </div>
+              <label style="margin-top:10px;">Pick lot to sell ▾ (smallest first; whole lot trades atomically as a single offer)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
               <details style="margin-top:6px;">
-                <summary class="muted" style="cursor:pointer;font-size:11px;">Need a smaller lot? Split first ▾</summary>
+                <summary class="muted" style="cursor:pointer;font-size:11px;">Need a smaller lot? Split first ▾ <span class="muted" style="font-weight:normal;font-size:10px;">(legacy — prefer the amount field above)</span></summary>
                 <div style="margin-top:8px;padding:8px;border:1px dashed var(--ink-faint);background:var(--bg);">
                   <div class="muted" style="font-size:11px;line-height:1.5;">
                     Atomic offers sell the whole lot — to list less than the chosen lot holds, split it first into <strong>the amount you want to list</strong> + <strong>change</strong>. One Bitcoin tx; after it confirms (~10 min) the smaller lot appears in the dropdown above.
@@ -34762,25 +34768,6 @@ async function renderHoldings() {
           };
           formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
             errEl.textContent = '';
-            const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
-            const u = sortedUtxos[utxoIdx];
-            if (!u) { errEl.textContent = 'pick a UTXO'; return; }
-            // Guard against double-listing the same UTXO. Awaits the
-            // enrichment promise — guarantees the check fires even if the
-            // user clicked Publish before the initial enrichment landed.
-            const listedTags = await listedTagsP;
-            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`)
-              || listedTags?.get('__range_active__');  // asset-wide soft tag
-            if (listedTag && listedTag.severity !== 'soft') {
-              errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
-              return;
-            }
-            if (listedTag && listedTag.severity === 'soft') {
-              // Soft tag (today: only the asset-wide range-listing warning).
-              // Require explicit confirm rather than block — the maker may
-              // well know what they're doing.
-              if (!confirm(`⚠ ${listedTag.label}\n\nProceed anyway?`)) return;
-            }
             const recipientPub = formHost.querySelector('[data-field="recipient"]').value.trim().toLowerCase().replace(/\s/g, '');
             if (!/^0[23][0-9a-f]{64}$/.test(recipientPub)) { errEl.textContent = 'recipient must be 33-byte compressed hex'; return; }
             try { secp.ProjectivePoint.fromHex(recipientPub); }
@@ -34790,6 +34777,51 @@ async function renderHoldings() {
             const days = parseInt(formHost.querySelector('[data-field="days"]').value.trim(), 10);
             if (!Number.isInteger(days) || days < 1 || days > 7) { errEl.textContent = 'days must be 1–7 (atomic offers should be short-lived)'; return; }
             const expiry = Math.floor(Date.now() / 1000) + days * 86400;
+
+            // Pick the source lot: amount-mode (top input) or lot-picker mode.
+            // Amount-mode carves the exact lot from holdings via a single
+            // self-CXFER (split smallest covering UTXO, OR consolidate-and-
+            // carve when no single UTXO covers). Both modes produce the same
+            // { utxo, amount, blinding } shape so the rest of the handler
+            // (confirm dialog, buildAxferOffer) is uniform.
+            let u;
+            const amountStr = formHost.querySelector('[data-field="amount"]').value.trim();
+            if (amountStr) {
+              let amount;
+              try { amount = parseAssetAmount(amountStr, target.decimals); }
+              catch (e) { errEl.textContent = 'parse error: ' + e.message; return; }
+              if (amount <= 0n) { errEl.textContent = 'amount must be > 0'; return; }
+              if (amount > target.balance) {
+                errEl.textContent = `amount exceeds balance (${fmtAssetAmount(target.balance, target.decimals)} ${target.ticker})`;
+                return;
+              }
+              try {
+                u = await carveExactAmount({ assetIdHex: aid, amount });
+              } catch (e) {
+                errEl.textContent = e.message === 'cancelled' ? 'cancelled' : 'Prepare failed: ' + e.message;
+                return;
+              }
+            } else {
+              const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
+              u = sortedUtxos[utxoIdx];
+              if (!u) { errEl.textContent = 'enter an amount above or pick a UTXO'; return; }
+              // Guard against double-listing the same UTXO. Awaits the
+              // enrichment promise — guarantees the check fires even if the
+              // user clicked Publish before the initial enrichment landed.
+              const listedTags = await listedTagsP;
+              const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`)
+                || listedTags?.get('__range_active__');  // asset-wide soft tag
+              if (listedTag && listedTag.severity !== 'soft') {
+                errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
+                return;
+              }
+              if (listedTag && listedTag.severity === 'soft') {
+                // Soft tag (today: only the asset-wide range-listing warning).
+                // Require explicit confirm rather than block — the maker may
+                // well know what they're doing.
+                if (!confirm(`⚠ ${listedTag.label}\n\nProceed anyway?`)) return;
+              }
+            }
             // Final spend-authorization confirm: form is data entry, this is the
             // explicit "yes, broadcast a commit tx and pay sats" step.
             if (!confirm(
@@ -34868,7 +34900,13 @@ async function renderHoldings() {
           ).join('');
           formHost.innerHTML = `
             <div class="inline-form">
-              <label>Pick lot to sell ▾ (smallest first)</label>
+              <label>Amount to sell (display units) <span class="muted" style="font-weight:normal;font-size:10px;">— or pick a specific lot below</span></label>
+              <input type="text" inputmode="decimal" data-field="amount" placeholder="e.g. 1.5 (leave blank to use lot picker)">
+              <div class="muted" style="margin-top:4px;font-size:10px;">
+                Available: ${fmtAssetAmount(target.balance, target.decimals)} ${escapeHtml(target.ticker)}.
+                In amount mode the dapp auto-prepares the exact lot from your holdings (one extra Bitcoin tx if needed).
+              </div>
+              <label style="margin-top:10px;">Pick lot to sell ▾ (smallest first)</label>
               <select data-field="utxo">${utxoOpts}</select>
               <div class="muted" data-utxo-picker-status style="margin-top:4px;font-size:10px;">checking listings…</div>
               <div class="form-row two" style="margin-top:8px;">
@@ -34979,27 +35017,53 @@ async function renderHoldings() {
           _refreshVarUi();
           formHost.querySelector('[data-form-act="publish"]').onclick = async (ev) => {
             errEl.textContent = '';
-            const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
-            const u = sortedUtxos[utxoIdx];
-            if (!u) { errEl.textContent = 'pick a UTXO'; return; }
-            const listedTags = await listedTagsP;
-            const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`)
-              || listedTags?.get('__range_active__');  // asset-wide soft tag
-            if (listedTag && listedTag.severity !== 'soft') {
-              errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
-              return;
-            }
-            if (listedTag && listedTag.severity === 'soft') {
-              // Soft tag (today: only the asset-wide range-listing warning).
-              // Require explicit confirm rather than block — the maker may
-              // well know what they're doing.
-              if (!confirm(`⚠ ${listedTag.label}\n\nProceed anyway?`)) return;
-            }
             const priceSats = parseInt(formHost.querySelector('[data-field="price"]').value.trim(), 10);
             if (!Number.isInteger(priceSats) || priceSats < DUST) { errEl.textContent = `price must be integer ≥ ${DUST}`; return; }
             const days = parseInt(formHost.querySelector('[data-field="days"]').value.trim(), 10);
             if (!Number.isInteger(days) || days < 1 || days > 7) { errEl.textContent = 'days must be 1–7'; return; }
             const expiry = Math.floor(Date.now() / 1000) + days * 86400;
+
+            // Pick the source lot: amount-mode (top input) or lot-picker mode.
+            // Amount-mode carves the exact lot from holdings via a single
+            // self-CXFER (split smallest covering UTXO, OR consolidate-and-
+            // carve when no single UTXO covers). Both modes produce the same
+            // { utxo, amount, blinding } shape so the rest of the handler
+            // (variable-fills validation, confirm dialog, publish) is uniform.
+            let u;
+            const amountStr = formHost.querySelector('[data-field="amount"]').value.trim();
+            if (amountStr) {
+              let amount;
+              try { amount = parseAssetAmount(amountStr, target.decimals); }
+              catch (e) { errEl.textContent = 'parse error: ' + e.message; return; }
+              if (amount <= 0n) { errEl.textContent = 'amount must be > 0'; return; }
+              if (amount > target.balance) {
+                errEl.textContent = `amount exceeds balance (${fmtAssetAmount(target.balance, target.decimals)} ${target.ticker})`;
+                return;
+              }
+              try {
+                u = await carveExactAmount({ assetIdHex: aid, amount });
+              } catch (e) {
+                errEl.textContent = e.message === 'cancelled' ? 'cancelled' : 'Prepare failed: ' + e.message;
+                return;
+              }
+            } else {
+              const utxoIdx = parseInt(formHost.querySelector('[data-field="utxo"]').value, 10);
+              u = sortedUtxos[utxoIdx];
+              if (!u) { errEl.textContent = 'enter an amount above or pick a UTXO'; return; }
+              const listedTags = await listedTagsP;
+              const listedTag = listedTags?.get(`${u.utxo.txid}:${u.utxo.vout | 0}`)
+                || listedTags?.get('__range_active__');  // asset-wide soft tag
+              if (listedTag && listedTag.severity !== 'soft') {
+                errEl.textContent = `That UTXO is already in an active ${listedTag.label}. Pick a different UTXO or cancel the existing one first.`;
+                return;
+              }
+              if (listedTag && listedTag.severity === 'soft') {
+                // Soft tag (today: only the asset-wide range-listing warning).
+                // Require explicit confirm rather than block — the maker may
+                // well know what they're doing.
+                if (!confirm(`⚠ ${listedTag.label}\n\nProceed anyway?`)) return;
+              }
+            }
 
             // Variable-fills branch (T_AXFER_VAR, §5.7.6.1). Reads + validates
             // min_take_amount in display units, converts to base-unit string
