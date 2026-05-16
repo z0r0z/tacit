@@ -4865,6 +4865,9 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-take-atomic">Take atomic offer</button>
       </div>
       <div data-pending-settlements-strip style="display:none;"></div>
+      <!-- cBTC.zk slot-balance summary. Renders above standard tacit-asset
+           holdings when this wallet has live slot records in localStorage. -->
+      <div id="holdings-slot-summary" style="display:none;margin-bottom:14px;"></div>
       <div id="holdings-list"></div>
     </div>
   </div>
@@ -5180,6 +5183,40 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
           <strong>Slot records on this browser.</strong> Each row is one wrapped slot: the secret material needed to redeem the backing sats. Stored in localStorage per network — back up before clearing browser data.
         </div>
         <div id="mixer-slot-records-list"><div class="muted" style="font-size:11px;">No slots wrapped yet on this network.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SPEC-CBTC-ZK §5.23 — slot-send helper. Rotates a live slot to a
+       recipient identified by their HKDF-derived viewing pubkey (or to
+       self for a key refresh). New slot's secrets are encrypted to the
+       recipient's viewing key + embedded in the rotate envelope; recipient
+       discovers via the on-load note scanner. -->
+  <div class="section" data-mixer-pool-op="true" id="mixer-slot-rotate-section">
+    <div class="section-header"><span>send slot to recipient</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">
+        Rotate a live slot to a recipient. New secrets are encrypted to their viewing pubkey; their dapp auto-detects incoming slots on next load. Leave recipient empty to refresh your own slot's keys (useful if the secrets may have been exposed).
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:2;min-width:280px;">Slot to send
+          <select id="mixer-slot-rotate-record"><option value="">— pick a live slot —</option></select>
+        </label>
+        <label style="flex:2;min-width:240px;">Recipient viewing pubkey <span class="muted" style="font-size:11px;">(33-byte compressed hex; empty = rotate to self)</span>
+          <input id="mixer-slot-rotate-recipient" type="text" placeholder="02… or 03… (66 hex chars; leave empty for self-rotation)" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <button id="btn-mixer-slot-rotate-broadcast" disabled>Send &amp; broadcast</button>
+      </div>
+      <div id="mixer-slot-rotate-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+      <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--ink-faint);">
+        <div class="muted" style="font-size:11px;margin-bottom:6px;">
+          <strong>Your incoming viewing pubkey</strong> (give this to senders so they can send slots to you; derived deterministically from your wallet privkey via HKDF):
+        </div>
+        <div id="mixer-slot-viewing-pub" class="muted" style="font-family:monospace;font-size:11px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <span data-pub-display>—</span>
+          <button type="button" data-pub-copy style="font-size:10px;padding:2px 8px;">Copy</button>
+        </div>
+        <div id="mixer-slot-scan-status" class="muted" style="font-size:11px;margin-top:6px;"></div>
       </div>
     </div>
   </div>

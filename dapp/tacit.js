@@ -11277,6 +11277,70 @@ function forgetSlotRecord(leafCommitmentHex) {
   return arr;
 }
 
+// Aggregate live slot records into a per-(asset_id, denomination) summary.
+// Used by Holdings render to show "you have N cBTC.zk slots = X sats" rows
+// alongside standard tacit-asset balances. Live slots only — rotated and
+// redeemed slots stay in localStorage for recovery but don't count toward
+// spendable balance.
+function getSlotBalanceSummary() {
+  const live = getSlotRecords({ status: 'live' });
+  const map = new Map();  // key = `${assetIdHex}:${denomination}` → { count, totalSats, assetIdHex, denomination, records }
+  for (const r of live) {
+    const k = `${r.assetIdHex}:${r.denomination}`;
+    let row = map.get(k);
+    if (!row) {
+      row = { assetIdHex: r.assetIdHex, denomination: r.denomination, count: 0, totalSats: 0n, records: [] };
+      map.set(k, row);
+    }
+    row.count++;
+    row.totalSats += BigInt(r.denomination);
+    row.records.push(r);
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.assetIdHex < b.assetIdHex) return -1;
+    if (a.assetIdHex > b.assetIdHex) return 1;
+    return BigInt(a.denomination) < BigInt(b.denomination) ? -1 : 1;
+  });
+}
+
+// Render the Holdings tab's cBTC.zk slot-balance summary banner. Idempotent
+// — recomputes from localStorage on every call. Hides the banner if no live
+// slots exist. Each row shows the asset's ticker/short-id, denomination,
+// slot count, total sats, and quick-action buttons (Send slot, Redeem slot).
+function _renderHoldingsSlotSummary() {
+  const host = document.getElementById('holdings-slot-summary');
+  if (!host) return;
+  const rows = getSlotBalanceSummary();
+  if (rows.length === 0) { host.style.display = 'none'; host.innerHTML = ''; return; }
+  host.style.display = 'block';
+  const summaryHtml = rows.map(row => {
+    const am = getAssetMeta(row.assetIdHex) || {};
+    const ticker = am.ticker || 'cBTC.zk';
+    const denomBtc = (Number(row.denomination) / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC';
+    const totalBtc = (Number(row.totalSats) / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC';
+    return `<div style="display:flex;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--ink-faint);background:var(--bg);margin-bottom:6px;font-family:monospace;font-size:12px;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-weight:600;font-size:13px;">${escapeHtml(ticker)} · ${escapeHtml(denomBtc)} tier</div>
+        <div class="muted" style="font-size:11px;margin-top:2px;">${row.count} live slot${row.count === 1 ? '' : 's'} · ${escapeHtml(totalBtc)} total · asset_id ${escapeHtml(row.assetIdHex.slice(0, 16))}…</div>
+      </div>
+      <a href="#tab=mixer" style="font-size:11px;padding:4px 10px;border:1px solid var(--ink-faint);text-decoration:none;background:var(--bg);" title="Open the Mixer tab to send or redeem slots">Manage →</a>
+    </div>`;
+  }).join('');
+  const totalSats = rows.reduce((s, r) => s + r.totalSats, 0n);
+  const totalBtc = (Number(totalSats) / 1e8).toFixed(8).replace(/\.?0+$/, '') + ' BTC';
+  host.innerHTML = `
+    <div style="border:1px solid var(--ink);background:var(--bg-warm);padding:12px 14px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;">
+        <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:var(--ink-mid);">wrapped Bitcoin (cBTC.zk)</div>
+        <div style="font-family:monospace;font-size:14px;font-weight:600;">${escapeHtml(totalBtc)}</div>
+      </div>
+      ${summaryHtml}
+      <div class="muted" style="font-size:11px;margin-top:8px;line-height:1.4;">
+        Each slot is a fixed-denomination wrapped-BTC unit backed 1:1 by sats locked on Bitcoin. Send or redeem via the <a href="#tab=mixer" style="color:inherit;">Mixer tab</a>.
+      </div>
+    </div>`;
+}
+
 // Estimate the reveal-tx vbytes for a T_SLOT_MINT envelope. Payload is fixed at
 // 244 bytes (SPEC §5.21.1), fitting in one ≤520-byte PUSHDATA2 chunk. Same
 // formula as estCEtchRevealVb but with one P2TR slot output instead of P2WPKH
@@ -11780,6 +11844,492 @@ async function buildAndBroadcastSlotBurn({
   };
 }
 
+// ============== SLOT-NOTE ENCRYPTION (SPEC-CBTC-ZK-FUNGIBILITY §5.26) ==============
+// Sapling-style sender→receiver ECDH for delivering slot secrets without
+// out-of-band coordination. Recipients derive a viewing key from wallet.priv;
+// senders encrypt (kind, secret', ν', amount_hint) under that key. Wire: 122
+// bytes total (33 ephemeral_pub + 89 AES-256-GCM ciphertext-with-tag).
+//
+// Substantive byte-identical reference impl + 28-check test suite lives at
+// tests/slot-note-encryption.test.mjs — that's the authoritative spec for
+// any third-party wallet implementing compatible note scanning.
+
+const SLOT_NOTE_VERSION_TAG = new TextEncoder().encode('tacit-slot-note-v1');
+const SLOT_NOTE_KIND_ROTATE = 0x01;
+const SLOT_NOTE_KIND_FRACTIONALIZE = 0x02;       // reserved for Phase 5 (amount amendment)
+const SLOT_NOTE_KIND_MERGE = 0x03;               // reserved
+
+// Viewing privkey: HKDF-derived from wallet.priv. Deterministic per-wallet;
+// users don't manage `sk_view` explicitly. Tradeoff: compromise of wallet.priv
+// also compromises sk_view (viewer/spender compartmentalisation deferred to
+// a v1.x extension).
+function _slotViewingPrivkey() {
+  if (!wallet || !wallet.priv) throw new Error('wallet.priv required for slot viewing key');
+  const prk = hmac(sha256, SLOT_NOTE_VERSION_TAG, wallet.priv);
+  const t1 = hmac(sha256, prk, concatBytes(new TextEncoder().encode('view'), new Uint8Array([0x01])));
+  let bn = bytes32ToBigint(t1) % SECP_N;
+  if (bn === 0n) bn = 1n;
+  return bigintToBytes32(bn);
+}
+function slotViewingPubkey() {
+  return secp.getPublicKey(_slotViewingPrivkey(), true);
+}
+
+async function _slotNoteSymKey(sharedX32) {
+  const keyMaterial = sha256(concatBytes(SLOT_NOTE_VERSION_TAG, sharedX32));
+  const subtle = (typeof crypto !== 'undefined' && crypto.subtle)
+    || (typeof globalThis !== 'undefined' && globalThis.crypto?.subtle);
+  if (!subtle) throw new Error('crypto.subtle not available — required for slot notes');
+  return await subtle.importKey('raw', keyMaterial, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+}
+
+async function encryptSlotNote({ recipientViewingPub33, kind, secretBytes32, nullifierPreimageBytes32, amountSats }) {
+  if (!(recipientViewingPub33 instanceof Uint8Array) || recipientViewingPub33.length !== 33) {
+    throw new Error('recipientViewingPub33 must be 33-byte compressed point');
+  }
+  if (secretBytes32.length !== 32 || nullifierPreimageBytes32.length !== 32) {
+    throw new Error('secret + nullifier_preimage must each be 32 bytes');
+  }
+  const eRaw = new Uint8Array(32); crypto.getRandomValues(eRaw);
+  let eBig = bytes32ToBigint(eRaw) % SECP_N;
+  if (eBig === 0n) eBig = 1n;
+  const ePriv = bigintToBytes32(eBig);
+  const ephemeralPub = secp.getPublicKey(ePriv, true);
+  const V = bytesToPoint(recipientViewingPub33);
+  const sharedPoint = V.multiply(eBig);
+  const sharedX = sharedPoint.toRawBytes(true).slice(1);
+  const amtLE = new Uint8Array(8);
+  {
+    const v = new DataView(amtLE.buffer);
+    const a = BigInt(amountSats);
+    v.setUint32(0, Number(a & 0xffffffffn), true);
+    v.setUint32(4, Number((a >> 32n) & 0xffffffffn), true);
+  }
+  const plaintext = concatBytes(
+    new Uint8Array([kind & 0xff]),
+    secretBytes32, nullifierPreimageBytes32, amtLE,
+  );
+  const subtle = crypto.subtle || globalThis.crypto.subtle;
+  const key = await _slotNoteSymKey(sharedX);
+  const ctBuf = await subtle.encrypt({ name: 'AES-GCM', iv: new Uint8Array(12) }, key, plaintext);
+  const ciphertext = new Uint8Array(ctBuf);
+  if (ciphertext.length !== 89) throw new Error(`unexpected ciphertext length ${ciphertext.length}, expected 89`);
+  return concatBytes(ephemeralPub, ciphertext);
+}
+
+async function decryptSlotNote(noteBytes122, viewingPriv32 = null) {
+  if (!(noteBytes122 instanceof Uint8Array) || noteBytes122.length !== 122) return null;
+  const skView = viewingPriv32 || _slotViewingPrivkey();
+  if (skView.length !== 32) return null;
+  const ephemeralPub = noteBytes122.slice(0, 33);
+  const ciphertext = noteBytes122.slice(33);
+  let sharedX;
+  try {
+    const E = bytesToPoint(ephemeralPub);
+    const sharedPoint = E.multiply(bytes32ToBigint(skView));
+    sharedX = sharedPoint.toRawBytes(true).slice(1);
+  } catch { return null; }
+  let plaintext;
+  try {
+    const subtle = crypto.subtle || globalThis.crypto.subtle;
+    const key = await _slotNoteSymKey(sharedX);
+    const ptBuf = await subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(12) }, key, ciphertext);
+    plaintext = new Uint8Array(ptBuf);
+  } catch { return null; }
+  if (plaintext.length !== 73) return null;
+  const amtView = new DataView(plaintext.buffer, plaintext.byteOffset + 65, 8);
+  const amountSats = (BigInt(amtView.getUint32(4, true)) << 32n) | BigInt(amtView.getUint32(0, true));
+  return {
+    kind: plaintext[0],
+    secretBytes: plaintext.slice(1, 33),
+    nullifierPreimageBytes: plaintext.slice(33, 65),
+    amountSats,
+  };
+}
+
+// Append an optional encrypted note as a length-prefixed tail to a host
+// envelope payload. Decoder: check the byte after the host envelope's
+// declared length; 0x00 = no note, 0x01 = next 122 bytes are the note.
+function appendSlotNoteToPayload(payloadBytes, noteBytes122OrNull) {
+  if (!noteBytes122OrNull) return concatBytes(payloadBytes, new Uint8Array([0x00]));
+  if (!(noteBytes122OrNull instanceof Uint8Array) || noteBytes122OrNull.length !== 122) {
+    throw new Error('slot note must be 122 bytes');
+  }
+  return concatBytes(payloadBytes, new Uint8Array([0x01]), noteBytes122OrNull);
+}
+
+// Parse the optional note tail off an envelope payload. Returns
+// { hostPayload, noteBytes } where noteBytes is null if has_note == 0 or
+// the trailer is malformed (forward-compat: unknown trailer formats are
+// just skipped, host payload still decodes).
+function tryExtractSlotNoteFromTail(payloadBytes, hostPayloadLen) {
+  if (!(payloadBytes instanceof Uint8Array)) return { hostPayload: null, noteBytes: null };
+  if (hostPayloadLen > payloadBytes.length) return { hostPayload: payloadBytes, noteBytes: null };
+  const tail = payloadBytes.slice(hostPayloadLen);
+  if (tail.length === 0) return { hostPayload: payloadBytes.slice(0, hostPayloadLen), noteBytes: null };
+  const hasNote = tail[0];
+  const hostPayload = payloadBytes.slice(0, hostPayloadLen);
+  if (hasNote === 0x00) return { hostPayload, noteBytes: null };
+  if (hasNote === 0x01 && tail.length === 1 + 122) {
+    return { hostPayload, noteBytes: tail.slice(1) };
+  }
+  // Unknown trailer; ignore (forward compat).
+  return { hostPayload, noteBytes: null };
+}
+
+function estSlotRotateRevealVb({ proofLen = 256, hasNote = false }) {
+  // T_SLOT_ROTATE envelope: 407 + proofLen + has_note tail (1 or 1+122).
+  const baseEnvelopePayload = 407 + proofLen + (hasNote ? 1 + 122 : 1);
+  const numChunks = Math.max(1, Math.ceil(baseEnvelopePayload / MAX_SCRIPT_PUSH));
+  const envelopeLen = 45 + baseEnvelopePayload + numChunks * 3;
+  const witnessLenVin0 = 1 + 65 + 3 + envelopeLen + 34;
+  const witnessLenVin1 = 1 + 64;
+  // 2 inputs + 1 P2TR new-slot output. (Payment-leg vout deferred to Phase 4c.)
+  const baseLen = 125;
+  return Math.ceil((baseLen * 4 + 2 + witnessLenVin0 + witnessLenVin1) / 4) + 5;
+}
+
+// SPEC-CBTC-ZK §5.23 — one-click "Rotate slot" (key-refresh / send-to-recipient).
+//
+// Phase 4b (this build) supports two modes:
+//   • self-rotation: recipientViewingPub omitted → wallet refreshes its own
+//     slot keys without payment. Useful if user worries r_leaf may have
+//     been exposed (e.g. they shared the slot record off-band).
+//   • OTC transfer: recipient identified by their `slotViewingPubkey()`
+//     (HKDF-derived from their wallet.priv). Sender generates fresh
+//     (secret', ν'), encrypts to the recipient's viewing key, attaches
+//     the 122-byte note to the envelope. Recipient discovers via their
+//     on-load note scanner.
+//
+// Phase 4c will add the payment leg (paymentAssetId + paymentAmount at
+// vout[1]) for AMM-style trades. v1 build refuses paymentAmount > 0.
+//
+// Bitcoin tx shape (same as burn for envelope placement — vin[0]=commit-
+// reveal w/ envelope, vin[1]=old slot key-path under r_leaf SIGHASH_ALL):
+async function buildAndBroadcastSlotRotate({
+  slotRecord,
+  recipientViewingPub = null,    // 33-byte compressed; null = self-rotate
+  newSecret = null,              // optional caller-supplied (typically auto-generated)
+  newNullifierPreimage = null,
+  paymentAssetIdHex = null,
+  paymentAmount = 0n,
+  ceremonyHash = null,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const circuitHash = ceremonyHash || TACIT_DEFAULT_CEREMONY_HASH;
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  if (!slotRecord || !slotRecord.assetIdHex || !slotRecord.mintTxid) {
+    throw new Error('slotRecord must include assetIdHex + mintTxid');
+  }
+  const assetIdHex = slotRecord.assetIdHex;
+  const denomBig = BigInt(slotRecord.denomination);
+  const paymentAmt = BigInt(paymentAmount);
+  if (paymentAmt > 0n) {
+    throw new Error('payment-leg rotation deferred to Phase 4c (AMM-side trades) — paymentAmount=0 only in v1');
+  }
+  if (!mixerIsPoolRegistered(assetIdHex, denomBig)) throw new Error('pool not registered locally — refresh Mixer tab first');
+  if (!mixerIsPoolCanonical(assetIdHex, denomBig)) throw new Error('pool declares a non-canonical vk_cid/ceremony_cid');
+
+  const oldNullifierPreimage = hexToBytes(slotRecord.nullifierPreimageHex);
+  const oldNullifierHash = computeNullifierHash(oldNullifierPreimage);
+  if (mixerIsNullifierSpent(assetIdHex, denomBig, oldNullifierHash)) {
+    throw new Error('this slot was already redeemed or rotated');
+  }
+
+  const newSec = newSecret || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+  const newNu = newNullifierPreimage || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+  if (newSec.length !== 32 || newNu.length !== 32) throw new Error('new (secret, ν) must each be 32 bytes');
+
+  _progress('proof:merkle');
+  const leafBytes = hexToBytes(slotRecord.leafCommitmentHex);
+  let mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
+  if (!mp) {
+    _mixerPoolCacheUntil = 0;
+    await refreshPoolsIfStale();
+    mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
+    if (!mp) throw new Error('slot leaf not in local pool tree; wait for indexer (≥ 3 confirmations)');
+  }
+
+  const oldRLeaf = poseidonHash(hexToBytes(slotRecord.secretHex), oldNullifierPreimage);
+  const oldRLeafBig = bytes32ToBigint(oldRLeaf) % SECP_N;
+  const oldRecipientCommitment = pedersenCommit(denomBig, oldRLeafBig).toRawBytes(true);
+  const assetIdBytes = hexToBytes(assetIdHex);
+  const oldBindHash = computeWithdrawBindHash(assetIdBytes, denomBig, oldNullifierHash, oldRecipientCommitment, oldRLeaf);
+
+  const proverDepositRecord = {
+    assetIdHex,
+    denomination: denomBig.toString(),
+    secretHex: slotRecord.secretHex,
+    nullifierPreimageHex: slotRecord.nullifierPreimageHex,
+    leafCommitmentHex: slotRecord.leafCommitmentHex,
+    nullifierHashHex: bytesToHex(oldNullifierHash),
+  };
+  const proverInput = await _mixerBuildProverInput({
+    depositRecord: proverDepositRecord, merkleProof: mp,
+    recipientCommitment: oldRecipientCommitment, bindHash: oldBindHash,
+  });
+  _progress('proof:fetch_zkey');
+  const { snarkjs } = await import('./vendor/tacit-mixer.min.js');
+  const zkeyBytes = await ceremonyFetchHeadZkeyBytes(circuitHash);
+  _progress('proof:fetch_wasm');
+  const wasmResp = await fetch(TACIT_WITHDRAW_WASM_PATH);
+  if (!wasmResp.ok) throw new Error(`wasm fetch failed: HTTP ${wasmResp.status}`);
+  const wasmBytes = new Uint8Array(await wasmResp.arrayBuffer());
+  _progress('proof:fullprove');
+  const PROOF_TIMEOUT_MS = 180_000;
+  let proof;
+  {
+    const _p = snarkjs.groth16.fullProve(proverInput, wasmBytes, zkeyBytes);
+    const _t = new Promise((_, rej) => setTimeout(() => rej(new Error(`Groth16 timed out after ${PROOF_TIMEOUT_MS/1000}s`)), PROOF_TIMEOUT_MS));
+    ({ proof } = await Promise.race([_p, _t]));
+  }
+  const oldProofBytes = _serializeGroth16Proof(proof);
+
+  const merkleRootBytes = mp.root instanceof Uint8Array ? mp.root : bigintToBytes32(BigInt(mp.root));
+  const rotateOut = await buildSlotRotateEnvelope({
+    networkTag,
+    oldSlotRecord: slotRecord,
+    oldMerkleRoot: merkleRootBytes,
+    oldProof: oldProofBytes,
+    newSecret: newSec,
+    newNullifierPreimage: newNu,
+    paymentAssetId: paymentAssetIdHex ? hexToBytes(paymentAssetIdHex.toLowerCase()) : new Uint8Array(32),
+    paymentAmount: paymentAmt,
+    oldOwnerPriv: wallet.priv,
+  });
+
+  // Optional encrypted note. If sending to someone else, attach. If
+  // self-rotating, no note needed (the sender already has the secrets).
+  let encryptedNoteBytes = null;
+  if (recipientViewingPub) {
+    if (!(recipientViewingPub instanceof Uint8Array) || recipientViewingPub.length !== 33) {
+      throw new Error('recipientViewingPub must be 33-byte compressed point');
+    }
+    encryptedNoteBytes = await encryptSlotNote({
+      recipientViewingPub33: recipientViewingPub,
+      kind: SLOT_NOTE_KIND_ROTATE,
+      secretBytes32: newSec,
+      nullifierPreimageBytes32: newNu,
+      amountSats: denomBig,
+    });
+  }
+  const finalPayload = appendSlotNoteToPayload(rotateOut.payload, encryptedNoteBytes);
+
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), finalPayload);
+  const leaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, leaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  const revealVb = estSlotRotateRevealVb({ proofLen: oldProofBytes.length, hasNote: !!encryptedNoteBytes });
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = Math.max(DUST, revealFee);
+
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  if (sats.length === 0) throw new Error('no sats UTXOs to fund the rotate commit');
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) throw new Error(`insufficient sats: need ${commitValue + commitFee}, have ${total}`);
+
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  const slotPrevoutScript = slotRecord.slotScriptPubKeyHex
+    ? hexToBytes(slotRecord.slotScriptPubKeyHex)
+    : slotScriptPubKeyFromKbtc(deriveSlotKbtc(oldRecipientCommitment, denomBig));
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: slotRecord.mintTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: [{ value: Number(denomBig), script: rotateOut.newSlotScriptPubKey }],
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: Number(denomBig), script: slotPrevoutScript },
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(revealTx, 1, revealPrevouts, oldRLeaf, 0x01);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  // Local-state update: mark old slot as rotated; if rotating to self, persist
+  // the new slot as live so the wallet can later burn/rotate it.
+  try {
+    const arr = _loadSlotRecords();
+    const idx = arr.findIndex(r => r.leafCommitmentHex === slotRecord.leafCommitmentHex);
+    if (idx >= 0) {
+      arr[idx] = {
+        ...arr[idx],
+        status: 'rotated',
+        rotatedTxid: revealTxidHex,
+        rotatedAt: Date.now(),
+        rotatedSuccessor: rotateOut.newSlotRecord.leafCommitmentHex,
+      };
+    }
+    const myViewingPub = slotViewingPubkey();
+    const rotatingToSelf = !recipientViewingPub
+      || bytesToHex(recipientViewingPub) === bytesToHex(myViewingPub);
+    if (rotatingToSelf) {
+      arr.push({
+        ...rotateOut.newSlotRecord,
+        network: NET.name,
+        mintTxid: revealTxidHex,
+        commitTxid: commitTxidHex,
+        status: 'live',
+        rotatedFromLeaf: slotRecord.leafCommitmentHex,
+      });
+    }
+    try { localStorage.setItem(_slotRecordsKey(), JSON.stringify(arr)); } catch {}
+    mixerMarkNullifierSpent(assetIdHex, denomBig, oldNullifierHash, revealTxidHex);
+  } catch {}
+
+  try {
+    const am = getAssetMeta(assetIdHex) || {};
+    recordActivity({
+      kind: 'slot-rotate',
+      ticker: am.ticker || 'cBTC.zk',
+      amount: denomBig,
+      decimals: am.decimals || 0,
+      assetId: assetIdHex,
+      txid: revealTxidHex,
+    });
+  } catch {}
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    newSlotRecord: rotateOut.newSlotRecord,
+    encryptedNote: encryptedNoteBytes,
+    encryptedNoteHex: encryptedNoteBytes ? bytesToHex(encryptedNoteBytes) : null,
+    commitFee, revealFee,
+  };
+}
+
+// Scan recent slot rotation envelopes from the worker, attempt to decrypt
+// each with our HKDF-derived viewing privkey, and materialize any newly-
+// detected slots into local storage. Idempotent — re-scanning skips notes
+// whose leaf_hash is already in our local set.
+//
+// The worker exposes slot rotations via the existing mixer-pool indexing
+// (slot-rotates are mixer-equivalent envelopes). For each one with a
+// successful decrypt, we reconstruct the slotRecord from the plaintext
+// + the on-chain rotation envelope's published fields. Failure modes
+// (auth-tag fail, malformed envelope, network error) are all silent;
+// scanning is best-effort and converges to the canonical chain state.
+async function scanInboundSlotNotes({ network = null, sinceHeight = 0, onProgress = null } = {}) {
+  if (!wallet || !wallet.priv) return { scanned: 0, detected: 0 };
+  const _net = network || NET.name;
+  const skView = _slotViewingPrivkey();
+  let scanned = 0, detected = 0;
+  try {
+    // Pull recent slot-rotation envelopes from the worker. Endpoint format
+    // mirrors /mixer-leaves: `/slot-rotates?network=<net>&since_height=<H>`.
+    // If the endpoint isn't deployed yet, this just returns 0 detected.
+    const res = await fetch(`${WORKER_BASE}/slot-rotates?network=${_net}&since_height=${sinceHeight}`);
+    if (!res.ok) return { scanned: 0, detected: 0 };
+    const body = await res.json().catch(() => ({}));
+    const rotates = Array.isArray(body?.rotates) ? body.rotates : [];
+    const existingLeafSet = new Set(_loadSlotRecords().map(r => r.leafCommitmentHex));
+    for (const r of rotates) {
+      scanned++;
+      try { onProgress && onProgress({ scanned, detected }); } catch {}
+      const noteHex = r.encrypted_note_hex || r.note_hex;
+      if (!noteHex) continue;
+      let noteBytes;
+      try { noteBytes = hexToBytes(noteHex); } catch { continue; }
+      if (noteBytes.length !== 122) continue;
+      const decoded = await decryptSlotNote(noteBytes, skView);
+      if (!decoded) continue;
+      // Verify the decoded amount + leaf_hash match the on-chain envelope.
+      // The rotation envelope's new_leaf_hash is the canonical record;
+      // decoded.amount must equal the variant's denom_sats, and recomputing
+      // poseidon(secret, ν, denom) should reproduce the on-chain new_leaf_hash.
+      const assetIdHex = (r.asset_id || '').toLowerCase();
+      const denomBig = BigInt(r.denomination || r.denom_sats || 0);
+      if (denomBig !== decoded.amountSats) continue;
+      const reLeaf = computePoolLeafCommitment(decoded.secretBytes, decoded.nullifierPreimageBytes, denomBig);
+      const reLeafHex = bytesToHex(reLeaf);
+      if (r.new_leaf_hash && reLeafHex !== r.new_leaf_hash.toLowerCase()) continue;
+      if (existingLeafSet.has(reLeafHex)) continue;
+      // Reconstruct r_leaf + recipient_commit + K_btc for the new slot.
+      const reRLeaf = poseidonHash(decoded.secretBytes, decoded.nullifierPreimageBytes);
+      const reRLeafBig = bytes32ToBigint(reRLeaf) % SECP_N;
+      const reRecipientCommit = pedersenCommit(denomBig, reRLeafBig).toRawBytes(true);
+      const reKBtc = deriveSlotKbtc(reRecipientCommit, denomBig);
+      const reSpk = slotScriptPubKeyFromKbtc(reKBtc);
+      const newRecord = {
+        assetIdHex,
+        denomination: denomBig.toString(),
+        secretHex: bytesToHex(decoded.secretBytes),
+        nullifierPreimageHex: bytesToHex(decoded.nullifierPreimageBytes),
+        leafCommitmentHex: reLeafHex,
+        recipientCommitHex: bytesToHex(reRecipientCommit),
+        rLeafHex: bytesToHex(reRLeaf),
+        kBtcXOnlyHex: bytesToHex(slotXOnly(reKBtc)),
+        slotScriptPubKeyHex: bytesToHex(reSpk),
+        mintedAt: r.confirmed_at || Date.now(),
+        network: _net,
+        mintTxid: r.rotate_txid || r.txid || null,
+        status: 'live',
+        inboundDetectedAt: Date.now(),
+        inboundFromRotate: true,
+      };
+      saveSlotRecord(newRecord);
+      existingLeafSet.add(reLeafHex);
+      detected++;
+      try {
+        const am = getAssetMeta(assetIdHex) || {};
+        recordActivity({
+          kind: 'slot-receive',
+          ticker: am.ticker || 'cBTC.zk',
+          amount: denomBig,
+          decimals: am.decimals || 0,
+          assetId: assetIdHex,
+          txid: newRecord.mintTxid,
+        });
+      } catch {}
+    }
+  } catch (e) {
+    // Worker endpoint may not be deployed yet — silent best-effort scan.
+    if (typeof console !== 'undefined') console.debug?.('slot-note scan: worker endpoint unavailable, skipping', e?.message || e);
+  }
+  return { scanned, detected };
+}
+
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -11810,42 +12360,18 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
     const haveDisp = h.utxos.map(u => u.amount.toString()).join(', ') || '(none)';
     throw new Error(`Insufficient balance: hold ${h.balance}, deposit needs ${denomBig}. UTXOs: ${haveDisp}.`);
   }
-  let exactUtxo = (h.utxos || []).find(u => u.amount === denomBig);
-  if (!exactUtxo) {
-    // Auto-split: pick the smallest UTXO that covers the denomination, then
-    // self-CXFER it down to exactly `denomBig`. Mirrors the bid-fulfil flow.
-    // Costs one extra CXFER on top of the deposit itself; the alternative
-    // ("send to your own pubkey first") is a worse UX with the same cost.
-    const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
-    const cover = sorted.find(u => u.amount > denomBig);
-    if (!cover) {
-      const haveDisp = sorted.map(u => u.amount.toString()).join(', ') || '(none)';
-      throw new Error(`No single UTXO covers the deposit denomination (need > ${denomBig} for split; you have ${haveDisp}). Consolidate first via Send to your own pubkey.`);
-    }
-    if (!await ensureBurnerBackedUp('Auto-split a UTXO before deposit (one extra CXFER from your active wallet, then the deposit itself)')) {
-      throw new Error('cancelled');
-    }
-    const need = await estimateSatsForOp('cxfer');
-    if (!(await ensureSatsFunded(need, 'Auto-split before deposit'))) throw new Error('cancelled');
-    _progress('autosplit-start');
-    const splitResult = await buildAndBroadcastCXferMulti({
-      assetIdHex,
-      recipients: [{ pubHex: bytesToHex(wallet.pub), amount: denomBig }],
-      forceUtxos: [cover],
-    });
-    const r0 = splitResult.recipients[0];
-    // Wait for the reveal tx to be visible before proceeding — mempool.space
-    // UTXO listing has a propagation lag; without the wait, the upcoming
-    // getUtxos / scanHoldings call would miss the freshly-minted UTXO and
-    // fall back to "no exact-denomination UTXO."
-    await waitForTxVisible(splitResult.revealTxid);
-    _progress('autosplit-done');
-    exactUtxo = {
-      utxo: { txid: splitResult.revealTxid, vout: r0.vout, value: DUST },
-      amount: denomBig,
-      blinding: r0.blinding,
-    };
-  }
+  // Use the shared carveExactAmount helper so depositors with fragmented
+  // holdings don't have to consolidate manually before deposit. The helper
+  // produces a single exact-denom lot via single-cover split OR multi-input
+  // consolidate-and-carve, then waits for tx visibility before returning.
+  _progress('autosplit-start');
+  const carved = await carveExactAmount({ assetIdHex, amount: denomBig });
+  if (carved.splitTxid) _progress('autosplit-done');
+  const exactUtxo = {
+    utxo: { txid: carved.utxo.txid, vout: carved.utxo.vout, value: DUST },
+    amount: carved.amount,
+    blinding: carved.blinding,
+  };
 
   // Generate fresh (secret, ν) for this deposit.
   const { secret, nullifierPreimage } = mixerGenerateDepositSecrets();
@@ -12543,28 +13069,17 @@ async function buildAndBroadcastTDrop({
     if (acc === capBig && picked.length <= 16) {
       pickedUtxos = picked;
     } else {
-      const cover = sorted.find(u => u.amount > capBig);
-      if (!cover) {
-        throw new Error(`no UTXO combination sums exactly to ${capBig} and no single UTXO covers it for auto-split. Consolidate first.`);
-      }
-      if (!await ensureBurnerBackedUp('Auto-split a UTXO before T_DROP (one extra CXFER, then the drop)')) {
-        throw new Error('cancelled');
-      }
-      const need = await estimateSatsForOp('cxfer');
-      if (!(await ensureSatsFunded(need, 'Auto-split before drop'))) throw new Error('cancelled');
+      // No exact multi-input sum — fall back to carveExactAmount, which
+      // produces a single capBig-sized UTXO via single-cover split OR
+      // multi-input consolidate-and-carve. Lets droppers with fragmented
+      // holdings ship a drop without manual consolidation.
       _progress('autosplit-start');
-      const splitResult = await buildAndBroadcastCXferMulti({
-        assetIdHex,
-        recipients: [{ pubHex: bytesToHex(wallet.pub), amount: capBig }],
-        forceUtxos: [cover],
-      });
-      const r0 = splitResult.recipients[0];
-      await waitForTxVisible(splitResult.revealTxid);
-      _progress('autosplit-done');
+      const carved = await carveExactAmount({ assetIdHex, amount: capBig });
+      if (carved.splitTxid) _progress('autosplit-done');
       pickedUtxos = [{
-        utxo: { txid: splitResult.revealTxid, vout: r0.vout, value: DUST },
-        amount: capBig,
-        blinding: r0.blinding,
+        utxo: { txid: carved.utxo.txid, vout: carved.utxo.vout, value: DUST },
+        amount: carved.amount,
+        blinding: carved.blinding,
       }];
     }
   }
@@ -13548,7 +14063,7 @@ async function carveExactAmount({ assetIdHex, amount }) {
   const availTotal = available.reduce((s, u) => s + u.amount, 0n);
   if (amount > availTotal) throw new Error(`amount exceeds free balance (${availTotal} available, ${amount} requested)`);
   const exact = available.find(u => u.amount === amount);
-  if (exact) return exact;
+  if (exact) return { ...exact, splitTxid: null };
   const availLargest = available[0].amount;
   let coverUtxos;
   if (amount <= availLargest) {
@@ -13585,6 +14100,10 @@ async function carveExactAmount({ assetIdHex, amount }) {
     utxo: { txid: r.revealTxid, vout: r0.vout },
     amount: r0.amount,
     blinding: r0.blinding,
+    // splitTxid lets callers in batch flows (e.g. sweep-sell) mark this
+    // broadcast's inputs as spent so the next fill doesn't re-pick them.
+    // null on the exact-match fast-path (no broadcast happened).
+    splitTxid: r.revealTxid,
   };
 }
 
@@ -15345,7 +15864,7 @@ async function finalizeAxferVarTake({ assetIdHex, intentIdHex, intent, fulfilmen
     if (total >= fundingGap + DUST) break;
   }
   if (total < fundingGap) {
-    throw new Error(`insufficient sats: need ${fundingGap}, have ${total}. Send sats to ${wallet.address()} or consolidate UTXOs.`);
+    throw new Error(`insufficient sats: need ${fundingGap}, have ${total}. Top up: send sats to ${wallet.address()}.`);
   }
   const takerChange = total - fundingGap;
 
@@ -16728,50 +17247,22 @@ async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
   // canonical wire-format rounding (SPEC §5.7.7 + §5.7.6.1).
   const scaledPriceSats = Number((fillAmtBI * BigInt(bid.price_sats)) / BigInt(bid.amount));
   if (scaledPriceSats < DUST) throw new Error(`scaled BTC payment ${scaledPriceSats} < DUST; raise fillAmount or skip this bid`);
-  // Auto-pick a UTXO of the right amount if the caller didn't pass one. If no
-  // single UTXO matches `fillAmtBI` exactly, auto-split via self-CXFER —
-  // mirrors the listing flow so sellers don't have to consolidate manually
-  // before fulfilling.
+  // Auto-pick a UTXO of the right amount if the caller didn't pass one.
+  // Uses the shared carveExactAmount helper so sellers with fragmented
+  // holdings don't have to consolidate manually before fulfilling — the
+  // helper produces a single exact-size lot via consolidate-and-carve when
+  // no single UTXO covers, then waits for tx visibility before returning.
   if (!sellerUtxo) {
-    const holdings = await scanHoldings();
-    const h = holdings.get(bid.asset_id);
-    if (!h || h.utxos.length === 0) throw new Error('you hold none of this asset');
-    const wantAmt = fillAmtBI;
-    if (h.balance < wantAmt) throw new Error(`insufficient balance: hold ${h.balance}, bid wants ${wantAmt}`);
-    const exact = h.utxos.find(u => u.amount === wantAmt);
-    if (exact) {
-      sellerUtxo = exact;
-    } else {
-      const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
-      const cover = sorted.find(u => u.amount >= wantAmt);
-      if (!cover) throw new Error('no single UTXO covers bid amount — consolidate first via Send to your own address');
-      if (!await ensureBurnerBackedUp('Auto-split UTXO before fulfilling bid (one extra CXFER from your active wallet)')) {
-        throw new Error('cancelled');
-      }
-      const need = await estimateSatsForOp('cxfer');
-      if (!(await ensureSatsFunded(need, 'Auto-split before fulfilling bid'))) throw new Error('cancelled');
-      const splitResult = await buildAndBroadcastCXferMulti({
-        assetIdHex: bid.asset_id,
-        recipients: [{ pubHex: bytesToHex(wallet.pub), amount: wantAmt }],
-        forceUtxos: [cover],
-      });
-      const r0 = splitResult.recipients[0];
-      // The reveal tx is broadcast but mempool.space's UTXO listing may not
-      // yet reflect the new output. publishAxferIntent below calls
-      // scanHoldings → getUtxos which would miss the freshly-minted UTXO.
-      // Wait for the reveal tx to be visible before proceeding.
-      await waitForTxVisible(splitResult.revealTxid);
-      sellerUtxo = {
-        utxo: { txid: splitResult.revealTxid, vout: r0.vout },
-        amount: wantAmt,
-        blinding: r0.blinding,
-        // Carry the split tx's reveal_txid through so the caller (e.g.,
-        // sweep sell) can mark its inputs as recently-spent. Without this
-        // the next fulfilment in a sweep would re-pick UTXOs the split
-        // already consumed.
-        _splitTxid: splitResult.revealTxid,
-      };
-    }
+    const carved = await carveExactAmount({ assetIdHex: bid.asset_id, amount: fillAmtBI });
+    sellerUtxo = {
+      utxo: { txid: carved.utxo.txid, vout: carved.utxo.vout },
+      amount: carved.amount,
+      blinding: carved.blinding,
+      // Carry the carve tx's reveal_txid through so the caller (e.g.,
+      // sweep sell) can mark its inputs as recently-spent. Null when
+      // an exact-match UTXO was found and no broadcast happened.
+      _splitTxid: carved.splitTxid,
+    };
   }
   if (!sellerUtxo.utxo) throw new Error('invalid seller UTXO shape');
   if (BigInt(sellerUtxo.amount) !== fillAmtBI) {
@@ -22053,6 +22544,151 @@ function setupMixerHandlers() {
       }
     };
   }
+
+  // ===== Slot-rotate helper (SPEC-CBTC-ZK §5.23) =====
+  // "Send slot to recipient" — rotates a live slot to a recipient's viewing
+  // pubkey (or to self for key refresh). New (secret, ν) encrypted to
+  // recipient's viewing key; their on-load scanner picks it up.
+  const srotBtn = document.getElementById('btn-mixer-slot-rotate-broadcast');
+  const srotSelect = document.getElementById('mixer-slot-rotate-record');
+  const srotRecipient = document.getElementById('mixer-slot-rotate-recipient');
+  const srotOut = document.getElementById('mixer-slot-rotate-out');
+  const srotPubDisplay = document.querySelector('#mixer-slot-viewing-pub [data-pub-display]');
+  const srotPubCopyBtn = document.querySelector('#mixer-slot-viewing-pub [data-pub-copy]');
+  const srotScanStatus = document.getElementById('mixer-slot-scan-status');
+
+  const _refreshSrotViewingPub = () => {
+    if (!srotPubDisplay) return;
+    try {
+      if (wallet && wallet.priv) {
+        srotPubDisplay.textContent = bytesToHex(slotViewingPubkey());
+      } else {
+        srotPubDisplay.textContent = '(unlock wallet to derive)';
+      }
+    } catch { srotPubDisplay.textContent = '(unavailable)'; }
+  };
+  if (srotPubCopyBtn) {
+    srotPubCopyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(srotPubDisplay?.textContent || '');
+        const orig = srotPubCopyBtn.textContent;
+        srotPubCopyBtn.textContent = 'Copied!';
+        setTimeout(() => { srotPubCopyBtn.textContent = orig; }, 1500);
+      } catch {}
+    };
+  }
+  _refreshSrotViewingPub();
+
+  const _refreshSrotOptions = () => {
+    if (!srotSelect) return;
+    const prior = srotSelect.value || '';
+    let liveSlots = [];
+    try { liveSlots = getSlotRecords({ status: 'live' }); } catch {}
+    srotSelect.innerHTML = '<option value="">— pick a live slot —</option>'
+      + liveSlots.map(r => {
+          const denom = r.denomination || '?';
+          const tx = (r.mintTxid || '').slice(0, 12) + '…';
+          const aid = (r.assetIdHex || '').slice(0, 8) + '…';
+          return `<option value="${escapeHtml(r.leafCommitmentHex)}">${escapeHtml(denom)} sats · ${escapeHtml(aid)} · mint ${escapeHtml(tx)}</option>`;
+        }).join('');
+    if (prior && Array.from(srotSelect.options).some(o => o.value === prior)) {
+      srotSelect.value = prior;
+    }
+    _refreshSrotBtn();
+  };
+  const _refreshSrotBtn = () => {
+    if (!srotBtn) return;
+    const haveSlot = !!srotSelect?.value;
+    const recip = (srotRecipient?.value || '').trim().toLowerCase().replace(/\s/g, '');
+    const recipOk = !recip || /^0[23][0-9a-f]{64}$/.test(recip);
+    srotBtn.disabled = !(haveSlot && recipOk);
+  };
+  if (srotSelect) srotSelect.addEventListener('change', _refreshSrotBtn);
+  if (srotRecipient) srotRecipient.addEventListener('input', _refreshSrotBtn);
+  _refreshSrotOptions();
+
+  if (srotBtn) {
+    srotBtn.onclick = async () => {
+      if (srotBtn.disabled) return;
+      const leafHex = srotSelect.value;
+      const records = getSlotRecords();
+      const record = records.find(r => r.leafCommitmentHex === leafHex);
+      if (!record) {
+        if (srotOut) { srotOut.style.display = 'block'; srotOut.textContent = '✗ slot record not found'; }
+        return;
+      }
+      const recipHex = (srotRecipient?.value || '').trim().toLowerCase().replace(/\s/g, '');
+      const recipientViewingPub = recipHex ? hexToBytes(recipHex) : null;
+      const isSelf = !recipientViewingPub;
+      const confirmed = await tacitConfirm({
+        title: isSelf ? 'Refresh slot keys (self-rotation)' : 'Send slot to recipient',
+        body:
+          isSelf
+            ? `Rotate this slot to fresh secrets generated locally. The slot's BTC stays locked; new K_btc derives from new (secret, ν). Useful if current secrets may be exposed.\n\nContinue?`
+            : `Send ${record.denomination} sats of cBTC.zk to ${recipHex.slice(0, 16)}…\n\n• Fresh (secret, ν) generated and encrypted to recipient's viewing pubkey.\n• Rotate envelope broadcasts; recipient's dapp auto-detects on next load.\n• Your slot record moves to 'rotated'; you no longer control the BTC.\n\nContinue?`,
+        confirmLabel: isSelf ? 'Refresh & broadcast' : 'Send & broadcast',
+        cancelLabel: 'Cancel',
+      });
+      if (!confirmed) return;
+      srotBtn.disabled = true;
+      const origLabel = srotBtn.textContent;
+      srotBtn.textContent = isSelf ? 'Refreshing…' : 'Sending…';
+      if (srotOut) { srotOut.style.display = 'block'; srotOut.textContent = 'Generating Groth16 proof…'; }
+      try {
+        const result = await buildAndBroadcastSlotRotate({
+          slotRecord: record,
+          recipientViewingPub,
+          onProgress: (stage) => {
+            if (!srotOut) return;
+            const stages = {
+              'proof:merkle':      'Building merkle proof…',
+              'proof:fetch_zkey':  'Fetching ceremony zkey…',
+              'proof:fetch_wasm':  'Fetching circuit wasm…',
+              'proof:fullprove':   'Generating Groth16 proof (5–15s)…',
+              'commit-start':      'Commit broadcasting…',
+              'reveal-start':      'Reveal broadcasting…',
+            };
+            srotOut.textContent = stages[stage] || stage;
+          },
+        });
+        if (srotOut) {
+          srotOut.textContent =
+            (isSelf ? '✓ slot keys refreshed (self-rotation)' : '✓ slot sent') + '\n' +
+            `  commit_txid: ${result.commitTxid}\n` +
+            `  reveal_txid: ${result.revealTxid}\n` +
+            (isSelf
+              ? `  new K_btc x-only: ${result.newSlotRecord.kBtcXOnlyHex}\n  new slot record saved locally`
+              : `  encrypted note (122 bytes) embedded\n  recipient will detect on next dapp load`);
+        }
+        _refreshSrotOptions();
+        _refreshSburnOptions();
+        _renderSwrapList();
+      } catch (e) {
+        if (srotOut) srotOut.textContent = `✗ rotate failed: ${e?.message || e}`;
+      } finally {
+        srotBtn.textContent = origLabel;
+        _refreshSrotBtn();
+      }
+    };
+  }
+
+  // On-load inbound-note scan. Silent no-op if /slot-rotates worker
+  // endpoint isn't yet deployed.
+  (async () => {
+    if (!wallet || !wallet.priv || !srotScanStatus) return;
+    srotScanStatus.textContent = 'Scanning for inbound slot transfers…';
+    try {
+      const result = await scanInboundSlotNotes();
+      if (result.detected > 0) {
+        srotScanStatus.textContent = `✓ Discovered ${result.detected} inbound slot${result.detected === 1 ? '' : 's'} (${result.scanned} rotations scanned).`;
+        try { _renderSwrapList(); _refreshSrotOptions(); _refreshSburnOptions(); } catch {}
+      } else if (result.scanned > 0) {
+        srotScanStatus.textContent = `Scanned ${result.scanned} rotation${result.scanned === 1 ? '' : 's'}; no inbound addressed to this wallet.`;
+      } else {
+        srotScanStatus.textContent = '(scanner idle — /slot-rotates not yet deployed)';
+      }
+    } catch { srotScanStatus.textContent = ''; }
+  })();
 }
 
 // ============== CEREMONY UI (Phase 2 MPC, browser-driven) ==============
@@ -33503,6 +34139,11 @@ async function renderHoldings() {
     }
     return;
   }
+  // cBTC.zk slot-balance summary banner. Renders above the standard tacit-
+  // asset holdings when this wallet has live slot records. Each slot is a
+  // fixed-denomination wrapped-BTC unit; total = sum of live-slot denoms.
+  try { _renderHoldingsSlotSummary(); } catch {}
+
   // First-load shows a skeleton; subsequent refreshes keep the prior list
   // visible so a transient 429 doesn't wipe rendered assets to a skeleton-
   // then-red-block flash. Tracked via _holdingsLastRenderOk: set true after
@@ -48808,24 +49449,19 @@ function _wireSwapTile(scope) {
     const holdings = await scanHoldings();
     const h = holdings.get(aid);
     if (!h || h.balance < residualBase) return { ok: false, reason: 'insufficient holdings' };
-    let listUtxo = h.utxos.find(u => u.amount === residualBase);
-    if (!listUtxo) {
-      // Pick the smallest covering UTXO for the split.
-      const sorted = [...h.utxos].sort((a, b) => a.amount < b.amount ? -1 : a.amount > b.amount ? 1 : 0);
-      const cover = sorted.find(u => u.amount >= residualBase);
-      if (!cover) return { ok: false, reason: 'no single UTXO covers residual; consolidate first' };
-      const splitResult = await buildAndBroadcastCXferMulti({
-        assetIdHex: aid,
-        recipients: [{ pubHex: bytesToHex(wallet.pub), amount: residualBase }],
-        forceUtxos: [cover],
-      });
-      const r0 = splitResult.recipients[0];
-      await waitForTxVisible(splitResult.revealTxid);
+    // Use the shared carveExactAmount helper so a swap-sell residual can
+    // post even when no single UTXO covers — multi-input consolidate-and-
+    // carve produces the exact-sized lot in one tx.
+    let listUtxo;
+    try {
+      const carved = await carveExactAmount({ assetIdHex: aid, amount: residualBase });
       listUtxo = {
-        utxo: { txid: splitResult.revealTxid, vout: r0.vout },
-        amount: residualBase,
-        blinding: r0.blinding,
+        utxo: { txid: carved.utxo.txid, vout: carved.utxo.vout },
+        amount: carved.amount,
+        blinding: carved.blinding,
       };
+    } catch (e) {
+      return { ok: false, reason: 'carve failed: ' + (e?.message || String(e)) };
     }
     // min_take: max(10% of amount, smallest-DUST-clearing chunk). Same
     // formula as the buy-side residual bid.
@@ -55000,7 +55636,16 @@ export {
   // commit-reveal Bitcoin tx + envelope construction + local-state update.
   // Exported so headless drivers (signet rehearsal, integration tests) can
   // exercise the same code path the UI calls.
-  buildAndBroadcastSlotMint, buildAndBroadcastSlotBurn,
+  buildAndBroadcastSlotMint, buildAndBroadcastSlotBurn, buildAndBroadcastSlotRotate,
+  // Slot-note encryption primitives (SPEC-CBTC-ZK-FUNGIBILITY §5.26).
+  // Exported for the standalone test at tests/slot-note-encryption.test.mjs.
+  encryptSlotNote, decryptSlotNote, slotViewingPubkey,
+  appendSlotNoteToPayload, tryExtractSlotNoteFromTail,
+  scanInboundSlotNotes,
+  // Holdings-tab integration: aggregate live slot records into per-tier
+  // summary rows. Used by renderHoldings to surface cBTC.zk balances
+  // alongside standard tacit-asset balances.
+  getSlotBalanceSummary,
   saveSlotRecord, getSlotRecords, forgetSlotRecord,
   estSlotMintRevealVb, estSlotBurnRevealVb,
   // BIP-341 key-path sighash + signer — used by the slot-spend reveal txs in
