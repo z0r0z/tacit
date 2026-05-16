@@ -33359,12 +33359,12 @@ async function renderHoldings() {
             return;
           }
           // List by AMOUNT, not by UTXO. If no UTXO matches the requested
-          // amount exactly, the dapp auto-splits via a self-CXFER first (one
-          // extra Bitcoin tx, ~$1-3 mainnet), creating a UTXO of the exact
-          // amount + change. Closes the user-reported gap where the form
-          // forced selling a whole UTXO. The largest holdable UTXO bounds
-          // what's sellable in a single listing — for amounts spanning
-          // multiple UTXOs, ask users to consolidate first via Send.
+          // amount exactly, the dapp carves it in one self-CXFER (one extra
+          // Bitcoin tx, ~$1-3 mainnet): consumes the smallest covering UTXO
+          // and splits, OR consolidates multiple UTXOs into one exact-size
+          // output + change when no single UTXO covers. Either case produces
+          // a single listable lot in one tx — no manual Send-Privately
+          // round-trip needed.
           const sortedUtxos = [...target.utxos].sort((a, b) => a.amount < b.amount ? 1 : a.amount > b.amount ? -1 : 0);
           const totalBal = sortedUtxos.reduce((s, u) => s + u.amount, 0n);
           const largestUtxo = sortedUtxos[0]?.amount || 0n;
@@ -33375,8 +33375,8 @@ async function renderHoldings() {
               <div class="muted" style="margin-top:4px;font-size:11px;">
                 Balance: ${fmtAssetAmount(totalBal, target.decimals)} ${escapeHtml(target.ticker)} across ${sortedUtxos.length} lot${sortedUtxos.length === 1 ? '' : 's'}
                 (largest: ${fmtAssetAmount(largestUtxo, target.decimals)} ${escapeHtml(target.ticker)}).
-                If the amount you enter doesn't match a single lot exactly, the dapp auto-splits one for you
-                (one extra Bitcoin tx), then lists the exact-size lot.
+                If your amount doesn't match a single lot exactly, the dapp combines and/or splits your lots in
+                one self-CXFER (one extra Bitcoin tx fee), then lists the exact-size lot.
               </div>
               <div class="form-row two" style="margin-top:8px;">
                 <div>
@@ -33418,10 +33418,6 @@ async function renderHoldings() {
             catch (e) { errEl.textContent = e.message; return; }
             if (amount <= 0n) { errEl.textContent = 'amount must be > 0'; return; }
             if (amount > totalBal) { errEl.textContent = `amount exceeds holdings (${fmtAssetAmount(totalBal, target.decimals)} ${target.ticker})`; return; }
-            if (amount > largestUtxo) {
-              errEl.textContent = `amount exceeds largest single UTXO (${fmtAssetAmount(largestUtxo, target.decimals)} ${target.ticker}). Consolidate first via Send Privately to your own address.`;
-              return;
-            }
             const priceSats = parseInt(formHost.querySelector('[data-field="price"]').value.trim(), 10);
             if (!Number.isInteger(priceSats) || priceSats < DUST) { errEl.textContent = `price must be integer ≥ ${DUST}`; return; }
             const days = parseInt(formHost.querySelector('[data-field="days"]').value.trim(), 10);
@@ -33429,46 +33425,83 @@ async function renderHoldings() {
             const expiry = Math.floor(Date.now() / 1000) + days * 86400;
 
             // Exclude UTXOs that are already in an active listing/intent —
-            // both from the exact-match search and the auto-split cover pick.
-            // Splitting an already-listed UTXO would silently invalidate the
-            // existing listing once the split tx confirms; double-listing it
-            // strands the older offer at fulfilment time.
+            // from the exact-match search, the single-cover split pick, and
+            // the multi-UTXO consolidation pick. Spending an already-listed
+            // UTXO would silently invalidate the existing listing once the
+            // tx confirms; double-listing it strands the older offer at
+            // fulfilment time.
             const listedTags = await listedTagsP;
             const isListed = u => listedTags.has(`${u.utxo.txid}:${u.utxo.vout | 0}`);
             const availableUtxos = sortedUtxos.filter(u => !isListed(u));
             const lockedCount = sortedUtxos.length - availableUtxos.length;
             const availLargest = availableUtxos[0]?.amount || 0n;
-            if (amount > availLargest) {
+            const availTotal = availableUtxos.reduce((s, u) => s + u.amount, 0n);
+            if (amount > availTotal) {
               errEl.textContent = lockedCount
-                ? `Largest free UTXO is ${fmtAssetAmount(availLargest, target.decimals)} ${target.ticker} (${lockedCount} UTXO${lockedCount === 1 ? '' : 's'} already in active listings/intents). Lower the amount or cancel an existing listing first.`
-                : `amount exceeds largest single UTXO (${fmtAssetAmount(availLargest, target.decimals)} ${target.ticker}). Consolidate first via Send Privately to your own address.`;
+                ? `Free balance is ${fmtAssetAmount(availTotal, target.decimals)} ${target.ticker} (${lockedCount} UTXO${lockedCount === 1 ? '' : 's'} already in active listings/intents). Lower the amount or cancel an existing listing first.`
+                : `amount exceeds holdings (${fmtAssetAmount(availTotal, target.decimals)} ${target.ticker})`;
               return;
             }
 
-            // Pick a UTXO. Prefer an exact match (no split needed); else pick
-            // the smallest UTXO that covers the amount (minimizes the
-            // post-split change UTXO size, which is more usable later).
+            // Pick UTXO(s). Prefer an exact match (no extra tx). Else carve
+            // a list-sized lot in a single self-CXFER:
+            //   • amount ≤ availLargest → split the smallest covering UTXO
+            //     (minimizes change so future listings can reuse it directly)
+            //   • amount > availLargest → consolidate multiple UTXOs into one
+            //     CXFER summing ≥ amount (greedy descending = smallest input
+            //     count = smallest fee). availableUtxos is already sorted
+            //     descending. The CXFER produces one exact-size output for the
+            //     listing plus a change output for the remainder.
             const exactMatch = availableUtxos.find(u => u.amount === amount);
             let listUtxo = exactMatch;
+            let coverUtxos = null;
+            if (!exactMatch) {
+              if (amount <= availLargest) {
+                const single = [...availableUtxos].reverse().find(u => u.amount >= amount);
+                if (!single) throw new Error('no UTXO large enough (should not happen — guarded above)');
+                coverUtxos = [single];
+              } else {
+                coverUtxos = [];
+                let sum = 0n;
+                for (const u of availableUtxos) {
+                  coverUtxos.push(u);
+                  sum += u.amount;
+                  if (sum >= amount) break;
+                }
+              }
+            }
+            const isConsolidate = coverUtxos && coverUtxos.length > 1;
             const submitBtn = ev.target;
-            submitBtn.disabled = true; submitBtn.textContent = exactMatch ? 'listing…' : 'splitting + listing…';
+            submitBtn.disabled = true; submitBtn.textContent = exactMatch
+              ? 'listing…'
+              : (isConsolidate ? `consolidating ${coverUtxos.length} lots + listing…` : 'splitting + listing…');
             try {
               if (!exactMatch) {
-                // Auto-split: self-CXFER for the exact amount. The result's
-                // recipients[0] is what we'll list (vout 0 of the reveal tx).
-                if (!await ensureBurnerBackedUp('Auto-split UTXO before listing (one extra CXFER from your active wallet)')) {
+                // Single self-CXFER does both consolidate (≥1 inputs) and
+                // carve (1 list-sized output + change). result.recipients[0]
+                // is the listing UTXO (vout 0 of the reveal tx).
+                const backupLabel = isConsolidate
+                  ? `Auto-consolidate ${coverUtxos.length} lots before listing (one CXFER from your active wallet)`
+                  : 'Auto-split UTXO before listing (one extra CXFER from your active wallet)';
+                if (!await ensureBurnerBackedUp(backupLabel)) {
                   throw new Error('cancelled');
                 }
-                const need = await estimateSatsForOp('cxfer');
-                if (!(await ensureSatsFunded(need, 'Auto-split before listing'))) throw new Error('cancelled');
-                // Force the smallest covering UTXO so the change UTXO is as
-                // small as possible (future listings can take from it directly).
-                const cover = [...availableUtxos].reverse().find(u => u.amount >= amount);
-                if (!cover) throw new Error('no UTXO large enough (should not happen — guarded above)');
+                // Fee estimate scales with actual input count — the default
+                // heuristic assumes numAssetIn=4 and would under-fund a larger
+                // consolidation.
+                const need = await (async () => {
+                  const feeRate = await getFeeRate();
+                  const revealVb = estCXferRevealVb({ m: 2, numAssetIn: coverUtxos.length, hasSatsChange: true });
+                  const revealFee = feeFor(revealVb, feeRate);
+                  const commitFee = feeFor(estCommitVb(1), feeRate);
+                  return DUST + revealFee + commitFee + DUST + 1000;
+                })();
+                const fundLabel = isConsolidate ? 'Auto-consolidate before listing' : 'Auto-split before listing';
+                if (!(await ensureSatsFunded(need, fundLabel))) throw new Error('cancelled');
                 const splitResult = await buildAndBroadcastCXferMulti({
                   assetIdHex: aid,
                   recipients: [{ pubHex: bytesToHex(wallet.pub), amount }],
-                  forceUtxos: [cover],
+                  forceUtxos: coverUtxos,
                 });
                 const r0 = splitResult.recipients[0];
                 listUtxo = {
@@ -33476,7 +33509,9 @@ async function renderHoldings() {
                   amount: r0.amount,
                   blinding: r0.blinding,
                 };
-                toast(`Split: ${fmtAssetAmount(amount, target.decimals)} ${target.ticker} carved out for listing ✓`, 'success');
+                toast(isConsolidate
+                  ? `Consolidated ${coverUtxos.length} lots → ${fmtAssetAmount(amount, target.decimals)} ${target.ticker} for listing ✓`
+                  : `Split: ${fmtAssetAmount(amount, target.decimals)} ${target.ticker} carved out for listing ✓`, 'success');
               }
               await publishListing({
                 assetIdHex: aid,
