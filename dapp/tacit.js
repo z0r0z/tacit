@@ -5925,7 +5925,6 @@ function decodeTWithdrawPayload(payload) {
 // permanently — same property native Bitcoin has.
 
 const SLOT_MINT_DOMAIN    = new TextEncoder().encode('tacit-slot-mint-v1');
-const SLOT_MINT_V2_DOMAIN = new TextEncoder().encode('tacit-slot-mint-v2');
 const SLOT_ROTATE_DOMAIN  = new TextEncoder().encode('tacit-slot-rotate-v1');
 const SLOT_FRAC_DOMAIN    = new TextEncoder().encode('tacit-slot-fractionalize-v1');
 const SLOT_RECON_DOMAIN   = new TextEncoder().encode('tacit-slot-reconsolidate-v1');
@@ -5952,13 +5951,19 @@ function slotScriptPubKeyFromKbtc(kBtcPoint) {
   return p2trScript(slotXOnly(kBtcPoint));
 }
 
-function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, kBtcXOnly = null) {
+// Canonical slot_mint_msg per SPEC-CBTC-ZK §5.21 (revised: §5.24.0 amount-
+// amendment two-key fix folded in). Single shape, single domain tag —
+// k_btc_xonly is always part of the signed preimage. cBTC.zk hasn't shipped
+// to mainnet yet, so there's no v1 single-key envelope to maintain
+// backward-compat with; the original single-key derivation was flagged
+// fractionalize-unsafe and never made it past test fixtures.
+function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, kBtcXOnly) {
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
   if (leafHash.length !== 32) throw new Error('leaf_hash 32 bytes');
   if (paymentAssetId.length !== 32) throw new Error('payment_asset_id 32 bytes');
-  if (kBtcXOnly !== null && (!(kBtcXOnly instanceof Uint8Array) || kBtcXOnly.length !== 32)) {
-    throw new Error('k_btc_xonly must be 32 bytes when present');
+  if (!(kBtcXOnly instanceof Uint8Array) || kBtcXOnly.length !== 32) {
+    throw new Error('k_btc_xonly must be 32 bytes (explicit BTC spending key per §5.24.0)');
   }
   const denomLE = new Uint8Array(8);
   {
@@ -5974,14 +5979,10 @@ function computeSlotMintMsg(networkTag, assetId, denomination, recipientCommit, 
     v.setUint32(0, Number(p & 0xffffffffn), true);
     v.setUint32(4, Number((p >> 32n) & 0xffffffffn), true);
   }
-  // v1 (single-key) and v2 (two-key) use distinct domain tags so a sig over
-  // one cannot be replayed as the other. v2 appends k_btc_xonly to the
-  // signed preimage so the minter explicitly attests to the slot's BTC
-  // spending key.
-  const domain = kBtcXOnly ? SLOT_MINT_V2_DOMAIN : SLOT_MINT_DOMAIN;
   const parts = [
-    domain, new Uint8Array([networkTag & 0xff]),
+    SLOT_MINT_DOMAIN, new Uint8Array([networkTag & 0xff]),
     assetId, denomLE, recipientCommit, leafHash, paymentAssetId, payLE,
+    kBtcXOnly,
   ];
   if (kBtcXOnly) parts.push(kBtcXOnly);
   return sha256(concatBytes(...parts));
@@ -6103,10 +6104,9 @@ function decodeTSlotMintPayload(payload) {
   if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
   const minterPubkey = payload.slice(p, p + 33); p += 33;
   const minterSig = payload.slice(p, p + 64); p += 64;
-  const kBtcXOnly = isV2 ? payload.slice(p, p + 32) : null;
+  const kBtcXOnly = payload.slice(p, p + 32);
   return {
     kind: 'slot_mint',
-    slotVariant: isV2 ? 'v2' : 'v1',
     networkTag, assetId, denomination,
     recipientCommit, leafHash,
     paymentAssetId, paymentAmount,
@@ -39873,7 +39873,7 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
     const isMine = myPub && b.buyer_pubkey === myPub;
     const fulfilTitle = isVar
       ? `Variable-fill bid: any chunk in ${fmtAssetAmountPlain(minBig, decimals)}–${fmtAssetAmountPlain(remBig, decimals)} ${ticker} settles atomically. Click to pick a chunk.`
-      : `Spin up an atomic intent targeted at this bidder, signed by your asset UTXO. Settles in one Bitcoin tx.`;
+      : `Spin up an atomic intent targeted at this bidder, signed by your asset UTXO. Settles atomically on Bitcoin.`;
     let actionsHtml;
     if (fullyClaimed && !isVar) {
       actionsHtml = `<span class="muted" style="font-size:10px;">claimed via atomic intent ${escapeHtml(shorten(b.axintent_id, 6))}</span>`;
@@ -42179,8 +42179,8 @@ function applyMarketFilters() {
            is the only honest signal. -->
       <div data-swap-limit-readout class="muted" style="font-size:10px;line-height:1.4;margin:-6px 0 10px;text-align:right;display:none;"></div>
       <!-- Primary action -->
-      <button data-swap-action type="button" disabled title="Each fill settles in one Bitcoin transaction. No public mempool ordering, no MEV bots, no privileged sequencer — Bitcoin's PoW + atomic settlement means no one can reorder your fill or sandwich you." style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
-      <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="Each fill settles in one Bitcoin transaction. No public mempool ordering games, no MEV bots, no privileged sequencer that can reorder or sandwich your trade.">Settles in one Bitcoin tx · no front-running</div>
+      <button data-swap-action type="button" disabled title="Each fill settles atomically on Bitcoin. No public mempool ordering, no MEV bots, no privileged sequencer — Bitcoin's PoW + atomic settlement means no one can reorder your fill or sandwich you." style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
+      <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="Each fill settles atomically on Bitcoin. No public mempool ordering games, no MEV bots, no privileged sequencer that can reorder or sandwich your trade.">Settles atomically on Bitcoin · no front-running</div>
       <!-- Auto-fulfil status hint: visible only in sell direction since
            sells depend on this tab signing claim responses from buyers.
            Updated dynamically by the wireup's applyDirection() based on
@@ -42513,7 +42513,7 @@ function applyMarketFilters() {
       } else if (claim) {
         statusLine = `<span title="Another taker has the 5-minute lock on this intent. If they don't broadcast in time the lock expires and this tile becomes claimable again.">claimed by <span class="mono-box inline" style="font-size:10px;">${escapeHtml(shorten(claim.taker_pubkey, 6))}</span></span>`;
       } else {
-        primaryAction = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-min-take="${escapeHtml(l.min_take_amount || '')}" data-expiry="${Number(l.expiry || 0)}" title="${l.min_take_amount ? 'Variable-amount listing — pick how much to take (DEX-like partial fill). Settles in one Bitcoin tx, atomic.' : 'Taker step 1 of 3: reserve this atomic intent for 5 minutes. You commit a sat UTXO ≥ price as proof of funds; the maker then fulfils, then you Take to settle.'}" style="flex:1;font-size:11px;">${l.min_take_amount ? 'Buy…' : 'Claim'}</button>`;
+        primaryAction = `<button data-act="market-claim-intent" data-aid="${escapeHtml(safeAid)}" data-iid="${escapeHtml(iid)}" data-price="${Number(l.price_sats || 0)}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-min-take="${escapeHtml(l.min_take_amount || '')}" data-expiry="${Number(l.expiry || 0)}" title="${l.min_take_amount ? 'Variable-amount listing — pick how much to take (DEX-like partial fill). Settles atomically on Bitcoin.' : 'Taker step 1 of 3: reserve this atomic intent for 5 minutes. You commit a sat UTXO ≥ price as proof of funds; the maker then fulfils, then you Take to settle.'}" style="flex:1;font-size:11px;">${l.min_take_amount ? 'Buy…' : 'Claim'}</button>`;
       }
     } else if (l.kind === 'preauth') {
       // Buyer-completable T_AXFER (SPEC §5.7.8). Seller can be offline; any
@@ -44778,7 +44778,7 @@ function showMarketListPreviewModal(assetId) {
         </div>
       </div>
       <div class="market-buy-note" title="Instant Listing · preauth (SPEC §5.7.8) — you sign a sale authorization once at publish time. Buyer completes the trade alone in a single Bitcoin tx.">
-        <strong>Instant listing:</strong> you sign once now. Any buyer can complete the trade alone — settles in one Bitcoin tx, no claim window, no follow-up step from you. Tokens move only if you're paid in the same transaction.
+        <strong>Instant listing:</strong> you sign once now. Any buyer can complete the trade alone — settles atomically on Bitcoin, no claim window, no follow-up step from you. Tokens move only if you're paid in the same transaction.
       </div>
       <div class="market-buy-actions">
         <button type="button" data-market-list-preview-close>Close</button>
@@ -49807,7 +49807,22 @@ function _wireSwapTile(scope) {
       }
       toInput.value = result.totalSats.toLocaleString();
       const usd = btcUsd ? fmtSatsAsUsd(result.totalSats, btcUsd) : null;
-      toMeta.textContent = usd ? `≈ ${usd}` : '';
+      // Min sats received at the limit price: the slippage cap's concrete
+      // guarantee on the sell side. Mirrors the buy-side "min X TAC at
+      // limit" prefix so the trader sees the protected worst-case before
+      // the estimated headline number.
+      let _minSatsHtml = '';
+      if (Number.isFinite(refUnit) && refUnit > 0 && amt > 0n) {
+        const _capUnitSell = refUnit * (1 - getSlipRatio());
+        if (_capUnitSell > 0) {
+          const _minSats = Math.floor(Number(amt) * _capUnitSell / Math.pow(10, decimals));
+          if (_minSats > 0) {
+            _minSatsHtml = `<strong style="color:var(--ink);">min ${_minSats.toLocaleString()} sats</strong> at ±${escapeHtml(String(slipSel?.value || ''))}% limit · `;
+          }
+        }
+      }
+      const _usdStr = usd ? `≈ ${usd}` : '';
+      toMeta.innerHTML = `${_minSatsHtml}${escapeHtml(_usdStr)}`;
       const highU = result.plan[0].u;
       const lowU = result.plan[result.plan.length - 1].u;
       const rangeStr = result.plan.length === 1
@@ -50147,7 +50162,7 @@ function _wireSwapTile(scope) {
         const hasIntent = result.plan.some(c => c.kind === 'intent' || c.kind === 'intent-var');
         const asyncNote = hasIntent
           ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
-          : `Each fill settles in one Bitcoin tx.`;
+          : `Each fill settles atomically on Bitcoin.`;
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
         // Same tightened style as the exact-in path. Exact-out uses
         // "≥ X" since whole-UTXO atomicity may overshoot the requested
@@ -50599,7 +50614,7 @@ function _wireSwapTile(scope) {
       const _hasIntent = result.plan.some(c => c.kind === 'intent' || c.kind === 'intent-var');
       const _asyncNote = _hasIntent
         ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
-        : `Each fill settles in one Bitcoin tx.`;
+        : `Each fill settles atomically on Bitcoin.`;
       // Residual-bid preview: tell the user up-front when their budget
       // won't fully fill from asks and the unspent portion stays open
       // as a passive swap order matching when a seller appears.
@@ -52756,7 +52771,7 @@ function _showOtcTakeGate({ kind, aid, ticker, amt, dec, price, addr, myPub }) {
     const altsHtml = altCount > 0
       ? `<div style="margin:14px 0;padding:10px 12px;border:1px solid var(--orange);background:var(--bg-warm);font-size:11px;">
            <strong>${altCount} atomic offer${altCount === 1 ? '' : 's'} exist for ${escapeHtml(ticker)}.</strong>
-           Atomic settles in one Bitcoin tx - no counterparty trust needed.
+           Atomic settlement on Bitcoin - no counterparty trust needed.
          </div>`
       : `<div class="muted" style="margin:14px 0;font-size:11px;font-style:italic;">No atomic alternatives currently listed for ${escapeHtml(ticker)}.</div>`;
     card.innerHTML = `
