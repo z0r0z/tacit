@@ -573,20 +573,63 @@ button.market-chip .chip-caret {
 .market-listing-tile[data-taken-pending="1"] .market-listing-actions {
   pointer-events: auto;
 }
+/* Sold-pending badge. Previously a solid-green uppercase pill that
+   overflowed the narrow action cell in rows-mode (the 6-column grid's
+   action minmax is 100px–0.7fr; nowrap'd uppercase text routinely
+   exceeded that on desktop and pushed into the gutter on mobile).
+   Now a quiet pulsing-dot indicator with lowercase muted text that
+   shrinks to fit and ellipses cleanly if the cell narrows further.
+   Reads as ambient status, not a colored CTA. */
 .market-listing-taken-badge {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  background: #0a8f43;
-  color: #fff;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 2px 6px;
+  background: transparent;
+  color: var(--ink-mid);
+  font-family: var(--mono);
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  border: 1px solid #0a7d3a;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  border: 1px dashed var(--ink-faint);
   border-radius: 2px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.market-listing-taken-badge::before {
+  content: "";
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #0a8f43;
+  animation: market-taken-pulse 1.6s ease-in-out infinite;
+}
+@keyframes market-taken-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .market-listing-taken-badge::before { animation: none; opacity: 0.7; }
+}
+/* Hide the action cell's gutter when only the taken-badge lives there
+   so it sits flush at the right edge of the row instead of fighting
+   the .market-listing-actions wrapper's default button alignment. */
+.market-listing-tile[data-taken-pending="1"] .market-listing-actions {
+  justify-content: flex-end;
+  gap: 0;
+  min-width: 0;
+}
+@media (max-width: 520px) {
+  .market-listing-taken-badge {
+    font-size: 9px;
+    padding: 2px 5px;
+  }
 }
 /* Focus rings for the now-keyboard-navigable orderbook rows (tabindex
    was added in the same commit that wired Enter/Space). Browser-

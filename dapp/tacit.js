@@ -50144,7 +50144,7 @@ function applyMarketFilters() {
   // (those rows are no longer takeable); shown alongside it.
   const _pendingCount = rowsForGrid.reduce((n, l) => n + (l._takenPending ? 1 : 0), 0);
   const _pendingPillHtml = _pendingCount > 0
-    ? ` <span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;text-transform:uppercase;" title="${_pendingCount} listing${_pendingCount === 1 ? '' : 's'} just sold — Bitcoin settlement tx is in the mempool, awaiting first confirmation (~10 min). Excluded from the floor and Swap routing so the displayed best ask reflects what's actually takeable right now.">🔥 ${_pendingCount} just sold</span>`
+    ? ` <span style="display:inline-flex;align-items:center;gap:4px;margin-left:6px;padding:1px 6px;background:transparent;color:var(--ink-mid);font-family:var(--mono);font-size:9.5px;font-weight:600;letter-spacing:0;border:1px dashed var(--ink-faint);border-radius:2px;text-transform:none;vertical-align:middle;" title="${_pendingCount} listing${_pendingCount === 1 ? '' : 's'} just sold — Bitcoin settlement tx is in the mempool, awaiting first confirmation (~10 min). Excluded from the floor and Swap routing so the displayed best ask reflects what's actually takeable right now."><span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#0a8f43;"></span>${_pendingCount} settling</span>`
     : '';
   // Bundle row count drives whether to render the row-types explainer line.
   // Rows are flagged after `groupChunkedPreauthListings` and
@@ -51173,7 +51173,11 @@ function applyMarketFilters() {
     // suppressed too — once the UTXO is in mempool the listing is
     // unrecoverable.
     if (l._takenPending) {
-      primaryAction = `<span class="market-listing-taken-badge" title="This lot is being settled on Bitcoin right now — the buyer's tx is in the mempool. Excluded from the floor + Swap routing so you don't price against it. The row disappears once the tx confirms (~10 min).">🔥 just sold · settling</span>`;
+      // Quieter pulsing-dot indicator (see .market-listing-taken-badge
+      // in index.html). Shrinks to fit the action cell and ellipses on
+      // narrow viewports — no more uppercase green pill juting into the
+      // gutter. Status line below still carries the full explainer.
+      primaryAction = `<span class="market-listing-taken-badge" title="This lot is being settled on Bitcoin right now — the buyer's tx is in the mempool. Excluded from the floor + Swap routing so you don't price against it. The row disappears once the tx confirms (~10 min).">settling</span>`;
       secondaryAction = '';
       statusLine = `<span title="Preauth/intent UTXO observed spent in the mempool. Pruned from the live order book and Swap router; the next live ask sets the new floor.">trade detected · awaiting Bitcoin confirmation</span>`;
     }
