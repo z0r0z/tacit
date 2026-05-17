@@ -49241,16 +49241,71 @@ function applyMarketFilters() {
     const markHtml = markValid
       ? `<span class="muted" style="font-size:10px;" title="Outlier-guarded reference price from recent trades (same value the price chart and depth chart anchor on).">mark ${fmtUnitPriceSats(markUnit)}</span>`
       : '';
-    return `<div data-market-spread-row class="market-spread-divider" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:8px 12px;margin:8px 0 12px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);background:var(--bg-warm,#faf9f5);font-family:var(--mono);font-size:11px;">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-        ${bestBidHtml}
-        <span class="muted" style="font-size:10px;">↕</span>
-        ${bestAskHtml}
+    // Recent-trades sub-strip: last 5 prints inline at the spread, so the
+    // "what just happened" question doesn't require a tab switch. Pulled
+    // from asset.trades (full ring, has size + price) when available;
+    // falls back to asset.price_summary (compact, price + ts only) on
+    // cold caches. Each pill shows price → size (if known) → relative
+    // age. Click any pill → Activity tab (delegated handler reads
+    // data-act). Skipped when there's no trade data at all so the strip
+    // collapses cleanly on never-traded assets.
+    const _recentTrades = (() => {
+      const full = Array.isArray(_assetForBids?.trades) ? _assetForBids.trades : null;
+      if (full && full.length > 0) {
+        return full.slice(0, 5).map(t => {
+          const ps = Number(t.price_sats) || 0;
+          const ts = Number(t.ts) || 0;
+          let amtBig = 0n; try { amtBig = BigInt(t.amount || '0'); } catch {}
+          if (ps <= 0 || ts <= 0 || amtBig <= 0n) return null;
+          const u = unitPriceSats(ps, amtBig, decForSpread);
+          return u != null ? { u, ts, amtBig, hasSize: true } : null;
+        }).filter(Boolean);
+      }
+      const summary = Array.isArray(_assetForBids?.price_summary) ? _assetForBids.price_summary : [];
+      if (summary.length === 0) return [];
+      // price_summary is newest-first per worker (see /assets handler).
+      return summary.slice(0, 5).map(p => ({
+        u: Number(p?.u) || 0, ts: Number(p?.ts) || 0, amtBig: 0n, hasSize: false,
+      })).filter(p => p.u > 0 && p.ts > 0);
+    })();
+    const _ageShort = (ts) => {
+      const s = Math.max(0, nowSec - ts);
+      if (s < 60)    return `${s}s`;
+      if (s < 3600)  return `${Math.floor(s / 60)}m`;
+      if (s < 86400) return `${Math.floor(s / 3600)}h`;
+      return `${Math.floor(s / 86400)}d`;
+    };
+    const _recentTradesHtml = _recentTrades.length > 0
+      ? `<div data-market-recent-trades style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding-top:8px;margin-top:8px;border-top:1px dashed var(--ink-faint);font-size:10px;">
+           <span class="muted" style="font-size:9px;text-transform:uppercase;letter-spacing:0.06em;flex:0 0 auto;">Recent</span>
+           ${_recentTrades.map(t => {
+             // Color: green when the print is above mark (buyer paid up),
+             // red when below (seller dumped). Matches the
+             // vs-mark column convention on the ladders.
+             const _diffCls = markValid
+               ? (t.u >= markUnit ? '#0a7d3a' : '#b8341d')
+               : 'var(--ink)';
+             const _sizeStr = t.hasSize
+               ? ` <span class="muted" style="font-size:9px;">· ${escapeHtml(fmtAssetAmountCompact(t.amtBig, decForSpread))}</span>`
+               : '';
+             return `<span style="display:inline-flex;align-items:center;gap:3px;padding:2px 6px;background:var(--bg);border:1px solid var(--ink-faint);border-radius:2px;font-family:var(--mono);" title="${markValid ? (t.u >= markUnit ? 'Print above mark — buyer paid up' : 'Print below mark — seller discounted') : 'Recent trade'}. Click to jump to Activity tab."><strong style="color:${_diffCls};">${escapeHtml(fmtUnitPriceSats(t.u))}</strong>${_sizeStr}<span class="muted" style="font-size:9px;">· ${escapeHtml(_ageShort(t.ts))} ago</span></span>`;
+           }).join('')}
+           <button data-act="market-jump-activity" type="button" style="background:none;border:none;color:var(--ink-mid);padding:0 4px;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;font-size:10px;" title="See the full trade history">all →</button>
+         </div>`
+      : '';
+    return `<div data-market-spread-row class="market-spread-divider" style="display:block;padding:8px 12px;margin:8px 0 12px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);background:var(--bg-warm,#faf9f5);font-family:var(--mono);font-size:11px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+          ${bestBidHtml}
+          <span class="muted" style="font-size:10px;">↕</span>
+          ${bestAskHtml}
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
+          ${spreadMidHtml}
+          ${markHtml}
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
-        ${spreadMidHtml}
-        ${markHtml}
-      </div>
+      ${_recentTradesHtml}
     </div>`;
   })();
   // CEX-standard orderbook layout: asks above, spread divider in the
@@ -49505,6 +49560,22 @@ function applyMarketFilters() {
       if (input) setTimeout(() => { try { input.focus({ preventScroll: true }); } catch { input.focus(); } }, 250);
     };
   });
+  // Recent-trades strip → Activity tab. Scrolls the asset-detail tabs
+  // into view first, then clicks the Activity chip so the full trade
+  // history (price + size + counterparty + tx link per row) lands
+  // immediately. Soft-fails if the tab can't be located — the user
+  // can still navigate manually.
+  list.querySelectorAll('[data-act="market-jump-activity"]').forEach(btn => {
+    btn.onclick = () => {
+      const activityTab = document.querySelector('[data-market-detail-tab="activity"]')
+                       || document.querySelector('[data-act="market-detail-tab"][data-tab="activity"]')
+                       || document.querySelector('[data-market-tab="activity"]');
+      if (activityTab) {
+        try { activityTab.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+        setTimeout(() => { try { activityTab.click(); } catch {} }, 250);
+      }
+    };
+  });
   list.querySelectorAll('[data-act="market-mine-asks-toggle"]').forEach(btn => {
     btn.onclick = () => {
       _marketMineOnlyAsks = !_marketMineOnlyAsks;
@@ -49553,6 +49624,37 @@ function applyMarketFilters() {
       bestUnit = u; bestPreauthIdx = i;
     }
   }
+  // Cumulative-depth pct per ask row. Mirrors the bids-side
+  // bidCumPct[] (renderMarketBidsLadderHTML) — same idea, opposite
+  // tint: a left-anchored translucent red-orange (sell-side wash)
+  // covering [0%, cumPct] of each ask row's background gives the
+  // eye a glanceable "where the supply is" cue at the spread.
+  // Sold-pending, expired, and zero-amount rows contribute 0 so
+  // the bar reflects actually-takeable depth. Skipped when fewer
+  // than 2 fillable rows are on the page (single-row ladders look
+  // weird with a full-width bar) and on cards-mode (gradient
+  // doesn't fit a multi-column card layout).
+  const _askFillableAmts = pageRows.map(lr => {
+    if (lr._takenPending) return 0;
+    if (lr.expired) return 0;
+    if (Number(lr.expiry || 0) <= Math.floor(Date.now() / 1000)) return 0;
+    let amtN = 0;
+    try {
+      const amtBig = BigInt(marketListingAmount(lr) || '0');
+      const decI = Number.isInteger(lr._asset?.decimals) ? lr._asset.decimals : 0;
+      const div = 10n ** BigInt(decI);
+      amtN = Number(amtBig / div) + (decI > 0 ? Number(amtBig - (amtBig / div) * div) / Number(div) : 0);
+    } catch {}
+    return Number.isFinite(amtN) && amtN > 0 ? amtN : 0;
+  });
+  let _askTotalDepth = 0;
+  for (const a of _askFillableAmts) _askTotalDepth += a;
+  let _askCumSoFar = 0;
+  const _askCumPct = _askFillableAmts.map(a => {
+    _askCumSoFar += a;
+    return _askTotalDepth > 0 ? Math.min(100, (_askCumSoFar / _askTotalDepth) * 100) : 0;
+  });
+  const _askFillableCount = _askFillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
   // Build all tiles into a DocumentFragment first; one reflow at the end
   // instead of N reflows during the loop. Material on busy markets.
   const frag = document.createDocumentFragment();
@@ -49601,11 +49703,25 @@ function applyMarketFilters() {
     // Stable per-listing key so the background liveness prune can target
     // this tile by selector when its UTXO turns out to be spent on-chain.
     tile.dataset.listingKey = _listingKey;
-    // Depth visualization lives in the dedicated depth chart above the
-    // ladder. A per-tile cumulative-depth gradient was tried here but the
-    // wrap-grid layout breaks the visual continuity that makes depth bars
-    // legible in row-stacked ladders — each tile just looked like it had
-    // a different amount of progress shading.
+    // Per-row cumulative-depth gradient in rows-mode. Left-anchored
+    // translucent red-orange wash covering [0%, cumPct] gives the eye
+    // a "where the supply is" cue the same way the bids ladder's
+    // green gradient does on its side. Only applied when ≥2 fillable
+    // rows are on the page (single-row ladders look weird with a
+    // full-width bar) and the current row contributes to depth
+    // (sold-pending / expired rows show no gradient). Skipped in
+    // cards-mode where the multi-column wrap layout breaks visual
+    // continuity (per the comment above).
+    if (_marketLadderView === 'rows'
+        && _askTotalDepth > 0
+        && _askFillableCount >= 2
+        && _askFillableAmts[_tileIdx] > 0) {
+      const _askCum = _askCumPct[_tileIdx];
+      tile.style.backgroundImage =
+        `linear-gradient(to right, rgba(184, 52, 29, 0.10) ${_askCum.toFixed(1)}%, transparent ${_askCum.toFixed(1)}%)`;
+    } else {
+      tile.style.backgroundImage = '';
+    }
     // Composite kind+trust badge. Both atomic-intent and preauth-sale are
     // trustless; the distinction is whether the seller must come back online
     // (atomic intent requires fulfilment after a buyer claims; instant does not).

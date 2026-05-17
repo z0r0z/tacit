@@ -1052,6 +1052,12 @@ tr[data-recent-activity] .market-token-sub::after {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   border-bottom: 1px solid var(--ink);
+  /* Sticky to viewport top while scrolling the bids ladder. Matches
+     the asks-side market-listing-row-head treatment for symmetric
+     scan-affordance on both sides of the two-sided book. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 .market-bids-row--mine { background: rgba(247,147,26,0.08); }
 /* Symmetric "your own listing" tint on the asks ladder. Matches the
@@ -1725,7 +1731,10 @@ tr[data-recent-activity] .market-token-sub::after {
 }
 /* Asks column-header row. Same shape as market-bids-row-head: black
    background, white text, uppercase letter-spaced labels. Render the
-   labels with the same flex semantics as the bids equivalent. */
+   labels with the same flex semantics as the bids equivalent. Sticky
+   to the viewport top so the column labels stay visible while the
+   user scrolls through a long ladder — pure quality-of-life win, no
+   layout shift since the header height is already accounted for. */
 .market-listing-grid.market-listing-rows-mode .market-listing-tile.market-listing-row-head {
   background: var(--ink);
   color: var(--bg);
@@ -1736,6 +1745,9 @@ tr[data-recent-activity] .market-token-sub::after {
   border-top: 0;
   border-bottom: 1px solid var(--ink);
   padding: 8px 14px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 .market-listing-grid.market-listing-rows-mode .market-listing-tile.market-listing-row-head span {
   color: var(--bg);
