@@ -4113,6 +4113,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   <button class="tab" data-tab="drops">Drops</button>
   <button class="tab" data-tab="claim">Claim</button>
   <button class="tab" data-tab="mixer">Mixer</button>
+  <button class="tab" data-tab="pool" title="AMM swap + LP pool — unlocks after the AMM trusted setup ceremony">Pool</button>
   <button class="tab" data-tab="about">Protocol</button>
 </div>
 
@@ -5618,6 +5619,104 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="flex" style="gap:8px;align-items:flex-end;margin-top:10px;">
         <button id="btn-mixer-init-broadcast" disabled>Initialize pool &amp; broadcast</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- POOL TAB — AMM swap tile + LP panel (SPEC AMM.md). Gated by the
+     AMM trusted setup ceremony: interactions are disabled until a
+     canonical VK + ceremony attestation is published. Read-only views
+     (pool list, your LP positions) are always available so users can
+     monitor pre-launch state. -->
+<div class="tab-panel" id="tab-pool">
+  <div id="pool-lock-banner" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);color:var(--ink-mid);padding:10px 12px;font-size:12px;border-radius:4px;">
+    AMM trusted setup ceremony in progress. Swap + Add Liquidity + Remove Liquidity unlock once the canonical verifying key is published. Pools and your LP positions are visible now; the buttons below activate when the dapp verifies the ceremony attestation.
+  </div>
+  <div class="section">
+    <div class="section-header">
+      <span>pool · AMM</span>
+      <span id="pool-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:14px;">
+        Constant-product AMM (x·y=k) over confidential tacit assets. Pool-side fee is a single bps knob (default 30 = 0.3%). Pool reserves are public; swap inputs + LP shares are amount-hidden via Pedersen + Bulletproof + a cross-curve sigma binding (secp256k1 ↔ BabyJubJub). LP shares per pool are deterministic from contributed reserves (Uniswap V2 mint formula). Swaps settle in one Bitcoin commit-reveal pair, no sequencer.
+      </div>
+    </div>
+  </div>
+
+  <div class="section" data-pool-ceremony-gated="true">
+    <div class="section-header"><span>swap</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve. Settlement is one Bitcoin tx with a slippage floor — if the pool moves past your floor before the reveal lands, the tx fails on chain and your input UTXO stays where it was.</div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:1;min-width:160px;">From
+          <select id="pool-swap-from" disabled><option value="">— pick an asset —</option></select>
+        </label>
+        <label style="flex:1;min-width:120px;">Amount
+          <input id="pool-swap-amount-in" type="text" placeholder="0" disabled style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <label style="flex:1;min-width:160px;">To
+          <select id="pool-swap-to" disabled><option value="">— pick an asset —</option></select>
+        </label>
+        <label style="flex:1;min-width:120px;">Slippage (bps)
+          <input id="pool-swap-slippage-bps" type="number" min="0" max="10000" value="100" disabled style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <button id="btn-pool-swap-broadcast" type="button" disabled title="Activates after the AMM trusted setup ceremony finalizes.">Swap &amp; broadcast</button>
+      </div>
+      <div id="pool-swap-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header">
+      <span>pools</span>
+      <span id="pool-list-status" class="muted"></span>
+    </div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">All AMM pools indexed by the worker on this network. Click a row to copy its pool_id. Empty = no pools confirmed yet on this network.</div>
+      <div id="pool-list"><div class="muted" style="font-size:12px;">Loading pools…</div></div>
+    </div>
+  </div>
+
+  <div class="section" data-pool-ceremony-gated="true">
+    <div class="section-header"><span>add liquidity</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">Deposit a proportional pair of assets into a pool. The dapp computes your share of the LP supply using the Uniswap V2 mint formula (min(ΔA·S/Rₐ, ΔB·S/R_b)) and binds the share commitment to your wallet via an XCurve sigma proof.</div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:2;min-width:220px;">Pool
+          <select id="pool-lpadd-pool" disabled><option value="">— pick a pool —</option></select>
+        </label>
+        <label style="flex:1;min-width:120px;">Δ asset A
+          <input id="pool-lpadd-delta-a" type="text" placeholder="0" disabled style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <label style="flex:1;min-width:120px;">Δ asset B
+          <input id="pool-lpadd-delta-b" type="text" placeholder="0" disabled style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <button id="btn-pool-lpadd-broadcast" type="button" disabled title="Activates after the AMM trusted setup ceremony finalizes.">Add &amp; broadcast</button>
+      </div>
+      <div id="pool-lpadd-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-header"><span>your LP positions</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">LP-share UTXOs in your wallet across pools on this network. Burn shares with Remove Liquidity to recover your proportional reserves.</div>
+      <div id="pool-lp-positions"><div class="muted" style="font-size:12px;">No LP positions found in this wallet.</div></div>
+    </div>
+  </div>
+
+  <div class="section" data-pool-ceremony-gated="true">
+    <div class="section-header"><span>remove liquidity</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">Burn one of your LP-share UTXOs and receive a proportional withdrawal of both reserve assets. Rounding remainders donate to remaining LPs (Uniswap V2 convention).</div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:2;min-width:280px;">Position
+          <select id="pool-lpremove-position" disabled><option value="">— pick an LP UTXO —</option></select>
+        </label>
+        <button id="btn-pool-lpremove-broadcast" type="button" disabled title="Activates after the AMM trusted setup ceremony finalizes.">Remove &amp; broadcast</button>
+      </div>
+      <div id="pool-lpremove-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
   </div>
 </div>

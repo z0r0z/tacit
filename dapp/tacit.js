@@ -29284,6 +29284,8 @@ function setupTabs() {
       } else { _stopMarketAutoRefresh(); _resetMarketLiveSnapshot(); }
       if (tab.dataset.tab === 'mixer') { renderMixer(); startMixerAutoRefresh(); }
       else stopMixerAutoRefresh();
+      if (tab.dataset.tab === 'pool') { renderPool(); startPoolAutoRefresh(); }
+      else stopPoolAutoRefresh();
       // Re-evaluate the cross-tab OTC claim banner: when the user lands on
       // Holdings, the per-asset claim row is now visible so the banner is
       // redundant and we hide it; when they leave Holdings, restore it.
@@ -29332,6 +29334,121 @@ function startMixerAutoRefresh() {
 }
 function stopMixerAutoRefresh() {
   if (_mixerPollTimer) { clearInterval(_mixerPollTimer); _mixerPollTimer = null; }
+}
+
+// ============== POOL (AMM) ==============
+// Read-only AMM panel. Reserves, pool list, and the user's LP-share UTXOs
+// render unconditionally; mutation buttons (swap, LP_ADD, LP_REMOVE) stay
+// disabled with a tooltip until the AMM ceremony unlock flips them on.
+//
+// We deliberately don't try to expand carveExactAmount-style flows in this
+// panel — those are the same builders the test harnesses exercise on signet
+// (tests/amm-{lp-cycle,tac-ctac-pool}-signet.mjs). Wiring them into the UI
+// is straightforward once the ceremony VK lands and `pool-ceremony-gated`
+// nodes get .removeAttribute('disabled').
+let _poolListCache = null;
+let _poolListCacheUntil = 0;
+const POOL_LIST_CACHE_MS = 25 * 1000;
+async function fetchAmmPools() {
+  if (Date.now() < _poolListCacheUntil && _poolListCache) return _poolListCache;
+  if (!WORKER_BASE) return [];
+  try {
+    const resp = await fetch(`${WORKER_BASE}/amm/pools?limit=200&network=${encodeURIComponent(NET.name)}`);
+    if (!resp.ok) return [];
+    const r = await resp.json();
+    if (!r || !Array.isArray(r.pools)) return [];
+    _poolListCache = r.pools;
+    _poolListCacheUntil = Date.now() + POOL_LIST_CACHE_MS;
+    return r.pools;
+  } catch { return []; }
+}
+function _poolRowHtml(p) {
+  const aHex = String(p.asset_a || '').slice(0, 16);
+  const bHex = String(p.asset_b || '').slice(0, 16);
+  const validation = String(p.validation || 'unknown');
+  const tag = validation === 'verified' ? '✓ verified' : validation;
+  const tagColor = validation === 'verified' ? 'var(--green, #859900)' : 'var(--ink-mid)';
+  return `<tr>
+    <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);" title="${escapeHtml(p.pool_id || '')}">${escapeHtml(String(p.pool_id || '').slice(0, 24))}…</td>
+    <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);" title="${escapeHtml(p.asset_a || '')}/${escapeHtml(p.asset_b || '')}">${escapeHtml(aHex)}… / ${escapeHtml(bHex)}…</td>
+    <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);text-align:right;">${escapeHtml(String(p.reserve_a ?? '?'))}</td>
+    <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);text-align:right;">${escapeHtml(String(p.reserve_b ?? '?'))}</td>
+    <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);text-align:right;">${escapeHtml(String(p.fee_bps ?? '?'))}</td>
+    <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);text-align:right;">${escapeHtml(String(p.lp_total_shares ?? '?'))}</td>
+    <td style="font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);color:${tagColor};">${escapeHtml(tag)}</td>
+  </tr>`;
+}
+async function renderPool() {
+  const listEl = document.getElementById('pool-list');
+  const statusEl = document.getElementById('pool-list-status');
+  if (listEl) {
+    if (statusEl) statusEl.textContent = 'fetching…';
+    const pools = await fetchAmmPools();
+    if (statusEl) statusEl.textContent = pools.length ? `${pools.length} pool${pools.length === 1 ? '' : 's'}` : '';
+    if (pools.length === 0) {
+      listEl.innerHTML = '<div class="muted" style="font-size:12px;">No AMM pools indexed on this network yet.</div>';
+    } else {
+      const rows = pools.map(_poolRowHtml).join('');
+      listEl.innerHTML = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="border-bottom:1px solid var(--ink);"><th style="text-align:left;padding:6px 8px;font-weight:600;">pool_id</th><th style="text-align:left;padding:6px 8px;font-weight:600;">pair</th><th style="text-align:right;padding:6px 8px;font-weight:600;">reserve_a</th><th style="text-align:right;padding:6px 8px;font-weight:600;">reserve_b</th><th style="text-align:right;padding:6px 8px;font-weight:600;">fee_bps</th><th style="text-align:right;padding:6px 8px;font-weight:600;">LP shares</th><th style="text-align:left;padding:6px 8px;font-weight:600;">validation</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
+    }
+  }
+  // LP positions: scan wallet holdings for any asset_id matching an indexed
+  // pool's lp_asset_id. The dapp tracks these as ordinary asset UTXOs once
+  // scanHoldings picks them up — the only special-case is recognising the
+  // lp_asset_id mapping to a parent pool.
+  const posEl = document.getElementById('pool-lp-positions');
+  if (posEl) {
+    try {
+      const pools = _poolListCache || await fetchAmmPools();
+      const lpByAid = new Map();
+      for (const p of pools) {
+        if (p?.lp_asset_id) lpByAid.set(String(p.lp_asset_id).toLowerCase(), p);
+      }
+      const holdings = await scanHoldings();
+      const lpRows = [];
+      if (holdings && lpByAid.size > 0) {
+        for (const [aid, h] of holdings.entries()) {
+          const pool = lpByAid.get(String(aid).toLowerCase());
+          if (!pool || !h?.utxos?.length) continue;
+          for (const u of h.utxos) {
+            lpRows.push(`<tr>
+              <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);" title="${escapeHtml(pool.pool_id || '')}">${escapeHtml(String(pool.pool_id || '').slice(0, 24))}…</td>
+              <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);">${escapeHtml(String(u.amount))} shares</td>
+              <td style="font-family:monospace;font-size:11px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);" title="${escapeHtml(u.utxo?.txid || '')}:${u.utxo?.vout}">${escapeHtml(String(u.utxo?.txid || '').slice(0, 16))}…:${u.utxo?.vout}</td>
+            </tr>`);
+          }
+        }
+      }
+      if (lpRows.length === 0) {
+        posEl.innerHTML = '<div class="muted" style="font-size:12px;">No LP positions found in this wallet.</div>';
+      } else {
+        posEl.innerHTML = `<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;">
+          <thead><tr style="border-bottom:1px solid var(--ink);"><th style="text-align:left;padding:6px 8px;font-weight:600;">pool_id</th><th style="text-align:left;padding:6px 8px;font-weight:600;">amount</th><th style="text-align:left;padding:6px 8px;font-weight:600;">UTXO</th></tr></thead>
+          <tbody>${lpRows.join('')}</tbody>
+        </table></div>`;
+      }
+    } catch (e) {
+      posEl.innerHTML = `<div class="muted" style="font-size:12px;color:var(--ink-mid);">LP-position scan failed: ${escapeHtml(e?.message || String(e))}</div>`;
+    }
+  }
+}
+let _poolPollTimer = null;
+const POOL_POLL_INTERVAL_MS = 30 * 1000;
+function startPoolAutoRefresh() {
+  if (_poolPollTimer) return;
+  _poolPollTimer = setInterval(async () => {
+    if (!document.querySelector('.tab.active[data-tab="pool"]')) {
+      stopPoolAutoRefresh(); return;
+    }
+    _poolListCacheUntil = 0;
+    try { await renderPool(); } catch {}
+  }, POOL_POLL_INTERVAL_MS);
+}
+function stopPoolAutoRefresh() {
+  if (_poolPollTimer) { clearInterval(_poolPollTimer); _poolPollTimer = null; }
 }
 
 // ============== WALLET ==============
