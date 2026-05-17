@@ -1,4 +1,4 @@
-// T_RANGE_ATTEST (opcode 0x44) — standalone on-chain anchored range
+// T_RANGE_ATTEST (opcode 0x3A) — standalone on-chain anchored range
 // attestations.
 //
 // Formalizes the range-proof primitive (range-proof.mjs) as a first-class
@@ -16,7 +16,7 @@
 //
 // Wire format:
 //
-//   opcode(1)                  = 0x44
+//   opcode(1)                  = 0x3A
 //   scope_id(32)               — opaque scope discriminator (e.g., pool_id,
 //                                claim_id, or SHA256(domain || context));
 //                                indexer treats as bytes only
@@ -74,7 +74,7 @@ import {
 } from './bulletproofs.mjs';
 import { verifyRange, PRED_GE, PRED_LE, PRED_IN_RANGE, PRED_GT_HIDDEN, PRED_EQ } from './range-proof.mjs';
 
-export const OPCODE_T_RANGE_ATTEST = 0x44;
+export const OPCODE_T_RANGE_ATTEST = 0x3A;
 const RANGE_ATTEST_DOMAIN = new TextEncoder().encode('tacit-range-attest-v1');
 
 // =========================================================================
