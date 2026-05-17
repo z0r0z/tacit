@@ -212,5 +212,92 @@ group('ammPoolGet/ammPoolPut round-trip (in-memory KV stub)');
   ok('missing pool → null', (await worker.ammPoolGet(env, 'signet', '22'.repeat(32))) === null);
 }
 
+// ============== Crypto helpers (POOL_INIT validator gates) ==============
+group('ammCanonicalAssetPair');
+{
+  const a = sha256(new TextEncoder().encode('canonical-a'));
+  const b = sha256(new TextEncoder().encode('canonical-b'));
+  const [low1, high1] = worker.ammCanonicalAssetPair(a, b);
+  const [low2, high2] = worker.ammCanonicalAssetPair(b, a);
+  ok('canonical pair (A,B) === (B,A) (lex-smaller first)',
+    bytesToHex(low1) === bytesToHex(low2) && bytesToHex(high1) === bytesToHex(high2));
+  let threwSame = false;
+  try { worker.ammCanonicalAssetPair(a, a); } catch { threwSame = true; }
+  ok('identical asset_ids throws', threwSame);
+}
+
+group('ammDerivePoolId (V3/V4 fee-tier parity)');
+{
+  const a = sha256(new TextEncoder().encode('feeA'));
+  const b = sha256(new TextEncoder().encode('feeB'));
+  const id30 = worker.ammDerivePoolId(a, b, 30, 0);
+  const id100 = worker.ammDerivePoolId(a, b, 100, 0);
+  const id30flag1 = worker.ammDerivePoolId(a, b, 30, 1);
+  ok('different fee tier → different pool_id', bytesToHex(id30) !== bytesToHex(id100));
+  ok('different capability flags → different pool_id', bytesToHex(id30) !== bytesToHex(id30flag1));
+  ok('(A,B,30,0) === (B,A,30,0)', bytesToHex(worker.ammDerivePoolId(b, a, 30, 0)) === bytesToHex(id30));
+  let threwBadFee = false;
+  try { worker.ammDerivePoolId(a, b, 1001, 0); } catch { threwBadFee = true; }
+  ok('fee_bps > 1000 throws', threwBadFee);
+  let threwBadFlag = false;
+  try { worker.ammDerivePoolId(a, b, 30, 256); } catch { threwBadFlag = true; }
+  ok('capability_flags > 255 throws', threwBadFlag);
+}
+
+group('ammDeriveLpAssetId');
+{
+  const a = sha256(new TextEncoder().encode('lpA'));
+  const b = sha256(new TextEncoder().encode('lpB'));
+  const poolId = worker.ammDerivePoolId(a, b, 30, 0);
+  const lpId = worker.ammDeriveLpAssetId(poolId);
+  ok('lp_asset_id is 32 bytes', lpId.length === 32);
+  ok('lp_asset_id deterministic', bytesToHex(worker.ammDeriveLpAssetId(poolId)) === bytesToHex(lpId));
+  ok('different pool_id → different lp_asset_id',
+    bytesToHex(worker.ammDeriveLpAssetId(sha256(new TextEncoder().encode('other-pool')))) !== bytesToHex(lpId));
+}
+
+group('ammIsqrt (Uniswap V2 init-share floor sqrt)');
+{
+  ok('isqrt(0) = 0', worker.ammIsqrt(0n) === 0n);
+  ok('isqrt(1) = 1', worker.ammIsqrt(1n) === 1n);
+  ok('isqrt(2) = 1', worker.ammIsqrt(2n) === 1n);
+  ok('isqrt(3) = 1', worker.ammIsqrt(3n) === 1n);
+  ok('isqrt(4) = 2', worker.ammIsqrt(4n) === 2n);
+  ok('isqrt(8) = 2', worker.ammIsqrt(8n) === 2n);
+  ok('isqrt(2e12) = 1_414_213', worker.ammIsqrt(2_000_000_000_000n) === 1_414_213n);
+  let threwNeg = false;
+  try { worker.ammIsqrt(-1n); } catch { threwNeg = true; }
+  ok('isqrt of negative throws', threwNeg);
+}
+
+group('ammLpInitShares (founder + locked)');
+{
+  // 100 × 400 = 40000 → isqrt = 200; founder = 200 - 1000 (ML) → throws
+  let threwLow = false;
+  try { worker.ammLpInitShares(100n, 400n); } catch { threwLow = true; }
+  ok('initial liquidity below ML throws', threwLow);
+
+  // 10000 × 10000 = 1e8 → isqrt = 10000; founder = 9000, locked = 1000
+  const big = worker.ammLpInitShares(10_000n, 10_000n);
+  ok('total_shares = isqrt(Δa·Δb) = 10000', big.total_shares === 10_000n);
+  ok('founder_shares = total - ML (= 9000)', big.founder_shares === 9_000n);
+  ok('locked_shares = ML (= 1000)', big.locked_shares === worker.AMM_MINIMUM_LIQUIDITY);
+}
+
+group('ammLauncherGateMsg');
+{
+  const poolId = sha256(new TextEncoder().encode('gate-pool'));
+  const msg = worker.ammLauncherGateMsg(poolId, 'bafy-vk', 30);
+  ok('gate_msg is 32 bytes', msg.length === 32);
+  // Deterministic
+  const msg2 = worker.ammLauncherGateMsg(poolId, 'bafy-vk', 30);
+  ok('gate_msg deterministic', bytesToHex(msg) === bytesToHex(msg2));
+  // Domain-bound
+  const msg3 = worker.ammLauncherGateMsg(poolId, 'bafy-other-vk', 30);
+  ok('different vk_cid → different gate_msg', bytesToHex(msg) !== bytesToHex(msg3));
+  const msg4 = worker.ammLauncherGateMsg(poolId, 'bafy-vk', 100);
+  ok('different fee_bps → different gate_msg', bytesToHex(msg) !== bytesToHex(msg4));
+}
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail === 0 ? 0 : 1);
