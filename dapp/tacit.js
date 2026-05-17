@@ -22535,6 +22535,26 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
   const p2trSpk = p2trScript(Q_xonly);
   const cb = controlBlock(TAP_NUMS, parity);
 
+  // Pre-flight sub-DUST guard. Each seller's payout becomes a P2WPKH /
+  // P2TR output at min_price_sats in the reveal tx; if ANY seller listed
+  // below DUST (546 sats), the batched reveal builds successfully but
+  // Bitcoin relay nodes reject it on propagation with a generic non-
+  // standard error — buyer's commit broadcasts and the sats sit
+  // stranded with no clear root cause surfaced. Single-take's worker-
+  // side validation catches sub-DUST at listing time, but the batch
+  // composition can pull in legacy listings that predate that gate, so
+  // we re-check here before building the reveal. Clear per-sale error
+  // points the buyer at the specific stale listing to skip.
+  for (let i = 0; i < N; i++) {
+    const _mps = Number(expanded[i].sale.min_price_sats);
+    if (!Number.isInteger(_mps) || _mps < DUST) {
+      throw new Error(
+        `sale ${expanded[i].saleIdHex.slice(0, 8)} has sub-dust payout (${_mps} < ${DUST} sats) — ` +
+        `Bitcoin would reject the batched reveal at broadcast. Skip this listing and retry; ` +
+        `the maker will need to re-list with min_price ≥ ${DUST}.`,
+      );
+    }
+  }
   // Fee planning. Generous estimate (overshoots roll into fee, never short).
   const feeRate = await getFeeRate();
   const totalMinPriceSats = expanded.reduce((s, e) => s + Number(e.sale.min_price_sats), 0);
@@ -49548,7 +49568,18 @@ function applyMarketFilters() {
     } else {
       tile = document.createElement('div');
     }
-    tile.className = 'market-listing-tile';
+    // Own-listing classification. Mirrors the bids-side `b._isMine`
+    // pattern so the asks ladder surfaces ownership the same way: amber
+    // background tint + a "YOU" pill in the price corner. Traders
+    // comparing the book and their own open orders no longer have to
+    // bounce to Holdings → Open orders to see where their ask sits.
+    // Covers preauth (seller_pubkey), intent (maker_pubkey), and OTC
+    // opening/range (owner_pubkey) in one classifier.
+    const _ownerPubHex = (l.kind === 'preauth' ? (l.seller_pubkey || '')
+                       : l.kind === 'intent'  ? (l.maker_pubkey  || '')
+                       :                         (l.owner_pubkey  || ''));
+    const _isMineAsk = !!myPubHex && _ownerPubHex === myPubHex;
+    tile.className = 'market-listing-tile' + (_isMineAsk ? ' market-listing-tile--mine' : '');
     // Stable per-listing key so the background liveness prune can target
     // this tile by selector when its UTXO turns out to be spent on-chain.
     tile.dataset.listingKey = _listingKey;
@@ -49856,6 +49887,13 @@ function applyMarketFilters() {
     const _bestPriceBadge = (_tileIdx === bestPreauthIdx && l.kind === 'preauth')
       ? `<span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="Cheapest preauth (single-tx instant fill) on this page.">BEST PRICE${_bestPriceDeltaStr}</span>`
       : '';
+    // "YOU" pill on own asks. Matches the bids-ladder YOU pill (amber
+    // background, same dimensions) so a trader's own orders read
+    // identically on both sides of the book. Suppressed on sold-pending
+    // tiles since their "🔥 just sold" badge is the dominant signal.
+    const _youBadge = (_isMineAsk && !l._takenPending)
+      ? ` <span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#fdf3cf;border:1px solid #c9a116;color:#7a5e00;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="Your own listing. Manage it from the action row below or Holdings → Open orders.">YOU</span>`
+      : '';
     // Token-id row + seller row: demoted to 9px / very muted. They're
     // useful for power users verifying a listing or recognizing a
     // repeat maker, but on a buyer's scan they're noise. Address +
@@ -49920,7 +49958,7 @@ function applyMarketFilters() {
         <small class="muted" style="display:block;margin-top:2px;font-size:9px;line-height:1.3;">${_isLevel ? '' : recencyLine}</small>
       </div>
       <div class="market-listing-amount" style="font-size:12px;font-weight:600;text-align:left;line-height:1.3;">
-        ${_amountLine}${_groupBadge}${_bestPriceBadge}${_levelBadge}${_perChunkSuffix}
+        ${_amountLine}${_groupBadge}${_bestPriceBadge}${_youBadge}${_levelBadge}${_perChunkSuffix}
         ${_fillProgressBar}
       </div>
       <div class="market-listing-total">
@@ -49931,7 +49969,7 @@ function applyMarketFilters() {
       ${_rowActionRow}`;
     const cardsModeHtml = `
       ${_tileTopHtml}
-      <div class="market-listing-amount">${_amountLine}${_groupBadge}${_bestPriceBadge}</div>
+      <div class="market-listing-amount">${_amountLine}${_groupBadge}${_bestPriceBadge}${_youBadge}</div>
       ${_fillProgressBar}
       <div class="market-listing-unit">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>

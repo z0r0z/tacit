@@ -1054,6 +1054,13 @@ tr[data-recent-activity] .market-token-sub::after {
   border-bottom: 1px solid var(--ink);
 }
 .market-bids-row--mine { background: rgba(247,147,26,0.08); }
+/* Symmetric "your own listing" tint on the asks ladder. Matches the
+   bids-side --mine row tint so a trader's own orders read identically
+   on both sides of the book — same amber wash, same scan affordance.
+   Tiles already carry a YOU pill in the price corner; the background
+   gives the eye an additional cue for long ladders where the pill is
+   easy to miss. */
+.market-listing-tile--mine { background: rgba(247,147,26,0.08); }
 .market-bids-row--claimed { background: rgba(10,143,67,0.06); }
 .market-bids-row--expired { opacity: 0.62; }
 /* Hover hint on bid rows so the click-to-prime-Swap affordance reads
