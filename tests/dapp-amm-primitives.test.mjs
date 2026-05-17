@@ -26,8 +26,18 @@ if (!globalThis.crypto) { try { globalThis.crypto = dom.window.crypto; } catch {
 
 const dappBJJ = await import('../dapp/amm-bjj.js');
 const dappSigma = await import('../dapp/amm-sigma.js');
+const dappAsset = await import('../dapp/amm-asset.js');
+const dappReceipt = await import('../dapp/amm-receipt.js');
+const dappKernel = await import('../dapp/amm-kernel.js');
+const dappMinLiq = await import('../dapp/amm-min-liq.js');
+const dappEnvelope = await import('../dapp/amm-envelope.js');
 const refBJJ = await import('./amm-bjj.mjs');
 const refSigma = await import('./amm-sigma-xcurve.mjs');
+const refAsset = await import('./amm-asset.mjs');
+const refReceipt = await import('./amm-receipt.mjs');
+const refKernel = await import('./amm-kernel.mjs');
+const refMinLiq = await import('./amm-min-liq.mjs');
+const refEnvelope = await import('./amm-envelope.mjs');
 
 let pass = 0, fail = 0;
 function ok(name, cond, detail) {
@@ -104,6 +114,109 @@ group('XCurve sigma: ref prove → dapp verify');
   const { proof, C_secp_bytes, C_BJJ_bytes } = refSigma.proveXCurve({ a, r_secp, r_BJJ, rng: detRng });
   ok('dapp verifyXCurve accepts ref proof',
     dappSigma.verifyXCurve(proof, C_secp_bytes, C_BJJ_bytes) === true);
+}
+
+// ============== amm-asset parity ==============
+group('amm-asset: derivePoolId / deriveLpAssetId / deriveAssetIdFromReveal');
+{
+  const a = new Uint8Array(32); for (let i = 0; i < 32; i++) a[i] = i;
+  const b = new Uint8Array(32); for (let i = 0; i < 32; i++) b[i] = 64 + i;
+  ok('derivePoolId(a, b, 30, 0) matches', bytesEq(dappAsset.derivePoolId(a, b, 30, 0), refAsset.derivePoolId(a, b, 30, 0)));
+  ok('derivePoolId(a, b, 300, 1) matches', bytesEq(dappAsset.derivePoolId(a, b, 300, 1), refAsset.derivePoolId(a, b, 300, 1)));
+  // Symmetric (canonical ordering)
+  ok('derivePoolId(b, a) == derivePoolId(a, b)', bytesEq(dappAsset.derivePoolId(b, a, 30, 0), dappAsset.derivePoolId(a, b, 30, 0)));
+  const pid = dappAsset.derivePoolId(a, b, 30, 0);
+  ok('deriveLpAssetId matches', bytesEq(dappAsset.deriveLpAssetId(pid), refAsset.deriveLpAssetId(pid)));
+  // CETCH-style asset id
+  const txid = 'a'.repeat(64);
+  ok('deriveAssetIdFromReveal matches', bytesEq(dappAsset.deriveAssetIdFromReveal(txid), refAsset.deriveAssetIdFromReveal(txid)));
+}
+
+// ============== amm-receipt parity ==============
+group('amm-receipt: deriveReceiptBlinding');
+{
+  const sk = new Uint8Array(32); for (let i = 0; i < 32; i++) sk[i] = 17 + i;
+  const pid = new Uint8Array(32); for (let i = 0; i < 32; i++) pid[i] = 200 + (i % 56);
+  const aid = new Uint8Array(32); for (let i = 0; i < 32; i++) aid[i] = 50 + i;
+  const op = dappReceipt.canonicalOutpoint('b'.repeat(64), 3);
+  const opRef = refReceipt.canonicalOutpoint('b'.repeat(64), 3);
+  ok('canonicalOutpoint matches', bytesEq(op, opRef));
+  const dResult = dappReceipt.deriveReceiptBlinding({
+    recipientPrivkey: sk, poolId: pid, anchorOutpoint: op, assetId: aid,
+  });
+  const rResult = refReceipt.deriveReceiptBlinding({
+    recipientPrivkey: sk, poolId: pid, anchorOutpoint: opRef, assetId: aid,
+  });
+  ok('r_secp parity', dResult.r_secp === rResult.r_secp);
+  ok('r_BJJ parity', dResult.r_BJJ === rResult.r_BJJ);
+}
+
+// ============== amm-kernel parity ==============
+group('amm-kernel: lpAddKernelMsg + lpAddKernelSign');
+{
+  const pid = new Uint8Array(32); for (let i = 0; i < 32; i++) pid[i] = i;
+  const aid = new Uint8Array(32); for (let i = 0; i < 32; i++) aid[i] = 100 + i;
+  const cscBytes = new Uint8Array(33); cscBytes[0] = 0x02; for (let i = 1; i < 33; i++) cscBytes[i] = i;
+  const inputs = [{ txid: 'c'.repeat(64), vout: 0 }, { txid: 'd'.repeat(64), vout: 1 }];
+  const dMsg = dappKernel.lpAddKernelMsg({
+    variant: 1, poolId: pid, assetX: aid, deltaX: 1_000n, shareAmount: 500n,
+    shareCSecpBytes: cscBytes, inputsX: inputs,
+  });
+  const rMsg = refKernel.lpAddKernelMsg({
+    variant: 1, poolId: pid, assetX: aid, deltaX: 1_000n, shareAmount: 500n,
+    shareCSecpBytes: cscBytes, inputsX: inputs,
+  });
+  ok('lpAddKernelMsg byte-parity', bytesEq(dMsg, rMsg));
+}
+
+// ============== amm-min-liq parity ==============
+group('amm-min-liq: MINIMUM_LIQUIDITY constants + derivations');
+{
+  ok('MINIMUM_LIQUIDITY === 1000n on both sides',
+    dappMinLiq.MINIMUM_LIQUIDITY === 1000n && refMinLiq.MINIMUM_LIQUIDITY === 1000n);
+  const pid = new Uint8Array(32); for (let i = 0; i < 32; i++) pid[i] = i * 3 + 7;
+  ok('deriveMinLiqBlinding parity',
+    dappMinLiq.deriveMinLiqBlinding(pid) === refMinLiq.deriveMinLiqBlinding(pid));
+  const dC = dappMinLiq.deriveMinLiqCommitment(pid);
+  const rC = refMinLiq.deriveMinLiqCommitment(pid);
+  ok('deriveMinLiqCommitment parity', bytesEq(dC.toRawBytes(true), rC.toRawBytes(true)));
+  ok('deriveMinLiqAmountCt parity',
+    bytesEq(dappMinLiq.deriveMinLiqAmountCt(pid), refMinLiq.deriveMinLiqAmountCt(pid)));
+  const dN = dappMinLiq.deriveMinLiqNumsRecipient(pid);
+  const rN = refMinLiq.deriveMinLiqNumsRecipient(pid);
+  ok('deriveMinLiqNumsRecipient.xOnly parity', bytesEq(dN.xOnly, rN.xOnly));
+  ok('deriveMinLiqNumsRecipient.p2wpkh parity', bytesEq(dN.p2wpkh, rN.p2wpkh));
+  // isqrt + founder shares
+  const dInit = dappMinLiq.lpInitShares(1_000_000n, 2_000_000n);
+  ok('lpInitShares.total_shares = isqrt(2e12) = 1414213', dInit.total_shares === 1414213n);
+  ok('lpInitShares.founder_shares = total - 1000', dInit.founder_shares === 1414213n - 1000n);
+}
+
+// ============== amm-envelope parity ==============
+group('amm-envelope: encodeLpAdd (variant 0 + variant 1)');
+{
+  const assetA = new Uint8Array(32); for (let i = 0; i < 32; i++) assetA[i] = i;
+  const assetB = new Uint8Array(32); for (let i = 0; i < 32; i++) assetB[i] = 32 + i;
+  const shareCSecp = new Uint8Array(33); shareCSecp[0] = 0x02; for (let i = 1; i < 33; i++) shareCSecp[i] = i;
+  const shareCBJJ = new Uint8Array(32); for (let i = 0; i < 32; i++) shareCBJJ[i] = 200 + i;
+  const sigma = new Uint8Array(169);
+  const kernelSigA = new Uint8Array(64); kernelSigA.fill(0xaa);
+  const kernelSigB = new Uint8Array(64); kernelSigB.fill(0xbb);
+  const proof = new Uint8Array(8); proof.fill(0xcc);
+  const args0 = {
+    variant: 0, assetA, assetB, deltaA: 1_000n, deltaB: 2_000n, shareAmount: 1414n,
+    shareCSecp, shareCBJJ, shareXcurveSigma: sigma,
+    kernelSigA, kernelSigB, proof,
+  };
+  ok('encodeLpAdd(variant 0) byte-parity', bytesEq(dappEnvelope.encodeLpAdd(args0), refEnvelope.encodeLpAdd(args0)));
+  const args1 = {
+    ...args0, variant: 1,
+    feeBps: 30, vkCid: 'bafyTest1', ceremonyCid: 'bafyCe1',
+    arbiterPubkeys: [], launcherSigs: [],
+    protocolFeeAddress: new Uint8Array(33), protocolFeeBps: 0,
+    poolMetaUri: '', poolCapabilityFlags: 0,
+  };
+  ok('encodeLpAdd(variant 1) byte-parity', bytesEq(dappEnvelope.encodeLpAdd(args1), refEnvelope.encodeLpAdd(args1)));
 }
 
 // ============== Domain tag pinning ==============

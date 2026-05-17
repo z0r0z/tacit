@@ -53,3 +53,48 @@ export function bytes32ToBigint(b) {
   for (let i = 0; i < 32; i++) n = (n << 8n) | BigInt(b[i]);
   return n;
 }
+
+// BIP-340 Schnorr — same impl as dapp/tacit.js's inline signSchnorr but
+// re-exported here so AMM modules can import without circular-depending
+// on tacit.js. Math is byte-identical to the test reference's
+// composition.mjs signSchnorr.
+function _taggedHash(tag, ...msgs) {
+  const tagHash = sha256(new TextEncoder().encode(tag));
+  return sha256(concatBytes(tagHash, tagHash, ...msgs));
+}
+function _xor32(a, b) { const r = new Uint8Array(32); for (let i = 0; i < 32; i++) r[i] = a[i] ^ b[i]; return r; }
+export function signSchnorr(msgHash, priv32) {
+  const dPrime = bytes32ToBigint(priv32);
+  if (dPrime <= 0n || dPrime >= SECP_N) throw new Error('schnorr: invalid private key');
+  const P = G.multiply(dPrime);
+  const Pbytes = P.toRawBytes(true);
+  const Px = Pbytes.slice(1);
+  const d = (Pbytes[0] === 0x02) ? dPrime : (SECP_N - dPrime);
+  const aux = crypto.getRandomValues(new Uint8Array(32));
+  const t = _xor32(bigintToBytes32(d), _taggedHash('BIP0340/aux', aux));
+  const rand = _taggedHash('BIP0340/nonce', t, Px, msgHash);
+  let kPrime = bytes32ToBigint(rand) % SECP_N;
+  if (kPrime === 0n) throw new Error('schnorr: nonce was zero');
+  const R = G.multiply(kPrime);
+  const Rbytes = R.toRawBytes(true);
+  const Rx = Rbytes.slice(1);
+  const k = (Rbytes[0] === 0x02) ? kPrime : (SECP_N - kPrime);
+  const e = bytes32ToBigint(_taggedHash('BIP0340/challenge', Rx, Px, msgHash)) % SECP_N;
+  const s = (k + e * d) % SECP_N;
+  return concatBytes(Rx, bigintToBytes32(s));
+}
+export function verifySchnorr(sig64, msgHash, pubXonly32) {
+  if (sig64.length !== 64 || pubXonly32.length !== 32 || msgHash.length !== 32) return false;
+  const Rx = sig64.slice(0, 32);
+  const sBig = bytes32ToBigint(sig64.slice(32, 64));
+  if (sBig >= SECP_N) return false;
+  if (bytes32ToBigint(pubXonly32) >= SECP_P) return false;
+  let P; try { P = secp.ProjectivePoint.fromHex('02' + bytesToHex(pubXonly32)); } catch { return false; }
+  const e = bytes32ToBigint(_taggedHash('BIP0340/challenge', Rx, pubXonly32, msgHash)) % SECP_N;
+  const R = G.multiply(sBig).add(P.multiply(e).negate());
+  if (R.equals(ZERO)) return false;
+  const Rb = R.toRawBytes(true);
+  if (Rb[0] !== 0x02) return false;
+  for (let i = 0; i < 32; i++) if (Rb[i + 1] !== Rx[i]) return false;
+  return true;
+}
