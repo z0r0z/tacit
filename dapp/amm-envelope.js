@@ -48,6 +48,34 @@ function isZeroAddress(b) {
 // Additional for variant 1 (POOL_INIT):
 //   feeBps, vkCid, ceremonyCid, arbiterPubkeys, launcherSigs,
 //   protocolFeeAddress, protocolFeeBps, poolMetaUri, poolCapabilityFlags
+// T_LP_REMOVE (0x2E) — burn LP-share UTXO(s) for proportional withdrawal
+// of pool reserves. Each receipt (A side + B side) carries a Pedersen
+// commit on both curves + an XCurve sigma binding them to the same
+// hidden amount. One kernel sig (LP side) proves the consumed LP-share
+// UTXOs net to exactly share_amount · H_secp.
+export function encodeLpRemove(args) {
+  const parts = [
+    new Uint8Array([OPCODE_T_LP_REMOVE]),
+    asBytes(args.assetA, 32, 'assetA'),
+    asBytes(args.assetB, 32, 'assetB'),
+    u64LE(args.shareAmount),
+    u64LE(args.deltaA),
+    u64LE(args.deltaB),
+    asBytes(args.recvACSecp, 33, 'recvACSecp'),
+    asBytes(args.recvACBJJ, 32, 'recvACBJJ'),
+    asBytes(args.recvAXcurveSigma, XCURVE_PROOF_LEN, 'recvAXcurveSigma'),
+    asBytes(args.recvBCSecp, 33, 'recvBCSecp'),
+    asBytes(args.recvBCBJJ, 32, 'recvBCBJJ'),
+    asBytes(args.recvBXcurveSigma, XCURVE_PROOF_LEN, 'recvBXcurveSigma'),
+    asBytes(args.kernelSigLP, 64, 'kernelSigLP'),
+  ];
+  const proof = args.proof;
+  if (!(proof instanceof Uint8Array)) throw new Error('proof must be Uint8Array');
+  if (proof.length > 0xffff) throw new Error('proof too large');
+  parts.push(u16LE(proof.length), proof);
+  return concatBytes(...parts);
+}
+
 export function encodeLpAdd(args) {
   const variant = args.variant;
   if (variant !== 0 && variant !== 1) throw new Error('variant must be 0 or 1');

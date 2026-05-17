@@ -16125,6 +16125,413 @@ async function buildAndBroadcastLpAddPoolInit({
   };
 }
 
+// ============== AMM LP_ADD variant 0 (append liquidity to existing pool) ==============
+//
+// Same crypto as POOL_INIT (BJJ share commit + XCurve sigma + kernel sigs
+// on each side) but: (a) variant=0 → envelope omits feeBps/vkCid/etc.,
+// (b) no MINIMUM_LIQUIDITY locked output (only the founder paid that at
+// POOL_INIT), (c) founder share = shareAmount you minted by depositing
+// proportionally to the existing pool's reserve ratio.
+//
+// Caller supplies expectedShareAmount (computed off-chain via pool state)
+// — typically `(min(Δa/R_A, Δb/R_B)) · S_total`. Or use the worker's
+// /amm/pool/<id> endpoint to derive R_A/R_B/S and call ammLpAddShares.
+async function buildAndBroadcastLpAddVariant0({
+  poolIdHex,            // 64 hex — existing pool
+  assetAIdHex, assetBIdHex,  // 64 hex each (canonical-ordered; smaller first)
+  deltaA, deltaB,        // bigint — liquidity to add per side
+  shareAmount,           // bigint — LP shares minted (caller computes proportional)
+  recipientPubHex = null,
+  feeBps = 30,           // NOT in envelope; used here just for pool_id sanity check
+  poolCapabilityFlags = 0,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (s) => { try { onProgress && onProgress(s); } catch {} };
+  if (deltaA <= 0n || deltaB <= 0n) throw new Error('deltaA and deltaB must be > 0');
+  if (shareAmount <= 0n) throw new Error('shareAmount must be > 0');
+  if (!/^[0-9a-f]{64}$/i.test(poolIdHex)) throw new Error('poolIdHex must be 64 hex');
+  if (!/^[0-9a-f]{64}$/i.test(assetAIdHex)) throw new Error('assetAIdHex must be 64 hex');
+  if (!/^[0-9a-f]{64}$/i.test(assetBIdHex)) throw new Error('assetBIdHex must be 64 hex');
+
+  // 1. Canonical asset pair
+  const [canonA, canonB] = ammAssetMod.canonicalAssetPair(assetAIdHex, assetBIdHex);
+  const canonAHex = bytesToHex(canonA);
+  const swapped = canonAHex !== assetAIdHex.toLowerCase();
+  const dA = swapped ? deltaB : deltaA;
+  const dB = swapped ? deltaA : deltaB;
+  // Sanity: derive pool_id and confirm it matches caller-supplied
+  const derivedPoolId = ammAssetMod.derivePoolId(canonA, canonB, feeBps, poolCapabilityFlags);
+  if (bytesToHex(derivedPoolId) !== poolIdHex.toLowerCase()) {
+    throw new Error(`pool_id mismatch: derived ${bytesToHex(derivedPoolId).slice(0,16)}… vs supplied ${poolIdHex.slice(0,16)}… (feeBps/flags mismatch?)`);
+  }
+  const poolIdBytes = derivedPoolId;
+  const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
+
+  // 2. Carve asset inputs
+  _progress('carve:assetA');
+  const utxoA = await carveExactAmount({ assetIdHex: canonAHex, amount: dA });
+  if (!utxoA?.utxo) throw new Error('failed to carve asset-A input');
+  _progress('carve:assetB');
+  const utxoB = await carveExactAmount({ assetIdHex: bytesToHex(canonB), amount: dB });
+  if (!utxoB?.utxo) throw new Error('failed to carve asset-B input');
+
+  // 3. Share blinding + commits (same anchoring as POOL_INIT)
+  _progress('shares:derive-blindings');
+  const aOpBytes = ammReceiptMod.canonicalOutpoint(utxoA.utxo.txid, utxoA.utxo.vout);
+  const { r_secp: rShareSecp, r_BJJ: rShareBJJ } = ammReceiptMod.deriveLpAddShareBlinding({
+    recipientPrivkey: wallet.priv,
+    poolId: poolIdBytes,
+    lpInputAOutpoint: aOpBytes,
+    lpAssetId: lpAssetIdBytes,
+  });
+  const shareCSecpPt = pedersenCommit(shareAmount, rShareSecp);
+  const shareCSecpBytes = shareCSecpPt.toRawBytes(true);
+  const shareCBJJPt = ammBjjMod.pedersenBJJ(shareAmount, rShareBJJ);
+  const shareCBJJBytes = ammBjjMod.packPoint(shareCBJJPt);
+
+  _progress('shares:xcurve-sigma');
+  const seedKey = hmac(sha256, wallet.priv, new TextEncoder().encode('tacit-amm-xcurve-seed-v1'));
+  const { proof: xcurveSigma } = ammSigmaMod.proveXCurveDeterministic({
+    a: shareAmount, r_secp: rShareSecp, r_BJJ: rShareBJJ, seedKey,
+    C_secp: shareCSecpPt, C_BJJ: shareCBJJPt,
+  });
+
+  // 4. Kernel sigs A + B
+  _progress('shares:kernel-sigs');
+  const utxoAInputCommit = pedersenCommit(BigInt(utxoA.amount), BigInt(utxoA.blinding));
+  const utxoBInputCommit = pedersenCommit(BigInt(utxoB.amount), BigInt(utxoB.blinding));
+  const kernelSigA = ammKernelMod.lpAddKernelSign({
+    variant: 0, poolId: poolIdBytes, assetX: canonA, deltaX: dA,
+    shareAmount, shareCSecpBytes,
+    inputsX: [{ txid: utxoA.utxo.txid, vout: utxoA.utxo.vout }],
+    inputCommitments: [utxoAInputCommit],
+    excessX: BigInt(utxoA.blinding),
+  });
+  const kernelSigB = ammKernelMod.lpAddKernelSign({
+    variant: 0, poolId: poolIdBytes, assetX: canonB, deltaX: dB,
+    shareAmount, shareCSecpBytes,
+    inputsX: [{ txid: utxoB.utxo.txid, vout: utxoB.utxo.vout }],
+    inputCommitments: [utxoBInputCommit],
+    excessX: BigInt(utxoB.blinding),
+  });
+
+  // 5. Encode envelope (variant 0 — no metadata trailer)
+  _progress('envelope:build');
+  const payload = ammEnvelopeMod.encodeLpAdd({
+    variant: 0,
+    assetA: canonA, assetB: canonB,
+    deltaA: dA, deltaB: dB,
+    shareAmount,
+    shareCSecp: shareCSecpBytes,
+    shareCBJJ: shareCBJJBytes,
+    shareXcurveSigma: xcurveSigma,
+    kernelSigA, kernelSigB,
+    proof: new Uint8Array(256),
+  });
+
+  // 6. Commit + reveal tx pair
+  //   reveal: vin[0]=commit  vin[1]=assetA  vin[2]=assetB
+  //           vout[0] = LP-share UTXO at recipient (DUST)
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  const revealVb = 11 + 41 + 41 + 41 + 31 +
+    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 109 + 109) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = Math.max(DUST, revealFee);
+
+  const holdings = await scanHoldings();
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for LP_ADD commit fees`);
+  }
+
+  _progress('tx:commit:build');
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  _progress('tx:reveal:build');
+  const recipientPub = recipientPubHex ? hexToBytes(recipientPubHex) : wallet.pub;
+  const recipientSpk = p2wpkhScript(recipientPub);
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: utxoA.utxo.txid, vout: utxoA.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+      { txid: utxoB.utxo.txid, vout: utxoB.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: [{ value: DUST, script: recipientSpk }],
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: DUST, script: p2wpkhScript(wallet.pub) },
+    { value: DUST, script: p2wpkhScript(wallet.pub) },
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  revealTx.inputs[2].witness = signP2wpkhInput(revealTx, 2, DUST);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  try {
+    recordOpening(revealTxidHex, 0, bytesToHex(lpAssetIdBytes), shareAmount, rShareSecp);
+  } catch {}
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    poolIdHex,
+    lpAssetIdHex: bytesToHex(lpAssetIdBytes),
+    shareAmount,
+    deltaA: dA, deltaB: dB,
+    rShareSecpHex: rShareSecp.toString(16).padStart(64, '0'),
+  };
+}
+
+// ============== AMM LP_REMOVE builder ==============
+//
+// Burns N LP-share UTXOs for proportional withdrawal of pool reserves.
+// Worker recomputes expected (deltaA, deltaB) via proportional math:
+//   deltaX = (R_X · shareAmount) / S_total
+// Caller MUST pre-fetch pool state and pass matching deltaA, deltaB
+// (worker rejects mismatches). Use ammLpRemoveOutputs(shareAmount, R_A,
+// R_B, S) — same impl — to compute.
+async function buildAndBroadcastLpRemove({
+  poolIdHex,
+  assetAIdHex, assetBIdHex,
+  shareAmount,                 // bigint — shares to burn (≤ total)
+  expectedDeltaA, expectedDeltaB,  // bigint — what the LP expects to receive
+  lpShareUtxos,                // [{utxo:{txid,vout}, amount, blinding}] — sum = shareAmount
+  recipientPubHex = null,
+  feeBps = 30, poolCapabilityFlags = 0,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (s) => { try { onProgress && onProgress(s); } catch {} };
+  if (shareAmount <= 0n) throw new Error('shareAmount must be > 0');
+  if (expectedDeltaA <= 0n || expectedDeltaB <= 0n) throw new Error('expected deltas must be > 0');
+  if (!Array.isArray(lpShareUtxos) || lpShareUtxos.length === 0) {
+    throw new Error('lpShareUtxos must be non-empty');
+  }
+  let burnSum = 0n;
+  for (const u of lpShareUtxos) {
+    if (!u?.utxo || u.amount === undefined || u.blinding === undefined) {
+      throw new Error('each lpShareUtxo must be {utxo:{txid,vout}, amount, blinding}');
+    }
+    burnSum += BigInt(u.amount);
+  }
+  if (burnSum !== shareAmount) {
+    throw new Error(`lpShareUtxos sum ${burnSum} must equal shareAmount ${shareAmount}`);
+  }
+
+  // 1. Canonical pair
+  const [canonA, canonB] = ammAssetMod.canonicalAssetPair(assetAIdHex, assetBIdHex);
+  const canonAHex = bytesToHex(canonA);
+  const swapped = canonAHex !== assetAIdHex.toLowerCase();
+  const dA = swapped ? expectedDeltaB : expectedDeltaA;
+  const dB = swapped ? expectedDeltaA : expectedDeltaB;
+  const poolIdBytes = ammAssetMod.derivePoolId(canonA, canonB, feeBps, poolCapabilityFlags);
+  if (bytesToHex(poolIdBytes) !== poolIdHex.toLowerCase()) {
+    throw new Error('pool_id mismatch (feeBps/flags differ?)');
+  }
+  const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
+
+  // 2. Receipt blindings + commits for sides A + B. Anchored on first LP-share input.
+  _progress('receipts:derive-blindings');
+  const firstLpOp = ammReceiptMod.canonicalOutpoint(lpShareUtxos[0].utxo.txid, lpShareUtxos[0].utxo.vout);
+  const { legA: blindA, legB: blindB } = ammReceiptMod.deriveLpRemoveBlindings({
+    recipientPrivkey: wallet.priv, poolId: poolIdBytes,
+    lpShareInputOutpoint: firstLpOp,
+    assetIdA: canonA, assetIdB: canonB,
+  });
+  const recvACSecpPt = pedersenCommit(dA, blindA.r_secp);
+  const recvACBJJPt = ammBjjMod.pedersenBJJ(dA, blindA.r_BJJ);
+  const recvBCSecpPt = pedersenCommit(dB, blindB.r_secp);
+  const recvBCBJJPt = ammBjjMod.pedersenBJJ(dB, blindB.r_BJJ);
+
+  _progress('receipts:xcurve-sigma');
+  const seedKey = hmac(sha256, wallet.priv, new TextEncoder().encode('tacit-amm-xcurve-seed-v1'));
+  const { proof: sigmaA } = ammSigmaMod.proveXCurveDeterministic({
+    a: dA, r_secp: blindA.r_secp, r_BJJ: blindA.r_BJJ, seedKey,
+    C_secp: recvACSecpPt, C_BJJ: recvACBJJPt,
+  });
+  const { proof: sigmaB } = ammSigmaMod.proveXCurveDeterministic({
+    a: dB, r_secp: blindB.r_secp, r_BJJ: blindB.r_BJJ, seedKey,
+    C_secp: recvBCSecpPt, C_BJJ: recvBCBJJPt,
+  });
+
+  // 3. LP kernel sig: (Σ C_in_LP − shareAmount·H).x_only
+  _progress('kernel:sig');
+  const lpInputCommits = lpShareUtxos.map(u =>
+    pedersenCommit(BigInt(u.amount), BigInt(u.blinding))
+  );
+  let excessLP = 0n;
+  for (const u of lpShareUtxos) excessLP = (excessLP + BigInt(u.blinding)) % SECP_N;
+  const kernelSigLP = ammKernelMod.lpRemoveKernelSign({
+    poolId: poolIdBytes, shareAmount,
+    deltaA: dA, deltaB: dB,
+    recvACSecpBytes: recvACSecpPt.toRawBytes(true),
+    recvBCSecpBytes: recvBCSecpPt.toRawBytes(true),
+    lpInputs: lpShareUtxos.map(u => ({ txid: u.utxo.txid, vout: u.utxo.vout })),
+    lpInputCommitments: lpInputCommits,
+    excessLP,
+  });
+
+  // 4. Encode envelope
+  _progress('envelope:build');
+  const payload = ammEnvelopeMod.encodeLpRemove({
+    assetA: canonA, assetB: canonB,
+    shareAmount, deltaA: dA, deltaB: dB,
+    recvACSecp: recvACSecpPt.toRawBytes(true),
+    recvACBJJ: ammBjjMod.packPoint(recvACBJJPt),
+    recvAXcurveSigma: sigmaA,
+    recvBCSecp: recvBCSecpPt.toRawBytes(true),
+    recvBCBJJ: ammBjjMod.packPoint(recvBCBJJPt),
+    recvBXcurveSigma: sigmaB,
+    kernelSigLP,
+    proof: new Uint8Array(256),
+  });
+
+  // 5. Bitcoin tx pair
+  //   reveal: vin[0]=commit  vin[1..]=LP-share UTXOs
+  //           vout[0] = receive-A UTXO  vout[1] = receive-B UTXO
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  const revealVb = 11 + 41 + (41 * lpShareUtxos.length) + 31 + 31 +
+    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 109) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  // Reveal tx math: commit P2TR + Σ DUST(LP-share inputs) = 2 × DUST(receive
+  // outputs) + revealFee. So commitValue must cover the output-side DUST
+  // deficit + revealFee. Without this commit-funding adjustment the reveal
+  // tx broadcasts with insufficient fee (signet enforces ≥1 sat/vbyte min
+  // relay; mainnet stricter).
+  const lpInputDust = DUST * lpShareUtxos.length;
+  const outputDust  = DUST * 2;
+  const commitValue = Math.max(DUST, outputDust + revealFee - lpInputDust);
+
+  const holdings = await scanHoldings();
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) throw new Error(`insufficient sats for LP_REMOVE commit`);
+
+  _progress('tx:commit:build');
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  _progress('tx:reveal:build');
+  const recipientPub = recipientPubHex ? hexToBytes(recipientPubHex) : wallet.pub;
+  const recipientSpk = p2wpkhScript(recipientPub);
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      ...lpShareUtxos.map(u => ({
+        txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [],
+      })),
+    ],
+    outputs: [
+      { value: DUST, script: recipientSpk },  // vout[0] = receive A
+      { value: DUST, script: recipientSpk },  // vout[1] = receive B
+    ],
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    ...lpShareUtxos.map(_ => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  for (let i = 0; i < lpShareUtxos.length; i++) {
+    revealTx.inputs[1 + i].witness = signP2wpkhInput(revealTx, 1 + i, DUST);
+  }
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  // Record openings so holdings scanner picks up the received UTXOs
+  try {
+    recordOpening(revealTxidHex, 0, canonAHex, dA, blindA.r_secp);
+    recordOpening(revealTxidHex, 1, bytesToHex(canonB), dB, blindB.r_secp);
+  } catch {}
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    poolIdHex,
+    shareAmount, deltaA: dA, deltaB: dB,
+    receiveAOutpoint: `${revealTxidHex}:0`,
+    receiveBOutpoint: `${revealTxidHex}:1`,
+    rRecvAHex: blindA.r_secp.toString(16).padStart(64, '0'),
+    rRecvBHex: blindB.r_secp.toString(16).padStart(64, '0'),
+  };
+}
+
 // ============== AMM swap UX (T_SWAP_VAR self-fulfill) ==============
 //
 // SPEC-SWAP-VAR-AMENDMENT §5.16.3. v1 self-fulfill: wallet acts as BOTH
@@ -62100,6 +62507,8 @@ export {
   buildSwapVarEnvelopeSelfFulfill, buildAndBroadcastSwapVarSelfFulfill,
   // AMM POOL_INIT builder (T_LP_ADD variant 1) — full crypto wiring.
   buildAndBroadcastLpAddPoolInit,
+  // AMM variant-0 LP add + LP_REMOVE.
+  buildAndBroadcastLpAddVariant0, buildAndBroadcastLpRemove,
   buildSwapVarIntentMsg,
   deriveSwapVarReceiptScalar, deriveSwapVarChangeScalar,
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,

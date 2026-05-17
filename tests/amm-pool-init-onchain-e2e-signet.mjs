@@ -190,6 +190,189 @@ for (let i = 0; i < revealTx.vout.length; i++) {
 }
 ok(`POOL_INIT on chain: https://mempool.space/signet/tx/${state.initRevealTxid}`);
 
-console.log('\n=== smoke test complete ===');
+// ---- Phase 5: wait for worker to index the pool ----
+const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
+step(5, 'wait for worker indexer to register the pool');
+let poolRecord = null;
+for (let i = 0; i < 30; i++) {
+  try {
+    const r = await fetch(`${WORKER_BASE}/amm/pool/${state.poolIdHex}`);
+    if (r.ok) {
+      poolRecord = await r.json();
+      if (poolRecord?.pool_id) break;
+    }
+  } catch {}
+  info(`  not yet indexed; polling again in 20s (attempt ${i + 1}/30)…`);
+  await sleep(20_000);
+}
+if (!poolRecord) {
+  fail(`pool not indexed after 10 minutes. Check worker cron + AMM validator branch.`);
+}
+ok(`pool indexed`);
+info(`  validation:     ${poolRecord.validation}`);
+info(`  reserve_a:      ${poolRecord.reserve_a}`);
+info(`  reserve_b:      ${poolRecord.reserve_b}`);
+info(`  lp_total_shares: ${poolRecord.lp_total_shares}`);
+info(`  founder_shares: ${poolRecord.founder_shares}`);
+info(`  locked_shares:  ${poolRecord.locked_shares}`);
+info(`  fee_bps:        ${poolRecord.fee_bps}`);
+state.poolRecord = poolRecord;
+saveState(state);
+
+if (process.env.SKIP_LIFECYCLE === '1') {
+  console.log('\nSKIP_LIFECYCLE=1 — stopping after POOL_INIT verification.');
+  console.log(`Pool id: ${state.poolIdHex}`);
+  process.exit(0);
+}
+
+// ---- Phase 6: LP_ADD variant 0 (add more liquidity) ----
+step(6, 'T_LP_ADD variant 0 — add more liquidity to existing pool');
+const ADD_DELTA_A = BigInt(process.env.ADD_DELTA_A || 50_000);
+const ADD_DELTA_B = BigInt(process.env.ADD_DELTA_B || 50_000);
+if (state.lpAddVariant0Result) {
+  ok(`reusing prior LP_ADD result: ${state.lpAddVariant0Result.revealTxid}`);
+} else {
+  // Compute expected shareAmount via Uniswap V2 mint formula:
+  //   shares = min(Δa·S/R_a, Δb·S/R_b)
+  const Ra = BigInt(poolRecord.reserve_a);
+  const Rb = BigInt(poolRecord.reserve_b);
+  const S = BigInt(poolRecord.lp_total_shares);
+  const sharesFromA = (ADD_DELTA_A * S) / Ra;
+  const sharesFromB = (ADD_DELTA_B * S) / Rb;
+  const expectedShares = sharesFromA < sharesFromB ? sharesFromA : sharesFromB;
+  info(`adding deltaA=${ADD_DELTA_A} deltaB=${ADD_DELTA_B} → ${expectedShares} shares`);
+  const r = await dapp.buildAndBroadcastLpAddVariant0({
+    poolIdHex: state.poolIdHex,
+    assetAIdHex: poolRecord.asset_a,
+    assetBIdHex: poolRecord.asset_b,
+    deltaA: ADD_DELTA_A, deltaB: ADD_DELTA_B,
+    shareAmount: expectedShares,
+    onProgress: (s) => info(`  · ${s}`),
+  });
+  ok(`LP_ADD variant 0 broadcast`);
+  info(`  commit_txid: ${r.commitTxid}`);
+  info(`  reveal_txid: ${r.revealTxid}`);
+  info(`  shares minted: ${r.shareAmount}`);
+  state.lpAddVariant0Result = {
+    commitTxid: r.commitTxid, revealTxid: r.revealTxid,
+    shareAmount: r.shareAmount.toString(), deltaA: r.deltaA.toString(), deltaB: r.deltaB.toString(),
+    rShareSecpHex: r.rShareSecpHex,
+  };
+  saveState(state);
+  info(`  waiting 90s for confirm + indexer pickup…`);
+  await sleep(90_000);
+}
+
+// ---- Phase 7: T_SWAP_VAR — swap against the pool ----
+step(7, 'T_SWAP_VAR — swap PINE for PINEB against the pool');
+if (state.swapResult) {
+  ok(`reusing prior swap result: ${state.swapResult.revealTxid}`);
+} else {
+  // Re-fetch pool to get fresh reserves after LP_ADD
+  let p2 = poolRecord;
+  try {
+    const r = await fetch(`${WORKER_BASE}/amm/pool/${state.poolIdHex}`);
+    if (r.ok) p2 = await r.json();
+  } catch {}
+  info(`pool reserves now: A=${p2.reserve_a} B=${p2.reserve_b}`);
+
+  const SWAP_DELTA_IN = BigInt(process.env.SWAP_DELTA_IN || 5_000);
+  const direction = 0; // A → B
+  // Compute expected deltaOut via x·y=k with fee
+  const Ra = BigInt(p2.reserve_a);
+  const Rb = BigInt(p2.reserve_b);
+  const fb = BigInt(p2.fee_bps);
+  const dinNet = (SWAP_DELTA_IN * (10000n - fb)) / 10000n;
+  const expectedOut = (Rb * dinNet) / (Ra + dinNet);
+  const minOut = (expectedOut * 99n) / 100n; // 1% slippage tolerance
+  info(`swap: ${SWAP_DELTA_IN} A → expect ${expectedOut} B (minOut=${minOut})`);
+
+  // Holdings should have a PINE UTXO ≥ SWAP_DELTA_IN; carve exact
+  const swapInputUtxo = await dapp.carveExactAmount({
+    assetIdHex: p2.asset_a, amount: SWAP_DELTA_IN,
+  });
+  if (!swapInputUtxo?.utxo) fail('failed to carve swap input UTXO');
+
+  // The shipped buildAndBroadcastSwapVarSelfFulfill takes poolReserves + assetInputUtxo
+  const r = await dapp.buildAndBroadcastSwapVarSelfFulfill({
+    poolReserves: {
+      reserve_a: p2.reserve_a, reserve_b: p2.reserve_b, fee_bps: p2.fee_bps,
+      pool_id_hex: state.poolIdHex,
+    },
+    assetInputUtxo: {
+      txid: swapInputUtxo.utxo.txid, vout: swapInputUtxo.utxo.vout,
+      amount: swapInputUtxo.amount, blinding: swapInputUtxo.blinding,
+      asset_id_hex: p2.asset_a,
+    },
+    direction,
+    deltaIn: SWAP_DELTA_IN,
+    minOut,
+    expiryHeight: 0xffffffff,
+    receiveAssetIdHex: p2.asset_b,
+  });
+  ok(`swap broadcast`);
+  info(`  reveal_txid: ${r.revealTxid}`);
+  info(`  deltaOut:    ${r.deltaOut}`);
+  state.swapResult = {
+    revealTxid: r.revealTxid, deltaIn: SWAP_DELTA_IN.toString(),
+    deltaOut: r.deltaOut.toString(),
+  };
+  saveState(state);
+  info(`  waiting 90s for confirm + indexer pickup…`);
+  await sleep(90_000);
+}
+
+// ---- Phase 8: T_LP_REMOVE (burn LP shares for proportional withdrawal) ----
+step(8, 'T_LP_REMOVE — burn LP shares for proportional reserves');
+if (state.lpRemoveResult) {
+  ok(`reusing prior LP_REMOVE result: ${state.lpRemoveResult.revealTxid}`);
+} else {
+  // Re-fetch pool state
+  let p3 = poolRecord;
+  try {
+    const r = await fetch(`${WORKER_BASE}/amm/pool/${state.poolIdHex}`);
+    if (r.ok) p3 = await r.json();
+  } catch {}
+  info(`pool reserves: A=${p3.reserve_a} B=${p3.reserve_b} total_shares=${p3.lp_total_shares}`);
+
+  // Burn the founder shares from POOL_INIT. The mint UTXO is at
+  // state.initRevealTxid:0 with state.founderShares + state.rShareSecpHex.
+  const burnShares = BigInt(state.founderShares);
+  const Ra = BigInt(p3.reserve_a);
+  const Rb = BigInt(p3.reserve_b);
+  const S = BigInt(p3.lp_total_shares);
+  const expectedA = (Ra * burnShares) / S;
+  const expectedB = (Rb * burnShares) / S;
+  info(`burning ${burnShares} shares → ${expectedA} A + ${expectedB} B (= S=${S}, R=${Ra}/${Rb})`);
+
+  const r = await dapp.buildAndBroadcastLpRemove({
+    poolIdHex: state.poolIdHex,
+    assetAIdHex: p3.asset_a, assetBIdHex: p3.asset_b,
+    shareAmount: burnShares,
+    expectedDeltaA: expectedA, expectedDeltaB: expectedB,
+    lpShareUtxos: [{
+      utxo: { txid: state.initRevealTxid, vout: 0 },
+      amount: burnShares,
+      blinding: BigInt('0x' + state.rShareSecpHex),
+    }],
+    onProgress: (s) => info(`  · ${s}`),
+  });
+  ok(`LP_REMOVE broadcast`);
+  info(`  reveal_txid: ${r.revealTxid}`);
+  info(`  receive A:   ${r.deltaA} (vout[0])`);
+  info(`  receive B:   ${r.deltaB} (vout[1])`);
+  state.lpRemoveResult = {
+    revealTxid: r.revealTxid,
+    deltaA: r.deltaA.toString(), deltaB: r.deltaB.toString(),
+  };
+  saveState(state);
+}
+
+console.log('\n=== AMM full lifecycle smoke test complete ===');
 console.log(`Pool id: ${state.poolIdHex}`);
 console.log(`State preserved at ${STATE_FILE}.`);
+console.log('\nTxs to inspect on https://mempool.space/signet:');
+console.log(`  POOL_INIT:   ${state.initRevealTxid}`);
+if (state.lpAddVariant0Result) console.log(`  LP_ADD v0:   ${state.lpAddVariant0Result.revealTxid}`);
+if (state.swapResult)          console.log(`  SWAP_VAR:    ${state.swapResult.revealTxid}`);
+if (state.lpRemoveResult)      console.log(`  LP_REMOVE:   ${state.lpRemoveResult.revealTxid}`);
