@@ -1331,6 +1331,89 @@ function ammSwapVarEnvelopeHash(payload) {
   return sha256(payload);
 }
 
+// ============== Kernel + intent msg helpers (T_SWAP_VAR crypto verify) ==============
+//
+// Mirrors dapp's computeKernelMsg (tacit-kernel-v1 domain). Used to
+// reconstruct the message the settler signed with the excess scalar.
+const _KERNEL_V1_DOMAIN = new TextEncoder().encode('tacit-kernel-v1');
+function ammKernelMsgV1(assetIdBytes, inputOutpoints, outputCommitments, burnedAmount) {
+  if (assetIdBytes.length !== 32) throw new Error('asset_id 32 bytes');
+  if (inputOutpoints.length > 255) throw new Error('kernel msg: input count > 255');
+  if (outputCommitments.length > 255) throw new Error('kernel msg: output count > 255');
+  const parts = [_KERNEL_V1_DOMAIN, assetIdBytes, new Uint8Array([inputOutpoints.length])];
+  for (const op of inputOutpoints) {
+    parts.push(reverseBytes(hexToBytes(op.txid)));
+    const voutLE = new Uint8Array(4);
+    new DataView(voutLE.buffer).setUint32(0, op.vout >>> 0, true);
+    parts.push(voutLE);
+  }
+  parts.push(new Uint8Array([outputCommitments.length]));
+  for (const c of outputCommitments) parts.push(c);
+  const burnLE = new Uint8Array(8);
+  const view = new DataView(burnLE.buffer);
+  const b = BigInt(burnedAmount);
+  view.setUint32(0, Number(b & 0xffffffffn), true);
+  view.setUint32(4, Number((b >> 32n) & 0xffffffffn), true);
+  parts.push(burnLE);
+  return sha256(concatBytes(...parts));
+}
+
+// Mirrors dapp's buildSwapVarIntentMsg. Used to reconstruct the message
+// the trader signed with their private key.
+const _SWAP_VAR_INTENT_DOMAIN_WORKER = new TextEncoder().encode('tacit-amm-swap-var-v1');
+function ammSwapVarIntentMsg({
+  poolId, direction,
+  deltaIn, deltaInMin, deltaInMax, deltaOut, minOut, tipAmount, tipAsset,
+  expiryHeight, traderPubkey, assetInputOutpoint, receiveScriptPubKey,
+  cReceiptSecp, cChangeOrSentinel,
+}) {
+  function u64LE(n) {
+    const b = new Uint8Array(8);
+    let x = BigInt(n);
+    for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+    return b;
+  }
+  function u32LE(n) {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setUint32(0, n >>> 0, true);
+    return b;
+  }
+  function u16LE(n) {
+    const b = new Uint8Array(2);
+    new DataView(b.buffer).setUint16(0, n & 0xffff, true);
+    return b;
+  }
+  return sha256(concatBytes(
+    _SWAP_VAR_INTENT_DOMAIN_WORKER,
+    poolId, new Uint8Array([direction]),
+    u64LE(deltaIn), u64LE(deltaInMin), u64LE(deltaInMax),
+    u64LE(deltaOut), u64LE(minOut), u64LE(tipAmount),
+    new Uint8Array([tipAsset]), u32LE(expiryHeight),
+    traderPubkey, assetInputOutpoint,
+    u16LE(receiveScriptPubKey.length), receiveScriptPubKey,
+    cReceiptSecp, cChangeOrSentinel,
+  ));
+}
+
+// Kernel-sig verification point: P = C_change_or_sentinel − C_in_secp +
+// delta_in_total · H_secp. The signing key the settler used = excess
+// scalar (r_change − r_in or −r_in for sentinel case). P's x-only form
+// is the BIP-340 verify key.
+function ammSwapVarKernelVerifyPoint(cChangeOrSentinelBytes, cInSecpBytes, deltaInTotal) {
+  let cChange;
+  let isSentinel = true;
+  for (let i = 0; i < 33; i++) if (cChangeOrSentinelBytes[i] !== 0) { isSentinel = false; break; }
+  if (isSentinel) {
+    cChange = PEDERSEN_ZERO;
+  } else {
+    cChange = compressedPointFromHex(bytesToHex(cChangeOrSentinelBytes));
+  }
+  const cIn = compressedPointFromHex(bytesToHex(cInSecpBytes));
+  const dit = BigInt(deltaInTotal);
+  const ditH = dit === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(modN(dit));
+  return cChange.add(cIn.negate()).add(ditH);
+}
+
 // ============== LP-share math (AMM.md §"LP shares") ==============
 //
 // For variant 0 LP_ADD: shareAmount = floor(min(ΔA·S/R_A, ΔB·S/R_B)).
@@ -14048,10 +14131,95 @@ async function scanForEtches(env, network) {
         if (curve.deltaOut !== BigInt(sv.delta_out)) continue;
         if (curve.deltaOut < BigInt(sv.min_out)) continue;  // slippage
 
-        // Update pool reserves. The cBTC.tac-style supply tracking +
-        // trader's asset-A consumption are handled by the standard
-        // asset-UTXO machinery when the validator processes the tx's
-        // input spends. The pool record only tracks aggregate reserves.
+        // Crypto gates: cInSecp matches on-chain UTXO + kernel sig +
+        // intent sig. The trader's asset input is at tx.vin[1] (vin[0]
+        // is the commit P2TR carrying the envelope).
+        const traderInp = tx.vin?.[1];
+        if (!traderInp || typeof traderInp.txid !== 'string' || typeof traderInp.vout !== 'number') continue;
+        let parent;
+        try { parent = await commitmentForUtxo(env, traderInp.txid, traderInp.vout, network); }
+        catch { continue; }
+        if (!parent) continue;
+        // Asset-id consistency: trader's input UTXO must be asset_A
+        // (direction=0) or asset_B (direction=1).
+        const expectedAssetIdHex = sv.direction === 0 ? pool.asset_a : pool.asset_b;
+        if (parent.asset_id !== expectedAssetIdHex) continue;
+        // C_in_secp must match the on-chain Pedersen commit byte-for-byte.
+        // Closes the input-side inflation gap (analogous to receipt-side
+        // 2026-05-15 fix): without this, a trader can claim
+        // a_in_claimed > a_real, mint env.cChange to commit to (a_real + Δ),
+        // and inflate asset A by Δ when they spend the change UTXO.
+        if (parent.commitment !== sv.c_in_secp) continue;
+
+        // Kernel sig: P = C_change_or_sentinel − C_in_secp + delta_in_total·H.
+        // Verify under P's x-only form. delta_in_total = delta_in + tip_amount.
+        let kernelPoint;
+        try {
+          kernelPoint = ammSwapVarKernelVerifyPoint(
+            hexToBytes(sv.c_change_or_sentinel),
+            hexToBytes(sv.c_in_secp),
+            BigInt(sv.delta_in) + BigInt(sv.tip_amount),
+          );
+        } catch { continue; }
+        if (kernelPoint.equals(PEDERSEN_ZERO)) continue;
+        const kernelXOnly = kernelPoint.toRawBytes(true).slice(1);
+        const assetIdInBytes = hexToBytes(expectedAssetIdHex);
+        const kernelMsg = ammKernelMsgV1(
+          assetIdInBytes,
+          [{ txid: traderInp.txid, vout: traderInp.vout }],
+          [hexToBytes(sv.c_change_or_sentinel)],
+          BigInt(sv.delta_in) + BigInt(sv.tip_amount),
+        );
+        if (!verifySchnorr(hexToBytes(sv.kernel_sig), kernelMsg, kernelXOnly)) continue;
+
+        // Intent sig: trader's BIP-340 over intent_msg under trader_pubkey.
+        // Reconstructs the intent_msg from envelope fields + the on-chain
+        // receive_scriptPubKey (vout[1]'s scriptpubkey — the trader pre-
+        // committed to where their swap receipt lands).
+        const receiptVout = tx.vout?.[1];
+        if (!receiptVout || typeof receiptVout.scriptpubkey !== 'string') continue;
+        const receiveScriptPubKey = hexToBytes(receiptVout.scriptpubkey);
+        const assetInputOutpoint = concatBytes(
+          reverseBytes(hexToBytes(traderInp.txid)),
+          (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, traderInp.vout >>> 0, true); return b; })(),
+        );
+        const intentMsg = ammSwapVarIntentMsg({
+          poolId: hexToBytes(sv.pool_id), direction: sv.direction,
+          deltaIn: BigInt(sv.delta_in),
+          deltaInMin: BigInt(sv.delta_in_min),
+          deltaInMax: BigInt(sv.delta_in_max),
+          deltaOut: BigInt(sv.delta_out),
+          minOut: BigInt(sv.min_out),
+          tipAmount: BigInt(sv.tip_amount),
+          tipAsset: sv.tip_asset,
+          expiryHeight: sv.expiry_height,
+          traderPubkey: hexToBytes(sv.trader_pubkey),
+          assetInputOutpoint,
+          receiveScriptPubKey,
+          cReceiptSecp: hexToBytes(sv.c_receipt_secp),
+          cChangeOrSentinel: hexToBytes(sv.c_change_or_sentinel),
+        });
+        let traderXOnly;
+        try {
+          const traderPt = compressedPointFromHex(sv.trader_pubkey);
+          traderXOnly = traderPt.toRawBytes(true).slice(1);
+        } catch { continue; }
+        if (!verifySchnorr(hexToBytes(sv.intent_sig), intentMsg, traderXOnly)) continue;
+
+        // r_receipt opening check: env.cReceiptSecp must equal
+        // delta_out · H + r_receipt · G. Closes the receipt-side
+        // inflation gap surfaced 2026-05-15.
+        let cReceiptPoint;
+        try { cReceiptPoint = compressedPointFromHex(sv.c_receipt_secp); }
+        catch { continue; }
+        const rReceiptBig = bytes32ToBigint(hexToBytes(sv.r_receipt)) % SECP_N;
+        const expectedReceipt = pedersenCommit(BigInt(sv.delta_out), rReceiptBig);
+        if (!cReceiptPoint.equals(expectedReceipt)) continue;
+
+        // Update pool reserves. The trader's asset-A consumption + the
+        // receipt UTXO (asset-B mint) are handled by the standard asset-
+        // UTXO machinery when the validator processes the tx's input
+        // spends. The pool record only tracks aggregate reserves.
         const newPool = {
           ...pool,
           reserve_a: curve.raPost.toString(),
@@ -14060,6 +14228,11 @@ async function scanForEtches(env, network) {
           last_swap_txid: tx.txid,
           last_swap_height: h,
           last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          // Upgrade tag to 'verified' for pools whose first swap has
+          // passed all crypto + arithmetic gates. Downstream consumers
+          // (cross-pool router, integrators) can refuse pools tagged
+          // 'sigs-and-arithmetic-verified' for high-value flows.
+          validation: 'verified',
         };
         await ammPoolPut(env, network, sv.pool_id, newPool);
         found++;
@@ -14397,6 +14570,7 @@ export {
   ammIsqrt, ammLpInitShares, ammLauncherGateMsg,
   AMM_FEE_BPS_MAX, AMM_CAPABILITY_FLAGS_MAX, AMM_MINIMUM_LIQUIDITY,
   decodeTSwapVarPayload, ammCurveDeltaOut, ammSwapVarEnvelopeHash,
+  ammKernelMsgV1, ammSwapVarIntentMsg, ammSwapVarKernelVerifyPoint,
   decodeTLpRemovePayload, ammLpAddShares, ammLpRemoveOutputs,
   decodeTLpAddPayload,
   // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
