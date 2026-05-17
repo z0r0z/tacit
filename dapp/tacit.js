@@ -43136,7 +43136,7 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
     } else if (isMine) {
       actionsHtml = `<button data-bid-action="cancel-mine" data-bid-id="${escapeHtml(b.bid_id)}" type="button" style="font-size:10px;">Cancel</button>`;
     } else {
-      actionsHtml = `<button data-bid-action="fulfil" data-bid-id="${escapeHtml(b.bid_id)}" class="primary" type="button" style="font-size:10px;" title="${escapeHtml(fulfilTitle)}">${isVar ? 'Fulfil chunk…' : 'Fulfil'}</button>`;
+      actionsHtml = `<button data-bid-action="fulfil" data-bid-id="${escapeHtml(b.bid_id)}" class="primary" type="button" style="font-size:10px;" title="${escapeHtml(fulfilTitle)}">${isVar ? 'Sell chunk…' : 'Sell'}</button>`;
     }
     const varHint = isVar
       ? ` <span class="muted" style="font-size:10px;">· partial OK ≥ ${fmtAssetAmountPlain(minBig, decimals)} ${escapeHtml(ticker)}</span>`
@@ -43203,17 +43203,17 @@ async function openDiscoverBidPanel(card, assetIdHex, ticker, decimals) {
         if (chunkAmount > remBig) { toast(`Chunk above remaining (${fmtAssetAmountPlain(remBig, decimals)}). Lower it.`, 'error'); return; }
       }
       btn.disabled = true;
-      btn.textContent = 'fulfilling…';
+      btn.textContent = 'selling…';
       try {
         await fulfilBidIntent({ bid, fillAmount: chunkAmount });
         const chunkLbl = chunkAmount != null ? ` (${fmtAssetAmountPlain(chunkAmount, decimals)} ${ticker})` : '';
-        toast(`Bid fulfilled ✓${chunkLbl} — waiting for the buyer to settle on Bitcoin`, 'success');
+        toast(`Sold ✓${chunkLbl} — waiting for the buyer to settle on Bitcoin`, 'success');
         openDiscoverBidPanel(card, assetIdHex, ticker, decimals);
       } catch (e) {
         btn.disabled = false;
-        btn.textContent = isVar ? 'Fulfil chunk…' : 'Fulfil';
+        btn.textContent = isVar ? 'Sell chunk…' : 'Sell';
         if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
-        else toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
+        else toast('Sell failed: ' + (e?.message || String(e)), 'error');
       }
     };
   });
@@ -46562,7 +46562,7 @@ function applyMarketFilters() {
           // language: black solid = single-listing fill, amber solid =
           // multi-listing bundle fill. Eyes distinguish the commitment
           // type without reading the verb.
-          primaryAction = `<button data-act="market-take-preauth-group" data-aid="${escapeHtml(safeAid)}" data-sids="${escapeHtml(chunkSids)}" data-group-size="${groupSize}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" type="button" class="primary" title="Buy any number of chunks from this group. Each chunk settles atomically on Bitcoin in its own transaction.${groupTitle}" style="flex:1;font-size:11px;">Buy 1–${groupSize}</button>`;
+          primaryAction = `<button data-act="market-take-preauth-group" data-aid="${escapeHtml(safeAid)}" data-sids="${escapeHtml(chunkSids)}" data-group-size="${groupSize}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" type="button" class="primary" title="Buy any number of chunks (1–${groupSize}) from this group. Each chunk settles atomically on Bitcoin in its own transaction.${groupTitle}" style="flex:1;font-size:11px;">Buy chunks <span style="font-weight:400;opacity:0.85;">·&nbsp;up&nbsp;to&nbsp;${groupSize}</span></button>`;
         } else {
           primaryAction = `<button data-act="market-take-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" data-expiry="${Number(l.expiry || 0)}" title="Buy instantly: trustless atomic settlement on Bitcoin. No claim window, no fulfilment step." style="flex:1;font-size:11px;">Buy</button>`;
         }
@@ -46642,7 +46642,7 @@ function applyMarketFilters() {
     // (chunk_amount × N) in the total row so buyers see both per-chunk and
     // group-level liquidity at a glance.
     const _groupBadge = l._isGroup
-      ? ` <span class="unit" style="background:var(--bg-warm);border:1px solid var(--ink);padding:1px 5px;font-size:10px;font-weight:600;border-radius:2px;" title="${l._groupSize} identical-price listings · pick any subset (Buy 1–${l._groupSize}) and each settles atomically in its own Bitcoin tx">${l._groupSize} listings</span>`
+      ? ` <span class="unit" style="background:var(--bg-warm);border:1px solid var(--ink);padding:1px 5px;font-size:10px;font-weight:600;border-radius:2px;" title="${l._groupSize} identical-price listings · pick any subset (Buy chunks · up to ${l._groupSize}) and each settles atomically in its own Bitcoin tx">${l._groupSize} listings</span>`
       : '';
     const _groupTotalLine = (l._isGroup && unit != null)
       ? (() => {
@@ -46757,7 +46757,7 @@ function applyMarketFilters() {
       ? `${l._levelCount} preauth listings aggregated in this price bucket.\nMin unit: ${fmtUnitPriceSats(l._levelMinUnit)} sats/${a.ticker || 'token'}\nMax unit: ${fmtUnitPriceSats(l._levelMaxUnit)} sats/${a.ticker || 'token'}\nTotal: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} for ${priceSatsRaw.toLocaleString('en-US')} sats.`
       : `Listing id: ${displayId}${_fullSeller ? `\n${l.kind === 'preauth' ? 'Seller' : 'Maker'}: ${_fullSeller}` : ''}${l._isGroup ? `\nGroup: ${l._groupId || ''} · ${l._groupSize} chunks` : ''}${recencyLine ? `\n${recencyLine.replace(/<[^>]+>/g, '')}` : ''}`;
     const _rowActionRow = _isLevel
-      ? `<div class="market-listing-actions"><button data-act="market-sweep-buy-level" data-aid="${escapeHtml(safeAid)}" data-target-amt="${escapeHtml(amount || '0')}" data-cap-unit="${l._levelMaxUnit}" data-dec="${dec}" data-ticker="${escapeHtml(a.ticker || '?')}" type="button" class="primary" title="Buy this depth level: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} routed across all ${l._levelCount} preauth listings in this bucket. Each fill is one Bitcoin tx; the cap is the bucket's max unit price. Opens the Advanced buy form preloaded so you can review before confirming.">Buy level</button></div>`
+      ? `<div class="market-listing-actions"><button data-act="market-sweep-buy-level" data-aid="${escapeHtml(safeAid)}" data-target-amt="${escapeHtml(amount || '0')}" data-cap-unit="${l._levelMaxUnit}" data-dec="${dec}" data-ticker="${escapeHtml(a.ticker || '?')}" type="button" class="market-listing-action--opener" title="Buy this depth level: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} routed across all ${l._levelCount} preauth listings in this bucket. Each fill is one Bitcoin tx; the cap is the bucket's max unit price. Opens the Advanced buy form preloaded so you can review before confirming.">Buy level →</button></div>`
       : actionRow;
     // Group rows: the amount + BTC + USD numbers are PER CHUNK (one of the
     // N identical-price listings), but the row's `Buy 1–N` picker can buy
@@ -46771,7 +46771,7 @@ function applyMarketFilters() {
       ? `<small class="muted" style="display:block;font-size:9px;line-height:1;margin-top:1px;">/ chunk</small>`
       : '';
     const _groupTotalInline = _isGroup
-      ? `<div style="margin-top:3px;padding-top:3px;border-top:1px dashed var(--ink-faint);font-size:10px;font-weight:600;color:var(--ink);" title="Cost if you buy all ${l._groupSize} chunks at once via the Buy 1–${l._groupSize} picker">× ${l._groupSize} = ${escapeHtml(fmtMarketBtc(priceSatsRaw * l._groupSize))}</div>`
+      ? `<div style="margin-top:3px;padding-top:3px;border-top:1px dashed var(--ink-faint);font-size:10px;font-weight:600;color:var(--ink);" title="Cost if you buy all ${l._groupSize} chunks at once via the Buy chunks picker">× ${l._groupSize} = ${escapeHtml(fmtMarketBtc(priceSatsRaw * l._groupSize))}</div>`
       : '';
     const rowsModeHtml = `
       <div class="market-listing-unit" title="${escapeHtml(_rowMetaTitle)}">
@@ -52351,14 +52351,18 @@ async function populateMarketBidsLadder(scope, asset) {
     } else if (_isLevel) {
       // Bucketed level: opens the sweep-sell form pre-loaded with the
       // bucket's cumulative size + worst-case (min) unit as the floor.
-      // Single-bid Fulfil signs one claim; the level action routes
-      // through sweep-sell because each maker bid in the bucket needs
-      // its own intent + fulfilment, matching the asks-side "Buy level"
-      // pattern. The wireup at _wireMarketSweepSellLevel reads the
-      // data-level-* attrs and primes the form.
-      action = `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt-level" data-aid="${escapeHtml(aid)}" data-level-amount="${escapeHtml(String(b.amount || '0'))}" data-level-min-unit="${b._levelMinUnit}" data-level-dec="${decimals}" data-level-ticker="${escapeHtml(ticker)}" data-level-count="${b._levelCount}" type="button" title="Sweep-sell against all ${b._levelCount} bids in this price tick (cumulative ${fmtAssetAmount(BigInt(b.amount || '0'), decimals)} ${ticker} at floor ${fmtUnitPriceSats(b._levelMinUnit)} sats/${ticker}). Opens the sweep-sell form preloaded so you can review before signing.">Fulfil level</button>`;
+      // Single-bid Sell signs one claim; the level action routes through
+      // sweep-sell because each maker bid in the bucket needs its own
+      // intent + fulfilment, matching the asks-side "Buy level" pattern.
+      // The trailing arrow + market-bid-action--opener class signal that
+      // this opens a preview-then-confirm form rather than committing in
+      // one click — visual distinction from the per-bid Sell button.
+      action = `<button class="market-bid-fulfil market-bid-action--opener" data-bid-action="fulfil-mkt-level" data-aid="${escapeHtml(aid)}" data-level-amount="${escapeHtml(String(b.amount || '0'))}" data-level-min-unit="${b._levelMinUnit}" data-level-dec="${decimals}" data-level-ticker="${escapeHtml(ticker)}" data-level-count="${b._levelCount}" type="button" title="Sweep-sell against all ${b._levelCount} bids in this price tick (cumulative ${fmtAssetAmount(BigInt(b.amount || '0'), decimals)} ${ticker} at floor ${fmtUnitPriceSats(b._levelMinUnit)} sats/${ticker}). Opens the sell-sweep form preloaded — review before signing.">Sell level →</button>`;
     } else {
-      action = `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(bidId)}" type="button">Fulfil</button>`;
+      // Per-bid Sell — CEX-standard verb; underlying call signs one
+      // T_AXFER_FULFIL claim against this bid. Variable-fill bids open
+      // a chunk picker first; whole-bid bids commit immediately on click.
+      action = `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(bidId)}" type="button" title="Sell into this bid. Whole-bid bids commit immediately; variable-fill bids open a chunk picker first.">Sell</button>`;
     }
     const rowClass = [
       'market-bids-row',
@@ -52393,7 +52397,7 @@ async function populateMarketBidsLadder(scope, asset) {
     // the bucket reads as one price tick with N bidders behind it.
     // Mirrors the asks ladder's _levelBadge / _levelSpread pattern.
     const _levelBadge = _isLevel
-      ? ` <span style="display:inline-block;margin-left:4px;padding:0 5px;background:var(--ink);color:var(--bg);font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="${b._levelCount} maker bids aggregated at this price bucket. Click Fulfil level to sweep-sell across all of them in one routed pass.">${b._levelCount} bids</span>`
+      ? ` <span style="display:inline-block;margin-left:4px;padding:0 5px;background:var(--ink);color:var(--bg);font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="${b._levelCount} maker bids aggregated at this price bucket. Click Sell level → to sweep-sell across all of them in one routed pass.">${b._levelCount} bids</span>`
       : '';
     const _levelSpread = _isLevel
       ? `<small class="muted" style="display:block;font-size:9px;">spread ${fmtUnitPriceSats(b._levelMinUnit)}–${fmtUnitPriceSats(b._levelMaxUnit)}</small>`
@@ -52648,25 +52652,25 @@ async function populateMarketBidsLadder(scope, asset) {
             fullPriceSats: Number(bid.price_sats || 0),
           });
         } catch { chunkAmount = null; }
-        if (chunkAmount == null) { btn.disabled = false; btn.textContent = 'Fulfil'; return; }
+        if (chunkAmount == null) { btn.disabled = false; btn.textContent = 'Sell'; return; }
         if (chunkAmount < minBig || chunkAmount > remBig) {
           toast(`Chunk out of range. Min ${fmtAssetAmountPlain(minBig, _decimals)} ${_ticker}, max ${fmtAssetAmountPlain(remBig, _decimals)} ${_ticker}.`, 'error');
-          btn.disabled = false; btn.textContent = 'Fulfil'; return;
+          btn.disabled = false; btn.textContent = 'Sell'; return;
         }
       }
-      btn.disabled = true; btn.textContent = 'fulfilling...';
+      btn.disabled = true; btn.textContent = 'selling…';
       try {
         await fulfilBidIntent({ bid, fillAmount: chunkAmount });
         const _decimals = Number.isInteger(asset?.decimals) ? asset.decimals : 0;
         const _ticker = asset?.ticker || '';
         const chunkLbl = chunkAmount != null ? ` (${fmtAssetAmountPlain(chunkAmount, _decimals)} ${_ticker})` : '';
-        toast(`Bid fulfilled ✓${chunkLbl} — waiting for the buyer to settle on Bitcoin`, 'success');
+        toast(`Sold ✓${chunkLbl} — waiting for the buyer to settle on Bitcoin`, 'success');
         _invalidateBidsCache(aid);
         populateMarketBidsLadder(scope, asset);
       } catch (e) {
-        btn.disabled = false; btn.textContent = 'Fulfil';
+        btn.disabled = false; btn.textContent = 'Sell';
         if (isUnlockCancelled(e)) toast('Unlock cancelled — nothing was broadcast.', '');
-        else toast('Fulfil failed: ' + (e?.message || String(e)), 'error');
+        else toast('Sell failed: ' + (e?.message || String(e)), 'error');
       }
     };
   });
@@ -55980,13 +55984,13 @@ function _wireMarketSweepSell(section, asset) {
       planEl.querySelector('[data-sweepsell-action="cancel-plan"]').onclick = () => { planEl.innerHTML = ''; };
       planEl.querySelector('[data-sweepsell-action="confirm"]').onclick = async (ev) => {
         const cBtn = ev.currentTarget;
-        cBtn.disabled = true; cBtn.textContent = 'fulfilling…';
+        cBtn.disabled = true; cBtn.textContent = 'selling…';
         const progEl = planEl.querySelector('[data-sweepsell-progress]');
         const fills = [];
         const fails = [];
         for (let i = 0; i < plan.length; i++) {
           const c = plan[i];
-          progEl.innerHTML = `${fills.length}/${plan.length} filled · sending fulfilment ${i + 1}…`;
+          progEl.innerHTML = `${fills.length}/${plan.length} sold · selling into bid ${i + 1}…`;
           try {
             const r = await fulfilBidIntent({ bid: c.b, fillAmount: c.kind === 'bid-var' ? c.amt : null });
             fills.push({ bidId: c.b.bid_id, commit: r?.commit_txid, amt: c.amt, ps: c.ps });
@@ -57540,7 +57544,7 @@ async function marketPartialFillPrompt({ direction, ticker, decimals, minBig, ma
     const overlay = document.createElement('div');
     overlay.className = 'market-buy-overlay';
     const isBuy = direction === 'buy';
-    const titleVerb = isBuy ? 'Buy' : 'Fulfil';
+    const titleVerb = isBuy ? 'Buy' : 'Sell';
     const payVerb = isBuy ? 'You pay' : 'You receive';
     const payNote = isBuy
       ? 'BTC payment scales linearly with the take fraction.'
@@ -57607,7 +57611,7 @@ async function marketPartialFillPrompt({ direction, ticker, decimals, minBig, ma
           ${warn ? `<div style="margin:8px 0;padding:6px 10px;border:1px solid #b8341d;background:rgba(184,52,29,0.06);color:#b8341d;font-size:11px;">⚠ ${escapeHtml(warn)}</div>` : ''}
           <div class="market-buy-actions">
             <button type="button" data-pf-cancel>Cancel</button>
-            <button type="button" class="primary" data-pf-confirm ${invalid ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>${escapeHtml(isBuy ? 'Buy' : 'Fulfil')} ${escapeHtml(fmtAssetAmount(chosen, decimals))} ${escapeHtml(ticker)}</button>
+            <button type="button" class="primary" data-pf-confirm ${invalid ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''}>${escapeHtml(isBuy ? 'Buy' : 'Sell')} ${escapeHtml(fmtAssetAmount(chosen, decimals))} ${escapeHtml(ticker)}</button>
           </div>
         </div>`;
       bind();

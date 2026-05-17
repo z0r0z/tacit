@@ -1002,6 +1002,21 @@ tr[data-recent-activity] .market-token-sub::after {
   border-color: var(--green);
   color: #fff;
 }
+/* Opener variant — "Sell level →" buttons that open the sweep-sell
+   preview form instead of committing in one click. Outline + ghost
+   styling so traders read the second-step semantic at a glance and
+   don't tap expecting an instant fill. Hover fills it in green for
+   the action-class continuity. */
+.market-bid-fulfil.market-bid-action--opener {
+  background: transparent;
+  color: var(--green);
+  border-color: var(--green);
+  font-weight: 700;
+}
+.market-bid-fulfil.market-bid-action--opener:hover {
+  background: var(--green);
+  color: #fff;
+}
 .market-bid-cancel {
   background: transparent;
   border-color: var(--red);
@@ -1522,6 +1537,31 @@ tr[data-recent-activity] .market-token-sub::after {
   flex: 1 1 88px;
   min-width: 0;
   white-space: nowrap;
+}
+/* Opener variant — "Buy level →" buttons that open the Advanced
+   buy preview form instead of committing in one click. Outline
+   styling so the trader doesn't confuse them with the solid one-tap
+   commit buttons (Buy, Buy chunks). Hover fills in the brand amber
+   used by Buy chunks / Buy level historical styling so the action
+   class continuity reads through. font-size + height match the
+   sibling solid buttons so the row keeps a clean baseline. */
+.market-listing-action--opener {
+  flex: 1 1 88px;
+  min-width: 0;
+  white-space: nowrap;
+  background: transparent;
+  color: #b8651d;
+  border: 1px solid #b8651d;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 10px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+.market-listing-action--opener:hover {
+  background: #f7931a;
+  color: #fff;
+  border-color: #f7931a;
 }
 /* Orderbook rows-mode: flatten each tile into a horizontal entry so the
    asks ladder reads as CEX-style depth (price · amount · total · expiry
