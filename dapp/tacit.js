@@ -8452,21 +8452,118 @@ function getAssetMeta(assetIdHex) {
 // cBTC.zk slot's denom), but only these standard tiers get a built-in
 // ticker. The leading entry (100k sats) matches the cBTC.zk default
 // (SPEC-CBTC-ZK §metadata: "cBTC.zk — denom_sats = 100_000").
-const _CBTC_TAC_TIERS = [
-  { denomSats: 100_000n,      ticker: 'cBTC.tac',        name: 'cBTC.tac' },
-  { denomSats: 1_000_000n,    ticker: 'cBTC.tac.k',      name: 'cBTC.tac (1M-sat tier)' },
-  { denomSats: 10_000_000n,   ticker: 'cBTC.tac.10M',    name: 'cBTC.tac (10M-sat tier)' },
-  { denomSats: 100_000_000n,  ticker: 'cBTC.tac.1BTC',   name: 'cBTC.tac (1 BTC tier)' },
-  { denomSats: 10_000n,       ticker: 'cBTC.tac.10k',    name: 'cBTC.tac (10k-sat tier)' },
-];
+const CBTC_TAC_CANONICAL_MANIFEST = Object.freeze({
+  schema: 'tacit-cbtc-tac-canonical-manifest',
+  schema_version: 1,
+  description:
+    'Canonical denomination tiers for cBTC.tac wrappers. Each tier is a ' +
+    'permissionless TAC-bonded fractional wrapper for BTC at a fixed ' +
+    'sat denomination. Variant asset_id is derived deterministically ' +
+    'per tier via SHA256("tacit-cbtc-tac-variant-v1" || u64_le(denom_sats)).',
+  source_spec: 'SPEC-CBTC-TAC-AMENDMENT',
+  variant_asset_id_derivation:
+    'SHA256("tacit-cbtc-tac-variant-v1" || u64_le(denom_sats))',
+  tiers: [
+    { denom_sats: 100_000,     ticker: 'cBTC.tac',
+      name: 'cBTC.tac',
+      description: 'Permissionless TAC-bonded wrapper for BTC at the 100,000-sat (≈$50) denomination. Matches the cBTC.zk default tier. Mint via slot+TAC deposit; redeem cooperatively via withdraw.' },
+    { denom_sats: 1_000_000,   ticker: 'cBTC.tac.k',
+      name: 'cBTC.tac (1M-sat tier)',
+      description: 'Permissionless TAC-bonded wrapper for BTC at the 1,000,000-sat (≈$500) denomination. Matches the cBTC.zk.k tier (larger denom for fee efficiency).' },
+    { denom_sats: 10_000_000,  ticker: 'cBTC.tac.10M',
+      name: 'cBTC.tac (10M-sat tier)',
+      description: 'Permissionless TAC-bonded wrapper for BTC at the 10,000,000-sat (≈$5,000) denomination tier.' },
+    { denom_sats: 100_000_000, ticker: 'cBTC.tac.1BTC',
+      name: 'cBTC.tac (1 BTC tier)',
+      description: 'Permissionless TAC-bonded wrapper for BTC at the 100,000,000-sat (1 BTC) denomination tier.' },
+    { denom_sats: 10_000,      ticker: 'cBTC.tac.10k',
+      name: 'cBTC.tac (10k-sat tier)',
+      description: 'Permissionless TAC-bonded wrapper for BTC at the 10,000-sat (≈$5) denomination tier.' },
+  ],
+});
+// Operator-set IPFS CID for the pinned canonical manifest. When null,
+// dapp uses the inline manifest above. When set, dapp fetches the IPFS
+// copy on load and uses it as the source of truth (with the inline copy
+// as a cold-start + offline fallback). Pin via window.__pinCbtcTacManifest()
+// from a wallet-loaded DevTools, paste CID here, redeploy.
+const CBTC_TAC_MANIFEST_CID = null;
+let _activeCbtcTacManifest = CBTC_TAC_CANONICAL_MANIFEST;
+function cbtcTacCanonicalManifest() { return _activeCbtcTacManifest; }
+// Shape-check the manifest fetched from IPFS so a malformed pin (or a
+// 3rd party with a different schema at the CID) can't poison the
+// synthetic-meta lookup.
+function _validateCbtcTacManifest(m) {
+  if (!m || typeof m !== 'object') return 'not an object';
+  if (m.schema !== CBTC_TAC_CANONICAL_MANIFEST.schema) return `bad schema tag: ${m.schema}`;
+  if (!Array.isArray(m.tiers) || m.tiers.length === 0) return 'tiers must be non-empty array';
+  for (const t of m.tiers) {
+    if (!t || typeof t !== 'object') return 'tier not object';
+    if (typeof t.denom_sats !== 'number' || !Number.isInteger(t.denom_sats) || t.denom_sats <= 0)
+      return `tier denom_sats invalid: ${t.denom_sats}`;
+    if (typeof t.ticker !== 'string' || t.ticker.length === 0) return 'tier ticker invalid';
+    if (typeof t.name !== 'string') return 'tier name not string';
+  }
+  return null;
+}
+// Pin the inline canonical manifest to IPFS via the worker's /pin-json
+// route. One-time operator action — returns the CID; paste into
+// CBTC_TAC_MANIFEST_CID + redeploy. Idempotent (content-addressed).
+async function pinCbtcTacManifest() {
+  if (typeof uploadMetadataToPinata !== 'function') {
+    throw new Error('uploadMetadataToPinata unavailable — worker base not configured');
+  }
+  return uploadMetadataToPinata(CBTC_TAC_CANONICAL_MANIFEST);
+}
+// Init-time fetch. If CBTC_TAC_MANIFEST_CID is set, pull from IPFS,
+// validate, install as active manifest. If fetch or validation fails,
+// keep inline copy (fail-open). Warn on divergence so we notice drift.
+async function _loadCbtcTacManifestFromIpfs() {
+  if (!CBTC_TAC_MANIFEST_CID) return;
+  try {
+    let body = null;
+    const gws = (typeof IPFS_GATEWAYS_FALLBACK !== 'undefined' && Array.isArray(IPFS_GATEWAYS_FALLBACK))
+      ? IPFS_GATEWAYS_FALLBACK : ['https://ipfs.io/ipfs/'];
+    for (const gw of gws) {
+      try {
+        const resp = await fetch(`${gw}${CBTC_TAC_MANIFEST_CID}`, { cache: 'no-store' });
+        if (!resp.ok) continue;
+        const ct = resp.headers.get('Content-Type') || '';
+        if (/text\/html/i.test(ct)) continue;
+        body = await resp.json();
+        break;
+      } catch {}
+    }
+    if (!body) {
+      console.warn('cBTC.tac manifest: all IPFS gateways failed, using inline');
+      return;
+    }
+    const err = _validateCbtcTacManifest(body);
+    if (err) {
+      console.warn(`cBTC.tac manifest: IPFS payload invalid (${err}), using inline`);
+      return;
+    }
+    const inlineNorm = JSON.stringify(CBTC_TAC_CANONICAL_MANIFEST);
+    const fetchedNorm = JSON.stringify(body);
+    if (inlineNorm !== fetchedNorm) {
+      console.warn('cBTC.tac manifest: IPFS pin differs from inline (using IPFS as source of truth)');
+    }
+    _activeCbtcTacManifest = Object.freeze(body);
+    _cbtcTacAidLookup = null;
+  } catch (e) {
+    console.warn('cBTC.tac manifest IPFS load failed:', e?.message || e);
+  }
+}
 let _cbtcTacAidLookup = null;
 function _cbtcTacSyntheticMeta(assetIdHex) {
   if (typeof assetIdHex !== 'string' || !/^[0-9a-f]{64}$/i.test(assetIdHex)) return null;
   if (!_cbtcTacAidLookup) {
     _cbtcTacAidLookup = new Map();
-    for (const tier of _CBTC_TAC_TIERS) {
+    for (const t of cbtcTacCanonicalManifest().tiers) {
       try {
-        _cbtcTacAidLookup.set(ctacVariantAssetId(tier.denomSats).toLowerCase(), tier);
+        const denomBig = BigInt(t.denom_sats);
+        _cbtcTacAidLookup.set(ctacVariantAssetId(denomBig).toLowerCase(), {
+          denomSats: denomBig, ticker: t.ticker, name: t.name,
+        });
       } catch {}
     }
   }
@@ -8484,6 +8581,22 @@ function _cbtcTacSyntheticMeta(assetIdHex) {
     cbtcTacDenomSats: tier.denomSats.toString(),
   };
 }
+// Fire-and-forget at module load: if operator has pinned a manifest CID,
+// fetch + install it as the active source of truth. Doesn't block init —
+// holdings rendering uses whatever manifest is active at render time
+// (inline at boot, IPFS-fetched within ~1s of boot once the fetch lands).
+try {
+  if (typeof _loadCbtcTacManifestFromIpfs === 'function') {
+    _loadCbtcTacManifestFromIpfs().catch(() => {});
+  }
+} catch {}
+// Operator convenience: pin from DevTools without needing a UI button.
+//   await window.__pinCbtcTacManifest()  →  returns IPFS CID
+try {
+  if (typeof window !== 'undefined') {
+    window.__pinCbtcTacManifest = pinCbtcTacManifest;
+  }
+} catch {}
 // Per-UTXO openings: "txid:vout" -> { assetIdHex, amount: string, blinding: hex }
 const loadOpenings = () => {
   if (_openingsCache) return _openingsCache;
@@ -15012,6 +15125,294 @@ async function buildAndBroadcastCbtcTacWithdraw({
     commitFee, revealFee,
     burnedAmount: burnSum,
     insuranceClaimTAC: insuranceClaimBig,
+  };
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.39.4 — pooled insurance claim (T_SHARE_SLASH_CLAIM).
+//
+// A cBTC.tac holder who chooses NOT to withdraw their position (or doesn't
+// have one to withdraw) but wants their pro-rata slice of the insurance pool
+// burns share_burn_amount of cBTC.tac and receives:
+//
+//   claim_TAC = share_burn_amount × insurance_pool_TAC / outstanding_supply
+//
+// (integer floor). Claiming is voluntary; un-claimed slices remain in the
+// pool for other holders. Useful when a position rugs (SLASH_DETECTED) and
+// holders want compensation without unwinding their cBTC.tac holdings via
+// the standard withdraw path.
+//
+// Bitcoin tx shape:
+//   commit: sats inputs → vout[0] = P2TR(envelope script) + sats change
+//   reveal:
+//     vin[0]    = commit P2TR (script-path with envelope reveal)
+//     vin[1..M] = each burned cBTC.tac UTXO (P2WPKH under wallet.priv)
+//     vout[0]   = new TAC UTXO at recipient (P2WPKH, DUST sats, blinded
+//                 amount = claim_TAC via recipientCommit)
+//     vout[1+]  = sats change
+//
+// Caller responsibilities (v1):
+//   - Pre-query the worker's insurance-pool + outstanding-supply state to
+//     compute the expected claim_TAC. The worker validator REJECTS if the
+//     submitted claim_TAC ≠ floor(burn × pool / supply), so a stale-state
+//     submission silently fails confirmation.
+//   - Supply the M cBTC.tac UTXOs to burn with their {utxo, amount,
+//     blinding, nullifier?} openings. Holdings scanner provides these via
+//     the standard asset-UTXO machinery (same shape buildAndBroadcastCXfer
+//     consumes); nullifier defaults to the canonical
+//     SHA256("cbtc-tac-burn-nullifier-v1" || txid || vout_LE || blinding)
+//     derivation matching buildAndBroadcastCbtcTacWithdraw.
+//
+// Proof note: SPEC §5.39.4 calls for a Groth16 asset-spend proof + a
+// bulletproof balance proof (Σ burn amounts = share_burn_amount). The
+// worker validator does NOT yet verify either (it only checks the supply
+// + pool decrements). Placeholders satisfy the wire decoder.
+async function buildAndBroadcastShareSlashClaim({
+  cbtcTacUtxos,                  // array of M (1..16) UTXOs to burn:
+                                  // [{ utxo:{txid,vout}, amount, blinding, nullifier? }]
+  claimTAC,                      // pre-queried from worker; must equal
+                                  // floor(burn × pool / supply)
+  tacAssetIdHex,                 // canonical TAC asset_id for the output UTXO
+  recipientPubHex = null,        // 33-byte compressed; null = wallet.pub
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  // 1. Pre-flight
+  if (!Array.isArray(cbtcTacUtxos) || cbtcTacUtxos.length < 1 || cbtcTacUtxos.length > 16) {
+    throw new Error('cbtcTacUtxos must be 1..16 entries');
+  }
+  let burnSum = 0n;
+  for (const u of cbtcTacUtxos) {
+    if (!u || !u.utxo || u.amount === undefined || u.blinding === undefined) {
+      throw new Error('each cbtcTacUtxo must be {utxo:{txid,vout}, amount, blinding}');
+    }
+    burnSum += BigInt(u.amount);
+  }
+  if (burnSum <= 0n || burnSum >= (1n << BigInt(N_BITS))) {
+    throw new Error('share_burn_amount out of range');
+  }
+  const claimBig = BigInt(claimTAC);
+  if (claimBig <= 0n || claimBig >= (1n << BigInt(N_BITS))) {
+    throw new Error('claimTAC must be > 0 (use buildAndBroadcastCbtcTacWithdraw if claim is zero)');
+  }
+  if (!tacAssetIdHex || !/^[0-9a-f]{64}$/i.test(tacAssetIdHex)) {
+    throw new Error('tacAssetIdHex must be 64 hex chars (canonical TAC asset_id)');
+  }
+  const tacAidHex = tacAssetIdHex.toLowerCase();
+
+  // 2. Derive nullifiers + commits per share UTXO (mirrors withdraw pattern)
+  const shareNullifiers = cbtcTacUtxos.map(u => {
+    if (u.nullifier instanceof Uint8Array && u.nullifier.length === 32) return u.nullifier;
+    return sha256(concatBytes(
+      new TextEncoder().encode('cbtc-tac-burn-nullifier-v1'),
+      hexToBytes(u.utxo.txid),
+      (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, u.utxo.vout | 0, true); return b; })(),
+      typeof u.blinding === 'bigint'
+        ? bigintToBytes32(u.blinding)
+        : hexToBytes(typeof u.blinding === 'string' ? u.blinding.padStart(64, '0') : '00'.repeat(32)),
+    ));
+  });
+  const shareCommits = cbtcTacUtxos.map(u => {
+    const amt = BigInt(u.amount);
+    const r = typeof u.blinding === 'bigint' ? u.blinding : BigInt('0x' + (typeof u.blinding === 'string' ? u.blinding : '0'));
+    return pedersenCommit(amt, r).toRawBytes(true);
+  });
+
+  // 3. Fresh blinding for the new TAC payout UTXO (recipientCommit binds
+  // the unblinded claim amount + blinding to the output position).
+  const recipientPub = recipientPubHex
+    ? hexToBytes(recipientPubHex.toLowerCase())
+    : wallet.pub;
+  if (recipientPub.length !== 33) {
+    throw new Error('recipientPubHex must be 33-byte compressed point');
+  }
+  const recipientBlindingBytes = new Uint8Array(32); crypto.getRandomValues(recipientBlindingBytes);
+  let recipientBlindingBig = bytes32ToBigint(recipientBlindingBytes) % SECP_N;
+  if (recipientBlindingBig === 0n) recipientBlindingBig = 1n;
+  const recipientCommit = pedersenCommit(claimBig, recipientBlindingBig).toRawBytes(true);
+
+  // 4. Placeholder bulletproof + Groth16 proof (worker doesn't verify yet).
+  const shareBalanceProof = new Uint8Array(192);
+  const proofBytes = new Uint8Array(256);
+
+  // 5. bind_hash + envelope payload
+  _progress('envelope:build');
+  const bindHash = computeShareSlashClaimBindHash({
+    networkTag,
+    shareCount: cbtcTacUtxos.length,
+    shareNullifiers,
+    shareCommits,
+    shareBurnAmount: burnSum,
+    claimTAC: claimBig,
+    recipientCommit,
+  });
+  const payload = encodeTShareSlashClaimPayload({
+    networkTag,
+    shareNullifiers,
+    shareCommits,
+    shareBurnAmount: burnSum,
+    shareBalanceProof,
+    claimTAC: claimBig,
+    recipientCommit,
+    bindHash,
+    proof: proofBytes,
+  });
+
+  // 6. Build commit + reveal Bitcoin transactions
+  // Commit: sats inputs → P2TR(envelope script) + sats change
+  // Reveal: vin[0]   = commit P2TR (script-path with envelope reveal)
+  //         vin[1..M] = burned cBTC.tac UTXOs (P2WPKH under wallet.priv)
+  //         vout[0]  = new TAC UTXO at recipientPub (P2WPKH, DUST sats)
+  //         vout[1]  = sats change to wallet (if any)
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  // Reveal vbytes: 1 + M inputs; 1 P2WPKH out + optional sats change.
+  // Envelope dominates witness; M asset inputs are P2WPKH (109 wt bytes each).
+  const revealVb = 11 + 41 + (41 * cbtcTacUtxos.length) + 31
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34 + cbtcTacUtxos.length * 109) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+
+  // The reveal's BTC math: commit P2TR + M × DUST (asset inputs) = DUST (TAC
+  // output) + sats change + revealFee. Solve for commit value.
+  const assetInputTotalSats = DUST * cbtcTacUtxos.length;
+  // We want sats change >= DUST or zero; start with commitValue minimal then
+  // bump if math says we'd produce sub-DUST change.
+  let commitValue = Math.max(DUST, DUST + revealFee - assetInputTotalSats);
+  let revealSatsChange = commitValue + assetInputTotalSats - DUST - revealFee;
+  if (revealSatsChange < DUST) {
+    // round up so change is at least DUST OR drop the change output
+    revealSatsChange = 0;
+    commitValue = Math.max(DUST, DUST + revealFee - assetInputTotalSats);
+  }
+
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  const allUtxos = await getUtxos(wallet.address());
+  const assetUtxoKeys = new Set(cbtcTacUtxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
+  const sats = allUtxos
+    .filter(u => !assetUtxoKeys.has(`${u.txid}:${u.vout}`))
+    .filter(u => u.value > DUST)
+    .sort((a, b) => b.value - a.value);
+  if (sats.length === 0) {
+    throw new Error('no plain-sats UTXOs available to fund the slash-claim commit');
+  }
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for slash-claim commit fees: need ${commitValue + commitFee}, have ${total}`);
+  }
+
+  _progress('tx:commit:build');
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  // Reveal tx
+  _progress('tx:reveal:build');
+  const recipSpk = p2wpkhScript(recipientPub);
+  const revealInputs = [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }];
+  for (const u of cbtcTacUtxos) {
+    revealInputs.push({ txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [] });
+  }
+  const revealOutputs = [{ value: DUST, script: recipSpk }];
+  if (revealSatsChange >= DUST) {
+    revealOutputs.push({ value: revealSatsChange, script: p2wpkhScript(wallet.pub) });
+  }
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: revealInputs,
+    outputs: revealOutputs,
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    ...cbtcTacUtxos.map(_ => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(
+    revealTx, revealPrevouts, envelopeScript, cb,
+  );
+  for (let i = 0; i < cbtcTacUtxos.length; i++) {
+    revealTx.inputs[1 + i].witness = signP2wpkhInput(revealTx, 1 + i, DUST);
+  }
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  // 7. Persist a local record BEFORE broadcasting so we can recover the
+  // blinding even if the page closes mid-broadcast.
+  try {
+    const r = {
+      kind: 'share-slash-claim',
+      network: NET.name,
+      tacAssetIdHex: tacAidHex,
+      claimTAC: claimBig.toString(),
+      recipientPubHex: bytesToHex(recipientPub),
+      recipientBlindingHex: recipientBlindingBig.toString(16).padStart(64, '0'),
+      recipientCommitHex: bytesToHex(recipientCommit),
+      shareBurnAmount: burnSum.toString(),
+      shareCount: cbtcTacUtxos.length,
+      shareNullifierHexes: shareNullifiers.map(n => bytesToHex(n)),
+      commitTxid: commitTxidHex,
+      revealTxid: revealTxidHex,
+      status: 'pending',
+      createdAt: Date.now(),
+    };
+    // Reuse the existing opening-record machinery so the new TAC UTXO is
+    // discoverable by scanHoldings on subsequent refreshes.
+    recordOpening(revealTxidHex, 0, tacAidHex, claimBig, recipientBlindingBig);
+    recordActivity({
+      kind: 'cbtc-tac-slash-claim',
+      ticker: 'TAC',
+      amount: claimBig,
+      decimals: 8,
+      assetId: tacAidHex,
+      txid: revealTxidHex,
+    });
+    // Light-weight breadcrumb. The recordActivity above is the
+    // user-visible surface; this exists for headless drivers that need
+    // the full envelope shape after broadcast.
+    try {
+      const key = `tacit-share-slash-claim-records:${NET.name}`;
+      const arr = JSON.parse(localStorage.getItem(key) || '[]');
+      arr.push(r);
+      localStorage.setItem(key, JSON.stringify(arr));
+    } catch {}
+  } catch {}
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    claimTAC: claimBig,
+    shareBurnAmount: burnSum,
+    recipientCommitHex: bytesToHex(recipientCommit),
+    recipientBlindingHex: recipientBlindingBig.toString(16).padStart(64, '0'),
+    commitFee, revealFee,
   };
 }
 
@@ -45038,6 +45439,19 @@ function applyMarketFilters() {
     populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
     populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
     populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
+    // Capture the rendered signature so the auto-refresh tick can detect
+    // a transition from "asset has no asks right now" to "fresh asks
+    // arrived" without being stuck on the empty pane. Without this
+    // capture, _renderedAssetSignature stays as whatever the previous
+    // asset's render left behind, so the tick's `freshSig !== ...sig`
+    // check either always fires (unrelated stale sig) or never fires
+    // (no prior sig at all, leaves user stuck on the empty pane until
+    // they browser-refresh — the bug being fixed). The `·empty·`
+    // sentinel keeps the signature truthy so the tick comparison fires
+    // exactly when the worker starts returning listings for this aid.
+    if (_marketView && typeof _marketView === 'object' && _marketView.mode === 'asset' && _marketView.assetId) {
+      _renderedAssetSignature = { aid: _marketView.assetId, sig: _assetSignatureFull(_marketView.assetId) || '·empty·' };
+    }
     return;
   }
   const activityPanelHtml = marketActivityPanelHtml(_assetForBids, allAssetRows);
@@ -47090,6 +47504,108 @@ function _aggregatePreauthRowsForLadder(rows, markUnit, decimals) {
     const uA = unitPriceSats(marketListingPriceSats(a), amA, dA) ?? Infinity;
     const uB = unitPriceSats(marketListingPriceSats(b), amB, dB) ?? Infinity;
     return uA - uB;
+  });
+  return all;
+}
+
+// Bids-side mirror of _aggregatePreauthRowsForLadder. Collapses same-
+// price-bucket whole-bid bids into one virtual row per price tick so
+// the ladder reads as discrete CEX price levels (size + maker count
+// per tick) rather than 30 individual maker rows. Same 0.5% bucket
+// width tied to mark price for consistency with the asks side.
+//
+// Pass-through (NOT bucketed) cases:
+//   · variable-fill bids (b.min_fill_amount > 0) — per-bid min/max
+//     granularity matters to a seller picking a partial fill; bucketing
+//     would hide it.
+//   · the user's own bids — keep them distinct + cancellable.
+//   · claimed bids (axintent_id set) — mid-lifecycle, individual fate.
+//
+// Bucketed bids share the bucket's best (highest) unit price as the
+// canonical "fill at this level" price. A seller fulfilling the level
+// is paid AT LEAST the bucket's MIN unit; we surface min/max so the
+// spread within the bucket is visible. Cumulative size sums the
+// remaining (tradable) amount per bid so a partial-filled bid in the
+// bucket contributes its remainder, not its original.
+function _aggregateBidsForLadder(bids, markUnit, decimals) {
+  if (!Array.isArray(bids) || bids.length === 0) return bids;
+  const bucketSize = Number.isFinite(markUnit) && markUnit > 0
+    ? Math.max(0.01, markUnit * 0.005)
+    : 1;
+  const buckets = new Map();
+  const passthrough = [];
+  for (const b of bids) {
+    // Pass-through guards (see header). Variable-fill bids are detected
+    // via the same min_fill check the per-row renderer uses.
+    const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    const isMine = !!b._isMine;
+    const isClaimed = !!b.axintent_id;
+    const isExpired = (b._expiresIn != null && b._expiresIn <= 0);
+    if (isVar || isMine || isClaimed || isExpired) { passthrough.push(b); continue; }
+    const unit = b._unit;
+    if (unit == null || !(unit > 0)) { passthrough.push(b); continue; }
+    const amtBig = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
+    if (amtBig <= 0n) { passthrough.push(b); continue; }
+    const ps = Number(b.price_sats || 0);
+    if (ps <= 0) { passthrough.push(b); continue; }
+    const bucketKey = Math.round(unit / bucketSize);
+    let agg = buckets.get(bucketKey);
+    if (!agg) {
+      agg = {
+        bucketUnit: bucketKey * bucketSize,
+        totalAmt: 0n,
+        totalSats: 0,
+        bids: [],
+        maxExpiry: 0,
+        minUnit: Infinity,
+        maxUnit: 0,
+      };
+      buckets.set(bucketKey, agg);
+    }
+    agg.totalAmt += amtBig;
+    agg.totalSats += ps;
+    agg.bids.push(b);
+    if (b.expiry && b.expiry > agg.maxExpiry) agg.maxExpiry = b.expiry;
+    if (unit < agg.minUnit) agg.minUnit = unit;
+    if (unit > agg.maxUnit) agg.maxUnit = unit;
+  }
+  const virtualRows = [];
+  for (const agg of buckets.values()) {
+    if (agg.bids.length === 1) { virtualRows.push(agg.bids[0]); continue; }
+    const proto = agg.bids[0];
+    // Recompute the bucket's _unit so downstream cumulative-depth bars
+    // and click-to-prime use a consistent reference. We expose maxUnit
+    // as the row's effective unit (best of the bucket = top of book) so
+    // it shows up at the right ladder slot; spread is revealed in the
+    // subtitle.
+    virtualRows.push({
+      ...proto,
+      _isLevel: true,
+      _levelCount: agg.bids.length,
+      _levelBids: agg.bids,
+      _levelMinUnit: agg.minUnit,
+      _levelMaxUnit: agg.maxUnit,
+      _unit: agg.maxUnit,
+      amount: agg.totalAmt.toString(),
+      price_sats: agg.totalSats,
+      expiry: agg.maxExpiry || proto.expiry,
+      // Bucket-level claim/lifecycle fields don't transfer — fulfilment
+      // of a level fans out across the underlying bids. Strip any per-
+      // proto bid identity that would confuse the single-bid renderer.
+      bid_id: '',
+      axintent_id: undefined,
+    });
+  }
+  // Sort all rows (bucketed + pass-through) by unit price descending so
+  // the best bid sits at the top — matches the existing ladder.sort
+  // contract at populateMarketBidsLadder.
+  const all = [...virtualRows, ...passthrough];
+  all.sort((a, b) => {
+    const ua = a._unit, ub = b._unit;
+    if (ua == null && ub == null) return 0;
+    if (ua == null) return 1;
+    if (ub == null) return -1;
+    return ub - ua;
   });
   return all;
 }
@@ -50065,14 +50581,14 @@ function renderMarketBidsLadderHTML(asset) {
         </div>
         <div class="market-bids-actions">
           <button data-act="auto-fulfil-toggle" type="button" title="Automatically signs claim responses for atomic intents (asks AND bid fulfilments) while this tab is open. Required for sell-side swaps to settle without you babysitting.">Auto-fulfil: OFF</button>
-          <button data-act="market-bids-toggle" type="button" aria-expanded="false" title="Show the full bid ladder. Each bid card now surfaces remaining_amount and min_fill_amount so partial-fill bids stay legible.">Show bids</button>
+          <button data-act="market-bids-toggle" type="button" aria-expanded="true" title="Collapse the bid ladder. Each bid card surfaces remaining_amount and min_fill_amount so partial-fill bids stay legible.">Hide bids</button>
           <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Advanced: sell-route control surface. Pick a floor price + amount; each fill publishes an atomic intent. For most cases the Swap tile above is simpler — this exposes the per-bid plan so you can audit before signing.">Sweep sell (advanced)</button>
           <button data-act="market-bid-place" data-aid="${aid}" type="button" title="Advanced: standalone bid form with explicit price chips (best-bid / floor / mark / last) + custom expiry + min-fill. The Swap tile above auto-falls-back to a variable-fill bid when no asks match your limit — use this when you want full control over the bid params.">+ Place a bid on ${ticker}</button>
         </div>
       </div>
       <div data-market-sweep-sell-form style="display:none;margin-top:10px;"></div>
       <div data-market-bid-form style="display:none;margin-top:10px;"></div>
-      <div data-market-bids-list hidden class="market-bids-list">
+      <div data-market-bids-list class="market-bids-list">
         <div class="muted" style="font-size:11px;"><span class="live-dots">loading bids</span></div>
       </div>
     </div>`;
@@ -51433,6 +51949,17 @@ async function populateMarketBidsLadder(scope, asset) {
     if (ub == null) return -1;
     return ub - ua;
   });
+  // Price-tick bucketing — mirror of the asks ladder's
+  // _aggregatePreauthRowsForLadder. Same 0.5% bucket width tied to mark
+  // price. Without this, 30 bids clustered at similar prices render as
+  // 30 rows; CEX users expect ~5-10 discrete price levels with
+  // cumulative size + maker count per level. Variable-fill / mine /
+  // claimed bids pass through unchanged so per-bid granularity isn't
+  // lost where it matters. Mine-only filter is applied AFTER bucketing
+  // would leave nothing to bucket, so we run aggregation regardless of
+  // mode (mine bids pass through individually anyway).
+  const _bidMarkUnit = Number(asset?.mark_price?.unit);
+  let bucketedLadder = _aggregateBidsForLadder(ladder, _bidMarkUnit, decimals);
   // USD pricing on every row when the oracle cache is hot. Decorative;
   // a missing price falls through to sats-only without breaking layout.
   const _bidBtcUsd = _cachedBtcUsd();
@@ -59871,11 +60398,15 @@ export {
   // Composes carveExactAmount (bond TAC) + cBTC.tac envelope + commit-reveal
   // P2TR. Force-close keeper + slash-claim builders staged separately.
   buildAndBroadcastCbtcTacDeposit, buildAndBroadcastCbtcTacWithdraw,
+  buildAndBroadcastShareSlashClaim,
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,
   // cBTC.tac variant asset_id derivation (must match worker byte-for-byte).
   ctacVariantAssetId,
   // Asset-registry lookup (returns synthetic meta for cBTC.tac canonical tiers).
   getAssetMeta,
+  // cBTC.tac IPFS-pinned canonical manifest (decentralization + permanence).
+  CBTC_TAC_CANONICAL_MANIFEST, CBTC_TAC_MANIFEST_CID,
+  cbtcTacCanonicalManifest, pinCbtcTacManifest, _validateCbtcTacManifest,
   // Slot-note encryption primitives (SPEC-CBTC-ZK-FUNGIBILITY §5.26).
   // Exported for the standalone test at tests/slot-note-encryption.test.mjs.
   encryptSlotNote, decryptSlotNote, slotViewingPubkey,
