@@ -504,5 +504,85 @@ group('decodeTLpRemovePayload structural round-trip');
     worker.decodeTLpRemovePayload(new Uint8Array(10).fill(0x2E)) === null);
 }
 
+// ============== Dapp T_SWAP_VAR wire primitives (cross-impl parity) ==============
+group('Dapp T_SWAP_VAR encoder → worker decoder parity');
+{
+  // Load dapp module with JSDOM globals.
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    url: 'http://localhost/', pretendToBeVisual: true,
+  });
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.localStorage = dom.window.localStorage;
+  globalThis.location = dom.window.location;
+  globalThis.navigator = dom.window.navigator;
+  globalThis.prompt = () => null;
+  globalThis.alert = () => {};
+  globalThis.confirm = () => false;
+  globalThis.__TACIT_NO_INIT__ = true;
+  const dapp = await import('../dapp/tacit.js');
+
+  ok('dapp T_SWAP_VAR = 0x32', dapp.T_SWAP_VAR === 0x32);
+  ok('dapp SWAP_VAR_ENVELOPE_VERSION = 0x01', dapp.SWAP_VAR_ENVELOPE_VERSION === 0x01);
+
+  // Dapp pool ID derivation matches worker
+  const a = sha256(new TextEncoder().encode('parity-A'));
+  const b = sha256(new TextEncoder().encode('parity-B'));
+  const dappPoolId = dapp.ammDerivePoolIdDapp(a, b, 30, 0);
+  const workerPoolId = worker.ammDerivePoolId(a, b, 30, 0);
+  ok('dapp ↔ worker pool_id parity',
+    bytesToHex(dappPoolId) === bytesToHex(workerPoolId));
+
+  // Dapp curve recompute matches worker
+  const dappCurve = dapp.swapVarCurveDeltaOut(0, 1_000_000n, 2_000_000n, 50_000n, 30);
+  const workerCurve = worker.ammCurveDeltaOut(0, 1_000_000n, 2_000_000n, 50_000n, 30);
+  ok('dapp ↔ worker delta_out parity', dappCurve.deltaOut === workerCurve.deltaOut);
+  ok('dapp ↔ worker raPost parity', dappCurve.raPost === workerCurve.raPost);
+  ok('dapp ↔ worker rbPost parity', dappCurve.rbPost === workerCurve.rbPost);
+
+  // Build a valid SwapVar envelope via dapp encoder, decode with worker
+  const poolId = sha256(new TextEncoder().encode('parity-pool'));
+  const traderPub = secp.ProjectivePoint.BASE.multiply(13n).toRawBytes(true);
+  const cIn = secp.ProjectivePoint.BASE.multiply(17n).toRawBytes(true);
+  const cChange = secp.ProjectivePoint.BASE.multiply(19n).toRawBytes(true);
+  const cReceipt = secp.ProjectivePoint.BASE.multiply(23n).toRawBytes(true);
+  const ra = 5_000_000n, rb = 10_000_000n, din = 100_000n;
+  const expectedOut = worker.ammCurveDeltaOut(0, ra, rb, din, 30).deltaOut;
+
+  const payload = dapp.encodeTSwapVarPayload({
+    poolId, direction: 0, R_A_pre: ra, R_B_pre: rb,
+    deltaIn: din, deltaInMin: 50_000n, deltaInMax: 150_000n,
+    deltaOut: expectedOut, minOut: expectedOut - 100n,
+    tipAmount: 0n, tipAsset: 0, expiryHeight: 1_000_000,
+    traderPubkey: traderPub, cInSecp: cIn,
+    cChangeOrSentinel: cChange, cReceiptSecp: cReceipt,
+    rReceipt: new Uint8Array(32).fill(0x77),
+    rangeProof: new Uint8Array(700).fill(0x88),
+    kernelSig: new Uint8Array(64).fill(0x99),
+    intentSig: new Uint8Array(64).fill(0xaa),
+  });
+  ok('dapp-encoded payload[0] = 0x01 (version)', payload[0] === 0x01);
+  ok('dapp-encoded payload[1] = 0x32 (opcode)', payload[1] === 0x32);
+
+  const decW = worker.decodeTSwapVarPayload(payload);
+  ok('worker decodes dapp-encoded payload', decW !== null);
+  ok('worker R_A_pre parity', decW?.R_A_pre === ra.toString());
+  ok('worker delta_out parity', decW?.delta_out === expectedOut.toString());
+  ok('worker pool_id parity',
+    decW?.pool_id === bytesToHex(poolId));
+
+  // Dapp self-roundtrip
+  const decD = dapp.decodeTSwapVarPayload(payload);
+  ok('dapp decodes its own encoded payload', decD !== null);
+  ok('dapp R_A_pre parity', decD?.R_A_pre === ra);  // dapp returns bigint
+  ok('dapp delta_out parity', decD?.deltaOut === expectedOut);
+
+  // Envelope hash parity
+  const dappHash = bytesToHex(dapp.computeSwapVarEnvelopeHash(payload));
+  const workerHash = bytesToHex(worker.ammSwapVarEnvelopeHash(payload));
+  ok('dapp ↔ worker envelope hash parity', dappHash === workerHash);
+}
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail === 0 ? 0 : 1);

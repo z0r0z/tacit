@@ -7648,6 +7648,205 @@ function decodeTShareSlashClaimPayload(payload) {
   };
 }
 
+// ============== T_SWAP_VAR WIRE PRIMITIVES (SPEC-SWAP-VAR-AMENDMENT §5.16.3) ==============
+//
+// Per-trade variable-amount AMM swap. Wire format (matches worker byte-for-byte):
+//   envelope_version(1) || opcode(1) || pool_id(32) || direction(1)
+//   || R_A_pre(8) || R_B_pre(8) || delta_in(8) || delta_in_min(8)
+//   || delta_in_max(8) || delta_out(8) || min_out(8) || tip_amount(8)
+//   || tip_asset(1) || expiry_height(4) || trader_pubkey(33)
+//   || C_in_secp(33) || C_change_or_sentinel(33) || C_receipt_secp(33)
+//   || r_receipt(32) || rangeproof_len(2) || range_proof(VAR)
+//   || kernel_sig(64) || intent_sig(64)
+//
+// envelope_hash = SHA256(payload). vout[0] OP_RETURN(envelope_hash) is the
+// on-chain binding.
+function encodeTSwapVarPayload({
+  poolId, direction,
+  R_A_pre, R_B_pre, deltaIn, deltaInMin, deltaInMax,
+  deltaOut, minOut, tipAmount, tipAsset, expiryHeight,
+  traderPubkey, cInSecp, cChangeOrSentinel, cReceiptSecp,
+  rReceipt, rangeProof, kernelSig, intentSig,
+}) {
+  if (!(poolId instanceof Uint8Array) || poolId.length !== 32) throw new Error('pool_id 32 bytes');
+  if (direction !== 0 && direction !== 1) throw new Error('direction must be 0|1');
+  if (tipAsset !== 0 && tipAsset !== 1) throw new Error('tip_asset must be 0|1');
+  if (!(traderPubkey instanceof Uint8Array) || traderPubkey.length !== 33) throw new Error('trader_pubkey 33 bytes');
+  if (!(cInSecp instanceof Uint8Array) || cInSecp.length !== 33) throw new Error('c_in_secp 33 bytes');
+  if (!(cChangeOrSentinel instanceof Uint8Array) || cChangeOrSentinel.length !== 33) {
+    throw new Error('c_change_or_sentinel 33 bytes');
+  }
+  if (!(cReceiptSecp instanceof Uint8Array) || cReceiptSecp.length !== 33) throw new Error('c_receipt_secp 33 bytes');
+  if (!(rReceipt instanceof Uint8Array) || rReceipt.length !== 32) throw new Error('r_receipt 32 bytes');
+  if (!(rangeProof instanceof Uint8Array) || rangeProof.length === 0 || rangeProof.length > 0xffff) {
+    throw new Error('range_proof len 1..65535');
+  }
+  if (!(kernelSig instanceof Uint8Array) || kernelSig.length !== 64) throw new Error('kernel_sig 64 bytes');
+  if (!(intentSig instanceof Uint8Array) || intentSig.length !== 64) throw new Error('intent_sig 64 bytes');
+  function u64LE(n) {
+    const b = new Uint8Array(8);
+    let x = BigInt(n);
+    if (x < 0n || x >= 1n << 64n) throw new Error('u64 overflow');
+    for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+    return b;
+  }
+  function u32LE(n) {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setUint32(0, n >>> 0, true);
+    return b;
+  }
+  function u16LE(n) {
+    const b = new Uint8Array(2);
+    new DataView(b.buffer).setUint16(0, n & 0xffff, true);
+    return b;
+  }
+  return concatBytes(
+    new Uint8Array([SWAP_VAR_ENVELOPE_VERSION, T_SWAP_VAR]),
+    poolId,
+    new Uint8Array([direction & 0xff]),
+    u64LE(R_A_pre), u64LE(R_B_pre),
+    u64LE(deltaIn), u64LE(deltaInMin), u64LE(deltaInMax),
+    u64LE(deltaOut), u64LE(minOut), u64LE(tipAmount),
+    new Uint8Array([tipAsset & 0xff]),
+    u32LE(expiryHeight),
+    traderPubkey, cInSecp, cChangeOrSentinel, cReceiptSecp, rReceipt,
+    u16LE(rangeProof.length), rangeProof,
+    kernelSig, intentSig,
+  );
+}
+
+function decodeTSwapVarPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 298) return null;
+  let p = 0;
+  const version = payload[p]; p += 1;
+  if (version !== SWAP_VAR_ENVELOPE_VERSION) return null;
+  const opcode = payload[p]; p += 1;
+  if (opcode !== T_SWAP_VAR) return null;
+  const poolId = payload.slice(p, p + 32); p += 32;
+  const direction = payload[p]; p += 1;
+  if (direction !== 0 && direction !== 1) return null;
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  function readU64() {
+    const lo = BigInt(dv.getUint32(p, true));
+    const hi = BigInt(dv.getUint32(p + 4, true));
+    p += 8;
+    return (hi << 32n) | lo;
+  }
+  const R_A_pre = readU64();
+  const R_B_pre = readU64();
+  const deltaIn = readU64();
+  const deltaInMin = readU64();
+  const deltaInMax = readU64();
+  const deltaOut = readU64();
+  const minOut = readU64();
+  const tipAmount = readU64();
+  const tipAsset = payload[p]; p += 1;
+  if (tipAsset !== 0 && tipAsset !== 1) return null;
+  const expiryHeight = dv.getUint32(p, true); p += 4;
+  const traderPubkey = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(traderPubkey); } catch { return null; }
+  const cInSecp = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(cInSecp); } catch { return null; }
+  const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
+  let isSentinel = true;
+  for (let i = 0; i < 33; i++) if (cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
+  if (!isSentinel) {
+    try { bytesToPoint(cChangeOrSentinel); } catch { return null; }
+  }
+  const cReceiptSecp = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(cReceiptSecp); } catch { return null; }
+  const rReceipt = payload.slice(p, p + 32); p += 32;
+  if (p + 2 > payload.length) return null;
+  const rpLen = dv.getUint16(p, true); p += 2;
+  if (rpLen === 0) return null;
+  if (p + rpLen + 64 + 64 > payload.length) return null;
+  const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const intentSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+  return {
+    kind: 'swap_var',
+    version, opcode,
+    poolId, direction,
+    R_A_pre, R_B_pre, deltaIn, deltaInMin, deltaInMax, deltaOut, minOut, tipAmount, tipAsset,
+    expiryHeight,
+    traderPubkey, cInSecp, cChangeOrSentinel, cReceiptSecp,
+    rReceipt, rangeProof, kernelSig, intentSig,
+  };
+}
+
+// x · y = k constant-product curve with fee_bps deducted from delta_in.
+// MUST agree byte-for-byte with worker's ammCurveDeltaOut + reference
+// tests/swap-var.mjs curveDeltaOut. Floor delta_out.
+function swapVarCurveDeltaOut(direction, R_A_pre, R_B_pre, deltaIn, feeBps) {
+  const ra = BigInt(R_A_pre);
+  const rb = BigInt(R_B_pre);
+  const din = BigInt(deltaIn);
+  const fbps = BigInt(feeBps);
+  if (ra <= 0n || rb <= 0n) throw new Error('reserves must be > 0');
+  if (din <= 0n) throw new Error('delta_in must be > 0');
+  if (fbps < 0n || fbps > 1000n) throw new Error('fee_bps out of range');
+  if (ra >= 1n << 64n || rb >= 1n << 64n || din >= 1n << 64n) throw new Error('values must fit u64');
+  const gNum = 10000n - fbps;
+  const gDen = 10000n;
+  let num, den, deltaOut, raPost, rbPost;
+  if (direction === 0) {
+    num = rb * gNum * din;
+    den = ra * gDen + gNum * din;
+    deltaOut = num / den;
+    raPost = ra + din;
+    rbPost = rb - deltaOut;
+  } else if (direction === 1) {
+    num = ra * gNum * din;
+    den = rb * gDen + gNum * din;
+    deltaOut = num / den;
+    raPost = ra - deltaOut;
+    rbPost = rb + din;
+  } else {
+    throw new Error('direction must be 0 or 1');
+  }
+  if (deltaOut >= 1n << 64n) throw new Error('delta_out overflows u64');
+  if (raPost <= 0n || rbPost <= 0n) throw new Error('post-reserve non-positive');
+  if (raPost >= 1n << 64n) throw new Error('post-reserve_A overflows u64');
+  if (rbPost >= 1n << 64n) throw new Error('post-reserve_B overflows u64');
+  return { deltaOut, raPost, rbPost };
+}
+
+// SHA256 of envelope payload. The Bitcoin tx's vout[0] OP_RETURN MUST
+// carry this 32-byte hash; worker validator binds them together.
+function computeSwapVarEnvelopeHash(payload) {
+  return sha256(payload);
+}
+
+// Pool ID derivation matching worker's ammDerivePoolId. Caller supplies
+// canonically-ordered assets (use lexCanonicalAssetPair below) and the
+// pool's fee_bps + capability_flags.
+const _AMM_POOL_ID_DOMAIN_DAPP = new TextEncoder().encode('tacit-amm-pool-v1');
+function lexCanonicalAssetPair(idA, idB) {
+  const a = idA instanceof Uint8Array ? idA : hexToBytes(idA);
+  const b = idB instanceof Uint8Array ? idB : hexToBytes(idB);
+  if (a.length !== 32 || b.length !== 32) throw new Error('asset_id must be 32 bytes');
+  for (let i = 0; i < 32; i++) {
+    if (a[i] < b[i]) return [a, b];
+    if (a[i] > b[i]) return [b, a];
+  }
+  throw new Error('canonical pair: identical asset_ids');
+}
+function ammDerivePoolIdDapp(idA, idB, feeBps, capabilityFlags) {
+  const [low, high] = lexCanonicalAssetPair(idA, idB);
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 1000) {
+    throw new Error(`fee_bps out of range [0, 1000]: ${feeBps}`);
+  }
+  if (!Number.isInteger(capabilityFlags) || capabilityFlags < 0 || capabilityFlags > 255) {
+    throw new Error(`capability_flags out of range u8: ${capabilityFlags}`);
+  }
+  const feeBpsLE = new Uint8Array(2);
+  new DataView(feeBpsLE.buffer).setUint16(0, feeBps, true);
+  const flagsByte = new Uint8Array([capabilityFlags]);
+  return sha256(concatBytes(_AMM_POOL_ID_DOMAIN_DAPP, low, high, feeBpsLE, flagsByte));
+}
+
 // Kernel message for T_DEPOSIT (SPEC §5.10). Domain-separated by 'tacit-deposit-v1'
 // to make cross-opcode replay against, say, a CXFER kernel sig structurally
 // impossible.
@@ -46693,16 +46892,32 @@ function applyMarketFilters() {
     // Hide per-row trade buttons in Simple mode (default ON). The row
     // is still clickable to prime the Swap tile; primary/secondary
     // actions return when the user flips Advanced. Maker-side actions
-    // (Cancel / Soft cancel / Hard cancel / Verify) on listings owned
-    // by the current wallet stay visible regardless — those aren't
-    // routed through the Swap tile and the user needs them where they
-    // can find them. Detection: any data-act containing 'cancel' or
-    // 'verify' means it's a maker/maintenance action, not a trade
-    // shortcut, so we keep the actionRow visible in that case.
-    const _isMakerSideAction = (primaryAction + secondaryAction).includes('data-act="market-cancel')
-      || (primaryAction + secondaryAction).includes('data-act="market-hard-cancel')
-      || (primaryAction + secondaryAction).includes('data-act="market-verify');
-    const _hideActionRow = _marketRowActionsHidden && !_isMakerSideAction;
+    // AND mid-flight-trade lifecycle actions stay visible regardless —
+    // those aren't routed through the Swap tile and hiding them would
+    // strand a user mid-flow (e.g., a maker whose intent just got
+    // claimed needs the Fulfil button; a taker whose claim just got
+    // fulfilled needs the Take button — neither is a trade shortcut,
+    // both are the next step of a trade already in progress).
+    //
+    // Always-visible action types:
+    //   · market-cancel*           — soft / hard cancel a listing
+    //   · market-hard-cancel*      — explicit hard cancel
+    //   · market-verify            — re-verify a listing's crypto chain
+    //   · market-fulfil            — maker completing a claim on their
+    //                                atomic intent (taker has locked,
+    //                                maker must sign the partial reveal
+    //                                or the lock expires in 5 min)
+    //   · market-take-intent       — taker finalizing the second leg
+    //                                of a claim they already committed
+    //                                sats to (Take button unlocks once
+    //                                the maker fulfils)
+    const _actHay = primaryAction + secondaryAction;
+    const _isLifecycleAction = _actHay.includes('data-act="market-cancel')
+      || _actHay.includes('data-act="market-hard-cancel')
+      || _actHay.includes('data-act="market-verify')
+      || _actHay.includes('data-act="market-fulfil')
+      || _actHay.includes('data-act="market-take-intent');
+    const _hideActionRow = _marketRowActionsHidden && !_isLifecycleAction;
     const actionRow = (primaryAction || secondaryAction)
       ? (_hideActionRow
           ? ''
@@ -60974,6 +61189,11 @@ export {
   encodeTCbtcTacWithdrawPayload, decodeTCbtcTacWithdrawPayload,
   encodeTCbtcTacForceClosePayload, decodeTCbtcTacForceClosePayload,
   encodeTShareSlashClaimPayload, decodeTShareSlashClaimPayload,
+  // AMM T_SWAP_VAR wire primitives (SPEC-SWAP-VAR-AMENDMENT §5.16.3).
+  encodeTSwapVarPayload, decodeTSwapVarPayload,
+  swapVarCurveDeltaOut, computeSwapVarEnvelopeHash,
+  ammDerivePoolIdDapp, lexCanonicalAssetPair,
+  T_LP_ADD, T_LP_REMOVE, T_SWAP_VAR, SWAP_VAR_ENVELOPE_VERSION,
   computeCbtcTacDepositBindHash, computeCbtcTacWithdrawBindHash,
   computeCbtcTacForceCloseBindHash, computeShareSlashClaimBindHash,
   computeSlotMintMsg, computeSlotRotateMsg, computeSlotSplitMsg, computeSlotMergeMsg,
