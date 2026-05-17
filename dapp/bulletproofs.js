@@ -91,7 +91,12 @@ export function verifySchnorr(sig64, msgHash, pubXonly32) {
   if (bytes32ToBigint(pubXonly32) >= SECP_P) return false;
   let P; try { P = secp.ProjectivePoint.fromHex('02' + bytesToHex(pubXonly32)); } catch { return false; }
   const e = bytes32ToBigint(_taggedHash('BIP0340/challenge', Rx, pubXonly32, msgHash)) % SECP_N;
-  const R = G.multiply(sBig).add(P.multiply(e).negate());
+  // noble's Point.multiply throws on scalar=0. Guard so adversarial sigs
+  // (s=0 or e=0) don't crash the verifier — let the identity-point check
+  // below reject them as invalid.
+  const sG = sBig === 0n ? ZERO : G.multiply(sBig);
+  const eP = e === 0n ? ZERO : P.multiply(e);
+  const R = sG.add(eP.negate());
   if (R.equals(ZERO)) return false;
   const Rb = R.toRawBytes(true);
   if (Rb[0] !== 0x02) return false;
