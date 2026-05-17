@@ -23158,11 +23158,36 @@ const shorten = (s, n = 10) => !s || s.length <= n*2 + 3 ? s : s.slice(0, n) + '
 // that pulses three trailing dots — strip your own ellipsis from the message
 // since the pseudo-element draws them. Pass `pending: false` (default) for
 // terminal text like "synced · 5 sat/vB" or "" to clear.
+// Optional mirrors: a caller wanting progress emitted on a primary slot
+// (e.g. '#holdings-status' from scanHoldings) to ALSO surface in another UI
+// slot (e.g. '#sats-status' during a Send-sats Preview) registers the extra
+// selector via addStatusMirror / removeStatusMirror. setStatus then writes
+// to every mirror in addition to the primary, so the secondary UI shows the
+// same live messages without scanHoldings having to know about it.
+const _statusMirrors = new Map(); // primarySelector -> Set<extraSelector>
+function addStatusMirror(primarySel, extraSel) {
+  if (!_statusMirrors.has(primarySel)) _statusMirrors.set(primarySel, new Set());
+  _statusMirrors.get(primarySel).add(extraSel);
+}
+function removeStatusMirror(primarySel, extraSel) {
+  const s = _statusMirrors.get(primarySel);
+  if (s) { s.delete(extraSel); if (s.size === 0) _statusMirrors.delete(primarySel); }
+}
 function setStatus(elOrSel, text, pending = false) {
   const el = typeof elOrSel === 'string' ? document.querySelector(elOrSel) : elOrSel;
-  if (!el) return;
-  el.textContent = text;
-  el.classList.toggle('live-dots', !!pending && !!text);
+  if (el) {
+    el.textContent = text;
+    el.classList.toggle('live-dots', !!pending && !!text);
+  }
+  if (typeof elOrSel === 'string') {
+    const extras = _statusMirrors.get(elOrSel);
+    if (extras) for (const extraSel of extras) {
+      const ex = document.querySelector(extraSel);
+      if (!ex) continue;
+      ex.textContent = text;
+      ex.classList.toggle('live-dots', !!pending && !!text);
+    }
+  }
 }
 
 // Reusable progress-strip markup for embedding in inline forms (mint /
@@ -30992,6 +31017,10 @@ function updateSatsRecipientHint() {
 function setupSatsSendForm() {
   // Mode toggle — clicking either pill swaps the visible form. Token form is
   // the default (active class set in HTML); sats form is hidden initially.
+  // On switch into 'sats' mode we also pre-warm the cheap-but-cold network
+  // bits (fee rate, pool registry) so Preview doesn't pay them serially
+  // after the heavy scan. Both calls are no-auth (no passkey prompt) and
+  // self-cache, so a user who never clicks Preview costs nothing extra.
   document.querySelectorAll('#send-mode-pills [data-send-mode]').forEach(btn => {
     btn.onclick = () => {
       const mode = btn.dataset.sendMode;
@@ -31000,7 +31029,11 @@ function setupSatsSendForm() {
       const satsEl = $('#send-mode-sats');
       if (tokenEl) tokenEl.style.display = mode === 'token' ? '' : 'none';
       if (satsEl) satsEl.style.display = mode === 'sats' ? '' : 'none';
-      if (mode === 'sats') refreshSatsSendBalance();
+      if (mode === 'sats') {
+        refreshSatsSendBalance();
+        getFeeRate().catch(() => {});
+        refreshPoolsIfStale().catch(() => {});
+      }
     };
   });
 
@@ -31013,6 +31046,7 @@ function setupSatsSendForm() {
     if (broadcastBtn) broadcastBtn.disabled = true;
     const preview = $('#sats-preview');
     if (preview) preview.style.display = 'none';
+    setStatus('#sats-status', '');
   };
 
   const recipInput = $('#s-recipient-addr');
@@ -31063,6 +31097,12 @@ function setupSatsSendForm() {
     btn.disabled = true; btn.textContent = 'previewing…';
     $('#sats-error').textContent = '';
     $('#sats-success').style.display = 'none';
+    // Mirror scan progress (#holdings-status emissions from _scanHoldingsImpl)
+    // into the Send-sats inline status so the user sees movement during the
+    // cold ancestor walk instead of a frozen "previewing…". Removed in the
+    // finally block regardless of outcome.
+    addStatusMirror('#holdings-status', '#sats-status');
+    setStatus('#sats-status', 'preparing', true);
     try {
       const recipient = $('#s-recipient-addr').value.trim().toLowerCase().replace(/\s/g, '');
       const decoded = decodeP2wpkhAddress(recipient);
@@ -31073,7 +31113,14 @@ function setupSatsSendForm() {
       if (!Number.isInteger(amtSats) || amtSats <= 0) throw new Error('enter a positive integer (sats)');
       if (amtSats < DUST) throw new Error(`amount must be at least ${DUST} sats`);
 
-      const holdings = await scanHoldings();
+      // Run the asset-UTXO classifier scan and the fee-rate fetch in parallel.
+      // Cold-cache, getFeeRate is ~500ms–1s and scanHoldings dominates;
+      // overlapping them eliminates the serial fee tail. Both self-cache,
+      // so the broadcast handler reuses these results.
+      const [holdings, feeRate] = await Promise.all([
+        scanHoldings(),
+        getFeeRate(),
+      ]);
       if (!holdings || !(holdings instanceof Map)) {
         throw new Error('could not classify asset UTXOs (holdings scan failed); not safe to send');
       }
@@ -31089,7 +31136,6 @@ function setupSatsSendForm() {
       });
       if (sats.length === 0) throw new Error('no plain-sats UTXOs available to send');
 
-      const feeRate = await getFeeRate();
       let picked = [], total = 0, fee = 0, hasChange = false, change = 0;
       for (let i = 0; i < sats.length; i++) {
         picked.push(sats[i]); total += sats[i].value;
@@ -31128,6 +31174,8 @@ function setupSatsSendForm() {
       $('#sats-preview').style.display = 'none';
     } finally {
       btn.disabled = false; btn.textContent = orig;
+      removeStatusMirror('#holdings-status', '#sats-status');
+      setStatus('#sats-status', '');
     }
   };
 
@@ -54952,7 +55000,7 @@ function _wireSwapTile(scope) {
       } else {
         actionBtn.disabled = false; actionBtn.style.opacity = '1';
         delete actionBtn.dataset.swapNeedsFunds;
-        actionBtn.textContent = swapLabel(`BUY ${accStrCompact} ${ticker}`);
+        actionBtn.textContent = swapLabel(`BUY ${accStrCompact} ${ticker} for ${result.totalSats.toLocaleString()} sats`);
       }
     } else {
       // SELL direction: raw is ticker amount.
@@ -55099,7 +55147,7 @@ function _wireSwapTile(scope) {
         actionBtn.textContent = 'top up sats for fees';
       } else {
         actionBtn.disabled = false; actionBtn.style.opacity = '1';
-        actionBtn.textContent = swapLabel(`SELL for ${result.totalSats.toLocaleString()} sats`);
+        actionBtn.textContent = swapLabel(`SELL ${fmtAssetAmountCompact(amt, decimals)} ${ticker} for ${result.totalSats.toLocaleString()} sats`);
       }
     }
   };
