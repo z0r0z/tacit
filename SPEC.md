@@ -1,6 +1,6 @@
 # tacit protocol specification
 
-> **Status:** v1. Wire format is envelope version `0x01`, opcodes `0x21, 0x23–0x32, 0x37, 0x38` (0x22 reserved/unused; 0x26 = `T_AXFER`, atomic OTC settlement; §5.7. 0x27 / 0x28 = `T_PETCH` / `T_PMINT`, permissionless public-mint mode; §5.8–§5.9. 0x29 / 0x2A = `T_DEPOSIT` / `T_WITHDRAW`, shielded mixer pool; §5.10–§5.11 — Groth16 verifier in production, Phase 2 trusted setup finalized 2026-05-11 with 2,227 contributions + Bitcoin-block beacon, see §10. 0x2B / 0x2C = `T_DROP` / `T_DCLAIM`, public-claim pool over existing supply with optional Merkle-eligibility gating; §5.12–§5.13. 0x2D / 0x2E / 0x2F / 0x31 = `T_LP_ADD` / `T_LP_REMOVE` / `T_SWAP_BATCH` / `T_PROTOCOL_FEE_CLAIM`, confidential block-batched AMM; §5.14–§5.16, §5.18 — Phase 2 trusted setup pending. 0x30 = `T_INTENT_ATTEST`, scope-generic preconfirmation channel attestation; §5.17 — no Groth16 / no ceremony, used by both AMM and orderbook surfaces (see `spec/amendments/SPEC-ORDERBOOK-CHANNEL-AMENDMENT.md` for orderbook scope schemas). 0x32 = `T_SWAP_VAR`, per-trade variable-amount AMM swap reusing CXFER N=2 cryptography; §5.20 — no Groth16 / no ceremony coupling, ships alongside V1 as the primary swap path; T_SWAP_BATCH (0x2F) remains the opt-in privacy mode. 0x37 = `T_AXFER_VAR`, variable-amount atomic settlement reusing CXFER N=2 cryptography for continuous partial fills; §5.7.6.1 + §5.7.9. 0x38 = `T_WRAPPER_ATTEST`, optional on-chain wrapper-issuer attestation per the §4.2 wrapper convention; §5.19). Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2). This spec is the authoritative reference for indexer implementations and audit review.
+> **Status:** v1. Wire format is envelope version `0x01`. Canonical opcode table at §1.1 enumerates every assigned, drafted, reserved, and free opcode byte across SPEC.md + all amendments in `spec/amendments/` — that table is the single source of truth before drafting a new opcode. Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2). This spec is the authoritative reference for indexer implementations and audit review.
 
 ## 1. Overview
 
@@ -11,28 +11,81 @@ Compared to other Bitcoin token meta-protocols:
 - **RGB / Taproot Assets** — privacy via off-chain proof distribution; recipient must receive validity proofs from the sender out-of-band. tacit keeps everything on chain at the cost of larger witnesses, with the benefit of trustless privkey-only recovery.
 - **Liquid Confidential Transactions** — same CT primitives, federated sidechain. tacit lives on Bitcoin proper.
 
-Operations:
-| | Op | Description |
-|---|---|---|
-| `0x21` | `CETCH` | Issue a new asset with a hidden initial supply. Optionally mintable. |
-| `0x23` | `CXFER` | Transfer (split) confidential value between parties. |
-| `0x24` | `T_MINT` | Issuer issues additional supply on a mintable asset. |
-| `0x25` | `T_BURN` | Any holder destroys part or all of their balance. Burn amount is public. |
-| `0x26` | `T_AXFER` | CXFER variant that allows non-tacit auxiliary inputs (e.g., a buyer's BTC payment) in the same Bitcoin tx, enabling atomic single-tx OTC settlement. §5.7. |
-| `0x27` | `T_PETCH` | Permissionless-mint deployment record. Declares ticker, decimals, lifetime cap, fixed per-mint amount, and a height window. Creates **no** supply UTXO; deployer receives zero tokens. §5.8. |
-| `0x28` | `T_PMINT` | Permissionless mint event against a `T_PETCH` ancestor. Anyone may broadcast. Mints exactly `mint_limit` tokens; reveals `(amount, blinding)` so any chain reader can audit cumulative supply against the cap. §5.9. |
-| `0x29` | `T_DEPOSIT` | Lock a fixed-denomination UTXO into a shielded pool — appends a Poseidon leaf commitment `Poseidon(secret, ν, denomination)` to the pool's Merkle tree. Deposit itself is publicly attributable; unlinkability comes at withdraw time (§5.11). The same opcode with `denomination = 0` is `POOL_INIT` (creates a new pool). §5.10. |
-| `0x2A` | `T_WITHDRAW` | Anonymous mint from a shielded pool. Produces a fresh tacit UTXO of the pool's denomination at vout[0], gated on a Groth16 proof of unspent leaf membership. Withdraw recipient is unlinkable to any specific deposit. §5.11. |
-| `0x2B` | `T_DROP` | Lock existing supply of an asset into a public-claim pool. Spends one or more tacit UTXOs of `asset_id` summing to `cap_amount`; declares `(per_claim, cap_amount, merkle_root)` in the envelope. Supply-preserving — the deposited tokens are not destroyed, they shift from the depositor's wallet into the pool's accounting. Creates **no** tacit UTXO of the asset. §5.12. |
-| `0x2C` | `T_DCLAIM` | Permissionless claim event against a `T_DROP` ancestor. Anyone may broadcast (subject to the parent drop's optional Merkle-eligibility gate). Mints exactly `per_claim` tokens from the drop pool to `vout[0]`; reveals `(per_claim, blinding)` so chain readers can audit cumulative claims against the cap. Claimant pays their own Bitcoin tx fee. §5.13. |
-| `0x2D` | `T_LP_ADD` | Add liquidity to a confidential constant-product AMM pool. The `variant=1` sentinel doubles as `POOL_INIT`: first-ever `T_LP_ADD` against a `(asset_A, asset_B)` pair creates the pool, sets the fee tier, mints initial LP shares to the founder, and locks `MINIMUM_LIQUIDITY` shares at the NUMS recipient. §5.14. |
-| `0x2E` | `T_LP_REMOVE` | Burn confidential LP-share UTXOs for proportional withdrawal of pool reserves. Quote-and-confirm: per-quote `min_a_out` / `min_b_out` floors are enforced against the pool reserves observed at the validating block. §5.15. |
-| `0x2F` | `T_SWAP_BATCH` | Settle N confidential swap intents against a pool at one uniform clearing price for each direction. Carries a single Groth16 proof binding (a) every intent's `min_out` / `max_in` / TTL, (b) the pool's pre-state, (c) the post-state, and (d) the per-leg net-flow commitments. §5.16. |
-| `0x30` | `T_INTENT_ATTEST` | Scope-generic preconfirmation channel attestation. Used by batched-AMM coordinators (and other scoped settlement surfaces) to pin a fee-quote / arbiter set / TTL window into the chain ahead of settlement. §5.17. |
-| `0x31` | `T_PROTOCOL_FEE_CLAIM` | Mint accrued protocol fee shares from a pool's `protocol_fee_reserve` to the configured fee recipient, decrementing the reserve and the pool's `lp_total_shares` accordingly. §5.18. |
-| `0x32` | `T_SWAP_VAR` | Per-trade variable-amount AMM swap. Single-trader path with the same curve, fee, and reserve-update math as `T_SWAP_BATCH` but no batching, no clearing price, and no Groth16 — a sigma cross-curve proof binds the trader's `delta_in_commitment` to the pool's reserve delta. §5.20. |
-| `0x37` | `T_AXFER_VAR` | Variable-amount atomic settlement: T_AXFER with a bulletproofs range proof on the buyer's auxiliary BTC leg. §5.7.6.1, §5.7.9. |
-| `0x38` | `T_WRAPPER_ATTEST` | Optional on-chain wrapper-issuer attestation pinning an external-wallet (e.g. Xverse, Leather) → tacit-key binding so wallet-portable identity becomes auditable by third parties. §5.19. |
+### 1.1 Canonical opcode table
+
+This table is the **single source of truth** for opcode-byte assignments
+across SPEC.md and every amendment in `spec/amendments/`. Before drafting
+an amendment that introduces a new opcode, scan this table for collisions
+and pick from the explicitly-listed free slots. The legend:
+
+- ✅ **shipped**: in production worker + dapp, on signet, validators enforce wire format.
+- 📝 **drafted**: spec amendment exists, may have reference impl in `tests/`; not yet enforced in production.
+- 🔒 **reserved**: opcode byte claimed by an amendment for future activation; nobody else may use it.
+- ⬜ **free**: unassigned, may be claimed by a new amendment.
+
+| Opcode | Op | Status | Source | Description |
+|---|---|---|---|---|
+| `0x21` | `T_CETCH` | ✅ shipped | SPEC §5.1 | Issue a new asset with a hidden initial supply. Optionally mintable. |
+| `0x22` | — | ⬜ free | — | Available. |
+| `0x23` | `T_CXFER` | ✅ shipped | SPEC §5.2 | Transfer (split) confidential value between parties. |
+| `0x24` | `T_MINT` | ✅ shipped | SPEC §5.3 | Issuer issues additional supply on a mintable asset. |
+| `0x25` | `T_BURN` | ✅ shipped | SPEC §5.4 | Any holder destroys part or all of their balance. Burn amount is public. |
+| `0x26` | `T_AXFER` | ✅ shipped | SPEC §5.7 | CXFER variant that allows non-tacit auxiliary inputs (e.g., a buyer's BTC payment) in the same Bitcoin tx, enabling atomic single-tx OTC settlement. |
+| `0x27` | `T_PETCH` | ✅ shipped | SPEC §5.8 | Permissionless-mint deployment record. Declares ticker, decimals, lifetime cap, fixed per-mint amount, and a height window. Creates **no** supply UTXO; deployer receives zero tokens. |
+| `0x28` | `T_PMINT` | ✅ shipped | SPEC §5.9 | Permissionless mint event against a `T_PETCH` ancestor. Anyone may broadcast. Mints exactly `mint_limit` tokens; reveals `(amount, blinding)` so any chain reader can audit cumulative supply against the cap. |
+| `0x29` | `T_DEPOSIT` | ✅ shipped | SPEC §5.10 | Lock a fixed-denomination UTXO into a shielded pool — appends a Poseidon leaf commitment `Poseidon(secret, ν, denomination)` to the pool's Merkle tree. Same opcode with `denomination = 0` is `POOL_INIT` (creates a new pool). |
+| `0x2A` | `T_WITHDRAW` | ✅ shipped | SPEC §5.11 | Anonymous mint from a shielded pool. Produces a fresh tacit UTXO of the pool's denomination at vout[0], gated on a Groth16 proof of unspent leaf membership. Withdraw recipient is unlinkable to any specific deposit. |
+| `0x2B` | `T_DROP` | ✅ shipped | SPEC §5.12 | Lock existing supply of an asset into a public-claim pool. Spends one or more tacit UTXOs of `asset_id` summing to `cap_amount`; declares `(per_claim, cap_amount, merkle_root)` in the envelope. Supply-preserving. |
+| `0x2C` | `T_DCLAIM` | ✅ shipped | SPEC §5.13 | Permissionless claim event against a `T_DROP` ancestor. Anyone may broadcast (subject to the parent drop's optional Merkle-eligibility gate). Mints exactly `per_claim` tokens from the drop pool. |
+| `0x2D` | `T_LP_ADD` | 📝 drafted | `AMM.md` §5.14 | Add liquidity to a confidential constant-product AMM pool. The `variant=1` sentinel doubles as `POOL_INIT`. |
+| `0x2E` | `T_LP_REMOVE` | 📝 drafted | `AMM.md` §5.15 | Burn confidential LP-share UTXOs for proportional withdrawal of pool reserves. |
+| `0x2F` | `T_SWAP_BATCH` | 📝 drafted | `AMM.md` §5.16 | Settle N confidential swap intents against a pool at one uniform clearing price per direction. Single Groth16 proof. |
+| `0x30` | `T_INTENT_ATTEST` | 📝 drafted | `AMM.md` §5.17 | Scope-generic preconfirmation channel attestation. Used by batched-AMM coordinators and other scoped settlement surfaces. No Groth16 / no ceremony. |
+| `0x31` | `T_PROTOCOL_FEE_CLAIM` | 📝 drafted | `AMM.md` §5.18 | Mint accrued protocol fee shares from a pool's `protocol_fee_reserve` to the configured fee recipient. |
+| `0x32` | `T_SWAP_VAR` | 📝 drafted | `SPEC-SWAP-VAR-AMENDMENT.md` §5.20 | Per-trade variable-amount AMM swap. No batching, no clearing price, no Groth16 — sigma cross-curve proof binds trader's `delta_in_commitment` to the pool's reserve delta. |
+| `0x33` | `T_LP_ADD_RANGE` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP add (V2). |
+| `0x34` | `T_LP_REMOVE_RANGE` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP remove (V2). |
+| `0x35` | `T_LP_REPOSITION` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP reposition (V2). |
+| `0x36` | `T_LP_MIGRATE_V` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP version migration (V2). |
+| `0x37` | `T_AXFER_VAR` | ✅ shipped | SPEC §5.7.6.1, §5.7.9 | Variable-amount atomic settlement: T_AXFER with a bulletproofs range proof on the buyer's auxiliary BTC leg. |
+| `0x38` | `T_WRAPPER_ATTEST` | ✅ shipped | SPEC §5.19 | Optional on-chain wrapper-issuer attestation pinning an external-wallet → tacit-key binding so wallet-portable identity becomes auditable by third parties. |
+| `0x39` | `T_TRADE_BATCH` | 📝 drafted | `SPEC-TRADE-BATCH-AMENDMENT.md` §5.20 | Atomic cross-surface settlement: settles N AMM intents + K orderbook bilateral pairs in one Bitcoin tx. (Reassigned from 0x43 to fix collision with `T_SLOT_MINT`.) |
+| `0x3A` | `T_RANGE_ATTEST` | 📝 drafted | `SPEC-RANGE-ATTEST-AMENDMENT.md` §5.21 | Persistent on-chain range-attestation envelope binding a holder pubkey to a `commitment ≥ K` claim. Power-user feature (KYC tier proofs, reputation, governance weight). (Reassigned from 0x44 to fix collision with `T_SLOT_BURN`.) |
+| `0x3B` – `0x42` | — | ⬜ free | — | Available. Previously reserved by retired cUSD-CDP / FROST oracle amendments — those reservations are released per `SPEC-CUSD-TAC-AMENDMENT.md`. |
+| `0x43` | `T_SLOT_MINT` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.21 | Self-custody-slot wrapper atomic mint. Locks BTC at `K_btc = r_leaf · G_secp256k1`. |
+| `0x44` | `T_SLOT_BURN` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.22 | Self-custody-slot wrapper atomic redeem. |
+| `0x45` | `T_SLOT_ROTATE` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.23 | Self-custody-slot wrapper atomic transfer (key rotation). |
+| `0x46` | `T_SLOT_SPLIT` | ✅ shipped | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.24 | Atomic 1→N slot split, ΣD_new = D_old. |
+| `0x47` | `T_SLOT_MERGE` | ✅ shipped | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.25 | Atomic N→1 slot merge, ΣD_old ≥ D_new. |
+| `0x48` | `T_SLOT_NOTE` | 🔒 reserved | `SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT.md` §5.26 | Encrypted slot note attachment. |
+| `0x49` | `T_CBTC_TAC_DEPOSIT` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.36 | LP-shaped mint: cBTC.zk slot + TAC → cBTC.tac. |
+| `0x4A` | `T_CBTC_TAC_WITHDRAW` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.37 | LP-shaped burn: cBTC.tac → cBTC.zk slot + TAC. |
+| `0x4B` | `T_CBTC_TAC_FORCE_CLOSE` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.38 | Permissionless liquidation when bond ratio < liquidation threshold. |
+| `0x4C` | `T_SHARE_SLASH_CLAIM` | ✅ shipped | `SPEC-CBTC-TAC-AMENDMENT.md` §5.39.4 | Optional pooled-insurance claim by a cBTC.tac holder. |
+| `0x4D` | `T_SLOT_FRACTIONALIZE` | 🔒 reserved | `SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md` §5.25 | Slot → standard tacit shares. Reserved for future activation. |
+| `0x4E` | `T_SLOT_RECONSOLIDATE` | 🔒 reserved | `SPEC-CBTC-ZK-AMOUNT-AMENDMENT.md` §5.26 | Standard tacit shares → slot. Reserved for future activation. |
+| `0x4F` | — | ⬜ free | — | Available. |
+| `0x50` | `T_GOV_PROPOSAL` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO proposal. |
+| `0x51` | `T_GOV_VOTE` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO vote. |
+| `0x52` | `T_GOV_VETO` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO veto. |
+| `0x53` | `T_GOV_EXECUTE` | 📝 drafted | `SPEC-GOVERNANCE-AMENDMENT.md` | TAC DAO execute. |
+| `0x54` | `T_CUSD_TAC_DEPOSIT` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.3 | Open cUSD.tac position. |
+| `0x55` | `T_CUSD_TAC_WITHDRAW` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.4 | Close cUSD.tac position. |
+| `0x56` | `T_CUSD_TAC_FORCE_CLOSE` | 📝 drafted | `SPEC-CUSD-TAC-AMENDMENT.md` §6.5 | Permissionless cUSD.tac liquidation. |
+| `0x57` – `0xFF` | — | ⬜ free | — | Available. |
+
+**Process for claiming a new opcode**:
+1. Scan the table above for free slots (⬜ rows).
+2. Prefer placement adjacent to related opcodes (e.g., a new AMM op near `0x2D`-`0x32`, a new slot op near `0x43`-`0x47`).
+3. Update this table in the same commit that introduces the amendment.
+4. Update `worker/src/index.js`, `dapp/tacit.js`, and any reference impl in `tests/` to match.
+5. Cross-implementation parity is enforced by `tests/cross-impl-vectors-gen.mjs` + `tests/amm-spec-conformance.test.mjs` — opcode bytes appearing in pre-sig digests must agree with this table.
+
+### 1.2 Legacy descriptive paragraph
+
+(Retained for historical context; superseded by §1.1 above.)
+
+Operations summary: tacit envelope opcodes span `0x21, 0x23–0x32, 0x37, 0x38` for SPEC.md-merged behavior; `0x39, 0x3A` for drafted V1.x amendments (TRADE_BATCH, RANGE_ATTEST); `0x43–0x4C` for the shipped slot + cBTC.tac families; and `0x50–0x56` for drafted governance + cUSD.tac. Runs on signet + mainnet — the dApp's in-page privkey (auto-generated, imported, or locally bound to an external wallet's address) is what signs every protocol op (see §2).
 
 ## 2. Trust model
 
