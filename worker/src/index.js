@@ -1212,6 +1212,125 @@ async function ammPoolPut(env, network, poolIdHex, value) {
   await env.REGISTRY_KV.put(ammPoolKey(network, poolIdHex), JSON.stringify(value));
 }
 
+// ============== T_SWAP_VAR (SPEC-SWAP-VAR-AMENDMENT §5.16.3) ==============
+const _SWAP_VAR_VERSION = 0x01;
+
+function decodeTSwapVarPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 298) return null;
+  let p = 0;
+  const version = payload[p]; p += 1;
+  if (version !== _SWAP_VAR_VERSION) return null;
+  const opcode = payload[p]; p += 1;
+  if (opcode !== T_SWAP_VAR) return null;
+  const poolId = payload.slice(p, p + 32); p += 32;
+  const direction = payload[p]; p += 1;
+  if (direction !== 0 && direction !== 1) return null;
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  function readU64() {
+    const lo = BigInt(dv.getUint32(p, true));
+    const hi = BigInt(dv.getUint32(p + 4, true));
+    p += 8;
+    return (hi << 32n) | lo;
+  }
+  const R_A_pre = readU64();
+  const R_B_pre = readU64();
+  const deltaIn = readU64();
+  const deltaInMin = readU64();
+  const deltaInMax = readU64();
+  const deltaOut = readU64();
+  const minOut = readU64();
+  const tipAmount = readU64();
+  const tipAsset = payload[p]; p += 1;
+  if (tipAsset !== 0 && tipAsset !== 1) return null;
+  const expiryHeight = dv.getUint32(p, true); p += 4;
+  const traderPubkey = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(traderPubkey)); } catch { return null; }
+  const cInSecp = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(cInSecp)); } catch { return null; }
+  const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
+  let isSentinel = true;
+  for (let i = 0; i < 33; i++) if (cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
+  if (!isSentinel) {
+    try { compressedPointFromHex(bytesToHex(cChangeOrSentinel)); } catch { return null; }
+  }
+  const cReceiptSecp = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(cReceiptSecp)); } catch { return null; }
+  const rReceipt = payload.slice(p, p + 32); p += 32;
+  if (p + 2 > payload.length) return null;
+  const rpLen = dv.getUint16(p, true); p += 2;
+  if (rpLen === 0) return null;
+  if (p + rpLen + 64 + 64 > payload.length) return null;
+  const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const intentSig = payload.slice(p, p + 64); p += 64;
+  if (p !== payload.length) return null;
+  return {
+    kind: 'swap_var',
+    version, opcode,
+    pool_id: bytesToHex(poolId),
+    direction,
+    R_A_pre: R_A_pre.toString(),
+    R_B_pre: R_B_pre.toString(),
+    delta_in: deltaIn.toString(),
+    delta_in_min: deltaInMin.toString(),
+    delta_in_max: deltaInMax.toString(),
+    delta_out: deltaOut.toString(),
+    min_out: minOut.toString(),
+    tip_amount: tipAmount.toString(),
+    tip_asset: tipAsset,
+    expiry_height: expiryHeight,
+    trader_pubkey: bytesToHex(traderPubkey),
+    c_in_secp: bytesToHex(cInSecp),
+    c_change_or_sentinel: bytesToHex(cChangeOrSentinel),
+    c_receipt_secp: bytesToHex(cReceiptSecp),
+    r_receipt: bytesToHex(rReceipt),
+    range_proof: bytesToHex(rangeProof),
+    kernel_sig: bytesToHex(kernelSig),
+    intent_sig: bytesToHex(intentSig),
+  };
+}
+
+// x · y = k constant-product curve with fee_bps deducted from delta_in.
+// Floor delta_out. Must agree byte-for-byte with tests/swap-var.mjs.
+function ammCurveDeltaOut(direction, R_A_pre, R_B_pre, deltaIn, feeBps) {
+  const ra = BigInt(R_A_pre);
+  const rb = BigInt(R_B_pre);
+  const din = BigInt(deltaIn);
+  const fbps = BigInt(feeBps);
+  if (ra <= 0n || rb <= 0n) throw new Error('reserves must be > 0');
+  if (din <= 0n) throw new Error('delta_in must be > 0');
+  if (fbps < 0n || fbps > BigInt(AMM_FEE_BPS_MAX)) throw new Error('fee_bps out of range');
+  if (ra >= 1n << 64n || rb >= 1n << 64n || din >= 1n << 64n) throw new Error('values must fit u64');
+  const gNum = 10000n - fbps;
+  const gDen = 10000n;
+  let num, den, deltaOut, raPost, rbPost;
+  if (direction === 0) {
+    num = rb * gNum * din;
+    den = ra * gDen + gNum * din;
+    deltaOut = num / den;
+    raPost = ra + din;
+    rbPost = rb - deltaOut;
+  } else if (direction === 1) {
+    num = ra * gNum * din;
+    den = rb * gDen + gNum * din;
+    deltaOut = num / den;
+    raPost = ra - deltaOut;
+    rbPost = rb + din;
+  } else {
+    throw new Error('direction must be 0 or 1');
+  }
+  if (deltaOut >= 1n << 64n) throw new Error('delta_out overflows u64');
+  if (raPost <= 0n || rbPost <= 0n) throw new Error('post-reserve non-positive');
+  if (raPost >= 1n << 64n) throw new Error('post-reserve_A overflows u64');
+  if (rbPost >= 1n << 64n) throw new Error('post-reserve_B overflows u64');
+  return { deltaOut, raPost, rbPost };
+}
+
+function ammSwapVarEnvelopeHash(payload) {
+  return sha256(payload);
+}
+
 // ============== T_LP_ADD STRUCTURAL DECODER (SPEC AMM.md §"Envelope") ==============
 //
 // Variant 1 (POOL_INIT) carries: assets, deltas, share amount + commits,
@@ -5442,7 +5561,7 @@ function decodeTCbtcTacDepositPayload(payload) {
 
 function _computeCbtcTacWithdrawBindHash({
   networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
-  burnAmount, insuranceClaimTAC,
+  burnAmount, insuranceClaimTAC, bondReturnCommit,
 }) {
   const burnAmtLE = new Uint8Array(8);
   { const v = new DataView(burnAmtLE.buffer); const b = BigInt(burnAmount);
@@ -5453,7 +5572,7 @@ function _computeCbtcTacWithdrawBindHash({
   return sha256(concatBytes(
     _CBTC_TAC_WITHDRAW_DOMAIN, new Uint8Array([networkTag & 0xff]),
     targetLeafHash, new Uint8Array([burnCount & 0xff]),
-    ...burnNullifiers, ...burnCommits, burnAmtLE, claimLE,
+    ...burnNullifiers, ...burnCommits, burnAmtLE, claimLE, bondReturnCommit,
   ));
 }
 
@@ -5467,7 +5586,8 @@ function decodeTCbtcTacWithdrawPayload(payload) {
   const targetLeafHash = payload.slice(p, p + 32); p += 32;
   const burnCount = payload[p]; p += 1;
   if (burnCount < 1 || burnCount > 16) return null;
-  if (payload.length < p + burnCount * 32 + burnCount * 33 + 8 + 2 + 8 + 32 + 2) return null;
+  // header tail now includes bond_return_commit (33B) before bind_hash
+  if (payload.length < p + burnCount * 32 + burnCount * 33 + 8 + 2 + 8 + 33 + 32 + 2) return null;
   const burnNullifiers = [];
   for (let i = 0; i < burnCount; i++) {
     burnNullifiers.push(payload.slice(p, p + 32));
@@ -5487,12 +5607,14 @@ function decodeTCbtcTacWithdrawPayload(payload) {
   const bpLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
   if (bpLen === 0) return null;
-  if (payload.length < p + bpLen + 8 + 32 + 2) return null;
+  if (payload.length < p + bpLen + 8 + 33 + 32 + 2) return null;
   const burnBalanceProof = payload.slice(p, p + bpLen); p += bpLen;
   const claimView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const insuranceClaimTAC = (BigInt(claimView.getUint32(4, true)) << 32n) | BigInt(claimView.getUint32(0, true));
   p += 8;
   if (insuranceClaimTAC >= (1n << BigInt(N_BITS))) return null;
+  const bondReturnCommit = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(bondReturnCommit)); } catch { return null; }
   const bindHashBytes = payload.slice(p, p + 32); p += 32;
   const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
@@ -5501,7 +5623,7 @@ function decodeTCbtcTacWithdrawPayload(payload) {
   const proof = payload.slice(p, p + proofLen);
   const expectedBind = _computeCbtcTacWithdrawBindHash({
     networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
-    burnAmount, insuranceClaimTAC,
+    burnAmount, insuranceClaimTAC, bondReturnCommit,
   });
   for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHashBytes[i]) return null;
   return {
@@ -5514,6 +5636,7 @@ function decodeTCbtcTacWithdrawPayload(payload) {
     burn_amount: burnAmount.toString(),
     insurance_claim_tac: insuranceClaimTAC.toString(),
     burn_balance_proof: bytesToHex(burnBalanceProof),
+    bond_return_commit: bytesToHex(bondReturnCommit),
     bind_hash: bytesToHex(bindHashBytes),
     proof: bytesToHex(proof),
   };
@@ -8586,6 +8709,25 @@ async function commitmentForUtxo(env, txidHex, vout, network) {
     return {
       commitment: dep.mint_recipient_commit,
       asset_id: ctacVariantAssetId(dep.slot_denom_sats),
+    };
+  }
+  if (decoded.opcode === T_CBTC_TAC_WITHDRAW) {
+    // The withdraw reveal tx layout (SPEC-CBTC-TAC-AMENDMENT §5.37):
+    //   vout[0] = BTC payout to recipient (slot_denom_sats sats)
+    //   vout[1] = TAC bond return UTXO at depositor_recovery_pk (DUST sats)
+    // commitmentForUtxo doesn't resolve plain-sats outputs, so vout[0]
+    // is out of scope. vout[1] is the bond-return tacit-asset UTXO —
+    // commit comes from the envelope's bond_return_commit; asset_id is
+    // the TAC asset_id, stashed in the position record at deposit time.
+    if (vout !== 1) throw new Error('T_CBTC_TAC_WITHDRAW bond return UTXO lives at vout 1 only');
+    const wd = decodeTCbtcTacWithdrawPayload(decoded.payload);
+    if (!wd) throw new Error('invalid T_CBTC_TAC_WITHDRAW payload');
+    const position = await ctacGetPosition(env, network, wd.target_leaf_hash);
+    if (!position) throw new Error('T_CBTC_TAC_WITHDRAW position not found');
+    if (!position.tac_asset_id) throw new Error('T_CBTC_TAC_WITHDRAW position missing tac_asset_id');
+    return {
+      commitment: hexToBytes(wd.bond_return_commit),
+      asset_id: position.tac_asset_id,
     };
   }
   throw new Error('unsupported envelope opcode');
@@ -13336,6 +13478,20 @@ async function scanForEtches(env, network) {
         // responsibility (verified at sig + spend time). Slot info is
         // copied from the leaf-lookup index so SLASH_DETECTED can probe
         // the slot's K_btc UTXO without re-resolving.
+        //
+        // Resolve the TAC asset_id by dereferencing the bond_source_outpoint.
+        // Stashed in the position so the WITHDRAW commitmentForUtxo path
+        // (vout[1] bond return) can return the right asset_id without
+        // re-resolving. Soft-fail: if the dereference fails the deposit still
+        // confirms — bond return will fall back to manual claim flow.
+        let tacAssetId = null;
+        try {
+          const bondOp = hexToBytes(dep.bond_source_outpoint);
+          const bondTxid = bytesToHex(bondOp.slice(0, 32));
+          const bondVout = new DataView(bondOp.buffer, bondOp.byteOffset + 32, 4).getUint32(0, true);
+          const bondInfo = await commitmentForUtxo(env, bondTxid, bondVout, network);
+          tacAssetId = bondInfo.asset_id;
+        } catch { /* leave null */ }
         const position = {
           state: 'active',
           target_leaf_hash: dep.target_leaf_hash,
@@ -13345,6 +13501,8 @@ async function scanForEtches(env, network) {
           slot_mint_txid: slotInfo.mint_txid,
           mint_amount: dep.mint_amount,
           bond_amount_tac: dep.bond_amount_tac,
+          tac_asset_id: tacAssetId,
+          bond_source_outpoint: dep.bond_source_outpoint,
           depositor_recovery_pk: dep.depositor_recovery_pk,
           mint_recipient_commit: dep.mint_recipient_commit,
           initial_twap: twap.toString(),
@@ -13618,11 +13776,104 @@ async function scanForEtches(env, network) {
         // continue past unknown structural variants in this foundation
         // build.
       } else if (decoded.opcode === T_SWAP_VAR) {
-        // SPEC-SWAP-VAR-AMENDMENT §5.16.3. v1 FOUNDATION ONLY: structural
-        // recognition; no state update until full validator lands.
-        // TODO(next-session): port tests/swap-var.mjs validateSwapVar;
-        // verify pool state + curve recompute + slippage + range proof
-        // + kernel sig + intent sig; update reserves.
+        // SPEC-SWAP-VAR-AMENDMENT §5.16.3. Per-trade variable-amount AMM
+        // swap. This branch verifies the arithmetic-load-bearing gates:
+        //
+        //   1. OP_RETURN at tx.vout[0] equals SHA256(envelope_payload)
+        //      — closes the "envelope claimed but tx didn't bind it"
+        //      hole.
+        //   2. Pool exists at envelope.pool_id and is in a tradable
+        //      state. We REQUIRE validation tag 'sigs-and-arithmetic-
+        //      verified' or stronger; pools tagged 'structural-only'
+        //      are refused (this would be a foundation-era pool that
+        //      hasn't been re-validated).
+        //   3. Reserves freshness: R_A_pre / R_B_pre in envelope match
+        //      the pool's current state. Prevents stale-quote replay.
+        //   4. Range: delta_in_min ≤ delta_in ≤ delta_in_max.
+        //   5. Expiry: confirm_height < expiry_height.
+        //   6. Curve recompute: delta_out matches x·y=k formula with
+        //      fee_bps deducted (ammCurveDeltaOut). Strict equality.
+        //   7. Slippage: delta_out ≥ min_out.
+        //   8. Post-reserve non-negativity (curve invariant).
+        //
+        // Deferred to follow-up sessions (TODO):
+        //   - Trader's BIP-340 intent_sig over intent_msg.
+        //   - Settler's BIP-340 kernel_sig over kernel_msg (closes the
+        //     trader's asset-A side via excess scalar).
+        //   - r_receipt opening check (binds C_receipt_secp to delta_out;
+        //     closes 2026-05-15 inflation gap).
+        //   - C_in_secp matches on-chain Pedersen commit at vin[1]
+        //     (input-side inflation defense).
+        //   - Aggregated bulletproof over (C_change, C_receipt) range.
+        //
+        // Pool state IS updated atomically after all gates pass; failure
+        // at any gate `continue`s without state change.
+        const sv = decodeTSwapVarPayload(decoded.payload);
+        if (!sv) continue;
+
+        // OP_RETURN binding check.
+        const vout0 = tx.vout?.[0];
+        if (!vout0 || typeof vout0.scriptpubkey !== 'string') continue;
+        const opReturnSpk = vout0.scriptpubkey.toLowerCase();
+        // OP_RETURN OP_PUSHBYTES_32 <hash>  = 6a 20 <32 bytes> = 34 bytes = 68 hex chars
+        if (opReturnSpk.length !== 68 || !opReturnSpk.startsWith('6a20')) continue;
+        const opReturnHash = hexToBytes(opReturnSpk.slice(4));
+        const expectedHash = ammSwapVarEnvelopeHash(decoded.payload);
+        let opReturnOk = true;
+        for (let i = 0; i < 32; i++) {
+          if (opReturnHash[i] !== expectedHash[i]) { opReturnOk = false; break; }
+        }
+        if (!opReturnOk) continue;
+
+        // Pool lookup.
+        const pool = await ammPoolGet(env, network, sv.pool_id);
+        if (!pool) continue;
+        if (pool.validation !== 'sigs-and-arithmetic-verified'
+            && pool.validation !== 'verified') continue;
+
+        // Reserves freshness: trader's view MUST match the pool's
+        // running state immediately before this tx. This is the
+        // critical anti-stale-quote gate — without it, a trader could
+        // submit an old (high reserve_A) quote against a current
+        // (low reserve_A) pool and drain the difference.
+        if (sv.R_A_pre !== pool.reserve_a) continue;
+        if (sv.R_B_pre !== pool.reserve_b) continue;
+
+        // Range checks.
+        const deltaInBig = BigInt(sv.delta_in);
+        const deltaInMinBig = BigInt(sv.delta_in_min);
+        const deltaInMaxBig = BigInt(sv.delta_in_max);
+        if (deltaInBig === 0n) continue;
+        if (deltaInBig < deltaInMinBig || deltaInBig > deltaInMaxBig) continue;
+
+        // Expiry.
+        if (h >= sv.expiry_height) continue;
+
+        // Curve recompute.
+        let curve;
+        try {
+          curve = ammCurveDeltaOut(
+            sv.direction, sv.R_A_pre, sv.R_B_pre, sv.delta_in, pool.fee_bps,
+          );
+        } catch { continue; }
+        if (curve.deltaOut !== BigInt(sv.delta_out)) continue;
+        if (curve.deltaOut < BigInt(sv.min_out)) continue;  // slippage
+
+        // Update pool reserves. The cBTC.tac-style supply tracking +
+        // trader's asset-A consumption are handled by the standard
+        // asset-UTXO machinery when the validator processes the tx's
+        // input spends. The pool record only tracks aggregate reserves.
+        const newPool = {
+          ...pool,
+          reserve_a: curve.raPost.toString(),
+          reserve_b: curve.rbPost.toString(),
+          k_last: (curve.raPost * curve.rbPost).toString(),
+          last_swap_txid: tx.txid,
+          last_swap_height: h,
+          last_swap_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+        };
+        await ammPoolPut(env, network, sv.pool_id, newPool);
+        found++;
       } else if (decoded.opcode === T_DROP) {
         // SPEC §5.12. Two payload shapes share opcode 0x2B:
         //   - Standard (per_claim > 0): registers a new claim pool keyed by
