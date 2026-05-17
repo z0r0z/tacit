@@ -47742,13 +47742,20 @@ function applyMarketFilters() {
   // (Buy / Cancel / etc.) take precedence — closest('button') check
   // skips the handler when the click came from one.
   grid.querySelectorAll('.market-listing-tile[data-fill-aid]').forEach(tile => {
-    tile.onclick = (ev) => {
-      if (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary')) return;
+    // A11y: orderbook tiles are <div>s, not <button>s. Adding tabindex
+    // + role="button" + Enter/Space handling makes them keyboard-
+    // navigable for users who tab through the page. Without this,
+    // keyboard / screen-reader users can't trigger the click-to-prime
+    // affordance at all.
+    if (!tile.hasAttribute('tabindex')) tile.setAttribute('tabindex', '0');
+    if (!tile.hasAttribute('role')) tile.setAttribute('role', 'button');
+    const _fire = (ev) => {
+      if (ev.target && (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary'))) return;
       const _u = parseFloat(tile.dataset.fillUnit || '');
       // Brief click acknowledgement on the row itself. The Swap-tile
       // pulse is far away (above the fold after scroll); without a
       // local visual the user can't tell their click registered.
-      // CSS class drives a 300ms background-flash; remove on a timer
+      // CSS class drives a 420ms background-flash; remove on a timer
       // so back-to-back clicks on the same row re-fire cleanly.
       try {
         if (tile._clickAckTimer) clearTimeout(tile._clickAckTimer);
@@ -47767,6 +47774,13 @@ function applyMarketFilters() {
         ticker: tile.dataset.fillTicker || '',
         targetUnit: Number.isFinite(_u) && _u > 0 ? _u : null,
       });
+    };
+    tile.onclick = _fire;
+    tile.onkeydown = (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        _fire(ev);
+      }
     };
   });
   // Quick-buy CTA above the grid uses the same take-preauth / claim-intent
@@ -53439,8 +53453,13 @@ async function populateMarketBidsLadder(scope, asset) {
     // accurate even as the row's attributes refresh across re-renders.
     if (row.dataset.fillAid && !row.dataset.bidRowClickBound) {
       row.dataset.bidRowClickBound = '1';
-      row.addEventListener('click', (ev) => {
-        if (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary')) return;
+      // A11y: bid rows are <div>s, not <button>s. Adding tabindex +
+      // role="button" + Enter/Space handling lets keyboard users
+      // trigger the click-to-prime affordance.
+      if (!row.hasAttribute('tabindex')) row.setAttribute('tabindex', '0');
+      if (!row.hasAttribute('role')) row.setAttribute('role', 'button');
+      const _fire = (ev) => {
+        if (ev.target && (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary'))) return;
         // Brief click acknowledgement on the row itself. The Swap-tile
         // pulse fires up top after scroll; without a local ack the
         // user can't tell their click registered before the page jumps.
@@ -53464,6 +53483,13 @@ async function populateMarketBidsLadder(scope, asset) {
           ticker: row.dataset.fillTicker || '',
           targetUnit: Number.isFinite(_u) && _u > 0 ? _u : null,
         });
+      };
+      row.addEventListener('click', _fire);
+      row.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          _fire(ev);
+        }
       });
     }
     _bindMarketLiveCleanup(row);
