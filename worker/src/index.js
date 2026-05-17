@@ -15311,6 +15311,53 @@ export default {
       }
     }
 
+    // AMM pool lookup. Returns the pool record (asset pair, reserves,
+    // fee_bps, validation tag, etc.) at /amm/pool/<pool_id_hex>.
+    //
+    // Used by:
+    //   - tests/amm-smoke-signet.mjs (verifies POOL_INIT registered)
+    //   - dapp swap path (fetches current reserves before constructing
+    //     T_SWAP_VAR envelope with R_A_pre / R_B_pre fields)
+    //   - cross-pool router + integrators (refuse pools at validation
+    //     tags < 'verified' for high-value flows)
+    if (url.pathname.startsWith('/amm/pool/') && req.method === 'GET') {
+      const tail = url.pathname.slice('/amm/pool/'.length);
+      const poolIdHex = tail.toLowerCase().replace(/\/$/, '');
+      if (!/^[0-9a-f]{64}$/.test(poolIdHex)) {
+        return jsonResponse({ error: 'pool_id must be 64 hex chars' }, 400, cors);
+      }
+      try {
+        const pool = await ammPoolGet(env, network, poolIdHex);
+        if (!pool) {
+          return jsonResponse({ error: 'pool not found', pool_id: poolIdHex, network }, 404, cors);
+        }
+        return jsonResponse(pool, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'amm pool lookup failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
+    // List all AMM pools on a network (paginated by KV list cursor).
+    // Returns { pools: [...], cursor: '<next>' }.
+    if (url.pathname === '/amm/pools' && req.method === 'GET') {
+      const cursor = url.searchParams.get('cursor') || undefined;
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10) || 100, 500);
+      try {
+        const prefix = network === 'signet' ? 'ammpool:' : `ammpool:${network}:`;
+        const list = await env.REGISTRY_KV.list({ prefix, limit, cursor });
+        const pools = [];
+        for (const k of list.keys) {
+          const v = await env.REGISTRY_KV.get(k.name, 'json');
+          if (v) pools.push(v);
+        }
+        return jsonResponse({
+          pools, cursor: list.list_complete ? null : (list.cursor || null),
+        }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'amm pools list failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
     if (url.pathname === '/slot-rotates' && req.method === 'GET') {
       const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
