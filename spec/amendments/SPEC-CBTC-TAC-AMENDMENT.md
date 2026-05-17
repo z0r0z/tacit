@@ -394,10 +394,21 @@ T_CBTC_TAC_WITHDRAW
    burn_balance_proof      VAR bytes (bulletproof: Σ amounts = burn_amount)
    insurance_claim_TAC_LE  8 bytes  (u64; optional pooled insurance claim
                                      for the burner; per §5.39.3)
+   bond_return_commit      33 bytes (compressed Pedersen point;
+                                     names the TAC bond-return UTXO that
+                                     materializes at reveal_tx.vout[1])
    bind_hash               32 bytes
    proof_length            2 bytes
    groth16_proof           VAR bytes (asset-spend over the cBTC.tac UTXOs)
 ```
+
+**Bond return.** The reveal Bitcoin tx MUST produce a TAC-asset UTXO at
+`vout[1]` that opens to `Pedersen(position.bond_amount_TAC, freshBlinding)`
+and matches `bond_return_commit`. The output script is `P2WPKH(position.depositor_recovery_pk)` at `DUST` sats — standard tacit-asset
+convention. The depositor stores `freshBlinding` locally so the recovered
+bond UTXO is spendable via the standard T_AXFER_VAR / CXFER path. Indexers
+recognize the UTXO via `commitmentForUtxo` returning
+`(bond_return_commit, position.tac_asset_id)`.
 
 The reveal Bitcoin transaction MUST simultaneously spend the slot's
 `K_btc` UTXO (the depositor signs under their `r_btc`). The
@@ -485,6 +496,7 @@ bind_hash = SHA256(
   || burn_commits
   || burn_amount_LE
   || insurance_claim_TAC_LE
+  || bond_return_commit
 )
 ```
 

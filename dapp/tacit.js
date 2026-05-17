@@ -7335,7 +7335,7 @@ function decodeTCbtcTacDepositPayload(payload) {
 // SPEC §5.37.3 bind_hash.
 function computeCbtcTacWithdrawBindHash({
   networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
-  burnAmount, insuranceClaimTAC,
+  burnAmount, insuranceClaimTAC, bondReturnCommit,
 }) {
   const burnAmtLE = new Uint8Array(8);
   { const v = new DataView(burnAmtLE.buffer); const b = BigInt(burnAmount);
@@ -7346,14 +7346,17 @@ function computeCbtcTacWithdrawBindHash({
   return sha256(concatBytes(
     CBTC_TAC_WITHDRAW_DOMAIN, new Uint8Array([networkTag & 0xff]),
     targetLeafHash, new Uint8Array([burnCount & 0xff]),
-    ...burnNullifiers, ...burnCommits, burnAmtLE, claimLE,
+    ...burnNullifiers, ...burnCommits, burnAmtLE, claimLE, bondReturnCommit,
   ));
 }
 
 // SPEC §5.37.1 wire format. M cBTC.tac UTXOs are burned; M ∈ [1, 16].
+// bond_return_commit (33B) names the Pedersen commit of the TAC bond
+// returned at vout[1] of the reveal tx (SPEC §5.37.3 — bond physical return).
 function encodeTCbtcTacWithdrawPayload({
   networkTag, targetLeafHash, burnNullifiers, burnCommits,
-  burnAmount, insuranceClaimTAC, burnBalanceProof, bindHash, proof,
+  burnAmount, insuranceClaimTAC, burnBalanceProof, bondReturnCommit,
+  bindHash, proof,
 }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (targetLeafHash.length !== 32) throw new Error('target_leaf_hash 32 bytes');
@@ -7367,6 +7370,9 @@ function encodeTCbtcTacWithdrawPayload({
   for (const c of burnCommits) if (!(c instanceof Uint8Array) || c.length !== 33) throw new Error('each burn_commit 33 bytes');
   if (!(burnBalanceProof instanceof Uint8Array) || burnBalanceProof.length === 0 || burnBalanceProof.length > 0xffff) {
     throw new Error('burn_balance_proof len 1..65535');
+  }
+  if (!(bondReturnCommit instanceof Uint8Array) || bondReturnCommit.length !== 33) {
+    throw new Error('bond_return_commit must be 33-byte compressed point');
   }
   if (bindHash.length !== 32) throw new Error('bind_hash 32 bytes');
   if (!(proof instanceof Uint8Array) || proof.length === 0 || proof.length > 0xffff) {
@@ -7392,7 +7398,7 @@ function encodeTCbtcTacWithdrawPayload({
     new Uint8Array([burnNullifiers.length & 0xff]),
     ...burnNullifiers, ...burnCommits,
     burnAmtLE, bpLen, burnBalanceProof, claimLE,
-    bindHash, proofLen, proof,
+    bondReturnCommit, bindHash, proofLen, proof,
   );
 }
 
@@ -7408,8 +7414,8 @@ function decodeTCbtcTacWithdrawPayload(payload) {
   const burnCount = payload[p]; p += 1;
   if (burnCount < 1 || burnCount > 16) return null;
   // After count: M*32 nullifiers + M*33 commits + 8 burnAmt + 2 bpLen + bpVar
-  //              + 8 claim + 32 bind + 2 proofLen + proofVar
-  const fixedAfterArrays = 8 + 2 + 8 + 32 + 2;
+  //              + 8 claim + 33 bondReturnCommit + 32 bind + 2 proofLen + proofVar
+  const fixedAfterArrays = 8 + 2 + 8 + 33 + 32 + 2;
   if (payload.length < p + burnCount * 32 + burnCount * 33 + fixedAfterArrays) return null;
   const burnNullifiers = [];
   for (let i = 0; i < burnCount; i++) {
@@ -7430,12 +7436,14 @@ function decodeTCbtcTacWithdrawPayload(payload) {
   const bpLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
   if (bpLen === 0) return null;
-  if (payload.length < p + bpLen + 8 + 32 + 2) return null;
+  if (payload.length < p + bpLen + 8 + 33 + 32 + 2) return null;
   const burnBalanceProof = payload.slice(p, p + bpLen); p += bpLen;
   const claimView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const insuranceClaimTAC = (BigInt(claimView.getUint32(4, true)) << 32n) | BigInt(claimView.getUint32(0, true));
   p += 8;
   if (insuranceClaimTAC >= (1n << BigInt(N_BITS))) return null;
+  const bondReturnCommit = payload.slice(p, p + 33); p += 33;
+  try { bytesToPoint(bondReturnCommit); } catch { return null; }
   const bindHash = payload.slice(p, p + 32); p += 32;
   const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
@@ -7444,13 +7452,14 @@ function decodeTCbtcTacWithdrawPayload(payload) {
   const proof = payload.slice(p, p + proofLen);
   const expectedBind = computeCbtcTacWithdrawBindHash({
     networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
-    burnAmount, insuranceClaimTAC,
+    burnAmount, insuranceClaimTAC, bondReturnCommit,
   });
   for (let i = 0; i < 32; i++) if (expectedBind[i] !== bindHash[i]) return null;
   return {
     kind: 'cbtc_tac_withdraw',
     networkTag, targetLeafHash, burnCount, burnNullifiers, burnCommits,
-    burnAmount, insuranceClaimTAC, burnBalanceProof, bindHash, proof,
+    burnAmount, insuranceClaimTAC, burnBalanceProof, bondReturnCommit,
+    bindHash, proof,
   };
 }
 
@@ -14859,10 +14868,13 @@ async function buildAndBroadcastCbtcTacDeposit({
 //     Currently a 256-byte placeholder; worker accepts any non-empty proof.
 //   - Bulletproof on the burn balance: proves Σ amounts = burn_amount.
 //     Placeholder for now; worker doesn't yet verify.
-//   - Bond TAC physical return: the worker's WITHDRAW handler tracks bond
-//     return at the ledger level. Producing the physical TAC output UTXO
-//     in the reveal tx is a separate concern (depends on bond-escrow address
-//     scheme to be locked in spec).
+//   - Worker-side ENFORCEMENT of vout[1] bond return shape (P2WPKH script
+//     to depositor_recovery_pk, value === DUST). Currently the worker
+//     recognizes vout[1] via commitmentForUtxo using the envelope's
+//     bond_return_commit + position.tac_asset_id, but doesn't yet
+//     hard-reject reveal txs that omit vout[1] or change its recipient.
+//     The dapp builder constructs vout[1] correctly today; enforcement
+//     is a defense-in-depth follow-up.
 async function buildAndBroadcastCbtcTacWithdraw({
   positionRecord,
   slotRecord,
@@ -14943,6 +14955,18 @@ async function buildAndBroadcastCbtcTacWithdraw({
   const burnBalanceProof = new Uint8Array(192);
   const proofBytes = new Uint8Array(256);
 
+  // Fresh blinding for the TAC bond return UTXO. The depositor recorded
+  // their bondAmountTAC at deposit; on withdraw they get it back as a
+  // first-class tacit-asset UTXO at vout[1], with a Pedersen commit to
+  // (bondAmountTAC, freshBlinding). Worker recognizes the UTXO via
+  // commitmentForUtxo → envelope.bond_return_commit + position.tac_asset_id.
+  const bondReturnBig = BigInt(positionRecord.bondAmountTAC);
+  const bondReturnBlindingBytes = new Uint8Array(32);
+  crypto.getRandomValues(bondReturnBlindingBytes);
+  let bondReturnBlindingBig = bytes32ToBigint(bondReturnBlindingBytes) % SECP_N;
+  if (bondReturnBlindingBig === 0n) bondReturnBlindingBig = 1n;
+  const bondReturnCommit = pedersenCommit(bondReturnBig, bondReturnBlindingBig).toRawBytes(true);
+
   // 4. bind_hash + payload
   _progress('envelope:build');
   const bindHash = computeCbtcTacWithdrawBindHash({
@@ -14953,6 +14977,7 @@ async function buildAndBroadcastCbtcTacWithdraw({
     burnCommits,
     burnAmount: burnSum,
     insuranceClaimTAC: insuranceClaimBig,
+    bondReturnCommit,
   });
   const payload = encodeTCbtcTacWithdrawPayload({
     networkTag,
@@ -14962,6 +14987,7 @@ async function buildAndBroadcastCbtcTacWithdraw({
     burnAmount: burnSum,
     insuranceClaimTAC: insuranceClaimBig,
     burnBalanceProof,
+    bondReturnCommit,
     bindHash,
     proof: proofBytes,
   });
@@ -14972,8 +14998,7 @@ async function buildAndBroadcastCbtcTacWithdraw({
   //         vin[1]   = slot UTXO (key-path under r_btc, SIGHASH_ALL)
   //         vin[2..] = cBTC.tac UTXOs being burned (P2WPKH under wallet.priv)
   //         vout[0]  = BTC payout to recipient (denom_sats from slot minus fees)
-  //         (bond TAC return is currently worker-side ledger only; physical
-  //          TAC output deferred — see header note)
+  //         vout[1]  = TAC bond return UTXO at depositor recovery pubkey (DUST sats)
   const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
   const tapLeaf = tapLeafHash(envelopeScript);
   const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
@@ -15038,6 +15063,15 @@ async function buildAndBroadcastCbtcTacWithdraw({
   const slotPrevoutScript = slotRecord.slotScriptPubKeyHex
     ? hexToBytes(slotRecord.slotScriptPubKeyHex)
     : slotScriptPubKeyFromKbtc(deriveSlotKbtc(hexToBytes(slotRecord.recipientCommitHex), denomBig));
+  // Bond return TAC UTXO at vout[1]: P2WPKH(depositor_recovery_pk) at DUST.
+  // Depositor uses the saved bondReturnBlinding to spend this later. The
+  // BTC payout at vout[0] is reduced by DUST + fees to fund this output.
+  const depositorRecoveryPub = hexToBytes(positionRecord.depositorRecoveryPubHex);
+  const bondReturnSpk = p2wpkhScript(depositorRecoveryPub);
+  const btcPayoutValue = Number(denomBig) - DUST;
+  if (btcPayoutValue < DUST) {
+    throw new Error(`slot denom ${denomBig} too small to fund BTC payout + bond return UTXO`);
+  }
   const revealTx = {
     version: 2, locktime: 0,
     inputs: [
@@ -15047,7 +15081,10 @@ async function buildAndBroadcastCbtcTacWithdraw({
         txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [],
       })),
     ],
-    outputs: [{ value: Number(denomBig), script: payoutSpk }],
+    outputs: [
+      { value: btcPayoutValue, script: payoutSpk },
+      { value: DUST, script: bondReturnSpk },
+    ],
   };
   const revealPrevouts = [
     { value: commitValue, script: commitSpk },
@@ -15066,12 +15103,16 @@ async function buildAndBroadcastCbtcTacWithdraw({
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
 
-  // 6. Persist position update BEFORE broadcasting (recovery discipline)
+  // 6. Persist position update BEFORE broadcasting (recovery discipline).
+  // bondReturnBlindingHex MUST be saved before broadcast — without it the
+  // depositor can never spend the recovered TAC bond UTXO at vout[1].
   saveCtacPositionRecord({
     targetLeafHashHex: positionRecord.targetLeafHashHex,
     status: 'withdraw-pending',
     withdrawCommitTxid: commitTxidHex,
     withdrawTxid: revealTxidHex,
+    bondReturnBlindingHex: bondReturnBlindingBig.toString(16).padStart(64, '0'),
+    bondReturnCommitHex: bytesToHex(bondReturnCommit),
   });
 
   // 7. Broadcast
@@ -15088,6 +15129,15 @@ async function buildAndBroadcastCbtcTacWithdraw({
     status: 'withdrawn',
     withdrawnAt: Date.now(),
   });
+
+  // Record the bond return UTXO opening so the holdings scanner finds it
+  // and the depositor can spend it via standard T_AXFER_VAR / CXFER flow.
+  try {
+    recordOpening(revealTxidHex, 1,
+      positionRecord.tacAssetIdHex,
+      bondReturnBig,
+      bondReturnBlindingBig);
+  } catch {}
 
   // Update slot record state — slot's K_btc has been spent atomically.
   try {
@@ -15121,10 +15171,14 @@ async function buildAndBroadcastCbtcTacWithdraw({
     commitTxid: commitTxidHex,
     revealTxid: revealTxidHex,
     commitHex, revealHex,
-    payoutValueSats: Number(denomBig),
+    payoutValueSats: btcPayoutValue,
     commitFee, revealFee,
     burnedAmount: burnSum,
     insuranceClaimTAC: insuranceClaimBig,
+    bondReturnAmount: bondReturnBig,
+    bondReturnCommitHex: bytesToHex(bondReturnCommit),
+    bondReturnBlindingHex: bondReturnBlindingBig.toString(16).padStart(64, '0'),
+    bondReturnOutpoint: `${revealTxidHex}:1`,
   };
 }
 
@@ -44585,6 +44639,29 @@ function _saveMarketSimple(on) {
   try { localStorage.setItem(_MARKET_SIMPLE_KEY, on ? '1' : '0'); } catch {}
 }
 let _marketSimpleMode = _loadMarketSimple();
+// Per-row trade buttons (Buy / Buy chunks / Buy level / Sell / Sell level)
+// can be hidden in favor of a single "Swap" surface: clicking any row
+// primes the Swap tile in the matching direction, scrolls to it, and
+// pulses the primary action so the trader sees the auto-routed quote
+// before committing. Default ON (buttons hidden) because the Swap tile
+// already auto-routes across asks AND bids better than per-row direct-
+// commit shortcuts can — those shortcuts are a power-user surface that
+// confused new traders into mis-clicking ("I thought Buy level was a
+// one-tap fill but a form appeared"). Power users flip the toggle to
+// get the direct-commit buttons back.
+const _MARKET_ROW_ACTIONS_HIDDEN_KEY = 'tacit-market-row-actions-hidden-v1';
+function _loadMarketRowActionsHidden() {
+  try {
+    const v = localStorage.getItem(_MARKET_ROW_ACTIONS_HIDDEN_KEY);
+    if (v === '0') return false;
+    if (v === '1') return true;
+  } catch {}
+  return true;  // default: per-row buttons hidden, route via Swap tile
+}
+function _saveMarketRowActionsHidden(on) {
+  try { localStorage.setItem(_MARKET_ROW_ACTIONS_HIDDEN_KEY, on ? '1' : '0'); } catch {}
+}
+let _marketRowActionsHidden = _loadMarketRowActionsHidden();
 // Ladder view mode: 'rows' (orderbook-style single-line entries, default) or
 // 'cards' (legacy 4-per-row tile grid). Rows mode gives a CEX-style depth
 // scan — price + amount + total + expiry + Buy on one line per listing —
@@ -45792,6 +45869,15 @@ function applyMarketFilters() {
   // mode), with semantic naming — "Depth view" reads as the orderbook
   // primary, "Individual listings" reads as per-maker detail.
   const _ladderToggleChip = `<button data-act="market-ladder-toggle" type="button" title="Toggle between depth view (aggregated price levels, CEX-style scan) and individual listings (per-maker tiles with full metadata: maker pubkey, listing id, group info)." style="font-size:10px;padding:3px 10px;background:transparent;border:1px solid var(--ink-faint);color:var(--ink-mid);cursor:pointer;">${_marketLadderView === 'rows' ? 'Individual listings' : 'Depth view'}</button>`;
+  // Row-actions toggle. Default hides per-row Buy / Buy chunks / Buy
+  // level / Sell / Sell level buttons so the orderbook reads as
+  // inspection-only and every trade flows through the Swap tile (which
+  // auto-routes across asks AND bids better than the direct-commit
+  // shortcuts can). Flipping to Advanced surfaces the direct buttons
+  // for traders who want explicit per-listing commits. Same chip-style
+  // convention as the Simple / Mine / ladder-view chips so the
+  // affordance reads as part of the existing toggle row.
+  const _rowActionsChip = `<button data-act="market-row-actions-toggle" type="button" title="${_marketRowActionsHidden ? 'Currently hiding per-row trade buttons — click rows to size the Swap tile above instead. Flip to Advanced to bring Buy / Sell / Buy level / Sell level buttons back on every row.' : 'Currently showing per-row direct-commit buttons. Flip to Simple to hide them and route every trade through the Swap tile above (cleaner scan + auto-routing across the whole book).'}" style="font-size:10px;padding:3px 10px;background:${_marketRowActionsHidden ? 'transparent' : 'var(--ink)'};border:1px solid var(--ink);color:${_marketRowActionsHidden ? 'var(--ink)' : 'var(--bg)'};cursor:pointer;font-weight:600;">${_marketRowActionsHidden ? 'Simple trade' : 'Advanced trade'}</button>`;
   // Count reconcile: rowsForGrid is the post-filter count (Simple mode +
   // Mine toggle applied). rowsFull is pre-filter. The header card shows
   // the worker's listing_count which is the true total. All three can
@@ -45823,7 +45909,7 @@ function applyMarketFilters() {
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
       <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Asks · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use <button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
-      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_ladderToggleChip}${_sweepBuyChip}</div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_rowActionsChip}${_ladderToggleChip}${_sweepBuyChip}</div>
     </div>${_rowTypesExplainerHtml}${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
   </div>`;
@@ -46374,6 +46460,13 @@ function applyMarketFilters() {
       applyMarketFilters();
     };
   });
+  list.querySelectorAll('[data-act="market-row-actions-toggle"]').forEach(btn => {
+    btn.onclick = () => {
+      _marketRowActionsHidden = !_marketRowActionsHidden;
+      _saveMarketRowActionsHidden(_marketRowActionsHidden);
+      applyMarketFilters();
+    };
+  });
   // "use Swap above for routed fills" jump-link. The hint was previously
   // plain text — users seeing "BEST PRICE 79.55" would click Buy on the
   // single best listing and miss the next four cheap ones at 175-195 that
@@ -46591,8 +46684,23 @@ function applyMarketFilters() {
     const statusRow = statusLine
       ? `<div class="muted" style="margin-top:8px;font-size:10px;">${statusLine}</div>`
       : '';
+    // Hide per-row trade buttons in Simple mode (default ON). The row
+    // is still clickable to prime the Swap tile; primary/secondary
+    // actions return when the user flips Advanced. Maker-side actions
+    // (Cancel / Soft cancel / Hard cancel / Verify) on listings owned
+    // by the current wallet stay visible regardless — those aren't
+    // routed through the Swap tile and the user needs them where they
+    // can find them. Detection: any data-act containing 'cancel' or
+    // 'verify' means it's a maker/maintenance action, not a trade
+    // shortcut, so we keep the actionRow visible in that case.
+    const _isMakerSideAction = (primaryAction + secondaryAction).includes('data-act="market-cancel')
+      || (primaryAction + secondaryAction).includes('data-act="market-hard-cancel')
+      || (primaryAction + secondaryAction).includes('data-act="market-verify');
+    const _hideActionRow = _marketRowActionsHidden && !_isMakerSideAction;
     const actionRow = (primaryAction || secondaryAction)
-      ? `<div class="market-listing-actions">${primaryAction}${secondaryAction}</div>`
+      ? (_hideActionRow
+          ? ''
+          : `<div class="market-listing-actions">${primaryAction}${secondaryAction}</div>`)
       : '';
     // Unit price: sats per whole token, accounting for decimals. For range
     // listings the threshold is a *minimum* delivery amount, so this number
@@ -46756,8 +46864,16 @@ function applyMarketFilters() {
     const _rowMetaTitle = _isLevel
       ? `${l._levelCount} preauth listings aggregated in this price bucket.\nMin unit: ${fmtUnitPriceSats(l._levelMinUnit)} sats/${a.ticker || 'token'}\nMax unit: ${fmtUnitPriceSats(l._levelMaxUnit)} sats/${a.ticker || 'token'}\nTotal: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} for ${priceSatsRaw.toLocaleString('en-US')} sats.`
       : `Listing id: ${displayId}${_fullSeller ? `\n${l.kind === 'preauth' ? 'Seller' : 'Maker'}: ${_fullSeller}` : ''}${l._isGroup ? `\nGroup: ${l._groupId || ''} · ${l._groupSize} chunks` : ''}${recencyLine ? `\n${recencyLine.replace(/<[^>]+>/g, '')}` : ''}`;
+    // Level rows: the level button is a trade shortcut, not a maker
+    // action — hide it in Simple mode (default). The row stays clickable
+    // to prime the Swap tile, which auto-routes across all bucket
+    // listings using the same logic the level button would have. Falls
+    // back to the standard actionRow for non-level rows (which already
+    // honors the Simple-mode hide-action policy above).
     const _rowActionRow = _isLevel
-      ? `<div class="market-listing-actions"><button data-act="market-sweep-buy-level" data-aid="${escapeHtml(safeAid)}" data-target-amt="${escapeHtml(amount || '0')}" data-cap-unit="${l._levelMaxUnit}" data-dec="${dec}" data-ticker="${escapeHtml(a.ticker || '?')}" type="button" class="market-listing-action--opener" title="Buy this depth level: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} routed across all ${l._levelCount} preauth listings in this bucket. Each fill is one Bitcoin tx; the cap is the bucket's max unit price. Opens the Advanced buy form preloaded so you can review before confirming.">Buy level →</button></div>`
+      ? (_marketRowActionsHidden
+          ? ''
+          : `<div class="market-listing-actions"><button data-act="market-sweep-buy-level" data-aid="${escapeHtml(safeAid)}" data-target-amt="${escapeHtml(amount || '0')}" data-cap-unit="${l._levelMaxUnit}" data-dec="${dec}" data-ticker="${escapeHtml(a.ticker || '?')}" type="button" class="market-listing-action--opener" title="Buy this depth level: ${fmtAssetAmount(BigInt(amount || '0'), dec)} ${a.ticker || 'token'} routed across all ${l._levelCount} preauth listings in this bucket. Each fill is one Bitcoin tx; the cap is the bucket's max unit price. Opens the Advanced buy form preloaded so you can review before confirming.">Buy level →</button></div>`)
       : actionRow;
     // Group rows: the amount + BTC + USD numbers are PER CHUNK (one of the
     // N identical-price listings), but the row's `Buy 1–N` picker can buy
@@ -51961,24 +52077,49 @@ function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, t
     targetInput.value = displayStr;
     targetInput.dispatchEvent(new Event('input', { bubbles: true }));
   }
-  // Only scroll the swap into view when it's substantially OFF-SCREEN.
-  // If the user is scrolled to the chart / depth and clicks a depth bar
-  // to prime the swap, auto-scrolling to the swap yanks them upward —
-  // jarring and the cause of "I was at the charts and got moved up"
-  // complaints. The toast below already announces the priming; users
-  // who want to confirm can scroll up themselves. Only fire scroll
-  // when the swap is more than half a viewport away from the top or
-  // bottom edge — i.e., truly out of sight, not just partially below
-  // the fold.
+  // Scroll behavior depends on whether the user is in Simple mode (where
+  // a row click IS the trade-priming interaction; we should aggressively
+  // surface the now-primed Swap tile) or Advanced mode (where per-row
+  // buttons exist; the row click is a secondary "prime if you want a
+  // preview" gesture and yanking the user to the top is jarring).
+  //
+  // Simple mode: always scroll + pulse the Swap action button so the
+  // trader sees the auto-routed quote land. Without the explicit visual
+  // tie, hiding the row buttons would make rows feel "dead" — clicking
+  // appears to do nothing because the action moved off-screen.
+  //
+  // Advanced mode: keep the original conservative scroll (only when the
+  // swap tile is truly out of sight). Toast alone suffices since the
+  // row buttons are still right there as the primary affordance.
+  const _isSimpleMode = (typeof _marketRowActionsHidden === 'boolean') && _marketRowActionsHidden;
   try {
-    const _rect = widget.getBoundingClientRect();
-    const _vh = window.innerHeight || 800;
-    const _fullyAbove = _rect.bottom < 0;
-    const _fullyBelow = _rect.top > _vh;
-    if (_fullyAbove || _fullyBelow) {
+    if (_isSimpleMode) {
       widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else {
+      const _rect = widget.getBoundingClientRect();
+      const _vh = window.innerHeight || 800;
+      const _fullyAbove = _rect.bottom < 0;
+      const _fullyBelow = _rect.top > _vh;
+      if (_fullyAbove || _fullyBelow) {
+        widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
     }
   } catch {}
+  // Pulse the Swap action button briefly so the user sees the quote
+  // landed and where to confirm. CSS animation lives on the
+  // .swap-action-pulse class; toggle off after the keyframe completes
+  // so re-priming (clicking another row) re-fires the animation.
+  if (_isSimpleMode) {
+    try {
+      const actionBtn = widget.querySelector('[data-swap-action]');
+      if (actionBtn) {
+        actionBtn.classList.remove('swap-action-pulse');
+        void actionBtn.offsetHeight;  // force reflow so re-add restarts the animation
+        actionBtn.classList.add('swap-action-pulse');
+        setTimeout(() => { try { actionBtn.classList.remove('swap-action-pulse'); } catch {} }, 1800);
+      }
+    } catch {}
+  }
   const slipNow = widget.querySelector('[data-swap-slippage]')?.value;
   const slipNote = slipNow ? ` · slip ${slipNow}%` : '';
   toast(`Sized ${displayStr} ${ticker || ''} in swap tile${slipNote} · review then ${direction === 'sell' ? 'sell' : 'buy'}`, '', 4000);
@@ -52357,12 +52498,21 @@ async function populateMarketBidsLadder(scope, asset) {
       // The trailing arrow + market-bid-action--opener class signal that
       // this opens a preview-then-confirm form rather than committing in
       // one click — visual distinction from the per-bid Sell button.
-      action = `<button class="market-bid-fulfil market-bid-action--opener" data-bid-action="fulfil-mkt-level" data-aid="${escapeHtml(aid)}" data-level-amount="${escapeHtml(String(b.amount || '0'))}" data-level-min-unit="${b._levelMinUnit}" data-level-dec="${decimals}" data-level-ticker="${escapeHtml(ticker)}" data-level-count="${b._levelCount}" type="button" title="Sweep-sell against all ${b._levelCount} bids in this price tick (cumulative ${fmtAssetAmount(BigInt(b.amount || '0'), decimals)} ${ticker} at floor ${fmtUnitPriceSats(b._levelMinUnit)} sats/${ticker}). Opens the sell-sweep form preloaded — review before signing.">Sell level →</button>`;
+      // Suppressed in Simple mode: the Swap tile auto-routes across the
+      // bucket using the same logic, no separate preview step needed.
+      action = _marketRowActionsHidden
+        ? ''
+        : `<button class="market-bid-fulfil market-bid-action--opener" data-bid-action="fulfil-mkt-level" data-aid="${escapeHtml(aid)}" data-level-amount="${escapeHtml(String(b.amount || '0'))}" data-level-min-unit="${b._levelMinUnit}" data-level-dec="${decimals}" data-level-ticker="${escapeHtml(ticker)}" data-level-count="${b._levelCount}" type="button" title="Sweep-sell against all ${b._levelCount} bids in this price tick (cumulative ${fmtAssetAmount(BigInt(b.amount || '0'), decimals)} ${ticker} at floor ${fmtUnitPriceSats(b._levelMinUnit)} sats/${ticker}). Opens the sell-sweep form preloaded — review before signing.">Sell level →</button>`;
     } else {
       // Per-bid Sell — CEX-standard verb; underlying call signs one
       // T_AXFER_FULFIL claim against this bid. Variable-fill bids open
       // a chunk picker first; whole-bid bids commit immediately on click.
-      action = `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(bidId)}" type="button" title="Sell into this bid. Whole-bid bids commit immediately; variable-fill bids open a chunk picker first.">Sell</button>`;
+      // Suppressed in Simple mode: row click primes the Swap tile in
+      // SELL direction at this bid's price floor and amount; the user
+      // commits via the always-visible Swap action above.
+      action = _marketRowActionsHidden
+        ? ''
+        : `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(bidId)}" type="button" title="Sell into this bid. Whole-bid bids commit immediately; variable-fill bids open a chunk picker first.">Sell</button>`;
     }
     const rowClass = [
       'market-bids-row',

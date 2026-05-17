@@ -172,6 +172,7 @@ group('T_CBTC_TAC_WITHDRAW round-trip');
     burnCommits: [pointAt(11), pointAt(22), pointAt(33)],
     burnAmount: 100_000_000n,
     insuranceClaimTAC: 12_345n,
+    bondReturnCommit: pointAt(444),
     burnBalanceProof: new Uint8Array(192).fill(0x77),
     proof: new Uint8Array(256).fill(0x88),
   };
@@ -187,6 +188,8 @@ group('T_CBTC_TAC_WITHDRAW round-trip');
   ok('dapp parity: burn_amount', decD?.burnAmount === params.burnAmount);
   ok('dapp parity: insurance_claim_TAC',
     decD?.insuranceClaimTAC === params.insuranceClaimTAC);
+  ok('dapp parity: bond_return_commit round-trips',
+    decD?.bondReturnCommit && bytesToHex(decD.bondReturnCommit) === bytesToHex(params.bondReturnCommit));
 
   const decW = worker.decodeTCbtcTacWithdrawPayload(payload);
   ok('worker decode succeeds', decW !== null);
@@ -195,6 +198,8 @@ group('T_CBTC_TAC_WITHDRAW round-trip');
     decW?.burn_amount === params.burnAmount.toString());
   ok('worker parity: insurance_claim_tac',
     decW?.insurance_claim_tac === params.insuranceClaimTAC.toString());
+  ok('worker parity: bond_return_commit',
+    decW?.bond_return_commit === bytesToHex(params.bondReturnCommit));
   ok('worker parity: bind_hash',
     decW?.bind_hash === bytesToHex(bindHash));
 }
@@ -208,6 +213,7 @@ group('T_CBTC_TAC_WITHDRAW round-trip');
     burnCommits: [pointAt(99)],
     burnAmount: 1_000n,
     insuranceClaimTAC: 0n,
+    bondReturnCommit: pointAt(555),
     burnBalanceProof: new Uint8Array(64).fill(0x12),
     proof: new Uint8Array(256).fill(0x34),
   };
@@ -218,6 +224,40 @@ group('T_CBTC_TAC_WITHDRAW round-trip');
   const dec = dapp.decodeTCbtcTacWithdrawPayload(payload);
   ok('decode succeeds with insurance_claim = 0', dec !== null);
   ok('insurance_claim round-trips as 0', dec?.insuranceClaimTAC === 0n);
+  ok('bond_return_commit still present with insurance_claim = 0',
+    dec?.bondReturnCommit && dec.bondReturnCommit.length === 33);
+}
+
+{
+  // bond_return_commit field tampering MUST invalidate the bind_hash
+  // (defense against a third party swapping the bond return into a
+  // different commit they control).
+  const params = {
+    networkTag: NET_SIGNET,
+    targetLeafHash: bytes32('withdraw-tamper'),
+    burnNullifiers: [bytes32('tn1')],
+    burnCommits: [pointAt(101)],
+    burnAmount: 50_000n,
+    insuranceClaimTAC: 0n,
+    bondReturnCommit: pointAt(666),
+    burnBalanceProof: new Uint8Array(64).fill(0xab),
+    proof: new Uint8Array(256).fill(0xcd),
+  };
+  const bindHash = dapp.computeCbtcTacWithdrawBindHash({
+    ...params, burnCount: 1,
+  });
+  const payload = dapp.encodeTCbtcTacWithdrawPayload({ ...params, bindHash });
+  // Locate the bond_return_commit region. Per the wire layout it lives
+  // between insurance_claim (8B) and bind_hash (32B), preceded by all
+  // earlier variable-length sections. Easier: just flip a bit in the
+  // 33B region at the known offset (payload.length - proof_len - 2 - 32 - 33).
+  const tampered = new Uint8Array(payload);
+  const bondCommitOffset = tampered.length - 2 - params.proof.length - 32 - 33;
+  tampered[bondCommitOffset] ^= 0x01;
+  ok('rejects bond_return_commit tampering',
+    dapp.decodeTCbtcTacWithdrawPayload(tampered) === null);
+  ok('worker rejects bond_return_commit tampering',
+    worker.decodeTCbtcTacWithdrawPayload(tampered) === null);
 }
 
 // ============== T_CBTC_TAC_FORCE_CLOSE ==============
