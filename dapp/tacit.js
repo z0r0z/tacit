@@ -3309,11 +3309,35 @@ const getTx = async (rawId) => {
 // `setupNetworkSelect → location.reload()`, so a single global would be safe;
 // keying by network is defense-in-depth against future code paths that flip
 // NET in-place.
-const _cachedRate = new Map();   // net.name → sat/vB
-const _cachedRateAt = new Map(); // net.name → ts
-async function getFeeRate() {
+// Cache is keyed by (network, tier) so changing tiers gets a fresh quote
+// without waiting for the prior cache window to drain.
+const _cachedRate = new Map();   // "net|tier" → sat/vB
+const _cachedRateAt = new Map(); // "net|tier" → ts
+
+// Fee-tier knobs. Tacit confidential transfers are bookkeeping ops, not
+// time-sensitive payments — `standard` (hourly) is a better default than
+// the previous halfHourly choice. Users who care can flip via the
+// fee-tier preference in localStorage.
+const FEE_TIER_PREF_KEY = 'tacit-fee-tier-v1';
+const FEE_TIERS = ['economy', 'standard', 'priority'];
+function getFeeTierPref() {
+  try {
+    const v = (localStorage.getItem(FEE_TIER_PREF_KEY) || '').toLowerCase();
+    return FEE_TIERS.includes(v) ? v : 'standard';
+  } catch { return 'standard'; }
+}
+function setFeeTierPref(tier) {
+  if (!FEE_TIERS.includes(tier)) return false;
+  try { localStorage.setItem(FEE_TIER_PREF_KEY, tier); return true; } catch { return false; }
+}
+
+async function getFeeRate(tier = null) {
   const net = NET.name;
-  if (_cachedRate.has(net) && Date.now() - (_cachedRateAt.get(net) || 0) < 60000) return _cachedRate.get(net);
+  const resolvedTier = tier && FEE_TIERS.includes(tier) ? tier : getFeeTierPref();
+  const cacheKey = `${net}|${resolvedTier}`;
+  if (_cachedRate.has(cacheKey) && Date.now() - (_cachedRateAt.get(cacheKey) || 0) < 60000) {
+    return _cachedRate.get(cacheKey);
+  }
   let apiOk = false;
   // Fallback floors when EVERY fee API is unreachable: signet has no fee
   // market, so a low rate is fine. Mainnet must NOT silently fall back to
@@ -3337,23 +3361,31 @@ async function getFeeRate() {
       sharedAbort.signal.removeEventListener('abort', onShared);
     });
   };
-  // mempool.space-style: { fastestFee, halfHourFee, hourFee, ... } in sat/vB.
+  // mempool.space-style: { fastestFee, halfHourFee, hourFee, economyFee,
+  // minimumFee } in sat/vB. Pick the field that matches the requested tier.
   const _mempoolStyle = async (apiBase) => {
     const r = await _withTimeout(`${apiBase}/v1/fees/recommended`);
     if (!r.ok) throw new Error('http ' + r.status);
     const j = await r.json();
-    const rate = Number(j.halfHourFee || j.hourFee || j.fastestFee || 0);
+    let raw;
+    if (resolvedTier === 'economy') raw = j.economyFee || j.minimumFee || j.hourFee;
+    else if (resolvedTier === 'priority') raw = j.fastestFee || j.halfHourFee || j.hourFee;
+    else raw = j.hourFee || j.halfHourFee || j.fastestFee;
+    const rate = Number(raw || 0);
     if (!Number.isFinite(rate) || rate <= 0) throw new Error('bad shape');
     return rate;
   };
-  // blockstream.info-style: { "1": 25.5, "2": 20.3, ... } — sat/vB per confirm
-  // target. Confirm target "3" (~30 min) is the closest match to mempool's
-  // halfHourFee value.
+  // blockstream.info-style: { "1": 25.5, "2": 20.3, "6": 8.1, ... } —
+  // sat/vB per confirm target in blocks. Map tier → confirm depth.
   const _blockstreamStyle = async (apiBase) => {
     const r = await _withTimeout(`${apiBase}/fee-estimates`);
     if (!r.ok) throw new Error('http ' + r.status);
     const j = await r.json();
-    const rate = Number(j['3'] || j['2'] || j['6'] || 0);
+    let raw;
+    if (resolvedTier === 'economy') raw = j['25'] || j['12'] || j['6'];
+    else if (resolvedTier === 'priority') raw = j['1'] || j['2'] || j['3'];
+    else raw = j['6'] || j['3'] || j['12'];
+    const rate = Number(raw || 0);
     if (!Number.isFinite(rate) || rate <= 0) throw new Error('bad shape');
     return rate;
   };
@@ -3388,14 +3420,26 @@ async function getFeeRate() {
       try { toast(`All fee APIs unreachable — using fallback rate ${base} sat/vB on mainnet`, ''); } catch {}
     }
   }
-  // 10% safety margin on mainnet so a small intra-block fee spike between the
-  // cache write and the broadcast doesn't push the tx below the min-relay
-  // threshold and stall it. Signet has no fee market, so no margin needed.
-  const rate = net === 'mainnet' ? Math.ceil(base * 1.1) : base;
-  _cachedRate.set(net, rate);
+  // Safety margin scales with tier — priority pays for headroom against
+  // intra-block spikes (the original 10%), standard takes a small buffer
+  // (5%), economy users have opted into slow confirm and don't need it.
+  // Signet has no fee market, so no margin needed at any tier.
+  // Use integer-ratio arithmetic (×11/10, ×21/20) instead of ×1.10 / ×1.05
+  // — JS floats overshoot (50 × 1.10 = 55.000…001, ceil → 56).
+  let rate;
+  if (net !== 'mainnet') {
+    rate = base;
+  } else if (resolvedTier === 'priority') {
+    rate = Math.ceil((base * 11) / 10);
+  } else if (resolvedTier === 'standard') {
+    rate = Math.ceil((base * 21) / 20);
+  } else {
+    rate = Math.max(1, base);
+  }
+  _cachedRate.set(cacheKey, rate);
   // Shorter TTL on the fallback rate so a recovered API drives a fresh quote
   // without waiting the full minute.
-  _cachedRateAt.set(net, apiOk ? Date.now() : Date.now() - 50_000);
+  _cachedRateAt.set(cacheKey, apiOk ? Date.now() : Date.now() - 50_000);
   return rate;
 }
 
@@ -12462,6 +12506,17 @@ function _reconcileOtcSettlements(holdings) {
   catch { return; }
   if (!Array.isArray(arr) || !arr.length) return;
   let mutated = false;
+  // UTXOs already linked to a settled entry are off-limits — otherwise two
+  // reservations against the same maker for similar amounts would both bind
+  // to the same incoming UTXO and the Activity tab would lie about a second
+  // settlement that never happened. Pre-seed from previously-linked entries
+  // so the no-op pass also stays stable across re-renders.
+  const claimed = new Set();
+  for (const entry of arr) {
+    if (entry?.extra?.settled_txid != null && entry?.extra?.settled_vout != null) {
+      claimed.add(`${entry.extra.settled_txid}:${entry.extra.settled_vout}`);
+    }
+  }
   for (const entry of arr) {
     if (entry.kind !== 'otc-reserved') continue;
     if (entry.extra?.settled_txid) continue;  // already linked
@@ -12479,7 +12534,9 @@ function _reconcileOtcSettlements(holdings) {
     //   - senderPubHex matches the maker we reserved from (when known)
     //   - confirmed AFTER the reservation timestamp (avoids matching pre-
     //     existing UTXOs that happen to fit by accident)
+    //   - not already claimed by an earlier entry in this pass
     const match = h.utxos.find(u => {
+      if (claimed.has(`${u.utxo.txid}:${u.utxo.vout}`)) return false;
       if (u.amount < reservedAmount) return false;
       if (makerPub && u.senderPubHex && u.senderPubHex.toLowerCase() !== makerPub) return false;
       if (reservedTs && u.blockTime && u.blockTime < reservedTs) return false;
@@ -12490,6 +12547,7 @@ function _reconcileOtcSettlements(holdings) {
       entry.extra.settled_txid = match.utxo.txid;
       entry.extra.settled_vout = match.utxo.vout;
       entry.extra.settled_at = match.blockTime || Math.floor(Date.now() / 1000);
+      claimed.add(`${match.utxo.txid}:${match.utxo.vout}`);
       mutated = true;
     }
   }
@@ -22249,6 +22307,13 @@ async function fulfilBidIntent({ bid, sellerUtxo, fillAmount = null }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
   if (!bid || !bid.bid_id || !bid.asset_id) throw new Error('invalid bid');
+  // Refuse self-fill: matches the sweep-sell pre-filter. Without this the
+  // dapp will happily build + broadcast a commit tx against the user's own
+  // bid before the worker rejects the claim, burning a BTC fee and an asset
+  // UTXO. Cheap to detect locally.
+  if (bid.buyer_pubkey && wallet?.pub && bid.buyer_pubkey === bytesToHex(wallet.pub)) {
+    throw new Error('cannot fulfil your own bid');
+  }
   // Variable-fill (§5.7.7): if the bid carries `min_fill_amount` and the
   // caller passed `fillAmount`, sell exactly that chunk at scaled price.
   // Otherwise: whole-fill (existing behavior) — sell bid.amount at
@@ -49635,8 +49700,14 @@ function marketCapSats(asset, unitPrice) {
   const supply = marketSupplyBase(asset);
   if (supply == null || unitPrice == null) return null;
   const dec = Number.isInteger(asset.decimals) && asset.decimals >= 0 && asset.decimals <= 8 ? asset.decimals : 0;
-  const wholeSupply = Number(supply) / (10 ** dec);
-  const sats = wholeSupply * Number(unitPrice);
+  // Compute whole-token supply in BigInt before coercing to Number so high-
+  // supply tokens (>2^53 base units) don't silently round at the conversion.
+  // The fractional remainder is at most one whole token so it stays in Number
+  // precision regardless of how large the supply is.
+  const decFactor = 10n ** BigInt(dec);
+  const wholePart = Number(supply / decFactor);
+  const fracPart = dec > 0 ? Number(supply % decFactor) / Number(decFactor) : 0;
+  const sats = (wholePart + fracPart) * Number(unitPrice);
   return Number.isFinite(sats) && sats > 0 ? sats : null;
 }
 function marketLastTradeUnitPrice(asset) {
@@ -57471,7 +57542,17 @@ function _wireSwapTile(scope) {
       let _residualUnposted = null;
       if (!lastErr && filled > 0 && result.residualSats >= DUST && Number.isFinite(result.cap) && result.cap > 0) {
         const _residualSats = Number(result.residualSats);
-        const _bidAmt = BigInt(Math.floor(_residualSats * Math.pow(10, decimals) / result.cap));
+        // BigInt-anchored amount derivation: `_residualSats * 10^decimals`
+        // breaks Number precision once residual sats × 10^dec crosses 2^53
+        // (~0.9 BTC residual at 8-decimal assets like TAC). Compute the
+        // floor-quotient in BigInt with a 6-digit cap-scale so fractional
+        // user caps survive without rounding to 0.
+        const _residualSatsBI = BigInt(Math.floor(_residualSats));
+        const _CAP_SCALE = 1_000_000n;
+        const _capScaled = BigInt(Math.floor(result.cap * Number(_CAP_SCALE)));
+        const _bidAmt = _capScaled > 0n
+          ? (_residualSatsBI * (10n ** BigInt(decimals)) * _CAP_SCALE) / _capScaled
+          : 0n;
         if (_bidAmt > 0n) {
           // Variable-fill default (§5.7.7): the residual bid is partial-
           // fillable so multiple sellers can each contribute a chunk in
@@ -57948,8 +58029,18 @@ function _wireMarketSweepBuy(section, asset) {
         const residualAmt2 = targetAmtBig > filledAmt ? (targetAmtBig - filledAmt) : 0n;
         if (residualEl.checked && residualAmt2 > 0n) {
           try {
-            const wholeRem = Number(residualAmt2) / Math.pow(10, decimals);
-            const bidPriceSats = Math.max(DUST, Math.ceil(wholeRem * capUnit));
+            // BigInt-anchored sats: ceil(residualAmt2 * capUnit / 10^dec).
+            // Number(residualAmt2) silently rounds once base-unit count
+            // exceeds 2^53 (whales on 8-decimal assets), so multiply in
+            // BigInt with a scaled cap and only coerce the final result.
+            const _CAP_SCALE = 1_000_000n;
+            const _capScaled = BigInt(Math.floor(capUnit * Number(_CAP_SCALE)));
+            const _decFactor = 10n ** BigInt(decimals);
+            const _den = _decFactor * _CAP_SCALE;
+            const _bidPriceBI = _capScaled > 0n
+              ? (residualAmt2 * _capScaled + _den - 1n) / _den
+              : 0n;
+            const bidPriceSats = Math.max(DUST, Number(_bidPriceBI));
             const bidExpiry = Math.floor(Date.now() / 1000) + 24 * 3600;
             await publishBidIntent({ assetIdHex: aid, amount: residualAmt2, priceSats: bidPriceSats, expiry: bidExpiry });
             progEl.innerHTML += `<div style="margin-top:4px;color:#0a7d3a;">Residual ${escapeHtml(fmtAssetAmount(residualAmt2, decimals))} ${escapeHtml(ticker)} posted as a bid at ${capUnit} sats/${escapeHtml(ticker)} (24h)</div>`;
@@ -63063,7 +63154,8 @@ export {
   buildAndBroadcastCXferMulti,
   carveExactAmount,
   scanHoldings, invalidateHoldingsCache,
-  getFeeRate, broadcast, broadcastWithRetry, getTx,
+  getFeeRate, getFeeTierPref, setFeeTierPref, FEE_TIERS,
+  broadcast, broadcastWithRetry, getTx,
   estCXferRevealVb, estCommitVb, feeFor,
   DUST,
   NET,

@@ -14751,7 +14751,7 @@ async function scanForEtches(env, network) {
           }),
         );
         await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
-        const newXonlyHex = bytesToHex(slotXOnly(newKBtcPoint));
+        const newXonlyHex = sr.new_k_btc_xonly;
         await env.REGISTRY_KV.put(
           slotRegistryKey(network, sr.asset_id, sr.denomination, newXonlyHex),
           JSON.stringify({
@@ -15238,7 +15238,16 @@ async function scanForEtches(env, network) {
         if (wd.network_tag !== expectedNetTag) continue;
         const position = await ctacGetPosition(env, network, wd.target_leaf_hash);
         if (!position) continue;
-        if (position.state !== 'active' && position.state !== 'force-closed') continue;
+        // Pre-launch guard: per SPEC §5.38.5 a withdraw against a force-closed
+        // position is supposed to draw BTC out of `redemption_reserve_BTC`,
+        // which is funded by the TAC→BTC AMM swap that force-close is
+        // supposed to execute (§5.38.4). The AMM-envelope-pairing rule that
+        // wires that swap isn't shipped yet (see the T_CBTC_TAC_FORCE_CLOSE
+        // handler below for the matching gap), so the reserve is structurally
+        // empty. Accepting a withdraw here would leave the position record
+        // marked `withdrawn` while no BTC is actually returned. Refuse until
+        // the pairing lands; depositors of `active` positions are unaffected.
+        if (position.state !== 'active') continue;
         if (BigInt(wd.burn_amount) !== BigInt(position.mint_amount)) continue;
 
         // Optional pooled-insurance claim: must match per_share × burn_amount
@@ -15368,9 +15377,16 @@ async function scanForEtches(env, network) {
         //   - MINIMUM_LIQUIDITY locked-output check at vout[k_min_liq]
         //
         // validation tag in pool record reflects how far the validator
-        // gate ran at confirmation; downstream consumers (T_SWAP_VAR,
-        // T_LP_REMOVE) MUST refuse pools tagged 'structural-only' or
-        // 'sigs-and-arithmetic-verified' until they upgrade to 'verified'.
+        // gate ran at confirmation; downstream consumers MUST refuse pools
+        // tagged 'structural-only' or 'sigs-and-arithmetic-verified' until
+        // they upgrade to 'verified'. The downstream gates are enforced at:
+        //   - T_LP_REMOVE (line ~15706)
+        //   - T_SWAP_BATCH (line ~15848)
+        //   - T_PROTOCOL_FEE_CLAIM (line ~16093)
+        //   - T_SWAP_VAR (line ~16181)
+        // Pools written by this branch with a partial-validation tag CANNOT
+        // be transacted against via any of those opcodes — the partial state
+        // is contained until the deferred validators upgrade the tag.
         const lp = decodeTLpAddPayload(decoded.payload);
         if (!lp) continue;
         if (lp.variant === 1) {
@@ -16118,35 +16134,34 @@ async function scanForEtches(env, network) {
         });
         found++;
       } else if (decoded.opcode === T_SWAP_VAR) {
-        // SPEC-SWAP-VAR-AMENDMENT §5.16.3. Per-trade variable-amount AMM
-        // swap. This branch verifies the arithmetic-load-bearing gates:
+        // SPEC-SWAP-VAR-AMENDMENT §5.16.3 (a.k.a. SPEC §5.20). Per-trade
+        // variable-amount AMM swap. This branch is a full validator — every
+        // gate in SPEC §5.20 step 1..12 is enforced; the only remaining
+        // delegated step is step 13 (tip-output opening — see N-1 in the
+        // pre-ceremony audit). Gates run in order:
         //
-        //   1. OP_RETURN at tx.vout[0] equals SHA256(envelope_payload)
-        //      — closes the "envelope claimed but tx didn't bind it"
-        //      hole.
-        //   2. Pool exists at envelope.pool_id and is in a tradable
-        //      state. We REQUIRE validation tag 'sigs-and-arithmetic-
-        //      verified' or stronger; pools tagged 'structural-only'
-        //      are refused (this would be a foundation-era pool that
-        //      hasn't been re-validated).
-        //   3. Reserves freshness: R_A_pre / R_B_pre in envelope match
-        //      the pool's current state. Prevents stale-quote replay.
-        //   4. Range: delta_in_min ≤ delta_in ≤ delta_in_max.
-        //   5. Expiry: confirm_height < expiry_height.
-        //   6. Curve recompute: delta_out matches x·y=k formula with
-        //      fee_bps deducted (ammCurveDeltaOut). Strict equality.
-        //   7. Slippage: delta_out ≥ min_out.
-        //   8. Post-reserve non-negativity (curve invariant).
-        //
-        // Deferred to follow-up sessions (TODO):
-        //   - Trader's BIP-340 intent_sig over intent_msg.
-        //   - Settler's BIP-340 kernel_sig over kernel_msg (closes the
-        //     trader's asset-A side via excess scalar).
-        //   - r_receipt opening check (binds C_receipt_secp to delta_out;
-        //     closes 2026-05-15 inflation gap).
-        //   - C_in_secp matches on-chain Pedersen commit at vin[1]
-        //     (input-side inflation defense).
-        //   - Aggregated bulletproof over (C_change, C_receipt) range.
+        //   1.  OP_RETURN at tx.vout[0] = SHA256(envelope_payload).
+        //   2.  Pool exists at envelope.pool_id AND validation tag is
+        //       'xcurve-verified' or 'verified' (refuses partial-validation
+        //       pools — the T_LP_ADD validator only writes a fully verified
+        //       tag after the first successful swap upgrades it).
+        //   3.  Reserves freshness: R_A_pre / R_B_pre match pool state.
+        //   4.  Range: delta_in_min ≤ delta_in ≤ delta_in_max, delta_in > 0.
+        //   5.  Expiry: confirm_height < expiry_height.
+        //   6.  Curve recompute (strict equality, byte-identical to
+        //       tests/swap-var.mjs).
+        //   7.  Slippage floor: delta_out ≥ min_out.
+        //   8.  Post-reserve positivity inside ammCurveDeltaOut.
+        //   9.  C_in_secp byte-equals the on-chain Pedersen commit at
+        //       tx.vin[1] (asset-id consistency + input-side inflation
+        //       defense).
+        //  10.  Kernel sig under P = C_change_or_sentinel − C_in_secp +
+        //       (delta_in + tip_amount)·H_secp, x-only.
+        //  11.  Intent sig under trader_pubkey x-only over the
+        //       reconstructed intent_msg.
+        //  12.  r_receipt opening (C_receipt_secp = delta_out·H + r_receipt·G).
+        //  13.  Aggregated bulletproof m=2 over (C_change_or_sentinel,
+        //       C_receipt_secp).
         //
         // Pool state IS updated atomically after all gates pass; failure
         // at any gate `continue`s without state change.
