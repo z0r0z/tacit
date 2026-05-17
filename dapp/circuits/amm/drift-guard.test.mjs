@@ -45,22 +45,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // =========================================================================
 
 const PINNED_SOURCE_HASHES = {
-  'bjj_pedersen.circom':   'fdb4b547d6f756757ccd25d8d9a1495d276ff90a9de98a623a3b1a014060c28e',
+  'bjj_pedersen.circom':   '8197b9cb6b916f6be08f3f5e60f01944bba65d92a1fd079eb0bf3a497cc7674b',
   'amm_lp_add.circom':     'dd8d9e2e50a7dec241b3de5a30262354ed1100155e363baf57c13b36f0565a06',
   'amm_lp_remove.circom':  '093fc69dc7d3f4727fcb74d95715c5de1e00a46372d6a4bf7279d2ccd1ce6941',
-  'amm_swap_batch.circom': 'dfb219a2704840a8deb2209d6b1a34edf3c9b206d1e02dea280e3df048aa64c4',
+  'amm_swap_batch.circom': '5d6cd0b31ed7ae7c3cf82fb6e890b868c5295f5b5d35600e39c9bb3f473add98',
 };
 
 const PINNED_R1CS_HASHES = {
   'amm_lp_add.r1cs':     '5a67cdcc9e432d8474147a212dabf35e65425522bac111f8a1805d9386afb701',
   'amm_lp_remove.r1cs':  '005a38bfe8acc4d644e600aa91d08e08dba87170f87279bfb5b087230a4399b1',
-  'amm_swap_batch.r1cs': 'bd144d4bc66bd349522d9b2d7308d3e4dbf4c1281da9a8964933afe4aad47de8',
+  'amm_swap_batch.r1cs': '2d9db81d741e59d65e1b52ac3d37c5da521ef8c3728e9cd715c9a8a45bd495f4',
 };
 
 const PINNED_FINGERPRINTS = {
   amm_lp_add:     { nl: 4923,   linear: 230,  wires: 5155,   pubInputs: 5,   privInputs: 1 },
   amm_lp_remove:  { nl: 9908,   linear: 461,  wires: 10371,  pubInputs: 8,   privInputs: 2 },
-  amm_swap_batch: { nl: 164476, linear: 7682, wires: 172058, pubInputs: 123, privInputs: 96 },
+  amm_swap_batch: { nl: 163478, linear: 7684, wires: 171076, pubInputs: 123, privInputs: 96 },
 };
 
 // =========================================================================

@@ -1551,28 +1551,31 @@ console.log('\nGroth16 publicSignals canonical serialization');
         && sigs[10] === '1';        // n_intents
   });
 
-  test('publicSignals per-intent layout: 5 fields × N_MAX=16 starting at index 11', () => {
+  test('publicSignals per-intent layout: by-field arrays at indices 11/27/43/59/75', () => {
     const sigs = buildPublicSignalsSwapBatch(env, pool);
-    // intent[0] is the real one; intents 1..15 are padded.
-    return sigs[11] === '0'         // direction (A→B)
-        && sigs[12] === '11'        // C_in_BJJ_u
-        && sigs[13] === '22'        // C_in_BJJ_v
-        && sigs[14] === '0'         // min_out
-        && sigs[15] === '50'        // tip_amount
-        // Padding starts at intent[1] = index 16.
-        && sigs[16] === '0'         // padded direction
-        && sigs[17] === '0'         // padded C_in_BJJ_u (identity)
-        && sigs[18] === '1';        // padded C_in_BJJ_v (identity)
+    // intent[0] is the real one; intents 1..15 are padded. Layout matches
+    // circom's witness flattening (each signal-input array contiguous).
+    return sigs[11] === '0'         // direction[0]      (A→B)
+        && sigs[27] === '11'        // C_in_BJJ_u[0]
+        && sigs[43] === '22'        // C_in_BJJ_v[0]
+        && sigs[59] === '0'         // min_out[0]
+        && sigs[75] === '50'        // tip_amount[0]
+        // Padded intent[1].
+        && sigs[12] === '0'         // direction[1]      (padded)
+        && sigs[28] === '0'         // C_in_BJJ_u[1]     (identity u=0)
+        && sigs[44] === '1'         // C_in_BJJ_v[1]     (identity v=1)
+        && sigs[60] === '0'         // min_out[1]        (padded)
+        && sigs[76] === '0';        // tip_amount[1]     (padded)
   });
 
-  test('publicSignals per-receipt layout: 2 fields × N_MAX=16 starting at index 91', () => {
-    // 11 + 5*16 = 91 is the first per-receipt index.
+  test('publicSignals per-receipt layout: by-field arrays at indices 91/107', () => {
+    // After 5 per-intent arrays of length 16: 11 + 5*16 = 91 is C_out_BJJ_u[0].
     const sigs = buildPublicSignalsSwapBatch(env, pool);
-    return sigs[91] === '33'        // receipt[0].C_out_BJJ_u
-        && sigs[92] === '44'        // receipt[0].C_out_BJJ_v
-        // Padded receipt[1] at index 93.
-        && sigs[93] === '0'         // padded C_out_BJJ_u (identity)
-        && sigs[94] === '1';        // padded C_out_BJJ_v (identity)
+    return sigs[91]  === '33'       // C_out_BJJ_u[0]
+        && sigs[107] === '44'       // C_out_BJJ_v[0]
+        // Padded receipt[1].
+        && sigs[92]  === '0'        // C_out_BJJ_u[1]    (identity u=0)
+        && sigs[108] === '1';       // C_out_BJJ_v[1]    (identity v=1)
   });
 
   test('publicSignals is deterministic (same inputs ⇒ same array)', () => {

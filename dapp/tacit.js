@@ -193,6 +193,34 @@ const CANONICAL_VK_CID = 'bafkreidwbautgstcnl54oszez7yqlc7mr5lrj6ac65h3p5sjw2rgz
 // is enforced via the IPFS CID's content-addressing (every fetch in
 // _fetchMixerVk verifies the bytes hash back to the requested CID).
 const CANONICAL_VK_SHA256 = '760829334a626afbc74b24cff1058bec8f5714f802f74fb7f649b6a26ce933af';
+
+// CANONICAL_AMM_VK_CID
+//
+// IPFS CID of the finalized Groth16 verifying key for the AMM circuits
+// (lp_add / lp_remove / swap_batch). Populated after the AMM Phase 2
+// ceremony completes + a public beacon is applied. Until then this stays
+// `null` and `_isAmmCeremonyUnlocked()` returns false, which CSS-gates the
+// LP_ADD / LP_REMOVE / pool-tab-swap operations in #tab-pool. Worker still
+// enforces public-amount math (ammLpAddShares / ammLpRemoveOutputs /
+// ammCurveDeltaOut) on every envelope today, so the lock is operational
+// caution (waiting on the public ceremony to extend the trust anchor),
+// not a soundness gate. Single-flip activation when the ceremony lands:
+// pin the CID here, the gate drops automatically on next renderPool().
+const CANONICAL_AMM_VK_CID = null;
+function _isAmmCeremonyUnlocked() { return !!CANONICAL_AMM_VK_CID; }
+
+// AMM ceremony circuit hashes. sha256 of each circuit's r1cs file bytes —
+// matches the value the coordinator passes to POST /ceremony/init when
+// kicking off the three Phase 2 chains. Computed from the built r1cs at
+// dapp/circuits/amm/build/*.r1cs (frozen pre-ceremony, see REVIEW.md).
+// The ceremony-contribute UI rotates across these to advance whichever
+// chain currently has the shortest contribution count, so a single user
+// click can move whichever side most needs entropy.
+const AMM_CEREMONY_CIRCUIT_HASHES = Object.freeze([
+  { key: 'amm_lp_add',     hash: '5a67cdcc9e432d8474147a212dabf35e65425522bac111f8a1805d9386afb701', label: 'AMM · LP add' },
+  { key: 'amm_lp_remove',  hash: '005a38bfe8acc4d644e600aa91d08e08dba87170f87279bfb5b087230a4399b1', label: 'AMM · LP remove' },
+  { key: 'amm_swap_batch', hash: '2d9db81d741e59d65e1b52ac3d37c5da521ef8c3728e9cd715c9a8a45bd495f4', label: 'AMM · swap batch' },
+]);
 // ============================================================================
 
 const PIN_URL      = WORKER_BASE ? WORKER_BASE + '/pin'      : '';
@@ -8566,6 +8594,191 @@ async function verifyMixerProof({ vkCid, publicInputs, proof }) {
   }
 }
 
+// ============== AMM GROTH16 VERIFY ==============
+// Parallel to verifyMixerProof above but for the three AMM circuits. Activates
+// when CANONICAL_AMM_VK_CID is pinned (post-ceremony). Before that, scanHoldings's
+// AMM branches keep their pre-ceremony "always-valid + worker-public-amount-check"
+// posture; once the constant flips, this verifier runs on every LP_ADD /
+// LP_REMOVE / SWAP_BATCH envelope walked during ancestry validation.
+//
+// Wrapper shape (matches what /pin-amm-vk validates + accepts):
+//   { schema: "tacit-amm-vk-wrapper-v1", lp_add: {...}, lp_remove: {...}, swap_batch: {...} }
+//
+// The wrapper is content-addressed (same _ipfsCidMatches check as mixer vk)
+// so a gateway can't substitute a malicious bundle. Cached per-CID.
+const _ammVkWrapperCache = new Map(); // vkCid → Promise<wrapper>
+async function _fetchAmmVkWrapper(vkCid) {
+  if (!vkCid) return null;
+  if (_ammVkWrapperCache.has(vkCid)) return _ammVkWrapperCache.get(vkCid);
+  const promise = (async () => {
+    const url = `${IPFS_GATEWAY}${vkCid}`;
+    const resp = await fetch(url, { cache: 'force-cache' });
+    if (!resp.ok) throw new Error(`amm vk fetch ${vkCid}: HTTP ${resp.status}`);
+    const raw = new Uint8Array(await resp.arrayBuffer());
+    if (!(await _ipfsCidMatches(vkCid, raw))) {
+      throw new Error(`amm vk content does not match CID ${vkCid} — gateway substitution detected`);
+    }
+    const wrapper = JSON.parse(new TextDecoder().decode(raw));
+    if (wrapper?.schema !== 'tacit-amm-vk-wrapper-v1') {
+      throw new Error('amm vk wrapper missing schema "tacit-amm-vk-wrapper-v1"');
+    }
+    for (const k of ['lp_add', 'lp_remove', 'swap_batch']) {
+      if (!wrapper[k] || wrapper[k].protocol !== 'groth16') {
+        throw new Error(`amm vk wrapper missing or malformed "${k}"`);
+      }
+    }
+    return wrapper;
+  })();
+  _ammVkWrapperCache.set(vkCid, promise);
+  promise.catch(() => _ammVkWrapperCache.delete(vkCid));
+  return promise;
+}
+
+// pool_id_fr = SHA256(pool_id_bytes) mod p_Fr (BN254 scalar field). The AMM
+// circuits take pool_id_fr as a public input so a proof for one pool can't
+// be replayed against another. Helper kept here so the verifier + the prover
+// share the same byte-for-byte derivation.
+function _ammPoolIdFr(poolIdBytes) {
+  const bytes = poolIdBytes instanceof Uint8Array ? poolIdBytes : hexToBytes(poolIdBytes);
+  if (bytes.length !== 32) throw new Error('pool_id must be 32 bytes');
+  const digest = sha256(bytes);
+  let v = 0n;
+  for (let i = 0; i < 32; i++) v = (v << 8n) | BigInt(digest[i]);
+  return v % ammBjjMod.P_FR;
+}
+
+// Unpack a 32-byte BJJ commitment (compressed `packPoint` form) into (u, v)
+// coordinates. The circuits take packed u + v as separate public inputs;
+// failing to unpack here means the on-chain commitment isn't a valid BJJ
+// subgroup point and the verifier short-circuits to false.
+function _ammBjjCoords(cBJJBytes) {
+  const pt = ammBjjMod.unpackPoint(cBJJBytes);
+  if (!pt) return null;
+  return { u: pt[0], v: pt[1] };
+}
+
+async function verifyAmmProof({ circuitKey, vkCid, publicInputs, proof }) {
+  if (!proof || proof.length !== 256) return false;
+  if (!Array.isArray(publicInputs)) return false;
+  if (!vkCid) return false;
+  if (circuitKey !== 'lp_add' && circuitKey !== 'lp_remove' && circuitKey !== 'swap_batch') return false;
+  let snarkjs, wrapper;
+  try {
+    [snarkjs, wrapper] = await Promise.all([_loadSnarkjs(), _fetchAmmVkWrapper(vkCid)]);
+  } catch (e) {
+    if (typeof console !== 'undefined') console.warn('[amm] verify load:', e.message || e);
+    return false;
+  }
+  if (!wrapper?.[circuitKey] || !snarkjs?.groth16?.verify) return false;
+  const proofObj = _parseGroth16Proof(proof);
+  if (!proofObj) return false;
+  const decInputs = _publicInputsToDecimal(publicInputs);
+  try {
+    return await snarkjs.groth16.verify(wrapper[circuitKey], decInputs, proofObj);
+  } catch (e) {
+    if (typeof console !== 'undefined') console.warn('[amm] verify:', e.message || e);
+    return false;
+  }
+}
+
+// AMM Groth16 prover wiring. Loads the per-circuit zkey on demand from
+// IPFS (the canonical wrapper directory pins all three under predictable
+// names — `amm_lp_add_final.zkey`, etc.); the wasm is bundled at the dapp
+// build step (vendor/amm_lp_add.wasm / vendor/amm_lp_remove.wasm). Returns
+// a 256-byte canonical Groth16 proof matching the envelope wire format.
+// Falls back to a placeholder 256-byte buffer when CANONICAL_AMM_VK_CID is
+// null (pre-ceremony — worker only enforces public-amount math, the proof
+// field is structural-only). Caching: zkeys per-CID across calls.
+const TACIT_AMM_LP_ADD_WASM_PATH    = './vendor/amm_lp_add.wasm';
+const TACIT_AMM_LP_REMOVE_WASM_PATH = './vendor/amm_lp_remove.wasm';
+const _ammZkeyCache = new Map(); // ipfsPath → Promise<Uint8Array>
+async function _fetchAmmZkey(circuitKey) {
+  if (!CANONICAL_AMM_VK_CID) return null;
+  // The wrapper directory pins each circuit's final zkey at a predictable
+  // path inside the IPFS bundle directory. Coordinator follows the runbook
+  // §"What the ceremony produces" naming.
+  const fileName = circuitKey === 'lp_add'     ? 'amm_lp_add_final.zkey'
+                 : circuitKey === 'lp_remove'  ? 'amm_lp_remove_final.zkey'
+                 : circuitKey === 'swap_batch' ? 'amm_swap_batch_final.zkey'
+                 : null;
+  if (!fileName) return null;
+  // The CANONICAL_AMM_VK_CID is the wrapper JSON's CID, not the directory
+  // CID. The bundle directory CID is announced separately; until that's
+  // pinned in a CANONICAL_AMM_CEREMONY_CID constant alongside the vk CID,
+  // we fetch from a coordinator-published directory CID held in
+  // CANONICAL_AMM_CEREMONY_CID (populated in the same one-line flip).
+  const dirCid = CANONICAL_AMM_CEREMONY_CID;
+  if (!dirCid) {
+    throw new Error('AMM ceremony directory CID not pinned — set CANONICAL_AMM_CEREMONY_CID');
+  }
+  const cacheKey = `${dirCid}/${fileName}`;
+  if (_ammZkeyCache.has(cacheKey)) return _ammZkeyCache.get(cacheKey);
+  const promise = (async () => {
+    const url = `${IPFS_GATEWAY}${dirCid}/${fileName}`;
+    const resp = await fetch(url, { cache: 'force-cache' });
+    if (!resp.ok) throw new Error(`amm zkey fetch ${cacheKey}: HTTP ${resp.status}`);
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    if (bytes.length < 1024) throw new Error('amm zkey too small');
+    if (bytes[0] !== 0x7a || bytes[1] !== 0x6b || bytes[2] !== 0x65 || bytes[3] !== 0x79) {
+      throw new Error('amm zkey missing "zkey" magic bytes');
+    }
+    return bytes;
+  })();
+  _ammZkeyCache.set(cacheKey, promise);
+  promise.catch(() => _ammZkeyCache.delete(cacheKey));
+  return promise;
+}
+// Sibling constant to CANONICAL_AMM_VK_CID for the bundle directory. Pin
+// both together post-ceremony so the prover can find the zkeys.
+const CANONICAL_AMM_CEREMONY_CID = null;
+async function _ammProveLpAdd({ poolIdBytes, variant, shareAmount, shareCBJJBytes, rShareBJJ }) {
+  if (!_isAmmCeremonyUnlocked()) return new Uint8Array(256);
+  const snarkjs = await _loadSnarkjs();
+  const wasmResp = await fetch(TACIT_AMM_LP_ADD_WASM_PATH);
+  if (!wasmResp.ok) throw new Error(`amm lp_add wasm fetch: HTTP ${wasmResp.status}`);
+  const wasmBytes = new Uint8Array(await wasmResp.arrayBuffer());
+  const zkeyBytes = await _fetchAmmZkey('lp_add');
+  if (!zkeyBytes) throw new Error('amm lp_add zkey not available');
+  const coords = _ammBjjCoords(shareCBJJBytes);
+  if (!coords) throw new Error('amm lp_add: shareCBJJ not on curve');
+  const input = {
+    pool_id_fr:     _ammPoolIdFr(poolIdBytes).toString(),
+    variant:        String(variant | 0),
+    share_amount:   BigInt(shareAmount).toString(),
+    C_share_BJJ_u:  coords.u.toString(),
+    C_share_BJJ_v:  coords.v.toString(),
+    r_share_BJJ:    BigInt(rShareBJJ).toString(),
+  };
+  const { proof } = await snarkjs.groth16.fullProve(input, wasmBytes, zkeyBytes);
+  return _serializeGroth16Proof(proof);
+}
+async function _ammProveLpRemove({ poolIdBytes, shareAmount, deltaA, deltaB, recvACBJJBytes, recvBCBJJBytes, rRecvABJJ, rRecvBBJJ }) {
+  if (!_isAmmCeremonyUnlocked()) return new Uint8Array(256);
+  const snarkjs = await _loadSnarkjs();
+  const wasmResp = await fetch(TACIT_AMM_LP_REMOVE_WASM_PATH);
+  if (!wasmResp.ok) throw new Error(`amm lp_remove wasm fetch: HTTP ${wasmResp.status}`);
+  const wasmBytes = new Uint8Array(await wasmResp.arrayBuffer());
+  const zkeyBytes = await _fetchAmmZkey('lp_remove');
+  if (!zkeyBytes) throw new Error('amm lp_remove zkey not available');
+  const coordsA = _ammBjjCoords(recvACBJJBytes);
+  const coordsB = _ammBjjCoords(recvBCBJJBytes);
+  if (!coordsA || !coordsB) throw new Error('amm lp_remove: receipt BJJ commits not on curve');
+  const input = {
+    pool_id_fr:     _ammPoolIdFr(poolIdBytes).toString(),
+    share_amount:   BigInt(shareAmount).toString(),
+    delta_A:        BigInt(deltaA).toString(),
+    delta_B:        BigInt(deltaB).toString(),
+    recv_A_BJJ_u:   coordsA.u.toString(),
+    recv_A_BJJ_v:   coordsA.v.toString(),
+    recv_B_BJJ_u:   coordsB.u.toString(),
+    recv_B_BJJ_v:   coordsB.v.toString(),
+    r_recv_A_BJJ:   BigInt(rRecvABJJ).toString(),
+    r_recv_B_BJJ:   BigInt(rRecvBBJJ).toString(),
+  };
+  const { proof } = await snarkjs.groth16.fullProve(input, wasmBytes, zkeyBytes);
+  return _serializeGroth16Proof(proof);
+}
+
 // ============== WALLET FLOWS ==============
 // Higher-level helpers a caller uses to generate the wire-level envelopes
 // for the three mixer operations. Callers handle the actual Bitcoin tx
@@ -11583,6 +11796,30 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     if (vout !== 0) { validatedSet.set(key, false); return false; }
     const dec = ammEnvelopeMod.decodeLpAdd(env.payload);
     if (!dec) { validatedSet.set(key, false); return false; }
+    // Post-ceremony Groth16 verify. Pre-ceremony the proof is a placeholder
+    // (256-byte zero buffer) and we skip — worker's ammLpAddShares /
+    // ammLpInitShares public-amount check is the floor. Once CANONICAL_AMM_VK_CID
+    // is pinned, this verifies the in-circuit Pedersen opening of the LP-share
+    // BJJ commitment against the public share_amount.
+    if (_isAmmCeremonyUnlocked()) {
+      const poolIdBytes = _scanLpAddPoolId(dec);
+      if (!poolIdBytes || !dec.proof || !dec.shareCBJJ) {
+        _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
+      }
+      const coords = _ammBjjCoords(dec.shareCBJJ);
+      if (!coords) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
+      const ok = await verifyAmmProof({
+        circuitKey: 'lp_add', vkCid: CANONICAL_AMM_VK_CID,
+        publicInputs: [
+          _ammPoolIdFr(poolIdBytes).toString(),
+          String(dec.variant | 0),
+          BigInt(dec.shareAmount).toString(),
+          coords.u.toString(), coords.v.toString(),
+        ],
+        proof: dec.proof,
+      });
+      if (!ok) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
+    }
     validatedSet.set(key, true);
     return true;
   }
@@ -11593,6 +11830,33 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     if (vout !== 0 && vout !== 1) { validatedSet.set(key, false); return false; }
     const dec = ammEnvelopeMod.decodeLpRemove(env.payload);
     if (!dec) { validatedSet.set(key, false); return false; }
+    // Post-ceremony Groth16 verify (parallel to LP_ADD branch above).
+    if (_isAmmCeremonyUnlocked()) {
+      const candidates = _scanLpRemovePoolIdCandidates(dec);
+      if (!candidates.length || !dec.proof || !dec.recvACBJJ || !dec.recvBCBJJ) {
+        _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false;
+      }
+      const coordsA = _ammBjjCoords(dec.recvACBJJ);
+      const coordsB = _ammBjjCoords(dec.recvBCBJJ);
+      if (!coordsA || !coordsB) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
+      let anyOk = false;
+      for (const poolIdBytes of candidates) {
+        const ok = await verifyAmmProof({
+          circuitKey: 'lp_remove', vkCid: CANONICAL_AMM_VK_CID,
+          publicInputs: [
+            _ammPoolIdFr(poolIdBytes).toString(),
+            BigInt(dec.shareAmount).toString(),
+            BigInt(dec.deltaA).toString(),
+            BigInt(dec.deltaB).toString(),
+            coordsA.u.toString(), coordsA.v.toString(),
+            coordsB.u.toString(), coordsB.v.toString(),
+          ],
+          proof: dec.proof,
+        });
+        if (ok) { anyOk = true; break; }
+      }
+      if (!anyOk) { _markInvalid(validatedSet, validatedReasons, key, _REASON_INVALID); return false; }
+    }
     validatedSet.set(key, true);
     return true;
   }
@@ -17024,7 +17288,17 @@ async function buildAndBroadcastLpAddPoolInit({
 
   // 9. Encode envelope
   _progress('envelope:build');
-  const proofBytes = new Uint8Array(256);  // placeholder Groth16
+  // Groth16 proof: real fullProve when the AMM ceremony has finalized
+  // (CANONICAL_AMM_VK_CID + CANONICAL_AMM_CEREMONY_CID pinned in
+  // dapp/tacit.js); placeholder 256-byte buffer otherwise. The worker's
+  // public-amount validators (ammLpInitShares / ammLpAddShares) gate
+  // soundness either way; the Groth16 layer extends that with circuit-
+  // verified Pedersen-opening proofs once the ceremony is load-bearing.
+  _progress('proof:groth16');
+  const proofBytes = await _ammProveLpAdd({
+    poolIdBytes, variant: 1, shareAmount: founderShares,
+    shareCBJJBytes, rShareBJJ,
+  });
   const payload = ammEnvelopeMod.encodeLpAdd({
     variant: 1,
     assetA: canonA, assetB: canonB,
@@ -17258,6 +17532,12 @@ async function buildAndBroadcastLpAddVariant0({
 
   // 5. Encode envelope (variant 0 — no metadata trailer)
   _progress('envelope:build');
+  // Groth16 proof: real when AMM ceremony has finalized (placeholder otherwise).
+  _progress('proof:groth16');
+  const proofBytes = await _ammProveLpAdd({
+    poolIdBytes, variant: 0, shareAmount,
+    shareCBJJBytes, rShareBJJ,
+  });
   const payload = ammEnvelopeMod.encodeLpAdd({
     variant: 0,
     assetA: canonA, assetB: canonB,
@@ -17267,7 +17547,7 @@ async function buildAndBroadcastLpAddVariant0({
     shareCBJJ: shareCBJJBytes,
     shareXcurveSigma: xcurveSigma,
     kernelSigA, kernelSigB,
-    proof: new Uint8Array(256),
+    proof: proofBytes,
   });
 
   // 6. Commit + reveal tx pair
@@ -17454,17 +17734,31 @@ async function buildAndBroadcastLpRemove({
 
   // 4. Encode envelope
   _progress('envelope:build');
+  const recvACBJJBytes = ammBjjMod.packPoint(recvACBJJPt);
+  const recvBCBJJBytes = ammBjjMod.packPoint(recvBCBJJPt);
+  // Groth16 proof: real fullProve when ceremony has finalized (placeholder
+  // otherwise). The worker's ammLpRemoveOutputs check gates correctness in
+  // either case; Groth16 layers the per-receipt Pedersen-opening verification.
+  _progress('proof:groth16');
+  const proofBytes = await _ammProveLpRemove({
+    poolIdBytes,
+    shareAmount,
+    deltaA: dA, deltaB: dB,
+    recvACBJJBytes, recvBCBJJBytes,
+    rRecvABJJ: blindA.r_BJJ,
+    rRecvBBJJ: blindB.r_BJJ,
+  });
   const payload = ammEnvelopeMod.encodeLpRemove({
     assetA: canonA, assetB: canonB,
     shareAmount, deltaA: dA, deltaB: dB,
     recvACSecp: recvACSecpPt.toRawBytes(true),
-    recvACBJJ: ammBjjMod.packPoint(recvACBJJPt),
+    recvACBJJ: recvACBJJBytes,
     recvAXcurveSigma: sigmaA,
     recvBCSecp: recvBCSecpPt.toRawBytes(true),
-    recvBCBJJ: ammBjjMod.packPoint(recvBCBJJPt),
+    recvBCBJJ: recvBCBJJBytes,
     recvBXcurveSigma: sigmaB,
     kernelSigLP,
-    proof: new Uint8Array(256),
+    proof: proofBytes,
   });
 
   // 5. Bitcoin tx pair
@@ -29114,6 +29408,57 @@ function setupMixerHandlers() {
 let _ceremonyActiveHash = TACIT_DEFAULT_CEREMONY_HASH;
 let _ceremonyState = null;
 
+// Per-circuit AMM ceremony state cache. Keyed by circuit_hash → most-recent
+// ceremonyFetchState response. Used by the chip + drawer (renderAmmCeremonyChip /
+// renderAmmCeremonyDrawer) to display contribution counts and pick the
+// shortest chain for round-robin advancement. Refreshed by the auto-refresh
+// timer and on drawer open. Null entries mean "not yet fetched"; a fetch
+// failure leaves the prior cached state in place (best-effort cache).
+const _ammCeremonyStateByCircuit = new Map();
+let _ammCeremonyStateLastFetchAt = 0;
+const AMM_CEREMONY_STATE_TTL_MS = 30 * 1000;
+async function refreshAmmCeremonyStatesIfStale(force = false) {
+  if (!force && Date.now() - _ammCeremonyStateLastFetchAt < AMM_CEREMONY_STATE_TTL_MS) return;
+  await Promise.all(AMM_CEREMONY_CIRCUIT_HASHES.map(async ({ hash }) => {
+    try {
+      const s = await ceremonyFetchState(hash);
+      if (s) _ammCeremonyStateByCircuit.set(hash, s);
+    } catch {}
+  }));
+  _ammCeremonyStateLastFetchAt = Date.now();
+}
+// Round-robin selector: returns the AMM circuit whose chain currently has
+// the fewest contributions (or the first not-yet-fetched chain). A user
+// clicking the chip's "contribute" button advances whichever chain most
+// needs entropy. Falls back to the first circuit when all states are
+// equal or missing.
+function pickShortestAmmCircuit() {
+  let best = AMM_CEREMONY_CIRCUIT_HASHES[0];
+  let bestCount = Infinity;
+  for (const c of AMM_CEREMONY_CIRCUIT_HASHES) {
+    const s = _ammCeremonyStateByCircuit.get(c.hash);
+    const count = s?.contribution_count ?? -1;  // not-yet-fetched first
+    if (count < bestCount) { best = c; bestCount = count; }
+  }
+  return best;
+}
+// localStorage ack so the chip auto-collapses for users who've contributed
+// in the last 24h. Per-(network, wallet-pubkey) so a user switching wallets
+// re-sees the prompt. Anonymous contributors get a global-per-network ack.
+function _ammCeremonyAckKey() {
+  const pub = wallet?.pub ? bytesToHex(wallet.pub) : 'anon';
+  return `tacit-amm-ceremony-ack-v1:${NET.name}:${pub}`;
+}
+function ammCeremonyRecentlyAcked(ttlMs = 24 * 60 * 60 * 1000) {
+  try {
+    const ts = parseInt(localStorage.getItem(_ammCeremonyAckKey()) || '0', 10);
+    return Number.isFinite(ts) && (Date.now() - ts) < ttlMs;
+  } catch { return false; }
+}
+function ammCeremonyMarkContributed() {
+  try { localStorage.setItem(_ammCeremonyAckKey(), String(Date.now())); } catch {}
+}
+
 // Module-level cache for the ceremony's r1cs and ptau blobs. These never
 // change for a given (circuit_hash) ceremony, but each call to
 // ceremonyVerifyChain re-downloads them — ~18 MB combined per attempt. A
@@ -30073,6 +30418,234 @@ async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entro
   return { newZkey: newKey.data, contributionHash: contributionHashHex };
 }
 
+// AMM ceremony contributor — slim wrapper around the existing
+// ceremonyContributeInBrowser path. Used by the chip + drawer UX that
+// surfaces a one-click contribute prompt on every market/asset/pool surface.
+// circuitHash selects which of the three AMM chains (lp_add / lp_remove /
+// swap_batch) gets advanced; the chip's round-robin selector picks the
+// shortest. contributorPubkeyHex is optional — when omitted, the upload
+// is pseudonymous (matches mixer pattern). Returns the worker's POST
+// response on success; throws on any pipeline failure.
+async function ceremonyContributeAmm({
+  circuitHash, contributorName = 'anonymous', contributorPubkeyHex = null, onProgress = null,
+}) {
+  if (!/^[0-9a-f]{64}$/.test(String(circuitHash || ''))) {
+    throw new Error('circuitHash must be 64 hex chars');
+  }
+  const _emit = (phase, info) => { try { onProgress && onProgress(phase, info); } catch {} };
+  _emit('refresh');
+  const state = await ceremonyFetchState(circuitHash);
+  if (!state) throw new Error('ceremony chain not initialized — coordinator hasn\'t POSTed /ceremony/init yet');
+  if (state.finalized) throw new Error('ceremony has been finalized; chain is locked');
+  _ammCeremonyStateByCircuit.set(circuitHash, state);
+
+  _emit('fetch-head', { cid: state.head_cid });
+  const headBytes = await _ceremonyFetchIpfsWithFailover(
+    state.head_cid,
+    (bytes) => {
+      if (bytes.length < 256) return `unexpectedly small (${bytes.length} bytes — likely error page)`;
+      if (bytes[0] !== 0x7a || bytes[1] !== 0x6b || bytes[2] !== 0x65 || bytes[3] !== 0x79) {
+        return `does not start with "zkey" magic bytes`;
+      }
+      return null;
+    },
+    (msg) => _emit('fetch-head-log', { msg }),
+    (done, total) => _emit('fetch-head-bytes', { done, total }),
+  );
+
+  _emit('mix');
+  const entropyBytes = crypto.getRandomValues(new Uint8Array(32));
+  const entropy = Array.from(entropyBytes).map(b => b.toString(16).padStart(2, '0')).join('') +
+                  ':' + Date.now() + ':' + Math.random();
+  const mixed = await ceremonyContributeInBrowser(
+    headBytes,
+    String(contributorName || 'anonymous').slice(0, 64),
+    entropy,
+    state,
+    (phase, info) => _emit('mix-phase', { phase, info }),
+  );
+
+  _emit('upload', { bytes: mixed.newZkey.length });
+  const fd = new FormData();
+  fd.append('zkey', new Blob([mixed.newZkey], { type: 'application/octet-stream' }), 'amm_contributed.zkey');
+  fd.append('contributor_name', String(contributorName || 'anonymous').slice(0, 64));
+  if (contributorPubkeyHex && /^0[23][0-9a-f]{64}$/.test(contributorPubkeyHex.toLowerCase())) {
+    fd.append('contributor_pubkey', contributorPubkeyHex.toLowerCase());
+  }
+  fd.append('prev_cid', state.head_cid);
+  fd.append('contribution_hash', mixed.contributionHash);
+  const upResp = await new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${WORKER_BASE}/ceremony/${circuitHash}/contribute`);
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable) _emit('upload-bytes', { done: ev.loaded, total: ev.total });
+    };
+    xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+    xhr.onerror = () => reject(new Error('upload network error'));
+    xhr.onabort = () => reject(new Error('upload aborted'));
+    xhr.send(fd);
+  });
+  if (upResp.status < 200 || upResp.status >= 300) {
+    let parsed = null; try { parsed = JSON.parse(upResp.body); } catch {}
+    throw new Error(parsed?.error || `upload failed (HTTP ${upResp.status})`);
+  }
+  let result;
+  try { result = JSON.parse(upResp.body); } catch { throw new Error('upload returned non-JSON'); }
+  // Refresh the local state cache for this circuit so the chip's "X/N
+  // contributions" indicator updates immediately.
+  if (result?.state) _ammCeremonyStateByCircuit.set(circuitHash, result.state);
+  ammCeremonyMarkContributed();
+  _emit('done', { state: result.state, contribution: result.contribution });
+  return result;
+}
+
+// AMM ceremony chip — ambient prompt on Market / Holdings / Pool / asset-
+// detail surfaces while the ceremony is running. Hidden when:
+//   (a) AMM ceremony finalized (canonical vk pinned, no further contribs)
+//   (b) user contributed in the last 24h (localStorage ack)
+//   (c) active tab isn't one of the four target surfaces
+//   (d) worker base unreachable (WORKER_BASE empty)
+const AMM_CEREMONY_CHIP_TABS = new Set(['market', 'pool', 'holdings']);
+function _ammCerActiveTab() {
+  try {
+    const t = document.querySelector('.tab.active');
+    return t?.dataset?.tab || '';
+  } catch { return ''; }
+}
+function renderAmmCeremonyChip() {
+  const chip = document.getElementById('amm-ceremony-chip');
+  if (!chip) return;
+  const finalized = _isAmmCeremonyUnlocked();
+  const tab = _ammCerActiveTab();
+  const onTargetTab = AMM_CEREMONY_CHIP_TABS.has(tab);
+  const acked = ammCeremonyRecentlyAcked();
+  const show = !finalized && onTargetTab && !acked && !!WORKER_BASE;
+  chip.style.display = show ? 'inline-flex' : 'none';
+  if (!show) return;
+  // Async refresh of per-circuit states so the count chip stays current.
+  // First paint shows last-known (or "—" placeholder); the refresh below
+  // updates in place when state lands.
+  const countEl = document.getElementById('amm-cer-chip-count');
+  if (countEl) {
+    const total = AMM_CEREMONY_CIRCUIT_HASHES.reduce((acc, c) => acc + (_ammCeremonyStateByCircuit.get(c.hash)?.contribution_count ?? 0), 0);
+    countEl.textContent = total > 0 ? `· ${total} contribs` : '';
+  }
+  refreshAmmCeremonyStatesIfStale().then(() => {
+    if (countEl) {
+      const total = AMM_CEREMONY_CIRCUIT_HASHES.reduce((acc, c) => acc + (_ammCeremonyStateByCircuit.get(c.hash)?.contribution_count ?? 0), 0);
+      countEl.textContent = total > 0 ? `· ${total} contribs` : '';
+    }
+  }).catch(() => {});
+}
+function openAmmCeremonyDrawer() {
+  const drawer = document.getElementById('amm-ceremony-drawer');
+  if (!drawer) return;
+  drawer.style.display = 'flex';
+  _renderAmmCerDrawerBody();
+  refreshAmmCeremonyStatesIfStale(true).then(_renderAmmCerDrawerBody).catch(() => {});
+  // Pre-fill the wallet pubkey hint if a wallet is loaded.
+  const pubHint = document.getElementById('amm-cer-pubkey-hint');
+  if (pubHint && wallet?.pub) pubHint.textContent = `(${bytesToHex(wallet.pub).slice(0, 12)}…)`;
+  // Disable the attribute checkbox if no wallet is loaded.
+  const attrCb = document.getElementById('amm-cer-attribute-pubkey');
+  if (attrCb && !wallet?.pub) { attrCb.checked = false; attrCb.disabled = true; }
+}
+function closeAmmCeremonyDrawer() {
+  const drawer = document.getElementById('amm-ceremony-drawer');
+  if (drawer) drawer.style.display = 'none';
+}
+function _renderAmmCerDrawerBody() {
+  const chainsEl = document.getElementById('amm-cer-chains');
+  if (!chainsEl) return;
+  const rows = AMM_CEREMONY_CIRCUIT_HASHES.map(c => {
+    const s = _ammCeremonyStateByCircuit.get(c.hash);
+    const count = s?.contribution_count ?? '—';
+    const finalized = s?.finalized ? ' · ✓ finalized' : '';
+    return `<div style="display:flex; justify-content:space-between; padding:4px 0; border-bottom:1px solid var(--ink-faint);"><span>${escapeHtml(c.label)}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalized}</span></div>`;
+  }).join('');
+  chainsEl.innerHTML = rows;
+}
+async function _submitAmmCeremonyContribution() {
+  const goBtn = document.getElementById('amm-cer-go');
+  const cancelBtn = document.getElementById('amm-cer-cancel');
+  const progEl = document.getElementById('amm-cer-progress');
+  const resultEl = document.getElementById('amm-cer-result');
+  const nameEl = document.getElementById('amm-cer-name');
+  const attrCb = document.getElementById('amm-cer-attribute-pubkey');
+  if (!goBtn || !progEl || !resultEl) return;
+  const contributorName = (nameEl?.value || '').trim().slice(0, 64) || 'anonymous';
+  const attributePub = !!attrCb?.checked && !!wallet?.pub;
+  const contributorPubkeyHex = attributePub ? bytesToHex(wallet.pub) : null;
+  // Round-robin: pick whichever AMM chain currently has the fewest contributions.
+  await refreshAmmCeremonyStatesIfStale(true).catch(() => {});
+  const target = pickShortestAmmCircuit();
+  const origLabel = goBtn.textContent;
+  goBtn.disabled = true;
+  if (cancelBtn) cancelBtn.disabled = true;
+  goBtn.textContent = 'Working…';
+  progEl.style.display = 'block';
+  progEl.textContent = `→ advancing ${target.label} (${target.hash.slice(0, 12)}…)\n`;
+  resultEl.style.display = 'none';
+  const _log = (line) => { progEl.textContent += line + '\n'; progEl.scrollTop = progEl.scrollHeight; };
+  try {
+    await ceremonyContributeAmm({
+      circuitHash: target.hash,
+      contributorName,
+      contributorPubkeyHex,
+      onProgress: (phase, info) => {
+        if (phase === 'refresh')       _log('  refreshing chain state…');
+        else if (phase === 'fetch-head') _log(`  fetching head ${(info?.cid || '').slice(0, 16)}…`);
+        else if (phase === 'fetch-head-log') _log('  ' + (info?.msg || ''));
+        else if (phase === 'fetch-head-bytes' && info?.total) _log(`  download: ${info.done}/${info.total} bytes`);
+        else if (phase === 'mix')      _log('  mixing your entropy (~30-60s)…');
+        else if (phase === 'mix-phase' && info?.phase) {
+          if (info.phase === 'contribute') _log('  computing contribution…');
+          else if (info.phase === 'verify') _log('  verifying chain…');
+        }
+        else if (phase === 'upload')   _log(`  uploading ${info?.bytes || 0} bytes…`);
+        else if (phase === 'done')     _log('  ✓ landed on chain');
+      },
+    });
+    resultEl.style.display = 'block';
+    resultEl.style.color = 'var(--green, #0a7d3a)';
+    const newState = _ammCeremonyStateByCircuit.get(target.hash);
+    resultEl.textContent =
+      `✓ Contribution landed.\n` +
+      `   chain: ${target.label}\n` +
+      `   new count: ${newState?.contribution_count ?? '?'}\n` +
+      (contributorPubkeyHex ? `   attributed to: ${contributorPubkeyHex.slice(0, 12)}…\n` : '   pseudonymous\n') +
+      `\nThanks! Re-open the drawer in 24h to contribute again.`;
+    goBtn.textContent = 'Contribute again';
+    try { renderAmmCeremonyChip(); } catch {}
+  } catch (e) {
+    resultEl.style.display = 'block';
+    resultEl.style.color = 'var(--red)';
+    resultEl.textContent = `✗ ${e?.message || e}`;
+    goBtn.textContent = origLabel;
+  } finally {
+    goBtn.disabled = false;
+    if (cancelBtn) cancelBtn.disabled = false;
+  }
+}
+function _wireAmmCeremonyChipOnce() {
+  if (_wireAmmCeremonyChipOnce._done) return;
+  _wireAmmCeremonyChipOnce._done = true;
+  const chip = document.getElementById('amm-ceremony-chip');
+  const drawer = document.getElementById('amm-ceremony-drawer');
+  const cancelBtn = document.getElementById('amm-cer-cancel');
+  const goBtn = document.getElementById('amm-cer-go');
+  if (chip) {
+    chip.onclick = openAmmCeremonyDrawer;
+    chip.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAmmCeremonyDrawer(); } };
+  }
+  if (cancelBtn) cancelBtn.onclick = closeAmmCeremonyDrawer;
+  if (goBtn)     goBtn.onclick = _submitAmmCeremonyContribution;
+  if (drawer)    drawer.onclick = (e) => { if (e.target === drawer) closeAmmCeremonyDrawer(); };
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && drawer && drawer.style.display !== 'none') closeAmmCeremonyDrawer();
+  });
+}
+
 async function ceremonyContribute() {
   // Hard-lock: contribute is only permitted against the canonical ceremony
   // baked into this dapp build. If _ceremonyActiveHash has drifted (e.g. a
@@ -30709,6 +31282,10 @@ function setupTabs() {
       // Holdings, the per-asset claim row is now visible so the banner is
       // redundant and we hide it; when they leave Holdings, restore it.
       try { _renderOtcClaimBanner(); } catch {}
+      // AMM ceremony chip — surfaces on Market / Pool / Holdings during the
+      // ceremony contribution window. Hidden when ceremony is finalized or
+      // user contributed in the last 24h.
+      try { _wireAmmCeremonyChipOnce(); renderAmmCeremonyChip(); } catch {}
     };
   });
   // Wire the banner's "Open Holdings" CTA once at setup. Click → simulate
@@ -30763,8 +31340,36 @@ function stopMixerAutoRefresh() {
 // We deliberately don't try to expand carveExactAmount-style flows in this
 // panel — those are the same builders the test harnesses exercise on signet
 // (tests/amm-{lp-cycle,tac-ctac-pool}-signet.mjs). Wiring them into the UI
-// is straightforward once the ceremony VK lands and `pool-ceremony-gated`
-// nodes get .removeAttribute('disabled').
+// is straightforward once the ceremony VK lands. The CSS lock
+// (#tab-pool.pool-ceremony-locked) dims + pointer-events: none every
+// [data-pool-ceremony-gated] section while _isAmmCeremonyUnlocked() is
+// false; the JS handlers attach unconditionally so the moment the gate
+// drops, the LP_ADD / LP_REMOVE / pool-tab-swap buttons go live without
+// further UX work.
+
+// Worker-mirrored share-derivation formulas. Byte-for-byte parity with
+// `ammLpAddShares` / `ammLpRemoveOutputs` at worker/src/index.js:1895/1906;
+// the worker rejects any envelope whose claimed share_amount or (delta_a,
+// delta_b) don't equal these values, so the dapp uses the same math to
+// (a) preview expected outcomes before broadcast, (b) build envelopes that
+// pass worker validation. Variant-0 LP_ADD (proportional add to existing
+// pool): shares = min(floor(deltaA · S / R_A), floor(deltaB · S / R_B)).
+function _lpAddSharesProportional(deltaA, deltaB, R_A, R_B, S) {
+  const da = BigInt(deltaA), db = BigInt(deltaB);
+  const ra = BigInt(R_A), rb = BigInt(R_B), s = BigInt(S);
+  if (s === 0n) throw new Error('use POOL_INIT (variant 1) for empty pools');
+  if (ra === 0n || rb === 0n) throw new Error('cannot add to a pool with zero reserves');
+  const a = (da * s) / ra;
+  const b = (db * s) / rb;
+  return a < b ? a : b;
+}
+function _lpRemoveOutputsProportional(shareAmount, R_A, R_B, S) {
+  const sa = BigInt(shareAmount), ra = BigInt(R_A), rb = BigInt(R_B), s = BigInt(S);
+  if (s === 0n) throw new Error('cannot remove from empty pool');
+  if (sa > s) throw new Error('shareAmount exceeds total shares');
+  return { deltaA: (ra * sa) / s, deltaB: (rb * sa) / s };
+}
+
 let _poolListCache = null;
 let _poolListCacheUntil = 0;
 const POOL_LIST_CACHE_MS = 25 * 1000;
@@ -30856,7 +31461,435 @@ async function renderPool() {
       posEl.innerHTML = `<div class="muted" style="font-size:12px;color:var(--ink-mid);">LP-position scan failed: ${escapeHtml(e?.message || String(e))}</div>`;
     }
   }
+
+  // Ceremony lock — CSS class drives the dim + pointer-events: none gating
+  // (see index.html .pool-ceremony-locked rules). Flips off automatically
+  // when CANONICAL_AMM_VK_CID is pinned. Handlers below attach unconditionally
+  // so the moment the gate drops, broadcast is one click away.
+  const tabPool = document.getElementById('tab-pool');
+  if (tabPool) tabPool.classList.toggle('pool-ceremony-locked', !_isAmmCeremonyUnlocked());
+
+  try { await _populatePoolForms(); } catch (e) { console.warn('pool-forms populate:', e); }
+  try { _wirePoolForms(); } catch (e) { console.warn('pool-forms wire:', e); }
 }
+
+// ----- Pool-tab form wiring (LP_ADD v0 + LP_REMOVE + pool-tab swap) -----
+//
+// All three forms share two concerns:
+//   (1) reactive preview — typing into an input recomputes expected shares /
+//       expected (deltaA, deltaB) / expected delta_out using the worker-
+//       mirrored math the broadcast will pass through
+//   (2) broadcast — on click, carve UTXOs + build envelope + broadcast via
+//       the existing buildAndBroadcast* helpers
+// Preview math runs unconditionally so users can SEE what their swap / add
+// would produce even while the ceremony lock is on. Broadcast is gated by
+// CSS pointer-events: none on the section, which flips off when
+// _isAmmCeremonyUnlocked() returns true.
+async function _populatePoolForms() {
+  const pools = _poolListCache || await fetchAmmPools();
+  if (!Array.isArray(pools)) return;
+  const _tickFor = (aidHex) => {
+    if (!aidHex) return '?';
+    const m = getAssetMeta(aidHex);
+    if (m?.ticker) return m.ticker;
+    const synth = _lpSyntheticMeta(aidHex);
+    if (synth?.ticker) return synth.ticker;
+    return aidHex.slice(0, 8) + '…';
+  };
+  const lpAddSel = document.getElementById('pool-lpadd-pool');
+  if (lpAddSel) {
+    const want = pools.map(p => p.pool_id).join('|');
+    if (lpAddSel.dataset.poolsSig !== want) {
+      const prev = lpAddSel.value;
+      lpAddSel.innerHTML = '<option value="">— pick a pool —</option>' +
+        pools.map(p => {
+          const ta = _tickFor(p.asset_a), tb = _tickFor(p.asset_b);
+          return `<option value="${escapeHtml(p.pool_id)}">${escapeHtml(ta)} / ${escapeHtml(tb)} · ${escapeHtml(String(p.fee_bps))} bps · R ${escapeHtml(String(p.reserve_a))}:${escapeHtml(String(p.reserve_b))}</option>`;
+        }).join('');
+      lpAddSel.dataset.poolsSig = want;
+      if (prev) lpAddSel.value = prev;
+    }
+  }
+  const swapFrom = document.getElementById('pool-swap-from');
+  const swapTo   = document.getElementById('pool-swap-to');
+  if (swapFrom && swapTo) {
+    const allAssets = new Set();
+    for (const p of pools) { allAssets.add(p.asset_a); allAssets.add(p.asset_b); }
+    const sig = [...allAssets].sort().join('|');
+    if (swapFrom.dataset.assetsSig !== sig) {
+      const prevFrom = swapFrom.value, prevTo = swapTo.value;
+      const opts = '<option value="">— pick an asset —</option>' +
+        [...allAssets].map(aid => `<option value="${escapeHtml(aid)}">${escapeHtml(_tickFor(aid))} (${escapeHtml(aid.slice(0, 8))}…)</option>`).join('');
+      swapFrom.innerHTML = opts;
+      swapTo.innerHTML = opts;
+      swapFrom.dataset.assetsSig = sig;
+      swapTo.dataset.assetsSig = sig;
+      if (prevFrom) swapFrom.value = prevFrom;
+      if (prevTo)   swapTo.value = prevTo;
+    }
+  }
+  const lpRemSel = document.getElementById('pool-lpremove-position');
+  if (lpRemSel) {
+    const lpByAid = new Map();
+    for (const p of pools) { if (p?.lp_asset_id) lpByAid.set(String(p.lp_asset_id).toLowerCase(), p); }
+    let holdings = null;
+    try { holdings = await scanHoldings(); } catch {}
+    const opts = ['<option value="">— pick an LP UTXO —</option>'];
+    const utxosByKey = new Map();
+    if (holdings && lpByAid.size > 0) {
+      for (const [aid, h] of holdings.entries()) {
+        const pool = lpByAid.get(String(aid).toLowerCase());
+        if (!pool || !h?.utxos?.length) continue;
+        for (const u of h.utxos) {
+          const key = `${u.utxo?.txid || ''}:${u.utxo?.vout ?? 0}`;
+          utxosByKey.set(key, { utxo: u, pool });
+          const ta = _tickFor(pool.asset_a), tb = _tickFor(pool.asset_b);
+          opts.push(`<option value="${escapeHtml(key)}">${escapeHtml(String(u.amount))} shares · ${escapeHtml(ta)}/${escapeHtml(tb)} · ${escapeHtml(String(pool.fee_bps))} bps · ${escapeHtml((u.utxo?.txid || '').slice(0, 12))}…:${u.utxo?.vout ?? 0}</option>`);
+        }
+      }
+    }
+    const sig = opts.join('|');
+    if (lpRemSel.dataset.utxosSig !== sig) {
+      const prev = lpRemSel.value;
+      lpRemSel.innerHTML = opts.join('');
+      lpRemSel.dataset.utxosSig = sig;
+      if (prev && utxosByKey.has(prev)) lpRemSel.value = prev;
+    }
+    lpRemSel._utxosByKey = utxosByKey;
+  }
+}
+
+let _poolFormsWired = false;
+function _wirePoolForms() {
+  if (_poolFormsWired) { _refreshPoolFormPreviews(); return; }
+  _poolFormsWired = true;
+  _wirePoolLpAddForm();
+  _wirePoolLpRemoveForm();
+  _wirePoolSwapForm();
+  _refreshPoolFormPreviews();
+}
+
+function _setPoolOut(el, text, kind = '') {
+  if (!el) return;
+  el.style.display = text ? 'block' : 'none';
+  el.textContent = text || '';
+  el.style.color = kind === 'error' ? 'var(--red)'
+                  : kind === 'success' ? 'var(--green, #0a7d3a)'
+                  : '';
+}
+
+function _findPoolFromCache(poolIdHex) {
+  const pools = _poolListCache || [];
+  return pools.find(p => String(p.pool_id || '').toLowerCase() === String(poolIdHex || '').toLowerCase()) || null;
+}
+
+function _wirePoolLpAddForm() {
+  const poolSel = document.getElementById('pool-lpadd-pool');
+  const dAIn    = document.getElementById('pool-lpadd-delta-a');
+  const dBIn    = document.getElementById('pool-lpadd-delta-b');
+  const broadcastBtn = document.getElementById('btn-pool-lpadd-broadcast');
+  const out     = document.getElementById('pool-lpadd-preview-out');
+  if (!poolSel || !dAIn || !dBIn || !broadcastBtn) return;
+  let dragging = false;
+  const _onDeltaInput = (drivenBy) => {
+    if (dragging) return;
+    const pool = _findPoolFromCache(poolSel.value);
+    if (!pool) { _setPoolOut(out, ''); return; }
+    const ra = BigInt(pool.reserve_a || 0);
+    const rb = BigInt(pool.reserve_b || 0);
+    const s  = BigInt(pool.lp_total_shares || 0);
+    if (ra <= 0n || rb <= 0n || s <= 0n) { _setPoolOut(out, '⚠ pool has zero reserves or shares — not addable', 'error'); return; }
+    try {
+      let da, db;
+      if (drivenBy === 'a') {
+        da = BigInt(parseAssetAmount(dAIn.value.trim() || '0', 0));
+        db = (da * rb) / ra;
+        dragging = true; dBIn.value = db.toString(); dragging = false;
+      } else {
+        db = BigInt(parseAssetAmount(dBIn.value.trim() || '0', 0));
+        da = (db * ra) / rb;
+        dragging = true; dAIn.value = da.toString(); dragging = false;
+      }
+      if (da <= 0n || db <= 0n) { _setPoolOut(out, ''); return; }
+      const shares = _lpAddSharesProportional(da, db, ra, rb, s);
+      const tA = (getAssetMeta(pool.asset_a)?.ticker) || pool.asset_a.slice(0, 8) + '…';
+      const tB = (getAssetMeta(pool.asset_b)?.ticker) || pool.asset_b.slice(0, 8) + '…';
+      const newS = s + shares;
+      const pctOfPool = newS > 0n ? Number((shares * 10000n) / newS) / 100 : 0;
+      _setPoolOut(out,
+        `Deposit ${da} ${tA} + ${db} ${tB}\n` +
+        `Mint:    ${shares} LP shares (${pctOfPool.toFixed(2)}% of new total)\n` +
+        `Pool:    ${ra}:${rb} reserves · ${s} total shares · ${pool.fee_bps} bps fee`);
+    } catch (e) {
+      _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+    }
+  };
+  poolSel.onchange = () => _onDeltaInput('a');
+  dAIn.oninput = () => _onDeltaInput('a');
+  dBIn.oninput = () => _onDeltaInput('b');
+  broadcastBtn.onclick = async () => {
+    if (broadcastBtn.disabled) return;
+    const pool = _findPoolFromCache(poolSel.value);
+    if (!pool) { _setPoolOut(out, '✗ pick a pool first', 'error'); return; }
+    let da, db;
+    try {
+      da = BigInt(parseAssetAmount(dAIn.value.trim() || '0', 0));
+      db = BigInt(parseAssetAmount(dBIn.value.trim() || '0', 0));
+    } catch { _setPoolOut(out, '✗ invalid amount', 'error'); return; }
+    if (da <= 0n || db <= 0n) { _setPoolOut(out, '✗ both deltas must be > 0', 'error'); return; }
+    const ra = BigInt(pool.reserve_a || 0), rb = BigInt(pool.reserve_b || 0), s = BigInt(pool.lp_total_shares || 0);
+    let shareAmount;
+    try { shareAmount = _lpAddSharesProportional(da, db, ra, rb, s); }
+    catch (e) { _setPoolOut(out, `✗ ${e.message}`, 'error'); return; }
+    if (shareAmount <= 0n) { _setPoolOut(out, '✗ proportional add rounds to zero shares — increase deltas', 'error'); return; }
+    const tA = (getAssetMeta(pool.asset_a)?.ticker) || pool.asset_a.slice(0, 8) + '…';
+    const tB = (getAssetMeta(pool.asset_b)?.ticker) || pool.asset_b.slice(0, 8) + '…';
+    const confirmed = await tacitConfirm({
+      title: 'Add liquidity?',
+      body:
+        `Deposit ${da} ${tA} + ${db} ${tB}\n` +
+        `Mint ${shareAmount} LP shares.\n\n` +
+        `Pool: ${pool.pool_id.slice(0, 16)}…\n` +
+        `Settlement is one Bitcoin commit-reveal pair.`,
+      confirmLabel: 'Add liquidity',
+    });
+    if (!confirmed) return;
+    broadcastBtn.disabled = true;
+    const origLabel = broadcastBtn.textContent;
+    broadcastBtn.textContent = 'Broadcasting…';
+    try {
+      const result = await buildAndBroadcastLpAddVariant0({
+        poolIdHex: pool.pool_id,
+        assetAIdHex: pool.asset_a,
+        assetBIdHex: pool.asset_b,
+        deltaA: da, deltaB: db,
+        shareAmount,
+        feeBps: pool.fee_bps,
+        poolCapabilityFlags: 0,
+        onProgress: (stage) => _setPoolOut(out, `… ${stage}`),
+      });
+      _setPoolOut(out,
+        `✓ LP_ADD broadcast\n` +
+        `  commit_txid: ${result.commitTxid}\n` +
+        `  reveal_txid: ${result.revealTxid}\n` +
+        `  shares minted: ${shareAmount}`, 'success');
+      _poolListCacheUntil = 0;
+      try { invalidateHoldingsCache(); } catch {}
+      try { await renderPool(); } catch {}
+    } catch (e) {
+      _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+    } finally {
+      broadcastBtn.disabled = false;
+      broadcastBtn.textContent = origLabel;
+    }
+  };
+}
+
+function _wirePoolLpRemoveForm() {
+  const posSel = document.getElementById('pool-lpremove-position');
+  const broadcastBtn = document.getElementById('btn-pool-lpremove-broadcast');
+  const out = document.getElementById('pool-lpremove-preview-out');
+  if (!posSel || !broadcastBtn) return;
+  const _renderPreview = () => {
+    const key = posSel.value;
+    const entry = posSel._utxosByKey?.get(key);
+    if (!entry) { _setPoolOut(out, ''); return; }
+    const { utxo, pool } = entry;
+    const ra = BigInt(pool.reserve_a || 0), rb = BigInt(pool.reserve_b || 0), s = BigInt(pool.lp_total_shares || 0);
+    try {
+      const { deltaA, deltaB } = _lpRemoveOutputsProportional(utxo.amount, ra, rb, s);
+      const tA = (getAssetMeta(pool.asset_a)?.ticker) || pool.asset_a.slice(0, 8) + '…';
+      const tB = (getAssetMeta(pool.asset_b)?.ticker) || pool.asset_b.slice(0, 8) + '…';
+      _setPoolOut(out,
+        `Burn ${utxo.amount} LP shares\n` +
+        `Receive: ${deltaA} ${tA} + ${deltaB} ${tB}\n` +
+        `Pool:    ${ra}:${rb} · ${s} total shares · ${pool.fee_bps} bps fee`);
+    } catch (e) {
+      _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+    }
+  };
+  posSel.onchange = _renderPreview;
+  broadcastBtn.onclick = async () => {
+    if (broadcastBtn.disabled) return;
+    const entry = posSel._utxosByKey?.get(posSel.value);
+    if (!entry) { _setPoolOut(out, '✗ pick a position first', 'error'); return; }
+    const { utxo, pool } = entry;
+    const ra = BigInt(pool.reserve_a || 0), rb = BigInt(pool.reserve_b || 0), s = BigInt(pool.lp_total_shares || 0);
+    let expDeltaA, expDeltaB;
+    try {
+      const r = _lpRemoveOutputsProportional(utxo.amount, ra, rb, s);
+      expDeltaA = r.deltaA; expDeltaB = r.deltaB;
+    } catch (e) { _setPoolOut(out, `✗ ${e.message}`, 'error'); return; }
+    if (expDeltaA <= 0n || expDeltaB <= 0n) { _setPoolOut(out, '✗ rounds to zero on at least one side — too few shares', 'error'); return; }
+    const tA = (getAssetMeta(pool.asset_a)?.ticker) || pool.asset_a.slice(0, 8) + '…';
+    const tB = (getAssetMeta(pool.asset_b)?.ticker) || pool.asset_b.slice(0, 8) + '…';
+    const confirmed = await tacitConfirm({
+      title: 'Remove liquidity?',
+      body:
+        `Burn ${utxo.amount} LP shares.\n` +
+        `Receive ${expDeltaA} ${tA} + ${expDeltaB} ${tB}.\n\n` +
+        `Settlement is one Bitcoin commit-reveal pair. Rounding remainders donate to remaining LPs.`,
+      confirmLabel: 'Remove liquidity',
+    });
+    if (!confirmed) return;
+    broadcastBtn.disabled = true;
+    const origLabel = broadcastBtn.textContent;
+    broadcastBtn.textContent = 'Broadcasting…';
+    try {
+      const result = await buildAndBroadcastLpRemove({
+        poolIdHex: pool.pool_id,
+        assetAIdHex: pool.asset_a,
+        assetBIdHex: pool.asset_b,
+        shareAmount: BigInt(utxo.amount),
+        expectedDeltaA: expDeltaA,
+        expectedDeltaB: expDeltaB,
+        lpShareUtxos: [{
+          utxo: { txid: utxo.utxo.txid, vout: utxo.utxo.vout },
+          amount: BigInt(utxo.amount),
+          blinding: BigInt(utxo.blinding),
+        }],
+        feeBps: pool.fee_bps,
+        poolCapabilityFlags: 0,
+        onProgress: (stage) => _setPoolOut(out, `… ${stage}`),
+      });
+      _setPoolOut(out,
+        `✓ LP_REMOVE broadcast\n` +
+        `  commit_txid: ${result.commitTxid}\n` +
+        `  reveal_txid: ${result.revealTxid}`, 'success');
+      _poolListCacheUntil = 0;
+      try { invalidateHoldingsCache(); } catch {}
+      try { await renderPool(); } catch {}
+    } catch (e) {
+      _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+    } finally {
+      broadcastBtn.disabled = false;
+      broadcastBtn.textContent = origLabel;
+    }
+  };
+}
+
+function _wirePoolSwapForm() {
+  const fromSel  = document.getElementById('pool-swap-from');
+  const toSel    = document.getElementById('pool-swap-to');
+  const amtIn    = document.getElementById('pool-swap-amount-in');
+  const slipIn   = document.getElementById('pool-swap-slippage-bps');
+  const broadcastBtn = document.getElementById('btn-pool-swap-broadcast');
+  const out      = document.getElementById('pool-swap-preview-out');
+  if (!fromSel || !toSel || !amtIn || !broadcastBtn) return;
+  const _findPoolForPair = (fromAid, toAid) => {
+    const pools = _poolListCache || [];
+    for (const p of pools) {
+      if ((p.asset_a === fromAid && p.asset_b === toAid) || (p.asset_a === toAid && p.asset_b === fromAid)) return p;
+    }
+    return null;
+  };
+  const _renderPreview = () => {
+    const fromAid = fromSel.value, toAid = toSel.value;
+    if (!fromAid || !toAid || fromAid === toAid) { _setPoolOut(out, ''); return; }
+    const pool = _findPoolForPair(fromAid, toAid);
+    if (!pool) { _setPoolOut(out, '⚠ no pool for this pair', 'error'); return; }
+    let deltaIn;
+    try { deltaIn = BigInt(parseAssetAmount(amtIn.value.trim() || '0', 0)); }
+    catch { _setPoolOut(out, ''); return; }
+    if (deltaIn <= 0n) { _setPoolOut(out, ''); return; }
+    const direction = (pool.asset_a === fromAid) ? 0 : 1;
+    try {
+      const curve = swapVarCurveDeltaOut(direction, pool.reserve_a, pool.reserve_b, deltaIn, pool.fee_bps);
+      const slipBps = Math.max(0, Math.min(10000, parseInt(slipIn?.value || '100', 10) || 0));
+      const minOut = (curve.deltaOut * BigInt(10000 - slipBps)) / 10000n;
+      const tFrom = (getAssetMeta(fromAid)?.ticker) || fromAid.slice(0, 8) + '…';
+      const tTo   = (getAssetMeta(toAid)?.ticker)   || toAid.slice(0, 8) + '…';
+      _setPoolOut(out,
+        `Swap:   ${deltaIn} ${tFrom} → ${curve.deltaOut} ${tTo}\n` +
+        `Floor:  ${minOut} ${tTo} (slippage ${slipBps} bps)\n` +
+        `Pool:   ${pool.reserve_a}:${pool.reserve_b} reserves · ${pool.fee_bps} bps fee · pool ${pool.pool_id.slice(0, 12)}…`);
+    } catch (e) {
+      _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+    }
+  };
+  fromSel.onchange = _renderPreview;
+  toSel.onchange   = _renderPreview;
+  amtIn.oninput    = _renderPreview;
+  if (slipIn) slipIn.oninput = _renderPreview;
+  broadcastBtn.onclick = async () => {
+    if (broadcastBtn.disabled) return;
+    const fromAid = fromSel.value, toAid = toSel.value;
+    if (!fromAid || !toAid || fromAid === toAid) { _setPoolOut(out, '✗ pick distinct From / To assets', 'error'); return; }
+    const pool = _findPoolForPair(fromAid, toAid);
+    if (!pool) { _setPoolOut(out, '✗ no pool for this pair', 'error'); return; }
+    let deltaIn;
+    try { deltaIn = BigInt(parseAssetAmount(amtIn.value.trim() || '0', 0)); }
+    catch { _setPoolOut(out, '✗ invalid amount', 'error'); return; }
+    if (deltaIn <= 0n) { _setPoolOut(out, '✗ amount must be > 0', 'error'); return; }
+    const direction = (pool.asset_a === fromAid) ? 0 : 1;
+    let curve;
+    try { curve = swapVarCurveDeltaOut(direction, pool.reserve_a, pool.reserve_b, deltaIn, pool.fee_bps); }
+    catch (e) { _setPoolOut(out, `✗ ${e.message}`, 'error'); return; }
+    const slipBps = Math.max(0, Math.min(10000, parseInt(slipIn?.value || '100', 10) || 0));
+    const minOut = (curve.deltaOut * BigInt(10000 - slipBps)) / 10000n;
+    let carved;
+    try { carved = await carveExactAmount({ assetIdHex: fromAid, amount: deltaIn }); }
+    catch (e) { _setPoolOut(out, `✗ carve failed: ${e.message}`, 'error'); return; }
+    if (!carved?.utxo) { _setPoolOut(out, '✗ insufficient balance to carve input', 'error'); return; }
+    const tFrom = (getAssetMeta(fromAid)?.ticker) || fromAid.slice(0, 8) + '…';
+    const tTo   = (getAssetMeta(toAid)?.ticker)   || toAid.slice(0, 8) + '…';
+    const confirmed = await tacitConfirm({
+      title: 'Swap via AMM?',
+      body:
+        `Swap ${deltaIn} ${tFrom} → ≥ ${minOut} ${tTo}.\n\n` +
+        `Floor enforces minOut on chain — if the pool moves past your floor before reveal, the tx fails and your input UTXO stays where it was.\n\n` +
+        `Settlement is one Bitcoin commit-reveal pair.`,
+      confirmLabel: 'Swap',
+    });
+    if (!confirmed) return;
+    broadcastBtn.disabled = true;
+    const origLabel = broadcastBtn.textContent;
+    broadcastBtn.textContent = 'Broadcasting…';
+    try {
+      const result = await buildAndBroadcastSwapVarSelfFulfill({
+        poolReserves: { pool_id_hex: pool.pool_id, reserve_a: pool.reserve_a, reserve_b: pool.reserve_b, fee_bps: pool.fee_bps },
+        assetInputUtxo: {
+          txid: carved.utxo.txid, vout: carved.utxo.vout,
+          asset_id_hex: fromAid,
+          amount: carved.amount, blinding: carved.blinding,
+        },
+        direction, deltaIn, minOut,
+        expiryHeight: 0xffffffff,
+        receiveAssetIdHex: toAid,
+        onProgress: (stage) => _setPoolOut(out, `… ${stage}`),
+      });
+      _setPoolOut(out,
+        `✓ T_SWAP_VAR broadcast\n` +
+        `  commit_txid: ${result.commitTxid}\n` +
+        `  reveal_txid: ${result.revealTxid}\n` +
+        `  received: ${result.deltaOut} ${tTo}`, 'success');
+      _poolListCacheUntil = 0;
+      try { invalidateHoldingsCache(); } catch {}
+      try { await renderPool(); } catch {}
+    } catch (e) {
+      _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+    } finally {
+      broadcastBtn.disabled = false;
+      broadcastBtn.textContent = origLabel;
+    }
+  };
+}
+
+function _refreshPoolFormPreviews() {
+  try {
+    const poolSel = document.getElementById('pool-lpadd-pool');
+    if (poolSel) poolSel.dispatchEvent(new Event('change'));
+  } catch {}
+  try {
+    const posSel = document.getElementById('pool-lpremove-position');
+    if (posSel) posSel.dispatchEvent(new Event('change'));
+  } catch {}
+  try {
+    const fromSel = document.getElementById('pool-swap-from');
+    if (fromSel) fromSel.dispatchEvent(new Event('change'));
+  } catch {}
+}
+
 let _poolPollTimer = null;
 const POOL_POLL_INTERVAL_MS = 30 * 1000;
 function startPoolAutoRefresh() {
@@ -64487,6 +65520,11 @@ async function init() {
   setupTabs();
   setupMixerHandlers();
   setupCeremonyHandlers();
+  // AMM ceremony chip — wire handlers + render once at boot so users
+  // landing directly on Market / Pool / Holdings see the contribute prompt
+  // without needing to switch tabs first. renderAmmCeremonyChip itself
+  // checks ack + finalized state so it's a no-op when irrelevant.
+  try { _wireAmmCeremonyChipOnce(); renderAmmCeremonyChip(); } catch {}
   setupFaqModal();
   setupCommandPalette();
   setupWalletButtons();

@@ -5,23 +5,25 @@ pragma circom 2.1.6;
 // Opens C = amount · H_BJJ + r · G_BJJ on the BabyJubJub curve, where:
 //   • H_BJJ and G_BJJ are the protocol's NUMS generators (SPEC §3.9).
 //   • amount is range-bounded to 0 ≤ amount < 2^64.
-//   • r is range-bounded to 0 ≤ r < n_BJJ ≈ 2^251.
+//   • r is range-bounded to 0 ≤ r < 2^251 (subset of the BabyJubJub
+//     subgroup order n_BJJ ≈ 2^252.2; Num2Bits(251) is intentionally
+//     conservative — discrete log on this sub-range is still hard).
 //
-// Fixed-base scalar multiplication via circomlib's EscalarMulFix is ~10× cheaper
-// than variable-base (escalarmulany) because the windowed precomputed tables
-// are baked in at compile time. With H_BJJ and G_BJJ as compile-time constants
-// from the pinned NUMS vectors, every AMM Pedersen opening is fast.
+// Fixed-base scalar multiplication via circomlib's EscalarMulFix is the
+// optimal primitive here: H_BJJ and G_BJJ are compile-time constants from
+// the pinned NUMS vectors, so the windowed precomputed tables are baked
+// in. The constraint cost lives mostly in the 251-bit r·G_BJJ multiplication.
 //
-// Constraint budget (empirical, see amm-circuit-build.test.mjs):
-//   • amount · H_BJJ (64-bit scalar):   ~150 constraints
-//   • r · G_BJJ      (251-bit scalar):  ~580 constraints
-//   • BabyAdd:                            ~7 constraints
-//   • Num2Bits(64):                       64 constraints
-//   • Num2Bits(251):                     251 constraints
-//   • Total per opening:                ~1.1K constraints
+// Empirical constraint cost per PedersenBJJ opening (pinned in
+// drift-guard.test.mjs against amm_lp_add.r1cs: 5,153 total constraints
+// for one opening + global overhead):
+//   • Per opening (Num2Bits + 2 × EscalarMulFix + BabyAdd):  ~5K constraints
 //
-// (AMM.md's original estimate of ~6K per opening assumed escalarmulany;
-//  fixed-base is the right primitive here and brings it down by ~5×.)
+// (AMM.md's original draft estimated ~6K per opening assuming escalarmulany;
+//  fixed-base is the right primitive here. Further reduction would require
+//  either a lookup-argument-capable proof system (Halo2/PLONK with PLOOKUP)
+//  or a different commitment scheme — both are follow-up directions outside
+//  the scope of this circuit.)
 
 include "../node_modules/circomlib/circuits/escalarmulfix.circom";
 include "../node_modules/circomlib/circuits/babyjub.circom";
@@ -83,47 +85,6 @@ template PedersenBJJ() {
     }
 
     // ---- sum ----
-    component sum = BabyAdd();
-    sum.x1 <== aH.out[0];
-    sum.y1 <== aH.out[1];
-    sum.x2 <== rG.out[0];
-    sum.y2 <== rG.out[1];
-
-    cx <== sum.xout;
-    cy <== sum.yout;
-}
-
-// PedersenBJJWithRangeNbits — same as PedersenBJJ but parameterized by amount
-// bitwidth. Used for share_amount / delta_X / etc. that may need different
-// bounds. Default 64-bit.
-template PedersenBJJWithAmountBits(amountBits) {
-    signal input  amount;
-    signal input  r;
-    signal output cx;
-    signal output cy;
-
-    component amountBitsComp = Num2Bits(amountBits);
-    amountBitsComp.in <== amount;
-
-    component rBitsComp = Num2Bits(251);
-    rBitsComp.in <== r;
-
-    var H_BASE[2];
-    H_BASE[0] = H_BJJ_BASE_U();
-    H_BASE[1] = H_BJJ_BASE_V();
-    component aH = EscalarMulFix(amountBits, H_BASE);
-    for (var i = 0; i < amountBits; i++) {
-        aH.e[i] <== amountBitsComp.out[i];
-    }
-
-    var G_BASE[2];
-    G_BASE[0] = G_BJJ_BASE_U();
-    G_BASE[1] = G_BJJ_BASE_V();
-    component rG = EscalarMulFix(251, G_BASE);
-    for (var i = 0; i < 251; i++) {
-        rG.e[i] <== rBitsComp.out[i];
-    }
-
     component sum = BabyAdd();
     sum.x1 <== aH.out[0];
     sum.y1 <== aH.out[1];

@@ -933,7 +933,7 @@ validateOutpoint(txid, vout):
 
 Recursion is memoized via a `(txid, vout) → bool` map. In production-mode optimization, all rangeproofs are deferred into a batched bulletproof verify (one multi-exp); falls back to per-proof verify if batch fails.
 
-**Unknown-opcode forward-compatibility rule (soft-fork semantics).** New envelope opcodes can be added to the protocol via future ceremonies and SPEC revisions (e.g., AMM V2 concentrated-liquidity opcodes proposed at `0x33+`; see AMM.md §"Forward compatibility"). To preserve clean upgrade mechanics, **an indexer that encounters an envelope opcode it does not recognize MUST treat the envelope as a no-op at the asset and pool-state level**:
+**Unknown-opcode forward-compatibility rule (soft-fork semantics).** New envelope opcodes can be added to the protocol via future ceremonies and SPEC revisions (e.g., follow-up AMM concentrated-liquidity opcodes proposed at `0x33+`; see AMM.md §"Forward compatibility"). To preserve clean upgrade mechanics, **an indexer that encounters an envelope opcode it does not recognize MUST treat the envelope as a no-op at the asset and pool-state level**:
 
 - The envelope does NOT create any tacit asset UTXO.
 - The envelope does NOT credit or debit any pool reserve, mixer-pool leaf, LP-share supply, or other indexer-tracked state.
@@ -941,7 +941,7 @@ Recursion is memoized via a `(txid, vout) → bool` map. In production-mode opti
 - The indexer SHOULD log the unknown opcode for monitoring, but MUST NOT halt indexing or revert state.
 - Wallets querying the indexer see no balance/state change from the unknown envelope.
 
-This is the **soft-fork semantic** that lets future opcodes ship without breaking deployed indexers. A V1-aware indexer continues to operate correctly when V2 opcodes appear on chain — it ignores them. A V2-aware indexer additionally interprets the V2 opcodes and tracks the V2 state. Both converge on the same V1 state for V1 envelopes.
+This is the **soft-fork semantic** that lets future opcodes ship without breaking deployed indexers. A V1-aware indexer continues to operate correctly when follow-up opcodes appear on chain — it ignores them. A follow-up-aware indexer additionally interprets the new opcodes and tracks the additional state. Both converge on the same V1 state for V1 envelopes.
 
 **Constraint:** opcodes already defined in this spec MUST NOT be redefined or reused with different semantics. Future ceremonies add new opcodes at new code points; they do not overload existing ones.
 
@@ -953,7 +953,7 @@ if envelope.opcode == T_LP_ADD (0x2D):
     # style kernel sigs; Groth16 proof asserts at-the-ratio + share formula. For
     # variant=1 (POOL_INIT), register pool metadata + verify launcher gate +
     # pin protocol_fee_address/protocol_fee_bps; otherwise crystallize protocol
-    # fee (V2-lazy mintFee) then mint LP-share UTXO at the declared share vout
+    # fee (Uniswap-V2-lazy mintFee) then mint LP-share UTXO at the declared share vout
     # under lp_asset_id.
 
 if envelope.opcode == T_LP_REMOVE (0x2E):
@@ -974,7 +974,7 @@ if envelope.opcode == T_SWAP_BATCH (0x2F):
     verify chain-side aggregate Pedersen check per asset
     verify direction consistency + constant-product invariant on declared deltas
     advance pool reserves; credit each receipt UTXO at vout[1+i]
-    # NOTE: protocol fee is NOT crystallized here (V2-lazy: only at LP events + claim)
+    # NOTE: protocol fee is NOT crystallized here (Uniswap-V2-lazy: only at LP events + claim)
 
 if envelope.opcode == T_INTENT_ATTEST (0x30):
     # See §5.17. Scope-generic preconfirmation channel attestation.
@@ -1643,7 +1643,7 @@ The maker's keystream is derived from `maker_priv` alone — no ECDH needed sinc
 
 **Why bid intents are off-chain in v1.** A naïve "buyer commits sats with a script-path P2TR" design doesn't work in current Bitcoin script: the T_AXFER envelope's kernel signature binds the seller's asset input outpoints, but those outpoints are unknown at bid-publish time, so the buyer can't precompute the envelope and can't commit it into their P2TR's tap-tree. Bitcoin script lacks the introspection covenants (no `OP_CHECKVOUTPUTSPK`, no `OP_CTV`) that would let the buyer's lock be conditionally unlocked by a tx-structure check. v1 bids therefore live entirely in the worker layer, with the trust model of any off-chain order book: the bidder is trusted to follow through on their take. Anti-spam mitigations (sig-required POSTs, per-IP rate limits, bid-expiry caps) sit in the worker.
 
-A future protocol revision with on-chain escrow (true buyer-funded atomic settlement) is feasible via either (a) BIP-119 OP_CTV / BIP-345 OP_VAULT once one ships at consensus, or (b) a two-commit architecture where buyer and seller each pre-broadcast a commit and the reveal spends both — operationally heavier (3 txs per settlement vs §5.7.6's 2) but viable today. v1 keeps the simpler off-chain pattern; v2 can add escrow as a separate primitive.
+A future protocol revision with on-chain escrow (true buyer-funded atomic settlement) is feasible via either (a) BIP-119 OP_CTV / BIP-345 OP_VAULT once one ships at consensus, or (b) a two-commit architecture where buyer and seller each pre-broadcast a commit and the reveal spends both — operationally heavier (3 txs per settlement vs §5.7.6's 2) but viable today. V1 keeps the simpler off-chain pattern; a follow-up amendment can add escrow as a separate primitive.
 
 ##### Records
 
@@ -2652,9 +2652,28 @@ Fixed-prefix bytes: `454 + proof_len` (one 169-byte sigma; spec-conformance pin:
 ```
 fee_bps_LE(2)                       # u16, 0..1000 (capped at 10%)
 vk_cid_len(1)                       # u8, 1..64
-vk_cid(vk_cid_len)                  # IPFS CID, UTF-8
+vk_cid(vk_cid_len)                  # IPFS CID, UTF-8 (CIDv1 raw codec, sha2-256;
+                                    #   "bafkrei..." form per §5.16 step 8).
+                                    #   Resolves to a JSON file with three keys
+                                    #   bundling the three AMM circuit vks:
+                                    #     {
+                                    #       "lp_add":     <snarkjs vk for amm_lp_add>,
+                                    #       "lp_remove":  <snarkjs vk for amm_lp_remove>,
+                                    #       "swap_batch": <snarkjs vk for amm_swap_batch>
+                                    #     }
+                                    #   Indexers pick the entry matching the opcode:
+                                    #     T_LP_ADD       -> "lp_add"
+                                    #     T_LP_REMOVE    -> "lp_remove"
+                                    #     T_SWAP_BATCH   -> "swap_batch"
+                                    #   The integrity rule (§5.16 step 8) hashes the
+                                    #   raw bundle bytes, not per-entry — one CID
+                                    #   pins the full triple.
 ceremony_cid_len(1)                 # u8, 1..64
-ceremony_cid(ceremony_cid_len)      # IPFS CID, UTF-8
+ceremony_cid(ceremony_cid_len)      # IPFS CID, UTF-8 — directory CID for the public
+                                    #   audit bundle (attestation chains, pre/post-
+                                    #   beacon zkeys, ptau, beacon transcript) under
+                                    #   one IPFS dir; indexers/auditors fetch via
+                                    #   <ceremony_cid>/<file>.
 arbiter_count(1)                    # u8, 0..16 (= n in m-of-n)
 arbiter_threshold_m(1)              # u8; encoded as 0 iff arbiter_count == 0; otherwise 1..arbiter_count
 arbiter_pubkeys(33 * arbiter_count) # compressed secp256k1
@@ -2706,7 +2725,7 @@ Sign with `excess_X = Σᵢ r_in_secp,X,i`. The `variant` byte distinguishes reg
 5. **If `variant == 0`:** require an existing pool with `pool.pool_id == pool_id`. Verify `share_amount == floor(min(delta_A·S/R_A, delta_B·S/R_B))`.
 6. Verify `kernel_sig_A` and `kernel_sig_B` under the respective `(Σ C_in_X − delta_X·H_secp).x_only()` keys.
 7. Verify `share_xcurve_sigma` binds `share_C_secp` and `share_C_BJJ` to a shared u64 amount (§3.10).
-8. Verify Groth16 `proof` under `pool.vk` over the canonical public-input vector (AMM.md §6 of "Implementation specification").
+8. Verify Groth16 `proof` under the `"lp_add"` entry of the JSON resolved at `pool.vk_cid` (see §5.14 wire format note on the per-kind vk wrapper) over the canonical public-input vector (AMM.md §6 of "Implementation specification"). Integrity-check the wrapper bytes against `pool.vk_cid` per §5.16 step 8.
 9. If all checks pass: register pool (POOL_INIT) or apply `R_A += delta_A, R_B += delta_B, S += share_amount`; credit the LP-share UTXO at the declared `vout`.
 
 Reference impl: `tests/amm-validator.mjs` (`validateLpAdd`).
@@ -2750,7 +2769,7 @@ kernel_msg_LP = SHA256(
 3. Verify proportional withdrawal: `delta_A == floor(R_A · share_amount / S)`, `delta_B == floor(R_B · share_amount / S)`.
 4. Verify `kernel_sig_LP` under `(Σ C_in_LP − share_amount·H_secp).x_only()`.
 5. Verify both receipts' sigma cross-curve bindings (§3.10).
-6. Verify Groth16 `proof`.
+6. Verify Groth16 `proof` under the `"lp_remove"` entry of the JSON resolved at `pool.vk_cid` (per-kind vk wrapper; see §5.14 wire format and §5.16 step 8 for the integrity rule).
 7. On success: apply `R_A -= delta_A, R_B -= delta_B, S -= share_amount`; credit the two receipt UTXOs at `vout[0]` (asset A) and `vout[1]` (asset B).
 
 Reference impl: `tests/amm-validator.mjs` (`validateLpRemove`).
@@ -2844,8 +2863,8 @@ The `vout[0]` OP_RETURN binding rule is what makes trader `SIGHASH_ALL` signatur
 5. Verify per-intent ordering: `intent_id` values are strictly ascending byte-order.
 6. For each intent: verify `intent_sig` (BIP-340 over `SHA256(intent_msg)` under `trader_pubkey`); verify `in_xcurve_sigma` binds `C_in_secp` and `C_in_BJJ` (§3.10); reject if `expiry_height < current_height`.
 7. For each receipt: verify `out_xcurve_sigma` binds `C_out_secp` and `C_out_BJJ`.
-8. **vk_cid integrity self-check** (normative). Before passing vk bytes to the Groth16 verifier, recompute the canonical V1 CID from the resolved vk bytes and verify it matches `pool.vk_cid` byte-for-byte. Canonical V1 format: CIDv1 with raw codec (0x55) + sha2-256 multihash (0x12 0x20), multibase-base32 lowercase no-padding (starts with `"bafkrei..."`). Reference impl: `tests/amm-validator.mjs` `deriveVkCid()` / `verifyVkCidBinding()`. **Production indexers MUST run this check; failure rejects the envelope before any snarkjs call.** Closes the "misconfigured IPFS gateway returns malicious vk bytes" hazard.
-9. Verify Groth16 batch `proof` under `pool.vk` (the integrity-checked vk bytes) over the canonical public-input vector (AMM.md §6 of "Implementation specification").
+8. **vk_cid integrity self-check** (normative). Before passing vk bytes to the Groth16 verifier, recompute the canonical V1 CID from the resolved bytes and verify it matches `pool.vk_cid` byte-for-byte. Canonical V1 format: CIDv1 with raw codec (0x55) + sha2-256 multihash (0x12 0x20), multibase-base32 lowercase no-padding (starts with `"bafkrei..."`). The CID hashes the **entire** JSON wrapper resolved at `vk_cid` (the `{lp_add, lp_remove, swap_batch}` object — see §5.14 wire format note), not the per-kind entry inside it: one CID pins the full triple. The indexer parses the JSON after integrity-checking and selects the `"swap_batch"` entry for `T_SWAP_BATCH` verification. Reference impl: `tests/amm-validator.mjs` `deriveVkCid()` / `verifyVkCidBinding()`. **Production indexers MUST run this check; failure rejects the envelope before any snarkjs call.** Closes the "misconfigured IPFS gateway returns malicious vk bytes" hazard.
+9. Verify Groth16 batch `proof` under the `"swap_batch"` entry of the integrity-checked vk wrapper over the canonical public-input vector (AMM.md §6 of "Implementation specification").
 10. **Chain-side aggregate Pedersen check** (per asset `X ∈ {A, B}`):
     ```
     Σ_{X→Y traders} C_in_secp,i  −  Σ_{Y→X traders} C_out_secp,i
@@ -3154,7 +3173,7 @@ Total payload ≈ 950–1000 bytes.
 11. **Kernel sig:** construct verifier key `P = C_change_or_sentinel − C_in_secp + delta_in_total · H_secp` (with `NO_CHANGE_SENTINEL` substituting the additive identity); verify `kernel_sig` under `P.x_only()` over `kernel_msg`. Closes the trader's asset-A side only.
 12. **Bulletproof:** verify aggregated m=2 range proof over `(C_change_or_sentinel, C_receipt_secp)`. Slot-0 proves `change_amount ≥ 0` (prevents over-spend); slot-1 is wire-parity with `T_AXFER_VAR` and complements the receipt-binding check.
 13. **Tip output (if `tip_amount > 0`):** caller MUST verify `vout[3]` exists, carries a tip commitment of the correct asset, and opens to `tip_amount` under the settler's derived `r_tip` (domain `"tacit-amm-swap-var-tip-v1"`). The reference validator delegates this check to the caller (`validateSwapVar()` returns the expected commitment for the caller to verify against `vout[3]`).
-14. On success: apply pool reserve updates (`R_A_post`, `R_B_post`); credit receipt UTXO at `vout[1]`; credit change UTXO at `vout[2]` if non-sentinel; mark `vin[1].outpoint` consumed. **Protocol fee is NOT crystallized here** (V2-lazy: only at LP events + `T_PROTOCOL_FEE_CLAIM`).
+14. On success: apply pool reserve updates (`R_A_post`, `R_B_post`); credit receipt UTXO at `vout[1]`; credit change UTXO at `vout[2]` if non-sentinel; mark `vin[1].outpoint` consumed. **Protocol fee is NOT crystallized here** (Uniswap-V2-lazy: only at LP events + `T_PROTOCOL_FEE_CLAIM`).
 
 **Domain-tag additions (BIP-340 signature / HMAC domains):**
 

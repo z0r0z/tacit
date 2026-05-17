@@ -9,10 +9,10 @@ and resolved before locking the ceremony" artifact.
 
 | Severity | Count | Resolved | Pending |
 |---|---|---|---|
-| CRITICAL | 0 | 0 | 0 |
+| CRITICAL (pre-ceremony) | 1 | 1 | 0 |
 | HIGH (completeness) | 2 | 2 | 0 |
 | MEDIUM | 3 | 2 | 1 (deferred — see below) |
-| LOW | 2 | 2 | 0 |
+| LOW | 3 | 3 | 0 |
 | INFORMATIONAL | 6 | n/a | n/a |
 
 **Two HIGH-severity completeness gaps fixed before ceremony.** No soundness bugs
@@ -188,6 +188,49 @@ Every multi-term product is correctly broken into intermediate signals
 single multiplications. Auxiliary arrays cost minor constraints but ensure
 each constraint emits cleanly.
 
+### 16. LOW — Unused `PedersenBJJWithAmountBits` template ✅ REMOVED
+
+**File:** `bjj_pedersen.circom`
+
+A second, bitwidth-parameterized variant of `PedersenBJJ` was declared but
+never instantiated by any circuit. Circom only compiles instantiated
+templates into the r1cs, so the unused declaration had no effect on the
+constraint set or any compiled artifact — verified by re-running
+`./build.sh` after deletion: all three r1cs hashes unchanged, constraint
+fingerprints identical.
+
+**Resolution:** Removed before the ceremony lock so the frozen source is
+exactly the set of templates actually used. Only the `bjj_pedersen.circom`
+source SHA-256 changed (re-pinned in `drift-guard.test.mjs`).
+
+### 17. CRITICAL (pre-ceremony) — `publicSignals` layout mismatch with circom ✅ FIXED
+
+**File:** `tests/amm-validator.mjs`, AMM.md §6, `tests/amm-validator.test.mjs`
+
+The validator's `buildPublicSignalsSwapBatch` (and the AMM.md §6 spec block
+documenting it) described an INTERLEAVED per-intent layout
+(`publicSignals[11 + 5*i + k] = field_k_of_intent_i`). Circom 2.1.6
+actually emits public-array signals BY-FIELD (each declared `signal input
+direction[N_MAX]` array is flattened contiguously, then the next array,
+etc.). Confirmed empirically via the build's `amm_swap_batch.sym` file and
+a `wtns export json` of an all-zero (spot, n_intents=0) witness — every
+`direction[i]` slot maps to witness indices 12..27 contiguously, every
+`C_in_BJJ_u[i]` to 28..43, and so on.
+
+Pre-ceremony this was latent: the validator's `groth16Verify` callback is
+still a stub today (dapp ships 256-byte placeholder proofs), so no
+real verifier ever saw the bad layout. But the ceremony commits to the
+circuit's witness layout via the r1cs, so the moment a real ceremony vk
+landed and a real verifier picked up `buildPublicSignalsSwapBatch`, every
+honest envelope would have been rejected by `snarkjs.groth16.verify`.
+
+**Fix:** Rewrote `buildPublicSignalsSwapBatch` to emit the by-field
+layout (constants `DIRECTION_OFF=11, C_IN_U_OFF=27, C_IN_V_OFF=43,
+MIN_OUT_OFF=59, TIP_OFF=75, C_OUT_U_OFF=91, C_OUT_V_OFF=107`),
+updated AMM.md §6 with the same formulas, and rewrote the two affected
+validator layout tests. Circuit / r1cs / drift-guard pins / ceremony
+scaffolding all unchanged.
+
 ## Pre-ceremony validation results
 
 After fixes:
@@ -195,31 +238,35 @@ After fixes:
 | Suite | Tests | Pass | Fail |
 |---|---|---|---|
 | Witness generation (honest paths) | 9 | 9 | 0 |
-| Adversarial witness (attack vectors) | 28 | 28 | 0 |
+| Adversarial witness (attack vectors) | 32 | 32 | 0 |
 | Compilation + constraint budget | 3 | 3 | 0 |
 
 Constraint counts after hardening:
 
 | Circuit | Constraints | Budget | Margin |
 |---|---|---|---|
-| `amm_lp_add` | 5,154 | 30,000 | 5.82× |
-| `amm_lp_remove` | 10,370 | 30,000 | 2.89× |
-| `amm_swap_batch` | 172,158 | 300,000 | 1.74× |
+| `amm_lp_add` | 5,153 | 30,000 | 5.82× |
+| `amm_lp_remove` | 10,369 | 30,000 | 2.89× |
+| `amm_swap_batch` | 171,162 | 300,000 | 1.75× |
 
 ## Ceremony-ready statement
 
-The four circom files in `dapp/circuits/amm/` are pre-ceremony-ready as of
-this review pass. All HIGH-severity completeness gaps are resolved. No
-soundness bugs were identified. The three deferred MEDIUM items are
-informational public inputs whose semantics are enforced out-of-circuit by
-the indexer, intentionally retained for defense-in-depth or protocol
-parity with the existing mixer.
+The four circom files in `dapp/circuits/amm/` are ceremony-ready as of
+this review pass. The one CRITICAL pre-ceremony issue (publicSignals
+layout mismatch — finding #17) is resolved validator-side. All HIGH-
+severity completeness gaps are resolved. No soundness bugs were
+identified. One MEDIUM item (`n_intents` discrimination, finding #3)
+remains intentionally out-of-circuit; the indexer matches signed
+intents against the public `C_in_BJJ` vector and is the authoritative
+active-vs-padded discriminator.
 
 Locking these circuits via Phase 2 ceremony commits to:
 - The 4 `.circom` source files at their current state
-- The 123 public-signal vector for `amm_swap_batch` (11 globals + 5×16 per-intent + 2×16 per-receipt)
+- The 123-element public-signal vector for `amm_swap_batch` (11 scalar
+  globals + 7 per-slot signal arrays of length N_MAX=16 each, flattened
+  by-array per circom's witness order — see AMM.md §6)
 - The 5 / 8 public-input vectors for `amm_lp_add` / `amm_lp_remove`
-- The pinned `H_BJJ` and `G_BJJ` decimal coordinates
+- The pinned `H_BJJ` and `G_BJJ` NUMS generator coordinates
 - N_MAX = 16 batch size
 - u64 amount range, 251-bit BJJ blinding range
 - All algorithmic decisions encoded in the constraint set

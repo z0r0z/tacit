@@ -10,13 +10,14 @@
 #   1. compiles amm_lp_add.circom, amm_lp_remove.circom, amm_swap_batch.circom
 #      → r1cs + wasm + sym, output in build/
 #   2. prints constraint counts and validates against AMM.md targets:
-#        • amm_lp_add      ≤ 30K   (current: ~5K)
-#        • amm_lp_remove   ≤ 30K   (current: ~10K)
-#        • amm_swap_batch  ≤ 300K  (current: ~165K)
+#        • amm_lp_add      ≤ 30K   (current: 5,153)
+#        • amm_lp_remove   ≤ 30K   (current: 10,369)
+#        • amm_swap_batch  ≤ 300K  (current: 171,162)
 #
-# Phase-1 ptau and Phase-2 ceremony are managed by ./finalize.sh once the
-# circuit constraint counts and witness shapes are accepted. This script is
-# the design-validation step and is safe to re-run any time circuits change.
+# The AMM Phase-1 ptau provisioning and Phase-2 ceremony are driven from
+# `../finalize-amm.sh` (the AMM-specific finalize script — distinct from the
+# mixer's `../finalize.sh`). This script is the design-validation step and
+# is safe to re-run any time circuits change.
 
 set -euo pipefail
 
@@ -82,5 +83,5 @@ echo
 echo "==> Build artifacts in build/:"
 ls -lh build/*.r1cs build/*_js/*.wasm 2>/dev/null | awk '{print "    " $9 "  " $5}'
 echo
-echo "Next: run ./finalize.sh once you're ready to do Phase 1 ptau download +"
-echo "Phase 2 ceremony coordination (mirrors the mixer's finalize.sh)."
+echo "Next: run ../finalize-amm.sh once you're ready to do Phase 1 ptau"
+echo "download + Phase 2 ceremony coordination across all three AMM circuits."

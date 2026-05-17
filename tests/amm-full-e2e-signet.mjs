@@ -892,7 +892,11 @@ if (!SKIP_CBTC) {
   // state is out of scope for this harness. Soft-fail with a warning so the
   // harness still completes summary.
   if (state.cbtcZk.burnResult) {
-    ok(`reusing cBTC.zk slot burn: ${state.cbtcZk.burnResult.reveal_txid.slice(0, 16)}…`);
+    if (state.cbtcZk.burnResult.skipped) {
+      warn(`reusing skipped cBTC.zk burn: ${(state.cbtcZk.burnResult.reason || '').slice(0, 100)}`);
+    } else {
+      ok(`reusing cBTC.zk slot burn: ${state.cbtcZk.burnResult.reveal_txid.slice(0, 16)}…`);
+    }
   } else {
     info(`T_SLOT_BURN (recover BTC from slot)…`);
     try {

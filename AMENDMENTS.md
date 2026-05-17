@@ -858,7 +858,12 @@ threshold schemes, new domain tags binding novel inputs):
      `buildPublicSignalsSwapBatch(env, pool)`. Produces the canonical
      123-element BN254-Fr-decimal-string array per AMM.md §6; pinned
      by 10 layout tests. Two independent indexers now produce byte-
-     identical publicSignals arrays from the same `(env, pool)`.
+     identical publicSignals arrays from the same `(env, pool)`. The
+     layout matches circom 2.1.6's witness-flattening order (each
+     declared `signal input` array emitted contiguously) so
+     `snarkjs.groth16.verify` lines up byte-for-byte against the
+     prover-emitted `public.json`. Verified empirically against
+     `dapp/circuits/amm/build/amm_swap_batch.sym`.
   5. **Sigma-prover production gate.** `proveXCurve` (the platform-
      RNG randomized prover) hard-refuses under `NODE_ENV=production`
      unless an explicit `rng` argument is passed. Mirrors the

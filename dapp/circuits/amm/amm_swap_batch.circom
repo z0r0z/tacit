@@ -55,14 +55,16 @@ pragma circom 2.1.6;
 // (0, 1) (the BabyJubJub identity, NOT (0,0) which is off-curve). All
 // constraints hold trivially for padded slots.
 //
-// Constraint budget (empirical, see amm-circuit-build.test.mjs):
+// Constraint budget (empirical, pinned by drift-guard.test.mjs against the
+// compiled r1cs):
 //   • Per-intent BJJ opening:  ~5K
 //   • Per-receipt BJJ opening: ~5K
 //   • Division-with-remainder, range proofs, min_out check: ~200
-//   • For N_MAX=16: ~16 × (5K + 5K + 200) + globals ≈ 165K NL constraints
+//   • For N_MAX=16: ~16 × (5K + 5K + 200) + globals ≈ 171K NL+linear
+//     (163,478 non-linear + 7,684 linear).
 //
-// (AMM.md projected ~300K with the variable-base sigma in-circuit; the
-//  fixed-base optimization brings this down by ~2×.)
+// (AMM.md's original sketch projected ~300K with a variable-base sigma in-
+//  circuit; the fixed-base PedersenBJJ primitive brings this down by ~2×.)
 
 include "./bjj_pedersen.circom";
 include "../node_modules/circomlib/circuits/comparators.circom";
@@ -222,21 +224,26 @@ template AmmSwapBatch(N_MAX) {
     component amountSwapBits[N_MAX];
     component tipBits[N_MAX];
     component remBits[N_MAX];                  // explicit range proof on rem (≤ 2^69 fits 16 × u64 + |Δ|)
-    component divisorBits[N_MAX];              // explicit range proof on divisor
     component remLT[N_MAX];
     component minCheck[N_MAX];
 
     // Per-intent derived signals lifted to top scope (circom 2 forbids signal
-    // declarations inside loops). Optimized to single-mult mux form:
-    //   multiplier = direction · (P_num − P_den) + P_den  ⇒ 1 NL per slot
-    //   divisor    = direction · (P_den − P_num) + P_num  ⇒ 1 NL per slot
-    //   tipB_i     = direction · tip_amount               ⇒ 1 NL per slot
-    //   tipA_i     = tip_amount − tipB_i                  ⇒ linear, free
-    // (Half the constraint count of the previous 4-mult decomposition.)
+    // declarations inside loops). Optimized to single-mult mux form per slot
+    // with linear-free siblings:
+    //   mulOffset  = direction · (P_num − P_den)           ⇒ 1 NL per slot
+    //   multiplier = mulOffset + P_den                     ⇒ linear, free
+    //   divisor    = P_num − mulOffset                     ⇒ linear, free
+    //   tipB_i     = direction · tip_amount                ⇒ 1 NL per slot
+    //   tipA_i     = tip_amount − tipB_i                   ⇒ linear, free
+    //   X_per      = (1 − direction) · amount_in_swap      ⇒ 1 NL per slot
+    //   Y_per      = amount_in_swap − X_per                ⇒ linear, free
+    // (Earlier passes used 4 multiplications per direction-mux + 2 for X/Y_per;
+    //  this form is 3 multiplications per slot total, plus linear derivations.
+    //  Divisor range bound is hoisted to global Num2Bits(69) on P_clear_num /
+    //  P_clear_den, since divisor[i] is always one of those two by construction.)
     signal multiplier[N_MAX];
     signal divisor[N_MAX];
     signal mulOffset[N_MAX];   // direction · (P_num − P_den)
-    signal divOffset[N_MAX];   // direction · (P_den − P_num)
     signal tipB_i_arr[N_MAX];  // direction · tip_amount (B-side accumulator term)
     signal div_lhs[N_MAX];     // amount_in_swap · multiplier  (quadratic term 1)
     signal div_rhs[N_MAX];     // amount_out · divisor          (quadratic term 2)
@@ -262,8 +269,10 @@ template AmmSwapBatch(N_MAX) {
         tipBits[i].in <== tip_amount_witness[i];
 
         // (3.5) Aggregate X and Y by direction (private aggregates needed for P_clear).
+        //       Single-mult form: X_per is the quadratic term; Y_per derives
+        //       linearly from amount_in_swap − X_per (free).
         X_per[i] <== (1 - direction[i]) * amount_in_swap[i];
-        Y_per[i] <== direction[i]       * amount_in_swap[i];
+        Y_per[i] <== amount_in_swap[i] - X_per[i];
         X_sum_acc[i + 1] <== X_sum_acc[i] + X_per[i];
         Y_sum_acc[i + 1] <== Y_sum_acc[i] + Y_per[i];
 
@@ -312,38 +321,49 @@ template AmmSwapBatch(N_MAX) {
     P_den_spot    <== is_spot * R_B_pre;
     P_clear_den   <== P_den_spot + P_den_nonspot;
 
+    // -------------- divisor range bound (hoisted from per-trader to global) ----
+    //
+    // Per-trader divisor[i] is always either P_clear_num (direction=0) or
+    // P_clear_den (direction=1) by construction. Range-checking the two global
+    // P_clear values here means each trader's LessThan(69) on (rem[i],
+    // divisor[i]) is sound without a per-trader Num2Bits(69) on divisor.
+    //
+    // Worst-case bound: P_clear_num ≤ X_sum + |Δa_net| ≤ 16·(2^64 − 1) +
+    // (2^64 − 1) = 17·(2^64 − 1) < 2^69. Symmetric for P_clear_den. Num2Bits(69)
+    // is the tight bound (LessThan(69) safely handles the comparison without
+    // field wraparound).
+    component pClearNumBits = Num2Bits(69);
+    pClearNumBits.in <== P_clear_num;
+    component pClearDenBits = Num2Bits(69);
+    pClearDenBits.in <== P_clear_den;
+
     // -------- Pass 2: per-intent constraints that reference P_clear --------
     for (var i = 0; i < N_MAX; i++) {
         // (5) Direction-multiplexed P_clear application.
         //     A→B trader (direction=0): amount_out = floor(amount_in_swap · P_den / P_num)
         //     B→A trader (direction=1): amount_out = floor(amount_in_swap · P_num / P_den)
-        //     Single-mult mux form (half the cost of the previous 4-mult
-        //     decomposition): multiplier = direction · (P_num − P_den) + P_den,
-        //     divisor = direction · (P_den − P_num) + P_num.
-        //     At direction=0: (multiplier, divisor) = (P_den, P_num).
-        //     At direction=1: (multiplier, divisor) = (P_num, P_den).
+        //     One NL multiplication per slot via single-mult mux:
+        //       mulOffset  = direction · (P_num − P_den)   ⇒ NL
+        //       multiplier = mulOffset + P_den             ⇒ linear, free
+        //       divisor    = P_num − mulOffset             ⇒ linear, free
+        //     At direction=0: mulOffset=0    ⇒ (multiplier, divisor) = (P_den, P_num).
+        //     At direction=1: mulOffset=P_num−P_den ⇒ (multiplier, divisor) = (P_num, P_den).
         mulOffset[i]  <== direction[i] * (P_clear_num - P_clear_den);
-        divOffset[i]  <== direction[i] * (P_clear_den - P_clear_num);
         multiplier[i] <== mulOffset[i] + P_clear_den;
-        divisor[i]    <== divOffset[i] + P_clear_num;
+        divisor[i]    <== P_clear_num - mulOffset[i];
 
         // amount_in_swap · multiplier === amount_out · divisor + rem;  rem < divisor.
         div_lhs[i] <== amount_in_swap[i] * multiplier[i];
         div_rhs[i] <== amount_out[i] * divisor[i];
         div_lhs[i] === div_rhs[i] + rem[i];
 
-        // (6) rem < divisor — enforce via LessThan with explicit pre-range-checks.
-        //
-        //     Worst-case divisor: in B-dom, divisor = P_clear_num = X_sum +
-        //     |Δa_net| ≤ 16·(2^64 − 1) + (2^64 − 1) = 17·(2^64 − 1) < 2^69.
-        //     Symmetric for P_clear_den. So Num2Bits(69) is the tight bound;
-        //     LessThan(69) safely handles the comparison without field
-        //     wraparound. (Tightened from (70) in the hardening pass once
-        //     the worst-case ceiling was re-derived precisely.)
+        // (6) rem < divisor — explicit range proof on rem only. Divisor's
+        //     bound is enforced globally above via Num2Bits(69) on
+        //     P_clear_num / P_clear_den, and divisor[i] is provably one of
+        //     those two by the single-mult mux construction, so its range
+        //     is closed by construction without a per-trader check.
         remBits[i] = Num2Bits(69);
         remBits[i].in <== rem[i];
-        divisorBits[i] = Num2Bits(69);
-        divisorBits[i].in <== divisor[i];
         remLT[i] = LessThan(69);
         remLT[i].in[0] <== rem[i];
         remLT[i].in[1] <== divisor[i];

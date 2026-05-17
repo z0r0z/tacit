@@ -3388,6 +3388,70 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
   display: block;
 }
 
+/* Pool ceremony lock — same shape as mixer. CSS-gates LP_ADD / LP_REMOVE /
+   pool-tab swap operations until the AMM Phase 2 ceremony finalizes and
+   the canonical AMM vk_cid is pinned in dapp/tacit.js. Forms remain
+   interactive enough for users to preview expected shares + swap
+   outputs while gated; only broadcast is blocked via pointer-events.
+   Read-only views (pool list, LP positions) render unchanged. The
+   lock toggle lives in renderPool() and flips off when
+   _isAmmCeremonyUnlocked() returns true. */
+#tab-pool #pool-lock-banner { display: none; }
+#tab-pool.pool-ceremony-locked #pool-lock-banner { display: block; }
+#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] {
+  position: relative;
+  opacity: 0.55;
+  filter: saturate(0.6);
+}
+#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] .section-body button,
+#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] .section-body input,
+#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] .section-body select,
+#tab-pool.pool-ceremony-locked [data-pool-ceremony-gated] .section-body textarea {
+  pointer-events: none;
+}
+
+/* AMM ceremony chip — subtle fixed-position growth-hack prompt that appears
+   on Market / Holdings / Pool / asset-detail surfaces while the AMM Phase 2
+   ceremony is running. renderAmmCeremonyChip() toggles display based on
+   active tab + 24h-ack localStorage + ceremony-finalized check. Drawer
+   click opens #amm-ceremony-drawer with the contribute flow. */
+.amm-cer-chip {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 900;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  background: var(--bg);
+  border: 1px solid var(--ink);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--ink);
+  transition: transform 80ms ease-out;
+  user-select: none;
+}
+.amm-cer-chip:hover { transform: translate(-1px, -1px); box-shadow: 3px 3px 0 var(--ink); }
+.amm-cer-chip:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--ink); }
+.amm-cer-chip .amm-cer-chip-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #c97a1a;
+  animation: amm-cer-pulse 2.5s ease-in-out infinite;
+}
+@keyframes amm-cer-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1.0; }
+}
+.amm-cer-chip .amm-cer-chip-count {
+  font-family: var(--mono);
+  color: var(--ink-mid);
+  font-weight: 500;
+}
+
 /* First-load welcome modal — shown only when this network has no burner key
    AND no remembered ext-wallet mode. Forces a deliberate choice (connect
    external vs. generate local) before init() falls into the passphrase prompt,
@@ -5865,18 +5929,18 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="muted" style="margin-bottom:10px;">Trade against a pool's curve. Settlement is one Bitcoin tx with a slippage floor — if the pool moves past your floor before the reveal lands, the tx fails on chain and your input UTXO stays where it was.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:1;min-width:160px;">From
-          <select id="pool-swap-from" disabled><option value="">— pick an asset —</option></select>
+          <select id="pool-swap-from"><option value="">— pick an asset —</option></select>
         </label>
         <label style="flex:1;min-width:120px;">Amount
-          <input id="pool-swap-amount-in" type="text" placeholder="0" disabled style="width:100%;font-family:monospace;font-size:12px;">
+          <input id="pool-swap-amount-in" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
         </label>
         <label style="flex:1;min-width:160px;">To
-          <select id="pool-swap-to" disabled><option value="">— pick an asset —</option></select>
+          <select id="pool-swap-to"><option value="">— pick an asset —</option></select>
         </label>
         <label style="flex:1;min-width:120px;">Slippage (bps)
-          <input id="pool-swap-slippage-bps" type="number" min="0" max="10000" value="100" disabled style="width:100%;font-family:monospace;font-size:12px;">
+          <input id="pool-swap-slippage-bps" type="number" min="0" max="10000" value="100" style="width:100%;font-family:monospace;font-size:12px;">
         </label>
-        <button id="btn-pool-swap-broadcast" type="button" disabled title="Activates after the AMM trusted setup ceremony finalizes.">Swap &amp; broadcast</button>
+        <button id="btn-pool-swap-broadcast" type="button">Swap &amp; broadcast</button>
       </div>
       <div id="pool-swap-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
@@ -5899,15 +5963,15 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="muted" style="margin-bottom:10px;">Deposit a proportional pair of assets into a pool. The dapp computes your share of the LP supply using the Uniswap V2 mint formula (min(ΔA·S/Rₐ, ΔB·S/R_b)) and binds the share commitment to your wallet via an XCurve sigma proof.</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:2;min-width:220px;">Pool
-          <select id="pool-lpadd-pool" disabled><option value="">— pick a pool —</option></select>
+          <select id="pool-lpadd-pool"><option value="">— pick a pool —</option></select>
         </label>
         <label style="flex:1;min-width:120px;">Δ asset A
-          <input id="pool-lpadd-delta-a" type="text" placeholder="0" disabled style="width:100%;font-family:monospace;font-size:12px;">
+          <input id="pool-lpadd-delta-a" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
         </label>
         <label style="flex:1;min-width:120px;">Δ asset B
-          <input id="pool-lpadd-delta-b" type="text" placeholder="0" disabled style="width:100%;font-family:monospace;font-size:12px;">
+          <input id="pool-lpadd-delta-b" type="text" placeholder="0" style="width:100%;font-family:monospace;font-size:12px;">
         </label>
-        <button id="btn-pool-lpadd-broadcast" type="button" disabled title="Activates after the AMM trusted setup ceremony finalizes.">Add &amp; broadcast</button>
+        <button id="btn-pool-lpadd-broadcast" type="button">Add &amp; broadcast</button>
       </div>
       <div id="pool-lpadd-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
@@ -5927,9 +5991,9 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       <div class="muted" style="margin-bottom:10px;">Burn one of your LP-share UTXOs and receive a proportional withdrawal of both reserve assets. Rounding remainders donate to remaining LPs (Uniswap V2 convention).</div>
       <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
         <label style="flex:2;min-width:280px;">Position
-          <select id="pool-lpremove-position" disabled><option value="">— pick an LP UTXO —</option></select>
+          <select id="pool-lpremove-position"><option value="">— pick an LP UTXO —</option></select>
         </label>
-        <button id="btn-pool-lpremove-broadcast" type="button" disabled title="Activates after the AMM trusted setup ceremony finalizes.">Remove &amp; broadcast</button>
+        <button id="btn-pool-lpremove-broadcast" type="button">Remove &amp; broadcast</button>
       </div>
       <div id="pool-lpremove-preview-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
     </div>
@@ -6149,6 +6213,42 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     <div class="pass-actions">
       <button id="tcm-cancel" type="button">Cancel</button>
       <button id="tcm-confirm" type="button">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- AMM ceremony chip + drawer. Ambient growth-hack: while the AMM Phase 2
+     ceremony is running, every trader on Market/Pool/Holdings sees a subtle
+     chip prompting a one-click contribute. Chip + drawer rendered globally
+     (renderAmmCeremonyChip() controls visibility per active tab + 24h ack).
+     Drawer carries the per-circuit progress + name + anonymity toggle + the
+     contribute button that calls ceremonyContributeAmm(). -->
+<div id="amm-ceremony-chip" class="amm-cer-chip" role="button" tabindex="0" style="display:none;" title="Contribute entropy to the AMM trusted setup ceremony — ~45 seconds in your browser.">
+  <span class="amm-cer-chip-dot"></span>
+  <span class="amm-cer-chip-text">contribute to AMM ceremony</span>
+  <span class="amm-cer-chip-count" id="amm-cer-chip-count"></span>
+</div>
+<div id="amm-ceremony-drawer" class="pass-modal" role="dialog" aria-modal="true" aria-labelledby="amm-cer-title" style="display:none;">
+  <div class="pass-card" style="max-width: 540px;">
+    <div id="amm-cer-title" class="pass-title">AMM trusted setup · contribute</div>
+    <div class="pass-reason" style="margin-bottom: 12px;">
+      <p style="margin:0 0 8px 0;">Each click advances one of three AMM circuit chains by mixing your local entropy into the proving key. As long as <strong>one</strong> contributor across the chain is honest, the AMM is sound. Takes ~30–60 seconds and ~10 MB of bandwidth in your browser.</p>
+      <p style="margin:0 0 8px 0;font-size:11px;color:var(--ink-mid);">Your contribution is pseudonymous by default. Attribute it to your tacit wallet pubkey to be eligible for future reputation + airdrop snapshots.</p>
+    </div>
+    <div id="amm-cer-chains" style="margin-bottom: 12px; font-family: var(--mono); font-size: 11px;"></div>
+    <div style="margin-bottom: 10px;">
+      <label style="display:block; font-size: 11px; margin-bottom: 4px;">Display name (optional)
+        <input id="amm-cer-name" type="text" maxlength="64" placeholder="anonymous" style="width:100%; font-size:12px; padding:4px 6px;">
+      </label>
+    </div>
+    <div style="margin-bottom: 12px; font-size: 11px;">
+      <label><input id="amm-cer-attribute-pubkey" type="checkbox" checked> Attribute to my wallet pubkey <span id="amm-cer-pubkey-hint" class="muted"></span></label>
+    </div>
+    <div id="amm-cer-progress" style="display:none; margin-bottom: 12px; font-family: var(--mono); font-size: 11px; color: var(--ink-mid); max-height: 200px; overflow-y: auto; padding: 8px; border: 1px solid var(--ink-faint); background: var(--bg-warm); white-space: pre-wrap;"></div>
+    <div id="amm-cer-result" style="display:none; margin-bottom: 12px; font-family: var(--mono); font-size: 11px; padding: 8px; border: 1px solid var(--ink-faint);"></div>
+    <div class="pass-actions">
+      <button id="amm-cer-cancel" type="button">Close</button>
+      <button id="amm-cer-go" type="button">Contribute</button>
     </div>
   </div>
 </div>

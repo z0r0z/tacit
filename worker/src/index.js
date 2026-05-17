@@ -4365,11 +4365,19 @@ async function handleCeremonyInit(req, env, cors) {
     return jsonResponse({ error: 'ptau does not start with snarkjs "ptau" magic bytes' }, 400, cors);
   }
 
+  // Pin filenames are derived from circuit_hash short form, not from a
+  // circuit-name string the coordinator picks. This keeps the worker
+  // circuit-agnostic (mixer, AMM, future ceremonies all use the same
+  // /ceremony/init endpoint) and means the Pinata dashboard distinguishes
+  // ceremonies by the short hash an auditor can cross-reference against
+  // the r1cs sha256, not by a self-asserted name a malicious coordinator
+  // could spoof.
+  const shortHash = circuitHash.slice(0, 8);
   let zkeyCid, r1csCid, ptauCid;
   try {
-    zkeyCid = await pinBinaryToIpfs(env, zkeyBytes, `withdraw_0000_${circuitHash.slice(0,8)}.zkey`);
-    r1csCid = await pinBinaryToIpfs(env, r1csBytes, `withdraw_${circuitHash.slice(0,8)}.r1cs`);
-    ptauCid = await pinBinaryToIpfs(env, ptauBytes, `pot_${circuitHash.slice(0,8)}.ptau`);
+    zkeyCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${shortHash}_0000.zkey`);
+    r1csCid = await pinBinaryToIpfs(env, r1csBytes, `circuit_${shortHash}.r1cs`);
+    ptauCid = await pinBinaryToIpfs(env, ptauBytes, `circuit_${shortHash}.ptau`);
   } catch (e) {
     return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
   }
@@ -4543,6 +4551,13 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
   catch { return jsonResponse({ error: 'expected multipart form-data' }, 400, cors); }
   const zkey = fd.get('zkey');
   const contributorName = String(fd.get('contributor_name') || 'anonymous').slice(0, 64);
+  // Optional 33-byte compressed secp256k1 pubkey hex (66 hex chars) — when
+  // present, lets a future reputation/airdrop snapshot attribute the
+  // contribution to a tacit wallet. Soundness is independent of identity
+  // (≥1 honest contributor is the math); this is a UX/attribution add.
+  // Empty / malformed → stored as null; pseudonymous default preserved.
+  let contributorPubkey = String(fd.get('contributor_pubkey') || '').trim().toLowerCase();
+  if (!/^0[23][0-9a-f]{64}$/.test(contributorPubkey)) contributorPubkey = null;
   const prevCid = String(fd.get('prev_cid') || '');
   const contribHash = String(fd.get('contribution_hash') || '').slice(0, 256);
   if (!(zkey instanceof File)) return jsonResponse({ error: 'missing form field "zkey"' }, 400, cors);
@@ -4563,7 +4578,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
 
   let newCid;
   try {
-    newCid = await pinBinaryToIpfs(env, zkeyBytes, `withdraw_${String(state.contribution_count + 1).padStart(4, '0')}_${circuitHash.slice(0,8)}.zkey`);
+    newCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_${String(state.contribution_count + 1).padStart(4, '0')}.zkey`);
   } catch (e) {
     return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
   }
@@ -4608,6 +4623,7 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     index: newCount,
     cid: newCid,
     contributor_name: contributorName,
+    contributor_pubkey: contributorPubkey,
     contribution_hash: contribHash,
     contributed_at: newState.last_contributed_at,
     prev_cid: prevCid,
@@ -4957,7 +4973,7 @@ async function handleCeremonyFinalize(req, env, circuitHash, cors, ctx) {
 
   let finalCid;
   try {
-    finalCid = await pinBinaryToIpfs(env, zkeyBytes, `withdraw_final_${circuitHash.slice(0,8)}.zkey`);
+    finalCid = await pinBinaryToIpfs(env, zkeyBytes, `circuit_${circuitHash.slice(0,8)}_final.zkey`);
   } catch (e) {
     return jsonResponse({ error: 'pin failed: ' + (e.message || 'unknown') }, 502, cors);
   }
@@ -5074,6 +5090,94 @@ async function handlePinMixerVk(req, env, cors) {
 
   const pinFd = new FormData();
   pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-mixer-vk-${Date.now()}.json`);
+  pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+
+  let pinResp;
+  try {
+    pinResp = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.PINATA_JWT}` },
+      body: pinFd,
+    });
+  } catch { return jsonResponse({ error: 'pinata unreachable' }, 502, cors); }
+  if (!pinResp.ok) {
+    try { console.error(`pinata ${pinResp.status}: ${(await pinResp.text()).slice(0, 240)}`); } catch {}
+    return jsonResponse({ error: `pinata error (status ${pinResp.status})` }, 502, cors);
+  }
+  const pj = await pinResp.json();
+  if (!pj.IpfsHash) return jsonResponse({ error: 'pinata returned no CID' }, 502, cors);
+
+  const newCount = prior + 1;
+  await env.UPLOAD_KV.put(kvKey, String(newCount), { expirationTtl: 60 * 60 * 25 });
+
+  return jsonResponse({ cid: pj.IpfsHash }, 200, cors);
+}
+
+// ============== /pin-amm-vk — pin the AMM ceremony's vk wrapper JSON ==============
+//
+// Mirrors /pin-mixer-vk but accepts a wrapper containing the three AMM
+// V1 circuits' verifying keys keyed by `lp_add`, `lp_remove`, `swap_batch`
+// (per AMM-CEREMONY-RUNBOOK §"What the ceremony produces"). Coordinator
+// uploads this after the Phase 2 ceremony finalizes; the returned CID gets
+// hardcoded into the dapp as CANONICAL_AMM_VK_CID, which is the single
+// flip-point that activates AMM Groth16 prover + verifier across the dapp.
+//
+// Wrapper shape (strict):
+//   {
+//     "schema": "tacit-amm-vk-wrapper-v1",
+//     "lp_add":     { protocol: "groth16", curve: "bn128", vk_alpha_1, vk_beta_2, vk_gamma_2, vk_delta_2, IC: [...] },
+//     "lp_remove":  { same shape },
+//     "swap_batch": { same shape }
+//   }
+//
+// Each sub-vk validated by the same shape-check as /pin-mixer-vk so a
+// malformed bundle can't get pinned and shipped as canonical.
+async function handlePinAmmVk(req, env, cors) {
+  if (!env.PINATA_JWT) return jsonResponse({ error: 'PINATA_JWT missing' }, 500, cors);
+
+  const ip = req.headers.get('CF-Connecting-IP') || 'anon';
+  const day = new Date().toISOString().slice(0, 10);
+  const kvKey = `pin:${day}:${ip}`;
+  const dailyLimit = safeInt(env.DAILY_LIMIT, 20, { min: 0 });
+  const prior = safeInt(await env.UPLOAD_KV.get(kvKey), 0, { min: 0 });
+  if (prior >= dailyLimit) return jsonResponse({ error: 'daily upload limit reached' }, 429, cors);
+
+  let body;
+  try { body = await req.json(); } catch { return jsonResponse({ error: 'expected JSON body' }, 400, cors); }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return jsonResponse({ error: 'expected JSON object' }, 400, cors);
+  }
+  if (body.schema !== 'tacit-amm-vk-wrapper-v1') {
+    return jsonResponse({ error: 'schema must be "tacit-amm-vk-wrapper-v1"' }, 400, cors);
+  }
+  for (const key of ['lp_add', 'lp_remove', 'swap_batch']) {
+    const sub = body[key];
+    if (!sub || typeof sub !== 'object') {
+      return jsonResponse({ error: `missing or non-object field "${key}"` }, 400, cors);
+    }
+    if (sub.protocol !== 'groth16') {
+      return jsonResponse({ error: `${key}.protocol must be "groth16"` }, 400, cors);
+    }
+    if (sub.curve !== 'bn128' && sub.curve !== 'bn254') {
+      return jsonResponse({ error: `${key}.curve must be bn128 or bn254` }, 400, cors);
+    }
+    for (const f of ['vk_alpha_1', 'vk_beta_2', 'vk_gamma_2', 'vk_delta_2', 'IC']) {
+      if (sub[f] === undefined) return jsonResponse({ error: `${key} missing field ${f}` }, 400, cors);
+    }
+    if (!Array.isArray(sub.IC) || sub.IC.length < 2) {
+      return jsonResponse({ error: `${key}.IC must be array length >= 2` }, 400, cors);
+    }
+  }
+
+  const json = JSON.stringify(body);
+  // Three vks of similar size to mixer (~10–30 KB each) plus wrapper —
+  // cap at 256 KB to leave headroom but reject anything wildly malformed.
+  if (json.length > 256 * 1024) {
+    return jsonResponse({ error: 'wrapper exceeds 256 KB' }, 413, cors);
+  }
+
+  const pinFd = new FormData();
+  pinFd.append('file', new Blob([json], { type: 'application/json' }), `tacit-amm-vk-${Date.now()}.json`);
   pinFd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
 
   let pinResp;
@@ -15477,16 +15581,14 @@ async function scanForEtches(env, network) {
           const deltaA = swapped ? BigInt(lp.delta_b) : BigInt(lp.delta_a);
           const deltaB = swapped ? BigInt(lp.delta_a) : BigInt(lp.delta_b);
 
-          // Pre-launch capability-flags guard. Mirror dapp/amm-envelope.js's
-          // `encodeLpAdd` guard (only 0x00 valid pre-launch): the worker does
-          // NOT yet enforce semantics for the RANGE_ATTEST_REQUIRED (0x01) or
-          // POOL_CAP_SOLO_INTENT_ALLOWED (0x02) bits in T_LP_ADD's swap-time
-          // consumers, so a pool registered with a non-zero flag is labelled
-          // but the gate is non-functional. Refuse the POOL_INIT until the
-          // corresponding validator branches ship in a follow-up amendment.
-          // (Wire-level decode at decodeTLpAddPayload accepts any u8; the
-          // gate lives here so non-dapp callers can't slip past dapp's
-          // build-time guard.)
+          // V1 pools fix capability_flags to 0x00. The byte is reserved in
+          // the pool_id preimage so follow-up opcodes (range-LP, etc.) can
+          // extend the pool taxonomy without colliding with V1 pool_ids
+          // (AMM.md §"Forward compatibility"). Any non-zero V1 POOL_INIT
+          // would derive a pool_id no V1 validator can interpret, so we
+          // skip indexing it here. The wire decoder still accepts any u8
+          // for forward-format compatibility; this gate mirrors dapp's
+          // encoder guard at dapp/amm-envelope.js's encodeLpAdd.
           if ((lp.pool_capability_flags ?? 0) !== 0) continue;
 
           // Pool ID per SPEC: includes fee_bps + capability_flags so
@@ -16877,6 +16979,7 @@ export default {
     if (url.pathname === '/pin' && req.method === 'POST')      return handlePin(req, env, cors);
     if (url.pathname === '/pin-json' && req.method === 'POST') return handlePinJson(req, env, cors);
     if (url.pathname === '/pin-mixer-vk' && req.method === 'POST') return handlePinMixerVk(req, env, cors);
+    if (url.pathname === '/pin-amm-vk' && req.method === 'POST') return handlePinAmmVk(req, env, cors);
     if (url.pathname === '/pin-airdrop-snapshot' && req.method === 'POST') return handlePinAirdropSnapshot(req, env, cors);
     if (url.pathname === '/ceremony/init' && req.method === 'POST') return handleCeremonyInit(req, env, cors);
     {

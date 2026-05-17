@@ -199,15 +199,13 @@ export function encodeLpAdd(args) {
     parts.push(new Uint8Array([metaBytes.length]), metaBytes);
     const capFlags = args.poolCapabilityFlags ?? 0;
     if (capFlags < 0 || capFlags > 0xff) throw new Error('poolCapabilityFlags must be u8');
-    // Pre-launch guard. The 0x01 (RANGE_ATTEST-gated LP_ADD) and 0x02
-    // (POOL_CAP_SOLO_INTENT_ALLOWED) bits are drafted in AMM.md but the
-    // worker validator does NOT yet enforce them — setting a bit creates
-    // a pool labelled with the flag but offering no actual semantic gate.
-    // Reject here so callers can't accidentally rely on a non-functional
-    // capability. Remove this guard when the corresponding validator
-    // branches ship in a follow-up amendment.
+    // V1 pools fix capability_flags to 0x00. The byte is reserved in
+    // the pool_id preimage so future opcodes (e.g. range-LP) can extend
+    // the pool taxonomy without colliding with V1 pool_ids — see AMM.md
+    // §"Forward compatibility". Any non-zero value would derive a pool_id
+    // no V1 validator can interpret, so we reject at the encoder.
     if (capFlags !== 0) {
-      throw new Error(`poolCapabilityFlags=${capFlags} is drafted but not enforced by the worker pre-launch; only 0x00 is valid for now`);
+      throw new Error(`poolCapabilityFlags must be 0x00 for V1 pools (the byte is reserved in pool_id derivation for forward extensions)`);
     }
     parts.push(new Uint8Array([capFlags]));
   }
@@ -249,8 +247,9 @@ export function decodeLpAdd(payload) {
     const deltaB = _readU64LE(payload, off); off += 8;
     const shareAmount = _readU64LE(payload, off); off += 8;
     const shareCSecp = payload.slice(off, off + 33); off += 33;
-    off += 32 + XCURVE_PROOF_LEN + 64 + 64;
-    const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp };
+    const shareCBJJ = payload.slice(off, off + 32); off += 32;
+    off += XCURVE_PROOF_LEN + 64 + 64;
+    const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp, shareCBJJ };
     if (variant === 1) {
       if (off + 2 > payload.length) return null;
       result.feeBps = _readU16LE(payload, off); off += 2;
@@ -276,6 +275,14 @@ export function decodeLpAdd(payload) {
       if (off + 1 > payload.length) return null;
       result.poolCapabilityFlags = payload[off++];
     }
+    // Tail: u16(proofLen) || proof. Skip if truncated (older callers don't
+    // need proof; verifier callers check for presence).
+    if (off + 2 <= payload.length) {
+      const proofLen = _readU16LE(payload, off); off += 2;
+      if (off + proofLen <= payload.length) {
+        result.proof = payload.slice(off, off + proofLen);
+      }
+    }
     return result;
   } catch { return null; }
 }
@@ -297,8 +304,18 @@ export function decodeLpRemove(payload) {
     const deltaA = _readU64LE(payload, off); off += 8;
     const deltaB = _readU64LE(payload, off); off += 8;
     const recvACSecp = payload.slice(off, off + 33); off += 33;
-    off += 32 + XCURVE_PROOF_LEN;
+    const recvACBJJ = payload.slice(off, off + 32); off += 32;
+    off += XCURVE_PROOF_LEN;
     const recvBCSecp = payload.slice(off, off + 33); off += 33;
-    return { assetA, assetB, shareAmount, deltaA, deltaB, recvACSecp, recvBCSecp };
+    const recvBCBJJ = payload.slice(off, off + 32); off += 32;
+    off += XCURVE_PROOF_LEN + 64;  // recvBXcurveSigma + kernelSigLP
+    const result = { assetA, assetB, shareAmount, deltaA, deltaB, recvACSecp, recvACBJJ, recvBCSecp, recvBCBJJ };
+    if (off + 2 <= payload.length) {
+      const proofLen = _readU16LE(payload, off); off += 2;
+      if (off + proofLen <= payload.length) {
+        result.proof = payload.slice(off, off + proofLen);
+      }
+    }
+    return result;
   } catch { return null; }
 }

@@ -223,11 +223,36 @@ function resolveMinLiqOutput(arg, fnName) {
 // content-addressable store MUST recompute the CID from those bytes and
 // verify it matches `pool.vk_cid` before passing the vk to snarkjs.
 //
+// `vk_cid` is a CIDv1 with raw codec + sha2-256 multihash, multibase-base32
+// lowercase no-padding (starts with "bafkrei..."), pointing at a single
+// content-addressed JSON file. The wire format and integrity-check rule are
+// uniform across pool kinds; only the resolved JSON shape differs:
+//
+//   • **Mixer pools (single circuit — `withdraw`).** The JSON at vk_cid is a
+//     flat snarkjs verifying-key object. The indexer/dapp passes the resolved
+//     bytes directly to `snarkjs.groth16.verify`.
+//
+//   • **AMM pools (three circuits).** The JSON at vk_cid is a per-kind
+//     wrapper bundling the three vks the pool needs:
+//         {
+//           "lp_add":     { ...snarkjs vk for amm_lp_add... },
+//           "lp_remove":  { ...snarkjs vk for amm_lp_remove... },
+//           "swap_batch": { ...snarkjs vk for amm_swap_batch... }
+//         }
+//     The verifier parses the JSON, picks the entry matching the opcode's
+//     circuit kind (T_LP_ADD → lp_add, T_LP_REMOVE → lp_remove, T_SWAP_BATCH
+//     → swap_batch), and verifies the proof under that entry. The pool's
+//     `ceremony_cid` separately resolves to the public audit bundle (full
+//     attestation chains, ptau, all three pre-beacon and post-beacon zkeys)
+//     under one IPFS directory.
+//
+// In both cases the integrity rule is identical: the indexer recomputes
+// `deriveVkCid(vk_bytes)` against the fetched JSON's raw bytes and rejects
+// any envelope whose Groth16 verification would otherwise have run against
+// bytes the pinned CID doesn't authenticate.
+//
 // V1 canonical format for `vk_cid` is **CIDv1 with raw codec + sha2-256
-// multihash, multibase-base32 lowercase no-padding** (i.e., starts with
-// "bafkrei..."). This matches IPFS's standard for content-addressed
-// non-IPLD content (the most common form for static binary artifacts
-// pinned by content-hash).
+// multihash, multibase-base32 lowercase no-padding**:
 //
 // Construction (canonical, byte-for-byte reproducible by every indexer):
 //   multihash  = 0x12 (sha2-256 code) || 0x20 (length=32) || sha256(vk_bytes)
@@ -309,23 +334,35 @@ export function verifyVkCidBinding(vkBytes, vkCidString) {
 // for-byte reference impl. Dapp provers, worker indexers, and third-party
 // re-implementations MUST agree with this output exactly.
 //
-// Layout (123 signals total, N_MAX = 16):
-//   [0]       pool_id_fr = SHA256(pool.pool_id) mod p_Fr        (32-byte hash reduced into Fr)
-//   [1]       R_A_pre
-//   [2]       R_B_pre
-//   [3]       delta_A_net_sign       (0 positive / 1 negative)
-//   [4]       delta_A_net_magnitude  (u64)
-//   [5]       delta_B_net_sign
-//   [6]       delta_B_net_magnitude  (u64)
-//   [7]       tip_A_amount
-//   [8]       tip_B_amount
-//   [9]       fee_bps                (0..1000)
-//   [10]      n_intents              (0..16)
-//   [11+5i+0..3]  direction_i, C_in_BJJ_u_i, C_in_BJJ_v_i, min_out_i, tip_amount_i  (i ∈ [0,16))
-//   [11+80+2i+0..1] C_out_BJJ_u_i, C_out_BJJ_v_i  (i ∈ [0,16))
+// Layout (123 signals total, N_MAX = 16). Matches circom 2.1.6's witness-
+// index order: scalar globals first, then each declared signal array
+// flattened contiguously in the order it appears in the template's `signal
+// input` declarations. Verified empirically against
+// `dapp/circuits/amm/build/amm_swap_batch.sym` and a `wtns export json` of
+// the all-zero (spot, n_intents=0) input.
+//
+//   [0]              pool_id_fr = SHA256(pool.pool_id) mod p_Fr        (32-byte hash reduced into Fr)
+//   [1]              R_A_pre
+//   [2]              R_B_pre
+//   [3]              delta_A_net_sign       (0 positive / 1 negative)
+//   [4]              delta_A_net_magnitude  (u64)
+//   [5]              delta_B_net_sign
+//   [6]              delta_B_net_magnitude  (u64)
+//   [7]              tip_A_amount
+//   [8]              tip_B_amount
+//   [9]              fee_bps                (0..1000)
+//   [10]             n_intents              (0..16)
+//   [11 + i]         direction[i]           (i ∈ [0,16))
+//   [27 + i]         C_in_BJJ_u[i]
+//   [43 + i]         C_in_BJJ_v[i]
+//   [59 + i]         min_out[i]
+//   [75 + i]         tip_amount[i]          binds in-circuit tip_amount_witness to intent_msg.tip_amount
+//   [91 + i]         C_out_BJJ_u[i]
+//   [107 + i]        C_out_BJJ_v[i]
 //
 // Padded intents (i ≥ n_intents) use direction=0, C_in_BJJ=(0,1), min_out=0,
-// tip_amount=0. Padded receipts use C_out_BJJ=(0,1).
+// tip_amount=0. Padded receipts use C_out_BJJ=(0,1). The BJJ identity is
+// `(0, 1)` — `(0, 0)` is off-curve and would fail the in-circuit constraint.
 export const PUBLIC_SIGNALS_SWAP_BATCH_LENGTH = 123;
 const _N_MAX = 16;
 const _BJJ_IDENTITY_U = '0';
@@ -402,46 +439,51 @@ export function buildPublicSignalsSwapBatch(env, pool) {
   sigs[9]  = _fr(env.feeBpsAtSettle ?? pool.fee_bps);
   sigs[10] = _fr(BigInt(n));
 
-  // Per-intent (5 × 16)
+  // Per-array offsets: circom emits each declared signal-input array
+  // contiguously, in the order the arrays appear in the template's signal
+  // declarations. For amm_swap_batch.circom that is direction → C_in_BJJ_u
+  // → C_in_BJJ_v → min_out → tip_amount → C_out_BJJ_u → C_out_BJJ_v.
+  const DIRECTION_OFF   = 11;
+  const C_IN_U_OFF      = DIRECTION_OFF + _N_MAX;     // 27
+  const C_IN_V_OFF      = C_IN_U_OFF + _N_MAX;        // 43
+  const MIN_OUT_OFF     = C_IN_V_OFF + _N_MAX;        // 59
+  const TIP_OFF         = MIN_OUT_OFF + _N_MAX;       // 75
+  const C_OUT_U_OFF     = TIP_OFF + _N_MAX;           // 91
+  const C_OUT_V_OFF     = C_OUT_U_OFF + _N_MAX;       // 107
+
   for (let i = 0; i < _N_MAX; i++) {
-    const off = 11 + 5 * i;
     if (i < n) {
       const it = env.intents[i];
-      sigs[off + 0] = _fr(BigInt(it.direction));
-      // C_in_BJJ is packed as 32 bytes; decode the (u, v) coordinates.
-      // For publicSignals, we need u and v as Fr-string decimal each.
-      // The codec stores cInBjj as packed bytes; the caller may have already
-      // unpacked them. Accept both forms: if env supplies cInBjjU/cInBjjV
-      // pre-parsed, use them; else require unpacking by the caller.
+      // C_in_BJJ is packed as 32 bytes; the caller is responsible for
+      // unpacking into (u, v) Fr coordinates (amm-bjj.unpackPoint).
       if (it.cInBjjU === undefined || it.cInBjjV === undefined) {
         throw new Error(`intent[${i}] must provide cInBjjU and cInBjjV (unpack via amm-bjj.unpackPoint first)`);
       }
-      sigs[off + 1] = _fr(it.cInBjjU);
-      sigs[off + 2] = _fr(it.cInBjjV);
-      sigs[off + 3] = _fr(it.minOut);
-      sigs[off + 4] = _fr(it.tipAmount);
+      sigs[DIRECTION_OFF + i] = _fr(BigInt(it.direction));
+      sigs[C_IN_U_OFF    + i] = _fr(it.cInBjjU);
+      sigs[C_IN_V_OFF    + i] = _fr(it.cInBjjV);
+      sigs[MIN_OUT_OFF   + i] = _fr(it.minOut);
+      sigs[TIP_OFF       + i] = _fr(it.tipAmount);
     } else {
-      sigs[off + 0] = '0';
-      sigs[off + 1] = _BJJ_IDENTITY_U;
-      sigs[off + 2] = _BJJ_IDENTITY_V;
-      sigs[off + 3] = '0';
-      sigs[off + 4] = '0';
+      sigs[DIRECTION_OFF + i] = '0';
+      sigs[C_IN_U_OFF    + i] = _BJJ_IDENTITY_U;
+      sigs[C_IN_V_OFF    + i] = _BJJ_IDENTITY_V;
+      sigs[MIN_OUT_OFF   + i] = '0';
+      sigs[TIP_OFF       + i] = '0';
     }
   }
 
-  // Per-receipt (2 × 16)
   for (let i = 0; i < _N_MAX; i++) {
-    const off = 11 + 5 * _N_MAX + 2 * i;
     if (i < n) {
       const r = env.receipts[i];
       if (r.cOutBjjU === undefined || r.cOutBjjV === undefined) {
         throw new Error(`receipt[${i}] must provide cOutBjjU and cOutBjjV (unpack via amm-bjj.unpackPoint first)`);
       }
-      sigs[off + 0] = _fr(r.cOutBjjU);
-      sigs[off + 1] = _fr(r.cOutBjjV);
+      sigs[C_OUT_U_OFF + i] = _fr(r.cOutBjjU);
+      sigs[C_OUT_V_OFF + i] = _fr(r.cOutBjjV);
     } else {
-      sigs[off + 0] = _BJJ_IDENTITY_U;
-      sigs[off + 1] = _BJJ_IDENTITY_V;
+      sigs[C_OUT_U_OFF + i] = _BJJ_IDENTITY_U;
+      sigs[C_OUT_V_OFF + i] = _BJJ_IDENTITY_V;
     }
   }
 

@@ -202,11 +202,12 @@ ok('all fee tiers produce distinct pool_ids', new Set(allPoolIds).size === FEE_T
 ok('all fee tiers produce distinct lp_asset_ids', new Set(allLpIds).size === FEE_TIERS.length);
 
 // ============== Sweep: capability flags ==============
-// Pre-launch: only 0x00 is encoder-permitted. The dapp encoder rejects
-// non-zero capability_flags until the worker's gate (RANGE_ATTEST 0x01,
-// SOLO_INTENT 0x02) ships. This sweep verifies the guard + that the
-// pool_id derivation correctly distinguishes flag values when the gate
-// eventually activates (pure math; no envelope encode).
+// V1 pools fix capability_flags to 0x00. The byte is reserved in the
+// pool_id preimage so follow-up opcodes can extend the pool taxonomy
+// without colliding with V1 pool_ids. The dapp encoder rejects any
+// non-zero value; this sweep verifies the guard + that the pool_id
+// derivation correctly distinguishes flag values for forward extensions
+// (pure math; no envelope encode).
 group('capability flags sweep — encoder guard + pool_id distinction');
 {
   // 0x00 must encode + validate cleanly today
@@ -225,8 +226,8 @@ group('capability flags sweep — encoder guard + pool_id distinction');
       deltaA: 500_000n, deltaB: 500_000n,
       feeBps: 30, capabilityFlags: flags, expectAccept: false,
     });
-    ok(`flags=0x${flags.toString(16).padStart(2,'0')}: encoder rejects (not yet enforced)`,
-      r.encoderRejected && r.encoderRejected.includes('not enforced'));
+    ok(`flags=0x${flags.toString(16).padStart(2,'0')}: encoder rejects (V1 reserves the byte)`,
+      r.encoderRejected && r.encoderRejected.includes('must be 0x00'));
   }
 
   // Pure math: derivePoolId STILL produces distinct ids for different flag
