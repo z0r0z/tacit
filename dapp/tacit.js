@@ -48659,6 +48659,28 @@ function applyMarketFilters() {
         delta24Pct = ((latest.u - refPoint.u) / refPoint.u) * 100;
       }
       const lastHtml = `<span class="strip-last" title="Latest unit price from the recent-trades ring">${fmtUnitPriceSats(latest.u)} sats/${escapeHtml(ticker)}</span>`;
+      // Recent-trade activity hint. Pulls the most recent trade timestamp
+      // (worker last_trade.ts is authoritative; falls back to the latest
+      // price_summary point) and counts trades in the past 24h. Gives a
+      // trader an at-a-glance liquidity signal without forcing a click
+      // into the Activity tab — quiet markets read "12h ago · 1 today",
+      // active markets read "2m ago · 14 today". Cold dot when no trade
+      // in the last hour, live (green) dot otherwise.
+      const _lastTradeTs = (() => {
+        const fromAsset = Number(a?.last_trade?.ts || 0);
+        if (Number.isFinite(fromAsset) && fromAsset > 0) return fromAsset;
+        const fromRing = Number(latest?.ts || 0);
+        return Number.isFinite(fromRing) && fromRing > 0 ? fromRing : 0;
+      })();
+      let tradeHtml = '';
+      if (_lastTradeTs > 0) {
+        const _ageSec = nowSec - _lastTradeTs;
+        const _isHot = _ageSec >= 0 && _ageSec < 3600;
+        const _24hCount = sortedNewestFirst.filter(p => p.ts >= cutoff).length;
+        const _ageStr = relativeAge(_lastTradeTs) || `${_ageSec}s`;
+        const _countSuffix = _24hCount > 1 ? ` · ${_24hCount} today` : '';
+        tradeHtml = `<span class="strip-trade${_isHot ? '' : ' cold'}" title="Most recent trade was ${escapeHtml(_ageStr)} ago. ${_24hCount} settled trade${_24hCount === 1 ? '' : 's'} in the last 24h (from the recent-trades summary)."><span class="strip-trade-dot"></span>last <span data-age-ts="${_lastTradeTs}" data-age-fmt="ago">${escapeHtml(_ageStr)} ago</span>${_countSuffix}</span>`;
+      }
       // Prefer the worker's canonical windowed Δ (1h / 4h / 24h / 7d / all,
       // picked from the tightest non-null window). It uses the outlier-
       // guarded mark on both endpoints and has access to the full trade
@@ -48678,7 +48700,7 @@ function applyMarketFilters() {
         const _winText = _winLbl === 'all' ? 'all' : _winLbl;
         deltaHtml = `<span class="strip-delta ${cls}" title="Change over the last ${escapeHtml(_winLbl)} · outlier-guarded reference, dust trades ignored.">${sign}${_pctVal.toFixed(2)}% <span class="strip-delta-win">${escapeHtml(_winText)}</span></span>`;
       }
-      return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}</div>`;
+      return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}${tradeHtml}</div>`;
     })();
     return `<div data-swap-tile data-aid="${escapeHtml(safeAid)}" data-ticker="${escapeHtml(ticker)}" data-dec="${decimals}" data-ref-unit="${refUnit != null ? refUnit : ''}" data-direction="buy" data-slippage="${slippagePct}" style="margin-bottom:14px;border:1px solid var(--ink);background:var(--bg);padding:16px;">
       <!-- Header: pair name with logos. Slippage moved to footer row
@@ -48733,17 +48755,20 @@ function applyMarketFilters() {
           </div>
         </div>
       </div>
-      <!-- Route summary + price limit on one balanced row above the action.
-           Labelled Limit because in an orderbook (no AMM curve) the picker
-           is really a price-tolerance cap, not a slippage-along-a-curve.
-           The select keeps its data-swap-slippage attr for code continuity;
-           only the user-facing label + tooltip changed. The inline readout
-           element below is filled by the wireup with the resolved absolute
-           cap so the trader sees the actual effect of their choice. -->
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+      <!-- Route summary + max/min price picker on one balanced row above
+           the action. Labelled "Max price" (buy) / "Min price" (sell) by
+           the wireup's applyDirection rather than the legacy "Limit" /
+           "Slippage" — both terms reliably confused traders ("slippage"
+           implied curve-execution tolerance we don't have; "limit" read
+           like a separate limit-order surface). Max / min is unambiguous
+           and matches the readout sentence ("won't pay more than X").
+           The select keeps its data-swap-slippage attr for code
+           continuity; only the user-facing label + readout placement
+           changed. -->
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
         <div data-swap-info class="muted" style="font-size:10px;flex:1 1 auto;min-width:0;line-height:1.5;overflow-wrap:anywhere;"></div>
         <label style="font-size:10px;display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:170px;">
-          <span class="muted" style="text-transform:uppercase;letter-spacing:0.08em;display:inline-flex;align-items:center;" title="Max premium over the mark price you'll pay (buying) / discount you'll accept (selling). Caps which open orders the swap matches, and sets the price of any bid your residual budget leaves open. In an orderbook this is your limit price, not curve slippage.">Limit<button data-swap-slippage-help class="slip-help" type="button" aria-label="What does Limit mean?" title="What does this control?">&#9432;</button></span>
+          <span data-swap-slip-label class="muted" style="text-transform:uppercase;letter-spacing:0.08em;display:inline-flex;align-items:center;gap:4px;" title="Caps which open orders this swap matches — asks priced above the cap (buying) or bids priced below the floor (selling) are skipped. If your budget isn't fully consumed by matching orders, the leftover posts as a passive bid/ask at the cap.">Max price<button data-swap-slippage-help class="slip-help" type="button" aria-label="What does Max price mean?" title="Why isn't this just slippage?">&#9432;</button></span>
           <select data-swap-slippage title="Cap on how far above mark price the swap will reach. Asks above the cap are skipped; residual unfilled budget posts as a bid AT the cap." style="box-sizing:border-box;min-width:78px;height:28px;font-family:var(--mono);font-size:11px;line-height:1.2;padding:4px 22px 4px 8px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);-webkit-appearance:none;-moz-appearance:none;appearance:none;cursor:pointer;">
             <option value="0.5">±0.5%</option>
             <option value="1">±1%</option>
@@ -48756,10 +48781,14 @@ function applyMarketFilters() {
           </select>
         </label>
       </div>
-      <!-- Absolute-cap readout. Visible only when refUnit is known
-           (the asset has a mark price). Otherwise the percent value
-           is the only honest signal. -->
-      <div data-swap-limit-readout class="muted" style="font-size:10px;line-height:1.4;margin:-6px 0 10px;text-align:right;display:none;"></div>
+      <!-- Absolute-cap readout. Promoted to a colored, full-width pill
+           directly under the picker so the actual effect of the chosen
+           percent is unmissable — a 10% cap on a 120-sats/TAC mark
+           reads as "won't pay more than 132 sats/TAC", which is the
+           number a trader actually decides against. Hidden only when
+           refUnit is unknown (no mark price); the percent value alone
+           is the only honest signal there. -->
+      <div data-swap-limit-readout style="font-size:11px;line-height:1.4;margin:0 0 10px;padding:6px 10px;text-align:right;display:none;border:1px solid var(--ink-faint);background:var(--bg-warm);color:var(--ink);font-weight:600;"></div>
       <!-- Primary action -->
       <button data-swap-action type="button" disabled title="Each fill settles atomically on Bitcoin. No public mempool ordering, no MEV bots, no privileged sequencer — Bitcoin's PoW + atomic settlement means no one can reorder your fill or sandwich you." style="display:block;width:100%;padding:14px;font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;background:#0a8f43;color:#fff;border:1px solid #0a7d3a;cursor:pointer;opacity:0.5;">enter an amount</button>
       <div class="muted" style="font-size:10px;line-height:1.4;margin-top:6px;text-align:center;letter-spacing:0.02em;" title="Each fill settles atomically on Bitcoin. No public mempool ordering games, no MEV bots, no privileged sequencer that can reorder or sandwich your trade.">Settles atomically on Bitcoin · no front-running</div>
@@ -52834,6 +52863,40 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
   // Back-compat alias for any caller that still expects the combined
   // markLine variable in scope (none currently, but defensive).
   const markLine = markLineStroke;
+  // VWAP overlay. Volume-weighted average price across the chart's
+  // visible time-frame: Σ(unit_price × fill_sats) / Σ(fill_sats). It
+  // tells a trader whether they're paying/accepting above or below the
+  // window's volume-weighted execution baseline — a CEX-standard
+  // benchmark that resists single-fill skew. Computed from `points` so
+  // it covers exactly the chart's range (1H VWAP for the 1H view,
+  // 7D VWAP for the 7D view) rather than always 24h. In-band points
+  // only: outliers (dust/fat-finger) would pull the average toward the
+  // extreme even with volume weighting if they happen to be large fills.
+  let vwapLineStroke = '';
+  let vwapLineLabel = '';
+  {
+    let _vwapNum = 0, _vwapDen = 0;
+    for (const p of points) {
+      if (p.isOutlier) continue;
+      if (p.price > 0 && p.u > 0) {
+        _vwapNum += p.u * p.price;
+        _vwapDen += p.price;
+      }
+    }
+    const vwap = _vwapDen > 0 ? _vwapNum / _vwapDen : null;
+    if (vwap != null && vwap > 0) {
+      const yVwap = yOf(vwap);
+      if (yVwap >= PT && yVwap <= PT + plotH) {
+        // Render below the mark line so the mark stays the dominant ref;
+        // VWAP is amber to distinguish from the green mark and from the
+        // green trace. Label sits flush left so it doesn't collide with
+        // the mark label on the right.
+        const vwapLbl = `vwap ${fmtUnitPriceSats(vwap)} sats/${ticker}`;
+        vwapLineStroke = `<line x1="${PL}" x2="${(PL + plotW).toFixed(0)}" y1="${yVwap.toFixed(2)}" y2="${yVwap.toFixed(2)}" stroke="#b8651d" stroke-width="1" stroke-dasharray="6,3" opacity="0.5"/>`;
+        vwapLineLabel = `<text x="${(PL + 4).toFixed(0)}" y="${(yVwap - 3.5).toFixed(2)}" font-size="9" fill="#b8651d" stroke="#faf9f5" stroke-width="3" paint-order="stroke fill" font-family="var(--mono, monospace)" text-anchor="start" font-weight="600">${escapeHtml(vwapLbl)}</text>`;
+      }
+    }
+  }
   // Horizontal gridlines at the Y min / mid / max — gives the eye a
   // reference without committing to full axis ticks. Dashed light strokes
   // so they don't compete with the price line.
@@ -52873,10 +52936,12 @@ function renderMarketPriceChartSVG(trades, ticker, decimals, markUnit = null) {
         </linearGradient>
       </defs>
       ${gridlines}
+      ${vwapLineStroke}
       ${markLineStroke}
       ${areaPath ? `<path data-chart-area d="${areaPath}" fill="url(#${_gradId})" stroke="none"/>` : ''}
       ${linePath ? `<path data-chart-line d="${linePath}" fill="none" stroke="#0a8f43" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.95" vector-effect="non-scaling-stroke"/>` : ''}
       ${dots}
+      ${vwapLineLabel}
       ${markLineLabel}
       <!-- Volume strip: per-bucket trade volume in sats below the price plot.
            Same color as the trend line, faded so it reads as a quiet
@@ -55954,22 +56019,25 @@ function _wireSwapTile(scope) {
   const infoEl    = widget.querySelector('[data-swap-info]');
   const actionBtn = widget.querySelector('[data-swap-action]');
   if (!fromInput || !toInput || !actionBtn) return;
-  // Slippage-explainer popover: tacit's "Limit" semantics differ from
-  // Uniswap-style "slippage tolerance" enough that users without context
-  // commonly misconfigure (e.g., cranking to 50% expecting curve-slippage
-  // protection). Click the ? to read the actual semantics in a dialog
-  // instead of a tooltip — discoverable on mobile, no hover required.
+  // Explainer popover. The picker controls a hard price cap on each
+  // fill the swap walks — not a tolerance band against execution drift.
+  // Tooltip + dialog convey the same idea at two depths; the dialog is
+  // discoverable on mobile where hover-titles don't fire.
   if (slipHelp) {
     slipHelp.onclick = (e) => {
       e.preventDefault(); e.stopPropagation();
+      const isBuy = (widget.dataset.direction || 'buy') === 'buy';
       tacitConfirm({
-        title: 'Limit · price tolerance cap',
-        body:
-          'tacit doesn\'t have curve-slippage (no AMM curve to slip along). The Limit picker controls two distinct things:\n\n' +
-          '1. WHICH orders this swap matches. Asks priced above the cap (when buying) or bids priced below the cap (when selling) are skipped — the swap walks cheapest-first across the book until either the budget is spent or no acceptable order remains.\n\n' +
-          '2. The price of any RESIDUAL bid/ask your unfilled budget posts. If your budget isn\'t fully consumed by matching orders, the leftover stays open at the cap price until a counterparty matches it (or 24h expiry, whichever comes first).\n\n' +
-          'Lower cap = stricter matching, more residual left as a passive bid. Higher cap = more aggressive, fills cheap-to-expensive across more of the book.\n\n' +
-          'On Bitcoin L1 with atomic settlement, there\'s no front-running and no curve to slip along — the cap is purely your limit price, not a tolerance against execution drift.',
+        title: isBuy ? 'Max price · cap per token' : 'Min price · floor per token',
+        body: isBuy
+          ? 'The swap walks the asks ladder cheapest-first and skips any ask priced above this cap. If your sats budget isn\'t fully spent by matching asks, the leftover posts as a passive bid AT the cap until a seller matches it (or 24h expiry).\n\n' +
+            'Lower cap = stricter matching, larger residual bid left passively.\n' +
+            'Higher cap = more aggressive, fills cheap-to-expensive across more of the book.\n\n' +
+            'Settlement is atomic on Bitcoin — there\'s no front-running, no curve to slip along. This is your hard limit price, not a tolerance against execution variance.'
+          : 'The swap walks the bids ladder best-first and skips any bid priced below this floor. If your asset isn\'t fully sold by matching bids, the leftover posts as a passive ask AT the floor until a buyer matches it (or 24h expiry).\n\n' +
+            'Higher floor = stricter matching, larger residual ask left passively.\n' +
+            'Lower floor = more aggressive, fills rich-to-cheap across more of the book.\n\n' +
+            'Settlement is atomic on Bitcoin — there\'s no front-running, no curve to slip along. This is your hard floor price, not a tolerance against execution variance.',
         confirmLabel: 'Got it',
         hideCancel: true,
       });
@@ -56220,7 +56288,7 @@ function _wireSwapTile(scope) {
     const amountBinding = currentResult && currentResult.residualAmt && currentResult.residualAmt > 0n;
     const verb = amountBinding ? 'unlock' : 'see';
     return {
-      html: `↓ widen limit to ±${widerPct}% to ${verb} +${escapeHtml(fmtAssetAmountCompact(extraAmt, decimals))} ${escapeHtml(ticker)} sellable (${extraFills} more bid${extraFills === 1 ? '' : 's'} available) <button data-act="swap-widen-slip" data-pct="${widerPct}" type="button" style="font-size:9.5px;padding:1px 6px;margin-left:4px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer;">Apply</button>`,
+      html: `↓ widen floor to ±${widerPct}% to ${verb} +${escapeHtml(fmtAssetAmountCompact(extraAmt, decimals))} ${escapeHtml(ticker)} sellable (${extraFills} more bid${extraFills === 1 ? '' : 's'} available) <button data-act="swap-widen-slip" data-pct="${widerPct}" type="button" style="font-size:9.5px;padding:1px 6px;margin-left:4px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer;">Apply</button>`,
     };
   };
   // Orderbook depth at a cap — total ask count + token amount fillable
@@ -56292,7 +56360,7 @@ function _wireSwapTile(scope) {
     const budgetBinding = currentResult && Number(currentResult.residualSats || 0) >= 100;
     const verb = budgetBinding ? 'unlock' : 'see';
     return {
-      html: `↑ widen limit to ±${widerPct}% to ${verb} +${escapeHtml(fmtAssetAmountCompact(extraAmt, decimals))} ${escapeHtml(ticker)} (${extraFills} more ask${extraFills === 1 ? '' : 's'} available) <button data-act="swap-widen-slip" data-pct="${widerPct}" type="button" style="font-size:9.5px;padding:1px 6px;margin-left:4px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer;">Apply</button>`,
+      html: `↑ raise max to ±${widerPct}% to ${verb} +${escapeHtml(fmtAssetAmountCompact(extraAmt, decimals))} ${escapeHtml(ticker)} (${extraFills} more ask${extraFills === 1 ? '' : 's'} available) <button data-act="swap-widen-slip" data-pct="${widerPct}" type="button" style="font-size:9.5px;padding:1px 6px;margin-left:4px;border:1px solid var(--ink);background:var(--bg);color:var(--ink);cursor:pointer;">Apply</button>`,
     };
   };
   // SELL plan: walk bid intents highest-first; include each bid whose
@@ -56494,6 +56562,20 @@ function _wireSwapTile(scope) {
     fromInput.setAttribute('inputmode', isBuy && payUnit === 'usd' ? 'decimal' : (isBuy ? 'numeric' : 'decimal'));
     actionBtn.style.background = isBuy ? '#0a8f43' : '#b8341d';
     actionBtn.style.borderColor = isBuy ? '#0a7d3a' : '#9b2a16';
+    // Flip the price-cap label to match direction. "Max price" on the
+    // buy side (you won't pay more than X) reads cleanly; on the sell
+    // side the same picker is a floor (you won't accept less than X),
+    // so it flips to "Min price". Keeps the math the same and the
+    // text honest. The help-icon is preserved across flips since
+    // we update textContent of the first text node, not innerHTML.
+    const slipLabel = widget.querySelector('[data-swap-slip-label]');
+    if (slipLabel) {
+      const helpBtn = slipLabel.querySelector('.slip-help');
+      slipLabel.firstChild && slipLabel.removeChild(slipLabel.firstChild);
+      const textNode = document.createTextNode(isBuy ? 'Max price' : 'Min price');
+      slipLabel.insertBefore(textNode, helpBtn);
+      slipLabel.setAttribute('aria-label', isBuy ? 'Max price you will pay' : 'Min price you will accept');
+    }
     // The asset logo lives inside one of the two pills (whichever holds
     // the ticker side). When direction flips, the pill innerHTML is
     // restored from the captured snapshot which may contain a
@@ -56751,7 +56833,7 @@ function _wireSwapTile(scope) {
         if (myToken !== updateToken) return;
         if (!result) {
           fromInput.value = '';
-          infoEl.textContent = `no asks within ±${slipSel.value}% of mark · widen limit or reduce amount`;
+          infoEl.textContent = `no asks within ±${slipSel.value}% of mark · raise max price or reduce amount`;
           actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
           actionBtn.textContent = 'no route';
           return;
@@ -56822,7 +56904,7 @@ function _wireSwapTile(scope) {
       if (myToken !== updateToken) return;
       if (!result) {
         fromInput.value = '';
-        infoEl.textContent = `no bids within ±${slipSel.value}% of mark · widen limit or reduce target sats`;
+        infoEl.textContent = `no bids within ±${slipSel.value}% of mark · lower min price or reduce target sats`;
         actionBtn.disabled = true; actionBtn.style.opacity = '0.5';
         actionBtn.textContent = 'no route';
         return;

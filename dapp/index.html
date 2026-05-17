@@ -3607,6 +3607,16 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 .swap-tile-strip .strip-delta { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
 .swap-tile-strip .strip-delta.up   { color: #0a8f43; }
 .swap-tile-strip .strip-delta.down { color: #b8341d; }
+/* Recent-trade indicator. "last trade · 2m ago · 7 today" — live-ticked
+   via data-age-ts. Tells a trader at a glance whether the orderbook is
+   active or has been quiet for hours, without making them open the
+   Activity tab. */
+.swap-tile-strip .strip-trade { font-family: var(--mono); color: var(--ink-mid); white-space: nowrap; font-size: 9.5px; }
+.swap-tile-strip .strip-trade .strip-trade-dot {
+  display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: #0a8f43; margin-right: 4px; vertical-align: middle;
+}
+.swap-tile-strip .strip-trade.cold .strip-trade-dot { background: var(--ink-faint); }
 
 /* "Set price alert" trigger button on the market asset stats strip. Subtle
    hover that lifts the background + ink tone so the button reads as
