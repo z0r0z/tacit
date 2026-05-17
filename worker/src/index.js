@@ -15420,6 +15420,18 @@ async function scanForEtches(env, network) {
           const deltaA = swapped ? BigInt(lp.delta_b) : BigInt(lp.delta_a);
           const deltaB = swapped ? BigInt(lp.delta_a) : BigInt(lp.delta_b);
 
+          // Pre-launch capability-flags guard. Mirror dapp/amm-envelope.js's
+          // `encodeLpAdd` guard (only 0x00 valid pre-launch): the worker does
+          // NOT yet enforce semantics for the RANGE_ATTEST_REQUIRED (0x01) or
+          // POOL_CAP_SOLO_INTENT_ALLOWED (0x02) bits in T_LP_ADD's swap-time
+          // consumers, so a pool registered with a non-zero flag is labelled
+          // but the gate is non-functional. Refuse the POOL_INIT until the
+          // corresponding validator branches ship in a follow-up amendment.
+          // (Wire-level decode at decodeTLpAddPayload accepts any u8; the
+          // gate lives here so non-dapp callers can't slip past dapp's
+          // build-time guard.)
+          if ((lp.pool_capability_flags ?? 0) !== 0) continue;
+
           // Pool ID per SPEC: includes fee_bps + capability_flags so
           // (A, B) at different fee tiers are different pools.
           let poolIdBytes;

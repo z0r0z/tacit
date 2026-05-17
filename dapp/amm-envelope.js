@@ -219,3 +219,86 @@ export function encodeLpAdd(args) {
 
   return concatBytes(...parts);
 }
+
+// Minimal decoder for T_LP_ADD — returns the fields scanHoldings needs to
+// recognize + recover the founder/recipient LP-share UTXO at vout[0].
+// Returns null on any structural mismatch (caller treats null as non-tacit).
+//
+// For variant 1 (POOL_INIT) we also extract feeBps + poolCapabilityFlags so
+// the recovery path can re-derive pool_id without consulting the registry.
+// For variant 0 the dapp recovery path looks up pool_id by (assetA, assetB)
+// from its cached pool list.
+function _readU16LE(b, off) {
+  return new DataView(b.buffer, b.byteOffset).getUint16(off, true);
+}
+function _readU64LE(b, off) {
+  const dv = new DataView(b.buffer, b.byteOffset);
+  return (BigInt(dv.getUint32(off + 4, true)) << 32n) | BigInt(dv.getUint32(off, true));
+}
+export function decodeLpAdd(payload) {
+  if (!(payload instanceof Uint8Array)) return null;
+  if (payload.length < 2 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + 169 + 64 + 64 + 2) return null;
+  if (payload[0] !== OPCODE_T_LP_ADD) return null;
+  const variant = payload[1];
+  if (variant !== 0 && variant !== 1) return null;
+  let off = 2;
+  try {
+    const assetA = payload.slice(off, off + 32); off += 32;
+    const assetB = payload.slice(off, off + 32); off += 32;
+    const deltaA = _readU64LE(payload, off); off += 8;
+    const deltaB = _readU64LE(payload, off); off += 8;
+    const shareAmount = _readU64LE(payload, off); off += 8;
+    const shareCSecp = payload.slice(off, off + 33); off += 33;
+    off += 32 + XCURVE_PROOF_LEN + 64 + 64;
+    const result = { variant, assetA, assetB, deltaA, deltaB, shareAmount, shareCSecp };
+    if (variant === 1) {
+      if (off + 2 > payload.length) return null;
+      result.feeBps = _readU16LE(payload, off); off += 2;
+      if (result.feeBps > FEE_BPS_MAX) return null;
+      const vkLen = payload[off++];
+      if (vkLen < 1 || vkLen > 64) return null;
+      off += vkLen;
+      const cerLen = payload[off++];
+      if (cerLen < 1 || cerLen > 64) return null;
+      off += cerLen;
+      const arbCount = payload[off++];
+      if (arbCount > 16) return null;
+      off += 1 + arbCount * 33;  // threshold + arbiter pubkeys
+      const lsigCount = payload[off++];
+      if (lsigCount > 2) return null;
+      off += lsigCount * 64;
+      off += 33;  // protocol_fee_address
+      if (off + 2 > payload.length) return null;
+      off += 2;  // protocol_fee_bps
+      if (off + 1 > payload.length) return null;
+      const metaLen = payload[off++];
+      off += metaLen;
+      if (off + 1 > payload.length) return null;
+      result.poolCapabilityFlags = payload[off++];
+    }
+    return result;
+  } catch { return null; }
+}
+
+// Minimal decoder for T_LP_REMOVE — returns fields scanHoldings needs to
+// recognize + recover the recipient's receive-A (vout[0]) and receive-B
+// (vout[1]) UTXOs. pool_id is NOT carried in the envelope; recovery looks
+// it up via canonical (assetA, assetB) from the dapp's pool registry.
+export function decodeLpRemove(payload) {
+  if (!(payload instanceof Uint8Array)) return null;
+  const minLen = 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + 169 + 33 + 32 + 169 + 64 + 2;
+  if (payload.length < minLen) return null;
+  if (payload[0] !== OPCODE_T_LP_REMOVE) return null;
+  let off = 1;
+  try {
+    const assetA = payload.slice(off, off + 32); off += 32;
+    const assetB = payload.slice(off, off + 32); off += 32;
+    const shareAmount = _readU64LE(payload, off); off += 8;
+    const deltaA = _readU64LE(payload, off); off += 8;
+    const deltaB = _readU64LE(payload, off); off += 8;
+    const recvACSecp = payload.slice(off, off + 33); off += 33;
+    off += 32 + XCURVE_PROOF_LEN;
+    const recvBCSecp = payload.slice(off, off + 33); off += 33;
+    return { assetA, assetB, shareAmount, deltaA, deltaB, recvACSecp, recvBCSecp };
+  } catch { return null; }
+}

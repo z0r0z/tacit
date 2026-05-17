@@ -8983,6 +8983,58 @@ function _lpAssetIdLookupRefresh(pools) {
   }
   _lpAssetIdLookup = next;
 }
+// Reverse lookups against _lpAssetIdLookup keyed by pool_id_hex /
+// canonical (asset_a, asset_b). Used by scanHoldings recovery for
+// T_LP_ADD variant=0, T_LP_REMOVE, and T_SWAP_VAR — all three carry
+// pool/asset references that resolve through the cached pool registry
+// (refreshPoolsIfStale runs at scan start so the map is populated).
+function _scanPoolEntryByPoolId(poolIdHex) {
+  if (typeof poolIdHex !== 'string') return null;
+  const needle = poolIdHex.toLowerCase();
+  for (const entry of _lpAssetIdLookup.values()) {
+    if (entry.pool_id_hex.toLowerCase() === needle) return entry;
+  }
+  return null;
+}
+function _scanLpAddPoolId(dec) {
+  // Variant 1: feeBps + capabilityFlags are in the envelope; derive directly.
+  if (dec.variant === 1) {
+    try {
+      return ammAssetMod.derivePoolId(dec.assetA, dec.assetB, dec.feeBps, dec.poolCapabilityFlags);
+    } catch { return null; }
+  }
+  // Variant 0: pool registry lookup by canonical (assetA, assetB). Returns
+  // the first matching pool's id; if multiple fee tiers exist for the same
+  // pair, the recovery loop tries each candidate.
+  const candidates = _scanLpAddPoolIdCandidates(dec);
+  return candidates[0] || null;
+}
+function _scanLpAddPoolIdCandidates(dec) {
+  if (dec.variant === 1) {
+    try { return [ammAssetMod.derivePoolId(dec.assetA, dec.assetB, dec.feeBps, dec.poolCapabilityFlags)]; }
+    catch { return []; }
+  }
+  const out = [];
+  const aHex = bytesToHex(dec.assetA);
+  const bHex = bytesToHex(dec.assetB);
+  for (const entry of _lpAssetIdLookup.values()) {
+    if (entry.asset_a.toLowerCase() === aHex && entry.asset_b.toLowerCase() === bHex) {
+      try { out.push(hexToBytes(entry.pool_id_hex)); } catch {}
+    }
+  }
+  return out;
+}
+function _scanLpRemovePoolIdCandidates(dec) {
+  const out = [];
+  const aHex = bytesToHex(dec.assetA);
+  const bHex = bytesToHex(dec.assetB);
+  for (const entry of _lpAssetIdLookup.values()) {
+    if (entry.asset_a.toLowerCase() === aHex && entry.asset_b.toLowerCase() === bHex) {
+      try { out.push(hexToBytes(entry.pool_id_hex)); } catch {}
+    }
+  }
+  return out;
+}
 function _lpSyntheticMeta(assetIdHex) {
   if (typeof assetIdHex !== 'string' || !/^[0-9a-f]{64}$/i.test(assetIdHex)) return null;
   const entry = _lpAssetIdLookup.get(assetIdHex.toLowerCase());
@@ -11254,6 +11306,46 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     return true;
   }
 
+  if (env.opcode === T_LP_ADD) {
+    // vout[0] = LP-share UTXO (recipient); vout[1] = MINIMUM_LIQUIDITY locked
+    // NUMS recipient. Worker enforces kernel sigs + rangeproofs + Groth16
+    // pool-invariant; dapp gate is structural recognition so scanHoldings can
+    // surface vout[0] as a spendable LP-share UTXO.
+    if (vout !== 0) { validatedSet.set(key, false); return false; }
+    const dec = ammEnvelopeMod.decodeLpAdd(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    validatedSet.set(key, true);
+    return true;
+  }
+
+  if (env.opcode === T_LP_REMOVE) {
+    // vout[0] = receive-A UTXO; vout[1] = receive-B UTXO. Worker enforces
+    // kernel sig + rangeproofs + Groth16 share-burn proof.
+    if (vout !== 0 && vout !== 1) { validatedSet.set(key, false); return false; }
+    const dec = ammEnvelopeMod.decodeLpRemove(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    validatedSet.set(key, true);
+    return true;
+  }
+
+  if (env.opcode === T_SWAP_VAR) {
+    // vout[0] = OP_RETURN(envelope_hash) (non-spendable); vout[1] = receipt
+    // UTXO (receive asset); vout[2] = optional change UTXO (input asset).
+    // Worker enforces intent sig + kernel sig + rangeproofs + curve invariant.
+    if (vout !== 1 && vout !== 2) { validatedSet.set(key, false); return false; }
+    const dec = decodeTSwapVarPayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    if (vout === 2) {
+      // vout[2] only exists when the swap had change. If cChangeOrSentinel
+      // is all-zeros (whole-input case), the tx's third output is non-tacit.
+      let isSentinel = true;
+      for (let i = 0; i < 33; i++) if (dec.cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
+      if (isSentinel) { validatedSet.set(key, false); return false; }
+    }
+    validatedSet.set(key, true);
+    return true;
+  }
+
   validatedSet.set(key, false);
   return false;
 }
@@ -12104,6 +12196,59 @@ async function _scanHoldingsImpl() {
       const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(dec.poolId);
       assetIdHex = bytesToHex(lpAssetIdBytes);
       onChainCommitment = dec.claimCSecp;
+    } else if (env.opcode === T_LP_ADD) {
+      // vout[0] = founder/recipient LP-share UTXO; vout[1] = MINIMUM_LIQUIDITY
+      // NUMS-locked output (not spendable, skip). asset_id = lp_asset_id =
+      // deriveLpAssetId(pool_id). pool_id derivation depends on variant:
+      // variant=1 carries feeBps + capabilityFlags in the envelope; variant=0
+      // requires looking up the pool by (assetA, assetB) in the cached pool
+      // registry (recovery branch below tries each candidate).
+      if (u.vout !== 0) continue;
+      const dec = ammEnvelopeMod.decodeLpAdd(env.payload);
+      if (!dec) continue;
+      const poolIdBytes = _scanLpAddPoolId(dec);
+      if (!poolIdBytes) continue;
+      const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
+      assetIdHex = bytesToHex(lpAssetIdBytes);
+      onChainCommitment = dec.shareCSecp;
+    } else if (env.opcode === T_LP_REMOVE) {
+      // vout[0] = receive-A UTXO (assetA); vout[1] = receive-B UTXO (assetB).
+      // pool_id not in envelope — recovery branch tries each (assetA, assetB)
+      // candidate from the cached pool registry.
+      if (u.vout !== 0 && u.vout !== 1) continue;
+      const dec = ammEnvelopeMod.decodeLpRemove(env.payload);
+      if (!dec) continue;
+      assetIdHex = bytesToHex(u.vout === 0 ? dec.assetA : dec.assetB);
+      const meta = getAssetMeta(assetIdHex);
+      if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
+      onChainCommitment = u.vout === 0 ? dec.recvACSecp : dec.recvBCSecp;
+    } else if (env.opcode === T_SWAP_VAR) {
+      // vout[0] = OP_RETURN(envelope_hash); vout[1] = receipt UTXO (receive
+      // asset, deltaOut, blinding rReceipt PUBLIC in envelope); vout[2] =
+      // optional change UTXO (input asset, changeAmount, blinding derived
+      // from priv via deriveSwapVarChangeScalar). asset_id requires pool
+      // registry lookup by pool_id.
+      if (u.vout !== 1 && u.vout !== 2) continue;
+      const dec = decodeTSwapVarPayload(env.payload);
+      if (!dec) continue;
+      const poolEntry = _scanPoolEntryByPoolId(bytesToHex(dec.poolId));
+      if (!poolEntry) continue;
+      const receiveAssetHex = dec.direction === 0 ? poolEntry.asset_b : poolEntry.asset_a;
+      const inputAssetHex = dec.direction === 0 ? poolEntry.asset_a : poolEntry.asset_b;
+      if (u.vout === 1) {
+        assetIdHex = receiveAssetHex.toLowerCase();
+        onChainCommitment = dec.cReceiptSecp;
+      } else {
+        // vout[2] only exists if not the whole-input case (cChangeOrSentinel
+        // all-zeros means no change UTXO; skip).
+        let isSentinel = true;
+        for (let i = 0; i < 33; i++) if (dec.cChangeOrSentinel[i] !== 0) { isSentinel = false; break; }
+        if (isSentinel) continue;
+        assetIdHex = inputAssetHex.toLowerCase();
+        onChainCommitment = dec.cChangeOrSentinel;
+      }
+      const meta = getAssetMeta(assetIdHex);
+      if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
     } else continue;
 
     if (!holdings.has(assetIdHex)) {
@@ -12409,6 +12554,127 @@ async function _scanHoldingsImpl() {
             continue;
           }
         } catch {}
+      }
+    }
+
+    if (env.opcode === T_LP_ADD) {
+      // Recovery: blinding = HMAC(priv, "tacit-amm-receipt-secp-v1" || pool_id
+      // || lpInputAOutpoint || lp_asset_id). Anchor outpoint = tx.vin[1]
+      // (the first asset-A input — vin[0] is the commit P2TR script-path).
+      // For variant 0 we try each pool registered against the (assetA, assetB)
+      // pair; only the right poolId yields a blinding that opens the on-chain
+      // commitment.
+      const dec = ammEnvelopeMod.decodeLpAdd(env.payload);
+      if (dec && tx.vin && tx.vin.length >= 2) {
+        const ai = tx.vin[1];
+        const anchor = ammReceiptMod.canonicalOutpoint(ai.txid, ai.vout);
+        let recovered = false;
+        for (const poolIdBytes of _scanLpAddPoolIdCandidates(dec)) {
+          try {
+            const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
+            const { r_secp } = ammReceiptMod.deriveLpAddShareBlinding({
+              recipientPrivkey: wallet.priv,
+              poolId: poolIdBytes,
+              lpInputAOutpoint: anchor,
+              lpAssetId: lpAssetIdBytes,
+            });
+            if (pedersenCommit(dec.shareAmount, r_secp).equals(bytesToPoint(onChainCommitment))) {
+              recordOpening(u.txid, u.vout, assetIdHex, dec.shareAmount, r_secp);
+              h.balance += dec.shareAmount;
+              h.utxos.push({ utxo: u, amount: dec.shareAmount, blinding: r_secp, commitment: onChainCommitment });
+              recovered = true;
+              break;
+            }
+          } catch {}
+        }
+        if (recovered) continue;
+      }
+    }
+
+    if (env.opcode === T_LP_REMOVE) {
+      // Recovery: leg A/B blindings = HMAC(priv, "tacit-amm-receipt-secp-v1"
+      // || pool_id || firstLpShareOutpoint || assetIdA/B). Anchor outpoint =
+      // tx.vin[1] (first LP-share input; vin[0] is commit P2TR script-path).
+      const dec = ammEnvelopeMod.decodeLpRemove(env.payload);
+      if (dec && tx.vin && tx.vin.length >= 2) {
+        const ai = tx.vin[1];
+        const anchor = ammReceiptMod.canonicalOutpoint(ai.txid, ai.vout);
+        const amount = u.vout === 0 ? dec.deltaA : dec.deltaB;
+        let recovered = false;
+        for (const poolIdBytes of _scanLpRemovePoolIdCandidates(dec)) {
+          try {
+            const { legA, legB } = ammReceiptMod.deriveLpRemoveBlindings({
+              recipientPrivkey: wallet.priv,
+              poolId: poolIdBytes,
+              lpShareInputOutpoint: anchor,
+              assetIdA: dec.assetA, assetIdB: dec.assetB,
+            });
+            const r = (u.vout === 0 ? legA : legB).r_secp;
+            if (pedersenCommit(amount, r).equals(bytesToPoint(onChainCommitment))) {
+              recordOpening(u.txid, u.vout, assetIdHex, amount, r);
+              h.balance += amount;
+              h.utxos.push({ utxo: u, amount, blinding: r, commitment: onChainCommitment });
+              recovered = true;
+              break;
+            }
+          } catch {}
+        }
+        if (recovered) continue;
+      }
+    }
+
+    if (env.opcode === T_SWAP_VAR) {
+      // Recovery:
+      //   vout[1] receipt: blinding = rReceipt (PUBLIC in envelope), amount = deltaOut.
+      //   vout[2] change:  blinding = HMAC(priv, "tacit-amm-swap-var-change-v1"
+      //                    || pool_id || assetInputOutpoint), amount = deltaIn-net
+      //                    derivable from envelope deltaIn + ancestor input amount.
+      // For change we don't have input amount without walking ancestry, so we
+      // brute-search over (cInSecp - din·H) — the change commitment must equal
+      // cInSecp - cReceipt-style delta minus deltaIn·H. Simpler: derive scalar,
+      // search ancestor input via tx.vin[1] to recover changeAmount.
+      const dec = decodeTSwapVarPayload(env.payload);
+      if (dec && tx.vin && tx.vin.length >= 2) {
+        const ai = tx.vin[1];
+        const anchor = concatBytes(
+          reverseBytes(hexToBytes(ai.txid)),
+          (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, ai.vout >>> 0, true); return b; })(),
+        );
+        if (u.vout === 1) {
+          const r = bytes32ToBigint(dec.rReceipt) % SECP_N;
+          try {
+            if (pedersenCommit(dec.deltaOut, r).equals(bytesToPoint(onChainCommitment))) {
+              recordOpening(u.txid, u.vout, assetIdHex, dec.deltaOut, r);
+              h.balance += dec.deltaOut;
+              h.utxos.push({ utxo: u, amount: dec.deltaOut, blinding: r, commitment: onChainCommitment });
+              continue;
+            }
+          } catch {}
+        } else if (u.vout === 2) {
+          // Change UTXO. Derive blinding from priv + (pool_id, asset_input_outpoint).
+          // Recover changeAmount by looking up the consumed input UTXO's opening
+          // (this wallet sent the swap → we should already have that opening).
+          // changeAmount = inputAmount - deltaIn.
+          try {
+            const out = hmac(sha256, wallet.priv, concatBytes(
+              _SWAP_VAR_CHANGE_BLIND_DOM, dec.poolId, anchor,
+            ));
+            let r = bytes32ToBigint(out) % SECP_N;
+            if (r === 0n) r = 1n;
+            const inputOpening = getOpening(ai.txid, ai.vout);
+            if (inputOpening) {
+              const changeAmount = inputOpening.amount - dec.deltaIn;
+              if (changeAmount > 0n) {
+                if (pedersenCommit(changeAmount, r).equals(bytesToPoint(onChainCommitment))) {
+                  recordOpening(u.txid, u.vout, assetIdHex, changeAmount, r);
+                  h.balance += changeAmount;
+                  h.utxos.push({ utxo: u, amount: changeAmount, blinding: r, commitment: onChainCommitment });
+                  continue;
+                }
+              }
+            }
+          } catch {}
+        }
       }
     }
 
