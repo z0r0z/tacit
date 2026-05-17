@@ -46477,7 +46477,7 @@ function applyMarketFilters() {
     : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Asks · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use <button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Asks · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · ${_marketRowActionsHidden ? `click any row or use ` : `use `}<button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_rowActionsChip}${_ladderToggleChip}${_sweepBuyChip}</div>
     </div>${_rowTypesExplainerHtml}${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
@@ -52796,7 +52796,7 @@ function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, t
   }
   const slipNow = widget.querySelector('[data-swap-slippage]')?.value;
   const slipNote = slipNow ? ` · slip ${slipNow}%` : '';
-  toast(`Sized ${displayStr} ${ticker || ''} in swap tile${slipNote} · review then ${direction === 'sell' ? 'sell' : 'buy'}`, '', 4000);
+  toast(`${direction === 'sell' ? 'Selling' : 'Buying'} ${displayStr} ${ticker || ''} — review the Swap tile above and tap Swap to confirm${slipNote}`, '', 4000);
 }
 
 // Cross-asset Open Orders dashboard for the Holdings tab. Walks every
