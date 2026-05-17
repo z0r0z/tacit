@@ -3818,6 +3818,61 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 }
 .swap-tile-strip .strip-trade.cold .strip-trade-dot { background: var(--ink-faint); }
 
+/* Swap-tile flip button. Circular toggle that overlaps the pay/receive
+   cells. Desktop: 36px circle, thin ink border, no decorative shadow —
+   minimal so it reads as a control without dominating the inputs.
+   Hover lifts the background tint + slight rotation as affordance.
+   Mobile (≤520px): drops to 30px with smaller SVG so the swap tile
+   stays tightly composed on narrow viewports. */
+.swap-flip-wrap {
+  display: flex;
+  justify-content: center;
+  margin: -14px 0;
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+.swap-flip-btn {
+  pointer-events: auto;
+  background: var(--bg);
+  border: 1px solid var(--ink);
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: var(--ink);
+  transition: transform 140ms ease-out, background 140ms ease-out;
+}
+.swap-flip-btn:hover {
+  background: var(--bg-warm);
+  transform: rotate(180deg);
+}
+.swap-flip-btn:active {
+  transform: rotate(180deg) scale(0.92);
+}
+.swap-flip-btn:focus-visible {
+  outline: 2px solid var(--orange, #f7931a);
+  outline-offset: 2px;
+}
+.swap-flip-btn svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+@media (prefers-reduced-motion: reduce) {
+  .swap-flip-btn,
+  .swap-flip-btn:hover,
+  .swap-flip-btn:active { transform: none; }
+}
+@media (max-width: 520px) {
+  .swap-flip-wrap { margin: -12px 0; }
+  .swap-flip-btn { width: 30px; height: 30px; }
+  .swap-flip-btn svg { width: 10px; height: 10px; }
+}
+
 /* "Set price alert" trigger button on the market asset stats strip. Subtle
    hover that lifts the background + ink tone so the button reads as
    interactive without dominating the strip. Same color tokens as the rest

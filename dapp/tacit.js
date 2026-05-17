@@ -12514,6 +12514,19 @@ async function scanHoldings(force = false) {
           // the retry's value is what the user sees.
           if (myGen === _holdingsLatestGen) {
             _holdingsCache = { fetchedAt: Date.now(), holdings: h };
+            // Holdings cache just warmed — kick a market re-render so the
+            // swap-tile cold-load placeholder (see applyMarketFilters'
+            // _holdingsKnown branch) swaps to the real tile in sell mode
+            // for holders, or stays suppressed for non-holders. Guarded
+            // by the market view being currently visible to avoid
+            // re-rendering off-screen surfaces.
+            try {
+              if (_marketView && _marketView !== 'browse'
+                  && typeof applyMarketFilters === 'function'
+                  && document.getElementById('market-list')) {
+                applyMarketFilters();
+              }
+            } catch {}
           }
           try { _pendingClearPostScan(); } catch {}
           return h;
@@ -50207,7 +50220,22 @@ function applyMarketFilters() {
     const preauthAsks = rows.filter(l => l.kind === 'preauth' && l.seller_pubkey !== myPubHex && !l._takenPending);
     const haveBuyLiquidity = preauthAsks.length > 0;
     const userHolds = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId) && _holdingsCache.holdings.get(_marketView.assetId).balance > 0n);
-    if (!haveBuyLiquidity && !userHolds) return '';
+    // Cold-start placeholder. When there's no buy liquidity AND the
+    // holdings cache hasn't warmed yet, the suppression below would
+    // hide the swap tile entirely — on a slow first-load the user
+    // sees a dead page until scanHoldings resolves and the next
+    // applyMarketFilters re-render brings the tile back. Render a
+    // small "checking your balance…" skeleton instead so the slot
+    // is visibly held; the next render replaces it with the real tile
+    // (or keeps suppression silent if asks==0 AND user truly holds 0).
+    if (!haveBuyLiquidity && !userHolds) {
+      const _holdingsKnown = !!(_holdingsCache && _holdingsCache.holdings);
+      if (_holdingsKnown) return '';  // confirmed: no asks + no holdings
+      return `<div class="swap-tile-coldload" style="margin-bottom:14px;border:1px dashed var(--ink-faint);background:var(--bg-warm);padding:14px;display:flex;align-items:center;gap:10px;font-size:11px;color:var(--ink-mid);">
+        <span class="skeleton-row" style="width:18px;height:18px;border-radius:50%;flex:0 0 18px;"></span>
+        <span>Checking your ${escapeHtml(ticker)} balance to decide between buy + sell modes…</span>
+      </div>`;
+    }
     // Asset logo: prefer the cached resolved image URL (from IPFS
     // metadata-blob walk) for sync paint; fall back to a data-asset-
     // logo-slot placeholder that _resolveAssetLogosIn swaps in later
@@ -50354,12 +50382,13 @@ function applyMarketFilters() {
         <div data-swap-quickfill style="display:none;margin-top:8px;gap:6px;flex-wrap:wrap;align-items:center;font-size:10px;"></div>
       </div>
       <!-- FLIP button — Uniswap-style circular swap toggle that sits in
-           the gap between pay and receive. SVG arrows (down + up) read as
-           "swap these two sides" rather than the bare "↕" glyph that
-           rendered as text-style and looked unfinished. -->
-      <div style="display:flex;justify-content:center;margin:-18px 0;position:relative;z-index:2;pointer-events:none;">
-        <button data-swap-flip type="button" title="Flip direction (buy ↔ sell)" aria-label="Flip swap direction" style="pointer-events:auto;background:var(--bg);border:2px solid var(--ink);width:44px;height:44px;border-radius:50%;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:2px 2px 0 var(--ink);transition:transform 120ms ease-out;">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+           the gap between pay and receive. Styled via .swap-flip-btn so
+           hover / active / mobile variants live in CSS (see index.html)
+           rather than inline-style sprawl. SVG arrows are the dual-
+           direction glyph that reads "swap these two sides". -->
+      <div class="swap-flip-wrap">
+        <button data-swap-flip class="swap-flip-btn" type="button" title="Flip direction (buy ↔ sell)" aria-label="Flip swap direction">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M4 1 L4 11 M1.5 8.5 L4 11 L6.5 8.5"></path>
             <path d="M10 13 L10 3 M7.5 5.5 L10 3 L12.5 5.5"></path>
           </svg>
@@ -54112,7 +54141,28 @@ function renderMarketAssetHeader(assetId, rows) {
           <div><span>Price</span><strong class="market-sats-price ${_priceFlashClassFor(safeAid, headerUnit)}" data-market-header="price-sats">${escapeHtml(priceLine)}/${escapeHtml(a.ticker || 'token')}</strong><small class="market-usd-price" data-market-header="price-usd">${escapeHtml(priceUsd || (_marketOracleLoading() ? 'loading USD…' : '—'))}</small></div>
           <div><span>24h Volume</span><strong data-market-header="vol24-usd">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketUsdWholeFromSats(allGroup.volume24hSats, '—') : '—')}</strong><small data-market-header="vol24-btc">${escapeHtml(allGroup.volume24hSats != null ? fmtMarketBtc(allGroup.volume24hSats) : '—')}</small></div>
           <div><span>Market Cap</span><strong data-market-header="mcap-usd">${escapeHtml(mcapUsd)}</strong><small data-market-header="mcap-btc">${escapeHtml(mcapBtc)}</small></div>
-          <div title="All live listings for this asset across every kind (instant + atomic intent + range + opening). The depth chart, asks-liquidity row, and Open Orders pane each filter this set differently — depth excludes outliers vs mark, asks-liquidity excludes recently-expired, Open Orders paginates and hides past page 1 — so their counts can be slightly lower than this header figure."><span>Listings</span><strong>${total.toLocaleString('en-US')}</strong></div>
+          ${(() => {
+            // Active orders tile. Previously read "Listings · N" where N
+            // was ASKS only (preauth + atomic-intent ask side + range
+            // + opening) — misleading on intent-heavy markets like TAC
+            // where asks can be 0 while bids are 26+, making the header
+            // look like a dead market while $5k+ of live bid liquidity
+            // sits below the fold. Now surfaces both sides explicitly:
+            // "N asks · M bids" when bids data is available; falls back
+            // to the original "N" when the bids cache hasn't warmed.
+            const _asksN = Number(total) || 0;
+            const _bidsPeek = (typeof _bidCachePeek === 'function') ? _bidCachePeek(safeAid) : null;
+            const _bidsKnown = Array.isArray(_bidsPeek);
+            const _nowSec = Math.floor(Date.now() / 1000);
+            const _bidsN = _bidsKnown
+              ? _bidsPeek.filter(b => !b.axintent_id && Number(b.expiry || 0) > _nowSec).length
+              : null;
+            const _display = _bidsKnown
+              ? `${_asksN.toLocaleString('en-US')} <span class="muted" style="font-weight:400;font-size:11px;">ask${_asksN === 1 ? '' : 's'}</span> · ${_bidsN.toLocaleString('en-US')} <span class="muted" style="font-weight:400;font-size:11px;">bid${_bidsN === 1 ? '' : 's'}</span>`
+              : _asksN.toLocaleString('en-US');
+            const _label = _bidsKnown ? 'Active orders' : 'Listings';
+            return `<div title="Live orders on both sides of the book. Asks (sell offers — preauth + atomic intent + range + opening) and bids (buy offers — bid intents). The depth chart, asks-liquidity row, and Open Orders pane each filter this set differently, so their counts can be slightly lower than this header figure."><span>${_label}</span><strong>${_display}</strong></div>`;
+          })()}
           ${(() => {
             // Wallets — distinct on-chain recipients indexed by the worker.
             // "Wallets" not "holders" because the indexer can't dedupe
@@ -55337,7 +55387,19 @@ async function populateMarketAssetStats(scope, asset) {
     high24 = sample[0].u; low24 = sample[0].u;
     for (const p of sample) { if (p.u > high24) high24 = p.u; if (p.u < low24) low24 = p.u; }
   }
-  if (last24h.length >= 1 && latestUnit != null) {
+  // Prefer the worker's canonical 24h Δ when present — it's computed
+  // server-side over the FULL trade history with the same outlier band
+  // we use locally, AND it's the same number the header delta pills
+  // surface (via price_change_primary_pct). Sourcing from the worker
+  // here keeps the two surfaces in agreement (the user-reported bug:
+  // header showed +30.06% while stats showed +41.27% on the same
+  // page). Falls back to the local tradePoints computation only when
+  // the worker hasn't supplied price_24h_change_pct (cold endpoint,
+  // older worker build).
+  const _workerDelta24 = Number(j.price_24h_change_pct);
+  if (Number.isFinite(_workerDelta24)) {
+    delta24Pct = _workerDelta24;
+  } else if (last24h.length >= 1 && latestUnit != null) {
     // Reference price for Δ%: the LAST in-band trade that landed before
     // the 24h window opened. The 0.2×/5× mark band is the same outlier
     // guard the chart, high/low, and mark price use. Without this filter
