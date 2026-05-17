@@ -44860,23 +44860,8 @@ function _loadMarketRowActionsHidden() {
     const v = localStorage.getItem(_MARKET_ROW_ACTIONS_HIDDEN_KEY);
     if (v === '0') return false;
     if (v === '1') return true;
-    // Migration: if the user has ANY prior market preference saved
-    // (Simple mode flag, ladder view, mine-only toggle, etc.) they've
-    // used the market before — keep their familiar Buy/Sell/Buy chunks
-    // buttons visible (Advanced default) so the toggle doesn't yank
-    // controls out from under them. New users (no prior market state)
-    // get the Simple default for the cleaner one-verb experience.
-    const _priorMarketKeys = [
-      'tacit-market-simple-v1',
-      'tacit-market-ladder-view-v1',
-      'tacit-market-mine-asks-v1',
-      'tacit-market-mine-bids-v1',
-    ];
-    for (const k of _priorMarketKeys) {
-      if (localStorage.getItem(k) != null) return false;  // existing user → Advanced default
-    }
   } catch {}
-  return true;  // new user: per-row buttons hidden, route via Swap tile
+  return true;  // default: per-row buttons hidden, route via Swap tile
 }
 function _saveMarketRowActionsHidden(on) {
   try { localStorage.setItem(_MARKET_ROW_ACTIONS_HIDDEN_KEY, on ? '1' : '0'); } catch {}
@@ -46082,7 +46067,14 @@ function applyMarketFilters() {
   // the quick "spend N sats, accept slippage" path; this chip is the
   // path for users who know exactly the cap they want to set and how
   // to handle leftover when asks run out under that cap.
-  const _sweepBuyChip = `<button data-act="market-sweep-buy" data-aid="${escapeHtml(_marketView.assetId)}" type="button" title="Advanced buy — same routed multi-listing fill as the Swap tile above, but with manual price-cap and residual-as-bid controls. Use this when you want to set a hard ceiling per token + decide whether leftover sats post as a bid after asks run out." class="primary" style="font-size:11px;padding:6px 14px;font-weight:600;letter-spacing:0.02em;">⚡ Advanced buy</button>`;
+  // Advanced-buy chip is a power-user surface — same routed fill the
+  // Swap tile already does, just with manual cap + residual-as-bid
+  // controls. In Simple mode it duplicates the Swap tile's role and
+  // adds noise to the header; hide it there. Surfaces again in
+  // Advanced mode for traders who want the explicit cap controls.
+  const _sweepBuyChip = _marketRowActionsHidden
+    ? ''
+    : `<button data-act="market-sweep-buy" data-aid="${escapeHtml(_marketView.assetId)}" type="button" title="Advanced buy — same routed multi-listing fill as the Swap tile above, but with manual price-cap and residual-as-bid controls. Use this when you want to set a hard ceiling per token + decide whether leftover sats post as a bid after asks run out." class="primary" style="font-size:11px;padding:6px 14px;font-weight:600;letter-spacing:0.02em;">⚡ Advanced buy</button>`;
   // Layout toggle: rows (default) ↔ cards. Persists between sessions so
   // power users sticking with cards aren't forced back to rows every load.
   // Labels describe what you GET on click (the inverse of the current
@@ -46113,17 +46105,21 @@ function applyMarketFilters() {
     ? ` <span class="muted" style="font-weight:400;font-size:10px;">of ${_totalActiveListings}</span>`
     : '';
   // Bundle row count drives whether to render the row-types explainer line.
-  // Rows are flagged after `groupChunkedPreauthListings` (line ~41833) and
-  // `_aggregatePreauthRowsForLadder` (line ~41848): `_isGroup` = N identical-
-  // price listings rolled into a `Buy 1–N` picker; `_isLevel` = N nearby-
-  // price listings rolled into a `Buy level` bucket. Skip the explainer when
-  // every row is a single-listing Buy — no ambiguity to resolve there.
+  // Rows are flagged after `groupChunkedPreauthListings` and
+  // `_aggregatePreauthRowsForLadder`: `_isGroup` = N identical-price
+  // listings rolled into a `Buy chunks` picker; `_isLevel` = N nearby-
+  // price listings rolled into a `Buy level` bucket. Skip the explainer
+  // when every row is a single-listing Buy — no ambiguity to resolve
+  // there. Also skip in Simple mode: the per-row Buy / Buy chunks /
+  // Buy level buttons being explained don't render in that mode (rows
+  // are inspection-only, click-to-prime-Swap), so the explainer would
+  // be describing buttons the user can't see.
   const _bundleRowCount = rowsForGrid.reduce((n, l) => n + ((l._isLevel || l._isGroup) ? 1 : 0), 0);
-  const _rowTypesExplainerHtml = _bundleRowCount > 0
+  const _rowTypesExplainerHtml = (_bundleRowCount > 0 && !_marketRowActionsHidden)
     ? `<div style="font-size:10px;color:var(--ink-mid);background:var(--bg-warm,#faf9f5);border:1px dashed var(--ink-faint);padding:5px 9px;margin-bottom:8px;line-height:1.45;">
         <strong style="color:var(--ink);">Each row is one fill.</strong>
         <span style="background:var(--ink);color:var(--bg);padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy</span> = one specific listing (atomic, one Bitcoin tx).
-        <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;level</span> / <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;1–N</span> = atomically fills several listings at once (one tx per listing, cheaper to monitor than running N separate Buys).
+        <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;level</span> / <span style="background:#f7931a;color:#fff;padding:0 4px;border-radius:2px;font-weight:600;font-size:9px;">Buy&nbsp;chunks</span> = atomically fills several listings at once (one tx per listing, cheaper to monitor than running N separate Buys).
       </div>`
     : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
@@ -52365,16 +52361,35 @@ function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, t
   // landed and where to confirm. CSS animation lives on the
   // .swap-action-pulse class; toggle off after the keyframe completes
   // so re-priming (clicking another row) re-fires the animation.
+  //
+  // Race fix: rapid row clicks (user comparing options) would have an
+  // earlier setTimeout fire AFTER a later add, stripping the fresh
+  // pulse mid-animation. Stash the timer on the button itself and
+  // cancel any prior pending strip before scheduling a new one.
+  //
+  // Defer one rAF so the input-event handler the prime call dispatched
+  // above has finished re-enabling the button (it starts disabled with
+  // "enter an amount" text). Pulsing a disabled button reads as broken.
   if (_isSimpleMode) {
-    try {
-      const actionBtn = widget.querySelector('[data-swap-action]');
-      if (actionBtn) {
+    requestAnimationFrame(() => {
+      try {
+        const actionBtn = widget.querySelector('[data-swap-action]');
+        if (!actionBtn) return;
+        if (actionBtn._pulseTimer) {
+          clearTimeout(actionBtn._pulseTimer);
+          actionBtn._pulseTimer = null;
+        }
         actionBtn.classList.remove('swap-action-pulse');
         void actionBtn.offsetHeight;  // force reflow so re-add restarts the animation
         actionBtn.classList.add('swap-action-pulse');
-        setTimeout(() => { try { actionBtn.classList.remove('swap-action-pulse'); } catch {} }, 1800);
-      }
-    } catch {}
+        actionBtn._pulseTimer = setTimeout(() => {
+          try {
+            actionBtn.classList.remove('swap-action-pulse');
+            actionBtn._pulseTimer = null;
+          } catch {}
+        }, 2300);
+      } catch {}
+    });
   }
   const slipNow = widget.querySelector('[data-swap-slippage]')?.value;
   const slipNote = slipNow ? ` · slip ${slipNow}%` : '';
