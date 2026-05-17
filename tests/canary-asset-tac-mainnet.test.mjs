@@ -93,11 +93,15 @@ const MONOTONIC_FLOORS = Object.freeze({
 // would create false-positive failures. Each entry below was verified
 // confirmed on mainnet via mempool.space at the time of pin.
 const PINNED_TRADES = Object.freeze([
-  Object.freeze({ txid: '1a9c4fec86b651287daeda409a5f9fdceb9fa2062ef429eb62d9867496b394dc', price_sats: 34500,  amount: '17288766395',  ts: 1778693707 }),
-  Object.freeze({ txid: '2a461126dedcac5d10dacab67bd88ce3773bf86f7ff2e0a116f783f70cf7961c', price_sats: 50000,  amount: '21963141745',  ts: 1778693203 }),
-  Object.freeze({ txid: 'e0758d2aada7f4a447d99ee163d89c8d866439f24d7f5aaf06bd7a72cca65468', price_sats: 34400,  amount: '10000000000',  ts: 1778692929 }),
-  Object.freeze({ txid: '021692ee229e2ec0a7cb42a5df0a31638350f3111d22e76d2bef3b43f1970ae4', price_sats: 150000, amount: '40000000000',  ts: 1778692730 }),
-  Object.freeze({ txid: 'f317a73d6d2b3e78ca275082af5cd902633edd95341dd45596b51d0a0d445831', price_sats: 60000,  amount: '16282047462',  ts: 1778690719 }),
+  // Re-pinned 2026-05-17 after the prior set aged out of the worker's
+  // TRADES_RING_CAP=200 ring (TAC sees ~50+ trades/day; the prior pins
+  // dated 2026-05-13 fell off ~3 days later). Verified live in
+  // worker's `/assets/{tac}` trades array + confirmed on mempool.space.
+  Object.freeze({ txid: '0cd724d5c0b9b25ee26983c28f94155ab7bf57ddfd8ea8e7e4033806b3fe5980', price_sats: 11400,  amount: '5784822629',   ts: 1779015651 }),
+  Object.freeze({ txid: '94bc8b68afdd1f2dbf4de5ed2e5cf0f6acb15d4568765d121b28510cefe3d41d', price_sats: 104000, amount: '53652660505',  ts: 1779014742 }),
+  Object.freeze({ txid: '38d36c455f73cfcf67a8e0867cced5f09929472931d8c4767e79142401092def', price_sats: 388000, amount: '200000000000', ts: 1779007062 }),
+  Object.freeze({ txid: 'c851b373d69390e2cc9a98e7c13e59bba0ee51c3a46d14d1cc382c6fb0984129', price_sats: 388000, amount: '200016418184', ts: 1779006996 }),
+  Object.freeze({ txid: '76bea0f77f0ee8447c6b0b22739ed9182e2b6ac5840561ab775916b84c58994b', price_sats: 210000, amount: '107305321011', ts: 1779005861 }),
 ]);
 
 const WORKER_BASE = 'https://tacit-pin.rosscampbell9.workers.dev';
