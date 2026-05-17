@@ -4761,6 +4761,12 @@ const T_SHARE_SLASH_CLAIM    = 0x4C; // optional pooled-insurance claim by cBTC.
 // 0x4D–0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
 // machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
 // not shipped on mainnet).
+// 0x2D–0x32: SPEC AMM amendments. v1 dapp side has wire-format primitives;
+// full buildAndBroadcast wrappers stage in over follow-up sessions.
+const T_LP_ADD     = 0x2D; // pool init (variant 1) or standard LP add (variant 0)
+const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
+const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
+const SWAP_VAR_ENVELOPE_VERSION = 0x01;
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / §5.7.6.1 — amended).
                           // N=2 partial reveal (recipient + maker change), single asset input,
                           // interleaved BTC-payment vout. Read-only as of this commit: validator

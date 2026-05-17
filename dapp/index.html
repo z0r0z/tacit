@@ -508,6 +508,21 @@ button.market-chip .chip-caret {
 [data-market-anim="down"] {
   animation: market-flash-down 1100ms ease-out;
 }
+/* Swap action pulse — fires when a row click in Simple mode primes the
+   Swap tile, so the trader sees the now-loaded quote land instead of
+   wondering why clicking the row "did nothing." Brief green glow + a
+   subtle scale beat draws the eye to the primary action without
+   feeling like a popup. Removes itself via a setTimeout in the
+   primeSwapTileFromOrderbook caller so re-priming (clicking another
+   row) re-triggers cleanly. */
+@keyframes swap-action-pulse-kf {
+  0%   { box-shadow: 0 0 0 0 rgba(10,143,67,0.55); transform: scale(1); }
+  35%  { box-shadow: 0 0 0 14px rgba(10,143,67,0); transform: scale(1.02); }
+  100% { box-shadow: 0 0 0 0 rgba(10,143,67,0); transform: scale(1); }
+}
+.swap-action-pulse {
+  animation: swap-action-pulse-kf 1100ms ease-out 2;
+}
 /* Live indicator: a small pulsing dot near the orderbook header to
    signal that auto-refresh is on. */
 .market-live-dot {
@@ -960,6 +975,24 @@ tr[data-recent-activity] .market-token-sub::after {
 .market-bids-row--mine { background: rgba(247,147,26,0.08); }
 .market-bids-row--claimed { background: rgba(10,143,67,0.06); }
 .market-bids-row--expired { opacity: 0.62; }
+/* Hover hint on bid rows so the click-to-prime-Swap affordance reads
+   visually in Simple mode. Subtle background brightening + slight
+   border-left accent in the brand green (sell side) signals "you can
+   sell into this bid right here." Disabled rows (expired, mine,
+   claimed) opt out of the hover via the additional :not() guards so
+   the affordance only lights up on actually-fillable rows. */
+.market-bids-row[data-fill-aid]:hover {
+  background: rgba(10,143,67,0.05);
+  box-shadow: inset 3px 0 0 0 rgba(10,143,67,0.55);
+  cursor: pointer;
+}
+.market-bids-row--mine[data-fill-aid]:hover,
+.market-bids-row--claimed[data-fill-aid]:hover,
+.market-bids-row--expired[data-fill-aid]:hover {
+  background: inherit;
+  box-shadow: none;
+  cursor: default;
+}
 .market-bid-price strong,
 .market-bid-cell strong {
   display: block;
