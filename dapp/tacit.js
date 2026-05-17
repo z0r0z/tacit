@@ -6066,7 +6066,7 @@ function computeSlotRotateMsg(networkTag, assetId, denomination, oldNullifierHas
 // single-key derivation but treats r_leaf as a private witness. Academically
 // cleaner crypto but requires a new trusted-setup ceremony. Deferred as a
 // future v1.x amendment.
-function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig, kBtcXOnly }) {
+function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCommit, leafHash, paymentAssetId, paymentAmount, minterPubkey, minterSig, kBtcXOnly, encryptedNote = null }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
   if (recipientCommit.length !== 33) throw new Error('recipient_commit 33 bytes');
@@ -6093,21 +6093,36 @@ function encodeTSlotMintPayload({ networkTag, assetId, denomination, recipientCo
     v.setUint32(0, Number(pAmt & 0xffffffffn), true);
     v.setUint32(4, Number((pAmt >> 32n) & 0xffffffffn), true);
   }
-  return concatBytes(
+  const parts = [
     new Uint8Array([T_SLOT_MINT, networkTag & 0xff]),
     assetId, denomLE,
     recipientCommit, leafHash,
     paymentAssetId, payLE,
     minterPubkey, minterSig,
     kBtcXOnly,
-  );
+  ];
+  // §5.26.4 optional encrypted-note tail (mint paid distribution: minter
+  // encrypts (secret, ν) to the recipient's viewing key so the recipient's
+  // dapp can scan-and-claim without out-of-band coordination).
+  if (encryptedNote !== null) {
+    if (encryptedNote === false || encryptedNote === 0) {
+      parts.push(new Uint8Array([0x00]));
+    } else {
+      if (!(encryptedNote instanceof Uint8Array) || encryptedNote.length !== 122) {
+        throw new Error('encryptedNote must be a 122-byte Uint8Array (or null/false)');
+      }
+      parts.push(new Uint8Array([0x01]), encryptedNote);
+    }
+  }
+  return concatBytes(...parts);
 }
 
 function decodeTSlotMintPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_SLOT_MINT) return null;
   // Canonical 276-byte payload — k_btc_xonly is mandatory.
-  if (payload.length !== 276) return null;
+  // §5.26.4 optional note tail allows 277 (has_note=0) or 399 (has_note=1+122).
+  if (payload.length !== 276 && payload.length !== 277 && payload.length !== 399) return null;
   let p = 1;
   const networkTag = payload[p]; p += 1;
   if (networkTag > 2) return null;
@@ -6126,7 +6141,15 @@ function decodeTSlotMintPayload(payload) {
   if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
   const minterPubkey = payload.slice(p, p + 33); p += 33;
   const minterSig = payload.slice(p, p + 64); p += 64;
-  const kBtcXOnly = payload.slice(p, p + 32);
+  const kBtcXOnly = payload.slice(p, p + 32); p += 32;
+  // §5.26.4 optional note tail.
+  let encryptedNote = null;
+  if (payload.length === 277) {
+    if (payload[p] !== 0x00) return null;
+  } else if (payload.length === 399) {
+    if (payload[p] !== 0x01) return null;
+    encryptedNote = payload.slice(p + 1, p + 1 + 122);
+  }
   return {
     kind: 'slot_mint',
     networkTag, assetId, denomination,
@@ -6134,6 +6157,7 @@ function decodeTSlotMintPayload(payload) {
     paymentAssetId, paymentAmount,
     minterPubkey, minterSig,
     kBtcXOnly,
+    encryptedNote,
   };
 }
 
@@ -23856,23 +23880,37 @@ function setupMixerHandlers() {
     };
   }
 
-  // On-load inbound-note scan. Silent no-op if /slot-rotates worker
-  // endpoint isn't yet deployed.
-  (async () => {
+  // Inbound-note scanner — runs on load, then every 60s while the user
+  // stays on the page. Cursor-tracked so each tick only walks the new
+  // rotations since the last successful scan. Silent no-op if /slot-rotates
+  // worker endpoint isn't yet deployed.
+  async function _runInboundSlotScan(isPeriodic) {
     if (!wallet || !wallet.priv || !srotScanStatus) return;
-    srotScanStatus.textContent = 'Scanning for inbound slot transfers…';
+    if (!isPeriodic) srotScanStatus.textContent = 'Scanning for inbound slot transfers…';
     try {
       const result = await scanInboundSlotNotes();
       if (result.detected > 0) {
-        srotScanStatus.textContent = `✓ Discovered ${result.detected} inbound slot${result.detected === 1 ? '' : 's'} (${result.scanned} rotations scanned).`;
+        srotScanStatus.textContent = `✓ Discovered ${result.detected} inbound slot${result.detected === 1 ? '' : 's'} (${result.scanned} rotation${result.scanned === 1 ? '' : 's'} this tick, cursor=${result.cursor}).`;
         try { _renderSwrapList(); _refreshSrotOptions(); _refreshSburnOptions(); } catch {}
-      } else if (result.scanned > 0) {
-        srotScanStatus.textContent = `Scanned ${result.scanned} rotation${result.scanned === 1 ? '' : 's'}; no inbound addressed to this wallet.`;
-      } else {
-        srotScanStatus.textContent = '(scanner idle — /slot-rotates not yet deployed)';
+      } else if (!isPeriodic) {
+        if (result.scanned > 0) {
+          srotScanStatus.textContent = `Scanned ${result.scanned} rotation${result.scanned === 1 ? '' : 's'}; no inbound addressed to this wallet.`;
+        } else {
+          srotScanStatus.textContent = '(no inbound rotations since last scan)';
+        }
       }
-    } catch { srotScanStatus.textContent = ''; }
-  })();
+    } catch { if (!isPeriodic) srotScanStatus.textContent = ''; }
+  }
+  _runInboundSlotScan(false);
+  // Periodic re-scan. 60s is fast enough to surface a fresh inbound rotation
+  // within a typical user's session, slow enough to keep KV/network costs
+  // negligible. Cursor-tracked so repeated ticks don't redo old work.
+  if (typeof setInterval === 'function') {
+    const _slotScanInterval = setInterval(() => _runInboundSlotScan(true), 60_000);
+    // No clearInterval — the interval lives as long as the page.
+    // setInterval reference retained on window to allow manual clear in tests.
+    try { if (typeof window !== 'undefined') window.__slotScanInterval = _slotScanInterval; } catch {}
+  }
 }
 
 // ============== CEREMONY UI (Phase 2 MPC, browser-driven) ==============

@@ -4826,10 +4826,9 @@ function _computeSlotMintMsg(networkTag, assetIdBytes, denomination, recipientCo
 function decodeTSlotMintPayload(payload) {
   if (!payload) return null;
   if (payload[0] !== T_SLOT_MINT) return null;
-  // Canonical 276-byte payload (§5.24.0 two-key). Legacy 244-byte
-  // single-key envelopes never made it past test fixtures and are no
-  // longer accepted.
-  if (payload.length !== 276) return null;
+  // Canonical 276-byte payload (§5.24.0 two-key). §5.26.4 optional note
+  // tail allows 277 (has_note=0) or 399 (has_note=1+122-byte note).
+  if (payload.length !== 276 && payload.length !== 277 && payload.length !== 399) return null;
   let p = 1;
   const networkTag = payload[p]; p += 1;
   if (networkTag > 2) return null;
@@ -4850,7 +4849,15 @@ function decodeTSlotMintPayload(payload) {
   if (paymentAmount >= (1n << BigInt(N_BITS))) return null;
   const minterPubkeyBytes = payload.slice(p, p + 33); p += 33;
   const minterSigBytes = payload.slice(p, p + 64); p += 64;
-  const kBtcXOnly = payload.slice(p, p + 32);
+  const kBtcXOnly = payload.slice(p, p + 32); p += 32;
+  // §5.26.4 optional encrypted-note tail.
+  let encryptedNote = null;
+  if (payload.length === 277) {
+    if (payload[p] !== 0x00) return null;
+  } else if (payload.length === 399) {
+    if (payload[p] !== 0x01) return null;
+    encryptedNote = bytesToHex(payload.slice(p + 1, p + 1 + 122));
+  }
   return {
     kind: 'slot_mint',
     network_tag: networkTag,
@@ -4863,6 +4870,7 @@ function decodeTSlotMintPayload(payload) {
     minter_pubkey: bytesToHex(minterPubkeyBytes),
     minter_sig: bytesToHex(minterSigBytes),
     k_btc_xonly: bytesToHex(kBtcXOnly),
+    encrypted_note: encryptedNote,
     _msg: () => _computeSlotMintMsg(
       networkTag, assetIdBytes, denomination,
       recipientCommitBytes, leafHashBytes,

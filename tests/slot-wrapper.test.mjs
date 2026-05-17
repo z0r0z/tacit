@@ -196,13 +196,25 @@ function buildSlotMintPayload({ networkTag, assetId, denom, recipientCommit, lea
   }).slice(0, -1);
   ok('rejects truncated payload', decodeTSlotMintPayload(truncated) === null);
 
-  // Wrong length (padded)
+  // Wrong length (padded). Note: SPEC-CBTC-ZK-FUNGIBILITY §5.26.4 now allows
+  // a 277-byte payload (has_note=0) or 399-byte payload (has_note=1+122).
+  // Any OTHER post-canonical length is still rejected. Use 2 trailing bytes
+  // to fall outside both accepted lengths.
   const padded = concatBytes(buildSlotMintPayload({
     networkTag: NETWORK_TAG_SIGNET, assetId: ASSET_ID, denom: DENOM,
     recipientCommit: recipient_commit_bytes, leafHash, paymentAssetId,
     paymentAmount: 1000n, minterPubkey, minterSig,
-  }), new Uint8Array([0x00]));
+  }), new Uint8Array([0xff, 0xff]));
   ok('rejects padded payload', decodeTSlotMintPayload(padded) === null);
+
+  // Bogus has_note byte (277 bytes but has_note != 0x00) is rejected.
+  const bogusHasNote = concatBytes(buildSlotMintPayload({
+    networkTag: NETWORK_TAG_SIGNET, assetId: ASSET_ID, denom: DENOM,
+    recipientCommit: recipient_commit_bytes, leafHash, paymentAssetId,
+    paymentAmount: 1000n, minterPubkey, minterSig,
+  }), new Uint8Array([0x42]));
+  ok('rejects 277-byte payload with bogus has_note byte',
+    decodeTSlotMintPayload(bogusHasNote) === null);
 
   // Invalid network tag
   const badNet = buildSlotMintPayload({
