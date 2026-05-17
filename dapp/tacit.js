@@ -13523,6 +13523,329 @@ async function scanInboundSlotNotes({
   return { scanned, detected, cursor: maxHeightSeen };
 }
 
+// ============== cBTC.tac POSITION RECORDS (local persistence) ==============
+//
+// Mirror the slot-record pattern: per-network localStorage, keyed by the
+// position's target_leaf_hash. Stores the depositor's full opening so they
+// can later withdraw (recover the slot + their bond TAC).
+const CTAC_POSITION_RECORDS_KEY_BASE = 'tacit-cbtc-tac-positions-v1';
+function _ctacPositionRecordsKey() { return `${CTAC_POSITION_RECORDS_KEY_BASE}:${NET.name}`; }
+function _loadCtacPositionRecords() {
+  try {
+    const raw = localStorage.getItem(_ctacPositionRecordsKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function saveCtacPositionRecord(record) {
+  // Upsert by target_leaf_hash — mirrors saveSlotRecord semantics.
+  const arr = _loadCtacPositionRecords();
+  const idx = arr.findIndex(r => r.targetLeafHashHex === record.targetLeafHashHex);
+  if (idx >= 0) arr[idx] = { ...arr[idx], ...record };
+  else arr.push(record);
+  try { localStorage.setItem(_ctacPositionRecordsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+function getCtacPositionRecords({ status = null } = {}) {
+  const arr = _loadCtacPositionRecords();
+  return arr.filter(r => !status || (r.status || 'active') === status);
+}
+function forgetCtacPositionRecord(targetLeafHashHex) {
+  const arr = _loadCtacPositionRecords().filter(r => r.targetLeafHashHex !== targetLeafHashHex);
+  try { localStorage.setItem(_ctacPositionRecordsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+
+// SPEC-CBTC-TAC-AMENDMENT §5.36 — LP-shaped mint of cBTC.tac.
+//
+// Locks a cBTC.zk slot's leaf + a TAC bond UTXO; mints cBTC.tac at the
+// depositor's recovery pubkey. The slot stays unspent on Bitcoin (the
+// depositor keeps r_btc); the cron handler tracks the position state.
+//
+// Atomicity: bond TAC UTXO is spent in the same reveal tx that produces
+// the cBTC.tac mint UTXO and carries the deposit envelope.
+//
+// Pre-flight gates:
+//   - Wallet ready (ensurePrivkey)
+//   - Slot record exists locally, state is 'live'
+//   - Wallet has TAC of >= bondAmountTAC (auto-carved via carveExactAmount)
+//   - depositorRecoveryPub defaults to wallet.pub
+//
+// Notes on what's NOT included in this build:
+//   1. Groth16 proof generation. SPEC §5.36.1 declares a `groth16_proof`
+//      VAR field combining bond-spend + slot-ownership. The worker cron
+//      currently doesn't verify this (proof generation requires the
+//      mixer-withdraw circuit + a new asset-spend circuit composition).
+//      We send a 256-byte placeholder; the worker accepts it but a
+//      production-hardened version requires a circuit pass.
+//   2. Auto-buy TAC mode (SPEC §5.36.4). Phase 2 — requires AMM swap
+//      envelope chaining. v1 expects depositor to already hold TAC.
+//   3. The worker also doesn't yet mint the cBTC.tac OUTPUT UTXO into
+//      its standard asset-UTXO index — the existing CRON handler stops at
+//      position record creation. Wiring the asset-output side is a follow-
+//      up worker change. Bitcoin-side the output IS produced and locked
+//      to the depositor's recovery_pk; the asset-side ledger entry will
+//      come from a parallel worker patch.
+async function buildAndBroadcastCbtcTacDeposit({
+  slotRecord,
+  bondAmountTAC,
+  tacAssetIdHex,
+  depositorRecoveryPubHex = null,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  // 1. Pre-flight validation
+  if (!slotRecord || !slotRecord.leafCommitmentHex || !slotRecord.assetIdHex) {
+    throw new Error('slotRecord must include leafCommitmentHex + assetIdHex');
+  }
+  const slotState = slotRecord.status || 'live';
+  if (slotState !== 'live') {
+    throw new Error(`slot state must be 'live' (got '${slotState}')`);
+  }
+  const denomBig = BigInt(slotRecord.denomination);
+  if (denomBig <= 0n || denomBig >= (1n << BigInt(N_BITS))) {
+    throw new Error('slot denomination out of range');
+  }
+  const bondBig = BigInt(bondAmountTAC);
+  if (bondBig <= 0n || bondBig >= (1n << BigInt(N_BITS))) {
+    throw new Error('bondAmountTAC out of range');
+  }
+  if (!tacAssetIdHex || !/^[0-9a-f]{64}$/i.test(tacAssetIdHex)) {
+    throw new Error('tacAssetIdHex must be 64 hex chars (the canonical TAC asset_id)');
+  }
+  const tacAid = tacAssetIdHex.toLowerCase();
+
+  // Existing-position dedupe
+  const existingPos = getCtacPositionRecords().find(p => p.targetLeafHashHex === slotRecord.leafCommitmentHex);
+  if (existingPos && existingPos.status !== 'withdrawn' && existingPos.status !== 'rugged') {
+    throw new Error(`cBTC.tac position already exists for this slot (state=${existingPos.status})`);
+  }
+
+  // 2. Derive deposit values
+  const targetLeafHashBytes = hexToBytes(slotRecord.leafCommitmentHex);
+  const depositorRecoveryPub = depositorRecoveryPubHex
+    ? hexToBytes(depositorRecoveryPubHex)
+    : wallet.pub;
+  if (depositorRecoveryPub.length !== 33) {
+    throw new Error('depositorRecoveryPubHex must be 33-byte compressed point');
+  }
+  // Fresh blinding for the cBTC.tac mint UTXO. amount = mint_amount = slot_denom_sats (§5.36.2).
+  const mintBlindingBytes = new Uint8Array(32); crypto.getRandomValues(mintBlindingBytes);
+  let mintBlindingBig = bytes32ToBigint(mintBlindingBytes) % SECP_N;
+  if (mintBlindingBig === 0n) mintBlindingBig = 1n;
+  const mintRecipientCommit = pedersenCommit(denomBig, mintBlindingBig).toRawBytes(true);
+
+  // 3. Carve exact bond TAC UTXO from holdings
+  _progress('carve:tac-bond');
+  const tacUtxo = await carveExactAmount({ assetIdHex: tacAid, amount: bondBig });
+  if (!tacUtxo || !tacUtxo.utxo) {
+    throw new Error('failed to carve TAC bond UTXO');
+  }
+  // bond_source_outpoint: 32-byte txid + 4-byte vout (LE)
+  const bondTxidBytes = hexToBytes(tacUtxo.utxo.txid);
+  const bondSourceOutpoint = new Uint8Array(36);
+  bondSourceOutpoint.set(bondTxidBytes, 0);
+  new DataView(bondSourceOutpoint.buffer).setUint32(32, tacUtxo.utxo.vout | 0, true);
+  // bond_commit: Pedersen commit of the bond UTXO (we know its opening from
+  // the carve step; the worker re-derives this from the asset-UTXO index).
+  const bondBlindingBig = BigInt(tacUtxo.blinding);
+  const bondCommit = pedersenCommit(bondBig, bondBlindingBig).toRawBytes(true);
+
+  // 4. Compute bind_hash + payload
+  _progress('envelope:build');
+  const assetIdBytes = hexToBytes(slotRecord.assetIdHex);
+  const bindHash = computeCbtcTacDepositBindHash({
+    networkTag,
+    targetLeafHash: targetLeafHashBytes,
+    slotDenomSats: denomBig,
+    bondAmountTAC: bondBig,
+    bondSourceOutpoint,
+    bondCommit,
+    depositorRecoveryPk: depositorRecoveryPub,
+    mintAmount: denomBig,
+    mintRecipientCommit,
+  });
+  // Placeholder proof. Spec §5.36.1 declares a Groth16 proof composing
+  // bond-spend + slot-ownership; the worker currently accepts any non-empty
+  // proof bytes. Real proof generation requires the mixer-withdraw circuit
+  // + a new asset-spend statement (forthcoming circuit work).
+  const proofBytes = new Uint8Array(256);
+  const payload = encodeTCbtcTacDepositPayload({
+    networkTag,
+    targetLeafHash: targetLeafHashBytes,
+    slotDenomSats: denomBig,
+    bondAmountTAC: bondBig,
+    bondSourceOutpoint,
+    bondCommit,
+    depositorRecoveryPk: depositorRecoveryPub,
+    mintAmount: denomBig,            // MUST equal slot_denom_sats per §5.36.2
+    mintRecipientCommit,
+    bindHash,
+    proof: proofBytes,
+  });
+
+  // 5. Build commit + reveal Bitcoin transaction pair
+  // Commit: sats inputs → vout[0] = P2TR(envelope script) (funds reveal fee) + sats change
+  // Reveal: vin[0] = commit P2TR (script-path with envelope)
+  //         vin[1] = bond TAC UTXO (key-path P2WPKH spend, signed under wallet.priv)
+  //         vout[0] = cBTC.tac mint UTXO at depositorRecoveryPub (P2WPKH at DUST)
+  //         vout[1] = (optional) sats change from bond input over DUST
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  // Reveal vbytes: 2 inputs (script-path P2TR + key-path P2WPKH) + 1 P2WPKH out.
+  // Rough estimate; tighten via dedicated estimator if needed.
+  const revealVb = 11 + (41 + 41) + 31 + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34 + 109) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = Math.max(DUST, revealFee);
+
+  // Fund the commit with sats UTXOs
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  if (sats.length === 0) throw new Error('no plain-sats UTXOs available to fund the deposit commit');
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for deposit-commit fees: need ${commitValue + commitFee}, have ${total}`);
+  }
+
+  // Commit tx
+  _progress('tx:commit:build');
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  // Reveal tx — bond TAC UTXO is a P2WPKH at DUST (standard tacit asset UTXO).
+  _progress('tx:reveal:build');
+  const recipSpk = p2wpkhScript(depositorRecoveryPub);
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: tacUtxo.utxo.txid, vout: tacUtxo.utxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: [{ value: DUST, script: recipSpk }],
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: DUST,        script: p2wpkhScript(wallet.pub) }, // bond TAC UTXOs are P2WPKH(wallet.pub) at DUST per tacit asset convention
+  ];
+  // vin[0]: P2TR script-path with envelope reveal
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  // vin[1]: standard P2WPKH BIP-143 sig under wallet.priv
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  // 6. Persist position record BEFORE broadcasting — same recovery
+  // discipline as the slot-mint flow. If broadcast fails or page closes,
+  // the local record preserves the mint blinding so the user can later
+  // identify their cBTC.tac UTXO and withdraw against the position.
+  const positionRecord = {
+    targetLeafHashHex: slotRecord.leafCommitmentHex,
+    slotAssetIdHex: slotRecord.assetIdHex,
+    slotDenomSats: denomBig.toString(),
+    bondAmountTAC: bondBig.toString(),
+    tacAssetIdHex: tacAid,
+    bondSourceOutpointHex: bytesToHex(bondSourceOutpoint),
+    bondBlindingHex: bondBlindingBig.toString(16).padStart(64, '0'),
+    depositorRecoveryPubHex: bytesToHex(depositorRecoveryPub),
+    mintAmount: denomBig.toString(),
+    mintRecipientCommitHex: bytesToHex(mintRecipientCommit),
+    mintBlindingHex: mintBlindingBig.toString(16).padStart(64, '0'),
+    bindHashHex: bytesToHex(bindHash),
+    network: NET.name,
+    depositCommitTxid: commitTxidHex,
+    depositRevealTxid: revealTxidHex,
+    status: 'deposit-pending',
+    createdAt: Date.now(),
+  };
+  saveCtacPositionRecord(positionRecord);
+
+  // 7. Broadcast
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  saveCtacPositionRecord({
+    targetLeafHashHex: positionRecord.targetLeafHashHex,
+    status: 'deposit-committing',
+  });
+
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+  saveCtacPositionRecord({
+    targetLeafHashHex: positionRecord.targetLeafHashHex,
+    status: 'active',
+    activatedAt: Date.now(),
+  });
+
+  // Mark the underlying slot record as 'deposited' so the burn flow refuses
+  // to spend it under r_btc until the position is closed via withdraw.
+  try {
+    const arr = _loadSlotRecords();
+    const idx = arr.findIndex(r => r.leafCommitmentHex === slotRecord.leafCommitmentHex);
+    if (idx >= 0) {
+      arr[idx] = {
+        ...arr[idx],
+        status: 'deposited',
+        depositedAt: Date.now(),
+        cbtcTacPositionLeafHash: slotRecord.leafCommitmentHex,
+      };
+      try { localStorage.setItem(_slotRecordsKey(), JSON.stringify(arr)); } catch {}
+    }
+  } catch {}
+
+  try {
+    recordActivity({
+      kind: 'cbtc-tac-deposit',
+      ticker: 'cBTC.tac',
+      amount: denomBig,
+      decimals: 0,
+      assetId: slotRecord.assetIdHex,
+      txid: revealTxidHex,
+    });
+  } catch {}
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    positionRecord,
+    commitFee, revealFee,
+    mintRecipientCommitHex: bytesToHex(mintRecipientCommit),
+    bondSourceOutpointHex: bytesToHex(bondSourceOutpoint),
+  };
+}
+
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -58057,6 +58380,11 @@ export {
   // Exported so headless drivers (signet rehearsal, integration tests) can
   // exercise the same code path the UI calls.
   buildAndBroadcastSlotMint, buildAndBroadcastSlotBurn, buildAndBroadcastSlotRotate,
+  // cBTC.tac LP-shaped mint builder (SPEC-CBTC-TAC-AMENDMENT §5.36).
+  // Composes carveExactAmount (bond TAC) + cBTC.tac envelope + commit-reveal
+  // P2TR. Withdraw + force-close + slash-claim builders staged separately.
+  buildAndBroadcastCbtcTacDeposit,
+  saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,
   // Slot-note encryption primitives (SPEC-CBTC-ZK-FUNGIBILITY §5.26).
   // Exported for the standalone test at tests/slot-note-encryption.test.mjs.
   encryptSlotNote, decryptSlotNote, slotViewingPubkey,
