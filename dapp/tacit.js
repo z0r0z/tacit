@@ -10967,6 +10967,21 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     return true;
   }
 
+  if (env.opcode === T_CBTC_TAC_DEPOSIT) {
+    // SPEC-CBTC-TAC-AMENDMENT §5.36 — produces exactly one fungible cBTC.tac
+    // UTXO at vout[0]. The envelope decoder recomputes bind_hash and rejects
+    // mismatches, so non-null `dec` is sufficient to mark vout 0 as a valid
+    // tacit UTXO for the cBTC.tac variant. Slot ownership + bond consumption
+    // soundness is the worker's responsibility (SPEC §5.11.4 three-verifier
+    // model); the dapp validator's role is the structural gate that prevents
+    // ancestry walks from treating non-tacit outputs as spendable balance.
+    if (vout !== 0) { validatedSet.set(key, false); return false; }
+    const dec = decodeTCbtcTacDepositPayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    validatedSet.set(key, true);
+    return true;
+  }
+
   validatedSet.set(key, false);
   return false;
 }
@@ -11043,6 +11058,19 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     const d = decodeCDClaimPayload(parentEnv.payload);
     if (!d) return null;
     return { assetIdHex: bytesToHex(d.assetId), commitment: d.commitment };
+  }
+  if (parentEnv.opcode === T_CBTC_TAC_DEPOSIT) {
+    // SPEC-CBTC-TAC-AMENDMENT §5.36: cBTC.tac mint at vout 0 with
+    // commitment = pedersenCommit(slot_denom_sats, mint_blinding).
+    // asset_id is the deterministic per-denomination variant id.
+    if (vout !== 0) return null;
+    const d = decodeTCbtcTacDepositPayload(parentEnv.payload);
+    if (!d) return null;
+    const variantBytes = ctacVariantAssetId(d.slotDenomSats);
+    const aidHex = (typeof variantBytes === 'string')
+      ? variantBytes.toLowerCase()
+      : bytesToHex(variantBytes);
+    return { assetIdHex: aidHex, commitment: d.mintRecipientCommit };
   }
   if (parentEnv.opcode === T_DROP) {
     // SPEC §5.12.1: T_DROP reclaim shape produces ONE tacit UTXO at vout 0
@@ -11758,6 +11786,21 @@ async function _scanHoldingsImpl() {
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       onChainCommitment = dec.recipientCommitment;
+    } else if (env.opcode === T_CBTC_TAC_DEPOSIT) {
+      // SPEC-CBTC-TAC-AMENDMENT §5.36: T_CBTC_TAC_DEPOSIT mints a fungible
+      // cBTC.tac UTXO at vout[0]. asset_id = ctacVariantAssetId(slot_denom);
+      // amount is public (= slot_denom_sats); blinding is random and lives
+      // in the depositor's localStorage position record.
+      const dec = decodeTCbtcTacDepositPayload(env.payload);
+      if (!dec) continue;
+      if (u.vout !== 0) continue;
+      const variantBytes = ctacVariantAssetId(dec.slotDenomSats);
+      assetIdHex = (typeof variantBytes === 'string')
+        ? variantBytes.toLowerCase()
+        : bytesToHex(variantBytes);
+      const synth = _cbtcTacSyntheticMeta(assetIdHex);
+      if (synth) { ticker = synth.ticker; decimals = synth.decimals; }
+      onChainCommitment = dec.mintRecipientCommit;
     } else continue;
 
     if (!holdings.has(assetIdHex)) {
@@ -12019,6 +12062,31 @@ async function _scanHoldingsImpl() {
             continue;
           }
         } catch {}
+      }
+    }
+
+    if (env.opcode === T_CBTC_TAC_DEPOSIT) {
+      // SPEC-CBTC-TAC-AMENDMENT §5.36 — mint blinding is random per deposit
+      // (not deterministic), so cold recovery requires the localStorage
+      // position record. A wallet without the record can still see the
+      // UTXO on chain but won't recover its opening here (falls through
+      // to the ghosts bucket).
+      const dec = decodeTCbtcTacDepositPayload(env.payload);
+      if (dec) {
+        const positions = getCtacPositionRecords();
+        const match = positions.find(p => p.depositRevealTxid === u.txid);
+        if (match && match.mintBlindingHex) {
+          const candidate = BigInt(match.mintAmount);
+          const r = BigInt('0x' + match.mintBlindingHex);
+          try {
+            if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
+              recordOpening(u.txid, u.vout, assetIdHex, candidate, r);
+              h.balance += candidate;
+              h.utxos.push({ utxo: u, amount: candidate, blinding: r, commitment: onChainCommitment });
+              continue;
+            }
+          } catch {}
+        }
       }
     }
 
