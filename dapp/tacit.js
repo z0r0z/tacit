@@ -9771,6 +9771,70 @@ function listPreauthTakePendings() {
   return Object.entries(obj).map(([commitTxidHex, v]) => ({ commitTxidHex, ...v }));
 }
 
+// One-click stranded-commit recovery prompt. Fires the moment a post-commit
+// failure is caught so the user can sweep the locked sats back without
+// having to know that (a) the commit-locked sats are NOT lost, and
+// (b) a Recover button exists buried in the Holdings tab. Returns the
+// recoverPreauthCommit result on success, null if the user defers, or
+// throws if recovery itself fails. The "defer" path leaves the local
+// record in place so the standing Holdings-tab banner still surfaces it
+// later — nothing is dropped silently.
+// Parse a takePreauthSale[Batch] post-commit error tail and fire the
+// recovery prompt. Returns true if a prompt was fired (caller knows the
+// failure is recoverable), false otherwise. Safe to call on any error —
+// non-post-commit errors return false without prompting.
+function maybePromptRecoveryFromError(err, { source = 'take' } = {}) {
+  const msg = err?.message || String(err || '');
+  if (!/Commit tx broadcast|locked at|recovery record/.test(msg)) return false;
+  const m = /locked at ([0-9a-f]{64}):0/i.exec(msg);
+  if (!m) return false;
+  const v = /(?:Commit tx broadcast — |locked\s+)(\d+)\s*sats/i.exec(msg);
+  promptStrandedCommitRecovery({
+    commitTxidHex: m[1].toLowerCase(),
+    commitValueSats: v ? Number(v[1]) : 0,
+    reason: msg.replace(/\s*·?\s*Commit tx broadcast[\s\S]*$/i, '').trim(),
+    source,
+  }).catch(() => {});
+  return true;
+}
+
+async function promptStrandedCommitRecovery({ commitTxidHex, commitValueSats, reason, source = 'take' }) {
+  const valStr = Number(commitValueSats || 0).toLocaleString();
+  const reasonLine = reason ? `Reason: ${reason}\n\n` : '';
+  const sourceLabel = source === 'batch' ? 'batched trade' : 'trade';
+  const yes = await tacitConfirm({
+    title: `${sourceLabel === 'trade' ? 'Trade' : 'Batched trade'} failed · sats recoverable`,
+    body:
+      `Your commit tx broadcast on Bitcoin, but the settlement leg never landed. ` +
+      `The commit-locked ${valStr} sats are NOT lost — they can be swept back to ` +
+      `your wallet right now with one Bitcoin tx (costs a small fee for the sweep).\n\n` +
+      reasonLine +
+      `If you skip recovery now, this trade will appear in Holdings → Stranded preauth-take ` +
+      `commits, where you can recover later (or batch with other stranded commits to save fees).`,
+    confirmLabel: `Recover ${valStr} sats now`,
+    cancelLabel: 'Later (Holdings)',
+    kind: '',
+  });
+  if (!yes) return null;
+  try {
+    const r = await recoverPreauthCommit(commitTxidHex);
+    toast(
+      `Recovered ${r.recovered_sats.toLocaleString()} sats ✓ (sweep fee ${r.fee_sats} sats)`,
+      'success', 9000,
+    );
+    try { renderActivity(); } catch {}
+    try { refreshWallet(); } catch {}
+    return r;
+  } catch (e) {
+    if (isUnlockCancelled(e)) {
+      toast('Recovery cancelled — record kept in Holdings for later.', '', 7000);
+    } else {
+      toast(`Recovery failed: ${e?.message || e} · retry from Holdings`, 'error', 12000);
+    }
+    return null;
+  }
+}
+
 // Direct recovery of stranded commit-locked sats. The buyer's preauth-take
 // commit P2TR has a tapscript leaf shaped as
 //   PUSH(signingPubXonly) OP_CHECKSIG OP_FALSE OP_IF [payload] OP_ENDIF
@@ -14189,8 +14253,16 @@ async function buildAndBroadcastSlotBurn({
   // interruption.
 
   // Pool must be registered + canonical — same gates as mixer withdraw.
+  // Auto-refresh the local pool registry on miss so a freshly-restored
+  // wallet doesn't need a manual Mixer-tab open before burning a slot
+  // that was minted in a prior session (registry lives in localStorage
+  // and is rebuilt from the worker's /pools endpoint on demand).
   if (!mixerIsPoolRegistered(assetIdHex, denomBig)) {
-    throw new Error(`pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) not registered locally — refresh Mixer tab first`);
+    _mixerPoolCacheUntil = 0;
+    try { await refreshPoolsIfStale(); } catch {}
+  }
+  if (!mixerIsPoolRegistered(assetIdHex, denomBig)) {
+    throw new Error(`pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) not registered locally — worker /pools didn't surface it; wait for indexer or check WORKER_BASE`);
   }
   if (!mixerIsPoolCanonical(assetIdHex, denomBig)) {
     throw new Error(`pool (${assetIdHex.slice(0, 8)}…, ${denomBig}) declares a non-canonical vk_cid/ceremony_cid. The dapp refuses to burn — the validator would reject the proof anyway.`);
@@ -58070,6 +58142,10 @@ function _wireSwapTile(scope) {
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'}${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (dir === 'buy') toast(`Bought ${accStr} ${ticker}${_feeSuffix} · view in Holdings (~10 min to settle)`, 'success', 8000);
       else toast(`Selling ${accStr} ${ticker}${_feeSuffix} · pending bidder Takes (~1–30 min)`, 'success', 8000);
+      // Post-commit recovery prompt for swap-tile failures whose last
+      // error was a takePreauthSale post-commit decoration. No-op for
+      // pre-commit failures and atomic-intent failures.
+      if (lastErr) maybePromptRecoveryFromError(lastErr, { source: filled >= 1 ? 'batch' : 'take' });
       // Post-success inline CTA: append a "View / Track in Holdings →"
       // button to the progress UI on full success (both directions).
       // Buy users want to verify their tokens arrived; sell users want
@@ -58380,6 +58456,9 @@ function _wireSwapTile(scope) {
       } else {
         toast(`Bought ${accStr} ${ticker} ✓${_feeSuffix} · view in Holdings (~10 min to settle)`, 'success', 6000);
       }
+      // Stranded-commit recovery prompt for post-commit failures on this
+      // exact-out path. No-op for pre-commit / atomic-intent failures.
+      if (lastErr) maybePromptRecoveryFromError(lastErr, { source: filled >= 1 ? 'batch' : 'take' });
       // Same post-success CTA pattern as the exact-out path. Surfaces a
       // green "View in Holdings →" button under the progress UI on a
       // clean full-fill buy. Skipped on partial / stopped / failed paths
@@ -58802,6 +58881,15 @@ function _wireMarketSweepBuy(section, asset) {
         const fillsAmt = fills.reduce((s, f) => s + f.amt, 0n);
         progEl.innerHTML = `<div style="margin-top:4px;"><strong>${fills.length}/${plan.length} filled</strong> · bought ${escapeHtml(fmtAssetAmount(fillsAmt, decimals))} ${escapeHtml(ticker)} for ${fillsTotal.toLocaleString()} sats</div>` +
           (fails.length ? `<div class="error" style="font-size:10px;margin-top:4px;">stopped at fill ${fills.length + 1}: ${escapeHtml(fails[0].err)}</div>` : '');
+        // Stranded-commit recovery prompt for sweep-buy failures whose
+        // first failing fill was a takePreauthSale post-commit decoration
+        // ("Commit tx broadcast / locked at"). The user otherwise has to
+        // navigate to Holdings → Stranded preauth-take commits — easy to
+        // miss on a busy session. No-op for pre-commit / atomic-intent
+        // failures.
+        if (fails.length > 0) {
+          maybePromptRecoveryFromError(new Error(fails[0].err || ''), { source: fills.length > 0 ? 'batch' : 'take' });
+        }
         // Residual → bid intent. Computes the unfilled remainder against the
         // ORIGINAL target (not the plan total) so a sweep stopped by a
         // failure also offers to bid the unfilled portion.
@@ -60642,12 +60730,21 @@ async function marketTakePreauthHandler(btn) {
       // never reframed as "just taken" — those messages must surface
       // verbatim so the user can recover the stranded sats.
       const _msg = e?.message || String(e);
-      const _staleSafe = !/Commit tx broadcast|locked at|recovery record/.test(_msg)
+      const _postCommit = /Commit tx broadcast|locked at|recovery record/.test(_msg);
+      const _staleSafe = !_postCommit
         && /already spent|expired|stale|refresh listings|preauth sale not found/i.test(_msg);
       if (_staleSafe) {
         try { invalidateMarketCache(); } catch {}
-        toast('This listing was just taken by another buyer (or it just expired). Refreshed Market — pick another tile and try again.', 'error', 10000);
+        toast('This listing was just taken by another buyer (or it just expired). No sats spent — refreshed Market, pick another tile and try again.', 'error', 10000);
         setTimeout(() => { try { renderMarket(); } catch {} }, 200);
+      } else if (_postCommit) {
+        // Post-commit failure: the buyer's commit tx broadcast OK but the
+        // settlement leg never landed (race with another taker, indexer
+        // lag tripping the reveal, fee-bump rejection, …). Brief toast
+        // for the audit log; the recovery prompt below surfaces the
+        // one-click sweep so the user doesn't have to find Holdings.
+        toast(`Trade failed post-commit · sats are recoverable`, 'error', 8000);
+        maybePromptRecoveryFromError(e, { source: 'take' });
       } else {
         toast('Preauth buy failed: ' + _msg, 'error', 12000);
       }
@@ -61049,6 +61146,11 @@ async function marketTakePreauthGroupHandler(btn) {
   } else {
     toast(`Filled · ${k} chunks bought (${_amtStr} ${ticker}${_filledUsd ? ` · ${_filledUsd}` : ''}) · settles in ~10 min (check Holdings)`, 'success', 10000);
   }
+  // Post-commit recovery prompt for group-buy partial failures. The
+  // failing chunk's commit may have broadcast before the reveal-leg
+  // race lost; surface the recovery flow inline so the user doesn't
+  // have to find Holdings → Stranded commits.
+  if (lastErr) maybePromptRecoveryFromError(lastErr, { source: filled > 1 ? 'batch' : 'take' });
   if (filled > 0) {
     _pendingAddSettlement({
       tradeId: `buy-group-${aid}-${Date.now()}`,
