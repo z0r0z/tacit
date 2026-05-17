@@ -49272,7 +49272,25 @@ function applyMarketFilters() {
   //
   // Your-open-orders panel stays at the very top so a maker managing
   // their own active orders sees them before either ladder.
-  const listedPaneHtml = `${_yourOrdersHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}${_spreadRowHtml}${bidsLadderHtml}`;
+  // Column-header row for the asks ladder. Only meaningful in rows-mode
+  // (cards-mode tiles don't share a grid alignment with a header). Mirrors
+  // the bids-side `market-bids-row-head` styling so both ladders read as
+  // paired halves of the same two-sided book — same column count, same
+  // black header background, same uppercase letter-spaced labels. Hidden
+  // in cards-mode and when there are no asks to show.
+  const _asksHeaderRowHtml = (_marketLadderView === 'rows' && rowsForGrid.length > 0)
+    ? `<div class="market-listing-grid market-listing-rows-mode market-listing-header-only">
+         <div class="market-listing-tile market-listing-row-head" role="row" aria-hidden="true">
+           <span>Ask</span>
+           <span>Quantity</span>
+           <span>Total</span>
+           <span title="Percentage premium (red) or discount (green) versus the asset's mark price. YOU pill on your own asks.">vs mark</span>
+           <span>Expires</span>
+           <span>${_marketRowActionsHidden ? '' : 'Action'}</span>
+         </div>
+       </div>`
+    : '';
+  const listedPaneHtml = `${_yourOrdersHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}${_asksHeaderRowHtml}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}${_spreadRowHtml}${bidsLadderHtml}`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -49950,12 +49968,44 @@ function applyMarketFilters() {
     const _groupTotalInline = _isGroup
       ? `<div style="margin-top:3px;padding-top:3px;border-top:1px dashed var(--ink-faint);font-size:10px;font-weight:600;color:var(--ink);" title="Cost if you buy all ${l._groupSize} chunks at once via the Buy chunks picker">× ${l._groupSize} = ${escapeHtml(fmtMarketBtc(priceSatsRaw * l._groupSize))}</div>`
       : '';
+    // Symmetric vs-mark column for the asks ladder. Mirrors the bids-
+    // side _vsMarkPct (renderMarketBidsLadderHTML) so both ladders
+    // speak the same column language: % above/below the asset's mark
+    // price. For asks, positive = paying premium (red), negative =
+    // below mark (green) — inverted from bids since "premium" means
+    // opposite things for buyers vs sellers. User's own asks show
+    // a YOU pill in this cell. Level rows show "N makers" since
+    // per-bucket delta is misleading.
+    const _askMarkUnit = Number(a?.mark_price?.unit);
+    const _markValidAsk = Number.isFinite(_askMarkUnit) && _askMarkUnit > 0;
+    const _vsMarkPctAsk = (_markValidAsk && unit != null && unit > 0)
+      ? ((unit - _askMarkUnit) / _askMarkUnit) * 100
+      : null;
+    const _vsMarkClsAsk = _vsMarkPctAsk == null ? '' : (_vsMarkPctAsk >= 0 ? 'color:#b8341d;' : 'color:#0a7d3a;');
+    const _vsMarkStrAsk = _vsMarkPctAsk == null
+      ? '&mdash;'
+      : `${_vsMarkPctAsk >= 0 ? '+' : ''}${_vsMarkPctAsk.toFixed(2)}%`;
+    const _vsMarkCellHtml = _isLevel
+      ? `<strong>${l._levelCount} makers</strong><small>at this tick</small>`
+      : (_isMineAsk
+          ? `<strong style="color:#7a5e00;">YOU</strong><small>your listing</small>`
+          : `<strong style="${_vsMarkClsAsk}">${_vsMarkStrAsk}</strong><small>vs mark</small>`);
+    // Dedicated expires cell. recencyLine already carries the
+    // "expires in Xd · listed Yh ago" + the data-age-ts hooks for
+    // the live ticker; we lift the relative expiry into a strong
+    // line and keep the listed-age as the subtitle so the column
+    // reads consistently with the bids Expires column.
+    const _expSecCell = Number(l.expiry || 0);
+    const _nowSecForExp = Math.floor(Date.now() / 1000);
+    const _expRelForCell = _expSecCell > _nowSecForExp ? relativeUntil(_expSecCell) : null;
+    const _expCellHtml = _expRelForCell
+      ? `<strong data-age-ts="${_expSecCell}" data-age-fmt="in" title="Expires ${escapeHtml(expIso)}">in ${escapeHtml(_expRelForCell)}</strong>${listedRel && listedTs > 0 ? `<small>listed <span data-age-ts="${listedTs}" data-age-fmt="ago">${escapeHtml(listedRel)} ago</span></small>` : '<small>open</small>'}`
+      : `<strong style="opacity:0.6;">expired</strong><small>${escapeHtml(expIso)}</small>`;
     const rowsModeHtml = `
       <div class="market-listing-unit" title="${escapeHtml(_rowMetaTitle)}">
         <strong>${unitStr || `${priceSatsRaw.toLocaleString('en-US')} sats`}</strong>
         <small class="market-usd-price">${escapeHtml(fmtMarketUsdUnitFromSats(unit || 0, ''))}${unit ? ` /token` : ''}</small>
         ${_levelSpread}
-        <small class="muted" style="display:block;margin-top:2px;font-size:9px;line-height:1.3;">${_isLevel ? '' : recencyLine}</small>
       </div>
       <div class="market-listing-amount" style="font-size:12px;font-weight:600;text-align:left;line-height:1.3;">
         ${_amountLine}${_groupBadge}${_bestPriceBadge}${_youBadge}${_levelBadge}${_perChunkSuffix}
@@ -49966,6 +50016,8 @@ function applyMarketFilters() {
         <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(priceSatsRaw, ''))}</span>
         ${_groupTotalInline}
       </div>
+      <div class="market-listing-vsmark">${_vsMarkCellHtml}</div>
+      <div class="market-listing-expires">${_expCellHtml}</div>
       ${_rowActionRow}`;
     const cardsModeHtml = `
       ${_tileTopHtml}

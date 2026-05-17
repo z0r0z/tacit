@@ -1698,15 +1698,67 @@ tr[data-recent-activity] .market-token-sub::after {
   gap: 0;
   border: 1px solid var(--ink);
   background: var(--bg);
+  /* min-width matches the bids table so the two ladders feel like
+     paired halves of one two-sided book; the asset-detail page already
+     has a horizontal scroller wrapping both. */
+  min-width: 860px;
+}
+/* Standalone header-only wrapper — used to render the column-header row
+   above #market-grid without nesting tiles inside the same container.
+   Drops the bordered outline so the header reads as a cap on the grid
+   below, not a separate panel. */
+.market-listing-grid.market-listing-rows-mode.market-listing-header-only {
+  border-bottom: 0;
 }
 .market-listing-grid.market-listing-rows-mode .market-listing-tile {
   min-height: 0;
   display: grid;
-  grid-template-columns: 1.2fr 1.4fr 1.4fr auto;
-  gap: 16px;
+  /* Six-column grid mirroring market-bids-row so both ladders align
+     visually column-for-column: Ask · Quantity · Total · vs mark ·
+     Expires · Action. Same minmax() ranges as bids for a true
+     two-sided-book layout. */
+  grid-template-columns: minmax(160px, 1.2fr) minmax(110px, 0.9fr) minmax(150px, 1fr) minmax(120px, 0.9fr) minmax(90px, 0.7fr) minmax(100px, 0.7fr);
+  gap: 12px;
   align-items: center;
   padding: 10px 14px;
   border-top: 1px solid var(--ink-faint);
+}
+/* Asks column-header row. Same shape as market-bids-row-head: black
+   background, white text, uppercase letter-spaced labels. Render the
+   labels with the same flex semantics as the bids equivalent. */
+.market-listing-grid.market-listing-rows-mode .market-listing-tile.market-listing-row-head {
+  background: var(--ink);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-top: 0;
+  border-bottom: 1px solid var(--ink);
+  padding: 8px 14px;
+}
+.market-listing-grid.market-listing-rows-mode .market-listing-tile.market-listing-row-head span {
+  color: var(--bg);
+}
+/* vs-mark + expires cells — typography mirrors the bids
+   .market-bid-cell convention so both ladders feel uniform. */
+.market-listing-grid.market-listing-rows-mode .market-listing-vsmark,
+.market-listing-grid.market-listing-rows-mode .market-listing-expires {
+  font-size: 12px;
+  line-height: 1.3;
+}
+.market-listing-grid.market-listing-rows-mode .market-listing-vsmark strong,
+.market-listing-grid.market-listing-rows-mode .market-listing-expires strong {
+  display: block;
+  font-weight: 800;
+  font-size: 12px;
+}
+.market-listing-grid.market-listing-rows-mode .market-listing-vsmark small,
+.market-listing-grid.market-listing-rows-mode .market-listing-expires small {
+  display: block;
+  margin-top: 3px;
+  color: var(--ink-mid);
+  font-size: 10px;
 }
 .market-listing-grid.market-listing-rows-mode .market-listing-tile:first-child {
   border-top: 0;
@@ -1766,13 +1818,23 @@ tr[data-recent-activity] .market-token-sub::after {
   padding: 6px 14px;
   font-size: 11px;
 }
-/* Narrow screens: collapse rows back to a tighter stacked layout. The
-   4-column grid would clip; a 2-column compromise keeps the row feel
-   while staying readable on phones. */
+/* Narrow screens: collapse the 6-column grid back to a tighter stacked
+   layout. The full grid would either clip or force horizontal scroll;
+   we drop the secondary columns (vs-mark, expires) entirely and
+   stack price + qty + total + action on a 2-col grid that fits
+   phone widths. The parent grid's min-width: 860px still triggers a
+   horizontal scroller for power users who want the full table. */
 @media (max-width: 720px) {
+  .market-listing-grid.market-listing-rows-mode {
+    min-width: 0;
+  }
   .market-listing-grid.market-listing-rows-mode .market-listing-tile {
     grid-template-columns: 1fr 1fr;
     gap: 8px;
+  }
+  .market-listing-grid.market-listing-rows-mode .market-listing-vsmark,
+  .market-listing-grid.market-listing-rows-mode .market-listing-expires {
+    display: none;
   }
   .market-listing-grid.market-listing-rows-mode .market-listing-total {
     grid-column: 1 / -1;
@@ -1780,6 +1842,11 @@ tr[data-recent-activity] .market-token-sub::after {
   }
   .market-listing-grid.market-listing-rows-mode .market-listing-actions {
     grid-column: 1 / -1;
+  }
+  /* The header row only makes sense when the full grid is visible. On
+     phones the per-tile labels carry their own context inline. */
+  .market-listing-grid.market-listing-rows-mode .market-listing-tile.market-listing-row-head {
+    display: none;
   }
 }
 /* On narrow tiles (≤220px), two side-by-side action buttons (e.g.
