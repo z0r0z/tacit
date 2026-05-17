@@ -4747,6 +4747,7 @@ function signTaprootKeyPathInputWithKey(tx, inputIdx, prevouts, privKey32, hashT
 const ENVELOPE_MAGIC = new TextEncoder().encode('TACIT');
 const ENVELOPE_VERSION = 0x01;
 const T_CETCH    = 0x21;
+const T_CXFER_BPP = 0x22; // BP+ variant of T_CXFER, identical wire shape, smaller rangeproof (SPEC §5.47 amendment)
 const T_CXFER    = 0x23;
 const T_MINT     = 0x24; // issue more supply on a mintable asset (signed by mint_authority)
 const T_BURN     = 0x25; // destroy supply (any holder; emits a public burned_amount)
@@ -4995,6 +4996,51 @@ function decodeCXferPayload(payload) {
   if (p + rpLen !== payload.length) return null;
   const rangeproof = payload.slice(p, p + rpLen);
   return { kind: 'cxfer', assetId, kernelSig, outputs, rangeproof };
+}
+
+// T_CXFER_BPP (SPEC §5.47 amendment) — byte-for-byte mirror of CXFER except
+// the opcode is 0x22 and the rangeproof is a Bulletproofs+ aggregated proof
+// instead of standard Bulletproofs. Kernel sig, asset_id, commitment, and
+// encrypted_amount encodings are unchanged. The wire-level encoder/decoder
+// treat the rangeproof field as opaque bytes; BP+ prover/verifier are
+// separate concerns landed alongside the amendment.
+function encodeCXferBppPayload({ assetId, kernelSig, outputs, rangeproof }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (!kernelSig || kernelSig.length !== 64) throw new Error('kernel_sig must be 64 bytes');
+  if (![1, 2, 4, 8].includes(outputs.length)) throw new Error('outputs must be in {1,2,4,8}');
+  if (rangeproof.length > 0xffff) throw new Error('rangeproof too large');
+  const parts = [new Uint8Array([T_CXFER_BPP]), assetId, kernelSig, new Uint8Array([outputs.length])];
+  for (const o of outputs) {
+    if (o.commitment.length !== 33) throw new Error('commitment 33 bytes');
+    if (!o.encryptedAmount || o.encryptedAmount.length !== 8) throw new Error('encrypted_amount must be 8 bytes');
+    parts.push(o.commitment, o.encryptedAmount);
+  }
+  const rpLen = new Uint8Array(2); new DataView(rpLen.buffer).setUint16(0, rangeproof.length, true);
+  parts.push(rpLen, rangeproof);
+  return concatBytes(...parts);
+}
+
+function decodeCXferBppPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 64 + 1 + (33 + 8) + 2) return null;
+  if (payload[0] !== T_CXFER_BPP) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const n = payload[p]; p += 1;
+  if (![1, 2, 4, 8].includes(n)) return null;
+  const outputs = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 + 8 > payload.length) return null;
+    const commitment = payload.slice(p, p + 33); p += 33;
+    const encryptedAmount = payload.slice(p, p + 8); p += 8;
+    outputs.push({ commitment, encryptedAmount });
+  }
+  if (p + 2 > payload.length) return null;
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  const rangeproof = payload.slice(p, p + rpLen);
+  return { kind: 'cxfer_bpp', assetId, kernelSig, outputs, rangeproof };
 }
 
 // T_AXFER (SPEC §5.7) — same shape as CXFER plus an asset_input_count byte
@@ -62420,6 +62466,7 @@ export {
   encodeEnvelopeScript, decodeEnvelopeScript,
   encodeCEtchPayload, decodeCEtchPayload,
   encodeCXferPayload, decodeCXferPayload,
+  encodeCXferBppPayload, decodeCXferBppPayload,
   encodeCMintPayload, decodeCMintPayload,
   encodeCBurnPayload, decodeCBurnPayload,
   encodeCPetchPayload, decodeCPetchPayload,
