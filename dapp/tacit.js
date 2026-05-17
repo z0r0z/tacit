@@ -46210,9 +46210,18 @@ function applyMarketFilters() {
     // demand. Empty asks copy clarifies the ask side specifically. We
     // still mount the rich stats strip so supply/attestation/charts are
     // visible even on assets with no live asks.
+    //
+    // Surface the Simple/Advanced trade toggle in the empty pane too —
+    // the asks-header chip row (where the toggle normally lives) only
+    // renders on the non-empty path, so without this the user can't
+    // flip out of Simple mode on an empty-asks asset. The toggle
+    // controls per-row buttons on BOTH ladders, so a user wanting
+    // Advanced sell-side controls (Sweep sell / +Place a bid) on the
+    // bids panel below would otherwise be stranded here.
+    const _emptyAsksToggleChip = `<button data-act="market-row-actions-toggle" type="button" title="${_marketRowActionsHidden ? 'Currently hiding per-row trade buttons — click bid rows to size the Swap tile. Flip to Advanced to surface Sweep sell / +Place a bid here too.' : 'Currently showing per-row direct-commit buttons. Flip to Simple to hide them and route every trade through the Swap tile (cleaner scan + auto-routing).'}" style="font-size:10px;padding:3px 10px;background:${_marketRowActionsHidden ? 'transparent' : 'var(--ink)'};border:1px solid var(--ink);color:${_marketRowActionsHidden ? 'var(--ink)' : 'var(--bg)'};cursor:pointer;font-weight:600;">${_marketRowActionsHidden ? 'Simple trade' : 'Advanced trade'}</button>`;
     const activityPanelHtml = marketActivityPanelHtml(_assetForBids, allAssetRows);
     const _yourOrdersHtmlNoAsks = renderYourOpenOrdersHTML(_marketView.assetId, _assetForBids, (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '');
-    const listedPaneHtml = `${_yourOrdersHtmlNoAsks}${bidsLadderHtml}<div class="empty">No active asks. Bids above; post one if you want to buy.</div>`;
+    const listedPaneHtml = `${_yourOrdersHtmlNoAsks}${bidsLadderHtml}<div class="empty" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>No active asks. Bids above; post one if you want to buy.</span>${_emptyAsksToggleChip}</div>`;
     const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
     list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
     hydrateMarketImages(list);
@@ -46224,6 +46233,18 @@ function applyMarketFilters() {
     populateMarketBidsLadder(list, _assetForBids).catch(e => console.warn('bids load failed', e));
     populateMarketAssetStats(list, _assetForBids).catch(e => console.warn('stats load failed', e));
     populateMarketActivityPanel(list, _assetForBids, allAssetRows).catch(e => console.warn('activity load failed', e));
+    // Wire the Simple/Advanced toggle chip we embedded in the empty
+    // pane. The main applyMarketFilters wire pass (which normally
+    // binds this handler at the bottom) is past the empty-pane early
+    // return, so the chip would otherwise be inert — leaving the user
+    // unable to flip out of Simple mode on an empty-asks asset.
+    list.querySelectorAll('[data-act="market-row-actions-toggle"]').forEach(btn => {
+      btn.onclick = () => {
+        _marketRowActionsHidden = !_marketRowActionsHidden;
+        _saveMarketRowActionsHidden(_marketRowActionsHidden);
+        applyMarketFilters();
+      };
+    });
     // Capture the rendered signature so the auto-refresh tick can detect
     // a transition from "asset has no asks right now" to "fresh asks
     // arrived" without being stuck on the empty pane. Without this
@@ -47500,20 +47521,39 @@ function applyMarketFilters() {
     // Click-to-fill: stamp the tile root with enough state for the
     // orderbook click handler to prime the swap tile + auto-set the
     // slippage cap to the clicked row's unit price. Skipped on the
-    // user's own listings. For preauth groups, fill amount = full
-    // group total so the swap tile pre-fills the whole-group buy.
+    // user's own listings.
+    //
+    // Per-row-type semantics:
+    //   · Single listing: fillAmt = listing amount, fillUnit = listing
+    //     unit price (the slip-cap that exactly matches this fill).
+    //   · Chunked group (_isGroup): fillAmt = full group total so the
+    //     Swap tile pre-fills the all-chunks buy; fillUnit stays the
+    //     per-chunk unit since every chunk is uniformly priced.
+    //   · Price-bucket level (_isLevel): fillAmt = bucket total,
+    //     fillUnit = bucket's MAX unit (the worst-case price). Bucket-
+    //     average would set the cap too tight — the auto-router would
+    //     reject the bucket's higher-priced listings and silently miss
+    //     the cumulative size the row advertised. Using max matches
+    //     the level-button's data-cap-unit semantics in Advanced mode.
     if (l.kind === 'preauth' && (l.seller_pubkey || '') !== myPubHex) {
       const _fillAmt = l._isGroup
         ? (BigInt(amount || '0') * BigInt(l._groupSize || 1)).toString()
         : (amount || '0');
+      const _fillUnitForTile = l._isLevel && Number.isFinite(l._levelMaxUnit)
+        ? l._levelMaxUnit
+        : unit;
       tile.dataset.fillAid = safeAid;
       tile.dataset.fillAmount = _fillAmt;
       tile.dataset.fillDec = String(dec);
       tile.dataset.fillTicker = a.ticker || '';
       tile.dataset.fillDirection = 'buy';
-      if (unit != null) tile.dataset.fillUnit = String(unit);
+      if (_fillUnitForTile != null) tile.dataset.fillUnit = String(_fillUnitForTile);
       tile.style.cursor = 'pointer';
-      tile.title = 'Click outside the Buy button to size this in the swap tile at this price cap.';
+      // Title adapts to Simple vs Advanced: in Simple mode there's no
+      // Buy button on the tile, so "outside the Buy button" was a lie.
+      tile.title = _marketRowActionsHidden
+        ? `Click row to size the Swap tile in BUY mode at this price${l._isLevel ? ' cap (across the level)' : ''}. Confirm with the Swap button above.`
+        : `Click outside the Buy button to size this in the swap tile at this price${l._isLevel ? ' cap' : ''}.`;
     }
     frag.appendChild(tile);
   }
