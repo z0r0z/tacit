@@ -421,5 +421,88 @@ group('T_SWAP_VAR — NO_CHANGE_SENTINEL accepted');
     dec?.c_change_or_sentinel === '00'.repeat(33));
 }
 
+// ============== T_LP_ADD variant 0 + T_LP_REMOVE arithmetic ==============
+group('ammLpAddShares (variant 0 proportional join)');
+{
+  // Pool: 1M / 4M reserves, 2M total shares. LP joins at-ratio with
+  // 100k / 400k → expected shares = floor(100k · 2M / 1M) = 200k
+  // (or floor(400k · 2M / 4M) = 200k; both sides agree at-ratio).
+  const got = worker.ammLpAddShares(100_000n, 400_000n, 1_000_000n, 4_000_000n, 2_000_000n);
+  ok('at-ratio LP gets proportional shares', got === 200_000n);
+
+  // Off-ratio: 100k / 500k vs reserves 1M / 4M → A-side = 200k, B-side = 250k.
+  // floor(min) = 200k. The 50k B-side excess donates to existing LPs.
+  const off = worker.ammLpAddShares(100_000n, 500_000n, 1_000_000n, 4_000_000n, 2_000_000n);
+  ok('off-ratio LP gets the smaller side', off === 200_000n);
+
+  let threwInit = false;
+  try { worker.ammLpAddShares(1n, 1n, 0n, 0n, 0n); } catch { threwInit = true; }
+  ok('S == 0 throws (POOL_INIT path)', threwInit);
+}
+
+group('ammLpRemoveOutputs (proportional withdraw)');
+{
+  // Burn 250k shares from a 2M total over 1M / 4M reserves:
+  //   deltaA = 1M · 250k / 2M = 125k
+  //   deltaB = 4M · 250k / 2M = 500k
+  const got = worker.ammLpRemoveOutputs(250_000n, 1_000_000n, 4_000_000n, 2_000_000n);
+  ok('deltaA = floor(R_A · sa / S)', got.deltaA === 125_000n);
+  ok('deltaB = floor(R_B · sa / S)', got.deltaB === 500_000n);
+
+  // Over-burn rejected
+  let threwOver = false;
+  try { worker.ammLpRemoveOutputs(3_000_000n, 1_000_000n, 4_000_000n, 2_000_000n); } catch { threwOver = true; }
+  ok('over-burn (sa > S) throws', threwOver);
+
+  // Empty pool rejected
+  let threwEmpty = false;
+  try { worker.ammLpRemoveOutputs(1n, 0n, 0n, 0n); } catch { threwEmpty = true; }
+  ok('empty pool (S == 0) throws', threwEmpty);
+}
+
+group('decodeTLpRemovePayload structural round-trip');
+{
+  // The reference encoder for T_LP_REMOVE lives in tests/amm-envelope.mjs.
+  // Reuse it to build a structurally-valid payload and round-trip.
+  const { encodeLpRemove } = await import('./amm-envelope.mjs');
+  const assetA = sha256(new TextEncoder().encode('lprm-a'));
+  const assetB = sha256(new TextEncoder().encode('lprm-b'));
+  const pubA = secp.ProjectivePoint.BASE.multiply(3n).toRawBytes(true);
+  const pubB = secp.ProjectivePoint.BASE.multiply(5n).toRawBytes(true);
+  const payload = encodeLpRemove({
+    assetA, assetB,
+    shareAmount: 250_000n,
+    deltaA: 125_000n, deltaB: 500_000n,
+    recvACSecp: pubA,
+    recvACBJJ: new Uint8Array(32).fill(0x11),
+    recvAXcurveSigma: new Uint8Array(XCURVE_PROOF_LEN).fill(0x22),
+    recvBCSecp: pubB,
+    recvBCBJJ: new Uint8Array(32).fill(0x33),
+    recvBXcurveSigma: new Uint8Array(XCURVE_PROOF_LEN).fill(0x44),
+    kernelSigLP: new Uint8Array(64).fill(0x55),
+    proof: new Uint8Array(192).fill(0x66),
+  });
+  ok('payload[0] === 0x2E', payload[0] === 0x2E);
+  const dec = worker.decodeTLpRemovePayload(payload);
+  ok('worker decodes', dec !== null);
+  ok('kind = lp_remove', dec?.kind === 'lp_remove');
+  ok('asset_a hex matches', dec?.asset_a === bytesToHex(assetA));
+  ok('asset_b hex matches', dec?.asset_b === bytesToHex(assetB));
+  ok('share_amount string', dec?.share_amount === '250000');
+  ok('delta_a string', dec?.delta_a === '125000');
+  ok('delta_b string', dec?.delta_b === '500000');
+  ok('recv_a_c_secp hex', dec?.recv_a_c_secp === bytesToHex(pubA));
+  ok('recv_b_c_secp hex', dec?.recv_b_c_secp === bytesToHex(pubB));
+  ok('kernel_sig_lp hex 128 chars', dec?.kernel_sig_lp?.length === 128);
+  ok('proof hex 384 chars', dec?.proof?.length === 384);  // 192 * 2
+
+  // Rejection cases
+  ok('null → null', worker.decodeTLpRemovePayload(null) === null);
+  ok('wrong opcode → null',
+    worker.decodeTLpRemovePayload(new Uint8Array([0x99, 0x00, 0x00])) === null);
+  ok('truncated → null',
+    worker.decodeTLpRemovePayload(new Uint8Array(10).fill(0x2E)) === null);
+}
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail === 0 ? 0 : 1);

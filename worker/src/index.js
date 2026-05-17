@@ -1331,6 +1331,90 @@ function ammSwapVarEnvelopeHash(payload) {
   return sha256(payload);
 }
 
+// ============== LP-share math (AMM.md §"LP shares") ==============
+//
+// For variant 0 LP_ADD: shareAmount = floor(min(ΔA·S/R_A, ΔB·S/R_B)).
+// Penalizes off-ratio joins by giving the LP only the smaller side's
+// proportional share — the LP's excess (asset whose ratio is over-supplied)
+// effectively rides as a donation to existing LPs, matching Uniswap V2's
+// LP-add discipline.
+function ammLpAddShares(deltaA, deltaB, R_A, R_B, S) {
+  const da = BigInt(deltaA), db = BigInt(deltaB);
+  const ra = BigInt(R_A), rb = BigInt(R_B), s = BigInt(S);
+  if (s === 0n) throw new Error('use ammLpInitShares for POOL_INIT (S == 0)');
+  if (ra === 0n || rb === 0n) throw new Error('cannot add to empty pool');
+  const a = (da * s) / ra;
+  const b = (db * s) / rb;
+  return a < b ? a : b;
+}
+
+// For LP_REMOVE: deltaA = floor(R_A · shareAmount / S), deltaB analogous.
+function ammLpRemoveOutputs(shareAmount, R_A, R_B, S) {
+  const sa = BigInt(shareAmount), ra = BigInt(R_A), rb = BigInt(R_B), s = BigInt(S);
+  if (s === 0n) throw new Error('cannot remove from empty pool');
+  if (sa > s) throw new Error('shareAmount exceeds total shares');
+  return { deltaA: (ra * sa) / s, deltaB: (rb * sa) / s };
+}
+
+// ============== T_LP_REMOVE structural decoder ==============
+//
+// Wire format (matches tests/amm-envelope.mjs):
+//   opcode(1)=0x2E || assetA(32) || assetB(32) || shareAmount(8)
+//   || deltaA(8) || deltaB(8)
+//   || recv_A_C_secp(33) || recv_A_C_BJJ(32) || recv_A_xcurve_sigma(169)
+//   || recv_B_C_secp(33) || recv_B_C_BJJ(32) || recv_B_xcurve_sigma(169)
+//   || kernel_sig_LP(64) || proof_len(2) || proof(VAR)
+function decodeTLpRemovePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_LP_REMOVE) return null;
+  // 1 + 32 + 32 + 8 + 8 + 8 + (33+32+169)*2 + 64 + 2 = 623 + proof(≥1)
+  const FIXED = 1 + 32 + 32 + 8 + 8 + 8 + 2 * (33 + 32 + XCURVE_PROOF_LEN_AMM) + 64 + 2;
+  if (payload.length < FIXED + 1) return null;
+  let p = 1;
+  const assetA = payload.slice(p, p + 32); p += 32;
+  const assetB = payload.slice(p, p + 32); p += 32;
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  function readU64() {
+    const lo = BigInt(dv.getUint32(p, true));
+    const hi = BigInt(dv.getUint32(p + 4, true));
+    p += 8;
+    return (hi << 32n) | lo;
+  }
+  const shareAmount = readU64();
+  const deltaA = readU64();
+  const deltaB = readU64();
+  const recvACSecp = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(recvACSecp)); } catch { return null; }
+  const recvACBJJ = payload.slice(p, p + 32); p += 32;
+  const recvAXcurveSigma = payload.slice(p, p + XCURVE_PROOF_LEN_AMM); p += XCURVE_PROOF_LEN_AMM;
+  const recvBCSecp = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(recvBCSecp)); } catch { return null; }
+  const recvBCBJJ = payload.slice(p, p + 32); p += 32;
+  const recvBXcurveSigma = payload.slice(p, p + XCURVE_PROOF_LEN_AMM); p += XCURVE_PROOF_LEN_AMM;
+  const kernelSigLP = payload.slice(p, p + 64); p += 64;
+  if (p + 2 > payload.length) return null;
+  const proofLen = dv.getUint16(p, true); p += 2;
+  if (proofLen === 0) return null;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  return {
+    kind: 'lp_remove',
+    asset_a: bytesToHex(assetA),
+    asset_b: bytesToHex(assetB),
+    share_amount: shareAmount.toString(),
+    delta_a: deltaA.toString(),
+    delta_b: deltaB.toString(),
+    recv_a_c_secp: bytesToHex(recvACSecp),
+    recv_a_c_bjj: bytesToHex(recvACBJJ),
+    recv_a_xcurve_sigma: bytesToHex(recvAXcurveSigma),
+    recv_b_c_secp: bytesToHex(recvBCSecp),
+    recv_b_c_bjj: bytesToHex(recvBCBJJ),
+    recv_b_xcurve_sigma: bytesToHex(recvBXcurveSigma),
+    kernel_sig_lp: bytesToHex(kernelSigLP),
+    proof: bytesToHex(proof),
+  };
+}
+
 // ============== T_LP_ADD STRUCTURAL DECODER (SPEC AMM.md §"Envelope") ==============
 //
 // Variant 1 (POOL_INIT) carries: assets, deltas, share amount + commits,
@@ -13758,23 +13842,128 @@ async function scanForEtches(env, network) {
           });
           found++;
         } else {
-          // Variant 0 standard LP add — defer reserve update + share mint
-          // to the full validator (kernel sig + sigma + Groth16 verify
-          // required). Structural decode succeeded; tx is on-chain but
-          // pool state is unchanged in this foundation build.
-          //
-          // TODO(next-session): verify kernel sigs (A + B), verify
-          // sigma_XCURVE on share commits, verify Groth16 proof against
-          // pool.vk_cid, update reserve_a/reserve_b/share_supply.
+          // Variant 0 standard LP add — append liquidity to existing pool.
+          // Arithmetic gates verified here (reserve update + share mint).
+          // Cryptographic gates (kernel sigs A+B, XCURVE sigma, Groth16
+          // proof against pool.vk_cid) deferred to follow-up sessions.
+
+          // Canonical asset pair (rejects A == B).
+          let canon0;
+          try { canon0 = ammCanonicalAssetPair(lp.asset_a, lp.asset_b); }
+          catch { continue; }
+          const a0 = canon0[0], b0 = canon0[1];
+          const swapped0 = bytesToHex(a0) !== lp.asset_a;
+          const dA0 = swapped0 ? BigInt(lp.delta_b) : BigInt(lp.delta_a);
+          const dB0 = swapped0 ? BigInt(lp.delta_a) : BigInt(lp.delta_b);
+
+          // Locate the pool. Variant 0 doesn't carry fee_bps / capability_flags;
+          // canonical pool_id derivation requires those, so we scan the
+          // ammpool: prefix and match by canonical asset pair. (V3/V4
+          // fee-tier parity: there can be multiple pools for the same
+          // (A, B); v1 worker assumes single canonical pool per pair until
+          // the dapp builder layer pins fee_bps in the envelope. Pools at
+          // 30 bps + capability_flags=0 are the default.)
+          // For v1 we look up by the standard (30 bps, flags=0) pool_id.
+          // A future amendment may extend T_LP_ADD variant 0 to carry the
+          // fee_bps discriminator for unambiguous pool lookup.
+          let poolIdBytes0;
+          try { poolIdBytes0 = ammDerivePoolId(a0, b0, 30, 0); }
+          catch { continue; }
+          const poolIdHex0 = bytesToHex(poolIdBytes0);
+          const pool0 = await ammPoolGet(env, network, poolIdHex0);
+          if (!pool0) continue;
+          if (pool0.validation !== 'sigs-and-arithmetic-verified'
+              && pool0.validation !== 'verified') continue;
+
+          // Initial-LP lock window: first AMM_INITIAL_LP_LOCK_BLOCKS after
+          // POOL_INIT, only swaps are accepted. Arbitrageurs correct any
+          // malicious seed ratio before naive LPs are exposed.
+          // (AMM_INITIAL_LP_LOCK_BLOCKS = 100 blocks per AMM.md.)
+          if (typeof pool0.init_height === 'number') {
+            if (h < pool0.init_height + 100) continue;
+          }
+
+          // Expected shares: floor(min(ΔA·S/R_A, ΔB·S/R_B))
+          let expectedShares;
+          try {
+            expectedShares = ammLpAddShares(
+              dA0, dB0, pool0.reserve_a, pool0.reserve_b, pool0.lp_total_shares,
+            );
+          } catch { continue; }
+          if (expectedShares === 0n) continue;  // zero-share guard
+          if (expectedShares !== BigInt(lp.share_amount)) continue;
+
+          // Update pool state atomically.
+          const newReserveA = BigInt(pool0.reserve_a) + dA0;
+          const newReserveB = BigInt(pool0.reserve_b) + dB0;
+          if (newReserveA >= 1n << 64n || newReserveB >= 1n << 64n) continue;
+          await ammPoolPut(env, network, poolIdHex0, {
+            ...pool0,
+            reserve_a: newReserveA.toString(),
+            reserve_b: newReserveB.toString(),
+            lp_total_shares: (BigInt(pool0.lp_total_shares) + expectedShares).toString(),
+            k_last: (newReserveA * newReserveB).toString(),
+            last_lp_add_txid: tx.txid,
+            last_lp_add_height: h,
+          });
+          found++;
         }
       } else if (decoded.opcode === T_LP_REMOVE) {
-        // SPEC AMM.md §"T_LP_REMOVE". v1 FOUNDATION ONLY: structural
-        // recognition; no state update until full validator lands.
-        // TODO(next-session): port tests/amm-validator.mjs LP_REMOVE
-        // validation; update reserves + burn share supply.
-        // Decode is performed lazily by the follow-up branch — we just
-        // continue past unknown structural variants in this foundation
-        // build.
+        // SPEC AMM.md §"T_LP_REMOVE". LP burns share UTXOs to withdraw
+        // their proportional slice of reserves. Arithmetic + structural
+        // gates verified here; kernel sig + Groth16 deferred.
+        const rm = decodeTLpRemovePayload(decoded.payload);
+        if (!rm) continue;
+
+        let canonR;
+        try { canonR = ammCanonicalAssetPair(rm.asset_a, rm.asset_b); }
+        catch { continue; }
+        const aR = canonR[0], bR = canonR[1];
+        const swappedR = bytesToHex(aR) !== rm.asset_a;
+        const dARecv = swappedR ? BigInt(rm.delta_b) : BigInt(rm.delta_a);
+        const dBRecv = swappedR ? BigInt(rm.delta_a) : BigInt(rm.delta_b);
+
+        // Pool lookup (same v1 default-fee assumption as variant 0).
+        let poolIdBytesR;
+        try { poolIdBytesR = ammDerivePoolId(aR, bR, 30, 0); }
+        catch { continue; }
+        const poolIdHexR = bytesToHex(poolIdBytesR);
+        const poolR = await ammPoolGet(env, network, poolIdHexR);
+        if (!poolR) continue;
+        if (poolR.validation !== 'sigs-and-arithmetic-verified'
+            && poolR.validation !== 'verified') continue;
+
+        const shareAmount = BigInt(rm.share_amount);
+        const totalShares = BigInt(poolR.lp_total_shares);
+        // Over-burn defense: caller can't burn more shares than exist.
+        if (shareAmount === 0n || shareAmount > totalShares) continue;
+
+        // Recompute expected withdrawal deltas.
+        let expected;
+        try {
+          expected = ammLpRemoveOutputs(
+            shareAmount, poolR.reserve_a, poolR.reserve_b, totalShares,
+          );
+        } catch { continue; }
+        if (expected.deltaA !== dARecv || expected.deltaB !== dBRecv) continue;
+        // Uniswap V2 INSUFFICIENT_LIQUIDITY_BURNED guard: both sides
+        // must yield > 0. In extremely imbalanced pools the smaller
+        // side could floor-round to 0; reject upfront.
+        if (expected.deltaA === 0n || expected.deltaB === 0n) continue;
+
+        const newReserveA = BigInt(poolR.reserve_a) - expected.deltaA;
+        const newReserveB = BigInt(poolR.reserve_b) - expected.deltaB;
+        if (newReserveA <= 0n || newReserveB <= 0n) continue;  // defensive
+        await ammPoolPut(env, network, poolIdHexR, {
+          ...poolR,
+          reserve_a: newReserveA.toString(),
+          reserve_b: newReserveB.toString(),
+          lp_total_shares: (totalShares - shareAmount).toString(),
+          k_last: (newReserveA * newReserveB).toString(),
+          last_lp_remove_txid: tx.txid,
+          last_lp_remove_height: h,
+        });
+        found++;
       } else if (decoded.opcode === T_SWAP_VAR) {
         // SPEC-SWAP-VAR-AMENDMENT §5.16.3. Per-trade variable-amount AMM
         // swap. This branch verifies the arithmetic-load-bearing gates:
@@ -14208,6 +14397,7 @@ export {
   ammIsqrt, ammLpInitShares, ammLauncherGateMsg,
   AMM_FEE_BPS_MAX, AMM_CAPABILITY_FLAGS_MAX, AMM_MINIMUM_LIQUIDITY,
   decodeTSwapVarPayload, ammCurveDeltaOut, ammSwapVarEnvelopeHash,
+  decodeTLpRemovePayload, ammLpAddShares, ammLpRemoveOutputs,
   decodeTLpAddPayload,
   // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
   ctacPositionKey, ctacActivePositionKey, ctacInsurancePoolKey,
