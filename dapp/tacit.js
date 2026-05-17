@@ -2756,6 +2756,84 @@ function renderBppSignetBanner() {
   }
 }
 
+// Sats-fragmentation hint banner. Detects when the wallet holds enough
+// dust-shaped sats UTXOs that consolidation pays for itself (saved
+// witness bytes on every future send) and offers a one-click sweep.
+// Per-wallet dismiss key so one user dismissing it doesn't suppress for
+// another wallet on the same browser; swapping wallets re-evaluates.
+const SATS_FRAG_BANNER_DISMISS_KEY = 'tacit-sats-fragmentation-banner-dismissed-v1';
+let _satsFragBannerInflight = false;
+async function renderSatsFragmentationBanner() {
+  const el = (typeof document !== 'undefined') ? document.getElementById('sats-fragmentation-banner') : null;
+  if (!el) return;
+  // Need an unlocked wallet to inspect — locked wallets can't decrypt
+  // openings, so scanHoldings would return empty and we'd false-negative.
+  if (typeof wallet === 'undefined' || !wallet || !wallet.priv || !wallet.pub) {
+    el.style.display = 'none';
+    return;
+  }
+  const dismissKey = `${SATS_FRAG_BANNER_DISMISS_KEY}:${wallet.pubHex()}`;
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(dismissKey) === '1'; } catch {}
+  if (dismissed) { el.style.display = 'none'; return; }
+  // Dedup concurrent renders — refreshWallet + tab switch + init can all
+  // fire this within the same tick.
+  if (_satsFragBannerInflight) return;
+  _satsFragBannerInflight = true;
+  let inspection;
+  try {
+    inspection = await inspectSatsFragmentation();
+  } catch {
+    _satsFragBannerInflight = false;
+    el.style.display = 'none';
+    return;
+  }
+  _satsFragBannerInflight = false;
+  if (!inspection || !inspection.fragmented) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML =
+    `<span>🧹 <strong>${inspection.dustCount} small sats UTXOs</strong> ` +
+    `(≤${fmtSats(SATS_DUST_SHAPE_THRESHOLD)} sats each, ` +
+    `${fmtSats(inspection.dustTotal)} sats total). ` +
+    `Consolidating sweeps them into one — lowers fees on every subsequent send.</span> ` +
+    `<button id="sats-frag-consolidate" type="button" style="font-size:11px;padding:5px 12px;background:#b58900;color:#fff;border:1px solid #8b6a00;margin-left:8px;cursor:pointer;">Consolidate</button> ` +
+    `<a href="#" id="sats-frag-dismiss" style="color:#5b3a08;text-decoration:underline;margin-left:8px;">dismiss</a>`;
+  const btn = el.querySelector('#sats-frag-consolidate');
+  const dismiss = el.querySelector('#sats-frag-dismiss');
+  if (dismiss) {
+    dismiss.onclick = (ev) => {
+      ev.preventDefault();
+      try { localStorage.setItem(dismissKey, '1'); } catch {}
+      el.style.display = 'none';
+    };
+  }
+  if (btn) {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      const prev = btn.textContent;
+      btn.textContent = 'Consolidating…';
+      try {
+        const res = await buildAndBroadcastSatsConsolidate({});
+        toast(
+          `✓ Consolidated ${res.inputCount} dust UTXOs → ${fmtSats(res.recipientValue)} sats ` +
+          `(fee ${fmtSats(res.fee)} sats at ${res.feeRate} sat/vB)`,
+          'success', 8000
+        );
+        // Hide immediately — the new state will resurface the banner if the
+        // wallet still meets the dust threshold after the broadcast settles.
+        el.style.display = 'none';
+        try { invalidateHoldingsCache(); } catch {}
+        try { await refreshWallet(); } catch {}
+      } catch (e) {
+        toast(`Consolidation failed: ${e?.message || e}`, 'error', 8000);
+        btn.disabled = false;
+        btn.textContent = prev;
+      }
+    };
+  }
+}
+
 // mempool.space /tx/:txid/outspend/:vout returns { spent: bool, txid?, vin? }.
 // Fails closed: errors propagate so callers can surface "couldn't verify
 // liveness" rather than silently treating an unreachable API as "not spent"
@@ -23504,6 +23582,131 @@ async function buildAndBroadcastSatsSend({ recipientAddr, amountSats }) {
   };
 }
 
+// Threshold under which a sats UTXO is considered "dust-shaped" for the
+// purpose of the consolidation prompt. Anything ≤ this size contributes
+// disproportionately to per-tx witness vbytes when spent (one input is
+// ~27 vB regardless of value). 10k sats is a deliberate floor: small
+// enough to catch routine change outputs from frequent activity, large
+// enough that a typical user with a few normal-sized UTXOs isn't pestered.
+const SATS_DUST_SHAPE_THRESHOLD = 10_000;
+// Minimum number of dust-shaped sats UTXOs before we surface a
+// consolidation hint. Below this, the per-tx cost from fragmentation
+// is small (≤5 extra inputs × 27 vB = ≤135 vB ≈ small fee).
+const SATS_CONSOLIDATE_MIN_INPUTS = 6;
+
+// Pure: given the eligible sats UTXO set (already filtered against the
+// asset/ghost/pending exclusion), compute the fragmentation summary.
+// Separated from inspectSatsFragmentation so the threshold contract can
+// be unit-tested without mocking scanHoldings + getUtxos.
+function computeSatsFragmentation(eligibleSatsUtxos) {
+  const dust = (eligibleSatsUtxos || []).filter(u => (u && Number.isFinite(u.value) ? u.value : 0) <= SATS_DUST_SHAPE_THRESHOLD);
+  const dustTotal = dust.reduce((s, u) => s + (u.value || 0), 0);
+  return {
+    fragmented: dust.length >= SATS_CONSOLIDATE_MIN_INPUTS,
+    dustCount: dust.length,
+    dustTotal,
+    dustUtxos: dust,
+  };
+}
+
+// Count + identify dust-shaped sats UTXOs the wallet holds. Pure
+// inspection — no broadcast. Used by both the UI fragmentation hint and
+// the consolidate builder. Excludes asset / ghost / pending UTXOs via
+// selectSatsUtxosSafe so we never sweep something the holdings scan
+// thinks might be a tacit asset.
+async function inspectSatsFragmentation() {
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) {
+    return { fragmented: false, dustCount: 0, dustTotal: 0, dustUtxos: [] };
+  }
+  const allUtxos = await getUtxos(wallet.address());
+  const eligible = selectSatsUtxosSafe(allUtxos, holdings);
+  return computeSatsFragmentation(eligible);
+}
+
+// Sweep all dust-shaped sats UTXOs into a single output to self. Reduces
+// future per-tx input count, which compounds across every subsequent
+// send / trade / drop / mixer / AMM action.
+//
+// Conservative behavior: only consolidates if SATS_CONSOLIDATE_MIN_INPUTS
+// dust UTXOs exist. Below that the consolidation fee outweighs the
+// future savings. Caller can pass `force: true` to consolidate anyway.
+async function buildAndBroadcastSatsConsolidate({ force = false } = {}) {
+  await ensurePrivkey();
+  const inspection = await inspectSatsFragmentation();
+  if (!force && !inspection.fragmented) {
+    throw new Error(`only ${inspection.dustCount} dust-shaped sats UTXOs (${SATS_DUST_SHAPE_THRESHOLD} sats or less); consolidation needs at least ${SATS_CONSOLIDATE_MIN_INPUTS} to be worth the fee. Pass force:true to override.`);
+  }
+  if (inspection.dustCount === 0) {
+    throw new Error('no dust-shaped sats UTXOs to consolidate');
+  }
+  // Sort confirmed-first so the consolidation tx isn't chained off an
+  // unconfirmed parent unnecessarily.
+  const inputs = sortSatsForCommit(inspection.dustUtxos);
+  const totalIn = inputs.reduce((s, u) => s + u.value, 0);
+
+  const feeRate = await getFeeRate();
+  // Single-output sweep — no change output.
+  const fee = feeFor(estSatsSendVb(inputs.length, false), feeRate);
+  if (totalIn <= fee + DUST) {
+    throw new Error(`dust sats (${totalIn}) too small to consolidate at ${feeRate} sat/vB (fee ${fee}). Wait for lower fee rates and retry.`);
+  }
+  const recipientValue = totalIn - fee;
+
+  // Belt-and-suspenders: re-classify the FINAL input set right before
+  // signing, in case an asset UTXO race classified anything mid-flow.
+  const recheck = await scanHoldings();
+  if (recheck && recheck instanceof Map) {
+    const reExclude = new Set();
+    for (const h of recheck.values()) {
+      for (const u of (h.utxos || []))    reExclude.add(`${u.utxo?.txid || u.txid}:${u.utxo?.vout ?? u.vout}`);
+      for (const g of (h.ghosts || []))   reExclude.add(`${g.utxo?.txid || g.txid}:${g.utxo?.vout ?? g.vout}`);
+      for (const i of (h.inflated || [])) reExclude.add(`${i.utxo?.txid || i.txid}:${i.utxo?.vout ?? i.vout}`);
+      for (const p of (h.pending || []))  reExclude.add(`${p.utxo?.txid || p.txid}:${p.utxo?.vout ?? p.vout}`);
+    }
+    for (const u of inputs) {
+      if (reExclude.has(`${u.txid}:${u.vout}`)) {
+        throw new Error('one of the selected inputs is now classified as an asset UTXO (race with concurrent scan). Aborted for safety. Refresh and retry.');
+      }
+    }
+  }
+
+  const recipientScript = p2wpkhScript(wallet.pub);
+  const tx = buildSatsSendTx({
+    inputs,
+    recipientScript,
+    recipientValue,
+    changeScript: recipientScript,  // unused (no change), but the helper requires it
+    changeValue: 0,
+  });
+  for (let i = 0; i < tx.inputs.length; i++) {
+    tx.inputs[i].witness = signP2wpkhInput(tx, i, inputs[i].value);
+  }
+  const txHex = bytesToHex(serializeTx(tx));
+  const sentTxid = txid(tx);
+  try {
+    await broadcastWithRetry(txHex);
+  } catch (e) {
+    const msg = (e && e.message) || '';
+    if (/too-long-mempool-chain/i.test(msg)) {
+      throw new Error(
+        'Bitcoin mempool ancestor-chain limit hit (25 unconfirmed parents). ' +
+        'Some of your dust UTXOs descend from a long chain of unconfirmed parents. ' +
+        'Wait for any of those to confirm and retry.'
+      );
+    }
+    throw e;
+  }
+  return {
+    txid: sentTxid,
+    inputsSpent: inputs.map(u => ({ txid: u.txid, vout: u.vout, value: u.value })),
+    inputCount: inputs.length,
+    recipientValue,
+    fee,
+    feeRate,
+  };
+}
+
 // ============== UTXO OPENING (publish) ==============
 // Per-UTXO opening publication. Wallet signs (asset_id, txid, vout, amount,
 // blinding, owner_pubkey) under BIP-340; worker verifies Pedersen binding +
@@ -30470,6 +30673,11 @@ async function refreshWallet() {
       const usd = fmtSatsAsUsd(balance, btcUsd);
       el.textContent = (usd && balance > 0) ? `· ${usd}` : '';
     }).catch(() => {});
+    // Re-evaluate the sats-fragmentation hint after every successful
+    // refresh — the holdings scan is cached (30s TTL) so this is cheap,
+    // and it catches new dust appearing from incoming sends / change
+    // outputs without waiting for the next page load.
+    renderSatsFragmentationBanner();
     _cancelWalletRetry();
   } catch (e) {
     const msg = String(e?.message || e);
@@ -63254,6 +63462,11 @@ async function init() {
   // is enabled; harmless no-op on mainnet (the banner DOM exists but
   // renderBppSignetBanner keeps it hidden there).
   renderBppSignetBanner();
+  // Sats-fragmentation hint. No-ops until the wallet is unlocked and
+  // scanHoldings finishes; refreshWallet's success branch re-evaluates
+  // after each refresh so the banner appears once a real holdings scan
+  // is available.
+  renderSatsFragmentationBanner();
   // Lander grid (recent etches) is independent of wallet keys — kick it off
   // BEFORE awaiting refreshWallet so the registry + per-asset verify fetches
   // run concurrently with the wallet's mempool round-trips instead of strictly
@@ -63494,6 +63707,8 @@ export {
   // exclusion logic is the primary defense against accidentally destroying
   // tacit holdings via plain-Bitcoin spends, so it gets dedicated test coverage.
   decodeP2wpkhAddress, selectSatsUtxosSafe, sortSatsForCommit, estSatsSendVb, buildSatsSendTx,
+  inspectSatsFragmentation, computeSatsFragmentation, buildAndBroadcastSatsConsolidate,
+  SATS_DUST_SHAPE_THRESHOLD, SATS_CONSOLIDATE_MIN_INPUTS,
   // Wire format encoders / decoders
   encodeEnvelopeScript, decodeEnvelopeScript,
   encodeCEtchPayload, decodeCEtchPayload,

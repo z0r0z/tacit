@@ -4084,6 +4084,15 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div id="bpp-signet-banner" style="display:none;background:#eef9f0;border:2px solid #2e7d3a;color:#1d4d27;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
 
 <!--
+  Sats fragmentation indicator. Appears when the wallet holds enough
+  dust-shaped sats UTXOs (default: ≥ 6 UTXOs of ≤ 10k sats each) that
+  consolidating them saves witness bytes on every subsequent tx.
+  Offers a one-click consolidate action. Snoozable; re-evaluates on
+  next wallet refresh.
+-->
+<div id="sats-fragmentation-banner" style="display:none;background:#fdf6e3;border:2px solid #b58900;color:#5b3a08;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
+
+<!--
   OTC claim arrival banner. Visible across every tab when the maker has
   at least one OTC listing with an unfulfilled buyer claim. Auto-shown by
   the claim poller (_pollMakerListings); auto-hidden when the maker is
