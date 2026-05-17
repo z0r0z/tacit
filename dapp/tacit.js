@@ -15637,6 +15637,29 @@ function forgetCtacPositionRecord(targetLeafHashHex) {
   return arr;
 }
 
+// One-shot JSON download of every cBTC.tac position record on this network.
+// The mint blinding inside each record is the ONLY way to reopen the on-
+// chain cBTC.tac UTXO commitment (blinding is random per-deposit per SPEC-
+// CBTC-TAC-AMENDMENT §5.36; not derivable from priv key). Backup-or-lose-
+// funds — UI fires this gate after every successful deposit. Stamps a
+// per-network last-export timestamp so the post-deposit gate can detect a
+// "recently backed up" state and skip the modal.
+function exportCtacPositionRecordsAsBlob() {
+  const records = _loadCtacPositionRecords();
+  try { localStorage.setItem(`tacit-cbtc-tac-last-export-v1:${NET.name}`, String(Date.now())); } catch {}
+  return new Blob([JSON.stringify({
+    format: 'tacit-cbtc-tac-positions-v1',
+    network: NET.name,
+    exported_at: new Date().toISOString(),
+    count: records.length,
+    records,
+  }, null, 2)], { type: 'application/json' });
+}
+function getCtacBackupLastExportTs() {
+  try { return Number(localStorage.getItem(`tacit-cbtc-tac-last-export-v1:${NET.name}`)) || 0; }
+  catch { return 0; }
+}
+
 // SPEC-CBTC-TAC-AMENDMENT §5.36 — LP-shaped mint of cBTC.tac.
 //
 // Locks a cBTC.zk slot's leaf + a TAC bond UTXO; mints cBTC.tac at the
@@ -20750,7 +20773,7 @@ async function resumePendingAxintents() {
 // replaces their own consolidation, settlement fails and they need to
 // reclaim — acceptable since RBF'ing your own claim is unusual and only
 // degrades the taker's own UX.
-async function prepareTakerSatsUtxo({ requiredSats, label = 'atomic intent claim' }) {
+async function prepareTakerSatsUtxo({ requiredSats, label = 'atomic intent claim', preConsolidateCheck = null }) {
   let utxos;
   try { utxos = await getUtxos(wallet.address()); }
   catch (e) { throw new Error('could not load wallet UTXOs: ' + (e.message || e)); }
@@ -20772,6 +20795,17 @@ async function prepareTakerSatsUtxo({ requiredSats, label = 'atomic intent claim
       `Top up via faucet or external wallet, then retry.`,
     );
   }
+  // Optional pre-consolidate freshness gate. Atomic-intent claims hit this
+  // path when the wallet has only fragmented sats — the self-consolidate
+  // tx broadcasts BEFORE the worker claim POST, so a claim that 409s
+  // afterward (another taker beat us / intent vanished) wastes the
+  // consolidate fee. preConsolidateCheck lets the caller re-verify the
+  // intent is still live + unclaimed before we spend that fee. It can
+  // throw to abort; otherwise the consolidate proceeds. No-op when not
+  // provided (preserves the original API for non-claim callers).
+  if (typeof preConsolidateCheck === 'function') {
+    await preConsolidateCheck();
+  }
   // No single covering UTXO but total is enough — consolidate. The
   // recipient output of buildAndBroadcastSatsSend is always vout 0 and
   // carries exactly `amountSats`.
@@ -20787,6 +20821,31 @@ async function prepareTakerSatsUtxo({ requiredSats, label = 'atomic intent claim
   };
 }
 
+// Worker re-fetch of an atomic intent; throws on conditions that would
+// otherwise make a subsequent claim POST fail (already claimed, expired,
+// removed). Cheap (single GET, no chain call) — used by claim callers as
+// a freshness gate before any sats-spending action so a race-lost claim
+// never burns the consolidate fee.
+async function fetchAxferIntentFresh(assetIdHex, intentIdHex) {
+  if (!WORKER_BASE) throw new Error('worker disabled — cannot verify intent freshness');
+  let resp;
+  try { resp = await fetch(withNet(ATOMIC_INTENTS_URL(assetIdHex))); }
+  catch (e) {
+    throw new Error(`could not verify intent is still live (worker unreachable: ${e?.message || e})`);
+  }
+  if (!resp.ok) throw new Error(`could not verify intent (worker HTTP ${resp.status})`);
+  const j = await resp.json().catch(() => ({}));
+  const intent = (Array.isArray(j.intents) ? j.intents : []).find(x => x.intent_id === intentIdHex);
+  if (!intent) throw new Error('intent not found at worker — already settled or cancelled. Refresh Market.');
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (Number(intent.expiry || 0) <= nowSec) throw new Error('intent expired — refresh Market and pick another.');
+  if (intent.claim && Number(intent.claim.expires_at || 0) > nowSec) {
+    throw new Error(`intent already claimed by another taker (~${Math.ceil((intent.claim.expires_at - nowSec) / 60)} min left on the lock). Refresh Market.`);
+  }
+  if (intent.fulfilment_pending) throw new Error('intent is mid-settlement — another taker just won the race. Refresh Market.');
+  return intent;
+}
+
 async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
@@ -20799,7 +20858,17 @@ async function claimAxferIntent({ assetIdHex, intentIdHex, priceSats }) {
   // exactly price_sats and commits the new (unconfirmed) outpoint — closes
   // the "fragmented sats" gap that previously forced takers to manually
   // consolidate before claiming.
-  const taker = await prepareTakerSatsUtxo({ requiredSats: priceSats, label: 'atomic intent claim' });
+  const taker = await prepareTakerSatsUtxo({
+    requiredSats: priceSats,
+    label: 'atomic intent claim',
+    // Freshness gate: only fires when the wallet would have to broadcast
+    // a sats-self-send to produce a covering UTXO. Worker re-fetch is
+    // cheap; bailing here saves the consolidate fee on a race-lost
+    // claim. Wallets with a covering UTXO already skip this check
+    // (no sats at risk — the claim POST itself is the only chain
+    // action, and the worker 409 is free).
+    preConsolidateCheck: () => fetchAxferIntentFresh(assetIdHex, intentIdHex),
+  });
   const utxoTxid = taker.txid;
   const utxoVout = taker.vout;
   const cMsg = _axintentClaimMsg(hexToBytes(assetIdHex), hexToBytes(intentIdHex), wallet.pub, utxoTxid, utxoVout);
@@ -20876,7 +20945,13 @@ async function claimAxferVarIntent({ assetIdHex, intentIdHex, intent, requestedA
   // Shared helper with the legacy whole-UTXO claim path — same fragmented-
   // sats fix: if no single confirmed UTXO covers, broadcasts a sats-send-to-
   // self for exactly requiredSats and commits the new (unconfirmed) outpoint.
-  const taker = await prepareTakerSatsUtxo({ requiredSats, label: 'variable-amount intent claim' });
+  // preConsolidateCheck gates the self-send broadcast on a fresh worker
+  // re-fetch of the intent so a race-lost claim doesn't burn the
+  // consolidate fee.
+  const taker = await prepareTakerSatsUtxo({
+    requiredSats, label: 'variable-amount intent claim',
+    preConsolidateCheck: () => fetchAxferIntentFresh(assetIdHex, intentIdHex),
+  });
   const utxoTxid = taker.txid;
   const utxoVout = taker.vout;
   const cMsg = _axintentClaimMsgVar(
@@ -21902,12 +21977,13 @@ async function fetchPreauthSale({ assetIdHex, saleIdHex }) {
 // public listed-UTXO opening, derives r_out via ECDH against seller_pubkey,
 // broadcasts the commit tx, waits for visibility, then broadcasts the
 // reveal tx with the seller's pre-signed asset-input witness.
-async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress = null }) {
+async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress = null, _skipApiFailurePrompt = false }) {
   // Sentinel for error decoration. Flips to true once the commit tx has
   // broadcast successfully — any throw past that point means commit-locked
   // sats are stranded and the user needs the recovery record.
   let _commitTxidHexForRecovery = null;
   let _commitValueForRecovery = 0;
+  const opts = { _skipApiFailurePrompt };
   try {
   await ensurePrivkey();
   if (!WORKER_BASE) throw new Error('worker disabled');
@@ -21931,13 +22007,44 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   // cost. This check costs one extra API call and avoids that loss. The
   // race window between this check and the reveal broadcast is unavoidable;
   // documented in SPEC §5.7.8 as the seller-double-spend race.
+  //
+  // API-failure semantics: silently passing on an API hiccup used to be
+  // the default ("non-blocking — caller decides"), but in practice every
+  // caller proceeded blindly and the user paid the commit fee when the
+  // listing turned out to be stale. Now we prompt explicitly: the user
+  // chooses to abort safely or proceed-at-risk with the exact sats
+  // amount disclosed. The prompt is skipped during sweep/auto-router
+  // multi-fill loops where the caller passes _skipApiFailurePrompt — those
+  // surfaces have their own per-fill UI feedback and shouldn't pop a
+  // dialog per fill.
   try {
     const sp = await getOutspend(sale.asset_outpoint.txid, sale.asset_outpoint.vout);
     if (sp?.spent) throw new Error('asset outpoint already spent — preauth sale is stale (refresh listings or pick another)');
   } catch (e) {
-    // Re-throw if it's our own "stale" error; otherwise treat API failure as
-    // non-blocking — caller decides whether to proceed under uncertainty.
-    if (/already spent/.test(String(e?.message || ''))) throw e;
+    const msg = String(e?.message || '');
+    if (/already spent/.test(msg)) throw e;
+    // Genuine API hiccup — give the user a real choice. The risk number is
+    // the commit-leg fee (~commitValue from estimateSatsForOp, but we
+    // haven't computed it here yet; use a conservative ~10k sats hint).
+    // Skipped under the _skipApiFailurePrompt flag for batch/loop callers.
+    if (opts && opts._skipApiFailurePrompt) {
+      // Auto-router / sweep: log the skip but proceed. The loop's
+      // per-fill stale-retry will catch most races; a true failure
+      // still hits the recovery prompt downstream.
+      console.warn('[preauth-take] outspend API failure (loop caller skipped prompt):', msg);
+    } else {
+      const proceed = await tacitConfirm({
+        title: 'Can\'t verify listing is still live',
+        body:
+          `The on-chain liveness check for this listing failed (${msg}). This usually means a Bitcoin indexer hiccup — the listing is probably still live, but we can't confirm.\n\n` +
+          `If you proceed and the listing turns out to be stale, you'll lose the commit-leg fee (~700–1,500 sats depending on fee rate). The locked sats are recoverable via Holdings → Stranded preauth-take commits if that happens.\n\n` +
+          `If you abort, no sats are spent. Retry in ~30s once the indexer catches up.`,
+        confirmLabel: 'Proceed anyway',
+        cancelLabel: 'Abort (safe)',
+        kind: 'danger',
+      });
+      if (!proceed) throw new Error('aborted — listing liveness could not be verified, no sats spent');
+    }
   }
 
   const sellerPub = hexToBytes(sale.seller_pubkey);
@@ -22332,14 +22439,39 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
   // already been spent (cancelled, raced by another taker), abort BEFORE
   // locking commit sats. Per-sale failure leaves the rest of the batch
   // valid — caller is expected to retry without the failed sale, OR fall
-  // back to a single-take loop for the rest.
-  const spendStates = await Promise.all(expanded.map(e =>
-    getOutspend(e.sale.asset_outpoint.txid, e.sale.asset_outpoint.vout).catch(() => null),
-  ));
+  // back to a single-take loop for the rest. API failures are tracked
+  // separately so we can prompt the user with the explicit risk number
+  // instead of silently proceeding into a likely-stale batch.
+  const spendStates = [];
+  let _apiFailureCount = 0;
+  for (const e of expanded) {
+    try {
+      spendStates.push(await getOutspend(e.sale.asset_outpoint.txid, e.sale.asset_outpoint.vout));
+    } catch {
+      spendStates.push(null);
+      _apiFailureCount++;
+    }
+  }
   for (let i = 0; i < N; i++) {
     if (spendStates[i]?.spent) {
       throw new Error(`sale ${expanded[i].saleIdHex.slice(0,8)} already spent — refresh listings`);
     }
+  }
+  if (_apiFailureCount > 0) {
+    // Same prompt as the single-take path. Risk number scales with N: a
+    // failed batch loses one commit fee (single tx), not N — but the
+    // sat-value at risk is still meaningful, so disclose it.
+    const proceed = await tacitConfirm({
+      title: 'Can\'t verify all listings are still live',
+      body:
+        `${_apiFailureCount} of ${N} liveness checks failed (Bitcoin indexer hiccup). The listings are probably still live, but we can't confirm.\n\n` +
+        `If you proceed and any one of them turns out to be stale, the entire batched tx will fail and you'll lose ~700–1,500 sats in commit-leg fees. The locked sats are recoverable via Holdings → Stranded preauth-take commits if that happens.\n\n` +
+        `If you abort, no sats are spent. Retry in ~30s once the indexer catches up.`,
+      confirmLabel: 'Proceed anyway',
+      cancelLabel: 'Abort (safe)',
+      kind: 'danger',
+    });
+    if (!proceed) throw new Error('aborted — batch liveness could not be verified, no sats spent');
   }
 
   // Pedersen / kernel state.
@@ -28492,6 +28624,42 @@ function setupMixerHandlers() {
         _refreshCtacDepOptions();
         _refreshCtacWithOptions();
         _renderCtacPosList();
+        // Post-deposit backup gate. The mint blinding is random per-deposit
+        // and stored ONLY in this browser's localStorage — unlike AMM-derived
+        // UTXOs whose blindings re-derive from priv key alone (shipped at
+        // e1f4a47). Wiping the browser without a backup loses access to this
+        // UTXO. Modal fires unconditionally; explicit choice required.
+        try {
+          const wantsExport = await tacitConfirm({
+            title: 'Back up cBTC.tac position record',
+            kind: 'danger',
+            body:
+              `This deposit minted a cBTC.tac UTXO at ${result.revealTxid.slice(0, 16)}…:0.\n\n` +
+              `The mint blinding is random per deposit and lives ONLY in this browser.\n` +
+              `It is NOT recoverable from your priv key alone (unlike AMM positions).\n\n` +
+              `If you wipe browser data without a JSON backup, the BTC underneath is\n` +
+              `unrecoverable.\n\n` +
+              `Download a backup now? You can re-import on any device.`,
+            confirmLabel: 'Download backup JSON',
+            cancelLabel: `I have a backup`,
+          });
+          if (wantsExport) {
+            const blob = exportCtacPositionRecordsAsBlob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `tacit-cbtc-tac-positions-${NET.name}-${Date.now()}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 10_000);
+          } else {
+            // User asserts they have a backup — stamp the timestamp so the
+            // "last-export" gate doesn't keep re-firing this modal for the
+            // same already-acknowledged-good state.
+            try { localStorage.setItem(`tacit-cbtc-tac-last-export-v1:${NET.name}`, String(Date.now())); } catch {}
+          }
+        } catch (e) { console.warn('post-deposit backup gate failed:', e?.message || e); }
       } catch (e) {
         if (ctacDepOut) ctacDepOut.textContent = `✗ deposit failed: ${e?.message || e}`;
       } finally {
@@ -58029,6 +58197,7 @@ function _wireSwapTile(scope) {
         return /already spent|expired|stale|refresh listings|preauth sale not found|intent not found|bid (already claimed|expired|remaining insufficient|not found)|claim.*expired|did not fulfil/i.test(s);
       };
       let _perFillStaleRetryUsed = false;
+      let _midSwapStaleRetryUsed = false;
       let i = 0;
       while (i < result.plan.length) {
         if (_batchedSet.has(i)) { i++; continue; }
@@ -58078,12 +58247,17 @@ function _wireSwapTile(scope) {
         } catch (e) {
           if (_tickHandle) { clearInterval(_tickHandle); _tickHandle = null; }
           const msg = e?.message || String(e);
-          // Pre-broadcast stale retry: only when no fills have committed
-          // yet. The batch path above covers ≥2-preauth swaps; this
-          // catches single-preauth swaps, all-intent swaps, and any
-          // mixed route whose first non-batched item went stale. The
-          // `filled === 0` guard keeps the retry out of mid-swap state
-          // (replanning then would race already-broadcast commits).
+          // Pre-broadcast stale retry. Two tiers:
+          //   (a) filled === 0: full re-plan against the original target.
+          //       Safe because no fills have committed; the new plan
+          //       replaces the old one wholesale.
+          //   (b) filled > 0 (NEW): re-plan against the REMAINING target
+          //       (original target minus what's already filled), pick up
+          //       where we left off without re-broadcasting earlier
+          //       fills. Buy-side only — sell-side requires symmetric
+          //       remaining-sats arithmetic which is more error-prone.
+          //       Each tier gets its own one-shot budget so a thrashing
+          //       orderbook can't loop forever.
           if (filled === 0 && _isStaleErrPerFill(msg) && !_perFillStaleRetryUsed) {
             _perFillStaleRetryUsed = true;
             const _noun = dir === 'buy' ? 'listing' : 'bid';
@@ -58116,6 +58290,52 @@ function _wireSwapTile(scope) {
             lastErr = dir === 'buy'
               ? 'a listing was just taken — no liquidity left after refresh. Try again in a moment.'
               : 'the matching bids just changed — no fillable bids left after refresh. Try again in a moment.';
+            progressItems[i].status = 'failed';
+            progressItems[i].err = lastErr;
+            _renderSwapProgress(progressEl, progressItems);
+            break;
+          }
+          // Mid-swap remaining-target re-plan (buy only). Previously a
+          // stale fill at i>0 broke the swap; the user got "Partial: 2/5"
+          // and had to manually re-Swap for the missing 3. Now we
+          // re-plan the remaining 3 against the refreshed orderbook
+          // and continue inline.
+          if (dir === 'buy' && filled > 0 && _isStaleErrPerFill(msg) && !_midSwapStaleRetryUsed) {
+            _midSwapStaleRetryUsed = true;
+            // Sum the AMOUNT already filled (not sats); the remaining
+            // target is the original amt minus what we got.
+            const _alreadyAmt = result.plan
+              .slice(0, i)
+              .reduce((s, c) => s + (typeof c.amt === 'bigint' ? c.amt : BigInt(c.amt || 0)), 0n);
+            const _remainingAmt = amt > _alreadyAmt ? (amt - _alreadyAmt) : 0n;
+            if (_remainingAmt > 0n) {
+              actionBtn.textContent = `a listing just changed mid-swap — re-planning remaining…`;
+              progressItems[i].status = 'queued';
+              _renderSwapProgress(progressEl, progressItems);
+              try { invalidateMarketCache(); } catch {}
+              let _refreshed = false;
+              try { await fetchMarketDataDeduped(); _refreshed = true; } catch {}
+              const _continueResult = _refreshed ? planBuyExactOut(_remainingAmt) : null;
+              if (_continueResult && Array.isArray(_continueResult.plan) && _continueResult.plan.length > 0) {
+                // Splice the new plan in place of the stale tail. Previous
+                // fills (0..i-1) stay as 'done' rows; new fills get
+                // queued at index i onward.
+                result.plan.splice(i, result.plan.length - i, ..._continueResult.plan);
+                progressItems.splice(i, progressItems.length - i);
+                for (let idx = 0; idx < _continueResult.plan.length; idx++) {
+                  const cc = _continueResult.plan[idx];
+                  progressItems.push({
+                    label: `${i + idx + 1}. ${fmtAssetAmount(cc.amt, decimals)} ${ticker} @ ${fmtUnitPriceSats(cc.u)} sats/${ticker} — ${cc.ps.toLocaleString()} sats`,
+                    status: 'queued', txid: null,
+                  });
+                }
+                _renderSwapProgress(progressEl, progressItems);
+                continue;  // retry iteration `i` with the refreshed plan
+              }
+            }
+            // Re-plan found no remaining liquidity OR target is exhausted.
+            // Treat as a soft partial-fill end-state, not a hard error.
+            lastErr = `mid-swap re-plan exhausted: ${msg}`;
             progressItems[i].status = 'failed';
             progressItems[i].err = lastErr;
             _renderSwapProgress(progressEl, progressItems);
@@ -64122,6 +64342,7 @@ export {
   buildSwapVarIntentMsg,
   deriveSwapVarReceiptScalar, deriveSwapVarChangeScalar,
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,
+  exportCtacPositionRecordsAsBlob, getCtacBackupLastExportTs,
   // cBTC.tac variant asset_id derivation (must match worker byte-for-byte).
   ctacVariantAssetId,
   // Asset-registry lookup (returns synthetic meta for cBTC.tac canonical tiers).
