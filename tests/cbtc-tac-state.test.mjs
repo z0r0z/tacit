@@ -354,9 +354,132 @@ group('ctacScanSlashDetected (chain-probe stub)');
   // No corresponding position record exists
   const before = env.REGISTRY_KV._has(worker.ctacActivePositionKey(network, orphan));
   ok('orphan sentinel exists pre-scan', before);
-  await worker.ctacScanSlashDetected(env, network, { maxOps: 10 });
+  await worker.ctacScanSlashDetected(env, network, { maxOps: 10, outspendProbe: async () => null, tipHeight: 1000 });
   const after = env.REGISTRY_KV._has(worker.ctacActivePositionKey(network, orphan));
   ok('orphan sentinel cleaned up post-scan', !after);
+}
+
+// ============== group: leaf-lookup index ==============
+group('slotLeafLookup (cBTC.zk leaf_hash → slot metadata)');
+
+{
+  const lh = bytesToHex(sha256(new TextEncoder().encode('ll-1')));
+  ok('lookup empty before put',
+    (await worker.slotLeafLookupGet(env, network, lh)) === null);
+  await worker.slotLeafLookupPut(env, network, lh, {
+    asset_id: 'ab'.repeat(32),
+    denom_sats: '100000000',
+    k_btc_xonly: 'cd'.repeat(32),
+    mint_txid: 'ef'.repeat(32),
+    mint_height: 500,
+    network,
+  });
+  const v = await worker.slotLeafLookupGet(env, network, lh);
+  ok('lookup round-trips asset_id', v && v.asset_id === 'ab'.repeat(32));
+  ok('lookup round-trips mint_txid', v && v.mint_txid === 'ef'.repeat(32));
+  ok('lookup round-trips k_btc_xonly', v && v.k_btc_xonly === 'cd'.repeat(32));
+}
+
+// ============== group: chain-probe helper ==============
+group('chainOutspendProbe (logic, with mocked apiJson)');
+
+{
+  // Sanity: malformed inputs return null
+  ok('rejects malformed txid', (await worker.chainOutspendProbe({ REGISTRY_KV: env.REGISTRY_KV }, 'signet', 'not-hex', 0, 100)) === null);
+  ok('rejects negative vout', (await worker.chainOutspendProbe({ REGISTRY_KV: env.REGISTRY_KV }, 'signet', 'ab'.repeat(32), -1, 100)) === null);
+  ok('rejects non-integer vout', (await worker.chainOutspendProbe({ REGISTRY_KV: env.REGISTRY_KV }, 'signet', 'ab'.repeat(32), 1.5, 100)) === null);
+}
+
+// ============== group: SLASH_DETECTED end-to-end with injected probe ==============
+group('ctacScanSlashDetected — full path with mocked chain probe');
+
+{
+  // Set up a position with all the slot info SLASH needs
+  const leaf = bytesToHex(sha256(new TextEncoder().encode('slash-e2e-1')));
+  const mintTxid = 'aa'.repeat(32);
+  await worker.ctacPutPosition(env, network, {
+    state: 'active', target_leaf_hash: leaf,
+    slot_asset_id: 'bb'.repeat(32),
+    slot_denom_sats: '100000000',
+    slot_k_btc_xonly: 'cc'.repeat(32),
+    slot_mint_txid: mintTxid,
+    mint_amount: '100000000',
+    bond_amount_tac: '200000000000',
+    depositor_recovery_pk: 'dd'.repeat(33),
+    mint_recipient_commit: 'ee'.repeat(33),
+    initial_twap: '1000', initial_ratio_thousandths: 2000,
+    deposit_height: 50, deposit_txid: 'ff'.repeat(32),
+    network,
+  });
+  await worker.ctacMarkActive(env, network, leaf);
+
+  // Case 1: outpoint still unspent → no slash
+  const r1 = await worker.ctacScanSlashDetected(env, network, {
+    maxOps: 10,
+    tipHeight: 1000,
+    outspendProbe: async () => ({ spent: false }),
+  });
+  ok('unspent UTXO → no slash', r1.slashed === 0);
+  ok('position still active after unspent probe',
+    (await worker.ctacGetPosition(env, network, leaf))?.state === 'active');
+
+  // Case 2: spent in mempool only (depth 0) → no slash
+  const r2 = await worker.ctacScanSlashDetected(env, network, {
+    maxOps: 10,
+    tipHeight: 1000,
+    outspendProbe: async () => ({ spent: true, depth: 0, spending_txid: 'cc'.repeat(32) }),
+  });
+  ok('mempool-only spend → no slash', r2.slashed === 0);
+
+  // Case 3: spent at depth 5 (below REORG_SAFETY_DEPTH=6) → no slash yet
+  const r3 = await worker.ctacScanSlashDetected(env, network, {
+    maxOps: 10,
+    tipHeight: 1000,
+    outspendProbe: async () => ({ spent: true, depth: 5, spending_txid: 'cc'.repeat(32), spent_at_height: 996 }),
+  });
+  ok('depth=5 < REORG_SAFETY_DEPTH=6 → no slash', r3.slashed === 0);
+  ok('position still active after sub-depth probe',
+    (await worker.ctacGetPosition(env, network, leaf))?.state === 'active');
+
+  // Case 4: spent at depth ≥ 6 → SLASH fires
+  const insurePoolBefore = await worker.ctacGetInsurancePool(env, network);
+  const r4 = await worker.ctacScanSlashDetected(env, network, {
+    maxOps: 10,
+    tipHeight: 1000,
+    outspendProbe: async () => ({ spent: true, depth: 6, spending_txid: 'cc'.repeat(32), spent_at_height: 995 }),
+  });
+  ok('depth=6 = REORG_SAFETY_DEPTH → SLASH', r4.slashed === 1);
+  const posAfter = await worker.ctacGetPosition(env, network, leaf);
+  ok('position state = rugged', posAfter?.state === 'rugged');
+  ok('rugged_at_height recorded', posAfter?.rugged_at_height === 995);
+  ok('rug_spending_txid recorded', posAfter?.rug_spending_txid === 'cc'.repeat(32));
+  ok('insurance pool credited with bond_amount_tac',
+    (await worker.ctacGetInsurancePool(env, network)) === insurePoolBefore + 200000000000n);
+  ok('active sentinel removed after slash',
+    !env.REGISTRY_KV._has(worker.ctacActivePositionKey(network, leaf)));
+}
+
+{
+  // Probe error (network failure) → no state change, no slash
+  const leaf = bytesToHex(sha256(new TextEncoder().encode('slash-err')));
+  await worker.ctacPutPosition(env, network, {
+    state: 'active', target_leaf_hash: leaf,
+    slot_asset_id: 'aa'.repeat(32), slot_denom_sats: '100000000',
+    slot_k_btc_xonly: 'bb'.repeat(32), slot_mint_txid: 'cc'.repeat(32),
+    mint_amount: '100000000', bond_amount_tac: '50000000000',
+    depositor_recovery_pk: 'dd'.repeat(33), mint_recipient_commit: 'ee'.repeat(33),
+    initial_twap: '1000', initial_ratio_thousandths: 2000,
+    deposit_height: 50, deposit_txid: 'ff'.repeat(32), network,
+  });
+  await worker.ctacMarkActive(env, network, leaf);
+  const r = await worker.ctacScanSlashDetected(env, network, {
+    maxOps: 10,
+    tipHeight: 1000,
+    outspendProbe: async () => null, // fetch error
+  });
+  ok('probe error → 0 slashed, no state change', r.slashed === 0);
+  ok('position still active after probe error',
+    (await worker.ctacGetPosition(env, network, leaf))?.state === 'active');
 }
 
 // ============== summary ==============

@@ -125,8 +125,12 @@ const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §
 const T_SLOT_MINT          = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
-const T_SLOT_FRACTIONALIZE = 0x46; // slot → shielded shares (SPEC §5.25, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
-const T_SLOT_RECONSOLIDATE = 0x47; // shielded shares → slot (SPEC §5.26, SPEC-CBTC-ZK-AMOUNT-AMENDMENT)
+const T_SLOT_SPLIT         = 0x46; // atomic 1→N slot split, ΣD_new = D_old (SPEC §5.24, SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT)
+// 0x47 reserved for SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT T_SLOT_MERGE.
+// 0x48 reserved for T_SLOT_NOTE.
+// 0x4D-0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
+// machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
+// not shipped on mainnet).
 // 0x49–0x4C: SPEC-CBTC-TAC-AMENDMENT (cBTC.tac LP-shaped wrapped BTC).
 const T_CBTC_TAC_DEPOSIT     = 0x49; // LP-shaped mint: cBTC.zk slot + TAC → cBTC.tac (SPEC §5.36)
 const T_CBTC_TAC_WITHDRAW    = 0x4A; // LP-shaped burn: cBTC.tac → cBTC.zk slot + TAC (SPEC §5.37)
@@ -736,6 +740,75 @@ async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
   return BigInt(Math.round(mean));
 }
 
+// ============== CHAIN OUTSPEND PROBE (reusable across SLASH + coverage) ==============
+//
+// Returns whether a Bitcoin UTXO has been spent and how deep its spending
+// tx is buried. Used by:
+//   - ctacScanSlashDetected (rug detection for cBTC.tac positions)
+//   - per-slot coverage check (SPEC-CBTC-ZK §4.2.x.2 — future caller)
+//
+// Read-only. Hits the same Esplora-shaped /tx/<txid>/outspend/<vout>
+// endpoint that the public /chain proxy exposes. CF's edge-cache (1h TTL
+// on confirmed outspends) absorbs repeated probes across cron ticks.
+//
+// Returns:
+//   { spent: false }                                   — outpoint still unspent
+//   { spent: true, depth: 0 }                          — spent, in mempool only
+//   { spent: true, depth: N, spending_txid, spent_at_height } — confirmed at depth N
+//   null                                               — fetch error (caller retries next tick)
+async function chainOutspendProbe(env, network, txid, vout, tipHeight) {
+  if (!/^[0-9a-f]{64}$/i.test(txid)) return null;
+  if (!Number.isInteger(vout) || vout < 0) return null;
+  let j;
+  try {
+    j = await apiJson(env, `/tx/${txid}/outspend/${vout}`, { timeoutMs: 10_000 }, network);
+  } catch { return null; }
+  if (!j || typeof j !== 'object') return null;
+  if (j.spent !== true) return { spent: false };
+  const status = j.status || {};
+  if (status.confirmed !== true) {
+    // Mempool spend — counts as spent at depth 0. Caller decides whether
+    // to require depth ≥ REORG_SAFETY_DEPTH.
+    return { spent: true, depth: 0, spending_txid: typeof j.txid === 'string' ? j.txid : null };
+  }
+  const spentAtHeight = Number.isInteger(status.block_height) ? status.block_height : null;
+  if (spentAtHeight === null || !Number.isInteger(tipHeight)) {
+    return { spent: true, depth: 1, spending_txid: typeof j.txid === 'string' ? j.txid : null };
+  }
+  const depth = Math.max(0, tipHeight - spentAtHeight + 1);
+  return {
+    spent: true,
+    depth,
+    spending_txid: typeof j.txid === 'string' ? j.txid : null,
+    spent_at_height: spentAtHeight,
+  };
+}
+
+// ============== cBTC.zk LEAF-LOOKUP INDEX ==============
+//
+// Maps a cBTC.zk slot leaf_hash to its full slot metadata so downstream
+// indexer logic (cBTC.tac DEPOSIT validator, SLASH monitor, future
+// per-leaf coverage check) can look up the slot's (asset_id, denom_sats,
+// k_btc_xonly, mint_txid) from leaf_hash alone — without scanning every
+// pool's leaves.
+//
+// Written at T_SLOT_MINT confirmation (single put per mint, idempotent on
+// leaf_hash uniqueness — Poseidon₃ collision negligible).
+//
+// Key:   leafidx:<network?>:<leaf_hash_hex>
+// Value: { asset_id, denom_sats, k_btc_xonly, mint_txid, mint_height, network }
+function slotLeafLookupKey(network, leafHashHex) {
+  return network === 'signet'
+    ? `leafidx:${leafHashHex}`
+    : `leafidx:${network}:${leafHashHex}`;
+}
+async function slotLeafLookupGet(env, network, leafHashHex) {
+  return env.REGISTRY_KV.get(slotLeafLookupKey(network, leafHashHex), 'json');
+}
+async function slotLeafLookupPut(env, network, leafHashHex, value) {
+  await env.REGISTRY_KV.put(slotLeafLookupKey(network, leafHashHex), JSON.stringify(value));
+}
+
 // ============== SLASH_DETECTED MONITOR (SPEC §5.39.1-2) ==============
 //
 // Enumerates active cBTC.tac positions and checks each one's slot K_btc
@@ -750,66 +823,65 @@ async function ctacScanSlashDetected(env, network, opts = {}) {
   const maxOps = opts.maxOps || 25;
   const prefix = ctacActivePositionPrefix(network);
   const list = await env.REGISTRY_KV.list({ prefix, limit: maxOps });
+  if (!list.keys.length) return { scanned: 0, slashed: 0 };
+
+  // Tip height fetched once for the batch — all per-position depth math
+  // uses the same anchor for consistency. If tip fetch fails the whole
+  // scan no-ops (caller retries next tick).
+  let tipHeight;
+  if (opts.tipHeight !== undefined) {
+    tipHeight = opts.tipHeight;  // test injection
+  } else {
+    try {
+      tipHeight = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, network)).trim(), 10);
+    } catch { return { scanned: list.keys.length, slashed: 0, error: 'tip-fetch-failed' }; }
+  }
+  if (!Number.isInteger(tipHeight)) return { scanned: list.keys.length, slashed: 0, error: 'tip-non-integer' };
+
+  // Allow test injection of the chain-probe function so unit tests
+  // don't need to mock the Esplora /tx/<txid>/outspend/<vout> endpoint
+  // shape. Production path uses the real chainOutspendProbe.
+  const probe = opts.outspendProbe || chainOutspendProbe;
+
   let slashed = 0;
   for (const k of list.keys) {
-    // Key format: "ctac-pos-active:<network?>:<leaf_hash_hex>" — extract leaf hash.
     const leafHashHex = k.name.split(':').pop();
     const position = await ctacGetPosition(env, network, leafHashHex);
     if (!position) {
-      // Active sentinel orphaned (state-record was deleted/corrupted).
-      // Best-effort cleanup of the sentinel and continue.
       await ctacUnmarkActive(env, network, leafHashHex);
       continue;
     }
     if (position.state !== 'active') {
-      // State changed via DEPOSIT/WITHDRAW/FORCE_CLOSE handler; clean sentinel.
       await ctacUnmarkActive(env, network, leafHashHex);
       continue;
     }
+    if (!position.slot_mint_txid) continue;  // older record without slot info cached
 
-    // Look up the slot record (created at T_SLOT_MINT) to find K_btc xonly.
-    // Slot registry is keyed by (network, asset_id, denom, K_btc_xonly), so
-    // we need to look up by leaf_hash → recipient_commit → derive K_btc.
-    // The position record carries mint_recipient_commit; for v2 (two-key)
-    // slots, K_btc is published explicitly in the original mint envelope's
-    // slot-registry record. We need to find that record.
-    //
-    // Bootstrap: position records should include slot_k_btc_xonly directly,
-    // populated at deposit time. Until that's added at the deposit handler,
-    // we skip slot lookups for older records and write the field on the
-    // next deposit cycle.
-    const kBtcXOnlyHex = position.slot_k_btc_xonly;
-    if (!kBtcXOnlyHex) continue;  // older record without k_btc cached
-
-    // Chain observation: is the BTC at this slot still unspent?
-    // The slot UTXO outpoint is (deposit_or_mint_txid, vout=0) per SPEC §5.21.2.
-    // We track the mint_txid in the slot-registry record (populated by T_SLOT_MINT).
-    // Defer the actual chain probe via getOutspend to the same path the
-    // wrapper-coverage check uses (avoids duplicating Esplora-fetch logic).
-    let isSpent = false, spentBuriedAt = null;
+    // Chain probe: is the slot's K_btc UTXO at (mint_txid, vout=0) still unspent?
+    let result;
     try {
-      // For now: stub the chain check. The full implementation would call
-      // a `chainOutspendBuriedDeep(env, network, mintTxid, 0, REORG_SAFETY_DEPTH)`
-      // helper that returns true if the UTXO is spent in a tx with depth ≥ 6.
-      // That helper is part of the wrapper-coverage infrastructure and
-      // wiring it here is a forthcoming separate session.
-      // Until then: monitor returns 0 slashed; positions stay 'active' until
-      // the chain-probe helper lands.
-      continue;
+      result = await probe(env, network, position.slot_mint_txid, 0, tipHeight);
     } catch { continue; }
+    if (result === null) continue;  // fetch error — retry next tick
+    if (!result.spent) continue;    // UTXO still alive, position remains active
 
-    // unreachable until chain-probe helper is wired
-    /* eslint-disable no-unreachable */
-    if (isSpent && spentBuriedAt && spentBuriedAt >= CTAC_REORG_SAFETY_DEPTH) {
-      // SLASH_DETECTED: slash bond TAC into insurance pool
-      await ctacAddInsurancePool(env, network, BigInt(position.bond_amount_tac));
-      position.state = 'rugged';
-      position.rugged_at_height = spentBuriedAt;
-      await ctacPutPosition(env, network, position);
-      await ctacUnmarkActive(env, network, leafHashHex);
-      slashed++;
-    }
-    /* eslint-enable no-unreachable */
+    // SPEC §5.39.1: rug requires the spend to be buried under REORG_SAFETY_DEPTH.
+    // Honest depositors whose legitimate WITHDRAW gets reorged-out have 6 blocks
+    // to re-broadcast before slashing fires.
+    if (result.depth < CTAC_REORG_SAFETY_DEPTH) continue;
+
+    // Also: legitimate exits (WITHDRAW / FORCE_CLOSE) flip the position state
+    // BEFORE the K_btc spend confirms, so by the time we observe the K_btc
+    // spend the position would have moved out of 'active' state. If we're
+    // here and the position is still 'active' at depth ≥ REORG_SAFETY_DEPTH
+    // with K_btc spent, no legitimate envelope claimed this exit. Rug.
+    await ctacAddInsurancePool(env, network, BigInt(position.bond_amount_tac));
+    position.state = 'rugged';
+    position.rugged_at_height = result.spent_at_height || (tipHeight - result.depth + 1);
+    position.rug_spending_txid = result.spending_txid || null;
+    await ctacPutPosition(env, network, position);
+    await ctacUnmarkActive(env, network, leafHashHex);
+    slashed++;
   }
   return { scanned: list.keys.length, slashed };
 }
@@ -4988,113 +5060,88 @@ function decodeTShareSlashClaimPayload(payload) {
   };
 }
 
-// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.25 T_SLOT_FRACTIONALIZE — slot → shielded shares.
-// Variable-size payload: 204-byte fixed header + N × 33-byte share commits +
-// 64-byte share kernel sig + 2-byte proof_len + proof bytes.
-function decodeTSlotFractionalizePayload(payload) {
+// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.24 — T_SLOT_SPLIT decoder.
+// Consumes one slot of denom D_old and produces N (2..16) new slots whose
+// denominations sum to D_old (Bitcoin pays its own miner fee from the
+// difference). The old r_leaf becomes public on chain; the old slot is
+// REDEEMED. Each new slot has fresh (secret_i, ν_i, denom_new_i) and
+// commits at new_recipient_commit_i = denom_new_i·H + r_pedersen_new_i·G.
+function decodeTSlotSplitPayload(payload) {
   if (!payload) return null;
-  if (payload[0] !== T_SLOT_FRACTIONALIZE) return null;
-  const FIXED_HEADER = 2 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 1;
-  if (payload.length < FIXED_HEADER) return null;
+  if (payload[0] !== T_SLOT_SPLIT) return null;
+  // opcode(1)+net(1)+asset_id_old(32)+denom_old_LE(8)+old_merkle_root(32)
+  // +old_nullifier_hash(32)+old_recipient_commit(33)+old_r_leaf(32)
+  // +old_bind_hash(32)+old_proof_length(2) = 205-byte prefix; +min 1-byte
+  // proof + n_outputs(1) + min 2*105 outputs + pubkey(33) + sig(64).
+  const FIXED_PRE_PROOF = 1 + 1 + 32 + 8 + 32 + 32 + 33 + 32 + 32 + 2;
+  if (payload.length < FIXED_PRE_PROOF + 1 + 1 + 2 * 105 + 33 + 64) return null;
   let p = 1;
   const networkTag = payload[p]; p += 1;
   if (networkTag > 2) return null;
-  const assetIdBytes = payload.slice(p, p + 32); p += 32;
+  const assetIdOldBytes = payload.slice(p, p + 32); p += 32;
   const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
-  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
+  const denomOld = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
   p += 8;
-  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
-  const merkleRootBytes = payload.slice(p, p + 32); p += 32;
-  const nullifierHashBytes = payload.slice(p, p + 32); p += 32;
-  const recipientCommitBytes = payload.slice(p, p + 33); p += 33;
-  try { compressedPointFromHex(bytesToHex(recipientCommitBytes)); } catch { return null; }
-  const rLeafBytes = payload.slice(p, p + 32); p += 32;
-  const bindHashBytes = payload.slice(p, p + 32); p += 32;
-  const shareCount = payload[p]; p += 1;
-  if (shareCount < 1 || shareCount > 16) return null;
-  if (payload.length < p + shareCount * 33 + 64 + 2) return null;
-  const shareCommitsBytes = [];
-  for (let i = 0; i < shareCount; i++) {
-    const sc = payload.slice(p, p + 33); p += 33;
-    try { compressedPointFromHex(bytesToHex(sc)); } catch { return null; }
-    shareCommitsBytes.push(sc);
-  }
-  const shareKernelSigBytes = payload.slice(p, p + 64); p += 64;
-  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+  if (denomOld <= 0n || denomOld >= (1n << BigInt(N_BITS))) return null;
+  const oldMerkleRootBytes = payload.slice(p, p + 32); p += 32;
+  const oldNullifierHashBytes = payload.slice(p, p + 32); p += 32;
+  const oldRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(oldRecipientCommitBytes)); } catch { return null; }
+  const oldRLeafBytes = payload.slice(p, p + 32); p += 32;
+  const oldBindHashBytes = payload.slice(p, p + 32); p += 32;
+  const oldProofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
   p += 2;
-  if (proofLen === 0) return null;
-  if (p + proofLen !== payload.length) return null;
-  const proof = payload.slice(p, p + proofLen);
-  // Re-derive bind_hash from canonical fields (reuses the mixer's
-  // tacit-withdraw-bind-v1 domain). Indexer-deterministic rejection of
-  // tampered envelopes is critical for cross-implementation consensus on
-  // the spent-nullifier ledger.
-  const expectedBindHash = _computeWithdrawBindHash(
-    assetIdBytes, denomination, nullifierHashBytes, recipientCommitBytes, rLeafBytes,
+  if (oldProofLen === 0) return null;
+  if (p + oldProofLen + 1 + 2 * 105 + 33 + 64 > payload.length) return null;
+  const oldProof = payload.slice(p, p + oldProofLen); p += oldProofLen;
+  // Bind-hash check reuses tacit-withdraw-bind-v1 domain per §5.24.3 (full
+  // T_SLOT_BURN-equivalent validation of the old leaf, minus the BTC payout).
+  const expectedOldBind = _computeWithdrawBindHash(
+    assetIdOldBytes, denomOld, oldNullifierHashBytes, oldRecipientCommitBytes, oldRLeafBytes,
   );
-  for (let i = 0; i < 32; i++) if (expectedBindHash[i] !== bindHashBytes[i]) return null;
-  return {
-    kind: 'slot_fractionalize',
-    network_tag: networkTag,
-    asset_id: bytesToHex(assetIdBytes),
-    denomination: denomination.toString(),
-    merkle_root: bytesToHex(merkleRootBytes),
-    nullifier_hash: bytesToHex(nullifierHashBytes),
-    recipient_commitment: bytesToHex(recipientCommitBytes),
-    r_leaf: bytesToHex(rLeafBytes),
-    bind_hash: bytesToHex(bindHashBytes),
-    share_count: shareCount,
-    share_commits: shareCommitsBytes.map(b => bytesToHex(b)),
-    share_kernel_sig: bytesToHex(shareKernelSigBytes),
-    proof: bytesToHex(proof),
-  };
-}
-
-// SPEC-CBTC-ZK-AMOUNT-AMENDMENT §5.26 T_SLOT_RECONSOLIDATE — shielded shares → slot.
-function decodeTSlotReconsolidatePayload(payload) {
-  if (!payload) return null;
-  if (payload[0] !== T_SLOT_RECONSOLIDATE) return null;
-  const FIXED_HEADER = 2 + 32 + 8 + 32 + 1;
-  if (payload.length < FIXED_HEADER) return null;
-  let p = 1;
-  const networkTag = payload[p]; p += 1;
-  if (networkTag > 2) return null;
-  const assetIdBytes = payload.slice(p, p + 32); p += 32;
-  const denomView = new DataView(payload.buffer, payload.byteOffset + p, 8);
-  const denomination = (BigInt(denomView.getUint32(4, true)) << 32n) | BigInt(denomView.getUint32(0, true));
-  p += 8;
-  if (denomination <= 0n || denomination >= (1n << BigInt(N_BITS))) return null;
-  const targetLeafHashBytes = payload.slice(p, p + 32); p += 32;
-  const shareCount = payload[p]; p += 1;
-  if (shareCount < 1 || shareCount > 16) return null;
-  if (payload.length < p + shareCount * 32 + shareCount * 33 + 64 + 2) return null;
-  const shareNullifiersBytes = [];
-  for (let i = 0; i < shareCount; i++) {
-    shareNullifiersBytes.push(payload.slice(p, p + 32)); p += 32;
+  for (let i = 0; i < 32; i++) if (expectedOldBind[i] !== oldBindHashBytes[i]) return null;
+  const nOutputs = payload[p]; p += 1;
+  if (nOutputs < 2 || nOutputs > 16) return null;
+  if (p + nOutputs * 105 + 33 + 64 !== payload.length) return null;
+  let sumDenomNew = 0n;
+  const outputs = [];
+  for (let i = 0; i < nOutputs; i++) {
+    const assetIdNewBytes = payload.slice(p, p + 32); p += 32;
+    const dnView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+    const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
+    p += 8;
+    if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
+    const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
+    try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
+    const newLeafHashBytes = payload.slice(p, p + 32); p += 32;
+    sumDenomNew += denomNew;
+    outputs.push({
+      asset_id_new: bytesToHex(assetIdNewBytes),
+      denom_new: denomNew.toString(),
+      new_recipient_commit: bytesToHex(newRecipientCommitBytes),
+      new_leaf_hash: bytesToHex(newLeafHashBytes),
+    });
   }
-  const shareCommitsBytes = [];
-  for (let i = 0; i < shareCount; i++) {
-    const sc = payload.slice(p, p + 33); p += 33;
-    try { compressedPointFromHex(bytesToHex(sc)); } catch { return null; }
-    shareCommitsBytes.push(sc);
-  }
-  const shareKernelSigBytes = payload.slice(p, p + 64); p += 64;
-  const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
-  p += 2;
-  if (proofLen === 0) return null;
-  if (p + proofLen !== payload.length) return null;
-  const proof = payload.slice(p, p + proofLen);
+  // §5.24.3 conservation: denom_old ≥ Σ denom_new (Bitcoin pays its fee
+  // from the difference, OR the user funds the fee from a separate vin[1+]).
+  if (sumDenomNew > denomOld) return null;
+  const oldOwnerPubkeyBytes = payload.slice(p, p + 33); p += 33;
+  const oldOwnerSigBytes = payload.slice(p, p + 64); p += 64;
   return {
-    kind: 'slot_reconsolidate',
+    kind: 'slot_split',
     network_tag: networkTag,
-    asset_id: bytesToHex(assetIdBytes),
-    denomination: denomination.toString(),
-    target_leaf_hash: bytesToHex(targetLeafHashBytes),
-    share_count: shareCount,
-    share_nullifiers: shareNullifiersBytes.map(b => bytesToHex(b)),
-    share_commits: shareCommitsBytes.map(b => bytesToHex(b)),
-    share_kernel_sig: bytesToHex(shareKernelSigBytes),
-    proof: bytesToHex(proof),
+    asset_id_old: bytesToHex(assetIdOldBytes),
+    denom_old: denomOld.toString(),
+    old_merkle_root: bytesToHex(oldMerkleRootBytes),
+    old_nullifier_hash: bytesToHex(oldNullifierHashBytes),
+    old_recipient_commitment: bytesToHex(oldRecipientCommitBytes),
+    old_r_leaf: bytesToHex(oldRLeafBytes),
+    old_bind_hash: bytesToHex(oldBindHashBytes),
+    old_proof: bytesToHex(oldProof),
+    n_outputs: nOutputs,
+    outputs,
+    old_owner_pubkey: bytesToHex(oldOwnerPubkeyBytes),
+    old_owner_sig: bytesToHex(oldOwnerSigBytes),
   };
 }
 
@@ -12003,6 +12050,17 @@ async function scanForEtches(env, network) {
           status: 'live',
           network,
         }));
+        // Leaf-lookup index: leaf_hash → slot metadata. Lets downstream
+        // indexer logic (cBTC.tac DEPOSIT, SLASH monitor, future coverage
+        // checks) find the slot's mint_txid + K_btc from leaf_hash alone.
+        await slotLeafLookupPut(env, network, sm.leaf_hash, {
+          asset_id: sm.asset_id,
+          denom_sats: sm.denomination,
+          k_btc_xonly: xonlyHex,
+          mint_txid: tx.txid,
+          mint_height: h,
+          network,
+        });
         found++;
       } else if (decoded.opcode === T_SLOT_BURN) {
         // SPEC-CBTC-ZK §5.22. Self-custody-slot atomic redeem. The full
@@ -12185,6 +12243,13 @@ async function scanForEtches(env, network) {
         const existingPos = await ctacGetPosition(env, network, dep.target_leaf_hash);
         if (existingPos) continue;
 
+        // Resolve the underlying cBTC.zk slot via the leaf-lookup index.
+        // The slot MUST exist (minted via prior T_SLOT_MINT) and its
+        // denomination MUST match the deposit envelope's slot_denom_sats.
+        const slotInfo = await slotLeafLookupGet(env, network, dep.target_leaf_hash);
+        if (!slotInfo) continue;
+        if (slotInfo.denom_sats !== dep.slot_denom_sats) continue;
+
         // TWAP sample at reorg-safe depth. Fail closed: if oracle is stale
         // or absent, refuse the deposit — depositor can retry later.
         let twap;
@@ -12206,11 +12271,16 @@ async function scanForEtches(env, network) {
 
         // Record the position. The bond TAC UTXO MUST be spent in this same
         // reveal tx; envelope-pairing validation is the dapp builder's
-        // responsibility (verified at sig + spend time).
+        // responsibility (verified at sig + spend time). Slot info is
+        // copied from the leaf-lookup index so SLASH_DETECTED can probe
+        // the slot's K_btc UTXO without re-resolving.
         const position = {
           state: 'active',
           target_leaf_hash: dep.target_leaf_hash,
+          slot_asset_id: slotInfo.asset_id,
           slot_denom_sats: dep.slot_denom_sats,
+          slot_k_btc_xonly: slotInfo.k_btc_xonly,
+          slot_mint_txid: slotInfo.mint_txid,
           mint_amount: dep.mint_amount,
           bond_amount_tac: dep.bond_amount_tac,
           depositor_recovery_pk: dep.depositor_recovery_pk,
@@ -12666,10 +12736,10 @@ export {
   decodeCPetchPayload, decodeCPmintPayload,
   decodeTDepositPayload, decodeTWithdrawPayload,
   decodeTSlotMintPayload, decodeTSlotBurnPayload, decodeTSlotRotatePayload,
-  decodeTSlotFractionalizePayload, decodeTSlotReconsolidatePayload,
+  decodeTSlotSplitPayload,
   decodeTCbtcTacDepositPayload, decodeTCbtcTacWithdrawPayload,
   decodeTCbtcTacForceClosePayload, decodeTShareSlashClaimPayload,
-  T_SLOT_FRACTIONALIZE, T_SLOT_RECONSOLIDATE,
+  T_SLOT_SPLIT,
   T_CBTC_TAC_DEPOSIT, T_CBTC_TAC_WITHDRAW, T_CBTC_TAC_FORCE_CLOSE, T_SHARE_SLASH_CLAIM,
   // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
   ctacPositionKey, ctacActivePositionKey, ctacInsurancePoolKey,
@@ -12681,6 +12751,10 @@ export {
   ctacGetForceCloseThrottle, ctacBumpForceCloseThrottle,
   ctacBondRatioThousandths, ctacTwapSatsPerTac,
   ctacScanSlashDetected,
+  // Chain-probe helper (reusable across SLASH + future coverage check).
+  chainOutspendProbe,
+  // Leaf-lookup index (cBTC.zk leaf_hash → slot metadata).
+  slotLeafLookupKey, slotLeafLookupGet, slotLeafLookupPut,
   // Constants useful for cross-impl test assertions.
   CTAC_INITIAL_BOND_RATIO_THOUSANDTHS, CTAC_LIQUIDATION_RATIO_THOUSANDTHS,
   CTAC_TWAP_WINDOW_BLOCKS, CTAC_REORG_SAFETY_DEPTH,
