@@ -5238,6 +5238,65 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
     </div>
   </div>
 
+  <!-- SPEC-CBTC-TAC-AMENDMENT §5.36 — cBTC.tac LP-shaped mint helper.
+       Locks a live cBTC.zk slot's leaf + a TAC bond UTXO; mints a single
+       cBTC.tac UTXO at the depositor's recovery pubkey in the same reveal
+       tx that carries the T_CBTC_TAC_DEPOSIT envelope. asset_id is the
+       per-denomination ctacVariantAssetId — distinct pool for each tier. -->
+  <div class="section" data-mixer-pool-op="true" id="cbtc-tac-deposit-section">
+    <div class="section-header"><span>deposit slot → cBTC.tac</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">
+        Bond TAC against a live cBTC.zk slot to mint cBTC.tac — a tacit-asset wrapper for BTC, transferable amount-privately and tradeable on the marketplace. The slot is locked into the position until withdraw closes it; the TAC bond backs the wrapper's solvency.
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:2;min-width:280px;">Live slot to deposit
+          <select id="cbtc-tac-deposit-slot"><option value="">— pick a live slot —</option></select>
+        </label>
+        <label style="flex:1;min-width:140px;">TAC bond amount
+          <input id="cbtc-tac-deposit-bond" type="number" min="1" placeholder="e.g. 100000" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <button id="btn-cbtc-tac-deposit-broadcast" disabled>Deposit &amp; broadcast</button>
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
+        <label style="flex:2;min-width:280px;">TAC asset_id <span class="muted" style="font-size:11px;">(auto-detected from holdings; override if needed)</span>
+          <input id="cbtc-tac-deposit-tac-aid" type="text" placeholder="64 hex chars — canonical TAC asset_id" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+      </div>
+      <div id="cbtc-tac-deposit-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+    </div>
+  </div>
+
+  <!-- SPEC-CBTC-TAC-AMENDMENT §5.37 — cBTC.tac LP-shaped burn helper.
+       Closes an active cBTC.tac position: spends the slot's K_btc UTXO
+       (key-path Schnorr under r_btc) + burns the cBTC.tac mint UTXO
+       (asset-spend kernel sig) in one Bitcoin tx. Sats payout lands at
+       the chosen address. v1 = cooperative exit (withdrawer == depositor). -->
+  <div class="section" data-mixer-pool-op="true" id="cbtc-tac-withdraw-section">
+    <div class="section-header"><span>withdraw cBTC.tac → sats</span></div>
+    <div class="section-body">
+      <div class="muted" style="margin-bottom:10px;">
+        Close an active cBTC.tac position. Spends the underlying slot UTXO atomically with the cBTC.tac burn; sats land at the chosen payout address. Same-wallet redemption only in v1 (the depositor's r_btc is required to sign the slot input).
+      </div>
+      <div class="flex" style="gap:8px;flex-wrap:wrap;align-items:flex-end;">
+        <label style="flex:2;min-width:280px;">Active position to withdraw
+          <select id="cbtc-tac-withdraw-position"><option value="">— pick an active position —</option></select>
+        </label>
+        <label style="flex:2;min-width:240px;">Payout address <span class="muted" style="font-size:11px;">(optional — empty = this wallet)</span>
+          <input id="cbtc-tac-withdraw-payout" type="text" placeholder="bc1q… / tb1q… (P2WPKH bech32)" style="width:100%;font-family:monospace;font-size:12px;">
+        </label>
+        <button id="btn-cbtc-tac-withdraw-broadcast" disabled>Withdraw &amp; broadcast</button>
+      </div>
+      <div id="cbtc-tac-withdraw-out" class="muted" style="margin-top:10px;display:none;white-space:pre-wrap;font-family:monospace;font-size:12px;"></div>
+      <div style="margin-top:14px;padding-top:10px;border-top:1px dashed var(--ink-faint);">
+        <div class="muted" style="font-size:11px;margin-bottom:6px;">
+          <strong>Your cBTC.tac positions on this browser.</strong> Each row is one open or closed position: slot leaf, denomination, TAC bond, current state, deposit txid. Back up before clearing browser data — losing a position record means losing the mint blinding needed to identify your cBTC.tac UTXO.
+        </div>
+        <div id="cbtc-tac-positions-list"><div class="muted" style="font-size:11px;">No cBTC.tac positions yet on this network.</div></div>
+      </div>
+    </div>
+  </div>
+
   <div class="section" data-mixer-pool-op="true">
     <div class="section-header"><span>withdraw</span></div>
     <div class="section-body">

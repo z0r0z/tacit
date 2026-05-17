@@ -6959,11 +6959,254 @@ async function buildSlotRotateEnvelope({
   };
 }
 
-// buildSlotFractionalizeEnvelope / buildSlotReconsolidateEnvelope deferred.
-// Standalone unbonded fractionalize doesn't ship on mainnet; the bonded path
-// (cBTC.tac per SPEC-CBTC-TAC-AMENDMENT) is implemented as T_CBTC_TAC_DEPOSIT
-// / T_CBTC_TAC_WITHDRAW envelopes, which reuse the underlying Pedersen sum
-// identity + two-key construction documented in SPEC-CBTC-ZK-AMOUNT-AMENDMENT.
+// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.24 T_SLOT_SPLIT envelope builder.
+// Atomic 1→N split of a cBTC.zk slot: consumes one old slot and produces
+// 2..16 new slots whose denominations sum ≤ denom_old (the difference funds
+// the Bitcoin miner fee, OR the user funds the fee from a separate vin).
+// Each new slot has fresh (secret_i, ν_i) generated here unless the caller
+// supplies one; the slotRecords returned contain the full recovery material.
+async function buildSlotSplitEnvelope({
+  networkTag,
+  oldSlotRecord,
+  oldMerkleRoot,
+  oldProof,
+  outputs,                       // array of { assetIdHex?, denomNew, secret?, nullifierPreimage? }
+                                 // assetIdHex defaults to old slot's; secret/ν generated if omitted
+  oldOwnerPriv,
+  encryptedNotes = null,         // optional array length === outputs.length; passed through
+                                 // to encodeTSlotSplitPayload's §5.26.4 tail
+}) {
+  if (!Array.isArray(outputs) || outputs.length < 2 || outputs.length > 16) {
+    throw new Error('outputs must be an array of 2..16');
+  }
+  const oldAssetId = hexToBytes(oldSlotRecord.assetIdHex);
+  const oldDenom = BigInt(oldSlotRecord.denomination);
+  const oldSecret = hexToBytes(oldSlotRecord.secretHex);
+  const oldNullifierPreimage = hexToBytes(oldSlotRecord.nullifierPreimageHex);
+  const oldNullifierHash = computeNullifierHash(oldNullifierPreimage);
+  const oldRLeaf = poseidonHash(oldSecret, oldNullifierPreimage);
+  const oldRLeafBig = bytes32ToBigint(oldRLeaf) % SECP_N;
+  const oldRecipientCommitment = pedersenCommit(oldDenom, oldRLeafBig).toRawBytes(true);
+  const oldBindHash = computeWithdrawBindHash(
+    oldAssetId, oldDenom, oldNullifierHash, oldRecipientCommitment, oldRLeaf,
+  );
+
+  const newSlotRecords = [];
+  const envelopeOutputs = [];
+  let sumDenomNew = 0n;
+  for (let i = 0; i < outputs.length; i++) {
+    const out = outputs[i];
+    const denomNew = BigInt(out.denomNew);
+    if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) {
+      throw new Error(`outputs[${i}].denomNew out of range`);
+    }
+    sumDenomNew += denomNew;
+    const assetIdNew = out.assetIdHex ? hexToBytes(out.assetIdHex) : oldAssetId;
+    if (assetIdNew.length !== 32) throw new Error(`outputs[${i}].assetIdHex must be 64 hex chars`);
+    const secret = out.secret
+      || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+    const nullifierPreimage = out.nullifierPreimage
+      || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+    if (secret.length !== 32 || nullifierPreimage.length !== 32) {
+      throw new Error(`outputs[${i}] secret/nullifierPreimage must each be 32 bytes`);
+    }
+    const newLeafHash = computePoolLeafCommitment(secret, nullifierPreimage, denomNew);
+    const newRLeaf = poseidonHash(secret, nullifierPreimage);
+    const newRLeafBig = bytes32ToBigint(newRLeaf) % SECP_N;
+    const newRecipientCommit = pedersenCommit(denomNew, newRLeafBig).toRawBytes(true);
+    const newRBtcBytes = deriveSlotRBtc(secret, nullifierPreimage);
+    const newRBtcBig = bytes32ToBigint(newRBtcBytes) % SECP_N;
+    const newKBtcPoint = G.multiply(newRBtcBig === 0n ? 1n : newRBtcBig);
+    const newSlotSpk = slotScriptPubKeyFromKbtc(newKBtcPoint);
+    envelopeOutputs.push({
+      assetIdNew, denomNew, newRecipientCommit, newLeafHash,
+    });
+    newSlotRecords.push({
+      assetIdHex: bytesToHex(assetIdNew),
+      denomination: denomNew.toString(),
+      secretHex: bytesToHex(secret),
+      nullifierPreimageHex: bytesToHex(nullifierPreimage),
+      leafCommitmentHex: bytesToHex(newLeafHash),
+      recipientCommitHex: bytesToHex(newRecipientCommit),
+      rLeafHex: bytesToHex(newRLeaf),
+      rPedersenHex: bytesToHex(newRLeaf),
+      rBtcHex: bytesToHex(newRBtcBytes),
+      kBtcXOnlyHex: bytesToHex(slotXOnly(newKBtcPoint)),
+      slotScriptPubKeyHex: bytesToHex(newSlotSpk),
+      slotScriptPubKey: newSlotSpk,
+      mintedAt: Date.now(),
+      splitFromNullifier: bytesToHex(oldNullifierHash),
+      splitVoutIndex: i,
+    });
+  }
+  if (sumDenomNew > oldDenom) {
+    throw new Error(
+      `Σ denom_new (${sumDenomNew}) > denom_old (${oldDenom}) — §5.24.3 conservation`,
+    );
+  }
+
+  const oldOwnerPubkey = secp.getPublicKey(oldOwnerPriv, true);
+  const splitMsg = computeSlotSplitMsg(
+    networkTag, oldAssetId, oldDenom, oldNullifierHash, envelopeOutputs,
+  );
+  const oldOwnerSig = signSchnorr(splitMsg, oldOwnerPriv);
+
+  const payload = encodeTSlotSplitPayload({
+    networkTag,
+    assetIdOld: oldAssetId,
+    denomOld: oldDenom,
+    oldMerkleRoot,
+    oldNullifierHash,
+    oldRecipientCommitment,
+    oldRLeaf,
+    oldBindHash,
+    oldProof,
+    outputs: envelopeOutputs,
+    oldOwnerPubkey,
+    oldOwnerSig,
+    encryptedNotes,
+  });
+  return {
+    payload,
+    newSlotRecords,
+    oldNullifierHash,
+    oldRLeaf,
+    sumDenomNew,
+    feeFromSlot: oldDenom - sumDenomNew,    // sats the slot itself contributes to miner fee
+  };
+}
+
+// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.25 T_SLOT_MERGE envelope builder.
+// Atomic N→1 merge of cBTC.zk slots: consumes 2..16 old slots and produces
+// one new slot at denom_new ≤ Σ denom_old. Each input contributes its own
+// (secret, ν, merkleRoot, proof) for the burn-side validation; the new slot
+// owner signs slot_merge_msg binding the destination terms collectively.
+// For single-owner merges (the common case), oldSlotRecords[i] and
+// newOwnerPriv are all the same wallet; for multi-owner merges, each old
+// owner's r_btc signs their vin under SIGHASH_ALL (handled at buildAndBroadcast).
+async function buildSlotMergeEnvelope({
+  networkTag,
+  oldSlotRecords,                  // array of N (2..16) slot records
+  oldMerkleRoots,                  // array length N
+  oldProofs,                       // array length N (Groth16 bytes per input)
+  assetIdNewHex = null,            // default = first input's asset_id
+  denomNew,                        // ≤ Σ denom_old
+  newSecret = null,
+  newNullifierPreimage = null,
+  newOwnerPriv,
+  encryptedNote = null,            // optional 122-byte SPEC §5.26 note for the new slot
+}) {
+  if (!Array.isArray(oldSlotRecords) || oldSlotRecords.length < 2 || oldSlotRecords.length > 16) {
+    throw new Error('oldSlotRecords must be 2..16');
+  }
+  if (!Array.isArray(oldMerkleRoots) || oldMerkleRoots.length !== oldSlotRecords.length) {
+    throw new Error('oldMerkleRoots count must match oldSlotRecords');
+  }
+  if (!Array.isArray(oldProofs) || oldProofs.length !== oldSlotRecords.length) {
+    throw new Error('oldProofs count must match oldSlotRecords');
+  }
+  const dNew = BigInt(denomNew);
+  if (dNew <= 0n || dNew >= (1n << BigInt(N_BITS))) {
+    throw new Error('denomNew out of range');
+  }
+
+  let sumDenomOld = 0n;
+  const inputsForMsg = [];
+  const inputsForEnvelope = [];
+  const inputNullifierHashes = [];
+  for (let i = 0; i < oldSlotRecords.length; i++) {
+    const rec = oldSlotRecords[i];
+    const assetIdOld = hexToBytes(rec.assetIdHex);
+    const denomOld = BigInt(rec.denomination);
+    sumDenomOld += denomOld;
+    const oldSecret = hexToBytes(rec.secretHex);
+    const oldNullifierPreimage = hexToBytes(rec.nullifierPreimageHex);
+    const oldNullifierHash = computeNullifierHash(oldNullifierPreimage);
+    const oldRLeaf = poseidonHash(oldSecret, oldNullifierPreimage);
+    const oldRLeafBig = bytes32ToBigint(oldRLeaf) % SECP_N;
+    const oldRecipientCommitment = pedersenCommit(denomOld, oldRLeafBig).toRawBytes(true);
+    const oldBindHash = computeWithdrawBindHash(
+      assetIdOld, denomOld, oldNullifierHash, oldRecipientCommitment, oldRLeaf,
+    );
+    inputsForMsg.push({ assetIdOld, denomOld, oldNullifierHash });
+    inputsForEnvelope.push({
+      assetIdOld, denomOld,
+      oldMerkleRoot: oldMerkleRoots[i],
+      oldNullifierHash,
+      oldRecipientCommitment,
+      oldRLeaf,
+      oldBindHash,
+      oldProof: oldProofs[i],
+    });
+    inputNullifierHashes.push(oldNullifierHash);
+  }
+  if (sumDenomOld < dNew) {
+    throw new Error(
+      `Σ denom_old (${sumDenomOld}) < denom_new (${dNew}) — §5.25.3 conservation`,
+    );
+  }
+
+  const aidNew = assetIdNewHex
+    ? hexToBytes(assetIdNewHex)
+    : hexToBytes(oldSlotRecords[0].assetIdHex);
+  if (aidNew.length !== 32) throw new Error('assetIdNewHex must be 64 hex chars');
+  const newSec = newSecret
+    || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+  const newNu = newNullifierPreimage
+    || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+  if (newSec.length !== 32 || newNu.length !== 32) {
+    throw new Error('new (secret, ν) must each be 32 bytes');
+  }
+  const newLeafHash = computePoolLeafCommitment(newSec, newNu, dNew);
+  const newRLeaf = poseidonHash(newSec, newNu);
+  const newRLeafBig = bytes32ToBigint(newRLeaf) % SECP_N;
+  const newRecipientCommit = pedersenCommit(dNew, newRLeafBig).toRawBytes(true);
+  const newRBtcBytes = deriveSlotRBtc(newSec, newNu);
+  const newRBtcBig = bytes32ToBigint(newRBtcBytes) % SECP_N;
+  const newKBtcPoint = G.multiply(newRBtcBig === 0n ? 1n : newRBtcBig);
+  const newSlotSpk = slotScriptPubKeyFromKbtc(newKBtcPoint);
+
+  const newOwnerPubkey = secp.getPublicKey(newOwnerPriv, true);
+  const mergeMsg = computeSlotMergeMsg(
+    networkTag, inputsForMsg, aidNew, dNew, newRecipientCommit, newLeafHash,
+  );
+  const newOwnerSig = signSchnorr(mergeMsg, newOwnerPriv);
+
+  const payload = encodeTSlotMergePayload({
+    networkTag,
+    inputs: inputsForEnvelope,
+    assetIdNew: aidNew,
+    denomNew: dNew,
+    newRecipientCommit,
+    newLeafHash,
+    newOwnerPubkey,
+    newOwnerSig,
+    encryptedNote,
+  });
+  return {
+    payload,
+    newSlotKbtc: newKBtcPoint,
+    newSlotScriptPubKey: newSlotSpk,
+    newSlotRecord: {
+      assetIdHex: bytesToHex(aidNew),
+      denomination: dNew.toString(),
+      secretHex: bytesToHex(newSec),
+      nullifierPreimageHex: bytesToHex(newNu),
+      leafCommitmentHex: bytesToHex(newLeafHash),
+      recipientCommitHex: bytesToHex(newRecipientCommit),
+      rLeafHex: bytesToHex(newRLeaf),
+      rPedersenHex: bytesToHex(newRLeaf),
+      rBtcHex: bytesToHex(newRBtcBytes),
+      kBtcXOnlyHex: bytesToHex(slotXOnly(newKBtcPoint)),
+      slotScriptPubKeyHex: bytesToHex(newSlotSpk),
+      mintedAt: Date.now(),
+      mergedFromNullifiers: inputNullifierHashes.map(h => bytesToHex(h)),
+    },
+    inputNullifierHashes,
+    sumDenomOld,
+    feeFromSlots: sumDenomOld - dNew,
+  };
+}
 
 // ============== cBTC.tac WIRE PRIMITIVES (SPEC-CBTC-TAC-AMENDMENT) ==============
 // Encoders / decoders only. Builder functions (buildAndBroadcast*) + worker
@@ -24378,6 +24621,291 @@ function setupMixerHandlers() {
       } finally {
         sburnBtn.textContent = origLabel;
         _refreshSburnBtn();
+      }
+    };
+  }
+
+  // ===== cBTC.tac deposit/withdraw/positions UI (SPEC-CBTC-TAC-AMENDMENT §§5.36–5.37) =====
+  // Deposit:  bond TAC against a live cBTC.zk slot → mint cBTC.tac UTXO at depositor.
+  // Withdraw: close an active position → spend slot UTXO + burn cBTC.tac → BTC payout.
+  // Positions list: persisted localStorage records (saveCtacPositionRecord) — backup-critical.
+  const ctacDepBtn   = document.getElementById('btn-cbtc-tac-deposit-broadcast');
+  const ctacDepSlot  = document.getElementById('cbtc-tac-deposit-slot');
+  const ctacDepBond  = document.getElementById('cbtc-tac-deposit-bond');
+  const ctacDepTacAid = document.getElementById('cbtc-tac-deposit-tac-aid');
+  const ctacDepOut   = document.getElementById('cbtc-tac-deposit-out');
+  const ctacWithBtn   = document.getElementById('btn-cbtc-tac-withdraw-broadcast');
+  const ctacWithSel   = document.getElementById('cbtc-tac-withdraw-position');
+  const ctacWithPayout = document.getElementById('cbtc-tac-withdraw-payout');
+  const ctacWithOut   = document.getElementById('cbtc-tac-withdraw-out');
+  const ctacPosList  = document.getElementById('cbtc-tac-positions-list');
+
+  // Best-effort: prefill TAC asset_id from holdings (any aid whose ticker === 'TAC').
+  const _autofillCtacTacAid = () => {
+    if (!ctacDepTacAid || ctacDepTacAid.value.trim().length > 0) return;
+    try {
+      const map = _holdingsCache?.holdings || new Map();
+      for (const [aid, h] of map.entries()) {
+        if (h && h.ticker === 'TAC' && /^[0-9a-f]{64}$/i.test(aid)) {
+          ctacDepTacAid.value = aid; ctacDepTacAid.placeholder = aid; break;
+        }
+      }
+    } catch {}
+  };
+
+  const _refreshCtacDepOptions = () => {
+    if (!ctacDepSlot) return;
+    const prior = ctacDepSlot.value || '';
+    let liveSlots = [];
+    try { liveSlots = getSlotRecords({ status: 'live' }); } catch {}
+    // Exclude slots already deposited into an active cBTC.tac position
+    let positions = [];
+    try { positions = getCtacPositionRecords(); } catch {}
+    const lockedLeaves = new Set(
+      positions
+        .filter(p => p.status !== 'withdrawn' && p.status !== 'rugged')
+        .map(p => p.targetLeafHashHex)
+    );
+    const candidates = liveSlots.filter(r => !lockedLeaves.has(r.leafCommitmentHex));
+    ctacDepSlot.innerHTML = '<option value="">— pick a live slot —</option>'
+      + candidates.map(r => {
+          const denom = r.denomination || '?';
+          const tx = (r.mintTxid || '').slice(0, 12) + '…';
+          const aid = (r.assetIdHex || '').slice(0, 8) + '…';
+          return `<option value="${escapeHtml(r.leafCommitmentHex)}">${escapeHtml(denom)} sats · ${escapeHtml(aid)} · mint ${escapeHtml(tx)}</option>`;
+        }).join('');
+    if (prior && Array.from(ctacDepSlot.options).some(o => o.value === prior)) {
+      ctacDepSlot.value = prior;
+    }
+    _refreshCtacDepBtn();
+  };
+  const _refreshCtacDepBtn = () => {
+    if (!ctacDepBtn) return;
+    const haveSlot = !!(ctacDepSlot && ctacDepSlot.value);
+    const haveBond = /^\d+$/.test((ctacDepBond?.value || '').trim())
+                   && BigInt((ctacDepBond?.value || '0').trim()) > 0n;
+    const haveTacAid = /^[0-9a-f]{64}$/i.test((ctacDepTacAid?.value || '').trim());
+    ctacDepBtn.disabled = !(haveSlot && haveBond && haveTacAid);
+  };
+  if (ctacDepSlot)   ctacDepSlot.addEventListener('change', _refreshCtacDepBtn);
+  if (ctacDepBond)   ctacDepBond.addEventListener('input', _refreshCtacDepBtn);
+  if (ctacDepTacAid) ctacDepTacAid.addEventListener('input', _refreshCtacDepBtn);
+  _autofillCtacTacAid();
+  _refreshCtacDepOptions();
+
+  const _refreshCtacWithOptions = () => {
+    if (!ctacWithSel) return;
+    const prior = ctacWithSel.value || '';
+    let positions = [];
+    try { positions = getCtacPositionRecords(); } catch {}
+    const active = positions.filter(p => p.status === 'active');
+    ctacWithSel.innerHTML = '<option value="">— pick an active position —</option>'
+      + active.map(p => {
+          const denom = p.slotDenomSats || '?';
+          const bond = p.bondAmountTAC || '?';
+          const leaf = (p.targetLeafHashHex || '').slice(0, 12) + '…';
+          return `<option value="${escapeHtml(p.targetLeafHashHex)}">${escapeHtml(denom)} sats · bond ${escapeHtml(bond)} TAC · leaf ${escapeHtml(leaf)}</option>`;
+        }).join('');
+    if (prior && Array.from(ctacWithSel.options).some(o => o.value === prior)) {
+      ctacWithSel.value = prior;
+    }
+    _refreshCtacWithBtn();
+  };
+  const _refreshCtacWithBtn = () => {
+    if (!ctacWithBtn) return;
+    ctacWithBtn.disabled = !(ctacWithSel && ctacWithSel.value);
+  };
+  if (ctacWithSel) ctacWithSel.addEventListener('change', _refreshCtacWithBtn);
+  _refreshCtacWithOptions();
+
+  const _renderCtacPosList = () => {
+    if (!ctacPosList) return;
+    let positions = [];
+    try { positions = getCtacPositionRecords(); } catch {}
+    if (!positions.length) {
+      ctacPosList.innerHTML = '<div class="muted" style="font-size:11px;">No cBTC.tac positions yet on this network.</div>';
+      return;
+    }
+    const rows = positions.map(p => {
+      const denom = p.slotDenomSats || '?';
+      const bond = p.bondAmountTAC || '?';
+      const leaf = (p.targetLeafHashHex || '').slice(0, 16) + '…';
+      const tx = (p.depositRevealTxid || '').slice(0, 16) + '…';
+      const status = p.status || '?';
+      const j = JSON.stringify(p);
+      return `<div style="display:flex;gap:8px;align-items:center;font-family:monospace;font-size:11px;padding:6px 8px;border:1px solid var(--ink-faint);margin-bottom:4px;">
+        <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">
+          <strong>${escapeHtml(denom)} sats</strong> · bond ${escapeHtml(bond)} TAC · ${escapeHtml(leaf)} · ${escapeHtml(tx)}
+          <span class="muted" style="margin-left:8px;">[${escapeHtml(status)}]</span>
+        </span>
+        <button type="button" data-act="ctac-pos-copy" data-rec='${escapeHtml(j)}' style="font-size:10px;padding:2px 8px;">Copy JSON</button>
+      </div>`;
+    }).join('');
+    ctacPosList.innerHTML = rows;
+    ctacPosList.querySelectorAll('[data-act="ctac-pos-copy"]').forEach(btn => {
+      btn.onclick = async () => {
+        const j = btn.getAttribute('data-rec') || '';
+        try { await navigator.clipboard.writeText(j); btn.textContent = 'Copied!'; }
+        catch { btn.textContent = 'Copy failed'; }
+        setTimeout(() => { btn.textContent = 'Copy JSON'; }, 1500);
+      };
+    });
+  };
+  _renderCtacPosList();
+
+  if (ctacDepBtn) {
+    ctacDepBtn.onclick = async () => {
+      if (ctacDepBtn.disabled) return;
+      const leafHex = ctacDepSlot.value;
+      const slotRecord = (getSlotRecords() || []).find(r => r.leafCommitmentHex === leafHex);
+      if (!slotRecord) {
+        if (ctacDepOut) { ctacDepOut.style.display = 'block'; ctacDepOut.textContent = '✗ slot record not found in local storage'; }
+        return;
+      }
+      const bondBig = BigInt((ctacDepBond?.value || '0').trim());
+      const tacAidHex = (ctacDepTacAid?.value || '').trim().toLowerCase();
+      const denomDisp = slotRecord.denomination || '?';
+      const confirmed = await tacitConfirm({
+        title: 'Deposit slot → cBTC.tac',
+        body:
+          `On broadcast, the dapp will:\n\n` +
+          `  1. Carve an exact ${bondBig.toString()}-TAC bond UTXO from your holdings.\n` +
+          `  2. Build a T_CBTC_TAC_DEPOSIT envelope binding the slot leaf + bond.\n` +
+          `  3. Broadcast commit/reveal — the reveal tx outputs your cBTC.tac UTXO\n` +
+          `     (${denomDisp} sats face value) at your recovery pubkey, vout[0].\n` +
+          `  4. Save the position record locally (status='deposit-pending' → 'active').\n\n` +
+          `⚠ The underlying slot is locked while the position is open — you cannot redeem it\n` +
+          `   directly. Use the withdraw flow to close the position when ready.\n\n` +
+          `⚠ Losing the position record = losing the mint blinding needed to identify\n` +
+          `   your cBTC.tac UTXO. Back up before clearing browser data.\n\n` +
+          `Continue?`,
+        confirmLabel: 'Deposit & broadcast',
+        cancelLabel: 'Cancel',
+      });
+      if (!confirmed) return;
+      ctacDepBtn.disabled = true;
+      const origLabel = ctacDepBtn.textContent;
+      ctacDepBtn.textContent = 'Depositing…';
+      if (ctacDepOut) { ctacDepOut.style.display = 'block'; ctacDepOut.textContent = 'Carving TAC bond UTXO…'; }
+      try {
+        const result = await buildAndBroadcastCbtcTacDeposit({
+          slotRecord,
+          bondAmountTAC: bondBig,
+          tacAssetIdHex: tacAidHex,
+          onProgress: (stage) => {
+            if (!ctacDepOut) return;
+            const stages = {
+              'carve:tac-bond':       'Carving TAC bond UTXO…',
+              'envelope:build':       'Building T_CBTC_TAC_DEPOSIT envelope…',
+              'tx:commit:build':      'Building commit tx…',
+              'tx:reveal:build':      'Building reveal tx…',
+              'tx:commit:broadcast':  'Commit broadcasting…',
+              'tx:reveal:broadcast':  'Reveal broadcasting…',
+            };
+            ctacDepOut.textContent = stages[stage] || stage;
+          },
+        });
+        if (ctacDepOut) {
+          ctacDepOut.textContent =
+            `✓ cBTC.tac position active\n` +
+            `  commit_txid: ${result.commitTxid}\n` +
+            `  reveal_txid: ${result.revealTxid}\n` +
+            `  mint UTXO:   ${result.revealTxid}:0  (${denomDisp} sats face value)\n` +
+            `  bond:        ${bondBig.toString()} TAC locked\n` +
+            `\nPosition record saved locally (back it up below).`;
+        }
+        _refreshCtacDepOptions();
+        _refreshCtacWithOptions();
+        _renderCtacPosList();
+      } catch (e) {
+        if (ctacDepOut) ctacDepOut.textContent = `✗ deposit failed: ${e?.message || e}`;
+      } finally {
+        ctacDepBtn.textContent = origLabel;
+        _refreshCtacDepBtn();
+      }
+    };
+  }
+
+  if (ctacWithBtn) {
+    ctacWithBtn.onclick = async () => {
+      if (ctacWithBtn.disabled) return;
+      const leafHex = ctacWithSel.value;
+      const positions = getCtacPositionRecords() || [];
+      const position = positions.find(p => p.targetLeafHashHex === leafHex && p.status === 'active');
+      if (!position) {
+        if (ctacWithOut) { ctacWithOut.style.display = 'block'; ctacWithOut.textContent = '✗ active position not found in local storage'; }
+        return;
+      }
+      const slotRecord = (getSlotRecords() || []).find(r => r.leafCommitmentHex === leafHex);
+      if (!slotRecord) {
+        if (ctacWithOut) { ctacWithOut.style.display = 'block'; ctacWithOut.textContent = '✗ underlying slot record not found (needed for r_btc — withdraw requires depositor wallet)'; }
+        return;
+      }
+      // Synthesize the single cBTC.tac UTXO from the position record. The mint
+      // landed at reveal_txid:0 with amount = mintAmount and the stored
+      // mintBlindingHex. (Multi-UTXO support is a follow-up.)
+      const cbtcTacUtxos = [{
+        utxo: { txid: position.depositRevealTxid, vout: 0 },
+        amount: BigInt(position.mintAmount),
+        blinding: BigInt('0x' + position.mintBlindingHex),
+      }];
+      const payoutAddr = (ctacWithPayout?.value || '').trim() || null;
+      const denomDisp = position.slotDenomSats || '?';
+      const confirmed = await tacitConfirm({
+        title: 'Withdraw cBTC.tac → sats',
+        body:
+          `On broadcast, the dapp will:\n\n` +
+          `  1. Build a T_CBTC_TAC_WITHDRAW envelope (burns the cBTC.tac UTXO).\n` +
+          `  2. Spend the slot's K_btc UTXO (key-path Schnorr under r_btc).\n` +
+          `  3. Broadcast commit/reveal — sats payout (${denomDisp}, minus fee) lands at\n` +
+          `     ${payoutAddr || '(this wallet)'}.\n` +
+          `  4. Position record marked 'withdrawn'; slot record marked 'spent'.\n\n` +
+          `⚠ Same-wallet redemption only (the depositor's r_btc is required).\n` +
+          `⚠ The cBTC.tac UTXO is consumed — make sure you haven't transferred it away\n` +
+          `   from the depositor recovery pubkey, or this will fail at broadcast.\n\n` +
+          `Continue?`,
+        confirmLabel: 'Withdraw & broadcast',
+        cancelLabel: 'Cancel',
+      });
+      if (!confirmed) return;
+      ctacWithBtn.disabled = true;
+      const origLabel = ctacWithBtn.textContent;
+      ctacWithBtn.textContent = 'Withdrawing…';
+      if (ctacWithOut) { ctacWithOut.style.display = 'block'; ctacWithOut.textContent = 'Building T_CBTC_TAC_WITHDRAW envelope…'; }
+      try {
+        const result = await buildAndBroadcastCbtcTacWithdraw({
+          positionRecord: position,
+          slotRecord,
+          cbtcTacUtxos,
+          recipientAddr: payoutAddr,
+          onProgress: (stage) => {
+            if (!ctacWithOut) return;
+            const stages = {
+              'envelope:build':       'Building withdraw envelope…',
+              'tx:commit:build':      'Building commit tx…',
+              'tx:reveal:build':      'Building reveal tx…',
+              'tx:commit:broadcast':  'Commit broadcasting…',
+              'tx:reveal:broadcast':  'Reveal broadcasting…',
+            };
+            ctacWithOut.textContent = stages[stage] || stage;
+          },
+        });
+        if (ctacWithOut) {
+          ctacWithOut.textContent =
+            `✓ cBTC.tac position closed\n` +
+            `  commit_txid: ${result.commitTxid}\n` +
+            `  reveal_txid: ${result.revealTxid}\n` +
+            `  payout:      ${result.payoutValueSats || denomDisp} sats → ${payoutAddr || 'this wallet'}\n` +
+            `\nPosition marked withdrawn; slot marked spent. Refresh holdings to see the sats arrive.`;
+        }
+        _refreshCtacDepOptions();
+        _refreshCtacWithOptions();
+        _renderCtacPosList();
+      } catch (e) {
+        if (ctacWithOut) ctacWithOut.textContent = `✗ withdraw failed: ${e?.message || e}`;
+      } finally {
+        ctacWithBtn.textContent = origLabel;
+        _refreshCtacWithBtn();
       }
     };
   }
@@ -58681,6 +59209,7 @@ export {
   computeSlotMintMsg, computeSlotRotateMsg, computeSlotSplitMsg, computeSlotMergeMsg,
   deriveSlotKbtc, deriveSlotRBtc, slotXOnly, slotScriptPubKeyFromKbtc,
   buildSlotMintEnvelope, buildSlotBurnEnvelope, buildSlotRotateEnvelope,
+  buildSlotSplitEnvelope, buildSlotMergeEnvelope,
   // High-level dapp builders for the slot wrapper flows. Each does the full
   // commit-reveal Bitcoin tx + envelope construction + local-state update.
   // Exported so headless drivers (signet rehearsal, integration tests) can
