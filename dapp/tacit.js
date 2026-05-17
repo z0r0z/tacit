@@ -8437,7 +8437,52 @@ function registerAsset(meta) {
 }
 function getAssetMeta(assetIdHex) {
   const r = loadRegistry();
-  return r[assetIdHex] || null;
+  const explicit = r[assetIdHex] || null;
+  if (explicit) return explicit;
+  // Synthetic meta for cBTC.tac variants (SPEC-CBTC-TAC-AMENDMENT). Each
+  // canonical denom tier has a deterministic asset_id derived via
+  // ctacVariantAssetId(denomSats); we probe the standard tiers and return
+  // a per-tier ticker so holdings / marketplace render the wrapper
+  // properly instead of as ??? unknown. (Custom-denom positions still
+  // show as unknown; users can register them manually if needed.)
+  return _cbtcTacSyntheticMeta(assetIdHex);
+}
+// Canonical cBTC.tac denom tiers — kept in sync with what the deposit
+// UI surfaces. Anyone can deposit at any denom (it follows the underlying
+// cBTC.zk slot's denom), but only these standard tiers get a built-in
+// ticker. The leading entry (100k sats) matches the cBTC.zk default
+// (SPEC-CBTC-ZK §metadata: "cBTC.zk — denom_sats = 100_000").
+const _CBTC_TAC_TIERS = [
+  { denomSats: 100_000n,      ticker: 'cBTC.tac',        name: 'cBTC.tac' },
+  { denomSats: 1_000_000n,    ticker: 'cBTC.tac.k',      name: 'cBTC.tac (1M-sat tier)' },
+  { denomSats: 10_000_000n,   ticker: 'cBTC.tac.10M',    name: 'cBTC.tac (10M-sat tier)' },
+  { denomSats: 100_000_000n,  ticker: 'cBTC.tac.1BTC',   name: 'cBTC.tac (1 BTC tier)' },
+  { denomSats: 10_000n,       ticker: 'cBTC.tac.10k',    name: 'cBTC.tac (10k-sat tier)' },
+];
+let _cbtcTacAidLookup = null;
+function _cbtcTacSyntheticMeta(assetIdHex) {
+  if (typeof assetIdHex !== 'string' || !/^[0-9a-f]{64}$/i.test(assetIdHex)) return null;
+  if (!_cbtcTacAidLookup) {
+    _cbtcTacAidLookup = new Map();
+    for (const tier of _CBTC_TAC_TIERS) {
+      try {
+        _cbtcTacAidLookup.set(ctacVariantAssetId(tier.denomSats).toLowerCase(), tier);
+      } catch {}
+    }
+  }
+  const tier = _cbtcTacAidLookup.get(assetIdHex.toLowerCase());
+  if (!tier) return null;
+  return {
+    assetIdHex,
+    ticker: tier.ticker,
+    name: tier.name,
+    decimals: 0,
+    // Marks the asset as a synthesized cBTC.tac variant so downstream code
+    // (e.g. marketplace, holdings card) can render an LP-shaped wrapper
+    // badge or hide CETCH-only fields without false-positives.
+    syntheticCbtcTac: true,
+    cbtcTacDenomSats: tier.denomSats.toString(),
+  };
 }
 // Per-UTXO openings: "txid:vout" -> { assetIdHex, amount: string, blinding: hex }
 const loadOpenings = () => {
@@ -59222,6 +59267,8 @@ export {
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,
   // cBTC.tac variant asset_id derivation (must match worker byte-for-byte).
   ctacVariantAssetId,
+  // Asset-registry lookup (returns synthetic meta for cBTC.tac canonical tiers).
+  getAssetMeta,
   // Slot-note encryption primitives (SPEC-CBTC-ZK-FUNGIBILITY §5.26).
   // Exported for the standalone test at tests/slot-note-encryption.test.mjs.
   encryptSlotNote, decryptSlotNote, slotViewingPubkey,

@@ -325,6 +325,41 @@ group('ctacVariantAssetId — cross-impl parity');
     dapp.ctacVariantAssetId(100_000_000n) !== dapp.ctacVariantAssetId(1_000_000n));
 }
 
+// ============== getAssetMeta — synthetic cBTC.tac variants ==============
+group('getAssetMeta — synthetic cBTC.tac tier metadata');
+
+if (typeof dapp.getAssetMeta === 'function') {
+  // Canonical tiers must resolve to a non-null meta with the correct ticker
+  // even when no explicit registry entry exists. Without this, cBTC.tac
+  // UTXOs would render as ??? in holdings / marketplace.
+  const tiers = [
+    { denom: 100_000n,     expected: 'cBTC.tac' },
+    { denom: 1_000_000n,   expected: 'cBTC.tac.k' },
+    { denom: 10_000_000n,  expected: 'cBTC.tac.10M' },
+    { denom: 100_000_000n, expected: 'cBTC.tac.1BTC' },
+    { denom: 10_000n,      expected: 'cBTC.tac.10k' },
+  ];
+  for (const t of tiers) {
+    const aid = dapp.ctacVariantAssetId(t.denom);
+    const meta = dapp.getAssetMeta(aid);
+    ok(`tier ${t.denom}: meta non-null`, meta !== null);
+    ok(`tier ${t.denom}: ticker = ${t.expected}`, meta && meta.ticker === t.expected);
+    ok(`tier ${t.denom}: syntheticCbtcTac flag`, meta && meta.syntheticCbtcTac === true);
+    ok(`tier ${t.denom}: decimals = 0`, meta && meta.decimals === 0);
+    ok(`tier ${t.denom}: denom round-trips`,
+      meta && BigInt(meta.cbtcTacDenomSats) === t.denom);
+  }
+  // Non-canonical denom MUST NOT resolve via the synthetic path (returns null)
+  // so the holdings card correctly flags it as unknown / requires CETCH.
+  const nonCanonicalAid = dapp.ctacVariantAssetId(123_456n);
+  ok('non-canonical denom: meta is null (no synthetic match)',
+    dapp.getAssetMeta(nonCanonicalAid) === null);
+  // A random non-cBTC.tac asset_id resolves to null (no false-positive
+  // synthetic match — important so unrelated asset_ids aren't mislabeled).
+  ok('random asset_id: meta is null',
+    dapp.getAssetMeta('a'.repeat(64)) === null);
+}
+
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);
