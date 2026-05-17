@@ -7,7 +7,11 @@
 import * as worker from '../worker/src/index.js';
 import { encodeLpAdd, OPCODE_T_LP_ADD, OPCODE_T_LP_REMOVE } from './amm-envelope.mjs';
 import { XCURVE_PROOF_LEN } from './amm-sigma-xcurve.mjs';
-import { OPCODE_T_SWAP_VAR } from './swap-var.mjs';
+import {
+  OPCODE_T_SWAP_VAR, ENVELOPE_VERSION as SWAP_VAR_VERSION,
+  encodeSwapVar, curveDeltaOut as refCurveDeltaOut,
+  computeSwapVarEnvelopeHash, NO_CHANGE_SENTINEL,
+} from './swap-var.mjs';
 import { sha256 } from '@noble/hashes/sha256';
 import { bytesToHex, concatBytes } from '@noble/hashes/utils';
 import * as secp from '@noble/secp256k1';
@@ -297,6 +301,124 @@ group('ammLauncherGateMsg');
   ok('different vk_cid → different gate_msg', bytesToHex(msg) !== bytesToHex(msg3));
   const msg4 = worker.ammLauncherGateMsg(poolId, 'bafy-vk', 100);
   ok('different fee_bps → different gate_msg', bytesToHex(msg) !== bytesToHex(msg4));
+}
+
+// ============== T_SWAP_VAR ==============
+group('T_SWAP_VAR — curve recompute parity (worker vs reference)');
+{
+  // A → B, balanced reserves, 30 bps fee
+  const ra = 1_000_000n, rb = 2_000_000n, din = 50_000n;
+  const ref = refCurveDeltaOut({ direction: 0, R_A_pre: ra, R_B_pre: rb, delta_in: din, fee_bps: 30 });
+  const wrk = worker.ammCurveDeltaOut(0, ra, rb, din, 30);
+  ok('delta_out matches ref', wrk.deltaOut === ref.deltaOut);
+  ok('raPost matches ref', wrk.raPost === ref.raPost);
+  ok('rbPost matches ref', wrk.rbPost === ref.rbPost);
+
+  // B → A direction
+  const wrk2 = worker.ammCurveDeltaOut(1, ra, rb, din, 30);
+  const ref2 = refCurveDeltaOut({ direction: 1, R_A_pre: ra, R_B_pre: rb, delta_in: din, fee_bps: 30 });
+  ok('B→A delta_out matches', wrk2.deltaOut === ref2.deltaOut);
+  ok('B→A raPost matches', wrk2.raPost === ref2.raPost);
+  ok('B→A rbPost matches', wrk2.rbPost === ref2.rbPost);
+
+  // 0 fee tier
+  const wrk0 = worker.ammCurveDeltaOut(0, 1000n, 1000n, 100n, 0);
+  const ref0 = refCurveDeltaOut({ direction: 0, R_A_pre: 1000n, R_B_pre: 1000n, delta_in: 100n, fee_bps: 0 });
+  ok('0-bps fee parity', wrk0.deltaOut === ref0.deltaOut);
+
+  // Bad inputs
+  let threwBadDir = false;
+  try { worker.ammCurveDeltaOut(2, 100n, 100n, 1n, 30); } catch { threwBadDir = true; }
+  ok('bad direction throws', threwBadDir);
+  let threwZero = false;
+  try { worker.ammCurveDeltaOut(0, 0n, 100n, 1n, 30); } catch { threwZero = true; }
+  ok('zero reserve throws', threwZero);
+}
+
+group('T_SWAP_VAR — decoder round-trip via reference encoder');
+{
+  const ra = 5_000_000n, rb = 10_000_000n, din = 100_000n;
+  const ref = refCurveDeltaOut({ direction: 0, R_A_pre: ra, R_B_pre: rb, delta_in: din, fee_bps: 30 });
+  // Build a valid SwapVar envelope using the reference encoder
+  const poolId = sha256(new TextEncoder().encode('test-swap-pool'));
+  const traderPub = secp.ProjectivePoint.BASE.multiply(7n).toRawBytes(true);
+  const cIn = secp.ProjectivePoint.BASE.multiply(31n).toRawBytes(true);
+  const cChange = secp.ProjectivePoint.BASE.multiply(41n).toRawBytes(true);
+  const cReceipt = secp.ProjectivePoint.BASE.multiply(43n).toRawBytes(true);
+  const rReceipt = new Uint8Array(32).fill(0x11);
+  const rangeProof = new Uint8Array(700).fill(0x22);  // m=2 bulletproof size
+  const kernelSig = new Uint8Array(64).fill(0x33);
+  const intentSig = new Uint8Array(64).fill(0x44);
+
+  const payload = encodeSwapVar({
+    poolId, direction: 0, R_A_pre: ra, R_B_pre: rb,
+    deltaIn: din, deltaInMin: 50_000n, deltaInMax: 150_000n,
+    deltaOut: ref.deltaOut, minOut: ref.deltaOut - 100n,
+    tipAmount: 0n, tipAsset: 0, expiryHeight: 1_000_000,
+    traderPubkey: traderPub, cInSecp: cIn,
+    cChangeOrSentinel: cChange, cReceiptSecp: cReceipt,
+    rReceipt, rangeProof, kernelSig, intentSig,
+  });
+  ok('payload starts with version 0x01', payload[0] === SWAP_VAR_VERSION);
+  ok('payload[1] opcode 0x32', payload[1] === 0x32);
+
+  const dec = worker.decodeTSwapVarPayload(payload);
+  ok('worker decodes', dec !== null);
+  ok('kind = swap_var', dec?.kind === 'swap_var');
+  ok('pool_id round-trip', dec?.pool_id === bytesToHex(poolId));
+  ok('direction = 0', dec?.direction === 0);
+  ok('R_A_pre as string', dec?.R_A_pre === ra.toString());
+  ok('R_B_pre as string', dec?.R_B_pre === rb.toString());
+  ok('delta_in as string', dec?.delta_in === din.toString());
+  ok('delta_out as string', dec?.delta_out === ref.deltaOut.toString());
+  ok('expiry_height', dec?.expiry_height === 1_000_000);
+  ok('trader_pubkey hex', dec?.trader_pubkey === bytesToHex(traderPub));
+  ok('range_proof hex length 1400', dec?.range_proof?.length === 1400);  // 700 bytes * 2 hex
+  ok('kernel_sig hex length 128', dec?.kernel_sig?.length === 128);
+  ok('intent_sig hex length 128', dec?.intent_sig?.length === 128);
+
+  // Envelope hash binding
+  const expected = bytesToHex(computeSwapVarEnvelopeHash(payload));
+  const got = bytesToHex(worker.ammSwapVarEnvelopeHash(payload));
+  ok('envelope_hash matches reference', expected === got);
+}
+
+group('T_SWAP_VAR — decoder rejection cases');
+{
+  ok('null payload → null', worker.decodeTSwapVarPayload(null) === null);
+  ok('empty payload → null', worker.decodeTSwapVarPayload(new Uint8Array(0)) === null);
+  ok('wrong version → null',
+    worker.decodeTSwapVarPayload(new Uint8Array(300).fill(0xff)) === null);
+  // Wrong opcode
+  const bad = new Uint8Array(300).fill(0x00);
+  bad[0] = SWAP_VAR_VERSION;
+  bad[1] = 0x99;
+  ok('wrong opcode → null', worker.decodeTSwapVarPayload(bad) === null);
+}
+
+group('T_SWAP_VAR — NO_CHANGE_SENTINEL accepted');
+{
+  const poolId = sha256(new TextEncoder().encode('sentinel-pool'));
+  const traderPub = secp.ProjectivePoint.BASE.multiply(7n).toRawBytes(true);
+  const cIn = secp.ProjectivePoint.BASE.multiply(31n).toRawBytes(true);
+  const cReceipt = secp.ProjectivePoint.BASE.multiply(43n).toRawBytes(true);
+  const payload = encodeSwapVar({
+    poolId, direction: 1, R_A_pre: 1000n, R_B_pre: 1000n,
+    deltaIn: 100n, deltaInMin: 100n, deltaInMax: 100n,
+    deltaOut: refCurveDeltaOut({ direction: 1, R_A_pre: 1000n, R_B_pre: 1000n, delta_in: 100n, fee_bps: 0 }).deltaOut,
+    minOut: 0n, tipAmount: 0n, tipAsset: 1, expiryHeight: 999_999,
+    traderPubkey: traderPub, cInSecp: cIn,
+    cChangeOrSentinel: NO_CHANGE_SENTINEL, cReceiptSecp: cReceipt,
+    rReceipt: new Uint8Array(32),
+    rangeProof: new Uint8Array(700).fill(0x55),
+    kernelSig: new Uint8Array(64),
+    intentSig: new Uint8Array(64),
+  });
+  const dec = worker.decodeTSwapVarPayload(payload);
+  ok('payload with sentinel decodes', dec !== null);
+  // 33 zero bytes → 66 hex zeros
+  ok('c_change_or_sentinel is all zero hex',
+    dec?.c_change_or_sentinel === '00'.repeat(33));
 }
 
 console.log(`\n${pass} passed, ${fail} failed.`);

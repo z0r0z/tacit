@@ -14207,6 +14207,7 @@ export {
   ammCanonicalAssetPair, ammDerivePoolId, ammDeriveLpAssetId,
   ammIsqrt, ammLpInitShares, ammLauncherGateMsg,
   AMM_FEE_BPS_MAX, AMM_CAPABILITY_FLAGS_MAX, AMM_MINIMUM_LIQUIDITY,
+  decodeTSwapVarPayload, ammCurveDeltaOut, ammSwapVarEnvelopeHash,
   decodeTLpAddPayload,
   // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
   ctacPositionKey, ctacActivePositionKey, ctacInsurancePoolKey,
