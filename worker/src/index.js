@@ -11869,6 +11869,14 @@ async function _handleAtomicIntentClaimVar(assetIdHex, intentIdHex, intent, body
     return jsonResponse({ error: 'taker_utxo.vout must be non-negative integer' }, 400, cors);
   }
   if (!/^\d+$/.test(requestedAmountStr)) return jsonResponse({ error: 'requested_amount must be base-10 integer string' }, 400, cors);
+  // Same maker-self-claim refusal as the whole-UTXO claim path. The variable
+  // handler is reachable only via the main dispatcher (handleAtomicIntentClaim)
+  // which checks no different-taker claim exists, but does NOT cover the case
+  // where the maker submits a claim against their own intent. Mirror the
+  // defensive check here so both code paths fail closed.
+  if (takerPubHex === intent.maker_pubkey) {
+    return jsonResponse({ error: 'taker_pubkey must differ from intent.maker_pubkey (self-claim)' }, 400, cors);
+  }
 
   // Bound check: min_take ≤ requested ≤ amount.
   const amountBI    = BigInt(intent.amount);
@@ -12417,6 +12425,12 @@ async function handleAtomicIntentClaim(assetIdHex, intentIdHex, req, env, networ
   if (!intent) return jsonResponse({ error: 'no such intent' }, 404, cors);
   const now = Math.floor(Date.now() / 1000);
   if ((intent.expiry || 0) <= now) return jsonResponse({ error: 'intent expired' }, 410, cors);
+  // Refuse maker self-claim: a maker who claims their own intent locks the
+  // slot for CLAIM_TTL_SECONDS, blocking real takers. The maker can cancel
+  // instead — there's no legitimate reason for the maker to be the taker.
+  if (takerPubHex === intent.maker_pubkey) {
+    return jsonResponse({ error: 'taker_pubkey must differ from intent.maker_pubkey (self-claim)' }, 400, cors);
+  }
 
   // Reject if there's an unexpired claim by a different taker.
   const existing = await env.REGISTRY_KV.get(atomicClaimKey(network, assetIdHex, intentIdHex), 'json');
@@ -13820,6 +13834,13 @@ async function handleBidIntentClaim(assetIdHex, bidIdHex, req, env, network, cor
   if (!intent) return jsonResponse({ error: 'no such bid' }, 404, cors);
   const now = Math.floor(Date.now() / 1000);
   if ((intent.expiry || 0) <= now) return jsonResponse({ error: 'bid expired' }, 410, cors);
+  // Refuse self-fill: a bidder claiming their own bid lets one wallet inflate
+  // trade activity without an external counterparty, and burns a commit-tx
+  // fee + an asset UTXO before the claim's atomic intent ever settles. The
+  // dapp pre-filters this but the worker mustn't trust client-side checks.
+  if (sellerPubHex === intent.buyer_pubkey) {
+    return jsonResponse({ error: 'seller_pubkey must differ from bid.buyer_pubkey (self-fill)' }, 400, cors);
+  }
 
   // Bound-check fill_amount against the bid's allowed range.
   //   Whole-bid (no min_fill_amount on the record): fill_amount must

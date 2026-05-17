@@ -385,7 +385,10 @@ if (typeof dapp.getAssetMeta === 'function') {
     ok(`tier ${t.denom}: meta non-null`, meta !== null);
     ok(`tier ${t.denom}: ticker = ${t.expected}`, meta && meta.ticker === t.expected);
     ok(`tier ${t.denom}: syntheticCbtcTac flag`, meta && meta.syntheticCbtcTac === true);
-    ok(`tier ${t.denom}: decimals = 0`, meta && meta.decimals === 0);
+    // cBTC.tac uses decimals=8 to align with Bitcoin + TAC (e.g. a 10k-sat
+    // tier UTXO with amount=10000 base units renders as 0.0001 BTC-equivalent
+    // rather than the raw sat count). See dapp _cbtcTacSyntheticMeta.
+    ok(`tier ${t.denom}: decimals = 8`, meta && meta.decimals === 8);
     ok(`tier ${t.denom}: denom round-trips`,
       meta && BigInt(meta.cbtcTacDenomSats) === t.denom);
   }

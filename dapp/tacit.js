@@ -8811,7 +8811,15 @@ function getAssetMeta(assetIdHex) {
   // a per-tier ticker so holdings / marketplace render the wrapper
   // properly instead of as ??? unknown. (Custom-denom positions still
   // show as unknown; users can register them manually if needed.)
-  return _cbtcTacSyntheticMeta(assetIdHex);
+  const cbtcMeta = _cbtcTacSyntheticMeta(assetIdHex);
+  if (cbtcMeta) return cbtcMeta;
+  // Synthetic meta for AMM LP shares. The Pool tab populates
+  // _lpAssetIdLookup whenever it fetches the worker pool list; this lets
+  // the Holdings tab render LP UTXOs with a meaningful ticker (e.g.
+  // "LP·<assetA-short>/<assetB-short>·30bps") instead of an opaque hex
+  // asset_id. Without this, LP shares show up untickered after a
+  // POOL_INIT / LP_ADD until the registry caches up.
+  return _lpSyntheticMeta(assetIdHex);
 }
 // Canonical cBTC.tac denom tiers — kept in sync with what the deposit
 // UI surfaces. Anyone can deposit at any denom (it follows the underlying
@@ -8939,12 +8947,88 @@ function _cbtcTacSyntheticMeta(assetIdHex) {
     assetIdHex,
     ticker: tier.ticker,
     name: tier.name,
-    decimals: 0,
+    // decimals=8 matches Bitcoin (the underlying asset) and TAC, so a
+    // cBTC.tac.10k UTXO with amount=10000 base units renders as 0.0001 —
+    // the same Bitcoin amount the slot represents. Without this, users
+    // would see raw sat counts like "10000 cBTC.tac.10k" which reads as a
+    // unit count rather than a Bitcoin amount.
+    decimals: 8,
     // Marks the asset as a synthesized cBTC.tac variant so downstream code
     // (e.g. marketplace, holdings card) can render an LP-shaped wrapper
     // badge or hide CETCH-only fields without false-positives.
     syntheticCbtcTac: true,
     cbtcTacDenomSats: tier.denomSats.toString(),
+  };
+}
+
+// LP-share synthetic meta. Populated lazily by fetchAmmPools — every time
+// the dapp fetches the worker pool list (Pool tab render, periodic refresh),
+// we update this cache so the Holdings tab can render LP UTXOs with a
+// meaningful ticker. Without this, an LP_ADD-minted share UTXO appears as
+// an unknown asset_id in the Holdings view until the worker pool list is
+// fetched (which only happens when the user opens the Pool tab).
+let _lpAssetIdLookup = new Map();  // lp_asset_id_hex → { pool_id_hex, asset_a, asset_b, fee_bps }
+function _lpAssetIdLookupRefresh(pools) {
+  if (!Array.isArray(pools)) return;
+  const next = new Map();
+  for (const p of pools) {
+    const aid = p?.lp_asset_id;
+    if (typeof aid !== 'string' || !/^[0-9a-f]{64}$/i.test(aid)) continue;
+    next.set(aid.toLowerCase(), {
+      pool_id_hex: String(p.pool_id || ''),
+      asset_a: String(p.asset_a || ''),
+      asset_b: String(p.asset_b || ''),
+      fee_bps: Number(p.fee_bps || 0),
+    });
+  }
+  _lpAssetIdLookup = next;
+}
+function _lpSyntheticMeta(assetIdHex) {
+  if (typeof assetIdHex !== 'string' || !/^[0-9a-f]{64}$/i.test(assetIdHex)) return null;
+  const entry = _lpAssetIdLookup.get(assetIdHex.toLowerCase());
+  if (!entry) return null;
+  // Use short hex prefixes for the constituent assets. Resolving them all
+  // the way to tickers would mean recursing through getAssetMeta, which
+  // pulls the synchronous registry — fine for cBTC.tac variants (lookup
+  // is O(1) against a fixed map) but would loop for LP-of-LP composite
+  // pools. Short hex is fine for V1 display; can upgrade to recursive
+  // resolution once nested pools land.
+  const aHexShort = entry.asset_a.slice(0, 8);
+  const bHexShort = entry.asset_b.slice(0, 8);
+  // Try to resolve to real tickers — bail to hex if unresolvable.
+  const aMetaTicker = (() => {
+    if (entry.asset_a === assetIdHex) return aHexShort;  // self-ref guard
+    const m = _cbtcTacSyntheticMeta(entry.asset_a);
+    if (m) return m.ticker;
+    try {
+      const reg = loadRegistry();
+      if (reg[entry.asset_a]?.ticker) return reg[entry.asset_a].ticker;
+    } catch {}
+    return aHexShort;
+  })();
+  const bMetaTicker = (() => {
+    if (entry.asset_b === assetIdHex) return bHexShort;
+    const m = _cbtcTacSyntheticMeta(entry.asset_b);
+    if (m) return m.ticker;
+    try {
+      const reg = loadRegistry();
+      if (reg[entry.asset_b]?.ticker) return reg[entry.asset_b].ticker;
+    } catch {}
+    return bHexShort;
+  })();
+  return {
+    assetIdHex,
+    ticker: `LP·${aMetaTicker}/${bMetaTicker}·${entry.fee_bps}bps`,
+    name: `AMM LP shares for ${aMetaTicker}/${bMetaTicker} at ${entry.fee_bps} bps`,
+    // LP shares are integer counts — decimals=0 is the most defensible
+    // default since share value is a function of pool reserves at burn
+    // time, not a fixed unit precision.
+    decimals: 0,
+    syntheticLpAsset: true,
+    poolIdHex: entry.pool_id_hex,
+    poolAssetA: entry.asset_a,
+    poolAssetB: entry.asset_b,
+    poolFeeBps: entry.fee_bps,
   };
 }
 // Fire-and-forget at module load: if operator has pinned a manifest CID,
@@ -12745,7 +12829,7 @@ async function buildAndBroadcastCEtch({ ticker, supplyBase, decimals, imageUri =
 
   // Pick commit inputs first; their order determines the anchor.
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const picked = []; let total = 0;
   let commitFee = 500;
   for (const u of sats) {
@@ -12909,7 +12993,7 @@ async function buildAndBroadcastPetch({ ticker, decimals, capAmount, mintLimit, 
   const commitValue = DUST + revealFee;
 
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const picked = []; let total = 0;
   let commitFee = 500;
   for (const u of sats) {
@@ -13056,7 +13140,7 @@ async function buildAndBroadcastPoolInit({ assetIdHex, poolDenom, vkCid, ceremon
   const commitP2wpkhValue = DUST;
 
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const picked = []; let total = 0;
   let commitFee = 500;
   for (const u of sats) {
@@ -15932,10 +16016,9 @@ async function buildAndBroadcastShareSlashClaim({
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
   const allUtxos = await getUtxos(wallet.address());
   const assetUtxoKeys = new Set(cbtcTacUtxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
-  const sats = allUtxos
+  const sats = sortSatsForCommit(allUtxos
     .filter(u => !assetUtxoKeys.has(`${u.txid}:${u.vout}`))
-    .filter(u => u.value > DUST)
-    .sort((a, b) => b.value - a.value);
+    .filter(u => u.value > DUST));
   if (sats.length === 0) {
     throw new Error('no plain-sats UTXOs available to fund the slash-claim commit');
   }
@@ -17292,9 +17375,8 @@ async function buildAndBroadcastSwapVarSelfFulfill({
   if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
   const allUtxos = await getUtxos(wallet.address());
   const assetKey = `${assetInputUtxo.txid}:${assetInputUtxo.vout}`;
-  const sats = allUtxos
-    .filter(u => `${u.txid}:${u.vout}` !== assetKey && u.value > DUST)
-    .sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos
+    .filter(u => `${u.txid}:${u.vout}` !== assetKey && u.value > DUST));
   if (sats.length === 0) {
     throw new Error('no plain-sats UTXOs available to fund the swap commit');
   }
@@ -17464,10 +17546,10 @@ async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress =
 
   // Pick sat inputs for commit, EXCLUDING the asset UTXO.
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u =>
+  const sats = sortSatsForCommit(allUtxos.filter(u =>
     u.value > DUST &&
     !(u.txid === exactUtxo.utxo.txid && u.vout === exactUtxo.utxo.vout)
-  ).sort((a, b) => b.value - a.value);
+  ));
   const picked = []; let total = 0;
   let commitFee = 500;
   for (const u of sats) {
@@ -17984,7 +18066,7 @@ async function buildAndBroadcastWithdraw({
   const commitP2trValue = DUST + revealFee;
 
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const picked = []; let total = 0;
   let commitFee = 500;
   for (const u of sats) {
@@ -18190,10 +18272,9 @@ async function buildAndBroadcastTDrop({
 
   const allUtxos = await getUtxos(wallet.address());
   const assetUtxoKeys = new Set(pickedUtxos.map(u => `${u.utxo.txid}:${u.utxo.vout}`));
-  const sats = allUtxos
+  const sats = sortSatsForCommit(allUtxos
     .filter(u => !assetUtxoKeys.has(`${u.txid}:${u.vout}`))
-    .filter(u => u.value > DUST)
-    .sort((a, b) => b.value - a.value);
+    .filter(u => u.value > DUST));
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
     pickedSats.push(u); totalSats += u.value;
@@ -18389,7 +18470,7 @@ async function buildAndBroadcastTDClaim({
   const commitValue = DUST + revealFee;
 
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
     pickedSats.push(u); totalSats += u.value;
@@ -18592,7 +18673,7 @@ async function buildAndBroadcastTDropReclaim({
   const commitValue = DUST + revealFee;
 
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
     pickedSats.push(u); totalSats += u.value;
@@ -18712,7 +18793,7 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
   const commitValue = DUST + revealFee;
 
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const picked = []; let total = 0;
   let commitFee = 500;
   for (const u of sats) {
@@ -18992,10 +19073,9 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
 
   const allUtxos = await getUtxos(wallet.address());
   const assetUtxoKeys = new Set(pickedAssetUtxos.map(x => `${x.utxo.txid}:${x.utxo.vout}`));
-  const sats = allUtxos
+  const sats = sortSatsForCommit(allUtxos
     .filter(u => !assetUtxoKeys.has(`${u.txid}:${u.vout}`))
-    .filter(u => u.value > DUST)
-    .sort((a, b) => b.value - a.value);
+    .filter(u => u.value > DUST));
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
     pickedSats.push(u); totalSats += u.value;
@@ -19276,7 +19356,7 @@ async function buildAxferOffer({ utxoTxid, utxoVout, recipientPubHex, priceSats,
   const commitValue = DUST + revealFee; // padding; taker will provide additional inputs to cover BTC payment and any deficit
   const allUtxos = await getUtxos(wallet.address());
   const exclude = new Set([`${utxoTxid}:${utxoVout}`]);
-  const sats = allUtxos.filter(u => !exclude.has(`${u.txid}:${u.vout}`)).filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => !exclude.has(`${u.txid}:${u.vout}`)).filter(u => u.value > DUST));
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
     pickedSats.push(u); totalSats += u.value;
@@ -19618,7 +19698,7 @@ async function takeAxferOffer(offer, { onProgress = null } = {}) {
 
   _progress('sign-start');
   const allUtxos = await getUtxos(wallet.address());
-  const usable = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const usable = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const picked = []; let total = 0;
   for (const u of usable) {
     picked.push(u); total += u.value;
@@ -19942,7 +20022,7 @@ async function publishAxferIntent({ utxoTxid, utxoVout, priceSats, expiry, onPro
 
   const allUtxos = await getUtxos(wallet.address());
   const exclude = new Set([`${utxoTxid}:${utxoVout}`]);
-  const sats = allUtxos.filter(u => !exclude.has(`${u.txid}:${u.vout}`)).filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => !exclude.has(`${u.txid}:${u.vout}`)).filter(u => u.value > DUST));
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
     pickedSats.push(u); totalSats += u.value;
@@ -20694,7 +20774,7 @@ async function fulfilAxferVarIntent({ assetIdHex, intentIdHex, intent, claim, au
 
   const allUtxos = await getUtxos(wallet.address());
   const exclude = new Set([`${intent.asset_utxo.txid}:${intent.asset_utxo.vout}`]);
-  const sats = allUtxos.filter(u => !exclude.has(`${u.txid}:${u.vout}`)).filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => !exclude.has(`${u.txid}:${u.vout}`)).filter(u => u.value > DUST));
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
     pickedSats.push(u); totalSats += u.value;
@@ -21521,7 +21601,7 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
 
   // Commit tx: buyer-funded.
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   // Reserve enough for: commit P2TR (commitValue) + commit fee + reveal fee
   // contribution (= price_sats already covered by commit, but the buyer also
   // pays seller payout in the reveal). The reveal funding pass below sources
@@ -21602,10 +21682,9 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
       value: commitChange,
     });
   }
-  const fundingUsable = postCommitSet
+  const fundingUsable = sortSatsForCommit(postCommitSet
     .filter(u => `${u.txid}:${u.vout}` !== assetKey)
-    .filter(u => u.value > DUST)
-    .sort((a, b) => b.value - a.value);
+    .filter(u => u.value > DUST));
 
   // Conservation: inputs (commit_value + asset.value + totalFunding) ==
   //               outputs (DUST + min_price_sats + buyerChange) + fee.
@@ -21927,7 +22006,7 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
 
   // Commit tx.
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   let pickedCommit = []; let totalCommit = 0; let commitFee = 500;
   for (const u of sats) {
     pickedCommit.push(u); totalCommit += u.value;
@@ -21992,10 +22071,9 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
   if (commitChange >= DUST) {
     postCommitSet.push({ txid: commitTxidHex, vout: 1, value: commitChange });
   }
-  const fundingUsable = postCommitSet
+  const fundingUsable = sortSatsForCommit(postCommitSet
     .filter(u => !sellerKeys.has(`${u.txid}:${u.vout}`))
-    .filter(u => u.value > DUST)
-    .sort((a, b) => b.value - a.value);
+    .filter(u => u.value > DUST));
 
   // Conservation: inputs (commit_value + Σ asset.value_i + totalFunding)
   //              == outputs (DUST + Σ min_price_sats_i + buyerChange) + fee.
@@ -22656,7 +22734,7 @@ async function buildAndBroadcastCMint({ assetIdHex, etchTxidHex, amount, onProgr
   const commitValue = DUST + revealFee;
 
   const allUtxos = await getUtxos(wallet.address());
-  const sats = allUtxos.filter(u => u.value > DUST).sort((a, b) => b.value - a.value);
+  const sats = sortSatsForCommit(allUtxos.filter(u => u.value > DUST));
   const picked = []; let total = 0; let commitFee = 500;
   for (const u of sats) {
     picked.push(u); total += u.value;
@@ -22831,10 +22909,9 @@ async function buildAndBroadcastCBurn({ assetIdHex, amount, onProgress = null })
 
   const allUtxos = await getUtxos(wallet.address());
   const assetUtxoKeys = new Set(pickedAssetUtxos.map(x => `${x.utxo.txid}:${x.utxo.vout}`));
-  const sats = allUtxos
+  const sats = sortSatsForCommit(allUtxos
     .filter(u => !assetUtxoKeys.has(`${u.txid}:${u.vout}`))
-    .filter(u => u.value > DUST)
-    .sort((a, b) => b.value - a.value);
+    .filter(u => u.value > DUST));
   const pickedSats = []; let totalSats = 0; let commitFee = 500;
   for (const u of sats) {
     pickedSats.push(u); totalSats += u.value;
@@ -22968,6 +23045,21 @@ function p2wpkhScriptFromProgram(program20) {
 // spend in a non-tacit P2WPKH transaction. `holdings` MUST be the result of a
 // successful scanHoldings() call — passing null/undefined throws to prevent
 // "scan failed → assume no asset UTXOs → spend everything" footguns.
+// Order sats UTXOs for the commit-input picker: confirmed first (so a
+// stuck mempool ancestor chain doesn't cascade into our broadcast),
+// then largest-value first (so the greedy loop terminates with fewer
+// inputs). Replaces the previous value-only sort at every commit-tx
+// build site. Pure ordering — does NOT filter; callers handle their
+// own dust / asset-exclusion gates.
+function sortSatsForCommit(utxos) {
+  return [...(utxos || [])].sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+}
+
 function selectSatsUtxosSafe(allUtxos, holdings) {
   if (!holdings || !(holdings instanceof Map)) {
     throw new Error('asset-utxo classifier unavailable: scanHoldings() must succeed before sats-send. Aborting for safety.');
@@ -29793,6 +29885,9 @@ async function fetchAmmPools() {
     if (!r || !Array.isArray(r.pools)) return [];
     _poolListCache = r.pools;
     _poolListCacheUntil = Date.now() + POOL_LIST_CACHE_MS;
+    // Keep the LP-asset synthetic-meta cache in sync with the worker's
+    // current pool list so Holdings can render LP shares with tickers.
+    try { _lpAssetIdLookupRefresh(r.pools); } catch {}
     return r.pools;
   } catch { return []; }
 }
@@ -63132,7 +63227,7 @@ export {
   // Sats-send safety primitives (exported for unit tests). The asset-UTXO
   // exclusion logic is the primary defense against accidentally destroying
   // tacit holdings via plain-Bitcoin spends, so it gets dedicated test coverage.
-  decodeP2wpkhAddress, selectSatsUtxosSafe, estSatsSendVb, buildSatsSendTx,
+  decodeP2wpkhAddress, selectSatsUtxosSafe, sortSatsForCommit, estSatsSendVb, buildSatsSendTx,
   // Wire format encoders / decoders
   encodeEnvelopeScript, decodeEnvelopeScript,
   encodeCEtchPayload, decodeCEtchPayload,
