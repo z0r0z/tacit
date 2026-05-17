@@ -5362,7 +5362,9 @@ function decodeTSlotSplitPayload(payload) {
   for (let i = 0; i < 32; i++) if (expectedOldBind[i] !== oldBindHashBytes[i]) return null;
   const nOutputs = payload[p]; p += 1;
   if (nOutputs < 2 || nOutputs > 16) return null;
-  if (p + nOutputs * 105 + 33 + 64 !== payload.length) return null;
+  // Validate length tolerating optional §5.26.4 notes tail.
+  const hostEnd = p + nOutputs * 105 + 33 + 64;
+  if (hostEnd > payload.length) return null;
   let sumDenomNew = 0n;
   const outputs = [];
   for (let i = 0; i < nOutputs; i++) {
@@ -5387,6 +5389,31 @@ function decodeTSlotSplitPayload(payload) {
   if (sumDenomNew > denomOld) return null;
   const oldOwnerPubkeyBytes = payload.slice(p, p + 33); p += 33;
   const oldOwnerSigBytes = payload.slice(p, p + 64); p += 64;
+  // §5.26.4 optional encrypted-notes tail (per-output bitmap + N notes).
+  let encryptedNotes = null;
+  if (payload.length > p) {
+    const bitmapBytes = Math.ceil(nOutputs / 8);
+    if (p + bitmapBytes > payload.length) return null;
+    const bitmap = payload.slice(p, p + bitmapBytes); p += bitmapBytes;
+    if (nOutputs % 8 !== 0) {
+      const lastByteMask = (1 << (nOutputs % 8)) - 1;
+      if ((bitmap[bitmapBytes - 1] & ~lastByteMask) !== 0) return null;
+    }
+    let notesCount = 0;
+    for (let i = 0; i < bitmapBytes; i++) {
+      let b = bitmap[i];
+      while (b) { notesCount += b & 1; b >>>= 1; }
+    }
+    if (p + notesCount * 122 !== payload.length) return null;
+    encryptedNotes = new Array(nOutputs).fill(null);
+    for (let i = 0; i < nOutputs; i++) {
+      const bit = (bitmap[Math.floor(i / 8)] >> (i % 8)) & 1;
+      if (bit) {
+        encryptedNotes[i] = bytesToHex(payload.slice(p, p + 122));
+        p += 122;
+      }
+    }
+  }
   return {
     kind: 'slot_split',
     network_tag: networkTag,
@@ -5402,6 +5429,7 @@ function decodeTSlotSplitPayload(payload) {
     outputs,
     old_owner_pubkey: bytesToHex(oldOwnerPubkeyBytes),
     old_owner_sig: bytesToHex(oldOwnerSigBytes),
+    encrypted_notes: encryptedNotes,
   };
 }
 
@@ -5464,7 +5492,18 @@ function decodeTSlotMergePayload(payload) {
       old_proof: bytesToHex(oldProof),
     });
   }
-  if (p + POST_INPUTS !== payload.length) return null;
+  // §5.26.4 optional note tail — allow hostEnd, hostEnd+1, hostEnd+123.
+  const hostEnd = p + POST_INPUTS;
+  let encryptedNote = null;
+  if (payload.length === hostEnd) {
+    // canonical, no tail
+  } else if (payload.length === hostEnd + 1 && payload[hostEnd] === 0x00) {
+    // explicit has_note=0
+  } else if (payload.length === hostEnd + 1 + 122 && payload[hostEnd] === 0x01) {
+    encryptedNote = payload.slice(hostEnd + 1, hostEnd + 1 + 122);
+  } else {
+    return null;
+  }
   const assetIdNewBytes = payload.slice(p, p + 32); p += 32;
   const dnView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
@@ -5488,6 +5527,7 @@ function decodeTSlotMergePayload(payload) {
     new_leaf_hash: bytesToHex(newLeafHashBytes),
     new_owner_pubkey: bytesToHex(newOwnerPubkeyBytes),
     new_owner_sig: bytesToHex(newOwnerSigBytes),
+    encrypted_note: encryptedNote ? bytesToHex(encryptedNote) : null,
   };
 }
 

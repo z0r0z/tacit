@@ -6367,6 +6367,11 @@ function encodeTSlotSplitPayload({
   oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof,
   outputs,                              // array of { assetIdNew, denomNew, newRecipientCommit, newLeafHash }
   oldOwnerPubkey, oldOwnerSig,
+  encryptedNotes = null,                // optional array length === outputs.length;
+                                        // each element either null (no note for that
+                                        // output) or 122-byte Uint8Array; if every
+                                        // element is null, emits bitmap-only tail.
+                                        // Pass null to omit the tail entirely.
 }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (assetIdOld.length !== 32) throw new Error('asset_id_old 32 bytes');
@@ -6423,6 +6428,27 @@ function encodeTSlotSplitPayload({
     parts.push(o.assetIdNew, denomNewLE, o.newRecipientCommit, o.newLeafHash);
   }
   parts.push(oldOwnerPubkey, oldOwnerSig);
+  // §5.26.4 optional encrypted-notes tail. Layout when present:
+  //   has_note_per_output:  ⌈n/8⌉ bytes  (LSB first; bit i = note for output i)
+  //   encrypted_note[k]:    122 bytes per output with has_note bit set
+  if (encryptedNotes !== null) {
+    if (!Array.isArray(encryptedNotes) || encryptedNotes.length !== outputs.length) {
+      throw new Error('encryptedNotes must be an array of length === outputs.length (or null to omit tail)');
+    }
+    const bitmapBytes = Math.ceil(outputs.length / 8);
+    const bitmap = new Uint8Array(bitmapBytes);
+    const notes = [];
+    for (let i = 0; i < encryptedNotes.length; i++) {
+      const note = encryptedNotes[i];
+      if (note === null) continue;
+      if (!(note instanceof Uint8Array) || note.length !== 122) {
+        throw new Error(`encryptedNotes[${i}] must be null or a 122-byte Uint8Array`);
+      }
+      bitmap[Math.floor(i / 8)] |= 1 << (i % 8);
+      notes.push(note);
+    }
+    parts.push(bitmap, ...notes);
+  }
   return concatBytes(...parts);
 }
 
@@ -6461,7 +6487,9 @@ function decodeTSlotSplitPayload(payload) {
   for (let i = 0; i < 32; i++) if (expectedOldBind[i] !== oldBindHash[i]) return null;
   const nOutputs = payload[p]; p += 1;
   if (nOutputs < 2 || nOutputs > 16) return null;
-  if (p + nOutputs * 105 + 33 + 64 !== payload.length) return null;
+  // Validate length tolerating optional §5.26.4 notes tail.
+  const hostEnd = p + nOutputs * 105 + 33 + 64;
+  if (hostEnd > payload.length) return null;
   let sumDenomNew = 0n;
   const outputs = [];
   for (let i = 0; i < nOutputs; i++) {
@@ -6483,12 +6511,41 @@ function decodeTSlotSplitPayload(payload) {
   if (sumDenomNew > denomOld) return null;
   const oldOwnerPubkey = payload.slice(p, p + 33); p += 33;
   const oldOwnerSig = payload.slice(p, p + 64); p += 64;
+  // §5.26.4 optional encrypted-notes tail:
+  //   has_note_per_output: ⌈n/8⌉ bytes (LSB-first bitmap)
+  //   encrypted_note[k]:   122 bytes per output with has_note bit set
+  let encryptedNotes = null;
+  if (payload.length > p) {
+    const bitmapBytes = Math.ceil(nOutputs / 8);
+    if (p + bitmapBytes > payload.length) return null;
+    const bitmap = payload.slice(p, p + bitmapBytes); p += bitmapBytes;
+    // Reject bitmap bits set beyond nOutputs (would be ambiguous).
+    if (nOutputs % 8 !== 0) {
+      const lastByteMask = (1 << (nOutputs % 8)) - 1;
+      if ((bitmap[bitmapBytes - 1] & ~lastByteMask) !== 0) return null;
+    }
+    let notesCount = 0;
+    for (let i = 0; i < bitmapBytes; i++) {
+      let b = bitmap[i];
+      while (b) { notesCount += b & 1; b >>>= 1; }
+    }
+    if (p + notesCount * 122 !== payload.length) return null;
+    encryptedNotes = new Array(nOutputs).fill(null);
+    for (let i = 0; i < nOutputs; i++) {
+      const bit = (bitmap[Math.floor(i / 8)] >> (i % 8)) & 1;
+      if (bit) {
+        encryptedNotes[i] = payload.slice(p, p + 122);
+        p += 122;
+      }
+    }
+  }
   return {
     kind: 'slot_split',
     networkTag, assetIdOld, denomOld,
     oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof,
     nOutputs, outputs,
     oldOwnerPubkey, oldOwnerSig,
+    encryptedNotes,
   };
 }
 
@@ -6543,6 +6600,7 @@ function encodeTSlotMergePayload({
   inputs,                              // array of { assetIdOld, denomOld, oldMerkleRoot, oldNullifierHash, oldRecipientCommitment, oldRLeaf, oldBindHash, oldProof }
   assetIdNew, denomNew, newRecipientCommit, newLeafHash,
   newOwnerPubkey, newOwnerSig,
+  encryptedNote = null,                // optional 122-byte SPEC-CBTC-ZK-FUNGIBILITY §5.26 note
 }) {
   if ((networkTag & 0xff) > 2) throw new Error('network_tag must be 0|1|2');
   if (!Array.isArray(inputs) || inputs.length < 2 || inputs.length > 16) {
@@ -6607,6 +6665,20 @@ function encodeTSlotMergePayload({
   }
   parts.push(assetIdNew, denomNewLE, newRecipientCommit, newLeafHash);
   parts.push(newOwnerPubkey, newOwnerSig);
+  // §5.26.4 optional encrypted-note tail. Three valid post-host layouts:
+  //   (a) no tail               — historical / no recipient detection wanted
+  //   (b) has_note=0 (1 byte)   — explicit "no note" marker
+  //   (c) has_note=1 (1+122)    — note for the new slot
+  if (encryptedNote === null) {
+    // emit (a) — no tail
+  } else if (encryptedNote === false || encryptedNote === 0) {
+    parts.push(new Uint8Array([0x00]));
+  } else {
+    if (!(encryptedNote instanceof Uint8Array) || encryptedNote.length !== 122) {
+      throw new Error('encryptedNote must be a 122-byte Uint8Array (or null/false)');
+    }
+    parts.push(new Uint8Array([0x01]), encryptedNote);
+  }
   return concatBytes(...parts);
 }
 
@@ -6653,7 +6725,18 @@ function decodeTSlotMergePayload(payload) {
       oldRLeaf, oldBindHash, oldProof,
     });
   }
-  if (p + POST_INPUTS !== payload.length) return null;
+  // §5.26.4 optional note tail — allow hostEnd, hostEnd+1, hostEnd+123.
+  const hostEnd = p + POST_INPUTS;
+  let encryptedNote = null;
+  if (payload.length === hostEnd) {
+    // canonical, no tail
+  } else if (payload.length === hostEnd + 1 && payload[hostEnd] === 0x00) {
+    // explicit has_note=0
+  } else if (payload.length === hostEnd + 1 + 122 && payload[hostEnd] === 0x01) {
+    encryptedNote = payload.slice(hostEnd + 1, hostEnd + 1 + 122);
+  } else {
+    return null;
+  }
   const assetIdNew = payload.slice(p, p + 32); p += 32;
   const dnView = new DataView(payload.buffer, payload.byteOffset + p, 8);
   const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
@@ -6671,6 +6754,7 @@ function decodeTSlotMergePayload(payload) {
     networkTag, nInputs, inputs,
     assetIdNew, denomNew, newRecipientCommit, newLeafHash,
     newOwnerPubkey, newOwnerSig,
+    encryptedNote,
   };
 }
 
@@ -13284,27 +13368,55 @@ async function buildAndBroadcastSlotRotate({
   };
 }
 
+// Per-network cursor for the slot-rotates scan. Persists the highest height
+// we've successfully scanned past so subsequent ticks don't re-walk old
+// rotations. Keyed per network to keep mainnet / signet bookkeeping isolated.
+const SLOT_NOTE_SCAN_CURSOR_KEY_BASE = 'tacit-slot-note-cursor';
+function _slotNoteScanCursorKey(network) {
+  return `${SLOT_NOTE_SCAN_CURSOR_KEY_BASE}:${network}`;
+}
+function _loadSlotNoteScanCursor(network) {
+  try {
+    const raw = localStorage.getItem(_slotNoteScanCursorKey(network));
+    const h = raw ? parseInt(raw, 10) : 0;
+    return Number.isInteger(h) && h >= 0 ? h : 0;
+  } catch { return 0; }
+}
+function _saveSlotNoteScanCursor(network, height) {
+  if (!Number.isInteger(height) || height < 0) return;
+  try { localStorage.setItem(_slotNoteScanCursorKey(network), String(height)); } catch {}
+}
+
 // Scan recent slot rotation envelopes from the worker, attempt to decrypt
 // each with our HKDF-derived viewing privkey, and materialize any newly-
 // detected slots into local storage. Idempotent — re-scanning skips notes
 // whose leaf_hash is already in our local set.
 //
-// The worker exposes slot rotations via the existing mixer-pool indexing
-// (slot-rotates are mixer-equivalent envelopes). For each one with a
-// successful decrypt, we reconstruct the slotRecord from the plaintext
-// + the on-chain rotation envelope's published fields. Failure modes
-// (auth-tag fail, malformed envelope, network error) are all silent;
-// scanning is best-effort and converges to the canonical chain state.
-async function scanInboundSlotNotes({ network = null, sinceHeight = 0, onProgress = null } = {}) {
+// Cursor behavior: by default uses the persisted per-network high-water mark
+// to skip already-scanned rotations and advances the cursor after a
+// successful scan. Pass `sinceHeight: 0` to force a full re-scan. Pass
+// `useCursor: false` to ignore the persisted cursor AND not advance it
+// (useful for ad-hoc inspections).
+//
+// The worker exposes slot rotations at GET /slot-rotates?network=<net>
+// &since_height=<H>. Failure modes (auth-tag fail, malformed envelope,
+// network error) are all silent; scanning is best-effort and converges
+// to the canonical chain state.
+async function scanInboundSlotNotes({
+  network = null,
+  sinceHeight = null,
+  useCursor = true,
+  onProgress = null,
+} = {}) {
   if (!wallet || !wallet.priv) return { scanned: 0, detected: 0 };
   const _net = network || NET.name;
+  const cursorHeight = useCursor ? _loadSlotNoteScanCursor(_net) : 0;
+  const effectiveSince = sinceHeight !== null ? sinceHeight : cursorHeight;
   const skView = _slotViewingPrivkey();
   let scanned = 0, detected = 0;
+  let maxHeightSeen = cursorHeight;
   try {
-    // Pull recent slot-rotation envelopes from the worker. Endpoint format
-    // mirrors /mixer-leaves: `/slot-rotates?network=<net>&since_height=<H>`.
-    // If the endpoint isn't deployed yet, this just returns 0 detected.
-    const res = await fetch(`${WORKER_BASE}/slot-rotates?network=${_net}&since_height=${sinceHeight}`);
+    const res = await fetch(`${WORKER_BASE}/slot-rotates?network=${_net}&since_height=${effectiveSince}`);
     if (!res.ok) return { scanned: 0, detected: 0 };
     const body = await res.json().catch(() => ({}));
     const rotates = Array.isArray(body?.rotates) ? body.rotates : [];
@@ -13312,7 +13424,13 @@ async function scanInboundSlotNotes({ network = null, sinceHeight = 0, onProgres
     for (const r of rotates) {
       scanned++;
       try { onProgress && onProgress({ scanned, detected }); } catch {}
-      const noteHex = r.encrypted_note_hex || r.note_hex;
+      const h = Number(r.height || 0);
+      if (Number.isInteger(h) && h > maxHeightSeen) maxHeightSeen = h;
+      // Worker writes the encrypted-note tail as `encrypted_note` (hex
+      // string or null), per scanForEtches T_SLOT_ROTATE indexing.
+      // `encrypted_note_hex` / `note_hex` retained as aliases for any
+      // future indexer that uses the more-explicit naming.
+      const noteHex = r.encrypted_note || r.encrypted_note_hex || r.note_hex;
       if (!noteHex) continue;
       let noteBytes;
       try { noteBytes = hexToBytes(noteHex); } catch { continue; }
@@ -13372,7 +13490,13 @@ async function scanInboundSlotNotes({ network = null, sinceHeight = 0, onProgres
     // Worker endpoint may not be deployed yet — silent best-effort scan.
     if (typeof console !== 'undefined') console.debug?.('slot-note scan: worker endpoint unavailable, skipping', e?.message || e);
   }
-  return { scanned, detected };
+  // Advance the cursor only when this scan call was using cursor mode.
+  // Ad-hoc full scans (useCursor: false) don't touch the cursor so they
+  // don't accidentally lose history if the user runs them mid-rescan.
+  if (useCursor && maxHeightSeen > cursorHeight) {
+    _saveSlotNoteScanCursor(_net, maxHeightSeen);
+  }
+  return { scanned, detected, cursor: maxHeightSeen };
 }
 
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {

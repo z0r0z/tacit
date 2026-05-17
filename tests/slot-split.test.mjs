@@ -252,5 +252,84 @@ group('Encoder input validation');
   ok('empty proof rejected', typeof threw === 'string' && threw.includes('old_proof'));
 }
 
+// ============== Group 6: optional encrypted-notes tail ==============
+// Per SPEC-CBTC-ZK-FUNGIBILITY §5.26.4 — SPLIT supports one note per output
+// via a packed bitmap (LSB-first, ⌈n/8⌉ bytes) followed by N notes for
+// outputs with has_note bit set.
+group('Optional encrypted-notes tail (§5.26.4)');
+{
+  const fx = buildFixture();
+  const noTail = dapp.encodeTSlotSplitPayload(fx);
+
+  // All-null array → emits 1-byte bitmap of zeros, no notes
+  const allNullArr = new Array(fx.outputs.length).fill(null);
+  const explicitNoNotes = dapp.encodeTSlotSplitPayload({ ...fx, encryptedNotes: allNullArr });
+  ok('encryptedNotes=[null,null,null,null] adds 1-byte zero bitmap',
+    explicitNoNotes.length === noTail.length + 1 && explicitNoNotes[noTail.length] === 0x00);
+
+  // Two notes attached at outputs 0 and 2
+  const note0 = new Uint8Array(122);
+  for (let i = 0; i < 122; i++) note0[i] = (i * 7 + 3) & 0xff;
+  const note2 = new Uint8Array(122);
+  for (let i = 0; i < 122; i++) note2[i] = (i * 13 + 17) & 0xff;
+  const mixedNotes = [note0, null, note2, null];
+  const withNotes = dapp.encodeTSlotSplitPayload({ ...fx, encryptedNotes: mixedNotes });
+  ok('two notes attached → tail = 1 byte bitmap + 2*122 bytes notes',
+    withNotes.length === noTail.length + 1 + 2 * 122);
+  ok('bitmap has bits 0 and 2 set (LSB-first → 0b00000101 = 0x05)',
+    withNotes[noTail.length] === 0x05);
+
+  // Decoder round-trips
+  const d0 = dapp.decodeTSlotSplitPayload(noTail);
+  ok('decoder: no tail → encryptedNotes === null', d0 && d0.encryptedNotes === null);
+
+  const d1 = dapp.decodeTSlotSplitPayload(explicitNoNotes);
+  ok('decoder: zero bitmap → encryptedNotes === [null, null, null, null]',
+    d1 && Array.isArray(d1.encryptedNotes) && d1.encryptedNotes.every(n => n === null));
+
+  const d2 = dapp.decodeTSlotSplitPayload(withNotes);
+  ok('decoder: mixed notes → array of correct length',
+    d2 && Array.isArray(d2.encryptedNotes) && d2.encryptedNotes.length === fx.outputs.length);
+  ok('decoder: output[0] has note',
+    d2 && d2.encryptedNotes[0] !== null && bytesToHex(d2.encryptedNotes[0]) === bytesToHex(note0));
+  ok('decoder: output[1] has no note',
+    d2 && d2.encryptedNotes[1] === null);
+  ok('decoder: output[2] has note', d2 && bytesToHex(d2.encryptedNotes[2]) === bytesToHex(note2));
+  ok('decoder: output[3] has no note', d2 && d2.encryptedNotes[3] === null);
+
+  // Worker parity
+  const w2 = workerDecode(withNotes);
+  ok('worker: encrypted_notes is array of length 4',
+    w2 && Array.isArray(w2.encrypted_notes) && w2.encrypted_notes.length === 4);
+  ok('worker: output[0] note hex matches', w2 && w2.encrypted_notes[0] === bytesToHex(note0));
+  ok('worker: output[1] note is null', w2 && w2.encrypted_notes[1] === null);
+
+  // Bitmap with bit set beyond nOutputs → null (ambiguity)
+  // n=4 means valid bits are 0-3 (lower nibble). Bit 4 (0x10) is invalid.
+  const badBitmap = new Uint8Array(noTail.length + 1);
+  badBitmap.set(noTail); badBitmap[noTail.length] = 0x10;
+  ok('bitmap bit beyond n_outputs → null (dapp)',
+    dapp.decodeTSlotSplitPayload(badBitmap) === null);
+  ok('bitmap bit beyond n_outputs → null (worker)',
+    workerDecode(badBitmap) === null);
+
+  // Truncated tail → null
+  const truncTail = withNotes.slice(0, withNotes.length - 50);
+  ok('truncated note tail → null (dapp)',
+    dapp.decodeTSlotSplitPayload(truncTail) === null);
+  ok('truncated note tail → null (worker)', workerDecode(truncTail) === null);
+
+  // Encoder validation
+  let threw = false;
+  try { dapp.encodeTSlotSplitPayload({ ...fx, encryptedNotes: [null, null, null] }); }
+  catch (e) { threw = String(e.message || e).includes('length === outputs.length'); }
+  ok('encoder: wrong-length encryptedNotes array rejected', threw);
+
+  threw = false;
+  try { dapp.encodeTSlotSplitPayload({ ...fx, encryptedNotes: [null, new Uint8Array(100), null, null] }); }
+  catch (e) { threw = String(e.message || e).includes('122-byte'); }
+  ok('encoder: non-122-byte note element rejected', threw);
+}
+
 console.log(`\n${pass} passed, ${fail} failed.`);
 process.exit(fail === 0 ? 0 : 1);

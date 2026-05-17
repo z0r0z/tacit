@@ -255,7 +255,63 @@ group('Encoder input validation');
   ok('denom_new = 0 rejected', typeof threw === 'string' && threw.includes('denom_new'));
 }
 
-// ============== Group 6: conservation enforcement ==============
+// ============== Group 6 (new): optional encrypted-note tail ==============
+// Per SPEC-CBTC-ZK-FUNGIBILITY §5.26.4 — MERGE produces one new slot, so
+// at most one note can be attached.
+group('Optional encrypted-note tail (§5.26.4)');
+{
+  const fx = buildFixture();
+  const noTail = dapp.encodeTSlotMergePayload(fx);
+  const explicitNoNote = dapp.encodeTSlotMergePayload({ ...fx, encryptedNote: false });
+  ok('encryptedNote=false adds 1-byte has_note=0',
+    explicitNoNote.length === noTail.length + 1 && explicitNoNote[noTail.length] === 0x00);
+
+  const note122 = new Uint8Array(122);
+  for (let i = 0; i < 122; i++) note122[i] = (i * 13 + 5) & 0xff;
+  const withNote = dapp.encodeTSlotMergePayload({ ...fx, encryptedNote: note122 });
+  ok('encryptedNote=Uint8Array(122) adds 1+122 tail',
+    withNote.length === noTail.length + 1 + 122 && withNote[noTail.length] === 0x01);
+
+  // Decoder round-trip: no tail → encryptedNote === null
+  const d0 = dapp.decodeTSlotMergePayload(noTail);
+  ok('decoder: no tail → encryptedNote === null', d0 && d0.encryptedNote === null);
+
+  // Decoder round-trip: explicit has_note=0 → null
+  const d1 = dapp.decodeTSlotMergePayload(explicitNoNote);
+  ok('decoder: has_note=0 → encryptedNote === null', d1 && d1.encryptedNote === null);
+
+  // Decoder round-trip: has_note=1 → 122-byte note
+  const d2 = dapp.decodeTSlotMergePayload(withNote);
+  ok('decoder: has_note=1 → encryptedNote present',
+    d2 && d2.encryptedNote !== null && d2.encryptedNote.length === 122);
+  ok('decoder: has_note=1 → note bytes match',
+    d2 && bytesToHex(d2.encryptedNote) === bytesToHex(note122));
+
+  // Worker parity
+  const w2 = workerDecode(withNote);
+  ok('worker: has_note=1 → encrypted_note hex present',
+    w2 && w2.encrypted_note === bytesToHex(note122));
+
+  // Invalid has_note byte (e.g., 0x02) → null
+  const badHasNote = new Uint8Array(noTail.length + 1);
+  badHasNote.set(noTail); badHasNote[noTail.length] = 0x02;
+  ok('invalid has_note byte → null (dapp)', dapp.decodeTSlotMergePayload(badHasNote) === null);
+  ok('invalid has_note byte → null (worker)', workerDecode(badHasNote) === null);
+
+  // Wrong-length note (has_note=1 but note bytes truncated) → null
+  const shortNote = new Uint8Array(noTail.length + 1 + 100);
+  shortNote.set(noTail); shortNote[noTail.length] = 0x01;
+  ok('truncated note → null (dapp)', dapp.decodeTSlotMergePayload(shortNote) === null);
+  ok('truncated note → null (worker)', workerDecode(shortNote) === null);
+
+  // Encoder validation: wrong-size note → throws
+  let threw = false;
+  try { dapp.encodeTSlotMergePayload({ ...fx, encryptedNote: new Uint8Array(100) }); }
+  catch (e) { threw = String(e.message || e).includes('122-byte'); }
+  ok('encoder: non-122-byte note rejected', threw);
+}
+
+// ============== Group 7: conservation enforcement ==============
 group('Conservation enforcement (Σ denom_old ≥ denom_new)');
 {
   const fx = buildFixture();
