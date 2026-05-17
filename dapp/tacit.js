@@ -52810,7 +52810,7 @@ function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, t
   }
   const slipNow = widget.querySelector('[data-swap-slippage]')?.value;
   const slipNote = slipNow ? ` · slip ${slipNow}%` : '';
-  toast(`${direction === 'sell' ? 'Selling' : 'Buying'} ${displayStr} ${ticker || ''} — review the Swap tile above and tap Swap to confirm${slipNote}`, '', 4000);
+  toast(`${direction === 'sell' ? 'Selling' : 'Buying'} ${displayStr} ${ticker || ''} — review the Swap tile above and tap ${direction === 'sell' ? 'SELL' : 'BUY'} to confirm${slipNote}`, '', 4000);
 }
 
 // Cross-asset Open Orders dashboard for the Holdings tab. Walks every
@@ -54660,7 +54660,7 @@ function _wireSwapTile(scope) {
         } else {
           actionBtn.disabled = false; actionBtn.style.opacity = '1';
           delete actionBtn.dataset.swapNeedsFunds;
-          actionBtn.textContent = swapLabel(`SWAP ≥ ${accStrCompact} ${ticker}`);
+          actionBtn.textContent = swapLabel(`BUY ≥ ${accStrCompact} ${ticker}`);
         }
         return;
       }
@@ -54721,7 +54721,7 @@ function _wireSwapTile(scope) {
         actionBtn.textContent = `need ${accStrCompact} ${ticker}, only ${fmtAssetAmountCompact(bal, decimals)} held`;
       } else {
         actionBtn.disabled = false; actionBtn.style.opacity = '1';
-        actionBtn.textContent = swapLabel(`SWAP ${accStrCompact} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats`);
+        actionBtn.textContent = swapLabel(`SELL ${accStrCompact} ${ticker} → ≥ ${result.totalSats.toLocaleString()} sats`);
       }
       return;
     }
@@ -54952,7 +54952,7 @@ function _wireSwapTile(scope) {
       } else {
         actionBtn.disabled = false; actionBtn.style.opacity = '1';
         delete actionBtn.dataset.swapNeedsFunds;
-        actionBtn.textContent = swapLabel(`SWAP → ${accStrCompact} ${ticker}`);
+        actionBtn.textContent = swapLabel(`BUY ${accStrCompact} ${ticker}`);
       }
     } else {
       // SELL direction: raw is ticker amount.
@@ -55099,7 +55099,7 @@ function _wireSwapTile(scope) {
         actionBtn.textContent = 'top up sats for fees';
       } else {
         actionBtn.disabled = false; actionBtn.style.opacity = '1';
-        actionBtn.textContent = swapLabel(`SWAP → ${result.totalSats.toLocaleString()} sats`);
+        actionBtn.textContent = swapLabel(`SELL for ${result.totalSats.toLocaleString()} sats`);
       }
     }
   };

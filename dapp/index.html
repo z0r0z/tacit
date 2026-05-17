@@ -544,6 +544,22 @@ button.market-chip .chip-caret {
 .market-bids-row--click-ack {
   animation: click-ack-flash-sell 420ms ease-out;
 }
+/* Focus rings for the now-keyboard-navigable orderbook rows (tabindex
+   was added in the same commit that wired Enter/Space). Browser-
+   default outlines are inconsistent across UAs and clash with the
+   solid-border tile look; explicit focus-visible rules match the
+   brand color of the row's trade side so keyboard users see a clear
+   "you've focused this row" signal without polluting mouse hovers. */
+.market-listing-tile[data-fill-aid]:focus-visible {
+  outline: 2px solid #f7931a;
+  outline-offset: -2px;
+  z-index: 1;
+}
+.market-bids-row[data-fill-aid]:focus-visible {
+  outline: 2px solid #0a8f43;
+  outline-offset: -2px;
+  z-index: 1;
+}
 /* Live indicator: a small pulsing dot near the orderbook header to
    signal that auto-refresh is on. */
 .market-live-dot {
@@ -4515,9 +4531,10 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 
         <div id="sats-preview" style="display:none;"></div>
 
-        <div class="flex" style="margin-top:18px;">
+        <div class="flex" style="margin-top:18px;align-items:center;gap:10px;">
           <button id="btn-sats-preview">1. Review send</button>
           <button id="btn-sats-broadcast" class="primary" disabled title="Click 'Review send' first to see exactly which UTXOs will be spent.">2. Confirm &amp; send</button>
+          <span id="sats-status" class="muted" style="font-size:11px;"></span>
         </div>
         <div class="muted" style="margin-top:6px;font-size:11px;">Review the inputs below before broadcasting — once sent, it can't be undone.</div>
         <div id="sats-error" class="error"></div>
