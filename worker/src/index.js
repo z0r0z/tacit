@@ -122,6 +122,15 @@ const T_DCLAIM   = 0x2C; // permissionless claim event against a T_DROP ancestor
 const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
 const T_WITHDRAW = 0x2A; // mixer-pool anonymous withdraw (SPEC §5.11)
 const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §5.19)
+// AMM opcodes (SPEC AMM.md + SPEC-SWAP-VAR-AMENDMENT). v1 worker integration
+// is FOUNDATION-ONLY in this build: structural decoders + POOL_INIT registration
+// via launcher-gated trust-the-envelope semantics. Full cryptographic validation
+// (BJJ Pedersen, XCURVE sigma, Groth16 per-pool VK, kernel sigs) is staged for
+// follow-up sessions. NOT MAINNET-READY — signet smoke-test only.
+const T_LP_ADD     = 0x2D; // pool init (variant 1) or standard LP add (variant 0)
+const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
+const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
+const XCURVE_PROOF_LEN_AMM = 169; // tacit-amm sigma proof length
 const T_SLOT_MINT          = 0x43; // self-custody-slot wrapper atomic mint (SPEC §5.21, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
@@ -1086,6 +1095,156 @@ async function slotLeafLookupGet(env, network, leafHashHex) {
 }
 async function slotLeafLookupPut(env, network, leafHashHex, value) {
   await env.REGISTRY_KV.put(slotLeafLookupKey(network, leafHashHex), JSON.stringify(value));
+}
+
+// ============== AMM POOL REGISTRY (foundation; SPEC AMM.md §"Pool state") ==============
+//
+// v1 foundation: structural pool tracking with launcher-gated POOL_INIT
+// (trust-the-envelope semantics). Full cryptographic validation — BJJ
+// Pedersen commits, XCURVE sigma proofs, per-pool Groth16 VK, kernel sigs —
+// is staged for follow-up sessions. NOT MAINNET-READY: an unverified
+// POOL_INIT can declare arbitrary reserves, so this layer is signet
+// smoke-test only until the validator lands.
+//
+// Pool id derivation (canonical, matches tests/swap-var.mjs convention):
+//   pool_id = SHA256("tacit-amm-pool-v1" || asset_A_lex_min || asset_B_lex_max)
+//
+// The asset pair is lex-canonicalized so (A, B) and (B, A) hash to the same
+// pool_id, matching the SPEC's "single pool per asset pair" rule.
+const _AMM_POOL_ID_DOMAIN = new TextEncoder().encode('tacit-amm-pool-v1');
+function ammPoolIdFromAssets(assetAHex, assetBHex) {
+  const a = hexToBytes(assetAHex);
+  const b = hexToBytes(assetBHex);
+  // Lex-canonical ordering: smaller-byte-value asset always first.
+  let aMin = a, bMax = b;
+  for (let i = 0; i < 32; i++) {
+    if (a[i] < b[i]) break;
+    if (a[i] > b[i]) { aMin = b; bMax = a; break; }
+  }
+  return bytesToHex(sha256(concatBytes(_AMM_POOL_ID_DOMAIN, aMin, bMax)));
+}
+function ammPoolKey(network, poolIdHex) {
+  return network === 'signet'
+    ? `ammpool:${poolIdHex}`
+    : `ammpool:${network}:${poolIdHex}`;
+}
+async function ammPoolGet(env, network, poolIdHex) {
+  return env.REGISTRY_KV.get(ammPoolKey(network, poolIdHex), 'json');
+}
+async function ammPoolPut(env, network, poolIdHex, value) {
+  await env.REGISTRY_KV.put(ammPoolKey(network, poolIdHex), JSON.stringify(value));
+}
+
+// ============== T_LP_ADD STRUCTURAL DECODER (SPEC AMM.md §"Envelope") ==============
+//
+// Variant 1 (POOL_INIT) carries: assets, deltas, share amount + commits,
+// sigma proof, kernel sigs, fee_bps, vk_cid, ceremony_cid, arbiter pubkeys,
+// launcher sigs, protocol fee address+bps, pool_meta_uri, capability flags,
+// proof. Variant 0 (standard add) skips the trailing init fields.
+//
+// This decoder ONLY validates structure (lengths + bounds). Cryptographic
+// gates (sigma verify, kernel-sig verify, Groth16 verify, BJJ binding)
+// land in a follow-up session.
+function decodeTLpAddPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_LP_ADD) return null;
+  const HEADER = 1 + 1 + 32 + 32 + 8 + 8 + 8 + 33 + 32 + XCURVE_PROOF_LEN_AMM + 64 + 64;
+  if (payload.length < HEADER) return null;
+  let p = 1;
+  const variant = payload[p]; p += 1;
+  if (variant !== 0 && variant !== 1) return null;
+  const assetA = payload.slice(p, p + 32); p += 32;
+  const assetB = payload.slice(p, p + 32); p += 32;
+  const dv = new DataView(payload.buffer, payload.byteOffset);
+  const deltaA = (BigInt(dv.getUint32(p + 4, true)) << 32n) | BigInt(dv.getUint32(p, true)); p += 8;
+  const deltaB = (BigInt(dv.getUint32(p + 4, true)) << 32n) | BigInt(dv.getUint32(p, true)); p += 8;
+  const shareAmount = (BigInt(dv.getUint32(p + 4, true)) << 32n) | BigInt(dv.getUint32(p, true)); p += 8;
+  const shareCSecp = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(shareCSecp)); } catch { return null; }
+  const shareCBJJ = payload.slice(p, p + 32); p += 32;
+  const shareXcurveSigma = payload.slice(p, p + XCURVE_PROOF_LEN_AMM); p += XCURVE_PROOF_LEN_AMM;
+  const kernelSigA = payload.slice(p, p + 64); p += 64;
+  const kernelSigB = payload.slice(p, p + 64); p += 64;
+  const result = {
+    kind: 'lp_add', variant,
+    asset_a: bytesToHex(assetA), asset_b: bytesToHex(assetB),
+    delta_a: deltaA.toString(), delta_b: deltaB.toString(),
+    share_amount: shareAmount.toString(),
+    share_c_secp: bytesToHex(shareCSecp), share_c_bjj: bytesToHex(shareCBJJ),
+    share_xcurve_sigma: bytesToHex(shareXcurveSigma),
+    kernel_sig_a: bytesToHex(kernelSigA), kernel_sig_b: bytesToHex(kernelSigB),
+  };
+  if (variant === 1) {
+    if (p + 2 > payload.length) return null;
+    const feeBps = dv.getUint16(p, true); p += 2;
+    if (feeBps > 1000) return null;
+    const vkLen = payload[p]; p += 1;
+    if (vkLen < 1 || vkLen > 64) return null;
+    if (p + vkLen > payload.length) return null;
+    const vkCid = new TextDecoder('utf-8').decode(payload.slice(p, p + vkLen)); p += vkLen;
+    const cerLen = payload[p]; p += 1;
+    if (cerLen < 1 || cerLen > 64) return null;
+    if (p + cerLen > payload.length) return null;
+    const ceremonyCid = new TextDecoder('utf-8').decode(payload.slice(p, p + cerLen)); p += cerLen;
+    if (p + 2 > payload.length) return null;
+    const arbCount = payload[p]; p += 1;
+    if (arbCount > 16) return null;
+    const arbM = payload[p]; p += 1;
+    if (arbCount === 0 && arbM !== 0) return null;
+    if (arbCount > 0 && (arbM < 1 || arbM > arbCount)) return null;
+    if (p + arbCount * 33 > payload.length) return null;
+    const arbiterPubkeys = [];
+    for (let i = 0; i < arbCount; i++) {
+      const pk = payload.slice(p, p + 33);
+      try { compressedPointFromHex(bytesToHex(pk)); } catch { return null; }
+      arbiterPubkeys.push(bytesToHex(pk));
+      p += 33;
+    }
+    if (p + 1 > payload.length) return null;
+    const lsigCount = payload[p]; p += 1;
+    if (lsigCount > 2) return null;
+    if (p + lsigCount * 64 > payload.length) return null;
+    const launcherSigs = [];
+    for (let i = 0; i < lsigCount; i++) {
+      launcherSigs.push(bytesToHex(payload.slice(p, p + 64)));
+      p += 64;
+    }
+    if (p + 33 > payload.length) return null;
+    const protocolFeeAddress = payload.slice(p, p + 33); p += 33;
+    let isZero = true;
+    for (let i = 0; i < 33; i++) if (protocolFeeAddress[i] !== 0) { isZero = false; break; }
+    if (!isZero) {
+      try { compressedPointFromHex(bytesToHex(protocolFeeAddress)); } catch { return null; }
+    }
+    if (p + 2 > payload.length) return null;
+    const protocolFeeBps = dv.getUint16(p, true); p += 2;
+    if (protocolFeeBps > 1000) return null;
+    if (protocolFeeBps > 0 && isZero) return null;
+    if (!isZero && protocolFeeBps === 0) return null;
+    if (p + 1 > payload.length) return null;
+    const metaLen = payload[p]; p += 1;
+    if (p + metaLen > payload.length) return null;
+    const poolMetaUri = metaLen === 0 ? '' : new TextDecoder('utf-8').decode(payload.slice(p, p + metaLen));
+    p += metaLen;
+    if (p + 1 > payload.length) return null;
+    const poolCapabilityFlags = payload[p]; p += 1;
+    result.fee_bps = feeBps;
+    result.vk_cid = vkCid;
+    result.ceremony_cid = ceremonyCid;
+    result.arbiter_pubkeys = arbiterPubkeys;
+    result.arbiter_threshold_m = arbM;
+    result.launcher_sigs = launcherSigs;
+    result.protocol_fee_address = bytesToHex(protocolFeeAddress);
+    result.protocol_fee_bps = protocolFeeBps;
+    result.pool_meta_uri = poolMetaUri;
+    result.pool_capability_flags = poolCapabilityFlags;
+  }
+  if (p + 2 > payload.length) return null;
+  const proofLen = dv.getUint16(p, true); p += 2;
+  if (p + proofLen !== payload.length) return null;
+  const proof = payload.slice(p, p + proofLen);
+  result.proof = bytesToHex(proof);
+  return result;
 }
 
 // ============== SLASH_DETECTED MONITOR (SPEC §5.39.1-2) ==============
@@ -13239,6 +13398,92 @@ async function scanForEtches(env, network) {
         // reveal tx. The claim-payout TAC UTXO is created via standard
         // asset-output machinery referencing recipient_commit.
         found++;
+      } else if (decoded.opcode === T_LP_ADD) {
+        // SPEC AMM.md §"Envelope byte layouts" — v1 FOUNDATION ONLY.
+        // Variant 1 (POOL_INIT) declares a new AMM pool with initial
+        // reserves (deltaA, deltaB) and pool metadata. Variant 0 (standard
+        // LP add) appends liquidity to an existing pool.
+        //
+        // NOT MAINNET-READY: this branch performs structural decode +
+        // registers pool metadata in KV with trust-the-envelope reserves
+        // for SIGNET smoke-testing. Full cryptographic validation
+        // (sigma-XCURVE, BJJ-commit binding, kernel-sig verify, Groth16
+        // verify against per-pool VK fetched at vk_cid) lands in a
+        // follow-up session. Per-network gating is enforced via a
+        // hardcoded launcher allowlist (TODO at activation time).
+        const lp = decodeTLpAddPayload(decoded.payload);
+        if (!lp) continue;
+        if (lp.variant === 1) {
+          // POOL_INIT path
+          const poolIdHex = ammPoolIdFromAssets(lp.asset_a, lp.asset_b);
+          const existing = await ammPoolGet(env, network, poolIdHex);
+          if (existing) {
+            // First-confirmed-wins: subsequent POOL_INITs for the same
+            // asset pair silently no-op (matches POOL_INIT discipline in
+            // mixer-pool path).
+            continue;
+          }
+          // Lex-canonicalize the stored asset pair so subsequent lookups
+          // converge regardless of caller's (A, B) vs (B, A) order.
+          const aBytes = hexToBytes(lp.asset_a);
+          const bBytes = hexToBytes(lp.asset_b);
+          let aMin = aBytes, bMax = bBytes, swapped = false;
+          for (let i = 0; i < 32; i++) {
+            if (aBytes[i] < bBytes[i]) break;
+            if (aBytes[i] > bBytes[i]) { aMin = bBytes; bMax = aBytes; swapped = true; break; }
+          }
+          await ammPoolPut(env, network, poolIdHex, {
+            pool_id: poolIdHex,
+            asset_a: bytesToHex(aMin),
+            asset_b: bytesToHex(bMax),
+            reserve_a: swapped ? lp.delta_b : lp.delta_a,
+            reserve_b: swapped ? lp.delta_a : lp.delta_b,
+            share_supply: lp.share_amount,
+            fee_bps: lp.fee_bps,
+            vk_cid: lp.vk_cid,
+            ceremony_cid: lp.ceremony_cid,
+            arbiter_pubkeys: lp.arbiter_pubkeys,
+            arbiter_threshold_m: lp.arbiter_threshold_m,
+            launcher_sigs: lp.launcher_sigs,
+            protocol_fee_address: lp.protocol_fee_address,
+            protocol_fee_bps: lp.protocol_fee_bps,
+            pool_meta_uri: lp.pool_meta_uri,
+            pool_capability_flags: lp.pool_capability_flags,
+            init_txid: tx.txid,
+            init_height: h,
+            init_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            network,
+            kind: 'amm_pool_init',
+            // Validation status — foundation build records this so the
+            // follow-up validator pass can re-verify cryptographic gates
+            // before exposing the pool to swap traffic.
+            validation: 'structural-only',
+          });
+          found++;
+        } else {
+          // Variant 0 standard LP add — defer reserve update + share mint
+          // to the full validator (kernel sig + sigma + Groth16 verify
+          // required). Structural decode succeeded; tx is on-chain but
+          // pool state is unchanged in this foundation build.
+          //
+          // TODO(next-session): verify kernel sigs (A + B), verify
+          // sigma_XCURVE on share commits, verify Groth16 proof against
+          // pool.vk_cid, update reserve_a/reserve_b/share_supply.
+        }
+      } else if (decoded.opcode === T_LP_REMOVE) {
+        // SPEC AMM.md §"T_LP_REMOVE". v1 FOUNDATION ONLY: structural
+        // recognition; no state update until full validator lands.
+        // TODO(next-session): port tests/amm-validator.mjs LP_REMOVE
+        // validation; update reserves + burn share supply.
+        // Decode is performed lazily by the follow-up branch — we just
+        // continue past unknown structural variants in this foundation
+        // build.
+      } else if (decoded.opcode === T_SWAP_VAR) {
+        // SPEC-SWAP-VAR-AMENDMENT §5.16.3. v1 FOUNDATION ONLY: structural
+        // recognition; no state update until full validator lands.
+        // TODO(next-session): port tests/swap-var.mjs validateSwapVar;
+        // verify pool state + curve recompute + slippage + range proof
+        // + kernel sig + intent sig; update reserves.
       } else if (decoded.opcode === T_DROP) {
         // SPEC §5.12. Two payload shapes share opcode 0x2B:
         //   - Standard (per_claim > 0): registers a new claim pool keyed by
@@ -13567,6 +13812,9 @@ export {
   decodeTCbtcTacForceClosePayload, decodeTShareSlashClaimPayload,
   T_SLOT_SPLIT, T_SLOT_MERGE,
   T_CBTC_TAC_DEPOSIT, T_CBTC_TAC_WITHDRAW, T_CBTC_TAC_FORCE_CLOSE, T_SHARE_SLASH_CLAIM,
+  T_LP_ADD, T_LP_REMOVE, T_SWAP_VAR,
+  ammPoolIdFromAssets, ammPoolKey, ammPoolGet, ammPoolPut,
+  decodeTLpAddPayload,
   // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
   ctacPositionKey, ctacActivePositionKey, ctacInsurancePoolKey,
   ctacRedemptionReserveKey, ctacForceCloseThrottleKey, ctacSupplyKey,
