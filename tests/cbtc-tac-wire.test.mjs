@@ -360,6 +360,55 @@ if (typeof dapp.getAssetMeta === 'function') {
     dapp.getAssetMeta('a'.repeat(64)) === null);
 }
 
+// ============== canonical manifest (IPFS-pinnable) ==============
+group('CBTC_TAC_CANONICAL_MANIFEST — shape + IPFS validation');
+
+if (dapp.CBTC_TAC_CANONICAL_MANIFEST && typeof dapp._validateCbtcTacManifest === 'function') {
+  const m = dapp.CBTC_TAC_CANONICAL_MANIFEST;
+  ok('manifest: schema tag', m.schema === 'tacit-cbtc-tac-canonical-manifest');
+  ok('manifest: schema_version is 1', m.schema_version === 1);
+  ok('manifest: source_spec set', typeof m.source_spec === 'string' && m.source_spec.length > 0);
+  ok('manifest: variant_asset_id_derivation documents formula',
+    typeof m.variant_asset_id_derivation === 'string'
+    && m.variant_asset_id_derivation.includes('tacit-cbtc-tac-variant-v1'));
+  ok('manifest: tiers non-empty', Array.isArray(m.tiers) && m.tiers.length >= 5);
+  // Every tier is well-shaped with the fields the synthetic-meta lookup uses
+  for (const t of m.tiers) {
+    ok(`manifest tier: denom_sats=${t.denom_sats} is int > 0`,
+      Number.isInteger(t.denom_sats) && t.denom_sats > 0);
+    ok(`manifest tier: ticker non-empty (${t.ticker})`,
+      typeof t.ticker === 'string' && t.ticker.length > 0);
+    ok(`manifest tier: name non-empty (${t.ticker})`,
+      typeof t.name === 'string' && t.name.length > 0);
+    ok(`manifest tier: description non-empty (${t.ticker})`,
+      typeof t.description === 'string' && t.description.length > 0);
+  }
+  // Validator must accept the inline manifest (would catch a drift between
+  // the validator's expectations and the inline shape).
+  ok('validator accepts inline manifest', dapp._validateCbtcTacManifest(m) === null);
+  // Validator must reject malformed payloads — these correspond to the
+  // failure modes the IPFS fetch path needs to defend against.
+  ok('validator rejects null',
+    typeof dapp._validateCbtcTacManifest(null) === 'string');
+  ok('validator rejects wrong schema tag',
+    dapp._validateCbtcTacManifest({ ...m, schema: 'evil' }) !== null);
+  ok('validator rejects empty tiers',
+    dapp._validateCbtcTacManifest({ ...m, tiers: [] }) !== null);
+  ok('validator rejects tier with non-int denom',
+    dapp._validateCbtcTacManifest({ ...m, tiers: [{ denom_sats: 1.5, ticker: 'x', name: 'x' }] }) !== null);
+  ok('validator rejects tier with negative denom',
+    dapp._validateCbtcTacManifest({ ...m, tiers: [{ denom_sats: -1, ticker: 'x', name: 'x' }] }) !== null);
+  ok('validator rejects tier with empty ticker',
+    dapp._validateCbtcTacManifest({ ...m, tiers: [{ denom_sats: 100, ticker: '', name: 'x' }] }) !== null);
+  ok('validator rejects tier with non-string name',
+    dapp._validateCbtcTacManifest({ ...m, tiers: [{ denom_sats: 100, ticker: 'x', name: 123 }] }) !== null);
+  // Active-manifest getter mirrors the inline (no IPFS CID set in test)
+  ok('cbtcTacCanonicalManifest() returns active manifest',
+    dapp.cbtcTacCanonicalManifest() === m);
+  // CID is null until operator pins (sanity check on initial state)
+  ok('CBTC_TAC_MANIFEST_CID is null pre-pin', dapp.CBTC_TAC_MANIFEST_CID === null);
+}
+
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

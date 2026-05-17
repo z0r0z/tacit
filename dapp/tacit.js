@@ -15416,6 +15416,177 @@ async function buildAndBroadcastShareSlashClaim({
   };
 }
 
+// SPEC-CBTC-TAC-AMENDMENT §5.38 — permissionless liquidation (T_CBTC_TAC_FORCE_CLOSE).
+//
+// Any keeper can trigger a force-close on a cBTC.tac position whose
+// current bond ratio has fallen below LIQUIDATION_RATIO (1.2x). The
+// envelope is signature-free and permissionless: the worker validator
+// computes current_ratio independently from chain state, so any caller
+// could in principle trigger the liquidation. In practice the 50 bps
+// (LIQUIDATOR_REWARD_FRACTION, SPEC §5.41.1) of the swap output is the
+// keeper's economic incentive.
+//
+// The fixed 107-byte payload (no Groth16 proof, no Schnorr sig) makes
+// this the cheapest tacit envelope to construct — a force-close keeper
+// can run as a permissionless bot with negligible per-tx work.
+//
+// Wire format (SPEC §5.38.1):
+//   opcode(1)=0x4B + network_tag(1) + target_leaf_hash(32)
+//   + liquidator_payout_pk(33) + amm_swap_min_BTC_out_LE(8) + bind_hash(32)
+//
+// v1 / AMM-chaining note (SPEC §5.38 + worker validator at line ~12744):
+// The actual TAC→BTC AMM swap that settles the bond is intended to be
+// carried in the same reveal Bitcoin tx via tacit envelope chaining.
+// The worker currently records the position transition to 'force-closed'
+// and increments the per-block throttle, but the AMM-swap accounting
+// (redemption_reserve_BTC credit + liquidator's 50 bps payout) requires
+// the envelope-pair validation rule shipped separately. Until then, the
+// dapp builder here produces a structurally-valid envelope that triggers
+// the position-state transition; the liquidator reward credits via worker
+// ledger on a forthcoming envelope-pair pass. Keepers running this v1
+// flow are gambling on the future swap settlement, but the position
+// transition itself is what prevents further leak from underwater
+// positions.
+async function buildAndBroadcastCbtcTacForceClose({
+  targetLeafHashHex,
+  ammSwapMinBtcOut,               // u64 BigInt or compatible — slippage floor on TAC→BTC swap
+  liquidatorPayoutPubHex = null,  // 33-byte compressed; null = wallet.pub (self-collect reward)
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  // 1. Pre-flight
+  if (!targetLeafHashHex || !/^[0-9a-f]{64}$/i.test(targetLeafHashHex)) {
+    throw new Error('targetLeafHashHex must be 64 hex chars');
+  }
+  const targetLeafHashBytes = hexToBytes(targetLeafHashHex.toLowerCase());
+  const minOutBig = BigInt(ammSwapMinBtcOut);
+  if (minOutBig < 0n || minOutBig >= (1n << BigInt(N_BITS))) {
+    throw new Error('ammSwapMinBtcOut out of range');
+  }
+  const liquidatorPub = liquidatorPayoutPubHex
+    ? hexToBytes(liquidatorPayoutPubHex.toLowerCase())
+    : wallet.pub;
+  if (liquidatorPub.length !== 33) {
+    throw new Error('liquidatorPayoutPubHex must be 33-byte compressed point');
+  }
+
+  // 2. bind_hash + envelope payload
+  _progress('envelope:build');
+  const bindHash = computeCbtcTacForceCloseBindHash({
+    networkTag,
+    targetLeafHash: targetLeafHashBytes,
+    liquidatorPayoutPk: liquidatorPub,
+    ammSwapMinBtcOut: minOutBig,
+  });
+  const payload = encodeTCbtcTacForceClosePayload({
+    networkTag,
+    targetLeafHash: targetLeafHashBytes,
+    liquidatorPayoutPk: liquidatorPub,
+    ammSwapMinBtcOut: minOutBig,
+    bindHash,
+  });
+
+  // 3. Commit + reveal Bitcoin transactions
+  // Permissionless force-close has minimal tx footprint:
+  //   commit: sats inputs → P2TR(envelope script) + sats change
+  //   reveal: vin[0] = commit P2TR (script-path); vout[0] = DUST P2WPKH
+  //           to liquidator (carries the envelope on-chain). No slot /
+  //           asset inputs needed — worker recomputes current_ratio from
+  //           chain state and credits liquidator's 50 bps via ledger.
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  // Reveal vbytes: 11 base + 41 (1 P2TR vin) + 31 (1 P2WPKH out)
+  //   + ceil((envelope witness) / 4). Payload is fixed 107 bytes.
+  const revealVb = 11 + 41 + 31
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = Math.max(DUST, DUST + revealFee);  // funds reveal's DUST out + revealFee
+
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  if (sats.length === 0) {
+    throw new Error('no plain-sats UTXOs available to fund the force-close commit');
+  }
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for force-close commit: need ${commitValue + commitFee}, have ${total}`);
+  }
+
+  _progress('tx:commit:build');
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  _progress('tx:reveal:build');
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: DUST, script: p2wpkhScript(liquidatorPub) }],
+  };
+  const revealPrevouts = [{ value: commitValue, script: commitSpk }];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(
+    revealTx, revealPrevouts, envelopeScript, cb,
+  );
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+
+  try {
+    recordActivity({
+      kind: 'cbtc-tac-force-close',
+      ticker: 'cBTC.tac',
+      amount: 0n,                  // no amount transfer; this is a state transition
+      decimals: 0,
+      txid: revealTxidHex,
+      targetLeafHash: targetLeafHashHex,
+    });
+  } catch {}
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    targetLeafHashHex,
+    ammSwapMinBtcOut: minOutBig,
+    liquidatorPayoutPubHex: bytesToHex(liquidatorPub),
+    commitFee, revealFee,
+  };
+}
+
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -47570,7 +47741,7 @@ function _aggregateBidsForLadder(bids, markUnit, decimals) {
     if (unit > agg.maxUnit) agg.maxUnit = unit;
   }
   const virtualRows = [];
-  for (const agg of buckets.values()) {
+  for (const [bucketKey, agg] of buckets.entries()) {
     if (agg.bids.length === 1) { virtualRows.push(agg.bids[0]); continue; }
     const proto = agg.bids[0];
     // Recompute the bucket's _unit so downstream cumulative-depth bars
@@ -47578,6 +47749,14 @@ function _aggregateBidsForLadder(bids, markUnit, decimals) {
     // as the row's effective unit (best of the bucket = top of book) so
     // it shows up at the right ladder slot; spread is revealed in the
     // subtitle.
+    // Stable synthetic id for the level row so FLIP identity
+    // preservation across re-renders works (same bucket key → same id
+    // even if individual bids enter/leave the bucket; the row keeps its
+    // DOM node and FLIP-slides when it moves slots). Decimals included
+    // so level keys don't collide if the helper is ever called against
+    // mixed-decimals data; mirrors the asks-side convention without
+    // colliding with real bid_ids.
+    const _levelKey = `level:${decimals}:${bucketKey}`;
     virtualRows.push({
       ...proto,
       _isLevel: true,
@@ -47592,7 +47771,7 @@ function _aggregateBidsForLadder(bids, markUnit, decimals) {
       // Bucket-level claim/lifecycle fields don't transfer — fulfilment
       // of a level fans out across the underlying bids. Strip any per-
       // proto bid identity that would confuse the single-bid renderer.
-      bid_id: '',
+      bid_id: _levelKey,
       axintent_id: undefined,
     });
   }
@@ -51970,9 +52149,12 @@ async function populateMarketBidsLadder(scope, asset) {
   // length tells you "this is where the liquidity is". Excludes claimed
   // / expired rows from the total so the bar reflects fillable depth.
   let bidTotalDepth = 0;
-  const _fillableAmts = ladder.map(b => {
+  const _fillableAmts = bucketedLadder.map(b => {
     if (b.axintent_id) return 0;
     if (b._expiresIn <= 0) return 0;
+    // For bucketed levels, `amount` was rewritten to the bucket's
+    // cumulative total in _aggregateBidsForLadder, so this naturally
+    // contributes the right depth weight.
     const amt = Number(b.amount || 0);
     return Number.isFinite(amt) && amt > 0 ? amt : 0;
   });
@@ -51983,7 +52165,7 @@ async function populateMarketBidsLadder(scope, asset) {
     return bidTotalDepth > 0 ? Math.min(100, (bidCumSoFar / bidTotalDepth) * 100) : 0;
   });
   const _bidFillableCount = _fillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
-  const rowsHtml = ladder.map((b, _bidIdx) => {
+  const rowsHtml = bucketedLadder.map((b, _bidIdx) => {
     // Variable-fill (§5.7.7) display: show the remaining (tradable now)
     // amount, with a subtle min-fill hint. Whole-bid bids unchanged.
     const _bidIsVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
@@ -52009,6 +52191,12 @@ async function populateMarketBidsLadder(scope, asset) {
       } catch {}
     }
     const sats = Number(b.price_sats || 0);
+    const _isLevel = !!b._isLevel;
+    // Aggregated levels show "≤ {max}" prefix on the unit line so a
+    // seller reads the row as "you'll receive at least this per token
+    // when sweeping the bucket." Mirrors the asks ladder's "up to"
+    // prefix on level rows (asks worst-case is highest unit price;
+    // bids worst-case is lowest). Single-bid rows keep the bare unit.
     const unitVal = b._unit != null ? fmtUnitPriceSats(b._unit) : 'n/a';
     const unitUsd = b._unit != null ? fmtMarketUsdUnitFromSats(b._unit, '') : '';
     const bidder = b.buyer_address || b.buyer_pubkey || '';
@@ -52028,6 +52216,15 @@ async function populateMarketBidsLadder(scope, asset) {
     } else if (b._expiresIn <= 0) {
       state = 'expired';
       action = `<span class="market-bid-state market-bid-state--expired">Expired</span>`;
+    } else if (_isLevel) {
+      // Bucketed level: opens the sweep-sell form pre-loaded with the
+      // bucket's cumulative size + worst-case (min) unit as the floor.
+      // Single-bid Fulfil signs one claim; the level action routes
+      // through sweep-sell because each maker bid in the bucket needs
+      // its own intent + fulfilment, matching the asks-side "Buy level"
+      // pattern. The wireup at _wireMarketSweepSellLevel reads the
+      // data-level-* attrs and primes the form.
+      action = `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt-level" data-aid="${escapeHtml(aid)}" data-level-amount="${escapeHtml(String(b.amount || '0'))}" data-level-min-unit="${b._levelMinUnit}" data-level-dec="${decimals}" data-level-ticker="${escapeHtml(ticker)}" data-level-count="${b._levelCount}" type="button" title="Sweep-sell against all ${b._levelCount} bids in this price tick (cumulative ${fmtAssetAmount(BigInt(b.amount || '0'), decimals)} ${ticker} at floor ${fmtUnitPriceSats(b._levelMinUnit)} sats/${ticker}). Opens the sweep-sell form preloaded so you can review before signing.">Fulfil level</button>`;
     } else {
       action = `<button class="market-bid-fulfil" data-bid-action="fulfil-mkt" data-bid-id="${escapeHtml(bidId)}" type="button">Fulfil</button>`;
     }
@@ -52035,13 +52232,18 @@ async function populateMarketBidsLadder(scope, asset) {
       'market-bids-row',
       state ? `market-bids-row--${state}` : '',
       b._isMine ? 'market-bids-row--mine' : '',
+      _isLevel ? 'market-bids-row--level' : '',
     ].filter(Boolean).join(' ');
     // Click-to-fill metadata on the row root so the bind pass can prime
     // the swap tile in SELL mode at this row's amount + auto-set the
     // slippage cap. Suppressed on the user's own bids and on already-
-    // claimed bids (`axintent_id` set or expired).
+    // claimed bids (`axintent_id` set or expired). For bucketed levels
+    // we pass the bucket's MIN unit (the floor the seller is guaranteed
+    // to clear) so a click primes a sell at the worst-case price across
+    // the level — conservative and honest.
     const _fillable = !b._isMine && !claimed && !(b._expiresIn === 0);
-    const _fillUnitAttr = (_fillable && b._unit != null) ? ` data-fill-unit="${b._unit}"` : '';
+    const _fillUnitForRow = _isLevel ? b._levelMinUnit : b._unit;
+    const _fillUnitAttr = (_fillable && _fillUnitForRow != null) ? ` data-fill-unit="${_fillUnitForRow}"` : '';
     // Cumulative-depth bar style: left-anchored translucent green covering
     // [0%, cumPct]. Bars only render when there's meaningful depth to
     // visualize (≥ 2 fillable rows); single-row ladders look weird with
@@ -52055,11 +52257,30 @@ async function populateMarketBidsLadder(scope, asset) {
     const _fillAttrs = _fillable
       ? ` data-fill-aid="${escapeHtml(aid)}" data-fill-amount="${escapeHtml(String(b.amount || '0'))}" data-fill-dec="${decimals}" data-fill-ticker="${escapeHtml(ticker)}" data-fill-direction="sell"${_fillUnitAttr}${_styleAttr} title="Click outside Fulfil to size this in the swap tile at this price floor."`
       : _styleAttr;
+    // Level-row UI: count badge on the price line + spread subtitle so
+    // the bucket reads as one price tick with N bidders behind it.
+    // Mirrors the asks ladder's _levelBadge / _levelSpread pattern.
+    const _levelBadge = _isLevel
+      ? ` <span style="display:inline-block;margin-left:4px;padding:0 5px;background:var(--ink);color:var(--bg);font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="${b._levelCount} maker bids aggregated at this price bucket. Click Fulfil level to sweep-sell across all of them in one routed pass.">${b._levelCount} bids</span>`
+      : '';
+    const _levelSpread = _isLevel
+      ? `<small class="muted" style="display:block;font-size:9px;">spread ${fmtUnitPriceSats(b._levelMinUnit)}–${fmtUnitPriceSats(b._levelMaxUnit)}</small>`
+      : '';
+    // Bidder column for level rows: show "N makers" instead of a single
+    // address; the bucket aggregates across multiple wallets so showing
+    // one truncated pubkey would mislead.
+    const _bidderHtml = _isLevel
+      ? `<strong>${b._levelCount} makers</strong><small>at this tick</small>`
+      : `<strong>${bidder ? escapeHtml(shorten(bidder, 10)) : '&mdash;'}</strong><small>${b._isMine ? 'your bid' : 'bidder'}</small>`;
+    // Expires line for level rows uses the bucket's MAX expiry (the
+    // latest bid in the bucket) so the seller sees how long the level
+    // is broadly available; min-expiry would be misleading since
+    // earlier-expiring bids are still fillable for now.
     return `
       <div data-bid-row data-bid-id="${escapeHtml(bidId)}" class="${rowClass}"${_fillAttrs}>
         <div class="market-bid-price">
-          <strong class="market-sats-price">${escapeHtml(unitVal)} sats/${escapeHtml(ticker)}</strong>
-          <small class="market-usd-price">${unitUsd ? `${escapeHtml(unitUsd)} per token` : 'no USD quote'}</small>
+          <strong class="market-sats-price">${_isLevel ? '≥ ' : ''}${escapeHtml(unitVal)} sats/${escapeHtml(ticker)}${_levelBadge}</strong>
+          ${_isLevel ? _levelSpread : `<small class="market-usd-price">${unitUsd ? `${escapeHtml(unitUsd)} per token` : 'no USD quote'}</small>`}
         </div>
         <div class="market-bid-cell">
           <strong>${escapeHtml(amtStr)}</strong>
@@ -52070,12 +52291,11 @@ async function populateMarketBidsLadder(scope, asset) {
           <small><span class="market-sats-price">${escapeHtml(sats.toLocaleString('en-US'))} sats</span>${fmtMarketUsdFromSats(sats, '') ? ` &middot; <span class="market-usd-price">${escapeHtml(fmtMarketUsdFromSats(sats, ''))}</span>` : ''}</small>
         </div>
         <div class="market-bid-cell">
-          <strong>${bidder ? escapeHtml(shorten(bidder, 10)) : '&mdash;'}</strong>
-          <small>${b._isMine ? 'your bid' : 'bidder'}</small>
+          ${_bidderHtml}
         </div>
         <div class="market-bid-cell">
           <strong class="${state === 'expired' ? 'market-bid-expired' : ''}">${escapeHtml(expiry)}</strong>
-          <small>expires</small>
+          <small>${_isLevel ? 'latest in tick' : 'expires'}</small>
         </div>
         <div class="market-bid-action">${action}</div>
       </div>`;
@@ -52304,6 +52524,58 @@ async function populateMarketBidsLadder(scope, asset) {
         if (isUnlockCancelled(e)) toast('Cancelled — nothing was broadcast.', '');
         else toast('Cancel failed: ' + (e?.message || String(e)), 'error');
       }
+    };
+  });
+  // Level-fulfil: bucketed bid rows have a "Fulfil level" button that
+  // opens the existing sweep-sell form pre-loaded with the bucket's
+  // cumulative size + worst-case (min) unit as the floor. We piggyback
+  // on _wireMarketSweepSell's existing form for two reasons: (1) it
+  // already runs the per-bid sequential intent + fulfilment loop a
+  // level-fill needs, and (2) the user sees a preview + can adjust
+  // before signing, matching the asks-side "Buy level" → Advanced buy
+  // pattern. The wireup clicks the sweep-sell button to open the form,
+  // waits one rAF for the form DOM to mount, then writes the prefill
+  // values into the amount + floor inputs.
+  list.querySelectorAll('[data-bid-action="fulfil-mkt-level"]').forEach(btn => {
+    btn.onclick = () => {
+      const lvlAmount = btn.dataset.levelAmount || '0';
+      const lvlMinUnit = Number(btn.dataset.levelMinUnit || '');
+      const lvlDec = Number(btn.dataset.levelDec || '0') | 0;
+      if (!lvlAmount || !Number.isFinite(lvlMinUnit) || lvlMinUnit <= 0) return;
+      const sweepSellBtn = section.querySelector('[data-act="market-sweep-sell"]');
+      const formHost = section.querySelector('[data-market-sweep-sell-form]');
+      if (!sweepSellBtn || !formHost) return;
+      // Open the form if it's not already open. The sweep-sell click
+      // handler toggles; we only want to OPEN, so check the dataset.
+      if (formHost.dataset.open !== '1') sweepSellBtn.click();
+      // Populate after a tick so the form's innerHTML has landed. rAF
+      // is enough because the form is rendered synchronously inside
+      // the click handler — we just need the browser to commit the
+      // DOM update before we query inputs.
+      requestAnimationFrame(() => {
+        const amountInput = formHost.querySelector('[data-sweepsell-field="amount"]');
+        const floorInput  = formHost.querySelector('[data-sweepsell-field="floor"]');
+        if (!amountInput || !floorInput) return;
+        try {
+          amountInput.value = fmtAssetAmount(BigInt(lvlAmount), lvlDec);
+          // Floor = bucket's MIN unit, rounded down. The seller is
+          // guaranteed at least this per token across the level; setting
+          // floor lower would invite fills BELOW the bucket's worst
+          // bid, which makes no sense for a level-targeted sweep.
+          floorInput.value = String(Math.floor(lvlMinUnit));
+          // Trigger input events so the form's live-preview / plan
+          // generation re-computes against the new values.
+          amountInput.dispatchEvent(new Event('input', { bubbles: true }));
+          floorInput.dispatchEvent(new Event('input', { bubbles: true }));
+          // Scroll the form into view so the user immediately sees the
+          // preloaded preview rather than wondering where the button
+          // sent them.
+          try { formHost.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+          catch { formHost.scrollIntoView(); }
+        } catch (e) {
+          console.warn('[market] fulfil-level prefill failed:', e?.message || e);
+        }
+      });
     };
   });
   _wireMarketBidPlace(section, asset);
