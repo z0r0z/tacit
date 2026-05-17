@@ -10102,6 +10102,78 @@ function listPreauthTakePendings() {
 // throws if recovery itself fails. The "defer" path leaves the local
 // record in place so the standing Holdings-tab banner still surfaces it
 // later — nothing is dropped silently.
+// Translate the raw Bitcoin RPC / API error tail that bubbles up from a
+// failed take into a plain-English explanation a trader can act on.
+// Reveal-leg races against another buyer (the most common failure mode
+// when the orderbook is hot) show up as "sendrawtransaction RPC error:
+// {code:-25,message:bad-txns-inputs-missingorspent}" — accurate but
+// opaque to anyone who doesn't read Bitcoin Core source. We strip the
+// JSON-wrapped node error, classify the bitcoind reason code, and
+// rewrite to a single sentence that names what happened (race, fee,
+// double-spend, propagation lag) so the failure-side notification
+// matches the recovery-side notification's tone. Preserves the
+// "Commit tx broadcast — N sats locked at …" tail when present so
+// the post-commit recovery path still has the data it needs to fire.
+function friendlyTradeErrorMsg(rawMsg, { postCommit = false } = {}) {
+  const s = String(rawMsg || '').trim();
+  if (!s) return 'Trade failed (no error detail returned).';
+  // Extract the post-commit decoration tail BEFORE we rewrite, so we
+  // can re-append a tightened version after the rewrite. The
+  // recovery-record file pointer (tacit-preauth-take-pending-v1:…)
+  // doesn't belong in a notification — it's a localStorage key the
+  // user can't act on — so we strip it from the displayed tail.
+  let tail = '';
+  const tailMatch = /\s*·?\s*Commit tx broadcast\s*—\s*(\d+)\s*sats\s*locked at\s*([0-9a-f]{64}):0/i.exec(s);
+  if (tailMatch) {
+    tail = ` · ${Number(tailMatch[1]).toLocaleString()} commit sats are recoverable in one click`;
+  }
+  // Strip the decoration so the regex matchers below see the bitcoind
+  // reason cleanly. Also strip the JSON-wrapped sendrawtransaction
+  // envelope so the user-facing copy doesn't bleed `{"code":-25,…}`.
+  let core = s
+    .replace(/\s*·?\s*Commit tx broadcast[\s\S]*$/i, '')
+    .replace(/\s*\(tacit-preauth-take-pending-v1[\s\S]*?\)\.?/i, '')
+    .replace(/API \d+:\s*/i, '')
+    .replace(/sendrawtransaction RPC error:\s*/i, '')
+    .replace(/\{"code":-?\d+,"message":"([^"]+)"\}/i, '$1')
+    .trim();
+  // Classify bitcoind / mempool.space relay reason codes.
+  if (/bad-txns-inputs-missingorspent|bad-txns-inputs-spent|missing inputs|race lost between/i.test(core)) {
+    return postCommit || tail
+      ? `Another taker beat you to this listing — the asset UTXO was spent before your settlement landed${tail}.`
+      : `This listing was just taken by another buyer (the asset UTXO is gone). No sats spent — refreshed Market, pick another tile and try again.`;
+  }
+  if (/txn-mempool-conflict/i.test(core)) {
+    return postCommit || tail
+      ? `Mempool conflict — another tx is spending one of your inputs first${tail}.`
+      : `Mempool conflict — another taker's tx is racing yours on the same inputs. Refresh Market and retry.`;
+  }
+  if (/too-long-mempool-chain/i.test(core)) {
+    return `Bitcoin mempool ancestor-chain limit (25 unconfirmed parents) hit. Wait for one of your unconfirmed txs to confirm, then retry${tail}.`;
+  }
+  if (/min relay fee not met|min fee not met|insufficient fee/i.test(core)) {
+    return `Fee too low for current mempool — broadcast was rejected${tail}. Retry with a higher fee rate.`;
+  }
+  if (/non-mandatory-script-verify-flag|mandatory-script-verify/i.test(core)) {
+    return `Bitcoin script verification failed — the listing may be malformed${tail}. Skip and pick another tile.`;
+  }
+  if (/dust|sub-?dust|payout.*dust/i.test(core)) {
+    return `Bitcoin rejected the tx as having a sub-dust output${tail}. The listing's payout is below the relay threshold; skip and pick another.`;
+  }
+  if (/too-long-mempool|package-too-large|too many sigops|too-long-mempool/i.test(core)) {
+    return `Bitcoin policy limit hit — tx too large or chain too deep${tail}. Retry once your other unconfirmed txs settle.`;
+  }
+  if (/insufficient sats|insufficient funds/i.test(core)) {
+    return `Insufficient sats in the wallet to fund this trade${tail}. Top up and retry.`;
+  }
+  if (/aborted — listing liveness/i.test(core)) {
+    return `Aborted — couldn't verify the listing was still live. No sats spent.`;
+  }
+  // Generic API/HTTP errors with the raw message stripped of envelope noise.
+  if (core.length > 220) core = core.slice(0, 220) + '…';
+  return `Trade failed: ${core}${tail}.`;
+}
+
 // Parse a takePreauthSale[Batch] post-commit error tail and fire the
 // recovery prompt. Returns true if a prompt was fired (caller knows the
 // failure is recoverable), false otherwise. Safe to call on any error —
@@ -22621,6 +22693,31 @@ async function takePreauthSale({ assetIdHex, saleIdHex, sale = null, onProgress 
   _progress('wait-visible');
   await waitForTxVisible(commitTxidHex);
 
+  // Pre-reveal asset-UTXO recheck. The original pre-flight outspend at
+  // the top of this function gates the COMMIT broadcast; between then
+  // and now (commit broadcast + waitForTxVisible polls), another taker
+  // could have spent sale.asset_outpoint with their own commit/reveal
+  // race. If we proceed to the reveal broadcast in that state, Bitcoin
+  // returns bad-txns-inputs-missingorspent and our commit's sats are
+  // stranded — the most common "wasted fees" failure mode reported by
+  // users. Catching it here cuts the failure-window from ~3-5s to
+  // ~ms (one extra API hop). On detection we throw a clear race-
+  // labelled error that the catch decoration appends "Commit tx
+  // broadcast — N sats locked at …" to, which fires the recovery
+  // prompt downstream. On API failure we fall through silently — the
+  // reveal broadcast itself is the final source of truth.
+  try {
+    const _spRecheck = await getOutspend(sale.asset_outpoint.txid, sale.asset_outpoint.vout);
+    if (_spRecheck?.spent) {
+      throw new Error('another taker just spent this listing\'s asset UTXO — race lost between your commit and reveal. Your commit-locked sats are recoverable.');
+    }
+  } catch (e) {
+    if (/race lost between/.test(String(e?.message || ''))) throw e;
+    // Genuine API hiccup — let the reveal broadcast attempt anyway; if
+    // the race truly happened, Bitcoin will reject and the recovery
+    // path fires from the broadcast failure.
+  }
+
   // Reveal tx: assemble vin[0] (commit), vin[1] (asset, seller's pre-signed
   // witness), vin[2..] (buyer BTC funding for seller payout + fee).
   //
@@ -23075,6 +23172,28 @@ async function takePreauthSaleBatch({ assetIdHex, sales, onProgress = null }) {
   _commitValueForRecovery = commitValue;
   _progress('wait-visible');
   await waitForTxVisible(commitTxidHex);
+
+  // Pre-reveal asset-UTXO recheck (parallel). Same intent as the
+  // single-take pre-reveal recheck: between this batch's commit
+  // broadcast and reveal broadcast, another taker may have spent
+  // ANY of the N sellers' asset outpoints. A single race-lost input
+  // dooms the entire batched reveal. Probing all N in parallel costs
+  // one fan-out round-trip and bails before broadcast if any input
+  // is gone — recovery prompt fires from the catch downstream. API
+  // failures fall through (the reveal broadcast remains the source
+  // of truth).
+  try {
+    const _recheckResults = await Promise.all(expanded.map(e =>
+      getOutspend(e.sale.asset_outpoint.txid, e.sale.asset_outpoint.vout).catch(() => null),
+    ));
+    const _raceLostIdx = _recheckResults.findIndex(sp => sp && sp.spent);
+    if (_raceLostIdx >= 0) {
+      const _saleShort = expanded[_raceLostIdx].saleIdHex.slice(0, 8);
+      throw new Error(`another taker just spent sale ${_saleShort} mid-batch — race lost between your commit and reveal. Your commit-locked sats are recoverable.`);
+    }
+  } catch (e) {
+    if (/race lost between/.test(String(e?.message || ''))) throw e;
+  }
 
   // Reveal tx. Synthesize the post-commit UTXO set deterministically so
   // we don't race the indexer's /utxo lag — same pattern as single-take.
@@ -59853,8 +59972,8 @@ function _wireSwapTile(scope) {
       if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       const _stoppedSuffix = _stoppedEarly ? ` · stopped after ${filled}/${result.plan.length} (you clicked stop)` : '';
-      if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
-      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'} · ${lastErr}${_feeSuffix}`, 'error', 8000);
+      if (lastErr && filled === 0) toast(friendlyTradeErrorMsg(lastErr?.message || String(lastErr)), 'error', 12000);
+      else if (lastErr) toast(`Partial · ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'}${_feeSuffix} · ${friendlyTradeErrorMsg(lastErr?.message || String(lastErr))}`, 'error', 10000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} ${dir === 'buy' ? 'filled' : 'fulfilled'}${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (dir === 'buy') toast(`Bought ${accStr} ${ticker}${_feeSuffix} · view in Holdings (~10 min to settle)`, 'success', 8000);
       else toast(`Selling ${accStr} ${ticker}${_feeSuffix} · pending bidder Takes (~1–30 min)`, 'success', 8000);
@@ -60186,8 +60305,8 @@ function _wireSwapTile(scope) {
       }
       if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
-      if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
-      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}${_feeSuffix}`, 'error', 8000);
+      if (lastErr && filled === 0) toast(friendlyTradeErrorMsg(lastErr?.message || String(lastErr)), 'error', 12000);
+      else if (lastErr) toast(`Partial · ${filled}/${result.plan.length} filled${_feeSuffix} · ${friendlyTradeErrorMsg(lastErr?.message || String(lastErr))}`, 'error', 10000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} filled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (bidPosted) {
         toast(`Bought ${accStr} ${ticker} ✓${_feeSuffix} · +${fmtAssetAmount(bidPosted.amount, decimals)} more open as bid @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker}`, 'success', 9000);
@@ -60405,8 +60524,8 @@ function _wireSwapTile(scope) {
       }
       if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
-      if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
-      else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}${_feeSuffix}`, 'error', 8000);
+      if (lastErr && filled === 0) toast(friendlyTradeErrorMsg(lastErr?.message || String(lastErr)), 'error', 12000);
+      else if (lastErr) toast(`Partial · ${filled}/${result.plan.length} fulfilled${_feeSuffix} · ${friendlyTradeErrorMsg(lastErr?.message || String(lastErr))}`, 'error', 10000);
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} fulfilled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (listingPosted) {
         toast(`Selling ${accStr} ${ticker} ✓${_feeSuffix} · ${fmtAssetAmount(listingPosted.amount, decimals)} ${ticker} more open @ ${fmtUnitPriceSats(refUnit * (1 - getSlipRatio()))} sats/${ticker}`, 'success', 9000);
@@ -62523,7 +62642,7 @@ async function marketTakePreauthHandler(btn) {
         toast(`Trade failed post-commit · sats are recoverable`, 'error', 8000);
         maybePromptRecoveryFromError(e, { source: 'take' });
       } else {
-        toast('Preauth buy failed: ' + _msg, 'error', 12000);
+        toast(friendlyTradeErrorMsg(_msg), 'error', 12000);
       }
     }
     restore();
@@ -62916,7 +63035,7 @@ async function marketTakePreauthGroupHandler(btn) {
   const _filledUsd = fmtMarketUsdFromSats(price * filled, '');
   if (lastErr && filled === 0) {
     if (isUnlockCancelled(lastErr)) toast('Unlock cancelled — nothing was bought.', '');
-    else toast('Buy failed: ' + lastErr.message, 'error', 12000);
+    else toast(friendlyTradeErrorMsg(lastErr.message), 'error', 12000);
     restore();
   } else if (lastErr) {
     toast(`Partial fill · ${filled}/${k} chunks bought (${_amtStr} ${ticker}${_filledUsd ? ` · ${_filledUsd}` : ''}) · ${lastErr.message}`, 'error', 12000);
