@@ -74,6 +74,11 @@ function setWallet(sk, pub) {
   dapp.invalidateHoldingsCache();
 }
 
+// Pre-mark backup ack so ensureBurnerBackedUp doesn't pop a modal
+// (modal returns false in headless JSDOM → carveExactAmount cancels).
+try { globalThis.localStorage.setItem('tacit-backup-ack-v1:' + bytesToHex(DEP_PUB), '1'); } catch {}
+try { globalThis.localStorage.setItem('tacit-backup-ack-v1:' + bytesToHex(REC_PUB), '1'); } catch {}
+
 setWallet(DEP_SK, DEP_PUB);
 const DEP_ADDR = dapp.wallet.address();
 setWallet(REC_SK, REC_PUB);
