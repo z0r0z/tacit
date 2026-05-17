@@ -52972,6 +52972,20 @@ async function populateMarketBidsLadder(scope, asset) {
     list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} &mdash; be the first to post one ${_marketRowActionsHidden
       ? `using the <button data-act="market-jump-to-swap" type="button" style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap tile above</button> (any unfilled buy budget posts as a bid at your limit).`
       : `with <em>+ Place a bid</em> above, or use the Swap tile (any unfilled buy budget posts as a bid at your limit).`}</div>`;
+    // Wire the inline Swap-tile jump on the freshly-rendered empty-state
+    // button. The main applyMarketFilters wire pass ran before this async
+    // populator landed, so its onclick wouldn't otherwise fire — direct
+    // wire here keeps the affordance working when bids are absent.
+    list.querySelectorAll('[data-act="market-jump-to-swap"]').forEach(btn => {
+      btn.onclick = () => {
+        const widget = document.querySelector('[data-swap-tile]');
+        if (!widget) return;
+        try { widget.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+        catch { widget.scrollIntoView(); }
+        const input = widget.querySelector('input[data-swap-input="from"]');
+        if (input) setTimeout(() => { try { input.focus({ preventScroll: true }); } catch { input.focus(); } }, 250);
+      };
+    });
     // Same fix: an asset with no bids should still have working
     // Sweep Buy / Sweep Sell / Auto-fulfil controls.
     _wireMarketBidPlace(section, asset);
