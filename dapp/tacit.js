@@ -27308,6 +27308,31 @@ function setupTransferForm() {
     const xferStrip = $('#transfer-progress');
     if (xferStrip) xferStrip.style.display = 'flex';
     setProgressStrip('transfer-progress', 0);
+    // If the user pinned a specific UTXO via the picker (documented use:
+    // "invalidating a stale listing's UTXO"), pre-mark any of my listings
+    // that reference that outpoint as a local cancel so the market vanish-
+    // detector doesn't fire "your listing sold ✓" once the worker reaper
+    // drops the now-stale entry and the chain-probe sees the lot spent by
+    // this very self-CXFER. Mirror of the hard-cancel marker pattern in
+    // marketHardCancelPreauthHandler / opening-listing cancel.
+    if (Array.isArray(job.forceUtxos) && job.forceUtxos.length > 0 && _marketCache?.listings) {
+      const myPubHex = bytesToHex(wallet.pub);
+      const forced = new Set(job.forceUtxos.map(u => `${String(u.utxo?.txid || u.txid || '').toLowerCase()}:${Number((u.utxo?.vout != null ? u.utxo.vout : u.vout) | 0)}`));
+      for (const l of _marketCache.listings) {
+        const sellerPub = l.seller_pubkey || l.owner_pubkey || l.maker_pubkey || '';
+        if (sellerPub !== myPubHex) continue;
+        let utxoTxid = null, utxoVout = null;
+        if (l.kind === 'opening') { utxoTxid = l.txid || null; utxoVout = (l.vout != null ? l.vout | 0 : null); }
+        else if (l.kind === 'preauth') { utxoTxid = l.asset_opening?.txid || null; utxoVout = (l.asset_opening?.vout != null ? l.asset_opening.vout | 0 : null); }
+        else if (l.kind === 'intent') { utxoTxid = l.asset_utxo?.txid || null; utxoVout = (l.asset_utxo?.vout != null ? l.asset_utxo.vout | 0 : null); }
+        if (!utxoTxid || utxoVout == null) continue;
+        const key = `${String(utxoTxid).toLowerCase()}:${utxoVout}`;
+        if (!forced.has(key)) continue;
+        if (l.kind === 'opening') _markLocalListingCancel(`opening:${l.txid}:${utxoVout}`);
+        else if (l.kind === 'preauth' && l.sale_id) _markLocalListingCancel(`preauth:${l.sale_id}`);
+        else if (l.kind === 'intent' && l.intent_id) _markLocalListingCancel(`intent:${l.intent_id}`);
+      }
+    }
     try {
       await new Promise(r => setTimeout(r, 50));
       const r = await buildAndBroadcastCXfer({
@@ -36268,6 +36293,7 @@ async function renderHoldings() {
               cxferBroadcast = true;
             }
             await cancelListing({ assetIdHex: aid, txidHex, vout });
+            _markLocalListingCancel(`opening:${txidHex}:${vout | 0}`);
             toast(includeSelfSpend
               ? 'Listing cancelled · UTXO self-spent · marketplace cleared ✓'
               : 'Listing cancelled ✓', 'success');
@@ -36277,7 +36303,11 @@ async function renderHoldings() {
               // Self-CXFER already broadcast — listed UTXO is spent, so the
               // listing is permanently invalid. Worker DELETE failed (transient
               // network/worker error); the worker's reaper cron will prune the
-              // stale entry once it sees the spend on chain.
+              // stale entry once it sees the spend on chain. Mark the key so
+              // the auto-refresh vanish-detector doesn't toast "your listing
+              // sold ✓" when worker reaper drops the entry + the chain-probe
+              // sees our own self-CXFER as a spent UTXO.
+              _markLocalListingCancel(`opening:${txidHex}:${vout | 0}`);
               toast('UTXO self-spent ✓ — marketplace cleanup pending (will auto-prune): ' + e.message, 'error');
               renderHoldings();
             } else if (isUnlockCancelled(e)) {
@@ -36381,6 +36411,7 @@ async function renderHoldings() {
           b.disabled = true; b.textContent = 'cancelling…';
           try {
             await cancelRangeListing({ assetIdHex: aid });
+            _markLocalListingCancel(`range:${aid}:${bytesToHex(wallet.pub)}`);
             toast('Range listing cancelled ✓', 'success');
             renderHoldings();
           } catch (e) {
@@ -53729,6 +53760,7 @@ async function marketCancelIntentHandler(btn) {
       });
       // The on-chain self-CXFER is what actually invalidated the partial reveal.
       // Worker DELETE is now best-effort cleanup so the entry stops appearing.
+      _markLocalListingCancel(`intent:${iid}`);
       await cancelAxferIntent({ assetIdHex: aid, intentIdHex: iid }).catch(() => {});
       toast('Intent cancelled - asset UTXO spent - taker can no longer broadcast OK', 'success', 6000);
       setTimeout(() => { renderMarket(); renderHoldings(); renderActivity(); }, 500);
@@ -54405,6 +54437,12 @@ async function hardCancelPreauthSale({ assetIdHex, sale }) {
     recipients: [{ pubHex: myPubHex, amount: listed.amount }],
     forceUtxos: [{ txid: aoTxid, vout: aoVout, amount: listed.amount, blinding: listed.blinding }],
   });
+  // Mark the listing as a local cancel so the auto-refresh vanish-detector
+  // doesn't fire a false "your listing sold" toast: the listed UTXO has
+  // just been spent by our own self-CXFER, which would pass both gates
+  // (worker DELETE makes the entry vanish, chain probe sees the UTXO
+  // spent) without this suppression.
+  if (sale.sale_id) _markLocalListingCancel(`preauth:${sale.sale_id}`);
   // Best-effort soft cancel after the on-chain action succeeded. If
   // this fails the listed UTXO is already gone, so the listing is
   // dead at protocol level; the worker entry will TTL on its own.
