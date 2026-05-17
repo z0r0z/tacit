@@ -60670,7 +60670,7 @@ export {
   // Composes carveExactAmount (bond TAC) + cBTC.tac envelope + commit-reveal
   // P2TR. Force-close keeper + slash-claim builders staged separately.
   buildAndBroadcastCbtcTacDeposit, buildAndBroadcastCbtcTacWithdraw,
-  buildAndBroadcastShareSlashClaim,
+  buildAndBroadcastShareSlashClaim, buildAndBroadcastCbtcTacForceClose,
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,
   // cBTC.tac variant asset_id derivation (must match worker byte-for-byte).
   ctacVariantAssetId,
