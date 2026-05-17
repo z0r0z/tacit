@@ -26,7 +26,7 @@ and pick from the explicitly-listed free slots. The legend:
 | Opcode | Op | Status | Source | Description |
 |---|---|---|---|---|
 | `0x21` | `T_CETCH` | ✅ shipped | SPEC §5.1 | Issue a new asset with a hidden initial supply. Optionally mintable. |
-| `0x22` | — | ⬜ free | — | Available. |
+| `0x22` | `T_CXFER_BPP` | ✅ shipped (signet bake) | SPEC §5.21 | Confidential transfer with Bulletproofs+ aggregated rangeproof. Byte-identical to `T_CXFER` (`0x23`) except for the rangeproof bytes; ~14% smaller witness. Mainnet activation pending signet bake completion (`bppEnabled()` defaults ON for signet, OFF for mainnet via `tacit-bpp-enable-mainnet-v1` localStorage flag). |
 | `0x23` | `T_CXFER` | ✅ shipped | SPEC §5.2 | Transfer (split) confidential value between parties. |
 | `0x24` | `T_MINT` | ✅ shipped | SPEC §5.3 | Issuer issues additional supply on a mintable asset. |
 | `0x25` | `T_BURN` | ✅ shipped | SPEC §5.4 | Any holder destroys part or all of their balance. Burn amount is public. |
@@ -43,15 +43,18 @@ and pick from the explicitly-listed free slots. The legend:
 | `0x30` | `T_INTENT_ATTEST` | 📝 drafted | `AMM.md` §5.17 | Scope-generic preconfirmation channel attestation. Used by batched-AMM coordinators and other scoped settlement surfaces. No Groth16 / no ceremony. |
 | `0x31` | `T_PROTOCOL_FEE_CLAIM` | 📝 drafted | `AMM.md` §5.18 | Mint accrued protocol fee shares from a pool's `protocol_fee_reserve` to the configured fee recipient. |
 | `0x32` | `T_SWAP_VAR` | 📝 drafted | `SPEC-SWAP-VAR-AMENDMENT.md` §5.20 | Per-trade variable-amount AMM swap. No batching, no clearing price, no Groth16 — sigma cross-curve proof binds trader's `delta_in_commitment` to the pool's reserve delta. |
-| `0x33` | `T_LP_ADD_RANGE` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP add (V2). |
-| `0x34` | `T_LP_REMOVE_RANGE` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP remove (V2). |
-| `0x35` | `T_LP_REPOSITION` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP reposition (V2). |
-| `0x36` | `T_LP_MIGRATE_V` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP version migration (V2). |
+| `0x33` | `T_LP_ADD_RANGE` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP add (follow-up amendment). |
+| `0x34` | `T_LP_REMOVE_RANGE` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP remove (follow-up amendment). |
+| `0x35` | `T_LP_REPOSITION` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP reposition (follow-up amendment). |
+| `0x36` | `T_LP_MIGRATE_V` | 🔒 reserved | `SPEC-AMM-RANGE-LP-AMENDMENT.md` | Range-LP version migration (follow-up amendment). |
 | `0x37` | `T_AXFER_VAR` | ✅ shipped | SPEC §5.7.6.1, §5.7.9 | Variable-amount atomic settlement: T_AXFER with a bulletproofs range proof on the buyer's auxiliary BTC leg. |
 | `0x38` | `T_WRAPPER_ATTEST` | ✅ shipped | SPEC §5.19 | Optional on-chain wrapper-issuer attestation pinning an external-wallet → tacit-key binding so wallet-portable identity becomes auditable by third parties. |
 | `0x39` | `T_TRADE_BATCH` | 📝 drafted | `SPEC-TRADE-BATCH-AMENDMENT.md` §5.20 | Atomic cross-surface settlement: settles N AMM intents + K orderbook bilateral pairs in one Bitcoin tx. (Reassigned from 0x43 to fix collision with `T_SLOT_MINT`.) |
 | `0x3A` | `T_RANGE_ATTEST` | 📝 drafted | `SPEC-RANGE-ATTEST-AMENDMENT.md` §5.21 | Persistent on-chain range-attestation envelope binding a holder pubkey to a `commitment ≥ K` claim. Power-user feature (KYC tier proofs, reputation, governance weight). (Reassigned from 0x44 to fix collision with `T_SLOT_BURN`.) |
-| `0x3B` – `0x42` | — | ⬜ free | — | Available. Previously reserved by retired cUSD-CDP / FROST oracle amendments — those reservations are released per `SPEC-CUSD-TAC-AMENDMENT.md`. |
+| `0x3B` | — | ⬜ free | — | Available. |
+| `0x3C` | `T_AXFER_BPP` | 📝 drafted | `SPEC-AXFER-BPP-AMENDMENT.md` | BP+ variant of `T_AXFER` (`0x26`). Byte-identical wire shape modulo opcode + rangeproof bytes; ~14% smaller witness on every atomic OTC settlement. |
+| `0x3D` | `T_AXFER_VAR_BPP` | 📝 drafted | `SPEC-AXFER-BPP-AMENDMENT.md` | BP+ variant of `T_AXFER_VAR` (`0x37`). Byte-identical wire shape (N=2 + asset_input_count=1 tightenings + interleaved vout layout + mandatory OP_RETURN(80) preserved) modulo opcode + rangeproof bytes. |
+| `0x3E` – `0x42` | — | ⬜ free | — | Available. Previously reserved by retired cUSD-CDP / FROST oracle amendments — those reservations are released per `SPEC-CUSD-TAC-AMENDMENT.md`. |
 | `0x43` | `T_SLOT_MINT` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.21 | Self-custody-slot wrapper atomic mint. Locks BTC at `K_btc = r_leaf · G_secp256k1`. |
 | `0x44` | `T_SLOT_BURN` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.22 | Self-custody-slot wrapper atomic redeem. |
 | `0x45` | `T_SLOT_ROTATE` | ✅ shipped | `SPEC-CBTC-ZK-AMENDMENT.md` §5.23 | Self-custody-slot wrapper atomic transfer (key rotation). |
@@ -811,6 +814,16 @@ validateOutpoint(txid, vout):
         verify aggregated range proof for outputs (skip if BURN with N=0)
         verify asset_id consistency: every input's parent envelope must declare the same asset_id
         compute E' (with burned·H term if BURN) and verify kernel_sig under E'.x_only()
+        return true
+    if envelope.opcode == T_CXFER_BPP:
+        # See §5.21. Byte-identical to CXFER except the rangeproof is a
+        # Bulletproofs+ aggregated proof (~14% smaller witness). All other
+        # fields (kernel_sig, commitments, amount_ct, kernel_msg construction,
+        # ECDH-derived blinding + amount-recovery) are unchanged from CXFER.
+        recursively validateOutpoint each input outpoint (tx.vin[1..])
+        verify aggregated Bulletproofs+ range proof for outputs
+        verify asset_id consistency: every input's parent envelope must declare the same asset_id
+        compute E' (no burn term — T_CXFER_BPP is not a burn variant) and verify kernel_sig under E'.x_only()
         return true
     if envelope.opcode == T_AXFER:
         # See §5.7. Identical to CXFER except aux BTC inputs at
@@ -3158,6 +3171,89 @@ The `kernel_msg` reuses the shared `tacit-kernel-v1` domain from CXFER (§5.4) /
 **Settler / dapp behavior** is fully specified in the amendment (`spec/amendments/SPEC-SWAP-VAR-AMENDMENT.md` §"Settlement flow", §"Open questions"); summarized briefly: settler observes pool depth, builds the envelope using trader-supplied range parameters and the trader's pre-signed intent, broadcasts. The trader's dapp validates the assembled envelope before sending the kernel-sig excess scalar (this step replaces `T_SWAP_BATCH`'s two-RTT auto-sign flow).
 
 Reference impl: `tests/swap-var.mjs` (`validateSwapVar`, `encodeSwapVar`, `decodeSwapVar`, `curveDeltaOut`, `buildTickFan`, `buildSwapVarIntentMsg`, `buildSwapVarKernelMsg`); re-exported from `tests/amm-validator.mjs` as the single canonical entry point for the AMM-opcode validator surface. Spec-conformance pins: `tests/amm-spec-conformance.test.mjs`.
+
+### 5.21 T_CXFER_BPP (`0x22`) — confidential transfer with Bulletproofs+ rangeproof
+
+`T_CXFER_BPP` is a byte-for-byte parallel of `T_CXFER` (§5.2) carrying a **Bulletproofs+** (Chung, Han, Lai, Maller, Mohnblatt, Sarkar, Sharma; 2020) aggregated rangeproof in place of the standard Bulletproofs rangeproof. Pedersen commitment, kernel-msg construction, ECDH-derived blinding + amount-recovery, aggregation cap `N ∈ {1,2,4,8}`, and the soft-fork unknown-opcode framing are all preserved verbatim. Witness footprint drops ~14% across `m ∈ {1,2,4,8}` from the BP+ wire savings (3 group elements + 3 scalars in the BP+ baseline vs 4 group elements + 5 scalars in BP).
+
+**Wire format:**
+
+```
+T_CXFER_BPP(1)              = 0x22
+|| asset_id(32)
+|| kernel_sig(64)            Schnorr sig over kernel_msg, see §5.2
+|| N(1)                      number of outputs, ∈ {1,2,4,8}
+|| (commitment(33) || amount_ct(8))  ×N
+|| rp_len(2)
+|| rangeproof(rp_len)        aggregated Bulletproofs+, m=N, n=64
+```
+
+Every field except the opcode byte and the `rangeproof` bytes is byte-identical to §5.2. The kernel msg, commitment encoding, and amount-encryption keystream are unchanged.
+
+**Kernel message** — identical to §5.2 (CXFER), with `burned_amount = 0`:
+```
+kernel_msg = SHA256(
+    "tacit-kernel-v1"
+    || asset_id(32)
+    || in_count(1) || (input_txid_BE(32) || input_vout_LE(4))*in_count
+    || out_count(1) || output_commitment(33)*out_count
+    || burned_amount_LE(8)    # 0 for T_CXFER_BPP
+)
+```
+
+Domain-tag reuse is intentional: the kernel signature secures the asset-side balance equation `(Σ output_commitments) − (Σ input_commitments) = excess·G`, which is identical between `T_CXFER` and `T_CXFER_BPP`. The same kernel-signing path in `dapp/tacit.js` and the worker indexer applies unchanged; only the rangeproof prover/verifier is swapped.
+
+**Rangeproof specification.** Aggregated Bulletproofs+ per Chung et al. 2020 §3 (Weighted Inner-Product Argument) + §4.4 (Aggregated Range Proof). Public parameters:
+
+| Parameter | Value |
+|---|---|
+| Curve | secp256k1 (same as T_CXFER) |
+| Range `n` | `64` (commitments prove `v ∈ [0, 2⁶⁴)`) |
+| Aggregation `m` | `N` (1, 2, 4, or 8 — matches output count) |
+| `G` | secp256k1 base point |
+| `H` | §3.1 NUMS construction under `tacit-generator-H-v1` |
+| `G_vec[0..511]`, `H_vec[0..511]` | §3.1 try-and-increment under `tacit-bp-G-v1` / `tacit-bp-H-v1` |
+| `Q` | §3.1 try-and-increment under `tacit-bp-Q-v1` |
+| Fiat-Shamir transcript hash | SHA-256, transcript-tagged per the WIPA construction in `dapp/bulletproofs-plus.js` |
+
+Generator vectors are **reused unchanged** from §3.1; no new NUMS-derivation domain tags are introduced. The pinned hex-encoded reference test vectors in §3.1 (`G_vec[0..3]`, `H_vec[0..3]`, `H`, `Q`) remain authoritative cross-implementation parity checks for both `T_CXFER` and `T_CXFER_BPP`.
+
+Proof size at each aggregation level (measured against the reference port in `dapp/bulletproofs-plus.js`):
+
+| `m` | T_CXFER (BP) | T_CXFER_BPP (BP+) | Saving |
+|---|---|---|---|
+| 1 | ~688 B | **591 B** | -14% |
+| 2 | ~754 B | **657 B** | -13% |
+| 4 | ~820 B | **723 B** | -12% |
+| 8 | ~886 B | **789 B** | -11% |
+
+**Validator algorithm.** The §5.5 dispatch carries a dedicated `T_CXFER_BPP` branch (see §5.5):
+
+```
+if envelope.opcode == T_CXFER_BPP:
+    recursively validateOutpoint each input outpoint (tx.vin[1..])
+    verify aggregated Bulletproofs+ rangeproof for outputs
+    verify asset_id consistency: every input's parent envelope declares the same asset_id
+    compute E' (no burn term) and verify kernel_sig under E'.x_only()
+    return true
+```
+
+**Mixed-ancestry rule.** A `T_CXFER_BPP` envelope MAY consume inputs produced by any of `T_CETCH`, `T_MINT`, `T_CXFER`, `T_AXFER`, `T_AXFER_VAR`, `T_PMINT`, `T_WITHDRAW`, `T_DCLAIM`, `T_PROTOCOL_FEE_CLAIM`, or any other producing opcode. The reverse also holds: `T_CXFER`, `T_AXFER`, `T_AXFER_VAR`, and `T_BURN` envelopes MAY consume inputs produced by `T_CXFER_BPP`. The ancestry walk recurses across the producing-opcode's verifier (Bulletproofs for CXFER ancestors, Bulletproofs+ for `T_CXFER_BPP` ancestors); **both verifiers MUST be present in any conforming indexer** for as long as either opcode appears anywhere in chain history.
+
+**Soundness.** Identical reduction shape to §5.2 (Mimblewimble + range-proof argument):
+
+1. **Conservation of value.** `E' = (Σ output_commitments) − (Σ input_commitments)`. If amounts balance, `E' = excess·G` (no `H` component) and the kernel signature verifies. Otherwise `E'` carries a non-zero `H` component and producing a valid signature requires solving the discrete log of `H` w.r.t. `G` — hard since `H` is NUMS (§3.1).
+2. **No inflation via negative amounts.** The aggregated Bulletproofs+ rangeproof binds each output's committed value to `[0, 2⁶⁴)`. Soundness reduces to the DLog assumption over secp256k1 (Chung et al. 2020 Theorem 4.4 — identical reduction shape to standard Bulletproofs).
+3. **No cross-asset confusion.** `asset_id` is committed in the kernel msg, and the validator asserts asset_id consistency across every recursively-validated input. Identical to §5.2.
+4. **No replay across outpoints.** The kernel msg binds every input outpoint (`txid_BE || vout_LE`). Identical to §5.2.
+
+**Recovery.** `amount_ct` is encrypted under an HMAC-keystream derived from the ECDH shared secret between sender and recipient pubkeys — identical to §3.5 and §5.2. **Bulletproofs+ changes only the rangeproof bytes**; the amount-recovery code paths in `dapp/tacit.js` and the worker require zero modification. A wallet recovering on a fresh device walks ancestry across whatever mix of `T_CXFER` and `T_CXFER_BPP` envelopes appears in chain history, dispatching on the opcode byte to the correct rangeproof verifier; the rest of the recovery flow is opcode-agnostic.
+
+**Domain-tag additions:** none. Kernel signatures reuse `tacit-kernel-v1`; rangeproof generator derivations reuse `tacit-generator-H-v1` / `tacit-bp-G-v1` / `tacit-bp-H-v1` / `tacit-bp-Q-v1` from §3.1 verbatim. Cross-impl parity for both proof systems is anchored by the same pinned hex constants.
+
+**Activation gating.** The reference dapp's send-path accepts `useBpp` per-call; `bppEnabled()` defaults ON for signet and OFF for mainnet (mainnet flip via `localStorage['tacit-bpp-enable-mainnet-v1']`). Indexers MUST accept `T_CXFER_BPP` envelopes on both networks unconditionally — the gate is sender-side only.
+
+Reference impl: `dapp/bulletproofs-plus.js` (`bppRangeProve`, `bppRangeVerify`), `dapp/tacit.js` (`encodeCXferBppPayload`, `decodeCXferBppPayload`, `validateOutpoint` dispatch, `bppEnabled`), `worker/src/index.js` (`T_CXFER_BPP` constant + `decodeCXferBppPayload` + ancestry-walk + canonical-order branches). Test suite: `tests/bulletproofs-plus-*.test.mjs` (11 test files covering roundtrip, adversarial, malicious-prover, Monero-scenarios, pinned fixtures, property fuzz, prover smoke, Python parity, symbolic identity, witness extractor, bounded exhaustive), `tests/cxfer-bpp-wire.test.mjs`, `tests/cxfer-bpp-integration.test.mjs`. Signet harness: `tests/cxfer-bpp-onchain-e2e-signet.mjs` (mixed-ancestry CETCH → T_CXFER_BPP → T_CXFER round-trip). Extended-narrative draft preserved at `spec/amendments/SPEC-CXFER-BPP-AMENDMENT.md`.
 
 ## 6. Recovery semantics
 

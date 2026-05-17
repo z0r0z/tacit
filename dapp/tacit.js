@@ -4925,6 +4925,8 @@ const T_CXFER    = 0x23;
 const T_MINT     = 0x24; // issue more supply on a mintable asset (signed by mint_authority)
 const T_BURN     = 0x25; // destroy supply (any holder; emits a public burned_amount)
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
+const T_AXFER_BPP = 0x3C; // BP+ variant of T_AXFER, identical wire shape modulo opcode + rangeproof (SPEC-AXFER-BPP-AMENDMENT)
+const T_AXFER_VAR_BPP = 0x3D; // BP+ variant of T_AXFER_VAR, identical wire shape modulo opcode + rangeproof (SPEC-AXFER-BPP-AMENDMENT)
 const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
 const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
 const T_DEPOSIT  = 0x29; // mixer-pool deposit / pool init (SPEC §5.10)
@@ -5348,6 +5350,109 @@ function axferVarOutputIndexForVout(vout) {
   if (vout === 0) return 0;
   if (vout === 2) return 1;
   return null;
+}
+
+// T_AXFER_BPP (SPEC-AXFER-BPP-AMENDMENT) — byte-for-byte mirror of T_AXFER
+// except the opcode is 0x3C and the rangeproof is a Bulletproofs+ aggregated
+// proof verified via bppRangeVerify rather than bpRangeAggVerify. Every other
+// field (asset_input_count, kernel_sig, commitments, amount_ct, kernel_msg
+// construction) is unchanged from §5.7. Soundness reduction is identical
+// modulo the rangeproof verifier swap.
+function encodeAxferBppPayload({ assetId, assetInputCount, kernelSig, outputs, rangeproof }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (!Number.isInteger(assetInputCount) || assetInputCount < 1 || assetInputCount > 255) {
+    throw new Error('asset_input_count must be integer in [1, 255]');
+  }
+  if (!kernelSig || kernelSig.length !== 64) throw new Error('kernel_sig must be 64 bytes');
+  if (![1, 2, 4, 8].includes(outputs.length)) throw new Error('outputs must be in {1,2,4,8}');
+  if (rangeproof.length > 0xffff) throw new Error('rangeproof too large');
+  const parts = [new Uint8Array([T_AXFER_BPP]), assetId, new Uint8Array([assetInputCount]), kernelSig, new Uint8Array([outputs.length])];
+  for (const o of outputs) {
+    if (o.commitment.length !== 33) throw new Error('commitment 33 bytes');
+    if (!o.encryptedAmount || o.encryptedAmount.length !== 8) throw new Error('encrypted_amount must be 8 bytes');
+    parts.push(o.commitment, o.encryptedAmount);
+  }
+  const rpLen = new Uint8Array(2); new DataView(rpLen.buffer).setUint16(0, rangeproof.length, true);
+  parts.push(rpLen, rangeproof);
+  return concatBytes(...parts);
+}
+
+function decodeAxferBppPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 1 + 64 + 1 + (33 + 8) + 2) return null;
+  if (payload[0] !== T_AXFER_BPP) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount < 1) return null;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const n = payload[p]; p += 1;
+  if (![1, 2, 4, 8].includes(n)) return null;
+  const outputs = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 + 8 > payload.length) return null;
+    const commitment = payload.slice(p, p + 33); p += 33;
+    const encryptedAmount = payload.slice(p, p + 8); p += 8;
+    outputs.push({ commitment, encryptedAmount });
+  }
+  if (p + 2 > payload.length) return null;
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  const rangeproof = payload.slice(p, p + rpLen);
+  return { kind: 'axfer_bpp', assetId, assetInputCount, kernelSig, outputs, rangeproof };
+}
+
+// T_AXFER_VAR_BPP (SPEC-AXFER-BPP-AMENDMENT) — byte-for-byte mirror of
+// T_AXFER_VAR (SPEC §5.7.9) except the opcode is 0x3D and the rangeproof
+// is Bulletproofs+. The N=2 tightening, vout interleaving rule, and the
+// mandatory OP_RETURN(80) recovery output are preserved verbatim — only
+// the rangeproof bytes change. Indexers reject deviations from the §5.7.9
+// tx layout identically.
+function encodeAxferVarBppPayload({ assetId, kernelSig, outputs, rangeproof }) {
+  if (assetId.length !== 32) throw new Error('asset_id 32 bytes');
+  if (!kernelSig || kernelSig.length !== 64) throw new Error('kernel_sig must be 64 bytes');
+  if (outputs.length !== 2) throw new Error('T_AXFER_VAR_BPP outputs MUST be exactly 2 (recipient + maker change)');
+  if (rangeproof.length > 0xffff) throw new Error('rangeproof too large');
+  const parts = [
+    new Uint8Array([T_AXFER_VAR_BPP]),
+    assetId,
+    new Uint8Array([1]),  // asset_input_count: exactly 1, mirrors §5.7.9
+    kernelSig,
+    new Uint8Array([2]),  // N: exactly 2, mirrors §5.7.9
+  ];
+  for (const o of outputs) {
+    if (o.commitment.length !== 33) throw new Error('commitment 33 bytes');
+    if (!o.encryptedAmount || o.encryptedAmount.length !== 8) throw new Error('encrypted_amount must be 8 bytes');
+    parts.push(o.commitment, o.encryptedAmount);
+  }
+  const rpLen = new Uint8Array(2); new DataView(rpLen.buffer).setUint16(0, rangeproof.length, true);
+  parts.push(rpLen, rangeproof);
+  return concatBytes(...parts);
+}
+
+function decodeAxferVarBppPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_AXFER_VAR_BPP) return null;
+  if (payload.length < 1 + 32 + 1 + 64 + 1 + 2 * (33 + 8) + 2) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount !== 1) return null;
+  const kernelSig = payload.slice(p, p + 64); p += 64;
+  const n = payload[p]; p += 1;
+  if (n !== 2) return null;
+  const outputs = [];
+  for (let i = 0; i < n; i++) {
+    if (p + 33 + 8 > payload.length) return null;
+    const commitment = payload.slice(p, p + 33); p += 33;
+    const encryptedAmount = payload.slice(p, p + 8); p += 8;
+    outputs.push({ commitment, encryptedAmount });
+  }
+  if (p + 2 > payload.length) return null;
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  const rangeproof = payload.slice(p, p + rpLen);
+  return { kind: 'axfer_var_bpp', assetId, assetInputCount, kernelSig, outputs, rangeproof };
 }
 
 // ---- Kernel message: binds the sig to (asset_id, input outpoints, output commitments) ----
@@ -10703,13 +10808,17 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     return kernelOk;
   }
 
-  if (env.opcode === T_AXFER) {
-    // SPEC §5.7. Same flow as CXFER but with declared asset_input_count:
+  if (env.opcode === T_AXFER || env.opcode === T_AXFER_BPP) {
+    // SPEC §5.7 (T_AXFER) + SPEC-AXFER-BPP-AMENDMENT (T_AXFER_BPP).
+    // Same flow as CXFER but with declared asset_input_count:
     // vin[1..1+aic] are tacit asset inputs (recursively validated, contribute
     // to kernel msg + E'); vin[1+aic..] are aux BTC inputs the kernel sig
     // deliberately doesn't bind. Used for atomic OTC settlement where a
     // buyer's BTC payment shares the same Bitcoin tx as the maker's reveal.
-    const dec = decodeAxferPayload(env.payload);
+    // T_AXFER_BPP is byte-identical except for the opcode byte and the
+    // rangeproof bytes (Bulletproofs+ vs Bulletproofs); dispatched here.
+    const isBpp = env.opcode === T_AXFER_BPP;
+    const dec = isBpp ? decodeAxferBppPayload(env.payload) : decodeAxferPayload(env.payload);
     if (!dec) { validatedSet.set(key, false); return false; }
     const N = dec.outputs.length;
     if (vout >= N) { validatedSet.set(key, false); return false; }
@@ -10729,7 +10838,12 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     let Cpts;
     try { Cpts = dec.outputs.map(o => bytesToPoint(o.commitment)); }
     catch { markAll(N, false); return false; }
-    if (rpBatch) {
+    // BP+ proofs never enter the cross-proof batch — `rpBatch` is a
+    // standard-Bulletproofs aggregator and would mis-verify a BP+ proof.
+    // For T_AXFER_BPP we verify inline regardless of rpBatch.
+    if (isBpp) {
+      if (!bppRangeVerify(Cpts, dec.rangeproof)) { markAll(N, false); return false; }
+    } else if (rpBatch) {
       rpBatch.push({ commitments: Cpts, proof: dec.rangeproof });
     } else if (!bpRangeAggVerify(Cpts, dec.rangeproof)) {
       markAll(N, false); return false;
@@ -10765,8 +10879,9 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     return kernelOkV2;
   }
 
-  if (env.opcode === T_AXFER_VAR) {
-    // SPEC §5.7.9 / §5.7.6.1 — variable-amount atomic settlement.
+  if (env.opcode === T_AXFER_VAR || env.opcode === T_AXFER_VAR_BPP) {
+    // SPEC §5.7.9 / §5.7.6.1 (T_AXFER_VAR) + SPEC-AXFER-BPP-AMENDMENT
+    // (T_AXFER_VAR_BPP) — variable-amount atomic settlement.
     // Same closure as T_AXFER (kernel sig over (Σ C_out − Σ C_in) + rangeproof
     // over output commitments) but with two structural tightenings vs the
     // parent opcode:
@@ -10778,7 +10893,10 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     //       vin[1]'s SIGHASH_SINGLE) and vout[3] is the mandatory
     //       OP_RETURN(80) recovery payload. validateOutpoint queries against
     //       vout 1 or vout ≥ 3 MUST return false (those aren't tacit UTXOs).
-    const dec = decodeAxferVarPayload(env.payload);
+    // T_AXFER_VAR_BPP is byte-identical to T_AXFER_VAR except for the opcode
+    // byte and the rangeproof bytes (Bulletproofs+ vs Bulletproofs).
+    const isBpp = env.opcode === T_AXFER_VAR_BPP;
+    const dec = isBpp ? decodeAxferVarBppPayload(env.payload) : decodeAxferVarPayload(env.payload);
     if (!dec) { validatedSet.set(key, false); return false; }
     // Map the consumer's requested vout to the payload's outputs[] index, or
     // reject if the vout is non-tacit per the interleaved-layout rule.
@@ -10809,11 +10927,15 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
       return false;
     }
     // Rangeproof over the 2 output commitments. m=2 aggregation; same BP
-    // construction as CXFER/T_AXFER.
+    // construction as CXFER/T_AXFER. For T_AXFER_VAR_BPP the rangeproof
+    // bytes are a Bulletproofs+ proof — verify inline and never enter the
+    // standard-BP cross-proof batch (would mis-verify).
     let Cpts;
     try { Cpts = dec.outputs.map(o => bytesToPoint(o.commitment)); }
     catch { markBothTacitVouts(false); return false; }
-    if (rpBatch) {
+    if (isBpp) {
+      if (!bppRangeVerify(Cpts, dec.rangeproof)) { markBothTacitVouts(false); return false; }
+    } else if (rpBatch) {
       rpBatch.push({ commitments: Cpts, proof: dec.rangeproof });
     } else if (!bpRangeAggVerify(Cpts, dec.rangeproof)) {
       markBothTacitVouts(false); return false;
@@ -11535,6 +11657,14 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     if (!d || vout >= d.outputs.length) return null;
     return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
   }
+  if (parentEnv.opcode === T_AXFER_BPP) {
+    // SPEC-AXFER-BPP-AMENDMENT. Wire shape identical to T_AXFER for
+    // asset_id + per-output commitments; only the rangeproof bytes differ.
+    // Downstream consumers walk the commitment the same way.
+    const d = decodeAxferBppPayload(parentEnv.payload);
+    if (!d || vout >= d.outputs.length) return null;
+    return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
+  }
   if (parentEnv.opcode === T_AXFER_VAR) {
     // SPEC §5.7.9 — variable-amount atomic settlement. The tx vout layout is
     // INTERLEAVED: vout[0]=recipient tacit, vout[1]=BTC payment, vout[2]=
@@ -11543,6 +11673,17 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
     // non-tacit and must return null so downstream consumers don't mistake
     // the BTC payment / OP_RETURN / taker change as a spendable tacit lot.
     const d = decodeAxferVarPayload(parentEnv.payload);
+    if (!d) return null;
+    const outIdx = axferVarOutputIndexForVout(vout);
+    if (outIdx === null) return null;
+    return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[outIdx].commitment };
+  }
+  if (parentEnv.opcode === T_AXFER_VAR_BPP) {
+    // SPEC-AXFER-BPP-AMENDMENT. Layout identical to T_AXFER_VAR (same
+    // interleaved vouts, same N=2, same asset_input_count=1); only the
+    // rangeproof bytes differ. Reuses axferVarOutputIndexForVout for the
+    // tacit-vout mapping.
+    const d = decodeAxferVarBppPayload(parentEnv.payload);
     if (!d) return null;
     const outIdx = axferVarOutputIndexForVout(vout);
     if (outIdx === null) return null;
@@ -12282,24 +12423,28 @@ async function _scanHoldingsImpl() {
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       onChainCommitment = dec.commitment;
-    } else if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP) {
-      const dec = env.opcode === T_CXFER     ? decodeCXferPayload(env.payload)
-                : env.opcode === T_AXFER     ? decodeAxferPayload(env.payload)
-                : env.opcode === T_CXFER_BPP ? decodeCXferBppPayload(env.payload)
-                                             : decodeCBurnPayload(env.payload);
+    } else if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP || env.opcode === T_AXFER_BPP) {
+      const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
+                : env.opcode === T_AXFER       ? decodeAxferPayload(env.payload)
+                : env.opcode === T_CXFER_BPP   ? decodeCXferBppPayload(env.payload)
+                : env.opcode === T_AXFER_BPP   ? decodeAxferBppPayload(env.payload)
+                                               : decodeCBurnPayload(env.payload);
       if (!dec) continue;
       assetIdHex = bytesToHex(dec.assetId);
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       if (u.vout >= dec.outputs.length) continue;
       onChainCommitment = dec.outputs[u.vout].commitment;
-    } else if (env.opcode === T_AXFER_VAR) {
-      // SPEC §5.7.9: interleaved-vout layout. Only vout {0, 2} are tacit;
+    } else if (env.opcode === T_AXFER_VAR || env.opcode === T_AXFER_VAR_BPP) {
+      // SPEC §5.7.9 (T_AXFER_VAR) + SPEC-AXFER-BPP-AMENDMENT (T_AXFER_VAR_BPP):
+      // interleaved-vout layout. Only vout {0, 2} are tacit;
       // vout 1 is the maker's BTC payment, vout 3 is OP_RETURN(80) recovery,
       // vout 4+ is taker BTC change. Skip non-tacit vouts so the holdings
       // scanner doesn't misidentify the BTC payment / OP_RETURN as a
       // spendable tacit UTXO.
-      const dec = decodeAxferVarPayload(env.payload);
+      const dec = env.opcode === T_AXFER_VAR_BPP
+        ? decodeAxferVarBppPayload(env.payload)
+        : decodeAxferVarPayload(env.payload);
       if (!dec) continue;
       const outIdx = axferVarOutputIndexForVout(u.vout);
       if (outIdx === null) continue;
@@ -12825,11 +12970,12 @@ async function _scanHoldingsImpl() {
       }
     }
 
-    if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP) {
-      const dec = env.opcode === T_CXFER     ? decodeCXferPayload(env.payload)
-                : env.opcode === T_AXFER     ? decodeAxferPayload(env.payload)
-                : env.opcode === T_CXFER_BPP ? decodeCXferBppPayload(env.payload)
-                                             : decodeCBurnPayload(env.payload);
+    if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP || env.opcode === T_AXFER_BPP) {
+      const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
+                : env.opcode === T_AXFER       ? decodeAxferPayload(env.payload)
+                : env.opcode === T_CXFER_BPP   ? decodeCXferBppPayload(env.payload)
+                : env.opcode === T_AXFER_BPP   ? decodeAxferBppPayload(env.payload)
+                                               : decodeCBurnPayload(env.payload);
       if (dec && tx.vin.length >= 2) {
         // Recovery anchor: for v1 CXFER/BURN, vin[1] is the first asset input
         // by definition. For v2, vin[1] is also the first asset input (asset
@@ -64852,6 +64998,14 @@ export {
   // signet-rejection class of bug.
   encodeAxferVarOnchainOpReturn, tryExtractAxferVarOnchainOpReturn,
   AXFER_VAR_OPRETURN_PAYLOAD_BYTES,
+  // SPEC-AXFER-BPP-AMENDMENT — encoder/decoder pairs for the Bulletproofs+
+  // variants. Wire format mirrors T_AXFER / T_AXFER_VAR byte-for-byte except
+  // for the leading opcode (0x3C / 0x3D) and the rangeproof bytes. Exported
+  // so the axfer-bpp-wire test can pin the format invariants.
+  encodeAxferPayload, decodeAxferPayload,
+  encodeAxferVarPayload, decodeAxferVarPayload,
+  encodeAxferBppPayload, decodeAxferBppPayload,
+  encodeAxferVarBppPayload, decodeAxferVarBppPayload,
   // Direct retry hooks for resume-after-partial-failure (e.g. publish broadcast
   // OK but worker POST timed out). The harness uses these to retry the POST
   // without rebroadcasting.

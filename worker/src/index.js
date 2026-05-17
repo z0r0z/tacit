@@ -115,7 +115,9 @@ const T_CXFER    = 0x23;
 const T_MINT     = 0x24;
 const T_BURN     = 0x25;
 const T_AXFER = 0x26; // CXFER variant allowing aux non-tacit inputs (atomic OTC settlement, SPEC §5.7)
+const T_AXFER_BPP = 0x3C; // BP+ variant of T_AXFER (SPEC-AXFER-BPP-AMENDMENT); byte-identical wire shape modulo opcode + rangeproof
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.6.1 / §5.7.9)
+const T_AXFER_VAR_BPP = 0x3D; // BP+ variant of T_AXFER_VAR (SPEC-AXFER-BPP-AMENDMENT); byte-identical wire shape modulo opcode + rangeproof
 const T_PETCH    = 0x27; // permissionless-mint deployment record (SPEC §5.8)
 const T_PMINT    = 0x28; // permissionless mint event against a T_PETCH ancestor (SPEC §5.9)
 const T_DROP     = 0x2B; // public-claim pool over existing supply (SPEC §5.12)
@@ -6248,6 +6250,61 @@ function decodeAxferVarPayload(payload) {
   p += 64; // kernel_sig
   const N = payload[p]; p += 1;
   if (N !== 2) return null;                  // T_AXFER_VAR: exactly N=2 (recipient + maker change)
+  if (p + N * (33 + 8) + 2 > payload.length) return null;
+  const outputs = [];
+  for (let i = 0; i < N; i++) {
+    const commitment = payload.slice(p, p + 33); p += 33;
+    p += 8; // amount_ct
+    outputs.push({ commitment: bytesToHex(commitment) });
+  }
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  return { asset_id: bytesToHex(assetId), asset_input_count: assetInputCount, n: N, outputs };
+}
+
+// T_AXFER_BPP structural decoder (SPEC-AXFER-BPP-AMENDMENT). Byte-for-byte
+// mirror of decodeAxferPayload except the opcode byte is 0x3C and the
+// rangeproof bytes are Bulletproofs+ rather than Bulletproofs. Worker-side
+// dispatch consumes only the per-vout commitments (commitmentForUtxo, hint
+// indexing, balance scans) — those bytes are identical, so the decoder
+// returns the same shape as decodeAxferPayload.
+function decodeAxferBppPayload(payload) {
+  if (!payload) return null;
+  if (payload.length < 1 + 32 + 1 + 64 + 1) return null;
+  if (payload[0] !== T_AXFER_BPP) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount < 1) return null;
+  p += 64; // kernel_sig
+  const N = payload[p]; p += 1;
+  if (![1, 2, 4, 8].includes(N)) return null;
+  if (p + N * (33 + 8) + 2 > payload.length) return null;
+  const outputs = [];
+  for (let i = 0; i < N; i++) {
+    const commitment = payload.slice(p, p + 33); p += 33;
+    p += 8; // amount_ct
+    outputs.push({ commitment: bytesToHex(commitment) });
+  }
+  const rpLen = payload[p] | (payload[p + 1] << 8); p += 2;
+  if (p + rpLen !== payload.length) return null;
+  return { asset_id: bytesToHex(assetId), asset_input_count: assetInputCount, outputs };
+}
+
+// T_AXFER_VAR_BPP structural decoder (SPEC-AXFER-BPP-AMENDMENT). Byte-for-
+// byte mirror of decodeAxferVarPayload except the opcode is 0x3D and the
+// rangeproof is Bulletproofs+. Same N=2 + asset_input_count=1 tightenings.
+function decodeAxferVarBppPayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_AXFER_VAR_BPP) return null;
+  if (payload.length < 1 + 32 + 1 + 64 + 1 + 2 * (33 + 8) + 2) return null;
+  let p = 1;
+  const assetId = payload.slice(p, p + 32); p += 32;
+  const assetInputCount = payload[p]; p += 1;
+  if (assetInputCount !== 1) return null;
+  p += 64; // kernel_sig
+  const N = payload[p]; p += 1;
+  if (N !== 2) return null;
   if (p + N * (33 + 8) + 2 > payload.length) return null;
   const outputs = [];
   for (let i = 0; i < N; i++) {

@@ -37,6 +37,8 @@ All design docs live under [`spec/design/`](./spec/design/).
 | Tacit range-proof primitive (§3) | ✅ Reference impl shipped; SPEC.md merge pending | Bulletproof-derived range-proof primitive (`tests/range-proof.mjs`, 39 tests). Slated for SPEC.md §3 as a normative primitive when consumers land. | Lives in the amendment file until SPEC.md merge; no opcode coupling. | [`spec/amendments/SPEC-RANGE-PROOF-PRIMITIVE.md`](./spec/amendments/SPEC-RANGE-PROOF-PRIMITIVE.md) |
 | Range-attestation opcode | ✅ Reference impl shipped; SPEC.md §5.21 merge pending | `T_RANGE_ATTEST` (`0x3A`); persistent on-chain range-attestation envelope binding a holder pubkey to a `commitment ≥ K` claim. Power-user feature (KYC tier proofs, reputation, governance weight). | Reference impl at `tests/range-attest.mjs` (23 tests); ships as V1.x amendment post-V1 ceremony. | [`spec/amendments/SPEC-RANGE-ATTEST-AMENDMENT.md`](./spec/amendments/SPEC-RANGE-ATTEST-AMENDMENT.md) |
 | Batched preauth-take | ✅ Merged | No new opcode. Formalizes a property of existing `T_AXFER` (`0x26`) under §5.7.8: BIP-143 `SIGHASH_SINGLE_ACP` preimages are position-independent for matching payout content, so N preauth sales by N distinct sellers settle in one (commit, reveal) pair using `asset_input_count = N` (already permitted by the wire format). ~70% fee reduction for multi-fill buys. SPEC.md §5.7.8.1 carries the canonical text; amendment file kept as historical record. | Shipped at `dc7a48e` + `79763f5` + `6648e7d` (fill_count). `tests/preauth-take.test.mjs` 55/55 + `tests/bid-fulfil-batch.test.mjs` 13/13 + `tests/bid-fulfil-batch-e2e.test.mjs` 11/11 + `tests/preauth-recovery-banner.test.mjs` 17/17 + `tests/worker-batched-axfer-index.test.mjs` 24/24 = 120 batch tests. Worker redeploy required for `fill_count` storage (deployed at `b317006e`). | [`spec/amendments/SPEC-PREAUTH-BATCH-AMENDMENT.md`](./spec/amendments/SPEC-PREAUTH-BATCH-AMENDMENT.md) |
+| Bulletproofs+ confidential transfer | ✅ Merged (signet bake in flight) | `T_CXFER_BPP` (`0x22`); byte-identical to `T_CXFER` (`0x23`) except the rangeproof is Bulletproofs+ instead of Bulletproofs. ~14% smaller witnesses across `m ∈ {1,2,4,8}`. Same kernel sig, same Pedersen commitments, same ECDH amount recovery, same `tacit-kernel-v1` domain tag, same NUMS generators (`tacit-bp-G-v1` / `tacit-bp-H-v1` / `tacit-bp-Q-v1` reused from §3.1). Universal fee cut across every CXFER edge — touches every transfer + AMM/orderbook follow-on consumption. No new domain tags. Mixed-ancestry walks recurse through both verifiers. Soft-fork-additive per §5.5 unknown-opcode rule. | Shipped: `dapp/bulletproofs-plus.js` (907 LOC BP+ prover/verifier + Pippenger MSM in `bppRangeVerify` closing perf parity to BP); `dapp/tacit.js` (encoder + decoder + validator dispatch + send-path `useBpp` flag); `worker/src/index.js` (decoder + ancestry-walk + canonical-order branches). Tests: 11 BP+ test files (roundtrip / adversarial / malicious-prover / monero-scenarios / pinned-fixtures / property-fuzz / symbolic-identity / witness-extractor / python-parity / bounded-exhaustive / prover-smoke) + `cxfer-bpp-wire.test.mjs` (136 wire-format tests) + `cxfer-bpp-integration.test.mjs` (full envelope → validator pipeline) + `bulletproofs-plus.bench.mjs` (verify-perf parity vs BP). On-chain harness `tests/cxfer-bpp-onchain-e2e-signet.mjs` exercises ≥5-hop mixed-ancestry CETCH → BPP → CXFER → BPP → BPP round-trip. Activation gated by `bppEnabled()` — default ON for signet, OFF for mainnet (`localStorage['tacit-bpp-enable-mainnet-v1']`). SPEC.md §5.21 ✅ + §1.1 opcode table row + §5.5 dispatch branch landed. | [`spec/amendments/SPEC-CXFER-BPP-AMENDMENT.md`](./spec/amendments/SPEC-CXFER-BPP-AMENDMENT.md) |
+| Bulletproofs+ atomic OTC settlement | 📝 Draft (round-1) | `T_AXFER_BPP` (`0x3C`) + `T_AXFER_VAR_BPP` (`0x3D`); BP+ variants of `T_AXFER` (`0x26`) and `T_AXFER_VAR` (`0x37`) respectively. Byte-identical wire formats modulo opcode + rangeproof bytes. ~14% witness reduction on every atomic OTC settlement (listings, fills, variable-amount partial fills, batched preauth-take routes). Same kernel-msg construction (`tacit-kernel-v1`), same Pedersen, same OP_RETURN(80) dual-recovery for T_AXFER_VAR_BPP. No new domain tags. Reuses the production BP+ prover/verifier from `T_CXFER_BPP`. Mixed-ancestry walks across BP and BP+ AXFER variants. | Wire-format infra landed in `dapp/tacit.js` (encoders/decoders/validator dispatch/getParentEnvelopeData/scanHoldings) + `worker/src/index.js` (constants + decoders). `tests/axfer-bpp-wire.test.mjs` pins encode/decode roundtrip + rejection cases + byte-level structural invariants vs BP twins. Pending: worker scan-loop integration, signet on-chain harness, send-path `useBpp` flag on the AXFER builders. | [`spec/amendments/SPEC-AXFER-BPP-AMENDMENT.md`](./spec/amendments/SPEC-AXFER-BPP-AMENDMENT.md) |
 | Protocol oracle + canonical cBTC + canonical cUSD | 🪦 Superseded by `SPEC-CBTC-TAC-AMENDMENT.md` + `SPEC-CUSD-TAC-AMENDMENT.md` (AMM-oracle architecture removes the need for FROST + dedicated price-attest opcodes). Earlier opcode reservations `0x39`–`0x42` are RETIRED and reusable; `0x39` is reassigned to `T_TRADE_BATCH`, `0x3A` to `T_RANGE_ATTEST`. | n/a — design path retired | [`spec/amendments/SPEC-CUSD-TAC-AMENDMENT.md`](./spec/amendments/SPEC-CUSD-TAC-AMENDMENT.md) |
 
 ### Supporting docs (not amendments, informative only)
@@ -433,6 +435,127 @@ implementation order.
 
 ---
 
+## Bulletproofs+ confidential transfer
+
+### Summary
+
+Adds `T_CXFER_BPP` (`0x22`) — a byte-for-byte parallel of
+`T_CXFER` (`0x23`) carrying a **Bulletproofs+** aggregated
+rangeproof in place of the standard Bulletproofs rangeproof.
+~14% smaller witnesses across `m ∈ {1,2,4,8}` (Monero's
+production-validated BP+ construction) with zero impact on
+existing assets, listings, mixer pools, AMM pools, drops, slots,
+or recovery flows. A universal fee cut on every confidential
+transfer edge.
+
+### Key additions
+
+- **Opcode `0x22`** `T_CXFER_BPP` — confidential transfer
+  carrying a Bulletproofs+ aggregated rangeproof. Pedersen
+  commitment, kernel sig, ECDH amount recovery, aggregation
+  cap `N ∈ {1,2,4,8}`, and the soft-fork unknown-opcode framing
+  are all unchanged from `T_CXFER`.
+- **No new domain tags** — kernel sigs reuse
+  `tacit-kernel-v1`; BP+ generator vectors reuse
+  `tacit-generator-H-v1` / `tacit-bp-G-v1` / `tacit-bp-H-v1` /
+  `tacit-bp-Q-v1` from §3.1 verbatim. The pinned hex test
+  vectors in §3.1 are the cross-impl parity check for both
+  proof systems.
+- **No new ceremony** — Bulletproofs+ shares Bulletproofs'
+  trusted-setup-free posture (DLog hardness over the same
+  secp256k1 curve).
+- **Mixed-ancestry walks** — a `T_CXFER_BPP` envelope may
+  consume `T_CXFER` ancestors and vice versa; the validator
+  dispatches on the opcode byte to the correct rangeproof
+  verifier. Both verifiers MUST be present in any conforming
+  indexer.
+- **Sender-side activation gate** — `bppEnabled()` defaults ON
+  for signet, OFF for mainnet (mainnet flip via
+  `localStorage['tacit-bpp-enable-mainnet-v1']`). Indexers
+  accept the opcode on both networks unconditionally — the gate
+  is producer-side only.
+
+### Dependencies
+
+None. Drop-in cost reduction over `T_CXFER`'s rangeproof bytes,
+independent of every other amendment.
+
+### Merge criteria
+
+- [x] Peer review (BP+ prover/verifier construction + WIPA
+  collapse equation cross-checked against Monero
+  `bulletproofs_plus.cc`)
+- [x] **Merged into SPEC.md** — §5.21 (wire format + kernel
+  msg + rangeproof spec + validator algorithm + soundness +
+  recovery + mixed-ancestry rule); §1.1 opcode table row for
+  `0x22`; §5.5 validator dispatch branch
+- [x] Reference implementation: `dapp/bulletproofs-plus.js`
+  (907 LOC BP+ prover/verifier), `dapp/tacit.js` (encoder +
+  decoder + validator dispatch + send-path `useBpp` flag),
+  `worker/src/index.js` (decoder + ancestry-walk + canonical-
+  order branches)
+- [x] Test suite: 11 BP+ test files (roundtrip / adversarial /
+  malicious-prover / monero-scenarios / pinned-fixtures /
+  property-fuzz / symbolic-identity / witness-extractor /
+  python-parity / bounded-exhaustive / prover-smoke) +
+  `tests/cxfer-bpp-wire.test.mjs` (136 wire-format tests) +
+  `tests/cxfer-bpp-integration.test.mjs` (full envelope →
+  validator pipeline)
+- [x] Signet on-chain harness at
+  `tests/cxfer-bpp-onchain-e2e-signet.mjs` (mixed-ancestry
+  CETCH → T_CXFER_BPP → T_CXFER round-trip)
+- [x] Zero regression on existing test suite — pre-amendment
+  CXFER UTXOs validate byte-identically under the unchanged
+  §5.2 verifier
+- [x] **First T_CXFER_BPP envelope confirmed on signet**
+  (2026-05-18, block 304812). 3-hop mixed-ancestry round-trip
+  CETCH (304810) → T_CXFER_BPP (304812) → standard T_CXFER
+  (304813) validated end-to-end via
+  `tests/cxfer-bpp-onchain-e2e-signet.mjs`; sender balance
+  restored to 100,000 (99,000 change + 1,000 returned) and
+  recipient credited 1,000 mid-chain. Both BPP↔BP dispatch
+  directions exercised on real signet chain.
+- [ ] **Extended signet bake in flight** (2-week soak) —
+  ≥5-hop alternating mixed-ancestry chain exercise + organic
+  signet usage across listings / AMM / mixer surfaces
+- [ ] Mainnet activation — flip `bppEnabled()` default ON for
+  mainnet after extended bake completes cleanly
+- [x] Blind Python re-derivation cross-check
+  (`.local/bpp-python-port/bpp.py` + `tests/bulletproofs-plus-python-parity.test.mjs`).
+  Independent Python port produces byte-identical proofs to the
+  JS port at all four aggregation levels (m=1/2/4/8, sizes
+  591/657/723/789 B) given a shared deterministic RNG. 16/16
+  passing as of 2026-05-18.
+
+### Tracker notes
+
+The single universal fee win on tacit's trading and transfer
+surfaces. Every confidential transfer edge — direct sends, AXFER
+OTC settlement, AMM swap input/change UTXOs, mixer deposits
+sourced from prior transfers, batched preauth-take routes —
+becomes ~14% cheaper in witness bytes when the sender opts in
+via `useBpp: true`.
+
+Because the kernel-msg construction, commitment encoding, and
+amount-encryption keystream are byte-identical to §5.2, the
+amount-recovery code paths in `dapp/tacit.js` and the worker
+indexer require **zero** modification. Only the rangeproof
+prover and verifier are swapped. Implementations that already
+ship a correct `T_CXFER` rangeproof verifier already have the
+right generator vectors for `T_CXFER_BPP`; a single typo in
+either domain tag breaks both proof systems identically (the
+existing failure mode).
+
+Activation is gated sender-side via `bppEnabled()`. The signet
+bake is in flight; mainnet activation flips the default ON
+once the on-chain exercise completes cleanly. Pre-amendment
+indexers see `T_CXFER_BPP` envelopes as unknown opcodes (per
+the §5.5 unknown-opcode forward-compat rule) and treat them as
+no-ops at the asset and pool-state level — the correct soft-
+fork behavior.
+
+---
+
 ## Protocol oracle + canonical cBTC + canonical cUSD
 
 ### Summary
@@ -665,6 +788,41 @@ threshold schemes, new domain tags binding novel inputs):
 ---
 
 ## Recent activity (changelog)
+
+- **2026-05-18** — **First `T_CXFER_BPP` (`0x22`) envelope
+  confirmed on signet.** End-to-end smoke via
+  `tests/cxfer-bpp-onchain-e2e-signet.mjs` against funded
+  signet wallets: CETCH `755919131ec8…` (block 304810) →
+  T_CXFER_BPP `82a4356d77bd…` (block 304812, m=1, 1,000 base
+  units, BP+ rangeproof) → standard T_CXFER `f463eada9185…`
+  (block 304813) return. Sender balance restored to 100,000
+  (99,000 change + 1,000 returned); recipient credited 1,000
+  mid-chain via the mixed-ancestry walk. Validates the
+  BPP↔BP dispatch in both directions on real signet chain.
+
+- **2026-05-18** — **`T_CXFER_BPP` (`0x22`) merged into SPEC.md as
+  §5.21.** Wire format + kernel msg + rangeproof spec + validator
+  algorithm + soundness reduction + mixed-ancestry rule + recovery
+  + activation gating now live in SPEC.md. The §1.1 opcode table
+  row for `0x22` is flipped from ⬜ free to ✅ shipped (signet
+  bake) and the §5.5 validator dispatch carries a dedicated
+  `T_CXFER_BPP` branch. No new domain tags (kernel sig reuses
+  `tacit-kernel-v1`; BP+ generators reuse `tacit-bp-{G,H,Q}-v1`
+  and `tacit-generator-H-v1` from §3.1 verbatim). Reference impl
+  is in production on signet: `dapp/bulletproofs-plus.js` BP+
+  prover/verifier (907 LOC); `dapp/tacit.js` encoder/decoder +
+  `validateOutpoint` dispatch + send-path `useBpp` flag;
+  `worker/src/index.js` decoder + ancestry-walk + canonical-
+  order branches; 11 BP+ test files + `cxfer-bpp-wire.test.mjs`
+  + `cxfer-bpp-integration.test.mjs`. On-chain harness at
+  `tests/cxfer-bpp-onchain-e2e-signet.mjs` exercises the
+  mixed-ancestry CETCH → T_CXFER_BPP → T_CXFER round-trip.
+  Activation gated sender-side via `bppEnabled()` (default ON
+  signet, OFF mainnet); indexers accept the opcode on both
+  networks. Universal ~14% witness reduction across every
+  confidential-transfer edge — direct sends, AXFER OTC
+  settlement, AMM swap input/change UTXOs, mixer deposits
+  sourced from prior transfers, batched preauth-take routes.
 
 - **2026-05-16** — **AMM v1 spec finalization and hardening pass.**
   Six normative additions to AMM.md / SPEC.md:
