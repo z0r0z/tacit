@@ -44860,8 +44860,23 @@ function _loadMarketRowActionsHidden() {
     const v = localStorage.getItem(_MARKET_ROW_ACTIONS_HIDDEN_KEY);
     if (v === '0') return false;
     if (v === '1') return true;
+    // Migration: if the user has ANY prior market preference saved
+    // (Simple mode flag, ladder view, mine-only toggle, etc.) they've
+    // used the market before — keep their familiar Buy/Sell/Buy chunks
+    // buttons visible (Advanced default) so the toggle doesn't yank
+    // controls out from under them. New users (no prior market state)
+    // get the Simple default for the cleaner one-verb experience.
+    const _priorMarketKeys = [
+      'tacit-market-simple-v1',
+      'tacit-market-ladder-view-v1',
+      'tacit-market-mine-asks-v1',
+      'tacit-market-mine-bids-v1',
+    ];
+    for (const k of _priorMarketKeys) {
+      if (localStorage.getItem(k) != null) return false;  // existing user → Advanced default
+    }
   } catch {}
-  return true;  // default: per-row buttons hidden, route via Swap tile
+  return true;  // new user: per-row buttons hidden, route via Swap tile
 }
 function _saveMarketRowActionsHidden(on) {
   try { localStorage.setItem(_MARKET_ROW_ACTIONS_HIDDEN_KEY, on ? '1' : '0'); } catch {}
@@ -52241,7 +52256,27 @@ function refreshYourOpenOrdersPanel(scope, aid) {
 // asset's orderbook anyway, so the mismatch path is defensive).
 function primeSwapTileFromOrderbook({ aid, direction, amountBaseStr, decimals, ticker, targetUnit = null }) {
   const widget = document.querySelector('[data-swap-tile]');
-  if (!widget) return;
+  // No-Swap-tile feedback. The tile is suppressed when the user holds
+  // none of the asset AND there's no buy liquidity (see line ~46006).
+  // In Simple mode rows are inspection-only and the row click is the
+  // primary trade gesture — silently returning here makes clicks feel
+  // dead. Surface a toast explaining why with an actionable next step
+  // (flip Advanced, or fund the wallet) so the user isn't left
+  // wondering whether the app is broken.
+  if (!widget) {
+    try {
+      const dirLabel = direction === 'sell' ? 'sell' : 'buy';
+      toast(
+        `Swap tile isn't shown for this asset (no ${dirLabel === 'buy' ? 'asks available' : ticker + ' in your wallet'}). ` +
+        `${typeof _marketRowActionsHidden === 'boolean' && _marketRowActionsHidden
+          ? 'Flip "Simple trade" → "Advanced trade" in the asks header to see per-row buttons.'
+          : 'Use the per-row buttons below to act directly.'}`,
+        '',
+        6000,
+      );
+    } catch {}
+    return;
+  }
   if (aid && widget.dataset.aid && widget.dataset.aid !== aid) return;
   const currentDir = widget.dataset.direction || 'buy';
   if (direction && direction !== currentDir) {
