@@ -482,6 +482,104 @@ group('ctacScanSlashDetected — full path with mocked chain probe');
     (await worker.ctacGetPosition(env, network, leaf))?.state === 'active');
 }
 
+// ============== group: slash-event log ==============
+group('Slash event log (SPEC §5.41.3 cascade-detector input)');
+
+{
+  // Fresh KV instance for clean window arithmetic
+  const env2 = { REGISTRY_KV: makeMockKv() };
+  const leaf = 'aa'.repeat(32);
+
+  // Record three slashes at different heights
+  await worker.ctacRecordSlashEvent(env2, network, 1000, 'l1' + '0'.repeat(62),
+    { slot_denom_sats: '50000000', bond_amount_tac: '100000000000', rug_spending_txid: null });
+  await worker.ctacRecordSlashEvent(env2, network, 1050, 'l2' + '0'.repeat(62),
+    { slot_denom_sats: '30000000', bond_amount_tac: '60000000000',  rug_spending_txid: null });
+  await worker.ctacRecordSlashEvent(env2, network, 1100, 'l3' + '0'.repeat(62),
+    { slot_denom_sats: '20000000', bond_amount_tac: '40000000000',  rug_spending_txid: null });
+
+  const fullSum = await worker.ctacSlashedSatsInWindow(env2, network, 0, 99999);
+  ok('window=[0,∞) sums all 3 slashes', fullSum === 100_000_000n);
+
+  const tightSum = await worker.ctacSlashedSatsInWindow(env2, network, 1040, 1060);
+  ok('window=[1040,1060] picks only middle slash', tightSum === 30_000_000n);
+
+  const lateSum = await worker.ctacSlashedSatsInWindow(env2, network, 1050, 99999);
+  ok('window=[1050,∞) picks 2 latest slashes',
+    lateSum === 50_000_000n /* 30M + 20M */);
+
+  const emptySum = await worker.ctacSlashedSatsInWindow(env2, network, 2000, 3000);
+  ok('window outside event range → 0', emptySum === 0n);
+}
+
+// ============== group: pause-condition evaluator ==============
+group('ctacComputePauseStatus (anti-systemic pauses)');
+
+{
+  // Fresh env to control TWAP behavior precisely
+  const env3 = { REGISTRY_KV: makeMockKv() };
+  const TAC_AID = 'cc' + '0'.repeat(62);
+
+  // No TAC journal at all → oracle_stale
+  const r1 = await worker.ctacComputePauseStatus(env3, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('no TAC journal → oracle_stale', r1 === 'oracle_stale');
+
+  // Seed a healthy journal
+  const now = Math.floor(Date.now() / 1000);
+  for (let i = 0; i < 10; i++) {
+    await env3.REGISTRY_KV.put(
+      `trade-event:${TAC_AID}:h${i}`,
+      JSON.stringify({ ts: now - i * 600, price_sats: 1000 + (i % 3) }),
+    );
+  }
+  const r2 = await worker.ctacComputePauseStatus(env3, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('healthy oracle + no slashes + no prospective → null (healthy)', r2 === null);
+
+  // Now seed slashes covering >5% of supply within 100-block window
+  await worker.ctacAddSupply(env3, network, 1_000_000_000n); // 10 BTC outstanding
+  await worker.ctacRecordSlashEvent(env3, network, 950, 'r1' + '0'.repeat(62),
+    { slot_denom_sats: '60000000', bond_amount_tac: '0', rug_spending_txid: null });
+  // 60M / 1000M = 6% → above 5% threshold
+  const r3 = await worker.ctacComputePauseStatus(env3, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('slash > 5% in 100-block window → slash_cascade', r3 === 'slash_cascade');
+
+  // Same slashes but query a height where the cascade is OUTSIDE the window
+  const r4 = await worker.ctacComputePauseStatus(env3, network, 1200, { tacAssetIdHex: TAC_AID });
+  ok('window slides past — cascade cleared', r4 === null);
+
+  // Prospective whale check: 5× current supply OK, 6× rejected
+  const r5 = await worker.ctacComputePauseStatus(env3, network, 1200, {
+    tacAssetIdHex: TAC_AID,
+    prospectiveDenomSats: 5_000_000_000n,  // 5× current supply
+  });
+  ok('prospective = 5× supply → allowed', r5 === null);
+
+  const r6 = await worker.ctacComputePauseStatus(env3, network, 1200, {
+    tacAssetIdHex: TAC_AID,
+    prospectiveDenomSats: 6_000_000_000n,  // 6× current supply
+  });
+  ok('prospective > 5× supply → prospective_single_too_large',
+    r6 === 'prospective_single_too_large');
+}
+
+{
+  // Volatile oracle → oracle_volatile
+  const env4 = { REGISTRY_KV: makeMockKv() };
+  const TAC_AID = 'dd' + '0'.repeat(62);
+  const now = Math.floor(Date.now() / 1000);
+  // High-volatility series: alternates 1000, 1500, 1000, 1500 — CV > 0.30
+  // (median = 1250, prices are within 0.2×-5× band so they all pass dust filter,
+  //  variance is huge across them → CV exceeds 0.30)
+  for (let i = 0; i < 10; i++) {
+    await env4.REGISTRY_KV.put(
+      `trade-event:${TAC_AID}:h${i}`,
+      JSON.stringify({ ts: now - i * 600, price_sats: i % 2 === 0 ? 1000 : 1900 }),
+    );
+  }
+  const r = await worker.ctacComputePauseStatus(env4, network, 1000, { tacAssetIdHex: TAC_AID });
+  ok('high CV → oracle_volatile', r === 'oracle_volatile');
+}
+
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

@@ -126,7 +126,7 @@ const T_SLOT_MINT          = 0x43; // self-custody-slot wrapper atomic mint (SPE
 const T_SLOT_BURN          = 0x44; // self-custody-slot wrapper atomic redeem (SPEC §5.22, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_ROTATE        = 0x45; // self-custody-slot wrapper atomic transfer (SPEC §5.23, SPEC-CBTC-ZK-AMENDMENT)
 const T_SLOT_SPLIT         = 0x46; // atomic 1→N slot split, ΣD_new = D_old (SPEC §5.24, SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT)
-// 0x47 reserved for SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT T_SLOT_MERGE.
+const T_SLOT_MERGE         = 0x47; // atomic N→1 slot merge, ΣD_old ≥ D_new (SPEC §5.25, SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT)
 // 0x48 reserved for T_SLOT_NOTE.
 // 0x4D-0x4E reserved for SPEC-CBTC-ZK-AMOUNT-AMENDMENT (T_SLOT_FRACTIONALIZE/T_SLOT_RECONSOLIDATE
 // machinery, activated via SPEC-CBTC-TAC-AMENDMENT envelopes; the unbonded standalone path is
@@ -740,6 +740,107 @@ async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
   return BigInt(Math.round(mean));
 }
 
+// ============== cBTC.tac SLASH EVENT LOG + PAUSE CONDITIONS (SPEC §5.41.3) ==============
+//
+// Slash event log feeds the "aggregate slash > 5% of bonded supply in last 100
+// blocks" cascade detector. Written by ctacScanSlashDetected when a position
+// is rugged. Keyed by zero-padded height + leaf_hash for chronological
+// list-prefix ordering (KV.list returns sorted order).
+//
+// Each entry stores the position's slot_denom_sats (the BTC value rugged)
+// and bond_amount_tac (for telemetry). The window sum reads slot_denom_sats.
+function ctacSlashEventKey(network, height, leafHashHex) {
+  const h = String(height || 0).padStart(10, '0');
+  return network === 'signet'
+    ? `ctac-slash-event:${h}:${leafHashHex}`
+    : `ctac-slash-event:${network}:${h}:${leafHashHex}`;
+}
+function ctacSlashEventPrefix(network) {
+  return network === 'signet' ? 'ctac-slash-event:' : `ctac-slash-event:${network}:`;
+}
+async function ctacRecordSlashEvent(env, network, height, leafHashHex, position) {
+  const k = ctacSlashEventKey(network, height, leafHashHex);
+  // 90-day TTL — the cascade window is 100 blocks (~16h), 90 days is
+  // generous for diagnostic / audit lookback without growing KV indefinitely.
+  await env.REGISTRY_KV.put(k, JSON.stringify({
+    height,
+    leaf_hash: leafHashHex,
+    slot_denom_sats: position.slot_denom_sats,
+    bond_amount_tac: position.bond_amount_tac,
+    rug_spending_txid: position.rug_spending_txid || null,
+    network,
+  }), { expirationTtl: 90 * 86400 });
+}
+// Sum slot_denom_sats across slash events with height in [fromHeight, toHeight].
+// Linear in events in window; bounded by KV.list (1000-key page).
+async function ctacSlashedSatsInWindow(env, network, fromHeight, toHeight) {
+  const prefix = ctacSlashEventPrefix(network);
+  const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
+  let sum = 0n;
+  for (const k of list.keys) {
+    const parts = k.name.split(':');
+    const heightStr = parts[parts.length - 2];
+    const h = parseInt(heightStr, 10);
+    if (!Number.isInteger(h) || h < fromHeight || h > toHeight) continue;
+    const v = await env.REGISTRY_KV.get(k.name, 'json');
+    if (!v || !v.slot_denom_sats) continue;
+    sum += BigInt(v.slot_denom_sats);
+  }
+  return sum;
+}
+
+// Pause-condition evaluator. Returns null if the system is healthy, or a
+// human-readable reason string if any §5.41.3 condition holds.
+//
+// Conditions:
+//   - oracle_stale: TWAP unavailable (covers both "no observations" and
+//     STALE_PRICE_BLOCKS exceedance via the helper throwing).
+//   - oracle_volatile: TWAP CV > 0.30 (helper throws "oracle pause").
+//   - slash_cascade: > 5% of outstanding supply slashed in last 100 blocks.
+//   - prospective_single_too_large: optional forward-looking check when
+//     opts.prospectiveDenomSats is supplied; refuses positions > 5× current
+//     supply (anti-whale fast-path; finer caps are enforced by MAX_SINGLE_POSITION
+//     in the per-deposit handler).
+async function ctacComputePauseStatus(env, network, currentHeight, opts = {}) {
+  // (1) Oracle health — TWAP call covers both staleness + CV
+  try {
+    await ctacTwapSatsPerTac(env, network, currentHeight - CTAC_REORG_SAFETY_DEPTH, {
+      tacAssetIdHex: opts.tacAssetIdHex,
+    });
+  } catch (e) {
+    const msg = String(e?.message || '');
+    if (/CV/i.test(msg)) return 'oracle_volatile';
+    return 'oracle_stale';
+  }
+
+  // (2) Slash-cascade detector. "5% of bonded supply in last 100 blocks."
+  const SLASH_CASCADE_WINDOW_BLOCKS = 100;
+  const SLASH_CASCADE_THRESHOLD_BPS = 500; // 5.00%
+  const fromH = Math.max(0, currentHeight - SLASH_CASCADE_WINDOW_BLOCKS);
+  const slashedInWindow = await ctacSlashedSatsInWindow(env, network, fromH, currentHeight);
+  if (slashedInWindow > 0n) {
+    const outstanding = await ctacGetSupply(env, network);
+    if (outstanding > 0n && slashedInWindow * 10000n > outstanding * BigInt(SLASH_CASCADE_THRESHOLD_BPS)) {
+      return 'slash_cascade';
+    }
+  }
+
+  // (3) Prospective whale fast-path: refuse if the would-be deposit alone
+  // is > 5× current outstanding supply. Bigger than the spec's
+  // MAX_SINGLE_POSITION cap, but the per-deposit handler already enforces
+  // that; this is an aggregate guard for the very-early-launch case where
+  // a 100× whale could grossly distort the system.
+  if (opts.prospectiveDenomSats !== undefined) {
+    const prospective = BigInt(opts.prospectiveDenomSats);
+    const currentSupply = await ctacGetSupply(env, network);
+    if (currentSupply > 0n && prospective > currentSupply * 5n) {
+      return 'prospective_single_too_large';
+    }
+  }
+
+  return null;  // healthy
+}
+
 // ============== CHAIN OUTSPEND PROBE (reusable across SLASH + coverage) ==============
 //
 // Returns whether a Bitcoin UTXO has been spent and how deep its spending
@@ -881,6 +982,9 @@ async function ctacScanSlashDetected(env, network, opts = {}) {
     position.rug_spending_txid = result.spending_txid || null;
     await ctacPutPosition(env, network, position);
     await ctacUnmarkActive(env, network, leafHashHex);
+    // Record into the slash-event log so ctacComputePauseStatus's cascade
+    // detector can see this in its sliding window (SPEC §5.41.3).
+    await ctacRecordSlashEvent(env, network, position.rugged_at_height, leafHashHex, position);
     slashed++;
   }
   return { scanned: list.keys.length, slashed };
@@ -5142,6 +5246,92 @@ function decodeTSlotSplitPayload(payload) {
     outputs,
     old_owner_pubkey: bytesToHex(oldOwnerPubkeyBytes),
     old_owner_sig: bytesToHex(oldOwnerSigBytes),
+  };
+}
+
+// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.25 — T_SLOT_MERGE decoder.
+// Inverse of SPLIT: consumes N (2..16) old slots and produces one new slot
+// at K_btc_new = new_recipient_commit − denom_new·H, with denom_new ≤ Σ
+// denom_old_i (the difference funds the Bitcoin miner fee). Each input's
+// old_r_leaf becomes public on chain; each old slot is REDEEMED.
+function decodeTSlotMergePayload(payload) {
+  if (!payload) return null;
+  if (payload[0] !== T_SLOT_MERGE) return null;
+  // Layout: opcode(1) + net(1) + n_inputs(1)
+  // + n × [asset_id_old(32) + denom_old_LE(8) + old_merkle_root(32)
+  //         + old_nullifier_hash(32) + old_recipient_commit(33) + old_r_leaf(32)
+  //         + old_bind_hash(32) + old_proof_length(2) + old_proof(≥1)]
+  // + asset_id_new(32) + denom_new_LE(8) + new_recipient_commit(33)
+  // + new_leaf_hash(32) + new_owner_pubkey(33) + new_owner_sig(64).
+  const PER_INPUT_FIXED = 32 + 8 + 32 + 32 + 33 + 32 + 32 + 2;
+  const POST_INPUTS = 32 + 8 + 33 + 32 + 33 + 64;
+  if (payload.length < 1 + 1 + 1 + 2 * (PER_INPUT_FIXED + 1) + POST_INPUTS) return null;
+  let p = 1;
+  const networkTag = payload[p]; p += 1;
+  if (networkTag > 2) return null;
+  const nInputs = payload[p]; p += 1;
+  if (nInputs < 2 || nInputs > 16) return null;
+  const inputs = [];
+  let sumDenomOld = 0n;
+  for (let i = 0; i < nInputs; i++) {
+    if (p + PER_INPUT_FIXED + 1 + POST_INPUTS > payload.length) return null;
+    const assetIdOldBytes = payload.slice(p, p + 32); p += 32;
+    const dView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+    const denomOld = (BigInt(dView.getUint32(4, true)) << 32n) | BigInt(dView.getUint32(0, true));
+    p += 8;
+    if (denomOld <= 0n || denomOld >= (1n << BigInt(N_BITS))) return null;
+    const oldMerkleRootBytes = payload.slice(p, p + 32); p += 32;
+    const oldNullifierHashBytes = payload.slice(p, p + 32); p += 32;
+    const oldRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
+    try { compressedPointFromHex(bytesToHex(oldRecipientCommitBytes)); } catch { return null; }
+    const oldRLeafBytes = payload.slice(p, p + 32); p += 32;
+    const oldBindHashBytes = payload.slice(p, p + 32); p += 32;
+    const proofLen = new DataView(payload.buffer, payload.byteOffset + p, 2).getUint16(0, true);
+    p += 2;
+    if (proofLen === 0) return null;
+    if (p + proofLen + POST_INPUTS > payload.length) return null;
+    const oldProof = payload.slice(p, p + proofLen); p += proofLen;
+    // Bind-hash recompute per §5.25.3 (each input is full T_SLOT_BURN-equivalent).
+    const expectedBind = _computeWithdrawBindHash(
+      assetIdOldBytes, denomOld, oldNullifierHashBytes, oldRecipientCommitBytes, oldRLeafBytes,
+    );
+    for (let j = 0; j < 32; j++) if (expectedBind[j] !== oldBindHashBytes[j]) return null;
+    sumDenomOld += denomOld;
+    inputs.push({
+      asset_id_old: bytesToHex(assetIdOldBytes),
+      denom_old: denomOld.toString(),
+      old_merkle_root: bytesToHex(oldMerkleRootBytes),
+      old_nullifier_hash: bytesToHex(oldNullifierHashBytes),
+      old_recipient_commitment: bytesToHex(oldRecipientCommitBytes),
+      old_r_leaf: bytesToHex(oldRLeafBytes),
+      old_bind_hash: bytesToHex(oldBindHashBytes),
+      old_proof: bytesToHex(oldProof),
+    });
+  }
+  if (p + POST_INPUTS !== payload.length) return null;
+  const assetIdNewBytes = payload.slice(p, p + 32); p += 32;
+  const dnView = new DataView(payload.buffer, payload.byteOffset + p, 8);
+  const denomNew = (BigInt(dnView.getUint32(4, true)) << 32n) | BigInt(dnView.getUint32(0, true));
+  p += 8;
+  if (denomNew <= 0n || denomNew >= (1n << BigInt(N_BITS))) return null;
+  const newRecipientCommitBytes = payload.slice(p, p + 33); p += 33;
+  try { compressedPointFromHex(bytesToHex(newRecipientCommitBytes)); } catch { return null; }
+  const newLeafHashBytes = payload.slice(p, p + 32); p += 32;
+  // §5.25.3 conservation: Σ denom_old ≥ denom_new (Bitcoin fee from the difference).
+  if (sumDenomOld < denomNew) return null;
+  const newOwnerPubkeyBytes = payload.slice(p, p + 33); p += 33;
+  const newOwnerSigBytes = payload.slice(p, p + 64); p += 64;
+  return {
+    kind: 'slot_merge',
+    network_tag: networkTag,
+    n_inputs: nInputs,
+    inputs,
+    asset_id_new: bytesToHex(assetIdNewBytes),
+    denom_new: denomNew.toString(),
+    new_recipient_commit: bytesToHex(newRecipientCommitBytes),
+    new_leaf_hash: bytesToHex(newLeafHashBytes),
+    new_owner_pubkey: bytesToHex(newOwnerPubkeyBytes),
+    new_owner_sig: bytesToHex(newOwnerSigBytes),
   };
 }
 
@@ -12250,6 +12440,15 @@ async function scanForEtches(env, network) {
         if (!slotInfo) continue;
         if (slotInfo.denom_sats !== dep.slot_denom_sats) continue;
 
+        // Anti-systemic pauses (SPEC §5.41.3). Forward-looking gate; if any
+        // pause condition holds, refuse the deposit (existing positions
+        // unaffected). Withdraws / force-closes / slash claims continue
+        // regardless of pause state per §5.41.3 — exits always allowed.
+        const pauseReason = await ctacComputePauseStatus(env, network, h, {
+          prospectiveDenomSats: dep.slot_denom_sats,
+        });
+        if (pauseReason !== null) continue;
+
         // TWAP sample at reorg-safe depth. Fail closed: if oracle is stale
         // or absent, refuse the deposit — depositor can retry later.
         let twap;
@@ -12736,10 +12935,10 @@ export {
   decodeCPetchPayload, decodeCPmintPayload,
   decodeTDepositPayload, decodeTWithdrawPayload,
   decodeTSlotMintPayload, decodeTSlotBurnPayload, decodeTSlotRotatePayload,
-  decodeTSlotSplitPayload,
+  decodeTSlotSplitPayload, decodeTSlotMergePayload,
   decodeTCbtcTacDepositPayload, decodeTCbtcTacWithdrawPayload,
   decodeTCbtcTacForceClosePayload, decodeTShareSlashClaimPayload,
-  T_SLOT_SPLIT,
+  T_SLOT_SPLIT, T_SLOT_MERGE,
   T_CBTC_TAC_DEPOSIT, T_CBTC_TAC_WITHDRAW, T_CBTC_TAC_FORCE_CLOSE, T_SHARE_SLASH_CLAIM,
   // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
   ctacPositionKey, ctacActivePositionKey, ctacInsurancePoolKey,
@@ -12755,6 +12954,9 @@ export {
   chainOutspendProbe,
   // Leaf-lookup index (cBTC.zk leaf_hash → slot metadata).
   slotLeafLookupKey, slotLeafLookupGet, slotLeafLookupPut,
+  // Anti-systemic pauses (SPEC §5.41.3) — slash-event log + condition evaluator.
+  ctacSlashEventKey, ctacRecordSlashEvent, ctacSlashedSatsInWindow,
+  ctacComputePauseStatus,
   // Constants useful for cross-impl test assertions.
   CTAC_INITIAL_BOND_RATIO_THOUSANDTHS, CTAC_LIQUIDATION_RATIO_THOUSANDTHS,
   CTAC_TWAP_WINDOW_BLOCKS, CTAC_REORG_SAFETY_DEPTH,
