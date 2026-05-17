@@ -54745,7 +54745,7 @@ function _wireSwapTile(scope) {
         } else {
           actionBtn.disabled = false; actionBtn.style.opacity = '1';
           delete actionBtn.dataset.swapNeedsFunds;
-          actionBtn.textContent = swapLabel(`BUY ≥ ${accStrCompact} ${ticker}`);
+          actionBtn.textContent = swapLabel(`BUY ≥ ${accStrCompact} ${ticker} for ${result.totalSats.toLocaleString()} sats`);
         }
         return;
       }
