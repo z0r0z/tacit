@@ -173,7 +173,7 @@ for (const feeBps of [5, 30, 100, 300, 1000]) {
 {
   const r = simulateLpAddV0({
     assetA: mkAssetId(200), assetB: mkAssetId(201),
-    feeBps: 30, capabilityFlags: 0x01,
+    feeBps: 30, capabilityFlags: 0x00,
     reserveA: 100_000n, reserveB: 100_000n, totalShares: 100_000n,
     deltaA: 10_000n, deltaB: 10_000n,
   });

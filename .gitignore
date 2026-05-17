@@ -6,6 +6,7 @@
 .idea/
 .claude/
 *.swp
+*.bak
 
 # Node / Wrangler
 node_modules/

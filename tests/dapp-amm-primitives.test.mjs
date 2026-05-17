@@ -31,6 +31,7 @@ const dappReceipt = await import('../dapp/amm-receipt.js');
 const dappKernel = await import('../dapp/amm-kernel.js');
 const dappMinLiq = await import('../dapp/amm-min-liq.js');
 const dappEnvelope = await import('../dapp/amm-envelope.js');
+const worker = await import('../worker/src/index.js');
 const refBJJ = await import('./amm-bjj.mjs');
 const refSigma = await import('./amm-sigma-xcurve.mjs');
 const refAsset = await import('./amm-asset.mjs');
@@ -190,6 +191,52 @@ group('amm-min-liq: MINIMUM_LIQUIDITY constants + derivations');
   const dInit = dappMinLiq.lpInitShares(1_000_000n, 2_000_000n);
   ok('lpInitShares.total_shares = isqrt(2e12) = 1414213', dInit.total_shares === 1414213n);
   ok('lpInitShares.founder_shares = total - 1000', dInit.founder_shares === 1414213n - 1000n);
+}
+
+// ============== amm-envelope protocol-fee-claim ==============
+group('amm-envelope: encodeProtocolFeeClaim + claim_msg parity');
+{
+  const poolId = new Uint8Array(32); for (let i = 0; i < 32; i++) poolId[i] = i * 5 + 13;
+  const claimerXOnly = new Uint8Array(32); for (let i = 0; i < 32; i++) claimerXOnly[i] = i + 200;
+  const claimAmount = 999_999n;
+  // Build a REAL Pedersen commit (worker rejects non-curve bytes as claimCSecp)
+  const dappBp = await import('../dapp/bulletproofs.js');
+  const blindingBig = 0x123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0n;
+  const claimCSecp = dappBp.pedersenCommit(claimAmount, blindingBig).toRawBytes(true);
+  const claimBlinding = new Uint8Array(32);
+  // The blinding bytes must round-trip to blindingBig via bytes32ToBigint
+  const hexLE = blindingBig.toString(16).padStart(64, '0');
+  for (let i = 0; i < 32; i++) claimBlinding[i] = parseInt(hexLE.substr(i*2, 2), 16);
+  const claimSig = new Uint8Array(64); claimSig.fill(0xab);
+
+  // 1. Wire format byte length is exactly 202
+  const payload = dappEnvelope.encodeProtocolFeeClaim({
+    poolId, claimerXOnly, claimAmount,
+    claimCSecp, claimBlinding, claimSig,
+  });
+  ok('encodeProtocolFeeClaim length === 202', payload.length === 202);
+  ok('encodeProtocolFeeClaim opcode byte === 0x31', payload[0] === 0x31);
+
+  // 2. Worker decoder parses our payload
+  const decoded = worker.decodeTProtocolFeeClaimPayload(payload);
+  ok('worker decodes dapp protocol-fee-claim payload', !!decoded);
+  ok('worker.pool_id matches', decoded?.pool_id === bytesToHex(poolId));
+  ok('worker.claim_amount matches', decoded?.claim_amount === claimAmount.toString());
+
+  // 3. claim_msg parity (worker.buildProtocolFeeClaimMsg matches dapp's)
+  const dappMsg = dappEnvelope.buildProtocolFeeClaimMsg({
+    poolIdBytes: poolId, claimAmount,
+    claimCSecpBytes: claimCSecp, claimBlindingBytes: claimBlinding,
+  });
+  const wMsg = worker.buildProtocolFeeClaimMsg
+    ? worker.buildProtocolFeeClaimMsg({
+        poolIdBytes: poolId, claimAmount,
+        claimCSecpBytes: claimCSecp, claimBlindingBytes: claimBlinding,
+      })
+    : null;
+  if (wMsg) {
+    ok('claim_msg byte-parity dapp ↔ worker', bytesEq(dappMsg, wMsg));
+  }
 }
 
 // ============== amm-envelope parity ==============

@@ -3,14 +3,17 @@
 // Byte-for-byte identical to the test reference so worker decoder accepts
 // dapp-produced payloads.
 
-import { concatBytes, hexToBytes } from './vendor/tacit-deps.min.js';
+import { concatBytes, hexToBytes, sha256 } from './vendor/tacit-deps.min.js';
 import { XCURVE_PROOF_LEN } from './amm-sigma.js';
 
 export const OPCODE_T_LP_ADD     = 0x2D;
 export const OPCODE_T_LP_REMOVE  = 0x2E;
+export const OPCODE_T_PROTOCOL_FEE_CLAIM = 0x31;
 export const FEE_BPS_MAX           = 1000;
 export const PROTOCOL_FEE_BPS_MAX  = 1000;
 export const PROTOCOL_FEE_ADDRESS_ZERO = new Uint8Array(33);
+
+const _PROTOCOL_FEE_CLAIM_DOMAIN = new TextEncoder().encode('tacit-amm-protocol-fee-claim-v1');
 
 function asBytes(x, len, name) {
   const b = x instanceof Uint8Array ? x : hexToBytes(x);
@@ -48,6 +51,63 @@ function isZeroAddress(b) {
 // Additional for variant 1 (POOL_INIT):
 //   feeBps, vkCid, ceremonyCid, arbiterPubkeys, launcherSigs,
 //   protocolFeeAddress, protocolFeeBps, poolMetaUri, poolCapabilityFlags
+// T_PROTOCOL_FEE_CLAIM (0x31) — founder-pinned recipient mints accrued
+// LP-fee skim as an lp_asset_id UTXO. Fixed 202-byte payload.
+// Wire format:
+//   opcode(1)=0x31 || pool_id(32) || claimer_pubkey_x_only(32)
+//   || claim_amount_LE(8) || claim_C_secp(33) || claim_blinding(32)
+//   || claim_sig(64)
+//
+// claim_sig is BIP-340 Schnorr over:
+//   SHA256("tacit-amm-protocol-fee-claim-v1" || pool_id || amt_LE
+//          || claim_C_secp || claim_blinding)
+//
+// Worker rejects if claimer_pubkey_x_only doesn't match the founder-pinned
+// address recorded at POOL_INIT, or if claim_amount differs from the
+// crystallized protocol_fee_accrued.
+export function buildProtocolFeeClaimMsg({ poolIdBytes, claimAmount, claimCSecpBytes, claimBlindingBytes }) {
+  const amtLE = new Uint8Array(8);
+  let x = BigInt(claimAmount);
+  for (let i = 0; i < 8; i++) { amtLE[i] = Number(x & 0xffn); x >>= 8n; }
+  return sha256(concatBytes(
+    _PROTOCOL_FEE_CLAIM_DOMAIN,
+    poolIdBytes, amtLE, claimCSecpBytes, claimBlindingBytes,
+  ));
+}
+
+export function encodeProtocolFeeClaim(args) {
+  const poolId = asBytes(args.poolId, 32, 'poolId');
+  const claimerXOnly = asBytes(args.claimerXOnly, 32, 'claimerXOnly');
+  const claimCSecp = asBytes(args.claimCSecp, 33, 'claimCSecp');
+  const claimBlinding = asBytes(args.claimBlinding, 32, 'claimBlinding');
+  const claimSig = asBytes(args.claimSig, 64, 'claimSig');
+  const amt = BigInt(args.claimAmount);
+  if (amt <= 0n || amt >= 1n << 64n) throw new Error('claim_amount out of u64+ range');
+  const amtLE = new Uint8Array(8);
+  let x = amt;
+  for (let i = 0; i < 8; i++) { amtLE[i] = Number(x & 0xffn); x >>= 8n; }
+  return concatBytes(
+    new Uint8Array([OPCODE_T_PROTOCOL_FEE_CLAIM]),
+    poolId, claimerXOnly, amtLE, claimCSecp, claimBlinding, claimSig,
+  );
+}
+
+// Decoder for T_PROTOCOL_FEE_CLAIM. Fixed 202-byte payload; bigint amount.
+// Returns null on any structural mismatch (caller treats null as non-tacit).
+export function decodeProtocolFeeClaim(payload) {
+  if (!(payload instanceof Uint8Array)) return null;
+  if (payload.length !== 202) return null;
+  if (payload[0] !== OPCODE_T_PROTOCOL_FEE_CLAIM) return null;
+  const poolId = payload.slice(1, 33);
+  const claimerXOnly = payload.slice(33, 65);
+  let amt = 0n;
+  for (let i = 0; i < 8; i++) amt |= BigInt(payload[65 + i]) << BigInt(i * 8);
+  const claimCSecp = payload.slice(73, 106);
+  const claimBlinding = payload.slice(106, 138);
+  const claimSig = payload.slice(138, 202);
+  return { poolId, claimerXOnly, claimAmount: amt, claimCSecp, claimBlinding, claimSig };
+}
+
 // T_LP_REMOVE (0x2E) — burn LP-share UTXO(s) for proportional withdrawal
 // of pool reserves. Each receipt (A side + B side) carries a Pedersen
 // commit on both curves + an XCurve sigma binding them to the same
@@ -139,6 +199,16 @@ export function encodeLpAdd(args) {
     parts.push(new Uint8Array([metaBytes.length]), metaBytes);
     const capFlags = args.poolCapabilityFlags ?? 0;
     if (capFlags < 0 || capFlags > 0xff) throw new Error('poolCapabilityFlags must be u8');
+    // Pre-launch guard. The 0x01 (RANGE_ATTEST-gated LP_ADD) and 0x02
+    // (POOL_CAP_SOLO_INTENT_ALLOWED) bits are drafted in AMM.md but the
+    // worker validator does NOT yet enforce them — setting a bit creates
+    // a pool labelled with the flag but offering no actual semantic gate.
+    // Reject here so callers can't accidentally rely on a non-functional
+    // capability. Remove this guard when the corresponding validator
+    // branches ship in a follow-up amendment.
+    if (capFlags !== 0) {
+      throw new Error(`poolCapabilityFlags=${capFlags} is drafted but not enforced by the worker pre-launch; only 0x00 is valid for now`);
+    }
     parts.push(new Uint8Array([capFlags]));
   }
 

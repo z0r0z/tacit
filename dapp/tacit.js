@@ -27,6 +27,7 @@ import { satsConnect as SatsConnect } from './vendor/tacit-deps.min.js';
 // that ships ~30 KB of round constants per arity. SPEC §3.6.
 import { poseidon1, poseidon2, poseidon3 } from './vendor/tacit-deps.min.js';
 import { prfRegister, prfLogin, loadPrfMap, savePrfMap, clearPrfMap, isPasskeyAvailable, prfTryRestore } from './prf-wallet.js';
+import { bppRangeProve, bppRangeVerify } from './bulletproofs-plus.js';
 // AMM module imports (loaded as ES modules; byte-parity with worker pinned
 // in tests/dapp-amm-primitives.test.mjs). Aliased as `*Mod` to avoid
 // shadowing the dapp's existing inline pedersenCommit / etc.
@@ -2731,6 +2732,30 @@ function renderChainDivergenceBanner() {
   el.textContent = `⚠ Chain-data divergence: ${primaryHost} reports tip ${primary}, ${secondaryHost} reports tip ${secondary} (Δ${Math.abs(primary - secondary)}). Treat balances as stale until this resolves; one of the endpoints may be lagging or compromised.`;
 }
 
+// Bulletproofs+ signet status banner. Shown on signet wallets when the
+// gate is enabled, suppressed on mainnet entirely. The banner reports
+// that confidential transfers on this client run BP+ (SPEC §5.47), with
+// the on-mainnet user-visible fee delta. Dismiss persists across reloads.
+const BPP_BANNER_DISMISS_KEY = 'tacit-bpp-signet-banner-dismissed-v1';
+function renderBppSignetBanner() {
+  const el = (typeof document !== 'undefined') ? document.getElementById('bpp-signet-banner') : null;
+  if (!el) return;
+  const isSignet = currentNetworkName() === 'signet';
+  let dismissed = false;
+  try { dismissed = localStorage.getItem(BPP_BANNER_DISMISS_KEY) === '1'; } catch {}
+  if (!isSignet || !bppEnabled() || dismissed) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.innerHTML = `<span>⚡ <strong>Bulletproofs+ active.</strong> Confidential transfers on this client use Tacit's BP+ port on secp256k1 (SPEC §5.47) — ~5% lower fees per send. Mainnet activation follows the signet exercise.</span> <a href="https://github.com/z0r0z/tacit/blob/main/spec/amendments/cxfer-bpp/README.md" target="_blank" rel="noopener noreferrer" style="color:#1d4d27;margin-left:8px;">verify ↗</a> <a href="#" id="bpp-banner-dismiss" style="color:#1d4d27;text-decoration:underline;margin-left:8px;">dismiss</a>`;
+  const dismiss = el.querySelector('#bpp-banner-dismiss');
+  if (dismiss) {
+    dismiss.onclick = (ev) => {
+      ev.preventDefault();
+      try { localStorage.setItem(BPP_BANNER_DISMISS_KEY, '1'); } catch {}
+      el.style.display = 'none';
+    };
+  }
+}
+
 // mempool.space /tx/:txid/outspend/:vout returns { spent: bool, txid?, vin? }.
 // Fails closed: errors propagate so callers can surface "couldn't verify
 // liveness" rather than silently treating an unreachable API as "not spent"
@@ -4748,6 +4773,26 @@ const ENVELOPE_MAGIC = new TextEncoder().encode('TACIT');
 const ENVELOPE_VERSION = 0x01;
 const T_CETCH    = 0x21;
 const T_CXFER_BPP = 0x22; // BP+ variant of T_CXFER, identical wire shape, smaller rangeproof (SPEC §5.47 amendment)
+
+// ============== T_CXFER_BPP ACTIVATION GATING ==============
+// The BP+ prover/verifier in dapp/bulletproofs-plus.js is a hand-port of
+// Monero's bulletproofs_plus.cc with secp256k1 + SHA-256 substitutions. It
+// is gated to signet by default while the on-chain signet harness exercises
+// the proof system end-to-end before mainnet activation.
+//
+// Override via localStorage:
+//   localStorage['tacit-bpp-enable-mainnet-v1'] = '1'  // explicit opt-in
+//   localStorage['tacit-bpp-disable-signet-v1'] = '1'  // turn off on signet
+const BPP_ENABLE_MAINNET_KEY = 'tacit-bpp-enable-mainnet-v1';
+const BPP_DISABLE_SIGNET_KEY = 'tacit-bpp-disable-signet-v1';
+function bppEnabled() {
+  const net = currentNetworkName();
+  if (net === 'mainnet') {
+    try { return localStorage.getItem(BPP_ENABLE_MAINNET_KEY) === '1'; } catch { return false; }
+  }
+  // signet (or anything non-mainnet)
+  try { return localStorage.getItem(BPP_DISABLE_SIGNET_KEY) !== '1'; } catch { return true; }
+}
 const T_CXFER    = 0x23;
 const T_MINT     = 0x24; // issue more supply on a mintable asset (signed by mint_authority)
 const T_BURN     = 0x25; // destroy supply (any holder; emits a public burned_amount)
@@ -4776,6 +4821,7 @@ const T_SHARE_SLASH_CLAIM    = 0x4C; // optional pooled-insurance claim by cBTC.
 // full buildAndBroadcast wrappers stage in over follow-up sessions.
 const T_LP_ADD     = 0x2D; // pool init (variant 1) or standard LP add (variant 0)
 const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
+const T_PROTOCOL_FEE_CLAIM = 0x31; // founder mints accrued LP-fee skim as lp_asset_id UTXO
 const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
 const SWAP_VAR_ENVELOPE_VERSION = 0x01;
 const T_AXFER_VAR = 0x37; // variable-amount atomic settlement (SPEC §5.7.9 / §5.7.6.1 — amended).
@@ -9945,7 +9991,7 @@ async function validateOutpoint(rootTxid, rootVout, validatedSet, fetchTx, _dept
     for (const node of slice) {
       const { tx, env } = decodedMap.get(node.txid) || { tx: null, env: null };
       if (!tx || !env) continue;
-      if (env.opcode === T_CXFER || env.opcode === T_BURN) {
+      if (env.opcode === T_CXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP) {
         for (let i = 1; i < tx.vin.length; i++) enqueue(tx.vin[i].txid, tx.vin[i].vout);
       } else if (env.opcode === T_AXFER) {
         const dec = decodeAxferPayload(env.payload);
@@ -10239,6 +10285,85 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     const outputCommitments = dec.outputs.map(o => o.commitment);
     const burnedAmount = isBurn ? dec.burnedAmount : 0n;
     const msg = computeKernelMsg(dec.assetId, inputOutpoints, outputCommitments, burnedAmount);
+    const kernelOk = verifySchnorr(dec.kernelSig, msg, ExBytes);
+
+    markAll(Math.max(N, 1), kernelOk);
+    return kernelOk;
+  }
+
+  if (env.opcode === T_CXFER_BPP) {
+    // SPEC §5.47 amendment. Identical to T_CXFER except the rangeproof is
+    // a Bulletproofs+ aggregated proof verified by bppRangeVerify (from
+    // dapp/bulletproofs-plus.js, hand-port of Monero's BP+).
+    //
+    // Gated by bppEnabled() — defaults to enabled on signet, disabled on
+    // mainnet. A disabled BPP envelope returns false from validation, which
+    // means the resulting UTXO is treated as non-tacit (unspendable as a
+    // tacit asset). This is the correct soft-fork behavior: clients that
+    // haven't activated BPP simply don't credit BPP-sourced balances.
+    if (!bppEnabled()) {
+      markAll(1, false);
+      return false;
+    }
+
+    const dec = decodeCXferBppPayload(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    const N = dec.outputs.length;
+    if (vout >= N) { validatedSet.set(key, false); return false; }
+
+    // Step 1: recursive input validation (mixed ancestry with CXFER allowed)
+    if (tx.vin.length < 2) { markAll(Math.max(N, 1), false); return false; }
+    if (tx.vin.length - 1 > 255) { markAll(Math.max(N, 1), false); return false; }
+    for (let i = 1; i < tx.vin.length; i++) {
+      const inp = tx.vin[i];
+      const parentKey = `${inp.txid}:${inp.vout}`;
+      const parentValid = validatedSet.get(parentKey) === true;
+      if (!parentValid) {
+        const parentReason = validatedReasons?.get(parentKey);
+        markAll(Math.max(N, 1), false, parentReason === _REASON_FETCH_FAILED ? _REASON_FETCH_FAILED : _REASON_INVALID);
+        return false;
+      }
+    }
+
+    // Step 2: BP+ rangeproof verification.
+    let Cpts;
+    try { Cpts = dec.outputs.map(o => bytesToPoint(o.commitment)); }
+    catch { markAll(Math.max(N, 1), false); return false; }
+    if (!bppRangeVerify(Cpts, dec.rangeproof)) { markAll(Math.max(N, 1), false); return false; }
+
+    // Step 3: asset_id consistency + kernel signature.
+    // Kernel msg shape is IDENTICAL to T_CXFER's (SPEC §5.47.2) — same
+    // "tacit-kernel-v1" domain tag, same asset_id + outpoints + commitments
+    // + burned=0 fields. Reuse computeKernelMsg unchanged.
+    const ourAssetIdHex = bytesToHex(dec.assetId);
+    const inputCommitments = [];
+    for (let i = 1; i < tx.vin.length; i++) {
+      const inp = tx.vin[i];
+      const parent = await fetchTx(inp.txid);
+      if (!parent) { markAll(Math.max(N, 1), false, _REASON_FETCH_FAILED); return false; }
+      const pwit = parent.vin?.[0]?.witness;
+      if (!pwit || pwit.length < 3) { markAll(Math.max(N, 1), false); return false; }
+      let parentEnv;
+      try { parentEnv = decodeEnvelopeScript(hexToBytes(pwit[1])); } catch { parentEnv = null; }
+      if (!parentEnv) { markAll(Math.max(N, 1), false); return false; }
+      const pd = getParentEnvelopeData(parentEnv, inp.vout, inp.txid);
+      if (!pd) { markAll(Math.max(N, 1), false); return false; }
+      if (pd.assetIdHex !== ourAssetIdHex) { markAll(Math.max(N, 1), false); return false; }
+      inputCommitments.push(pd.commitment);
+    }
+
+    // E' = Σ C_out − Σ C_in (no burn term — BPP is not a burn variant)
+    let EPrime = secp.ProjectivePoint.ZERO;
+    try {
+      for (const o of dec.outputs) EPrime = EPrime.add(bytesToPoint(o.commitment));
+      for (const c of inputCommitments) EPrime = EPrime.add(bytesToPoint(c).negate());
+    } catch { markAll(Math.max(N, 1), false); return false; }
+    if (EPrime.equals(secp.ProjectivePoint.ZERO)) { markAll(Math.max(N, 1), false); return false; }
+
+    const ExBytes = EPrime.toRawBytes(true).slice(1);
+    const inputOutpoints = tx.vin.slice(1).map(v => ({ txid: v.txid, vout: v.vout }));
+    const outputCommitments = dec.outputs.map(o => o.commitment);
+    const msg = computeKernelMsg(dec.assetId, inputOutpoints, outputCommitments, 0n);
     const kernelOk = verifySchnorr(dec.kernelSig, msg, ExBytes);
 
     markAll(Math.max(N, 1), kernelOk);
@@ -10982,6 +11107,19 @@ async function _validateOutpointSingle(txidHex, vout, validatedSet, fetchTx, met
     return true;
   }
 
+  if (env.opcode === T_PROTOCOL_FEE_CLAIM) {
+    // Fixed-shape claim envelope: vout[0] is the lp_asset_id UTXO opened
+    // publicly by the envelope itself (amount + blinding revealed). Deep
+    // soundness (claimer == pool.protocol_fee_address, accrued match) is
+    // worker-enforced; the dapp's role here is to mark vout[0] as a valid
+    // tacit UTXO so ancestry walks and holdings scans surface it.
+    if (vout !== 0) { validatedSet.set(key, false); return false; }
+    const dec = ammEnvelopeMod.decodeProtocolFeeClaim(env.payload);
+    if (!dec) { validatedSet.set(key, false); return false; }
+    validatedSet.set(key, true);
+    return true;
+  }
+
   validatedSet.set(key, false);
   return false;
 }
@@ -11004,6 +11142,16 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
   }
   if (parentEnv.opcode === T_CXFER) {
     const d = decodeCXferPayload(parentEnv.payload);
+    if (!d || vout >= d.outputs.length) return null;
+    return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
+  }
+  if (parentEnv.opcode === T_CXFER_BPP) {
+    // SPEC §5.47 amendment. Wire shape identical to CXFER for asset_id +
+    // per-output commitments; only the rangeproof differs. The kernel sig
+    // verification + range-proof verification happened when this parent
+    // envelope was originally validated; this function just exposes the
+    // commitment for downstream consumers.
+    const d = decodeCXferBppPayload(parentEnv.payload);
     if (!d || vout >= d.outputs.length) return null;
     return { assetIdHex: bytesToHex(d.assetId), commitment: d.outputs[vout].commitment };
   }
@@ -11071,6 +11219,16 @@ function getParentEnvelopeData(parentEnv, vout, parentTxid) {
       ? variantBytes.toLowerCase()
       : bytesToHex(variantBytes);
     return { assetIdHex: aidHex, commitment: d.mintRecipientCommit };
+  }
+  if (parentEnv.opcode === T_PROTOCOL_FEE_CLAIM) {
+    // Founder mints accrued LP-fee skim. Produces one lp_asset_id UTXO at
+    // vout 0 with the publicly-revealed Pedersen commit `claim_C_secp`.
+    // lp_asset_id is derived from pool_id.
+    if (vout !== 0) return null;
+    const d = ammEnvelopeMod.decodeProtocolFeeClaim(parentEnv.payload);
+    if (!d) return null;
+    const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(d.poolId);
+    return { assetIdHex: bytesToHex(lpAssetIdBytes), commitment: d.claimCSecp };
   }
   if (parentEnv.opcode === T_DROP) {
     // SPEC §5.12.1: T_DROP reclaim shape produces ONE tacit UTXO at vout 0
@@ -11751,10 +11909,11 @@ async function _scanHoldingsImpl() {
       const meta = getAssetMeta(assetIdHex);
       if (meta) { ticker = meta.ticker; decimals = meta.decimals; }
       onChainCommitment = dec.commitment;
-    } else if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN) {
-      const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
-                : env.opcode === T_AXFER    ? decodeAxferPayload(env.payload)
-                                                : decodeCBurnPayload(env.payload);
+    } else if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP) {
+      const dec = env.opcode === T_CXFER     ? decodeCXferPayload(env.payload)
+                : env.opcode === T_AXFER     ? decodeAxferPayload(env.payload)
+                : env.opcode === T_CXFER_BPP ? decodeCXferBppPayload(env.payload)
+                                             : decodeCBurnPayload(env.payload);
       if (!dec) continue;
       assetIdHex = bytesToHex(dec.assetId);
       const meta = getAssetMeta(assetIdHex);
@@ -11801,6 +11960,16 @@ async function _scanHoldingsImpl() {
       const synth = _cbtcTacSyntheticMeta(assetIdHex);
       if (synth) { ticker = synth.ticker; decimals = synth.decimals; }
       onChainCommitment = dec.mintRecipientCommit;
+    } else if (env.opcode === T_PROTOCOL_FEE_CLAIM) {
+      // Founder LP-fee claim: vout[0] is an lp_asset_id UTXO with the
+      // amount + blinding revealed in the envelope itself. asset_id is
+      // lp_asset_id = deriveLpAssetId(pool_id).
+      const dec = ammEnvelopeMod.decodeProtocolFeeClaim(env.payload);
+      if (!dec) continue;
+      if (u.vout !== 0) continue;
+      const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(dec.poolId);
+      assetIdHex = bytesToHex(lpAssetIdBytes);
+      onChainCommitment = dec.claimCSecp;
     } else continue;
 
     if (!holdings.has(assetIdHex)) {
@@ -12090,10 +12259,30 @@ async function _scanHoldingsImpl() {
       }
     }
 
-    if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN) {
-      const dec = env.opcode === T_CXFER       ? decodeCXferPayload(env.payload)
-                : env.opcode === T_AXFER    ? decodeAxferPayload(env.payload)
-                                                : decodeCBurnPayload(env.payload);
+    if (env.opcode === T_PROTOCOL_FEE_CLAIM) {
+      // Founder LP-fee claim — opening (claim_amount + claim_blinding) is
+      // public in the envelope. Cold-restored wallets recover unconditionally
+      // by reading those bytes; no localStorage record required.
+      const dec = ammEnvelopeMod.decodeProtocolFeeClaim(env.payload);
+      if (dec) {
+        const candidate = dec.claimAmount;
+        const r = bytes32ToBigint(dec.claimBlinding) % SECP_N;
+        try {
+          if (pedersenCommit(candidate, r).equals(bytesToPoint(onChainCommitment))) {
+            recordOpening(u.txid, u.vout, assetIdHex, candidate, r);
+            h.balance += candidate;
+            h.utxos.push({ utxo: u, amount: candidate, blinding: r, commitment: onChainCommitment });
+            continue;
+          }
+        } catch {}
+      }
+    }
+
+    if (env.opcode === T_CXFER || env.opcode === T_AXFER || env.opcode === T_BURN || env.opcode === T_CXFER_BPP) {
+      const dec = env.opcode === T_CXFER     ? decodeCXferPayload(env.payload)
+                : env.opcode === T_AXFER     ? decodeAxferPayload(env.payload)
+                : env.opcode === T_CXFER_BPP ? decodeCXferBppPayload(env.payload)
+                                             : decodeCBurnPayload(env.payload);
       if (dec && tx.vin.length >= 2) {
         // Recovery anchor: for v1 CXFER/BURN, vin[1] is the first asset input
         // by definition. For v2, vin[1] is also the first asset input (asset
@@ -16646,6 +16835,162 @@ async function buildAndBroadcastLpRemove({
   };
 }
 
+// ============== AMM T_PROTOCOL_FEE_CLAIM builder ==============
+//
+// Founder-pinned recipient mints accrued LP-fee skim as an lp_asset_id
+// UTXO. Public Pedersen opening (amount + blinding revealed in envelope)
+// — protocol fee claims are intentionally non-confidential for accounting.
+//
+// Caller MUST be the founder (privkey matches pool.protocol_fee_address).
+// Caller pre-fetches the pool record via worker /amm/pool/<id> to know
+// the current accrued amount.
+//
+// Reveal tx layout:
+//   vin[0]  = commit P2TR (envelope-bearing)
+//   vout[0] = lp_asset_id UTXO at recipient (DUST sats; claim_amount of
+//             lp_asset_id at claim_C_secp = amount·H + r·G)
+async function buildAndBroadcastProtocolFeeClaim({
+  poolIdHex,             // 64-hex of the pool
+  claimAmount,           // bigint — must equal pool.protocol_fee_accrued
+                         //         after crystallization (caller queries
+                         //         the worker for current value)
+  onProgress = null,
+}) {
+  // Claim is always to self. The worker enforces claimer_pubkey_x_only ==
+  // pool.protocol_fee_address (the founder's pinned address), so the
+  // BIP-340 sig must be made under wallet.priv. Sending the lp_asset_id
+  // UTXO to a different Bitcoin scriptPubKey would split control: this
+  // wallet records the (amount, blinding) opening but the recipient lacks
+  // a scanHoldings branch to surface the UTXO — net result is invisible
+  // funds. If founder-to-third-party transfer is ever needed, claim to
+  // self first then forward via T_AXFER.
+  await ensurePrivkey();
+  const _progress = (s) => { try { onProgress && onProgress(s); } catch {} };
+  if (!/^[0-9a-f]{64}$/i.test(poolIdHex)) throw new Error('poolIdHex must be 64 hex');
+  const amt = BigInt(claimAmount);
+  if (amt <= 0n) throw new Error('claimAmount must be > 0');
+  if (amt >= 1n << 64n) throw new Error('claimAmount out of u64 range');
+
+  const poolIdBytes = hexToBytes(poolIdHex.toLowerCase());
+  const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
+
+  // Fresh blinding for the claim UTXO + public Pedersen commit
+  _progress('claim:derive-blinding');
+  const blindingBytes = new Uint8Array(32); crypto.getRandomValues(blindingBytes);
+  let blindingBig = bytes32ToBigint(blindingBytes) % SECP_N;
+  if (blindingBig === 0n) blindingBig = 1n;
+  const claimCSecpPt = pedersenCommit(amt, blindingBig);
+  const claimCSecpBytes = claimCSecpPt.toRawBytes(true);
+  const claimBlindingBytesPadded = bigintToBytes32(blindingBig);
+
+  // Wallet must be the founder (privkey corresponding to protocol_fee_address).
+  // The claim_sig is signed under wallet.priv; the worker verifies under
+  // pool.protocol_fee_address_x_only. If mismatch, validator rejects.
+  const claimerXOnly = wallet.xonly();
+
+  // claim_msg + sig
+  _progress('claim:sign');
+  const claimMsg = ammEnvelopeMod.buildProtocolFeeClaimMsg({
+    poolIdBytes, claimAmount: amt,
+    claimCSecpBytes, claimBlindingBytes: claimBlindingBytesPadded,
+  });
+  const claimSig = signSchnorr(claimMsg, wallet.priv);
+
+  // Encode envelope (fixed 202 bytes)
+  const payload = ammEnvelopeMod.encodeProtocolFeeClaim({
+    poolId: poolIdBytes,
+    claimerXOnly,
+    claimAmount: amt,
+    claimCSecp: claimCSecpBytes,
+    claimBlinding: claimBlindingBytesPadded,
+    claimSig,
+  });
+
+  // Bitcoin commit + reveal pair
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  // reveal: 1 input (commit) + 1 output (claim UTXO at recipient DUST)
+  const revealVb = 11 + 41 + 31 +
+    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = Math.max(DUST, revealFee);
+
+  const holdings = await scanHoldings();
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error('insufficient sats for protocol-fee claim commit');
+  }
+
+  _progress('tx:commit:build');
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  _progress('tx:reveal:build');
+  const recipientSpk = p2wpkhScript(wallet.pub);
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }],
+    outputs: [{ value: DUST, script: recipientSpk }],
+  };
+  const revealPrevouts = [{ value: commitValue, script: commitSpk }];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  // Record opening so the claimed LP-fee UTXO shows in holdings + is
+  // spendable via standard T_AXFER_VAR / CXFER flow.
+  try {
+    recordOpening(revealTxidHex, 0, bytesToHex(lpAssetIdBytes), amt, blindingBig);
+  } catch {}
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    poolIdHex,
+    lpAssetIdHex: bytesToHex(lpAssetIdBytes),
+    claimAmount: amt,
+    claimCommitHex: bytesToHex(claimCSecpBytes),
+    claimBlindingHex: blindingBig.toString(16).padStart(64, '0'),
+    claimOutpoint: `${revealTxidHex}:0`,
+    commitFee, revealFee,
+  };
+}
+
 // ============== AMM swap UX (T_SWAP_VAR self-fulfill) ==============
 //
 // SPEC-SWAP-VAR-AMENDMENT §5.16.3. v1 self-fulfill: wallet acts as BOTH
@@ -18423,7 +18768,7 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
 // Padding is needed because the aggregated bulletproof requires m to be a power
 // of 2. Padding outputs are indistinguishable from change to outsiders; the
 // wallet auto-recovers them as 0-amount UTXOs (DUST sats are returned).
-async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null }) {
+async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = false }) {
   await ensurePrivkey();
   // onProgress(stage) parity with buildAndBroadcastCEtch — fires
   // 'commit-start' / 'reveal-start' right before each broadcast.
@@ -18516,12 +18861,25 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     keystreams.push(deriveAmountKeystreamSelf(wallet.priv, anchorBytes, v));
   }
 
-  const { proof: aggProof, commitments } = bpRangeAggProve(amounts, blindings);
+  // Caller may opt the send-path into T_CXFER_BPP (SPEC §5.47): same wire
+  // shape, smaller rangeproof. `useBpp` requires the gate at `bppEnabled()`
+  // is consistent with the network (default ON on signet, OFF on mainnet
+  // until activation); a caller asking for BPP while the gate is OFF will
+  // build a valid envelope that the validator on the same client will
+  // refuse to credit, which is a foot-gun, so trip an early throw.
+  if (useBpp && !bppEnabled()) {
+    throw new Error('T_CXFER_BPP not enabled on this network — set localStorage["tacit-bpp-enable-mainnet-v1"]=\'1\' or use signet');
+  }
+  const proverFn = useBpp ? bppRangeProve : bpRangeAggProve;
+  const encoderFn = useBpp ? encodeCXferBppPayload : encodeCXferPayload;
+
+  const { proof: aggProof, commitments } = proverFn(amounts, blindings);
   const commitmentBytesList = commitments.map(pointToBytes);
 
   // Kernel signature. excess = Σ r_out − Σ r_in across ALL m outputs (including
   // padding); padding contributes 0·H to the H-component, so the balance
   // equation is unchanged. Verifier reconstructs E' = ΣC_out − ΣC_in.
+  // BPP and CXFER share kernel-msg shape verbatim (§5.47.2).
   const blindingSum = blindings.reduce((s, b) => modN(s + b), 0n);
   const excess = modN(blindingSum - inBlindingSum);
   const inputOutpoints = pickedAssetUtxos.map(x => ({ txid: x.utxo.txid, vout: x.utxo.vout }));
@@ -18531,7 +18889,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
 
   const cts = amounts.map((a, i) => encryptAmount(a, keystreams[i]));
 
-  const payload = encodeCXferPayload({
+  const payload = encoderFn({
     assetId: assetIdBytes,
     kernelSig,
     outputs: amounts.map((_, i) => ({ commitment: commitmentBytesList[i], encryptedAmount: cts[i] })),
@@ -18663,12 +19021,13 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
 // Backwards-compatible single-recipient wrapper. The send-form UI handler and
 // other internal flows (cancel-axfer-offer, cancel-fulfilled-intent) call this
 // with the legacy { assetIdHex, recipientPubHex, amount, forceUtxos } shape.
-async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount, forceUtxos = null, onProgress = null }) {
+async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount, forceUtxos = null, onProgress = null, useBpp = false }) {
   const r = await buildAndBroadcastCXferMulti({
     assetIdHex,
     recipients: [{ pubHex: recipientPubHex, amount }],
     forceUtxos,
     onProgress,
+    useBpp,
   });
   return {
     commitTxid: r.commitTxid,
@@ -23926,8 +24285,12 @@ async function importShareLink(linkOrHash) {
   const expectedC = pedersenCommit(d.amount, blinding);
   const envBytes = hexToBytes(tx.vin[0].witness[1]);
   const env = decodeEnvelopeScript(envBytes);
-  if (!env || env.opcode !== T_CXFER) throw new Error('parent tx is not a CXFER');
-  const dec = decodeCXferPayload(env.payload);
+  if (!env || (env.opcode !== T_CXFER && env.opcode !== T_CXFER_BPP)) {
+    throw new Error('parent tx is not a CXFER');
+  }
+  const dec = env.opcode === T_CXFER_BPP
+    ? decodeCXferBppPayload(env.payload)
+    : decodeCXferPayload(env.payload);
   if (!dec || d.vout >= dec.outputs.length) throw new Error('vout outside envelope outputs');
   // Asset_id from envelope must match the share-link's claim (already implied by metadata lookup but check explicitly)
   if (bytesToHex(dec.assetId) !== d.assetIdHex) throw new Error('asset_id mismatch between envelope and share-link');
@@ -33937,9 +34300,10 @@ async function _crossCheckOneEntry(drop, entry) {
   try { env = decodeEnvelopeScript(hexToBytes(wit[1])); } catch { env = null; }
   if (!env) return { ok: false, reason: 'envelope decode failed' };
   let dec, label;
-  if (env.opcode === T_CXFER)      { dec = decodeCXferPayload(env.payload); label = 'CXFER'; }
-  else if (env.opcode === T_AXFER) { dec = decodeAxferPayload(env.payload); label = 'T_AXFER'; }
-  else return { ok: false, reason: `parent envelope is opcode 0x${env.opcode.toString(16)}, not CXFER or T_AXFER` };
+  if (env.opcode === T_CXFER)          { dec = decodeCXferPayload(env.payload);    label = 'CXFER'; }
+  else if (env.opcode === T_CXFER_BPP) { dec = decodeCXferBppPayload(env.payload); label = 'CXFER_BPP'; }
+  else if (env.opcode === T_AXFER)     { dec = decodeAxferPayload(env.payload);    label = 'T_AXFER'; }
+  else return { ok: false, reason: `parent envelope is opcode 0x${env.opcode.toString(16)}, not CXFER, CXFER_BPP, or T_AXFER` };
   if (!dec) return { ok: false, reason: `${label} payload decode failed` };
   if (bytesToHex(dec.assetId) !== drop.asset_id_hex) {
     return { ok: false, reason: `${label} asset_id ${shorten(bytesToHex(dec.assetId), 8)} ≠ drop's ${shorten(drop.asset_id_hex, 8)}` };
@@ -48184,14 +48548,17 @@ function applyMarketFilters() {
         ? ` (${groupSize} chunks available · each tile takes one chunk)`
         : '';
       if (isSeller) {
-        // Soft + hard cancel paired on owned tiles. Soft = pull worker
-        // record only (signed authorization bytes still floating).
-        // Hard = self-CXFER the listed UTXO so consensus moots the
-        // signed spend permanently. Hard is the safer default for any
-        // listing the seller is sure about.
+        // Hard cancel is the safer default and reads as the primary
+        // action (filled background, default button order). Soft cancel
+        // remains available but is visually demoted to "advanced" since
+        // it leaves the pre-signed authorization valid — any buyer who
+        // copied the bytes earlier can still settle. Order matters here:
+        // hard FIRST so it's the natural click; soft second, lighter, as
+        // an opt-in for "I know what I'm doing" sellers (already-settled,
+        // re-list flow, etc.).
         secondaryAction =
-          `<button data-act="market-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Soft cancel: pulls the listing from the worker. The seller's pre-signed asset spend remains valid; a buyer who copied the bytes earlier could still settle.${l._isGroup ? ' This cancels ONE chunk of the group; the remaining chunks stay live.' : ''}" style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Soft cancel${l._isGroup ? ' chunk' : ''}</button>`
-          + `<button data-act="market-hard-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Hard cancel: self-spends the listed UTXO on Bitcoin. Consensus rejects any future broadcast of the pre-signed sale tx (the input is gone). Costs one Bitcoin tx fee. The most cryptographically definitive cancel.${l._isGroup ? ' This hard-cancels ONE chunk of the group; the remaining chunks stay live.' : ''}" style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink);border:1px solid var(--ink);font-weight:600;">Hard cancel${l._isGroup ? ' chunk' : ''}</button>`;
+          `<button data-act="market-hard-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Cancel — self-spends the listed UTXO on Bitcoin so consensus permanently rejects any future broadcast of the pre-signed sale. Costs one Bitcoin tx fee (~800 sats). This is the safe default.${l._isGroup ? ' This cancels ONE chunk of the group; the remaining chunks stay live.' : ''}" style="font-size:10px;padding:4px 8px;background:var(--ink);color:var(--bg);border:1px solid var(--ink);font-weight:600;">Cancel${l._isGroup ? ' chunk' : ''}</button>`
+          + `<button data-act="market-cancel-preauth" data-aid="${escapeHtml(safeAid)}" data-sid="${escapeHtml(sid)}" data-price="${priceSatsRaw}" data-ticker="${escapeHtml(a.ticker || '?')}" data-amount="${escapeHtml(amount || '0')}" data-dec="${dec}" title="Soft cancel (advanced) — removes only the worker record. ⚠ Your pre-signed asset spend remains valid; any buyer who copied the bytes earlier can still settle the trade. Use this only when the listing has already filled (no UTXO to self-spend) or when you intend to re-list immediately.${l._isGroup ? ' This soft-cancels ONE chunk of the group; the remaining chunks stay live.' : ''}" style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);">Soft cancel${l._isGroup ? ' chunk' : ''}</button>`;
         if (l._isGroup) {
           // Group-aware "Cancel all" — fires K worker DELETEs sequentially.
           // Stamps the chunk sale_ids comma-joined so the handler can iterate
@@ -57090,6 +57457,12 @@ function _wireSwapTile(scope) {
       // a take failure so we don't strand a passive bid against unknown
       // state.
       let bidPosted = null;
+      // Residual sats that ARE above the DUST floor but ended up unposted —
+      // either because the user's cap can't buy one base unit (`_bidAmt === 0n`,
+      // can hit on low-decimal assets at high cap), or because publishBidIntent
+      // threw. Surfaced in the final toast so the buyer knows the sats are
+      // still in their wallet rather than silently assuming a bid is open.
+      let _residualUnposted = null;
       if (!lastErr && filled > 0 && result.residualSats >= DUST && Number.isFinite(result.cap) && result.cap > 0) {
         const _residualSats = Number(result.residualSats);
         const _bidAmt = BigInt(Math.floor(_residualSats * Math.pow(10, decimals) / result.cap));
@@ -57117,8 +57490,15 @@ function _wireSwapTile(scope) {
             // as a soft warning; the fills already settled.
             if (!isUnlockCancelled(e)) {
               console.warn('[swap] residual bid post failed:', e.message);
+              _residualUnposted = { sats: _residualSats, reason: `bid post failed: ${e.message}` };
             }
           }
+        } else {
+          // _bidAmt === 0n: residual is ≥ DUST but won't buy even one base
+          // unit at the user's cap (rare; needs a low-decimal asset at a
+          // very high unit price). Sats sit in wallet — flag it so they
+          // don't silently disappear from the user's expected open bids.
+          _residualUnposted = { sats: _residualSats, reason: `too small to bid one ${ticker} unit at ${fmtUnitPriceSats(result.cap)} sats/${ticker}` };
         }
       }
       if (progressEl) progressEl.__swapCancelState = null;
@@ -57128,6 +57508,8 @@ function _wireSwapTile(scope) {
       else if (_stoppedEarly && filled > 0) toast(`Stopped · ${filled}/${result.plan.length} filled${_feeSuffix} · remaining fills cancelled`, 'warn', 8000);
       else if (bidPosted) {
         toast(`Bought ${accStr} ${ticker} ✓${_feeSuffix} · +${fmtAssetAmount(bidPosted.amount, decimals)} more open as bid @ ${fmtUnitPriceSats(bidPosted.cap)} sats/${ticker}`, 'success', 9000);
+      } else if (_residualUnposted) {
+        toast(`Bought ${accStr} ${ticker} ✓${_feeSuffix} · ${_residualUnposted.sats.toLocaleString()} sats stay in wallet (${_residualUnposted.reason})`, 'success', 9000);
       } else {
         toast(`Bought ${accStr} ${ticker} ✓${_feeSuffix} · view in Holdings (~10 min to settle)`, 'success', 6000);
       }
@@ -59881,9 +60263,11 @@ async function marketCancelPreauthHandler(btn) {
   const origText = btn.textContent;
   const restore = () => { if (btn.isConnected) { btn.disabled = false; btn.textContent = origText; } };
   if (!confirm(
-    `Cancel instant listing?${detail}\n` +
-    `This removes the worker record so buyers won't see it. The pre-signed asset spend remains valid until you spend the listed UTXO yourself.\n\n` +
-    `For a hard cancel, after this completes, do a Send Privately of the listed UTXO to yourself.`,
+    `⚠ Soft cancel only — your signed authorization stays valid${detail}\n` +
+    `This removes the listing from the worker so buyers won't browse it, but your pre-signed asset spend is NOT invalidated. Anyone who saved the listing bytes (any buyer who clicked through to the take screen before now) can still broadcast the sale at the original price, even days later.\n\n` +
+    `To fully cancel: use the "Cancel" button (hard cancel) instead — it self-spends the listed UTXO so the pre-signed sale becomes consensus-invalid.\n\n` +
+    `Only proceed with Soft cancel if: the listing already filled (nothing to self-spend), or you're re-listing immediately at a new price.\n\n` +
+    `Continue with soft cancel?`,
   )) { restore(); return; }
   btn.textContent = 'cancelling...';
   // Mark this listing as a local cancel BEFORE the worker write so the
@@ -59964,10 +60348,11 @@ async function marketCancelPreauthGroupHandler(btn) {
   const sids = sidsRaw.split(',').map(s => s.trim()).filter(Boolean);
   if (sids.length === 0) { toast('No chunks to cancel', 'error'); return; }
   if (!confirm(
-    `Cancel all ${sids.length} chunks in this group?\n\n` +
-    `Worker removes all ${sids.length} ${ticker} listings; buyers won't see them after the next market refresh.\n\n` +
-    `Note: the K pre-signed asset spends remain valid on the K on-chain UTXOs until you spend them yourself. ` +
-    `For a hard cancel, after this completes, self-CXFER each chunk UTXO from Holdings.`,
+    `⚠ Soft cancel ${sids.length} chunks — pre-signed authorizations stay valid\n\n` +
+    `Worker removes all ${sids.length} ${ticker} listings; buyers won't browse them after the next market refresh. BUT the K pre-signed asset spends remain valid on the K on-chain UTXOs. Anyone who saved a chunk's listing bytes earlier can still settle it at the original price.\n\n` +
+    `To fully invalidate: after this completes, self-CXFER each chunk UTXO from Holdings (~800 sats fee per chunk).\n\n` +
+    `Only proceed if the chunks already filled, or you're re-listing immediately.\n\n` +
+    `Continue with soft cancel of all ${sids.length}?`,
   )) return;
   const origText = btn.textContent;
   btn.disabled = true;
@@ -62407,6 +62792,10 @@ async function init() {
   // immediately + every CHAIN_DIVERGE_INTERVAL_MS thereafter. Surfaces a
   // banner if the primary and secondary endpoints disagree on tip height.
   startChainDivergenceWatchdog();
+  // Bulletproofs+ signet indicator. Shown on signet only when the gate
+  // is enabled; harmless no-op on mainnet (the banner DOM exists but
+  // renderBppSignetBanner keeps it hidden there).
+  renderBppSignetBanner();
   // Lander grid (recent etches) is independent of wallet keys — kick it off
   // BEFORE awaiting refreshWallet so the registry + per-asset verify fetches
   // run concurrently with the wallet's mempool round-trips instead of strictly
@@ -62741,6 +63130,8 @@ export {
   buildAndBroadcastLpAddPoolInit,
   // AMM variant-0 LP add + LP_REMOVE.
   buildAndBroadcastLpAddVariant0, buildAndBroadcastLpRemove,
+  // AMM protocol-fee claim (T_PROTOCOL_FEE_CLAIM 0x31). Founder-only.
+  buildAndBroadcastProtocolFeeClaim,
   buildSwapVarIntentMsg,
   deriveSwapVarReceiptScalar, deriveSwapVarChangeScalar,
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,

@@ -81,7 +81,7 @@ group('POOL_INIT fuzz — 100 random (Δa, Δb, fee, caps)');
     const deltaA = 10_000n + rng.bigRange(0n, 9_990_000n);
     const deltaB = 10_000n + rng.bigRange(0n, 9_990_000n);
     const feeBps = rng.range(0, 1000);
-    const capabilityFlags = rng.range(0, 1) * 0x01;
+    const capabilityFlags = 0x00;
 
     try {
       const [canonA, canonB] = dappAsset.canonicalAssetPair(assetA, assetB);

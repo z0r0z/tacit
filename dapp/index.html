@@ -4075,6 +4075,15 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 <div id="chain-divergence-banner" style="display:none;background:#fff8eb;border:2px solid #a04030;color:#a04030;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
 
 <!--
+  Bulletproofs+ signet indicator. Visible only on signet, when bppEnabled()
+  returns true. Surfaces that confidential transfers on this client are
+  running the BP+ port (SPEC §5.47), with a one-line note on the
+  upstream-mainnet savings. Dismissable via localStorage flag; appears
+  again on signet wallets that haven't dismissed.
+-->
+<div id="bpp-signet-banner" style="display:none;background:#eef9f0;border:2px solid #2e7d3a;color:#1d4d27;padding:10px 16px;font-size:12px;text-align:center;margin-bottom:16px;"></div>
+
+<!--
   OTC claim arrival banner. Visible across every tab when the maker has
   at least one OTC listing with an unfulfilled buyer claim. Auto-shown by
   the claim poller (_pollMakerListings); auto-hidden when the maker is

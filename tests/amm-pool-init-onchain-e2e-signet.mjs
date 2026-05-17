@@ -247,6 +247,8 @@ if (state.lpAddVariant0Result) {
     assetBIdHex: poolRecord.asset_b,
     deltaA: ADD_DELTA_A, deltaB: ADD_DELTA_B,
     shareAmount: expectedShares,
+    feeBps: poolRecord.fee_bps,
+    poolCapabilityFlags: poolRecord.capability_flags,
     onProgress: (s) => info(`  · ${s}`),
   });
   ok(`LP_ADD variant 0 broadcast`);
@@ -355,6 +357,8 @@ if (state.lpRemoveResult) {
       amount: burnShares,
       blinding: BigInt('0x' + state.rShareSecpHex),
     }],
+    feeBps: p3.fee_bps,
+    poolCapabilityFlags: p3.capability_flags,
     onProgress: (s) => info(`  · ${s}`),
   });
   ok(`LP_REMOVE broadcast`);

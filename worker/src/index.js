@@ -130,6 +130,7 @@ const T_WRAPPER_ATTEST = 0x38; // optional on-chain wrapper attestation (SPEC §
 // follow-up sessions. NOT MAINNET-READY — signet smoke-test only.
 const T_LP_ADD     = 0x2D; // pool init (variant 1) or standard LP add (variant 0)
 const T_LP_REMOVE  = 0x2E; // LP redeem — share burn → asset A + B
+const T_SWAP_BATCH = 0x2F; // batched uniform-clearing settlement (ceremony-gated)
 const T_PROTOCOL_FEE_CLAIM = 0x31; // founder-pinned recipient mints accrued LP-fee skim
 const T_SWAP_VAR   = 0x32; // per-trade variable-amount AMM swap (SPEC §5.16.3)
 const XCURVE_PROOF_LEN_AMM = 169; // tacit-amm sigma proof length
@@ -2265,22 +2266,83 @@ function ammExtractLauncherPubkey(blobBytes) {
   if (v[0] !== '0' || (v[1] !== '2' && v[1] !== '3')) return null;
   try { return hexToBytes(v); } catch { return null; }
 }
-// Fetch + extract launcher pubkey for an asset_id by following its CETCH
-// metadata's image_uri (ipfs://CID format). Returns null on any failure
-// (asset not registered, image_uri absent, IPFS gateways all fail, blob
-// non-canonical, field absent). The "no gate" default means malformed
-// metadata silently makes POOL_INIT permissionless — this matches the
-// spec's conservative-default rule (AMM.md §"Indexer-determinism for
-// the metadata blob").
+// Resolve the launcher pubkey for an asset_id by content-addressing its
+// CETCH metadata's image_uri (ipfs://CID). Returns a status-typed result so
+// the caller can distinguish:
+//
+//   { status: 'no-gate', pubkey: null }
+//     The asset is not gated. Conservative-default state per AMM.md
+//     §"Indexer-determinism for the metadata blob" — applies when the asset
+//     has no image_uri, the URI isn't ipfs://, the blob is non-canonical,
+//     the field is absent, or the value is malformed.
+//
+//   { status: 'gated', pubkey: <33B> }
+//     Asset declares a valid launcher pubkey.
+//
+//   { status: 'fetch-failed' }
+//     image_uri is a well-formed ipfs:// CID but every gateway returned
+//     non-200 / timeout / invalid body. The caller MUST DEFER processing
+//     this POOL_INIT rather than treat as no-gate — two indexers replaying
+//     the same chain during a gateway outage would otherwise reach
+//     different verdicts and fork. A subsequent /rescan retries.
+//
+// Results are cached per asset_id in KV. Positive entries (no-gate / gated)
+// are durable for 7 days (content-addressed blob bytes → safe forever once
+// observed); fetch-failed is NEVER cached so retries happen each scan.
+const _AMM_LAUNCHER_CACHE_TTL_S = 7 * 24 * 3600;
+function _ammLauncherCacheKey(network, assetIdHex) {
+  return network === 'signet'
+    ? `amm:launcher:${assetIdHex}`
+    : `amm:launcher:${network}:${assetIdHex}`;
+}
 async function ammFetchLauncherPubkeyForAsset(env, network, assetIdHex) {
+  const cached = await env.REGISTRY_KV.get(_ammLauncherCacheKey(network, assetIdHex), 'json');
+  if (cached && (cached.status === 'no-gate' || cached.status === 'gated')) {
+    return cached.status === 'gated'
+      ? { status: 'gated', pubkey: hexToBytes(cached.pubkey_hex) }
+      : { status: 'no-gate', pubkey: null };
+  }
+
   const asset = await env.REGISTRY_KV.get(assetKey(network, assetIdHex), 'json');
-  if (!asset || typeof asset.image_uri !== 'string') return null;
+  // No registered asset → conservative no-gate. (Kernel-sig check upstream
+  // rejects POOL_INIT against non-existent asset_ids anyway.)
+  if (!asset || typeof asset.image_uri !== 'string') {
+    const out = { status: 'no-gate', pubkey: null };
+    await env.REGISTRY_KV.put(_ammLauncherCacheKey(network, assetIdHex),
+      JSON.stringify({ status: 'no-gate' }), { expirationTtl: _AMM_LAUNCHER_CACHE_TTL_S });
+    return out;
+  }
   const cid = extractIpfsCid(asset.image_uri);
-  if (!cid) return null;
+  if (!cid) {
+    // Non-IPFS image_uri (HTTPS, data:, etc.) cannot be content-addressed →
+    // permanently no gate. Cache.
+    const out = { status: 'no-gate', pubkey: null };
+    await env.REGISTRY_KV.put(_ammLauncherCacheKey(network, assetIdHex),
+      JSON.stringify({ status: 'no-gate' }), { expirationTtl: _AMM_LAUNCHER_CACHE_TTL_S });
+    return out;
+  }
+
   const fetched = await fetchIpfsJson(cid);
-  if (!fetched || typeof fetched.body !== 'string') return null;
+  if (!fetched || typeof fetched.body !== 'string') {
+    // Transient — NOT cached so the next scan retries.
+    return { status: 'fetch-failed' };
+  }
   const blobBytes = new TextEncoder().encode(fetched.body);
-  return ammExtractLauncherPubkey(blobBytes);
+  const pubkey = ammExtractLauncherPubkey(blobBytes);
+  if (pubkey) {
+    await env.REGISTRY_KV.put(
+      _ammLauncherCacheKey(network, assetIdHex),
+      JSON.stringify({ status: 'gated', pubkey_hex: bytesToHex(pubkey) }),
+      { expirationTtl: _AMM_LAUNCHER_CACHE_TTL_S },
+    );
+    return { status: 'gated', pubkey };
+  }
+  await env.REGISTRY_KV.put(
+    _ammLauncherCacheKey(network, assetIdHex),
+    JSON.stringify({ status: 'no-gate' }),
+    { expirationTtl: _AMM_LAUNCHER_CACHE_TTL_S },
+  );
+  return { status: 'no-gate', pubkey: null };
 }
 
 // ============== MINIMUM_LIQUIDITY locked-output verification ==============
@@ -2458,6 +2520,276 @@ function buildProtocolFeeClaimMsg({ poolIdBytes, claimAmount, claimCSecpBytes, c
     _PROTOCOL_FEE_CLAIM_DOMAIN,
     poolIdBytes, amtLE, claimCSecpBytes, claimBlindingBytes,
   ));
+}
+
+// ============== T_SWAP_BATCH decoder + intent_msg + qualifying-set ==============
+//
+// SPEC AMM.md §"Envelope byte layouts" → T_SWAP_BATCH. Wire format:
+//   opcode(1)=0x2F || assetA(32) || assetB(32) || n_intents(1)
+//   || delta_A_net_signed(9) || delta_B_net_signed(9)
+//   || R_net_A(32) || R_net_B(32)
+//   || fee_bps_at_settle_LE(2)
+//   || tip_A_amount_LE(8) || tip_B_amount_LE(8)
+//   || tip_A_C_secp(33) || tip_B_C_secp(33)
+//   || r_tip_A(32) || r_tip_B(32)
+//   || [arbiter block if pool has arbiter_pubkeys pinned]:
+//      expected_height_LE(4) || qualifying_set_hash(32) || arbiter_m(1)
+//      || arbiter_signer_indices(arbiter_m bytes ascending distinct)
+//      || arbiter_sigs(64 * arbiter_m)
+//   || per_intent[n_intents]: direction(1) || trader_pubkey(33)
+//      || C_in_secp(33) || C_in_BJJ(32) || in_xcurve_sigma(169)
+//      || min_out_LE(8) || tip_amount_LE(8) || expiry_height_LE(4) || intent_sig(64)
+//   || per_receipt[n_intents]: C_out_secp(33) || C_out_BJJ(32) || out_xcurve_sigma(169)
+//   || proof_len_LE(2) || proof(proof_len)
+//   || settler_meta_uri_len(1) || settler_meta_uri(0..255 bytes)
+//
+// hasArbiter is supplied by the caller (looked up from pool state). If the
+// caller passes the wrong value the layout is interpreted incorrectly →
+// validation fails — defensive but not soundness-breaking.
+const SWAP_BATCH_N_MIN = 1;     // hard wire-format minimum (indexer rejects N=1 for non-solo pools separately)
+const SWAP_BATCH_N_MAX = 16;
+const _INTENT_DOMAIN_BATCH = new TextEncoder().encode('tacit-amm-intent-v1');
+const _QSET_DOMAIN = new TextEncoder().encode('tacit-amm-qset-v1');
+
+function _signedU64Decode(payload, off) {
+  const sign = payload[off];
+  if (sign !== 0 && sign !== 1) throw new Error(`signed u64: sign byte must be 0 or 1, got ${sign}`);
+  let mag = 0n;
+  for (let i = 0; i < 8; i++) mag |= BigInt(payload[off + 1 + i]) << BigInt(i * 8);
+  return sign === 0 ? mag : -mag;
+}
+
+function decodeTSwapBatchPayload(payload, { hasArbiter = false } = {}) {
+  if (!(payload instanceof Uint8Array)) return null;
+  if (payload.length < 1 || payload[0] !== T_SWAP_BATCH) return null;
+  let off = 1;
+  try {
+    const assetA = payload.slice(off, off + 32); off += 32;
+    const assetB = payload.slice(off, off + 32); off += 32;
+    const nIntents = payload[off++];
+    if (nIntents < SWAP_BATCH_N_MIN || nIntents > SWAP_BATCH_N_MAX) return null;
+    const dA = _signedU64Decode(payload, off); off += 9;
+    const dB = _signedU64Decode(payload, off); off += 9;
+    const rNetA = payload.slice(off, off + 32); off += 32;
+    const rNetB = payload.slice(off, off + 32); off += 32;
+    const dv = new DataView(payload.buffer, payload.byteOffset);
+    const feeBpsAtSettle = dv.getUint16(off, true); off += 2;
+    if (feeBpsAtSettle > AMM_FEE_BPS_MAX) return null;
+    function readU64Le() {
+      const lo = BigInt(dv.getUint32(off, true));
+      const hi = BigInt(dv.getUint32(off + 4, true));
+      off += 8;
+      return (hi << 32n) | lo;
+    }
+    const tipAAmount = readU64Le();
+    const tipBAmount = readU64Le();
+    const tipACSecp = payload.slice(off, off + 33); off += 33;
+    const tipBCSecp = payload.slice(off, off + 33); off += 33;
+    const rTipA = payload.slice(off, off + 32); off += 32;
+    const rTipB = payload.slice(off, off + 32); off += 32;
+
+    let arbiterBlock = null;
+    if (hasArbiter) {
+      const expectedHeight = dv.getUint32(off, true); off += 4;
+      const qualifyingSetHash = payload.slice(off, off + 32); off += 32;
+      const m = payload[off++];
+      if (m < 1 || m > 16) return null;
+      if (off + m + 64 * m > payload.length) return null;
+      const signerIndices = [];
+      for (let i = 0; i < m; i++) {
+        const idx = payload[off++];
+        if (idx > 15) return null;
+        if (i > 0 && idx <= signerIndices[i - 1]) return null;
+        signerIndices.push(idx);
+      }
+      const sigs = payload.slice(off, off + 64 * m); off += 64 * m;
+      arbiterBlock = { expectedHeight, qualifyingSetHash, m, signerIndices, sigs };
+    }
+
+    const intents = [];
+    for (let i = 0; i < nIntents; i++) {
+      const direction = payload[off++];
+      if (direction !== 0 && direction !== 1) return null;
+      const traderPubkey = payload.slice(off, off + 33); off += 33;
+      try { compressedPointFromHex(bytesToHex(traderPubkey)); } catch { return null; }
+      const cInSecp = payload.slice(off, off + 33); off += 33;
+      try { compressedPointFromHex(bytesToHex(cInSecp)); } catch { return null; }
+      const cInBjj = payload.slice(off, off + 32); off += 32;
+      const inXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN_AMM); off += XCURVE_PROOF_LEN_AMM;
+      const minOut = readU64Le();
+      const tipAmount = readU64Le();
+      const expiryHeight = dv.getUint32(off, true); off += 4;
+      const intentSig = payload.slice(off, off + 64); off += 64;
+      intents.push({ direction, traderPubkey, cInSecp, cInBjj, inXcurveSigma, minOut, tipAmount, expiryHeight, intentSig });
+    }
+
+    const receipts = [];
+    for (let i = 0; i < nIntents; i++) {
+      const cOutSecp = payload.slice(off, off + 33); off += 33;
+      try { compressedPointFromHex(bytesToHex(cOutSecp)); } catch { return null; }
+      const cOutBjj = payload.slice(off, off + 32); off += 32;
+      const outXcurveSigma = payload.slice(off, off + XCURVE_PROOF_LEN_AMM); off += XCURVE_PROOF_LEN_AMM;
+      receipts.push({ cOutSecp, cOutBjj, outXcurveSigma });
+    }
+
+    if (off + 2 > payload.length) return null;
+    const proofLen = dv.getUint16(off, true); off += 2;
+    if (off + proofLen > payload.length) return null;
+    const proof = payload.slice(off, off + proofLen);
+    off += proofLen;
+
+    // settler_meta_uri (informational only).
+    if (off + 1 > payload.length) return null;
+    const settlerLen = payload[off++];
+    if (off + settlerLen > payload.length) return null;
+    const settlerMetaUri = settlerLen === 0 ? '' : new TextDecoder('utf-8').decode(payload.slice(off, off + settlerLen));
+    off += settlerLen;
+    if (off !== payload.length) return null;
+
+    return {
+      kind: 'swap_batch', opcode: T_SWAP_BATCH,
+      assetA, assetB, nIntents,
+      deltaANetSigned: dA, deltaBNetSigned: dB,
+      rNetA, rNetB,
+      feeBpsAtSettle,
+      tipAAmount, tipBAmount, tipACSecp, tipBCSecp, rTipA, rTipB,
+      arbiterBlock,
+      intents, receipts,
+      proof,
+      settlerMetaUri,
+    };
+  } catch { return null; }
+}
+
+function ammSwapBatchEnvelopeHash(payload) { return sha256(payload); }
+
+// Reconstruct the trader's canonical intent_msg for sig verification.
+// Per AMM.md §"Intent authentication is out-of-circuit" and the intent_msg
+// layout (12 fields with domain tag "tacit-amm-intent-v1").
+function ammBuildIntentMsg({
+  poolIdBytes, direction, inputUtxos, cInSecp, cInBjj, xcurveSigma,
+  receiveScriptPubKey, minOut, tipAmount, tipAsset, expiryHeight, traderPubkey,
+}) {
+  if (direction !== 0 && direction !== 1) throw new Error('direction must be 0 or 1');
+  if (tipAsset !== direction) throw new Error('tipAsset must equal direction per AMM.md §"Tip mechanics"');
+  if (!Array.isArray(inputUtxos) || inputUtxos.length === 0 || inputUtxos.length > 255) {
+    throw new Error('inputUtxos: 1..255 entries required');
+  }
+  function u64Le(n) {
+    const b = new Uint8Array(8); let x = BigInt(n);
+    for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+    return b;
+  }
+  function u32Le(n) { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, n >>> 0, true); return b; }
+  function u16Le(n) { const b = new Uint8Array(2); new DataView(b.buffer).setUint16(0, n & 0xffff, true); return b; }
+  const parts = [
+    _INTENT_DOMAIN_BATCH,
+    poolIdBytes,
+    new Uint8Array([direction]),
+    new Uint8Array([inputUtxos.length]),
+  ];
+  for (const op of inputUtxos) {
+    parts.push(reverseBytes(hexToBytes(op.txid)));
+    parts.push(u32Le(op.vout));
+  }
+  parts.push(cInSecp, cInBjj, xcurveSigma);
+  parts.push(u16Le(receiveScriptPubKey.length));
+  parts.push(receiveScriptPubKey);
+  parts.push(u64Le(minOut));
+  parts.push(u64Le(tipAmount));
+  parts.push(new Uint8Array([tipAsset]));
+  parts.push(u32Le(expiryHeight));
+  parts.push(traderPubkey);
+  return sha256(concatBytes(...parts));
+}
+
+// Compute qualifying_set_hash per arbiter-pinned-pool spec.
+function ammComputeQualifyingSetHash({ poolIdBytes, height, intentIds }) {
+  if (poolIdBytes.length !== 32) throw new Error('poolId must be 32 bytes');
+  if (intentIds.length > 0xff) throw new Error('intentIds must be 0..255');
+  for (let i = 1; i < intentIds.length; i++) {
+    const a = intentIds[i - 1], b = intentIds[i];
+    let cmp = 0;
+    for (let j = 0; j < 32 && cmp === 0; j++) {
+      if (a[j] < b[j]) cmp = -1;
+      else if (a[j] > b[j]) cmp = 1;
+    }
+    if (cmp >= 0) throw new Error(`intentIds must be ascending and distinct (index ${i})`);
+  }
+  const heightLE = new Uint8Array(4);
+  new DataView(heightLE.buffer).setUint32(0, height >>> 0, true);
+  const parts = [_QSET_DOMAIN, poolIdBytes, heightLE, new Uint8Array([intentIds.length])];
+  for (const id of intentIds) {
+    if (id.length !== 32) throw new Error('intent_id must be 32 bytes');
+    parts.push(id);
+  }
+  return sha256(concatBytes(...parts));
+}
+
+// Verify m-of-n arbiter sig set against pinned pubkey list. Mirrors
+// tests/amm-validator.mjs verifyArbiterSig.
+function ammVerifyArbiterSigs(qualifyingSetHashBytes, signerIndices, sigsConcat, pinnedPubkeyHexes, m) {
+  if (!Array.isArray(pinnedPubkeyHexes) || pinnedPubkeyHexes.length === 0) return false;
+  if (typeof m !== 'number' || m < 1 || m > pinnedPubkeyHexes.length) return false;
+  if (qualifyingSetHashBytes.length !== 32) return false;
+  if (signerIndices.length !== m) return false;
+  if (sigsConcat.length !== 64 * m) return false;
+  for (let i = 0; i < m; i++) {
+    const idx = signerIndices[i];
+    if (typeof idx !== 'number' || idx < 0 || idx >= pinnedPubkeyHexes.length) return false;
+    if (i > 0 && idx <= signerIndices[i - 1]) return false;
+  }
+  for (let i = 0; i < m; i++) {
+    const pkHex = pinnedPubkeyHexes[signerIndices[i]];
+    let pkBytes;
+    try { pkBytes = hexToBytes(pkHex); } catch { return false; }
+    if (pkBytes.length !== 33) return false;
+    const xOnly = pkBytes.subarray(1);
+    const sig = sigsConcat.subarray(64 * i, 64 * (i + 1));
+    if (!verifySchnorr(sig, qualifyingSetHashBytes, xOnly)) return false;
+  }
+  return true;
+}
+
+// Tip-output opening check: pedersenCommit(amount, r) == declared_C.
+function ammVerifyTipOpening(amount, rBytes, cSecpBytes) {
+  const rScalar = bytes32ToBigint(rBytes);
+  if (rScalar >= SECP_N) return false;
+  let cActual;
+  try { cActual = compressedPointFromHex(bytesToHex(cSecpBytes)); }
+  catch { return false; }
+  const cExpected = pedersenCommit(amount, modN(rScalar));
+  return cExpected.equals(cActual);
+}
+
+// Chain-side aggregate Pedersen check (per asset):
+//   Σ_{X→Y inputs} C_in_secp,i − Σ_{Y→X outputs} C_out_secp,i
+//     − tip_X_C_secp − delta_X_signed · H == R_net_X · G
+function ammCheckAggregatePedersen({ env, inputCommitmentsByIntent, assetXIsA, deltaXSigned, tipXCSecpBytes, rNetXBytes }) {
+  let sum = PEDERSEN_ZERO;
+  for (let i = 0; i < env.intents.length; i++) {
+    const it = env.intents[i];
+    const isInputSide  = (assetXIsA && it.direction === 0) || (!assetXIsA && it.direction === 1);
+    const isOutputSide = (assetXIsA && it.direction === 1) || (!assetXIsA && it.direction === 0);
+    if (isInputSide) {
+      for (const cp of inputCommitmentsByIntent[i]) sum = sum.add(cp);
+    } else if (isOutputSide) {
+      sum = sum.add(compressedPointFromHex(bytesToHex(env.receipts[i].cOutSecp)).negate());
+    }
+  }
+  try {
+    sum = sum.add(compressedPointFromHex(bytesToHex(tipXCSecpBytes)).negate());
+  } catch { return false; }
+  if (deltaXSigned !== 0n) {
+    const mag = deltaXSigned < 0n ? -deltaXSigned : deltaXSigned;
+    const dH = PEDERSEN_H.multiply(mag);
+    if (deltaXSigned > 0n) sum = sum.add(dH.negate());
+    else sum = sum.add(dH);
+  }
+  const rNet = bytes32ToBigint(rNetXBytes);
+  const rNetMod = modN(rNet);
+  const rG = rNetMod === 0n ? PEDERSEN_ZERO : PEDERSEN_G.multiply(rNetMod);
+  return sum.equals(rG);
 }
 
 // ============== T_LP_REMOVE structural decoder ==============
@@ -3029,6 +3361,9 @@ async function handleBackfillHolders(env, network, cors, opts = {}) {
     } else if (decoded.opcode === T_CXFER) {
       dec = decodeCXferPayload(decoded.payload);
       voutForOutput = (i) => i;
+    } else if (decoded.opcode === T_CXFER_BPP) {
+      dec = decodeCXferBppPayload(decoded.payload);
+      voutForOutput = (i) => i;
     } else if (decoded.opcode === T_AXFER_VAR) {
       dec = decodeAxferVarPayload(decoded.payload);
       voutForOutput = (i) => i === 0 ? 0 : 2;  // interleaved layout
@@ -3138,7 +3473,7 @@ async function handleAuditTradeVolume(env, network, assetIdHex, opts) {
       let decoded;
       try { decoded = decodeEnvelopeScript(hexToBytes(wHex)); } catch { return { skipped: true }; }
       if (!decoded) return { skipped: true };
-      if (decoded.opcode === T_CXFER) return { cxfer: true };
+      if (decoded.opcode === T_CXFER || decoded.opcode === T_CXFER_BPP) return { cxfer: true };
       if (decoded.opcode !== T_AXFER && decoded.opcode !== T_AXFER_VAR) return { skipped: true };
       const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload : decodeAxferVarPayload;
       const dx = decoder(decoded.payload);
@@ -8267,9 +8602,10 @@ async function handleAssetHint(req, env, network, cors, ctx) {
   // and any block scanned before the cron started running is permanently
   // missed since mainnet has zero backfill window. The xferseen dedupe in
   // bumpTransferCount makes this idempotent against the cron.
-  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR) {
+  if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_CXFER_BPP) {
     const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload
                   : decoded.opcode === T_AXFER_VAR ? decodeAxferVarPayload
+                  : decoded.opcode === T_CXFER_BPP ? decodeCXferBppPayload
                   : decodeCXferPayload;
     const dx = decoder(decoded.payload);
     if (!dx) return jsonResponse({ error: 'invalid transfer payload' }, 400, cors);
@@ -9894,6 +10230,12 @@ async function commitmentForUtxo(env, txidHex, vout, network) {
     if (vout >= cx.outputs.length) throw new Error(`CXFER vout ${vout} out of range`);
     return { commitment: cx.outputs[vout].commitment, asset_id: cx.asset_id };
   }
+  if (decoded.opcode === T_CXFER_BPP) {
+    const cx = decodeCXferBppPayload(decoded.payload);
+    if (!cx) throw new Error('invalid T_CXFER_BPP payload');
+    if (vout >= cx.outputs.length) throw new Error(`T_CXFER_BPP vout ${vout} out of range`);
+    return { commitment: cx.outputs[vout].commitment, asset_id: cx.asset_id };
+  }
   if (decoded.opcode === T_AXFER) {
     const cx = decodeAxferPayload(decoded.payload);
     if (!cx) throw new Error('invalid T_AXFER payload');
@@ -9949,6 +10291,154 @@ async function commitmentForUtxo(env, txidHex, vout, network) {
       commitment: hexToBytes(wd.bond_return_commit),
       asset_id: position.tac_asset_id,
     };
+  }
+  if (decoded.opcode === T_LP_ADD) {
+    // POOL_INIT (variant=1) emits two LP-share UTXOs on lp_asset_id:
+    //   vout[0] = founder share, committed under envelope's share_C_secp
+    //             (founder's chosen blinding via deterministic
+    //             recipient-anchor formula)
+    //   vout[1] = MINIMUM_LIQUIDITY locked share, committed under the
+    //             deterministic C_min_liq from pool_id (NUMS recipient,
+    //             unspendable forever)
+    // Variant=0 (standard LP_ADD) emits only:
+    //   vout[0] = LP-share UTXO for the depositor under envelope's
+    //             share_C_secp.
+    //
+    // Without this branch, T_LP_REMOVE's kernel-sig verification can't
+    // resolve the LP-share inputs (they look like unknown UTXOs to the
+    // asset machinery), and the founder can't withdraw their initial
+    // share. Closes the orphaned MIN_LIQ Pedersen-commit-check gap and
+    // the founder-share-spend gap simultaneously.
+    const lp = decodeTLpAddPayload(decoded.payload);
+    if (!lp) throw new Error('invalid T_LP_ADD payload');
+    let canon;
+    try { canon = ammCanonicalAssetPair(lp.asset_a, lp.asset_b); }
+    catch (e) { throw new Error(`T_LP_ADD canonical pair: ${e.message}`); }
+    const aBytes = canon[0], bBytes = canon[1];
+    // pool_id derivation: variant=1 carries fee_bps + capability_flags in
+    // the envelope; variant=0 doesn't. For variant=0 we mirror scanForEtches'
+    // disambiguation: enumerate candidates via the canonical-pair reverse
+    // index and probe each via the kernel sig (which binds the full pool_id
+    // including fee_bps + capability_flags). Without the kernel-sig probe
+    // we'd pick the first-registered candidate regardless of fee tier — fine
+    // when only one pool exists per pair, wrong as soon as two do.
+    let poolIdBytes;
+    let lpAssetIdBytes;
+    if (lp.variant === 1) {
+      try { poolIdBytes = ammDerivePoolId(aBytes, bBytes, lp.fee_bps, lp.pool_capability_flags ?? 0); }
+      catch (e) { throw new Error(`T_LP_ADD pool_id derive: ${e.message}`); }
+      lpAssetIdBytes = ammDeriveLpAssetId(poolIdBytes);
+    } else {
+      const swapped = bytesToHex(aBytes) !== lp.asset_a;
+      const dA0 = swapped ? BigInt(lp.delta_b) : BigInt(lp.delta_a);
+      const candidates = await ammPairGet(env, network, bytesToHex(aBytes), bytesToHex(bBytes));
+      if (candidates.length === 0) throw new Error('T_LP_ADD variant=0: no pool registered for asset pair');
+      const inputsByAsset = await ammCollectAssetInputs(env, tx, network, 1);
+      const aSide = inputsByAsset.get(bytesToHex(aBytes));
+      if (!aSide || aSide.inputs.length === 0) {
+        throw new Error('T_LP_ADD variant=0: no asset-A inputs found');
+      }
+      const shareAmt = BigInt(lp.share_amount);
+      const shareCSecpBytes = hexToBytes(lp.share_c_secp);
+      const kernelSigA = hexToBytes(lp.kernel_sig_a);
+      let found = null;
+      for (const candidate of candidates) {
+        let candidateIdBytes;
+        try { candidateIdBytes = hexToBytes(candidate); } catch { continue; }
+        if (candidateIdBytes.length !== 32) continue;
+        const trialOk = ammLpAddKernelVerify({
+          variant: 0, poolId: candidateIdBytes,
+          assetX: aBytes, deltaX: dA0, shareAmount: shareAmt,
+          shareCSecpBytes, inputsX: aSide.inputs,
+          inputCommitments: aSide.commitments,
+          sig64: kernelSigA,
+        });
+        if (trialOk) { found = candidateIdBytes; break; }
+      }
+      if (!found) throw new Error('T_LP_ADD variant=0: no candidate pool matched kernel sig');
+      poolIdBytes = found;
+      lpAssetIdBytes = ammDeriveLpAssetId(poolIdBytes);
+    }
+    if (vout === 0) {
+      // Founder / depositor share: commit = envelope's share_C_secp.
+      return {
+        commitment: lp.share_c_secp,
+        asset_id: bytesToHex(lpAssetIdBytes),
+      };
+    }
+    if (vout === 1 && lp.variant === 1) {
+      // POOL_INIT MIN_LIQ locked share: deterministic C_min_liq from pool_id.
+      // Computed cryptographically — the asset machinery now binds vout[1]
+      // to the value MINIMUM_LIQUIDITY under r_burn, closing the spec's
+      // "anyone can verify the lock by recomputing r_burn and C_min_liq"
+      // promise (AMM.md §"MINIMUM_LIQUIDITY burn-output construction").
+      const c = ammDeriveMinLiqCommitment(poolIdBytes);
+      return {
+        commitment: bytesToHex(c.toRawBytes(true)),
+        asset_id: bytesToHex(lpAssetIdBytes),
+      };
+    }
+    throw new Error(`T_LP_ADD vout ${vout} out of range`);
+  }
+  if (decoded.opcode === T_LP_REMOVE) {
+    // T_LP_REMOVE emits two asset receipts paired with the envelope's STATED
+    // asset_a / asset_b (in that on-wire order, not canonical):
+    //   vout[0] = recv_a_c_secp, on rm.asset_a
+    //   vout[1] = recv_b_c_secp, on rm.asset_b
+    // scanForEtches normalizes via swap when applying pool-state updates,
+    // but the per-receipt mapping itself follows the envelope as written.
+    // ammCanonicalAssetPair stays as the well-formedness check (rejects
+    // A == B and validates each is 32 bytes).
+    const rm = decodeTLpRemovePayload(decoded.payload);
+    if (!rm) throw new Error('invalid T_LP_REMOVE payload');
+    try { ammCanonicalAssetPair(rm.asset_a, rm.asset_b); }
+    catch (e) { throw new Error(`T_LP_REMOVE canonical pair: ${e.message}`); }
+    if (vout === 0) {
+      return { commitment: rm.recv_a_c_secp, asset_id: rm.asset_a };
+    }
+    if (vout === 1) {
+      return { commitment: rm.recv_b_c_secp, asset_id: rm.asset_b };
+    }
+    throw new Error(`T_LP_REMOVE vout ${vout} out of range`);
+  }
+  if (decoded.opcode === T_PROTOCOL_FEE_CLAIM) {
+    // T_PROTOCOL_FEE_CLAIM emits one lp_asset_id UTXO at vout[0] with
+    // commitment = claim_C_secp (opened publicly to (claim_amount, blinding)
+    // in the envelope itself). Without this branch, the claimed UTXO can't
+    // be spent forward — ancestry resolution would throw "unsupported
+    // envelope opcode" and any downstream T_AXFER / T_CXFER / T_LP_ADD
+    // would fail.
+    if (vout !== 0) throw new Error('T_PROTOCOL_FEE_CLAIM vout 0 only');
+    const cl = decodeTProtocolFeeClaimPayload(decoded.payload);
+    if (!cl) throw new Error('invalid T_PROTOCOL_FEE_CLAIM payload');
+    const lpAssetIdBytes = ammDeriveLpAssetId(cl.pool_id_bytes);
+    return { commitment: cl.claim_c_secp, asset_id: bytesToHex(lpAssetIdBytes) };
+  }
+  if (decoded.opcode === T_SWAP_VAR) {
+    // T_SWAP_VAR emits:
+    //   vout[0] = OP_RETURN(envelope_hash), not a tacit UTXO
+    //   vout[1] = trader's swap receipt (c_receipt_secp) on the
+    //             opposite asset of the trader's input
+    //   vout[2] = optional change UTXO (on input asset) when non-sentinel
+    //   vout[3+] = optional settler outputs
+    // Look up the pool to know which asset is which.
+    const sv = decodeTSwapVarPayload(decoded.payload);
+    if (!sv) throw new Error('invalid T_SWAP_VAR payload');
+    const pool = await ammPoolGet(env, network, sv.pool_id);
+    if (!pool) throw new Error(`T_SWAP_VAR pool not registered: ${sv.pool_id}`);
+    if (vout === 1) {
+      // Receipt is on opposite asset of input.
+      const receiptAssetId = sv.direction === 0 ? pool.asset_b : pool.asset_a;
+      return { commitment: sv.c_receipt_secp, asset_id: receiptAssetId };
+    }
+    if (vout === 2) {
+      // Change (if non-sentinel); on input-side asset.
+      const sentinel = sv.c_change_or_sentinel === '00'.repeat(33);
+      if (sentinel) throw new Error('T_SWAP_VAR vout 2 absent (no-change sentinel)');
+      const changeAssetId = sv.direction === 0 ? pool.asset_a : pool.asset_b;
+      return { commitment: sv.c_change_or_sentinel, asset_id: changeAssetId };
+    }
+    throw new Error(`T_SWAP_VAR vout ${vout} out of range for asset UTXO resolution`);
   }
   throw new Error('unsupported envelope opcode');
 }
@@ -13714,16 +14204,17 @@ async function scanForEtches(env, network) {
         };
         await env.REGISTRY_KV.put(burnKeyFor(network, cb.asset_id, tx.txid), JSON.stringify(burnMeta));
         found++;
-      } else if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR) {
-        // Confidential transfer (T_CXFER) or atomic settlement reveal
-        // (T_AXFER / T_AXFER_VAR). All three move asset value between
-        // holders; bump a single per-asset counter so /assets can surface
-        // a "movement" stat without paying the cost of a full per-tx
-        // index. The xferseen dedupe key makes hint+cron idempotent:
-        // whichever path sees the tx first wins, the other no-ops.
-        // Mid-block-crash re-scans no longer double-count.
+      } else if (decoded.opcode === T_CXFER || decoded.opcode === T_AXFER || decoded.opcode === T_AXFER_VAR || decoded.opcode === T_CXFER_BPP) {
+        // Confidential transfer (T_CXFER / T_CXFER_BPP) or atomic
+        // settlement reveal (T_AXFER / T_AXFER_VAR). All move asset value
+        // between holders; bump a single per-asset counter so /assets can
+        // surface a "movement" stat without paying the cost of a full
+        // per-tx index. The xferseen dedupe key makes hint+cron
+        // idempotent: whichever path sees the tx first wins, the other
+        // no-ops. Mid-block-crash re-scans no longer double-count.
         const decoder = decoded.opcode === T_AXFER ? decodeAxferPayload
                       : decoded.opcode === T_AXFER_VAR ? decodeAxferVarPayload
+                      : decoded.opcode === T_CXFER_BPP ? decodeCXferBppPayload
                       : decodeCXferPayload;
         const dx = decoder(decoded.payload);
         if (!dx) continue;
@@ -14918,13 +15409,22 @@ async function scanForEtches(env, network) {
           // asset declares one, the launcher MUST co-sign POOL_INIT under
           // BIP-340 over SHA256("tacit-amm-launcher-gate-v1" || pool_id ||
           // vk_cid || fee_bps_LE). If both assets declare one, both must
-          // co-sign. Missing/malformed metadata defaults to "no gate"
-          // (first-mover wins) per AMM.md conservative-default rule.
+          // co-sign. Missing/malformed metadata → no gate (conservative
+          // first-mover default).
+          //
+          // Determinism: if IPFS gateways are unreachable for either asset,
+          // DEFER this POOL_INIT rather than treat as no-gate. Two indexers
+          // mid-outage would otherwise see different gate sets and fork on
+          // signature-count checks. /rescan picks it up on next pass.
           const gateA = await ammFetchLauncherPubkeyForAsset(env, network, bytesToHex(aBytes));
           const gateB = await ammFetchLauncherPubkeyForAsset(env, network, bytesToHex(bBytes));
+          if (gateA.status === 'fetch-failed' || gateB.status === 'fetch-failed') {
+            // Defer: do not register this pool. /rescan retries.
+            continue;
+          }
           const gates = [];
-          if (gateA) gates.push({ pubkey: gateA, side: 'A' });
-          if (gateB) gates.push({ pubkey: gateB, side: 'B' });
+          if (gateA.status === 'gated') gates.push({ pubkey: gateA.pubkey, side: 'A' });
+          if (gateB.status === 'gated') gates.push({ pubkey: gateB.pubkey, side: 'B' });
           const lsigs = lp.launcher_sigs || [];
           if (gates.length !== lsigs.length) continue;  // count mismatch
           if (gates.length > 0) {
@@ -15256,6 +15756,315 @@ async function scanForEtches(env, network) {
           last_lp_remove_txid: tx.txid,
           last_lp_remove_height: h,
         });
+        found++;
+      } else if (decoded.opcode === T_SWAP_BATCH) {
+        // SPEC AMM.md §"Uniform clearing" + §"Envelope byte layouts".
+        // Worker validates all non-Groth16 gates here. The Groth16 batch
+        // proof itself is verified browser-side via snarkjs (mirrors the
+        // mixer pattern — worker is /pin-mixer-vk + indexer, not prover).
+        //
+        // Pre-ceremony reality: no real T_SWAP_BATCH txs exist yet because
+        // POOL_INIT references a vk_cid produced by the Phase 2 ceremony.
+        // This branch is the foundation that activates as soon as the
+        // ceremony lands; until then it sees no envelopes and stays inert.
+        //
+        // What this branch verifies (matches tests/amm-validator.mjs
+        // validateSwapBatch byte-for-byte except for the Groth16 step):
+        //   1. Tx layout: vout[0] OP_RETURN(envelope_hash), vin[1..N] +
+        //      vout[1..N] in intent_id ascending order.
+        //   2. Pool registered + tradable validation tag.
+        //   3. canonical asset pair + pool_id consistency + fee_bps_at_settle.
+        //   4. MIN_BATCH_SIZE confidentiality default (N≥2 unless
+        //      POOL_CAP_SOLO_INTENT_ALLOWED).
+        //   5. Arbiter block enforcement (m-of-n sigs + canonical
+        //      qualifying-set hash + mandatory inclusion of every qualifying
+        //      intent_id).
+        //   6. intent_id strictly ascending order, per-intent intent_sig
+        //      verify, per-intent xcurve sigma binding, per-intent input
+        //      commitment matches on-chain UTXOs at vin[1+i], expiry check.
+        //   7. Per-receipt xcurve sigma binding.
+        //   8. Per-asset tip-output opening check.
+        //   9. Aggregate Pedersen identity (per asset A and B).
+        //  10. Direction consistency on net deltas.
+        //  11. Constant-product invariant (post ≥ pre).
+        //  12. With-fee CFMM curve floor identity (A-dom or B-dom).
+        //  13. State transition: reserve_A += dA, reserve_B += dB.
+
+        // We don't know if pool has arbiter yet, so we first parse without
+        // arbiter assumption and infer from pool state. Approach: pool
+        // lookup happens via canonical-pair + fee_bps match from envelope.
+        // Decode requires hasArbiter hint; we look up pool first via a
+        // probe-decode then re-decode with the right hint.
+        //
+        // Probe-decode without arbiter to extract assetA/assetB/feeBpsAtSettle.
+        const probe = decodeTSwapBatchPayload(decoded.payload, { hasArbiter: false });
+        // probe may parse if the pool has no arbiter; if pool DOES have an
+        // arbiter, probe will either fail or mis-parse the per-intent block.
+        // Both are recoverable below.
+        let probeFeeBps = null;
+        let canonAB = null;
+        if (probe) {
+          probeFeeBps = probe.feeBpsAtSettle;
+          try { canonAB = ammCanonicalAssetPair(probe.assetA, probe.assetB); } catch { canonAB = null; }
+        } else {
+          // Fall back: parse assets + fee_bps_at_settle manually from fixed-offset prefix.
+          const pl = decoded.payload;
+          if (pl.length < 1 + 32 + 32 + 1 + 9 + 9 + 32 + 32 + 2) continue;
+          const aBytesProbe = pl.slice(1, 33);
+          const bBytesProbe = pl.slice(33, 65);
+          const feeBpsOffset = 1 + 32 + 32 + 1 + 9 + 9 + 32 + 32;
+          const dv = new DataView(pl.buffer, pl.byteOffset);
+          probeFeeBps = dv.getUint16(feeBpsOffset, true);
+          try { canonAB = ammCanonicalAssetPair(aBytesProbe, bBytesProbe); } catch { canonAB = null; }
+        }
+        if (!canonAB || typeof probeFeeBps !== 'number') continue;
+
+        // Find the matching pool: enumerate pair-index entries; for each,
+        // recompute pool_id and match feeBpsAtSettle.
+        const sbCandidates = await ammPairGet(env, network, bytesToHex(canonAB[0]), bytesToHex(canonAB[1]));
+        let sbPool = null;
+        let sbPoolIdBytes = null;
+        for (const cand of sbCandidates) {
+          const cPool = await ammPoolGet(env, network, cand);
+          if (!cPool) continue;
+          if (cPool.fee_bps !== probeFeeBps) continue;
+          let cPoolIdBytes;
+          try { cPoolIdBytes = ammDerivePoolId(canonAB[0], canonAB[1], cPool.fee_bps, cPool.capability_flags ?? 0); }
+          catch { continue; }
+          if (bytesToHex(cPoolIdBytes) !== cand) continue;
+          sbPool = cPool;
+          sbPoolIdBytes = cPoolIdBytes;
+          break;
+        }
+        if (!sbPool) continue;
+        if (sbPool.validation !== 'xcurve-verified' && sbPool.validation !== 'verified') continue;
+
+        // Now re-decode with the correct hasArbiter hint.
+        const hasArbiter = Array.isArray(sbPool.arbiter_pubkeys) && sbPool.arbiter_pubkeys.length > 0;
+        const env_ = decodeTSwapBatchPayload(decoded.payload, { hasArbiter });
+        if (!env_) continue;
+
+        // OP_RETURN envelope_hash binding.
+        const vout0sb = tx.vout?.[0];
+        if (!vout0sb || typeof vout0sb.scriptpubkey !== 'string') continue;
+        const opReturnSpkSb = vout0sb.scriptpubkey.toLowerCase();
+        if (opReturnSpkSb.length !== 68 || !opReturnSpkSb.startsWith('6a20')) continue;
+        const opReturnHashSb = hexToBytes(opReturnSpkSb.slice(4));
+        const expectedHashSb = ammSwapBatchEnvelopeHash(decoded.payload);
+        let opReturnOkSb = true;
+        for (let i = 0; i < 32; i++) if (opReturnHashSb[i] !== expectedHashSb[i]) { opReturnOkSb = false; break; }
+        if (!opReturnOkSb) continue;
+
+        // fee_bps_at_settle must equal pool.fee_bps.
+        if (env_.feeBpsAtSettle !== sbPool.fee_bps) continue;
+
+        // MIN_BATCH_SIZE: N=1 rejected unless POOL_CAP_SOLO_INTENT_ALLOWED.
+        const sbFlags = sbPool.capability_flags ?? 0;
+        const soloAllowed = (sbFlags & POOL_CAP_SOLO_INTENT_ALLOWED) !== 0;
+        if (!soloAllowed && env_.nIntents < AMM_MIN_BATCH_SIZE) continue;
+
+        // Arbiter block enforcement.
+        if (hasArbiter) {
+          if (!env_.arbiterBlock) continue;
+          if (env_.arbiterBlock.expectedHeight !== h) continue;
+          if (env_.arbiterBlock.m !== sbPool.arbiter_threshold_m) continue;
+          if (!ammVerifyArbiterSigs(
+            env_.arbiterBlock.qualifyingSetHash,
+            env_.arbiterBlock.signerIndices,
+            env_.arbiterBlock.sigs,
+            sbPool.arbiter_pubkeys,
+            sbPool.arbiter_threshold_m,
+          )) continue;
+          // Mandatory-inclusion check happens AFTER the intent loop, once
+          // we've recomputed each on-chain intent_id. The check recomputes
+          // ammComputeQualifyingSetHash from those intent_ids and compares
+          // to the arbiter-signed hash — pure on-chain derivation, no
+          // off-chain list fetch needed.
+        } else {
+          if (env_.arbiterBlock) continue;
+        }
+
+        // Walk the trader inputs. tx.vin[0] = settler envelope-bearing input;
+        // tx.vin[1..N] = trader inputs in intent_id ascending order.
+        // Strict equality on count: an extra vin beyond 1+N would be a
+        // tacit asset UTXO consumed by the tx but not authorized by any
+        // intent sig — silent value loss into the void from the LP/trader
+        // perspective. Reject so settlers can't drain unauthorized inputs.
+        if (!Array.isArray(tx.vin) || tx.vin.length !== 1 + env_.nIntents) continue;
+        // Build per-intent inputCommitments by walking vin[1..1+nIntents].
+        const inputCommitmentsByIntent = new Array(env_.nIntents);
+        let inputsResolved = true;
+        for (let i = 0; i < env_.nIntents; i++) {
+          const inp = tx.vin[1 + i];
+          if (!inp || typeof inp.txid !== 'string' || typeof inp.vout !== 'number') { inputsResolved = false; break; }
+          try {
+            const parent = await commitmentForUtxo(env, inp.txid, inp.vout, network);
+            const cp = compressedPointFromHex(parent.commitment);
+            inputCommitmentsByIntent[i] = [cp];
+          } catch { inputsResolved = false; break; }
+        }
+        if (!inputsResolved) continue;
+
+        // Verify intent_id strict ascending order + intent_sig + xcurve sigma
+        // per intent + expiry. Reconstruct intent_msg using each trader's
+        // outpoint at vin[1+i] and the receipt scriptPubKey at vout[1+i].
+        let prevIid = null;
+        let intentsOk = true;
+        const intentIds = [];
+        for (let i = 0; i < env_.nIntents; i++) {
+          const it = env_.intents[i];
+          const inp = tx.vin[1 + i];
+          const receiptVout = tx.vout?.[1 + i];
+          if (!receiptVout || typeof receiptVout.scriptpubkey !== 'string') { intentsOk = false; break; }
+          const receiveScriptPubKey = hexToBytes(receiptVout.scriptpubkey);
+          let intentMsgHash;
+          try {
+            intentMsgHash = ammBuildIntentMsg({
+              poolIdBytes: sbPoolIdBytes,
+              direction: it.direction,
+              inputUtxos: [{ txid: inp.txid, vout: inp.vout }],
+              cInSecp: it.cInSecp,
+              cInBjj: it.cInBjj,
+              xcurveSigma: it.inXcurveSigma,
+              receiveScriptPubKey,
+              minOut: it.minOut,
+              tipAmount: it.tipAmount,
+              tipAsset: it.direction,  // tip on input side per spec
+              expiryHeight: it.expiryHeight,
+              traderPubkey: it.traderPubkey,
+            });
+          } catch { intentsOk = false; break; }
+          const iid = intentMsgHash;  // intent_id = SHA256(intent_msg)
+          if (prevIid) {
+            let cmp = 0;
+            for (let j = 0; j < 32; j++) {
+              if (iid[j] < prevIid[j]) { cmp = -1; break; }
+              if (iid[j] > prevIid[j]) { cmp = 1; break; }
+            }
+            if (cmp <= 0) { intentsOk = false; break; }
+          }
+          prevIid = iid;
+          intentIds.push(iid);
+          // BIP-340 intent_sig verify.
+          const traderXOnly = it.traderPubkey.subarray(1);
+          if (!verifySchnorr(it.intentSig, intentMsgHash, traderXOnly)) { intentsOk = false; break; }
+          // Per-intent xcurve sigma binding.
+          if (!verifyXCurve(it.inXcurveSigma, it.cInSecp, it.cInBjj)) { intentsOk = false; break; }
+          // Per-intent input commitment matches on-chain.
+          let claimedC;
+          try { claimedC = compressedPointFromHex(bytesToHex(it.cInSecp)); }
+          catch { intentsOk = false; break; }
+          let inputSum = PEDERSEN_ZERO;
+          for (const cp of inputCommitmentsByIntent[i]) inputSum = inputSum.add(cp);
+          if (!inputSum.equals(claimedC)) { intentsOk = false; break; }
+          // Expiry: at currentHeight == expiry_height intent is STILL valid
+          // (strict less-than per AMM.md §"Expiry semantics" for batches).
+          if (it.expiryHeight < h) { intentsOk = false; break; }
+        }
+        if (!intentsOk) continue;
+
+        // Mandatory inclusion for arbiter-pinned pools: the on-chain batch
+        // MUST reproduce the arbiter-signed qualifying_set_hash byte-for-
+        // byte. ammComputeQualifyingSetHash is a pure function of
+        // (pool_id, height, intent_ids), and the per-intent loop above has
+        // already enforced ascending+distinct order, so equal intent-id
+        // multisets imply equal hashes. Settlers can't cherry-pick a
+        // subset, append non-qualifying intents, or reorder.
+        if (hasArbiter) {
+          let computedQSetHash;
+          try {
+            computedQSetHash = ammComputeQualifyingSetHash({
+              poolIdBytes: sbPoolIdBytes,
+              height: env_.arbiterBlock.expectedHeight,
+              intentIds,
+            });
+          } catch { continue; }
+          let qSetMatch = true;
+          for (let i = 0; i < 32; i++) {
+            if (computedQSetHash[i] !== env_.arbiterBlock.qualifyingSetHash[i]) {
+              qSetMatch = false;
+              break;
+            }
+          }
+          if (!qSetMatch) continue;
+        }
+
+        // Per-receipt xcurve sigma bindings.
+        let receiptsOk = true;
+        for (let i = 0; i < env_.receipts.length; i++) {
+          const r = env_.receipts[i];
+          if (!verifyXCurve(r.outXcurveSigma, r.cOutSecp, r.cOutBjj)) { receiptsOk = false; break; }
+        }
+        if (!receiptsOk) continue;
+
+        // Tip-output opening checks (per asset).
+        if (!ammVerifyTipOpening(env_.tipAAmount, env_.rTipA, env_.tipACSecp)) continue;
+        if (!ammVerifyTipOpening(env_.tipBAmount, env_.rTipB, env_.tipBCSecp)) continue;
+
+        // Chain-side aggregate Pedersen identity (per asset).
+        if (!ammCheckAggregatePedersen({
+          env: env_, inputCommitmentsByIntent,
+          assetXIsA: true, deltaXSigned: env_.deltaANetSigned,
+          tipXCSecpBytes: env_.tipACSecp, rNetXBytes: env_.rNetA,
+        })) continue;
+        if (!ammCheckAggregatePedersen({
+          env: env_, inputCommitmentsByIntent,
+          assetXIsA: false, deltaXSigned: env_.deltaBNetSigned,
+          tipXCSecpBytes: env_.tipBCSecp, rNetXBytes: env_.rNetB,
+        })) continue;
+
+        // Direction inference: A-dom (dA > 0, dB < 0), B-dom (dA < 0, dB > 0), spot (both 0).
+        const dA = env_.deltaANetSigned, dB = env_.deltaBNetSigned;
+        if (!(dA === 0n && dB === 0n) && !(dA > 0n && dB < 0n) && !(dA < 0n && dB > 0n)) continue;
+
+        // Apply state transition + verify reserves non-negative + curve checks.
+        let newReserveA = BigInt(sbPool.reserve_a);
+        let newReserveB = BigInt(sbPool.reserve_b);
+        if (dA > 0n) {
+          newReserveA += dA;
+          newReserveB += dB;  // dB is negative
+          if (newReserveB <= 0n) continue;
+        } else if (dA < 0n) {
+          newReserveA += dA;
+          newReserveB += dB;
+          if (newReserveA <= 0n) continue;
+        }
+        if (newReserveA >= 1n << 64n || newReserveB >= 1n << 64n) continue;
+        if (newReserveA * newReserveB < BigInt(sbPool.reserve_a) * BigInt(sbPool.reserve_b)) continue;
+
+        // With-fee CFMM curve floor identity.
+        if (dA !== 0n || dB !== 0n) {
+          const gNum = 10000n - BigInt(sbPool.fee_bps);
+          const gDen = 10000n;
+          if (dA > 0n) {
+            const absA = dA, absB = -dB;
+            const lhs = absB * (BigInt(sbPool.reserve_a) * gDen + gNum * absA);
+            const rhs = BigInt(sbPool.reserve_b) * gNum * absA;
+            if (lhs > rhs) continue;
+          } else {
+            const absA = -dA, absB = dB;
+            const lhs = absA * (BigInt(sbPool.reserve_b) * gDen + gNum * absB);
+            const rhs = BigInt(sbPool.reserve_a) * gNum * absB;
+            if (lhs > rhs) continue;
+          }
+        }
+
+        // Groth16 batch proof verify is browser-side (worker has no snarkjs).
+        // Worker enforces every non-Groth16 constraint above; downstream
+        // browser/dapp re-verifies the proof using the pool's pinned vk_cid.
+
+        const sbNewPool = {
+          ...sbPool,
+          reserve_a: newReserveA.toString(),
+          reserve_b: newReserveB.toString(),
+          k_last: (newReserveA * newReserveB).toString(),
+          last_swap_batch_txid: tx.txid,
+          last_swap_batch_height: h,
+          last_swap_batch_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          // Don't upgrade validation tag — Groth16 verify is deferred to
+          // the browser-side consumer.
+        };
+        await ammPoolPut(env, network, bytesToHex(sbPoolIdBytes), sbNewPool);
         found++;
       } else if (decoded.opcode === T_PROTOCOL_FEE_CLAIM) {
         // SPEC AMM.md §"Claiming: T_PROTOCOL_FEE_CLAIM". The founder-pinned
@@ -15848,7 +16657,7 @@ export {
   decodeTCbtcTacForceClosePayload, decodeTShareSlashClaimPayload,
   T_SLOT_SPLIT, T_SLOT_MERGE,
   T_CBTC_TAC_DEPOSIT, T_CBTC_TAC_WITHDRAW, T_CBTC_TAC_FORCE_CLOSE, T_SHARE_SLASH_CLAIM,
-  T_LP_ADD, T_LP_REMOVE, T_SWAP_VAR, T_PROTOCOL_FEE_CLAIM,
+  T_LP_ADD, T_LP_REMOVE, T_SWAP_BATCH, T_SWAP_VAR, T_PROTOCOL_FEE_CLAIM,
   ammPoolIdFromAssets, ammPoolKey, ammPoolGet, ammPoolPut,
   ammPairKey, ammPairGet, ammPairAppend,
   ammCanonicalAssetPair, ammDerivePoolId, ammDeriveLpAssetId,
@@ -15909,7 +16718,7 @@ export {
   encodeCDropPayload, encodeCDropReclaimPayload, decodeCDropPayload,
   encodeCDClaimPayload, encodeCDClaimWitness, decodeCDClaimPayload,
   dropIdFromRevealTxid,
-  T_CETCH, T_CXFER, T_MINT, T_BURN, T_AXFER, T_AXFER_VAR, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
+  T_CETCH, T_CXFER, T_CXFER_BPP, T_MINT, T_BURN, T_AXFER, T_AXFER_VAR, T_PETCH, T_PMINT, T_DEPOSIT, T_WITHDRAW, T_DROP, T_DCLAIM,
   T_SLOT_MINT, T_SLOT_BURN, T_SLOT_ROTATE,
   // Mixer kernel-sig verifier — exported so tests/mixer-conservation can
   // drive it directly against a stubbed apiJson/fetch and confirm the
@@ -16123,7 +16932,20 @@ export default {
         const pools = [];
         for (const k of list.keys) {
           const v = await env.REGISTRY_KV.get(k.name, 'json');
-          if (v) pools.push(v);
+          if (!v) continue;
+          // Mirror the single-pool endpoint: include post-crystallization
+          // state so LPs computing their envelope against this listing hit
+          // the same S the validator will reach. No-op for pools without
+          // protocol fees (xPool === v).
+          const xPool = ammCrystallizeProtocolFee(v);
+          pools.push({
+            ...v,
+            crystallized: {
+              lp_total_shares: xPool.lp_total_shares,
+              protocol_fee_accrued: xPool.protocol_fee_accrued || '0',
+              k_last: xPool.k_last,
+            },
+          });
         }
         return jsonResponse({
           pools, cursor: list.list_complete ? null : (list.cursor || null),

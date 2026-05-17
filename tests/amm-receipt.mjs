@@ -57,9 +57,22 @@ export function canonicalOutpoint(txidHex, vout) {
   return concatBytes(txid_BE, vout_LE);
 }
 
+// Counter-extended HMAC for rejection sampling. counter byte is appended
+// to the base message; counter=0 is the unsuffixed base call (handled at
+// the call site by trying base first without suffix).
+function _hmacWithCounter(sk, baseMsg, counter) {
+  const counterByte = new Uint8Array([counter & 0xff]);
+  return hmac(sha256, sk, concatBytes(baseMsg, counterByte));
+}
+
 // Derive (r_out_secp, r_out_BJJ) for a single receipt.
 //
 // Returns { r_secp: bigint (mod n_secp), r_BJJ: bigint (mod n_BJJ) }.
+//
+// Rejection-samples r=0: probability is ~2⁻²⁵⁶ per side, but r=0 collapses
+// the Pedersen commitment to amount·H and breaks the hiding property the
+// spec requires. The counter-extended fallback preserves the unsuffixed
+// base call as the canonical path so existing test vectors stay valid.
 export function deriveReceiptBlinding({
   recipientPrivkey,    // 32-byte Uint8Array or hex
   poolId,              // 32-byte Uint8Array or hex
@@ -74,11 +87,22 @@ export function deriveReceiptBlinding({
     throw new Error('anchorOutpoint must be 36 bytes (use canonicalOutpoint())');
   }
 
-  const seedSecp = hmac(sha256, sk, concatBytes(DOMAIN_SECP, pid, anchorOutpoint, aid));
-  const seedBJJ  = hmac(sha256, sk, concatBytes(DOMAIN_BJJ,  pid, anchorOutpoint, aid));
-
-  const r_secp = modSecp(bytesToBigintBE(seedSecp));
-  const r_BJJ  = bytesToBigintBE(seedBJJ) % N_BJJ;
+  const baseSecp = concatBytes(DOMAIN_SECP, pid, anchorOutpoint, aid);
+  const baseBJJ  = concatBytes(DOMAIN_BJJ,  pid, anchorOutpoint, aid);
+  let seedSecp = hmac(sha256, sk, baseSecp);
+  let r_secp = modSecp(bytesToBigintBE(seedSecp));
+  for (let counter = 1; r_secp === 0n && counter < 256; counter++) {
+    seedSecp = _hmacWithCounter(sk, baseSecp, counter);
+    r_secp = modSecp(bytesToBigintBE(seedSecp));
+  }
+  if (r_secp === 0n) throw new Error('receipt secp blinding: rejection sampling exhausted (statistically impossible)');
+  let seedBJJ = hmac(sha256, sk, baseBJJ);
+  let r_BJJ  = bytesToBigintBE(seedBJJ) % N_BJJ;
+  for (let counter = 1; r_BJJ === 0n && counter < 256; counter++) {
+    seedBJJ = _hmacWithCounter(sk, baseBJJ, counter);
+    r_BJJ  = bytesToBigintBE(seedBJJ) % N_BJJ;
+  }
+  if (r_BJJ === 0n) throw new Error('receipt BJJ blinding: rejection sampling exhausted (statistically impossible)');
   return { r_secp, r_BJJ };
 }
 

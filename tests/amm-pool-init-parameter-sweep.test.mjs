@@ -202,22 +202,39 @@ ok('all fee tiers produce distinct pool_ids', new Set(allPoolIds).size === FEE_T
 ok('all fee tiers produce distinct lp_asset_ids', new Set(allLpIds).size === FEE_TIERS.length);
 
 // ============== Sweep: capability flags ==============
-group('capability flags sweep — flags=0x01 RANGE_ATTEST-gated coexists with default');
-const CAP_VARIANTS = [0x00, 0x01];
-const poolIdsByFlag = new Map();
-for (const flags of CAP_VARIANTS) {
-  const r = simulatePoolInit({
+// Pre-launch: only 0x00 is encoder-permitted. The dapp encoder rejects
+// non-zero capability_flags until the worker's gate (RANGE_ATTEST 0x01,
+// SOLO_INTENT 0x02) ships. This sweep verifies the guard + that the
+// pool_id derivation correctly distinguishes flag values when the gate
+// eventually activates (pure math; no envelope encode).
+group('capability flags sweep — encoder guard + pool_id distinction');
+{
+  // 0x00 must encode + validate cleanly today
+  const r0 = simulatePoolInit({
     assetA: mkAssetId(7), assetB: mkAssetId(8),
     deltaA: 500_000n, deltaB: 500_000n,
-    feeBps: 30, capabilityFlags: flags,
-    expectAccept: true,
+    feeBps: 30, capabilityFlags: 0x00, expectAccept: true,
   });
-  ok(`flags=0x${flags.toString(16).padStart(2,'0')}: validates`,
-    !!r.decoded && r.xcurveOk && r.kernelOkA && r.kernelOkB);
-  poolIdsByFlag.set(flags, r.poolIdHex);
+  ok('flags=0x00: encoder accepts + validator validates',
+    !!r0.decoded && r0.xcurveOk && r0.kernelOkA && r0.kernelOkB);
+
+  // 0x01 + 0x02 must be REJECTED by encoder pre-launch
+  for (const flags of [0x01, 0x02]) {
+    const r = simulatePoolInit({
+      assetA: mkAssetId(7), assetB: mkAssetId(8),
+      deltaA: 500_000n, deltaB: 500_000n,
+      feeBps: 30, capabilityFlags: flags, expectAccept: false,
+    });
+    ok(`flags=0x${flags.toString(16).padStart(2,'0')}: encoder rejects (not yet enforced)`,
+      r.encoderRejected && r.encoderRejected.includes('not enforced'));
+  }
+
+  // Pure math: derivePoolId STILL produces distinct ids for different flag
+  // values, so when the gate activates, no rewiring is needed.
+  const pidA = bytesToHex(dappAsset.derivePoolId(mkAssetId(91), mkAssetId(92), 30, 0x00));
+  const pidB = bytesToHex(dappAsset.derivePoolId(mkAssetId(91), mkAssetId(92), 30, 0x01));
+  ok('flags=0x00 and 0x01 derive distinct pool_ids (V3/V4 parity)', pidA !== pidB);
 }
-ok('flags=0x00 and 0x01 produce distinct pool_ids',
-  poolIdsByFlag.get(0x00) !== poolIdsByFlag.get(0x01));
 
 // ============== Sweep: asymmetric reserve ratios ==============
 group('asymmetric ratio sweep — extreme reserve imbalances');
