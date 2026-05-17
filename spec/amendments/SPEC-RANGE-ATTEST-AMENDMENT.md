@@ -1,4 +1,4 @@
-# SPEC Amendment — `T_RANGE_ATTEST` (`0x44`) opcode
+# SPEC Amendment — `T_RANGE_ATTEST` (`0x3A`) opcode
 
 > Status: ✅ Reference impl shipped (`tests/range-attest.mjs`, 23 tests).
 > SPEC.md §5.21 merge pending.
@@ -30,7 +30,7 @@ suffices without going through this opcode.
 | Layer | Module | Use when |
 |---|---|---|
 | Cryptographic primitive | `tests/range-proof.mjs` | The attestation is verified atomically inside a consumer envelope (CDP draw, gated LP_ADD, single-shot proof) and doesn't need on-chain persistence. |
-| On-chain opcode | `tests/range-attest.mjs` + `T_RANGE_ATTEST 0x44` | The attestation should be published as a standalone, persistent, cross-op-referenceable claim with expiry windowing and holder identity binding. |
+| On-chain opcode | `tests/range-attest.mjs` + `T_RANGE_ATTEST 0x3A` | The attestation should be published as a standalone, persistent, cross-op-referenceable claim with expiry windowing and holder identity binding. |
 
 The two layers are **complementary**: the primitive does the math; the
 opcode publishes a signed wrapper of the math output on chain.
@@ -40,7 +40,7 @@ opcode publishes a signed wrapper of the math output on chain.
 ## Wire format (normative)
 
 ```
-opcode(1)                  = 0x44
+opcode(1)                  = 0x3A
 scope_id(32)               opaque scope discriminator — binds the
                             attestation to a use context (e.g., pool_id,
                             CDP claim_id, or SHA256(domain || context));
@@ -193,7 +193,7 @@ should mix UTXOs first, then attest against fresh outpoints.
 ## Backwards-compatibility statement
 
 This amendment is **purely additive at the protocol layer**. It introduces
-one new opcode (`T_RANGE_ATTEST 0x44`) and one new domain tag
+one new opcode (`T_RANGE_ATTEST 0x3A`) and one new domain tag
 (`tacit-range-attest-v1`). No existing UTXO, opcode, ceremony, or
 envelope is affected. Pre-amendment indexers happily ignore unknown
 opcodes per SPEC.md §5.0. Existing tacit assets and orders remain
