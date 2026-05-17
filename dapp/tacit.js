@@ -61754,6 +61754,16 @@ export {
   estCXferRevealVb, estCommitVb, feeFor,
   DUST,
   NET,
+  // Low-level tx-assembly primitives exposed so the AMM POOL_INIT CLI
+  // (tests/amm-pool-init-cli.mjs) can build commit-reveal Bitcoin txs
+  // without rebuilding these from scratch. All read-only or wallet-
+  // module-state-driven — safe to expose.
+  // (p2trScript + controlBlock already exported above with the script-builder
+  // contract-test cluster.)
+  tapLeafHash, tweakedOutputKey,
+  signP2wpkhInput, signTaprootScriptPathInput,
+  serializeTx, txid,
+  hash160, recordOpening,
   // Additional builders exposed for the signet dryrun harness — same
   // jsdom-shim entry point as the daemon, exercises full flow end-to-end.
   buildAndBroadcastCXfer, buildAndBroadcastCEtch, buildAndBroadcastCMint,
