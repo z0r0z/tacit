@@ -580,6 +580,150 @@ group('ctacComputePauseStatus (anti-systemic pauses)');
   ok('high CV → oracle_volatile', r === 'oracle_volatile');
 }
 
+// ============== group: per-slot coverage check ==============
+group('Per-slot coverage check (SPEC-CBTC-ZK §4.2.x.2)');
+
+{
+  // Fresh env, seed a cBTC.zk variant with 4 live slots, 1 redeemed slot.
+  const env5 = { REGISTRY_KV: makeMockKv() };
+  const aid = 'ee' + '0'.repeat(62);
+  const denom = '100000000';
+
+  // POOL_INIT record (required for variant enumeration)
+  await env5.REGISTRY_KV.put(
+    `pool:${aid}:${denom}`,
+    JSON.stringify({ vkCid: 'mock-vk', ceremonyCid: 'mock-cer', init_height: 1, init_txid: 'aa'.repeat(32) }),
+  );
+
+  // 4 live slot-registry entries — each with a unique k_btc_xonly + mint_txid
+  const slots = [];
+  for (let i = 0; i < 4; i++) {
+    const xonly = `${i}${i}`.repeat(16);
+    const mintTxid = `${i}f`.repeat(16);
+    slots.push({ xonly, mint_txid: mintTxid });
+    await env5.REGISTRY_KV.put(
+      `slot:${aid}:${denom}:${xonly}`,
+      JSON.stringify({
+        asset_id: aid, denomination: denom,
+        k_btc_xonly: xonly,
+        mint_txid: mintTxid, mint_height: 100 + i,
+        status: 'live',
+        recipient_commitment: 'cc'.repeat(33),
+        leaf_commitment: `${i}d`.repeat(16),
+        network,
+      }),
+    );
+  }
+  // 1 redeemed slot — should be excluded from coverage
+  await env5.REGISTRY_KV.put(
+    `slot:${aid}:${denom}:${'77'.repeat(32)}`,
+    JSON.stringify({
+      asset_id: aid, denomination: denom,
+      k_btc_xonly: '77'.repeat(32),
+      mint_txid: '88'.repeat(32),
+      status: 'redeemed',
+      network,
+    }),
+  );
+
+  // Case 1: all 4 slots backed → coverage = 1.0
+  const r1 = await worker.slotCoverageProbeVariant(env5, network, aid, denom, 1000, {
+    outspendProbe: async () => ({ spent: false }),
+  });
+  ok('all-backed: live_count=4', r1.live_count === 4);
+  ok('all-backed: coverage_ratio=1.0', r1.coverage_ratio === 1.0);
+  ok('all-backed: missing empty', r1.missing.length === 0);
+  ok('redeemed slot excluded from live count', r1.live_count === 4);
+
+  // Case 2: 1 of 4 slots has K_btc spent at confirmed depth → coverage = 0.75
+  const r2 = await worker.slotCoverageProbeVariant(env5, network, aid, denom, 1000, {
+    outspendProbe: async (env, net, txid, vout, tip) => {
+      // Only the 0th slot's mint_txid (00f00f...) is spent
+      if (txid === '0f'.repeat(16)) {
+        return { spent: true, depth: 10, spending_txid: 'dead' + 'beef'.repeat(15), spent_at_height: 990 };
+      }
+      return { spent: false };
+    },
+  });
+  ok('one-missing: coverage_ratio=0.75', r2.coverage_ratio === 0.75);
+  ok('one-missing: missing_count=1', r2.missing_count === 1);
+  ok('one-missing: missing entry has spending_txid',
+    r2.missing[0]?.spending_txid?.startsWith('dead'));
+
+  // Case 3: mempool-only spend (depth 0) counts as backed (reorg-safe)
+  const r3 = await worker.slotCoverageProbeVariant(env5, network, aid, denom, 1000, {
+    outspendProbe: async (env, net, txid, vout, tip) => {
+      if (txid === '0f'.repeat(16)) {
+        return { spent: true, depth: 0, spending_txid: 'mempool' };
+      }
+      return { spent: false };
+    },
+  });
+  ok('mempool-only spend treated as backed', r3.coverage_ratio === 1.0);
+
+  // Case 4: fetch error on one probe → that slot omitted from both counts
+  const r4 = await worker.slotCoverageProbeVariant(env5, network, aid, denom, 1000, {
+    outspendProbe: async (env, net, txid, vout, tip) => {
+      if (txid === '0f'.repeat(16)) return null;  // fetch error
+      return { spent: false };
+    },
+  });
+  ok('fetch error: live_count=4 (still counted live)', r4.live_count === 4);
+  ok('fetch error: backed_count=3 (errored slot omitted)', r4.backed_count === 3);
+  ok('fetch error: coverage_ratio=0.75', r4.coverage_ratio === 0.75);
+}
+
+{
+  // Variant enumeration
+  const env6 = { REGISTRY_KV: makeMockKv() };
+  await env6.REGISTRY_KV.put(`pool:${'a1'.repeat(32)}:100`, JSON.stringify({ vkCid: 'x' }));
+  await env6.REGISTRY_KV.put(`pool:${'a2'.repeat(32)}:200`, JSON.stringify({ vkCid: 'x' }));
+  await env6.REGISTRY_KV.put(`pool:${'a3'.repeat(32)}:0`, JSON.stringify({ vkCid: 'x' }));  // POOL_INIT sentinel — should be filtered out
+  const variants = await worker.slotCoverageEnumerateVariants(env6, network);
+  ok('enumerates 2 real variants (skips denom=0 sentinel)', variants.length === 2);
+  ok('variant entries have asset_id + denom_sats',
+    variants.every(v => v.asset_id && v.denom_sats));
+}
+
+{
+  // Round-robin scanner advances cursor across multiple ticks
+  const env7 = { REGISTRY_KV: makeMockKv() };
+  const aid1 = '11'.repeat(32), aid2 = '22'.repeat(32);
+  await env7.REGISTRY_KV.put(`pool:${aid1}:100`, JSON.stringify({}));
+  await env7.REGISTRY_KV.put(`pool:${aid2}:200`, JSON.stringify({}));
+  // No slots — each scan returns empty coverage but the cursor still advances
+  const stubProbe = async () => ({ spent: false });
+
+  const r1 = await worker.slotCoverageScanRoundRobin(env7, network, {
+    tipHeight: 1000, outspendProbe: stubProbe, maxSlots: 50,
+  });
+  ok('first tick scans 1 variant', r1.scanned === 1);
+  const cur1 = JSON.parse(await env7.REGISTRY_KV.get(worker.slotCoverageCursorKey(network)));
+  ok('cursor advances to variant_index=1', cur1.variant_index === 1);
+
+  const r2 = await worker.slotCoverageScanRoundRobin(env7, network, {
+    tipHeight: 1001, outspendProbe: stubProbe, maxSlots: 50,
+  });
+  ok('second tick scans the other variant', r2.scanned === 1);
+  const cur2 = JSON.parse(await env7.REGISTRY_KV.get(worker.slotCoverageCursorKey(network)));
+  ok('cursor wraps to variant_index=0', cur2.variant_index === 0);
+
+  // Both variants have cached coverage records
+  const cache1 = await worker.slotCoverageCacheGet(env7, network, aid1, '100');
+  const cache2 = await worker.slotCoverageCacheGet(env7, network, aid2, '200');
+  ok('variant 1 has cached coverage record', cache1 && cache1.coverage_ratio === 1.0);
+  ok('variant 2 has cached coverage record', cache2 && cache2.coverage_ratio === 1.0);
+}
+
+{
+  // No variants registered → scanner returns 'no-variants' without erroring
+  const env8 = { REGISTRY_KV: makeMockKv() };
+  const r = await worker.slotCoverageScanRoundRobin(env8, network, {
+    tipHeight: 1000, outspendProbe: async () => ({ spent: false }), maxSlots: 50,
+  });
+  ok('empty enumeration → graceful no-op', r.scanned === 0 && r.reason === 'no-variants');
+}
+
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

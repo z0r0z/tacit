@@ -740,6 +740,162 @@ async function ctacTwapSatsPerTac(env, network, sampleAtHeight, opts = {}) {
   return BigInt(Math.round(mean));
 }
 
+// ============== cBTC.zk PER-SLOT COVERAGE CHECK (SPEC-CBTC-ZK §4.2.x.2) ==============
+//
+// For each cBTC.zk variant (asset_id, denom_sats), verify that every `live`
+// slot leaf has a corresponding unspent Bitcoin UTXO at its K_btc. Surfaces
+// rugs / missing-backing events as a per-variant coverage_ratio in [0, 1].
+//
+// A correctly-operating variant has coverage_ratio = 1.0 modulo Bitcoin
+// reorgs. Deviation signals one of:
+//   - Pending unconfirmed activity (resolves once confirmations land)
+//   - Protocol violation: depositor unilaterally spent K_btc outside protocol
+//   - Indexer lag: a legitimate burn/rotate hasn't been observed yet
+//
+// Bounded per scheduled-handler tick (round-robin across variants via cursor).
+// Reuses chainOutspendProbe (the SLASH monitor's underlying primitive).
+//
+// KV keys:
+//   coverage:<network?>:<aid>:<denom>           — cached per-variant result
+//   coverage-cursor:<network?>                  — round-robin scan cursor
+function slotCoverageCacheKey(network, aid, denom) {
+  return network === 'signet'
+    ? `coverage:${aid}:${denom}`
+    : `coverage:${network}:${aid}:${denom}`;
+}
+function slotCoverageCursorKey(network) {
+  return network === 'signet' ? 'coverage-cursor' : `coverage-cursor:${network}`;
+}
+
+// Probe one variant. Iterates its slot-registry entries (status='live' only),
+// runs chainOutspendProbe against each slot's mint_txid:0, returns the
+// coverage summary. Bounded by `opts.maxSlots` (default 50).
+async function slotCoverageProbeVariant(env, network, aid, denom, tipHeight, opts = {}) {
+  const maxSlots = opts.maxSlots || 50;
+  const probe = opts.outspendProbe || chainOutspendProbe;
+  const prefix = slotRegistryPrefix(network, aid, denom);
+  const listOpts = { prefix, limit: maxSlots };
+  if (opts.cursor) listOpts.cursor = opts.cursor;
+  const list = await env.REGISTRY_KV.list(listOpts);
+
+  let liveCount = 0, backedCount = 0;
+  const missing = [];
+  for (const k of list.keys) {
+    const rec = await env.REGISTRY_KV.get(k.name, 'json');
+    if (!rec) continue;
+    // Only count 'live' slots — redeemed, rotated, force-closed slots
+    // have intentional state transitions and don't count toward coverage.
+    if (rec.status !== 'live') continue;
+    liveCount++;
+    if (!rec.mint_txid) continue;  // older record without txid cached — skip from probe
+    let result;
+    try {
+      result = await probe(env, network, rec.mint_txid, 0, tipHeight);
+    } catch { continue; }
+    if (result === null) continue;  // fetch error — neither backed nor missing
+    if (!result.spent) {
+      backedCount++;
+    } else if (result.depth >= 1) {
+      // Spent + confirmed. Could be lag-on-legitimate-exit OR a rug.
+      // SLASH_DETECTED (for cBTC.tac-bonded slots) is the action layer;
+      // coverage just reports the gap.
+      missing.push({
+        leaf_hash: rec.leaf_commitment || null,
+        k_btc_xonly: rec.k_btc_xonly,
+        mint_txid: rec.mint_txid,
+        spent_at_height: result.spent_at_height || null,
+        spending_txid: result.spending_txid || null,
+      });
+    } else {
+      // Mempool-only (depth 0) — count as backed; flips to missing once confirmed.
+      backedCount++;
+    }
+  }
+
+  const ratio = liveCount === 0 ? 1.0 : backedCount / liveCount;
+  return {
+    asset_id: aid,
+    denom_sats: denom,
+    network,
+    live_count: liveCount,
+    backed_count: backedCount,
+    missing_count: missing.length,
+    coverage_ratio: ratio,
+    missing,
+    scanned_at_height: tipHeight,
+    scanned_at_ts: Math.floor(Date.now() / 1000),
+    next_cursor: list.cursor || null,
+    list_complete: !list.cursor,
+  };
+}
+
+async function slotCoverageCachePut(env, network, aid, denom, result) {
+  await env.REGISTRY_KV.put(
+    slotCoverageCacheKey(network, aid, denom),
+    JSON.stringify(result),
+  );
+}
+async function slotCoverageCacheGet(env, network, aid, denom) {
+  return env.REGISTRY_KV.get(slotCoverageCacheKey(network, aid, denom), 'json');
+}
+
+// Enumerate all (aid, denom) variant tuples by listing POOL_INIT records.
+async function slotCoverageEnumerateVariants(env, network) {
+  const prefix = poolPrefix(network);
+  const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
+  const variants = [];
+  for (const k of list.keys) {
+    // Key format: "pool:<network?>:<aid>:<denom>"
+    const parts = k.name.split(':');
+    const denom = parts[parts.length - 1];
+    const aid = parts[parts.length - 2];
+    if (!/^[0-9a-f]{64}$/i.test(aid)) continue;
+    if (denom === '0') continue;          // skip POOL_INIT sentinel entries
+    variants.push({ asset_id: aid, denom_sats: denom });
+  }
+  return variants;
+}
+
+// Periodic round-robin scanner — each tick advances one variant by one page.
+async function slotCoverageScanRoundRobin(env, network, opts = {}) {
+  const maxSlots = opts.maxSlots || 50;
+  let tipHeight;
+  if (opts.tipHeight !== undefined) {
+    tipHeight = opts.tipHeight;
+  } else {
+    try {
+      tipHeight = parseInt((await apiText(env, '/blocks/tip/height', { timeoutMs: 10_000 }, network)).trim(), 10);
+    } catch { return { scanned: 0, reason: 'tip-fetch-failed' }; }
+  }
+  if (!Number.isInteger(tipHeight)) return { scanned: 0, reason: 'tip-non-integer' };
+
+  const cursorRaw = await env.REGISTRY_KV.get(slotCoverageCursorKey(network));
+  let cursor = null;
+  try { cursor = cursorRaw ? JSON.parse(cursorRaw) : null; } catch { cursor = null; }
+
+  const variants = await slotCoverageEnumerateVariants(env, network);
+  if (variants.length === 0) return { scanned: 0, reason: 'no-variants' };
+
+  const idx = cursor && Number.isInteger(cursor.variant_index)
+    ? cursor.variant_index % variants.length
+    : 0;
+  const variant = variants[idx];
+
+  const result = await slotCoverageProbeVariant(env, network, variant.asset_id, variant.denom_sats, tipHeight, {
+    maxSlots,
+    cursor: cursor && cursor.variant_index === idx ? cursor.kv_cursor : null,
+    outspendProbe: opts.outspendProbe,
+  });
+  await slotCoverageCachePut(env, network, variant.asset_id, variant.denom_sats, result);
+
+  const nextCursor = result.list_complete
+    ? { variant_index: (idx + 1) % variants.length, kv_cursor: null }
+    : { variant_index: idx, kv_cursor: result.next_cursor };
+  await env.REGISTRY_KV.put(slotCoverageCursorKey(network), JSON.stringify(nextCursor));
+
+  return { scanned: 1, variant, result, next_cursor: nextCursor };
+}
+
 // ============== cBTC.tac SLASH EVENT LOG + PAUSE CONDITIONS (SPEC §5.41.3) ==============
 //
 // Slash event log feeds the "aggregate slash > 5% of bonded supply in last 100
@@ -12957,6 +13113,10 @@ export {
   // Anti-systemic pauses (SPEC §5.41.3) — slash-event log + condition evaluator.
   ctacSlashEventKey, ctacRecordSlashEvent, ctacSlashedSatsInWindow,
   ctacComputePauseStatus,
+  // Per-slot coverage check (SPEC-CBTC-ZK §4.2.x.2) — reuses chainOutspendProbe.
+  slotCoverageProbeVariant, slotCoverageCachePut, slotCoverageCacheGet,
+  slotCoverageEnumerateVariants, slotCoverageScanRoundRobin,
+  slotCoverageCacheKey, slotCoverageCursorKey,
   // Constants useful for cross-impl test assertions.
   CTAC_INITIAL_BOND_RATIO_THOUSANDTHS, CTAC_LIQUIDATION_RATIO_THOUSANDTHS,
   CTAC_TWAP_WINDOW_BLOCKS, CTAC_REORG_SAFETY_DEPTH,
@@ -13096,6 +13256,40 @@ export default {
     // tails. Recipients call this on dapp load, iterate, and attempt to
     // decrypt each note with their HKDF-derived viewing privkey. Successful
     // decrypts identify slots addressed to this wallet.
+    // SPEC-CBTC-ZK §4.2.x.2 — per-slot coverage check. Returns cached
+    // coverage_ratio + missing-slot list for a specific variant, or the
+    // full list of cached coverage records across all variants.
+    //
+    //   GET /coverage?asset_id=<hex>&denom_sats=<u64>  → single variant
+    //   GET /coverage                                   → all cached variants
+    if (url.pathname === '/coverage' && req.method === 'GET') {
+      const aidParam = url.searchParams.get('asset_id');
+      const denomParam = url.searchParams.get('denom_sats');
+      if (aidParam && denomParam) {
+        if (!/^[0-9a-f]{64}$/i.test(aidParam)) {
+          return jsonResponse({ error: 'asset_id must be 64 hex chars' }, 400, cors);
+        }
+        const rec = await slotCoverageCacheGet(env, network, aidParam.toLowerCase(), denomParam);
+        if (!rec) return jsonResponse({ error: 'no coverage record', asset_id: aidParam, denom_sats: denomParam }, 404, cors);
+        return jsonResponse({ coverage: rec }, 200, cors);
+      }
+      // Full list
+      try {
+        const prefix = network === 'signet' ? 'coverage:' : `coverage:${network}:`;
+        // Exclude the coverage-cursor key (different prefix tail) by post-filtering.
+        const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
+        const out = [];
+        for (const k of list.keys) {
+          if (k.name.startsWith('coverage-cursor')) continue;
+          const v = await env.REGISTRY_KV.get(k.name, 'json');
+          if (v) out.push(v);
+        }
+        return jsonResponse({ coverage: out }, 200, cors);
+      } catch (e) {
+        return jsonResponse({ error: 'coverage list failed', detail: String(e?.message || e) }, 500, cors);
+      }
+    }
+
     if (url.pathname === '/slot-rotates' && req.method === 'GET') {
       const sinceHeight = parseInt(url.searchParams.get('since_height') || '0', 10) || 0;
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10) || 500, 5000);
@@ -14856,6 +15050,12 @@ export default {
       // Bounded per network; full chain-probe wiring is staged separately.
       await Promise.allSettled(
         NETWORKS.map(net => ctacScanSlashDetected(env, net, { maxOps: 25 }).catch(() => {})),
+      );
+      // SPEC-CBTC-ZK §4.2.x.2 — per-slot coverage scan. Round-robin across
+      // variants; each tick advances one variant by one page. Reuses
+      // chainOutspendProbe (same primitive the SLASH monitor uses).
+      await Promise.allSettled(
+        NETWORKS.map(net => slotCoverageScanRoundRobin(env, net, { maxSlots: 50 }).catch(() => {})),
       );
       // After the scan updates KV, pre-warm the /assets edge cache for both
       // networks. Without this, the first user to hit /assets after a quiet
