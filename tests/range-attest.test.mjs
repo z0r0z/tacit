@@ -78,12 +78,12 @@ console.log('Encode/decode round-trip');
       && dec.holderSig.length === 64;
   });
 
-  test('opcode byte is 0x44', () => {
+  test('opcode byte is 0x3A', () => {
     const enc = encodeRangeAttest({
       scopeId: SCOPE_ID, assetId: ASSET_ID, expiryHeight: 1, commitmentOutpoints: [outpointA],
       attestationBytes: attestationGE, holderPrivkey: holderSk,
     });
-    return enc[0] === OPCODE_T_RANGE_ATTEST && OPCODE_T_RANGE_ATTEST === 0x44;
+    return enc[0] === OPCODE_T_RANGE_ATTEST && OPCODE_T_RANGE_ATTEST === 0x3A;
   });
 
   test('encode rejects empty commitment list', () => {

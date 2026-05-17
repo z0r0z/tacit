@@ -727,7 +727,7 @@ function validate_protocol_fee_claim(env: Envelope, tx: BitcoinTx, state: Indexe
 
 ---
 
-## Opcode `0x43`: T_TRADE_BATCH (deferred impl; spec'd in V1)
+## Opcode `0x39`: T_TRADE_BATCH (deferred impl; spec'd in V1)
 
 **Spec:** SPEC-TRADE-BATCH-AMENDMENT.md.
 

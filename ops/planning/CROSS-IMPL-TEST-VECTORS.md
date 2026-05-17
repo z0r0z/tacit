@@ -740,7 +740,7 @@ TODO from settler decryption of trader openings.
 
 ---
 
-## T_TRADE_BATCH (`0x43`) vectors — for the deferred impl
+## T_TRADE_BATCH (`0x39`) vectors — for the deferred impl
 
 **Spec authority:** SPEC-TRADE-BATCH-AMENDMENT.md.
 

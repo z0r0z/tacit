@@ -235,7 +235,7 @@ emit('intent_pool_hash ([0x11×32, 0x22×32, 0x33×32], sorted ascending)',
   const holderPubkey = pubkeyOf(CANONICAL.trader_privkey_A);
 
   const preSig = concatBytes(
-    new Uint8Array([0x44]),
+    new Uint8Array([0x3A]),
     scopeId,
     expiryLE,
     new Uint8Array([count]),
