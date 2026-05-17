@@ -544,6 +544,50 @@ button.market-chip .chip-caret {
 .market-bids-row--click-ack {
   animation: click-ack-flash-sell 420ms ease-out;
 }
+/* Sold-pending tiles. Liveness prune flips _takenPending=true the
+   instant a preauth/intent UTXO appears in the mempool spend index,
+   so the asks ladder reflects "this lot is gone" without waiting the
+   ~10 min until first confirmation. Greyed + struck-through so a
+   buyer scanning the floor sees the row without mistaking it for a
+   live cheap ask, and the price/amount numbers stay visible as
+   context ("X just sold at Y sats"). Pointer-events off so the row
+   can't be clicked to prime Swap. Excluded from floor calc, mark
+   price, counts, and Swap routing (see _marketFloorByAsset etc.). */
+.market-listing-tile[data-taken-pending="1"] {
+  opacity: 0.52;
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0,
+    transparent 8px,
+    rgba(10,143,67,0.06) 8px,
+    rgba(10,143,67,0.06) 9px
+  );
+  pointer-events: none;
+}
+.market-listing-tile[data-taken-pending="1"] .market-listing-unit strong,
+.market-listing-tile[data-taken-pending="1"] .market-listing-amount,
+.market-listing-tile[data-taken-pending="1"] .market-listing-total {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.market-listing-tile[data-taken-pending="1"] .market-listing-actions {
+  pointer-events: auto;
+}
+.market-listing-taken-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: #0a8f43;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid #0a7d3a;
+  border-radius: 2px;
+  white-space: nowrap;
+}
 /* Focus rings for the now-keyboard-navigable orderbook rows (tabindex
    was added in the same commit that wired Enter/Space). Browser-
    default outlines are inconsistent across UAs and clash with the

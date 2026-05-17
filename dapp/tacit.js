@@ -46835,7 +46835,10 @@ function _marketListingsSignature() {
   const parts = [];
   for (const l of ls) {
     const id = l.sale_id || l.intent_id || l.listing_id || '';
-    parts.push(`${id}:${l.kind || ''}:${l.min_price_sats || l.price_sats || 0}:${l.expired ? 1 : 0}`);
+    // Include _takenPending so a listing flipping to sold-pending (grey-
+    // out by the liveness prune) or recovering from a flicker triggers
+    // an auto-refresh re-render, not just a silent cache mutation.
+    parts.push(`${id}:${l.kind || ''}:${l.min_price_sats || l.price_sats || 0}:${l.expired ? 1 : 0}:${l._takenPending ? 1 : 0}`);
   }
   return parts.join('|');
 }
@@ -46856,7 +46859,10 @@ function _assetListingsSignature(aid) {
     const lid = String(l._asset?.asset_id || l.asset_id || '');
     if (lid !== aid) continue;
     const id = l.sale_id || l.intent_id || l.listing_id || `${l.txid || ''}:${l.vout | 0}`;
-    parts.push(`${id}:${l.kind || ''}:${l.min_price_sats || l.price_sats || 0}:${l.expired ? 1 : 0}:${l.expiry || 0}`);
+    // _takenPending flips trigger a redraw so the grey-out + struck-
+    // through styling appears on the next auto-refresh tick (not just
+    // when the buyer scrolls or clicks something).
+    parts.push(`${id}:${l.kind || ''}:${l.min_price_sats || l.price_sats || 0}:${l.expired ? 1 : 0}:${l.expiry || 0}:${l._takenPending ? 1 : 0}`);
   }
   parts.sort();
   return parts.join('|');
@@ -46924,6 +46930,13 @@ function _marketFloorByAsset() {
   for (const l of _marketCache.listings) {
     const a = l._asset;
     if (!a?.asset_id) continue;
+    // Sold-pending listings (preauth/intent whose UTXO is being spent in
+    // mempool) are excluded from the floor so the next buyer prices
+    // against the NEXT live ask, not a phantom cheap row that's already
+    // been taken. The grey-out + recovery is managed by the liveness
+    // prune; see onTakenPending / onUnspentRecover in
+    // startMarketLivenessPrune.
+    if (l._takenPending) continue;
     const dec = Number.isInteger(a.decimals) && a.decimals >= 0 && a.decimals <= 8 ? a.decimals : 0;
     const amount = l.kind === 'range' ? l.threshold
                  : l.kind === 'preauth' ? (l.asset_opening?.amount)
@@ -47035,10 +47048,22 @@ function _marketLiveCountsByAsset() {
   // _marketCache.listings for a filtered copy, so memoize on that array.
   if (_marketLiveCountCache.src === _marketCache.listings) return _marketLiveCountCache.map;
   const map = new Map();
+  let _pendingTotal = 0;
   for (const l of _marketCache.listings) {
     const aid = l._asset?.asset_id;
     if (!aid) continue;
-    const cur = map.get(aid) || { listings: 0, ranges: 0, intents: 0, preauths: 0, total: 0 };
+    const cur = map.get(aid) || { listings: 0, ranges: 0, intents: 0, preauths: 0, pending: 0, total: 0 };
+    // Sold-pending listings get counted in `pending` (so the "Asks · N"
+    // header can show a separate "+M just sold (settling)" hint) but
+    // NOT in the per-kind buckets that drive the headline total — those
+    // should reflect the actually-takeable book.
+    if (l._takenPending) {
+      cur.pending++;
+      _pendingTotal++;
+      cur.total = cur.listings + cur.ranges + cur.intents + cur.preauths;
+      map.set(aid, cur);
+      continue;
+    }
     if (l.kind === 'opening')      cur.listings++;
     else if (l.kind === 'range')   cur.ranges++;
     else if (l.kind === 'intent')  cur.intents++;
@@ -47658,7 +47683,15 @@ function _scheduleMarketPruneRender() {
   if (_marketPruneRenderTimer) clearTimeout(_marketPruneRenderTimer);
   _marketPruneRenderTimer = setTimeout(() => {
     _marketPruneRenderTimer = null;
-    if (_marketView === 'browse') applyMarketFilters();
+    // Re-apply filters in BOTH browse and asset modes. Browse drives the
+    // aggregate floor/count refresh; asset mode needs the redraw so a
+    // _takenPending flip surfaces the grey-out + "just sold · settling"
+    // badge (a pure dataset mutation on the cached listing object isn't
+    // visible until the tile is re-rendered). Original code skipped asset
+    // mode because onSpent did an in-place tile.remove() for confirmed
+    // spends — but _takenPending keeps the tile and restyles it, so the
+    // full re-render is required.
+    if (_marketCache) applyMarketFilters();
   }, 250);
 }
 
@@ -47687,6 +47720,25 @@ function startMarketLivenessPrune() {
   }
   let active = 0;
   let i = 0;
+  // Two-stage prune. Confirmed spend → fully remove (onSpent). Unconfirmed
+  // spend → flag the listing _takenPending so the floor, mark-price,
+  // counts, Swap router, and per-tile UI all treat it as "sold, settling"
+  // immediately — without waiting ~10min for first confirmation, which is
+  // how a freshly-taken cheap lot used to drag the displayed floor down
+  // and lure the next buyer into pricing against a phantom ask. Flicker
+  // recovery: if a later prune tick finds the same UTXO is NOT spent
+  // (mempool.space false-positive), the flag is cleared and the listing
+  // returns to live state. Worst case of a transient indexer hiccup is a
+  // brief grey-out, never a destroyed live tile.
+  const _invalidateLiveCaches = () => {
+    // Floor / counts / mark caches memoize on listings ARRAY identity.
+    // _takenPending mutations don't change the array, so we have to bust
+    // the caches manually for the grey-out to actually exclude the tile
+    // from floor calc + Swap routing on the next consumer call.
+    _marketFloorCache = { src: null, map: null };
+    _marketLiveCountCache = { src: null, map: null };
+    _marketMarkCache = { src: null, map: null };
+  };
   const onSpent = (l) => {
     if (_marketCache) {
       _marketCache.listings = _marketCache.listings.filter(x => x !== l);
@@ -47711,26 +47763,43 @@ function startMarketLivenessPrune() {
       grid.innerHTML = '<div class="empty">No live listings.</div>';
     }
   };
+  const onTakenPending = (l) => {
+    if (l._takenPending) return;  // idempotent — only re-render on flip
+    l._takenPending = true;
+    l._takenPendingAt = Date.now();
+    _invalidateLiveCaches();
+    _scheduleMarketPruneRender();
+  };
+  const onUnspentRecover = (l) => {
+    if (!l._takenPending) return;  // common case — already live, no-op
+    l._takenPending = false;
+    l._takenPendingAt = 0;
+    _invalidateLiveCaches();
+    _scheduleMarketPruneRender();
+  };
   const drain = () => {
     while (active < MARKET_PRUNE_CONCURRENCY && i < queue.length) {
       const { l, txid, vout } = queue[i++];
       active++;
       getOutspend(txid, vout).then((sp) => {
-        // Require CONFIRMED spend before removing the listing from the
-        // local cache. Unconfirmed spends include legitimate buyer
-        // takes that are still in mempool (good to remove eventually
-        // once they confirm) AND mempool.space false-positives /
-        // indexer flickers (bad to remove — wipes real-live listings).
-        // The pessimistic stance — only confirmed spends remove —
-        // means a freshly-taken listing stays visible for the ~10min
-        // until block confirmation, but the worker has the
-        // authoritative claim state and will stop serving the listing
-        // on the next fetch anyway. Better one stale row briefly
-        // than wiping live tiles on every indexer hiccup, which was
-        // the root cause of the "click Activity tab then back, asks
-        // vanished" regression masked by the defensive guard in
-        // applyMarketFilters.
-        if (sp && sp.spent && sp.status && sp.status.confirmed === true) onSpent(l);
+        // Three terminal states for one prune probe:
+        //  - confirmed spend   → onSpent       (drop from cache + DOM)
+        //  - unconfirmed spend → onTakenPending (grey + exclude from
+        //                                       floor / mark / counts /
+        //                                       Swap router so the next
+        //                                       buyer prices against the
+        //                                       NEXT live ask, not the
+        //                                       sold-pending one)
+        //  - not spent         → onUnspentRecover (clears any prior
+        //                                       _takenPending from a
+        //                                       flicker — no-op for
+        //                                       normally-live tiles)
+        if (sp && sp.spent) {
+          if (sp.status && sp.status.confirmed === true) onSpent(l);
+          else onTakenPending(l);
+        } else {
+          onUnspentRecover(l);
+        }
       }).catch(() => {}).finally(() => {
         active--;
         drain();
@@ -48431,6 +48500,16 @@ function applyMarketFilters() {
   const _countSuffix = _filteredOut > 0
     ? ` <span class="muted" style="font-weight:400;font-size:10px;">of ${_totalActiveListings}</span>`
     : '';
+  // Sold-pending pill. When the liveness prune has flipped one or more
+  // visible rows to _takenPending (preauth/intent UTXO observed spent
+  // in mempool, awaiting first confirmation), surface a small pill
+  // next to the asks count so the dimmed rows are explained instead of
+  // looking like stale clutter. Excluded from the headline count
+  // (those rows are no longer takeable); shown alongside it.
+  const _pendingCount = rowsForGrid.reduce((n, l) => n + (l._takenPending ? 1 : 0), 0);
+  const _pendingPillHtml = _pendingCount > 0
+    ? ` <span style="display:inline-block;margin-left:6px;padding:1px 7px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;text-transform:uppercase;" title="${_pendingCount} listing${_pendingCount === 1 ? '' : 's'} just sold — Bitcoin settlement tx is in the mempool, awaiting first confirmation (~10 min). Excluded from the floor and Swap routing so the displayed best ask reflects what's actually takeable right now.">🔥 ${_pendingCount} just sold</span>`
+    : '';
   // Bundle row count drives whether to render the row-types explainer line.
   // Rows are flagged after `groupChunkedPreauthListings` and
   // `_aggregatePreauthRowsForLadder`: `_isGroup` = N identical-price
@@ -48451,7 +48530,7 @@ function applyMarketFilters() {
     : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Asks · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · ${_marketRowActionsHidden ? `click any row or use ` : `use `}<button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Asks · ${rowsForGrid.length - _pendingCount}${_countSuffix}</strong>${_pendingPillHtml} <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · ${_marketRowActionsHidden ? `click any row or use ` : `use `}<button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_rowActionsChip}${_ladderToggleChip}${_sweepBuyChip}</div>
     </div>${_rowTypesExplainerHtml}${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
@@ -48499,7 +48578,10 @@ function applyMarketFilters() {
     }
     // Hide entirely when neither buy nor sell is possible (no asks AND
     // user doesn't hold the asset).
-    const preauthAsks = rows.filter(l => l.kind === 'preauth' && l.seller_pubkey !== myPubHex);
+    // Exclude sold-pending asks from the buy-liquidity check — otherwise a
+    // page where every ask just got taken still shows the Swap tile in
+    // buy mode and routes into nothing.
+    const preauthAsks = rows.filter(l => l.kind === 'preauth' && l.seller_pubkey !== myPubHex && !l._takenPending);
     const haveBuyLiquidity = preauthAsks.length > 0;
     const userHolds = !!(_holdingsCache?.holdings && _holdingsCache.holdings.get(_marketView.assetId) && _holdingsCache.holdings.get(_marketView.assetId).balance > 0n);
     if (!haveBuyLiquidity && !userHolds) return '';
@@ -48736,6 +48818,7 @@ function applyMarketFilters() {
     for (const l of rows) {
       if (l.kind !== 'preauth') continue;
       if (l.expired) continue;
+      if (l._takenPending) continue;  // sold-pending; not a real best ask
       if (Number(l.expiry || 0) <= expiryGuard) continue;
       const amt = l.asset_opening?.amount;
       const ps = Number(l.min_price_sats || 0);
@@ -49088,6 +49171,7 @@ function applyMarketFilters() {
     for (let i = 0; i < pageRows.length; i++) {
       const lr = pageRows[i];
       if (lr.kind !== 'preauth') continue;
+      if (lr._takenPending) continue;  // sold-pending; can't be "best price"
       if (Number(lr.expiry || 0) <= _bpExpiryGuard) continue;
       const amtBig = (() => { try { return BigInt(marketListingAmount(lr) || '0'); } catch { return 0n; } })();
       if (amtBig <= 0n) continue;
@@ -49122,6 +49206,11 @@ function applyMarketFilters() {
       tile = _pendingTileReuse.get(_listingKey);
       _pendingTileReuse.delete(_listingKey);
       tile.removeAttribute('data-market-anim');
+      // Flicker recovery: a reused tile may carry data-taken-pending from
+      // the previous render. Clear it unconditionally — the conditional
+      // re-stamp below puts it back if the listing is still sold-pending,
+      // and otherwise the tile correctly returns to its live styling.
+      tile.removeAttribute('data-taken-pending');
     } else {
       tile = document.createElement('div');
     }
@@ -49246,6 +49335,22 @@ function applyMarketFilters() {
         secondaryAction = `<button data-act="market-verify" data-kind="${l.kind}" data-aid="${escapeHtml(safeAid)}" data-txid="${escapeHtml(l.txid || '')}" data-vout="${l.vout | 0}" data-maker="${escapeHtml(l.owner_pubkey || '')}" title="Run the full client-side check chain on this listing without buying it: signatures, P2WPKH ownership, Pedersen commitment binds against on-chain state, UTXO is still unspent. Safe to call as many times as you want." style="font-size:10px;padding:4px 8px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);" aria-label="Verify listing">verify</button>`;
       }
     }
+    // Sold-pending override: the liveness prune flagged this listing's
+    // UTXO as spent-but-unconfirmed (preauth taken / atomic intent settled
+    // in mempool, ~10min from first confirmation). Replace the trade
+    // action with a non-clickable "just sold · settling" badge so the
+    // row is clearly attributed rather than read as a stale ask dragging
+    // the apparent floor down. The whole tile gets pointer-events off +
+    // dimmed styling via [data-taken-pending="1"] (see index.html), and
+    // we skip stamping fill-* dataset attrs below so a click can't prime
+    // the Swap tile. Owner-side cancel/lifecycle buttons are intentionally
+    // suppressed too — once the UTXO is in mempool the listing is
+    // unrecoverable.
+    if (l._takenPending) {
+      primaryAction = `<span class="market-listing-taken-badge" title="This lot is being settled on Bitcoin right now — the buyer's tx is in the mempool. Excluded from the floor + Swap routing so you don't price against it. The row disappears once the tx confirms (~10 min).">🔥 just sold · settling</span>`;
+      secondaryAction = '';
+      statusLine = `<span title="Preauth/intent UTXO observed spent in the mempool. Pruned from the live order book and Swap router; the next live ask sets the new floor.">trade detected · awaiting Bitcoin confirmation</span>`;
+    }
     const statusRow = statusLine
       ? `<div class="muted" style="margin-top:8px;font-size:10px;">${statusLine}</div>`
       : '';
@@ -49277,7 +49382,10 @@ function applyMarketFilters() {
       || _actHay.includes('data-act="market-verify')
       || _actHay.includes('data-act="market-fulfil')
       || _actHay.includes('data-act="market-take-intent');
-    const _hideActionRow = _marketRowActionsHidden && !_isLifecycleAction;
+    // Sold-pending tiles always show the "just sold" badge regardless of
+    // Simple/Advanced mode — it's not a trade button, it's a status pill,
+    // and hiding it would leave the dimmed row unexplained.
+    const _hideActionRow = _marketRowActionsHidden && !_isLifecycleAction && !l._takenPending;
     const actionRow = (primaryAction || secondaryAction)
       ? (_hideActionRow
           ? ''
@@ -49531,7 +49639,13 @@ function applyMarketFilters() {
     //     reject the bucket's higher-priced listings and silently miss
     //     the cumulative size the row advertised. Using max matches
     //     the level-button's data-cap-unit semantics in Advanced mode.
-    if (l.kind === 'preauth' && (l.seller_pubkey || '') !== myPubHex) {
+    // Sold-pending tiles: stamp the marker attribute (drives dim + struck-
+    // through styling, disables hover/click via CSS pointer-events:none).
+    // Don't add fill-* dataset attrs — there's no live UTXO to route into,
+    // so a click should not prime the Swap tile.
+    if (l._takenPending) {
+      tile.dataset.takenPending = '1';
+    } else if (l.kind === 'preauth' && (l.seller_pubkey || '') !== myPubHex) {
       const _fillAmt = l._isGroup
         ? (BigInt(amount || '0') * BigInt(l._groupSize || 1)).toString()
         : (amount || '0');
@@ -53889,6 +54003,7 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   const listings = (_marketCache?.listings || []).filter(l =>
     l._asset?.asset_id === aid
     && !l.expired
+    && !l._takenPending  // sold-pending; not a real best ask
     && l.kind === 'preauth'
     && Number(l.expiry || 0) > _expiryGuard,
   );
@@ -55935,7 +56050,13 @@ function _wireSwapTile(scope) {
     const nowSec = Math.floor(Date.now() / 1000);
     const asks = (_marketCache?.listings || [])
       .filter(l => l._asset?.asset_id === aid)
-      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired);
+      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired)
+      // Skip listings the liveness prune has greyed out as sold-pending —
+      // routing through one would either fail (UTXO already in mempool
+      // for another buyer's settlement tx) or produce a confusing race.
+      // The prune flag clears automatically on the next tick if the
+      // spend turns out to be a mempool.space flicker.
+      .filter(l => !l._takenPending);
     const candidates = [];
     for (const l of asks) {
       if (l.kind === 'preauth') {
@@ -56008,6 +56129,7 @@ function _wireSwapTile(scope) {
     for (const l of (_marketCache?.listings || [])) {
       if (l._asset?.asset_id !== aid) continue;
       if (Number(l.expiry || 0) <= nowSec || l.expired) continue;
+      if (l._takenPending) continue;  // sold-pending; excluded from depth simulation
       let amt, ps;
       if (l.kind === 'preauth') {
         if (l.seller_pubkey === myPubHex) continue;
@@ -56117,6 +56239,7 @@ function _wireSwapTile(scope) {
     for (const l of (_marketCache?.listings || [])) {
       if (l._asset?.asset_id !== aid) continue;
       if (Number(l.expiry || 0) <= nowSec || l.expired) continue;
+      if (l._takenPending) continue;  // sold-pending; excluded from cap-depth scan
       let amt, ps;
       if (l.kind === 'preauth') {
         if (l.seller_pubkey === myPubHex) continue;
@@ -56247,7 +56370,13 @@ function _wireSwapTile(scope) {
     const nowSec = Math.floor(Date.now() / 1000);
     const asks = (_marketCache?.listings || [])
       .filter(l => l._asset?.asset_id === aid)
-      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired);
+      .filter(l => Number(l.expiry || 0) > nowSec && !l.expired)
+      // Skip listings the liveness prune has greyed out as sold-pending —
+      // routing through one would either fail (UTXO already in mempool
+      // for another buyer's settlement tx) or produce a confusing race.
+      // The prune flag clears automatically on the next tick if the
+      // spend turns out to be a mempool.space flicker.
+      .filter(l => !l._takenPending);
     const candidates = [];
     for (const l of asks) {
       if (l.kind === 'preauth') {
