@@ -724,6 +724,20 @@ group('Per-slot coverage check (SPEC-CBTC-ZK §4.2.x.2)');
   ok('empty enumeration → graceful no-op', r.scanned === 0 && r.reason === 'no-variants');
 }
 
+// ============== group: cBTC.tac variant asset_id derivation ==============
+group('ctacVariantAssetId (per-denomination tier asset_id)');
+
+{
+  // Determinism + per-denom isolation
+  const a1 = worker.ctacVariantAssetId(100_000_000n);  // 1 BTC tier
+  const a2 = worker.ctacVariantAssetId(100_000_000n);  // same call
+  const a3 = worker.ctacVariantAssetId(1_000_000n);    // 0.01 BTC tier
+  ok('deterministic: same denom → same asset_id', a1 === a2);
+  ok('per-denom: different denoms → different asset_ids', a1 !== a3);
+  ok('asset_id is 64 hex chars (32-byte SHA256)',
+    a1.length === 64 && /^[0-9a-f]{64}$/.test(a1));
+}
+
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);

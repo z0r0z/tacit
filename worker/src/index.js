@@ -670,6 +670,28 @@ const CTAC_MAX_SINGLE_POSITION_BTC_SATS = 1_000_000_000n; // 10 BTC SPEC §5.42.
 const CTAC_MAX_POOL_FRAC_THOUSANDTHS = 50;          // 0.05 → 50/1000 SPEC §5.42.3 conservative initial
 const CTAC_STABILITY_FEE_BPS = 25;                  // 0.25% APR — accrued lazily on position events
 
+// Deterministic derivation of the cBTC.tac variant asset_id per denomination.
+// The single global rule: cBTC.tac@denom_sats has asset_id =
+// SHA256("tacit-cbtc-tac-variant-v1" || denom_sats_LE_u64).
+//
+// Rationale: cBTC.tac is a fungible wrapper indexed per BTC denomination
+// (1 BTC tier, 0.01 BTC tier, etc.). Holders of any (1 BTC) cBTC.tac are
+// fungible regardless of which cBTC.zk variant originally backed each
+// share. Per-tier asset_ids let the dapp / marketplace / AMM treat each
+// denomination tier as a distinct asset for routing purposes.
+//
+// Deterministic + globally derivable. No pre-registration ceremony or
+// per-variant CETCH required — the asset_id is implied by the denom alone.
+const _CTAC_VARIANT_DOMAIN = new TextEncoder().encode('tacit-cbtc-tac-variant-v1');
+function ctacVariantAssetId(denomSats) {
+  const denomLE = new Uint8Array(8);
+  const v = new DataView(denomLE.buffer);
+  const d = BigInt(denomSats);
+  v.setUint32(0, Number(d & 0xffffffffn), true);
+  v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  return bytesToHex(sha256(concatBytes(_CTAC_VARIANT_DOMAIN, denomLE)));
+}
+
 // ============== cBTC.tac TWAP ORACLE (SPEC §5.40) ==============
 //
 // Reads the trade-event journal for the canonical TAC asset to compute
@@ -4796,6 +4818,60 @@ function decodeTWithdrawPayload(payload) {
 // Fixed-size payload: 1 + 1 + 32 + 8 + 33 + 32 + 32 + 8 + 33 + 64 = 244 bytes.
 const _SLOT_MINT_DOMAIN   = new TextEncoder().encode('tacit-slot-mint-v1');
 const _SLOT_ROTATE_DOMAIN = new TextEncoder().encode('tacit-slot-rotate-v1');
+const _SLOT_SPLIT_DOMAIN  = new TextEncoder().encode('tacit-slot-split-v1');
+const _SLOT_MERGE_DOMAIN  = new TextEncoder().encode('tacit-slot-merge-v1');
+
+function _computeSlotSplitMsg(networkTag, assetIdOldBytes, denomOld, oldNullifierHashBytes, outputs) {
+  const denomOldLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomOldLE.buffer);
+    const d = BigInt(denomOld);
+    v.setUint32(0, Number(d & 0xffffffffn), true);
+    v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  }
+  const parts = [
+    _SLOT_SPLIT_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    assetIdOldBytes, denomOldLE, oldNullifierHashBytes,
+    new Uint8Array([outputs.length & 0xff]),
+  ];
+  for (const o of outputs) {
+    const denomNewLE = new Uint8Array(8);
+    {
+      const v = new DataView(denomNewLE.buffer);
+      const dn = BigInt(o.denomNew);
+      v.setUint32(0, Number(dn & 0xffffffffn), true);
+      v.setUint32(4, Number((dn >> 32n) & 0xffffffffn), true);
+    }
+    parts.push(o.assetIdNew, denomNewLE, o.newRecipientCommit, o.newLeafHash);
+  }
+  return sha256(concatBytes(...parts));
+}
+
+function _computeSlotMergeMsg(networkTag, inputs, assetIdNewBytes, denomNew, newRecipientCommitBytes, newLeafHashBytes) {
+  const denomNewLE = new Uint8Array(8);
+  {
+    const v = new DataView(denomNewLE.buffer);
+    const dn = BigInt(denomNew);
+    v.setUint32(0, Number(dn & 0xffffffffn), true);
+    v.setUint32(4, Number((dn >> 32n) & 0xffffffffn), true);
+  }
+  const parts = [
+    _SLOT_MERGE_DOMAIN, new Uint8Array([networkTag & 0xff]),
+    new Uint8Array([inputs.length & 0xff]),
+  ];
+  for (const inp of inputs) {
+    const denomOldLE = new Uint8Array(8);
+    {
+      const v = new DataView(denomOldLE.buffer);
+      const d = BigInt(inp.denomOld);
+      v.setUint32(0, Number(d & 0xffffffffn), true);
+      v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+    }
+    parts.push(inp.assetIdOld, denomOldLE, inp.oldNullifierHash);
+  }
+  parts.push(assetIdNewBytes, denomNewLE, newRecipientCommitBytes, newLeafHashBytes);
+  return sha256(concatBytes(...parts));
+}
 function _computeSlotMintMsg(networkTag, assetIdBytes, denomination, recipientCommitBytes, leafHashBytes, paymentAssetIdBytes, paymentAmount, kBtcXOnly) {
   const denomLE = new Uint8Array(8);
   {
@@ -8262,6 +8338,19 @@ async function commitmentForUtxo(env, txidHex, vout, network) {
     const tw = decodeTWithdrawPayload(decoded.payload);
     if (!tw) throw new Error('invalid T_WITHDRAW payload');
     return { commitment: tw.recipient_commitment, asset_id: tw.asset_id };
+  }
+  if (decoded.opcode === T_CBTC_TAC_DEPOSIT) {
+    // The deposit reveal tx produces the cBTC.tac mint UTXO at vout[0]
+    // (the P2WPKH at depositor_recovery_pk). The dapp builder enforces
+    // this layout; here we just bind (commit, asset_id) for downstream
+    // holdings / transfer / marketplace queries.
+    if (vout !== 0) throw new Error('T_CBTC_TAC_DEPOSIT mint UTXO lives at vout 0 only');
+    const dep = decodeTCbtcTacDepositPayload(decoded.payload);
+    if (!dep) throw new Error('invalid T_CBTC_TAC_DEPOSIT payload');
+    return {
+      commitment: dep.mint_recipient_commit,
+      asset_id: ctacVariantAssetId(dep.slot_denom_sats),
+    };
   }
   throw new Error('unsupported envelope opcode');
 }
@@ -12623,6 +12712,340 @@ async function scanForEtches(env, network) {
           }
         } catch { /* best-effort */ }
         found++;
+      } else if (decoded.opcode === T_SLOT_SPLIT) {
+        // SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.24 — atomic 1→N slot split.
+        // Consumes one old slot (records its nullifier in the spent-set) and
+        // appends N new leaves (2..16) — each output gets its own pool slot,
+        // possibly across different (asset_id, denomination) pairs sharing
+        // the same wrapper convention. Per-output K_btc x-only is recovered
+        // from tx.vout[i].scriptpubkey (P2TR 51 20 <x_only>), since the
+        // envelope wire format publishes (recipient_commit, leaf_hash) per
+        // output but K_btc is observable from the Bitcoin tx vout shape.
+        // Conservation Σ denom_new ≤ denom_old is enforced in the decoder.
+        const ss = decodeTSlotSplitPayload(decoded.payload);
+        if (!ss) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (ss.network_tag !== expectedNetTag) continue;
+
+        // Old slot's pool must be initialized.
+        const oldDenom = BigInt(ss.denom_old);
+        const oldInitRec = await env.REGISTRY_KV.get(
+          poolInitKey(network, ss.asset_id_old, oldDenom), 'json',
+        );
+        if (!oldInitRec) continue;
+
+        // Each output pool must be initialized. Cross-asset SPLIT is allowed
+        // by §5.24.6 when wrapper conventions match; pool-init existence is
+        // the structural gate (canonical-vk verification is upstream).
+        let allPoolsReady = true;
+        for (const out of ss.outputs) {
+          const initRec = await env.REGISTRY_KV.get(
+            poolInitKey(network, out.asset_id_new, BigInt(out.denom_new)), 'json',
+          );
+          if (!initRec) { allPoolsReady = false; break; }
+        }
+        if (!allPoolsReady) continue;
+
+        // Verify old owner's signature over slot_split_msg. This is the
+        // off-chain authorization binding (assetIdOld, denomOld, oldNullifier,
+        // outputs) — the on-chain K_btc spend at vin[1] is what Bitcoin
+        // consensus enforces.
+        let splitMsg;
+        try {
+          const outputsForMsg = ss.outputs.map(o => ({
+            assetIdNew: hexToBytes(o.asset_id_new),
+            denomNew: BigInt(o.denom_new),
+            newRecipientCommit: hexToBytes(o.new_recipient_commit),
+            newLeafHash: hexToBytes(o.new_leaf_hash),
+          }));
+          splitMsg = _computeSlotSplitMsg(
+            ss.network_tag,
+            hexToBytes(ss.asset_id_old),
+            oldDenom,
+            hexToBytes(ss.old_nullifier_hash),
+            outputsForMsg,
+          );
+        } catch { continue; }
+        let ownerXOnly;
+        try {
+          const ownerPt = compressedPointFromHex(ss.old_owner_pubkey);
+          ownerXOnly = ownerPt.toRawBytes(true).slice(1);
+        } catch { continue; }
+        if (!verifySchnorr(hexToBytes(ss.old_owner_sig), splitMsg, ownerXOnly)) continue;
+
+        // Verify each new slot is at tx.vout[i] with the expected denom +
+        // P2TR shape. Outputs are required to live at vout[0..n-1] in order;
+        // any output beyond n is ignored (commit-tx change can use a
+        // different reveal-tx structure — but the canonical split shape
+        // places all new slots first).
+        let voutsValid = true;
+        const newKBtcXOnlyHexes = [];
+        for (let i = 0; i < ss.outputs.length; i++) {
+          const vout = tx.vout?.[i];
+          if (!vout || typeof vout.value !== 'number') { voutsValid = false; break; }
+          if (BigInt(vout.value) !== BigInt(ss.outputs[i].denom_new)) {
+            voutsValid = false; break;
+          }
+          if (typeof vout.scriptpubkey !== 'string') { voutsValid = false; break; }
+          const spkLower = vout.scriptpubkey.toLowerCase();
+          // P2TR: OP_1 (0x51) + push 32 (0x20) + <x_only_32>
+          if (spkLower.length !== 68 || !spkLower.startsWith('5120')) {
+            voutsValid = false; break;
+          }
+          newKBtcXOnlyHexes.push(spkLower.slice(4));
+        }
+        if (!voutsValid) continue;
+
+        // Per-output leaf cap check (atomically — all-or-nothing).
+        let allCapped = true;
+        const cntCache = [];
+        for (let i = 0; i < ss.outputs.length; i++) {
+          const out = ss.outputs[i];
+          const dNew = BigInt(out.denom_new);
+          const cntKey = poolLeafCountKey(network, out.asset_id_new, dNew);
+          const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+          if (cnt >= POOL_LEAF_CAP) { allCapped = false; break; }
+          cntCache.push({ cntKey, cnt, dNew });
+        }
+        if (!allCapped) continue;
+
+        // Append each new leaf + write slot-registry + leaf-lookup entries.
+        for (let i = 0; i < ss.outputs.length; i++) {
+          const out = ss.outputs[i];
+          const { cntKey, cnt, dNew } = cntCache[i];
+          const xonlyHex = newKBtcXOnlyHexes[i];
+          // poolLeafKeyFor uses (network, aid, denom, height, txIndex, txid)
+          // — for N outputs in the same tx we need disambiguation. Suffix
+          // the txid with ":i" so each leaf gets its own key, preserving
+          // canonical sort order across the tx's outputs.
+          const leafKey = poolLeafKeyFor(
+            network, out.asset_id_new, dNew, h, txIndex, tx.txid + ':' + i,
+          );
+          await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+            asset_id: out.asset_id_new,
+            denomination: dNew.toString(),
+            leaf_commitment: out.new_leaf_hash,
+            deposit_txid: tx.txid,
+            tx_index: txIndex,
+            deposited_at_height: h,
+            deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            network,
+            kind: 'slot_split_new',
+            recipient_commitment: out.new_recipient_commit,
+            encrypted_note: ss.encrypted_notes ? ss.encrypted_notes[i] : null,
+            split_predecessor_nullifier: ss.old_nullifier_hash,
+            split_vout_index: i,
+          }));
+          await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+          await env.REGISTRY_KV.put(
+            slotRegistryKey(network, out.asset_id_new, dNew, xonlyHex),
+            JSON.stringify({
+              asset_id: out.asset_id_new,
+              denomination: dNew.toString(),
+              k_btc_xonly: xonlyHex,
+              recipient_commitment: out.new_recipient_commit,
+              leaf_index: cnt,
+              mint_txid: tx.txid,
+              mint_height: h,
+              status: 'live',
+              split_predecessor_nullifier: ss.old_nullifier_hash,
+              split_vout_index: i,
+              network,
+            }),
+          );
+          await slotLeafLookupPut(env, network, out.new_leaf_hash, {
+            asset_id: out.asset_id_new,
+            denom_sats: dNew.toString(),
+            k_btc_xonly: xonlyHex,
+            mint_txid: tx.txid,
+            mint_height: h,
+            network,
+          });
+        }
+
+        // Record old nullifier (burn side) — idempotent.
+        const nKey = poolNullifierKey(network, ss.asset_id_old, oldDenom, ss.old_nullifier_hash);
+        const existingN = await env.REGISTRY_KV.get(nKey);
+        if (!existingN) {
+          await env.REGISTRY_KV.put(nKey, JSON.stringify({
+            asset_id: ss.asset_id_old,
+            denomination: oldDenom.toString(),
+            nullifier_hash: ss.old_nullifier_hash,
+            withdraw_txid: tx.txid,
+            withdrawn_at_height: h,
+            withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+            network,
+            kind: 'slot_split_old',
+            split_successor_leaf_hashes: ss.outputs.map(o => o.new_leaf_hash),
+          }));
+        }
+
+        // Mark old slot 'split' in slot-registry (best-effort). Recovered K_btc
+        // for the old slot comes from deriveSlotKbtc on the pre-§5.24.0 legacy
+        // single-key path — for two-key slots the registry was populated at
+        // mint time with the explicit k_btc_xonly, so lookup by recipient_commit
+        // is informational only.
+        try {
+          const oldKBtcPoint = deriveSlotKbtc(hexToBytes(ss.old_recipient_commitment), oldDenom);
+          if (!oldKBtcPoint.equals(PEDERSEN_ZERO)) {
+            const oldXonlyHex = bytesToHex(slotXOnly(oldKBtcPoint));
+            const oldSlotKey = slotRegistryKey(network, ss.asset_id_old, oldDenom, oldXonlyHex);
+            const oldSlot = await env.REGISTRY_KV.get(oldSlotKey, 'json');
+            if (oldSlot && oldSlot.status !== 'rotated' && oldSlot.status !== 'redeemed' && oldSlot.status !== 'split' && oldSlot.status !== 'merged') {
+              oldSlot.status = 'split';
+              oldSlot.split_txid = tx.txid;
+              oldSlot.split_height = h;
+              oldSlot.split_successor_leaf_hashes = ss.outputs.map(o => o.new_leaf_hash);
+              await env.REGISTRY_KV.put(oldSlotKey, JSON.stringify(oldSlot));
+            }
+          }
+        } catch { /* best-effort */ }
+
+        found++;
+      } else if (decoded.opcode === T_SLOT_MERGE) {
+        // SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.25 — atomic N→1 slot merge.
+        // Consumes N old slots (records each nullifier in the spent-set) and
+        // appends ONE new leaf with denom_new ≤ Σ denom_old (the difference
+        // funds the Bitcoin miner fee). Each input's K_btc UTXO is spent in
+        // the reveal tx (Bitcoin consensus enforces the spend authorization);
+        // the new slot's K_btc is at tx.vout[0].
+        const sm = decodeTSlotMergePayload(decoded.payload);
+        if (!sm) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (sm.network_tag !== expectedNetTag) continue;
+
+        // Each input pool must be initialized.
+        let allInputsReady = true;
+        for (const inp of sm.inputs) {
+          const initRec = await env.REGISTRY_KV.get(
+            poolInitKey(network, inp.asset_id_old, BigInt(inp.denom_old)), 'json',
+          );
+          if (!initRec) { allInputsReady = false; break; }
+        }
+        if (!allInputsReady) continue;
+
+        // New slot's pool must be initialized.
+        const dNew = BigInt(sm.denom_new);
+        const newInitRec = await env.REGISTRY_KV.get(
+          poolInitKey(network, sm.asset_id_new, dNew), 'json',
+        );
+        if (!newInitRec) continue;
+
+        // Verify new owner's signature over slot_merge_msg.
+        let mergeMsg;
+        try {
+          const inputsForMsg = sm.inputs.map(inp => ({
+            assetIdOld: hexToBytes(inp.asset_id_old),
+            denomOld: BigInt(inp.denom_old),
+            oldNullifierHash: hexToBytes(inp.old_nullifier_hash),
+          }));
+          mergeMsg = _computeSlotMergeMsg(
+            sm.network_tag,
+            inputsForMsg,
+            hexToBytes(sm.asset_id_new),
+            dNew,
+            hexToBytes(sm.new_recipient_commit),
+            hexToBytes(sm.new_leaf_hash),
+          );
+        } catch { continue; }
+        let ownerXOnly;
+        try {
+          const ownerPt = compressedPointFromHex(sm.new_owner_pubkey);
+          ownerXOnly = ownerPt.toRawBytes(true).slice(1);
+        } catch { continue; }
+        if (!verifySchnorr(hexToBytes(sm.new_owner_sig), mergeMsg, ownerXOnly)) continue;
+
+        // New slot at tx.vout[0] with denom_new + P2TR shape.
+        const vout0 = tx.vout?.[0];
+        if (!vout0 || typeof vout0.value !== 'number' || BigInt(vout0.value) !== dNew) continue;
+        if (typeof vout0.scriptpubkey !== 'string') continue;
+        const spkLower = vout0.scriptpubkey.toLowerCase();
+        if (spkLower.length !== 68 || !spkLower.startsWith('5120')) continue;
+        const newKBtcXOnlyHex = spkLower.slice(4);
+
+        // New-pool leaf cap.
+        const cntKey = poolLeafCountKey(network, sm.asset_id_new, dNew);
+        const cnt = parseInt(await env.REGISTRY_KV.get(cntKey) || '0', 10);
+        if (cnt >= POOL_LEAF_CAP) continue;
+
+        // Append new leaf + slot-registry + leaf-lookup.
+        const leafKey = poolLeafKeyFor(network, sm.asset_id_new, dNew, h, txIndex, tx.txid);
+        await env.REGISTRY_KV.put(leafKey, JSON.stringify({
+          asset_id: sm.asset_id_new,
+          denomination: dNew.toString(),
+          leaf_commitment: sm.new_leaf_hash,
+          deposit_txid: tx.txid,
+          tx_index: txIndex,
+          deposited_at_height: h,
+          deposited_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+          network,
+          kind: 'slot_merge_new',
+          recipient_commitment: sm.new_recipient_commit,
+          encrypted_note: sm.encrypted_note || null,
+          merge_predecessor_nullifiers: sm.inputs.map(i => i.old_nullifier_hash),
+        }));
+        await env.REGISTRY_KV.put(cntKey, String(cnt + 1));
+        await env.REGISTRY_KV.put(
+          slotRegistryKey(network, sm.asset_id_new, dNew, newKBtcXOnlyHex),
+          JSON.stringify({
+            asset_id: sm.asset_id_new,
+            denomination: dNew.toString(),
+            k_btc_xonly: newKBtcXOnlyHex,
+            recipient_commitment: sm.new_recipient_commit,
+            leaf_index: cnt,
+            mint_txid: tx.txid,
+            mint_height: h,
+            status: 'live',
+            merge_predecessor_nullifiers: sm.inputs.map(i => i.old_nullifier_hash),
+            network,
+          }),
+        );
+        await slotLeafLookupPut(env, network, sm.new_leaf_hash, {
+          asset_id: sm.asset_id_new,
+          denom_sats: dNew.toString(),
+          k_btc_xonly: newKBtcXOnlyHex,
+          mint_txid: tx.txid,
+          mint_height: h,
+          network,
+        });
+
+        // Record each input's nullifier (burn side) — idempotent per nullifier.
+        for (const inp of sm.inputs) {
+          const dOld = BigInt(inp.denom_old);
+          const nKey = poolNullifierKey(network, inp.asset_id_old, dOld, inp.old_nullifier_hash);
+          const existingN = await env.REGISTRY_KV.get(nKey);
+          if (!existingN) {
+            await env.REGISTRY_KV.put(nKey, JSON.stringify({
+              asset_id: inp.asset_id_old,
+              denomination: dOld.toString(),
+              nullifier_hash: inp.old_nullifier_hash,
+              withdraw_txid: tx.txid,
+              withdrawn_at_height: h,
+              withdrawn_at: tx.status?.block_time || Math.floor(Date.now() / 1000),
+              network,
+              kind: 'slot_merge_old',
+              merge_successor_leaf: sm.new_leaf_hash,
+            }));
+          }
+          // Mark old slot 'merged' (best-effort, legacy single-key path).
+          try {
+            const oldKBtcPoint = deriveSlotKbtc(hexToBytes(inp.old_recipient_commitment), dOld);
+            if (!oldKBtcPoint.equals(PEDERSEN_ZERO)) {
+              const oldXonlyHex = bytesToHex(slotXOnly(oldKBtcPoint));
+              const oldSlotKey = slotRegistryKey(network, inp.asset_id_old, dOld, oldXonlyHex);
+              const oldSlot = await env.REGISTRY_KV.get(oldSlotKey, 'json');
+              if (oldSlot && oldSlot.status !== 'rotated' && oldSlot.status !== 'redeemed' && oldSlot.status !== 'split' && oldSlot.status !== 'merged') {
+                oldSlot.status = 'merged';
+                oldSlot.merge_txid = tx.txid;
+                oldSlot.merge_height = h;
+                oldSlot.merge_successor_leaf = sm.new_leaf_hash;
+                await env.REGISTRY_KV.put(oldSlotKey, JSON.stringify(oldSlot));
+              }
+            }
+          } catch { /* best-effort */ }
+        }
+
+        found++;
       } else if (decoded.opcode === T_CBTC_TAC_DEPOSIT) {
         // SPEC-CBTC-TAC-AMENDMENT §5.36 — LP-shaped mint of cBTC.tac.
         // Validates: target cBTC.zk leaf is `live`, bond_ratio meets
@@ -13153,6 +13576,7 @@ export {
   ctacGetSupply, ctacAddSupply,
   ctacGetForceCloseThrottle, ctacBumpForceCloseThrottle,
   ctacBondRatioThousandths, ctacTwapSatsPerTac,
+  ctacVariantAssetId,
   ctacScanSlashDetected,
   // Chain-probe helper (reusable across SLASH + future coverage check).
   chainOutspendProbe,

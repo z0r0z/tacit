@@ -6022,6 +6022,19 @@ function deriveSlotRBtc(secretBytes, nullifierPreimageBytes) {
   return bigintToBytes32(bn);
 }
 
+// Deterministic cBTC.tac variant asset_id per denomination tier.
+// Mirrors the worker's ctacVariantAssetId; both sides MUST compute the
+// same value byte-for-byte or holdings/transfers diverge silently.
+const CTAC_VARIANT_DOMAIN = new TextEncoder().encode('tacit-cbtc-tac-variant-v1');
+function ctacVariantAssetId(denomSats) {
+  const denomLE = new Uint8Array(8);
+  const v = new DataView(denomLE.buffer);
+  const d = BigInt(denomSats);
+  v.setUint32(0, Number(d & 0xffffffffn), true);
+  v.setUint32(4, Number((d >> 32n) & 0xffffffffn), true);
+  return bytesToHex(sha256(concatBytes(CTAC_VARIANT_DOMAIN, denomLE)));
+}
+
 // §5.24.0 + §5.23: rotate_msg binds the NEW slot's k_btc_xonly so the old
 // owner attests to the new BTC spending key. Two-key: K_btc is independent
 // from recipient_commit, so we must publish + sign it explicitly.
@@ -58678,6 +58691,8 @@ export {
   // P2TR. Force-close keeper + slash-claim builders staged separately.
   buildAndBroadcastCbtcTacDeposit, buildAndBroadcastCbtcTacWithdraw,
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,
+  // cBTC.tac variant asset_id derivation (must match worker byte-for-byte).
+  ctacVariantAssetId,
   // Slot-note encryption primitives (SPEC-CBTC-ZK-FUNGIBILITY §5.26).
   // Exported for the standalone test at tests/slot-note-encryption.test.mjs.
   encryptSlotNote, decryptSlotNote, slotViewingPubkey,

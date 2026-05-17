@@ -307,6 +307,24 @@ group('T_SHARE_SLASH_CLAIM round-trip');
     dapp.decodeTShareSlashClaimPayload(tampered) === null);
 }
 
+// ============== ctacVariantAssetId — dapp ↔ worker parity ==============
+group('ctacVariantAssetId — cross-impl parity');
+
+{
+  // Both sides MUST compute the same asset_id byte-for-byte. Mismatch here
+  // = silent divergence between dapp holdings/transfer logic and worker
+  // indexer (cBTC.tac UTXOs would be invisible to the dapp).
+  const denoms = [100_000_000n, 1_000_000n, 10_000n, 1_000_000_000n];
+  for (const d of denoms) {
+    const dappAid = dapp.ctacVariantAssetId(d);
+    const workerAid = worker.ctacVariantAssetId(d);
+    ok(`parity at denom=${d}: dapp_aid === worker_aid`, dappAid === workerAid);
+  }
+  // Distinct denoms → distinct asset_ids (canonical-pool isolation)
+  ok('cBTC.tac@1BTC ≠ cBTC.tac@0.01BTC',
+    dapp.ctacVariantAssetId(100_000_000n) !== dapp.ctacVariantAssetId(1_000_000n));
+}
+
 // ============== summary ==============
 console.log(`\n${pass}/${pass + fail} passed`);
 if (fail > 0) process.exit(1);
