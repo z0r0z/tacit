@@ -182,6 +182,271 @@ function pedersenCommit(amount, blinding) {
   return aH.add(rG);
 }
 
+// ============== BABY JUBJUB PRIMITIVES (AMM cross-curve commits) ==============
+//
+// Twisted Edwards form per circomlib: a·u² + v² = 1 + d·u²·v² over BN254 Fr.
+//   a    = 168700
+//   d    = 168696
+//   p_Fr = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+//   full order = 21888242871839275222246405745257275088614511777268538073601725287587578984328
+//   prime subgroup order = full / 8
+//
+// Point encoding (matches circomlib packPoint byte-for-byte): 32-byte v
+// little-endian, with sign(u) in high bit of byte 31.
+//
+// Pedersen commitment on BJJ: C = a·H_BJJ + r·G_BJJ. Used by LP_ADD
+// share commits + LP_REMOVE recv commits. The XCURVE sigma proof binds
+// the BJJ commit to the corresponding secp commit so a single value
+// can't open to (a₁ on secp, a₂ on BJJ) for a₁ ≠ a₂.
+//
+// Inlined from tests/amm-bjj.mjs (reference impl). Pure-JS over BigInt;
+// only deps are sha256 + concatBytes which the worker already has.
+const BJJ_P_FR    = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+const BJJ_A       = 168700n;
+const BJJ_D       = 168696n;
+const BJJ_ORDER   = 21888242871839275222246405745257275088614511777268538073601725287587578984328n;
+const BJJ_N       = BJJ_ORDER / 8n;
+const BJJ_COFACTOR = 8n;
+const BJJ_PM1D2   = (BJJ_P_FR - 1n) / 2n;
+const BJJ_ID      = Object.freeze([0n, 1n]);
+
+function bjjMod(a, p = BJJ_P_FR) { const r = a % p; return r < 0n ? r + p : r; }
+function bjjModPow(base, exp, p = BJJ_P_FR) {
+  let r = 1n, b = bjjMod(base, p), e = exp;
+  while (e > 0n) {
+    if (e & 1n) r = (r * b) % p;
+    b = (b * b) % p;
+    e >>= 1n;
+  }
+  return r;
+}
+function bjjModInv(a, p = BJJ_P_FR) {
+  let [oldR, r] = [bjjMod(a, p), p];
+  let [oldS, s] = [1n, 0n];
+  while (r !== 0n) {
+    const q = oldR / r;
+    [oldR, r] = [r, oldR - q * r];
+    [oldS, s] = [s, oldS - q * s];
+  }
+  if (oldR !== 1n) throw new Error('not invertible');
+  return bjjMod(oldS, p);
+}
+function bjjModSqrt(n, p = BJJ_P_FR) {
+  n = bjjMod(n, p);
+  if (n === 0n) return 0n;
+  if (bjjModPow(n, (p - 1n) / 2n, p) !== 1n) return null;
+  let Q = p - 1n;
+  let S = 0n;
+  while ((Q & 1n) === 0n) { Q >>= 1n; S++; }
+  if (S === 1n) return bjjModPow(n, (p + 1n) / 4n, p);
+  let z = 2n;
+  while (bjjModPow(z, (p - 1n) / 2n, p) !== p - 1n) z++;
+  let M = S;
+  let c = bjjModPow(z, Q, p);
+  let t = bjjModPow(n, Q, p);
+  let R = bjjModPow(n, (Q + 1n) / 2n, p);
+  while (true) {
+    if (t === 1n) return R;
+    let i = 0n, tmp = t;
+    while (tmp !== 1n) {
+      tmp = (tmp * tmp) % p;
+      i++;
+      if (i >= M) return null;
+    }
+    const b = bjjModPow(c, 1n << (M - i - 1n), p);
+    M = i;
+    c = (b * b) % p;
+    t = (t * c) % p;
+    R = (R * b) % p;
+  }
+}
+function bjjEq(P, Q) { return P[0] === Q[0] && P[1] === Q[1]; }
+function bjjIsIdentity(P) { return P[0] === 0n && P[1] === 1n; }
+function bjjOnCurve(P) {
+  const [u, v] = P;
+  const u2 = (u * u) % BJJ_P_FR;
+  const v2 = (v * v) % BJJ_P_FR;
+  const lhs = bjjMod(BJJ_A * u2 + v2);
+  const rhs = bjjMod(1n + BJJ_D * ((u2 * v2) % BJJ_P_FR));
+  return lhs === rhs;
+}
+function bjjAdd(P, Q) {
+  const [u1, v1] = P, [u2, v2] = Q;
+  const u1u2 = (u1 * u2) % BJJ_P_FR;
+  const v1v2 = (v1 * v2) % BJJ_P_FR;
+  const dProd = bjjMod(BJJ_D * u1u2 * v1v2 % BJJ_P_FR);
+  const inv1 = bjjModInv(bjjMod(1n + dProd));
+  const inv2 = bjjModInv(bjjMod(1n - dProd));
+  const u3 = bjjMod((u1 * v2 + v1 * u2) % BJJ_P_FR * inv1);
+  const v3 = bjjMod((v1 * v2 - BJJ_A * u1 * u2 % BJJ_P_FR) * inv2);
+  return [u3, v3];
+}
+function bjjMul(P, k) {
+  let r = [0n, 1n];
+  let acc = [P[0], P[1]];
+  let e = bjjMod(k, BJJ_ORDER);
+  while (e > 0n) {
+    if (e & 1n) r = bjjAdd(r, acc);
+    acc = bjjAdd(acc, acc);
+    e >>= 1n;
+  }
+  return r;
+}
+function bjjPackPoint(P) {
+  const buf = new Uint8Array(32);
+  let v = P[1];
+  for (let i = 0; i < 32; i++) { buf[i] = Number(v & 0xffn); v >>= 8n; }
+  if (P[0] > BJJ_PM1D2) buf[31] |= 0x80;
+  return buf;
+}
+function bjjInSubgroup(P) {
+  if (bjjIsIdentity(P)) return true;
+  return bjjIsIdentity(bjjMul(P, BJJ_N));
+}
+function bjjUnpackPoint(buf) {
+  if (buf.length !== 32) throw new Error('bad length');
+  const work = new Uint8Array(buf);
+  let sign = false;
+  if (work[31] & 0x80) { sign = true; work[31] &= 0x7f; }
+  let v = 0n;
+  for (let i = 31; i >= 0; i--) v = (v << 8n) | BigInt(work[i]);
+  if (v >= BJJ_P_FR) return null;
+  const v2 = (v * v) % BJJ_P_FR;
+  const num = bjjMod(1n - v2);
+  const den = bjjMod(BJJ_A - BJJ_D * v2 % BJJ_P_FR);
+  if (den === 0n) return null;
+  const u2 = bjjMod(num * bjjModInv(den));
+  let u = bjjModSqrt(u2);
+  if (u === null) return null;
+  if ((u > BJJ_PM1D2) !== sign) u = bjjMod(-u);
+  const P = [u, v];
+  if (!bjjInSubgroup(P)) return null;
+  return P;
+}
+
+// NUMS generator derivation (AMM.md §"BabyJubJub NUMS try-and-increment").
+const _BJJ_SEED_H = new TextEncoder().encode('tacit-amm-bjj-H-v1');
+const _BJJ_SEED_G = new TextEncoder().encode('tacit-amm-bjj-G-v1');
+function _bjjCounterLE(c) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setUint32(0, c >>> 0, true);
+  return b;
+}
+function _bjjDigestToScalar(d32) {
+  let n = 0n;
+  for (let i = 0; i < 32; i++) n = (n << 8n) | BigInt(d32[i]);
+  return n % BJJ_P_FR;
+}
+function bjjDeriveGenerator(seed, maxIters = 1024) {
+  for (let c = 0; c < maxIters; c++) {
+    const d = sha256(concatBytes(seed, _bjjCounterLE(c)));
+    const u = _bjjDigestToScalar(d);
+    const u2 = (u * u) % BJJ_P_FR;
+    const num = bjjMod(1n - BJJ_A * u2 % BJJ_P_FR);
+    const den = bjjMod(1n - BJJ_D * u2 % BJJ_P_FR);
+    if (den === 0n) continue;
+    const vsq = bjjMod(num * bjjModInv(den));
+    let v = bjjModSqrt(vsq);
+    if (v === null) continue;
+    if ((v & 1n) === 1n) v = bjjMod(-v);
+    const cand = [u, v];
+    if (!bjjOnCurve(cand)) continue;
+    const Q = bjjMul(cand, BJJ_COFACTOR);
+    if (bjjIsIdentity(Q)) continue;
+    if (!bjjIsIdentity(bjjMul(Q, BJJ_N))) continue;
+    return { point: Q, counter: c };
+  }
+  throw new Error('BJJ NUMS derivation: max iterations exceeded');
+}
+let _BJJ_H = null, _BJJ_G = null;
+function H_BJJ() { if (!_BJJ_H) _BJJ_H = bjjDeriveGenerator(_BJJ_SEED_H).point; return _BJJ_H; }
+function G_BJJ() { if (!_BJJ_G) _BJJ_G = bjjDeriveGenerator(_BJJ_SEED_G).point; return _BJJ_G; }
+
+// Pedersen commitment on BJJ: C = a·H_BJJ + r·G_BJJ. Used by LP_ADD
+// share commits + LP_REMOVE recv commits.
+function pedersenBJJ(amount, blinding) {
+  const a = bjjMod(BigInt(amount), BJJ_N);
+  const r = bjjMod(BigInt(blinding), BJJ_N);
+  const aH = a === 0n ? [0n, 1n] : bjjMul(H_BJJ(), a);
+  const rG = r === 0n ? [0n, 1n] : bjjMul(G_BJJ(), r);
+  return bjjAdd(aH, rG);
+}
+
+// ============== XCURVE SIGMA VERIFY (Camenisch-Stadler hybrid commit binding) ==============
+//
+// Per AMM.md §"Hybrid commitments (secp256k1 + BabyJubJub)". Proves
+// knowledge of (a, r_secp, r_BJJ) such that:
+//   C_in_secp = a·H_secp + r_secp·G_secp  (on secp256k1)
+//   C_in_BJJ  = a·H_BJJ  + r_BJJ ·G_BJJ   (on BabyJubJub)
+// with a < 2^64. Binding holds because the wire-integer z_a is SHARED
+// across both curves' verification equations.
+//
+// Wire format (169 bytes):
+//   A_secp(33) || A_BJJ(32) || z_a(40) || z_r_secp(32) || z_r_BJJ(32)
+//
+// Soundness: 128-bit (Fiat-Shamir extractor over 2^128 challenge space).
+// Worker inlines the VERIFIER only (prover lives in dapp).
+const _XCURVE_DOMAIN = new TextEncoder().encode('tacit-amm-xcurve-v1');
+const XCURVE_PROOF_LEN = 169;
+const _XCURVE_Z_A_BYTES = 40;
+const _XCURVE_CHALLENGE_BYTES = 16;
+const _XCURVE_TWO_320 = 1n << 320n;
+
+function _xcurveBytesToBigintBE(b) {
+  let n = 0n;
+  for (let i = 0; i < b.length; i++) n = (n << 8n) | BigInt(b[i]);
+  return n;
+}
+function _xcurveModNBJJ(x) { return ((x % BJJ_N) + BJJ_N) % BJJ_N; }
+function _xcurveChallenge(C_secp_bytes, C_BJJ_bytes, A_secp_bytes, A_BJJ_bytes) {
+  const h = sha256(concatBytes(_XCURVE_DOMAIN, C_secp_bytes, C_BJJ_bytes, A_secp_bytes, A_BJJ_bytes));
+  return _xcurveBytesToBigintBE(h.subarray(32 - _XCURVE_CHALLENGE_BYTES, 32));
+}
+
+// Verify the cross-curve sigma proof. Returns true iff the same hidden
+// `a` opens both C_secp_bytes and C_BJJ_bytes.
+function verifyXCurve(proof, C_secp_bytes, C_BJJ_bytes) {
+  if (!(proof instanceof Uint8Array) || proof.length !== XCURVE_PROOF_LEN) return false;
+  if (!(C_secp_bytes instanceof Uint8Array) || C_secp_bytes.length !== 33) return false;
+  if (!(C_BJJ_bytes  instanceof Uint8Array) || C_BJJ_bytes.length  !== 32) return false;
+
+  const A_secp_bytes = proof.subarray(0, 33);
+  const A_BJJ_bytes  = proof.subarray(33, 65);
+  const z_a          = _xcurveBytesToBigintBE(proof.subarray(65, 65 + _XCURVE_Z_A_BYTES));
+  const z_r_secp     = _xcurveBytesToBigintBE(proof.subarray(65 + _XCURVE_Z_A_BYTES, 65 + _XCURVE_Z_A_BYTES + 32));
+  const z_r_BJJ      = _xcurveBytesToBigintBE(proof.subarray(65 + _XCURVE_Z_A_BYTES + 32, XCURVE_PROOF_LEN));
+
+  if (z_a >= _XCURVE_TWO_320) return false;
+  if (z_r_secp >= SECP_N) return false;
+  if (z_r_BJJ  >= BJJ_N)  return false;
+
+  let C_secp_pt, A_secp_pt, C_BJJ_pt, A_BJJ_pt;
+  try {
+    C_secp_pt = secp.ProjectivePoint.fromHex(bytesToHex(C_secp_bytes));
+    A_secp_pt = secp.ProjectivePoint.fromHex(bytesToHex(A_secp_bytes));
+  } catch { return false; }
+  C_BJJ_pt = bjjUnpackPoint(C_BJJ_bytes);
+  A_BJJ_pt = bjjUnpackPoint(A_BJJ_bytes);
+  if (!C_BJJ_pt || !A_BJJ_pt) return false;
+
+  const e = _xcurveChallenge(C_secp_bytes, C_BJJ_bytes, A_secp_bytes, A_BJJ_bytes);
+
+  // secp side: z_a·H_secp + z_r_secp·G_secp == A_secp + e·C_secp
+  const lhsS = (z_a === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(modN(z_a)))
+    .add(z_r_secp === 0n ? PEDERSEN_ZERO : PEDERSEN_G.multiply(z_r_secp));
+  const rhsS = A_secp_pt.add(e === 0n ? PEDERSEN_ZERO : C_secp_pt.multiply(e));
+  if (!lhsS.equals(rhsS)) return false;
+
+  // BJJ side: z_a·H_BJJ + z_r_BJJ·G_BJJ == A_BJJ + e·C_BJJ
+  const lhsB = bjjAdd(
+    z_a === 0n ? [0n, 1n] : bjjMul(H_BJJ(), _xcurveModNBJJ(z_a)),
+    z_r_BJJ === 0n ? [0n, 1n] : bjjMul(G_BJJ(), z_r_BJJ),
+  );
+  const eC_BJJ = e === 0n ? [0n, 1n] : bjjMul(C_BJJ_pt, e);
+  const rhsB = bjjAdd(A_BJJ_pt, eC_BJJ);
+  return bjjEq(lhsB, rhsB);
+}
+
 // SPEC-CBTC-ZK §5.21–§5.23: derive the slot's Bitcoin spending key from the
 // mixer leaf's Pedersen commitment. Identity:
 //   K_btc = recipient_commit − denomination · H = r_leaf · G
@@ -13887,6 +14152,16 @@ async function scanForEtches(env, network) {
             if (!allOk) continue;
           }
 
+          // XCurve sigma binding: prove share commit opens to the SAME
+          // hidden value on secp (shareCSecp) and BJJ (shareCBJJ). This
+          // closes the cross-curve binding gap — without it, a founder
+          // could mint shares on secp side with one value and BJJ side
+          // with another, creating a hidden inflation vector.
+          const shareCSecpBytes = hexToBytes(lp.share_c_secp);
+          const shareCBJJBytes = hexToBytes(lp.share_c_bjj);
+          const shareXcurveSigmaBytes = hexToBytes(lp.share_xcurve_sigma);
+          if (!verifyXCurve(shareXcurveSigmaBytes, shareCSecpBytes, shareCBJJBytes)) continue;
+
           // Derive lp_asset_id so downstream consumers can attribute
           // share UTXOs to this pool.
           const lpAssetId = bytesToHex(ammDeriveLpAssetId(poolIdBytes));
@@ -13918,10 +14193,11 @@ async function scanForEtches(env, network) {
             network,
             kind: 'amm_pool_init',
             // Validation tag reflects what THIS branch verified. Downstream
-            // T_SWAP_VAR / T_LP_REMOVE validators check this before
-            // accepting traffic against the pool — pools must reach
-            // 'verified' before mainnet-quality traffic is allowed.
-            validation: 'sigs-and-arithmetic-verified',
+            // T_SWAP_VAR / T_LP_REMOVE validators check this. Pools at
+            // 'xcurve-verified' are missing only the Groth16 proof gate
+            // (per-pool VK fetch + verify — staged separately). Pools at
+            // 'verified' (post-first-swap upgrade) are fully crypto-checked.
+            validation: 'xcurve-verified',
           });
           found++;
         } else {
@@ -13955,7 +14231,7 @@ async function scanForEtches(env, network) {
           const poolIdHex0 = bytesToHex(poolIdBytes0);
           const pool0 = await ammPoolGet(env, network, poolIdHex0);
           if (!pool0) continue;
-          if (pool0.validation !== 'sigs-and-arithmetic-verified'
+          if (pool0.validation !== 'xcurve-verified'
               && pool0.validation !== 'verified') continue;
 
           // Initial-LP lock window: first AMM_INITIAL_LP_LOCK_BLOCKS after
@@ -13975,6 +14251,12 @@ async function scanForEtches(env, network) {
           } catch { continue; }
           if (expectedShares === 0n) continue;  // zero-share guard
           if (expectedShares !== BigInt(lp.share_amount)) continue;
+
+          // XCurve sigma binding on share commit (same gate as POOL_INIT).
+          const v0ShareCSecpBytes = hexToBytes(lp.share_c_secp);
+          const v0ShareCBJJBytes = hexToBytes(lp.share_c_bjj);
+          const v0ShareSigmaBytes = hexToBytes(lp.share_xcurve_sigma);
+          if (!verifyXCurve(v0ShareSigmaBytes, v0ShareCSecpBytes, v0ShareCBJJBytes)) continue;
 
           // Update pool state atomically.
           const newReserveA = BigInt(pool0.reserve_a) + dA0;
@@ -14013,7 +14295,7 @@ async function scanForEtches(env, network) {
         const poolIdHexR = bytesToHex(poolIdBytesR);
         const poolR = await ammPoolGet(env, network, poolIdHexR);
         if (!poolR) continue;
-        if (poolR.validation !== 'sigs-and-arithmetic-verified'
+        if (poolR.validation !== 'xcurve-verified'
             && poolR.validation !== 'verified') continue;
 
         const shareAmount = BigInt(rm.share_amount);
@@ -14033,6 +14315,19 @@ async function scanForEtches(env, network) {
         // must yield > 0. In extremely imbalanced pools the smaller
         // side could floor-round to 0; reject upfront.
         if (expected.deltaA === 0n || expected.deltaB === 0n) continue;
+
+        // XCurve sigma binding on BOTH recv A and recv B commits. Each
+        // proves recv_X_C_secp opens to the same hidden ΔX as recv_X_C_BJJ,
+        // so the LP can't withdraw different effective amounts on each
+        // curve. Each binding is verified independently.
+        const recvACSecpBytes = hexToBytes(rm.recv_a_c_secp);
+        const recvACBJJBytes = hexToBytes(rm.recv_a_c_bjj);
+        const recvASigmaBytes = hexToBytes(rm.recv_a_xcurve_sigma);
+        if (!verifyXCurve(recvASigmaBytes, recvACSecpBytes, recvACBJJBytes)) continue;
+        const recvBCSecpBytes = hexToBytes(rm.recv_b_c_secp);
+        const recvBCBJJBytes = hexToBytes(rm.recv_b_c_bjj);
+        const recvBSigmaBytes = hexToBytes(rm.recv_b_xcurve_sigma);
+        if (!verifyXCurve(recvBSigmaBytes, recvBCSecpBytes, recvBCBJJBytes)) continue;
 
         const newReserveA = BigInt(poolR.reserve_a) - expected.deltaA;
         const newReserveB = BigInt(poolR.reserve_b) - expected.deltaB;
@@ -14100,7 +14395,7 @@ async function scanForEtches(env, network) {
         // Pool lookup.
         const pool = await ammPoolGet(env, network, sv.pool_id);
         if (!pool) continue;
-        if (pool.validation !== 'sigs-and-arithmetic-verified'
+        if (pool.validation !== 'xcurve-verified'
             && pool.validation !== 'verified') continue;
 
         // Reserves freshness: trader's view MUST match the pool's
@@ -14571,6 +14866,10 @@ export {
   AMM_FEE_BPS_MAX, AMM_CAPABILITY_FLAGS_MAX, AMM_MINIMUM_LIQUIDITY,
   decodeTSwapVarPayload, ammCurveDeltaOut, ammSwapVarEnvelopeHash,
   ammKernelMsgV1, ammSwapVarIntentMsg, ammSwapVarKernelVerifyPoint,
+  // BJJ + XCurve primitives for cross-curve LP commits.
+  pedersenBJJ, H_BJJ, G_BJJ, bjjDeriveGenerator,
+  verifyXCurve, XCURVE_PROOF_LEN,
+  BJJ_P_FR, BJJ_N, BJJ_ORDER,
   decodeTLpRemovePayload, ammLpAddShares, ammLpRemoveOutputs,
   decodeTLpAddPayload,
   // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
