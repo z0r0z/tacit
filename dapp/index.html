@@ -523,6 +523,27 @@ button.market-chip .chip-caret {
 .swap-action-pulse {
   animation: swap-action-pulse-kf 1100ms ease-out 2;
 }
+/* Click-acknowledgement on orderbook rows. Fires the moment a row is
+   clicked so the user gets immediate feedback before the page scrolls
+   to the Swap tile and pulses its action. Without this local ack the
+   click felt unconfirmed during the scroll latency. Brief background
+   flash + a thin border-left in the relevant brand color (amber for
+   buy-side asks, green for sell-side bids). Removed by a setTimeout
+   in the click handler so rapid re-clicks re-fire cleanly. */
+@keyframes click-ack-flash-buy {
+  0%   { background: rgba(247,147,26,0.32); box-shadow: inset 3px 0 0 0 #f7931a; }
+  100% { background: var(--bg); box-shadow: inset 0 0 0 0 transparent; }
+}
+@keyframes click-ack-flash-sell {
+  0%   { background: rgba(10,143,67,0.32); box-shadow: inset 3px 0 0 0 #0a8f43; }
+  100% { background: var(--bg); box-shadow: inset 0 0 0 0 transparent; }
+}
+.market-listing-tile--click-ack {
+  animation: click-ack-flash-buy 420ms ease-out;
+}
+.market-bids-row--click-ack {
+  animation: click-ack-flash-sell 420ms ease-out;
+}
 /* Live indicator: a small pulsing dot near the orderbook header to
    signal that auto-refresh is on. */
 .market-live-dot {

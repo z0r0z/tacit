@@ -47745,6 +47745,20 @@ function applyMarketFilters() {
     tile.onclick = (ev) => {
       if (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary')) return;
       const _u = parseFloat(tile.dataset.fillUnit || '');
+      // Brief click acknowledgement on the row itself. The Swap-tile
+      // pulse is far away (above the fold after scroll); without a
+      // local visual the user can't tell their click registered.
+      // CSS class drives a 300ms background-flash; remove on a timer
+      // so back-to-back clicks on the same row re-fire cleanly.
+      try {
+        if (tile._clickAckTimer) clearTimeout(tile._clickAckTimer);
+        tile.classList.remove('market-listing-tile--click-ack');
+        void tile.offsetHeight;
+        tile.classList.add('market-listing-tile--click-ack');
+        tile._clickAckTimer = setTimeout(() => {
+          try { tile.classList.remove('market-listing-tile--click-ack'); tile._clickAckTimer = null; } catch {}
+        }, 420);
+      } catch {}
       primeSwapTileFromOrderbook({
         aid: tile.dataset.fillAid,
         direction: tile.dataset.fillDirection || 'buy',
@@ -53427,6 +53441,20 @@ async function populateMarketBidsLadder(scope, asset) {
       row.dataset.bidRowClickBound = '1';
       row.addEventListener('click', (ev) => {
         if (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('summary')) return;
+        // Brief click acknowledgement on the row itself. The Swap-tile
+        // pulse fires up top after scroll; without a local ack the
+        // user can't tell their click registered before the page jumps.
+        // Same pattern as the asks-tile click handler — toggle a class
+        // for 420ms, store timer to handle rapid re-clicks cleanly.
+        try {
+          if (row._clickAckTimer) clearTimeout(row._clickAckTimer);
+          row.classList.remove('market-bids-row--click-ack');
+          void row.offsetHeight;
+          row.classList.add('market-bids-row--click-ack');
+          row._clickAckTimer = setTimeout(() => {
+            try { row.classList.remove('market-bids-row--click-ack'); row._clickAckTimer = null; } catch {}
+          }, 420);
+        } catch {}
         const _u = parseFloat(row.dataset.fillUnit || '');
         primeSwapTileFromOrderbook({
           aid: row.dataset.fillAid,
