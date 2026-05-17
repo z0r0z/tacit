@@ -1,4 +1,5 @@
-// End-to-end signet harness for SPEC-CXFER-BPP-AMENDMENT §5.47.
+// End-to-end signet harness for SPEC-CXFER-BPP-AMENDMENT §5.47
+// (now merged as SPEC.md §5.21).
 //
 // Exercises T_CXFER_BPP on real signet chain, including the mixed-ancestry
 // walk that the offline tests cover only at the dispatch layer:
@@ -10,8 +11,17 @@
 //            via the mixed-ancestry path (CETCH → CXFER_BPP)
 //   Phase 5: recipient sends back via standard T_CXFER m=1 (reverse path:
 //            CXFER_BPP → CXFER); confirms validator dispatches correctly
-//   Phase 6: sender re-scans; confirms final balance matches pre-send
-//            minus fees (5-hop ancestry sanity)
+//   Phase 6: sender re-scans; confirms balance restored after 3 hops
+//   Phase 7: sender → recipient via T_CXFER_BPP again (4th envelope) —
+//            sender's input traces CETCH → BPP_3 → CXFER_5; output adds
+//            another BPP hop (4-deep ancestry from CETCH).
+//   Phase 8: recipient → sender via T_CXFER_BPP (5th envelope) —
+//            **BPP spending BPP-ancestor** is the new coverage gap closed
+//            here; the recipient's input is the BPP UTXO from Phase 7,
+//            so validateOutpoint walks BPP → BPP at depth ≥ 2.
+//   Phase 9: sender re-scans; confirms balance restored after full
+//            5-envelope chain (CETCH → BPP → CXFER → BPP → BPP); all
+//            mixed BPP↔CXFER dispatch paths exercised on real chain.
 //
 // State is persisted between phases at .local/cxfer-bpp-signet-state.json
 // so a partial run can be resumed.
@@ -166,16 +176,25 @@ if (!bppRevealTxid) {
 }
 
 // ---------------- Phase 4: recipient confirms credit ----------------
-step(4, 'Recipient scans holdings (CETCH → CXFER_BPP ancestry)');
-asRecipient();
-const recipHoldings = await dapp.scanHoldings();
-const recipAsset = recipHoldings.get(assetIdHex);
-if (!recipAsset) fail(`recipient sees no balance for ${assetIdHex.slice(0, 12)}…`);
-if (recipAsset.balance !== BigInt(state.bppSendAmt)) {
-  fail(`recipient balance ${recipAsset.balance} ≠ expected ${state.bppSendAmt}`);
+// Phase 4 asserts an intermediate state (recipient holds the BPP-sourced
+// receipt). On a fresh run that follows directly after Phase 3 this is
+// trivially observable. On a *resumed* run where Phase 5 already returned
+// the funds, the recipient's current balance is correctly 0, so re-asserting
+// the intermediate state is a false negative — skip it.
+if (state.returnRevealTxid) {
+  step(4, 'Recipient credit check (skipped — Phase 5 already returned funds; intermediate state no longer observable)');
+} else {
+  step(4, 'Recipient scans holdings (CETCH → CXFER_BPP ancestry)');
+  asRecipient();
+  const recipHoldings = await dapp.scanHoldings();
+  const recipAsset = recipHoldings.get(assetIdHex);
+  if (!recipAsset) fail(`recipient sees no balance for ${assetIdHex.slice(0, 12)}…`);
+  if (recipAsset.balance !== BigInt(state.bppSendAmt)) {
+    fail(`recipient balance ${recipAsset.balance} ≠ expected ${state.bppSendAmt}`);
+  }
+  ok(`recipient credited ${recipAsset.balance} units via T_CXFER_BPP UTXO`);
+  info(`recipient holdings: ${recipAsset.utxos.length} utxo(s) on this asset`);
 }
-ok(`recipient credited ${recipAsset.balance} units via T_CXFER_BPP UTXO`);
-info(`recipient holdings: ${recipAsset.utxos.length} utxo(s) on this asset`);
 
 // ---------------- Phase 5: recipient sends back via standard T_CXFER ----------------
 let returnRevealTxid = state.returnRevealTxid;
@@ -198,25 +217,99 @@ if (!returnRevealTxid) {
   step(5, `return send already done — reveal ${returnRevealTxid.slice(0, 12)}…`);
 }
 
-// ---------------- Phase 6: sender re-scans, mixed-ancestry walk validated ----------------
-step(6, 'Sender re-scans (CETCH → CXFER_BPP → CXFER, 3-hop mixed ancestry)');
-asSender();
-const senderHoldings = await dapp.scanHoldings();
-const senderAsset = senderHoldings.get(assetIdHex);
-if (!senderAsset) fail('sender sees no holdings for the asset after round trip');
-// Sender should hold: original supply minus 0 (received back the entire send amount)
-// = change_from_send + returned_amount
-const expectTotal = BigInt(state.bppChangeAmt) + BigInt(state.bppSendAmt);
-if (senderAsset.balance !== expectTotal) {
-  fail(`sender balance ${senderAsset.balance} ≠ expected ${expectTotal} (change ${state.bppChangeAmt} + returned ${state.bppSendAmt})`);
+// ---------------- Phase 6: sender re-scans, 3-hop mixed-ancestry walk validated ----------------
+// Like Phase 4, this asserts an intermediate state — skip on resume if
+// Phase 7 has already advanced the chain past this snapshot.
+if (state.bpp2RevealTxid) {
+  step(6, 'Sender 3-hop credit check (skipped — Phase 7 already advanced state past this snapshot)');
+} else {
+  step(6, 'Sender re-scans (CETCH → CXFER_BPP → CXFER, 3-hop mixed ancestry)');
+  asSender();
+  const senderHoldings = await dapp.scanHoldings();
+  const senderAsset = senderHoldings.get(assetIdHex);
+  if (!senderAsset) fail('sender sees no holdings for the asset after round trip');
+  // Sender should hold: original supply minus 0 (received back the entire send amount)
+  // = change_from_send + returned_amount
+  const expectTotal = BigInt(state.bppChangeAmt) + BigInt(state.bppSendAmt);
+  if (senderAsset.balance !== expectTotal) {
+    fail(`sender balance ${senderAsset.balance} ≠ expected ${expectTotal} (change ${state.bppChangeAmt} + returned ${state.bppSendAmt})`);
+  }
+  ok(`sender balance restored to ${senderAsset.balance} (= ${state.bppChangeAmt} change + ${state.bppSendAmt} returned)`);
+  info('mixed-ancestry validator walk CETCH → CXFER_BPP → CXFER credits correctly');
 }
-ok(`sender balance restored to ${senderAsset.balance} (= ${state.bppChangeAmt} change + ${state.bppSendAmt} returned)`);
-info('mixed-ancestry validator walk CETCH → CXFER_BPP → CXFER credits correctly');
 
-console.log('\n=== T_CXFER_BPP signet smoke PASSED ===');
-console.log('Validated on chain:');
-console.log('  • T_CXFER_BPP envelope builds, broadcasts, confirms');
+// ---------------- Phase 7: sender → recipient via T_CXFER_BPP again (4th envelope) ----------------
+let bpp2RevealTxid = state.bpp2RevealTxid;
+if (!bpp2RevealTxid) {
+  step(7, 'Sender → recipient via T_CXFER_BPP (4th envelope; deeper mixed ancestry)');
+  asSender();
+  await dapp.scanHoldings();
+  const r = await dapp.buildAndBroadcastCXfer({
+    assetIdHex,
+    recipientPubHex: W.recipient.pub_hex,
+    amount: 1_000n,
+    useBpp: true,
+  });
+  ok(`BPP2 commit ${r.commitTxid.slice(0, 12)}… reveal ${r.revealTxid.slice(0, 12)}…`);
+  await waitConfirmed(r.revealTxid, 'BPP2-send reveal');
+  state.bpp2RevealTxid = r.revealTxid;
+  state.bpp2SendAmt   = '1000';
+  state.bpp2ChangeAmt = r.changeAmount.toString();
+  saveState(state);
+  bpp2RevealTxid = state.bpp2RevealTxid;
+} else {
+  step(7, `BPP2 send already done — reveal ${bpp2RevealTxid.slice(0, 12)}…`);
+}
+
+// ---------------- Phase 8: recipient → sender via T_CXFER_BPP (5th envelope; BPP-spending-BPP) ----------------
+let bpp3RevealTxid = state.bpp3RevealTxid;
+if (!bpp3RevealTxid) {
+  step(8, 'Recipient → sender via T_CXFER_BPP (5th envelope; BPP spending BPP-ancestor)');
+  asRecipient();
+  await dapp.scanHoldings();
+  // Recipient holds two BPP UTXOs by now (Phase 3's 1k that they spent in Phase 5,
+  // plus Phase 7's 1k). Wallet's coin-selection will consume Phase 7's BPP UTXO,
+  // so this reveal's vin[1] parent is a T_CXFER_BPP envelope — exercising the
+  // BPP → BPP recursive-ancestry path that no offline test covers end-to-end.
+  const r = await dapp.buildAndBroadcastCXfer({
+    assetIdHex,
+    recipientPubHex: W.sender.pub_hex,
+    amount: 1_000n,
+    useBpp: true,
+  });
+  ok(`BPP3 commit ${r.commitTxid.slice(0, 12)}… reveal ${r.revealTxid.slice(0, 12)}…`);
+  await waitConfirmed(r.revealTxid, 'BPP3-send reveal');
+  state.bpp3RevealTxid = r.revealTxid;
+  state.bpp3SendAmt    = '1000';
+  saveState(state);
+  bpp3RevealTxid = state.bpp3RevealTxid;
+} else {
+  step(8, `BPP3 send already done — reveal ${bpp3RevealTxid.slice(0, 12)}…`);
+}
+
+// ---------------- Phase 9: final scan — 5-envelope mixed ancestry resolves cleanly ----------------
+step(9, 'Sender final re-scan (5-envelope chain: CETCH → BPP → CXFER → BPP → BPP)');
+asSender();
+{
+  const senderHoldings = await dapp.scanHoldings();
+  const senderAsset = senderHoldings.get(assetIdHex);
+  if (!senderAsset) fail('sender sees no holdings after 5-envelope chain');
+  // After Phase 8 the sender holds the full 100k supply again, regardless of
+  // how coin-selection split things in Phases 7/8. Conservation is the
+  // invariant: every transfer split or rejoined exactly the input value.
+  if (senderAsset.balance !== 100_000n) {
+    fail(`sender balance ${senderAsset.balance} ≠ expected 100000 after 5-envelope chain`);
+  }
+  ok(`sender balance restored to ${senderAsset.balance} after 5 envelopes (full chain)`);
+  info(`UTXOs: ${senderAsset.utxos.length}`);
+  info('5-hop mixed-ancestry walk credits every BPP↔CXFER transition correctly');
+}
+
+console.log('\n=== T_CXFER_BPP signet smoke PASSED (extended ≥5-hop bake) ===');
+console.log('Validated on chain across 5 envelopes:');
+console.log('  • T_CXFER_BPP envelope builds, broadcasts, confirms (×3 BPP envelopes)');
 console.log('  • Recipient scanHoldings credits BPP-sourced UTXO via mixed-ancestry walk');
-console.log('  • Standard T_CXFER spending a BPP parent dispatches correctly in validateOutpoint');
-console.log('  • End-to-end balance integrity across CETCH → BPP → CXFER chain');
+console.log('  • Standard T_CXFER spending a BPP parent (CXFER → BPP dispatch)');
+console.log('  • T_CXFER_BPP spending a BPP parent (BPP → BPP recursive dispatch — Phase 8)');
+console.log('  • End-to-end balance integrity across CETCH → BPP → CXFER → BPP → BPP chain');
 console.log('\nWipe state with: rm .local/cxfer-bpp-signet-state.json');

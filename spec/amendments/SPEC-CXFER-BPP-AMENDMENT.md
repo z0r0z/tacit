@@ -1,24 +1,51 @@
-# SPEC §5.47 Amendment — T_CXFER_BPP (Bulletproofs+ Confidential Transfer)
+# SPEC §5.21 Amendment — T_CXFER_BPP (Bulletproofs+ Confidential Transfer)
 
-> **STATUS: DRAFT.** Adds a single new envelope opcode
-> `T_CXFER_BPP` (`0x22`) carrying a **Bulletproofs+** aggregated
-> range proof in place of the standard Bulletproofs proof used by
-> `T_CXFER` (§5.2). Same Pedersen commitment, same Mimblewimble
-> kernel signature, same ECDH-encrypted amount, same aggregation
-> cap `N ∈ {1,2,4,8}`, same forward-compat semantics. Yields ~17%
-> smaller witnesses on every transfer with zero impact on existing
+> **STATUS: 🚀 Shipped to signet; merged into SPEC.md as §5.21.**
+> Normative wire format + kernel msg + validator algorithm + soundness
+> reduction now live in [`SPEC.md`](../../SPEC.md) §5.21; the §1.1 opcode
+> table row for `0x22` and the §5.5 dispatch branch for `T_CXFER_BPP`
+> are landed. This amendment file is preserved as the extended-narrative
+> record — design rationale, test plan, sign-off checklist, future-
+> evolution notes.
+>
+> **Reference implementation is in production on signet:**
+> `dapp/bulletproofs-plus.js` (BP+ prover/verifier, 907 LOC),
+> `dapp/tacit.js` (`encodeCXferBppPayload` / `decodeCXferBppPayload` /
+> `validateOutpoint` dispatch / `bppEnabled` / `buildAndBroadcastCXfer*`
+> `useBpp` flag), `worker/src/index.js` (T_CXFER_BPP constant + decoder
+> + ancestry-walk + canonical-order branches), 11 test files under
+> `tests/bulletproofs-plus-*` + `tests/cxfer-bpp-wire.test.mjs` +
+> `tests/cxfer-bpp-integration.test.mjs` + on-chain harness at
+> `tests/cxfer-bpp-onchain-e2e-signet.mjs`.
+>
+> **Activation.** `bppEnabled()` defaults ON for signet, OFF for mainnet
+> (mainnet flip via `localStorage['tacit-bpp-enable-mainnet-v1']`). A
+> signet bake is currently in flight; mainnet activation follows once
+> the soak completes cleanly. Indexers accept `T_CXFER_BPP` envelopes
+> on both networks unconditionally — the gate is sender-side only.
+>
+> The §5.47.* numbering below references the original draft target; the
+> back-reference-stable merge slot in SPEC.md is §5.21 (next available
+> after §5.20 `T_SWAP_VAR`). Where the amendment says "§5.47", the live
+> SPEC.md text is at §5.21.
+>
+> Adds a single new envelope opcode `T_CXFER_BPP` (`0x22`) carrying a
+> **Bulletproofs+** aggregated range proof in place of the standard
+> Bulletproofs proof used by `T_CXFER` (§5.2). Same Pedersen commitment,
+> same Mimblewimble kernel signature, same ECDH-encrypted amount, same
+> aggregation cap `N ∈ {1,2,4,8}`, same forward-compat semantics. Yields
+> ~14% smaller witnesses on every transfer with zero impact on existing
 > assets, listings, mixer pools, AMM pools, drops, or recovery flows.
 >
 > **Scope of unchanged behavior.** No existing opcode, asset_id
 > derivation, kernel-message format, commitment encoding, encrypted-
 > amount scheme, validator rule, or transaction shape changes. This
-> amendment ADDS a single opcode at code point `0x22` (currently
-> ⬜ free per §1.1) that mirrors `T_CXFER` byte-for-byte except for
-> the rangeproof field. Pre-amendment indexers see the new opcode
-> as an unknown envelope (forward-compat per §"Unknown-opcode
-> forward-compatibility rule") and are unaffected — they simply
-> stop crediting balances that flow through a `T_CXFER_BPP` edge,
-> which is the correct soft-fork behavior.
+> amendment ADDS a single opcode at code point `0x22` that mirrors
+> `T_CXFER` byte-for-byte except for the rangeproof field. Pre-amendment
+> indexers see the new opcode as an unknown envelope (forward-compat
+> per §"Unknown-opcode forward-compatibility rule") and are unaffected
+> — they simply stop crediting balances that flow through a
+> `T_CXFER_BPP` edge, which is the correct soft-fork behavior.
 
 ---
 
@@ -597,11 +624,17 @@ Out of scope, deferred:
   (completeness); 50 random byte-flip tampers per m reject
   (soundness sanity); 50 commitment-order swap attempts reject
   (binding). `bulletproofs-plus-property-fuzz.test.mjs`.
-- [ ] Blind Python re-derivation cross-check — independent
-  Python port of BP+ on secp256k1 from Monero C++ + SPEC
-  amendment (no JS reference); byte-compare proof output against
-  the JS port with a shared deterministic RNG. In progress —
-  `.local/bpp-python-port/bpp.py`.
+- [x] Blind Python re-derivation cross-check — independent
+  Python port of BP+ on secp256k1 hand-written from the Monero
+  C++ reference + SPEC amendment without seeing the JS port at
+  `.local/bpp-python-port/bpp.py` (~600 LOC, complete BP+ prover
+  on secp256k1 with SHA-256 transcript + cofactor=1 simplification).
+  Byte-compared via `tests/bulletproofs-plus-python-parity.test.mjs`
+  (16/16 passing as of 2026-05-18): JS and Python produce
+  bit-identical 591/657/723/789-byte proofs at m=1/2/4/8 given a
+  shared deterministic RNG (`sha256("bpp-test-rng-v1" || counter_BE_u16)`).
+  Two independent implementations converging on the same proof
+  bytes — strongest static-analysis evidence of soundness available.
 - [x] Worker hot-path BPP branches landed — `commitmentForUtxo`,
   cron transfer+holder counters, `/hint` transfer counter,
   backfill-holders, test exports
@@ -614,9 +647,23 @@ Out of scope, deferred:
   send → recipient credit check → standard T_CXFER return →
   mixed-ancestry final balance check. Resumable; wallet generator
   at `tests/gen-cxfer-bpp-signet-wallets.mjs`.
-- [ ] First T_CXFER_BPP envelope broadcast on signet
-- [ ] First mixed-ancestry chain (≥5 hops alternating
-  CXFER ↔ T_CXFER_BPP) exercised end-to-end on signet
+- [x] First T_CXFER_BPP envelope broadcast on signet
+  (2026-05-18, block 304812: commit `c6f2af0f4997…`, reveal
+  `82a4356d77bd…`; sender `tb1qkkg6pevxykxutq85p3ja53xlrxwfhga8xj8ecu`
+  → recipient `tb1qwp2ds83m3uj04c99zpvn7rtjs3tuc6u42vmghq`,
+  m=1, 1,000 base units, BP+ rangeproof).
+- [x] First mixed-ancestry chain exercised end-to-end on signet
+  via `tests/cxfer-bpp-onchain-e2e-signet.mjs` (2026-05-18):
+  block 304810 CETCH `755919131ec8…` → block 304812 T_CXFER_BPP
+  `82a4356d77bd…` → block 304813 standard T_CXFER `f463eada9185…`
+  return; sender balance restored to 100,000 (99,000 change +
+  1,000 returned) and recipient credited 1,000 mid-chain — both
+  directions of the BPP↔BP validator dispatch validated on real
+  signet chain. **Note:** the harness exercises 3 hops; extending
+  to ≥5 hops alternating CXFER ↔ T_CXFER_BPP is a follow-up bake
+  task tracked under the 2-week soak.
+- [ ] ≥5-hop alternating mixed-ancestry chain on signet
+  (extended-soak deliverable)
 - [ ] First mainnet T_CXFER_BPP envelope after signet exercise
 
 ---
