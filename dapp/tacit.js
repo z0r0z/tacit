@@ -15846,6 +15846,338 @@ async function buildAndBroadcastCbtcTacForceClose({
   };
 }
 
+// ============== AMM swap UX (T_SWAP_VAR self-fulfill) ==============
+//
+// SPEC-SWAP-VAR-AMENDMENT §5.16.3. v1 self-fulfill: wallet acts as BOTH
+// trader (signs intent_msg) AND settler (builds kernel_sig from excess
+// scalar + assembles the Bitcoin tx). Single Bitcoin tx, no off-chain
+// coordination.
+const _SWAP_VAR_INTENT_DOMAIN     = new TextEncoder().encode('tacit-amm-swap-var-v1');
+const _SWAP_VAR_RECEIPT_BLIND_DOM = new TextEncoder().encode('tacit-amm-swap-var-receipt-v1');
+const _SWAP_VAR_CHANGE_BLIND_DOM  = new TextEncoder().encode('tacit-amm-swap-var-change-v1');
+
+function deriveSwapVarReceiptScalar(traderPriv, poolIdBytes, assetInputOutpoint) {
+  const out = hmac(sha256, traderPriv, concatBytes(
+    _SWAP_VAR_RECEIPT_BLIND_DOM, poolIdBytes, assetInputOutpoint,
+  ));
+  const n = bytes32ToBigint(out) % SECP_N;
+  return n === 0n ? 1n : n;
+}
+function deriveSwapVarChangeScalar(traderPriv, poolIdBytes, assetInputOutpoint) {
+  const out = hmac(sha256, traderPriv, concatBytes(
+    _SWAP_VAR_CHANGE_BLIND_DOM, poolIdBytes, assetInputOutpoint,
+  ));
+  const n = bytes32ToBigint(out) % SECP_N;
+  return n === 0n ? 1n : n;
+}
+
+function buildSwapVarIntentMsg({
+  poolId, direction,
+  deltaIn, deltaInMin, deltaInMax, deltaOut, minOut, tipAmount, tipAsset,
+  expiryHeight, traderPubkey, assetInputOutpoint, receiveScriptPubKey,
+  cReceiptSecp, cChangeOrSentinel,
+}) {
+  function u64LE(n) {
+    const b = new Uint8Array(8);
+    let x = BigInt(n);
+    if (x < 0n || x >= 1n << 64n) throw new Error('u64 overflow');
+    for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+    return b;
+  }
+  function u32LE(n) {
+    const b = new Uint8Array(4);
+    new DataView(b.buffer).setUint32(0, n >>> 0, true);
+    return b;
+  }
+  function u16LE(n) {
+    const b = new Uint8Array(2);
+    new DataView(b.buffer).setUint16(0, n & 0xffff, true);
+    return b;
+  }
+  return sha256(concatBytes(
+    _SWAP_VAR_INTENT_DOMAIN,
+    poolId, new Uint8Array([direction]),
+    u64LE(deltaIn), u64LE(deltaInMin), u64LE(deltaInMax),
+    u64LE(deltaOut), u64LE(minOut), u64LE(tipAmount),
+    new Uint8Array([tipAsset]), u32LE(expiryHeight),
+    traderPubkey, assetInputOutpoint,
+    u16LE(receiveScriptPubKey.length), receiveScriptPubKey,
+    cReceiptSecp, cChangeOrSentinel,
+  ));
+}
+
+// Pure envelope builder (no Bitcoin tx assembly).
+async function buildSwapVarEnvelopeSelfFulfill({
+  poolReserves, assetInputUtxo,
+  direction, deltaIn, minOut,
+  deltaInMin = null, deltaInMax = null,
+  expiryHeight, receiveAssetIdHex,
+  recipientPubHex = null,
+}) {
+  await ensurePrivkey();
+  const traderPriv = wallet.priv;
+  const traderPub = wallet.pub;
+  const ra = BigInt(poolReserves.reserve_a);
+  const rb = BigInt(poolReserves.reserve_b);
+  const feeBps = poolReserves.fee_bps;
+  const dirInt = direction | 0;
+  const din = BigInt(deltaIn);
+  const dinMin = deltaInMin === null ? din : BigInt(deltaInMin);
+  const dinMax = deltaInMax === null ? din : BigInt(deltaInMax);
+  const minOutBig = BigInt(minOut);
+  if (din <= 0n) throw new Error('deltaIn must be > 0');
+  if (din < dinMin || din > dinMax) throw new Error('deltaIn outside [min, max]');
+
+  const inputAmount = BigInt(assetInputUtxo.amount);
+  if (din > inputAmount) {
+    throw new Error(`deltaIn (${din}) exceeds input amount (${inputAmount})`);
+  }
+
+  const curve = swapVarCurveDeltaOut(dirInt, ra, rb, din, feeBps);
+  if (curve.deltaOut < minOutBig) {
+    throw new Error(`slippage: deltaOut ${curve.deltaOut} < minOut ${minOutBig}`);
+  }
+
+  const poolIdBytes = hexToBytes(poolReserves.pool_id_hex);
+  const assetInputOutpoint = concatBytes(
+    reverseBytes(hexToBytes(assetInputUtxo.txid)),
+    (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, assetInputUtxo.vout >>> 0, true); return b; })(),
+  );
+  const rReceiptBig = deriveSwapVarReceiptScalar(traderPriv, poolIdBytes, assetInputOutpoint);
+  const rChangeBig = deriveSwapVarChangeScalar(traderPriv, poolIdBytes, assetInputOutpoint);
+
+  const rInBig = typeof assetInputUtxo.blinding === 'bigint'
+    ? assetInputUtxo.blinding
+    : BigInt('0x' + (typeof assetInputUtxo.blinding === 'string' ? assetInputUtxo.blinding : '0'));
+  const cIn = pedersenCommit(inputAmount, rInBig).toRawBytes(true);
+  const changeAmount = inputAmount - din;  // tip_amount=0 in v1 self-fulfill
+  let cChangeOrSentinel;
+  if (changeAmount === 0n) {
+    cChangeOrSentinel = new Uint8Array(33);
+  } else {
+    cChangeOrSentinel = pedersenCommit(changeAmount, rChangeBig).toRawBytes(true);
+  }
+  const cReceipt = pedersenCommit(curve.deltaOut, rReceiptBig).toRawBytes(true);
+  const rReceiptBytes = bigintToBytes32(rReceiptBig);
+
+  // m=2 aggregated bulletproof over [C_change, C_receipt]. Whole-input
+  // case opens slot 0 trivially (value=0, blinding=0) per sentinel rule.
+  const rangeAmounts = changeAmount === 0n ? [0n, curve.deltaOut] : [changeAmount, curve.deltaOut];
+  const rangeBlindings = changeAmount === 0n ? [0n, rReceiptBig] : [rChangeBig, rReceiptBig];
+  const rangeProofResult = bpRangeAggProve(rangeAmounts, rangeBlindings);
+  const rangeProof = rangeProofResult.proof;
+
+  const recipientPub = recipientPubHex
+    ? hexToBytes(recipientPubHex.toLowerCase())
+    : traderPub;
+  const receiveScriptPubKey = p2wpkhScript(recipientPub);
+  const intentMsg = buildSwapVarIntentMsg({
+    poolId: poolIdBytes, direction: dirInt,
+    deltaIn: din, deltaInMin: dinMin, deltaInMax: dinMax,
+    deltaOut: curve.deltaOut, minOut: minOutBig,
+    tipAmount: 0n, tipAsset: dirInt,
+    expiryHeight, traderPubkey: traderPub,
+    assetInputOutpoint, receiveScriptPubKey,
+    cReceiptSecp: cReceipt, cChangeOrSentinel,
+  });
+  const intentSig = signSchnorr(intentMsg, traderPriv);
+
+  const assetIdInBytes = hexToBytes(assetInputUtxo.asset_id_hex);
+  const kernelMsg = computeKernelMsg(
+    assetIdInBytes,
+    [{ txid: assetInputUtxo.txid, vout: assetInputUtxo.vout }],
+    [cChangeOrSentinel],
+    din,
+  );
+  let excess;
+  if (changeAmount === 0n) {
+    excess = (SECP_N - (rInBig % SECP_N)) % SECP_N;
+  } else {
+    excess = ((rChangeBig - rInBig) % SECP_N + SECP_N) % SECP_N;
+  }
+  if (excess === 0n) excess = 1n;
+  const kernelSig = signSchnorr(kernelMsg, bigintToBytes32(excess));
+
+  const payload = encodeTSwapVarPayload({
+    poolId: poolIdBytes, direction: dirInt,
+    R_A_pre: ra, R_B_pre: rb,
+    deltaIn: din, deltaInMin: dinMin, deltaInMax: dinMax,
+    deltaOut: curve.deltaOut, minOut: minOutBig,
+    tipAmount: 0n, tipAsset: dirInt,
+    expiryHeight,
+    traderPubkey: traderPub,
+    cInSecp: cIn,
+    cChangeOrSentinel,
+    cReceiptSecp: cReceipt,
+    rReceipt: rReceiptBytes,
+    rangeProof, kernelSig, intentSig,
+  });
+  const envelopeHash = computeSwapVarEnvelopeHash(payload);
+
+  return {
+    payload, envelopeHash,
+    deltaOut: curve.deltaOut,
+    raPost: curve.raPost, rbPost: curve.rbPost,
+    cInSecp: cIn,
+    cChangeOrSentinel,
+    cReceiptSecp: cReceipt,
+    rReceipt: rReceiptBytes,
+    rChangeScalar: rChangeBig,
+    rReceiptScalar: rReceiptBig,
+    receiveScriptPubKey,
+    kernelSig, intentSig,
+    changeAmount,
+    isWholeInput: changeAmount === 0n,
+  };
+}
+
+// Full broadcast wrapper. Bitcoin tx (SPEC §"Bitcoin tx layout"):
+//   commit: sats inputs → P2TR(envelope script) + sats change
+//   reveal:
+//     vin[0]  = commit P2TR (script-path with envelope reveal)
+//     vin[1]  = trader's asset UTXO (P2WPKH under wallet.priv)
+//     vout[0] = OP_RETURN(envelope_hash) — 0 sat, 34 bytes
+//     vout[1] = receipt UTXO at recipient P2WPKH (DUST sats)
+//     vout[2] = change UTXO at trader P2WPKH (DUST; iff not whole-input)
+async function buildAndBroadcastSwapVarSelfFulfill({
+  poolReserves, assetInputUtxo,
+  direction, deltaIn, minOut,
+  deltaInMin = null, deltaInMax = null,
+  expiryHeight,
+  receiveAssetIdHex,
+  recipientPubHex = null,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+
+  _progress('envelope:build');
+  const built = await buildSwapVarEnvelopeSelfFulfill({
+    poolReserves, assetInputUtxo, direction, deltaIn, minOut,
+    deltaInMin, deltaInMax, expiryHeight, receiveAssetIdHex, recipientPubHex,
+  });
+
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), built.payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const recipientPub = recipientPubHex
+    ? hexToBytes(recipientPubHex.toLowerCase())
+    : wallet.pub;
+  const recipSpk = p2wpkhScript(recipientPub);
+  const changeSpk = p2wpkhScript(wallet.pub);
+  const hasChange = !built.isWholeInput;
+
+  const vbBaseOuts = 34 /* OP_RETURN */ + 31 /* receipt */ + (hasChange ? 31 : 0);
+  const revealVb = 11 + 41 + 41 + vbBaseOuts
+    + Math.ceil((1 + 1 + 65 + 3 + 45 + built.payload.length + 34 + 109) / 4);
+
+  const feeRate = await getFeeRate();
+  const revealFee = feeFor(revealVb, feeRate);
+  const totalOutputDust = DUST /* receipt */ + (hasChange ? DUST : 0);
+  let commitValue = Math.max(DUST, totalOutputDust + revealFee - DUST /* asset input */);
+
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  const allUtxos = await getUtxos(wallet.address());
+  const assetKey = `${assetInputUtxo.txid}:${assetInputUtxo.vout}`;
+  const sats = allUtxos
+    .filter(u => `${u.txid}:${u.vout}` !== assetKey && u.value > DUST)
+    .sort((a, b) => b.value - a.value);
+  if (sats.length === 0) {
+    throw new Error('no plain-sats UTXOs available to fund the swap commit');
+  }
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for swap commit: need ${commitValue + commitFee}, have ${total}`);
+  }
+
+  _progress('tx:commit:build');
+  const satsChange = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (satsChange >= DUST) commitOutputs.push({ value: satsChange, script: changeSpk });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  _progress('tx:reveal:build');
+  const opReturnSpk = concatBytes(new Uint8Array([0x6a, 0x20]), built.envelopeHash);
+  const revealOutputs = [
+    { value: 0, script: opReturnSpk },
+    { value: DUST, script: recipSpk },
+  ];
+  if (hasChange) revealOutputs.push({ value: DUST, script: changeSpk });
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: assetInputUtxo.txid, vout: assetInputUtxo.vout | 0, sequence: 0xfffffffd, witness: [] },
+    ],
+    outputs: revealOutputs,
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: DUST, script: p2wpkhScript(wallet.pub) },
+  ];
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(
+    revealTx, revealPrevouts, envelopeScript, cb,
+  );
+  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  // Persist openings for receipt (vout 1) + change (vout 2). Holdings
+  // scanner will pick these up on next refresh.
+  try {
+    recordOpening(revealTxidHex, 1, receiveAssetIdHex, built.deltaOut, built.rReceiptScalar);
+    if (hasChange) {
+      recordOpening(revealTxidHex, 2, assetInputUtxo.asset_id_hex, built.changeAmount, built.rChangeScalar);
+    }
+  } catch {}
+
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+
+  try {
+    recordActivity({
+      kind: 'amm-swap',
+      ticker: '',
+      amount: built.deltaOut,
+      decimals: 0,
+      assetId: receiveAssetIdHex,
+      txid: revealTxidHex,
+    });
+  } catch {}
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    deltaOut: built.deltaOut,
+    raPost: built.raPost, rbPost: built.rbPost,
+    receiptVout: 1,
+    changeVout: hasChange ? 2 : null,
+    commitFee, revealFee,
+  };
+}
+
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -51211,6 +51543,23 @@ async function populateMarketAssetStats(scope, asset) {
 function renderMarketBidsLadderHTML(asset) {
   const aid = /^[0-9a-f]{64}$/.test(asset.asset_id || '') ? asset.asset_id : '';
   const ticker = escapeHtml(asset.ticker || '?');
+  // In Simple mode the Swap tile auto-falls-back to posting a residual
+  // bid at the cap when no asks match the user's limit — so both
+  // `Sweep sell (advanced)` (sell-route control surface) and `+ Place
+  // a bid on TAC` (explicit bid-params form) duplicate functionality
+  // the Swap tile already provides one tap above. Hide them in Simple
+  // mode to keep the bids-panel header focused on inspection + the
+  // two genuinely-distinct controls (Auto-fulfil daemon toggle,
+  // Hide/Show ladder collapse). Advanced mode surfaces them back for
+  // traders who want explicit control over per-bid params (custom
+  // expiry, min-fill) or sell-route audit before signing.
+  const _showAdvancedBidActions = (typeof _marketRowActionsHidden === 'boolean') && !_marketRowActionsHidden;
+  const _sweepSellBtn = _showAdvancedBidActions
+    ? `<button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Advanced: sell-route control surface. Pick a floor price + amount; each fill publishes an atomic intent. For most cases the Swap tile above is simpler — this exposes the per-bid plan so you can audit before signing.">Sweep sell (advanced)</button>`
+    : '';
+  const _placeBidBtn = _showAdvancedBidActions
+    ? `<button data-act="market-bid-place" data-aid="${aid}" type="button" title="Advanced: standalone bid form with explicit price chips (best-bid / floor / mark / last) + custom expiry + min-fill. The Swap tile above auto-falls-back to a variable-fill bid when no asks match your limit — use this when you want full control over the bid params.">+ Place a bid on ${ticker}</button>`
+    : '';
   return `
     <div data-market-bids-section data-aid="${aid}" class="market-bids-panel">
       <div class="market-bids-head">
@@ -51221,8 +51570,8 @@ function renderMarketBidsLadderHTML(asset) {
         <div class="market-bids-actions">
           <button data-act="auto-fulfil-toggle" type="button" title="Automatically signs claim responses for atomic intents (asks AND bid fulfilments) while this tab is open. Required for sell-side swaps to settle without you babysitting.">Auto-fulfil: OFF</button>
           <button data-act="market-bids-toggle" type="button" aria-expanded="true" title="Collapse the bid ladder. Each bid card surfaces remaining_amount and min_fill_amount so partial-fill bids stay legible.">Hide bids</button>
-          <button data-act="market-sweep-sell" data-aid="${aid}" type="button" title="Advanced: sell-route control surface. Pick a floor price + amount; each fill publishes an atomic intent. For most cases the Swap tile above is simpler — this exposes the per-bid plan so you can audit before signing.">Sweep sell (advanced)</button>
-          <button data-act="market-bid-place" data-aid="${aid}" type="button" title="Advanced: standalone bid form with explicit price chips (best-bid / floor / mark / last) + custom expiry + min-fill. The Swap tile above auto-falls-back to a variable-fill bid when no asks match your limit — use this when you want full control over the bid params.">+ Place a bid on ${ticker}</button>
+          ${_sweepSellBtn}
+          ${_placeBidBtn}
         </div>
       </div>
       <div data-market-sweep-sell-form style="display:none;margin-top:10px;"></div>
@@ -52620,7 +52969,9 @@ async function populateMarketBidsLadder(scope, asset) {
     _renderedAssetSignature = { aid, sig: _assetSignatureFull(aid) };
   }
   if (!intentsAll.length) {
-    list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} &mdash; be the first to post one.</div>`;
+    list.innerHTML = `<div class="muted" style="font-size:11px;">No open bids on ${escapeHtml(ticker)} &mdash; be the first to post one ${_marketRowActionsHidden
+      ? `using the <button data-act="market-jump-to-swap" type="button" style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap tile above</button> (any unfilled buy budget posts as a bid at your limit).`
+      : `with <em>+ Place a bid</em> above, or use the Swap tile (any unfilled buy budget posts as a bid at your limit).`}</div>`;
     // Same fix: an asset with no bids should still have working
     // Sweep Buy / Sweep Sell / Auto-fulfil controls.
     _wireMarketBidPlace(section, asset);
@@ -61261,6 +61612,12 @@ export {
   // P2TR. Force-close keeper + slash-claim builders staged separately.
   buildAndBroadcastCbtcTacDeposit, buildAndBroadcastCbtcTacWithdraw,
   buildAndBroadcastShareSlashClaim, buildAndBroadcastCbtcTacForceClose,
+  // AMM swap (T_SWAP_VAR) high-level builder. v1 self-fulfill: wallet
+  // acts as both trader (intent sig) and settler (kernel sig from
+  // excess scalar). Single Bitcoin tx, no off-chain coordination.
+  buildSwapVarEnvelopeSelfFulfill, buildAndBroadcastSwapVarSelfFulfill,
+  buildSwapVarIntentMsg,
+  deriveSwapVarReceiptScalar, deriveSwapVarChangeScalar,
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,
   // cBTC.tac variant asset_id derivation (must match worker byte-for-byte).
   ctacVariantAssetId,
