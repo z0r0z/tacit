@@ -9758,12 +9758,17 @@ function recordPreauthTakePending(commitTxidHex, record) {
   const obj = loadPreauthTakePendings();
   obj[commitTxidHex] = { ...record, savedAt: Math.floor(Date.now() / 1000) };
   try { localStorage.setItem(preauthTakePendingKey(), JSON.stringify(obj)); } catch {}
+  // Refresh the header in-flight pill — a stranded commit just landed
+  // and the count + warning-color should update without waiting for the
+  // user to navigate.
+  try { if (typeof _renderInflightPill === 'function') _renderInflightPill(); } catch {}
 }
 function forgetPreauthTakePending(commitTxidHex) {
   const obj = loadPreauthTakePendings();
   if (commitTxidHex in obj) {
     delete obj[commitTxidHex];
     try { localStorage.setItem(preauthTakePendingKey(), JSON.stringify(obj)); } catch {}
+    try { if (typeof _renderInflightPill === 'function') _renderInflightPill(); } catch {}
   }
 }
 function listPreauthTakePendings() {
@@ -26052,6 +26057,19 @@ function _startWorkerHealthLoop() {
 if (typeof document !== 'undefined') {
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _startWorkerHealthLoop);
   else _startWorkerHealthLoop();
+}
+
+// Initial paint of the in-flight pill on load. Picks up stranded
+// preauth-take commits persisted across sessions so a returning user
+// with unrecovered sats sees the amber pill immediately. Pending-
+// settlement state is in-memory only and starts empty, so it's
+// effectively a stranded-commits-on-load render here. Subsequent
+// updates flow via _renderInflightPill calls in record/forget paths
+// and _pendingAddSettlement.
+if (typeof document !== 'undefined') {
+  const _initInflight = () => { try { _renderInflightPill(); } catch {} };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _initInflight);
+  else _initInflight();
 }
 
 // ============== NOTIFICATION LOG ==============
@@ -46151,6 +46169,7 @@ function _pendingAddSettlement({ tradeId, kind, aid, ticker, decimals, amountBas
     verifyState: 'pending',
   });
   _renderPendingSettlementsStrip();
+  _renderInflightPill();
   // Schedule a periodic chain re-check the first time we add an entry
   // that carries a UTXO reference. Idempotent — _ensurePendingVerifyTimer
   // no-ops if already running.
@@ -46165,7 +46184,53 @@ function _pendingClearStale() {
   for (const [k, ts] of _recentLocalListingCancels) {
     if (now - ts > RECENT_LOCAL_CANCEL_TTL_MS) _recentLocalListingCancels.delete(k);
   }
-  if (changed) _renderPendingSettlementsStrip();
+  if (changed) { _renderPendingSettlementsStrip(); _renderInflightPill(); }
+}
+
+// Header in-flight pill. Aggregates everything the wallet is currently
+// waiting on Bitcoin to settle: pending preauth-take + atomic-intent
+// settlements (`_pendingSettlements` map) and stranded commit records
+// that need user-action recovery (`loadPreauthTakePendings`). Renders
+// next to the worker-health dot so users see "3 trades in flight" at a
+// glance across every tab and don't have to bounce to Holdings to
+// confirm a recent buy is settling. Stranded count flips the color to
+// amber + adds a "1 needs recovery" hint — those need a click, not
+// just patience. Click → Holdings tab.
+function _renderInflightPill() {
+  if (typeof document === 'undefined') return;
+  const el = document.getElementById('inflight-pill');
+  if (!el) return;
+  let strandedCount = 0;
+  try { strandedCount = Object.keys(loadPreauthTakePendings() || {}).length; } catch {}
+  const pendingCount = _pendingSettlements ? _pendingSettlements.size : 0;
+  const total = pendingCount + strandedCount;
+  if (total === 0) {
+    el.style.display = 'none';
+    el.removeAttribute('data-has-stranded');
+    return;
+  }
+  el.style.display = 'inline-flex';
+  if (strandedCount > 0) el.setAttribute('data-has-stranded', '1');
+  else el.removeAttribute('data-has-stranded');
+  const strandedHint = strandedCount > 0
+    ? ` · ${strandedCount} need${strandedCount === 1 ? 's' : ''} recovery`
+    : '';
+  el.innerHTML = `<span class="inflight-dot" aria-hidden="true"></span><span>${total} in flight</span>`;
+  el.title = strandedCount > 0
+    ? `${pendingCount} trade${pendingCount === 1 ? '' : 's'} settling on Bitcoin · ${strandedCount} commit${strandedCount === 1 ? '' : 's'} stranded (one-click recovery in Holdings). Click to jump.`
+    : `${pendingCount} trade${pendingCount === 1 ? '' : 's'} settling on Bitcoin (~10 min for first confirmation). Click to jump to Holdings.`;
+  if (!el.dataset.wired) {
+    el.dataset.wired = '1';
+    const goHoldings = (ev) => {
+      ev?.preventDefault?.();
+      const tab = document.querySelector('.tab[data-tab="holdings"]');
+      if (tab) tab.click();
+    };
+    el.addEventListener('click', goHoldings);
+    el.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') goHoldings(ev);
+    });
+  }
 }
 // Vanish-confirmation candidates. The previous diff fired "your listing
 // sold ✓" as soon as a listing disappeared from one auto-refresh tick —
@@ -56184,6 +56249,8 @@ function _renderSwapProgress(host, items, opts = {}) {
   const hasRemaining = items.some(it =>
     it.status === 'queued' || it.status === 'broadcasting' || it.status === 'awaiting-fulfil');
   const showCancel = !!cancellable && hasRemaining;
+  const remainingCount = items.filter(it =>
+    it.status === 'queued' || it.status === 'broadcasting' || it.status === 'awaiting-fulfil').length;
   const cancelHtml = showCancel
     ? `<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">
          <button data-swap-cancel-remaining class="swap-cancel-remaining" type="button"${cancelled ? ' disabled' : ''}
@@ -56196,6 +56263,30 @@ function _renderSwapProgress(host, items, opts = {}) {
   if (showCancel && !cancelled && typeof onCancel === 'function') {
     const btn = host.querySelector('[data-swap-cancel-remaining]');
     if (btn) btn.onclick = (e) => { e.preventDefault(); onCancel(); };
+  }
+  // Promote the cancel affordance to the action button itself. During a
+  // long multi-fill swap (5 fills × ~10s each) the original action button
+  // sits disabled in its "broadcasting…" state, well above the progress
+  // section's Stop button — on mobile or narrow viewports the user has to
+  // scroll to find the stop control. Mirroring it onto the action button
+  // means the primary trade surface IS the kill switch while a swap is
+  // running. The loop tail restores the original onclick + label.
+  const actionBtn = host.__swapActionBtn || null;
+  if (actionBtn) {
+    if (showCancel && !cancelled && typeof onCancel === 'function') {
+      actionBtn._promotedToCancel = true;  // tells the loop tail to restore
+      actionBtn.disabled = false;
+      actionBtn.style.opacity = '1';
+      actionBtn.style.background = '#b8341d';
+      actionBtn.style.borderColor = '#9b2a16';
+      actionBtn.textContent = `Stop after this fill · ${remainingCount} remaining`;
+      actionBtn.title = 'Aborts the loop after the in-flight fill completes. Already-broadcast txs can\'t be recalled, but the queued fills (and their fees) are spared.';
+      actionBtn.onclick = (e) => { e?.preventDefault?.(); try { onCancel(); } catch {} };
+    } else if (cancelled) {
+      actionBtn.disabled = true;
+      actionBtn.style.opacity = '0.6';
+      actionBtn.textContent = `Stopping after this fill…`;
+    }
   }
 }
 
@@ -57803,7 +57894,14 @@ function _wireSwapTile(scope) {
     });
   };
 
-  actionBtn.onclick = async () => {
+  // Original swap-action click handler. Captured into a closure variable
+  // so the multi-fill loops can promote the action button into a "Stop
+  // after this fill" cancel control during execution and then restore
+  // the original onclick + green background in their completion tails.
+  // Without this, _renderSwapProgress's promote logic would overwrite
+  // onclick permanently — the next user click would fire the cancel
+  // handler against a stale cancelState.
+  const _origSwapActionHandler = async () => {
     // Funds-needed short-circuit: when the action button is in the
     // "+ Add funds" state, the click should open the Top-up modal
     // (Onramper / bitcoin: URI / P2P) instead of attempting a swap
@@ -57864,15 +57962,21 @@ function _wireSwapTile(scope) {
           ? `Some routes settle via online-maker claim → fulfil → settle (~5–10s wait if maker has auto-fulfil on; up to 5 min otherwise).`
           : `Each fill settles atomically on Bitcoin.`;
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
-        // Same tightened style as the exact-in path. Exact-out uses
-        // "≥ X" since whole-UTXO atomicity may overshoot the requested
-        // target; overshootStr already explains the diff if any.
+        // Plain-English exact-out buy confirm. Same structure as the
+        // exact-in variant: lead with what happens in human terms, then
+        // the technical fill / fee breakdown. "≥ X" prefix in the title
+        // signals whole-UTXO atomicity may overshoot the requested target;
+        // overshootStr explains the diff if any.
         const maxU = result.plan[result.plan.length - 1].u;
+        const _feesEst2 = (result.plan.length * 800).toLocaleString();
+        const _multiFillTail2 = result.plan.length > 1 ? ' · stop allowed mid-route' : '';
+        const _fillCountLine2 = `Routed across ${result.plan.length} ${result.plan.length === 1 ? 'listing' : 'listings'} on the asks ladder · ~${_feesEst2} sats in network fees${_multiFillTail2}.`;
         if (!await tacitConfirm({
           title: `Buy ≥ ${accStr} ${ticker} for ${result.totalSats.toLocaleString()} sats${usd ? ` (≈ ${usd})` : ''}?`,
           body:
-            `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · cap ≤ ${fmtUnitPriceSats(maxU)} sats/${ticker} · fees ~${(result.plan.length * 800).toLocaleString()} sats\n` +
-            asyncNote +
+            `Settles in ~10 min on Bitcoin · won't pay more than ${fmtUnitPriceSats(maxU)} sats per ${ticker}.\n\n` +
+            _fillCountLine2 +
+            (_hasIntent ? `\n\n${asyncNote}` : '') +
             (impactStr ? `\n\n${impactStr.replace(/^ · /, '').trim()}` : '') +
             overshootStr,
           confirmLabel: 'Buy',
@@ -57884,15 +57988,18 @@ function _wireSwapTile(scope) {
           ? `\n\nLast bid overshoots your ${result.targetSats.toLocaleString()} sats target by +${result.overshootSats.toLocaleString()} sats.`
           : '';
         const impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'sell');
-        const _afNoteOn  = `Auto-fulfil ON — claims sign automatically while this tab stays open.`;
-        const _afNoteOff = `Enable Auto-fulfil to keep this tab signing claims (or click "Enable now" below).`;
-        // Sells route via atomic intents — each fulfilment depends on a
-        // buyer's Take (1–30 min wait window). Surface that timing in the
-        // one essentials line so users understand sells aren't instant.
+        const _afNoteOn  = `Auto-fulfil is ON — this tab will sign each buyer's claim automatically as long as it stays open.`;
+        const _afNoteOff = `Auto-fulfil is OFF — sells stall until you sign each buyer's claim manually. Enable now to settle hands-free.`;
+        // Plain-English sell confirm. Sells aren't instant — each match
+        // waits for a buyer to Take (~1–30 min). The headline conveys
+        // timing + manual-signing dependency up front; the technical
+        // fill count and floor live below.
         const minU = result.plan[result.plan.length - 1].u;
+        const _multiFillTail3 = result.plan.length > 1 ? ' · stop allowed mid-route' : '';
         const _bodyFor = (afOn) =>
-          `${result.plan.length} fulfilment${result.plan.length === 1 ? '' : 's'} · floor ≥ ${fmtUnitPriceSats(minU)} sats/${ticker}\n` +
-          `Settlement waits for each bidder's Take (~1–30 min). ${afOn ? _afNoteOn : _afNoteOff}` +
+          `Each fill settles on Bitcoin when a bidder Takes (~1–30 min per match) · won't accept less than ${fmtUnitPriceSats(minU)} sats per ${ticker}.\n\n` +
+          `Routed across ${result.plan.length} ${result.plan.length === 1 ? 'bid' : 'bids'}${_multiFillTail3}.\n\n` +
+          (afOn ? _afNoteOn : _afNoteOff) +
           (impactStr ? `\n\n${impactStr.replace(/^ · /, '').trim()}` : '') +
           overshootStr;
         if (!await tacitConfirm({
@@ -57934,6 +58041,10 @@ function _wireSwapTile(scope) {
         _renderSwapProgress(progressEl, progressItems);
       };
       progressEl.__swapCancelState = result.plan.length > 1 ? _cancelState : null;
+      // Attach the action button so _renderSwapProgress can promote
+      // it into a "Stop after this fill (N remaining)" control during
+      // the multi-fill broadcast loop. Cleared in the completion tail.
+      progressEl.__swapActionBtn = result.plan.length > 1 ? actionBtn : null;
       _renderSwapProgress(progressEl, progressItems);
       let filled = 0, lastErr = null;
       let _totalFeesSats = 0;
@@ -58354,7 +58465,7 @@ function _wireSwapTile(scope) {
       // Clear cancel state so a subsequent swap on the same widget starts
       // fresh (otherwise the stale `cancelled: true` would suppress the
       // next swap's cancel button).
-      if (progressEl) progressEl.__swapCancelState = null;
+      if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       const _stoppedSuffix = _stoppedEarly ? ` · stopped after ${filled}/${result.plan.length} (you clicked stop)` : '';
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
@@ -58394,7 +58505,21 @@ function _wireSwapTile(scope) {
       // user typed. payUnit captures the current pay-unit so a USD-typed
       // buy doesn't accidentally restore as sats next time.
       if (filled > 0) _saveLastSwap({ aid, dir, payUnit: getPayUnit(), fromValue: rawTo, label: `${rawTo} ${dir === 'buy' ? ticker : 'sats'}` });
+      // Restore the action button from any mid-swap cancel-promotion
+      // (see _renderSwapProgress). The promotion path sets a flag on the
+      // element when it actually changes background/onclick; only
+      // resetting in that case avoids stomping on the buy/sell color
+      // applyDirection sets at wireup time.
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      if (actionBtn._promotedToCancel) {
+        actionBtn._promotedToCancel = false;
+        // Replay applyDirection so buy=green / sell=red is restored to
+        // the current direction (which may have changed mid-swap if the
+        // user flipped before the loop tail ran). Cheaper than
+        // hard-coding either color here.
+        try { if (typeof applyDirection === 'function') applyDirection(); } catch {}
+        if (actionBtn._origSwapActionHandler) actionBtn.onclick = actionBtn._origSwapActionHandler;
+      }
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);
       return;
@@ -58524,17 +58649,23 @@ function _wireSwapTile(scope) {
         }
       }
       const _impactStr = _computeImpactStr(result.totalSats, result.totalAmt, 'buy');
-      // Tighter buy confirm: lead with the human-readable trade in the
-      // title (≈USD shown there so it lands at first glance), keep the
-      // body to one essentials line + the async note + any conditional
-      // edge-case paragraphs (residual / impact). Less wall-of-text,
-      // same information density for the user who reads carefully.
+      // Plain-English buy confirm. Leads with what's about to happen in
+      // language a normie understands (settles on Bitcoin, stop allowed,
+      // hard price cap). Technical details — fill count, fee estimate,
+      // price impact, residual-as-bid — stay below as supporting
+      // bullets so power users still get the breakdown without having
+      // to parse "3 fills · cap ≤ 120 sats/TAC · fees ~2,400 sats"
+      // as their first line.
       const _maxUnit = result.plan[result.plan.length - 1].u;
+      const _feesEst = (result.plan.length * 800).toLocaleString();
+      const _multiFillTail = result.plan.length > 1 ? ' · stop allowed mid-route' : '';
+      const _fillCountLine = `Routed across ${result.plan.length} ${result.plan.length === 1 ? 'listing' : 'listings'} on the asks ladder · ~${_feesEst} sats in network fees${_multiFillTail}.`;
       if (!await tacitConfirm({
         title: `Buy ~${accStr} ${ticker} for ${result.totalSats.toLocaleString()} sats${usd ? ` (≈ ${usd})` : ''}?`,
         body:
-          `${result.plan.length} fill${result.plan.length === 1 ? '' : 's'} · cap ≤ ${fmtUnitPriceSats(_maxUnit)} sats/${ticker} · fees ~${(result.plan.length * 800).toLocaleString()} sats\n` +
-          _asyncNote +
+          `Settles in ~10 min on Bitcoin · won't pay more than ${fmtUnitPriceSats(_maxUnit)} sats per ${ticker}.\n\n` +
+          _fillCountLine +
+          (_hasIntent ? `\n\n${_asyncNote}` : '') +
           (_impactStr ? `\n\n${_impactStr.replace(/^ · /, '').trim()}` : '') +
           _residualNote,
         confirmLabel: 'Buy',
@@ -58557,6 +58688,10 @@ function _wireSwapTile(scope) {
         _renderSwapProgress(progressEl, progressItems);
       };
       progressEl.__swapCancelState = result.plan.length > 1 ? _cancelState : null;
+      // Attach the action button so _renderSwapProgress can promote
+      // it into a "Stop after this fill (N remaining)" control during
+      // the multi-fill broadcast loop. Cleared in the completion tail.
+      progressEl.__swapActionBtn = result.plan.length > 1 ? actionBtn : null;
       _renderSwapProgress(progressEl, progressItems);
       let filled = 0, lastErr = null;
       let _totalFeesSats = 0;
@@ -58664,7 +58799,7 @@ function _wireSwapTile(scope) {
           _residualUnposted = { sats: _residualSats, reason: `too small to bid one ${ticker} unit at ${fmtUnitPriceSats(result.cap)} sats/${ticker}` };
         }
       }
-      if (progressEl) progressEl.__swapCancelState = null;
+      if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} filled · ${lastErr}${_feeSuffix}`, 'error', 8000);
@@ -58701,7 +58836,21 @@ function _wireSwapTile(scope) {
       // raw is the literal value the user typed in the "from" input;
       // payUnit captures whether it was sats or USD.
       if (filled > 0) _saveLastSwap({ aid, dir: 'buy', payUnit: getPayUnit(), fromValue: raw, label: getPayUnit() === 'usd' ? `$${raw}` : `${raw} sats` });
+      // Restore the action button from any mid-swap cancel-promotion
+      // (see _renderSwapProgress). The promotion path sets a flag on the
+      // element when it actually changes background/onclick; only
+      // resetting in that case avoids stomping on the buy/sell color
+      // applyDirection sets at wireup time.
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      if (actionBtn._promotedToCancel) {
+        actionBtn._promotedToCancel = false;
+        // Replay applyDirection so buy=green / sell=red is restored to
+        // the current direction (which may have changed mid-swap if the
+        // user flipped before the loop tail ran). Cheaper than
+        // hard-coding either color here.
+        try { if (typeof applyDirection === 'function') applyDirection(); } catch {}
+        if (actionBtn._origSwapActionHandler) actionBtn.onclick = actionBtn._origSwapActionHandler;
+      }
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);
     } else {
@@ -58809,6 +58958,10 @@ function _wireSwapTile(scope) {
         _renderSwapProgress(progressEl, progressItems);
       };
       progressEl.__swapCancelState = result.plan.length > 1 ? _cancelState : null;
+      // Attach the action button so _renderSwapProgress can promote
+      // it into a "Stop after this fill (N remaining)" control during
+      // the multi-fill broadcast loop. Cleared in the completion tail.
+      progressEl.__swapActionBtn = result.plan.length > 1 ? actionBtn : null;
       _renderSwapProgress(progressEl, progressItems);
       let filled = 0, lastErr = null;
       let _totalFeesSats = 0;
@@ -58865,7 +59018,7 @@ function _wireSwapTile(scope) {
           if (!isUnlockCancelled(e)) console.warn('[swap] residual listing failed:', e.message);
         }
       }
-      if (progressEl) progressEl.__swapCancelState = null;
+      if (progressEl) { progressEl.__swapCancelState = null; progressEl.__swapActionBtn = null; }
       const _feeSuffix = _totalFeesSats > 0 ? ` · paid ${_totalFeesSats.toLocaleString()} sats fees` : '';
       if (lastErr && filled === 0) toast(`Swap failed: ${lastErr}`, 'error');
       else if (lastErr) toast(`Partial: ${filled}/${result.plan.length} fulfilled · ${lastErr}${_feeSuffix}`, 'error', 8000);
@@ -58896,11 +59049,30 @@ function _wireSwapTile(scope) {
       }
       // Remember this sell for the "↻ Repeat" chip — raw is the asset amount the user typed.
       if (filled > 0) _saveLastSwap({ aid, dir: 'sell', payUnit: '', fromValue: raw, label: `${raw} ${ticker}` });
+      // Restore the action button from any mid-swap cancel-promotion
+      // (see _renderSwapProgress). The promotion path sets a flag on the
+      // element when it actually changes background/onclick; only
+      // resetting in that case avoids stomping on the buy/sell color
+      // applyDirection sets at wireup time.
       actionBtn.disabled = false; actionBtn.style.opacity = '1';
+      if (actionBtn._promotedToCancel) {
+        actionBtn._promotedToCancel = false;
+        // Replay applyDirection so buy=green / sell=red is restored to
+        // the current direction (which may have changed mid-swap if the
+        // user flipped before the loop tail ran). Cheaper than
+        // hard-coding either color here.
+        try { if (typeof applyDirection === 'function') applyDirection(); } catch {}
+        if (actionBtn._origSwapActionHandler) actionBtn.onclick = actionBtn._origSwapActionHandler;
+      }
       actionBtn.textContent = origLabel;
       setTimeout(() => renderMarket(), 1500);
     }
   };
+  // Bind the original handler. Stash it on the element too so the
+  // multi-fill loops' completion tails can restore it after promoting
+  // the button into a cancel control mid-swap.
+  actionBtn.onclick = _origSwapActionHandler;
+  actionBtn._origSwapActionHandler = _origSwapActionHandler;
 }
 
 function _wireMarketSweepBuy(section, asset) {

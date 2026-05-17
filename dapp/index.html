@@ -3547,6 +3547,56 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
 .worker-health[data-state="loading"] { color: var(--ink-faint); animation: worker-pulse 1.4s ease-in-out infinite; }
 @keyframes worker-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 
+/* In-flight trades pill. Live count of trades that have been broadcast
+   to Bitcoin but haven't yet confirmed (preauth-take pendings + atomic-
+   intent settlements awaiting first conf + stranded commits awaiting
+   recovery). Sits next to the worker-health dot so it reads as part of
+   the same "current network state" cluster. Hidden when count == 0 so
+   the header stays clean during idle browsing. Click → Holdings tab.
+   Stranded count gets the warning color since those need user action. */
+.inflight-pill {
+  display: none;  /* JS toggles to inline-flex when count > 0 */
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  margin-right: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #0a8f43;
+  background: rgba(10,143,67,0.08);
+  border: 1px solid #0a7d3a;
+  border-radius: 11px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.inflight-pill:hover { background: rgba(10,143,67,0.16); }
+.inflight-pill[data-has-stranded="1"] {
+  color: #b8651d;
+  background: rgba(184,101,29,0.08);
+  border-color: #b8651d;
+}
+.inflight-pill[data-has-stranded="1"]:hover { background: rgba(184,101,29,0.16); }
+.inflight-pill .inflight-dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: inflight-pulse 1.6s infinite ease-out;
+}
+@keyframes inflight-pulse {
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .inflight-pill .inflight-dot { animation: none; }
+}
+
 /* Slippage help bubble: small ? button beside the "Limit" label that opens
    a tacitConfirm-style info modal. Visible affordance for the explanation,
    distinct from hover-only title tooltips that don't work on mobile. */
@@ -4080,6 +4130,13 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
            on the far left so the action-button cluster (⌘K, bell, ?) reads
            as one tight group on the right, with the network select. -->
       <span id="worker-health" class="worker-health" data-state="loading" title="Worker status — checking…" role="status" aria-live="polite">●</span>
+      <!-- In-flight trades pill. Live count of Bitcoin txs broadcast by
+           this wallet that haven't yet confirmed (preauth-take pendings +
+           atomic-intent settlements + stranded commits awaiting one-click
+           recovery). Hidden when 0. Click jumps to Holdings. Stranded
+           commits flip the color to amber so the user knows they need
+           to act, not just wait. Updated by _renderInflightPill(). -->
+      <span id="inflight-pill" class="inflight-pill" role="button" tabindex="0" aria-label="Trades in flight"></span>
       <!-- Action cluster: keyboard-equivalent + click-equivalent user actions.
            Grouped tight with the normal .net-row gap so they read as a unit. -->
       <button id="btn-cmd" class="btn-help btn-cmd" type="button" aria-label="Open command palette" title="Open command palette (⌘K)">⌘K</button>
