@@ -13985,6 +13985,289 @@ async function buildAndBroadcastSlotSplit({
   };
 }
 
+// SPEC-CBTC-ZK-FUNGIBILITY-AMENDMENT §5.25 — one-click "Merge slots" UX.
+//
+// Structural inverse of SPLIT: takes 2..16 owned cBTC.zk slots and produces
+// one new slot at denom_new ≤ Σ denom_old (the difference funds the Bitcoin
+// miner fee). Useful for consolidating fragmented holdings before a large
+// transfer / withdraw / cBTC.tac deposit.
+//
+// v1 single-owner: caller's wallet signs every old-slot vin under r_btc and
+// signs slot_merge_msg under wallet.priv. Multi-owner merges (§5.25.4) are
+// a forthcoming feature requiring SIGHASH_ALL coordination across signers.
+//
+// Bitcoin tx shape:
+//   commit: sats inputs → vout[0] = P2TR(envelope script) + sats change
+//   reveal:
+//     vin[0]    = commit P2TR (script-path with envelope reveal)
+//     vin[1..N] = each old slot K_btc UTXO (key-path under that slot's r_btc,
+//                 SIGHASH_ALL so each vin commits to vout[0] = new slot)
+//     vout[0]   = new slot P2TR at K_btc_new (value = denom_new)
+async function buildAndBroadcastSlotMerge({
+  oldSlotRecords,                 // array of N (2..16) slot records — all
+                                   // must be 'live' and owned by this wallet
+  denomNew,                       // ≤ Σ denom_old (slot pays fee from difference)
+  assetIdNewHex = null,           // default = first input's asset_id
+  newSecret = null,
+  newNullifierPreimage = null,
+  recipientViewingPub = null,     // optional — if set, encrypt note to recipient
+                                   // (sender's note scanner will NOT find this
+                                   // slot; useful for "consolidate then send")
+  ceremonyHash = null,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  if (!Array.isArray(oldSlotRecords) || oldSlotRecords.length < 2 || oldSlotRecords.length > 16) {
+    throw new Error('oldSlotRecords must be 2..16');
+  }
+  for (let i = 0; i < oldSlotRecords.length; i++) {
+    const r = oldSlotRecords[i];
+    if (!r || !r.assetIdHex || !r.mintTxid) {
+      throw new Error(`oldSlotRecords[${i}] must include assetIdHex + mintTxid`);
+    }
+    const s = r.status || 'live';
+    if (s !== 'live') throw new Error(`oldSlotRecords[${i}] state must be 'live' (got '${s}')`);
+    if (!mixerIsPoolRegistered(r.assetIdHex, BigInt(r.denomination))) {
+      throw new Error(`oldSlotRecords[${i}] pool not registered locally`);
+    }
+    if (!mixerIsPoolCanonical(r.assetIdHex, BigInt(r.denomination))) {
+      throw new Error(`oldSlotRecords[${i}] pool declares a non-canonical vk_cid/ceremony_cid`);
+    }
+  }
+  const dNew = BigInt(denomNew);
+  const aidNewHex = assetIdNewHex || oldSlotRecords[0].assetIdHex;
+  if (!mixerIsPoolRegistered(aidNewHex, dNew)) {
+    throw new Error(`new-slot pool (${aidNewHex.slice(0,8)}…, ${dNew}) not registered`);
+  }
+  if (!mixerIsPoolCanonical(aidNewHex, dNew)) {
+    throw new Error(`new-slot pool declares a non-canonical vk_cid/ceremony_cid`);
+  }
+
+  // Per-input merkle proofs + nullifier-already-spent guards.
+  _progress('proof:merkle');
+  const oldMerkleRoots = [];
+  const oldNullifierHashes = [];
+  for (let i = 0; i < oldSlotRecords.length; i++) {
+    const r = oldSlotRecords[i];
+    const assetIdHex = r.assetIdHex;
+    const denomBig = BigInt(r.denomination);
+    const oldNullifierPreimage = hexToBytes(r.nullifierPreimageHex);
+    const oldNullifierHash = computeNullifierHash(oldNullifierPreimage);
+    if (mixerIsNullifierSpent(assetIdHex, denomBig, oldNullifierHash)) {
+      throw new Error(`oldSlotRecords[${i}] already redeemed (nullifier in spent-set)`);
+    }
+    oldNullifierHashes.push(oldNullifierHash);
+    const leafBytes = hexToBytes(r.leafCommitmentHex);
+    let mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
+    if (!mp) {
+      _mixerPoolCacheUntil = 0;
+      await refreshPoolsIfStale();
+      mp = buildMixerMerkleProof(assetIdHex, denomBig, leafBytes);
+      if (!mp) throw new Error(`oldSlotRecords[${i}] leaf not in local pool tree`);
+    }
+    const merkleRootBytes = mp.root instanceof Uint8Array ? mp.root : bigintToBytes32(BigInt(mp.root));
+    oldMerkleRoots.push(merkleRootBytes);
+  }
+
+  // Placeholder proofs — see §5.25.3 note (worker validator doesn't yet
+  // verify; bind_hash recompute is the structural correctness gate).
+  const oldProofs = oldSlotRecords.map(() => new Uint8Array(256));
+
+  // Optional encrypted note to a recipient (consolidate-and-send pattern).
+  let encryptedNote = null;
+  const newSec = newSecret
+    || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+  const newNu = newNullifierPreimage
+    || (() => { const b = new Uint8Array(32); crypto.getRandomValues(b); return b; })();
+  if (recipientViewingPub) {
+    if (!(recipientViewingPub instanceof Uint8Array) || recipientViewingPub.length !== 33) {
+      throw new Error('recipientViewingPub must be 33-byte compressed point');
+    }
+    encryptedNote = await encryptSlotNote({
+      recipientViewingPub33: recipientViewingPub,
+      kind: SLOT_NOTE_KIND_MERGE,
+      secretBytes32: newSec,
+      nullifierPreimageBytes32: newNu,
+      amountSats: dNew,
+    });
+  }
+
+  _progress('envelope:build');
+  const built = await buildSlotMergeEnvelope({
+    networkTag,
+    oldSlotRecords,
+    oldMerkleRoots,
+    oldProofs,
+    assetIdNewHex,
+    denomNew: dNew,
+    newSecret: newSec,
+    newNullifierPreimage: newNu,
+    newOwnerPriv: wallet.priv,
+    encryptedNote,
+  });
+
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), built.payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  // Reveal-tx vbytes estimate: 11 base + 41×(N+1) ins (1 commit + N slots)
+  //   + 43 (1 P2TR out) + ceil(witness bytes / 4).
+  const witnessBytes = (1 + 1 + 65 + 3 + 45 + built.payload.length + 34 + 109)
+    + oldSlotRecords.length * (1 + 64);
+  const revealVb = 11 + 41 * (oldSlotRecords.length + 1) + 43
+    + Math.ceil(witnessBytes / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+
+  // Fee budgeting: feeFromSlots = Σ denom_old − denom_new. If positive,
+  // covers some/all of revealFee; commit funds the remainder.
+  const slotContribution = built.feeFromSlots;
+  const commitMustCover = revealFee > Number(slotContribution)
+    ? revealFee - Number(slotContribution)
+    : DUST;
+  const commitValue = Math.max(DUST, commitMustCover);
+
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  if (sats.length === 0) throw new Error('no sats UTXOs to fund merge commit');
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for merge commit: need ${commitValue + commitFee}, have ${total}`);
+  }
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+  _progress('commit-start');
+  await broadcast(commitHex);
+
+  // Reveal tx: vin[0]=commit, vin[1..N]=old slots, vout[0]=new slot.
+  const revealInputs = [{ txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] }];
+  for (const r of oldSlotRecords) {
+    revealInputs.push({ txid: r.mintTxid, vout: 0, sequence: 0xfffffffd, witness: [] });
+  }
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: revealInputs,
+    outputs: [{ value: Number(dNew), script: built.newSlotScriptPubKey }],
+  };
+  const revealPrevouts = [{ value: commitValue, script: commitSpk }];
+  for (const r of oldSlotRecords) {
+    const denomBig = BigInt(r.denomination);
+    const oldNullifierPreimage = hexToBytes(r.nullifierPreimageHex);
+    const oldRecipientCommit = pedersenCommit(
+      denomBig,
+      bytes32ToBigint(poseidonHash(hexToBytes(r.secretHex), oldNullifierPreimage)) % SECP_N,
+    ).toRawBytes(true);
+    const slotSpk = r.slotScriptPubKeyHex
+      ? hexToBytes(r.slotScriptPubKeyHex)
+      : slotScriptPubKeyFromKbtc(deriveSlotKbtc(oldRecipientCommit, denomBig));
+    revealPrevouts.push({ value: Number(denomBig), script: slotSpk });
+  }
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(
+    revealTx, revealPrevouts, envelopeScript, cb,
+  );
+  // Sign each old-slot vin under that slot's r_btc (SIGHASH_ALL).
+  for (let i = 0; i < oldSlotRecords.length; i++) {
+    const r = oldSlotRecords[i];
+    const oldNullifierPreimage = hexToBytes(r.nullifierPreimageHex);
+    const oldRBtcBytes = r.rBtcHex
+      ? hexToBytes(r.rBtcHex)
+      : deriveSlotRBtc(hexToBytes(r.secretHex), oldNullifierPreimage);
+    revealTx.inputs[1 + i].witness = signTaprootKeyPathInputWithKey(
+      revealTx, 1 + i, revealPrevouts, oldRBtcBytes, 0x01,
+    );
+  }
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+  _progress('reveal-start');
+  await broadcastWithRetry(revealHex);
+
+  // Local-state update: mark each old slot 'merged' + persist the new slot if
+  // we'll own it (no recipient OTC, or recipient === self).
+  try {
+    const arr = _loadSlotRecords();
+    for (let i = 0; i < oldSlotRecords.length; i++) {
+      const r = oldSlotRecords[i];
+      const idx = arr.findIndex(x => x.leafCommitmentHex === r.leafCommitmentHex);
+      if (idx >= 0) {
+        arr[idx] = {
+          ...arr[idx],
+          status: 'merged',
+          mergedTxid: revealTxidHex,
+          mergedAt: Date.now(),
+          mergedSuccessorLeafHash: built.newSlotRecord.leafCommitmentHex,
+        };
+      }
+    }
+    const isSelf = !recipientViewingPub
+      || bytesToHex(recipientViewingPub) === bytesToHex(slotViewingPubkey());
+    if (isSelf) {
+      arr.push({
+        ...built.newSlotRecord,
+        network: NET.name,
+        mintTxid: revealTxidHex,
+        commitTxid: commitTxidHex,
+        status: 'live',
+      });
+    }
+    try { localStorage.setItem(_slotRecordsKey(), JSON.stringify(arr)); } catch {}
+    for (let i = 0; i < oldSlotRecords.length; i++) {
+      const r = oldSlotRecords[i];
+      mixerMarkNullifierSpent(
+        r.assetIdHex, BigInt(r.denomination), oldNullifierHashes[i], revealTxidHex,
+      );
+    }
+  } catch {}
+
+  try {
+    const am = getAssetMeta(aidNewHex) || {};
+    recordActivity({
+      kind: 'slot-merge',
+      ticker: am.ticker || 'cBTC.zk',
+      amount: dNew,
+      decimals: am.decimals || 0,
+      assetId: aidNewHex,
+      txid: revealTxidHex,
+    });
+  } catch {}
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    newSlotRecord: built.newSlotRecord,
+    inputNullifierHashes: built.inputNullifierHashes,
+    commitFee, revealFee,
+  };
+}
+
 // Per-network cursor for the slot-rotates scan. Persists the highest height
 // we've successfully scanned past so subsequent ticks don't re-walk old
 // rotations. Keyed per network to keep mainnet / signet bookkeeping isolated.
@@ -44633,6 +44916,29 @@ function applyMarketFilters() {
   }
   rows = rows.filter(l => (l._asset?.asset_id || '') === _marketView.assetId);
 
+  // Filter-stripped-everything fallback. If the user-side filters
+  // (kind dropdown, price range, expired flag) zeroed out the asset's
+  // rows even though the cache HAS active listings for this aid, the
+  // "No active asks. Bids above; post one if you want to buy" empty
+  // pane below would lie to the user — there ARE asks; their current
+  // filter just hid them. The catastrophic empty pane also hides the
+  // swap tile, asks header chips, and filter affordances, so the user
+  // has no way to widen the filter without a full page reload (the
+  // bug they reported: "have to refresh to see the active list"). Re-
+  // seed `rows` with the unfiltered per-asset set so the normal render
+  // path runs; Simple Mode / Mine / expiry / dust filters downstream
+  // still narrow rowsForGrid, but the user sees the orderbook chrome
+  // (filter chips, mode toggle, count headers) and can react in place.
+  // The asks header's "Showing X of Y · N hidden by current filter"
+  // copy tells them what's happening; one chip click brings the asks
+  // back without losing swap-tile state.
+  if (!rows.length) {
+    const _allRowsForAsset = _marketCache.listings.filter(l => (l._asset?.asset_id || '') === _marketView.assetId);
+    if (_allRowsForAsset.length > 0) {
+      rows = _allRowsForAsset;
+    }
+  }
+
   // Sort priority: trustless atomic intents always surface above
   // trust-required listings (within each price/recency tier). The user can
   // still see opening/range offers, but the recommended path is on top.
@@ -59560,7 +59866,7 @@ export {
   // Exported so headless drivers (signet rehearsal, integration tests) can
   // exercise the same code path the UI calls.
   buildAndBroadcastSlotMint, buildAndBroadcastSlotBurn, buildAndBroadcastSlotRotate,
-  buildAndBroadcastSlotSplit,
+  buildAndBroadcastSlotSplit, buildAndBroadcastSlotMerge,
   // cBTC.tac LP-shaped mint + burn builders (SPEC-CBTC-TAC-AMENDMENT §5.36/§5.37).
   // Composes carveExactAmount (bond TAC) + cBTC.tac envelope + commit-reveal
   // P2TR. Force-close keeper + slash-claim builders staged separately.
