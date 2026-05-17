@@ -40527,18 +40527,59 @@ function _vanishCandidatesClearStale() {
   }
 }
 
-// Probe the seller's asset UTXO via cached/batched mempool.space. Returns
-// true if confirmed spent, false if confirmed unspent, null if we can't
-// tell (network error, unknown txid). Callers must treat null as "no
-// answer" — never as either branch — otherwise a flaky API turns into
-// either a false fire or a false retract.
-async function _utxoSpentProbe(txid, vout) {
+// Probe the seller's asset UTXO via cached/batched mempool.space. Without
+// a sellerPubHex the return values are:
+//   true  — confirmed spent on chain
+//   false — confirmed unspent
+//   null  — couldn't determine (network error, unknown txid)
+// Callers must treat null as "no answer" — never as either branch —
+// otherwise a flaky API turns into either a false fire or a false retract.
+//
+// With a sellerPubHex, the probe also classifies the spending tx so callers
+// can distinguish settlement spends (asset moved to a non-seller P2WPKH)
+// from user self-spends (hard-cancel, Send Privately to self, fractionalize
+// of a listed lot, …). Adds one extra return value:
+//   'self-spend' — confirmed spent, and the spending tx's vout[0] is a
+//                  P2WPKH of the seller's own hash160 (= a self-spend,
+//                  not a real settlement).
+async function _utxoSpentProbe(txid, vout, sellerPubHex = null) {
   if (!txid || !/^[0-9a-f]{64}$/i.test(txid)) return null;
   if (!Number.isInteger(vout) || vout < 0) return null;
   try {
     const res = await getOutspend(txid, vout);
     if (!res || typeof res.spent !== 'boolean') return null;
-    return res.spent === true;
+    if (res.spent !== true) return false;
+    if (!sellerPubHex || !/^[0-9a-f]{66}$/i.test(sellerPubHex)) return true;
+    const cls = await _classifySpendingTx(res.txid, sellerPubHex);
+    return cls === 'self' ? 'self-spend' : true;
+  } catch { return null; }
+}
+
+// Classify the spending tx referenced by an outspend record. Returns:
+//   'self' — vout[0] is a P2WPKH of the seller's pubkey hash160 (= asset
+//            transferred back to the seller; not a marketplace settlement)
+//   'other' — vout[0] is some other P2WPKH (= asset moved to a different
+//             party; could be a real settlement or an off-marketplace
+//             CXFER, but in either case the asset left the seller and the
+//             "listing sold" toast is at least directionally correct)
+//   null   — couldn't determine (network error, tx not P2WPKH-shaped, etc.)
+//
+// Asset-transfer-shaped txs (T_CXFER, T_AXFER, atomic intent takes, preauth
+// takes) consistently put the asset recipient at vout[0]. Self-spend CXFERs
+// — emitted by every cancel/cleanup path that consumes a listed lot — put
+// the seller at vout[0]. The hash160-compare is enough to discriminate.
+async function _classifySpendingTx(spendingTxid, sellerPubHex) {
+  if (!spendingTxid || !/^[0-9a-f]{64}$/i.test(spendingTxid)) return null;
+  if (!sellerPubHex || !/^[0-9a-f]{66}$/i.test(sellerPubHex)) return null;
+  try {
+    const tx = await getTx(spendingTxid);
+    if (!tx || !Array.isArray(tx.vout) || tx.vout.length === 0) return null;
+    const out0 = tx.vout[0];
+    const spk = String(out0?.scriptpubkey || '').toLowerCase();
+    // P2WPKH program: 0x00 0x14 <20-byte hash160> → 22 bytes → 44 hex chars.
+    if (spk.length !== 44 || !spk.startsWith('0014')) return null;
+    const sellerH160Hex = bytesToHex(hash160(hexToBytes(sellerPubHex))).toLowerCase();
+    return spk.slice(4) === sellerH160Hex ? 'self' : 'other';
   } catch { return null; }
 }
 
@@ -40587,11 +40628,14 @@ function _pendingReconcileAgainstLiveCache() {
 
 // Chain-side reconciliation. For each pending entry that carries a
 // utxoTxid, probe the outspend:
-//   spent=true  → mark verifyState='verified' (real settlement broadcast)
-//   spent=false → if entry is older than PENDING_RETRACT_AFTER_MS, retract
-//                 (toast and notification were wrong; no tx consumed the
-//                 seller's lot)
-//   null        → leave alone; try again next interval
+//   spent=true       → mark verifyState='verified' (real settlement broadcast)
+//   spent='self-spend' → retract immediately; the spending tx exists but
+//                       sends the asset back to the seller, so no real
+//                       settlement happened (matches the seller-initiated
+//                       self-spend false-positive family)
+//   spent=false      → if entry is older than PENDING_RETRACT_AFTER_MS,
+//                      retract (toast was wrong; no tx consumed the lot)
+//   null             → leave alone; try again next interval
 async function _pendingReconcileAgainstChain() {
   if (!_pendingSettlements.size) return;
   if (_pendingVerifyInflight) return;
@@ -40599,7 +40643,12 @@ async function _pendingReconcileAgainstChain() {
   try {
     const entries = [..._pendingSettlements.entries()].filter(([, e]) => e.utxoTxid && Number.isInteger(e.utxoVout));
     if (!entries.length) return;
-    const results = await Promise.all(entries.map(([, e]) => _utxoSpentProbe(e.utxoTxid, e.utxoVout)));
+    // Pending sell entries are mine (the vanish-detector only records my
+    // own listings). Pass myPubHex so the probe can classify a 'self-spend'
+    // result and retract the strip row when the user's own self-CXFER
+    // consumed the listed UTXO between fire and verify.
+    const myPubHex = (typeof wallet !== 'undefined' && wallet?.pub) ? bytesToHex(wallet.pub) : null;
+    const results = await Promise.all(entries.map(([, e]) => _utxoSpentProbe(e.utxoTxid, e.utxoVout, myPubHex)));
     const now = Date.now();
     let changed = false;
     const retractedTickers = [];
@@ -40611,6 +40660,13 @@ async function _pendingReconcileAgainstChain() {
           _pendingSettlements.set(id, { ...e, verifyState: 'verified' });
           changed = true;
         }
+      } else if (spent === 'self-spend') {
+        // Conclusive: the on-chain spend is back to the seller. Retract
+        // immediately (no need to wait PENDING_RETRACT_AFTER_MS — we have
+        // a positive signal that this wasn't a settlement).
+        _pendingSettlements.delete(id);
+        retractedTickers.push(e.ticker);
+        changed = true;
       } else if (spent === false) {
         if (now - e.ts > PENDING_RETRACT_AFTER_MS) {
           _pendingSettlements.delete(id);
@@ -41082,20 +41138,25 @@ function _startMarketAutoRefresh() {
         }
         if (candidateConfirms.length > 0) {
           // Chain pre-check in parallel for any UTXO-bound listings.
+          // myPubHex is passed so the probe can classify the spending tx
+          // and return 'self-spend' when the asset went back to the user
+          // (hard-cancel self-CXFER, Send Privately to self, fractionalize
+          // of a listed lot, etc.). 'self-spend' is treated the same as
+          // 'unspent' below — closes the entire family of seller-initiated
+          // self-spend false-positives in one place.
           const probes = await Promise.all(candidateConfirms.map(([, snap]) => (
             (snap.utxoTxid && Number.isInteger(snap.utxoVout))
-              ? _utxoSpentProbe(snap.utxoTxid, snap.utxoVout)
+              ? _utxoSpentProbe(snap.utxoTxid, snap.utxoVout, myPubHex || null)
               : Promise.resolve(undefined)  // range / unknown → no probe
           )));
           for (let i = 0; i < candidateConfirms.length; i++) {
             const [key, snap] = candidateConfirms[i];
             const probe = probes[i];
             _vanishCandidateListings.delete(key);
-            if (probe === false) {
-              // UTXO is verifiably unspent — a settlement could not have
-              // happened. Listing vanished for some other reason
-              // (expired but not yet flushed by worker, worker dropped
-              // the record, etc.); don't toast a false fill.
+            if (probe === false || probe === 'self-spend') {
+              // UTXO is verifiably unspent, or it was spent by the user's
+              // own self-CXFER (asset returned to seller at vout[0]). Either
+              // way no real settlement happened; don't toast a false fill.
               continue;
             }
             fireListingFill(key, snap);
