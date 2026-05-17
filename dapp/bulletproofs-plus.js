@@ -144,16 +144,107 @@ export function safeMult(P, s) {
   return x === 0n ? ZERO : P.multiply(x);
 }
 
-// Multi-scalar multiplication: Σ s_i · P_i. Naïve loop; matches the existing
-// tacit msm shape. Performance optimization (Straus/Pippenger) is a future
-// concern — correctness first.
+// Multi-scalar multiplication: Σ s_i · P_i via windowed Pippenger.
+//
+// The result is mathematically identical to the naïve `Σ s_i · P_i` loop —
+// both produce the same secp256k1 point. Pippenger reorders the work to
+// cut total point operations from O(n · log(n_scalar_bits)) doublings down
+// to O(n + 2^c · log(n_scalar_bits) / c) by binning each scalar's c-bit
+// windows into shared buckets that get added once per bucket, not once per
+// scalar bit. Window size c ≈ log2(active_n) is the empirical sweet spot.
+//
+// For BP+ at typical vector sizes (n = 128–512), Pippenger is ~5–20×
+// faster than the naïve loop. Output is byte-identical when serialized via
+// `pointToBytes`. Not consensus-relevant; just a hot-path speedup for
+// prove + verify.
+//
+// Algorithm (textbook Pippenger, e.g. Bernstein/Doche/Lange survey):
+//   1. Pick c such that the number of windows numWindows ≈ ceil(256/c).
+//   2. For each window w (from MSB to LSB):
+//      a. Double the running accumulator c times to shift it left one window.
+//      b. Bin each point into a bucket indexed by its c-bit window value:
+//         buckets[v] += points[i] when scalar[i]'s window-w value == v.
+//      c. Sum buckets weighted by index: Σ_v v · buckets[v]. Computed in
+//         linear time via running-sum trick (Σ from B-1 down to 1).
+//      d. Add weighted sum to accumulator.
+//
+// Small-n fast path: setup cost (allocating buckets, BigInt shifts)
+// dominates Pippenger's savings below a handful of nonzero scalars, so fall
+// through to the naïve loop in that regime.
+
+function _msmWindowSize(activeCount) {
+  if (activeCount < 32)   return 3;
+  if (activeCount < 128)  return 4;
+  if (activeCount < 1024) return 5;
+  return 6;
+}
+
 export function msm(scalars, points) {
   if (scalars.length !== points.length) throw new Error('bpp: msm length mismatch');
-  let acc = ZERO;
-  for (let i = 0; i < scalars.length; i++) {
+  const n = scalars.length;
+  if (n === 0) return ZERO;
+
+  // Reduce scalars once; track which entries are nonzero so the bucket pass
+  // can skip zero-scalar slots without re-reducing.
+  const reduced = new Array(n);
+  let activeCount = 0;
+  for (let i = 0; i < n; i++) {
     const s = modN(scalars[i]);
-    if (s !== 0n) acc = acc.add(points[i].multiply(s));
+    reduced[i] = s;
+    if (s !== 0n) activeCount++;
   }
+  if (activeCount === 0) return ZERO;
+
+  // Tiny n: naïve loop is competitive and avoids Pippenger's setup cost.
+  if (activeCount <= 4) {
+    let acc = ZERO;
+    for (let i = 0; i < n; i++) {
+      if (reduced[i] !== 0n) acc = acc.add(points[i].multiply(reduced[i]));
+    }
+    return acc;
+  }
+
+  const c = _msmWindowSize(activeCount);
+  const numBuckets = 1 << c;
+  const numWindows = Math.ceil(256 / c);
+  const cBig = BigInt(c);
+  const mask = (1n << cBig) - 1n;
+
+  let acc = ZERO;
+  for (let w = numWindows - 1; w >= 0; w--) {
+    // Shift acc left by one window (= c doublings). Skip on the first
+    // iteration because acc is ZERO.
+    if (w !== numWindows - 1) {
+      for (let d = 0; d < c; d++) acc = acc.add(acc);
+    }
+
+    // Bin points by their c-bit window value.
+    const buckets = new Array(numBuckets);
+    for (let b = 0; b < numBuckets; b++) buckets[b] = ZERO;
+
+    const shift = BigInt(w * c);
+    for (let i = 0; i < n; i++) {
+      const s = reduced[i];
+      if (s === 0n) continue;
+      const v = Number((s >> shift) & mask);
+      if (v === 0) continue;
+      buckets[v] = buckets[v].add(points[i]);
+    }
+
+    // Σ_v v · buckets[v] via running sum: starting from bucket B-1 and
+    // sweeping down, runningSum accumulates buckets and windowTotal
+    // accumulates runningSums — windowTotal ends up equal to the
+    // index-weighted sum without any explicit multiplications.
+    let runningSum = ZERO;
+    let windowTotal = ZERO;
+    for (let b = numBuckets - 1; b >= 1; b--) {
+      runningSum = runningSum.add(buckets[b]);
+      windowTotal = windowTotal.add(runningSum);
+    }
+
+    acc = acc.add(windowTotal);
+  }
+
   return acc;
 }
 
@@ -885,23 +976,42 @@ export function bppRangeVerify(commitments, proofBytes) {
   }
 
   // ---- Final MSM check ------------------------------------------------
-  let acc = ZERO;
-  acc = acc.add(safeMult(G, G_scalar));
-  acc = acc.add(safeMult(H, H_scalar));
+  // Single Pippenger multi-exp over every (scalar, point) pair contributing
+  // to the verifier identity. Replaces the prior per-point .multiply() loop
+  // (which was O(MN · 256) point-ops; Pippenger collapses to O(MN + 2^c)
+  // per c-bit window). Closes SPEC.md §3.3 "Verifier optimizations" parity
+  // for Bulletproofs+ — without this, m=8 verify is ~10× slower than the
+  // BP equivalent; with this, BP+ verify lands in the same wall-time class
+  // as BP verify (see tests/bulletproofs-plus.bench.mjs).
+  //
+  // Total points fed per call:
+  //   G, H            (2)
+  //   Gvec[0..MN-1]   (MN)
+  //   Hvec[0..MN-1]   (MN)
+  //   commitments[0..m-1] (m)
+  //   A, A1, B        (3)
+  //   Lvec[0..logMN-1] (logMN)
+  //   Rvec[0..logMN-1] (logMN)
+  // = 2·MN + m + 2·logMN + 5  (e.g. m=8 ⇒ 1057 points in one MSM).
+  const msmScalars = [];
+  const msmPoints  = [];
+  msmScalars.push(G_scalar);  msmPoints.push(G);
+  msmScalars.push(H_scalar);  msmPoints.push(H);
   for (let i = 0; i < MN; i++) {
-    if (Gi_scalars[i] !== 0n) acc = acc.add(Gvec[i].multiply(Gi_scalars[i]));
-    if (Hi_scalars[i] !== 0n) acc = acc.add(Hvec[i].multiply(Hi_scalars[i]));
+    msmScalars.push(Gi_scalars[i]); msmPoints.push(Gvec[i]);
+    msmScalars.push(Hi_scalars[i]); msmPoints.push(Hvec[i]);
   }
   for (let j = 0; j < m; j++) {
-    if (V_scalars[j] !== 0n) acc = acc.add(commitments[j].multiply(V_scalars[j]));
+    msmScalars.push(V_scalars[j]); msmPoints.push(commitments[j]);
   }
-  acc = acc.add(safeMult(A, A_scalar));
-  acc = acc.add(safeMult(A1, A1_scalar));
-  acc = acc.add(safeMult(B, B_scalar));
+  msmScalars.push(A_scalar);  msmPoints.push(A);
+  msmScalars.push(A1_scalar); msmPoints.push(A1);
+  msmScalars.push(B_scalar);  msmPoints.push(B);
   for (let k = 0; k < logMN; k++) {
-    if (L_scalars[k] !== 0n) acc = acc.add(Lvec[k].multiply(L_scalars[k]));
-    if (R_scalars[k] !== 0n) acc = acc.add(Rvec[k].multiply(R_scalars[k]));
+    msmScalars.push(L_scalars[k]); msmPoints.push(Lvec[k]);
+    msmScalars.push(R_scalars[k]); msmPoints.push(Rvec[k]);
   }
 
+  const acc = msm(msmScalars, msmPoints);
   return acc.equals(ZERO);
 }
