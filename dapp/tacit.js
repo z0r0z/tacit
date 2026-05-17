@@ -4780,6 +4780,12 @@ const T_CXFER_BPP = 0x22; // BP+ variant of T_CXFER, identical wire shape, small
 // is gated to signet by default while the on-chain signet harness exercises
 // the proof system end-to-end before mainnet activation.
 //
+// `bppEnabled()` drives both validator-side acceptance AND the send-path
+// builder default. buildAndBroadcastCXfer{,Multi} now use
+// `useBpp = bppEnabled()` as the default, so signet sends auto-route
+// through T_CXFER_BPP while mainnet sends stay on T_CXFER until the
+// mainnet flag flips. Callers can override either way explicitly.
+//
 // Override via localStorage:
 //   localStorage['tacit-bpp-enable-mainnet-v1'] = '1'  // explicit opt-in
 //   localStorage['tacit-bpp-disable-signet-v1'] = '1'  // turn off on signet
@@ -18768,7 +18774,7 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
 // Padding is needed because the aggregated bulletproof requires m to be a power
 // of 2. Padding outputs are indistinguishable from change to outsiders; the
 // wallet auto-recovers them as 0-amount UTXOs (DUST sats are returned).
-async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = false }) {
+async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled() }) {
   await ensurePrivkey();
   // onProgress(stage) parity with buildAndBroadcastCEtch — fires
   // 'commit-start' / 'reveal-start' right before each broadcast.
@@ -19021,7 +19027,7 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
 // Backwards-compatible single-recipient wrapper. The send-form UI handler and
 // other internal flows (cancel-axfer-offer, cancel-fulfilled-intent) call this
 // with the legacy { assetIdHex, recipientPubHex, amount, forceUtxos } shape.
-async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount, forceUtxos = null, onProgress = null, useBpp = false }) {
+async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount, forceUtxos = null, onProgress = null, useBpp = bppEnabled() }) {
   const r = await buildAndBroadcastCXferMulti({
     assetIdHex,
     recipients: [{ pubHex: recipientPubHex, amount }],
