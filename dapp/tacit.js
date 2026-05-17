@@ -52226,7 +52226,27 @@ async function populateMarketBidsLadder(scope, asset) {
   const intents = _marketMineOnlyBids && myPub
     ? intentsAll.filter(b => b.buyer_pubkey === myPub)
     : intentsAll;
-  const ladder = intents.map(b => {
+  // Drop unfulfillable variable bids (remaining_amount < min_fill_amount)
+  // from the visible ladder. The worker keeps them in the response until
+  // the bidder cancels or they expire, but no seller can construct a
+  // valid take against them — the chunk picker's lower bound would
+  // exceed the upper bound. They showed up as "0 TAC · min N · 100%
+  // filled" rows with a misleading Fulfil button. Same filter the
+  // spread row / depth chart already use; bringing the ladder in line.
+  // Mine bids are exempted: the user keeps visibility on their own
+  // (exhausted) bids in the public ladder until they explicitly cancel
+  // — Your Open Orders panel surfaces them too, but a seller-facing
+  // ladder hiding their own filled-out bid would feel surprising.
+  const _ladderInput = intents.filter(b => {
+    const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    if (!isVar) return true;
+    if (myPub && b.buyer_pubkey === myPub) return true;
+    let rem = 0n, mf = 0n;
+    try { rem = BigInt(b.remaining_amount || b.amount || '0'); } catch {}
+    try { mf = BigInt(b.min_fill_amount || '0'); } catch {}
+    return rem >= mf;
+  });
+  const ladder = _ladderInput.map(b => {
     const amt = BigInt(b.amount || 0);
     const sats = Number(b.price_sats || 0);
     const unit = unitPriceSats(sats, amt, decimals);
@@ -52367,7 +52387,7 @@ async function populateMarketBidsLadder(scope, asset) {
     const _baseCursor = _fillable ? 'cursor:pointer;' : '';
     const _styleAttr = (_depthStyle || _baseCursor) ? ` style="${_depthStyle}${_baseCursor}"` : '';
     const _fillAttrs = _fillable
-      ? ` data-fill-aid="${escapeHtml(aid)}" data-fill-amount="${escapeHtml(String(b.amount || '0'))}" data-fill-dec="${decimals}" data-fill-ticker="${escapeHtml(ticker)}" data-fill-direction="sell"${_fillUnitAttr}${_styleAttr} title="Click outside Fulfil to size this in the swap tile at this price floor."`
+      ? ` data-fill-aid="${escapeHtml(aid)}" data-fill-amount="${escapeHtml(String(b.amount || '0'))}" data-fill-dec="${decimals}" data-fill-ticker="${escapeHtml(ticker)}" data-fill-direction="sell"${_fillUnitAttr}${_styleAttr} title="Click row to size the Swap tile in SELL mode at this price${_isLevel ? ' floor (across the level)' : ''}. Click Fulfil to commit the trade directly."`
       : _styleAttr;
     // Level-row UI: count badge on the price line + spread subtitle so
     // the bucket reads as one price tick with N bidders behind it.
