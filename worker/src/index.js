@@ -1679,6 +1679,171 @@ function ammSwapVarKernelVerifyPoint(cChangeOrSentinelBytes, cInSecpBytes, delta
   return cChange.add(cIn.negate()).add(ditH);
 }
 
+// ============== LP_ADD + LP_REMOVE kernel msg / key / verify ==============
+//
+// LP_ADD kernel sig is per-side (A and B). Each side signs:
+//   kernel_msg_X = SHA256(
+//     "tacit-amm-lp-add-v1" || variant || pool_id || asset_X
+//     || delta_X_LE || share_amount_LE || share_C_secp(33)
+//     || inputs_X_count || (txid_BE || vout_LE)* inputs_X)
+//
+// Verification key on side X:
+//   key_X = (Σᵢ C_in_secp,X,i − delta_X · H_secp).x_only()
+//
+// Closes the LP-add asset-X balance gate: the LP must have spent UTXOs
+// summing to (delta_X + r_share_X)·G + delta_X·H, with r_share_X being
+// the signing key. Anyone without the openings to the input UTXOs
+// can't produce a valid sig.
+const _LP_ADD_DOMAIN = new TextEncoder().encode('tacit-amm-lp-add-v1');
+const _LP_REMOVE_DOMAIN = new TextEncoder().encode('tacit-amm-lp-remove-v1');
+
+function _ammOutpointBytes(op) {
+  return concatBytes(
+    reverseBytes(hexToBytes(op.txid)),
+    (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, op.vout >>> 0, true); return b; })(),
+  );
+}
+
+function ammLpAddKernelMsg({
+  variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+}) {
+  if (variant !== 0 && variant !== 1) throw new Error('variant must be 0 or 1');
+  if (!Array.isArray(inputsX) || inputsX.length === 0) throw new Error('inputsX must be non-empty');
+  if (inputsX.length > 255) throw new Error('too many inputs');
+  function u64LE(n) {
+    const b = new Uint8Array(8);
+    let x = BigInt(n);
+    for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+    return b;
+  }
+  const parts = [
+    _LP_ADD_DOMAIN,
+    new Uint8Array([variant]),
+    poolId, assetX,
+    u64LE(deltaX), u64LE(shareAmount),
+    shareCSecpBytes,
+    new Uint8Array([inputsX.length]),
+  ];
+  for (const op of inputsX) parts.push(_ammOutpointBytes(op));
+  return sha256(concatBytes(...parts));
+}
+
+function ammLpAddKernelKey(inputCommitments, deltaX) {
+  if (!Array.isArray(inputCommitments) || inputCommitments.length === 0) {
+    throw new Error('inputCommitments must be non-empty');
+  }
+  let sum = PEDERSEN_ZERO;
+  for (const C of inputCommitments) {
+    const Cp = secp.ProjectivePoint.fromHex(bytesToHex(C));
+    sum = sum.add(Cp);
+  }
+  const d = BigInt(deltaX);
+  if (d < 0n || d >= 1n << 64n) throw new Error('delta out of u64 range');
+  const dH = d === 0n ? PEDERSEN_ZERO : PEDERSEN_H.multiply(d);
+  const E = sum.add(dH.negate());
+  if (E.equals(PEDERSEN_ZERO)) throw new Error('kernel key collapsed to identity');
+  return E.toRawBytes(true).slice(1);  // x-only
+}
+
+function ammLpAddKernelVerify({
+  variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+  inputCommitments, sig64,
+}) {
+  let key;
+  try {
+    key = ammLpAddKernelKey(inputCommitments, deltaX);
+  } catch { return false; }
+  const msg = ammLpAddKernelMsg({
+    variant, poolId, assetX, deltaX, shareAmount, shareCSecpBytes, inputsX,
+  });
+  return verifySchnorr(sig64, msg, key);
+}
+
+// LP_REMOVE kernel msg:
+//   SHA256("tacit-amm-lp-remove-v1" || pool_id(32) || share_amount_LE(8)
+//          || delta_A_LE(8) || delta_B_LE(8) || recv_A_C_secp(33) || recv_B_C_secp(33)
+//          || lp_in_count(1) || (lp_in_txid_BE(32) || lp_in_vout_LE(4))* lp_in_count)
+// Key: (Σᵢ C_in_secp,LP,i − share_amount · H_secp).x_only()
+function ammLpRemoveKernelMsg({
+  poolId, shareAmount, deltaA, deltaB,
+  recvACSecpBytes, recvBCSecpBytes, lpInputs,
+}) {
+  if (!Array.isArray(lpInputs) || lpInputs.length === 0) throw new Error('lpInputs must be non-empty');
+  if (lpInputs.length > 255) throw new Error('too many lp inputs');
+  function u64LE(n) {
+    const b = new Uint8Array(8);
+    let x = BigInt(n);
+    for (let i = 0; i < 8; i++) { b[i] = Number(x & 0xffn); x >>= 8n; }
+    return b;
+  }
+  const parts = [
+    _LP_REMOVE_DOMAIN, poolId,
+    u64LE(shareAmount), u64LE(deltaA), u64LE(deltaB),
+    recvACSecpBytes, recvBCSecpBytes,
+    new Uint8Array([lpInputs.length]),
+  ];
+  for (const op of lpInputs) parts.push(_ammOutpointBytes(op));
+  return sha256(concatBytes(...parts));
+}
+
+function ammLpRemoveKernelKey(lpInputCommitments, shareAmount) {
+  if (!Array.isArray(lpInputCommitments) || lpInputCommitments.length === 0) {
+    throw new Error('lpInputCommitments must be non-empty');
+  }
+  let sum = PEDERSEN_ZERO;
+  for (const C of lpInputCommitments) {
+    const Cp = secp.ProjectivePoint.fromHex(bytesToHex(C));
+    sum = sum.add(Cp);
+  }
+  const sH = PEDERSEN_H.multiply(BigInt(shareAmount));
+  const E = sum.add(sH.negate());
+  if (E.equals(PEDERSEN_ZERO)) throw new Error('kernel key collapsed to identity');
+  return E.toRawBytes(true).slice(1);
+}
+
+function ammLpRemoveKernelVerify({
+  poolId, shareAmount, deltaA, deltaB,
+  recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  lpInputCommitments, sig64,
+}) {
+  let key;
+  try {
+    key = ammLpRemoveKernelKey(lpInputCommitments, shareAmount);
+  } catch { return false; }
+  const msg = ammLpRemoveKernelMsg({
+    poolId, shareAmount, deltaA, deltaB,
+    recvACSecpBytes, recvBCSecpBytes, lpInputs,
+  });
+  return verifySchnorr(sig64, msg, key);
+}
+
+// Walk tx.vin from index `startVin` and collect, per asset_id, the
+// outpoints and Pedersen commits of asset UTXOs. Helper for LP_ADD
+// (groups vins by asset_A vs asset_B) and LP_REMOVE (single asset_id,
+// the lp_asset_id of the pool).
+//
+// Returns Map<assetIdHex, { inputs: [{txid, vout}], commitments: [33-byte] }>.
+async function ammCollectAssetInputs(env, tx, network, startVin = 1) {
+  const byAsset = new Map();
+  if (!tx || !Array.isArray(tx.vin)) return byAsset;
+  for (let i = startVin; i < tx.vin.length; i++) {
+    const inp = tx.vin[i];
+    if (!inp || typeof inp.txid !== 'string' || typeof inp.vout !== 'number') continue;
+    let parent;
+    try { parent = await commitmentForUtxo(env, inp.txid, inp.vout, network); }
+    catch { continue; }
+    if (!parent || !parent.asset_id || !parent.commitment) continue;
+    let entry = byAsset.get(parent.asset_id);
+    if (!entry) {
+      entry = { inputs: [], commitments: [] };
+      byAsset.set(parent.asset_id, entry);
+    }
+    entry.inputs.push({ txid: inp.txid, vout: inp.vout });
+    entry.commitments.push(hexToBytes(parent.commitment));
+  }
+  return byAsset;
+}
+
 // ============== LP-share math (AMM.md §"LP shares") ==============
 //
 // For variant 0 LP_ADD: shareAmount = floor(min(ΔA·S/R_A, ΔB·S/R_B)).
@@ -14162,6 +14327,39 @@ async function scanForEtches(env, network) {
           const shareXcurveSigmaBytes = hexToBytes(lp.share_xcurve_sigma);
           if (!verifyXCurve(shareXcurveSigmaBytes, shareCSecpBytes, shareCBJJBytes)) continue;
 
+          // Kernel sigs (A + B sides). Collect asset inputs from tx.vin[1..]
+          // grouped by asset_id (commitmentForUtxo lookup). Each side
+          // requires its own kernel sig over (variant, pool_id, asset_X,
+          // delta_X, share_amount, share_c_secp, inputs_X) under the key
+          // (Σ C_in_secp,X − delta_X·H_secp).x_only.
+          //
+          // Without this, anyone could publish a POOL_INIT envelope with
+          // arbitrary deltas and forge pool seed liquidity — the worker
+          // would record reserves without backing real value.
+          const initInputsByAsset = await ammCollectAssetInputs(env, tx, network, 1);
+          const initAssetAHex = bytesToHex(aBytes);
+          const initAssetBHex = bytesToHex(bBytes);
+          const initASide = initInputsByAsset.get(initAssetAHex);
+          const initBSide = initInputsByAsset.get(initAssetBHex);
+          if (!initASide || initASide.inputs.length === 0) continue;
+          if (!initBSide || initBSide.inputs.length === 0) continue;
+          const initKernelOkA = ammLpAddKernelVerify({
+            variant: 1, poolId: poolIdBytes,
+            assetX: aBytes, deltaX: deltaA, shareAmount: BigInt(lp.share_amount),
+            shareCSecpBytes, inputsX: initASide.inputs,
+            inputCommitments: initASide.commitments,
+            sig64: hexToBytes(lp.kernel_sig_a),
+          });
+          if (!initKernelOkA) continue;
+          const initKernelOkB = ammLpAddKernelVerify({
+            variant: 1, poolId: poolIdBytes,
+            assetX: bBytes, deltaX: deltaB, shareAmount: BigInt(lp.share_amount),
+            shareCSecpBytes, inputsX: initBSide.inputs,
+            inputCommitments: initBSide.commitments,
+            sig64: hexToBytes(lp.kernel_sig_b),
+          });
+          if (!initKernelOkB) continue;
+
           // Derive lp_asset_id so downstream consumers can attribute
           // share UTXOs to this pool.
           const lpAssetId = bytesToHex(ammDeriveLpAssetId(poolIdBytes));
@@ -14258,6 +14456,31 @@ async function scanForEtches(env, network) {
           const v0ShareSigmaBytes = hexToBytes(lp.share_xcurve_sigma);
           if (!verifyXCurve(v0ShareSigmaBytes, v0ShareCSecpBytes, v0ShareCBJJBytes)) continue;
 
+          // Kernel sigs (A + B sides) — same gate as POOL_INIT but variant=0.
+          const v0InputsByAsset = await ammCollectAssetInputs(env, tx, network, 1);
+          const v0AssetAHex = bytesToHex(a0);
+          const v0AssetBHex = bytesToHex(b0);
+          const v0ASide = v0InputsByAsset.get(v0AssetAHex);
+          const v0BSide = v0InputsByAsset.get(v0AssetBHex);
+          if (!v0ASide || v0ASide.inputs.length === 0) continue;
+          if (!v0BSide || v0BSide.inputs.length === 0) continue;
+          const v0KernelOkA = ammLpAddKernelVerify({
+            variant: 0, poolId: poolIdBytes0,
+            assetX: a0, deltaX: dA0, shareAmount: BigInt(lp.share_amount),
+            shareCSecpBytes: v0ShareCSecpBytes, inputsX: v0ASide.inputs,
+            inputCommitments: v0ASide.commitments,
+            sig64: hexToBytes(lp.kernel_sig_a),
+          });
+          if (!v0KernelOkA) continue;
+          const v0KernelOkB = ammLpAddKernelVerify({
+            variant: 0, poolId: poolIdBytes0,
+            assetX: b0, deltaX: dB0, shareAmount: BigInt(lp.share_amount),
+            shareCSecpBytes: v0ShareCSecpBytes, inputsX: v0BSide.inputs,
+            inputCommitments: v0BSide.commitments,
+            sig64: hexToBytes(lp.kernel_sig_b),
+          });
+          if (!v0KernelOkB) continue;
+
           // Update pool state atomically.
           const newReserveA = BigInt(pool0.reserve_a) + dA0;
           const newReserveB = BigInt(pool0.reserve_b) + dB0;
@@ -14328,6 +14551,23 @@ async function scanForEtches(env, network) {
         const recvBCBJJBytes = hexToBytes(rm.recv_b_c_bjj);
         const recvBSigmaBytes = hexToBytes(rm.recv_b_xcurve_sigma);
         if (!verifyXCurve(recvBSigmaBytes, recvBCSecpBytes, recvBCBJJBytes)) continue;
+
+        // LP_REMOVE kernel sig: BIP-340 over kernel_msg under
+        //   (Σ C_in_secp,LP,i − share_amount·H_secp).x_only
+        // Collects asset inputs from tx.vin[1..] filtered by pool.lp_asset_id.
+        // Closes the "anyone can burn shares they don't own" hole.
+        const rmInputsByAsset = await ammCollectAssetInputs(env, tx, network, 1);
+        const lpSide = rmInputsByAsset.get(poolR.lp_asset_id);
+        if (!lpSide || lpSide.inputs.length === 0) continue;
+        const rmKernelOk = ammLpRemoveKernelVerify({
+          poolId: poolIdBytesR, shareAmount,
+          deltaA: expected.deltaA, deltaB: expected.deltaB,
+          recvACSecpBytes, recvBCSecpBytes,
+          lpInputs: lpSide.inputs,
+          lpInputCommitments: lpSide.commitments,
+          sig64: hexToBytes(rm.kernel_sig_lp),
+        });
+        if (!rmKernelOk) continue;
 
         const newReserveA = BigInt(poolR.reserve_a) - expected.deltaA;
         const newReserveB = BigInt(poolR.reserve_b) - expected.deltaB;
@@ -14870,6 +15110,10 @@ export {
   pedersenBJJ, H_BJJ, G_BJJ, bjjDeriveGenerator,
   verifyXCurve, XCURVE_PROOF_LEN,
   BJJ_P_FR, BJJ_N, BJJ_ORDER,
+  // LP_ADD + LP_REMOVE kernel sig helpers.
+  ammLpAddKernelMsg, ammLpAddKernelKey, ammLpAddKernelVerify,
+  ammLpRemoveKernelMsg, ammLpRemoveKernelKey, ammLpRemoveKernelVerify,
+  ammCollectAssetInputs,
   decodeTLpRemovePayload, ammLpAddShares, ammLpRemoveOutputs,
   decodeTLpAddPayload,
   // cBTC.tac KV schema + helpers (SPEC-CBTC-TAC-AMENDMENT §5.35+).
