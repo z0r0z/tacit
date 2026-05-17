@@ -48784,8 +48784,13 @@ function marketAssetHasMarketSurface(asset) {
       || Number(asset.preauth_sale_count || 0) > 0;
 }
 function marketBrowsePagerHtml(total, page, totalPages, start, end) {
+  // Skip the "0 of 0 tokens · 8 per page" filler when there's nothing
+  // to page through. Same rationale as the listing pager — when the
+  // browse table is empty (filter strips all, brand-new market, etc.)
+  // the empty-state copy above is the user's signal, not a pager.
+  if (total <= 0) return '';
   if (totalPages <= 1) {
-    return `<div class="market-pagination"><span>${total ? `${start}-${end} of ${total}` : '0 of 0'} tokens</span><span>${MARKET_BROWSE_PAGE_SIZE} per page</span></div>`;
+    return `<div class="market-pagination"><span>${start}-${end} of ${total} tokens</span><span>${MARKET_BROWSE_PAGE_SIZE} per page</span></div>`;
   }
   const opts = Array.from({ length: totalPages }, (_, i) => {
     const p = i + 1;
@@ -48802,8 +48807,16 @@ function marketBrowsePagerHtml(total, page, totalPages, start, end) {
     </div>`;
 }
 function marketListingPagerHtml(total, page, totalPages, start, end) {
+  // Skip the "0 of 0 listings · 12 per page" filler when no listings
+  // remain to page through. Previously rendered as visual noise between
+  // the empty asks grid and the spread divider — especially obvious
+  // after the asks-on-top layout flip put the spread + bids panel
+  // directly below the pager. The asks-header count + the simpleEmptyHint
+  // ("No instant listings — switch to All offers") already tell the
+  // user why the grid is empty; another "0 of 0" line adds nothing.
+  if (total <= 0) return '';
   if (totalPages <= 1) {
-    return `<div class="market-pagination"><span>${total ? `${start}-${end} of ${total}` : '0 of 0'} listings</span><span>${MARKET_LISTING_PAGE_SIZE} per page</span></div>`;
+    return `<div class="market-pagination"><span>${start}-${end} of ${total} listings</span><span>${MARKET_LISTING_PAGE_SIZE} per page</span></div>`;
   }
   const opts = Array.from({ length: totalPages }, (_, i) => {
     const p = i + 1;
