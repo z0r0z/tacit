@@ -13846,6 +13846,299 @@ async function buildAndBroadcastCbtcTacDeposit({
   };
 }
 
+// SPEC-CBTC-TAC-AMENDMENT §5.37 — LP-shaped burn of cBTC.tac.
+//
+// Atomic: spends the slot's K_btc UTXO (key-path Schnorr under r_btc) +
+// burns M cBTC.tac UTXOs (asset-spend kernel sigs) in one Bitcoin tx.
+// Produces a BTC payout to the redeemer's chosen address.
+//
+// v1 scope: COOPERATIVE EXIT — withdrawer == depositor. The depositor's
+// own slot record (which contains r_btc + r_pedersen) is required to
+// sign the slot input. SPEC §5.37.5 allows third-party withdraw with
+// the depositor's r_btc cooperation, but that flow needs an out-of-band
+// r_btc-handoff mechanism; v1 expects the depositor wallet redeems.
+//
+// Inputs:
+//   positionRecord  — local cBTC.tac position to close (from getCtacPositionRecords)
+//   slotRecord      — the underlying cBTC.zk slot record (provides r_btc + mintTxid)
+//   cbtcTacUtxos    — array of {utxo:{txid,vout}, amount, blinding} totalling position.mintAmount
+//   recipientAddr   — optional bech32 P2WPKH address; null → wallet's own P2WPKH
+//   insuranceClaimTAC — optional; 0n by default. To claim the per-share insurance pool slice.
+//
+// Known follow-ups (separate sessions):
+//   - Real Groth16 proof: asset-spend over the cBTC.tac UTXOs (M inputs).
+//     Currently a 256-byte placeholder; worker accepts any non-empty proof.
+//   - Bulletproof on the burn balance: proves Σ amounts = burn_amount.
+//     Placeholder for now; worker doesn't yet verify.
+//   - Bond TAC physical return: the worker's WITHDRAW handler tracks bond
+//     return at the ledger level. Producing the physical TAC output UTXO
+//     in the reveal tx is a separate concern (depends on bond-escrow address
+//     scheme to be locked in spec).
+async function buildAndBroadcastCbtcTacWithdraw({
+  positionRecord,
+  slotRecord,
+  cbtcTacUtxos,
+  recipientAddr = null,
+  insuranceClaimTAC = 0n,
+  onProgress = null,
+}) {
+  await ensurePrivkey();
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+  const networkTag = NET.name === 'signet' ? 0x01 : NET.name === 'regtest' ? 0x02 : 0x00;
+
+  // 1. Pre-flight
+  if (!positionRecord || !positionRecord.targetLeafHashHex) {
+    throw new Error('positionRecord required');
+  }
+  const posState = positionRecord.status || 'active';
+  if (posState !== 'active') {
+    throw new Error(`position state must be 'active' (got '${posState}')`);
+  }
+  if (!slotRecord || !slotRecord.mintTxid) {
+    throw new Error('slotRecord must include mintTxid (slot UTXO is at mintTxid:0)');
+  }
+  if (slotRecord.leafCommitmentHex !== positionRecord.targetLeafHashHex) {
+    throw new Error('slotRecord leaf does not match positionRecord target_leaf_hash');
+  }
+  if (!Array.isArray(cbtcTacUtxos) || cbtcTacUtxos.length < 1 || cbtcTacUtxos.length > 16) {
+    throw new Error('cbtcTacUtxos must be 1..16 entries');
+  }
+  let burnSum = 0n;
+  for (const u of cbtcTacUtxos) {
+    if (!u || !u.utxo || u.amount === undefined || u.blinding === undefined) {
+      throw new Error('each cbtcTacUtxo must be {utxo:{txid,vout}, amount, blinding}');
+    }
+    burnSum += BigInt(u.amount);
+  }
+  const mintAmt = BigInt(positionRecord.mintAmount);
+  if (burnSum !== mintAmt) {
+    throw new Error(`cbtcTacUtxos sum ${burnSum} must equal position.mintAmount ${mintAmt}`);
+  }
+  const denomBig = BigInt(slotRecord.denomination);
+  const insuranceClaimBig = BigInt(insuranceClaimTAC);
+  if (insuranceClaimBig < 0n || insuranceClaimBig >= (1n << BigInt(N_BITS))) {
+    throw new Error('insuranceClaimTAC out of range');
+  }
+
+  // 2. Derive r_btc from slot record (slot was minted with two-key construction)
+  const slotSecret = hexToBytes(slotRecord.secretHex);
+  const slotNullPre = hexToBytes(slotRecord.nullifierPreimageHex);
+  const rBtcBytes = slotRecord.rBtcHex
+    ? hexToBytes(slotRecord.rBtcHex)
+    : deriveSlotRBtc(slotSecret, slotNullPre);
+
+  // 3. Compute envelope fields
+  const targetLeafHashBytes = hexToBytes(positionRecord.targetLeafHashHex);
+  const burnNullifiers = cbtcTacUtxos.map(u => {
+    // Nullifier for each cBTC.tac UTXO. For standard tacit asset UTXOs the
+    // nullifier is the asset-spend kernel uniqueness derivation. Caller is
+    // responsible for supplying these alongside each UTXO; for v1 we
+    // derive a deterministic value from (txid, vout, blinding).
+    if (u.nullifier instanceof Uint8Array && u.nullifier.length === 32) return u.nullifier;
+    return sha256(concatBytes(
+      new TextEncoder().encode('cbtc-tac-burn-nullifier-v1'),
+      hexToBytes(u.utxo.txid),
+      (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, u.utxo.vout | 0, true); return b; })(),
+      typeof u.blinding === 'bigint'
+        ? bigintToBytes32(u.blinding)
+        : hexToBytes(typeof u.blinding === 'string' ? u.blinding.padStart(64, '0') : '00'.repeat(32)),
+    ));
+  });
+  const burnCommits = cbtcTacUtxos.map(u => {
+    const amt = BigInt(u.amount);
+    const r = typeof u.blinding === 'bigint' ? u.blinding : BigInt('0x' + (typeof u.blinding === 'string' ? u.blinding : '0'));
+    return pedersenCommit(amt, r).toRawBytes(true);
+  });
+
+  // Placeholder bulletproof + Groth16 proof (real proof gen deferred).
+  const burnBalanceProof = new Uint8Array(192);
+  const proofBytes = new Uint8Array(256);
+
+  // 4. bind_hash + payload
+  _progress('envelope:build');
+  const bindHash = computeCbtcTacWithdrawBindHash({
+    networkTag,
+    targetLeafHash: targetLeafHashBytes,
+    burnCount: cbtcTacUtxos.length,
+    burnNullifiers,
+    burnCommits,
+    burnAmount: burnSum,
+    insuranceClaimTAC: insuranceClaimBig,
+  });
+  const payload = encodeTCbtcTacWithdrawPayload({
+    networkTag,
+    targetLeafHash: targetLeafHashBytes,
+    burnNullifiers,
+    burnCommits,
+    burnAmount: burnSum,
+    insuranceClaimTAC: insuranceClaimBig,
+    burnBalanceProof,
+    bindHash,
+    proof: proofBytes,
+  });
+
+  // 5. Commit-reveal Bitcoin tx pair
+  // Commit: sats inputs → P2TR(envelope script) + change
+  // Reveal: vin[0]   = commit P2TR (script-path with envelope)
+  //         vin[1]   = slot UTXO (key-path under r_btc, SIGHASH_ALL)
+  //         vin[2..] = cBTC.tac UTXOs being burned (P2WPKH under wallet.priv)
+  //         vout[0]  = BTC payout to recipient (denom_sats from slot minus fees)
+  //         (bond TAC return is currently worker-side ledger only; physical
+  //          TAC output deferred — see header note)
+  const envelopeScript = encodeEnvelopeScript(wallet.xonly(), payload);
+  const tapLeaf = tapLeafHash(envelopeScript);
+  const { Q_xonly, parity } = tweakedOutputKey(TAP_NUMS, tapLeaf);
+  const commitSpk = p2trScript(Q_xonly);
+  const cb = controlBlock(TAP_NUMS, parity);
+
+  const feeRate = await getFeeRate();
+  // Reveal vbytes: 2 + M inputs; 1 output. Envelope dominates.
+  const revealVb = 11 + 41 + 41 + (41 * cbtcTacUtxos.length) + 31 +
+    Math.ceil((1 + 1 + 65 + 3 + 45 + payload.length + 34 + 109 + cbtcTacUtxos.length * 109) / 4);
+  const revealFee = feeFor(revealVb, feeRate);
+  const commitValue = Math.max(DUST, revealFee);
+
+  const holdings = await scanHoldings();
+  if (!holdings || !(holdings instanceof Map)) throw new Error('holdings scan failed');
+  const allUtxos = await getUtxos(wallet.address());
+  const sats = selectSatsUtxosSafe(allUtxos, holdings).sort((a, b) => {
+    const ac = a.status?.confirmed === true ? 1 : 0;
+    const bc = b.status?.confirmed === true ? 1 : 0;
+    if (ac !== bc) return bc - ac;
+    return b.value - a.value;
+  });
+  if (sats.length === 0) throw new Error('no plain-sats UTXOs available to fund the withdraw commit');
+  const picked = []; let total = 0; let commitFee = 500;
+  for (const u of sats) {
+    picked.push(u); total += u.value;
+    commitFee = feeFor(estCommitVb(picked.length), feeRate);
+    if (total >= commitValue + commitFee + DUST) break;
+  }
+  if (total < commitValue + commitFee) {
+    throw new Error(`insufficient sats for withdraw-commit fees: need ${commitValue + commitFee}, have ${total}`);
+  }
+
+  // Commit tx
+  _progress('tx:commit:build');
+  const change = total - commitValue - commitFee;
+  const commitOutputs = [{ value: commitValue, script: commitSpk }];
+  if (change >= DUST) commitOutputs.push({ value: change, script: p2wpkhScript(wallet.pub) });
+  const commitTx = {
+    version: 2, locktime: 0,
+    inputs: picked.map(u => ({ txid: u.txid, vout: u.vout, sequence: 0xfffffffd, witness: [] })),
+    outputs: commitOutputs,
+  };
+  for (let i = 0; i < commitTx.inputs.length; i++) {
+    commitTx.inputs[i].witness = signP2wpkhInput(commitTx, i, picked[i].value);
+  }
+  const commitHex = bytesToHex(serializeTx(commitTx));
+  const commitTxidHex = txid(commitTx);
+
+  // Reveal tx — payout output: denom_sats from slot minus all fees, to recipient.
+  // bond return is conceptual (worker ledger) for v1.
+  _progress('tx:reveal:build');
+  let payoutSpk;
+  if (recipientAddr) {
+    const decoded = decodeP2wpkhAddress(recipientAddr);
+    if (!decoded) throw new Error('recipientAddr is not a valid P2WPKH bech32 address');
+    if (decoded.hrp !== NET.hrp) throw new Error(`recipient is for ${decoded.hrp}, current network is ${NET.name}`);
+    payoutSpk = p2wpkhScriptFromProgram(decoded.program);
+  } else {
+    payoutSpk = p2wpkhScript(wallet.pub);
+  }
+  const slotPrevoutScript = slotRecord.slotScriptPubKeyHex
+    ? hexToBytes(slotRecord.slotScriptPubKeyHex)
+    : slotScriptPubKeyFromKbtc(deriveSlotKbtc(hexToBytes(slotRecord.recipientCommitHex), denomBig));
+  const revealTx = {
+    version: 2, locktime: 0,
+    inputs: [
+      { txid: commitTxidHex, vout: 0, sequence: 0xfffffffd, witness: [] },
+      { txid: slotRecord.mintTxid, vout: 0, sequence: 0xfffffffd, witness: [] },
+      ...cbtcTacUtxos.map(u => ({
+        txid: u.utxo.txid, vout: u.utxo.vout | 0, sequence: 0xfffffffd, witness: [],
+      })),
+    ],
+    outputs: [{ value: Number(denomBig), script: payoutSpk }],
+  };
+  const revealPrevouts = [
+    { value: commitValue, script: commitSpk },
+    { value: Number(denomBig), script: slotPrevoutScript },
+    ...cbtcTacUtxos.map(_ => ({ value: DUST, script: p2wpkhScript(wallet.pub) })),
+  ];
+  // vin[0]: Taproot script-path with envelope reveal
+  revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
+  // vin[1]: Taproot key-path under r_btc, SIGHASH_ALL (binds the entire tx so
+  // a third party can't strip the cBTC.tac burn inputs and pocket the slot's BTC)
+  revealTx.inputs[1].witness = signTaprootKeyPathInputWithKey(revealTx, 1, revealPrevouts, rBtcBytes, 0x01);
+  // vin[2..]: standard P2WPKH BIP-143 sigs under wallet.priv for the cBTC.tac inputs
+  for (let i = 0; i < cbtcTacUtxos.length; i++) {
+    revealTx.inputs[2 + i].witness = signP2wpkhInput(revealTx, 2 + i, DUST);
+  }
+  const revealHex = bytesToHex(serializeTx(revealTx));
+  const revealTxidHex = txid(revealTx);
+
+  // 6. Persist position update BEFORE broadcasting (recovery discipline)
+  saveCtacPositionRecord({
+    targetLeafHashHex: positionRecord.targetLeafHashHex,
+    status: 'withdraw-pending',
+    withdrawCommitTxid: commitTxidHex,
+    withdrawTxid: revealTxidHex,
+  });
+
+  // 7. Broadcast
+  _progress('tx:commit:broadcast');
+  await broadcast(commitHex);
+  saveCtacPositionRecord({
+    targetLeafHashHex: positionRecord.targetLeafHashHex,
+    status: 'withdraw-committing',
+  });
+  _progress('tx:reveal:broadcast');
+  await broadcastWithRetry(revealHex);
+  saveCtacPositionRecord({
+    targetLeafHashHex: positionRecord.targetLeafHashHex,
+    status: 'withdrawn',
+    withdrawnAt: Date.now(),
+  });
+
+  // Update slot record state — slot's K_btc has been spent atomically.
+  try {
+    const arr = _loadSlotRecords();
+    const idx = arr.findIndex(r => r.leafCommitmentHex === slotRecord.leafCommitmentHex);
+    if (idx >= 0) {
+      arr[idx] = {
+        ...arr[idx],
+        status: 'redeemed',
+        burnTxid: revealTxidHex,
+        redeemedAt: Date.now(),
+        redeemedViaCbtcTacWithdraw: true,
+      };
+      try { localStorage.setItem(_slotRecordsKey(), JSON.stringify(arr)); } catch {}
+    }
+  } catch {}
+
+  try {
+    recordActivity({
+      kind: 'cbtc-tac-withdraw',
+      ticker: 'cBTC.tac',
+      amount: denomBig,
+      decimals: 0,
+      assetId: positionRecord.slotAssetIdHex,
+      txid: revealTxidHex,
+    });
+  } catch {}
+  invalidateHoldingsCache();
+
+  return {
+    commitTxid: commitTxidHex,
+    revealTxid: revealTxidHex,
+    commitHex, revealHex,
+    payoutValueSats: Number(denomBig),
+    commitFee, revealFee,
+    burnedAmount: burnSum,
+    insuranceClaimTAC: insuranceClaimBig,
+  };
+}
+
 async function buildAndBroadcastDeposit({ assetIdHex, denomination, onProgress = null }) {
   await ensurePrivkey();
   const _progress = (stage) => { try { onProgress && onProgress(stage); } catch {} };
@@ -58380,10 +58673,10 @@ export {
   // Exported so headless drivers (signet rehearsal, integration tests) can
   // exercise the same code path the UI calls.
   buildAndBroadcastSlotMint, buildAndBroadcastSlotBurn, buildAndBroadcastSlotRotate,
-  // cBTC.tac LP-shaped mint builder (SPEC-CBTC-TAC-AMENDMENT §5.36).
+  // cBTC.tac LP-shaped mint + burn builders (SPEC-CBTC-TAC-AMENDMENT §5.36/§5.37).
   // Composes carveExactAmount (bond TAC) + cBTC.tac envelope + commit-reveal
-  // P2TR. Withdraw + force-close + slash-claim builders staged separately.
-  buildAndBroadcastCbtcTacDeposit,
+  // P2TR. Force-close keeper + slash-claim builders staged separately.
+  buildAndBroadcastCbtcTacDeposit, buildAndBroadcastCbtcTacWithdraw,
   saveCtacPositionRecord, getCtacPositionRecords, forgetCtacPositionRecord,
   // Slot-note encryption primitives (SPEC-CBTC-ZK-FUNGIBILITY §5.26).
   // Exported for the standalone test at tests/slot-note-encryption.test.mjs.
