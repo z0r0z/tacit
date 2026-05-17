@@ -12,7 +12,7 @@
 > (`SPEC-BID-VARIABLE-AMOUNT-AMENDMENT.md` §5.7.7). No new
 > cryptographic primitive. No new Groth16 circuit. No new ceremony.
 >
-> Adds a single opcode (`T_TRADE_BATCH` `0x43`) that settles N AMM
+> Adds a single opcode (`T_TRADE_BATCH` `0x39`) that settles N AMM
 > intents + K orderbook bilateral pairs **atomically in one Bitcoin
 > transaction**. Either every leg of the cross-surface batch
 > confirms or none does. The AMM portion is verified by the
@@ -89,7 +89,7 @@ chain-aggregate check.
 
 ---
 
-## §5.20 `T_TRADE_BATCH` (`0x43`) — atomic cross-surface settlement
+## §5.20 `T_TRADE_BATCH` (`0x39`) — atomic cross-surface settlement
 
 (SPEC.md section number tentative; lands as §5.20 after §5.19
 T_WRAPPER_ATTEST.)
@@ -97,7 +97,7 @@ T_WRAPPER_ATTEST.)
 ### Wire format
 
 ```
-opcode(1)              = 0x43
+opcode(1)              = 0x39
 n_amm_intents(1)       u8, 0..16 (matches T_SWAP_BATCH's N_MAX cap)
 n_orderbook_pairs(1)   u8, 0..16 (per-batch orderbook pair cap;
                                   spec-defined, not circuit-defined)
@@ -355,7 +355,7 @@ blobs); only the per-asset aggregate R_net is published.
 ```
 on T_TRADE_BATCH envelope at confirmation depth ≥ FINALITY_DEPTH:
 
-    require envelope.opcode == 0x43
+    require envelope.opcode == 0x39
     require n_amm_intents + n_orderbook_pairs > 0 (non-empty batch)
     require n_amm_intents <= 16
     require n_orderbook_pairs <= 16
@@ -466,7 +466,7 @@ surfaces in one view.
 
 ## Backwards-compatibility statement
 
-T_TRADE_BATCH is **purely additive**. It introduces opcode `0x43`
+T_TRADE_BATCH is **purely additive**. It introduces opcode `0x39`
 that V1 indexers must learn to parse; V1 indexers without
 T_TRADE_BATCH support treat it as unknown and ignore the
 envelope (no indexer-state change). Existing standalone
@@ -484,7 +484,7 @@ This amendment does NOT modify:
   reused for orderbook pair kernel sigs, same as T_AXFER_VAR)
 
 It DOES add:
-- One new opcode (`0x43`)
+- One new opcode (`0x39`)
 - One new BIP-340 domain tag (`tacit-trade-batch-v1`) for the
   settler_sig over the outer envelope
 - A new indexer validator dispatch branch with the combined
@@ -555,7 +555,7 @@ Add to SPEC.md §3 *BIP-340 domain tags*:
   pubkey.
 
 Add to SPEC.md §3 *opcodes table*:
-- `0x43` `T_TRADE_BATCH` — atomic cross-surface settlement
+- `0x39` `T_TRADE_BATCH` — atomic cross-surface settlement
   (§5.20). Composes AMM Groth16 verification + orderbook
   per-pair conservation in one envelope; combined chain-aggregate
   Pedersen check enforces cross-surface conservation.
@@ -623,7 +623,7 @@ aggregate check math are pinned in V1 so:
 
 - Future indexer implementers have a fixed specification to build
   against.
-- The opcode space (`0x43`) is reserved.
+- The opcode space (`0x39`) is reserved.
 - The architectural commitment to cross-surface atomicity is
   on-record from V1.
 
@@ -653,7 +653,7 @@ branch without requiring any change to existing settlement.
 ## Integration checklist for landing in `SPEC.md` (when implementation arrives)
 
 - [ ] §5.20 `T_TRADE_BATCH` added after §5.19 T_WRAPPER_ATTEST.
-- [ ] §3 opcode table adds `0x43 T_TRADE_BATCH`.
+- [ ] §3 opcode table adds `0x39 T_TRADE_BATCH`.
 - [ ] §3 BIP-340 domain-tag table adds `tacit-trade-batch-v1`.
 - [ ] §5.5 validator dispatch extended with T_TRADE_BATCH branch.
 - [ ] §11 indexer determinism rules extended with combined

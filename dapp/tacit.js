@@ -45822,7 +45822,7 @@ function applyMarketFilters() {
     : '';
   const asksHeaderHtml = `<div data-market-sweep-buy-section data-aid="${escapeHtml(_marketView.assetId)}">
     <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
-      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Open orders · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use <button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
+      <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.08em;"><span class="market-live-dot" title="Live: order book refreshes every 15s while this tab is open"></span><strong title="${escapeHtml(_countTitle)}">Asks · ${rowsForGrid.length}${_countSuffix}</strong> <span class="muted" style="font-size:10px;text-transform:none;letter-spacing:0;">· ${sortLabel} · use <button data-act="market-jump-to-swap" type="button" title="Jump to the Swap widget above. Swap auto-routes across the cheapest listings to fill your target amount in one go." style="background:none;border:none;color:inherit;padding:0;font:inherit;text-decoration:underline;text-decoration-style:dotted;cursor:pointer;">Swap</button> above for routed fills</span></div>
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">${_listChip}${mineAsksChip}${modeChip}${_ladderToggleChip}${_sweepBuyChip}</div>
     </div>${_rowTypesExplainerHtml}${_askFormSlot}
     <div data-market-sweep-form style="display:none;margin-bottom:10px;"></div>
@@ -46075,7 +46075,119 @@ function applyMarketFilters() {
   // wants. _wireSwapTile uses a scoped querySelector so it finds the tile
   // at its new top-level position without code changes.
   const _gridClass = `market-listing-grid${_marketLadderView === 'rows' ? ' market-listing-rows-mode' : ''}`;
-  const listedPaneHtml = `${_yourOrdersHtml}${bidsLadderHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}`;
+  // Spread divider between the bids ladder (above) and the asks ladder
+  // (below) so the asset-detail page reads as one two-sided orderbook
+  // instead of two unrelated panels. Shows best-bid · spread · best-ask
+  // computed from the synchronous _marketCache + _bidCachePeek data
+  // available in this scope. Uses the same 0.2×/5× mark-band outlier
+  // guard as the depth chart and _populateBidAskSpread so a dust ask
+  // priced 0.5 sats doesn't anchor the divider's "best ask" reading.
+  // Both ladders' inner row widths stay the same — this row spans
+  // them like a CEX orderbook midline. When either side is unknown
+  // (cold cache, no bids, etc.) the row collapses to just the side
+  // that's present so the divider still functions as a visual
+  // separator without lying about data we don't have.
+  const _spreadRowHtml = (() => {
+    const aidForSpread = _marketView.assetId;
+    const decForSpread = Number.isInteger(_assetForBids?.decimals) ? _assetForBids.decimals : 0;
+    const tickerForSpread = _assetForBids?.ticker || '?';
+    const markUnit = Number(_assetForBids?.mark_price?.unit);
+    const markValid = Number.isFinite(markUnit) && markUnit > 0;
+    const bandLo = markValid ? markUnit * 0.2 : 0;
+    const bandHi = markValid ? markUnit * 5 : Infinity;
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expiryGuard = nowSec + 60;
+    // Cheapest in-band preauth ask. Mirror of _populateBidAskSpread's
+    // ask-side scan but reading from `rows` (the filtered set the user
+    // sees) rather than the global cache — keeps the divider honest to
+    // what the visible ladder claims.
+    let cheapestAsk = null;
+    let cheapestAskSats = null;
+    let cheapestAskAmt = null;
+    for (const l of rows) {
+      if (l.kind !== 'preauth') continue;
+      if (l.expired) continue;
+      if (Number(l.expiry || 0) <= expiryGuard) continue;
+      const amt = l.asset_opening?.amount;
+      const ps = Number(l.min_price_sats || 0);
+      const u = unitPriceSats(ps, BigInt(amt || 0), decForSpread);
+      if (u == null || !(u > 0)) continue;
+      if (markValid && (u < bandLo || u > bandHi)) continue;
+      if (cheapestAsk == null || u < cheapestAsk) {
+        cheapestAsk = u;
+        cheapestAskSats = ps;
+        cheapestAskAmt = amt;
+      }
+    }
+    // Highest in-band fillable bid. Pulled from the sync bid cache so
+    // this composes inline. Variable-fill bids whose remaining slipped
+    // below min_fill are excluded — they're orphaned and unfillable
+    // (matches the depth chart's logic).
+    let highestBid = null;
+    let highestBidSats = null;
+    let highestBidAmt = null;
+    const cachedBids = (typeof _bidCachePeek === 'function') ? _bidCachePeek(aidForSpread) : null;
+    if (Array.isArray(cachedBids)) {
+      for (const b of cachedBids) {
+        if (b.axintent_id) continue;
+        if (Number(b.expiry || 0) <= nowSec) continue;
+        const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+        if (isVar) {
+          let rem = 0n, mf = 0n;
+          try { rem = BigInt(b.remaining_amount || b.amount || '0'); } catch {}
+          try { mf = BigInt(b.min_fill_amount || '0'); } catch {}
+          if (rem < mf) continue;
+        }
+        const amtBig = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
+        if (amtBig <= 0n) continue;
+        const u = unitPriceSats(Number(b.price_sats || 0), amtBig, decForSpread);
+        if (u == null || !(u > 0)) continue;
+        if (markValid && (u < bandLo || u > bandHi)) continue;
+        if (highestBid == null || u > highestBid) {
+          highestBid = u;
+          highestBidSats = Number(b.price_sats || 0);
+          highestBidAmt = String(b.amount || '0');
+        }
+      }
+    }
+    // Skip the divider entirely when we have neither side — nothing
+    // useful to anchor against. Single-side renders still show.
+    if (highestBid == null && cheapestAsk == null) return '';
+    const spreadAbs = (highestBid != null && cheapestAsk != null) ? (cheapestAsk - highestBid) : null;
+    const midpoint = (highestBid != null && cheapestAsk != null) ? (cheapestAsk + highestBid) / 2 : null;
+    const spreadPct = (spreadAbs != null && midpoint != null && midpoint > 0) ? (spreadAbs / midpoint) * 100 : null;
+    const isCrossed = spreadAbs != null && spreadAbs < 0;
+    // Color: amber for crossed (book anomaly), green for tight (< 1%
+    // spread = fillable midpoint), neutral otherwise. Matches the
+    // existing stats-strip spread colors so the two surfaces agree.
+    const spreadColor = isCrossed ? '#c97a1a' : (spreadPct != null && spreadPct < 1 ? '#0a7d3a' : 'var(--ink-mid)');
+    const bestBidHtml = highestBid != null
+      ? `<span title="Highest in-band bid — top of the bids ladder above."><strong style="color:#0a8f43;">${fmtUnitPriceSats(highestBid)}</strong> <span class="muted" style="font-size:9px;">best bid</span></span>`
+      : `<span class="muted" style="font-size:10px;">no bids</span>`;
+    const bestAskHtml = cheapestAsk != null
+      ? `<span title="Cheapest in-band preauth ask — top of the asks ladder below."><strong style="color:#b8341d;">${fmtUnitPriceSats(cheapestAsk)}</strong> <span class="muted" style="font-size:9px;">best ask</span></span>`
+      : `<span class="muted" style="font-size:10px;">no asks</span>`;
+    const spreadMidHtml = spreadAbs != null
+      ? (isCrossed
+          ? `<span style="color:${spreadColor};font-weight:700;letter-spacing:0.04em;" title="Best in-band bid exceeds best in-band ask — arbitrage opportunity (also shown on the depth chart).">CROSSED ${fmtUnitPriceSats(Math.abs(spreadAbs))}${spreadPct != null ? ` · ${Math.abs(spreadPct).toFixed(1)}%` : ''}</span>`
+          : `<span style="color:${spreadColor};" title="Bid-ask spread in sats per ${escapeHtml(tickerForSpread)} (and as a percent of the midpoint). Tighter spread = the book agrees on price.">spread ${fmtUnitPriceSats(spreadAbs)}${spreadPct != null ? ` · ${spreadPct.toFixed(2)}%` : ''}</span>`)
+      : `<span class="muted" style="font-size:10px;">spread —</span>`;
+    const markHtml = markValid
+      ? `<span class="muted" style="font-size:10px;" title="Outlier-guarded reference price from recent trades (same value the price chart and depth chart anchor on).">mark ${fmtUnitPriceSats(markUnit)}</span>`
+      : '';
+    return `<div data-market-spread-row class="market-spread-divider" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:8px 12px;margin:8px 0 12px;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink);background:var(--bg-warm,#faf9f5);font-family:var(--mono);font-size:11px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        ${bestBidHtml}
+        <span class="muted" style="font-size:10px;">↕</span>
+        ${bestAskHtml}
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end;">
+        ${spreadMidHtml}
+        ${markHtml}
+      </div>
+    </div>`;
+  })();
+  const listedPaneHtml = `${_yourOrdersHtml}${bidsLadderHtml}${_spreadRowHtml}${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -52266,12 +52378,40 @@ async function populateMarketBidsLadder(scope, asset) {
     const _levelSpread = _isLevel
       ? `<small class="muted" style="display:block;font-size:9px;">spread ${fmtUnitPriceSats(b._levelMinUnit)}–${fmtUnitPriceSats(b._levelMaxUnit)}</small>`
       : '';
-    // Bidder column for level rows: show "N makers" instead of a single
-    // address; the bucket aggregates across multiple wallets so showing
-    // one truncated pubkey would mislead.
+    // TOP-of-book pill on the best (rank-0) row. Mirrors the asks
+    // ladder's BEST PRICE badge. For level rows the TOP designation
+    // applies when the bucket sits at the top of the visible ladder —
+    // its maxUnit is the highest unit price overall — which matches
+    // _bidIdx === 0 in the bucketed ladder.
+    const _topBadge = (_bidIdx === 0 && _fillable)
+      ? ` <span style="display:inline-block;margin-left:4px;padding:0 5px;background:#0a8f43;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.04em;border-radius:2px;vertical-align:middle;" title="Best bid in the book — the next fill any sell sweep would hit.">TOP</span>`
+      : '';
+    // "vs mark" column replaces "Bidder". Truncated pubkey was low
+    // signal for a partial-fillable book; %delta from mark price is
+    // universally meaningful — at a glance you see which bids pay a
+    // premium vs sit below mark. Green for >= 0 (paying premium),
+    // red for < 0 (discount). When mark price isn't available (cold
+    // worker cache, brand-new asset) the cell shows an em-dash so
+    // the table layout stays consistent. Level rows keep their
+    // "N makers" semantics — bucketing makes a per-row delta
+    // misleading (the bucket spans a small range; the median delta
+    // is more honest but harder to render in one cell).
+    const _markValid = Number.isFinite(_bidMarkUnit) && _bidMarkUnit > 0;
+    const _vsMarkPct = (_markValid && b._unit != null && b._unit > 0)
+      ? ((b._unit - _bidMarkUnit) / _bidMarkUnit) * 100
+      : null;
+    const _vsMarkCls = _vsMarkPct == null ? '' : (_vsMarkPct >= 0 ? 'color:#0a7d3a;' : 'color:#b8341d;');
+    const _vsMarkStr = _vsMarkPct == null
+      ? '&mdash;'
+      : `${_vsMarkPct >= 0 ? '+' : ''}${_vsMarkPct.toFixed(2)}%`;
+    // Mine pill on the cell subtitle so the user can spot their own
+    // bid across a long ladder without scanning the wallet column.
+    const _mineSub = b._isMine
+      ? `<span style="background:#fdf3cf;border:1px solid #c9a116;color:#7a5e00;font-size:8px;font-weight:700;padding:0 4px;letter-spacing:0.04em;border-radius:2px;">YOU</span>`
+      : 'vs mark';
     const _bidderHtml = _isLevel
       ? `<strong>${b._levelCount} makers</strong><small>at this tick</small>`
-      : `<strong>${bidder ? escapeHtml(shorten(bidder, 10)) : '&mdash;'}</strong><small>${b._isMine ? 'your bid' : 'bidder'}</small>`;
+      : `<strong style="${_vsMarkCls}">${_vsMarkStr}</strong><small>${_mineSub}</small>`;
     // Expires line for level rows uses the bucket's MAX expiry (the
     // latest bid in the bucket) so the seller sees how long the level
     // is broadly available; min-expiry would be misleading since
@@ -52279,7 +52419,7 @@ async function populateMarketBidsLadder(scope, asset) {
     return `
       <div data-bid-row data-bid-id="${escapeHtml(bidId)}" class="${rowClass}"${_fillAttrs}>
         <div class="market-bid-price">
-          <strong class="market-sats-price">${_isLevel ? '≥ ' : ''}${escapeHtml(unitVal)} sats/${escapeHtml(ticker)}${_levelBadge}</strong>
+          <strong class="market-sats-price">${_isLevel ? '≥ ' : ''}${escapeHtml(unitVal)} sats/${escapeHtml(ticker)}${_levelBadge}${_topBadge}</strong>
           ${_isLevel ? _levelSpread : `<small class="market-usd-price">${unitUsd ? `${escapeHtml(unitUsd)} per token` : 'no USD quote'}</small>`}
         </div>
         <div class="market-bid-cell">
@@ -52328,7 +52468,7 @@ async function populateMarketBidsLadder(scope, asset) {
         <span>Bid</span>
         <span>Quantity</span>
         <span>Total</span>
-        <span>Bidder</span>
+        <span title="Percentage premium (green) or discount (red) versus the asset's mark price. Replaces the maker-address column which was low signal for a partial-fillable book — vs-mark is universally meaningful at a glance.">vs mark</span>
         <span>Expires</span>
         <span>Action</span>
       </div>
