@@ -6,17 +6,19 @@
 //   (3) AMM POOL_INIT (LP)    — asset_id = SHA256("tacit-amm-lp-v1" || pool_id)
 //                                 where pool_id = SHA256(
 //                                   "tacit-amm-pool-v1"
-//                                   || asset_A           // 32 B, lex-smaller
-//                                   || asset_B           // 32 B, lex-larger
-//                                   || fee_bps_LE        // 2 B,  u16  (0..1000)
-//                                   || capability_flags  // 1 B,  u8
+//                                   || asset_A                 // 32 B, lex-smaller
+//                                   || asset_B                 // 32 B, lex-larger
+//                                   || fee_bps_LE              // 2 B,  u16  (0..1000)
+//                                   || capability_flags        // 1 B,  u8
+//                                   || protocol_fee_address    // 33 B, appended iff fee enabled
+//                                   || protocol_fee_bps_LE     // 2 B,  appended iff fee enabled
 //                                 )
-//                                 → 84-byte preimage
+//                                 → 84-byte preimage (no-skim) or 119-byte preimage (fee enabled)
 //
 // Domain separation between paths is structural: path (1)/(2) preimages are
 // 36 bytes (txid_BE 32 || vout_LE 4); path (3) lp_asset_id preimages are
 // 47 bytes ("tacit-amm-lp-v1" 15 B || pool_id 32 B); pool_id preimages are
-// 84 bytes. All three sizes are disjoint, so cross-origin SHA256 collisions
+// 84 or 119 bytes. All sizes are disjoint, so cross-origin SHA256 collisions
 // reduce to preimage-finding under distinct domain separations.
 //
 // V3/V4 parity: multiple pools can coexist for the same (asset_A, asset_B)
@@ -35,6 +37,13 @@ const DOMAIN_LP_ASSET = new TextEncoder().encode('tacit-amm-lp-v1');
 // §"SOLVE_CLEARING". capability_flags is a u8 bitmap (AMM.md §"Pool state").
 const FEE_BPS_MAX = 1000;
 const CAPABILITY_FLAGS_MAX = 255;
+const PROTOCOL_FEE_ADDRESS_LEN = 33;
+const PROTOCOL_FEE_BPS_MAX = 1000;
+const ZERO_PROTOCOL_FEE_ADDRESS = new Uint8Array(PROTOCOL_FEE_ADDRESS_LEN);
+function isZeroProtocolFeeAddress(b) {
+  for (let i = 0; i < b.length; i++) if (b[i] !== 0) return false;
+  return true;
+}
 
 function reverseBytes(b) { const r = new Uint8Array(b); r.reverse(); return r; }
 
@@ -64,13 +73,18 @@ export function canonicalAssetPair(idA, idB) {
 // Derive pool_id from a canonical pair, fee tier, and capability flags.
 //   pool_id = SHA256(
 //     "tacit-amm-pool-v1" || asset_A || asset_B || fee_bps_LE || capability_flags
+//     [ || protocol_fee_address || protocol_fee_bps_LE ]   // appended iff fee enabled
 //   )
-// All four discriminators are load-bearing: two POOL_INITs over the same
-// (A, B) but with different fee_bps OR capability_flags are different
-// canonical pools (V3/V4-style parity). Callers MUST supply fee_bps and
-// capabilityFlags from either the POOL_INIT envelope (variant=1) or the
-// existing pool record (variant=0 LP_ADD / LP_REMOVE / SWAP_*).
-export function derivePoolId(idA, idB, feeBps, capabilityFlags) {
+// All discriminators are load-bearing: two POOL_INITs over the same (A, B)
+// with different fee_bps OR capability_flags OR protocol-fee configuration are
+// different canonical pools. The protocol-fee fields are size-discriminated:
+// fee-disabled (joint-zero) uses the 84-byte preimage and is the canonical
+// no-skim pool; any non-zero protocol-fee config appends both fields (119-byte
+// preimage), preventing protocol-fee squatting on the no-skim canonical pool.
+// Callers MUST supply fee_bps + capabilityFlags from the POOL_INIT envelope
+// (variant=1) or the existing pool record (variant=0 LP_ADD / LP_REMOVE /
+// SWAP_*); protocolFeeAddress + protocolFeeBps default to disabled if omitted.
+export function derivePoolId(idA, idB, feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps) {
   const [low, high] = canonicalAssetPair(idA, idB);
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_MAX) {
     throw new Error(`fee_bps must be integer in [0, ${FEE_BPS_MAX}]: got ${feeBps}`);
@@ -81,7 +95,30 @@ export function derivePoolId(idA, idB, feeBps, capabilityFlags) {
   const feeBpsLE = new Uint8Array(2);
   new DataView(feeBpsLE.buffer).setUint16(0, feeBps, true);
   const flagsByte = new Uint8Array([capabilityFlags]);
-  return sha256(concatBytes(DOMAIN_POOL_ID, low, high, feeBpsLE, flagsByte));
+
+  const pfBps = protocolFeeBps == null ? 0 : protocolFeeBps;
+  if (!Number.isInteger(pfBps) || pfBps < 0 || pfBps > PROTOCOL_FEE_BPS_MAX) {
+    throw new Error(`protocol_fee_bps must be integer in [0, ${PROTOCOL_FEE_BPS_MAX}]: got ${pfBps}`);
+  }
+  let pfAddr;
+  if (protocolFeeAddress == null) {
+    pfAddr = ZERO_PROTOCOL_FEE_ADDRESS;
+  } else {
+    pfAddr = protocolFeeAddress instanceof Uint8Array ? protocolFeeAddress : hexToBytes(protocolFeeAddress);
+    if (pfAddr.length !== PROTOCOL_FEE_ADDRESS_LEN) {
+      throw new Error(`protocol_fee_address must be ${PROTOCOL_FEE_ADDRESS_LEN} bytes: got ${pfAddr.length}`);
+    }
+  }
+  const pfAddrZero = isZeroProtocolFeeAddress(pfAddr);
+  if ((pfBps === 0) !== pfAddrZero) {
+    throw new Error('protocol_fee_address and protocol_fee_bps must be joint-zero or joint-non-zero');
+  }
+  if (pfBps === 0) {
+    return sha256(concatBytes(DOMAIN_POOL_ID, low, high, feeBpsLE, flagsByte));
+  }
+  const pfBpsLE = new Uint8Array(2);
+  new DataView(pfBpsLE.buffer).setUint16(0, pfBps, true);
+  return sha256(concatBytes(DOMAIN_POOL_ID, low, high, feeBpsLE, flagsByte, pfAddr, pfBpsLE));
 }
 
 // LP-share asset_id derived from a confirmed POOL_INIT's pool_id.

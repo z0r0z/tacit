@@ -47,6 +47,11 @@ dapp/circuits/amm/dev-zkey/*.zkey
 dapp/circuits/amm/dev-zkey/*.wtns
 dapp/circuits/amm/dev-zkey/proof*.json
 dapp/circuits/amm/dev-zkey/public*.json
+# Test-runner scratch — *.test.mjs harnesses write per-circuit
+# {input,proof,public}.json under `_rt_*` / `_wire_*` prefixes;
+# regenerated on every run.
+dapp/circuits/amm/dev-zkey/_rt_*.json
+dapp/circuits/amm/dev-zkey/_wire_*.json
 
 # Signet e2e state (test/ephemeral wallet privs — regenerable, never commit).
 .local/

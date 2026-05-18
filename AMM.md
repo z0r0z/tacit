@@ -444,14 +444,33 @@ pool_id = SHA256(
  || asset_B          (32 B, lex-larger)
  || fee_bps_LE       (2 B,  u16, 0..1000)
  || capability_flags (1 B,  u8 bitmap)
+ || protocol_fee_address    (33 B, compressed secp256k1)  ─┐
+ || protocol_fee_bps_LE     (2 B,  u16, 1..1000)           │ appended iff fee enabled
+                                                            ┘
 )
 ```
 
-Preimage is 84 bytes. Including `fee_bps` and `capability_flags` as
-discriminators gives **Uniswap V3/V4-style multi-tier parity**: a
-single asset pair can host multiple canonical pools simultaneously,
-each at a different fee tier or capability configuration. `pool_id`
-is a 32-byte SHA-256 digest regardless of preimage length.
+Preimage is **84 bytes for the default no-skim pool** (fee disabled
+≡ `protocol_fee_bps == 0` ≡ `protocol_fee_address == 33×0x00`, per
+the decoder rule that the two fields are joint-zero or joint-non-zero)
+and **119 bytes when a protocol fee is enabled**. Including
+`fee_bps` and `capability_flags` as discriminators gives **Uniswap
+V3/V4-style multi-tier parity**: a single asset pair can host
+multiple canonical pools simultaneously, each at a different fee
+tier or capability configuration. `pool_id` is a 32-byte SHA-256
+digest regardless of preimage length.
+
+The protocol-fee fields are **size-discriminated**: any pool with
+`protocol_fee_bps > 0` hashes to a *different* `pool_id` than the
+default no-skim pool over the same (pair, fee tier, capability)
+tuple. This makes the protocol-fee recipient **un-squattable** —
+a frontrunner who broadcasts a `POOL_INIT` with their own
+`protocol_fee_address` cannot camp out the canonical pool LPs and
+swappers naturally route to, because the no-skim pool_id is fixed
+by the 84-byte preimage and a separate canonical pool entirely.
+The 84-byte and 119-byte preimages cannot collide (size-domain
+separation under SHA-256 reduces to a preimage-finding attack across
+disjoint length classes).
 
 The LP-share asset's `lp_asset_id` is **deterministically derived**
 as `lp_asset_id = SHA256("tacit-amm-lp-v1" || pool_id)`. Because
@@ -481,7 +500,7 @@ map keyed by `asset_id`. Domain separation between paths is
 structural — the SHA256 preimages have disjoint sizes by
 construction (CETCH/T_PETCH: 36 B = `reveal_txid_BE || 0_LE`;
 LP-asset path: 47 B = `"tacit-amm-lp-v1"(15) || pool_id(32)`;
-pool_id itself: 84 B per the preimage above), so cross-origin
+pool_id itself: 84 B or 119 B per the preimage above), so cross-origin
 collisions reduce to SHA256 preimage-finding under different
 domains and are negligible.
 Indexers treat the first canonical `T_LP_ADD(variant=1)` (=
@@ -513,19 +532,23 @@ reserve is at every height by replaying confirmed envelopes.
 deposit their LP-share UTXO into the mixer's `(lp_asset_id,
 denomination)` pool and withdraw to a fresh address.
 
-### One canonical pool per (pair, fee_bps, capability_flags)
+### One canonical pool per (pair, fee_bps, capability_flags, protocol_fee_config)
 
-Multiple competing pools at the **same** `(asset_A, asset_B,
-fee_bps, capability_flags)` configuration would fragment liquidity
-needlessly. The indexer enforces **one canonical pool per
-discriminator-tuple** by the same first-mover rule as ticker
-disambiguation in CETCH (§4): the first canonically-ordered
-confirmed `POOL_INIT` whose `(asset_A, asset_B, fee_bps,
-capability_flags)` hash to a given `pool_id` becomes canonical;
-subsequent inits at the same `pool_id` are silently ignored. A
-`POOL_INIT` at a *different* fee tier or capability configuration
+Multiple competing pools at the **same** discriminator tuple
+would fragment liquidity needlessly. The indexer enforces **one
+canonical pool per discriminator-tuple** by the same first-mover
+rule as ticker disambiguation in CETCH (§4): the first
+canonically-ordered confirmed `POOL_INIT` whose discriminators hash
+to a given `pool_id` becomes canonical; subsequent inits at the
+same `pool_id` are silently ignored. A `POOL_INIT` at a *different*
+fee tier, capability configuration, or protocol-fee configuration
 for the same pair yields a *different* `pool_id` and is therefore
-a separate canonical pool — not a collision.
+a separate canonical pool — not a collision. In particular, the
+default no-skim configuration (`protocol_fee_address = 33×0x00`
+with `protocol_fee_bps = 0`) defines **the** canonical no-skim pool
+for any given (pair, fee tier, capability) tuple, and a frontrunner
+who pins a non-zero `protocol_fee_address` creates a *separate*
+canonical pool that does not compete with the no-skim variant.
 
 This is the V3/V4 fee-tier model: founders / LPs / arbitrageurs
 decide which tier(s) attract liquidity for a given pair, the same

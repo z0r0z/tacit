@@ -378,7 +378,7 @@ where `asset_A` is the lexicographically smaller of the two pool assets under un
 2. A confirmed `T_PETCH` (§5.8) exists whose reveal-tx satisfies the same equation. (CETCH and T_PETCH are mutually exclusive — a given `asset_id` matches at most one.)
 3. A confirmed canonical `POOL_INIT` (§5.14 variant=1) exists whose `pool_id` satisfies `asset_id == SHA256("tacit-amm-lp-v1" || pool_id)`.
 
-Domain separation between paths is structural: path (1)/(2) SHA256 preimages are 36 bytes (`txid_BE(32) || vout_LE(4)`); path (3) LP-asset preimages are 47 bytes (`"tacit-amm-lp-v1"(15) || pool_id(32)`); pool_id itself has an 84-byte preimage (domain(17) || A(32) || B(32) || fee_bps_LE(2) || flags(1)). All three sizes are disjoint, so cross-origin collisions reduce to SHA256 preimage-finding under distinct domain separations and are cryptographically negligible.
+Domain separation between paths is structural: path (1)/(2) SHA256 preimages are 36 bytes (`txid_BE(32) || vout_LE(4)`); path (3) LP-asset preimages are 47 bytes (`"tacit-amm-lp-v1"(15) || pool_id(32)`); pool_id itself has an 84-byte preimage for no-skim pools (domain(17) || A(32) || B(32) || fee_bps_LE(2) || flags(1)) or a 119-byte preimage for fee-enabled pools (the above plus protocol_fee_address(33) || protocol_fee_bps_LE(2), appended iff the pool has a non-zero protocol fee per AMM.md §"Pool state"). All sizes are disjoint, so cross-origin collisions reduce to SHA256 preimage-finding under distinct domain separations and are cryptographically negligible.
 
 Indexers maintain a reverse map keyed by `asset_id` so the lookup is constant time. The §5.5 validator algorithm extends with one additional branch: when walking an ancestry that lands on a `T_LP_ADD` or `T_LP_REMOVE` (§§5.14–5.15) producing an `lp_asset_id` UTXO, resolution path (3) is what authorises that UTXO as a real tacit asset.
 
@@ -2715,7 +2715,7 @@ Sign with `excess_X = Σᵢ r_in_secp,X,i`. The `variant` byte distinguishes reg
 **Validator algorithm** (extends §5.5):
 1. Decode payload. Reject on any structural error or trailing bytes.
 2. Reject if `asset_A ≥ asset_B` (lex order).
-3. Recompute `pool_id = SHA256("tacit-amm-pool-v1" || asset_A || asset_B || fee_bps_LE || capability_flags)`. For `variant == 1` (POOL_INIT) the discriminators come from the envelope; for `variant == 0` they come from the existing pool record indexed by `pool_id`. (V3/V4 fee-tier parity: distinct `(fee_bps, capability_flags)` tuples are distinct canonical pools — see SPEC §4.1 / AMM.md §"Pool state".)
+3. Recompute `pool_id = SHA256("tacit-amm-pool-v1" || asset_A || asset_B || fee_bps_LE || capability_flags [ || protocol_fee_address || protocol_fee_bps_LE ])`. The trailing `protocol_fee_address || protocol_fee_bps_LE` pair is appended iff `protocol_fee_bps != 0` (joint-non-zero with `protocol_fee_address`, per the decoder rule). For `variant == 1` (POOL_INIT) the discriminators come from the envelope; for `variant == 0` they come from the existing pool record indexed by `pool_id`. (V3/V4 fee-tier parity: distinct `(fee_bps, capability_flags, protocol_fee_config)` tuples are distinct canonical pools — see SPEC §4.1 / AMM.md §"Pool state". The size-discriminated protocol-fee fields make the no-skim canonical pool un-squattable: a frontrunner pinning a fee recipient hashes to a different `pool_id` than the canonical no-skim variant.)
 4. **If `variant == 1`:**
    a. Reject if a pool already exists for this `pool_id`.
    a.1. Reject if `fee_bps > 1000` (= 10% protocol cap; also wire-format-rejected since `fee_bps_LE` is u16 0..1000, echoed here as an explicit validator step so non-reference implementations cannot accidentally fork by accepting higher fees). Reject if `protocol_fee_bps > 1000`.
@@ -2995,7 +2995,7 @@ claim_msg = SHA256(
 
 1. Decode payload. Reject on structural error or wrong total length (≠ 202).
 2. Reject `claim_amount == 0`.
-3. Recompute `pool_id` from `(asset_A, asset_B, fee_bps, capability_flags)` of the pool registered in the indexer (the full discriminator tuple — see SPEC §4.1); reject if the envelope's `pool_id` doesn't match a known pool.
+3. Recompute `pool_id` from `(asset_A, asset_B, fee_bps, capability_flags, protocol_fee_address, protocol_fee_bps)` of the pool registered in the indexer (the full discriminator tuple — see SPEC §4.1; trailing protocol-fee fields appended iff the pool has a non-zero protocol fee); reject if the envelope's `pool_id` doesn't match a known pool.
 4. Reject if `pool.protocol_fee_address` is all-zeros (no protocol fee configured) or `pool.protocol_fee_bps == 0`.
 5. Reject if `claimer_pubkey_x_only` doesn't equal the x-only of `pool.protocol_fee_address`.
 6. **Crystallize protocol fee** on pool state: `pool ← crystallizeProtocolFee(pool)`. This applies the Uniswap-V2-lazy `mintFee` formula over `(k_now − k_last)` and updates `pool.protocol_fee_accrued`, `pool.lp_total_shares`, and `pool.k_last`.

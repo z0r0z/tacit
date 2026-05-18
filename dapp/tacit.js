@@ -9419,10 +9419,10 @@ function _scanPoolEntryByPoolId(poolIdHex) {
   return null;
 }
 function _scanLpAddPoolId(dec) {
-  // Variant 1: feeBps + capabilityFlags are in the envelope; derive directly.
+  // Variant 1: feeBps + capabilityFlags + protocol-fee fields are in the envelope; derive directly.
   if (dec.variant === 1) {
     try {
-      return ammAssetMod.derivePoolId(dec.assetA, dec.assetB, dec.feeBps, dec.poolCapabilityFlags);
+      return ammAssetMod.derivePoolId(dec.assetA, dec.assetB, dec.feeBps, dec.poolCapabilityFlags, dec.protocolFeeAddress, dec.protocolFeeBps);
     } catch { return null; }
   }
   // Variant 0: pool registry lookup by canonical (assetA, assetB). Returns
@@ -9433,7 +9433,7 @@ function _scanLpAddPoolId(dec) {
 }
 function _scanLpAddPoolIdCandidates(dec) {
   if (dec.variant === 1) {
-    try { return [ammAssetMod.derivePoolId(dec.assetA, dec.assetB, dec.feeBps, dec.poolCapabilityFlags)]; }
+    try { return [ammAssetMod.derivePoolId(dec.assetA, dec.assetB, dec.feeBps, dec.poolCapabilityFlags, dec.protocolFeeAddress, dec.protocolFeeBps)]; }
     catch { return []; }
   }
   const out = [];
@@ -16281,6 +16281,219 @@ function* enumerateStakingSubkeysForRecovery(maxScan = 256) {
   }
 }
 
+// ============== STAGED BONDS (pre-staged TAC at staking-subkey addresses) ==============
+//
+// To break the chain-analysis link between wallet.pub and the eventual
+// cBTC.tac UTXO, the bond TAC consumed by T_CBTC_TAC_DEPOSIT must NOT be a
+// fresh carve from wallet.pub spent directly in the deposit reveal tx — that
+// puts wallet.pub on the deposit's input side. Instead, we pre-stage: emit a
+// CXfer in advance that delivers the bond UTXO to a staking-subkey address.
+// The deposit reveal tx then spends only the subkey-owned bond UTXO + the
+// slot UTXO, so it never carries wallet.pub. The carve tx itself still ties
+// wallet.pub → subkey.pub one hop away; timing decorrelation (stage now,
+// deposit later, ideally batched with other users' stages) makes that
+// linkage analytically weak.
+//
+// Recovery from a clean wipe: subkeys are deterministic from wallet.priv +
+// index, so a scan can rebuild this index by iterating subkey addresses and
+// checking on-chain TAC UTXOs. The local store is a UX accelerator, not a
+// recovery dependency.
+
+const STAGED_BONDS_KEY_BASE = 'tacit-staged-bonds-v1';
+function _stagedBondsKey() { return `${STAGED_BONDS_KEY_BASE}:${NET.name}`; }
+function _loadStagedBondRecords() {
+  try {
+    const raw = localStorage.getItem(_stagedBondsKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function saveStagedBondRecord(record) {
+  if (!record || !record.id) throw new Error('staged-bond record must include id');
+  const arr = _loadStagedBondRecords();
+  const idx = arr.findIndex(r => r.id === record.id);
+  if (idx >= 0) arr[idx] = { ...arr[idx], ...record };
+  else arr.push(record);
+  try { localStorage.setItem(_stagedBondsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+function getStagedBondRecords({ status = null, assetIdHex = null } = {}) {
+  const arr = _loadStagedBondRecords();
+  return arr.filter(r =>
+    (!status || (r.status || 'staged') === status) &&
+    (!assetIdHex || r.assetIdHex === assetIdHex)
+  );
+}
+function getStagedBondById(id) {
+  return _loadStagedBondRecords().find(r => r.id === id) || null;
+}
+function forgetStagedBondRecord(id) {
+  const arr = _loadStagedBondRecords().filter(r => r.id !== id);
+  try { localStorage.setItem(_stagedBondsKey(), JSON.stringify(arr)); } catch {}
+  return arr;
+}
+
+// Pretty age (ms) for a staged-at timestamp. Used by UI to show "staged
+// 3h ago" — the longer the age, the better the privacy decorrelation.
+function stagedBondAgeMs(record) {
+  if (!record || !record.stagedAt) return 0;
+  return Math.max(0, Date.now() - Number(record.stagedAt));
+}
+
+// Stage a bond: allocate a fresh staking subkey, carve the named asset+amount
+// to its address, persist the staged-bond record. Returns the record + the
+// derived subkey material (so caller can show the address / verify).
+//
+// Idempotency: persists a 'staging' record BEFORE the carve so a mid-flight
+// failure leaves a recoverable trail. On carve success the status flips to
+// 'staged'; on failure to 'aborted' (no UTXO at subkey).
+async function stageBondToSubkey({ assetIdHex, amount, label = '', onProgress = null }) {
+  if (!assetIdHex || !/^[0-9a-f]{64}$/i.test(assetIdHex)) {
+    throw new Error('assetIdHex must be 64 hex chars');
+  }
+  const aid = assetIdHex.toLowerCase();
+  const amountBig = BigInt(amount);
+  if (amountBig <= 0n || amountBig >= (1n << BigInt(N_BITS))) {
+    throw new Error('amount out of range');
+  }
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+
+  // Allocate a fresh subkey. parentSlotLeafHashHex stays null until the
+  // staged bond is consumed by a deposit — only then is the subkey bound
+  // to a specific slot's position.
+  const sk = allocateStakingSubkey({ label: label || `Staged bond ${aid.slice(0, 8)}…` });
+  const id = `staged-${sk.index}-${aid.slice(0, 8)}`;
+  const pending = {
+    id,
+    subkeyIndex: sk.index,
+    subkeyPubHex: bytesToHex(sk.pub),
+    assetIdHex: aid,
+    amount: amountBig.toString(),
+    utxo: null,
+    blindingHex: null,
+    stagedAt: null,
+    status: 'staging',
+    consumedByPositionLeafHashHex: null,
+    abortTxid: null,
+    network: NET.name,
+    createdAt: Date.now(),
+  };
+  saveStagedBondRecord(pending);
+
+  _progress('carve:start');
+  let carved;
+  try {
+    carved = await carveExactAmount({
+      assetIdHex: aid,
+      amount: amountBig,
+      recipientPubHex: bytesToHex(sk.pub),
+    });
+  } catch (err) {
+    saveStagedBondRecord({ id, status: 'aborted', abortReason: String(err?.message || err) });
+    throw err;
+  }
+  if (!carved || !carved.utxo) {
+    saveStagedBondRecord({ id, status: 'aborted', abortReason: 'carve returned no UTXO' });
+    throw new Error('staging failed: carve returned no UTXO');
+  }
+
+  _progress('carve:settled', { txid: carved.utxo.txid });
+  const blindingBig = BigInt(carved.blinding);
+  const settled = {
+    id,
+    utxo: { txid: carved.utxo.txid, vout: carved.utxo.vout | 0 },
+    blindingHex: blindingBig.toString(16).padStart(64, '0'),
+    stagedAt: Date.now(),
+    status: 'staged',
+  };
+  saveStagedBondRecord(settled);
+  saveStakingSubkeyRecord({ index: sk.index, status: 'staged-bond' });
+
+  return { ...pending, ...settled, subkeyPriv: sk.priv, subkeyPub: sk.pub };
+}
+
+// Look up a staged bond + rederive the subkey privkey. Used by the deposit
+// flow to consume a staged bond. Returns null if the bond doesn't exist or
+// the wallet identity has changed (rederived pubkey mismatches stored hex).
+function loadStagedBondForConsumption(id) {
+  const record = getStagedBondById(id);
+  if (!record) return null;
+  if (record.status !== 'staged') return null;
+  if (!Number.isInteger(record.subkeyIndex)) return null;
+  const sk = getStakingSubkeyByIndex(record.subkeyIndex);
+  if (!sk) return null;
+  if (bytesToHex(sk.pub) !== record.subkeyPubHex) return null;
+  return { record, subkeyPriv: sk.priv, subkeyPub: sk.pub };
+}
+
+// Unstage a previously-staged bond: spend the subkey-owned UTXO via CXfer
+// back to wallet.pub. This is the "user changed their mind" path — they
+// staged a bond but decided not to deposit. The CXfer reveals wallet ↔
+// subkey linkage on-chain, so the subkey is marked 'burned' and not
+// recommended for reuse.
+async function unstageBond({ stagedBondId, onProgress = null }) {
+  const record = getStagedBondById(stagedBondId);
+  if (!record) throw new Error(`staged bond not found: ${stagedBondId}`);
+  if (record.status !== 'staged') {
+    throw new Error(`staged bond not in 'staged' state (got '${record.status}')`);
+  }
+  if (!record.utxo || !record.utxo.txid) {
+    throw new Error('staged bond record missing utxo');
+  }
+  const sk = getStakingSubkeyByIndex(record.subkeyIndex);
+  if (!sk || bytesToHex(sk.pub) !== record.subkeyPubHex) {
+    throw new Error('subkey unavailable (wallet identity changed?)');
+  }
+  const _progress = (stage, info) => { try { onProgress && onProgress(stage, info); } catch {} };
+
+  // Mark 'aborting' BEFORE the broadcast — same idempotency discipline as
+  // stage. If broadcast fails or page closes mid-flight, the record reflects
+  // the intent and a retry can pick up where we left off.
+  saveStagedBondRecord({ id: stagedBondId, status: 'aborting' });
+
+  _progress('unstage:cxfer-build');
+  // forceUtxos: just the staged UTXO. CXferMulti's assetSigner override
+  // signs the input under the subkey instead of wallet.priv. Recipient is
+  // wallet.pub (the user gets their TAC back at their main address).
+  const stagedAssetUtxo = {
+    utxo: { txid: record.utxo.txid, vout: record.utxo.vout | 0, value: DUST },
+    amount: BigInt(record.amount),
+    blinding: '0x' + record.blindingHex,
+  };
+  let r;
+  try {
+    r = await buildAndBroadcastCXferMulti({
+      assetIdHex: record.assetIdHex,
+      recipients: [{ pubHex: bytesToHex(wallet.pub), amount: BigInt(record.amount) }],
+      forceUtxos: [stagedAssetUtxo],
+      assetSigner: { priv: sk.priv, pub: sk.pub },
+    });
+  } catch (err) {
+    // Best-effort: revert status so a retry can re-attempt. The on-chain
+    // staged UTXO is unaffected — it remains spendable.
+    saveStagedBondRecord({ id: stagedBondId, status: 'staged' });
+    throw err;
+  }
+
+  _progress('unstage:cxfer-broadcast', { txid: r.revealTxid });
+  saveStagedBondRecord({
+    id: stagedBondId,
+    status: 'aborted',
+    abortTxid: r.revealTxid,
+    abortedAt: Date.now(),
+  });
+  // The subkey is now publicly linked to wallet.pub via the unstage tx —
+  // mark it so the allocator + UI know not to recommend it for reuse.
+  saveStakingSubkeyRecord({
+    index: record.subkeyIndex,
+    status: 'burned',
+    burnedReason: 'unstage',
+  });
+  invalidateHoldingsCache();
+  return { abortTxid: r.revealTxid, record: getStagedBondById(stagedBondId) };
+}
+
 // ============== cBTC.tac POSITION RECORDS (local persistence) ==============
 //
 // Mirror the slot-record pattern: per-network localStorage, keyed by the
@@ -16373,6 +16586,7 @@ async function buildAndBroadcastCbtcTacDeposit({
   bondAmountTAC,
   tacAssetIdHex,
   depositorRecoveryPubHex = null,
+  stagedBondId = null,            // NEW: consume a pre-staged bond (privacy path)
   onProgress = null,
 }) {
   await ensurePrivkey();
@@ -16406,13 +16620,68 @@ async function buildAndBroadcastCbtcTacDeposit({
     throw new Error(`cBTC.tac position already exists for this slot (state=${existingPos.status})`);
   }
 
-  // 2. Derive deposit values
+  // 2. Resolve bond source: staged bond (privacy path) OR live-carve from
+  //    wallet.pub (backwards-compatible legacy path).
+  //
+  //    Privacy path: stagedBondId names a pre-staged TAC UTXO at a staking-
+  //    subkey address. The deposit reveal tx then spends only the subkey-
+  //    owned bond UTXO + the slot UTXO, so wallet.pub never appears on the
+  //    deposit's inputs. depositorRecoveryPub is forced to the subkey pub
+  //    (overriding any depositorRecoveryPubHex param) so all on-envelope
+  //    identifiers point at the subkey, not the main wallet.
+  //
+  //    Legacy path: live-carve from wallet.pub. depositorRecoveryPub falls
+  //    back to depositorRecoveryPubHex or wallet.pub. Used by older callers
+  //    and the rendered-on-screen one-click path until UI migrates.
+  let bondSigner = null;             // { priv, pub, subkeyIndex } when staged
+  let bondPrevoutPub = wallet.pub;   // pubkey controlling the bond UTXO (for prevout scriptCode)
+  let tacUtxo;                       // { utxo: { txid, vout }, blinding }
+  let stagedBondRecord = null;
+  if (stagedBondId) {
+    _progress('bond:load-staged', { id: stagedBondId });
+    const loaded = loadStagedBondForConsumption(stagedBondId);
+    if (!loaded) {
+      throw new Error(`staged bond not found, not 'staged', or wallet identity changed: ${stagedBondId}`);
+    }
+    if (loaded.record.assetIdHex !== tacAid) {
+      throw new Error(`staged bond asset_id ${loaded.record.assetIdHex} doesn't match tacAssetIdHex ${tacAid}`);
+    }
+    if (BigInt(loaded.record.amount) !== bondBig) {
+      throw new Error(`staged bond amount ${loaded.record.amount} doesn't match bondAmountTAC ${bondBig}`);
+    }
+    if (!loaded.record.utxo || !loaded.record.utxo.txid) {
+      throw new Error('staged bond record missing utxo');
+    }
+    tacUtxo = {
+      utxo: { txid: loaded.record.utxo.txid, vout: loaded.record.utxo.vout | 0 },
+      blinding: '0x' + loaded.record.blindingHex,
+    };
+    bondSigner = { priv: loaded.subkeyPriv, pub: loaded.subkeyPub, subkeyIndex: loaded.record.subkeyIndex };
+    bondPrevoutPub = loaded.subkeyPub;
+    stagedBondRecord = loaded.record;
+  } else {
+    _progress('carve:tac-bond');
+    tacUtxo = await carveExactAmount({ assetIdHex: tacAid, amount: bondBig });
+    if (!tacUtxo || !tacUtxo.utxo) {
+      throw new Error('failed to carve TAC bond UTXO');
+    }
+  }
+
+  // 3. Derive deposit values
   const targetLeafHashBytes = hexToBytes(slotRecord.leafCommitmentHex);
-  const depositorRecoveryPub = depositorRecoveryPubHex
-    ? hexToBytes(depositorRecoveryPubHex)
-    : wallet.pub;
+  // depositorRecoveryPub: staged path forces it to the subkey pub (otherwise
+  // we'd leak by minting cBTC.tac back to wallet.pub). Legacy path honors
+  // depositorRecoveryPubHex or falls back to wallet.pub.
+  let depositorRecoveryPub;
+  if (bondSigner) {
+    depositorRecoveryPub = bondSigner.pub;
+  } else if (depositorRecoveryPubHex) {
+    depositorRecoveryPub = hexToBytes(depositorRecoveryPubHex);
+  } else {
+    depositorRecoveryPub = wallet.pub;
+  }
   if (depositorRecoveryPub.length !== 33) {
-    throw new Error('depositorRecoveryPubHex must be 33-byte compressed point');
+    throw new Error('depositorRecoveryPub must be 33-byte compressed point');
   }
   // Fresh blinding for the cBTC.tac mint UTXO. amount = mint_amount = slot_denom_sats (§5.36.2).
   const mintBlindingBytes = new Uint8Array(32); crypto.getRandomValues(mintBlindingBytes);
@@ -16420,19 +16689,14 @@ async function buildAndBroadcastCbtcTacDeposit({
   if (mintBlindingBig === 0n) mintBlindingBig = 1n;
   const mintRecipientCommit = pedersenCommit(denomBig, mintBlindingBig).toRawBytes(true);
 
-  // 3. Carve exact bond TAC UTXO from holdings
-  _progress('carve:tac-bond');
-  const tacUtxo = await carveExactAmount({ assetIdHex: tacAid, amount: bondBig });
-  if (!tacUtxo || !tacUtxo.utxo) {
-    throw new Error('failed to carve TAC bond UTXO');
-  }
   // bond_source_outpoint: 32-byte txid + 4-byte vout (LE)
   const bondTxidBytes = hexToBytes(tacUtxo.utxo.txid);
   const bondSourceOutpoint = new Uint8Array(36);
   bondSourceOutpoint.set(bondTxidBytes, 0);
   new DataView(bondSourceOutpoint.buffer).setUint32(32, tacUtxo.utxo.vout | 0, true);
   // bond_commit: Pedersen commit of the bond UTXO (we know its opening from
-  // the carve step; the worker re-derives this from the asset-UTXO index).
+  // the carve/stage step; the worker re-derives this from the asset-UTXO
+  // index for verification).
   const bondBlindingBig = BigInt(tacUtxo.blinding);
   const bondCommit = pedersenCommit(bondBig, bondBlindingBig).toRawBytes(true);
 
@@ -16526,6 +16790,8 @@ async function buildAndBroadcastCbtcTacDeposit({
   const commitTxidHex = txid(commitTx);
 
   // Reveal tx — bond TAC UTXO is a P2WPKH at DUST (standard tacit asset UTXO).
+  // The bond prevout script + signer depend on bondPrevoutPub: staged path
+  // uses the subkey, legacy path uses wallet.pub.
   _progress('tx:reveal:build');
   const recipSpk = p2wpkhScript(depositorRecoveryPub);
   const revealTx = {
@@ -16538,12 +16804,18 @@ async function buildAndBroadcastCbtcTacDeposit({
   };
   const revealPrevouts = [
     { value: commitValue, script: commitSpk },
-    { value: DUST,        script: p2wpkhScript(wallet.pub) }, // bond TAC UTXOs are P2WPKH(wallet.pub) at DUST per tacit asset convention
+    { value: DUST,        script: p2wpkhScript(bondPrevoutPub) },
   ];
-  // vin[0]: P2TR script-path with envelope reveal
+  // vin[0]: P2TR script-path with envelope reveal (signed under wallet.priv —
+  // the commit output was funded by wallet, so the envelope/script-path
+  // schnorr sig is wallet's regardless of bond source).
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, revealPrevouts, envelopeScript, cb);
-  // vin[1]: standard P2WPKH BIP-143 sig under wallet.priv
-  revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  // vin[1]: P2WPKH sig under whichever key controls the bond UTXO.
+  if (bondSigner) {
+    revealTx.inputs[1].witness = signP2wpkhInputWithKey(revealTx, 1, DUST, bondSigner.priv, bondSigner.pub);
+  } else {
+    revealTx.inputs[1].witness = signP2wpkhInput(revealTx, 1, DUST);
+  }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxidHex = txid(revealTx);
 
@@ -16569,6 +16841,11 @@ async function buildAndBroadcastCbtcTacDeposit({
     depositRevealTxid: revealTxidHex,
     status: 'deposit-pending',
     createdAt: Date.now(),
+    // Privacy-path metadata. When set, the position's recovery key is a
+    // deterministic subkey derived from wallet.priv + index — withdraw flow
+    // rederives the privkey rather than relying on wallet.priv directly.
+    stakingSubkeyIndex: bondSigner ? bondSigner.subkeyIndex : null,
+    stagedBondId: stagedBondRecord ? stagedBondRecord.id : null,
   };
   saveCtacPositionRecord(positionRecord);
 
@@ -16587,6 +16864,26 @@ async function buildAndBroadcastCbtcTacDeposit({
     status: 'active',
     activatedAt: Date.now(),
   });
+
+  // Privacy-path bookkeeping: mark the consumed staged bond + bind the
+  // subkey record to this position's leaf so recovery scans can pair them.
+  if (stagedBondRecord && bondSigner) {
+    try {
+      saveStagedBondRecord({
+        id: stagedBondRecord.id,
+        status: 'consumed',
+        consumedByPositionLeafHashHex: slotRecord.leafCommitmentHex,
+        consumedAt: Date.now(),
+      });
+    } catch {}
+    try {
+      saveStakingSubkeyRecord({
+        index: bondSigner.subkeyIndex,
+        status: 'active',
+        parentSlotLeafHashHex: slotRecord.leafCommitmentHex,
+      });
+    } catch {}
+  }
 
   // Mark the underlying slot record as 'deposited' so the burn flow refuses
   // to spend it under r_btc until the position is closed via withdraw.
@@ -17485,7 +17782,7 @@ async function buildAndBroadcastLpAddPoolInit({
   if (!utxoB || !utxoB.utxo) throw new Error('failed to carve asset-B input UTXO');
 
   // 3. Pool id + LP asset id + founder shares
-  const poolIdBytes = ammAssetMod.derivePoolId(canonA, canonB, feeBps, poolCapabilityFlags);
+  const poolIdBytes = ammAssetMod.derivePoolId(canonA, canonB, feeBps, poolCapabilityFlags, protocolFeeAddress, protocolFeeBps);
   const poolIdHex = bytesToHex(poolIdBytes);
   const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
   const { founder_shares: founderShares } = ammMinLiqMod.lpInitShares(dA, dB);
@@ -17721,6 +18018,8 @@ async function buildAndBroadcastLpAddVariant0({
   recipientPubHex = null,
   feeBps = 30,           // NOT in envelope; used here just for pool_id sanity check
   poolCapabilityFlags = 0,
+  protocolFeeAddress = null,  // pool's pinned protocol-fee fields, for sanity-check derivation
+  protocolFeeBps = 0,         // (default 0 ≡ no-skim pool, matches the 84-byte preimage)
   onProgress = null,
 }) {
   await ensurePrivkey();
@@ -17738,9 +18037,9 @@ async function buildAndBroadcastLpAddVariant0({
   const dA = swapped ? deltaB : deltaA;
   const dB = swapped ? deltaA : deltaB;
   // Sanity: derive pool_id and confirm it matches caller-supplied
-  const derivedPoolId = ammAssetMod.derivePoolId(canonA, canonB, feeBps, poolCapabilityFlags);
+  const derivedPoolId = ammAssetMod.derivePoolId(canonA, canonB, feeBps, poolCapabilityFlags, protocolFeeAddress, protocolFeeBps);
   if (bytesToHex(derivedPoolId) !== poolIdHex.toLowerCase()) {
-    throw new Error(`pool_id mismatch: derived ${bytesToHex(derivedPoolId).slice(0,16)}… vs supplied ${poolIdHex.slice(0,16)}… (feeBps/flags mismatch?)`);
+    throw new Error(`pool_id mismatch: derived ${bytesToHex(derivedPoolId).slice(0,16)}… vs supplied ${poolIdHex.slice(0,16)}… (feeBps/flags/protocol-fee mismatch?)`);
   }
   const poolIdBytes = derivedPoolId;
   const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
@@ -17922,6 +18221,8 @@ async function buildAndBroadcastLpRemove({
   lpShareUtxos,                // [{utxo:{txid,vout}, amount, blinding}] — sum = shareAmount
   recipientPubHex = null,
   feeBps = 30, poolCapabilityFlags = 0,
+  protocolFeeAddress = null,  // pool's pinned protocol-fee fields, for sanity-check derivation
+  protocolFeeBps = 0,
   onProgress = null,
 }) {
   await ensurePrivkey();
@@ -17948,9 +18249,9 @@ async function buildAndBroadcastLpRemove({
   const swapped = canonAHex !== assetAIdHex.toLowerCase();
   const dA = swapped ? expectedDeltaB : expectedDeltaA;
   const dB = swapped ? expectedDeltaA : expectedDeltaB;
-  const poolIdBytes = ammAssetMod.derivePoolId(canonA, canonB, feeBps, poolCapabilityFlags);
+  const poolIdBytes = ammAssetMod.derivePoolId(canonA, canonB, feeBps, poolCapabilityFlags, protocolFeeAddress, protocolFeeBps);
   if (bytesToHex(poolIdBytes) !== poolIdHex.toLowerCase()) {
-    throw new Error('pool_id mismatch (feeBps/flags differ?)');
+    throw new Error('pool_id mismatch (feeBps/flags/protocol-fee differ?)');
   }
   const lpAssetIdBytes = ammAssetMod.deriveLpAssetId(poolIdBytes);
 
@@ -20060,7 +20361,7 @@ async function buildAndBroadcastPmint({ etchTxidHex, onProgress = null }) {
 // Padding is needed because the aggregated bulletproof requires m to be a power
 // of 2. Padding outputs are indistinguishable from change to outsiders; the
 // wallet auto-recovers them as 0-amount UTXOs (DUST sats are returned).
-async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled() }) {
+async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos = null, allowDuplicateRecipients = false, onProgress = null, useBpp = bppEnabled(), assetSigner = null }) {
   await ensurePrivkey();
   // onProgress(stage) parity with buildAndBroadcastCEtch — fires
   // 'commit-start' / 'reveal-start' right before each broadcast.
@@ -20260,13 +20561,32 @@ async function buildAndBroadcastCXferMulti({ assetIdHex, recipients, forceUtxos 
     ],
     outputs: revealOutputs,
   };
+  // assetSigner override: when set, the asset-UTXO inputs are P2WPKH spends
+  // under assetSigner.priv against p2wpkhScript(assetSigner.pub) — used by
+  // the cBTC.tac unstage flow to recover a staged bond from a subkey-owned
+  // UTXO back to wallet.pub without involving wallet.priv on the asset side.
+  // Commit funding (sats) and envelope (taproot script-path) remain on the
+  // main wallet regardless.
+  const assetPrevoutPub = assetSigner ? assetSigner.pub : wallet.pub;
+  if (assetSigner) {
+    if (!(assetSigner.priv instanceof Uint8Array) || assetSigner.priv.length !== 32) {
+      throw new Error('assetSigner.priv must be 32 bytes');
+    }
+    if (!(assetSigner.pub instanceof Uint8Array) || assetSigner.pub.length !== 33) {
+      throw new Error('assetSigner.pub must be 33-byte compressed point');
+    }
+  }
   const prevouts = [
     { value: commitValue, script: p2trSpk },
-    ...pickedAssetUtxos.map(x => ({ value: x.utxo.value, script: p2wpkhScript(wallet.pub) })),
+    ...pickedAssetUtxos.map(x => ({ value: x.utxo.value, script: p2wpkhScript(assetPrevoutPub) })),
   ];
   revealTx.inputs[0].witness = signTaprootScriptPathInput(revealTx, prevouts, envelopeScript, cb);
   for (let i = 1; i < revealTx.inputs.length; i++) {
-    revealTx.inputs[i].witness = signP2wpkhInput(revealTx, i, prevouts[i].value);
+    if (assetSigner) {
+      revealTx.inputs[i].witness = signP2wpkhInputWithKey(revealTx, i, prevouts[i].value, assetSigner.priv, assetSigner.pub);
+    } else {
+      revealTx.inputs[i].witness = signP2wpkhInput(revealTx, i, prevouts[i].value);
+    }
   }
   const revealHex = bytesToHex(serializeTx(revealTx));
   const revealTxid = txid(revealTx);
@@ -20345,10 +20665,23 @@ async function buildAndBroadcastCXfer({ assetIdHex, recipientPubHex, amount, for
 // Used by amount-based publish flows (Instant listing by amount, etc.)
 // so the form can accept an arbitrary amount instead of forcing the
 // user to pre-pick a specific lot.
-async function carveExactAmount({ assetIdHex, amount }) {
+async function carveExactAmount({ assetIdHex, amount, recipientPubHex = null }) {
   await ensurePrivkey();
   amount = BigInt(amount);
   if (amount <= 0n) throw new Error('amount must be > 0');
+  // recipientPubHex defaults to wallet.pub (backwards compatible). When set,
+  // the carved UTXO is delivered to the named pubkey — used by the cBTC.tac
+  // staging flow to land the bond UTXO at a staking subkey's P2WPKH so the
+  // subsequent deposit reveal tx never carries wallet.pub on its inputs.
+  let deliverPubHex;
+  if (recipientPubHex == null) {
+    deliverPubHex = bytesToHex(wallet.pub);
+  } else {
+    if (!/^[0-9a-f]{66}$/i.test(recipientPubHex)) {
+      throw new Error('recipientPubHex must be 33-byte compressed pubkey (66 hex chars)');
+    }
+    deliverPubHex = recipientPubHex.toLowerCase();
+  }
   const holdings = await scanHoldings();
   const h = holdings.get(assetIdHex);
   if (!h) throw new Error(`no holdings for asset ${assetIdHex}`);
@@ -20360,11 +20693,17 @@ async function carveExactAmount({ assetIdHex, amount }) {
   if (!available.length) throw new Error('no unlocked UTXOs available for this asset');
   const availTotal = available.reduce((s, u) => s + u.amount, 0n);
   if (amount > availTotal) throw new Error(`amount exceeds free balance (${availTotal} available, ${amount} requested)`);
+  // Fast-path the exact-match only when delivering to the wallet itself. For
+  // a non-default recipient we MUST emit a CXfer to actually move the UTXO
+  // to the recipient's address — returning the unmoved UTXO would leave
+  // funds at the wrong key.
   const exact = available.find(u => u.amount === amount);
-  if (exact) return { ...exact, splitTxid: null };
+  if (exact && recipientPubHex == null) return { ...exact, splitTxid: null };
   const availLargest = available[0].amount;
   let coverUtxos;
-  if (amount <= availLargest) {
+  if (exact) {
+    coverUtxos = [exact];
+  } else if (amount <= availLargest) {
     const single = [...available].reverse().find(u => u.amount >= amount);
     if (!single) throw new Error('no UTXO large enough (should not happen — guarded above)');
     coverUtxos = [single];
@@ -20386,7 +20725,7 @@ async function carveExactAmount({ assetIdHex, amount }) {
   if (!(await ensureSatsFunded(need, 'Prepare exact amount'))) throw new Error('cancelled');
   const r = await buildAndBroadcastCXferMulti({
     assetIdHex,
-    recipients: [{ pubHex: bytesToHex(wallet.pub), amount }],
+    recipients: [{ pubHex: deliverPubHex, amount }],
     forceUtxos: coverUtxos,
   });
   const r0 = r.recipients[0];
@@ -66567,6 +66906,16 @@ export {
   getStakingSubkeyByIndex, findStakingSubkeyByPubkey,
   enumerateStakingSubkeysForRecovery,
   saveStakingSubkeyRecord, getStakingSubkeyRecords, forgetStakingSubkeyRecord,
+  // Staged bonds — pre-staged TAC at subkey addresses for the cBTC.tac
+  // privacy flow. Stage now, deposit later (ideally with delay + batching).
+  stageBondToSubkey, loadStagedBondForConsumption, unstageBond,
+  saveStagedBondRecord, getStagedBondRecords, getStagedBondById,
+  forgetStagedBondRecord, stagedBondAgeMs,
+  // Key-injectable P2WPKH signer — used by the deposit flow to sign the
+  // bond input under the staking subkey rather than wallet.priv, and by
+  // the CXferMulti `assetSigner` override (the underlying mechanism for
+  // the unstage flow's subkey-owned spend).
+  signP2wpkhInputWithKey,
   // Holdings-tab integration: aggregate live slot records into per-tier
   // summary rows. Used by renderHoldings to surface cBTC.zk balances
   // alongside standard tacit-asset balances.

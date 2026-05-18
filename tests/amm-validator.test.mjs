@@ -21,7 +21,7 @@ import { N_BJJ, pedersenBJJ, packPoint } from './amm-bjj.mjs';
 import { lpAddKernelSign, lpRemoveKernelSign } from './amm-kernel.mjs';
 import { buildIntentMsg, signIntent, deriveIntentId, computeEnvelopeHash } from './amm-intent.mjs';
 import { solveClearing, lpInitShares } from './amm-clearing.mjs';
-import { validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE, computeQualifyingSetHash, deriveVkCid, verifyVkCidBinding, buildPublicSignalsSwapBatch, derivePoolIdFr, PUBLIC_SIGNALS_SWAP_BATCH_LENGTH } from './amm-validator.mjs';
+import { validateLpAdd, validateLpRemove, validateSwapBatch, SKIP_GROTH16_VERIFY_UNSAFE, SKIP_MIN_LIQ_VERIFY_UNSAFE, computeQualifyingSetHash, deriveVkCid, verifyVkCidBinding, buildPublicSignalsSwapBatch, buildPublicSignalsLpAdd, buildPublicSignalsLpRemove, derivePoolIdFr, PUBLIC_SIGNALS_SWAP_BATCH_LENGTH, PUBLIC_SIGNALS_LP_ADD_LENGTH, PUBLIC_SIGNALS_LP_REMOVE_LENGTH } from './amm-validator.mjs';
 import { deriveMinLiqCommitment, deriveMinLiqAmountCt, deriveMinLiqNumsRecipient } from './amm-min-liq.mjs';
 
 let pass = 0, fail = 0;
@@ -1627,6 +1627,66 @@ console.log('\nGroth16 publicSignals canonical serialization');
         && fr.length > 0
         && BigInt(fr) >= 0n
         && BigInt(fr) < BigInt(P_FR_STR);
+  });
+}
+
+console.log('\nGroth16 publicSignals canonical serialization — LP_ADD + LP_REMOVE');
+{
+  // The LP circuits are scalar-only (no signal arrays). circom emits public
+  // inputs in `public [...]` declaration order; the validator helpers
+  // (added 2026-05-18) pin that order so dapp + worker + tests share one
+  // canonical builder.
+  const POOL_ID = fill(32, 0x42);
+  const pool = { pool_id: POOL_ID, reserve_A: 1_000_000n, reserve_B: 2_000_000n };
+
+  test('PUBLIC_SIGNALS_LP_ADD_LENGTH pinned at 5', () => PUBLIC_SIGNALS_LP_ADD_LENGTH === 5);
+  test('PUBLIC_SIGNALS_LP_REMOVE_LENGTH pinned at 8', () => PUBLIC_SIGNALS_LP_REMOVE_LENGTH === 8);
+
+  test('buildPublicSignalsLpAdd layout matches spec', () => {
+    const env = { variant: 0, shareAmount: 1_414_213n, cShareBjjU: 11n, cShareBjjV: 22n };
+    const sigs = buildPublicSignalsLpAdd(env, pool);
+    return sigs.length === PUBLIC_SIGNALS_LP_ADD_LENGTH
+        && sigs[0] === derivePoolIdFr(POOL_ID)
+        && sigs[1] === '0'              // variant
+        && sigs[2] === '1414213'        // share_amount
+        && sigs[3] === '11'             // C_share_BJJ_u
+        && sigs[4] === '22';            // C_share_BJJ_v
+  });
+
+  test('buildPublicSignalsLpAdd rejects missing BJJ coords', () => {
+    try { buildPublicSignalsLpAdd({ variant: 0, shareAmount: 1n }, pool); return false; }
+    catch (e) { return /cShareBjjU and cShareBjjV/.test(e.message); }
+  });
+
+  test('buildPublicSignalsLpAdd variant=1 (POOL_INIT) layout', () => {
+    const env = { variant: 1, shareAmount: 999n, cShareBjjU: 33n, cShareBjjV: 44n };
+    const sigs = buildPublicSignalsLpAdd(env, pool);
+    return sigs[1] === '1' && sigs[2] === '999';
+  });
+
+  test('buildPublicSignalsLpRemove layout matches spec', () => {
+    const env = {
+      shareAmount: 1000n, deltaA: 500n, deltaB: 1000n,
+      recvABjjU: 11n, recvABjjV: 22n, recvBBjjU: 33n, recvBBjjV: 44n,
+    };
+    const sigs = buildPublicSignalsLpRemove(env, pool);
+    return sigs.length === PUBLIC_SIGNALS_LP_REMOVE_LENGTH
+        && sigs[0] === derivePoolIdFr(POOL_ID)
+        && sigs[1] === '1000'           // share_amount
+        && sigs[2] === '500'            // delta_A
+        && sigs[3] === '1000'           // delta_B
+        && sigs[4] === '11'             // recv_A_BJJ_u
+        && sigs[5] === '22'             // recv_A_BJJ_v
+        && sigs[6] === '33'             // recv_B_BJJ_u
+        && sigs[7] === '44';            // recv_B_BJJ_v
+  });
+
+  test('buildPublicSignalsLpRemove rejects missing BJJ coords', () => {
+    try {
+      buildPublicSignalsLpRemove(
+        { shareAmount: 1n, deltaA: 1n, deltaB: 1n, recvABjjU: 1n }, pool);
+      return false;
+    } catch (e) { return /recvABjjU\/V and recvBBjjU\/V/.test(e.message); }
   });
 }
 

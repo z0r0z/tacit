@@ -1369,19 +1369,26 @@ async function slotLeafLookupPut(env, network, leafHashHex, value) {
 
 // ============== AMM POOL REGISTRY (SPEC AMM.md §"Pool state") ==============
 //
-// Pool ID is derived from the canonical asset pair PLUS fee tier and
-// capability flags (V3/V4-style fee-tier parity per AMM.md):
+// Pool ID is derived from the canonical asset pair PLUS fee tier,
+// capability flags, and (size-discriminated) the protocol-fee config —
+// V3/V4-style fee-tier parity per AMM.md, extended to make the no-skim
+// canonical pool un-squattable:
 //   pool_id = SHA256(
 //     "tacit-amm-pool-v1"
 //     || asset_A_lex_min(32)
 //     || asset_B_lex_max(32)
 //     || fee_bps_LE(2)
 //     || capability_flags(1)
+//     [ || protocol_fee_address(33) || protocol_fee_bps_LE(2) ]  -- iff fee enabled
 //   )
 //
 // This means two POOL_INITs over the same (A, B) but with different fee
-// tiers OR capability_flags are DIFFERENT canonical pools, supporting
-// Uniswap-V3-style fee tiers. Callers MUST supply fee_bps + capabilityFlags
+// tiers, capability_flags, or protocol-fee configuration are DIFFERENT
+// canonical pools. The protocol-fee fields are appended iff
+// protocol_fee_bps != 0 (joint-non-zero with protocol_fee_address, per
+// the decoder rule); fee-disabled (default) uses the 84-byte preimage
+// and is the canonical no-skim pool that LPs and swappers route to.
+// Callers MUST supply fee_bps + capabilityFlags + protocol-fee fields
 // from either the POOL_INIT envelope (variant=1) or the existing pool
 // record (variant=0 / SWAP / REMOVE).
 //
@@ -1425,8 +1432,14 @@ function ammCanonicalAssetPair(idA, idB) {
   throw new Error('canonical pair: identical asset_ids');
 }
 
-// Per AMM.md §"Pool state": pool_id includes fee_bps + capability_flags.
-function ammDerivePoolId(idA, idB, feeBps, capabilityFlags) {
+// Per AMM.md §"Pool state": pool_id discriminators are fee_bps,
+// capability_flags, and (size-discriminated) protocol-fee config.
+const _AMM_ZERO_PROTOCOL_FEE_ADDRESS = new Uint8Array(33);
+function _ammIsZeroProtocolFeeAddress(b) {
+  for (let i = 0; i < b.length; i++) if (b[i] !== 0) return false;
+  return true;
+}
+function ammDerivePoolId(idA, idB, feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps) {
   const [low, high] = ammCanonicalAssetPair(idA, idB);
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > AMM_FEE_BPS_MAX) {
     throw new Error(`fee_bps out of range [0, ${AMM_FEE_BPS_MAX}]: ${feeBps}`);
@@ -1437,7 +1450,28 @@ function ammDerivePoolId(idA, idB, feeBps, capabilityFlags) {
   const feeBpsLE = new Uint8Array(2);
   new DataView(feeBpsLE.buffer).setUint16(0, feeBps, true);
   const flagsByte = new Uint8Array([capabilityFlags]);
-  return sha256(concatBytes(_AMM_POOL_ID_DOMAIN, low, high, feeBpsLE, flagsByte));
+
+  const pfBps = protocolFeeBps == null ? 0 : protocolFeeBps;
+  if (!Number.isInteger(pfBps) || pfBps < 0 || pfBps > AMM_PROTOCOL_FEE_BPS_MAX) {
+    throw new Error(`protocol_fee_bps out of range [0, ${AMM_PROTOCOL_FEE_BPS_MAX}]: ${pfBps}`);
+  }
+  let pfAddr;
+  if (protocolFeeAddress == null) {
+    pfAddr = _AMM_ZERO_PROTOCOL_FEE_ADDRESS;
+  } else {
+    pfAddr = protocolFeeAddress instanceof Uint8Array ? protocolFeeAddress : hexToBytes(protocolFeeAddress);
+    if (pfAddr.length !== 33) throw new Error(`protocol_fee_address must be 33 bytes: got ${pfAddr.length}`);
+  }
+  const pfAddrZero = _ammIsZeroProtocolFeeAddress(pfAddr);
+  if ((pfBps === 0) !== pfAddrZero) {
+    throw new Error('protocol_fee_address and protocol_fee_bps must be joint-zero or joint-non-zero');
+  }
+  if (pfBps === 0) {
+    return sha256(concatBytes(_AMM_POOL_ID_DOMAIN, low, high, feeBpsLE, flagsByte));
+  }
+  const pfBpsLE = new Uint8Array(2);
+  new DataView(pfBpsLE.buffer).setUint16(0, pfBps, true);
+  return sha256(concatBytes(_AMM_POOL_ID_DOMAIN, low, high, feeBpsLE, flagsByte, pfAddr, pfBpsLE));
 }
 
 // LP-share asset_id derived from confirmed POOL_INIT.
@@ -10486,7 +10520,7 @@ async function commitmentForUtxo(env, txidHex, vout, network) {
     let poolIdBytes;
     let lpAssetIdBytes;
     if (lp.variant === 1) {
-      try { poolIdBytes = ammDerivePoolId(aBytes, bBytes, lp.fee_bps, lp.pool_capability_flags ?? 0); }
+      try { poolIdBytes = ammDerivePoolId(aBytes, bBytes, lp.fee_bps, lp.pool_capability_flags ?? 0, lp.protocol_fee_address, lp.protocol_fee_bps); }
       catch (e) { throw new Error(`T_LP_ADD pool_id derive: ${e.message}`); }
       lpAssetIdBytes = ammDeriveLpAssetId(poolIdBytes);
     } else {
@@ -15591,12 +15625,16 @@ async function scanForEtches(env, network) {
           // encoder guard at dapp/amm-envelope.js's encodeLpAdd.
           if ((lp.pool_capability_flags ?? 0) !== 0) continue;
 
-          // Pool ID per SPEC: includes fee_bps + capability_flags so
-          // (A, B) at different fee tiers are different pools.
+          // Pool ID per SPEC: includes fee_bps + capability_flags +
+          // (size-discriminated) protocol-fee config so (A, B) at different
+          // fee tiers OR with different protocol-fee configs are different
+          // pools — making protocol-fee squatting impossible on the
+          // canonical no-skim variant.
           let poolIdBytes;
           try {
             poolIdBytes = ammDerivePoolId(
               aBytes, bBytes, lp.fee_bps, lp.pool_capability_flags ?? 0,
+              lp.protocol_fee_address, lp.protocol_fee_bps,
             );
           } catch { continue; }
           const poolIdHex = bytesToHex(poolIdBytes);
@@ -15787,7 +15825,7 @@ async function scanForEtches(env, network) {
             if (cPool.validation !== 'xcurve-verified'
                 && cPool.validation !== 'verified') continue;
             let cPoolIdBytes;
-            try { cPoolIdBytes = ammDerivePoolId(a0, b0, cPool.fee_bps, cPool.capability_flags ?? 0); }
+            try { cPoolIdBytes = ammDerivePoolId(a0, b0, cPool.fee_bps, cPool.capability_flags ?? 0, cPool.protocol_fee_address, cPool.protocol_fee_bps); }
             catch { continue; }
             const cPoolIdHex = bytesToHex(cPoolIdBytes);
             if (cPoolIdHex !== candidate) continue;  // index corrupted; skip
@@ -15906,7 +15944,7 @@ async function scanForEtches(env, network) {
           if (cPool.validation !== 'xcurve-verified'
               && cPool.validation !== 'verified') continue;
           let cPoolIdBytes;
-          try { cPoolIdBytes = ammDerivePoolId(aR, bR, cPool.fee_bps, cPool.capability_flags ?? 0); }
+          try { cPoolIdBytes = ammDerivePoolId(aR, bR, cPool.fee_bps, cPool.capability_flags ?? 0, cPool.protocol_fee_address, cPool.protocol_fee_bps); }
           catch { continue; }
           const cPoolIdHex = bytesToHex(cPoolIdBytes);
           if (cPoolIdHex !== candidate) continue;
@@ -16037,7 +16075,7 @@ async function scanForEtches(env, network) {
           if (!cPool) continue;
           if (cPool.fee_bps !== probeFeeBps) continue;
           let cPoolIdBytes;
-          try { cPoolIdBytes = ammDerivePoolId(canonAB[0], canonAB[1], cPool.fee_bps, cPool.capability_flags ?? 0); }
+          try { cPoolIdBytes = ammDerivePoolId(canonAB[0], canonAB[1], cPool.fee_bps, cPool.capability_flags ?? 0, cPool.protocol_fee_address, cPool.protocol_fee_bps); }
           catch { continue; }
           if (bytesToHex(cPoolIdBytes) !== cand) continue;
           sbPool = cPool;

@@ -490,6 +490,75 @@ export function buildPublicSignalsSwapBatch(env, pool) {
   return sigs;
 }
 
+// =========================================================================
+// LP_ADD + LP_REMOVE publicSignals helpers
+// =========================================================================
+//
+// Scalar-only — circom emits public inputs in `public [...]` declaration
+// order with no array flattening (no signal arrays in either circuit). The
+// shapes are pinned by the circuit's `component main { public [...] }`
+// list and the dev `amm_lp_add_vkey.json` (`nPublic = 5`) /
+// `amm_lp_remove_vkey.json` (`nPublic = 8`).
+//
+// The dapp's `verifyAmmProof` builds the same arrays inline at
+// `dapp/tacit.js:11811-11857`. These helpers exist so any future cross-
+// impl indexer can call one canonical builder rather than duplicate the
+// per-field push pattern.
+
+export const PUBLIC_SIGNALS_LP_ADD_LENGTH    = 5;
+export const PUBLIC_SIGNALS_LP_REMOVE_LENGTH = 8;
+
+// amm_lp_add public-signals layout (5 fields):
+//   [0] pool_id_fr        — SHA256(pool.pool_id) mod p_Fr
+//   [1] variant           — 0 = standard add, 1 = POOL_INIT
+//   [2] share_amount      — u64
+//   [3] C_share_BJJ_u     — Fr coordinate
+//   [4] C_share_BJJ_v     — Fr coordinate
+export function buildPublicSignalsLpAdd(env, pool) {
+  if (!pool || !(pool.pool_id instanceof Uint8Array) || pool.pool_id.length !== 32) {
+    throw new Error('buildPublicSignalsLpAdd: pool.pool_id must be a 32-byte Uint8Array');
+  }
+  if (env.cShareBjjU === undefined || env.cShareBjjV === undefined) {
+    throw new Error('buildPublicSignalsLpAdd: env must provide cShareBjjU and cShareBjjV (unpack via amm-bjj.unpackPoint first)');
+  }
+  return [
+    derivePoolIdFr(pool.pool_id),
+    _fr(BigInt(env.variant | 0)),
+    _fr(env.shareAmount),
+    _fr(env.cShareBjjU),
+    _fr(env.cShareBjjV),
+  ];
+}
+
+// amm_lp_remove public-signals layout (8 fields):
+//   [0] pool_id_fr       — SHA256(pool.pool_id) mod p_Fr
+//   [1] share_amount     — u64
+//   [2] delta_A          — u64
+//   [3] delta_B          — u64
+//   [4] recv_A_BJJ_u     — Fr coordinate
+//   [5] recv_A_BJJ_v     — Fr coordinate
+//   [6] recv_B_BJJ_u     — Fr coordinate
+//   [7] recv_B_BJJ_v     — Fr coordinate
+export function buildPublicSignalsLpRemove(env, pool) {
+  if (!pool || !(pool.pool_id instanceof Uint8Array) || pool.pool_id.length !== 32) {
+    throw new Error('buildPublicSignalsLpRemove: pool.pool_id must be a 32-byte Uint8Array');
+  }
+  if (env.recvABjjU === undefined || env.recvABjjV === undefined
+      || env.recvBBjjU === undefined || env.recvBBjjV === undefined) {
+    throw new Error('buildPublicSignalsLpRemove: env must provide recvABjjU/V and recvBBjjU/V (unpack via amm-bjj.unpackPoint first)');
+  }
+  return [
+    derivePoolIdFr(pool.pool_id),
+    _fr(env.shareAmount),
+    _fr(env.deltaA),
+    _fr(env.deltaB),
+    _fr(env.recvABjjU),
+    _fr(env.recvABjjV),
+    _fr(env.recvBBjjU),
+    _fr(env.recvBBjjV),
+  ];
+}
+
 // Minimum blocks between POOL_INIT confirmation and the first variant-0
 // LP_ADD. During this window only swaps are accepted, so arbitrageurs can
 // correct any misprice before naive LPs are exposed. The founder bears
@@ -582,8 +651,8 @@ export function validateLpAdd({
   //   variant=1 (POOL_INIT): pool doesn't exist yet — read from envelope.
   //   variant=0 (LP join):   pool record is authoritative — read from state.
   const poolId = env.variant === 1
-    ? derivePoolId(env.assetA, env.assetB, env.feeBps, env.poolCapabilityFlags)
-    : (pool ? derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0) : null);
+    ? derivePoolId(env.assetA, env.assetB, env.feeBps, env.poolCapabilityFlags, env.protocolFeeAddress, env.protocolFeeBps)
+    : (pool ? derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0, pool.protocol_fee_address, pool.protocol_fee_bps) : null);
 
   // POOL_INIT path (variant 1): create pool. Otherwise require existing pool.
   if (env.variant === 1) {
@@ -827,7 +896,7 @@ export function validateLpRemove({
   if (!pool) return { valid: false, reason: 'pool not registered' };
   const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
   if (orderErr) return { valid: false, reason: orderErr };
-  const poolId = derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0);
+  const poolId = derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0, pool.protocol_fee_address, pool.protocol_fee_bps);
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
 
   // Crystallize protocol fee before applying the remove. Same V2-lazy
@@ -997,7 +1066,7 @@ export function validateSwapBatch({
   // pool_id consistency
   const orderErr = checkAssetPairCanonical(env.assetA, env.assetB);
   if (orderErr) return { valid: false, reason: orderErr };
-  const poolId = derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0);
+  const poolId = derivePoolId(env.assetA, env.assetB, pool.fee_bps, pool.capability_flags ?? 0, pool.protocol_fee_address, pool.protocol_fee_bps);
   if (!bytesEqual(pool.pool_id, poolId)) return { valid: false, reason: 'pool_id mismatch' };
   if (env.feeBpsAtSettle !== pool.fee_bps) {
     return { valid: false, reason: 'fee_bps_at_settle != pool.fee_bps' };

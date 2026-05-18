@@ -7,11 +7,17 @@
 //   (3) AMM POOL_INIT (LP)   — asset_id = SHA256("tacit-amm-lp-v1" || pool_id)
 //                              where pool_id = SHA256(
 //                                "tacit-amm-pool-v1"
-//                                || asset_A           // 32 B, lex-smaller
-//                                || asset_B           // 32 B, lex-larger
-//                                || fee_bps_LE        // 2 B,  u16  (0..1000)
-//                                || capability_flags  // 1 B,  u8
+//                                || asset_A                 // 32 B, lex-smaller
+//                                || asset_B                 // 32 B, lex-larger
+//                                || fee_bps_LE              // 2 B,  u16  (0..1000)
+//                                || capability_flags        // 1 B,  u8
+//                                || protocol_fee_address    // 33 B, appended iff fee enabled
+//                                || protocol_fee_bps_LE     // 2 B,  appended iff fee enabled
 //                              )
+// Fee-disabled (default) ≡ protocol_fee_bps == 0 ≡ address == 33×0x00 — preimage is 84 B.
+// Fee-enabled adds 35 B → 119 B preimage. Size-domain separation makes the no-skim
+// canonical pool un-squattable: a frontrunner pinning a fee recipient hashes to a
+// different pool_id than the canonical no-skim variant LPs and swappers route to.
 
 import { sha256, concatBytes, hexToBytes, bytesToHex } from './vendor/tacit-deps.min.js';
 
@@ -20,6 +26,9 @@ const DOMAIN_LP_ASSET = new TextEncoder().encode('tacit-amm-lp-v1');
 
 const FEE_BPS_MAX = 1000;
 const CAPABILITY_FLAGS_MAX = 255;
+const PROTOCOL_FEE_ADDRESS_LEN = 33;
+const PROTOCOL_FEE_BPS_MAX = 1000;
+const ZERO_PROTOCOL_FEE_ADDRESS = new Uint8Array(PROTOCOL_FEE_ADDRESS_LEN);
 
 function reverseBytes(b) { const r = new Uint8Array(b); r.reverse(); return r; }
 
@@ -41,7 +50,12 @@ export function canonicalAssetPair(idA, idB) {
   throw new Error('canonicalAssetPair: identical asset_ids');
 }
 
-export function derivePoolId(idA, idB, feeBps, capabilityFlags) {
+function isZeroProtocolFeeAddress(b) {
+  for (let i = 0; i < b.length; i++) if (b[i] !== 0) return false;
+  return true;
+}
+
+export function derivePoolId(idA, idB, feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps) {
   const [low, high] = canonicalAssetPair(idA, idB);
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > FEE_BPS_MAX) {
     throw new Error(`fee_bps must be integer in [0, ${FEE_BPS_MAX}]: got ${feeBps}`);
@@ -52,7 +66,30 @@ export function derivePoolId(idA, idB, feeBps, capabilityFlags) {
   const feeBpsLE = new Uint8Array(2);
   new DataView(feeBpsLE.buffer).setUint16(0, feeBps, true);
   const flagsByte = new Uint8Array([capabilityFlags]);
-  return sha256(concatBytes(DOMAIN_POOL_ID, low, high, feeBpsLE, flagsByte));
+
+  const pfBps = protocolFeeBps == null ? 0 : protocolFeeBps;
+  if (!Number.isInteger(pfBps) || pfBps < 0 || pfBps > PROTOCOL_FEE_BPS_MAX) {
+    throw new Error(`protocol_fee_bps must be integer in [0, ${PROTOCOL_FEE_BPS_MAX}]: got ${pfBps}`);
+  }
+  let pfAddr;
+  if (protocolFeeAddress == null) {
+    pfAddr = ZERO_PROTOCOL_FEE_ADDRESS;
+  } else {
+    pfAddr = protocolFeeAddress instanceof Uint8Array ? protocolFeeAddress : hexToBytes(protocolFeeAddress);
+    if (pfAddr.length !== PROTOCOL_FEE_ADDRESS_LEN) {
+      throw new Error(`protocol_fee_address must be ${PROTOCOL_FEE_ADDRESS_LEN} bytes: got ${pfAddr.length}`);
+    }
+  }
+  const pfAddrZero = isZeroProtocolFeeAddress(pfAddr);
+  if ((pfBps === 0) !== pfAddrZero) {
+    throw new Error('protocol_fee_address and protocol_fee_bps must be joint-zero or joint-non-zero');
+  }
+  if (pfBps === 0) {
+    return sha256(concatBytes(DOMAIN_POOL_ID, low, high, feeBpsLE, flagsByte));
+  }
+  const pfBpsLE = new Uint8Array(2);
+  new DataView(pfBpsLE.buffer).setUint16(0, pfBps, true);
+  return sha256(concatBytes(DOMAIN_POOL_ID, low, high, feeBpsLE, flagsByte, pfAddr, pfBpsLE));
 }
 
 export function deriveLpAssetId(poolId) {
