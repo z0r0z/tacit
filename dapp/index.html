@@ -3859,10 +3859,20 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
    the welcome modal because they can stack briefly during the new-wallet flow. */
 .pass-modal {
   position: fixed; inset: 0; z-index: 1010;
-  display: grid; place-items: center;
+  /* Use flex column with overflow-y so a card taller than the viewport
+     (long ceremony progress pane, multi-paragraph result) scrolls
+     inside the modal backdrop rather than overflowing it. place-items
+     :center previously prevented scroll on tall cards because the
+     centered child can't scroll past viewport edges. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
   background: rgba(10, 10, 10, 0.55);
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   padding: 24px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   /* Subtle backdrop fade-in so the modal feels intentional, not jarring.
      Fires each time display flips from none → grid (animation re-triggers
      when the element re-enters the rendering tree). The card has its
@@ -3875,6 +3885,42 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
   padding: 24px 24px 20px;
   animation: pass-card-in 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
   transform-origin: center center;
+  /* Auto top-margin centers the card vertically when it fits the
+     viewport; sticks to top with safe-area padding when content
+     pushes past viewport height (so the user can scroll down to see
+     buttons). margin-top:auto + margin-bottom:auto is the trick. */
+  margin: auto;
+}
+/* Mobile: tighter modal chrome so the card uses every available pixel,
+   and use dvh (dynamic viewport height — excludes browser address bar
+   on mobile) for the implicit max-height check so the card doesn't
+   leave the action buttons hidden behind iOS bottom chrome. */
+@media (max-width: 600px) {
+  .pass-modal { padding: 12px; }
+  .pass-card { padding: 18px 16px 14px; }
+  /* Sticky action row on tall cards — keeps Close + Contribute reachable
+     without scrolling all the way down on phones. */
+  .pass-actions {
+    position: sticky;
+    bottom: -14px;
+    background: var(--bg);
+    margin-bottom: -14px;
+    padding: 10px 0 14px;
+    border-top: 1px solid var(--ink-faint);
+  }
+  /* Title and reason on the AMM ceremony drawer: tighter on mobile so
+     the form content stays visible above the fold without scrolling.
+     The drawer's pass-title is the editorial serif italic at 28px on
+     desktop; 22px reads cleaner on phones. */
+  .pass-title { font-size: 22px; }
+  /* Ceremony progress pane: max-height: 200px on desktop swallows half
+     a phone's viewport. 30dvh keeps it proportional regardless of
+     device height; user can scroll within the pane for older lines. */
+  #amm-cer-progress { max-height: 30dvh; font-size: 10px; padding: 6px; }
+  #amm-cer-result { font-size: 11px; padding: 6px; }
+  /* AMM ceremony chains list: stack tight on mobile so the box doesn't
+     stretch the card height before the user even clicks Contribute. */
+  #amm-cer-chains { font-size: 10px; }
 }
 @keyframes pass-modal-fade {
   from { opacity: 0; }
