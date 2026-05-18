@@ -18348,9 +18348,13 @@ async function _routeFetch(req, env, ctx) {
       try {
         const prefix = network === 'signet' ? 'ammpool:' : `ammpool:${network}:`;
         const list = await env.REGISTRY_KV.list({ prefix, limit, cursor });
+        // Parallelize the per-pool KV.get. The prior sequential-await
+        // loop forced N round-trip latencies in serial; Promise.all
+        // collapses them into one parallel fan-out (KV.get within a
+        // worker invocation has no concurrency budget concern).
+        const fetched = await Promise.all(list.keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
         const pools = [];
-        for (const k of list.keys) {
-          const v = await env.REGISTRY_KV.get(k.name, 'json');
+        for (const v of fetched) {
           if (!v) continue;
           // Mirror the single-pool endpoint: include post-crystallization
           // state so LPs computing their envelope against this listing hit
