@@ -3302,8 +3302,8 @@ Reference impl: `dapp/bulletproofs-plus.js` (`bppRangeProve`, `bppRangeVerify`),
 **Wire format** (full byte layout + field semantics: `spec/amendments/SPEC-SWAP-ROUTE-AMENDMENT.md` §"Wire format"):
 
 ```
-opcode(1)                  = 0x33
 envelope_version(1)        = 0x01
+opcode(1)                  = 0x33
 n_hops(1)                  # u8, 2..N_HOPS_MAX (= 4)
 trader_input_asset_id(32)
 trader_output_asset_id(32)
