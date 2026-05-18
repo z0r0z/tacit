@@ -5660,15 +5660,26 @@ async function handleCeremonyContribute(req, env, circuitHash, cors, ctx) {
     // expires; no chain corruption).
     const gatewayUrl = `https://gateway.pinata.cloud/ipfs/${zkeyCidProvided}`;
     let magicOk = false;
-    try {
-      const headResp = await fetch(gatewayUrl, { method: 'GET', headers: { 'Range': 'bytes=0-255' } });
-      if (!headResp.ok && headResp.status !== 206) {
-        return jsonResponse({ error: `couldn\'t fetch zkey_cid from Pinata gateway: HTTP ${headResp.status}` }, 502, cors);
+    // Just-pinned CIDs can briefly 404 / 502 on the public gateway
+    // while the edge PoPs sync. Retry up to 4 times with 500ms backoff
+    // so a fresh upload doesn't get bounced for replication lag.
+    let lastErr = '';
+    for (let attempt = 0; attempt < 4 && !magicOk; attempt++) {
+      try {
+        const headResp = await fetch(gatewayUrl, { method: 'GET', headers: { 'Range': 'bytes=0-255' } });
+        if (!headResp.ok && headResp.status !== 206) {
+          lastErr = `HTTP ${headResp.status}`;
+          if (attempt < 3) { await new Promise(r => setTimeout(r, 500 * (attempt + 1))); continue; }
+          return jsonResponse({ error: `couldn\'t fetch zkey_cid from Pinata gateway after retries: ${lastErr}` }, 502, cors);
+        }
+        const firstChunk = new Uint8Array(await headResp.arrayBuffer());
+        magicOk = _hasCeremonyMagic(firstChunk, 'zkey');
+        if (magicOk) break;
+      } catch (e) {
+        lastErr = e?.message || String(e);
+        if (attempt < 3) { await new Promise(r => setTimeout(r, 500 * (attempt + 1))); continue; }
+        return jsonResponse({ error: 'couldn\'t fetch zkey_cid for magic-byte verification: ' + lastErr }, 502, cors);
       }
-      const firstChunk = new Uint8Array(await headResp.arrayBuffer());
-      magicOk = _hasCeremonyMagic(firstChunk, 'zkey');
-    } catch (e) {
-      return jsonResponse({ error: 'couldn\'t fetch zkey_cid for magic-byte verification: ' + (e?.message || e) }, 502, cors);
     }
     if (!magicOk) {
       return jsonResponse({ error: 'zkey_cid bytes don\'t start with snarkjs "zkey" magic — either wrong CID or corrupted upload' }, 400, cors);
@@ -14532,6 +14543,11 @@ async function _handleAtomicIntentFulfilVar(assetIdHex, intentIdHex, intent, cla
   if (!/^[0-9a-f]{66}$/.test(controlBlockHex)) return jsonResponse({ error: 'control_block_hex must be 33-byte hex (parity_byte + 32-byte internal key)' }, 400, cors);
   if (!/^5120[0-9a-f]{64}$/.test(p2trSpkHex)) return jsonResponse({ error: 'p2tr_spk_hex must be a P2TR scriptPubKey: 34 bytes (51 20 + 32-byte tweaked output key)' }, 400, cors);
 
+  const requestedAmountStr = String(claim.requested_amount ?? '');
+  if (!/^\d+$/.test(requestedAmountStr)) {
+    return jsonResponse({ error: 'claim is missing requested_amount; cannot fulfil under v2 path' }, 400, cors);
+  }
+
   // Structural binding of the variable-amount envelope. Mirrors the legacy
   // handleAtomicIntentPost validation but against T_AXFER_VAR semantics
   // (opcode 0x37, asset_input_count == 1, N == 2). Without this a malicious
@@ -14554,11 +14570,6 @@ async function _handleAtomicIntentFulfilVar(assetIdHex, intentIdHex, intent, cla
   if (_ax.n !== 2) return jsonResponse({ error: `T_AXFER_VAR requires exactly N=2 outputs (recipient + maker change), got ${_ax.n}` }, 400, cors);
   if (_ax.asset_id !== assetIdHex) {
     return jsonResponse({ error: 'envelope.asset_id does not match URL asset_id' }, 400, cors);
-  }
-
-  const requestedAmountStr = String(claim.requested_amount ?? '');
-  if (!/^\d+$/.test(requestedAmountStr)) {
-    return jsonResponse({ error: 'claim is missing requested_amount; cannot fulfil under v2 path' }, 400, cors);
   }
   // Maker fulfilment sig under v2 domain — binds requested_amount explicitly.
   const partialRevealJson = JSON.stringify(partialReveal);

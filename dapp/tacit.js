@@ -15221,6 +15221,86 @@ async function _scanHoldingsImpl() {
       }
     }
 
+    // §5.7.6.1 variable-amount atomic-intent on-chain recovery. Mirrors the
+    // T_AXFER OP_RETURN(40) branch above, against the T_AXFER_VAR/BPP 80-byte
+    // dual-payload at vout[3]. Two sides:
+    //   u.vout === 0 → wallet is the taker; decrypt taker half via ECDH
+    //                  against maker_pubkey (vin[1].witness[1]).
+    //   u.vout === 2 → wallet is the maker; decrypt maker half via own priv.
+    // intent_id derives from (maker_pubkey, asset_utxo_outpoint) where the
+    // asset_utxo is vin[1] of the reveal tx (T_AXFER_VAR spec: single asset
+    // input at vin[1]). Without this branch a wallet that loses localStorage
+    // after a partial fill is unable to credit T_AXFER_VAR holdings —
+    // silent loss of funds, same class as the AMM-UTXO gap fixed 2026-05-18.
+    if ((env.opcode === T_AXFER_VAR || env.opcode === T_AXFER_VAR_BPP) && tx.vin.length >= 2) {
+      const tacitIdx = axferVarOutputIndexForVout(u.vout);
+      if (tacitIdx !== null) {
+        const firstIn = tx.vin[1];
+        const senderPubHex = (firstIn.witness && firstIn.witness.length === 2 && firstIn.witness[1].length === 66)
+          ? firstIn.witness[1] : null;
+        let op80 = null;
+        for (const out of tx.vout) {
+          try {
+            const spk = hexToBytes(out.scriptpubkey || '');
+            const p80 = tryExtractAxferVarOnchainOpReturn(spk);
+            if (p80) { op80 = p80; break; }
+          } catch {}
+        }
+        if (senderPubHex && op80) {
+          try {
+            const senderPub = hexToBytes(senderPubHex);
+            // intent_id = sha256("tacit-axintent-id-v1" || maker_pub || asset_outpoint)[:16].
+            // Byte-parity with _axintentIdVar and worker's atomicIntentIdHexVar.
+            const voutLE = new Uint8Array(4);
+            new DataView(voutLE.buffer).setUint32(0, firstIn.vout >>> 0, true);
+            const intentIdBytes = sha256(concatBytes(
+              new TextEncoder().encode('tacit-axintent-id-v1'),
+              senderPub,
+              reverseBytes(hexToBytes(firstIn.txid)),
+              voutLE,
+            )).slice(0, 16);
+            const assetIdBytes = hexToBytes(assetIdHex);
+            const { takerHalf, makerHalf } = splitAxferVarOnchainPayload(op80);
+            let recovered = null;
+            let recoveryPath = null;
+            if (u.vout === 0) {
+              // Taker side: ECDH(taker_priv, maker_pub) at voutIdx=0.
+              const takerKs = deriveAxintentOnchainKeystreams(wallet.priv, senderPub, intentIdBytes, assetIdBytes, 0);
+              const { amount: candidate, blindingBytes } = decodeAxintentOnchainPayload(takerHalf, takerKs);
+              if (candidate >= 0n && candidate < (1n << 64n)) {
+                const rBig = bytes32ToBigint(blindingBytes) % SECP_N;
+                if (rBig > 0n && pedersenCommit(candidate, rBig).equals(bytesToPoint(onChainCommitment))) {
+                  recovered = { amount: candidate, blinding: rBig };
+                  recoveryPath = 'axintent-var-onchain-taker';
+                }
+              }
+            } else if (u.vout === 2) {
+              // Maker side: self-derived keystreams (no ECDH).
+              const makerKs = deriveAxintentMakerOnchainKeystreams(wallet.priv, intentIdBytes, assetIdBytes);
+              const { amount: candidate, blindingBytes } = decodeAxferVarMakerOnchainPayload(makerHalf, makerKs);
+              if (candidate >= 0n && candidate < (1n << 64n)) {
+                const rBig = bytes32ToBigint(blindingBytes) % SECP_N;
+                if (rBig > 0n && pedersenCommit(candidate, rBig).equals(bytesToPoint(onChainCommitment))) {
+                  recovered = { amount: candidate, blinding: rBig };
+                  recoveryPath = 'axintent-var-onchain-maker';
+                }
+              }
+            }
+            if (recovered) {
+              recordOpening(u.txid, u.vout, assetIdHex, recovered.amount, recovered.blinding);
+              h.balance += recovered.amount;
+              h.utxos.push({
+                utxo: u, amount: recovered.amount, blinding: recovered.blinding, commitment: onChainCommitment,
+                senderPubHex: recoveryPath === 'axintent-var-onchain-taker' ? senderPubHex : null,
+                blockTime: u.status?.block_time || null,
+              });
+              continue;
+            }
+          } catch {}
+        }
+      }
+    }
+
     // Worker-cache fallback: a preauth-take buyer publishes their
     // (amount, blinding) opening to the worker encrypted to themselves
     // at take time. If the local recordOpening was lost (localStorage
@@ -34851,10 +34931,12 @@ async function ceremonyContributeInBrowser(headZkeyBytes, contributorName, entro
 
 // Pin a large zkey straight to Pinata using a v3 presigned upload URL
 // the worker mints. The browser POSTs to a URL that's already signed,
-// so no Authorization header is sent cross-origin — that's the only
-// pattern Pinata exposes to browsers without CORS preflight failures
-// (the older /pinning/pinFileToIPFS endpoint won't accept Authorization
-// from arbitrary origins). Master PINATA_JWT stays server-side.
+// so no Authorization header is sent cross-origin — the only browser-
+// friendly path Pinata exposes (the older /pinning/pinFileToIPFS won't
+// accept Authorization cross-origin). Master PINATA_JWT stays server-
+// side. Files > 90 MB use Pinata's TUS resumable upload (init + chunked
+// PATCH); smaller files use simple multipart POST. The 90 MB cutoff
+// matches Pinata's SDK threshold — simple POST silently fails above it.
 async function _ammDirectPinToPinata(circuitHash, bytes, filename, onProgress) {
   const tokResp = await fetch(`${WORKER_BASE}/ceremony/${circuitHash}/upload-token`, {
     method: 'POST',
@@ -34869,9 +34951,17 @@ async function _ammDirectPinToPinata(circuitHash, bytes, filename, onProgress) {
   const tok = await tokResp.json();
   if (!tok?.upload_url) throw new Error('upload-token returned no upload_url');
   const uploadName = tok.filename || filename;
-  return await new Promise((resolve, reject) => {
+  const PINATA_TUS_THRESHOLD = 94_371_840;
+  if (bytes.length > PINATA_TUS_THRESHOLD) {
+    return await _ammPinataTusUpload(tok.upload_url, bytes, uploadName, onProgress);
+  }
+  return await _ammPinataSimpleUpload(tok.upload_url, bytes, uploadName, onProgress);
+}
+
+function _ammPinataSimpleUpload(uploadUrl, bytes, filename, onProgress) {
+  return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', tok.upload_url);
+    xhr.open('POST', uploadUrl);
     xhr.timeout = 600_000;
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable && typeof onProgress === 'function') {
@@ -34893,10 +34983,78 @@ async function _ammDirectPinToPinata(circuitHash, bytes, filename, onProgress) {
     xhr.ontimeout = () => reject(new Error('pinata upload timeout (10 min)'));
     xhr.onabort = () => reject(new Error('pinata upload aborted'));
     const fd = new FormData();
-    fd.append('file', new Blob([bytes], { type: 'application/octet-stream' }), uploadName);
+    fd.append('file', new Blob([bytes], { type: 'application/octet-stream' }), filename);
     fd.append('network', 'public');
+    fd.append('name', filename);
     xhr.send(fd);
   });
+}
+
+// TUS resumable upload — the only path Pinata accepts for files > 90 MB.
+// Step 1: POST to the signed URL with Upload-Length + Upload-Metadata
+//         headers and empty body. Pinata responds 201 with a Location
+//         header pointing at the chunk-receive URL.
+// Step 2: PATCH chunks of ≤50 MB to that URL with Upload-Offset header.
+//         Final PATCH returns the {data:{cid}} JSON body.
+async function _ammPinataTusUpload(uploadUrl, bytes, filename, onProgress) {
+  const _b64 = (s) => {
+    try { return btoa(s); }
+    catch { return btoa(unescape(encodeURIComponent(s))); }
+  };
+  const metadata = [
+    `filename ${_b64(filename)}`,
+    `filetype ${_b64('application/octet-stream')}`,
+    `network ${_b64('public')}`,
+    `name ${_b64(filename)}`,
+  ].join(',');
+  const initResp = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      'Upload-Length': String(bytes.length),
+      'Upload-Metadata': metadata,
+    },
+  });
+  if (!initResp.ok && initResp.status !== 201) {
+    const txt = await initResp.text().catch(() => '');
+    throw new Error(`pinata tus init HTTP ${initResp.status}: ${txt.slice(0, 200)}`);
+  }
+  const chunkUrl = initResp.headers.get('Location') || initResp.headers.get('location');
+  if (!chunkUrl) throw new Error('pinata tus init returned no Location header');
+  const CHUNK = 50 * 1024 * 1024;
+  let offset = 0;
+  let lastBody = '';
+  while (offset < bytes.length) {
+    const end = Math.min(offset + CHUNK, bytes.length);
+    const chunk = bytes.subarray(offset, end);
+    const baseOffset = offset;
+    const resp = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PATCH', chunkUrl);
+      xhr.setRequestHeader('Content-Type', 'application/offset+octet-stream');
+      xhr.setRequestHeader('Upload-Offset', String(baseOffset));
+      xhr.timeout = 600_000;
+      xhr.upload.onprogress = (ev) => {
+        if (ev.lengthComputable && typeof onProgress === 'function') {
+          try { onProgress(baseOffset + ev.loaded, bytes.length); } catch {}
+        }
+      };
+      xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
+      xhr.onerror = () => reject(new Error(`pinata tus PATCH network error (readyState=${xhr.readyState}, status=${xhr.status || 0})`));
+      xhr.ontimeout = () => reject(new Error('pinata tus PATCH timeout (10 min)'));
+      xhr.onabort = () => reject(new Error('pinata tus PATCH aborted'));
+      xhr.send(chunk);
+    });
+    if (resp.status < 200 || resp.status >= 300) {
+      throw new Error(`pinata tus PATCH HTTP ${resp.status}: ${resp.body.slice(0, 200)}`);
+    }
+    offset = end;
+    lastBody = resp.body || lastBody;
+  }
+  let parsed = null;
+  try { parsed = JSON.parse(lastBody); } catch {}
+  const cid = parsed?.data?.cid || parsed?.cid;
+  if (!cid) throw new Error('pinata tus completed but final response had no cid: ' + lastBody.slice(0, 200));
+  return String(cid);
 }
 
 // AMM ceremony contributor — slim wrapper around the existing
@@ -34987,16 +35145,27 @@ async function ceremonyContributeAmm({
   const PINATA_DIRECT_THRESHOLD = 16 * 1024 * 1024;
   let prePinnedCid = null;
   if (mixed.newZkey.length > PINATA_DIRECT_THRESHOLD) {
-    try {
-      _emit('upload-retry', { attempt: 0, wait: 0, reason: 'large zkey — uploading directly to Pinata' });
-      prePinnedCid = await _ammDirectPinToPinata(
-        circuitHash,
-        mixed.newZkey,
-        `circuit_${circuitHash.slice(0, 8)}_contribution.zkey`,
-        (done, total) => _emit('upload-bytes', { done, total }),
-      );
-    } catch (e) {
-      _emit('upload-retry', { attempt: 0, wait: 0, reason: 'direct-pinata path failed (' + (e?.message || e) + ') — falling back to worker relay' });
+    const DIRECT_MAX_ATTEMPTS = 3;
+    for (let dpAttempt = 1; dpAttempt <= DIRECT_MAX_ATTEMPTS && !prePinnedCid; dpAttempt++) {
+      try {
+        _emit('upload-retry', { attempt: 0, wait: 0, reason: dpAttempt === 1
+          ? 'large zkey — uploading directly to Pinata'
+          : `direct-pinata retry ${dpAttempt}/${DIRECT_MAX_ATTEMPTS}` });
+        prePinnedCid = await _ammDirectPinToPinata(
+          circuitHash,
+          mixed.newZkey,
+          `circuit_${circuitHash.slice(0, 8)}_contribution.zkey`,
+          (done, total) => _emit('upload-bytes', { done, total }),
+        );
+      } catch (e) {
+        if (dpAttempt < DIRECT_MAX_ATTEMPTS) {
+          const wait = 1500 * dpAttempt;
+          _emit('upload-retry', { attempt: dpAttempt, wait, reason: 'direct-pinata error (' + (e?.message || e) + ') — retrying' });
+          await new Promise(r => setTimeout(r, wait));
+        } else {
+          _emit('upload-retry', { attempt: 0, wait: 0, reason: 'direct-pinata exhausted (' + (e?.message || e) + ') — falling back to worker relay' });
+        }
+      }
     }
   }
   // Build form once — reused across upload retries. Blob/FormData are
