@@ -18289,12 +18289,12 @@ async function _routeFetch(req, env, ctx) {
         const prefix = network === 'signet' ? 'coverage:' : `coverage:${network}:`;
         // Exclude the coverage-cursor key (different prefix tail) by post-filtering.
         const list = await env.REGISTRY_KV.list({ prefix, limit: 1000 });
-        const out = [];
-        for (const k of list.keys) {
-          if (k.name.startsWith('coverage-cursor')) continue;
-          const v = await env.REGISTRY_KV.get(k.name, 'json');
-          if (v) out.push(v);
-        }
+        // Parallelize the per-key KV.get. The prior sequential-await loop
+        // serialized N round-trips; Promise.all collapses them into one
+        // parallel fan-out within the worker invocation.
+        const keys = list.keys.filter(k => !k.name.startsWith('coverage-cursor'));
+        const fetched = await Promise.all(keys.map(k => env.REGISTRY_KV.get(k.name, 'json')));
+        const out = fetched.filter(Boolean);
         return jsonResponse({ coverage: out }, 200, cors);
       } catch (e) {
         return jsonResponse({ error: 'coverage list failed', detail: String(e?.message || e) }, 500, cors);
