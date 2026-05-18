@@ -6450,6 +6450,16 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
       You followed a share link to the <strong>tacit mixer ceremony</strong>. Pick a wallet setup below — passkey is the one-tap path; the ceremony panel loads right after.
     </div>
     <div class="welcome-options">
+      <!-- Cross-network "use your existing wallet" option. Shown only
+           when a local-burner blob exists for the OTHER network. JS
+           wires + populates label per _showWelcomeModal. Hidden by
+           default. Adopting this path imports the same priv to the
+           current network so both sides of the chain see one wallet —
+           matches passkey's same-priv-both-networks behavior. -->
+      <button id="welcome-crossnet" class="welcome-option welcome-option--primary" type="button" style="display:none;">
+        <span class="welcome-option-title" id="welcome-crossnet-title">use your existing wallet</span>
+        <span class="welcome-option-meta" id="welcome-crossnet-meta">unlock your other-network wallet and use the same signing key on this network too. matches the way passkey already works across networks; one passphrase, one identity.</span>
+      </button>
       <button id="welcome-passkey" class="welcome-option welcome-option--primary" type="button">
         <span class="welcome-option-title">use a passkey<span class="welcome-option-rec" id="welcome-passkey-rec">(recommended)</span></span>
         <span class="welcome-option-meta">one-tap unlock with Touch ID / Windows Hello / your hardware key. WebAuthn PRF derives the signing key on each load — no passphrase to retype on refresh. Same encryption as the passphrase option, less ceremony.</span>

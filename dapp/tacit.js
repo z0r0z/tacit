@@ -65356,6 +65356,48 @@ function _hasUnboundLocalWallet() {
   return localStorage.getItem(walletStorageKey()) !== null;
 }
 
+// Cross-network wallet detection. Returns the OTHER network's local
+// wallet blob if one exists, so the welcome modal can offer a one-tap
+// "use your existing wallet here too" path instead of dumping the user
+// into a fresh setup. Matches the way passkey mode already behaves
+// (same PRF priv on both networks); local-burner users got network-
+// isolated by storage default. Skipped for ext-bound burners — those
+// are bound to a network-specific address that doesn't apply on the
+// other network's HRP, so cross-network copy would be misleading.
+function _findCrossNetworkLocalWallet() {
+  const otherNet = NET.name === 'mainnet' ? 'signet' : 'mainnet';
+  const otherKey = `${WALLET_KEY_BASE}:${otherNet}`;
+  try {
+    const raw = localStorage.getItem(otherKey);
+    if (!raw) return null;
+    // Same pubkey hydration as the active-network restore — surfaces the
+    // address in the welcome-modal button so the user can verify which
+    // identity they're about to import.
+    const pub = readBlobPub(raw);
+    return { otherNet, otherKey, raw, pub };
+  } catch { return null; }
+}
+
+// Import a local-burner wallet from one network to the current network.
+// Prompts for the source-network passphrase, decrypts, re-encrypts under
+// the (caller-supplied) target-network passphrase using the SAME priv.
+// User-facing effect: one wallet that signs on both networks — matches
+// the precedent set by passkey mode (constant PRF priv per credential).
+// Throws on cancellation or wrong passphrase so the caller can re-prompt.
+async function _importCrossNetworkWallet({ otherNet, raw }) {
+  const srcPassphrase = await _promptUnlockPassphrase(`Unlock your ${otherNet} wallet to use it on ${NET.name} too.`);
+  const priv = await decryptPrivkey(raw, srcPassphrase);
+  // Re-use the same passphrase for the new network's blob — simplest path
+  // (one passphrase to remember, one to type per session). User can
+  // re-encrypt later from the Wallet tab if they want different passphrases
+  // per network. Same priv stored under the new network's key.
+  wallet.priv = priv;
+  wallet.pub = secp.getPublicKey(priv, true);
+  const newKey = walletStorageKey();
+  localStorage.setItem(newKey, await encryptPrivkey(priv, srcPassphrase));
+  setActiveWalletMode('local');
+}
+
 // FAQ modal: opened by the "?" button in the header. Static reference content
 // (questions hard-coded in index.html); this just wires up open/close. Closes
 // on the ✕ button, on backdrop click outside the card, and on Escape.
@@ -65601,7 +65643,40 @@ function _showWelcomeModal() {
     const uBtn = document.getElementById('welcome-unisat');
     const pBtn = document.getElementById('welcome-passkey');
     const lBtn = document.getElementById('welcome-local');
+    const cBtn = document.getElementById('welcome-crossnet');
     if (!modal || !xBtn || !uBtn || !pBtn || !lBtn) { resolve('local'); return; }
+    // Cross-network restore. If the user already has a local wallet on
+    // the OTHER network, prepend a one-tap "use it here too" option
+    // and demote the passkey/local-burner recommendations — most users
+    // landing on this modal after a network switch want continuity,
+    // not a fresh setup. Hidden + non-recommended-flipped when no
+    // cross-network wallet exists, so first-time visitors get the
+    // original three-option layout.
+    const crossNet = (typeof _findCrossNetworkLocalWallet === 'function')
+      ? _findCrossNetworkLocalWallet()
+      : null;
+    if (cBtn) {
+      if (crossNet && crossNet.pub) {
+        const addrStr = (() => {
+          try { return p2wpkhAddress(crossNet.pub); } catch { return ''; }
+        })();
+        const title = document.getElementById('welcome-crossnet-title');
+        const meta  = document.getElementById('welcome-crossnet-meta');
+        if (title) title.innerHTML = `use your ${escapeHtml(crossNet.otherNet)} wallet here too <span class="welcome-option-rec">(recommended)</span>`;
+        if (meta)  meta.textContent  = addrStr
+          ? `Unlock ${shorten(addrStr, 10)} (${crossNet.otherNet}) and use the same signing key on ${NET.name} too. One passphrase, one identity across both networks — matches the way passkey already works.`
+          : `Unlock your ${crossNet.otherNet} wallet and use the same signing key on ${NET.name}. One passphrase, one identity across both networks.`;
+        cBtn.style.display = '';
+        // Demote the previously-recommended option so the cross-net
+        // path reads as THE primary action; the user explicitly
+        // chose to switch nets so importing-existing is the
+        // continuity-preserving move.
+        pBtn.classList.remove('welcome-option--primary');
+        lBtn.classList.remove('welcome-option--primary');
+      } else {
+        cBtn.style.display = 'none';
+      }
+    }
     // Reveal the share-link context banner if this visitor arrived via a
     // canonical ?ceremony=… URL. Tells them *why* the wallet picker stands
     // between them and the ceremony panel they were linked to. Non-canonical
@@ -65641,6 +65716,7 @@ function _showWelcomeModal() {
     }
     const close = (choice) => {
       xBtn.onclick = uBtn.onclick = pBtn.onclick = lBtn.onclick = null;
+      if (cBtn) cBtn.onclick = null;
       modal.style.display = 'none';
       resolve(choice);
     };
@@ -65648,6 +65724,7 @@ function _showWelcomeModal() {
     uBtn.onclick = () => close('ext-unisat');
     pBtn.onclick = () => close('passkey');
     lBtn.onclick = () => close('local');
+    if (cBtn) cBtn.onclick = () => close('crossnet');
     modal.style.display = 'grid';
   });
 }
@@ -65678,6 +65755,30 @@ async function _runFirstLoadChoice() {
         if (!await _showPasskeyModal()) throw new Error('cancelled');
         // _showPasskeyModal → prfWallet.register/login already called
         // setActiveWalletMode('passkey') via _setupSession.
+      } else if (choice === 'crossnet') {
+        // Cross-network restore: import the other-network local wallet
+        // so the same priv signs on this network too. Matches passkey
+        // mode's same-priv-both-networks UX. On unlock-cancel, fall
+        // back to the welcome modal so the user can pick a different
+        // path; the catch below routes 'cancelled' to the loop's
+        // continue without an error toast.
+        const xnet = _findCrossNetworkLocalWallet();
+        if (!xnet) {
+          // Should not happen — the option was hidden when this was null —
+          // but defensive: re-show the modal cleanly.
+          continue;
+        }
+        await _importCrossNetworkWallet(xnet);
+        // Surface the import in a toast so the user sees the same
+        // address now lives on the new network. Mirrors the
+        // consumePendingNetFlipToast copy in tone.
+        try {
+          const addrStr = wallet.pub ? wallet.address() : '';
+          toast(
+            `Using your ${xnet.otherNet} wallet (${shorten(addrStr || '', 10)}) on ${NET.name} too. Same signing key on both networks.`,
+            'success', 7000,
+          );
+        } catch {}
       } else {
         await wallet.load();
         setActiveWalletMode('local');
