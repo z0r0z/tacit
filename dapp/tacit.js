@@ -34704,8 +34704,18 @@ function _ammCerActiveTab() {
 const AMM_CEREMONY_CHIP_ENABLED = true;
 function renderAmmCeremonyChip() {
   const chip = document.getElementById('amm-ceremony-chip');
-  if (!chip) return;
   const finalized = _isAmmCeremonyUnlocked();
+  // Toggle the body-scope class that gates [data-amm-gated] elements
+  // (advanced mixer sections: slot wrap / rotate / burn, cBTC.tac
+  // deposit + withdraw). When the ceremony finalizes, _isAmm-
+  // CeremonyUnlocked flips true (CANONICAL_AMM_VK_CID gets pinned),
+  // the body class lands, and the gated sections re-appear. Until
+  // then they stay hidden so the mixer page reads clean without
+  // showing affordances tied to unfinished ceremony state.
+  if (typeof document !== 'undefined' && document.body) {
+    document.body.classList.toggle('tacit-amm-ceremony-ready', finalized);
+  }
+  if (!chip) return;
   const tab = _ammCerActiveTab();
   const onTargetTab = AMM_CEREMONY_CHIP_TABS.has(tab);
   const acked = ammCeremonyRecentlyAcked();
