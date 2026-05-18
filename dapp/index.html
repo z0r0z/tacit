@@ -2161,6 +2161,48 @@ tr[data-recent-activity] .market-token-sub::after {
   .market-chip,
   .market-chips-row select.market-chip { font-size: 10px; padding: 6px 24px 6px 9px; }
 
+  /* Market browse table mobile reflow. Drop the 960px min-width that
+     forces horizontal scroll on phones; hide derived columns (Market
+     Cap, Total Volume) so the remaining four (Token, Price, 24h Vol,
+     Activity) fit comfortably on a 360-400px viewport. Activity
+     remains the at-a-glance "is this market alive?" signal; 24h Vol
+     is the only honest "recent" number; Token + Price carry identity
+     + reference. Mcap is derived (supply × mark) and not always
+     trustworthy; Total Vol duplicates 24h on young markets. Tap the
+     row → detail page where every metric is available. */
+  .market-token-table-wrap {
+    overflow-x: visible;
+    box-shadow: 1px 1px 0 var(--ink);
+  }
+  .market-token-table { min-width: 0; table-layout: fixed; }
+  .market-token-table th,
+  .market-token-table td {
+    padding: 10px 8px;
+    font-size: 11px;
+  }
+  .market-token-table th {
+    font-size: 9px;
+    letter-spacing: 0.06em;
+  }
+  /* Hide Market Cap (col 3) AND Total Volume (col 5 when present —
+     when absent the Wallets / Activity columns shift down one and
+     the rules still target the right column because we hide by index
+     in source order, not by label). Wallets (col 6 or 5) is already
+     hidden site-wide via the desktop nth-child(6) rule. */
+  .market-token-table th:nth-child(3),
+  .market-token-table td:nth-child(3) { display: none; }
+  /* Hide the id sub-line — accessible on the asset detail page after
+     row tap. Frees ~80px per row of vertical real estate. */
+  .market-token-sub { display: none; }
+  .market-token-cell { min-width: 0; gap: 8px; }
+  .market-token-icon { width: 32px; height: 32px; box-shadow: 1px 1px 0 var(--ink); }
+  .market-token-title { font-size: 13px; }
+  /* Price + value cells: keep two lines (sats price + USD sub) but
+     drop the "per token" suffix tail which repeats across every row. */
+  .market-table-value { font-size: 12px; }
+  .market-table-sub { font-size: 10px; }
+}
+
   /* Trading-page reflow for phones. The bids ladder and asks table
      both declare `min-width: 860/960px` on desktop so the dense
      multi-column grids stay legible. On a 375px viewport that forces
@@ -3528,6 +3570,16 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
    path out of the locked state. `_placeCeremonySection` independently keeps
    the ceremony section at the top of the panel until finalized, so users
    always see the unlock first. */
+/* AMM-ceremony gating: advanced mixer sections (slot wrap / rotate /
+   burn / cBTC.tac deposit / withdraw) depend on the AMM ceremony
+   being finalized before they're safe to surface. Hide them entirely
+   until body carries the tacit-amm-ceremony-ready class (set by JS
+   once the ceremony finalization signal lands). Until then, only the
+   basic mixer deposit/withdraw flows show — cleaner page, no broken
+   buttons. */
+[data-amm-gated] { display: none; }
+body.tacit-amm-ceremony-ready [data-amm-gated] { display: ''; }
+
 #tab-mixer.mixer-ceremony-locked [data-mixer-pool-op] {
   position: relative;
   opacity: 0.5;
@@ -5885,7 +5937,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
        canonical cBTC.zk wrapper's CETCH-derived asset_id; pool denomination
        must match metadata.custody.denom_sats. Slot records are persisted
        per-network in localStorage (treat as critical as deposit records). -->
-  <div class="section" data-mixer-pool-op="true" id="mixer-slot-wrap-section">
+  <div class="section" data-mixer-pool-op="true" data-amm-gated="1" id="mixer-slot-wrap-section">
     <div class="section-header"><span>wrap sats → cBTC.zk slot</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">
@@ -5915,7 +5967,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
        self for a key refresh). New slot's secrets are encrypted to the
        recipient's viewing key + embedded in the rotate envelope; recipient
        discovers via the on-load note scanner. -->
-  <div class="section" data-mixer-pool-op="true" id="mixer-slot-rotate-section">
+  <div class="section" data-mixer-pool-op="true" data-amm-gated="1" id="mixer-slot-rotate-section">
     <div class="section-header"><span>send slot to recipient</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">
@@ -5949,7 +6001,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
        broadcasting a commit/reveal pair that spends the slot UTXO under
        r_leaf (key-path Schnorr SIGHASH_ALL). Sats payout lands at the
        chosen address (defaults to the wallet's own P2WPKH). -->
-  <div class="section" data-mixer-pool-op="true" id="mixer-slot-burn-section">
+  <div class="section" data-mixer-pool-op="true" data-amm-gated="1" id="mixer-slot-burn-section">
     <div class="section-header"><span>redeem slot → sats</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">
@@ -5974,7 +6026,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
        UTXO stays in the depositor's wallet but is economically immobile
        (worker refuses any spend via commitmentForUtxo's lien check). Mints
        cBTC.tac at the depositor's recipient_commit. -->
-  <div class="section" data-mixer-pool-op="true" id="cbtc-tac-deposit-section">
+  <div class="section" data-mixer-pool-op="true" data-amm-gated="1" id="cbtc-tac-deposit-section">
     <div class="section-header"><span>deposit slot → cBTC.tac (v1 lien model)</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">
@@ -6022,7 +6074,7 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
        return — the LP-share UTXO stays in your wallet, just unliened).
        Sats payout lands at the chosen address. v1 = cooperative exit
        (withdrawer == depositor). -->
-  <div class="section" data-mixer-pool-op="true" id="cbtc-tac-withdraw-section">
+  <div class="section" data-mixer-pool-op="true" data-amm-gated="1" id="cbtc-tac-withdraw-section">
     <div class="section-header"><span>withdraw cBTC.tac → sats (v1 lien release)</span></div>
     <div class="section-body">
       <div class="muted" style="margin-bottom:10px;">
