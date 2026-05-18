@@ -3636,7 +3636,20 @@ async function getFeeRate(tier = null) {
     // of overpay at low mainnet rates: hourFee=1.4 → ceil=2 (+43%) before
     // the tier margin even applied. feeFor() does the final ceil-to-sats,
     // so fractional sat/vB is safe end-to-end.
-    base = Math.max(1, rate);
+    //
+    // Floor by network. Mainnet keeps the 1 sat/vB floor purely as a
+    // divide-by-zero / NaN guard (real backlog drives reported rates
+    // well above it). Signet relay strictly enforces 1 sat/vB
+    // (bitcoind's `minrelaytxfee` default = 1000 sat/kvB), and some
+    // per-opcode vbytes estimators in this dapp underestimate by up to
+    // ~2.5× on long-payload reveals — the AMM POOL_INIT path with a
+    // ~1 KB envelope + 3 inputs was caught at 0.4 sat/vB actual during
+    // the 2026-05-18 FEE_CLAIM signet rehearsal, leaving its
+    // commit+reveal pair stuck below relay. A 2 sat/vB signet floor
+    // gives 2× headroom against estimator slop so even worst-case
+    // drift produces ≥1 sat/vB actual on chain.
+    const minFloor = net === 'signet' ? 2 : 1;
+    base = Math.max(minFloor, rate);
     apiOk = true;
     // Cancel losing fee-rate fetches so their responses (often blockstream
     // 400/429 under load) don't surface as console errors after we already
@@ -68579,6 +68592,12 @@ export {
   // declare anything else are refused.
   mixerIsPoolCanonical,
   CANONICAL_VK_CID, CANONICAL_CEREMONY_CID,
+  // High-level mixer wiring exported for the cBTC.zk lifecycle signet
+  // smoke + future headless drivers — pool init broadcaster, the worker→
+  // local-tree sync that hosts the slot-leaf dispatch under audit, the
+  // merkle-proof builder consumed by buildAndBroadcastSlotBurn, and the
+  // wallet unlock prompt the higher-level builders depend on.
+  buildAndBroadcastPoolInit, scanPools, buildMixerMerkleProof, ensurePrivkey,
   // bind_hash recompute — exported so the per-field tamper-matrix test can
   // hash the canonical preimage from outside the encoder without re-deriving
   // it inline. SPEC §5.11 invariant 4 (Output validity).
