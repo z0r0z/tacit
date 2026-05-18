@@ -12550,6 +12550,31 @@ async function commitmentForUtxo(env, txidHex, vout, network, opts = {}) {
       asset_id: position.bond_lp_asset_id,
     };
   }
+  if (decoded.opcode === T_CBTC_TAC_TOP_UP) {
+    // SPEC §5.50 — vout[0] is the new combined liened LP-share. asset_id =
+    // position.bond_lp_asset_id (same pool as pre-top-up).
+    const tp = decodeTCbtcTacTopUpPayload(decoded.payload);
+    if (!tp) throw new Error('invalid T_CBTC_TAC_TOP_UP payload');
+    if (vout !== 0) throw new Error(`T_CBTC_TAC_TOP_UP vout ${vout} out of range (only 0)`);
+    const position = await ctacGetPosition(env, network, tp.target_leaf_hash);
+    if (!position) throw new Error('T_CBTC_TAC_TOP_UP position not found');
+    if (!position.bond_lp_asset_id) throw new Error('T_CBTC_TAC_TOP_UP position missing bond_lp_asset_id');
+    return { commitment: tp.new_bond_commit, asset_id: position.bond_lp_asset_id };
+  }
+  if (decoded.opcode === T_CBTC_TAC_BOND_RELEASE) {
+    // SPEC §5.51 — vout[0] new smaller liened LP-share; vout[1] release LP-share
+    // (unliened). Both same lp_asset_id as the position's bond.
+    const rl = decodeTCbtcTacBondReleasePayload(decoded.payload);
+    if (!rl) throw new Error('invalid T_CBTC_TAC_BOND_RELEASE payload');
+    if (vout > 1) throw new Error(`T_CBTC_TAC_BOND_RELEASE vout ${vout} out of range (only 0=lien, 1=release)`);
+    const position = await ctacGetPosition(env, network, rl.target_leaf_hash);
+    if (!position) throw new Error('T_CBTC_TAC_BOND_RELEASE position not found');
+    if (!position.bond_lp_asset_id) throw new Error('T_CBTC_TAC_BOND_RELEASE position missing bond_lp_asset_id');
+    return {
+      commitment: vout === 0 ? rl.new_bond_commit : rl.release_commit,
+      asset_id: position.bond_lp_asset_id,
+    };
+  }
   throw new Error('unsupported envelope opcode');
 }
 
@@ -18095,6 +18120,196 @@ async function scanForEtches(env, network) {
         ));
         await ctacPutPosition(env, network, position);
         found++;
+      } else if (decoded.opcode === T_CBTC_TAC_TOP_UP) {
+        // SPEC-CBTC-TAC-AMENDMENT §5.50 — T_CBTC_TAC_TOP_UP.
+        //
+        // Strengthen the bond on an open position by combining the current
+        // liened LP-share UTXO with 1..15 additional unliened LP-share UTXOs.
+        // Position record is updated to reflect the larger bond; cBTC.tac
+        // mint is untouched. Authorised by depositor's Schnorr sig.
+        const tp = decodeTCbtcTacTopUpPayload(decoded.payload);
+        if (!tp) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (tp.network_tag !== expectedNetTag) continue;
+        const position = await ctacGetPosition(env, network, tp.target_leaf_hash);
+        if (!position) continue;
+        if (position.state !== 'active') continue;
+        const lienRef = await ctacGetPositionLien(env, network, tp.target_leaf_hash);
+        if (!lienRef) continue;
+        const lien = await ctacGetLien(env, network, lienRef.txid, lienRef.vout);
+        if (!lien || lien.state !== 'depositor') continue;
+        const oldOp = hexToBytes(tp.old_bond_outpoint);
+        const oldTxid = bytesToHex(oldOp.slice(0, 32));
+        const oldVout = new DataView(oldOp.buffer, oldOp.byteOffset + 32, 4).getUint32(0, true);
+        if (oldTxid !== lienRef.txid || oldVout !== lienRef.vout) continue;
+        // SAFETY: source UTXO must actually be spent by this tx
+        let sourceSpent = false;
+        if (Array.isArray(tx.vin)) {
+          for (const vin of tx.vin) {
+            if (vin && vin.txid === oldTxid && (vin.vout >>> 0) === oldVout) { sourceSpent = true; break; }
+          }
+        }
+        if (!sourceSpent) continue;
+        // Verify all add inputs are (a) actually spent by this tx, (b) unliened,
+        // (c) same lp_asset_id as the position's bond
+        let addsOk = true;
+        for (let i = 0; i < tp.add_count; i++) {
+          const ao = hexToBytes(tp.add_outpoints[i]);
+          const aTxid = bytesToHex(ao.slice(0, 32));
+          const aVout = new DataView(ao.buffer, ao.byteOffset + 32, 4).getUint32(0, true);
+          let spent = false;
+          if (Array.isArray(tx.vin)) {
+            for (const vin of tx.vin) {
+              if (vin && vin.txid === aTxid && (vin.vout >>> 0) === aVout) { spent = true; break; }
+            }
+          }
+          if (!spent) { addsOk = false; break; }
+          const addLien = await ctacGetLien(env, network, aTxid, aVout);
+          if (addLien && addLien.state === 'depositor') { addsOk = false; break; }
+          try {
+            const addInfo = await commitmentForUtxo(env, aTxid, aVout, network);
+            if (!addInfo || addInfo.asset_id !== position.bond_lp_asset_id) { addsOk = false; break; }
+          } catch { addsOk = false; break; }
+        }
+        if (!addsOk) continue;
+        // Pedersen homomorphic balance: old_commit + Σ add_commits == new_commit
+        let sumPt;
+        try {
+          sumPt = compressedPointFromHex(tp.old_bond_commit);
+          for (let i = 0; i < tp.add_count; i++) {
+            sumPt = sumPt.add(compressedPointFromHex(tp.add_commits[i]));
+          }
+        } catch { continue; }
+        let newPt;
+        try { newPt = compressedPointFromHex(tp.new_bond_commit); } catch { continue; }
+        if (!sumPt.equals(newPt)) continue;
+        // Verify new_bond_commit opens to (new_bond_amount, new_bond_blinding)
+        try {
+          const r = bytes32ToBigint(hexToBytes(tp.new_bond_blinding)) % SECP_N;
+          const expectedPt = pedersenCommit(BigInt(tp.new_bond_amount), r);
+          if (!expectedPt.equals(newPt)) continue;
+        } catch { continue; }
+        // Verify depositor sig
+        let depXOnly;
+        try {
+          const depPt = compressedPointFromHex(position.depositor_recovery_pk);
+          depXOnly = depPt.toRawBytes(true).slice(1);
+        } catch { continue; }
+        if (!verifySchnorr(hexToBytes(tp.depositor_sig), hexToBytes(tp.bind_hash), depXOnly)) continue;
+        // Effects: transfer lien to new outpoint, update position
+        const newLien = {
+          ...lien,
+          lp_share_amount: tp.new_bond_amount,
+          attached_at_height: h,
+          attached_at_txid: tx.txid,
+          topup_from_outpoint: tp.old_bond_outpoint,
+        };
+        await ctacDeleteLien(env, network, lienRef.txid, lienRef.vout);
+        await ctacPutLien(env, network, tx.txid, 0, newLien);
+        await ctacPutPositionLien(env, network, tp.target_leaf_hash, tx.txid, 0);
+        // Increment aggregate bonded TAC by sum of added amounts
+        let addedSum = 0n;
+        for (let i = 0; i < tp.add_count; i++) addedSum += BigInt(tp.add_amounts[i]);
+        if (addedSum > 0n) await ctacAddTotalBondedTac(env, network, addedSum);
+        position.bond_lp_share_amount = tp.new_bond_amount;
+        position.bond_amount_tac = tp.new_bond_amount;
+        position.bond_source_outpoint = bytesToHex(concatBytes(
+          hexToBytes(tx.txid),
+          (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 0, true); return b; })(),
+        ));
+        position.last_topup_height = h;
+        await ctacPutPosition(env, network, position);
+        found++;
+      } else if (decoded.opcode === T_CBTC_TAC_BOND_RELEASE) {
+        // SPEC-CBTC-TAC-AMENDMENT §5.51 — T_CBTC_TAC_BOND_RELEASE.
+        //
+        // Symmetric inverse of TOP_UP: spend current liened LP-share, output
+        // a smaller liened LP-share (lien transferred) + an unliened release
+        // LP-share to recipient_pk. Post-release ratio must satisfy
+        // INITIAL_BOND_RATIO (stricter than slash threshold — leave the
+        // position in deposit-acceptable territory).
+        const rl = decodeTCbtcTacBondReleasePayload(decoded.payload);
+        if (!rl) continue;
+        const expectedNetTag = network === 'signet' ? 0x01 : network === 'regtest' ? 0x02 : 0x00;
+        if (rl.network_tag !== expectedNetTag) continue;
+        const position = await ctacGetPosition(env, network, rl.target_leaf_hash);
+        if (!position) continue;
+        if (position.state !== 'active') continue;
+        const lienRef = await ctacGetPositionLien(env, network, rl.target_leaf_hash);
+        if (!lienRef) continue;
+        const lien = await ctacGetLien(env, network, lienRef.txid, lienRef.vout);
+        if (!lien || lien.state !== 'depositor') continue;
+        const oldOp = hexToBytes(rl.old_bond_outpoint);
+        const oldTxid = bytesToHex(oldOp.slice(0, 32));
+        const oldVout = new DataView(oldOp.buffer, oldOp.byteOffset + 32, 4).getUint32(0, true);
+        if (oldTxid !== lienRef.txid || oldVout !== lienRef.vout) continue;
+        // SAFETY: source UTXO must actually be spent by this tx
+        let sourceSpent = false;
+        if (Array.isArray(tx.vin)) {
+          for (const vin of tx.vin) {
+            if (vin && vin.txid === oldTxid && (vin.vout >>> 0) === oldVout) { sourceSpent = true; break; }
+          }
+        }
+        if (!sourceSpent) continue;
+        // Pedersen homomorphic balance: new_commit + release_commit == old_commit
+        let oldPt, newPt, relPt;
+        try {
+          oldPt = compressedPointFromHex(rl.old_bond_commit);
+          newPt = compressedPointFromHex(rl.new_bond_commit);
+          relPt = compressedPointFromHex(rl.release_commit);
+        } catch { continue; }
+        if (!newPt.add(relPt).equals(oldPt)) continue;
+        // Verify openings of new + release
+        try {
+          const rNew = bytes32ToBigint(hexToBytes(rl.new_bond_blinding)) % SECP_N;
+          if (!pedersenCommit(BigInt(rl.new_bond_amount), rNew).equals(newPt)) continue;
+          const rRel = bytes32ToBigint(hexToBytes(rl.release_blinding)) % SECP_N;
+          if (!pedersenCommit(BigInt(rl.release_amount), rRel).equals(relPt)) continue;
+        } catch { continue; }
+        // Verify depositor sig
+        let depXOnly;
+        try {
+          const depPt = compressedPointFromHex(position.depositor_recovery_pk);
+          depXOnly = depPt.toRawBytes(true).slice(1);
+        } catch { continue; }
+        if (!verifySchnorr(hexToBytes(rl.depositor_sig), hexToBytes(rl.bind_hash), depXOnly)) continue;
+        // Post-release ratio check at current TWAP — must satisfy INITIAL_BOND_RATIO
+        let twapSp;
+        try { twapSp = await ctacTwapSatsPerTac(env, network, h - CTAC_REORG_SAFETY_DEPTH); }
+        catch { continue; }
+        const newAmt = BigInt(rl.new_bond_amount);
+        const lpValueAfter = await ctacLpShareValueSats(
+          env, network, lien.pool_id, newAmt, twapSp,
+        );
+        if (!lpValueAfter.ok) continue;
+        const ratioAfter = (lpValueAfter.valueSats * 1000n) / BigInt(position.slot_denom_sats);
+        if (ratioAfter < BigInt(CTAC_INITIAL_BOND_RATIO_THOUSANDTHS)) continue;
+        // Aggregate-recovery pause refusal
+        try {
+          const pauseStatus = await ctacComputePauseStatus(env, network, h);
+          if (pauseStatus === 'aggregate_recovery') continue;
+        } catch {}
+        // Effects: transfer lien to vout[0], decrement aggregate bonded TAC by release_amount
+        const newLien = {
+          ...lien,
+          lp_share_amount: rl.new_bond_amount,
+          attached_at_height: h,
+          attached_at_txid: tx.txid,
+          release_from_outpoint: rl.old_bond_outpoint,
+        };
+        await ctacDeleteLien(env, network, lienRef.txid, lienRef.vout);
+        await ctacPutLien(env, network, tx.txid, 0, newLien);
+        await ctacPutPositionLien(env, network, rl.target_leaf_hash, tx.txid, 0);
+        await ctacAddTotalBondedTac(env, network, -BigInt(rl.release_amount));
+        position.bond_lp_share_amount = rl.new_bond_amount;
+        position.bond_amount_tac = rl.new_bond_amount;
+        position.bond_source_outpoint = bytesToHex(concatBytes(
+          hexToBytes(tx.txid),
+          (() => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, 0, true); return b; })(),
+        ));
+        position.last_release_height = h;
+        await ctacPutPosition(env, network, position);
+        found++;
       } else if (decoded.opcode === T_CBTC_TAC_DEPOSIT_ATOMIC) {
         // SPEC-CBTC-TAC-AMENDMENT §5.48 v1.1 — atomic LP_ADD + DEPOSIT.
         //
@@ -19388,6 +19603,8 @@ async function scanForEtches(env, network) {
         await ammPoolPut(env, network, sv.pool_id, newPool);
         found++;
       } else if (decoded.opcode === T_SWAP_ROUTE) {
+        const _DR = (msg) => { try { console.log(`[DR-SR] tx=${tx.txid.slice(0,16)} h=${h} ${msg}`); } catch {} };
+        _DR('enter T_SWAP_ROUTE');
         // SPEC-SWAP-ROUTE-AMENDMENT §"Validator algorithm". Atomic
         // N-hop AMM routing (2 ≤ N ≤ SWAP_ROUTE_N_HOPS_MAX = 4). Reuses
         // T_SWAP_VAR's cryptography stack: kernel sig under
@@ -19395,23 +19612,24 @@ async function scanForEtches(env, network) {
         // Hops compose CFMM curve-floor identity per pool in declared
         // order; intermediate amounts are public cleartext deltas.
         const sr = decodeTSwapRoutePayload(decoded.payload);
-        if (!sr) continue;
+        if (!sr) { _DR('decode failed'); continue; }
+        _DR(`decoded n_hops=${sr.n_hops}`);
 
         // OP_RETURN binding.
         const vout0sr = tx.vout?.[0];
-        if (!vout0sr || typeof vout0sr.scriptpubkey !== 'string') continue;
+        if (!vout0sr || typeof vout0sr.scriptpubkey !== 'string') { _DR('no vout[0]'); continue; }
         const opReturnSpkSr = vout0sr.scriptpubkey.toLowerCase();
-        if (opReturnSpkSr.length !== 68 || !opReturnSpkSr.startsWith('6a20')) continue;
+        if (opReturnSpkSr.length !== 68 || !opReturnSpkSr.startsWith('6a20')) { _DR(`bad OP_RETURN ${opReturnSpkSr.slice(0,16)}`); continue; }
         const opReturnHashSr = hexToBytes(opReturnSpkSr.slice(4));
         const expectedHashSr = ammSwapRouteEnvelopeHash(decoded.payload);
         let opReturnOkSr = true;
         for (let i = 0; i < 32; i++) {
           if (opReturnHashSr[i] !== expectedHashSr[i]) { opReturnOkSr = false; break; }
         }
-        if (!opReturnOkSr) continue;
+        if (!opReturnOkSr) { _DR('OP_RETURN hash mismatch'); continue; }
 
         // Expiry.
-        if (sr.expiry_height !== 0 && h > sr.expiry_height) continue;
+        if (sr.expiry_height !== 0 && h > sr.expiry_height) { _DR(`expired`); continue; }
 
         // Snapshot each touched pool (so a route revisiting the same
         // pool advances state correctly hop-by-hop).
@@ -19421,6 +19639,7 @@ async function scanForEtches(env, network) {
           if (poolSnapshot.has(hop.pool_id)) continue;
           const p = await ammPoolGet(env, network, hop.pool_id);
           if (!p || (p.validation !== 'xcurve-verified' && p.validation !== 'verified')) {
+            _DR(`pool missing id=${hop.pool_id.slice(0,16)} val=${p?.validation}`);
             anyMissingPool = true; break;
           }
           poolSnapshot.set(hop.pool_id, {
@@ -19433,6 +19652,7 @@ async function scanForEtches(env, network) {
           });
         }
         if (anyMissingPool) continue;
+        _DR(`all pools snapshot ok n=${poolSnapshot.size}`);
 
         // Per-hop chain: asset + amount continuity + CFMM curve floor.
         const traderInputAssetIdHex = sr.trader_input_asset_id;
@@ -19442,13 +19662,14 @@ async function scanForEtches(env, network) {
         let deltaIn0 = null;
         let deltaOutLast = null;
         let routeOk = true;
+        let _fr = null;
 
         for (let k = 0; k < sr.hops.length; k++) {
           const Hk = sr.hops[k];
           const snap = poolSnapshot.get(Hk.pool_id);
-          if (Hk.fee_bps !== snap.fee_bps) { routeOk = false; break; }
-          if (BigInt(Hk.R_A_pre) !== snap.reserve_A) { routeOk = false; break; }
-          if (BigInt(Hk.R_B_pre) !== snap.reserve_B) { routeOk = false; break; }
+          if (Hk.fee_bps !== snap.fee_bps) { _fr=`hop${k} fee_bps`; routeOk = false; break; }
+          if (BigInt(Hk.R_A_pre) !== snap.reserve_A) { _fr=`hop${k} R_A_pre ${Hk.R_A_pre} vs ${snap.reserve_A}`; routeOk = false; break; }
+          if (BigInt(Hk.R_B_pre) !== snap.reserve_B) { _fr=`hop${k} R_B_pre ${Hk.R_B_pre} vs ${snap.reserve_B}`; routeOk = false; break; }
 
           let assetInHex, assetOutHex, R_in, R_out, delta_in, delta_out;
           if (Hk.direction === 0) {
@@ -19466,15 +19687,15 @@ async function scanForEtches(env, network) {
             delta_in    = BigInt(Hk.delta_b_net_mag);
             delta_out   = BigInt(Hk.delta_a_net_mag);
           }
-          if (delta_in <= 0n || delta_out <= 0n) { routeOk = false; break; }
+          if (delta_in <= 0n || delta_out <= 0n) { _fr=`hop${k} delta<=0`; routeOk = false; break; }
 
           // Asset continuity.
-          if (assetInHex !== hopInputAssetHex) { routeOk = false; break; }
+          if (assetInHex !== hopInputAssetHex) { _fr=`hop${k} asset chain ${assetInHex.slice(0,12)} vs ${hopInputAssetHex.slice(0,12)}`; routeOk = false; break; }
           // Amount continuity (k ≥ 1).
-          if (k > 0 && delta_in !== prevDeltaOut) { routeOk = false; break; }
+          if (k > 0 && delta_in !== prevDeltaOut) { _fr=`hop${k} amount chain`; routeOk = false; break; }
           // Reserve-bound guards.
-          if (R_in + delta_in > AMM_SWAP_ROUTE_U64_MAX) { routeOk = false; break; }
-          if (R_out < delta_out) { routeOk = false; break; }
+          if (R_in + delta_in > AMM_SWAP_ROUTE_U64_MAX) { _fr=`hop${k} R_in overflow`; routeOk = false; break; }
+          if (R_out < delta_out) { _fr=`hop${k} R_out<delta_out`; routeOk = false; break; }
 
           // CFMM curve floor: delta_out·(R_in·gDen + gNum·delta_in)
           //                  ≤ R_out·gNum·delta_in
@@ -19482,7 +19703,7 @@ async function scanForEtches(env, network) {
           const gDen = 10000n;
           const lhs = delta_out * (R_in * gDen + gNum * delta_in);
           const rhs = R_out * gNum * delta_in;
-          if (lhs > rhs) { routeOk = false; break; }
+          if (lhs > rhs) { _fr=`hop${k} CFMM`; routeOk = false; break; }
 
           // Advance snapshot for the next hop's freshness check.
           if (Hk.direction === 0) {
@@ -19498,32 +19719,35 @@ async function scanForEtches(env, network) {
           prevDeltaOut    = delta_out;
           hopInputAssetHex = assetOutHex;
         }
-        if (!routeOk) continue;
-        if (hopInputAssetHex !== traderOutputAssetIdHex) continue;
+        if (!routeOk) { _DR(`per-hop fail: ${_fr}`); continue; }
+        if (hopInputAssetHex !== traderOutputAssetIdHex) { _DR(`final asset mismatch`); continue; }
+        _DR(`hops chained OK delta_in0=${deltaIn0} delta_out_last=${deltaOutLast}`);
 
         // Terminal min_out gate.
-        if (deltaOutLast < BigInt(sr.min_out)) continue;
+        if (deltaOutLast < BigInt(sr.min_out)) { _DR(`min_out`); continue; }
 
         // Receipt opening: C_receipt_secp == delta_out_last·H + r_receipt·G.
         let rReceiptBigSr;
         try { rReceiptBigSr = modN(BigInt('0x' + sr.r_receipt)); }
-        catch { continue; }
-        if (rReceiptBigSr === 0n) continue;       // leaks delta_out (defense in depth)
+        catch { _DR('r_receipt parse'); continue; }
+        if (rReceiptBigSr === 0n) { _DR('r_receipt zero'); continue; }
         const expectedReceiptSr = pedersenCommit(deltaOutLast, rReceiptBigSr);
         let cReceiptPointSr;
         try { cReceiptPointSr = compressedPointFromHex(sr.c_receipt_secp); }
-        catch { continue; }
-        if (!cReceiptPointSr.equals(expectedReceiptSr)) continue;
+        catch { _DR('c_receipt decode'); continue; }
+        if (!cReceiptPointSr.equals(expectedReceiptSr)) { _DR('receipt opening mismatch'); continue; }
+        _DR('receipt opening ok');
 
         // Verify C_in_secp matches the on-chain Pedersen commit at vin[1].
         const traderInpSr = tx.vin?.[1];
-        if (!traderInpSr || typeof traderInpSr.txid !== 'string' || typeof traderInpSr.vout !== 'number') continue;
+        if (!traderInpSr || typeof traderInpSr.txid !== 'string' || typeof traderInpSr.vout !== 'number') { _DR('no vin[1]'); continue; }
         let parentSr;
         try { parentSr = await commitmentForUtxo(env, traderInpSr.txid, traderInpSr.vout, network); }
-        catch { continue; }
-        if (!parentSr) continue;
-        if (parentSr.asset_id !== traderInputAssetIdHex) continue;
-        if (parentSr.commitment !== sr.c_in_secp) continue;
+        catch (e) { _DR(`commitmentForUtxo throw: ${e.message}`); continue; }
+        if (!parentSr) { _DR('parent null'); continue; }
+        if (parentSr.asset_id !== traderInputAssetIdHex) { _DR(`parent asset_id ${parentSr.asset_id?.slice(0,12)} vs ${traderInputAssetIdHex.slice(0,12)}`); continue; }
+        if (parentSr.commitment !== sr.c_in_secp) { _DR(`parent.commit ${parentSr.commitment?.slice(0,12)} vs sr.c_in ${sr.c_in_secp.slice(0,12)}`); continue; }
+        _DR('chain binding ok');
 
         // Intent sig over route_msg (binds the entire route under
         // trader_pubkey).
@@ -19535,8 +19759,9 @@ async function scanForEtches(env, network) {
             hexToBytes(sr.intent_sig), intentMsgSr,
             traderPtSr.toRawBytes(true).slice(1),
           );
-        } catch { routeIntentOk = false; }
-        if (!routeIntentOk) continue;
+        } catch (e) { _DR(`intent throw: ${e.message}`); routeIntentOk = false; }
+        if (!routeIntentOk) { _DR('intent sig fail'); continue; }
+        _DR('intent sig ok');
 
         // Kernel sig over kernel_msg under
         // P = C_receipt − C_in − (delta_out_last − delta_in_0)·H_secp.
@@ -19553,16 +19778,18 @@ async function scanForEtches(env, network) {
               hexToBytes(sr.kernel_sig), kMsgSr,
               Pkernel.toRawBytes(true).slice(1),
             );
-          }
-        } catch { routeKernelOk = false; }
-        if (!routeKernelOk) continue;
+          } else { _DR('kernel P==ZERO'); }
+        } catch (e) { _DR(`kernel throw: ${e.message}`); routeKernelOk = false; }
+        if (!routeKernelOk) { _DR('kernel sig fail'); continue; }
+        _DR('kernel sig ok');
 
         // Bulletproof m=2 over (SENTINEL = PEDERSEN_ZERO, C_receipt_secp).
         let bpOkSr = false;
         try {
           bpOkSr = bpRangeAggVerify([PEDERSEN_ZERO, cReceiptPointSr], hexToBytes(sr.range_proof));
-        } catch { bpOkSr = false; }
-        if (!bpOkSr) continue;
+        } catch (e) { _DR(`BP throw: ${e.message}`); bpOkSr = false; }
+        if (!bpOkSr) { _DR('BP fail'); continue; }
+        _DR('ALL GATES PASS — committing pool state');
 
         // All gates pass — commit per-pool state transitions atomically.
         for (const [pid_hex, snap] of poolSnapshot) {
