@@ -3512,7 +3512,11 @@ async function getFeeRate(tier = null) {
   }
   try {
     const rate = await Promise.any(attempts);
-    base = Math.max(1, Math.ceil(rate));
+    // Keep the API quote as a float. Ceiling here was the dominant source
+    // of overpay at low mainnet rates: hourFee=1.4 → ceil=2 (+43%) before
+    // the tier margin even applied. feeFor() does the final ceil-to-sats,
+    // so fractional sat/vB is safe end-to-end.
+    base = Math.max(1, rate);
     apiOk = true;
     // Cancel losing fee-rate fetches so their responses (often blockstream
     // 400/429 under load) don't surface as console errors after we already
@@ -3527,21 +3531,27 @@ async function getFeeRate(tier = null) {
     }
   }
   // Safety margin scales with tier — priority pays for headroom against
-  // intra-block spikes (the original 10%), standard takes a small buffer
-  // (5%), economy users have opted into slow confirm and don't need it.
-  // Signet has no fee market, so no margin needed at any tier.
-  // Use integer-ratio arithmetic (×11/10, ×21/20) instead of ×1.10 / ×1.05
-  // — JS floats overshoot (50 × 1.10 = 55.000…001, ceil → 56).
+  // intra-block spikes (10%), standard takes a small buffer (5%), economy
+  // skips margin entirely. Signet has no fee market, so no margin needed
+  // at any tier. Margins are gated on `base ≥ 5 sat/vB` — at lower rates
+  // the mempool is empty and there's no spike to hedge against, so a 5%
+  // markup on a 1.4 sat/vB base just inflates the user's bill without
+  // buying faster confirmation.
+  // Use integer-ratio arithmetic (×11/10, ×21/20) instead of ×1.10/×1.05
+  // — JS floats overshoot (50 × 1.10 = 55.000…001).
   let rate;
-  if (net !== 'mainnet') {
-    rate = base;
-  } else if (resolvedTier === 'priority') {
-    rate = Math.ceil((base * 11) / 10);
+  const applyMargin = net === 'mainnet' && base >= 5;
+  if (resolvedTier === 'priority') {
+    rate = applyMargin ? (base * 11) / 10 : base;
   } else if (resolvedTier === 'standard') {
-    rate = Math.ceil((base * 21) / 20);
+    rate = applyMargin ? (base * 21) / 20 : base;
   } else {
-    rate = Math.max(1, base);
+    rate = base;
   }
+  // Enforce min-relay floor + clean up float ulp noise (1.05 × 1.4 may
+  // land at 1.4700000000000002; trim to 3 decimals so toString/display
+  // stay readable and downstream ceils don't catch the extra fraction).
+  rate = Math.max(1, Math.round(rate * 1000) / 1000);
   _cachedRate.set(cacheKey, rate);
   // Shorter TTL on the fallback rate so a recovered API drives a fresh quote
   // without waiting the full minute.
@@ -42420,6 +42430,12 @@ async function renderHoldings() {
   // asset holdings when this wallet has live slot records. Each slot is a
   // fixed-denomination wrapped-BTC unit; total = sum of live-slot denoms.
   try { _renderHoldingsSlotSummary(); } catch {}
+  // Soft-cancel replay-risk strip. Paints the current list synchronously
+  // from localStorage so the warning is visible immediately; then a
+  // background prune drops entries whose UTXO has gone spent (legit
+  // settle, hard cancel on another device, etc.).
+  try { _renderSoftCancelRiskStrip(); } catch {}
+  setTimeout(() => { try { _pruneSoftCancelRecords(); } catch {} }, 50);
 
   // First-load shows a skeleton; subsequent refreshes keep the prior list
   // visible so a transient 429 doesn't wipe rendered assets to a skeleton-
@@ -48457,6 +48473,157 @@ function _renderPendingSettlementsStrip() {
 function _markLocalListingCancel(listingKey) {
   if (listingKey) _recentLocalListingCancels.set(listingKey, Date.now());
 }
+
+// =================== Soft-cancel risk surface ===================
+//
+// When a preauth listing is soft-cancelled (worker DELETE only), the
+// pre-signed sale_tx template remains valid on the still-unspent
+// asset UTXO. Anyone who saved the listing bytes during the original
+// listing window (or copied them via a leaked URL) can still
+// broadcast the sale at the original price until that UTXO is
+// consumed. Hard cancel = self-CXFER of the UTXO so the input
+// becomes consensus-invalid.
+//
+// We persistently track soft-cancelled listings per-network in
+// localStorage. The Holdings tab surfaces a warning strip that lists
+// every soft-cancel whose asset UTXO is STILL UNSPENT, with one-
+// click hard-cancel + dismiss actions. _pruneSoftCancelRecords()
+// runs on each renderHoldings + after user-driven hard cancel,
+// dropping entries once getOutspend reports the UTXO is spent
+// (legitimate settle, hard cancel from another device, or any other
+// path that consumed the UTXO — once spent, the bytes are no longer
+// replayable). Records have no TTL — they only leave the list when
+// the UTXO is observed spent.
+const SOFT_CANCEL_KEY_BASE = 'tacit-soft-cancels-v1';
+function _softCancelKey() { return `${SOFT_CANCEL_KEY_BASE}:${NET.name}`; }
+function _loadSoftCancelRecords() {
+  try {
+    const raw = localStorage.getItem(_softCancelKey());
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch { return []; }
+}
+function _saveSoftCancelRecords(arr) {
+  try { localStorage.setItem(_softCancelKey(), JSON.stringify(arr || [])); } catch {}
+}
+function _addSoftCancelRecord(record) {
+  if (!record || !record.sale_id) return;
+  const arr = _loadSoftCancelRecords();
+  const idx = arr.findIndex(r => r.sale_id === record.sale_id);
+  if (idx >= 0) arr[idx] = { ...arr[idx], ...record };
+  else arr.push(record);
+  _saveSoftCancelRecords(arr);
+  try { _renderSoftCancelRiskStrip(); } catch {}
+}
+function _removeSoftCancelRecord(saleId) {
+  if (!saleId) return;
+  const arr = _loadSoftCancelRecords();
+  const next = arr.filter(r => r.sale_id !== saleId);
+  if (next.length !== arr.length) {
+    _saveSoftCancelRecords(next);
+    try { _renderSoftCancelRiskStrip(); } catch {}
+  }
+}
+// Probe every tracked UTXO; drop entries whose UTXO is spent. Idempotent
+// + tab-aware (skips when document.hidden so it doesn't burn API calls
+// while the user isn't looking). Used on each renderHoldings tick and
+// after user-driven hard-cancel to clear the strip promptly.
+let _softCancelPruneInflight = false;
+async function _pruneSoftCancelRecords() {
+  if (_softCancelPruneInflight) return;
+  if (typeof document !== 'undefined' && document.hidden) return;
+  const arr = _loadSoftCancelRecords();
+  if (arr.length === 0) return;
+  _softCancelPruneInflight = true;
+  try {
+    const probes = await Promise.all(arr.map(async r => {
+      const txid = r?.asset_outpoint?.txid;
+      const vout = r?.asset_outpoint?.vout;
+      if (!txid || !Number.isInteger(vout)) return { r, spent: false };
+      try {
+        const res = await getOutspend(txid, vout);
+        return { r, spent: !!(res && res.spent === true) };
+      } catch {
+        return { r, spent: false };
+      }
+    }));
+    const stillReplayable = probes.filter(p => !p.spent).map(p => p.r);
+    if (stillReplayable.length !== arr.length) {
+      _saveSoftCancelRecords(stillReplayable);
+      try { _renderSoftCancelRiskStrip(); } catch {}
+    }
+  } finally {
+    _softCancelPruneInflight = false;
+  }
+}
+function _renderSoftCancelRiskStrip() {
+  if (typeof document === 'undefined') return;
+  const hosts = document.querySelectorAll('[data-soft-cancel-risk-strip]');
+  if (!hosts.length) return;
+  const arr = _loadSoftCancelRecords();
+  if (arr.length === 0) {
+    hosts.forEach(h => { h.style.display = 'none'; h.innerHTML = ''; });
+    return;
+  }
+  // Newest-first so a fresh soft-cancel lands at the top of the strip.
+  const sorted = [...arr].sort((a, b) => (Number(b.soft_cancelled_at) || 0) - (Number(a.soft_cancelled_at) || 0));
+  const itemsHtml = sorted.map(r => {
+    const amtStr = (() => {
+      try { return fmtAssetAmount(BigInt(r.amount || '0'), Number(r.decimals) || 0); }
+      catch { return r.amount || '?'; }
+    })();
+    const ticker = escapeHtml(r.ticker || '?');
+    const priceStr = Number(r.price_sats || 0).toLocaleString('en-US');
+    const ageSec = Math.max(0, Math.floor(Date.now() / 1000) - Number(r.soft_cancelled_at || 0));
+    const ageLabel = ageSec < 60 ? `${ageSec}s ago`
+                   : ageSec < 3600 ? `${Math.floor(ageSec / 60)}m ago`
+                   : ageSec < 86400 ? `${Math.floor(ageSec / 3600)}h ago`
+                   : `${Math.floor(ageSec / 86400)}d ago`;
+    const outpointShort = r.asset_outpoint?.txid
+      ? `${shorten(r.asset_outpoint.txid, 6)}:${r.asset_outpoint.vout}`
+      : '';
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--ink-faint);background:var(--bg);font-size:11px;flex-wrap:wrap;font-family:var(--mono, monospace);">
+      <strong style="color:#a04030;">${escapeHtml(amtStr)} ${ticker}</strong>
+      <span class="muted" style="font-size:10px;font-family:inherit;">@ ${priceStr} sats &middot; UTXO ${escapeHtml(outpointShort)} &middot; soft-cancelled ${ageLabel}</span>
+      <span style="margin-left:auto;display:inline-flex;gap:6px;">
+        <button data-act="soft-cancel-hard-finish" data-sid="${escapeHtml(r.sale_id)}" data-aid="${escapeHtml(r.asset_id)}" data-price="${Number(r.price_sats) || 0}" data-ticker="${ticker}" data-amount="${escapeHtml(r.amount || '0')}" data-dec="${Number(r.decimals) || 0}" type="button" class="primary" style="font-size:10px;padding:4px 10px;font-family:inherit;" title="Self-spend the asset UTXO on Bitcoin so the pre-signed sale bytes become unbroadcastable. Costs ~800 sats Bitcoin fee.">Hard cancel</button>
+        <button data-act="soft-cancel-dismiss" data-sid="${escapeHtml(r.sale_id)}" type="button" style="font-size:10px;padding:4px 10px;background:transparent;color:var(--ink-mid);border:1px solid var(--ink-faint);font-family:inherit;" title="Dismiss without invalidating the pre-signed bytes. Use only if you're certain the UTXO has already been consumed elsewhere (another device, a different cancel path) or that you accept the residual replay risk.">Dismiss</button>
+      </span>
+    </div>`;
+  }).join('');
+  const html = `
+    <div style="margin-bottom:14px;padding:10px 12px;border:1px dashed var(--orange, #c97a1a);background:rgba(201,122,26,0.05);">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:8px;">
+        <strong style="font-size:12px;color:var(--orange, #c97a1a);">&#9888; Soft-cancelled &middot; still replayable</strong>
+        <span class="muted" style="font-size:10px;">${arr.length} listing${arr.length === 1 ? '' : 's'} you soft-cancelled still have an unspent asset UTXO. The pre-signed sale bytes remain valid until the UTXO is consumed &mdash; anyone who saved the listing earlier can still broadcast at the original price. Hard cancel = one Bitcoin tx to invalidate.</span>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        ${itemsHtml}
+      </div>
+    </div>`;
+  hosts.forEach(h => {
+    h.style.display = 'block';
+    h.innerHTML = html;
+    h.querySelectorAll('button[data-act="soft-cancel-hard-finish"]').forEach(b => {
+      b.onclick = async () => {
+        try { await marketHardCancelPreauthHandler(b); }
+        catch {}
+        // Proactive prune after hard-cancel so the strip clears immediately
+        // once the self-CXFER lands in mempool. The next renderHoldings
+        // tick would catch it within 30s anyway; this is just snappier UX.
+        setTimeout(() => { try { _pruneSoftCancelRecords(); } catch {} }, 1500);
+      };
+    });
+    h.querySelectorAll('button[data-act="soft-cancel-dismiss"]').forEach(b => {
+      b.onclick = () => {
+        if (!confirm('Dismiss this entry without hard-cancelling?\n\nThe pre-signed sale bytes remain valid until the asset UTXO is spent. Anyone with the bytes can still broadcast the sale at the original price. Only dismiss if you\'re sure the UTXO has already been consumed (e.g. on another device) or you accept the replay risk.')) return;
+        _removeSoftCancelRecord(b.dataset.sid);
+      };
+    });
+  });
+}
+
 // Stable per-listing key used by both the market auto-refresh snapshot
 // and the local-cancel suppression set. Mirrors marketListingKey() but
 // hardened against missing fields so it can't throw inside the diff loop.
@@ -56584,6 +56751,78 @@ function _bidCachePeek(aid) {
   return c.value;
 }
 
+// In-band best-bid / best-ask snapshot, shared between the spread row and
+// the depth chart so they don't disagree about what's takeable. Both code
+// paths used to compute this independently — same filter logic, but called
+// asynchronously, so a render cycle could paint the spread row with one
+// snapshot and the depth header with a slightly newer one. Caching here
+// for a brief window guarantees coherent display.
+//
+// Filter rules (matched to historical _populateBidAskSpread / depth chart):
+//   Ask side: kind === 'preauth', !expired, !_takenPending, expiry > now+60s
+//   Bid side: !_isReserved, !expired, for variable-fill bids remaining ≥ min_fill
+//   Both: clamp to 0.2× ≤ unit ≤ 5× of mark when mark is finite
+const _BOOK_STATS_TTL_MS = 1000;
+const _bookStatsCache = new Map();  // aid → { ts, key, value }
+async function _computeInBandBookStats(aid, decimals, markUnit) {
+  // Cache key folds mark + decimals so a mark refresh invalidates without
+  // an explicit cache-bust. Within the TTL, two callers (spread row +
+  // depth chart) see byte-identical { cheapestAsk, highestBid } snapshots.
+  const markValid = Number.isFinite(markUnit) && markUnit > 0;
+  const key = `${markValid ? markUnit.toFixed(6) : 'no-mark'}|${decimals | 0}`;
+  const cached = _bookStatsCache.get(aid);
+  if (cached && cached.key === key && (Date.now() - cached.ts) < _BOOK_STATS_TTL_MS) {
+    return cached.value;
+  }
+
+  const lo = markValid ? markUnit * 0.2 : 0;
+  const hi = markValid ? markUnit * 5 : Infinity;
+  const _nowSec = Math.floor(Date.now() / 1000);
+  const _expiryGuard = _nowSec + 60;
+
+  let cheapestAsk = null;
+  const listings = (_marketCache?.listings || []).filter(l =>
+    l._asset?.asset_id === aid
+    && !l.expired
+    && !l._takenPending
+    && l.kind === 'preauth'
+    && Number(l.expiry || 0) > _expiryGuard,
+  );
+  for (const l of listings) {
+    const amt = l.asset_opening?.amount;
+    const ps = Number(l.min_price_sats || 0);
+    const u = unitPriceSats(ps, BigInt(amt || 0), decimals);
+    if (u == null) continue;
+    if (markValid && (u < lo || u > hi)) continue;
+    if (cheapestAsk == null || u < cheapestAsk) cheapestAsk = u;
+  }
+
+  const intents = await _fetchBidIntentsCached(aid);
+  let highestBid = null;
+  for (const b of intents) {
+    if (b._isReserved) continue;
+    if (Number(b.expiry || 0) <= _nowSec) continue;
+    const _isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+    if (_isVar) {
+      let _rem = 0n, _minFill = 0n;
+      try { _rem = BigInt(b.remaining_amount || b.amount || '0'); } catch {}
+      try { _minFill = BigInt(b.min_fill_amount || '0'); } catch {}
+      if (_rem < _minFill) continue;
+    }
+    let amtBig = 0n;
+    try { amtBig = BigInt(b.amount || '0'); } catch {}
+    if (amtBig <= 0n) continue;
+    const u = unitPriceSats(Number(b.price_sats || 0), amtBig, decimals);
+    if (u == null) continue;
+    if (markValid && (u < lo || u > hi)) continue;
+    if (highestBid == null || u > highestBid) highestBid = u;
+  }
+
+  const value = { cheapestAsk, highestBid };
+  _bookStatsCache.set(aid, { ts: Date.now(), key, value });
+  return value;
+}
+
 // Bid-ask spread row populator. Cheapest ask comes from the in-memory
 // listings cache (already loaded for this asset). Highest bid comes from
 // the shared bid-intent cache. Hidden when either side is missing.
@@ -56600,66 +56839,14 @@ async function _populateBidAskSpread(section, aid, decimals, ticker, markUnit = 
   const wrap = section.querySelector('[data-market-stat-spread-wrap]');
   const out = section.querySelector('[data-market-stat-spread]');
   if (!wrap || !out) return;
-  const markValid = Number.isFinite(markUnit) && markUnit > 0;
-  const lo = markValid ? markUnit * 0.2 : 0;
-  const hi = markValid ? markUnit * 5 : Infinity;
-  let cheapestAsk = null;
-  // Restrict ask-side to `preauth` listings AND filter out near-expiry
-  // entries. Opening / range listings settle off-chain or via different
-  // mechanics and aren't directly crossable with a bid intent in a
-  // single tx — mixing them used to produce a "crossed 322 sats"
-  // artifact. The near-expiry filter (>= 60s left) further excludes
-  // stale listings whose race-with-expiry would make a fill unreliable;
-  // these are the "BEST PRICE 79 sats/TAC, expires in 0m" entries that
-  // skewed best-ask without being realistically takeable.
-  // Bids already come from intents only (the variable-fill bid type),
-  // which IS the matching crossable counterpart of preauth.
-  const _nowSec = Math.floor(Date.now() / 1000);
-  const _expiryGuard = _nowSec + 60;
-  const listings = (_marketCache?.listings || []).filter(l =>
-    l._asset?.asset_id === aid
-    && !l.expired
-    && !l._takenPending  // sold-pending; not a real best ask
-    && l.kind === 'preauth'
-    && Number(l.expiry || 0) > _expiryGuard,
-  );
-  for (const l of listings) {
-    const amt = l.asset_opening?.amount;
-    const ps = Number(l.min_price_sats || 0);
-    const u = unitPriceSats(ps, BigInt(amt || 0), decimals);
-    if (u == null) continue;
-    if (markValid && (u < lo || u > hi)) continue; // skip dust + outliers
-    if (cheapestAsk == null || u < cheapestAsk) cheapestAsk = u;
-  }
-  const intents = await _fetchBidIntentsCached(aid);
-  const nowSec = Math.floor(Date.now() / 1000);
-  let highestBid = null;
-  for (const b of intents) {
-    if (b._isReserved) continue;
-    if (Number(b.expiry || 0) <= nowSec) continue;
-    // Closed-var filter: a variable-fill bid whose remaining_amount has
-    // dropped below min_fill_amount is effectively unfillable — no seller
-    // can construct a valid take against it. The depth chart correctly
-    // excludes these (see _populateDepthChart ~L47309); without the same
-    // filter here, the spread row reported a "highest bid" no one could
-    // actually hit, inflating ARB% above the depth chart's value (seen
-    // on TAC: spread row 264.00 vs depth chart 251.88). Unit price uses
-    // the bid's ORIGINAL amount + price (the rate the bidder signed for),
-    // matching the depth chart's unitPriceSats call exactly.
-    const _isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
-    if (_isVar) {
-      let _rem = 0n, _minFill = 0n;
-      try { _rem = BigInt(b.remaining_amount || b.amount || '0'); } catch {}
-      try { _minFill = BigInt(b.min_fill_amount || '0'); } catch {}
-      if (_rem < _minFill) continue;
-    }
-    const amt = (() => { try { return BigInt(b.amount || '0'); } catch { return 0n; } })();
-    if (amt <= 0n) continue;
-    const u = unitPriceSats(Number(b.price_sats || 0), amt, decimals);
-    if (u == null) continue;
-    if (markValid && (u < lo || u > hi)) continue;
-    if (highestBid == null || u > highestBid) highestBid = u;
-  }
+  // Shared snapshot with the depth chart's header. Both render paths read
+  // identical { cheapestAsk, highestBid } so the displayed spread agrees
+  // with the depth header's best-bid/best-ask labels within a render cycle.
+  // Filter rules match the historical local impl (preauth + 60s expiry
+  // guard on asks; non-reserved + variable-fill remaining ≥ min_fill on
+  // bids; 0.2×–5× mark band on both).
+  const stats = await _computeInBandBookStats(aid, decimals, markUnit);
+  const { cheapestAsk, highestBid } = stats;
   if (cheapestAsk == null || highestBid == null) {
     wrap.style.display = 'none';
     return;
@@ -56884,26 +57071,22 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
   const bestAsk = (asksXable.length ? asksXable[0].u : askCum[0].u);
   const lowestBid = bidCum[bidCum.length - 1].u;
   const highestAsk = askCum[askCum.length - 1].u;
-  const isCrossed = bestBid > bestAsk;
-  // spread row already uses. Header text + dashed marker lines both
-  // read these so they match the spread row + reflect prices a trader
-  // would actually fill at. The chart's filled depth curves still
-  // draw against the unfiltered bidCum / askCum so dust tails stay
-  // visible. Falls back to raw extremes if markUnit is unknown or
-  // no orders fall in-band.
-  const _bandLo = (Number.isFinite(markUnit) && markUnit > 0) ? markUnit * 0.2 : 0;
-  const _bandHi = (Number.isFinite(markUnit) && markUnit > 0) ? markUnit * 5 : Infinity;
-  let inBandBestBid = null;
-  for (const b of bidCum) {
-    if (b.u >= _bandLo && b.u <= _bandHi && (inBandBestBid == null || b.u > inBandBestBid)) inBandBestBid = b.u;
-  }
-  let inBandBestAsk = null;
-  // Walk asksXable (preauth-only) — same rationale as bestAsk above.
-  for (const a of asksXable) {
-    if (a.u >= _bandLo && a.u <= _bandHi && (inBandBestAsk == null || a.u < inBandBestAsk)) inBandBestAsk = a.u;
-  }
+  // Read from the shared in-band book-stats helper so the depth-chart
+  // header and the standalone spread row agree on best-bid / best-ask.
+  // Same filter logic both ways, cached within a 1s window so render-
+  // cycle drift can't make them disagree. Falls back to raw extremes
+  // when the helper returns null on either side.
+  const _sharedStats = await _computeInBandBookStats(aid, decimals, markUnit);
+  const inBandBestBid = _sharedStats && _sharedStats.highestBid != null ? _sharedStats.highestBid : null;
+  const inBandBestAsk = _sharedStats && _sharedStats.cheapestAsk != null ? _sharedStats.cheapestAsk : null;
   const headerBestBid = inBandBestBid != null ? inBandBestBid : bestBid;
   const headerBestAsk = inBandBestAsk != null ? inBandBestAsk : bestAsk;
+  // Crossed flag tracks the in-band header values — same numbers the user
+  // sees in the depth-chart header and the spread row. Using raw bestBid >
+  // bestAsk here would flip the chart into crossed-rendering for outlier
+  // pairs the header itself excludes, which reads as "marketing a cross
+  // the labels don't show."
+  const isCrossed = headerBestBid > headerBestAsk;
   const xLoRawUnclamped = Math.min(lowestBid, bestAsk, bestBid);
   const xHiRawUnclamped = Math.max(highestAsk, bestBid, bestAsk);
   // Domain clamp: when mark price is available, restrict the visible
@@ -57028,30 +57211,34 @@ async function _populateDepthChart(section, aid, decimals, ticker, markUnit) {
     </div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" style="width:100%;height:auto;max-height:200px;display:block;background:var(--bg-warm, #faf9f5);border:1px solid var(--ink-faint);">
       ${isCrossed ? (() => {
-        // Crossed zone: best bid > best ask, so the band between them
-        // is a real arbitrage opportunity (someone could buy at the
-        // best ask and immediately sell at the best bid). Visible
-        // yellow rect + an explicit "ARB ZONE" label in the centre so
-        // users who don't know what "crossed" means in finance still
-        // read it as "something is unusual here." pointer-events:none
-        // on the rect so the overlay crosshair (data-depth-overlay
-        // above) keeps capturing hover for the price tooltip — the
-        // label is purely visual signal. Min-width gate keeps the
-        // label from rendering on tiny zones where it'd be illegible.
+        // Crossed zone: best bid > best ask, so the band between them is a
+        // real arbitrage opportunity (someone could buy at the best ask and
+        // immediately sell at the best bid). Visible amber rect + an
+        // explicit "ARB ZONE +N%" label in the centre so users who don't
+        // know what "crossed" means in finance still read it as "something
+        // is unusual here." Reads in-band header values to match the
+        // header label + the spread row above. pointer-events:none on the
+        // rect so the overlay crosshair (data-depth-overlay below) keeps
+        // capturing hover for the price tooltip — the label is purely
+        // visual signal. Min-width gate kept loose so even thin crosses
+        // render the label.
         const _zoneXLo = Math.min(bestBidX, bestAskX);
         const _zoneXHi = Math.max(bestBidX, bestAskX);
         const _zoneW = _zoneXHi - _zoneXLo;
         const _zoneCx = (_zoneXLo + _zoneXHi) / 2;
         const _zoneCy = PT + plotH / 2;
-        const _showLabel = _zoneW >= 70;
-        const _spreadPct = (bestAsk > 0) ? ((bestBid - bestAsk) / bestAsk) * 100 : null;
-        const _zoneTip = `Arbitrage zone: best bid (${fmtUnitPriceSats(bestBid)}) is higher than best ask (${fmtUnitPriceSats(bestAsk)}) sats/${ticker}${_spreadPct != null ? ` — a +${_spreadPct.toFixed(0)}% gap` : ''}. A real-liquidity cross would drain immediately as arbitrageurs buy the ask and sell to the bid; persistent crosses usually mean one side is stale or fat-finger.`;
-        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.18" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="10" font-family="var(--mono, monospace)" fill="#a06800" text-anchor="middle" font-weight="700" letter-spacing="0.1em" pointer-events="none" opacity="0.75">ARB ZONE</text>` : ''}`;
+        const _showLabel = _zoneW >= 36;
+        const _spreadPct = (headerBestAsk > 0) ? ((headerBestBid - headerBestAsk) / headerBestAsk) * 100 : null;
+        const _pctTag = _spreadPct != null && Number.isFinite(_spreadPct) && _spreadPct < 10000
+          ? ` +${_spreadPct.toFixed(_spreadPct < 10 ? 1 : 0)}%`
+          : '';
+        const _zoneTip = `Arbitrage zone: best bid (${fmtUnitPriceSats(headerBestBid)}) is higher than best ask (${fmtUnitPriceSats(headerBestAsk)}) sats/${ticker}${_spreadPct != null ? ` — a +${_spreadPct.toFixed(0)}% gap` : ''}. A real-liquidity cross drains immediately as arbitrageurs buy the ask and sell to the bid; persistent crosses usually mean one side is stale or fat-finger.`;
+        return `<rect x="${_zoneXLo.toFixed(2)}" y="${PT}" width="${_zoneW.toFixed(2)}" height="${plotH.toFixed(2)}" fill="#ffcc33" fill-opacity="0.42" stroke="#c97a1a" stroke-width="1" stroke-opacity="0.55" stroke-dasharray="4,3" pointer-events="none"><title>${escapeHtml(_zoneTip)}</title></rect>${_showLabel ? `<text x="${_zoneCx.toFixed(2)}" y="${_zoneCy.toFixed(2)}" font-size="10" font-family="var(--mono, monospace)" fill="#7a4d00" text-anchor="middle" font-weight="800" letter-spacing="0.12em" pointer-events="none">ARB ZONE${escapeHtml(_pctTag)}</text>` : ''}`;
       })() : ''}
       <path data-depth-bid d="${bidPath}" fill="#0a8f43" fill-opacity="0.32" stroke="#0a8f43" stroke-width="1.6" pointer-events="none"/>
       <path data-depth-ask d="${askPath}" fill="#b8341d" fill-opacity="0.32" stroke="#b8341d" stroke-width="1.6" pointer-events="none"/>
-      <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="1" stroke-opacity="0.8" stroke-dasharray="2,2" pointer-events="none"/>
-      <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#b8341d" stroke-width="1" stroke-opacity="0.8" stroke-dasharray="2,2" pointer-events="none"/>
+      <line x1="${bestBidX.toFixed(2)}" y1="${PT}" x2="${bestBidX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#0a8f43" stroke-width="${isCrossed ? '1.5' : '1'}" stroke-opacity="${isCrossed ? '1' : '0.8'}" stroke-dasharray="2,2" pointer-events="none"/>
+      <line x1="${bestAskX.toFixed(2)}" y1="${PT}" x2="${bestAskX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="#b8341d" stroke-width="${isCrossed ? '1.5' : '1'}" stroke-opacity="${isCrossed ? '1' : '0.8'}" stroke-dasharray="2,2" pointer-events="none"/>
       ${centerX != null ? `<line x1="${centerX.toFixed(2)}" y1="${PT}" x2="${centerX.toFixed(2)}" y2="${(PT + plotH).toFixed(2)}" stroke="var(--ink)" stroke-width="1.4" stroke-dasharray="5,3" stroke-opacity="0.85" pointer-events="none"/><rect x="${(centerX - 36).toFixed(2)}" y="${PT}" width="72" height="11" rx="2" fill="#faf9f5" stroke="var(--ink)" stroke-width="0.8" opacity="0.95" pointer-events="none"/><text x="${centerX.toFixed(2)}" y="${(PT + 8).toFixed(2)}" font-size="9" fill="var(--ink)" font-family="var(--mono, monospace)" text-anchor="middle" font-weight="600" pointer-events="none">mark ${escapeHtml(fmtUnitPriceSats(centerU))}</text>` : ''}
       <text x="${PL}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xLo))}</text>
       <text x="${W - PR}" y="${H - 5}" font-size="9" fill="var(--ink-mid)" font-family="var(--mono, monospace)" text-anchor="end" pointer-events="none">${escapeHtml(fmtUnitPriceSats(xHi))}</text>
@@ -63988,13 +64175,40 @@ async function marketCancelPreauthHandler(btn) {
   // when it sees the entry vanish — that toast is meant for filled
   // sales, not user-initiated removals.
   _markLocalListingCancel(`preauth:${sid}`);
+  // Capture the listing's asset_outpoint + identifying fields BEFORE
+  // the worker DELETE so we can persist a soft-cancel record for the
+  // Holdings risk-surface strip. The strip lists every soft-cancelled
+  // preauth whose UTXO is still unspent + replayable, and the strip's
+  // periodic prune drops entries once the UTXO is observed spent. We
+  // do this BEFORE the cancel so a worker failure doesn't leave a
+  // stale tracking entry; on cancel success the record is appended.
+  const _softCancelSnap = (() => {
+    const live = (_marketCache?.listings || []).find(l => l.kind === 'preauth' && l.sale_id === sid);
+    if (!live) return null;
+    const op = live.asset_outpoint || {};
+    if (!op.txid || !Number.isInteger(op.vout)) return null;
+    return {
+      sale_id: sid,
+      asset_id: aid,
+      asset_outpoint: { txid: String(op.txid).toLowerCase(), vout: op.vout | 0 },
+      ticker, decimals: dec, amount, price_sats: price,
+      seller_pubkey: live.seller_pubkey || '',
+      soft_cancelled_at: Math.floor(Date.now() / 1000),
+    };
+  })();
   try {
     await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
+    if (_softCancelSnap) {
+      try { _addSoftCancelRecord(_softCancelSnap); } catch {}
+    }
     // Post-soft-cancel nudge: surfaces the hard-cancel follow-up so a
     // user who soft-cancelled because of second thoughts (rather than
     // because the listing already settled) doesn't leave the signed
-    // bytes in the wild. Toast is dismissible / fades on next nav.
-    toast('Soft cancel done · worker record removed. Hard cancel (self-spend the UTXO) is the only crypto-strong invalidation.', 'success', 12000);
+    // bytes in the wild. Toast is dismissible / fades on next nav. The
+    // Holdings risk strip persistently surfaces the same warning until
+    // the user hard-cancels (or the UTXO is observed spent some other
+    // way), so the warning isn't a one-shot anymore.
+    toast(`Soft cancel done · worker record removed. ${_softCancelSnap ? 'The pre-signed sale bytes stay replayable until the UTXO is spent — see Holdings for one-click hard cancel.' : 'Hard cancel (self-spend the UTXO) is the only crypto-strong invalidation.'}`, 'success', 12000);
     invalidateMarketCache();
     setTimeout(() => renderMarket(), 500);
   } catch (e) {
@@ -64073,12 +64287,40 @@ async function marketCancelPreauthGroupHandler(btn) {
   // doesn't false-positive any of them as a sale once the worker
   // DELETEs propagate through the SWR cache.
   for (const sid of sids) _markLocalListingCancel(`preauth:${sid}`);
+  // Snapshot every chunk's asset_outpoint up front so the soft-cancel
+  // risk-tracking bookkeeping has the data even if _marketCache is
+  // invalidated mid-loop. _marketCache reads stay synchronous so we
+  // capture state-at-click before the worker DELETE round-trips.
+  const _softCancelSnaps = sids.map(sid => {
+    const live = (_marketCache?.listings || []).find(l => l.kind === 'preauth' && l.sale_id === sid);
+    if (!live) return null;
+    const op = live.asset_outpoint || {};
+    if (!op.txid || !Number.isInteger(op.vout)) return null;
+    return {
+      sale_id: sid,
+      asset_id: aid,
+      asset_outpoint: { txid: String(op.txid).toLowerCase(), vout: op.vout | 0 },
+      ticker,
+      decimals: Number.isInteger(live._asset?.decimals) ? live._asset.decimals : 0,
+      amount: live.asset_opening?.amount || '0',
+      price_sats: Number(live.min_price_sats) || 0,
+      seller_pubkey: live.seller_pubkey || '',
+      soft_cancelled_at: Math.floor(Date.now() / 1000),
+    };
+  });
   let done = 0;
   let firstErr = null;
   for (const sid of sids) {
     btn.textContent = `cancelling ${done + 1}/${sids.length}…`;
     try {
       await cancelPreauthSale({ assetIdHex: aid, saleIdHex: sid });
+      // Append the soft-cancel record for this chunk on per-chunk success
+      // so a partial-group failure still surfaces every successfully-
+      // cancelled chunk in the Holdings risk strip.
+      const snap = _softCancelSnaps[done];
+      if (snap) {
+        try { _addSoftCancelRecord(snap); } catch {}
+      }
       done++;
     } catch (e) {
       if (isUnlockCancelled(e)) { firstErr = new Error('Unlock cancelled'); break; }
@@ -64092,9 +64334,9 @@ async function marketCancelPreauthGroupHandler(btn) {
     return;
   }
   if (firstErr) {
-    toast(`Cancelled ${done}/${sids.length} chunks · ${firstErr.message}`, 'error', 10000);
+    toast(`Cancelled ${done}/${sids.length} chunks · ${firstErr.message}${done > 0 ? ' · see Holdings for one-click hard cancel of the replayable chunks' : ''}`, 'error', 10000);
   } else {
-    toast(`Cancelled ${done} chunks ✓`, 'success');
+    toast(`Cancelled ${done} chunks ✓${done > 0 ? ' · see Holdings for one-click hard cancel of the replayable chunks' : ''}`, 'success');
   }
   invalidateMarketCache();
   setTimeout(() => renderMarket(), 500);

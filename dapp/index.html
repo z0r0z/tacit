@@ -5395,6 +5395,11 @@ details[open] > summary > .det-arrow { transform: rotate(90deg); display: inline
         <button id="btn-take-atomic">Take atomic offer</button>
       </div>
       <div data-pending-settlements-strip style="display:none;"></div>
+      <!-- Soft-cancel risk surface. Lists locally-tracked listings the user
+           soft-cancelled whose asset UTXO is still unspent — the pre-signed
+           sale bytes remain replayable until the UTXO is consumed. Populated
+           by _renderSoftCancelRiskStrip() on every renderHoldings tick. -->
+      <div data-soft-cancel-risk-strip style="display:none;"></div>
       <!-- cBTC.zk slot-balance summary. Renders above standard tacit-asset
            holdings when this wallet has live slot records in localStorage. -->
       <div id="holdings-slot-summary" style="display:none;margin-bottom:14px;"></div>
