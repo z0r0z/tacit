@@ -34946,11 +34946,18 @@ async function ceremonyContributeAmm({
   const _doUpload = (fd) => new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${WORKER_BASE}/ceremony/${circuitHash}/contribute`);
+    // Explicit XHR timeout: 180s. Without it, default 0 = no timeout, so a
+    // hung CF<->Pinata leg can sit for minutes. 180s is generous enough
+    // for a slow Pinata upload but lets the retry path catch true hangs.
+    xhr.timeout = 180_000;
     xhr.upload.onprogress = (ev) => {
       if (ev.lengthComputable) _emit('upload-bytes', { done: ev.loaded, total: ev.total });
     };
     xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
-    xhr.onerror = () => reject(new Error('upload network error'));
+    // Capture readyState + status on error so diagnostic output can
+    // distinguish a CORS/CF-killed response from a true network drop.
+    xhr.onerror = () => reject(new Error(`upload network error (readyState=${xhr.readyState}, status=${xhr.status || 0})`));
+    xhr.ontimeout = () => reject(new Error('upload timeout (180s) — Cloudflare worker likely killed mid-Pinata pin'));
     xhr.onabort = () => reject(new Error('upload aborted'));
     xhr.send(fd);
   });
@@ -35144,6 +35151,10 @@ function renderAmmCeremonyChip() {
 // When the contribute completes (success or error), the chip hides and
 // a toast announces the outcome with a click-to-reopen handle.
 let _ammContribInFlight = false;
+// One-shot circuit override: set by the "try lp_add" rotate-button in
+// the error UI; consumed by the next _submitAmmCeremonyContribution
+// call to skip round-robin and target the named circuit directly.
+let _ammContribForcedCircuit = null;
 let _ammContribCurrentPct = 0;
 let _ammContribStartedAt = 0;
 let _ammContribMiniChipTimer = null;
@@ -35304,7 +35315,16 @@ async function _submitAmmCeremonyContribution() {
   const contributorPubkeyHex = attributePub ? bytesToHex(wallet.pub) : null;
   // Round-robin: pick whichever AMM chain currently has the fewest contributions.
   await refreshAmmCeremonyStatesIfStale(true).catch(() => {});
-  const target = pickShortestAmmCircuit();
+  // Forced-circuit override: when the user rotated via the "try lp_add"
+  // button after a swap_batch failure, skip round-robin and target the
+  // specified circuit directly. Override is one-shot (cleared on use).
+  let target;
+  if (_ammContribForcedCircuit) {
+    target = _ammContribForcedCircuit;
+    _ammContribForcedCircuit = null;
+  } else {
+    target = pickShortestAmmCircuit();
+  }
   const origLabel = goBtn.textContent;
   goBtn.disabled = true;
   if (cancelBtn) cancelBtn.disabled = true;
@@ -35534,8 +35554,8 @@ async function _submitAmmCeremonyContribution() {
         else if (phase === 'upload-bytes' && info?.total) { _setBytesProgress('upload', info.done || 0, info.total); _updateProgressLine('upload', info.done || 0, info.total); }
         else if (phase === 'upload-retry') {
           _progLineActive = null;
-          if (headlineSubEl) headlineSubEl.textContent = `upload hiccup, retry ${info.attempt}/3 in ${Math.round((info.wait || 0) / 1000)}s`;
-          _log(`    · upload hiccup (${info.reason || 'network'}), retrying in ${Math.round((info.wait || 0) / 1000)}s (attempt ${info.attempt}/3)…`);
+          if (headlineSubEl) headlineSubEl.textContent = `upload hiccup, retry ${info.attempt}/8 in ${Math.round((info.wait || 0) / 1000)}s`;
+          _log(`    · upload hiccup (${info.reason || 'network'}), retrying in ${Math.round((info.wait || 0) / 1000)}s (attempt ${info.attempt}/8)…`);
         }
         else if (phase === 'done')     {
           _progLineActive = null;
@@ -35650,15 +35670,42 @@ async function _submitAmmCeremonyContribution() {
     } else if (e?.code === 'TOOLARGE') {
       msg = 'Zkey exceeded the 100 MB worker upload ceiling. '
           + 'This circuit needs the IPFS pre-pin path — contact the coordinator.';
-    } else if (/network|aborted|fetch/i.test(String(e?.message || ''))) {
-      msg = 'Network error — your connection dropped before the contribution landed. '
-          + 'Click Contribute again to retry; the download + mix runs again from scratch.';
-    } else if (/cancelled|cancelled|user/i.test(String(e?.message || ''))) {
+    } else if (/network|aborted|fetch|timeout/i.test(String(e?.message || ''))) {
+      msg = 'Network error — your upload bytes reached the worker but the response was dropped '
+          + '(Cloudflare may have killed the request while the worker was pinning to IPFS). '
+          + 'Click Contribute again to retry.';
+    } else if (/cancelled|user/i.test(String(e?.message || ''))) {
       msg = String(e?.message || 'Cancelled.');
     } else {
       msg = `Couldn\'t finish: ${e?.message || e}. Click Contribute again to retry.`;
     }
     resultEl.textContent = `✗ ${msg}`;
+    // Smart rotate: if this was swap_batch AND the failure looks like a
+    // CF<->Pinata timeout (network / upload-after-8-attempts), suggest
+    // the lp_add / lp_remove circuits which are much lighter (3 MB / 6 MB
+    // zkeys vs 95 MB) and complete reliably even on slow upstream legs.
+    // The button below the error spawns a one-click contribute against
+    // a forced lp circuit, bypassing the round-robin pick.
+    const isSwapBatch = /swap_batch|swap batch/i.test(target.label || '');
+    const isNetworkish = /network|aborted|fetch|timeout|upload failed after/i.test(String(e?.message || ''));
+    if (isSwapBatch && isNetworkish) {
+      const rotateHint = document.createElement('div');
+      rotateHint.style.cssText = 'margin-top:10px;padding:10px 12px;border:1px solid var(--ink-faint);background:var(--bg-warm);font-family:var(--serif);font-style:italic;font-size:12px;line-height:1.5;color:var(--ink);';
+      rotateHint.innerHTML = '<strong style="font-style:normal;font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;">tip · try a lighter circuit</strong><br>swap_batch zkey is 91 MB and stresses Cloudflare\'s upload-to-Pinata leg. The lp_add (3 MB) and lp_remove (6 MB) circuits complete in &lt;30 seconds and rarely hit network timeouts. Your entropy still strengthens the ceremony — every circuit needs contributors.';
+      const rotateBtn = document.createElement('button');
+      rotateBtn.type = 'button';
+      rotateBtn.textContent = 'try lp_add (lightest)';
+      rotateBtn.style.cssText = 'margin-top:8px;padding:6px 12px;border:1px solid var(--ink);background:var(--ink);color:var(--bg);font-family:var(--mono);font-size:11px;font-weight:700;letter-spacing:0.04em;cursor:pointer;text-transform:uppercase;';
+      rotateBtn.onclick = () => {
+        // Force-target lp_add for the next contribute by stashing the
+        // override; the submit fn picks it up before round-robin runs.
+        _ammContribForcedCircuit = AMM_CEREMONY_CIRCUIT_HASHES.find(c => c.key === 'amm_lp_add');
+        _submitAmmCeremonyContribution();
+      };
+      rotateHint.appendChild(document.createElement('br'));
+      rotateHint.appendChild(rotateBtn);
+      resultEl.appendChild(rotateHint);
+    }
     goBtn.textContent = origLabel;
   } finally {
     goBtn.disabled = false;
