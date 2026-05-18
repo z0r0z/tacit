@@ -33137,6 +33137,57 @@ function _wirePoolLpRemoveForm() {
   };
 }
 
+// Compare a direct-pool single-hop swap against the best multi-hop route
+// (2..N_HOPS_MAX hops) and return whichever yields a larger delta_out.
+// Returns one of:
+//   { kind: 'direct',   pool, direction, deltaOut, raPost, rbPost }
+//   { kind: 'multihop', route }    where route = findSwapRoutePath output
+//   null                           when no path exists
+//
+// The dapp's swap tile calls this and dispatches the matching builder
+// (buildAndBroadcastSwapVarSelfFulfill vs buildAndBroadcastSwapRoute).
+// Exported so external integrations + tests can reuse the same dispatch
+// logic.
+export function previewSwapRoute({ fromAid, toAid, amountIn, pools }) {
+  const a_in = String(fromAid).toLowerCase();
+  const a_out = String(toAid).toLowerCase();
+  if (!a_in || !a_out || a_in === a_out) return null;
+  const din = BigInt(amountIn);
+  if (din <= 0n) return null;
+
+  // Direct quote (if a pool exists for the pair).
+  let direct = null;
+  for (const p of pools || []) {
+    if (!p.asset_a || !p.asset_b) continue;
+    if (p.validation !== 'verified' && p.validation !== 'xcurve-verified') continue;
+    const pa = String(p.asset_a).toLowerCase();
+    const pb = String(p.asset_b).toLowerCase();
+    if ((pa === a_in && pb === a_out) || (pa === a_out && pb === a_in)) {
+      const direction = (pa === a_in) ? 0 : 1;
+      try {
+        const c = swapVarCurveDeltaOut(direction, p.reserve_a, p.reserve_b, din, p.fee_bps);
+        direct = { kind: 'direct', pool: p, direction, deltaOut: c.deltaOut, raPost: c.raPost, rbPost: c.rbPost };
+      } catch { /* unusable direct pool — fall through to multi-hop */ }
+      break;
+    }
+  }
+
+  // Multi-hop quote (2..N_HOPS_MAX). Pre-ceremony viable; reuses
+  // T_SWAP_VAR's crypto stack atomically across N pools.
+  let multihop = null;
+  try {
+    const route = findSwapRoutePath({ assetInHex: a_in, assetOutHex: a_out, amountIn: din, pools: pools || [] });
+    if (route) multihop = { kind: 'multihop', route };
+  } catch { /* no multi-hop path */ }
+
+  if (!direct && !multihop) return null;
+  if (direct && !multihop) return direct;
+  if (!direct && multihop) return multihop;
+  // Both exist — pick larger delta_out (strict). Direct wins ties to keep
+  // settlement cheaper (one pool's state change vs N).
+  return (multihop.route.deltaOutLast > direct.deltaOut) ? multihop : direct;
+}
+
 function _wirePoolSwapForm() {
   const fromSel  = document.getElementById('pool-swap-from');
   const toSel    = document.getElementById('pool-swap-to');
@@ -33145,6 +33196,7 @@ function _wirePoolSwapForm() {
   const broadcastBtn = document.getElementById('btn-pool-swap-broadcast');
   const out      = document.getElementById('pool-swap-preview-out');
   if (!fromSel || !toSel || !amtIn || !broadcastBtn) return;
+  const _ticker = (aid) => (getAssetMeta(aid)?.ticker) || (aid ? aid.slice(0, 8) + '…' : '?');
   const _findPoolForPair = (fromAid, toAid) => {
     const pools = _poolListCache || [];
     for (const p of pools) {
@@ -33152,28 +33204,61 @@ function _wirePoolSwapForm() {
     }
     return null;
   };
+  const _renderRouteSummary = (route) => {
+    // Walk hop assets to render `A → B → C` with tickers. Hop k's
+    // asset_in is hop k-1's asset_out (or trader_input for k==0);
+    // hop k's asset_out feeds hop k+1's asset_in.
+    const labels = [_ticker(fromSel.value)];
+    for (const hop of route.hops) {
+      const poolIdHex = (hop.poolId instanceof Uint8Array)
+        ? bytesToHex(hop.poolId)
+        : String(hop.poolId).toLowerCase();
+      const pool = (_poolListCache || []).find((p) => String(p.pool_id).toLowerCase() === poolIdHex);
+      const asset_out = pool
+        ? (hop.direction === 0 ? pool.asset_b : pool.asset_a)
+        : null;
+      labels.push(_ticker(asset_out));
+    }
+    return labels.join(' → ');
+  };
   const _renderPreview = () => {
     const fromAid = fromSel.value, toAid = toSel.value;
     if (!fromAid || !toAid || fromAid === toAid) { _setPoolOut(out, ''); return; }
-    const pool = _findPoolForPair(fromAid, toAid);
-    if (!pool) { _setPoolOut(out, '⚠ no pool for this pair', 'error'); return; }
     let deltaIn;
     try { deltaIn = BigInt(parseAssetAmount(amtIn.value.trim() || '0', 0)); }
     catch { _setPoolOut(out, ''); return; }
     if (deltaIn <= 0n) { _setPoolOut(out, ''); return; }
-    const direction = (pool.asset_a === fromAid) ? 0 : 1;
-    try {
-      const curve = swapVarCurveDeltaOut(direction, pool.reserve_a, pool.reserve_b, deltaIn, pool.fee_bps);
-      const slipBps = Math.max(0, Math.min(10000, parseInt(slipIn?.value || '100', 10) || 0));
-      const minOut = (curve.deltaOut * BigInt(10000 - slipBps)) / 10000n;
-      const tFrom = (getAssetMeta(fromAid)?.ticker) || fromAid.slice(0, 8) + '…';
-      const tTo   = (getAssetMeta(toAid)?.ticker)   || toAid.slice(0, 8) + '…';
+    const slipBps = Math.max(0, Math.min(10000, parseInt(slipIn?.value || '100', 10) || 0));
+    const tFrom = _ticker(fromAid);
+    const tTo   = _ticker(toAid);
+    const best = previewSwapRoute({ fromAid, toAid, amountIn: deltaIn, pools: _poolListCache || [] });
+    if (!best) { _setPoolOut(out, '⚠ no pool or multi-hop route for this pair', 'error'); return; }
+    if (best.kind === 'direct') {
+      const minOut = (best.deltaOut * BigInt(10000 - slipBps)) / 10000n;
+      const p = best.pool;
+      let extra = '';
+      // If a multi-hop alternative exists (just smaller), surface it as
+      // informational so the user knows the router considered it.
+      try {
+        const r = findSwapRoutePath({ assetInHex: fromAid, assetOutHex: toAid, amountIn: deltaIn, pools: _poolListCache || [] });
+        if (r && r.deltaOutLast > 0n) {
+          extra = `\nAlt:    multi-hop ${r.hops.length}-hop → ${r.deltaOutLast} ${tTo} (direct wins by ${best.deltaOut - r.deltaOutLast})`;
+        }
+      } catch {}
       _setPoolOut(out,
-        `Swap:   ${deltaIn} ${tFrom} → ${curve.deltaOut} ${tTo}\n` +
+        `Swap:   ${deltaIn} ${tFrom} → ${best.deltaOut} ${tTo}  (direct, 1 pool)\n` +
         `Floor:  ${minOut} ${tTo} (slippage ${slipBps} bps)\n` +
-        `Pool:   ${pool.reserve_a}:${pool.reserve_b} reserves · ${pool.fee_bps} bps fee · pool ${pool.pool_id.slice(0, 12)}…`);
-    } catch (e) {
-      _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+        `Pool:   ${p.reserve_a}:${p.reserve_b} reserves · ${p.fee_bps} bps fee · pool ${p.pool_id.slice(0, 12)}…${extra}`);
+    } else {
+      // multi-hop
+      const r = best.route;
+      const minOut = (r.deltaOutLast * BigInt(10000 - slipBps)) / 10000n;
+      const summary = _renderRouteSummary(r);
+      _setPoolOut(out,
+        `Swap:   ${deltaIn} ${tFrom} → ${r.deltaOutLast} ${tTo}  (multi-hop, ${r.hops.length} pools)\n` +
+        `Route:  ${summary}\n` +
+        `Floor:  ${minOut} ${tTo} (slippage ${slipBps} bps on final hop)\n` +
+        `Tx:     one Bitcoin commit + reveal pair — atomic across all ${r.hops.length} pools`);
     }
   };
   fromSel.onchange = _renderPreview;
@@ -33184,63 +33269,114 @@ function _wirePoolSwapForm() {
     if (broadcastBtn.disabled) return;
     const fromAid = fromSel.value, toAid = toSel.value;
     if (!fromAid || !toAid || fromAid === toAid) { _setPoolOut(out, '✗ pick distinct From / To assets', 'error'); return; }
-    const pool = _findPoolForPair(fromAid, toAid);
-    if (!pool) { _setPoolOut(out, '✗ no pool for this pair', 'error'); return; }
     let deltaIn;
     try { deltaIn = BigInt(parseAssetAmount(amtIn.value.trim() || '0', 0)); }
     catch { _setPoolOut(out, '✗ invalid amount', 'error'); return; }
     if (deltaIn <= 0n) { _setPoolOut(out, '✗ amount must be > 0', 'error'); return; }
-    const direction = (pool.asset_a === fromAid) ? 0 : 1;
-    let curve;
-    try { curve = swapVarCurveDeltaOut(direction, pool.reserve_a, pool.reserve_b, deltaIn, pool.fee_bps); }
-    catch (e) { _setPoolOut(out, `✗ ${e.message}`, 'error'); return; }
     const slipBps = Math.max(0, Math.min(10000, parseInt(slipIn?.value || '100', 10) || 0));
-    const minOut = (curve.deltaOut * BigInt(10000 - slipBps)) / 10000n;
+    const tFrom = _ticker(fromAid);
+    const tTo   = _ticker(toAid);
+    const best = previewSwapRoute({ fromAid, toAid, amountIn: deltaIn, pools: _poolListCache || [] });
+    if (!best) { _setPoolOut(out, '✗ no pool or multi-hop route for this pair', 'error'); return; }
     let carved;
     try { carved = await carveExactAmount({ assetIdHex: fromAid, amount: deltaIn }); }
     catch (e) { _setPoolOut(out, `✗ carve failed: ${e.message}`, 'error'); return; }
     if (!carved?.utxo) { _setPoolOut(out, '✗ insufficient balance to carve input', 'error'); return; }
-    const tFrom = (getAssetMeta(fromAid)?.ticker) || fromAid.slice(0, 8) + '…';
-    const tTo   = (getAssetMeta(toAid)?.ticker)   || toAid.slice(0, 8) + '…';
-    const confirmed = await tacitConfirm({
-      title: 'Swap via AMM?',
-      body:
-        `Swap ${deltaIn} ${tFrom} → ≥ ${minOut} ${tTo}.\n\n` +
-        `Floor enforces minOut on chain — if the pool moves past your floor before reveal, the tx fails and your input UTXO stays where it was.\n\n` +
-        `Settlement is one Bitcoin commit-reveal pair.`,
-      confirmLabel: 'Swap',
-    });
-    if (!confirmed) return;
-    broadcastBtn.disabled = true;
+
     const origLabel = broadcastBtn.textContent;
-    broadcastBtn.textContent = 'Broadcasting…';
-    try {
-      const result = await buildAndBroadcastSwapVarSelfFulfill({
-        poolReserves: { pool_id_hex: pool.pool_id, reserve_a: pool.reserve_a, reserve_b: pool.reserve_b, fee_bps: pool.fee_bps },
-        assetInputUtxo: {
-          txid: carved.utxo.txid, vout: carved.utxo.vout,
-          asset_id_hex: fromAid,
-          amount: carved.amount, blinding: carved.blinding,
-        },
-        direction, deltaIn, minOut,
-        expiryHeight: 0xffffffff,
-        receiveAssetIdHex: toAid,
-        onProgress: (stage) => _setPoolOut(out, `… ${stage}`),
+    if (best.kind === 'direct') {
+      const minOut = (best.deltaOut * BigInt(10000 - slipBps)) / 10000n;
+      const confirmed = await tacitConfirm({
+        title: 'Swap via AMM?',
+        body:
+          `Swap ${deltaIn} ${tFrom} → ≥ ${minOut} ${tTo}.\n\n` +
+          `Floor enforces minOut on chain — if the pool moves past your floor before reveal, the tx fails and your input UTXO stays where it was.\n\n` +
+          `Settlement is one Bitcoin commit-reveal pair.`,
+        confirmLabel: 'Swap',
       });
-      _setPoolOut(out,
-        `✓ T_SWAP_VAR broadcast\n` +
-        `  commit_txid: ${result.commitTxid}\n` +
-        `  reveal_txid: ${result.revealTxid}\n` +
-        `  received: ${result.deltaOut} ${tTo}`, 'success');
-      _poolListCacheUntil = 0;
-      try { invalidateHoldingsCache(); } catch {}
-      try { await renderPool(); } catch {}
-    } catch (e) {
-      _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
-    } finally {
-      broadcastBtn.disabled = false;
-      broadcastBtn.textContent = origLabel;
+      if (!confirmed) return;
+      broadcastBtn.disabled = true;
+      broadcastBtn.textContent = 'Broadcasting…';
+      try {
+        const result = await buildAndBroadcastSwapVarSelfFulfill({
+          poolReserves: { pool_id_hex: best.pool.pool_id, reserve_a: best.pool.reserve_a, reserve_b: best.pool.reserve_b, fee_bps: best.pool.fee_bps },
+          assetInputUtxo: {
+            txid: carved.utxo.txid, vout: carved.utxo.vout,
+            asset_id_hex: fromAid,
+            amount: carved.amount, blinding: carved.blinding,
+          },
+          direction: best.direction, deltaIn, minOut,
+          expiryHeight: 0xffffffff,
+          receiveAssetIdHex: toAid,
+          onProgress: (stage) => _setPoolOut(out, `… ${stage}`),
+        });
+        _setPoolOut(out,
+          `✓ T_SWAP_VAR broadcast\n` +
+          `  commit_txid: ${result.commitTxid}\n` +
+          `  reveal_txid: ${result.revealTxid}\n` +
+          `  received: ${result.deltaOut} ${tTo}`, 'success');
+      } catch (e) {
+        _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+      } finally {
+        broadcastBtn.disabled = false;
+        broadcastBtn.textContent = origLabel;
+      }
+    } else {
+      // multi-hop
+      const r = best.route;
+      const minOut = (r.deltaOutLast * BigInt(10000 - slipBps)) / 10000n;
+      const summary = (() => {
+        const labels = [tFrom];
+        for (const hop of r.hops) {
+          const poolIdHex = (hop.poolId instanceof Uint8Array)
+            ? bytesToHex(hop.poolId)
+            : String(hop.poolId).toLowerCase();
+          const pool = (_poolListCache || []).find((p) => String(p.pool_id).toLowerCase() === poolIdHex);
+          const asset_out = pool ? (hop.direction === 0 ? pool.asset_b : pool.asset_a) : null;
+          labels.push(_ticker(asset_out));
+        }
+        return labels.join(' → ');
+      })();
+      const confirmed = await tacitConfirm({
+        title: `Swap via multi-hop AMM route?`,
+        body:
+          `Route ${deltaIn} ${tFrom} → ≥ ${minOut} ${tTo}\n` +
+          `via ${r.hops.length} pools: ${summary}\n\n` +
+          `Floor enforces minOut on chain — if the FINAL hop's delta_out clears your floor, every pool's state advances atomically. If any hop fails (curve mismatch, stale reserves), the entire route reverts and your input UTXO stays where it was.\n\n` +
+          `Settlement is one Bitcoin commit-reveal pair (same as a direct swap).`,
+        confirmLabel: `Swap via ${r.hops.length} pools`,
+      });
+      if (!confirmed) return;
+      broadcastBtn.disabled = true;
+      broadcastBtn.textContent = 'Broadcasting…';
+      try {
+        const result = await buildAndBroadcastSwapRoute({
+          pools: _poolListCache || [],
+          assetInputUtxo: {
+            txid: carved.utxo.txid, vout: carved.utxo.vout,
+            asset_id_hex: fromAid,
+            amount: carved.amount, blinding: carved.blinding,
+          },
+          traderOutputAssetIdHex: toAid,
+          minOut, expiryHeight: 0xffffffff,
+          onProgress: (stage) => _setPoolOut(out, `… ${stage}`),
+        });
+        _setPoolOut(out,
+          `✓ T_SWAP_ROUTE broadcast (${result.hops.length} pools)\n` +
+          `  commit_txid: ${result.commitTxid}\n` +
+          `  reveal_txid: ${result.revealTxid}\n` +
+          `  route:       ${summary}\n` +
+          `  received:    ${result.deltaOutLast} ${tTo}`, 'success');
+      } catch (e) {
+        _setPoolOut(out, `✗ ${e?.message || e}`, 'error');
+      } finally {
+        broadcastBtn.disabled = false;
+        broadcastBtn.textContent = origLabel;
+      }
     }
+    _poolListCacheUntil = 0;
+    try { invalidateHoldingsCache(); } catch {}
+    try { await renderPool(); } catch {}
   };
 }
 
@@ -51751,23 +51887,21 @@ function applyMarketFilters() {
         tradeHtml = `<span class="strip-trade${_isHot ? '' : ' cold'}" title="Most recent trade was ${escapeHtml(_ageStr)} ago. ${_24hCount} settled trade${_24hCount === 1 ? '' : 's'} in the last 24h (from the recent-trades summary)."><span class="strip-trade-dot"></span>last <span data-age-ts="${_lastTradeTs}" data-age-fmt="ago">${escapeHtml(_ageStr)} ago</span>${_countSuffix}</span>`;
       }
       // Prefer the worker's canonical windowed Δ (1h / 4h / 24h / 7d / all,
-      // picked from the tightest non-null window). It uses the outlier-
-      // guarded mark on both endpoints and has access to the full trade
-      // history, not just the 10-entry ring the dapp sees. Falls back to
-      // the locally-computed 24h delta if the worker hasn't been upgraded
-      // or didn't ship the field for this asset.
-      const _workerPct = Number(a.price_change_primary_pct);
-      const _workerWin = typeof a.price_change_primary_window === 'string' && a.price_change_primary_window
-        ? a.price_change_primary_window
-        : '24h';
-      const _pctVal = Number.isFinite(_workerPct) ? _workerPct : delta24Pct;
-      const _winLbl = Number.isFinite(_workerPct) ? _workerWin : '24h';
+      // Strict 24h Δ — pulls the worker's canonical price_24h_change_pct
+      // so this surface, the asset-header delta strip, and the stats
+      // section all show the SAME number. A previous version read
+      // price_change_primary_pct (the tightest non-null window, which
+      // can be 1h / 4h / 7d / all on quiet markets) and labelled it
+      // "24h" anyway — that caused the three surfaces to disagree on
+      // active markets where primary happened to use a different
+      // window than 24h. Local fallback dropped: better to hide than
+      // to show a value computed by a different code path.
+      const _workerPct = Number(a.price_24h_change_pct);
       let deltaHtml = '';
-      if (Number.isFinite(_pctVal)) {
-        const cls = _pctVal >= 0 ? 'up' : 'down';
-        const sign = _pctVal >= 0 ? '+' : '';
-        const _winText = _winLbl === 'all' ? 'all' : _winLbl;
-        deltaHtml = `<span class="strip-delta ${cls}" title="Change over the last ${escapeHtml(_winLbl)} · outlier-guarded reference, dust trades ignored.">${sign}${_pctVal.toFixed(2)}% <span class="strip-delta-win">${escapeHtml(_winText)}</span></span>`;
+      if (Number.isFinite(_workerPct)) {
+        const cls = _workerPct >= 0 ? 'up' : 'down';
+        const sign = _workerPct >= 0 ? '+' : '';
+        deltaHtml = `<span class="strip-delta ${cls}" title="Change over the last 24h · outlier-guarded reference, dust trades ignored.">${sign}${_workerPct.toFixed(2)}% <span class="strip-delta-win">24h</span></span>`;
       }
       return `<div class="swap-tile-strip" data-swap-strip>${sparkSvg ? `<span class="strip-spark">${sparkSvg}</span>` : '<span class="strip-spark"></span>'}${lastHtml}${deltaHtml}${tradeHtml}</div>`;
     })();
@@ -56894,34 +57028,16 @@ async function populateMarketAssetStats(scope, asset) {
     high24 = sample[0].u; low24 = sample[0].u;
     for (const p of sample) { if (p.u > high24) high24 = p.u; if (p.u < low24) low24 = p.u; }
   }
-  // Prefer the worker's canonical 24h Δ when present — it's computed
-  // server-side over the FULL trade history with the same outlier band
-  // we use locally, AND it's the same number the header delta pills
-  // surface (via price_change_primary_pct). Sourcing from the worker
-  // here keeps the two surfaces in agreement (the user-reported bug:
-  // header showed +30.06% while stats showed +41.27% on the same
-  // page). Falls back to the local tradePoints computation only when
-  // the worker hasn't supplied price_24h_change_pct (cold endpoint,
-  // older worker build).
+  // Strict: read the worker's canonical price_24h_change_pct only. The
+  // older local fallback (computed from tradePoints with a 0.2×/5× mark
+  // band) produced different values from the asset-header delta strip
+  // and the swap-tile sub-strip on the same page, since those surfaces
+  // route through the worker's authoritative field. Now all three
+  // surfaces share one source of truth; on cold cache / older worker
+  // builds without the field the slot just hides instead of rendering
+  // a drifting local approximation.
   const _workerDelta24 = Number(j.price_24h_change_pct);
-  if (Number.isFinite(_workerDelta24)) {
-    delta24Pct = _workerDelta24;
-  } else if (last24h.length >= 1 && latestUnit != null) {
-    // Reference price for Δ%: the LAST in-band trade that landed before
-    // the 24h window opened. The 0.2×/5× mark band is the same outlier
-    // guard the chart, high/low, and mark price use. Without this filter
-    // a single dust-print (e.g., a 0.18-sat trade that sneaked past the
-    // worker's older indexing) anchors the delta and produces +1683%
-    // on a market that actually moved 335 → 330 sats over the window —
-    // exactly the TAC bug surfaced in screenshot review. Falls back to
-    // the unfiltered tradePoints when no in-band reference exists, so
-    // markets with fewer than a handful of trades still get a delta.
-    const refPool = _deltaMarkUnit != null
-      ? tradePoints.filter(p => p.u >= _deltaMarkUnit * 0.2 && p.u <= _deltaMarkUnit * 5)
-      : tradePoints;
-    const ref = (refPool.find(p => p.ts < _24hAgo)) || tradePoints.find(p => p.ts < _24hAgo);
-    if (ref && ref.u > 0) delta24Pct = ((latestUnit - ref.u) / ref.u) * 100;
-  }
+  if (Number.isFinite(_workerDelta24)) delta24Pct = _workerDelta24;
   // Locate the wrapper so we can hide the whole slot (label + value)
   // when the 24h figure isn't truly 24h. Drops the "24h Δ -4.05% /
   // all-time Δ -4.05%" duplicate that traders find confusing on
@@ -67905,6 +68021,11 @@ export {
   buildSwapRouteIntentMsg, buildSwapRouteKernelMsg,
   computeSwapRouteEnvelopeHash,
   buildSwapRouteEnvelopeSelfFulfill, buildAndBroadcastSwapRoute,
+  // Swap-tile router preview: picks the better of {direct swap, multi-hop}
+  // against the current pool registry. Returns either a SwapVar-shaped
+  // direct quote or a SwapRoute-shaped multi-hop route. The Swap tile
+  // dispatches the matching builder based on `.kind`.
+  // previewSwapRoute is exported inline at its definition (export function).
   // AMM POOL_INIT builder (T_LP_ADD variant 1) — full crypto wiring.
   buildAndBroadcastLpAddPoolInit,
   // AMM variant-0 LP add + LP_REMOVE.
