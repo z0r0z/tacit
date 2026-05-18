@@ -27,7 +27,7 @@ const {
   bpRangeAggVerify,
 } = w;
 
-const FARM_INIT_TXID = '5c6813bf401bea39ada0588da233b389ab3e16e0b0f3236b160371e300f7194c';
+const FARM_INIT_TXID = '44546a18b803ae41e88841e5c26333cb536b130a11589026c5256e99a740dcd5';
 
 async function fetchTx(txid) {
   const r = await fetch(`https://mempool.space/signet/api/tx/${txid}`);
