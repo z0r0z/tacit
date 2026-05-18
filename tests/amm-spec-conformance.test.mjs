@@ -36,6 +36,10 @@ const EXPECTED_OPCODES = {
   T_INTENT_ATTEST:       0x30,
   T_PROTOCOL_FEE_CLAIM:  0x31,
   T_SWAP_VAR:            0x32,  // implemented (SPEC.md §5.16.3)
+  // LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md §5.40/§5.41/§5.42).
+  T_FARM_INIT:           0x34,
+  T_LP_BOND:             0x35,
+  T_LP_UNBOND:           0x36,
 };
 
 // ----- Pinned: every domain-tag string the protocol uses, byte-by-byte. -----
@@ -69,6 +73,13 @@ const EXPECTED_DOMAIN_TAGS = [
   'tacit-amm-swap-var-recv-v1',
   'tacit-amm-swap-var-change-v1',
   'tacit-amm-swap-var-tip-v1',
+  // LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md §"Constants").
+  // Three tags only — receipts are plain P2WPKH dust (no asset class),
+  // treasury is virtual (no NUMS sentinel). The kernel-sig domain reuses
+  // the shared "tacit-kernel-v1" from composition.mjs.
+  'tacit-amm-farm-init-v1',     // farm_id derivation + init_msg
+  'tacit-amm-farm-bond-v1',     // bond_msg
+  'tacit-amm-farm-unbond-v1',   // unbond_msg
   // Deterministic-nonce derivation tags for proveXCurveDeterministic
   // Internal-only — never appear in on-chain bytes, so
   // they don't need normative SPEC documentation, but we whitelist them
@@ -165,6 +176,14 @@ console.log('Opcode bytes (spec-literal pinning)');
   const { OPCODE_T_SWAP_VAR } = await import('./swap-var.mjs');
   test(`T_SWAP_VAR == 0x32`, () => OPCODE_T_SWAP_VAR === EXPECTED_OPCODES.T_SWAP_VAR);
 
+  // T_FARM_INIT / T_LP_BOND / T_LP_UNBOND — SPEC-AMM-FARM-AMENDMENT.md.
+  const {
+    OPCODE_T_FARM_INIT, OPCODE_T_LP_BOND, OPCODE_T_LP_UNBOND,
+  } = await import('./amm-farm.mjs');
+  test(`T_FARM_INIT == 0x34`, () => OPCODE_T_FARM_INIT === EXPECTED_OPCODES.T_FARM_INIT);
+  test(`T_LP_BOND   == 0x35`, () => OPCODE_T_LP_BOND   === EXPECTED_OPCODES.T_LP_BOND);
+  test(`T_LP_UNBOND == 0x36`, () => OPCODE_T_LP_UNBOND === EXPECTED_OPCODES.T_LP_UNBOND);
+
   // amm-validator.mjs re-exports the T_SWAP_VAR surface so integrators
   // have a single canonical entry point for every AMM-opcode validator.
   const ammv = await import('./amm-validator.mjs');
@@ -172,6 +191,18 @@ console.log('Opcode bytes (spec-literal pinning)');
        () => typeof ammv.validateSwapVar === 'function');
   test(`amm-validator re-exports OPCODE_T_SWAP_VAR == 0x32`,
        () => ammv.OPCODE_T_SWAP_VAR === EXPECTED_OPCODES.T_SWAP_VAR);
+  test(`amm-validator re-exports validateFarmInit`,
+       () => typeof ammv.validateFarmInit === 'function');
+  test(`amm-validator re-exports validateLpBond`,
+       () => typeof ammv.validateLpBond === 'function');
+  test(`amm-validator re-exports validateLpUnbond`,
+       () => typeof ammv.validateLpUnbond === 'function');
+  test(`amm-validator re-exports OPCODE_T_FARM_INIT == 0x34`,
+       () => ammv.OPCODE_T_FARM_INIT === EXPECTED_OPCODES.T_FARM_INIT);
+  test(`amm-validator re-exports OPCODE_T_LP_BOND == 0x35`,
+       () => ammv.OPCODE_T_LP_BOND === EXPECTED_OPCODES.T_LP_BOND);
+  test(`amm-validator re-exports OPCODE_T_LP_UNBOND == 0x36`,
+       () => ammv.OPCODE_T_LP_UNBOND === EXPECTED_OPCODES.T_LP_UNBOND);
 }
 
 // =========================================================================
@@ -473,6 +504,8 @@ console.log('\nDomain tag whitelist');
     'amm-receipt.mjs', 'amm-sigma-xcurve.mjs', 'amm-validator.mjs',
     // T_SWAP_VAR (0x32) — per-trade variable-amount swap (SPEC.md §5.16.3):
     'swap-var.mjs',
+    // T_FARM_INIT/T_LP_BOND/T_LP_UNBOND (0x34/0x35/0x36) — staked-LP rewards:
+    'amm-farm.mjs',
     // Scope-generic primitives (not AMM-specific but consumed by AMM and
     // future amendments):
     'range-proof.mjs', 'range-attest.mjs',

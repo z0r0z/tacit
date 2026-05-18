@@ -86,6 +86,43 @@ export {
   N_HOPS_MAX,
 } from './swap-route.mjs';
 
+// T_FARM_INIT (0x34) / T_LP_BOND (0x35) / T_LP_UNBOND (0x36) —
+// MasterChef-style staked-LP rewards on tacit AMM pools. Virtual-
+// treasury bookkeeping, per-bond worker-indexed records, lazy Q.96
+// mintFee-style accrual. Reuses the kernel-sig + Pedersen + m=1
+// bulletproof stack from T_SWAP_VAR; no Groth16, no new ceremony.
+// See SPEC-AMM-FARM-AMENDMENT.md for wire format + validator algorithm.
+export {
+  // Validators
+  validateFarmInit, verifyFarmInitKernelSig,
+  validateLpBond, verifyLpBondKernelSig,
+  validateLpUnbond,
+  // Wire format
+  encodeFarmInit, decodeFarmInit,
+  encodeLpBond,   decodeLpBond,
+  encodeLpUnbond, decodeLpUnbond,
+  computeEnvelopeHash as computeFarmEnvelopeHash,
+  // Msg builders
+  buildFarmInitMsg, buildFarmInitKernelMsg,
+  buildLpBondMsg,   buildLpBondKernelMsg,
+  buildLpUnbondMsg,
+  // Derivations
+  deriveFarmId, deriveLpAssetIdFromPoolId,
+  encodeBondId,  decodeBondId,
+  // Accrual
+  crystallizeFarm,
+  // State machine
+  FarmState,
+  // Opcodes
+  OPCODE_T_FARM_INIT, OPCODE_T_LP_BOND, OPCODE_T_LP_UNBOND,
+  // Constants
+  AMM_FARM_MIN_BOND, AMM_FARM_MIN_REWARD_TOTAL,
+  AMM_FARM_MAX_START_DELAY, AMM_FARM_VIEW_STALENESS,
+  ACC_FIXED_POINT_SHIFT,
+  // Helpers
+  isNoChangeSentinel as isFarmNoChangeSentinel,
+} from './amm-farm.mjs';
+
 function bytesEqual(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;

@@ -194,11 +194,16 @@ export function decodeBondId(bondIdBytes) {
 // =========================================================================
 
 // init_msg — signed by launcher_pubkey (BIP-340).
+//
+// Convention: the domain msg binds the structural fields directly. The
+// envelope's on-chain replay protection comes from the OP_RETURN
+// (SHA256(payload)) binding the validator enforces separately. This
+// matches T_SWAP_VAR §"intent_msg" — sigs are NOT over envelope_hash
+// (which would be self-referential since sigs are in the payload).
 export function buildFarmInitMsg({
   farmId, launcherPubkey,
   rewardTotal, rewardPerBlock,
   startHeight, endHeight,
-  envelopeHash,
 }) {
   return sha256(concatBytes(
     DOMAIN_INIT_MSG,
@@ -208,7 +213,6 @@ export function buildFarmInitMsg({
     u64LE(rewardPerBlock),
     u32LE(startHeight),
     u32LE(endHeight),
-    asBytes(envelopeHash, 32, 'envelopeHash'),
   ));
 }
 
@@ -231,10 +235,12 @@ export function buildFarmInitKernelMsg({
   );
 }
 
-// bond_msg — signed by bonder_pubkey (BIP-340).
+// bond_msg — signed by bonder_pubkey (BIP-340). Domain msg binds the
+// structural fields directly (envelope_hash binding via OP_RETURN, not
+// in-msg, to avoid self-reference; same convention as buildFarmInitMsg).
 export function buildLpBondMsg({
   farmId, bonderPubkey, bondAmount,
-  entryAccPerShare, bondViewHeight, envelopeHash,
+  entryAccPerShare, bondViewHeight,
 }) {
   return sha256(concatBytes(
     DOMAIN_BOND_MSG,
@@ -243,7 +249,6 @@ export function buildLpBondMsg({
     u64LE(bondAmount),
     u128LE(entryAccPerShare),
     u32LE(bondViewHeight),
-    asBytes(envelopeHash, 32, 'envelopeHash'),
   ));
 }
 
@@ -263,11 +268,13 @@ export function buildLpBondKernelMsg({
   );
 }
 
-// unbond_msg — signed by unbonder_pubkey (BIP-340).
+// unbond_msg — signed by unbonder_pubkey (BIP-340). Domain msg binds
+// the structural fields directly; envelope_hash via OP_RETURN binding.
+// bond_id is the canonical position identifier (= T_LP_BOND vout[1] outpoint).
 export function buildLpUnbondMsg({
   farmId, bondId, unbonderPubkey,
   exitAccPerShare, exitViewHeight, rewardAmount,
-  lpReturnR, rewardR, envelopeHash,
+  lpReturnR, rewardR,
 }) {
   return sha256(concatBytes(
     DOMAIN_UNBOND_MSG,
@@ -279,7 +286,6 @@ export function buildLpUnbondMsg({
     u64LE(rewardAmount),
     asBytes(lpReturnR, 32, 'lpReturnR'),
     asBytes(rewardR, 32, 'rewardR'),
-    asBytes(envelopeHash, 32, 'envelopeHash'),
   ));
 }
 
@@ -706,7 +712,6 @@ export function validateFarmInit({
     rewardPerBlock: env.rewardPerBlock,
     startHeight: env.startHeight,
     endHeight: env.endHeight,
-    envelopeHash,
   });
 
   // launcher_sig verification.
@@ -845,7 +850,6 @@ export function validateLpBond({
     bondAmount: env.bondAmount,
     entryAccPerShare: env.entryAccPerShare,
     bondViewHeight: env.bondViewHeight,
-    envelopeHash,
   });
   const bonderXOnly = env.bonderPubkey.subarray(1);
   let bonderOk;
@@ -999,7 +1003,6 @@ export function validateLpUnbond({
     rewardAmount: env.rewardAmount,
     lpReturnR: env.lpReturnR,
     rewardR: env.rewardR,
-    envelopeHash,
   });
   const unbonderXOnly = env.unbonderPubkey.subarray(1);
   let unbonderOk;
