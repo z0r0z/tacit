@@ -917,38 +917,6 @@ tr[data-recent-activity] .market-token-sub::after {
   display: block;
 }
 .market-token-main { min-width: 0; }
-/* Constrain the swap tile width on desktop so it doesn't span the full
-   page (which makes the tile feel oversized once the page is wide
-   enough that the asks/bids grids don't need every pixel). Centered.
-   Tablet + mobile stay full-width — the tile's inputs need every pixel
-   below ~700px viewport to remain comfortably tappable. */
-@media (min-width: 900px) {
-  [data-swap-tile] {
-    max-width: 560px;
-    margin-left: auto !important;
-    margin-right: auto !important;
-  }
-}
-/* Skeleton placeholder for the swap tile during the brief async load
-   window before _swapTileHtml resolves. Without this the tile area
-   renders as blank space then suddenly populates — the "looks broken
-   for a beat" complaint. Dashed border + faint text echoes the resolved
-   tile's frame so the transition reads as fill-in, not pop-in. */
-[data-swap-tile-skeleton] {
-  display: block;
-  margin: 0 auto 14px;
-  max-width: 560px;
-  border: 1px dashed var(--ink-faint);
-  background: var(--bg);
-  padding: 16px;
-  min-height: 240px;
-  color: var(--ink-mid);
-  font-size: 11px;
-  text-align: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
 .market-asset-tabbar {
   display: flex;
   align-items: center;
