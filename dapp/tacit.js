@@ -34750,7 +34750,14 @@ async function ceremonyContributeAmm({
 //   (b) user contributed in the last 24h (localStorage ack)
 //   (c) active tab isn't one of the four target surfaces
 //   (d) worker base unreachable (WORKER_BASE empty)
-const AMM_CEREMONY_CHIP_TABS = new Set(['market', 'pool', 'holdings']);
+// AMM chip surfaces on EVERY tab now (was: market/pool/holdings only).
+// Ceremony eligibility cuts across the whole app — a user landing on
+// Wallet or Send still wants the prompt visible since contribution
+// drives airdrop snapshots regardless of which surface they're on.
+// Acked + finalized + worker-down gates still apply; this set is just
+// the visibility allowlist. Empty Set ⇒ no tab filter; chip shows
+// wherever the other gates allow.
+const AMM_CEREMONY_CHIP_TABS = null;
 function _ammCerActiveTab() {
   try {
     const t = document.querySelector('.tab.active');
@@ -34779,7 +34786,7 @@ function renderAmmCeremonyChip() {
   }
   if (!chip) return;
   const tab = _ammCerActiveTab();
-  const onTargetTab = AMM_CEREMONY_CHIP_TABS.has(tab);
+  const onTargetTab = AMM_CEREMONY_CHIP_TABS == null || AMM_CEREMONY_CHIP_TABS.has(tab);
   const acked = ammCeremonyRecentlyAcked();
   const show = AMM_CEREMONY_CHIP_ENABLED && !finalized && onTargetTab && !acked && !!WORKER_BASE;
   chip.style.display = show ? 'inline-flex' : 'none';
@@ -34869,33 +34876,14 @@ async function _submitAmmCeremonyContribution() {
         return;
       }
     }
-    if (!wallet?.priv) {
-      try {
-        if (typeof _promptUnlockPassphrase === 'function') {
-          progEl.style.display = 'block';
-          progEl.textContent = '→ unlock your wallet to attribute this contribution…\n';
-          await _promptUnlockPassphrase('Unlock to attribute your AMM ceremony contribution.');
-        }
-      } catch (e) {
-        if (typeof isUnlockCancelled === 'function' && isUnlockCancelled(e)) {
-          resultEl.style.display = 'block';
-          resultEl.style.color = 'var(--ink-mid)';
-          resultEl.textContent =
-            'Unlock cancelled. Uncheck "log my wallet" to contribute anonymously, or retry to unlock and attribute.';
-          return;
-        }
-        resultEl.style.display = 'block';
-        resultEl.style.color = 'var(--red)';
-        resultEl.textContent = `Unlock failed: ${e?.message || e}`;
-        return;
-      }
-      if (!wallet?.priv) {
-        resultEl.style.display = 'block';
-        resultEl.style.color = 'var(--ink-mid)';
-        resultEl.textContent = 'Wallet still locked — aborting.';
-        return;
-      }
-    }
+    // Attribution only needs the wallet PUBLIC key — there's no signing
+    // step in the ceremony contribute flow. Previously the gate
+    // required wallet.priv too, which forced a passphrase prompt even
+    // for passkey wallets that are loaded (pub known) but locked
+    // (priv requires a fresh passkey ceremony). Now: skip the priv
+    // requirement entirely when wallet.pub is already populated.
+    // The wallet.pub null case is handled by the welcome-modal branch
+    // above which covers BOTH passphrase and passkey onboarding.
   }
   const contributorName = (nameEl?.value || '').trim().slice(0, 64) || 'anonymous';
   const attributePub = wantsAttribution && !!wallet?.pub;
