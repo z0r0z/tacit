@@ -35511,14 +35511,15 @@ function _renderAmmCerDrawerBody(opts) {
       : ` <span style="color:var(--ink-mid);font-size:10px;letter-spacing:0.05em;">~30s</span>`;
     const isCurrent = currentKey === c.key;
     const isCompleted = completedKeys.has(c.key);
-    // Picker-clickable when nothing else is contending: not the
-    // currently-running circuit, not finalized, not mobile-heavy, not
-    // mid-contribute. Click sets _ammContribForcedCircuit + fires the
-    // Go button so a user assigned the slow swap_batch can pick a 30s
-    // lp_* instead.
-    const clickable = !isCurrent && !isFinalized && !(mobile && heavy) && !_ammContribInFlight;
+    // Picker is clickable on any row that isn't the active one or
+    // already-finalized (and isn't mobile-heavy). When a contribute is
+    // mid-flight, clicking another row prompts to abandon the current
+    // mix — useful when the current circuit is failing (TUS no-CID,
+    // stuck upload) or just to skip swap_batch's 5-min wait for a
+    // ~30s lp_*.
+    const clickable = !isCurrent && !isFinalized && !(mobile && heavy);
     let leadGlyph = '';
-    let rowStyle = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);';
+    let rowStyle = 'display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--ink-faint);transition:background 120ms;';
     let leftStyle = '';
     if (isCurrent) {
       leadGlyph = '<span style="color:#c97a1a;margin-right:6px;font-weight:700;">▸</span>';
@@ -35534,21 +35535,38 @@ function _renderAmmCerDrawerBody(opts) {
       ? ` <span style="color:#c97a1a;font-size:10px;letter-spacing:0.05em;text-decoration:underline;">pick</span>`
       : '';
     const dataAttr = clickable ? ` data-amm-cer-pick="${escapeHtml(c.key)}"` : '';
-    return `<div${dataAttr} style="${rowStyle}"><span style="${leftStyle}">${leadGlyph}${escapeHtml(c.label)}${hint}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalizedTag}${pickTag}</span></div>`;
+    return `<div${dataAttr} class="amm-cer-row${clickable ? ' amm-cer-row-pickable' : ''}" style="${rowStyle}"><span style="${leftStyle}">${leadGlyph}${escapeHtml(c.label)}${hint}</span><span style="color:var(--ink-mid);">${escapeHtml(String(count))} contribs${finalizedTag}${pickTag}</span></div>`;
   }).join('');
   chainsEl.innerHTML = rows;
   chainsEl.querySelectorAll('[data-amm-cer-pick]').forEach(el => {
+    el.addEventListener('mouseenter', () => {
+      const isActive = el.style.background.includes('255, 248, 235') || el.style.background.includes('#fff8eb');
+      if (!isActive) el.style.background = '#faf4e8';
+    });
+    el.addEventListener('mouseleave', () => {
+      const isActive = el.style.background.includes('255, 248, 235') || el.style.background.includes('#fff8eb');
+      if (!isActive) el.style.background = '';
+    });
     el.addEventListener('click', () => {
-      if (_ammContribInFlight) return;
       const key = el.getAttribute('data-amm-cer-pick');
       const picked = AMM_CEREMONY_CIRCUIT_HASHES.find(c => c.key === key);
       if (!picked) return;
+      if (_ammContribInFlight) {
+        if (!confirm(`Queue a switch to "${picked.label}"? It'll start as soon as the current contribute finishes (the in-flight WASM mix can't be interrupted mid-flight).`)) return;
+        _ammContribPendingSwitch = picked;
+        return;
+      }
       _ammContribForcedCircuit = picked;
       const go = document.getElementById('amm-cer-go');
       if (go) go.click();
     });
   });
 }
+// Set when a picker click while mid-flight asks to abandon current.
+// Contribute path checks this at safe checkpoints (post-mix, before
+// upload) and bails so the user can start the new circuit.
+let _ammContribAbortRequested = false;
+let _ammContribPendingSwitch = null;
 // Per-session completed set so subsequent contributes in the same drawer
 // session can mark prior wins as ✓ even after fresh round-robin picks
 // move on. Cleared on full page reload (sessionless).
@@ -36025,6 +36043,21 @@ async function _submitAmmCeremonyContribution() {
       try {
         toast(msg, landed ? 'success' : '', 12000, { onClick: () => { try { openAmmCeremonyDrawer(); } catch {} } });
       } catch { try { toast(msg, landed ? 'success' : '', 12000); } catch {} }
+    }
+    // Picker-triggered switch: if the user clicked a different circuit
+    // mid-flight + confirmed, the current run was abandoned. Start the
+    // newly-picked circuit now that the in-flight flag is cleared.
+    if (_ammContribPendingSwitch) {
+      const next = _ammContribPendingSwitch;
+      _ammContribPendingSwitch = null;
+      _ammContribAbortRequested = false;
+      _ammContribForcedCircuit = next;
+      setTimeout(() => {
+        try {
+          const go = document.getElementById('amm-cer-go');
+          if (go) go.click();
+        } catch {}
+      }, 200);
     }
   }
 }
@@ -65530,7 +65563,10 @@ function _wireSwapTile(scope) {
   };
   // SELL exact-out: user types target SATS to receive; walk bids
   // highest-first above slippage floor, accumulate until cumulative sats
-  // ≥ target. Last bid can overshoot by ≤ one bid's worth of sats.
+  // ≥ target. Last whole-bid can overshoot by ≤ one bid's worth of sats;
+  // variable-fill bids (§5.7.7) scale their chunk to land the tail
+  // exactly on the gap so the cumulative SATS lands on target without
+  // overselling the underlying token amount.
   const planSellExactOut = async (targetSatsTotal) => {
     if (!Number.isFinite(targetSatsTotal) || targetSatsTotal <= 0) return null;
     let bids;
@@ -65539,23 +65575,45 @@ function _wireSwapTile(scope) {
     if (!Array.isArray(bids) || bids.length === 0) return null;
     const nowSec = Math.floor(Date.now() / 1000);
     const floor = _sellFloorUnit();
-    const candidates = bids
-      .filter(b => b.buyer_pubkey !== myPubHex)
-      .filter(b => Number(b.expiry || 0) > nowSec)
-      .filter(b => !b._isReserved)
-      .map(b => {
-        const amt = BigInt(b.amount || 0);
-        const ps  = Number(b.price_sats || 0);
-        const u   = unitPriceSats(ps, amt, decimals);
-        return { b, amt, ps, u };
-      })
-      .filter(c => Number.isFinite(c.u) && c.u > 0 && c.u >= floor && c.u <= outlierCeilUnit && c.amt > 0n && c.ps > 0)
-      .sort((x, y) => y.u - x.u);
+    const candidates = [];
+    for (const b of bids) {
+      if (b.buyer_pubkey === myPubHex) continue;
+      if (Number(b.expiry || 0) <= nowSec) continue;
+      if (b._isReserved) continue;
+      const fullAmt = BigInt(b.amount || 0);
+      const fullPs  = Number(b.price_sats || 0);
+      const u       = unitPriceSats(fullPs, fullAmt, decimals);
+      if (!Number.isFinite(u) || u <= 0 || u < floor || u > outlierCeilUnit || fullAmt <= 0n || fullPs <= 0) continue;
+      const isVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
+      if (isVar) {
+        const minBig = BigInt(b.min_fill_amount);
+        const remBig = BigInt(b.remaining_amount || b.amount || '0');
+        if (remBig < minBig) continue;  // closed
+        candidates.push({ kind: 'bid-var', b, fullAmt, fullPs, u, minFill: minBig, remaining: remBig });
+      } else {
+        candidates.push({ kind: 'bid', b, amt: fullAmt, ps: fullPs, u });
+      }
+    }
+    candidates.sort((x, y) => y.u - x.u);
     if (!candidates.length) return null;
     const plan = []; let totalSats = 0; let totalAmt = 0n;
     for (const c of candidates) {
       if (totalSats >= targetSatsTotal) break;
-      plan.push(c); totalSats += c.ps; totalAmt += c.amt;
+      if (c.kind === 'bid-var') {
+        const gapSats = targetSatsTotal - totalSats;
+        // chunk_amt ≈ floor(gap_sats × fullAmt / fullPs) — the inverse
+        // of the bid's amount→sats scaling. Clamp to [minFill, remaining].
+        let chunk = (BigInt(gapSats) * c.fullAmt) / BigInt(c.fullPs);
+        if (chunk > c.remaining) chunk = c.remaining;
+        if (chunk < c.minFill) chunk = c.minFill;  // overshoot SATS if gap < minFill priced
+        if (chunk > c.remaining) continue;
+        const scaledSats = Number((chunk * BigInt(c.fullPs)) / c.fullAmt);
+        if (scaledSats < DUST) continue;
+        plan.push({ kind: 'bid-var', b: c.b, amt: chunk, ps: scaledSats, u: c.u });
+        totalAmt += chunk; totalSats += scaledSats;
+      } else {
+        plan.push(c); totalSats += c.ps; totalAmt += c.amt;
+      }
     }
     if (!plan.length) return null;
     return { plan, totalAmt, totalSats, targetSats: targetSatsTotal, overshootSats: totalSats > targetSatsTotal ? totalSats - targetSatsTotal : 0, shortfallSats: totalSats < targetSatsTotal ? targetSatsTotal - totalSats : 0, floor, exactOut: true };
