@@ -5054,7 +5054,14 @@ body.tacit-amm-ceremony-ready [data-amm-gated] { display: block; }
        5min TTL keeps worker hits to ~1 round-trip per 5min per user
        per active session. -->
   <div class="section" id="amm-contrib-section" style="display:none;">
-    <div class="section-header"><span>amm ceremony contributors</span></div>
+    <div class="section-header">
+      <span>amm ceremony contributors</span>
+      <!-- Lean social-metric badge: shows total contributions across the
+           three AMM circuits + the per-circuit progress bar. Populated by
+           _renderAmmContribTape() from the same cache the marquee uses;
+           no extra worker round-trips. -->
+      <span id="amm-contrib-count" style="font-family:var(--mono);font-style:normal;font-size:10px;color:var(--bg);letter-spacing:0.04em;text-transform:none;font-weight:400;opacity:0.85;"></span>
+    </div>
     <div class="section-body" style="padding:0;">
       <div id="amm-contrib-tape" class="global-tape" data-amm-contrib-tape style="display:none;margin:0;border-bottom:0;">
         <div class="global-tape-track" data-amm-contrib-tape-track></div>

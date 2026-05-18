@@ -34017,17 +34017,34 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
   // and the failover only fires on truly dead gateways. Per-gateway
   // (not total) so the outer failover can move on to the next.
   const PER_GATEWAY_TIMEOUT_MS = 300_000;
+  // Friendly gateway labels — shows e.g. "tacit cache" instead of the
+  // raw "tacit-pin.rosscampbell9.workers.dev/ipfs/" URL in user-facing
+  // progress logs. Falls back to a short host if the gateway isn't in
+  // the table. Keeps logs readable + doesn't bake operator personal
+  // domain into the visible ceremony progress.
+  const _gwLabel = (gw) => {
+    try {
+      if (gw.includes('tacit-pin')) return 'tacit cache';
+      if (gw.includes('content.wrappr.wtf')) return 'wrappr';
+      if (gw.includes('ipfs.io')) return 'ipfs.io';
+      if (gw.includes('w3s.link')) return 'w3s';
+      if (gw.includes('dweb.link')) return 'dweb';
+      const h = new URL(gw).hostname;
+      return h.replace(/^www\./, '').split('.')[0];
+    } catch { return 'gateway'; }
+  };
   for (const gw of IPFS_GATEWAYS_FALLBACK) {
     const url = `${gw}${cid}`;
+    const label = _gwLabel(gw);
     const _ac = new AbortController();
     const _timer = setTimeout(() => _ac.abort(), PER_GATEWAY_TIMEOUT_MS);
     try {
-      if (onProgress) onProgress(`trying ${gw}…`);
+      if (onProgress) onProgress(`trying ${label}…`);
       const resp = await fetch(url, { cache: 'no-store', signal: _ac.signal });
-      if (!resp.ok) { errors.push(`${gw}: HTTP ${resp.status}`); continue; }
+      if (!resp.ok) { errors.push(`${label}: HTTP ${resp.status}`); continue; }
       const ct = resp.headers.get('Content-Type') || '';
       if (/text\/html|application\/xhtml/i.test(ct)) {
-        errors.push(`${gw}: returned HTML (Content-Type: ${ct})`);
+        errors.push(`${label}: returned HTML (Content-Type: ${ct})`);
         continue;
       }
       // Stream the body so we can report bytes-downloaded in real time.
@@ -34068,7 +34085,7 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
         // Either no streaming available, or streaming threw above. Re-fetch
         // since the body of the original Response is already consumed/locked.
         const resp2 = streamErr ? await fetch(url, { cache: 'no-store' }) : resp;
-        if (streamErr && !resp2.ok) { errors.push(`${gw}: HTTP ${resp2.status} (after stream-fail retry)`); continue; }
+        if (streamErr && !resp2.ok) { errors.push(`${label}: HTTP ${resp2.status} (after stream-fail retry)`); continue; }
         bytes = new Uint8Array(await resp2.arrayBuffer());
         if (onBytes) { try { onBytes(bytes.length, bytes.length); } catch {} }
       }
@@ -34077,16 +34094,16 @@ async function _ceremonyFetchIpfsWithFailover(cid, validate, onProgress, onBytes
       // is truthy and gets stringified as "[object Promise]", silently
       // rejecting a perfectly good response.
       const verr = validate ? await validate(bytes, resp.headers) : null;
-      if (verr) { errors.push(`${gw}: ${verr}`); continue; }
+      if (verr) { errors.push(`${label}: ${verr}`); continue; }
       clearTimeout(_timer);
       return bytes;
     } catch (e) {
       // Distinguish AbortError (our own timeout) from other failures so the
       // per-gateway error line tells the user what actually happened.
       if (_ac.signal.aborted) {
-        errors.push(`${gw}: timed out after ${PER_GATEWAY_TIMEOUT_MS / 1000}s`);
+        errors.push(`${label}: timed out after ${PER_GATEWAY_TIMEOUT_MS / 1000}s`);
       } else {
-        errors.push(`${gw}: ${(e && e.message) || e}`);
+        errors.push(`${label}: ${(e && e.message) || e}`);
       }
     } finally {
       clearTimeout(_timer);
@@ -35004,6 +35021,13 @@ function openAmmCeremonyDrawer() {
 function closeAmmCeremonyDrawer() {
   const drawer = document.getElementById('amm-ceremony-drawer');
   if (drawer) drawer.style.display = 'none';
+  // Re-render the contribute chip on close so users who errored (or
+  // closed without contributing) see the chip reappear immediately
+  // without needing to navigate away and back. Defensive — covers
+  // the "I errored and never saw the chip again" report. Mark-contributed
+  // never runs on error paths so the chip's acked check stays
+  // honest; this just ensures we redraw to reflect that.
+  try { renderAmmCeremonyChip(); } catch {}
 }
 function _renderAmmCerDrawerBody() {
   const chainsEl = document.getElementById('amm-cer-chains');
@@ -35154,41 +35178,86 @@ async function _submitAmmCeremonyContribution() {
       },
     });
     resultEl.style.display = 'block';
-    resultEl.style.color = 'var(--green, #0a7d3a)';
+    resultEl.style.color = 'var(--ink)';
+    resultEl.style.borderColor = '#0a7d3a';
+    resultEl.style.background = '#f0f7f0';
     const newState = _ammCeremonyStateByCircuit.get(target.hash);
-    const summary =
-      `✓ Contribution landed.\n` +
-      `   chain: ${target.label}\n` +
-      `   new count: ${newState?.contribution_count ?? '?'}\n` +
-      (contributorPubkeyHex ? `   attributed to: ${contributorPubkeyHex.slice(0, 12)}…\n` : '   pseudonymous\n') +
-      `\nThanks!`;
-    // Render the summary + a "share on X" intent button. Built with
-    // createElement (not innerHTML) so the dapp's strict CSP3 surface
-    // stays intact — no inline handlers, no eval.
+    // Tally across all three AMM chains for the social hook — "you're
+    // contributor #N to the tacit AMM ceremony" reads stronger than
+    // "you're contributor #N to AMM · LP add" alone, because it makes
+    // the community size visible to the contributor and to anyone they
+    // share with. Reads from the local state map, which contributeAmm
+    // just updated with the fresh count for target.hash.
+    let totalContribs = 0;
+    for (const c of AMM_CEREMONY_CIRCUIT_HASHES) {
+      const s = _ammCeremonyStateByCircuit.get(c.hash);
+      totalContribs += Number(s?.contribution_count) || 0;
+    }
+    const myIndex = newState?.contribution_count;
+    const attributed = !!(contributorPubkeyHex);
     resultEl.textContent = '';
-    const summaryNode = document.createElement('div');
-    summaryNode.style.whiteSpace = 'pre-wrap';
-    summaryNode.textContent = summary;
-    resultEl.appendChild(summaryNode);
+    // Editorial-aesthetic success card built with createElement (strict
+    // CSP3 — no inline handlers, no eval).
+    const titleNode = document.createElement('div');
+    titleNode.style.cssText = 'font-family:var(--serif);font-style:italic;font-size:24px;line-height:1.05;letter-spacing:-0.005em;margin-bottom:8px;color:var(--ink);';
+    titleNode.textContent = 'Contribution landed.';
+    resultEl.appendChild(titleNode);
+    const subNode = document.createElement('div');
+    subNode.style.cssText = 'font-size:12px;line-height:1.55;color:var(--ink-mid);margin-bottom:14px;font-family:var(--serif);';
+    subNode.textContent = `You strengthened the ${target.label} chain — the AMM is now sound as long as you (and any prior contributor) were honest.`;
+    resultEl.appendChild(subNode);
+    // Stat row — readable counters in mono, label in serif italic.
+    // Two metrics: your index in this chain, and the cumulative total
+    // across all three. Both are social-proof signals.
+    const statsRow = document.createElement('div');
+    statsRow.style.cssText = 'display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;border:1px solid var(--ink-faint);background:var(--bg);';
+    const _stat = (label, value, sub) => {
+      const cell = document.createElement('div');
+      cell.style.cssText = 'flex:1 1 110px;min-width:0;';
+      const lbl = document.createElement('div');
+      lbl.style.cssText = 'font-family:var(--serif);font-style:italic;font-size:11px;color:var(--ink-mid);margin-bottom:2px;';
+      lbl.textContent = label;
+      const val = document.createElement('div');
+      val.style.cssText = 'font-family:var(--mono);font-size:18px;font-weight:600;color:var(--ink);line-height:1.1;';
+      val.textContent = value;
+      cell.appendChild(lbl); cell.appendChild(val);
+      if (sub) {
+        const subEl = document.createElement('div');
+        subEl.style.cssText = 'font-family:var(--mono);font-size:10px;color:var(--ink-mid);margin-top:2px;';
+        subEl.textContent = sub;
+        cell.appendChild(subEl);
+      }
+      return cell;
+    };
+    statsRow.appendChild(_stat('your position', myIndex != null ? `#${myIndex}` : '#?', `in ${target.label.replace(/^AMM · /, '')}`));
+    statsRow.appendChild(_stat('total contributions', String(totalContribs), 'across all 3 chains'));
+    if (attributed) {
+      statsRow.appendChild(_stat('attributed', 'tacit:' + contributorPubkeyHex.slice(0, 8), 'eligible for snapshots'));
+    } else {
+      statsRow.appendChild(_stat('attribution', 'pseudonymous', 'not snapshot-eligible'));
+    }
+    resultEl.appendChild(statsRow);
+    // Share + retry actions. share-on-x intent first (the engagement
+    // hook), contribute-again hint trailing.
     const shareWrap = document.createElement('div');
-    shareWrap.style.cssText = 'margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;';
+    shareWrap.style.cssText = 'display:flex;gap:10px;align-items:center;flex-wrap:wrap;';
     const tweetText =
-      'contributed entropy to the tacit AMM trusted setup ceremony.\n\n' +
-      'contribute at tacit.finance\n\n' +
-      '#tacit';
+      'Just contributed entropy #' + (myIndex || '?') + ' to the tacit AMM trusted setup ceremony — '
+      + 'now ' + totalContribs + ' contributions across the 3 circuits. '
+      + 'One honest contributor per circuit is enough.\n\n'
+      + 'contribute at tacit.finance\n\n#tacit';
     const shareBtn = document.createElement('a');
     shareBtn.href = 'https://x.com/intent/post?text=' + encodeURIComponent(tweetText);
     shareBtn.target = '_blank';
     shareBtn.rel = 'noopener noreferrer';
     shareBtn.textContent = 'share on x';
     shareBtn.style.cssText =
-      'display:inline-block; padding:6px 12px; border:1px solid var(--ink); background:var(--ink); color:var(--bg); ' +
-      'text-decoration:none; font-size:12px; cursor:pointer;';
+      'display:inline-block;padding:8px 16px;border:1px solid var(--ink);background:var(--ink);color:var(--bg);' +
+      'text-decoration:none;font-size:12px;font-weight:600;letter-spacing:0.04em;cursor:pointer;text-transform:uppercase;';
     shareWrap.appendChild(shareBtn);
     const shareHint = document.createElement('span');
-    shareHint.className = 'muted';
-    shareHint.style.cssText = 'font-size:11px;';
-    shareHint.textContent = 're-open in 24h to contribute again';
+    shareHint.style.cssText = 'font-size:11px;color:var(--ink-mid);font-family:var(--serif);font-style:italic;';
+    shareHint.textContent = 're-open in 30 min to contribute to another circuit';
     shareWrap.appendChild(shareHint);
     resultEl.appendChild(shareWrap);
     goBtn.textContent = 'Contribute again';
@@ -35225,6 +35294,12 @@ async function _submitAmmCeremonyContribution() {
   } finally {
     goBtn.disabled = false;
     if (cancelBtn) cancelBtn.disabled = false;
+    // Defensive: re-render the floating chip after every contribute
+    // attempt (success OR error). On error the ack was never set so
+    // the chip should still show, but a chip-render call after error
+    // guards against any state drift. On success the renderAmmCeremony-
+    // Chip will respect the new 30-min ack and hide.
+    try { renderAmmCeremonyChip(); } catch {}
   }
 }
 function _wireAmmCeremonyChipOnce() {
@@ -53458,6 +53533,24 @@ function _renderAmmContribTape() {
     const itemsHtml = items.map(buildItem).join('');
     // Duplicate for seamless marquee loop (same trick as global tape).
     track.innerHTML = itemsHtml + itemsHtml;
+    // Update the social-metrics count badge in the section header.
+    // Reads per-circuit contribution_count from the cache that the
+    // chip's refresh path already populates (no extra worker hit).
+    try {
+      const countEl = document.getElementById('amm-contrib-count');
+      if (countEl) {
+        let total = 0;
+        for (const c of AMM_CEREMONY_CIRCUIT_HASHES) {
+          const s = _ammCeremonyStateByCircuit.get(c.hash);
+          total += Number(s?.contribution_count) || 0;
+        }
+        if (total > 0) {
+          countEl.textContent = `${total} contribution${total === 1 ? '' : 's'} across 3 circuits`;
+        } else {
+          countEl.textContent = '';
+        }
+      }
+    } catch {}
     section.style.display = '';
     tape.style.display = '';
   }).catch(e => {
