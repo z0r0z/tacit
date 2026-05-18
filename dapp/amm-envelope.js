@@ -319,3 +319,257 @@ export function decodeLpRemove(payload) {
     return result;
   } catch { return null; }
 }
+
+// ===== LP-bond yield farms (SPEC-AMM-FARM-AMENDMENT.md) =====
+//
+// T_FARM_INIT (0x34) / T_LP_BOND (0x35) / T_LP_UNBOND (0x36). Mirrors
+// the byte layouts of tests/amm-farm.mjs encodeFarmInit / encodeLpBond /
+// encodeLpUnbond exactly so worker decoders accept dapp envelopes.
+
+export const OPCODE_T_FARM_INIT  = 0x34;
+export const OPCODE_T_LP_BOND    = 0x35;
+export const OPCODE_T_LP_UNBOND  = 0x36;
+export const FARM_ENVELOPE_VERSION = 0x01;
+export const FARM_NO_CHANGE_SENTINEL = new Uint8Array(33);
+
+const _FARM_INIT_DOMAIN   = new TextEncoder().encode('tacit-amm-farm-init-v1');
+const _FARM_BOND_DOMAIN   = new TextEncoder().encode('tacit-amm-farm-bond-v1');
+const _FARM_UNBOND_DOMAIN = new TextEncoder().encode('tacit-amm-farm-unbond-v1');
+const _LP_ASSET_DOMAIN    = new TextEncoder().encode('tacit-amm-lp-v1');
+
+function u32LE(n) {
+  const buf = new Uint8Array(4);
+  new DataView(buf.buffer).setUint32(0, n >>> 0, true);
+  return buf;
+}
+function u128LE(n) {
+  const buf = new Uint8Array(16);
+  let x = BigInt(n);
+  if (x < 0n || x >= 1n << 128n) throw new Error('u128 overflow');
+  for (let i = 0; i < 16; i++) { buf[i] = Number(x & 0xffn); x >>= 8n; }
+  return buf;
+}
+function _readU128LE(b, off) {
+  let n = 0n;
+  for (let i = 0; i < 16; i++) n |= BigInt(b[off + i]) << BigInt(i * 8);
+  return n;
+}
+function _readU32LE(b, off) {
+  return new DataView(b.buffer, b.byteOffset, b.byteLength).getUint32(off, true) >>> 0;
+}
+
+// farm_id = SHA256("tacit-amm-farm-init-v1" || pool_id || launcher_pubkey ||
+//                   reward_asset_id || farm_nonce)
+export function deriveFarmId({ poolId, launcherPubkey, rewardAssetId, farmNonce }) {
+  return sha256(concatBytes(
+    _FARM_INIT_DOMAIN,
+    asBytes(poolId, 32, 'poolId'),
+    asBytes(launcherPubkey, 33, 'launcherPubkey'),
+    asBytes(rewardAssetId, 32, 'rewardAssetId'),
+    asBytes(farmNonce, 32, 'farmNonce'),
+  ));
+}
+
+export function deriveLpAssetIdFromPoolId(poolId) {
+  return sha256(concatBytes(_LP_ASSET_DOMAIN, asBytes(poolId, 32, 'poolId')));
+}
+
+// Domain msg builders. Sigs bind structural fields only; OP_RETURN
+// (SHA256(payload)) provides replay protection. Same convention as
+// T_SWAP_VAR intent_msg.
+export function buildFarmInitMsg({ farmId, launcherPubkey, rewardTotal, rewardPerBlock, startHeight, endHeight }) {
+  return sha256(concatBytes(
+    _FARM_INIT_DOMAIN,
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(launcherPubkey, 33, 'launcherPubkey'),
+    u64LE(rewardTotal), u64LE(rewardPerBlock),
+    u32LE(startHeight), u32LE(endHeight),
+  ));
+}
+export function buildLpBondMsg({ farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight }) {
+  return sha256(concatBytes(
+    _FARM_BOND_DOMAIN,
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(bonderPubkey, 33, 'bonderPubkey'),
+    u64LE(bondAmount),
+    u128LE(entryAccPerShare),
+    u32LE(bondViewHeight),
+  ));
+}
+export function buildLpUnbondMsg({ farmId, bondId, unbonderPubkey, exitAccPerShare, exitViewHeight, rewardAmount, lpReturnR, rewardR }) {
+  return sha256(concatBytes(
+    _FARM_UNBOND_DOMAIN,
+    asBytes(farmId, 32, 'farmId'),
+    asBytes(bondId, 36, 'bondId'),
+    asBytes(unbonderPubkey, 33, 'unbonderPubkey'),
+    u128LE(exitAccPerShare),
+    u32LE(exitViewHeight),
+    u64LE(rewardAmount),
+    asBytes(lpReturnR, 32, 'lpReturnR'),
+    asBytes(rewardR, 32, 'rewardR'),
+  ));
+}
+
+export function encodeFarmInit(args) {
+  const parts = [
+    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_FARM_INIT]),
+    asBytes(args.poolId, 32, 'poolId'),
+    asBytes(args.farmNonce, 32, 'farmNonce'),
+    asBytes(args.launcherPubkey, 33, 'launcherPubkey'),
+    asBytes(args.rewardAssetId, 32, 'rewardAssetId'),
+    u64LE(args.rewardTotal),
+    u64LE(args.rewardPerBlock),
+    u32LE(args.startHeight),
+    u32LE(args.endHeight),
+    asBytes(args.cChangeOrSentinel, 33, 'cChangeOrSentinel'),
+  ];
+  const proof = args.rangeProof;
+  if (!(proof instanceof Uint8Array)) throw new Error('rangeProof must be Uint8Array');
+  if (proof.length > 0xffff) throw new Error('rangeProof too large');
+  parts.push(u16LE(proof.length), proof);
+  parts.push(asBytes(args.kernelSig, 64, 'kernelSig'));
+  parts.push(asBytes(args.launcherSig, 64, 'launcherSig'));
+  return concatBytes(...parts);
+}
+
+export function encodeLpBond(args) {
+  const parts = [
+    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_LP_BOND]),
+    asBytes(args.farmId, 32, 'farmId'),
+    asBytes(args.bonderPubkey, 33, 'bonderPubkey'),
+    u64LE(args.bondAmount),
+    u128LE(args.entryAccPerShare),
+    u32LE(args.bondViewHeight),
+    asBytes(args.cChangeOrSentinel, 33, 'cChangeOrSentinel'),
+  ];
+  const proof = args.rangeProof;
+  if (!(proof instanceof Uint8Array)) throw new Error('rangeProof must be Uint8Array');
+  if (proof.length > 0xffff) throw new Error('rangeProof too large');
+  parts.push(u16LE(proof.length), proof);
+  parts.push(asBytes(args.kernelSig, 64, 'kernelSig'));
+  parts.push(asBytes(args.bonderSig, 64, 'bonderSig'));
+  return concatBytes(...parts);
+}
+
+export function encodeLpUnbond(args) {
+  return concatBytes(
+    new Uint8Array([FARM_ENVELOPE_VERSION, OPCODE_T_LP_UNBOND]),
+    asBytes(args.farmId, 32, 'farmId'),
+    asBytes(args.bondId, 36, 'bondId'),
+    asBytes(args.unbonderPubkey, 33, 'unbonderPubkey'),
+    u128LE(args.exitAccPerShare),
+    u32LE(args.exitViewHeight),
+    u64LE(args.rewardAmount),
+    asBytes(args.lpReturnR, 32, 'lpReturnR'),
+    asBytes(args.rewardR, 32, 'rewardR'),
+    asBytes(args.unbonderSig, 64, 'unbonderSig'),
+  );
+}
+
+export function decodeFarmInit(payload) {
+  if (!(payload instanceof Uint8Array)) return null;
+  if (payload.length < 316 + 2) return null;
+  let p = 0;
+  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
+  if (payload[p++] !== OPCODE_T_FARM_INIT) return null;
+  try {
+    const poolId          = payload.slice(p, p + 32); p += 32;
+    const farmNonce       = payload.slice(p, p + 32); p += 32;
+    const launcherPubkey  = payload.slice(p, p + 33); p += 33;
+    if (launcherPubkey[0] !== 0x02 && launcherPubkey[0] !== 0x03) return null;
+    const rewardAssetId   = payload.slice(p, p + 32); p += 32;
+    const rewardTotal     = _readU64LE(payload, p); p += 8;
+    const rewardPerBlock  = _readU64LE(payload, p); p += 8;
+    const startHeight     = _readU32LE(payload, p); p += 4;
+    const endHeight       = _readU32LE(payload, p); p += 4;
+    const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
+    const rpLen = _readU16LE(payload, p); p += 2;
+    if (p + rpLen + 64 + 64 > payload.length) return null;
+    const rangeProof   = payload.slice(p, p + rpLen); p += rpLen;
+    const kernelSig    = payload.slice(p, p + 64); p += 64;
+    const launcherSig  = payload.slice(p, p + 64); p += 64;
+    if (p !== payload.length) return null;
+    return {
+      poolId, farmNonce, launcherPubkey, rewardAssetId,
+      rewardTotal, rewardPerBlock, startHeight, endHeight,
+      cChangeOrSentinel, rangeProof, kernelSig, launcherSig,
+    };
+  } catch { return null; }
+}
+
+export function decodeLpBond(payload) {
+  if (!(payload instanceof Uint8Array)) return null;
+  if (payload.length < 256 + 2) return null;
+  let p = 0;
+  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
+  if (payload[p++] !== OPCODE_T_LP_BOND) return null;
+  try {
+    const farmId          = payload.slice(p, p + 32); p += 32;
+    const bonderPubkey    = payload.slice(p, p + 33); p += 33;
+    if (bonderPubkey[0] !== 0x02 && bonderPubkey[0] !== 0x03) return null;
+    const bondAmount      = _readU64LE(payload, p); p += 8;
+    const entryAccPerShare = _readU128LE(payload, p); p += 16;
+    const bondViewHeight  = _readU32LE(payload, p); p += 4;
+    const cChangeOrSentinel = payload.slice(p, p + 33); p += 33;
+    const rpLen = _readU16LE(payload, p); p += 2;
+    if (p + rpLen + 64 + 64 > payload.length) return null;
+    const rangeProof = payload.slice(p, p + rpLen); p += rpLen;
+    const kernelSig  = payload.slice(p, p + 64); p += 64;
+    const bonderSig  = payload.slice(p, p + 64); p += 64;
+    if (p !== payload.length) return null;
+    return {
+      farmId, bonderPubkey, bondAmount, entryAccPerShare, bondViewHeight,
+      cChangeOrSentinel, rangeProof, kernelSig, bonderSig,
+    };
+  } catch { return null; }
+}
+
+export function decodeLpUnbond(payload) {
+  if (!(payload instanceof Uint8Array)) return null;
+  if (payload.length !== 259) return null;
+  let p = 0;
+  if (payload[p++] !== FARM_ENVELOPE_VERSION) return null;
+  if (payload[p++] !== OPCODE_T_LP_UNBOND) return null;
+  try {
+    const farmId          = payload.slice(p, p + 32); p += 32;
+    const bondId          = payload.slice(p, p + 36); p += 36;
+    const unbonderPubkey  = payload.slice(p, p + 33); p += 33;
+    if (unbonderPubkey[0] !== 0x02 && unbonderPubkey[0] !== 0x03) return null;
+    const exitAccPerShare = _readU128LE(payload, p); p += 16;
+    const exitViewHeight  = _readU32LE(payload, p); p += 4;
+    const rewardAmount    = _readU64LE(payload, p); p += 8;
+    const lpReturnR       = payload.slice(p, p + 32); p += 32;
+    const rewardR         = payload.slice(p, p + 32); p += 32;
+    const unbonderSig     = payload.slice(p, p + 64); p += 64;
+    if (p !== payload.length) return null;
+    return {
+      farmId, bondId, unbonderPubkey,
+      exitAccPerShare, exitViewHeight, rewardAmount,
+      lpReturnR, rewardR, unbonderSig,
+    };
+  } catch { return null; }
+}
+
+// Q.96 lazy crystallization (mirrors tests/amm-farm.mjs crystallizeFarm).
+// Used by the dapp to compute live pending rewards before /farm fetch.
+// Mutates the farm object in place; idempotent at same height.
+export const FARM_ACC_FIXED_POINT_SHIFT = 96n;
+export function crystallizeFarm(farm, currentHeight) {
+  const h = currentHeight > farm.end_height ? farm.end_height : currentHeight;
+  if (h <= farm.last_update_height) return;
+  if (h < farm.start_height) {
+    farm.last_update_height = h;
+    return;
+  }
+  const baseline = farm.last_update_height < farm.start_height
+    ? farm.start_height
+    : farm.last_update_height;
+  const elapsed = BigInt(h - baseline);
+  const totalBonded = BigInt(farm.total_bonded);
+  if (totalBonded > 0n && elapsed > 0n) {
+    const rewardUnits = elapsed * BigInt(farm.reward_per_block);
+    const accDelta = (rewardUnits << FARM_ACC_FIXED_POINT_SHIFT) / totalBonded;
+    farm.acc_reward_per_share = (BigInt(farm.acc_reward_per_share) + accDelta).toString();
+  }
+  farm.last_update_height = h;
+}
