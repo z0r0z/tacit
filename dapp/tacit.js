@@ -8196,7 +8196,12 @@ function lexCanonicalAssetPair(idA, idB) {
   }
   throw new Error('canonical pair: identical asset_ids');
 }
-function ammDerivePoolIdDapp(idA, idB, feeBps, capabilityFlags) {
+const _AMM_ZERO_PROTOCOL_FEE_ADDRESS = new Uint8Array(33);
+function _ammIsZeroProtocolFeeAddress(b) {
+  for (let i = 0; i < b.length; i++) if (b[i] !== 0) return false;
+  return true;
+}
+function ammDerivePoolIdDapp(idA, idB, feeBps, capabilityFlags, protocolFeeAddress, protocolFeeBps) {
   const [low, high] = lexCanonicalAssetPair(idA, idB);
   if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 1000) {
     throw new Error(`fee_bps out of range [0, 1000]: ${feeBps}`);
@@ -8207,7 +8212,28 @@ function ammDerivePoolIdDapp(idA, idB, feeBps, capabilityFlags) {
   const feeBpsLE = new Uint8Array(2);
   new DataView(feeBpsLE.buffer).setUint16(0, feeBps, true);
   const flagsByte = new Uint8Array([capabilityFlags]);
-  return sha256(concatBytes(_AMM_POOL_ID_DOMAIN_DAPP, low, high, feeBpsLE, flagsByte));
+
+  const pfBps = protocolFeeBps == null ? 0 : protocolFeeBps;
+  if (!Number.isInteger(pfBps) || pfBps < 0 || pfBps > 1000) {
+    throw new Error(`protocol_fee_bps out of range [0, 1000]: ${pfBps}`);
+  }
+  let pfAddr;
+  if (protocolFeeAddress == null) {
+    pfAddr = _AMM_ZERO_PROTOCOL_FEE_ADDRESS;
+  } else {
+    pfAddr = protocolFeeAddress instanceof Uint8Array ? protocolFeeAddress : hexToBytes(protocolFeeAddress);
+    if (pfAddr.length !== 33) throw new Error(`protocol_fee_address must be 33 bytes: got ${pfAddr.length}`);
+  }
+  const pfAddrZero = _ammIsZeroProtocolFeeAddress(pfAddr);
+  if ((pfBps === 0) !== pfAddrZero) {
+    throw new Error('protocol_fee_address and protocol_fee_bps must be joint-zero or joint-non-zero');
+  }
+  if (pfBps === 0) {
+    return sha256(concatBytes(_AMM_POOL_ID_DOMAIN_DAPP, low, high, feeBpsLE, flagsByte));
+  }
+  const pfBpsLE = new Uint8Array(2);
+  new DataView(pfBpsLE.buffer).setUint16(0, pfBps, true);
+  return sha256(concatBytes(_AMM_POOL_ID_DOMAIN_DAPP, low, high, feeBpsLE, flagsByte, pfAddr, pfBpsLE));
 }
 
 // Kernel message for T_DEPOSIT (SPEC §5.10). Domain-separated by 'tacit-deposit-v1'
@@ -49806,7 +49832,7 @@ function applyMarketFilters() {
   // Filter-stripped-everything fallback. If the user-side filters
   // (kind dropdown, price range, expired flag) zeroed out the asset's
   // rows even though the cache HAS active listings for this aid, the
-  // "No active asks. Bids above; post one if you want to buy" empty
+  // "No active asks. Bids below; post one if you want to buy" empty
   // pane below would lie to the user — there ARE asks; their current
   // filter just hid them. The catastrophic empty pane also hides the
   // swap tile, asks header chips, and filter affordances, so the user
@@ -49922,12 +49948,12 @@ function applyMarketFilters() {
     const _emptyAsksToggleChip = `<button data-act="market-row-actions-toggle" type="button" title="${_marketRowActionsHidden ? 'Currently hiding per-row trade buttons — click bid rows to size the Swap tile. Flip to Advanced to surface Sweep sell / +Place a bid here too.' : 'Currently showing per-row direct-commit buttons. Flip to Simple to hide them and route every trade through the Swap tile (cleaner scan + auto-routing).'}" style="font-size:10px;padding:3px 10px;background:${_marketRowActionsHidden ? 'transparent' : 'var(--ink)'};border:1px solid var(--ink);color:${_marketRowActionsHidden ? 'var(--ink)' : 'var(--bg)'};cursor:pointer;font-weight:600;">${_marketRowActionsHidden ? 'Simple trade' : 'Advanced trade'}</button>`;
     const activityPanelHtml = marketActivityPanelHtml(_assetForBids, allAssetRows);
     const _yourOrdersHtmlNoAsks = renderYourOpenOrdersHTML(_marketView.assetId, _assetForBids, (wallet && wallet.pub) ? bytesToHex(wallet.pub) : '');
-    // Empty-asks layout: bids ladder on top (matches the new bids-above-
-    // asks CEX flip), with the "no asks" empty pane + Simple/Advanced
-    // toggle BELOW it so the empty-ask state sits where the asks panel
-    // would normally render. Copy says "Bids above" so users who read it
-    // know to scroll up rather than hunting below.
-    const listedPaneHtml = `${_yourOrdersHtmlNoAsks}${bidsLadderHtml}<div class="empty" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>No active asks. Bids above; post one if you want to buy.</span>${_emptyAsksToggleChip}</div>`;
+    // Empty-asks layout (classic CEX layout: asks on top, bids below).
+    // Show the "no asks" empty pane + Simple/Advanced toggle in the
+    // asks slot at the top, then the bids ladder below. Copy says
+    // "Bids below" so users know to scroll past the empty pane to see
+    // demand-side liquidity.
+    const listedPaneHtml = `${_yourOrdersHtmlNoAsks}<div class="empty" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;"><span>No active asks. Bids below; post one if you want to buy.</span>${_emptyAsksToggleChip}</div>${bidsLadderHtml}`;
     const richStatsHtml = renderMarketAssetStatsHTML(_assetForBids);
     list.innerHTML = `<div class="market-token-page"><div class="market-token-main">${assetHeaderHtml}${richStatsHtml}${marketAssetTabsHtml(listedPaneHtml, activityPanelHtml, marketTabActionHtml)}</div></div>`;
     hydrateMarketImages(list);
@@ -50066,11 +50092,12 @@ function applyMarketFilters() {
   // toggle, and the form host that expands underneath) so a holder
   // wanting to add liquidity sees the action in context — the asks
   // ladder they're contributing to.
-  // Asset view always force-sorts unit-asc (see the const sort = ... above),
-  // so the label reads "cheapest first" regardless of the browse-view's
-  // dropdown selection. Without this clamp, a stale "recency" pick would
-  // mislabel an actually-cheapest-first ladder as "newest first".
-  const sortLabel = 'cheapest first';
+  // Asset view always force-sorts unit-asc internally (page 1 = the 12
+  // cheapest asks), but the asks panel renders them descending within
+  // the page so best ask lands at the bottom, adjacent to the spread
+  // divider — classic CEX layout. Surface the visual order here so the
+  // hint matches what the user sees scrolling down the panel.
+  const sortLabel = 'best ask at bottom · adjacent to spread';
   // Per-kind breakdown of what Simple mode hides — surfaced both in the
   // chip tooltip and (when meaningful) inline as a one-liner so users
   // don't have to hover to discover that the "+86 hidden" is broken
@@ -50582,10 +50609,10 @@ function applyMarketFilters() {
     // existing stats-strip spread colors so the two surfaces agree.
     const spreadColor = isCrossed ? '#c97a1a' : (spreadPct != null && spreadPct < 1 ? '#0a7d3a' : 'var(--ink-mid)');
     const bestBidHtml = highestBid != null
-      ? `<span title="Highest in-band bid — bottom of the bids ladder directly above, adjacent to this spread divider."><strong style="color:#0a8f43;">${fmtUnitPriceSats(highestBid)}</strong> <span class="muted" style="font-size:9px;">best bid</span></span>`
+      ? `<span title="Highest in-band bid — top of the bids ladder directly below, adjacent to this spread divider."><strong style="color:#0a8f43;">${fmtUnitPriceSats(highestBid)}</strong> <span class="muted" style="font-size:9px;">best bid</span></span>`
       : `<span class="muted" style="font-size:10px;">no bids</span>`;
     const bestAskHtml = cheapestAsk != null
-      ? `<span title="Cheapest in-band preauth ask — top of the asks ladder directly below, adjacent to this spread divider."><strong style="color:#b8341d;">${fmtUnitPriceSats(cheapestAsk)}</strong> <span class="muted" style="font-size:9px;">best ask</span></span>`
+      ? `<span title="Cheapest in-band preauth ask — bottom of the asks ladder directly above, adjacent to this spread divider."><strong style="color:#b8341d;">${fmtUnitPriceSats(cheapestAsk)}</strong> <span class="muted" style="font-size:9px;">best ask</span></span>`
       : `<span class="muted" style="font-size:10px;">no asks</span>`;
     const spreadMidHtml = spreadAbs != null
       ? (isCrossed
@@ -50662,24 +50689,26 @@ function applyMarketFilters() {
       ${_recentTradesHtml}
     </div>`;
   })();
-  // CEX-standard orderbook layout: bids above, spread divider in the
-  // middle, asks below. Reading top-to-bottom:
-  //   bids (low → high → best bid sits directly above the spread
-  //         divider, lowest bids at the top of the bids panel)
+  // Classic CEX orderbook layout (Coinbase / Binance / Bybit vertical
+  // mode): asks above, spread divider in the middle, bids below.
+  // Reading top-to-bottom:
+  //   asks (descending within page → most expensive of page 1 at the
+  //         top of the asks panel, best ask = cheapest at the bottom
+  //         of the panel adjacent to the spread divider)
   //   spread divider (explicit best-bid / best-ask / spread / mark)
-  //   asks (cheapest first → best ask sits directly below the spread
-  //         divider, more expensive asks descending)
+  //   bids (descending → best bid at the top of the bids panel
+  //         adjacent to the spread divider, lower bids fall away)
   //
-  // Both best prices meet at the spread divider — the classic CEX
-  // "books crash together at the spread" visualization. The Swap tile
-  // above the orderbook is the primary trade surface for buyer intent
-  // (it auto-routes through asks); the orderbook itself reads as
-  // inspection-mode depth, so leading with bids signals the demand
-  // side of the market without burying the take-side (asks remain
-  // one short scroll past the spread). Asks pagination is preserved
-  // as-is (page 1 = the 12 cheapest, ascending within the page); the
-  // bids ladder is rendered low → high via a reverse() in
-  // populateMarketBidsLadder so best bid lands adjacent to the spread.
+  // Both best prices meet at the spread divider — the visual "pinch
+  // point" both sides flow into. Asks-on-top also co-locates the
+  // orderbook's take-side with the Swap tile above (which routes
+  // through asks for the dominant buyer-intent flow), making the
+  // page read as one continuous "buy stack": amount → route → spread
+  // → demand context. Pagination still selects cheapest-first
+  // (page 1 = the 12 most-relevant asks); the WITHIN-PAGE render
+  // iteration reverses so best-ask lands adjacent to the spread.
+  // Bids stay sorted descending in populateMarketBidsLadder so best
+  // bid sits at the top of the bids panel.
   //
   // Your-open-orders panel stays at the very top so a maker managing
   // their own active orders sees them before either ladder.
@@ -50720,10 +50749,17 @@ function applyMarketFilters() {
   })();
   const _mobileTabsHtml = `
     <div class="orderbook-mobile-tabs" role="tablist" aria-label="Orderbook side">
-      <button role="tab" data-act="orderbook-mobile-tab" data-side="bids" aria-selected="true">Bids${_bidsTabCount != null ? ` · ${_bidsTabCount}` : ''}</button>
-      <button role="tab" data-act="orderbook-mobile-tab" data-side="asks" aria-selected="false">Asks${rowsForGrid.length ? ` · ${rowsForGrid.length}` : ''}</button>
+      <button role="tab" data-act="orderbook-mobile-tab" data-side="asks" aria-selected="true">Asks${rowsForGrid.length ? ` · ${rowsForGrid.length}` : ''}</button>
+      <button role="tab" data-act="orderbook-mobile-tab" data-side="bids" aria-selected="false">Bids${_bidsTabCount != null ? ` · ${_bidsTabCount}` : ''}</button>
     </div>`;
-  const listedPaneHtml = `${_yourOrdersHtml}<div data-orderbook-wrap data-orderbook-active="bids">${_mobileTabsHtml}<div data-orderbook-side="bids">${bidsLadderHtml}</div>${_spreadRowHtml}<div data-orderbook-side="asks">${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}${_asksHeaderRowHtml}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div>${marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd)}</div></div>`;
+  // Pager moved ABOVE the grid in the classic-CEX layout: with asks
+  // rendered descending (worst at top, best ask at the bottom),
+  // putting the pager below the grid would sit it between the best
+  // ask and the spread divider — breaking the adjacency that's the
+  // whole point of the flip. Above the grid, it reads as a toolbar
+  // for the asks panel.
+  const _asksPagerHtml = marketListingPagerHtml(totalAskRows, _marketListingPage, totalAskPages, askShowingStart, askShowingEnd);
+  const listedPaneHtml = `${_yourOrdersHtml}<div data-orderbook-wrap data-orderbook-active="asks">${_mobileTabsHtml}<div data-orderbook-side="asks">${asksHeaderHtml}${noAtomicHint}${simpleEmptyHint}${_asksPagerHtml}${_asksHeaderRowHtml}<div id="market-grid" class="${_gridClass}" style="${rowsForGrid.length === 0 ? 'display:none;' : ''}"></div></div>${_spreadRowHtml}<div data-orderbook-side="bids">${bidsLadderHtml}</div></div>`;
   // Rich stats strip — supply (with IPFS-attestation badge), market cap
   // with proof, 24h Δ, depth chart, recent-trades feed. The header above
   // shows the 4 condensed cells; this strip below carries the deeper
@@ -51051,8 +51087,18 @@ function applyMarketFilters() {
   const _askFillableCount = _askFillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
   // Build all tiles into a DocumentFragment first; one reflow at the end
   // instead of N reflows during the loop. Material on busy markets.
+  //
+  // Classic CEX iteration order: page contents are still selected
+  // cheapest-first (pageRows[0] = best ask), but tiles are APPENDED in
+  // reverse so the most-expensive-of-page lands at the top of the
+  // asks panel and the cheapest = best ask lands at the bottom,
+  // adjacent to the spread divider below. _tileIdx still indexes
+  // into pageRows / _askCumPct / bestPreauthIdx unchanged, so
+  // cumulative-depth bars + BEST PRICE badge stay correct (small
+  // bar on the best ask at the bottom, full bar on the worst at the
+  // top — depth grows away from the spread, CEX convention).
   const frag = document.createDocumentFragment();
-  for (let _tileIdx = 0; _tileIdx < pageRows.length; _tileIdx++) {
+  for (let _tileIdx = pageRows.length - 1; _tileIdx >= 0; _tileIdx--) {
     const l = pageRows[_tileIdx];
     const a = l._asset || {};
     const safeAid = /^[0-9a-f]{64}$/.test(a.asset_id || '') ? a.asset_id : '';
@@ -57325,14 +57371,7 @@ async function populateMarketBidsLadder(scope, asset) {
     return bidTotalDepth > 0 ? Math.min(100, (bidCumSoFar / bidTotalDepth) * 100) : 0;
   });
   const _bidFillableCount = _fillableAmts.reduce((s, a) => s + (a > 0 ? 1 : 0), 0);
-  // CEX-flip rendering: bucketedLadder is sorted best-first (highest unit
-  // price at index 0) so cumulative-depth / TOP-badge / vs-mark
-  // computations inside the loop stay "rank 0 = best bid". After the map
-  // produces per-row HTML, the array is reversed so the rendered ladder
-  // reads low → high top-to-bottom, landing the best bid at the BOTTOM
-  // of the bids panel — directly above the spread divider. See the
-  // layout comment in applyMarketFilters above _spreadRowHtml.
-  const _bidRowsHtmlArr = bucketedLadder.map((b, _bidIdx) => {
+  const rowsHtml = bucketedLadder.map((b, _bidIdx) => {
     // Variable-fill (§5.7.7) display: show the remaining (tradable now)
     // amount, with a subtle min-fill hint. Whole-bid bids unchanged.
     const _bidIsVar = !!(b.min_fill_amount && b.min_fill_amount !== '0');
@@ -57507,9 +57546,7 @@ async function populateMarketBidsLadder(scope, asset) {
         </div>
         <div class="market-bid-action">${action}</div>
       </div>`;
-  });
-  _bidRowsHtmlArr.reverse();
-  const rowsHtml = _bidRowsHtmlArr.join('') || `<div class="muted" style="font-size:11px;">No bids match this filter.</div>`;
+  }).join('') || `<div class="muted" style="font-size:11px;">No bids match this filter.</div>`;
   const mineBidsChip = minedBidsCount > 0
     ? (_marketMineOnlyBids
         ? `<button data-act="market-mine-bids-toggle" type="button" title="Showing only your bids (${minedBidsCount}). Click to show all bids.">Mine - ${minedBidsCount}</button>`
